@@ -126,6 +126,13 @@ import {
   type DocumentFilterOption,
 } from './thread-rail.ts';
 import type { LibraryMoveResult } from '../../library/move-to-document.ts';
+import {
+  occupySidebarSlot,
+  readSidebarPageLayout,
+  vacateSidebarSlot,
+  writeSidebarPageLayout,
+  type SidebarPageLayout,
+} from './page-layout.ts';
 import { detectPlatformKind } from '../../engine/navigation-keymap.ts';
 import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createEffortSlider } from './effort-slider.ts';
@@ -215,7 +222,43 @@ export interface AgentSidebarDeps {
   navigateToChange?: (position: DocumentPosition, anchor?: DiffItem['rightAnchor']) => void;
   /** 기존 RHWP 문서 이력 대화상자를 연다. */
   openClassicVersionControl?: () => void;
+  /**
+   * false 면 화면에 붙이지 않은 채로 만든다 — 다른 문서의 사이드바가 화면을 가진
+   * 동안 뒤에서 브리지 이벤트를 받는다. 기본 true.
+   */
+  startActive?: boolean;
+  /**
+   * 다른 문서의 채팅을 연다. 편집기가 문서 세션을 관리할 때 넘긴다. 있으면
+   * 사이드바는 지금 도는 작업을 멈추지 않고 현재 채팅만 저장한 뒤 편집기에 맡긴다.
+   * 편집기는 이 사이드바를 내리고 그 문서 세션의 사이드바를 올릴 수 있다.
+   */
+  openThreadDocument?: (
+    thread: { id: string; documentId: string | null; docKey: string | null },
+  ) => Promise<LibraryMoveResult>;
 }
+
+export interface AgentSidebarHandle {
+  root: HTMLElement;
+  openVersions(): void;
+  sendInlinePrompt(submission: InlinePromptSubmission): InlinePromptSendResponse;
+  /** 화면에 붙인다 — 페이지 배치(펼침·폭·집중 모드·목록)를 이어받고 애니메이션은 다시 돌리지 않는다. */
+  activate(): void;
+  /** 화면에서 내린다. 브리지와 대화 상태는 그대로 두고, 페이지 배치는 다음 사이드바에 넘긴다. */
+  deactivate(): void;
+  isActive(): boolean;
+  /** 이 문서의 채팅을 연다 — 편집기가 이 사이드바를 올린 뒤 부른다. */
+  openThreadById(threadId: string): void;
+  /** 이 세션에 다음으로 열리는 문서가 그 채팅의 문서면 그 채팅을 잇는다. */
+  followThreadOnNextDocument(threadId: string): void;
+  dispose(): void;
+}
+
+/* 첫 실행 안내는 페이지에 하나만 띄운다 — 문서마다 사이드바가 있어도 겹치지 않게. */
+let initialSetupOwner: object | null = null;
+
+/** 화면에서 내려간 사이드바가 남기는 자리 표시 이름. */
+const ROOT_SLOT = 'agent-sidebar';
+const COLLAPSE_TAB_SLOT = 'agent-sidebar-collapse-tab';
 
 type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'replaced';
 
@@ -579,12 +622,7 @@ function truncate(s: string, max: number): string {
 }
 
 
-export function initAgentSidebar(deps: AgentSidebarDeps): {
-  root: HTMLElement;
-  openVersions(): void;
-  sendInlinePrompt(submission: InlinePromptSubmission): InlinePromptSendResponse;
-  dispose(): void;
-} {
+export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const {
     bridge,
     eventBus,
@@ -596,7 +634,22 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     listRecentDocuments,
     versionController,
     openClassicVersionControl,
+    openThreadDocument,
   } = deps;
+
+  /**
+   * 이 사이드바가 화면에 붙어 있는가. 문서마다 사이드바가 하나씩 있고 화면에는
+   * 하나만 선다. body·html 클래스, 페이지 CSS 변수, 문서 층 애니메이션, 전역
+   * 단축키처럼 페이지 전체에 걸리는 일은 붙은 사이드바만 한다.
+   */
+  let active = deps.startActive !== false;
+  /** 편집 영역 inset 을 이 사이드바가 커밋한 상태(body.ag-sidebar-inset 과 같다). */
+  let editorInsetApplied = false;
+
+  /** 페이지 클래스는 붙은 사이드바만 바꾼다. */
+  function setPageClass(name: string, on: boolean): void {
+    if (active) document.body.classList.toggle(name, on);
+  }
 
   // 개인 기본값(설정 탭에서 저장) — 새 대화가 이 조합으로 열린다.
   let agentPrefs: AgentPrefs = loadAgentPrefs();
@@ -821,6 +874,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   function writeSidebarWidthVar(px: number): void {
     const value = `${px}px`;
     root.style.setProperty('--ag-root-width', value);
+    // 편집 영역 쪽 변수는 페이지의 것이다 — 화면에 붙은 사이드바만 쓴다.
+    if (!active) return;
     for (const id of SIDEBAR_WIDTH_CONSUMERS) {
       document.getElementById(id)?.style.setProperty('--ag-sidebar-width', value);
     }
@@ -838,7 +893,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     resizeHandle.setAttribute('aria-valuemax', String(maxSidebarWidth(sidebarWidthMin)));
     if (opts?.persist) persistSidebarWidth(sidebarWidth);
     // 전이 대기 중(펼침 커밋 전)에는 inset 이 아직 레이아웃에 없다.
-    if (document.body.classList.contains('ag-sidebar-inset')) {
+    if (editorInsetApplied) {
       committedEditorInsetPx = effectiveEditorInset(true);
     }
     // 여닫는 도중 폭이 바뀌면(끌다가 다시 펼치기) 지금 위치·속도에서 새 폭으로 이어 간다.
@@ -851,7 +906,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   function notifyInsetChanged(): void {
-    eventBus?.emit('viewport-inset-changed');
+    if (active) eventBus?.emit('viewport-inset-changed');
   }
 
   /** body.ag-sidebar-inset 이 켜졌을 때 편집 영역이 실제로 비켜 줄 폭 (CSS 규칙과 같은 조건). */
@@ -862,7 +917,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   function commitEditorInset(applied: boolean): void {
-    document.body.classList.toggle('ag-sidebar-inset', applied);
+    editorInsetApplied = applied;
+    setPageClass('ag-sidebar-inset', applied);
     committedEditorInsetPx = effectiveEditorInset(applied);
   }
 
@@ -902,7 +958,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   function clearInsetRecenterLoop(): void {
     cancelInsetAnimations();
     afterInsetSettle = null;
-    document.body.classList.remove('ag-sidebar-animating');
+    setPageClass('ag-sidebar-animating', false);
   }
 
   /** 사이드바 뒤를 따르는 문서 층. 상태 알약은 편집 영역 오른쪽 끝을 따라 두 배 움직인다. */
@@ -921,7 +977,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     const motion = insetMotion;
     // finish 이벤트는 같은 프레임의 페인트 전에 돈다. 커밋·재정렬과 transform 제거를
     // 한 번에 해 끝 프레임에서 용지가 튀지 않게 한다.
-    document.body.classList.remove('ag-sidebar-animating');
+    setPageClass('ag-sidebar-animating', false);
     if (motion) {
       sidebarShownAtRest = motion.open;
       if (motion.deferCommit) commitEditorInset(motion.open);
@@ -944,7 +1000,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
    * - docFromVis: 사이드바는 제자리에 두고 문서만 이 폭에서 새 폭으로 옮긴다(폭 초기화).
    */
   function startInsetRecenterLoop(opts?: { instant?: boolean; docFromVis?: number }): void {
-    const wantOpen = document.body.classList.contains('ag-sidebar-open');
+    const wantOpen = !root.classList.contains('ag-collapsed');
     const paneWidth = sidebarPaneWidth();
     const target = wantOpen ? paneWidth : 0;
     const now = motionNow();
@@ -966,11 +1022,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     }
     cancelInsetAnimations();
 
-    const config = opts?.instant || fullscreen || !eventBus ? null : slowMotionConfig();
+    // 화면에서 내려간 사이드바는 움직이지 않고 끝 상태만 맞춘다(문서 층은 페이지의 것이다).
+    const config = opts?.instant || fullscreen || !eventBus || !active ? null : slowMotionConfig();
     const plan = config ? planSpring(state, target, config) : null;
     const nextInset = effectiveEditorInset(wantOpen);
     if (!plan || plan.durationMs <= 0) {
-      document.body.classList.remove('ag-sidebar-animating');
+      setPageClass('ag-sidebar-animating', false);
       sidebarShownAtRest = wantOpen;
       commitEditorInset(wantOpen);
       notifyInsetChanged();
@@ -981,7 +1038,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     }
 
     const deferCommit = nextInset > committedEditorInsetPx;
-    document.body.classList.add('ag-sidebar-animating');
+    setPageClass('ag-sidebar-animating', true);
     if (!deferCommit) {
       // 레이아웃은 지금 한 번 바꾸고, 문서는 이전 화면 위치에서 출발시킨다.
       commitEditorInset(wantOpen);
@@ -1008,7 +1065,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       ));
     }
     if (!animations.length) {
-      document.body.classList.remove('ag-sidebar-animating');
+      setPageClass('ag-sidebar-animating', false);
       sidebarShownAtRest = wantOpen;
       commitEditorInset(wantOpen);
       notifyInsetChanged();
@@ -1028,15 +1085,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
 
   function setCollapsed(collapsed: boolean, opts?: { recenter?: boolean }): void {
     // 접힌 사이드바 안의 시트는 보이지 않으므로 취소로 닫고, 포커스·키가 닿지 않게 한다.
-    if (collapsed) dismissOpenSheets();
+    if (collapsed && active) dismissOpenSheets();
     root.inert = collapsed;
     root.classList.toggle('ag-collapsed', collapsed);
-    document.body.classList.toggle('ag-sidebar-open', !collapsed);
+    setPageClass('ag-sidebar-open', !collapsed);
     const label = collapsed ? '에이전트 사이드바 펼치기' : '에이전트 사이드바 숨기기';
     collapseTab.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
     collapseTab.setAttribute('aria-label', label);
     collapseTab.title = label;
-    eventBus?.emit('agent-sidebar-visibility-changed', { open: !collapsed });
+    if (active) eventBus?.emit('agent-sidebar-visibility-changed', { open: !collapsed });
     startInsetRecenterLoop(opts?.recenter === false ? { instant: true } : undefined);
   }
 
@@ -1070,7 +1127,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     resizeStartWidth = sidebarWidth;
     resizeDragCollapsed = false;
     setConfigPanelOpen(false);
-    document.body.classList.add('ag-sidebar-resizing', 'ag-sidebar-animating');
+    setPageClass('ag-sidebar-resizing', true);
+    setPageClass('ag-sidebar-animating', true);
     window.addEventListener('pointermove', onResizePointerMove, true);
     window.addEventListener('pointerup', endSidebarResize, true);
     window.addEventListener('pointercancel', endSidebarResize, true);
@@ -1086,13 +1144,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       clearResizeResumeTimer();
       // 접고 펴는 동안은 편집 영역 여백도 전이로 따라가야 한다 — 리사이즈 클래스를
       // 잠시 내리고, 다시 펼친 뒤 전이가 끝나면 즉시 추종으로 돌아간다.
-      document.body.classList.remove('ag-sidebar-resizing');
+      setPageClass('ag-sidebar-resizing', false);
       setCollapsed(overshoot);
       if (!overshoot) {
         // 다시 펼침 스프링이 멈추면 곧바로 폭 추종으로 돌아간다(시간 추측 타이머 없이).
         const resume = () => {
           if (resizing && !resizeDragCollapsed) {
-            document.body.classList.add('ag-sidebar-resizing', 'ag-sidebar-animating');
+            setPageClass('ag-sidebar-resizing', true);
+            setPageClass('ag-sidebar-animating', true);
           }
         };
         if (insetMotion) afterInsetSettle = resume;
@@ -1126,9 +1185,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     widthDragging = false;
     resizeArmed = false;
     clearResizeResumeTimer();
-    document.body.classList.remove('ag-sidebar-resizing');
+    setPageClass('ag-sidebar-resizing', false);
     // 접힘 전이가 도는 중이면 ag-sidebar-animating 은 그 루프가 거둔다.
-    if (insetMotion === null) document.body.classList.remove('ag-sidebar-animating');
+    if (insetMotion === null) setPageClass('ag-sidebar-animating', false);
     detachResizeWindowListeners();
     if (resizeDragCollapsed) {
       // 다시 펼칠 때는 끌기 전 폭으로 돌아온다.
@@ -1605,9 +1664,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   /** 스레드 목록이 지금 화면에 있는가 — 사이드바에선 패널일 때만,
-      전체 화면에선 레일이 접혀 있지 않으면 항상 보인다. */
+      전체 화면에선 레일이 접혀 있지 않으면 항상 보인다. 내려간 사이드바는
+      다시 붙을 때 한 번에 그린다. */
   function threadsListVisible(): boolean {
-    return threadsPanelOpen || (fullscreen && !threadsRailCollapsed);
+    return active && (threadsPanelOpen || (fullscreen && !threadsRailCollapsed));
   }
 
   /**
@@ -1676,6 +1736,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   const onDocPointerDown = (e: PointerEvent) => {
+    if (!active) return;
     const t = e.target as Node;
     if (!composer.contains(t)) setConfigPanelOpen(false);
   };
@@ -1684,7 +1745,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   /* Esc 로 전체 화면을 접는다. 설정 패널이 열려 있으면 그쪽이 먼저
      닫히고, 입력 중 IME 조합은 가로채지 않는다. */
   const onDocKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== 'Escape' || !fullscreen) return;
+    if (!active || e.key !== 'Escape' || !fullscreen) return;
     // 슬래시 메뉴·팝오버처럼 먼저 Esc 를 받은 쪽이 있으면 모드는 그대로 둔다.
     if (e.isComposing || e.defaultPrevented) return;
     if (configPanelOpen) {
@@ -1736,6 +1797,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   const onAgentCommand = (event: Event) => {
+    // 메뉴 명령은 화면에 붙은 문서의 사이드바만 받는다.
+    if (!active) return;
     const command = (event as CustomEvent<{ command?: unknown }>).detail?.command;
     if (command === 'toggle-sidebar') toggleAgentSidebarVisibility();
     else if (command === 'toggle-focus-chat') toggleFocusChat();
@@ -1754,7 +1817,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
 
   // 캡처 단계에서 받아 문서 단축키·입력기 처리보다 먼저 가져간다.
   const onAgentShortcutKeyDown = (e: KeyboardEvent) => {
-    if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+    if (!active || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
     if (isMacPlatform && e.ctrlKey && e.metaKey && !e.altKey && !e.shiftKey
       && (e.code === 'KeyS' || e.code === 'KeyJ')) {
       e.preventDefault();
@@ -2404,7 +2467,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       if (agent !== selectedAgent) continue;
       if (turnRunning) reconnectRestartPending.add(agent);
       else restartAgentSession();
-      showToast({ message: `${AGENT_LABEL[agent]} 다시 연결됨`, durationMs: 2400 });
+      // 같은 허브 상태를 모든 문서의 사이드바가 받는다 — 알림은 보이는 사이드바 하나만.
+      if (active) showToast({ message: `${AGENT_LABEL[agent]} 다시 연결됨`, durationMs: 2400 });
     }
   }
 
@@ -2991,11 +3055,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     refreshSkills: () => bridge.listSkills(),
   });
   const settingsPage = settingsPanel.element;
-  initialSetup = maybeStartInitialSetup({
-    openAgentSetup: (agent) => settingsPanel.openAgentSetup(agent),
-    beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
-    openCalibration: (options) => writingStyleCalibration.open(options),
-  });
+  if (active && initialSetupOwner === null) {
+    initialSetup = maybeStartInitialSetup({
+      openAgentSetup: (agent) => settingsPanel.openAgentSetup(agent),
+      beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
+      openCalibration: (options) => writingStyleCalibration.open(options),
+    });
+    if (initialSetup) initialSetupOwner = root;
+  }
   settingsPage.addEventListener('ag-settings-close-request', () => {
     void requestSettingsClose(fullscreen ? workspaceSettingsBtn : settingsBtn);
   });
@@ -3096,7 +3163,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       /* 캡처를 못 얻어도 pointermove 는 손잡이 위에서 계속 온다 */
     }
     root.classList.add('ag-col-resizing');
-    document.body.classList.add('ag-col-resizing');
+    setPageClass('ag-col-resizing', true);
     // The divider moves with the grid, so pointer events must continue even
     // after the cursor leaves its narrow hit target or pointer capture fails.
     window.addEventListener('pointermove', onColumnResizePointerMove, true);
@@ -3119,7 +3186,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     if (!columnResizing) {
       detachColumnResizeWindowListeners();
       root.classList.remove('ag-col-resizing');
-      document.body.classList.remove('ag-col-resizing');
+      setPageClass('ag-col-resizing', false);
       return;
     }
     // 다른 손가락이 뗀 것이라면 진행 중인 드래그를 끝내지 않는다.
@@ -3130,7 +3197,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     columnResizePointerId = null;
     detachColumnResizeWindowListeners();
     root.classList.remove('ag-col-resizing');
-    document.body.classList.remove('ag-col-resizing');
+    setPageClass('ag-col-resizing', false);
     const handle = columnHandle(kind);
     try {
       if (pointerId !== null && handle.hasPointerCapture(pointerId)) {
@@ -3172,7 +3239,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     root.classList.toggle('ag-compact-rail-hover-open', compact && compactRailHoverOpen);
     root.classList.toggle('ag-rail-collapsed', fullscreen && !expanded);
     if (!fullscreen) return;
-    if (!expanded) closeThreadRailSurfaces();
+    if (!expanded) closeThreadRailSurfaces(root);
     threadsBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     threadsBtn.title = expanded ? '채팅 목록 접기' : '채팅 목록 열기';
     threadsBtn.setAttribute('aria-label', threadsBtn.title);
@@ -3270,7 +3337,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     compactRailHoverCloseTimer = window.setTimeout(() => {
       compactRailHoverCloseTimer = null;
       // 문서 필터·문서 열기 팝오버는 레일 밖에 떠 있어도 레일의 일부다.
-      if (!compactRailHoverOpen || threadsPage.contains(document.activeElement) || threadRailSurfaceOpen()) return;
+      if (!compactRailHoverOpen || threadsPage.contains(document.activeElement) || threadRailSurfaceOpen(root)) return;
       setCompactThreadsRailOpen(false);
     }, 100);
   }
@@ -3394,10 +3461,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   const onCompactDrawerPointerDown = (event: PointerEvent) => {
-    dismissCompactDrawers(event.target as Node);
+    if (active) dismissCompactDrawers(event.target as Node);
   };
   const onCompactDrawerFocusIn = (event: FocusEvent) => {
-    dismissCompactDrawers(event.target as Node);
+    if (active) dismissCompactDrawers(event.target as Node);
   };
   document.addEventListener('pointerdown', onCompactDrawerPointerDown);
   document.addEventListener('focusin', onCompactDrawerFocusIn);
@@ -3517,7 +3584,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   let fsTransition: FsViewTransition | null = null;
 
   function clearFsTransitionClasses(): void {
-    document.documentElement.classList.remove('ag-fs-vt', 'ag-fs-vt-enter', 'ag-fs-vt-exit');
+    if (active) document.documentElement.classList.remove('ag-fs-vt', 'ag-fs-vt-enter', 'ag-fs-vt-exit');
     root.classList.remove('ag-fs-motion');
   }
 
@@ -3547,9 +3614,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     applyPlanMinimizedState();
   }
 
+  /** 지금 DOM 에 반영된 집중 모드 배치. 교차 페이드는 다음 프레임에 배치를 바꾼다. */
+  let fullscreenLayoutOn = false;
+
   function applyFullscreenLayout(on: boolean): void {
+    fullscreenLayoutOn = on;
     root.classList.toggle('ag-fullscreen', on);
-    document.body.classList.toggle('ag-fullscreen-open', on);
+    setPageClass('ag-fullscreen-open', on);
     syncFocusGreeting();
     applyEnvironmentPanelState();
     fullscreenBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
@@ -3618,14 +3689,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       return;
     }
     fullscreen = on;
-    closeThreadRailSurfaces();
+    closeThreadRailSurfaces(root);
     // 두 모드의 쉬는 모양이 달라서, 화면 전환은 펼친 입력기로 시작한다.
     composerRest.setResting(false);
 
     const startViewTransition = (document as unknown as {
       startViewTransition?: (update: () => void) => FsViewTransition;
     }).startViewTransition;
-    const animate = typeof startViewTransition === 'function'
+    // 교차 페이드는 페이지 전체를 잡으므로 화면에 붙은 사이드바만 건다.
+    const animate = active
+      && typeof startViewTransition === 'function'
       && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (!animate) {
       cancelFsMotionTimers();
@@ -3646,7 +3719,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     // 모드가 이미 다시 바뀌었으면 마지막 요청만 배치에 반영한다.
     const transition = startViewTransition.call(document, () => {
       if (fullscreen !== on) return;
-      applyFullscreenLayout(on);
+      // 그사이 사이드바가 화면에서 내려가며 배치를 먼저 맞췄을 수 있다.
+      if (fullscreenLayoutOn !== on) applyFullscreenLayout(on);
       opts?.then?.();
     });
     fsTransition = transition;
@@ -4435,8 +4509,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   // resizeHandle 을 마지막에 두어 왼쪽 가장자리 히트 테스트를 확실히 가져간다.
   // 토글은 상단 아이콘 도구 모음의 오른쪽 끝에 둔다.
   root.append(stage, resizeHandle);
-  document.body.appendChild(root);
-  document.getElementById('icon-toolbar')?.appendChild(collapseTab);
+  // 화면에 붙지 않은 채로 시작한 사이드바는 activate() 에서 페이지 배치를 이어받으며 붙는다.
+  if (active) {
+    document.body.appendChild(root);
+    document.getElementById('icon-toolbar')?.appendChild(collapseTab);
+  }
   setCollapsed(false, { recenter: false });
 
   // ── 배치: #editor-area ↔ #status-bar 사이에 맞춘다 ────
@@ -4505,9 +4582,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   function onWindowResizeSettleInset(): void {
     if (insetMotion) startInsetRecenterLoop({ instant: true });
   }
+  /* 내려간 사이드바는 다시 붙을 때 잰다. */
+  function onWindowResizeMeasure(): void {
+    if (active) measure();
+  }
   window.addEventListener('resize', onWindowResizeSettleInset);
-  window.addEventListener('resize', measure);
-  measure();
+  window.addEventListener('resize', onWindowResizeMeasure);
+  if (active) measure();
   void document.fonts?.ready?.then(() => refreshSidebarWidthMin());
 
   // ── 스레드(채팅 목록) ─────────────────────────────────
@@ -5086,9 +5167,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     const currentInGroup = group.documentId
       ? currentThread.documentId === group.documentId
       : !currentThread.documentId && (currentThread.docKey ?? '') === (group.docKey ?? '');
+    const leavingThreadId = currentThread.id;
     // startNewChat 이 현재 채팅을 저장하므로, 삭제는 빠져나온 뒤에 한다.
     if (currentInGroup) startNewChat({ silent: true });
-    const removed = forgetDocumentThreads(group.documentId, group.docKey);
+    // 다른 문서 세션에서 아직 일하는 채팅은 남긴다 — 하나씩 지울 때처럼 작업 중에는 지우지 않는다.
+    const removed = forgetDocumentThreads(group.documentId, group.docKey, (thread) => (
+      thread.id !== leavingThreadId && getChatStatus(thread.id) === 'working'
+    ));
     for (const id of removed) {
       planArchives.delete(id);
       threadWorkflows.delete(id);
@@ -5459,7 +5544,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
 
   function openDocumentFilter(): void {
     if (threadsToolbar.filterButton.getAttribute('aria-expanded') === 'true') {
-      closeThreadRailSurfaces();
+      closeThreadRailSurfaces(root);
       return;
     }
     const documents = documentFilterOptions();
@@ -5496,7 +5581,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
 
   function openDocumentPalette(): void {
     if (threadsToolbar.openButton.getAttribute('aria-expanded') === 'true') {
-      closeThreadRailSurfaces();
+      closeThreadRailSurfaces(root);
       return;
     }
     showDocumentPalette({
@@ -5514,20 +5599,34 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   /**
-   * 레일에서 다른 문서로 옮겨 간다. 지금 문서에서 도는 에이전트는 먼저 멈추고,
-   * 저장과 버전 기록 커밋은 편집기가 맡는다.
+   * 레일에서 다른 문서로 옮겨 간다. 저장과 버전 기록 커밋은 편집기가 맡는다.
+   * 편집기가 문서 세션을 관리하면(openThreadDocument) 지금 문서의 에이전트는
+   * 그 세션에서 계속 돌고, 아니면 떠나기 전에 멈춘다.
    */
   async function moveToDocument(
     target: { documentId: string | null; fileName: string | null },
   ): Promise<LibraryMoveResult> {
     if (!moveToLibraryDocument) return 'failed';
-    if (bridge.isTurnRunning()) bridge.interrupt();
+    if (!openThreadDocument && bridge.isTurnRunning()) bridge.interrupt();
     flushAssistantBuffer();
     persistCurrentThread();
     try {
       return await moveToLibraryDocument(target, { commit: true });
     } catch (error) {
       console.warn('[agent-sidebar] 문서 이동 실패:', error);
+      return 'failed';
+    }
+  }
+
+  /** 다른 문서의 채팅을 편집기에 맡긴다 — 지금 채팅은 저장만 하고 멈추지 않는다. */
+  async function handThreadToHost(thread: ChatThread): Promise<LibraryMoveResult> {
+    if (!openThreadDocument) return 'failed';
+    flushAssistantBuffer();
+    persistCurrentThread();
+    try {
+      return await openThreadDocument({ id: thread.id, documentId: thread.documentId, docKey: thread.docKey });
+    } catch (error) {
+      console.warn('[agent-sidebar] 채팅 문서 열기 실패:', error);
       return 'failed';
     }
   }
@@ -5544,22 +5643,30 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     pendingThreadSwitch = { threadId: thread.id };
     openingThreadId = thread.id;
     rebuildThreadsList();
-    const result = await moveToDocument({ documentId: thread.documentId, fileName: thread.docKey });
+    const result = openThreadDocument
+      ? await handThreadToHost(thread)
+      : await moveToDocument({ documentId: thread.documentId, fileName: thread.docKey });
     if (openingThreadId === thread.id) {
       openingThreadId = null;
       if (threadsListVisible()) rebuildThreadsList();
+    }
+    // 편집기가 그 문서 세션의 사이드바를 올렸다 — 채팅은 그 사이드바가 연다.
+    if (!active) {
+      if (pendingThreadSwitch?.threadId === thread.id) pendingThreadSwitch = null;
+      return;
     }
     // 문서가 바뀌며 이미 이 채팅이 열렸거나, 그사이 다른 채팅을 골랐다.
     if (pendingThreadSwitch?.threadId !== thread.id) return;
     // 문서가 아직 바뀌기 전이면 바뀌는 순간 handleDocumentSwitch 가 잇는다.
     if (result === 'moved' && !threadMatchesDocument(thread, currentDocumentId, currentDocKey)) return;
     pendingThreadSwitch = null;
-    if (result === 'moved' || result === 'same') openThread(thread.id);
+    // 이미 문서를 옮겼으니 다시 옮기지 않는다 — 맞지 않으면 읽기 전용으로 열린다.
+    if (result === 'moved' || result === 'same') openThread(thread.id, { routed: true });
     // 문서를 열 수 없으면 기록만이라도 읽게 한다.
     else if (result === 'failed') openThread(thread.id, { viewOnly: true });
   }
 
-  function setThreadsPanelOpen(open: boolean): void {
+  function setThreadsPanelOpen(open: boolean, opts?: { focus?: boolean }): void {
     // 전체 화면에서 스레드는 넘겨 보는 페이지가 아니라 상시 레일이다.
     // 목록만 갱신하고 페이지 전환은 하지 않는다.
     if (fullscreen) {
@@ -5585,9 +5692,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     chatPage.setAttribute('aria-hidden', open ? 'true' : 'false');
     if (open) {
       rebuildThreadsList();
-      threadsToolbar.search.focus({ preventScroll: true });
+      if (opts?.focus !== false) threadsToolbar.search.focus({ preventScroll: true });
     } else {
-      closeThreadRailSurfaces();
+      closeThreadRailSurfaces(root);
     }
   }
 
@@ -5669,10 +5776,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     input.focus();
   }
 
-  function openThread(id: string, opts?: { viewOnly?: boolean }): void {
+  /**
+   * 채팅을 연다. routed 는 편집기가 이미 이 문서로 옮겨 온 경우다 — 다시
+   * 편집기에 맡기지 않는다(문서가 맞지 않으면 읽기 전용으로 연다).
+   */
+  function openThread(id: string, opts?: { viewOnly?: boolean; routed?: boolean }): void {
     // 채팅을 열어 보면 완료 점은 걷힌다. 다른 탭에서 아직 일하는 채팅의
-    // 노란 불은 그 탭의 것이므로 여기서 지우지 않는다.
-    if (getChatStatus(id) === 'finished') clearChatStatus(id);
+    // 노란 불은 그 탭의 것이므로 여기서 지우지 않는다. 화면에서 내려간
+    // 사이드바가 마지막 채팅을 되살릴 때는 아무도 보지 않았으므로 점을 남긴다.
+    if (active && getChatStatus(id) === 'finished') clearChatStatus(id);
     if (id === currentThread.id) {
       setThreadsPanelOpen(false);
       return;
@@ -5683,13 +5795,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     const liveQuestion = questionController.interaction() ?? bridge.getPendingUserQuestion();
     const target = getThread(id);
     if (!target) return;
-    // 다른 문서의 채팅은 그 문서로 옮겨 가서 잇는다. 에이전트가 답을
-    // 기다리는 동안에는 문서를 떠나지 않고 읽기 전용으로 연다.
+    // 다른 문서의 채팅은 그 문서로 옮겨 가서 잇는다. 편집기가 문서 세션을
+    // 관리하면 지금 문서의 작업과 질문은 그 세션에 남으므로 언제나 맡긴다.
+    // 아니면 에이전트가 답을 기다리는 동안에는 문서를 떠나지 않고 읽기 전용으로 연다.
     if (
       !opts?.viewOnly
-      && !liveQuestion
+      && !opts?.routed
       && !threadMatchesDocument(target, currentDocumentId, currentDocKey)
-      && canFollowThreadDocument(target)
+      && (openThreadDocument !== undefined || (!liveQuestion && canFollowThreadDocument(target)))
     ) {
       void followThreadToDocument(target);
       return;
@@ -8196,6 +8309,141 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     return { ok: true };
   }
 
+  // ── 화면에 붙이고 내리기 ──────────────────────────────
+  /* 문서마다 사이드바가 하나씩 있고 화면에는 붙은 문서의 사이드바 하나만 선다.
+     내려간 사이드바는 문서에서 떨어진 채 DOM 과 대화 상태를 그대로 품고 브리지
+     이벤트를 계속 받는다. 문서에서 떨어져 있으니 id 와 접기 탭도 겹치지 않는다. */
+  let savedScrollPositions: Array<[Element, number, number]> = [];
+
+  function pageLayoutSnapshot(): SidebarPageLayout {
+    return {
+      collapsed: root.classList.contains('ag-collapsed'),
+      fullscreen,
+      threadsPanelOpen,
+      sidebarWidth,
+      railWidth,
+      reviewWidth,
+      threadsRailCollapsed,
+      environmentPanelOpen,
+      desktopEnvironmentPanelOpen,
+    };
+  }
+
+  /** 앞서 붙어 있던 사이드바의 배치를 이어받는다. 전이·교차 페이드 없이 끝 상태로 선다. */
+  function adoptPageLayout(layout: SidebarPageLayout | null): void {
+    applySidebarWidth(layout?.sidebarWidth ?? sidebarWidth, { persist: false, recenter: false });
+    if (layout) {
+      applyRailWidth(layout.railWidth);
+      applyReviewWidth(layout.reviewWidth);
+      threadsRailCollapsed = layout.threadsRailCollapsed;
+      environmentPanelOpen = layout.environmentPanelOpen;
+      desktopEnvironmentPanelOpen = layout.desktopEnvironmentPanelOpen;
+    }
+    const nextFullscreen = layout?.fullscreen ?? fullscreen;
+    const fullscreenChanged = nextFullscreen !== fullscreen || fullscreenLayoutOn !== nextFullscreen;
+    if (fullscreenChanged) {
+      fullscreen = nextFullscreen;
+      cancelFsMotionTimers();
+      composerRest.setResting(false);
+      applyFullscreenLayout(fullscreen);
+    } else {
+      setPageClass('ag-fullscreen-open', fullscreen);
+      applyEnvironmentPanelState();
+      applyThreadsRailState();
+    }
+    // 집중 모드로 들어가는 배치는 이미 사이드바를 펼쳤다.
+    if (!fullscreenChanged || !fullscreen) {
+      const collapsed = !fullscreen && (layout?.collapsed ?? root.classList.contains('ag-collapsed'));
+      setCollapsed(collapsed, { recenter: false });
+    }
+    if (!fullscreen && layout && layout.threadsPanelOpen !== threadsPanelOpen) {
+      setThreadsPanelOpen(layout.threadsPanelOpen, { focus: false });
+    }
+  }
+
+  /* 문서에서 떨어지면 스크롤 위치를 잃는다 — 내릴 때 적어 두고 붙일 때 되돌린다. */
+  function rememberScrollPositions(): void {
+    savedScrollPositions = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    for (let node: Node | null = walker.currentNode; node; node = walker.nextNode()) {
+      const element = node as Element;
+      if (element.scrollTop !== 0 || element.scrollLeft !== 0) {
+        savedScrollPositions.push([element, element.scrollTop, element.scrollLeft]);
+      }
+    }
+  }
+
+  function restoreScrollPositions(): void {
+    for (const [element, top, left] of savedScrollPositions) {
+      if (!root.contains(element)) continue;
+      element.scrollTop = top;
+      element.scrollLeft = left;
+    }
+    savedScrollPositions = [];
+    // 따라가던 대화는 그사이 늘어난 끝으로 움직임 없이 바로 간다.
+    lockConversationScroll(80);
+    syncConversationSpacer();
+    if (followConversation) {
+      const anchor = latestTurnAnchor();
+      if (anchor) messages.scrollTop = roundedConversationTarget(anchor);
+    }
+    conversationLastScrollTop = messages.scrollTop;
+    composerRestLastScrollTop = messages.scrollTop;
+    scheduleLatestPillUpdate();
+  }
+
+  /** 다시 붙으며 처음부터 도는 CSS 등장 애니메이션은 끝 상태로 건너뛴다. 무한 반복(맥박·잉크)은 그대로 둔다. */
+  function finishReplayedAnimations(): void {
+    if (typeof root.getAnimations !== 'function') return;
+    for (const animation of root.getAnimations({ subtree: true })) {
+      const cssDriven = (typeof CSSAnimation !== 'undefined' && animation instanceof CSSAnimation)
+        || (typeof CSSTransition !== 'undefined' && animation instanceof CSSTransition);
+      if (!cssDriven) continue;
+      const end = animation.effect?.getComputedTiming().endTime;
+      if (typeof end === 'number' && Number.isFinite(end)) animation.finish();
+    }
+  }
+
+  function activate(): void {
+    if (active || root.dataset.disposed === 'true') return;
+    active = true;
+    // 배치는 문서에 붙이기 전에 맞춘다 — 스타일이 한 번에 계산되어 전이가 걸리지 않는다.
+    adoptPageLayout(readSidebarPageLayout());
+    occupySidebarSlot(COLLAPSE_TAB_SLOT, collapseTab, () => {
+      document.getElementById('icon-toolbar')?.appendChild(collapseTab);
+    });
+    occupySidebarSlot(ROOT_SLOT, root, () => document.body.appendChild(root));
+    measure();
+    restoreScrollPositions();
+    finishReplayedAnimations();
+    if (threadsListVisible()) rebuildThreadsList();
+    updateDocumentContext();
+  }
+
+  function deactivate(): void {
+    if (!active || root.dataset.disposed === 'true') return;
+    // 끌기·여닫기·교차 페이드는 끝 상태로 정리한다. 일시 클래스는 아직 붙어 있을 때 거둔다.
+    endSidebarResize();
+    endColumnResize();
+    if (insetMotion) startInsetRecenterLoop({ instant: true });
+    if (fullscreenLayoutOn !== fullscreen) applyFullscreenLayout(fullscreen);
+    cancelFsMotionTimers();
+    clearCompactRailHoverOpen();
+    clearCompactRailHoverClose();
+    closeThreadRailSurfaces(root);
+    dismissOpenSheets();
+    setConnPopoverOpen(false);
+    // 펼침·inset·집중 모드 클래스는 남긴다 — 다음 사이드바가 그 배치를 이어받는다.
+    writeSidebarPageLayout(pageLayoutSnapshot());
+    rememberScrollPositions();
+    // 위로 읽던 대화는 뒤에서 답이 늘어나도 그 자리를 지킨다.
+    if (!followConversation) conversationScrollPaused = true;
+    cancelConversationScroll();
+    active = false;
+    vacateSidebarSlot(COLLAPSE_TAB_SLOT, collapseTab);
+    vacateSidebarSlot(ROOT_SLOT, root);
+  }
+
   return {
     root,
     openVersions(): void {
@@ -8203,8 +8451,22 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       openConfiguredVersionControl();
     },
     sendInlinePrompt,
+    activate,
+    deactivate,
+    isActive: () => active,
+    openThreadById(threadId: string): void {
+      if (root.dataset.disposed === 'true') return;
+      if (pendingThreadSwitch?.threadId === threadId) pendingThreadSwitch = null;
+      openThread(threadId, { routed: true });
+    },
+    followThreadOnNextDocument(threadId: string): void {
+      if (root.dataset.disposed === 'true') return;
+      pendingThreadSwitch = { threadId };
+    },
     dispose(): void {
       if (root.dataset.disposed === 'true') return;
+      // 붙어 있던 사이드바를 걷으면 다음에 붙는 사이드바가 이 배치를 이어받는다.
+      if (active) writeSidebarPageLayout(pageLayoutSnapshot());
       root.dataset.disposed = 'true';
       for (const url of reviewImageUrls.values()) URL.revokeObjectURL(url);
       reviewImageUrls.clear();
@@ -8214,7 +8476,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       unsubThreads();
       unsubChatStatus();
       window.clearInterval(threadClock);
-      closeThreadRailSurfaces();
+      closeThreadRailSurfaces(root);
       unsubPending();
       unsubEditingLease();
       clearTimeout(changesRefreshTimer);
@@ -8248,7 +8510,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         deferredVersionsOpenTimer = null;
       }
       window.removeEventListener('resize', onWindowResizeSettleInset);
-      window.removeEventListener('resize', measure);
+      window.removeEventListener('resize', onWindowResizeMeasure);
       clearCompactRailHoverOpen();
       clearCompactRailHoverClose();
       compactRailHoverTarget.removeEventListener('pointerenter', onCompactRailEdgeEnter);
@@ -8279,6 +8541,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       versionManagerPage?.dispose();
       versionController?.dispose?.();
       initialSetup?.dispose();
+      if (initialSetupOwner === root) initialSetupOwner = null;
       clearAttachmentDrag();
       root.removeEventListener('dragenter', onAttachmentDragEnter);
       root.removeEventListener('dragover', onAttachmentDragOver);
@@ -8286,13 +8549,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       root.removeEventListener('drop', onAttachmentDrop);
       input.removeEventListener('paste', onAttachmentPaste);
       referenceLibrary.dispose();
-      document.body.classList.remove(
-        'ag-sidebar-open',
-        'ag-sidebar-inset',
-        'ag-sidebar-resizing',
-        'ag-fullscreen-open',
-        'ag-col-resizing',
-      );
+      // 페이지 클래스는 화면에 붙어 있던 사이드바만 걷는다.
+      if (active) {
+        document.body.classList.remove(
+          'ag-sidebar-open',
+          'ag-sidebar-inset',
+          'ag-sidebar-resizing',
+          'ag-fullscreen-open',
+          'ag-col-resizing',
+        );
+      }
       sweepUnresolvedToolRows();
       collapseTab.remove();
       root.remove();

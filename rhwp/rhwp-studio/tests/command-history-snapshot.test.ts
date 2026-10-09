@@ -179,13 +179,12 @@ test('원자적 배치 스냅샷은 성공·예외 뒤에 점유를 반환한다
   const manager = new PendingEditManager({
     wasm: wasm as never,
     eventBus: new EventBus(),
-    inputHandler: {
+    editor: {
       getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }),
       prepareSnapshotCapacity: (count: number) => { prepared += count; },
       retainExternalSnapshot: () => { held++; },
       releaseExternalSnapshot: () => { held--; },
     } as never,
-    canvasView: {} as never,
     overlay: { clear() {}, setOps() {} } as never,
   });
   manager.beginTurn('claude');

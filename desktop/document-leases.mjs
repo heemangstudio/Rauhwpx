@@ -1,5 +1,22 @@
 import { randomUUID } from 'node:crypto';
 
+/**
+ * One window can hold several live documents: the visible one and documents
+ * whose agent keeps working in the background. Each lives in its own slot.
+ * Callers that never name a slot use this one, which is the window's only
+ * document in the single-document flow.
+ */
+export const DEFAULT_DOCUMENT_SLOT = 'default';
+const SLOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+export function normalizeDocumentSlotId(slotId) {
+  if (slotId === undefined || slotId === null) return DEFAULT_DOCUMENT_SLOT;
+  if (typeof slotId !== 'string' || !SLOT_ID_PATTERN.test(slotId)) {
+    throw new Error('Document slot id is invalid');
+  }
+  return slotId;
+}
+
 function identityKeys(identity, canonicalPath) {
   if (typeof identity?.documentId !== 'string' || identity.documentId.length === 0) {
     throw new Error('Document ownership requires a documentId');
@@ -31,6 +48,7 @@ export function releaseRendererDocuments(sessionId, { documentLeases, nativeFile
 
 export class DocumentLeaseManager {
   #claimsByKey = new Map();
+  // sessionId -> Map(slotId -> lease)
   #leasesBySession = new Map();
   #reservations = new Map();
   #createId;
@@ -43,11 +61,16 @@ export class DocumentLeaseManager {
     return this.#claimsByKey.get(`path:${canonicalPath}`)?.sessionId ?? null;
   }
 
-  reserve(sessionId, identity, canonicalPath = null) {
+  /**
+   * A claim held by the same window in another slot is a conflict too: two
+   * live copies of one document in one window would save over each other.
+   */
+  reserve(sessionId, identity, canonicalPath = null, slotId = DEFAULT_DOCUMENT_SLOT) {
+    const slot = normalizeDocumentSlotId(slotId);
     const keys = identityKeys(identity, canonicalPath);
     for (const key of keys) {
       const claim = this.#claimsByKey.get(key);
-      if (claim && claim.sessionId !== sessionId) {
+      if (claim && (claim.sessionId !== sessionId || claim.slotId !== slot)) {
         return { ok: false, ownerSessionId: claim.sessionId };
       }
     }
@@ -56,6 +79,7 @@ export class DocumentLeaseManager {
     const reservation = {
       reservationId,
       sessionId,
+      slotId: slot,
       identity: Object.freeze({
         documentId: identity?.documentId ?? null,
         sourceDigest: identity?.sourceDigest ?? null,
@@ -70,66 +94,107 @@ export class DocumentLeaseManager {
     return { ok: true, reservationId };
   }
 
-  commit(sessionId, reservationId) {
-    const reservation = this.#reservationForSession(sessionId, reservationId);
-    const previous = this.#leasesBySession.get(sessionId);
+  commit(sessionId, reservationId, slotId) {
+    const reservation = this.#reservationForSession(sessionId, reservationId, slotId);
+    const slots = this.#slotsForSession(sessionId);
+    const previous = slots.get(reservation.slotId);
     if (previous) this.#releaseClaim(previous);
 
     this.#reservations.delete(reservationId);
     const lease = { ...reservation, reservationId: null, claimedKeys: reservation.keys };
-    this.#leasesBySession.set(sessionId, lease);
+    slots.set(reservation.slotId, lease);
     for (const key of lease.keys) this.#claimsByKey.set(key, lease);
     return lease;
   }
 
-  cancel(sessionId, reservationId) {
-    const reservation = this.#reservationForSession(sessionId, reservationId);
+  cancel(sessionId, reservationId, slotId) {
+    const reservation = this.#reservationForSession(sessionId, reservationId, slotId);
     this.#reservations.delete(reservationId);
     this.#releaseClaim(reservation);
     return true;
   }
 
-  releaseSession(sessionId) {
-    const lease = this.#leasesBySession.get(sessionId);
+  /** Release one slot's lease and its pending reservations. */
+  releaseSlot(sessionId, slotId = DEFAULT_DOCUMENT_SLOT) {
+    const slot = normalizeDocumentSlotId(slotId);
+    const slots = this.#leasesBySession.get(sessionId);
+    const lease = slots?.get(slot);
     if (lease) {
-      this.#leasesBySession.delete(sessionId);
+      slots.delete(slot);
+      if (slots.size === 0) this.#leasesBySession.delete(sessionId);
       this.#releaseClaim(lease);
     }
     for (const [reservationId, reservation] of this.#reservations) {
-      if (reservation.sessionId !== sessionId) continue;
+      if (reservation.sessionId !== sessionId || reservation.slotId !== slot) continue;
       this.#reservations.delete(reservationId);
       this.#releaseClaim(reservation);
     }
   }
 
+  /**
+   * Release every slot the window holds. `keepDefaultSlot` keeps the default
+   * slot for a reloaded renderer, which reopens that document itself.
+   */
+  releaseSession(sessionId, { keepDefaultSlot = false } = {}) {
+    const slots = new Set(this.#leasesBySession.get(sessionId)?.keys() ?? []);
+    for (const reservation of this.#reservations.values()) {
+      if (reservation.sessionId === sessionId) slots.add(reservation.slotId);
+    }
+    for (const slot of slots) {
+      if (keepDefaultSlot && slot === DEFAULT_DOCUMENT_SLOT) continue;
+      this.releaseSlot(sessionId, slot);
+    }
+  }
+
+  /** Any lease or pending reservation of the window may authorize its own exact target. */
   validateSaveTarget(sessionId, identity, canonicalPath) {
-    const lease = this.#leasesBySession.get(sessionId);
-    if (!lease) throw new Error('The window does not own an open document');
+    const leases = [...(this.#leasesBySession.get(sessionId)?.values() ?? [])];
+    if (leases.length === 0) throw new Error('The window does not own an open document');
     const pending = [...this.#reservations.values()]
       .filter((reservation) => reservation.sessionId === sessionId);
-    const candidates = [lease, ...pending];
+    const candidates = [...leases, ...pending];
     if (candidates.some((claim) => (
       identity?.documentId === claim.identity.documentId
       && identity?.sourceDigest === claim.identity.sourceDigest
       && canonicalPath
       && canonicalPath === claim.canonicalPath
     ))) return true;
-    if (identity?.documentId !== lease.identity.documentId) {
+    const sameDocument = leases.filter((lease) => identity?.documentId === lease.identity.documentId);
+    if (sameDocument.length === 0) {
       throw new Error('The save target does not belong to the active document');
     }
-    if (identity?.sourceDigest !== lease.identity.sourceDigest) {
+    if (!sameDocument.some((lease) => identity?.sourceDigest === lease.identity.sourceDigest)) {
       throw new Error('The save request has a stale document identity');
     }
     throw new Error('The native save target is owned by another document');
   }
 
-  leaseForSession(sessionId) {
-    return this.#leasesBySession.get(sessionId) ?? null;
+  leaseForSession(sessionId, slotId = DEFAULT_DOCUMENT_SLOT) {
+    return this.#leasesBySession.get(sessionId)?.get(normalizeDocumentSlotId(slotId)) ?? null;
   }
 
-  #reservationForSession(sessionId, reservationId) {
+  /** True while the window holds a committed document in any slot. */
+  hasLease(sessionId) {
+    return (this.#leasesBySession.get(sessionId)?.size ?? 0) > 0;
+  }
+
+  #slotsForSession(sessionId) {
+    let slots = this.#leasesBySession.get(sessionId);
+    if (!slots) {
+      slots = new Map();
+      this.#leasesBySession.set(sessionId, slots);
+    }
+    return slots;
+  }
+
+  #reservationForSession(sessionId, reservationId, slotId) {
     const reservation = this.#reservations.get(reservationId);
-    if (!reservation || reservation.sessionId !== sessionId) {
+    if (
+      !reservation
+      || reservation.sessionId !== sessionId
+      || (slotId !== undefined && slotId !== null
+        && reservation.slotId !== normalizeDocumentSlotId(slotId))
+    ) {
       throw new Error('Document reservation does not belong to this window');
     }
     return reservation;

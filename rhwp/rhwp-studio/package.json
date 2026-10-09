@@ -18,6 +18,7 @@
     "e2e": "node e2e/text-flow.test.mjs",
     "e2e:agent-edit-loop": "node e2e/agent-edit-loop.test.mjs --mode=headless",
     "e2e:user-question": "node e2e/user-question-flow.test.mjs --mode=headless",
+    "e2e:background-sessions": "node e2e/background-agent-sessions.test.mjs --mode=headless",
     "e2e:subagent-fleet": "node e2e/subagent-fleet.test.mjs --mode=headless",
     "e2e:agent-live-parity": "node e2e/agent-live-parity.test.mjs --mode=headless",
     "e2e:agent-overlay-kinds": "node e2e/agent-overlay-kinds.test.mjs --mode=headless",

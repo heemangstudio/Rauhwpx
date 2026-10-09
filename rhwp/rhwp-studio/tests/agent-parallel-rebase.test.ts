@@ -86,13 +86,13 @@ function makeHarness(initial: string[], tables: Record<number, number> = {}) {
   };
   const overlay = { setOps: () => {}, clear: () => {} };
   const pending = new PendingEditManager({
-    wasm: wasm as never, eventBus, inputHandler: inputHandler as never,
-    canvasView: {} as never, overlay: overlay as never,
+    wasm: wasm as never, eventBus, editor: inputHandler as never,
+    overlay: overlay as never,
     contentNeutral: (run) => executor.coverContentNeutral(run),
   });
   const revision = new RevisionTracker(eventBus);
   const executor = new AgentToolExecutor({
-    wasm: wasm as never, inputHandler: inputHandler as never,
+    wasm: wasm as never, editor: inputHandler as never,
     documentState: { isDirty: () => false } as never,
     revision, pending,
   });

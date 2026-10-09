@@ -176,7 +176,7 @@ function makeExecutor(paragraphs: string[][] = [['hello world', 'second para']])
   const documentState = { isDirty: () => false };
   const executor = new AgentToolExecutor({
     wasm: wasm as any,
-    inputHandler: inputHandler as any,
+    editor: inputHandler as any,
     documentState: documentState as any,
     revision,
     pending: pending as any,
@@ -630,7 +630,7 @@ test('executor: wasm throw("문서가 로드되지 않았습니다") → DOC_NOT
   };
   const ex = new AgentToolExecutor({
     wasm: throwingWasm as any,
-    inputHandler: {} as any,
+    editor: {} as any,
     documentState: {} as any,
     revision,
     pending: {} as any,

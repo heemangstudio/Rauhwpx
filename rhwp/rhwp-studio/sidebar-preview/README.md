@@ -83,6 +83,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?controls=0` | Hide preview controls for clean captures |
 | `?reset=1` | Clear preview storage before mounting |
 | `?chats=sample` | Restore sample chats across three documents and no document, one running and one finished |
+| `?sessions=2&chats=sample` | A second live document (회의록) with its own sidebar and mock agent; its chats switch sidebars without stopping the other agent |
 
 Parameters can be combined. Select **Next reply**, then type a message or press
 **Play sample conversation**. Connection and service controls expose disconnected,

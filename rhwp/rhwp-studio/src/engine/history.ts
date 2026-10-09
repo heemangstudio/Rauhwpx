@@ -46,6 +46,34 @@ export class CommandHistory {
    * 엔트리의 스냅샷을 무통보 축출한다.
    */
   private externalSnapshotIds = 0;
+  /**
+   * 이 히스토리의 명령과 스냅샷 id 가 속한 문서 (WasmBridge.documentInstance). 처음 문서를
+   * 받은 연산에서 정해지고 clear() 로 풀린다. 편집기가 여러 문서 사이를 옮겨 다녀도 이
+   * 히스토리의 명령은 이 문서에만 실행된다.
+   */
+  private ownerInstance: number | undefined;
+
+  /**
+   * 다른 문서의 브리지로 불리면 이 히스토리의 명령은 그 문서에 실행할 수 없다. 스냅샷 id 는
+   * 문서마다 따로 매겨지므로 undo·discard 가 그 문서의 스냅샷을 덮거나 지운다. 그래서 원래
+   * 문서에 손대지 않고(그 문서는 해제됐거나 다른 곳에 있다) 이력만 버린 뒤 새 문서에 묶는다.
+   * documentInstance 가 없는 대역(테스트 목)은 검사하지 않는다.
+   */
+  private bindDocument(wasm: WasmBridge | undefined): void {
+    const instance: unknown = wasm?.documentInstance;
+    if (typeof instance !== 'number') return;
+    if (this.ownerInstance === undefined) {
+      this.ownerInstance = instance;
+      return;
+    }
+    if (this.ownerInstance === instance) return;
+    console.warn('[CommandHistory] 다른 문서의 브리지로 불려 이전 문서의 이력을 버립니다.');
+    this.undoStack = [];
+    this.redoStack = [];
+    this.currentSnapshotId = null;
+    this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
+    this.ownerInstance = instance;
+  }
 
   /** 외부(히스토리 밖) 스냅샷 id 점유 1개를 예산에 등록한다. */
   retainExternalSnapshot(count = 1): void {
@@ -100,6 +128,7 @@ export class CommandHistory {
 
   /** 복합 편집이 임시로 여러 snapshot id를 잡기 전에 WASM 저장소 여유를 확보한다. */
   prepareSnapshotCapacity(wasm: WasmBridge, additionalIds: number): void {
+    this.bindDocument(wasm);
     const reserve = Math.max(0, Math.min(WASM_MAX_SNAPSHOTS, Math.trunc(additionalIds)));
     this.currentSnapshotId = null;
     // 새 편집은 어차피 redo를 무효화하므로 먼저 해제해 불필요한 undo 축출을 줄인다.
@@ -112,6 +141,7 @@ export class CommandHistory {
 
   /** 명령 실행 + 히스토리 기록. 실행 후 커서 위치 반환 */
   execute(command: EditCommand, wasm: WasmBridge): DocumentPosition {
+    this.bindDocument(wasm);
     this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
     if (this.currentSnapshotId !== null) {
       command.reuseCurrentSnapshot?.(wasm, this.currentSnapshotId);
@@ -166,6 +196,7 @@ export class CommandHistory {
 
   /** Undo — 성공 시 커서 위치 반환, 스택 비었으면 null */
   undo(wasm: WasmBridge): DocumentPosition | null {
+    this.bindDocument(wasm);
     this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
     const command = this.undoStack[this.undoStack.length - 1];
     if (!command) return null;
@@ -194,6 +225,7 @@ export class CommandHistory {
 
   /** Redo — 성공 시 커서 위치 반환, 스택 비었으면 null */
   redo(wasm: WasmBridge): DocumentPosition | null {
+    this.bindDocument(wasm);
     this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
     if (this.peekUndoTop()?.retainOnFailure?.()) return null;
     const command = this.redoStack[this.redoStack.length - 1];
@@ -222,6 +254,7 @@ export class CommandHistory {
 
   /** execute() 없이 히스토리에만 기록 (IME compositionend용 — 텍스트가 이미 문서에 있는 경우) */
   recordWithoutExecute(command: EditCommand, wasm?: WasmBridge): void {
+    this.bindDocument(wasm);
     this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
     this.currentSnapshotId = command.currentSnapshotId?.() ?? null;
     // 직전 명령과 병합 시도
@@ -259,6 +292,7 @@ export class CommandHistory {
 
   /** 실패한 시험적 편집을 되돌린 뒤 해당 이력을 폐기한다. */
   discardRedo(wasm: WasmBridge): void {
+    this.bindDocument(wasm);
     if (this.redoStack.length > 0) this.currentSnapshotId = null;
     discardAll(this.redoStack, wasm);
     this.redoStack = [];
@@ -276,6 +310,7 @@ export class CommandHistory {
 
   /** 이미 적용된 보상 교체 상태는 유지하면서 해당 이력을 폐기한다. */
   discardUndoTop(wasm: WasmBridge): void {
+    this.bindDocument(wasm);
     this.currentSnapshotId = null;
     this.undoStack.pop()?.discard?.(wasm);
   }
@@ -289,9 +324,17 @@ export class CommandHistory {
   peekUndoTop(): EditCommand | null { return this.undoStack[this.undoStack.length - 1] ?? null; }
   peekRedoTop(): EditCommand | null { return this.redoStack[this.redoStack.length - 1] ?? null; }
 
-  /** 히스토리 초기화 (문서 로드 시). wasm이 있으면 스냅샷 리소스도 해제. */
+  /**
+   * 히스토리 초기화 (문서 로드 시). wasm이 있으면 스냅샷 리소스도 해제한다. 다른 문서의
+   * 브리지면 해제하지 않고 비우기만 한다. 비운 뒤에는 다음 연산의 문서에 새로 묶인다.
+   */
   clear(wasm?: WasmBridge): void {
-    if (wasm) {
+    const instance: unknown = wasm?.documentInstance;
+    const foreign = typeof instance === 'number'
+      && this.ownerInstance !== undefined
+      && instance !== this.ownerInstance;
+    this.ownerInstance = undefined;
+    if (wasm && !foreign) {
       discardAll(this.undoStack, wasm);
       discardAll(this.redoStack, wasm);
     }

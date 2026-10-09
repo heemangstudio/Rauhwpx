@@ -158,8 +158,8 @@ test('main-issued native identity survives stale handles and feeds the active ve
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
   assert.match(main, /const verifiedGrant = grant \?\?/,
     'an explicit project/recent grant must retain priority over native metadata');
-  assert.match(main, /activeDocumentId = ownership\.identity\.documentId/);
-  assert.match(main, /getDocumentId: \(\) => activeDocumentId/,
+  assert.match(main, /attachedSession\.documentId = ownership\.identity\.documentId/);
+  assert.match(main, /getDocumentId: \(\) => session\.documentId/,
     'the recovered identity must remain the version repository lookup key');
 });
 

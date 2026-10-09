@@ -42,14 +42,13 @@ function manager(document: Document) {
   const pending = new PendingEditManager({
     wasm: bridge as never,
     eventBus: new EventBus(),
-    inputHandler: {
+    editor: {
       getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }),
       executeOperation: (operation: { kind: string; command: PreparedSnapshotCommand }) => {
         assert.equal(operation.kind, 'record');
         commands.push(operation.command);
       },
     } as never,
-    canvasView: {} as never,
     overlay: { setOps() {}, clear() {} } as never,
   });
   pending.onChange((event) => events.push(event));

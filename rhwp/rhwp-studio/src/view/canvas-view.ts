@@ -64,6 +64,13 @@ type IdleCallbackWindow = Window & {
   cancelIdleCallback?: (id: number) => void;
 };
 
+/** 문서마다 따로 기억했다가 다시 붙을 때 되살리는 보기 상태 */
+export interface CanvasViewState {
+  scrollTop: number;
+  scrollLeft: number;
+  zoom: number;
+}
+
 export class CanvasView {
   private virtualScroll: VirtualScroll;
   private canvasPool: CanvasPool;
@@ -198,8 +205,21 @@ export class CanvasView {
     );
   }
 
-  /** 문서 로드 후 호출 — 페이지 정보 수집 및 가상 스크롤 초기화 */
-  async loadDocument(): Promise<void> {
+  /** 지금 문서의 스크롤·배율. 다른 문서로 옮기기 전에 떠 둔다. */
+  captureViewState(): CanvasViewState {
+    return {
+      scrollTop: this.viewportManager.getScrollY(),
+      scrollLeft: this.viewportManager.getScrollX(),
+      zoom: this.viewportManager.getZoom(),
+    };
+  }
+
+  /**
+   * 문서 로드 후 호출 — 페이지 정보 수집 및 가상 스크롤 초기화.
+   * restore 를 주면 배치를 마친 뒤 그 배율과 스크롤 위치를 되살린다(다시 붙인 문서). 주지 않으면
+   * 첫 쪽 위·가운데에서 시작한다.
+   */
+  async loadDocument(restore?: CanvasViewState | null): Promise<void> {
     if (this.disposed) return;
     if (!this.documentLoadPrepared) this.prepareDocumentLoad();
     const epoch = this.rendererSelectionEpoch;
@@ -213,6 +233,11 @@ export class CanvasView {
     ) return;
     this.applyRendererSelection(selection);
 
+    // 쪽이 비어 있는 동안 배율을 바꾸면 onZoomChanged 가 옛 배치로 다시 그리지 않는다.
+    const restoredZoom = restore && Number.isFinite(restore.zoom)
+      && restore.zoom !== this.viewportManager.getZoom();
+    if (restoredZoom) this.viewportManager.setZoom(restore.zoom);
+
     const pageCount = this.wasm.pageCount;
     this.pages = this.collectPageInfo(pageCount) ?? [];
 
@@ -221,8 +246,8 @@ export class CanvasView {
       return;
     }
 
-    // 모바일: 문서 로드 시 폭 맞춤 줌 자동 적용
-    if (window.innerWidth < 1024 && this.pages.length > 0) {
+    // 모바일: 문서 로드 시 폭 맞춤 줌 자동 적용 (되살린 배율이 있으면 그대로 둔다)
+    if (!restore && window.innerWidth < 1024 && this.pages.length > 0) {
       const containerWidth = this.container.clientWidth - 20;
       const pageWidth = this.pages[0].width;
       if (pageWidth > 0 && containerWidth > 0) {
@@ -232,12 +257,19 @@ export class CanvasView {
     }
 
     this.recalcLayout();
-    this.viewportManager.setScrollLeft(
-      this.virtualScroll.getCenteredScrollLeft(this.layoutViewportSize.width),
-    );
+    if (restore) {
+      // 브라우저가 새 내용 크기 안으로 잘라 준다. 캐시 좌표도 setter 가 함께 맞춘다.
+      this.viewportManager.setScrollLeft(Math.max(0, restore.scrollLeft));
+      this.viewportManager.setScrollTop(Math.max(0, restore.scrollTop));
+      if (restoredZoom) this.eventBus.emit('zoom-level-display', this.viewportManager.getZoom());
+    } else {
+      this.viewportManager.setScrollLeft(
+        this.virtualScroll.getCenteredScrollLeft(this.layoutViewportSize.width),
+      );
 
-    // 캐시 좌표도 함께 0 으로 맞춘다 — 직접 대입하면 첫 쪽 창이 이전 문서의 위치로 계산된다.
-    this.viewportManager.setScrollTop(0);
+      // 캐시 좌표도 함께 0 으로 맞춘다 — 직접 대입하면 첫 쪽 창이 이전 문서의 위치로 계산된다.
+      this.viewportManager.setScrollTop(0);
+    }
     this.updateVisiblePages();
     // 초기 replay가 예약한 document fallback을 load 완료 전에 확정한다.
     await Promise.resolve();
@@ -437,6 +469,9 @@ export class CanvasView {
   private updateVisiblePages(): void {
     // 멈춘 엔진으로는 새 쪽을 그릴 수 없다. 이미 그린 쪽을 해제하지 않고 그대로 둔다.
     if (engineTrap()) return;
+    // 문서를 바꾸는 중(reset 뒤 renderer 선택을 기다리는 동안)에는 가상 스크롤이 아직 이전
+    // 문서의 배치를 들고 있다. 그 배치로 새 문서의 쪽을 그리지 않는다.
+    if (this.pages.length === 0 && this.canvasPool.activePages.length === 0) return;
     const scrollY = this.viewportManager.getScrollY();
     const scrollX = this.viewportManager.getScrollX();
     const { width: vpWidth, height: vpHeight } = this.viewportManager.getViewportSize();
@@ -1356,6 +1391,9 @@ export class CanvasView {
     if (hadFocusedPage) this.eventBus.emit('focused-page-changed', null);
     this.headerFooterEditState = null;
     this.pages = [];
+    this.lastCurrentPageKey = '';
+    // 머리말/꼬리말 preview 재사용 키를 문서 단위로도 끊는다.
+    this.documentRenderGeneration += 1;
     this.scrollContent.replaceChildren();
   }
 
