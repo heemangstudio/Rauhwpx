@@ -91,9 +91,6 @@ web-sys = { version = "0.3", features = [
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
 
-[dev-dependencies]
-wasm-bindgen-test = "0.3"
-
 # 통합 테스트는 바이너리 하나(`it`)로 묶어 빌드·링크를 한 번에 끝낸다.
 [[test]]
 name = "it"
@@ -179,6 +176,10 @@ unused_assignments = "allow"
 unused_macros = "allow"
 # wmf 모듈의 tracing feature cfg 경고 억제
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("tracing", "svg"))'] }
+
+[profile.dev]
+# 줄 번호 정보만 남겨 디버그 빌드와 링크 시간을 줄인다(백트레이스 위치는 유지).
+debug = "line-tables-only"
 
 [profile.release]
 lto = true
