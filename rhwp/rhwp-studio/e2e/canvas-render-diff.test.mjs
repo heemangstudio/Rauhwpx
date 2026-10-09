@@ -253,7 +253,7 @@ runTest('Canvas legacy/layer visual diff', async ({ page }) => {
       const pageLimit = Math.min(pageCount, config.maxPages);
 
       for (let pageIndex = 0; pageIndex < pageLimit; pageIndex++) {
-        const result = await page.evaluate((args) => {
+        const result = await page.evaluate(async (args) => {
           const doc = window.__wasm?.doc;
           if (!doc) throw new Error('window.__wasm.doc is not available');
           if (typeof doc.renderPageToCanvasLegacy !== 'function') {
@@ -265,6 +265,13 @@ runTest('Canvas legacy/layer visual diff', async ({ page }) => {
 
           const legacyCanvas = document.createElement('canvas');
           const layerCanvas = document.createElement('canvas');
+          // 그림은 비동기로 디코드된다. 비교 전에 두 경로가 모두 그림을 다 그릴 수 있게 한다.
+          for (let attempt = 0; attempt < 100; attempt++) {
+            const pending = doc.renderPageToCanvasLegacy(args.pageIndex, legacyCanvas, args.scale)
+              + doc.renderPageToCanvas(args.pageIndex, layerCanvas, args.scale);
+            if (!(pending > 0)) break;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
           const renderWithTextModeCheck = (canvas, render) => {
             const ctx = canvas.getContext('2d');
             const supported = 'textRendering' in ctx;

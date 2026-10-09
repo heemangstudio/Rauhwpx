@@ -59,7 +59,7 @@ test('clipboard conversion and paste guard encoded dimensions before Image decod
   assertBefore(paste, 'assertEncodedImageDecodeDimensions(data', 'new Image()');
 });
 
-test('PageRenderer guards embedded raster data before DOM image decode and prefetch', () => {
+test('PageRenderer guards embedded raster data before DOM image decode', () => {
   const renderer = source('view/page-renderer.ts');
   const flowImages = between(
     renderer,
@@ -74,21 +74,4 @@ test('PageRenderer guards embedded raster data before DOM image decode and prefe
     'export function visibleFlowImageBbox',
   );
   assert.match(displayable, /assertBase64EncodedImageDecodeDimensions\(image\.base64/);
-
-  const prefetch = between(
-    renderer,
-    '  private async prefetchLayerImages',
-    '  cancelReRender(pageIdx: number): void {',
-  );
-  assert.match(prefetch, /collectLayerImagePrefetch\(JSON\.parse\(this\.wasm\.getPageLayerTree\(pageIdx\)\)\)/);
-
-  // 미리 디코드할 raster 는 모두 헤더 검사를 먼저 통과한다.
-  const walk = source('view/raw-svg-prefetch.ts');
-  const guard = between(walk, 'function hasValidRasterDimensions', 'function findSvgAttrValue');
-  assert.match(guard, /assertBase64EncodedImageDecodeDimensions\(base64/);
-  const images = between(walk, '  const visitImage', '  const visitRawSvg');
-  assertBefore(images, 'hasValidRasterDimensions(base64)', 'enqueue(`data:${mime};base64,${base64}`)');
-  const rawSvg = between(walk, '  const visitRawSvg', '  // PageLayerTree 구조');
-  assertBefore(rawSvg, 'hasValidRasterDimensions(match[2])', 'enqueue(single)');
-  assertBefore(rawSvg, 'hasValidRasterDimensions(embedded[2])', 'enqueue(rawSvgFragmentToDataUrl(');
 });

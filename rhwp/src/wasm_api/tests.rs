@@ -1737,6 +1737,44 @@ fn test_normalize_canvas_scale_clamps_request_and_canvas_extent() {
 }
 
 #[test]
+fn test_canvas_region_snaps_to_device_pixels_inside_scaled_page() {
+    assert_eq!(normalize_region_scale(f64::NAN), 1.0);
+    assert_eq!(normalize_region_scale(0.1), 0.25);
+    assert_eq!(normalize_region_scale(15.0), 12.0);
+
+    // 쪽 전체 canvas 가 16384px 한도로 배율을 줄이는 크기여도 영역 렌더는 요청 배율을 쓴다.
+    assert_eq!(normalize_region_scale(10.0), 10.0);
+
+    // 원점은 정수 장치 픽셀로 반올림하고, 쪽 전체 canvas 와 같이 배율 적용 쪽 크기를 버린 범위로 자른다.
+    let page = (794.0, 1123.0);
+    assert_eq!(
+        clip_canvas_region(page.0, page.1, 6.0, (100.4, 200.6, 640.0, 480.0)),
+        Ok(CanvasRegion {
+            x: 100,
+            y: 201,
+            width: 640,
+            height: 480,
+        })
+    );
+    assert_eq!(
+        clip_canvas_region(page.0, page.1, 6.0, (-50.0, 6_500.0, 5_000.0, 900.0)),
+        Ok(CanvasRegion {
+            x: 0,
+            y: 6_500,
+            width: 4_764,
+            height: 238,
+        })
+    );
+
+    // 한 변 16384px 한도와 빈 영역·잘못된 입력.
+    let wide = clip_canvas_region(4_000.0, 100.0, 12.0, (0.0, 0.0, 48_000.0, 10.0)).unwrap();
+    assert_eq!(wide.width, 16_384);
+    assert!(clip_canvas_region(page.0, page.1, 2.0, (2_000.0, 0.0, 10.0, 10.0)).is_err());
+    assert!(clip_canvas_region(page.0, page.1, 2.0, (0.0, 0.0, f64::NAN, 10.0)).is_err());
+    assert!(clip_canvas_region(0.0, page.1, 2.0, (0.0, 0.0, 10.0, 10.0)).is_err());
+}
+
+#[test]
 fn test_document_with_paragraphs() {
     use crate::model::document::SectionDef;
     use crate::model::page::PageDef;

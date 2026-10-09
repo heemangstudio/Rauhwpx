@@ -408,8 +408,8 @@ pub struct DocumentCore {
     pub(crate) pending_pagination_job: Option<PendingPaginationJob>,
     /// 페이지별 렌더 트리 캐시 (지연 구축, 부분 무효화)
     pub(crate) page_tree_cache: RefCell<Vec<Option<std::sync::Arc<PageRenderTree>>>>,
-    /// 페이지 렌더 캐시 LRU 순서. 앞이 가장 오래된 페이지다.
-    pub(crate) page_tree_cache_order: RefCell<VecDeque<usize>>,
+    /// 페이지 렌더 캐시 LRU 순서 (쪽, 트리가 쥔 그림 바이트). 앞이 가장 오래된 페이지다.
+    pub(crate) page_tree_cache_order: RefCell<VecDeque<(usize, usize)>>,
     /// 머리말/꼬리말 대표 편집 트리 캐시 (마지막 target 한 건만 재사용).
     pub(crate) header_footer_preview_tree_cache:
         RefCell<Option<((u32, usize, bool, u8), PageRenderTree)>>,

@@ -13,7 +13,7 @@ const methods = [
   'applyCharFormatInHeaderFooter',
   'getHeaderFooterPreviewPage',
   'hitTestInHeaderFooterTarget',
-  'renderHeaderFooterEditPreviewToCanvas',
+  'renderHeaderFooterEditPreviewRegionToCanvas',
 ];
 
 for (const method of methods) {

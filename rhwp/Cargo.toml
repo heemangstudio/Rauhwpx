@@ -67,18 +67,29 @@ skia-safe = { version = "0.99.0", optional = true, default-features = false, fea
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3", features = [
+    "Blob",
+    "BlobPropertyBag",
     "CanvasRenderingContext2d",
     "CanvasGradient",
     "CanvasPattern",
+    "ColorSpaceConversion",
+    "DomMatrix",
     "HtmlCanvasElement",
     "HtmlImageElement",
+    "ImageBitmap",
+    "ImageBitmapOptions",
     "ImageData",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
+    "ResizeQuality",
+    "Url",
     "TextMetrics",
     "Document",
     "Window",
     "console",
 ] }
 js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

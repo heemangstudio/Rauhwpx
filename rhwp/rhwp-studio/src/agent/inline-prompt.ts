@@ -938,7 +938,7 @@ class InlinePromptController {
     try {
       const scale = 2;
       const source = document.createElement('canvas');
-      this.deps.wasm.renderPageToCanvas(pageIndex, source, scale);
+      await this.deps.wasm.renderPageToCanvasWithPictures(pageIndex, source, scale);
       const padding = 4 * scale;
       const sx = Math.max(0, Math.floor(item.x * scale - padding));
       const sy = Math.max(0, Math.floor(item.y * scale - padding));
