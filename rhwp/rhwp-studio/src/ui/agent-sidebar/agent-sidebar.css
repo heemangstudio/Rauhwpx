@@ -6710,6 +6710,74 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   margin-bottom: 20px;
 }
 
+/* 빈 채팅은 인사와 입력기를 대화면 가운데에 모은다. 대화 영역과 아래 여백이
+   남는 높이를 나눠 갖고, 아래쪽이 조금 더 가져가 한가운데보다 살짝 위에 선다. */
+.ag-focus-greeting {
+  display: none;
+}
+
+.ag-fullscreen .ag-chat-page.ag-chat-empty .ag-messages {
+  flex: 1 1 0;
+  padding-block: 0;
+}
+
+.ag-fullscreen .ag-chat-page.ag-chat-empty::after {
+  content: '';
+  flex: 1.25 1 0;
+}
+
+.ag-fullscreen .ag-chat-page.ag-chat-empty .ag-focus-greeting,
+.ag-fullscreen .ag-focus-greeting.ag-leaving {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: min(var(--ag-column-w), calc(100% - 2 * var(--ag-column-gutter)));
+  margin: 0 auto 28px;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 첫 메시지를 보낸 뒤 인사는 흐름에서 빠져 제자리에 뜬 채 옅어진다. */
+.ag-fullscreen .ag-focus-greeting.ag-leaving {
+  position: absolute;
+  z-index: 1;
+  margin: 0;
+}
+
+/* 인사 한 줄은 세로로 긴 해바라기체(Sunflower Medium, SIL OFL 1.1)로 쓴다.
+   글꼴은 KS X 1001 완성형 2,350자를 담는다. */
+@font-face {
+  font-family: 'Sunflower';
+  font-style: normal;
+  font-weight: 500;
+  font-display: block;
+  src: url('./fonts/Sunflower-Medium.woff2') format('woff2');
+}
+
+.ag-focus-greeting-line {
+  margin: 0;
+  color: var(--ag-text);
+  font-family: 'Sunflower', var(--ag-font);
+  font-size: 36px;
+  font-weight: 500;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.ag-focus-greeting-doc {
+  overflow: hidden;
+  max-width: 100%;
+  margin: 0;
+  color: var(--ag-text-muted);
+  font-size: var(--ag-fs-secondary);
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .ag-fullscreen .ag-chat-page > .ag-calibration-chip {
   box-sizing: border-box;
   max-width: min(var(--ag-column-w), calc(100% - 2 * var(--ag-column-gutter)));
