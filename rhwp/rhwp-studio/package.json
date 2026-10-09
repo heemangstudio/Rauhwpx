@@ -17,6 +17,7 @@
     "test": "npm run generate:agent-edit-capabilities && node scripts/run-tests.mjs unit",
     "e2e:smoke": "node e2e/smoke/run.mjs",
     "e2e:background-sessions": "node e2e/background-agent-sessions.test.mjs --mode=headless",
+    "e2e:worktrees": "node e2e/worktree-lifecycle.test.mjs --mode=headless",
     "e2e:chat-follows-document": "node e2e/chat-follows-document.test.mjs --mode=headless",
     "bench:agent-tools": "node bench/agent-tool-bench.mjs",
     "bench:agent-tool-concurrency": "node bench/agent-tool-concurrency-bench.mjs",

@@ -51,6 +51,7 @@ import {
   type VersionCommit,
   type VersionRef,
   type VersionRepository,
+  type VersionWorktree,
   type VersionShelf,
   type VersionMergeDraft,
   type VersionMergeManifest,
@@ -81,7 +82,18 @@ const AI_TITLES_KEY = 'rhwp-versions-ai-titles-v1';
 
 type CheckpointReason = 'manual' | 'save' | 'export' | 'agent' | 'pre-restore' | 'pre-switch' | 'pre-merge' | 'merge' | 'restore' | 'adopt';
 
+export interface VersionWorktreeHost {
+  ensureOwnership(worktree: VersionWorktree): Promise<boolean>;
+  canMutate(): boolean;
+  getStatus(worktree: VersionWorktree): { isOpen: boolean; busy: boolean; readOnly?: boolean };
+  open(worktree: VersionWorktree): Promise<void>;
+  close(worktree: VersionWorktree): Promise<void>;
+  remove(worktree: VersionWorktree): Promise<boolean>;
+  merge(worktree: VersionWorktree): Promise<void>;
+}
+
 interface VersionControllerDeps {
+  worktreeHost?: VersionWorktreeHost;
   store?: VersionGraphStore;
   wasm: WasmBridge;
   eventBus: EventBus;
@@ -135,6 +147,7 @@ function emptyState(): VersionManagerState {
     activeBranch: null,
     commits: [],
     branches: [],
+    worktrees: [],
     shelves: [],
     mergeDrafts: [],
     legacy: [],
@@ -234,6 +247,12 @@ function mergeDocumentFormat(bytes: Uint8Array): 'hwp' | 'hwpx' {
   throw new VersionError('MERGE_VALIDATION_FAILED', 'HWP와 HWPX 문서만 병합할 수 있습니다.');
 }
 
+function worktreeSnapshotFormat(bytes: Uint8Array): 'hwp' | 'hwpx' | 'hml' {
+  if (bytes[0] === 0xd0 && bytes[1] === 0xcf) return 'hwp';
+  if (bytes[0] === 0x50 && bytes[1] === 0x4b) return 'hwpx';
+  return 'hml';
+}
+
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   const chunkSize = 0x8000;
@@ -260,6 +279,16 @@ function createMergeDraftId(): ReturnType<typeof mergeDraftId> {
 
 export class DocumentVersionController implements VersionManagerController {
   readonly #store: VersionGraphStore;
+  readonly #worktreeHost?: VersionWorktreeHost;
+  #worktree: VersionWorktree | null = null;
+  #worktrees: VersionWorktree[] = [];
+  #persistTimer: ReturnType<typeof setTimeout> | null = null;
+  #mergeCompletion: {
+    sourceBranch: BranchName;
+    targetBranch: BranchName;
+    draftId: string | null;
+    callback: () => Promise<void>;
+  } | null = null;
   readonly #wasm: WasmBridge;
   readonly #eventBus: EventBus;
   readonly #documentState: DocumentDirtyState;
@@ -308,6 +337,7 @@ export class DocumentVersionController implements VersionManagerController {
 
   constructor(deps: VersionControllerDeps) {
     this.#store = deps.store ?? new VersionGraphStore();
+    this.#worktreeHost = deps.worktreeHost;
     this.#ownsStore = !deps.store;
     this.#maintenance = new VersionMaintenance(this.#store, {
       enqueue: (operation) => this.#enqueue(operation),
@@ -326,8 +356,12 @@ export class DocumentVersionController implements VersionManagerController {
     const documentChanged = () => {
       this.#editorRevision += 1;
       this.#syncTransientState();
+      this.#scheduleWorktreePersistence();
     };
     this.#unsubscribers.push(
+      this.#store.subscribe((repositoryId) => {
+        if (repositoryId === this.#repository?.id) void this.refresh().catch(console.warn);
+      }),
       this.#eventBus.on('document-mutated', documentChanged),
       this.#eventBus.on('document-changed', documentChanged),
       this.#eventBus.on('document-dirty-changed', () => this.#syncTransientState()),
@@ -348,10 +382,17 @@ export class DocumentVersionController implements VersionManagerController {
         const capture = this.#wasm.hasLoadedDocument() ? this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision) : null;
         if (id && capture) this.#savedBaseline = { documentId: id, capture };
         void this.#enqueue(async () => {
-          if (!capture || id !== this.#getDocumentId()) return;
+          if (!capture || id !== this.#getDocumentId() || this.#worktreeHost?.canMutate() === false) return;
           await this.#refreshData(false);
-          if (!this.#repository || id !== this.#getDocumentId()) return;
-          this.#repository = await this.#store.markSaved(
+          if (!this.#repository || id !== this.#getDocumentId() || this.#worktreeHost?.canMutate() === false) return;
+          if (this.#worktree) {
+            this.#worktree = await this.#store.saveWorktree({
+              id: this.#worktree.id, expectedRevision: this.#worktree.revision,
+              bytes: capture.bytes, savedFingerprint: capture.fingerprint,
+              fileName: this.#wasm.fileName, sourceFormat: worktreeSnapshotFormat(capture.bytes),
+            });
+          }
+          if (!this.#worktree || this.#worktree.primary) this.#repository = await this.#store.markSaved(
             this.#repository.id, capture.fingerprint, this.#repository.revision,
           );
           await this.#refreshData(false);
@@ -371,15 +412,38 @@ export class DocumentVersionController implements VersionManagerController {
     return () => this.#listeners.delete(listener);
   }
 
-  async documentLoaded(): Promise<void> {
+  async documentLoaded(options: { fromDisk?: boolean } = {}): Promise<void> {
     this.#snapshotCache.clear();
     const id = this.#getDocumentId();
+    const existingWorktree = options.fromDisk && id
+      ? await this.#store.findWorktreeByDocumentId(documentId(id)) : null;
     if (id && !this.#wasm.isNewDocument && !this.#documentState.isDirty()) {
       this.#savedBaseline = { documentId: id, capture: this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision) };
     } else {
       this.#savedBaseline = null;
     }
     await this.refresh();
+    if (options.fromDisk && this.#worktree?.primary && this.#worktreeHost?.canMutate() !== false
+      && (!existingWorktree || String(this.#worktree.blobId) === String(this.#worktree.savedFingerprint))) {
+      await this.#enqueue(async () => {
+        if (!this.#worktree?.primary || this.#getDocumentId() !== id || this.#worktreeHost?.canMutate() === false) return;
+        const workspace = this.#captureWorkspaceToken();
+        const capture = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
+        const current = await this.#store.getWorktree(this.#worktree.id);
+        this.#assertWorkspaceToken(workspace);
+        if (!current || current.revision !== this.#worktree.revision
+          || (existingWorktree && String(current.blobId) !== String(current.savedFingerprint))) return;
+        this.#worktree = await this.#store.saveWorktree({
+          id: current.id, expectedRevision: current.revision, bytes: capture.bytes,
+          savedFingerprint: capture.fingerprint, fileName: this.#wasm.fileName,
+          sourceFormat: worktreeSnapshotFormat(capture.bytes),
+        });
+        await this.#refreshData(false);
+      });
+    }
+    if (this.#worktree && this.#wasm.hasLoadedDocument()) {
+      this.#setDirtyForFingerprint(fingerprintVersionContent(this.#wasm), 'worktree-loaded');
+    }
   }
 
   async refresh(): Promise<void> {
@@ -480,6 +544,114 @@ export class DocumentVersionController implements VersionManagerController {
         throw new VersionError('STALE_WORKSPACE', 'The workspace changed before checkpoint started');
       }
       await this.#createCheckpoint({ reason: 'manual', message });
+    });
+  }
+
+  async createWorktree(sourceBranch: string, newBranchName?: string): Promise<void> {
+    const host = this.#requireWorktreeHost();
+    const worktree = await this.#enqueue(async () => {
+      await this.#refreshData(false);
+      await this.#guardMutation(true);
+      await this.#checkpointDirty('pre-switch');
+      await this.#persistWorktree();
+      const repository = this.#requireRepository();
+      const branch = await this.#store.getBranch(repository.id, branchName(sourceBranch));
+      if (!branch) throw new VersionError('REF_NOT_FOUND', '브랜치를 찾을 수 없습니다.');
+      return this.#store.createWorktree({
+        repositoryId: repository.id, branch: branch.name,
+        documentId: documentId(globalThis.crypto.randomUUID()),
+        fileName: this.#wasm.fileName,
+        sourceFormat: this.#wasm.getSourceFormat(),
+        expectedRepositoryRevision: repository.revision,
+        expectedBranchRevision: branch.revision,
+        mergeTarget: this.#worktrees.some((worktree) => worktree.branch === branch.name)
+          ? { name: branch.name, generation: branch.generation }
+          : { name: this.#requireActiveBranch().name, generation: this.#requireActiveBranch().generation },
+        ...(newBranchName ? { forkName: branchName(newBranchName) } : {}),
+      });
+    });
+    await host.open(worktree);
+    await this.refresh();
+  }
+
+  async openWorktree(id: string): Promise<void> {
+    await this.#requireWorktreeHost().open(await this.#requireWorktree(id));
+  }
+
+  async closeWorktree(id: string): Promise<void> {
+    await this.#requireWorktreeHost().close(await this.#requireWorktree(id));
+    await this.refresh();
+  }
+
+  async removeWorktree(id: string): Promise<void> {
+    const worktree = await this.#requireWorktree(id);
+    if (worktree.primary) throw new Error('원본 작업 공간은 삭제할 수 없습니다.');
+    await this.#requireWorktreeHost().remove(worktree);
+    await this.refresh();
+  }
+
+  async mergeWorktree(id: string): Promise<void> {
+    const worktree = await this.#requireWorktree(id);
+    if (worktree.primary) throw new Error('원본 작업 공간은 병합 후 삭제할 수 없습니다.');
+    await this.#requireWorktreeHost().merge(worktree);
+  }
+
+  async persistWorktree(): Promise<void> {
+    if (this.#persistTimer) clearTimeout(this.#persistTimer);
+    this.#persistTimer = null;
+    await this.#enqueue(() => this.#persistWorktree());
+  }
+
+  async saveManagedWorktree(): Promise<void> {
+    await this.#enqueue(async () => {
+      await this.#refreshData(false);
+      await this.#guardMutation();
+      if (!this.#worktree || this.#worktree.primary) throw new Error('관리되는 워크트리가 아닙니다.');
+      await this.#checkpointDirty('pre-switch');
+      const revision = this.#editorRevision;
+      await this.#persistWorktree(true);
+      if (revision === this.#editorRevision) this.#documentState.markClean('worktree-saved');
+      await this.#refreshData(false);
+    });
+  }
+
+  #requireWorktreeHost(): VersionWorktreeHost {
+    if (!this.#worktreeHost) throw new Error('워크트리를 열 수 없는 환경입니다.');
+    return this.#worktreeHost;
+  }
+
+  async #requireWorktree(id: string): Promise<VersionWorktree> {
+    const worktree = await this.#store.getWorktree(id);
+    if (!worktree || worktree.repositoryId !== this.#repository?.id) {
+      throw new VersionError('STALE_WORKSPACE', '워크트리를 찾을 수 없습니다.');
+    }
+    return worktree;
+  }
+
+  #scheduleWorktreePersistence(): void {
+    if (!this.#worktree || this.#worktreeHost?.canMutate() === false) return;
+    if (this.#persistTimer) clearTimeout(this.#persistTimer);
+    this.#persistTimer = setTimeout(() => {
+      this.#persistTimer = null;
+      void this.persistWorktree().catch((error) => console.warn('[worktrees] 저장 실패:', error));
+    }, 500);
+  }
+
+  async #persistWorktree(saved = false): Promise<void> {
+    const worktree = this.#worktree;
+    if (!worktree || worktree.documentId !== this.#getDocumentId()) return;
+    if (this.#worktreeHost?.canMutate() === false) throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
+    const workspace = this.#captureWorkspaceToken();
+    const capture = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
+    const branch = this.#requireActiveBranch();
+    const current = await this.#store.getWorktree(worktree.id);
+    if (!current) throw new VersionError('STALE_WORKSPACE', '워크트리가 삭제되었습니다.');
+    this.#assertWorkspaceToken(workspace);
+    this.#worktree = await this.#store.saveWorktree({
+      id: current.id, expectedRevision: current.revision, bytes: capture.bytes,
+      fileName: this.#wasm.fileName, sourceFormat: worktreeSnapshotFormat(capture.bytes),
+      baseCommitId: branch.target,
+      ...(saved ? { savedFingerprint: capture.fingerprint } : {}),
     });
   }
 
@@ -871,6 +1043,8 @@ export class DocumentVersionController implements VersionManagerController {
   async #switchBranch(name: string): Promise<void> {
       await this.#refreshData(false);
       await this.#guardMutation(true);
+      const occupied = this.#worktrees.find((worktree) => worktree.branch === name && worktree.id !== this.#worktree?.id);
+      if (occupied) throw new Error('이 브랜치는 다른 워크트리에서 사용 중입니다.');
       await this.#checkpointDirty('pre-switch');
       const workspace = this.#captureWorkspaceToken();
       const repository = this.#requireRepository();
@@ -981,12 +1155,16 @@ export class DocumentVersionController implements VersionManagerController {
     });
   }
 
-  async startMerge(sourceBranch: string): Promise<void> {
+  async startMerge(sourceBranch: string, options: { onCompleted?: () => Promise<void> } = {}): Promise<void> {
     await this.#enqueue(async () => {
       await this.#refreshData(false);
       await this.#guardMutation(true);
       if (!await this.#prepareMergeWorkingTree()) return;
       await this.#refreshData(false);
+      this.#mergeCompletion = options.onCompleted ? {
+        sourceBranch: branchName(sourceBranch), targetBranch: this.#requireActiveBranch().name,
+        draftId: null, callback: options.onCompleted,
+      } : null;
       await this.#openMergeResolver(branchName(sourceBranch));
     });
   }
@@ -1224,7 +1402,7 @@ export class DocumentVersionController implements VersionManagerController {
       const repository = this.#requireRepository();
       const activeBranch = this.#requireActiveBranch();
       const head = await this.#requireCommit(activeBranch.target);
-      const snapshot = await this.#store.exportRepositorySnapshot(repository.id);
+      const snapshot = await this.#store.exportRepositorySnapshot(repository.id, { activeBranch: activeBranch.name });
       const sourceFormat = this.#wasm.getSourceFormat();
       if (sourceFormat !== 'hwp' && sourceFormat !== 'hwpx' && sourceFormat !== 'hml') {
         throw new VersionError('VERSION_STORE_FAILED', 'The document format cannot be bundled');
@@ -1240,6 +1418,8 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   dispose(): void {
+    if (this.#persistTimer) clearTimeout(this.#persistTimer);
+    this.#persistTimer = null;
     for (const unsubscribe of this.#unsubscribers) unsubscribe();
     this.#listeners.clear();
     this.#compareWindow.hide();
@@ -1299,13 +1479,14 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   #guardSaved(): void {
-    if (!this.#getDocumentId() || this.#wasm.pageCount === 0 || this.#wasm.isNewDocument) {
+    if (!this.#getDocumentId() || this.#wasm.pageCount === 0 || (this.#wasm.isNewDocument && !this.#worktree)) {
       throw new VersionError('SAVE_REQUIRED', '먼저 문서를 저장하세요.');
     }
   }
 
   async #guardMutation(resolvePending = false, fromAgentTurn = false): Promise<void> {
     this.#guardSaved();
+    if (this.#worktreeHost?.canMutate() === false) throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
     if (this.#mergeResolverActive) {
       throw new VersionError('MERGE_IN_PROGRESS', '열린 변경 검토를 먼저 마치거나 닫으세요.');
     }
@@ -1503,6 +1684,9 @@ export class DocumentVersionController implements VersionManagerController {
     };
     this.#setMergeResolverLock(true);
     try {
+      if (this.#mergeCompletion?.sourceBranch === sourceBranch.name
+        && this.#mergeCompletion.targetBranch === targetBranch.name
+        && this.#mergeCompletion.draftId === null) this.#mergeCompletion.draftId = storedDraft.id;
       this.#mergeResolver.open({
         draft: storedDraft,
         analysis,
@@ -1515,7 +1699,8 @@ export class DocumentVersionController implements VersionManagerController {
           current: { bytes: current.blob.bytes, fileName: this.#wasm.fileName, label: '현재' },
           incoming: { bytes: incoming.blob.bytes, fileName: this.#wasm.fileName, label: '가져올 변경' },
         },
-        canDeleteSource: !shelfApply && sourceBranch.name !== repository.defaultBranch,
+        canDeleteSource: !shelfApply && sourceBranch.name !== repository.defaultBranch
+          && !this.#worktrees.some((worktree) => worktree.branch === sourceBranch.name),
         materialize: ({ analysis: nextAnalysis, resolutions: nextResolutions, signal }) => (
           materialize(nextAnalysis, nextResolutions, signal)
         ),
@@ -1580,9 +1765,17 @@ export class DocumentVersionController implements VersionManagerController {
           };
         },
         complete: (request) => this.#enqueue(() => this.#completeMerge(request)),
-        finalizeSourceDisposition: (receipt, disposition) => this.#enqueue(
-          () => this.#finalizeMergeSource(receipt, disposition),
-        ),
+        finalizeSourceDisposition: async (receipt, disposition) => {
+          await this.#enqueue(() => this.#finalizeMergeSource(receipt, disposition));
+          const completed = this.#mergeCompletion;
+          this.#mergeCompletion = null;
+          if (completed?.draftId === storedDraft.id) {
+            try { await completed.callback(); }
+            catch (error) {
+              throw new Error('병합은 완료했지만 워크트리를 삭제하지 못했습니다.', { cause: error });
+            }
+          }
+        },
         onClosed: () => this.#setMergeResolverLock(false),
       });
     } catch (error) {
@@ -1634,6 +1827,7 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   async #completeMerge(request: MergeApplicationRequest): Promise<MergeAppliedReceipt> {
+    if (this.#worktreeHost?.canMutate() === false) throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
     if (request.draft.analysisVersion >= 2 && request.mode === 'fast-forward') {
       request = { ...request, mode: 'explicit-checkpoint', draft: { ...request.draft, mode: 'explicit-checkpoint' } };
     }
@@ -2124,11 +2318,14 @@ export class DocumentVersionController implements VersionManagerController {
   async #refreshData(includeLegacy: boolean): Promise<void> {
     const epoch = ++this.#refreshEpoch;
     const id = this.#getDocumentId();
+    this.#worktree = id ? await this.#store.findWorktreeByDocumentId(documentId(id)) : null;
+    if (epoch !== this.#refreshEpoch || this.#getDocumentId() !== id) return;
     this.#state.documentId = id;
     this.#state.documentName = this.#wasm.pageCount > 0 ? this.#wasm.fileName : null;
-    this.#state.saved = Boolean(id && this.#wasm.pageCount > 0 && !this.#wasm.isNewDocument);
+    this.#state.saved = Boolean(id && this.#wasm.pageCount > 0 && (!this.#wasm.isNewDocument || this.#worktree));
     if (!id || !this.#state.saved) {
       this.#repository = null;
+      this.#worktrees = [];
       this.#refs = [];
       this.#commits = [];
       this.#shelves = [];
@@ -2142,6 +2339,7 @@ export class DocumentVersionController implements VersionManagerController {
     const repository = await this.#store.findRepositoryByDocumentId(documentId(id));
     if (epoch !== this.#refreshEpoch || this.#getDocumentId() !== id) return;
     this.#repository = repository;
+    const initialSavedFingerprint = this.#savedBaseline?.documentId === id ? this.#savedBaseline.capture.fingerprint : undefined;
     if (repository) {
       this.#savedBaseline = null;
       this.#maintenance.schedule(repository.id);
@@ -2152,6 +2350,7 @@ export class DocumentVersionController implements VersionManagerController {
       return;
     }
     if (!repository) {
+      this.#worktrees = [];
       this.#refs = [];
       this.#commits = [];
       this.#shelves = [];
@@ -2174,13 +2373,24 @@ export class DocumentVersionController implements VersionManagerController {
     this.#shelves = shelves;
     this.#mergeDrafts = mergeDrafts;
     const branches = refs.filter((ref): ref is BranchRef => ref.kind === 'branch');
-    const storedBranch = readActiveBranch(id);
+    const storedBranch = this.#worktree?.branch ?? readActiveBranch(id);
     const memoryBranch = this.#activeBranches.get(id);
     this.#activeBranch = branches.find((branch) => branch.name === storedBranch)?.name
       ?? branches.find((branch) => branch.name === memoryBranch)?.name
       ?? branches.find((branch) => branch.name === repository.defaultBranch)?.name
       ?? branches[0]?.name
       ?? null;
+    if (!this.#worktree && this.#activeBranch) {
+      this.#worktree = await this.#store.ensurePrimaryWorktree({
+        repositoryId: repository.id, branch: this.#activeBranch, documentId: documentId(id),
+        savedFingerprint: initialSavedFingerprint,
+        fileName: this.#wasm.fileName,
+        sourceFormat: this.#wasm.getSourceFormat(),
+      });
+    }
+    this.#worktrees = await this.#store.listWorktrees(repository.id);
+    if (this.#worktree && this.#worktreeHost) await this.#worktreeHost.ensureOwnership(this.#worktree);
+    if (epoch !== this.#refreshEpoch || this.#getDocumentId() !== id) return;
     if (this.#activeBranch) persistActiveBranch(id, this.#activeBranch);
     if (this.#activeBranch) this.#activeBranches.set(id, this.#activeBranch);
     await this.#refreshSemanticDirty(id, epoch);
@@ -2237,6 +2447,7 @@ export class DocumentVersionController implements VersionManagerController {
       headId: branch.target,
       isActive: branch.name === this.#activeBranch,
       isDefault: branch.name === this.#repository?.defaultBranch,
+      worktreeId: this.#worktrees.find((worktree) => worktree.branch === branch.name)?.id,
       updatedAt: commitById.get(branch.target)?.createdAt ?? this.#repository?.enabledAt ?? Date.now(),
     }));
     const shelves: VersionShelfView[] = this.#shelves.map((shelf) => ({
@@ -2275,11 +2486,17 @@ export class DocumentVersionController implements VersionManagerController {
     this.#state = {
       documentId: this.#getDocumentId(),
       documentName: this.#wasm.pageCount > 0 ? this.#wasm.fileName : null,
-      saved: Boolean(this.#getDocumentId() && this.#wasm.pageCount > 0 && !this.#wasm.isNewDocument),
+      saved: Boolean(this.#getDocumentId() && this.#wasm.pageCount > 0 && (!this.#wasm.isNewDocument || this.#worktree)),
       enabled: this.#repository !== null,
       dirty: this.#isSemanticDirty(),
       mutationBlockedReason: this.#mutationBlockedReason(),
       activeBranch: this.#activeBranch,
+      worktrees: this.#worktrees.map((worktree) => ({
+        id: worktree.id, documentId: worktree.documentId, branch: worktree.branch,
+        primary: worktree.primary, isCurrent: worktree.id === this.#worktree?.id,
+        ...(this.#worktreeHost?.getStatus(worktree) ?? { isOpen: false, busy: false }),
+        mergeTarget: worktree.mergeTarget?.name,
+      })),
       commits: commitViews,
       branches,
       shelves,
@@ -2333,6 +2550,7 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   #mutationBlockedReason(): string | null {
+    if (this.#worktreeHost?.canMutate() === false) return '다른 창에서 이 워크트리를 편집하고 있습니다.';
     if (this.#mergeResolverActive) return '병합 검토가 열려 있습니다.';
     if (this.#agentBridge.isTurnRunning()) return '에이전트가 응답 중입니다.';
     if (this.#agentBridge.pendingEdits.hasPending()) return '대기 중인 에이전트 편집을 먼저 처리하세요.';
@@ -2383,12 +2601,15 @@ export class DocumentVersionController implements VersionManagerController {
     this.#assertWorkspaceToken(workspace);
     const message = options.message?.trim() ?? '';
     if (capture.fingerprint === head.contentFingerprint && !options.allowSameContent) {
-      if (options.lastSaved && repository.lastSavedFingerprint !== capture.fingerprint) {
-        const updated = await this.#store.markSaved(
-          repository.id,
-          capture.fingerprint,
-          repository.revision,
-        );
+      if (options.lastSaved && (this.#worktree?.savedFingerprint ?? repository.lastSavedFingerprint) !== capture.fingerprint) {
+        if (this.#worktree) this.#worktree = await this.#store.saveWorktree({
+          id: this.#worktree.id, expectedRevision: this.#worktree.revision,
+          bytes: capture.bytes, savedFingerprint: capture.fingerprint,
+          fileName: this.#wasm.fileName, sourceFormat: worktreeSnapshotFormat(capture.bytes),
+        });
+        const updated = !this.#worktree || this.#worktree.primary
+          ? await this.#store.markSaved(repository.id, capture.fingerprint, repository.revision)
+          : repository;
         options.onPersisted?.();
         if (!this.#isWorkspaceTokenCurrent(workspace, { editor: false })) return null;
         this.#repository = updated;
@@ -2423,10 +2644,12 @@ export class DocumentVersionController implements VersionManagerController {
     }
     const mergeManifestEntries = await this.#mergeWorker.buildDocumentManifest(capture.bytes);
     this.#assertWorkspaceToken(workspace);
+    if (this.#worktreeHost?.canMutate() === false) throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
     const createdAt = Date.now();
     const result = await this.#store.createCheckpoint({
       repositoryId: repository.id,
       branch: branch.name,
+      ...(this.#worktree ? { worktreeId: this.#worktree.id, expectedWorktreeRevision: this.#worktree.revision } : {}),
       expectedRepositoryRevision: repository.revision,
       expectedBranchRevision: branch.revision,
       expectedHead: branch.target,
@@ -2584,38 +2807,74 @@ export class DocumentVersionController implements VersionManagerController {
     previousCommit: VersionCommit | null = null,
   ): Promise<void> {
     const workspace = this.#captureWorkspaceToken();
+    const original = captureVersionSnapshot(this.#wasm);
+    let compensating = false;
+    await this.#bindWorktreeBranch(next);
+    const transition = (direction: 'undo' | 'redo'): void => {
+      if (compensating) return;
+      this.#setMergeResolverLock(true);
+      void this.#enqueue(async () => {
+        let reconciled = true;
+        let bindingMoved = false;
+        const destination = direction === 'undo' ? previous : next;
+        const prior = direction === 'undo' ? next : previous;
+        const expected = direction === 'undo'
+          ? { bytes, fingerprint: target.contentFingerprint }
+          : original;
+        try {
+          await this.#bindWorktreeBranch(destination);
+          bindingMoved = true;
+          this.#setActiveBranch(destination.name);
+          this.#setDirtyForFingerprint(
+            direction === 'undo' ? original.fingerprint : target.contentFingerprint,
+            direction === 'undo' ? 'version-branch-undo' : 'version-branch-redo',
+            direction === 'undo' ? previousCommit?.contentFingerprint : target.contentFingerprint,
+          );
+          await this.#refreshData(false);
+          await this.#persistWorktree();
+        } catch (error) {
+          compensating = true;
+          try {
+            if (bindingMoved) await this.#bindWorktreeBranch(prior);
+            this.#setActiveBranch(prior.name);
+            reconcileCompositeHistoryTransition({
+              restoreFromHistory: () => {
+                if (direction === 'undo') handler.performRedo(true);
+                else handler.performUndo(true);
+              },
+              matchesExpectedDocument: () => fingerprintVersionContent(this.#wasm) === expected.fingerprint,
+              replaceWithExpectedDocument: () => { handler.replaceContentFromBytes(expected.bytes); },
+              discardFallbackUndo: () => handler.discardLatestUndoHistory(),
+            });
+            this.#setDirtyForFingerprint(expected.fingerprint, 'version-branch-history-reconciled');
+          } catch (compensationError) {
+            reconciled = false;
+            console.error('[Versions] Branch history compensation failed:', compensationError);
+          } finally {
+            // Snapshot hooks schedule a microtask; keep compensation marked until they run.
+            queueMicrotask(() => { compensating = false; });
+          }
+          throw error;
+        } finally {
+          if (reconciled) this.#setMergeResolverLock(false);
+        }
+      }).catch((error) => console.warn('[Versions] Branch history transition failed:', error));
+    };
     const releaseHistory = await this.#maintenance.retainHistory(target.repositoryId);
     try {
       this.#assertWorkspaceToken(workspace);
       handler.replaceContentFromBytes(bytes, {
         afterDiscard: releaseHistory,
         afterUndo: () => {
-          queueMicrotask(() => {
-            this.#setActiveBranch(previous.name);
-            if (previousCommit) {
-              this.#setDirtyForFingerprint(
-                previousCommit.contentFingerprint,
-                'version-branch-undo',
-                previousCommit.contentFingerprint,
-              );
-            }
-            void this.refresh();
-          });
+          queueMicrotask(() => transition('undo'));
         },
         afterRedo: () => {
-          queueMicrotask(() => {
-            this.#setActiveBranch(next.name);
-            this.#setDirtyForFingerprint(
-              target.contentFingerprint,
-              'version-branch-redo',
-              target.contentFingerprint,
-            );
-            void this.refresh();
-          });
+          queueMicrotask(() => transition('redo'));
         },
       });
     } catch (error) {
       releaseHistory();
+      await this.#bindWorktreeBranch(previous);
       throw error;
     }
     this.#setActiveBranch(next.name);
@@ -2651,6 +2910,24 @@ export class DocumentVersionController implements VersionManagerController {
     }
   }
 
+  async #bindWorktreeBranch(branch: BranchRef): Promise<void> {
+    if (!this.#worktree) return;
+    if (this.#worktreeHost?.canMutate() === false) throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
+    const [current, repository, freshBranch] = await Promise.all([
+      this.#store.getWorktree(this.#worktree.id),
+      this.#store.getRepository(this.#worktree.repositoryId),
+      this.#store.getBranch(this.#worktree.repositoryId, branch.name),
+    ]);
+    if (!current || !repository || !freshBranch || freshBranch.generation !== branch.generation) {
+      throw new VersionError('STALE_WORKSPACE', '전환할 브랜치가 변경되었습니다.');
+    }
+    if (current.branch === branch.name && current.branchGeneration === branch.generation) return;
+    this.#worktree = await this.#store.switchWorktreeBranch({
+      id: current.id, branch: branch.name, expectedRevision: current.revision,
+      expectedRepositoryRevision: repository.revision, expectedBranchRevision: freshBranch.revision,
+    });
+  }
+
   #setActiveBranch(name: BranchName): void {
     this.#activeBranch = name;
     const id = this.#getDocumentId();
@@ -2666,7 +2943,7 @@ export class DocumentVersionController implements VersionManagerController {
     semanticHeadFingerprint?: string,
   ): void {
     this.#recordSemanticDirty(fingerprint, semanticHeadFingerprint);
-    if (fingerprint === this.#repository?.lastSavedFingerprint) this.#documentState.markClean(reason);
+    if (fingerprint === (this.#worktree?.savedFingerprint ?? this.#repository?.lastSavedFingerprint)) this.#documentState.markClean(reason);
     else this.#documentState.markDirty(reason);
   }
 

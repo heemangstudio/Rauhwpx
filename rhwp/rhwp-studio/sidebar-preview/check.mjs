@@ -9,6 +9,7 @@ import puppeteer from 'puppeteer-core';
 import { checkSetupTerminal } from './setup-terminal.check.mjs';
 import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
+import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
 import { checkContextPreview } from './context.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
@@ -790,6 +791,7 @@ try {
       });
     },
   );
+  await step('Worktree create, open, close, removal cancellation and merge', () => checkWorktrees({ page, open, screenshot }));
   await step('Branch commits keep their graph lane and move the branch label', async () => {
     await open('page=versions&history=branches&theme=dark&width=480');
     await showVersionGraph();
@@ -833,6 +835,7 @@ try {
     assert.deepEqual(result, { branchAtHead: true, parent: 'e8f21a0', separateLane: true, label: true, current: true, selected: 'true' });
     await screenshot('versions-branch-commit');
     await open('page=versions&history=branches&width=360');
+    await showVersionGraph();
     await screenshot('versions-light-narrow');
     assert(await page.$eval('.ag-versions-page', (el) => el.scrollWidth <= el.clientWidth), 'Narrow panel overflows');
     await open('width=480');

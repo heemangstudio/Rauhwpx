@@ -304,6 +304,7 @@ async function tryFileSystemSave(
   suggestedName: string,
   forceSaveAs: boolean,
   currentHandle: FileSystemFileHandleLike | null,
+  retainHandle = true,
 ): Promise<SaveDocumentResult | 'cancelled'> {
   try {
     return await saveDocumentToFileSystem({
@@ -315,6 +316,7 @@ async function tryFileSystemSave(
       saveFormat: format,
       pickSaveHandle: services.pickSaveHandle,
       validateTarget: services.validateSaveHandle,
+      retainHandle,
     });
   } catch (error) {
     if (isUserCancelError(error)) return 'cancelled';
@@ -408,13 +410,20 @@ async function resolvePendingAgentEditsBeforeSave(services: CommandServices): Pr
 
 async function saveAsFormat(services: CommandServices, format: SaveFormat): Promise<SaveOutcome> {
   try {
+    assertCanSaveDocument(services);
     if (!await resolvePendingAgentEditsBeforeSave(services)) return 'cancelled';
+    assertCanSaveDocument(services);
     flushDeferredPaginationBeforeExplicitOutput(services, 'save-as');
+    const managed = services.isManagedWorktree?.() === true;
+    if (managed) {
+      if (!services.persistManagedWorktree) throw new Error('작업 사본 저장 서비스를 사용할 수 없습니다.');
+      await services.persistManagedWorktree();
+    }
     const sourceFormat = services.wasm.getSourceFormat();
     const saveName = fileNameForFormat(services.wasm.fileName, format);
     const revision = services.documentState.captureRevision();
     const blob = createSaveBlob(services, format);
-    const originalHandle = sourceFormat === 'hml' ? services.wasm.currentFileHandle : null;
+    const originalHandle = !managed && sourceFormat === 'hml' ? services.wasm.currentFileHandle : null;
     const result = await tryFileSystemSave(
       services,
       format,
@@ -422,16 +431,19 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
       saveName,
       true,
       originalHandle,
+      !managed,
     );
     if (result === 'cancelled') return 'cancelled';
     if (result.method !== 'fallback') {
+      if (managed) return 'saved';
       completeHandleSave(services, sourceFormat, format, result, 'save-as', revision, await savedBlobDigest(blob));
       return 'saved';
     }
     const downloadName = await promptFallbackName(saveName, format);
     if (!downloadName) return 'cancelled';
-    services.wasm.fileName = downloadName;
     downloadBlob(blob, downloadName);
+    if (managed) return 'saved';
+    services.wasm.fileName = downloadName;
     services.documentState.markCleanIfUnchanged(revision, 'save-as');
     services.eventBus.emit('document-context-changed');
     services.eventBus.emit('document-saved', {
@@ -448,15 +460,22 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
 
 async function saveWithHistory(services: CommandServices): Promise<SaveCurrentDocumentResult> {
   try {
+    assertCanSaveDocument(services);
     if (!await resolvePendingAgentEditsBeforeSave(services)) return 'cancelled';
+    assertCanSaveDocument(services);
     flushDeferredPaginationBeforeExplicitOutput(services, 'save-with-history');
+    const managed = services.isManagedWorktree?.() === true;
+    if (managed) {
+      if (!services.persistManagedWorktree) throw new Error('작업 사본 저장 서비스를 사용할 수 없습니다.');
+      await services.persistManagedWorktree();
+    }
     if (!services.createPortableHistoryBundle) {
       throw new Error('버전 기록 서비스를 사용할 수 없습니다.');
     }
 
     const revision = services.documentState.captureRevision();
     const archive = await services.createPortableHistoryBundle();
-    const currentHandle = services.wasm.currentFileHandle;
+    const currentHandle = managed ? null : services.wasm.currentFileHandle;
     const historyBlob = new Blob([archive.bytes as unknown as BlobPart], {
       type: PORTABLE_HISTORY_MIME_TYPE,
     });
@@ -493,8 +512,8 @@ async function saveWithHistory(services: CommandServices): Promise<SaveCurrentDo
         await targetHandle.releaseUnusedSaveTarget?.().catch(() => {});
         throw new Error('.rhwpx 확장자를 가진 기록 파일을 선택해야 합니다.');
       }
-      await writeBlobToHandle(targetHandle, historyBlob, services.validateSaveHandle);
-      completePortableHistorySave(services, targetHandle, targetHandle.name, revision);
+      await writeBlobToHandle(targetHandle, historyBlob, services.validateSaveHandle, !managed);
+      if (!managed) completePortableHistorySave(services, targetHandle, targetHandle.name, revision);
       return 'saved';
     }
 
@@ -538,6 +557,12 @@ function reportSaveError(scope: string, error: unknown): void {
   alert(`파일 저장에 실패했습니다:\n${message}`);
 }
 
+function assertCanSaveDocument(services: CommandServices): void {
+  if (services.canSaveDocument?.() === false) {
+    throw new Error('읽기 전용 문서는 저장할 수 없습니다. 편집 중인 창에서 저장하세요.');
+  }
+}
+
 export type SaveCurrentDocumentResult = SaveOutcome;
 
 /** 저장은 한 번에 하나만 실행한다 (겹친 쓰기가 오래된 바이트로 최신 저장을 덮지 않도록). */
@@ -567,14 +592,18 @@ async function runExclusiveSave(run: () => Promise<SaveOutcome>): Promise<void> 
 
 async function runSaveCurrentDocument(services: CommandServices): Promise<SaveCurrentDocumentResult> {
   try {
+    assertCanSaveDocument(services);
+    if (!await resolvePendingAgentEditsBeforeSave(services)) return 'cancelled';
+    assertCanSaveDocument(services);
+    flushDeferredPaginationBeforeExplicitOutput(services, 'save');
+    if (await services.saveManagedWorktree?.()) return 'saved';
+    if (services.isManagedWorktree?.()) throw new Error('작업 사본을 저장하지 못했습니다.');
     if (
       isPortableHistoryFileName(services.wasm.fileName)
       || isPortableHistoryFileName(services.wasm.currentFileHandle?.name ?? '')
     ) {
       return saveWithHistory(services);
     }
-    if (!await resolvePendingAgentEditsBeforeSave(services)) return 'cancelled';
-    flushDeferredPaginationBeforeExplicitOutput(services, 'save');
     const sourceFormat = services.wasm.getSourceFormat();
     let target = resolveSaveTarget(
       sourceFormat,
@@ -1184,6 +1213,12 @@ export const fileCommands: CommandDef[] = [
     canExecute: (ctx) => ctx.hasDocument,
     async execute(services) {
       await runExclusiveSave(async () => {
+        try {
+          assertCanSaveDocument(services);
+        } catch (error) {
+          reportSaveError('file:save-as', error);
+          return 'failed';
+        }
         const format = await chooseSaveAsFormat(services);
         return format === null ? 'cancelled' : saveAsFormat(services, format);
       });

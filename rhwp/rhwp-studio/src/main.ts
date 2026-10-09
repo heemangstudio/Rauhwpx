@@ -74,7 +74,7 @@ import { CommandPalette } from '@/ui/command-palette';
 import { showHmlImportWarning } from '@/ui/hml-import-warning';
 import { showLocalFontsModalIfNeeded } from '@/ui/local-fonts-modal';
 import { showToast } from '@/ui/toast';
-import { resolveDocumentPreflight, type DocumentPreflightIdentity, type OpenDocumentBytesEvent, type VerifiedDocumentGrant } from '@/recent/document-preflight';
+import { documentSourceDigest, resolveDocumentPreflight, type DocumentPreflightIdentity, type OpenDocumentBytesEvent, type VerifiedDocumentGrant } from '@/recent/document-preflight';
 import { addRecentDoc, listRecentDocs } from '@/recent/recent-store';
 import { showDropConfirmDialog } from '@/ui/drop-confirm-dialog';
 import { showConfirm } from '@/ui/confirm-dialog';
@@ -196,6 +196,7 @@ import {
   type AgentHubSessionLease,
   releaseReplacedNativeFileHandle,
   rememberNativeDocument,
+  restoreNativeDocument,
   reserveDesktopDocument,
 } from '@/desktop-integration';
 import { initAgentBridge } from './agent/bridge.ts';
@@ -205,6 +206,8 @@ import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing
 import { AGENT_LABEL } from './ui/agent-sidebar/providers.ts';
 import { initInlinePrompt } from './agent/inline-prompt.ts';
 import { DocumentVersionController, persistActiveBranch, type VersionAgentView } from './versioning/controller.ts';
+import { WorktreeOwnership } from './versioning/worktree-ownership.ts';
+import type { VersionWorktree } from './versioning/types.ts';
 import {
   VersionGraphStore,
   documentId as versionDocumentId,
@@ -234,9 +237,9 @@ const rendererSessionContextPromise = getRendererSessionContext();
 // 열린 문서마다 세션 하나. 화면은 attachedSession 하나에만 붙고, 아래 퍼사드는 그 세션을 가리킨다.
 // 에이전트가 일하는 문서는 화면에서 떨어져도 세션째 살아 있어 작업을 이어 간다.
 function createSessionCore(slotId?: string): DocumentSession {
-  return createDocumentSessionCore({
+  const session = createDocumentSessionCore({
     slotId,
-    isReadOnly: () => documentReadOnly,
+    isReadOnly: () => sessionReadOnly(session),
     autosave: {
       schedule: autosaveScheduleFromUserSettings(),
       locks: defaultAutosaveLocks(),
@@ -247,12 +250,41 @@ function createSessionCore(slotId?: string): DocumentSession {
     },
     onDirtyChanged: () => desktopDocumentStateUpdate?.(),
   });
+  return session;
 }
 
 let desktopDocumentStateUpdate: (() => void) | null = null;
 const firstSession = createSessionCore();
 const liveSessions: DocumentSession[] = [firstSession];
 let attachedSession: DocumentSession = firstSession;
+const worktreeStore = new VersionGraphStore();
+const worktreeOwnership = new WorktreeOwnership<DocumentSession>(navigator.locks ?? null);
+const deniedWorktreeSessions = new WeakSet<DocumentSession>();
+const mutatingWorktreeSessions = new WeakSet<DocumentSession>();
+const loadingWorktreeSessions = new WeakSet<DocumentSession>();
+const openWorktreeDocuments = new Set<string>();
+const worktreeWindows = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('rhwp-worktree-windows');
+worktreeWindows?.addEventListener('message', () => refreshWorktreeSessions(false));
+window.addEventListener('focus', () => refreshWorktreeSessions(false));
+
+function isManagedWorktree(session = attachedSession): boolean {
+  return Boolean(session.worktree && !session.worktree.primary);
+}
+
+function sessionReadOnly(session = attachedSession): boolean {
+  return documentReadOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
+}
+
+async function withWorktreeMutation<T>(session: DocumentSession, run: () => Promise<T>): Promise<T> {
+  if (mutatingWorktreeSessions.has(session)) throw new Error('워크트리 작업이 끝난 뒤 다시 시도하세요.');
+  mutatingWorktreeSessions.add(session);
+  if (session === attachedSession) setDocumentReadOnly(documentReadOnly);
+  try { return await run(); }
+  finally {
+    mutatingWorktreeSessions.delete(session);
+    if (session === attachedSession) setDocumentReadOnly(documentReadOnly);
+  }
+}
 
 const wasmFacade = createAttachableFacade<WasmBridge>(firstSession.wasm, {
   stickyKeys: ['onFileNameChanged', 'onExternalImagesInjected'],
@@ -278,7 +310,10 @@ onEngineTrap(() => {
 window.addEventListener('pagehide', (event) => {
   if (!event.persisted) {
     disposeAgentSidebar();
-    for (const session of liveSessions) session.autosave.dispose();
+    for (const session of liveSessions) {
+      void session.versions?.persistWorktree().catch(() => {});
+      session.autosave.dispose();
+    }
   }
 });
 initThemeSync((effective, mode) => {
@@ -396,8 +431,8 @@ function getContext(): EditorContext {
     canGroupSelectedObjects: canGroupTopLevelBodyObjects(selectedObjects),
     canUngroupSelectedObject: canUngroupTopLevelBodyObject(selectedObject),
     inField: inputHandler?.isInField() ?? false,
-    isEditable: !documentReadOnly && !agentEditingLease.active && (!isFormMode || canEditFormField),
-    readOnly: documentReadOnly,
+    isEditable: !sessionReadOnly() && !agentEditingLease.active && (!isFormMode || canEditFormField),
+    readOnly: sessionReadOnly(),
     userEditingLocked: agentEditingLease.active,
     editMode,
     isFormMode,
@@ -426,9 +461,9 @@ function setEditMode(mode: EditorEditMode): void {
 
 function setDocumentReadOnly(readOnly: boolean): void {
   documentReadOnly = readOnly;
-  document.documentElement.dataset.documentReadOnly = readOnly ? 'true' : 'false';
-  inputHandler?.setReadOnly(readOnly);
-  toolbar?.setEnabled(wasm.pageCount > 0 && !readOnly && !agentEditingLease.active);
+  document.documentElement.dataset.documentReadOnly = sessionReadOnly() ? 'true' : 'false';
+  inputHandler?.setReadOnly(sessionReadOnly());
+  toolbar?.setEnabled(wasm.pageCount > 0 && !sessionReadOnly() && !agentEditingLease.active);
   eventBus.emit('command-state-changed');
 }
 
@@ -448,7 +483,7 @@ function setAgentEditingLease(lease: AgentEditingLease): void {
     if (lease.waitingForUser) statusLabel.textContent = `${AGENT_LABEL[lease.agent]}가 답변을 기다리고 있어요`;
   }
   inputHandler?.setUserEditingLocked(agentEditingLease.active);
-  toolbar?.setEnabled(wasm.pageCount > 0 && !documentReadOnly && !agentEditingLease.active);
+  toolbar?.setEnabled(wasm.pageCount > 0 && !sessionReadOnly() && !agentEditingLease.active);
   scheduleCharacterStatus();
   eventBus.emit('command-state-changed');
 }
@@ -478,9 +513,23 @@ const commandServices: CommandServices = {
   pickOpenHandle: pickDesktopNativeOpenFile,
   pickSaveHandle: pickDesktopNativeSaveFile,
   validateSaveHandle: reserveSaveHandleForWrite,
+  canSaveDocument: () => !sessionReadOnly(),
   createPortableHistoryBundle: async () => {
     if (!attachedSession.versions) throw new Error('버전 기록 서비스를 사용할 수 없습니다.');
     return attachedSession.versions.createPortableHistoryBundle();
+  },
+  isManagedWorktree: () => isManagedWorktree(),
+  saveManagedWorktree: async () => {
+    const session = attachedSession;
+    if (!isManagedWorktree(session)) return false;
+    if (!session.versions) throw new Error('워크트리 저장 서비스를 사용할 수 없습니다.');
+    await session.versions.saveManagedWorktree();
+    return true;
+  },
+  persistManagedWorktree: async () => {
+    if (!isManagedWorktree()) return;
+    if (!attachedSession.versions) throw new Error('워크트리 저장 서비스를 사용할 수 없습니다.');
+    await attachedSession.versions.persistWorktree();
   },
   setEditMode,
   opensDocumentsInNewSession: () => shouldOpenInNewSession(),
@@ -1053,7 +1102,7 @@ async function initialize(): Promise<void> {
       canvasView.getViewportManager(),
     );
     inputHandler.setEditMode(editMode);
-    inputHandler.setReadOnly(documentReadOnly);
+    inputHandler.setReadOnly(sessionReadOnly());
     inputHandler.setUserEditingLocked(agentEditingLease.active);
 
     toolbar = new Toolbar(document.getElementById('style-bar')!, wasm, eventBus, dispatcher);
@@ -1280,8 +1329,271 @@ function installDocumentVersions(session: DocumentSession): DocumentVersionContr
     getDocumentId: () => session.documentId,
     agentBridge: documentAgentView(session),
     autoEnable: () => userSettings.getUseHancomGit(),
+    worktreeHost: {
+      ensureOwnership: (worktree) => ensureWorktreeOwnership(session, worktree),
+      canMutate: () => !documentReadOnly && !loadingWorktreeSessions.has(session)
+        && (!session.worktree || session.worktreeWritable),
+      getStatus: (worktree) => {
+        const live = liveSessionForDocument(worktree.documentId);
+        return {
+          isOpen: Boolean(live) || openWorktreeDocuments.has(worktree.documentId),
+          readOnly: Boolean(live && !live.worktreeWritable),
+          busy: live
+            ? !live.worktreeWritable || mutatingWorktreeSessions.has(live) || isDocumentSessionBusy(live) || documentAgentView(live).pendingEdits.hasPending()
+            : openWorktreeDocuments.has(worktree.documentId),
+        };
+      },
+      open: (worktree) => runNavigation(async () => { await openWorktreeSession(worktree); }),
+      close: (worktree) => runNavigation(() => closeWorktreeSession(worktree)),
+      remove: (worktree) => runNavigation(async () => { await removeWorktreeSession(worktree); return true; }),
+      merge: (worktree) => runNavigation(() => mergeWorktreeSession(worktree)),
+    },
   });
   return session.versions;
+}
+
+async function ensureWorktreeOwnership(session: DocumentSession, worktree: VersionWorktree): Promise<boolean> {
+  if (session.documentId !== worktree.documentId) return false;
+  if (session.worktree?.documentId !== worktree.documentId) deniedWorktreeSessions.delete(session);
+  const alreadyOwned = worktreeOwnership.owns(session, worktree.documentId);
+  session.worktree = worktree;
+  session.worktreeWritable = alreadyOwned;
+  if (deniedWorktreeSessions.has(session)) return false;
+  if (session === attachedSession) setDocumentReadOnly(documentReadOnly);
+  const writable = await worktreeOwnership.claim(session, worktree.documentId);
+  if (session.documentId !== worktree.documentId || !liveSessions.includes(session)) {
+    worktreeOwnership.release(session);
+    return false;
+  }
+  session.worktreeWritable = writable;
+  if (!writable) deniedWorktreeSessions.add(session);
+  if (writable && !alreadyOwned) refreshWorktreeSessions();
+  if (session === attachedSession) setDocumentReadOnly(documentReadOnly);
+  return writable;
+}
+
+function refreshWorktreeSessions(broadcast = true): void {
+  if (broadcast) worktreeWindows?.postMessage('changed');
+  void (async () => {
+    if (navigator.locks?.query) {
+      const state = await navigator.locks.query();
+      openWorktreeDocuments.clear();
+      for (const lock of state.held ?? []) {
+        if (lock.name?.startsWith('rhwp-worktree:')) openWorktreeDocuments.add(lock.name.slice('rhwp-worktree:'.length));
+      }
+    }
+    for (const session of liveSessions) {
+      void session.versions?.refresh().catch((error) => console.warn('[worktrees] 작업 공간 갱신 실패:', error));
+    }
+  })().catch((error) => console.warn('[worktrees] 창 상태 확인 실패:', error));
+}
+
+function assertWorktreeIdle(session: DocumentSession): void {
+  if (!session.worktreeWritable) throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
+  if (isDocumentSessionBusy(session) || documentAgentView(session).pendingEdits.hasPending()) {
+    throw new Error('에이전트 작업과 변경 검토를 마친 뒤 다시 시도하세요.');
+  }
+}
+
+/** 저장한 작업 공간의 바이트를 새 세션에 연다. 문서 ID와 파일 핸들을 복제하지 않는다. */
+async function openWorktreeSession(requested: VersionWorktree): Promise<DocumentSession> {
+  let worktree = await worktreeStore.getWorktree(requested.id);
+  if (!worktree) throw new Error('워크트리가 삭제되었습니다.');
+  const existing = liveSessionForDocument(worktree.documentId);
+  if (existing) {
+    await attachSession(existing);
+    if (!existing.worktreeWritable) {
+      // 다른 창의 오래된 화면을 편집 가능하게 바꾸지 않는다. 명시적으로 열 때 최신 바이트를 복구한다.
+      if (!await worktreeOwnership.claim(existing, worktree.documentId)) {
+        throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
+      }
+      loadingWorktreeSessions.add(existing);
+      try {
+        await withWorktreeMutation(existing, async () => {
+          const fresh = await worktreeStore.getWorktree(requested.id);
+          const blob = fresh ? await worktreeStore.getBlob(fresh.blobId) : null;
+          if (!fresh || !blob) throw new Error('워크트리의 문서 데이터를 찾을 수 없습니다.');
+          deniedWorktreeSessions.delete(existing);
+          await loadBytes(blob.bytes, fresh.fileName, null, performance.now(), {
+            skipRecent: true, suppressDialogs: true, worktreeSnapshot: true,
+            grant: { kind: 'verified', documentId: fresh.documentId },
+          });
+        });
+      } catch (error) {
+        existing.worktreeWritable = false;
+        deniedWorktreeSessions.add(existing);
+        worktreeOwnership.release(existing);
+        throw error;
+      } finally {
+        loadingWorktreeSessions.delete(existing);
+        refreshWorktreeSessions();
+      }
+    }
+    return existing;
+  }
+  const previous = attachedSession;
+  const session = await createLiveSession();
+  if (!session) throw new Error('열린 문서나 채팅을 닫은 뒤 다시 시도하세요.');
+  session.documentId = worktree.documentId;
+  session.worktree = worktree;
+  let reopenedHandle: FileSystemFileHandleLike | null = null;
+  try {
+    if (!await ensureWorktreeOwnership(session, worktree)) {
+      throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
+    }
+    worktree = await worktreeStore.getWorktree(requested.id);
+    if (!worktree) throw new Error('워크트리가 삭제되었습니다.');
+    session.worktree = worktree;
+    const blob = await worktreeStore.getBlob(worktree.blobId);
+    if (!blob) throw new Error('워크트리의 문서 데이터를 찾을 수 없습니다.');
+    await attachSession(session);
+    // 파일이 외부에서 바뀌었으면 복구한 작업 내용에 그 파일의 쓰기 권한을 붙이지 않는다.
+    let handle: FileSystemFileHandleLike | null = null;
+    let nativeSourceBytes: Uint8Array | undefined;
+    if (worktree.primary) {
+      const recent = (await listRecentDocs()).find((entry) => entry.documentId === worktree!.documentId);
+      const native = await restoreNativeDocument(worktree.documentId);
+      if (native === 'owned') throw new Error('다른 창에서 원본 문서를 편집하고 있습니다.');
+      reopenedHandle = native ?? (recent?.handle?.identityKind === 'native-path' ? null : recent?.handle ?? null);
+      if (reopenedHandle) {
+        try {
+          const bytes = await readBlobBytesWithLimit(await reopenedHandle.getFile(), EXACT_LOCAL_DOCUMENT_MAX_BYTES, '원본 문서');
+          if (recent && documentSourceDigest(bytes) === recent.sourceDigest) {
+            handle = reopenedHandle;
+            nativeSourceBytes = bytes;
+          }
+        } catch { /* 원본 파일 없이도 저장한 작업 공간을 복구할 수 있다. */ }
+        if (!handle) {
+          await reopenedHandle.releaseUnusedSaveTarget?.().catch(() => {});
+          reopenedHandle = null;
+        }
+      }
+    }
+    await loadBytes(blob.bytes, worktree.fileName, handle, performance.now(), {
+      skipRecent: true,
+      worktreeSnapshot: true,
+      suppressDialogs: true,
+      grant: { kind: 'verified', documentId: worktree.documentId },
+      nativeSourceBytes,
+    });
+    if (!session.wasm.hasLoadedDocument() || session.documentId !== worktree.documentId) {
+      throw new Error('워크트리 문서를 열지 못했습니다.');
+    }
+    refreshWorktreeSessions();
+    return session;
+  } catch (error) {
+    if (attachedSession === session && liveSessions.includes(previous)) await attachSession(previous);
+    await disposeSession(session, { persistWorktree: false });
+    await reopenedHandle?.releaseUnusedSaveTarget?.().catch(() => {});
+    throw error;
+  }
+}
+
+async function closeWorktreeSession(worktree: VersionWorktree, removed = false): Promise<void> {
+  const session = liveSessionForDocument(worktree.documentId);
+  if (!session) return;
+  if (mutatingWorktreeSessions.has(session)) return closeWorktreeSessionNow(worktree, removed);
+  return withWorktreeMutation(session, () => closeWorktreeSessionNow(worktree, removed));
+}
+
+async function closeWorktreeSessionNow(worktree: VersionWorktree, removed: boolean): Promise<void> {
+  const session = liveSessionForDocument(worktree.documentId);
+  if (!session) return;
+  assertWorktreeIdle(session);
+  if (!removed) await session.versions?.persistWorktree();
+  if (session === attachedSession) {
+    let next = liveSessions.find((candidate) => candidate !== session && candidate.worktree?.repositoryId === worktree.repositoryId)
+      ?? liveSessions.find((candidate) => candidate !== session);
+    if (!next) {
+      const primary = (await worktreeStore.listWorktrees(worktree.repositoryId)).find((candidate) => candidate.primary && candidate.id !== worktree.id);
+      if (primary) next = await openWorktreeSession(primary);
+      else next = await createLiveSession() ?? undefined;
+    }
+    if (!next) throw new Error('워크트리를 닫을 화면을 준비하지 못했습니다.');
+    await attachSession(next);
+  }
+  await disposeSession(session, { persistWorktree: !removed });
+  refreshWorktreeSessions();
+}
+
+async function removeWorktreeSession(requested: VersionWorktree): Promise<void> {
+  const worktree = await worktreeStore.getWorktree(requested.id);
+  if (!worktree) return;
+  if (worktree.primary) throw new Error('기본 작업 공간은 삭제할 수 없습니다.');
+  const previous = attachedSession;
+  const session = await openWorktreeSession(worktree);
+  assertWorktreeIdle(session);
+  await withWorktreeMutation(session, async () => {
+    try {
+      await session.versions!.checkpoint();
+    } catch (error) {
+      if (versionErrorCode(error) !== 'NO_CHANGES') throw error;
+    }
+    await session.versions!.persistWorktree();
+    const persisted = await worktreeStore.getWorktree(worktree.id);
+    if (!persisted) return;
+    await worktreeStore.deleteWorktree({ id: persisted.id, expectedRevision: persisted.revision });
+    if (previous !== session && liveSessions.includes(previous)) await attachSession(previous);
+    await closeWorktreeSession(persisted, true);
+  });
+}
+
+async function mergeWorktreeSession(requested: VersionWorktree): Promise<void> {
+  const source = await worktreeStore.getWorktree(requested.id);
+  if (!source || source.primary || !source.mergeTarget) throw new Error('병합할 워크트리와 대상 브랜치를 찾을 수 없습니다.');
+  const sourceSession = await openWorktreeSession(source);
+  assertWorktreeIdle(sourceSession);
+  const { sourceRevision, sourceSnapshot } = await withWorktreeMutation(sourceSession, async () => {
+    try {
+      await sourceSession.versions!.checkpoint();
+    } catch (error) {
+      if (versionErrorCode(error) !== 'NO_CHANGES') throw error;
+    }
+    await sourceSession.versions!.persistWorktree();
+    const sourceRevision = sourceSession.documentState.captureRevision();
+    const sourceSnapshot = await worktreeStore.getWorktree(source.id);
+    if (!sourceSnapshot) throw new Error('병합할 워크트리가 삭제되었습니다.');
+    return { sourceRevision, sourceSnapshot };
+  });
+  let target = (await worktreeStore.listWorktrees(source.repositoryId)).find((candidate) => (
+    candidate.branch === source.mergeTarget!.name && candidate.branchGeneration === source.mergeTarget!.generation
+  ));
+  if (!target) {
+    if (allChats().length >= MAX_PARALLEL_CHATS) throw new Error('열린 문서나 채팅을 닫은 뒤 다시 병합하세요.');
+    const [repository, branch] = await Promise.all([
+      worktreeStore.getRepository(source.repositoryId),
+      worktreeStore.getBranch(source.repositoryId, source.mergeTarget.name),
+    ]);
+    if (!repository || !branch || branch.generation !== source.mergeTarget.generation) {
+      throw new Error('병합 대상 브랜치가 삭제되었거나 새로 만들어졌습니다.');
+    }
+    target = await worktreeStore.createWorktree({
+      repositoryId: repository.id, documentId: versionDocumentId(createActiveDocumentId()),
+      branch: branch.name, fileName: source.fileName, sourceFormat: source.sourceFormat,
+      expectedRepositoryRevision: repository.revision, expectedBranchRevision: branch.revision,
+      mergeTarget: null,
+    });
+  }
+  const targetSession = await openWorktreeSession(target);
+  assertWorktreeIdle(targetSession);
+  await targetSession.versions!.startMerge(source.branch, {
+    onCompleted: async () => {
+      await withWorktreeMutation(sourceSession, async () => {
+        // 검토 중 원본에 새 편집이 생겼으면 병합한 시점 뒤의 변경을 지우지 않는다.
+        if (!liveSessions.includes(sourceSession) || sourceSession.documentState.captureRevision() !== sourceRevision) {
+          throw new Error('검토 중 워크트리가 변경되어 삭제하지 않았습니다.');
+        }
+        assertWorktreeIdle(sourceSession);
+        const current = await worktreeStore.getWorktree(source.id);
+        if (!current) return;
+        if (current.blobId !== sourceSnapshot.blobId || current.baseCommitId !== sourceSnapshot.baseCommitId) {
+          throw new Error('검토 중 워크트리의 저장 내용이 변경되어 삭제하지 않았습니다.');
+        }
+        await worktreeStore.deleteWorktree({ id: current.id, expectedRevision: current.revision });
+        await closeWorktreeSession(current, true);
+      });
+    },
+  });
 }
 
 type ChatPendingChange = Parameters<Parameters<ChatSession['bridge']['pendingEdits']['onChange']>[0]>[0];
@@ -1370,7 +1682,7 @@ function installChatAgent(
     documentState: session.documentState,
     editor: docAttached ? editor : session.editorHost,
     view: docAttached ? view : null,
-    isReadOnly: () => documentReadOnly,
+    isReadOnly: () => sessionReadOnly(session),
     commitVersion: async (message) => {
       await versions.checkpoint(message, { agentTurn: true });
     },
@@ -1884,7 +2196,7 @@ async function attachSessionNow(next: DocumentSession): Promise<void> {
     console.error('[sessions] 문서 화면을 다시 그리지 못했습니다:', error);
   }
   inputHandler.attachDocumentState(next.editorState);
-  inputHandler.setReadOnly(documentReadOnly);
+  inputHandler.setReadOnly(sessionReadOnly(next));
   if (next.editMode !== editMode) setEditMode(next.editMode);
   if (viewReady) {
     try {
@@ -1953,10 +2265,13 @@ async function createLiveSession(): Promise<DocumentSession | null> {
 }
 
 /** 화면에 붙어 있지 않은 세션을 닫는다. 엔진 문서와 허브 세션, 문서 점유를 모두 놓는다. */
-async function disposeSession(session: DocumentSession): Promise<void> {
+async function disposeSession(session: DocumentSession, options: { persistWorktree?: boolean } = {}): Promise<void> {
   if (session === attachedSession) return;
   const index = liveSessions.indexOf(session);
   if (index < 0) return;
+  if (session.worktree && session.worktreeWritable && options.persistWorktree !== false) {
+    await session.versions?.persistWorktree();
+  }
   liveSessions.splice(index, 1);
   for (const dispose of session.disposers.splice(0)) {
     try { dispose(); } catch (error) { console.warn('[sessions] 세션 정리 실패:', error); }
@@ -1965,6 +2280,9 @@ async function disposeSession(session: DocumentSession): Promise<void> {
   session.versions?.dispose();
   session.editorHost.dispose();
   session.versions = null;
+  worktreeOwnership.release(session);
+  deniedWorktreeSessions.delete(session);
+  refreshWorktreeSessions();
   notifyAttentionPendingChanged();
   // 파일 핸들(북마크 포함)과 문서 점유를 먼저 놓는다. 방금 닫은 문서를 곧바로 다시 열면
   // 아직 이 창이 쥔 것으로 보인다. 자동 저장 정리는 그 뒤에 한다.
@@ -2016,7 +2334,7 @@ async function switchToLiveSession(
 ): Promise<'ok' | 'cancelled' | 'failed'> {
   const current = attachedSession;
   if (current === live) return 'ok';
-  const closeCurrent = !isDocumentSessionBusy(current);
+  const closeCurrent = !isDocumentSessionBusy(current) && !isManagedWorktree(current);
   if (closeCurrent && options.saveCurrent && current.wasm.hasLoadedDocument()) {
     const left = await runSaveBeforeLeaving(
       commandServices,
@@ -2096,6 +2414,8 @@ async function confirmCloseWithBackgroundSessions(): Promise<boolean> {
   if (!confirmed) return false;
   await Promise.all(background.map((session) => session.autosave.flushNow('window-close')
     .catch(() => {})));
+  await Promise.all(liveSessions.filter((session) => session.worktreeWritable)
+    .map((session) => session.versions?.persistWorktree()));
   return true;
 }
 
@@ -2635,7 +2955,7 @@ function applySavedTextMarkSettings(): void {
 
 async function initializeDocument(
   docInfo: DocumentInfo,
-  options: { suppressDialogs?: boolean } = {},
+  options: { suppressDialogs?: boolean; fromDisk?: boolean } = {},
 ): Promise<void> {
   const msg = sbMessage();
   try {
@@ -2687,7 +3007,7 @@ async function initializeDocument(
     prepareCanvasKitLocalFonts(docInfo.fontsUsed);
     prepareLocalFontRepairs(docInfo.fontsUsed);
     await updateLoadProgress(90, '도구 모음 준비 중...');
-    toolbar?.setEnabled(!documentReadOnly && !agentEditingLease.active);
+    toolbar?.setEnabled(!sessionReadOnly() && !agentEditingLease.active);
     toolbar?.initFontDropdown(docInfo.fontsUsed);
     toolbar?.initStyleDropdown();
     await updateLoadProgress(94, '문서 검증 및 글꼴 확인 중...');
@@ -2731,7 +3051,7 @@ async function initializeDocument(
     // #2527: 자동 보정을 하지 않으므로 로드 직후 문서는 항상 clean.
     documentState.markClean('document-initialized');
     try {
-      await attachedSession.versions?.documentLoaded();
+      await attachedSession.versions?.documentLoaded({ fromDisk: options.fromDisk });
     } catch (error) {
       console.warn('[Hancom Git] Could not initialize document history', error);
       showToast({ message: '문서는 열렸지만 버전 기록을 준비하지 못했습니다.', durationMs: 4500 });
@@ -2862,7 +3182,7 @@ async function reserveDocumentOpen(
     undefined,
     verifiedGrant,
   );
-  const identity = skipRecent
+  const identity = skipRecent && !verifiedGrant
     ? { ...resolved, documentId: createActiveDocumentId(), useSourceDigest: false }
     : resolved;
   const live = liveSessionForDocument(identity.documentId)
@@ -2876,6 +3196,31 @@ async function reserveDocumentOpen(
 async function reserveSaveHandleForWrite(
   handle: FileSystemFileHandleLike,
 ): Promise<((saved: boolean) => Promise<void>) | void> {
+  if (isManagedWorktree()) {
+    // 내보낸 사본은 현재 워크트리와 다른 문서다. 성공해도 이 세션의 파일 점유를 바꾸지 않는다.
+    const source = attachedSession;
+    const slotId = source.slotId;
+    const identity = { documentId: createActiveDocumentId(), sourceDigest: null, useSourceDigest: false };
+    const reservationId = await reserveDesktopDocument(identity, handle, undefined, slotId);
+    if (reservationId === null) throw new DocumentOwnedElsewhereError();
+    try {
+      bindNativeFileHandleIdentity(handle, identity);
+      const linked = new Set((await worktreeStore.listWorktrees(source.worktree!.repositoryId)).map((entry) => String(entry.documentId)));
+      const handles = [
+        ...liveSessions.map((session) => session.wasm.currentFileHandle),
+        ...(await listRecentDocs()).filter((entry) => linked.has(entry.documentId)).map((entry) => entry.handle),
+      ];
+      for (const owned of handles) {
+        if (owned && (owned === handle || await handle.isSameEntry?.(owned))) {
+          throw new Error('연결된 문서를 덮어쓸 수 없습니다. 다른 파일 이름을 선택하세요.');
+        }
+      }
+    } catch (error) {
+      await cancelDesktopDocument(reservationId, undefined, slotId).catch(() => {});
+      throw error;
+    }
+    return async () => { await cancelDesktopDocument(reservationId, undefined, slotId); };
+  }
   const currentHandle = wasm.currentFileHandle;
   const currentIdentity = attachedSession.documentId
     ? { documentId: attachedSession.documentId, sourceDigest: wasm.documentDigest, useSourceDigest: false }
@@ -2926,7 +3271,19 @@ async function reserveSaveHandleForWrite(
 
 /** 문서 열기는 끝날 때까지 화면 세션을 바꾸지 않는다 (trackDocumentIo). */
 function loadBytes(...args: Parameters<typeof loadBytesNow>): Promise<void> {
-  return trackDocumentIo(() => loadBytesNow(...args));
+  return trackDocumentIo(async () => {
+    const target = attachedSession;
+    if (target.worktree && target.worktreeWritable && target.wasm.hasLoadedDocument()) {
+      await target.versions?.persistWorktree();
+      await target.versions?.whenIdle();
+    }
+    loadingWorktreeSessions.add(target);
+    try { await loadBytesNow(...args); }
+    finally {
+      loadingWorktreeSessions.delete(target);
+      if (target === attachedSession) setDocumentReadOnly(documentReadOnly);
+    }
+  });
 }
 
 async function loadBytesNow(
@@ -2938,6 +3295,8 @@ async function loadBytesNow(
     dataReadProgressShown?: boolean;
     skipRecent?: boolean;
     suppressDialogs?: boolean;
+    /** 이미 저장소에서 읽은 작업 바이트이면 디스크 열기 복구를 반복하지 않는다. */
+    worktreeSnapshot?: boolean;
     grant?: VerifiedDocumentGrant | null;
     preparedDocument?: PreparedWasmDocument;
     /** 복구한 draft 의 id. 새 id 대신 이 id 로 자동 저장해 복구본을 제자리에서 갱신한다. */
@@ -2960,6 +3319,55 @@ async function loadBytesNow(
     throw error;
   }
   const previousFileHandle = wasm.currentFileHandle;
+  const previousBinding = {
+    documentId: target.documentId, worktree: target.worktree,
+    writable: target.worktreeWritable, denied: deniedWorktreeSessions.has(target),
+  };
+  try {
+    if (target.worktree && target.worktree.documentId !== ownership.identity.documentId) {
+      worktreeOwnership.release(target);
+      deniedWorktreeSessions.delete(target);
+      target.worktree = null;
+      target.worktreeWritable = false;
+    }
+    target.documentId = ownership.identity.documentId;
+    if (!options.worktreeSnapshot && !options.autosaveDraftId) {
+      const persisted = await worktreeStore.findWorktreeByDocumentId(versionDocumentId(ownership.identity.documentId));
+      if (persisted?.primary && String(persisted.blobId) !== String(persisted.savedFingerprint)) {
+        // 원본 파일을 다시 열어도 닫기 전에 보관한 편집을 디스크의 이전 내용으로 덮지 않는다.
+        const writable = await worktreeOwnership.claim(target, persisted.documentId);
+        const latest = await worktreeStore.getWorktree(persisted.id);
+        const blob = latest ? await worktreeStore.getBlob(latest.blobId) : null;
+        if (!latest || !blob) throw new Error('보관된 원본 작업 공간을 읽지 못했습니다.');
+        const recent = (await listRecentDocs()).find((entry) => entry.documentId === persisted.documentId);
+        const originalBytes = options.nativeSourceBytes ?? data;
+        if (recent && recent.sourceDigest !== ownership.identity.sourceDigest) {
+          await fileHandle?.releaseUnusedSaveTarget?.().catch(() => {});
+          fileHandle = null;
+          showToast({ message: '원본 파일이 변경되어 보관된 작업을 별도로 열었습니다.', durationMs: 4500 });
+        }
+        data = blob.bytes;
+      options = { ...options, skipRecent: true, worktreeSnapshot: true, preparedDocument: undefined, nativeSourceBytes: originalBytes };
+        target.worktree = latest;
+        target.worktreeWritable = writable;
+        if (!writable) deniedWorktreeSessions.add(target);
+      }
+    }
+  } catch (error) {
+    await cancelDesktopDocument(ownership.reservationId, undefined, target.slotId).catch(() => {});
+    worktreeOwnership.release(target);
+    target.documentId = previousBinding.documentId;
+    target.worktree = previousBinding.worktree;
+    target.worktreeWritable = previousBinding.writable && previousBinding.worktree !== null
+      ? await worktreeOwnership.claim(target, previousBinding.worktree.documentId)
+      : false;
+    if (previousBinding.denied || (previousBinding.worktree && !target.worktreeWritable)) {
+      deniedWorktreeSessions.add(target);
+    } else {
+      deniedWorktreeSessions.delete(target);
+    }
+    throw error;
+  }
   if (!options.dataReadProgressShown) {
     await updateLoadProgress(0, '문서 데이터 준비 중...');
   }
@@ -2978,6 +3386,10 @@ async function loadBytesNow(
     fileHandle?.adoptSaveTarget?.();
   } catch (error) {
     await cancelDesktopDocument(ownership.reservationId, undefined, attachedSession.slotId).catch(() => {});
+    worktreeOwnership.release(target);
+    deniedWorktreeSessions.delete(target);
+    target.worktree = null;
+    target.worktreeWritable = false;
     attachedSession.documentId = null;
     eventBus.emit('document-context-changed');
     await releaseDesktopDocument(undefined, attachedSession.slotId).catch(() => {});
@@ -3040,8 +3452,10 @@ async function loadBytesNow(
   await updateLoadProgress(50, '문서 초기화 중...');
   const elapsed = performance.now() - startTime;
   console.debug(`[load] ${fileName}: ${docInfo.pageCount} pages in ${elapsed.toFixed(1)}ms`);
+  loadingWorktreeSessions.delete(target);
   await initializeDocument(docInfo, {
     suppressDialogs: options.suppressDialogs,
+    fromDisk: !options.worktreeSnapshot && !options.autosaveDraftId,
   });
 }
 
@@ -3222,6 +3636,12 @@ function createNewDocument(): Promise<boolean> {
 async function createNewDocumentNow(): Promise<boolean> {
   const msg = sbMessage();
   const target = attachedSession;
+  if (target.worktree) {
+    if (target.worktreeWritable) await target.versions?.persistWorktree();
+    worktreeOwnership.release(target);
+    target.worktree = null;
+    target.worktreeWritable = false;
+  }
   const previousFileHandle = wasm.currentFileHandle;
   const identity = { documentId: createActiveDocumentId(), sourceDigest: null };
   const slotId = attachedSession.slotId;
@@ -3272,7 +3692,8 @@ async function canReplaceCurrentDocument(skipUnsavedGuard?: boolean): Promise<bo
 
 /** 에이전트가 일하는 중이면 지금 문서를 뒤에 두고 새 세션에서 연다. */
 function shouldOpenInNewSession(): boolean {
-  return attachedSession.wasm.hasLoadedDocument() && isDocumentSessionBusy(attachedSession);
+  return attachedSession.wasm.hasLoadedDocument()
+    && (isDocumentSessionBusy(attachedSession) || isManagedWorktree());
 }
 
 function openDocumentBytes(data: OpenDocumentBytesEvent): Promise<boolean> {
@@ -3329,19 +3750,29 @@ async function openDocumentBytesInAttachedSessionNow(data: OpenDocumentBytesEven
     if (isPortableHistoryFileName(data.fileName) || isPortableHistoryBytes(data.bytes)) {
       const bundle = openPortableHistoryBundle(data.bytes);
       const store = new VersionGraphStore();
-      const retainPortableHistoryHandle = Boolean(
+      let retainPortableHistoryHandle = Boolean(
         data.fileHandle
         && !isLegacyPortableHistoryFolderHandle(data.fileHandle)
         && isPortableHistoryFileName(data.fileName),
       );
-      const openFileName = retainPortableHistoryHandle
-        ? data.fileName
-        : bundle.documentFileName;
       let importedRepository = false;
       let preparedDocument: PreparedWasmDocument | null = null;
       try {
         const imported = await store.importRepositorySnapshot(bundle.snapshot);
         importedRepository = imported.imported;
+        const localWorktrees = await store.listWorktrees(bundle.snapshot.repository.id);
+        const localWorktree = localWorktrees.find((entry) => entry.branch === bundle.activeBranch);
+        if (localWorktree && localWorktree.blobId !== bundle.currentBlobId) {
+          throw new Error('이 브랜치에 보관된 작업 내용이 있습니다. 워크트리에서 기존 작업을 먼저 여세요.');
+        }
+        if (localWorktrees.length > 0 && !localWorktree) {
+          throw new Error('이 버전 기록은 이미 열려 있습니다. 워크트리에서 해당 브랜치를 여세요.');
+        }
+        if (localWorktree && !localWorktree.primary) retainPortableHistoryHandle = false;
+        const openFileName = retainPortableHistoryHandle ? data.fileName : bundle.documentFileName;
+        const openDocumentId = localWorktree?.documentId ?? bundle.snapshot.repository.documentId;
+        // 최초 작업 공간이 만들어지기 전에 아카이브가 선택한 브랜치를 지정한다.
+        persistActiveBranch(openDocumentId, bundle.activeBranch);
         preparedDocument = wasm.prepareDocument(
           bundle.currentDocumentBytes,
           openFileName,
@@ -3355,13 +3786,13 @@ async function openDocumentBytesInAttachedSessionNow(data: OpenDocumentBytesEven
           {
             grant: {
               kind: 'verified',
-              documentId: bundle.snapshot.repository.documentId,
+              documentId: openDocumentId,
             },
+            skipRecent: Boolean(localWorktree && !localWorktree.primary),
             preparedDocument,
             nativeSourceBytes: data.bytes,
           },
         );
-        persistActiveBranch(bundle.snapshot.repository.documentId, bundle.activeBranch);
         await attachedSession.versions?.refresh().catch((error) => {
           console.warn('[versioning] 가져온 기록 새로고침 실패:', error);
         });
