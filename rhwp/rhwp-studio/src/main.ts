@@ -1204,7 +1204,7 @@ async function initialize(): Promise<void> {
         isReadOnly: () => documentReadOnly,
         commitVersion: async (message) => {
           if (!versionControllerRef) throw new Error('Version history is not ready yet.');
-          await versionControllerRef.checkpoint(message);
+          await versionControllerRef.checkpoint(message, { agentTurn: true });
         },
       });
       agentBridgeRef = agentBridge;
