@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
+  addCompactionMarker,
+  addHandoffMarker,
   archivePendingUserQuestion,
   clearPendingUserQuestion,
   createPendingUserQuestionDraftSnapshot,
@@ -15,8 +17,11 @@ import {
   explorerGroupIsCurrent,
   listThreads,
   listThreadsByDocument,
+  forgetProviderSession,
   pendingUserQuestionMatchesInteraction,
+  providerStartContext,
   recordDocumentOpened,
+  rememberProviderSession,
   serializeThreadMessagesForProviderHistory,
   setThreadTitle,
   subscribeThreadChanges,
@@ -814,4 +819,116 @@ test('same-millisecond thread updates keep the later state newer', (t) => {
   const second = getThread(thread.id)!;
   assert.ok(second.updatedAt > first.updatedAt);
   assert.equal(second.title, '바뀐 제목');
+});
+
+// ─── 프로바이더 넘겨받기 · 압축 ─────────────────────────
+
+function mixedProviderThread() {
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  thread.messages.push(
+    { role: 'user', text: '표를 정리해줘', agent: 'claude' },
+    { role: 'assistant', text: '표를 정리했습니다.', agent: 'claude' },
+  );
+  addHandoffMarker(thread, 'codex');
+  thread.messages.push(
+    { role: 'user', text: '제목을 다듬어줘', agent: 'codex' },
+    { role: 'system', text: 'MCP 서버 연결 실패: timeout', agent: 'codex' },
+    { role: 'assistant', text: '제목을 다듬었습니다.', agent: 'codex' },
+  );
+  return thread;
+}
+
+test('a resumed provider receives only the messages after its own last message', () => {
+  const thread = mixedProviderThread();
+  rememberProviderSession(thread, 'claude', 'claude-native-1', 10);
+  const context = providerStartContext(thread, 'claude');
+  assert.equal(context.providerSessionId, 'claude-native-1');
+  assert.deepEqual(context.handoffHistory, [
+    { role: 'user', text: '제목을 다듬어줘' },
+    { role: 'assistant', text: '제목을 다듬었습니다.' },
+  ]);
+  // 재개에 실패하면 허브가 쓰는 전체 대화 — 구분선과 시스템 줄은 프로바이더에게 가지 않는다.
+  assert.deepEqual(context.history.map((entry) => entry.text),
+    ['표를 정리해줘', '표를 정리했습니다.', '제목을 다듬어줘', '제목을 다듬었습니다.']);
+});
+
+test('a provider without a cursor, or whose messages are gone, gets the full transcript only', () => {
+  const thread = mixedProviderThread();
+  assert.deepEqual(Object.keys(providerStartContext(thread, 'codex')), ['history']);
+  // 커서는 있지만 이 대화에 Pi 의 메시지가 없다 — 다른 채팅의 세션일 수 있으므로 보내지 않는다.
+  rememberProviderSession(thread, 'pi', 'pi-native');
+  assert.deepEqual(Object.keys(providerStartContext(thread, 'pi')), ['history']);
+  rememberProviderSession(thread, 'codex', 'codex-native');
+  assert.deepEqual(providerStartContext(thread, 'codex').handoffHistory, []);
+  forgetProviderSession(thread, 'codex');
+  assert.equal(providerStartContext(thread, 'codex').providerSessionId, undefined);
+});
+
+test('undelivered messages are left out of the start context so the queued send is not duplicated', () => {
+  const thread = mixedProviderThread();
+  rememberProviderSession(thread, 'codex', 'codex-native');
+  const queued = { role: 'user' as const, text: '다음 쪽도', agent: 'codex' as const };
+  thread.messages.push(queued);
+  const context = providerStartContext(thread, 'codex', new Set([queued]));
+  assert.deepEqual(context.handoffHistory, []);
+  assert.equal(context.history.at(-1)?.text, '제목을 다듬었습니다.');
+});
+
+test('handoff markers appear only when the next message goes to a different provider', () => {
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  assert.equal(addHandoffMarker(thread, 'codex'), null, '빈 채팅에는 남기지 않는다');
+  thread.messages.push({ role: 'user', text: 'a', agent: 'claude' }, { role: 'system', text: '알림', agent: 'codex' });
+  assert.equal(addHandoffMarker(thread, 'claude'), null, '시스템 줄은 프로바이더 참여로 치지 않는다');
+  const marker = addHandoffMarker(thread, 'codex');
+  assert.deepEqual(marker && { from: marker.marker === 'handoff' && marker.from, to: marker.marker === 'handoff' && marker.to },
+    { from: 'claude', to: 'codex' });
+});
+
+test('compaction markers are idempotent by compaction id', () => {
+  const thread = mixedProviderThread();
+  const first = addCompactionMarker(thread, { compactionId: 'c-1', trigger: 'auto', beforeTokens: 182_000, afterTokens: 41_000 });
+  assert.ok(first);
+  assert.equal(addCompactionMarker(thread, { compactionId: 'c-1', trigger: 'auto' }), null);
+  assert.ok(addCompactionMarker(thread, { compactionId: 'c-2', trigger: 'manual' }));
+  assert.equal(thread.messages.filter((message) => message.kind === 'marker' && message.marker === 'compaction').length, 2);
+});
+
+test('markers, provider cursors, and context usage survive persistence and the message cap', () => {
+  mem.clear();
+  const thread = mixedProviderThread();
+  for (let index = 0; index < 195; index += 1) thread.messages.push({ role: 'user', text: `m-${index}`, agent: 'codex' });
+  addCompactionMarker(thread, { compactionId: 'c-9', trigger: 'manual', beforeTokens: 150_000, afterTokens: 30_000 });
+  rememberProviderSession(thread, 'claude', 'claude-native', 5);
+  thread.contextUsage = { agent: 'codex', usedTokens: 30_000, maxTokens: 258_000, updatedAt: 6 };
+  upsertThread(thread);
+  const restored = getThread(thread.id)!;
+  assert.equal(restored.messages.length, 200);
+  assert.deepEqual(restored.messages.at(-1), {
+    role: 'system', kind: 'marker', marker: 'compaction', compactionId: 'c-9', trigger: 'manual',
+    text: '', beforeTokens: 150_000, afterTokens: 30_000,
+  });
+  assert.deepEqual(restored.providerSessions, { claude: { sessionId: 'claude-native', updatedAt: 5 } });
+  assert.deepEqual(restored.contextUsage, { agent: 'codex', usedTokens: 30_000, maxTokens: 258_000, updatedAt: 6 });
+  // 앞쪽 Claude 메시지는 잘려 나갔다 — 커서가 남아 있어도 전체 대화로 시작한다.
+  assert.equal(providerStartContext(restored, 'claude').providerSessionId, undefined);
+});
+
+test('malformed stored markers and cursors are dropped instead of crashing the thread', () => {
+  mem.clear();
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
+    id: 'stored-markers', title: 't', titleRequested: true, createdAt: 1, updatedAt: 2,
+    agent: 'claude', model: 'sonnet', effort: 'high',
+    providerSessions: { claude: { sessionId: '' }, codex: { sessionId: 'ok', updatedAt: 3 }, nope: { sessionId: 'x' } },
+    contextUsage: { agent: 'claude', usedTokens: -1 },
+    messages: [
+      { role: 'user', text: 'hi', agent: 'claude' },
+      { role: 'system', kind: 'marker', marker: 'handoff', from: 'claude', to: 'opencode', text: '' },
+      { role: 'assistant', kind: 'marker', marker: 'compaction', compactionId: 'x', trigger: 'auto', text: '' },
+      { role: 'system', kind: 'marker', marker: 'handoff', from: 'claude', to: 'codex', text: '' },
+    ],
+  }]));
+  const restored = getThread('stored-markers')!;
+  assert.deepEqual(restored.messages.map((message) => message.kind ?? message.role), ['user', 'marker']);
+  assert.deepEqual(restored.providerSessions, { codex: { sessionId: 'ok', updatedAt: 3 } });
+  assert.equal(restored.contextUsage, undefined);
 });

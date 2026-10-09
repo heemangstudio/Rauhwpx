@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import spawn from 'cross-spawn';
 import { WebSocketServer } from 'ws';
 import {
+  canResumeClaudeSession,
   createClaudeSession,
   flushClaudeCredentialMirrors,
   prepareClaudeHome,
@@ -18,7 +19,8 @@ import {
   flushCodexCredentialMirror,
   prepareCodexHome,
 } from './agents/codex.mjs';
-import { createPiSession } from './agents/pi.mjs';
+import { canResumePiSession, createPiSession } from './agents/pi.mjs';
+import { canResumeCodexThread } from './agents/codex-app-server.mjs';
 import { generateChatTitle } from './agents/title.mjs';
 import {
   CHECKPOINT_TITLE_OVERALL_TIMEOUT_MS,
@@ -630,6 +632,16 @@ const SESSION_FACTORIES = {
   claude: createClaudeSession,
   codex: createCodexSession,
   pi: createPiSession,
+};
+
+/**
+ * 네이티브 재개 커서가 공급자 저장소에 아직 있는지 디스크로 확인한다 — 백엔드를 만들기 전에
+ * 대화 기록을 delta 로 줄지 전체로 줄지 정해야 해서 각 백엔드의 canResume 과 같은 함수를 쓴다.
+ */
+const SESSION_RESUME_PROBES = {
+  claude: canResumeClaudeSession,
+  codex: canResumeCodexThread,
+  pi: canResumePiSession,
 };
 
 function unknownAgentError(agent) {
@@ -1693,9 +1705,31 @@ function sessionInfo(record) {
       turnId: activeSession.turnId,
       activeTemplateId: activeSession.activeTemplateId,
       pendingUserQuestion: pendingUserQuestionSnapshot(record),
+      resumed: activeSession.resumed === true,
+      compaction: compactionSupportOf(activeSession),
+      // 다시 붙은 Studio 가 "맥락 압축 중…" 을 이어 보이거나 지운다.
+      compactionInFlight: compactionInFlightOf(activeSession),
+      contextUsage: activeSession.contextUsage ? { ...activeSession.contextUsage } : null,
       ...activeSession.planning.snapshot(),
     }
     : null;
+}
+
+/** 수락했지만 공급자 턴이 아직 시작되지 않은 수동 압축도 진행 중으로 본다. */
+function compactionInFlightOf(activeSession) {
+  if (activeSession.compaction) return { ...activeSession.compaction };
+  const manual = activeSession.manualCompaction;
+  if (!manual || manual.settled) return null;
+  return {
+    compactionId: manual.compactionId,
+    trigger: 'manual',
+    ...(manual.beforeTokens !== undefined ? { beforeTokens: manual.beforeTokens } : {}),
+  };
+}
+
+function compactionSupportOf(activeSession) {
+  const support = activeSession?.backend?.compactionSupport;
+  return support === 'manual' || support === 'auto-only' ? support : 'none';
 }
 
 function artifactDownloadDescriptor(record, artifactId, artifact) {
@@ -2177,6 +2211,110 @@ function createTemplateJob(record, activeSession, binding) {
 
 const TRACED_PROVIDER_EVENTS = new Set(['turn-start', 'turn-end', 'tool-call', 'tool-result', 'task-start', 'task-end']);
 
+const FAILED_STOP_REASONS = new Set(['interrupted', 'failed', 'exited', 'error', 'cancelled']);
+
+/** 공급자 세션이 이 턴을 정상으로 마쳤는가 — 커서 저장과 부트스트랩 기록 비우기의 기준. */
+function providerTurnSucceeded(evt) {
+  const reason = typeof evt?.stopReason === 'string' ? evt.stopReason : '';
+  return !evt?.errorMessage && reason !== '' && !FAILED_STOP_REASONS.has(reason) && !reason.startsWith('error');
+}
+
+function compactionEventBase(agent, compaction) {
+  return {
+    type: 'compaction',
+    agent,
+    compactionId: compaction.compactionId,
+    trigger: compaction.trigger,
+    ...(compaction.beforeTokens !== undefined ? { beforeTokens: compaction.beforeTokens } : {}),
+  };
+}
+
+/**
+ * 공급자 압축 이벤트를 Studio 계약으로 고른다. 수동 압축 턴의 이벤트는 허브가 정한 id/trigger 로
+ * 바꾸고 started 와 종료를 각각 한 번만 내보낸다. 자동 압축은 진행 상태만 기록하고 그대로 흘린다.
+ * @returns {object[]}
+ */
+function routeCompactionEvent(activeSession, evt) {
+  const manual = activeSession.manualCompaction;
+  if (manual) {
+    if (manual.settled) return [];
+    const event = { ...evt, compactionId: manual.compactionId, trigger: 'manual' };
+    if (event.beforeTokens === undefined && manual.beforeTokens !== undefined) event.beforeTokens = manual.beforeTokens;
+    const out = [];
+    if (event.phase === 'started') {
+      if (manual.started) return [];
+    } else if (!manual.started) {
+      out.push({ ...compactionEventBase(evt.agent, { ...manual, trigger: 'manual' }), phase: 'started' });
+    }
+    if (event.phase === 'started' || !manual.started) {
+      manual.started = true;
+      activeSession.compaction = {
+        compactionId: manual.compactionId,
+        trigger: 'manual',
+        ...(event.beforeTokens !== undefined ? { beforeTokens: event.beforeTokens } : {}),
+      };
+    }
+    if (event.phase !== 'started') {
+      manual.settled = true;
+      activeSession.compaction = null;
+    }
+    out.push(event);
+    return out;
+  }
+  if (evt.phase === 'started') {
+    activeSession.compaction = {
+      compactionId: evt.compactionId,
+      trigger: evt.trigger === 'manual' ? 'manual' : 'auto',
+      ...(evt.beforeTokens !== undefined ? { beforeTokens: evt.beforeTokens } : {}),
+    };
+  } else if (activeSession.compaction?.compactionId === evt.compactionId) {
+    activeSession.compaction = null;
+  }
+  return [evt];
+}
+
+/**
+ * 턴이 끝났는데 끝나지 않은 압축이 있으면 허브가 종료를 만든다: 수동 압축은 started 와 종료를
+ * 정확히 한 번씩 보장하고, 공급자가 완료 신호를 안 줬어도 턴이 성공했으면 completed 로 닫는다.
+ * @returns {object[]}
+ */
+function settleCompactionAtTurnEnd(activeSession, succeeded, evt) {
+  const out = [];
+  const message = typeof evt?.errorMessage === 'string' && evt.errorMessage
+    ? evt.errorMessage.slice(0, 500)
+    : evt?.stopReason === 'interrupted' ? '맥락 압축이 중단되었습니다.' : '맥락 압축에 실패했습니다.';
+  const terminal = succeeded ? { phase: 'completed' } : { phase: 'failed', message };
+  const manual = activeSession.manualCompaction;
+  activeSession.manualCompaction = null;
+  if (manual && !manual.settled) {
+    const base = compactionEventBase(activeSession.agent, { ...manual, trigger: 'manual' });
+    if (!manual.started) out.push({ ...base, phase: 'started' });
+    out.push({ ...base, ...terminal });
+  } else if (activeSession.compaction) {
+    out.push({ ...compactionEventBase(activeSession.agent, activeSession.compaction), ...terminal });
+  }
+  activeSession.compaction = null;
+  return out;
+}
+
+function sendCompactionEvents(record, events, turnId) {
+  const activeSession = record.agentSession;
+  for (const event of events) {
+    // 압축 전 사용량을 재접속 스냅샷과 다음 압축의 beforeTokens 로 다시 쓰지 않는다.
+    // Claude 의 post_tokens 는 시스템 프롬프트·도구 정의를 빼고 세므로 다음 호출을 기다린다.
+    if (event.phase === 'completed' && activeSession?.contextUsage) {
+      activeSession.contextUsage = activeSession.agent !== 'claude' && event.afterTokens !== undefined
+        ? { ...activeSession.contextUsage, usedTokens: event.afterTokens }
+        : null;
+    }
+    sendJson(record.studioSocket, {
+      v: 1,
+      type: 'agent-event',
+      event: turnId ? { ...event, turnId } : event,
+    });
+  }
+}
+
 function makeBackendEventHandler(record, generation) {
   return (evt) => {
     const activeSession = record.agentSession;
@@ -2231,6 +2369,16 @@ function makeBackendEventHandler(record, generation) {
       return;
     }
     if (evt.type === 'session-info' && evt.sessionId) activeSession.sessionId = evt.sessionId;
+    if (evt.type === 'context-usage') {
+      activeSession.contextUsage = {
+        usedTokens: evt.usedTokens,
+        ...(evt.maxTokens ? { maxTokens: evt.maxTokens } : {}),
+      };
+    }
+    if (evt.type === 'compaction') {
+      sendCompactionEvents(record, routeCompactionEvent(activeSession, evt), activeSession.turnId);
+      return;
+    }
     if (evt.type === 'usage') {
       usageStore.record({
         agent: activeSession.agent, model: evt.model, costUsd: evt.costUsd, ...(evt.usage ?? {}),
@@ -2251,11 +2399,37 @@ function makeBackendEventHandler(record, generation) {
       : evt;
     if (evt.type === 'turn-start') record.missedTurnEnd = null;
     if (evt.type === 'turn-end') {
+      const succeeded = providerTurnSucceeded(evt);
+      const compactionTurn = Boolean(activeSession.manualCompaction);
+      sendCompactionEvents(record, settleCompactionAtTurnEnd(activeSession, succeeded, evt), providerTurnId);
+      if (succeeded) {
+        activeSession.nativeTurnSucceeded = true;
+        // 공급자가 기록을 받아 저장했다 — 이제야 부트스트랩 기록을 비운다.
+        if (!compactionTurn) {
+          activeSession.bootstrapHistory = [];
+          activeSession.fallbackHistory = [];
+        }
+        const providerSessionId = activeSession.backend.getSessionId?.();
+        if (typeof providerSessionId === 'string' && providerSessionId) studioEvent.providerSessionId = providerSessionId;
+      }
+      if (evt.resumeLost) {
+        studioEvent.resumeLost = true;
+        activeSession.resumed = false;
+        // 이 턴이 실패했다면 다음 턴은 전체 기록으로 새 세션을 연다.
+        if (!succeeded) activeSession.bootstrapHistory = activeSession.fallbackHistory;
+      }
       settleAgentTurn(record, activeSession, evt);
       // 서브에이전트 브라우저는 턴과 함께 끝난다 — 메인 브라우저만 다음 턴까지 산다.
       record.browserbaseSession.cleanupExtras('turn ended');
     }
     const delivered = sendJson(record.studioSocket, { v: 1, type: 'agent-event', event: studioEvent });
+    if (evt.type === 'turn-start' && activeSession.manualCompaction && !activeSession.manualCompaction.started) {
+      // 수동 압축의 started 는 공급자 턴이 실제로 시작될 때 한 번 낸다.
+      sendCompactionEvents(record, routeCompactionEvent(activeSession, {
+        type: 'compaction', agent: activeSession.agent, compactionId: activeSession.manualCompaction.compactionId,
+        phase: 'started', trigger: 'manual',
+      }), providerTurnId);
+    }
     if (evt.type === 'turn-end' && !delivered) record.missedTurnEnd = studioEvent;
     if (evt.type === 'turn-end') {
       record.userQuestionResponseReceipts.clear();
@@ -2307,6 +2481,7 @@ function disposeSession(record) {
     browserbaseExit = Promise.resolve(false);
   }
   if (wasRunning) {
+    sendCompactionEvents(record, settleCompactionAtTurnEnd(activeSession, false, { stopReason: 'interrupted' }), disposedTurnId);
     const evt = {
       type: 'turn-end',
       agent,
@@ -2380,9 +2555,11 @@ function normalizeChatHistory(value) {
   return history;
 }
 
-function addReopenedChatHistory(activeSession, prompt) {
-  const history = activeSession.bootstrapHistory;
-  activeSession.bootstrapHistory = [];
+/**
+ * 공급자가 아직 보지 못한 대화를 프롬프트 앞에 붙인다. 기록은 여기서 비우지 않는다 —
+ * 턴이 성공적으로 끝났을 때만 비운다 (실패한 첫 턴 뒤에도 다음 턴이 같은 기록을 싣는다).
+ */
+function addReopenedChatHistory(history, prompt) {
   if (!Array.isArray(history) || history.length === 0) return prompt;
   const block = [
     '<reopened_chat_history trust="conversation-transcript">',
@@ -2515,17 +2692,22 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       if (activeSession.planning.phase === 'awaiting-approval') {
         prompt = `The current plan remains open for review. Answer questions and research normally. If this message requests concrete changes to the plan, revise it directly with present_implementation_plan; do not ask the user to request a draft again. Never treat discussion as approval to edit the document.\n\nCurrent plan:\n${JSON.stringify(activeSession.planning.latestPlan.plan)}\n\n${prompt}`;
       }
-      activeSession.backend.sendUserMessage(addAgentInstructionsContext(addReopenedChatHistory(
+      const turnPrompt = addActiveDocumentContext(
         activeSession,
-        addActiveDocumentContext(
+        addTemplateContext(
+          record,
           activeSession,
-          addTemplateContext(
-            record,
-            activeSession,
-            addEditReportContext(record, activeSession, addReferenceContext(activeSession, msg.text, prompt, messageAttachments)),
-          ),
+          addEditReportContext(record, activeSession, addReferenceContext(activeSession, msg.text, prompt, messageAttachments)),
         ),
-      )));
+      );
+      // 재개한 세션이 공급자 저장소에서 사라졌으면 백엔드가 이 글로 바꿔 새 세션을 연다.
+      const resumeFallbackText = activeSession.resumed && !activeSession.nativeTurnSucceeded
+        ? addAgentInstructionsContext(addReopenedChatHistory(activeSession.fallbackHistory, turnPrompt))
+        : undefined;
+      activeSession.backend.sendUserMessage(
+        addAgentInstructionsContext(addReopenedChatHistory(activeSession.bootstrapHistory, turnPrompt)),
+        resumeFallbackText ? { resumeFallbackText } : undefined,
+      );
     })
     .catch((e) => {
       // A stale rejection belongs to the settled turn. It must not idle or
@@ -2596,6 +2778,62 @@ async function dispatchStagedUserMessage(record, sock, msg, activeSession) {
   dispatchUserMessage(record, sock, msg, activeSession, readyFiles);
 }
 
+/**
+ * 수동 맥락 압축을 공급자 턴으로 연다. 보통 턴과 같은 turnId/status 잠금을 쓰므로
+ * turn-start … turn-end 사이의 다른 요청은 기존 AGENT_BUSY 경로가 막는다.
+ */
+function startManualCompaction(record, sock, msg) {
+  const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+  const reject = (code, message) => sendJson(sock, { v: 1, type: 'chat-error', requestId, code, message });
+  const activeSession = record.agentSession;
+  if (!activeSession || (typeof msg.threadId === 'string' && msg.threadId !== activeSession.threadId)) {
+    reject('NO_SESSION', 'No agent session for this chat.');
+    return;
+  }
+  if (activeSession.status === 'running'
+    || activeSession.pendingTransitions > 0
+    || record.pendingReferenceMessage
+    || record.pendingUserQuestion
+    || activeSession.manualCompaction
+    || activeSession.compaction) {
+    reject('AGENT_BUSY', 'A turn or compaction is already in progress.');
+    return;
+  }
+  if (compactionSupportOf(activeSession) !== 'manual' || typeof activeSession.backend.compact !== 'function') {
+    reject('COMPACTION_UNSUPPORTED', 'This provider does not support manual compaction.');
+    return;
+  }
+  if (!activeSession.resumed && !activeSession.nativeTurnSucceeded) {
+    reject('NOTHING_TO_COMPACT', 'This conversation has no provider context to compact yet.');
+    return;
+  }
+  // beginAgentTurn 은 쓰지 않는다 — 압축 턴이 플랜 실행 턴으로 잡히면 안 된다.
+  record.userQuestionResponseReceipts.clear();
+  activeSession.turnId = crypto.randomUUID();
+  activeSession.providerTurnStarted = false;
+  activeSession.status = 'running';
+  const compactionId = crypto.randomUUID();
+  const beforeTokens = activeSession.contextUsage?.usedTokens;
+  activeSession.manualCompaction = {
+    compactionId,
+    ...(Number.isFinite(beforeTokens) ? { beforeTokens } : {}),
+    started: false,
+    settled: false,
+  };
+  sendJson(sock, { v: 1, type: 'chat-compact-accepted', requestId, compactionId });
+  try {
+    activeSession.backend.compact();
+  } catch (error) {
+    // 수락한 뒤의 실패는 압축 failed + turn-end 로 닫는다 (보통 턴 경로와 같은 정리).
+    activeSession.emitBackendEvent({
+      type: 'turn-end',
+      agent: activeSession.agent,
+      stopReason: 'failed',
+      errorMessage: describeHubError(error, '맥락 압축을 시작하지 못했습니다.'),
+    });
+  }
+}
+
 function emitWorkflowState(record, extra = {}) {
   const activeSession = record.agentSession;
   if (!activeSession) return;
@@ -2615,6 +2853,7 @@ async function startSession(
   requestedHistory,
   force = false,
   requestedServiceTier,
+  { providerSessionId = null, handoffHistory = null } = {},
 ) {
   if (record.processCleanupUncertain === true) throw agentProcessCleanupUncertain();
   await ensureBootWork();
@@ -2646,6 +2885,15 @@ async function startSession(
     && currentSession.documentId === documentId
   ) {
     currentSession.documentName = documentName;
+    // 같은 백엔드를 그대로 쓴다. 아직 성공한 턴이 없으면 최신 기록으로 부트스트랩을 다시 맞춘다
+    // (재연결·재시도 사이에 Studio 쪽 대화가 늘었을 수 있다).
+    if (!currentSession.nativeTurnSucceeded && currentSession.status !== 'running' && Array.isArray(requestedHistory)) {
+      const fullHistory = normalizeChatHistory(requestedHistory);
+      currentSession.fallbackHistory = fullHistory;
+      currentSession.bootstrapHistory = currentSession.resumed && Array.isArray(handoffHistory)
+        ? normalizeChatHistory(handoffHistory)
+        : fullHistory;
+    }
     return currentSession;
   }
   // A settings change must never interrupt a turn or its pending question.
@@ -2713,9 +2961,24 @@ async function startSession(
     piRoot: piManager.rootDir,
     openRouterApiKey: agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
     reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
+    ...(agent === 'pi' && piModelConfig(model)?.contextLength ? { contextWindow: piModelConfig(model).contextLength } : {}),
   };
   const createBackend = SESSION_FACTORIES[agent];
   if (!createBackend) throw unknownAgentError(agent);
+  // 네이티브 우선: 커서가 저장소에 남아 있으면 그 세션을 이어 받고 못 본 메시지(delta)만 준다.
+  // 없으면 전체 기록으로 새로 시작한다. 전체 기록은 턴 시점 재개 실패에 대비해 늘 들고 있다.
+  const fullHistory = normalizeChatHistory(requestedHistory);
+  let resumeSessionId = null;
+  if (typeof providerSessionId === 'string' && providerSessionId) {
+    const probe = SESSION_RESUME_PROBES[agent];
+    const exists = await Promise.resolve(probe?.(opts, providerSessionId)).catch((error) => {
+      log(`resume probe failed (${agent}): ${error?.message ?? error}`);
+      return false;
+    });
+    if (exists === true) resumeSessionId = providerSessionId;
+  }
+  if (resumeSessionId) opts.resumeSessionId = resumeSessionId;
+  const resumed = Boolean(resumeSessionId);
   const backend = createBackend(opts);
   record.agentSession = {
     agent,
@@ -2743,7 +3006,14 @@ async function startSession(
     planExecutionTurnId: continuing ? currentSession.planExecutionTurnId : null,
     planExecutionTurnSucceeded: continuing ? currentSession.planExecutionTurnSucceeded : false,
     planReviewTurnId: continuing && currentSession.planning.workflow === workflow ? currentSession.planReviewTurnId : null,
-    bootstrapHistory: normalizeChatHistory(requestedHistory),
+    resumed,
+    nativeTurnSucceeded: false,
+    bootstrapHistory: resumed ? normalizeChatHistory(handoffHistory) : fullHistory,
+    fallbackHistory: fullHistory,
+    contextUsage: resumed && continuing && currentSession.agent === agent ? currentSession.contextUsage ?? null : null,
+    compaction: null,
+    manualCompaction: null,
+    emitBackendEvent: opts.onEvent,
     planning,
     workflowTransition: Promise.resolve(),
     pendingTransitions: 0,
@@ -3116,11 +3386,19 @@ async function handleStudioMessage(record, sock, msg) {
           msg.history,
           Boolean(msg.force),
           msg.serviceTier,
+          {
+            providerSessionId: typeof msg.providerSessionId === 'string' ? msg.providerSessionId : null,
+            handoffHistory: Array.isArray(msg.handoffHistory) ? msg.handoffHistory : null,
+          },
         );
+        const resumedCursor = s.resumed === true || (typeof msg.providerSessionId === 'string'
+          && msg.providerSessionId !== '' && msg.providerSessionId === s.backend.getSessionId?.());
         sendJson(sock, {
           v: 1,
           type: 'chat-started',
           requestId,
+          resumed: resumedCursor,
+          compaction: compactionSupportOf(s),
           agent: s.agent,
           model: s.model,
           effort: s.effort,
@@ -4118,6 +4396,12 @@ async function handleStudioMessage(record, sock, msg) {
         } catch (e) {
           log(`interrupt error: ${e?.message ?? e}`);
         }
+        // 백엔드가 turn-end 를 내지 못한 경우(시작 대기 중 등)에도 압축은 한 번 실패로 닫힌다.
+        sendCompactionEvents(
+          record,
+          settleCompactionAtTurnEnd(interruptedSession, false, { stopReason: 'interrupted' }),
+          interruptedTurnId,
+        );
         interruptedSession.status = 'idle';
         interruptedSession.turnId = null;
         interruptedSession.providerTurnStarted = false;
@@ -4128,6 +4412,10 @@ async function handleStudioMessage(record, sock, msg) {
         }
         record.userQuestionResponseReceipts.clear();
       }
+      return;
+    }
+    case 'chat-compact': {
+      startManualCompaction(record, sock, msg);
       return;
     }
     case 'chat-stop': {

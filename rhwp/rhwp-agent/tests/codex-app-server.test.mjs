@@ -151,6 +151,7 @@ function harness(t, {
   responder = appServerResponder(),
   requestUserInput = async () => ({ status: 'cancelled', reason: 'user-stop' }),
   terminateProcess = (process) => process.kill('SIGTERM'),
+  extraOpts = {},
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-codex-app-server-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -171,6 +172,7 @@ function harness(t, {
     agentRole: 'chat',
     requestUserInput,
     onEvent: (event) => events.push(event),
+    ...extraOpts,
   };
   const session = createCodexSession(opts, {
     spawnProcess(command, argv, options) {
@@ -1128,4 +1130,104 @@ test('Stop aborts a blocked question and sends turn/interrupt to Codex', async (
   );
   assert.equal(h.events.filter((event) => event.type === 'turn-end').at(-1).stopReason, 'interrupted');
   await h.session.dispose();
+});
+
+// 아래 알림 모양은 실제 codex-cli 0.162.0 app-server 캡처(thread/compact/start 턴)를 다듬어 옮겼다.
+function tokenUsage(threadId, turnId, lastTotal) {
+  const breakdown = (totalTokens) => ({
+    totalTokens, inputTokens: totalTokens, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0,
+  });
+  return {
+    method: 'thread/tokenUsage/updated',
+    params: { threadId, turnId, tokenUsage: { total: breakdown(17780), last: breakdown(lastTotal), modelContextWindow: 258400 } },
+  };
+}
+
+test('manual compaction runs thread/compact/start as a turn and maps contextCompaction items', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    responder(frame, process) {
+      if (frame.method === 'turn/start') {
+        const { threadId } = frame.params;
+        process.send({ method: 'turn/started', params: { threadId, turn: { id: 'turn-1', status: 'inProgress' } } });
+        process.send({ id: frame.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });
+        process.send(tokenUsage(threadId, 'turn-1', 17780));
+        // 이 응답 도중의 자동 압축은 구식 thread/compacted 로만 알린다.
+        process.send({ method: 'thread/compacted', params: { threadId, turnId: 'turn-1' } });
+        process.send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-1', status: 'completed' } } });
+        return;
+      }
+      if (frame.method === 'thread/compact/start') {
+        const { threadId } = frame.params;
+        process.send({ id: frame.id, result: {} });
+        process.send({ method: 'turn/started', params: { threadId, turn: { id: 'turn-compact', status: 'inProgress' } } });
+        // 자식 스레드의 압축은 루트 대화의 압축이 아니다.
+        process.send({ method: 'item/started', params: { threadId: 'child-thread', turnId: 'turn-compact', item: { type: 'contextCompaction', id: 'child-item' } } });
+        process.send({ method: 'item/started', params: { threadId, turnId: 'turn-compact', item: { type: 'contextCompaction', id: 'item-1' } } });
+        process.send(tokenUsage(threadId, 'turn-compact', 11504));
+        process.send({ method: 'item/completed', params: { threadId, turnId: 'turn-compact', item: { type: 'contextCompaction', id: 'item-1' } } });
+        process.send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-compact', status: 'completed' } } });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+  assert.equal(h.session.compactionSupport, 'manual');
+  h.session.sendUserMessage('Remember MANGO-77');
+  await settle(24);
+  assert.deepEqual(h.events.filter((event) => event.type === 'compaction').map(({ phase, trigger }) => [phase, trigger]), [['completed', 'auto']]);
+
+  h.events.length = 0;
+  h.session.compact();
+  await settle(32);
+  const compactRequest = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/compact/start');
+  assert.deepEqual(compactRequest.params, { threadId: 'thread-native' });
+  assert.equal(h.spawns.at(-1).process.frames.some((frame) => frame.method === 'turn/start'), false);
+  assert.deepEqual(h.events.filter((event) => event.type !== 'session-info').map((event) => event.type), [
+    'turn-start', 'compaction', 'context-usage', 'compaction', 'turn-end',
+  ]);
+  const [started, completed] = h.events.filter((event) => event.type === 'compaction');
+  assert.deepEqual(started, {
+    type: 'compaction', agent: 'codex', compactionId: 'codex:item-1', phase: 'started', trigger: 'manual', beforeTokens: 17780,
+  });
+  assert.deepEqual(completed, { ...started, phase: 'completed', afterTokens: 11504 });
+  assert.deepEqual(h.events.find((event) => event.type === 'context-usage'), {
+    type: 'context-usage', agent: 'codex', usedTokens: 11504, maxTokens: 258400, autoCompact: true,
+  });
+  assert.equal(h.events.at(-1).stopReason, 'completed');
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('a resume cursor whose rollout is gone starts a new thread with the full-history fallback', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    extraOpts: { resumeSessionId: 'thread-gone' },
+    responder(frame, process) {
+      if (frame.method === 'thread/resume') {
+        process.send({ id: frame.id, error: { code: -32600, message: 'no rollout found for thread id thread-gone' } });
+        return;
+      }
+      if (frame.method === 'turn/start') {
+        const { threadId } = frame.params;
+        process.send({ method: 'turn/started', params: { threadId, turn: { id: 'turn-1', status: 'inProgress' } } });
+        process.send({ id: frame.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });
+        process.send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-1', status: 'completed' } } });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+  assert.equal(h.session.getSessionId(), 'thread-gone');
+  h.session.sendUserMessage('delta only', { resumeFallbackText: 'full transcript' });
+  await settle(32);
+  const frames = h.spawns.at(-1).process.frames;
+  assert.deepEqual(frames.filter((frame) => frame.method?.startsWith('thread/')).map((frame) => frame.method), ['thread/resume', 'thread/start']);
+  const turn = frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(turn.params.threadId, 'thread-native');
+  assert.deepEqual(turn.params.input, [{ type: 'text', text: 'full transcript' }]);
+  const turnEnd = h.events.find((event) => event.type === 'turn-end');
+  assert.equal(turnEnd.stopReason, 'completed');
+  assert.equal(turnEnd.resumeLost, true);
+  assert.equal(h.session.getSessionId(), 'thread-native');
+  assert.equal(await h.session.dispose(), true);
 });

@@ -99,7 +99,8 @@ const initialScenario = params.get('scenario');
 if (scenarios.includes(initialScenario as Scenario))
   scenarioSelect.value = initialScenario!;
 mock.setScenario(scenarioSelect.value as Scenario);
-mock.setHold(params.get('hold') === '1');
+// 압축 장면의 hold 는 압축 턴에만 건다 — 앞의 답변은 끝나야 압축할 수 있다.
+mock.setHold(params.get('hold') === '1' && params.get('compact') !== '1');
 scenarioSelect.addEventListener('change', () => {
   mock.bridge.interrupt();
   mock.bridge.setWorkflow('direct');

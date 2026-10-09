@@ -8,6 +8,7 @@ import test, { after } from 'node:test';
 import {
   buildPiArgv,
   buildPiEnv,
+  canResumePiSession,
   createPiFleetMapper,
   createPiSession,
   formatOpenRouterCreditError,
@@ -175,9 +176,11 @@ test('a tool-call turn maps to the unified event sequence and settles', () => {
 
   proc.exit(0);
   assert.deepEqual(types(events), [
-    'turn-start', 'session-info', 'text-delta', 'usage',
-    'tool-call', 'tool-result', 'text-delta', 'text-delta', 'usage', 'turn-end',
+    'turn-start', 'session-info', 'text-delta', 'context-usage', 'usage',
+    'tool-call', 'tool-result', 'text-delta', 'text-delta', 'context-usage', 'usage', 'turn-end',
   ]);
+  // 맥락 크기는 마지막 호출의 totalTokens 다 (누적이 아니다).
+  assert.deepEqual(events.filter((event) => event.type === 'context-usage').map((event) => event.usedTokens), [168, 168]);
 
   const sessionInfo = events[1];
   assert.equal(sessionInfo.sessionId, SESSION_LINE.id);
@@ -865,4 +868,68 @@ test('a failed Pi cancellation marks the affected fleet card failed', () => {
   mapper.onToolStart({ toolCallId: 'cancel', toolName: 'subagent_cancel', args: { ids: ['sa-1'] } });
   mapper.onToolEnd({ toolCallId: 'cancel', toolName: 'subagent_cancel', isError: true, result: {} });
   assert.equal(events.at(-1).status, 'failed');
+});
+
+// compaction_* 모양은 Pi 1.1.0 docs/json.md 의 JSON 이벤트 계약을 따른다.
+test('Pi auto compaction and per-call usage map to the shared compaction and context-usage events', () => {
+  const { session, events, spawns } = startSession({ contextWindow: 200_000 });
+  session.sendUserMessage('long task');
+  const { proc } = spawns[0];
+  proc.emitJson(
+    SESSION_LINE,
+    { type: 'message_end', message: { role: 'assistant', usage: { ...TOOL_USAGE, totalTokens: 150_000 }, stopReason: 'toolUse', content: [] } },
+    { type: 'compaction_start', reason: 'threshold' },
+    {
+      type: 'compaction_end', reason: 'threshold', aborted: false, willRetry: false,
+      result: { summary: 's', firstKeptEntryId: 'e1', tokensBefore: 150_500, estimatedTokensAfter: 32_000, details: {} },
+    },
+    { type: 'compaction_start', reason: 'overflow' },
+    { type: 'compaction_end', reason: 'overflow', aborted: false, willRetry: false, errorMessage: 'summary model failed' },
+    { type: 'agent_settled' },
+  );
+  proc.exit(0);
+  const compactions = events.filter((event) => event.type === 'compaction');
+  assert.deepEqual(compactions.map(({ phase, trigger }) => [phase, trigger]), [
+    ['started', 'auto'], ['completed', 'auto'], ['started', 'auto'], ['failed', 'auto'],
+  ]);
+  assert.equal(compactions[0].compactionId, compactions[1].compactionId);
+  assert.notEqual(compactions[1].compactionId, compactions[2].compactionId);
+  assert.equal(compactions[0].beforeTokens, 150_000);
+  assert.equal(compactions[1].beforeTokens, 150_500);
+  assert.equal(compactions[1].afterTokens, 32_000);
+  assert.match(compactions[3].message, /summary model failed/);
+  const usage = events.filter((event) => event.type === 'context-usage');
+  assert.deepEqual(usage.map((event) => [event.usedTokens, event.maxTokens]), [[150_000, 200_000], [32_000, 200_000]]);
+  assert.equal(session.compactionSupport, 'auto-only');
+});
+
+test('a Pi resume cursor reuses the session file and falls back to the full transcript when it vanished', async (t) => {
+  const piRoot = mkdtempSync(path.join(os.tmpdir(), 'rhwp-pi-resume-'));
+  t.after(() => rmSync(piRoot, { recursive: true, force: true }));
+  const rootDir = path.join(piRoot, 'work');
+  fs.mkdirSync(path.join(piRoot, 'sessions'), { recursive: true });
+  const sessionFile = path.join(piRoot, 'sessions', '2026-10-09T00-00-00-000Z_kept-1.jsonl');
+  writeFileSync(sessionFile, `${JSON.stringify({ type: 'session', version: 3, id: 'kept-1', cwd: rootDir })}\n`);
+  assert.equal(await canResumePiSession({ piRoot, rootDir }, 'kept-1'), true);
+  // Pi 는 cwd 가 다른 세션 파일을 열지 않는다.
+  assert.equal(await canResumePiSession({ piRoot, rootDir: path.join(piRoot, 'other') }, 'kept-1'), false);
+
+  const kept = startSession({ piRoot, rootDir, resumeSessionId: 'kept-1' });
+  kept.session.sendUserMessage('delta only', { resumeFallbackText: 'full transcript' });
+  const keptArgv = kept.spawns[0].argv;
+  assert.equal(keptArgv[keptArgv.indexOf('--session-id') + 1], 'kept-1');
+  assert.deepEqual(kept.spawns[0].proc.stdin.chunks, ['delta only']);
+  kept.spawns[0].proc.emitJson({ type: 'agent_settled' });
+  kept.spawns[0].proc.exit(0);
+  assert.equal(kept.events.at(-1).resumeLost, undefined);
+
+  rmSync(sessionFile);
+  const lost = startSession({ piRoot, rootDir, resumeSessionId: 'kept-1' });
+  lost.session.sendUserMessage('delta only', { resumeFallbackText: 'full transcript' });
+  const lostArgv = lost.spawns[0].argv;
+  assert.notEqual(lostArgv[lostArgv.indexOf('--session-id') + 1], 'kept-1');
+  assert.deepEqual(lost.spawns[0].proc.stdin.chunks, ['full transcript']);
+  lost.spawns[0].proc.emitJson({ type: 'agent_settled' });
+  lost.spawns[0].proc.exit(0);
+  assert.deepEqual(lost.events.at(-1), { type: 'turn-end', agent: 'pi', stopReason: 'completed', resumeLost: true });
 });

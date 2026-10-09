@@ -21,7 +21,7 @@ import {
   validateExecutionMode,
 } from './backend.mjs';
 import { createCodexRolloutWatcher } from './codex-rollout-watcher.mjs';
-import { createCodexAppServerSession } from './codex-app-server.mjs';
+import { canResumeCodexThread, createCodexAppServerSession } from './codex-app-server.mjs';
 import { isRootUserInputContext } from './provider-user-input.mjs';
 export {
   CODEX_REQUEST_USER_INPUT_METHOD,
@@ -420,6 +420,11 @@ export function createLegacyCodexSession(opts, {
     getSessionId() {
       return threadId;
     },
+    // exec 는 자동 압축만 하고, 그 신호를 이벤트로 내지 않는다.
+    compactionSupport: 'auto-only',
+    canResume(id) {
+      return canResumeCodexThread(opts, id);
+    },
     sendUserMessage(text) {
       if (disposed) return;
       if (turnOpen || queuedTurn) throw new Error('Codex already has a turn in progress');
@@ -757,7 +762,10 @@ export function createCodexSession(opts, dependencies = {}) {
   const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
   if (typeof opts.requestUserInput !== 'function'
     || !isRootUserInputContext({ agentRole: opts.agentRole })) {
-    return withCredentialCopyback(createLegacyCodexSession(opts, dependencies), codexHome);
+    return withCredentialCopyback(createLegacyCodexSession(opts, {
+      initialThreadId: opts.resumeSessionId ?? null,
+      ...dependencies,
+    }), codexHome);
   }
   return withCredentialCopyback(createCodexAppServerSession(opts, {
     ...dependencies,

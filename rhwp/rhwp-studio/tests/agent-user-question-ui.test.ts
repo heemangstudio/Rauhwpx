@@ -101,5 +101,5 @@ test('retry errors retain the draft and history is rendered as plain text', () =
   assert.doesNotMatch(controller, /innerHTML/);
   assert.match(sidebar, /renderUserQuestionHistory/);
   assert.match(sidebar, /message\.outcome\.answers\[question\.id\]/);
-  assert.match(sidebar, /serializeThreadMessagesForProviderHistory\(currentThread\.messages\)/);
+  assert.match(sidebar, /providerStartContext\(currentThread, selectedAgent, undeliveredMessages\)/);
 });

@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { registerHooks } from 'node:module';
+
+// bridge.ts 는 오버레이 css 를 함께 들여온다 — node 테스트에서는 빈 모듈로 대체한다.
+registerHooks({
+  load(url, context, nextLoad) {
+    if (/\.css$/.test(url)) return { format: 'module', source: 'export default {};', shortCircuit: true };
+    return nextLoad(url, context);
+  },
+});
 import { EventBus } from '../src/core/event-bus.ts';
 import { RevisionTracker, timeSeededRevision } from '../src/agent/revision.ts';
 import {
@@ -649,4 +658,118 @@ test('브리지: agent-setup-progress 의 userCode 를 그대로 사이드바로
   );
   // 문자열이 아닌 값은 아예 실리지 않는다 — 필드는 선택 사항으로 남는다.
   assert.match(typesSource, /type: 'agent-setup-progress';[\s\S]*userCode\?: string;/);
+});
+
+// ─── chat-start 맥락 · 압축 프레임 ───────────────────────
+
+const { AgentBridgeImpl } = await import('../src/agent/bridge.ts');
+const { PendingRequestRegistry } = await import('../src/agent/pending-requests.ts');
+const { providerStartContext, rememberProviderSession, createEmptyThread } = await import('../src/agent/threads.ts');
+
+function contextBridge(overrides: Record<string, unknown> = {}) {
+  const bridge = Object.create(AgentBridgeImpl.prototype) as any;
+  const frames: any[] = [];
+  const events: any[] = [];
+  Object.assign(bridge, {
+    state: 'connected', requestSeq: 0, pendingChatStart: null, chatStartSent: false,
+    activeAgent: 'claude', selectedAgent: 'claude', selectedModel: null, selectedEffort: null,
+    editingAgent: 'claude', permissionProfile: 'safe', serviceTier: 'standard',
+    workflow: 'direct', phase: 'direct', threadId: 'thread-1', documentId: 'doc-1', documentName: 'a.hwpx',
+    activeTemplateId: null, revision: { revision: 7 }, chatHistory: [], queuedMessages: [],
+    workflowSwitchPending: false, turnRunning: false, pendingTurnOpen: false, pendingUserQuestion: null,
+    requests: new PendingRequestRegistry(),
+    sendJson: (frame: unknown) => { frames.push(structuredClone(frame)); return true; },
+    emit: (event: unknown) => events.push(event),
+    syncEditingLease() {}, finishWorkflowSwitch() {}, syncWorkflowState() {}, clearPendingQuestionCancellation() {},
+    notifyPlanningDocumentSaved() {},
+    workflowState: () => ({ workflow: 'direct', phase: 'direct', capabilityEpoch: 1, latestPlan: null }),
+    ...overrides,
+  });
+  return { bridge, frames, events, starts: () => frames.filter((frame) => frame.type === 'chat-start') };
+}
+
+function sampleThread() {
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  thread.id = 'thread-1';
+  thread.messages.push({ role: 'user', text: '첫 질문', agent: 'claude' }, { role: 'assistant', text: '첫 답', agent: 'claude' });
+  return thread;
+}
+
+test('bridge: an implicit restart after a hub restart rebuilds history and cursor from the current thread', async () => {
+  const thread = sampleThread();
+  const { bridge, starts } = contextBridge();
+  bridge.setChatStartContextProvider(({ agent }: { agent: 'claude' }) => providerStartContext(thread, agent));
+  bridge.startChat('claude', undefined, undefined, false, 'safe', 'direct', 'thread-1', 'doc-1', 'a.hwpx', [
+    { role: 'user', text: 'stale' },
+  ]);
+  assert.deepEqual(starts()[0].history.map((entry: { text: string }) => entry.text), ['첫 질문', '첫 답']);
+  assert.equal('providerSessionId' in starts()[0], false);
+  bridge.handleMessage({ type: 'chat-started', requestId: starts()[0].requestId, agent: 'claude', threadId: 'thread-1' });
+
+  // 그 뒤 Codex 가 한 차례 답했고 Claude 는 성공한 턴의 커서를 얻었다. 허브가 다시 시작해 세션이 없다.
+  rememberProviderSession(thread, 'claude', 'claude-native');
+  thread.messages.push({ role: 'user', text: 'Codex 에게', agent: 'codex' }, { role: 'assistant', text: 'Codex 답', agent: 'codex' });
+  bridge.activeAgent = null;
+  const sent = bridge.sendUserMessage('이어서');
+  const restart = starts()[1];
+  assert.equal(restart.providerSessionId, 'claude-native');
+  assert.deepEqual(restart.handoffHistory.map((entry: { text: string }) => entry.text), ['Codex 에게', 'Codex 답']);
+  assert.deepEqual(restart.history.map((entry: { text: string }) => entry.text), ['첫 질문', '첫 답', 'Codex 에게', 'Codex 답']);
+  bridge.handleMessage({ type: 'chat-started', requestId: restart.requestId, agent: 'claude', threadId: 'thread-1', resumed: true, compaction: 'manual' });
+  await sent;
+});
+
+test('bridge: a start remembered while offline is rebuilt when the socket finally sends it', () => {
+  const thread = sampleThread();
+  const { bridge, starts } = contextBridge({ state: 'connecting', activeAgent: null });
+  bridge.setChatStartContextProvider(({ agent }: { agent: 'claude' }) => providerStartContext(thread, agent));
+  void bridge.sendUserMessage('연결되면');
+  assert.equal(starts().length, 0);
+  thread.messages.push({ role: 'assistant', text: '다른 탭에서 끝난 답', agent: 'claude' });
+  bridge.state = 'connected';
+  bridge.sendPendingChatStart();
+  assert.equal(starts()[0].history.at(-1).text, '다른 탭에서 끝난 답');
+});
+
+test('bridge: chat-started forwards resume and compaction support to the sidebar', () => {
+  const { bridge, events } = contextBridge();
+  bridge.handleMessage({ type: 'chat-started', agent: 'codex', threadId: 'thread-1', resumed: true, compaction: 'auto-only' });
+  bridge.handleMessage({ type: 'chat-started', agent: 'codex', threadId: 'thread-1', compaction: 'sometimes' });
+  const started = events.filter((event) => event.type === 'chat-started');
+  assert.equal(started[0].resumed, true);
+  assert.equal(started[0].compaction, 'auto-only');
+  assert.equal('compaction' in started[1], false, '모르는 값은 싣지 않는다 (= 압축 없음)');
+});
+
+test('bridge: chat-compact resolves on accept and on rejection without touching the session', async () => {
+  const { bridge, frames, events } = contextBridge();
+  const accepted = bridge.compactChat();
+  const frame = frames.at(-1);
+  assert.deepEqual({ type: frame.type, threadId: frame.threadId }, { type: 'chat-compact', threadId: 'thread-1' });
+  bridge.handleMessage({ type: 'chat-compact-accepted', requestId: frame.requestId, compactionId: 'cmp-1' });
+  assert.deepEqual(await accepted, { ok: true, compactionId: 'cmp-1' });
+
+  const rejected = bridge.compactChat();
+  bridge.handleMessage({ type: 'chat-error', requestId: frames.at(-1).requestId, code: 'NOTHING_TO_COMPACT', message: 'nothing yet' });
+  assert.deepEqual(await rejected, { ok: false, code: 'NOTHING_TO_COMPACT', message: 'nothing yet' });
+  assert.equal(bridge.activeAgent, 'claude');
+  assert.equal(events.some((event) => event.type === 'hub-error'), false);
+
+  bridge.activeAgent = null;
+  assert.equal((await bridge.compactChat()).code, 'NO_SESSION');
+});
+
+test('bridge: context events are validated and a finished compaction re-sends the document next turn', () => {
+  let resets = 0;
+  const { bridge, events } = contextBridge({ turnSnapshots: { reset: () => { resets += 1; }, noteSubagentActivity() {} } });
+  const agentEvents = () => events.filter((event) => event.type === 'agent').map((event) => event.event);
+  bridge.handleMessage({ type: 'agent-event', event: { type: 'context-usage', agent: 'claude', usedTokens: 'many' } });
+  bridge.handleMessage({ type: 'agent-event', event: { type: 'context-usage', agent: 'claude', usedTokens: 120_400.4, maxTokens: 200_000 } });
+  bridge.handleMessage({ type: 'agent-event', event: { type: 'compaction', agent: 'claude', compactionId: '', phase: 'completed', trigger: 'auto' } });
+  bridge.handleMessage({ type: 'agent-event', event: { type: 'compaction', agent: 'claude', compactionId: 'a-1', phase: 'completed', trigger: 'auto', beforeTokens: 180_000, afterTokens: 40_000 } });
+  assert.deepEqual(agentEvents(), [
+    { type: 'context-usage', agent: 'claude', usedTokens: 120_400, maxTokens: 200_000 },
+    { type: 'compaction', agent: 'claude', compactionId: 'a-1', phase: 'completed', trigger: 'auto', beforeTokens: 180_000, afterTokens: 40_000 },
+  ]);
+  assert.equal(resets, 1);
 });

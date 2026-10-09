@@ -70,6 +70,8 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=review` | Streaming reply followed by accept/reject changes |
 | `?scenario=fleet` | Tool activity and a subagent task |
 | `?scenario=error` | A failed turn |
+| `?scenario=compaction` | A turn with an automatic context compaction divider |
+| `?context=92` | Start the context meter at 92% (any 1–100) |
 | `?page=settings` | Production settings panel |
 | `?page=settings&fullscreen=1` | Settings inside the full-screen focus workspace |
 | `?page=versions` | Production version graph |

@@ -8,6 +8,7 @@ import { isAgentWorkflow, isStructuredPlan } from './types.ts';
 import type {
   AgentName,
   AgentWorkflow,
+  CompactionTrigger,
   ProductSkillIcon,
   ServiceTier,
   StructuredPlan,
@@ -110,8 +111,33 @@ export interface ThreadProviderHistoryEntry {
   text: string;
 }
 
+/**
+ * 대화 흐름의 구분선. 프로바이더에게는 보내지 않는다.
+ * handoff = 다른 프로바이더로 넘어간 자리, compaction = 맥락을 압축한 자리.
+ */
+export type ThreadMarkerMessage =
+  | (ThreadMessageBase & {
+      role: 'system';
+      kind: 'marker';
+      marker: 'handoff';
+      from: AgentName;
+      to: AgentName;
+      planId?: never;
+    })
+  | (ThreadMessageBase & {
+      role: 'system';
+      kind: 'marker';
+      marker: 'compaction';
+      compactionId: string;
+      trigger: CompactionTrigger;
+      beforeTokens?: number;
+      afterTokens?: number;
+      planId?: never;
+    });
+
 export type ThreadMessage =
   | UserQuestionHistoryMessage
+  | ThreadMarkerMessage
   | (ThreadMessageBase & {
       role: 'assistant';
       kind: 'plan';
@@ -182,7 +208,23 @@ export interface ChatThread {
   plans?: StructuredPlan[];
   /** Draft state only. Provider authority remains in the live hub session. */
   pendingUserQuestion?: PendingUserQuestionDraftSnapshot;
+  /** 프로바이더별 네이티브 세션 재개 커서. 성공한 턴이 끝날 때만 갱신한다. */
+  providerSessions?: Partial<Record<AgentName, ProviderSessionCursor>>;
+  /** 마지막으로 보고된 맥락 창 사용량 — 다시 열었을 때 맥락 표시를 복원한다. */
+  contextUsage?: ThreadContextUsage;
   messages: ThreadMessage[];
+}
+
+export interface ProviderSessionCursor {
+  sessionId: string;
+  updatedAt: number;
+}
+
+export interface ThreadContextUsage {
+  agent: AgentName;
+  usedTokens: number;
+  maxTokens?: number;
+  updatedAt: number;
 }
 
 export interface ThreadDraft {
@@ -229,7 +271,9 @@ export function explorerGroupIsCurrent(
   return groups.filter((item) => normalizedDocumentName(item.docKey) === activeName).length === 1;
 }
 
-type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion'> & {
+type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion' | 'providerSessions' | 'contextUsage'> & {
+  providerSessions?: unknown;
+  contextUsage?: unknown;
   workflow?: unknown;
   latestPlan?: unknown;
   plans?: unknown;
@@ -708,6 +752,62 @@ function normalizeStoredSelection(value: unknown): ThreadMessageBase['selection'
   };
 }
 
+function storedTokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
+}
+
+function normalizeProviderSessions(value: unknown): ChatThread['providerSessions'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const sessions: NonNullable<ChatThread['providerSessions']> = {};
+  for (const [agent, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!isAgentName(agent) || !raw || typeof raw !== 'object') continue;
+    const cursor = raw as Record<string, unknown>;
+    const sessionId = nonEmptyString(cursor.sessionId);
+    if (!sessionId) continue;
+    sessions[agent] = { sessionId, updatedAt: storedTokenCount(cursor.updatedAt) ?? 0 };
+  }
+  return Object.keys(sessions).length ? sessions : undefined;
+}
+
+function normalizeContextUsage(value: unknown): ThreadContextUsage | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const usedTokens = storedTokenCount(raw.usedTokens);
+  if (!isAgentName(raw.agent) || usedTokens === undefined) return undefined;
+  const maxTokens = storedTokenCount(raw.maxTokens);
+  return {
+    agent: raw.agent,
+    usedTokens,
+    ...(maxTokens ? { maxTokens } : {}),
+    updatedAt: storedTokenCount(raw.updatedAt) ?? 0,
+  };
+}
+
+function normalizeStoredMarker(message: Record<string, unknown>): ThreadMarkerMessage | null {
+  if (message.role !== 'system' || typeof message.text !== 'string') return null;
+  if (message.marker === 'handoff') {
+    if (!isAgentName(message.from) || !isAgentName(message.to)) return null;
+    return { role: 'system', kind: 'marker', marker: 'handoff', from: message.from, to: message.to, text: message.text };
+  }
+  if (message.marker === 'compaction') {
+    const compactionId = nonEmptyString(message.compactionId);
+    if (!compactionId || (message.trigger !== 'auto' && message.trigger !== 'manual')) return null;
+    const beforeTokens = storedTokenCount(message.beforeTokens);
+    const afterTokens = storedTokenCount(message.afterTokens);
+    return {
+      role: 'system',
+      kind: 'marker',
+      marker: 'compaction',
+      compactionId,
+      trigger: message.trigger,
+      text: message.text,
+      ...(beforeTokens !== undefined ? { beforeTokens } : {}),
+      ...(afterTokens !== undefined ? { afterTokens } : {}),
+    };
+  }
+  return null;
+}
+
 function normalizeStoredThread(thread: StoredChatThread): ChatThread {
   const latestPlan = isStructuredPlan(thread.latestPlan) ? thread.latestPlan : undefined;
   const plans = Array.isArray(thread.plans) ? thread.plans.filter(isStructuredPlan) : [];
@@ -719,11 +819,17 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     documentId: storedDocumentId,
     activeTemplateId: storedActiveTemplateId,
     pendingUserQuestion: storedPendingUserQuestion,
+    providerSessions: storedProviderSessions,
+    contextUsage: storedContextUsage,
     ...rest
   } = thread;
   const messages = rest.messages.flatMap((raw): ThreadMessage[] => {
     if (!raw || typeof raw !== 'object') return [];
     const message = raw as unknown as Record<string, unknown>;
+    if (message.kind === 'marker') {
+      const marker = normalizeStoredMarker(message);
+      return marker ? [marker] : [];
+    }
     if ((message.role !== 'user' && message.role !== 'assistant' && message.role !== 'system')
       || typeof message.text !== 'string') return [];
     const attachments = Array.isArray(message.attachments)
@@ -834,6 +940,8 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     thread.id,
     thread.agent,
   );
+  const providerSessions = normalizeProviderSessions(storedProviderSessions);
+  const contextUsage = normalizeContextUsage(storedContextUsage);
   const pendingAlreadyArchived = pendingUserQuestion
     ? messages.some((message) => message.kind === 'user-question'
       && message.interaction.interactionId === pendingUserQuestion.interaction.interactionId)
@@ -849,6 +957,8 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     ...(latestPlan ? { latestPlan } : {}),
     ...(plans.length ? { plans } : {}),
     ...(pendingUserQuestion && !pendingAlreadyArchived ? { pendingUserQuestion } : {}),
+    ...(providerSessions ? { providerSessions } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
   };
 }
 
@@ -1242,6 +1352,108 @@ export function serializeThreadMessagesForProviderHistory(
         : message.text,
     }];
   });
+}
+
+/** 마지막으로 대화에 참여한 프로바이더. 시스템 줄과 구분선은 세지 않는다. */
+export function lastProviderAgent(messages: readonly ThreadMessage[]): AgentName | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role !== 'system' && message.agent) return message.agent;
+  }
+  return null;
+}
+
+export interface ProviderStartContext {
+  /** 커서가 없거나 재개에 실패했을 때 쓰는 전체 대화. */
+  history: ThreadProviderHistoryEntry[];
+  /** 이 프로바이더의 네이티브 세션 커서. */
+  providerSessionId?: string;
+  /** 재개에 성공했을 때만 쓰는, 이 프로바이더가 아직 못 본 메시지. */
+  handoffHistory?: ThreadProviderHistoryEntry[];
+}
+
+/**
+ * chat-start 에 실을 맥락. 커서가 있는 프로바이더는 자기 마지막 메시지 뒤의 메시지만
+ * 받는다. 대화에 그 프로바이더의 메시지가 남아 있지 않으면(잘렸거나 처음) 커서를 보내지 않는다.
+ * exclude 는 아직 프로바이더에 전달되지 않은 메시지(대기열에 있는 사용자 메시지)다.
+ */
+export function providerStartContext(
+  thread: Pick<ChatThread, 'messages' | 'providerSessions'>,
+  agent: AgentName,
+  exclude?: ReadonlySet<ThreadMessage>,
+): ProviderStartContext {
+  const messages = exclude?.size
+    ? thread.messages.filter((message) => !exclude.has(message))
+    : thread.messages;
+  const history = serializeThreadMessagesForProviderHistory(messages);
+  const sessionId = thread.providerSessions?.[agent]?.sessionId;
+  if (!sessionId) return { history };
+  let last = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role !== 'system' && message.agent === agent) {
+      last = index;
+      break;
+    }
+  }
+  if (last < 0) return { history };
+  return {
+    history,
+    providerSessionId: sessionId,
+    handoffHistory: serializeThreadMessagesForProviderHistory(messages.slice(last + 1)),
+  };
+}
+
+export function rememberProviderSession(
+  thread: ChatThread,
+  agent: AgentName,
+  sessionId: string,
+  updatedAt = Date.now(),
+): boolean {
+  if (thread.providerSessions?.[agent]?.sessionId === sessionId) return false;
+  thread.providerSessions = { ...thread.providerSessions, [agent]: { sessionId, updatedAt } };
+  return true;
+}
+
+export function forgetProviderSession(thread: ChatThread, agent: AgentName): boolean {
+  if (!thread.providerSessions?.[agent]) return false;
+  const { [agent]: _dropped, ...rest } = thread.providerSessions;
+  if (Object.keys(rest).length) thread.providerSessions = rest;
+  else delete thread.providerSessions;
+  return true;
+}
+
+/**
+ * 다른 프로바이더로 첫 메시지를 보낼 때 구분선을 남긴다. 피커만 오간 경우에는 남지 않는다.
+ */
+export function addHandoffMarker(thread: ChatThread, to: AgentName): ThreadMarkerMessage | null {
+  const from = lastProviderAgent(thread.messages);
+  if (!from || from === to) return null;
+  const marker: ThreadMarkerMessage = { role: 'system', kind: 'marker', marker: 'handoff', from, to, text: '' };
+  thread.messages.push(marker);
+  return marker;
+}
+
+/** 압축 구분선. 같은 compactionId 는 한 번만 남긴다 (재전송·중복 이벤트). */
+export function addCompactionMarker(
+  thread: ChatThread,
+  compaction: { compactionId: string; trigger: CompactionTrigger; beforeTokens?: number; afterTokens?: number },
+): ThreadMarkerMessage | null {
+  const exists = thread.messages.some((message) => message.kind === 'marker'
+    && message.marker === 'compaction' && message.compactionId === compaction.compactionId);
+  if (exists) return null;
+  const marker: ThreadMarkerMessage = {
+    role: 'system',
+    kind: 'marker',
+    marker: 'compaction',
+    compactionId: compaction.compactionId,
+    trigger: compaction.trigger,
+    text: '',
+    ...(compaction.beforeTokens !== undefined ? { beforeTokens: compaction.beforeTokens } : {}),
+    ...(compaction.afterTokens !== undefined ? { afterTokens: compaction.afterTokens } : {}),
+  };
+  thread.messages.push(marker);
+  return marker;
 }
 
 export function createEmptyThread(draft: ThreadDraft): ChatThread {
