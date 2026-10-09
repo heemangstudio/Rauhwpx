@@ -189,6 +189,7 @@ import {
   pickDesktopNativeSaveFile,
   releaseDesktopDocument,
   createAgentHubSession,
+  supportsExtraAgentHubSessions,
   type AgentHubSessionLease,
   releaseReplacedNativeFileHandle,
   rememberNativeDocument,
@@ -1333,6 +1334,8 @@ function allChats(): ChatSession[] {
 
 /** 같은 문서의 다른 채팅이 문서를 고치는 중이면 이 채팅은 채팅 모드만 쓴다. */
 function chatModeLockFor(chat: ChatSession): { reason: string } | null {
+  // 문서를 고치고 있는 채팅은 스스로 잠기지 않는다 (잠그면 그 채팅의 계획·모드를 잃는다).
+  if (chatHoldsDocumentWrites(chat)) return null;
   return chat.document.chats.some((other) => other !== chat && chatHoldsDocumentWrites(other))
     ? { reason: '다른 채팅이 이 문서를 편집하고 있어요' }
     : null;
@@ -1451,6 +1454,7 @@ function installChatAgent(
       if (event.type === 'connection' && event.state === 'connected' && documentShown()) {
         connectPendingDocumentFonts();
       }
+      if (event.type === 'workflow-changed') notifyChatModeLock(session);
       for (const listener of taps.events) listener(event);
       attentionSession = session;
       try {
@@ -1459,7 +1463,11 @@ function installChatAgent(
         attentionSession = null;
       }
     }),
-    bridge.onBusyChange(() => notifyChatModeLock(session)),
+    bridge.onBusyChange((busy) => {
+      notifyChatModeLock(session);
+      // 보이지 않는 채팅이 일을 마치면 닫는다. 기록은 채팅 목록에 남고, 허브 세션과 공급자를 놓는다.
+      if (!busy) closeIdleHiddenChats(session);
+    }),
     bridge.pendingEdits.onChange((event) => {
       for (const listener of taps.pending) listener(event);
       notifyAttentionPendingChanged();
@@ -1532,17 +1540,21 @@ function showChat(session: DocumentSession, chat: ChatSession): void {
   const documentShown = attachedSession === session;
   if (documentShown) previous?.sidebar.deactivate();
   session.activeChat = chat;
-  if (!documentShown) return;
-  chat.sidebar.activate();
-  reinstallInlinePrompt();
-  setAgentEditingLease(documentEditingLease(session));
+  if (documentShown) {
+    chat.sidebar.activate();
+    reinstallInlinePrompt();
+    setAgentEditingLease(documentEditingLease(session));
+  }
+  closeIdleHiddenChats(session);
 }
 
-/** 다른 채팅으로 넘어간 뒤, 일이 없는 채팅은 닫는다 (문서마다 채팅 하나는 남긴다). */
-function closeIdleChat(chat: ChatSession): void {
-  const session = chat.document;
-  if (session.activeChat === chat || session.chats.length < 2 || chat.bridge.isBusy()) return;
-  disposeChat(chat);
+/** 보이지 않는 채팅 중 일이 없는 것을 닫는다 (문서마다 보이는 채팅 하나는 남는다). */
+function closeIdleHiddenChats(session: DocumentSession): void {
+  for (const chat of [...session.chats]) {
+    if (session.chats.length < 2) return;
+    if (chat === session.activeChat || chat.bridge.isBusy()) continue;
+    disposeChat(chat);
+  }
 }
 
 /**
@@ -1563,11 +1575,14 @@ function openChatFromChat(
       ));
       if (holder) {
         showChat(session, holder);
-        closeIdleChat(chat);
         return 'handled';
       }
     }
     if (!chat.bridge.isBusy()) return 'local';
+    // 채팅을 따로 열 수 없는 환경(웹 배포판)은 예전처럼 지금 채팅에서 연다.
+    if (!supportsExtraAgentHubSessions() && allChats().every((other) => other.hubSession !== null)) {
+      return 'local';
+    }
     const fresh = await createChatSession(session, { active: false });
     if (!fresh) return 'handled';
     showChat(session, fresh);
@@ -1811,6 +1826,10 @@ async function attachSessionNow(next: DocumentSession): Promise<void> {
     }
   }
   for (const chat of next.chats) chat.bridge.attachView({ inputHandler, canvasView });
+  // 채팅마다 붙을 때 템플릿 잠금을 다시 알린다. 마지막 채팅의 "잠금 없음"이 덮지 않게, 잠근
+  // 채팅이 있으면 그 상태로 한 번 더 맞춘다.
+  next.chats.find((chat) => chat.bridge.pendingEdits.isTemplateLocked())
+    ?.bridge.pendingEdits.republishTemplateLock();
   setAgentEditingLease(documentEditingLease(next));
   next.sidebar?.activate();
   reinstallInlinePrompt();

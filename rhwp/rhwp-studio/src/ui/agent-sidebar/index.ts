@@ -9130,6 +9130,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
     followThreadOnNextDocument(threadId: string): void {
       if (root.dataset.disposed === 'true') return;
+      // 이 채팅을 열기로 정했으니, 늦게 도는 "마지막 채팅 복원"이 덮어쓰지 않게 한다.
+      chatChosen = true;
       pendingThreadSwitch = { threadId };
     },
     dispose(): void {

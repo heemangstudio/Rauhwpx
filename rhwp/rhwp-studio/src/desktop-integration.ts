@@ -112,7 +112,8 @@ export interface RhwpDesktopApi {
     bytes: Uint8Array,
     identity: DocumentOwnershipIdentity,
   ) => Promise<{ name: string; byteLength: number }>;
-  isSameNativeFile?: (firstHandleId: string, secondHandleId: string) => Promise<boolean>;
+  /** 한쪽 핸들을 이미 놓았으면 null (비교할 수 없음) */
+  isSameNativeFile?: (firstHandleId: string, secondHandleId: string) => Promise<boolean | null>;
   adoptNativeFileContent?: (handleId: string, digest: string) => Promise<boolean>;
   rememberNativeDocument?: (
     documentId: string,
@@ -403,6 +404,16 @@ function onceAsync(run: () => Promise<void>): () => Promise<void> {
  * 새로고침되면 함께 닫는다. Vite 개발 서버는 같은 출처 라우트로 등록·해제한다.
  * 허브를 등록할 수 없는 환경(일반 웹 빌드, 이전 preload)에서는 null 이다.
  */
+/** 이 환경에서 허브 세션을 더 받을 수 있는지 (데스크톱 앱, 또는 개발 서버). */
+export function supportsExtraAgentHubSessions(win?: DesktopHost): boolean {
+  const host = desktopHost(win);
+  if (isDesktopApp(host)) {
+    const api = host?.rhwpDesktop;
+    return Boolean(api?.createAgentSession && api.getAgentSessionContext && api.releaseAgentSession);
+  }
+  return isDevBuild() && typeof globalThis.fetch === 'function';
+}
+
 export async function createAgentHubSession(
   win?: DesktopHost,
   { fetchImpl = globalThis.fetch, dev = isDevBuild() }: {
@@ -747,7 +758,10 @@ export function createNativeFileHandle(
       if (!otherMetadata || otherMetadata.api !== api || !api.isSameNativeFile) {
         throw new DOMException('Handle kinds cannot be compared', 'NotSupportedError');
       }
-      return api.isSameNativeFile(descriptor.handleId, otherMetadata.handleId);
+      const same = await api.isSameNativeFile(descriptor.handleId, otherMetadata.handleId);
+      // 놓은 핸들은 "다른 파일"이 아니라 "비교할 수 없음"이다. 호출부는 다른 근거로 판단한다.
+      if (same === null) throw new DOMException('비교할 파일 핸들이 더 이상 없습니다.', 'NotFoundError');
+      return same;
     },
     async queryPermission() {
       return 'granted';

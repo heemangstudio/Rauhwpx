@@ -1275,8 +1275,8 @@ export class NativeFileHandleRegistry {
     // 임의 핸들 탐색을 막기 위해 둘 다 이 창의 핸들이 아니면 기존처럼 거절한다.
     const first = this.#byId.get(firstHandleId);
     const second = this.#byId.get(secondHandleId);
-    // 놓은 핸들은 살아 있는 어떤 파일과도 같은 항목이 아니다 (최근 문서의 옛 핸들과 비교할 때).
-    if (!first || !second) return false;
+    // 놓은 핸들(최근 문서의 옛 핸들 등)은 비교할 수 없다. "다른 파일"로 답하면 맞는 파일을 거절한다.
+    if (!first || !second) return null;
     if (first.sessionId !== senderSessionId && second.sessionId !== senderSessionId) {
       throw new Error('Native file handle does not belong to this window');
     }
