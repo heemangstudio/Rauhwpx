@@ -25,7 +25,7 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('chat-streaming', 'Conversation', 'Streaming response', 'Inspect the active turn, stop control, and composer while work is running.', { scenario: 'chat', play: '1', hold: '1' }),
   scene('panel-skills', 'Panels and menus', 'Skills library', 'Inspect search, enable toggles, editing, and creation.', { surface: 'skills' }),
   scene('panel-references', 'Panels and menus', 'Reference library', 'Inspect file search, attachment controls, and reference details.', { surface: 'references' }),
-  scene('panel-threads', 'Panels and menus', 'Conversation library', 'Inspect thread navigation and conversation actions.', { surface: 'threads' }),
+  scene('panel-threads', 'Panels and menus', 'Conversation library', 'Inspect thread navigation and conversation actions.', { surface: 'threads', chats: 'sample' }),
   scene('menu-provider', 'Panels and menus', 'Provider picker', 'Inspect provider choices, readiness, and selection.', { surface: 'provider-picker' }),
   scene('menu-model', 'Panels and menus', 'Model picker', 'Inspect model names, selected state, and scrolling.', { surface: 'model-picker' }),
   scene('menu-effort', 'Panels and menus', 'Reasoning effort', 'Inspect available effort levels and selection.', { surface: 'effort-picker' }),

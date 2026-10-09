@@ -12,15 +12,17 @@ import {
   fallbackTitle,
   forgetDocumentThreads,
   getThread,
-  explorerGroupIsCurrent,
   listThreads,
-  listThreadsByDocument,
+  orderPinnedThreads,
   pendingUserQuestionMatchesInteraction,
-  recordDocumentOpened,
+  pinThread,
+  placeThread,
   serializeThreadMessagesForProviderHistory,
   setThreadTitle,
   subscribeThreadChanges,
+  threadListKey,
   threadMatchesDocument,
+  unpinThread,
   upsertThread,
 } from '../src/agent/threads.ts';
 import type {
@@ -539,33 +541,6 @@ test('past chats match their active document by stable ID with a legacy filename
   ), false);
 });
 
-test('explorer current badge does not follow a unique filename when the group is identified', () => {
-  const groups = [
-    { documentId: 'doc-a', docKey: 'report.hwpx' },
-    { documentId: 'doc-b', docKey: 'other.hwpx' },
-  ];
-  assert.equal(
-    explorerGroupIsCurrent(groups[0]!, 'fresh-id', 'report.hwpx', groups),
-    false,
-  );
-  assert.equal(
-    explorerGroupIsCurrent(groups[1]!, 'fresh-id', 'report.hwpx', groups),
-    false,
-  );
-  assert.equal(
-    explorerGroupIsCurrent(groups[0]!, 'doc-a', 'renamed.hwpx', groups),
-    true,
-  );
-});
-
-test('legacy explorer groups still use the unique filename bridge', () => {
-  const legacy = [{ documentId: null, docKey: 'report.hwpx' }];
-  assert.equal(
-    explorerGroupIsCurrent(legacy[0]!, 'fresh-id', 'report.hwpx', legacy),
-    true,
-  );
-});
-
 test('threads keep their document key and legacy threads fall back to null', () => {
   mem.clear();
   const t = createEmptyThread({
@@ -652,79 +627,149 @@ test('threads persist only the active template stable id', () => {
   assert.doesNotMatch(raw, /contentHash|arrayBuffer|base64|blob:/i);
 });
 
-test('listThreadsByDocument groups by document, groups ordered by recent activity', () => {
+test('chat list follows conversation activity across documents, not opening a chat', () => {
   mem.clear();
-  const mk = (docKey: string | null, text: string, updatedAt: number) => {
-    const t = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high', docKey });
+  const realNow = Date.now;
+  let clock = 1_000;
+  Date.now = () => clock;
+  try {
+    const mk = (documentId: string, text: string) => {
+      const t = createEmptyThread({
+        agent: 'claude', model: 'sonnet', effort: 'high', docKey: `${documentId}.hwpx`, documentId,
+      });
+      t.messages.push({ role: 'user', text });
+      upsertThread(t);
+      clock += 1_000;
+      return t.id;
+    };
+    const a = mk('doc-a', 'a 채팅');
+    const b = mk('doc-b', 'b 채팅');
+    assert.deepEqual(listThreads().map((t) => t.id), [b, a]);
+
+    // 채팅을 열고 떠날 때의 저장은 순서를 바꾸지 않는다.
+    upsertThread({ ...getThread(a)! });
+    clock += 1_000;
+    assert.deepEqual(listThreads().map((t) => t.id), [b, a]);
+
+    // 대화가 움직여야 위로 올라온다.
+    const moved = getThread(a)!;
+    moved.messages.push({ role: 'user', text: '이어서' });
+    upsertThread(moved);
+    assert.deepEqual(listThreads().map((t) => t.id), [a, b]);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('pinned chats hold their dragged order, survive stale saves and keep activity order', () => {
+  mem.clear();
+  const realNow = Date.now;
+  let clock = 1_000;
+  Date.now = () => clock;
+  try {
+    const mk = (text: string) => {
+      const t = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+      t.messages.push({ role: 'user', text });
+      upsertThread(t);
+      clock += 1_000;
+      return t.id;
+    };
+    const a = mk('a');
+    const b = mk('b');
+    const c = mk('c');
+    const pinnedIds = () => orderPinnedThreads(listThreads()).map((t) => t.id);
+    const staleA = getThread(a)!;
+
+    // 새로 고정한 채팅은 맨 위, 끌어 놓으면 이웃 사이로 간다.
+    pinThread(a);
+    pinThread(c);
+    assert.deepEqual(pinnedIds(), [c, a]);
+    pinThread(c, { after: a });
+    assert.deepEqual(pinnedIds(), [a, c]);
+    pinThread(b, { before: c });
+    assert.deepEqual(pinnedIds(), [a, b, c]);
+
+    // 고정은 대화 활동이 아니다.
+    assert.deepEqual(listThreads().map((t) => t.id), [c, b, a]);
+
+    // 고정 전에 열어 둔 사본을 저장해도 고정이 풀리지 않는다.
+    upsertThread(staleA);
+    assert.deepEqual(pinnedIds(), [a, b, c]);
+
+    unpinThread(b);
+    assert.deepEqual(pinnedIds(), [a, c]);
+    assert.equal(getThread(b)!.pinOrder, undefined);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('a dragged chat keeps its spot through new messages while undragged chats follow activity', () => {
+  mem.clear();
+  const realNow = Date.now;
+  let clock = 1_000_000;
+  Date.now = () => clock;
+  try {
+    const mk = (text: string) => {
+      const t = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+      t.messages.push({ role: 'user', text });
+      upsertThread(t);
+      clock += 1_000;
+      return t.id;
+    };
+    const a = mk('a');
+    const b = mk('b');
+    const c = mk('c');
+    const rail = () => listThreads()
+      .filter((t) => t.pinOrder === undefined)
+      .sort((x, y) => threadListKey(y) - threadListKey(x))
+      .map((t) => t.id);
+    assert.deepEqual(rail(), [c, b, a]);
+
+    // 맨 위 채팅을 맨 아래로 끌어 놓는다.
+    placeThread(c, { after: a, before: null });
+    assert.deepEqual(rail(), [b, a, c]);
+
+    // 새 대화가 와도 끌어 놓은 자리에 남는다.
+    const moved = getThread(c)!;
+    moved.messages.push({ role: 'user', text: '이어서' });
+    upsertThread(moved);
+    clock += 1_000;
+    assert.deepEqual(rail(), [b, a, c]);
+
+    // 끌지 않은 채팅은 대화가 오면 위로 올라온다.
+    const busy = getThread(a)!;
+    busy.messages.push({ role: 'user', text: '이어서' });
+    upsertThread(busy);
+    clock += 1_000;
+    assert.deepEqual(rail(), [a, b, c]);
+
+    // 고정한 채팅을 아래 목록에 놓으면 고정이 풀리고 그 자리에 선다.
+    pinThread(b);
+    placeThread(b, { after: c, before: null });
+    assert.equal(getThread(b)!.pinOrder, undefined);
+    assert.deepEqual(rail(), [a, c, b]);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('pinned chats are kept when the chat cap drops the oldest chats', () => {
+  mem.clear();
+  const mk = (text: string) => {
+    const t = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
     t.messages.push({ role: 'user', text });
     upsertThread(t);
-    // upsertThread 가 updatedAt 을 지금으로 찍으므로 저장본을 직접 되감는다.
-    const stored = JSON.parse(mem.get('rhwp-agent-threads') ?? '[]') as Array<Record<string, unknown>>;
-    stored.find((s) => s.id === t.id)!.updatedAt = updatedAt;
-    mem.set('rhwp-agent-threads', JSON.stringify(stored));
-    return t;
+    return t.id;
   };
-  mk('a.hwpx', 'a 첫 채팅', 10);
-  mk('b.hwpx', 'b 채팅', 30);
-  mk('a.hwpx', 'a 최근 채팅', 20);
-  mk(null, '문서 없는 채팅', 5);
-
-  const groups = listThreadsByDocument();
-  assert.deepEqual(groups.map((g) => g.docKey), ['b.hwpx', 'a.hwpx', null]);
-  assert.deepEqual(
-    groups[1]!.threads.map((t) => t.messages[0]!.text),
-    ['a 최근 채팅', 'a 첫 채팅'],
-  );
+  const oldest = mk('가장 오래된 채팅');
+  pinThread(oldest);
+  for (let i = 0; i < 45; i += 1) mk(`채팅 ${i}`);
+  assert.equal(listThreads().length, 40);
+  assert.equal(getThread(oldest)?.pinOrder, 0);
 });
 
-test('document groups hold last-opened order; only reopening a document moves it up', () => {
-  mem.clear();
-  const mk = (docKey: string, documentId: string, text: string) => {
-    const t = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high', docKey, documentId });
-    t.messages.push({ role: 'user', text });
-    upsertThread(t);
-    return t;
-  };
-  // a → b 순서로 문서를 열었다: b 가 위.
-  recordDocumentOpened('doc-a', 'a.hwpx');
-  recordDocumentOpened('doc-b', 'b.hwpx');
-  const staleA = mk('a.hwpx', 'doc-a', 'a 채팅');
-  mk('b.hwpx', 'doc-b', 'b 채팅');
-  assert.deepEqual(listThreadsByDocument().map((g) => g.docKey), ['b.hwpx', 'a.hwpx']);
-
-  // a 의 옛 채팅이 다시 움직여도(updatedAt 갱신) 그룹 순서는 그대로다.
-  upsertThread(staleA);
-  assert.deepEqual(listThreadsByDocument().map((g) => g.docKey), ['b.hwpx', 'a.hwpx']);
-
-  // a 문서를 다시 열어야만 맨 위로 올라온다.
-  recordDocumentOpened('doc-a', 'a.hwpx');
-  assert.deepEqual(listThreadsByDocument().map((g) => g.docKey), ['a.hwpx', 'b.hwpx']);
-
-  // 기록이 없는 문서(레거시)는 기록된 그룹 뒤에 최근 활동 순서로 남는다.
-  mk('c.hwpx', 'doc-c', 'c 채팅');
-  assert.deepEqual(listThreadsByDocument().map((g) => g.docKey), ['a.hwpx', 'b.hwpx', 'c.hwpx']);
-});
-
-test('listThreadsByDocument splits same filenames when documentId differs', () => {
-  mem.clear();
-  const left = createEmptyThread({
-    agent: 'claude', model: 'sonnet', effort: 'high', docKey: '보고서.hwp', documentId: 'doc-a',
-  });
-  left.messages.push({ role: 'user', text: '왼쪽' });
-  upsertThread(left);
-  const right = createEmptyThread({
-    agent: 'claude', model: 'sonnet', effort: 'high', docKey: '보고서.hwp', documentId: 'doc-b',
-  });
-  right.messages.push({ role: 'user', text: '오른쪽' });
-  upsertThread(right);
-
-  const groups = listThreadsByDocument();
-  assert.equal(groups.length, 2);
-  assert.deepEqual(new Set(groups.map((g) => g.documentId)), new Set(['doc-a', 'doc-b']));
-  assert.ok(groups.every((g) => g.docKey === '보고서.hwp'));
-});
-
-test('forgetDocumentThreads removes only that document group and its open-order record', () => {
+test('forgetDocumentThreads removes only that document\'s chats', () => {
   mem.clear();
   const mk = (docKey: string | null, documentId: string | null, text: string) => {
     const t = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high', docKey, documentId });
@@ -732,8 +777,6 @@ test('forgetDocumentThreads removes only that document group and its open-order 
     upsertThread(t);
     return t;
   };
-  recordDocumentOpened('doc-a', 'a.hwpx');
-  recordDocumentOpened('doc-b', 'b.hwpx');
   const gone = mk('a.hwpx', 'doc-a', 'a 채팅 1');
   mk('a.hwpx', 'doc-a', 'a 채팅 2');
   const legacy = mk('a.hwpx', null, '레거시 a 채팅');
@@ -745,17 +788,11 @@ test('forgetDocumentThreads removes only that document group and its open-order 
   assert.ok(removed.includes(gone.id));
   assert.equal(getThread(gone.id), null);
   assert.deepEqual(new Set(listThreads().map((t) => t.id)), new Set([legacy.id, kept.id]));
-  const orderAfterId = JSON.parse(mem.get('rhwp-agent-doc-order') ?? '[]') as string[];
-  assert.ok(!orderAfterId.includes('id:doc-a'));
-  assert.ok(orderAfterId.includes('name:a.hwpx'));
 
-  // 레거시(파일명뿐인) 그룹을 지우면 이름 기록도 함께 사라진다.
+  // 레거시(파일명뿐인) 묶음은 파일명으로 지운다.
   forgetDocumentThreads(null, 'a.hwpx');
   assert.equal(getThread(legacy.id), null);
   assert.deepEqual(listThreads().map((t) => t.id), [kept.id]);
-  const orderAfterName = JSON.parse(mem.get('rhwp-agent-doc-order') ?? '[]') as string[];
-  assert.ok(!orderAfterName.includes('name:a.hwpx'));
-  assert.ok(orderAfterName.includes('id:doc-b'));
 });
 
 test('workflow and every presented plan persist as history without approval authority', () => {

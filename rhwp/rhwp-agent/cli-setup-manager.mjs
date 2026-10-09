@@ -398,7 +398,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   /** 같은 에이전트 설치가 이미 돌고 있으면 그 결과를 함께 기다린다. */
   async function install(agent, onProgress) {
     const item = assertAgent(agent);
-    onProgress?.({ state: 'installing', phase: 'install', activity: true });
+    onProgress?.({ state: 'installing', phase: 'installing', activity: true });
     const running = installs.get(agent);
     if (running) return running;
     const task = installQueue.then(async () => {
