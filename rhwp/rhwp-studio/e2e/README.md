@@ -13,6 +13,13 @@ Name regression scripts `*.test.mjs` and make assertion failures exit nonzero.
 Helpers, render reports, and benchmark runners are not regression coverage
 merely because they execute.
 
+`npm run e2e:worktrees` starts an isolated hub and Studio to check worktree creation
+from current edits, independent document state, local saving, standalone export,
+close and reopen, portable history import, removal with retained history, merge
+undo and redo, and cross-window ownership. It uses the real editor, WASM and
+IndexedDB; the file picker uses an in-memory handle.
+Chrome and the built WASM package are required. No provider credentials are needed.
+
 ## Agent tool latency
 
 `npm run e2e:agent-tool-concurrency-bench` sends tool calls through a real

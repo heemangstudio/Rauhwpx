@@ -234,3 +234,135 @@ test('겹친 Ctrl+S는 쓰기를 겹치지 않고 마지막 기록이 최신 문
     assert.equal(harness.documentState.isDirty(), false);
   });
 });
+
+test('관리되는 작업 사본의 Ctrl+S는 페이지네이션 뒤 체크포인트만 저장한다', async () => {
+  await withFileCommands(async ({ saveCurrentDocument }) => {
+    const harness = createSaveHarness();
+    harness.services.wasm.fileName = 'parent.rhwpx';
+    const order: string[] = [];
+    harness.edit('worktree-edit');
+    const services = {
+      ...harness.services,
+      getInputHandler: () => ({
+        flushDeferredPaginationIfNeeded() { order.push('flush'); },
+        hasDeferredPaginationPending: () => false,
+      }),
+      isManagedWorktree: () => true,
+      async saveManagedWorktree() {
+        order.push('checkpoint');
+        harness.documentState.markCleanIfUnchanged(harness.documentState.captureRevision(), 'worktree-save');
+        return true;
+      },
+      async createPortableHistoryBundle() { throw new Error('일반 파일 저장 경로에 들어오면 안 된다'); },
+    };
+    assert.equal(await saveCurrentDocument(services as never), 'saved');
+    assert.deepEqual(order, ['flush', 'checkpoint']);
+    assert.equal(harness.writes.length, 0);
+    assert.equal(harness.services.wasm.fileName, 'parent.rhwpx');
+    assert.equal(harness.documentState.isDirty(), false);
+  });
+});
+
+test('작업 사본의 다른 이름 저장과 기록 내보내기는 문서 연결과 dirty를 유지한다', async () => {
+  await withFileCommands(async ({ fileCommands }) => {
+    for (const commandId of ['file:save-as-hwpx', 'file:save-with-history']) {
+      const harness = createSaveHarness();
+      harness.services.wasm.fileName = 'parent.rhwpx';
+      const inheritedHandle = harness.services.wasm.currentFileHandle;
+      inheritedHandle.name = 'parent.rhwpx';
+      harness.edit('worktree-edit');
+      const savedEvents: unknown[] = [];
+      harness.eventBus.on('document-saved', (data) => savedEvents.push(data));
+      harness.eventBus.on('document-file-handle-saved', (data) => savedEvents.push(data));
+      const order: string[] = [];
+      let exportedBytes: Uint8Array | null = null;
+      const target = {
+        name: commandId === 'file:save-with-history' ? 'copy.rhwpx' : 'copy.hwpx',
+        async getFile() { return new File([], this.name); },
+        adoptSaveTarget() { order.push('adopt'); },
+        async releaseUnusedSaveTarget() { order.push('release'); },
+        async createWritable() {
+          order.push('write');
+          return {
+            async write(blob: Blob) { exportedBytes = new Uint8Array(await blob.arrayBuffer()); },
+            async close() {},
+          };
+        },
+      };
+      (globalThis.window as unknown as { showSaveFilePicker: unknown }).showSaveFilePicker = async () => target;
+      const archiveBytes = new Uint8Array([4, 7, 8, 9]);
+      const services = {
+        ...harness.services,
+        isManagedWorktree: () => true,
+        async persistManagedWorktree() { order.push('persist'); },
+        async saveManagedWorktree() { throw new Error('내보내기는 저장 기준점을 바꾸면 안 된다'); },
+        async createPortableHistoryBundle() { return { bytes: archiveBytes, fileName: 'copy.rhwpx' }; },
+        async validateSaveHandle() {
+          order.push('reserve');
+          return async (saved: boolean) => { order.push(saved ? 'commit' : 'cancel'); };
+        },
+      };
+      await fileCommands.find((entry) => entry.id === commandId)!.execute(services as never);
+      assert.deepEqual(order, ['persist', 'reserve', 'write', 'cancel', 'release']);
+      assert.equal(harness.services.wasm.fileName, 'parent.rhwpx');
+      assert.equal(harness.services.wasm.currentFileHandle, inheritedHandle);
+      assert.equal(harness.documentState.isDirty(), true);
+      assert.deepEqual(savedEvents, []);
+      assert.equal(harness.writes.length, 0, '상속된 원본 핸들에는 쓰지 않는다');
+      assert.deepEqual(exportedBytes, commandId === 'file:save-with-history'
+        ? archiveBytes : new Uint8Array([0x50, 0x4b, 0x03, 0x04, 2]));
+    }
+  });
+});
+
+test('소유권 없는 문서의 저장과 내보내기는 검토·출력·쓰기 전에 중단한다', async () => {
+  await withFileCommands(async ({ saveCurrentDocument, fileCommands }) => {
+    const previousAlert = globalThis.alert;
+    const previousError = console.error;
+    const alerts: string[] = [];
+    globalThis.alert = (message) => { alerts.push(String(message)); };
+    console.error = () => {};
+    try {
+      const harness = createSaveHarness();
+      harness.edit('owner-unavailable');
+      const handle = harness.services.wasm.currentFileHandle;
+      const events: unknown[] = [];
+      harness.eventBus.on('document-saved', (event) => events.push(event));
+      harness.eventBus.on('document-file-handle-saved', (event) => events.push(event));
+      let pendingChecks = 0;
+      let worktreeSaves = 0;
+      let bundleExports = 0;
+      let pickerCalls = 0;
+      (globalThis.window as unknown as { showSaveFilePicker: unknown }).showSaveFilePicker = async () => {
+        pickerCalls += 1;
+        return handle;
+      };
+      const services = {
+        ...harness.services,
+        canSaveDocument: () => false,
+        getPendingAgentEdits() { pendingChecks += 1; return null; },
+        async saveManagedWorktree() { worktreeSaves += 1; return false; },
+        async createPortableHistoryBundle() { bundleExports += 1; return { bytes: new Uint8Array(), fileName: 'doc.rhwpx' }; },
+      };
+      assert.equal(await saveCurrentDocument(services as never), 'failed');
+      for (const id of ['file:save-as', 'file:save-as-hwp', 'file:save-as-hwpx', 'file:save-with-history']) {
+        await fileCommands.find((command) => command.id === id)!.execute(services as never);
+      }
+      assert.equal(alerts.length, 5);
+      assert.ok(alerts.every((message) => message.includes('읽기 전용 문서는 저장할 수 없습니다')));
+      assert.equal(pendingChecks, 0);
+      assert.equal(worktreeSaves, 0);
+      assert.equal(bundleExports, 0);
+      assert.equal(pickerCalls, 0);
+      assert.equal(harness.exportedVersion, 0);
+      assert.deepEqual(harness.writes, []);
+      assert.deepEqual(events, []);
+      assert.equal(harness.documentState.isDirty(), true);
+      assert.equal(harness.services.wasm.currentFileHandle, handle);
+      assert.equal(harness.services.wasm.fileName, 'doc.hwpx');
+    } finally {
+      globalThis.alert = previousAlert;
+      console.error = previousError;
+    }
+  });
+});

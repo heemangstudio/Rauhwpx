@@ -130,7 +130,7 @@ The optional transport accepts only same-origin usage reads and Codex reset requ
 | References | File picker/drop/paste UI, staged message attachments, scoped lists, filename search, and deletion; extraction returns sample metadata/snippets |
 | Settings | Real editing preferences, draft/apply/cancel, themes, model defaults, app instructions, and sample writing-style calibration |
 | Connections | Provider install/login, direct quota health bars, manual refresh, Codex banked reset confirmation, and model catalogs; provider credentials are never used by mocks |
-| Versions | Graph, commit titles, checkpoints, restore/adopt metadata, branches, tags, shelves, and sample merges |
+| Versions | Graph, commit titles, checkpoints, restore/adopt metadata, branches, worktree create/open/close/remove, tags, shelves, and sample merges |
 | External/document actions | Local notice for browser pages, linked documents, full-workspace focus mode, and document comparisons |
 
 Service fixtures are in memory and reset on reload. The production preference and
@@ -158,8 +158,11 @@ The shared desktop module's optional PWA import resolves to a preview-only no-op
 
 The version graph uses compact rows. Dates appear on hover or keyboard focus;
 selecting a commit keeps its details and restore actions below the scrolling list.
-The branch buttons switch the active branch, and new preview commits update the
-same graph layout used by the application.
+The branch buttons switch the active branch or open its owning worktree. The
+워크트리 tab creates isolated sample branches, opens and closes them, preserves
+branches on removal, and removes a worktree after its fixture merge succeeds.
+These operations use in-memory document fixtures. New preview commits update
+the same graph layout used by the application.
 
 For LAN or Tailscale access, bind the preview explicitly:
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 
-const fullScene = 'audit=1&auditScene=chat-changes-full&scenario=review&review=full&permission=unrestricted&play=1&surface=changes';
+const fullScene = 'audit=1&auditScene=chat-changes-full&scenario=review&review=full&permission=safe&play=1&surface=changes';
 
 export async function checkChangesPreview(page, origin, artifacts) {
   const open = async (query, width = 480) => {
@@ -13,16 +13,18 @@ export async function checkChangesPreview(page, origin, artifacts) {
 
   await open('audit=1&scenario=review&review=full&permission=unrestricted&play=1', 360);
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().pendingChanges), 0);
-  assert.equal(await page.$eval('.ag-compact-changes', (node) => node.hidden), false);
-  await page.click('.ag-compact-changes-toggle');
-  await page.waitForSelector('.ag-compact-changes-content:not([hidden]) .ag-changes-diff-list .ag-changes-item');
-  assert.equal(await page.$eval('.ag-compact-changes', (node) => node.scrollWidth <= node.clientWidth), true);
+  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.snapshot().changeEvents), ['approved'], 'Unrestricted edits apply without a staged review');
+  assert.equal(await page.$eval('.ag-versions-badge', (node) => node.hidden), false);
+  await page.click('.ag-versions-btn');
+  await page.waitForSelector('.ag-versions-changes:not([hidden]) .ag-changes-diff-list .ag-changes-item');
+  assert.equal(await page.$eval('.ag-versions-page', (node) => node.scrollWidth <= node.clientWidth), true);
   await page.screenshot({ path: resolve(artifacts, 'changes-compact-before-commit.png') });
-  await page.type('.ag-compact-changes-content .ag-changes-message', '에이전트 수정을 반영했습니다.');
-  await page.click('.ag-compact-changes-content .ag-changes-primary');
+  await page.type('.ag-versions-changes .ag-changes-message', '에이전트 수정을 반영했습니다.');
+  await page.click('.ag-versions-changes .ag-changes-primary');
   await page.waitForFunction(() => window.sidebarPreview.versions.getState().dirty === false);
   assert.equal(await page.evaluate(() => window.sidebarPreview.versions.getState().commits[0].title), '에이전트 수정을 반영했습니다.');
-  assert.equal(await page.$eval('.ag-compact-changes', (node) => node.hidden), true);
+  assert.equal(await page.$eval('.ag-versions-changes-empty', (node) => node.hidden), false);
+  assert.equal(await page.$eval('.ag-versions-badge', (node) => node.hidden), true);
 
   await open(fullScene);
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.snapshot().changeEvents), ['set-finalized', 'approved']);
@@ -91,7 +93,17 @@ export async function checkChangesPreview(page, origin, artifacts) {
   await page.waitForFunction(() => document.querySelectorAll('.ag-changes-diff-list .ag-changes-item').length === 0);
   assert.equal(await page.evaluate(() => window.sidebarPreview.versions.getState().dirty), false);
 
-  await open('audit=1&scenario=review&review=full&play=1&surface=changes');
+  await open('audit=1&scenario=review&review=full&play=1&mode=agent');
+  await page.evaluate(() => window.sidebarPreview.enterFocusMode());
+  await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-fs-motion'));
+  if (await page.$eval('.ag-environment-changes', (node) => node.getAttribute('aria-expanded')) !== 'true') {
+    if (await page.$eval('.ag-environment-toggle', (node) => node.getAttribute('aria-expanded')) !== 'true') {
+      await page.click('.ag-environment-toggle');
+    }
+    await page.waitForSelector('.ag-environment-panel[aria-hidden="false"]', { visible: true });
+    await page.click('.ag-environment-changes');
+  }
+  await page.waitForSelector('.ag-changes-review-slot .ag-review-card', { visible: true });
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().pendingChanges), 1);
   assert.equal(await page.$$eval('.ag-changes-review-slot .ag-changes-pending-item', (nodes) => nodes.length), 3);
   assert.equal(await page.$eval('.ag-changes-review-slot .ag-approve', (node) => node.disabled), false);
