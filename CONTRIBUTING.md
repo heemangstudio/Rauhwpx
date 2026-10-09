@@ -64,7 +64,7 @@ Studio의 기본 테스트는 브라우저를 실행하지 않습니다. 브라�
 
 에이전트의 타입 검사는 공유 backend 계약, ACP 세션 모듈과 그 의존성을 대상으로 합니다. Claude/Codex/Pi 제공자와 HTTP/WebSocket 허브는 검사 범위에 포함되지 않습니다.
 
-E2E 목록과 참조 검사는 Python 3가 필요합니다. 문서 조작 E2E와 수동 진단은 [E2E 안내](rhwp/rhwp-studio/e2e/README.md)를 참고하세요. `e2e:list`는 스크립트를 찾고 `e2e:check`는 실행 참조를 확인합니다. Browserbase 라이브 검사는 해당 통합을 바꿀 때 수동 실행하며 외부 서비스 계정이 필요합니다.
+앱 동작 스모크 검사는 `npm --prefix rhwp/rhwp-studio run e2e:smoke`로 실행합니다. 허브와 Vite를 직접 띄우고 여덟 가지 사용자 흐름을 headless Chrome에서 확인합니다. 자세한 내용은 [스모크 안내](rhwp/rhwp-studio/e2e/README.md)를 참고하세요. Browserbase 라이브 검사는 해당 통합을 바꿀 때 수동 실행하며 외부 서비스 계정이 필요합니다.
 
 CI는 변경 경로에 따라 작업을 선택합니다. 실제 명령과 조건은 [.github/workflows/](.github/workflows/)에 있습니다. 패키지 검증은 설치 파일을 만들 때 실행하며, nightly는 더 넓은 엔진 검증을 수행합니다.
 

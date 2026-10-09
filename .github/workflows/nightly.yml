@@ -123,9 +123,7 @@ jobs:
       # Studio unit tests run edit history and save checks on the real engine.
       - uses: ./.github/actions/build-wasm
       - name: Test Studio
-        run: |
-          npm --prefix rhwp/rhwp-studio test
-          npm --prefix rhwp/rhwp-studio run e2e:check
+        run: npm --prefix rhwp/rhwp-studio test
       - name: Test agent hub
         if: ${{ !cancelled() }}
         run: |
@@ -215,13 +213,11 @@ jobs:
           retention-days: 7
 
   e2e:
-    name: Editor flows
+    name: Editor smoke flows
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     env:
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
-      VITE_URL: http://127.0.0.1:7700
-      RHWP_SKIP_AGENT_HUB: '1'
     steps:
       - uses: actions/checkout@v5
         with:
@@ -243,27 +239,14 @@ jobs:
         run: |
           npm --prefix rhwp/rhwp-studio ci
           npm --prefix rhwp/rhwp-agent ci --no-audit --no-fund
-      - name: Start Studio
-        id: studio
-        working-directory: rhwp/rhwp-studio
-        run: |
-          # The server keeps running for the remaining steps of this job.
-          nohup node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 7700 --strictPort > "$RUNNER_TEMP/editor-vite.log" 2>&1 &
-          for _ in {1..60}; do
-            if curl --fail --silent "$VITE_URL" > /dev/null; then exit 0; fi
-            sleep 1
-          done
-          cat "$RUNNER_TEMP/editor-vite.log"
-          exit 1
-      - name: Test document shortcuts
-        if: ${{ !cancelled() && steps.studio.outcome == 'success' }}
-        working-directory: rhwp/rhwp-studio
-        run: node e2e/global-shortcut.test.mjs --mode=headless
-      - name: Test deletion caret
-        if: ${{ !cancelled() && steps.studio.outcome == 'success' }}
-        working-directory: rhwp/rhwp-studio
-        run: node e2e/deletion-caret.test.mjs --mode=headless
-      - name: Test agent table reveal
-        if: ${{ !cancelled() && steps.studio.outcome == 'success' }}
-        working-directory: rhwp/rhwp-studio
-        run: node e2e/agent-table-reveal.test.mjs --mode=headless
+      - name: Run editor smoke flows
+        run: npm --prefix rhwp/rhwp-studio run e2e:smoke
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: smoke-server-logs
+          path: |
+            rhwp/target/smoke-hub.log
+            rhwp/target/smoke-vite.log
+          if-no-files-found: ignore
+          retention-days: 7
