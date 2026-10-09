@@ -27,6 +27,7 @@ let hub = null;
 let vite = null;
 let browser = null;
 let cleaning = null;
+let interrupted = false;
 
 function cleanup() {
   cleaning ??= (async () => {
@@ -38,7 +39,11 @@ function cleanup() {
   return cleaning;
 }
 for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.once(signal, () => { void cleanup().finally(() => process.exit(130)); });
+  process.once(signal, () => {
+    interrupted = true;
+    console.log('interrupted, stopping servers');
+    void cleanup().finally(() => process.exit(130));
+  });
 }
 
 const started = performance.now();
@@ -50,15 +55,29 @@ try {
   const { piRoot, finishTurnPath } = writeFakePi(fixtureRoot);
   const hubPort = await findAvailablePort(5790);
   const vitePort = await findAvailablePort(7790);
+  // 허브는 오프라인으로 돌린다: 하네스 자동 업데이트 등 외부 요청은 닫힌 프록시에서 바로 실패하고,
+  // CLI 폴더는 빈 임시 폴더라 사용자의 Claude·Codex 설치를 건드리지 않는다.
+  const offline = {
+    NODE_USE_ENV_PROXY: '1', HTTPS_PROXY: 'http://127.0.0.1:9', HTTP_PROXY: 'http://127.0.0.1:9',
+    NO_PROXY: '127.0.0.1,localhost', npm_config_offline: 'true',
+  };
   [hub, vite, browser] = await Promise.all([
-    startHub({ hubPort, token, fixtureRoot, env: { RHWP_PI_DIR: piRoot }, logName: 'smoke-hub.log' }),
+    startHub({
+      hubPort, token, fixtureRoot, logName: 'smoke-hub.log',
+      env: { RHWP_PI_DIR: piRoot, RHWP_CLI_DIR: path.join(fixtureRoot, 'cli'), ...offline },
+    }),
     startVite({ vitePort, hubPort, token, logName: 'smoke-vite.log' }),
-    puppeteer.launch({ headless: true, executablePath, protocolTimeout: 30000, args: ['--no-sandbox', '--disable-gpu'] }),
+    // 신호 처리는 아래 cleanup 이 맡는다. puppeteer 기본 처리기는 서버를 남긴 채 프로세스를 끝낸다.
+    puppeteer.launch({
+      headless: true, executablePath, protocolTimeout: 30000, args: ['--no-sandbox', '--disable-gpu'],
+      handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
+    }),
   ]);
   const url = `http://127.0.0.1:${vitePort}`;
   console.log(`smoke: vite ${url}, hub :${hubPort} (${((performance.now() - started) / 1000).toFixed(1)} s)`);
 
   for (const file of files) {
+    if (interrupted) break;
     const flow = (await import(path.join(here, file))).default;
     const context = await browser.createBrowserContext();
     const t0 = performance.now();
@@ -76,6 +95,7 @@ try {
     } catch (caught) {
       error ??= caught;
     }
+    if (interrupted) break;
     if (error) failures += 1;
     await context.close().catch(() => {});
     const seconds = ((performance.now() - t0) / 1000).toFixed(1).padStart(5);
@@ -84,10 +104,11 @@ try {
   }
 } catch (error) {
   failures += 1;
-  console.error(`smoke setup failed: ${error.stack || error}`);
-  console.error(`logs: ${path.join(repoRoot, 'target', 'smoke-hub.log')}, ${path.join(repoRoot, 'target', 'smoke-vite.log')}`);
+  if (!interrupted) console.error(`smoke setup failed: ${error.stack || error}`);
+  if (!interrupted) console.error(`logs: ${path.join(repoRoot, 'target', 'smoke-hub.log')}, ${path.join(repoRoot, 'target', 'smoke-vite.log')}`);
 } finally {
   await cleanup();
 }
+if (interrupted) await new Promise(() => {});
 console.log(`${failures ? `${failures} failed` : 'all passed'} in ${((performance.now() - started) / 1000).toFixed(1)} s`);
 process.exit(failures ? 1 : 0);
