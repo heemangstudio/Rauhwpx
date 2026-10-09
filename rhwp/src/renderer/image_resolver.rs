@@ -264,53 +264,47 @@ fn grayscale_jpeg_bytes_to_png_bytes_shared(data: &[u8]) -> Option<Arc<[u8]>> {
 }
 
 fn grayscale_jpeg_bytes_to_png_bytes_uncached(data: &[u8]) -> Option<Vec<u8>> {
-    use image::ImageFormat;
+    use image::{DynamicImage, GrayImage, ImageFormat};
 
     if detect_image_mime_type(data) != "image/jpeg" {
         return None;
     }
 
-    let decoded = decode_image_with_format_limited(data, ImageFormat::Jpeg)?;
-    if decoded.width() == 0 || decoded.height() == 0 {
-        return None;
-    }
-
-    let has_photoshop_profile = data
-        .windows(b"Adobe Photoshop".len())
-        .any(|chunk| chunk == b"Adobe Photoshop")
-        || data
-            .windows(b"Adobe_CM".len())
-            .any(|chunk| chunk == b"Adobe_CM");
-    let is_gray_rgb = |[r, g, b]: [u8; 3]| {
-        let min = r.min(g).min(b);
-        let max = r.max(g).max(b);
-        max.saturating_sub(min) <= 2
+    // 디코드한 채널 그대로 검사하고 인코딩한다. RGBA 로 넓히면 큰 사진 한 장이 디코드
+    // 버퍼보다 큰 사본을 하나 더 잡고, WASM 선형 메모리는 그 최고점에서 줄지 않는다.
+    let img = match decode_image_with_format_limited(data, ImageFormat::Jpeg)? {
+        DynamicImage::ImageLuma8(gray) => DynamicImage::ImageLuma8(gray),
+        decoded => {
+            let rgb = decoded.into_rgb8();
+            let has_photoshop_profile = data
+                .windows(b"Adobe Photoshop".len())
+                .any(|chunk| chunk == b"Adobe Photoshop")
+                || data
+                    .windows(b"Adobe_CM".len())
+                    .any(|chunk| chunk == b"Adobe_CM");
+            let is_gray = rgb.pixels().all(|px| {
+                let [r, g, b] = px.0;
+                let min = r.min(g).min(b);
+                let max = r.max(g).max(b);
+                max.saturating_sub(min) <= 2
+            });
+            let is_luma_plane_gray = has_photoshop_profile
+                && rgb.pixels().all(|px| {
+                    let [_, g, b] = px.0;
+                    g.abs_diff(128) <= 2 && b.abs_diff(128) <= 2
+                });
+            if is_luma_plane_gray {
+                let (width, height) = rgb.dimensions();
+                let luma = rgb.pixels().map(|px| px.0[0]).collect();
+                DynamicImage::ImageLuma8(GrayImage::from_raw(width, height, luma)?)
+            } else if is_gray {
+                DynamicImage::ImageRgb8(rgb)
+            } else {
+                return None;
+            }
+        }
     };
-    let is_luma_plane_rgb = |[_, g, b]: [u8; 3]| g.abs_diff(128) <= 2 && b.abs_diff(128) <= 2;
-    // 대부분인 컬러 사진은 디코드 버퍼에서 바로 걸러 RGBA 사본(원본 크기 ×4)을 만들지 않는다.
-    // WASM 선형 메모리는 줄지 않으므로 큰 사진 하나의 사본이 그대로 남는다.
-    if let Some(rgb) = decoded.as_rgb8() {
-        let is_gray = rgb.pixels().all(|px| is_gray_rgb(px.0));
-        if !is_gray && !(has_photoshop_profile && rgb.pixels().all(|px| is_luma_plane_rgb(px.0))) {
-            return None;
-        }
-    }
-    let mut img = decoded.into_rgba8();
-    let is_gray = img.pixels().all(|px| {
-        let [r, g, b, _] = px.0;
-        is_gray_rgb([r, g, b])
-    });
-    let is_luma_plane_gray = has_photoshop_profile
-        && img.pixels().all(|px| {
-            let [r, g, b, _] = px.0;
-            is_luma_plane_rgb([r, g, b])
-        });
-    if is_luma_plane_gray {
-        for px in img.pixels_mut() {
-            let gray = px.0[0];
-            px.0 = [gray, gray, gray, px.0[3]];
-        }
-    } else if !is_gray {
+    if img.width() == 0 || img.height() == 0 {
         return None;
     }
 
