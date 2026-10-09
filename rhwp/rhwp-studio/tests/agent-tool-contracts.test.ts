@@ -8,7 +8,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { expectErr, makeEnv } from './agent-test-env.ts';
+import { addTable, expectErr, makeEnv } from './agent-test-env.ts';
 
 test('replace_range text "" deletes the range, alone and inside apply_edits, and reject restores it', async () => {
   const h = makeEnv(['첫 문장입니다. 지울 부분 남는 부분', '둘째 문단']);
@@ -28,4 +28,39 @@ test('replace_range text "" deletes the range, alone and inside apply_edits, and
   });
   assert.equal(batch['applied'], 2);
   assert.deepEqual(h.body, ['첫 문장입니다. 남는 부분', '두 번째 문단']);
+});
+
+test('top-level controlIdx/cellIdx without cell is rejected with the corrected call and leaves the host paragraph alone', async () => {
+  const h = makeEnv(['머리', '', '꼬리']);
+  addTable(h, 1, [['이름', '값']]);
+  // 배치 롤백은 표를 스냅샷 사본으로 바꾼다 — 매번 새로 읽는다.
+  const cells = () => h.tables[0].cells;
+  const err = await expectErr(
+    h.call('insert_text', { sectionIdx: 0, paraIdx: 1, controlIdx: 0, cellIdx: 1, charOffset: 0, text: '42' }),
+    'INVALID_ARGS',
+  );
+  assert.match(err.message, /cell:\{paraIdx:1,controlIdx:0,cellIdx:1\}/);
+  assert.deepEqual(h.body, ['머리', '', '꼬리']);
+  assert.deepEqual(cells()[1], ['값']);
+
+  // apply_edits 항목도 같은 검사를 지나 배치 전체가 되돌아간다.
+  const batchErr = await expectErr(h.call('apply_edits', {
+    edits: [
+      { tool: 'replace_range', find: '머리', text: '제목' },
+      { tool: 'replace_range', sectionIdx: 0, startParaIdx: 1, startCharOffset: 0, endParaIdx: 1, endCharOffset: 1, controlIdx: 0, cellIdx: 0, cellParaIdx: 0, text: '성명' },
+    ],
+  }), 'INVALID_ARGS');
+  assert.match(batchErr.message, /edits\[1\] \(replace_range\).*cell:\{paraIdx:1,controlIdx:0,cellIdx:0\}.*startParaIdx\/endParaIdx/);
+  assert.deepEqual(h.body, ['머리', '', '꼬리']);
+
+  // 읽기 배치는 그 항목만 오류로 돌려준다.
+  const read = await h.call('read_batch', {
+    reads: [{ tool: 'get_text_range', sectionIdx: 0, paraIdx: 1, cellIdx: 0, charOffset: 0, count: 5 }],
+  });
+  const [item] = read['results'] as Array<{ error?: { code: string } }>;
+  assert.equal(item.error?.code, 'INVALID_ARGS');
+
+  // 올바른 cell 주소는 그대로 셀에 쓴다.
+  await h.call('insert_text', { cell: { paraIdx: 1, controlIdx: 0, cellIdx: 1 }, paraIdx: 0, charOffset: 0, text: '42 ' });
+  assert.deepEqual(cells()[1], ['42 값']);
 });

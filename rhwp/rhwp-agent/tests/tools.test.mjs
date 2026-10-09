@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod/v3';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import {
+  assertCellArgsPlacement,
   BATCHABLE_EDIT_TOOL_NAMES,
   TOOL_CATEGORIES,
   TOOL_CLASSIFICATIONS,
@@ -99,6 +100,17 @@ test('앵커 도구는 anchor 인자를 받고 좌표를 선택 필드로 둔다
   // 범위 도구의 paraIdx 는 startParaIdx 의 별칭이다 — find 옆에서는 검색 범위, 좌표 옆에서는 시작 문단.
   assert.doesNotThrow(() => byName.get('replace_range').validate({ paraIdx: 1, startCharOffset: 0, endCharOffset: 2, text: 'x' }));
   assert.doesNotThrow(() => byName.get('apply_char_format').validate({ paraIdx: 1, startOffset: 0, endOffset: 2, bold: true }));
+});
+
+test('cell 없이 최상위에 둔 표 좌표는 고친 호출 꼴과 함께 거절한다', () => {
+  assert.throws(
+    () => assertCellArgsPlacement('insert_text', { paraIdx: 5, controlIdx: 0, cellIdx: 3, charOffset: 0, text: 'x' }),
+    (error) => error.code === 'INVALID_ARGS' && /cell:\{paraIdx:5,controlIdx:0,cellIdx:3\}/.test(error.message),
+  );
+  assert.throws(() => assertCellArgsPlacement('get_text_range', { paraIdx: 2, cellParaIdx: 1 }), /paraIdx:1/);
+  assert.doesNotThrow(() => assertCellArgsPlacement('insert_text', { cell: { paraIdx: 5, controlIdx: 0, cellIdx: 3 }, paraIdx: 0 }));
+  // 표 좌표가 제 인자인 도구는 건드리지 않는다.
+  assert.doesNotThrow(() => assertCellArgsPlacement('set_cell_props', { paraIdx: 5, controlIdx: 0, cellIdx: 3 }));
 });
 
 test('anchor 옆의 좌표·cell 은 검색 범위라 거절하지 않는다', () => {

@@ -704,6 +704,33 @@ const NON_NEGATIVE_ADDRESS_KEYS = [
   'pageIndex', 'styleId',
 ] as const;
 
+/**
+ * cell 을 받는 텍스트·서식 도구. 표 좌표(controlIdx/cellIdx/cellParaIdx)를 cell 없이 최상위에 두면
+ * 무시된 채 표가 놓인 본문 문단을 고치게 되므로 고친 호출 꼴을 담아 거절한다 (rhwp-agent tools.mjs 와 같은 문구).
+ */
+const CELL_ADDRESSED_TOOLS: ReadonlySet<string> = new Set([
+  'insert_text', 'delete_range', 'replace_range', 'apply_char_format', 'apply_para_format', 'get_text_range',
+]);
+const STRAY_CELL_KEYS = ['controlIdx', 'cellIdx', 'cellParaIdx'] as const;
+
+function assertCellArgsPlacement(tool: string, args: Record<string, unknown>): void {
+  if (!CELL_ADDRESSED_TOOLS.has(tool) || (args['cell'] !== undefined && args['cell'] !== null)) return;
+  const given = (key: string) => args[key] !== undefined && args[key] !== null;
+  const stray = STRAY_CELL_KEYS.filter(given);
+  if (stray.length === 0) return;
+  const show = (key: string, fallback: string) => (typeof args[key] === 'number' ? String(args[key]) : fallback);
+  const tablePara = given('paraIdx') ? show('paraIdx', 'P') : show('startParaIdx', 'P');
+  const cell = `cell:{paraIdx:${tablePara},controlIdx:${show('controlIdx', '0')},cellIdx:${show('cellIdx', 'N')}}`;
+  const inner = show('cellParaIdx', '0');
+  const paraKeys = tool === 'delete_range' || tool === 'replace_range' ? 'startParaIdx/endParaIdx' : 'paraIdx';
+  throw new AgentToolError(
+    'INVALID_ARGS',
+    `${tool} got top-level ${stray.join('/')} without cell, which would edit the table's host paragraph instead of the cell. `
+      + `Put the cell address in ${cell} (paraIdx = the table's body paragraph from its get_structure line) `
+      + `and set ${paraKeys} to the paragraph inside the cell (${inner}), e.g. {${cell}, ${paraKeys.split('/')[0]}:${inner}, …}.`,
+  );
+}
+
 function assertNonNegativeAddress(args: Record<string, unknown>): void {
   for (const key of NON_NEGATIVE_ADDRESS_KEYS) {
     const v = args[key];
@@ -1076,6 +1103,7 @@ export class AgentToolExecutor {
   private dispatch(tool: string, rawArgs: unknown, agent: AgentName, capability?: ToolCapabilityContext): unknown {
     const args = rawArgs === undefined ? {} : asRecord(rawArgs);
     assertNonNegativeAddress(args);
+    assertCellArgsPlacement(tool, args);
     switch (tool) {
       case 'get_structure': return this.getStructure(args);
       case 'get_text_range': return this.getTextRange(args);

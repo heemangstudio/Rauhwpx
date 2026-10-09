@@ -393,6 +393,30 @@ function invalidArgs(message) {
   return err;
 }
 
+// cell 을 받는 텍스트·서식 도구. 표 좌표를 cell 없이 최상위에 두면 strict 스키마가 "Unrecognized key" 로만
+// 거절한다 — 고친 호출 꼴을 대신 알려 준다 (스튜디오 tool-executor 의 assertCellArgsPlacement 와 같은 문구).
+const CELL_ADDRESSED_TOOLS = new Set([
+  'insert_text', 'delete_range', 'replace_range', 'apply_char_format', 'apply_para_format', 'get_text_range',
+]);
+
+export function assertCellArgsPlacement(tool, args) {
+  if (!CELL_ADDRESSED_TOOLS.has(tool) || !args || typeof args !== 'object') return;
+  const given = (key) => args[key] !== undefined && args[key] !== null;
+  if (given('cell')) return;
+  const stray = ['controlIdx', 'cellIdx', 'cellParaIdx'].filter(given);
+  if (stray.length === 0) return;
+  const show = (key, fallback) => (typeof args[key] === 'number' ? String(args[key]) : fallback);
+  const tablePara = given('paraIdx') ? show('paraIdx', 'P') : show('startParaIdx', 'P');
+  const cell = `cell:{paraIdx:${tablePara},controlIdx:${show('controlIdx', '0')},cellIdx:${show('cellIdx', 'N')}}`;
+  const inner = show('cellParaIdx', '0');
+  const paraKeys = tool === 'delete_range' || tool === 'replace_range' ? 'startParaIdx/endParaIdx' : 'paraIdx';
+  throw invalidArgs(
+    `${tool} got top-level ${stray.join('/')} without cell, which would edit the table's host paragraph instead of the cell. `
+      + `Put the cell address in ${cell} (paraIdx = the table's body paragraph from its get_structure line) `
+      + `and set ${paraKeys} to the paragraph inside the cell (${inner}), e.g. {${cell}, ${paraKeys.split('/')[0]}:${inner}, …}.`,
+  );
+}
+
 /**
  * 스튜디오 결과를 MCP content 블록으로 변환한다.
  * result.image 가 { data(base64), mimeType } 모양이면 image 블록을 먼저 남고

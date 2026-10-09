@@ -32,7 +32,7 @@ import { WritingStyleStore, assertWritingStyleAppendCompatible } from './writing
 import { AgentInstructionsStore } from './agent-instructions.mjs';
 import { calibrateWritingStyle } from './style-calibrator.mjs';
 import { buildWritingStyleCatalog, resolveWritingStyleSelection } from './writing-style-catalog.mjs';
-import { filterToolDefinitions, TOOL_DEFINITIONS } from './tools.mjs';
+import { assertCellArgsPlacement, filterToolDefinitions, TOOL_DEFINITIONS } from './tools.mjs';
 import { resolveRenderSavePath, writeRenderPng } from './render-save.mjs';
 import { replayMissedTurnEnd } from './turn-outcome-replay.mjs';
 import {
@@ -4455,6 +4455,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       }
       let args;
       try {
+        assertCellArgsPlacement(tool, msg.args);
         args = toolArgSchema(tool, definition).parse(msg.args ?? {});
         definition.validate?.(args);
         if ((tool === 'present_implementation_plan' || tool === 'update_todos')
