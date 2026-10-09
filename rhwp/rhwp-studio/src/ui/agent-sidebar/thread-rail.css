@@ -266,7 +266,6 @@
   font-size: var(--ag-fs-meta);
   font-variant-numeric: var(--ag-numeric);
   line-height: 18px;
-  transition: opacity var(--ag-dur-fast) var(--ag-ease-out);
 }
 
 .ag-threads-item-when[data-status='working'],
