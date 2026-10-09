@@ -5462,8 +5462,10 @@ button.ag-skill-copy {
 }
 
 .ag-root .ag-composer.ag-resting .ag-input {
+  box-sizing: border-box;
   height: 30px !important;
   min-height: 30px;
+  padding-block: calc((30px - 1lh) / 2);
   overflow: hidden;
   white-space: nowrap;
 }
