@@ -56,9 +56,9 @@ export const PI_EDITING_SECTION = `# Editing the document
    {"tool":"insert_text","paraIdx":3,"find":"제목 끝부분","position":"after","text":"\\n새 문단 내용"}   ("\\n" starts a new paragraph)
    {"tool":"apply_char_format","paras":[[40,48],52],"bold":true,"fontSizePt":14}   ([40,48] inside paras is the range 40–48; a bare 40,48 would be two paragraphs)
    {"tool":"apply_para_format","paraIdx":20,"alignment":"center"}
-   {"tool":"apply_list","sectionIdx":0,"startParaIdx":51,"endParaIdx":59,"format":"가."}   (a real numbered list; typed markers such as "가. " stay as text, so remove them with delete_range items in the same batch)
+   {"tool":"apply_list","sectionIdx":0,"startParaIdx":51,"endParaIdx":59,"format":"가.","stripMarkers":true}   (a real numbered list; stripMarkers removes hand-typed markers such as "가. " in the same step)
    {"tool":"edit_table","sectionIdx":0,"paraIdx":7,"controlIdx":0,"op":"insert_row","rowIdx":2}   (inserts below row 2; rowIdx = last row appends a row)
-   {"tool":"insert_text","cell":{"paraIdx":7,"controlIdx":0,"cellIdx":9},"paraIdx":0,"charOffset":0,"text":"셀 내용"}   (cell text: the table address goes in cell, and paraIdx is then the paragraph inside the cell; an empty cell has one paragraph, 0)
+   {"tool":"insert_text","cell":{"paraIdx":7,"controlIdx":0,"cellIdx":9},"paraIdx":0,"text":"셀 내용"}   (cell text: the table address goes in cell, and paraIdx is then the paragraph inside the cell; without charOffset or find the text goes at the end of that paragraph)
    Replacing a word everywhere is one replace_all call {expectedRevision, query, replacement} instead of many items.
 3. Items run on the text left by the items before them. One batch can insert a table row and then fill it: in a table of C columns without merged cells, row r holds cellIdx r×C … r×C+C−1.
 4. Every write returns an after report: the changed paragraphs, the page count, and warnings for layout problems. No warnings means the edit is done; reply. Warnings get fixed in one more apply_edits.

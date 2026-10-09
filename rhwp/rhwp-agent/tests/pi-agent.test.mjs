@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import fs, { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test, { after } from 'node:test';
@@ -448,6 +448,21 @@ test('the core loadout enables tool_search and reaches the extension through the
   assert.equal(buildPiEnv(baseOpts, { RHWP_PI_LOADOUT: 'core' }).RHWP_PI_LOADOUT, 'core');
   assert.equal(buildPiEnv(baseOpts, { RHWP_PI_LOADOUT: 'bogus' }).RHWP_PI_LOADOUT, 'full');
   assert.equal(buildPiEnv({ ...baseOpts, piLoadout: 'core' }, {}).RHWP_PI_LOADOUT, 'core');
+});
+
+test('a spawn reads its system prompt from a session file instead of the command line', () => {
+  const piRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rhwp-pi-prompt-'));
+  try {
+    fs.mkdirSync(path.join(piRoot, 'sessions'));
+    const { session, spawns } = startSession({ piRoot, permissionProfile: 'unrestricted' });
+    session.sendUserMessage('edit');
+    const value = spawns[0].argv[spawns[0].argv.indexOf('--system-prompt') + 1];
+    assert.equal(path.dirname(value), path.join(piRoot, 'sessions'));
+    assert.match(fs.readFileSync(value, 'utf8'), /^You are the document agent inside Rauhwpx[\s\S]*Mode: 전체/);
+    session.dispose();
+  } finally {
+    fs.rmSync(piRoot, { recursive: true, force: true });
+  }
 });
 
 test('the system prompt follows the mode and an explicit override replaces it', () => {

@@ -79,6 +79,35 @@ test('batch items lose provider prefixes and legacy wrapped args are flattened w
   assert.deepEqual(reads[1], { tool: 'find_text', args: { query: '2024' } });
 });
 
+test('batch items without a tool get one only when it is unambiguous (shapes GLM 5.3 Flash sent)', () => {
+  const cell = (cellIdx) => ({ paraIdx: 60, controlIdx: 0, cellIdx });
+  const out = repair('apply_edits', {
+    expectedRevision: 9,
+    edits: [
+      { sectionIdx: 0, paraIdx: 60, controlIdx: 0, op: 'insert_row', rowIdx: 2 },
+      { cell: cell(9), paraIdx: 0, text: '2' },
+      { replace_range: { paraIdx: 3, find: '사엄', text: '사업' } },
+      { paraIdx: 4, find: '회사', text: '기업' },
+    ],
+  });
+  assert.equal(out.edits[0].tool, 'edit_table');
+  assert.equal(out.edits[1].tool, 'insert_text');
+  assert.deepEqual(out.edits[2], { paraIdx: 3, find: '사엄', text: '사업', tool: 'replace_range' });
+  // find 가 있으면 insert_text 인지 replace_range 인지 알 수 없다 — 그대로 둬서 스키마 오류가 돌아가게 한다.
+  assert.equal(out.edits[3].tool, undefined);
+});
+
+test('an anchor that repeats find is dropped and its position kept', () => {
+  const out = repair('insert_text', {
+    expectedRevision: 7, paraIdx: 1, find: 'A Study on', text: '요약\n',
+    anchor: { position: 'before', text: 'A Study on' },
+  });
+  assert.equal(out.anchor, undefined);
+  assert.equal(out.position, 'before');
+  const different = { expectedRevision: 7, find: 'A', anchor: { text: 'B' }, text: 'x' };
+  assert.deepEqual(repair('insert_text', different), different);
+});
+
 test('a whole-argument JSON string and a single object in an object-array slot are recovered', () => {
   assert.deepEqual(
     repair('read_batch', '{"reads":[{"tool":"get_selection"}]}'),

@@ -1,6 +1,7 @@
 // cross-spawn: Windows에서 npm .cmd 심을 인자 이스케이프 손상 없이 실행한다.
 import spawn from 'cross-spawn';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 
 import { toolProfileForPhase } from '../planning-state.mjs';
@@ -99,8 +100,10 @@ export function piLoadoutFor(opts, env = process.env) {
  * @param {PiBackendOptions & { piLoadout?: string }} opts
  * @param {string} sessionId
  * @param {NodeJS.ProcessEnv} [env] RHWP_PI_LOADOUT 을 읽는 환경
+ * @param {{ systemPromptPath?: string | null }} [options] 시스템 프롬프트를 담은 파일. pi 는
+ *   --system-prompt 값이 있는 파일 경로면 그 내용을 읽는다 — 긴 프롬프트가 명령줄 한계를 쓰지 않게 한다.
  */
-export function buildPiArgv(opts, sessionId, env = process.env) {
+export function buildPiArgv(opts, sessionId, env = process.env, { systemPromptPath = null } = {}) {
   const piRoot = opts.piRoot ?? '';
   const modelId = String(opts.model ?? '').replace(/^openrouter\//, '');
   const argv = ['--mode', 'json', '--model', `openrouter/${modelId}`];
@@ -110,7 +113,7 @@ export function buildPiArgv(opts, sessionId, env = process.env) {
     '--session-dir', path.join(piRoot, 'sessions'),
     '--session-id', sessionId,
     // Pi 의 코딩 어시스턴트 기본 프롬프트(도구 목록·규칙·Pi 문서 절)를 통째로 대체한다.
-    '--system-prompt', piSystemPromptFor({ ...opts, piLoadout: piLoadoutFor(opts, env) }),
+    '--system-prompt', systemPromptPath ?? piSystemPromptFor({ ...opts, piLoadout: piLoadoutFor(opts, env) }),
     // 워크스페이스의 CLAUDE.md/AGENTS.md 를 끌어오지 않는다.
     '--no-context-files',
     // ~/.agents/skills 같은 사용자 전역 스킬은 문서 에이전트와 무관한 프롬프트 잡음이다.
@@ -129,6 +132,28 @@ export function buildPiArgv(opts, sessionId, env = process.env) {
   else if (opts.toolProfile === 'copy-layout-worker') argv.push('--exclude-tools', SAFE_WORKER_EXCLUDED_TOOLS);
   else if (opts.permissionProfile !== 'unrestricted') argv.push('--exclude-tools', SAFE_EXCLUDED_TOOLS);
   return argv;
+}
+
+/**
+ * 이번 스폰의 시스템 프롬프트를 세션 폴더의 파일로 쓴다. 18K자 안팎의 프롬프트를 argv 에 싣지
+ * 않으므로 Windows 명령줄 32,767자 한계와 무관해진다. 쓰지 못하면 null — argv 에 글을 그대로 싣는다.
+ *
+ * @param {PiBackendOptions} opts
+ * @param {string} sessionId
+ * @returns {string | null}
+ */
+export function writeSystemPromptFile(opts, sessionId) {
+  if (!opts.piRoot) return null;
+  try {
+    // pi-manager 가 세션 폴더를 만든다. 없으면 설치되지 않은 루트이므로 만들지 않는다.
+    const dir = path.join(opts.piRoot, 'sessions');
+    if (!fs.statSync(dir).isDirectory()) return null;
+    const file = path.join(dir, `${sessionId}.system-prompt.md`);
+    fs.writeFileSync(file, piSystemPromptFor({ ...opts, piLoadout: piLoadoutFor(opts) }), { mode: 0o600 });
+    return file;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -545,7 +570,9 @@ export function createPiSession(opts, {
       // 프롬프트는 stdin 으로 넘긴다. argv 로 넘기면 Linux 의 인자당 128 KiB,
       // Windows 의 명령줄 32,767자 한계에 걸리고 '-'/'@' 로 시작하는 메시지가
       // 플래그나 첨부 파일로 파싱된다.
-      const argv = buildPiArgv(opts, sessionId);
+      const argv = buildPiArgv(opts, sessionId, process.env, {
+        systemPromptPath: writeSystemPromptFile(opts, sessionId),
+      });
       stderrTail = '';
 
       let proc;

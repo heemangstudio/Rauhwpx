@@ -196,12 +196,60 @@ export function coerceToSchema(value: unknown, schema: JsonSchema | undefined): 
 }
 
 /**
+ * find 와 같은 글을 가리키는 anchor 를 함께 보내면 도구가 거절한다 ("pass find or anchor, not both").
+ * anchor.text 가 find 와 같을 때만 anchor 를 버리고, 그 position/occurrence 는 비어 있는 쪽으로 옮긴다.
+ */
+export function dropRedundantAnchor(record: Record<string, unknown>): Record<string, unknown> {
+  const anchor = record.anchor;
+  if (typeof record.find !== 'string' || !isPlainObject(anchor) || anchor.text !== record.find) return record;
+  if (anchor.within !== undefined) return record;
+  const { anchor: _dropped, ...rest } = record;
+  if (rest.position === undefined && anchor.position !== undefined) rest.position = anchor.position;
+  if (rest.occurrence === undefined && anchor.occurrence !== undefined) rest.occurrence = anchor.occurrence;
+  return rest;
+}
+
+/** 텍스트 범위를 가리키는 키 — 있으면 insert_text 인지 replace_range 인지 가를 수 없다. */
+const RANGE_KEYS = Object.freeze(['find', 'anchor', 'startParaIdx', 'endParaIdx', 'startCharOffset', 'endCharOffset']);
+
+/**
+ * tool 이 빠진 배치 항목의 도구를 모호하지 않을 때만 정한다.
+ * - op 값을 enum 으로 가진 도구가 하나뿐이면 그 도구 (edit_table 의 insert_row 등)
+ * - 범위 키 없이 text 만 있으면 insert_text
+ * - {insert_text:{…}} 처럼 도구 이름 하나로 감싼 꼴은 펼친다
+ * 정할 수 없으면 null — 도구가 빠진 채로 보내 스키마 오류가 모델에게 돌아간다.
+ */
+export function inferEditItem(
+  record: Record<string, unknown>,
+  schemas: ReadonlyMap<string, JsonSchema>,
+): Record<string, unknown> | null {
+  const keys = Object.keys(record);
+  if (keys.length === 1 && schemas.has(String(stripToolPrefix(keys[0]))) && isPlainObject(record[keys[0]])) {
+    return { ...(record[keys[0]] as Record<string, unknown>), tool: stripToolPrefix(keys[0]) };
+  }
+  if (typeof record.op === 'string') {
+    const owners = [...schemas].filter(([, schema]) => {
+      const values = schema?.properties?.op?.enum;
+      return Array.isArray(values) && values.includes(record.op);
+    });
+    return owners.length === 1 ? { ...record, tool: owners[0][0] } : null;
+  }
+  if (typeof record.text === 'string' && schemas.has('insert_text')
+    && !RANGE_KEYS.some((key) => record[key] !== undefined)) {
+    return { ...record, tool: 'insert_text' };
+  }
+  return null;
+}
+
+/**
  * apply_edits 항목을 평평한 {tool, …인자} 로 만든다. 옛 {tool, args:{…}} 꼴은 펼치고,
  * 둘 다 있으면 평평한 키가 이긴다. 대상 도구의 스키마로 값도 맞춘다.
  */
 function repairEditItem(item: unknown, schemas: ReadonlyMap<string, JsonSchema>): unknown {
   let record = typeof item === 'string' ? parseJsonText(item) : item;
   if (!isPlainObject(record)) return item;
+  if (record.tool === undefined) record = inferEditItem(record, schemas) ?? record;
+  record = dropRedundantAnchor(record as Record<string, unknown>);
   const tool = stripToolPrefix(record.tool);
   const { args: rawArgs, ...flat } = record;
   let nested: unknown = rawArgs;
@@ -252,7 +300,7 @@ export function repairToolArguments(
     if (isPlainObject(parsed)) next = parsed;
   }
   if (!isPlainObject(next)) return args;
-  let repaired = coerceToSchema(next, schema) as Record<string, unknown>;
+  let repaired = dropRedundantAnchor(coerceToSchema(next, schema) as Record<string, unknown>);
   if (toolName === 'apply_edits' && Array.isArray(repaired.edits)) {
     repaired = { ...repaired, edits: repaired.edits.map((item) => repairEditItem(item, schemas)) };
   } else if (toolName === 'read_batch' && Array.isArray(repaired.reads)) {
