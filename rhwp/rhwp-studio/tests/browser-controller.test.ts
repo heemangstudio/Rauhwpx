@@ -7,12 +7,12 @@ import { createBrowserController } from '../src/ui/agent-sidebar/browser-control
 function fixture(nativePresentation = false) {
   const listeners = new Set<(event: BrowserEvent) => void>();
   const actions: string[] = [];
-  let respond: (action: string) => Promise<BrowserResult> = async () => ({});
+  let respond: (action: string, args: Record<string, unknown>) => Promise<BrowserResult> = async () => ({});
   const bridge = {
     getConnectionState: () => 'connected',
     onBrowserEvent(handler: (event: BrowserEvent) => void) { listeners.add(handler); return () => listeners.delete(handler); },
     onEvent(_handler: (event: SidebarEvent) => void) { return () => undefined; },
-    async requestBrowser(action: string) { actions.push(action); return respond(action); },
+    async requestBrowser(action: string, args: Record<string, unknown>) { actions.push(action); return respond(action, args); },
   } as unknown as SidebarBridge;
   return { controller: createBrowserController(bridge, { nativePresentation }), actions,
     emit(event: BrowserEvent) { for (const handler of listeners) handler(event); },
@@ -99,5 +99,52 @@ test('허브 재시작으로 세대가 낮아져도 새 타깃과 조작권을 �
   f.emit({ type: 'owned_browser_inventory', runtime: oldRuntime, tabs: [oldTab] });
   assert.deepEqual(f.controller.tab(), fresh);
   assert.equal(f.controller.state.runtime.runtimeId, 'new-hub');
+  f.controller.dispose();
+});
+
+
+test('탭 닫기는 선택한 탭의 탐색·조작·런타임 세대를 보내고 다른 활성 탭을 유지한다', async () => {
+  const f = fixture(true);
+  const active = { ...tab(2, 3), runtime: 'native' as const, runtimeGeneration: 7 };
+  const inactive = { ...tab(5, 6), tabId: 'inactive', runtime: 'native' as const, runtimeGeneration: 7, status: 'disconnected' as const };
+  f.emit({ type: 'owned_browser_inventory', tabs: [active, inactive] });
+  f.controller.select(active.tabId);
+  f.respond(async (action, args) => {
+    if (action !== 'close') return {};
+    const target = [active, inactive].find(row => row.tabId === args.tabId)!;
+    if (args.navigationEpoch !== target.navigationEpoch || args.controllerEpoch !== target.controllerEpoch || args.runtimeGeneration !== target.runtimeGeneration) throw new Error('Refresh the browser state before sending input.');
+    return {};
+  });
+  await f.controller.close(inactive.tabId);
+  assert.equal(f.controller.tab()?.tabId, active.tabId);
+  assert.deepEqual(f.controller.state.tabs, [active]);
+  await f.controller.close(active.tabId);
+  assert.equal(f.controller.tab(), null);
+  assert.deepEqual(f.controller.state.tabs, []);
+  f.controller.dispose();
+});
+
+test('오래된 세대의 탭 닫기가 거절되면 목록과 활성 페이지를 유지한다', async () => {
+  const f = fixture(true); const active = { ...tab(2, 3), runtime: 'native' as const, runtimeGeneration: 7 };
+  const other = { ...active, tabId: 'survivor' };
+  f.emit({ type: 'owned_browser_inventory', tabs: [active, other] });
+  f.controller.select(active.tabId);
+  f.respond(async () => { throw new Error('Refresh the browser state before sending input.'); });
+  await assert.rejects(f.controller.close(active.tabId), /Refresh the browser state/);
+  assert.deepEqual(f.controller.state.tabs, [active, other]); assert.equal(f.controller.tab()?.tabId, active.tabId);
+  f.respond(async () => ({})); await f.controller.close(active.tabId);
+  assert.equal(f.controller.tab()?.tabId, other.tabId);
+  f.controller.dispose();
+});
+
+
+test('활성 탭을 닫으면 인접한 탭을 선택하고 마지막 탭은 앞 탭으로 돌아간다', async () => {
+  const f = fixture(true); const rows = ['old', 'previous', 'selected', 'next'].map(tabId => ({ ...tab(2, 3), tabId, runtime: 'native' as const }));
+  f.emit({ type: 'owned_browser_inventory', tabs: rows }); f.controller.select('selected');
+  f.respond(async (_action, args) => ({ tabs: f.controller.state.tabs.filter(row => row.tabId !== args.tabId) }));
+  await f.controller.close('selected'); assert.equal(f.controller.tab()?.tabId, 'next');
+  await f.controller.close('next'); assert.equal(f.controller.tab()?.tabId, 'previous');
+  await f.controller.close('old'); assert.equal(f.controller.tab()?.tabId, 'previous');
+  await f.controller.close('previous'); assert.equal(f.controller.tab(), null);
   f.controller.dispose();
 });

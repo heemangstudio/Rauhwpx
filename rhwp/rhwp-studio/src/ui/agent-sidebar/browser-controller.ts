@@ -19,10 +19,11 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
     connected: bridge.getConnectionState() === 'connected', busy: false, error: null,
   };
   try { state.activeTabId = localStorage.getItem('rhwp.browser.active-tab'); } catch { /* 공유 화면에서는 기록이 없을 수 있다. */ }
-  const rememberTab = () => { try { if (state.activeTabId) localStorage.setItem('rhwp.browser.active-tab', state.activeTabId); } catch { /* 저장소 제한 */ } };
+  const rememberTab = () => { try { if (state.activeTabId) localStorage.setItem('rhwp.browser.active-tab', state.activeTabId); else localStorage.removeItem('rhwp.browser.active-tab'); } catch { /* 저장소 제한 */ } };
   const listeners = new Set<() => void>();
   let disposed = false;
   let refreshSequence = 0;
+  let selectionSequence = 0;
   let frameRequest: Promise<void> | null = null;
   const retiredRuntimeIds = new Set<string>();
   const notify = () => { if (!disposed) for (const listener of listeners) listener(); };
@@ -136,17 +137,21 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
     subscribe(callback: () => void) { listeners.add(callback); return () => { listeners.delete(callback); }; },
     select(tabId: string) {
       if (!state.tabs.some((row) => row.tabId === tabId)) return;
-      state.activeTabId = tabId; rememberTab(); notify(); void readFrame();
+      selectionSequence++; state.activeTabId = tabId; rememberTab(); notify(); void readFrame();
     },
     async open(url = 'https://www.google.com/') {
       const result = await action('open', { url });
-      if (result.tab) { state.activeTabId = result.tab.tabId; rememberTab(); notify(); void readFrame(); }
+      if (result.tab) { selectionSequence++; state.activeTabId = result.tab.tabId; rememberTab(); notify(); void readFrame(); }
     },
     async close(tabId: string) {
-      await action('close', { tabId });
+      const target = state.tabs.find((row) => row.tabId === tabId);
+      if (!target) return;
+      const index = state.tabs.indexOf(target); const wasActive = state.activeTabId === tabId; const selected = selectionSequence;
+      const adjacent = state.tabs[index + 1]?.tabId ?? state.tabs[index - 1]?.tabId ?? null;
+      await action('close', identity(target));
       state.tabs = state.tabs.filter((row) => row.tabId !== tabId); state.frames.delete(tabId);
-      if (state.activeTabId === tabId) state.activeTabId = state.tabs[0]?.tabId ?? null;
-      notify();
+      if (wasActive && selected === selectionSequence) state.activeTabId = state.tabs.find(row => row.tabId === adjacent)?.tabId ?? state.tabs[Math.min(index, state.tabs.length - 1)]?.tabId ?? null;
+      rememberTab(); notify(); void readFrame();
     },
     dispose() { disposed = true; refreshSequence++; unsubscribe(); unsubscribeConnection(); listeners.clear(); state.frames.clear(); },
   };
