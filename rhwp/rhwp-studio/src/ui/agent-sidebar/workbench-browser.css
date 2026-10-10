@@ -1,5 +1,5 @@
 /* 작은 도구를 같은 줄에 묶고 페이지에 가장 넓은 자리를 남긴다. */
-.ag-browser { --browser-border: color-mix(in srgb, currentColor 12%, transparent); container-type: inline-size; display: flex; flex-direction: column; min-width: 0; height: 100%; overflow: hidden; background: var(--ag-bg, var(--n-surface, #fafaf9)); color: var(--ag-text, var(--n-text, #20251f)); font: 12px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+.ag-browser { position: relative; --browser-border: color-mix(in srgb, currentColor 12%, transparent); container-type: inline-size; display: flex; flex-direction: column; min-width: 0; height: 100%; overflow: hidden; background: var(--ag-bg, var(--n-surface, #fafaf9)); color: var(--ag-text, var(--n-text, #20251f)); font: 12px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
 .ag-browser [hidden],.ag-browser[hidden] { display: none; }
 .ag-browser button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--browser-border); border-radius: 7px; background: transparent; color: inherit; padding: 5px 9px; font: inherit; cursor: pointer; white-space: nowrap; touch-action: manipulation; }
 .ag-browser button:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
@@ -38,16 +38,25 @@
 .ag-browser-ime { position: absolute; width: 1px; height: 1px; left: 8px; bottom: 8px; opacity: .01; resize: none; border: 0; padding: 0; overflow: hidden; }
 .ag-browser-picking { cursor: crosshair; }
 .ag-browser-selection { position: absolute; pointer-events: none; border: 2px solid #497958; background: #49795822; }
-.ag-browser-annotation { padding: 10px; border-top: 1px solid var(--browser-border); display: flex; flex-wrap: wrap; gap: 7px; flex-shrink: 0; }
-.ag-browser-annotation[hidden] { display: none; }
-.ag-browser-annotation strong,.ag-browser-annotation p,.ag-browser-annotation textarea,.ag-browser-annotation [role=status] { flex: 1 0 100%; }
-.ag-browser-annotation strong { overflow-wrap: anywhere; }
-.ag-browser-annotation p { margin: 0; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
-.ag-browser-annotation textarea { min-height: 58px; max-height: 140px; resize: vertical; background: transparent; color: inherit; font: inherit; border: 1px solid var(--browser-border); padding: 8px; border-radius: 5px; }
-.ag-browser-annotation-modes { display: flex; gap: 5px; }
-.ag-browser-annotation-modes [aria-pressed=true] { background: color-mix(in srgb, currentColor 13%, transparent); }
-.ag-browser-downloads { flex-shrink: 0; max-height: 230px; overflow: auto; border-top: 1px solid var(--browser-border); padding: 10px; }
-.ag-browser-downloads h3 { font-size: 12px; margin: 0 0 8px; }
+/* 보조 작업은 페이지 크기를 유지하는 작은 도구 팝오버로 연다. */
+.ag-browser-annotation,.ag-browser-downloads { position: absolute; z-index: 12; top: var(--browser-popover-top, 44px); right: 8px; width: min(296px, calc(100% - 16px)); max-height: var(--browser-popover-height, calc(100% - 60px)); box-sizing: border-box; overflow: auto; border: 1px solid var(--browser-border); border-radius: 12px; padding: 12px; background: var(--ag-bg, var(--n-surface, #fafaf9)); box-shadow: 0 8px 28px #0003, 0 2px 5px #0001; }
+.ag-browser-annotation { display: flex; flex-direction: column; gap: 9px; }
+.ag-browser-popover-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; }
+.ag-browser-popover-header>strong { font-size: 12px; font-weight: 600; }
+.ag-browser .ag-browser-popover-header button.ag-browser-icon { width: 22px; height: 22px; flex-basis: 22px; margin: -3px -3px -3px 0; }
+.ag-browser-popover-header .ag-icon { width: 13px; height: 13px; }
+.ag-browser-annotation>strong { font-size: 10px; font-weight: 400; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-browser-annotation p { margin: 0; font-size: 11px; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
+.ag-browser-annotation textarea { width: 100%; box-sizing: border-box; min-height: 64px; max-height: 120px; resize: vertical; background: color-mix(in srgb, currentColor 3%, transparent); color: inherit; font: inherit; border: 1px solid var(--browser-border); padding: 8px; border-radius: 7px; }
+.ag-browser-annotation [role=status]:empty { display: none; }
+.ag-browser-annotation [role=status] { font-size: 11px; overflow-wrap: anywhere; }
+.ag-browser-annotation-modes { display: flex; gap: 2px; border-radius: 7px; padding: 2px; background: color-mix(in srgb, currentColor 5%, transparent); }
+.ag-browser-annotation-modes button { flex: 1; border-color: transparent; padding: 4px 5px; font-size: 11px; border-radius: 5px; }
+.ag-browser-annotation-modes [aria-pressed=true] { background: var(--ag-bg, var(--n-surface, #fafaf9)); box-shadow: 0 1px 3px #0002; }
+.ag-browser-annotation-actions { display: flex; justify-content: flex-end; }
+.ag-browser-annotation-actions button { font-weight: 500; background: color-mix(in srgb, currentColor 8%, transparent); }
+.ag-browser-downloads>.ag-browser-popover-header { margin-bottom: 8px; }
+.ag-browser-downloads>p { margin: 8px 0 2px; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); font-size: 11px; }
 .ag-browser-download { display: flex; flex-wrap: wrap; gap: 6px; border-top: 1px solid var(--browser-border); padding: 8px 0; }
 .ag-browser-download strong,.ag-browser-download>span { flex: 1 0 100%; overflow-wrap: anywhere; }
 .ag-browser-download>span { font-size: 11px; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
