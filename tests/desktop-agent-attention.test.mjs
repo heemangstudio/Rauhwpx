@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
   AgentAttention,
+  PACKAGED_APP_USER_MODEL_ID,
+  applyAppUserModelId,
   normalizeAttentionCount,
   normalizeAttentionNotice,
 } from '../desktop/native-shell.mjs';
@@ -32,7 +35,7 @@ function fakeWindow(id, { focused = false, minimized = false } = {}) {
   return window;
 }
 
-function setup(platform, { supported = true } = {}) {
+function setup(platform, { supported = true, now = () => 0 } = {}) {
   const shown = [];
   const badges = [];
   const bounces = [];
@@ -58,7 +61,7 @@ function setup(platform, { supported = true } = {}) {
       return { overlay: true };
     },
   };
-  const attention = new AgentAttention({ app, Notification: FakeNotification, nativeImage, platform });
+  const attention = new AgentAttention({ app, Notification: FakeNotification, nativeImage, platform, now });
   return { attention, shown, badges, bounces, bitmaps };
 }
 
@@ -75,10 +78,11 @@ test('a focused window gets no notification, and malformed notices are dropped',
 test('clicking a notification restores and focuses its window and opens the chat', () => {
   const { attention, shown, bounces } = setup('darwin');
   const window = fakeWindow(1, { minimized: true });
-  attention.notify(window, { threadId: 'thread-1', title: '표 정리', body: '검토할 변경이 있습니다 · 회의록.hwpx' });
+  // 렌더러는 기본으로 채팅 제목과 문서 이름 없이 앱 이름과 문구만 보낸다.
+  attention.notify(window, { threadId: 'thread-1', title: 'Rauhwpx', body: '검토할 변경이 있습니다' });
   assert.deepEqual(bounces, ['informational']);
   assert.equal(shown.length, 1);
-  assert.deepEqual(shown[0].options, { title: '표 정리', body: '검토할 변경이 있습니다 · 회의록.hwpx', silent: false });
+  assert.deepEqual(shown[0].options, { title: 'Rauhwpx', body: '검토할 변경이 있습니다', silent: false });
   assert.equal(shown[0].shown, true);
   shown[0].emit('click');
   assert.deepEqual(window.calls, [
@@ -156,4 +160,58 @@ test('notice text and counts are bounded', () => {
   assert.equal(normalizeAttentionCount('7'), 7);
   assert.equal(normalizeAttentionCount(Number.NaN), 0);
   assert.equal(normalizeAttentionCount(123456), 9999);
+});
+
+test('a window raises at most one notification per chat per 10 s and six per minute; extras are dropped silently', () => {
+  for (const platform of ['darwin', 'win32', 'linux']) {
+    let clock = 1_000_000;
+    const { attention, shown, bounces } = setup(platform, { now: () => clock });
+    const window = fakeWindow(1);
+    const other = fakeWindow(2);
+    const flashes = () => window.calls.filter(([name, on]) => name === 'flashFrame' && on === true).length;
+    const notify = (target, threadId) => attention.notify(target, { threadId, title: 'Rauhwpx', body: '작업을 마쳤습니다' });
+
+    notify(window, 'thread-a');
+    notify(window, 'thread-a');
+    clock += 9_999;
+    notify(window, 'thread-a');
+    assert.equal(shown.length, 1, `${platform}: the same chat within 10 s is dropped`);
+    clock += 1;
+    notify(window, 'thread-a');
+    assert.equal(shown.length, 2, `${platform}: after 10 s the chat may notify again`);
+
+    for (let index = 0; index < 10; index += 1) notify(window, `burst-${index}`);
+    assert.equal(shown.length, 6, `${platform}: six per minute per window`);
+    notify(other, 'thread-a');
+    assert.equal(shown.length, 7, `${platform}: another window has its own budget`);
+    const bouncedOrFlashed = platform === 'darwin' ? bounces.length : flashes() + other.calls.filter(([name]) => name === 'flashFrame').length;
+    assert.equal(bouncedOrFlashed, 7, `${platform}: a dropped notice neither bounces nor flashes`);
+
+    clock += 60_000;
+    notify(window, 'burst-9');
+    assert.equal(shown.length, 8, `${platform}: the minute window slides`);
+
+    // 닫힌 창의 기록은 잊는다 — 같은 id 의 새 창은 처음부터 센다.
+    for (let index = 0; index < 6; index += 1) notify(window, `late-${index}`);
+    attention.forget(1);
+    notify(fakeWindow(1), 'late-0');
+    assert.equal(shown.length, 14, `${platform}: a closed window's budget is forgotten`);
+  }
+});
+
+test('Windows notifications use the installer app id when packaged and the executable path in development', () => {
+  const calls = [];
+  const fakeApp = (isPackaged) => ({ isPackaged, setAppUserModelId: (id) => calls.push(id) });
+  assert.equal(applyAppUserModelId({ app: fakeApp(true), platform: 'win32', execPath: 'C:\\Rauhwpx\\Rauhwpx.exe' }), PACKAGED_APP_USER_MODEL_ID);
+  assert.equal(
+    applyAppUserModelId({ app: fakeApp(false), platform: 'win32', execPath: 'C:\\dev\\electron.exe' }),
+    'C:\\dev\\electron.exe',
+    'an unpackaged run does not claim the installed app id',
+  );
+  assert.equal(applyAppUserModelId({ app: fakeApp(true), platform: 'darwin' }), null);
+  assert.equal(applyAppUserModelId({ app: fakeApp(false), platform: 'linux' }), null);
+  assert.deepEqual(calls, [PACKAGED_APP_USER_MODEL_ID, 'C:\\dev\\electron.exe']);
+  // 설치 바로가기의 id 는 electron-builder 의 build.appId 다.
+  const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(PACKAGED_APP_USER_MODEL_ID, packageJson.build.appId);
 });

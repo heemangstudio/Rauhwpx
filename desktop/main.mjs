@@ -68,6 +68,7 @@ import { installAppMenu } from './app-menu.mjs';
 import {
   AgentAttention,
   WindowFrameStore,
+  applyAppUserModelId,
   applyDocumentState,
   installTextContextMenu,
   popupContextMenu,
@@ -132,7 +133,8 @@ function sessionForEvent(event) {
 
 app.setName('Rauhwpx');
 // Windows 는 이 id 가 설치 바로가기(package.json build.appId)와 같아야 앱의 알림을 띄운다.
-if (process.platform === 'win32') app.setAppUserModelId('com.hataewook.rauhwpx');
+// 개발 실행은 실행 파일 경로를 쓴다 — 바로가기가 없고, 설치된 앱의 알림을 가로채지 않는다.
+applyAppUserModelId({ app });
 if (!app.isPackaged) {
   const developmentUserData = process.env.RHWP_DESKTOP_USER_DATA
     ? resolve(process.env.RHWP_DESKTOP_USER_DATA)

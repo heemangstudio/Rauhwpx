@@ -125,6 +125,26 @@ export class WindowFrameStore {
 const ATTENTION_THREAD_ID = /^[\w.:-]{1,128}$/;
 const ATTENTION_TEXT_MAX = 200;
 const ATTENTION_COUNT_MAX = 9999;
+/** 한 창에서 같은 채팅의 알림 사이 최소 간격. */
+const ATTENTION_THREAD_INTERVAL_MS = 10_000;
+/** 한 창이 1분에 올릴 수 있는 알림 수. */
+const ATTENTION_WINDOW_LIMIT = 6;
+const ATTENTION_WINDOW_SPAN_MS = 60_000;
+
+/** Windows 알림의 앱 id — 설치본의 시작 메뉴 바로가기(package.json build.appId)와 같아야 한다. */
+export const PACKAGED_APP_USER_MODEL_ID = 'com.hataewook.rauhwpx';
+
+/**
+ * Windows 는 앱 id 가 시작 메뉴 바로가기의 id 와 같을 때만 그 앱의 알림을 띄운다. 설치본은
+ * build.appId 를, 바로가기가 없는 개발 실행은 실행 파일 경로를 쓴다(Electron 이 권하는 개발용 id) —
+ * 개발 실행이 설치된 앱의 id 로 알림을 가로채지 않는다. 다른 플랫폼은 아무것도 하지 않는다.
+ */
+export function applyAppUserModelId({ app, platform = process.platform, execPath = process.execPath }) {
+  if (platform !== 'win32') return null;
+  const id = app.isPackaged ? PACKAGED_APP_USER_MODEL_ID : execPath;
+  app.setAppUserModelId(id);
+  return id;
+}
 
 /**
  * 렌더러가 보낸 백그라운드 채팅 알림을 검증한다. 채팅 id 가 맞지 않으면 null(버린다).
@@ -170,7 +190,8 @@ function attentionDotBitmap() {
  *
  * - notify: 초점 없는 창의 채팅만 알린다(초점이 있으면 렌더러가 토스트로 대신한다 — 경쟁을 막는다).
  *   macOS 는 Dock 을 튕기고, Windows·Linux 는 작업 표시줄 단추를 깜빡인다. 알림을 누르면 창을
- *   되살려 앞으로 가져오고 그 채팅을 열게 한다.
+ *   되살려 앞으로 가져오고 그 채팅을 열게 한다. 렌더러가 고장 나거나 탈취돼도 알림을 쏟아내지
+ *   못하게 창마다 같은 채팅은 10초에 한 번, 모두 합쳐 1분에 6번까지만 알리고 나머지는 조용히 버린다.
  * - setCount/forget: macOS·Linux 는 창들의 합을 앱 배지(app.setBadgeCount)로, Windows 는 창마다
  *   자기 수로 작업 표시줄 겹침 표시를 단다.
  * - focused: 창이 초점을 얻으면 깜빡임을 멈춘다.
@@ -182,21 +203,26 @@ export class AgentAttention {
   #Notification;
   #nativeImage;
   #platform;
+  #now;
   /** windowId → { window, count } */
   #counts = new Map();
+  /** windowId → { times: 최근 1분의 알림 시각, threads: threadId → 마지막 알림 시각 } */
+  #recent = new Map();
   #notifications = new Set();
   #overlay = null;
 
-  constructor({ app, Notification, nativeImage = null, platform = process.platform }) {
+  constructor({ app, Notification, nativeImage = null, platform = process.platform, now = Date.now }) {
     this.#app = app;
     this.#Notification = Notification;
     this.#nativeImage = nativeImage;
     this.#platform = platform;
+    this.#now = now;
   }
 
   notify(window, payload) {
     const notice = normalizeAttentionNotice(payload);
     if (!notice || !window || window.isDestroyed() || window.isFocused()) return;
+    if (!this.#admit(window.id, notice.threadId)) return;
     try {
       if (this.#platform === 'darwin') this.#app.dock?.bounce('informational');
       else window.flashFrame?.(true);
@@ -236,7 +262,26 @@ export class AgentAttention {
   }
 
   forget(windowId) {
+    this.#recent.delete(windowId);
     if (this.#counts.delete(windowId)) this.#syncBadge();
+  }
+
+  /** 이 창의 이 채팅 알림을 지금 올려도 되는가 — 되면 시각을 남긴다. */
+  #admit(windowId, threadId) {
+    const at = this.#now();
+    let entry = this.#recent.get(windowId);
+    if (!entry) {
+      entry = { times: [], threads: new Map() };
+      this.#recent.set(windowId, entry);
+    }
+    entry.times = entry.times.filter((time) => at - time < ATTENTION_WINDOW_SPAN_MS);
+    for (const [id, time] of entry.threads) {
+      if (at - time >= ATTENTION_THREAD_INTERVAL_MS) entry.threads.delete(id);
+    }
+    if (entry.threads.has(threadId) || entry.times.length >= ATTENTION_WINDOW_LIMIT) return false;
+    entry.times.push(at);
+    entry.threads.set(threadId, at);
+    return true;
   }
 
   focused(window) {
