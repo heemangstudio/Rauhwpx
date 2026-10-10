@@ -8,7 +8,7 @@
  *   끝나면 그 채팅으로 돌아가 답변 전체가 보이는지 확인한다.
  *
  * 먼저 npm run dev:sidebar 를 실행한다.
- * 실행: node e2e/chat-stream-frame-bench.mjs [--url=http://127.0.0.1:7715] [--runs=3]
+ * 실행: node bench/chat-stream-frame-bench.mjs [--url=http://127.0.0.1:7715] [--runs=3]
  *       [--tokens-per-frame=4] [--json=out.json]
  */
 import { writeFileSync } from 'node:fs';
