@@ -16,6 +16,8 @@ import {
   Notification as ElectronNotification,
   protocol,
   safeStorage,
+  systemPreferences,
+  webContents,
   screen,
   session as electronSession,
   shell,
@@ -68,6 +70,8 @@ import { resolveProfileDirectories } from './profile-continuity.mjs';
 import { createRebrandImportController } from './rebrand-import-controller.mjs';
 import { createSecretVault, handleSecretRequest } from './secret-vault.mjs';
 import { OwnedBrowserHost } from './browser-host.mjs';
+import { NativeBrowserPasswords, registerBrowserPasswordIpc } from './browser-passwords.mjs';
+import { BrowserWebAuthn } from './browser-webauthn.mjs';
 import { removeRetiredCloudData } from './retired-cloud-data.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
 import { createUpdateLifecycle, completeWindowClose } from './update-lifecycle.mjs';
@@ -550,6 +554,22 @@ const browserHost = new OwnedBrowserHost({
     )) ?? null;
   },
 });
+new NativeBrowserPasswords({
+  host: browserHost,
+  dataDir: join(app.getPath('userData'), 'browser', 'password-vault'),
+  safeStorage,
+  Menu,
+});
+const browserWebAuthn = new BrowserWebAuthn({
+  app, dialog, systemPreferences,
+  getTabForFrame: (frame) => {
+    const contents = webContents.fromFrame(frame);
+    return [...browserHost.tabs.values()].find((tab) => !tab.closing && tab.view.webContents === contents);
+  },
+  getWindowForTab: (tab) => tab.placement?.window ?? browserHost.getWindowForSession(tab.sessionId),
+  onState: (tab, extra) => browserHost.emit(tab, 'authentication', extra),
+});
+browserHost.webAuthn = browserWebAuthn;
 const documentLeases = new DocumentLeaseManager();
 const nativeFiles = new NativeFileHandleRegistry();
 const nativeBookmarkFile = join(app.getPath('userData'), 'native-document-bookmarks.json');
@@ -1502,6 +1522,8 @@ function browserWindowForEvent(event) {
   if (event.senderFrame !== event.sender.mainFrame) throw new Error('Native browser IPC requires the owning main frame');
   return window;
 }
+registerBrowserPasswordIpc({ ipcMain, browserHost, browserWindowForEvent });
+ipcMain.handle('desktop:browser-zoom', (event, payload) => browserHost.zoom(browserWindowForEvent(event), payload));
 ipcMain.handle('desktop:browser-attach', (event, payload) => browserHost.attach(browserWindowForEvent(event), payload));
 ipcMain.handle('desktop:browser-detach', (event, payload) => browserHost.detach(browserWindowForEvent(event), payload));
 ipcMain.handle('desktop:browser-state', (event, payload) => browserHost.state(browserHost.ownedTab(payload?.tabId, browserWindowForEvent(event))));
@@ -1591,6 +1613,8 @@ if (!hasSingleInstanceLock) {
     secretVault = createSecretVault({
       filePath: join(app.getPath('userData'), 'secrets.json'),
       safeStorage,
+  systemPreferences,
+  webContents,
     });
     // 2.0.10까지 Cloud·계정 기능이 남긴 자격 증명과 파일을 지운다. 허브의 비밀 요청보다 먼저 큐에 넣는다.
     void bestEffortStartupCleanup(
@@ -1599,6 +1623,7 @@ if (!hasSingleInstanceLock) {
     );
     // 허브는 비밀 저장소가 생긴 직후 띄워 첫 창과 나란히 준비한다(허브의 비밀 요청은 이 저장소로 간다).
     // 실패는 아래에서 기다려 알린다.
+    await browserWebAuthn.configure();
     const hubStartup = hubOwner.ensure();
     hubStartup.catch(() => {});
     configureAutoUpdater();
