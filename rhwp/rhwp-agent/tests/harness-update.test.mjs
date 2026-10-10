@@ -45,6 +45,19 @@ test('bounded registry metadata still validates and normalizes semver', async ()
   });
 });
 
+test('a pinned version is fetched by exact version and must come back as that version', async () => {
+  const urls = [];
+  const registry = (version) => async (url) => {
+    urls.push(String(url));
+    return { ok: true, status: 200, json: async () => ({ version, dist: { tarball: 'https://registry.test/p.tgz' } }) };
+  };
+  assert.equal((await fetchLatestPackage(registry('1.1.0'), '@scope/package', 1_000, '1.1.0')).version, '1.1.0');
+  assert.equal(urls[0], 'https://registry.npmjs.org/@scope%2Fpackage/1.1.0');
+  await assert.rejects(fetchLatestPackage(registry('2.0.0'), '@scope/package', 1_000, '1.1.0'), /returned 2\.0\.0/);
+  await fetchLatestPackage(registry('2.0.0'), '@scope/package');
+  assert.equal(urls.at(-1), 'https://registry.npmjs.org/@scope%2Fpackage/latest');
+});
+
 test('an uncertain installer keeps its staging prefix for the live process', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-update-cleanup-'));
   const prefixDir = path.join(root, 'prefix');

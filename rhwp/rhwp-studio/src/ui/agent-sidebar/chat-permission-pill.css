@@ -1,0 +1,44 @@
+.ag-permission-pill {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--ag-border-strong);
+  border-radius: 18px;
+  color: var(--ag-text);
+  background: var(--ag-input-bg);
+  font-size: 12px;
+}
+
+.ag-permission-grant,
+.ag-permission-deny {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ag-permission-grant {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.ag-permission-label { font-weight: 600; }
+.ag-permission-status { color: var(--ag-accent-strong); }
+.ag-permission-deny { padding: 2px 4px; font-size: 18px; color: var(--ag-text-muted); }
+.ag-permission-grant:disabled,
+.ag-permission-deny:disabled { cursor: default; opacity: .6; }
+.ag-permission-grant:focus-visible,
+.ag-permission-deny:focus-visible { outline: var(--ag-focus-ring); outline-offset: 3px; border-radius: 12px; }
+.ag-permission-pill[data-status='granted'] { border-color: color-mix(in srgb, var(--ag-accent) 35%, var(--ag-border)); }
+.ag-permission-pill[data-status='denied'] .ag-permission-status,
+.ag-permission-pill[data-status='expired'] .ag-permission-status { color: var(--ag-text-muted); }
+.ag-permission-error { flex-basis: 100%; padding: 2px; color: var(--ag-text-muted); font-size: 11px; }

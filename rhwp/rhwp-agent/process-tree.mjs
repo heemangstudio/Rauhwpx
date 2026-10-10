@@ -56,6 +56,11 @@ function validPid(child) {
   return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
+/** Node records a negative libuv exit code when spawn failed before creating an OS process. */
+function spawnFailedWithoutProcess(child) {
+  return validPid(child) === null && Number.isInteger(child?.exitCode) && child.exitCode < 0;
+}
+
 function windowsTaskkillPath(sourceEnv) {
   const systemRoot = sourceEnv?.SystemRoot ?? sourceEnv?.WINDIR;
   if (typeof systemRoot !== 'string' || !win32.isAbsolute(systemRoot)) return null;
@@ -92,6 +97,7 @@ export function waitForProcessTreeExit(child, {
   terminateProcess = terminateProcessTree,
 } = {}) {
   if (!child) return Promise.resolve(true);
+  if (spawnFailedWithoutProcess(child)) return Promise.resolve(true);
   if (child.exitCode != null || child.signalCode != null) {
     const pid = validPid(child);
     if (!activeTerminations.has(child) && !completedTerminations.has(child) && pid !== null) {
@@ -220,6 +226,10 @@ export function terminateProcessTree(child, {
   env = process.env,
 } = {}) {
   if (!child) return null;
+  if (spawnFailedWithoutProcess(child)) {
+    completedTerminations.set(child, true);
+    return Promise.resolve(true);
+  }
   const active = activeTerminations.get(child);
   if (active) return active.completion;
   if (completedTerminations.has(child)) {

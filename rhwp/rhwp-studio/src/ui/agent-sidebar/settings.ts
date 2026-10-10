@@ -44,6 +44,8 @@ import {
   formatUsageAge,
 } from './usage-format.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
+import type { ChatThread } from '../../agent/threads.ts';
+import { createArchiveSettingsPane } from './settings-archive.ts';
 import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
 import type { EventBus } from '../../core/event-bus.ts';
 import type {
@@ -322,6 +324,8 @@ export interface SettingsPanelDeps {
   refreshSkills?: () => void;
   /** 설정 → 프로젝트가 쓰는 허브 서비스. 없으면 bridge.projects 를 찾는다. */
   projectSettings?: ProjectService | null;
+  /** 보관함에서 채팅을 영구히 지운다. 사이드바의 삭제 확인 경로를 쓴다. */
+  deleteArchivedThread?: (thread: ChatThread) => Promise<boolean>;
 }
 
 export interface SettingsPanel {
@@ -476,6 +480,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { id: 'ai', label: 'AI' },
     { id: 'skills', label: '스킬' },
     { id: 'project', label: '프로젝트' },
+    { id: 'archive', label: '보관함' },
   ];
   for (const destination of destinations) {
     const button = el('button', 'ag-settings-nav-button', destination.label);
@@ -514,6 +519,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
   });
   panes.get('project')?.appendChild(projectPane.element);
+  const archivePane = createArchiveSettingsPane({
+    deleteThread: (thread) => deps.deleteArchivedThread?.(thread) ?? Promise.resolve(false),
+  });
+  panes.get('archive')?.appendChild(archivePane.element);
 
   // ── 1. 연결 ────────────────────────────────────────────
   const connection = createSection('연결');
@@ -1454,6 +1463,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       case 'ai':
         return isAiDirty();
       case 'skills':
+      case 'archive':
         return false;
       case 'project':
         return projectPane.isDirty();
@@ -1503,6 +1513,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     syncUsagePolling();
     if (destination === 'skills') refreshSkills?.();
     if (destination === 'project') projectPane.open();
+    if (destination === 'archive') archivePane.open();
     panes.get(destination)?.scrollTo({ top: 0 });
   }
 
@@ -1660,6 +1671,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           cancelAiDraft();
           return true;
         case 'skills':
+        case 'archive':
           return true;
         case 'project':
           projectPane.cancel();
@@ -1676,6 +1688,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       case 'ai':
         return applyAiDraft();
       case 'skills':
+      case 'archive':
         return true;
       case 'project':
         return projectPane.apply();
@@ -3584,6 +3597,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       if (setupCloseTimer) clearTimeout(setupCloseTimer);
       setupTerminal.dispose();
       projectPane.dispose();
+      archivePane.dispose();
       disposed = true;
       settingsOpen = false;
       syncUsagePolling();

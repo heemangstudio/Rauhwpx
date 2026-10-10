@@ -1,6 +1,11 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('rhwpDesktop', {
+  saveAgentContext: (payload) => ipcRenderer.invoke('desktop:agent-context-save', payload),
+  listAgentContexts: (documentId) => ipcRenderer.invoke('desktop:agent-context-list', documentId),
+  readAgentContextFiles: (id) => ipcRenderer.invoke('desktop:agent-context-files', id),
+  setAgentContextState: (ids, state) => ipcRenderer.invoke('desktop:agent-context-state', ids, state),
+  captureDocumentRegion: (rect) => ipcRenderer.invoke('desktop:agent-context-capture', rect),
   getSessionContext: () => ipcRenderer.invoke('desktop:get-session-context'),
   // 백그라운드 문서의 에이전트용 추가 허브 세션. 만든 창만 문맥을 받고 해제할 수 있다.
   createAgentSession: () => ipcRenderer.invoke('desktop:agent-session-create'),
@@ -13,6 +18,9 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     agentSessionId,
   ),
   getUniqueInstalls: () => ipcRenderer.invoke('desktop:get-unique-installs'),
+  takeRebrandImport: () => ipcRenderer.invoke('desktop:take-rebrand-import'),
+  takeRebrandImportChunk: (token, index) => ipcRenderer.invoke('desktop:take-rebrand-import-chunk', token, index),
+  finishRebrandImport: (token, outcome) => ipcRenderer.invoke('desktop:finish-rebrand-import', token, outcome),
   getLaunchFiles: () => ipcRenderer.invoke('desktop:get-launch-files'),
   getLaunchGeneratedDocument: () => ipcRenderer.invoke('desktop:get-launch-generated-document'),
   openGeneratedDocumentWindow: (payload) => ipcRenderer.invoke(
@@ -76,6 +84,23 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     documentId,
     handleId,
   ),
+  inspectNativeDocuments: (documentIds) => ipcRenderer.invoke(
+    'desktop:inspect-native-documents',
+    Array.isArray(documentIds) ? documentIds.map(String) : [],
+  ),
+  relocateNativeDocument: (documentId) => ipcRenderer.invoke(
+    'desktop:relocate-native-document',
+    documentId,
+  ),
+  readRememberedNativeDocument: (documentId) => ipcRenderer.invoke(
+    'desktop:read-remembered-native-document',
+    documentId,
+  ),
+  revealNativeDocument: (documentId) => ipcRenderer.invoke('desktop:reveal-native-document', documentId),
+  openNativeDocumentWindow: (documentId) => ipcRenderer.invoke(
+    'desktop:open-native-document-window',
+    documentId,
+  ),
   reserveDocument: (identity, nativeHandleId, slotId) => ipcRenderer.invoke(
     'desktop:document-reserve',
     identity,
@@ -94,7 +119,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   ),
   releaseDocument: (slotId) => ipcRenderer.invoke('desktop:document-release', slotId),
   listSystemFonts: (options) => ipcRenderer.invoke('desktop:fonts-list', options),
-  readSystemFont: (id) => ipcRenderer.invoke('desktop:fonts-read', id),
+  systemFontBaseUrl: () => ipcRenderer.invoke('desktop:fonts-base'),
   ensureAgentHub: () => ipcRenderer.invoke('agent-hub:ensure'),
   respondToCloseRequest: (requestId, allowClose) => (
     ipcRenderer.invoke('desktop:close-response', requestId, allowClose)

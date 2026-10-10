@@ -10,18 +10,21 @@ import {
 } from '../credential-mirror.mjs';
 import {
   createLineReader,
+  chatPermissionGrantsFor,
+  hasLocalExecutionGrant,
   isPlanningRestricted,
   mcpCapabilityEnv,
   mcpRuntimeFor,
   normalizeExecutionMode,
   normalizeUsageTokens,
+  applyPreparedProviderLaunch,
   redactDiagnosticText,
   systemBriefFor,
   truncate,
   validateExecutionMode,
 } from './backend.mjs';
 import { createCodexRolloutWatcher } from './codex-rollout-watcher.mjs';
-import { createCodexAppServerSession } from './codex-app-server.mjs';
+import { canResumeCodexThread, createCodexAppServerSession } from './codex-app-server.mjs';
 import { isRootUserInputContext } from './provider-user-input.mjs';
 export {
   CODEX_REQUEST_USER_INPUT_METHOD,
@@ -115,8 +118,8 @@ function withCredentialCopyback(session, codexHome) {
  * @param {string | null} threadId
  */
 export function buildCodexArgv(opts, threadId) {
-  const unrestricted = opts.permissionProfile === 'unrestricted';
-  const planningRestricted = isPlanningRestricted(opts);
+  const unrestricted = opts.permissionProfile === 'unrestricted' || hasLocalExecutionGrant(opts);
+  const planningRestricted = isPlanningRestricted(opts) && !hasLocalExecutionGrant(opts);
   const runtime = mcpRuntimeFor(opts);
   const capabilityEnv = {
     ...runtime.env,
@@ -133,10 +136,12 @@ export function buildCodexArgv(opts, threadId) {
     '-c', `mcp_servers.rhwp.args=${JSON.stringify(runtime.args)}`,
     '-c', `mcp_servers.rhwp.env={${mcpEnv}}`,
     '-c', 'mcp_servers.rhwp.startup_timeout_sec=20',
-    // 헤드리스 MCP 호출은 승인 프롬프트를 표시할 수 없다. rhwp 도구를 자동 승인하며,
-    // Studio는 성공한 문서 편집을 자동 커밋하고 undo 이력을 보존한다. 최초 실행과
-    // resume 하위 명령이 모두 이해하는 설정 키만 사용한다.
+    // auto 는 주석에 따라 연구 자료 저장에도 승인을 요구할 수 있다. 헤드리스 실행에서
+    // 앱이 관리하는 자료 저장만 미리 승인한다. 모드·설정·세션 경계는 허브가 검사한다.
+    // 최초 실행과 resume 하위 명령이 모두 이해하는 설정 키만 사용한다.
     '-c', 'mcp_servers.rhwp.default_tools_approval_mode="auto"',
+    '-c', 'mcp_servers.rhwp.tools.project_import.approval_mode="approve"',
+    '-c', 'mcp_servers.rhwp.tools.download_file.approval_mode="approve"',
     '-c', 'approval_policy="never"',
     '-c', `sandbox_mode="${planningRestricted || opts.toolProfile === 'copy-layout-worker' ? 'read-only' : (unrestricted ? 'danger-full-access' : 'workspace-write')}"`,
     ...(opts.workflow === 'plan' || opts.workflow === 'question' ? ['-c', 'web_search="live"'] : []),
@@ -159,7 +164,9 @@ export function buildCodexArgv(opts, threadId) {
     ...(opts.toolProfile === 'copy-layout-worker'
       ? [
         '--disable', 'multi_agent', '--disable', 'shell_tool', '--disable', 'unified_exec',
-        '--disable', 'code_mode_host', '--disable', 'standalone_web_search',
+        // GPT-6 계열은 이 호스트를 거쳐 MCP 도구를 호출한다. 네이티브 실행 권한은
+        // 위의 shell/unified_exec 차단과 읽기 전용 sandbox로 따로 제한한다.
+        '--enable', 'code_mode_host', '--disable', 'standalone_web_search',
         '--disable', 'view_image', '--disable', 'shell_snapshot',
       ]
       : ['--enable', 'multi_agent']),
@@ -228,8 +235,9 @@ export function createLegacyCodexSession(opts, {
   let suppressChildOutput = () => {};
   const pendingTreeCleanups = new Set();
   let uncertainTreeCleanup = false;
-  /** @type {{ text: string } | null} */
+  /** @type {{ text: string, options?: { replaceSession?: boolean } } | null} */
   let queuedTurn = null;
+  let launchPrepared = false;
   /**
    * 이번 턴의 롤아웃 워처. codex --json 에는 자식 에이전트 활동이 한 줄도 오지
    * 않으므로 fleet 카드의 유일한 소스다.
@@ -249,10 +257,15 @@ export function createLegacyCodexSession(opts, {
     }
   }
 
+  // 허브가 세션 교체를 요청한 턴 — 새 스레드로 시작하고 turn-end 에 resumeLost 를 싣는다.
+  let turnResumeLost = false;
+
   function endTurn(evt) {
     if (!turnOpen) return;
     turnOpen = false;
-    onEvent(evt);
+    const lost = turnResumeLost;
+    turnResumeLost = false;
+    onEvent(lost ? { ...evt, resumeLost: true } : evt);
   }
 
   function makeHandler() {
@@ -420,7 +433,12 @@ export function createLegacyCodexSession(opts, {
     getSessionId() {
       return threadId;
     },
-    sendUserMessage(text) {
+    // exec 는 자동 압축만 하고, 그 신호를 이벤트로 내지 않는다.
+    compactionSupport: 'auto-only',
+    canResume(id) {
+      return canResumeCodexThread(opts, id);
+    },
+    sendUserMessage(text, options = {}) {
       if (disposed) return;
       if (turnOpen || queuedTurn) throw new Error('Codex already has a turn in progress');
       if (uncertainTreeCleanup) {
@@ -436,7 +454,7 @@ export function createLegacyCodexSession(opts, {
         return;
       }
       if (child) {
-        const queued = { text };
+        const queued = { text, options };
         queuedTurn = queued;
         const ownership = childExitPromise;
         void stopChild('queue');
@@ -445,7 +463,7 @@ export function createLegacyCodexSession(opts, {
           queuedTurn = null;
           if (disposed) return;
           if (cleaned && !child) {
-            session.sendUserMessage(queued.text);
+            session.sendUserMessage(queued.text, queued.options);
             return;
           }
           turnOpen = true;
@@ -471,6 +489,39 @@ export function createLegacyCodexSession(opts, {
         });
         return;
       }
+      if (opts.prepareLaunch && !launchPrepared) {
+        const queued = { text };
+        queuedTurn = queued;
+        void Promise.resolve().then(() => opts.prepareLaunch()).then((launch) => {
+          let ownsLaunch = false;
+          try {
+            if (queuedTurn !== queued || disposed) return;
+            ownsLaunch = true;
+            applyPreparedProviderLaunch(opts, 'codex', launch);
+            queuedTurn = null;
+            launchPrepared = true;
+            session.sendUserMessage(queued.text);
+          } catch (error) {
+            if (!ownsLaunch || disposed) return;
+            queuedTurn = null;
+            launchPrepared = false;
+            const message = redactDiagnosticText(error?.message ?? error, [opts.token]);
+            onEvent({ type: 'error', agent: 'codex', message });
+            const ended = { type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: message };
+            if (turnOpen) endTurn(ended); else onEvent(ended);
+          } finally {
+            launch?.release?.();
+          }
+        }, (error) => {
+          if (queuedTurn !== queued || disposed) return;
+          queuedTurn = null;
+          const message = redactDiagnosticText(error?.message ?? error, [opts.token]);
+          onEvent({ type: 'error', agent: 'codex', message });
+          onEvent({ type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: message });
+        });
+        return;
+      }
+      launchPrepared = false;
       // 이전 턴의 워처가 남아 있으면 turn-start 보다 먼저 정리한다 — 그래야 남은
       // 카드를 닫는 task-end 가 지난 턴 안에서 끝난다 (정상 흐름에서는 exit 에서
       // 이미 정리됐고, 여기 걸리는 건 exit 이 오지 않은 예외 경로다).
@@ -478,6 +529,10 @@ export function createLegacyCodexSession(opts, {
       turnOpen = true;
       turnCompleted = false;
       turnFailureMessage = null;
+      if (options?.replaceSession) {
+        threadId = null;
+        turnResumeLost = true;
+      }
       onEvent({ type: 'turn-start', agent: 'codex' });
 
       // 프롬프트는 positional 인자가 아니라 stdin('-')으로 전달한다: '-' 로 시작하는
@@ -715,13 +770,19 @@ export function createLegacyCodexSession(opts, {
       opts.workflow = mode.workflow;
       opts.phase = mode.phase;
       opts.capabilityEpoch = mode.capabilityEpoch;
+      opts.chatPermissionGrants = chatPermissionGrantsFor(mode, opts);
     },
     interrupt() {
+      const hadQueuedTurn = queuedTurn !== null;
       queuedTurn = null;
       suppressChildOutput();
       killChild();
       finalizeRolloutWatcher();
-      endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'interrupted' });
+      if (hadQueuedTurn && !turnOpen) {
+        onEvent({ type: 'turn-end', agent: 'codex', stopReason: 'interrupted' });
+      } else {
+        endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'interrupted' });
+      }
     },
     dispose() {
       disposed = true;
@@ -755,7 +816,10 @@ export function createCodexSession(opts, dependencies = {}) {
   const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
   if (typeof opts.requestUserInput !== 'function'
     || !isRootUserInputContext({ agentRole: opts.agentRole })) {
-    return withCredentialCopyback(createLegacyCodexSession(opts, dependencies), codexHome);
+    return withCredentialCopyback(createLegacyCodexSession(opts, {
+      initialThreadId: opts.resumeSessionId ?? null,
+      ...dependencies,
+    }), codexHome);
   }
   return withCredentialCopyback(createCodexAppServerSession(opts, {
     ...dependencies,

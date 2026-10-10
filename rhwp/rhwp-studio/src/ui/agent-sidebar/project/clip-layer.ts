@@ -6,6 +6,7 @@
  *   바로 이름을 고칠 수 있다. Esc 는 그리던 네모를, 그다음에는 도구를 끈다.
  * - 테두리를 누르면 고르고, 끌면 옮기고, 모서리를 끌면 크기를 바꾼다. 고른 조각은
  *   휴지통 단추나 Delete 로 버린다. 두 번 누르면 이름을 고친다.
+ * - 이름표를 끌어 입력창에 놓으면 그 조각을 멘션한다. 테두리 안을 끄는 것은 옮기기다.
  * - 좌표는 모두 쪽 비율(0..1)이라 확대·축소에도 층은 다시 그릴 필요가 없다.
  */
 import './clip-layer.css';
@@ -18,8 +19,11 @@ import {
 } from '../../../agent/clip-geometry.ts';
 import type { ProjectClipItem, ProjectClipRect } from '../../../agent/types.ts';
 import { button, el, reducedMotion } from './project-ui.ts';
+import { makeProjectItemDraggable } from './project-drag.ts';
 
 export interface ClipLayerDeps {
+  /** 이름표를 입력창으로 끌 때 싣는 프로젝트 id. */
+  projectId: string;
   /** 이 원본의 살아 있는 조각. 부를 때마다 지금 스냅샷에서 읽는다. */
   clips(): ProjectClipItem[];
   /** 새 조각을 만들고 그 id 를 돌려준다. */
@@ -117,6 +121,19 @@ export function createClipLayer(deps: ClipLayerDeps): ClipLayer {
     box.tabIndex = 0;
     box.setAttribute('role', 'button');
     const label = el('span', 'ag-clip-label');
+    // 이름표는 끌기 손잡이다. 옮기기 제스처를 시작하지 않고 고르기만 한다.
+    label.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || gesture) return;
+      event.stopPropagation();
+      select(box.dataset.clip!);
+      box.focus({ preventScroll: true });
+    });
+    makeProjectItemDraggable(label, () => {
+      const current = clipById(box.dataset.clip!);
+      return current && !current.id.startsWith('tmp-')
+        ? { projectId: deps.projectId, itemId: current.id, title: current.title }
+        : null;
+    });
     box.append(label);
     for (const handle of HANDLES) {
       const grip = el('span', 'ag-clip-handle');

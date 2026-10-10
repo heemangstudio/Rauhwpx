@@ -44,6 +44,15 @@ test('접두어를 떼고 인자에서 한 줄 요약을 만든다', () => {
   assert.equal(presentToolCall('edit_object', '{"paraIdx":3,"controlIdx":0,"xMm":20,"yMm":30}').label, '개체 이동');
 });
 
+test('권한 요청은 허용 대기와 허용 완료를 구분하고 요청 범위를 읽을 수 있다', () => {
+  const argsJson = JSON.stringify({ capability: 'local-execution', reason: '자료 파일을 정리합니다.' });
+  const request = presentToolCall('mcp__rhwp__request_permission', argsJson);
+  assert.equal(request.label, '권한 요청');
+  assert.equal(request.summary, '로컬 파일·명령 실행 · 자료 파일을 정리합니다.');
+  assert.equal(presentToolResult({ tool: 'request_permission', argsJson, ok: true, preview: '', result: { status: 'pending' } }).text, '허용 대기');
+  assert.equal(presentToolResult({ tool: 'request_permission', argsJson, ok: true, preview: '', result: { status: 'granted' } }).text, '이 채팅에 허용됨');
+});
+
 test('paras 대상은 구간 하나면 문단 범위, 여럿이면 겹침을 합친 문단 수로 보인다', () => {
   const summary = (tool: string, args: unknown) => presentToolCall(tool, JSON.stringify(args)).summary;
   assert.equal(summary('apply_char_format', { paras: [[3, 5]], fontSizePt: 14, underline: true }), '4–6문단 · 밑줄 · 14pt');

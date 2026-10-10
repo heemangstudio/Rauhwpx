@@ -2,103 +2,48 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+// 남은 소스 가드: 아래 호출부는 페이지 렌더러와 DOM 대화상자 안에 있어 Node 에서 실행할
+// seam 이 없다. 같은 한도를 쓰는 다른 경로는 untrusted-input-limits.test.ts 가 실제 모듈로,
+// main.ts 의 호출부는 main-entry-guards.test.ts 가 지킨다.
+
 function source(relativePath: string): string {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8');
 }
 
-test('external picture files use the shared 64 MiB pre-allocation guard', () => {
-  for (const relativePath of [
-    '../src/engine/input-handler-picture.ts',
-    '../src/engine/input-handler-keyboard.ts',
-    '../src/command/commands/insert.ts',
-    '../src/versioning/controller.ts',
+function between(contents: string, start: string, end: string): string {
+  const startIndex = contents.indexOf(start);
+  const endIndex = contents.indexOf(end, startIndex + start.length);
+  assert.notEqual(startIndex, -1, `missing start marker: ${start}`);
+  assert.notEqual(endIndex, -1, `missing end marker: ${end}`);
+  return contents.slice(startIndex, endIndex);
+}
+
+function assertBefore(contents: string, first: string, second: string): void {
+  const firstIndex = contents.indexOf(first);
+  const secondIndex = contents.indexOf(second);
+  assert.notEqual(firstIndex, -1, `missing guard: ${first}`);
+  assert.notEqual(secondIndex, -1, `missing decode path: ${second}`);
+  assert.ok(firstIndex < secondIndex, `${first} must run before ${second}`);
+}
+
+test('page renderer decodes DOM flow images only after every image passes the size check', () => {
+  const flowImages = between(
+    source('../src/view/page-renderer.ts'),
+    '  private createOrReuseFlowImageLayer',
+    '  private createOrReuseFilteredCanvasLayer',
+  );
+  assertBefore(flowImages, 'images.every(isDomDisplayableFlowImage)', 'new Image()');
+});
+
+test('dialog uploads read through their size limit', () => {
+  for (const [relativePath, call] of [
+    ['../src/versioning/controller.ts', 'readBlobBytesWithLimit(file, INSERTED_IMAGE_MAX_BYTES'],
+    ['../src/merge/manual-conflict-editor.ts', 'readBlobBytesWithLimit(file, MAX_IMAGE_UPLOAD_BYTES'],
+    ['../src/ui/agent-sidebar/writing-style-calibration.ts', 'readBlobBytesWithLimit(file, MAX_FILE_BYTES'],
+    ['../src/ui/compare-dialog.ts', 'readBlobBytesWithLimit(selected, UNTRUSTED_DOCUMENT_MAX_BYTES'],
   ]) {
     const code = source(relativePath);
-    assert.match(code, /readBlobBytesWithLimit\(file, INSERTED_IMAGE_MAX_BYTES/);
-    assert.doesNotMatch(code, /file\.arrayBuffer\(\)/);
+    assert.ok(code.includes(call), `${relativePath}: ${call}`);
+    assert.doesNotMatch(code, /(file|selected)\.arrayBuffer\(\)/, relativePath);
   }
-
-  const main = source('../src/main.ts');
-  const dropStart = main.indexOf('if (isImage) {');
-  const dropEnd = main.indexOf('// HWP/HWPX/HML/RHWPX', dropStart);
-  assert.notEqual(dropStart, -1);
-  assert.ok(dropEnd > dropStart);
-  const droppedImage = main.slice(dropStart, dropEnd);
-  assert.match(
-    droppedImage,
-    /try \{[\s\S]*readBlobBytesWithLimit\(file, INSERTED_IMAGE_MAX_BYTES, '그림'\)[\s\S]*catch \(error\)/,
-  );
-  assert.match(droppedImage, /message: `그림을 삽입할 수 없습니다\.\\n\$\{message\}`/);
-});
-
-test('smaller upload policies remain enforced at the actual read', () => {
-  const manualConflict = source('../src/merge/manual-conflict-editor.ts');
-  assert.match(manualConflict, /readBlobBytesWithLimit\(file, MAX_IMAGE_UPLOAD_BYTES/);
-  assert.doesNotMatch(manualConflict, /file\.arrayBuffer\(\)/);
-
-  const calibration = source('../src/ui/agent-sidebar/writing-style-calibration.ts');
-  assert.match(calibration, /readBlobBytesWithLimit\(file, MAX_FILE_BYTES/);
-  assert.doesNotMatch(calibration, /file\.arrayBuffer\(\)/);
-
-  const compare = source('../src/ui/compare-dialog.ts');
-  assert.match(compare, /readBlobBytesWithLimit\(selected, UNTRUSTED_DOCUMENT_MAX_BYTES/);
-  assert.doesNotMatch(compare, /selected\.arrayBuffer\(\)/);
-});
-
-test('save identity and dev external images have allocation bounds', () => {
-  const main = source('../src/main.ts');
-  assert.match(
-    main,
-    /const targetBytes = await readBlobBytesWithLimit\([\s\S]*?EXACT_LOCAL_DOCUMENT_MAX_BYTES/,
-  );
-  assert.doesNotMatch(main, /target\.arrayBuffer\(\)/);
-
-  const bridge = source('../src/core/wasm-bridge.ts');
-  assert.match(
-    bridge,
-    /readResponseBytesWithLimit\([\s\S]*?INSERTED_IMAGE_MAX_BYTES[\s\S]*?doc\.injectExternalImage/,
-  );
-  assert.doesNotMatch(bridge, /res\.arrayBuffer\(\)/);
-});
-
-test('extension thumbnail fetches use the 64 MiB bounded stream reader', () => {
-  for (const relativePath of [
-    '../../rhwp-chrome/sw/thumbnail-extractor.js',
-    '../../rhwp-firefox/sw/thumbnail-extractor.js',
-  ]) {
-    const code = source(relativePath);
-    assert.match(code, /readResponseBytesWithLimit\(response, REMOTE_THUMBNAIL_MAX_BYTES\)/);
-    assert.doesNotMatch(code, /response\.arrayBuffer\(\)/);
-  }
-
-  for (const relativePath of [
-    '../../rhwp-chrome/sw/fetch-security.js',
-    '../../rhwp-firefox/sw/fetch-security.js',
-  ]) {
-    assert.match(
-      source(relativePath),
-      /export const REMOTE_THUMBNAIL_MAX_BYTES = 64 \* 1024 \* 1024/,
-    );
-  }
-});
-
-test('portable history keeps archive views, copies only at storage, and adopts one parse', () => {
-  const portable = source('../src/versioning/portable-bundle.ts');
-  assert.match(portable, /bytes:\s*payload/);
-  assert.doesNotMatch(portable, /bytes:\s*new Uint8Array\(payload\)/);
-  assert.match(portable, /currentDocumentBytes:\s*current\.bytes/);
-
-  const store = source('../src/versioning/store.ts');
-  assert.match(store, /sortedRepositorySnapshot\(input, \{ copyBlobBytes: false \}\)/);
-  assert.match(store, /assertStoredBlob\(blob, \{ copyBytes: false \}\)/);
-  assert.match(store, /await tx\.put\('blobs', assertStoredBlob\(blob\)\)/);
-
-  const main = source('../src/main.ts');
-  assert.doesNotMatch(main, /const probe = new WasmBridge\(\)/);
-  assert.match(main, /preparedDocument = wasm\.prepareDocument\(/);
-  assert.match(main, /wasm\.adoptPreparedDocument\(options\.preparedDocument\)/);
-
-  const bridge = source('../src/core/wasm-bridge.ts');
-  assert.match(bridge, /prepareDocument\(data: Uint8Array/);
-  assert.match(bridge, /adoptPreparedDocument\(prepared: PreparedWasmDocument\)/);
 });

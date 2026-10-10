@@ -29,6 +29,64 @@ function copyLayoutStateError(code, message) {
   return Object.assign(new Error(message), { code });
 }
 
+/**
+ * 채팅이 만든 copy-layout 결과를 서식 틀로 등록한다. 결과는 artifactId로 찾으므로
+ * 허브를 다시 켜 작업 기록(jobId)이 사라져도 등록할 수 있다.
+ * @param {{ artifactStore: any, templateStore: any, threadId: string|null,
+ *   args: { artifactId?: string, jobId?: string, name?: string }, job?: any }} input
+ */
+export async function registerCopyLayoutArtifact({ artifactStore, templateStore, threadId, args, job = null }) {
+  let artifactId = typeof args?.artifactId === 'string' ? args.artifactId : null;
+  if (!artifactId && job && job.ownerThreadId === threadId) {
+    if (job.status !== 'completed' || !job.result?.artifact) {
+      throw copyLayoutStateError('COPY_LAYOUT_JOB_NOT_READY', 'The copy-layout artifact is not ready for registration');
+    }
+    artifactId = job.result.artifact.artifactId;
+  }
+  if (!artifactId) {
+    throw copyLayoutStateError(
+      'COPY_LAYOUT_JOB_NOT_FOUND',
+      "Pass artifactId: the id after /artifacts/ in this chat's 템플릿 미리보기 link",
+    );
+  }
+  let artifact;
+  try {
+    artifact = await artifactStore.read(artifactId);
+  } catch (error) {
+    if (error?.code !== 'ARTIFACT_NOT_FOUND') throw error;
+    artifact = null;
+  }
+  if (!artifact || !threadId || artifact.owner?.threadId !== threadId) {
+    throw copyLayoutStateError(
+      'ARTIFACT_NOT_FOUND',
+      'This generated document is no longer stored for this chat. Tell the user and offer to run copy-layout again; do not search files.',
+    );
+  }
+  const template = artifact.template;
+  if (template?.kind !== 'copy-layout') {
+    throw copyLayoutStateError('COPY_LAYOUT_JOB_NOT_READY', 'Only a completed copy-layout artifact can be registered as a template');
+  }
+  if (template.registeredTemplateId) {
+    try {
+      return { template: templateStore.get(template.registeredTemplateId), alreadyRegistered: true };
+    } catch {
+      // 사용자가 서식 틀을 지웠으면 다시 등록한다.
+    }
+  }
+  const registered = await templateStore.add({
+    name: args?.name ?? defaultTemplateName(artifact.fileName),
+    originalName: artifact.fileName,
+    format: path.extname(artifact.fileName).slice(1).toLowerCase(),
+    pageCount: template.pageCount,
+    sectionCount: template.sectionCount,
+    bytes: artifact.bytes,
+  });
+  await artifactStore.annotate(artifactId, {
+    template: { ...template, registeredTemplateId: registered.id },
+  });
+  return { template: registered, alreadyRegistered: false };
+}
+
 export function claimCopyLayoutSnapshot(job) {
   if (job.snapshot) return { bound: job.snapshot, claimed: false };
   if (job.snapshotPending) {
@@ -84,7 +142,7 @@ export function claimCopyLayoutSettlement(job) {
 }
 
 export function buildCopyLayoutWorkerPrompt({ jobId, binding, jobDir }) {
-  return `You are the dedicated autonomous copy-layout worker for Rauhwpx job ${jobId}.
+  return `You are the dedicated autonomous copy-layout worker for HamaEditor job ${jobId}.
 
 This is a fresh independent provider process. It is not a provider-native subagent. Do not spawn, delegate, ask the user, request confirmation, or wait for human input. Work only on this job and call complete_copy_layout_job exactly once.
 
@@ -112,7 +170,7 @@ export function buildCopyLayoutCompletionPrompt(result) {
 ${JSON.stringify(result, null, 2)}
 </copy_layout_job_completion>
 
-This is the hub's automatic completion notification for the independent copy-layout worker — not a collaboration-tool result (never a wait_agent result) and not a user message. The worker has settled. Do not open the artifact automatically. Notify the user now: report the quality, precise warnings, counts, and representative preview comparison concisely. When outcome is succeeded, include exactly one Markdown link labeled 템플릿 미리보기 whose href is the exact artifact.downloadUrl from the payload. Studio renders it as a clickable document card; only the user's click opens a new read-only template-preview window. Then ask exactly one final question: whether the user wants to save/register this exact artifact as a reusable template. Do not ask for any other confirmation. If the user accepts in their next reply, call register_copy_layout_template with this jobId; if they decline, do not call it and leave the card available.`;
+This is the hub's automatic completion notification for the independent copy-layout worker — not a collaboration-tool result (never a wait_agent result) and not a user message. The worker has settled. Do not open the artifact automatically. Notify the user now: report the quality, precise warnings, counts, and representative preview comparison concisely. When outcome is succeeded, include exactly one Markdown link labeled 템플릿 미리보기 whose href is the exact artifact.downloadUrl from the payload. Studio renders it as a clickable document card; only the user's click opens a new read-only template-preview window. Then ask exactly one final question: whether the user wants to save/register this exact artifact as a reusable template. Do not ask for any other confirmation. Whenever the user accepts or later asks to save it, call register_copy_layout_template with artifactId set to artifact.artifactId (the id between /artifacts/ and the file name in the 템플릿 미리보기 link); this works in any chat mode and after app restarts. Never look for the result with shell, filesystem, or MCP resource tools; if they decline, do not call it and leave the card available.`;
 }
 
 export function taskProgressForJob(job, activity, lastTool) {

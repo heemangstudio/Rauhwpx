@@ -67,6 +67,10 @@ const appCommit = (() => {
 })();
 
 export default defineConfig({
+  // 같은 의존성 폴더를 쓰는 미리보기와 작업 트리도 최적화 캐시를 공유하지 않는다.
+  cacheDir: resolve(__dirname, '.run/vite-cache/studio'),
+  // 그래프를 처음 열 때 의존성을 재최적화하며 기존 모듈 URL을 만료시키지 않는다.
+  optimizeDeps: { include: ['d3-force'] },
   define: {
     __APP_VERSION__: JSON.stringify(appPackage.version),
     __APP_COMMIT__: JSON.stringify(appCommit),
@@ -177,9 +181,9 @@ export default defineConfig({
       injectRegister: false,
       includeAssets: ['favicon.ico', 'icons/*.png'],
       manifest: {
-        name: 'Rauhwpx',
-        short_name: 'Rauhwpx',
-        description: 'Rauhwpx HWP/HWPX/HML 문서 편집기',
+        name: 'HamaEditor',
+        short_name: 'HamaEditor',
+        description: 'HamaEditor HWP/HWPX/HML 문서 편집기',
         lang: 'ko',
         theme_color: '#2b6cb0',
         background_color: '#ffffff',
@@ -209,7 +213,7 @@ export default defineConfig({
       workbox: {
         // WASM (~12 MB) is kept out of precache to avoid blocking SW installation;
         // CacheFirst at runtime still gives offline access after the first load.
-        globPatterns: ['**/*.{js,css,html,png,svg,ico,woff,woff2,ttf,otf}'],
+        globPatterns: ['**/*.{js,css,html,png,gif,svg,ico,woff,woff2,ttf,otf}'],
         maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
         runtimeCaching: [
           {

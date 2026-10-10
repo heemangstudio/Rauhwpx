@@ -6,6 +6,7 @@
  * 끄는 동안 들어온 스냅샷은 놓은 뒤 한 번에 그린다.
  */
 import { confirmSheet } from '../sheet.ts';
+import { createChevron } from '../../chevron.ts';
 import { columnItems, matchesOriginFilter, projectShowsWorktrees } from '../../../agent/project-service.ts';
 import type { ProjectOriginFilter, ProjectService, ProjectStore } from '../../../agent/project-service.ts';
 import type { ProjectItem, ProjectOp, ProjectSnapshot, ProjectWorktreeContext } from '../../../agent/types.ts';
@@ -61,6 +62,8 @@ const MAX_CARD_TAGS = 3;
 
 interface ColumnView {
   root: HTMLElement;
+  /** 좁은 작업 칸에서 열 묶음을 접는다. 가로 보드에서는 숨긴다. */
+  toggle: HTMLButtonElement;
   dot: HTMLElement;
   name: HTMLButtonElement;
   count: HTMLElement;
@@ -91,6 +94,7 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
   let deferred: ProjectSnapshot | null | undefined;
   let drag: DragState | null = null;
   let focusAfterRender: string | null = null;
+  const collapsedColumns = new Set<string>();
   let editingColumn: string | null = null;
   const columnViews = new Map<string, ColumnView>();
   const cards = new Map<string, HTMLElement>();
@@ -158,6 +162,9 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
     const root = el('section', 'ag-pboard-col');
     root.dataset.column = columnId;
     const head = el('div', 'ag-pboard-col-head');
+    const toggle = el('button', 'ag-pboard-col-toggle');
+    toggle.type = 'button';
+    toggle.append(createChevron());
     const dot = el('span', 'ag-pboard-col-dot');
     dot.setAttribute('aria-hidden', 'true');
     const name = el('button', 'ag-pboard-col-name');
@@ -165,7 +172,7 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
     name.id = `ag-pboard-col-${columnId}`;
     const count = el('span', 'ag-pboard-col-count');
     const remove = button('ag-pboard-icon-btn ag-pboard-col-remove', '열 삭제', { icon: 'trash' });
-    head.append(dot, name, count, remove);
+    head.append(toggle, dot, name, count, remove);
     const list = el('ul', 'ag-pboard-cards');
     list.setAttribute('aria-labelledby', name.id);
     root.setAttribute('aria-labelledby', name.id);
@@ -182,7 +189,11 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
       }
     });
     remove.addEventListener('click', () => void deleteColumn(columnId));
-    return { root, dot, name, count, remove, list };
+    toggle.addEventListener('click', () => {
+      if (!collapsedColumns.delete(columnId)) collapsedColumns.add(columnId);
+      render();
+    });
+    return { root, toggle, dot, name, count, remove, list };
   }
 
   function beginColumnRename(columnId: string): void {
@@ -342,6 +353,11 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
     const seenColumns = new Set<string>();
     const seenCards = new Set<string>();
     let firstCard: HTMLElement | null = null;
+    // 접힌 열로 옮긴 카드에 초점을 주려면 그 열을 편다.
+    if (focusAfterRender && !focusAfterRender.startsWith('column:')) {
+      const column = snapshot.items.find((item) => item.id === focusAfterRender)?.column;
+      if (column) collapsedColumns.delete(column);
+    }
     for (const column of snapshot.columns) {
       seenColumns.add(column.id);
       let view = columnViews.get(column.id);
@@ -355,6 +371,10 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
       view.name.title = '이름 바꾸기';
       const items = boardItems(snapshot, column.id);
       view.count.textContent = String(items.length);
+      const folded = collapsedColumns.has(column.id);
+      view.root.classList.toggle('ag-collapsed', folded);
+      view.toggle.setAttribute('aria-expanded', String(!folded));
+      view.toggle.setAttribute('aria-label', `${column.name} ${folded ? '펼치기' : '접기'}`);
       view.remove.hidden = snapshot.columns.length <= 1;
       view.remove.setAttribute('aria-label', `${column.name} 열 삭제`);
       // 이미 제자리인 카드는 옮기지 않는다. DOM 에서 옮기면 초점이 풀린다.
@@ -368,7 +388,7 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
           view.list.insertBefore(card, expectedNext);
         }
         previous = card;
-        firstCard ??= card;
+        if (!folded) firstCard ??= card;
       }
       for (const pending of uploads.get(column.id) ?? []) view.list.append(pending);
     }
@@ -386,7 +406,8 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
     }
     // 보드 안 Tab 정지는 하나 — 마지막으로 머문 카드 또는 첫 카드.
     const rovingId = focusAfterRender && !focusAfterRender.startsWith('column:') ? focusAfterRender : activeId;
-    const roving = (rovingId && cards.get(rovingId)) || firstCard;
+    const rovingCard = rovingId ? cards.get(rovingId) : undefined;
+    const roving = (rovingCard && !rovingCard.closest('.ag-collapsed') ? rovingCard : null) || firstCard;
     for (const card of cards.values()) card.tabIndex = card === roving ? 0 : -1;
     if (!focusAfterRender && activeId && !element.contains(document.activeElement)) {
       cards.get(activeId)?.focus({ preventScroll: true });
@@ -500,12 +521,17 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
     const hit = document.elementFromPoint(x, y);
     const column = hit instanceof Element ? hit.closest<HTMLElement>('.ag-pboard-col') : null;
     if (column && element.contains(column)) return column;
-    // 열 사이 틈이나 열 아래 빈 곳: 가로 위치가 겹치는 열을 고른다.
+    // 열 사이 틈이나 열 아래 빈 곳: 가로 위치가 겹치는 열 가운데 세로로 가장 가까운 열을 고른다.
+    // 좁은 작업 칸처럼 열을 세로로 쌓으면 모든 열의 가로 위치가 겹친다.
+    let nearest: HTMLElement | null = null;
+    let nearestDistance = Infinity;
     for (const view of columnViews.values()) {
       const rect = view.root.getBoundingClientRect();
-      if (x >= rect.left && x <= rect.right) return view.root;
+      if (x < rect.left || x > rect.right) continue;
+      const distance = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
+      if (distance < nearestDistance) { nearest = view.root; nearestDistance = distance; }
     }
-    return null;
+    return nearest;
   }
 
   function updateDropTarget(state: DragState, x: number, y: number): void {
@@ -541,6 +567,16 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
       element.scrollLeft += dx;
       scrolled = element.scrollLeft !== before;
     }
+    let dyBoard = 0;
+    if (element.scrollHeight > element.clientHeight + 1) {
+      if (state.lastY < rect.top + EDGE_SCROLL_PX) dyBoard = -Math.ceil((rect.top + EDGE_SCROLL_PX - state.lastY) / 4);
+      else if (state.lastY > rect.bottom - EDGE_SCROLL_PX) dyBoard = Math.ceil((state.lastY - (rect.bottom - EDGE_SCROLL_PX)) / 4);
+      if (dyBoard) {
+        const before = element.scrollTop;
+        element.scrollTop += dyBoard;
+        scrolled ||= element.scrollTop !== before;
+      }
+    }
     const target = state.target ? columnViews.get(state.target.columnId)?.list : null;
     if (target) {
       const listRect = target.getBoundingClientRect();
@@ -554,7 +590,7 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
       }
     }
     if (scrolled) updateDropTarget(state, state.lastX, state.lastY);
-    if (dx || scrolled) state.scrollFrame = requestAnimationFrame(() => edgeScroll(state));
+    if (dx || dyBoard || scrolled) state.scrollFrame = requestAnimationFrame(() => edgeScroll(state));
   }
 
   function startDrag(state: DragState): void {

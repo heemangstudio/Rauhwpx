@@ -1,21 +1,59 @@
+/* 버전 병합 준비. 사이드바 시트와 같은 토큰을 쓰고, 사이드바 밖에서는 앱 색으로 물러난다.
+   전역 리셋(* { margin: 0 })이 모달의 가운데 정렬을 지우므로 margin: auto 를 되돌린다. */
 .version-merge-preparation {
-  width: min(440px, calc(100vw - 32px));
+  margin: auto;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
   box-sizing: border-box;
-  border: 1px solid var(--color-border, #d9dce1);
-  border-radius: 12px;
-  padding: 24px;
-  background: var(--color-surface, #fff);
-  color: var(--color-text, #222);
-  box-shadow: 0 20px 80px #0003;
-  font: 14px/1.5 system-ui, sans-serif;
+  overflow: auto;
+  border: 1px solid var(--n-ink-hairline, var(--color-border, #d9dce1));
+  border-radius: var(--ag-r-sheet, 12px);
+  padding: 22px 22px 18px;
+  background: var(--ag-raised, var(--color-surface, #fff));
+  color: var(--ag-text, var(--color-text, #222));
+  box-shadow: var(--ag-elev-sheet, 0 20px 80px #0003);
+  font: 13px/1.5 var(--ag-font, system-ui, sans-serif);
 }
-.version-merge-preparation::backdrop { background: #0005; }
-.version-merge-preparation h2 { margin: 0; font-size: 18px; }
-.version-merge-preparation p { margin: 8px 0 18px; }
-.version-merge-preparation label { display: flex; align-items: flex-start; gap: 8px; padding: 10px 0; cursor: default; }
-.version-merge-preparation small { display: block; color: var(--color-text-secondary, #666); margin-top: 3px; }
-.version-merge-preparation input[type=radio] { margin-top: 4px; }
-.version-merge-preparation .version-merge-branch-name { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--color-border, #ccd0d5); border-radius: 6px; background: var(--color-surface, #fff); color: inherit; font: inherit; }
-.version-merge-preparation footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
-.version-merge-preparation button { font: inherit; padding: 7px 16px; border: 1px solid var(--color-border, #ccd0d5); border-radius: 8px; cursor: default; background: var(--color-surface-raised, #f5f5f5); color: inherit; }
-.version-merge-preparation button[type=submit] { background: #2563eb; border-color: #2563eb; color: #fff; }
+.version-merge-preparation::backdrop { background: rgb(0 0 0 / 0.32); }
+.version-merge-preparation h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.version-merge-preparation p { margin: 6px 0 14px; color: var(--ag-text-secondary, var(--color-text-secondary, #666)); }
+.version-merge-preparation label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 -10px;
+  padding: 9px 10px;
+  border-radius: var(--ag-r-row, 8px);
+  cursor: default;
+}
+.version-merge-preparation label:hover { background: var(--ag-hover, #0000000a); }
+.version-merge-preparation small { display: block; margin-top: 2px; color: var(--ag-text-secondary, var(--color-text-secondary, #666)); font-size: 12px; }
+.version-merge-preparation input[type=radio] { margin: 3px 0 0; accent-color: var(--ag-text, #2563eb); }
+.version-merge-preparation .version-merge-branch-name {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--n-ink-hairline-strong, var(--color-border, #ccd0d5));
+  border-radius: var(--ag-r-chip, 6px);
+  background: var(--ag-input-bg, var(--color-surface, #fff));
+  color: inherit;
+  font: inherit;
+}
+.version-merge-preparation .version-merge-branch-name[hidden] { display: none; }
+.version-merge-preparation footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.version-merge-preparation button {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--ag-r-row, 8px);
+  background: var(--ag-hover, #f0f0f0);
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  cursor: default;
+}
+.version-merge-preparation button:hover { background: var(--ag-active, #e6e6e6); }
+.version-merge-preparation button[type=submit] { background: var(--ag-text, #2563eb); color: var(--ag-bg, #fff); }
+.version-merge-preparation button[type=submit]:hover { opacity: 0.88; }
+.version-merge-preparation :focus-visible { outline: 2px solid var(--ag-text-secondary, #2563eb); outline-offset: 2px; }

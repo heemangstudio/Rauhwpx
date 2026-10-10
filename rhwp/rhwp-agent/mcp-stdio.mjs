@@ -1,5 +1,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+  ErrorCode,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
+  McpError,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { performance } from 'node:perf_hooks';
 import WebSocket from 'ws';
 import {
@@ -302,6 +309,15 @@ function shutdown(reason) {
   try { ws?.terminate(); } catch {}
   process.exit(0);
 }
+
+// rhwp 는 리소스를 내보내지 않는다. Codex 같은 CLI 가 list_mcp_resources 로 먼저 살펴볼 때
+// "Method not found" 실패 대신 빈 목록을 받도록 리소스 메서드에 빈 응답을 둔다.
+server.server.registerCapabilities({ resources: {} });
+server.server.setRequestHandler(ListResourcesRequestSchema, () => ({ resources: [] }));
+server.server.setRequestHandler(ListResourceTemplatesRequestSchema, () => ({ resourceTemplates: [] }));
+server.server.setRequestHandler(ReadResourceRequestSchema, (request) => {
+  throw new McpError(ErrorCode.InvalidParams, `rhwp exposes no MCP resources: ${request.params.uri}`);
+});
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

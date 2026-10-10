@@ -141,7 +141,7 @@ export async function stageInlineReferences(
     await Promise.all(staged.map((file) => bridge.discardStagedReference(file.scopeId, file.id).catch(() => undefined)));
   };
   if (signal?.aborted) throw new DOMException('선택 자료 전송이 취소되었습니다.', 'AbortError');
-  const settled = await Promise.allSettled(files.map((file) => bridge.stageReference(scopeId, file)));
+  const settled = await Promise.allSettled(files.map((file) => bridge.stageReference(scopeId, file, signal)));
   const staged = settled.flatMap((entry) => entry.status === 'fulfilled' ? [entry.value] : []);
   const failed = settled.find((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
   if (failed || signal?.aborted) {
@@ -586,10 +586,12 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     revision: number;
     uploadState: 'uploading' | 'ready' | 'error';
     cancelled: boolean;
+    controller: AbortController | null;
     previewUrl: string | null;
   };
 
   function releaseChip(chip: UploadChip): void {
+    chip.controller?.abort();
     chip.root.remove();
     if (chip.previewUrl) {
       URL.revokeObjectURL(chip.previewUrl);
@@ -624,7 +626,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     }
     const chip: UploadChip = {
       file, root, state, retry, remove, target: null, staged: null,
-      revision: 0, uploadState: 'uploading', cancelled: false, previewUrl,
+      revision: 0, uploadState: 'uploading', cancelled: false, controller: null, previewUrl,
     };
     remove.addEventListener('click', () => {
       chip.cancelled = true;
@@ -669,6 +671,9 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   async function stageOne(chip: UploadChip): Promise<void> {
     if (!chip.target) throw new Error('현재 채팅에 파일을 첨부할 수 없습니다.');
     const revision = ++chip.revision;
+    chip.controller?.abort();
+    const controller = new AbortController();
+    chip.controller = controller;
     if (chip.staged) {
       void bridge.discardStagedReference(chip.target.scopeId, chip.staged.id).catch(() => undefined);
     }
@@ -682,7 +687,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     chip.remove.hidden = !chip.previewUrl;
     options.onDraftStateChange?.();
     try {
-      const staged = await bridge.stageReference(chip.target.scopeId, chip.file);
+      const staged = await bridge.stageReference(chip.target.scopeId, chip.file, controller.signal);
       if (chip.cancelled || chip.revision !== revision) {
         await bridge.discardStagedReference(chip.target.scopeId, staged.id).catch(() => undefined);
         return;
@@ -693,7 +698,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       chip.state.textContent = '준비됨';
       chip.remove.hidden = false;
     } catch (caught) {
-      if (chip.revision !== revision) return;
+      if (chip.cancelled || chip.revision !== revision) return;
       chip.uploadState = 'error';
       chip.root.classList.add('ag-error');
       chip.state.textContent = '실패';

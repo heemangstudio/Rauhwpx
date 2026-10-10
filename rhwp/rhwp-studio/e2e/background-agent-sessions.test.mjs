@@ -171,6 +171,7 @@ const hubDataRoot = fs.mkdtempSync(path.join(repoRoot, 'target', 'rhwp-e2e-data-
 const hubDataEnv = {
   RHWP_REFERENCES_DIR: path.join(hubDataRoot, 'references'),
   RHWP_PROJECTS_DIR: path.join(hubDataRoot, 'projects'),
+  RHWP_ARTIFACTS_DIR: path.join(hubDataRoot, 'artifacts'),
 };
 const hub = spawnLogged(
   process.execPath,
@@ -502,4 +503,5 @@ try {
   await stop(vite);
   await stop(hub);
   fs.rmSync(piRoot, { recursive: true, force: true });
+  fs.rmSync(hubDataRoot, { recursive: true, force: true });
 }

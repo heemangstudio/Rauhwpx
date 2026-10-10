@@ -1,6 +1,8 @@
 @import './styles/base.css';
+@import './styles/boot-screen.css';
 @import './styles/menu-bar.css';
 @import './styles/inline-rename.css';
+@import './styles/worktree-chip.css';
 @import './styles/toolbar.css';
 @import './styles/style-bar.css';
 @import './styles/editor.css';
@@ -28,3 +30,4 @@
 @import './styles/editor-icons.css';
 @import './styles/editor-ribbon.css';
 @import './styles/editor-popovers.css';
+@import './styles/document-home.css';

@@ -183,4 +183,3 @@ export class AuthRunRegistry {
   }
 }
 
-export { DEFAULT_TTL_MS as AUTH_RUN_TTL_MS };

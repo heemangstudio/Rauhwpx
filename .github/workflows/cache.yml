@@ -1,0 +1,70 @@
+name: Warm caches
+
+# Pull requests restore caches saved on main, never ones saved by other pull requests.
+# Save the shared WASM package and Cargo build whenever their inputs change on main.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - rhwp/src/**
+      - rhwp/Cargo.toml
+      - rhwp/Cargo.lock
+      - rhwp/rust-toolchain.toml
+      - rhwp/saved/blank2010.hwp
+      - scripts/build-wasm.mjs
+      - scripts/wasm-source-fingerprint.mjs
+      - .github/actions/**
+      - .github/workflows/cache.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cache-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wasm:
+    name: WASM package
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          # rhwp/pdf and rhwp/pdf-large (300 MB) only feed local parity tools.
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/rhwp/pdf/
+            !/rhwp/pdf-large/
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.23.3
+      # Restores the package for these inputs, or builds and saves it.
+      - uses: ./.github/actions/build-wasm
+
+  engine:
+    name: Engine build
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/rhwp/pdf/
+            !/rhwp/pdf-large/
+      - uses: ./.github/actions/setup-rust
+        id: rust
+        with:
+          cache: parser
+      # The cache is keyed on Cargo.lock, so only a new dependency set needs a build to save.
+      - name: Build the engine test targets that pull requests run
+        if: steps.rust.outputs.cache-hit != 'true'
+        working-directory: rhwp
+        run: cargo test --locked --no-run

@@ -6,11 +6,18 @@ import { crc32, inflateRaw } from 'node:zlib';
 import { promisify } from 'node:util';
 
 import { sanitizeFilename } from './download-manager.mjs';
+import { defaultTemplateDataRoot } from './template-store.mjs';
 
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_ARTIFACTS = 20;
 const MAX_SNAPSHOTTED_BYTES = 128 * 1024 * 1024;
 const MAX_PENDING_INSPECTIONS = 20;
+// 생성 문서는 허브·앱을 다시 켜도 채팅 카드에서 열리도록 디스크에 남긴다.
+// 개수·용량·기간을 넘으면 오래된 것부터 지운다.
+const MAX_PERSISTED_ARTIFACTS = 100;
+const MAX_PERSISTED_BYTES = 1024 * 1024 * 1024;
+const MAX_PERSISTED_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+const ARTIFACT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{15,127}$/;
 const MAX_HWPX_EXPANDED_BYTES = 256 * 1024 * 1024;
 const MAX_HWPX_ENTRIES = 4096;
 const MAX_HWPX_ENTRY_BYTES = 64 * 1024 * 1024;
@@ -46,6 +53,32 @@ function artifactError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+/** 앱 데이터 폴더 아래 생성 문서 보관 위치. 템플릿 보관소와 같은 부모를 쓴다. */
+export function defaultGeneratedArtifactRoot(env = process.env, platform = process.platform, home = undefined) {
+  if (env.RHWP_ARTIFACTS_DIR) return path.resolve(env.RHWP_ARTIFACTS_DIR);
+  const templates = home === undefined
+    ? defaultTemplateDataRoot(env, platform)
+    : defaultTemplateDataRoot(env, platform, home);
+  return path.join(path.dirname(templates), 'generated-artifacts');
+}
+
+function normalizeOwner(owner) {
+  const threadId = typeof owner?.threadId === 'string' && owner.threadId ? owner.threadId.slice(0, 256) : null;
+  const documentId = typeof owner?.documentId === 'string' && owner.documentId ? owner.documentId.slice(0, 256) : null;
+  return threadId || documentId ? { threadId, documentId } : null;
+}
+
+async function writeFileAtomic(target, data) {
+  const temporary = `${target}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    await fs.writeFile(temporary, data, { mode: 0o600 });
+    await fs.rename(temporary, target);
+  } catch (error) {
+    await fs.rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 function isInside(parent, candidate) {
@@ -328,6 +361,9 @@ export class ArtifactStore {
     maxBytes = DEFAULT_MAX_BYTES,
     createId = () => `artifact_${crypto.randomBytes(24).toString('base64url')}`,
     readExactFileImpl = readExactFile,
+    persistDir = null,
+    now = () => Date.now(),
+    onPersistError = () => {},
   } = {}) {
     if (!rootDir) throw new Error('ArtifactStore requires rootDir');
     this.rootDir = path.resolve(rootDir);
@@ -338,6 +374,9 @@ export class ArtifactStore {
     this.maxBytes = maxBytes;
     this.createId = createId;
     this.readExactFile = readExactFileImpl;
+    this.persistDir = persistDir ? path.resolve(persistDir) : null;
+    this.now = now;
+    this.onPersistError = onPersistError;
     this.records = new Map();
     this.snapshottedBytes = 0;
     this.inspectionActive = false;
@@ -425,11 +464,11 @@ export class ArtifactStore {
     );
   }
 
-  async publish({ filePath, fileName }) {
+  async publish({ filePath, fileName, owner = null }) {
     return this.runWithInspectionMemory(async () => {
       const inspected = await this.inspectFileUnchecked(filePath, fileName);
       const artifactId = String(this.createId());
-      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{15,127}$/.test(artifactId)) {
+      if (!ARTIFACT_ID_RE.test(artifactId)) {
         throw artifactError('ARTIFACT_ID_INVALID', 'Artifact id generator returned an invalid id');
       }
       if (this.records.has(artifactId)) {
@@ -439,31 +478,222 @@ export class ArtifactStore {
       // snapshot avoids a second allocation as large as the artifact while
       // remaining independent from later workspace-file writes.
       const snapshot = inspected.bytes;
-      this.records.set(artifactId, Object.freeze({
+      const record = Object.freeze({
         fileName: inspected.fileName,
         mime: inspected.mime,
         size: snapshot.length,
         checksum: `sha256:${crypto.createHash('sha256').update(snapshot).digest('hex')}`,
+        createdAt: this.now(),
+        owner: normalizeOwner(owner),
+        template: null,
         bytes: snapshot,
-      }));
-      this.snapshottedBytes += snapshot.length;
-      while (this.records.size > MAX_ARTIFACTS || this.snapshottedBytes > MAX_SNAPSHOTTED_BYTES) {
-        const oldestId = this.records.keys().next().value;
-        const oldest = this.records.get(oldestId);
-        this.snapshottedBytes -= oldest?.size ?? 0;
-        this.records.delete(oldestId);
-      }
-      const { bytes: _bytes, ...published } = this.records.get(artifactId);
+      });
+      this.remember(artifactId, record);
+      await this.persist(artifactId, record);
+      const { bytes: _bytes, ...published } = record;
       return { artifactId, ...published };
     });
   }
 
+  remember(artifactId, record) {
+    const previous = this.records.get(artifactId);
+    if (previous) {
+      this.snapshottedBytes -= previous.size;
+      this.records.delete(artifactId);
+    }
+    this.records.set(artifactId, record);
+    this.snapshottedBytes += record.size;
+    while (this.records.size > MAX_ARTIFACTS || this.snapshottedBytes > MAX_SNAPSHOTTED_BYTES) {
+      const oldestId = this.records.keys().next().value;
+      const oldest = this.records.get(oldestId);
+      this.snapshottedBytes -= oldest?.size ?? 0;
+      this.records.delete(oldestId);
+    }
+  }
+
+  persistedPaths(artifactId) {
+    if (!this.persistDir || !ARTIFACT_ID_RE.test(artifactId)) return null;
+    return {
+      meta: path.join(this.persistDir, `${artifactId}.json`),
+      blob: path.join(this.persistDir, `${artifactId}.bin`),
+    };
+  }
+
+  static metadataOf(artifactId, record) {
+    return {
+      version: 1,
+      artifactId,
+      fileName: record.fileName,
+      mime: record.mime,
+      size: record.size,
+      checksum: record.checksum,
+      createdAt: record.createdAt,
+      owner: record.owner,
+      template: record.template,
+    };
+  }
+
+  async persist(artifactId, record) {
+    const paths = this.persistedPaths(artifactId);
+    if (!paths) return false;
+    try {
+      await fs.mkdir(this.persistDir, { recursive: true, mode: 0o700 });
+      // 본문을 먼저 쓰고 메타데이터를 나중에 쓴다. 메타데이터가 있으면 본문도 완성돼 있다.
+      await writeFileAtomic(paths.blob, record.bytes);
+      await writeFileAtomic(paths.meta, JSON.stringify(ArtifactStore.metadataOf(artifactId, record)));
+      await this.prunePersisted();
+      return true;
+    } catch (error) {
+      this.onPersistError(error);
+      return false;
+    }
+  }
+
+  async readPersistedMetadata(artifactId) {
+    const paths = this.persistedPaths(artifactId);
+    if (!paths) return null;
+    let meta;
+    try {
+      meta = JSON.parse(await fs.readFile(paths.meta, 'utf8'));
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error instanceof SyntaxError) return null;
+      throw error;
+    }
+    if (meta?.artifactId !== artifactId || typeof meta.fileName !== 'string'
+      || !Number.isSafeInteger(meta.size) || meta.size < 1 || meta.size > this.maxBytes
+      || typeof meta.checksum !== 'string') {
+      return null;
+    }
+    let format;
+    try {
+      format = formatFor(meta.fileName);
+    } catch {
+      return null;
+    }
+    if (path.basename(meta.fileName) !== meta.fileName || /[\0\\/]/u.test(meta.fileName)) return null;
+    return {
+      fileName: meta.fileName,
+      mime: format.mime,
+      size: meta.size,
+      checksum: meta.checksum,
+      createdAt: Number.isFinite(meta.createdAt) ? meta.createdAt : 0,
+      owner: normalizeOwner(meta.owner),
+      template: meta.template && typeof meta.template === 'object' ? meta.template : null,
+    };
+  }
+
+  /** 본문 없이 메타데이터만 돌려준다. 다운로드 주소를 새로 만들 때 쓴다. */
+  async describe(artifactId) {
+    const id = String(artifactId ?? '');
+    const cached = this.records.get(id);
+    if (cached) {
+      const { bytes: _bytes, ...metadata } = cached;
+      return metadata;
+    }
+    const metadata = await this.readPersistedMetadata(id);
+    if (!metadata) throw artifactError('ARTIFACT_NOT_FOUND', 'Generated artifact is unavailable or expired');
+    const stat = await fs.lstat(this.persistedPaths(id).blob).catch(() => null);
+    if (!stat?.isFile() || stat.size !== metadata.size) {
+      throw artifactError('ARTIFACT_NOT_FOUND', 'Generated artifact is unavailable or expired');
+    }
+    return metadata;
+  }
+
   async read(artifactId) {
-    const record = this.records.get(String(artifactId ?? ''));
-    if (!record) throw artifactError('ARTIFACT_NOT_FOUND', 'Generated artifact is unavailable or expired');
+    const id = String(artifactId ?? '');
+    const record = this.records.get(id);
     // Callers borrow the store-owned snapshot and pass it directly to the HTTP
     // or template sink. They must not mutate it. Copying here doubled peak
     // memory for every 64 MiB download without adding source-file isolation.
-    return record;
+    if (record) return record;
+    const metadata = await this.readPersistedMetadata(id);
+    if (!metadata) throw artifactError('ARTIFACT_NOT_FOUND', 'Generated artifact is unavailable or expired');
+    let bytes;
+    try {
+      const handle = await fs.open(this.persistedPaths(id).blob, fsConstants.O_RDONLY);
+      try {
+        bytes = await this.readExactFile(handle, metadata.size, this.maxBytes);
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ARTIFACT_CHANGED') {
+        throw artifactError('ARTIFACT_NOT_FOUND', 'Generated artifact is unavailable or expired');
+      }
+      throw error;
+    }
+    const checksum = `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`;
+    if (checksum !== metadata.checksum) {
+      throw artifactError('ARTIFACT_NOT_FOUND', 'Stored generated artifact is damaged');
+    }
+    const format = formatFor(metadata.fileName);
+    validateSignature(bytes, format.signature, format.extension);
+    const loaded = Object.freeze({ ...metadata, bytes });
+    this.remember(id, loaded);
+    return loaded;
+  }
+
+  /** 생성 문서에 서식 틀 정보 같은 메타데이터를 덧붙인다. */
+  async annotate(artifactId, { template }) {
+    const id = String(artifactId ?? '');
+    const current = await this.read(id);
+    const next = Object.freeze({ ...current, template: template ?? null });
+    this.remember(id, next);
+    const paths = this.persistedPaths(id);
+    if (paths) {
+      try {
+        await writeFileAtomic(paths.meta, JSON.stringify(ArtifactStore.metadataOf(id, next)));
+      } catch (error) {
+        this.onPersistError(error);
+      }
+    }
+    const { bytes: _bytes, ...metadata } = next;
+    return metadata;
+  }
+
+  async prunePersisted() {
+    if (!this.persistDir) return;
+    const entries = await fs.readdir(this.persistDir).catch((error) => {
+      if (error?.code === 'ENOENT') return [];
+      throw error;
+    });
+    const now = this.now();
+    const ids = new Set();
+    for (const name of entries) {
+      const match = /^(.+)\.(json|bin)$/.exec(name);
+      if (match && ARTIFACT_ID_RE.test(match[1])) ids.add(match[1]);
+      else if (/\.tmp-\d+-[0-9a-f-]+$/i.test(name)) {
+        const stat = await fs.stat(path.join(this.persistDir, name)).catch(() => null);
+        if (stat && now - stat.mtimeMs > 60 * 60 * 1000) {
+          await fs.rm(path.join(this.persistDir, name), { force: true }).catch(() => {});
+        }
+      }
+    }
+    const kept = [];
+    for (const id of ids) {
+      const metadata = await this.readPersistedMetadata(id).catch(() => null);
+      const blob = await fs.stat(this.persistedPaths(id).blob).catch(() => null);
+      if (!metadata || !blob || now - metadata.createdAt > MAX_PERSISTED_AGE_MS) {
+        // 메타데이터를 쓰는 중인 새 문서는 남긴다.
+        if (!metadata && blob && now - blob.mtimeMs < 60 * 1000) continue;
+        await this.removePersisted(id);
+        continue;
+      }
+      kept.push({ id, createdAt: metadata.createdAt, size: metadata.size });
+    }
+    kept.sort((left, right) => left.createdAt - right.createdAt);
+    let total = kept.reduce((sum, entry) => sum + entry.size, 0);
+    while (kept.length > MAX_PERSISTED_ARTIFACTS || total > MAX_PERSISTED_BYTES) {
+      const oldest = kept.shift();
+      total -= oldest.size;
+      await this.removePersisted(oldest.id);
+    }
+  }
+
+  async removePersisted(artifactId) {
+    const paths = this.persistedPaths(artifactId);
+    if (!paths) return;
+    await fs.rm(paths.meta, { force: true }).catch(() => {});
+    await fs.rm(paths.blob, { force: true }).catch(() => {});
   }
 }

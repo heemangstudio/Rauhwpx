@@ -56,7 +56,7 @@
   --ui-pressed-inset: none;
   --doc-workspace: #e8eaee;
   --doc-paper-shadow: 0 0 0 1px #cbd0d9, 0 2px 5px #18253612;
-  --focus-ring: #356caa;
+  --focus-ring: rgba(23, 27, 34, 0.42);
   --ruler-bg: #f2f3f5;
   --ruler-body: #f2f3f5;
   --ruler-tick: #6b7480;
@@ -151,7 +151,7 @@
   --ui-footer-bg: #0f0f0f;
   --doc-workspace: #191919;
   --doc-paper-shadow: 0 0 0 1px #00000099, 0 6px 24px #00000080;
-  --focus-ring: #ef6a62;
+  --focus-ring: rgba(230, 230, 230, 0.48);
   --ruler-bg: #0f0f0f;
   --ruler-body: #181818;
   --ruler-tick: #787878;
@@ -234,7 +234,7 @@
 }
 /* Do not animate layout or theme colors: controls stay in place as state changes. */
 #studio-header, #studio-header button, #style-bar, #icon-toolbar, .cp-panel { transition: none; }
-html.desktop-mac #menu-bar { height: var(--desktop-titlebar-height); padding-left: var(--desktop-traffic-light-inset); }
+html.desktop-mac #menu-bar { height: var(--desktop-titlebar-height); padding-left: var(--desktop-home-reserve); }
 html.desktop-mac #editor-command-search { -webkit-app-region: no-drag; }
 @media (max-width: 1023px) {
 }

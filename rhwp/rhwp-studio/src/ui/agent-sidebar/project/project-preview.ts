@@ -7,7 +7,8 @@
  * - PDF·이미지 위에는 영역 조각 층(clip-layer.ts)을 덮는다. 조각을 열면 원본의 그 쪽으로 가서
  *   테두리로 보여 주고, 영역 도구로 새 조각을 그린다.
  * - 노트: 채팅과 같은 Markdown 렌더러로 그리고, 바로 고쳐 `note` 연산으로 저장한다.
- * - 그 밖의 문서: 허브가 뽑은 글자를 읽기 보기로 보여 주고 조각을 강조한다.
+ * - 그 밖의 문서: 허브가 뽑은 글자를 읽기 보기로 보여 주고 조각을 강조한다. Markdown 파일은
+ *   강조할 조각이 없으면 노트처럼 그리고, JSON 은 들여 쓴다.
  * 어떤 경우에도 원문 HTML 을 해석하지 않는다.
  */
 
@@ -33,6 +34,7 @@ import {
 } from '../wikilinks.ts';
 import { button, el, itemIconName, projectIcon } from './project-ui.ts';
 import { locateInText } from './passage-locate.ts';
+import { decodeTextBytes, prettyJson, textFormatOf } from './text-decode.ts';
 import { createPdfViewer, type PdfViewer } from './pdf-viewer.ts';
 
 export interface ProjectPreviewRequest {
@@ -50,6 +52,11 @@ export interface ProjectPreviewDeps {
   /** 노트·영역 저장. ProjectStore.edit 를 넘기면 보드가 바로 따라온다. 없으면 service.applyOps 로 보낸다. */
   edit?: (ops: ProjectOp[]) => Promise<ProjectOpsResult | unknown>;
   onClose: () => void;
+  /** 탭을 쓰는 호스트는 인용을 새 항목 탭으로 연다. */
+  onOpen?: (request: ProjectPreviewRequest) => void;
+  onDirtyChange?: () => void;
+  /** 탭 호스트가 초안 확인과 뷰 해제를 맡는다. */
+  managedClose?: boolean;
   /** `d…` 문서 노드를 열 때. 없으면 미리보기가 안내만 한다. */
   openDocument?: (documentId: string) => void;
 }
@@ -63,6 +70,10 @@ export interface ProjectPreview {
   /** 열린 항목과 뒤로 가기 목록을 비운다. */
   clear(): void;
   readonly current: ProjectPreviewRequest | null;
+  setVisible(visible: boolean): void;
+  /** 같은 원본의 쪽·인용 이동은 배율과 노트 초안을 보존한다. */
+  reveal(request: ProjectPreviewRequest): Promise<void>;
+  readonly hasUnsavedChanges: boolean;
   destroy(): void;
 }
 
@@ -100,6 +111,8 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   let clipLayer: ClipLayer | null = null;
   let objectUrl: string | null = null;
   let cleanupView: (() => void) | null = null;
+  let isVisible = true;
+  let dirty = () => false;
 
   /** 조각 → 쪽 번호. 받은 값은 숫자로 바꿔 두어, 다시 그린 칩이 바로 같은 모양이 된다. */
   const chunkPages = new Map<string, number | null | Promise<number | null>>();
@@ -107,7 +120,9 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   const citations: CitationHooks = {
     resolveItem: (id) => projectCitationTarget(deps.project(), id),
     openCitation: (request) => {
-      void open({ itemId: request.id, anchor: request.anchor, quote: request.quote });
+      const target = { itemId: request.id, anchor: request.anchor, quote: request.quote };
+      if (deps.onOpen) deps.onOpen(target);
+      else void open(target);
     },
     chunkPage: (id, n) => {
       const projectId = deps.project()?.id;
@@ -133,6 +148,8 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   }
 
   function resetView(): void {
+    dirty = () => false;
+    deps.onDirtyChange?.();
     cleanupView?.();
     cleanupView = null;
     clipLayer?.destroy();
@@ -193,6 +210,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     const tool = button('ag-pp-text-button ag-pp-clip-tool', '영역 그리기', { icon: 'clip', text: '영역' });
     tool.setAttribute('aria-pressed', 'false');
     const layer = createClipLayer({
+      projectId,
       clips: () => (deps.project()?.items ?? []).filter((entry): entry is ProjectClipItem => (
         entry.kind === 'clip' && entry.sourceId === source.id && !entry.trashedAt
       )),
@@ -235,6 +253,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       onPageChange: (page, total) => { meta.textContent = `${page} / ${total}`; },
     });
     viewer = pdf;
+    pdf.setVisible(isVisible);
     zoomTools(() => pdf.zoomOut(), () => pdf.zoomIn());
     busy();
     const [blob, chunk] = await Promise.all([
@@ -243,7 +262,9 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     ]);
     if (token !== generation) return;
     body.replaceChildren(pdf.element);
-    await pdf.load(new Uint8Array(await blob.arrayBuffer()));
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (token !== generation) return;
+    await pdf.load(bytes);
     if (token !== generation) return;
     body.removeAttribute('aria-busy');
     const layer = mountClipLayer(projectId, item);
@@ -309,19 +330,46 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   async function showReader(projectId: string, item: ProjectFileItem, anchor: WikilinkAnchor | null, quote: string | null, token: number): Promise<void> {
     root.dataset.kind = 'reader';
     busy();
-    const chunk = await chunkFor(projectId, item.id, anchor);
-    const page = chunk?.page ?? (anchor?.kind === 'page' ? anchor.n : undefined);
-    const text = await deps.service.fileText(projectId, item.id, page ?? undefined);
+    // 텍스트 파일은 허브가 못 읽은 인코딩(EUC-KR, UTF-16)도 원본 바이트에서 직접 푼다.
+    const plainFile = item.fileKind === 'text';
+    let chunk: ProjectChunk | null = null;
+    let text: { page: number | null; text: string } | null = null;
+    if (item.status === 'ready') {
+      try {
+        chunk = await chunkFor(projectId, item.id, anchor);
+        const page = chunk?.page ?? (anchor?.kind === 'page' ? anchor.n : undefined);
+        text = await deps.service.fileText(projectId, item.id, page ?? undefined);
+      } catch (error) {
+        if (!plainFile) throw error;
+      }
+    }
+    if (!text && plainFile) {
+      const decoded = decodeTextBytes(new Uint8Array(await (await deps.service.fileBlob(projectId, item.id)).arrayBuffer()));
+      if (decoded !== null) text = { page: null, text: decoded.replace(/\r\n?/g, '\n') };
+    }
     if (token !== generation) return;
+    if (!text) {
+      message('글자를 읽지 못한 파일입니다.');
+      return;
+    }
     if (text.page) meta.textContent = `p.${text.page}`;
-    const reader = el('div', 'ag-pp-reader');
     const match = chunk || quote ? locateInText(text.text, { chunk, quote }) : null;
+    const format = plainFile ? textFormatOf(item) : 'plain';
+    if (!match && format === 'markdown') {
+      const view = el('div', 'ag-pp-note ag-msg ag-msg-assistant');
+      renderChatMarkdown(view, text.text, { citations });
+      body.replaceChildren(view);
+      body.removeAttribute('aria-busy');
+      return;
+    }
+    const reader = el('div', 'ag-pp-reader');
     if (match) {
       const mark = el('mark', 'ag-pp-hit', text.text.slice(match.start, match.end));
       reader.append(document.createTextNode(text.text.slice(0, match.start)), mark, document.createTextNode(text.text.slice(match.end)));
     } else {
-      reader.textContent = text.text;
+      reader.textContent = format === 'json' ? prettyJson(text.text) : text.text;
     }
+    if (format === 'json') reader.classList.add('ag-pp-reader-code');
     body.replaceChildren(reader);
     body.removeAttribute('aria-busy');
     const hit = reader.querySelector<HTMLElement>('.ag-pp-hit');
@@ -345,14 +393,18 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     const startEdit = () => {
       const editor = el('textarea', 'ag-pp-note-editor');
       editor.value = source;
+      dirty = () => editor.value !== source;
+      editor.addEventListener('input', () => deps.onDirtyChange?.());
       editor.setAttribute('aria-label', '노트 내용');
       editor.spellcheck = false;
       const cancel = button('ag-pp-text-button', '편집 취소', { text: '취소' });
       const save = button('ag-pp-text-button ag-pp-primary', '노트 저장', { text: '저장' });
       tools.replaceChildren(cancel, save);
       body.replaceChildren(editor);
-      editor.focus();
+      if (isVisible) editor.focus();
       const finish = () => {
+        dirty = () => false;
+        deps.onDirtyChange?.();
         tools.replaceChildren(editButton);
         body.replaceChildren(view);
       };
@@ -363,14 +415,20 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
         }
         save.disabled = true;
         cancel.disabled = true;
-        const ops: ProjectOp[] = [{ op: 'note', id: item.id, body: editor.value, mode: 'replace' }];
+        const savedBody = editor.value;
+        const ops: ProjectOp[] = [{ op: 'note', id: item.id, body: savedBody, mode: 'replace' }];
         try {
           if (deps.edit) await deps.edit(ops);
           else await deps.service.applyOps(projectId, ops);
           if (token !== generation) return;
-          source = editor.value;
+          source = savedBody;
           render();
-          finish();
+          if (editor.value === savedBody) finish();
+          else {
+            save.disabled = false;
+            cancel.disabled = false;
+            deps.onDirtyChange?.();
+          }
         } catch {
           save.disabled = false;
           cancel.disabled = false;
@@ -428,13 +486,16 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       }
       if (item.fileKind === 'pdf') await showPdf(project.id, item, anchor, quote, token, clip);
       else if (item.fileKind === 'image') await showImage(project.id, item, token, clip);
-      else if (item.status === 'failed') message('글자를 읽지 못한 파일입니다.');
+      else if (item.status === 'failed' && item.fileKind !== 'text') message('글자를 읽지 못한 파일입니다.');
       else await showReader(project.id, item, anchor, quote, token);
     } catch (error) {
       if (token !== generation) return;
       if ((error as Error)?.message === 'closed') return;
       body.removeAttribute('aria-busy');
       message(errorText(error));
+      const retry = button('ag-pp-text-button', '다시 열기', { text: '다시 시도' });
+      retry.addEventListener('click', () => { void show(request); });
+      body.append(retry);
     }
   }
 
@@ -457,7 +518,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       void show(previous);
       return;
     }
-    clear();
+    if (!deps.managedClose) clear();
     deps.onClose();
   }
 
@@ -499,6 +560,47 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       refreshCitations(body, citations);
     },
     clear,
+    setVisible(next) {
+      isVisible = next;
+      root.inert = !next;
+      viewer?.setVisible(next);
+    },
+    async reveal(request) {
+      const found = findItem(request.itemId);
+      const source = found?.kind === 'clip' ? findItem(found.sourceId) : found;
+      const previous = current ? findItem(current.itemId) : null;
+      const previousSource = previous?.kind === 'clip' ? findItem(previous.sourceId) : previous;
+      if (!source || source.id !== previousSource?.id) return open(request);
+      current = request;
+      if (source.kind === 'note') return;
+      if (!viewer) {
+        if (found?.kind === 'clip') {
+          const box = clipLayer?.reveal(found.id);
+          box?.scrollIntoView({ block: 'center', inline: 'center' });
+        } else if (source.kind === 'file' && source.fileKind !== 'image' && (request.anchor || request.quote)) {
+          const projectId = deps.project()?.id;
+          if (projectId) await showReader(projectId, source, parseAnchor(request.anchor), request.quote?.trim() || null, ++generation);
+        }
+        return;
+      }
+      const pdf = viewer;
+      const token = generation;
+      if (found?.kind === 'clip') {
+        pdf.scrollToRegion(found.page, found.rect);
+        clipLayer?.reveal(found.id);
+        return;
+      }
+      const anchor = parseAnchor(request.anchor);
+      if (anchor?.kind === 'page') pdf.showPage(anchor.n);
+      else if (anchor?.kind === 'chunk') {
+        const projectId = deps.project()?.id;
+        if (!projectId) return;
+        const chunk = await chunkFor(projectId, source.id, anchor);
+        if (token !== generation || pdf !== viewer || !isVisible) return;
+        if (chunk?.page) await pdf.highlight(chunk.page, { chunk, quote: request.quote });
+      }
+    },
+    get hasUnsavedChanges() { return dirty(); },
     get current() {
       return current;
     },

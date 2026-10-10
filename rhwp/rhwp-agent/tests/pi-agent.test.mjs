@@ -1,17 +1,27 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import fs, { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 
 import {
   buildPiArgv,
   buildPiEnv,
+  canResumePiSession,
   createPiFleetMapper,
   createPiSession,
   formatOpenRouterCreditError,
   formatPiExitError,
   isOpenRouterCreditError,
 } from '../agents/pi.mjs';
+import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
+import { availableReadOnlyBuiltins } from '../agents/pi-prompt.mjs';
+
+// rg/fd 가 있는 가짜 PATH — grep/find 선언은 실행 파일을 찾을 수 있을 때만 붙는다.
+const SEARCH_BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'rhwp-pi-search-bin-'));
+for (const name of ['rg', 'fd']) writeFileSync(path.join(SEARCH_BIN_DIR, name), '');
+after(() => rmSync(SEARCH_BIN_DIR, { recursive: true, force: true }));
 
 const baseOpts = {
   rootDir: '/tmp/rhwp',
@@ -166,9 +176,11 @@ test('a tool-call turn maps to the unified event sequence and settles', () => {
 
   proc.exit(0);
   assert.deepEqual(types(events), [
-    'turn-start', 'session-info', 'text-delta', 'usage',
-    'tool-call', 'tool-result', 'text-delta', 'text-delta', 'usage', 'turn-end',
+    'turn-start', 'session-info', 'text-delta', 'context-usage', 'usage',
+    'tool-call', 'tool-result', 'text-delta', 'text-delta', 'context-usage', 'usage', 'turn-end',
   ]);
+  // 맥락 크기는 마지막 호출의 totalTokens 다 (누적이 아니다).
+  assert.deepEqual(events.filter((event) => event.type === 'context-usage').map((event) => event.usedTokens), [168, 168]);
 
   const sessionInfo = events[1];
   assert.equal(sessionInfo.sessionId, SESSION_LINE.id);
@@ -385,9 +397,102 @@ test('argv carries the model, thinking level, session and system brief', () => {
   ]);
   assert.equal(argv[argv.indexOf('--session-dir') + 1], path.join('/pi', 'sessions'));
   assert.equal(argv[argv.indexOf('--session-id') + 1], 'sess-1');
-  assert.match(argv[argv.indexOf('--append-system-prompt') + 1], /rhwp MCP tools/);
-  assert.ok(argv.includes('--no-context-files'));
+  assert.match(argv[argv.indexOf('--system-prompt') + 1], /^You are the document agent inside HamaEditor/);
   assert.equal(argv[argv.indexOf('--exclude-tools') + 1], 'bash');
+  assert.equal(argv.includes('--append-system-prompt'), false);
+});
+
+test('argv loads only the extensions and skills shipped with the app', () => {
+  const argv = buildPiArgv({ ...baseOpts, workflow: 'direct', phase: 'implementing' }, 'sess-1');
+  for (const flag of ['--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes',
+    '--no-context-files', '--no-approve']) {
+    assert.ok(argv.includes(flag), flag);
+  }
+  const agentPackage = path.resolve(import.meta.dirname, '..');
+  const extensions = argv.flatMap((arg, index) => (arg === '-e' ? [argv[index + 1]] : []));
+  assert.deepEqual(extensions.map((file) => path.relative(agentPackage, file)), [
+    path.join('pi', 'extension', 'rhwp.ts'),
+    path.join('pi', 'extension', 'subagents.ts'),
+  ]);
+  const skills = argv.flatMap((arg, index) => (arg === '--skill' ? [argv[index + 1]] : []));
+  assert.deepEqual(skills, [path.join(agentPackage, 'pi', 'skills')]);
+  for (const file of [...extensions, ...skills]) assert.ok(fs.existsSync(file), file);
+  // Pi 홈(설정이 들어 있는 사용자 데이터 폴더)에서는 아무 리소스도 싣지 않는다.
+  assert.equal(argv.some((arg) => arg.startsWith(path.join('/pi', 'agent'))), false);
+});
+
+test('every mode adds the read-only search built-ins without replacing the default set', () => {
+  const searchEnv = { PATH: SEARCH_BIN_DIR };
+  for (const mode of [
+    { workflow: 'direct', permissionProfile: 'safe' },
+    { workflow: 'direct', permissionProfile: 'unrestricted' },
+    { workflow: 'question', phase: 'questioning' },
+    { workflow: 'plan', phase: 'planning' },
+    { workflow: 'plan', phase: 'implementing' },
+    { toolProfile: 'copy-layout-worker' },
+  ]) {
+    const argv = buildPiArgv({ ...baseOpts, ...mode }, 'sess-1', searchEnv);
+    // `+이름` 만 쓰는 형식이어야 확장 도구가 살아남는다 (이름만 나열하면 허용 목록이 된다).
+    const tools = argv[argv.indexOf('--tools') + 1].split(',');
+    assert.ok(tools.every((entry) => entry.startsWith('+')), JSON.stringify(mode));
+    assert.deepEqual(tools.filter((entry) => ['+grep', '+find', '+ls'].includes(entry)).length, 3);
+  }
+});
+
+test('grep and find are declared only when pi can run rg and fd', () => {
+  const files = new Set([
+    path.join('/pi', 'agent', 'bin', 'rg'),
+    path.join('/usr', 'bin', 'fdfind'),
+  ]);
+  const exists = (file) => files.has(file);
+  assert.deepEqual(
+    availableReadOnlyBuiltins({ pathEnv: '/usr/bin', binDir: path.join('/pi', 'agent', 'bin'), exists, platform: 'darwin' }),
+    ['grep', 'find', 'ls'],
+  );
+  assert.deepEqual(availableReadOnlyBuiltins({ pathEnv: '/usr/bin', exists, platform: 'darwin' }), ['find', 'ls']);
+  assert.deepEqual(availableReadOnlyBuiltins({ pathEnv: '', exists: () => false, platform: 'darwin' }), ['ls']);
+  assert.deepEqual(
+    availableReadOnlyBuiltins({ pathEnv: 'C:\\tools', exists: (file) => file === 'C:\\tools\\rg.exe', platform: 'win32' }),
+    ['grep', 'ls'],
+  );
+  const bare = buildPiArgv(baseOpts, 'sess-1', { PATH: '' });
+  assert.equal(bare[bare.indexOf('--tools') + 1], '+ls');
+});
+
+test('a spawn reads its system prompt from a session file instead of the command line', () => {
+  const piRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rhwp-pi-prompt-'));
+  try {
+    fs.mkdirSync(path.join(piRoot, 'sessions'));
+    const { session, spawns } = startSession({ piRoot, permissionProfile: 'unrestricted' });
+    session.sendUserMessage('edit');
+    const value = spawns[0].argv[spawns[0].argv.indexOf('--system-prompt') + 1];
+    assert.equal(path.dirname(value), path.join(piRoot, 'sessions'));
+    assert.match(fs.readFileSync(value, 'utf8'), /^You are the document agent inside HamaEditor[\s\S]*Mode: 전체/);
+    session.dispose();
+  } finally {
+    fs.rmSync(piRoot, { recursive: true, force: true });
+  }
+});
+
+test('the system prompt follows the mode and an explicit override replaces it', () => {
+  const promptOf = (opts) => {
+    const argv = buildPiArgv({ ...baseOpts, ...opts }, 'sess-1', {});
+    return argv[argv.indexOf('--system-prompt') + 1];
+  };
+  const prompts = [
+    promptOf({ workflow: 'question', phase: 'questioning' }),
+    promptOf({ workflow: 'plan', phase: 'planning' }),
+    promptOf({ workflow: 'direct', permissionProfile: 'safe' }),
+    promptOf({ workflow: 'direct', permissionProfile: 'unrestricted' }),
+    promptOf({ workflow: 'plan', phase: 'implementing', permissionProfile: 'safe' }),
+    promptOf({ workflow: 'plan', phase: 'implementing', permissionProfile: 'unrestricted' }),
+  ];
+  assert.equal(new Set(prompts).size, prompts.length);
+  for (const prompt of prompts) {
+    assert.doesNotMatch(prompt, /expert coding assistant/);
+    assert.ok(prompt.includes(RHWP_TOOL_RULES));
+  }
+  assert.equal(promptOf({ systemPromptOverride: 'AUTONOMOUS TEMPLATE WORKER' }), 'AUTONOMOUS TEMPLATE WORKER');
 });
 
 test('argv omits thinking for non-reasoning models and never doubles the provider prefix', () => {
@@ -405,7 +510,7 @@ test('pi gets its own subagent fleet instructions', () => {
     { workflow: 'plan', phase: 'implementing' },
   ]) {
     const argv = buildPiArgv({ ...baseOpts, ...mode }, 'sess-1');
-    const brief = argv[argv.indexOf('--append-system-prompt') + 1];
+    const brief = argv[argv.indexOf('--system-prompt') + 1];
     assert.doesNotMatch(brief, /Workflow tool/, mode.phase);
     assert.match(brief, /subagent_spawn/, mode.phase);
     assert.match(brief, /role=doc-editor/, mode.phase);
@@ -418,11 +523,11 @@ test('planning phases exclude the built-in write and shell tools', () => {
   for (const phase of ['planning', 'awaiting-approval', 'switching']) {
     const argv = buildPiArgv({ ...baseOpts, workflow: 'plan', phase }, 'sess-1');
     assert.equal(argv[argv.indexOf('--exclude-tools') + 1], 'bash,edit,write', phase);
-    assert.match(argv[argv.indexOf('--append-system-prompt') + 1], /플랜 \(plan\) mode|implementation mode/);
+    assert.match(argv[argv.indexOf('--system-prompt') + 1], /Mode: 플랜 \(plan\)/);
   }
   const implementing = buildPiArgv({ ...baseOpts, workflow: 'plan', phase: 'implementing' }, 'x');
   assert.equal(implementing[implementing.indexOf('--exclude-tools') + 1], 'bash');
-  assert.match(implementing[implementing.indexOf('--append-system-prompt') + 1], /implementation mode/);
+  assert.match(implementing[implementing.indexOf('--system-prompt') + 1], /Mode: plan implementation/);
 
   const unrestricted = buildPiArgv({
     ...baseOpts,
@@ -448,6 +553,7 @@ test('the child env is built from scratch without ambient provider keys', () => 
   assert.deepEqual(env.PATH, '/usr/bin');
   assert.equal(env.PI_CODING_AGENT_DIR, path.join('/pi', 'agent'));
   assert.equal(env.PI_OFFLINE, '1');
+  assert.equal(env.PI_TELEMETRY, '0');
   assert.equal(env.HOME, '/tmp/rhwp isolated home');
   assert.equal(env.USERPROFILE, '/tmp/rhwp isolated home');
   assert.equal(env.RHWP_SESSION_ID, 'studio-thread-pi');
@@ -546,6 +652,25 @@ test('a mode switch waits for the running child to exit', async () => {
   assert.equal(spawns[1].options.env.RHWP_AGENT_PHASE, 'implementing');
   assert.equal(spawns[1].argv[spawns[1].argv.indexOf('--session-id') + 1], session.getSessionId());
   session.dispose();
+});
+
+test('a reused Pi chat applies and clears the native execution grant', async (t) => {
+  const { session, opts, spawns } = startSession({ agentRole: 'chat', workflow: 'question', phase: 'questioning' }, {
+    terminateProcess: async () => true, waitForExit: async () => true,
+  });
+  t.after(() => session.dispose());
+  for (const [index, grants] of [[], ['local-execution'], []].entries()) {
+    await session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 1, chatPermissionGrants: grants });
+    session.sendUserMessage(`turn ${index}`);
+    const { argv, options, proc } = spawns[index];
+    assert.equal(argv.includes('--exclude-tools'), grants.length === 0);
+    assert.equal(options.env.RHWP_LOCAL_EXECUTION, grants.length ? '1' : '0');
+    assert.equal(options.env.RHWP_PERMISSION_PROFILE, 'safe');
+    assert.equal(opts.workflow, 'question');
+    proc.emitJson({ type: 'agent_end', messages: [], willRetry: false });
+    proc.exit(0);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 });
 
 test('natural Pi leader exit retains tree cleanup result for delayed disposal', async () => {
@@ -762,4 +887,89 @@ test('a failed Pi cancellation marks the affected fleet card failed', () => {
   mapper.onToolStart({ toolCallId: 'cancel', toolName: 'subagent_cancel', args: { ids: ['sa-1'] } });
   mapper.onToolEnd({ toolCallId: 'cancel', toolName: 'subagent_cancel', isError: true, result: {} });
   assert.equal(events.at(-1).status, 'failed');
+});
+
+// compaction_* 모양은 Pi 1.1.0 docs/json.md 의 JSON 이벤트 계약을 따른다.
+test('Pi auto compaction and per-call usage map to the shared compaction and context-usage events', () => {
+  const { session, events, spawns } = startSession({ contextWindow: 200_000 });
+  session.sendUserMessage('long task');
+  const { proc } = spawns[0];
+  proc.emitJson(
+    SESSION_LINE,
+    { type: 'message_end', message: { role: 'assistant', usage: { ...TOOL_USAGE, totalTokens: 150_000 }, stopReason: 'toolUse', content: [] } },
+    { type: 'compaction_start', reason: 'threshold' },
+    {
+      type: 'compaction_end', reason: 'threshold', aborted: false, willRetry: false,
+      result: { summary: 's', firstKeptEntryId: 'e1', tokensBefore: 150_500, estimatedTokensAfter: 32_000, details: {} },
+    },
+    { type: 'compaction_start', reason: 'overflow' },
+    { type: 'compaction_end', reason: 'overflow', aborted: false, willRetry: false, errorMessage: 'summary model failed' },
+    { type: 'agent_settled' },
+  );
+  proc.exit(0);
+  const compactions = events.filter((event) => event.type === 'compaction');
+  assert.deepEqual(compactions.map(({ phase, trigger }) => [phase, trigger]), [
+    ['started', 'auto'], ['completed', 'auto'], ['started', 'auto'], ['failed', 'auto'],
+  ]);
+  assert.equal(compactions[0].compactionId, compactions[1].compactionId);
+  assert.notEqual(compactions[1].compactionId, compactions[2].compactionId);
+  assert.equal(compactions[0].beforeTokens, 150_000);
+  assert.equal(compactions[1].beforeTokens, 150_500);
+  assert.equal(compactions[1].afterTokens, 32_000);
+  assert.match(compactions[3].message, /summary model failed/);
+  const usage = events.filter((event) => event.type === 'context-usage');
+  assert.deepEqual(usage.map((event) => [event.usedTokens, event.maxTokens]), [[150_000, 200_000], [32_000, 200_000]]);
+  assert.equal(session.compactionSupport, 'auto-only');
+});
+
+test('a Pi resume cursor reuses the session file and falls back to the full transcript when it vanished', async (t) => {
+  const piRoot = mkdtempSync(path.join(os.tmpdir(), 'rhwp-pi-resume-'));
+  t.after(() => rmSync(piRoot, { recursive: true, force: true }));
+  const rootDir = path.join(piRoot, 'work');
+  fs.mkdirSync(path.join(piRoot, 'sessions'), { recursive: true });
+  const sessionFile = path.join(piRoot, 'sessions', '2026-10-09T00-00-00-000Z_kept-1.jsonl');
+  writeFileSync(sessionFile, `${JSON.stringify({ type: 'session', version: 3, id: 'kept-1', cwd: rootDir })}\n`);
+  assert.equal(await canResumePiSession({ piRoot, rootDir }, 'kept-1'), true);
+  // Pi 는 cwd 가 다른 세션 파일을 열지 않는다.
+  assert.equal(await canResumePiSession({ piRoot, rootDir: path.join(piRoot, 'other') }, 'kept-1'), false);
+
+  const kept = startSession({ piRoot, rootDir, resumeSessionId: 'kept-1' });
+  kept.session.sendUserMessage('delta only', { resumeFallbackText: 'full transcript' });
+  const keptArgv = kept.spawns[0].argv;
+  assert.equal(keptArgv[keptArgv.indexOf('--session-id') + 1], 'kept-1');
+  assert.deepEqual(kept.spawns[0].proc.stdin.chunks, ['delta only']);
+  kept.spawns[0].proc.emitJson({ type: 'agent_settled' });
+  kept.spawns[0].proc.exit(0);
+  assert.equal(kept.events.at(-1).resumeLost, undefined);
+
+  rmSync(sessionFile);
+  const lost = startSession({ piRoot, rootDir, resumeSessionId: 'kept-1' });
+  lost.session.sendUserMessage('delta only', { resumeFallbackText: 'full transcript' });
+  const lostArgv = lost.spawns[0].argv;
+  assert.notEqual(lostArgv[lostArgv.indexOf('--session-id') + 1], 'kept-1');
+  assert.deepEqual(lost.spawns[0].proc.stdin.chunks, ['full transcript']);
+  lost.spawns[0].proc.emitJson({ type: 'agent_settled' });
+  lost.spawns[0].proc.exit(0);
+  assert.deepEqual(lost.events.at(-1), { type: 'turn-end', agent: 'pi', stopReason: 'completed', resumeLost: true });
+});
+
+test('replaceSession opens a fresh Pi session for the full transcript and reports the old cursor lost', async (t) => {
+  const piRoot = mkdtempSync(path.join(os.tmpdir(), 'rhwp-pi-replace-'));
+  t.after(() => rmSync(piRoot, { recursive: true, force: true }));
+  const rootDir = path.join(piRoot, 'work');
+  fs.mkdirSync(path.join(piRoot, 'sessions'), { recursive: true });
+  writeFileSync(
+    path.join(piRoot, 'sessions', '2026-10-09T00-00-00-000Z_kept-2.jsonl'),
+    `${JSON.stringify({ type: 'session', version: 3, id: 'kept-2', cwd: rootDir })}\n`,
+  );
+  const { session, spawns, events } = startSession({ piRoot, rootDir, resumeSessionId: 'kept-2' });
+  session.sendUserMessage('full transcript', { replaceSession: true, resumeFallbackText: 'unused' });
+  const argv = spawns[0].argv;
+  const fresh = argv[argv.indexOf('--session-id') + 1];
+  assert.notEqual(fresh, 'kept-2');
+  assert.equal(session.getSessionId(), fresh);
+  assert.deepEqual(spawns[0].proc.stdin.chunks, ['full transcript']);
+  spawns[0].proc.emitJson({ type: 'agent_settled' });
+  spawns[0].proc.exit(0);
+  assert.deepEqual(events.at(-1), { type: 'turn-end', agent: 'pi', stopReason: 'completed', resumeLost: true });
 });

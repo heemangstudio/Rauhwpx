@@ -56,6 +56,8 @@ export interface ProjectColumnDeps {
   onClose?(): void;
   /** 그래프의 문서 노드를 눌렀을 때. */
   openDocument?(documentId: string): void;
+  /** 참고자료를 별도 작업 탭에서 열 때. 칸 안의 미리보기를 대신한다. */
+  openPreview?(target: ProjectPreviewRequest): void;
   initialTab?: ProjectTab;
 }
 
@@ -568,6 +570,10 @@ export function createProjectColumn(deps: ProjectColumnDeps): ProjectColumn {
 
   function openPreview(target: ProjectPreviewTarget | string): void {
     const resolved = typeof target === 'string' ? { itemId: target } : target;
+    if (deps.openPreview) {
+      deps.openPreview(resolved);
+      return;
+    }
     if (!previewOpen) {
       previewReturnFocus = document.activeElement instanceof HTMLElement && element.contains(document.activeElement)
         ? document.activeElement

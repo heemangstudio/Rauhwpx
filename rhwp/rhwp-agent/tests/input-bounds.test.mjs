@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { promises as fs } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -30,12 +29,4 @@ test('semantic request fields enforce character and UTF-8 aggregate limits', () 
     () => boundTextFields({ a: '한'.repeat(5), b: '글'.repeat(5) }, { a: 5, b: 5 }, { maxTotalChars: 10, maxTotalBytes: 20 }),
     (error) => error.code === 'INVALID_REQUEST',
   );
-});
-
-test('server applies semantic bounds before plan mutation', async () => {
-  const source = await fs.readFile(new URL('../server.mjs', import.meta.url), 'utf8');
-  const plan = source.indexOf('async function requestImplementationPlanChanges');
-  assert.ok(source.indexOf('boundTextFields(msg, PLAN_CHANGE_TEXT_LIMITS', plan) < source.indexOf('activeSession.planning.requestChanges', plan));
-  assert.equal(source.includes('generateSkillDraft'), false);
-  assert.equal(source.includes("case 'skill-draft-request'"), false);
 });

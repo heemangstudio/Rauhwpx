@@ -72,6 +72,8 @@ export interface PdfViewer {
   /** 1 = 폭 맞춤. */
   readonly zoom: number;
   readonly pageCount: number;
+  /** 숨겨진 탭의 관찰·렌더 작업을 쉰다. */
+  setVisible(visible: boolean): void;
   destroy(): void;
 }
 
@@ -93,13 +95,16 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
   let zoom = 1;
   let scale = 1;
   let destroyed = false;
+  let isVisible = true;
   let docGeneration = 0;
   const visible = new Set<number>();
   let pending: PendingHighlight | null = null;
   let active: { page: number; citation: PassageCitation; match: PassageMatch | null } | null = null;
   let currentPage = 0;
+  let deferredPage: number | null = null;
 
   const observer = new IntersectionObserver((entries) => {
+    if (!isVisible || destroyed) return;
     for (const entry of entries) {
       const page = Number((entry.target as HTMLElement).dataset.page);
       if (entry.isIntersecting) visible.add(page);
@@ -110,7 +115,7 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
 
   let windowFrame = 0;
   function scheduleWindow(): void {
-    if (windowFrame) return;
+    if (windowFrame || !isVisible || destroyed) return;
     windowFrame = requestAnimationFrame(() => {
       windowFrame = 0;
       updateWindow();
@@ -119,7 +124,7 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
 
   /** 보이는 쪽 ±1 을 그리고, ±3 밖은 비운다. */
   function updateWindow(): void {
-    if (!doc || visible.size === 0) return;
+    if (!isVisible || destroyed || !doc || visible.size === 0) return;
     const min = Math.min(...visible);
     const max = Math.max(...visible);
     for (const slot of slots) {
@@ -167,12 +172,13 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
   }
 
   async function renderSlot(slot: PageSlot): Promise<void> {
-    if (!doc || !pdfjs) return;
+    if (!isVisible || destroyed || !doc || !pdfjs) return;
     const generation = ++slot.generation;
     const targetScale = scale;
     slot.render?.cancel();
     slot.textLayer?.cancel();
     const current = doc;
+    let outputCanvas: HTMLCanvasElement | null = null;
     try {
       const page = await current.getPage(slot.number);
       if (generation !== slot.generation || current !== doc) return;
@@ -186,6 +192,7 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
       const pixels = viewport.width * viewport.height * ratio * ratio;
       const outputScale = pixels > MAX_CANVAS_PIXELS ? Math.sqrt(MAX_CANVAS_PIXELS / (viewport.width * viewport.height)) : ratio;
       const canvas = document.createElement('canvas');
+      outputCanvas = canvas;
       canvas.className = 'ag-pdf-canvas';
       canvas.width = Math.floor(viewport.width * outputScale);
       canvas.height = Math.floor(viewport.height * outputScale);
@@ -233,10 +240,12 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
       if (pending?.page === slot.number) applyPending();
       else if (active?.page === slot.number) applyHighlight(slot, active.citation);
     } catch (error) {
+      if (outputCanvas && outputCanvas !== slot.canvas) outputCanvas.width = outputCanvas.height = 0;
       if (generation !== slot.generation) return;
       if ((error as { name?: string })?.name === 'RenderingCancelledException') return;
       if ((error as { name?: string })?.name === 'AbortException') return;
       slot.element.dataset.failed = 'true';
+      if (pending?.page === slot.number) { pending.resolve(null); pending = null; }
     }
   }
 
@@ -300,7 +309,7 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
 
   let scrollFrame = 0;
   function trackCurrentPage(): void {
-    if (scrollFrame) return;
+    if (scrollFrame || !isVisible || destroyed) return;
     scrollFrame = requestAnimationFrame(() => {
       scrollFrame = 0;
       if (!slots.length) return;
@@ -320,7 +329,7 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
 
   /** 배율이 바뀌면 지금 보던 자리를 쪽 기준으로 지키며 다시 배치한다. */
   function relayout(): void {
-    if (!doc || !slots.length) return;
+    if (!isVisible || destroyed || !doc || !slots.length) return;
     const next = computeScale();
     if (Math.abs(next - scale) < 0.001) return;
     const anchor = slots.find((slot) => slot.element.offsetTop + slot.element.offsetHeight > scroller.scrollTop) ?? slots[0]!;
@@ -334,6 +343,7 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
   let resizeTimer = 0;
   let lastWidth = 0;
   const resizeObserver = new ResizeObserver(() => {
+    if (!isVisible || destroyed) return;
     const width = scroller.clientWidth;
     if (Math.abs(width - lastWidth) < 1) return;
     lastWidth = width;
@@ -363,6 +373,7 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
     pending = null;
     active = null;
     currentPage = 0;
+    deferredPage = null;
     const closing = loading;
     loading = null;
     doc = null;
@@ -383,6 +394,7 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
     }
     doc = opened;
     const first = await opened.getPage(1);
+    if (destroyed || generation !== docGeneration) throw new Error('closed');
     const unit = first.getViewport({ scale: 1 });
     baseWidth = unit.width;
     baseHeight = unit.height;
@@ -405,7 +417,7 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
       return slot;
     });
     pagesEl.replaceChildren(...slots.map((slot) => slot.element));
-    for (const slot of slots) observer.observe(slot.element);
+    if (isVisible) for (const slot of slots) observer.observe(slot.element);
     currentPage = 1;
     options.onPageChange?.(1, slots.length);
     return { pageCount: opened.numPages };
@@ -421,12 +433,20 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
     load,
     showPage(page) {
       const slot = clampPage(page);
-      if (slot) scrollToSlot(slot);
+      if (slot) {
+        if (isVisible) scrollToSlot(slot);
+        else deferredPage = slot.number;
+      }
     },
     highlight(page, citation) {
       const slot = clampPage(page);
       if (!slot) return Promise.resolve(null);
       pending?.resolve(null);
+      if (!isVisible) {
+        deferredPage = slot.number;
+        active = { page: slot.number, citation, match: null };
+        return Promise.resolve(null);
+      }
       scrollToSlot(slot);
       return new Promise<PassageMatch | null>((resolve) => {
         pending = { page: slot.number, citation, resolve };
@@ -470,6 +490,30 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
     },
     get pageCount() {
       return slots.length;
+    },
+    setVisible(next) {
+      if (next === isVisible || destroyed) return;
+      isVisible = next;
+      if (!next) {
+        observer.disconnect();
+        visible.clear();
+        if (windowFrame) cancelAnimationFrame(windowFrame);
+        if (scrollFrame) cancelAnimationFrame(scrollFrame);
+        windowFrame = scrollFrame = 0;
+        window.clearTimeout(resizeTimer);
+        pending?.resolve(null);
+        pending = null;
+        for (const slot of slots) releaseSlot(slot);
+      } else {
+        relayout();
+        for (const slot of slots) observer.observe(slot.element);
+        if (deferredPage !== null) {
+          const slot = clampPage(deferredPage);
+          if (slot) scrollToSlot(slot);
+          deferredPage = null;
+        }
+        trackCurrentPage();
+      }
     },
     destroy() {
       destroyed = true;

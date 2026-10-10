@@ -124,7 +124,7 @@ function prepareFakePi(root) {
   writeFakeCliBin(binDir, 'pi', ALIVE_PI_FIXTURE_SOURCE);
 }
 
-async function startHub(t, { seed } = {}) {
+async function startHub(t, { seed, env = {} } = {}) {
   const workRoot = mkdtempSync(path.join(os.tmpdir(), 'rhwp-hub-reattach-'));
   const piRoot = path.join(workRoot, 'pi');
   prepareFakePi(piRoot);
@@ -144,6 +144,7 @@ async function startHub(t, { seed } = {}) {
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
       RHWP_PI_DIR: piRoot,
       RHWP_REFERENCES_DIR: referencesRoot,
+      ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -221,7 +222,8 @@ test('same-instance reattach keeps in-flight tool calls alive', { timeout: 40_00
 });
 
 test('same-instance reattach fails calls the old socket dropped without waiting for the tool timeout', { timeout: 40_000 }, async (t) => {
-  const { port, stderr } = await startHub(t);
+  // 버퍼 응답 대기 시간을 줄여 기다림만 짧게 한다. 즉시 실패와 구분되는 여유는 남긴다.
+  const { port, stderr } = await startHub(t, { env: { RHWP_STUDIO_REATTACH_FLUSH_MS: '500' } });
   const sessionId = 'dropped';
   const studio = await connectStudio(port, { sessionId, instance: 'page-1' });
   const session = await startRunningChat(studio, { threadId: 'thread-dropped', documentId: 'doc-dropped' });
@@ -244,7 +246,7 @@ test('same-instance reattach fails calls the old socket dropped without waiting 
   const elapsed = Date.now() - reattachedAt;
   assert.equal(failed.ok, false, stderr());
   assert.equal(failed.error.code, 'NO_STUDIO');
-  assert.equal(elapsed >= 1_500, true, `버퍼 응답을 기다리지 않았다 (${elapsed}ms)`);
+  assert.equal(elapsed >= 300, true, `버퍼 응답을 기다리지 않았다 (${elapsed}ms)`);
   assert.equal(elapsed < 10_000, true, `도구 타임아웃까지 끌었다 (${elapsed}ms)`);
 });
 
@@ -316,7 +318,8 @@ test('tool-responses queued behind a slow frame still settle after the studio so
 });
 
 test('a studio that never comes back fails in-flight calls after the grace window', { timeout: 40_000 }, async (t) => {
-  const { port, stderr } = await startHub(t);
+  // 유예 시간을 줄여 기다림만 짧게 한다. 즉시 실패와 구분되는 여유는 남긴다.
+  const { port, stderr } = await startHub(t, { env: { RHWP_STUDIO_REATTACH_GRACE_MS: '300' } });
   const sessionId = 'gone';
   const studio = await connectStudio(port, { sessionId, instance: 'page-1' });
   const session = await startRunningChat(studio, { threadId: 'thread-gone', documentId: 'doc-gone' });
@@ -338,7 +341,7 @@ test('a studio that never comes back fails in-flight calls after the grace windo
   const elapsed = Date.now() - closedAt;
   assert.equal(failed.ok, false, stderr());
   assert.equal(failed.error.code, 'NO_STUDIO');
-  assert.equal(elapsed >= 4_000, true, `유예 없이 즉시 실패했다 (${elapsed}ms)`);
+  assert.equal(elapsed >= 250, true, `유예 없이 즉시 실패했다 (${elapsed}ms)`);
   assert.equal(elapsed < 15_000, true, `도구 타임아웃까지 끌었다 (${elapsed}ms)`);
 });
 

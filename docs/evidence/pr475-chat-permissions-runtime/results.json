@@ -1,0 +1,38 @@
+{
+  "runtime": "http://127.0.0.1:7840",
+  "provider": "controlled Pi fixture",
+  "scenarios": [
+    {
+      "name": "project and local execution",
+      "projectWriteBeforeGrantBlocked": true,
+      "projectNoteStored": true,
+      "busyGrantRejected": true,
+      "documentWriteAfterGrantsBlocked": true,
+      "documentPermissionRejected": "INVALID_ARGS",
+      "authenticatedGrants": [
+        "project-edit",
+        "local-execution"
+      ]
+    },
+    {
+      "name": "deny, stop and new chat",
+      "deniedDownload": true,
+      "stoppedBrowser": true,
+      "oldButtonInvalid": true,
+      "newChatGrants": [],
+      "newChatWriteBlocked": true,
+      "idleChatResetGrants": [],
+      "personalModeUnchanged": true
+    },
+    {
+      "name": "Agent and Full document editing",
+      "agentWorkflow": "direct",
+      "agentReviewRequired": true,
+      "rejectedRestoresWasm": true,
+      "fullWorkflow": "direct",
+      "fullProfile": "unrestricted",
+      "fullDocumentEditCommitted": true,
+      "fullReviewPending": false
+    }
+  ]
+}

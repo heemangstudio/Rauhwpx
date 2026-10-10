@@ -6,6 +6,7 @@
  * 모르는 도구나 rhwp 밖의 도구는 원래 이름과 대표 인자 하나로 떨어진다.
  */
 import { batchItemArgs } from '../../agent/batch-item.ts';
+import { CHAT_PERMISSION_LABELS, isChatPermissionCapability } from '../../agent/chat-permissions.ts';
 
 export type ToolCategory = 'edit' | 'read' | 'check' | 'other';
 
@@ -555,6 +556,10 @@ const SPECS: Record<string, ToolSpec> = {
   find_home_files: { category: 'read', label: '홈 폴더 검색', summary: (a) => quote(str(a['query'])) },
 
   // 대화·계획·파일
+  request_permission: {
+    category: 'other', label: '권한 요청',
+    summary: (a) => join([isChatPermissionCapability(a['capability']) ? CHAT_PERMISSION_LABELS[a['capability']] : '', clip(str(a['reason']), 64)]),
+  },
   ask_user_question: {
     category: 'other', label: '질문하기',
     summary: (a) => {
@@ -874,6 +879,8 @@ function successText(name: string, args: Args, result: Args, category: ToolCateg
   const facts = afterFacts(result);
   const tail = join([facts.pages, facts.pageDelta, facts.warnings.length ? `경고 ${facts.warnings.length}` : '']);
   switch (name) {
+    case 'request_permission': return result['status'] === 'granted' ? '이 채팅에 허용됨'
+      : result['status'] === 'pending' ? '허용 대기' : '';
     case 'apply_edits': {
       const applied = num(result['applied']) ?? count(result['results']) ?? count(args['edits']);
       return join([applied !== null ? `${applied}개 편집 적용` : '편집 적용', tail]);

@@ -1,7 +1,6 @@
 // 끊긴 사이에 끝난 tool-response 를 붙잡아 두는 버퍼와, 브리지가 그것을 물린 자리를 고정한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 
 // bridge.ts 는 오버레이 css 를 함께 들여온다 — node 테스트에서는 빈 모듈로 대체한다.
@@ -14,7 +13,6 @@ registerHooks({
 
 const { AgentBridgeImpl, ToolResponseBuffer, providerTurnEndMatches } = await import('../src/agent/bridge.ts');
 const { assertToolRequestActive } = await import('../src/agent/tool-executor.ts');
-const bridgeSource = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
 
 test('ToolResponseBuffer: 담은 순서대로 흘려보내고 비운다', () => {
   const buffer = new ToolResponseBuffer();
@@ -68,10 +66,10 @@ test('turn cancellation releases the editing lease before deferred tools settle'
     turnRunning: true,
     editingAgent: 'pi',
     activeToolRequests: 0,
-    activeToolRequestControllers: new Map(),
+    activeToolRequestControllers: new Map(), inFlightWrites: new Set(), versionCommitInFlight: null,
     editingLease: { active: false, agent: 'pi' },
     editingLeaseListeners: new Set(),
-    pendingUserQuestionId: null,
+    pendingUserQuestionId: null, pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
     workflow: 'direct',
     phase: 'direct',
     capabilityEpoch: null,
@@ -124,15 +122,21 @@ test('turn cancellation releases the editing lease before deferred tools settle'
   assert.equal(bridge.activeToolRequests, 0);
 });
 
-test('브리지는 전송 실패한 tool-response 를 버퍼에 넣고 재연결 때 흘려보낸다', () => {
-  assert.match(bridgeSource, /private sendToolResponse\(frame: unknown\): void \{\s*if \(this\.sendJson\(frame\)\) return;\s*this\.toolResponses\.push\(frame\);/);
-  assert.match(bridgeSource, /this\.setState\('connected'\);[\s\S]{0,200}this\.flushToolResponses\(\);/);
-  assert.doesNotMatch(bridgeSource, /this\.sendJson\(\{ v: AGENT_PROTOCOL_VERSION, type: 'tool-response'/);
-});
-
-test('스튜디오 소켓 URL 은 페이지 인스턴스 id 를 함께 보낸다', () => {
-  assert.match(bridgeSource, /&instance=\$\{encodeURIComponent\(STUDIO_INSTANCE_ID\)\}/);
-  assert.match(bridgeSource, /const STUDIO_INSTANCE_ID = /);
+test('브리지는 전송 실패한 tool-response 를 버퍼에 넣고 재연결 때 순서대로 흘려보낸다', () => {
+  const bridge = Object.create(AgentBridgeImpl.prototype) as any;
+  const sent: unknown[] = [];
+  let online = false;
+  Object.assign(bridge, {
+    toolResponses: new ToolResponseBuffer(),
+    sendJson: (frame: unknown) => { if (online) sent.push(frame); return online; },
+  });
+  bridge.sendToolResponse({ id: 1 });
+  bridge.sendToolResponse({ id: 2 });
+  assert.deepEqual(sent, []);
+  online = true;
+  bridge.flushToolResponses();
+  assert.deepEqual(sent, [{ id: 1 }, { id: 2 }]);
+  assert.equal(bridge.toolResponses.size, 0);
 });
 
 function interruptBridgeFixture(execute: (...args: any[]) => Promise<unknown> = async () => ({})) {
@@ -140,10 +144,11 @@ function interruptBridgeFixture(execute: (...args: any[]) => Promise<unknown> = 
   const responses: any[] = [];
   Object.assign(bridge, {
     activeProviderTurnId: 'turn-active', turnRunning: true,
-    activeToolRequests: 0, activeToolRequestControllers: new Map(),
+    activeToolRequests: 0, activeToolRequestControllers: new Map(), inFlightWrites: new Set(), versionCommitInFlight: null,
     pendingUserQuestion: null, pendingQuestionCancellation: null,
+    pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
     workflow: 'direct', phase: 'direct', activeAgent: 'codex',
-    executor: { execute }, syncEditingLease: () => {},
+    executor: { execute }, listeners: new Set(), syncEditingLease: () => {},
     sendJson: () => true, sendToolResponse: (response: unknown) => { responses.push(response); },
   });
   const request = (id: number, turnId = 'turn-active') => bridge.handleToolRequest({
@@ -173,9 +178,10 @@ test('plan completion follows the actual edit outcome and exact provider turn', 
     let sets: any[] = [];
     Object.assign(bridge, {
       phase: 'implementing', workflow: 'plan', activeProviderTurnId: null,
+      pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
       latestPlan: { planId: 'plan-1', execution: { status: 'running', steps: [{ stepId: 'step-1', status: complete ? 'completed' : 'in-progress' }] } },
       planReview: null, planExecutionTurn: null, pendingTurnOpen: false,
-      activeToolRequestControllers: new Map(), permissionProfile: pending ? 'safe' : 'unrestricted',
+      activeToolRequestControllers: new Map(), inFlightWrites: new Set(), versionCommitInFlight: null, permissionProfile: pending ? 'safe' : 'unrestricted',
       pendingEdits: { getChangeSets: () => sets }, syncEditingLease: () => {}, emit: () => {},
       beginPendingTurn: () => { bridge.pendingTurnOpen = true; },
       endPendingTurn: () => {

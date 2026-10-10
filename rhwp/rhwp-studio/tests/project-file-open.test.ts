@@ -411,3 +411,16 @@ test('최근 문서에 없어도 기억한 위치가 있으면 그대로 연다'
   assert.equal(calls.picks, 0);
   assert.deepEqual(calls.loaded, [{ name: '보고서.hwp', documentId: 'doc-1' }]);
 });
+
+test('문서 홈처럼 기록 지우기·파일 선택을 넘기지 않으면 없는 파일은 지우지도 묻지도 않고 not-found 다', async () => {
+  const live = handle('보고서.hwp');
+  const { deps, calls } = makeDeps({
+    readHandle: async () => { throw new DOMException('gone', 'NotFoundError'); },
+  });
+  const { pickForProject: _picker, forgetRecent: _forget, ...homeDeps } = deps;
+  const result = await openProjectFile(claim({ liveHandle: live }), homeDeps);
+  assert.equal(result.kind, 'not-found', '사용자가 취소한 것과 구별된다');
+  assert.deepEqual(calls.forgotten, []);
+  assert.deepEqual(calls.toasts, [], '지우지 않았으니 "목록에서 제거했습니다"라고 알리지 않는다');
+  assert.equal(calls.picks, 0);
+});

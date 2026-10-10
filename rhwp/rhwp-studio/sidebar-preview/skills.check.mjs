@@ -12,7 +12,7 @@ const executablePath = findBrowserExecutable();
 assert(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable.');
 await mkdir(artifacts, { recursive: true });
 
-const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-skills-check-'));
+const cacheDir = await mkdtemp(resolve(tmpdir(), 'hamaeditor-skills-check-'));
 const server = await createServer({
   cacheDir,
   configFile: resolve(studio, 'vite.sidebar.config.ts'),
@@ -53,7 +53,7 @@ try {
       const input = document.querySelector('.ag-input');
       return input && !input.disabled;
     });
-    await page.click('.ag-settings-btn');
+    await page.$eval('#settings', (button) => button.click());
     await page.waitForSelector('.ag-root.ag-settings-open');
     await page.click('.ag-settings-nav-button[data-destination="skills"]');
     await page.waitForSelector('#ag-settings-pane-skills .ag-skills-list');
@@ -138,7 +138,7 @@ try {
 
   await page.reload({ waitUntil: 'networkidle0' });
   await page.waitForFunction(() => window.sidebarPreview);
-  await page.click('.ag-settings-btn');
+  await page.$eval('#settings', (button) => button.click());
   await page.waitForSelector('.ag-root.ag-settings-open');
   await page.click('.ag-settings-nav-button[data-destination="skills"]');
   await page.waitForSelector('#ag-settings-pane-skills .ag-skills-list');
@@ -251,7 +251,7 @@ try {
   await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
   await page.goto(`${origin}/?controls=0&theme=light&width=280`, { waitUntil: 'networkidle0' });
   await page.waitForFunction(() => window.sidebarPreview);
-  await page.click('.ag-settings-btn');
+  await page.$eval('#settings', (button) => button.click());
   await page.waitForSelector('.ag-root.ag-settings-open');
   await page.click('.ag-settings-nav-button[data-destination="skills"]');
   await page.waitForSelector('#ag-settings-pane-skills .ag-skills-list');

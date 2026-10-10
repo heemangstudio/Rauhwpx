@@ -6,6 +6,7 @@ import test from 'node:test';
 import { createServer } from 'vite';
 import puppeteer from 'puppeteer-core';
 import { browserExecutable, browserLaunchArgs } from './browser-support.ts';
+import type { ReferenceSearchHit } from '../src/agent/types.ts';
 
 // Mount production modules; the sidebar service boundary is the explicitly labeled preview fixture.
 let server: any, browser: any, origin: string, cache: string;
@@ -66,7 +67,7 @@ async function clickText(page: any, selector: string, text: string) {
 
 test('settings keyboard entry exposes the named region and dirty exit preserves, discards or persists the draft', async (t) => {
   const page = await open(t);
-  await page.focus('.ag-settings-btn');
+  await page.focus('#settings');
   await page.keyboard.press('Enter');
   await page.waitForSelector('.ag-root.ag-settings-open');
   assert.equal(
@@ -119,7 +120,7 @@ test('settings keyboard entry exposes the named region and dirty exit preserves,
         .querySelector('.ag-root')!
         .classList.contains('ag-settings-open'),
   );
-  await page.click('.ag-settings-btn');
+  await page.click('#settings');
   await page.click('[data-destination="editing"]');
   assert.equal(
     await page.$eval(toggle, (el: HTMLInputElement) => el.checked),
@@ -217,7 +218,7 @@ test('plan approval is locked during transition and produces one implementation 
   );
 });
 
-test('mode changes are blocked during an active turn and entering 전체 requires confirmation', async (t) => {
+test('mode changes are blocked during an active turn and 전체 applies without a confirmation', async (t) => {
   const page = await open(t, 'scenario=chat');
   const chip = '.ag-mode-btn';
   const before = await page.$eval(chip, (b: HTMLButtonElement) => b.textContent);
@@ -241,12 +242,12 @@ test('mode changes are blocked during an active turn and entering 전체 require
   await page.click(chip);
   await page.waitForSelector('.ag-mode-item[data-mode="full"]', { visible: true });
   await page.click('.ag-mode-item[data-mode="full"]');
-  await page.waitForSelector(
-    '.ag-sheet-layer.ag-sheet-open .ag-sheet-confirm',
-    { visible: true },
+  await page.waitForFunction(
+    (selector: string) => document.querySelector(selector)?.textContent === '전체',
+    {},
+    chip,
   );
-  await page.keyboard.press('Escape');
-  assert.equal(await page.$eval(chip, (b: HTMLButtonElement) => b.textContent), before);
+  assert.equal(await page.$('.ag-sheet-layer.ag-sheet-open .ag-sheet-confirm'), null);
 });
 
 test('toolbar boundary inputs emit bounded formats and keyboard increments do not duplicate them', async (t) => {
@@ -403,16 +404,20 @@ test('chat markdown and reference search treat hostile markup as data', async (t
   assert.equal(rendered.unsafe, false);
   assert.equal(rendered.injected, false);
   await page.evaluate(() => {
-    (window as any).sidebarPreview.bridge.searchReferences = async () => [
+    (window as any).sidebarPreview.bridge.searchReferences = async (): Promise<ReferenceSearchHit[]> => [
       {
         referenceId: 'hostile',
-        fileName: '<img src=x onerror=alert(1)>',
+        name: '<img src=x onerror=alert(1)>',
+        scope: 'global',
+        scopeId: 'global',
+        score: 1,
         snippet: '<script>window.reviewInjected=true</script>',
         page: 1,
       },
     ];
   });
   await page.click('.ag-references-btn');
+  await page.click('.ag-reference-tab[data-scope="global"]');
   await page.type('.ag-reference-search', 'hostile');
   await page.waitForSelector('.ag-reference-search-hit', { visible: true });
   const hit = await page.$eval(
@@ -422,8 +427,10 @@ test('chat markdown and reference search treat hostile markup as data', async (t
       injected: el.querySelectorAll('script,img').length,
     }),
   );
+  assert.match(hit.text, /<img/);
   assert.match(hit.text, /<script>/);
   assert.equal(hit.injected, 0);
+  assert.equal(await page.evaluate(() => (window as any).reviewInjected), false);
 });
 
 test('streamed chat markdown matches fresh rendering and preserves completed content', async (t) => {

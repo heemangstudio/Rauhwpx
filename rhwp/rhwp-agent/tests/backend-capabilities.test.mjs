@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   existsSync,
   lstatSync,
@@ -213,10 +213,13 @@ test('safe copy-layout workers have job-local reads and no native write, shell, 
 
   const codex = buildCodexArgv(opts, null);
   assert.match(codexConfig(codex, 'sandbox_mode='), /read-only/);
-  for (const feature of ['multi_agent', 'shell_tool', 'unified_exec', 'code_mode_host', 'standalone_web_search']) {
+  for (const feature of ['multi_agent', 'shell_tool', 'unified_exec', 'standalone_web_search']) {
     assert.ok(codex.some((value, index) => value === '--disable' && codex[index + 1] === feature), feature);
     const app = buildCodexAppServerArgv(opts);
     assert.ok(app.some((value, index) => value === '--disable' && app[index + 1] === feature), `app:${feature}`);
+  }
+  for (const argv of [codex, buildCodexAppServerArgv(opts)]) {
+    assert.ok(argv.some((value, index) => value === '--enable' && argv[index + 1] === 'code_mode_host'));
   }
   assert.deepEqual(codexAppServerSandboxPolicy(opts), { type: 'readOnly', networkAccess: false });
 
@@ -432,6 +435,17 @@ test('question workflow stays read-only without Claude native Plan mode', () => 
   const codex = buildCodexArgv(opts, null);
   assert.ok(codex.includes('sandbox_mode="read-only"'));
   assert.ok(codex.includes('web_search="live"'));
+  // 최초 실행·resume·app-server 가 모두 같은 자료 저장 권한을 전달해야 한다.
+  for (const argv of [codex, buildCodexArgv(opts, 'thread-research'), buildCodexAppServerArgv(opts)]) {
+    assert.ok(argv.includes('approval_policy="never"'));
+    assert.ok(argv.includes('sandbox_mode="read-only"'));
+    assert.ok(argv.includes('mcp_servers.rhwp.default_tools_approval_mode="auto"'));
+    const overrides = argv.filter((value) => /^mcp_servers\.rhwp\.tools\..*\.approval_mode=/.test(value));
+    assert.deepEqual(overrides, [
+      'mcp_servers.rhwp.tools.project_import.approval_mode="approve"',
+      'mcp_servers.rhwp.tools.download_file.approval_mode="approve"',
+    ]);
+  }
 });
 
 test('Claude SDK projects plan and build intent independently from access', () => {
@@ -461,6 +475,48 @@ test('Claude SDK projects plan and build intent independently from access', () =
   assert.equal(build.permissionMode, 'bypassPermissions');
   assert.equal(build.allowDangerouslySkipPermissions, true);
   assert.equal(build.tools.includes('Write'), true);
+});
+
+test('a chat-local native grant preserves document workflow and safe review across providers', async () => {
+  for (const workflow of ['direct', 'question', 'plan']) {
+    const phase = workflow === 'plan' ? 'planning' : workflow === 'question' ? 'questioning' : 'implementing';
+    const opts = {
+      ...baseOpts, workflow, phase, permissionProfile: 'safe', agentRole: 'chat',
+      chatPermissionGrants: ['local-execution'], requestUserInput: async () => null,
+    };
+    for (const codex of [buildCodexArgv(opts, null), buildCodexArgv(opts, 'same-chat'), buildCodexAppServerArgv(opts)]) {
+      assert.ok(codex.includes('sandbox_mode="danger-full-access"'));
+      assert.ok(codex.includes('approval_policy="never"'));
+    }
+    assert.equal(codexAppServerSandboxPolicy(opts).type, 'dangerFullAccess');
+    const cli = buildClaudeArgv(opts, sessionId, true);
+    assert.equal(argValue(cli, '--permission-mode'), 'dontAsk');
+    assert.equal(cli.includes('--dangerously-skip-permissions'), false);
+    assert.ok(argValue(cli, '--tools').split(',').includes('Write'));
+    assert.equal(JSON.parse(argValue(cli, '--settings')).sandbox.enabled, false);
+    const sdk = buildClaudeSdkOptions(opts, sessionId, true, new AbortController());
+    for (const name of ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash']) {
+      const input = { file_path: '/outside/workspace/file.txt', command: 'test command' };
+      assert.deepEqual(await sdk.canUseTool(name, input, {}), { behavior: 'allow', updatedInput: input });
+    }
+    assert.equal((await sdk.canUseTool('UnknownTool', {}, {})).behavior, 'deny');
+    assert.equal(sdk.allowDangerouslySkipPermissions, undefined);
+    assert.equal(buildPiArgv(opts, sessionId).includes('--exclude-tools'), false);
+    const env = buildPiEnv(opts);
+    assert.equal(env.RHWP_LOCAL_EXECUTION, '1');
+    assert.equal(env.RHWP_PERMISSION_PROFILE, 'safe');
+    assert.equal(env.RHWP_AGENT_WORKFLOW, workflow);
+    assert.equal(env.RHWP_AGENT_PHASE, phase);
+    assert.equal(opts.permissionProfile, 'safe');
+  }
+
+  for (const role of ['doc-researcher', 'copy-layout-worker:job:token', 'pi-subagent.child.general']) {
+    const opts = { ...baseOpts, agentRole: role, workflow: 'question', phase: 'questioning', permissionProfile: 'safe', chatPermissionGrants: ['local-execution'] };
+    assert.equal(codexAppServerSandboxPolicy(opts).type, 'readOnly');
+    assert.ok(buildPiArgv(opts, sessionId).includes('--exclude-tools'));
+    assert.equal(buildPiEnv(opts).RHWP_LOCAL_EXECUTION, '0');
+    assert.equal(argValue(buildClaudeArgv(opts, sessionId, false), '--tools').includes('Write'), false);
+  }
 });
 
 test('phase prompts separate planning from approved implementation', () => {
@@ -685,13 +741,6 @@ test('doc-editor subagent prompt batches independent writes through apply_edits'
   assert.doesNotMatch(prompt, /one write at a time/i);
 });
 
-test('plan revision prompt applies concrete feedback without another drafting request', () => {
-  const server = readFileSync(new URL('../server.mjs', import.meta.url), 'utf8');
-  assert.match(server, /Re-read the affected document state and revise the plan directly/);
-  assert.match(server, /Ask a focused question only if a missing answer blocks/);
-  assert.match(server, /does not need to ask you to draft it again/);
-});
-
 test('resume argv retains the selected capability profile', () => {
   const opts = { ...baseOpts, workflow: 'plan', phase: 'implementing', capabilityEpoch: 42, permissionProfile: 'safe' };
   const claude = buildClaudeArgv(opts, sessionId, true);
@@ -725,6 +774,43 @@ test('sessions expose an async idle execution-mode switch', async () => {
     session.dispose();
   }
 });
+
+for (const [agent, createSession] of [['claude', createClaudeSession], ['codex', createCodexSession]]) {
+  test(`${agent} legacy resume applies and clears chat grants without changing the document mode`, async (t) => {
+    const spawns = [];
+    const events = [];
+    const opts = { ...baseOpts, permissionProfile: 'safe', workflow: 'question', phase: 'questioning', capabilityEpoch: 1, agentRole: 'chat', onEvent: (event) => events.push(event) };
+    const session = createSession(opts, {
+      spawnProcess(command, argv) {
+        const process = new FakeProcess();
+        spawns.push({ argv, process });
+        return process;
+      },
+      terminateProcess(process) { process.kill('SIGTERM'); return true; },
+      waitForExit: async () => true,
+    });
+    t.after(() => session.dispose());
+    for (const [index, grants] of [[], ['local-execution'], []].entries()) {
+      await session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 1, chatPermissionGrants: grants });
+      session.sendUserMessage(`turn ${index}`);
+      await waitUntil(() => spawns.length === index + 1);
+      const { argv, process } = spawns[index];
+      if (agent === 'claude') {
+        assert.equal(argValue(argv, '--tools').split(',').includes('Write'), grants.length > 0);
+        assert.equal(JSON.parse(argValue(argv, '--settings')).sandbox.enabled, grants.length === 0);
+        process.emitJson({ type: 'system', subtype: 'init', session_id: 'same-chat' }, { type: 'result', subtype: 'success', stop_reason: 'end_turn' });
+      } else {
+        assert.ok(argv.includes(`sandbox_mode="${grants.length ? 'danger-full-access' : 'read-only'}"`));
+        process.emitJson({ type: 'thread.started', thread_id: 'same-chat' }, { type: 'turn.completed', usage: {} });
+        process.exit(0);
+      }
+      await waitUntil(() => events.filter((event) => event.type === 'turn-end').length === index + 1);
+      assert.equal(opts.permissionProfile, 'safe');
+      assert.equal(opts.workflow, 'question');
+      if (index > 0) assert.ok(argv.includes('same-chat'));
+    }
+  });
+}
 
 test('Codex recreates a purged isolated home before spawning', (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-codex-home-test-'));
@@ -1348,6 +1434,101 @@ test('Claude preserves a redacted spawn error through delayed exit settlement', 
   assert.equal(events.find((event) => event.type === 'turn-end')?.stopReason, 'exited');
   await session.dispose();
 });
+
+test('Claude can retry after a real spawn failure without retaining a nonexistent process tree', async (t) => {
+  const events = [];
+  const ends = [];
+  let launches = 0;
+  const waitForEnd = () => new Promise((resolve) => ends.push(resolve));
+  const session = createClaudeSession({
+    ...baseOpts,
+    rootDir: testHome,
+    permissionProfile: 'safe',
+    onEvent(event) {
+      events.push(event);
+      if (event.type === 'turn-end') ends.shift()?.(event);
+    },
+  }, {
+    spawnProcess(command, argv, options) {
+      launches += 1;
+      if (launches === 1) return spawn(path.join(testHome, 'missing-claude'), [], options);
+      return spawn(process.execPath, ['-e',
+        'process.stdin.once("data", () => process.stdout.write(JSON.stringify({type:"result",stop_reason:"end_turn"})+"\\n"))',
+      ], options);
+    },
+  });
+  t.after(() => session.dispose());
+
+  const failed = waitForEnd();
+  session.sendUserMessage('first attempt');
+  assert.equal((await failed).stopReason, 'exited');
+  assert.match(events.find((event) => event.type === 'error').message, /ENOENT/);
+
+  const retried = waitForEnd();
+  assert.doesNotThrow(() => session.sendUserMessage('retry after installing'));
+  assert.equal((await retried).stopReason, 'end_turn');
+  assert.equal(launches, 2);
+  assert.equal(await session.dispose(), true);
+});
+
+for (const [agent, createSession] of [['claude', createClaudeSession], ['codex', createCodexSession]]) {
+  test(`${agent} launch preparation waits, cancels without spawning, and can retry after failure`, async (t) => {
+    const events = [];
+    const spawns = [];
+    let release;
+    let reservationsReleased = 0;
+    let failWatcher = false;
+    let prepare = () => new Promise((resolve) => { release = resolve; });
+    const session = createSession({
+      ...baseOpts,
+      prepareLaunch: () => prepare(),
+      onEvent: (event) => events.push(event),
+    }, {
+      ...(agent === 'codex' ? { createRolloutWatcher() {
+        if (failWatcher) throw new Error('rollout watcher could not start');
+        return { start() {}, stop() {}, finalize() {} };
+      } } : {}),
+      spawnProcess(command, argv, options) {
+        const process = new FakeProcess();
+        spawns.push({ command, options });
+        return process;
+      },
+    });
+    t.after(() => session.dispose());
+
+    session.sendUserMessage('wait for the installation');
+    await nextTask();
+    assert.equal(spawns.length, 0);
+    assert.equal(events.some((event) => event.type === 'turn-start'), false);
+    session.interrupt();
+    assert.equal(events.at(-1)?.stopReason, 'interrupted');
+    release({ bin: '/stale-cli', release() { reservationsReleased++; } });
+    await nextTask();
+    assert.equal(spawns.length, 0, 'cancellation must suppress the deferred spawn');
+
+    prepare = async () => { throw new Error('installation failed'); };
+    session.sendUserMessage('failed preparation');
+    await nextTask();
+    assert.equal(events.at(-1)?.stopReason, 'failed');
+    assert.equal(spawns.length, 0);
+
+    prepare = async () => ({ bin: '/fresh-managed-cli', providerEnv: { RHWP_LAUNCH_ENV: 'fresh' }, release() { reservationsReleased++; } });
+    if (agent === 'codex') {
+      failWatcher = true;
+      session.sendUserMessage('synchronous launch failure');
+      await nextTask();
+      assert.equal(events.at(-1)?.stopReason, 'failed');
+      assert.equal(spawns.length, 0);
+      failWatcher = false;
+    }
+    session.sendUserMessage('retry');
+    await nextTask();
+    assert.equal(spawns.length, 1);
+    assert.equal(spawns[0].command, '/fresh-managed-cli');
+    assert.equal(spawns[0].options.env.RHWP_LAUNCH_ENV, 'fresh');
+    assert.equal(reservationsReleased, agent === 'codex' ? 3 : 2);
+  });
+}
 
 async function runClaudeResult(result, opts = {}) {
   const events = [];

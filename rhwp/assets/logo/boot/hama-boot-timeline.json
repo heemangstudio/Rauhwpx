@@ -1,0 +1,175 @@
+{
+  "width": 88,
+  "height": 36,
+  "frames": [
+    {
+      "ms": 220,
+      "beat": "idle"
+    },
+    {
+      "ms": 40,
+      "beat": "scan"
+    },
+    {
+      "ms": 40,
+      "beat": "scan"
+    },
+    {
+      "ms": 40,
+      "beat": "scan"
+    },
+    {
+      "ms": 40,
+      "beat": "scan"
+    },
+    {
+      "ms": 40,
+      "beat": "scan"
+    },
+    {
+      "ms": 40,
+      "beat": "scan"
+    },
+    {
+      "ms": 40,
+      "beat": "scan"
+    },
+    {
+      "ms": 40,
+      "beat": "scan"
+    },
+    {
+      "ms": 40,
+      "beat": "scan"
+    },
+    {
+      "ms": 40,
+      "beat": "scan"
+    },
+    {
+      "ms": 70,
+      "beat": "bubbles"
+    },
+    {
+      "ms": 70,
+      "beat": "bubbles"
+    },
+    {
+      "ms": 70,
+      "beat": "bubbles"
+    },
+    {
+      "ms": 70,
+      "beat": "peek"
+    },
+    {
+      "ms": 80,
+      "beat": "peek"
+    },
+    {
+      "ms": 80,
+      "beat": "peek"
+    },
+    {
+      "ms": 80,
+      "beat": "peek"
+    },
+    {
+      "ms": 90,
+      "beat": "peek"
+    },
+    {
+      "ms": 120,
+      "beat": "peek"
+    },
+    {
+      "ms": 80,
+      "beat": "peek"
+    },
+    {
+      "ms": 140,
+      "beat": "peek"
+    },
+    {
+      "ms": 50,
+      "beat": "rise"
+    },
+    {
+      "ms": 50,
+      "beat": "rise"
+    },
+    {
+      "ms": 50,
+      "beat": "rise"
+    },
+    {
+      "ms": 50,
+      "beat": "rise"
+    },
+    {
+      "ms": 50,
+      "beat": "rise"
+    },
+    {
+      "ms": 50,
+      "beat": "rise"
+    },
+    {
+      "ms": 50,
+      "beat": "rise"
+    },
+    {
+      "ms": 160,
+      "beat": "settle"
+    },
+    {
+      "ms": 70,
+      "beat": "yawn"
+    },
+    {
+      "ms": 70,
+      "beat": "yawn"
+    },
+    {
+      "ms": 80,
+      "beat": "yawn"
+    },
+    {
+      "ms": 60,
+      "beat": "sparkle"
+    },
+    {
+      "ms": 60,
+      "beat": "sparkle"
+    },
+    {
+      "ms": 60,
+      "beat": "sparkle"
+    },
+    {
+      "ms": 60,
+      "beat": "sparkle"
+    },
+    {
+      "ms": 60,
+      "beat": "sparkle"
+    },
+    {
+      "ms": 100,
+      "beat": "final"
+    }
+  ],
+  "durationMs": 2700,
+  "sprites": {
+    "cellWidth": 26,
+    "cellHeight": 20,
+    "poses": [
+      "closed",
+      "talk",
+      "open",
+      "blink",
+      "step",
+      "crouch"
+    ]
+  }
+}

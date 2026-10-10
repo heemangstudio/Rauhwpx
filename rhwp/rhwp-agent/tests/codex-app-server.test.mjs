@@ -126,6 +126,7 @@ function appServerResponder({
       return reply({ thread: { id: 'thread-native' } })(frame, process);
     }
     if (frame.method === 'thread/resume') return reply({ thread: { id: frame.params.threadId } })(frame, process);
+    if (frame.method === 'thread/inject_items') return reply({})(frame, process);
     if (frame.method === 'turn/start') {
       process.send({
         method: 'turn/started',
@@ -152,6 +153,8 @@ function harness(t, {
   responder = appServerResponder(),
   requestUserInput = async () => ({ status: 'cancelled', reason: 'user-stop' }),
   terminateProcess = (process) => process.kill('SIGTERM'),
+  extraOpts = {},
+  idleReleaseMs,
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-codex-app-server-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -171,7 +174,9 @@ function harness(t, {
     capabilityEpoch: 1,
     agentRole: 'chat',
     requestUserInput,
+    idleReleaseMs,
     onEvent: (event) => events.push(event),
+    ...extraOpts,
   };
   const session = createCodexSession(opts, {
     spawnProcess(command, argv, options) {
@@ -193,6 +198,43 @@ async function settle(rounds = 12) {
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
+
+test('native Codex launch preparation cancels before spawn and later starts with the current CLI', async (t) => {
+  const h = harness(t);
+  let release;
+  h.opts.prepareLaunch = () => new Promise((resolve) => { release = resolve; });
+  h.session.sendUserMessage('cancel this installation wait');
+  await settle(1);
+  assert.equal(h.spawns.length, 0);
+  h.session.interrupt();
+  release({ bin: '/stale-cli' });
+  await settle(1);
+  assert.equal(h.spawns.length, 0);
+  assert.equal(h.events.filter((event) => event.type === 'turn-end').length, 1);
+  assert.equal(h.events.at(-1).stopReason, 'interrupted');
+
+  h.opts.prepareLaunch = async () => ({ bin: '/fresh-native-codex', providerEnv: { RHWP_LAUNCH_ENV: 'fresh' } });
+  h.session.sendUserMessage('start after installation');
+  await settle();
+  assert.equal(h.spawns.length, 1);
+  assert.equal(h.spawns[0].command, '/fresh-native-codex');
+  assert.equal(h.spawns[0].options.env.RHWP_LAUNCH_ENV, 'fresh');
+  assert.equal(h.events.at(-1).type, 'turn-start');
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('disposing native Codex during installation prevents its deferred child from starting', async (t) => {
+  const h = harness(t);
+  let release;
+  h.opts.prepareLaunch = () => new Promise((resolve) => { release = resolve; });
+  h.session.sendUserMessage('never launch');
+  await settle(1);
+  assert.equal(await h.session.dispose(), true);
+  release({ bin: '/stale-cli' });
+  await settle(1);
+  assert.equal(h.spawns.length, 0);
+  assert.equal(h.events.some((event) => event.type === 'turn-start'), false);
+});
 
 test('JSON-RPC line overflow closes the connection before parsing', async () => {
   const process = new FakeProcess();
@@ -758,7 +800,8 @@ for (const entry of [
 ]) {
   test(`default-mode ${entry.name} falls back to legacy exec before starting a turn`, async (t) => {
     const h = harness(t, { responder: entry.responder });
-    h.session.sendUserMessage('Fallback prompt');
+    // legacy exec 는 네이티브 주입이 없으므로 기록이 붙은 인라인 글을 그대로 받는다.
+    h.session.sendUserMessage('Fallback prompt', { handoff: HANDOFF });
     await settle(24);
     assert.equal(h.spawns.length, entry.name === 'enablement failure' ? 3 : 2);
     assert.equal(h.spawns[0].native, true);
@@ -883,6 +926,31 @@ test('a resumed chat receives the current editing instructions after switching t
   await h.session.dispose();
 });
 
+test('a mode switch before the first turn starts a fresh thread when Codex has no rollout to resume', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    responder(frame, process) {
+      if (frame.method === 'thread/resume') {
+        process.send({ id: frame.id, error: { code: -32603, message: `no rollout found for thread id ${frame.params.threadId}` } });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+  await h.session.setExecutionMode({ workflow: 'plan', phase: 'planning', capabilityEpoch: 2 });
+  await h.session.setExecutionMode({ workflow: 'direct', phase: 'implementing', capabilityEpoch: 3 });
+  h.session.sendUserMessage('First after switching');
+  await settle(24);
+  const methods = h.spawns.at(-1).process.frames.map((frame) => frame.method);
+  assert.equal(methods.includes('thread/resume'), false, 'an unrun thread has no rollout to resume');
+  assert.ok(methods.includes('thread/start'), 'it starts a fresh thread instead of failing');
+  assert.ok(methods.includes('turn/start'), 'the turn still starts');
+  assert.equal(h.events.some((event) => event.type === 'error'), false);
+  h.session.interrupt();
+  await settle();
+  await h.session.dispose();
+});
+
 test('mode changes restart app-server while idle, resume the thread, and select plan mode', async (t) => {
   const h = harness(t);
   h.session.sendUserMessage('First');
@@ -911,6 +979,92 @@ test('mode changes restart app-server while idle, resume the thread, and select 
   h.session.interrupt();
   await settle();
   await h.session.dispose();
+});
+
+test('a native chat grant and explicit revocation change only that resumed conversation', async (t) => {
+  const h = harness(t, { workflow: 'question', phase: 'questioning' });
+  const other = harness(t, { workflow: 'question', phase: 'questioning' });
+  t.after(() => Promise.all([h.session.dispose(), other.session.dispose()]));
+  async function turn(chat, prompt) {
+    chat.session.sendUserMessage(prompt);
+    await settle(24);
+    const process = chat.spawns.at(-1).process;
+    const start = process.frames.find((frame) => frame.method === 'turn/start');
+    process.send({ method: 'turn/completed', params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } } });
+    await settle();
+    return start.params;
+  }
+  const initial = await turn(h, 'Ask for local access');
+  assert.equal(initial.sandboxPolicy.type, 'readOnly');
+  await h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 2, chatPermissionGrants: ['document-edit'] });
+  const documentOnly = await turn(h, 'Continue after a stale document grant');
+  assert.equal(documentOnly.collaborationMode.mode, 'plan');
+  assert.equal(documentOnly.sandboxPolicy.type, 'readOnly');
+  assert.deepEqual(h.opts.chatPermissionGrants, []);
+  assert.match(systemBriefFor(h.opts, 'codex'), /The live document cannot be changed in this mode/);
+  const mode = { workflow: 'question', phase: 'questioning', capabilityEpoch: 3, chatPermissionGrants: ['local-execution'] };
+  await h.session.setExecutionMode(mode);
+  mode.chatPermissionGrants.length = 0;
+  const granted = await turn(h, 'Use the granted access');
+  assert.equal(granted.sandboxPolicy.type, 'dangerFullAccess');
+  assert.equal(granted.collaborationMode.mode, 'default');
+  assert.equal(h.opts.permissionProfile, 'safe');
+  assert.equal(h.opts.workflow, 'question');
+  assert.ok(h.spawns.at(-1).process.frames.some((frame) => frame.method === 'thread/resume'));
+  assert.equal((await turn(other, 'A separate chat')).sandboxPolicy.type, 'readOnly');
+  await h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 4, chatPermissionGrants: [] });
+  const revoked = await turn(h, 'Access was cleared');
+  assert.equal(revoked.sandboxPolicy.type, 'readOnly');
+  assert.equal(revoked.collaborationMode.mode, 'plan');
+  assert.equal(revoked.threadId, initial.threadId);
+  await h.session.setExecutionMode({ workflow: 'direct', phase: 'implementing', capabilityEpoch: 5, chatPermissionGrants: [] });
+  const directReady = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
+  assert.match(directReady.params.items[0].content[0].text, /You are in 에이전트 mode/);
+  assert.equal(h.spawns.at(-1).process.frames.some((frame) => frame.method === 'turn/start'), false);
+  const direct = await turn(h, 'Apply a document edit in agent mode');
+  assert.equal(direct.collaborationMode.mode, 'default');
+  assert.equal(direct.sandboxPolicy.type, 'workspaceWrite');
+  await h.session.setPermissionProfile('unrestricted');
+  const fullReady = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
+  assert.match(fullReady.params.items[0].content[0].text, /You are in 전체/);
+  const full = await turn(h, 'Apply the full access profile');
+  assert.equal(full.sandboxPolicy.type, 'dangerFullAccess');
+  await h.session.setPermissionProfile('safe');
+  const safeReady = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
+  assert.match(safeReady.params.items[0].content[0].text, /staged as a live preview/);
+  assert.doesNotMatch(safeReady.params.items[0].content[0].text, /You are in 전체/);
+});
+
+test('a failed native permission instruction update rolls back before acknowledging the grant', async (t) => {
+  const standard = appServerResponder();
+  const h = harness(t, {
+    workflow: 'question', phase: 'questioning',
+    responder(frame, process) {
+      if (frame.method === 'thread/inject_items') {
+        process.send({ id: frame.id, error: { code: -32601, message: 'Unsupported method' } });
+        return;
+      }
+      standard(frame, process);
+    },
+  });
+  t.after(() => h.session.dispose());
+  h.session.sendUserMessage('Ask for permission');
+  await settle();
+  h.spawns[0].process.send({ method: 'turn/completed', params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } } });
+  await settle();
+  await assert.rejects(
+    h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 2, chatPermissionGrants: ['local-execution'] }),
+    /thread\/inject_items support is required/,
+  );
+  assert.deepEqual(h.opts.chatPermissionGrants, []);
+  assert.equal(h.opts.permissionProfile, 'safe');
+  assert.equal(h.opts.capabilityEpoch, 1);
+  assert.equal(h.spawns[1].process.frames.some((frame) => frame.method === 'turn/start'), false);
+  h.session.sendUserMessage('Continue within the existing permission');
+  await settle(24);
+  const next = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(next.params.sandboxPolicy.type, 'readOnly');
+  assert.equal(next.params.collaborationMode.mode, 'plan');
 });
 
 test('approved Plan restarts advertise mutation tools and returning to planning removes them', async (t) => {
@@ -1039,6 +1193,73 @@ test('a Plan permission change re-proves native Plan before resolving', async (t
   await h.session.dispose();
 });
 
+test('an idle Plan readiness app-server is released and the next turn resumes its thread', async (t) => {
+  const h = harness(t, { workflow: 'plan', phase: 'planning', idleReleaseMs: 30 });
+  h.session.sendUserMessage('First plan turn');
+  await settle();
+  h.spawns[0].process.send({
+    method: 'turn/completed',
+    params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } },
+  });
+  await settle();
+  await h.session.setPermissionProfile('unrestricted');
+  const warm = h.spawns[1].process;
+  assert.equal(warm.signalCode, null);
+  const eventsBeforeRelease = h.events.length;
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await settle();
+  assert.equal(warm.signalCode, 'SIGTERM', 'idle readiness process is stopped');
+  assert.equal(h.events.length, eventsBeforeRelease, 'release is silent to the hub');
+  assert.equal(h.session.getSessionId(), 'thread-native');
+
+  h.session.sendUserMessage('Plan next');
+  await settle(24);
+  assert.equal(h.spawns.length, 3);
+  const methods = h.spawns[2].process.frames.map((frame) => frame.method);
+  assert.ok(methods.includes('thread/resume'));
+  assert.equal(methods.includes('thread/start'), false);
+  const turn = h.spawns[2].process.frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(turn.params.threadId, 'thread-native');
+  assert.equal(turn.params.collaborationMode.mode, 'plan');
+  assert.equal(turn.params.sandboxPolicy.type, 'readOnly');
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await settle();
+  assert.equal(h.spawns[2].process.signalCode, null, 'an open turn is never released');
+  h.session.interrupt();
+  await settle();
+  await h.session.dispose();
+});
+
+test('a message racing an idle release still starts its turn', async (t) => {
+  const h = harness(t, {
+    workflow: 'plan',
+    phase: 'planning',
+    idleReleaseMs: 20,
+    terminateProcess: (process) => new Promise((resolve) => {
+      setTimeout(() => resolve(process.kill('SIGTERM')), 40);
+    }),
+  });
+  await h.session.setExecutionMode({ workflow: 'plan', phase: 'planning', capabilityEpoch: 2 });
+  assert.equal(h.spawns.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  h.session.sendUserMessage('Arrives during release');
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await settle(24);
+  assert.equal(h.spawns[0].process.signalCode, 'SIGTERM');
+  assert.equal(h.spawns.length, 2);
+  const methods = h.spawns[1].process.frames.map((frame) => frame.method);
+  assert.ok(methods.includes('thread/start'), 'a readiness thread without turns has no rollout to resume');
+  assert.equal(methods.includes('thread/resume'), false);
+  const turn = h.spawns[1].process.frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(turn?.params.input[0].text, 'Arrives during release');
+  assert.equal(h.events.filter((event) => event.type === 'turn-start').length, 1);
+  h.session.interrupt();
+  await settle();
+  await h.session.dispose();
+});
+
 test('an active legacy Codex session cannot accept Plan mode', async (t) => {
   const h = harness(t, { responder: appServerResponder({ features: [] }) });
   h.session.sendUserMessage('Use fallback');
@@ -1156,4 +1377,244 @@ test('Stop aborts a blocked question and sends turn/interrupt to Codex', async (
   );
   assert.equal(h.events.filter((event) => event.type === 'turn-end').at(-1).stopReason, 'interrupted');
   await h.session.dispose();
+});
+
+// 아래 알림 모양은 실제 codex-cli 0.162.0 app-server 캡처(thread/compact/start 턴)를 다듬어 옮겼다.
+function tokenUsage(threadId, turnId, lastTotal) {
+  const breakdown = (totalTokens) => ({
+    totalTokens, inputTokens: totalTokens, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0,
+  });
+  return {
+    method: 'thread/tokenUsage/updated',
+    params: { threadId, turnId, tokenUsage: { total: breakdown(17780), last: breakdown(lastTotal), modelContextWindow: 258400 } },
+  };
+}
+
+test('manual compaction runs thread/compact/start as a turn and maps contextCompaction items', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    responder(frame, process) {
+      if (frame.method === 'turn/start') {
+        const { threadId } = frame.params;
+        process.send({ method: 'turn/started', params: { threadId, turn: { id: 'turn-1', status: 'inProgress' } } });
+        process.send({ id: frame.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });
+        process.send(tokenUsage(threadId, 'turn-1', 17780));
+        // 이 응답 도중의 자동 압축은 구식 thread/compacted 로만 알린다.
+        process.send({ method: 'thread/compacted', params: { threadId, turnId: 'turn-1' } });
+        process.send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-1', status: 'completed' } } });
+        return;
+      }
+      if (frame.method === 'thread/compact/start') {
+        const { threadId } = frame.params;
+        process.send({ id: frame.id, result: {} });
+        process.send({ method: 'turn/started', params: { threadId, turn: { id: 'turn-compact', status: 'inProgress' } } });
+        // 자식 스레드의 압축은 루트 대화의 압축이 아니다.
+        process.send({ method: 'item/started', params: { threadId: 'child-thread', turnId: 'turn-compact', item: { type: 'contextCompaction', id: 'child-item' } } });
+        process.send({ method: 'item/started', params: { threadId, turnId: 'turn-compact', item: { type: 'contextCompaction', id: 'item-1' } } });
+        process.send(tokenUsage(threadId, 'turn-compact', 11504));
+        process.send({ method: 'item/completed', params: { threadId, turnId: 'turn-compact', item: { type: 'contextCompaction', id: 'item-1' } } });
+        process.send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-compact', status: 'completed' } } });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+  assert.equal(h.session.compactionSupport, 'manual');
+  h.session.sendUserMessage('Remember MANGO-77');
+  await settle(24);
+  assert.deepEqual(h.events.filter((event) => event.type === 'compaction').map(({ phase, trigger }) => [phase, trigger]), [['completed', 'auto']]);
+
+  h.events.length = 0;
+  h.session.compact();
+  await settle(32);
+  const compactRequest = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/compact/start');
+  assert.deepEqual(compactRequest.params, { threadId: 'thread-native' });
+  assert.equal(h.spawns.at(-1).process.frames.some((frame) => frame.method === 'turn/start'), false);
+  assert.deepEqual(h.events.filter((event) => event.type !== 'session-info').map((event) => event.type), [
+    'turn-start', 'compaction', 'context-usage', 'compaction', 'turn-end',
+  ]);
+  const [started, completed] = h.events.filter((event) => event.type === 'compaction');
+  assert.deepEqual(started, {
+    type: 'compaction', agent: 'codex', compactionId: 'codex:item-1', phase: 'started', trigger: 'manual', beforeTokens: 17780,
+  });
+  assert.deepEqual(completed, { ...started, phase: 'completed', afterTokens: 11504 });
+  assert.deepEqual(h.events.find((event) => event.type === 'context-usage'), {
+    type: 'context-usage', agent: 'codex', usedTokens: 11504, maxTokens: 258400, autoCompact: true,
+  });
+  assert.equal(h.events.at(-1).stopReason, 'completed');
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('a resume cursor whose rollout is gone starts a new thread with the full-history fallback', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    extraOpts: { resumeSessionId: 'thread-gone' },
+    responder(frame, process) {
+      if (frame.method === 'thread/resume') {
+        process.send({ id: frame.id, error: { code: -32600, message: 'no rollout found for thread id thread-gone' } });
+        return;
+      }
+      if (frame.method === 'turn/start') {
+        const { threadId } = frame.params;
+        process.send({ method: 'turn/started', params: { threadId, turn: { id: 'turn-1', status: 'inProgress' } } });
+        process.send({ id: frame.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });
+        process.send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-1', status: 'completed' } } });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+  assert.equal(h.session.getSessionId(), 'thread-gone');
+  h.session.sendUserMessage('delta only', { resumeFallbackText: 'full transcript' });
+  await settle(32);
+  const frames = h.spawns.at(-1).process.frames;
+  assert.deepEqual(frames.filter((frame) => frame.method?.startsWith('thread/')).map((frame) => frame.method), ['thread/resume', 'thread/start']);
+  const turn = frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(turn.params.threadId, 'thread-native');
+  assert.deepEqual(turn.params.input, [{ type: 'text', text: 'full transcript' }]);
+  const turnEnd = h.events.find((event) => event.type === 'turn-end');
+  assert.equal(turnEnd.stopReason, 'completed');
+  assert.equal(turnEnd.resumeLost, true);
+  assert.equal(h.session.getSessionId(), 'thread-native');
+  assert.equal(await h.session.dispose(), true);
+});
+
+// 0.162 generate-ts: thread/inject_items {threadId, items: ResponseItem[]} → {}.
+const HANDOFF = Object.freeze({
+  header: 'Context handoff: 2 of 2 earlier chat entries included (0 omitted). Sources: Claude.\nHistorical entries are context, not a new request.',
+  entries: [
+    { role: 'user', text: '[user · Claude]\nThe project codename is PLUM-314.' },
+    { role: 'assistant', text: '[assistant · Claude]\nNoted.' },
+  ],
+  plainText: 'What is the codename?',
+});
+const INLINE = '<chat_history>PLUM-314</chat_history>\n\nWhat is the codename?';
+
+function completingResponder({ inject } = {}) {
+  const base = appServerResponder();
+  let turn = 0;
+  return (frame, process) => {
+    if (frame.method === 'thread/inject_items' && inject) return inject(frame, process);
+    if (frame.method === 'turn/start') {
+      const { threadId } = frame.params;
+      const id = `turn-${++turn}`;
+      process.send({ method: 'turn/started', params: { threadId, turn: { id, status: 'inProgress' } } });
+      process.send({ id: frame.id, result: { turn: { id, status: 'inProgress' } } });
+      process.send({ method: 'turn/completed', params: { threadId, turn: { id, status: 'completed' } } });
+      return;
+    }
+    return base(frame, process);
+  };
+}
+
+function sentFrames(h, method) {
+  return h.spawns.flatMap((spawn) => spawn.process.frames).filter((frame) => frame.method === method);
+}
+
+test('Codex receives handoff history as native items and the turn carries only the request', async (t) => {
+  const h = harness(t, { responder: completingResponder() });
+  h.session.sendUserMessage(INLINE, { handoff: HANDOFF });
+  await settle(32);
+  const [inject] = sentFrames(h, 'thread/inject_items');
+  assert.equal(inject.params.threadId, 'thread-native');
+  assert.deepEqual(inject.params.items, [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: HANDOFF.header }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: HANDOFF.entries[0].text }] },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: HANDOFF.entries[1].text }] },
+  ]);
+  const [turn] = sentFrames(h, 'turn/start');
+  assert.deepEqual(turn.params.input, [{ type: 'text', text: 'What is the codename?' }]);
+  const frames = h.spawns[0].process.frames.map((frame) => frame.method);
+  assert.ok(frames.indexOf('thread/inject_items') < frames.indexOf('turn/start'));
+  const end = h.events.find((event) => event.type === 'turn-end');
+  assert.equal(end.stopReason, 'completed');
+  assert.equal(end.handoffUncertain, undefined);
+  assert.equal(await h.session.dispose(), true);
+});
+
+for (const [name, error] of [
+  ['JSON-RPC method not found', { code: -32601, message: 'Method not found' }],
+  // codex 0.162 앱 서버가 모르는 메서드에 실제로 내는 응답.
+  ['unknown request variant', { code: -32600, message: 'Invalid request: unknown variant `thread/inject_items`, expected one of `initialize`, `thread/start`' }],
+]) test(`an app-server without thread/inject_items (${name}) gets the inline history and is not asked again`, async (t) => {
+  const h = harness(t, {
+    responder: completingResponder({
+      inject: (frame, process) => process.send({ id: frame.id, error }),
+    }),
+  });
+  h.session.sendUserMessage(INLINE, { handoff: HANDOFF });
+  await settle(32);
+  assert.deepEqual(sentFrames(h, 'turn/start')[0].params.input, [{ type: 'text', text: INLINE }]);
+  assert.equal(h.events.find((event) => event.type === 'turn-end').stopReason, 'completed');
+
+  h.session.sendUserMessage(INLINE, { handoff: HANDOFF });
+  await settle(32);
+  assert.equal(sentFrames(h, 'thread/inject_items').length, 1);
+  assert.deepEqual(sentFrames(h, 'turn/start')[1].params.input, [{ type: 'text', text: INLINE }]);
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('an ambiguous inject failure fails the turn without sending it and marks the handoff uncertain', async (t) => {
+  const h = harness(t, {
+    responder: completingResponder({
+      inject: (frame, process) => process.send({ id: frame.id, error: { code: -32603, message: 'history write failed' } }),
+    }),
+  });
+  h.session.sendUserMessage(INLINE, { handoff: HANDOFF });
+  await settle(32);
+  assert.equal(sentFrames(h, 'turn/start').length, 0);
+  assert.equal(h.events.some((event) => event.type === 'turn-start'), false);
+  const end = h.events.find((event) => event.type === 'turn-end');
+  assert.equal(end.stopReason, 'failed');
+  assert.equal(end.handoffUncertain, true);
+  assert.match(end.errorMessage, /history write failed/);
+
+  // 허브의 교체 턴은 새 스레드에 인라인으로 간다 — 같은 주입 오류로 다시 막히지 않는다.
+  h.events.length = 0;
+  h.session.sendUserMessage(INLINE, { handoff: HANDOFF, replaceSession: true });
+  await settle(32);
+  assert.equal(sentFrames(h, 'thread/inject_items').length, 1);
+  assert.deepEqual(sentFrames(h, 'turn/start')[0].params.input, [{ type: 'text', text: INLINE }]);
+  const replaced = h.events.find((event) => event.type === 'turn-end');
+  assert.equal(replaced.stopReason, 'completed');
+  assert.equal(replaced.resumeLost, true);
+  assert.equal(replaced.handoffUncertain, undefined);
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('replaceSession abandons the resumed thread and delivers the full history to a new one', async (t) => {
+  const h = harness(t, { extraOpts: { resumeSessionId: 'thread-old' }, responder: completingResponder() });
+  h.session.sendUserMessage(INLINE, { handoff: HANDOFF, replaceSession: true });
+  await settle(32);
+  const frames = h.spawns[0].process.frames.map((frame) => frame.method).filter((method) => method?.startsWith('thread/'));
+  assert.deepEqual(frames, ['thread/start', 'thread/inject_items']);
+  assert.equal(sentFrames(h, 'thread/inject_items')[0].params.threadId, 'thread-native');
+  assert.deepEqual(sentFrames(h, 'turn/start')[0].params.input, [{ type: 'text', text: HANDOFF.plainText }]);
+  const end = h.events.find((event) => event.type === 'turn-end');
+  assert.equal(end.resumeLost, true);
+  assert.equal(h.session.getSessionId(), 'thread-native');
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('a lost resume injects the full-history handoff instead of the delta', async (t) => {
+  const base = completingResponder();
+  const h = harness(t, {
+    extraOpts: { resumeSessionId: 'thread-gone' },
+    responder(frame, process) {
+      if (frame.method === 'thread/resume') {
+        process.send({ id: frame.id, error: { code: -32600, message: 'no rollout found for thread id thread-gone' } });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+  const delta = { ...HANDOFF, entries: [HANDOFF.entries[1]] };
+  h.session.sendUserMessage('delta prompt', {
+    handoff: delta, resumeFallbackText: INLINE, resumeFallbackHandoff: HANDOFF,
+  });
+  await settle(32);
+  assert.deepEqual(sentFrames(h, 'thread/inject_items')[0].params.items.length, 3);
+  assert.deepEqual(sentFrames(h, 'turn/start')[0].params.input, [{ type: 'text', text: HANDOFF.plainText }]);
+  assert.equal(h.events.find((event) => event.type === 'turn-end').resumeLost, true);
+  assert.equal(await h.session.dispose(), true);
 });

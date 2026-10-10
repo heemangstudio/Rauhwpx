@@ -16,6 +16,7 @@ import {
   extractCollectionFace as extractCollectionFaceCore,
   parseFontSource,
 } from '../rhwp/rhwp-shared/fonts/font-index-core.mjs';
+import { serveSystemFont, systemFontBaseUrl } from '../desktop/studio-protocol.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NOTO = path.join(repoRoot, 'rhwp/ttfs/opensource/NotoSansKR-Regular.ttf');
@@ -255,18 +256,36 @@ test('indexes roots, caches parses, maps Hancom names and guards reads', async (
     [['한양신명조', hft.id], ['HY Sinmyeongjo', hft.id], ['노토산스', hancomTtf.id]],
   );
 
-  const bytes = await service.readFace(korean.id);
+  // 렌더러는 앱 프로토콜로 face 를 받는다. key 가 맞을 때만 색인의 face 를 흘려보낸다.
+  const key = 'a'.repeat(64);
+  const serve = (id, withKey = key) => serveSystemFont(
+    new Request(`${systemFontBaseUrl(withKey)}${id}`),
+    { fonts: service, key },
+  );
+  const response = await serve(korean.id);
+  assert.equal(response.status, 200);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  assert.equal(Number(response.headers.get('content-length')), bytes.length);
+  assert.deepEqual(Buffer.from(bytes), await extractCollectionFace(collection, 1));
+  assert.equal((await serve(korean.id, 'b'.repeat(64))).status, 404);
+  assert.equal(await serveSystemFont(new Request('rauhwpx://app/index.html'), { fonts: service, key }), null);
   const reparsed = await parseSfntFaces(Buffer.from(bytes));
   assert.deepEqual(reparsed.faces[0].koreanNames, korean.koreanNames);
-  await assert.rejects(service.readFace('0123456789abcdef'), /unknown font id/);
-  await assert.rejects(service.readFace('../../etc/passwd'), /invalid font id/);
+  const streamed = await service.openFace(hancomTtf.id);
+  const parts = [];
+  for await (const chunk of streamed.chunks()) parts.push(chunk);
+  assert.equal(streamed.size, noto.length);
+  assert.deepEqual(Buffer.concat(parts), noto);
+  assert.equal((await serve('0123456789abcdef')).status, 404);
+  assert.equal((await serve('..%2F..%2Fetc%2Fpasswd')).status, 400);
+  await assert.rejects(service.openFace('../../etc/passwd'), /invalid font id/);
 
   const warm = await createSystemFontService({ ...options, log: () => {} }).list();
   assert.equal(warm.fromCache, true);
   assert.deepEqual(warm.faces.map((face) => face.id), first.faces.map((face) => face.id));
 
   await utimes(path.join(userFonts, 'Rau.ttc'), new Date(), new Date(Date.now() + 5_000));
-  await assert.rejects(service.readFace(korean.id), /stale/);
+  assert.equal((await serve(korean.id)).status, 409);
   const refreshed = await service.list({ refresh: true });
   assert.equal(refreshed.stats.parsed, 1);
   assert.ok(!refreshed.faces.some((face) => face.id === korean.id));

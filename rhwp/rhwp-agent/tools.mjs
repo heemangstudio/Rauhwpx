@@ -2,6 +2,7 @@
 // 프로세스/네트워크 부수효과가 없어야 하므로 여기에는 스키마·설명·검증 함수만 둔다.
 import { z } from 'zod/v3';
 import { MCP_USER_QUESTION_SHAPE } from './user-question.mjs';
+import { CHAT_PERMISSION_CAPABILITIES, chatPermissionForCategory } from './chat-permissions.mjs';
 
 // 공유 규칙 본문은 tool-rules.mjs 에 있다 — provider 브리프(agents/backend.mjs)가 zod 없이 가져다 쓴다.
 export { RHWP_TOOL_RULES } from './tool-rules.mjs';
@@ -417,6 +418,30 @@ function invalidArgs(message) {
   return err;
 }
 
+// cell 을 받는 텍스트·서식 도구. 표 좌표를 cell 없이 최상위에 두면 strict 스키마가 "Unrecognized key" 로만
+// 거절한다 — 고친 호출 꼴을 대신 알려 준다 (스튜디오 tool-executor 의 assertCellArgsPlacement 와 같은 문구).
+const CELL_ADDRESSED_TOOLS = new Set([
+  'insert_text', 'delete_range', 'replace_range', 'apply_char_format', 'apply_para_format', 'get_text_range',
+]);
+
+export function assertCellArgsPlacement(tool, args) {
+  if (!CELL_ADDRESSED_TOOLS.has(tool) || !args || typeof args !== 'object') return;
+  const given = (key) => args[key] !== undefined && args[key] !== null;
+  if (given('cell')) return;
+  const stray = ['controlIdx', 'cellIdx', 'cellParaIdx'].filter(given);
+  if (stray.length === 0) return;
+  const show = (key, fallback) => (typeof args[key] === 'number' ? String(args[key]) : fallback);
+  const tablePara = given('paraIdx') ? show('paraIdx', 'P') : show('startParaIdx', 'P');
+  const cell = `cell:{paraIdx:${tablePara},controlIdx:${show('controlIdx', '0')},cellIdx:${show('cellIdx', 'N')}}`;
+  const inner = show('cellParaIdx', '0');
+  const paraKeys = tool === 'delete_range' || tool === 'replace_range' ? 'startParaIdx/endParaIdx' : 'paraIdx';
+  throw invalidArgs(
+    `${tool} got top-level ${stray.join('/')} without cell, which would edit the table's host paragraph instead of the cell. `
+      + `Put the cell address in ${cell} (paraIdx = the table's body paragraph from its get_structure line) `
+      + `and set ${paraKeys} to the paragraph inside the cell (${inner}), e.g. {${cell}, ${paraKeys.split('/')[0]}:${inner}, …}.`,
+  );
+}
+
 /**
  * 스튜디오 결과를 MCP content 블록으로 변환한다.
  * result.image 가 { data(base64), mimeType } 모양이면 image 블록을 먼저 남고
@@ -507,6 +532,7 @@ export const TOOL_CATEGORIES = Object.freeze([
   'document-write',
   'reference-read',
   'template-read',
+  'template-write',
   'download-write',
   'artifact-write',
   'user-interaction',
@@ -527,7 +553,7 @@ export const TOOL_CATEGORIES = Object.freeze([
  * destructive 로 표시하지 않는다. 그렇게 표시하면 Codex 안전 모드
  * (`workspace-write` + `approval_policy=never`)가 문서 편집 도구를 거절한다.
  *
- * @param {'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'} category
+ * @param {'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'} category
  */
 export function toolAnnotations(category) {
   return {
@@ -581,7 +607,7 @@ const BROWSER_ID_ARG = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/, 'bro
 const BASE_TOOL_DEFINITIONS = [
   {
     name: 'read_agent_instructions',
-    description: 'Read the app-only AGENTS.md (durable user preferences for Rauhwpx chats): content, revision, updatedAt. Read before update_agent_instructions. Not a project AGENTS.md; never shared outside this app.',
+    description: 'Read the app-only AGENTS.md (durable user preferences for HamaEditor chats): content, revision, updatedAt. Read before update_agent_instructions. Not a project AGENTS.md; never shared outside this app.',
     shape: {},
   },
   {
@@ -595,7 +621,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'read_product_skill',
-    description: 'Read an enabled rhwp product skill (start with SKILL.md) or one of its text resources; returns the directory digest and file list. Read only the referenced files you need.',
+    description: 'Read an enabled HamaEditor product skill (start with SKILL.md) or one of its text resources; returns the directory digest and file list. Read only the referenced files you need.',
     shape: {
       name: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/),
       resourcePath: z.string().min(1).max(500).default('SKILL.md').optional(),
@@ -603,7 +629,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'commit_product_skill',
-    description: 'Change the rhwp product skill library: create, write one file, replace the body, import a harness skill or delete a user skill. Send only the fields for that action; pass the current digest as base for write/body/delete/replace. Never write provider-global skill directories.',
+    description: 'Change the HamaEditor product skill library: create, write one file, replace the body, import a harness skill or delete a user skill. Send only the fields for that action; pass the current digest as base for write/body/delete/replace. Never write provider-global skill directories.',
     shape: {
       action: z.enum(['create', 'write', 'body', 'import', 'delete']),
       name: z.string().optional(),
@@ -875,7 +901,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'get_document_info',
-    description: `Active document identity (documentId, name, sourcePath or null, digest, dirty), section/page counts, format and fonts. fontQuery lists registered names usable as fontFamily. Identify documents by documentId/digest/sourcePath, never by filename or title.`,
+    description: `Active document identity (documentId, name, sourcePath or null, digest, dirty, and worktree {branch, primary} when version worktrees share this name), section/page counts, format and fonts. When worktree is present, name the branch whenever you refer to this document, because other copies have the same file name. fontQuery lists registered names usable as fontFamily. Identify documents by documentId/digest/sourcePath, never by filename or title.`,
     shape: {
       fontQuery: z.array(z.string().min(1)).min(1).optional(),
     },
@@ -1018,7 +1044,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'insert_text',
-    description: `Insert text at charOffset, or before/after the text matched by find (position, default after). "\\n" splits paragraphs. ${WRITE_POINTER}`,
+    description: `Insert text at charOffset (omitted: paragraph end), or before/after the text matched by find (position, default after). "\\n" splits paragraphs. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
@@ -1031,7 +1057,8 @@ const BASE_TOOL_DEFINITIONS = [
       cell: cellParam(),
       cellPath: cellPathParam(),
     },
-    validate: (args) => validateAnchorTool('insert_text', args, ['sectionIdx', 'paraIdx', 'charOffset']),
+    // charOffset 이 없으면 스튜디오가 문단 끝에 덧붙인다.
+    validate: (args) => validateAnchorTool('insert_text', args, ['sectionIdx', 'paraIdx']),
   },
   {
     name: 'template_apply_section_layout',
@@ -1101,7 +1128,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'replace_range',
-    description: `Replace the text matched by find, or a coordinate range, with text. Keeps formatting; prefer it over delete_range + insert_text. ${WRITE_POINTER}`,
+    description: `Replace the text matched by find, or a coordinate range, with text ("" deletes). Keeps formatting; prefer it over delete_range + insert_text. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
@@ -1304,7 +1331,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_list',
-    description: `Make startParaIdx..endParaIdx a REAL HWP list: renderer-generated numbers with a hanging indent. Never type literal '1.' or '가.' to fake a list. format: '1.' for 1,2,3 or '가.'/'ㄱ.' for 가,나,다 (level 2 defaults to 가,나,다). bulletChar (e.g. '•') makes a bullet list instead. ${WRITE_POINTER}`,
+    description: `Make startParaIdx..endParaIdx a REAL HWP list: renderer-generated numbers with a hanging indent. Never type literal '1.' or '가.' to fake a list. format: '1.' for 1,2,3 or '가.'/'ㄱ.' for 가,나,다 (level 2 defaults to 가,나,다). bulletChar (e.g. '•') makes a bullet list instead. stripMarkers:true removes typed markers ('가. ', '1) ', '- '). ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
@@ -1315,6 +1342,7 @@ const BASE_TOOL_DEFINITIONS = [
       level: z.number().int().max(6).default(0).optional(),
       startNumber: z.number().int().optional(),
       bulletChar: z.string().optional(),
+      stripMarkers: z.boolean().optional(),
     },
     validate: validateApplyList,
   },
@@ -1616,6 +1644,14 @@ const BASE_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'request_permission',
+    description: 'Request a missing project, download, browser or local execution permission for this chat, explaining why. Returns pending: end the turn and wait. It authorizes nothing. Document edits need 에이전트/전체 mode or an approved plan.',
+    shape: {
+      capability: z.enum(CHAT_PERMISSION_CAPABILITIES),
+      reason: z.string().trim().min(1).max(1_000),
+    },
+  },
+  {
     name: 'ask_user_question',
     description: 'Ask the user 1-4 focused multiple-choice questions (2-4 concise options each; multiSelect only when several may apply; “Other” is on by default) and wait for one response. Root conversation only — subagents report uncertainty to the root agent.',
     shape: MCP_USER_QUESTION_SHAPE,
@@ -1758,10 +1794,15 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'register_copy_layout_template',
-    description: 'Register the completed copy-layout artifact as a reusable template after the user explicitly accepts the final save/register action. Never call before that reply; declining needs no tool call.',
+    description: 'Save a copy-layout result from this chat as a template when asked. Pass artifactId from its 템플릿 미리보기 link (/artifacts/<id>/<file>); never search files or MCP resources.',
     shape: {
-      jobId: z.string().uuid(),
+      artifactId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{15,127}$/).optional()
+        .describe('Id in /artifacts/<id>/<file>'),
+      jobId: z.string().uuid().optional().describe('Completed copy-layout jobId'),
       name: z.string().min(1).max(80).optional(),
+    },
+    validate(args) {
+      if (!args.artifactId && !args.jobId) throw invalidArgs('register_copy_layout_template requires artifactId');
     },
   },
   {
@@ -1799,7 +1840,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
 ];
 
-/** @type {Readonly<Record<string, 'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'>>} */
+/** @type {Readonly<Record<string, 'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'>>} */
 export const TOOL_CLASSIFICATIONS = Object.freeze({
   read_agent_instructions: 'instruction-read',
   update_agent_instructions: 'instruction-write',
@@ -1877,6 +1918,7 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   set_bookmark: 'document-write',
   verify_changes: 'document-read',
   ask_user_question: 'user-interaction',
+  request_permission: 'user-interaction',
   present_implementation_plan: 'planning-control',
   update_todos: 'plan-progress',
   download_file: 'download-write',
@@ -1885,7 +1927,7 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   update_copy_layout_job: 'background-worker',
   run_copy_layout_helper: 'background-worker',
   complete_copy_layout_job: 'background-worker',
-  register_copy_layout_template: 'background-control',
+  register_copy_layout_template: 'template-write',
   browserbase_start: 'browser',
   browserbase_end: 'browser',
   browserbase_navigate: 'browser',
@@ -1905,11 +1947,11 @@ export const TOOL_DEFINITIONS = Object.freeze(BASE_TOOL_DEFINITIONS.map((definit
 const PROJECT_CATEGORIES = Object.freeze(['project-read', 'project-write', 'project-ingest']);
 
 export const TOOL_PROFILES = Object.freeze({
-  direct: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'artifact-write', 'user-interaction', 'background-control', ...PROJECT_CATEGORIES]),
-  planning: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'download-write', 'user-interaction', 'planning-control', 'browser', ...PROJECT_CATEGORIES]),
-  question: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'download-write', 'user-interaction', 'browser', ...PROJECT_CATEGORIES]),
-  'awaiting-approval': Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'download-write', 'user-interaction', 'planning-control', 'browser', ...PROJECT_CATEGORIES]),
-  implementing: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'background-control', ...PROJECT_CATEGORIES]),
+  direct: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'artifact-write', 'user-interaction', 'background-control', ...PROJECT_CATEGORIES]),
+  planning: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', ...PROJECT_CATEGORIES]),
+  question: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'browser', ...PROJECT_CATEGORIES]),
+  'awaiting-approval': Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', ...PROJECT_CATEGORIES]),
+  implementing: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'background-control', ...PROJECT_CATEGORIES]),
   'copy-layout-worker': Object.freeze([
     'read_product_skill',
     'get_document_info',
@@ -1939,6 +1981,7 @@ export function projectToolGatesFromEnv(env = process.env) {
   return {
     projectWrites: env.RHWP_PROJECT_WRITES !== '0',
     homeSearch: env.RHWP_HOME_SEARCH === '1',
+    ...(env.RHWP_REQUESTABLE_TOOLS === '1' ? { requestable: true } : {}),
   };
 }
 
@@ -1947,15 +1990,18 @@ export function projectToolGatesFromEnv(env = process.env) {
  * Unknown entries are ignored so a typo cannot accidentally broaden access.
  * @param {string | undefined} profile
  */
-export function filterToolDefinitions(profile, { projectWrites = true, homeSearch = false } = {}) {
+export function filterToolDefinitions(profile, { projectWrites = true, homeSearch = false, requestable = false } = {}) {
   const value = String(profile ?? 'direct').trim();
   const named = TOOL_PROFILES[value];
   const entries = new Set(named ?? value.split(',').map((entry) => entry.trim()).filter(Boolean));
+  const requestableProfile = ['direct', 'planning', 'question', 'awaiting-approval', 'implementing'].includes(value);
   return TOOL_DEFINITIONS.filter((definition) => {
-    if (!entries.has(definition.category) && !entries.has(definition.name)) return false;
+    // 루트 채팅은 요청 가능한 앱 도구의 정의만 먼저 받는다. 실제 실행은 허브가 클릭으로 부여한 권한을 검사한다.
+    const canRequest = requestable && requestableProfile && Boolean(chatPermissionForCategory(definition.category));
+    if (!entries.has(definition.category) && !entries.has(definition.name) && !canRequest) return false;
     // 홈 폴더 검색은 데스크톱에서 켜졌을 때만 보인다(기본은 숨김).
     if (definition.name === 'find_home_files' && !homeSearch) return false;
-    if (!projectWrites && (definition.category === 'project-write' || definition.category === 'project-ingest')) return false;
+    if (!projectWrites && !canRequest && (definition.category === 'project-write' || definition.category === 'project-ingest')) return false;
     return true;
   });
 }

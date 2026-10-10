@@ -70,6 +70,8 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=review` | Streaming reply followed by accept/reject changes |
 | `?scenario=fleet` | Tool activity and a subagent task |
 | `?scenario=error` | A failed turn |
+| `?scenario=compaction` | A turn with an automatic context compaction divider |
+| `?context=92` | Start the context meter at 92% (any 1–100) |
 | `?page=settings` | Production settings panel |
 | `?page=settings&fullscreen=1` | Settings inside the full-screen focus workspace |
 | `?page=versions` | Production version graph |
@@ -78,7 +80,8 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?page=settings&quota=error` | Provider quota errors and unknown health bars in AI |
 | `?page=settings&quota=empty` | Exhausted Codex quota and zero banked resets |
 | `?page=settings&quota=refresh-error` | Manual refresh fails once, then succeeds on retry |
-| `?initial-setup=1` | Production first-run setup wizard |
+| `?initial-setup=1` | Production first-run setup (theme, models, fonts) with the talking hippo |
+| `?initial-setup=deferred` | Setup postponed by a file launch: the `처음 설정` chip above the composer |
 | `?theme=dark&width=360` | Dark theme and narrow sidebar |
 | `?controls=0` | Hide preview controls for clean captures |
 | `?reset=1` | Clear preview storage before mounting |
@@ -182,8 +185,11 @@ node rhwp/rhwp-studio/sidebar-preview/editor-shell.check.mjs
 ```
 
 The browser check starts its own Vite server on an ephemeral port and launches a
-fresh headless Chrome profile. It exercises the primary panels and mutations,
-checks request isolation, and writes **sidebar-only PNGs** to
+fresh headless Chrome profile. By default it is a short smoke: the preview boots,
+one chat turn finishes, the Agent Focus panel opens a view, and no request leaves
+the preview or reaches the document engine. Feature checks run only by name, for
+example `node rhwp/rhwp-studio/sidebar-preview/check.mjs workbench changes`; an
+unknown name prints the available list. Named checks write **sidebar-only PNGs** to
 `sidebar-preview/artifacts/` (Git-ignored). Set `CHROME_PATH` if Chrome/Chromium is
 not installed in a standard macOS/Linux location; this also supports Windows paths.
 It does not connect to or control your normal browser.

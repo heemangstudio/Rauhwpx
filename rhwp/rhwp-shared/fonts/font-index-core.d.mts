@@ -102,6 +102,11 @@ export function parseFontSource(input: Uint8Array | FontByteSource, fileName?: s
   faces: RawFontFace[];
   undecodable?: number;
 }>;
+export function faceOffsets(source: FontByteSource): Promise<{ collection: boolean; offsets: number[] }>;
+export function readTableDirectory(source: FontByteSource, faceOffset: number): Promise<{
+  sfntVersion: number;
+  tables: Map<string, { tag: string; checksum: number; offset: number; length: number }>;
+}>;
 export function extractCollectionFace(
   input: Uint8Array | FontByteSource,
   faceIndex: number,

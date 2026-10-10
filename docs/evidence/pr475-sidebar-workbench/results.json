@@ -1,0 +1,216 @@
+{
+  "runtime": "http://127.0.0.1:64196",
+  "provider": "fixture-backed sidebar; no model calls",
+  "layouts": [
+    {
+      "theme": "light",
+      "viewport": 1440,
+      "view": "board",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "light",
+      "viewport": 1440,
+      "view": "changes",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "light",
+      "viewport": 1440,
+      "view": "agents",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "light",
+      "viewport": 1440,
+      "view": "documents",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "light",
+      "viewport": 1280,
+      "view": "board",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "light",
+      "viewport": 1280,
+      "view": "changes",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "light",
+      "viewport": 1280,
+      "view": "agents",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "light",
+      "viewport": 1280,
+      "view": "documents",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "light",
+      "viewport": 840,
+      "view": "board",
+      "width": 378,
+      "height": 904,
+      "overflow": 0
+    },
+    {
+      "theme": "light",
+      "viewport": 840,
+      "view": "changes",
+      "width": 378,
+      "height": 904,
+      "overflow": 0
+    },
+    {
+      "theme": "light",
+      "viewport": 840,
+      "view": "agents",
+      "width": 378,
+      "height": 904,
+      "overflow": 0
+    },
+    {
+      "theme": "light",
+      "viewport": 840,
+      "view": "documents",
+      "width": 378,
+      "height": 904,
+      "overflow": 0
+    },
+    {
+      "theme": "dark",
+      "viewport": 1440,
+      "view": "board",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "dark",
+      "viewport": 1440,
+      "view": "changes",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "dark",
+      "viewport": 1440,
+      "view": "agents",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "dark",
+      "viewport": 1440,
+      "view": "documents",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "dark",
+      "viewport": 1280,
+      "view": "board",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "dark",
+      "viewport": 1280,
+      "view": "changes",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "dark",
+      "viewport": 1280,
+      "view": "agents",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "dark",
+      "viewport": 1280,
+      "view": "documents",
+      "width": 560,
+      "height": 952,
+      "overflow": 0
+    },
+    {
+      "theme": "dark",
+      "viewport": 840,
+      "view": "board",
+      "width": 378,
+      "height": 904,
+      "overflow": 0
+    },
+    {
+      "theme": "dark",
+      "viewport": 840,
+      "view": "changes",
+      "width": 378,
+      "height": 904,
+      "overflow": 0
+    },
+    {
+      "theme": "dark",
+      "viewport": 840,
+      "view": "agents",
+      "width": 378,
+      "height": 904,
+      "overflow": 0
+    },
+    {
+      "theme": "dark",
+      "viewport": 840,
+      "view": "documents",
+      "width": 378,
+      "height": 904,
+      "overflow": 0
+    }
+  ],
+  "boardPersistence": true,
+  "boardPointerDrag": true,
+  "pdfTabReuse": true,
+  "pdfZoomRetained": true,
+  "pdfPageRetained": true,
+  "clipReusesSourceTab": true,
+  "noteDraftRetained": true,
+  "dirtyCloseCancellation": true,
+  "keyboardCloseFocus": true,
+  "directResourceCloseFallback": true,
+  "panelToggleAndLauncher": true,
+  "compactBoardSections": true,
+  "malformedPdfRetry": true,
+  "taskFailureAndCancellation": true,
+  "draftTaskIsolation": true,
+  "changeReviewAndCommit": true,
+  "versionManagerInPanel": true,
+  "browserErrors": []
+}

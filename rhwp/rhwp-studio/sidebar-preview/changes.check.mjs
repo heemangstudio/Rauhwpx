@@ -10,6 +10,12 @@ export async function checkChangesPreview(page, origin, artifacts) {
     await page.waitForFunction(() => document.querySelector('.ag-changes-diff-list .ag-changes-item'));
   };
   const itemCount = () => page.$$eval('.ag-changes-diff-list .ag-changes-item', (nodes) => nodes.length);
+  // 집중 화면의 변경 사항 탭은 버전 창 전체를 담는다. 커밋 전 변경은 그 변경 탭에 있다.
+  const embedded = '.ag-workbench-changes .ag-versions-embedded';
+  const versionTab = async (label) => {
+    await page.evaluate((selector, text) => [...document.querySelectorAll(`${selector} .ag-versions-tab`)]
+      .find((node) => node.textContent.startsWith(text)).click(), embedded, label);
+  };
 
   await open('audit=1&scenario=review&review=full&permission=unrestricted&play=1', 360);
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().pendingChanges), 0);
@@ -30,8 +36,9 @@ export async function checkChangesPreview(page, origin, artifacts) {
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.snapshot().changeEvents), ['set-finalized', 'approved']);
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().pendingChanges), 0);
   assert.equal(await page.$('.ag-changes-review-slot .ag-review-card'), null);
-  assert.equal(await page.$eval('.ag-review-column-head .ag-review-column-undo', (node) => node.hidden), false);
-  assert.equal(await page.$eval('.ag-changes-overlay', (node) => node.hidden), false);
+  assert.equal(await page.$eval('.ag-workbench-actions .ag-review-column-undo', (node) => node.hidden), false);
+  assert.equal(await page.$eval(embedded, (node) => node.checkVisibility()), true);
+  assert.equal(await page.$eval('.ag-root', (node) => node.classList.contains('ag-fullscreen')), true, 'opening changes keeps Agent Focus');
   assert.equal(await itemCount(), 5);
   assert.equal(await page.$eval('.ag-changes-latest', (node) => getComputedStyle(node).display), 'none');
   assert.match(await page.$eval('.ag-changes-diff-list', (node) => node.textContent), /주문 접수부터 정산까지 이어지는 흐름도/);
@@ -39,29 +46,34 @@ export async function checkChangesPreview(page, origin, artifacts) {
   assert.equal(await page.$eval('.ag-changes-expand', (node) => node.getAttribute('aria-expanded')), 'false');
   await page.click('.ag-changes-expand');
   assert.equal(await page.$eval('.ag-changes-expand', (node) => node.getAttribute('aria-expanded')), 'true');
-  assert.equal(await page.$eval('.ag-changes-overlay', (node) => node.scrollWidth <= node.clientWidth), true);
+  assert.equal(await page.$eval(embedded, (node) => node.scrollWidth <= node.clientWidth), true);
   await page.screenshot({ path: resolve(artifacts, 'changes-full-long-text.png') });
 
-  await page.click('.ag-changes-commit-toggle');
-  await page.waitForSelector('.ag-changes-commit-detail .ag-changes-item');
-  assert.equal(await page.$eval('.ag-changes-commit-toggle', (node) => node.getAttribute('aria-expanded')), 'true');
-  assert.match(await page.$eval('.ag-changes-commit-detail', (node) => node.textContent), /추진 일정과 기대 효과를 정리했습니다/);
+  // 그래프와 브랜치 탭이 같은 칸에서 열린다.
+  await versionTab('그래프');
+  await page.waitForSelector(`${embedded} .ag-version-row`, { visible: true });
+  await page.click(`${embedded} .ag-version-row`);
+  await page.waitForFunction((selector) => /추진 일정과 기대 효과를 정리했습니다/.test(
+    document.querySelector(`${selector} .ag-versions-inspector-title`)?.textContent ?? ''), {}, embedded);
+  await versionTab('브랜치');
+  await page.waitForFunction((selector) => document.querySelector(`${selector} .ag-versions-ref-list`)?.textContent.includes('main'), {}, embedded);
+  await versionTab('변경');
   // 미리보기의 반영 알림 토스트가 검토 열 머리글을 잠시 덮는다. 닫고 되돌린다.
   if (await page.$('.rhwp-toast-close')) {
     await page.click('.rhwp-toast-close');
     await page.waitForSelector('.rhwp-toast', { hidden: true });
   }
-  await page.click('.ag-review-column-head .ag-review-column-undo');
+  await page.click('.ag-workbench-actions .ag-review-column-undo');
   await page.waitForFunction(() => window.sidebarPreview.undoState.calls === 1);
   await page.waitForFunction(() => document.querySelectorAll('.ag-changes-diff-list .ag-changes-item').length === 0);
-  assert.equal(await page.$eval('.ag-review-column-head .ag-review-column-undo', (node) => node.hidden), true);
+  assert.equal(await page.$eval('.ag-workbench-actions .ag-review-column-undo', (node) => node.hidden), true);
 
   await open(fullScene);
   await page.evaluate(() => {
     window.sidebarPreview.undoState.entry = null;
     window.sidebarPreview.eventBus.emit('document-mutated');
   });
-  await page.waitForFunction(() => document.querySelector('.ag-review-column-head .ag-review-column-undo').hidden);
+  await page.waitForFunction(() => document.querySelector('.ag-workbench-actions .ag-review-column-undo').hidden);
   await page.click('.ag-changes-diff-list .ag-changes-text-button');
   await page.waitForFunction(() => window.sidebarPreview.navigation.calls.length === 1);
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.navigation.calls[0]),
@@ -80,9 +92,9 @@ export async function checkChangesPreview(page, origin, artifacts) {
   await page.type('.ag-changes-message', '사업 목표와 예산표를 수정했습니다.');
   await page.click('.ag-changes-primary');
   await page.waitForFunction(() => document.querySelectorAll('.ag-changes-diff-list .ag-changes-item').length === 0);
-  assert.match(await page.$eval('.ag-changes-history-list .ag-changes-commit-title', (node) => node.textContent), /사업 목표와 예산표를 수정했습니다/);
-  await page.click('.ag-changes-commit-toggle');
-  await page.waitForFunction(() => document.querySelectorAll('.ag-changes-commit-detail .ag-changes-item').length === 5);
+  await versionTab('그래프');
+  await page.waitForFunction((selector) => /사업 목표와 예산표를 수정했습니다/.test(
+    document.querySelector(`${selector} .ag-version-row .ag-version-title`)?.textContent ?? ''), {}, embedded);
 
   await open(fullScene);
   await page.click('.ag-changes-danger');
@@ -147,11 +159,10 @@ export async function checkChangesPreview(page, origin, artifacts) {
         { waitUntil: 'networkidle0' });
       await page.waitForFunction(() => document.body.dataset.auditReady === 'true'
         && document.querySelector('.ag-changes-diff-list .ag-changes-item'));
-      const overflow = await page.evaluate(() => ({
+      const overflow = await page.evaluate((selector) => ({
         page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-        drawer: document.querySelector('.ag-changes-drawer').scrollWidth
-          - document.querySelector('.ag-changes-drawer').clientWidth,
-      }));
+        drawer: document.querySelector(selector).scrollWidth - document.querySelector(selector).clientWidth,
+      }), embedded);
       assert.ok(overflow.page <= 1 && overflow.drawer <= 1,
         `${width}px ${theme} overflow: ${JSON.stringify(overflow)}`);
     }

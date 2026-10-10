@@ -1,0 +1,166 @@
+.ag-workbench-page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  z-index: 8;
+  color: var(--ag-text);
+  background: var(--ag-bg);
+  animation: ag-workbench-enter 150ms ease-out;
+}
+.ag-workbench-page[hidden], .ag-workbench-page [hidden] { display: none !important; }
+.ag-workbench-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; flex: 0 0 auto; border-bottom: 1px solid var(--ag-border); }
+.ag-workbench-head h2 { margin: 0; flex: 1; font: 590 14px/1.4 var(--ag-font); letter-spacing: -.015em; }
+.ag-workbench-body, .ag-workbench-panel { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+
+.ag-workbench-changes .ag-changes-overlay { background: var(--ag-bg); }
+.ag-workbench-changes .ag-changes-drawer { width: 100%; }
+.ag-workbench-changes .ag-review { flex: 0 0 auto; }
+.ag-root:not(.ag-fullscreen) .ag-workbench-page { display: none; }
+@keyframes ag-workbench-enter { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .ag-workbench-page { animation: none; }
+}
+/* 문서와 도구를 같은 가로 탭 줄에 놓는다. 내용 면의 중복 탭 줄은 숨긴다. */
+/* T3 Code의 탭처럼 테두리 없이 배경에 녹인다. 아이콘 자리는 hover 때 닫기 버튼이 된다. */
+.ag-workbench-head { background: var(--ag-bg); min-height: 36px; padding: 4px 6px 4px 8px; gap: 2px; }
+.ag-workbench-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.ag-workbench-tabs { display: flex; align-items: center; flex: 0 1 auto; gap: 2px; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+.ag-workbench-tabs::-webkit-scrollbar { display: none; }
+.ag-workbench-tab-row { position: relative; display: flex; align-items: center; flex: 0 0 auto; min-width: 0; max-width: 180px; border-radius: 6px; color: var(--ag-text-secondary); transition: background 120ms ease, color 120ms ease; }
+.ag-workbench-tab-row:hover { color: var(--ag-text); background: var(--ag-hover); }
+.ag-workbench-tab-row.ag-selected { color: var(--ag-text); background: var(--ag-active); }
+.ag-workbench-tab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px 0 7px; border: 0; min-width: 0; color: inherit; background: transparent; font: 500 12px/1 var(--ag-font); cursor: pointer; }
+.ag-workbench-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-workbench-tab svg { flex: 0 0 auto; width: 13px; height: 13px; opacity: .8; }
+.ag-workbench-tab-row.ag-dirty .ag-workbench-tab::after { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.ag-workbench-tab-close { position: absolute; left: 4px; top: 50%; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; color: inherit; background: transparent; cursor: pointer; opacity: 0; transform: translateY(-50%); pointer-events: none; }
+.ag-workbench-tab-close svg { width: 10px; height: 10px; }
+.ag-workbench-tab-row:hover .ag-workbench-tab-close, .ag-workbench-tab-close:focus-visible { opacity: .7; pointer-events: auto; }
+.ag-workbench-tab-row:hover .ag-workbench-tab > svg { visibility: hidden; }
+.ag-workbench-tab-close:hover { opacity: 1; background: var(--ag-hover); }
+.ag-workbench-tab:focus-visible, .ag-workbench-tab-close:focus-visible, .ag-workbench-scroll:focus-visible { outline: 2px solid var(--ag-text-secondary); outline-offset: -2px; border-radius: 6px; }
+.ag-workbench-scroll { flex: 0 0 18px; height: 26px; width: 18px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--ag-text-secondary); font: 18px/1 var(--ag-font); cursor: pointer; }
+.ag-workbench-scroll:hover { background: var(--ag-hover); }
+@media (prefers-reduced-motion: reduce) { .ag-workbench-tab-row { transition: none; } }
+.ag-workbench-page .ag-wdocs-tabs, .ag-workbench-page .ag-wdocs-eyebrow { display: none; }
+.ag-workbench-page .ag-pp-kind, .ag-workbench-page .ag-pp-title { display: none; }
+.ag-workbench-page .ag-pp-tools { margin-left: auto; }
+
+.ag-workbench-head [hidden] { display: none !important; }
+.ag-workbench-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; margin-left: auto; }
+.ag-workbench-add { display: grid; place-items: center; flex: 0 0 26px; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 6px; color: var(--ag-text-tertiary); background: transparent; cursor: pointer; transition: color 120ms ease, background 120ms ease; }
+.ag-workbench-add svg { width: 13px; height: 13px; }
+.ag-workbench-add:hover { color: var(--ag-text); background: var(--ag-hover); }
+.ag-workbench-add:focus-visible { outline: 2px solid var(--ag-text-secondary); outline-offset: -2px; }
+
+/* 탭이 없을 때의 작업 목록. 열 수 있는 보기와 글자 단축키를 가운데에 둔다. */
+.ag-workbench-launcher { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; min-height: 0; padding: 24px 16px 12vh; overflow: auto; }
+.ag-workbench-launcher-title { margin: 0 0 14px; color: var(--ag-text); font: 590 14px/1.4 var(--ag-font); letter-spacing: -.01em; }
+.ag-workbench-launcher-list { display: grid; gap: 2px; width: min(300px, 100%); }
+.ag-workbench-launcher-item { display: flex; align-items: center; gap: 11px; height: 34px; padding: 0 6px 0 9px; border: 0; border-radius: 7px; color: var(--ag-text); background: transparent; font: 450 13px/1 var(--ag-font); text-align: left; cursor: pointer; transition: background 120ms ease; }
+.ag-workbench-launcher-item svg { flex: 0 0 auto; width: 15px; height: 15px; color: var(--ag-text-secondary); }
+.ag-workbench-launcher-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-workbench-launcher-item kbd { display: grid; place-items: center; flex: 0 0 auto; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 5px; color: var(--ag-text-tertiary); background: var(--ag-hover); font: 500 11px/1 var(--ag-font); }
+.ag-workbench-launcher-item:hover { background: var(--ag-hover); }
+.ag-workbench-launcher-item:focus-visible { outline: 2px solid var(--ag-text-secondary); outline-offset: -2px; }
+@media (prefers-reduced-motion: reduce) { .ag-workbench-add, .ag-workbench-launcher-item { transition: none; } }
+.ag-workbench-actions:empty { display: none; }
+.ag-workbench-actions .ag-header-icon-btn { width: 26px; height: 26px; }
+
+/* 집중 화면의 작업 칸. 문서 편집기 옆의 일반 사이드바는 원래 배치를 쓴다.
+   T3 Code처럼 제목 막대 높이까지 올라와 탭이 칸 열기 단추와 한 줄에 선다. */
+.ag-fullscreen .ag-workbench-page {
+  grid-column: 3;
+  grid-row: 1 / -1;
+  position: relative;
+  inset: auto;
+  border-left: 1px solid var(--ag-border);
+}
+.ag-fullscreen:not(.ag-workspace-compact).ag-workbench-open .ag-workspace-bar { grid-column: 1 / 3; }
+.ag-fullscreen:not(.ag-workspace-compact) .ag-workbench-head {
+  min-height: var(--ag-workspace-bar-h, 48px);
+  padding-right: 124px;
+  border-bottom: 0;
+}
+html.desktop-mac .ag-fullscreen:not(.ag-workspace-compact) .ag-workbench-head { -webkit-app-region: drag; }
+html.desktop-mac .ag-fullscreen .ag-workbench-head :is(button, [role="tab"], [tabindex]:not([tabindex="-1"])) { -webkit-app-region: no-drag; }
+
+/* 환경·닫기·칸 열기 묶음은 무대 오른쪽 위에 고정된다. 칸이 열리면 탭 줄 오른쪽 끝에 놓인다. */
+.ag-workspace-corner { display: none; }
+.ag-fullscreen .ag-workspace-corner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: absolute;
+  top: calc((var(--ag-workspace-bar-h, 48px) - 32px) / 2);
+  right: 10px;
+  z-index: 21;
+}
+html.desktop-mac .ag-fullscreen .ag-workspace-corner { -webkit-app-region: no-drag; }
+.ag-fullscreen .ag-workspace-trailing { padding-right: 124px; }
+.ag-fullscreen.ag-workbench-open .ag-stage {
+  grid-template-columns: var(--ag-rail-w, 264px) minmax(0, 1fr) var(--ag-review-w, 560px);
+}
+.ag-fullscreen.ag-workbench-open.ag-rail-collapsed .ag-stage {
+  grid-template-columns: 0 minmax(0, 1fr) var(--ag-review-w, 560px);
+}
+.ag-fullscreen.ag-workbench-open .ag-review-resize {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 10;
+}
+.ag-fullscreen.ag-workspace-compact.ag-workbench-open .ag-stage {
+  grid-template-columns: minmax(0, 1fr);
+}
+.ag-fullscreen.ag-workspace-compact .ag-workbench-page {
+  position: absolute;
+  top: var(--ag-workspace-bar-h, 48px);
+  bottom: 0;
+  right: 0;
+  width: min(var(--ag-review-w, 560px), 88vw);
+  z-index: 14;
+  box-shadow: var(--ag-elev-sheet);
+}
+.ag-fullscreen.ag-workspace-compact.ag-workbench-open .ag-review-resize { display: none; }
+
+.ag-workbench-tab-row.ag-dragging { z-index: 2; color: var(--ag-text); background: var(--ag-active); box-shadow: var(--ag-elev-popover); }
+.ag-workbench-tab-row.ag-dragging .ag-workbench-tab-close { opacity: 0; pointer-events: none; }
+.ag-workbench-tab-row.ag-dragging .ag-workbench-tab > svg { visibility: visible; }
+.ag-workbench-tabs.ag-tab-dragging, .ag-workbench-tabs.ag-tab-dragging * { cursor: grabbing; }
+
+/* 오른쪽 작업 칸 단추. 대화 목록 단추의 아이콘을 좌우로 뒤집는다. */
+.ag-workspace-panel-btn .ag-column-icon-end { transform: scaleX(-1); }
+.ag-workspace-panel-btn[aria-expanded="true"] { color: var(--ag-text); background: var(--ag-active); }
+.ag-fullscreen.ag-settings-open .ag-workspace-panel-btn { display: none; }
+
+/* 변경 사항 탭은 버전 창 전체를 빌려 쓴다. 사이드바 페이지 전환 위치·애니메이션을 풀고 탭 안을 채운다. */
+.ag-workbench-changes .ag-versions-page.ag-versions-embedded {
+  position: relative;
+  inset: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+  transition: none;
+  z-index: auto;
+}
+.ag-versions-embedded .ag-versions-close { display: none; }
+.ag-versions-embedded .ag-versions-review-host { padding: 12px 12px 4px; }
+.ag-versions-embedded .ag-versions-review-host:has(> .ag-review:empty) { display: none; }
+.ag-versions-embedded .ag-versions-review-host .ag-review {
+  display: flex;
+  flex: none;
+  width: 100%;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.ag-versions-embedded .ag-versions-review-host .ag-review-summary { max-height: none; overflow: visible; }

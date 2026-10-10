@@ -1,5 +1,34 @@
 /* 인라인 프롬프트 — 선택 끝의 칩과 즉석 입력 상자. #scroll-content 안에 산다. */
 
+/* Control 두 번으로 선택을 준비한 상태. 영역 캡처(Control 두 번 + S)와 같은 옅은 틀이다. */
+.ag-inline-armed-frame {
+  position: fixed;
+  z-index: 200;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 38%, transparent);
+  background: color-mix(in srgb, var(--accent-primary) 4%, transparent);
+  pointer-events: none;
+  animation: ag-inline-armed-in 120ms ease-out;
+}
+.ag-inline-armed-hint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--ui-surface-raised);
+  color: var(--ui-text);
+  font: 12px/1.4 var(--font-family-ui);
+  box-shadow: 0 2px 14px #0002;
+  white-space: nowrap;
+}
+.ag-inline-armed-frame.ag-selecting .ag-inline-armed-hint { display: none; }
+.ag-inline-armed-frame { transition: opacity 160ms ease-out; }
+.ag-inline-armed-frame.ag-leaving { opacity: 0; }
+@keyframes ag-inline-armed-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ag-inline-armed-frame { animation: none; transition: none; } }
+
 .ag-inline-layer {
   position: absolute;
   left: 0;
@@ -43,7 +72,6 @@ body:not(.ag-sidebar-open) .ag-inline-box {
 }
 
 .ag-inline-chip:focus-visible,
-.ag-inline-permission:focus-visible,
 .ag-inline-send:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
@@ -142,35 +170,6 @@ body:not(.ag-sidebar-open) .ag-inline-box {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.ag-inline-permission {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  border: 1px solid var(--ui-border);
-  border-radius: var(--ag-r-chip);
-  background: transparent;
-  color: var(--ui-text-secondary);
-  font-family: var(--font-family-ui);
-  font-size: 11px;
-  cursor: default;
-}
-
-.ag-inline-permission:hover:not(:disabled) {
-  background: var(--ui-hover);
-  color: var(--ui-text);
-}
-
-/* 채팅·플랜 모드는 표시만 한다 — 바꾸는 곳은 사이드바 모드 칩이다. */
-.ag-inline-permission:disabled {
-  opacity: 0.72;
-}
-
-.ag-inline-permission.ag-inline-unrestricted {
-  border-color: var(--ui-danger);
-  background: var(--ui-danger-soft);
-  color: var(--ui-danger);
-  font-weight: 700;
 }
 
 .ag-inline-error {

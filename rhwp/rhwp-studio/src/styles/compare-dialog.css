@@ -394,5 +394,5 @@
 .compare-dialog :is(button, input, select, textarea):focus-visible, .compare-inspector-window :is(button, input, select, textarea):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 @media (max-width: 700px) { .compare-options { grid-template-columns: 1fr; } .compare-inspector-panes { grid-template-columns: 1fr; } .compare-inspector-window { overflow-y: auto; } .compare-inspector-pane { min-height: 240px; } }
 
-.compare-dialog, .compare-inspector-window { --ui-surface: #f2f3f5; --ui-surface-raised: #fff; --ui-surface-muted: #e8eaee; --ui-text: #171b22; --ui-border: #d9dde3; --ui-hover: #e5e8ed; --ui-selected: #dfe5ec; --focus-ring: #356caa; }
-:root[data-theme-effective='dark'] :is(.compare-dialog, .compare-inspector-window) { --ui-surface: #0f0f0f; --ui-surface-raised: #181818; --ui-surface-muted: #080808; --ui-text: #e6e6e6; --ui-border: #262626; --ui-hover: #1c1c1c; --ui-selected: #2e2e2e; --focus-ring: #ef6a62; }
+.compare-dialog, .compare-inspector-window { --ui-surface: #f2f3f5; --ui-surface-raised: #fff; --ui-surface-muted: #e8eaee; --ui-text: #171b22; --ui-border: #d9dde3; --ui-hover: #e5e8ed; --ui-selected: #dfe5ec; --focus-ring: rgba(23, 27, 34, 0.42); }
+:root[data-theme-effective='dark'] :is(.compare-dialog, .compare-inspector-window) { --ui-surface: #0f0f0f; --ui-surface-raised: #181818; --ui-surface-muted: #080808; --ui-text: #e6e6e6; --ui-border: #262626; --ui-hover: #1c1c1c; --ui-selected: #2e2e2e; --focus-ring: rgba(230, 230, 230, 0.48); }

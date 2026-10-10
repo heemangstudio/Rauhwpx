@@ -29,7 +29,10 @@ import {
 const DB_NAME = 'rhwpStudioRecent';
 const DB_VER = 2;
 const STORE = 'recent';
-const MAX_RECENT = 8;
+/** 문서 홈이 보여 주는 열람 기록 상한. 파일 메뉴는 앞의 {@link RECENT_MENU_LIMIT}개만 보인다. */
+export const MAX_RECENT_DOCS = 100;
+export const RECENT_MENU_LIMIT = 8;
+const MAX_RECENT = MAX_RECENT_DOCS;
 const SAME_ENTRY_TIMEOUT_MS = 200;
 
 export interface RecentDoc {
@@ -51,6 +54,11 @@ export interface RecentDoc {
    * (`handle` 미존재), 이 경우 자동 재열기는 불가하고 목록/이력 표시에만 쓰인다.
    */
   handle?: FileSystemFileHandleLike;
+  /**
+   * 문서 홈이 파일을 찾지 못한 첫 시각. 한 번 못 찾았다고 바로 지우지 않고, 시간이 지나
+   * 다시 확인해도 없을 때만 목록에서 뺀다. 다시 열거나 찾으면 없어진다.
+   */
+  missingSince?: number;
 }
 
 /** addRecentDoc 입력 (id/openedAt는 내부 생성) */
@@ -106,8 +114,14 @@ function createDocumentId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `document_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function openDb(): Promise<IDBDatabase | null> {
-  return openIndexedDatabase(DB_NAME, DB_VER, (db, event) => {
+/** 2.0.11 가져오기도 이 함수로 열어 오래된 버전을 먼저 올린다. */
+export const RECENT_DB_NAME = DB_NAME;
+export function openRecentDatabase(name = DB_NAME): Promise<IDBDatabase | null> {
+  return openDb(name);
+}
+
+function openDb(name = DB_NAME): Promise<IDBDatabase | null> {
+  return openIndexedDatabase(name, DB_VER, (db, event) => {
     if (!db.objectStoreNames.contains(STORE)) {
       db.createObjectStore(STORE, { keyPath: 'id' });
     } else if (event.oldVersion < 2) {
@@ -120,7 +134,7 @@ function openDb(): Promise<IDBDatabase | null> {
 }
 
 function withDb<T>(fn: (db: IDBDatabase) => Promise<T>, fallback: () => Promise<T>) {
-  return withDatabase(openDb, DB_NAME, fn, fallback);
+  return withDatabase(() => openDb(), DB_NAME, fn, fallback);
 }
 
 function getAllRows(db: IDBDatabase): Promise<RecentDoc[]> {
@@ -139,8 +153,12 @@ function deleteRow(db: IDBDatabase, id: string): Promise<void> {
   return transactionDone(tx);
 }
 
-/** 동일 파일 판정 — 핸들 비교가 불가능할 때만 원본 digest로 폴백한다. */
-async function isSameFile(a: RecentDocInput, existing: RecentDoc): Promise<boolean> {
+/**
+ * 동일 파일 판정 — 핸들 비교가 불가능할 때만 원본 digest로 폴백한다. digest 폴백은 최근
+ * {@link RECENT_MENU_LIMIT}개 안에서만 한다. 오래된 기록까지 내용만으로 맞추면 같은 내용의 다른
+ * 파일(복사본·양식)이 남의 문서 ID를 물려받는다.
+ */
+async function isSameFile(a: RecentDocInput, existing: RecentDoc, allowDigest = true): Promise<boolean> {
   if (a.documentId && a.documentId === existing.documentId) return true;
 
   const ha = a.handle;
@@ -156,7 +174,14 @@ async function isSameFile(a: RecentDocInput, existing: RecentDoc): Promise<boole
       // 권한/브라우저 제약·무응답이면 digest로 폴백한다.
     }
   }
-  return a.sourceDigest === existing.sourceDigest;
+  return allowDigest && a.sourceDigest === existing.sourceDigest;
+}
+
+/** 같은 파일로 보이는 기록(최신순). 핸들 비교는 한꺼번에 해 기록이 많아도 한 번의 대기로 끝난다. */
+async function sameFileMatches(input: RecentDocInput, rows: readonly RecentDoc[]): Promise<RecentDoc[]> {
+  const ordered = [...rows].sort((a, b) => b.openedAt - a.openedAt);
+  const same = await Promise.all(ordered.map((row, index) => isSameFile(input, row, index < RECENT_MENU_LIMIT)));
+  return ordered.filter((_, index) => same[index]);
 }
 
 /** 최신순(openedAt 내림차순)으로 정렬해 상한까지 자른다. */
@@ -172,6 +197,63 @@ function sortAndTrim(rows: RecentDoc[]): RecentDoc[] {
  * 핸들이 structured clone 불가(DataCloneError 등)한 환경이면 핸들을 떼고 메타-only
  * 로 재시도한다 — 기록 자체는 남긴다.
  */
+/** 다른 창에 알리는 최근 문서 변경. 빠진 기록 ID, 전체 삭제, 추가, 이름·표시 수정. */
+export interface RecentDocsChange {
+  removed?: string[];
+  cleared?: boolean;
+  changed?: boolean;
+  /** 이름이 바뀌었거나 못 찾음 표시가 달라진 기록. 받는 창은 다시 읽지 않고 그 자리에서 고친다. */
+  updated?: { id: string; fileName: string; missingSince?: number }[];
+}
+
+const CHANNEL_NAME = 'rhwp-recent-docs';
+let recentChannel: BroadcastChannel | null | undefined;
+
+/** 같은 출처의 창끼리 쓰는 통로. 이 창이 보낸 알림은 이 창으로 돌아오지 않는다. */
+function channel(): BroadcastChannel | null {
+  if (recentChannel === undefined) {
+    // Node 테스트에서는 열린 통로가 프로세스를 붙잡으므로 창에서만 연다.
+    recentChannel = typeof window === 'undefined' || typeof BroadcastChannel === 'undefined'
+      ? null
+      : new BroadcastChannel(CHANNEL_NAME);
+    recentChannel?.addEventListener('message', (event: MessageEvent<RecentDocsChange>) => {
+      // 다른 창이 지운 기록은 이 창의 기억에서도 뺀다.
+      if (event.data?.cleared) { memory.clear(); liveHandles.clear(); }
+      for (const id of event.data?.removed ?? []) { memory.delete(id); liveHandles.delete(id); }
+      for (const patch of event.data?.updated ?? []) {
+        const row = memory.get(patch.id);
+        if (!row) continue;
+        const next: RecentDoc = { ...row, fileName: patch.fileName };
+        if (patch.missingSince === undefined) delete next.missingSince;
+        else next.missingSince = patch.missingSince;
+        memory.set(patch.id, next);
+      }
+    });
+  }
+  return recentChannel;
+}
+
+function announce(change: RecentDocsChange): void {
+  try { channel()?.postMessage(change); } catch { /* 창이 닫히는 중이면 알리지 않는다. */ }
+}
+
+function announceUpdate(row: RecentDoc): void {
+  announce({ updated: [{
+    id: row.id,
+    fileName: row.fileName,
+    ...(row.missingSince !== undefined ? { missingSince: row.missingSince } : {}),
+  }] });
+}
+
+/** 다른 창에서 최근 문서가 바뀌면 부른다. 해제 함수를 돌려준다. */
+export function subscribeRecentDocs(listener: (change: RecentDocsChange) => void): () => void {
+  const target = channel();
+  if (!target) return () => {};
+  const handle = (event: MessageEvent<RecentDocsChange>) => { if (event.data) listener(event.data); };
+  target.addEventListener('message', handle);
+  return () => target.removeEventListener('message', handle);
+}
+
 export async function addRecentDoc(input: RecentDocInput): Promise<RecentDoc> {
   if (!input.sourceDigest) {
     throw new Error('sourceDigest is required for recent document identity');
@@ -179,11 +261,7 @@ export async function addRecentDoc(input: RecentDocInput): Promise<RecentDoc> {
 
   return withDb(
     async (db) => {
-      const rows = await getAllRows(db);
-      const matches: RecentDoc[] = [];
-      for (const row of [...rows].sort((a, b) => b.openedAt - a.openedAt)) {
-        if (await isSameFile(input, row)) matches.push(row);
-      }
+      const matches = await sameFileMatches(input, await getAllRows(db));
 
       const previous = matches[0] ? withLiveHandle(matches[0]) : undefined;
       const entry: RecentDoc = {
@@ -206,26 +284,28 @@ export async function addRecentDoc(input: RecentDocInput): Promise<RecentDoc> {
         await putRow(db, metaOnly);
         stored = metaOnly;
       }
+      const removed: string[] = [];
       for (const duplicate of matches.slice(1)) {
         if (duplicate.id !== stored.id) {
           liveHandles.delete(duplicate.id);
           await deleteRow(db, duplicate.id);
+          removed.push(duplicate.id);
         }
       }
       const after = sortAndTrim(await getAllRows(db));
       const keep = new Set(after.map((r) => r.id));
       pruneLiveHandles(keep);
       for (const row of await getAllRows(db)) {
-        if (!keep.has(row.id)) await deleteRow(db, row.id);
+        if (!keep.has(row.id)) {
+          await deleteRow(db, row.id);
+          removed.push(row.id);
+        }
       }
+      announce({ changed: true, ...(removed.length ? { removed } : {}) });
       return withLiveHandle({ ...stored, ...(entry.handle ? { handle: entry.handle } : {}) });
     },
     async () => {
-      const rows = [...memory.values()].sort((a, b) => b.openedAt - a.openedAt);
-      const matches: RecentDoc[] = [];
-      for (const row of rows) {
-        if (await isSameFile(input, row)) matches.push(row);
-      }
+      const matches = await sameFileMatches(input, [...memory.values()]);
       const previous = matches[0] ? withLiveHandle(matches[0]) : undefined;
       const entry: RecentDoc = {
         id: previous?.id ?? createRecentId(),
@@ -236,8 +316,8 @@ export async function addRecentDoc(input: RecentDocInput): Promise<RecentDoc> {
         openedAt: Date.now(),
         ...(input.handle || previous?.handle ? { handle: input.handle ?? previous?.handle } : {}),
       };
-      for (const [id, row] of memory) {
-        if (id !== entry.id && await isSameFile(input, row)) memory.delete(id);
+      for (const match of matches) {
+        if (match.id !== entry.id) memory.delete(match.id);
       }
       rememberLiveHandle(entry.id, entry.handle);
       memory.set(entry.id, persistableRow(entry));
@@ -259,6 +339,43 @@ export async function listRecentDocs(): Promise<RecentDoc[]> {
   );
 }
 
+/**
+ * 기록의 표시 메타를 고친다. 파일이 다른 이름으로 옮겨졌거나 이름을 바꿨을 때, 문서 홈이 파일을
+ * 찾지 못했을 때 쓴다. 열람 시각과 순서는 그대로 두고, 읽기와 쓰기를 한 트랜잭션에서 해 그사이
+ * 들어온 열기 기록을 되돌리지 않는다. 없는 기록이면 null.
+ */
+export async function updateRecentDoc(
+  id: string,
+  patch: { fileName?: string; missingSince?: number | null },
+): Promise<RecentDoc | null> {
+  const apply = (row: RecentDoc): RecentDoc => {
+    const next: RecentDoc = { ...row, ...(patch.fileName ? { fileName: patch.fileName } : {}) };
+    if (patch.missingSince === null) delete next.missingSince;
+    else if (patch.missingSince !== undefined) next.missingSince = patch.missingSince;
+    return next;
+  };
+  return withDb(
+    async (db) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      const store = tx.objectStore(STORE);
+      const row = await requestResult(store.get(id) as IDBRequest<RecentDoc | undefined>);
+      const next = row ? apply(row) : null;
+      if (next) store.put(persistableRow(next));
+      await withTimeout(transactionDone(tx), 800, 'recent-update');
+      if (next) announceUpdate(next);
+      return next ? withLiveHandle(next) : null;
+    },
+    async () => {
+      const row = memory.get(id);
+      if (!row) return null;
+      const next = apply(row);
+      memory.set(id, next);
+      announceUpdate(next);
+      return withLiveHandle(next);
+    },
+  );
+}
+
 /** 특정 최근 문서를 제거한다. */
 export async function removeRecentDoc(id: string): Promise<void> {
   memory.delete(id);
@@ -267,6 +384,7 @@ export async function removeRecentDoc(id: string): Promise<void> {
     async (db) => deleteRow(db, id),
     async () => {},
   );
+  announce({ removed: [id] });
 }
 
 /** 최근 문서 목록 전체 삭제. */
@@ -281,4 +399,5 @@ export async function clearRecentDocs(): Promise<void> {
     },
     async () => {},
   );
+  announce({ cleared: true });
 }

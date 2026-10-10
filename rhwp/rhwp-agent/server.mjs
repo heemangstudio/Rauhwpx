@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import spawn from 'cross-spawn';
 import { WebSocketServer } from 'ws';
 import {
+  canResumeClaudeSession,
   createClaudeSession,
   flushClaudeCredentialMirrors,
   prepareClaudeHome,
@@ -18,7 +19,16 @@ import {
   flushCodexCredentialMirror,
   prepareCodexHome,
 } from './agents/codex.mjs';
-import { createPiSession } from './agents/pi.mjs';
+import { IDLE_PROCESS_RELEASE_MS } from './agents/backend.mjs';
+import { canResumePiSession, createPiSession } from './agents/pi.mjs';
+import { canResumeCodexThread } from './agents/codex-app-server.mjs';
+import {
+  handoffBudget,
+  handoffTokenCap,
+  normalizeChatHistory,
+  prepareHandoff,
+  resolveContextWindow,
+} from './chat-handoff.mjs';
 import { generateChatTitle } from './agents/title.mjs';
 import {
   CHECKPOINT_TITLE_OVERALL_TIMEOUT_MS,
@@ -29,10 +39,11 @@ import {
 } from './agents/checkpoint-title.mjs';
 import { SkillRegistry } from './skills.mjs';
 import { WritingStyleStore, assertWritingStyleAppendCompatible } from './writing-style.mjs';
+import { importRebrandedHubData } from './rebrand-import.mjs';
 import { AgentInstructionsStore } from './agent-instructions.mjs';
 import { calibrateWritingStyle } from './style-calibrator.mjs';
 import { buildWritingStyleCatalog, resolveWritingStyleSelection } from './writing-style-catalog.mjs';
-import { filterToolDefinitions, TOOL_DEFINITIONS } from './tools.mjs';
+import { assertCellArgsPlacement, filterToolDefinitions, TOOL_DEFINITIONS } from './tools.mjs';
 import { resolveRenderSavePath, writeRenderPng } from './render-save.mjs';
 import { replayMissedTurnEnd } from './turn-outcome-replay.mjs';
 import { createStudioFrameCoalescer } from './studio-frame-coalescer.mjs';
@@ -46,7 +57,7 @@ import {
 } from './planning-state.mjs';
 import { DownloadManager, fetchPublic } from './download-manager.mjs';
 import { DocumentSnapshotManager } from './document-snapshot-manager.mjs';
-import { ArtifactStore } from './artifact-store.mjs';
+import { ArtifactStore, defaultGeneratedArtifactRoot } from './artifact-store.mjs';
 import { BrowserbaseFleet, normalizeBrowserbaseOverride, validateBrowserbaseCredentials } from './browserbase-session.mjs';
 import { createProviderHealth } from './provider-health.mjs';
 import { createUsageStore } from './usage-store.mjs';
@@ -95,12 +106,19 @@ import {
   validateUserQuestionAnswers,
 } from './user-question.mjs';
 import {
+  createChatPermissionRequest,
+  isRequestPermissionTool,
+  normalizeChatPermissionGrants,
+  normalizeChatPermissionRequest,
+} from './chat-permissions.mjs';
+import {
   activeDocumentIdentity,
   addActiveDocumentContext,
   assertMessageScope,
   attachActiveDocumentIdentity,
   liveDocumentBlock,
   normalizeDocumentSnapshot,
+  normalizeStableScopeId,
   referenceScopesForSession,
   resolveSessionIdentity,
 } from './reference-session.mjs';
@@ -119,7 +137,7 @@ import {
   claimCopyLayoutSnapshot,
   COPY_LAYOUT_MAX_ITERATIONS,
   copyLayoutPhaseIndex,
-  defaultTemplateName,
+  registerCopyLayoutArtifact,
   releaseCopyLayoutPublication,
   releaseCopyLayoutSnapshot,
   taskProgressForJob,
@@ -170,12 +188,16 @@ const RUNTIME_ROOT = process.env.RHWP_RUNTIME_DIR
   ? path.resolve(process.env.RHWP_RUNTIME_DIR)
   : null;
 const RECORDS_ROOT = path.join(WORK_ROOT, 'sessions');
+// 작업 폴더는 실행마다 새로 만들고 지운다. 생성 문서는 앱 데이터 폴더에 남겨
+// 허브나 앱을 다시 켜도 채팅의 문서 카드가 열리게 한다.
+const GENERATED_ARTIFACTS_ROOT = defaultGeneratedArtifactRoot();
 await fs.mkdir(RECORDS_ROOT, { recursive: true, mode: 0o700 });
 ensureCredentialRetentionRootSync(WORK_ROOT);
 const TOOL_TRACE_PATH = configureToolTrace(WORK_ROOT);
 let hubPort = REQUESTED_PORT;
 const STUDIO_TOOL_TIMEOUT_MS = 30_000;
 const MAX_CHAT_MESSAGE_CHARS = 128_000;
+const MAX_USER_MESSAGE_RECEIPTS = 128;
 const PLAN_CHANGE_TEXT_LIMITS = Object.freeze({
   planId: 256,
   promptOverride: MAX_CHAT_MESSAGE_CHARS,
@@ -209,6 +231,10 @@ const ORPHAN_HARD_SHUTDOWN_MS = Number.isSafeInteger(configuredOrphanHardShutdow
   && configuredOrphanHardShutdownMs >= 100
   ? Math.max(configuredOrphanHardShutdownMs, ORPHAN_IDLE_SHUTDOWN_MS)
   : 30 * 60 * 1000;
+const configuredAgentIdleMs = Number(process.env.RHWP_AGENT_IDLE_MS);
+const AGENT_IDLE_RELEASE_MS = Number.isSafeInteger(configuredAgentIdleMs) && configuredAgentIdleMs >= 100
+  ? configuredAgentIdleMs
+  : IDLE_PROCESS_RELEASE_MS;
 const toolDefinitionsByName = new Map(TOOL_DEFINITIONS.map((definition) => [definition.name, definition]));
 const copyLayoutWorkerTools = new Set(
   filterToolDefinitions('copy-layout-worker').map((definition) => definition.name),
@@ -245,6 +271,13 @@ function findSourceCodexAuthPath() {
   return undefined;
 }
 let sourceCodexAuthPath = findSourceCodexAuthPath();
+// 2.0.11 이 hamaeditor 폴더에 남긴 데이터를 저장소를 열기 전에 정본 폴더로 합친다.
+// 테스트 허브는 사용자의 실제 데이터 폴더를 건드리지 않는다.
+if (process.env.NODE_ENV !== 'test' || process.env.RHWP_REBRAND_IMPORT === '1') {
+  await importRebrandedHubData({ log }).catch((error) => {
+    log(`2.0.11 data import failed: ${error?.message ?? error}`);
+  });
+}
 const writingStyleStore = await new WritingStyleStore().init();
 const agentInstructionsStore = await new AgentInstructionsStore().init();
 const skillRegistry = await new SkillRegistry({ bundledRoot: BUNDLED_SKILLS, writingStyleStore }).init();
@@ -256,7 +289,9 @@ if (process.env.RHWP_AGENT_MODE === 'production' && !secretStore.available) {
     code: 'HUB_SECRET_BROKER_REQUIRED',
   });
 }
-const piManager = await createPiManager({ rootDir: PI_ROOT, openRouter, secretStore }).init();
+const piManager = await createPiManager({
+  rootDir: PI_ROOT, openRouter, secretStore, routingSort: process.env.RHWP_PI_ROUTING_SORT,
+}).init();
 const authRuns = new AuthRunRegistry();
 let npmPrefixMutationQueue = Promise.resolve();
 function mutateSharedNpmPrefix(operation) {
@@ -316,7 +351,7 @@ let openRouterCreditsKey = null;
 
 /**
  * 준비 줄 뒤로 미룬 기동 작업: Claude 자격 증명 위치(Keychain), CLI 상태(--version),
- * pi 확장/스킬 동기화(fs.cp). 한 번만 돌고 실패해도 거절하지 않는다. 세션 시작처럼
+ * Pi 홈 설정 동기화. 한 번만 돌고 실패해도 거절하지 않는다. 세션 시작처럼
  * 결과에 기대는 경로는 이 약속을 기다린다.
  */
 let bootWorkPromise = null;
@@ -328,7 +363,7 @@ function ensureBootWork() {
     ...['claude', 'codex'].map((agent) => cliSetup.status(agent).then((status) => {
       if (cliSetupStatus[agent] === provisionalCliSetup[agent]) cliSetupStatus[agent] = status;
     }).catch((error) => log(`${agent} setup status failed: ${error?.message ?? error}`))),
-    // 저장소가 갱신되면 확장/스킬도 따라와야 한다 — 실패해도 허브는 그대로 뜬다.
+    // Pi 홈 설정을 다시 쓰고 예전 허브가 남긴 사본을 치운다 — 실패해도 허브는 그대로 뜬다.
     piStatus.installed
       ? piManager.syncAssets().catch((error) => log(`pi asset sync failed: ${error?.message ?? error}`))
       : null,
@@ -480,8 +515,12 @@ const sessions = new HubSessionRegistry({
       piSubagents: new PiSubagentCapabilityRegistry(),
       studioMessageQueue: Promise.resolve(),
       agentSession: null,
+      sessionDisposalPromise: null,
+      referenceStagingThreadId: null,
       processCleanupUncertain: false,
       pendingReferenceMessage: null,
+      userMessageReceipts: new Map(),
+      settledUserMessages: new WeakSet(),
       nextCapabilityEpoch: 1,
       pendingCalls: new Map(),
       toolTelemetry: null,
@@ -489,9 +528,15 @@ const sessions = new HubSessionRegistry({
       suppressedUserQuestionCallIds: new Set(),
       pendingUserQuestionScopes: [],
       userQuestionResponseReceipts: new Map(),
+      pendingChatPermissionRequest: null,
+      pendingChatPermissionScopes: [],
+      suppressedChatPermissionCallIds: new Set(),
+      chatPermissionResponseReceipts: new Map(),
       nextHubId: 1,
       sessionGeneration: 0,
       missedTurnEnd: null,
+      // 기록 전달이 불확실해진 네이티브 세션 (`${agent}:${sessionId}`) — 다시 이어 받지 않는다.
+      untrustedNativeSessions: new Set(),
       styleCalibration: null,
       pendingInstructionDraft: null,
       auxiliaryProcesses: new Set(),
@@ -506,7 +551,12 @@ const sessions = new HubSessionRegistry({
       browserbaseSession: new BrowserbaseFleet({ log }),
       downloadManager,
       documentSnapshotManager,
-      artifactStore: new ArtifactStore({ rootDir: workDir, trustedReadRoots: hubReadOnlyRoots }),
+      artifactStore: new ArtifactStore({
+        rootDir: workDir,
+        trustedReadRoots: hubReadOnlyRoots,
+        persistDir: GENERATED_ARTIFACTS_ROOT,
+        onPersistError: (error) => log(`generated artifact persistence failed: ${error?.message ?? error}`),
+      }),
       recordRoot,
       workDir,
       hubStorageDir,
@@ -701,6 +751,16 @@ const SESSION_FACTORIES = {
   claude: createClaudeSession,
   codex: createCodexSession,
   pi: createPiSession,
+};
+
+/**
+ * 네이티브 재개 커서가 공급자 저장소에 아직 있는지 디스크로 확인한다 — 백엔드를 만들기 전에
+ * 대화 기록을 delta 로 줄지 전체로 줄지 정해야 해서 각 백엔드의 canResume 과 같은 함수를 쓴다.
+ */
+const SESSION_RESUME_PROBES = {
+  claude: canResumeClaudeSession,
+  codex: canResumeCodexThread,
+  pi: canResumePiSession,
 };
 
 function unknownAgentError(agent) {
@@ -1143,6 +1203,135 @@ function pendingUserQuestionSnapshot(record) {
     : null;
 }
 
+function pendingChatPermissionSnapshot(record) {
+  const request = record.pendingChatPermissionRequest?.request;
+  if (!request) return null;
+  try {
+    normalizeChatPermissionRequest(request);
+    return structuredClone(request);
+  } catch {
+    return null;
+  }
+}
+
+function settleChatPermissionRequest(record, outcome) {
+  const pending = record.pendingChatPermissionRequest;
+  if (!pending) return false;
+  record.pendingChatPermissionRequest = null;
+  const { requestId, threadId, documentId } = pending.request;
+  sendJson(record.studioSocket, {
+    v: 1, type: 'chat-permission-resolved', requestId, threadId, documentId,
+    outcome,
+    grants: normalizeChatPermissionGrants(record.agentSession?.chatPermissionGrants),
+    capabilityEpoch: record.agentSession?.planning.capabilityEpoch,
+  });
+  return true;
+}
+
+function requestChatPermission(record, args, generation) {
+  const activeSession = record.agentSession;
+  if (!activeSession || activeSession.generation !== generation || activeSession.status !== 'running'
+    || !activeSession.turnId || activeSession.providerTurnStarted !== true) {
+    throw workflowError('NO_ACTIVE_TURN', 'Permission requests require the active root turn');
+  }
+  const normalized = normalizeChatPermissionRequest(args);
+  if (activeSession.chatPermissionGrants.includes(normalized.capability)) {
+    return { status: 'granted', capability: normalized.capability, scope: 'chat', grants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants) };
+  }
+  const pending = record.pendingChatPermissionRequest;
+  if (pending) {
+    if (pending.request.capability !== normalized.capability || pending.request.reason !== normalized.reason) {
+      throw workflowError('INTERACTION_ALREADY_PENDING', 'Another permission request is waiting for the user');
+    }
+    return { status: 'pending', requestId: pending.request.requestId, capability: normalized.capability, scope: 'chat' };
+  }
+  if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
+    throw workflowError('NO_STUDIO', 'Studio must be connected to request a chat permission');
+  }
+  const request = createChatPermissionRequest(normalized, activeSession);
+  record.pendingChatPermissionRequest = {
+    request, session: activeSession, generation,
+    providerCapabilityResource: activeSession.providerCapabilityResource,
+    capabilityEpoch: activeSession.planning.capabilityEpoch,
+  };
+  if (!sendJson(record.studioSocket, { v: 1, type: 'chat-permission-requested', request: structuredClone(request) })) {
+    settleChatPermissionRequest(record, { status: 'expired', reason: 'studio-disconnected' });
+    throw workflowError('NO_STUDIO', 'Studio disconnected before the permission could be presented');
+  }
+  return { status: 'pending', requestId: request.requestId, capability: normalized.capability, scope: 'chat' };
+}
+
+async function answerChatPermission(record, sock, msg) {
+  const requestId = typeof msg.requestId === 'string' ? msg.requestId : '';
+  const responseId = typeof msg.responseId === 'string' ? msg.responseId : '';
+  const result = (ok, error = null) => ({
+    v: 1, type: 'chat-permission-response-result', requestId, responseId, ok,
+    ...(error ? { code: error.code ?? 'CHAT_PERMISSION_FAILED', message: String(error.message ?? error) } : {}),
+  });
+  try {
+    if (!requestId || !responseId || requestId.length > 256 || responseId.length > 256
+      || !['grant', 'deny'].includes(msg.decision)) {
+      throw workflowError('INVALID_CHAT_PERMISSION_RESPONSE', 'Provide requestId, responseId and grant or deny');
+    }
+    const fingerprint = JSON.stringify([requestId, msg.threadId, msg.documentId, msg.decision]);
+    const receipt = record.chatPermissionResponseReceipts.get(responseId);
+    if (receipt) {
+      if (receipt.fingerprint !== fingerprint) throw workflowError('RESPONSE_ID_REUSED', 'responseId already belongs to another permission response');
+      sendJson(sock, receipt.frame);
+      return;
+    }
+    const pending = record.pendingChatPermissionRequest;
+    const activeSession = record.agentSession;
+    if (!pending || pending.request.requestId !== requestId) {
+      throw workflowError('CHAT_PERMISSION_NOT_FOUND', 'This permission request is no longer pending');
+    }
+    normalizeChatPermissionRequest(pending.request);
+    if (!activeSession || pending.session !== activeSession || pending.generation !== activeSession.generation
+      || pending.providerCapabilityResource !== activeSession.providerCapabilityResource
+      || pending.capabilityEpoch !== activeSession.planning.capabilityEpoch
+      || pending.request.threadId !== msg.threadId || pending.request.documentId !== msg.documentId
+      || activeSession.threadId !== msg.threadId || activeSession.documentId !== msg.documentId) {
+      throw workflowError('REQUEST_INVALIDATED', 'The permission request no longer belongs to this chat and document');
+    }
+    if (msg.decision === 'grant') {
+      const grants = normalizeChatPermissionGrants([...activeSession.chatPermissionGrants, pending.request.capability]);
+      {
+        if (activeSession.status !== 'idle') throw workflowError('AGENT_BUSY', 'Wait for the agent turn to finish before granting this chat permission');
+        requireWorkflowSwitchBackend(activeSession);
+        const previousGrants = [...activeSession.chatPermissionGrants];
+        try {
+          await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: grants });
+          if (record.agentSession !== activeSession || record.pendingChatPermissionRequest !== pending) {
+            throw workflowError('REQUEST_INVALIDATED', 'The chat changed while the permission was being applied');
+          }
+        } catch (error) {
+          // 중지는 전환 대기열을 건너뛴다. 취소된 전환이 같은 공급자에 권한을 남기지 않게 되돌린다.
+          if (record.agentSession === activeSession) {
+            try {
+              await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: previousGrants });
+            } catch (rollbackError) {
+              log(`chat permission rollback failed: ${rollbackError?.message ?? rollbackError}`);
+              await disposeSession(record);
+            }
+          }
+          throw error;
+        }
+      }
+      activeSession.chatPermissionGrants.splice(0, activeSession.chatPermissionGrants.length, ...grants);
+    }
+    const frame = result(true);
+    record.chatPermissionResponseReceipts.set(responseId, { fingerprint, frame });
+    // 성공한 응답만 중복 확인에 남긴다. 바쁜 공급자·실패한 전환은 같은 요청으로 다시 시도할 수 있다.
+    if (record.chatPermissionResponseReceipts.size > 32) {
+      record.chatPermissionResponseReceipts.delete(record.chatPermissionResponseReceipts.keys().next().value);
+    }
+    sendJson(sock, frame);
+    settleChatPermissionRequest(record, { status: msg.decision === 'grant' ? 'granted' : 'denied', ...(msg.decision === 'deny' ? { reason: 'user-denied' } : {}) });
+  } catch (error) {
+    sendJson(sock, result(false, error));
+  }
+}
+
 function userQuestionOutcomeForTurnEnd(event) {
   if (event.stopReason === 'interrupted') return { status: 'cancelled', reason: 'user-stop' };
   if (event.stopReason === 'failed' || event.stopReason === 'exited' || event.errorMessage) {
@@ -1169,6 +1358,7 @@ function settleUserQuestion(record, outcome) {
 }
 
 function beginAgentTurn(record, activeSession) {
+  settleChatPermissionRequest(record, { status: 'expired', reason: 'request-invalidated' });
   if (record.pendingUserQuestion) {
     settleUserQuestion(record, { status: 'expired', reason: 'request-invalidated' });
   }
@@ -1305,6 +1495,14 @@ function currentPiSubagentForSocket(record, sock) {
 
 function settleAgentTurn(record, activeSession, event) {
   const settledTurnId = activeSession.turnId;
+  const succeeded = ['completed', 'end_turn', 'success'].includes(event.stopReason) && !event.errorMessage;
+  // A backend may finish synchronously inside sendUserMessage. Successful
+  // dispatch still gets its receipt after that call returns.
+  if (!succeeded) {
+    rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'The turn ended before accepting the message', {
+      session: activeSession, turnId: settledTurnId,
+    });
+  }
   if (activeSession.planning.phase === 'implementing' && activeSession.planExecutionTurnId === settledTurnId) {
     activeSession.planExecutionTurnSucceeded = ['completed', 'end_turn', 'success'].includes(event.stopReason) && !event.errorMessage;
     activeSession.planning.settleExecution(event.stopReason === 'interrupted' ? 'interrupted'
@@ -1312,6 +1510,7 @@ function settleAgentTurn(record, activeSession, event) {
     sendJson(record.studioSocket, { v: 1, type: 'plan-progress', ...activeSession.planning.snapshot() });
   }
   settleUserQuestion(record, userQuestionOutcomeForTurnEnd(event));
+  if (!succeeded) settleChatPermissionRequest(record, { status: 'expired', reason: event.stopReason === 'interrupted' ? 'user-stop' : 'provider-disconnected' });
   failPendingProviderCallsForTurn(record, activeSession, settledTurnId);
   retireProviderSockets(record, activeSession, { turnId: settledTurnId });
   retirePiSubagentsForTurn(record, activeSession);
@@ -1434,6 +1633,22 @@ async function waitForUserQuestionScopes(record, agent, questions, generation) {
     matches = matchingUserQuestionScopes(record, agent, questions);
   }
   return matches;
+}
+
+async function consumeChatPermissionScope(record, agent, args, generation) {
+  const expected = JSON.stringify(normalizeChatPermissionRequest(args));
+  const matchingScopes = () => record.pendingChatPermissionScopes
+    .map((scope, index) => ({ scope, index }))
+    .filter(({ scope }) => scope.agent === agent && scope.request && JSON.stringify(scope.request) === expected);
+  const deadline = Date.now() + USER_QUESTION_SCOPE_WAIT_MS;
+  let matches = matchingScopes();
+  while (!matches.length && record.agentSession?.generation === generation && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(20, deadline - Date.now())));
+    matches = matchingScopes();
+  }
+  if (matches.length !== 1) throw workflowError('CALLER_SCOPE_UNKNOWN', 'The provider did not establish a unique root permission request');
+  const [scope] = record.pendingChatPermissionScopes.splice(matches[0].index, 1);
+  if (scope.parentTaskId) throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request permissions');
 }
 
 function userQuestionAnswerFrame({ interactionId, responseId, ok, code, message }) {
@@ -1774,9 +1989,33 @@ function sessionInfo(record) {
       turnId: activeSession.turnId,
       activeTemplateId: activeSession.activeTemplateId,
       pendingUserQuestion: pendingUserQuestionSnapshot(record),
+      pendingChatPermissionRequest: pendingChatPermissionSnapshot(record),
+      chatPermissionGrants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants),
+      resumed: activeSession.resumed === true,
+      compaction: compactionSupportOf(activeSession),
+      // 다시 붙은 Studio 가 "맥락 압축 중…" 을 이어 보이거나 지운다.
+      compactionInFlight: compactionInFlightOf(activeSession),
+      contextUsage: activeSession.contextUsage ? { ...activeSession.contextUsage } : null,
       ...activeSession.planning.snapshot(),
     }
     : null;
+}
+
+/** 수락했지만 공급자 턴이 아직 시작되지 않은 수동 압축도 진행 중으로 본다. */
+function compactionInFlightOf(activeSession) {
+  if (activeSession.compaction) return { ...activeSession.compaction };
+  const manual = activeSession.manualCompaction;
+  if (!manual || manual.settled) return null;
+  return {
+    compactionId: manual.compactionId,
+    trigger: 'manual',
+    ...(manual.beforeTokens !== undefined ? { beforeTokens: manual.beforeTokens } : {}),
+  };
+}
+
+function compactionSupportOf(activeSession) {
+  const support = activeSession?.backend?.compactionSupport;
+  return support === 'manual' || support === 'auto-only' ? support : 'none';
 }
 
 function artifactDownloadDescriptor(record, artifactId, artifact) {
@@ -1802,6 +2041,35 @@ function artifactDownloadDescriptor(record, artifactId, artifact) {
     checksum: artifact.checksum,
     downloadUrl: downloadUrl.href,
   };
+}
+
+/**
+ * 대화에 남은 카드의 artifactId로 지금 허브 세션의 다운로드 주소를 새로 만든다.
+ * 예전 주소는 허브 포트·세션·토큰이 바뀌면 쓸 수 없다.
+ */
+async function freshArtifactDescriptor(record, artifactId, threadId) {
+  const id = String(artifactId ?? '');
+  const metadata = await record.artifactStore.describe(id);
+  if (!metadata.owner?.threadId || metadata.owner.threadId !== threadId) {
+    throw workflowError('ARTIFACT_NOT_FOUND', 'Generated artifact is unavailable or expired');
+  }
+  return artifactDownloadDescriptor(record, id, metadata);
+}
+
+async function registerCopyLayoutTemplate(record, args) {
+  const job = args.jobId ? record.templateJobs.get(args.jobId) ?? null : null;
+  const outcome = await registerCopyLayoutArtifact({
+    artifactStore: record.artifactStore,
+    templateStore,
+    threadId: record.agentSession?.threadId ?? null,
+    args,
+    job,
+  });
+  if (!outcome.alreadyRegistered) {
+    if (job) job.registeredTemplateId = outcome.template.id;
+    broadcastTemplateCatalog({ type: 'added', template: outcome.template });
+  }
+  return outcome;
 }
 
 function sendTemplateJobEvent(record, event) {
@@ -2261,6 +2529,110 @@ function createTemplateJob(record, activeSession, binding) {
 
 const TRACED_PROVIDER_EVENTS = new Set(['turn-start', 'turn-end', 'tool-call', 'tool-result', 'task-start', 'task-end']);
 
+const FAILED_STOP_REASONS = new Set(['interrupted', 'failed', 'exited', 'error', 'cancelled']);
+
+/** 공급자 세션이 이 턴을 정상으로 마쳤는가 — 커서 저장과 부트스트랩 기록 비우기의 기준. */
+function providerTurnSucceeded(evt) {
+  const reason = typeof evt?.stopReason === 'string' ? evt.stopReason : '';
+  return !evt?.errorMessage && reason !== '' && !FAILED_STOP_REASONS.has(reason) && !reason.startsWith('error');
+}
+
+function compactionEventBase(agent, compaction) {
+  return {
+    type: 'compaction',
+    agent,
+    compactionId: compaction.compactionId,
+    trigger: compaction.trigger,
+    ...(compaction.beforeTokens !== undefined ? { beforeTokens: compaction.beforeTokens } : {}),
+  };
+}
+
+/**
+ * 공급자 압축 이벤트를 Studio 계약으로 고른다. 수동 압축 턴의 이벤트는 허브가 정한 id/trigger 로
+ * 바꾸고 started 와 종료를 각각 한 번만 내보낸다. 자동 압축은 진행 상태만 기록하고 그대로 흘린다.
+ * @returns {object[]}
+ */
+function routeCompactionEvent(activeSession, evt) {
+  const manual = activeSession.manualCompaction;
+  if (manual) {
+    if (manual.settled) return [];
+    const event = { ...evt, compactionId: manual.compactionId, trigger: 'manual' };
+    if (event.beforeTokens === undefined && manual.beforeTokens !== undefined) event.beforeTokens = manual.beforeTokens;
+    const out = [];
+    if (event.phase === 'started') {
+      if (manual.started) return [];
+    } else if (!manual.started) {
+      out.push({ ...compactionEventBase(evt.agent, { ...manual, trigger: 'manual' }), phase: 'started' });
+    }
+    if (event.phase === 'started' || !manual.started) {
+      manual.started = true;
+      activeSession.compaction = {
+        compactionId: manual.compactionId,
+        trigger: 'manual',
+        ...(event.beforeTokens !== undefined ? { beforeTokens: event.beforeTokens } : {}),
+      };
+    }
+    if (event.phase !== 'started') {
+      manual.settled = true;
+      activeSession.compaction = null;
+    }
+    out.push(event);
+    return out;
+  }
+  if (evt.phase === 'started') {
+    activeSession.compaction = {
+      compactionId: evt.compactionId,
+      trigger: evt.trigger === 'manual' ? 'manual' : 'auto',
+      ...(evt.beforeTokens !== undefined ? { beforeTokens: evt.beforeTokens } : {}),
+    };
+  } else if (activeSession.compaction?.compactionId === evt.compactionId) {
+    activeSession.compaction = null;
+  }
+  return [evt];
+}
+
+/**
+ * 턴이 끝났는데 끝나지 않은 압축이 있으면 허브가 종료를 만든다: 수동 압축은 started 와 종료를
+ * 정확히 한 번씩 보장하고, 공급자가 완료 신호를 안 줬어도 턴이 성공했으면 completed 로 닫는다.
+ * @returns {object[]}
+ */
+function settleCompactionAtTurnEnd(activeSession, succeeded, evt) {
+  const out = [];
+  const message = typeof evt?.errorMessage === 'string' && evt.errorMessage
+    ? evt.errorMessage.slice(0, 500)
+    : evt?.stopReason === 'interrupted' ? '맥락 압축이 중단되었습니다.' : '맥락 압축에 실패했습니다.';
+  const terminal = succeeded ? { phase: 'completed' } : { phase: 'failed', message };
+  const manual = activeSession.manualCompaction;
+  activeSession.manualCompaction = null;
+  if (manual && !manual.settled) {
+    const base = compactionEventBase(activeSession.agent, { ...manual, trigger: 'manual' });
+    if (!manual.started) out.push({ ...base, phase: 'started' });
+    out.push({ ...base, ...terminal });
+  } else if (activeSession.compaction) {
+    out.push({ ...compactionEventBase(activeSession.agent, activeSession.compaction), ...terminal });
+  }
+  activeSession.compaction = null;
+  return out;
+}
+
+function sendCompactionEvents(record, events, turnId) {
+  const activeSession = record.agentSession;
+  for (const event of events) {
+    // 압축 전 사용량을 재접속 스냅샷과 다음 압축의 beforeTokens 로 다시 쓰지 않는다.
+    // Claude 의 post_tokens 는 시스템 프롬프트·도구 정의를 빼고 세므로 다음 호출을 기다린다.
+    if (event.phase === 'completed' && activeSession?.contextUsage) {
+      activeSession.contextUsage = activeSession.agent !== 'claude' && event.afterTokens !== undefined
+        ? { ...activeSession.contextUsage, usedTokens: event.afterTokens }
+        : null;
+    }
+    sendJson(record.studioSocket, {
+      v: 1,
+      type: 'agent-event',
+      event: turnId ? { ...event, turnId } : event,
+    });
+  }
+}
+
 function makeBackendEventHandler(record, generation) {
   return (evt) => {
     const activeSession = record.agentSession;
@@ -2279,6 +2651,20 @@ function makeBackendEventHandler(record, generation) {
         ...(evt.type === 'tool-result' ? { ok: evt.ok !== false } : {}),
         ...(evt.type === 'turn-end' && evt.status ? { status: String(evt.status) } : {}),
       });
+    }
+    if (evt.type === 'tool-call' && isRequestPermissionTool(evt.tool)) {
+      if (evt.callId) record.suppressedChatPermissionCallIds.add(evt.callId);
+      let request = null;
+      try { request = normalizeChatPermissionRequest(JSON.parse(evt.argsJson ?? '{}')); } catch {}
+      record.pendingChatPermissionScopes.push({ agent: evt.agent, callId: evt.callId, parentTaskId: evt.parentTaskId ?? null, request });
+      if (record.pendingChatPermissionScopes.length > 8) record.pendingChatPermissionScopes.splice(0, record.pendingChatPermissionScopes.length - 8);
+      return;
+    }
+    if (evt.type === 'tool-result' && record.suppressedChatPermissionCallIds.has(evt.callId)) {
+      record.suppressedChatPermissionCallIds.delete(evt.callId);
+      const index = record.pendingChatPermissionScopes.findIndex((scope) => scope.callId === evt.callId);
+      if (index >= 0) record.pendingChatPermissionScopes.splice(index, 1);
+      return;
     }
     // The fallback question tool is a first-class blocking interaction. Keep
     // its provider bookkeeping out of the generic tool activity transcript;
@@ -2315,6 +2701,16 @@ function makeBackendEventHandler(record, generation) {
       return;
     }
     if (evt.type === 'session-info' && evt.sessionId) activeSession.sessionId = evt.sessionId;
+    if (evt.type === 'context-usage') {
+      activeSession.contextUsage = {
+        usedTokens: evt.usedTokens,
+        ...(evt.maxTokens ? { maxTokens: evt.maxTokens } : {}),
+      };
+    }
+    if (evt.type === 'compaction') {
+      sendCompactionEvents(record, routeCompactionEvent(activeSession, evt), activeSession.turnId);
+      return;
+    }
     if (evt.type === 'usage') {
       usageStore.record({
         agent: activeSession.agent, model: evt.model, costUsd: evt.costUsd, ...(evt.usage ?? {}),
@@ -2332,19 +2728,65 @@ function makeBackendEventHandler(record, generation) {
     }
     const studioEvent = providerTurnId
       ? { ...evt, turnId: providerTurnId }
-      : evt;
+      : { ...evt };
     if (evt.type === 'turn-start') record.missedTurnEnd = null;
     if (evt.type === 'turn-end') {
+      const succeeded = providerTurnSucceeded(evt);
+      const compactionTurn = Boolean(activeSession.manualCompaction);
+      delete studioEvent.handoffUncertain;
+      sendCompactionEvents(record, settleCompactionAtTurnEnd(activeSession, succeeded, evt), providerTurnId);
+      // 압축 턴은 기록을 싣지도, 비우지도 않는다 — 다음 보통 턴이 그대로 전한다.
+      const delivery = compactionTurn ? null : activeSession.handoffDelivery;
+      if (!compactionTurn) activeSession.handoffDelivery = null;
+      if (succeeded) {
+        activeSession.nativeTurnSucceeded = true;
+        // 공급자가 기록을 받아 저장했다 — 이제야 부트스트랩 기록을 비운다.
+        if (!compactionTurn) {
+          activeSession.bootstrapHistory = [];
+          activeSession.fallbackHistory = [];
+          activeSession.replaceSessionPending = false;
+        }
+        const providerSessionId = activeSession.backend.getSessionId?.();
+        if (typeof providerSessionId === 'string' && providerSessionId) studioEvent.providerSessionId = providerSessionId;
+      }
+      if (evt.resumeLost || activeSession.reportResumeLost) {
+        studioEvent.resumeLost = true;
+        activeSession.reportResumeLost = false;
+        activeSession.resumed = false;
+        // 이 턴이 실패했다면 다음 턴은 전체 기록으로 새 세션을 연다.
+        if (!succeeded) activeSession.bootstrapHistory = activeSession.fallbackHistory;
+      }
+      // 기록을 실은 턴이 성공하지 못했고 공급자가 그 턴을 받았을 수 있다 → 전달 불확실.
+      const carried = delivery && (delivery.primary || (evt.resumeLost && delivery.fallback));
+      if (!succeeded && carried && (activeSession.providerTurnStarted || evt.handoffUncertain === true)) {
+        markHandoffUncertain(record, activeSession, delivery, evt.stopReason);
+      }
       settleAgentTurn(record, activeSession, evt);
       // 서브에이전트 브라우저는 턴과 함께 끝난다 — 메인 브라우저만 다음 턴까지 산다.
       record.browserbaseSession.cleanupExtras('turn ended');
     }
-    const delivered = sendAgentEvent(record, studioEvent);
+    // Opt-in sends acknowledge before Studio inserts the user bubble. A
+    // synchronous turn-start inside sendUserMessage must follow that receipt.
+    const pendingMessage = [...record.userMessageReceipts.values()].find((receipt) => (
+      receipt.message && receipt.session === activeSession && receipt.turnId === providerTurnId
+    ));
+    const delivered = pendingMessage
+      ? (pendingMessage.events ??= [], pendingMessage.events.push(studioEvent), true)
+      : sendAgentEvent(record, studioEvent);
+    if (evt.type === 'turn-start' && activeSession.manualCompaction && !activeSession.manualCompaction.started) {
+      // 수동 압축의 started 는 공급자 턴이 실제로 시작될 때 한 번 낸다.
+      sendCompactionEvents(record, routeCompactionEvent(activeSession, {
+        type: 'compaction', agent: activeSession.agent, compactionId: activeSession.manualCompaction.compactionId,
+        phase: 'started', trigger: 'manual',
+      }), providerTurnId);
+    }
     if (evt.type === 'turn-end' && !delivered) record.missedTurnEnd = studioEvent;
     if (evt.type === 'turn-end') {
       record.userQuestionResponseReceipts.clear();
       record.suppressedUserQuestionCallIds.clear();
       record.pendingUserQuestionScopes.length = 0;
+      record.suppressedChatPermissionCallIds.clear();
+      record.pendingChatPermissionScopes.length = 0;
     }
     if (evt.type === 'turn-end') drainTemplateCompletion(record);
     if (evt.type === 'turn-end') drainPlanningDocumentSaved(record);
@@ -2361,7 +2803,11 @@ function sendAgentEvent(record, event) {
 
 function disposeSession(record) {
   record.pendingReferenceMessage = null;
+  rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'The chat stopped before accepting the message');
   record.pendingDocumentSaved = null;
+  // 채팅 중지·창 닫기·허브 종료가 겹치면 같은 공급자 종료를 기다린다.
+  // agentSession 을 비웠다고 아직 살아 있는 프로세스의 작업 폴더를 지우면 안 된다.
+  if (record.sessionDisposalPromise) return record.sessionDisposalPromise;
   const activeSession = record.agentSession;
   if (!activeSession) {
     retireAllPiSubagents(record);
@@ -2371,6 +2817,10 @@ function disposeSession(record) {
   const disposedTurnId = activeSession.turnId;
   const agent = activeSession.agent;
   settleUserQuestion(record, { status: 'expired', reason: 'request-invalidated' });
+  settleChatPermissionRequest(record, { status: 'expired', reason: 'request-invalidated' });
+  record.chatPermissionResponseReceipts.clear();
+  record.suppressedChatPermissionCallIds.clear();
+  record.pendingChatPermissionScopes.length = 0;
   record.userQuestionResponseReceipts.clear();
   record.suppressedUserQuestionCallIds.clear();
   record.pendingUserQuestionScopes.length = 0;
@@ -2399,6 +2849,7 @@ function disposeSession(record) {
     browserbaseExit = Promise.resolve(false);
   }
   if (wasRunning) {
+    sendCompactionEvents(record, settleCompactionAtTurnEnd(activeSession, false, { stopReason: 'interrupted' }), disposedTurnId);
     const evt = {
       type: 'turn-end',
       agent,
@@ -2409,7 +2860,7 @@ function disposeSession(record) {
       record.missedTurnEnd = evt;
     }
   }
-  return Promise.allSettled([backendExit, browserbaseExit]).then(([backend, browserbase]) => {
+  record.sessionDisposalPromise = Promise.allSettled([backendExit, browserbaseExit]).then(([backend, browserbase]) => {
     const backendCleaned = backend.status === 'fulfilled' && backend.value !== false;
     const browserbaseCleaned = browserbase.status === 'fulfilled' && browserbase.value !== false;
     if (backend.status === 'rejected') {
@@ -2424,7 +2875,10 @@ function disposeSession(record) {
     if (!browserbaseCleaned) retainedUncertainBrowserbaseSessions.add(record.browserbaseSession);
     retainUncertainProcessCleanup(record.recordRoot);
     return false;
+  }).finally(() => {
+    record.sessionDisposalPromise = null;
   });
+  return record.sessionDisposalPromise;
 }
 
 function agentProcessCleanupUncertain(cause = null) {
@@ -2453,36 +2907,67 @@ function resolveWorkflow(value) {
   throw workflowError('INVALID_WORKFLOW', `Unknown workflow: ${String(value)}`);
 }
 
-const CHAT_HISTORY_MAX_MESSAGES = 40;
-const CHAT_HISTORY_MAX_ENTRY_CHARS = 8_000;
-const CHAT_HISTORY_MAX_TOTAL_CHARS = 32_000;
-
-function normalizeChatHistory(value) {
-  if (!Array.isArray(value)) return [];
-  const history = [];
-  let remaining = CHAT_HISTORY_MAX_TOTAL_CHARS;
-  for (const entry of value.slice(-CHAT_HISTORY_MAX_MESSAGES).reverse()) {
-    if (!entry || (entry.role !== 'user' && entry.role !== 'assistant')) continue;
-    const text = typeof entry.text === 'string' ? entry.text.trim().slice(0, CHAT_HISTORY_MAX_ENTRY_CHARS) : '';
-    if (!text || remaining <= 0) continue;
-    const bounded = text.slice(-remaining);
-    history.unshift({ role: entry.role, text: bounded });
-    remaining -= bounded.length;
-  }
-  return history;
+/**
+ * 이번 턴에 실을 기록을 예산에 맞춰 고른다. 예산은 보낼 프롬프트(기록 제외)를 뺀 값이다.
+ * usedTokens 는 이어 받은 네이티브 세션이 이미 차지한 양이고, 새 세션이면 0 이다.
+ */
+function prepareTurnHandoff(activeSession, history, plainText, usedTokens) {
+  if (!Array.isArray(history) || history.length === 0) return null;
+  return prepareHandoff(history, handoffBudget({
+    cap: handoffTokenCap(process.env),
+    window: activeSession.contextWindow,
+    usedTokens,
+    userText: plainText,
+  }));
 }
 
-function addReopenedChatHistory(activeSession, prompt) {
-  const history = activeSession.bootstrapHistory;
-  activeSession.bootstrapHistory = [];
-  if (!Array.isArray(history) || history.length === 0) return prompt;
-  const block = [
-    '<reopened_chat_history trust="conversation-transcript">',
-    JSON.stringify(history),
-    'Continue this conversation consistently. The final user request follows after this transcript.',
-    '</reopened_chat_history>',
-  ].join('\n');
-  return `${block}\n\n${prompt}`;
+/**
+ * 공급자가 아직 보지 못한 대화를 프롬프트 앞에 붙인다. 기록은 여기서 비우지 않는다 —
+ * 턴이 성공적으로 끝났을 때만 비운다 (실패한 첫 턴 뒤에도 다음 턴이 같은 기록을 싣는다).
+ */
+function handoffPromptText(delivery, turnPrompt) {
+  return addAgentInstructionsContext(delivery ? `${delivery.block}\n\n${turnPrompt}` : turnPrompt);
+}
+
+/** Codex 가 네이티브로 주입할 조각. 인라인으로 보내는 공급자는 무시한다. */
+function handoffPayload(delivery, plainText) {
+  return delivery ? { header: delivery.header, entries: delivery.entries, plainText } : undefined;
+}
+
+/** Studio 가 알려 준 맥락 창 크기·사용량으로 기록 예산의 기준을 정한다. */
+function applyHandoffContext(session, { model, providerContextUsage, resumed }) {
+  const usage = providerContextUsage && typeof providerContextUsage === 'object' ? providerContextUsage : {};
+  session.contextWindow = resolveContextWindow(session.agent, {
+    modelContextLength: session.agent === 'pi' ? piModelConfig(model)?.contextLength : undefined,
+    reportedMaxTokens: usage.maxTokens,
+  });
+  const used = Number(usage.usedTokens);
+  session.resumedUsedTokens = resumed && Number.isFinite(used) && used > 0 ? used : 0;
+}
+
+/**
+ * 기록을 실은 턴이 성공하지 못했는데 공급자가 그 턴을 받았을 수 있다. 그 네이티브 세션은
+ * 기록을 받았는지 알 수 없으므로 다시 이어 받지 않고, 다음 턴은 새 세션에 전체 기록을 보낸다.
+ * 실패한 요청은 이전 세션이 일부만 봤을 수 있어 전체 기록 끝에 덧붙인다.
+ */
+function markHandoffUncertain(record, activeSession, delivery, stopReason) {
+  const nativeId = activeSession.backend.getSessionId?.();
+  if (typeof nativeId === 'string' && nativeId) record.untrustedNativeSessions.add(`${activeSession.agent}:${nativeId}`);
+  activeSession.replaceSessionPending = true;
+  const userText = typeof delivery.userText === 'string' ? delivery.userText.trim() : '';
+  if (userText) {
+    activeSession.fallbackHistory = normalizeChatHistory([
+      ...activeSession.fallbackHistory,
+      { role: 'user', text: userText, agent: activeSession.agent },
+      {
+        role: 'assistant',
+        kind: 'interrupted',
+        agent: activeSession.agent,
+        text: stopReason === 'interrupted' ? 'Turn interrupted before completion.' : 'Turn failed before completion.',
+      },
+    ]);
+  }
+  activeSession.bootstrapHistory = activeSession.fallbackHistory;
 }
 
 function referenceScopes(activeSession) {
@@ -2490,7 +2975,7 @@ function referenceScopes(activeSession) {
 }
 
 /** 연구 프로젝트 요약(언급·발췌 포함)과 메시지 첨부를 사용자 메시지 앞에 붙인다. */
-async function addReferenceContext(activeSession, query, prompt, messageAttachments = [], mentions = []) {
+async function addReferenceContext(activeSession, query, prompt, messageAttachments = [], mentions = [], { required = false } = {}) {
   try {
     const record = sessions.get(activeSession.hubSessionId ?? '') ?? null;
     const repository = record ? repositoryContext(record) : null;
@@ -2520,6 +3005,7 @@ async function addReferenceContext(activeSession, query, prompt, messageAttachme
     return [block, attached, prompt].filter(Boolean).join('\n\n');
   } catch (error) {
     log(`reference retrieval failed: ${error?.message ?? error}`);
+    if (required) throw error;
     return prompt;
   }
 }
@@ -2730,16 +3216,90 @@ function addTemplateContext(record, activeSession, prompt) {
   }
 }
 
+function userMessageFingerprint(msg, activeSession) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    threadId: activeSession.threadId,
+    documentId: activeSession.documentId,
+    text: msg.text,
+    skillName: msg.skillName ?? null,
+    mentions: normalizeMentions(msg.mentions),
+    activeTemplateId: msg.activeTemplateId ?? null,
+    attachmentCount: Array.isArray(msg.stagedReferenceIds) ? msg.stagedReferenceIds.length : 0,
+  })).digest('hex');
+}
+
+function rejectUserMessage(record, sock, msg, error, fallbackCode = 'INVALID_REQUEST', reportError = true) {
+  if (record.settledUserMessages.has(msg)) return;
+  const code = error?.code ?? fallbackCode;
+  const message = describeHubError(error);
+  let bufferedEvents = [];
+  if (msg.requireAcceptance === true && typeof msg.messageId === 'string') {
+    const receipt = record.userMessageReceipts.get(msg.messageId);
+    // A conflicting retry must not delete the receipt of the original message.
+    if (receipt?.message === msg) {
+      record.userMessageReceipts.delete(msg.messageId);
+      bufferedEvents = receipt.events ?? [];
+    }
+    record.settledUserMessages.add(msg);
+    sendJson(sock, { v: 1, type: 'chat-user-message-rejected', messageId: msg.messageId, code, message });
+  }
+  if (reportError) sendChatError(sock, error, fallbackCode);
+  for (const event of bufferedEvents) sendAgentEvent(record, event);
+}
+
+function rejectPendingUserMessages(record, code, message, { session, turnId, socket } = {}) {
+  for (const receipt of [...record.userMessageReceipts.values()]) {
+    if (!receipt.message || (session && receipt.session !== session)
+      || (turnId && receipt.turnId !== turnId) || (socket && receipt.socket !== socket)) continue;
+    rejectUserMessage(record, receipt.socket, receipt.message, workflowError(code, message), code, false);
+  }
+}
+
+function requireUserMessageAcceptanceCurrent(record, msg) {
+  if (msg.requireAcceptance !== true) return;
+  const receipt = record.userMessageReceipts.get(msg.messageId);
+  if (receipt?.message !== msg || record.studioSocket !== receipt.socket
+    || receipt.socket.readyState !== receipt.socket.OPEN) {
+    throw workflowError('REQUEST_INVALIDATED', 'The message was cancelled before the provider accepted it');
+  }
+}
+
+function acceptUserMessage(record, sock, msg) {
+  if (msg.requireAcceptance !== true) return;
+  const receipt = record.userMessageReceipts.get(msg.messageId);
+  if (receipt?.message !== msg) return;
+  record.settledUserMessages.add(msg);
+  record.userMessageReceipts.set(msg.messageId, { fingerprint: receipt.fingerprint, attachments: receipt.attachments ?? [] });
+  while (record.userMessageReceipts.size > MAX_USER_MESSAGE_RECEIPTS) {
+    const oldestAccepted = [...record.userMessageReceipts].find(([, entry]) => !entry.message);
+    if (!oldestAccepted) break;
+    record.userMessageReceipts.delete(oldestAccepted[0]);
+  }
+  sendJson(receipt.socket ?? sock, { v: 1, type: 'chat-user-message-accepted', messageId: msg.messageId });
+  for (const event of receipt.events ?? []) sendAgentEvent(record, event);
+}
+
+async function discardRepeatedMessageStages(msg, activeSession) {
+  const stageIds = Array.isArray(msg.stagedReferenceIds) ? msg.stagedReferenceIds : [];
+  await Promise.allSettled(stageIds.map((stageId) => referenceStore.discardStaged({
+    stageId, scopeId: activeSession.threadId,
+  })));
+}
+
 function dispatchUserMessage(record, sock, msg, activeSession, messageAttachments = [], discussionReady = false) {
   if (activeSession.planning.phase === 'awaiting-approval' && !discussionReady) {
     const planId = activeSession.planning.latestPlan?.planId;
     if (!planId) {
-      sendJson(sock, { v: 1, type: 'chat-error', code: 'PLAN_NOT_FOUND', message: 'The latest plan is unavailable; return to planning and present it again.' });
+      rejectUserMessage(record, sock, msg, workflowError('PLAN_NOT_FOUND', 'The latest plan is unavailable; return to planning and present it again.'));
       return;
     }
     const hasAttachments = messageAttachments.length > 0
       || (Array.isArray(msg.stagedReferenceIds) && msg.stagedReferenceIds.length > 0);
     if (!hasAttachments && isExplicitImplementationApproval(msg.text)) {
+      if (msg.requireAcceptance === true) {
+        rejectUserMessage(record, sock, msg, workflowError('PLAN_APPROVAL_REQUIRED', 'Approve the plan before sending this message'));
+        return;
+      }
       void enqueueWorkflowTransition(record, activeSession, () => approveImplementationPlan(record, sock, { planId, documentRevision: msg.documentRevision }))
         .catch((error) => sendChatError(sock, error));
       return;
@@ -2750,14 +3310,18 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       async () => {
         requireWorkflowSwitchBackend(activeSession);
         await activeSession.backend.setExecutionMode(providerModeRequest(activeSession, 'awaiting-approval'));
-        if (record.agentSession === activeSession) dispatchUserMessage(record, sock, msg, activeSession, messageAttachments, true);
+        if (record.agentSession !== activeSession) {
+          throw workflowError('REQUEST_INVALIDATED', 'The chat changed before accepting the message');
+        }
+        requireUserMessageAcceptanceCurrent(record, msg);
+        dispatchUserMessage(record, sock, msg, activeSession, messageAttachments, true);
       },
     )
-      .catch((error) => sendChatError(sock, error));
+      .catch((error) => rejectUserMessage(record, sock, msg, error, 'WORKFLOW_ERROR'));
     return;
   }
   if (activeSession.planning.phase === 'switching') {
-    sendJson(sock, { v: 1, type: 'chat-error', code: 'WORKFLOW_SWITCHING', message: 'The provider is switching into implementation mode.' });
+    rejectUserMessage(record, sock, msg, workflowError('WORKFLOW_SWITCHING', 'The provider is switching into implementation mode.'));
     return;
   }
   beginAgentTurn(record, activeSession);
@@ -2766,6 +3330,8 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
     generation: activeSession.generation,
     turnId: activeSession.turnId,
   });
+  const receipt = record.userMessageReceipts.get(msg.messageId);
+  if (receipt?.message === msg) receipt.turnId = providerTurn.turnId;
   // Studio 가 메시지에 실어 보낸 문서 읽기 — 사용자 요청 바로 앞에 둔다. 승인·수정·허브 생성 턴은 이 경로를 타지 않는다.
   // 모양이 어긋난 스냅샷은 버리고 메시지는 그대로 보낸다.
   const liveDocument = normalizeDocumentSnapshot(msg.documentSnapshot);
@@ -2780,36 +3346,80 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       // Skill context is loaded asynchronously. An interrupt can settle this
       // turn and a later message can start another turn on the same session
       // before the read completes, so session identity alone is insufficient.
-      if (!providerTurnIsCurrent(record, providerTurn)) return;
+      if (!providerTurnIsCurrent(record, providerTurn)) {
+        rejectUserMessage(record, sock, msg, workflowError('REQUEST_INVALIDATED', 'The turn ended before accepting the message'), 'REQUEST_INVALIDATED', false);
+        return;
+      }
+      requireUserMessageAcceptanceCurrent(record, msg);
       if (activeSession.planning.phase === 'awaiting-approval') {
         prompt = `The current plan remains open for review. Answer questions and research normally. If this message requests concrete changes to the plan, revise it directly with present_implementation_plan; do not ask the user to request a draft again. Never treat discussion as approval to edit the document.\n\nCurrent plan:\n${JSON.stringify(activeSession.planning.latestPlan.plan)}\n\n${prompt}`;
       }
       // 프로젝트 요약은 메모·발췌를 읽느라 비동기다 — 기다린 뒤 턴이 여전히 이 턴인지 다시 본다.
-      prompt = await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions));
-      if (!providerTurnIsCurrent(record, providerTurn)) return;
+      const referencedPrompt = msg.requireAcceptance === true
+        ? await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions), { required: true })
+        : await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions));
+      if (!providerTurnIsCurrent(record, providerTurn)) {
+        rejectUserMessage(record, sock, msg, workflowError('REQUEST_INVALIDATED', 'The turn ended before accepting the message'), 'REQUEST_INVALIDATED', false);
+        return;
+      }
+      requireUserMessageAcceptanceCurrent(record, msg);
       // 스냅샷도 에이전트가 본 문서 상태다 — 읽기 도구 없이 세운 계획이 승인 때 stale 로 거절되지 않게 한다.
       if (liveDocument) activeSession.lastObservedDocumentRevision = liveDocument.revision;
-      activeSession.backend.sendUserMessage(addAgentInstructionsContext(addReopenedChatHistory(
+      const turnPrompt = addActiveDocumentContext(
         activeSession,
-        addActiveDocumentContext(
+        addTemplateContext(
+          record,
           activeSession,
-          addTemplateContext(
-            record,
-            activeSession,
-            addEditReportContext(record, activeSession, prompt),
-          ),
+          addEditReportContext(record, activeSession, referencedPrompt),
         ),
-      )));
+      );
+      // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
+      const plainText = addAgentInstructionsContext(turnPrompt);
+      const replaceSession = activeSession.replaceSessionPending === true;
+      const resumedNative = activeSession.resumed && !replaceSession;
+      // 새 세션(재개 실패·세션 교체)에는 전체 기록을 쓰고 사용량은 0 으로 본다.
+      const full = prepareTurnHandoff(activeSession, activeSession.fallbackHistory, plainText, 0);
+      const primary = replaceSession
+        ? full
+        : prepareTurnHandoff(
+          activeSession,
+          activeSession.bootstrapHistory,
+          plainText,
+          resumedNative ? (activeSession.contextUsage?.usedTokens ?? activeSession.resumedUsedTokens ?? 0) : 0,
+        );
+      // 재개한 세션이 공급자 저장소에서 사라졌으면 백엔드가 이 글로 바꿔 새 세션을 연다.
+      const withResumeFallback = resumedNative && !activeSession.nativeTurnSucceeded;
+      const options = {
+        ...(primary ? { handoff: handoffPayload(primary, plainText) } : {}),
+        ...(withResumeFallback ? { resumeFallbackText: handoffPromptText(full, turnPrompt) } : {}),
+        ...(withResumeFallback && full ? { resumeFallbackHandoff: handoffPayload(full, plainText) } : {}),
+        ...(replaceSession ? { replaceSession: true } : {}),
+      };
+      // 기록을 실은 턴은 성공으로 끝날 때까지 전달 대기다 (turn-end 에서 판정한다).
+      activeSession.handoffDelivery = {
+        primary: Boolean(primary) || replaceSession,
+        fallback: withResumeFallback && Boolean(full),
+        userText: typeof msg.text === 'string' ? msg.text : '',
+      };
+      const dispatched = activeSession.backend.sendUserMessage(handoffPromptText(primary, turnPrompt), options);
+      // Current providers accept synchronously; a future asynchronous backend
+      // may reject its dispatch promise before acknowledging the message.
+      if (dispatched?.then) await dispatched;
+      acceptUserMessage(record, sock, msg);
     })
     .catch((e) => {
       // A stale rejection belongs to the settled turn. It must not idle or
       // report an error against a newer turn on this same backend session.
-      if (!providerTurnIsCurrent(record, providerTurn)) return;
+      if (!providerTurnIsCurrent(record, providerTurn)) {
+        rejectUserMessage(record, sock, msg, e, 'AGENT_SPAWN_FAILED', false);
+        return;
+      }
+      activeSession.handoffDelivery = null;
       failPendingProviderCallsForTurn(record, activeSession, providerTurn.turnId);
       activeSession.status = 'idle';
       activeSession.turnId = null;
       record.userQuestionResponseReceipts.clear();
-      sendJson(sock, { v: 1, type: 'chat-error', code: e?.code ?? 'AGENT_SPAWN_FAILED', message: describeHubError(e) });
+      rejectUserMessage(record, sock, msg, e, 'AGENT_SPAWN_FAILED');
     });
 }
 
@@ -2881,10 +3491,18 @@ async function dispatchStagedUserMessage(record, sock, msg, activeSession) {
       error: String(entry.reason?.message ?? entry.reason ?? 'Attachment processing failed'),
     });
   sendJson(sock, { v: 1, type: 'chat-reference-status', messageId: msg.messageId, attachments });
+  const receipt = record.userMessageReceipts.get(msg.messageId);
+  if (receipt?.message === msg) receipt.attachments = attachments;
   const stillCurrent = record.pendingReferenceMessage === pendingReferenceMessage;
   if (stillCurrent) record.pendingReferenceMessage = null;
   const readyFiles = settled.flatMap((entry) => entry.status === 'fulfilled' ? [entry.value.file] : []);
-  if (!stillCurrent || record.agentSession !== activeSession) return;
+  if (!stillCurrent || record.agentSession !== activeSession) {
+    throw workflowError('REQUEST_INVALIDATED', 'The chat changed while message attachments were being prepared');
+  }
+  requireUserMessageAcceptanceCurrent(record, msg);
+  if (msg.requireAcceptance === true && settled.some((entry) => entry.status === 'rejected')) {
+    throw workflowError('REFERENCE_COMMIT_FAILED', 'Some message attachments could not be prepared; retry the complete message');
+  }
   if (activeSession.status !== 'idle' || activeSession.pendingTransitions > 0) {
     throw workflowError(
       'REQUEST_INVALIDATED',
@@ -2892,6 +3510,63 @@ async function dispatchStagedUserMessage(record, sock, msg, activeSession) {
     );
   }
   dispatchUserMessage(record, sock, msg, activeSession, readyFiles);
+}
+
+/**
+ * 수동 맥락 압축을 공급자 턴으로 연다. 보통 턴과 같은 turnId/status 잠금을 쓰므로
+ * turn-start … turn-end 사이의 다른 요청은 기존 AGENT_BUSY 경로가 막는다.
+ */
+function startManualCompaction(record, sock, msg) {
+  const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+  const reject = (code, message) => sendJson(sock, { v: 1, type: 'chat-error', requestId, code, message });
+  const activeSession = record.agentSession;
+  if (!activeSession || (typeof msg.threadId === 'string' && msg.threadId !== activeSession.threadId)) {
+    reject('NO_SESSION', 'No agent session for this chat.');
+    return;
+  }
+  if (activeSession.status === 'running'
+    || activeSession.pendingTransitions > 0
+    || record.pendingReferenceMessage
+    || record.pendingUserQuestion
+    || activeSession.manualCompaction
+    || activeSession.compaction) {
+    reject('AGENT_BUSY', 'A turn or compaction is already in progress.');
+    return;
+  }
+  if (compactionSupportOf(activeSession) !== 'manual' || typeof activeSession.backend.compact !== 'function') {
+    reject('COMPACTION_UNSUPPORTED', 'This provider does not support manual compaction.');
+    return;
+  }
+  // 교체가 예정된 세션은 버려질 세션이라 압축할 맥락이 없다.
+  if ((!activeSession.resumed && !activeSession.nativeTurnSucceeded) || activeSession.replaceSessionPending) {
+    reject('NOTHING_TO_COMPACT', 'This conversation has no provider context to compact yet.');
+    return;
+  }
+  // beginAgentTurn 은 쓰지 않는다 — 압축 턴이 플랜 실행 턴으로 잡히면 안 된다.
+  record.userQuestionResponseReceipts.clear();
+  activeSession.turnId = crypto.randomUUID();
+  activeSession.providerTurnStarted = false;
+  activeSession.status = 'running';
+  const compactionId = crypto.randomUUID();
+  const beforeTokens = activeSession.contextUsage?.usedTokens;
+  activeSession.manualCompaction = {
+    compactionId,
+    ...(Number.isFinite(beforeTokens) ? { beforeTokens } : {}),
+    started: false,
+    settled: false,
+  };
+  sendJson(sock, { v: 1, type: 'chat-compact-accepted', requestId, compactionId });
+  try {
+    activeSession.backend.compact();
+  } catch (error) {
+    // 수락한 뒤의 실패는 압축 failed + turn-end 로 닫는다 (보통 턴 경로와 같은 정리).
+    activeSession.emitBackendEvent({
+      type: 'turn-end',
+      agent: activeSession.agent,
+      stopReason: 'failed',
+      errorMessage: describeHubError(error, '맥락 압축을 시작하지 못했습니다.'),
+    });
+  }
 }
 
 function emitWorkflowState(record, extra = {}) {
@@ -2913,6 +3588,7 @@ async function startSession(
   requestedHistory,
   force = false,
   requestedServiceTier,
+  { providerSessionId = null, handoffHistory = null, providerContextUsage = null } = {},
 ) {
   if (record.processCleanupUncertain === true) throw agentProcessCleanupUncertain();
   await ensureBootWork();
@@ -2944,6 +3620,25 @@ async function startSession(
     && currentSession.documentId === documentId
   ) {
     currentSession.documentName = documentName;
+    // 같은 백엔드를 그대로 쓴다. 아직 성공한 턴이 없으면 최신 기록으로 부트스트랩을 다시 맞춘다
+    // (재연결·재시도 사이에 Studio 쪽 대화가 늘었을 수 있다).
+    if (!currentSession.nativeTurnSucceeded && currentSession.status !== 'running' && Array.isArray(requestedHistory)) {
+      const fullHistory = normalizeChatHistory(requestedHistory);
+      currentSession.fallbackHistory = fullHistory;
+      // 교체가 예정된 세션은 새 세션으로 가므로 delta 가 아니라 전체 기록을 쓴다.
+      currentSession.bootstrapHistory = currentSession.resumed && !currentSession.replaceSessionPending
+        && Array.isArray(handoffHistory)
+        ? normalizeChatHistory(handoffHistory)
+        : fullHistory;
+    }
+    if (currentSession.status !== 'running') {
+      applyHandoffContext(currentSession, {
+        model,
+        providerContextUsage,
+        resumed: currentSession.resumed && !currentSession.replaceSessionPending
+          && typeof providerSessionId === 'string' && providerSessionId === currentSession.backend.getSessionId?.(),
+      });
+    }
     return currentSession;
   }
   // A settings change must never interrupt a turn or its pending question.
@@ -2994,12 +3689,22 @@ async function startSession(
     model,
     effort,
     permissionProfile,
+    chatPermissionGrants: continuing ? normalizeChatPermissionGrants(currentSession.chatPermissionGrants) : [],
     serviceTier,
     isolatedHome: record.isolatedHome,
     codexHome: record.codexHome,
     codexAuthPath: sourceCodexAuthPath,
     codexBin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
     claudeBin: cliSetupStatus.claude?.installed ? cliSetup.binPath('claude') : 'claude',
+    // CLI 는 채팅 시작 뒤에도 설치·갱신될 수 있다. 실제 프로세스를 만들 때 prefix 잠금을 기다린다.
+    prepareLaunch: CLI_SETUP_AGENTS.includes(agent) ? async () => {
+      const launch = await cliSetup.prepareLaunch(agent);
+      return {
+        bin: launch.bin ?? agent,
+        release: launch.release,
+        providerEnv: agent === 'claude' ? claudeRuntimeEnv(record.isolatedHome) : launch.env,
+      };
+    } : undefined,
     providerEnv: agent === 'claude'
       ? claudeRuntimeEnv(record.isolatedHome)
       : (CLI_SETUP_AGENTS.includes(agent) ? cliSetup.envFor(agent) : {}),
@@ -3010,6 +3715,7 @@ async function startSession(
       signal,
     }),
     agentRole: providerRole,
+    idleReleaseMs: AGENT_IDLE_RELEASE_MS,
     workflow,
     phase: workflow === 'direct' ? 'implementing' : planning.phase,
     capabilityEpoch: planning.capabilityEpoch,
@@ -3019,16 +3725,35 @@ async function startSession(
     piRoot: piManager.rootDir,
     openRouterApiKey: agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
     reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
-    projectToolGates,
+    projectToolGates: () => ({ ...projectToolGates(), requestable: true }),
+    ...(agent === 'pi' && piModelConfig(model)?.contextLength ? { contextWindow: piModelConfig(model).contextLength } : {}),
   };
   const createBackend = SESSION_FACTORIES[agent];
   if (!createBackend) throw unknownAgentError(agent);
+  // 네이티브 우선: 커서가 저장소에 남아 있으면 그 세션을 이어 받고 못 본 메시지(delta)만 준다.
+  // 없으면 전체 기록으로 새로 시작한다. 전체 기록은 턴 시점 재개 실패에 대비해 늘 들고 있다.
+  const fullHistory = normalizeChatHistory(requestedHistory);
+  let resumeSessionId = null;
+  // 기록 전달이 불확실했던 세션은 이어 받지 않는다. 첫 turn-end 가 resumeLost 로 커서를 지우게 한다.
+  const untrustedCursor = typeof providerSessionId === 'string' && providerSessionId !== ''
+    && record.untrustedNativeSessions.has(`${agent}:${providerSessionId}`);
+  if (typeof providerSessionId === 'string' && providerSessionId && !untrustedCursor) {
+    const probe = SESSION_RESUME_PROBES[agent];
+    const exists = await Promise.resolve(probe?.(opts, providerSessionId)).catch((error) => {
+      log(`resume probe failed (${agent}): ${error?.message ?? error}`);
+      return false;
+    });
+    if (exists === true) resumeSessionId = providerSessionId;
+  }
+  if (resumeSessionId) opts.resumeSessionId = resumeSessionId;
+  const resumed = Boolean(resumeSessionId);
   const backend = createBackend(opts);
   record.agentSession = {
     agent,
     model,
     effort,
     permissionProfile,
+    chatPermissionGrants: opts.chatPermissionGrants,
     serviceTier,
     backend,
     generation,
@@ -3053,12 +3778,25 @@ async function startSession(
     planExecutionTurnId: continuing ? currentSession.planExecutionTurnId : null,
     planExecutionTurnSucceeded: continuing ? currentSession.planExecutionTurnSucceeded : false,
     planReviewTurnId: continuing && currentSession.planning.workflow === workflow ? currentSession.planReviewTurnId : null,
-    bootstrapHistory: normalizeChatHistory(requestedHistory),
+    resumed,
+    nativeTurnSucceeded: false,
+    bootstrapHistory: resumed ? normalizeChatHistory(handoffHistory) : fullHistory,
+    fallbackHistory: fullHistory,
+    contextWindow: undefined,
+    resumedUsedTokens: 0,
+    handoffDelivery: null,
+    replaceSessionPending: false,
+    reportResumeLost: untrustedCursor,
+    contextUsage: resumed && continuing && currentSession.agent === agent ? currentSession.contextUsage ?? null : null,
+    compaction: null,
+    manualCompaction: null,
+    emitBackendEvent: opts.onEvent,
     planning,
     workflowTransition: Promise.resolve(),
     pendingTransitions: 0,
     releaseReferenceScopes: referenceStore.retainScopes(sessionReferenceScopes),
   };
+  applyHandoffContext(record.agentSession, { model, providerContextUsage, resumed });
   try {
     if (workflow === 'plan') {
       requireWorkflowSwitchBackend(record.agentSession);
@@ -3135,11 +3873,12 @@ async function applyBrowserbaseOverride(record, msg) {
   );
 }
 
-function providerModeRequest(activeSession, phase) {
+function providerModeRequest(activeSession, phase = activeSession.planning.workflow === 'direct' ? 'implementing' : activeSession.planning.phase) {
   return {
-    workflow: 'plan',
+    workflow: activeSession.planning.workflow,
     phase,
     capabilityEpoch: activeSession.planning.capabilityEpoch,
+    chatPermissionGrants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants),
   };
 }
 
@@ -3357,11 +4096,13 @@ async function setChatWorkflow(record, sock, msg) {
   // Codex setExecutionMode 는 자식 재시작을 기다리므로, 스냅샷·도구 게이트는
   // 재시작 전에 구상으로 바꿔 둔다. 실패하면 이전 상태로 되돌린다.
   activeSession.planning = nextPlanning;
+  settleChatPermissionRequest(record, { status: 'expired', reason: 'workflow-changed' });
   try {
     await activeSession.backend.setExecutionMode({
       workflow: msg.workflow,
       phase,
       capabilityEpoch: nextPlanning.capabilityEpoch,
+      chatPermissionGrants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants),
     });
   } catch (error) {
     if (record.agentSession === activeSession) activeSession.planning = previousPlanning;
@@ -3395,6 +4136,20 @@ async function setChatWorkflow(record, sock, msg) {
 
 async function handleStudioMessage(record, sock, msg) {
   switch (msg.type) {
+    case 'reference-stage-bind': {
+      // 첨부 초안은 이전 채팅의 provider 가 살아 있어도 만들 수 있다. 이 묶기는
+      // staging HTTP 만 허용하며 provider 의 자료 읽기 범위·프로젝트를 바꾸지 않는다.
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      if (!requestId) return;
+      try {
+        const threadId = normalizeStableScopeId(msg.threadId, 'threadId');
+        record.referenceStagingThreadId = threadId;
+        sendJson(sock, { v: 1, type: 'reference-stage-bound', requestId, threadId });
+      } catch (error) {
+        sendJson(sock, { v: 1, type: 'reference-stage-bound', requestId, threadId: null });
+      }
+      return;
+    }
     case 'chat-start': {
       if (record.agentSession?.workflowTransition) {
         await record.agentSession.workflowTransition;
@@ -3435,23 +4190,38 @@ async function handleStudioMessage(record, sock, msg) {
           msg.history,
           Boolean(msg.force),
           msg.serviceTier,
+          {
+            providerSessionId: typeof msg.providerSessionId === 'string' ? msg.providerSessionId : null,
+            handoffHistory: Array.isArray(msg.handoffHistory) ? msg.handoffHistory : null,
+            providerContextUsage: msg.providerContextUsage && typeof msg.providerContextUsage === 'object'
+              ? msg.providerContextUsage
+              : null,
+          },
         );
         // 같은 세션을 그대로 쓰면 묶기를 건너뛴다 — 작업 공간이 바뀌었으면 여기서 다시 묶는다.
         if (repositoryChanged && s === reusable) await rebindRecordProject(record);
+        const resumedCursor = !s.replaceSessionPending && (s.resumed === true || (typeof msg.providerSessionId === 'string'
+          && msg.providerSessionId !== '' && msg.providerSessionId === s.backend.getSessionId?.()));
         sendJson(sock, {
           v: 1,
           type: 'chat-started',
           requestId,
+          resumed: resumedCursor,
+          compaction: compactionSupportOf(s),
           agent: s.agent,
           model: s.model,
           effort: s.effort,
           permissionProfile: s.permissionProfile,
           serviceTier: s.serviceTier,
           sessionId: s.sessionId,
+          status: s.status,
+          turnId: s.turnId,
           threadId: s.threadId,
           documentId: s.documentId,
           documentName: s.documentName,
           projectId: s.projectId ?? null,
+          pendingChatPermissionRequest: pendingChatPermissionSnapshot(record),
+          chatPermissionGrants: normalizeChatPermissionGrants(s.chatPermissionGrants),
           ...s.planning.snapshot(),
         });
         await sendProjectBound(record);
@@ -3582,30 +4352,72 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'chat-user-message': {
       if (!record.agentSession) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'AGENT_NOT_STARTED', message: 'No agent session; send chat-start first.' });
-        return;
-      }
-      if (record.agentSession.pendingTransitions > 0) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'WORKFLOW_SWITCHING', message: 'The provider is applying a workflow or permission change.' });
+        rejectUserMessage(record, sock, msg, workflowError('AGENT_NOT_STARTED', 'No agent session; send chat-start first.'));
         return;
       }
       try {
         assertMessageScope(record.agentSession, msg);
+        if (msg.requireAcceptance === true) {
+          if (typeof msg.messageId !== 'string' || !msg.messageId || msg.messageId.length > 128
+            || /[\u0000-\u001f\u007f]/.test(msg.messageId)
+            || !Object.prototype.hasOwnProperty.call(msg, 'threadId')
+            || !Object.prototype.hasOwnProperty.call(msg, 'documentId')) {
+            throw workflowError('INVALID_REQUEST', 'Accepted message receipts require messageId, threadId and documentId');
+          }
+          if (msg.stagedReferenceIds !== undefined && (!Array.isArray(msg.stagedReferenceIds)
+            || msg.stagedReferenceIds.length > 10
+            || msg.stagedReferenceIds.some((id) => typeof id !== 'string' || !id)
+            || new Set(msg.stagedReferenceIds).size !== msg.stagedReferenceIds.length)) {
+            throw workflowError('INVALID_REFERENCE_MESSAGE', 'Message attachments require up to 10 unique staged reference ids');
+          }
+          const receipt = record.userMessageReceipts.get(msg.messageId);
+          if (receipt) {
+            if (receipt.fingerprint !== userMessageFingerprint(msg, record.agentSession)) {
+              throw workflowError('MESSAGE_ID_CONFLICT', 'messageId belongs to a different message or document context');
+            }
+            if (!receipt.message) {
+              await discardRepeatedMessageStages(msg, record.agentSession);
+              if (receipt.attachments?.length) {
+                sendJson(sock, {
+                  v: 1, type: 'chat-reference-status', messageId: msg.messageId,
+                  attachments: receipt.attachments.map((attachment, index) => ({
+                    ...attachment, stageId: msg.stagedReferenceIds[index],
+                  })),
+                });
+              }
+              sendJson(sock, { v: 1, type: 'chat-user-message-accepted', messageId: msg.messageId });
+            } else if (receipt.socket !== sock) {
+              rejectUserMessage(record, receipt.socket, receipt.message, workflowError('REQUEST_INVALIDATED', 'Studio reconnected before accepting the message'), 'REQUEST_INVALIDATED', false);
+              throw workflowError('REQUEST_INVALIDATED', 'Retry the message after reconnecting Studio');
+            }
+            return;
+          }
+        }
       } catch (error) {
-        sendChatError(sock, error, 'INVALID_REQUEST');
+        rejectUserMessage(record, sock, msg, error);
+        return;
+      }
+      if (record.agentSession.pendingTransitions > 0) {
+        rejectUserMessage(record, sock, msg, workflowError('WORKFLOW_SWITCHING', 'The provider is applying a workflow or permission change.'));
         return;
       }
       if (record.agentSession.status === 'running' || record.pendingReferenceMessage) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'AGENT_BUSY', message: 'A turn is already in progress.' });
+        rejectUserMessage(record, sock, msg, workflowError('AGENT_BUSY', 'A turn is already in progress.'));
         return;
       }
       if (typeof msg.text !== 'string' || msg.text.length === 0) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'INVALID_REQUEST', message: 'chat-user-message requires text' });
+        rejectUserMessage(record, sock, msg, workflowError('INVALID_REQUEST', 'chat-user-message requires text'));
         return;
       }
       if (msg.text.length > MAX_CHAT_MESSAGE_CHARS) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'INVALID_REQUEST', message: `chat message exceeds ${MAX_CHAT_MESSAGE_CHARS} characters` });
+        rejectUserMessage(record, sock, msg, workflowError('INVALID_REQUEST', `chat message exceeds ${MAX_CHAT_MESSAGE_CHARS} characters`));
         return;
+      }
+      if (msg.requireAcceptance === true) {
+        record.userMessageReceipts.set(msg.messageId, {
+          fingerprint: userMessageFingerprint(msg, record.agentSession),
+          message: msg, socket: sock, session: record.agentSession, turnId: null,
+        });
       }
       if (Object.prototype.hasOwnProperty.call(msg, 'activeTemplateId')) {
         try {
@@ -3616,17 +4428,21 @@ async function handleStudioMessage(record, sock, msg) {
           record.agentSession.activeTemplateId = null;
           sendJson(sock, { v: 1, type: 'chat-template-changed', template: null, reason: 'unavailable' });
           log(`message template unavailable: ${error?.message ?? error}`);
+          if (msg.requireAcceptance === true) {
+            rejectUserMessage(record, sock, msg, error, 'TEMPLATE_NOT_FOUND');
+            return;
+          }
         }
       }
       if (Array.isArray(msg.stagedReferenceIds) && msg.stagedReferenceIds.length > 0) {
         if (typeof msg.messageId !== 'string' || !msg.messageId) {
-          sendJson(sock, { v: 1, type: 'chat-error', code: 'INVALID_REFERENCE_MESSAGE', message: 'Attachment messages require messageId' });
+          rejectUserMessage(record, sock, msg, workflowError('INVALID_REFERENCE_MESSAGE', 'Attachment messages require messageId'));
           return;
         }
         void dispatchStagedUserMessage(record, sock, msg, record.agentSession)
           .catch((error) => {
             if (record.pendingReferenceMessage?.messageId === msg.messageId) record.pendingReferenceMessage = null;
-            sendChatError(sock, error, 'REFERENCE_COMMIT_FAILED');
+            rejectUserMessage(record, sock, msg, error, 'REFERENCE_COMMIT_FAILED');
           });
         return;
       }
@@ -3780,6 +4596,15 @@ async function handleStudioMessage(record, sock, msg) {
         }));
       return;
     }
+    case 'chat-permission-response': {
+      const activeSession = record.agentSession;
+      if (!activeSession) {
+        void answerChatPermission(record, sock, msg);
+        return;
+      }
+      void enqueueWorkflowTransition(record, activeSession, () => answerChatPermission(record, sock, msg));
+      return;
+    }
     case 'chat-service-tier-set': {
       if (!record.agentSession) {
         sendJson(sock, { v: 1, type: 'chat-error', code: 'AGENT_NOT_STARTED', message: 'Start a chat before changing the service tier.' });
@@ -3902,6 +4727,22 @@ async function handleStudioMessage(record, sock, msg) {
           outcome: publishedSkillOutcome(outcome),
         }))
         .catch((e) => sendJson(sock, { v: 1, type: 'skills-error', requestId: msg.requestId ?? null, code: e?.code ?? 'SKILLS_ERROR', message: String(e?.message ?? e) }));
+      return;
+    }
+    case 'artifact-descriptor-request': {
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      const threadId = typeof msg.threadId === 'string' ? msg.threadId : '';
+      void freshArtifactDescriptor(record, msg.artifactId, threadId)
+        .then((artifact) => replyToStudio(record, sock, { v: 1, type: 'artifact-descriptor', requestId, artifact }))
+        .catch((error) => replyToStudio(record, sock, {
+          v: 1,
+          type: 'artifact-descriptor',
+          requestId,
+          error: {
+            code: error?.code === 'ARTIFACT_NOT_FOUND' ? 'ARTIFACT_NOT_FOUND' : 'ARTIFACT_UNAVAILABLE',
+            message: String(error?.message ?? error),
+          },
+        }));
       return;
     }
     case 'skill-editor-read': {
@@ -4464,10 +5305,13 @@ async function handleStudioMessage(record, sock, msg) {
       return;
     }
     case 'chat-interrupt': {
+      record.pendingReferenceMessage = null;
+      rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'The message was cancelled before acceptance');
       if (record.agentSession) {
         const interruptedSession = record.agentSession;
         const interruptedTurnId = interruptedSession.turnId;
         settleUserQuestion(record, { status: 'cancelled', reason: 'user-stop' });
+        settleChatPermissionRequest(record, { status: 'expired', reason: 'user-stop' });
         failPendingProviderCallsForTurn(
           record,
           interruptedSession,
@@ -4479,6 +5323,12 @@ async function handleStudioMessage(record, sock, msg) {
         } catch (e) {
           log(`interrupt error: ${e?.message ?? e}`);
         }
+        // 백엔드가 turn-end 를 내지 못한 경우(시작 대기 중 등)에도 압축은 한 번 실패로 닫힌다.
+        sendCompactionEvents(
+          record,
+          settleCompactionAtTurnEnd(interruptedSession, false, { stopReason: 'interrupted' }),
+          interruptedTurnId,
+        );
         interruptedSession.status = 'idle';
         interruptedSession.turnId = null;
         interruptedSession.providerTurnStarted = false;
@@ -4491,8 +5341,13 @@ async function handleStudioMessage(record, sock, msg) {
       }
       return;
     }
+    case 'chat-compact': {
+      startManualCompaction(record, sock, msg);
+      return;
+    }
     case 'chat-stop': {
       settleUserQuestion(record, { status: 'cancelled', reason: 'user-stop' });
+      settleChatPermissionRequest(record, { status: 'expired', reason: 'user-stop' });
       cancelCheckpointTitleJobs(record);
       if (!await disposeSession(record)) {
         sendChatError(sock, agentProcessCleanupUncertain(), 'AGENT_PROCESS_CLEANUP_UNCERTAIN');
@@ -4816,9 +5671,10 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       }
       let args;
       try {
+        assertCellArgsPlacement(tool, msg.args);
         args = toolArgSchema(tool, definition).parse(msg.args ?? {});
         definition.validate?.(args);
-        if ((tool === 'present_implementation_plan' || tool === 'update_todos')
+        if ((tool === 'present_implementation_plan' || tool === 'update_todos' || tool === 'request_permission')
           && (workerJob || sock.piSubagentId || sock.agentRole !== 'chat' || msg.parentTaskId)) {
           throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may manage the plan');
         }
@@ -4852,6 +5708,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             receivedEpoch: msg.capabilityEpoch,
             chatMayEdit: gates.chatMayEdit,
             homeSearch: gates.homeSearch,
+            chatPermissionGrants: !sock.piSubagentId && !msg.parentTaskId ? record.agentSession.chatPermissionGrants : [],
           });
         }
       } catch (error) {
@@ -4863,6 +5720,14 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         void skillRegistry.readResource(String(args.name ?? ''), String(args.resourcePath ?? 'SKILL.md'))
           .then(sendResult)
           .catch((error) => sendError(error, 'SKILLS_ERROR'));
+        return;
+      }
+      if (tool === 'request_permission') {
+        const generation = record.agentSession.generation;
+        void (async () => {
+          if (sock.agentLabel !== 'pi') await consumeChatPermissionScope(record, sock.agentLabel, args, generation);
+          return requestChatPermission(record, args, generation);
+        })().then(sendResult).catch((error) => sendError(error, 'CHAT_PERMISSION_FAILED'));
         return;
       }
       if (tool === 'commit_product_skill') {
@@ -5108,7 +5973,16 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         const completion = (async () => {
           let artifact = null;
           if (args.outcome === 'succeeded') {
-            artifact = await record.artifactStore.read(args.artifactId);
+            artifact = await record.artifactStore.annotate(args.artifactId, {
+              template: {
+                kind: 'copy-layout',
+                jobId: workerJob.jobId,
+                quality: completionClaims.quality,
+                pageCount: completionClaims.preview.outputPageCount,
+                sectionCount: completionClaims.preview.outputSectionCount,
+                registeredTemplateId: null,
+              },
+            });
           }
           workerJob.status = args.outcome === 'succeeded' ? 'completed' : 'failed';
           workerJob.activity = args.summary;
@@ -5147,37 +6021,8 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         return;
       }
       if (tool === 'register_copy_layout_template') {
-        const job = record.templateJobs.get(args.jobId);
-        if (!job || job.ownerThreadId !== record.agentSession?.threadId) {
-          sendError(workflowError('COPY_LAYOUT_JOB_NOT_FOUND', 'No completed copy-layout job belongs to this chat'));
-          return;
-        }
-        if (job.status !== 'completed' || !job.result?.artifact) {
-          sendError(workflowError('COPY_LAYOUT_JOB_NOT_READY', 'The copy-layout artifact is not ready for registration'));
-          return;
-        }
-        if (job.registeredTemplateId) {
-          try {
-            sendResult({ template: templateStore.get(job.registeredTemplateId), alreadyRegistered: true });
-          } catch (error) {
-            sendError(error, 'TEMPLATE_NOT_FOUND');
-          }
-          return;
-        }
-        void record.artifactStore.read(job.result.artifact.artifactId)
-          .then((artifact) => templateStore.add({
-            name: args.name ?? defaultTemplateName(artifact.fileName),
-            originalName: artifact.fileName,
-            format: path.extname(artifact.fileName).slice(1).toLowerCase(),
-            pageCount: job.result.preview.outputPageCount,
-            sectionCount: job.result.preview.outputSectionCount,
-            bytes: artifact.bytes,
-          }))
-          .then((template) => {
-            job.registeredTemplateId = template.id;
-            broadcastTemplateCatalog({ type: 'added', template });
-            sendResult({ template, alreadyRegistered: false });
-          })
+        void registerCopyLayoutTemplate(record, args)
+          .then(sendResult)
           .catch((error) => sendError(error, 'TEMPLATE_REGISTER_FAILED'));
         return;
       }
@@ -5198,7 +6043,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
             throw workflowError(
               'INSTRUCTIONS_CONFIRMATION_UNAVAILABLE',
-              'Rauhwpx Studio must be connected so the user can confirm the instruction proposal.',
+              'HamaEditor Studio must be connected so the user can confirm the instruction proposal.',
             );
           }
           if (record.pendingInstructionDraft) clearInstructionDraft(record, 'replaced');
@@ -5225,7 +6070,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             record.pendingInstructionDraft = null;
             throw workflowError(
               'INSTRUCTIONS_CONFIRMATION_UNAVAILABLE',
-              'Rauhwpx Studio disconnected before the instruction proposal could be shown.',
+              'HamaEditor Studio disconnected before the instruction proposal could be shown.',
             );
           }
           sendResult({
@@ -5346,7 +6191,10 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           }
           workerPublishClaimed = true;
         }
-        void record.artifactStore.publish(args)
+        const artifactOwner = workerJob
+          ? { threadId: workerJob.ownerThreadId, documentId: workerJob.binding?.documentId ?? null }
+          : { threadId: record.agentSession?.threadId ?? null, documentId: record.agentSession?.documentId ?? null };
+        void record.artifactStore.publish({ ...args, owner: artifactOwner })
           .then(async ({ artifactId, fileName, mime, size, checksum }) => {
             if (workerJob) {
               await Promise.resolve(workerJob.helperPromise);
@@ -5519,6 +6367,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           workflow: record.agentSession?.planning.snapshot().workflow,
           phase: record.agentSession?.planning.snapshot().phase,
           capabilityEpoch: record.agentSession?.planning.capabilityEpoch,
+          chatPermissionGrants: !workerJob && !sock.piSubagentId && !msg.parentTaskId ? normalizeChatPermissionGrants(record.agentSession.chatPermissionGrants) : [],
           turnBound: !workerJob,
           ...(providerTurn ? { providerTurnId: providerTurn.turnId } : {}),
           ...(sock.parentTaskId ? { parentTaskId: sock.parentTaskId } : {}),
@@ -5804,8 +6653,13 @@ const httpServer = http.createServer((req, res) => {
       // session-wide token.
       const presentedToken = requestToken(req, url);
       const expectedTokens = authSessionId ? [presentedToken] : [];
-      const allowedScopes = authSessionId
-        ? referenceScopesForSession(sessions.require(authSessionId).agentSession)
+      const referenceRecord = authSessionId ? sessions.require(authSessionId) : null;
+      const stagingPath = url.pathname === '/reference-staging' || url.pathname.startsWith('/reference-staging/');
+      // 초안 첨부만 별도로 묶는다. 저장된 자료 읽기는 살아 있는 provider 세션의 범위만 쓴다.
+      const allowedScopes = referenceRecord
+        ? referenceScopesForSession(stagingPath && referenceRecord.referenceStagingThreadId
+          ? { threadId: referenceRecord.referenceStagingThreadId }
+          : referenceRecord.agentSession)
         : [];
       if (isReferencePath(url.pathname)) {
         const handleReferenceHttp = createReferenceHttpHandler({
@@ -5861,7 +6715,7 @@ const httpServer = http.createServer((req, res) => {
       if (!code || !authRun || authRun.method !== 'oauth'
         || authRun.signal?.aborted || typeof authRun.commitCredentials !== 'function') {
         res.writeHead(400, { 'content-type': 'text/html; charset=utf-8' });
-        res.end('<!doctype html><meta charset="utf-8"><title>Rauhwpx</title><p>OpenRouter login did not return a code.</p>');
+        res.end('<!doctype html><meta charset="utf-8"><title>HamaEditor</title><p>OpenRouter login did not return a code.</p>');
         return;
       }
       try {
@@ -5881,19 +6735,19 @@ const httpServer = http.createServer((req, res) => {
           log(`post-auth pi credit refresh failed: ${refreshError?.message ?? refreshError}`);
         });
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-        res.end('<!doctype html><meta charset="utf-8"><title>Rauhwpx</title><style>body{font:16px system-ui;margin:48px;color:#202124}</style><h1>OpenRouter connected</h1><p>You can return to Rauhwpx and close this tab.</p>');
+        res.end('<!doctype html><meta charset="utf-8"><title>HamaEditor</title><style>body{font:16px system-ui;margin:48px;color:#202124}</style><h1>OpenRouter connected</h1><p>You can return to HamaEditor and close this tab.</p>');
       } catch (error) {
         if (authRun.credentialsCommitted === true) {
           log(`post-auth pi status refresh failed: ${error?.message ?? error}`);
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-          res.end('<!doctype html><meta charset="utf-8"><title>Rauhwpx</title><h1>OpenRouter connected</h1><p>You can return to Rauhwpx and close this tab.</p>');
+          res.end('<!doctype html><meta charset="utf-8"><title>HamaEditor</title><h1>OpenRouter connected</h1><p>You can return to HamaEditor and close this tab.</p>');
           return;
         }
         if (error?.code !== 'OPENROUTER_OAUTH_INVALID') {
           sendAuthRunError(authRun, error, 'OPENROUTER_OAUTH_FAILED');
         }
         res.writeHead(400, { 'content-type': 'text/html; charset=utf-8' });
-        res.end('<!doctype html><meta charset="utf-8"><title>Rauhwpx</title><p>OpenRouter login could not be completed. Return to Rauhwpx and try again.</p>');
+        res.end('<!doctype html><meta charset="utf-8"><title>HamaEditor</title><p>OpenRouter login could not be completed. Return to HamaEditor and try again.</p>');
       }
       return;
     }
@@ -6108,6 +6962,7 @@ const httpServer = http.createServer((req, res) => {
         gates: {
           projectWrites: !(workflow === 'question' && gates.chatMayEdit === false),
           homeSearch: gates.homeSearch && !requestedWorkerJobId && !requestedSubagentId,
+          requestable: !requestedWorkerJobId && !requestedSubagentId,
         },
       });
       sendHttpJson(res, status, body);
@@ -6327,6 +7182,7 @@ httpServer.on('upgrade', (req, socket, head) => {
         if (record.studioSocket === ws) {
           record.studioSocket = null;
           record.pendingReferenceMessage = null;
+          rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'Studio disconnected before accepting the message', { socket: ws });
           armStudioReattachGrace(record);
         }
       });
@@ -6381,6 +7237,10 @@ httpServer.on('upgrade', (req, socket, head) => {
           replayed: true,
         });
       }
+      const pendingChatPermissionRequest = pendingChatPermissionSnapshot(record);
+      if (pendingChatPermissionRequest) sendJson(ws, {
+        v: 1, type: 'chat-permission-requested', request: pendingChatPermissionRequest, replayed: true,
+      });
       void skillRegistry.catalog()
         .then((catalog) => sendJson(ws, { v: 1, type: 'skills-catalog', catalog }))
         .catch((e) => log(`skills catalog on connect failed: ${e?.message ?? e}`));
@@ -6508,6 +7368,7 @@ httpServer.on('error', (err) => {
   process.exitCode = 1;
 });
 
+const PI_SETTINGS_FLUSH_TIMEOUT_MS = 3_000;
 let shutdownPreparationPromise = null;
 let shutdownPromise = null;
 let launchCleanupRetentionRequired = false;
@@ -6610,6 +7471,11 @@ function prepareShutdown(signal) {
       (record) => disposeRecord(record, 'hub shutdown'),
     );
     if (!cleanupProven) retainUncertainProcessCleanup(WORK_ROOT);
+    // 기동 동기화가 models.json 을 쓰는 도중에 process.exit 가 오면 `.tmp-*` 사본(키 포함 가능)이 남는다.
+    await Promise.race([
+      piManager.close().catch((error) => log(`pi settings flush failed: ${error?.message ?? error}`)),
+      new Promise((resolve) => setTimeout(resolve, PI_SETTINGS_FLUSH_TIMEOUT_MS).unref()),
+    ]);
     for (const wss of [studioWss, mcpWss]) {
       for (const sock of wss.clients) {
         try { sock.close(1001, 'server shutting down'); } catch {}

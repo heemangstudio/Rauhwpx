@@ -1,0 +1,831 @@
+/* 문서 홈 (src/home/document-home.ts). 창 전체를 덮는 시작 화면이다. 편집기 크롬의 범위
+   밖(body)에 붙으므로 색을 여기서 정한다. 미리보기 용지는 두 테마 모두 흰 종이다 — 편집
+   화면과 같다. */
+.document-home {
+  --dh-page: #f2f3f5;
+  --dh-strip: #e8eaee;
+  --dh-raised: #ffffff;
+  --dh-text: #171b22;
+  --dh-text-secondary: #424a55;
+  --dh-text-muted: #626b77;
+  --dh-hairline: #d9dde3;
+  --dh-hairline-strong: #c4cad3;
+  --dh-hover: rgba(23, 27, 34, 0.06);
+  --dh-pressed: rgba(23, 27, 34, 0.1);
+  --dh-chip: rgba(23, 27, 34, 0.07);
+  --dh-ink: #171b22;
+  --dh-ink-inverse: #ffffff;
+  --dh-paper: #ffffff;
+  --dh-paper-blank: #ffffff;
+  --dh-paper-edge: #cbd0d9;
+  --dh-paper-shadow: 0 0 0 1px var(--dh-paper-edge), 0 1px 3px rgba(24, 37, 54, 0.07);
+  --dh-paper-shadow-hover: 0 0 0 1px #b6bec9, 0 6px 16px rgba(24, 37, 54, 0.12);
+  --dh-detail-shadow: 0 0 0 1px var(--dh-hairline), 0 10px 28px rgba(24, 37, 54, 0.1);
+  /* 홈 안의 초점 고리는 불투명한 중성색이다. 옅은 면 위에서도 또렷하다. */
+  --dh-focus: #4b5563;
+
+  position: fixed;
+  inset: 0;
+  /* 사이드바(전체 화면 포함)보다 위, 명령 검색·대화상자·알림보다 아래. */
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  container: document-home / inline-size;
+  background: var(--dh-page);
+  color: var(--dh-text);
+  font-family: var(--font-family-ui);
+  font-size: 13px;
+  opacity: 0;
+  transition: opacity 140ms ease-out;
+}
+
+:root[data-theme-effective='dark'] .document-home {
+  --dh-page: #0f0f0f;
+  --dh-strip: #181818;
+  --dh-raised: #1c1c1c;
+  --dh-text: #e6e6e6;
+  --dh-text-secondary: #b4b4b4;
+  --dh-text-muted: #8f8f8f;
+  --dh-hairline: #262626;
+  --dh-hairline-strong: #363636;
+  --dh-hover: rgba(255, 255, 255, 0.06);
+  --dh-pressed: rgba(255, 255, 255, 0.1);
+  --dh-chip: rgba(255, 255, 255, 0.08);
+  --dh-ink: #e6e6e6;
+  --dh-ink-inverse: #171717;
+  /* 미리보기가 없는 빈 종이는 어두운 면에서 눈부시지 않게 한 단 누른다. */
+  --dh-paper-blank: #e6e6e6;
+  --dh-paper-edge: rgba(0, 0, 0, 0.6);
+  --dh-paper-shadow: 0 0 0 1px var(--dh-paper-edge), 0 2px 6px rgba(0, 0, 0, 0.5);
+  --dh-paper-shadow-hover: 0 0 0 1px rgba(255, 255, 255, 0.28), 0 8px 22px rgba(0, 0, 0, 0.6);
+  --dh-detail-shadow: 0 0 0 1px var(--dh-hairline-strong), 0 12px 32px rgba(0, 0, 0, 0.5);
+  --dh-focus: #d4d4d4;
+}
+
+.document-home[hidden] { display: none; }
+.document-home.is-shown { opacity: 1; }
+
+/* 홈이 떠 있는 동안 뒤의 앱은 보이지 않는다. 레이아웃은 남겨 문서 화면이 그대로 돌아온다.
+   Electron 은 가려진 요소의 창 끌기 영역도 쓰므로 뒤의 끌기 영역을 모두 거둔다. */
+html.document-home-open :is(#studio-root, #agent-sidebar) {
+  visibility: hidden;
+}
+
+html.document-home-open :is(#studio-root, #agent-sidebar),
+html.document-home-open :is(#studio-root, #agent-sidebar) *,
+html.document-home-open :is(#studio-root, #agent-sidebar) *::before,
+html.document-home-open :is(#studio-root, #agent-sidebar) *::after {
+  -webkit-app-region: no-drag !important;
+}
+
+/* ── 위 막대 ─────────────────────────────────────────── */
+.dh-topbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 48px;
+  padding: 0 16px 0 20px;
+  border-bottom: 1px solid var(--dh-hairline);
+  background: var(--dh-page);
+  user-select: none;
+}
+
+/* macOS 셸: 창 제목 막대 자리다. 신호등을 비켜 두고 빈 면으로 창을 끈다. 끌기 영역은
+   문서 순서로 적용되므로 막대(끌기) 뒤에 오는 단추가 no-drag 로 덮는다. */
+html.desktop-mac .dh-topbar {
+  height: var(--desktop-titlebar-height, 38px);
+  padding-left: calc(var(--desktop-home-reserve, 98px) + 2px);
+  -webkit-app-region: drag;
+}
+
+html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
+  -webkit-app-region: no-drag;
+}
+
+.dh-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--dh-text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.dh-brand .dh-brand-mark {
+  width: 20px;
+  height: 20px;
+}
+
+.dh-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  outline: none;
+  transform: translateY(6px);
+  transition: transform 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.document-home.is-shown .dh-scroll { transform: none; }
+.document-home.is-drag-over .dh-scroll {
+  outline: 2px dashed var(--dh-focus);
+  outline-offset: -12px;
+}
+
+.dh-inner {
+  max-width: 1140px;
+  margin: 0 auto;
+  padding: 0 40px;
+}
+
+.dh-start {
+  padding: 24px 0 28px;
+  border-bottom: 1px solid var(--dh-hairline);
+  background: var(--dh-strip);
+}
+
+.dh-recent { padding: 28px 0 64px; }
+
+.dh-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  margin-bottom: 16px;
+}
+
+.dh-heading {
+  margin: 0;
+  color: var(--dh-text);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.dh-spacer { flex: 1; }
+
+.dh-icon {
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.document-home button {
+  font: inherit;
+  cursor: default;
+  -webkit-app-region: no-drag;
+}
+
+.document-home button:focus-visible {
+  outline: 2px solid var(--dh-focus);
+  outline-offset: 2px;
+}
+
+.dh-ghost,
+.dh-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dh-text-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+/* 에이전트 집중 화면의 설정 행과 같은 자리: 아이콘 중심이 왼쪽·아래에서 22px. */
+.dh-settings {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dh-text-secondary);
+}
+.dh-settings .ag-icon { width: 15px; height: 15px; }
+
+.dh-ghost:hover,
+.dh-settings:hover,
+.dh-back:hover { background: var(--dh-hover); color: var(--dh-text); }
+.dh-ghost:active,
+.dh-back:active { background: var(--dh-pressed); }
+
+.dh-back {
+  position: relative;
+  max-width: min(320px, 40vw);
+  margin-left: 16px;
+  color: var(--dh-text);
+  font-weight: 500;
+}
+
+/* 제품 표시와 돌아가기 사이의 가는 칸막이 */
+.dh-back::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--dh-hairline-strong);
+}
+
+.dh-back[hidden] { display: none; }
+.dh-back-label { overflow: hidden; text-overflow: ellipsis; }
+
+.dh-gallery .dh-icon { transition: transform 160ms ease; }
+.dh-gallery.is-open .dh-icon { transform: rotate(180deg); }
+.dh-gallery[hidden] { display: none; }
+
+.dh-list-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 4px;
+}
+
+.dh-list-controls[hidden] { display: none; }
+
+/* ── 종이 ─────────────────────────────────────────────── */
+.dh-paper {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 210 / 297;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--dh-paper-blank);
+  box-shadow: var(--dh-paper-shadow);
+  transition: box-shadow 160ms ease, transform 160ms ease;
+}
+
+.dh-paper.has-thumb { background: var(--dh-paper); }
+
+/* 그리는 동안만 보이는 글줄 */
+.dh-sheet {
+  position: absolute;
+  inset: 14% 13% auto;
+  display: none;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.dh-paper.is-loading:not(.has-thumb) .dh-sheet { display: flex; }
+
+.dh-sheet-line {
+  height: 3px;
+  border-radius: 2px;
+  background: #e2e5ea;
+}
+
+.dh-sheet-line:nth-child(1) { width: 58%; height: 4px; margin-bottom: 4px; }
+.dh-sheet-line:nth-child(3) { width: 92%; }
+.dh-sheet-line:nth-child(4) { width: 70%; }
+.dh-sheet-line:nth-child(6) { width: 84%; }
+
+/* 미리보기가 없을 때의 형식 표시 */
+.dh-paper-format {
+  position: absolute;
+  top: 18%;
+  left: 0;
+  right: 0;
+  color: #8a929d;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.dh-paper.is-loading .dh-paper-format,
+.dh-paper.has-thumb .dh-paper-format { display: none; }
+
+.dh-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+.dh-paper.has-thumb .dh-thumb { opacity: 1; }
+
+/* ── 새로 만들기 줄 ───────────────────────────────────── */
+.dh-templates {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 20px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dh-template[hidden] { display: none; }
+
+.dh-template-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+
+.document-home .dh-template-card:focus-visible,
+.document-home .dh-card:focus-visible { outline: none; }
+
+.dh-template-card:hover .dh-paper,
+.dh-card:hover .dh-paper {
+  box-shadow: var(--dh-paper-shadow-hover);
+  transform: translateY(-1px);
+}
+
+/* 초점은 떨어진 고리, 펼친 카드는 붙은 먹선이다. 둘이 겹쳐도 구별된다. */
+.dh-template-card:focus-visible .dh-paper,
+.dh-card:focus-visible .dh-paper {
+  outline: 2px solid var(--dh-focus);
+  outline-offset: 4px;
+}
+
+.dh-template-card:active .dh-paper,
+.dh-card:active .dh-paper { transform: none; }
+
+.dh-paper-blank {
+  display: grid;
+  place-items: center;
+  color: #626b77;
+}
+
+.dh-paper-blank .dh-icon { stroke-width: 1.1; }
+
+.dh-paper-add {
+  display: grid;
+  place-items: center;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--dh-hairline-strong);
+  color: var(--dh-text-muted);
+}
+
+.dh-template-card:hover .dh-paper-add {
+  box-shadow: inset 0 0 0 1px var(--dh-text-muted);
+  transform: none;
+}
+
+.dh-template-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dh-template-name,
+.dh-card-name,
+.dh-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dh-template-name {
+  color: var(--dh-text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.dh-template-detail {
+  color: var(--dh-text-muted);
+  font-size: 12px;
+}
+
+/* ── 최근 문서 ────────────────────────────────────────── */
+.dh-segment {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--dh-chip);
+}
+
+.dh-segment-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dh-text-muted);
+  font-size: 12px;
+}
+
+.dh-segment-icon { width: 28px; padding: 0; }
+.dh-segment-btn:hover { color: var(--dh-text); }
+
+.dh-segment-btn[aria-checked='true'] {
+  background: var(--dh-raised);
+  box-shadow: 0 0 0 1px var(--dh-hairline), 0 1px 2px rgba(0, 0, 0, 0.06);
+  color: var(--dh-text);
+}
+
+.dh-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
+  gap: 32px 24px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dh-item { min-width: 0; transition: opacity 160ms ease, transform 160ms ease; }
+.dh-item.is-leaving { opacity: 0; transform: scale(0.97); }
+.dh-item.is-dimmed .dh-paper { opacity: 0.5; }
+
+.dh-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+
+/* 첫 쪽의 윗부분만 보인다. 이름과 함께 알아보기에 충분하다. */
+.dh-doc-paper { aspect-ratio: 4 / 4.7; }
+
+.dh-card[aria-expanded='true'] .dh-paper {
+  box-shadow: 0 0 0 2px var(--dh-ink);
+}
+
+/* 작업 트리가 있는 문서는 오른쪽 아래로 두 장이 겹쳐 보인다. 윗선은 다른 카드와 같다. */
+.dh-paper-stack,
+.dh-card:hover .dh-paper-stack {
+  box-shadow:
+    var(--dh-paper-shadow),
+    4px 4px 0 -1px var(--dh-paper-blank),
+    4px 4px 0 0 var(--dh-paper-edge),
+    8px 8px 0 -2px var(--dh-paper-blank),
+    8px 8px 0 -1px var(--dh-paper-edge);
+}
+
+.dh-card[aria-expanded='true'] .dh-paper-stack {
+  box-shadow:
+    0 0 0 2px var(--dh-ink),
+    4px 4px 0 -1px var(--dh-paper-blank),
+    4px 4px 0 0 var(--dh-paper-edge),
+    8px 8px 0 -2px var(--dh-paper-blank),
+    8px 8px 0 -1px var(--dh-paper-edge);
+}
+
+.dh-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin-top: 4px;
+}
+
+.dh-card-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.dh-card-name {
+  color: var(--dh-text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.dh-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--dh-text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.dh-format {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--dh-chip);
+  color: var(--dh-text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.dh-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--dh-text-secondary);
+}
+
+.dh-live::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.dh-flag { color: var(--dh-text-secondary); }
+
+/* 작업 트리 묶음 표시: 갈래 아이콘, 가지 색 점, 사본 수가 한 덩어리다. */
+.dh-tree-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--dh-chip);
+  color: var(--dh-text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.dh-tree-dots { display: inline-flex; gap: 2px; }
+
+.dh-tree-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--worktree-color, #379cff);
+}
+
+
+/* 목록 보기 */
+.dh-grid.is-list {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
+.dh-grid.is-list .dh-item + .dh-item { border-top: 1px solid var(--dh-hairline); }
+
+.dh-grid.is-list .dh-card {
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.dh-grid.is-list .dh-card:hover { background: var(--dh-hover); }
+.dh-grid.is-list .dh-card:focus-visible { outline: 2px solid var(--dh-focus); outline-offset: -2px; }
+.dh-grid.is-list .dh-card:focus-visible .dh-paper { outline: none; }
+.dh-grid.is-list .dh-card[aria-expanded='true'] { background: var(--dh-hover); }
+
+.dh-grid.is-list .dh-paper {
+  flex: none;
+  width: 32px;
+  aspect-ratio: 210 / 297;
+  border-radius: 2px;
+}
+
+.dh-grid.is-list .dh-card:hover .dh-paper { transform: none; }
+.dh-grid.is-list .dh-sheet { inset: 14% 14% auto; gap: 3px; }
+.dh-grid.is-list .dh-sheet-line { height: 1.5px; }
+.dh-grid.is-list .dh-paper-format { font-size: 7px; }
+
+.dh-grid.is-list .dh-paper-stack,
+.dh-grid.is-list .dh-card[aria-expanded='true'] .dh-paper-stack {
+  box-shadow:
+    var(--dh-paper-shadow),
+    3px 3px 0 -1px var(--dh-paper-blank),
+    3px 3px 0 0 var(--dh-paper-edge);
+}
+
+.dh-grid.is-list .dh-card[aria-expanded='true'] .dh-paper:not(.dh-paper-stack) { box-shadow: var(--dh-paper-shadow); }
+
+.dh-grid.is-list .dh-card-text {
+  flex: 1;
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+  margin-top: 0;
+}
+
+.dh-grid.is-list .dh-card-title { flex: 1; }
+.dh-grid.is-list .dh-card-meta { flex: none; min-width: 180px; justify-content: flex-end; }
+.dh-grid.is-list .dh-tree-token { order: -1; margin-left: 0; margin-right: auto; }
+
+/* ── 펼친 작업 ───────────────────────────────────────── */
+/* 줄 전체를 차지하는 자리 안에서, 고른 카드 쪽에 붙은 작은 판으로 놓인다. */
+.dh-detail {
+  grid-column: 1 / -1;
+  margin-top: -16px;
+}
+
+.dh-detail-panel {
+  position: relative;
+  width: fit-content;
+  max-width: min(560px, 100%);
+  margin-left: var(--dh-panel-left, 0px);
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--dh-raised);
+  box-shadow: var(--dh-detail-shadow);
+  animation: dh-detail-in 160ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* 고른 카드를 가리키는 작은 꼭지 */
+.dh-detail-panel::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: calc(var(--dh-notch, 40px) - 6px);
+  width: 12px;
+  height: 12px;
+  background: var(--dh-raised);
+  box-shadow: -1px -1px 0 var(--dh-hairline);
+  transform: rotate(45deg);
+}
+
+:root[data-theme-effective='dark'] .dh-detail-panel::before { box-shadow: -1px -1px 0 var(--dh-hairline-strong); }
+
+.dh-grid.is-list .dh-detail { margin: 4px 0 12px; }
+.dh-grid.is-list .dh-detail-panel { margin-left: 56px; }
+.dh-grid.is-list .dh-detail-panel::before { display: none; }
+
+@keyframes dh-detail-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.dh-actions,
+.dh-rename {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+}
+
+.dh-rename {
+  min-width: 280px;
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.dh-action {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dh-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.dh-action:hover { background: var(--dh-hover); }
+.dh-action:active { background: var(--dh-pressed); }
+
+.dh-action-primary {
+  padding: 0 14px;
+  margin-right: 4px;
+  background: var(--dh-ink);
+  color: var(--dh-ink-inverse);
+}
+
+.dh-action-primary:hover { background: color-mix(in oklab, var(--dh-ink) 86%, var(--dh-ink-inverse)); }
+.dh-action-primary:active { background: color-mix(in oklab, var(--dh-ink) 74%, var(--dh-ink-inverse)); }
+
+.dh-action-quiet { color: var(--dh-text-muted); }
+
+.dh-detail-note {
+  margin: 8px 8px 4px;
+  color: var(--dh-text-muted);
+  font-size: 12px;
+}
+
+.dh-trees {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--dh-hairline);
+}
+
+.dh-trees-title {
+  margin: 0 8px 4px;
+  color: var(--dh-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.dh-tree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dh-tree {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--dh-text);
+  font-size: 13px;
+  text-align: left;
+}
+
+.dh-tree:hover { background: var(--dh-hover); }
+.dh-tree .worktree-chip { margin-left: 0; max-width: 200px; font-size: 12px; }
+.dh-tree-name { flex: 1; min-width: 0; color: var(--dh-text-secondary); }
+
+.dh-tree-date {
+  flex: none;
+  margin-left: auto;
+  padding-left: 16px;
+  color: var(--dh-text-muted);
+  font-size: 12px;
+}
+
+/* ── 빈 목록과 알림 ───────────────────────────────────── */
+.dh-empty {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 56px 0 40px;
+  color: var(--dh-text-muted);
+}
+
+.dh-empty-title { font-size: 13px; }
+
+.dh-status {
+  margin: 12px 0 0;
+  color: var(--dh-text-muted);
+  font-size: 12px;
+}
+
+.dh-status:empty { display: none; }
+
+.dh-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--dh-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ── 좁은 폭 ─────────────────────────────────────────── */
+/* 창 폭이 아니라 홈 자신의 폭을 본다. */
+@container document-home (max-width: 720px) {
+  .dh-inner { padding: 0 16px; }
+  .dh-brand-name { display: none; }
+  .dh-templates { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 16px 12px; }
+  .dh-grid { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 24px 16px; }
+  .dh-bar { flex-wrap: wrap; }
+  .dh-grid.is-list .dh-card-meta { min-width: 0; }
+  .dh-grid.is-list .dh-date { display: none; }
+  .dh-grid.is-list .dh-detail-panel { margin-left: 0; }
+  .dh-segment-btn { padding: 0 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .document-home,
+  .dh-scroll,
+  .dh-item,
+  .dh-paper,
+  .dh-thumb,
+  .dh-gallery .dh-icon { transition: none; }
+  .dh-scroll { transform: none; }
+  .dh-detail-panel { animation: none; }
+}

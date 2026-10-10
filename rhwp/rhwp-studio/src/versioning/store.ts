@@ -884,6 +884,45 @@ async function repositorySnapshotFromTransaction(
   }, { copyBlobBytes: false });
 }
 
+export interface RepositorySnapshotsFromRowsResult {
+  snapshots: VersionRepositorySnapshot[];
+  /** Repositories whose rows were incomplete or corrupt, so no snapshot could be built. */
+  skipped: string[];
+}
+
+/**
+ * Rebuild portable repository snapshots from the raw rows of another version
+ * database, such as one an earlier release kept under a different name. Rows are
+ * keyed by object store name; unknown stores are ignored.
+ */
+export async function repositorySnapshotsFromRows(
+  rows: Readonly<Record<string, readonly unknown[] | undefined>>,
+): Promise<RepositorySnapshotsFromRowsResult> {
+  const state = memoryState();
+  for (const store of STORE_NAMES) {
+    for (const raw of rows[store] ?? []) {
+      if (!raw || typeof raw !== 'object') continue;
+      const row = store === 'blobs' && !((raw as VersionBlob).bytes instanceof Uint8Array)
+        ? { ...(raw as VersionBlob), bytes: new Uint8Array((raw as { bytes: ArrayBufferLike }).bytes) }
+        : raw;
+      const key = rowKey(store, row as StoreRows[typeof store]);
+      if (key === undefined || key === null) continue;
+      (state[store] as Map<IDBValidKey, unknown>).set(key, row);
+    }
+  }
+  const transaction = memoryTransaction(state);
+  const snapshots: VersionRepositorySnapshot[] = [];
+  const skipped: string[] = [];
+  for (const repository of state.repositories.values()) {
+    try {
+      snapshots.push(await repositorySnapshotFromTransaction(transaction, repository.id));
+    } catch {
+      skipped.push(String(repository.id));
+    }
+  }
+  return { snapshots, skipped };
+}
+
 function snapshotMetadata(snapshot: VersionRepositorySnapshot): unknown {
   const sorted = sortedRepositorySnapshot(snapshot, { copyBlobBytes: false });
   return {
@@ -1593,6 +1632,11 @@ export class VersionGraphStore {
   async listWorktrees(id: RepositoryId): Promise<VersionWorktree[]> {
     return this.#transaction('readonly', async (tx) => (await repositoryWorktrees(tx, id))
       .sort((left, right) => Number(right.primary) - Number(left.primary) || left.createdAt - right.createdAt || left.id.localeCompare(right.id)));
+  }
+
+  /** 모든 문서의 작업 트리. 문서 홈이 사본을 원본 문서 아래로 묶을 때 쓴다. */
+  async listAllWorktrees(): Promise<VersionWorktree[]> {
+    return this.#transaction('readonly', async (tx) => tx.getAll('worktrees'));
   }
 
   async ensurePrimaryWorktree(input: EnsurePrimaryWorktreeInput): Promise<VersionWorktree> {

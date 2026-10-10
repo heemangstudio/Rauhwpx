@@ -1,69 +1,86 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import test, { after, before } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import test from 'node:test';
 
 import { CommandDispatcher } from '../src/command/dispatcher.ts';
 import { EventBus } from '../src/core/event-bus.ts';
 import { AgentToolExecutor } from '../src/agent/tool-executor.ts';
 import { createTestModuleServer } from './support/module-server.ts';
 
-const bridge = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
-const sidebar = readFileSync(new URL('../src/ui/agent-sidebar/index.ts', import.meta.url), 'utf8');
-const desktopIntegration = readFileSync(new URL('../src/desktop-integration.ts', import.meta.url), 'utf8');
-const toolExecutor = readFileSync(new URL('../src/agent/tool-executor.ts', import.meta.url), 'utf8');
-const css = readFileSync(new URL('../src/ui/agent-sidebar/agent-sidebar.css', import.meta.url), 'utf8');
-const studioRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const rootDir = fileURLToPath(new URL('..', import.meta.url));
+let vite: Awaited<ReturnType<typeof createTestModuleServer>>;
+let inputHandlerProto: any;
 
-test('template artifact opens read-only only after its main-chat card is clicked', () => {
-  assert.doesNotMatch(bridge, /template-preview-ready/);
-  assert.doesNotMatch(bridge, /template-preview-opened/);
-  assert.match(desktopIntegration, /templatePreview'\) === '1' \? \{ readOnly: true \}/);
-  assert.match(sidebar, /const card = el\('span', 'ag-md-artifact-card'\)/);
-  assert.match(sidebar, /openPublishedDocumentInNewWindow\(artifact, undefined, \{ readOnly: artifact\.readOnly === true \}\)/);
-  assert.match(css, /\.ag-md-artifact-card\s*\{[^}]*display:\s*flex;[^}]*border:/s);
-  assert.match(css, /\.ag-md-artifact-open\s*\{[^}]*flex:\s*1 1 auto;/s);
+before(async () => {
+  vite = await createTestModuleServer(rootDir);
+  inputHandlerProto = (await vite.ssrLoadModule('/src/engine/input-handler.ts')).InputHandler.prototype;
 });
 
-test('read-only input blocks typing, clipboard writes, operations, and applied snapshots', async () => {
-  const vite = await createTestModuleServer(studioRoot);
-  try {
-    const [{ InputHandler }, { onInput }, { onKeyDown, onCut, onPaste }] = await Promise.all([
-      vite.ssrLoadModule('/src/engine/input-handler.ts'),
-      vite.ssrLoadModule('/src/engine/input-handler-text.ts'),
-      vite.ssrLoadModule('/src/engine/input-handler-keyboard.ts'),
-    ]);
-    const calls: string[] = [];
-    const handler = Object.create(InputHandler.prototype) as any;
-    handler.active = true;
-    handler.textarea = { blur: () => calls.push('blur') };
-    handler.container = { style: { cursor: 'text' } };
-    handler.clearPendingCharFormat = () => calls.push('clear-format');
-    handler.eventBus = { emit: () => {} };
-    handler.resetTextareaBuffer = () => calls.push('reset-input');
-    handler.wasm = { saveSnapshot: () => { calls.push('snapshot'); return 1; } };
-    handler.history = { execute: () => calls.push('history') };
-
-    handler.setReadOnly(true);
-    assert.deepEqual(calls, ['blur', 'clear-format']);
-    assert.equal(handler.container.style.cursor, '');
-
-    onInput.call(handler, { data: 'blocked' });
-    const event = { key: 'a', code: 'KeyA', ctrlKey: false, metaKey: false,
-      shiftKey: false, altKey: false, preventDefault: () => calls.push('prevent') };
-    onKeyDown.call(handler, event);
-    onCut.call(handler, event);
-    onPaste.call(handler, event);
-    handler.executeOperation({ kind: 'command', command: { type: 'insertText' } });
-    assert.throws(() => handler.executeAppliedSnapshot('replace', () => calls.push('edit')), /read-only/);
-    assert.deepEqual(calls, ['blur', 'clear-format', 'reset-input', 'prevent', 'reset-input', 'prevent', 'prevent']);
-  } finally {
-    await vite.close();
-  }
+after(async () => {
+  await vite?.close();
 });
 
+/** 건드리면 바로 실패하는 문서 서비스. 읽기 전용 게이트가 먼저 막았는지 본다. */
+function untouchable(name: string): any {
+  return new Proxy({}, {
+    get: (_target, key) => {
+      throw new Error(`read-only preview touched ${name}.${String(key)}`);
+    },
+  });
+}
+
+test('read-only preview input handler blocks operations, snapshots, typing, keys, cut and paste', () => {
+  let textareaResets = 0;
+  const handler: any = Object.create(inputHandlerProto);
+  Object.assign(handler, {
+    active: true,
+    readOnly: true,
+    userEditingLocked: false,
+    cursor: untouchable('cursor'),
+    wasm: untouchable('wasm'),
+    history: untouchable('history'),
+    imeSession: untouchable('imeSession'),
+    resetTextareaBuffer: () => { textareaResets += 1; },
+  });
+  let prevented = 0;
+  const event = (extra: Record<string, unknown> = {}) => ({
+    preventDefault: () => { prevented += 1; },
+    key: 'Backspace',
+    code: 'Backspace',
+    ...extra,
+  });
+
+  handler.executeOperation({ kind: 'command', command: untouchable('command') });
+  assert.throws(() => handler.executeAppliedSnapshot('replace', () => 1), /template preview is read-only/);
+  handler.onInput({ inputType: 'insertText', data: '가', isComposing: false });
+  handler.onKeyDown(event());
+  handler.onKeyDown(event({ key: 'v', code: 'KeyV', ctrlKey: true }));
+  handler.onCut(event());
+  handler.onPaste(event({ clipboardData: untouchable('clipboardData') }));
+  assert.equal(prevented, 4);
+  assert.ok(textareaResets >= 3, 'typed text must not stay queued for a later edit');
+});
+
+test('entering read-only mode drops focus, pending formatting and the text cursor', () => {
+  const calls: string[] = [];
+  const handler: any = Object.create(inputHandlerProto);
+  Object.assign(handler, {
+    active: true,
+    textarea: { blur: () => calls.push('blur') },
+    container: { style: { cursor: 'text' } },
+    clearPendingCharFormat: () => calls.push('clear-format'),
+    eventBus: { emit: () => {} },
+  });
+  handler.setReadOnly(true);
+  assert.deepEqual(calls, ['blur', 'clear-format']);
+  assert.equal(handler.container.style.cursor, '');
+});
+
+// 남은 소스 가드: 템플릿 블록 전송은 실제 템플릿 문서·네이티브 importer 를 거쳐야 해서
+// 단위 테스트로 재현하기 어렵다. URL 플래그 배선은 main-entry-guards.test.ts 가 지킨다.
 test('template block insertion transfers exact source bytes through the native importer', () => {
+  const toolExecutor = readFileSync(new URL('../src/agent/tool-executor.ts', import.meta.url), 'utf8');
   const insertBlock = toolExecutor.match(
     /private async templateInsertBlock[\s\S]*?\n  dispose\(\): void/,
   )?.[0];

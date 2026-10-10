@@ -1,10 +1,16 @@
+import './support/wasm-liftoff.ts';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { mergeResourceDependencyErrors } from '../src/versioning/merge-validation.ts';
+import { requireWasmPackage } from './browser-support.ts';
+import { createTestModuleServer } from './support/module-server.ts';
 
-const bridgeSource = readFileSync(new URL('../src/core/wasm-bridge.ts', import.meta.url), 'utf8');
+const rootDir = fileURLToPath(new URL('..', import.meta.url));
+
+requireWasmPackage(resolve(rootDir, '../pkg'));
 
 test('merge resource validation rejects every unloaded external image dependency', () => {
   assert.deepEqual(mergeResourceDependencyErrors([
@@ -26,10 +32,28 @@ test('merge resource validation accepts embedded or successfully loaded dependen
   ]), []);
 });
 
-test('external image dependency reports distinguish valid emptiness from unavailable data', () => {
-  assert.match(bridgeSource, /typeof getReferences !== 'function'[\s\S]*종속성 정보를 사용할 수 없습니다/);
-  assert.match(bridgeSource, /typeof raw !== 'string'[\s\S]*종속성 정보 형식이 올바르지 않습니다/);
-  assert.match(bridgeSource, /catch \{\s*throw new Error\('문서의 외부 이미지 종속성 정보를 읽지 못했습니다'\);/);
-  assert.match(bridgeSource, /if \(!Array\.isArray\(parsed\)\) \{\s*throw new Error\('문서의 외부 이미지 종속성 정보 형식이 올바르지 않습니다'\);/);
-  assert.match(bridgeSource, /return parsed\.filter/);
+test('external image dependency reports distinguish valid emptiness from unavailable data', async () => {
+  const vite = await createTestModuleServer();
+  try {
+    const { WasmBridge } = await vite.ssrLoadModule('/src/core/wasm-bridge.ts');
+    const references = (doc: unknown) => {
+      const bridge = Object.create(WasmBridge.prototype);
+      bridge.doc = doc;
+      return () => bridge.getExternalImageReferences();
+    };
+    const reporting = (raw: unknown) => references({ getExternalImageReferences: () => raw });
+
+    // 정보를 얻지 못한 경우는 "의존성 없음"으로 바꾸지 않고 실패로 알린다.
+    assert.throws(references({}), /사용할 수 없습니다/);
+    assert.throws(reporting(5), /형식이 올바르지 않습니다/);
+    assert.throws(reporting('not json'), /읽지 못했습니다/);
+    assert.throws(reporting('{}'), /형식이 올바르지 않습니다/);
+    assert.deepEqual(reporting('[]')(), []);
+    assert.deepEqual(
+      reporting(JSON.stringify([{ basename: 'a.png', loaded: false }, null, { basename: 'b.png' }]))(),
+      [{ basename: 'a.png', loaded: false }],
+    );
+  } finally {
+    await vite.close();
+  }
 });

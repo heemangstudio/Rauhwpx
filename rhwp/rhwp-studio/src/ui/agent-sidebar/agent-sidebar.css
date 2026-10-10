@@ -444,16 +444,8 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 .ag-model-summary {
-  min-height: 52px;
+  min-height: 44px;
   padding: 8px 12px 8px 10px;
-}
-
-/* 전체 화면 토글 — 헤더 왼쪽 모서리에 고정. 모드 전환 때
-   DOM 을 옮기지 않으므로 위치가 흔들리지 않는다. */
-.ag-model-summary > .ag-fullscreen-btn {
-  flex: 0 0 auto;
-  align-self: center;
-  margin-right: 0;
 }
 
 .ag-context-row {
@@ -463,16 +455,19 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   padding: 0 2px;
 }
 
+/* 채팅 이름 / 문서 이름 — 집중 화면 제목 줄과 같은 가로 배치. */
 .ag-document-context {
   display: flex;
   flex: 1 1 auto;
+  align-items: baseline;
+  gap: 7px;
   min-width: 0;
-  flex-direction: column;
-  gap: 0;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-tight);
 }
 
-.ag-document-name,
-.ag-selection-context {
+.ag-chat-title,
+.ag-document-name {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -480,20 +475,17 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   white-space: nowrap;
 }
 
-.ag-document-name {
+.ag-chat-title {
+  flex: 0 1 auto;
+  max-width: 60%;
   color: var(--ag-text);
-  font-size: var(--ag-fs-body);
-  font-weight: var(--ag-fw-strong);
-  letter-spacing: var(--ag-track-tight);
-  line-height: var(--ag-lh-tight);
+  font-weight: var(--ag-fw-medium);
 }
 
-/* Selection context stays secondary to the document title. */
-.ag-selection-context {
+/* 가운데 줄임이 남은 폭 전체를 재도록 내용과 무관한 폭을 갖는다. */
+.ag-document-name {
+  flex: 1 1 0;
   color: var(--ag-text-secondary);
-  font-size: var(--ag-fs-meta);
-  font-variant-numeric: var(--ag-numeric);
-  line-height: var(--ag-lh-secondary);
 }
 
 .ag-header-actions {
@@ -949,14 +941,14 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   right: 0;
   bottom: calc(100% + 6px);
   left: auto;
-  width: 212px;
+  width: 196px;
   min-width: 0;
   padding: 5px;
-  /* 배경과 확실히 갈리도록 한 단계 밝은 면 + 밝은 테두리 선. */
-  background: color-mix(in oklab, color-mix(in oklab, var(--ag-raised) 90%, var(--ag-text)) 88%, transparent);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  backdrop-filter: blur(28px) saturate(180%);
-  box-shadow: var(--ag-elev-popover), inset 0 0 0 1px var(--ag-border-strong);
+  /* 뒤쪽 내용이 비치는 유리 면과 얇은 안쪽 테두리. */
+  background: color-mix(in oklab, var(--ag-raised) 68%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+  box-shadow: var(--ag-elev-popover), inset 0 0 0 0.5px color-mix(in oklab, var(--ag-text) 18%, transparent);
   transform-origin: bottom right;
   transform: scale(0.9);
   transition:
@@ -998,9 +990,9 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 .ag-mode-item[data-mode='full'] { --ag-mode-color: var(--ag-mode-full); }
 
 .ag-mode .ag-mode-item {
-  gap: 10px;
-  min-height: 40px;
-  padding: 5px 8px 5px 10px;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 7px;
 }
 
 .ag-mode .ag-mode-item.ag-active {
@@ -1028,19 +1020,21 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
-  flex-direction: column;
-  gap: 1px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
   line-height: 1.25;
 }
 
 .ag-mode-name {
-  color: var(--ag-mode-color);
+  color: var(--ag-text);
   font-weight: var(--ag-fw-medium);
 }
 
 .ag-mode-detail {
-  color: var(--ag-text-tertiary);
+  color: var(--ag-text-secondary);
   font-size: var(--ag-fs-meta);
+  white-space: nowrap;
 }
 
 .ag-mode-check {
@@ -1057,7 +1051,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 
 .ag-mode-separator {
   height: 0.5px;
-  margin: 4px 8px;
+  margin: 3px 7px;
   background: var(--ag-border-strong);
 }
 
@@ -2753,6 +2747,40 @@ button.ag-skill-copy {
   line-height: var(--ag-lh-secondary);
 }
 
+/* 대화 흐름의 구분선 — 프로바이더 전환·맥락 압축. 선 · 아이콘 · 이름 · 선. */
+.ag-marker {
+  display: flex;
+  align-self: stretch;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-tight);
+  font-variant-numeric: var(--ag-numeric);
+  white-space: nowrap;
+  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) both;
+}
+
+.ag-marker-line {
+  flex: 1 1 0;
+  min-width: 16px;
+  height: 1px;
+  background: var(--ag-border);
+}
+
+.ag-marker .ag-marker-icon {
+  width: 12px;
+  height: 12px;
+  color: var(--ag-text-tertiary);
+}
+
+.ag-marker-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ─── 진행 타임라인 + 접힌 도구 호출 ────────────────── */
 
 .ag-progress-step {
@@ -3831,6 +3859,189 @@ button.ag-skill-copy {
   min-width: 0;
 }
 
+/* 맥락 창 사용량. 사용량을 알기 전에는 자리를 차지하지 않는다. */
+.ag-context {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.ag-context[hidden] {
+  display: none;
+}
+
+.ag-context-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-context-btn:hover,
+.ag-context-open .ag-context-btn {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-context-btn:active {
+  background: var(--ag-pressed);
+  transition: none;
+}
+
+.ag-context-btn:focus-visible,
+.ag-context-compact:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-context-ring {
+  display: block;
+  width: 14px;
+  height: 14px;
+  transform: rotate(-90deg);
+}
+
+.ag-context-ring circle {
+  fill: none;
+  stroke-width: 2.25;
+}
+
+.ag-context-ring-track {
+  stroke: var(--ag-border-strong);
+}
+
+.ag-context-ring-value {
+  stroke: currentColor;
+  stroke-dasharray: 0 100;
+  transition: stroke-dasharray var(--ag-dur-slow) var(--ag-ease-out);
+}
+
+.ag-context[data-level='high'] .ag-context-btn,
+.ag-context[data-level='high'] .ag-context-percent {
+  color: var(--ag-err);
+}
+
+.ag-context-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 196px;
+  padding: 12px;
+  border-radius: var(--ag-r-sheet);
+  background: var(--ag-raised);
+  box-shadow: var(--ag-elev-popover), inset 0 0 0 1px var(--ag-border-strong);
+  transform-origin: bottom right;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: scale(0.96);
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    transform var(--ag-dur-exit) var(--ag-ease-out),
+    visibility 0s linear var(--ag-dur-exit);
+}
+
+.ag-context-open .ag-context-popover {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: none;
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    transform var(--ag-dur-base) var(--ag-spring),
+    visibility 0s linear 0s;
+}
+
+.ag-context-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-variant-numeric: var(--ag-numeric);
+}
+
+.ag-context-percent {
+  color: var(--ag-text);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-strong);
+  line-height: var(--ag-lh-tight);
+}
+
+.ag-context-count {
+  margin-left: auto;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-context-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-hover);
+}
+
+.ag-context-bar[hidden] {
+  display: none;
+}
+
+.ag-context-bar-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ag-text-secondary);
+  transition: width var(--ag-dur-slow) var(--ag-ease-out);
+}
+
+.ag-context[data-level='high'] .ag-context-bar-fill {
+  background: var(--ag-err);
+}
+
+.ag-context-compact {
+  height: 28px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--ag-hover);
+  color: var(--ag-text);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-context-compact:hover:not([aria-disabled='true']) {
+  background: var(--ag-selected);
+}
+
+.ag-context-compact:active:not([aria-disabled='true']) {
+  background: var(--ag-pressed);
+  transition: none;
+}
+
+.ag-context-compact[aria-disabled='true'] {
+  color: var(--ag-text-disabled);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-context-popover,
+  .ag-context-open .ag-context-popover {
+    transform: none;
+  }
+}
+
 /* 플랜의 진행 단계(승인 대기·전환·실행)만 보이는 읽기 전용 상태다. 모드는 옆 칩이 말한다. */
 .ag-phase-badge {
   flex: 0 0 auto;
@@ -4389,11 +4600,6 @@ button.ag-skill-copy {
 .ag-plan-source-note { color: var(--ag-text-secondary); font-size: var(--ag-fs-meta); }
 .ag-plan-source-locator { color: var(--ag-text-secondary); font-family: var(--ag-mono); font-size: var(--ag-fs-mono); overflow-wrap: anywhere; }
 
-.ag-plan-draft-card { padding: 12px 2px; }
-.ag-plan-draft-action { padding: 8px 12px; border: 1px solid var(--ag-border); border-radius: var(--ag-r-row); background: var(--ag-bg); color: var(--ag-text); font: inherit; cursor: default; }
-.ag-plan-draft-action:hover { background: var(--ag-hover); }
-.ag-plan-draft-action:focus-visible { outline: var(--ag-focus-ring); outline-offset: var(--ag-focus-offset); }
-.ag-plan-draft-action:disabled { opacity: 0.5; cursor: default; }
 
 .ag-plan-footer {
   position: static;
@@ -4666,6 +4872,12 @@ button.ag-skill-copy {
 .ag-md-artifact-open.ag-failed {
   color: var(--ag-err);
 }
+
+.ag-md-artifact-card.ag-gone .ag-md-artifact-open { cursor: default; }
+.ag-md-artifact-card.ag-gone .ag-md-artifact-open:hover { background: transparent; }
+.ag-md-artifact-card.ag-gone .ag-md-artifact-icon,
+.ag-md-artifact-card.ag-gone .ag-md-artifact-name { opacity: 0.55; }
+.ag-md-artifact-card.ag-gone .ag-md-artifact-hint { white-space: normal; }
 
 .ag-md-artifact-download {
   display: inline-flex;
@@ -5122,6 +5334,16 @@ button.ag-skill-copy {
   color: var(--ag-text);
 }
 
+/* 미뤄 둔 첫 실행 설정 칩 — 문체 칩과 같은 모양에 픽셀 하마(1배, 닫은 입) 하나. */
+.ag-setup-chip-hippo {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 20px;
+  margin-left: -4px;
+  background: url('/images/boot/hama-sprites.png') 0 0 / 156px 20px no-repeat;
+  image-rendering: pixelated;
+}
+
 /* 재연결 칩 — 문체 칩과 같은 자리. 닫기 없이, 로그인이 돌아오면 스스로 걷힌다. */
 .ag-reconnect-chip {
   padding: 2px;
@@ -5283,6 +5505,29 @@ button.ag-skill-copy {
 .ag-composer:focus-within {
   border-color: var(--ag-border-strong);
   box-shadow: var(--ag-elev-composer);
+}
+
+/* 자료·영역을 끌어 올 때 입력창 위에 뜨는 놓기 표시. 파일 첨부 표시와 같은 모양이다. */
+.ag-composer::after {
+  content: '놓아서 메시지에 언급';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  border: 1.5px dashed var(--n-ink-tertiary);
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--ag-bg) 92%, transparent);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 140ms var(--ag-motion-out);
+}
+
+.ag-composer.ag-mention-dragging::after {
+  opacity: 1;
 }
 
 
@@ -6256,7 +6501,7 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   grid-column: 1 / -1;
   grid-row: 1;
   display: grid;
-  /* 첫 칸은 레일 폭과 정확히 같아야 한다. 레일 최소 폭(200px)보다 큰 하한을
+  /* 첫 칸은 레일 폭과 정확히 같아야 한다. 레일 최소 폭(220px)보다 큰 하한을
      두면 제목이 레일 면을 넘어 대화 면 위에서 잘린다. */
   grid-template-columns: var(--ag-rail-w, 264px) minmax(280px, 1fr) minmax(230px, auto);
   align-items: stretch;
@@ -6270,7 +6515,8 @@ html.ag-fs-vt-exit::view-transition-new(root) {
 /* 레일이 접히면 첫 칸은 토글까지만 남아 제목이 토글 바로 뒤로 온다. */
 .ag-fullscreen.ag-rail-collapsed .ag-workspace-bar {
   grid-template-columns:
-    calc(var(--ag-workspace-lead-inset) + 32px) minmax(280px, 1fr) minmax(230px, auto);
+    calc(var(--ag-workspace-lead-inset) + 32px + var(--ag-workspace-home-w, 0px) + 8px + var(--ag-workspace-brand-short-w, 66px) + 14px)
+    minmax(280px, 1fr) minmax(230px, auto);
 }
 
 .ag-fullscreen .ag-workspace-leading {
@@ -6324,7 +6570,8 @@ html.ag-fs-vt-exit::view-transition-new(root) {
    빈 면은 모두 창 드래그, 조작 가능한 자식만 no-drag 로 뺀다. */
 html.desktop-mac .ag-fullscreen {
   --ag-workspace-bar-h: var(--desktop-titlebar-height, 38px);
-  --ag-workspace-lead-inset: calc(10px + var(--desktop-traffic-light-inset, 78px));
+  /* 레일 토글은 홈 단추에 조금 더 붙는다. 두 아이콘 사이가 5px 이다. */
+  --ag-workspace-lead-inset: calc(var(--desktop-home-reserve, 98px) - 3px);
 }
 
 html.desktop-mac .ag-fullscreen .ag-workspace-bar {
@@ -6414,13 +6661,21 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   letter-spacing: var(--ag-track-tight);
 }
 
-/* 레일이 접히면 칸이 줄어드는 동안 먼저 사라진다. */
-.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand {
-  opacity: 0;
-  visibility: hidden;
-  transition:
-    opacity var(--ag-dur-fast) var(--ag-ease-out),
-    visibility 0s linear var(--ag-dur-fast);
+/* 레일이 접히면 마크와 짧은 이름 Hama 만 토글 옆에 남는다. */
+.ag-workspace-brand-short,
+.ag-workspace-brand.ag-short .ag-workspace-brand-name:not(.ag-workspace-brand-short),
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
+  display: none;
+}
+
+.ag-workspace-brand.ag-short {
+  /* 가장 좁은 레일(220px)에서도 신호등 옆에 마크와 Hama 가 들어가게 오른쪽 여백을 줄인다. */
+  margin-right: 4px;
+}
+
+.ag-workspace-brand.ag-short .ag-workspace-brand-short,
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-short {
+  display: inline;
 }
 
 .ag-workspace-trailing {
@@ -6766,22 +7021,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   display: none;
 }
 
-.ag-workspace-exit-btn {
-  display: inline-flex;
-  min-height: 32px;
-  align-items: center;
-  gap: 6px;
-  margin-left: 4px;
-  padding: 0 12px;
-  border-radius: var(--ag-r-row);
-  font-size: var(--ag-fs-secondary);
-}
-
-.ag-workspace-exit-btn .ag-icon {
-  width: 16px;
-  height: 16px;
-}
-
 /* Sidebar chrome gives way to the workspace title bar in focus mode. */
 .ag-fullscreen .ag-chat-page > .ag-header {
   display: none;
@@ -7075,25 +7314,19 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
     display: none;
   }
 
-  /* 레일이 덮개로 뜨는 폭에서는 첫 칸이 내용 폭이라 워드마크가 제목을 민다. */
-  .ag-workspace-brand {
+  /* 레일이 덮개로 뜨는 폭에서는 첫 칸이 내용 폭이라 짧은 이름 Hama 만 둔다. */
+  .ag-workspace-brand .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
     display: none;
+  }
+
+  .ag-workspace-brand .ag-workspace-brand-short {
+    display: inline;
   }
 }
 
 @media (max-width: 680px) {
-  .ag-workspace-exit-label {
-    display: none;
-  }
-
   .ag-fullscreen {
     --ag-workspace-lead-inset: 8px;
-  }
-
-  .ag-workspace-exit-btn {
-    width: 34px;
-    justify-content: center;
-    padding: 0;
   }
 
   .ag-environment-panel {
@@ -7260,16 +7493,33 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   }
 }
 
-/* 설정은 focus title bar를 유지한 채 두 번째 grid row를 채운다. */
+/* 설정은 제목 막대 높이까지 올라와 왼쪽 목록이 창 위 끝까지 한 면으로 이어진다.
+   닫기는 오른쪽 위 ✕ 와 Esc 가 맡는다. */
 .ag-workspace-settings-back {
   display: none;
+}
+
+.ag-fullscreen.ag-settings-open .ag-workspace-bar {
+  background: transparent;
+}
+
+.ag-fullscreen.ag-settings-open .ag-workspace-bar::before {
+  display: none;
+}
+
+.ag-fullscreen .ag-settings-nav {
+  padding-top: calc(var(--ag-workspace-bar-h, 48px) + 8px);
+}
+
+.ag-fullscreen .ag-settings-body {
+  margin-top: var(--ag-workspace-bar-h, 48px);
 }
 
 .ag-fullscreen .ag-settings-page {
   position: relative;
   inset: auto;
   grid-column: 1 / -1;
-  grid-row: 2;
+  grid-row: 1 / -1;
   z-index: 3;
   min-width: 0;
   min-height: 0;
@@ -7281,20 +7531,11 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   display: none;
 }
 
-.ag-fullscreen.ag-settings-open .ag-workspace-settings-back {
-  display: inline-flex;
-}
-
 .ag-fullscreen.ag-settings-open .ag-workspace-threads-btn,
 .ag-fullscreen.ag-settings-open .ag-workspace-document-context,
 .ag-fullscreen.ag-settings-open .ag-workspace-agent-context,
 .ag-fullscreen.ag-settings-open .ag-environment-wrap {
   display: none;
-}
-
-.ag-fullscreen.ag-settings-open .ag-workspace-settings-btn {
-  background: var(--ag-selected);
-  color: var(--ag-text);
 }
 
 /* 집중 모드는 대화 화면을 계속 붙여 두므로 설정을 열 때 두 화면을
@@ -8653,4 +8894,22 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   letter-spacing: 0.2em;
   text-align: center;
   opacity: 0.6;
+}
+
+/* 계획 초안 제안은 권한 요청 알약과 같은 모양을 쓴다. */
+.ag-plan-suggest .ag-icon { width: 13px; height: 13px; color: var(--ag-text-secondary); }
+
+/* macOS 셸에서는 문서 홈 단추가 신호등 옆에 늘 떠 있으므로 사이드바의 홈 단추는 숨긴다. */
+html.desktop-mac .ag-home-btn,
+html.desktop-mac .ag-workspace-home-btn {
+  display: none;
+}
+
+html.desktop-mac .ag-root {
+  --ag-workspace-home-w: 0px !important;
+}
+
+/* 토글 아이콘의 안쪽 여백만큼 워드마크를 당겨 아이콘 사이 간격을 고르게 둔다. */
+html.desktop-mac .ag-fullscreen .ag-workspace-brand {
+  margin-left: -6px;
 }

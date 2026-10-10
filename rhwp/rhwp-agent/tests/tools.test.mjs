@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod/v3';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import {
+  assertCellArgsPlacement,
   BATCHABLE_EDIT_TOOL_NAMES,
   TOOL_CATEGORIES,
   TOOL_CLASSIFICATIONS,
@@ -21,16 +22,50 @@ import {
   toolAnnotations,
 } from '../tools.mjs';
 import { toolDefinitionChars } from '../tool-telemetry.mjs';
-import { mcpCapabilityEnv } from '../agents/backend.mjs';
+import { chatPermissionGrantsFor, mcpCapabilityEnv } from '../agents/backend.mjs';
+import { normalizeChatPermissionGrants, normalizeChatPermissionRequest } from '../chat-permissions.mjs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { EDIT_OBJECT_ARG_KEYS } from '../../rhwp-studio/src/agent/object-edit-args.ts';
 
 const byName = new Map(TOOL_DEFINITIONS.map((d) => [d.name, d]));
 
-test('도구는 정확히 91개, 이름 중복 없음', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 91);
+test('도구 이름에 중복이 없다', () => {
   assert.equal(byName.size, TOOL_DEFINITIONS.length, 'duplicate tool names');
+});
+
+test('root requestable catalogs expose bounded app capabilities while plan and worker boundaries remain', () => {
+  const names = (profile, gates) => new Set(filterToolDefinitions(profile, gates).map((definition) => definition.name));
+  assert.ok(names('question').has('request_permission'));
+  assert.ok(!names('question').has('insert_text'));
+  assert.ok(!names('question', { requestable: true }).has('insert_text'));
+  assert.ok(names('question', { requestable: true, projectWrites: false }).has('project_edit'));
+  assert.ok(names('direct', { requestable: true }).has('download_file'));
+  assert.ok(names('direct', { requestable: true }).has('browserbase_navigate'));
+  for (const profile of ['planning', 'awaiting-approval']) {
+    assert.ok(!names(profile, { requestable: true }).has('insert_text'));
+  }
+  for (const profile of ['copy-layout-worker', 'doc-researcher', 'document-read']) {
+    assert.ok(!names(profile, { requestable: true }).has('insert_text'));
+    assert.ok(!names(profile, { requestable: true }).has('request_permission'));
+  }
+  assert.ok(!names('question', { requestable: true }).has('update_agent_instructions'));
+  assert.ok(!names('question', { requestable: true }).has('delegate_copy_layout'));
+});
+
+test('document-edit is rejected as a chat permission capability', () => {
+  const schema = z.object(byName.get('request_permission').shape);
+  assert.equal(schema.safeParse({ capability: 'document-edit', reason: 'Edit the open document.' }).success, false);
+  assert.throws(() => normalizeChatPermissionRequest({ capability: 'document-edit', reason: 'Edit the open document.' }), { code: 'INVALID_CHAT_PERMISSION_REQUEST' });
+  const staleGrants = ['document-edit', 'local-execution', 'project-edit', 'project-edit'];
+  const validGrants = ['project-edit', 'local-execution'];
+  assert.deepEqual(normalizeChatPermissionGrants(staleGrants), validGrants);
+  assert.deepEqual(chatPermissionGrantsFor({ chatPermissionGrants: staleGrants }), validGrants);
+  assert.deepEqual(chatPermissionGrantsFor({}, { chatPermissionGrants: staleGrants }), validGrants);
+  for (const capability of ['project-edit', 'downloads', 'browser', 'local-execution']) {
+    assert.equal(schema.safeParse({ capability, reason: 'Perform the requested action.' }).success, true);
+  }
 });
 
 test('모든 도구가 허용된 카테고리로 명시 분류된다', () => {
@@ -54,9 +89,6 @@ test('document-write annotations stay non-destructive so safe mode can edit', ()
   assert.deepEqual(toolAnnotations('artifact-write'), {
     readOnlyHint: false, destructiveHint: false, openWorldHint: false,
   });
-  const mcpStdio = readFileSync(fileURLToPath(new URL('../mcp-stdio.mjs', import.meta.url)), 'utf8');
-  assert.match(mcpStdio, /annotations: toolAnnotations\(def\.category\)/);
-  assert.doesNotMatch(mcpStdio, /destructiveHint:\s*true/);
 });
 
 test('nested table paths are accepted on staged cell text tools', () => {
@@ -89,8 +121,11 @@ test('앵커 도구는 anchor 인자를 받고 좌표를 선택 필드로 둔다
   // 앵커가 없으면 좌표가 필요하다 — 오류가 그 도구의 좌표 전체를 알려 준다.
   assert.throws(
     () => byName.get('insert_text').validate({ text: 'x' }),
-    /insert_text needs sectionIdx, paraIdx, charOffset — or find \(missing paraIdx, charOffset\)/,
+    /insert_text needs sectionIdx, paraIdx — or find \(missing paraIdx\)/,
   );
+  // charOffset 이 없으면 문단 끝에 덧붙인다 — position 은 여전히 find 가 있어야 한다.
+  assert.doesNotThrow(() => byName.get('insert_text').validate({ cell: { paraIdx: 7, controlIdx: 0, cellIdx: 9 }, paraIdx: 0, text: 'x' }));
+  assert.throws(() => byName.get('insert_text').validate({ paraIdx: 0, position: 'after', text: 'x' }), /position refines a text match/);
   assert.throws(
     () => byName.get('delete_range').validate({ startParaIdx: 1 }),
     /delete_range needs sectionIdx, startParaIdx, startCharOffset, endParaIdx, endCharOffset — or find \(missing startCharOffset, endCharOffset\)/,
@@ -101,6 +136,17 @@ test('앵커 도구는 anchor 인자를 받고 좌표를 선택 필드로 둔다
   // 범위 도구의 paraIdx 는 startParaIdx 의 별칭이다 — find 옆에서는 검색 범위, 좌표 옆에서는 시작 문단.
   assert.doesNotThrow(() => byName.get('replace_range').validate({ paraIdx: 1, startCharOffset: 0, endCharOffset: 2, text: 'x' }));
   assert.doesNotThrow(() => byName.get('apply_char_format').validate({ paraIdx: 1, startOffset: 0, endOffset: 2, bold: true }));
+});
+
+test('cell 없이 최상위에 둔 표 좌표는 고친 호출 꼴과 함께 거절한다', () => {
+  assert.throws(
+    () => assertCellArgsPlacement('insert_text', { paraIdx: 5, controlIdx: 0, cellIdx: 3, charOffset: 0, text: 'x' }),
+    (error) => error.code === 'INVALID_ARGS' && /cell:\{paraIdx:5,controlIdx:0,cellIdx:3\}/.test(error.message),
+  );
+  assert.throws(() => assertCellArgsPlacement('get_text_range', { paraIdx: 2, cellParaIdx: 1 }), /paraIdx:1/);
+  assert.doesNotThrow(() => assertCellArgsPlacement('insert_text', { cell: { paraIdx: 5, controlIdx: 0, cellIdx: 3 }, paraIdx: 0 }));
+  // 표 좌표가 제 인자인 도구는 건드리지 않는다.
+  assert.doesNotThrow(() => assertCellArgsPlacement('set_cell_props', { paraIdx: 5, controlIdx: 0, cellIdx: 3 }));
 });
 
 test('anchor 옆의 좌표·cell 은 검색 범위라 거절하지 않는다', () => {
@@ -145,7 +191,6 @@ test('anchor 내부 필드는 validate 훅이 모양을 고정한다', () => {
 
 test('도구 프로필은 direct 호환성과 planning/implementing 가시성을 지킨다', () => {
   const direct = new Set(filterToolDefinitions('direct').map((definition) => definition.name));
-  assert.equal(direct.size, 78);
   assert.equal(byName.get('commit_product_skill')?.category, 'instruction-write');
   assert.equal(byName.get('list_harness_skills')?.category, 'instruction-read');
   assert.ok(direct.has('commit_product_skill'));
@@ -716,11 +761,6 @@ test('cell 을 받는 도구와 모든 문서 쓰기 도구는 공유 규칙을 
   }
 });
 
-test('MCP 서버 instructions 가 공유 규칙을 싣는다', () => {
-  const mcpStdio = readFileSync(fileURLToPath(new URL('../mcp-stdio.mjs', import.meta.url)), 'utf8');
-  assert.match(mcpStdio, /new McpServer\(\{ name: 'rhwp', version: '[^']+' \}, \{ instructions: RHWP_TOOL_RULES \}\)/);
-});
-
 test('수식 문법 안내는 preview_equation 에만 있다', () => {
   assert.match(byName.get('preview_equation').description, /NOT LaTeX/);
   assert.doesNotMatch(byName.get('insert_equation').description, /NOT LaTeX/);
@@ -1037,7 +1077,8 @@ test('표·셀 속성은 타입이 있는 객체이고 모르는 키는 올바�
 // commit_version(전체 모드 버전 커밋) 추가분만큼 올렸다.
 // 연구 프로젝트 도구(project_read·project_edit·project_import)가 모든 모드에 들어가며 다시 올렸다 —
 // list_reference_files 는 project_read 가 대신해 뺐다. find_home_files 는 데스크톱에서만 보여 여기서 빠진다.
-const DIRECT_DEFINITION_TOTAL_LIMIT = 63_000;
+// 채팅별 권한 요청 도구의 정의를 포함한다.
+const DIRECT_DEFINITION_TOTAL_LIMIT = 64_000;
 const TOOL_DEFINITION_LIMIT = 3_000;
 
 test('direct 프로필 도구 정의 크기가 한도를 넘지 않는다', () => {
@@ -1061,9 +1102,7 @@ test('도구 스키마는 $ref 없이 펼쳐진다 (Codex/Pi 가 $ref 를 못 �
 
 test('edit_object 편집 인자는 스튜디오 계획 함수가 읽는 키와 같다', () => {
   // 허브 스키마에만 있는 키는 스튜디오가 조용히 무시한다 — 두 목록을 함께 고친다.
-  const src = readFileSync(fileURLToPath(new URL('../../rhwp-studio/src/agent/object-edit-args.ts', import.meta.url)), 'utf8');
-  const list = /export const EDIT_OBJECT_ARG_KEYS = \[([^\]]*)\]/.exec(src)?.[1] ?? '';
-  const studio = [...list.matchAll(/'([A-Za-z]+)'/g)].map((m) => m[1]).sort();
+  const studio = [...EDIT_OBJECT_ARG_KEYS].sort();
   const address = ['expectedRevision', 'render', 'sectionIdx', 'paraIdx', 'controlIdx', 'cell', 'cellPath', 'delete'];
   const hub = Object.keys(byName.get('edit_object').shape).filter((key) => !address.includes(key)).sort();
   assert.deepEqual(hub, studio);

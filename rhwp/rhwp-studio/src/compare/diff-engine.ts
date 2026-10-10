@@ -556,6 +556,7 @@ function buildTableSummary(
   sec: number,
   para: number,
   ci: number,
+  tableBox: TableBoxLookup,
 ): { summary: string; tableCellTexts: string[] } {
   let sigDigest = 'nosig';
   try {
@@ -623,7 +624,7 @@ function buildTableSummary(
   }
   let bboxDigest = 'nobox';
   try {
-    const bbox = wasm.getTableBBox(sec, para, ci);
+    const bbox = tableBox(sec, para, ci);
     bboxDigest = `${Math.round(bbox.width)}x${Math.round(bbox.height)}`;
   } catch {
     bboxDigest = 'nobox';
@@ -850,20 +851,15 @@ function tryResolveCompareParaAnchorFromCursor(
  * 커서 rect를 못 얻은 문단에 대해, 해당 문단에 붙은 첫 레이아웃 개체 박스로 앵커를 채운다(비교 상세 캔버스용).
  */
 function fillMissingParaAnchorsFromPageLayout(
-  wasm: WasmBridge,
-  info: DocumentInfo,
+  layouts: PageControlLayout[],
   paragraphs: CompareParaSnapshot[],
   displayedPageByGlobalPage: Map<number, number>,
 ): void {
   const firstBoxByPara = new Map<string, DiffAnchor>();
-  for (let page = 0; page < info.pageCount; page += 1) {
-    let controls: ControlLayoutItem[];
-    try {
-      controls = wasm.getPageControlLayout(page).controls;
-    } catch {
-      continue;
-    }
-    for (const item of controls) {
+  for (let page = 0; page < layouts.length; page += 1) {
+    const layout = layouts[page];
+    if ('error' in layout) continue;
+    for (const item of layout.controls) {
       const sec = item.secIdx;
       const pIdx = item.paraIdx;
       if (sec == null || pIdx == null || sec < 0 || pIdx < 0) continue;
@@ -940,19 +936,102 @@ function fillMissingParaAnchorsFromNeighbors(
   }
 }
 
+/** 쪽 하나의 개체 배치. 조회에 실패한 쪽은 오류를 들고 있다가 그 쪽을 쓰는 곳에서 다시 던진다. */
+type PageControlLayout = { controls: ControlLayoutItem[] } | { error: unknown };
+
+interface TableBox {
+  pageIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+type TableBoxLookup = (sec: number, para: number, ci: number) => TableBox;
+
+function readPageControlLayouts(wasm: WasmBridge, pageCount: number): PageControlLayout[] {
+  const layouts: PageControlLayout[] = [];
+  for (let page = 0; page < pageCount; page += 1) {
+    try {
+      layouts.push({ controls: wasm.getPageControlLayout(page).controls });
+    } catch (error) {
+      layouts.push({ error });
+    }
+  }
+  return layouts;
+}
+
+/**
+ * 스냅샷 한 번 동안의 표 조회.
+ * `getTableBBox`는 표를 찾을 때까지 첫 쪽부터 쪽 트리를 다시 꺼내므로, 쪽 캐시보다 긴 문서에서는
+ * 표마다 문서 전체를 다시 조판한다. 같은 답(가장 앞 쪽의 첫 표 조각)을 이미 읽은 쪽 개체 배치에서 찾고,
+ * 배치에 없거나 머리말·꼬리말 표와 좌표가 겹치는 표만 엔진에 직접 묻는다.
+ * 표 요약은 같은 스냅샷 안에서 표 하나당 한 번만 만든다.
+ */
+class SnapshotTables {
+  readonly #wasm: WasmBridge;
+  readonly #options: CompareOptions;
+  readonly #boxes = new Map<string, TableBox>();
+  readonly #ambiguous = new Set<string>();
+  readonly #summaries = new Map<string, { summary: string; tableCellTexts: string[] }>();
+
+  constructor(wasm: WasmBridge, options: CompareOptions, layouts: PageControlLayout[]) {
+    this.#wasm = wasm;
+    this.#options = options;
+    for (let page = 0; page < layouts.length; page += 1) {
+      const layout = layouts[page];
+      // 엔진 탐색도 이 쪽에서 실패하므로, 뒤쪽 표는 엔진에 맡겨 같은 오류를 받는다.
+      if ('error' in layout) break;
+      for (const item of layout.controls) {
+        if (item.type !== 'table' || item.secIdx == null || item.paraIdx == null || item.controlIdx == null) continue;
+        const key = `${item.secIdx}:${item.paraIdx}:${item.controlIdx}`;
+        if (this.#boxes.has(key)) continue;
+        if (item.headerFooter) {
+          this.#ambiguous.add(key);
+          continue;
+        }
+        this.#boxes.set(key, { pageIndex: page, x: item.x, y: item.y, width: item.w, height: item.h });
+      }
+    }
+  }
+
+  readonly box: TableBoxLookup = (sec, para, ci) => {
+    const key = `${sec}:${para}:${ci}`;
+    const box = this.#ambiguous.has(key) ? undefined : this.#boxes.get(key);
+    return box ? { ...box } : this.#wasm.getTableBBox(sec, para, ci);
+  };
+
+  /** 이 표를 이미 요약했는지. */
+  summarized(sec: number, para: number, ci: number): boolean {
+    return this.#summaries.has(`${sec}:${para}:${ci}`);
+  }
+
+  summary(sec: number, para: number, ci: number): { summary: string; tableCellTexts: string[] } {
+    const key = `${sec}:${para}:${ci}`;
+    let summary = this.#summaries.get(key);
+    if (!summary) {
+      summary = buildTableSummary(this.#wasm, this.#options, sec, para, ci, this.box);
+      this.#summaries.set(key, summary);
+    }
+    return summary;
+  }
+}
+
 /**
  * WASM이 열린 단일 문서에서 비교용 스냅샷을 만든다.
  * - 문단: 텍스트, 정규화 텍스트, stable_id, 레이아웃 앵커(커서 rect·다중 오프셋 → 페이지 개체 박스 → 이웃 문단), 구역 내 쪽번호,
  *   `signature`(정규화 텍스트·컨트롤 개수 + `getParaPropertiesAt` 기반 문단모양 요약 `ps:`)
  * - 개체: 페이지 레이아웃 + 문단별 table 순회를 합쳐 키를 `sid:` 우선으로 통일
  * - 마지막에 `canonicalControlKey`로 중복을 합치고 `controlSnapshotQuality`로 더 나은 요약을 남긴다.
+ * 문단·개체 하나마다 멈출 수 있는 단계로 진행한다. 쪽 개체 배치는 한 단계에서 모두 읽어
+ * 개체 목록이 한 조판 결과에서 나오게 한다.
  */
-function fillSnapshotFromWasm(
+function* snapshotSteps(
   wasm: WasmBridge,
   info: DocumentInfo,
   displayName: string,
   options: CompareOptions,
-): CompareDocumentSnapshot {
+): Generator<void, CompareDocumentSnapshot, void> {
   // 비교 스냅샷 직전에 강제 재조판하여 폰트/도형 반영 지연으로 인한 페이지 밀림을 줄인다.
   // 대형 문서에서 재조판은 입력을 장시간 멈추게 하므로 실시간(편집 중) diff 는
   // options.refreshLayout === false 로 건너뛰고 마지막으로 확정된 페이지 트리를 쓴다.
@@ -1039,10 +1118,13 @@ function fillSnapshotFromWasm(
         anchor,
       });
       globalIndex += 1;
+      yield;
     }
   }
 
-  fillMissingParaAnchorsFromPageLayout(wasm, info, paragraphs, displayedPageByGlobalPage);
+  const pageLayouts = readPageControlLayouts(wasm, info.pageCount);
+  const tables = new SnapshotTables(wasm, options, pageLayouts);
+  fillMissingParaAnchorsFromPageLayout(pageLayouts, paragraphs, displayedPageByGlobalPage);
   fillMissingParaAnchorsFromNeighbors(paragraphs, displayedPageByGlobalPage);
 
   // 글로벌 앵커 후보(`isAnchorCandidate`): 시그니처 중복은 즉시 탈락. 그 다음
@@ -1091,7 +1173,8 @@ function fillSnapshotFromWasm(
     hasPix: boolean;
   }> = [];
   for (let page = 0; page < info.pageCount; page += 1) {
-    const layout = wasm.getPageControlLayout(page);
+    const layout = pageLayouts[page];
+    if ('error' in layout) throw layout.error;
     for (const item of layout.controls) {
       const sec = item.secIdx ?? -1;
       const para = item.paraIdx ?? -1;
@@ -1105,7 +1188,7 @@ function fillSnapshotFromWasm(
 
       try {
         if (item.type === 'table' && sec >= 0 && para >= 0 && ci >= 0) {
-          ({ summary, tableCellTexts } = buildTableSummary(wasm, options, sec, para, ci));
+          ({ summary, tableCellTexts } = tables.summary(sec, para, ci));
         } else if (item.type === 'image' && sec >= 0 && para >= 0 && ci >= 0) {
           const pic = wasm.getPictureProperties(sec, para, ci);
           const w = Math.round(pic.width);
@@ -1181,6 +1264,7 @@ function fillSnapshotFromWasm(
           height: Math.max(12, item.h),
         },
       });
+      yield;
     }
   }
 
@@ -1190,14 +1274,16 @@ function fillSnapshotFromWasm(
   for (const p of paragraphs) {
     const controlCount = wasm.getControlTextPositions(p.section, p.paragraph).length;
     for (let ci = 0; ci < controlCount; ci += 1) {
+      // 쪽 배치에서 이미 요약한 표는 같은 키·같은 요약이라 아래 중복 제거에서 버려진다.
+      if (tables.summarized(p.section, p.paragraph, ci)) continue;
       try {
-        const { summary, tableCellTexts } = buildTableSummary(wasm, options, p.section, p.paragraph, ci);
+        const { summary, tableCellTexts } = tables.summary(p.section, p.paragraph, ci);
         const key = p.stableId
           ? `sid:${p.stableId}:${ci}:table`
           : `loc:${p.section}:${p.paragraph}:${ci}:table`;
         let anchor = p.anchor ?? { pageIndex: 0, x: 0, y: 0, width: 12, height: 12 };
         try {
-          const bbox = wasm.getTableBBox(p.section, p.paragraph, ci);
+          const bbox = tables.box(p.section, p.paragraph, ci);
           anchor = {
             pageIndex: bbox.pageIndex,
             x: bbox.x,
@@ -1226,6 +1312,7 @@ function fillSnapshotFromWasm(
       // - shape/image는 layout 경로만 사용해 오매핑을 최소화한다.
       // - direct 경로는 table 전용으로 제한한다.
     }
+    yield;
   }
 
   const uniqueControls = new Map<string, CompareControlSnapshot>();
@@ -1317,7 +1404,7 @@ export async function buildSnapshotFromBytes(
   const wasm = new WasmBridge();
   await wasm.initialize();
   const info = wasm.loadDocument(bytes, fileName);
-  return fillSnapshotFromWasm(wasm, info, fileName, options);
+  return drainSnapshotSteps(snapshotSteps(wasm, info, fileName, options));
 }
 
 /** 편집기에 올라온 문서 그대로 스냅샷 — 이력 비교 시 stable_id 유지 */
@@ -1326,8 +1413,61 @@ export function buildSnapshotFromWasm(
   displayName: string,
   options: CompareOptions,
 ): CompareDocumentSnapshot {
-  const info = wasm.getDocumentInfo();
-  return fillSnapshotFromWasm(wasm, info, displayName, options);
+  return drainSnapshotSteps(snapshotSteps(wasm, wasm.getDocumentInfo(), displayName, options));
+}
+
+function drainSnapshotSteps(steps: Generator<void, CompareDocumentSnapshot, void>): CompareDocumentSnapshot {
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** 한 번에 메인 스레드를 쥐는 시간. 그 뒤로 입력·그리기·다른 작업에 차례를 넘긴다. */
+const SNAPSHOT_SLICE_MS = 8;
+/** 쪽 수가 바뀌어(지연 조판·글꼴 재조판) 다시 시작하는 횟수. 넘으면 남은 일을 한 번에 끝낸다. */
+const SNAPSHOT_SLICE_RESTARTS = 2;
+
+function yieldToMainThread(): Promise<void> {
+  const scheduler = (globalThis as {
+    scheduler?: { postTask?: (task: () => void) => Promise<void> };
+  }).scheduler;
+  if (scheduler?.postTask) return scheduler.postTask(() => undefined);
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      resolve();
+    };
+    channel.port2.postMessage(null);
+  });
+}
+
+/**
+ * `buildSnapshotFromWasm`과 같은 스냅샷을 작은 조각으로 나눠 만든다. 조각 사이에 문서가 바뀌면
+ * (`isCurrent()`가 false) 만들던 스냅샷을 버리고 null을 돌려준다. 쪽 수가 바뀌면 처음부터 다시 만든다.
+ */
+export async function buildSnapshotFromWasmInSlices(
+  wasm: WasmBridge,
+  displayName: string,
+  options: CompareOptions,
+  isCurrent: () => boolean,
+): Promise<CompareDocumentSnapshot | null> {
+  for (let attempt = 0; ; attempt += 1) {
+    const info = wasm.getDocumentInfo();
+    const steps = snapshotSteps(wasm, info, displayName, options);
+    if (attempt === SNAPSHOT_SLICE_RESTARTS) return drainSnapshotSteps(steps);
+    let sliceStart = performance.now();
+    for (;;) {
+      const step = steps.next();
+      if (step.done) return step.value;
+      if (performance.now() - sliceStart < SNAPSHOT_SLICE_MS) continue;
+      await yieldToMainThread();
+      if (!isCurrent()) return null;
+      if (wasm.pageCount !== info.pageCount) break;
+      sliceStart = performance.now();
+    }
+  }
 }
 
 /**

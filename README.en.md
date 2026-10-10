@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="rhwp/assets/logo/logo-256.png" alt="Rauhwpx" width="112" />
+  <img src="rhwp/assets/logo/logo-256.png" alt="HamaEditor" width="112" />
 </p>
 
-<h1 align="center">Rauhwpx</h1>
+<h1 align="center">HamaEditor</h1>
 
 <p align="center">
   <a href="README.md">한국어</a> · English
@@ -23,7 +23,7 @@
 
 ## What this is
 
-Rauhwpx opens and edits Korean HWP/HWPX documents. The Rust engine handles parsing, layout, rendering and editing; the agent sidebar connects supported AI providers to the open document through MCP tools.
+HamaEditor opens and edits Korean HWP/HWPX documents. The Rust engine handles parsing, layout, rendering and editing; the agent sidebar connects supported AI providers to the open document through MCP tools.
 
 Document editing runs on your machine. AI requests send prompts and any document content read by the agent to your selected provider. Web research and the optional Browserbase integration also use external services. The local agent hub manages provider sessions, permissions, downloads and tool routing.
 
@@ -51,7 +51,7 @@ Download a build from [Releases](https://github.com/heemangstudio/Rauhwpx/releas
 
 Windows installs per user by default. The installer detects an older all-users installation and requests elevation to upgrade it instead of creating a second copy.
 
-Saving over an existing desktop file uses a crash-safe compare-and-swap and requires hard-link support on that volume. FAT/exFAT, some SMB shares, and some cloud-synced volumes may reject the save without changing the original; use a local APFS or NTFS volume, or Save As to a supported destination. On Windows, preserving the original file's access rules also requires the built-in System32 Windows PowerShell. If both publication and rollback fail, Rauhwpx keeps an openable recovery copy and reports its exact path.
+Saving over an existing desktop file uses a crash-safe compare-and-swap and requires hard-link support on that volume. FAT/exFAT, some SMB shares, and some cloud-synced volumes may reject the save without changing the original; use a local APFS or NTFS volume, or Save As to a supported destination. On Windows, preserving the original file's access rules also requires the built-in System32 Windows PowerShell. If both publication and rollback fail, HamaEditor keeps an openable recovery copy and reports its exact path.
 
 Testers on macOS and Windows can use the [nightly](https://github.com/heemangstudio/Rauhwpx/releases/tag/nightly) pre-release. Artifact names use `<version>-nightly.<date>.<sha>`, with a UTC `YYYYMMDD` date and the first seven SHA characters.
 
@@ -75,8 +75,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for native builds, focused tests and prer
 
 Run `npm --prefix rhwp/rhwp-studio ci` once, then `npm run dev:sidebar` and open
 http://127.0.0.1:7715. This mounts the production sidebar with local service fixtures;
-Node is the only runtime prerequisite. `npm run test:sidebar` checks its interactions
-in headless Chrome and saves sidebar screenshots. See the
+Node is the only runtime prerequisite. `npm run test:sidebar` runs a short smoke in
+headless Chrome; feature checks run by name. See the
 [preview guide](rhwp/rhwp-studio/sidebar-preview/README.md) for scenarios and design editing.
 
 ## Layout

@@ -1,6 +1,7 @@
-import type { SidebarBridge } from '../agent/bridge.ts';
+import type { ChatStartContextProvider, SidebarBridge } from '../agent/bridge.ts';
 import type * as T from '../agent/types.ts';
 import { deriveAgentEditingLease } from '../agent/editing-lease.ts';
+import { isChatPermissionCapability } from '../agent/chat-permissions.ts';
 import {
   defaultModelForAgent,
   setModelCatalog,
@@ -19,9 +20,11 @@ export const scenarios = [
   'rich',
   'plan',
   'question',
+  'permission',
   'review',
   'fleet',
   'error',
+  'compaction',
 ] as const;
 export type Scenario = (typeof scenarios)[number];
 
@@ -150,6 +153,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   });
   let interrupts = 0;
   let threadId = '';
+  let chatDocumentId: string | null = null;
   let scenario: Scenario = 'chat';
   let holdReply = false;
   let permission: T.PermissionProfile = 'safe';
@@ -161,6 +165,19 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     latestPlan: null,
   };
   let question: T.UserQuestionInteraction | null = null;
+  let permissionRequest: T.ChatPermissionRequest | null = null;
+  let chatPermissionGrants: T.ChatPermissionCapability[] = [];
+  const permissionResponses: Array<{ requestId: string; decision: T.ChatPermissionDecision }> = [];
+  /* 맥락 창 흉내 — ?context=92 로 시작 사용률을 고른다. */
+  const CONTEXT_MAX = 200_000;
+  const contextParam = Number(new URLSearchParams(location.search).get('context'));
+  let contextShare = contextParam > 0 && contextParam <= 100 ? contextParam / 100 : 0.31;
+  let compacting: string | null = null;
+  let contextProvider: ChatStartContextProvider | null = null;
+  /** 마지막 chat-start 가 실은 맥락 — 넘겨받기 흐름을 브라우저 검사에서 확인한다. */
+  let lastChatStart: { agent: T.AgentName; providerSessionId: string | null; handoff: number; history: number } | null = null;
+  const sessionCompaction = (provider: T.AgentName): T.CompactionSupport =>
+    provider === 'pi' ? 'auto-only' : 'manual';
   let activeTemplate: T.DocumentTemplate | null = null;
   let changes: T.PendingChangeSet[] = [];
   const changeEvents: T.PendingEditsChangeEvent['type'][] = [];
@@ -202,7 +219,20 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   };
   const finish = (stopReason = 'completed') => {
     setRunning(false);
-    stream({ type: 'turn-end', agent, stopReason });
+    const completed = stopReason === 'completed';
+    if (compacting) {
+      stream({ type: 'compaction', agent, compactionId: compacting, phase: 'failed', trigger: 'manual' });
+      compacting = null;
+    }
+    if (completed) {
+      stream({ type: 'context-usage', agent, usedTokens: Math.round(CONTEXT_MAX * contextShare), maxTokens: CONTEXT_MAX });
+    }
+    stream({
+      type: 'turn-end',
+      agent,
+      stopReason,
+      ...(completed ? { providerSessionId: `preview-${agent}-${threadId}` } : {}),
+    });
   };
   const updatePlanExecution = (execution: NonNullable<T.StructuredPlan['execution']>) => {
     if (!workflow.latestPlan) return;
@@ -263,6 +293,13 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     });
     question = null;
   };
+  const completePermission = (outcome: T.ChatPermissionOutcome) => {
+    if (!permissionRequest) return;
+    const pending = permissionRequest;
+    permissionRequest = null;
+    emit({ type: 'chat-permission-resolved', requestId: pending.requestId, threadId: pending.threadId,
+      documentId: pending.documentId, outcome, grants: [...chatPermissionGrants] });
+  };
   const bridge: SidebarBridge = {
     projects,
     setProjectWorktrees: (binding) => {
@@ -308,13 +345,28 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     getActiveAgent: () => agent,
     isTurnRunning: () => running,
     getPendingUserQuestion: () => question,
+    getPendingChatPermissionRequest: () => permissionRequest,
+    getChatPermissionGrants: () => [...chatPermissionGrants],
+    respondChatPermission: (requestId, decision) => request((responseId) => {
+      const pending = permissionRequest;
+      permissionResponses.push({ requestId, decision });
+      if (!pending || pending.requestId !== requestId) {
+        emit({ type: 'chat-permission-response-result', responseId, requestId, ok: false, code: 'REQUEST_INVALIDATED' });
+      } else if (decision === 'grant' && running) {
+        emit({ type: 'chat-permission-response-result', responseId, requestId, ok: false, code: 'AGENT_BUSY' });
+      } else {
+        emit({ type: 'chat-permission-response-result', responseId, requestId, ok: true });
+        if (decision === 'grant' && !chatPermissionGrants.includes(pending.capability)) chatPermissionGrants.push(pending.capability);
+        completePermission(decision === 'grant' ? { status: 'granted' } : { status: 'denied', reason: 'user-denied' });
+      }
+    }),
     getEditingLease: () =>
       deriveAgentEditingLease({
         turnRunning: running,
         activeToolRequests: 0,
         agent,
         ...workflow,
-        waitingForUser: question !== null,
+        waitingForUser: question !== null || permissionRequest !== null,
       }),
     onEditingLeaseChange: (listener) => {
       leaseListeners.add(listener);
@@ -499,22 +551,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       data.usage.plans[provider] = plan;
       return data.usage;
     },
-    connectCliproxy: async () => {
-      data.usage.cliproxy = {
-        configured: true,
-        connected: true,
-        url: 'https://usage.example.test',
-        error: null,
-        checkedAt: Date.now(),
-        accounts: [],
-      };
-      report('Sample usage account connected');
-      return data.usage;
-    },
-    disconnectCliproxy: async () => {
-      delete data.usage.cliproxy;
-      return data.usage;
-    },
     requestPiStatus: async () => data.pi,
     installPi: async () => {
       await bridge.installAgent('pi');
@@ -566,12 +602,17 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       documentName,
     ) => {
       const continuing = !force && id === threadId && (mode ?? 'direct') === workflow.workflow;
+      if (!continuing || documentId !== chatDocumentId) {
+        chatPermissionGrants = [];
+        completePermission({ status: 'expired', reason: 'request-invalidated' });
+      }
       ++generation;
       const startGeneration = ++chatGeneration;
       completeQuestion({ status: 'expired', reason: 'request-invalidated' });
       setRunning(false);
       agent = provider;
       threadId = id ?? threadId;
+      chatDocumentId = documentId ?? null;
       permission = profile ?? permission;
       workflow = continuing ? workflow : {
         workflow: mode ?? 'direct',
@@ -584,10 +625,19 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         capabilityEpoch: 1,
         latestPlan: null,
       };
+      const context = contextProvider?.({ agent, threadId }) ?? null;
+      lastChatStart = {
+        agent,
+        providerSessionId: context?.providerSessionId ?? null,
+        handoff: context?.handoffHistory?.length ?? 0,
+        history: context?.history.length ?? 0,
+      };
       const started: T.SidebarEvent = {
         type: 'chat-started',
         agent,
         sessionId: 'preview-session',
+        resumed: Boolean(context?.providerSessionId),
+        compaction: sessionCompaction(agent),
         model: model ?? defaultModelForAgent(agent),
         effort,
         permissionProfile: permission,
@@ -602,7 +652,38 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         if (chatGeneration === startGeneration) emit(started);
       });
     },
+    setChatStartContextProvider: (provider) => {
+      contextProvider = provider;
+    },
+    compactChat: async () => {
+      if (running) return { ok: false, code: 'AGENT_BUSY', message: 'A turn is already in progress.' };
+      if (sessionCompaction(agent) !== 'manual') return { ok: false, code: 'COMPACTION_UNSUPPORTED', message: '' };
+      const turnGeneration = ++generation;
+      const compactionId = `preview-compaction-${turnGeneration}`;
+      later(() => {
+        if (generation !== turnGeneration) return;
+        setRunning(true);
+        compacting = compactionId;
+        stream({ type: 'turn-start', agent, turnId: `turn-${turnGeneration}` });
+        stream({ type: 'compaction', agent, compactionId, phase: 'started', trigger: 'manual' });
+        if (holdReply) return;
+        later(() => {
+          if (generation !== turnGeneration) return;
+          const beforeTokens = Math.round(CONTEXT_MAX * contextShare);
+          contextShare = 0.21;
+          compacting = null;
+          stream({
+            type: 'compaction', agent, compactionId, phase: 'completed', trigger: 'manual',
+            beforeTokens, afterTokens: Math.round(CONTEXT_MAX * contextShare),
+          });
+          finish();
+        }, 1400);
+      });
+      return { ok: true, compactionId };
+    },
     stopChat: () => {
+      chatPermissionGrants = [];
+      completePermission({ status: 'expired', reason: 'user-stop' });
       generation++;
       chatGeneration++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
@@ -632,6 +713,32 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         if (generation !== turnGeneration) return;
         setRunning(true);
         stream({ type: 'turn-start', agent, turnId: `turn-${turnGeneration}` });
+        if (reply === 'permission') {
+          const selected = projectParams.get('permissionCapability');
+          if (selected !== null && !isChatPermissionCapability(selected)) {
+            stream({ type: 'tool-call', agent, callId: `permission-${turnGeneration}`, tool: 'mcp__rhwp__request_permission',
+              argsJson: JSON.stringify({ capability: selected, reason: '요청한 작업을 진행합니다.' }) });
+            stream({ type: 'tool-result', agent, callId: `permission-${turnGeneration}`, ok: false,
+              resultPreview: '지원하지 않는 권한입니다.' });
+            stream({ type: 'text-delta', agent, text: '문서 편집은 에이전트 또는 전체 모드에서 가능합니다.' });
+            if (!holdReply) later(() => finish(), 100);
+            return;
+          }
+          const capability = isChatPermissionCapability(selected) ? selected : 'project-edit';
+          if (!chatPermissionGrants.includes(capability)) {
+            permissionRequest = { requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId,
+              turnId: `turn-${turnGeneration}`, agent, capability,
+              reason: '요청한 작업을 이어가려면 이 권한이 필요합니다.', createdAt: new Date().toISOString() };
+            stream({ type: 'tool-call', agent, callId: `permission-${turnGeneration}`, tool: 'mcp__rhwp__request_permission',
+              argsJson: JSON.stringify({ capability, reason: permissionRequest.reason }) });
+            stream({ type: 'tool-result', agent, callId: `permission-${turnGeneration}`, ok: true,
+              resultPreview: JSON.stringify({ status: 'pending', capability, scope: 'chat', requestId: permissionRequest.requestId }) });
+            stream({ type: 'text-delta', agent, text: '작업을 이어가기 위한 권한을 요청했습니다.' });
+            emit({ type: 'chat-permission-requested', request: permissionRequest });
+            if (!holdReply) later(() => finish(), 100);
+            return;
+          }
+        }
         if (referenceIds.length)
           emit({
             type: 'reference-status',
@@ -683,6 +790,9 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
           };
           emit({ type: 'user-question-requested', interaction: question });
           return;
+        }
+        if (reply === 'compaction') {
+          stream({ type: 'compaction', agent, compactionId: `preview-auto-${turnGeneration}`, phase: 'started', trigger: 'auto' });
         }
         stream({
           type: 'tool-call',
@@ -748,6 +858,14 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
                   : JSON.stringify([{ type: 'text', text: JSON.stringify(call.result ?? {}) }]).slice(0, 2000),
               });
             }
+          }
+          if (reply === 'compaction') {
+            const beforeTokens = Math.round(CONTEXT_MAX * 0.93);
+            contextShare = 0.2;
+            stream({
+              type: 'compaction', agent, compactionId: `preview-auto-${turnGeneration}`, phase: 'completed', trigger: 'auto',
+              beforeTokens, afterTokens: Math.round(CONTEXT_MAX * contextShare),
+            });
           }
           if (reply === 'error') {
             stream({
@@ -870,6 +988,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       emit({ type: 'chat-template-changed', template: activeTemplate });
     },
     getActiveTemplate: () => activeTemplate,
+    // 미리보기에는 템플릿 원본이 없다. 문서 홈은 종이 자리표시를 그린다.
+    fetchTemplateContent: async () => { throw new Error('미리보기에는 템플릿 원본이 없습니다.'); },
     stageReference: async (scopeId, file) => {
       const reference: T.StagedReference = {
         id: crypto.randomUUID(),
@@ -1047,6 +1167,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
           ],
         }),
       ),
+    // 미리보기에는 허브가 없다. 생성 문서 카드는 보관 기간이 지난 경우처럼 보인다.
+    requestGeneratedArtifact: async (): Promise<T.GeneratedArtifactLookup> => ({ status: 'gone' }),
     readSkillEditor: async (name: string) => {
       const row = data.skills.rows.find((item) => item.name === name);
       if (!row || row.kind !== 'skill' || row.editable !== true)
@@ -1249,6 +1371,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       interrupts += 1;
       generation++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
+      completePermission({ status: 'expired', reason: 'user-stop' });
       if (running) finish('interrupted');
     },
     onEvent: (listener) => {
@@ -1357,7 +1480,10 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       scenario = value;
     },
     setHold: (value: boolean) => { holdReply = value; },
+    finishPermissionTurn: () => { if (running) finish(); },
     projects,
+    /** 허브가 같은 이벤트를 다시 보내는 경우(재전송·중복)를 흉내 낸다. */
+    emitAgentEvent: (event: T.AgentStreamEvent) => stream(event),
     /** Delivers one provider event as the hub would, e.g. a token-by-token answer for benches. */
     streamEvent: stream,
     boot: () => {
@@ -1373,6 +1499,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       messagesSent,
       sentMentions: sentMentions.map((ids) => [...ids]),
       interrupts,
+      permissionResponses: permissionResponses.map((response) => ({ ...response })),
+      chatPermissionGrants: [...chatPermissionGrants],
       scenario,
       connection,
       running,
@@ -1381,6 +1509,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       changeEvents: [...changeEvents],
       references: references.length,
       browserbase: browserbaseState,
+      lastChatStart,
     }),
   };
 }

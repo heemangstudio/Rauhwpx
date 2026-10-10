@@ -28,6 +28,9 @@ export interface ProjectHostDeps {
    */
   requestOpen(then: () => void): void;
   requestClose(): void;
+  /** 자료는 별도 작업 탭에서 연다. */
+  openPreview?(target: ProjectPreviewTarget): boolean | void;
+  openBoard?(tab?: ProjectTab): boolean | void;
   /** `d…` 문서 노드를 열 때 — 그 문서로 옮겨 간다. */
   openDocument(documentId: string): void;
   onChange?(project: ProjectSnapshot | null): void;
@@ -75,6 +78,8 @@ export function createProjectHost(deps: ProjectHostDeps): ProjectHost {
 
   function open(target?: ProjectPreviewTarget, tab?: ProjectTab): void {
     if (!client) return;
+    if (target && deps.openPreview && deps.openPreview(target) !== false) return;
+    if (!target && deps.openBoard && deps.openBoard(tab) !== false) return;
     deps.requestOpen(() => {
       const opened = ensureColumn();
       if (tab) opened?.setTab(tab);
@@ -179,6 +184,8 @@ export interface ComposerMentions {
   take(): ThreadMention[];
   /** 채팅을 오가며 초안을 되살린다. */
   set(mentions: readonly ThreadMention[]): void;
+  /** 끌어 놓은 프로젝트 항목을 칩으로 더한다. 지금 프로젝트에 없는 항목이면 false. */
+  addItem(projectId: string, itemId: string): boolean;
   dispose(): void;
 }
 
@@ -245,6 +252,15 @@ export function createComposerMentions(deps: ComposerMentionsDeps): ComposerMent
         add(mention, item ? projectIcon(itemIconName(item)) : undefined);
       }
       deps.onChange?.();
+    },
+    addItem(projectId, itemId) {
+      const snapshot = client?.store.get();
+      const item = snapshot?.id === projectId
+        ? snapshot.items.find((entry) => entry.id === itemId && !entry.trashedAt)
+        : undefined;
+      if (!item) return false;
+      add({ id: item.id, title: item.title }, projectIcon(itemIconName(item)));
+      return true;
     },
     dispose() {
       unsubscribe();

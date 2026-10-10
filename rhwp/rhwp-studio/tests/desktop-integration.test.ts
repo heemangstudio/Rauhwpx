@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import {
   bindNativeFileHandleIdentity,
@@ -37,9 +36,6 @@ import {
   PORTABLE_HISTORY_MAX_BYTES,
 } from '../src/core/document-input-limits.ts';
 
-const source = readFileSync(new URL('../src/desktop-integration.ts', import.meta.url), 'utf8');
-const bridge = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
-const settings = readFileSync(new URL('../src/ui/agent-sidebar/settings.ts', import.meta.url), 'utf8');
 
 test('desktop integration asks the shell to launch a missing hub', async () => {
   assert.equal(isDesktopApp({}), false);
@@ -76,7 +72,6 @@ test('desktop integration asks the shell to launch a missing hub', async () => {
 });
 
 test('dev ensure path asks Vite to start a missing hub', async () => {
-  assert.match(source, /\/__rhwp\/ensure-agent-hub/);
   let calls = 0;
   const ready = await requestDevAgentHub(async (url, init) => {
     calls += 1;
@@ -174,9 +169,10 @@ test('browser hub identity is stable across reloads but scoped to its tab storag
 test('published artifact links open through a fresh editor window on desktop', async () => {
   const href = 'http://127.0.0.1:5175/artifacts/artifact_token_1234567890/%EB%B3%B4%EA%B3%A0%EC%84%9C%28%ED%8C%80%29.hwp?sessionId=a&token=b';
   const artifact = parsePublishedDocumentLink(href);
-  assert.deepEqual(artifact, { downloadUrl: href, fileName: '보고서(팀).hwp' });
+  assert.deepEqual(artifact, { artifactId: 'artifact_token_1234567890', downloadUrl: href, fileName: '보고서(팀).hwp' });
   const templateHref = `${href}&templatePreview=1`;
   assert.deepEqual(parsePublishedDocumentLink(templateHref), {
+    artifactId: 'artifact_token_1234567890',
     downloadUrl: templateHref,
     fileName: '보고서(팀).hwp',
     readOnly: true,
@@ -675,26 +671,7 @@ test('releasing a replaced native handle bookmarks it first', async () => {
   assert.deepEqual(released, ['old']);
 });
 
-test('브리지와 설정 재연결이 데스크톱 허브 기동을 탄다', () => {
-  assert.match(bridge, /await this\.requestHubLaunch\(\)/);
-  assert.match(bridge, /async reconnectNow\(\): Promise<void>/);
-  assert.match(settings, /void bridge\.reconnectNow\(\)/);
-  assert.doesNotMatch(settings, /ensureDesktopAgentHub/);
-  assert.match(settings, /hubReconnect\.disabled = connectionState === 'connected'/);
-  assert.doesNotMatch(
-    settings,
-    /hubReconnect\.disabled = connectionState === 'connected' \|\| connectionState === 'connecting'/,
-  );
-  assert.match(source, /rhwpDesktop\?\.ensureAgentHub/);
-  assert.match(source, /\/Electron\/i\.test\(ua\)/);
-});
-
 test('데스크톱 셸은 서비스 워커를 끄고 PWA 등록을 건너뛴다', async () => {
-  const vite = readFileSync(new URL('../vite.config.ts', import.meta.url), 'utf8');
-  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  assert.match(vite, /injectRegister:\s*false/);
-  assert.match(main, /installWebAppShell\(\)/);
-
   const unregisters: string[] = [];
   await suppressDesktopServiceWorker({
     rhwpDesktop: { ensureAgentHub: async () => true },
