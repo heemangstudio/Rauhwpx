@@ -112,13 +112,22 @@
   .ag-wdocs *, .ag-wdocs *::after { animation: none !important; transition: none !important; }
 }
 
-.ag-download-inbox { border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent); padding: 15px 0; margin-top: 20px; }
-.ag-download-inbox h3 { font-size: 14px; margin: 0 0 7px; }
-.ag-download-inbox p,.ag-download-inbox-row span { font-size: 11px; color: var(--ag-muted, #687265); }
-.ag-download-inbox-row { display: flex; flex-wrap: wrap; gap: 7px; padding: 9px 0; }
-.ag-download-inbox-row strong,.ag-download-inbox-row span { flex: 1 0 100%; }
-.ag-download-inbox button { border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 5px; background: transparent; color: inherit; font: inherit; padding: 5px 8px; cursor: pointer; }
-.ag-download-inbox-viewer { margin-top: 15px; overflow: auto; max-height: 75vh; }
+.ag-download-inbox { flex: none; margin-top: 12px; font-size: 11px; }
+.ag-download-inbox-summary { display: flex; align-items: center; gap: 6px; min-height: 30px; border-radius: 6px; color: var(--ag-text-tertiary); cursor: pointer; list-style: none; }
+.ag-download-inbox-summary::-webkit-details-marker { display: none; }
+.ag-download-inbox-summary::before { width: 5px; height: 5px; margin: 0 4px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); content: ''; }
+.ag-download-inbox[open] > .ag-download-inbox-summary::before { transform: rotate(45deg); }
+.ag-download-inbox-summary:hover { background: var(--ag-hover); color: var(--ag-text-secondary); }
+.ag-download-inbox-summary:focus-visible { outline: var(--ag-focus-ring); outline-offset: -2px; }
+.ag-download-inbox-count { font-variant-numeric: tabular-nums; }
+.ag-download-inbox p,.ag-download-inbox-row span { margin: 0; font-size: 11px; color: var(--ag-text-secondary); }
+.ag-download-inbox > p { padding: 6px 12px; }
+.ag-download-inbox-row { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; padding: 7px 12px; }
+.ag-download-inbox-row strong { flex: 1 1 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 550; }
+.ag-download-inbox-row p { flex: 1 0 100%; overflow-wrap: anywhere; }
+.ag-download-inbox button { border: 1px solid var(--ag-border); border-radius: 5px; background: transparent; color: inherit; font: inherit; padding: 4px 7px; cursor: pointer; }
+.ag-download-inbox button:hover { background: var(--ag-hover); }
+.ag-download-inbox-viewer { margin-top: 8px; overflow: auto; max-height: 75vh; }
 .ag-download-inbox-viewer>strong { display: block; margin-bottom: 8px; }
 .ag-download-inbox-viewer>div { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .ag-download-inbox-viewer canvas { display: block; max-width: 100%; }
