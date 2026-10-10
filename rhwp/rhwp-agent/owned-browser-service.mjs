@@ -300,12 +300,11 @@ export function createOwnedBrowserService(options = {}) {
     }
   };
 
-  const attach = async (tab, page, { protectedNative = false } = {}) => {
+  const attach = async (tab, page) => {
     tab.page = page;
     pageTabs.set(page, tab);
-    protectedNative ||= (await selectedAdapter()?.inventory?.())?.some((entry) => entry.passwordProtected === true) ?? false;
-    // Playwright 웹소켓 바인딩은 컨텍스트 전체에 설치되어 보호된 다른 게스트도 건드린다.
-    if (!protectedNative) await page.routeWebSocket('**/*', async (socket) => {
+    // 네이티브 WSS는 검증된 목적지로 TLS 프록시를 통과한다. JS 바인딩은 관리형 브라우저에서만 설치한다.
+    if (!selectedAdapter()) await page.routeWebSocket('**/*', async (socket) => {
       const url = socket.url().replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
       try {
         await guard.resolve(url);
@@ -440,7 +439,7 @@ export function createOwnedBrowserService(options = {}) {
           finally { await session.detach().catch(() => {}); }
           const logicalId = nativeInventory.find((tab) => tab.nativeTargetId === targetId)?.tabId;
           const retained = tabs.get(logicalId) ?? [...tabs.values()].find((tab) => tab.nativeTargetId === targetId);
-          if (retained) { retained.controller = { owner: 'agent' }; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page, { protectedNative: nativeInventory.some((tab) => tab.passwordProtected === true) }); retained.restorePending = false; publish(retained); }
+          if (retained) { retained.controller = { owner: 'agent' }; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); retained.restorePending = false; publish(retained); }
         }
         const observedRuntime = runtime;
         runtime.browser?.on('disconnected', () => {
