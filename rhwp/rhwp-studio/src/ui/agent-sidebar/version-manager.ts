@@ -7,7 +7,7 @@ import { versionErrorCode } from '../../versioning/types.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { createChevron } from '../chevron.ts';
 
-export type VersionTab = 'changes' | 'history' | 'branches' | 'shelves';
+export type VersionTab = 'changes' | 'history' | 'branches' | 'worktrees' | 'shelves';
 
 export interface VersionCommitView {
   id: string;
@@ -34,7 +34,21 @@ export interface VersionBranchView {
   headId: string;
   isActive: boolean;
   isDefault: boolean;
+  worktreeId?: string;
   updatedAt: number;
+}
+
+export interface VersionWorktreeView {
+  id: string;
+  documentId: string;
+  branch: string;
+  primary: boolean;
+  isCurrent: boolean;
+  isOpen: boolean;
+  busy?: boolean;
+  dirty?: boolean;
+  readOnly?: boolean;
+  mergeTarget?: string;
 }
 
 export interface VersionShelfView {
@@ -71,6 +85,7 @@ export interface VersionManagerState {
   activeBranch: string | null;
   commits: VersionCommitView[];
   branches: VersionBranchView[];
+  worktrees: VersionWorktreeView[];
   shelves: VersionShelfView[];
   mergeDrafts: VersionMergeDraftView[];
   legacy: LegacyVersionView[];
@@ -97,6 +112,11 @@ export interface VersionManagerController {
   amendTitle(commitId: string, title: string): Promise<void>;
   createBranch(name: string, fromCommitId?: string): Promise<void>;
   switchBranch(name: string): Promise<void>;
+  createWorktree(sourceBranch: string, newBranchName?: string): Promise<void>;
+  openWorktree(id: string): Promise<void>;
+  closeWorktree(id: string): Promise<void>;
+  removeWorktree(id: string): Promise<void>;
+  mergeWorktree(id: string): Promise<void>;
   renameBranch(name: string, nextName: string): Promise<void>;
   deleteBranch(name: string): Promise<void>;
   listRecoveryEntries(): Promise<VersionRecoveryView[]>;
@@ -151,6 +171,7 @@ interface VersionTextPromptOptions {
   initial?: string;
   maxLength?: number;
   optional?: boolean;
+  choices?: string[];
   validate?: (value: string) => string | null;
 }
 
@@ -176,11 +197,17 @@ function requestVersionText(options: VersionTextPromptOptions): VersionTextPromp
     title.id = `${promptId}-title`;
     const label = el('label', 'ag-version-prompt-label', options.label);
     label.htmlFor = `${promptId}-input`;
-    const input = el('input', 'ag-version-prompt-input');
+    const input = options.choices
+      ? el('select', 'ag-version-prompt-input')
+      : el('input', 'ag-version-prompt-input');
     input.id = `${promptId}-input`;
-    input.type = 'text';
-    input.maxLength = options.maxLength ?? 200;
-    input.autocomplete = 'off';
+    if (input instanceof HTMLInputElement) {
+      input.type = 'text';
+      input.maxLength = options.maxLength ?? 200;
+      input.autocomplete = 'off';
+    } else {
+      for (const choice of options.choices ?? []) input.appendChild(el('option', '', choice));
+    }
     input.value = options.initial ?? '';
     const error = el('p', 'ag-version-prompt-error');
     error.id = `${promptId}-error`;
@@ -241,7 +268,7 @@ function requestVersionText(options: VersionTextPromptOptions): VersionTextPromp
 
     document.body.appendChild(overlay);
     input.focus();
-    input.select();
+    if (input instanceof HTMLInputElement) input.select();
   });
   return { promise, cancel: () => cancelPrompt() };
 }
@@ -471,6 +498,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     { id: 'changes', label: '변경' },
     { id: 'history', label: '그래프' },
     { id: 'branches', label: '브랜치' },
+    { id: 'worktrees', label: '워크트리' },
     { id: 'shelves', label: '보관함' },
   ];
   const tabButtons = new Map<VersionTab, HTMLButtonElement>();
@@ -512,6 +540,23 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     if (name) await perform(() => controller.createBranch(name));
   })());
   toolbar.prepend(createBranchButton);
+  const createWorktreeButton = el('button', 'ag-versions-primary', '+ 워크트리');
+  createWorktreeButton.type = 'button';
+  createWorktreeButton.setAttribute('aria-label', '워크트리 만들기');
+  createWorktreeButton.dataset.versionMutation = 'true';
+  createWorktreeButton.addEventListener('click', () => void (async () => {
+    const source = await promptVersionText({
+      title: '워크트리 만들기', label: '시작 브랜치',
+      choices: current.branches.map((branch) => branch.name),
+      initial: current.activeBranch ?? current.branches[0]?.name,
+    });
+    if (!source) return;
+    const occupied = current.worktrees.some((worktree) => worktree.branch === source);
+    const name = occupied ? await askName('새 워크트리 브랜치 이름', `${source}-작업`) : undefined;
+    if (occupied && !name) return;
+    await perform(() => controller.createWorktree(source, name ?? undefined));
+  })());
+  toolbar.prepend(createWorktreeButton);
   const shelf = el('button', 'ag-versions-primary ag-versions-create-shelf', '현재 변경 보관');
   shelf.type = 'button';
   shelf.dataset.versionMutation = 'true';
@@ -573,6 +618,8 @@ export function createVersionManagerPage(controller: VersionManagerController): 
 
   const branchesPanel = el('div', 'ag-versions-panel ag-versions-branches');
   branchesPanel.setAttribute('role', 'tabpanel');
+  const worktreesPanel = el('div', 'ag-versions-panel ag-versions-worktrees');
+  worktreesPanel.setAttribute('role', 'tabpanel');
   const shelvesPanel = el('div', 'ag-versions-panel ag-versions-shelves');
   shelvesPanel.setAttribute('role', 'tabpanel');
   // 변경 탭: 커밋 전 diff 와 커밋 입력. 비었을 때는 점으로 그린 빈 종이 한 장만 둔다.
@@ -588,13 +635,14 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     ['changes', changesPanel],
     ['history', historyPanel],
     ['branches', branchesPanel],
+    ['worktrees', worktreesPanel],
     ['shelves', shelvesPanel],
   ]);
   for (const [id, panel] of tabPanels) {
     panel.id = `ag-versions-${id}-tabpanel`;
     panel.setAttribute('aria-labelledby', `ag-versions-${id}-tab`);
   }
-  body.append(changesPanel, historyPanel, branchesPanel, shelvesPanel);
+  body.append(changesPanel, historyPanel, branchesPanel, worktreesPanel, shelvesPanel);
   const recoveryPanel = el('div', 'ag-versions-panel ag-versions-recovery');
   recoveryPanel.hidden = true;
   body.append(recoveryPanel);
@@ -701,6 +749,10 @@ export function createVersionManagerPage(controller: VersionManagerController): 
           ? (button.dataset.versionPrerequisiteTitle ?? '')
           : (button.dataset.versionTitle ?? ''));
     }
+    for (const button of page.querySelectorAll<HTMLButtonElement>('[data-version-navigation]')) {
+      button.disabled = actionPending;
+      button.title = actionPending ? '작업을 처리하고 있습니다.' : '';
+    }
     for (const button of page.querySelectorAll<HTMLButtonElement>('[data-version-enable]')) {
       const enableBlockedReason = actionPending
         ? '작업을 처리하고 있습니다.'
@@ -728,6 +780,10 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     changesEmpty.hidden = changeCount > 0;
     changesHost.hidden = changeCount === 0;
     createBranchButton.hidden = tab !== 'branches';
+    createWorktreeButton.hidden = tab !== 'worktrees';
+    mergeButton.hidden = tab === 'worktrees';
+    branchButton.hidden = tab === 'worktrees';
+    checkpointButton.hidden = tab === 'worktrees';
     shelf.hidden = tab !== 'shelves';
     for (const [id, button] of tabButtons) {
       const selected = id === tab;
@@ -997,6 +1053,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     const list = el('div', 'ag-versions-ref-list');
     for (const branch of current.branches) {
       const row = el('article', 'ag-versions-ref-row');
+      const owner = current.worktrees.find((worktree) => worktree.branch === branch.name);
       row.dataset.branchName = branch.name;
       const copy = el('div', 'ag-versions-ref-copy');
       copy.append(
@@ -1004,7 +1061,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
         el(
           'span',
           'ag-versions-ref-meta',
-          `${branch.headId.slice(0, 8)}  ${formatTime(branch.updatedAt)}${branch.isDefault ? '  default' : ''}`,
+          `${branch.headId.slice(0, 8)}  ${formatTime(branch.updatedAt)}${branch.isDefault ? '  default' : ''}${owner ? `  워크트리 ${owner.isOpen ? '열림' : '닫힘'}` : ''}`,
         ),
       );
       const actions = el('div', 'ag-versions-ref-actions');
@@ -1019,12 +1076,14 @@ export function createVersionManagerPage(controller: VersionManagerController): 
         merge.setAttribute('aria-label', `${branch.name}에서 ${current.activeBranch ?? '현재 브랜치'}로 병합`);
         merge.addEventListener('click', () => void perform(() => controller.startMerge(branch.name)));
         actions.appendChild(merge);
-        const switchButton = el('button', 'ag-versions-secondary', '전환');
+        const switchButton = el('button', 'ag-versions-secondary', owner && !owner.isCurrent ? '열기' : '전환');
         switchButton.type = 'button';
         switchButton.dataset.versionAction = 'switch';
-        switchButton.setAttribute('aria-label', `${branch.name} 브랜치로 전환`);
-        switchButton.dataset.versionMutation = 'true';
+        switchButton.setAttribute('aria-label', owner && !owner.isCurrent ? `${branch.name} 워크트리 열기` : `${branch.name} 브랜치로 전환`);
+        if (owner && !owner.isCurrent) switchButton.dataset.versionNavigation = 'true';
+        else switchButton.dataset.versionMutation = 'true';
         switchButton.addEventListener('click', async () => {
+          if (owner && !owner.isCurrent) { void perform(() => controller.openWorktree(owner.id)); return; }
           if (current.dirty && !await confirmSheet(switchButton, '브랜치 전환', '현재 작업을 커밋한 뒤 전환합니다.', { confirmLabel: '전환' })) return;
           void perform(() => controller.switchBranch(branch.name));
         });
@@ -1040,7 +1099,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
         if (name && name !== branch.name) await perform(() => controller.renameBranch(branch.name, name));
       })());
       actions.appendChild(rename);
-      if (!branch.isActive && !branch.isDefault) {
+      if (!branch.isActive && !branch.isDefault && !current.worktrees.some((worktree) => worktree.branch === branch.name)) {
         const remove = el('button', 'ag-versions-danger', '삭제');
         remove.type = 'button';
         remove.dataset.versionAction = 'delete';
@@ -1086,6 +1145,62 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       }
     }
     branchesPanel.appendChild(list);
+  }
+
+  function renderWorktrees(): void {
+    worktreesPanel.replaceChildren();
+    const list = el('div', 'ag-versions-ref-list');
+    for (const worktree of current.worktrees) {
+      const row = el('article', 'ag-versions-ref-row ag-versions-worktree-row');
+      row.dataset.worktreeId = worktree.id;
+      row.dataset.branchName = worktree.branch;
+      const copy = el('div', 'ag-versions-ref-copy');
+      const statuses = [worktree.primary ? '기본' : null, worktree.isCurrent ? '현재' : null,
+        worktree.isOpen ? '열림' : '닫힘', worktree.dirty ? '커밋 전 변경 있음' : null,
+        worktree.readOnly ? '읽기 전용' : null, worktree.busy ? '사용 중' : null].filter(Boolean);
+      copy.append(el('strong', 'ag-versions-ref-title', worktree.branch),
+        el('span', 'ag-versions-ref-meta', statuses.join(' · ')));
+      if (worktree.mergeTarget && !worktree.primary) {
+        copy.append(el('span', 'ag-versions-ref-meta', `${worktree.branch} → ${worktree.mergeTarget}`));
+      }
+      const actions = el('div', 'ag-versions-ref-actions');
+      const action = (label: string, kind: string, callback: () => Promise<void>, navigation = false): HTMLButtonElement => {
+        const button = el('button', kind, label);
+        button.type = 'button';
+        button.setAttribute('aria-label', `${worktree.branch} 워크트리 ${label}`);
+        if (navigation) button.dataset.versionNavigation = 'true';
+        else button.dataset.versionMutation = 'true';
+        button.dataset.versionPrerequisiteDisabled = String(!navigation && Boolean(worktree.busy));
+        button.dataset.versionPrerequisiteTitle = '에이전트 작업을 마친 뒤 다시 시도하세요.';
+        button.addEventListener('click', () => void perform(callback));
+        actions.appendChild(button);
+        return button;
+      };
+      if (!worktree.isCurrent || worktree.readOnly) {
+        action(worktree.isCurrent ? '다시 열기' : '열기', 'ag-versions-secondary', () => controller.openWorktree(worktree.id), true);
+      }
+      if (worktree.isOpen && !worktree.primary) action('닫기', 'ag-versions-quiet', () => controller.closeWorktree(worktree.id));
+      if (!worktree.primary) {
+        action('병합 후 삭제', 'ag-versions-primary', () => controller.mergeWorktree(worktree.id));
+        const remove = el('button', 'ag-versions-danger', '삭제');
+        remove.type = 'button';
+        remove.setAttribute('aria-label', `${worktree.branch} 워크트리 삭제`);
+        remove.dataset.versionMutation = 'true';
+        remove.dataset.versionPrerequisiteDisabled = String(Boolean(worktree.busy));
+        remove.dataset.versionPrerequisiteTitle = '에이전트 작업을 마친 뒤 다시 시도하세요.';
+        remove.addEventListener('click', async () => {
+          if (!await confirmSheet(remove, `${worktree.branch} 워크트리 삭제`,
+            '현재 변경을 커밋으로 보존하고 워크트리를 삭제합니다. 브랜치와 기록은 남습니다.',
+            { confirmLabel: '삭제', destructive: true })) return;
+          void perform(() => controller.removeWorktree(worktree.id));
+        });
+        actions.appendChild(remove);
+      }
+      row.append(copy, actions);
+      list.appendChild(row);
+    }
+    if (current.worktrees.length === 0) list.appendChild(el('p', 'ag-versions-placeholder', '워크트리가 없습니다.'));
+    worktreesPanel.appendChild(list);
   }
 
   function renderShelves(): void {
@@ -1178,6 +1293,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     renderTabs();
     renderHistory();
     renderBranches();
+    renderWorktrees();
     renderShelves();
     if (recovering) renderRecovery();
     renderMutationState();

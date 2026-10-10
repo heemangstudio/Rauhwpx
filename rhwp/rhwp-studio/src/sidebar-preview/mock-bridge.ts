@@ -11,6 +11,7 @@ import { loadAgentPrefs } from '../agent/agent-prefs.ts';
 import { createFixtures, samplePlan, timestamp, agents } from './fixtures.ts';
 import { requestLiveUsage, consumeLiveCodexReset } from './live-usage.ts';
 import { createBrowserbaseFixture, type BrowserbaseFixtureState } from './fixtures.ts';
+import { createTurnFailureCollector } from '../agent/provider-failure.ts';
 
 export const scenarios = [
   'chat',
@@ -21,9 +22,75 @@ export const scenarios = [
   'review',
   'fleet',
   'error',
+  'writer-busy',
+  'interrupted',
   'compaction',
 ] as const;
 export type Scenario = (typeof scenarios)[number];
+
+/** `?scenario=error&failure=…` — 실패 알림 종류. 기본은 network (예전 오류 시나리오의 문구). */
+export const failureKinds = [
+  'network',
+  'auth',
+  'pi-auth',
+  'pi-setup',
+  'usage',
+  'usage-soon',
+  'credits',
+  'provider',
+  'exited',
+  'cleanup',
+  'cli-missing',
+  'invalid',
+  'unknown',
+  'start',
+  'legacy',
+] as const;
+export type FailureKind = (typeof failureKinds)[number];
+
+/** 허브가 분류해 보내는 모양 그대로의 견본 실패. */
+function previewFailure(kind: FailureKind, agent: T.AgentName, now: number): T.ProviderFailure {
+  const failure = (
+    failureClass: T.ProviderFailureClass,
+    message: string,
+    code: string | null,
+    retryable: boolean,
+    resetAt: number | null = null,
+  ): T.ProviderFailure => ({ class: failureClass, agent, message, code, retryable, resetAt });
+  switch (kind) {
+    case 'auth':
+      return failure('auth_required', 'Invalid API key · Please run /login', `${agent}:authentication_failed`, false);
+    case 'pi-auth':
+      return { ...failure('auth_required', '401 No auth credentials found', 'http_401', false), agent: 'pi' };
+    case 'pi-setup':
+      // 허브가 Pi 설정이 끝나지 않은 채팅 시작을 거절한다 (chat-error PI_NOT_CONFIGURED).
+      return { ...failure('auth_required', 'Pi 설정을 먼저 끝내 주세요 (설치 · OpenRouter 키 · 모델 선택).', 'PI_NOT_CONFIGURED', false), agent: 'pi' };
+    case 'usage':
+      return failure('usage_limit', "You've hit your limit · resets 3pm (UTC)", `${agent}:rate_limit`, false);
+    case 'usage-soon':
+      return failure('usage_limit', "You've hit your limit · resets soon", `${agent}:rate_limit`, false, now + 3_000);
+    case 'credits':
+      return failure('usage_limit', 'OpenRouter 크레딧이 부족합니다.\n402 This request requires more credits, or fewer max_tokens. To increase, visit https://openrouter.ai/settings/credits?[redacted]', 'openrouter_credits', false);
+    case 'provider':
+      return failure('provider_error', 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', `${agent}:overloaded`, true);
+    case 'exited':
+      return failure('process_exited', '실행이 중단되었습니다 (code 1).\nAPI Error: Connection error.\nAuthorization: Bearer [redacted]', null, true);
+    case 'cleanup':
+      return failure('process_exited', 'The previous provider process tree could not be confirmed stopped. Restart the app before starting another provider.', 'cleanup_uncertain', false);
+    case 'cli-missing':
+      return failure('process_exited', 'process error: spawn ENOENT', 'cli_missing', false);
+    case 'invalid':
+      return failure('invalid_request', 'Codex ran out of room in the model\'s context window. Start a new thread or clear earlier history before retrying.', 'codex:contextWindowExceeded', false);
+    case 'unknown':
+      return failure('unknown', 'Unexpected provider response: the stream ended without a terminal frame.', null, true);
+    case 'start':
+      return failure('process_exited', 'spawn failed: the CLI exited before it was ready', 'AGENT_SPAWN_FAILED', true);
+    case 'legacy':
+    case 'network':
+    default:
+      return failure('network', 'stream disconnected before completion: error sending request for url (https://api.example.com/v1/responses?[redacted])', null, true);
+  }
+}
 
 const sampleModelCatalogs: Record<CatalogAgent, ModelCatalogEntry[]> = {
   claude: [
@@ -106,8 +173,61 @@ function toolScenarioCalls(): ToolScenarioCall[] {
   ];
 }
 
+/** writer-busy 시나리오 — 같은 문서의 다른 채팅이 편집 중이라 스튜디오가 거절한 쓰기. */
+function writerBusyCall(): ToolScenarioCall & { error: NonNullable<ToolScenarioCall['error']> } {
+  return {
+    id: 'busy',
+    tool: 'mcp__rhwp__replace_range',
+    args: { expectedRevision: 12, anchor: { text: '2026년 11월 착수' }, text: '2026년 10월 착수' },
+    error: {
+      code: 'DOCUMENT_WRITER_BUSY',
+      message: 'Another chat open on this document is editing it (its turn is running or its edits are waiting for the user\'s review). '
+        + 'A document has one editing chat at a time. Nothing was changed. '
+        + 'Do not retry document-write tools in this turn; reads still work. '
+        + 'Finish by telling the user what you would change; they can ask again after the other chat\'s edits are applied or discarded.',
+    },
+  };
+}
+
+const WRITER_BUSY_REPLY = [
+  '다른 채팅이 이 문서를 편집하고 있어서 이번에는 문서를 고치지 않았어요.\n\n',
+  '바꾸려던 내용은 다음과 같아요.\n\n',
+  '- ‘2026년 11월 착수’ → ‘2026년 10월 착수’\n\n',
+  '그 채팅의 편집이 반영되거나 취소된 뒤 다시 요청해 주세요.',
+];
+
+/**
+ * A chat the hub already runs for this window when the page loads, as after a reload:
+ * the sidebar must re-adopt it instead of restarting it.
+ */
+export interface MockLiveChat {
+  threadId: string;
+  agent?: T.AgentName;
+  /** The question the running turn is blocked on, if any. */
+  question?: T.UserQuestionInteraction;
+  /**
+   * Keep the hub's first answer back until `deliverWelcome()` so a test can order it against
+   * the thread store's hydration. By default `boot()` delivers it, right after the sidebar mounts.
+   */
+  deferWelcome?: boolean;
+  /**
+   * The chat's turn ended while the page was reloading: the hub replays that turn-end (and, for
+   * `failed`, the provider error) before its welcome, which then reports the session idle.
+   * `error`: the hub replays the turn's provider error and then a turn-end that carries no failure.
+   */
+  ended?: 'completed' | 'failed' | 'error';
+}
+
+export interface MockBridgeOptions {
+  liveChat?: MockLiveChat;
+}
+
 /** Implements the actual UI contract: new bridge methods produce a type error here. */
-export function createMockBridge(report: (message: string) => void, onApproved?: () => void) {
+export function createMockBridge(
+  report: (message: string) => void,
+  onApproved?: () => void,
+  options: MockBridgeOptions = {},
+) {
   const data = createFixtures();
   const liveUsage = new URLSearchParams(location.search).get('usage') === 'live';
   if (liveUsage) {
@@ -136,9 +256,64 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   let running = false;
   let usageRefreshFailed = false;
   let generation = 0;
+  /** 채팅 시작 응답만 따로 센다 — 실제 브리지처럼 시작 직후 보낸 메시지가 시작을 덮지 않는다. */
+  let chatGeneration = 0;
+  /** 브라우저 검사가 읽는 호출 기록. */
+  const chatStarts: Array<{
+    threadId: string;
+    workflow: T.AgentWorkflow;
+    permissionProfile: T.PermissionProfile;
+    /** 그 시작이 실은 대화 기록의 본문(프로바이더가 이어 받는 맥락). */
+    history: string[];
+  }> = [];
+  /**
+   * 마지막 chat-start 가 실은 대화 기록. 실제 브리지처럼 보내는 순간 사이드바의 맥락 제공자로 다시
+   * 만든다(제공자가 없으면 startChat 이 건넨 기록) — 세션을 잃은 뒤 메시지가 스스로 여는 시작도 같다.
+   */
+  let startHistory: string[] = [];
+  let messagesSent = 0;
+  /** 브리지가 받은 사용자 메시지 — 검사가 요청문·스킬·첨부·receipt 를 읽는다. */
+  const sentMessages: Array<{ text: string; skillName?: string; referenceIds: string[]; requireReceipt: boolean }> = [];
+  /** 다음 메시지를 허브가 이 코드로 거절한다(턴이 시작되지 않는다). */
+  let rejectNext: string | null = null;
+  let interrupts = 0;
+  let stops = 0;
   let threadId = '';
+  /** The chat whose session the mock hub holds; null before a start and after a stop. */
+  let hubChatThreadId: string | null = null;
+  let currentTurnId: string | null = null;
+  /** Without a live chat the fixture hub has nothing to report and has answered already. */
+  let welcomed = !options.liveChat;
+  let resolveWelcome: () => void = () => {};
+  const welcome = welcomed
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => { resolveWelcome = resolve; });
   let scenario: Scenario = 'chat';
+  /**
+   * `interrupted` 시나리오: 다음 턴 하나를 허브 재시작으로 끊는다. 끊은 뒤에는(이어서 진행 포함)
+   * 보통 답으로 돈다.
+   */
+  let interruptNextTurn = true;
+  /** 멈춘 턴의 끝을 바로 보내지 않는다 — 검사가 늦게 온 끝을 직접 보낸다. */
+  let lateTurnEnd = false;
+  /** 허브 프로세스 id(welcome.hubInstanceId 흉내). 허브를 다시 띄우면 바뀐다. */
+  let hubInstance = 'preview-hub-1';
+  /** 허브를 잃어 세션이 없다 — 다음 메시지 앞에 실제 브리지처럼 chat-start 를 보낸다. */
+  let sessionLost = false;
+  /** 보낸 chat-start 를 허브가 아직 확인하지 않았다 — 그 사이의 메시지는 그 시작 뒤에 간다. */
+  let startPending = false;
+  let failureKind: FailureKind = 'network';
+  // 실제 브리지처럼 한 턴의 error·turn-end 를 실패 알림 하나로 모은다.
+  const turnFailures = createTurnFailureCollector();
   let holdReply = false;
+  /** How long a chat start and an attachment upload take — checks slow them to observe the locks. */
+  let chatStartDelayMs = 20;
+  /**
+   * How long the hub takes to open the turn of an accepted message. Checks slow it to observe the gap
+   * where the hub already runs the message but Studio has not seen its turn-start.
+   */
+  let turnStartDelayMs = 20;
+  let stageDelayMs = 0;
   let permission: T.PermissionProfile = 'safe';
   let tier: T.ServiceTier = 'standard';
   let workflow: T.AgentWorkflowState = {
@@ -158,10 +333,30 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   let lastChatStart: { agent: T.AgentName; providerSessionId: string | null; handoff: number; history: number } | null = null;
   const sessionCompaction = (provider: T.AgentName): T.CompactionSupport =>
     provider === 'pi' ? 'auto-only' : 'manual';
+  /** chat-start 를 보낸 것으로 친다: 그 순간의 맥락(대화·커서·넘겨받기)을 읽어 남긴다. */
+  const recordChatStart = () => {
+    const context = contextProvider?.({ agent, threadId }) ?? null;
+    if (context) startHistory = context.history.map((entry) => entry.text);
+    lastChatStart = {
+      agent,
+      providerSessionId: context?.providerSessionId ?? null,
+      handoff: context?.handoffHistory?.length ?? 0,
+      history: context?.history.length ?? 0,
+    };
+    chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission, history: [...startHistory] });
+    return context;
+  };
   let activeTemplate: T.DocumentTemplate | null = null;
   let changes: T.PendingChangeSet[] = [];
   const changeEvents: T.PendingEditsChangeEvent['type'][] = [];
   const reviewMode = new URLSearchParams(location.search).get('review');
+  /** `background=1`: the fleet scenario's first subagent is a background process that outlives its turn. */
+  const backgroundTask = new URLSearchParams(location.search).get('background') === '1';
+  /**
+   * `report=1`: the reply writes its report first and then calls one more tool (update_todos), so the
+   * turn ends without a final answer bubble — the report is the turn's last prose.
+   */
+  const reportEnding = new URLSearchParams(location.search).get('report') === '1';
   const fullReview = reviewMode === 'full';
   const references: T.ReferenceFile[] = [
     {
@@ -192,18 +387,40 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     later(() => fn(id));
     return id;
   };
-  const stream = (event: T.AgentStreamEvent) => emit({ type: 'agent', event });
+  const stream = (event: T.AgentStreamEvent) => {
+    if (event.type === 'turn-start') currentTurnId = event.turnId ?? null;
+    let failureEvent: T.SidebarEvent | null = null;
+    if (event.type === 'turn-start') turnFailures.beginTurn(event.turnId ?? null, true);
+    if (event.type === 'error') {
+      const idle = turnFailures.observeError(event, running);
+      if (idle) failureEvent = { type: 'turn-failure', failure: idle, turnId: null, origin: 'idle', userInitiated: false };
+    }
+    if (event.type === 'turn-end') {
+      const ended = turnFailures.endTurn(event);
+      if (ended) {
+        failureEvent = {
+          type: 'turn-failure', failure: ended.failure, turnId: ended.turnId, origin: 'turn',
+          userInitiated: ended.userInitiated, wroteDocument: false,
+        };
+      }
+    }
+    emit({ type: 'agent', event });
+    if (failureEvent) emit(failureEvent);
+  };
   const setRunning = (value: boolean) => {
     running = value;
     leaseListeners.forEach((listener) => listener(bridge.getEditingLease()));
   };
-  const finish = (stopReason = 'completed') => {
+  /** 허브처럼 턴이 끝날 때 끝나지 않은 수동 압축을 failed 로 닫는다(완료는 압축 흐름이 직접 보낸다). */
+  const settleCompaction = () => {
+    if (!compacting) return;
+    stream({ type: 'compaction', agent, compactionId: compacting, phase: 'failed', trigger: 'manual' });
+    compacting = null;
+  };
+  const finish = (stopReason = 'completed', errorMessage?: string) => {
     setRunning(false);
     const completed = stopReason === 'completed';
-    if (compacting) {
-      stream({ type: 'compaction', agent, compactionId: compacting, phase: 'failed', trigger: 'manual' });
-      compacting = null;
-    }
+    settleCompaction();
     if (completed) {
       stream({ type: 'context-usage', agent, usedTokens: Math.round(CONTEXT_MAX * contextShare), maxTokens: CONTEXT_MAX });
     }
@@ -211,8 +428,58 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       type: 'turn-end',
       agent,
       stopReason,
+      ...(errorMessage ? { errorMessage } : {}),
       ...(completed ? { providerSessionId: `preview-${agent}-${threadId}` } : {}),
     });
+  };
+  /**
+   * 허브가 다시 떴다(실제 브리지가 welcome {session:null} 로 아는 것과 같은 모양): 기다리던 질문은
+   * 허브 재시작으로 만료되고, 도는 턴은 interruption 이 실린 합성 turn-end 로 닫힌다. 세션이 없으니
+   * 다음 메시지는 채팅 시작부터 간다.
+   */
+  const restartHub = () => {
+    hubInstance = `preview-hub-${Number(hubInstance.split('-').pop() ?? 1) + 1}`;
+    generation++;
+    const lostTurnId = currentTurnId;
+    completeQuestion({ status: 'expired', reason: 'hub-restarted' });
+    hubChatThreadId = null;
+    sessionLost = true;
+    // 죽은 허브는 압축의 끝을 보내지 못한다 — 실제처럼 아무것도 보내지 않고 잊는다.
+    compacting = null;
+    if (!running) return;
+    setRunning(false);
+    stream({
+      type: 'turn-end',
+      agent,
+      stopReason: 'exited',
+      errorMessage: '에이전트 허브가 다시 시작되어 작업이 중단됐습니다.',
+      interruption: 'hub-restart',
+      ...(lostTurnId ? { turnId: lostTurnId } : {}),
+    });
+  };
+  /** 실패한 턴: 실제 허브처럼 같은 실패를 error 와 turn-end 에 함께 싣는다 (알림은 하나만 남아야 한다). */
+  const failTurn = (kind: FailureKind, turnId: string) => {
+    const now = Date.now();
+    const failure = previewFailure(kind, agent, now);
+    if (kind === 'usage' && (agent === 'claude' || agent === 'codex') && data.usage.limits) {
+      // 실패에 리셋 시각이 없으면 사용량 보고의 다 쓴 창에서 찾는다.
+      const limits = structuredClone(data.usage.limits);
+      limits[agent].session = { percent: 100, resetsAt: now + 2 * 60 * 60 * 1000 };
+      emit({ type: 'usage-report', usage: { ...data.usage, limits } });
+    }
+    if (kind === 'legacy') {
+      // 이전 허브: failure 없이 문구만 온다.
+      const message = 'Invalid API key · Please run /login';
+      stream({ type: 'error', agent, message });
+      setRunning(false);
+      settleCompaction();
+      stream({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: message, turnId });
+      return;
+    }
+    stream({ type: 'error', agent, message: failure.message, failure });
+    setRunning(false);
+    settleCompaction();
+    stream({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: failure.message, failure, turnId });
   };
   const updatePlanExecution = (execution: NonNullable<T.StructuredPlan['execution']>) => {
     if (!workflow.latestPlan) return;
@@ -264,14 +531,52 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     setupChanged();
     report(`${provider}: connected to a local sample account`);
   };
+  /** The sample question, asked on the given turn as a provider would. */
+  const askSampleQuestion = (turnId: string) => {
+    question = {
+      interactionId: crypto.randomUUID(),
+      providerRequestId: 'preview-request',
+      threadId,
+      turnId,
+      agent,
+      source: 'native',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      questions: [
+        {
+          id: 'tone',
+          header: '문체',
+          question: '어떤 문체로 다듬을까요?',
+          mode: 'single',
+          allowOther: true,
+          options: [
+            {
+              id: 'formal',
+              label: '공식적인 문체',
+              description: '제안서와 보고서에 적합합니다.',
+            },
+            {
+              id: 'friendly',
+              label: '친근한 문체',
+              description: '쉽고 자연스럽게 전달합니다.',
+            },
+          ],
+        },
+      ],
+    };
+    emit({ type: 'user-question-requested', interaction: question });
+    return question.interactionId;
+  };
   const completeQuestion = (outcome: T.UserQuestionOutcome) => {
     if (!question) return;
+    // As the real bridge: the question is gone before listeners hear it resolved.
+    const { interactionId } = question;
+    question = null;
     emit({
       type: 'user-question-resolved',
-      interactionId: question.interactionId,
+      interactionId,
       outcome,
     });
-    question = null;
   };
   const bridge: SidebarBridge = {
     pendingEdits: {
@@ -305,9 +610,20 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     getDocumentSelectionIdentity: () => ({ documentId: 'sidebar-preview', revision: 0 }),
     getConnectionState: () => connection,
     getHubFontAccess: () => null,
-    getActiveAgent: () => agent,
+    // 실제 브리지처럼 허브가 세션을 잃었으면(허브 재시작) 다음 시작 전까지 활성 에이전트가 없다.
+    getActiveAgent: () => (sessionLost ? null : agent),
     isTurnRunning: () => running,
     getPendingUserQuestion: () => question,
+    hubSessionKnown: () => welcome,
+    getHubIdentity: () => ({ hubInstanceId: hubInstance, hubSessionId: 'preview-session' }),
+    getHubChat: () => (hubChatThreadId
+      ? {
+        threadId: hubChatThreadId,
+        turnId: running ? currentTurnId : null,
+        running,
+        awaitingUser: question !== null || workflow.phase === 'awaiting-approval',
+      }
+      : null),
     getEditingLease: () =>
       deriveAgentEditingLease({
         turnRunning: running,
@@ -548,9 +864,13 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       id,
       documentId,
       documentName,
+      history,
     ) => {
       const continuing = !force && id === threadId && (mode ?? 'direct') === workflow.workflow;
-      const startGeneration = ++generation;
+      startHistory = (history ?? []).map((entry) => entry.text);
+      startPending = true;
+      ++generation;
+      const startGeneration = ++chatGeneration;
       completeQuestion({ status: 'expired', reason: 'request-invalidated' });
       setRunning(false);
       agent = provider;
@@ -567,13 +887,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         capabilityEpoch: 1,
         latestPlan: null,
       };
-      const context = contextProvider?.({ agent, threadId }) ?? null;
-      lastChatStart = {
-        agent,
-        providerSessionId: context?.providerSessionId ?? null,
-        handoff: context?.handoffHistory?.length ?? 0,
-        history: context?.history.length ?? 0,
-      };
+      const context = recordChatStart();
       const started: T.SidebarEvent = {
         type: 'chat-started',
         agent,
@@ -589,9 +903,15 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         documentName,
         ...workflow,
       };
+      hubChatThreadId = null;
       later(() => {
-        if (generation === startGeneration) emit(started);
-      });
+        if (chatGeneration !== startGeneration) return;
+        hubChatThreadId = threadId;
+        // 실제 브리지처럼 허브가 시작을 확인해야 활성 에이전트가 생긴다.
+        sessionLost = false;
+        startPending = false;
+        emit(started);
+      }, chatStartDelayMs);
     },
     setChatStartContextProvider: (provider) => {
       contextProvider = provider;
@@ -623,7 +943,13 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       return { ok: true, compactionId };
     },
     stopChat: () => {
+      stops += 1;
+      hubChatThreadId = null;
+      startPending = false;
+      // chat-stopped 가 사이드바의 압축 상태를 지운다 — 다음 턴 끝에 옛 압축을 실패로 알리지 않는다.
+      compacting = null;
       generation++;
+      chatGeneration++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
       setRunning(false);
       emit({ type: 'chat-stopped' });
@@ -638,13 +964,44 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         }),
       ),
     requestCheckpointTitle: async () => null,
-    sendUserMessage: async (_text, _skill, referenceIds = []) => {
+    sendUserMessage: async (text, skillName, referenceIds = [], requireReceipt = false) => {
+      messagesSent += 1;
+      sentMessages.push({ text, ...(skillName ? { skillName } : {}), referenceIds: [...referenceIds], requireReceipt });
       const messageId = crypto.randomUUID();
+      // 실제 브리지처럼 receipt 가 필요한 메시지(첨부·대기 메시지)만 id 를 돌려준다.
+      const receipt = referenceIds.length > 0 || requireReceipt ? messageId : null;
+      if (rejectNext) {
+        const code = rejectNext;
+        rejectNext = null;
+        // 허브가 자기 턴을 먼저 시작한 것처럼 거절한다 — 턴은 열리지 않는다.
+        later(() => emit({
+          type: 'hub-error',
+          code,
+          message: 'A turn is already in progress.',
+          ...(receipt ? { messageId: receipt } : {}),
+        }));
+        return receipt;
+      }
+      if (sessionLost && !startPending) {
+        // 실제 브리지: 세션이 없으면 지금 스레드의 대화와 커서로 chat-start 를 다시 보낸 뒤 메시지를 보낸다.
+        sessionLost = false;
+        recordChatStart();
+        hubChatThreadId = threadId;
+      }
       const turnGeneration = ++generation;
+      const cutThisTurn = scenario === 'interrupted' && interruptNextTurn;
+      if (cutThisTurn) interruptNextTurn = false;
       const reply =
         scenario === 'chat' && workflow.workflow !== 'direct'
           ? workflow.workflow
-          : scenario;
+          : scenario === 'interrupted' ? (cutThisTurn ? 'interrupted' : 'chat') : scenario;
+      if (reply === 'error' && (failureKind === 'start' || failureKind === 'pi-setup')) {
+        // 채팅 시작 실패: 메시지는 프로바이더에 닿지 않는다.
+        const failure = previewFailure(failureKind, agent, Date.now());
+        const code = failureKind === 'start' ? 'AGENT_SPAWN_FAILED' : 'PI_NOT_CONFIGURED';
+        later(() => emit({ type: 'hub-error', code, message: failure.message, failure, origin: 'start' }));
+        return null;
+      }
       later(() => {
         if (generation !== turnGeneration) return;
         setRunning(true);
@@ -667,38 +1024,21 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
             }),
           });
         if (reply === 'question') {
-          question = {
-            interactionId: crypto.randomUUID(),
-            providerRequestId: 'preview-request',
-            threadId,
-            turnId: `turn-${turnGeneration}`,
-            agent,
-            source: 'native',
-            createdAt: timestamp,
-            updatedAt: timestamp,
-            questions: [
-              {
-                id: 'tone',
-                header: '문체',
-                question: '어떤 문체로 다듬을까요?',
-                mode: 'single',
-                allowOther: true,
-                options: [
-                  {
-                    id: 'formal',
-                    label: '공식적인 문체',
-                    description: '제안서와 보고서에 적합합니다.',
-                  },
-                  {
-                    id: 'friendly',
-                    label: '친근한 문체',
-                    description: '쉽고 자연스럽게 전달합니다.',
-                  },
-                ],
-              },
-            ],
-          };
-          emit({ type: 'user-question-requested', interaction: question });
+          askSampleQuestion(`turn-${turnGeneration}`);
+          return;
+        }
+        if (reply === 'interrupted') {
+          // 문서를 읽고 답을 쓰다가 질문을 남긴 채 허브가 다시 뜬다. 붙잡아 두면(hold=1) 문서를 읽은 뒤
+          // 계속 돌고, 검사가 askQuestion·restartHub 로 질문과 허브 재시작을 직접 부른다.
+          stream({ type: 'tool-call', agent, callId: `structure-${turnGeneration}`, tool: 'mcp__rhwp__get_structure', argsJson: '{}' });
+          later(() => {
+            if (generation !== turnGeneration) return;
+            stream({ type: 'tool-result', agent, callId: `structure-${turnGeneration}`, ok: true, resultPreview: '구역 1개 · 문단 42개 · 표 3개' });
+            stream({ type: 'text-delta', agent, text: '추진 일정 표를 분기별로 나누기 전에 범위를 확인하겠습니다.' });
+            if (holdReply) return;
+            askSampleQuestion(`turn-${turnGeneration}`);
+            later(() => { if (generation === turnGeneration) restartHub(); }, 900);
+          }, 400);
           return;
         }
         if (reply === 'compaction') {
@@ -716,6 +1056,10 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
             stream({ type: 'tool-call', agent, callId: `${call.id}-${turnGeneration}`, tool: call.tool, argsJson: JSON.stringify(call.args) });
           }
         }
+        if (reply === 'writer-busy') {
+          const call = writerBusyCall();
+          stream({ type: 'tool-call', agent, callId: `${call.id}-${turnGeneration}`, tool: call.tool, argsJson: JSON.stringify(call.args) });
+        }
         if (reply === 'fleet') {
           stream({
             type: 'task-start',
@@ -724,6 +1068,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
             title: '문장과 용어 검토',
             taskKind: 'agent',
             role: '교정',
+            ...(backgroundTask ? { background: true } : {}),
           });
           for (const [suffix, title] of [['layout', '표 구조와 문서 서식'], ['facts', '일정과 수치 검증']]) {
             stream({ type: 'task-start', agent, taskId: `${suffix}-${turnGeneration}`, title, taskKind: 'agent' });
@@ -735,7 +1080,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
             stream({ type: 'text-delta', agent, parentTaskId: `task-${turnGeneration}`, text: activities[frame % activities.length] + '\n' });
             stream({ type: 'task-progress', agent, taskId: `task-${turnGeneration}`, usage: { totalTokens: 2400 + frame * 120, toolUses: 3 } });
             frame += 1;
-            if (holdReply) later(updateFleet, 1600);
+            if (holdReply || backgroundTask) later(updateFleet, 1600);
           };
           later(updateFleet, 500);
           stream({ type: 'tool-call', agent, parentTaskId: `layout-${turnGeneration}`, callId: `layout-read-${turnGeneration}`, tool: 'read_document', argsJson: '{"section":1}' });
@@ -777,13 +1122,20 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
               beforeTokens, afterTokens: Math.round(CONTEXT_MAX * contextShare),
             });
           }
-          if (reply === 'error') {
+          if (reply === 'writer-busy') {
+            // 스튜디오가 문서에 닿기 전에 거절하고, 프로바이더가 같은 오류를 받는다.
+            const call = writerBusyCall();
+            emit({ type: 'tool-executed', tool: call.tool.replace(/^mcp__rhwp__/, ''), args: call.args, ok: false, error: call.error });
             stream({
-              type: 'error',
+              type: 'tool-result',
               agent,
-              message: '앗, 오류에요! 네트워크 연결을 확인하세요!',
+              callId: `${call.id}-${turnGeneration}`,
+              ok: false,
+              resultPreview: `${call.error.code}: ${call.error.message}`,
             });
-            finish('failed');
+          }
+          if (reply === 'error') {
+            failTurn(failureKind, `turn-${turnGeneration}`);
             return;
           }
           if (reply === 'plan') {
@@ -800,7 +1152,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
               latestPlan: plan,
             };
             emit({ type: 'plan-ready', plan, ...workflow });
-            finish();
+            if (!holdReply) finish();
             return;
           }
           if (reply === 'fleet') {
@@ -814,7 +1166,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
               activity: '용어와 문장 길이를 검토했습니다.',
               usage: { totalTokens: 2400, toolUses: 3 },
             });
-            if (!holdReply) stream({
+            if (!holdReply && !backgroundTask) stream({
               type: 'task-end',
               agent,
               taskId: `task-${turnGeneration}`,
@@ -835,19 +1187,33 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
             '> 승인 전에는 원본 문서를 보존하고 변경 사항을 검토합니다.\n\n',
             '```json\n{ "status": "review", "sections": 3 }\n```\n\n',
             '[브랜드 가이드](#preview-reference)를 참고해 **용어**와 *문체*를 통일했습니다.\n\n');
+          if (reply === 'writer-busy') chunks.splice(0, chunks.length, ...WRITER_BUSY_REPLY);
           chunks.forEach((text, index) =>
             later(() => {
               if (generation !== turnGeneration) return;
               stream({ type: 'text-delta', agent, text });
               if (index === chunks.length - 1) {
                 if (reply === 'review') addReview();
+                if (reportEnding) {
+                  const todos = [
+                    { content: '문서 검토', status: 'completed' },
+                    { content: '보고 작성', status: 'completed' },
+                  ];
+                  stream({ type: 'tool-call', agent, callId: `todos-${turnGeneration}`, tool: 'mcp__rhwp__update_todos', argsJson: JSON.stringify({ todos }) });
+                  later(() => {
+                    if (generation !== turnGeneration) return;
+                    stream({ type: 'tool-result', agent, callId: `todos-${turnGeneration}`, ok: true, resultPreview: '할 일 2개를 갱신했습니다.' });
+                    if (!holdReply) finish();
+                  }, 140);
+                  return;
+                }
                 if (!holdReply) finish();
               }
             }, index * 140),
           );
         }, 650);
-      });
-      return messageId;
+      }, turnStartDelayMs);
+      return receipt;
     },
     listTemplates: async () => data.templates,
     addTemplate: async (file, name) => {
@@ -899,6 +1265,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     },
     getActiveTemplate: () => activeTemplate,
     stageReference: async (scopeId, file) => {
+      if (stageDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, stageDelayMs));
       const reference: T.StagedReference = {
         id: crypto.randomUUID(),
         scope: 'chat',
@@ -1274,9 +1641,11 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         finish();
       }),
     interrupt: () => {
+      interrupts += 1;
       generation++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
-      if (running) finish('interrupted');
+      // lateTurnEnd: 실제 허브처럼 멈춘 턴의 끝은 나중에 온다(streamEvent 로 보낸다).
+      if (running && !lateTurnEnd) finish('interrupted');
     },
     onEvent: (listener) => {
       listeners.add(listener);
@@ -1291,6 +1660,52 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       leaseListeners.clear();
     },
   };
+  /**
+   * The hub's first answer after a reload, as the real bridge applies it: the chat's turn kept
+   * running in the hub, so the bridge adopts it, announces the session for its thread, and
+   * replays the question the turn is blocked on.
+   */
+  function deliverWelcome(): void {
+    const live = options.liveChat;
+    if (!live || welcomed) return;
+    welcomed = true;
+    agent = live.agent ?? agent;
+    if (live.ended) {
+      // 허브는 저장해 둔 턴의 끝(실패면 그 실패를 실은 turn-end 하나)을 welcome 보다 먼저 다시 보낸다 —
+      // 이 페이지는 아직 그 채팅을 모른다.
+      const failure = live.ended === 'failed'
+        ? previewFailure('network', agent, Date.now())
+        : null;
+      if (live.ended === 'error') {
+        const error = previewFailure('provider', agent, Date.now());
+        stream({ type: 'error', agent, message: error.message, failure: error });
+      }
+      stream({
+        type: 'turn-end', agent, turnId: 'preview-turn',
+        stopReason: failure ? 'failed' : 'completed',
+        ...(failure ? { errorMessage: failure.message, failure } : {}),
+      });
+    }
+    threadId = live.threadId;
+    hubChatThreadId = threadId;
+    currentTurnId = live.ended ? null : 'preview-turn';
+    question = live.question && !live.ended ? structuredClone(live.question) : null;
+    setRunning(!live.ended);
+    emit({
+      type: 'chat-started',
+      agent,
+      sessionId: 'preview-session',
+      // 허브의 welcome 세션 요약처럼 압축 지원을 싣는다 — 이어 받은 채팅도 수동 압축을 쓴다.
+      compaction: sessionCompaction(agent),
+      model: defaultModelForAgent(agent),
+      permissionProfile: permission,
+      serviceTier: tier,
+      threadId,
+      ...workflow,
+    });
+    if (question) emit({ type: 'user-question-requested', interaction: question, replayed: true });
+    resolveWelcome();
+  }
   function setConnection(state: typeof connection) {
     if (state !== 'connected') {
       generation++;
@@ -1382,10 +1797,63 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     },
     setScenario: (value: Scenario) => {
       scenario = value;
+      interruptNextTurn = true;
+    },
+    /** 허브 프로세스를 다시 띄운 것처럼 — 도는 턴을 허브 재시작으로 끊는다(S3). */
+    restartHub,
+    /** 멈춘 턴의 끝을 바로 보내지 않는다(실제 허브처럼 나중에 온다). */
+    setLateTurnEnd: (value: boolean) => { lateTurnEnd = value; },
+    /**
+     * 끊긴 사이에 턴이 끝났는데 허브가 그 끝을 다시 보내지 않았다 — 실제 브리지처럼 welcome 뒤
+     * 진행 상태만 내리고 connection 으로 다시 맞추게 한다.
+     */
+    loseTurnEnd: () => {
+      generation++;
+      setRunning(false);
+      currentTurnId = null;
+      emit({ type: 'connection', state: connection, attempt: 0 });
+    },
+    setFailureKind: (value: FailureKind) => {
+      failureKind = value;
     },
     setHold: (value: boolean) => { holdReply = value; },
+    setChatStartDelay: (ms: number) => { chatStartDelayMs = ms; },
+    setTurnStartDelay: (ms: number) => { turnStartDelayMs = ms; },
+    /** Sends a hub error as the hub does for a refused frame (a settings change mid-turn, for example). */
+    emitHubError: (code: string, message: string, messageId?: string) => {
+      emit({ type: 'hub-error', code, message, ...(messageId ? { messageId } : {}) });
+    },
+    setStageDelay: (ms: number) => { stageDelayMs = ms; },
+    /**
+     * Asks the sample question on the running turn (a held reply keeps it running), as the
+     * provider does mid-turn. Starts a turn first when none runs. Returns the interaction id.
+     */
+    askQuestion: () => {
+      if (!running) {
+        setRunning(true);
+        stream({ type: 'turn-start', agent, turnId: `turn-${++generation}` });
+      }
+      return askSampleQuestion(`turn-${generation}`);
+    },
+    /**
+     * 붙잡아 둔 턴을 끝낸다(턴이 없으면 허브가 연 턴의 끝처럼 turn-end 만 보낸다).
+     * errorMessage 를 주면 예전 허브처럼 그 문구를 turn-end 에 싣는다.
+     */
+    finishTurn: (stopReason = 'completed', errorMessage?: string) => {
+      generation++;
+      finish(stopReason, errorMessage);
+    },
+    /** 붙잡아 둔 턴을 이 실패로 끝낸다 (error 와 turn-end 에 같은 실패). */
+    failRunningTurn: (kind: FailureKind = failureKind) => {
+      generation++;
+      failTurn(kind, currentTurnId ?? `turn-${generation}`);
+    },
+    /** 다음 사용자 메시지를 허브가 이 코드로 거절하게 한다. */
+    rejectNextMessage: (code = 'AGENT_BUSY') => { rejectNext = code; },
     /** 허브가 같은 이벤트를 다시 보내는 경우(재전송·중복)를 흉내 낸다. */
     emitAgentEvent: (event: T.AgentStreamEvent) => stream(event),
+    /** Delivers one provider event as the hub would, e.g. a token-by-token answer for benches. */
+    streamEvent: stream,
     boot: () => {
       setPiModels(data.pi.models);
       emit({ type: 'pi-status', status: data.pi });
@@ -1393,8 +1861,17 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       setupChanged();
       emit({ type: 'usage-report', usage: data.usage });
       bridge.listSkills();
+      if (!options.liveChat?.deferWelcome) deliverWelcome();
     },
+    deliverWelcome,
     snapshot: () => ({
+      chatStarts: chatStarts.map((start) => ({ ...start, history: [...start.history] })),
+      messagesSent,
+      messageTexts: sentMessages.map((message) => message.text),
+      sentMessages: sentMessages.map((message) => ({ ...message, referenceIds: [...message.referenceIds] })),
+      failureKind,
+      interrupts,
+      stops,
       scenario,
       connection,
       running,

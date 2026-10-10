@@ -27,6 +27,7 @@ import {
   ensureChromePath,
   findAvailablePort,
   openSample,
+  removeTempDir,
   repoRoot,
   startHub,
   startVite,
@@ -367,7 +368,7 @@ try {
 } finally {
   await stopServer(vite);
   await stopServer(hub);
-  fs.rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5 });
+  removeTempDir(fixtureRoot);
 }
 
 function printSummary() {

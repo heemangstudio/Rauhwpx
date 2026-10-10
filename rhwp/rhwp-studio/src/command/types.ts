@@ -92,6 +92,8 @@ export interface CommandServices {
   wasm: WasmBridge;
   /** 저장되지 않은 문서 변경 상태 */
   documentState: DocumentDirtyState;
+  /** 현재 세션이 문서와 작업 공간을 저장할 권한이 있는가. */
+  canSaveDocument?: () => boolean;
   /** 현재 에디터 상태 스냅샷 */
   getContext: () => EditorContext;
   /** InputHandler 접근 (문서 미로드 시 null) */
@@ -110,6 +112,11 @@ export interface CommandServices {
   ) => Promise<((saved: boolean) => Promise<void>) | void>;
   /** Build a portable document bundle containing the complete local version graph. */
   createPortableHistoryBundle?: () => Promise<PortableHistoryArchive>;
+  /** 관리되는 작업 사본은 파일 대신 로컬 체크포인트로 저장한다. */
+  saveManagedWorktree?: () => Promise<boolean>;
+  isManagedWorktree?: () => boolean;
+  /** 내보내기 전 현재 내용을 보존하되 저장 기준점은 바꾸지 않는다. */
+  persistManagedWorktree?: () => Promise<void>;
   /** 에디터 편집 모드 변경 */
   setEditMode: (mode: EditorEditMode) => void;
   /**
@@ -117,6 +124,8 @@ export interface CommandServices {
    * 미리보기로 문서에 이미 반영돼 있으므로, 저장 전에 수락/거절을 결정해야 한다.
    * 에이전트 브리지가 없거나 대기 편집이 없으면 null.
    */
+  /** 지금 문서에서 에이전트가 일하는 중이라 새 문서를 따로 연다면 true (지금 문서를 바꾸지 않는다) */
+  opensDocumentsInNewSession?: () => boolean;
   getPendingAgentEdits?: () => {
     opCount: number;
     approveAll: () => boolean;

@@ -19,6 +19,7 @@ import {
   flushCodexCredentialMirror,
   prepareCodexHome,
 } from './agents/codex.mjs';
+import { IDLE_PROCESS_RELEASE_MS } from './agents/backend.mjs';
 import { canResumePiSession, createPiSession } from './agents/pi.mjs';
 import { canResumeCodexThread } from './agents/codex-app-server.mjs';
 import {
@@ -45,6 +46,8 @@ import { buildWritingStyleCatalog, resolveWritingStyleSelection } from './writin
 import { assertCellArgsPlacement, filterToolDefinitions, TOOL_DEFINITIONS } from './tools.mjs';
 import { resolveRenderSavePath, writeRenderPng } from './render-save.mjs';
 import { replayMissedTurnEnd } from './turn-outcome-replay.mjs';
+import { failureForHubError, normalizeProviderFailureEvent, redactFailureText } from './provider-failure.mjs';
+import { createStudioFrameCoalescer } from './studio-frame-coalescer.mjs';
 import {
   PlanningState,
   authorizeToolCall,
@@ -127,6 +130,7 @@ import {
 import { runCopyLayoutHelper } from './copy-layout-runner.mjs';
 import { z } from 'zod/v3';
 import {
+  HUB_SECRET_ENV_NAMES,
   PROCESS_TREE_CLEANUP_OUTCOME,
   terminateAndWaitForProcessTreeExitOutcome,
   terminateProcessTree,
@@ -154,7 +158,13 @@ import {
 const REQUESTED_PORT = Number(process.env.RHWP_AGENT_PORT ?? 5175);
 const PRODUCTION = process.env.NODE_ENV === 'production' || process.env.RHWP_AGENT_MODE === 'production';
 const { token: TOKEN, development: DEVELOPMENT_AUTH, launchId: LAUNCH_ID } = resolveHubIdentity();
+// 마스터 토큰과 실행 id 는 위 상수에만 둔다. 환경에 남기면 허브가 띄우는 모든 자식(프로바이더 CLI 와
+// 그 Bash 도구, npm 설치 스크립트)이 물려받아 소유자 엔드포인트를 마스터 권한으로 부를 수 있다.
+for (const name of HUB_SECRET_ENV_NAMES) delete process.env[name];
 const PROTOCOL_VERSION = 5;
+// 허브 프로세스 하나의 id. launchId 는 데스크톱 앱 실행 id 라 앱이 같은 실행 안에서 허브를 다시
+// 띄우면 그대로다 — Studio 는 이 값으로 허브 재시작과 새로고침을 가른다(welcome.hubInstanceId).
+const HUB_INSTANCE_ID = crypto.randomUUID();
 const HUB_NAME = 'rhwp-agent';
 const STARTED_AT = Date.now();
 // The bundle is discovery-only. Every per-window cwd, home, download, and
@@ -209,6 +219,10 @@ const ORPHAN_HARD_SHUTDOWN_MS = Number.isSafeInteger(configuredOrphanHardShutdow
   && configuredOrphanHardShutdownMs >= 100
   ? Math.max(configuredOrphanHardShutdownMs, ORPHAN_IDLE_SHUTDOWN_MS)
   : 30 * 60 * 1000;
+const configuredAgentIdleMs = Number(process.env.RHWP_AGENT_IDLE_MS);
+const AGENT_IDLE_RELEASE_MS = Number.isSafeInteger(configuredAgentIdleMs) && configuredAgentIdleMs >= 100
+  ? configuredAgentIdleMs
+  : IDLE_PROCESS_RELEASE_MS;
 const toolDefinitionsByName = new Map(TOOL_DEFINITIONS.map((definition) => [definition.name, definition]));
 const copyLayoutWorkerTools = new Set(
   filterToolDefinitions('copy-layout-worker').map((definition) => definition.name),
@@ -1062,7 +1076,7 @@ function log(msg) {
   process.stderr.write(`[rhwp-agent] ${msg}\n`);
 }
 
-function sendJson(sock, obj) {
+function writeJson(sock, obj) {
   if (!sock || sock.readyState !== sock.OPEN) return false;
   try {
     sock.send(JSON.stringify(obj?.v === 1 ? { ...obj, v: PROTOCOL_VERSION } : obj));
@@ -1073,8 +1087,18 @@ function sendJson(sock, obj) {
   }
 }
 
+/** 토큰마다 WS 프레임을 보내지 않도록 스트리밍 이벤트를 소켓별로 잠깐 모은다. */
+const studioFrames = createStudioFrameCoalescer({ write: writeJson });
+
+/** 모아 둔 스트리밍 프레임을 먼저 보낸 뒤 보낸다 — 프레임 순서가 그대로 유지된다. */
+function sendJson(sock, obj) {
+  if (sock) studioFrames.flush(sock);
+  return writeJson(sock, obj);
+}
+
 /** 이미 직렬화한 프레임을 보낸다 — 크기를 먼저 재야 하는 도구 결과용. */
 function sendRaw(sock, frame) {
+  if (sock) studioFrames.flush(sock);
   if (!sock || sock.readyState !== sock.OPEN) return false;
   try {
     sock.send(frame);
@@ -1128,6 +1152,8 @@ function beginAgentTurn(record, activeSession) {
   // must remain unable to borrow that window.
   activeSession.providerTurnStarted = false;
   activeSession.status = 'running';
+  // 이 턴에 보고된 프로바이더 실패 — turn-end 가 하나로 합쳐 싣는다.
+  activeSession.turnFailure = null;
   if (activeSession.planning.phase === 'implementing' && activeSession.planning.execution?.status !== 'completed') {
     activeSession.planExecutionTurnId = activeSession.turnId;
     activeSession.planExecutionTurnSucceeded = false;
@@ -2094,7 +2120,10 @@ function makeTemplateWorkerEventHandler(record, job) {
     if (event.type === 'session-info' && event.sessionId) job.providerSessionId = event.sessionId;
     if (event.type === 'text-delta' && event.text?.trim()) {
       job.activity = event.text.replace(/\s+/g, ' ').trim().slice(-500);
-      sendTemplateJobEvent(record, taskProgressForJob(job, job.activity));
+      // 근황 스냅샷은 토큰마다 바뀐다 — 같은 창 안에서는 마지막 것만 보낸다.
+      studioFrames.pushProgress(record.studioSocket, {
+        v: 1, type: 'agent-event', event: taskProgressForJob(job, job.activity),
+      });
       return;
     }
     if (event.type === 'tool-call') {
@@ -2228,6 +2257,37 @@ function createTemplateJob(record, activeSession, binding) {
 
 const TRACED_PROVIDER_EVENTS = new Set(['turn-start', 'turn-end', 'tool-call', 'tool-result', 'task-start', 'task-end']);
 
+/** 실패 문구에서 지울 이 세션의 비밀 값: MCP 세션 토큰, OpenRouter 키, CLI 설정 키. */
+function providerFailureSecrets(opts) {
+  const values = [opts.token, opts.openRouterApiKey, piManager.apiKey()];
+  for (const [name, value] of Object.entries(opts.providerEnv ?? {})) {
+    if (/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i.test(name)) values.push(value);
+  }
+  return values.filter((value) => typeof value === 'string' && value.length >= 8);
+}
+
+/**
+ * 프로바이더의 error·turn-end 를 Studio 로 보내기 전에 분류하고 가린다 (provider-failure.mjs).
+ * 어댑터의 단서는 분류 결과로 바뀌어 나가고, 진행 중인 턴의 실패는 turn-end 하나로 합쳐진다.
+ */
+function classifyBackendFailureEvent(record, activeSession, evt) {
+  const agent = evt.agent ?? activeSession.agent;
+  const { event, held, failure } = normalizeProviderFailureEvent(evt, {
+    agent,
+    held: activeSession.turnFailure ?? null,
+    running: activeSession.status === 'running',
+    secrets: activeSession.failureSecrets ?? [],
+  });
+  activeSession.turnFailure = held;
+  if (evt.type === 'turn-end' && failure?.class === 'usage_limit' && (agent === 'claude' || agent === 'codex')) {
+    // 한도 막대와 리셋 시각을 새로 읽는다. 강제 새로고침은 쿨다운이 있어 30초 캐시를 쓴다.
+    void providerLimits.refresh(false)
+      .then(() => sendJson(record.studioSocket, { v: 1, type: 'usage-report', usage: usageSnapshot() }))
+      .catch(() => {});
+  }
+  return event;
+}
+
 const FAILED_STOP_REASONS = new Set(['interrupted', 'failed', 'exited', 'error', 'cancelled']);
 
 /** 공급자 세션이 이 턴을 정상으로 마쳤는가 — 커서 저장과 부트스트랩 기록 비우기의 기준. */
@@ -2333,9 +2393,12 @@ function sendCompactionEvents(record, events, turnId) {
 }
 
 function makeBackendEventHandler(record, generation) {
-  return (evt) => {
+  return (rawEvent) => {
     const activeSession = record.agentSession;
     if (!activeSession || activeSession.generation !== generation) return;
+    const evt = rawEvent?.type === 'error' || rawEvent?.type === 'turn-end'
+      ? classifyBackendFailureEvent(record, activeSession, rawEvent)
+      : rawEvent;
     if (TOOL_TRACE_ENABLED && TRACED_PROVIDER_EVENTS.has(evt.type)) {
       writeToolTrace({
         kind: 'provider',
@@ -2393,7 +2456,12 @@ function makeBackendEventHandler(record, generation) {
       };
     }
     if (evt.type === 'compaction') {
-      sendCompactionEvents(record, routeCompactionEvent(activeSession, evt), activeSession.turnId);
+      // 공급자가 실은 압축 실패 문구(Claude compact_error, Pi errorMessage)는 실패 문구와 같은 가림을
+      // 거친다 — 턴 실패와 달리 분류하지 않고 구분선의 한 줄로만 보인다.
+      const compactionEvent = evt.phase === 'failed' && typeof evt.message === 'string'
+        ? { ...evt, message: redactFailureText(evt.message, activeSession.failureSecrets ?? []) }
+        : evt;
+      sendCompactionEvents(record, routeCompactionEvent(activeSession, compactionEvent), activeSession.turnId);
       return;
     }
     if (evt.type === 'usage') {
@@ -2450,7 +2518,7 @@ function makeBackendEventHandler(record, generation) {
       // 서브에이전트 브라우저는 턴과 함께 끝난다 — 메인 브라우저만 다음 턴까지 산다.
       record.browserbaseSession.cleanupExtras('turn ended');
     }
-    const delivered = sendJson(record.studioSocket, { v: 1, type: 'agent-event', event: studioEvent });
+    const delivered = sendAgentEvent(record, studioEvent);
     if (evt.type === 'turn-start' && activeSession.manualCompaction && !activeSession.manualCompaction.started) {
       // 수동 압축의 started 는 공급자 턴이 실제로 시작될 때 한 번 낸다.
       sendCompactionEvents(record, routeCompactionEvent(activeSession, {
@@ -2467,6 +2535,14 @@ function makeBackendEventHandler(record, generation) {
     if (evt.type === 'turn-end') drainTemplateCompletion(record);
     if (evt.type === 'turn-end') drainPlanningDocumentSaved(record);
   };
+}
+
+/** 턴 끝이 아닌 이벤트는 그대로 보내고, text-delta 만 소켓별로 모은다. */
+function sendAgentEvent(record, event) {
+  const frame = { v: 1, type: 'agent-event', event };
+  return event.type === 'text-delta'
+    ? studioFrames.pushTextDelta(record.studioSocket, frame)
+    : sendJson(record.studioSocket, frame);
 }
 
 function disposeSession(record) {
@@ -2546,6 +2622,11 @@ function agentProcessCleanupUncertain(cause = null) {
   error.code = 'AGENT_PROCESS_CLEANUP_UNCERTAIN';
   error.processCleanupUncertain = true;
   return error;
+}
+
+/** 정리 실패를 알리는 chat-error 의 분류된 실패 (다시 시도 없음 — 앱을 다시 시작해야 한다). */
+function cleanupUncertainFailure(agent) {
+  return failureForHubError('AGENT_PROCESS_CLEANUP_UNCERTAIN', agentProcessCleanupUncertain(), agent);
 }
 
 function resolvePermissionProfile(value) {
@@ -2697,14 +2778,14 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
   if (activeSession.planning.phase === 'awaiting-approval' && !discussionReady) {
     const planId = activeSession.planning.latestPlan?.planId;
     if (!planId) {
-      sendJson(sock, { v: 1, type: 'chat-error', code: 'PLAN_NOT_FOUND', message: 'The latest plan is unavailable; return to planning and present it again.' });
+      rejectUserMessage(sock, msg, 'PLAN_NOT_FOUND', 'The latest plan is unavailable; return to planning and present it again.');
       return;
     }
     const hasAttachments = messageAttachments.length > 0
       || (Array.isArray(msg.stagedReferenceIds) && msg.stagedReferenceIds.length > 0);
     if (!hasAttachments && isExplicitImplementationApproval(msg.text)) {
       void enqueueWorkflowTransition(record, activeSession, () => approveImplementationPlan(record, sock, { planId, documentRevision: msg.documentRevision }))
-        .catch((error) => sendChatError(sock, error));
+        .catch((error) => sendChatError(sock, error, undefined, userMessageReceipt(msg)));
       return;
     }
     void enqueueWorkflowTransition(
@@ -2716,11 +2797,11 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         if (record.agentSession === activeSession) dispatchUserMessage(record, sock, msg, activeSession, messageAttachments, true);
       },
     )
-      .catch((error) => sendChatError(sock, error));
+      .catch((error) => sendChatError(sock, error, undefined, userMessageReceipt(msg)));
     return;
   }
   if (activeSession.planning.phase === 'switching') {
-    sendJson(sock, { v: 1, type: 'chat-error', code: 'WORKFLOW_SWITCHING', message: 'The provider is switching into implementation mode.' });
+    rejectUserMessage(sock, msg, 'WORKFLOW_SWITCHING', 'The provider is switching into implementation mode.');
     return;
   }
   beginAgentTurn(record, activeSession);
@@ -2796,7 +2877,9 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       activeSession.status = 'idle';
       activeSession.turnId = null;
       record.userQuestionResponseReceipts.clear();
-      sendJson(sock, { v: 1, type: 'chat-error', code: e?.code ?? 'AGENT_SPAWN_FAILED', message: describeHubError(e) });
+      rejectUserMessage(sock, msg, e?.code ?? 'AGENT_SPAWN_FAILED', describeHubError(e), {
+        failure: failureForHubError(e?.code ?? 'AGENT_SPAWN_FAILED', e, activeSession.agent, activeSession.failureSecrets),
+      });
     });
 }
 
@@ -2892,6 +2975,8 @@ function startManualCompaction(record, sock, msg) {
   activeSession.turnId = crypto.randomUUID();
   activeSession.providerTurnStarted = false;
   activeSession.status = 'running';
+  // 지난 턴의 실패가 압축 턴의 turn-end 에 합쳐지지 않게 비운다 (beginAgentTurn 과 같다).
+  activeSession.turnFailure = null;
   const compactionId = crypto.randomUUID();
   const beforeTokens = activeSession.contextUsage?.usedTokens;
   activeSession.manualCompaction = {
@@ -3042,6 +3127,7 @@ async function startSession(
       signal,
     }),
     agentRole: providerRole,
+    idleReleaseMs: AGENT_IDLE_RELEASE_MS,
     workflow,
     phase: workflow === 'direct' ? 'implementing' : planning.phase,
     capabilityEpoch: planning.capabilityEpoch,
@@ -3051,6 +3137,8 @@ async function startSession(
     piRoot: piManager.rootDir,
     openRouterApiKey: agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
     reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
+    // 기록(RHWP_PROVIDER_TRANSCRIPT_DIR)의 meta.cli 에 남길 CLI 버전.
+    providerCliVersion: (agent === 'pi' ? piStatus.version : cliSetupStatus[agent]?.version) ?? null,
     ...(agent === 'pi' && piModelConfig(model)?.contextLength ? { contextWindow: piModelConfig(model).contextLength } : {}),
   };
   const createBackend = SESSION_FACTORIES[agent];
@@ -3112,6 +3200,8 @@ async function startSession(
     compaction: null,
     manualCompaction: null,
     emitBackendEvent: opts.onEvent,
+    failureSecrets: providerFailureSecrets(opts),
+    turnFailure: null,
     planning,
     workflowTransition: Promise.resolve(),
     pendingTransitions: 0,
@@ -3140,13 +3230,38 @@ function describeHubError(error, fallback = '알 수 없는 오류가 발생했�
   return fallback;
 }
 
-function sendChatError(sock, error, fallbackCode = 'WORKFLOW_ERROR') {
+/**
+ * chat-error 한 프레임. `extra` 는 프레임에 그대로 얹는 추가 필드다 (requestId, session,
+ * 거절한 사용자 메시지의 messageId, failure …). 프로바이더 실패 코드(failureForHubError 표)는
+ * 분류된 `failure` 를 싣고, 그 가린 문구가 message 가 된다 — 호출자가 failure 를 주지 않으면
+ * 여기서 만든다.
+ */
+function sendChatError(sock, error, fallbackCode = 'WORKFLOW_ERROR', extra = {}) {
+  const code = error?.code ?? fallbackCode;
+  const failure = extra.failure !== undefined ? extra.failure : failureForHubError(code, error, undefined, []);
+  const { failure: _failure, ...fields } = extra;
   sendJson(sock, {
     v: 1,
     type: 'chat-error',
-    code: error?.code ?? fallbackCode,
-    message: describeHubError(error),
+    ...fields,
+    code,
+    message: failure ? failure.message : describeHubError(error),
+    ...(failure ? { failure } : {}),
   });
+}
+
+/**
+ * Studio 가 사용자 메시지에 receipt id(messageId)를 실어 보냈으면 거절에 그대로 되돌린다.
+ * 대기 메시지는 이 id 로 자기 메시지의 거절을 알아보고 대기열 맨 앞으로 돌아간다. 없으면 빈 객체 —
+ * 예전 Studio 는 이 필드를 모른다.
+ */
+function userMessageReceipt(msg) {
+  return typeof msg?.messageId === 'string' && msg.messageId ? { messageId: msg.messageId } : {};
+}
+
+/** 사용자 메시지 거절. extra 는 sendChatError 와 같은 덧붙임 필드다 (failure 포함). */
+function rejectUserMessage(sock, msg, code, message, extra = {}) {
+  sendChatError(sock, { code, message }, code, { ...extra, ...userMessageReceipt(msg) });
 }
 
 /** pi 요청 실패는 채팅 오류가 아니라 설정 카드에 붙는다. 키는 절대 되돌려 보내지 않는다. */
@@ -3432,7 +3547,9 @@ async function setChatWorkflow(record, sock, msg) {
       retainUncertainProcessCleanup(record.recordRoot);
       // The workflow switch itself already succeeded. Report the cleanup
       // failure separately while still publishing the authoritative new mode.
-      sendChatError(sock, agentProcessCleanupUncertain(), 'AGENT_PROCESS_CLEANUP_UNCERTAIN');
+      sendChatError(sock, agentProcessCleanupUncertain(), 'AGENT_PROCESS_CLEANUP_UNCERTAIN', {
+        failure: cleanupUncertainFailure(activeSession.agent),
+      });
     }
   }
   if (previousPlanId) {
@@ -3454,9 +3571,10 @@ async function handleStudioMessage(record, sock, msg) {
         await record.agentSession.workflowTransition;
       }
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      const rejectStart = (error, fallbackCode = 'INVALID_REQUEST') => sendJson(sock, {
-        v: 1, type: 'chat-error', requestId, session: sessionInfo(record),
-        code: error?.code ?? fallbackCode, message: describeHubError(error),
+      const rejectStart = (error, fallbackCode = 'INVALID_REQUEST') => sendChatError(sock, error, fallbackCode, {
+        requestId,
+        session: sessionInfo(record),
+        failure: failureForHubError(error?.code ?? fallbackCode, error, KNOWN_AGENTS.has(msg.agent) ? msg.agent : undefined),
       });
       const agent = msg.agent;
       if (!KNOWN_AGENTS.has(agent)) {
@@ -3465,10 +3583,10 @@ async function handleStudioMessage(record, sock, msg) {
       }
       // 설정이 끝나지 않은 pi 로는 세션을 열지 않는다 — 살아 있는 세션도 건드리지 않는다.
       if (agent === 'pi' && !piStatus.setupComplete) {
-        sendJson(sock, {
-          v: 1, type: 'chat-error', requestId, session: sessionInfo(record), code: 'PI_NOT_CONFIGURED',
-          message: 'Pi 설정을 먼저 끝내 주세요 (설치 · OpenRouter 키 · 모델 선택).',
-        });
+        rejectStart(Object.assign(
+          new Error('Pi 설정을 먼저 끝내 주세요 (설치 · OpenRouter 키 · 모델 선택).'),
+          { code: 'PI_NOT_CONFIGURED' },
+        ));
         return;
       }
       try {
@@ -3601,29 +3719,29 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'chat-user-message': {
       if (!record.agentSession) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'AGENT_NOT_STARTED', message: 'No agent session; send chat-start first.' });
+        rejectUserMessage(sock, msg, 'AGENT_NOT_STARTED', 'No agent session; send chat-start first.');
         return;
       }
       if (record.agentSession.pendingTransitions > 0) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'WORKFLOW_SWITCHING', message: 'The provider is applying a workflow or permission change.' });
+        rejectUserMessage(sock, msg, 'WORKFLOW_SWITCHING', 'The provider is applying a workflow or permission change.');
         return;
       }
       try {
         assertMessageScope(record.agentSession, msg);
       } catch (error) {
-        sendChatError(sock, error, 'INVALID_REQUEST');
+        sendChatError(sock, error, 'INVALID_REQUEST', userMessageReceipt(msg));
         return;
       }
       if (record.agentSession.status === 'running' || record.pendingReferenceMessage) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'AGENT_BUSY', message: 'A turn is already in progress.' });
+        rejectUserMessage(sock, msg, 'AGENT_BUSY', 'A turn is already in progress.');
         return;
       }
       if (typeof msg.text !== 'string' || msg.text.length === 0) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'INVALID_REQUEST', message: 'chat-user-message requires text' });
+        rejectUserMessage(sock, msg, 'INVALID_REQUEST', 'chat-user-message requires text');
         return;
       }
       if (msg.text.length > MAX_CHAT_MESSAGE_CHARS) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'INVALID_REQUEST', message: `chat message exceeds ${MAX_CHAT_MESSAGE_CHARS} characters` });
+        rejectUserMessage(sock, msg, 'INVALID_REQUEST', `chat message exceeds ${MAX_CHAT_MESSAGE_CHARS} characters`);
         return;
       }
       if (Object.prototype.hasOwnProperty.call(msg, 'activeTemplateId')) {
@@ -3645,7 +3763,7 @@ async function handleStudioMessage(record, sock, msg) {
         void dispatchStagedUserMessage(record, sock, msg, record.agentSession)
           .catch((error) => {
             if (record.pendingReferenceMessage?.messageId === msg.messageId) record.pendingReferenceMessage = null;
-            sendChatError(sock, error, 'REFERENCE_COMMIT_FAILED');
+            sendChatError(sock, error, 'REFERENCE_COMMIT_FAILED', userMessageReceipt(msg));
           });
         return;
       }
@@ -4523,8 +4641,11 @@ async function handleStudioMessage(record, sock, msg) {
     case 'chat-stop': {
       settleUserQuestion(record, { status: 'cancelled', reason: 'user-stop' });
       cancelCheckpointTitleJobs(record);
+      const stoppedAgent = record.agentSession?.agent;
       if (!await disposeSession(record)) {
-        sendChatError(sock, agentProcessCleanupUncertain(), 'AGENT_PROCESS_CLEANUP_UNCERTAIN');
+        sendChatError(sock, agentProcessCleanupUncertain(), 'AGENT_PROCESS_CLEANUP_UNCERTAIN', {
+          failure: cleanupUncertainFailure(stoppedAgent),
+        });
       }
       return;
     }
@@ -6274,6 +6395,7 @@ httpServer.on('upgrade', (req, socket, head) => {
       record.studioInstanceId = instanceId;
       clearStudioReattachGrace(record);
       if (replacing) {
+        studioFrames.flush(record.studioSocket);
         try { record.studioSocket.close(4000, 'replaced'); } catch {}
       }
       if (!instanceId || instanceId !== previousInstanceId) {
@@ -6288,6 +6410,7 @@ httpServer.on('upgrade', (req, socket, head) => {
       // 소켓이 닫혔다고 곧바로 인플라이트 호출을 접지 않는다 — 스튜디오는 보통 250ms 안에
       // 같은 세션으로 돌아온다. 대신 유예 타이머를 걸어 돌아오지 않는 경우만 실패시킨다.
       ws.on('close', () => {
+        studioFrames.discard(ws);
         if (record.studioSocket === ws) {
           record.studioSocket = null;
           record.pendingReferenceMessage = null;
@@ -6307,6 +6430,7 @@ httpServer.on('upgrade', (req, socket, head) => {
         type: 'welcome',
         protocol: PROTOCOL_VERSION,
         launchId: LAUNCH_ID,
+        hubInstanceId: HUB_INSTANCE_ID,
         hubSessionId: record.sessionId,
         session: sessionInfo(record),
       });
@@ -6520,6 +6644,7 @@ async function disposeRecord(record, reason) {
     }
   }
   for (const sock of [record.studioSocket, ...record.mcpSockets]) {
+    if (sock) studioFrames.flush(sock);
     try { sock?.close(1001, reason); } catch {}
   }
   record.mcpSockets.clear();
@@ -6566,6 +6691,9 @@ function prepareShutdown(signal) {
     if (harnessUpdateTimer) clearTimeout(harnessUpdateTimer);
     if (ownerWatchdog) clearInterval(ownerWatchdog);
     log(`shutting down (${signal})`);
+    // 세션을 정리하면 도는 턴마다 turn-end 가 나간다. 그 끝이 프로바이더 실패가 아니라 허브가 내려가며
+    // 끊은 턴임을 Studio 가 알도록 먼저 알린다(S3 의 허브 재시작 줄). 옛 Studio 는 모르는 프레임을 무시한다.
+    for (const sock of studioWss.clients) sendJson(sock, { v: 1, type: 'hub-shutdown' });
     const cleanupProven = await sessions.disposeAll(
       (record) => disposeRecord(record, 'hub shutdown'),
     );

@@ -1000,7 +1000,9 @@ test('Claude exit grace without close discards an unterminated terminal frame', 
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   assert.equal(events.some((event) => event.type === 'usage'), false);
-  assert.deepEqual(events.at(-1), { type: 'turn-end', agent: 'claude', stopReason: 'exited' });
+  assert.deepEqual(events.at(-1), {
+    type: 'turn-end', agent: 'claude', stopReason: 'exited', failure: { source: 'claude', code: 'process_exit' },
+  });
   assert.equal(await session.dispose(), false);
 });
 

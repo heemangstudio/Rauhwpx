@@ -19,7 +19,19 @@ class FakeWorker {
   terminated = false;
   request: MergeWorkerRequest | null = null;
 
-  postMessage(request: MergeWorkerRequest): void { this.request = request; }
+  readonly reportsReady: boolean;
+
+  constructor(reportsReady = true) { this.reportsReady = reportsReady; }
+
+  postMessage(request: MergeWorkerRequest): void {
+    this.request = request;
+    if (this.reportsReady) {
+      queueMicrotask(() => this.emitReady(request));
+    }
+  }
+  emitReady(request: MergeWorkerRequest): void {
+    this.emit({ id: request.id, type: 'progress', operation: request.operation, phase: 'ready' });
+  }
   addEventListener(type: 'message', listener: (event: MessageEvent<MergeWorkerResponse>) => void): void;
   addEventListener(type: 'error', listener: (event: ErrorEvent) => void): void;
   addEventListener(type: 'messageerror', listener: (event: MessageEvent<unknown>) => void): void;
@@ -46,6 +58,17 @@ class FakeWorker {
   emitMessageError(): void {
     for (const listener of this.messageErrorListeners) listener({ data: null } as MessageEvent<unknown>);
   }
+}
+
+/** 재시작한 클라이언트는 다음 요청에서야 새 워커를 만들고 그 워커로 응답한다. */
+async function assertFreshWorkerServesNextRequest(client: MergeWorkerClient, workers: FakeWorker[]): Promise<void> {
+  const before = workers.length;
+  const pending = client.buildDocumentManifest(new Uint8Array([9]));
+  assert.equal(workers.length, before + 1);
+  const fresh = workers.at(-1)!;
+  assert.equal(fresh.request?.operation, 'build-manifest');
+  fresh.emit({ id: fresh.request!.id, type: 'manifest', entries: [] });
+  assert.deepEqual(await pending, []);
 }
 
 test('worker client forwards analysis and progress', async () => {
@@ -78,7 +101,7 @@ test('analysis soft budget returns an explicit conservative conflict and restart
   assert.equal(analysis.conflicts[0].reason, 'budget-exceeded');
   assert.deepEqual(analysis.result, { value: 'current' });
   assert.equal(workers[0].terminated, true);
-  assert.equal(workers.length, 2);
+  await assertFreshWorkerServesNextRequest(client, workers);
   client.dispose();
 });
 
@@ -156,7 +179,7 @@ test('aborting synchronous WASM work restarts the dedicated worker', async () =>
   abort.abort();
   await assert.rejects(pending, { name: 'AbortError' });
   assert.equal(workers[0].terminated, true);
-  assert.equal(workers.length, 2);
+  await assertFreshWorkerServesNextRequest(client, workers);
   client.dispose();
 });
 
@@ -269,7 +292,7 @@ test('worker errors reject every pending request, stop heartbeats, and restart c
   assert.equal(progress.length, progressAfterFailure);
   assert.equal(workers[0].terminated, true);
   assert.equal(workers[0].listeners.size + workers[0].errorListeners.size + workers[0].messageErrorListeners.size, 0);
-  assert.equal(workers.length, 2);
+  await assertFreshWorkerServesNextRequest(client, workers);
   client.dispose();
 });
 
@@ -283,7 +306,7 @@ test('worker message errors reject pending requests', async () => {
   const pending = client.buildDocumentManifest(new Uint8Array([1]));
   workers[0].emitMessageError();
   await assert.rejects(pending, /unreadable message/);
-  assert.equal(workers.length, 2);
+  await assertFreshWorkerServesNextRequest(client, workers);
   client.dispose();
 });
 
@@ -299,7 +322,29 @@ test('requests without a conservative fallback hard-timeout and restart the work
     /exceeded its time budget/,
   );
   assert.equal(workers[0].terminated, true);
-  assert.equal(workers.length, 2);
+  await assertFreshWorkerServesNextRequest(client, workers);
+  client.dispose();
+});
+
+test('a cold worker budget starts when it reports ready, within a bounded start-up allowance', async () => {
+  const workers: FakeWorker[] = [];
+  const client = new MergeWorkerClient(() => {
+    const worker = new FakeWorker(false);
+    workers.push(worker);
+    return worker;
+  }, 30_000, 200);
+  let settled = false;
+  const pending = client.buildDocumentManifest(new Uint8Array([1]), { softBudgetMs: 20 });
+  pending.catch(() => undefined).finally(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(settled, false, 'engine start-up does not count against the request budget');
+  workers[0].emitReady(workers[0].request!);
+  await assert.rejects(pending, /exceeded its time budget/);
+  assert.equal(workers[0].terminated, true);
+
+  const stuck = client.buildDocumentManifest(new Uint8Array([2]), { softBudgetMs: 20 });
+  await assert.rejects(stuck, /exceeded its time budget/);
+  assert.equal(workers[1].terminated, true, 'a worker that never becomes ready is still bounded');
   client.dispose();
 });
 
@@ -312,4 +357,28 @@ test('dispose rejects pending and future requests and removes every worker liste
   await assert.rejects(client.buildDocumentManifest(new Uint8Array([2])), { name: 'AbortError' });
   assert.equal(worker.listeners.size + worker.errorListeners.size + worker.messageErrorListeners.size, 0);
   assert.equal(worker.terminated, true);
+});
+
+test('an idle worker is released and a fresh one serves the next request', async () => {
+  const workers: FakeWorker[] = [];
+  const client = new MergeWorkerClient(() => {
+    const worker = new FakeWorker();
+    workers.push(worker);
+    return worker;
+  }, 20);
+  assert.equal(workers.length, 0);
+  const first = client.buildDocumentManifest(new Uint8Array([1]));
+  const second = client.buildDocumentManifest(new Uint8Array([2]));
+  assert.equal(workers.length, 1);
+  const firstId = workers[0].request!.id - 1;
+  workers[0].emit({ id: firstId, type: 'manifest', entries: [] });
+  await first;
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(workers[0].terminated, false, 'a request still in flight keeps the worker');
+  workers[0].emit({ id: workers[0].request!.id, type: 'manifest', entries: [] });
+  await second;
+  await waitFor(() => workers[0].terminated);
+  assert.equal(workers[0].listeners.size + workers[0].errorListeners.size + workers[0].messageErrorListeners.size, 0);
+  await assertFreshWorkerServesNextRequest(client, workers);
+  client.dispose();
 });

@@ -52,12 +52,29 @@ try {
       assert.equal(await page.$eval('.ag-mode-btn', (node) => node.textContent), labels[scene.params.mode]);
     }
     if (scene.id === 'menu-mode') assert.equal(await page.$$eval('.ag-mode.ag-model-open .ag-mode-item', (nodes) => nodes.length), 4);
+    if (scene.id === 'chat-queue' || scene.id === 'chat-queue-held') {
+      const queue = await page.evaluate(() => ({
+        rows: document.querySelectorAll('.ag-followup').length,
+        held: Boolean(document.querySelector('.ag-followups-hold:not([hidden])')),
+        sent: window.sidebarPreview.snapshot().messagesSent,
+      }));
+      assert.deepEqual(queue, { rows: 2, held: scene.id === 'chat-queue-held', sent: 1 });
+    }
+    if (scene.id === 'chat-queue-gap') {
+      const gap = await page.evaluate(() => ({
+        rows: document.querySelectorAll('.ag-followup').length,
+        sent: window.sidebarPreview.snapshot().messagesSent,
+        modeLocked: document.querySelector('.ag-mode-btn').disabled,
+        modelLocked: document.querySelector('.ag-llm-trigger').disabled,
+      }));
+      assert.deepEqual(gap, { rows: 1, sent: 2, modeLocked: true, modelLocked: true });
+    }
     if (scene.id === 'plan-run-modes') {
       assert.deepEqual(await page.$$eval('.ag-plan-actions button', (nodes) => nodes.map((node) => node.textContent)),
         ['수정 요청', '전체 접근으로 실행', '에이전트로 실행']);
     }
-    if (['chat-empty', 'chat-review', 'chat-changes-full',
-      'mode-chat', 'mode-plan', 'mode-agent', 'mode-full', 'menu-mode', 'plan-run-modes'].includes(scene.id))
+    if (['chat-empty', 'chat-review', 'chat-changes-full', 'chat-queue', 'chat-queue-held', 'chat-queue-gap',
+      'mode-chat', 'mode-plan', 'mode-agent', 'mode-full', 'menu-mode', 'mode-locked', 'plan-run-modes'].includes(scene.id))
       await page.screenshot({ path: resolve(artifacts, `audit-${scene.id}.png`) });
     console.log(`PASS ${scene.id}`);
   }

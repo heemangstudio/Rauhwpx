@@ -109,3 +109,34 @@ test('ordinary engine errors do not stop the engine', () => {
   assert.equal(engineTrap(), null);
   assert.equal(doc.pageCount(), 3);
 });
+
+test('after a trap, HML export and the source format still answer so every document can leave a recovery copy', () => {
+  resetEngineTrapForTests();
+  let entered = 0;
+  class HmlDocument {
+    getCursorRect(): never {
+      throw new WebAssembly.RuntimeError('unreachable');
+    }
+    pageCount(): number {
+      entered += 1;
+      return 2;
+    }
+    getSourceFormat(): string {
+      entered += 1;
+      return 'hml';
+    }
+    exportHml(): Uint8Array {
+      entered += 1;
+      return new Uint8Array([0x3c]);
+    }
+  }
+  guardEngineCalls(HmlDocument.prototype);
+  const doc = new HmlDocument();
+
+  assert.throws(() => doc.getCursorRect(), WebAssembly.RuntimeError);
+  assert.equal(doc.getSourceFormat(), 'hml');
+  assert.deepEqual([...doc.exportHml()], [0x3c]);
+  assert.equal(entered, 2);
+  assert.throws(() => doc.pageCount(), EngineTrappedError);
+  assert.equal(entered, 2, 'other reads are still refused');
+});

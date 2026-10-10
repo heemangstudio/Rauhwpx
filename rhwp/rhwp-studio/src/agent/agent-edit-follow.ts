@@ -31,6 +31,13 @@ function cellPathAt(cell: CellAddr, paraIdx: number): string {
     : entry));
 }
 
+export interface AgentEditFollowDeps {
+  /** 따라갈 캔버스. null 이면 문서가 화면 밖이라 따라가지 않는다 — setCanvasView 로 바꾼다. */
+  canvasView: CanvasView | null;
+  wasm: WasmBridge;
+  eventBus: EventBus;
+}
+
 /**
  * 에이전트 편집 위치 따라가기.
  *
@@ -42,12 +49,14 @@ export class AgentEditFollow {
   private target: { event: AgentTextInsertedEvent; at: number } | null = null;
   private scheduled = false;
   private unsubs: Array<() => void> = [];
-  private deps: { canvasView: CanvasView; wasm: WasmBridge; eventBus: EventBus };
+  private deps: AgentEditFollowDeps;
 
-  constructor(deps: { canvasView: CanvasView; wasm: WasmBridge; eventBus: EventBus }) {
+  constructor(deps: AgentEditFollowDeps) {
     this.deps = deps;
     this.unsubs.push(
       deps.eventBus.on('agent-text-inserted', (payload) => {
+        // 화면 밖 문서의 편집은 따라갈 화면이 없다 — 다시 붙어도 지난 위치로 튀지 않게 버린다.
+        if (!this.deps.canvasView) return;
         this.target = { event: payload as AgentTextInsertedEvent, at: performance.now() };
         if (this.scheduled) return;
         this.scheduled = true;
@@ -66,6 +75,12 @@ export class AgentEditFollow {
     this.target = null;
   }
 
+  /** 문서가 화면에 붙거나(view) 떨어질(null) 때 부른다. 떨어지면 대기 중인 이동을 버린다. */
+  setCanvasView(canvasView: CanvasView | null): void {
+    this.deps.canvasView = canvasView;
+    if (!canvasView) this.cancel();
+  }
+
   dispose(): void {
     for (const un of this.unsubs) un();
     this.unsubs = [];
@@ -74,13 +89,18 @@ export class AgentEditFollow {
 
   private flush(): void {
     const target = this.target;
+    const canvasView = this.deps.canvasView;
     if (!target) return;
+    if (!canvasView) {
+      this.target = null;
+      return;
+    }
     const { range, text, oldText } = target.event;
     const offset = firstAddedOffset(text, oldText);
     let pos: { top: number; height: number } | 'unplaced' | null = null;
     if (offset !== null) {
       try {
-        pos = this.editPosition(range, pointAtNewScalarOffset(range, text, offset));
+        pos = this.editPosition(canvasView, range, pointAtNewScalarOffset(range, text, offset));
       } catch {
         // 주소 드리프트(사용자 편집/승인 경합) — 이동을 생략한다.
       }
@@ -89,7 +109,7 @@ export class AgentEditFollow {
     if (pos === 'unplaced' && performance.now() - target.at <= MAX_TARGET_AGE_MS) return;
     this.target = null;
     if (!pos || pos === 'unplaced') return;
-    const vm = this.deps.canvasView.getViewportManager();
+    const vm = canvasView.getViewportManager();
     const { height: viewHeight } = vm.getViewportSize();
     const scrollY = vm.getScrollY();
     if (pos.top < scrollY || pos.top + pos.height > scrollY + viewHeight) {
@@ -99,6 +119,7 @@ export class AgentEditFollow {
 
   /** 편집 지점의 스크롤 좌표. 주소가 무효면 throw 한다. */
   private editPosition(
+    canvasView: CanvasView,
     r: DocRange,
     point: { paraIdx: number; charOffset: number },
   ): { top: number; height: number } | 'unplaced' {
@@ -112,9 +133,9 @@ export class AgentEditFollow {
         r.sectionIdx, cell.paraIdx, cell.controlIdx, cell.cellIdx, point.paraIdx, point.charOffset,
       )
       : this.deps.wasm.getCursorRect(r.sectionIdx, point.paraIdx, point.charOffset);
-    const vs = this.deps.canvasView.getVirtualScroll();
+    const vs = canvasView.getVirtualScroll();
     if (rect.pageIndex >= vs.pageCount) return 'unplaced';
-    const zoom = this.deps.canvasView.getViewportManager().getZoom();
+    const zoom = canvasView.getViewportManager().getZoom();
     return {
       top: vs.getPageOffset(rect.pageIndex) + rect.y * zoom,
       height: rect.height * zoom,

@@ -1,0 +1,747 @@
+/* 채팅 레일 — 도구 줄, 채팅 목록, 문서 팝오버.
+   문서 편집기의 소스 목록 문법을 따른다: 테두리 없는 도구, 잉크로 칠한 선택,
+   색은 실행 상태 점과 hover 한 줄의 에이전트 로고에만 쓴다. */
+
+/* ── 도구 줄 ────────────────────────────────────────── */
+
+.ag-threads-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* 검색 칸은 쉬는 동안 글자처럼 놓여 있다가 손이 닿으면 칸이 된다. */
+.ag-threads-search {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--ag-r-row);
+  color: var(--ag-text-tertiary);
+  cursor: text;
+  transition: var(--ag-transition-color), box-shadow var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-threads-search:hover {
+  background: var(--ag-hover);
+}
+
+.ag-threads-search:focus-within {
+  background: var(--ag-input-bg);
+  box-shadow: inset 0 0 0 1px var(--ag-border);
+  color: var(--ag-text-secondary);
+}
+
+.ag-threads-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ag-text);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  outline: none;
+  appearance: none;
+}
+
+.ag-threads-search-input::placeholder {
+  color: var(--ag-text-tertiary);
+}
+
+/* 지우기는 Esc 가 맡는다 — 브라우저 기본 × 는 레일 문법과 어긋난다. */
+.ag-threads-search-input::-webkit-search-cancel-button,
+.ag-threads-search-input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.ag-threads-tool {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-threads-tool .ag-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.ag-threads-tool:hover {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-threads-tool:active {
+  background: var(--ag-pressed);
+  transition-duration: 0s;
+}
+
+.ag-threads-tool[aria-expanded='true'],
+.ag-threads-tool.ag-active {
+  background: var(--ag-selected);
+  color: var(--ag-text);
+}
+
+.ag-threads-tool:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: -2px;
+}
+
+/* 문서 필터가 걸렸을 때 도구 줄 아래에 서는 한 줄 — 무엇으로 걸렀는지와 풀기. */
+.ag-threads-filter {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 2px 0 10px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-threads-filter[hidden] {
+  display: none;
+}
+
+.ag-threads-filter-icon {
+  color: var(--ag-text-tertiary);
+}
+
+.ag-threads-filter-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-threads-filter-clear {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text-tertiary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-threads-filter-clear:hover {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-threads-filter-clear:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: -2px;
+}
+
+/* 확인 필요 — 손을 대야 하는 채팅이 있을 때 도구 줄 아래 왼쪽에 서는 작은 칩.
+   누르면 그 채팅만 남기고, 행은 자리를 옮기지 않는다. */
+.ag-threads-attention {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 24px;
+  margin: 2px 0 2px 4px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  font-variant-numeric: var(--ag-numeric);
+  white-space: nowrap;
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-threads-attention[hidden] {
+  display: none;
+}
+
+.ag-threads-attention:hover {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-threads-attention.ag-active {
+  background: var(--ag-selected);
+  color: var(--ag-text);
+}
+
+.ag-threads-attention:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: -2px;
+}
+
+.ag-threads-attention-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ag-err);
+}
+
+.ag-threads-attention-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 문서 없이 시작한 채팅 — 종이 윤곽을 점선으로 그린다. 둥근 끝이 선을 늘리므로
+   빈칸을 선 굵기보다 넉넉히 둔다. */
+.ag-doc-missing path {
+  stroke-dasharray: 0.9 2.3;
+}
+
+/* ── 채팅 목록 ──────────────────────────────────────── */
+
+.ag-threads-list {
+  /* 끌기가 행의 offsetTop 을 목록 기준으로 잰다. */
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  margin: 2px -4px 0;
+  padding: 0 4px 12px;
+  overflow: auto;
+  list-style: none;
+}
+
+.ag-threads-row {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+/* 두 줄 행 — 위는 제목과 상태, 아래는 문서와 에이전트. */
+.ag-threads-item {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  min-height: 52px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-threads-item:hover {
+  background: var(--ag-hover);
+}
+
+.ag-threads-item:active {
+  background: var(--ag-pressed);
+  transition-duration: 0s;
+}
+
+.ag-threads-item.ag-active {
+  background: var(--ag-selected);
+}
+
+.ag-threads-item:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: -2px;
+}
+
+.ag-threads-item-top,
+.ag-threads-item-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.ag-threads-item-top {
+  gap: 10px;
+}
+
+.ag-threads-item-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-regular);
+  line-height: 18px;
+}
+
+.ag-threads-item.ag-active .ag-threads-item-title {
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-threads-item-when {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  /* hover 에서 고정·이름 바꾸기 두 버튼이 이 자리에 겹친다 — 제목이 그 밑으로 들어가지 않게 둔다. */
+  min-width: 36px;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+  font-variant-numeric: var(--ag-numeric);
+  line-height: 18px;
+}
+
+.ag-threads-item-when[data-status='working'],
+.ag-threads-item-when[data-status='needs-input'],
+.ag-threads-item-when[data-status='needs-review'],
+.ag-threads-item-when[data-status='failed'] {
+  color: var(--ag-text-secondary);
+}
+
+/* 오류 이유는 짧다. 길게 온 이유는 제목을 밀어내지 않고 말줄임으로 끝난다. */
+.ag-threads-item-when[data-status='failed'] .ag-threads-item-when-label {
+  max-width: 9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-threads-item-meta {
+  gap: 6px;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+  line-height: 16px;
+}
+
+.ag-threads-item-doc {
+  /* 폭을 칸에 맡겨야 가운데 줄임이 남은 자리를 잰다. */
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.ag-threads-item-agent {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-left: 4px;
+}
+
+/* 쉬는 행의 로고는 잉크로 가라앉고, 손이 닿거나 고른 행에서만 제 색을 띤다. */
+.ag-threads-item-agent .ag-provider-icon {
+  width: 12px;
+  height: 12px;
+  opacity: 0.6;
+  filter: grayscale(1);
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    filter var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-threads-item-agent .ag-provider-icon-mask {
+  color: var(--ag-text-secondary);
+}
+
+.ag-threads-item:hover .ag-threads-item-agent .ag-provider-icon,
+.ag-threads-item:focus-visible .ag-threads-item-agent .ag-provider-icon,
+.ag-threads-item.ag-active .ag-threads-item-agent .ag-provider-icon {
+  opacity: 1;
+  filter: none;
+}
+
+/* 문서를 옮겨 가는 동안 — 고른 행이 천천히 숨 쉰다. */
+.ag-threads-row.ag-opening .ag-threads-item {
+  animation: ag-thread-opening 1.2s ease-in-out infinite;
+}
+
+@keyframes ag-thread-opening {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.ag-threads-empty {
+  padding: 8px 10px;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+}
+
+/* ── 실행 상태 점 ───────────────────────────────────────
+   여러 탭에서 도는 채팅을 한 목록에서 알아본다 — 노란 점은 지금 일하는
+   채팅, 초록 점은 끝나서 볼거리가 생긴 채팅, 빨간 점은 답을 기다리는 채팅,
+   에이전트 색 점은 검토를 기다리는 채팅, 빨간 고리는 오류·중단으로 멈춘 채팅. */
+.ag-thread-status {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.ag-thread-status-working {
+  background: var(--ag-run);
+  animation: ag-thread-breathe 1.8s ease-in-out infinite;
+}
+
+.ag-thread-status-finished {
+  background: var(--ag-ok);
+}
+
+.ag-thread-status-needs-input {
+  background: var(--ag-err);
+}
+
+.ag-thread-status-needs-review {
+  background: var(--ag-accent);
+}
+
+.ag-thread-status-failed {
+  box-sizing: border-box;
+  border: 1.5px solid var(--ag-err);
+  background: transparent;
+}
+
+@keyframes ag-thread-breathe {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ── 고정 · 이름 바꾸기 ─────────────────────────────────
+   버튼 안에 버튼을 넣을 수 없어 형제로 두고, hover 에서 상태 자리에 겹친다. */
+.ag-thread-rename,
+.ag-thread-pin {
+  position: absolute;
+  top: 8px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-code);
+  background: transparent;
+  color: var(--ag-text-tertiary);
+  cursor: default;
+  opacity: 0;
+  pointer-events: none;
+  transition: var(--ag-transition-color);
+}
+
+.ag-thread-pin {
+  right: 30px;
+}
+
+.ag-thread-rename .ag-icon,
+.ag-thread-pin .ag-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.ag-threads-row:hover .ag-thread-rename,
+.ag-threads-row:hover .ag-thread-pin,
+.ag-thread-rename:focus-visible,
+.ag-thread-pin:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ag-threads-row:hover .ag-threads-item-when {
+  opacity: 0;
+}
+
+.ag-thread-pin[aria-pressed='true'] {
+  color: var(--ag-text-secondary);
+}
+
+.ag-thread-rename:hover,
+.ag-thread-pin:hover {
+  color: var(--ag-text);
+}
+
+.ag-thread-rename:focus-visible,
+.ag-thread-pin:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+/* 편집 중인 행은 행 전체가 입력 칸이 된다 — 행 높이를 그대로 쓴다. */
+/* ── 고정 구역 · 끌기 ─────────────────────────────────────
+   고정한 채팅이 있을 때만 머리가 서고, 끄는 동안에는 빈 고정 구역도 드러나
+   놓을 자리가 된다. 놓일 구역의 머리는 잉크로 짙어진다. */
+.ag-threads-section {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 10px;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+  transition: var(--ag-transition-color);
+}
+
+.ag-threads-section::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--ag-border);
+  transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-threads-section[data-section='recent'] {
+  margin-top: 6px;
+}
+
+.ag-threads-list:not(.ag-has-pinned):not(.ag-dragging) > .ag-threads-section {
+  display: none;
+}
+
+.ag-threads-section.ag-drop-target {
+  color: var(--ag-text);
+}
+
+.ag-threads-section.ag-drop-target::after {
+  background: var(--ag-text-tertiary);
+}
+
+/* 끄는 행이 떠난 자리 — 놓일 곳에 옅은 우물로 남는다. */
+.ag-threads-row.ag-drag-placeholder {
+  border-radius: var(--ag-r-row);
+  background: var(--ag-hover);
+}
+
+.ag-threads-row.ag-drag-placeholder > *,
+.ag-threads-row.ag-drop-landing > * {
+  visibility: hidden;
+}
+
+/* 끄는 동안 목록은 hover 에 반응하지 않는다. */
+.ag-threads-list.ag-dragging .ag-threads-item:not(.ag-active) {
+  background: transparent;
+}
+
+.ag-threads-list.ag-dragging .ag-thread-rename,
+.ag-threads-list.ag-dragging .ag-thread-pin {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ag-threads-list.ag-dragging .ag-threads-row:hover .ag-threads-item-when {
+  opacity: 1;
+}
+
+.ag-threads-dragging,
+.ag-threads-dragging * {
+  cursor: grabbing !important;
+}
+
+/* 포인터를 따라 뜬 행 사본. */
+.ag-threads-ghost {
+  position: fixed;
+  z-index: 95;
+  margin: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--ag-raised);
+  box-shadow: var(--ag-elev-popover);
+  list-style: none;
+  pointer-events: none;
+}
+
+.ag-threads-ghost .ag-thread-rename,
+.ag-threads-ghost .ag-thread-pin {
+  display: none;
+}
+
+/* ── 문서 팝오버(문서별로 보기 · 문서 열기) ───────────────── */
+
+.ag-rail-probe {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ag-rail-popover {
+  position: fixed;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--ag-border);
+  border-radius: var(--ag-r-card);
+  background: var(--ag-raised);
+  box-shadow: var(--ag-elev-popover);
+  transform-origin: top left;
+  animation: ag-rail-popover-in var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+@keyframes ag-rail-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+.ag-rail-field {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--ag-border);
+  color: var(--ag-text-tertiary);
+  cursor: text;
+}
+
+.ag-rail-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ag-text);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  outline: none;
+}
+
+.ag-rail-input::placeholder {
+  color: var(--ag-text-tertiary);
+}
+
+.ag-rail-options {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px;
+  overflow: auto;
+}
+
+.ag-rail-section {
+  padding: 10px 8px 4px;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-rail-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--ag-r-row);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary);
+  cursor: default;
+}
+
+.ag-rail-option.ag-active {
+  background: var(--ag-hover);
+}
+
+.ag-rail-option-icon {
+  color: var(--ag-text-tertiary);
+}
+
+.ag-rail-option-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-rail-option-trail {
+  flex: 0 0 auto;
+  padding-right: 4px;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+  font-variant-numeric: var(--ag-numeric);
+}
+
+.ag-rail-option-check {
+  flex: 0 0 auto;
+  margin-right: 4px;
+  color: var(--ag-text-secondary);
+}
+
+.ag-rail-option-more {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text-tertiary);
+  cursor: default;
+  visibility: hidden;
+}
+
+.ag-rail-option.ag-active .ag-rail-option-more {
+  visibility: visible;
+}
+
+.ag-rail-option-more:hover {
+  background: var(--ag-pressed);
+  color: var(--ag-text);
+}
+
+.ag-rail-empty {
+  padding: 8px;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-rail-popover,
+  .ag-thread-status-working,
+  .ag-threads-row.ag-opening .ag-threads-item {
+    animation: none;
+  }
+}

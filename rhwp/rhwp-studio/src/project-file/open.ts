@@ -13,7 +13,8 @@ export type ProjectOpenOutcome =
   | { readonly kind: 'permission-denied' }
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'not-this-file' }
-  | { readonly kind: 'not-found' };
+  | { readonly kind: 'not-found' }
+  | { readonly kind: 'untraceable' };
 
 export interface NativeProbe {
   readonly probeId: string;
@@ -56,11 +57,47 @@ export async function openProjectFile(
   const remembered = await tryRemembered(claim, deps);
   if (remembered) return remembered;
 
+  // 기억한 위치가 없고 최근 문서 기록(내용 digest·핸들)도 없다 — 저장한 적 없는 새 문서이거나
+  // 기록이 지워진 문서다. 고른 파일을 이 문서와 맞춰 볼 근거가 없으니 파일 선택 창을 띄우지 않는다.
+  if (!claim.recentId && !claim.knownDigest && !claim.liveHandle) return { kind: 'untraceable' };
+
   const nearby = await tryNearby(claim, deps);
   if (nearby) return nearby;
 
   if (!deps.pickForProject) return { kind: 'not-found' };
   return pickForProject(claim, deps);
+}
+
+export type ProjectFileLocation =
+  | {
+    readonly kind: 'found';
+    readonly bytes: Uint8Array;
+    readonly name: string;
+    readonly handle: FileSystemFileHandleLike;
+  }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'permission-denied' }
+  | { readonly kind: 'owned-elsewhere' };
+
+/**
+ * 파일 선택 창 없이 프로젝트 문서의 원본 파일을 찾아 바이트만 읽는다. 문서를 열지는 않으며,
+ * 찾은 핸들의 사용 여부는 호출자가 정한다(쓰지 않으면 releaseUnusedSaveTarget 으로 푼다).
+ */
+export async function locateProjectFile(
+  claim: ProjectFileClaim,
+  deps: Omit<ProjectFileDeps, 'loadBound' | 'pickForProject'>,
+): Promise<ProjectFileLocation> {
+  let found: Extract<ProjectFileLocation, { kind: 'found' }> | null = null;
+  const outcome = await openProjectFile(claim, {
+    ...deps,
+    loadBound: async (bytes, name, handle) => {
+      found = { kind: 'found', bytes, name, handle };
+    },
+  });
+  if (outcome.kind === 'opened' && found) return found;
+  if (outcome.kind === 'owned-elsewhere') return { kind: 'owned-elsewhere' };
+  if (outcome.kind === 'permission-denied') return { kind: 'permission-denied' };
+  return { kind: 'missing' };
 }
 
 async function tryLiveHandle(
@@ -93,7 +130,9 @@ async function tryLiveHandle(
     if (handle.identityKind !== 'native-path' && claim.recentId) {
       await deps.forgetRecent?.(claim.recentId);
       deps.toast?.(`"${claim.displayName}" 파일을 찾을 수 없어 목록에서 제거했습니다.`, 3500);
-    } else {
+    } else if (!(error instanceof DOMException && error.name === 'NotFoundError')) {
+      // 닫은 문서·지난 실행의 네이티브 핸들은 NotFoundError 로 온다. 기억해 둔 위치로 다시 여는
+      // 평범한 경로이므로 경고하지 않는다.
       console.warn('[project-file] 라이브 핸들 읽기 실패:', error);
     }
     return null;

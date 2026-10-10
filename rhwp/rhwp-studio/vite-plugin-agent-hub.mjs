@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
+  closeHubSession,
   createHubToken,
   isHubHealthy,
   readHubHealth,
@@ -19,6 +20,8 @@ import {
 } from '../rhwp-agent/credential-mirror.mjs';
 
 export const AGENT_HUB_ENSURE_PATH = '/__rhwp/ensure-agent-hub';
+// Closes a hub session the page registered, so its provider process exits.
+export const AGENT_HUB_RELEASE_PATH = '/__rhwp/release-agent-hub-session';
 const DEV_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 
 /** Capability minting is browser-only: require the request's exact transport origin. */
@@ -262,7 +265,8 @@ export function rhwpAgentHubPlugin(studioRoot = process.cwd()) {
           sendJson(res, 400, { started: false, ready: false, error: 'Malformed request target' });
           return;
         }
-        if (requestUrl.pathname !== AGENT_HUB_ENSURE_PATH) {
+        const releasing = requestUrl.pathname === AGENT_HUB_RELEASE_PATH;
+        if (requestUrl.pathname !== AGENT_HUB_ENSURE_PATH && !releasing) {
           next();
           return;
         }
@@ -278,6 +282,25 @@ export function rhwpAgentHubPlugin(studioRoot = process.cwd()) {
         const sessionId = requestUrl.searchParams.get('sessionId');
         if (!sessionId || !DEV_SESSION_ID_PATTERN.test(sessionId)) {
           sendJson(res, 400, { started: false, ready: false, error: 'Valid sessionId is required' });
+          return;
+        }
+        if (releasing) {
+          try {
+            // A stopped hub already dropped every session.
+            if (context) {
+              await closeHubSession({
+                port: context.port,
+                token,
+                launchId: context.launchId,
+                sessionId,
+              }).catch((error) => {
+                if (error?.status !== 404) throw error;
+              });
+            }
+            sendJson(res, 200, { released: true });
+          } catch (error) {
+            sendJson(res, 500, { released: false, error: String(error) });
+          }
           return;
         }
         try {

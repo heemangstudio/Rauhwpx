@@ -1,3 +1,4 @@
+import type { FileSystemFileHandleLike } from '@/command/file-system-access';
 import type { DirtyStateChange } from '@/core/document-dirty-state';
 import type { EventBus } from '@/core/event-bus';
 import {
@@ -7,7 +8,9 @@ import {
   releaseAutosaveSession,
   saveAutosaveDraft,
   touchAutosaveSession,
+  type AutosaveDataFormat,
   type AutosaveDraft,
+  type AutosaveDraftBase,
   type AutosaveLockManagerLike,
   type AutosaveOwner,
 } from './autosave-store.ts';
@@ -16,10 +19,25 @@ export interface AutosaveDocumentMeta {
   fileName: string;
   sourceFormat: string;
   draftId?: string;
+  documentId?: string | null;
+}
+
+/** 저장할 때마다 읽는 현재 문서 정보. 다른 이름으로 저장한 뒤에도 draft 가 최신 이름을 따른다. */
+export interface AutosaveLiveDocument {
+  documentId: string | null;
+  fileName: string;
+  fileHandle: FileSystemFileHandleLike | null;
+}
+
+/** 이 창이 마지막으로 열거나 저장한 파일 바이트. 복구할 때 디스크 변경 판단과 병합 기준이 된다. */
+export interface AutosaveBaseInput {
+  bytes: Uint8Array;
+  digest: string;
+  mergeable: boolean;
 }
 
 export interface AutosaveStoreLike {
-  saveDraft(draft: AutosaveDraft): Promise<void>;
+  saveDraft(draft: AutosaveDraft, base?: AutosaveDraftBase): Promise<void>;
   deleteDraft(id: string): Promise<void>;
   touchSession?(owner: AutosaveOwner, heartbeatAt: number): Promise<void>;
   releaseSession?(sessionId: string): Promise<void>;
@@ -37,8 +55,21 @@ export type AutosaveStatus =
   | { state: 'saved'; reason: string; byteLength: number }
   | { state: 'error'; reason: string; error: unknown };
 
+/**
+ * 엔진이 멈춘 뒤 남긴 복구본의 결과. 실패하면 이 문서가 앞서 남긴 자동 저장본(lastSavedAt)이
+ * 복구 원본이 된다. 그것도 없으면 둘 다 null 이다.
+ */
+export type AutosaveRecoverySaveResult =
+  | { ok: true; draftId: string; savedAt: number }
+  | { ok: false; error: unknown; draftId: string | null; lastSavedAt: number | null };
+
+type SaveOnceResult =
+  | { ok: true; savedAt: number }
+  | { ok: false; error: unknown };
+
 export interface AutosaveManagerOptions {
-  exportBytes: () => Uint8Array;
+  exportDraft: () => { bytes: Uint8Array; format: AutosaveDataFormat };
+  liveDocument?: () => AutosaveLiveDocument | null;
   debounceMs?: number;
   minSaveIntervalMs?: number;
   schedule?: Partial<AutosaveScheduleSettings>;
@@ -64,6 +95,10 @@ interface CurrentDocument {
   draftId: string;
   fileName: string;
   sourceFormat: string;
+  documentId: string | null;
+  base: AutosaveBaseInput | null;
+  /** base 를 draftBases 에 기록했으면 true. 다음 저장부터는 base 를 다시 쓰지 않는다. */
+  basePersisted: boolean;
 }
 
 const DEFAULT_IDLE_DELAY_MS = 10_000;
@@ -79,7 +114,8 @@ function reasonText(reason: unknown, fallback: string): string {
 }
 
 export class AutosaveManager {
-  private readonly exportBytes: () => Uint8Array;
+  private readonly exportDraft: () => { bytes: Uint8Array; format: AutosaveDataFormat };
+  private readonly liveDocument?: () => AutosaveLiveDocument | null;
   private readonly now: () => number;
   private readonly idFactory: () => string;
   private readonly store: AutosaveStoreLike;
@@ -109,9 +145,17 @@ export class AutosaveManager {
   private retryAttempt = 0;
   private readonly retryDelayMs: number;
   private readonly maxRetryDelayMs: number;
+  /** 진행 중인 저장이 끝나면 풀린다. 복구본 저장이 앞선 저장을 기다릴 때 쓴다. */
+  private saveSettled: Promise<void> | null = null;
+  /**
+   * 엔진이 멈춰 복구본을 남긴 뒤면 true. 문서는 더 바뀌지 않으므로 예약 저장과 재시도를 하지
+   * 않는다 — 내보내기가 거절되는 문서가 끝없이 다시 시도하지 않게 한다.
+   */
+  private sealedForRecovery = false;
 
   constructor(options: AutosaveManagerOptions) {
-    this.exportBytes = options.exportBytes;
+    this.exportDraft = options.exportDraft;
+    this.liveDocument = options.liveDocument;
     this.scheduleSettings = normalizeSchedule({
       recoveryEnabled: true,
       recoveryIntervalMs: options.minSaveIntervalMs ?? DEFAULT_RECOVERY_INTERVAL_MS,
@@ -122,7 +166,7 @@ export class AutosaveManager {
     this.now = options.now ?? (() => Date.now());
     this.idFactory = options.idFactory ?? createAutosaveDraftId;
     this.store = options.store ?? {
-      saveDraft: saveAutosaveDraft,
+      saveDraft: (draft, base) => saveAutosaveDraft(draft, base ? { base } : {}),
       deleteDraft: deleteAutosaveDraft,
       touchSession: touchAutosaveSession,
       releaseSession: releaseAutosaveSession,
@@ -183,7 +227,10 @@ export class AutosaveManager {
     };
   }
 
-  async beginDocument(meta: AutosaveDocumentMeta, options: { discardPreviousDraft?: boolean } = {}): Promise<string> {
+  async beginDocument(
+    meta: AutosaveDocumentMeta,
+    options: { discardPreviousDraft?: boolean; base?: AutosaveBaseInput | null } = {},
+  ): Promise<string> {
     const previousDraftId = this.current?.draftId ?? null;
     this.cancelTimers();
     this.pendingReason = null;
@@ -193,6 +240,9 @@ export class AutosaveManager {
       draftId: meta.draftId ?? this.idFactory(),
       fileName: meta.fileName,
       sourceFormat: meta.sourceFormat,
+      documentId: meta.documentId ?? null,
+      base: options.base ?? null,
+      basePersisted: false,
     };
 
     if (options.discardPreviousDraft && previousDraftId && previousDraftId !== this.current.draftId) {
@@ -203,6 +253,27 @@ export class AutosaveManager {
 
   getCurrentDraftId(): string | null {
     return this.current?.draftId ?? null;
+  }
+
+  /** 지금 문서의 draft 를 마지막으로 기록한 시각. 기록한 적이 없거나 지웠으면 null. */
+  getLastSavedAt(): number | null {
+    return this.current && this.lastSavedAt > 0 ? this.lastSavedAt : null;
+  }
+
+  /**
+   * 파일에 저장한 바이트를 새 기준으로 삼는다. 저장하는 동안 들어온 편집으로 문서가 아직
+   * dirty 면 남은 draft 가 옛 기준을 가리키지 않도록 바로 다시 기록한다.
+   */
+  async rebase(
+    base: AutosaveBaseInput,
+    options: { draftId?: string | null; dirty: boolean },
+  ): Promise<void> {
+    const current = this.current;
+    if (!current) return;
+    if (options.draftId !== undefined && options.draftId !== current.draftId) return;
+    current.base = base;
+    current.basePersisted = false;
+    if (options.dirty) await this.flushNow('rebased');
   }
 
   updateSchedule(settings: Partial<AutosaveScheduleSettings>): void {
@@ -221,7 +292,7 @@ export class AutosaveManager {
   }
 
   schedule(reason = 'document-mutated'): void {
-    if (!this.current) return;
+    if (!this.current || this.sealedForRecovery) return;
     const settings = this.scheduleSettings;
     if (!settings.recoveryEnabled && !settings.idleEnabled) return;
 
@@ -245,29 +316,76 @@ export class AutosaveManager {
 
   async flushNow(reason = 'manual'): Promise<void> {
     const current = this.current;
-    if (!current) return;
+    if (!current || this.sealedForRecovery) return;
 
     if (this.saving) {
       this.pendingReason = reason;
       return;
     }
 
+    await this.saveOnce(current, reason, { retryOnFailure: true });
+  }
+
+  /**
+   * 엔진이 멈춘 직후의 복구본. 진행 중인 저장이 있으면 끝나기를 기다린 뒤(그 저장은 멈추기 전이나
+   * 멈춘 순간의 내용이다) 지금 내용으로 한 번 더 내보내 기록한다. 실패해도 다시 시도하지 않고,
+   * 이후의 예약 저장도 멈춘다. 실패하면 앞서 남긴 자동 저장본이 있는지 함께 알린다.
+   */
+  async saveForRecovery(reason = 'engine-trap'): Promise<AutosaveRecoverySaveResult> {
+    this.sealedForRecovery = true;
+    this.cancelTimers();
+    this.pendingReason = null;
+    while (this.saving && this.saveSettled) await this.saveSettled;
+    this.pendingReason = null;
+    const current = this.current;
+    if (!current) {
+      return { ok: false, error: new Error('열린 문서가 없습니다.'), draftId: null, lastSavedAt: null };
+    }
+    const result = await this.saveOnce(current, reason, { retryOnFailure: false });
+    if (result.ok) return { ok: true, draftId: current.draftId, savedAt: result.savedAt };
+    const lastSavedAt = this.current === current && this.lastSavedAt > 0 ? this.lastSavedAt : null;
+    return { ok: false, error: result.error, draftId: lastSavedAt ? current.draftId : null, lastSavedAt };
+  }
+
+  /** 내보내기 한 번과 draft 기록 한 번. 저장 중에 들어온 저장 요청은 끝난 뒤 다시 예약한다. */
+  private async saveOnce(
+    current: CurrentDocument,
+    reason: string,
+    { retryOnFailure }: { retryOnFailure: boolean },
+  ): Promise<SaveOnceResult> {
     this.saving = true;
+    let settle!: () => void;
+    this.saveSettled = new Promise<void>((resolve) => { settle = resolve; });
     this.cancelTimers();
     this.onStatus?.({ state: 'saving', reason });
     const generationAtStart = this.discardGeneration;
     try {
       await this.waitForInstanceLock();
-      const bytes = this.exportBytes();
+      const { bytes, format } = this.exportDraft();
+      const live = this.liveDocument?.() ?? null;
+      const fileName = live?.fileName || current.fileName;
+      const documentId = live ? live.documentId : current.documentId;
+      const fileHandle = live?.fileHandle ?? null;
+      const base = current.base;
+      const writeBase = base && !current.basePersisted ? base : null;
       const savedAt = this.now();
       if (this.owner) await this.heartbeat(savedAt);
       await this.store.saveDraft({
         id: current.draftId,
-        fileName: current.fileName,
+        fileName,
         sourceFormat: current.sourceFormat,
         savedAt,
         byteLength: bytes.byteLength,
         data: new Uint8Array(bytes),
+        dataFormat: format,
+        ...(documentId ? { documentId } : {}),
+        ...(base ? {
+          base: { digest: base.digest, byteLength: base.bytes.byteLength, mergeable: base.mergeable },
+        } : {}),
+        ...(fileHandle ? {
+          fileHandle,
+          handleKind: fileHandle.identityKind === 'native-path' ? 'native-path' as const : 'browser' as const,
+        } : {}),
         dirtyReason: reason,
         ...(this.owner ? {
           ownerLaunchId: this.owner.launchId,
@@ -276,23 +394,27 @@ export class AutosaveManager {
           // lock 을 실제로 잡았을 때만 기록한다. 잡지 못한 페이지의 draft 는 heartbeat 규칙을 따른다.
           ...(this.instanceLockHeld ? { ownerInstanceId: this.instanceId } : {}),
         } : {}),
-      });
+      }, writeBase ? { digest: writeBase.digest, byteLength: writeBase.bytes.byteLength, data: writeBase.bytes } : undefined);
       if (this.discardGeneration !== generationAtStart) {
         // 저장 진행 중 discard가 끼어듦 — 방금 저장으로 부활한 draft를 재삭제한다
         await this.deleteDraft(current.draftId, 'discarded-during-save');
-        return;
+        return { ok: false, error: new Error('저장하는 동안 문서가 깨끗해졌습니다.') };
       }
+      // 저장 중 rebase 로 기준이 바뀌었으면 다음 저장에서 새 기준을 기록한다.
+      if (writeBase && current.base === writeBase) current.basePersisted = true;
       this.lastSavedAt = savedAt;
       this.retryAttempt = 0;
-      this.logger.debug?.(`[autosave] draft saved: ${current.fileName} (${bytes.byteLength} bytes)`);
+      this.logger.debug?.(`[autosave] draft saved: ${fileName} (${bytes.byteLength} bytes)`);
       this.onStatus?.({ state: 'saved', reason, byteLength: bytes.byteLength });
+      return { ok: true, savedAt };
     } catch (error) {
       this.logger.warn('[autosave] draft save failed:', error);
       this.onStatus?.({ state: 'error', reason, error });
       // 편집이 멈춘 문서는 다음 저장 계기가 없다. 복구본 없이 남지 않도록 다시 시도한다.
-      if (this.discardGeneration === generationAtStart && this.current === current) {
+      if (retryOnFailure && this.discardGeneration === generationAtStart && this.current === current) {
         this.scheduleRetry(reason);
       }
+      return { ok: false, error };
     } finally {
       this.saving = false;
       const pending = this.pendingReason;
@@ -300,6 +422,7 @@ export class AutosaveManager {
       if (pending && this.current) {
         this.schedule(pending);
       }
+      settle();
     }
   }
 
@@ -309,6 +432,8 @@ export class AutosaveManager {
     this.pendingReason = null;
     this.lastSavedAt = 0;
     this.retryAttempt = 0;
+    // draft 와 함께 기준 바이트도 지워진다. 다음 draft 는 기준을 다시 기록해야 한다.
+    if (this.current) this.current.basePersisted = false;
     const draftId = this.current?.draftId;
     if (!draftId) return;
     await this.deleteDraft(draftId, reason);
@@ -382,7 +507,7 @@ export class AutosaveManager {
   }
 
   private scheduleRetry(reason: string): void {
-    if (this.disposed || !this.current) return;
+    if (this.disposed || !this.current || this.sealedForRecovery) return;
     this.cancelRetryTimer();
     const delay = Math.min(this.maxRetryDelayMs, this.retryDelayMs * 2 ** this.retryAttempt);
     this.retryAttempt += 1;

@@ -9,7 +9,7 @@ import type { HyperlinkTarget, HyperlinkContext } from './hyperlink';
 import * as wasmExports from '@wasm/rhwp.js';
 import { blake3 } from '@noble/hashes/blake3.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import type { DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, EndnoteShapeSettings, NoteEditInfo, CursorRect, HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo, TableCellTarget, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect, CharProperties, ParaProperties, CellPathEntry, CellPathLike, NavContextEntry, FieldInfoResult, BookmarkInfo, LayerRenderProfile, PageLayerTree, CanvasKitDocumentPreflight, CanvasDeviceRect } from './types';
+import type { DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, EndnoteShapeSettings, NoteEditInfo, CursorRect, HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo, TableCellTarget, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect, CharProperties, ParaProperties, CellPathEntry, CellPathLike, NavContextEntry, FieldInfoResult, BookmarkInfo, LayerRenderProfile, PageLayerTree, CanvasKitDocumentPreflight } from './types';
 import { parseCanvasKitDocumentPreflight } from './canvaskit-document-preflight';
 import { DEFAULT_FONT_METRICS_POLICY } from './font-metrics-policy';
 import {
@@ -225,13 +225,11 @@ export interface DeferredPaginationResult {
 }
 
 export interface WebCanvasImageCacheStats {
-  pictureEntries: number;
-  pictureBitmaps: number;
-  /** 디코드된 비트맵 바이트 (w×h×4) */
-  pictureBytes: number;
-  pictureBudgetBytes: number;
-  pendingDecodes: number;
-  failedPictures: number;
+  decodedCanvasEntries: number;
+  decodedCanvasPixels: number;
+  decodedCanvasRgbaBytes: number;
+  htmlImageEntries: number;
+  htmlImageSourceBytes: number;
 }
 
 import { fontFamilyChainForDisplay, prefersHcrOverWebProxy, prefersImportedHancomSubstitute } from './font-substitution';
@@ -247,20 +245,6 @@ import {
 } from './subsecond-runtime';
 
 let disconnectSubsecondDevtools: (() => void) | null = null;
-
-/** 엔진 그림 캐시는 인스턴스 전역이라 디코드 알림도 브리지 전체가 함께 받는다. */
-const pictureDecodeListeners = new Set<(pendingDecodes: number) => void>();
-let pictureDecodeListenerInstalled = false;
-
-function installPictureDecodeListener(): void {
-  if (pictureDecodeListenerInstalled) return;
-  const setListener = Reflect.get(wasmExports, 'setWebCanvasPictureListener');
-  if (typeof setListener !== 'function') return;
-  setListener((pendingDecodes: number) => {
-    for (const listener of [...pictureDecodeListeners]) listener(pendingDecodes);
-  });
-  pictureDecodeListenerInstalled = true;
-}
 
 /**
  * CSS font 문자열에서 font-family를 추출하여 폰트 치환을 적용한다.
@@ -396,6 +380,24 @@ class PreparedWasmDocumentState implements PreparedWasmDocument {
   }
 }
 
+/**
+ * 문서 세대·인스턴스 번호는 페이지의 모든 WasmBridge 가 한 카운터를 나눠 쓴다. 화면이 퍼사드로
+ * 다른 세션의 브리지에 붙어도 번호가 겹치지 않아, "같은 문서인가" 비교가 브리지를 넘나들어도
+ * 맞는다.
+ */
+let lastDocumentGeneration = 0;
+let lastDocumentInstance = 0;
+
+function nextDocumentGeneration(): number {
+  lastDocumentGeneration += 1;
+  return lastDocumentGeneration;
+}
+
+function nextDocumentInstance(): number {
+  lastDocumentInstance += 1;
+  return lastDocumentInstance;
+}
+
 export class WasmBridge {
   private doc: HwpDocument | null = null;
   private _documentGeneration = 0;
@@ -409,8 +411,9 @@ export class WasmBridge {
    * 문서 인스턴스 번호 — 문서를 내리거나 다른 문서를 들일 때만 오른다. documentGeneration 과
    * 달리 스냅샷 복원·내용 교체로는 오르지 않아, 에이전트 revision 과 대기 편집이 "같은 문서"를
    * 판별하는 기준이 된다 (대기 편집은 스테이징·승인·거절마다 스냅샷을 복원한다).
+   * 페이지 전체에서 유일하므로 문서를 들이지 않은 브리지끼리도 번호가 다르다.
    */
-  private _documentInstance = 0;
+  private _documentInstance = nextDocumentInstance();
   get documentInstance(): number {
     return this._documentInstance;
   }
@@ -432,7 +435,6 @@ export class WasmBridge {
     this.installMeasureTextWidth();
     await init();
     guardEngineCalls(HwpDocument.prototype);
-    installPictureDecodeListener();
     const downsampleRgba = Reflect.get(wasmExports, 'smoothHermiteDownsampleRgba');
     setImageDownsampleApi(typeof downsampleRgba === 'function' ? downsampleRgba : null);
     const affineSampleRgba = Reflect.get(wasmExports, 'gridfitAffineSampleRgba');
@@ -530,8 +532,8 @@ export class WasmBridge {
    * 비교 상세 창 등 보조 WasmBridge 인스턴스에서 반복 로드 시 메모리 누수를 줄이기 위해 사용한다.
    */
   releaseDocument(): void {
-    this.documentGeneration++;
-    this._documentInstance++;
+    this.documentGeneration = nextDocumentGeneration();
+    this._documentInstance = nextDocumentInstance();
     if (this.doc) {
       try {
         this.doc.free();
@@ -587,8 +589,8 @@ export class WasmBridge {
       throw new Error('Prepared document was not created by this WASM bridge');
     }
     const next = prepared.take();
-    this.documentGeneration++;
-    this._documentInstance++;
+    this.documentGeneration = nextDocumentGeneration();
+    this._documentInstance = nextDocumentInstance();
     if (this.doc) {
       try {
         this.doc.free();
@@ -669,7 +671,8 @@ export class WasmBridge {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const doc = this.doc;
     const raw = doc.replaceContentFromBytes(data);
-    const generation = ++this.documentGeneration;
+    this.documentGeneration = nextDocumentGeneration();
+    const generation = this.documentGeneration;
     this.ensureParagraphStableIds();
     void this.populateExternalImagesFromDevServer(doc, generation);
     return JSON.parse(raw) as DocumentInfo;
@@ -763,6 +766,11 @@ export class WasmBridge {
 
   get documentDigest(): string | null {
     return this._documentDigest;
+  }
+
+  /** 연 바이트가 원본 파일과 다를 때(자동 저장본 복구) 원본 파일의 digest 를 기준으로 삼는다. */
+  adoptSourceDigest(digest: string): void {
+    if (this.doc) this._documentDigest = digest;
   }
 
   set fileName(name: string) {
@@ -1056,46 +1064,9 @@ export class WasmBridge {
     return JSON.parse((this.doc as any).setPageBorderFill(sectionIdx, JSON.stringify(settings)));
   }
 
-  /** 디코드를 기다리느라 빠진 그림 수를 돌려준다. 0 이 아니면 디코드 뒤 다시 그려야 한다. */
-  renderPageToCanvas(pageNum: number, canvas: HTMLCanvasElement, scale = 1.0): number {
+  renderPageToCanvas(pageNum: number, canvas: HTMLCanvasElement, scale = 1.0): void {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return Number(this.doc.renderPageToCanvas(pageNum, canvas, scale)) || 0;
-  }
-
-  /**
-   * 그림이 모두 그려진 쪽을 렌더한다. 스냅샷·미리보기처럼 다시 그릴 기회가 없는 호출자가 쓴다.
-   */
-  async renderPageToCanvasWithPictures(
-    pageNum: number,
-    canvas: HTMLCanvasElement,
-    scale = 1.0,
-    timeoutMs = 5000,
-  ): Promise<void> {
-    const deadline = performance.now() + timeoutMs;
-    while (this.renderPageToCanvas(pageNum, canvas, scale) > 0) {
-      const remaining = deadline - performance.now();
-      if (remaining <= 0 || !await this.waitForPictureDecode(remaining)) return;
-    }
-  }
-
-  /** 엔진 그림 디코드가 끝날 때마다 부른다. 인자는 아직 진행 중인 디코드 수다. */
-  onPictureDecoded(listener: (pendingDecodes: number) => void): () => void {
-    pictureDecodeListeners.add(listener);
-    return () => pictureDecodeListeners.delete(listener);
-  }
-
-  /** 진행 중인 그림 디코드가 모두 끝나면 true, 시간이 지나면 false. */
-  private waitForPictureDecode(timeoutMs: number): Promise<boolean> {
-    if (!pictureDecodeListenerInstalled) return Promise.resolve(false);
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => { off(); resolve(false); }, timeoutMs);
-      const off = this.onPictureDecoded((pendingDecodes) => {
-        if (pendingDecodes > 0) return;
-        clearTimeout(timer);
-        off();
-        resolve(true);
-      });
-    });
+    this.doc.renderPageToCanvas(pageNum, canvas, scale);
   }
 
   /**
@@ -1106,7 +1077,6 @@ export class WasmBridge {
    *                  'flow-dynamic' = 본문 layer 중 Image/RawSvg 제외,
    *                  'flow-static' = page background + 본문 Image/RawSvg layer,
    *                  'behind' = BehindText overlay, 'front' = InFrontOfText overlay
-   * @returns 디코드를 기다리느라 빠진 그림 수. 0 이 아니면 디코드 뒤 다시 그려야 한다.
    */
   renderPageToCanvasFiltered(
     pageNum: number,
@@ -1114,52 +1084,31 @@ export class WasmBridge {
     scale: number,
     layerKind: 'all' | 'background' | 'flow' | 'flow-dynamic' | 'flow-static' | 'behind' | 'front',
     profile: LayerRenderProfile = 'screen',
-  ): number {
+  ): void {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const d = this.doc as unknown as {
-      renderPageToCanvasFiltered?: (p: number, c: HTMLCanvasElement, s: number, k: string) => unknown;
+      renderPageToCanvasFiltered?: (p: number, c: HTMLCanvasElement, s: number, k: string) => void;
       renderPageToCanvasFilteredWithProfile?: (
         p: number,
         c: HTMLCanvasElement,
         s: number,
         k: string,
         profile: string,
-      ) => unknown;
+      ) => void;
     };
     if (typeof d.renderPageToCanvasFilteredWithProfile === 'function') {
-      return Number(d.renderPageToCanvasFilteredWithProfile(pageNum, canvas, scale, layerKind, profile)) || 0;
+      d.renderPageToCanvasFilteredWithProfile(pageNum, canvas, scale, layerKind, profile);
+      return;
     }
     if (profile !== 'screen') {
       throw new Error('[WasmBridge] 현재 WASM은 profile별 Canvas2D 렌더링을 지원하지 않습니다');
     }
     if (typeof d.renderPageToCanvasFiltered === 'function') {
-      return Number(d.renderPageToCanvasFiltered(pageNum, canvas, scale, layerKind)) || 0;
+      d.renderPageToCanvasFiltered(pageNum, canvas, scale, layerKind);
+      return;
     }
     // 구버전 WASM(public/rhwp.js 등): 레이어 필터 API 없음 → 전체 캔버스 렌더로 폴백
-    return Number(this.doc.renderPageToCanvas(pageNum, canvas, scale)) || 0;
-  }
-
-  /** 쪽 일부 영역 렌더를 지원하는 WASM 인가. 구버전이면 page-detail 층을 쓰지 않는다. */
-  get supportsPageRegionRender(): boolean {
-    return typeof this.doc?.renderPageRegionToCanvas === 'function';
-  }
-
-  /**
-   * 쪽의 일부 영역만 그린다. `region` 은 `scale` 을 적용한 쪽 좌표계의 장치 픽셀이며,
-   * 엔진이 쪽 범위 안으로 잘라 canvas 크기를 영역 크기로 맞춘다. 디코드를 기다리는 그림 수를 돌려준다.
-   */
-  renderPageRegionToCanvas(
-    pageNum: number,
-    canvas: HTMLCanvasElement,
-    scale: number,
-    region: CanvasDeviceRect,
-    layerKind: 'all' | 'background' | 'flow' | 'flow-dynamic' | 'flow-static' | 'behind' | 'front',
-    profile: LayerRenderProfile = 'screen',
-  ): number {
-    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return Number(this.doc.renderPageRegionToCanvas(
-      pageNum, canvas, scale, region.x, region.y, region.width, region.height, layerKind, profile,
-    )) || 0;
+    this.doc.renderPageToCanvas(pageNum, canvas, scale);
   }
 
   /**
@@ -3617,7 +3566,8 @@ export class WasmBridge {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const doc = this.doc;
     doc.restoreSnapshot(id);
-    const generation = ++this.documentGeneration;
+    this.documentGeneration = nextDocumentGeneration();
+    const generation = this.documentGeneration;
     void this.populateExternalImagesFromDevServer(doc, generation);
   }
 
@@ -3846,32 +3796,36 @@ export class WasmBridge {
     ));
   }
 
-  /**
-   * HF 대표 편집 preview 의 일부 영역만 그린다. 영역 좌표는 renderPageRegionToCanvas 와 같다.
-   * 디코드를 기다리는 그림 수를 돌려준다.
-   */
-  renderHeaderFooterEditPreviewRegionToCanvas(
+  renderHeaderFooterEditPreviewToCanvas(
     pageNum: number,
     sectionIdx: number,
     isHeader: boolean,
     applyTo: number,
     canvas: HTMLCanvasElement,
     scale: number,
-    region: CanvasDeviceRect,
-  ): number {
+  ): void {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return Number(this.doc.renderHeaderFooterEditPreviewRegionToCanvas(
+    const doc = this.doc as unknown as {
+      renderHeaderFooterEditPreviewToCanvas?: (
+        pageNum: number,
+        sectionIdx: number,
+        isHeader: boolean,
+        applyTo: number,
+        canvas: HTMLCanvasElement,
+        scale: number,
+      ) => void;
+    };
+    if (typeof doc.renderHeaderFooterEditPreviewToCanvas !== 'function') {
+      throw new Error('현재 WASM은 HF 대표 편집 preview 렌더링을 지원하지 않습니다');
+    }
+    doc.renderHeaderFooterEditPreviewToCanvas(
       pageNum,
       sectionIdx,
       isHeader,
       applyTo,
       canvas,
       scale,
-      region.x,
-      region.y,
-      region.width,
-      region.height,
-    )) || 0;
+    );
   }
 
   deleteHeaderFooter(sectionIdx: number, isHeader: boolean, applyTo: number): void {

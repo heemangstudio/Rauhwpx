@@ -47,7 +47,7 @@ function post(message: MergeWorkerResponse, transfer: Transferable[] = []): void
   scope.postMessage(message, transfer);
 }
 
-async function exportsReady(): Promise<StructuralMergeExports> {
+function wasmInitialized(): Promise<void> {
   if (!wasmReady) {
     const initializing = init().then(() => undefined);
     wasmReady = initializing.catch((error) => {
@@ -55,7 +55,11 @@ async function exportsReady(): Promise<StructuralMergeExports> {
       throw error;
     });
   }
-  await wasmReady;
+  return wasmReady;
+}
+
+async function exportsReady(): Promise<StructuralMergeExports> {
+  await wasmInitialized();
   const exports = wasmModule as unknown as Partial<StructuralMergeExports>;
   if (
     typeof exports.structuralMergeAnalyze !== 'function'
@@ -204,6 +208,8 @@ scope.addEventListener('message', (event: MessageEvent<MergeWorkerRequest>) => {
   const request = event.data;
   void (async () => {
     post({ id: request.id, type: 'progress', operation: request.operation, phase: 'initializing', percent: 0 });
+    await wasmInitialized();
+    post({ id: request.id, type: 'progress', operation: request.operation, phase: 'ready' });
     if (request.operation === 'analyze') {
       const value = await analyze(request.base, request.current, request.incoming);
       post({ id: request.id, type: 'analysis', value });

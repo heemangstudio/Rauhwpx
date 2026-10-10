@@ -43,16 +43,18 @@ import {
   type VersionRepository,
   type VersionShelf,
   type VersionStats,
+  type VersionWorktree,
   type VersionTitle,
 } from './types.ts';
 
 export const VERSION_DATABASE_NAME = 'rhwpStudioVersionGraph';
-export const VERSION_DATABASE_VERSION = 3;
+export const VERSION_DATABASE_VERSION = 4;
 
 const RECOVERY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const STORE_NAMES = [
   'repositories',
+  'worktrees',
   'commits',
   'refs',
   'blobs',
@@ -72,6 +74,7 @@ type MaintenanceRow = { id: string; phase: 'blobs' | 'compareSnapshots' | 'done'
 
 interface StoreRows {
   repositories: VersionRepository;
+  worktrees: VersionWorktree;
   commits: VersionCommit;
   refs: RefRow;
   blobs: VersionBlob;
@@ -89,6 +92,8 @@ interface GraphTransaction {
   has(store: StoreName, key: IDBValidKey): Promise<boolean>;
   getAll<Name extends StoreName>(store: Name): Promise<StoreRows[Name][]>;
   findRepositoryByDocumentId(documentId: DocumentId): Promise<VersionRepository | undefined>;
+  findWorktreeByDocumentId(documentId: DocumentId): Promise<VersionWorktree | undefined>;
+  listWorktrees(repositoryId: RepositoryId): Promise<VersionWorktree[]>;
   listCommits(repositoryId: RepositoryId, beforeOrdinal: number, limit: number): Promise<VersionCommit[]>;
   listRefs(repositoryId: RepositoryId): Promise<RefRow[]>;
   listShelves(repositoryId: RepositoryId, limit?: number): Promise<VersionShelf[]>;
@@ -183,6 +188,8 @@ export type CreateCheckpointInput = CheckpointPayload & {
   expectedHead?: CommitId;
   parents?: readonly [CommitId] | readonly [CommitId, CommitId];
   reason: Exclude<VersionCommit['reason'], 'initial'>;
+  worktreeId?: string;
+  expectedWorktreeRevision?: number;
   lastSavedFingerprint?: ContentFingerprint;
   merge?: VersionMergeMetadata;
 };
@@ -274,6 +281,44 @@ export interface RepositoryStorageUsage {
   commitTruncated: boolean;
   shelfTruncated: boolean;
   truncated: boolean;
+}
+
+export interface EnsurePrimaryWorktreeInput {
+  repositoryId: RepositoryId;
+  documentId: DocumentId;
+  branch: BranchName;
+  fileName: string;
+  sourceFormat: string;
+  savedFingerprint?: ContentFingerprint;
+}
+
+export interface CreateWorktreeInput extends EnsurePrimaryWorktreeInput {
+  id?: string;
+  expectedRepositoryRevision: number;
+  expectedBranchRevision: number;
+  /** A new branch is created atomically when the requested branch is occupied. */
+  forkName?: BranchName;
+  mergeTarget?: { name: BranchName; generation: BranchGeneration } | null;
+}
+
+export interface SaveWorktreeInput {
+  id: string;
+  expectedRevision: number;
+  expectedDocumentId?: DocumentId;
+  bytes?: Uint8Array;
+  baseCommitId?: CommitId;
+  savedFingerprint?: ContentFingerprint;
+  fileName?: string;
+  sourceFormat?: string;
+}
+
+export interface SwitchWorktreeBranchInput {
+  id: string;
+  branch: BranchName;
+  expectedRevision: number;
+  expectedDocumentId?: DocumentId;
+  expectedRepositoryRevision: number;
+  expectedBranchRevision: number;
 }
 
 export interface CreateBranchInput {
@@ -372,6 +417,7 @@ const EMPTY_STATS: VersionStats = { added: 0, removed: 0, modified: 0 };
 function memoryState(): MemoryState {
   return {
     repositories: new Map(),
+    worktrees: new Map(),
     commits: new Map(),
     refs: new Map(),
     blobs: new Map(),
@@ -396,6 +442,7 @@ function forkMemoryState(state: MemoryState): MemoryState {
     new Map(source);
   return {
     repositories: cloneMap(state.repositories),
+    worktrees: cloneMap(state.worktrees),
     commits: cloneMap(state.commits),
     refs: cloneMap(state.refs),
     blobs: cloneMap(state.blobs),
@@ -427,9 +474,17 @@ function memoryTransaction(state: MemoryState): GraphTransaction {
       return [...state[store].values()].map(cloneValue);
     },
     async findRepositoryByDocumentId(documentId) {
-      const repository = [...state.repositories.values()]
-        .find((candidate) => candidate.documentId === documentId);
+      const binding = [...state.worktrees.values()].find((row) => row.documentId === documentId);
+      const repository = binding ? state.repositories.get(binding.repositoryId)
+        : [...state.repositories.values()].find((candidate) => candidate.documentId === documentId);
       return repository === undefined ? undefined : cloneValue(repository);
+    },
+    async findWorktreeByDocumentId(documentId) {
+      const row = [...state.worktrees.values()].find((row) => row.documentId === documentId);
+      return row ? cloneValue(row) : undefined;
+    },
+    async listWorktrees(repositoryId) {
+      return [...state.worktrees.values()].filter((row) => row.repositoryId === repositoryId).map(cloneValue);
     },
     async listCommits(repositoryId, beforeOrdinal, limit) {
       return [...state.commits.values()]
@@ -468,7 +523,8 @@ function memoryTransaction(state: MemoryState): GraphTransaction {
       return [...state[kind].values()].filter((row) => !after || row.id > after).sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit).map(cloneValue);
     },
     async isBlobReferenced(id) {
-      return [...state.commits.values()].some((row) => row.blobId === id)
+      return [...state.worktrees.values()].some((row) => row.blobId === id)
+        || [...state.commits.values()].some((row) => row.blobId === id)
         || [...state.shelves.values()].some((row) => row.blobId === id)
         || [...state.mergeDrafts.values()].some((row) => row.manualAssetBlobIds.includes(id));
     },
@@ -521,8 +577,16 @@ function indexedDbTransaction(transaction: IDBTransaction): GraphTransaction {
       return requestResult(transaction.objectStore(store).getAll()) as Promise<never>;
     },
     async findRepositoryByDocumentId(documentId) {
+      const binding = await requestResult(transaction.objectStore('worktrees').index('documentId').get(documentId)) as VersionWorktree | undefined;
+      if (binding) return requestResult(transaction.objectStore('repositories').get(binding.repositoryId));
       const index = transaction.objectStore('repositories').index('documentId');
       return requestResult(index.get(documentId)) as Promise<VersionRepository | undefined>;
+    },
+    async findWorktreeByDocumentId(documentId) {
+      return requestResult(transaction.objectStore('worktrees').index('documentId').get(documentId));
+    },
+    async listWorktrees(repositoryId) {
+      return requestResult(transaction.objectStore('worktrees').index('repositoryId').getAll(IDBKeyRange.only(repositoryId)));
     },
     async listCommits(repositoryId, beforeOrdinal, limit) {
       const index = transaction.objectStore('commits').index('repositoryOrdinal');
@@ -580,7 +644,8 @@ function indexedDbTransaction(transaction: IDBTransaction): GraphTransaction {
     },
     async isBlobReferenced(id) {
       const only = IDBKeyRange.only(id);
-      return Boolean(await requestResult(transaction.objectStore('commits').index('blobId').getKey(only)))
+      return Boolean(await requestResult(transaction.objectStore('worktrees').index('blobId').getKey(only)))
+        || Boolean(await requestResult(transaction.objectStore('commits').index('blobId').getKey(only)))
         || Boolean(await requestResult(transaction.objectStore('shelves').index('blobId').getKey(only)))
         || Boolean(await requestResult(transaction.objectStore('mergeDrafts').index('manualAssetBlobIds').getKey(only)));
     },
@@ -634,7 +699,7 @@ function stale(message: string): never {
 }
 
 function missing(
-  code: 'REPOSITORY_NOT_FOUND' | 'COMMIT_NOT_FOUND' | 'REF_NOT_FOUND' | 'SHELF_NOT_FOUND' | 'MERGE_DRAFT_NOT_FOUND',
+  code: 'REPOSITORY_NOT_FOUND' | 'COMMIT_NOT_FOUND' | 'REF_NOT_FOUND' | 'SHELF_NOT_FOUND' | 'MERGE_DRAFT_NOT_FOUND' | 'WORKTREE_NOT_FOUND',
   message: string,
 ): never {
   throw new VersionError(code, message);
@@ -771,6 +836,7 @@ function sortedRepositorySnapshot(
 async function repositorySnapshotFromTransaction(
   tx: GraphTransaction,
   id: RepositoryId,
+  options: { activeBranch?: BranchName } = {},
 ): Promise<VersionRepositorySnapshot> {
   const repository = await tx.get('repositories', id);
   if (!repository) missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
@@ -778,7 +844,8 @@ async function repositorySnapshotFromTransaction(
   const refs = (await tx.listRefs(id)).map(fromRefRow);
   const shelves = await tx.listShelves(id);
   const mergeManifests = await tx.listRepositoryManifests(id);
-  const mergeDrafts = await tx.listMergeDrafts(id);
+  const mergeDrafts = (await tx.listMergeDrafts(id)).filter((draft) => options.activeBranch === undefined
+    || normalizedRefKey(draft.targetBranch) === normalizedRefKey(options.activeBranch));
   const blobIds = new Set<BlobId>([
     ...commits.map((commit) => commit.blobId),
     ...shelves.map((shelf) => shelf.blobId),
@@ -1162,6 +1229,63 @@ function draftNamesBranch(draft: VersionMergeDraft, branch: BranchName): boolean
   return normalizedRefKey(draft.targetBranch) === key || normalizedRefKey(draft.sourceBranch) === key;
 }
 
+async function repositoryWorktrees(tx: GraphTransaction, id: RepositoryId): Promise<VersionWorktree[]> {
+  return tx.listWorktrees(id);
+}
+
+async function assertBranchUnoccupied(tx: GraphTransaction, id: RepositoryId, name: BranchName, exceptId?: string): Promise<void> {
+  if ((await repositoryWorktrees(tx, id)).some((row) => row.id !== exceptId && normalizedRefKey(row.branch) === normalizedRefKey(name))) {
+    throw new VersionError('BRANCH_OCCUPIED', 'The branch is assigned to a document workspace');
+  }
+}
+
+function assertWorktreeRevision(row: VersionWorktree, revision: number, expectedDocumentId?: DocumentId): void {
+  if (row.revision !== revision || (expectedDocumentId !== undefined && row.documentId !== expectedDocumentId)) {
+    stale('The document workspace changed');
+  }
+}
+
+async function worktreeBranch(tx: GraphTransaction, row: VersionWorktree): Promise<BranchRef> {
+  const ref = await tx.get('refs', refKey(row.repositoryId, 'branch', row.branch));
+  if (!ref || ref.kind !== 'branch') stale('The workspace branch was replaced');
+  const branch = fromRefRow(ref) as BranchRef;
+  if (branch.generation !== row.branchGeneration) stale('The workspace branch was replaced');
+  return branch;
+}
+
+const storeListeners = new Set<(id: RepositoryId) => void>();
+const notificationOrigin = createId('version-store');
+let notificationChannel: BroadcastChannel | null = null;
+function notifyRepository(id: RepositoryId, broadcast = true): void {
+  for (const listener of storeListeners) {
+    try { listener(id); } catch { /* A subscriber cannot interrupt a committed transaction. */ }
+  }
+  if (broadcast) notificationChannel?.postMessage({ origin: notificationOrigin, repositoryId: id });
+}
+
+function observeTransaction(tx: GraphTransaction, changed: Set<RepositoryId>): GraphTransaction {
+  return {
+    ...tx,
+    async put(store, row) {
+      await tx.put(store, row);
+      const id = store === 'repositories' ? (row as VersionRepository).id
+        : 'repositoryId' in row ? row.repositoryId : undefined;
+      if (id) changed.add(id);
+    },
+    async delete(store, key) {
+      const row = await tx.get(store, key);
+      await tx.delete(store, key);
+      const id = store === 'repositories' ? (row as VersionRepository | undefined)?.id
+        : row && 'repositoryId' in row ? row.repositoryId : undefined;
+      if (id) changed.add(id);
+    },
+    async clear(store) {
+      if (store === 'repositories') for (const row of await tx.getAll(store)) changed.add(row.id);
+      await tx.clear(store);
+    },
+  };
+}
+
 export class VersionGraphStore {
   readonly #factory: IDBFactory | null;
   #database: Promise<IDBDatabase> | null = null;
@@ -1173,6 +1297,19 @@ export class VersionGraphStore {
     this.#factory = options.indexedDB === null
       ? null
       : options.indexedDB ?? (typeof indexedDB === 'undefined' ? null : indexedDB);
+  }
+
+  subscribe(listener: (repositoryId: RepositoryId) => void): () => void {
+    storeListeners.add(listener);
+    if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined' && !notificationChannel) {
+      notificationChannel = new BroadcastChannel(VERSION_DATABASE_NAME);
+      notificationChannel.onmessage = (event) => {
+        if (event.data?.origin !== notificationOrigin && typeof event.data?.repositoryId === 'string') {
+          notifyRepository(repositoryId(event.data.repositoryId), false);
+        }
+      };
+    }
+    return () => storeListeners.delete(listener);
   }
 
   #openDatabase(): Promise<IDBDatabase> {
@@ -1188,6 +1325,13 @@ export class VersionGraphStore {
         if (!database.objectStoreNames.contains('repositories')) {
           const store = database.createObjectStore('repositories', { keyPath: 'id' });
           store.createIndex('documentId', 'documentId', { unique: true });
+        }
+        if (!database.objectStoreNames.contains('worktrees')) {
+          const store = database.createObjectStore('worktrees', { keyPath: 'id' });
+          store.createIndex('documentId', 'documentId', { unique: true });
+          store.createIndex('repositoryId', 'repositoryId');
+          store.createIndex('branchIdentity', ['repositoryId', 'branchGeneration'], { unique: true });
+          store.createIndex('blobId', 'blobId');
         }
         if (!database.objectStoreNames.contains('commits')) {
           const store = database.createObjectStore('commits', { keyPath: 'id' });
@@ -1308,8 +1452,8 @@ export class VersionGraphStore {
     opened?.close();
   }
 
-  async exportRepositorySnapshot(id: RepositoryId): Promise<VersionRepositorySnapshot> {
-    return this.#transaction('readonly', (tx) => repositorySnapshotFromTransaction(tx, id));
+  async exportRepositorySnapshot(id: RepositoryId, options: { activeBranch?: BranchName } = {}): Promise<VersionRepositorySnapshot> {
+    return this.#transaction('readonly', (tx) => repositorySnapshotFromTransaction(tx, id, options));
   }
 
   async importRepositorySnapshot(
@@ -1401,6 +1545,8 @@ export class VersionGraphStore {
         || repository.revision !== expectedRevision
       ) return;
       const imported = await repositorySnapshotFromTransaction(tx, id);
+      const worktrees = await repositoryWorktrees(tx, id);
+      for (const row of worktrees) await tx.delete('worktrees', row.id);
       for (const ref of imported.refs) await tx.delete('refs', refKey(id, ref.kind, ref.name));
       for (const commit of imported.commits) await tx.delete('commits', commit.id);
       for (const shelf of imported.shelves) await tx.delete('shelves', shelf.id);
@@ -1408,8 +1554,8 @@ export class VersionGraphStore {
       for (const draft of imported.mergeDrafts) await tx.delete('mergeDrafts', draft.id);
       for (const entry of await tx.listRecoveryEntries(id)) await tx.delete('recoveryEntries', entry.id);
       await tx.delete('repositories', id);
-      for (const blob of imported.blobs) {
-        if (!await tx.isBlobReferenced(blob.id)) await tx.delete('blobs', blob.id);
+      for (const blobId of new Set([...imported.blobs.map((blob) => blob.id), ...worktrees.map((row) => row.blobId)])) {
+        if (!await tx.isBlobReferenced(blobId)) await tx.delete('blobs', blobId);
       }
       for (const stored of imported.compareSnapshots) {
         if (!await tx.isCompareSnapshotReferenced(stored.id)) {
@@ -1424,8 +1570,10 @@ export class VersionGraphStore {
       if (mode === 'readonly') return operation(memoryTransaction(this.#memory));
       const result = this.#memoryWriteTail.catch(() => undefined).then(async () => {
         const working = forkMemoryState(this.#memory);
-        const value = await operation(memoryTransaction(working));
+        const changed = new Set<RepositoryId>();
+        const value = await operation(observeTransaction(memoryTransaction(working), changed));
         this.#memory = working;
+        for (const id of changed) notifyRepository(id);
         return cloneValue(value);
       });
       this.#memoryWriteTail = result.then(() => undefined, () => undefined);
@@ -1445,8 +1593,11 @@ export class VersionGraphStore {
     }
     const done = transactionComplete(transaction);
     try {
-      const result = await operation(indexedDbTransaction(transaction));
+      const changed = new Set<RepositoryId>();
+      const tx = indexedDbTransaction(transaction);
+      const result = await operation(mode === 'readwrite' ? observeTransaction(tx, changed) : tx);
       await done;
+      for (const id of changed) notifyRepository(id);
       return result;
     } catch (error) {
       try {
@@ -1468,6 +1619,160 @@ export class VersionGraphStore {
       if (this.#queues.get(key) === settled) this.#queues.delete(key);
     });
     return result;
+  }
+
+  async getWorktree(id: string): Promise<VersionWorktree | null> {
+    return this.#transaction('readonly', async (tx) => await tx.get('worktrees', id) ?? null);
+  }
+
+  async findWorktreeByDocumentId(id: DocumentId): Promise<VersionWorktree | null> {
+    return this.#transaction('readonly', async (tx) => await tx.findWorktreeByDocumentId(id) ?? null);
+  }
+
+  async listWorktrees(id: RepositoryId): Promise<VersionWorktree[]> {
+    return this.#transaction('readonly', async (tx) => (await repositoryWorktrees(tx, id))
+      .sort((left, right) => Number(right.primary) - Number(left.primary) || left.createdAt - right.createdAt || left.id.localeCompare(right.id)));
+  }
+
+  async ensurePrimaryWorktree(input: EnsurePrimaryWorktreeInput): Promise<VersionWorktree> {
+    return this.#serialize(input.repositoryId, () => this.#transaction('readwrite', async (tx) => {
+      const repository = await tx.get('repositories', input.repositoryId);
+      if (!repository) missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
+      const existing = await tx.findWorktreeByDocumentId(input.documentId);
+      if (existing) {
+        if (existing.repositoryId !== repository.id || !existing.primary) stale('The document belongs to another workspace');
+        await worktreeBranch(tx, existing);
+        return existing;
+      }
+      if (repository.documentId !== input.documentId || (await repositoryWorktrees(tx, repository.id)).some((row) => row.primary)) {
+        stale('The primary document workspace already exists');
+      }
+      const ref = await tx.get('refs', refKey(repository.id, 'branch', input.branch));
+      if (!ref || ref.kind !== 'branch') missing('REF_NOT_FOUND', 'Workspace branch was not found');
+      const branch = fromRefRow(ref) as BranchRef;
+      await assertBranchUnoccupied(tx, repository.id, branch.name);
+      const commit = await tx.get('commits', branch.target);
+      assertCommitInRepository(commit, repository.id);
+      const now = Date.now();
+      const worktree: VersionWorktree = {
+        id: createId('worktree'), documentId: input.documentId, repositoryId: repository.id,
+        branch: branch.name, branchGeneration: branch.generation, primary: true,
+        fileName: input.fileName, sourceFormat: input.sourceFormat,
+        baseCommitId: branch.target, blobId: commit!.blobId, savedFingerprint: contentFingerprint(input.savedFingerprint ?? repository.lastSavedFingerprint),
+        mergeTarget: null, revision: 1, createdAt: now, updatedAt: now,
+      };
+      await tx.put('worktrees', worktree);
+      return worktree;
+    }));
+  }
+
+  async createWorktree(input: CreateWorktreeInput): Promise<VersionWorktree> {
+    return this.#serialize(input.repositoryId, () => this.#transaction('readwrite', async (tx) => {
+      const repository = await tx.get('repositories', input.repositoryId);
+      if (!repository) missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
+      assertRepositoryRevision(repository, input.expectedRepositoryRevision);
+      if (await tx.findRepositoryByDocumentId(input.documentId)) stale('The document already belongs to a repository');
+      const id = input.id ?? createId('worktree');
+      if (await tx.has('worktrees', id)) stale('The document workspace already exists');
+      const row = await tx.get('refs', refKey(repository.id, 'branch', input.branch));
+      if (!row || row.kind !== 'branch') missing('REF_NOT_FOUND', 'Workspace branch was not found');
+      const source = fromRefRow(row) as BranchRef;
+      assertRefRevision(source, input.expectedBranchRevision);
+      const occupied = (await repositoryWorktrees(tx, repository.id)).some((binding) => binding.branchGeneration === source.generation);
+      if (occupied && !input.forkName) throw new VersionError('BRANCH_OCCUPIED', 'Choose a new branch for this document workspace');
+      let branch = source;
+      if (input.forkName) {
+        const name = branchName(input.forkName);
+        if (await tx.has('refs', refKey(repository.id, 'branch', name))) throw new VersionError('BRANCH_EXISTS', 'Workspace branch already exists');
+        branch = { ...source, name, generation: newBranchGeneration(), revision: 1 };
+        await tx.put('refs', toRefRow(branch));
+        await logRecovery(tx, 'branch-created', null, branch);
+      }
+      const mergeTarget = input.mergeTarget === undefined ? { name: source.name, generation: source.generation } : input.mergeTarget;
+      if (mergeTarget) {
+        const target = await tx.get('refs', refKey(repository.id, 'branch', mergeTarget.name));
+        if (!target || target.kind !== 'branch' || (fromRefRow(target) as BranchRef).generation !== mergeTarget.generation) stale('The merge destination was replaced');
+      }
+      const commit = await tx.get('commits', branch.target);
+      assertCommitInRepository(commit, repository.id);
+      const now = Date.now();
+      const worktree: VersionWorktree = {
+        id, documentId: input.documentId, repositoryId: repository.id,
+        branch: branch.name, branchGeneration: branch.generation, primary: false,
+        fileName: input.fileName, sourceFormat: input.sourceFormat,
+        baseCommitId: branch.target, blobId: commit!.blobId, savedFingerprint: contentFingerprint(input.savedFingerprint ?? commit!.contentFingerprint),
+        mergeTarget, revision: 1, createdAt: now, updatedAt: now,
+      };
+      await tx.put('worktrees', worktree);
+      if (input.forkName) await tx.put('repositories', nextRepositoryRevision(repository));
+      return worktree;
+    }));
+  }
+
+  async saveWorktree(input: SaveWorktreeInput): Promise<VersionWorktree> {
+    const bytes = input.bytes === undefined ? undefined : new Uint8Array(input.bytes);
+    const blobId = bytes === undefined ? undefined : hashBytes(bytes);
+    return this.#serialize(`worktree:${input.id}`, () => this.#transaction('readwrite', async (tx) => {
+      const current = await tx.get('worktrees', input.id);
+      if (!current) missing('WORKTREE_NOT_FOUND', 'Document workspace was not found');
+      assertWorktreeRevision(current, input.expectedRevision, input.expectedDocumentId);
+      await worktreeBranch(tx, current);
+      if (input.baseCommitId !== undefined) assertCommitInRepository(await tx.get('commits', input.baseCommitId), current.repositoryId);
+      if (blobId && bytes && !await tx.has('blobs', blobId)) await tx.put('blobs', { id: blobId, bytes, byteLength: bytes.byteLength });
+      const updated: VersionWorktree = {
+        ...current,
+        baseCommitId: input.baseCommitId ?? current.baseCommitId,
+        blobId: blobId ?? current.blobId,
+        savedFingerprint: input.savedFingerprint === undefined ? current.savedFingerprint : contentFingerprint(input.savedFingerprint),
+        fileName: input.fileName ?? current.fileName,
+        sourceFormat: input.sourceFormat ?? current.sourceFormat,
+        revision: current.revision + 1,
+        updatedAt: Date.now(),
+      };
+      if (current.blobId === updated.blobId && current.baseCommitId === updated.baseCommitId
+        && current.savedFingerprint === updated.savedFingerprint && current.fileName === updated.fileName
+        && current.sourceFormat === updated.sourceFormat) return current;
+      await tx.put('worktrees', updated);
+      if (current.blobId !== updated.blobId && !await tx.isBlobReferenced(current.blobId)) await tx.delete('blobs', current.blobId);
+      return updated;
+    }));
+  }
+
+  async switchWorktreeBranch(input: SwitchWorktreeBranchInput): Promise<VersionWorktree> {
+    return this.#serialize(`worktree:${input.id}`, () => this.#transaction('readwrite', async (tx) => {
+      const current = await tx.get('worktrees', input.id);
+      if (!current) missing('WORKTREE_NOT_FOUND', 'Document workspace was not found');
+      assertWorktreeRevision(current, input.expectedRevision, input.expectedDocumentId);
+      await worktreeBranch(tx, current);
+      const repository = await tx.get('repositories', current.repositoryId);
+      if (!repository) missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
+      assertRepositoryRevision(repository, input.expectedRepositoryRevision);
+      const row = await tx.get('refs', refKey(repository.id, 'branch', input.branch));
+      if (!row || row.kind !== 'branch') missing('REF_NOT_FOUND', 'Workspace branch was not found');
+      const branch = fromRefRow(row) as BranchRef;
+      assertRefRevision(branch, input.expectedBranchRevision);
+      await assertBranchUnoccupied(tx, repository.id, branch.name, current.id);
+      const commit = await tx.get('commits', branch.target);
+      assertCommitInRepository(commit, repository.id);
+      const updated: VersionWorktree = { ...current, branch: branch.name, branchGeneration: branch.generation,
+        baseCommitId: branch.target, blobId: commit!.blobId, revision: current.revision + 1, updatedAt: Date.now() };
+      await tx.put('worktrees', updated);
+      if (current.blobId !== updated.blobId && !await tx.isBlobReferenced(current.blobId)) await tx.delete('blobs', current.blobId);
+      return updated;
+    }));
+  }
+
+  async deleteWorktree(input: { id: string; expectedRevision: number; expectedDocumentId?: DocumentId }): Promise<void> {
+    await this.#serialize(`worktree:${input.id}`, () => this.#transaction('readwrite', async (tx) => {
+      const current = await tx.get('worktrees', input.id);
+      if (!current) missing('WORKTREE_NOT_FOUND', 'Document workspace was not found');
+      assertWorktreeRevision(current, input.expectedRevision, input.expectedDocumentId);
+      if (current.primary) throw new VersionError('PRIMARY_WORKTREE', 'The primary document workspace cannot be removed');
+      const repository = await tx.get('repositories', current.repositoryId);
+      if (!repository) missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
+      await tx.delete('worktrees', current.id);
+      if (!await tx.isBlobReferenced(current.blobId)) await tx.delete('blobs', current.blobId);
+    }));
   }
 
   async createRepository(input: CreateRepositoryInput): Promise<{
@@ -1591,6 +1896,11 @@ export class VersionGraphStore {
         stale('The branch head changed');
       }
 
+      const worktree = input.worktreeId ? await tx.get('worktrees', input.worktreeId) : undefined;
+      if (input.worktreeId) {
+        if (!worktree || worktree.repositoryId !== repository.id || worktree.branchGeneration !== branch.generation) stale('The checkpoint workspace changed');
+        if (input.expectedWorktreeRevision !== undefined) assertWorktreeRevision(worktree, input.expectedWorktreeRevision);
+      }
       const parents: CommitParents = input.parents ?? [branch.target];
       if (parents[0] !== branch.target) stale('The first parent must be the current branch head');
       if (parents.length === 2 && parents[0] === parents[1]) {
@@ -1639,7 +1949,7 @@ export class VersionGraphStore {
       };
       const updatedRepository = nextRepositoryRevision(repository, {
         nextOrdinal: repository.nextOrdinal + 1,
-        lastSavedFingerprint: input.lastSavedFingerprint ?? repository.lastSavedFingerprint,
+        lastSavedFingerprint: input.worktreeId ? repository.lastSavedFingerprint : input.lastSavedFingerprint ?? repository.lastSavedFingerprint,
       });
       const updatedBranch: BranchRef = {
         ...branch,
@@ -1648,6 +1958,12 @@ export class VersionGraphStore {
       };
 
       if (!await tx.has('blobs', payload.blob.id)) await tx.put('blobs', payload.blob);
+      if (worktree) {
+        await tx.put('worktrees', { ...worktree, baseCommitId: commit.id, blobId: payload.blob.id,
+          savedFingerprint: input.lastSavedFingerprint ?? worktree.savedFingerprint,
+          revision: worktree.revision + 1, updatedAt: Date.now() });
+        if (worktree.blobId !== payload.blob.id && !await tx.isBlobReferenced(worktree.blobId)) await tx.delete('blobs', worktree.blobId);
+      }
       if (!await tx.has('compareSnapshots', payload.compareSnapshot.id)) {
         await tx.put('compareSnapshots', payload.compareSnapshot);
       }
@@ -1956,7 +2272,9 @@ export class VersionGraphStore {
       const shelfTruncated = shelfRows.length > maxShelves;
       const shelves = shelfTruncated ? shelfRows.slice(0, maxShelves) : shelfRows;
       const drafts = await tx.listMergeDrafts(id);
+      const worktrees = await tx.listWorktrees(id);
       const blobIds = new Set([
+        ...worktrees.map((worktree) => worktree.blobId),
         ...commits.map((commit) => commit.blobId),
         ...shelves.map((shelf) => shelf.blobId),
         ...drafts.flatMap((draft) => draft.manualAssetBlobIds),
@@ -2162,6 +2480,7 @@ export class VersionGraphStore {
       await tx.put('refs', toRefRow(updatedBranch));
       await logRecovery(tx, 'head-moved', targetBranch, updatedBranch);
       if (input.deleteSource) {
+        await assertBranchUnoccupied(tx, input.repositoryId, input.sourceBranch);
         await tx.delete('refs', sourceKey);
         await logRecovery(tx, 'branch-deleted', sourceBranch, null);
       }
@@ -2211,6 +2530,7 @@ export class VersionGraphStore {
         stale('Stash source changed before it could be applied');
       }
       if (draft.shelfApply.remove) await tx.delete('shelves', shelf.id);
+      await assertBranchUnoccupied(tx, repository.id, source.name);
       await tx.delete('refs', sourceKey);
       await logRecovery(tx, 'branch-deleted', source, null);
       await deleteMergeDrafts(tx, repository.id, (item) => draftNamesBranch(item, source.name));
@@ -2324,6 +2644,7 @@ export class VersionGraphStore {
       await tx.put('refs', toRefRow(updatedBranch));
       await logRecovery(tx, 'head-moved', targetBranch, updatedBranch);
       if (input.deleteSource) {
+        await assertBranchUnoccupied(tx, input.repositoryId, input.sourceBranch);
         await tx.delete('refs', sourceKey);
         await logRecovery(tx, 'branch-deleted', sourceBranch, null);
       }
@@ -2412,6 +2733,7 @@ export class VersionGraphStore {
       if (targetBranch.target !== currentTarget.target) await logRecovery(tx, 'head-moved', currentTarget, targetBranch);
       if (sourceBranch) await tx.put('refs', toRefRow(sourceBranch));
       else {
+        await assertBranchUnoccupied(tx, input.repositoryId, input.sourceBranch);
         await tx.delete('refs', sourceKey);
         if (currentSource) await logRecovery(tx, 'branch-deleted', currentSource, null);
         await deleteMergeDrafts(tx, input.repositoryId, (draft) => draftNamesBranch(draft, input.sourceBranch));
@@ -2474,6 +2796,18 @@ export class VersionGraphStore {
       const updatedRepository = nextRepositoryRevision(repository, isDefaultBranch(repository, current.name)
         ? { defaultBranch: name }
         : {});
+      for (const worktree of await tx.listWorktrees(repository.id)) {
+        if (worktree.repositoryId !== repository.id) continue;
+        const bound = worktree.branchGeneration === current.generation;
+        const target = worktree.mergeTarget?.generation === current.generation;
+        if (bound || target) await tx.put('worktrees', {
+          ...worktree,
+          ...(bound ? { branch: name } : {}),
+          ...(target ? { mergeTarget: { name, generation: current.generation } } : {}),
+          revision: worktree.revision + 1,
+          updatedAt: Date.now(),
+        });
+      }
       await tx.delete('refs', oldKey);
       await tx.put('refs', toRefRow(branch));
       await tx.put('repositories', updatedRepository);
@@ -2502,6 +2836,7 @@ export class VersionGraphStore {
       if (refs.filter((ref) => ref.kind === 'branch').length <= 1) {
         throw new VersionError('LAST_BRANCH', 'The final branch cannot be deleted');
       }
+      await assertBranchUnoccupied(tx, input.repositoryId, input.branch);
       await tx.delete('refs', key);
       await logRecovery(tx, 'branch-deleted', fromRefRow(row), null);
       await deleteMergeDrafts(tx, input.repositoryId, (draft) => draftNamesBranch(draft, input.branch));
@@ -2574,6 +2909,7 @@ export class VersionGraphStore {
       const reachable = new Set<CommitId>();
       const seenManifests = new Set<string>();
       const frontier = [
+        ...(await tx.listWorktrees(repositoryId)).map((row) => row.baseCommitId),
         ...refs.map((ref) => ref.target),
         ...repositoryShelves.map((shelf) => shelf.baseCommitId),
         ...repositoryDrafts.flatMap((draft) => [

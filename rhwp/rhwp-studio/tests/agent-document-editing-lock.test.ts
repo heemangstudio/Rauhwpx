@@ -33,7 +33,7 @@ after(async () => {
   await vite?.close();
 });
 
-test('agent editing lock blocks mutations but leaves view and copy commands available', () => {
+test('agent editing lock blocks mutations but leaves view, copy and other-document commands available', () => {
   const executed: string[] = [];
   const definitions = new Map(['edit:copy', 'view:zoom-in', 'format:bold', 'insert:table', 'file:open', 'edit:select-all', 'edit:find'].map((id) => [
     id,
@@ -49,10 +49,11 @@ test('agent editing lock blocks mutations but leaves view and copy commands avai
   assert.equal(dispatcher.dispatch('view:zoom-in'), true);
   assert.equal(dispatcher.dispatch('format:bold'), false);
   assert.equal(dispatcher.dispatch('insert:table'), false);
-  assert.equal(dispatcher.dispatch('file:open'), false);
+  // 다른 문서는 따로 열리므로 에이전트가 잡은 문서를 건드리지 않는다.
+  assert.equal(dispatcher.dispatch('file:open'), true);
   assert.equal(dispatcher.dispatch('edit:select-all'), false);
   assert.equal(dispatcher.dispatch('edit:find'), false);
-  assert.deepEqual(executed, ['edit:copy', 'view:zoom-in']);
+  assert.deepEqual(executed, ['edit:copy', 'view:zoom-in', 'file:open']);
 });
 
 test('the derived lease stays active while a turn or tool call runs', () => {

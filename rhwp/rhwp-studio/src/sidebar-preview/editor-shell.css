@@ -23,6 +23,19 @@
 .editor-fixture-page h2 { margin: 48px 0 32px; text-align: center; font-size: 25px; }
 .editor-fixture-page h3 { margin: 42px 0 12px; font-size: 18px; }
 .editor-fixture-page p { margin: 0 0 20px; }
+.editor-fixture-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 72px;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px dashed #b8b8b8;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
 @media (max-width: 720px) {
   .preview-editor #scroll-container { padding: 18px 12px 40px; }
   .editor-fixture-page { min-height: 760px; padding: 38px 32px; }

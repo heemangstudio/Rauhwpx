@@ -14,6 +14,7 @@ import {
   CodexJsonRpcConnection,
   buildCodexAppServerArgv,
 } from '../agents/codex-app-server.mjs';
+import { systemBriefFor } from '../agents/backend.mjs';
 import { createCodexSession } from '../agents/codex.mjs';
 
 class FakeStream extends EventEmitter {
@@ -153,6 +154,7 @@ function harness(t, {
   requestUserInput = async () => ({ status: 'cancelled', reason: 'user-stop' }),
   terminateProcess = (process) => process.kill('SIGTERM'),
   extraOpts = {},
+  idleReleaseMs,
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-codex-app-server-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -172,6 +174,7 @@ function harness(t, {
     capabilityEpoch: 1,
     agentRole: 'chat',
     requestUserInput,
+    idleReleaseMs,
     onEvent: (event) => events.push(event),
     ...extraOpts,
   };
@@ -331,7 +334,7 @@ test('direct mode negotiates native input and answers the original app-server re
   assert.deepEqual(turn.params.collaborationMode.settings, {
     model: 'test-model',
     reasoning_effort: 'high',
-    developer_instructions: null,
+    developer_instructions: systemBriefFor(h.opts, 'codex'),
   });
   assert.equal(turn.params.input[0].text, 'Build it');
   assert.equal(h.session.getSessionId(), 'thread-native');
@@ -621,7 +624,7 @@ test('planning mode remains native without the default-mode feature', async (t) 
   assert.deepEqual(turn.params.collaborationMode.settings, {
     model: 'test-model',
     reasoning_effort: 'high',
-    developer_instructions: null,
+    developer_instructions: systemBriefFor(h.opts, 'codex'),
   });
   assert.equal(h.spawns[0].process.frames.some((frame) => frame.method === 'collaborationMode/list'), true);
   assert.equal(h.spawns[0].process.frames.some((frame) => frame.method === 'experimentalFeature/enablement/set'), false);
@@ -859,6 +862,33 @@ test('Stop while the thread is resuming settles the turn exactly once', async (t
   await h.session.dispose();
 });
 
+test('a resumed chat receives the current editing instructions after switching to full access', async (t) => {
+  const h = harness(t, { workflow: 'question', phase: 'questioning' });
+  h.session.sendUserMessage('Discuss an edit');
+  await settle();
+  const first = h.spawns[0].process;
+  const firstTurn = first.frames.find((frame) => frame.method === 'turn/start');
+  assert.match(firstTurn.params.collaborationMode.settings.developer_instructions, /You are in 채팅/);
+  first.send({ method: 'turn/completed', params: {
+    threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' },
+  } });
+  await settle();
+  await h.session.setPermissionProfile('unrestricted');
+  await h.session.setExecutionMode({ workflow: 'direct', phase: 'implementing', capabilityEpoch: 2 });
+  h.session.sendUserMessage('Apply the edit');
+  await settle(24);
+  const resumed = h.spawns.at(-1).process;
+  assert.ok(resumed.frames.some((frame) => frame.method === 'thread/resume'));
+  const turn = resumed.frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(turn.params.threadId, 'thread-native');
+  assert.equal(turn.params.sandboxPolicy.type, 'dangerFullAccess');
+  assert.match(turn.params.collaborationMode.settings.developer_instructions, /You are in 전체/);
+  assert.doesNotMatch(turn.params.collaborationMode.settings.developer_instructions, /You are in 채팅/);
+  h.session.interrupt();
+  await settle();
+  await h.session.dispose();
+});
+
 test('mode changes restart app-server while idle, resume the thread, and select plan mode', async (t) => {
   const h = harness(t);
   h.session.sendUserMessage('First');
@@ -1012,6 +1042,73 @@ test('a Plan permission change re-proves native Plan before resolving', async (t
   assert.ok(readinessMethods.includes('collaborationMode/list'));
   assert.ok(readinessMethods.includes('thread/resume'));
   assert.equal(readinessMethods.includes('turn/start'), false);
+  await h.session.dispose();
+});
+
+test('an idle Plan readiness app-server is released and the next turn resumes its thread', async (t) => {
+  const h = harness(t, { workflow: 'plan', phase: 'planning', idleReleaseMs: 30 });
+  h.session.sendUserMessage('First plan turn');
+  await settle();
+  h.spawns[0].process.send({
+    method: 'turn/completed',
+    params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } },
+  });
+  await settle();
+  await h.session.setPermissionProfile('unrestricted');
+  const warm = h.spawns[1].process;
+  assert.equal(warm.signalCode, null);
+  const eventsBeforeRelease = h.events.length;
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await settle();
+  assert.equal(warm.signalCode, 'SIGTERM', 'idle readiness process is stopped');
+  assert.equal(h.events.length, eventsBeforeRelease, 'release is silent to the hub');
+  assert.equal(h.session.getSessionId(), 'thread-native');
+
+  h.session.sendUserMessage('Plan next');
+  await settle(24);
+  assert.equal(h.spawns.length, 3);
+  const methods = h.spawns[2].process.frames.map((frame) => frame.method);
+  assert.ok(methods.includes('thread/resume'));
+  assert.equal(methods.includes('thread/start'), false);
+  const turn = h.spawns[2].process.frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(turn.params.threadId, 'thread-native');
+  assert.equal(turn.params.collaborationMode.mode, 'plan');
+  assert.equal(turn.params.sandboxPolicy.type, 'readOnly');
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await settle();
+  assert.equal(h.spawns[2].process.signalCode, null, 'an open turn is never released');
+  h.session.interrupt();
+  await settle();
+  await h.session.dispose();
+});
+
+test('a message racing an idle release still starts its turn', async (t) => {
+  const h = harness(t, {
+    workflow: 'plan',
+    phase: 'planning',
+    idleReleaseMs: 20,
+    terminateProcess: (process) => new Promise((resolve) => {
+      setTimeout(() => resolve(process.kill('SIGTERM')), 40);
+    }),
+  });
+  await h.session.setExecutionMode({ workflow: 'plan', phase: 'planning', capabilityEpoch: 2 });
+  assert.equal(h.spawns.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  h.session.sendUserMessage('Arrives during release');
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await settle(24);
+  assert.equal(h.spawns[0].process.signalCode, 'SIGTERM');
+  assert.equal(h.spawns.length, 2);
+  const methods = h.spawns[1].process.frames.map((frame) => frame.method);
+  assert.ok(methods.includes('thread/start'), 'a readiness thread without turns has no rollout to resume');
+  assert.equal(methods.includes('thread/resume'), false);
+  const turn = h.spawns[1].process.frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(turn?.params.input[0].text, 'Arrives during release');
+  assert.equal(h.events.filter((event) => event.type === 'turn-start').length, 1);
+  h.session.interrupt();
+  await settle();
   await h.session.dispose();
 });
 

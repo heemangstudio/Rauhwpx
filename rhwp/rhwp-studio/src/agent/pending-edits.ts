@@ -1,12 +1,10 @@
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import type { EventBus } from '../core/event-bus.ts';
-import type { InputHandler } from '../engine/input-handler.ts';
-import type { CanvasView } from '../view/canvas-view.ts';
 import type { DocumentPosition, CharProperties, CharShapeRun, SelectionRect } from '../core/types.ts';
 import { replacementCharShapes } from './replacement-format.ts';
 import { PreparedSnapshotCommand } from '../engine/prepared-snapshot-command.ts';
 import type {
-  AgentName, CellAddr, CharFormatProps, DocPoint, DocRange, EngineBatchSpan,
+  AgentEditorHost, AgentName, CellAddr, CharFormatProps, DocPoint, DocRange, EngineBatchSpan,
   ObjectAnchor, ObjectOp, ParagraphCaptureRef, PendingAppliedAt, PendingChangeSet,
   PendingDrop, PendingDropCause, PendingEditsChangeEvent, PendingOp,
 } from './types.ts';
@@ -17,8 +15,11 @@ import type { AgentTextInsertedEvent } from './agent-edit-follow.ts';
 export interface PendingEditDeps {
   wasm: WasmBridge;
   eventBus: EventBus;
-  inputHandler: InputHandler;
-  canvasView: CanvasView;
+  /**
+   * 승인 기록·커서·스냅샷 예산을 맡는 편집기. 브리지는 화면 편집기와 헤드리스 호스트 사이를
+   * 오가는 전달자를 넘기므로, 매번 this.deps.editor 로 읽어야 전환이 반영된다.
+   */
+  editor: AgentEditorHost;
   overlay: PendingOverlayRenderer;
   /** 문서 내용이 그대로인 작업을 감싼다 — run 이 true 를 돌려주면 그 동안의 revision bump 를 내용 불변으로 기록한다. */
   contentNeutral?: (run: () => boolean) => boolean;
@@ -595,9 +596,9 @@ export class PendingEditManager {
     // undo 기준(before)이 역연산 폴백으로 서식을 잃지 않게 하기 위해서다.
     let snapshotId: number | null = null;
     if (retainSnapshot || !this.inAtomicBatch) {
-      this.deps.inputHandler.prepareSnapshotCapacity?.(1);
+      this.deps.editor.prepareSnapshotCapacity?.(1);
       snapshotId = wasm.saveSnapshot();
-      this.deps.inputHandler.retainExternalSnapshot?.();
+      this.deps.editor.retainExternalSnapshot?.();
     }
     let deleteShifted = false;
     try {
@@ -631,7 +632,7 @@ export class PendingEditManager {
       if (!retainSnapshot && snapshotId !== null) {
         // 벌크 경로: 에러 롤백용 스냅샷은 성공 즉시 반환한다 — 되돌림은 역연산 폴백.
         wasm.discardSnapshot(snapshotId);
-        this.deps.inputHandler.releaseExternalSnapshot?.();
+        this.deps.editor.releaseExternalSnapshot?.();
       }
       const op: PendingOp = {
         kind: 'replace', id: this.nextId('op'), agent: set.agent,
@@ -663,7 +664,7 @@ export class PendingEditManager {
       if (snapshotId !== null) {
         try { wasm.restoreSnapshot(snapshotId); } catch { /* best effort */ }
         wasm.discardSnapshot(snapshotId);
-        this.deps.inputHandler.releaseExternalSnapshot?.();
+        this.deps.editor.releaseExternalSnapshot?.();
         // 삭제 shift 는 이미 다른 op 들에 반영됐을 수 있다 — 원본이 다시 나타났으므로
         // 재삽입과 동치인 shift 로 되돌린다.
         if (deleteShifted) {
@@ -780,9 +781,9 @@ export class PendingEditManager {
     if (obj.type === 'insertImage' || obj.type === 'insertEquation'
       || (obj.type === 'editObject' && obj.zOrder !== undefined)
       || (paraCapture === null && this.revertsByParagraph(obj))) {
-      this.deps.inputHandler.prepareSnapshotCapacity?.(1);
+      this.deps.editor.prepareSnapshotCapacity?.(1);
       snapshotId = wasm.saveSnapshot();
-      this.deps.inputHandler.retainExternalSnapshot?.();
+      this.deps.editor.retainExternalSnapshot?.();
     }
     const dimsBefore = this.tableDims(obj);
     // 구조 op 은 flat cellIdx 를 다시 매긴다 — 이 표 셀을 가리키는 앞선 pending op 이
@@ -819,7 +820,7 @@ export class PendingEditManager {
       } catch { /* best effort */ } finally {
         if (snapshotId !== null) {
           wasm.discardSnapshot(snapshotId);
-          this.deps.inputHandler.releaseExternalSnapshot?.();
+          this.deps.editor.releaseExternalSnapshot?.();
         }
         if (paraCapture) wasm.discardParagraphCapture(paraCapture.id);
       }
@@ -864,16 +865,16 @@ export class PendingEditManager {
       );
     }
     const wasm = this.deps.wasm;
-    this.deps.inputHandler.prepareSnapshotCapacity?.(1);
+    this.deps.editor.prepareSnapshotCapacity?.(1);
     const snapshotId = wasm.saveSnapshot();
-    this.deps.inputHandler.retainExternalSnapshot?.();
+    this.deps.editor.retainExternalSnapshot?.();
     let rawReport: { warnings?: string[]; skippedFeatures?: string[]; affectedSections?: number[] } | void;
     try {
       rawReport = operation();
     } catch (error) {
       try { wasm.restoreSnapshot(snapshotId); } catch { /* best effort */ }
       wasm.discardSnapshot(snapshotId);
-      this.deps.inputHandler.releaseExternalSnapshot?.();
+      this.deps.editor.releaseExternalSnapshot?.();
       throw error;
     }
     const report = {
@@ -906,9 +907,9 @@ export class PendingEditManager {
   addEngineBatch<T>(agent: AgentName, methods: string[], run: () => T): { changeSetId: string; result: T; touched: EngineBatchSpan[] } {
     const wasm = this.deps.wasm;
     const digestsBefore = this.bodyDigests();
-    this.deps.inputHandler.prepareSnapshotCapacity?.(1);
+    this.deps.editor.prepareSnapshotCapacity?.(1);
     const snapshotId = wasm.saveSnapshot();
-    this.deps.inputHandler.retainExternalSnapshot?.();
+    this.deps.editor.retainExternalSnapshot?.();
     let result: T;
     try {
       result = run();
@@ -916,7 +917,7 @@ export class PendingEditManager {
     } catch (error) {
       try { wasm.restoreSnapshot(snapshotId); } catch { /* best effort */ }
       wasm.discardSnapshot(snapshotId);
-      this.deps.inputHandler.releaseExternalSnapshot?.();
+      this.deps.editor.releaseExternalSnapshot?.();
       this.reconcilePreviewLayout();
       throw error;
     }
@@ -1001,9 +1002,9 @@ export class PendingEditManager {
     const pendingState = this.capturePendingState();
     const setIdsBefore = new Set(this.sets.map((s) => s.id));
     const openBefore = this.open;
-    this.deps.inputHandler.prepareSnapshotCapacity?.(1);
+    this.deps.editor.prepareSnapshotCapacity?.(1);
     const snapId = wasm.saveSnapshot();
-    this.deps.inputHandler.retainExternalSnapshot?.();
+    this.deps.editor.retainExternalSnapshot?.();
     const wasAtomic = this.inAtomicBatch;
     const textInsertedBefore = this.bulkTextInserted.length;
     this.inAtomicBatch = true;
@@ -1034,7 +1035,7 @@ export class PendingEditManager {
       throw err;
     } finally {
       wasm.discardSnapshot(snapId);
-      this.deps.inputHandler.releaseExternalSnapshot?.();
+      this.deps.editor.releaseExternalSnapshot?.();
       this.inAtomicBatch = wasAtomic;
       this.endBulk();
     }
@@ -1175,7 +1176,7 @@ export class PendingEditManager {
     const keepPreviewsOf = kept.length > 0 ? dropped : [];
 
     const wasm = this.deps.wasm;
-    const cursor = this.deps.inputHandler.getCursorPosition();
+    const cursor = this.deps.editor.getCursorPosition();
     const previewState = this.capturePendingState();
     let previewId: number | null = null;
     let beforeId: number | null = null;
@@ -1184,19 +1185,19 @@ export class PendingEditManager {
     let heldExternal = 0;
     const retainExternal = (): void => {
       heldExternal++;
-      this.deps.inputHandler.retainExternalSnapshot?.();
+      this.deps.editor.retainExternalSnapshot?.();
     };
     const releaseExternal = (n = 1): void => {
       const count = Math.min(n, heldExternal);
       heldExternal -= count;
-      for (let i = 0; i < count; i++) this.deps.inputHandler.releaseExternalSnapshot?.();
+      for (let i = 0; i < count; i++) this.deps.editor.releaseExternalSnapshot?.();
     };
     let command: PreparedSnapshotCommand | null = null;
 
     try {
       // preview + before + after 세 id가 잠시 공존한다. 오래된 history snapshot을
       // 선제 정리해 WASM 저장소의 무통보 축출을 막는다.
-      this.deps.inputHandler.prepareSnapshotCapacity?.(3);
+      this.deps.editor.prepareSnapshotCapacity?.(3);
       // before 캡처를 위해 잠시 되돌리되, 즉시 원본 스냅샷을 복원한다. 텍스트를
       // 삭제 후 재삽입하지 않으므로 줄/문단/혼합 글자 서식이 미리보기와 동일하다.
       previewId = wasm.saveSnapshot();
@@ -1220,7 +1221,7 @@ export class PendingEditManager {
       this.settledSetSeq++;
       wasm.discardSnapshot(previewId);
       previewId = null;
-      this.deps.inputHandler.executeOperation({
+      this.deps.editor.executeOperation({
         kind: 'record',
         command,
         // 승인은 이미 보이는 미리보기를 채택하는 것 — 사용자가 보고 있는
@@ -1447,7 +1448,7 @@ export class PendingEditManager {
         if ((op.kind === 'object' || op.kind === 'insert') && op.paraCapture) op.paraCapture = null;
         if ((op.kind !== 'replace' && op.kind !== 'template' && op.kind !== 'object') || op.snapshotId == null) continue;
         op.snapshotId = null;
-        this.deps.inputHandler.releaseExternalSnapshot?.();
+        this.deps.editor.releaseExternalSnapshot?.();
       }
     }
     this.sets = this.sets.filter((set) => set.ops.length === 0);
@@ -1509,8 +1510,22 @@ export class PendingEditManager {
       if ((op.kind !== 'replace' && op.kind !== 'template' && op.kind !== 'object') || op.snapshotId == null) continue;
       try { this.deps.wasm.discardSnapshot(op.snapshotId); } catch { /* best effort */ }
       op.snapshotId = null;
-      this.deps.inputHandler.releaseExternalSnapshot?.();
+      this.deps.editor.releaseExternalSnapshot?.();
     }
+  }
+
+  /**
+   * 템플릿 잠금 상태를 변화 없이도 다시 알린다. 문서가 화면에 다시 붙으면 편집기는 그동안
+   * 다른 문서의 잠금 상태를 들고 있으므로, 이 문서의 상태로 맞춰야 한다.
+   */
+  /** 검토를 기다리는 템플릿 교체가 있어 편집기를 잠가야 하는지 */
+  isTemplateLocked(): boolean {
+    return this.hasTemplateMutation();
+  }
+
+  republishTemplateLock(): void {
+    this.templateLocked = this.hasTemplateMutation();
+    this.deps.eventBus.emit('agent-template-lock-changed', this.templateLocked);
   }
 
   private syncTemplateLock(): void {

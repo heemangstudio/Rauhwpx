@@ -58,6 +58,7 @@ import { CaretLayoutReveal } from './caret-layout-reveal';
 import { emitHeaderFooterModeChanged } from './header-footer-mode';
 import { clearObjectEditingPage } from './object-selection-page';
 import { showInitialCaretAndPublishFocus } from './initial-caret-focus';
+import { clampCaretPosition, withoutHitRect } from './caret-position-clamp';
 import {
   editableTargetFromPosition,
   positionsShareEditableContainer,
@@ -273,6 +274,15 @@ function createOverlayLabel(x: number, y: number, text: string): HTMLDivElement 
     'border-radius:3px;white-space:nowrap;pointer-events:none';
   label.textContent = text;
   return label;
+}
+
+/**
+ * 한 문서에 묶인 편집 상태. 편집기가 다른 문서로 옮겨 가도 이 문서의 히스토리(스냅샷 id 는
+ * 그 문서의 WASM 저장소에 있다)와 캐럿을 들고 있다가 다시 붙을 때 돌려준다.
+ */
+export interface EditorDocumentState {
+  history: CommandHistory;
+  cursor: DocumentPosition | null;
 }
 
 /** 클릭 커서 배치 + 키보드 입력을 처리한다 */
@@ -585,12 +595,14 @@ export class InputHandler {
     private eventBus: EventBus,
     private virtualScroll: VirtualScroll,
     private viewportManager: ViewportManager,
+    /** 처음 붙는 문서의 히스토리 — 문서 세션이 같은 객체를 들고 있게 한다 (없으면 새로 만든다). */
+    initialHistory?: CommandHistory,
   ) {
     this.cursor = new CursorState(wasm);
     this.caret = new CaretRenderer(container, virtualScroll);
     this.fieldMarker = new FieldMarkerRenderer(container, virtualScroll);
     this.selectionRenderer = new SelectionRenderer(container, virtualScroll);
-    this.history = new CommandHistory();
+    this.history = initialHistory ?? new CommandHistory();
     this.deferredPaginationRunner = new DeferredPaginationRunner(
       wasm,
       (result) => this.completeResumablePagination(result.pageCount),
@@ -3302,6 +3314,23 @@ export class InputHandler {
     );
   }
 
+  /**
+   * 에이전트 턴 체크포인트(엔진 스냅샷)로 문서 전체를 되돌린다 — 실행 취소 한 단계.
+   * 체크포인트 id 는 그대로 남아 다시 쓸 수 있다 (이 단계는 자기 before/after 를 따로 저장한다).
+   */
+  restoreDocumentSnapshot(snapshotId: number): void {
+    this.finalizeCompositionBeforeCursorMove();
+    this.flushDeferredPaginationIfNeeded('before-turn-restore', false);
+    // executeAppliedSnapshot 은 살아 있는 id + 2 가 98 예산 안이어야 한다. prepare 는 100 기준이라
+    // 버전 복원과 같이 4 를 비운다.
+    this.prepareSnapshotCapacity(4);
+    this.executeAppliedSnapshot('agent:restore_turn', (wasm) => {
+      wasm.restoreSnapshot(snapshotId);
+      this.clearTableResizeRuntimeCache();
+      this.resetDerivedStateAfterHistoryJump();
+    });
+  }
+
   /** 승인처럼 여러 임시 스냅샷이 필요한 외부 편집기의 저장소 여유를 확보한다. */
   prepareSnapshotCapacity(additionalIds: number): void {
     this.history.prepareSnapshotCapacity(this.wasm, additionalIds);
@@ -4415,10 +4444,15 @@ export class InputHandler {
     }
   }
 
-  /** 문서 로딩 후 저장된 캐럿 위치에 캐럿을 배치한다 */
-  activateWithCaretPosition(): void {
+  /**
+   * 문서 로딩 후 캐럿을 배치하고 편집을 시작한다. position 을 주면(다시 붙인 문서의 저장된
+   * 캐럿) 지금 문서 범위로 맞춘 그 자리에, 주지 않으면 문서 파일에 저장된 캐럿 위치에 둔다.
+   */
+  activateWithCaretPosition(position?: DocumentPosition | null): void {
     try {
-      const savedPos = this.wasm.getCaretPosition();
+      const savedPos = position
+        ? clampCaretPosition(this.wasm, position)
+        : this.wasm.getCaretPosition();
       if (savedPos) {
         this.cursor.moveTo(savedPos);
       } else {
@@ -4463,6 +4497,97 @@ export class InputHandler {
 
   deactivate(): void {
     this.flushDeferredPaginationIfNeeded('before-deactivate', false);
+    // 머리말/꼬리말·각주 모드는 커서에 남아 다음 문서의 캐럿 조회까지 그 모드로 묻는다.
+    this.exitDocumentSubmodes();
+    this.releaseDocumentView();
+    this.history.clear(this.wasm);
+  }
+
+  /**
+   * 화면의 문서를 내리고 그 문서의 히스토리와 캐럿을 넘겨준다. deactivate() 처럼 캐럿·선택·IME·
+   * 지연 조판을 걷어내지만 히스토리는 비우지 않는다 — 스냅샷은 그 문서의 WASM 저장소에 남는다.
+   *
+   * wasm 퍼사드를 다른 문서로 돌리기 전에 불러야 한다. 조합 확정, 진행 중인 끌기 확정, 지연
+   * 조판 flush 를 내리는 문서에 한다. attachDocumentState() 전까지는 빈 히스토리를 들고 있어
+   * 그사이 들어온 호출이 내린 문서의 히스토리를 다른 문서에 쓰지 않는다.
+   */
+  detachDocumentState(): EditorDocumentState {
+    // 문서는 계속 살아 있으므로 조합 중인 글자는 버리지 않고 확정한다 (입력 블러와 같은 경로).
+    if (this.isComposing) _text.onCompositionEnd.call(this);
+    this.resetIosInputSession();
+    this.finishPointerInteractions();
+    this.stopPointerFrames();
+    this.flushDeferredPaginationIfNeeded('before-detach', false);
+    this.exitDocumentSubmodes();
+    const caret = this.lockedUserSelection?.cursor ?? this.cursor.getPosition();
+    this.releaseDocumentView();
+    this.clearDocumentLocalState();
+    const history = this.history;
+    this.history = new CommandHistory();
+    this.cursor = new CursorState(this.wasm);
+    return { history, cursor: withoutHitRect(caret) };
+  }
+
+  /**
+   * 다른 문서의 히스토리를 들이고 문서별 파생 상태를 새로 시작한다. state 가 null 이면 새
+   * 히스토리로 시작한다. wasm 퍼사드를 그 문서로 돌린 뒤 부르고, 이어서
+   * activateWithCaretPosition(state.cursor) 로 캐럿을 놓는다. 이 메서드는 문서에 쓰지 않는다.
+   */
+  attachDocumentState(state: EditorDocumentState | null): void {
+    if (this.active) {
+      throw new Error('InputHandler: detachDocumentState() must run before attachDocumentState()');
+    }
+    this.history = state?.history ?? new CommandHistory();
+    // 떨어져 있던 동안의 히스토리 밖 변이(에이전트 스테이징 등)는 이 핸들러가 듣지 못했다.
+    // 마지막 스냅샷을 다음 명령의 before 로 공유하지 않게 버린다.
+    this.history.invalidateCurrentSnapshot();
+    this.cursor = new CursorState(this.wasm);
+    this.lockedUserSelection = null;
+    this.caretLayoutReveal.clear();
+    this.cancelDeferredPaginationFlush();
+    this.deferredPaginationRunner.cancel();
+    this.deferredPaginationPending = false;
+    this.resetInputSessionState();
+    this.clearPendingCharFormat();
+    this.clearDocumentLocalState();
+    this.caret.hide();
+    this.fieldMarker.hide();
+    this.selectionRenderer.clear();
+    this.cellSelectionRenderer?.clear();
+    this.tableObjectRenderer?.clear();
+    this.pictureObjectRenderer?.clear();
+  }
+
+  /** 머리말/꼬리말·각주 편집 모드와 블록 선택 단계를 끝내고 본문 캐럿으로 돌아간다. */
+  private exitDocumentSubmodes(): void {
+    if (this.cursor.isInHeaderFooter()) {
+      this.cursor.exitHeaderFooterMode();
+      emitHeaderFooterModeChanged(this.eventBus, this.cursor);
+    }
+    if (this.cursor.isInFootnote()) {
+      this.cursor.exitFootnoteMode();
+      this.eventBus.emit('footnoteModeChanged', false);
+    }
+    this.cursor.exitBlockSelectionMode();
+  }
+
+  /** 끌기 자동 스크롤과 hover rAF 를 멈춘다. */
+  private stopPointerFrames(): void {
+    this.stopTextSelectionDragAutoScroll();
+    if (this.dragRafId) {
+      cancelAnimationFrame(this.dragRafId);
+      this.dragRafId = 0;
+    }
+    if (this.resizeHoverRafId) {
+      cancelAnimationFrame(this.resizeHoverRafId);
+      this.resizeHoverRafId = 0;
+    }
+    this.cellSelectionDragState = null;
+    this.cellSelectionDragCandidate = null;
+  }
+
+  /** deactivate·detach 공통 — 캐럿·선택·IME·지연 조판 상태를 걷어낸다. 히스토리는 그대로 둔다. */
+  private releaseDocumentView(): void {
     this.cancelPicturePreviewDrags();
     this.active = false;
     this.lockedUserSelection = null;
@@ -4475,6 +4600,26 @@ export class InputHandler {
     // 확정하지 않는다 — 이미 교체 중인 문서에 이전 preedit 을 커밋하면 안 된다.
     // 네이티브 preedit 은 문서에 들어가 있으므로 히스토리 초기화 전에 되돌린다.
     _text.revertCompositionPreview.call(this);
+    // 되돌리기가 지연 조판을 다시 걸었으면 이 문서에서 끝낸다 — 남은 작업이 다음 문서에서 돌지 않게.
+    this.flushDeferredPaginationIfNeeded('after-composition-revert', false);
+    this.resetInputSessionState();
+    this.clearPendingCharFormat();
+    this.caret.hide();
+    this.fieldMarker.hide();
+    this.cursor.exitPictureObjectSelection();
+    this.pictureObjectRenderer?.clear();
+    this.cursor.exitTableObjectSelection();
+    this.tableObjectRenderer?.clear();
+    this.cursor.exitCellSelectionMode();
+    this.cellSelectionRenderer?.clear();
+    this.cursor.clearSelection();
+    this.selectionRenderer.clear();
+    this.eventBus.emit('picture-object-selection-changed', false);
+    this.eventBus.emit('table-object-selection-changed', false);
+  }
+
+  /** 조합·iOS 입력·textarea 버퍼 상태를 비운다. 문서에 쓰지 않는다. */
+  private resetInputSessionState(): void {
     this.resetRawTextMutationEffects();
     this.imeSession.reset();
     this.compositionAnchor = null;
@@ -4492,21 +4637,33 @@ export class InputHandler {
     this._iosLength = 0;
     this._iosPrevText = '';
     this._iosRequiresFullRefresh = false;
+    this.headerFooterSelectionComposition = false;
     this.resetTextareaBuffer();
-    this.clearPendingCharFormat();
-    this.caret.hide();
-    this.fieldMarker.hide();
-    this.cursor.exitPictureObjectSelection();
-    this.pictureObjectRenderer?.clear();
-    this.cursor.exitTableObjectSelection();
-    this.tableObjectRenderer?.clear();
-    this.cursor.exitCellSelectionMode();
-    this.cellSelectionRenderer?.clear();
-    this.cursor.clearSelection();
-    this.selectionRenderer.clear();
-    this.eventBus.emit('picture-object-selection-changed', false);
-    this.eventBus.emit('table-object-selection-changed', false);
-    this.history.clear(this.wasm);
+  }
+
+  /**
+   * 문단·표·개체 번호로 열쇠를 삼은 캐시와 문서 안 id 를 들고 있는 상태를 비운다. 다른 문서의
+   * 같은 번호에 잘못 들어맞지 않게 한다. 문서에 쓰지 않는다.
+   */
+  private clearDocumentLocalState(): void {
+    // 눈금자는 셀 상태를 바뀔 때만 받는다. 셀 열쇠를 지우기 전에 셀 밖으로 알려 둔다.
+    const leftCell = this.lastCellKey !== null;
+    this.clearTableResizeRuntimeCache();
+    if (leftCell) this.eventBus.emit('cursor-cell-changed', { inCell: false });
+    this.protectedCellHitCache = null;
+    this.protectedCellHoverEl?.remove();
+    this.protectedCellHoverEl = null;
+    this.fieldStartExitKey = null;
+    this.fieldEndExitKey = null;
+    this.pastedFieldEndOutsidePending = false;
+    // 서식 복사는 글꼴·번호·테두리 id 를 복사한 문서의 번호로 들고 있다.
+    this.formatCopyState = null;
+    // 내부 클립보드는 문서마다 따로다. 다른 문서에서 만든 표식으로 이 문서의 내부 클립보드를
+    // 붙이지 않고 시스템 클립보드 경로로 붙인다.
+    this.rhwpClipboardToken = null;
+    (this as unknown as { rhwpCellBlockClipboardToken?: string | null }).rhwpCellBlockClipboardToken = null;
+    // 템플릿 잠금은 붙는 문서의 대기 편집이 다시 알린다.
+    this.agentTemplateLocked = false;
   }
 
   dispose(): void {
@@ -4620,27 +4777,7 @@ export class InputHandler {
   setUserEditingLocked(locked: boolean): void {
     if (this.userEditingLocked === locked) return;
     if (locked) {
-      this.cancelFormOverlayEdit?.();
-      this.removeFormOverlay();
-      this.cancelImagePlacement();
-      this.cancelTextboxPlacement();
-      this.cancelPolygonDrawing();
-      _connector.exitConnectorDrawingMode.call(this);
-      if (
-        this.isMoveDragging
-        || this.isPictureMoveDragging
-        || this.isPictureRotateDragging
-        || this.isLineEndpointDragging
-        || this.isPictureResizeDragging
-        || this.isResizeDragging
-        || this.cellSelectionDragState
-        || this.isDragging
-      ) {
-        _mouse.onMouseUp.call(this, new MouseEvent('mouseup', {
-          clientX: this.lastPointerClientX,
-          clientY: this.lastPointerClientY,
-        }));
-      }
+      this.finishPointerInteractions();
       _text.revertCompositionPreview.call(this);
       this.resetRawTextMutationEffects();
       this.imeSession.reset();
@@ -4664,6 +4801,34 @@ export class InputHandler {
       this.lockedUserSelection = null;
     }
     this.eventBus.emit('command-state-changed');
+  }
+
+  /**
+   * 양식 편집·개체 배치·연결선·다각형 그리기를 끝내고, 진행 중인 끌기는 마지막 포인터
+   * 위치에서 놓은 것으로 지금 문서에 확정한다.
+   */
+  private finishPointerInteractions(): void {
+    this.cancelFormOverlayEdit?.();
+    this.removeFormOverlay();
+    this.cancelImagePlacement();
+    this.cancelTextboxPlacement();
+    this.cancelPolygonDrawing();
+    _connector.exitConnectorDrawingMode.call(this);
+    if (
+      this.isMoveDragging
+      || this.isPictureMoveDragging
+      || this.isPictureRotateDragging
+      || this.isLineEndpointDragging
+      || this.isPictureResizeDragging
+      || this.isResizeDragging
+      || this.cellSelectionDragState
+      || this.isDragging
+    ) {
+      _mouse.onMouseUp.call(this, new MouseEvent('mouseup', {
+        clientX: this.lastPointerClientX,
+        clientY: this.lastPointerClientY,
+      }));
+    }
   }
 
   /** 잠긴 동안 사용자가 문서 선택을 붙잡고 있지 않도록 모든 선택 표시를 걷어낸다. */
