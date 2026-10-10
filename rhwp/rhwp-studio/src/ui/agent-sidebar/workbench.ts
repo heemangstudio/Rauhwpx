@@ -137,6 +137,7 @@ export function createSidebarWorkbench(deps: {
     stripFrame = requestAnimationFrame(() => {
       stripFrame = null;
       if (disposed) return;
+      if (tabDrag?.moved) { updateScrollControls(); return; }
       const key = activeKey();
       const tab = key === revealedKey ? null : tabRows.get(key ?? '')?.row;
       if (tab && !head.hidden) {
@@ -194,6 +195,7 @@ export function createSidebarWorkbench(deps: {
     let restoreFocus = false;
     for (const [key, tab] of tabRows) {
       if (!keys.includes(key)) {
+        if (tabDrag?.key === key) endTabDrag(false);
         restoreFocus ||= tab.row.contains(document.activeElement);
         tab.row.remove(); tabRows.delete(key);
       }
@@ -242,6 +244,7 @@ export function createSidebarWorkbench(deps: {
       tab.row.classList.toggle('ag-selected', isActive);
       tab.button.setAttribute('aria-selected', String(isActive));
       tab.button.tabIndex = isActive ? 0 : -1;
+      tab.close.tabIndex = isActive ? 0 : -1;
       if (isActive) panels.get(selected!)?.setAttribute('aria-labelledby', tab.button.id);
     }
     const closeRemoved = closingFocusedResource !== null && !keys.includes(closingFocusedResource);
@@ -282,11 +285,17 @@ export function createSidebarWorkbench(deps: {
   }
   function onTabPointerDown(event: PointerEvent): void {
     if (event.button !== 0 || tabDrag || !(event.target instanceof Element)) return;
+    suppressTabClick = false;
+    window.removeEventListener('pointerup', clearSuppressedClick);
     if (event.target.closest('.ag-workbench-tab-close')) return;
     const row = event.target.closest<HTMLElement>('.ag-workbench-tab-row');
     const key = keyForRow(row);
     if (!row || !key) return;
     tabDrag = { key, row, pointerId: event.pointerId, startX: event.clientX, grabX: event.clientX - row.getBoundingClientRect().left, moved: false };
+    window.addEventListener('pointermove', onTabPointerMove);
+    window.addEventListener('pointerup', onTabPointerUp);
+    window.addEventListener('pointercancel', cancelTabDrag);
+    window.addEventListener('blur', cancelTabDrag);
   }
   function onTabPointerMove(event: PointerEvent): void {
     const drag = tabDrag;
@@ -329,15 +338,23 @@ export function createSidebarWorkbench(deps: {
     event.stopPropagation();
     endTabDrag(false);
   }
+  function onTabPointerUp(event: PointerEvent): void { if (event.pointerId === tabDrag?.pointerId) endTabDrag(true); }
+  function cancelTabDrag(): void { endTabDrag(false); }
+  function clearSuppressedClick(): void { window.setTimeout(() => { suppressTabClick = false; }, 0); }
   function endTabDrag(commit: boolean): void {
     const drag = tabDrag;
     if (!drag) return;
     tabDrag = null;
     window.removeEventListener('keydown', onTabDragKeyDown, true);
+    window.removeEventListener('pointermove', onTabPointerMove);
+    window.removeEventListener('pointerup', onTabPointerUp);
+    window.removeEventListener('pointercancel', cancelTabDrag);
+    window.removeEventListener('blur', cancelTabDrag);
     if (strip.hasPointerCapture(drag.pointerId)) strip.releasePointerCapture(drag.pointerId);
     if (!drag.moved) return;
     suppressTabClick = true;
-    window.setTimeout(() => { suppressTabClick = false; }, 0);
+    if (commit) clearSuppressedClick();
+    else window.addEventListener('pointerup', clearSuppressedClick, { once: true });
     drag.row.style.transform = '';
     drag.row.classList.remove('ag-dragging');
     strip.classList.remove('ag-tab-dragging');
@@ -351,13 +368,10 @@ export function createSidebarWorkbench(deps: {
     tabRows.get(drag.key)?.button.focus({ preventScroll: true });
   }
   strip.addEventListener('pointerdown', onTabPointerDown);
-  strip.addEventListener('pointermove', onTabPointerMove);
-  strip.addEventListener('pointerup', (event) => { if (event.pointerId === tabDrag?.pointerId) endTabDrag(true); });
-  strip.addEventListener('pointercancel', () => endTabDrag(false));
-  strip.addEventListener('lostpointercapture', () => { if (tabDrag?.moved) endTabDrag(true); });
+  strip.addEventListener('lostpointercapture', () => { if (tabDrag?.moved) endTabDrag(false); });
   // 끌기를 끝낸 뒤 따라오는 click은 탭 전환이나 닫기로 쓰지 않는다.
   strip.addEventListener('click', (event) => {
-    if (!suppressTabClick) return;
+    if (!suppressTabClick || event.detail === 0) return;
     event.preventDefault();
     event.stopPropagation();
   }, true);
@@ -496,7 +510,7 @@ export function createSidebarWorkbench(deps: {
       paintTabs();
     },
     setVisible(next) { visible = next; paint(); },
-    dispose() { disposed = true; endTabDrag(false); observer.disconnect(); if (stripFrame !== null) cancelAnimationFrame(stripFrame);
+    dispose() { disposed = true; endTabDrag(false); window.removeEventListener('pointerup', clearSuppressedClick); observer.disconnect(); if (stripFrame !== null) cancelAnimationFrame(stripFrame);
       strip.removeEventListener('wheel', onWheel); element.remove(); head.remove(); panels.clear(); tabRows.clear(); },
   };
 }

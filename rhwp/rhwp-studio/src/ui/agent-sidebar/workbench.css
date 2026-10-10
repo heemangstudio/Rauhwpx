@@ -24,22 +24,21 @@
   .ag-workbench-page { animation: none; }
 }
 /* 문서와 도구를 같은 가로 탭 줄에 놓는다. 내용 면의 중복 탭 줄은 숨긴다. */
-/* T3 Code의 탭처럼 테두리 없이 배경에 녹인다. 아이콘 자리는 hover 때 닫기 버튼이 된다. */
+/* 탭 선택과 닫기는 서로 겹치지 않는 자리를 사용한다. */
 .ag-workbench-head { background: var(--ag-bg); min-height: 36px; padding: 4px 6px 4px 8px; gap: 2px; }
 .ag-workbench-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .ag-workbench-tabs { display: flex; align-items: center; flex: 0 1 auto; gap: 2px; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
 .ag-workbench-tabs::-webkit-scrollbar { display: none; }
-.ag-workbench-tab-row { position: relative; display: flex; align-items: center; flex: 0 0 auto; min-width: 0; max-width: 180px; border-radius: 6px; color: var(--ag-text-secondary); transition: background 120ms ease, color 120ms ease; }
+.ag-workbench-tab-row { position: relative; display: flex; align-items: center; flex: 0 0 auto; min-width: 0; max-width: 180px; border-radius: 6px; color: var(--ag-text-secondary); transition: background 120ms ease, color 120ms ease; touch-action: none; user-select: none; }
 .ag-workbench-tab-row:hover { color: var(--ag-text); background: var(--ag-hover); }
 .ag-workbench-tab-row.ag-selected { color: var(--ag-text); background: var(--ag-active); }
-.ag-workbench-tab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px 0 7px; border: 0; min-width: 48px; color: inherit; background: transparent; font: 500 12px/1 var(--ag-font); cursor: pointer; }
+.ag-workbench-tab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px 0 7px; border: 0; min-width: 48px; flex: 1; color: inherit; background: transparent; font: 500 12px/1 var(--ag-font); cursor: pointer; }
 .ag-workbench-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ag-workbench-tab svg { flex: 0 0 auto; width: 13px; height: 13px; opacity: .8; }
 .ag-workbench-tab-row.ag-dirty .ag-workbench-tab::after { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-.ag-workbench-tab-close { position: absolute; left: 4px; top: 50%; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; color: inherit; background: transparent; cursor: pointer; opacity: 0; transform: translateY(-50%); pointer-events: none; }
+.ag-workbench-tab-close { display: grid; place-items: center; flex: 0 0 22px; width: 22px; height: 22px; margin-right: 2px; padding: 0; border: 0; border-radius: 4px; color: inherit; background: transparent; cursor: pointer; opacity: .45; }
 .ag-workbench-tab-close svg { width: 10px; height: 10px; }
-.ag-workbench-tab-row:hover .ag-workbench-tab-close, .ag-workbench-tab-close:focus-visible { opacity: .7; pointer-events: auto; }
-.ag-workbench-tab-row:hover .ag-workbench-tab > svg { visibility: hidden; }
+.ag-workbench-tab-row:hover .ag-workbench-tab-close, .ag-workbench-tab-row:focus-within .ag-workbench-tab-close { opacity: .8; }
 .ag-workbench-tab-close:hover { opacity: 1; background: var(--ag-hover); }
 .ag-workbench-tab:focus-visible, .ag-workbench-tab-close:focus-visible, .ag-workbench-scroll:focus-visible { outline: 2px solid var(--ag-text-secondary); outline-offset: -2px; border-radius: 6px; }
 .ag-workbench-scroll { flex: 0 0 18px; height: 26px; width: 18px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--ag-text-secondary); font: 18px/1 var(--ag-font); cursor: pointer; }
@@ -86,7 +85,7 @@
   border-bottom: 0;
 }
 html.desktop-mac .ag-fullscreen:not(.ag-workspace-compact) .ag-workbench-head { -webkit-app-region: drag; }
-html.desktop-mac .ag-fullscreen .ag-workbench-head :is(button, [role="tab"], [tabindex]:not([tabindex="-1"])) { -webkit-app-region: no-drag; }
+html.desktop-mac .ag-fullscreen .ag-workbench-head :is(.ag-workbench-tabs, .ag-workbench-tabs *, button, [role="tab"], [tabindex]:not([tabindex="-1"])) { -webkit-app-region: no-drag; }
 
 /* 환경·닫기·칸 열기 묶음은 무대 오른쪽 위에 고정된다. 칸이 열리면 탭 줄 오른쪽 끝에 놓인다. */
 .ag-workspace-corner { display: none; }
