@@ -16,6 +16,7 @@ import {
   validateExecutionMode,
 } from './backend.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
+import { tapProviderProcess } from '../provider-transcript.mjs';
 import {
   PROCESS_TREE_CLEANUP_OUTCOME,
   processTreeCleanupOutcome,
@@ -530,12 +531,15 @@ export function createPiSession(opts, {
         const launched = applyManagedCliLaunch(opts.piBin ?? 'pi', argv, {
           platform, nodeCommand, env: spawnEnv,
         });
-        proc = spawnProcess(launched.command, launched.argv, {
+        proc = tapProviderProcess(spawnProcess(launched.command, launched.argv, {
           ...processTreeSpawnOptions(),
           cwd: opts.rootDir,
           env: launched.env,
           // json 모드는 stdin 이 닫힐 때까지 읽는다. 프롬프트를 쓰고 바로 닫는다.
           stdio: ['pipe', 'pipe', 'pipe'],
+        }), {
+          agent, transport: 'json', stdin: 'text', argv: launched.argv, env: launched.env,
+          secrets: [opts.token, opts.openRouterApiKey], cli: opts.providerCliVersion,
         });
       } catch (e) {
         onEvent({ type: 'error', agent, message: `failed to start pi: ${e?.message ?? e}` });

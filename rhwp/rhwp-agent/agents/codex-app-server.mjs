@@ -25,6 +25,7 @@ import {
   terminateProcessTree,
 } from '../process-tree.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
+import { tapProviderProcess } from '../provider-transcript.mjs';
 
 const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 const DEFAULT_MODE_FEATURE = 'default_mode_request_user_input';
@@ -783,11 +784,14 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       const launched = applyManagedCliLaunch(opts.codexBin ?? 'codex', buildCodexAppServerArgv(opts, {
         enableDefaultModeUserInput: featureForced,
       }), { platform, nodeCommand, env: spawnEnv });
-      child = spawnProcess(launched.command, launched.argv, {
+      child = tapProviderProcess(spawnProcess(launched.command, launched.argv, {
         ...processTreeSpawnOptions(),
         cwd: opts.rootDir,
         env: launched.env,
         stdio: ['pipe', 'pipe', 'pipe'],
+      }), {
+        agent: 'codex', transport: 'app-server', stdin: 'ndjson', argv: launched.argv, env: launched.env,
+        secrets: [opts.token], cli: opts.providerCliVersion,
       });
     } catch (error) {
       throw new CodexAppServerUnavailableError('Failed to start Codex app-server', error);

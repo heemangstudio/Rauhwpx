@@ -2,6 +2,9 @@
 // as the managed Pi binary, so the hub's own spawning, Studio wiring and
 // process-tree cleanup run unchanged. Fixtures are synthetic.
 import assert from 'node:assert/strict';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { sendFrame } from './hub-harness.mjs';
@@ -14,6 +17,7 @@ import {
   startReplayPiHub,
   waitUntil,
 } from './provider-replay/hub.mjs';
+import { parseReplayBundle } from './provider-replay/replay.mjs';
 
 test('a replayed Pi turn streams through the real hub and its stdin reached the CLI', { timeout: 40_000 }, async (t) => {
   const { port, cli } = await startReplayPiHub(t, 'pi/text-turn');
@@ -78,4 +82,45 @@ test('Stop during a replayed Pi turn gives one interrupted turn-end and the hub 
   const secondResult = cli.results()[1];
   assert.deepEqual(secondResult.unexpected, []);
   if (process.platform !== 'win32') assert.deepEqual(secondResult.leftover, []);
+});
+
+test('with RHWP_PROVIDER_TRANSCRIPT_DIR the hub records each provider process as a replayable file', { timeout: 40_000 }, async (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-hub-transcripts-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const transcriptDir = path.join(root, 'transcripts');
+  const { port, stderr } = await startReplayPiHub(t, 'pi/text-turn', {
+    env: { RHWP_PROVIDER_TRANSCRIPT_DIR: transcriptDir },
+  });
+  const studio = await openStudio(t, port, 'replay-recorded');
+  const started = await startChat(studio, 'replay-recorded-thread', 'pi');
+  sendChatMessage(studio, started, 'Record this turn.');
+  const turnEnd = await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end', 20_000);
+  assert.equal(turnEnd.event.stopReason, 'completed');
+
+  const [name, ...others] = await waitUntil(() => {
+    const names = readdirSync(transcriptDir).filter((entry) => entry.endsWith('.ndjson'));
+    if (names.length === 0) return null;
+    const text = readFileSync(path.join(transcriptDir, names[0]), 'utf8');
+    return text.includes('"kind":"close"') ? names : null;
+  }, 'no complete transcript was written');
+  assert.deepEqual(others, [], 'one file per provider process');
+  assert.match(name, /^pi-json-/);
+  const file = path.join(transcriptDir, name);
+  if (process.platform !== 'win32') {
+    assert.equal(statSync(transcriptDir).mode & 0o777, 0o700);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+  }
+  assert.match(stderr(), /\[provider-transcript\] recording provider stdio to .*files contain prompts and document text/);
+
+  const text = readFileSync(file, 'utf8');
+  const bundle = parseReplayBundle(text, { source: name });
+  assert.equal(bundle.meta.provenance, 'recorded');
+  assert.equal(bundle.meta.cli, '0.0.0-test', 'the hub passes the installed CLI version');
+  assert.equal(text.includes('test-placeholder-key'), false, 'the OpenRouter key never reaches disk');
+  const records = text.trim().split('\n').map((line) => JSON.parse(line));
+  assert.ok(records.some((record) => record.kind === 'in' && /Record this turn\./.test(record.text ?? '')));
+  assert.ok(records.some((record) => record.kind === 'out' && record.json?.type === 'agent_settled'));
+  const spawn = records.find((record) => record.kind === 'spawn');
+  assert.ok(spawn.envNames.includes('OPENROUTER_API_KEY'), 'variable names are recorded');
+  assert.equal('env' in spawn, false, 'variable values are not');
 });

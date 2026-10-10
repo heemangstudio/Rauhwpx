@@ -5,6 +5,12 @@ const activeTerminations = new WeakMap();
 const completedTerminations = new WeakMap();
 
 /**
+ * Optional per-child callback the provider transcript recorder installs to
+ * learn when the hub starts terminating a provider process.
+ */
+export const PROVIDER_TERMINATION_HOOK = Symbol.for('rhwp.providerTerminationHook');
+
+/**
  * Process-tree cleanup has three outcomes. `UNAVAILABLE` means the leader
  * exited before Windows could safely target its tree. It is not cleanup proof.
  */
@@ -220,6 +226,7 @@ export function terminateProcessTree(child, {
   env = process.env,
 } = {}) {
   if (!child) return null;
+  try { child[PROVIDER_TERMINATION_HOOK]?.('SIGTERM'); } catch {}
   const active = activeTerminations.get(child);
   if (active) return active.completion;
   if (completedTerminations.has(child)) {

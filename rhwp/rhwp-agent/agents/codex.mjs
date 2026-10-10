@@ -40,6 +40,7 @@ import {
   waitForProcessTreeExit,
 } from '../process-tree.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
+import { tapProviderProcess } from '../provider-transcript.mjs';
 
 const STDERR_TAIL_LIMIT = 16_000;
 const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
@@ -502,11 +503,14 @@ export function createLegacyCodexSession(opts, {
         const launched = applyManagedCliLaunch(opts.codexBin ?? 'codex', argv, {
           platform, nodeCommand, env: spawnEnv,
         });
-        proc = spawnProcess(launched.command, launched.argv, {
+        proc = tapProviderProcess(spawnProcess(launched.command, launched.argv, {
           ...processTreeSpawnOptions(),
           cwd: opts.rootDir,
           env: launched.env,
           stdio: ['pipe', 'pipe', 'pipe'],
+        }), {
+          agent: 'codex', transport: 'exec', stdin: 'text', argv: launched.argv, env: launched.env,
+          secrets: [opts.token], cli: opts.providerCliVersion,
         });
       } catch (e) {
         rolloutWatcher?.stop();

@@ -16,6 +16,7 @@ import {
 } from '../credential-mirror.mjs';
 import { applyManagedCliLaunch, resolveCommandOnPath, resolveNpmCliLaunch } from '../npm-cli-launch.mjs';
 import { TOOL_TRACE_ENABLED, traceNow, writeToolTrace } from '../tool-trace.mjs';
+import { recordingClaudeSdkSpawner, tapProviderProcess } from '../provider-transcript.mjs';
 import {
   createLineReader,
   isPlanningRestricted,
@@ -1025,6 +1026,9 @@ export function createClaudeSession(opts, {
         const resolvedBin = resolveCommandOnPath(launch.command, { env: options.env });
         if (resolvedBin) options.pathToClaudeCodeExecutable = resolvedBin;
       }
+      // RHWP_PROVIDER_TRANSCRIPT_DIR 가 켜졌을 때만 SDK 스폰을 기록용으로 바꾼다.
+      const recordingSpawn = recordingClaudeSdkSpawner({ secrets: [opts.token], cli: opts.providerCliVersion });
+      if (recordingSpawn && !options.spawnClaudeCodeProcess) options.spawnClaudeCodeProcess = recordingSpawn;
       query = queryAgent({
         prompt: owner.queue,
         options,
@@ -1152,11 +1156,14 @@ export function createClaudeSession(opts, {
     const launched = applyManagedCliLaunch(opts.claudeBin ?? 'claude', buildArgv(resume), {
       platform, nodeCommand, env: spawnEnv,
     });
-    const proc = spawnProcess(launched.command, launched.argv, {
+    const proc = tapProviderProcess(spawnProcess(launched.command, launched.argv, {
       ...processTreeSpawnOptions(),
       cwd: opts.rootDir,
       env: launched.env,
       stdio: ['pipe', 'pipe', 'pipe'],
+    }), {
+      agent: 'claude', transport: 'cli', stdin: 'ndjson', argv: launched.argv, env: launched.env,
+      secrets: [opts.token], cli: opts.providerCliVersion,
     });
     writeToolTrace({ kind: 'claude', t: traceNow(), ev: 'spawn', transport: 'cli', resume });
     // 기동 중 종료한 자식에 쓰면 EPIPE 가 'error' 로 온다. 리스너가 없으면 허브 전체가

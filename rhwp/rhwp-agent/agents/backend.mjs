@@ -111,6 +111,7 @@ export function redactDiagnosticText(value, secrets = []) {
  * @property {string} [agentRole]
  * @property {string} [systemPromptOverride]
  * @property {number} [idleReleaseMs] How long a provider process may idle between turns before it is stopped.
+ * @property {string|null} [providerCliVersion] CLI version recorded in provider transcripts (RHWP_PROVIDER_TRANSCRIPT_DIR).
  * @property {(request: ProviderUserQuestionRequest, signal: AbortSignal) => Promise<UserQuestionOutcome>} [requestUserInput]
  * @property {(evt: UnifiedAgentEvent) => void} onEvent
  *
