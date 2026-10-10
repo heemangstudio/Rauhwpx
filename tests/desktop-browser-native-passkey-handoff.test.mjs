@@ -20,7 +20,7 @@ test('real Electron returns an isolated signed Chrome session to its retained na
   const entry = fileURLToPath(new URL('./electron/native-passkey-handoff.mjs', import.meta.url));
   try {
     const report = await new Promise((resolve, reject) => {
-      const child = spawn(electron, [entry, '--use-mock-keychain'], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(electron, [entry, '--use-mock-keychain', '-ApplePersistenceIgnoreState', 'YES'], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = ''; let stderr = '';
       child.stdout.on('data', (data) => { stdout += data; });
       child.stderr.on('data', (data) => { stderr += data; });
