@@ -79,7 +79,10 @@ export class ChromePasswordImporter {
   constructor({ vault, platform = process.platform, root = join(homedir(), 'Library', 'Application Support', 'Google', 'Chrome'), readKey = chromeKeychainPassword, readRows = loginRows }) {
     this.vault = vault; this.platform = platform; this.root = root; this.readKey = readKey; this.readRows = readRows;
     this.profiles = new Map();
+    this.generation = 0;
   }
+  beginReset() { this.generation++; this.resetting = true; }
+  endReset() { this.resetting = false; }
   async listProfiles() {
     if (this.platform !== 'darwin') return { supported: false, profiles: [] };
     let state;
@@ -106,10 +109,12 @@ export class ChromePasswordImporter {
   }
   async importProfile({ profileId } = {}) {
     if (this.platform !== 'darwin') throw passwordFailure('BROWSER_CHROME_IMPORT_UNSUPPORTED', 'Chrome profile import is available on macOS.');
+    if (this.resetting) throw passwordFailure('BROWSER_NATIVE_RESET_ACTIVE', 'Browser data is being removed. Retry the import when it finishes.');
     if (this.importing) throw passwordFailure('BROWSER_CHROME_IMPORT_ACTIVE', 'A Chrome password import is already running.');
     const profile = this.profiles.get(profileId);
     if (!profile) throw passwordFailure('BROWSER_CHROME_PROFILE_INVALID', 'Choose a current Chrome profile before importing.');
     this.importing = true;
+    const generation = this.generation;
     let passphrase; let key;
     try {
       if (!await this.vault.available()) throw passwordFailure('BROWSER_PASSWORD_STORAGE_UNAVAILABLE', 'OS password storage is unavailable.');
@@ -136,15 +141,20 @@ export class ChromePasswordImporter {
       for (const row of supported) {
         let origin; let password;
         try {
+          if (typeof row.username_value !== 'string' || row.password_value.length > 12 * 1024 + 32) throw new Error();
           origin = passwordOrigin(row.origin_url);
           if (passwordOrigin(row.signon_realm) !== origin) throw new Error();
           password = decryptChromeMacPassword(row.password_value, key);
           if (!password) throw new Error();
+          if (Buffer.byteLength(row.username_value) + Buffer.byteLength(password) > 12 * 1024) throw new Error();
         } catch { result.skipped++; continue; }
         // Only OS-encrypted records are written. The importer returns counts, never secrets.
         credentials.push({ origin, username: row.username_value, password, sourceProfile: profile.name });
       }
-      try { result.imported = (await this.vault.importCredentials(credentials)).length; return result; }
+      try {
+        if (generation !== this.generation || this.resetting) throw passwordFailure('BROWSER_CHROME_IMPORT_CANCELLED', 'The Chrome import was cancelled because browser data was removed.');
+        result.imported = (await this.vault.importCredentials(credentials)).length; return result;
+      }
       finally { for (const credential of credentials) credential.password = ''; }
     } finally { passphrase?.fill?.(0); key?.fill(0); this.importing = false; }
   }

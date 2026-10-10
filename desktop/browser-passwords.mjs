@@ -102,6 +102,35 @@ export class NativeBrowserPasswords {
     try { return await tab.view.webContents.executeJavaScriptInIsolatedWorld(WORLD, [{ code: `(${fn.toString()})(...${JSON.stringify(args)})` }], true); }
     catch { throw passwordFailure('BROWSER_PASSWORD_TARGET_CHANGED', 'The page changed before native browser input completed.'); }
   }
+  protectFamily(tab, origin, password) {
+    const candidates = new Set([...this.host.tabs.values(), ...(this.host.pendingTabs ?? []), tab]);
+    const keys = (candidate) => {
+      const result = new Set(); const visited = new Set();
+      for (let member = candidate; member && !visited.has(member); member = member.openerTab) {
+        visited.add(member); result.add(member);
+        if (member.targetId) result.add(`target:${member.targetId}`);
+        if (member.openerTargetId) result.add(`target:${member.openerTargetId}`);
+      }
+      return result;
+    };
+    const connected = keys(tab); const family = new Set([tab]); let changed;
+    do {
+      changed = false;
+      for (const candidate of candidates) {
+        if (candidate.closing || candidate.view.webContents.isDestroyed()) continue;
+        const related = keys(candidate);
+        if ([...related].some((key) => connected.has(key))) {
+          for (const key of related) connected.add(key);
+          if (!family.has(candidate)) { family.add(candidate); changed = true; }
+        }
+      }
+    } while (changed);
+    for (const member of family) {
+      member.passwordShield = true;
+      member.passwordAllowedOrigins = new Set(member.passwordAllowedOrigins ?? []); member.passwordAllowedOrigins.add(origin);
+      member.protectedPasswords = new Set(member.protectedPasswords ?? []); member.protectedPasswords.add(password);
+    }
+  }
   tab(params, { human = false } = {}) {
     const tab = this.host.tab(params.targetId ?? params.tabId);
     if (params.tabId !== tab.tabId || (!human && (params.targetId !== tab.targetId || params.sessionId !== tab.sessionId || (params.chatId ?? null) !== (tab.chatId ?? null)))) throw passwordFailure('BROWSER_PASSWORD_SCOPE_MISMATCH', 'The saved account request belongs to another browser tab or chat.');
@@ -138,9 +167,7 @@ export class NativeBrowserPasswords {
       if (!checked?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
       // Stop outstanding raw reads before the first secret enters the guest DOM.
       const firstProtection = !tab.passwordShield;
-      tab.passwordShield = true;
-      tab.passwordAllowedOrigins ??= new Set(); tab.passwordAllowedOrigins.add(origin);
-      tab.protectedPasswords ??= new Set(); tab.protectedPasswords.add(credential.password);
+      this.protectFamily(tab, origin, credential.password);
       if (firstProtection) await this.host.session?.closeAllConnections();
       this.assertSnapshot(tab, params);
       const result = await this.run(tab, pageAction, [{ ...target, action: 'fill', username: credential.username, password: credential.password }]);
@@ -205,7 +232,7 @@ export class NativeBrowserPasswords {
   }
   async storageState() {
     if (![...this.host.tabs.values()].some((tab) => tab.passwordShield)) return null;
-    let value = { cookies: await this.host.getCookies(), origins: [] };
+    let value = { cookies: await this.host.getCookies(), origins: [], originsComplete: false };
     for (const tab of this.host.tabs.values()) value = this.redact(tab, value);
     return value;
   }

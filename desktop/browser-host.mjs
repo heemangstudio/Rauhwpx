@@ -702,6 +702,7 @@ export class OwnedBrowserHost {
       throw new Error('Native browser reset owner is stale');
     }
     if (this.resetPromise) return this.resetPromise;
+    this.passwords?.importer.beginReset();
     this.lastOwner = owner;
     this.resetPromise = (async () => {
       await this.releasePromise;
@@ -739,7 +740,7 @@ export class OwnedBrowserHost {
       this.generation = randomUUID();
       return { tabsClosed: guests.length, generation: this.generation };
     })();
-    try { return await this.resetPromise; } finally { this.resetPromise = null; }
+    try { return await this.resetPromise; } finally { this.resetPromise = null; this.passwords?.importer.endReset(); }
   }
 
   async handleRequest(message, owner) {

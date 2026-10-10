@@ -96,6 +96,7 @@ test('explicit Chrome profile import takes a WAL-consistent readonly snapshot an
   insert.run('https://fixture.invalid/login', 'https://fixture.invalid/', 'andy', encryptChrome('fixture-password', 'fixture-keychain-key'));
   insert.run('https://unsupported.invalid/', 'https://unsupported.invalid/', 'andy', Buffer.from('v11new-format'));
   insert.run('http://insecure.invalid/', 'http://insecure.invalid/', 'andy', encryptChrome('ignored', 'fixture-keychain-key'));
+  insert.run('https://invalid-identity.invalid/', 'https://invalid-identity.invalid/', null, encryptChrome('ignored-invalid-identity', 'fixture-keychain-key'));
   const accountDb = new DatabaseSync(join(profile, 'Login Data For Account'));
   t.after(() => accountDb.close());
   accountDb.exec('PRAGMA journal_mode = WAL; CREATE TABLE logins (origin_url TEXT, signon_realm TEXT, username_value TEXT, password_value BLOB, blacklisted_by_user INTEGER)');
@@ -111,7 +112,7 @@ test('explicit Chrome profile import takes a WAL-consistent readonly snapshot an
   assert.equal(profiles.profiles.length, 1);
   assert.equal(JSON.stringify(profiles).includes(profile), false);
   await assert.rejects(importer.importProfile({ profileId: profile }), { code: 'BROWSER_CHROME_PROFILE_INVALID' });
-  assert.deepEqual(await importer.importProfile({ profileId: profiles.profiles[0].id }), { imported: 2, skipped: 1, unsupported: 1 });
+  assert.deepEqual(await importer.importProfile({ profileId: profiles.profiles[0].id }), { imported: 2, skipped: 2, unsupported: 1 });
   assert.equal(keyReads, 1);
   assert.equal((await vault.list()).accounts.length, 2);
   const imported = (await vault.list()).accounts.find((account) => account.origin === 'https://fixture.invalid');
@@ -121,7 +122,7 @@ test('explicit Chrome profile import takes a WAL-consistent readonly snapshot an
     assert.deepEqual(await readFile(file), source.bytes);
     assert.equal(after.mtimeNs, source.info.mtimeNs); assert.equal(after.ctimeNs, source.info.ctimeNs);
   }
-  assert.equal(db.prepare('SELECT count(*) AS count FROM logins').get().count, 3);
+  assert.equal(db.prepare('SELECT count(*) AS count FROM logins').get().count, 4);
   const key = pbkdf2Sync('fixture-keychain-key', 'saltysalt', 1003, 16, 'sha1');
   assert.throws(() => decryptChromeMacPassword(Buffer.from('v20unsupported'), key), { code: 'BROWSER_CHROME_ENCRYPTION_UNSUPPORTED' });
 });
@@ -135,6 +136,27 @@ test('Chrome keychain cancellation keeps the vault empty and imports can retry',
   await assert.rejects(importer.importProfile({ profileId: 'fixture-profile' }), { code: 'BROWSER_CHROME_KEYCHAIN_DENIED' });
   assert.equal((await vault.list()).accounts.length, 0);
   importer.readKey = async () => Buffer.from('fixture-keychain-key');
+  assert.equal((await importer.importProfile({ profileId: 'fixture-profile' })).imported, 1);
+});
+
+test('browser reset cancels a Chrome import waiting for key access before it can repopulate the vault', async (t) => {
+  const { root, vault } = await vaultFixture(t);
+  const profile = join(root, 'Default'); await mkdir(profile); await writeFile(join(profile, 'Login Data'), 'fixture');
+  let releaseKey; let waiting;
+  const keyReady = new Promise((resolve) => { waiting = resolve; });
+  const importer = new ChromePasswordImporter({ vault, platform: 'darwin', readRows: async () => [{ origin_url: 'https://fixture.invalid/', signon_realm: 'https://fixture.invalid/', username_value: 'andy', password_value: encryptChrome('fixture-password', 'fixture-keychain-key') }], readKey: () => new Promise((resolve) => { releaseKey = resolve; waiting(); }) });
+  importer.profiles.set('fixture-profile', { path: await realpath(profile), name: 'Test profile' });
+  const host = new OwnedBrowserHost({ dataDir: join(root, 'native') }); new NativeBrowserPasswords({ host, vault, importer });
+  const pending = importer.importProfile({ profileId: 'fixture-profile' });
+  await keyReady;
+  await host.reset({ connected: true });
+  assert.equal((await vault.list()).accounts.length, 0);
+  releaseKey(Buffer.from('fixture-keychain-key'));
+  await assert.rejects(pending, { code: 'BROWSER_CHROME_IMPORT_CANCELLED' });
+  assert.equal((await vault.list()).accounts.length, 0);
+  importer.beginReset();
+  await assert.rejects(importer.importProfile({ profileId: 'fixture-profile' }), { code: 'BROWSER_NATIVE_RESET_ACTIVE' });
+  importer.endReset(); importer.readKey = async () => Buffer.from('fixture-keychain-key');
   assert.equal((await importer.importProfile({ profileId: 'fixture-profile' })).imported, 1);
 });
 
@@ -185,6 +207,39 @@ test('native account filling fences chat, origin, snapshot, navigation, control 
   assert.equal(f.passwords.redact(f.tab, { text: 'fixture-password', encoded: Buffer.from('fixture-password').toString('base64') }).text, '[masked]');
   await f.passwords.action({ ...f.binding, snapshotId: observation.snapshotId, action: 'click', ref: 'e2' });
   assert.equal(f.calls.at(-1).type, 'mouseUp');
+});
+
+test('native fills shield the existing opener family including pending descendants and preserve unrelated tabs', async (t) => {
+  const { vault } = await vaultFixture(t); const f = nativeFixture(vault);
+  const ancestor = { targetId: 'ancestor', view: { webContents: f.contents } };
+  const sibling = { targetId: 'sibling', openerTab: ancestor, view: { webContents: f.contents } };
+  const child = { targetId: 'child', openerTargetId: f.tab.targetId, view: { webContents: f.contents } };
+  const pending = { targetId: null, openerTab: child, view: { webContents: f.contents } };
+  const unrelated = { targetId: 'unrelated', view: { webContents: f.contents } };
+  f.tab.openerTab = ancestor;
+  for (const tab of [ancestor, sibling, child, unrelated]) f.host.tabs.set(tab.targetId, tab);
+  f.host.pendingTabs = new Set([pending]);
+  const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'andy', password: 'fixture-password' });
+  const observed = await f.passwords.snapshot(f.binding);
+  await f.passwords.fill({ ...f.binding, snapshotId: observed.snapshotId, accountId: account.id, passwordRef: 'e1' });
+  for (const tab of [f.tab, ancestor, sibling, child, pending]) {
+    assert.equal(tab.passwordShield, true); assert.ok(tab.protectedPasswords.has('fixture-password'));
+    if (tab !== f.tab) assert.notEqual(tab.protectedPasswords, f.tab.protectedPasswords);
+  }
+  assert.equal(unrelated.passwordShield, undefined);
+});
+
+test('native fills protect sibling popups whose opener has already closed', async (t) => {
+  const { vault } = await vaultFixture(t); const f = nativeFixture(vault);
+  f.tab.openerTargetId = 'closed-opener';
+  const sibling = { targetId: 'sibling', openerTargetId: 'closed-opener', view: { webContents: f.contents } };
+  f.host.tabs.set(sibling.targetId, sibling);
+  const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'andy', password: 'fixture-password' });
+  const observed = await f.passwords.snapshot(f.binding);
+  await f.passwords.fill({ ...f.binding, snapshotId: observed.snapshotId, accountId: account.id, passwordRef: 'e1' });
+  assert.equal(sibling.passwordShield, true);
+  assert.ok(sibling.protectedPasswords.has('fixture-password'));
+  assert.notEqual(sibling.protectedPasswords, f.tab.protectedPasswords);
 });
 
 test('protected CDP denies arbitrary/encoded reads, child sessions, nested commands and pre-fill pending reads', async () => {
