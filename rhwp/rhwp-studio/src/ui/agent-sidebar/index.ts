@@ -986,6 +986,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 환경 패널의 `변경 사항` 행을 눌렀을 때만 열린다.
   const turnChanges = new TurnChanges();
   let turnOwnerThreadId: string | null = null;
+  /** 지금 도는 턴의 turn-start 를 이 사이드바가 봤다 (turnOwnerThreadId 가 그 턴의 주인이다). */
+  let turnOwnerTurnOpen = false;
+  /** 방금 끝난 턴의 주인 채팅 — 그 턴의 실패 알림은 이 채팅에 남는다. 시작을 보지 못한 턴은 null. */
+  let endedTurnOwnerThreadId: string | null = null;
   let workingDiff: DiffItem[] = [];
   let compactChangesOpen = false;
   let changesRefreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1021,6 +1025,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const failureNotices = createFailureNoticeController({
     thread: () => currentThread,
     persist: () => persistCurrentThread(),
+    persistThread: (thread) => upsertThread(thread),
     append: (node) => withAutoScroll(() => appendConversation(node)),
     agentLabel: (agent) => AGENT_LABEL[agent],
     // 보낸 메시지가 턴을 기다리는 동안도 다시 시도는 막힌다 — 같은 요청이 두 번 나간다.
@@ -2882,7 +2887,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 허브가 인증 실패로 분류한 턴 — 허브 상태가 늦게 따라올 때를 잡는다. */
   function noteProviderAuthFailure(agent: AgentName, failure: ProviderFailure): void {
-    if (failure.class !== 'auth_required') return;
+    // Pi 설정이 끝나지 않은 채팅 시작(PI_NOT_CONFIGURED)은 로그인 문제가 아니다 — 알림의 '설정 열기'
+    // 가 맡는다. 로그인 칩을 띄우면 Pi 상태로는 걷히지 않고 세션 재시작도 막는다.
+    if (failure.class !== 'auth_required' || failure.code === 'PI_NOT_CONFIGURED') return;
     authFailedAgents.add(agent);
     authFailedAt.set(agent, Date.now());
     updateReconnectChip();
@@ -5005,10 +5012,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         : skillRequestText;
     }
     // 실패하면 '다시 시도' 가 다시 보낼 요청 — 꾸밈 전 본문이다(꾸밈은 보낼 때마다 새로 붙는다).
-    // 인라인 프롬프트의 선택 맥락은 그 시점 문서에 묶여 있어 다시 보낼 때 싣지 않는다.
+    // 인라인 프롬프트는 다시 보낼 요청을 두지 않는다: 선택 맥락이 그 시점 문서에 묶여 있어, 맥락 없이
+    // 지시만 다시 보내면 ("이 부분을 표로") 에이전트가 엉뚱한 곳을 고칠 수 있다.
     const retryPayload = {
       displayText: messageText,
-      requestText: spec.origin === 'inline' ? messageText : requestText,
+      requestText,
       ...(skillName ? { skillName } : {}),
       ...(skillName && spec.skillIcon ? { skillIcon: spec.skillIcon } : {}),
     };
@@ -5027,7 +5035,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       skillName,
       spec.skillIcon,
     );
-    failureNotices.noteSend(currentThread.id, retryPayload);
+    failureNotices.noteSend(currentThread.id, spec.origin === 'inline' ? null : retryPayload);
     const userBubble = renderUserMessage(userMessage);
     userBubble.classList.add('ag-msg-enter');
     replyPending = true;
@@ -8463,6 +8471,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     switch (event.type) {
       case 'turn-start':
         turnOwnerThreadId = currentThread.id;
+        turnOwnerTurnOpen = true;
         turnChanges.begin(currentThread.id);
         rebuildReview();
         // 이전 턴이 비정상 종료돼 남긴 실행 상태를 먼저 닫는다.
@@ -8577,6 +8586,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
         break;
       case 'turn-end': {
+        // 이 턴의 실패 알림(turn-failure)이 바로 뒤에 온다 — 그 알림이 갈 채팅을 기억한다.
+        endedTurnOwnerThreadId = turnOwnerTurnOpen ? turnOwnerThreadId : null;
+        turnOwnerTurnOpen = false;
         flushPendingAssistantRender();
         const finalBubble =
           streamBubble?.parentElement === messages
@@ -8714,12 +8726,18 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // 붙이지 않은 허브 턴의 실패는 초안 화면에 그리지 않는다 — 그리면 초안이 그 알림으로 저장된다.
         if (hubChatUnbound()) break;
         noteProviderAuthFailure(e.failure.agent, e.failure);
+        // 턴의 실패는 그 턴의 채팅에 남는다 — 질문이 걸린 턴을 두고 다른 채팅을 보는 중이거나 새 초안으로
+        // 옮긴 뒤 끝났으면 보이는 채팅이 아니라 주인 채팅에 저장만 한다.
+        const ownerId = e.origin === 'turn' ? endedTurnOwnerThreadId : null;
+        endedTurnOwnerThreadId = null;
+        const owner = ownerId !== null && ownerId !== currentThread.id ? getThread(ownerId) : null;
+        if (ownerId !== null && ownerId !== currentThread.id && !owner) break;
         const notice = failureNotices.add(e.failure, {
           origin: e.origin,
           turnId: e.turnId,
           userInitiated: e.userInitiated === true,
           wroteDocument: e.wroteDocument === true,
-        });
+        }, owner ?? undefined);
         // 이 채팅의 턴이 실패로 끝났다 — 대기열을 그 이유와 함께 붙잡는다(턴 끝의 붙잡음에 설명을 더한다).
         // 사용자가 멈춘 턴은 대기열의 '멈춤' 그대로 둔다(알림만 왜 아무것도 못 했는지 말한다).
         if (e.origin === 'turn' && lastTurnEndOutcome === 'failed'

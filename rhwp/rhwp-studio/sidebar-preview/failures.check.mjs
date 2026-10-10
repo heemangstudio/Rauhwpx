@@ -12,6 +12,7 @@ const KINDS = [
   ['network', /에 연결하지 못했어요$/, ['retry']],
   ['auth', /로그인이 필요해요$/, ['login']],
   ['pi-auth', /^Pi 연결 설정이 필요해요$/, ['settings']],
+  ['pi-setup', /^Pi 연결 설정이 필요해요$/, ['settings']],
   ['usage', /사용 한도에 도달했어요$/, ['resume', 'usage']],
   ['usage-soon', /사용 한도에 도달했어요$/, ['resume', 'usage']],
   ['credits', /^OpenRouter 크레딧이 부족해요$/, ['usage']],
@@ -207,6 +208,71 @@ export async function checkFailureNotices(page, origin, artifacts) {
   await page.waitForSelector('.ag-failure-action[data-action="resume"]');
   await new Promise((resolve) => setTimeout(resolve, 5_000));
   assert.equal((await snapshot(page)).messagesSent, cancelledBefore, '취소 keeps the request unsent');
+
+  // Pi setup that is not finished (PI_NOT_CONFIGURED) is a settings problem: 설정 열기 on the notice,
+  // and no "Pi 로그인 필요" chip, which Pi's status could never clear.
+  await openFailure(page, origin, 'pi-setup');
+  await page.click('[aria-label="프로바이더 선택"]');
+  await page.waitForSelector('.ag-config-panel.ag-open');
+  await page.click('.ag-provider-item[data-agent="pi"]');
+  await page.keyboard.press('Escape');
+  await playFailure(page);
+  const [piSetup] = await notices(page);
+  assert.match(piSetup.title, /^Pi 연결 설정이 필요해요$/);
+  assert.deepEqual(piSetup.actions.map((action) => action.id), ['settings']);
+  assert.equal(await page.$eval('.ag-reconnect-chip', (chip) => chip.hidden), true, 'no Pi login chip for unfinished Pi setup');
+  await shot(page, artifacts, 'pi-setup');
+
+  // An inline-prompt request is tied to the selection it was sent with: its failure offers no 다시 시도,
+  // which would resend the bare instruction ("이 부분을 표로") without its target.
+  await openFailure(page, origin, 'network');
+  const inlineResult = await page.evaluate(() => window.sidebarPreview.sidebar.sendInlinePrompt({
+    prompt: '이 부분을 표로 바꿔 주세요',
+    selection: { label: '1문단', excerpt: '핵심 내용', contextBlock: '[선택 1문단] 핵심 내용', items: [] },
+  }));
+  assert.deepEqual(inlineResult, { ok: true });
+  await waitForNotices(page, 1);
+  const [inlineNotice] = await notices(page);
+  assert.deepEqual(inlineNotice.actions.map((action) => action.id), [], 'no 다시 시도 for an inline-prompt failure');
+  assert.match((await snapshot(page)).messageTexts.at(-1), /^\[선택 1문단\] 핵심 내용\n\n이 부분을 표로/, 'the request itself carried the selection');
+
+  // A failed turn's notice stays in its own chat: a question keeps the turn alive while another chat is
+  // shown, and the failure arriving then is stored in the turn's chat, not drawn in the shown one.
+  await page.goto(`${origin}/?theme=light&width=480&reset=1&scenario=chat`, { waitUntil: 'networkidle0' });
+  await composerReady(page);
+  await page.click('#play');
+  await page.waitForFunction(() => window.sidebarPreview.snapshot().messagesSent === 1 && !window.sidebarPreview.bridge.isTurnRunning());
+  const otherChat = await page.evaluate(() => window.sidebarPreview.sidebar.currentThreadId());
+  await page.evaluate(() => {
+    window.sidebarPreview.setHold(true);
+    window.sidebarPreview.sidebar.startDraftChat();
+  });
+  await composerReady(page);
+  // 새 초안은 집중 모드로 열린다 — 입력기에 직접 써서 보낸다.
+  await page.focus('.ag-input');
+  await page.type('.ag-input', '표로 정리해 주세요');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.sidebarPreview.snapshot().running);
+  const ownerChat = await page.evaluate(() => window.sidebarPreview.sidebar.currentThreadId());
+  assert.ok(otherChat && ownerChat && otherChat !== ownerChat);
+  await page.evaluate(() => window.sidebarPreview.askQuestion());
+  await page.waitForSelector('.ag-question-prompt');
+  await page.evaluate((id) => window.sidebarPreview.sidebar.openThreadById(id), otherChat);
+  await page.waitForFunction((id) => window.sidebarPreview.sidebar.currentThreadId() === id, {}, otherChat);
+  assert.equal((await snapshot(page)).running, true, 'the question keeps the turn running');
+  await page.evaluate(() => window.sidebarPreview.failRunningTurn('network'));
+  await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning());
+  assert.deepEqual(await notices(page), [], 'nothing is drawn into the chat being shown');
+  const storedNotices = await page.evaluate(async ([owner, other]) => {
+    await window.sidebarPreview.threadStore.waitForThreadsPersistence();
+    const threads = await window.sidebarPreview.threadStore.listThreads();
+    const count = (id) => threads.find((thread) => thread.id === id)?.messages.filter((message) => message.kind === 'error').length ?? -1;
+    return { owner: count(owner), other: count(other) };
+  }, [ownerChat, otherChat]);
+  assert.deepEqual(storedNotices, { owner: 1, other: 0 }, 'the notice is stored in the chat whose turn failed');
+  await page.evaluate((id) => window.sidebarPreview.sidebar.openThreadById(id), ownerChat);
+  await page.waitForSelector('.ag-failure-notice');
+  assert.match((await notices(page))[0].title, /에 연결하지 못했어요$/);
 }
 
 // Run on its own: `node sidebar-preview/failures.check.mjs` (own Vite server and browser profile).

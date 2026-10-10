@@ -31,6 +31,7 @@ export const failureKinds = [
   'network',
   'auth',
   'pi-auth',
+  'pi-setup',
   'usage',
   'usage-soon',
   'credits',
@@ -60,6 +61,9 @@ function previewFailure(kind: FailureKind, agent: T.AgentName, now: number): T.P
       return failure('auth_required', 'Invalid API key · Please run /login', `${agent}:authentication_failed`, false);
     case 'pi-auth':
       return { ...failure('auth_required', '401 No auth credentials found', 'http_401', false), agent: 'pi' };
+    case 'pi-setup':
+      // 허브가 Pi 설정이 끝나지 않은 채팅 시작을 거절한다 (chat-error PI_NOT_CONFIGURED).
+      return { ...failure('auth_required', 'Pi 설정을 먼저 끝내 주세요 (설치 · OpenRouter 키 · 모델 선택).', 'PI_NOT_CONFIGURED', false), agent: 'pi' };
     case 'usage':
       return failure('usage_limit', "You've hit your limit · resets 3pm (UTC)", `${agent}:rate_limit`, false);
     case 'usage-soon':
@@ -867,10 +871,11 @@ export function createMockBridge(
         scenario === 'chat' && workflow.workflow !== 'direct'
           ? workflow.workflow
           : scenario;
-      if (reply === 'error' && failureKind === 'start') {
+      if (reply === 'error' && (failureKind === 'start' || failureKind === 'pi-setup')) {
         // 채팅 시작 실패: 메시지는 프로바이더에 닿지 않는다.
-        const failure = previewFailure('start', agent, Date.now());
-        later(() => emit({ type: 'hub-error', code: 'AGENT_SPAWN_FAILED', message: failure.message, failure, origin: 'start' }));
+        const failure = previewFailure(failureKind, agent, Date.now());
+        const code = failureKind === 'start' ? 'AGENT_SPAWN_FAILED' : 'PI_NOT_CONFIGURED';
+        later(() => emit({ type: 'hub-error', code, message: failure.message, failure, origin: 'start' }));
         return null;
       }
       later(() => {

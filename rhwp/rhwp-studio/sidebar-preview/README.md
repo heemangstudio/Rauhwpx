@@ -76,6 +76,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=error` | A failed turn: one network-failure notice with 다시 시도 (same as `&failure=network`); failed turns never fold |
 | `?scenario=error&failure=auth` | Login notice (Claude/Codex) with 로그인; after the fixture login it shows 다시 연결됐어요 and 다시 시도 |
 | `?scenario=error&failure=pi-auth` | Pi connection notice with 설정 열기 |
+| `?scenario=error&failure=pi-setup` | Chat start refused because Pi setup is unfinished (`PI_NOT_CONFIGURED`): Pi connection notice with 설정 열기 and no Pi 로그인 필요 chip |
 | `?scenario=error&failure=usage` | Usage-limit notice whose reset time comes from the quota report, with 리셋 후 이어서 and 사용량 보기 |
 | `?scenario=error&failure=usage-soon` | Usage-limit notice resetting in 3 s; 리셋 후 이어서 sends by itself (the preview's clock grace is 0.5 s, the app's 30 s) |
 | `?scenario=error&failure=credits` | OpenRouter credits notice with 사용량 보기 |

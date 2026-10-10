@@ -369,6 +369,8 @@ export interface FailureNoticeControllerDeps {
   /** 이 사이드바가 보여 주는 채팅 */
   thread(): ChatThread;
   persist(): void;
+  /** 보이지 않는 채팅(실패한 턴의 주인)을 저장한다 — 그리지 않고 저장만 한다. */
+  persistThread(thread: ChatThread): void;
   /** 대화 끝(진행 표시 앞)에 붙인다 */
   append(node: HTMLElement): void;
   agentLabel(agent: AgentName): string;
@@ -593,25 +595,38 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
   }
 
   return {
-    /** 사용자가 이 채팅에서 요청을 보냈다 — 실패하면 다시 보낼 요청이다. 걸린 이어서 보내기는 취소된다. */
-    noteSend(threadId: string, payload: SendPayload): void {
-      lastSend = {
-        threadId,
-        displayText: payload.displayText,
-        requestText: payload.requestText,
-        ...(payload.skillName ? { skillName: payload.skillName } : {}),
-        ...(payload.skillName && payload.skillIcon ? { skillIcon: payload.skillIcon } : {}),
-      };
+    /**
+     * 사용자가 이 채팅에서 요청을 보냈다 — 실패하면 다시 보낼 요청이다(null 이면 다시 보낼 수 없는
+     * 요청: 인라인 프롬프트처럼 그 순간의 문서 선택에 묶인 것). 걸린 이어서 보내기는 취소된다.
+     */
+    noteSend(threadId: string, payload: SendPayload | null): void {
+      lastSend = payload
+        ? {
+          threadId,
+          displayText: payload.displayText,
+          requestText: payload.requestText,
+          ...(payload.skillName ? { skillName: payload.skillName } : {}),
+          ...(payload.skillName && payload.skillIcon ? { skillIcon: payload.skillIcon } : {}),
+        }
+        : null;
       cancelResume(threadId);
       refresh();
     },
-    /** 계획 승인·수정처럼 다시 보내면 안 되는 전송 뒤 */
+    /** 계획 승인·수정처럼 다시 보내면 안 되는 전송 뒤 — 이것도 이 채팅의 전송이라 걸린 이어서 보내기를 거둔다. */
     clearLastSend(): void {
       lastSend = null;
+      const threadId = deps.thread().id;
+      if (!resumes.has(threadId)) return;
+      cancelResume(threadId);
+      refresh();
     },
-    /** 실패 하나를 이 채팅의 대화 끝에 알림으로 남긴다. */
-    add(failure: ProviderFailure, input: FailureNoticeInput): ThreadFailureMessage {
-      const thread = deps.thread();
+    /**
+     * 실패 하나를 그 턴의 채팅 대화 끝에 알림으로 남긴다. owner 는 실패한 턴이 속한 채팅이다 — 지금
+     * 보이는 채팅이 아니면 그 채팅에 저장만 하고 그리지 않는다(그 채팅을 열면 복원된다).
+     */
+    add(failure: ProviderFailure, input: FailureNoticeInput, owner?: ChatThread): ThreadFailureMessage {
+      const shown = deps.thread();
+      const thread = owner && owner.id !== shown.id ? owner : shown;
       const sendable = !input.noRetry && (input.origin === 'send' || (input.origin === 'turn' && input.userInitiated));
       const base = sendable && lastSend?.threadId === thread.id ? lastSend : null;
       const retry: ThreadRetryPayload | undefined = base
@@ -639,6 +654,10 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
       cancelResume(thread.id);
       thread.messages.push(message);
       message.text = failureSummaryText(viewFor(message, thread, true));
+      if (thread !== shown) {
+        deps.persistThread(thread);
+        return message;
+      }
       deps.persist();
       const node = render(message);
       nodes.set(message, node);
