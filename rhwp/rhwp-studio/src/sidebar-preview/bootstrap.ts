@@ -41,13 +41,24 @@ if (url.searchParams.get('reset') === '1') {
 // `chats=engine-trap` adds the shown document's chat stopped by an engine trap.
 const chatsParam = url.searchParams.get('chats');
 if (chatsParam === 'sample' || chatsParam === 'engine-trap') {
-  const { engineTrapInterruptedChat, sampleChats } = await import('./fixtures.ts');
+  const {
+    engineTrapInterruptedChat, sampleChats, sampleReloadQuestionDraft, SAMPLE_WORKING_CHAT_ID,
+  } = await import('./fixtures.ts');
   const key = 'rhwp-agent-threads';
   const now = Date.now();
   const seeded = [
     ...sampleChats(now),
     ...(chatsParam === 'engine-trap' ? [engineTrapInterruptedChat(now)] : []),
   ];
+  // `chats=sample&reload=running|question` opens as if the page reloaded while the working
+  // chat's turn kept running: its stored copy is the newest, and `question` adds the draft the
+  // old page saved.
+  const reload = chatsParam === 'sample' ? url.searchParams.get('reload') : null;
+  const working = seeded.find((thread) => thread.id === SAMPLE_WORKING_CHAT_ID);
+  if (working && (reload === 'running' || reload === 'question')) {
+    working.updatedAt = now;
+    if (reload === 'question') working.pendingUserQuestion = sampleReloadQuestionDraft(now);
+  }
   const ids = new Set(seeded.map((thread) => thread.id));
   let pending: unknown[] = [];
   try {

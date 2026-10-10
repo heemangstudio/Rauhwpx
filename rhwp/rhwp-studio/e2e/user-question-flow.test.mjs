@@ -225,6 +225,36 @@ try {
     }
     await attachProvider();
 
+    // 턴이 도는 중에 새로고침해도 같은 채팅이 허브의 같은 프로바이더 세션·턴에 다시 붙는다.
+    // 다시 시작하면(chat-start force·chat-stop) 허브가 프로바이더를 내려 세션 id 가 바뀌고 턴이 끝난다.
+    const hubSession = async () => (await (await fetch(`http://127.0.0.1:${hubPort}/healthz?token=${HUB_TOKEN}`)).json())
+      .sessions?.[0]?.session ?? null;
+    const runningBefore = await hubSession();
+    assert(runningBefore?.status === 'running' && Boolean(runningBefore.turnId), 'Hub runs the turn before the reload');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => window.__agentBridge?.getConnectionState?.() === 'connected', { timeout: 30_000 });
+    await page.waitForFunction(
+      () => window.__agentBridge?.isTurnRunning?.() === true && Boolean(document.querySelector('.ag-send.ag-stop'))
+        && [...document.querySelectorAll('.ag-msg-user')].some((node) => node.textContent?.includes('Begin the mock blocking turn.')),
+      { timeout: 10_000 },
+    );
+    await delay(500);
+    const runningAfter = await hubSession();
+    assert(
+      runningAfter?.sessionId === runningBefore.sessionId && runningAfter.turnId === runningBefore.turnId
+        && runningAfter.status === 'running',
+      'Reload during a running turn keeps the same provider session and turn',
+    );
+    assert(
+      await page.evaluate(() => window.__agentBridge?.isTurnRunning?.() === true && Boolean(document.querySelector('.ag-send.ag-stop'))),
+      'Reloaded chat shows the running turn with Stop',
+    );
+    assert(
+      !await page.evaluate(() => [...document.querySelectorAll('.ag-msg-system')].some((node) => node.textContent?.includes('AGENT_BUSY'))),
+      'Reload adds no AGENT_BUSY error line',
+    );
+    await screenshot(page, 'ask-user-question-running-reload');
+
     const providerResult = provider.call('ask_user_question', {
       questions: [
         {
@@ -288,7 +318,7 @@ try {
     assert(restored.value === 'Keep my reconnect\ndraft', 'Other draft and Shift+Enter newline restored after reload');
     assert(restored.label === '현재 질문의 직접 답변' && restored.maxLength === 2_000, 'Other composer semantics restored');
     assert(
-      await page.$eval('.ag-user-question', (node) => node.nextElementSibling?.classList.contains('ag-composer')),
+      await page.$eval('.ag-user-question[data-inactive="false"]', (node) => node.nextElementSibling?.classList.contains('ag-composer')),
       'Reloaded live question is restored above the composer',
     );
     assert(await page.$('.ag-messages > .ag-question-timeline-anchor'), 'Reload restores the chronological transcript position');
@@ -501,6 +531,8 @@ try {
     );
     const stoppedResponse = await stoppedProviderResult;
     assert(stoppedResponse.ok === false && stoppedResponse.error?.code === 'USER_QUESTION_CANCELLED', 'Question Stop cancels the original provider call');
+    // 허브는 스튜디오에 해소를 알린 뒤 프로바이더 호출을 끝낸다 — 두 소켓의 도착 순서는 정해져 있지 않다.
+    await page.waitForFunction(() => !window.__agentBridge?.pendingQuestionCancellation, { timeout: 5_000 }).catch(() => {});
     assert(!await page.evaluate(() => Boolean(window.__agentBridge?.pendingQuestionCancellation)), 'Reloaded bridge clears the cancellation marker after hub resolution');
     await page.waitForFunction(
       () => window.__agentBridge?.isTurnRunning?.() === false

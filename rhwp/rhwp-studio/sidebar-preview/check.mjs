@@ -13,6 +13,7 @@ import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
 import { checkComposerSendPath, checkFollowUpQueue } from './queue.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
+import { checkReloadPreview } from './reload.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
 import { checkWriterBusyPreview } from './writer-busy.check.mjs';
 import { checkTypingGuard } from './typing-guard.check.mjs';
@@ -1023,6 +1024,8 @@ try {
   await step('Transient statuses wait 400 ms and never blink', () => checkDelayedStatus(page, origin, artifacts));
   await step('A request\'s accepted changes can be restored from its bubble, with confirmation and refusals',
     () => checkRestoreTurnPreview(page, origin, artifacts));
+  await step('A reload re-adopts the chat the hub still runs instead of restarting it',
+    () => checkReloadPreview(page, origin, artifacts));
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

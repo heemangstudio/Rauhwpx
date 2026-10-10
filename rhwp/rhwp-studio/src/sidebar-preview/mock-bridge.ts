@@ -129,8 +129,32 @@ const WRITER_BUSY_REPLY = [
   '그 채팅의 편집이 반영되거나 취소된 뒤 다시 요청해 주세요.',
 ];
 
+/**
+ * A chat the hub already runs for this window when the page loads, as after a reload:
+ * the sidebar must re-adopt it instead of restarting it.
+ */
+export interface MockLiveChat {
+  threadId: string;
+  agent?: T.AgentName;
+  /** The question the running turn is blocked on, if any. */
+  question?: T.UserQuestionInteraction;
+  /**
+   * Keep the hub's first answer back until `deliverWelcome()` so a test can order it against
+   * the thread store's hydration. By default `boot()` delivers it, right after the sidebar mounts.
+   */
+  deferWelcome?: boolean;
+}
+
+export interface MockBridgeOptions {
+  liveChat?: MockLiveChat;
+}
+
 /** Implements the actual UI contract: new bridge methods produce a type error here. */
-export function createMockBridge(report: (message: string) => void, onApproved?: () => void) {
+export function createMockBridge(
+  report: (message: string) => void,
+  onApproved?: () => void,
+  options: MockBridgeOptions = {},
+) {
   const data = createFixtures();
   const liveUsage = new URLSearchParams(location.search).get('usage') === 'live';
   if (liveUsage) {
@@ -169,7 +193,17 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   /** 다음 메시지를 허브가 이 코드로 거절한다(턴이 시작되지 않는다). */
   let rejectNext: string | null = null;
   let interrupts = 0;
+  let stops = 0;
   let threadId = '';
+  /** The chat whose session the mock hub holds; null before a start and after a stop. */
+  let hubChatThreadId: string | null = null;
+  let currentTurnId: string | null = null;
+  /** Without a live chat the fixture hub has nothing to report and has answered already. */
+  let welcomed = !options.liveChat;
+  let resolveWelcome: () => void = () => {};
+  const welcome = welcomed
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => { resolveWelcome = resolve; });
   let scenario: Scenario = 'chat';
   let holdReply = false;
   /** How long a chat start and an attachment upload take — checks slow them to observe the locks. */
@@ -218,7 +252,10 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     later(() => fn(id));
     return id;
   };
-  const stream = (event: T.AgentStreamEvent) => emit({ type: 'agent', event });
+  const stream = (event: T.AgentStreamEvent) => {
+    if (event.type === 'turn-start') currentTurnId = event.turnId ?? null;
+    emit({ type: 'agent', event });
+  };
   const setRunning = (value: boolean) => {
     running = value;
     leaseListeners.forEach((listener) => listener(bridge.getEditingLease()));
@@ -359,6 +396,15 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     getActiveAgent: () => agent,
     isTurnRunning: () => running,
     getPendingUserQuestion: () => question,
+    hubSessionKnown: () => welcome,
+    getHubChat: () => (hubChatThreadId
+      ? {
+        threadId: hubChatThreadId,
+        turnId: running ? currentTurnId : null,
+        running,
+        awaitingUser: question !== null || workflow.phase === 'awaiting-approval',
+      }
+      : null),
     getEditingLease: () =>
       deriveAgentEditingLease({
         turnRunning: running,
@@ -649,11 +695,16 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         ...workflow,
       };
       chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission });
+      hubChatThreadId = null;
       later(() => {
-        if (chatGeneration === startGeneration) emit(started);
+        if (chatGeneration !== startGeneration) return;
+        hubChatThreadId = threadId;
+        emit(started);
       }, chatStartDelayMs);
     },
     stopChat: () => {
+      stops += 1;
+      hubChatThreadId = null;
       generation++;
       chatGeneration++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
@@ -1316,6 +1367,34 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       leaseListeners.clear();
     },
   };
+  /**
+   * The hub's first answer after a reload, as the real bridge applies it: the chat's turn kept
+   * running in the hub, so the bridge adopts it, announces the session for its thread, and
+   * replays the question the turn is blocked on.
+   */
+  function deliverWelcome(): void {
+    const live = options.liveChat;
+    if (!live || welcomed) return;
+    welcomed = true;
+    agent = live.agent ?? agent;
+    threadId = live.threadId;
+    hubChatThreadId = threadId;
+    currentTurnId = 'preview-turn';
+    question = live.question ? structuredClone(live.question) : null;
+    setRunning(true);
+    emit({
+      type: 'chat-started',
+      agent,
+      sessionId: 'preview-session',
+      model: defaultModelForAgent(agent),
+      permissionProfile: permission,
+      serviceTier: tier,
+      threadId,
+      ...workflow,
+    });
+    if (question) emit({ type: 'user-question-requested', interaction: question, replayed: true });
+    resolveWelcome();
+  }
   function setConnection(state: typeof connection) {
     if (state !== 'connected') {
       generation++;
@@ -1438,13 +1517,16 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       setupChanged();
       emit({ type: 'usage-report', usage: data.usage });
       bridge.listSkills();
+      if (!options.liveChat?.deferWelcome) deliverWelcome();
     },
+    deliverWelcome,
     snapshot: () => ({
       chatStarts: chatStarts.map((start) => ({ ...start })),
       messagesSent,
       messageTexts: sentMessages.map((message) => message.text),
       sentMessages: sentMessages.map((message) => ({ ...message, referenceIds: [...message.referenceIds] })),
       interrupts,
+      stops,
       scenario,
       connection,
       running,

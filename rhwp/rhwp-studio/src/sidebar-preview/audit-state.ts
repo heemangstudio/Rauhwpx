@@ -49,6 +49,7 @@ async function chooseMode(mode: 'chat' | 'plan' | 'agent' | 'full'): Promise<voi
 export async function applyAuditState(preview: SidebarPreview, params: URLSearchParams): Promise<void> {
   // 저장된 대화를 다시 열면 채팅이 그 대화의 모드와 권한으로 새로 시작된다. 장면은 그 뒤에 준비한다.
   await preview.threadStore.waitForThreadsPersistence();
+  await preview.sidebar.startupChatSettled();
   await new Promise((resolve) => requestAnimationFrame(resolve));
   // 감사 장면은 저장된 대화를 이어받는다. 앞 장면이 남긴 대기 메시지는 삭제 단추로 걷고 시작한다.
   if (params.get('audit') === '1') {

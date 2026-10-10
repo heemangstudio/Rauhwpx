@@ -17,7 +17,7 @@ import type { DiffItem } from '../../compare/types.ts';
 import type { DocumentPosition } from '../../core/types.ts';
 
 import type { EventBus } from '../../core/event-bus.ts';
-import type { SidebarBridge } from '../../agent/bridge.ts';
+import type { HubChat, SidebarBridge } from '../../agent/bridge.ts';
 import type {
   AgentName,
   AgentPhase,
@@ -195,6 +195,7 @@ import type {
   InlinePromptSubmission,
 } from '../../agent/inline-prompt-context.ts';
 import { createUserQuestionController, type UserQuestionDraftState } from './user-question-controller.ts';
+import { decideStartupChat, STARTUP_HUB_ANSWER_TIMEOUT_MS, type StartupChatDecision } from './startup-chat.ts';
 import { createModeMenu, parseModeCommand } from './mode-menu.ts';
 import { createTurnRestoreActions } from './turn-restore-action.ts';
 import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
@@ -299,6 +300,11 @@ export interface AgentSidebarHandle {
   startDraftChat(): void;
   /** 이 사이드바가 보이는 채팅. 초안이거나 비어 있으면 null. */
   currentThreadId(): string | null;
+  /**
+   * 시작 채팅 고르기가 끝나면 풀린다 — 스레드 저장소와 허브의 첫 답을 기다린 뒤 살아 있는 채팅을
+   * 잇거나 마지막 채팅을 복원한 다음이다. 그 뒤에 채팅을 다루는 스크립트·검사가 기다린다.
+   */
+  startupChatSettled(): Promise<void>;
   dispose(): void;
 }
 
@@ -867,6 +873,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let bridgeThreadId: string | null = null;
   /** 사용자나 편집기가 채팅을 고른 뒤에는 시작 때의 마지막 채팅 복원이 덮어쓰지 않는다. */
   let chatChosen = false;
+  /**
+   * 시작 채팅 고르기(settleStartupChat)가 아직 스레드 저장소와 허브의 첫 답을 기다린다. 그동안
+   * 처음 뜬 초안은 문서가 열려도 새 채팅을 시작하지 않는다 — 허브에 살아 있는 이 창의 채팅을
+   * 새 시작 요청이 갈아 치우지 않게 한다.
+   */
+  let startupChatPending = true;
   /** 같은 문서의 다른 채팅이 편집 중이면 그 이유 — 이 채팅은 채팅 모드만 쓴다. */
   let chatModeLockReason: string | null = null;
   /** 잠금 때문에 채팅 모드로 옮기려 했던 채팅 — 허브가 거절해도 같은 채팅에서 되풀이하지 않는다. */
@@ -1837,10 +1849,39 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     pendingThreadSwitch = null;
     if (followed && threadMatchesDocument(followed, nextDocumentId, nextKey)) {
       openThread(followed.id);
+    } else if (!followed && adoptLiveChatForDocument(nextDocumentId, nextKey)) {
+      // 새로고침 전부터 허브에서 돌던 이 문서의 채팅을 다시 시작하지 않고 이었다.
+    } else if (!followed && startupChatPending && draftChat && !chatChosen) {
+      // 시작 채팅은 허브의 첫 답을 본 뒤 이 문서 기준으로 고른다 — 지금 새 채팅을 열면
+      // 허브에 살아 있는 이 창의 채팅을 시작 요청이 갈아 치운다.
+      retargetStartupDraft();
     } else {
       startNewChat({ silent: true });
     }
     rebuildThreadsList();
+  }
+
+  /**
+   * 새로고침 뒤 아직 붙이지 않은 허브의 채팅(문서가 늦게 열린 경우)이 이 문서의 것이면 그 채팅을
+   * 연다. 데스크톱 실행 파일이나 문서 ID 를 지키는 자동 저장 복원이 시작 채팅 고르기 뒤에 도착할 때다.
+   */
+  function adoptLiveChatForDocument(documentId: string | null, docKey: string | null): boolean {
+    if (!draftChat || bridgeThreadId !== null) return false;
+    const live = bridge.getHubChat();
+    const liveThread = live ? getThread(live.threadId) : null;
+    if (!liveThread || !threadMatchesDocument(liveThread, documentId, docKey)) return false;
+    openThread(liveThread.id, { routed: true });
+    return currentThread.id === liveThread.id;
+  }
+
+  /** 아직 저장되지 않은 시작 초안을 새로 열린 문서에 맞춘다. */
+  function retargetStartupDraft(): void {
+    currentThread.docKey = currentDocKey;
+    currentThread.documentId = currentDocumentId;
+    referenceLibrary.contextChanged();
+    enforceChatModeLock();
+    updateWorkspaceChatTitle();
+    updateComposer();
   }
 
   function setConfigPanelOpen(open: boolean): void {
@@ -6563,8 +6604,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     pendingThreadSwitch = null;
+    // 허브의 살아 있는 세션이 이 채팅이다(새로고침 뒤 다시 붙이기) — 멈추거나 다시 시작하지 않고 잇는다.
+    const adopt = bridge.getHubChat()?.threadId === id;
     // 초안을 버리고 브리지가 아직 들고 있는 앞 채팅으로 돌아가면 다시 열지 않고 잇는다.
-    const resume = draftChat && !liveQuestion && bridgeThreadId === id && bridge.getActiveAgent() !== null;
+    const resume = adopt
+      || (draftChat && !liveQuestion && bridgeThreadId === id && bridge.getActiveAgent() !== null);
     if (!resume && !liveQuestion && turnRunning) bridge.interrupt();
     flushAssistantBuffer();
     followUps.detach();
@@ -6622,6 +6666,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     persistCurrentThread();
     exitReadOnlyMode();
     restoreThreadComposerDraft();
+    // 입력칸 복원 뒤에 묶는다 — 이어 붙인 질문의 '직접 입력' 답이 마지막에 들어간다.
+    if (adopt) bindLiveChat(id);
     if (liveQuestion) {
       setThreadsPanelOpen(false);
       return;
@@ -6637,6 +6683,122 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     startCurrentBridgeChat(true);
     setThreadsPanelOpen(false);
     input.focus();
+  }
+
+  /**
+   * 브리지가 허브에서 이미 들고 있는 채팅(새로고침 전부터 돌던 턴·질문·계획 승인 대기)을 이 화면에
+   * 묶는다. 멈추거나 다시 시작하지 않고 모드·진행 표시·질문 카드만 브리지에 맞춘다.
+   */
+  function bindLiveChat(id: string): void {
+    bridgeThreadId = id;
+    chatStartPendingThreadId = null;
+    applyChatSessionState({
+      agent: bridge.getActiveAgent() ?? selectedAgent,
+      permissionProfile: bridge.getPermissionProfile(),
+      serviceTier: bridge.getServiceTier(),
+    });
+    setTurnRunning(bridge.isTurnRunning());
+    if (turnRunning) {
+      runStatusThreadId = id;
+      markChatWorking(id);
+    }
+    const interaction = bridge.getPendingUserQuestion();
+    if (interaction?.threadId === id) {
+      presentLiveQuestion(interaction);
+      runStatusThreadId = id;
+      markChatNeedsInput(id);
+      updateComposer();
+    } else {
+      expireStalePendingQuestion();
+    }
+    const live = bridge.getHubChat();
+    if (live?.threadId === id) onLiveChatAdopted(live);
+  }
+
+  /**
+   * 허브의 살아 있는 턴을 이 채팅에 다시 묶은 직후(bindLiveChat)에 부른다. 지금은 할 일이 없다.
+   * - U4: 이 채팅의 마지막 턴 표식(kind:'turn')이 아직 열려 있으면 그 표식을 openFold 로 다시
+   *   잡아, 이어 붙인 턴의 turn-end 가 그 접힘을 닫게 한다.
+   * - S3: 이 턴을 중단으로 기록해 두었으면(live.turnId 가 같으면) 되살린다(reviveInterruptedTurn).
+   */
+  function onLiveChatAdopted(_live: HubChat): void {
+    // U4·S3 가 채운다.
+  }
+
+  /** 허브 세션의 에이전트·모델·속도·권한·작업 방식을 이 채팅에 맞춘다 — chat-started 와 다시 붙이기가 함께 쓴다. */
+  function applyChatSessionState(
+    e: Pick<Extract<SidebarEvent, { type: 'chat-started' }>, 'agent' | 'model' | 'effort' | 'serviceTier' | 'permissionProfile'>,
+  ): void {
+    chatStartPendingThreadId = null;
+    const prevAgent = selectedAgent;
+    const prevModel = selectedModel;
+    const prevEffort = selectedEffort;
+    if (e.agent !== selectedAgent) {
+      selectedModel = defaultModelForAgent(e.agent);
+      selectedEffort = resolveEffortForAgent(e.agent, null, selectedModel);
+    }
+    setSelectedAgent(e.agent);
+    selectedModel = resolveModelForAgent(selectedAgent, e.model ?? selectedModel);
+    selectedEffort = resolveEffortForAgent(
+      selectedAgent,
+      e.effort ?? selectedEffort,
+      selectedModel,
+    );
+    currentThread.agent = selectedAgent;
+    currentThread.model = selectedModel;
+    currentThread.effort = selectedEffort;
+    if (e.serviceTier === 'fast' || e.serviceTier === 'standard') {
+      selectedServiceTier = resolveServiceTier(selectedAgent, e.serviceTier);
+      currentThread.serviceTier = selectedServiceTier;
+    }
+    if (e.permissionProfile) {
+      permissionProfile = e.permissionProfile;
+      updateModeChip();
+    }
+    // 로컬에서 이미 맞춰 둔 선택(추론 강도 등)을 서버가 그대로 메아리치면
+    // 메뉴를 다시 그리지 않는다 — 열린 설정 패널이 깜빡이지 않게.
+    if (selectedAgent !== prevAgent || selectedModel !== prevModel) rebuildLlmMenu();
+    if (selectedAgent !== prevAgent || selectedModel !== prevModel || selectedEffort !== prevEffort) {
+      rebuildEffortMenu();
+    }
+    updateComposer();
+    // Socket-open precedes the authoritative welcome/chat-started frame,
+    // so non-global reference scopes are refreshed only after the hub has
+    // bound this exact thread and document identity.
+    void referenceLibrary.refresh();
+    // 새 채팅(welcome)·재시작 시 작업 방식과 계획 단계를 서버와 다시 맞춘다.
+    syncPlanningFromBridge();
+    persistCurrentThread();
+  }
+
+  /** 브리지의 살아 있는 질문을 지금 채팅에 띄운다. 저장된 초안(단계·선택·직접 입력)이 같은 질문이면 잇는다. */
+  function presentLiveQuestion(interaction: UserQuestionInteraction): void {
+    const stored = currentThread.pendingUserQuestion
+      && pendingUserQuestionMatchesInteraction(currentThread.pendingUserQuestion, interaction)
+      ? currentThread.pendingUserQuestion
+      : undefined;
+    currentThread.pendingUserQuestion = stored ?? createPendingUserQuestionDraftSnapshot(interaction);
+    questionController.setVisible(true);
+    questionController.request(interaction, stored);
+    mountQuestionTimelineAnchor();
+    persistCurrentThread();
+  }
+
+  /**
+   * 저장된 질문 초안이 허브의 살아 있는 질문과 이어지지 않으면 만료로 남긴다. 같은 틱에 재생될
+   * 질문이 먼저 자리를 잡을 수 있게 마이크로태스크로 미룬다.
+   */
+  function expireStalePendingQuestion(): void {
+    if (!currentThread.pendingUserQuestion) return;
+    const pendingId = currentThread.pendingUserQuestion.interaction.interactionId;
+    queueMicrotask(() => {
+      if (currentThread.pendingUserQuestion?.interaction.interactionId !== pendingId) return;
+      if (questionController.interaction()?.interactionId === pendingId) return;
+      const expired = expirePendingUserQuestion(currentThread, 'request-invalidated', pendingId);
+      if (!expired) return;
+      persistCurrentThread();
+      appendConversation(renderUserQuestionHistory(expired));
+    });
   }
 
   threadsBtn.addEventListener('click', (e) => {
@@ -7781,7 +7943,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
 
+  /**
+   * 브리지가 허브의 채팅을 들고 있지만 이 화면에 붙이지 않았다 — 새로고침 뒤 그 채팅의 문서가
+   * 아직 열리지 않아 초안이 대신 떠 있다. 문서가 열리면 handleDocumentSwitch 가 붙인다.
+   */
+  function hubChatUnbound(): boolean {
+    return draftChat && bridgeThreadId === null && bridge.getHubChat() !== null;
+  }
+
   function handleAgentEvent(event: AgentStreamEvent): void {
+    // 붙이지 않은 허브 턴의 스트림은 초안 화면에 그리지 않는다 — 그리면 초안이 그 답으로 저장된다.
+    if (hubChatUnbound()) return;
     switch (event.type) {
       case 'turn-start':
         turnOwnerThreadId = currentThread.id;
@@ -8020,74 +8192,27 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
       case 'connection':
         setConnection(e.state, { attempt: e.attempt, retryInMs: e.retryInMs });
-        // 재연결 시 진행 상태를 브리지와 다시 동기화한다.
-        setTurnRunning(bridge.isTurnRunning());
+        // 재연결 시 진행 상태를 브리지와 다시 동기화한다. 붙이지 않은 허브 턴은 초안의 일이 아니다.
+        setTurnRunning(bridge.isTurnRunning() && !hubChatUnbound());
         dropRunStatusIfIdle();
         followUps.settle();
         break;
       case 'chat-started': {
         if (e.threadId && e.threadId !== currentThread.id) break;
-        chatStartPendingThreadId = null;
-        const prevAgent = selectedAgent;
-        const prevModel = selectedModel;
-        const prevEffort = selectedEffort;
-        if (e.agent !== selectedAgent) {
-          selectedModel = defaultModelForAgent(e.agent);
-          selectedEffort = resolveEffortForAgent(e.agent, null, selectedModel);
+        applyChatSessionState(e);
+        // 재연결 welcome 이 이 채팅의 살아 있는 턴을 이었다(대기 중이던 시작 요청을 버리고) —
+        // 진행 표시를 브리지에 맞춘다. 사이드바가 이미 돌고 있다고 알면 그대로 둔다.
+        const live = bridge.getHubChat();
+        if (live?.threadId === currentThread.id && live.running && !turnRunning) {
+          bridgeThreadId = currentThread.id;
+          setTurnRunning(true);
+          runStatusThreadId = currentThread.id;
+          markChatWorking(currentThread.id);
+          onLiveChatAdopted(live);
         }
-        setSelectedAgent(e.agent);
-        selectedModel = resolveModelForAgent(selectedAgent, e.model ?? selectedModel);
-        selectedEffort = resolveEffortForAgent(
-          selectedAgent,
-          e.effort ?? selectedEffort,
-          selectedModel,
-        );
-        currentThread.agent = selectedAgent;
-        currentThread.model = selectedModel;
-        currentThread.effort = selectedEffort;
-        if (e.serviceTier === 'fast' || e.serviceTier === 'standard') {
-          selectedServiceTier = resolveServiceTier(selectedAgent, e.serviceTier);
-          currentThread.serviceTier = selectedServiceTier;
-        }
-        if (e.permissionProfile) {
-          permissionProfile = e.permissionProfile;
-          updateModeChip();
-        }
-        // 로컬에서 이미 맞춰 둔 선택(추론 강도 등)을 서버가 그대로 메아리치면
-        // 메뉴를 다시 그리지 않는다 — 열린 설정 패널이 깜빡이지 않게.
-        if (selectedAgent !== prevAgent || selectedModel !== prevModel) rebuildLlmMenu();
-        if (selectedAgent !== prevAgent || selectedModel !== prevModel || selectedEffort !== prevEffort) {
-          rebuildEffortMenu();
-        }
-        updateComposer();
-        // Socket-open precedes the authoritative welcome/chat-started frame,
-        // so non-global reference scopes are refreshed only after the hub has
-        // bound this exact thread and document identity.
-        void referenceLibrary.refresh();
-        // 새 채팅(welcome)·재시작 시 작업 방식과 계획 단계를 서버와 다시 맞춘다.
-        syncPlanningFromBridge();
-        persistCurrentThread();
         const liveQuestion = bridge.getPendingUserQuestion();
-        if (liveQuestion?.threadId === currentThread.id) {
-          const stored = currentThread.pendingUserQuestion
-            && pendingUserQuestionMatchesInteraction(currentThread.pendingUserQuestion, liveQuestion)
-            ? currentThread.pendingUserQuestion
-            : undefined;
-          questionController.setVisible(true);
-          requestQuestion(liveQuestion, stored);
-          mountQuestionTimelineAnchor();
-        }
-        if (currentThread.pendingUserQuestion) {
-          const pendingId = currentThread.pendingUserQuestion.interaction.interactionId;
-          queueMicrotask(() => {
-            if (currentThread.pendingUserQuestion?.interaction.interactionId !== pendingId) return;
-            if (questionController.interaction()?.interactionId === pendingId) return;
-            const expired = expirePendingUserQuestion(currentThread, 'request-invalidated', pendingId);
-            if (!expired) return;
-            persistCurrentThread();
-            appendConversation(renderUserQuestionHistory(expired));
-          });
-        }
+        if (liveQuestion?.threadId === currentThread.id) presentLiveQuestion(liveQuestion);
+        expireStalePendingQuestion();
         break;
       }
       case 'permission-changed':
@@ -9030,21 +9155,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   // ── 구독 ──────────────────────────────────────────────
   const unsubBridge = bridge.onEvent(handleSidebarEvent);
+  // 저장소 준비가 허브의 welcome 보다 늦어도 시작 채팅 고르기(settleStartupChat)가 둘 다 기다린
+  // 뒤에 살아 있는 채팅을 잇는다 — 여기서 질문을 따로 되살리지 않는다.
   const unsubThreads = subscribeThreadChanges(() => {
     if (threadsListVisible()) rebuildThreadsList();
-    if (restoringLiveQuestion) return;
-    const liveQuestion = bridge.getPendingUserQuestion();
-    if (!liveQuestion || questionController.interaction()?.interactionId === liveQuestion.interactionId) return;
-    const owner = getThread(liveQuestion.threadId);
-    if (!owner) return;
-    // IndexedDB hydration can finish after the v4 welcome snapshot. Replay the
-    // canonical bridge interaction once its persisted owner becomes available.
-    restoringLiveQuestion = true;
-    try {
-      handleSidebarEvent({ type: 'user-question-requested', interaction: liveQuestion });
-    } finally {
-      restoringLiveQuestion = false;
-    }
   });
   // 다른 탭의 채팅이 일을 시작하거나 끝내면 이 탭의 목록에도 불이 옮겨 붙는다.
   const unsubChatStatus = subscribeChatStatus(() => {
@@ -9115,19 +9229,68 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   setTurnRunning(turnRunning);
   updateWorkflowControl();
   updateDocumentContext();
-  // 재시작 뒤 현재 문서의 마지막 채팅을 복원한다. 이전 세션 대화가 기록에 남아 있으면
-  // 비어 보이는 새 채팅 대신 그 스레드를 연다 — openThread 가 스냅샷/세션 재시작을 처리한다.
-  function restoreLastChat(): void {
-    if (root.dataset.disposed === 'true' || restoringLiveQuestion || chatChosen) return;
-    if (currentThread.messages.length > 0) return;
-    const restored = listThreads()
-      .find((thread) => threadMatchesDocument(thread, currentDocumentId, currentDocKey));
-    if (restored && restored.id !== currentThread.id) openThread(restored.id);
+  /**
+   * 재시작·새로고침 뒤 처음 띄울 채팅을 고른다. 스레드 저장소와 허브의 첫 답(welcome)이 모두 준비된
+   * 뒤 한 번 돈다. 허브가 이 창의 채팅을 아직 돌리고 있으면(턴·질문·계획 승인 대기) 그 채팅을 다시
+   * 시작하지 않고 잇고, 아니면 현재 문서의 마지막 채팅을 복원한다 — openThread 가 세션 시작을 맡는다.
+   */
+  let resolveStartupChatSettled: () => void = () => {};
+  const startupChatSettled = new Promise<void>((resolve) => { resolveStartupChatSettled = resolve; });
+  function settleStartupChat(): void {
+    if (!startupChatPending) return;
+    startupChatPending = false;
+    try {
+      chooseStartupChat();
+    } finally {
+      resolveStartupChatSettled();
+    }
   }
-  void waitForThreadsPersistence().then(() => {
+
+  function chooseStartupChat(): void {
+    if (root.dataset.disposed === 'true') return;
+    const decision = decideStartupChat({
+      live: bridge.getHubChat(),
+      getThread,
+      threads: listThreads(),
+      documentId: currentDocumentId,
+      docKey: currentDocKey,
+    });
+    reconcileStartupTurns(decision);
+    if (restoringLiveQuestion || chatChosen) return;
+    // 사용자가 이미 초안에 쓰기 시작했으면(한글 조합 중 포함) 아무것도 바꾸지 않는다.
+    if (currentThread.messages.length > 0 || input.value !== '') return;
+    if (decision.kind === 'adopt') {
+      openThread(decision.threadId);
+      return;
+    }
+    // 살아 있는 턴의 문서가 아직 없다 — 그 문서가 열리면 handleDocumentSwitch 가 잇는다.
+    if (decision.kind === 'await-document') return;
+    // 화면에 없는 다른 문서의 턴은 고칠 문서가 없다 — 복원 전에 끝낸다.
+    if (decision.stopLive) bridge.stopChat();
+    if (decision.threadId && decision.threadId !== currentThread.id) openThread(decision.threadId);
+  }
+
+  /**
+   * 시작 채팅을 고르기 직전, 저장소와 허브의 첫 답이 모두 준비된 때 한 번 부른다(사용자나 편집기가
+   * 이미 채팅을 골랐어도 부른다). 지금은 할 일이 없다.
+   * - S3: 여기서 중단된 턴을 정리한다(reconcileInterruptedTurns). decision 이 adopt 면 그 채팅의 마지막
+   *   미정 턴은 살아 있으니 남기고, adopt 가 아닌 살아 있는 턴(await-document·stopLive)은 이 화면에서
+   *   끊긴 것으로 본다. 뒤에 문서가 열려 다시 붙으면 onLiveChatAdopted 가 되살린다.
+   */
+  function reconcileStartupTurns(_decision: StartupChatDecision): void {
+    // S3 가 채운다.
+  }
+
+  // 허브가 첫 답을 끝내 주지 못하는 경우(세션 구성 조회가 멈춘 데스크톱 IPC 등)에도 복원은 한다 —
+  // 그때 늦게 온 같은 채팅의 살아 있는 턴은 브리지가 시작 요청 대신 잇는다.
+  const hubAnswer = Promise.race([
+    bridge.hubSessionKnown(),
+    new Promise<void>((resolve) => window.setTimeout(resolve, STARTUP_HUB_ANSWER_TIMEOUT_MS)),
+  ]);
+  void Promise.all([waitForThreadsPersistence(), hubAnswer]).then(() => {
     // 화면 밖에서 만든 채팅 창은 편집기가 곧바로 초안이나 채팅을 고른다 — 한 박자 미뤄 그 선택을 덮지 않는다.
-    if (deps.startActive === false) window.setTimeout(restoreLastChat, 0);
-    else restoreLastChat();
+    if (deps.startActive === false) window.setTimeout(settleStartupChat, 0);
+    else settleStartupChat();
   });
   rebuildReview();
   // 같은 문서의 다른 채팅이 편집하는 동안 이 채팅은 채팅 모드만 쓴다.
@@ -9393,6 +9556,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     currentThreadId(): string | null {
       return draftChat || currentThread.messages.length === 0 ? null : currentThread.id;
     },
+    startupChatSettled: () => startupChatSettled,
     followThreadOnNextDocument(threadId: string): void {
       if (root.dataset.disposed === 'true') return;
       // 이 채팅을 열기로 정했으니, 늦게 도는 "마지막 채팅 복원"이 덮어쓰지 않게 한다.
@@ -9402,6 +9566,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     dispose(): void {
       if (root.dataset.disposed === 'true') return;
       followUps.detach('interrupted');
+      resolveStartupChatSettled();
       flushTranscriptPersist();
       // 붙어 있던 사이드바를 걷으면 다음에 붙는 사이드바가 이 배치를 이어받는다.
       if (active) writeSidebarPageLayout(pageLayoutSnapshot());

@@ -1,5 +1,5 @@
 import type * as T from '../agent/types.ts';
-import type { ChatThread } from '../agent/threads.ts';
+import type { ChatThread, PendingUserQuestionDraftSnapshot } from '../agent/threads.ts';
 import { defaultModelForAgent, labelForModel } from '../agent/models.ts';
 import { ENGINE_TRAP_INTERRUPTED_NOTICE } from '../recovery/trap-chat-notice.ts';
 
@@ -384,5 +384,60 @@ export function engineTrapInterruptedChat(now: number): ChatThread {
       { role: 'assistant', text: '일정 표의 칸 너비를 확인하고 있습니다.', agent: 'claude', kind: 'progress' },
       { role: 'system', text: ENGINE_TRAP_INTERRUPTED_NOTICE },
     ],
+  };
+}
+
+/**
+ * `reload=question`: the question the reloaded chat's running turn is blocked on (sample data).
+ * The second card accepts typed text, which the reload must bring back with its step.
+ */
+export function sampleReloadQuestion(): T.UserQuestionInteraction {
+  return {
+    interactionId: 'preview-reload-question',
+    providerRequestId: 'preview-reload-request',
+    threadId: SAMPLE_WORKING_CHAT_ID,
+    turnId: 'preview-turn',
+    agent: 'claude',
+    source: 'native',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    questions: [
+      {
+        id: 'range',
+        header: '범위',
+        question: '어느 기간의 일정을 분기별로 나눌까요?',
+        mode: 'single',
+        allowOther: false,
+        options: [
+          { id: 'all', label: '전체 일정', description: '착수부터 종료까지 모두 나눕니다.' },
+          { id: 'next-year', label: '내년 일정만', description: '2027년 일정만 분기로 묶습니다.' },
+        ],
+      },
+      {
+        id: 'confirm',
+        header: '확인',
+        question: '표를 고치기 전에 확인할 내용이 있나요?',
+        mode: 'single',
+        allowOther: true,
+        options: [
+          { id: 'owner', label: '담당자 확인', description: '일정마다 담당자를 표에 함께 적습니다.' },
+          { id: 'none', label: '바로 진행', description: '지금 날짜로 표를 정리합니다.' },
+        ],
+      },
+    ],
+  };
+}
+
+/** Typed `직접 입력` answer that the stored draft of `sampleReloadQuestion` holds (sample data). */
+export const SAMPLE_RELOAD_OTHER_TEXT = '현장 인터뷰 일정\n다시 확인';
+
+/** The draft the page saved before the reload: the first card answered, the second one typed. */
+export function sampleReloadQuestionDraft(now: number): PendingUserQuestionDraftSnapshot {
+  return {
+    interaction: sampleReloadQuestion(),
+    selectedOptionIdsByQuestionId: { range: ['all'] },
+    otherTextByQuestionId: { confirm: SAMPLE_RELOAD_OTHER_TEXT },
+    activeQuestionIndex: 1,
+    updatedAt: now,
   };
 }

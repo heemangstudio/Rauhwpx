@@ -17,6 +17,7 @@ import {
   SAMPLE_FINISHED_CHAT_ID,
   SAMPLE_WORKING_CHAT_ID,
   sampleRecentDocuments,
+  sampleReloadQuestion,
 } from './fixtures.ts';
 import { normalizeSettingsDestination } from '../ui/agent-sidebar/settings-contract.ts';
 import { mountAuditNavigator } from './audit-scenarios.ts';
@@ -82,13 +83,25 @@ const turnRestore: TurnRestoreControl = {
     return () => { restoreListeners.delete(listener); };
   },
 };
+/*
+ * `chats=sample&reload=running|question` mounts the sidebar as after a reload while the hub still
+ * runs the 사업 제안서 chat's turn (and, for `question`, waits on its question).
+ */
+const reload = params.get('reload');
+const liveChat = params.get('chats') === 'sample' && (reload === 'running' || reload === 'question')
+  ? {
+    threadId: SAMPLE_WORKING_CHAT_ID,
+    agent: 'claude' as const,
+    ...(reload === 'question' ? { question: sampleReloadQuestion() } : {}),
+  }
+  : undefined;
 const mock = createMockBridge(report, () => {
   undoState.entry = {};
   if (restoreState.turnKey) {
     restoreState.ready.add(restoreState.turnKey);
     notifyRestore();
   }
-});
+}, { liveChat });
 if (params.get('services') === 'setup') mock.setServices(false);
 const eventBus = new EventBus();
 const versions = createMockVersions(report, params.get('history') === 'branches');
@@ -496,7 +509,7 @@ async function enterFocusMode(): Promise<void> {
 }
 // Open the requested view after the sidebar restores its saved conversation.
 if (params.get('page') === 'settings' || params.get('page') === 'versions')
-  await waitForThreadsPersistence();
+  await sidebar.startupChatSettled();
 if (params.get('fullscreen') === '1') await enterFocusMode();
 if (params.get('page') === 'settings')
   eventBus.emit('settings:open', { destination: normalizeSettingsDestination(params.get('destination')) ?? 'editing' });
@@ -507,7 +520,8 @@ async function openLockedParallelScene(): Promise<void> {
   const until = async (ready: () => boolean) => {
     while (!ready()) await new Promise((resolve) => setTimeout(resolve, 20));
   };
-  await waitForThreadsPersistence();
+  // The restored chat starts first; the scene is played on top of it.
+  await sidebar.startupChatSettled();
   const modeButton = sidebar.root.querySelector<HTMLButtonElement>('.ag-mode-btn')!;
   await until(() => sidebar.root.dataset.composerReady === 'true' && !modeButton.disabled);
   // A restored chat may be in another mode; the first chat edits in 에이전트.
