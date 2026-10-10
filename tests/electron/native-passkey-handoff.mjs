@@ -37,7 +37,7 @@ try {
   const nativeOwner = {};
   const passwordsModule = await import(process.env.RHWP_TEST_NATIVE_PASSWORD_HOST ? new URL('./browser-passwords.mjs', process.env.RHWP_TEST_NATIVE_PASSWORD_HOST).href : '../../desktop/browser-passwords.mjs').catch(() => null);
   const secret = 'synthetic-native-autofill-only';
-  if (passwordsModule) new passwordsModule.NativeBrowserPasswords({ host, vault: { async withCredential(_id, use) { return use({ origin, username: 'fixture-user', password: secret }); } } });
+  if (passwordsModule) new passwordsModule.NativeBrowserPasswords({ host, vault: { async withCredential(_id, use) { return use({ origin, username: 'fixture-user', password: secret }, { assertCurrent() {}, write: callback => callback() }); } } });
   const nativeAdapter = {
     async start(params) { return { ...await host.start(params, nativeOwner), close: () => host.release(nativeOwner) }; },
     ...(host.activity ? { activity: (params) => host.activity(params) } : {}),
