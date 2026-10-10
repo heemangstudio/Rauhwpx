@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, promises as fs, renameSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -572,4 +573,36 @@ test('journal publish does not retry a non-lock or unix lock error', async (t) =
     (error) => error.code === 'EPERM',
   );
   assert.equal(unixAttempts, 1);
+});
+
+test('a credential copyback interrupted in 2.0.11 is finished from its HamaEditor-named files', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-rebranded-copyback-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const providerDir = path.join(root, '.codex');
+  const launchDir = path.join(root, 'HamaEditor', 'launch-work', 'run');
+  await fs.mkdir(providerDir, { recursive: true });
+  await fs.mkdir(launchDir, { recursive: true });
+  const source = path.join(providerDir, 'auth.json');
+  const target = path.join(launchDir, 'auth.json');
+  const id = createHash('sha256').update(path.resolve(target)).digest('hex').slice(0, 16);
+  // 2.0.11 moved the old file aside and crashed before installing the refreshed one.
+  await fs.writeFile(`${source}.hamaeditor-copyback-${id}.previous`, 'original');
+  await fs.writeFile(`${source}.hamaeditor-copyback-${id}.next`, 'refreshed');
+  await fs.writeFile(target, 'refreshed');
+  await fs.writeFile(path.join(providerDir, `.auth.json.hamaeditor-copyback-${id}.json`), JSON.stringify({
+    version: 1,
+    id,
+    source,
+    target,
+    initialSourceDigest: createHash('sha256').update('original').digest('hex'),
+    pid: 999_999,
+    createdAtMs: Date.now() - 1000,
+    retentionMarker: null,
+  }));
+
+  recoverCredentialMirrorsSync(source, { isAlive: () => false });
+
+  assert.equal(await fs.readFile(source, 'utf8'), 'refreshed');
+  assert.deepEqual((await fs.readdir(providerDir)).sort(), ['auth.json']);
+  assert.equal(await fs.readFile(target, 'utf8'), 'refreshed', 'the 2.0.11 launch folder is left as it was');
 });

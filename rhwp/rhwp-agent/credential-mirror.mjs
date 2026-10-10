@@ -29,6 +29,13 @@ const OWNER_FILE = '.rauhwpx-owner.json';
 export const CREDENTIAL_ROOT_FILE = '.rauhwpx-credential-root';
 export const CREDENTIAL_RETENTION_DIR = '.rauhwpx-credential-copybacks';
 export const LAUNCH_CLEANUP_RETENTION_FILE = '.rauhwpx-legacy-cleanup.json';
+// 2.0.11 named its copyback journals after HamaEditor. A crash there can leave a refreshed
+// credential only in those files, so recovery reads both names; new journals use the first.
+const JOURNAL_BRANDS = Object.freeze([
+  Object.freeze({ name: 'rauhwpx', retentionDir: CREDENTIAL_RETENTION_DIR, legacy: false }),
+  Object.freeze({ name: 'hamaeditor', retentionDir: '.hamaeditor-credential-copybacks', legacy: true }),
+]);
+const CURRENT_JOURNAL_BRAND = JOURNAL_BRANDS[0];
 export const MAX_CREDENTIAL_MIRROR_BYTES = 1024 * 1024;
 export const MAX_CREDENTIAL_JOURNAL_BYTES = 64 * 1024;
 
@@ -69,12 +76,12 @@ export function credentialConflictPath(source) {
   return path.join(path.dirname(resolved), `.rauhwpx-credential-conflict-${id}.copy`);
 }
 
-function journalPrefix(source) {
-  return `.${path.basename(source)}.rauhwpx-copyback-`;
+function journalPrefix(source, brand = CURRENT_JOURNAL_BRAND) {
+  return `.${path.basename(source)}.${brand.name}-copyback-`;
 }
 
-function journalPathFor(source, target) {
-  return path.join(path.dirname(source), `${journalPrefix(source)}${mirrorId(target)}.json`);
+function journalPathFor(source, target, brand = CURRENT_JOURNAL_BRAND) {
+  return path.join(path.dirname(source), `${journalPrefix(source, brand)}${mirrorId(target)}.json`);
 }
 
 function retentionMarkerFor(target, id) {
@@ -286,7 +293,7 @@ function plainFile(pathname) {
   }
 }
 
-function readJournal(journalPath) {
+function readJournal(journalPath, brand = CURRENT_JOURNAL_BRAND) {
   let raw;
   try {
     const bytes = boundedPlainFileRead(
@@ -309,7 +316,7 @@ function readJournal(journalPath) {
   if (raw.source.length > 4096 || raw.target.length > 4096) return null;
   const source = path.resolve(raw.source);
   const target = path.resolve(raw.target);
-  if (journalPathFor(source, target) !== path.resolve(journalPath)) return null;
+  if (journalPathFor(source, target, brand) !== path.resolve(journalPath)) return null;
   if (raw.id !== mirrorId(target)) return null;
   /** @type {string | null} */
   let retentionMarker = null;
@@ -317,7 +324,7 @@ function readJournal(journalPath) {
     if (typeof raw.retentionMarker !== 'string') return null;
     retentionMarker = path.resolve(raw.retentionMarker);
     if (path.basename(retentionMarker) !== `${raw.id}.pending`
-      || path.basename(path.dirname(retentionMarker)) !== CREDENTIAL_RETENTION_DIR) return null;
+      || path.basename(path.dirname(retentionMarker)) !== brand.retentionDir) return null;
     const launchRoot = path.dirname(path.dirname(retentionMarker));
     const relativeTarget = path.relative(launchRoot, target);
     if (!relativeTarget || relativeTarget === '..' || relativeTarget.startsWith(`..${path.sep}`)
@@ -328,11 +335,19 @@ function readJournal(journalPath) {
     source,
     target,
     journalPath: path.resolve(journalPath),
-    nextPath: `${source}.rauhwpx-copyback-${raw.id}.next`,
-    previousPath: `${source}.rauhwpx-copyback-${raw.id}.previous`,
-    retentionMarker,
+    nextPath: `${source}.${brand.name}-copyback-${raw.id}.next`,
+    previousPath: `${source}.${brand.name}-copyback-${raw.id}.previous`,
+    // The 2.0.11 launch folder lives in its own profile, which this app only reads.
+    retentionMarker: brand.legacy ? null : retentionMarker,
+    brand: brand.name,
+    legacy: brand.legacy,
     mode: 'copy',
   });
+}
+
+/** The 2.0.11 mirror copy sits in that version's own launch folder, which this app leaves alone. */
+function removeMirrorTarget(handle) {
+  if (!handle.legacy) rmSync(handle.target, { force: true });
 }
 
 function removeMirrorArtifacts(handle) {
@@ -363,7 +378,7 @@ function finishTerminalConflict(handle, targetBytes, { rename, rm }) {
       );
     }
   }
-  rmSync(handle.target, { force: true });
+  removeMirrorTarget(handle);
   removeMirrorArtifacts(handle);
   return { copied: false, conflict: true, conflictPath };
 }
@@ -420,7 +435,8 @@ export function flushCredentialMirrorSync(handle, {
   const rename = (from, to) => retryLockedSync(() => renameFile(from, to), lock);
   const rm = (target, options = { force: true }) => retryLockedSync(() => rmSync(target, options), lock);
   if (!handle || handle.mode !== 'copy') return { copied: false, conflict: false };
-  const verified = readJournal(handle.journalPath);
+  const brand = JOURNAL_BRANDS.find((candidate) => candidate.name === handle.brand) ?? CURRENT_JOURNAL_BRAND;
+  const verified = readJournal(handle.journalPath, brand);
   if (!verified || verified.source !== path.resolve(handle.source)
     || verified.target !== path.resolve(handle.target)) {
     return { copied: false, conflict: false };
@@ -439,7 +455,7 @@ export function flushCredentialMirrorSync(handle, {
   } catch (error) {
     // Unsafe or oversized launch data cannot be copied or retained. Clear its
     // journal marker so startup cleanup is not blocked forever, then report it.
-    rmSync(verified.target, { force: true });
+    removeMirrorTarget(verified);
     removeMirrorArtifacts(verified);
     throw error;
   }
@@ -449,7 +465,7 @@ export function flushCredentialMirrorSync(handle, {
     return { copied: false, conflict: false };
   }
   if (typeof validateTarget === 'function' && validateTarget(targetBytes) !== true) {
-    rmSync(verified.target, { force: true });
+    removeMirrorTarget(verified);
     removeMirrorArtifacts(verified);
     return { copied: false, conflict: false };
   }
@@ -514,16 +530,18 @@ export function recoverCredentialMirrorsSync(source, {
     if (error?.code === 'ENOENT') return [];
     throw error;
   }
-  const prefix = journalPrefix(resolvedSource);
   const results = [];
-  for (const name of names) {
-    if (!name.startsWith(prefix) || !name.endsWith('.json')) continue;
-    const handle = readJournal(path.join(path.dirname(resolvedSource), name));
-    if (!handle || handle.source !== resolvedSource) continue;
-    if (handle.pid === currentPid || isAlive(handle.pid)) continue;
-    results.push(flushCredentialMirrorSync(handle, {
-      platform, validateTarget, renameFile, delays, sleep,
-    }));
+  for (const brand of JOURNAL_BRANDS) {
+    const prefix = journalPrefix(resolvedSource, brand);
+    for (const name of names) {
+      if (!name.startsWith(prefix) || !name.endsWith('.json')) continue;
+      const handle = readJournal(path.join(path.dirname(resolvedSource), name), brand);
+      if (!handle || handle.source !== resolvedSource) continue;
+      if (handle.pid === currentPid || isAlive(handle.pid)) continue;
+      results.push(flushCredentialMirrorSync(handle, {
+        platform, validateTarget, renameFile, delays, sleep,
+      }));
+    }
   }
   return results;
 }

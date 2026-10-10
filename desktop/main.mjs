@@ -80,8 +80,10 @@ import {
   retainLaunchRootForProcessCleanupSync,
 } from '../rhwp/rhwp-agent/credential-mirror.mjs';
 import {
+  REBRANDED_LAUNCH_MARKERS,
   launchStoragePaths,
   prepareDevelopmentCaches,
+  rebrandedRuntimeRoots,
   removeLegacyLaunchDirectories,
   removeStaleLaunchDirectories,
   writeLaunchOwnerMetadata,
@@ -1377,6 +1379,12 @@ if (!hasSingleInstanceLock) {
       bestEffortStartupCleanup(
         'legacy launch workspace',
         removeLegacyLaunchDirectories(legacyWorkRoot, launchId),
+      ),
+      bestEffortStartupCleanup(
+        '2.0.11 runtime',
+        rebrandedRuntimeRoots(app.getPath('temp')).then((roots) => Promise.all(roots.map((root) => (
+          removeStaleLaunchDirectories(root, launchId, { markers: REBRANDED_LAUNCH_MARKERS })
+        )))),
       ),
     ]);
     if (devUrl) {

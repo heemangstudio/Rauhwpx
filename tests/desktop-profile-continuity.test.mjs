@@ -14,6 +14,11 @@ import {
   writeRebrandImportMarker,
 } from '../desktop/profile-continuity.mjs';
 import { createRebrandImportController } from '../desktop/rebrand-import-controller.mjs';
+import {
+  REBRANDED_LAUNCH_MARKERS,
+  rebrandedRuntimeRoots,
+  removeStaleLaunchDirectories,
+} from '../desktop/runtime-cleanup.mjs';
 import { createSecretVault } from '../desktop/secret-vault.mjs';
 
 async function tempDir(t, label) {
@@ -207,4 +212,31 @@ test('when the 2.0.11 files cannot merge, its chats wait instead of losing their
   assert.equal(await controller.take(), null);
   assert.deepEqual(opened, [], 'the storage export does not start without the merged bookmarks');
   await assert.rejects(fs.stat(path.join(target, 'rebrand-import.json')), { code: 'ENOENT' });
+});
+
+test('stale 2.0.11 runtime folders in temp are cleaned unless they still hold a credential copyback', async (t) => {
+  const tempRoot = await tempDir(t, 'runtime');
+  const runtime = path.join(tempRoot, 'hamaeditor', 'profiles', '0123456789abcdef0123', 'runtime');
+  const launch = async (launchId, pid) => {
+    const directory = path.join(runtime, launchId);
+    await write(path.join(directory, '.hamaeditor-owner.json'), JSON.stringify({
+      version: 1, launchId, profileId: '0123456789abcdef0123', pid, createdAtMs: Date.now() - 3 * 24 * 60 * 60 * 1000,
+    }));
+    return directory;
+  };
+  const dead = await launch('11111111-1111-4111-8111-111111111111', 424242);
+  const alive = await launch('22222222-2222-4222-8222-222222222222', process.pid);
+  const pending = await launch('33333333-3333-4333-8333-333333333333', 424242);
+  await write(path.join(pending, '.hamaeditor-credential-copybacks', '0123456789abcdef.pending'), 'journal');
+
+  for (const root of await rebrandedRuntimeRoots(tempRoot)) {
+    await removeStaleLaunchDirectories(root, 'none', {
+      markers: REBRANDED_LAUNCH_MARKERS,
+      isAlive: (pid) => pid === process.pid,
+    });
+  }
+
+  await assert.rejects(fs.stat(dead), { code: 'ENOENT' });
+  await fs.stat(alive);
+  await fs.stat(pending);
 });
