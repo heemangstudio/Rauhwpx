@@ -4,7 +4,8 @@ export type BrowserPresentationMode = 'dock' | 'float' | 'popout';
 export interface NativeBrowserApi {
   attach(args: { tabId: string; expectedTargetId?: string; bounds: { x: number; y: number; width: number; height: number }; mode: BrowserPresentationMode; interactive: boolean }): Promise<unknown>;
   detach(args: { tabId: string }): Promise<unknown>;
-  getState(args: { tabId: string }): Promise<unknown>;
+  getState(args: { tabId: string; expectedTargetId?: string; checkPaint?: boolean }): Promise<unknown>;
+  reload?(args: { tabId: string; expectedTargetId?: string; navigationEpoch?: number; recovery?: boolean }): Promise<unknown>;
   zoom?(args: { tabId: string; factor: number }): Promise<unknown>;
   onEvent?(callback: (event: Record<string, unknown>) => void): () => void;
 }

@@ -199,6 +199,10 @@ export function createWorkbenchBrowser(options: {
   let pointerStart: { x: number; y: number } | null = null;
   let reconnecting = false;
   let tabsSignature = ''; let downloadsSignature = ''; let nativeProjection = ''; let nativeFailedProjection = ''; let nativeError: string | null = null; let nativePending: Promise<boolean> | null = null; let inputChain: Promise<unknown> = Promise.resolve();
+  let nativeHealthGeneration = 0; let nativeRecovering = false;
+  let nativeHealthIdentity = ''; let nativeReloadedIdentity = '';
+  let nativeHealthTimer: ReturnType<typeof setTimeout> | null = null;
+  function cancelNativeHealth(): void { if (nativeHealthTimer) clearTimeout(nativeHealthTimer); nativeHealthTimer = null; }
   let lastInputAt = -Infinity;
   const presentation = createBrowserPresentation(element, (mode) => {
     if (mode === 'float' || mode === null) { details.open = false; endAnnotation(false); showDownloads(false, false); }
@@ -404,6 +408,7 @@ export function createWorkbenchBrowser(options: {
   async function reconnectBrowser(): Promise<void> {
     if (reconnecting) return;
     const tab = controller.tab(); if (!tab) { await controller.refresh(); return; }
+    cancelNativeHealth(); nativeHealthGeneration++; nativeHealthIdentity = ''; nativeReloadedIdentity = '';
     reconnecting = true; nativeError = null; nativeFailedProjection = ''; paint();
     try {
       await nativePending?.catch(() => undefined);
@@ -422,11 +427,48 @@ export function createWorkbenchBrowser(options: {
       const message = failure instanceof Error ? failure.message : String(failure);
       if (!/Native browser tab is unavailable|presentation (navigation|target) is stale/.test(message)) throw failure;
       if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
-      await controller.request('reconnect', { tabId: placement.tabId });
+      await controller.request('reconnect', { tabId: placement.tabId, restore: true });
       if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
       acceptZoom(placement.tabId, await native.attach({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, interactive: true }));
     }
     return true;
+  }
+  async function checkNativeHealth(placement: Parameters<NonNullable<ReturnType<typeof nativeBrowserApi>>['attach']>[0], sequence: number, timedOut = false): Promise<void> {
+    const native = nativeBrowserApi(); if (!native?.getState) return;
+    const tab = controller.tab();
+    const scope = JSON.stringify([placement.tabId, placement.expectedTargetId]);
+    const epoch = tab?.navigationEpoch; const generation = nativeHealthGeneration;
+    const presented = () => !disposed && !pinned && generation === nativeHealthGeneration && nativeSurfaceVisible() && !nativeOverlayOpen() && !nativePopout
+      && controller.tab()?.tabId === placement.tabId && controller.tab()?.nativeTargetId === placement.expectedTargetId;
+    const current = () => presented() && controller.tab()?.navigationEpoch === epoch;
+    if (!current()) return;
+    const state = await native.getState({ tabId: placement.tabId, expectedTargetId: placement.expectedTargetId, checkPaint: true }) as Record<string, unknown> | undefined;
+    if (!current()) return;
+    const health = state?.presentationHealth;
+    if (health === 'loading' && !timedOut) {
+      cancelNativeHealth();
+      nativeHealthTimer = setTimeout(() => { nativeHealthTimer = null; if (current()) handle(checkNativeHealth(placement, sequence, true).catch(() => { if (current()) { nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; paint(); } })); }, 15_000);
+      return;
+    }
+    if (!['failed', 'paint-timeout'].includes(String(health)) && !(health === 'loading' && timedOut)) return;
+    if (!native.reload || nativeReloadedIdentity === scope) throw new Error('브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.');
+    nativeReloadedIdentity = scope; cancelNativeHealth();
+    nativeRecovering = true; nativeError = null; paint();
+    try {
+      // 실패한 문서만 한 번 GET으로 연다. 폼 제출이나 이전 입력은 다시 보내지 않는다.
+      const recovered = await native.reload({ tabId: placement.tabId, expectedTargetId: placement.expectedTargetId, navigationEpoch: state?.navigationEpoch as number | undefined, recovery: true }) as { restoreRequired?: boolean } | undefined;
+      if (recovered?.restoreRequired && presented()) {
+        await controller.request('reconnect', { tabId: placement.tabId, restore: true });
+        nativeProjection = ''; nativeHealthIdentity = '';
+        await controller.refresh();
+        return;
+      }
+      if (!presented()) return;
+      await controller.refresh();
+      if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId || controller.tab()?.nativeTargetId !== placement.expectedTargetId) return;
+      const generationAfterReload = nativeHealthGeneration;
+      nativeHealthTimer = setTimeout(() => { nativeHealthTimer = null; if (generationAfterReload === nativeHealthGeneration) handle(checkNativeHealth(placement, nativeSequence, true).catch(() => { if (generationAfterReload === nativeHealthGeneration && controller.tab()?.tabId === placement.tabId) { nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; paint(); } })); }, 15_000);
+    } finally { nativeRecovering = false; paint(); layout(); }
   }
   async function projectNative(): Promise<void> {
     const native = nativeBrowserApi(); if (!native) return;
@@ -435,6 +477,7 @@ export function createWorkbenchBrowser(options: {
     const target = tab?.tabId;
     const useNative = tab && (tab.runtime === 'native' || controller.state.runtime?.kind === 'native');
     if (nativeTab && (!nativeSurfaceVisible() || nativeOverlayOpen() || !useNative || nativeTab !== target)) {
+      cancelNativeHealth(); nativeHealthIdentity = ''; nativeHealthGeneration++;
       const previous = nativeTab; nativeTab = null; nativeProjection = '';
       nativePending = native.detach({ tabId: previous }).then(() => false, () => false);
       try { await nativePending; } finally { nativePending = null; layout(); }
@@ -445,12 +488,26 @@ export function createWorkbenchBrowser(options: {
     const placement = { tabId: target, expectedTargetId: tab.nativeTargetId, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, mode: presentation.current() ?? 'dock', interactive: true };
     const identity = () => JSON.stringify({ tabId: target, runtimeGeneration: controller.tab()?.runtimeGeneration, nativeTargetId: controller.tab()?.nativeTargetId });
     const signature = () => JSON.stringify({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, identity: identity() });
-    if (nativeProjection === signature() || nativeFailedProjection === identity()) return;
+    const healthIdentity = () => JSON.stringify([identity(), controller.tab()?.navigationEpoch]);
+    if (nativeFailedProjection === identity()) return;
+    if (nativeProjection === signature()) {
+      if (!pinned && nativeHealthIdentity !== healthIdentity()) {
+        cancelNativeHealth(); nativeHealthIdentity = healthIdentity();
+        nativePending = checkNativeHealth(placement, sequence).then(() => true);
+        try { await nativePending; } catch { nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; }
+        finally { nativePending = null; paint(); layout(); }
+      }
+      return;
+    }
     nativeError = null;
     nativePending = attachNative(placement);
     paint();
     try {
       const attached = await nativePending;
+      if (attached && sequence === nativeSequence && nativeSurfaceVisible() && !nativeOverlayOpen() && controller.tab()?.tabId === target && !nativePopout && !pinned && nativeHealthIdentity !== healthIdentity()) {
+        nativeHealthIdentity = healthIdentity();
+        await checkNativeHealth({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId }, sequence);
+      }
       if (!attached || disposed || sequence !== nativeSequence || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== target || nativePopout) { await native.detach({ tabId: target }).catch(() => undefined); nativeTab = null; nativeProjection = ''; }
       else { nativeProjection = signature(); nativeFailedProjection = ''; nativeError = null; errorMessage.textContent = controller.state.error ?? ''; error.hidden = !controller.state.error; }
     } catch {
@@ -474,6 +531,7 @@ export function createWorkbenchBrowser(options: {
     if (disposed) return;
     const next = nativeSurfaceVisible();
     if (next !== nativeSurfaceWasVisible) {
+      cancelNativeHealth(); nativeHealthGeneration++; nativeHealthIdentity = ''; nativeReloadedIdentity = '';
       nativeSurfaceWasVisible = next; ++nativeSequence; nativeProjection = ''; layout();
     }
     for (let parent: HTMLElement | null = surface; parent; parent = parent.parentElement) {
@@ -503,7 +561,7 @@ export function createWorkbenchBrowser(options: {
     surface.classList.toggle('ag-browser-frozen', Boolean(pinned?.frame));
     challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
     fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
-    status.textContent = reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'loading' ? '페이지 여는 중' : '에이전트 브라우저';
+    status.textContent = nativeRecovering ? '페이지 다시 여는 중' : reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'loading' ? '페이지 여는 중' : '에이전트 브라우저';
     status.title = status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
     const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title, row.url]), tab?.tabId]);
     if (tabsSignature !== nextTabsSignature) {
@@ -536,7 +594,7 @@ export function createWorkbenchBrowser(options: {
     emptyOpen.disabled = !connected;
     recover.hidden = reconnecting || !!nativePending || !tab || !['crashed', 'disconnected', 'restorable', 'failed'].includes(tab.status); recover.disabled = !connected || controller.state.busy;
     back.disabled ||= tab?.canGoBack === false; forward.disabled ||= tab?.canGoForward === false;
-    reconnectButton.disabled = reconnecting || !!nativePending; reconnectButton.textContent = reconnecting ? '연결 중…' : '다시 연결';
+    reconnectButton.disabled = nativeRecovering || reconnecting || !!nativePending; reconnectButton.textContent = reconnecting ? '연결 중…' : '다시 연결';
     errorMessage.textContent = controller.state.error ?? nativeError ?? ''; error.hidden = !controller.state.error && !nativeError;
     placeholder.hidden = Boolean(tab); image.hidden = !frame;
     if (frame && frame.frameId !== selectedFrameId) { selectedFrameId = frame.frameId; image.src = `data:${frame.mimeType};base64,${frame.data}`; image.style.aspectRatio = `${frame.width} / ${frame.height}`; }
@@ -591,7 +649,7 @@ export function createWorkbenchBrowser(options: {
       else if (presentation.current() === 'dock') presentation.hide();
     },
     float() { nativePopout = false; presentation.present('float'); handle(controller.refresh().then(() => controller.readFrame())); },
-    dispose() { endAnnotation(false); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
+    dispose() { endAnnotation(false); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
   };
 }
 export type WorkbenchBrowser = ReturnType<typeof createWorkbenchBrowser>;

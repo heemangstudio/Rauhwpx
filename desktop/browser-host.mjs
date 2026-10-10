@@ -212,7 +212,7 @@ export class OwnedBrowserHost {
     contents.once('destroyed', () => {
       tab.closing = true; void this.clearActivity(tab); this.passwords?.forgetTab(tab); this.webAuthn?.cancelTab(tab); this.pendingTabs.delete(tab); this.unplace(tab);
       this.cdp.remove(tab.targetId); this.tabs.delete(tab.targetId);
-      if (tab.tabId) this.aliases.delete(tab.tabId);
+      if (tab.tabId && this.aliases.get(tab.tabId) === tab.targetId) this.aliases.delete(tab.tabId);
       const popout = this.popouts.get(tab.targetId);
       if (popout && !popout.isDestroyed()) popout.destroy();
       this.popouts.delete(tab.targetId); this.emit(tab, 'closed');
@@ -400,6 +400,72 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
+  async presentationState(window, { tabId, expectedTargetId }) {
+    const tab = this.ownedTab(tabId, window);
+    if (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) throw new Error('Native browser presentation target is stale');
+    const contents = tab.view.webContents;
+    const placement = tab.placement; const epoch = tab.navigationEpoch; const generation = this.generation;
+    const current = () => this.generation === generation && tab.navigationEpoch === epoch && this.tabs.get(tab.targetId) === tab && tab.placement?.window === window && placement?.window === window && tab.placement?.mode === placement?.mode && window.isVisible?.() !== false && !contents.isDestroyed();
+    const result = health => ({ ...this.state(tab), presentationHealth: health });
+    if (!current()) return result('unavailable');
+    if (tab.crashed || tab.lastError) return result('failed');
+    if (contents.isLoadingMainFrame()) return result('loading');
+    // 비밀 보호 페이지는 캡처 경로를 열지 않는다. 픽셀이나 본문은 반환하지 않는다.
+    if (tab.passwordShield || contents.getURL() === 'about:blank') return result('ready');
+    let timer; let accepting = true;
+    const capture = async () => {
+      if (!accepting || !current() || tab.passwordShield) return null;
+      try { return await contents.capturePage(); } catch { return null; }
+    };
+    try {
+      const paint = async () => {
+        await this.viewport(tab, tab.view.getBounds());
+        let image = await capture();
+        if ((!image || image.isEmpty()) && accepting && current() && !tab.passwordShield) {
+          // 첫 부착 프레임은 아직 비어 있을 수 있다. 다시 열기 전에 합성을 기다린다.
+          await contents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+          image = await capture();
+        }
+        return image;
+      };
+      const image = await Promise.race([
+        paint(), new Promise(resolve => { timer = setTimeout(() => { accepting = false; resolve(null); }, 1500); }),
+      ]);
+      if (!current()) return result('unavailable');
+      if (tab.passwordShield) return result('ready');
+      if (!image || image.isEmpty()) return result('paint-timeout');
+      const bitmap = image.toBitmap();
+      let white = bitmap.length > 0;
+      for (let offset = 0; white && offset < bitmap.length; offset += 4) {
+        white = bitmap[offset] >= 248 && bitmap[offset + 1] >= 248 && bitmap[offset + 2] >= 248 && bitmap[offset + 3] > 0;
+      }
+      if (!white) return result('ready');
+      // 흰 화면만으로 정상 빈 문서를 다시 열지 않는다. 예상되는 가시 콘텐츠 유무만 확인한다.
+      if (!current() || tab.passwordShield) return result(tab.passwordShield ? 'ready' : 'unavailable');
+      const expectedPaint = await Promise.race([
+        contents.executeJavaScript(`(() => {
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+          let node = document.body;
+          for (let count = 0; node && count < 200; count++, node = walker.nextNode()) {
+            const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+            const rect = el.getBoundingClientRect(); const style = getComputedStyle(el);
+            const visible = rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 && rect.top < innerHeight && rect.left < innerWidth
+              && style.visibility === 'visible' && style.display !== 'none' && Number(style.opacity) > 0;
+            if (visible && (/^(IMG|VIDEO|CANVAS|INPUT|BUTTON)$/.test(el.tagName)
+              || (node.nodeType === Node.TEXT_NODE && !!node.nodeValue.trim() && !/rgba?\\(255, 255, 255/.test(style.color)))) return true;
+          }
+          return false;
+        })()`),
+        new Promise(resolve => { clearTimeout(timer); timer = setTimeout(() => resolve(false), 500); }),
+      ]);
+      if (!current()) return result('unavailable');
+      return result(!tab.passwordShield && expectedPaint ? 'paint-timeout' : 'ready');
+    } catch { return result(!current() ? 'unavailable' : tab.passwordShield ? 'ready' : 'paint-timeout'); }
+    finally { accepting = false; clearTimeout(timer); }
+  }
+
+  setQuitRequested(requested) { this.quitRequested = requested === true; }
+
   unplace(tab) {
     const placement = tab.placement;
     if (placement && !placement.window.isDestroyed()) placement.window.contentView.removeChildView(tab.view);
@@ -429,6 +495,11 @@ export class OwnedBrowserHost {
       popout.on('resize', () => this.layoutPopout(tab, popout));
       popout.on('close', (event) => {
         if (this.disposing) return;
+        if (this.quitRequested) {
+          this.unplace(tab);
+          this.popouts.delete(tab.targetId);
+          return;
+        }
         event.preventDefault();
         this.unplace(tab); popout.hide(); this.emit(tab, 'presentation');
       });
@@ -475,13 +546,19 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
-  navigation(window, { tabId }, command) {
+  navigation(window, { tabId, expectedTargetId, navigationEpoch, recovery }, command) {
     const tab = this.ownedTab(tabId, window);
     if (!tab.human) throw new Error('Take control before navigating the native browser');
+    if (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) throw new Error('Native browser presentation target is stale');
+    if (navigationEpoch !== undefined && navigationEpoch !== tab.navigationEpoch) throw new Error('Native browser presentation navigation is stale');
     const contents = tab.view.webContents;
+    if (command === 'reload' && recovery === true && tab.crashed) {
+      this.closeGuest(tab);
+      return { restoreRequired: true };
+    }
     if (command === 'back' && contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack();
     else if (command === 'forward' && contents.navigationHistory.canGoForward()) contents.navigationHistory.goForward();
-    else if (command === 'reload') { tab.crashed = false; contents.reload(); }
+    else if (command === 'reload') { tab.crashed = false; tab.lastError = null; if (recovery === true) void contents.loadURL(browserNavigationUrl(contents.getURL())).catch(() => {}); else contents.reload(); }
     else if (command === 'stop') contents.stop();
     return this.state(tab);
   }
@@ -524,6 +601,8 @@ export class OwnedBrowserHost {
   closeGuest(tab) {
     void this.clearActivity(tab);
     tab.closing = true;
+    this.tabs.delete(tab.targetId);
+    if (tab.tabId && this.aliases.get(tab.tabId) === tab.targetId) this.aliases.delete(tab.tabId);
     this.webAuthn?.cancelTab(tab);
     this.unplace(tab);
     this.cdp.remove(tab.targetId);

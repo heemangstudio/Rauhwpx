@@ -672,7 +672,7 @@ const updateLifecycle = createUpdateLifecycle({
     await hubOwner.teardown();
     await browserHost.dispose();
   },
-  onQuitRequested: (requested) => { quitRequested = requested; },
+  onQuitRequested: (requested) => { quitRequested = requested; browserHost.setQuitRequested(requested); },
   onTeardown: () => { quitting = true; },
 });
 let manualUpdateCheck = false;
@@ -1526,7 +1526,9 @@ registerBrowserPasswordIpc({ ipcMain, browserHost, browserWindowForEvent });
 ipcMain.handle('desktop:browser-zoom', (event, payload) => browserHost.zoom(browserWindowForEvent(event), payload));
 ipcMain.handle('desktop:browser-attach', (event, payload) => browserHost.attach(browserWindowForEvent(event), payload));
 ipcMain.handle('desktop:browser-detach', (event, payload) => browserHost.detach(browserWindowForEvent(event), payload));
-ipcMain.handle('desktop:browser-state', (event, payload) => browserHost.state(browserHost.ownedTab(payload?.tabId, browserWindowForEvent(event))));
+ipcMain.handle('desktop:browser-state', (event, payload) => payload?.checkPaint === true
+  ? browserHost.presentationState(browserWindowForEvent(event), payload)
+  : browserHost.state(browserHost.ownedTab(payload?.tabId, browserWindowForEvent(event))));
 ipcMain.handle('desktop:browser-navigate', (event, payload) => browserHost.navigate(browserWindowForEvent(event), payload));
 for (const command of ['back', 'forward', 'reload', 'stop']) {
   ipcMain.handle(`desktop:browser-${command}`, (event, payload) => browserHost.navigation(browserWindowForEvent(event), payload, command));

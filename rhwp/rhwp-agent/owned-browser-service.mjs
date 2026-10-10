@@ -1132,6 +1132,13 @@ export function createOwnedBrowserService(options = {}) {
         try {
           await ensureRuntime();
           if (tabs.get(tab.tabId) !== tab) throw error('BROWSER_TAB_NOT_FOUND', 'This browser tab was closed.');
+          if (args.restore === true && tab.page && !tab.page.isClosed() && tab.nativeTargetId && selectedAdapter().inventory) {
+            const inventory = await selectedAdapter().inventory();
+            if (!inventory.some(entry => entry.nativeTargetId === tab.nativeTargetId)) {
+              // 네이티브 종료 알림보다 화면 복원이 먼저 도착해도 오래된 페이지를 재사용하지 않는다.
+              tab.page = null; tab.nativeTargetId = undefined;
+            }
+          }
           if ((!tab.page || tab.page.isClosed()) && (tab.restorePending || args.restore === true)) {
             // 앱 재시작으로 사라진 게스트만 복원한다. 입력과 조작 권한은 재생하지 않는다.
             let url = tab.url;
