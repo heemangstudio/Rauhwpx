@@ -106,3 +106,27 @@ test('a rejection without a receipt id (older hub or plain message) has no messa
   for (const error of errors) assert.equal('messageId' in error, false);
   bridge.dispose();
 });
+
+test('a template changed while the hub runs a message travels with the next message instead of a refused frame', () => {
+  const { bridge, frame } = bridgeWithEvents();
+  frame({ type: 'chat-started', agent: 'claude', sessionId: 's', threadId: 'thread-1', permissionProfile: 'safe', workflow: 'direct', phase: 'direct' });
+  const sent: Array<{ type: string; templateId?: string | null; activeTemplateId?: string | null }> = [];
+  const internals = bridge as unknown as { state: string; sendJson(frame: unknown): boolean };
+  internals.state = 'connected';
+  internals.sendJson = (out) => { sent.push(out as (typeof sent)[number]); return true; };
+  const types = () => sent.map((out) => out.type);
+
+  void bridge.sendUserMessage('표를 정리해 주세요');
+  // 허브는 그 메시지를 돌리지만 turn-start 는 아직 오지 않았다 — 이 틈의 템플릿 바꾸기는 허브가 거절한다.
+  bridge.setActiveTemplate(null);
+  assert.deepEqual(types(), ['chat-user-message'], 'no template frame for the hub to refuse');
+  frame({ type: 'agent-event', event: { type: 'turn-start', agent: 'claude', turnId: 't1' } });
+  bridge.setActiveTemplate(null);
+  assert.deepEqual(types(), ['chat-user-message'], 'nor while the turn runs');
+  frame({ type: 'agent-event', event: { type: 'turn-end', agent: 'claude', turnId: 't1', stopReason: 'end_turn' } });
+  void bridge.sendUserMessage('다음 요청');
+  const next = sent.at(-1)!;
+  assert.equal(next.type, 'chat-user-message');
+  assert.equal(next.activeTemplateId, null, 'the next message carries the template the user chose');
+  bridge.dispose();
+});

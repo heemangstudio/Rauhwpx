@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createFollowUpController } from '../src/ui/agent-sidebar/follow-up-controller.ts';
+import { HUB_USER_MESSAGE_BUSY, createFollowUpController } from '../src/ui/agent-sidebar/follow-up-controller.ts';
 import type { FollowUpStripView } from '../src/ui/agent-sidebar/follow-up-strip.ts';
 import type { FollowUpItem, ThreadFollowUps } from '../src/agent/follow-ups.ts';
 
@@ -198,14 +198,14 @@ test('other rejection codes hold as rejected with the code', async () => {
   assert.equal(h.sent.length, 1, 'a rejected hold needs the user');
 });
 
-test('an older hub without messageId is matched only by AGENT_BUSY before the turn opens', async () => {
+test('an older hub without messageId is matched only by its busy user-message refusal before the turn opens', async () => {
   const before = harness();
   before.start();
   queue(before, 'A');
   before.end('end_turn');
   await before.dispatched();
-  assert.equal(before.controller.hubError({ code: 'INVALID_REQUEST' }), false);
-  assert.equal(before.controller.hubError({ code: 'AGENT_BUSY' }), true);
+  assert.equal(before.controller.hubError({ code: 'INVALID_REQUEST', message: 'chat-user-message requires text' }), false);
+  assert.equal(before.controller.hubError({ code: 'AGENT_BUSY', message: HUB_USER_MESSAGE_BUSY }), true);
   assert.equal(before.hold(), 'busy');
 
   const after = harness();
@@ -214,7 +214,36 @@ test('an older hub without messageId is matched only by AGENT_BUSY before the tu
   after.end('end_turn');
   await after.dispatched();
   after.start();
-  assert.equal(after.controller.hubError({ code: 'AGENT_BUSY' }), false, 'a turn already opened for it');
+  assert.equal(after.controller.hubError({ code: 'AGENT_BUSY', message: HUB_USER_MESSAGE_BUSY }), false,
+    'a turn already opened for it');
+});
+
+test('a settings change refused while the queued message waits for its turn does not send that message twice', async () => {
+  // 대기 메시지를 보낸 뒤 turn-start 전의 틈: 허브는 이미 그 메시지를 돌리고 있다. 그 틈에 바꾼 템플릿·모드·
+  // 권한·Fast·모델은 id 없는 AGENT_BUSY 로 거절된다 — 받아들인 대기 메시지의 거절이 아니다.
+  for (const message of [
+    'Templates can only change between turns.',
+    'Workflow can only change while the agent is idle',
+    'Permissions can only change between turns.',
+    'Service tier can only change between turns.',
+    'Provider settings can only change between turns.',
+  ]) {
+    const h = harness();
+    h.start();
+    queue(h, 'A');
+    h.end('end_turn');
+    await h.dispatched();
+    assert.equal(h.controller.hubError({ code: 'AGENT_BUSY', message }), false, message);
+    assert.deepEqual(h.unsent, [], `${message}: the accepted message stays in the chat`);
+    assert.deepEqual(h.texts(), [], `${message}: and does not return to the queue`);
+    // 사이드바는 허브 오류 뒤 브리지 상태로 응답 대기를 걷고 정착한다.
+    h.env.replyPending = false;
+    h.controller.settle();
+    // 허브가 받아 둔 그 메시지의 턴이 열리고 정상으로 끝난다.
+    h.start();
+    h.end('end_turn');
+    assert.deepEqual(h.sent.map((entry) => entry.item.text), ['A'], `${message}: sent once`);
+  }
 });
 
 test('a message the bridge drops goes back to the head, held as interrupted', async () => {
@@ -296,6 +325,83 @@ test('leaving before the bridge sent a queued message puts it back in the queue'
   h.controller.detach();
   assert.deepEqual(h.unsent, [h.sent[0]!.item.id]);
   assert.deepEqual(h.texts(), ['A', 'B']);
+  assert.equal(h.hold(), 'stopped');
+});
+
+test('leaving in the gap after a queued send puts the accepted message back when the switch stops the chat', async () => {
+  const h = harness();
+  h.start();
+  queue(h, 'A', 'B');
+  h.end('end_turn');
+  await h.dispatched();
+  // 허브는 A 를 받아 돌리지만 turn-start 는 아직 오지 않았다. 이 전환이 채팅을 멈추면 A 도 사라진다.
+  h.controller.detach('stopped', { chatStops: true });
+  assert.deepEqual(h.unsent, [h.sent[0]!.item.id], 'the bubble of the killed message is taken out');
+  assert.deepEqual(h.texts(), ['A', 'B'], 'A is back at the head');
+  assert.equal(h.hold(), 'stopped');
+
+  // 채팅을 멈추지 않는 전환(이어 가기)은 받아들인 메시지를 그대로 둔다.
+  const kept = harness();
+  kept.start();
+  queue(kept, 'A');
+  kept.end('end_turn');
+  await kept.dispatched();
+  kept.controller.detach('stopped', { chatStops: false });
+  assert.deepEqual(kept.unsent, []);
+  assert.deepEqual(kept.texts(), []);
+
+  // 턴이 이미 열린 메시지는 그 턴(중단)과 함께 대화에 남는다.
+  const opened = harness();
+  opened.start();
+  queue(opened, 'A');
+  opened.end('end_turn');
+  await opened.dispatched();
+  opened.start();
+  opened.controller.detach('stopped', { chatStops: true });
+  assert.deepEqual(opened.unsent, []);
+  assert.deepEqual(opened.texts(), []);
+});
+
+test('a busy hold does not outlive the chat: leaving or reopening holds it until the user sends', async () => {
+  const busyHold = async () => {
+    const h = harness();
+    h.start();
+    queue(h, 'A');
+    h.end('end_turn');
+    const messageId = await h.dispatched();
+    assert.equal(h.controller.hubError({ code: 'AGENT_BUSY', messageId }), true);
+    h.env.replyPending = false;
+    h.controller.settle();
+    assert.equal(h.hold(), 'busy');
+    return h;
+  };
+  // 떠날 때(창 닫기·새로고침)
+  const closed = await busyHold();
+  closed.controller.detach('interrupted');
+  assert.equal(closed.hold(), 'interrupted');
+  closed.controller.attach();
+  closed.start();
+  closed.end('end_turn');
+  assert.equal(closed.sent.length, 1, 'an unrelated later turn does not send it');
+
+  // 저장된 busy 붙잡음을 다시 열 때
+  const reopened = harness();
+  reopened.thread.followUps = { items: [{ id: 'x', text: 'X', createdAt: 1 }], hold: { reason: 'busy', at: 1 } };
+  reopened.controller.attach();
+  assert.equal(reopened.hold(), 'interrupted');
+  reopened.start();
+  reopened.end('end_turn');
+  assert.equal(reopened.sent.length, 0, 'a reopened busy queue never auto-sends');
+});
+
+test('a stop that loses the race to a normal end still holds the queue', () => {
+  const h = harness();
+  h.start();
+  queue(h, 'A');
+  h.controller.noteUserStop();
+  // 허브가 중지를 받기 전에 정상 종료를 보냈다.
+  h.end('end_turn');
+  assert.equal(h.sent.length, 0, 'nothing is sent right after the user pressed stop');
   assert.equal(h.hold(), 'stopped');
 });
 

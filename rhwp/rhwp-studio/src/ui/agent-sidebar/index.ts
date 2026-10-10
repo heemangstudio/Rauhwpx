@@ -4264,7 +4264,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return true;
     }
     if (isControlLocked() || connState !== 'connected') {
-      systemMessage(turnRunning ? '실행 중에는 모드를 바꿀 수 없습니다.' : '전환 중에는 모드를 바꿀 수 없습니다.');
+      systemMessage(agentWorking() ? '실행 중에는 모드를 바꿀 수 없습니다.' : '전환 중에는 모드를 바꿀 수 없습니다.');
       return false;
     }
     const restartCompletedPlan = target.workflow === 'plan' && chatWorkflow === 'plan' && planningPhase === 'implementing';
@@ -6697,8 +6697,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     rememberThreadComposerDraft();
     setComposerSkill(null);
     // 초안은 앞 채팅을 멈추지 않는다. 다만 편집기가 바쁜 채팅을 따로 띄우지 않으면
-    // (openChat 없음) 예전처럼 도는 턴과 질문을 끝내 초안 화면에 흘러들지 않게 한다.
-    const stopPrevious = bridge.isTurnRunning() || bridge.getPendingUserQuestion() !== null;
+    // (openChat 없음) 예전처럼 도는 턴과 질문을 끝내 초안 화면에 흘러들지 않게 한다. 보낸 메시지가
+    // 아직 턴을 열지 않았어도(replyPending) 허브는 그 메시지를 돌리고 있다 — 그 답도 초안에 흘러든다.
+    const stopPrevious = bridge.isTurnRunning() || bridge.getPendingUserQuestion() !== null || agentWorking();
     if (bridge.isTurnRunning()) bridge.interrupt();
     flushAssistantBuffer();
     const previousThreadId = currentThread.id;
@@ -6707,7 +6708,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const returnThreadId = previousWasDraft
       ? draftReturnThreadId
       : (previousThreadWasEmpty ? null : previousThreadId);
-    followUps.detach();
+    // 초안은 앞 채팅이 일할 때만 멈추고, 조용한 새 채팅은 언제나 멈춘다.
+    followUps.detach('stopped', { chatStops: !draft || stopPrevious });
     persistCurrentThread();
     if (previousWasDraft) threadComposerDrafts.delete(previousThreadId);
     input.value = '';
@@ -6829,7 +6831,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       || (draftChat && !liveQuestion && bridgeThreadId === id && bridge.getActiveAgent() !== null);
     if (!resume && !liveQuestion && turnRunning) bridge.interrupt();
     flushAssistantBuffer();
-    followUps.detach();
+    // 이어 가지 않는 전환은 아래에서 브리지 채팅을 멈춘다.
+    followUps.detach('stopped', { chatStops: !liveQuestion && !resume });
     persistCurrentThread();
     const loaded = getThread(id);
     if (!loaded) return;
@@ -8996,7 +8999,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function isControlLocked(): boolean {
     if (mergeResolverLocked) return true;
-    return turnRunning || attachmentsSending || chatStartPendingThreadId !== null
+    // 보낸 메시지가 턴을 기다리는 동안(replyPending)도 잠근다 — 허브는 이미 그 메시지를 돌리고 있어
+    // 설정 바꾸기를 AGENT_BUSY 로 거절한다.
+    return agentWorking() || attachmentsSending || chatStartPendingThreadId !== null
       || workflowTransitionPending || planActionPending || planningPhase === 'switching';
   }
 
@@ -9062,7 +9067,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     if (isControlLocked() || connState !== 'connected') {
       systemMessage(
-        turnRunning
+        agentWorking()
           ? '실행 중에는 작업 방식을 바꿀 수 없습니다.'
           : '전환 중에는 작업 방식을 바꿀 수 없습니다.',
       );
@@ -9881,7 +9886,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (mergeResolverLocked) return { ok: false, reason: '병합 검토 진행 중' };
     if (readOnlyDocLabel !== null) return { ok: false, reason: '다른 문서의 채팅을 열람 중입니다' };
     if (connState !== 'connected') return { ok: false, reason: '에이전트 허브에 연결되어 있지 않습니다' };
-    if (turnRunning) return { ok: false, reason: '에이전트가 응답 중입니다' };
+    // 보낸 메시지가 아직 턴을 열지 않았어도 허브는 그 메시지를 돌리고 있다 — 지금 보내면 거절된다.
+    if (agentWorking()) return { ok: false, reason: '에이전트가 응답 중입니다' };
     if (planningPhase === 'switching' || workflowTransitionPending || planActionPending
       || chatStartPendingThreadId !== null || attachmentsSending) {
       return { ok: false, reason: '잠시 후 다시 시도' };

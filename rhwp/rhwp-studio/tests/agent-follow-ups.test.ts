@@ -79,6 +79,9 @@ test('turn ends classify like the UI turn outcome: unknown stop reasons complete
   assert.equal(end({}), 'normal');
   assert.equal(end({ stopReason: 'interrupted' }), 'interrupted');
   assert.equal(end({ stopReason: 'interrupted' }, { userStopRequested: true }), 'stopped');
+  // 중지가 정상 종료·실패와 엇갈려도 사용자는 멈추라고 했다.
+  assert.equal(end({ stopReason: 'end_turn' }, { userStopRequested: true }), 'stopped');
+  assert.equal(end({ stopReason: 'end_turn', errorMessage: 'boom' }, { userStopRequested: true }), 'stopped');
   assert.equal(end({ stopReason: 'end_turn' }, { interruptionReason: 'hub-restart', userStopRequested: true }), 'interrupted');
   assert.equal(end({ stopReason: 'exited', errorMessage: '허브가 다시 시작됐습니다' }), 'failed');
   assert.equal(end({ stopReason: 'failed' }), 'failed');

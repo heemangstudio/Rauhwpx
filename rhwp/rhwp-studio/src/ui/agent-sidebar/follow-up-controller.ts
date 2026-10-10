@@ -14,6 +14,7 @@ import {
   edit as editItem,
   enqueue as enqueueItem,
   hold as holdQueue,
+  holdNeedsUser,
   isStranded,
   moveToHead,
   release as releaseQueue,
@@ -76,6 +77,13 @@ export const FOLLOW_UP_HINTS = {
 export type FollowUpHintKind = keyof typeof FOLLOW_UP_HINTS;
 
 const QUEUED_ANNOUNCEMENT = '대기열에 넣었어요. 작업이 끝나면 보냅니다.';
+
+/**
+ * 예전 허브(거절에 receipt id 를 돌려주지 않는다)가 사용자 메시지를 바빠서 거절할 때의 문구
+ * (rhwp-agent/server.mjs 의 chat-user-message AGENT_BUSY). 채팅 시작·작업 방식·권한·템플릿·Fast 같은
+ * 설정 바꾸기의 AGENT_BUSY 도 id 없이 오지만 문구가 다르다. 새 허브는 대기 메시지의 거절에 언제나 id 를 붙인다.
+ */
+export const HUB_USER_MESSAGE_BUSY = 'A turn is already in progress.';
 
 export interface FollowUpControllerDeps<Message, Bubble> {
   strip: FollowUpStrip;
@@ -406,13 +414,14 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       return drained;
     },
     /** 허브 오류. 보낸 대기 메시지의 거절이면 되돌리고 true — 일반 오류 줄은 띄우지 않는다. */
-    hubError(error: { code: string; messageId?: string }): boolean {
+    hubError(error: { code: string; message?: string; messageId?: string }): boolean {
       const flight = inFlight;
       if (!flight) return false;
       const matches = error.messageId
         ? error.messageId === flight.messageId
-        // 예전 허브는 id 를 돌려주지 않는다 — 턴이 열리기 전의 AGENT_BUSY 만 이 메시지로 본다.
-        : error.code === 'AGENT_BUSY' && !flight.sawTurnStart;
+        // 예전 허브는 id 를 돌려주지 않는다 — 턴이 열리기 전, 사용자 메시지를 바빠서 거절한 AGENT_BUSY 만
+        // 이 메시지로 본다. 같은 틈에 보낸 설정 바꾸기의 AGENT_BUSY 는 문구가 달라 받아들인 메시지를 걷지 않는다.
+        : error.code === 'AGENT_BUSY' && error.message === HUB_USER_MESSAGE_BUSY && !flight.sawTurnStart;
       if (!matches) return false;
       bounce(flight, error.code === 'AGENT_BUSY' ? 'busy' : 'rejected', error.code === 'AGENT_BUSY' ? undefined : error.code);
       return true;
@@ -427,10 +436,13 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
     /**
      * 채팅을 떠나기 전(전환·새 채팅·닫기). 떠나는 전환은 턴을 멈추므로 'stopped' 로 붙잡는다.
      * 사이드바를 닫을 때(창 닫기·새로고침)는 'interrupted' — 다시 열면 끊긴 작업으로 보인다.
+     * chatStops 는 이 전환이 브리지 채팅을 멈춘다는 뜻이다(한 채팅만 띄우는 호스트의 전환·새 채팅).
      */
-    detach(reason: 'stopped' | 'interrupted' = 'stopped'): void {
-      // 브리지가 아직 내보내지 않은 대기 메시지는 채팅과 함께 버려진다 — 대기열로 되돌린다.
-      if (inFlight && !inFlight.dispatched) {
+    detach(reason: 'stopped' | 'interrupted' = 'stopped', opts?: { chatStops?: boolean }): void {
+      // 브리지가 아직 내보내지 않은 대기 메시지는 채팅과 함께 버려진다. 허브가 받았지만 턴이 아직 열리지
+      // 않은 메시지도 이 전환이 채팅을 멈추면 함께 사라진다 — 둘 다 대화에서 걷고 대기열로 되돌린다.
+      // 턴이 열린 메시지는 그 턴(중단)과 함께 대화에 남는다.
+      if (inFlight && (!inFlight.dispatched || (opts?.chatStops === true && !inFlight.sawTurnStart))) {
         const flight = inFlight;
         inFlight = null;
         deps.unsend(flight.message, flight.bubble);
@@ -444,7 +456,8 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       }
       const current = queue();
       resetRuntime();
-      if (current?.items.length && !current.hold) holdWith(reason);
+      // busy 붙잡음은 이 채팅의 다음 정상 종료를 기다리는 런타임 약속이다 — 떠나면 그 약속도 끝난다.
+      if (current?.items.length && !holdNeedsUser(current.hold)) holdWith(reason);
       else render();
       deps.strip.clearHint();
     },
@@ -453,7 +466,8 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       resetRuntime();
       deps.strip.clearHint();
       const current = queue();
-      if (current?.items.length && !current.hold) holdWith('interrupted');
+      // 저장된 busy 붙잡음은 다시 열면 아무 턴도 기다리지 않는다 — 다른 붙잡음처럼 사용자가 풀게 한다.
+      if (current?.items.length && !holdNeedsUser(current.hold)) holdWith('interrupted');
       else render();
       deps.onChange();
     },

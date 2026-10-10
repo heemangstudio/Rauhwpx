@@ -237,9 +237,12 @@ export function followUpTurnOutcome(
   ctx: FollowUpTurnEndContext,
 ): FollowUpTurnOutcome {
   if (ctx.sendNowId !== null) return 'send-now';
-  // 성패는 UI 의 한 분류기가 정한다. 대기열은 사용자가 누른 중지만 따로 '멈춤'으로 읽는다.
+  // 사용자가 누른 중지는 턴이 어떻게 끝났든 '멈춤'이다 — 허브가 중지보다 먼저 정상 종료를 보냈어도
+  // 사용자는 멈추라고 했으므로 대기열을 보내지 않는다. Studio 가 붙인 끊김(허브 재시작)은 그 이유가 이긴다.
+  if (ctx.userStopRequested && !ctx.interruptionReason) return 'stopped';
+  // 성패는 UI 의 한 분류기가 정한다.
   const outcome = turnOutcomeFor(event, { errorSeen: ctx.errorSeen, interruptionReason: ctx.interruptionReason });
-  if (outcome === 'interrupted') return ctx.userStopRequested && !ctx.interruptionReason ? 'stopped' : 'interrupted';
+  if (outcome === 'interrupted') return 'interrupted';
   return outcome === 'failed' ? 'failed' : 'normal';
 }
 

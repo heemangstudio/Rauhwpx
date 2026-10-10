@@ -275,6 +275,11 @@ export function createMockBridge(
   let holdReply = false;
   /** How long a chat start and an attachment upload take — checks slow them to observe the locks. */
   let chatStartDelayMs = 20;
+  /**
+   * How long the hub takes to open the turn of an accepted message. Checks slow it to observe the gap
+   * where the hub already runs the message but Studio has not seen its turn-start.
+   */
+  let turnStartDelayMs = 20;
   let stageDelayMs = 0;
   let permission: T.PermissionProfile = 'safe';
   let tier: T.ServiceTier = 'standard';
@@ -1035,7 +1040,7 @@ export function createMockBridge(
             }, index * 140),
           );
         }, 650);
-      });
+      }, turnStartDelayMs);
       return receipt;
     },
     listTemplates: async () => data.templates,
@@ -1607,6 +1612,11 @@ export function createMockBridge(
     },
     setHold: (value: boolean) => { holdReply = value; },
     setChatStartDelay: (ms: number) => { chatStartDelayMs = ms; },
+    setTurnStartDelay: (ms: number) => { turnStartDelayMs = ms; },
+    /** Sends a hub error as the hub does for a refused frame (a settings change mid-turn, for example). */
+    emitHubError: (code: string, message: string, messageId?: string) => {
+      emit({ type: 'hub-error', code, message, ...(messageId ? { messageId } : {}) });
+    },
     setStageDelay: (ms: number) => { stageDelayMs = ms; },
     /**
      * Asks the sample question on the running turn (a held reply keeps it running), as the

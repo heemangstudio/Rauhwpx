@@ -3979,7 +3979,9 @@ export class AgentBridgeImpl implements AgentBridge {
     this.activeTemplateId = id;
     this.activeTemplate = id ? (this.templateCatalog.templates.find((item) => item.id === id) ?? null) : null;
     // 허브가 이미 같은 템플릿을 쓰고 있으면 보내지 않는다. 메시지마다 activeTemplateId 도 함께 간다.
-    if (this.activeAgent !== null && id !== this.hubTemplateId) {
+    // 턴이 돌거나 보낸 메시지가 턴을 기다리는 동안에도 보내지 않는다 — 허브는 AGENT_BUSY 로 거절하고,
+    // 다음 메시지가 바뀐 템플릿을 싣고 간다.
+    if (this.activeAgent !== null && id !== this.hubTemplateId && !this.turnRunning && !this.messageAwaitingTurn) {
       this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-template-set', templateId: id });
     }
   }

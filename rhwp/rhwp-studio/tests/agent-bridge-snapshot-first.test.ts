@@ -331,6 +331,10 @@ test('re-selecting the template the adopted session already uses sends nothing',
   f.socket.receive({ type: 'welcome', protocol: 5, session: session({ activeTemplateId: 'template-1' }) });
   f.bridge.setActiveTemplate('template-1');
   assert.deepEqual(f.socket.frames('chat-template-set'), [], '돌던 턴에 같은 템플릿을 다시 걸지 않는다(AGENT_BUSY)');
+  // 다른 템플릿도 이어 붙인 턴이 도는 동안에는 보내지 않는다 — 허브가 거절한다. 턴이 끝난 뒤에는 보낸다.
+  f.bridge.setActiveTemplate('template-2');
+  assert.deepEqual(f.socket.frames('chat-template-set'), []);
+  f.socket.receive({ type: 'agent-event', event: { type: 'turn-end', agent: 'pi', turnId: 'turn-live', stopReason: 'end_turn' } });
   f.bridge.setActiveTemplate('template-2');
   assert.deepEqual(f.socket.frames('chat-template-set').map((frame) => frame.templateId), ['template-2']);
   f.bridge.dispose();

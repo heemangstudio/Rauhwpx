@@ -11,7 +11,7 @@ import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
 import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
-import { checkComposerSendPath, checkFollowUpQueue } from './queue.check.mjs';
+import { checkComposerSendPath, checkFollowUpGap, checkFollowUpQueue } from './queue.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
 import { checkReloadPreview } from './reload.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
@@ -432,6 +432,8 @@ try {
     () => checkPlanPreview(page, origin, artifacts));
   await step('Follow-up queue: Enter queues, normal ends drain, doubtful ends hold',
     () => checkFollowUpQueue(page, origin, artifacts));
+  await step('Follow-up gap: settings lock, inline refusal, settings refusals and chat switches keep the accepted message once',
+    () => checkFollowUpGap(page, origin, artifacts));
   await step('Composer send path: template, skill, attachments and local commands',
     () => checkComposerSendPath(page, origin));
   await step('Question submission and resolution', async () => {

@@ -32,6 +32,8 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('chat-streaming', 'Conversation', 'Streaming response', 'Inspect the active turn, stop control, and composer while work is running.', { scenario: 'chat', play: '1', hold: '1' }),
   scene('chat-queue', 'Conversation', 'Queued follow-ups', 'Messages entered while the agent works wait above the composer. Inspect send now, edit, and delete.', { scenario: 'chat', play: '1', hold: '1', queue: '2' }),
   scene('chat-queue-held', 'Conversation', 'Held follow-ups', 'After 중지 the queue is held. Inspect the reason line and 보내기.', { scenario: 'chat', play: '1', hold: '1', queue: '2', queueHold: 'stopped' }),
+  scene('chat-queue-gap', 'Conversation', 'Queued follow-up sent', 'The turn ended and the first follow-up was sent; the hub has not opened its turn yet. Inspect the locked mode chip and model pickers.',
+    { scenario: 'chat', play: '1', hold: '1', queue: '2', queueHold: 'gap' }),
   scene('panel-skills', 'Panels and menus', 'Skills library', 'Inspect search, enable toggles, editing, and creation.', { surface: 'skills' }),
   scene('panel-references', 'Panels and menus', 'Reference library', 'Inspect file search, attachment controls, and reference details.', { surface: 'references' }),
   scene('panel-threads', 'Panels and menus', 'Conversation library', 'Inspect thread navigation and conversation actions.', { surface: 'threads', chats: 'sample' }),

@@ -101,6 +101,14 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
       await click('.ag-send.ag-stop');
       await until(() => document.querySelector('.ag-followups-hold:not([hidden])'), 'held queue');
     }
+    // queueHold=gap: 턴이 정상으로 끝나 맨 앞을 보냈다. 허브는 그 메시지를 돌리지만 turn-start 는 아직
+    // 오지 않았다 — 설정이 잠긴 틈. 그 턴은 열리지 않는다(10분 뒤에 연다).
+    if (params.get('queueHold') === 'gap') {
+      const sent = preview.snapshot().messagesSent;
+      preview.setTurnStartDelay(600_000);
+      preview.finishTurn('completed');
+      await until(() => preview.snapshot().messagesSent > sent && !preview.snapshot().running, 'queued send');
+    }
   }
   const surface = params.get('surface');
   const surfaces: Record<string, string> = {

@@ -246,6 +246,146 @@ export async function checkFollowUpQueue(page, origin, artifacts) {
   assert.equal((await queueState(page)).messagesSent, 1);
 }
 
+/**
+ * 대기 메시지를 보낸 뒤 turn-start 가 오기 전의 틈 — 허브는 이미 그 메시지를 돌리고 있다. 설정은 잠기고,
+ * 인라인 지시는 거절되고, 같은 틈의 설정 거절(AGENT_BUSY)은 그 메시지를 되돌리지 않는다. 한 채팅만 띄우는
+ * 호스트에서 이 틈에 채팅을 바꾸면 그 메시지는 대기열로 돌아온다.
+ */
+export async function checkFollowUpGap(page, origin, artifacts) {
+  const userBubbles = () => page.$$eval('.ag-msg-user', (nodes) => nodes.map((node) => node.textContent.trim()));
+  const sentCount = (text) => page.evaluate((value) => window.sidebarPreview.snapshot().messageTexts
+    .filter((sent) => sent === value).length, text);
+  /** 대기열 맨 앞을 정상 종료로 보내되, 허브가 그 턴을 아주 늦게 연다. */
+  const sendIntoGap = async (text) => {
+    await page.evaluate(() => window.sidebarPreview.setTurnStartDelay(60_000));
+    await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+    await waitFor(page, (value) => window.sidebarPreview.snapshot().messageTexts.at(-1) === value
+      && !window.sidebarPreview.snapshot().running, text, `"${text}" was not sent into the gap`);
+  };
+  const openThreads = async () => {
+    // 새 채팅(초안)은 집중 모드로 열린다 — 머리줄의 채팅 목록 단추가 보이도록 나온다.
+    if (await page.evaluate(() => document.querySelector('.ag-root').classList.contains('ag-fullscreen'))) {
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } })));
+      await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-fullscreen'));
+    }
+    await page.click('.ag-header .ag-threads-btn');
+    await page.waitForSelector('.ag-root.ag-threads-open .ag-threads-item, .ag-root.ag-threads-open .ag-threads-new', { visible: true });
+  };
+  const activeThread = () => page.evaluate(() => window.sidebarPreview.sidebar.currentThreadId());
+
+  // 1. 틈에는 모드·모델이 잠기고 인라인 지시는 거절된다. 설정 거절은 받아들인 메시지를 걷지 않는다.
+  await openPreview(page, origin, 'reset=1&scenario=chat&hold=1');
+  await page.click('#play');
+  await waitRunning(page);
+  await enqueue(page, '틈에 보낸 요청');
+  await sendIntoGap('틈에 보낸 요청');
+  const locks = await page.evaluate(() => ({
+    mode: document.querySelector('.ag-mode-btn').disabled,
+    model: document.querySelector('.ag-llm-trigger').disabled,
+    effort: document.querySelector('.ag-effort-trigger').disabled,
+  }));
+  assert.deepEqual(locks, { mode: true, model: true, effort: true }, 'settings wait for the accepted message\'s turn');
+  await screenshot(page, artifacts, 'queue-gap-locked');
+  const inline = await page.evaluate(() => window.sidebarPreview.sidebar.sendInlinePrompt({
+    prompt: '이 문단을 고쳐 주세요',
+    selection: { label: '1쪽 1문단', excerpt: '사업 개요', contextBlock: '[선택] 사업 개요', items: [] },
+  }));
+  assert.equal(inline.ok, false, 'an inline prompt in the gap is refused instead of being sent and rejected');
+  assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent), 2);
+  // 같은 틈에 다른 곳(템플릿 칩 등)에서 바꾼 설정을 허브가 거절했다.
+  await page.evaluate(() => window.sidebarPreview.emitHubError('AGENT_BUSY', 'Templates can only change between turns.'));
+  let state = await queueState(page);
+  assert.deepEqual(state.rows, [], 'the accepted message does not return to the queue');
+  assert.equal(state.userBubbles.filter((text) => text === '틈에 보낸 요청').length, 1, 'its bubble stays');
+  // 허브가 받아 둔 그 메시지의 턴이 열리고 끝난다 — 다시 보내지 않는다.
+  await page.evaluate(() => {
+    window.sidebarPreview.streamEvent({ type: 'turn-start', agent: 'claude', turnId: 'turn-gap' });
+    window.sidebarPreview.finishTurn('completed');
+  });
+  await new Promise((done) => setTimeout(done, 200));
+  assert.equal(await sentCount('틈에 보낸 요청'), 1, 'the accepted message is sent once');
+
+  // 2. 틈에 다른 채팅을 열면 받아들인 대기 메시지는 채팅과 함께 멈추고 대기열 맨 앞으로 돌아온다.
+  await openPreview(page, origin, 'reset=1&scenario=chat&hold=1');
+  await page.click('#play');
+  await waitRunning(page);
+  await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+  await page.waitForFunction(() => !window.sidebarPreview.snapshot().running);
+  const firstThread = await activeThread();
+  await openThreads();
+  await page.click('.ag-threads-new');
+  await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
+  await page.type('.ag-input', '두 번째 채팅의 요청');
+  await page.keyboard.press('Enter');
+  await waitRunning(page);
+  await enqueue(page, '전환 전에 보낸 요청');
+  const secondThread = await activeThread();
+  assert.ok(firstThread && secondThread && firstThread !== secondThread, 'two saved chats');
+  await sendIntoGap('전환 전에 보낸 요청');
+  const stopsBefore = await page.evaluate(() => window.sidebarPreview.snapshot().stops);
+  await openThreads();
+  await page.click(`.ag-threads-item[data-thread-id="${firstThread}"]`);
+  await waitFor(page, (before) => window.sidebarPreview.snapshot().stops > before, stopsBefore,
+    'opening another chat did not stop this one');
+  await openThreads();
+  await page.click(`.ag-threads-item[data-thread-id="${secondThread}"]`);
+  await waitFor(page, () => document.querySelector('.ag-followups')?.dataset.hold === 'stopped', undefined,
+    'the message stopped with the chat did not come back to the queue');
+  state = await queueState(page);
+  assert.deepEqual(state.rows, ['전환 전에 보낸 요청']);
+  assert.equal(state.userBubbles.includes('전환 전에 보낸 요청'), false, 'no bubble is left for a message nobody answers');
+  assert.equal(await sentCount('전환 전에 보낸 요청'), 1);
+  await screenshot(page, artifacts, 'queue-gap-switched');
+
+  // 3. 틈에 새 채팅(초안)을 열어도 앞 채팅을 멈추고 그 메시지를 대기열로 되돌린다 — 답이 초안에 흘러들지 않는다.
+  await page.click('.ag-followups-resume');
+  await waitFor(page, () => window.sidebarPreview.snapshot().messageTexts.at(-1) === '전환 전에 보낸 요청'
+    && !document.querySelector('.ag-followup'), undefined, '보내기 did not send the head');
+  // 허브가 그 턴을 열고 돌린다. 다음 대기 메시지를 틈으로 보낸다.
+  await page.evaluate(() => {
+    window.sidebarPreview.streamEvent({ type: 'turn-start', agent: 'claude', turnId: 'turn-resumed' });
+  });
+  await enqueue(page, '초안 전에 보낸 요청');
+  await sendIntoGap('초안 전에 보낸 요청');
+  const stopsBeforeDraft = await page.evaluate(() => window.sidebarPreview.snapshot().stops);
+  await openThreads();
+  await page.click('.ag-threads-new');
+  await waitFor(page, (before) => window.sidebarPreview.snapshot().stops > before, stopsBeforeDraft,
+    'a new chat did not stop the chat whose message the hub was running');
+  assert.deepEqual(await userBubbles(), [], 'the draft shows nothing of the previous chat');
+  await openThreads();
+  await page.click(`.ag-threads-item[data-thread-id="${secondThread}"]`);
+  await waitFor(page, () => document.querySelector('.ag-followups')?.dataset.hold === 'stopped', undefined,
+    'the draft did not put the message back');
+  assert.deepEqual((await queueState(page)).rows, ['초안 전에 보낸 요청']);
+
+  // 4. 허브가 스스로 연 턴이 거절될 대기 메시지보다 먼저 오면, 그 턴은 남은 마지막 요청에 묶인다.
+  await openPreview(page, origin, 'reset=1&scenario=chat&hold=1');
+  await page.click('#play');
+  await waitRunning(page);
+  await enqueue(page, '거절될 요청');
+  await page.evaluate(() => {
+    window.sidebarPreview.rejectNextMessage('AGENT_BUSY');
+    window.sidebarPreview.finishTurn('completed');
+    window.sidebarPreview.streamEvent({ type: 'turn-start', agent: 'claude', turnId: 'turn-hub' });
+  });
+  await waitFor(page, () => document.querySelector('.ag-followups')?.dataset.hold === 'busy', undefined, 'the refusal did not bounce');
+  const binding = await page.evaluate(() => ({
+    turnKey: window.sidebarPreview.restoreState.turnKey,
+    requestKey: [...document.querySelectorAll('.ag-msg-user')].at(-1)?.dataset.turnKey ?? null,
+    bubbles: [...document.querySelectorAll('.ag-msg-user')].length,
+  }));
+  assert.equal(binding.bubbles, 1, 'only the first request is left');
+  assert.ok(binding.requestKey);
+  assert.equal(binding.turnKey, binding.requestKey, 'the hub turn moved to the request that is still shown');
+  await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+}
+
+async function screenshot(page, artifacts, name) {
+  const sidebar = await page.$('.ag-root');
+  await sidebar.screenshot({ path: resolve(artifacts, `${name}.png`) });
+}
+
 /** 입력기의 한 보내기 길: 템플릿 머리말·스킬 호출·첨부가 요청에 실리고, 로컬 명령은 메시지를 보내지 않는다. */
 export async function checkComposerSendPath(page, origin) {
   const sent = () => page.evaluate(() => window.sidebarPreview.snapshot().sentMessages);
@@ -333,6 +473,8 @@ export async function checkComposerSendPath(page, origin) {
 // 혼자 돌리기 — check.mjs 의 알려진 앞 단계 실패와 상관없이 이 검사만 본다.
 if (isMainModule(import.meta)) {
   await runStandalone('Follow-up queue: Enter queues, normal ends drain, doubtful ends hold', checkFollowUpQueue);
+  await runStandalone('Follow-up gap: settings lock, inline refusal, settings refusals and chat switches keep the accepted message once',
+    checkFollowUpGap);
   await runStandalone('Composer send path: template, skill, attachments and local commands',
     (page, origin) => checkComposerSendPath(page, origin));
 }
