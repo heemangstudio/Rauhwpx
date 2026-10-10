@@ -30,12 +30,13 @@ export class PrivateBrowserCdp {
     });
     this.wsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_CDP_MESSAGE_BYTES });
     this.server.on('upgrade', (request, socket, head) => {
-      const valid = request.url === this.path
-        && !request.headers.origin
-        && request.socket.remoteAddress === '127.0.0.1'
-        && request.headers.host === `127.0.0.1:${this.server.address().port}`
-        && !this.client;
-      if (!valid) { socket.destroy(); return; }
+      const checks = { pathMatches: request.url === this.path, originAbsent: !request.headers.origin,
+        loopback: request.socket.remoteAddress === '127.0.0.1',
+        hostMatches: request.headers.host === `127.0.0.1:${this.server.address().port}`, ownerAvailable: !this.client };
+      if (!Object.values(checks).every(Boolean)) {
+        console.warn('[owned-browser-cdp] rejected upgrade', JSON.stringify(checks));
+        socket.destroy(); return;
+      }
       this.wsServer.handleUpgrade(request, socket, head, (client) => this.connect(client));
     });
     await new Promise((resolve, reject) => {
