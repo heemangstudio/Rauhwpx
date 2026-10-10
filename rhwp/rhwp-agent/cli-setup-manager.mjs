@@ -172,6 +172,10 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   /** 진행 중인 설치. 같은 prefix 의 npm 은 package.json 을 서로 덮어쓰므로 설치는 한 번에 하나씩 돈다. */
   const installs = new Map();
   let installQueue = Promise.resolve();
+  let activeLaunches = 0;
+  let launchReady = Promise.resolve();
+  let releaseLaunches = () => {};
+  let prefixCleanupUncertain = false;
   let nodeHostShimDir = null;
   let loaded = false;
   let loadPromise = null;
@@ -191,6 +195,9 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     }
   }
   function assertAgent(agent) { if (!Object.hasOwn(CONFIG, agent)) throw setupError('AGENT_SETUP_INVALID', `지원하지 않는 에이전트예요: ${agent}`); return CONFIG[agent]; }
+  function assertPrefixAvailable() {
+    if (prefixCleanupUncertain) throw setupError('AGENT_INSTALL_CLEANUP_UNCERTAIN', '이전 CLI 설치 프로세스가 종료됐는지 확인할 수 없어 설치와 실행을 중단했어요.');
+  }
   function binPath(agent) { const item = assertAgent(agent); return path.join(binDir, platform === 'win32' ? `${item.bin}.cmd` : item.bin); }
   function claudeCleanEnv() {
     const env = { ...baseEnv };
@@ -348,14 +355,22 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     child.stdout?.on('data', (chunk) => { stdout += String(chunk); }); child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
     return await new Promise((resolve) => {
       // 설치(tree)는 npm 이 띄운 자식까지 끝난 뒤에 실패를 알린다. 남은 npm 이 다음 설치와 겹쳐 파일을 쓰지 않게 하기 위해서다.
-      let timedOut = false;
-      const timer = setTimeout(async () => {
-        timedOut = true;
-        if (tree) await terminateAndWaitForProcessTreeExit(child).catch(() => false); else child.kill?.();
-        resolve({ code: null, stdout, stderr: `${stderr}\ntimeout` });
-      }, timeoutMs);
-      child.on('error', (error) => { clearTimeout(timer); if (!timedOut) resolve({ code: null, stdout, stderr: `${stderr}\n${error?.message ?? error}` }); });
-      child.once('close', (code, signal) => { clearTimeout(timer); if (!timedOut) resolve({ code, signal, stdout, stderr }); });
+      let settling = false;
+      const finish = async (result, stop = false) => {
+        if (settling) return;
+        settling = true;
+        clearTimeout(timer);
+        if (stop) {
+          if (tree) {
+            const cleaned = await terminateAndWaitForProcessTreeExit(child).catch(() => false);
+            if (!cleaned) prefixCleanupUncertain = true;
+          } else child.kill?.();
+        }
+        resolve(result);
+      };
+      const timer = setTimeout(() => { void finish({ code: null, stdout, stderr: `${stderr}\ntimeout` }, true); }, timeoutMs);
+      child.on('error', (error) => { void finish({ code: null, stdout, stderr: `${stderr}\n${error?.message ?? error}` }, tree); });
+      child.once('close', (code, signal) => { void finish({ code, signal, stdout, stderr }); });
     });
   }
   /** `codex login` 이 남긴 auth.json 을 확인한다. 허브도 같은 파일을 세션에 연결해 쓴다. */
@@ -402,14 +417,42 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     const running = installs.get(agent);
     if (running) return running;
     const task = installQueue.then(async () => {
+      assertPrefixAvailable();
+      await launchReady;
       await load(); await fs.mkdir(rootDir, { recursive: true, mode: 0o700 });
       const result = await run(npmLaunch.command, [...npmLaunch.leadingArgs, 'install', '--prefix', prefixDir, `${item.package}@latest`], { env: baseEnv, timeoutMs: INSTALL_TIMEOUT_MS, tree: true });
+      assertPrefixAvailable();
       if (result.code !== 0) throw setupError('AGENT_INSTALL_FAILED', cleanOutput(result.stderr || result.stdout) || 'CLI 설치에 실패했어요.');
     });
     installQueue = task.catch(() => {});
     const settled = task.finally(() => installs.delete(agent)).then(() => { onProgress?.({ state: 'done' }); return status(agent); });
     installs.set(agent, settled);
     return settled;
+  }
+  /** npm replaces .bin targets while installing; resolve a launch only after the shared prefix is stable. */
+  async function prepareLaunch(agent) {
+    assertAgent(agent);
+    await load();
+    const ownInstall = installs.get(agent);
+    if (ownInstall) await ownInstall;
+    let pending;
+    do {
+      pending = installQueue;
+      await pending;
+    } while (pending !== installQueue);
+    assertPrefixAvailable();
+    if (activeLaunches++ === 0) launchReady = new Promise((resolve) => { releaseLaunches = resolve; });
+    let released = false;
+    const bin = binPath(agent);
+    return {
+      bin: existsSync(bin) ? bin : null,
+      env: envFor(agent),
+      release() {
+        if (released) return;
+        released = true;
+        if (--activeLaunches === 0) releaseLaunches();
+      },
+    };
   }
   async function authenticate(agent, method, key, onProgress, { signal, onCommitted, terminal = false } = {}) {
     assertAgent(agent); await load();
@@ -595,7 +638,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       // Earlier builds copied Claude logins into these folders. Nothing reads them now.
       await fs.rm(claudeLoginDir, { recursive: true, force: true }).catch(() => {});
       await fs.rm(legacyClaudeSeedDir, { recursive: true, force: true }).catch(() => {}); nodeHostShimDir = await ensureNodeHost().catch(() => null); await load(); return this; },
-    status, install, authenticate,
+    status, install, prepareLaunch, authenticate,
     async submitAuthCode(agent, code) { assertAgent(agent); if (typeof code !== 'string' || Buffer.byteLength(code) > AUTH_CODE_MAX_BYTES) throw setupError('AGENT_AUTH_CODE_INVALID', '인증 코드가 올바르지 않아요.'); if (authTerminals.has(agent)) authTerminals.get(agent).write(`${code.trim()}\n`); else authProcesses.get(agent)?.stdin?.write?.(`${code.trim()}\n`); },
     terminalSnapshot(agent) { return authTerminals.get(agent)?.snapshot() ?? null; }, terminalInput(agent, data) { authTerminals.get(agent)?.write(String(data ?? '')); }, terminalResize(agent, cols, rows) { authTerminals.get(agent)?.resize(cols, rows); loginScreens.get(agent)?.resize(cols, rows); },
     async cancel(agent) { return cancelLogin(agent); },

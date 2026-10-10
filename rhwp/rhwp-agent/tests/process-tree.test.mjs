@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -34,6 +38,22 @@ test('owned spawn options create POSIX groups without detaching Windows children
   assert.deepEqual(processTreeSpawnOptions('linux'), { detached: true, windowsHide: true });
   assert.deepEqual(processTreeSpawnOptions('darwin'), { detached: true, windowsHide: true });
   assert.deepEqual(processTreeSpawnOptions('win32'), { detached: false, windowsHide: true });
+});
+
+test('a failed spawn without an OS process is proven clean after its pipes close', async () => {
+  const child = spawn(process.execPath, ['--version'], {
+    ...processTreeSpawnOptions(),
+    cwd: path.join(os.tmpdir(), `rhwp-missing-cwd-${randomUUID()}`),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const closed = new Promise((resolve) => child.once('close', resolve));
+  const [error] = await once(child, 'error');
+  assert.equal(error.code, 'ENOENT');
+  assert.equal(child.pid, undefined);
+  await closed;
+
+  assert.equal(await terminateAndWaitForProcessTreeExitOutcome(child), PROCESS_TREE_CLEANUP_OUTCOME.PROVEN);
+  assert.equal(await waitForProcessTreeExit(child), true);
 });
 
 test('POSIX termination targets the child process group with TERM then KILL', () => {

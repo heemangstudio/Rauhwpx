@@ -180,6 +180,22 @@ try {
     await page.waitForFunction(
       () => window.__agentBridge?.getConnectionState?.() === 'connected',
     );
+
+    // 문서를 열거나 첫 메시지를 보내기 전에도 현재 채팅 초안에 첨부할 수 있다.
+    await page.click('.ag-reference-quick-add');
+    const draftFileInput = await page.$('.ag-reference-file-input');
+    await draftFileInput.uploadFile(path.join(repoRoot, 'samples/hwpx/landscape-001.hwpx'));
+    await page.waitForFunction(() => document.querySelector(
+      '.ag-reference-upload-chip.ag-ready, .ag-reference-upload-chip.ag-error',
+    ));
+    const emptyEditorUpload = await page.$eval('.ag-reference-upload-chip', (chip) => ({
+      ready: chip.classList.contains('ag-ready'),
+      error: chip.getAttribute('title'),
+    }));
+    assert(emptyEditorUpload.ready, `empty-editor attachment should be ready: ${JSON.stringify(emptyEditorUpload)}`);
+    await screenshot(page, 'memo1-empty-editor-upload');
+    await page.click('button[aria-label="landscape-001.hwpx 첨부 취소"]');
+    await page.waitForFunction(() => document.querySelectorAll('.ag-reference-upload-chip').length === 0);
     await createNewDocument(page);
 
     // 지운 초안 첨부는 어디에도 쌓이지 않는다.
@@ -276,6 +292,12 @@ try {
     await page.waitForSelector('.ag-threads-page[aria-hidden="false"]');
     await page.evaluate(() => document.querySelector('.ag-threads-new')?.click());
     await page.waitForFunction(() => !document.documentElement.classList.contains('ag-fs-vt'));
+    // 이전 채팅의 idle provider 를 그대로 두는 새 초안도 첨부를 준비할 수 있다.
+    await stageQuickFile(page, { name: 'next-chat-draft.txt', content: 'DRAFT_WITH_PREVIOUS_PROVIDER_ALIVE' });
+    await page.waitForFunction(() => document.querySelector('.ag-reference-upload-chip.ag-ready, .ag-reference-upload-chip.ag-error'));
+    assert(await page.$eval('.ag-reference-upload-chip', (chip) => chip.classList.contains('ag-ready')),
+      'a new draft can attach before replacing the previous provider');
+    await page.click('button[aria-label="next-chat-draft.txt 첨부 취소"]');
     await page.type('.ag-input', 'second chat');
     await page.click('.ag-send');
     await page.waitForFunction(

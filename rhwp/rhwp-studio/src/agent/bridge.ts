@@ -367,7 +367,7 @@ export interface AgentBridge {
   setActiveTemplate(id: string | null): void;
   getActiveTemplate(): DocumentTemplate | null;
   /** 읽기 전용 템플릿 미리보기 창이 실제로 열렸음을 허브에 확인한다. */
-  stageReference(scopeId: string, file: File): Promise<StagedReference>;
+  stageReference(scopeId: string, file: File, signal?: AbortSignal): Promise<StagedReference>;
   discardStagedReference(scopeId: string, stageId: string): Promise<void>;
   /** 참고자료 원본은 HTTP로 스트리밍하고, 브라우저에는 메타데이터만 돌려준다. */
   uploadReference(scope: ReferenceScope, scopeId: string, file: File): Promise<ReferenceFile>;
@@ -1585,13 +1585,15 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private async initializeConnection() {
-    const seq = this.reconnectSeq;
+    const seq = ++this.reconnectSeq;
+    this.clearReconnectTimer();
     await this.requestHubLaunch();
-    if (this.disposed) return;
-    if (!await this.refreshSessionContext()) {
+    if (this.disposed || seq !== this.reconnectSeq) return;
+    if (!await this.refreshSessionContext(seq)) {
       this.retryAfterContextFailure(seq);
       return;
     }
+    if (this.disposed || seq !== this.reconnectSeq) return;
     this.connect();
   }
 
@@ -1627,9 +1629,10 @@ export class AgentBridgeImpl implements AgentBridge {
     }
   }
 
-  private async refreshSessionContext() {
+  private async refreshSessionContext(seq = this.reconnectSeq) {
     const context = await this.loadSessionContext();
-    if (this.disposed) return false;
+    // 조회 중 새 재연결이 시작됐으면 오래된 capability 로 세션을 덮어쓰지 않는다.
+    if (this.disposed || seq !== this.reconnectSeq) return false;
     if (!context) {
       this.setState('disconnected');
       return false;
@@ -1804,10 +1807,11 @@ export class AgentBridgeImpl implements AgentBridge {
     this.setState('connecting');
     await this.requestHubLaunch();
     if (this.disposed || seq !== this.reconnectSeq || this.getConnectionState() === 'connected') return;
-    if (!await this.refreshSessionContext()) {
+    if (!await this.refreshSessionContext(seq)) {
       this.retryAfterContextFailure(seq);
       return;
     }
+    if (this.disposed || seq !== this.reconnectSeq || this.getConnectionState() === 'connected') return;
     this.forceReconnect();
   }
 
@@ -1920,10 +1924,11 @@ export class AgentBridgeImpl implements AgentBridge {
   private async connectAfterHub(seq: number): Promise<void> {
     await this.requestHubLaunch();
     if (this.disposed || seq !== this.reconnectSeq || this.state === 'connected') return;
-    if (!await this.refreshSessionContext()) {
+    if (!await this.refreshSessionContext(seq)) {
       this.retryAfterContextFailure(seq);
       return;
     }
+    if (this.disposed || seq !== this.reconnectSeq || this.getConnectionState() === 'connected') return;
     this.connect();
   }
 
@@ -2568,6 +2573,9 @@ export class AgentBridgeImpl implements AgentBridge {
         this.emit({ type: 'reference-status', messageId: String(msg.messageId ?? ''), attachments });
         break;
       }
+      case 'reference-stage-bound':
+        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, msg);
+        break;
       case 'project-bound':
       case 'project-changed':
       case 'project-librarian-status':
@@ -3813,7 +3821,23 @@ export class AgentBridgeImpl implements AgentBridge {
     return normalized;
   }
 
-  async stageReference(scopeId: string, file: File): Promise<StagedReference> {
+  async stageReference(scopeId: string, file: File, signal?: AbortSignal): Promise<StagedReference> {
+    // 새 채팅 초안은 첫 메시지 전까지 CLI 를 열지 않는다. HTTP 업로드 전에 현재
+    // 스레드를 허브에 묶고 응답을 기다려, 범위 등록과 업로드 사이의 경합을 막는다.
+    signal?.throwIfAborted();
+    const context = this.referenceContext();
+    const bound = await this.request<{ threadId: string }>(
+      {
+        type: 'reference-stage-bind',
+        threadId: scopeId,
+      },
+      'reference-bind',
+    );
+    signal?.throwIfAborted();
+    if (!bound) throw new Error('채팅 첨부를 준비하지 못했습니다. 서버 연결을 확인하고 다시 시도해 주세요.');
+    if (bound.threadId !== scopeId || context.threadId !== this.threadId || context.documentId !== this.documentId) {
+      throw new Error('현재 채팅이 바뀌었습니다. 새 채팅에서 파일을 다시 첨부해 주세요.');
+    }
     const payload = await this.referenceFetch(
       this.referenceUrl('/reference-staging', { scopeId }),
       {
@@ -3823,6 +3847,7 @@ export class AgentBridgeImpl implements AgentBridge {
           'X-File-Name': encodeURIComponent(file.name),
         },
         body: file,
+        signal,
       },
     );
     const source = payload && typeof payload === 'object' ? (payload as any).staged : null;

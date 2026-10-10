@@ -104,6 +104,7 @@ export function redactDiagnosticText(value, secrets = []) {
  * @property {string} [openRouterApiKey]
  * @property {boolean} [reasoning]
  * @property {Record<string, string>} [providerEnv]
+ * @property {() => Promise<{bin: string, providerEnv?: Record<string, string>, release?: () => void}>} [prepareLaunch] Reserve the managed CLI until its synchronous spawn completes.
  * @property {string} [model]
  * @property {string} [effort]
  * @property {'standard'|'fast'} [serviceTier]
@@ -480,6 +481,13 @@ export const SYSTEM_BRIEF = `${SHARED_SYSTEM_BRIEF}\n\n${INSTRUCTION_WRITE_BRIEF
 
 const WORKFLOWS = new Set(['direct', 'plan', 'question']);
 const PHASES = new Set(['planning', 'questioning', 'awaiting-approval', 'switching', 'implementing']);
+
+/** Refresh the executable and credential environment after a managed installation settles. */
+export function applyPreparedProviderLaunch(opts, agent, launch) {
+  if (!launch) return;
+  if (typeof launch.bin === 'string' && launch.bin) opts[`${agent}Bin`] = launch.bin;
+  if (launch.providerEnv) opts.providerEnv = launch.providerEnv;
+}
 
 export function normalizeExecutionMode(opts = {}) {
   const hasWorkflow = opts.workflow !== undefined && opts.workflow !== null;

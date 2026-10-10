@@ -15,6 +15,7 @@ import {
   mcpRuntimeFor,
   normalizeExecutionMode,
   normalizeUsageTokens,
+  applyPreparedProviderLaunch,
   redactDiagnosticText,
   systemBriefFor,
   truncate,
@@ -230,6 +231,7 @@ export function createLegacyCodexSession(opts, {
   let uncertainTreeCleanup = false;
   /** @type {{ text: string } | null} */
   let queuedTurn = null;
+  let launchPrepared = false;
   /**
    * 이번 턴의 롤아웃 워처. codex --json 에는 자식 에이전트 활동이 한 줄도 오지
    * 않으므로 fleet 카드의 유일한 소스다.
@@ -471,6 +473,39 @@ export function createLegacyCodexSession(opts, {
         });
         return;
       }
+      if (opts.prepareLaunch && !launchPrepared) {
+        const queued = { text };
+        queuedTurn = queued;
+        void Promise.resolve().then(() => opts.prepareLaunch()).then((launch) => {
+          let ownsLaunch = false;
+          try {
+            if (queuedTurn !== queued || disposed) return;
+            ownsLaunch = true;
+            applyPreparedProviderLaunch(opts, 'codex', launch);
+            queuedTurn = null;
+            launchPrepared = true;
+            session.sendUserMessage(queued.text);
+          } catch (error) {
+            if (!ownsLaunch || disposed) return;
+            queuedTurn = null;
+            launchPrepared = false;
+            const message = redactDiagnosticText(error?.message ?? error, [opts.token]);
+            onEvent({ type: 'error', agent: 'codex', message });
+            const ended = { type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: message };
+            if (turnOpen) endTurn(ended); else onEvent(ended);
+          } finally {
+            launch?.release?.();
+          }
+        }, (error) => {
+          if (queuedTurn !== queued || disposed) return;
+          queuedTurn = null;
+          const message = redactDiagnosticText(error?.message ?? error, [opts.token]);
+          onEvent({ type: 'error', agent: 'codex', message });
+          onEvent({ type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: message });
+        });
+        return;
+      }
+      launchPrepared = false;
       // 이전 턴의 워처가 남아 있으면 turn-start 보다 먼저 정리한다 — 그래야 남은
       // 카드를 닫는 task-end 가 지난 턴 안에서 끝난다 (정상 흐름에서는 exit 에서
       // 이미 정리됐고, 여기 걸리는 건 exit 이 오지 않은 예외 경로다).
@@ -717,11 +752,16 @@ export function createLegacyCodexSession(opts, {
       opts.capabilityEpoch = mode.capabilityEpoch;
     },
     interrupt() {
+      const hadQueuedTurn = queuedTurn !== null;
       queuedTurn = null;
       suppressChildOutput();
       killChild();
       finalizeRolloutWatcher();
-      endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'interrupted' });
+      if (hadQueuedTurn && !turnOpen) {
+        onEvent({ type: 'turn-end', agent: 'codex', stopReason: 'interrupted' });
+      } else {
+        endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'interrupted' });
+      }
     },
     dispose() {
       disposed = true;

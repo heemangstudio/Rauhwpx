@@ -12,7 +12,7 @@ import { checkChangesPreview } from './changes.check.mjs';
 import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
-import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
+import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock, checkNewChatViewMode } from './parallel-chats.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -110,7 +110,7 @@ try {
     );
     assert(clicked, `Visible ${selector} with text ${text}`);
   }
-  // New chat opens a focus-mode draft, so sidebar checks start from an empty store instead.
+  // Sidebar checks start from an empty chat store.
   async function openNewChat(query = '') {
     await open(query ? `reset=1&${query}` : 'reset=1');
   }
@@ -139,11 +139,16 @@ try {
     }
   }
   await step('Fullscreen provider chip follows the composer column', () => checkChipAlignment(page, origin));
+  await step('New chat preserves sidebar and fullscreen views', () => checkNewChatViewMode(page, origin));
   await step('Empty focus chat centers the composer and sends it to the bottom', async () => {
-    await open('fullscreen=1');
+    await open('fullscreen=1&reset=1');
     const startNewChat = async () => {
+      if (await page.$eval('.ag-root', (root) => root.classList.contains('ag-rail-collapsed'))) {
+        await page.click('.ag-workspace-threads-btn');
+      }
       await page.click('.ag-threads-new');
-      await page.waitForFunction(() => !document.querySelector('.ag-input').disabled);
+      await page.waitForFunction(() => !document.querySelector('.ag-input').disabled
+        && window.sidebarPreview.sidebar.currentThreadId() === null);
     };
     await startNewChat();
     const layout = () => page.evaluate(() => {

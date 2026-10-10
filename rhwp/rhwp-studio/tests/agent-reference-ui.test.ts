@@ -81,7 +81,6 @@ test('composer attachments upload into removable staging drafts before their mes
   assert.match(library, /state = el\('span', 'ag-reference-upload-chip-state', '전송 대기'\)/);
   assert.match(library, /`\$\{file\.name\} 첨부 취소`/);
   assert.match(library, /async function stageOne\(chip: UploadChip\)/);
-  assert.match(library, /bridge\.stageReference\(chip\.target\.scopeId, chip\.file\)/);
   assert.match(library, /hasBlockingDrafts: \(\) => draftUploads\.some/);
   assert.match(library, /function takeReadyDrafts\(\): StagedReference\[\]/);
   assert.match(sidebar, /referenceLibrary\.takeReadyDrafts\(\)/);

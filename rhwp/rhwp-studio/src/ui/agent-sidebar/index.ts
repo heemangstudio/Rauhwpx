@@ -6046,7 +6046,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     ) {
       chatChosen = true;
       setThreadsPanelOpen(false);
-      setFullscreen(true, { then: () => input.focus({ preventScroll: true }) });
+      input.focus({ preventScroll: true });
       return;
     }
     chatChosen = true;
@@ -6181,8 +6181,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   /**
-   * 새 채팅. 사용자가 고른 새 채팅은 초안이다 — 집중 모드에 인사와 입력기만 띄우고, 첫
-   * 메시지를 보낼 때 스레드를 저장하고 브리지 채팅을 연다. 앞 채팅은 저장된 그대로 두고
+   * 새 채팅. 사용자가 고른 새 채팅은 지금 화면 모드를 유지하는 초안이다 — 첫 메시지를
+   * 보낼 때 스레드를 저장하고 브리지 채팅을 연다. 앞 채팅은 저장된 그대로 두고
    * 브리지도 아직 멈추지 않는다. silent 는 문서 전환·삭제처럼 지금 채팅을 대신 세울 때로,
    * 빈 채팅의 브리지 채팅을 곧바로 연다.
    */
@@ -6243,7 +6243,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       setThreadsPanelOpen(false);
       // 초안마다 새 인사를 고른다 — 이미 집중 모드여도 빈 채팅 배치를 다시 세운다.
       syncFocusGreeting();
-      setFullscreen(true, { then: () => input.focus({ preventScroll: true }) });
+      input.focus({ preventScroll: true });
       return;
     }
     selectTemplate(null);

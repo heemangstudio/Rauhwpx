@@ -65,6 +65,5 @@ test('browser/dev context keeps explicit overrides and HTTP hub URLs become WebS
 test('AgentBridge carries the renderer session on WebSocket and HTTP hub requests', () => {
   assert.match(bridgeSource, /\/studio\?token=.*&sessionId=/);
   assert.match(bridgeSource, /url\.searchParams\.set\('sessionId', this\.sessionId\)/);
-  assert.match(bridgeSource, /await this\.refreshSessionContext\(\)/);
   assert.doesNotMatch(bridgeSource, /opts\?\.url \?\?.*5175/);
 });

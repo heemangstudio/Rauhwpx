@@ -6,6 +6,7 @@ import {
   isPlanningRestricted,
   mcpCapabilityEnv,
   mcpRuntimeFor,
+  applyPreparedProviderLaunch,
   providerInteractionMode,
   redactDiagnosticText,
   systemBriefFor,
@@ -763,12 +764,17 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   }
 
   async function startConnection({ featureForced = false } = {}) {
-    const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
-    prepareHome(codexHome, opts.codexAuthPath);
-    stderrTail = '';
-    expectedShutdown = false;
+    const attempt = turnAttempt;
     let child;
+    let launch;
     try {
+      launch = opts.prepareLaunch ? await opts.prepareLaunch() : null;
+      if (disposed || attempt !== turnAttempt) throw new Error('Codex launch was cancelled');
+      applyPreparedProviderLaunch(opts, 'codex', launch);
+      const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+      prepareHome(codexHome, opts.codexAuthPath);
+      stderrTail = '';
+      expectedShutdown = false;
       const spawnEnv = {
         ...isolatedProcessEnv(opts, opts.providerEnv ?? process.env),
         CODEX_HOME: codexHome,
@@ -784,6 +790,8 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       });
     } catch (error) {
       throw new CodexAppServerUnavailableError('Failed to start Codex app-server', error);
+    } finally {
+      launch?.release?.();
     }
     proc = child;
     const connectionGeneration = ++generation;

@@ -101,6 +101,7 @@ import {
   attachActiveDocumentIdentity,
   liveDocumentBlock,
   normalizeDocumentSnapshot,
+  normalizeStableScopeId,
   referenceScopesForSession,
   resolveSessionIdentity,
 } from './reference-session.mjs';
@@ -480,6 +481,8 @@ const sessions = new HubSessionRegistry({
       piSubagents: new PiSubagentCapabilityRegistry(),
       studioMessageQueue: Promise.resolve(),
       agentSession: null,
+      sessionDisposalPromise: null,
+      referenceStagingThreadId: null,
       processCleanupUncertain: false,
       pendingReferenceMessage: null,
       nextCapabilityEpoch: 1,
@@ -2362,6 +2365,9 @@ function sendAgentEvent(record, event) {
 function disposeSession(record) {
   record.pendingReferenceMessage = null;
   record.pendingDocumentSaved = null;
+  // 채팅 중지·창 닫기·허브 종료가 겹치면 같은 공급자 종료를 기다린다.
+  // agentSession 을 비웠다고 아직 살아 있는 프로세스의 작업 폴더를 지우면 안 된다.
+  if (record.sessionDisposalPromise) return record.sessionDisposalPromise;
   const activeSession = record.agentSession;
   if (!activeSession) {
     retireAllPiSubagents(record);
@@ -2409,7 +2415,7 @@ function disposeSession(record) {
       record.missedTurnEnd = evt;
     }
   }
-  return Promise.allSettled([backendExit, browserbaseExit]).then(([backend, browserbase]) => {
+  record.sessionDisposalPromise = Promise.allSettled([backendExit, browserbaseExit]).then(([backend, browserbase]) => {
     const backendCleaned = backend.status === 'fulfilled' && backend.value !== false;
     const browserbaseCleaned = browserbase.status === 'fulfilled' && browserbase.value !== false;
     if (backend.status === 'rejected') {
@@ -2424,7 +2430,10 @@ function disposeSession(record) {
     if (!browserbaseCleaned) retainedUncertainBrowserbaseSessions.add(record.browserbaseSession);
     retainUncertainProcessCleanup(record.recordRoot);
     return false;
+  }).finally(() => {
+    record.sessionDisposalPromise = null;
   });
+  return record.sessionDisposalPromise;
 }
 
 function agentProcessCleanupUncertain(cause = null) {
@@ -3000,6 +3009,15 @@ async function startSession(
     codexAuthPath: sourceCodexAuthPath,
     codexBin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
     claudeBin: cliSetupStatus.claude?.installed ? cliSetup.binPath('claude') : 'claude',
+    // CLI 는 채팅 시작 뒤에도 설치·갱신될 수 있다. 실제 프로세스를 만들 때 prefix 잠금을 기다린다.
+    prepareLaunch: CLI_SETUP_AGENTS.includes(agent) ? async () => {
+      const launch = await cliSetup.prepareLaunch(agent);
+      return {
+        bin: launch.bin ?? agent,
+        release: launch.release,
+        providerEnv: agent === 'claude' ? claudeRuntimeEnv(record.isolatedHome) : launch.env,
+      };
+    } : undefined,
     providerEnv: agent === 'claude'
       ? claudeRuntimeEnv(record.isolatedHome)
       : (CLI_SETUP_AGENTS.includes(agent) ? cliSetup.envFor(agent) : {}),
@@ -3395,6 +3413,20 @@ async function setChatWorkflow(record, sock, msg) {
 
 async function handleStudioMessage(record, sock, msg) {
   switch (msg.type) {
+    case 'reference-stage-bind': {
+      // 첨부 초안은 이전 채팅의 provider 가 살아 있어도 만들 수 있다. 이 묶기는
+      // staging HTTP 만 허용하며 provider 의 자료 읽기 범위·프로젝트를 바꾸지 않는다.
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      if (!requestId) return;
+      try {
+        const threadId = normalizeStableScopeId(msg.threadId, 'threadId');
+        record.referenceStagingThreadId = threadId;
+        sendJson(sock, { v: 1, type: 'reference-stage-bound', requestId, threadId });
+      } catch (error) {
+        sendJson(sock, { v: 1, type: 'reference-stage-bound', requestId, threadId: null });
+      }
+      return;
+    }
     case 'chat-start': {
       if (record.agentSession?.workflowTransition) {
         await record.agentSession.workflowTransition;
@@ -5804,8 +5836,13 @@ const httpServer = http.createServer((req, res) => {
       // session-wide token.
       const presentedToken = requestToken(req, url);
       const expectedTokens = authSessionId ? [presentedToken] : [];
-      const allowedScopes = authSessionId
-        ? referenceScopesForSession(sessions.require(authSessionId).agentSession)
+      const referenceRecord = authSessionId ? sessions.require(authSessionId) : null;
+      const stagingPath = url.pathname === '/reference-staging' || url.pathname.startsWith('/reference-staging/');
+      // 초안 첨부만 별도로 묶는다. 저장된 자료 읽기는 살아 있는 provider 세션의 범위만 쓴다.
+      const allowedScopes = referenceRecord
+        ? referenceScopesForSession(stagingPath && referenceRecord.referenceStagingThreadId
+          ? { threadId: referenceRecord.referenceStagingThreadId }
+          : referenceRecord.agentSession)
         : [];
       if (isReferencePath(url.pathname)) {
         const handleReferenceHttp = createReferenceHttpHandler({

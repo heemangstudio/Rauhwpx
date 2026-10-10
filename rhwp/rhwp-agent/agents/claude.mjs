@@ -25,6 +25,7 @@ import {
   normalizeTaskUsage,
   normalizeUsageTokens,
   providerReadOnlyRoots,
+  applyPreparedProviderLaunch,
   providerInteractionMode,
   redactDiagnosticText,
   RHWP_SUBAGENTS,
@@ -407,6 +408,7 @@ export function createClaudeSession(opts, {
   // 영구히 실패한다. 재스폰 시 완료된 turn 이 없으면 새 UUID 를 발급한다.
   let sessionIdConsumed = false;
   let turnOpen = false;
+  let userTurnGeneration = 0;
   let sawRootTextDelta = false;
   const streamedSubagents = new Set();
   let disposed = false;
@@ -1006,6 +1008,7 @@ export function createClaudeSession(opts, {
     usageBaseline = new Map();
     const owner = {
       generation: ++sdkGeneration,
+      turnGeneration: userTurnGeneration,
       query: null,
       queue: createClaudeInputQueue(),
       run: null,
@@ -1071,8 +1074,9 @@ export function createClaudeSession(opts, {
           // give two providers ownership of the same turn and workspace.
           nativeUserInput = false;
           const cleanupReady = closeSdkQuery(owner);
-          void cleanupReady.then((cleaned) => {
-            if (disposed || !turnOpen) return;
+          void cleanupReady.then(async (cleaned) => {
+            const stale = () => disposed || !turnOpen || userTurnGeneration !== owner.turnGeneration;
+            if (stale()) return;
             if (!cleaned) {
               onEvent({
                 type: 'error',
@@ -1083,11 +1087,21 @@ export function createClaudeSession(opts, {
               return;
             }
             process.stderr.write(`[claude] native user-input transport unavailable; using MCP fallback: ${error?.message ?? error}\n`);
+            let launch;
             try {
+              if (opts.prepareLaunch) {
+                launch = await opts.prepareLaunch();
+                if (stale()) return;
+                applyPreparedProviderLaunch(opts, 'claude', launch);
+              }
+              if (stale()) return;
               dispatchLegacy(pendingPrompt);
             } catch (fallbackError) {
-              onEvent({ type: 'error', agent: 'claude', message: `failed to dispatch message: ${fallbackError?.message ?? fallbackError}` });
+              if (stale()) return;
+              onEvent({ type: 'error', agent: 'claude', message: `failed to dispatch message: ${redactDiagnosticText(fallbackError?.message ?? fallbackError, [opts.token])}` });
               endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'exited' });
+            } finally {
+              launch?.release?.();
             }
           });
           return;
@@ -1347,6 +1361,7 @@ export function createClaudeSession(opts, {
 
   function beginQueuedTurn(text) {
     if (disposed) return;
+    userTurnGeneration += 1;
     turnOpen = true;
     sawRootTextDelta = false;
     streamedSubagents.clear();
@@ -1379,7 +1394,7 @@ export function createClaudeSession(opts, {
     onEvent({
       type: 'error',
       agent: 'claude',
-      message: error?.message ?? 'Claude process-tree cleanup could not be confirmed before the next turn',
+      message: redactDiagnosticText(error?.message ?? 'Claude process-tree cleanup could not be confirmed before the next turn', [opts.token]),
     });
     // The hub allocated this user turn before dispatch. Close that allocation
     // without advertising provider authority through a matching turn-start.
@@ -1418,8 +1433,21 @@ export function createClaudeSession(opts, {
             return;
           }
         }
-        queuedTurn = null;
-        beginQueuedTurn(entry.text);
+        let launch;
+        try {
+          if (opts.prepareLaunch) {
+            launch = await opts.prepareLaunch();
+            if (queuedTurn !== entry || disposed) return;
+            applyPreparedProviderLaunch(opts, 'claude', launch);
+          }
+          if (queuedTurn !== entry || disposed) return;
+          queuedTurn = null;
+          beginQueuedTurn(entry.text);
+        } catch (error) {
+          failQueuedTurn(entry, error);
+        } finally {
+          launch?.release?.();
+        }
       }, (error) => failQueuedTurn(entry, error));
     },
     async setPermissionProfile(profile) {
@@ -1469,6 +1497,7 @@ export function createClaudeSession(opts, {
       }
     },
     interrupt() {
+      const hadQueuedTurn = queuedTurn !== null;
       queuedTurn = null;
       if (sdkOwner) {
         // Closing the SDK query aborts the exact signal handed to canUseTool,
@@ -1478,7 +1507,11 @@ export function createClaudeSession(opts, {
       suppressChildOutput();
       killChild();
       childAlive = false;
-      endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'interrupted' });
+      if (hadQueuedTurn && !turnOpen) {
+        onEvent({ type: 'turn-end', agent: 'claude', stopReason: 'interrupted' });
+      } else {
+        endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'interrupted' });
+      }
     },
     dispose() {
       disposed = true;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   existsSync,
   lstatSync,
@@ -1348,6 +1348,101 @@ test('Claude preserves a redacted spawn error through delayed exit settlement', 
   assert.equal(events.find((event) => event.type === 'turn-end')?.stopReason, 'exited');
   await session.dispose();
 });
+
+test('Claude can retry after a real spawn failure without retaining a nonexistent process tree', async (t) => {
+  const events = [];
+  const ends = [];
+  let launches = 0;
+  const waitForEnd = () => new Promise((resolve) => ends.push(resolve));
+  const session = createClaudeSession({
+    ...baseOpts,
+    rootDir: testHome,
+    permissionProfile: 'safe',
+    onEvent(event) {
+      events.push(event);
+      if (event.type === 'turn-end') ends.shift()?.(event);
+    },
+  }, {
+    spawnProcess(command, argv, options) {
+      launches += 1;
+      if (launches === 1) return spawn(path.join(testHome, 'missing-claude'), [], options);
+      return spawn(process.execPath, ['-e',
+        'process.stdin.once("data", () => process.stdout.write(JSON.stringify({type:"result",stop_reason:"end_turn"})+"\\n"))',
+      ], options);
+    },
+  });
+  t.after(() => session.dispose());
+
+  const failed = waitForEnd();
+  session.sendUserMessage('first attempt');
+  assert.equal((await failed).stopReason, 'exited');
+  assert.match(events.find((event) => event.type === 'error').message, /ENOENT/);
+
+  const retried = waitForEnd();
+  assert.doesNotThrow(() => session.sendUserMessage('retry after installing'));
+  assert.equal((await retried).stopReason, 'end_turn');
+  assert.equal(launches, 2);
+  assert.equal(await session.dispose(), true);
+});
+
+for (const [agent, createSession] of [['claude', createClaudeSession], ['codex', createCodexSession]]) {
+  test(`${agent} launch preparation waits, cancels without spawning, and can retry after failure`, async (t) => {
+    const events = [];
+    const spawns = [];
+    let release;
+    let reservationsReleased = 0;
+    let failWatcher = false;
+    let prepare = () => new Promise((resolve) => { release = resolve; });
+    const session = createSession({
+      ...baseOpts,
+      prepareLaunch: () => prepare(),
+      onEvent: (event) => events.push(event),
+    }, {
+      ...(agent === 'codex' ? { createRolloutWatcher() {
+        if (failWatcher) throw new Error('rollout watcher could not start');
+        return { start() {}, stop() {}, finalize() {} };
+      } } : {}),
+      spawnProcess(command, argv, options) {
+        const process = new FakeProcess();
+        spawns.push({ command, options });
+        return process;
+      },
+    });
+    t.after(() => session.dispose());
+
+    session.sendUserMessage('wait for the installation');
+    await nextTask();
+    assert.equal(spawns.length, 0);
+    assert.equal(events.some((event) => event.type === 'turn-start'), false);
+    session.interrupt();
+    assert.equal(events.at(-1)?.stopReason, 'interrupted');
+    release({ bin: '/stale-cli', release() { reservationsReleased++; } });
+    await nextTask();
+    assert.equal(spawns.length, 0, 'cancellation must suppress the deferred spawn');
+
+    prepare = async () => { throw new Error('installation failed'); };
+    session.sendUserMessage('failed preparation');
+    await nextTask();
+    assert.equal(events.at(-1)?.stopReason, 'failed');
+    assert.equal(spawns.length, 0);
+
+    prepare = async () => ({ bin: '/fresh-managed-cli', providerEnv: { RHWP_LAUNCH_ENV: 'fresh' }, release() { reservationsReleased++; } });
+    if (agent === 'codex') {
+      failWatcher = true;
+      session.sendUserMessage('synchronous launch failure');
+      await nextTask();
+      assert.equal(events.at(-1)?.stopReason, 'failed');
+      assert.equal(spawns.length, 0);
+      failWatcher = false;
+    }
+    session.sendUserMessage('retry');
+    await nextTask();
+    assert.equal(spawns.length, 1);
+    assert.equal(spawns[0].command, '/fresh-managed-cli');
+    assert.equal(spawns[0].options.env.RHWP_LAUNCH_ENV, 'fresh');
+    assert.equal(reservationsReleased, agent === 'codex' ? 3 : 2);
+  });
+}
 
 async function runClaudeResult(result, opts = {}) {
   const events = [];

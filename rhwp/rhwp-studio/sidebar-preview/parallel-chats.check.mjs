@@ -8,7 +8,11 @@ async function openPreview(page, origin, query) {
 }
 
 async function clickNewChat(page) {
-  await page.click('.ag-header .ag-threads-btn');
+  const mode = await page.$eval('.ag-root', (root) => ({
+    fullscreen: root.classList.contains('ag-fullscreen'), collapsed: root.classList.contains('ag-rail-collapsed'),
+  }));
+  if (!mode.fullscreen) await page.click('.ag-header .ag-threads-btn');
+  else if (mode.collapsed) await page.click('.ag-workspace-threads-btn');
   await page.waitForSelector('.ag-threads-new', { visible: true });
   await page.click('.ag-threads-new');
 }
@@ -25,10 +29,41 @@ function draftState(page) {
   });
 }
 
-/** New chat is a focus-mode draft: no thread, rail row, or chat start until the first send. */
-export async function checkDraftChat(page, origin) {
-  await openPreview(page, origin, 'scenario=chat');
+/** The toolbar keeps the current sidebar/focus view for empty and established chats. */
+export async function checkNewChatViewMode(page, origin) {
+  for (const fullscreen of [false, true]) {
+    await openPreview(page, origin, `scenario=chat${fullscreen ? '&fullscreen=1' : ''}`);
+    const openDraft = async () => {
+      await clickNewChat(page);
+      await page.waitForFunction(() => document.querySelector('.ag-input')?.checkVisibility()
+        && document.querySelector('.ag-chat-page')?.getAttribute('aria-hidden') === 'false'
+        && window.sidebarPreview.sidebar.currentThreadId() === null);
+      assert.equal((await draftState(page)).focus, fullscreen, 'new chat preserves the current view');
+    };
+    await openDraft();
+    await page.type('.ag-input', '첫 채팅');
+    await page.click('.ag-send');
+    await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning()
+      && document.querySelector('.ag-msg-assistant'));
+    const before = await draftState(page);
+    await openDraft();
+    assert.equal((await draftState(page)).current, null, 'the completed conversation opens a fresh draft');
+    assert.deepEqual((await draftState(page)).threads, before.threads, 'opening a draft creates no stored chat');
+  }
+  await openPreview(page, origin, 'parallel=1&scenario=chat&hold=1');
   await page.click('#play');
+  await page.waitForFunction(() => window.sidebarPreview.chats[0].mock.snapshot().running);
+  await clickNewChat(page);
+  await page.waitForFunction(() => window.sidebarPreview.chats[1]?.sidebar.isActive());
+  assert.equal((await draftState(page)).focus, false, 'a host-routed new chat also keeps sidebar view');
+  assert.equal(await page.evaluate(() => window.sidebarPreview.chats[0].mock.snapshot().running), true);
+}
+
+/** New chat keeps an explicit focus-mode view and creates no stored chat before the first send. */
+export async function checkDraftChat(page, origin) {
+  await openPreview(page, origin, 'scenario=chat&fullscreen=1');
+  await page.type('.ag-input', '첫 채팅');
+  await page.click('.ag-send');
   await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning()
     && document.querySelector('.ag-msg-assistant'));
   const before = await draftState(page);
@@ -43,8 +78,10 @@ export async function checkDraftChat(page, origin) {
   // Leaving the draft discards it and returns to the earlier chat without restarting it.
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-fullscreen'));
-  assert.deepEqual(await draftState(page), before);
+  assert.deepEqual(await draftState(page), { ...before, focus: false });
 
+  // Re-enter focus mode explicitly; the new-chat toolbar itself keeps sidebar view.
+  await page.evaluate(() => window.sidebarPreview.enterFocusMode());
   // The first send creates the chat and starts it once, with the message.
   await clickNewChat(page);
   await page.waitForFunction(() => document.querySelector('.ag-focus-greeting')?.checkVisibility());
@@ -74,8 +111,9 @@ export async function checkDraftChat(page, origin) {
 
 /** A new chat while the shown chat works goes through openChat and leaves that agent running. */
 export async function checkNewChatWhileRunning(page, origin) {
-  await openPreview(page, origin, 'parallel=1&scenario=chat&hold=1');
-  await page.click('#play');
+  await openPreview(page, origin, 'parallel=1&scenario=chat&hold=1&fullscreen=1');
+  await page.type('.ag-input', '진행 중인 채팅');
+  await page.click('.ag-send');
   await page.waitForFunction(() => window.sidebarPreview.chats[0].mock.snapshot().running);
   const runningThread = await page.evaluate(() => window.sidebarPreview.chats[0].sidebar.currentThreadId());
   assert(runningThread);

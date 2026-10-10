@@ -305,6 +305,31 @@ test('two active provider turns route overlapping MCP ids only to their owning S
   });
   assert.equal(crossSessionTemplateRequest.status, 401);
 
+  const bindDraft = async (socket, threadId, requestId) => {
+    const bound = waitForMessage(socket, (msg) => msg.type === 'reference-stage-bound' && msg.requestId === requestId);
+    sendFrame(socket, { type: 'reference-stage-bind', requestId, threadId });
+    return bound;
+  };
+  const stageDraft = (sessionId, token, threadId) => fetch(
+    `${httpBase}/reference-staging?sessionId=${sessionId}&scopeId=${threadId}`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`, Origin: studioOrigin,
+        'Content-Type': 'text/plain', 'X-File-Name': 'draft.txt',
+      },
+      body: 'A draft attachment before any provider starts.',
+    },
+  );
+  assert.equal((await bindDraft(alpha, 'draft-alpha', 'draft-bind-1')).threadId, 'draft-alpha');
+  const draftUpload = await stageDraft('alpha', alphaCapabilities.reference, 'draft-alpha');
+  assert.equal(draftUpload.status, 201, await draftUpload.text());
+  assert.equal((await stageDraft('beta', betaCapabilities.reference, 'draft-alpha')).status, 403);
+  assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'unbound-draft')).status, 403);
+  await bindDraft(alpha, 'next-draft-alpha', 'draft-bind-2');
+  assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'draft-alpha')).status, 403);
+  assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'next-draft-alpha')).status, 201);
+
   const alphaStarted = waitForMessage(alpha, (msg) => msg.type === 'chat-started');
   const betaStarted = waitForMessage(beta, (msg) => msg.type === 'chat-started');
   sendFrame(alpha, { type: 'chat-start', agent: 'pi', threadId: 'thread-alpha', documentId: 'doc-alpha' });
@@ -312,6 +337,16 @@ test('two active provider turns route overlapping MCP ids only to their owning S
   const [alphaSession, betaSession] = await Promise.all([alphaStarted, betaStarted]);
   assert.equal(alphaSession.status, undefined);
   assert.equal(betaSession.status, undefined);
+  assert.equal((await bindDraft(alpha, 'new-draft', 'draft-bind-active')).threadId, 'new-draft');
+  assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'new-draft')).status, 201);
+  assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'next-draft-alpha')).status, 403);
+  const listReferences = (scopeId) => fetch(`${httpBase}/reference-files?sessionId=alpha&scope=chat&scopeId=${scopeId}`, {
+    headers: { Authorization: `Bearer ${alphaCapabilities.reference}`, Origin: studioOrigin },
+  });
+  assert.equal((await listReferences('new-draft')).status, 403, 'draft staging must not widen provider reference reads');
+  assert.equal((await listReferences('thread-alpha')).status, 200, 'the active provider scope remains authoritative');
+  await bindDraft(alpha, 'thread-alpha', 'draft-bind-provider');
+  assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'thread-alpha')).status, 201);
   const [alphaProviderCapabilities, betaProviderCapabilities] = await Promise.all([
     registerHubSession({
       port: ready.port, token: TOKEN, launchId: LAUNCH_ID, sessionId: 'alpha',

@@ -194,6 +194,43 @@ async function settle(rounds = 12) {
   }
 }
 
+test('native Codex launch preparation cancels before spawn and later starts with the current CLI', async (t) => {
+  const h = harness(t);
+  let release;
+  h.opts.prepareLaunch = () => new Promise((resolve) => { release = resolve; });
+  h.session.sendUserMessage('cancel this installation wait');
+  await settle(1);
+  assert.equal(h.spawns.length, 0);
+  h.session.interrupt();
+  release({ bin: '/stale-cli' });
+  await settle(1);
+  assert.equal(h.spawns.length, 0);
+  assert.equal(h.events.filter((event) => event.type === 'turn-end').length, 1);
+  assert.equal(h.events.at(-1).stopReason, 'interrupted');
+
+  h.opts.prepareLaunch = async () => ({ bin: '/fresh-native-codex', providerEnv: { RHWP_LAUNCH_ENV: 'fresh' } });
+  h.session.sendUserMessage('start after installation');
+  await settle();
+  assert.equal(h.spawns.length, 1);
+  assert.equal(h.spawns[0].command, '/fresh-native-codex');
+  assert.equal(h.spawns[0].options.env.RHWP_LAUNCH_ENV, 'fresh');
+  assert.equal(h.events.at(-1).type, 'turn-start');
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('disposing native Codex during installation prevents its deferred child from starting', async (t) => {
+  const h = harness(t);
+  let release;
+  h.opts.prepareLaunch = () => new Promise((resolve) => { release = resolve; });
+  h.session.sendUserMessage('never launch');
+  await settle(1);
+  assert.equal(await h.session.dispose(), true);
+  release({ bin: '/stale-cli' });
+  await settle(1);
+  assert.equal(h.spawns.length, 0);
+  assert.equal(h.events.some((event) => event.type === 'turn-start'), false);
+});
+
 test('JSON-RPC line overflow closes the connection before parsing', async () => {
   const process = new FakeProcess();
   let closed;
