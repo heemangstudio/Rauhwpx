@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     agentSessionId,
   ),
   getUniqueInstalls: () => ipcRenderer.invoke('desktop:get-unique-installs'),
+  takeRebrandImport: () => ipcRenderer.invoke('desktop:take-rebrand-import'),
+  takeRebrandImportChunk: (token, index) => ipcRenderer.invoke('desktop:take-rebrand-import-chunk', token, index),
+  finishRebrandImport: (token, outcome) => ipcRenderer.invoke('desktop:finish-rebrand-import', token, outcome),
   getLaunchFiles: () => ipcRenderer.invoke('desktop:get-launch-files'),
   getLaunchGeneratedDocument: () => ipcRenderer.invoke('desktop:get-launch-generated-document'),
   openGeneratedDocumentWindow: (payload) => ipcRenderer.invoke(

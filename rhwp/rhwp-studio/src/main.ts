@@ -225,6 +225,7 @@ import {
 import { initAgentBridge } from './agent/bridge.ts';
 import { renameThreadsDocument } from './agent/threads.ts';
 import { initAgentSidebar } from './ui/agent-sidebar/index.ts';
+import { markStudioReady } from './ui/boot-screen.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
 import { AGENT_LABEL } from './ui/agent-sidebar/providers.ts';
 import { initInlinePrompt } from './agent/inline-prompt.ts';
@@ -1713,7 +1714,7 @@ function installChatAgent(
     view: docAttached ? view : null,
     isReadOnly: () => sessionReadOnly(session),
     commitVersion: async (message) => {
-      await versions.checkpoint(message);
+      await versions.checkpoint(message, { agentTurn: true });
     },
   }, hubSession ? { resolveSessionContext: hubSession.resolveContext } : undefined);
   let chat: ChatSession | undefined;
@@ -4255,6 +4256,8 @@ function showLoadError(error: unknown): void {
 }
 
 const initPromise = initialize();
+// 실패해도 부트 화면을 걷어 오류 표시를 가리지 않는다.
+void initPromise.then(markStudioReady, markStudioReady);
 
 installEmbedRuntime({
   hostWindow: window,

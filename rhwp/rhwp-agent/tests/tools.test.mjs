@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod/v3';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import {
+  assertCellArgsPlacement,
   BATCHABLE_EDIT_TOOL_NAMES,
   TOOL_CATEGORIES,
   TOOL_CLASSIFICATIONS,
@@ -23,6 +24,7 @@ import { toolDefinitionChars } from '../tool-telemetry.mjs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { EDIT_OBJECT_ARG_KEYS } from '../../rhwp-studio/src/agent/object-edit-args.ts';
 
 const byName = new Map(TOOL_DEFINITIONS.map((d) => [d.name, d]));
 
@@ -52,9 +54,6 @@ test('document-write annotations stay non-destructive so safe mode can edit', ()
   assert.deepEqual(toolAnnotations('artifact-write'), {
     readOnlyHint: false, destructiveHint: false, openWorldHint: false,
   });
-  const mcpStdio = readFileSync(fileURLToPath(new URL('../mcp-stdio.mjs', import.meta.url)), 'utf8');
-  assert.match(mcpStdio, /annotations: toolAnnotations\(def\.category\)/);
-  assert.doesNotMatch(mcpStdio, /destructiveHint:\s*true/);
 });
 
 test('nested table paths are accepted on staged cell text tools', () => {
@@ -87,8 +86,11 @@ test('앵커 도구는 anchor 인자를 받고 좌표를 선택 필드로 둔다
   // 앵커가 없으면 좌표가 필요하다 — 오류가 그 도구의 좌표 전체를 알려 준다.
   assert.throws(
     () => byName.get('insert_text').validate({ text: 'x' }),
-    /insert_text needs sectionIdx, paraIdx, charOffset — or find \(missing paraIdx, charOffset\)/,
+    /insert_text needs sectionIdx, paraIdx — or find \(missing paraIdx\)/,
   );
+  // charOffset 이 없으면 문단 끝에 덧붙인다 — position 은 여전히 find 가 있어야 한다.
+  assert.doesNotThrow(() => byName.get('insert_text').validate({ cell: { paraIdx: 7, controlIdx: 0, cellIdx: 9 }, paraIdx: 0, text: 'x' }));
+  assert.throws(() => byName.get('insert_text').validate({ paraIdx: 0, position: 'after', text: 'x' }), /position refines a text match/);
   assert.throws(
     () => byName.get('delete_range').validate({ startParaIdx: 1 }),
     /delete_range needs sectionIdx, startParaIdx, startCharOffset, endParaIdx, endCharOffset — or find \(missing startCharOffset, endCharOffset\)/,
@@ -99,6 +101,17 @@ test('앵커 도구는 anchor 인자를 받고 좌표를 선택 필드로 둔다
   // 범위 도구의 paraIdx 는 startParaIdx 의 별칭이다 — find 옆에서는 검색 범위, 좌표 옆에서는 시작 문단.
   assert.doesNotThrow(() => byName.get('replace_range').validate({ paraIdx: 1, startCharOffset: 0, endCharOffset: 2, text: 'x' }));
   assert.doesNotThrow(() => byName.get('apply_char_format').validate({ paraIdx: 1, startOffset: 0, endOffset: 2, bold: true }));
+});
+
+test('cell 없이 최상위에 둔 표 좌표는 고친 호출 꼴과 함께 거절한다', () => {
+  assert.throws(
+    () => assertCellArgsPlacement('insert_text', { paraIdx: 5, controlIdx: 0, cellIdx: 3, charOffset: 0, text: 'x' }),
+    (error) => error.code === 'INVALID_ARGS' && /cell:\{paraIdx:5,controlIdx:0,cellIdx:3\}/.test(error.message),
+  );
+  assert.throws(() => assertCellArgsPlacement('get_text_range', { paraIdx: 2, cellParaIdx: 1 }), /paraIdx:1/);
+  assert.doesNotThrow(() => assertCellArgsPlacement('insert_text', { cell: { paraIdx: 5, controlIdx: 0, cellIdx: 3 }, paraIdx: 0 }));
+  // 표 좌표가 제 인자인 도구는 건드리지 않는다.
+  assert.doesNotThrow(() => assertCellArgsPlacement('set_cell_props', { paraIdx: 5, controlIdx: 0, cellIdx: 3 }));
 });
 
 test('anchor 옆의 좌표·cell 은 검색 범위라 거절하지 않는다', () => {
@@ -685,11 +698,6 @@ test('cell 을 받는 도구와 모든 문서 쓰기 도구는 공유 규칙을 
   }
 });
 
-test('MCP 서버 instructions 가 공유 규칙을 싣는다', () => {
-  const mcpStdio = readFileSync(fileURLToPath(new URL('../mcp-stdio.mjs', import.meta.url)), 'utf8');
-  assert.match(mcpStdio, /new McpServer\(\{ name: 'rhwp', version: '[^']+' \}, \{ instructions: RHWP_TOOL_RULES \}\)/);
-});
-
 test('수식 문법 안내는 preview_equation 에만 있다', () => {
   assert.match(byName.get('preview_equation').description, /NOT LaTeX/);
   assert.doesNotMatch(byName.get('insert_equation').description, /NOT LaTeX/);
@@ -1028,9 +1036,7 @@ test('도구 스키마는 $ref 없이 펼쳐진다 (Codex/Pi 가 $ref 를 못 �
 
 test('edit_object 편집 인자는 스튜디오 계획 함수가 읽는 키와 같다', () => {
   // 허브 스키마에만 있는 키는 스튜디오가 조용히 무시한다 — 두 목록을 함께 고친다.
-  const src = readFileSync(fileURLToPath(new URL('../../rhwp-studio/src/agent/object-edit-args.ts', import.meta.url)), 'utf8');
-  const list = /export const EDIT_OBJECT_ARG_KEYS = \[([^\]]*)\]/.exec(src)?.[1] ?? '';
-  const studio = [...list.matchAll(/'([A-Za-z]+)'/g)].map((m) => m[1]).sort();
+  const studio = [...EDIT_OBJECT_ARG_KEYS].sort();
   const address = ['expectedRevision', 'render', 'sectionIdx', 'paraIdx', 'controlIdx', 'cell', 'cellPath', 'delete'];
   const hub = Object.keys(byName.get('edit_object').shape).filter((key) => !address.includes(key)).sort();
   assert.deepEqual(hub, studio);

@@ -1,7 +1,7 @@
 {
   "name": "rhwp-vscode",
-  "displayName": "HWP Viewer",
-  "description": "HWP/HWPX/HML 문서 뷰어 — rhwp 기반",
+  "displayName": "HamaEditor",
+  "description": "HWP/HWPX/HML 문서 뷰어 — HamaEditor",
   "version": "0.8.2",
   "publisher": "edwardkim",
   "license": "MIT",
@@ -35,7 +35,7 @@
     "customEditors": [
       {
         "viewType": "rhwp.hwpViewer",
-        "displayName": "HWP Viewer",
+        "displayName": "HamaEditor",
         "selector": [
           {
             "filenamePattern": "*.hwp"
@@ -53,15 +53,15 @@
     "commands": [
       {
         "command": "rhwp.exportSvg",
-        "title": "HWP: SVG로 내보내기"
+        "title": "HamaEditor: SVG로 내보내기"
       },
       {
         "command": "rhwp.debugOverlay",
-        "title": "HWP: 디버그 오버레이 보기"
+        "title": "HamaEditor: 디버그 오버레이 보기"
       },
       {
         "command": "rhwp.dumpParagraph",
-        "title": "HWP: 문단 덤프"
+        "title": "HamaEditor: 문단 덤프"
       }
     ],
     "menus": {

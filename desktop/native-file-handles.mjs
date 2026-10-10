@@ -8,8 +8,11 @@ import { retryWindows } from './fs-replace.mjs';
 
 const SUPPORTED_EXTENSIONS = new Set(['.hwp', '.hwpx', '.hml', '.rhwpx']);
 const PORTABLE_HISTORY_INNER_FILE = 'history';
-const PORTABLE_HISTORY_MAGIC = new TextEncoder().encode('RAUHWPX-HISTORY\0');
-const PORTABLE_HISTORY_PREFIX_LENGTH = PORTABLE_HISTORY_MAGIC.byteLength + 4;
+// Studio writes the original signature. 2.0.11 wrote the second one; its archives stay valid.
+const PORTABLE_HISTORY_SIGNATURES = Object.freeze([
+  { magic: new TextEncoder().encode('RAUHWPX-HISTORY\0'), format: 'rauhwpx-history' },
+  { magic: new TextEncoder().encode('HAMAEDITOR-HISTORY\0'), format: 'hamaeditor-history' },
+]);
 export const MAX_NATIVE_DOCUMENT_BYTES = 512 * 1024 * 1024;
 export const MAX_PORTABLE_HISTORY_BYTES = 128 * 1024 * 1024;
 const MAX_PORTABLE_HISTORY_MANIFEST_BYTES = 32 * 1024 * 1024;
@@ -514,14 +517,12 @@ function hasValidZipDirectory(bytes) {
     && view.getUint32(directoryOffset, true) === 0x02014b50;
 }
 
-function hasValidPortableHistoryLayout(bytes, manifestLength) {
+function hasValidPortableHistoryLayout(bytes, signature, manifestLength) {
+  const prefixLength = signature.magic.byteLength + 4;
   let manifest;
   try {
     manifest = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(
-      bytes.subarray(
-        PORTABLE_HISTORY_PREFIX_LENGTH,
-        PORTABLE_HISTORY_PREFIX_LENGTH + manifestLength,
-      ),
+      bytes.subarray(prefixLength, prefixLength + manifestLength),
     ));
   } catch {
     return false;
@@ -529,7 +530,7 @@ function hasValidPortableHistoryLayout(bytes, manifestLength) {
   if (
     !manifest
     || typeof manifest !== 'object'
-    || manifest.format !== 'rauhwpx-history'
+    || manifest.format !== signature.format
     || manifest.version !== 1
     || !manifest.document
     || typeof manifest.document !== 'object'
@@ -540,7 +541,7 @@ function hasValidPortableHistoryLayout(bytes, manifestLength) {
     || manifest.objects.length > MAX_PORTABLE_HISTORY_OBJECTS
   ) return false;
 
-  const payloadOffset = PORTABLE_HISTORY_PREFIX_LENGTH + manifestLength;
+  const payloadOffset = prefixLength + manifestLength;
   const descriptors = [...manifest.objects].sort((left, right) => left?.offset - right?.offset);
   let expectedOffset = 0;
   for (const descriptor of descriptors) {
@@ -572,16 +573,19 @@ export function validateNativeDocumentBytes(filePath, bytes) {
     throw new Error('Refusing to replace a document with empty or oversized data');
   }
   if (extension === '.rhwpx') {
-    const manifestLength = bytes.byteLength >= PORTABLE_HISTORY_PREFIX_LENGTH
+    const signature = PORTABLE_HISTORY_SIGNATURES.find(({ magic }) => (
+      bytes.byteLength >= magic.byteLength + 4 && startsWithBytes(bytes, magic)
+    ));
+    const manifestLength = signature
       ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-        .getUint32(PORTABLE_HISTORY_MAGIC.byteLength, true)
+        .getUint32(signature.magic.byteLength, true)
       : 0;
     if (
-      !startsWithBytes(bytes, PORTABLE_HISTORY_MAGIC)
+      !signature
       || manifestLength === 0
       || manifestLength > MAX_PORTABLE_HISTORY_MANIFEST_BYTES
-      || PORTABLE_HISTORY_PREFIX_LENGTH + manifestLength > bytes.byteLength
-      || !hasValidPortableHistoryLayout(bytes, manifestLength)
+      || signature.magic.byteLength + 4 + manifestLength > bytes.byteLength
+      || !hasValidPortableHistoryLayout(bytes, signature, manifestLength)
     ) {
       throw new Error('Refusing to replace an RHWPX file with an invalid or truncated history archive');
     }

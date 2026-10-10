@@ -61,12 +61,6 @@ Thumbs.db
 # 계획 모드의 채팅별 다운로드
 /.rhwp-agent/downloads/
 
-# E2E 스크린샷
-rhwp-studio/e2e/screenshots/
-
-# 비공개 테스트
-rhwp-studio/e2e/kps-ai*.test.mjs
-
 # rhwp-vscode 빌드 산출물
 rhwp-vscode/media/rhwp.js
 rhwp-vscode/media/rhwp_bg.wasm

@@ -161,7 +161,7 @@ export function rhwpAgentHubPlugin(studioRoot = process.cwd()) {
     }
     if (child) await stopOwnedHub({ removeWork: true });
 
-    workRoot = mkdtempSync(join(tmpdir(), 'rauhwpx-vite-hub-'));
+    workRoot = mkdtempSync(join(tmpdir(), 'hamaeditor-vite-hub-'));
     const spawned = spawnHubProcess({
       command: process.execPath,
       args: [script],
@@ -242,7 +242,7 @@ export function rhwpAgentHubPlugin(studioRoot = process.cwd()) {
   }
 
   return {
-    name: 'rhwp-agent-hub',
+    name: 'hamaeditor-agent-hub',
     apply: 'serve',
     config() {
       return {

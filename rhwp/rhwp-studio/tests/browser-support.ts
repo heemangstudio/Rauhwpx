@@ -39,6 +39,6 @@ export function browserLaunchArgs(): string[] {
 
 export function requireWasmPackage(directory: string): void {
   if (!['rhwp.js', 'rhwp_bg.wasm'].every((name) => existsSync(join(directory, name)))) {
-    throw new Error(`Browser merge tests require generated WASM in ${directory}. Run npm run build:wasm from the repository root first.`);
+    throw new Error(`These tests need the generated WASM in ${directory}. Run npm run build:wasm from the repository root first.`);
   }
 }

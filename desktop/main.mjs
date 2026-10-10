@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
-import { basename, dirname, extname, join, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   app,
@@ -53,12 +53,17 @@ import { SessionManager } from './session-manager.mjs';
 import { safeSuggestedFilename } from './safe-filename.mjs';
 import { installPdfExport, PDF_EXPORT_FRAME_NAME, pdfExportWindowOptions } from './pdf-export.mjs';
 import {
+  STUDIO_HOST,
+  STUDIO_SCHEME,
   STUDIO_URL,
   installStudioProtocol,
   registerStudioScheme,
   resolveDevelopmentUrl,
   systemFontBaseUrl,
 } from './studio-protocol.mjs';
+import { INTERNAL_APP_NAME, PRODUCT_NAME } from './app-identity.mjs';
+import { resolveProfileDirectories } from './profile-continuity.mjs';
+import { createRebrandImportController } from './rebrand-import-controller.mjs';
 import { createSecretVault, handleSecretRequest } from './secret-vault.mjs';
 import { removeRetiredCloudData } from './retired-cloud-data.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
@@ -77,8 +82,10 @@ import {
   retainLaunchRootForProcessCleanupSync,
 } from '../rhwp/rhwp-agent/credential-mirror.mjs';
 import {
+  REBRANDED_LAUNCH_MARKERS,
   launchStoragePaths,
   prepareDevelopmentCaches,
+  rebrandedRuntimeRoots,
   removeLegacyLaunchDirectories,
   removeStaleLaunchDirectories,
   writeLaunchOwnerMetadata,
@@ -95,6 +102,7 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const RELEASES_URL = 'https://github.com/heemangstudio/Rauhwpx/releases/latest';
 const RELEASES_API_URL = 'https://api.github.com/repos/heemangstudio/Rauhwpx/releases/latest';
 const PRELOAD_PATH = join(__dirname, 'preload.cjs');
+const REBRAND_EXPORT_PRELOAD_PATH = join(__dirname, 'rebrand-export-preload.cjs');
 const devUrl = resolveDevelopmentUrl({
   packaged: app.isPackaged,
   rawUrl: process.env.RHWP_DEV_URL,
@@ -117,7 +125,7 @@ function isTrustedRendererUrl(rawUrl) {
   try {
     const url = new URL(rawUrl);
     if (devOrigin) return url.origin === devOrigin;
-    return url.protocol === 'rauhwpx:' && url.host === 'app';
+    return url.protocol === `${STUDIO_SCHEME}:` && url.host === STUDIO_HOST;
   } catch {
     return false;
   }
@@ -129,13 +137,16 @@ function sessionForEvent(event) {
   return sessions.sessionForSender(event.sender);
 }
 
-app.setName('Rauhwpx');
-if (!app.isPackaged) {
-  const developmentUserData = process.env.RHWP_DESKTOP_USER_DATA
-    ? resolve(process.env.RHWP_DESKTOP_USER_DATA)
-    : join(__dirname, '..', '.run', 'desktop-user-data');
-  app.setPath('userData', developmentUserData);
-}
+// Electron 은 앱 이름으로 사용자 데이터 폴더와 safeStorage 키체인 항목을 정한다. 실행 내내
+// 2.0.10 까지와 같은 내부 이름을 쓴다. 메뉴·대화상자에는 PRODUCT_NAME 을 직접 넘긴다.
+app.setName(INTERNAL_APP_NAME);
+const profileDirectories = resolveProfileDirectories({
+  packaged: app.isPackaged,
+  appDataDir: app.getPath('appData'),
+  env: process.env,
+  developmentUserData: join(__dirname, '..', '.run', 'desktop-user-data'),
+});
+app.setPath('userData', profileDirectories.userData);
 registerStudioScheme(protocol);
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -221,16 +232,16 @@ class AgentHubOwner {
     if (this.#restartAttempt >= MAX_HUB_AUTO_RESTARTS) {
       // Warn once; a successful start resets #restartAttempt to 0.
       if (this.#restartAttempt++ === MAX_HUB_AUTO_RESTARTS) {
-        console.warn('[rauhwpx] agent hub keeps exiting; automatic restarts stopped until the next window or sidebar request');
+        console.warn('[hamaeditor] agent hub keeps exiting; automatic restarts stopped until the next window or sidebar request');
       }
       return;
     }
     const delay = nextHubRestartDelay(this.#restartAttempt++);
-    console.warn(`[rauhwpx] owned agent hub exited; restarting in ${delay}ms`);
+    console.warn(`[hamaeditor] owned agent hub exited; restarting in ${delay}ms`);
     this.#restartTimer = setTimeout(() => {
       this.#restartTimer = null;
       void this.ensure().catch((error) => {
-        console.warn('[rauhwpx] agent hub restart failed:', error);
+        console.warn('[hamaeditor] agent hub restart failed:', error);
         this.scheduleRestart();
       });
     }, delay);
@@ -243,10 +254,10 @@ class AgentHubOwner {
     try {
       retainLaunchRootForProcessCleanupSync(this.activeWorkDir(), { launchId });
     } catch (error) {
-      console.warn('[rauhwpx] process cleanup retention marker failed:', error);
+      console.warn('[hamaeditor] process cleanup retention marker failed:', error);
     }
     console.warn(
-      '[rauhwpx] owned agent hub exited unexpectedly on Windows; descendants may be orphaned.',
+      '[hamaeditor] owned agent hub exited unexpectedly on Windows; descendants may be orphaned.',
       'Retaining launch work and moving the next hub start to a fresh workspace:',
       this.activeWorkDir(),
     );
@@ -277,7 +288,7 @@ class AgentHubOwner {
           cleanupPrepared = response?.status === 'prepared'
             && response?.launchId === launchId;
         } catch (error) {
-          console.warn('[rauhwpx] graceful agent hub shutdown failed:', error);
+          console.warn('[hamaeditor] graceful agent hub shutdown failed:', error);
         }
       }
       // A prepared response proves descendants were disposed. Windows can then
@@ -289,7 +300,7 @@ class AgentHubOwner {
         try {
           retainLaunchRootForProcessCleanupSync(this.activeWorkDir(), { launchId });
         } catch (error) {
-          console.warn('[rauhwpx] process cleanup retention marker failed:', error);
+          console.warn('[hamaeditor] process cleanup retention marker failed:', error);
         }
         if (!this.#child || this.#child === child) this.#child = child;
         // The tree could not be proven stopped — the next start must not share
@@ -311,7 +322,7 @@ class AgentHubOwner {
       // directory that no orphan can lock or corrupt.
       this.#quarantined = false;
       this.#epoch += 1;
-      console.warn(`[rauhwpx] restarting agent hub on an isolated workspace (epoch ${this.#epoch})`);
+      console.warn(`[hamaeditor] restarting agent hub on an isolated workspace (epoch ${this.#epoch})`);
     }
     if (this.#startPromise) return this.#startPromise;
     this.#startPromise = this.startOwnedChild();
@@ -384,7 +395,7 @@ class AgentHubOwner {
     if (!launch) throw new Error(`Agent hub launch command not found: ${server}`);
     launch.cwd = workDir;
 
-    console.log(`[rauhwpx] starting owned agent hub via ${launch.via}`);
+    console.log(`[hamaeditor] starting owned agent hub via ${launch.via}`);
     const child = spawnHubProcess(launch, {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       onMessage: (message, source) => {
@@ -394,10 +405,10 @@ class AgentHubOwner {
         });
       },
       onError: (error) => {
-        console.warn('[rauhwpx] agent hub spawn error:', error);
+        console.warn('[hamaeditor] agent hub spawn error:', error);
       },
       onExit: (code, signal) => {
-        console.warn('[rauhwpx] agent hub process exit:', code, signal ?? '');
+        console.warn('[hamaeditor] agent hub process exit:', code, signal ?? '');
         if (this.#child !== child) return;
         this.#context = null;
         // `exit` only proves the leader died. Retain the ChildProcess/PID until
@@ -454,7 +465,7 @@ class AgentHubOwner {
       }
       for (const dir of this.#ownedWorkDirs) {
         if (hasPendingLaunchCleanupSync(dir)) {
-          console.warn('[rauhwpx] retaining launch work for pending cleanup:', dir);
+          console.warn('[hamaeditor] retaining launch work for pending cleanup:', dir);
         } else {
           await rm(dir, { recursive: true, force: true }).catch(() => {});
         }
@@ -467,6 +478,7 @@ class AgentHubOwner {
 let quitting = false;
 let quitRequested = false;
 let desktopReady = false;
+let initialLaunchesOpened = false;
 let secretVault = null;
 const pendingLaunches = [launchRequest({ argv: process.argv, source: 'initial' })];
 const launchStorage = launchStoragePaths({
@@ -492,7 +504,7 @@ async function closeOwnedHubSession(sessionId) {
   try {
     await closeHubSession({ port: hub.port, token: hubToken, launchId, sessionId });
   } catch (error) {
-    if (error?.status !== 404) console.warn('[rauhwpx] hub session close failed:', error);
+    if (error?.status !== 404) console.warn('[hamaeditor] hub session close failed:', error);
   }
 }
 
@@ -512,7 +524,7 @@ const nativeFiles = new NativeFileHandleRegistry();
 const nativeBookmarkFile = join(app.getPath('userData'), 'native-document-bookmarks.json');
 const systemFonts = createSystemFontService({
   cacheDir: join(app.getPath('userData'), 'fonts'),
-  log: (line) => console.log(`[rauhwpx] fonts: ${line}`),
+  log: (line) => console.log(`[hamaeditor] fonts: ${line}`),
 });
 const systemFontKey = randomBytes(32).toString('hex');
 let uniqueInstallSnapshot = {
@@ -540,14 +552,14 @@ async function finishUniqueInstallMetric() {
   try {
     await syncUniqueInstallMetric();
   } catch (error) {
-    console.warn('[rauhwpx] unique install ping failed:', error);
+    console.warn('[hamaeditor] unique install ping failed:', error);
   } finally {
     resolveUniqueInstallSync();
   }
 }
 const nativeBookmarkWriter = new SerializedStateWriter({
   write: (snapshot) => writeNativeFileAtomically(nativeBookmarkFile, Buffer.from(snapshot, 'utf8')),
-  onError: (error) => console.warn('[rauhwpx] native bookmark persist failed:', error),
+  onError: (error) => console.warn('[hamaeditor] native bookmark persist failed:', error),
 });
 
 const windowFrames = new WindowFrameStore({
@@ -564,7 +576,7 @@ function noteRecentDocument(sessionId, handleId) {
     const filePath = nativeFiles.sourcePathForSender(sessionId, handleId);
     if (filePath) app.addRecentDocument(filePath);
   } catch (error) {
-    console.warn('[rauhwpx] recent document update failed:', error);
+    console.warn('[hamaeditor] recent document update failed:', error);
   }
 }
 
@@ -581,7 +593,7 @@ async function loadNativeBookmarks() {
   } catch (error) {
     if (error?.code !== 'BOOKMARK_STATE_CORRUPT') throw error;
     const quarantined = await quarantineBookmarkState(nativeBookmarkFile);
-    console.warn('[rauhwpx] corrupt native bookmark state quarantined:', quarantined);
+    console.warn('[hamaeditor] corrupt native bookmark state quarantined:', quarantined);
   }
 }
 
@@ -593,7 +605,7 @@ async function bestEffortStartupCleanup(label, cleanup) {
   try {
     await cleanup;
   } catch (error) {
-    console.warn(`[rauhwpx] ${label} cleanup failed:`, error);
+    console.warn(`[hamaeditor] ${label} cleanup failed:`, error);
   }
 }
 
@@ -603,7 +615,7 @@ const updateLifecycle = createUpdateLifecycle({
   nativeUpdater: nativeAutoUpdater,
   platform: process.platform,
   isInteractive: () => manualUpdateCheck || interactiveUpdateDownload,
-  showMessageBox: (options) => dialog.showMessageBox(options),
+  showMessageBox: (options) => dialog.showMessageBox({ title: PRODUCT_NAME, ...options }),
   openReleases: () => shell.openExternal(RELEASES_URL),
   cleanup: () => hubOwner.teardown(),
   onQuitRequested: (requested) => { quitRequested = requested; },
@@ -615,8 +627,9 @@ let updateCheckPromise = null;
 
 async function showUpToDate() {
   await dialog.showMessageBox({
+    title: PRODUCT_NAME,
     type: 'info',
-    message: 'Rauhwpx is up to date',
+    message: 'HamaEditor is up to date',
     detail: `Version ${app.getVersion()} is the latest release.`,
     buttons: ['OK'],
   });
@@ -642,8 +655,9 @@ async function checkForDebUpdates({ manual }) {
   }
   const asset = selectDebAsset(release?.assets, process.arch);
   const { response: choice } = await dialog.showMessageBox({
+    title: PRODUCT_NAME,
     type: 'info',
-    message: `Rauhwpx ${String(release.tag_name).replace(/^v/i, '')} is available`,
+    message: `HamaEditor ${String(release.tag_name).replace(/^v/i, '')} is available`,
     detail: `You are running version ${app.getVersion()}. Download the signed Debian package and install it with your system package manager.`,
     buttons: ['Open download page', 'Cancel'],
     defaultId: 0,
@@ -668,8 +682,9 @@ function configureAutoUpdater() {
     const linuxDeb = process.platform === 'linux' && !process.env.APPIMAGE;
     if (autoUpdater.autoDownload || (!manualUpdateCheck && !linuxDeb)) return;
     void dialog.showMessageBox({
+      title: PRODUCT_NAME,
       type: 'info',
-      message: `Rauhwpx ${info?.version ?? ''} is available`,
+      message: `HamaEditor ${info?.version ?? ''} is available`,
       detail: linuxDeb
         ? `You are running version ${app.getVersion()}. Download the signed Debian package from Releases.`
         : `You are running version ${app.getVersion()}. Download the installer now?`,
@@ -759,7 +774,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     : null;
   const window = new BrowserWindow({
     ...(restoredFrame ? restoredFrame.bounds : { ...cascadedWindowPosition(), width: 1440, height: 920 }),
-    title: 'Rauhwpx',
+    title: 'HamaEditor',
     minWidth: 900,
     minHeight: 640,
     show: false,
@@ -847,10 +862,10 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     if (!window.isDestroyed()) window.webContents.send('window:fullscreen-changed', false);
   });
   window.webContents.on('preload-error', (_event, preloadPath, error) => {
-    console.warn('[rauhwpx] preload error', preloadPath, error);
+    console.warn('[hamaeditor] preload error', preloadPath, error);
   });
   window.webContents.on('render-process-gone', (_event, details) => {
-    console.warn('[rauhwpx] renderer process gone:', details?.reason);
+    console.warn('[hamaeditor] renderer process gone:', details?.reason);
     // An unanswered close prompt died with the renderer; clear it so the
     // window can close (the close handler skips the prompt for dead renderers).
     session.pendingCloseRequestId = null;
@@ -885,7 +900,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
           minWidth: 480,
           minHeight: 360,
           autoHideMenuBar: true,
-          title: 'Rauhwpx',
+          title: 'HamaEditor',
           webPreferences: {
             preload: PRELOAD_PATH,
             contextIsolation: true,
@@ -962,8 +977,33 @@ function queueLaunch(request) {
 }
 
 function showLaunchError(error) {
-  dialog.showErrorBox('Rauhwpx could not open', error instanceof Error ? error.message : String(error));
+  dialog.showErrorBox('HamaEditor could not open', error instanceof Error ? error.message : String(error));
 }
+
+// ── 2.0.11 프로필 가져오기 ────────────────────────────────────────────────
+// 2.0.11 은 다른 프로필 폴더와 출처(hamaeditor://app)에 Studio 저장소를 남겼다. 그 사본을 숨은 창에서
+// 2.0.11 출처로 열어 덤프하고, 첫 Studio 창이 기동하면서 정본 저장소에 합친다. 원본은 읽기만 한다.
+const rebrandImport = createRebrandImportController({
+  BrowserWindow,
+  session: electronSession,
+  userDataDir: app.getPath('userData'),
+  rebrandedDir: profileDirectories.rebranded,
+  tempDir: app.getPath('temp'),
+  preloadPath: REBRAND_EXPORT_PRELOAD_PATH,
+});
+
+ipcMain.handle('desktop:take-rebrand-import', (event) => {
+  sessionForEvent(event);
+  return rebrandImport.take();
+});
+ipcMain.handle('desktop:take-rebrand-import-chunk', (event, token, index) => {
+  sessionForEvent(event);
+  return rebrandImport.chunk(token, index);
+});
+ipcMain.handle('desktop:finish-rebrand-import', (event, token, outcome) => {
+  sessionForEvent(event);
+  return rebrandImport.finish(token, outcome);
+});
 
 ipcMain.handle('desktop:get-unique-installs', async (event) => {
   sessionForEvent(event);
@@ -1062,7 +1102,7 @@ ipcMain.handle('desktop:pick-native-open-file', async (event, options = {}) => {
   }
   const picked = await dialog.showOpenDialog(window, {
     ...(defaultPath ? { defaultPath } : {}),
-    filters: [{ name: 'HWP/HWPX/HML documents and RauHWPX history', extensions: ['hwp', 'hwpx', 'hml', 'rhwpx'] }],
+    filters: [{ name: 'HWP/HWPX/HML documents and HamaEditor history', extensions: ['hwp', 'hwpx', 'hml', 'rhwpx'] }],
     properties: ['openFile'],
   });
   if (picked.canceled || !picked.filePaths[0]) return null;
@@ -1079,7 +1119,7 @@ ipcMain.handle('desktop:pick-legacy-history-folder', async (event) => {
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window) throw new Error('Legacy history import sender window is unavailable');
   const picked = await dialog.showOpenDialog(window, {
-    title: 'Import legacy RauHWPX history folder',
+    title: 'Import legacy HamaEditor history folder',
     properties: ['openDirectory'],
   });
   if (picked.canceled || !picked.filePaths[0]) return null;
@@ -1127,7 +1167,7 @@ ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
   const picked = await dialog.showSaveDialog(window, {
     defaultPath: suggestedStem,
     filters: [{
-      name: extension === 'rhwpx' ? 'RauHWPX history archive' : `${extension.toUpperCase()} document`,
+      name: extension === 'rhwpx' ? 'HamaEditor history archive' : `${extension.toUpperCase()} document`,
       extensions: [extension],
     }],
     properties: ['showOverwriteConfirmation', 'createDirectory'],
@@ -1294,21 +1334,21 @@ ipcMain.on('desktop:set-document-state', (event, state) => {
   try {
     applyDocumentState(sessionForEvent(event).window, { edited: state?.edited === true });
   } catch (error) {
-    console.warn('[rauhwpx] document state update failed:', error);
+    console.warn('[hamaeditor] document state update failed:', error);
   }
 });
 ipcMain.on('desktop:set-pending-review-count', (event, count) => {
   try {
     agentAttention.setPendingCount(sessionForEvent(event).window.id, count);
   } catch (error) {
-    console.warn('[rauhwpx] pending review badge update failed:', error);
+    console.warn('[hamaeditor] pending review badge update failed:', error);
   }
 });
 ipcMain.on('desktop:agent-turn-finished', (event, payload) => {
   try {
     agentAttention.turnFinished(sessionForEvent(event).window, payload ?? {});
   } catch (error) {
-    console.warn('[rauhwpx] agent turn notification failed:', error);
+    console.warn('[hamaeditor] agent turn notification failed:', error);
   }
 });
 ipcMain.handle('desktop:show-context-menu', (event, items) => {
@@ -1329,10 +1369,11 @@ ipcMain.handle('desktop:close-response', async (event, requestId, allowClose) =>
     cancelQuit: updateLifecycle.cancelQuit,
     persistBookmarks: () => persistNativeBookmarks({ rejectOnError: true }),
     onError: async (error) => {
-      console.warn('[rauhwpx] document close failed:', error);
+      console.warn('[hamaeditor] document close failed:', error);
       await dialog.showMessageBox({
+        title: PRODUCT_NAME,
         type: 'warning',
-        message: 'Rauhwpx could not close the document',
+        message: 'HamaEditor could not close the document',
         detail: error?.message ?? String(error),
         buttons: ['OK'],
       });
@@ -1367,6 +1408,10 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    // 비밀 저장소·허브·북마크보다 먼저 2.0.11 프로필의 파일을 합친다. 실패해도 앱은 뜬다.
+    await rebrandImport.prepare().catch((error) => {
+      console.warn('[hamaeditor] 2.0.11 profile import failed:', error);
+    });
     const owner = { launchId, profileId: userDataProfileId, pid: process.pid };
     await Promise.all([
       writeLaunchOwnerMetadata(runtimeDir, owner),
@@ -1393,6 +1438,12 @@ if (!hasSingleInstanceLock) {
       bestEffortStartupCleanup(
         'legacy launch workspace',
         removeLegacyLaunchDirectories(legacyWorkRoot, launchId),
+      ),
+      bestEffortStartupCleanup(
+        '2.0.11 runtime',
+        rebrandedRuntimeRoots(app.getPath('temp')).then((roots) => Promise.all(roots.map((root) => (
+          removeStaleLaunchDirectories(root, launchId, { markers: REBRANDED_LAUNCH_MARKERS })
+        )))),
       ),
     ]);
     if (devUrl) {
@@ -1437,6 +1488,7 @@ if (!hasSingleInstanceLock) {
         showLaunchError(error);
       });
     }
+    initialLaunchesOpened = true;
     if (failedLaunches > 0 && sessions.windows().length === 0) {
       resolveUniqueInstallSync();
       app.quit();
@@ -1467,10 +1519,12 @@ if (!hasSingleInstanceLock) {
     const window = windows.at(-1);
     if (window?.isMinimized()) window.restore();
     window?.focus();
-    void hubOwner.ensure().catch((error) => console.warn('[rauhwpx] agent hub ensure failed:', error));
+    void hubOwner.ensure().catch((error) => console.warn('[hamaeditor] agent hub ensure failed:', error));
   });
 
   app.on('window-all-closed', () => {
+    // 2.0.11 저장소를 읽는 숨은 창이 첫 Studio 창보다 먼저 닫혀도 앱을 끝내지 않는다.
+    if (!initialLaunchesOpened) return;
     if (process.platform !== 'darwin') app.quit();
   });
 }

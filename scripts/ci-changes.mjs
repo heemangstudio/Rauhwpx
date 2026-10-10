@@ -2,34 +2,53 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const groups = ['sessions', 'app', 'browser', 'engine'];
+// Checks a path can select. `app` is one job whose steps run per part.
+export const APP_PARTS = ['studio', 'hub', 'desktop', 'site', 'extensions'];
+const JOBS = ['engine', 'browser', 'sessions', 'docs'];
+const ALL = [...JOBS, ...APP_PARTS];
 
-// Unknown code/configuration runs every check. Docs and build packaging are free;
-// installers and dependency audits run nightly.
+// First matching rule wins. A path no rule matches runs every check, so new
+// directories and CI/build configuration (.github, scripts, root package files) fail safe.
+const RULES = [
+  // Not read by any build or test.
+  [/^(?:docs|research|promo|output|build|\.audit|\.claude|\.impeccable|\.commandcode)\//, []],
+  [/^rhwp\/(?:docs|pdf|pdf-large|bindings|typescript|rhwp-vscode|scripts)\//, []],
+  [/^rhwp\/tools\/(?!rhwp-subsecond\/)/, []],
+  [/(?:^|\/)(?:LICENSE[^/]*|THIRD_PARTY_LICENSES\.md|CHANGELOG\.md|SECURITY\.md)$/, []],
+  // Publish docs, website and the tool list the docs must not hardcode.
+  [/(?:^|\/)(?:README[^/]*|CONTRIBUTING|AGENTS|CLAUDE|DESIGN|PRODUCT|PRIVACY|DEVELOPER_GUIDE)\.md$/, ['docs']],
+  [/^website\/|^scripts\/check-publish-docs/, ['docs']],
+  [/^rhwp\/rhwp-agent\/tools\.mjs$/, ['docs', 'hub', 'studio', 'sessions']],
+  // Engine: WASM inputs rebuild rhwp/pkg for the browser job; fixtures are also read by Studio tests.
+  [/^rhwp\/(?:src\/|Cargo\.(?:toml|lock)$|rust-toolchain\.toml$|build\.rs$|\.cargo\/)/, ['engine', 'browser']],
+  [/^rhwp\/(?:samples|saved|ttfs|assets)\//, ['engine', 'browser', 'studio']],
+  [/^rhwp\/(?:tests|fuzz|\.config|tools\/rhwp-subsecond)\/|^rhwp\/rustfmt\.toml$/, ['engine']],
+  // Hub tests read Studio's tool executor; Studio tests import hub modules.
+  [/^rhwp\/rhwp-studio\/src\/agent\//, ['studio', 'hub', 'browser']],
+  [/^rhwp\/rhwp-studio\/tests\/desktop-/, ['studio', 'sessions']],
+  [/^rhwp\/rhwp-studio\//, ['studio', 'browser']],
+  // Studio `npm test` runs the npm/editor tests.
+  [/^rhwp\/npm\//, ['studio']],
+  [/^rhwp\/rhwp-agent\//, ['hub', 'studio', 'sessions']],
+  // Root tests, packaging script tests, Studio desktop-* tests and the hub all import desktop modules.
+  [/^(?:desktop|tests)\//, ['desktop', 'studio', 'hub', 'sessions']],
+  [/^site-api\//, ['site']],
+  // The desktop and hub font index uses rhwp-shared/fonts.
+  [/^rhwp\/rhwp-shared\/fonts\//, ['extensions', 'browser', 'desktop', 'hub', 'sessions']],
+  [/^rhwp\/rhwp-shared\//, ['extensions', 'browser']],
+  [/^rhwp\/rhwp-(?:chrome|firefox|safari)\//, ['extensions']],
+];
+
 export function selectChecks(paths) {
-  const selected = Object.fromEntries(groups.map((name) => [name, false]));
-  const enable = (...names) => names.forEach((name) => { selected[name] = true; });
+  const selected = new Set();
   for (const file of paths) {
-    if (/^(?:docs|\.audit|rhwp\/docs|build)\//.test(file) || /(?:^|\/)(?:README|CONTRIBUTING|CHANGELOG|SECURITY|AGENTS|CLAUDE|LICENSE)(?:\.[^/]+|-APACHE|-MIT)?$/.test(file)) continue;
-    if (/^rhwp\/(?:samples|pdf|pdf-large|src|tests|fuzz|benches|Cargo\.(?:toml|lock)|\.cargo\/|\.config\/|build\.rs)/.test(file)) {
-      enable('engine', 'browser');
-    } else if (/^rhwp\/rhwp-agent\//.test(file)) {
-      enable('app', 'sessions');
-    } else if (/^rhwp\/rhwp-studio\//.test(file)) {
-      enable('app', 'browser');
-      if (/\/tests\/desktop-/.test(file)) enable('sessions');
-    } else if (/^desktop\//.test(file)) {
-      enable('sessions', 'app');
-    } else if (/^(?:site-api|rhwp\/(?:rhwp-shared|rhwp-chrome|rhwp-firefox|rhwp-safari))\//.test(file)) {
-      enable('app');
-      if (file.startsWith('rhwp/rhwp-shared/')) enable('browser');
-      // 데스크톱 글꼴 색인이 이 모듈을 쓴다.
-      if (file.startsWith('rhwp/rhwp-shared/fonts/')) enable('sessions');
-    } else {
-      enable(...groups);
-    }
+    const rule = RULES.find(([pattern]) => pattern.test(file));
+    for (const name of rule ? rule[1] : ALL) selected.add(name);
   }
-  return selected;
+  return {
+    ...Object.fromEntries(JOBS.map((name) => [name, selected.has(name)])),
+    app: APP_PARTS.filter((part) => selected.has(part)).join(' '),
+  };
 }
 
 export function changedPaths(event, git = (args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })) {
@@ -42,10 +61,12 @@ export function changedPaths(event, git = (args) => execFileSync('git', args, { 
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
-  const checks = selectChecks(changedPaths(event));
-  for (const [name, enabled] of Object.entries(checks)) {
-    appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${enabled}\n`);
+  const paths = process.env.GITHUB_EVENT_PATH
+    ? changedPaths(JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')))
+    : process.argv.slice(2);
+  const checks = selectChecks(paths);
+  for (const [name, value] of Object.entries(checks)) {
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
   }
   console.log(checks);
 }

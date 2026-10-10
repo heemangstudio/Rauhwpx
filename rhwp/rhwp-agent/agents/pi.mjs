@@ -1,6 +1,7 @@
 // cross-spawn: Windows에서 npm .cmd 심을 인자 이스케이프 손상 없이 실행한다.
 import spawn from 'cross-spawn';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 
 import { toolProfileForPhase } from '../planning-state.mjs';
@@ -11,10 +12,16 @@ import {
   normalizeExecutionMode,
   providerReadOnlyRoots,
   redactDiagnosticText,
-  systemBriefFor,
   truncate,
   validateExecutionMode,
+  isSafeSessionId,
 } from './backend.mjs';
+import {
+  availableReadOnlyBuiltins,
+  piSystemPromptFor,
+  piToolSelection,
+} from './pi-prompt.mjs';
+import { piResourceArgs } from '../pi/resources.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
 import {
   PROCESS_TREE_CLEANUP_OUTCOME,
@@ -84,8 +91,11 @@ function toolProfileFor(opts) {
  *
  * @param {PiBackendOptions} opts
  * @param {string} sessionId
+ * @param {NodeJS.ProcessEnv} [env] PATH 를 읽는 환경
+ * @param {{ systemPromptPath?: string | null }} [options] 시스템 프롬프트를 담은 파일. pi 는
+ *   --system-prompt 값이 있는 파일 경로면 그 내용을 읽는다 — 긴 프롬프트가 명령줄 한계를 쓰지 않게 한다.
  */
-export function buildPiArgv(opts, sessionId) {
+export function buildPiArgv(opts, sessionId, env = process.env, { systemPromptPath = null } = {}) {
   const piRoot = opts.piRoot ?? '';
   const modelId = String(opts.model ?? '').replace(/^openrouter\//, '');
   const argv = ['--mode', 'json', '--model', `openrouter/${modelId}`];
@@ -94,10 +104,14 @@ export function buildPiArgv(opts, sessionId) {
   argv.push(
     '--session-dir', path.join(piRoot, 'sessions'),
     '--session-id', sessionId,
-    // 'pi' 를 명시한다 — 미지정은 클로드 기본 브리프(스폰 지시 포함)를 낳았다.
-    '--append-system-prompt', systemBriefFor(opts, 'pi'),
-    // 워크스페이스의 CLAUDE.md/AGENTS.md 를 끌어오지 않는다.
-    '--no-context-files',
+    // Pi 의 코딩 어시스턴트 기본 프롬프트(도구 목록·규칙·Pi 문서 절)를 통째로 대체한다.
+    '--system-prompt', systemPromptPath ?? piSystemPromptFor(opts),
+    // 앱 번들의 확장·스킬만 싣고 사용자 Pi 설정과 워크스페이스의 AGENTS.md/.pi 는 읽지 않는다.
+    ...piResourceArgs(),
+    '--tools', piToolSelection(availableReadOnlyBuiltins({
+      pathEnv: env.PATH ?? '',
+      binDir: path.join(piRoot, 'agent', 'bin'),
+    })),
   );
   // Safe Pi has no OS write sandbox. Never expose its general shell: even
   // a hub-private sibling path is writable by the same OS user. Background
@@ -106,6 +120,28 @@ export function buildPiArgv(opts, sessionId) {
   else if (opts.toolProfile === 'copy-layout-worker') argv.push('--exclude-tools', SAFE_WORKER_EXCLUDED_TOOLS);
   else if (opts.permissionProfile !== 'unrestricted') argv.push('--exclude-tools', SAFE_EXCLUDED_TOOLS);
   return argv;
+}
+
+/**
+ * 이번 스폰의 시스템 프롬프트를 세션 폴더의 파일로 쓴다. 18K자 안팎의 프롬프트를 argv 에 싣지
+ * 않으므로 Windows 명령줄 32,767자 한계와 무관해진다. 쓰지 못하면 null — argv 에 글을 그대로 싣는다.
+ *
+ * @param {PiBackendOptions} opts
+ * @param {string} sessionId
+ * @returns {string | null}
+ */
+export function writeSystemPromptFile(opts, sessionId) {
+  if (!opts.piRoot) return null;
+  try {
+    // pi-manager 가 세션 폴더를 만든다. 없으면 설치되지 않은 루트이므로 만들지 않는다.
+    const dir = path.join(opts.piRoot, 'sessions');
+    if (!fs.statSync(dir).isDirectory()) return null;
+    const file = path.join(dir, `${sessionId}.system-prompt.md`);
+    fs.writeFileSync(file, piSystemPromptFor(opts), { mode: 0o600 });
+    return file;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -134,6 +170,7 @@ export function buildPiEnv(opts, sourceEnv = process.env) {
     ...(opts.openRouterApiKey ? { OPENROUTER_API_KEY: String(opts.openRouterApiKey) } : {}),
     // 버전 확인/카탈로그 갱신 같은 기동 시 네트워크 동작을 끈다.
     PI_OFFLINE: '1',
+    PI_TELEMETRY: '0',
     RHWP_WS_URL: `ws://127.0.0.1:${opts.hubPort}/mcp`,
     RHWP_AGENT_TOKEN: String(opts.token ?? ''),
     RHWP_AGENT_NAME: 'pi',
@@ -303,6 +340,63 @@ export function formatPiExitError(stderrText, code, signal, token) {
  * @param {any} raw
  * @returns {{ usage: import('./backend.mjs').UsageTokens, costUsd: number } | null}
  */
+/**
+ * `--session-id` 로 이어 쓸 세션 파일(`<piRoot>/sessions/<시각>_<id>.jsonl`)을 찾는다. Pi 1.1.0 은
+ * --session-dir 아래에서 헤더의 cwd 가 같은 파일만 연다 (없으면 같은 id 로 빈 세션을 새로 만든다).
+ *
+ * @returns {string | null}
+ */
+export function findPiSessionFileSync(opts, sessionId) {
+  if (!opts.piRoot || !isSafeSessionId(sessionId)) return null;
+  const dir = path.join(opts.piRoot, 'sessions');
+  let names;
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return null;
+  }
+  // Pi 는 process.cwd()(실경로)와 비교한다 — /var → /private/var 같은 링크를 풀어 둔다.
+  const cwds = new Set([path.resolve(String(opts.rootDir ?? ''))]);
+  try { cwds.add(fs.realpathSync(String(opts.rootDir ?? ''))); } catch {}
+  for (const name of names) {
+    if (!name.endsWith(`_${sessionId}.jsonl`)) continue;
+    const file = path.join(dir, name);
+    let fd;
+    try {
+      fd = fs.openSync(file, 'r');
+      const buffer = Buffer.alloc(16 * 1024);
+      const bytes = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      const header = JSON.parse(buffer.subarray(0, bytes).toString('utf8').split('\n')[0]);
+      if (header?.type === 'session' && header.id === sessionId
+        && typeof header.cwd === 'string' && cwds.has(path.resolve(header.cwd))) return file;
+    } catch {
+      // 읽지 못한 파일은 재개 대상이 아니다.
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  }
+  return null;
+}
+
+export async function canResumePiSession(opts, sessionId) {
+  return findPiSessionFileSync(opts, sessionId) !== null;
+}
+
+/** Pi 가 맥락 크기로 세는 값 — 마지막 호출의 totalTokens, 없으면 네 칸의 합. */
+function piContextTokens(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const total = Number(raw.totalTokens);
+  if (Number.isFinite(total) && total > 0) return Math.round(total);
+  const sum = ['input', 'output', 'cacheRead', 'cacheWrite']
+    .reduce((acc, key) => acc + (Number(raw[key]) > 0 ? Number(raw[key]) : 0), 0);
+  return sum > 0 ? Math.round(sum) : null;
+}
+
+function finitePiTokens(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined;
+}
+
 function normalizePiUsage(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const count = (value) => {
@@ -341,7 +435,14 @@ export function createPiSession(opts, {
 
   // pi 세션 id 는 우리가 발급한다. 첫 스폰은 세션 파일을 만들고(“creating a new
   // session” 경고가 stderr 에 찍힌다) 이후 스폰은 같은 파일을 이어 쓴다.
-  let sessionId = crypto.randomUUID();
+  // 재개 커서로 시작하면 그 파일을 이어 쓴다 — 첫 스폰 직전에 파일이 남아 있는지 다시 본다.
+  let sessionId = isSafeSessionId(opts.resumeSessionId) ? opts.resumeSessionId : crypto.randomUUID();
+  let resumeUnverified = sessionId === opts.resumeSessionId;
+  let turnResumeLost = false;
+  let lastContextTokens = null;
+  let compactionSeq = 0;
+  /** @type {{ compactionId: string, trigger: 'auto'|'manual', beforeTokens?: number } | null} */
+  let activeCompaction = null;
   /** @type {import('node:child_process').ChildProcess | null} */
   let child = null;
   let turnOpen = false;
@@ -363,8 +464,35 @@ export function createPiSession(opts, {
   function endTurn(evt) {
     if (!turnOpen) return;
     turnOpen = false;
+    activeCompaction = null;
     fleet.finalize(evt?.stopReason === 'failed' ? 'failed' : 'stopped');
-    onEvent(evt);
+    const lost = turnResumeLost;
+    turnResumeLost = false;
+    onEvent(lost ? { ...evt, resumeLost: true } : evt);
+  }
+
+  function emitContextUsage() {
+    if (lastContextTokens === null) return;
+    const window = Number(opts.contextWindow);
+    onEvent({
+      type: 'context-usage',
+      agent,
+      usedTokens: lastContextTokens,
+      ...(Number.isFinite(window) && window > 0 ? { maxTokens: Math.round(window) } : {}),
+      autoCompact: true,
+    });
+  }
+
+  function compactionEvent(compaction, phase, extra = {}) {
+    return {
+      type: 'compaction',
+      agent,
+      compactionId: compaction.compactionId,
+      phase,
+      trigger: compaction.trigger,
+      ...(compaction.beforeTokens !== undefined ? { beforeTokens: compaction.beforeTokens } : {}),
+      ...extra,
+    };
   }
 
   function makeHandler() {
@@ -391,9 +519,47 @@ export function createPiSession(opts, {
         }
         return;
       }
+      if (type === 'compaction_start') {
+        // reason: manual | threshold | overflow (Pi 1.1.0 json.md).
+        activeCompaction = {
+          compactionId: `pi:${sessionId}:${Date.now().toString(36)}:${++compactionSeq}`,
+          trigger: e.reason === 'manual' ? 'manual' : 'auto',
+          ...(lastContextTokens !== null ? { beforeTokens: lastContextTokens } : {}),
+        };
+        onEvent(compactionEvent(activeCompaction, 'started'));
+        return;
+      }
+      if (type === 'compaction_end') {
+        const compaction = activeCompaction ?? {
+          compactionId: `pi:${sessionId}:${Date.now().toString(36)}:${++compactionSeq}`,
+          trigger: e.reason === 'manual' ? 'manual' : 'auto',
+        };
+        activeCompaction = null;
+        const result = e.result;
+        if (result && !e.aborted) {
+          const beforeTokens = finitePiTokens(result.tokensBefore) ?? compaction.beforeTokens;
+          const afterTokens = finitePiTokens(result.estimatedTokensAfter);
+          onEvent(compactionEvent({ ...compaction, beforeTokens }, 'completed', {
+            ...(afterTokens !== undefined ? { afterTokens } : {}),
+          }));
+          if (afterTokens !== undefined) {
+            lastContextTokens = afterTokens;
+            emitContextUsage();
+          }
+        } else {
+          const message = e.aborted ? 'Compaction was aborted' : String(e.errorMessage ?? 'Compaction failed');
+          onEvent(compactionEvent(compaction, 'failed', { message: truncate(message, 500) }));
+        }
+        return;
+      }
       if (type === 'message_end') {
         const message = e.message ?? {};
         if (message.role !== 'assistant') return;
+        const contextTokens = piContextTokens(message.usage);
+        if (contextTokens !== null) {
+          lastContextTokens = contextTokens;
+          emitContextUsage();
+        }
         const usage = normalizePiUsage(message.usage);
         if (usage) {
           onEvent({
@@ -456,7 +622,12 @@ export function createPiSession(opts, {
     getSessionId() {
       return sessionId;
     },
-    sendUserMessage(text) {
+    // json 모드는 /compact 를 처리하지 않는다 (대화형 전용 명령). 자동 압축은 compaction_* 로 보인다.
+    compactionSupport: 'auto-only',
+    canResume(id) {
+      return canResumePiSession(opts, id);
+    },
+    sendUserMessage(text, options = {}) {
       if (disposed) return;
       if (turnOpen || queuedTurn) throw new Error('Pi already has a turn in progress');
       if (uncertainTreeCleanup) {
@@ -472,7 +643,7 @@ export function createPiSession(opts, {
         return;
       }
       if (child) {
-        const queued = { text };
+        const queued = { text, options };
         queuedTurn = queued;
         const ownership = childExitPromise;
         void stopChild('queue');
@@ -481,7 +652,7 @@ export function createPiSession(opts, {
           queuedTurn = null;
           if (disposed) return;
           if (cleaned && !child) {
-            session.sendUserMessage(queued.text);
+            session.sendUserMessage(queued.text, queued.options);
             return;
           }
           turnOpen = true;
@@ -511,17 +682,38 @@ export function createPiSession(opts, {
       turnFailureMessage = null;
       onEvent({ type: 'turn-start', agent });
 
+      if (options.replaceSession) {
+        // 허브가 이 세션의 기록 전달을 믿지 않는다 — 새 세션 id 로 전체 기록을 보낸다.
+        resumeUnverified = false;
+        turnResumeLost = true;
+        sessionId = crypto.randomUUID();
+        lastContextTokens = null;
+      } else if (resumeUnverified) {
+        resumeUnverified = false;
+        if (!findPiSessionFileSync(opts, sessionId)) {
+          // 이어 쓸 파일이 사라졌다. Pi 는 같은 id 로 빈 세션을 만들 뿐이라 여기서 알아챈다.
+          turnResumeLost = true;
+          sessionId = crypto.randomUUID();
+          lastContextTokens = null;
+          if (typeof options.resumeFallbackText === 'string' && options.resumeFallbackText) {
+            text = options.resumeFallbackText;
+          }
+        }
+      }
+
       if (!opts.model) {
         onEvent({ type: 'error', agent, message: 'Pi 모델이 선택되지 않았습니다.' });
         endTurn({ type: 'turn-end', agent, stopReason: 'exited' });
         return;
       }
 
-      // 시스템 브리핑은 --append-system-prompt 로 매 스폰마다 붙는다.
+      // 시스템 프롬프트는 --system-prompt 로 매 스폰마다 새로 정한다(모드가 바뀌면 함께 바뀐다).
       // 프롬프트는 stdin 으로 넘긴다. argv 로 넘기면 Linux 의 인자당 128 KiB,
       // Windows 의 명령줄 32,767자 한계에 걸리고 '-'/'@' 로 시작하는 메시지가
       // 플래그나 첨부 파일로 파싱된다.
-      const argv = buildPiArgv(opts, sessionId);
+      const argv = buildPiArgv(opts, sessionId, process.env, {
+        systemPromptPath: writeSystemPromptFile(opts, sessionId),
+      });
       stderrTail = '';
 
       let proc;

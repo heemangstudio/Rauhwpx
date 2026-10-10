@@ -14,6 +14,7 @@ import {
   PI_MODEL_ID_MAX_CHARS,
   PI_MODEL_NAME_MAX_CHARS,
   PI_SETTINGS_MAX_BYTES,
+  PI_VERSION,
 } from '../pi-manager.mjs';
 import { createMemorySecretStore } from '../secret-store.mjs';
 
@@ -48,7 +49,7 @@ function fakeSpawner(onSpawn) {
 }
 
 /** 설치 성공을 흉내 낸다: 패키지 package.json 을 심고 0으로 끝낸다. */
-function installer(prefixDir, version = '0.84.3') {
+function installer(prefixDir, version = PI_VERSION) {
   return async (proc) => {
     const dir = path.join(prefixDir, 'node_modules', ...PI_PACKAGE.split('/'));
     await fs.mkdir(dir, { recursive: true });
@@ -64,7 +65,8 @@ const CATALOG = [
     name: 'DeepSeek: Chat v3.1',
     provider: 'deepseek',
     contextLength: 163840,
-    pricing: { prompt: 0.0000002, completion: 0.0000008 },
+    maxCompletionTokens: 32768,
+    pricing: { prompt: 0.0000002, completion: 0.0000008, cacheRead: 0.00000002 },
     reasoning: true,
     supportsImages: false,
   },
@@ -73,7 +75,8 @@ const CATALOG = [
     name: 'Anthropic: Claude Haiku 4.5',
     provider: 'anthropic',
     contextLength: 200000,
-    pricing: { prompt: 0.000001, completion: 0.000005 },
+    maxCompletionTokens: 64000,
+    pricing: { prompt: 0.000001, completion: 0.000005, cacheRead: 0.0000001 },
     reasoning: false,
     supportsImages: true,
   },
@@ -82,16 +85,20 @@ const CATALOG = [
     name: 'OpenAI: GPT-5 mini',
     provider: 'openai',
     contextLength: 400000,
-    pricing: { prompt: 0.00000025, completion: 0.000002 },
+    // 최상위 제공자가 출력 상한을 밝히지 않은 모델.
+    maxCompletionTokens: null,
+    pricing: { prompt: 0.00000025, completion: 0.000002, cacheRead: 0 },
     reasoning: true,
     supportsImages: true,
   },
 ];
 
-function fakeOpenRouter({ valid = true } = {}) {
+function fakeOpenRouter({ valid = true, catalog = CATALOG } = {}) {
   const calls = { validate: [], catalog: 0, cleared: 0 };
   return {
     calls,
+    /** 테스트가 바꿔 끼운다 — 배열이면 그대로 돌려주고, 함수면 불러서 돌려준다. */
+    catalogSource: catalog,
     async validateKey(key) {
       calls.validate.push(key);
       return valid
@@ -100,7 +107,7 @@ function fakeOpenRouter({ valid = true } = {}) {
     },
     async catalog() {
       calls.catalog += 1;
-      return CATALOG;
+      return typeof this.catalogSource === 'function' ? this.catalogSource() : this.catalogSource;
     },
     async credits() {
       return { balanceUsd: 9, totalCreditsUsd: 10, totalUsageUsd: 1, checkedAt: 1 };
@@ -119,11 +126,11 @@ async function offlineFetch() {
 }
 
 /** 레지스트리 메타 + 타르볼 스트림을 흉내 내는 fetch. */
-function fakeRegistryFetch({ chunks, integrity = null, contentLength = null, version = '0.84.3' }) {
+function fakeRegistryFetch({ chunks, integrity = null, contentLength = null, version = PI_VERSION }) {
   const calls = [];
   const fetchImpl = async (url) => {
     calls.push(String(url));
-    if (String(url).endsWith('/latest')) {
+    if (String(url).endsWith(`/${PI_VERSION}`)) {
       return {
         ok: true,
         json: async () => ({
@@ -362,17 +369,17 @@ test('install runs npm with a prefix, reports progress and syncs assets', async 
   // 레지스트리에 못 닿으면 npm 이 직접 받고, http 로그가 활동 신호가 된다.
   assert.match(spawns[0].argv[0], /npm[/\\]bin[/\\]npm-cli\.js$/);
   assert.deepEqual(spawns[0].argv.slice(1), [
-    'install', '--prefix', prefixDir, '--no-fund', '--no-audit', '--loglevel=http', PI_PACKAGE,
+    'install', '--prefix', prefixDir, '--no-fund', '--no-audit', '--loglevel=http', `${PI_PACKAGE}@${PI_VERSION}`,
   ]);
   assert.deepEqual(progress.map((event) => event.state), [
     'preparing', 'downloading', 'installing', 'installing', 'configuring', 'verifying', 'done',
   ]);
   assert.equal(progress[3].activity, true, 'npm 출력이 활동 신호로 흘러나온다');
   assert.deepEqual(progress.map((event) => event.percent), [8, 12, 64, 65.5, 92, 97, 100]);
-  assert.equal(progress.at(-1).detail, '0.84.3');
+  assert.equal(progress.at(-1).detail, PI_VERSION);
 
   assert.equal(status.installed, true);
-  assert.equal(status.version, '0.84.3');
+  assert.equal(status.version, PI_VERSION);
   assert.equal(status.installing, false);
   assert.equal(status.setupComplete, false, '키와 모델이 아직 없다');
   assert.equal(
@@ -384,18 +391,12 @@ test('install runs npm with a prefix, reports progress and syncs assets', async 
   assert.equal(settings.defaultProjectTrust, 'never');
   assert.equal(settings.enableSkillCommands, false);
   assert.equal(settings.enableInstallTelemetry, false);
-  assert.equal(settings.extensions.length, 2);
-  assert.equal(path.isAbsolute(settings.extensions[0]), true);
-  assert.match(settings.extensions[0], /rhwp-agent[/\\]pi[/\\]extension[/\\]rhwp\.ts$/);
-  assert.equal(settings.extensions[0], manager.extensionPath);
-  assert.equal(path.isAbsolute(settings.extensions[1]), true);
-  assert.match(settings.extensions[1], /rhwp-agent[/\\]pi[/\\]extension[/\\]subagents\.ts$/);
-  assert.equal(settings.extensions[1], manager.subagentExtensionPath);
+  assert.equal('extensions' in settings, false);
 
   await fs.stat(path.join(rootDir, 'sessions'));
   const config = await readJson(path.join(rootDir, 'config.json'));
   assert.equal(config.version, 1);
-  assert.equal(config.installedVersion, '0.84.3');
+  assert.equal(config.installedVersion, PI_VERSION);
 
   await fs.rm(rootDir, { recursive: true, force: true });
 });
@@ -417,7 +418,7 @@ test('concurrent installs share a single npm run', async () => {
 
   assert.equal(spawns.length, 1);
   assert.deepEqual(a, b);
-  assert.equal(a.version, '0.84.3');
+  assert.equal(a.version, PI_VERSION);
   assert.ok(second.includes('done'), '뒤늦게 붙은 호출도 진행 상황을 받는다');
 
   await fs.rm(rootDir, { recursive: true, force: true });
@@ -552,6 +553,37 @@ test('a failing npm install raises PI_INSTALL_FAILED with the stderr tail', asyn
   await fs.rm(rootDir, { recursive: true, force: true });
 });
 
+test('automatic Pi update converges on the pinned version and replaces a newer install', async () => {
+  const rootDir = await tmpRoot();
+  const prefixDir = path.join(rootDir, 'prefix');
+  const writePackage = async (prefix, version) => {
+    const dir = path.join(prefix, 'node_modules', ...PI_PACKAGE.split('/'));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: PI_PACKAGE, version }));
+  };
+  await writePackage(prefixDir, '9.0.0');
+  const chunks = [Buffer.alloc(12, 5)];
+  const { calls, fetchImpl } = fakeRegistryFetch({ chunks, integrity: sha512Integrity(chunks), contentLength: 12 });
+  const { spawnProcess } = fakeSpawner(async (proc, argv) => {
+    await writePackage(argv[argv.indexOf('--prefix') + 1], PI_VERSION);
+    proc.emit('close', 0, null);
+  });
+  const manager = await createPiManager({
+    rootDir, spawnProcess, openRouter: fakeOpenRouter(), fetchImpl,
+  }).init();
+
+  const status = await manager.automaticUpdate();
+  assert.equal(calls[0], `https://registry.npmjs.org/@earendil-works%2Fpi-coding-agent/${PI_VERSION}`);
+  assert.equal(status.version, PI_VERSION);
+  assert.equal(status.latestVersion, PI_VERSION);
+  assert.equal(status.updateRequired, false);
+  const again = await manager.automaticUpdate();
+  assert.equal(again.version, PI_VERSION);
+  assert.equal(calls.filter((url) => url.endsWith('.tgz')).length, 1, 'the pinned install is not downloaded again');
+
+  await fs.rm(rootDir, { recursive: true, force: true });
+});
+
 test('automatic Pi update failure is silent and leaves the working harness active', async () => {
   const rootDir = await tmpRoot();
   const prefixDir = path.join(rootDir, 'prefix');
@@ -559,14 +591,13 @@ test('automatic Pi update failure is silent and leaves the working harness activ
   await fs.mkdir(packageDir, { recursive: true });
   await fs.writeFile(
     path.join(packageDir, 'package.json'),
-    JSON.stringify({ name: PI_PACKAGE, version: '0.84.3' }),
+    JSON.stringify({ name: PI_PACKAGE, version: '1.0.0' }),
   );
   const chunks = [Buffer.alloc(12, 4)];
   const { fetchImpl } = fakeRegistryFetch({
     chunks,
     integrity: sha512Integrity(chunks),
     contentLength: 12,
-    version: '0.84.4',
   });
   const { spawnProcess } = fakeSpawner(async (proc) => {
     proc.stderr.emit('data', 'npm install failed\n');
@@ -577,11 +608,11 @@ test('automatic Pi update failure is silent and leaves the working harness activ
   }).init();
 
   const status = await manager.automaticUpdate();
-  assert.equal(status.version, '0.84.3');
-  assert.equal(status.latestVersion, '0.84.4');
+  assert.equal(status.version, '1.0.0');
+  assert.equal(status.latestVersion, PI_VERSION);
   assert.equal(status.updateRequired, true);
   assert.equal(status.error, null);
-  assert.equal(JSON.parse(await fs.readFile(path.join(packageDir, 'package.json'), 'utf8')).version, '0.84.3');
+  assert.equal(JSON.parse(await fs.readFile(path.join(packageDir, 'package.json'), 'utf8')).version, '1.0.0');
   assert.deepEqual((await fs.readdir(rootDir)).filter((name) => name.includes('.update-')), []);
 
   await fs.rm(rootDir, { recursive: true, force: true });
@@ -645,11 +676,11 @@ test('a rejected deterministic tarball cancels its unread body before npm fallba
   const prefixDir = path.join(rootDir, 'prefix');
   let cancelled = false;
   const fetchImpl = async (url) => {
-    if (String(url).endsWith('/latest')) {
+    if (String(url).endsWith(`/${PI_VERSION}`)) {
       return {
         ok: true,
         json: async () => ({
-          version: '0.84.3',
+          version: PI_VERSION,
           dist: {
             tarball: 'https://registry.npmjs.org/pi/-/pi-0.84.3.tgz',
             integrity: sha512Integrity([Buffer.from('unused')]),
@@ -669,7 +700,7 @@ test('a rejected deterministic tarball cancels its unread body before npm fallba
   await manager.install();
   assert.equal(cancelled, true);
   assert.equal(spawns.length, 1);
-  assert.equal(spawns[0].argv.at(-1), PI_PACKAGE);
+  assert.equal(spawns[0].argv.at(-1), `${PI_PACKAGE}@${PI_VERSION}`);
   await fs.rm(rootDir, { recursive: true, force: true });
 });
 
@@ -1025,7 +1056,8 @@ test('setModels writes the pi provider block and survives a reopen', async () =>
     efforts: ['low', 'medium', 'high'],
     defaultEffort: 'high',
     contextLength: 163840,
-    pricing: { prompt: 0.0000002, completion: 0.0000008 },
+    maxOutputTokens: 32768,
+    pricing: { prompt: 0.0000002, completion: 0.0000008, cacheRead: 0.00000002 },
   });
   assert.deepEqual(status.models[1].efforts, [], '비추론 모델은 effort 를 노출하지 않는다');
   assert.equal(status.models[1].defaultEffort, null);
@@ -1037,15 +1069,15 @@ test('setModels writes the pi provider block and survives a reopen', async () =>
   assert.equal(deepseek.reasoning, true);
   assert.deepEqual(deepseek.input, ['text']);
   assert.equal(deepseek.contextWindow, 163840);
-  assert.equal(deepseek.maxTokens, 8192);
+  assert.equal(deepseek.maxTokens, 32768);
   assert.deepEqual(deepseek.thinkingLevelMap, {
     off: null, minimal: 'minimal', low: 'low', medium: 'medium', high: 'high', xhigh: null, max: null,
   });
   // 100만 토큰당 USD 로 환산해서 넣는다.
-  assert.deepEqual(deepseek.cost, { input: 0.2, output: 0.8, cacheRead: 0, cacheWrite: 0 });
+  assert.deepEqual(deepseek.cost, { input: 0.2, output: 0.8, cacheRead: 0.02, cacheWrite: 0 });
   assert.equal(haiku.thinkingLevelMap, undefined, '비추론 모델에는 thinkingLevelMap 이 없다');
   assert.deepEqual(haiku.input, ['text', 'image']);
-  assert.deepEqual(haiku.cost, { input: 1, output: 5, cacheRead: 0, cacheWrite: 0 });
+  assert.deepEqual(haiku.cost, { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 0 });
 
   // 싼 쪽은 출력 단가가 낮은 딥식이다.
   assert.equal(manager.cheapestModel().id, 'deepseek/deepseek-chat-v3.1');
@@ -1063,6 +1095,165 @@ test('setModels writes the pi provider block and survives a reopen', async () =>
   assert.equal(reloaded.models.length, 2);
   assert.equal(reloaded.models[0].name, '빠른 딥식');
   assert.equal(reopened.apiKey(), 'sk-or-v1-secret-abcd');
+
+  await fs.rm(rootDir, { recursive: true, force: true });
+});
+
+test('models.json sends catalog output ceilings and omits the max token field when unknown', async () => {
+  const rootDir = await tmpRoot();
+  const modelsPath = path.join(rootDir, 'agent', 'models.json');
+  const catalog = [
+    ...CATALOG,
+    {
+      id: 'qwen/qwen3-coder',
+      name: 'Qwen: Qwen3 Coder',
+      provider: 'qwen',
+      contextLength: 32768,
+      maxCompletionTokens: 262144,
+      pricing: { prompt: 0.0000002, completion: 0.0000008, cacheRead: 0 },
+      reasoning: false,
+      supportsImages: false,
+    },
+  ];
+  const manager = createPiManager({ rootDir, openRouter: fakeOpenRouter({ catalog }) });
+
+  await manager.setModels([
+    { id: 'deepseek/deepseek-chat-v3.1' },
+    { id: 'openai/gpt-5-mini' },
+    { id: 'qwen/qwen3-coder' },
+  ]);
+  const provider = (await readJson(modelsPath)).providers.openrouter;
+  const byId = Object.fromEntries(provider.models.map((model) => [model.id, model]));
+  assert.equal(byId['deepseek/deepseek-chat-v3.1'].maxTokens, 32768);
+  assert.equal(byId['qwen/qwen3-coder'].maxTokens, 32768, '컨텍스트 창보다 큰 상한은 창에 맞춘다');
+  assert.equal('maxTokens' in byId['openai/gpt-5-mini'], false, '정의에 0 이하를 쓰면 pi 가 거부한다');
+  assert.deepEqual(provider.modelOverrides, { 'openai/gpt-5-mini': { maxTokens: 0 } });
+  assert.equal(byId['deepseek/deepseek-chat-v3.1'].cost.cacheRead, 0.02);
+  assert.equal(byId['openai/gpt-5-mini'].cost.cacheRead, 0);
+
+  await manager.setModels([{ id: 'deepseek/deepseek-chat-v3.1' }]);
+  assert.equal(
+    'modelOverrides' in (await readJson(modelsPath)).providers.openrouter,
+    false,
+    '모든 모델에 상한이 있으면 modelOverrides 를 쓰지 않는다',
+  );
+
+  await fs.rm(rootDir, { recursive: true, force: true });
+});
+
+test('Pi OpenRouter routing defaults to throughput and follows the configured sort', async () => {
+  for (const [routingSort, expected] of [
+    [undefined, { require_parameters: true, sort: 'throughput' }],
+    [' Latency ', { require_parameters: true, sort: 'latency' }],
+    ['price', { require_parameters: true, sort: 'price' }],
+    ['fastest', { require_parameters: true, sort: 'throughput' }],
+    ['OFF', null],
+  ]) {
+    const rootDir = await tmpRoot();
+    const manager = createPiManager({ rootDir, openRouter: fakeOpenRouter(), routingSort });
+    await manager.setModels([
+      { id: 'deepseek/deepseek-chat-v3.1' },
+      { id: 'anthropic/claude-haiku-4.5' },
+    ]);
+    const { models } = (await readJson(path.join(rootDir, 'agent', 'models.json'))).providers.openrouter;
+    for (const model of models) {
+      assert.deepEqual(model.compat?.openRouterRouting ?? null, expected, `${routingSort} → ${model.id}`);
+    }
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+/** 출력 상한과 캐시 단가가 생기기 전의 config.json. */
+async function writeLegacyModelConfig(rootDir) {
+  await fs.writeFile(path.join(rootDir, 'config.json'), `${JSON.stringify({
+    version: 1,
+    installedVersion: '1.1.0',
+    keyTail: null,
+    models: [
+      {
+        id: 'deepseek/deepseek-chat-v3.1',
+        name: '빠른 딥식',
+        reasoning: true,
+        supportsImages: false,
+        efforts: ['low', 'medium', 'high'],
+        defaultEffort: 'high',
+        contextLength: 163840,
+        pricing: { prompt: 0.0000002, completion: 0.0000008 },
+      },
+      {
+        id: 'openai/gpt-5-mini',
+        name: 'OpenAI: GPT-5 mini',
+        reasoning: true,
+        supportsImages: true,
+        efforts: ['low', 'medium', 'high'],
+        defaultEffort: 'medium',
+        contextLength: 400000,
+        pricing: { prompt: 0.00000025, completion: 0.000002 },
+      },
+    ],
+    defaultModelId: 'deepseek/deepseek-chat-v3.1',
+    setupComplete: false,
+  }, null, 2)}\n`);
+}
+
+test('syncAssets fills catalog fields missing from an older config.json', async () => {
+  const rootDir = await tmpRoot();
+  await writeLegacyModelConfig(rootDir);
+  const openRouter = fakeOpenRouter();
+  const manager = await createPiManager({ rootDir, openRouter }).init();
+
+  await manager.syncAssets();
+  const config = await readJson(path.join(rootDir, 'config.json'));
+  assert.equal(config.models[0].name, '빠른 딥식');
+  assert.equal(config.models[0].defaultEffort, 'high');
+  assert.equal(config.models[0].maxOutputTokens, 32768);
+  assert.equal(config.models[0].pricing.cacheRead, 0.00000002);
+  assert.equal(config.models[1].maxOutputTokens, null, '카탈로그에 상한이 없으면 null 로 이관한다');
+  assert.equal(config.models[1].pricing.cacheRead, 0);
+
+  const provider = (await readJson(path.join(rootDir, 'agent', 'models.json'))).providers.openrouter;
+  assert.equal(provider.models[0].maxTokens, 32768);
+  assert.equal(provider.models[0].cost.cacheRead, 0.02);
+  assert.equal('maxTokens' in provider.models[1], false);
+  assert.deepEqual(provider.modelOverrides, { 'openai/gpt-5-mini': { maxTokens: 0 } });
+
+  // 이관이 끝난 설정은 부팅마다 카탈로그를 다시 부르지 않는다.
+  const reopened = createPiManager({ rootDir, openRouter });
+  await reopened.syncAssets();
+  assert.equal(openRouter.calls.catalog, 1);
+
+  await fs.rm(rootDir, { recursive: true, force: true });
+});
+
+test('syncAssets still writes models.json offline and migrates on a later sync', async () => {
+  const rootDir = await tmpRoot();
+  await writeLegacyModelConfig(rootDir);
+  const openRouter = fakeOpenRouter();
+  openRouter.catalogSource = () => {
+    throw Object.assign(new Error('offline'), { code: 'OPENROUTER_UNREACHABLE' });
+  };
+  const manager = await createPiManager({ rootDir, openRouter }).init();
+
+  await manager.syncAssets();
+  const offline = (await readJson(path.join(rootDir, 'agent', 'models.json'))).providers.openrouter;
+  assert.deepEqual(offline.models.map((model) => 'maxTokens' in model), [false, false]);
+  assert.deepEqual(offline.modelOverrides, {
+    'deepseek/deepseek-chat-v3.1': { maxTokens: 0 },
+    'openai/gpt-5-mini': { maxTokens: 0 },
+  });
+  assert.deepEqual(offline.models.map((model) => model.cost.cacheRead), [0, 0]);
+  const unmigrated = await readJson(path.join(rootDir, 'config.json'));
+  assert.equal('maxOutputTokens' in unmigrated.models[0], false, '다음 동기화가 다시 시도하도록 비워 둔다');
+  assert.equal('cacheRead' in unmigrated.models[0].pricing, false);
+
+  openRouter.catalogSource = CATALOG;
+  await manager.syncAssets();
+  const migrated = await readJson(path.join(rootDir, 'config.json'));
+  assert.deepEqual(migrated.models.map((model) => model.maxOutputTokens), [32768, null]);
+  const online = (await readJson(path.join(rootDir, 'agent', 'models.json'))).providers.openrouter;
+  assert.equal(online.models[0].maxTokens, 32768);
+  assert.deepEqual(online.modelOverrides, { 'openai/gpt-5-mini': { maxTokens: 0 } });
+  assert.equal(openRouter.calls.catalog, 2);
 
   await fs.rm(rootDir, { recursive: true, force: true });
 });
@@ -1307,22 +1498,77 @@ test('Pi atomic settings writes remove staged files after replacement failure', 
   await fs.rm(rootDir, { recursive: true, force: true });
 });
 
-test('syncAssets rewrites settings.json without an install', async () => {
+test('syncAssets keeps app paths out of the Pi home and clears what older hubs left there', async () => {
   const rootDir = await tmpRoot();
+  const agentDir = path.join(rootDir, 'agent');
+  await fs.mkdir(path.join(agentDir, 'skills', 'rhwp-editing'), { recursive: true });
+  await fs.writeFile(path.join(agentDir, 'skills', 'rhwp-editing', 'SKILL.md'), 'old copy');
+  const old = new Date(Date.now() - 10 * 60_000);
+  const staleTemps = [
+    path.join(agentDir, 'models.json.tmp-111-1790000000000-2'),
+    path.join(agentDir, 'settings.json.tmp-111-1790000000000-1'),
+    path.join(rootDir, 'config.json.tmp-111-1790000000000-3'),
+  ];
+  for (const file of staleTemps) {
+    await fs.writeFile(file, '{"providers":{"openrouter":{"apiKey":"sk-or-leaked"}}}');
+    await fs.utimes(file, old, old);
+  }
+  // 같은 루트를 쓰는 다른 허브가 방금 만든 임시 파일은 건드리지 않는다.
+  const liveTemp = path.join(agentDir, 'models.json.tmp-222-1790000000001-2');
+  await fs.writeFile(liveTemp, '');
+  const unrelated = path.join(agentDir, 'auth.json.tmp-old');
+  await fs.writeFile(unrelated, '');
+  await fs.utimes(unrelated, old, old);
   const { spawns, spawnProcess } = fakeSpawner();
   const manager = createPiManager({ rootDir, spawnProcess, openRouter: fakeOpenRouter() });
 
   await manager.syncAssets();
-  const settings = await readJson(path.join(rootDir, 'agent', 'settings.json'));
-  assert.deepEqual(settings.extensions, [manager.extensionPath, manager.subagentExtensionPath]);
+  const settingsText = await fs.readFile(path.join(agentDir, 'settings.json'), 'utf8');
+  assert.deepEqual(JSON.parse(settingsText), {
+    defaultProjectTrust: 'never',
+    enableSkillCommands: false,
+    enableInstallTelemetry: false,
+  });
+  assert.equal(settingsText.includes(path.sep), false, 'settings.json holds no paths');
+  await assert.rejects(fs.stat(path.join(agentDir, 'skills')), { code: 'ENOENT' });
+  for (const file of staleTemps) await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+  await fs.stat(liveTemp);
+  await fs.stat(unrelated);
   assert.equal(spawns.length, 0);
 
-  // 두 번 불러도 그대로 덮어쓴다.
-  await manager.syncAssets();
-  assert.deepEqual(
-    (await readJson(path.join(rootDir, 'agent', 'settings.json'))).extensions,
-    [manager.extensionPath, manager.subagentExtensionPath],
-  );
+  await fs.rm(rootDir, { recursive: true, force: true });
+});
+
+test('close waits for a settings write in flight and refuses later writes', async () => {
+  const rootDir = await tmpRoot();
+  const replacing = deferred();
+  const release = deferred();
+  let stagedPath = null;
+  const manager = createPiManager({
+    rootDir,
+    openRouter: fakeOpenRouter(),
+    async replaceFile(tempPath, targetPath) {
+      if (!stagedPath) {
+        stagedPath = tempPath;
+        replacing.resolve();
+        await release.promise;
+      }
+      await fs.rename(tempPath, targetPath);
+    },
+  });
+
+  const sync = manager.syncAssets();
+  await replacing.promise;
+  let closed = false;
+  const closing = manager.close().then(() => { closed = true; });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(closed, false, 'close waits for the staged write');
+  release.resolve();
+  await closing;
+  await sync.catch(() => {});
+  await assert.rejects(fs.stat(stagedPath), { code: 'ENOENT' });
+  await assert.rejects(manager.setModels([{ id: 'deepseek/deepseek-chat-v3.1' }]));
+  assert.deepEqual((await fs.readdir(path.join(rootDir, 'agent'))).filter((name) => name.includes('.tmp-')), []);
 
   await fs.rm(rootDir, { recursive: true, force: true });
 });

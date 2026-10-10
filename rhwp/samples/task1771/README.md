@@ -8,4 +8,4 @@
   (render-diff Path 335→0, Group 215→3, STRUCT_MISMATCH).
 - 기대(수정 후): 중첩 그룹도 SHAPE_COMPONENT('$con') 경계 방출 → 710 전량 보존,
   `render-diff --via hwp` **PASS** (페이지 15=15, 변위 0.00px).
-- 검증: `cargo test --test issue_1771_nested_group_roundtrip`
+- 검증: `cargo test --test it issue_1771_nested_group_roundtrip`
