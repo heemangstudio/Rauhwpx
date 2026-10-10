@@ -279,5 +279,39 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   });
   assert.deepEqual(passkeyChecks, { unavailable: true, noPasswordChange: true, installChrome: true, chromeInstruction: true, signIns: [{ accountId: 'passkey-fixture', url: 'https://fixture.example', authenticationMethod: 'mac-passkey' }] }, 'Mac passkey action appears only when installed Chrome handoff is available');
 
+  const linkedSessionChecks = await page.evaluate(async () => {
+    const { createBrowserSettingsPane } = await import('/src/ui/agent-sidebar/browser-settings.ts');
+    const source = { id: 'source-default', profileId: 'default', origin: 'https://fixture.example', label: 'Source account', hasPassword: false, agentReuseApproved: true, sessionStatus: 'authenticated' };
+    const counterpart = { ...source, id: 'native-session', sourceAccountId: source.id, profileId: 'native' };
+    let brokerAccounts = [source]; let confirmed = 0;
+    window.rhwpDesktop = { browser: { passwords: {
+      listProfiles: async () => ({ supported: true, profiles: [] }),
+      list: async () => ({ accounts: [{ ...source, id: 'imported-password', profileId: 'native', sourceAccountId: source.id, username: 'fixture-reader', source: 'chrome', sourceProfile: 'Fixture', hasPassword: true, sessionStatus: 'saved' }], secureStorageAvailable: true }),
+    } } };
+    const pane = createBrowserSettingsPane({ isConnected: () => true, submit: async () => { throw new Error('unexpected secret form'); }, request: async (action) => {
+      if (action === 'accounts.list') return { accounts: brokerAccounts, secureStorageAvailable: true };
+      if (action === 'status') return { runtime: { passkeys: { supported: true } } };
+      if (action === 'confirm-sign-in') { confirmed++; brokerAccounts = [source, counterpart]; }
+      return {};
+    } });
+    document.querySelector('#ag-settings-pane-browser').replaceChildren(pane.element);
+    const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+    const click = (label) => [...pane.element.querySelectorAll('button')].find(button => button.textContent.startsWith(label)).click();
+    pane.open(); await settle(); click('로그인 확인'); await settle();
+    const oneSource = pane.element.querySelectorAll('.ag-browser-account-option').length === 1 && pane.element.querySelector('.ag-browser-account-detail').dataset.accountId === source.id;
+    const sessionCount = [...pane.element.querySelectorAll('.ag-browser-account-kinds button')].find(button => button.textContent.startsWith('연결된 계정')).textContent;
+    const signInButtons = [...pane.element.querySelectorAll('.ag-browser-account-detail button')].filter(button => ['로그인 열기', 'Chrome에서 Mac 패스키 사용'].includes(button.textContent));
+    const signInAvailable = signInButtons.length === 2 && signInButtons.every(button => !button.disabled);
+    const noSecretForm = !pane.element.querySelector('input[type=password]') && ![...pane.element.querySelectorAll('button')].some(button => button.textContent === '비밀번호 변경');
+    brokerAccounts = [counterpart]; pane.open(); await settle();
+    const orphanVisible = pane.element.querySelector('.ag-browser-account-option')?.dataset.accountId === counterpart.id;
+    const orphanManagement = [...pane.element.querySelectorAll('.ag-browser-account-detail button')].some(button => button.textContent === '계정 삭제') && ![...pane.element.querySelectorAll('.ag-browser-account-detail button')].some(button => button.textContent === '비밀번호 삭제');
+    click('저장된 비밀번호');
+    const importedVisible = pane.element.querySelector('.ag-browser-account-option')?.dataset.accountId === 'imported-password';
+    pane.dispose(); delete window.rhwpDesktop;
+    return { confirmed, oneSource, sessionCount, signInAvailable, noSecretForm, orphanVisible, orphanManagement, importedVisible };
+  });
+  assert.deepEqual(linkedSessionChecks, { confirmed: 1, oneSource: true, sessionCount: '연결된 계정 1', signInAvailable: true, noSecretForm: true, orphanVisible: true, orphanManagement: true, importedVisible: true }, 'confirmed native sessions share the source card while orphan sessions and imported passwords remain manageable');
+
 
 }

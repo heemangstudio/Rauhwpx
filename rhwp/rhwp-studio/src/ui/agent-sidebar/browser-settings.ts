@@ -3,7 +3,7 @@ import { confirmSheet } from './sheet.ts';
 import { localPasswordsApi, type LocalPasswordAccount } from './browser-local-passwords.ts';
 
 export type BrowserSettingsRequest = (action: string, args?: Record<string, unknown>) => Promise<unknown>;
-interface Account { profileId?: string; id: string; origin: string; origins?: string[]; label: string; stableIdentity?: string; hasPassword: boolean; agentReuseApproved: boolean; sessionStatus: string; }
+interface Account { sourceAccountId?: string; profileId?: string; id: string; origin: string; origins?: string[]; label: string; stableIdentity?: string; hasPassword: boolean; agentReuseApproved: boolean; sessionStatus: string; }
 interface Site { id: string; origin: string; label?: string; source: string; allowedActions: string[]; blockedActions: string[]; }
 const permissionLabels: Record<string, string> = { browse: '읽기', read: '읽기', download: '다운로드', 'research-import': '자료 추가', 'website-change': '웹사이트 변경', 'account-use': '계정 사용' };
 interface Policy { defaults: { browse: boolean; download: boolean; researchImport: boolean }; sites: Site[]; }
@@ -107,7 +107,11 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   let localAccounts: LocalPasswordAccount[] = []; let profiles: { id: string; name: string }[] = [];
   let profileId = ''; let localSupported = false; let localBusy = false; let localFailed = false; let localMessage = '';
   const localApi = localPasswordsApi();
-  function allAccounts(): Account[] { return [...accounts, ...localAccounts.map(account => ({ ...account, stableIdentity: account.username }))]; }
+  function managedAccounts(): Account[] {
+    const ids = new Set(accounts.map(account => account.id));
+    return accounts.filter(account => !(account.profileId === 'native' && !account.hasPassword && account.sourceAccountId && ids.has(account.sourceAccountId)));
+  }
+  function allAccounts(): Account[] { return [...managedAccounts(), ...localAccounts.map(account => ({ ...account, stableIdentity: account.username }))]; }
   let form: ReturnType<typeof createBrowserAccountForm> | null = null;
   const tabs = new Map<string, HTMLButtonElement>();
   for (const [id, label] of [['accounts', '계정'], ['permissions', '승인된 권한'], ['configuration', '구성']]) {
@@ -213,7 +217,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
         if ((account.origins?.length ?? 0) > 1) {
           const sites = node('details', 'ag-browser-account-sites'); sites.append(node('summary', '', `사용 가능한 사이트 ${account.origins!.length}`), node('p', 'ag-browser-empty', account.origins!.join(' · '))); details.append(sites);
         }
-        if (account.profileId === 'native' && localApi) {
+        if (localApi && localAccounts.some(value => value.id === account.id)) {
           const local = localAccounts.find(value => value.id === account.id);
           row('가져온 프로필', local?.sourceProfile || 'Chrome', details);
           const actions = node('div', 'ag-browser-detail-actions'); details.append(actions);
@@ -251,8 +255,8 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
         input.addEventListener('change', () => void mutate('policy.update', { operation: 'set-default', key, enabled: input.checked })); root.append(input, document.createTextNode(label!)); defaults.append(root);
       }
       const accountPermissions = section('계정 사용 승인', '각 계정에 등록된 사이트에서 적용됩니다.');
-      if (!accounts.length) accountPermissions.append(node('p', 'ag-browser-empty', '등록된 계정이 없습니다.'));
-      for (const account of accounts) {
+      if (!managedAccounts().length) accountPermissions.append(node('p', 'ag-browser-empty', '등록된 계정이 없습니다.'));
+      for (const account of managedAccounts()) {
         const actions = row(account.label || account.origin, `${accountProvider(account)} · ${visibleIdentity(account)} · ${account.agentReuseApproved ? '허용됨' : '승인 철회됨'}`, accountPermissions);
         action(actions, account.agentReuseApproved ? '사용 승인 철회' : '사용 허용', account.agentReuseApproved ? 'accounts.revoke' : 'accounts.approve', { accountId: account.id });
       }
