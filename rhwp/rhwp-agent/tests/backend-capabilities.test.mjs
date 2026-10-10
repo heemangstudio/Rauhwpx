@@ -1,3 +1,4 @@
+import { TOOL_DEFINITIONS } from '../tools.mjs';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
@@ -441,10 +442,9 @@ test('question workflow stays read-only without Claude native Plan mode', () => 
     assert.ok(argv.includes('sandbox_mode="read-only"'));
     assert.ok(argv.includes('mcp_servers.rhwp.default_tools_approval_mode="auto"'));
     const overrides = argv.filter((value) => /^mcp_servers\.rhwp\.tools\..*\.approval_mode=/.test(value));
-    assert.deepEqual(overrides, [
-      'mcp_servers.rhwp.tools.project_import.approval_mode="approve"',
-      'mcp_servers.rhwp.tools.download_file.approval_mode="approve"',
-    ]);
+    const approved = overrides.map((value) => value.match(/^mcp_servers\.rhwp\.tools\.(.+)\.approval_mode="approve"$/)?.[1]).sort();
+    const browserTools = TOOL_DEFINITIONS.filter(({ category }) => category === 'browser').map(({ name }) => name);
+    assert.deepEqual(approved, ['project_import', 'download_file', ...browserTools].sort());
   }
 });
 
