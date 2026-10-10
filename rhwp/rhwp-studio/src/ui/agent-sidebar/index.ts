@@ -144,7 +144,7 @@ import {
 } from './turn-fold.ts';
 import { createChevron, createColumnIcon } from '../chevron.ts';
 import { showContextMenu } from '../native-context-menu.ts';
-import { setMiddleTruncatedText } from '../middle-truncate.ts';
+import { releaseMiddleTruncatedWithin, setMiddleTruncatedText } from '../middle-truncate.ts';
 import { createInkRing, createIcon, createStopIcon } from './icons.ts';
 import {
   attachThreadDrag,
@@ -11019,6 +11019,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       composerStackResizeObserver?.disconnect();
       cancelAnimationFrame(composerStackFrame);
       rootResizeObserver?.disconnect();
+      releaseMiddleTruncatedWithin(root);
       messages.removeEventListener('scroll', onMessagesScroll);
       messages.removeEventListener('wheel', onMessagesWheel);
       window.removeEventListener('focus', onWindowRefocus);
