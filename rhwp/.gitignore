@@ -8,7 +8,7 @@
 bindings/Native/Cargo.lock
 
 # WebAssembly
-/pkg/
+/pkg
 *.wasm
 
 # Output (렌더링 결과물)
