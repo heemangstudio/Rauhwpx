@@ -77,7 +77,6 @@ export function createWorkbenchBrowser(options: {
     const unavailable = !nativeBrowserApi()?.zoom || !tab || !controller.state.connected || !controller.usesNativePresentation() || zoomPending || Boolean(pinned);
     zoomReset.disabled = unavailable; zoomOut.disabled = unavailable || factor <= .25; zoomIn.disabled = unavailable || factor >= 3;
   }
-  const newTab = button('새 브라우저 탭', '+', () => handle(controller.open()));
   const status = document.createElement('span'); status.className = 'ag-browser-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const recover = button('끊긴 브라우저 탭 복구', '탭 복구', () => { handle(reconnectBrowser()); });
   const annotate = button('페이지·개체·영역에 의견 붙이기', '의견 붙이기', () => beginAnnotation());
@@ -97,10 +96,9 @@ export function createWorkbenchBrowser(options: {
       }).catch(() => { nativePopout = false; nativeError = '브라우저 화면을 연결하지 못했습니다. 다시 연결해 주세요.'; paint(); }));
     } else presentation.present('popout');
   });
-  const closeView = button('브라우저 보기 닫기', '', () => presentation.hide());
-  for (const [node, name] of [[back, 'browserBack'], [forward, 'browserForward'], [reload, 'refresh'], [newTab, 'insert'], [recover, 'refresh'], [annotate, 'browserCapture'], [downloadsButton, 'browserDownload'], [dockButton, 'browserDock'], [floatButton, 'browserFloat'], [popoutButton, 'external'], [closeView, 'close']] as const) icon(node, name);
+  for (const [node, name] of [[back, 'browserBack'], [forward, 'browserForward'], [reload, 'refresh'], [recover, 'refresh'], [annotate, 'browserCapture'], [downloadsButton, 'browserDownload'], [dockButton, 'browserDock'], [floatButton, 'browserFloat'], [popoutButton, 'external']] as const) icon(node, name);
   const tabBar = document.createElement('div'); tabBar.className = 'ag-browser-tabbar'; tabBar.append(tabs);
-  toolbar.prepend(navigation); toolbar.append(newTab, status); element.append(tabBar, toolbar);
+  toolbar.prepend(navigation); toolbar.append(status); element.append(tabBar, toolbar);
   const error = document.createElement('div'); error.className = 'ag-browser-error'; error.setAttribute('role', 'alert'); error.hidden = true;
   const errorMessage = document.createElement('span'); error.append(errorMessage);
   const reconnectButton = button('브라우저 다시 연결', '다시 연결', () => { handle(reconnectBrowser()); }, error);
@@ -499,7 +497,7 @@ export function createWorkbenchBrowser(options: {
     for (const node of [annotate, reload, back, forward]) node.disabled = !tab || !connected || controller.state.busy;
     annotate.disabled ||= zoomPending;
     const reloadLabel = tab?.status === 'loading' ? '페이지 열기 중지' : '새로고침'; reload.setAttribute('aria-label', reloadLabel); reload.title = reloadLabel; icon(reload, tab?.status === 'loading' ? 'browserStop' : 'refresh');
-    newTab.disabled = !connected; emptyOpen.disabled = !connected;
+    emptyOpen.disabled = !connected;
     recover.hidden = reconnecting || !!nativePending || !tab || !['crashed', 'disconnected', 'restorable', 'failed'].includes(tab.status); recover.disabled = !connected || controller.state.busy;
     back.disabled ||= tab?.canGoBack === false; forward.disabled ||= tab?.canGoForward === false;
     reconnectButton.disabled = reconnecting || !!nativePending; reconnectButton.textContent = reconnecting ? '연결 중…' : '다시 연결';

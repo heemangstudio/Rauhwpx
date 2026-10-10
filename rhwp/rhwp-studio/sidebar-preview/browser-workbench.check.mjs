@@ -16,12 +16,13 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   await page.waitForSelector(siteTab(original));
   assert.equal(await page.$('.ag-workbench-tabs [data-view="browser"]'), null, 'website tabs replace the browser container tab');
   assert.equal(await page.$eval('.ag-browser-tabbar', element => element.checkVisibility()), false, 'docked pages use the single workbench tab strip');
-  await page.click('.ag-browser [aria-label="새 브라우저 탭"]');
+  await page.evaluate(() => window.sidebarPreview.bridge.requestBrowser('open', { url: 'https://www.google.com/' }));
   await page.waitForFunction(() => window.sidebarPreview.snapshot().browser.tabs.length === 2);
   const second = await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[1].tabId);
-  await page.click('.ag-browser [aria-label="새 브라우저 탭"]');
+  await page.evaluate(() => window.sidebarPreview.bridge.requestBrowser('open', { url: 'https://www.google.com/' }));
   await page.waitForFunction(() => window.sidebarPreview.snapshot().browser.tabs.length === 3);
   const third = await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[2].tabId);
+  await page.click(siteTab(third));
   await page.$eval('.ag-browser-address', input => { input.value = 'https://x.com/home'; });
   await page.click('.ag-browser [aria-label="주소 열기"]');
   await page.waitForFunction(id => document.querySelector(`[data-resource-id="browser:${id}"]`)?.textContent === 'X', {}, third);
@@ -140,7 +141,7 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   assert.equal(capture.mode, 'region'); assert.ok(capture.rect.width > 0 && capture.rect.height > 0);
   assert.equal(capture.comment, '이 영역의 근거를 확인해 주세요.');
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent), 0, 'capture stages attachments without sending chat');
-  await page.click('.ag-browser [aria-label="브라우저 보기 닫기"]');
+  await page.click('.ag-workbench-add');
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs.length), 1, 'hiding presentation leaves browser available');
   await page.click(siteTab(original));
   await page.waitForSelector('.ag-browser:not([hidden])', { visible: true });
