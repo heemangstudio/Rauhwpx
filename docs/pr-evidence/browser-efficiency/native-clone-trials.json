@@ -1,0 +1,62 @@
+[
+  {
+    "mode": "baseline",
+    "trial": 1,
+    "electron": "44.7.0",
+    "rssKiB": 1003968,
+    "loadMs": 623.069667,
+    "guestRendererProcesses": 8,
+    "visibleTabs": 0,
+    "animationFramesOver3Seconds": 0
+  },
+  {
+    "mode": "baseline",
+    "trial": 2,
+    "electron": "44.7.0",
+    "rssKiB": 1004448,
+    "loadMs": 632.838375,
+    "guestRendererProcesses": 8,
+    "visibleTabs": 0,
+    "animationFramesOver3Seconds": 0
+  },
+  {
+    "mode": "baseline",
+    "trial": 3,
+    "electron": "44.7.0",
+    "rssKiB": 999392,
+    "loadMs": 604.991875,
+    "guestRendererProcesses": 8,
+    "visibleTabs": 0,
+    "animationFramesOver3Seconds": 0
+  },
+  {
+    "mode": "seed",
+    "trial": 1,
+    "electron": "44.7.0",
+    "rssKiB": 401584,
+    "loadMs": 617.204417,
+    "guestRendererProcesses": 1,
+    "visibleTabs": 8,
+    "animationFramesOver3Seconds": 1448
+  },
+  {
+    "mode": "seed",
+    "trial": 2,
+    "electron": "44.7.0",
+    "rssKiB": 400752,
+    "loadMs": 505.86,
+    "guestRendererProcesses": 1,
+    "visibleTabs": 8,
+    "animationFramesOver3Seconds": 1448
+  },
+  {
+    "mode": "seed",
+    "trial": 3,
+    "electron": "44.7.0",
+    "rssKiB": 400336,
+    "loadMs": 490.47841700000004,
+    "guestRendererProcesses": 1,
+    "visibleTabs": 8,
+    "animationFramesOver3Seconds": 1456
+  }
+]
