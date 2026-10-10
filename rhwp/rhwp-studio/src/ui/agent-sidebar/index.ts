@@ -3040,6 +3040,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       if (active && !input.disabled) input.focus({ preventScroll: true });
     },
     onChange: () => updateComposer(),
+    // 턴 접힘과 같은 한 플래그로 이 턴의 성패를 가른다.
+    errorSeen: () => turnErrorSeen,
   });
   // 입력기 위에 흐름으로 쌓인 것들의 높이. 떠 있는 요소는 이들을 덮지 않고 한 겹 위에 선다.
   // attached 는 입력기와 한 면을 이루는 질문 카드, stack 은 그 위의 변경 막대와 칩이다.
@@ -8392,18 +8394,18 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // 턴을 결과와 함께 정착하고 그 작업을 접는다. 새로고침으로 시작을 놓친 턴은 그 표식에 잇는다.
         if (!openFold) adoptUnsettledTurnFold();
         settleOpenTurnFold(turnOutcomeFor(event, { errorSeen: turnErrorSeen }));
-        turnErrorSeen = false;
         // 턴의 도구·작업 기록은 턴 끝에서 바로 남긴다.
         flushTranscriptPersist();
-        // 대기 메시지: 정상 종료면 맨 앞 하나를 보내고, 미심쩍은 끝이면 붙잡는다.
+        // 대기 메시지: 정상 종료면 맨 앞 하나를 보내고, 미심쩍은 끝이면 붙잡는다. 같은 errorSeen 을 읽은 뒤 비운다.
         followUps.turnEnded(event, turnOwnerThreadId === currentThread.id);
+        turnErrorSeen = false;
         break;
       }
       case 'error':
+        // 턴 접힘과 대기열이 함께 읽는 한 플래그다.
         if (turnRunning || openFold) turnErrorSeen = true;
         systemMessage(event.message);
         noteProviderAuthFailure(event.agent, event.message);
-        if (turnRunning) followUps.agentError();
         break;
     }
   }

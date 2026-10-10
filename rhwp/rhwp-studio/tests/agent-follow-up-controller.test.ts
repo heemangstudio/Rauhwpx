@@ -10,7 +10,7 @@ import type { FollowUpItem, ThreadFollowUps } from '../src/agent/follow-ups.ts';
 
 interface Sent { item: FollowUpItem; resolve(value: string | null): void }
 
-function harness() {
+function harness(opts: { errorSeen?: () => boolean } = {}) {
   const thread: { followUps?: ThreadFollowUps } = {};
   const sent: Sent[] = [];
   const unsent: string[] = [];
@@ -48,6 +48,7 @@ function harness() {
     focusComposer: () => {},
     onChange: () => {},
     now: () => 100,
+    ...(opts.errorSeen ? { errorSeen: opts.errorSeen } : {}),
   });
   const flush = () => new Promise<void>((done) => setImmediate(done));
   return {
@@ -352,4 +353,22 @@ test('the eleventh item is refused with a hint and read-only chats cannot change
   h.controller.sendNow(head);
   assert.equal(h.texts().length, 10);
   assert.equal(h.interrupts(), 0);
+});
+
+test('with the sidebar shared error flag, the queue reads the same error state as the turn fold', () => {
+  let sidebarErrorSeen = false;
+  const failed = harness({ errorSeen: () => sidebarErrorSeen });
+  failed.start();
+  queue(failed, 'A');
+  sidebarErrorSeen = true;
+  failed.end('end_turn');
+  assert.equal(failed.hold(), 'failed', 'an error event seen by the sidebar holds the queue');
+  assert.equal(failed.sent.length, 0);
+
+  sidebarErrorSeen = false;
+  const clean = harness({ errorSeen: () => sidebarErrorSeen });
+  clean.start();
+  queue(clean, 'A');
+  clean.end('end_turn');
+  assert.deepEqual(clean.sent.map((entry) => entry.item.text), ['A'], 'no error: the head is sent');
 });

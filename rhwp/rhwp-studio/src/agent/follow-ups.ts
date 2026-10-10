@@ -9,6 +9,7 @@
  * 이 모듈은 상태 전이만 담은 순수 함수다. 같은 입력에는 같은 새 값을 돌려주고 받은 값을
  * 고치지 않는다. node 테스트가 바로 읽도록 상대 경로만 들여온다.
  */
+import { turnOutcomeFor } from './turn-outcome.ts';
 import type { ProductSkillIcon } from './types.ts';
 
 /** 한 채팅에 쌓아 둘 수 있는 대기 메시지 수. */
@@ -236,13 +237,10 @@ export function followUpTurnOutcome(
   ctx: FollowUpTurnEndContext,
 ): FollowUpTurnOutcome {
   if (ctx.sendNowId !== null) return 'send-now';
-  if (ctx.interruptionReason || event.stopReason === 'interrupted') {
-    return ctx.userStopRequested && !ctx.interruptionReason ? 'stopped' : 'interrupted';
-  }
-  if (event.errorMessage || ctx.errorSeen || event.stopReason === 'failed' || event.stopReason === 'exited') {
-    return 'failed';
-  }
-  return 'normal';
+  // 성패는 UI 의 한 분류기가 정한다. 대기열은 사용자가 누른 중지만 따로 '멈춤'으로 읽는다.
+  const outcome = turnOutcomeFor(event, { errorSeen: ctx.errorSeen, interruptionReason: ctx.interruptionReason });
+  if (outcome === 'interrupted') return ctx.userStopRequested && !ctx.interruptionReason ? 'stopped' : 'interrupted';
+  return outcome === 'failed' ? 'failed' : 'normal';
 }
 
 const HOLD_REASONS: ReadonlySet<string> = new Set<FollowUpHoldReason>([

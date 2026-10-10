@@ -99,6 +99,11 @@ export interface FollowUpControllerDeps<Message, Bubble> {
   focusComposer(): void;
   /** 대기열 모양이 바뀌었다 — 입력기 표시와 쌓인 높이를 다시 잰다. */
   onChange(): void;
+  /**
+   * 이 턴에 error 이벤트가 있었는가 — 사이드바가 턴 접힘(turnOutcomeFor)과 함께 쓰는 하나의 플래그.
+   * 주지 않으면 agentError() 로 모은 이 컨트롤러의 플래그를 쓴다.
+   */
+  errorSeen?(): boolean;
   now?(): number;
 }
 
@@ -370,7 +375,7 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       userStopRequested = false;
       errorSeen = false;
     },
-    /** 턴이 도는 동안의 error 이벤트. */
+    /** 턴이 도는 동안의 error 이벤트 — deps.errorSeen 이 없을 때만 쓰인다. */
     agentError(): void {
       errorSeen = true;
     },
@@ -385,7 +390,7 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
     ): void {
       inFlight = null;
       const outcome: FollowUpTurnOutcome = followUpTurnOutcome(event, {
-        errorSeen,
+        errorSeen: deps.errorSeen ? deps.errorSeen() : errorSeen,
         userStopRequested,
         sendNowId,
         interruptionReason,

@@ -34,7 +34,6 @@ export interface TurnOutcomeContext {
 export function turnOutcomeFor(event: TurnEndFacts, ctx: TurnOutcomeContext = { errorSeen: false }): TurnOutcome {
   if (typeof ctx.interruptionReason === 'string' && ctx.interruptionReason.length > 0) return 'interrupted';
   if (event.stopReason === 'interrupted') return 'interrupted';
-  const errorMessage = typeof event.errorMessage === 'string' && event.errorMessage.trim().length > 0;
-  if (errorMessage || ctx.errorSeen || event.stopReason === 'failed' || event.stopReason === 'exited') return 'failed';
+  if (event.errorMessage || ctx.errorSeen || event.stopReason === 'failed' || event.stopReason === 'exited') return 'failed';
   return 'completed';
 }
