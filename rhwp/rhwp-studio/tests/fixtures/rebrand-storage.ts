@@ -34,7 +34,7 @@ function deleteDatabase(name: string): Promise<void> {
 
 export async function reset(): Promise<void> {
   localStorage.clear();
-  for (const name of [...CANONICAL, ...Object.values(REBRANDED)]) await deleteDatabase(name);
+  for (const name of [...CANONICAL, ...Object.values(REBRANDED), 'rhwpRebrandImport']) await deleteDatabase(name);
 }
 
 export async function databaseNames(): Promise<string[]> {
@@ -242,4 +242,13 @@ export async function canonicalThreadIds(): Promise<string[]> {
   const ids = await request(db.transaction('threads').objectStore('threads').getAllKeys());
   db.close();
   return ids.map(String).sort();
+}
+
+/** Local Storage that is full: writing the import marker fails like a quota error would. */
+export function fillMarkerQuota(): void {
+  const original = Storage.prototype.setItem;
+  Storage.prototype.setItem = function setItem(key: string, value: string) {
+    if (key === 'rhwp-rebrand-import-v1') throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+    return original.call(this, key, value);
+  };
 }

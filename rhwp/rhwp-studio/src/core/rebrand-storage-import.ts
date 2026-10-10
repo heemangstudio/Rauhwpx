@@ -736,14 +736,75 @@ interface WebMarker {
   ledger?: RebrandImportLedger;
   complete?: boolean;
   attempts?: number;
+  importedAt?: number;
 }
 
-function readWebMarker(storage: Storage | null): WebMarker {
+/**
+ * 웹 장부는 IndexedDB 에 둔다. localStorage 가 가득 차도 장부를 잃지 않아야, 지운 기록이 다시
+ * 들어오지 않고 매번 처음부터 가져오지도 않는다. IndexedDB 를 못 쓰는 환경만 localStorage 를 쓴다.
+ */
+const LEDGER_DATABASE = 'rhwpRebrandImport';
+const LEDGER_STORE = 'state';
+const WEB_LEDGER_KEY = 'web';
+
+function asWebMarker(value: unknown): WebMarker | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as WebMarker : null;
+}
+
+function openLedgerDatabase(): Promise<IDBDatabase | null> {
+  const factory = defaultFactory();
+  if (!factory) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const request = factory.open(LEDGER_DATABASE, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(LEDGER_STORE)) request.result.createObjectStore(LEDGER_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+    request.onblocked = () => resolve(null);
+  });
+}
+
+async function readWebMarker(storage: Storage | null): Promise<WebMarker> {
+  const db = await openLedgerDatabase();
+  if (db) {
+    try {
+      const stored = asWebMarker(await requestResult(db.transaction(LEDGER_STORE).objectStore(LEDGER_STORE).get(WEB_LEDGER_KEY)));
+      if (stored) return stored;
+    } catch {
+      // 아래 localStorage 사본으로 넘어간다.
+    } finally {
+      db.close();
+    }
+  }
   try {
-    const parsed: unknown = JSON.parse(storage?.getItem(REBRAND_IMPORT_MARKER_KEY) ?? '{}');
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as WebMarker : {};
+    return asWebMarker(JSON.parse(storage?.getItem(REBRAND_IMPORT_MARKER_KEY) ?? '{}')) ?? {};
   } catch {
     return {};
+  }
+}
+
+async function writeWebMarker(storage: Storage | null, marker: WebMarker): Promise<boolean> {
+  const db = await openLedgerDatabase();
+  if (db) {
+    try {
+      const tx = db.transaction(LEDGER_STORE, 'readwrite');
+      const done = transactionDone(tx);
+      tx.objectStore(LEDGER_STORE).put(marker, WEB_LEDGER_KEY);
+      await done;
+      return true;
+    } catch (error) {
+      console.warn('[rebrand] 2.0.11 가져오기 장부를 IndexedDB 에 쓰지 못했습니다:', error);
+    } finally {
+      db.close();
+    }
+  }
+  try {
+    storage?.setItem(REBRAND_IMPORT_MARKER_KEY, JSON.stringify(marker));
+    return Boolean(storage);
+  } catch (error) {
+    console.warn('[rebrand] 2.0.11 가져오기 장부를 저장하지 못했습니다:', error);
+    return false;
   }
 }
 
@@ -783,18 +844,18 @@ async function importFromDesktop(desktop: DesktopRebrandApi, signal: AbortSignal
 
 async function importFromThisOrigin(signal: AbortSignal): Promise<void> {
   const storage = defaultStorage();
-  const marker = readWebMarker(storage);
+  const marker = await readWebMarker(storage);
   if (marker.complete || (marker.attempts ?? 0) >= MAX_WEB_ATTEMPTS) return;
   const dump = await dumpRebrandedStorage();
   if (!dump) return;
   const result = await importRebrandedStorage(dump, { ledger: marker.ledger ?? {}, signal });
   logResult('2.0.11 저장소', result);
-  storage?.setItem(REBRAND_IMPORT_MARKER_KEY, JSON.stringify({
+  await writeWebMarker(storage, {
     ledger: result.ledger,
     complete: result.complete,
     attempts: nextAttempts(marker, result),
     importedAt: Date.now(),
-  } satisfies WebMarker & { importedAt: number }));
+  });
 }
 
 function ledgerSize(ledger: RebrandImportLedger | undefined): number {

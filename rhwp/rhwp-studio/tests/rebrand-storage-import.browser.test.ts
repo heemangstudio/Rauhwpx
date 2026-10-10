@@ -232,3 +232,27 @@ test('a database the desktop could not read keeps the import open while the rest
   assert.deepEqual(await step(page, (fixture) => fixture.canonicalThreadIds()), ['thread-ok']);
   await page.close();
 });
+
+test('a full Local Storage cannot make a deleted chat come back on the next load', { timeout: 60_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  await step(page, (fixture) => fixture.reset());
+  await step(page, async (fixture) => {
+    await fixture.writeGeneration('2011', 'doc-2011');
+    await fixture.moveToRebrandedNames();
+  });
+
+  await step(page, async (fixture, importer) => {
+    fixture.fillMarkerQuota();
+    await importer.runRebrandedStorageImport();
+  });
+  assert.deepEqual(await step(page, (fixture) => fixture.canonicalThreadIds()), ['thread-2011']);
+  await step(page, (fixture) => fixture.deleteCanonicalThread('thread-2011'));
+
+  await step(page, async (fixture, importer) => {
+    fixture.fillMarkerQuota();
+    await importer.runRebrandedStorageImport();
+  });
+  assert.deepEqual(await step(page, (fixture) => fixture.canonicalThreadIds()), []);
+  await page.close();
+});
