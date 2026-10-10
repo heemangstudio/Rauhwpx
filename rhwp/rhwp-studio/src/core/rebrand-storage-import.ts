@@ -345,9 +345,14 @@ interface WriteOutcome {
  * 한 트랜잭션 안에서 기록마다 정본을 확인하고 쓴다. 트랜잭션 밖 await 이 없어야 커밋되지 않는다.
  * 기록 하나만의 오류는 그 기록만 건너뛰고, 그 밖의 오류는 트랜잭션을 되돌린다.
  */
+interface PendingRecord extends RebrandedRecord {
+  /** 이미 옮긴 뒤 2.0.11 에서 바뀐 채팅. 정본에 남아 있을 때만 새 내용으로 바꾼다. */
+  updateOnly?: boolean;
+}
+
 function writeRecords(
   store: IDBObjectStore,
-  records: readonly RebrandedRecord[],
+  records: readonly PendingRecord[],
   policy: StorePolicy,
   inlineKeys: boolean,
 ): Promise<WriteOutcome> {
@@ -380,8 +385,9 @@ function writeRecords(
       existing.onerror = () => reject(existing.error);
       existing.onsuccess = () => {
         const current = existing.result;
-        const replace = current === undefined
-          || (policy === 'newer' && updatedAtOf(current) < updatedAtOf(record.value));
+        const replace = record.updateOnly
+          ? current !== undefined && updatedAtOf(current) < updatedAtOf(record.value)
+          : current === undefined || (policy === 'newer' && updatedAtOf(current) < updatedAtOf(record.value));
         if (!replace) {
           settle(id);
           return;
@@ -484,6 +490,50 @@ async function upgradeThroughModule(
   }
 }
 
+/**
+ * 장부에서 이미 처리한 기록을 가려 낸다. 채팅처럼 더 최근 쪽을 두는 저장소는 처리한 시각도
+ * `키@updatedAt` 으로 남겨, 2.0.11 쪽이 그 뒤에 바뀌었으면 정본에 남은 채팅만 새로 고친다.
+ */
+function pendingRecords(
+  records: readonly RebrandedRecord[],
+  entries: readonly string[],
+  versioned: boolean,
+): PendingRecord[] {
+  const seen = new Map<string, number>();
+  for (const entry of entries) {
+    const at = versioned ? entry.lastIndexOf('@') : -1;
+    if (at > 0 && Number.isFinite(Number(entry.slice(at + 1)))) seen.set(entry.slice(0, at), Number(entry.slice(at + 1)));
+    else seen.set(entry, versioned ? -Infinity : Infinity);
+  }
+  const pending: PendingRecord[] = [];
+  for (const record of records) {
+    const id = ledgerKey(record.key);
+    if (!seen.has(id)) pending.push(record);
+    else if (versioned && updatedAtOf(record.value) > seen.get(id)!) pending.push({ ...record, updateOnly: true });
+  }
+  return pending;
+}
+
+function updatedLedger(
+  entries: readonly string[],
+  handled: readonly string[],
+  records: readonly PendingRecord[],
+  versioned: boolean,
+): string[] {
+  if (!versioned) return [...new Set([...entries, ...handled])];
+  const versions = new Map<string, string>();
+  for (const entry of entries) {
+    const at = entry.lastIndexOf('@');
+    versions.set(at > 0 ? entry.slice(0, at) : entry, entry);
+  }
+  const handledIds = new Set(handled);
+  for (const record of records) {
+    const id = ledgerKey(record.key);
+    if (handledIds.has(id)) versions.set(id, `${id}@${updatedAtOf(record.value)}`);
+  }
+  return [...versions.values()];
+}
+
 async function mergeDatabase(
   original: RebrandedDatabase,
   targetName: string,
@@ -492,10 +542,14 @@ async function mergeDatabase(
 ): Promise<void> {
   const { ledger, result, aliases } = context;
   const policies = STORE_POLICIES[targetName] ?? {};
-  const hasPending = original.stores.some((store) => (
-    (policies[store.name] ?? 'add') !== 'skip'
-    && [...store.records, ...extraThreads].some((record) => !(ledger[`${targetName}/${store.name}`] ?? []).includes(ledgerKey(record.key)))
-  ));
+  const recordsOf = (store: RebrandedStore) => (
+    targetName === THREADS_DATABASE && store.name === 'threads' ? [...store.records, ...extraThreads] : store.records
+  );
+  const hasPending = original.stores.some((store) => {
+    const policy = policies[store.name] ?? 'add';
+    return policy !== 'skip'
+      && pendingRecords(recordsOf(store), ledger[`${targetName}/${store.name}`] ?? [], policy === 'newer').length > 0;
+  });
   if (!hasPending) return;
 
   const opener = TARGET_OPENERS[targetName];
@@ -519,15 +573,13 @@ async function mergeDatabase(
   const units = source.stores
     .map((store) => {
       const unit = `${targetName}/${store.name}`;
-      const done = new Set(ledger[unit] ?? []);
-      const all = targetName === THREADS_DATABASE && store.name === 'threads'
-        ? [...store.records, ...extraThreads]
-        : store.records;
-      return { store, unit, done, records: all.filter((record) => !done.has(ledgerKey(record.key))) };
+      const policy = policies[store.name] ?? 'add';
+      const entries = ledger[unit] ?? [];
+      return { store, unit, policy, entries, records: pendingRecords(recordsOf(store), entries, policy === 'newer') };
     })
-    .filter(({ store, records }) => (policies[store.name] ?? 'add') !== 'skip' && records.length > 0);
+    .filter(({ policy, records }) => policy !== 'skip' && records.length > 0);
   try {
-    for (const { store, unit, done, records } of units) {
+    for (const { store, unit, policy, entries, records } of units) {
       checkAborted(context);
       try {
         if (!db.objectStoreNames.contains(store.name)) throw new Error('정본에 이 저장소가 없습니다');
@@ -536,12 +588,12 @@ async function mergeDatabase(
         committed.catch(() => {});
         const objectStore = tx.objectStore(store.name);
         const remapped = records.map((record) => ({
-          key: record.key,
+          ...record,
           value: aliasDocumentId(record.value, aliases),
         }));
         let outcome: WriteOutcome;
         try {
-          outcome = await writeRecords(objectStore, remapped, policies[store.name] ?? 'add', objectStore.keyPath !== null);
+          outcome = await writeRecords(objectStore, remapped, policy, objectStore.keyPath !== null);
         } catch (error) {
           try {
             tx.abort();
@@ -553,7 +605,7 @@ async function mergeDatabase(
         await committed;
         result.records += outcome.written;
         result.skipped.push(...outcome.skipped.map((entry) => `${unit}: ${entry}`));
-        ledger[unit] = [...done, ...outcome.handled];
+        ledger[unit] = updatedLedger(entries, outcome.handled, records, policy === 'newer');
       } catch (error) {
         result.failures.push(`${unit}: ${message(error)}`);
       }

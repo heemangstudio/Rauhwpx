@@ -228,7 +228,7 @@ test('a database the desktop could not read keeps the import open while the rest
       threadLedger: outcome.ledger['rhwpAgentThreads/threads']?.slice().sort(),
     };
   });
-  assert.deepEqual(result, { complete: false, failed: true, threadLedger: ['"thread-huge"', '"thread-ok"'] });
+  assert.deepEqual(result, { complete: false, failed: true, threadLedger: ['"thread-huge"', '"thread-ok"@2'] });
   assert.deepEqual(await step(page, (fixture) => fixture.canonicalThreadIds()), ['thread-ok']);
   await page.close();
 });
@@ -268,5 +268,48 @@ test('2.0.11 data in an older format is upgraded by the store module instead of 
 
   assert.deepEqual(await step(page, (fixture) => fixture.listDraftIds()), ['draft-old-format']);
   assert.ok(!(await step(page, (fixture) => fixture.databaseNames())).some((name) => name.startsWith('rhwpRebrandStaging')));
+  await page.close();
+});
+
+test('a chat that changed in 2.0.11 after it was imported is refreshed, but never brought back once deleted', { timeout: 60_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  await step(page, (fixture) => fixture.reset());
+  const outcome = await step(page, async (fixture, importer) => {
+    const dumpWith = (updatedAt: number, text: string) => importer.assembleRebrandedChunks([
+      {
+        kind: 'database', name: 'hamaeditorAgentThreads', version: 1,
+        stores: [{ name: 'threads', keyPath: 'id', autoIncrement: false, indexes: [] }],
+      },
+      {
+        kind: 'records', database: 'hamaeditorAgentThreads', store: 'threads', records: [{
+          key: 'thread-2011',
+          value: {
+            id: 'thread-2011', title: 'chat', createdAt: 1, updatedAt, agent: 'claude', model: 'sonnet', effort: 'high',
+            messages: [{ role: 'user', text }],
+          },
+        }],
+      },
+    ]);
+    const readText = async () => {
+      const db = await new Promise<IDBDatabase>((resolve) => {
+        const request = indexedDB.open('rhwpAgentThreads');
+        request.onsuccess = () => resolve(request.result);
+      });
+      const row = await new Promise<{ messages: Array<{ text: string }> } | undefined>((resolve) => {
+        const request = db.transaction('threads').objectStore('threads').get('thread-2011');
+        request.onsuccess = () => resolve(request.result);
+      });
+      db.close();
+      return row?.messages.at(-1)?.text ?? null;
+    };
+    const first = await importer.importRebrandedStorage(dumpWith(100, 'first'));
+    const refreshed = await importer.importRebrandedStorage(dumpWith(200, 'continued in 2.0.11'), { ledger: first.ledger });
+    const afterRefresh = await readText();
+    await fixture.deleteCanonicalThread('thread-2011');
+    await importer.importRebrandedStorage(dumpWith(300, 'even later'), { ledger: refreshed.ledger });
+    return { afterRefresh, afterDelete: await readText() };
+  });
+  assert.deepEqual(outcome, { afterRefresh: 'continued in 2.0.11', afterDelete: null });
   await page.close();
 });
