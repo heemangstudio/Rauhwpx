@@ -150,3 +150,16 @@ test('a plan approval or plan-change send cancels an armed 리셋 후 이어서'
   controller.dispose();
   other.controller.dispose();
 });
+
+test('only the newest failure notice keeps the request to resend; the newest still resends it', () => {
+  const shown = thread('t');
+  const { controller, drawn, resent, action } = sidebar(shown);
+  controller.noteSend(shown.id, SEND);
+  const first = controller.add(failure(), { origin: 'turn', turnId: 't1', userInitiated: true });
+  assert.equal(first.retry?.requestText, SEND.requestText);
+  const second = controller.add(failure({ message: 'second disconnect' }), { origin: 'turn', turnId: 't2', userInitiated: true });
+  assert.equal(first.retry, undefined, 'an earlier notice no longer carries its resend payload');
+  assert.equal(second.retry?.requestText, SEND.requestText);
+  action(drawn.at(-1)!, 'retry')!.click();
+  assert.deepEqual(resent.map((retry) => retry.requestText), [SEND.requestText]);
+});

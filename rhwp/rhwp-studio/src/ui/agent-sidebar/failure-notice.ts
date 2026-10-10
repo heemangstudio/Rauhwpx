@@ -699,6 +699,10 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
       live.add(message);
       // 새 실패가 오면 걸려 있던 이어서 보내기는 거둔다.
       cancelResume(thread.id);
+      // 조치는 마지막 알림만 가진다 — 앞선 알림의 다시 보낼 요청(최대 128k 자 두 벌)은 걷어 저장을 가볍게 한다.
+      for (const earlier of thread.messages) {
+        if (earlier.kind === 'error' && earlier.retry) delete earlier.retry;
+      }
       thread.messages.push(message);
       message.text = failureSummaryText(viewFor(message, thread, true));
       if (thread !== shown) {

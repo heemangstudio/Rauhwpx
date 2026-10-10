@@ -92,6 +92,46 @@ export async function checkAdoptionPreview(page, origin) {
     .filter((message) => message.kind === 'activity').flatMap((message) => message.tools.map((tool) => tool.callId)), WORKING_CHAT);
   assert.ok(tools.includes('gap-1'), `the tool call made before the adoption is recorded: ${JSON.stringify(tools)}`);
 
+  // 3b. 붙이기 전에 쌓인 이벤트가 많아도 화면이 멈추지 않는다 — 나눠 그리는 사이 다른 일(타이머·입력)이 돌고,
+  //     그 사이 온 이벤트는 순서를 지켜 뒤에 그려진다.
+  await open(page, origin, 'chats=sample&reload=running&document=empty');
+  const HELD = 300;
+  await page.evaluate((count) => {
+    const stream = window.sidebarPreview.streamEvent;
+    for (let i = 0; i < count; i += 1) {
+      stream({ type: 'tool-call', agent: 'claude', callId: `held-${i}`, tool: 'mcp__rhwp__apply_edits', argsJson: JSON.stringify({ expectedRevision: i, edits: [{ op: 'replace_text', sectionIdx: 0, paraIdx: i % 40, text: 'x'.repeat(500) }] }) });
+      stream({ type: 'tool-result', agent: 'claude', callId: `held-${i}`, ok: true, resultPreview: '적용됨' });
+      stream({ type: 'text-delta', agent: 'claude', text: `문단 ${i}을 고쳤습니다. ` });
+    }
+    window.__replayTicks = [];
+    window.__replayTimer = setInterval(() => window.__replayTicks.push(document.querySelectorAll('.ag-messages .ag-tool-row').length), 5);
+  }, HELD);
+  await page.select('#document', 'proposal');
+  await page.evaluate(() => window.sidebarPreview.streamEvent({ type: 'text-delta', agent: 'claude', text: '마지막 문장입니다.' }));
+  await waitFor(page, (count) => document.querySelectorAll('.ag-messages .ag-tool-row').length >= count, HELD,
+    'the held tool calls were not all drawn');
+  const ticks = await page.evaluate(() => {
+    clearInterval(window.__replayTimer);
+    return window.__replayTicks;
+  });
+  assert.ok(ticks.some((rows) => rows > 2 && rows < HELD),
+    `timers ran while the held events were drawn (the page did not freeze): ${JSON.stringify(ticks.slice(0, 20))}`);
+  await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+  await waitFor(page, () => document.querySelector('.ag-messages > .ag-turn-fold:not([hidden])'), undefined, 'the replayed turn did not fold');
+  const replayed = await page.evaluate((id) => {
+    const messages = window.sidebarPreview.threadStore.getThread(id).messages;
+    return {
+      rows: document.querySelectorAll('.ag-messages .ag-tool-row').length,
+      // 저장된 채팅은 마지막 200개 메시지만 남긴다 — 마지막 도구가 차례대로 남았는지 본다.
+      lastTools: messages.filter((message) => message.kind === 'activity').flatMap((message) => message.tools.map((tool) => tool.callId))
+        .slice(-3),
+      answer: messages.filter((message) => message.role === 'assistant' && !message.kind).at(-1)?.text ?? '',
+    };
+  }, WORKING_CHAT);
+  assert.equal(replayed.rows, HELD + 2, 'every held tool call is drawn once (plus the two from before the reload)');
+  assert.deepEqual(replayed.lastTools, [`held-${HELD - 3}`, `held-${HELD - 2}`, `held-${HELD - 1}`]);
+  assert.ok(replayed.answer.endsWith('마지막 문장입니다.'), `the live text that arrived mid-replay comes last: ${replayed.answer.slice(-60)}`);
+
   // 4. 끊긴 사이에 끝났는데 허브가 그 끝을 다시 보내지 않은 턴: 다시 붙으면 열린 표식을 중단으로 정착한다.
   await open(page, origin, 'scenario=chat&hold=1');
   await page.click('#play');

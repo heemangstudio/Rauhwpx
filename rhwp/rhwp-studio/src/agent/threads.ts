@@ -1084,7 +1084,8 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     : false;
   return {
     ...rest,
-    messages,
+    // 예전에 저장한 앞선 실패 알림의 다시 시도 요청은 읽을 때 걷는다(dropStaleRetries).
+    messages: dropStaleRetries(messages),
     workflow: isAgentWorkflow(thread.workflow) ? thread.workflow : 'direct',
     serviceTier: thread.serviceTier === 'fast' ? 'fast' : 'standard',
     docKey: typeof storedDocKey === 'string' && storedDocKey ? storedDocKey : null,
@@ -1701,6 +1702,29 @@ export function getThread(id: string): ChatThread | null {
  * 남은 메시지 안의 표식, 남은 메시지가 걸쳐 시작하는 턴의 표식, 정착 전 표식만 남기고,
  * 그래도 상한을 넘으면 오래된 정착한 표식부터 버린다.
  */
+/**
+ * 다시 시도 요청(최대 128k 자 두 벌)은 채팅의 마지막 실패 알림에만 남긴다 — 조치(다시 시도·리셋 후 이어서)는
+ * 그 알림만 가진다. 앞선 알림의 요청을 남기면 그 채팅을 저장할 때마다 커진다. 바꿀 것이 없으면 같은 배열.
+ */
+export function dropStaleRetries(messages: ThreadMessage[]): ThreadMessage[] {
+  let last = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]!.kind === 'error') {
+      last = i;
+      break;
+    }
+  }
+  let changed: ThreadMessage[] | null = null;
+  for (let i = 0; i < last; i += 1) {
+    const message = messages[i]!;
+    if (message.kind !== 'error' || !(message as ThreadFailureMessage).retry) continue;
+    const { retry: _stale, ...rest } = message as ThreadFailureMessage;
+    changed ??= messages.slice();
+    changed[i] = rest as ThreadFailureMessage;
+  }
+  return changed ?? messages;
+}
+
 function capThreadMessages(messages: readonly ThreadMessage[]): ThreadMessage[] {
   const keep = new Set<number>();
   let conversation = 0;
@@ -1757,7 +1781,7 @@ export function upsertThread(thread: ChatThread): void {
   const previousUpdatedAt = previous?.updatedAt ?? 0;
   const updatedAt = Math.max(Date.now(), thread.updatedAt + 1, previousUpdatedAt + 1);
   // 채팅을 열거나 떠날 때도 저장은 일어난다 — 대화가 움직였을 때만 목록에서 위로 올린다.
-  const messages = capThreadMessages(thread.messages);
+  const messages = dropStaleRetries(capThreadMessages(thread.messages));
   const lastActivityAt = previous && activityStamp(previous) === activityStamp({ ...thread, messages })
     ? threadActivityAt(previous)
     : updatedAt;

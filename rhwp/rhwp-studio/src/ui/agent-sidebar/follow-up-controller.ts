@@ -162,8 +162,12 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
     return queue()?.items ?? [];
   }
 
+  /** 띠가 마지막으로 그린 대기열의 모양(항목 수·붙잡음) — 바뀌지 않았으면 입력기를 다시 재지 않는다. */
+  let renderedShape = '0:';
+
   function render(): void {
     const current = queue();
+    renderedShape = `${current?.items.length ?? 0}:${current?.hold?.reason ?? ''}`;
     deps.strip.render({
       items: current?.items ?? [],
       hold: current?.hold ?? null,
@@ -531,10 +535,15 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       resetRuntime();
       deps.strip.clearHint();
       const current = queue();
+      const before = renderedShape;
       // 저장된 busy 붙잡음은 다시 열면 아무 턴도 기다리지 않는다 — 다른 붙잡음처럼 사용자가 풀게 한다.
+      // 붙잡으면 commit 이 입력기에 알린다. 아니면 띠의 모양이 바뀌었을 때만 알린다 — 빈 대기열에서 빈
+      // 대기열로 옮기며 입력기를 다시 재면 긴 채팅을 열 때마다 배치를 한 번 더 강제한다.
       if (current?.items.length && !holdNeedsUser(current.hold)) holdWith('interrupted');
-      else render();
-      deps.onChange();
+      else {
+        render();
+        if (renderedShape !== before) deps.onChange();
+      }
     },
 
     // ── S3·U5 계약 ────────────────────────────────────────

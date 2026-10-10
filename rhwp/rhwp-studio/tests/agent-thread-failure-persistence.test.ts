@@ -102,3 +102,16 @@ test('a retry that already carries the interruption block keeps that mark across
   const forged = storeAndReload([{ ...continued, retry: { ...continued.retry, continuation: 'yes' } }])[0] as ThreadFailureMessage;
   assert.equal(forged.retry?.continuation, undefined, 'only a literal true is kept');
 });
+
+test('only the last failure notice of a chat keeps its resend payload when saved or loaded', () => {
+  const older: ThreadFailureMessage = { ...notice, turnId: 'turn-1', retry: { displayText: '첫 요청', requestText: '첫 요청 '.repeat(1000) } };
+  const newer: ThreadFailureMessage = { ...notice, turnId: 'turn-2', retry: { displayText: '두 번째 요청', requestText: '두 번째 요청' } };
+  const restored = storeAndReload([
+    { role: 'user', text: '첫 요청' }, older, { role: 'user', text: '두 번째 요청' }, newer, { role: 'assistant', text: '다시 볼게요' },
+  ]);
+  const notices = restored.filter((message): message is ThreadFailureMessage => message.kind === 'error');
+  assert.deepEqual(notices.map((message) => message.turnId), ['turn-1', 'turn-2'], 'both notices stay in the conversation');
+  assert.equal(notices[0]!.retry, undefined, 'the earlier notice drops its stored request');
+  assert.deepEqual(notices[1]!.retry, newer.retry);
+  assert.ok(!JSON.stringify(restored).includes('첫 요청 첫 요청'), 'the dropped request is not stored');
+});

@@ -407,6 +407,10 @@ let attentionDescriptionSeq = 0;
 const ROOT_SLOT = 'agent-sidebar';
 /** 붙이지 않은 허브 채팅의 이벤트를 미뤄 두는 상한(이어지는 글 조각은 하나로 합친다). */
 const UNBOUND_EVENT_LIMIT = 2_000;
+/** 미뤄 둔 이벤트의 글자 수 상한 — 큰 도구 인자·결과가 쌓여도 메모리를 묶어 두지 않는다. */
+const UNBOUND_EVENT_CHARS = 4_000_000;
+/** 붙인 채팅에 미뤄 둔 이벤트를 한 태스크에 흘려보내는 수 — 사이사이 브라우저가 그리고 입력을 받는다. */
+const REPLAY_SLICE = 50;
 const COLLAPSE_TAB_SLOT = 'agent-sidebar-collapse-tab';
 
 type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'replaced';
@@ -1051,12 +1055,29 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 붙이지 않으면 턴의 끝만 저장된 기록에 정착한다. 초안 화면에는 그리지 않는다.
    */
   const unboundEvents: Array<{ agent: AgentStreamEvent } | { failure: Extract<SidebarEvent, { type: 'turn-failure' }> }> = [];
+  /** unboundEvents 각 항목의 대략 글자 수와 그 합 — 글자 수 상한을 지킨다. */
+  const unboundSizes: number[] = [];
+  let unboundChars = 0;
   /** 붙이지 않은 이벤트가 속한 채팅(허브의 첫 답이 알린다). */
   let unboundThreadId: string | null = null;
-  /** 붙인 뒤 미뤄 둔 이벤트를 다시 흘려보내는 중. */
+  /** 붙인 뒤 미뤄 둔 이벤트 하나를 다시 흘려보내는 중. */
   let replayingUnbound = false;
   /** 다시 흘려보내는 이벤트 뒤에 그 턴의 끝이 아직 남았다 — 그 사이의 오류는 그 턴의 것이다. */
   let replayAwaitsTurnEnd = false;
+  /**
+   * 붙인 채팅에 여러 태스크에 걸쳐 흘려보내는 중인 이벤트. 그 사이 브리지가 알린 이벤트는 순서를 지키도록
+   * 뒤에 줄 선다({ live }). 비어 있지 않은 동안만 있다.
+   */
+  let replayBacklog: Array<(typeof unboundEvents)[number] | { live: SidebarEvent }> | null = null;
+  let replayBacklogIndex = 0;
+  /** 아직 흘려보내지 않은, 미뤄 둔(다시 흘려보내는) 턴 끝의 수. */
+  let replayTurnEndsAhead = 0;
+  let replayTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 흘려보내는 동안 미룬 저장과 대화 배치가 있다. */
+  let replayPersistPending = false;
+  let replayLayoutPending = false;
+  /** 다시 흘려보내는 동안 따라가기를 미룬 도구 내역 — 끝나면 한 번 맨 아래로 내린다. */
+  const replayScrollers = new Set<HTMLElement>();
   let workingDiff: DiffItem[] = [];
   let compactChangesOpen = false;
   let changesRefreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2678,6 +2699,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    */
   let conversationLayoutQueued = false;
   function queueConversationLayout(): void {
+    // 미뤄 둔 이벤트를 흘려보내는 동안에는 조각마다 대화 전체를 다시 재지 않는다 — 끝나면 한 번 잰다.
+    if (replayBacklog !== null) {
+      replayLayoutPending = true;
+      return;
+    }
     if (conversationLayoutQueued) return;
     conversationLayoutQueued = true;
     queueMicrotask(runConversationLayout);
@@ -5469,6 +5495,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function persistCurrentThread(): void {
+    // 미뤄 둔 이벤트를 다시 흘려보내는 동안에는 한 번만 저장한다 — 이벤트마다 대화 전체를 복사해 쓰면
+    // 수천 개를 흘려보낼 때 대화 크기의 제곱만큼 느려진다. 끝나면(또는 채팅을 바꾸기 전에) 저장한다.
+    if (replayBacklog !== null) {
+      replayPersistPending = true;
+      return;
+    }
     if (transcriptPersistTimer !== null) {
       window.clearTimeout(transcriptPersistTimer);
       transcriptPersistTimer = null;
@@ -6818,6 +6850,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 빈 채팅의 브리지 채팅을 곧바로 연다.
    */
   function startNewChat(opts?: { silent?: boolean }): void {
+    finishReplayNow();
     const draft = !opts?.silent;
     if (!opts?.silent) pendingThreadSwitch = null;
     rememberThreadComposerDraft();
@@ -6924,6 +6957,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 편집기에 맡기지 않는다(문서가 맞지 않으면 읽기 전용으로 연다).
    */
   function openThread(id: string, opts?: { viewOnly?: boolean; routed?: boolean }): void {
+    // 흘려보내던 이 채팅의 이벤트를 먼저 마친다 — 남은 것이 다음 채팅에 그려지지 않게.
+    finishReplayNow();
     // 연 채팅을 보고 있으면(열기를 마친 뒤) 완료·오류 점이 걷힌다. 입력·검토 대기와 다른 탭의
     // 노란 불은 남는다. 화면에서 내려간 사이드바가 마지막 채팅을 되살릴 때는 아무도 보지 않았으므로 남긴다.
     scheduleSeenCheck();
@@ -7811,7 +7846,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 따라갈지는 바꾸기 전에 정하고, 재기는 대화 변경 처리 한 번에 맡긴다.
    */
   function withAutoScroll(mutate: () => void): void {
-    const shouldFollow = followConversation || (!conversationScrollPaused && isConversationFollowingTurn());
+    // 미뤄 둔 이벤트를 다시 흘려보내는 동안에는 줄마다 재지 않는다 — 대화 크기만큼 배치를 강제해 느려진다.
+    const shouldFollow = followConversation
+      || (!conversationScrollPaused && (replayingUnbound || isConversationFollowingTurn()));
     mutate();
     if (shouldFollow) {
       followConversation = true;
@@ -7822,6 +7859,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 실행 중인 도구 내역은 높이를 늘리지 않고 항상 최신 단계를 보여준다. */
   function isActivityFollowingLatest(content: HTMLElement): boolean {
+    // 미뤄 둔 이벤트를 다시 흘려보내는 동안에는 재지 않고, 끝난 뒤 한 번 맨 아래로 내린다(pumpReplay).
+    if (replayingUnbound) {
+      replayScrollers.add(content);
+      return false;
+    }
     return content.scrollHeight - content.scrollTop - content.clientHeight <= 48;
   }
 
@@ -8945,6 +8987,25 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return hubChatUnbound() || (startupChatPending && draftChat && currentThread.messages.length === 0);
   }
 
+  /** 미뤄 둔 이벤트 하나의 대략 글자 수(도구 인자·결과·글). */
+  function unboundEntryChars(entry: (typeof unboundEvents)[number]): number {
+    if (!('agent' in entry)) return 256 + entry.failure.failure.message.length;
+    const event = entry.agent as Record<string, unknown>;
+    let chars = 128;
+    for (const key of ['text', 'argsJson', 'resultPreview', 'message', 'errorMessage', 'title']) {
+      const value = event[key];
+      if (typeof value === 'string') chars += value.length;
+    }
+    return chars;
+  }
+
+  /** 미뤄 둔 이벤트를 비운다. */
+  function takeUnboundEvents(): Array<(typeof unboundEvents)[number]> {
+    unboundSizes.length = 0;
+    unboundChars = 0;
+    return unboundEvents.splice(0);
+  }
+
   /** 붙이지 않은 이벤트를 미뤄 둔다. 이어지는 글 조각은 하나로 합쳐 길이를 줄인다. */
   function holdUnboundEvent(entry: (typeof unboundEvents)[number]): void {
     unboundThreadId = bridge.getHubChat()?.threadId ?? unboundThreadId;
@@ -8952,33 +9013,108 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if ('agent' in entry && entry.agent.type === 'text-delta' && last && 'agent' in last
       && last.agent.type === 'text-delta' && last.agent.parentTaskId === entry.agent.parentTaskId) {
       unboundEvents[unboundEvents.length - 1] = { agent: { ...last.agent, text: last.agent.text + entry.agent.text } };
-      return;
+      unboundSizes[unboundSizes.length - 1] += entry.agent.text.length;
+      unboundChars += entry.agent.text.length;
+    } else {
+      const chars = unboundEntryChars(entry);
+      unboundEvents.push(entry);
+      unboundSizes.push(chars);
+      unboundChars += chars;
     }
-    unboundEvents.push(entry);
     // 오래 붙이지 못하면 오래된 것부터 버린다 — 턴의 끝은 언제나 마지막이라 남는다.
-    if (unboundEvents.length > UNBOUND_EVENT_LIMIT) unboundEvents.splice(0, unboundEvents.length - UNBOUND_EVENT_LIMIT);
+    let drop = Math.max(0, unboundEvents.length - UNBOUND_EVENT_LIMIT);
+    let chars = unboundChars;
+    for (let index = 0; index < drop; index += 1) chars -= unboundSizes[index]!;
+    while (chars > UNBOUND_EVENT_CHARS && drop < unboundEvents.length - 1) {
+      chars -= unboundSizes[drop]!;
+      drop += 1;
+    }
+    if (drop === 0) return;
+    unboundEvents.splice(0, drop);
+    unboundSizes.splice(0, drop);
+    unboundChars = chars;
   }
 
-  /** 붙인 채팅에 미뤄 둔 이벤트를 차례대로 흘려보낸다. */
+  /**
+   * 붙인 채팅에 미뤄 둔 이벤트를 차례대로 흘려보낸다. 한 태스크에 REPLAY_SLICE 개씩 — 수천 개를 한 번에
+   * 그리면 화면이 수십 초 멈춘다. 그 사이 브리지가 알린 이벤트는 뒤에 줄 서고(onBridgeEvent), 채팅을
+   * 바꾸거나 닫으면 남은 것을 그 자리에서 마저 흘려보낸다(finishReplayNow).
+   */
   function replayUnboundEvents(): void {
     if (unboundEvents.length === 0) return;
-    const events = unboundEvents.splice(0);
+    const events = takeUnboundEvents();
     unboundThreadId = null;
-    replayingUnbound = true;
-    let lastTurnEnd = -1;
-    events.forEach((entry, index) => {
-      if ('agent' in entry && entry.agent.type === 'turn-end') lastTurnEnd = index;
-    });
-    try {
-      events.forEach((entry, index) => {
-        replayAwaitsTurnEnd = index < lastTurnEnd;
+    replayTurnEndsAhead += events.filter((entry) => 'agent' in entry && entry.agent.type === 'turn-end').length;
+    if (replayBacklog) {
+      replayBacklog.push(...events);
+      return;
+    }
+    replayBacklog = events;
+    replayBacklogIndex = 0;
+    pumpReplay(REPLAY_SLICE);
+  }
+
+  /** 줄 선 이벤트를 limit 개까지 흘려보내고, 남았으면 다음 태스크에 잇는다. */
+  function pumpReplay(limit: number): void {
+    replayTimer = null;
+    const backlog = replayBacklog;
+    if (!backlog) return;
+    const end = Math.min(backlog.length, replayBacklogIndex + limit);
+    while (replayBacklogIndex < end && replayBacklog === backlog) {
+      const entry = backlog[replayBacklogIndex]!;
+      replayBacklogIndex += 1;
+      if ('live' in entry) {
+        handleSidebarEvent(entry.live);
+        continue;
+      }
+      if ('agent' in entry && entry.agent.type === 'turn-end') replayTurnEndsAhead = Math.max(0, replayTurnEndsAhead - 1);
+      replayingUnbound = true;
+      replayAwaitsTurnEnd = replayTurnEndsAhead > 0;
+      try {
         if ('agent' in entry) handleAgentEvent(entry.agent);
         else handleSidebarEvent(entry.failure);
-      });
-    } finally {
-      replayingUnbound = false;
-      replayAwaitsTurnEnd = false;
+      } finally {
+        replayingUnbound = false;
+        replayAwaitsTurnEnd = false;
+      }
     }
+    if (replayBacklog !== backlog) return;
+    if (replayBacklogIndex < backlog.length) {
+      replayTimer = setTimeout(() => pumpReplay(REPLAY_SLICE), 0);
+      return;
+    }
+    replayBacklog = null;
+    replayBacklogIndex = 0;
+    replayTurnEndsAhead = 0;
+    if (replayPersistPending) {
+      replayPersistPending = false;
+      persistCurrentThread();
+    }
+    if (replayLayoutPending) {
+      replayLayoutPending = false;
+      queueConversationLayout();
+    }
+    // 따라가기를 미룬 도구 내역을 한 번에 맨 아래로 내린다.
+    for (const content of replayScrollers) {
+      if (content.isConnected) scrollActivityToLatest(content, true);
+    }
+    replayScrollers.clear();
+  }
+
+  /** 줄 선 이벤트를 지금 모두 흘려보낸다 — 채팅을 바꾸거나 닫기 전에 그 채팅의 기록을 마친다. */
+  function finishReplayNow(): void {
+    if (!replayBacklog) return;
+    if (replayTimer !== null) clearTimeout(replayTimer);
+    pumpReplay(Number.POSITIVE_INFINITY);
+  }
+
+  /** 브리지 이벤트 — 미뤄 둔 이벤트를 흘려보내는 동안에는 그 뒤에 줄 선다. */
+  function onBridgeEvent(e: SidebarEvent): void {
+    if (replayBacklog && !replayingUnbound) {
+      replayBacklog.push({ live: e });
+      return;
+    }
+    handleSidebarEvent(e);
   }
 
   /**
@@ -8987,7 +9123,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 이유로 붙잡는다(그 채팅을 열면 보인다). 나머지는 버린다.
    */
   function releaseUnboundEvents(): void {
-    const events = unboundEvents.splice(0);
+    const events = takeUnboundEvents();
     const threadId = unboundThreadId;
     unboundThreadId = null;
     if (!threadId || events.length === 0) return;
@@ -10348,7 +10484,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   // ── 구독 ──────────────────────────────────────────────
-  const unsubBridge = bridge.onEvent(handleSidebarEvent);
+  const unsubBridge = bridge.onEvent(onBridgeEvent);
   // 저장소 준비가 허브의 welcome 보다 늦어도 시작 채팅 고르기(settleStartupChat)가 둘 다 기다린
   // 뒤에 살아 있는 채팅을 잇는다 — 여기서 질문을 따로 되살리지 않는다.
   const unsubThreads = subscribeThreadChanges(() => {
@@ -10837,6 +10973,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
     dispose(): void {
       if (root.dataset.disposed === 'true') return;
+      finishReplayNow();
       followUps.detach('interrupted');
       resolveStartupChatSettled();
       flushTranscriptPersist();
