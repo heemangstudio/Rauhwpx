@@ -580,7 +580,11 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     return node;
   }
 
+  /** 판의 단추 줄에서 마지막으로 머문 자리. 작업 트리에서 ↑ 로 돌아오면 그 단추로 간다. */
+  let lastAction = 0;
+
   function detailFor(doc: HomeDocument, row: RecentDoc): HTMLLIElement {
+    lastAction = 0;
     const detail = el('li', 'dh-detail');
     detail.id = 'dh-detail';
     detail.setAttribute('role', 'group');
@@ -638,12 +642,39 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     }
     detail.append(panel);
     detail.addEventListener('keydown', (event) => {
-      if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
+      if (event.isComposing || event.defaultPrevented) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        const id = expanded;
+        collapse();
+        cardFor(id)?.focus();
+        return;
+      }
+      if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
+      if ((event.target as HTMLElement).closest('input, textarea')) return;
+      // 판 안에서는 ←→ 로 작업 단추 사이를, ↑↓ 로 단추 줄·작업 트리·카드 사이를 옮긴다. Enter 는 단추가 받는다.
+      const buttons = [...actions.querySelectorAll<HTMLButtonElement>('button:not([disabled])')];
+      const trees = [...panel.querySelectorAll<HTMLButtonElement>('.dh-tree')];
+      const current = event.target as HTMLButtonElement;
+      const inActions = buttons.indexOf(current);
+      const inTrees = trees.indexOf(current);
+      let next: HTMLElement | null | undefined = null;
+      if (event.key === 'ArrowRight' && inActions >= 0) next = buttons[Math.min(buttons.length - 1, inActions + 1)];
+      else if (event.key === 'ArrowLeft' && inActions >= 0) next = buttons[Math.max(0, inActions - 1)];
+      else if (event.key === 'ArrowDown') next = inActions >= 0 ? trees[0] : inTrees >= 0 ? trees[inTrees + 1] : null;
+      else if (event.key === 'ArrowUp') {
+        next = inTrees > 0 ? trees[inTrees - 1]
+          : inTrees === 0 ? buttons[lastAction] ?? buttons[0]
+          : inActions >= 0 ? cardFor(expanded) : null;
+      } else return;
       event.preventDefault();
-      event.stopPropagation();
-      const id = expanded;
-      collapse();
-      cardFor(id)?.focus();
+      if (!next) return;
+      const nextAction = buttons.indexOf(next as HTMLButtonElement);
+      if (nextAction >= 0) lastAction = nextAction;
+      else if (inActions >= 0) lastAction = inActions;
+      next.focus();
+      next.scrollIntoView({ block: 'nearest' });
     });
     return detail;
   }
@@ -870,7 +901,21 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     switch (event.key) {
       case 'ArrowRight': next = Math.min(documents.length - 1, index + 1); break;
       case 'ArrowLeft': next = Math.max(0, index - 1); break;
-      case 'ArrowDown': next = Math.min(documents.length - 1, index + perRow); break;
+      case 'ArrowDown': {
+        // 펼친 카드에서는 아래 판의 첫 작업 단추로 들어간다.
+        const first = expanded === card.dataset.id
+          ? grid.querySelector<HTMLButtonElement>('.dh-detail .dh-actions button:not([disabled])')
+          : null;
+        if (first) {
+          event.preventDefault();
+          lastAction = 0;
+          first.focus();
+          first.scrollIntoView({ block: 'nearest' });
+          return;
+        }
+        next = Math.min(documents.length - 1, index + perRow);
+        break;
+      }
       case 'ArrowUp': next = Math.max(0, index - perRow); break;
       case 'Home': next = 0; break;
       case 'End': next = documents.length - 1; break;
