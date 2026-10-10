@@ -34,6 +34,8 @@
 .ag-browser-surface { position: relative; flex: 1; min-height: 150px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #e4e6e2; outline-offset: -3px; }
 .ag-browser-frame { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; user-select: none; }
 .ag-browser-frame[hidden] { display: none; }
+.ag-browser-surface.ag-browser-frozen { display: block; overflow: auto; overscroll-behavior: contain; }
+.ag-browser-frozen .ag-browser-frame { width: 100%; max-width: none; max-height: none; height: auto; object-fit: fill; }
 .ag-browser-placeholder { text-align: center; padding: 25px; max-width: 380px; color: #576253; line-height: 1.6; }
 .ag-browser-placeholder[hidden] { display: none; }
 .ag-browser-placeholder strong { font-size: 17px; }
@@ -41,6 +43,8 @@
 .ag-browser-ime { position: absolute; width: 1px; height: 1px; left: 8px; bottom: 8px; opacity: .01; resize: none; border: 0; padding: 0; overflow: hidden; }
 .ag-browser-picking { cursor: crosshair; }
 .ag-browser-selection { position: absolute; pointer-events: none; border: 2px solid #497958; background: #49795822; }
+.ag-browser-selection[hidden] { display: none; }
+.ag-browser-hover { border-style: dashed; background: transparent; }
 /* 보조 작업은 페이지 크기를 유지하는 작은 도구 팝오버로 연다. */
 .ag-browser-annotation,.ag-browser-downloads { position: absolute; z-index: 12; top: var(--browser-popover-top, 44px); right: 8px; width: min(296px, calc(100% - 16px)); max-height: var(--browser-popover-height, calc(100% - 60px)); box-sizing: border-box; overflow: auto; border: 1px solid var(--browser-border); border-radius: 12px; padding: 12px; background: var(--ag-bg, var(--n-surface, #fafaf9)); box-shadow: 0 8px 28px #0003, 0 2px 5px #0001; }
 .ag-browser-annotation { display: flex; flex-direction: column; gap: 9px; }

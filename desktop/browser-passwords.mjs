@@ -157,7 +157,7 @@ export class NativeBrowserPasswords {
     if (tab.closing || tab.view.webContents.isDestroyed() || epoch !== tab.navigationEpoch || lifetime.generation !== this.host.generation || lifetime.owner !== this.host.owner || lifetime.targetId !== tab.targetId || lifetime.sessionId !== tab.sessionId || lifetime.chatId !== tab.chatId || lifetime.controlEpoch !== (tab.passwordControlEpoch ?? 0) || lifetime.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'The page changed during the browser snapshot.');
     const url = new URL(tab.view.webContents.getURL());
     tab.passwordSnapshot = { snapshotId, generation: this.host.generation, owner: this.host.owner, navigationEpoch: epoch, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: lifetime.zoomFactor, origin: url.origin, elements: observed.elements };
-    return this.redact(tab, { ...observed, snapshotId, nativeNavigationEpoch: epoch, url: tab.passwordShield ? `${url.origin}/` : `${url.origin}${url.pathname}`, title: tab.passwordShield ? '' : tab.view.webContents.getTitle(), passwordProtected: !!tab.passwordShield });
+    return this.redact(tab, { ...observed, snapshotId, nativeNavigationEpoch: epoch, nativeControlEpoch: lifetime.controlEpoch, zoomFactor: lifetime.zoomFactor, url: tab.passwordShield ? `${url.origin}/` : `${url.origin}${url.pathname}`, title: tab.passwordShield ? '' : tab.view.webContents.getTitle(), passwordProtected: !!tab.passwordShield });
   }
   async fill(params, { human = false } = {}) {
     const tab = this.tab(params, { human });
@@ -239,6 +239,7 @@ export class NativeBrowserPasswords {
     return scrub(value);
   }
   forgetTab(tab) {
+    tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1;
     tab.passwordSnapshot = null; tab.protectedPasswords?.clear(); tab.passwordAllowedOrigins?.clear();
     tab.passwordShield = false;
   }

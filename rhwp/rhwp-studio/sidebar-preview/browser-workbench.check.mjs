@@ -7,6 +7,7 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   await page.goto(`${origin}/?reset=1&controls=0&scenario=chat&fullscreen=1&theme=dark`, { waitUntil: 'networkidle0' });
   await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
   await page.click('.ag-workspace-panel-btn');
+  await page.waitForFunction(() => { const node = document.querySelector('.ag-workbench-launcher-item[data-view="browser"]'); const rect = node?.getBoundingClientRect(); return node?.checkVisibility() && rect.left >= 0 && rect.right <= innerWidth; });
   await page.click('.ag-workbench-launcher-item[data-view="browser"]');
   await page.waitForSelector('.ag-browser:not([hidden])', { visible: true });
   await page.click('[aria-label="연구 브라우저 열기"]');
@@ -129,6 +130,7 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   await page.waitForFunction(count => window.sidebarPreview.snapshot().browser.inputs.slice(count).some(row => row.type === 'pointer' && row.event === 'down'), {}, beforeDismissInput);
   await page.click('.ag-browser [aria-label="페이지·개체·영역에 의견 붙이기"]');
   await page.$eval('.ag-browser [aria-label="자료 의견"]', node => { node.value = ''; });
+  await page.waitForFunction(() => document.querySelector('.ag-browser-surface')?.classList.contains('ag-browser-frozen') && document.querySelector('.ag-browser-frame')?.naturalWidth > 0);
   await page.click('.ag-browser [aria-label="영역 선택"]');
   const frame = await page.$('.ag-browser-frame'); const bounds = await frame.boundingBox();
   await page.mouse.move(bounds.x + bounds.width * .1, bounds.y + bounds.height * .2);

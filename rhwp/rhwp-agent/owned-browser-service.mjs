@@ -10,8 +10,10 @@ export { OwnedBrowserError } from './owned-browser-runtime.mjs';
 
 const ELEMENTS = 'a[href],button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="menuitem"],[role="option"],[role="tab"],[contenteditable="true"],summary';
 const SENSITIVE = 'input[type="password"],input[type="email"],input[autocomplete="username"],input[name="username"],input[name="email"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
+const FROZEN_PRIVATE = 'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[data-rhwp-private-field]';
+const FROZEN_TTL = 5 * 60_000;
 const MUTATIONS = new Set(['navigate', 'click', 'type', 'press', 'scroll', 'close', 'input', 'fill-account', 'viewport', 'upload']);
-const READS = new Set(['snapshot', 'frame', 'capture', 'wait']);
+const READS = new Set(['snapshot', 'frame', 'freeze', 'release-freeze', 'capture', 'wait']);
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
 const error = (code, message, retryable = false) => new OwnedBrowserError(code, message, retryable);
 const bounded = (value, min, max, fallback) => Number.isFinite(Number(value)) ? Math.max(min, Math.min(max, Number(value))) : fallback;
@@ -87,6 +89,8 @@ export function createOwnedBrowserService(options = {}) {
   if (!dataDir) throw new TypeError('Owned browser dataDir is required');
   const guard = createBrowserNetworkGuard({ workspaceTargets: options.workspaceTargets ?? policy?.workspaceTargets ?? [], lookup: options.lookup });
   const tabs = new Map();
+  const frozenPages = new Map();
+  const freezeQueues = new Map();
   const pageTabs = new WeakMap();
   const runtimeId = id('runtime');
   const descriptorFile = path.join(dataDir, 'browser', 'tabs.json');
@@ -165,10 +169,16 @@ export function createOwnedBrowserService(options = {}) {
     else if (mapped === 'website-change') throw error('BROWSER_WEBSITE_CHANGE_REQUIRED', 'Approve website changes for this site before continuing.');
     if (credentialBroker?.assertBrowserAccess && url !== 'about:blank') await credentialBroker.assertBrowserAccess({ actor, url, tab: { ...descriptor(tab ?? { page: null, url, controller: {} }), profileId: profileId() } });
   };
-  const invalidate = (tab) => {
+  const releaseFrozen = (tab) => {
+    const frozen = frozenPages.get(tab.tabId);
+    if (frozen) clearTimeout(frozen.timer);
+    frozenPages.delete(tab.tabId);
+  };
+  const invalidate = (tab, clearFrozen = true) => {
     for (const handle of tab.snapshot?.handles?.values?.() ?? []) void handle.dispose?.().catch(() => {});
     tab.snapshot = null;
     tab.frame = null;
+    if (clearFrozen) releaseFrozen(tab);
     credentialBroker?.invalidateTab?.(tab.tabId);
   };
   const unsubscribeNativeEvents = nativeAdapter?.onEvent?.((event) => {
@@ -591,7 +601,7 @@ export function createOwnedBrowserService(options = {}) {
   };
 
   const snapshot = async (tab) => {
-    invalidate(tab);
+    invalidate(tab, false);
     const navigationEpoch = tab.navigationEpoch;
     const geometryEpoch = tab.geometryEpoch;
     if (selectedAdapter()?.passwordSnapshot && tab.nativeTargetId) {
@@ -656,6 +666,89 @@ export function createOwnedBrowserService(options = {}) {
     return result;
   };
 
+  const assertFrozenImageAllowed = async (tab) => {
+    if (!selectedAdapter()?.passwordSnapshot || !tab.nativeTargetId) return;
+    const observed = await selectedAdapter().passwordSnapshot(nativePasswordBinding(tab));
+    if (observed?.passwordProtected) {
+      releaseFrozen(tab);
+      throw error('BROWSER_PASSWORD_CAPTURE_PROTECTED', 'The page contains a saved password. Use a semantic snapshot for page evidence.');
+    }
+    return observed?.available === false ? undefined : { navigationEpoch: observed.nativeNavigationEpoch, controlEpoch: observed.nativeControlEpoch, zoomFactor: observed.zoomFactor };
+  };
+  const buildFrozenPage = async (actor, tab, args) => {
+    if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the user can freeze a browser page for annotation.');
+    epochs(tab, args, true);
+    assertController(actor, tab);
+    for (const [tabId, frozen] of frozenPages) if (frozen.clientId === actor.clientId) releaseFrozen(tabs.get(tabId) ?? { tabId });
+    const lifetime = { navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, geometryEpoch: tab.geometryEpoch, generation, targetId: tab.nativeTargetId };
+    const nativeLifetime = await assertFrozenImageAllowed(tab);
+    // 문서 좌표와 내용은 한 번만 읽는다. 입력값이나 비공개 필드의 상위 요소도 복사하지 않는다.
+    const observed = await tab.page.evaluate(({ privateSelector }) => {
+      const root = document.documentElement;
+      const width = Math.max(innerWidth, root.scrollWidth, document.body?.scrollWidth ?? 0);
+      const height = Math.max(innerHeight, root.scrollHeight, document.body?.scrollHeight ?? 0);
+      if (width > 4096 || height > 32768 || width * height > 12_000_000) return { tooLarge: true };
+      const candidates = document.querySelectorAll('body *');
+      const elements = [];
+      const semantic = 'a,button,input,textarea,select,summary,h1,h2,h3,h4,h5,h6,p,li,td,th,img,svg,canvas,pre,blockquote,figure,[role],[aria-label]';
+      for (const el of candidates) {
+        if (el.closest('script,style,noscript,template') || el.closest(privateSelector)) continue;
+        if (!el.matches(semantic) && el.children.length) continue;
+        const style = getComputedStyle(el);
+        if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0) continue;
+        const r = el.getBoundingClientRect();
+        const rect = { x: Math.max(0, r.x + scrollX), y: Math.max(0, r.y + scrollY), width: Math.min(width, r.right + scrollX) - Math.max(0, r.x + scrollX), height: Math.min(height, r.bottom + scrollY) - Math.max(0, r.y + scrollY) };
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        if (elements.length >= 4096) return { tooManyElements: true };
+        const copy = el.cloneNode(true);
+        for (const child of copy.querySelectorAll(`${privateSelector},script,style,noscript,template`)) child.remove();
+        const content = String(copy.textContent ?? '').trim().slice(0, 2000);
+        const containsPrivate = Boolean(el.querySelector(privateSelector));
+        let depth = 0; for (let parent = el.parentElement; parent; parent = parent.parentElement) depth++;
+        elements.push({ elementId: `f${elements.length + 1}`, tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || '', name: String(containsPrivate ? content : el.getAttribute('aria-label') || el.getAttribute('alt') || content).slice(0, 500), text: content, rect, depth });
+      }
+      return { width, height, viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY }, elements };
+    }, { privateSelector: FROZEN_PRIVATE });
+    if (observed.tooLarge) throw error('BROWSER_FROZEN_PAGE_TOO_LARGE', 'This page is too long or wide to freeze. Open a shorter page to annotate.');
+    if (!observed.tooLarge && !observed.tooManyElements && Buffer.byteLength(JSON.stringify(observed.elements), 'utf8') > 2 * 1024 * 1024) throw error('BROWSER_FROZEN_PAGE_TOO_COMPLEX', 'This page has too much content to freeze. Open a simpler page to annotate.');
+    if (observed.tooManyElements) throw error('BROWSER_FROZEN_PAGE_TOO_COMPLEX', 'This page has too many elements to freeze. Open a simpler page to annotate.');
+    const bytes = await tab.page.screenshot({ type: 'jpeg', quality: 75, scale: 'css', fullPage: true, animations: 'disabled',
+      clip: { x: 0, y: 0, width: observed.width, height: observed.height },
+      mask: tab.page.frames().map(frame => frame.locator(FROZEN_PRIVATE)), maskColor: '#333333', timeout: 10_000 });
+    if (bytes.length > 8 * 1024 * 1024) throw error('BROWSER_FROZEN_PAGE_TOO_LARGE', 'This page image is too large to freeze. Open a shorter page to annotate.');
+    // 비밀번호 보호가 캡처 도중 켜져도 이미지가 편집기로 나가지 않는다.
+    const nativeAfter = await assertFrozenImageAllowed(tab);
+    if (JSON.stringify(nativeLifetime) !== JSON.stringify(nativeAfter)) throw error('BROWSER_STALE_FREEZE', 'The native page changed while freezing. Freeze the page again.', true);
+    if (closed || resetting || tabs.get(tab.tabId) !== tab || !tab.page || tab.page.isClosed() || lifetime.navigationEpoch !== tab.navigationEpoch || lifetime.controllerEpoch !== tab.controllerEpoch || lifetime.geometryEpoch !== tab.geometryEpoch || lifetime.generation !== generation || lifetime.targetId !== tab.nativeTargetId) throw error('BROWSER_STALE_FREEZE', 'The page changed while freezing. Freeze the page again.', true);
+    const freezeId = id('freeze'), timestamp = new Date().toISOString(), expiresAt = Date.now() + FROZEN_TTL;
+    const result = { freezeId, expiresAt, source: { url: publicURL(tab.page.url()), title: tab.title, timestamp }, viewport: observed.viewport,
+      frame: { frameId: freezeId, tabId: tab.tabId, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, mimeType: 'image/jpeg', data: bytes.toString('base64'), width: observed.width, height: observed.height, deviceScaleFactor: 1, scrollX: 0, scrollY: 0 }, elements: observed.elements };
+    const timer = setTimeout(() => releaseFrozen(tab), FROZEN_TTL); timer.unref?.();
+    frozenPages.set(tab.tabId, { ...result, ...lifetime, nativeLifetime, clientId: actor.clientId, sessionId: actor.sessionId, tabSessionId: tab.sessionId, timer });
+    return result;
+  };
+  const frozenCapture = async (actor, tab, args) => {
+    const frozen = frozenPages.get(tab.tabId);
+    if (!actor.isHuman || !frozen || args.freezeId !== frozen.freezeId || frozen.clientId !== actor.clientId || frozen.sessionId !== actor.sessionId) throw error('BROWSER_STALE_FREEZE', 'The frozen page is unavailable. Freeze the page again.', true);
+    assertController(actor, tab);
+    if (frozen.expiresAt <= Date.now() || frozen.navigationEpoch !== tab.navigationEpoch || frozen.controllerEpoch !== tab.controllerEpoch || frozen.geometryEpoch !== tab.geometryEpoch || frozen.generation !== generation || frozen.targetId !== tab.nativeTargetId || frozen.tabSessionId !== tab.sessionId) { releaseFrozen(tab); throw error('BROWSER_STALE_FREEZE', 'The page changed. Freeze the page again.', true); }
+    const nativeNow = await assertFrozenImageAllowed(tab);
+    if (JSON.stringify(frozen.nativeLifetime) !== JSON.stringify(nativeNow)) { releaseFrozen(tab); throw error('BROWSER_STALE_FREEZE', 'The native page changed. Freeze the page again.', true); }
+    if (frozenPages.get(tab.tabId) !== frozen || frozen.navigationEpoch !== tab.navigationEpoch || frozen.controllerEpoch !== tab.controllerEpoch || frozen.geometryEpoch !== tab.geometryEpoch || frozen.generation !== generation || frozen.targetId !== tab.nativeTargetId || frozen.sessionId !== actor.sessionId) throw error('BROWSER_STALE_FREEZE', 'The page changed. Freeze the page again.', true);
+    const mode = args.mode ?? 'page';
+    if (!['page', 'element', 'region'].includes(mode)) throw error('BROWSER_CAPTURE_REGION_INVALID', 'Choose a page, element, or region.');
+    const element = mode === 'element' ? frozen.elements.find(element => element.elementId === args.elementId) : undefined;
+    if (mode === 'element' && !element) throw error('BROWSER_ELEMENT_NOT_FOUND', 'Select an element in the frozen page.');
+    let rect = element?.rect ?? (mode === 'region' ? args.rect : undefined);
+    if (rect) {
+      if (![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) || rect.x < 0 || rect.y < 0 || rect.width < 1 || rect.height < 1 || rect.x + rect.width > frozen.frame.width + .01 || rect.y + rect.height > frozen.frame.height + .01) throw error('BROWSER_CAPTURE_REGION_INVALID', 'Select a region inside the frozen page.');
+      rect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    } else if (mode === 'region') throw error('BROWSER_CAPTURE_REGION_INVALID', 'Select a region inside the frozen page.');
+    return { captureId: id('capture'), freezeId: frozen.freezeId, tabId: tab.tabId, threadId: args.destinationThreadId ?? tab.threadId, projectId: tab.projectId, documentId: tab.documentId,
+      navigationEpoch: frozen.navigationEpoch, source: frozen.source, viewport: frozen.viewport, coordinateSpace: 'page-css', mode, comment: text(args.comment), ...(element ? { element } : {}), ...(rect ? { rect } : {}),
+      screenshot: { mimeType: frozen.frame.mimeType, data: frozen.frame.data, width: frozen.frame.width, height: frozen.frame.height, ...(rect ? { clip: rect } : {}) } };
+  };
+
   const input = async (tab, args) => {
     if (args.type === 'release') { await releaseInput(tab); return { completed: true }; }
     if (args.frameId && args.frameId !== tab.frame?.frameId) throw error('BROWSER_STALE_FRAME', 'The displayed browser frame is stale.', true);
@@ -678,6 +771,7 @@ export function createOwnedBrowserService(options = {}) {
   };
 
   const capture = async (actor, tab, args) => {
+    if (args.freezeId) return frozenCapture(actor, tab, args);
     if (args.frameId && args.frameId !== tab.frame?.frameId) throw error('BROWSER_STALE_FRAME', 'The displayed browser frame is stale.', true);
     const epoch = tab.navigationEpoch;
     const geometryEpoch = tab.geometryEpoch;
@@ -713,10 +807,16 @@ export function createOwnedBrowserService(options = {}) {
   };
 
   const operate = async (actor, action, tab, args) => {
-    if (action === 'close') { await releaseInput(tab); await tab.page?.close(); tab.status = 'closed'; tabs.delete(tab.tabId); await persist(); return { completed: true }; }
+    if (action === 'close') { releaseFrozen(tab); await releaseInput(tab); await tab.page?.close(); tab.status = 'closed'; tabs.delete(tab.tabId); await persist(); return { completed: true }; }
     const page = requirePage(tab);
     if (action === 'snapshot') return { snapshot: await snapshot(tab) };
     if (action === 'frame') return { frame: await frame(tab) };
+    if (action === 'freeze') return { frozen: await buildFrozenPage(actor, tab, args) };
+    if (action === 'release-freeze') {
+      const frozen = frozenPages.get(tab.tabId);
+      if (!actor.isHuman || frozen && (frozen.clientId !== actor.clientId || frozen.freezeId !== args.freezeId)) throw error('BROWSER_STALE_FREEZE', 'The frozen page belongs to another annotation.');
+      releaseFrozen(tab); return { completed: true };
+    }
     if (action === 'capture') return { capture: await capture(actor, tab, args) };
     if (tab.snapshot?.native && selectedAdapter()?.passwordAction && ['click', 'type', 'press', 'scroll'].includes(action)) {
       if (action === 'press') assertAgentKey(actor, args.key);
@@ -838,7 +938,7 @@ export function createOwnedBrowserService(options = {}) {
     if (selectedAdapter()?.passwordAccounts) accounts = (await selectedAdapter().passwordAccounts()).accounts ?? [];
     return { ok: true, action: 'status', runtime: runtimeInfo(), tabs: visible, limits, accounts };
   };
-  const request = async (actor, action, args = {}) => {
+  const performRequest = async (actor, action, args = {}) => {
     validateActor(actor);
     if ((resetting || resetFailed) && !['status', 'reset-browser'].includes(action)) throw error('BROWSER_RESET_REQUIRED', 'Complete browser cleanup in Settings before using the browser.', true);
     if (action === 'reset-browser') {
@@ -967,6 +1067,7 @@ export function createOwnedBrowserService(options = {}) {
       return enqueue(tab, async () => {
         const previousSession = tab.sessionId;
         tab.sessionId = actor.sessionId ?? previousSession;
+        releaseFrozen(tab);
         try {
           await ensureRuntime();
           if (tabs.get(tab.tabId) !== tab) throw error('BROWSER_TAB_NOT_FOUND', 'This browser tab was closed.');
@@ -1018,7 +1119,7 @@ export function createOwnedBrowserService(options = {}) {
     if (action === 'control') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the user can transfer browser control.');
       epochs(tab, args);
-      tab.controllerEpoch++; tab.controller = { owner: 'agent' };
+      tab.controllerEpoch++; tab.controller = { owner: 'agent' }; releaseFrozen(tab);
       if (tab.controller.owner === 'human') markHumanDocument(tab);
       credentialBroker?.invalidateTab?.(tab.tabId);
       // Invalidate queued agent input immediately, then drain before confirming the transfer.
@@ -1029,7 +1130,7 @@ export function createOwnedBrowserService(options = {}) {
     const mutating = MUTATIONS.has(action);
     // 편집기의 탭 닫기는 페이지 입력 조작권을 넘겨받지 않아도 실행한다.
     const requiresControl = mutating && !(action === 'close' && actor.isHuman);
-    epochs(tab, args, mutating);
+    epochs(tab, args, mutating || action === 'freeze');
     if (requiresControl) assertController(actor, tab);
     const queuedControlEpoch = tab.controllerEpoch;
     return enqueue(tab, async () => {
@@ -1064,7 +1165,14 @@ export function createOwnedBrowserService(options = {}) {
         else if (action !== 'close') { await recordAgentSessions(requirePage(tab).url(), agentSessionEpoch); await observeHumanSessions(); }
         if (mutating && action !== 'close' && queuedControlEpoch !== tab.controllerEpoch) throw error('BROWSER_ACTION_UNCERTAIN', 'Control changed during the action. Observe the current page before deciding what to do next.', true);
         if (action !== 'close') await assertPolicy(actor, action, requirePage(tab).url(), tab, args);
-        if (value.capture) emit('owned_browser_capture', { capture: value.capture });
+        if (value.frozen || value.capture?.freezeId) {
+          const frozen = frozenPages.get(tab.tabId);
+          const freezeId = value.frozen?.freezeId ?? value.capture.freezeId;
+          if (closed || resetting || !frozen || frozen.freezeId !== freezeId || frozen.clientId !== actor.clientId || frozen.sessionId !== actor.sessionId || frozen.tabSessionId !== tab.sessionId || frozen.expiresAt <= Date.now() || frozen.navigationEpoch !== tab.navigationEpoch || frozen.controllerEpoch !== tab.controllerEpoch || frozen.geometryEpoch !== tab.geometryEpoch || frozen.generation !== generation || frozen.targetId !== tab.nativeTargetId || !tab.page || tab.page.isClosed()) throw error('BROWSER_STALE_FREEZE', 'The page changed. Freeze the page again.', true);
+          const nativeNow = await assertFrozenImageAllowed(tab);
+          if (frozenPages.get(tab.tabId) !== frozen || JSON.stringify(frozen.nativeLifetime) !== JSON.stringify(nativeNow) || frozen.navigationEpoch !== tab.navigationEpoch || frozen.controllerEpoch !== tab.controllerEpoch || frozen.geometryEpoch !== tab.geometryEpoch || closed || resetting) { releaseFrozen(tab); throw error('BROWSER_STALE_FREEZE', 'The native page changed. Freeze the page again.', true); }
+        }
+        if (value.capture) { const eventCapture = { ...value.capture }; if (eventCapture.freezeId) delete eventCapture.screenshot; emit('owned_browser_capture', { capture: eventCapture }); }
         publish(tab); if (!actor.isHuman && action !== 'close' && challengeFor(tab)) return challengeResult(action, tab);
         return { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab), ...value };
       } catch (failure) {
@@ -1072,6 +1180,14 @@ export function createOwnedBrowserService(options = {}) {
         throw error(failure.name === 'TimeoutError' ? 'BROWSER_ACTION_TIMEOUT' : 'BROWSER_ACTION_FAILED', 'The browser action did not complete. Observe the current page before retrying.', true);
       } finally { tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
     });
+  };
+  const request = (actor, action, args = {}) => {
+    if (action !== 'freeze' || !actor?.isHuman) return performRequest(actor, action, args);
+    // 이미지 생성부터 마지막 수명 확인까지 같은 창의 전체 요청을 직렬화한다.
+    const queued = (freezeQueues.get(actor.clientId) ?? Promise.resolve()).catch(() => {}).then(() => performRequest(actor, action, args));
+    freezeQueues.set(actor.clientId, queued);
+    void queued.finally(() => { if (freezeQueues.get(actor.clientId) === queued) freezeQueues.delete(actor.clientId); }).catch(() => {});
+    return queued;
   };
   return {
     request, inventory,
@@ -1097,6 +1213,6 @@ export function createOwnedBrowserService(options = {}) {
         const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), openerTabId: typeof record.openerTabId === 'string' ? text(record.openerTabId, 160) : undefined, searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, restorePending: true, status: 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
       }
     },
-    async close() { if (closed) return; closed = true; unsubscribeNativeEvents?.(); if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) await releaseInput(tab); await persist().catch(() => {}); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); state = 'closed'; },
+    async close() { if (closed) return; closed = true; unsubscribeNativeEvents?.(); if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) { releaseFrozen(tab); await releaseInput(tab); } await persist().catch(() => {}); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); state = 'closed'; },
   };
 }

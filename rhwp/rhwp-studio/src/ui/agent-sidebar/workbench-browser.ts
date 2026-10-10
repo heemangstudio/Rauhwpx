@@ -1,6 +1,6 @@
 import './workbench-browser.css';
 import type { SidebarBridge } from '../../agent/bridge.ts';
-import type { BrowserDownload, BrowserTab } from '../../agent/types.ts';
+import type { BrowserDownload, BrowserFrozenElement, BrowserFrozenPage, BrowserTab } from '../../agent/types.ts';
 import { createBrowserController } from './browser-controller.ts';
 import { createBrowserPresentation, nativeBrowserApi, type BrowserPresentationMode } from './browser-presentation.ts';
 import { saveBrowserCaptureDraft, type BrowserCaptureDestination, type BrowserCaptureDraft } from './browser-capture-store.ts';
@@ -139,22 +139,26 @@ export function createWorkbenchBrowser(options: {
   const emptyOpen = button('연구 브라우저 열기', '브라우저 열기', () => handle(controller.open()), placeholder);
   placeholder.prepend(placeholderTitle, placeholderText);
   const selection = document.createElement('div'); selection.className = 'ag-browser-selection'; selection.hidden = true;
+  const hoverSelection = document.createElement('div'); hoverSelection.className = 'ag-browser-selection ag-browser-hover'; hoverSelection.hidden = true;
   const textInput = document.createElement('textarea'); textInput.className = 'ag-browser-ime'; textInput.setAttribute('aria-label', '브라우저 페이지에 입력'); textInput.autocomplete = 'off'; textInput.spellcheck = false;
-  surface.append(image, placeholder, selection, textInput); element.append(surface);
+  surface.append(image, placeholder, selection, hoverSelection, textInput); element.append(surface);
   const annotation = document.createElement('section'); annotation.className = 'ag-browser-annotation'; annotation.hidden = true; annotation.setAttribute('aria-label', '브라우저 자료 의견'); annotation.setAttribute('role', 'dialog'); annotate.setAttribute('aria-haspopup', 'dialog'); annotate.setAttribute('aria-expanded', 'false');
   const destination = document.createElement('strong'); const annotationHint = document.createElement('p');
   const modes = document.createElement('div'); modes.className = 'ag-browser-annotation-modes';
   const comment = document.createElement('textarea'); comment.placeholder = '이 자료에서 에이전트가 확인할 내용을 적어 주세요'; comment.setAttribute('aria-label', '자료 의견');
   const annotationStatus = document.createElement('span'); annotationStatus.setAttribute('role', 'status');
   let annotationMode: BrowserCaptureDraft['mode'] = 'page';
-  type AnnotationContext = { runtimeId: string | undefined; destination: BrowserCaptureDestination; tab: NonNullable<ReturnType<typeof controller.tab>>; frame: ReturnType<typeof controller.frame> };
+  type AnnotationContext = { runtimeId: string | undefined; destination: BrowserCaptureDestination; tab: NonNullable<ReturnType<typeof controller.tab>>; zoomFactor: number; frame: ReturnType<typeof controller.frame>; frozen: BrowserFrozenPage | null };
   let pinned: AnnotationContext | null = null;
-  let annotationDraft: { context: AnnotationContext; mode: BrowserCaptureDraft['mode']; comment: string; point: typeof pickedPoint; rect: typeof pickedRect } | null = null;
+  let annotationDraft: { runtimeId: string | undefined; tab: BrowserTab; zoomFactor: number; destination: BrowserCaptureDestination; mode: BrowserCaptureDraft['mode']; comment: string } | null = null;
   let pickedPoint: { x: number; y: number } | null = null;
   let pickedRect: { x: number; y: number; width: number; height: number } | null = null;
+  let pickedElement: BrowserFrozenElement | null = null;
+  let hoveredElement: BrowserFrozenElement | null = null;
+  let freezeExpiry: ReturnType<typeof setTimeout> | null = null;
   const modeButtons = new Map<BrowserCaptureDraft['mode'], HTMLButtonElement>();
   for (const [mode, title] of [['page', '페이지'], ['element', '개체 선택'], ['region', '영역 선택']] as const) {
-    const choice = button(title, title, () => { annotationMode = mode; pickedPoint = null; pickedRect = null; selection.hidden = true; paintAnnotation(); }, modes);
+    const choice = button(title, title, () => { annotationMode = mode; pickedPoint = null; pickedRect = null; pickedElement = null; hoveredElement = null; selection.hidden = true; paintAnnotation(); }, modes);
     modeButtons.set(mode, choice);
   }
   const annotationHeader = document.createElement('header'); annotationHeader.className = 'ag-browser-popover-header';
@@ -179,8 +183,8 @@ export function createWorkbenchBrowser(options: {
     if (details.open && !details.contains(target)) { details.open = false; dismissed = true; }
     if (!downloads.hidden && !downloads.contains(target) && !downloadsButton.contains(target)) { showDownloads(false, false); dismissed = true; }
     if (pinned && !annotation.contains(target) && !annotate.contains(target)) {
-      // 개체와 영역을 고를 때는 팝오버 밖의 페이지를 계속 사용할 수 있다.
-      if (annotationMode !== 'page' && surface.contains(target)) return;
+      // 캡처한 페이지의 스크롤과 선택은 팝오버를 닫지 않는다.
+      if (surface.contains(target)) return;
       endAnnotation(false); dismissed = true;
     }
     if (dismissed && surface.contains(target)) { event.preventDefault(); event.stopPropagation(); }
@@ -219,10 +223,10 @@ export function createWorkbenchBrowser(options: {
   function paintAnnotation(): void {
     paintZoom();
     for (const [mode, choice] of modeButtons) choice.setAttribute('aria-pressed', String(mode === annotationMode));
-    annotationHint.textContent = annotationMode === 'page' ? '현재 페이지를 자료로 첨부합니다.' : annotationMode === 'element' ? '페이지에서 확인할 개체를 클릭하세요.' : '페이지에서 확인할 영역을 드래그하세요.';
+    annotationHint.textContent = annotationMode === 'page' ? '캡처한 전체 페이지를 자료로 첨부합니다.' : annotationMode === 'element' ? pickedElement ? `${pickedElement.name || pickedElement.tag} 선택됨` : '페이지를 스크롤해 확인할 개체를 클릭하세요.' : '페이지를 스크롤해 확인할 영역을 드래그하세요.';
     surface.classList.toggle('ag-browser-picking', annotationMode !== 'page');
     paintSelection();
-    save.disabled = !pinned || (annotationMode === 'element' && !pickedPoint) || (annotationMode === 'region' && !pickedRect);
+    save.disabled = !pinned?.frozen || (annotationMode === 'element' && !pickedElement) || (annotationMode === 'region' && (!pickedRect || pickedRect.width < 1 || pickedRect.height < 1));
   }
   function beginAnnotation(): void {
     if (zoomPending) return;
@@ -230,18 +234,30 @@ export function createWorkbenchBrowser(options: {
     const tab = controller.tab(); if (!tab) return;
     details.open = false; showDownloads(false, false);
     const target = { ...options.getDestination() };
-    const resume = annotationDraft && annotationDraft.context.runtimeId === controller.state.runtime?.runtimeId && annotationDraft.context.tab.tabId === tab.tabId && annotationDraft.context.tab.navigationEpoch === tab.navigationEpoch && annotationDraft.context.tab.runtimeGeneration === tab.runtimeGeneration && annotationDraft.context.tab.nativeTargetId === tab.nativeTargetId && annotationDraft.context.tab.controllerEpoch === tab.controllerEpoch && annotationDraft.context.destination.threadId === target.threadId && annotationDraft.context.destination.projectId === target.projectId && annotationDraft.context.destination.documentId === target.documentId ? annotationDraft : null;
-    pinned = resume?.context ?? { runtimeId: controller.state.runtime?.runtimeId, destination: target, tab: { ...tab }, frame: controller.frame() };
-    annotationMode = resume?.mode ?? 'page'; comment.value = resume?.comment ?? ''; pickedPoint = resume?.point ?? null; pickedRect = resume?.rect ?? null;
-    destination.textContent = pinned.destination.label || pinned.destination.threadId;
-    annotation.hidden = false; annotate.setAttribute('aria-expanded', 'true'); annotationStatus.textContent = ''; comment.focus(); paintAnnotation(); layout();
-    if (!resume) handle(controller.readFrame(true).then(() => { if (pinned && pinned.tab.tabId === tab.tabId && pinned.tab.navigationEpoch === controller.tab()?.navigationEpoch) { pinned.frame = controller.frame(); paint(); } }));
+    const resume = annotationDraft && annotationDraft.runtimeId === controller.state.runtime?.runtimeId && annotationDraft.tab.tabId === tab.tabId && annotationDraft.tab.navigationEpoch === tab.navigationEpoch && annotationDraft.tab.controllerEpoch === tab.controllerEpoch && annotationDraft.tab.runtimeGeneration === tab.runtimeGeneration && annotationDraft.tab.nativeTargetId === tab.nativeTargetId && annotationDraft.zoomFactor === (tabZoom.get(tab.tabId) ?? tab.zoomFactor ?? 1) && annotationDraft.destination.threadId === target.threadId && annotationDraft.destination.projectId === target.projectId && annotationDraft.destination.documentId === target.documentId ? annotationDraft : null;
+    const context: AnnotationContext = { runtimeId: controller.state.runtime?.runtimeId, destination: target, tab: { ...tab }, zoomFactor: tabZoom.get(tab.tabId) ?? tab.zoomFactor ?? 1, frame: null, frozen: null };
+    pinned = context;
+    annotationMode = resume?.mode ?? 'page'; comment.value = resume?.comment ?? ''; pickedPoint = null; pickedRect = null; pickedElement = null; hoveredElement = null;
+    destination.textContent = target.label || target.threadId;
+    annotation.hidden = false; annotate.setAttribute('aria-expanded', 'true'); annotationStatus.textContent = '페이지를 캡처하고 있습니다…'; comment.focus(); paintAnnotation(); paint(); layout();
+    handle(controller.action('freeze', controller.identity(context.tab)).then(response => {
+      const frozen = response.frozen;
+      if (!frozen) throw new Error('페이지를 캡처하지 못했습니다. 다시 시도해 주세요.');
+      if (pinned !== context || disposed) { handle(controller.request('release-freeze', { tabId: context.tab.tabId, freezeId: frozen.freezeId })); return; }
+      context.frozen = frozen; context.frame = frozen.frame;
+      annotationStatus.textContent = ''; surface.scrollLeft = 0; surface.scrollTop = 0; paintAnnotation(); paint();
+      // 캡처 당시 읽던 위치를 복원하되 이후 스크롤은 저장한 이미지만 움직인다.
+      requestAnimationFrame(() => { if (pinned === context) { const scale = image.getBoundingClientRect().width / frozen.frame.width; surface.scrollLeft = frozen.viewport.scrollX * scale; surface.scrollTop = frozen.viewport.scrollY * scale; } });
+      freezeExpiry = setTimeout(() => { if (pinned === context) { annotationStatus.textContent = '캡처 시간이 지났습니다. 의견을 닫고 페이지를 다시 캡처해 주세요.'; context.frozen = null; context.frame = null; pickedElement = null; paintAnnotation(); paint(); } }, Math.max(0, frozen.expiresAt - Date.now()));
+    }).catch(failure => { if (pinned === context) { annotationStatus.textContent = failure instanceof Error ? failure.message : String(failure); paintAnnotation(); } }));
   }
   function endAnnotation(restoreFocus = true): void {
     if (!pinned) return;
-    annotationDraft = { context: pinned, mode: annotationMode, comment: comment.value, point: pickedPoint, rect: pickedRect };
-    pinned = null; annotation.hidden = true; annotate.setAttribute('aria-expanded', 'false'); surface.classList.remove('ag-browser-picking'); selection.hidden = true; pointerStart = null; layout();
-    paintZoom();
+    annotationDraft = { runtimeId: pinned.runtimeId, tab: pinned.tab, zoomFactor: pinned.zoomFactor, destination: pinned.destination, mode: annotationMode, comment: comment.value };
+    if (pinned.frozen) handle(controller.request('release-freeze', { tabId: pinned.tab.tabId, freezeId: pinned.frozen.freezeId }));
+    if (freezeExpiry) clearTimeout(freezeExpiry); freezeExpiry = null;
+    pinned = null; annotation.hidden = true; annotate.setAttribute('aria-expanded', 'false'); surface.classList.remove('ag-browser-picking', 'ag-browser-frozen'); selection.hidden = true; hoverSelection.hidden = true; pointerStart = null; pickedElement = null; hoveredElement = null; surface.scrollTop = 0; surface.scrollLeft = 0; layout();
+    paint(); paintZoom();
     if (restoreFocus) annotate.focus({ preventScroll: true });
   }
   function showDownloads(open: boolean, restoreFocus = true): void {
@@ -251,12 +267,12 @@ export function createWorkbenchBrowser(options: {
   }
   function nativeOverlayOpen(): boolean { return Boolean(pinned || details.open || !downloads.hidden); }
   async function capture(): Promise<void> {
-    const context = pinned; if (!context) return;
-    const captureRequest = { mode: annotationMode, comment: comment.value, point: pickedPoint ? { ...pickedPoint } : null, rect: pickedRect ? { ...pickedRect } : null };
+    const context = pinned; if (!context?.frozen) return;
+    const captureRequest = { mode: annotationMode, comment: comment.value, elementId: pickedElement?.elementId, rect: pickedRect ? { ...pickedRect } : null };
     save.disabled = true; annotationStatus.textContent = '자료를 저장하고 있습니다…';
     try {
-      const response = await controller.action('capture', { ...controller.identity(context.tab), mode: captureRequest.mode, point: captureRequest.point, rect: captureRequest.rect,
-        comment: captureRequest.comment, frameId: context.frame?.frameId, destinationThreadId: context.destination.threadId });
+      const response = await controller.action('capture', { ...controller.identity(context.tab), mode: captureRequest.mode, elementId: captureRequest.elementId, rect: captureRequest.rect,
+        comment: captureRequest.comment, freezeId: context.frozen.freezeId, destinationThreadId: context.destination.threadId });
       const evidence = response.capture && typeof response.capture === 'object' ? response.capture as Record<string, unknown> : response;
       const screenshotError = evidence.screenshotError as { message?: string } | undefined;
       const draft = await saveBrowserCaptureDraft({ destination: context.destination, tab: context.tab, frame: context.frame,
@@ -270,7 +286,7 @@ export function createWorkbenchBrowser(options: {
     }
   }
   function point(event: { clientX: number; clientY: number }): { x: number; y: number } | null {
-    const frame = pinned?.frame ?? controller.frame(); if (!frame) return null;
+    const frame = pinned ? pinned.frame : controller.frame(); if (!frame) return null;
     const rect = image.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     const x = (event.clientX - rect.left) * frame.width / rect.width;
@@ -278,10 +294,18 @@ export function createWorkbenchBrowser(options: {
     return x < 0 || y < 0 || x > frame.width || y > frame.height ? null : { x, y };
   }
   function paintSelection(): void {
-    selection.hidden = !pinned || annotationMode !== 'region' || !pickedRect;
-    if (selection.hidden || !pickedRect || !pinned?.frame) return;
-    const frame = pinned.frame; const rect = image.getBoundingClientRect(); const host = surface.getBoundingClientRect();
-    Object.assign(selection.style, { left: `${rect.left - host.left + pickedRect.x * rect.width / frame.width}px`, top: `${rect.top - host.top + pickedRect.y * rect.height / frame.height}px`, width: `${pickedRect.width * rect.width / frame.width}px`, height: `${pickedRect.height * rect.height / frame.height}px` });
+    const selected = annotationMode === 'element' ? pickedElement?.rect : annotationMode === 'region' ? pickedRect : null;
+    function outline(node: HTMLElement, bounds: typeof pickedRect | undefined): void {
+      node.hidden = !pinned?.frame || !bounds;
+      if (node.hidden || !bounds || !pinned?.frame) return;
+      const frame = pinned.frame; const rect = image.getBoundingClientRect(); const host = surface.getBoundingClientRect();
+      Object.assign(node.style, { left: `${rect.left - host.left + surface.scrollLeft + bounds.x * rect.width / frame.width}px`, top: `${rect.top - host.top + surface.scrollTop + bounds.y * rect.height / frame.height}px`, width: `${bounds.width * rect.width / frame.width}px`, height: `${bounds.height * rect.height / frame.height}px` });
+    }
+    outline(selection, selected); outline(hoverSelection, annotationMode === 'element' ? hoveredElement?.rect : null);
+  }
+  function frozenElementAt(at: { x: number; y: number }): BrowserFrozenElement | null {
+    const hits = pinned?.frozen?.elements.filter(({ rect }) => at.x >= rect.x && at.y >= rect.y && at.x <= rect.x + rect.width && at.y <= rect.y + rect.height) ?? [];
+    return hits.sort((a, b) => b.depth - a.depth || a.rect.width * a.rect.height - b.rect.width * b.rect.height)[0] ?? null;
   }
   function sendInput(args: Record<string, unknown>): void {
     const tab = controller.tab();
@@ -297,7 +321,7 @@ export function createWorkbenchBrowser(options: {
   surface.addEventListener('pointerdown', event => {
     const at = point(event); if (!at) return;
     if (pinned) {
-      if (annotationMode === 'element') { pickedPoint = at; pickedRect = null; paintAnnotation(); }
+      if (annotationMode === 'element') { pickedPoint = at; pickedElement = frozenElementAt(at); pickedRect = null; paintAnnotation(); }
       if (annotationMode === 'region') { pointerStart = at; surface.setPointerCapture(event.pointerId); selection.hidden = false; }
       event.preventDefault(); return;
     }
@@ -306,6 +330,7 @@ export function createWorkbenchBrowser(options: {
   });
   surface.addEventListener('pointermove', event => {
     const at = point(event); if (!at) return;
+    if (pinned && annotationMode === 'element') { hoveredElement = frozenElementAt(at); paintSelection(); }
     if (pointerStart && pinned) {
       pickedRect = { x: Math.min(at.x, pointerStart.x), y: Math.min(at.y, pointerStart.y), width: Math.abs(at.x - pointerStart.x), height: Math.abs(at.y - pointerStart.y) };
       paintSelection();
@@ -319,6 +344,9 @@ export function createWorkbenchBrowser(options: {
     if (surface.hasPointerCapture(event.pointerId)) surface.releasePointerCapture(event.pointerId);
   });
   surface.addEventListener('pointercancel', () => { pointerStart = null; sendInput({ type: 'release' }); });
+  surface.addEventListener('pointerleave', () => { hoveredElement = null; paintSelection(); });
+  surface.addEventListener('scroll', paintSelection);
+  image.addEventListener('load', paintSelection);
   surface.addEventListener('wheel', event => {
     if (!controller.tab() || pinned) return;
     event.preventDefault(); sendInput({ type: 'wheel', event: 'move', ...point(event), deltaX: event.deltaX, deltaY: event.deltaY });
@@ -469,7 +497,10 @@ export function createWorkbenchBrowser(options: {
   }
   function paint(): void {
     if (disposed) return;
-    const tab = controller.tab(); const frame = pinned?.frame ?? controller.frame(); const connected = controller.state.connected;
+    const tab = controller.tab(); const connected = controller.state.connected;
+    if (pinned && (!connected || pinned.runtimeId !== controller.state.runtime?.runtimeId || pinned.tab.tabId !== tab?.tabId || pinned.tab.navigationEpoch !== tab.navigationEpoch || pinned.tab.controllerEpoch !== tab.controllerEpoch || pinned.tab.nativeTargetId !== tab.nativeTargetId || pinned.tab.runtimeGeneration !== tab.runtimeGeneration || pinned.zoomFactor !== (tabZoom.get(tab.tabId) ?? tab.zoomFactor ?? 1))) { endAnnotation(false); return; }
+    const frame = pinned ? pinned.frame : controller.frame();
+    surface.classList.toggle('ag-browser-frozen', Boolean(pinned?.frame));
     challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
     fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
     status.textContent = reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'loading' ? '페이지 여는 중' : '에이전트 브라우저';
@@ -560,7 +591,7 @@ export function createWorkbenchBrowser(options: {
       else if (presentation.current() === 'dock') presentation.hide();
     },
     float() { nativePopout = false; presentation.present('float'); handle(controller.refresh().then(() => controller.readFrame())); },
-    dispose() { document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
+    dispose() { endAnnotation(false); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
   };
 }
 export type WorkbenchBrowser = ReturnType<typeof createWorkbenchBrowser>;
