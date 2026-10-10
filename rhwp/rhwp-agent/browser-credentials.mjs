@@ -54,6 +54,8 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
   let dataResetter;
   let resetting = false;
   let dataGeneration = 0;
+  let checkpointEpoch = 0;
+  let checkpointMutations = 0;
   const requests = new Map();
   const handles = new Map();
   const activeUses = new Map();
@@ -86,6 +88,14 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
   function emit(event) { try { onEvent(event); } catch {} }
   function assertNotResetting() {
     if (resetting || state?.resetPending) throw failure('BROWSER_RESET_INCOMPLETE', 'Browser data cleanup must finish before saved sessions can be used. Retry cleanup in Browser settings.');
+  }
+  async function mutateCheckpoints(operation) {
+    checkpointEpoch++; checkpointMutations++;
+    try { return await operation(); }
+    finally { checkpointEpoch++; checkpointMutations--; }
+  }
+  function assertCheckpointEpoch(epoch) {
+    if (checkpointMutations || checkpointEpoch !== epoch) throw failure('BROWSER_AUTH_CHECKPOINT_INVALIDATED', 'The browser authentication checkpoint was cancelled by an account change.');
   }
   function invalidateAccount(id) {
     for (const [key, handle] of handles) if (handle.accountId === id) handles.delete(key);
@@ -397,16 +407,18 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
   }
   async function revokeAccount({ actor, accountId } = {}) {
     human(actor);
-    return serialized(async () => {
-      const account = findAccount(accountId);
-      for (const linked of linkedAccounts(account)) {
-        invalidateAccount(linked.id);
-        await policy.update({ actor, operation: 'revoke-account', accountId: linked.id, origins: linked.origins, profileId: linked.profileId });
-        await authStore.deleteCheckpoint(linked.profileId);
-      }
-      const safeAccount = await metadata(account);
-      emit({ type: 'browser-account-changed', account: safeAccount });
-      return { account: safeAccount };
+    return mutateCheckpoints(async () => {
+      return serialized(async () => {
+        const account = findAccount(accountId);
+        for (const linked of linkedAccounts(account)) {
+          invalidateAccount(linked.id);
+          await policy.update({ actor, operation: 'revoke-account', accountId: linked.id, origins: linked.origins, profileId: linked.profileId });
+          await authStore.deleteCheckpoint(linked.profileId);
+        }
+        const safeAccount = await metadata(account);
+        emit({ type: 'browser-account-changed', account: safeAccount });
+        return { account: safeAccount };
+      });
     });
   }
   async function clearSession(account) {
@@ -417,52 +429,59 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
   }
   async function signOut({ actor, accountId } = {}) {
     human(actor);
-    await readyPromise;
-    assertNotResetting();
-    const target = clone(findAccount(accountId));
-    const linked = linkedAccounts(target).map(clone);
-    linked.forEach((entry) => invalidateAccount(entry.id));
-    await drainWrites(linked.map((entry) => entry.id));
-    const results = [];
-    for (const entry of linked) results.push(await clearSession(entry));
-    const cleared = { clearedDomains: results.flatMap((entry) => entry.clearedDomains ?? []), clearedOrigins: results.flatMap((entry) => entry.clearedOrigins ?? []) };
-    return serialized(async () => {
-      const account = findAccount(accountId);
-      invalidateAccount(account.id);
-      const clearedDomains = (cleared.clearedDomains ?? []).map(normalizedDomain);
-      const clearedOrigins = (cleared.clearedOrigins ?? []).map(browserOrigin);
-      const affected = state.accounts.filter((entry) => linked.some((item) => item.profileId === entry.profileId) && entry.origins.some((origin) => account.origins.includes(origin) || clearedOrigins.includes(origin) || clearedDomains.some((domain) => domainMatches(origin, domain))));
-      const affectedIds = new Set(affected.map((entry) => entry.id));
-      for (const id of affectedIds) invalidateAccount(id);
-      await drainWrites([...affectedIds]);
-      const updatedAt = new Date(now()).toISOString();
-      const next = { ...state, accounts: state.accounts.map((entry) => affectedIds.has(entry.id) ? { ...entry, sessionStatus: 'signed-out', version: entry.version + 1, updatedAt } : entry) };
-      await writeBrowserJson(filePath, next); state = next;
-      const affectedAccounts = await Promise.all(state.accounts.filter((entry) => affectedIds.has(entry.id)).map(metadata));
-      for (const record of affectedAccounts) emit({ type: 'browser-account-changed', account: record });
-      return { account: affectedAccounts.find((entry) => entry.id === account.id), affectedAccounts };
+    return mutateCheckpoints(async () => {
+      await readyPromise;
+      assertNotResetting();
+      const target = clone(findAccount(accountId));
+      const linked = linkedAccounts(target).map(clone);
+      linked.forEach((entry) => invalidateAccount(entry.id));
+      await drainWrites(linked.map((entry) => entry.id));
+      const results = [];
+      for (const entry of linked) results.push(await clearSession(entry));
+      const cleared = { clearedDomains: results.flatMap((entry) => entry.clearedDomains ?? []), clearedOrigins: results.flatMap((entry) => entry.clearedOrigins ?? []) };
+      return serialized(async () => {
+        const account = findAccount(accountId);
+        invalidateAccount(account.id);
+        const clearedDomains = (cleared.clearedDomains ?? []).map(normalizedDomain);
+        const clearedOrigins = (cleared.clearedOrigins ?? []).map(browserOrigin);
+        const affected = state.accounts.filter((entry) => linked.some((item) => item.profileId === entry.profileId) && entry.origins.some((origin) => account.origins.includes(origin) || clearedOrigins.includes(origin) || clearedDomains.some((domain) => domainMatches(origin, domain))));
+        const affectedIds = new Set(affected.map((entry) => entry.id));
+        for (const id of affectedIds) invalidateAccount(id);
+        await drainWrites([...affectedIds]);
+        const updatedAt = new Date(now()).toISOString();
+        const next = { ...state, accounts: state.accounts.map((entry) => affectedIds.has(entry.id) ? { ...entry, sessionStatus: 'signed-out', version: entry.version + 1, updatedAt } : entry) };
+        await writeBrowserJson(filePath, next); state = next;
+        const affectedAccounts = await Promise.all(state.accounts.filter((entry) => affectedIds.has(entry.id)).map(metadata));
+        for (const record of affectedAccounts) emit({ type: 'browser-account-changed', account: record });
+        return { account: affectedAccounts.find((entry) => entry.id === account.id), affectedAccounts };
+      });
     });
   }
   async function forgetAccount({ actor, accountId } = {}) {
     human(actor);
-    await revokeAccount({ actor, accountId });
-    await signOut({ actor, accountId });
-    return serialized(async () => {
-      const account = findAccount(accountId);
-      const linked = linkedAccounts(account);
-      for (const entry of linked) { invalidateAccount(entry.id); await deletePassword(entry.id); }
-      const ids = new Set(linked.map((entry) => entry.id));
-      const next = { ...state, accounts: state.accounts.filter((entry) => !ids.has(entry.id)) };
-      await writeBrowserJson(filePath, next); state = next;
-      for (const entry of linked) {
-        await policy.update({ actor, operation: 'forget-account', accountId: entry.id });
-        emit({ type: 'browser-account-forgotten', accountId: entry.id });
-      }
-      return { forgotten: true, accountId: account.id };
+    return mutateCheckpoints(async () => {
+      await revokeAccount({ actor, accountId });
+      await signOut({ actor, accountId });
+      return serialized(async () => {
+        const account = findAccount(accountId);
+        const linked = linkedAccounts(account);
+        for (const entry of linked) { invalidateAccount(entry.id); await deletePassword(entry.id); }
+        const ids = new Set(linked.map((entry) => entry.id));
+        const next = { ...state, accounts: state.accounts.filter((entry) => !ids.has(entry.id)) };
+        await writeBrowserJson(filePath, next); state = next;
+        for (const entry of linked) {
+          await policy.update({ actor, operation: 'forget-account', accountId: entry.id });
+          emit({ type: 'browser-account-forgotten', accountId: entry.id });
+        }
+        return { forgotten: true, accountId: account.id };
+      });
     });
   }
   async function saveCheckpoint({ profileId = 'default', state: storageState } = {}) {
+    const epoch = checkpointEpoch;
+    assertCheckpointEpoch(epoch);
     await readyPromise;
+    assertCheckpointEpoch(epoch);
     assertNotResetting();
     const checkpointGeneration = dataGeneration;
     if (!storageState || !Array.isArray(storageState.cookies) || !Array.isArray(storageState.origins)) throw failure('BROWSER_AUTH_CHECKPOINT_INVALID', 'The browser session checkpoint is invalid.');
@@ -477,17 +496,20 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     assertNotResetting();
     if (checkpointGeneration !== dataGeneration) throw failure('BROWSER_RESET_INCOMPLETE', 'The browser authentication checkpoint was cancelled by cleanup.');
     const accounts = state.accounts.filter((account) => account.profileId === profileId).map((account) => ({ id: account.id, version: account.version, sessionVersion: account.sessionVersion ?? 0, policyVersion: currentPolicy.accounts.find((entry) => entry.accountId === account.id)?.version ?? 0 }));
+    assertCheckpointEpoch(epoch);
     await authStore.saveCheckpoint(profileId, { schema: 1, profileId, accounts, state: checkpointState });
     return { saved: true };
   }
   async function restoreCheckpoint({ profileId = 'default' } = {}) {
+    const epoch = checkpointEpoch;
     await readyPromise;
-    if (resetting || state.resetPending) return null;
+    if (checkpointMutations || checkpointEpoch !== epoch || resetting || state.resetPending) return null;
     const checkpointGeneration = dataGeneration;
     const saved = await authStore.restoreCheckpoint(profileId);
-    if (resetting || state.resetPending || checkpointGeneration !== dataGeneration) return null;
+    if (checkpointMutations || checkpointEpoch !== epoch || resetting || state.resetPending || checkpointGeneration !== dataGeneration) return null;
     if (!saved) return null;
     const currentPolicy = await policy.list();
+    if (checkpointMutations || checkpointEpoch !== epoch || resetting || state.resetPending || checkpointGeneration !== dataGeneration) return null;
     const currentAccounts = state.accounts.filter((account) => account.profileId === profileId);
     if (saved.schema !== 1 || saved.profileId !== profileId || !Array.isArray(saved.accounts)
       || saved.accounts.length !== currentAccounts.length || saved.accounts.some((entry) => {
@@ -499,7 +521,7 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
       await authStore.deleteCheckpoint(profileId);
       return null;
     }
-    return resetting || state.resetPending || checkpointGeneration !== dataGeneration ? null : saved.state;
+    return checkpointMutations || checkpointEpoch !== epoch || resetting || state.resetPending || checkpointGeneration !== dataGeneration ? null : saved.state;
   }
   async function getConfiguration() {
     await readyPromise;
