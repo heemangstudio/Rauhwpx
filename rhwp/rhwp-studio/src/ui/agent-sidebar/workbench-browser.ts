@@ -170,7 +170,7 @@ export function createWorkbenchBrowser(options: {
   let lastInputAt = -Infinity;
   const presentation = createBrowserPresentation(element, (mode) => {
     if (mode === 'float' || mode === null) { details.open = false; endAnnotation(false); showDownloads(false, false); }
-    visible = mode !== null; paint(); scheduleFrame(); void projectNative();
+    visible = mode !== null; watchNativeVisibility(); paint(); scheduleFrame(); void projectNative();
   }, () => { layout(); }, options.onDock);
   function navigate(direction: string): void {
     if (!controller.tab()) return;
@@ -351,13 +351,14 @@ export function createWorkbenchBrowser(options: {
   }
   async function attachNative(placement: Parameters<NonNullable<ReturnType<typeof nativeBrowserApi>>['attach']>[0]): Promise<boolean> {
     const native = nativeBrowserApi()!;
-    if (disposed || !visible || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
+    if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
     try { await native.attach(placement); }
     catch (failure) {
       const message = failure instanceof Error ? failure.message : String(failure);
       if (!/Native browser tab is unavailable|presentation (navigation|target) is stale/.test(message)) throw failure;
+      if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
       await controller.request('reconnect', { tabId: placement.tabId });
-      if (disposed || !visible || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
+      if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
       await native.attach({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, interactive: true });
     }
     return true;
@@ -368,8 +369,12 @@ export function createWorkbenchBrowser(options: {
     const tab = controller.tab(); const sequence = ++nativeSequence;
     const target = tab?.tabId;
     const useNative = tab && (tab.runtime === 'native' || controller.state.runtime?.kind === 'native');
-    if (nativeTab && (!visible || nativeOverlayOpen() || !useNative || nativeTab !== target)) { const previous = nativeTab; nativeTab = null; nativeProjection = ''; await native.detach({ tabId: previous }).catch(() => undefined); }
-    if (disposed || sequence !== nativeSequence || !visible || nativeOverlayOpen() || !useNative || !target || nativePopout) return;
+    if (nativeTab && (!nativeSurfaceVisible() || nativeOverlayOpen() || !useNative || nativeTab !== target)) {
+      const previous = nativeTab; nativeTab = null; nativeProjection = '';
+      nativePending = native.detach({ tabId: previous }).then(() => false, () => false);
+      try { await nativePending; } finally { nativePending = null; layout(); }
+    }
+    if (disposed || sequence !== nativeSequence || !nativeSurfaceVisible() || nativeOverlayOpen() || !useNative || !target || nativePopout) return;
     const rect = surface.getBoundingClientRect(); if (rect.width < 1 || rect.height < 1) return;
     nativeTab = target;
     const placement = { tabId: target, expectedTargetId: tab.nativeTargetId, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, mode: presentation.current() ?? 'dock', interactive: true };
@@ -380,11 +385,11 @@ export function createWorkbenchBrowser(options: {
     nativePending = attachNative(placement);
     paint();
     try {
-      await nativePending;
-      if (disposed || !visible || nativeOverlayOpen() || controller.tab()?.tabId !== target || nativePopout) { await native.detach({ tabId: target }).catch(() => undefined); nativeTab = null; nativeProjection = ''; }
+      const attached = await nativePending;
+      if (!attached || disposed || sequence !== nativeSequence || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== target || nativePopout) { await native.detach({ tabId: target }).catch(() => undefined); nativeTab = null; nativeProjection = ''; }
       else { nativeProjection = signature(); nativeFailedProjection = ''; nativeError = null; errorMessage.textContent = controller.state.error ?? ''; error.hidden = !controller.state.error; }
     } catch {
-      if (!disposed && controller.tab()?.tabId === target && sequence === nativeSequence) { nativeTab = null; nativeProjection = ''; nativeFailedProjection = identity(); nativeError = '브라우저 화면을 연결하지 못했습니다. 다시 연결해 주세요.'; errorMessage.textContent = nativeError; error.hidden = false; }
+      if (!disposed && nativeSurfaceVisible() && controller.tab()?.tabId === target && sequence === nativeSequence) { nativeTab = null; nativeProjection = ''; nativeFailedProjection = identity(); nativeError = '브라우저 화면을 연결하지 못했습니다. 다시 연결해 주세요.'; errorMessage.textContent = nativeError; error.hidden = false; }
     } finally { nativePending = null; paint(); layout(); }
   }
   let layoutFrame: number | null = null;
@@ -392,6 +397,25 @@ export function createWorkbenchBrowser(options: {
     if (layoutFrame !== null || disposed) return;
     layoutFrame = requestAnimationFrame(() => { layoutFrame = null; const host = element.getBoundingClientRect(); const bar = toolbar.getBoundingClientRect(); paintSelection(); element.style.setProperty('--browser-popover-top', `${bar.bottom - host.top + 6}px`); element.style.setProperty('--browser-popover-height', `${Math.max(80, host.bottom - bar.bottom - 14)}px`); void projectNative(); });
   };
+  function nativeSurfaceVisible(): boolean {
+    return visible && surface.isConnected && !document.documentElement.classList.contains('document-home-open')
+      && getComputedStyle(surface).visibility === 'visible' && surface.getClientRects().length > 0;
+  }
+  let nativeSurfaceWasVisible = false;
+  // 홈은 레이아웃을 유지한 채 부모만 가리므로 크기 관찰과 별도로 표시 상태를 확인한다.
+  const visibilityObserver = new MutationObserver(watchNativeVisibility);
+  function watchNativeVisibility(): void {
+    visibilityObserver.disconnect();
+    if (disposed) return;
+    const next = nativeSurfaceVisible();
+    if (next !== nativeSurfaceWasVisible) {
+      nativeSurfaceWasVisible = next; ++nativeSequence; nativeProjection = ''; layout();
+    }
+    for (let parent: HTMLElement | null = surface; parent; parent = parent.parentElement) {
+      visibilityObserver.observe(parent, { attributes: true, attributeFilter: ['class', 'style', 'hidden', 'inert'], childList: true });
+    }
+    if (!surface.isConnected) visibilityObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+  }
   const resizeObserver = new ResizeObserver(layout); resizeObserver.observe(surface);
   window.addEventListener('scroll', layout, true); window.addEventListener('resize', layout);
   function scheduleFrame(): void {
@@ -480,13 +504,13 @@ export function createWorkbenchBrowser(options: {
     activeTab(): string | null { return controller.tab() ? `browser:${controller.tab()!.tabId}` : null; },
     selectTab(id: string) { controller.select(id.slice('browser:'.length)); },
     closeTab(id: string) { handle(controller.close(id.slice('browser:'.length))); },
-    mount(host: HTMLElement) { presentation.mount(host); },
+    mount(host: HTMLElement) { presentation.mount(host); watchNativeVisibility(); layout(); },
     setVisible(next: boolean) {
       if (next) { if (presentation.current() !== 'float' && presentation.current() !== 'popout') presentation.present('dock'); handle(controller.refresh().then(() => controller.readFrame())); }
       else if (presentation.current() === 'dock') presentation.hide();
     },
     float() { nativePopout = false; presentation.present('float'); handle(controller.refresh().then(() => controller.readFrame())); },
-    dispose() { document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
+    dispose() { document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
   };
 }
 export type WorkbenchBrowser = ReturnType<typeof createWorkbenchBrowser>;
