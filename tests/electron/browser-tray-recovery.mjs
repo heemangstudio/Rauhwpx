@@ -55,6 +55,10 @@ try {
   assert.equal(requests, initialRequests, 'healthy hide/reopen and reconnect never reload the document');
   host.attach(window, placement);
   const capture = tab.view.webContents.capturePage.bind(tab.view.webContents);
+  let firstWhite = true;
+  tab.view.webContents.capturePage = async () => { if (firstWhite) { firstWhite = false; return nativeImage.createFromBitmap(Buffer.alloc(20 * 20 * 4, 255), { width: 20, height: 20 }); } return capture(); };
+  assert.equal((await host.presentationState(window, placement)).presentationHealth, 'ready', 'a white first compositor frame gets a fresh paint before recovery');
+  assert.equal(requests, initialRequests);
   tab.view.webContents.capturePage = async () => nativeImage.createEmpty();
   assert.equal((await host.presentationState(window, placement)).presentationHealth, 'paint-timeout');
   tab.view.webContents.capturePage = async () => nativeImage.createFromBitmap(Buffer.alloc(20 * 20 * 4, 255), { width: 20, height: 20 });

@@ -413,15 +413,24 @@ export class OwnedBrowserHost {
     // 비밀 보호 페이지는 캡처 경로를 열지 않는다. 픽셀이나 본문은 반환하지 않는다.
     if (tab.passwordShield || contents.getURL() === 'about:blank') return result('ready');
     let timer; let accepting = true;
+    const whiteFrame = image => {
+      if (!image || image.isEmpty()) return false;
+      const bitmap = image.toBitmap();
+      if (!bitmap.length) return false;
+      for (let offset = 0; offset < bitmap.length; offset += 4) {
+        if (bitmap[offset] < 248 || bitmap[offset + 1] < 248 || bitmap[offset + 2] < 248 || !bitmap[offset + 3]) return false;
+      }
+      return true;
+    };
     const capture = async () => {
       if (!accepting || !current() || tab.passwordShield) return null;
-      try { return await contents.capturePage(); } catch { return null; }
+      try { return await contents.capturePage({}, { stayAwake: true }); } catch { return null; }
     };
     try {
       const paint = async () => {
         await this.viewport(tab, tab.view.getBounds());
         let image = await capture();
-        if ((!image || image.isEmpty()) && accepting && current() && !tab.passwordShield) {
+        if ((!image || image.isEmpty() || whiteFrame(image)) && accepting && current() && !tab.passwordShield) {
           // 첫 부착 프레임은 아직 비어 있을 수 있다. 다시 열기 전에 합성을 기다린다.
           await contents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
           image = await capture();
@@ -434,12 +443,7 @@ export class OwnedBrowserHost {
       if (!current()) return result('unavailable');
       if (tab.passwordShield) return result('ready');
       if (!image || image.isEmpty()) return result('paint-timeout');
-      const bitmap = image.toBitmap();
-      let white = bitmap.length > 0;
-      for (let offset = 0; white && offset < bitmap.length; offset += 4) {
-        white = bitmap[offset] >= 248 && bitmap[offset + 1] >= 248 && bitmap[offset + 2] >= 248 && bitmap[offset + 3] > 0;
-      }
-      if (!white) return result('ready');
+      if (!whiteFrame(image)) return result('ready');
       // 흰 화면만으로 정상 빈 문서를 다시 열지 않는다. 예상되는 가시 콘텐츠 유무만 확인한다.
       if (!current() || tab.passwordShield) return result(tab.passwordShield ? 'ready' : 'unavailable');
       const expectedPaint = await Promise.race([
