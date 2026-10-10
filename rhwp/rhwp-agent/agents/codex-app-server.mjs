@@ -865,16 +865,24 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     if (attachedGeneration === generation) return;
     let result;
     if (threadId) {
-      result = await connection.request('thread/resume', {
-        threadId,
-        model: opts.model ?? DEFAULT_CODEX_MODEL,
-        cwd: opts.rootDir,
-        approvalPolicy: 'never',
-        sandbox: sandboxMode(opts),
-        developerInstructions: systemBriefFor(opts, 'codex'),
-        excludeTurns: true,
-      });
-    } else {
+      try {
+        result = await connection.request('thread/resume', {
+          threadId,
+          model: opts.model ?? DEFAULT_CODEX_MODEL,
+          cwd: opts.rootDir,
+          approvalPolicy: 'never',
+          sandbox: sandboxMode(opts),
+          developerInstructions: systemBriefFor(opts, 'codex'),
+          excludeTurns: true,
+        });
+      } catch (error) {
+        // Codex writes a thread's rollout only after its first turn. A mode switch can restart
+        // app-server before that, so the resume finds nothing; the thread has no history to keep.
+        if (!/no rollout found/i.test(String(error?.message ?? error))) throw error;
+        result = null;
+      }
+    }
+    if (!result) {
       result = await connection.request('thread/start', {
         model: opts.model ?? DEFAULT_CODEX_MODEL,
         cwd: opts.rootDir,

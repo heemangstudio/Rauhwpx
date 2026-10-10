@@ -893,6 +893,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let planDraftPill: HTMLElement | null = null;
   /** 다음 전송의 요청 본문 뒤에만 붙이는 지시. 대화에는 보이지 않는다. */
   let hiddenRequestInstruction: string | null = null;
+  let refocusInputWhenEnabled = false;
+  /** Shift+Tab 으로 고르는 중인 모드. 칩에만 먼저 보이고, 누르기를 멈추면 한 번만 바꾼다. */
+  let keyboardModeTarget: AgentMode | null = null;
+  let keyboardModeTimer: number | null = null;
   /** 기록에서 연 계획은 표시 전용이며 현재 계획 workflow 상태를 절대 나타내지 않는다. */
   let activePlanHistorical = false;
   let pendingReviewOpCount = 0;
@@ -1912,6 +1916,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     e.preventDefault();
   };
   document.addEventListener('keydown', onDocKeyDown);
+  /* 초점이 몸체로 떨어졌거나 입력기 안의 다른 단추에 있어도 Shift+Tab 은 모드를 돌린다.
+     브라우저 기본 동작대로 초점이 사이드바 밖으로 돌아다니지 않는다. */
+  const onDocShiftTab = (e: KeyboardEvent) => {
+    if (!active || e.key !== 'Tab' || !e.shiftKey || e.isComposing || e.altKey || e.metaKey || e.ctrlKey || e.defaultPrevented) return;
+    const focused = document.activeElement;
+    if (focused !== null && focused !== document.body && !composer.contains(focused)) return;
+    e.preventDefault();
+    cycleModeFromKeyboard();
+    if (!input.disabled) input.focus({ preventScroll: true });
+  };
+  document.addEventListener('keydown', onDocShiftTab);
 
   /* 에이전트 명령 — 네이티브 메뉴(rhwp:agent-command)와 같은 동작을
      macOS 에서는 ⌃⌘S(사이드바 보이기/숨기기)·⌃⌘J(집중 모드)로도 연다.
@@ -4272,7 +4287,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function updateModeChip(): void {
     const planRun = chatWorkflow === 'plan' && planningPhase === 'implementing';
     modeMenu.update({
-      mode: currentMode(),
+      mode: keyboardModeTarget ?? currentMode(),
       disabled: isControlLocked() || connState !== 'connected',
       hint: planRun ? '승인한 계획을 실행 중' : (chatModeLockReason ?? ''),
       chatOnlyReason: chatModeLockReason,
@@ -4287,6 +4302,37 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   async function requestMode(next: AgentMode): Promise<boolean> {
     if (modeBlockedByLock(next)) return false;
     return switchMode(next);
+  }
+
+  const KEYBOARD_MODE_ORDER: readonly AgentMode[] = ['chat', 'plan', 'agent', 'full'];
+
+  function cycleModeFromKeyboard(): void {
+    const from = keyboardModeTarget ?? currentMode();
+    const next = KEYBOARD_MODE_ORDER[(KEYBOARD_MODE_ORDER.indexOf(from) + 1) % KEYBOARD_MODE_ORDER.length];
+    if (draftChat) {
+      // 보내기 전 채팅은 허브를 거치지 않으므로 바로 바꾼다.
+      void requestMode(next);
+      return;
+    }
+    if (turnRunning || modeBlockedByLock(next)) return;
+    keyboardModeTarget = next;
+    updateModeChip();
+    if (keyboardModeTimer !== null) window.clearTimeout(keyboardModeTimer);
+    keyboardModeTimer = window.setTimeout(commitKeyboardMode, 450);
+  }
+
+  /** 연달아 누른 Shift+Tab 은 마지막 모드 하나로 허브에 보낸다. 앞선 전환이 끝나기를 기다린다. */
+  function commitKeyboardMode(): void {
+    keyboardModeTimer = null;
+    const target = keyboardModeTarget;
+    if (!target) return;
+    if (!turnRunning && isControlLocked()) {
+      keyboardModeTimer = window.setTimeout(commitKeyboardMode, 150);
+      return;
+    }
+    keyboardModeTarget = null;
+    if (turnRunning || target === currentMode()) updateModeChip();
+    else void requestMode(target);
   }
 
   /** 같은 문서의 다른 채팅이 편집하는 동안에는 채팅 말고는 고를 수 없다 — 칩이 이유를 보인다. */
@@ -4874,8 +4920,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // Shift+Tab 은 채팅 → 플랜 → 에이전트 → 전체 순서로 모드를 돌린다.
     if (e.key === 'Tab' && e.shiftKey && !e.isComposing && !e.altKey && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
-      const order: AgentMode[] = ['chat', 'plan', 'agent', 'full'];
-      void requestMode(order[(order.indexOf(currentMode()) + 1) % order.length]);
+      cycleModeFromKeyboard();
       return;
     }
     if (questionController.hasPending()) {
@@ -5049,6 +5094,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     e.preventDefault();
     const hiddenInstruction = hiddenRequestInstruction;
     hiddenRequestInstruction = null;
+    // 칩에만 보이던 Shift+Tab 모드를 보내기 전에 먼저 적용한다.
+    if (keyboardModeTarget) {
+      if (keyboardModeTimer !== null) window.clearTimeout(keyboardModeTimer);
+      commitKeyboardMode();
+    }
     composerRest.setResting(false);
     if (readOnlyDocLabel !== null || mergeResolverLocked) return;
     if (questionController.hasPending()) {
@@ -5781,6 +5831,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function renderMessagesFromThread(thread: ChatThread): void {
     scheduleWorkbenchAgents();
+    // 다른 채팅으로 옮기면 고르던 모드는 버린다.
+    if (keyboardModeTimer !== null) window.clearTimeout(keyboardModeTimer);
+    keyboardModeTimer = null;
+    keyboardModeTarget = null;
     composerRest.setResting(false);
     cancelPendingAssistantRender();
     resetConversation();
@@ -6948,9 +7002,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       const chatStarting = chatStartPendingThreadId !== null;
       const questionPending = questionController.hasPending();
       const questionUsesComposer = questionController.usesComposerForOther();
+      const inputHadFocus = document.activeElement === input;
       input.disabled = connState !== 'connected' || attachmentsSending || chatStarting
         || workflowTransitionPending || planActionPending
         || (questionPending && !questionUsesComposer);
+      // 모드 전환처럼 잠깐 잠기는 동안 풀린 초점은 다시 쓸 수 있게 되면 입력칸으로 돌려준다.
+      if (input.disabled && inputHadFocus) refocusInputWhenEnabled = true;
+      else if (!input.disabled && refocusInputWhenEnabled) {
+        refocusInputWhenEnabled = false;
+        if (document.activeElement === document.body || document.activeElement === null) input.focus({ preventScroll: true });
+      }
       send.disabled = connState !== 'connected' || attachmentsSending || chatStarting
         || workflowTransitionPending || planActionPending
         || (!questionPending && referenceLibrary.hasBlockingDrafts());
@@ -9575,6 +9636,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       document.removeEventListener('pointerdown', onCompactDrawerPointerDown, true);
       document.removeEventListener('focusin', onCompactDrawerFocusIn);
       document.removeEventListener('keydown', onDocKeyDown);
+      document.removeEventListener('keydown', onDocShiftTab);
       window.removeEventListener('keydown', onAgentShortcutKeyDown, true);
       window.removeEventListener('rhwp:agent-command', onAgentCommand);
       if (latestPillFrame !== null) window.cancelAnimationFrame(latestPillFrame);

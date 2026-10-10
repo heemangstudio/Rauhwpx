@@ -921,6 +921,32 @@ test('a resumed chat receives the current editing instructions after switching t
   await h.session.dispose();
 });
 
+test('a mode switch before the first turn starts a fresh thread when Codex has no rollout to resume', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    responder(frame, process) {
+      if (frame.method === 'thread/resume') {
+        process.send({ id: frame.id, error: { code: -32603, message: `no rollout found for thread id ${frame.params.threadId}` } });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+  await h.session.setExecutionMode({ workflow: 'plan', phase: 'planning', capabilityEpoch: 2 });
+  await h.session.setExecutionMode({ workflow: 'direct', phase: 'implementing', capabilityEpoch: 3 });
+  h.session.sendUserMessage('First after switching');
+  await settle(24);
+  const methods = h.spawns.at(-1).process.frames.map((frame) => frame.method);
+  const resumed = methods.indexOf('thread/resume');
+  assert.ok(resumed >= 0, 'the restarted app-server tries to resume the unrun thread');
+  assert.ok(methods.indexOf('thread/start', resumed) > resumed, 'it starts a fresh thread instead of failing');
+  assert.ok(methods.includes('turn/start'), 'the turn still starts');
+  assert.equal(h.events.some((event) => event.type === 'error'), false);
+  h.session.interrupt();
+  await settle();
+  await h.session.dispose();
+});
+
 test('mode changes restart app-server while idle, resume the thread, and select plan mode', async (t) => {
   const h = harness(t);
   h.session.sendUserMessage('First');
