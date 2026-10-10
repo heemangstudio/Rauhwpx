@@ -86,7 +86,16 @@ try {
   host.control({ tabId: 'tab-one', human: true });
   const floatContents = host.tab('tab-one').view.webContents;
   await page.locator('#draft').focus();
+  first.focus();
+  let resolveNativeFocus;
+  const nativeFocus = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Native fixture did not receive keyboard focus')), 2000);
+    resolveNativeFocus = () => { clearTimeout(timer); resolve(); };
+    floatContents.once('focus', resolveNativeFocus);
+  });
   floatContents.focus();
+  if (floatContents.isFocused()) resolveNativeFocus();
+  await nativeFocus;
   host.attach(first, { tabId: 'tab-one', bounds: { x: 24, y: 104, width: 500, height: 360 }, mode: 'float', interactive: true });
   assert.equal(floatContents.isFocused(), true, 'Moving the live view must preserve keyboard focus');
   floatContents.sendInputEvent({ type: 'keyDown', keyCode: 'X' });
@@ -261,6 +270,26 @@ try {
   })`);
   assert.equal(value, 'x');
   report.nativeDefaultRecovery = { native: true, currentEditorBinding: true, humanInput: true };
+  await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'control', { tabId: 'restored-tab', owner: 'agent' });
+  const retainedTarget = serviceHost.tab('restored-tab').targetId;
+  await service.close();
+  service = createOwnedBrowserService({ dataDir: serviceDir, nativeAdapter: adapter, workspaceTargets: [serviceOrigin] });
+  await service.restore();
+  await assert.rejects(service.request({ isHuman: false, threadId: 'chat-one', agentId: 'owner' }, 'reconnect', { tabId: 'restored-tab' }), { code: 'BROWSER_HUMAN_REQUIRED' });
+  const reconnected = await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'reconnect', { tabId: 'restored-tab' });
+  assert.equal(reconnected.tab.nativeTargetId, retainedTarget);
+  assert.equal(reconnected.tab.controller.owner, 'agent');
+  assert.equal(await recoveredContents.executeJavaScript('document.querySelector("#draft").value'), 'x');
+  assert.equal(serviceHost.tab('restored-tab').view.webContents, recoveredContents);
+  await assert.rejects(service.request({ isHuman: true, clientId: 'window-two', sessionId: 'window-two' }, 'reconnect', { tabId: 'restored-tab' }), /another editor window/);
+  serviceHost.attach(first, { tabId: 'restored-tab', bounds: { x: 0, y: 80, width: 500, height: 360 }, interactive: true });
+  assert.equal(serviceHost.tab('restored-tab').interactive, false);
+  const guestClosed = new Promise((resolve) => recoveredContents.once('destroyed', resolve));
+  serviceHost.closeTab(retainedTarget);
+  await assert.rejects(service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'reconnect', { tabId: 'restored-tab' }), /disconnected|unavailable/);
+  await guestClosed;
+  assert.equal(serviceHost.tabs.size, 0);
+  report.nativePresentationReconnect = { retainedForm: true, agentOwnership: true, windowIsolation: true, closedGuestNotRecreated: true };
   report.runtime = 'Electron WebContentsView + private CDP + Playwright';
   report.fixtureUrl = 'http://browser-fixture.invalid/';
 } catch (error) { report.error = error.stack ?? String(error); }

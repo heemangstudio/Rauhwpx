@@ -2,7 +2,7 @@ import { createIcon } from './icons.ts';
 
 export type BrowserPresentationMode = 'dock' | 'float' | 'popout';
 export interface NativeBrowserApi {
-  attach(args: { tabId: string; bounds: { x: number; y: number; width: number; height: number }; mode: BrowserPresentationMode; interactive: boolean }): Promise<unknown>;
+  attach(args: { tabId: string; expectedTargetId?: string; bounds: { x: number; y: number; width: number; height: number }; mode: BrowserPresentationMode; interactive: boolean }): Promise<unknown>;
   detach(args: { tabId: string }): Promise<unknown>;
   getState(args: { tabId: string }): Promise<unknown>;
   onEvent?(callback: (event: Record<string, unknown>) => void): () => void;

@@ -85,3 +85,19 @@ test('런타임을 교체하면 새 세대의 탭을 쓰고 입력에 그 세대
   assert.equal(f.controller.tab()?.navigationEpoch, 1);
   f.controller.dispose();
 });
+
+test('허브 재시작으로 세대가 낮아져도 새 타깃과 조작권을 쓰고 이전 허브 응답은 버린다', () => {
+  const f = fixture(true);
+  const oldTab = { ...tab(8, 6), runtime: 'native' as const, runtimeGeneration: 5, nativeTargetId: 'previous-native-target' };
+  const oldRuntime = { runtimeId: 'previous-hub', generation: 5, state: 'ready', kind: 'native' as const };
+  f.emit({ type: 'owned_browser_inventory', runtime: oldRuntime, tabs: [oldTab], frame: frame(oldTab) });
+  const fresh = { ...tab(2, 2), runtime: 'native' as const, runtimeGeneration: 1, nativeTargetId: 'retained-native-target', controller: { owner: 'agent' as const } };
+  f.emit({ type: 'owned_browser_inventory', runtime: { runtimeId: 'new-hub', generation: 1, state: 'ready', kind: 'native' }, tabs: [fresh] });
+  assert.deepEqual(f.controller.tab(), fresh);
+  assert.equal(f.controller.frame(), null);
+  assert.equal(f.controller.identity().runtimeGeneration, 1);
+  f.emit({ type: 'owned_browser_inventory', runtime: oldRuntime, tabs: [oldTab] });
+  assert.deepEqual(f.controller.tab(), fresh);
+  assert.equal(f.controller.state.runtime.runtimeId, 'new-hub');
+  f.controller.dispose();
+});

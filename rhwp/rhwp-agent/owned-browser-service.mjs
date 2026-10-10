@@ -797,6 +797,21 @@ export function createOwnedBrowserService(options = {}) {
       publish(tab); await persist(); return { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab) };
     }
     const tab = ownedTab(actor, args.tabId);
+    if (action === 'reconnect') {
+      if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Browser presentation reconnect is managed by the editor.');
+      if (!selectedAdapter()) throw error('BROWSER_RECONNECT_REQUIRED', 'This browser does not have a native presentation.', true);
+      return enqueue(tab, async () => {
+        const previousSession = tab.sessionId;
+        tab.sessionId = actor.sessionId ?? previousSession;
+        try {
+          await ensureRuntime();
+          requirePage(tab);
+          // 재연결은 살아 있는 게스트만 바인딩한다. 새 페이지나 조작 권한을 만들지 않는다.
+          await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId });
+        } catch (failure) { tab.sessionId = previousSession; throw failure; }
+        return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo() };
+      });
+    }
     if (action === 'recover') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Recover disconnected pages from Browser settings.');
       await ensureRuntime();

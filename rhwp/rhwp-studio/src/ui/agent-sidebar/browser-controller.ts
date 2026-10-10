@@ -24,6 +24,7 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
   let disposed = false;
   let refreshSequence = 0;
   let frameRequest: Promise<void> | null = null;
+  const retiredRuntimeIds = new Set<string>();
   const notify = () => { if (!disposed) for (const listener of listeners) listener(); };
   function tab(): BrowserTab | null { return state.tabs.find((row) => row.tabId === state.activeTabId) ?? null; }
   function latestTab(incoming: BrowserTab): BrowserTab {
@@ -36,7 +37,13 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
   function accept(result: BrowserResult | BrowserEvent): void {
     if (disposed) return;
     if (result.runtime) {
+      if (retiredRuntimeIds.has(result.runtime.runtimeId)) return;
       if (state.runtime?.runtimeId === result.runtime.runtimeId && state.runtime.generation > result.runtime.generation) return;
+      if (state.runtime && state.runtime.runtimeId !== result.runtime.runtimeId) {
+        retiredRuntimeIds.add(state.runtime.runtimeId);
+        // 새 허브는 세대를 0부터 시작하므로 이전 허브의 탭 세대와 비교하지 않는다.
+        state.tabs = [];
+      }
       if (state.runtime && (state.runtime.runtimeId !== result.runtime.runtimeId || state.runtime.generation !== result.runtime.generation)) state.frames.clear();
       state.runtime = result.runtime;
     }

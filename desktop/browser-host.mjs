@@ -102,9 +102,11 @@ export class OwnedBrowserHost {
     await this.session.setProxy({ proxyRules: proxy.server, proxyBypassRules: '<-loopback>' });
     await this.session.closeAllConnections();
     for (const tab of this.tabs.values()) {
-      if (!this.cdp.tabs.has(tab.targetId) && !tab.view.webContents.isDestroyed()) {
+      if (!tab.closing && !this.cdp.tabs.has(tab.targetId) && tab.view.webContents && !tab.view.webContents.isDestroyed()) {
         await this.cdp.add(tab);
-        await this.viewport(tab, tab.viewport ?? { width: 1280, height: 800 });
+        const viewport = tab.viewport ?? { width: 1280, height: 800 };
+        tab.viewport = null;
+        await this.viewport(tab, viewport);
       }
     }
     const endpointURL = await this.cdp.listen();
@@ -168,7 +170,6 @@ export class OwnedBrowserHost {
     try {
       await contents.loadURL('about:blank');
       await this.cdp.add(tab);
-      this.tabs.set(tab.targetId, tab);
       await this.viewport(tab, { width: 1280, height: 800 });
       const tree = await contents.debugger.sendCommand('Page.getFrameTree');
       tab.frameId = tree.frameTree.frame.id;
@@ -186,8 +187,19 @@ export class OwnedBrowserHost {
 
   tab(id) {
     const tab = this.tabs.get(id) ?? this.tabs.get(this.aliases.get(id));
-    if (!tab?.view.webContents || tab.view.webContents.isDestroyed()) throw new Error('Native browser tab is unavailable');
+    if (tab?.closing || !tab?.view.webContents || tab.view.webContents.isDestroyed()) throw new Error('Native browser tab is unavailable');
     return tab;
+  }
+
+  registerTarget(tab, previousTargetId) {
+    // 재연결은 같은 게스트를 유지한다. 대상 ID가 바뀌어도 논리 탭과 창 소유권은 유지한다.
+    if (previousTargetId && previousTargetId !== tab.targetId) {
+      this.tabs.delete(previousTargetId);
+      const popout = this.popouts.get(previousTargetId);
+      if (popout) { this.popouts.delete(previousTargetId); this.popouts.set(tab.targetId, popout); }
+    }
+    this.tabs.set(tab.targetId, tab);
+    if (tab.tabId) this.aliases.set(tab.tabId, tab.targetId);
   }
 
   bind({ targetId, tabId, sessionId, chatId }) {
@@ -246,8 +258,9 @@ export class OwnedBrowserHost {
     if (popout && !popout.isDestroyed()) popout.webContents.send('desktop:browser-popout-state', payload);
   }
 
-  attach(window, { tabId, bounds, mode = 'dock', interactive = false, navigationEpoch }) {
+  attach(window, { tabId, bounds, mode = 'dock', interactive = false, navigationEpoch, expectedTargetId }) {
     const tab = this.ownedTab(tabId, window);
+    if (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) throw new Error('Native browser presentation target is stale');
     if (navigationEpoch !== undefined && navigationEpoch !== tab.navigationEpoch) throw new Error('Native browser presentation navigation is stale');
     if (!['dock', 'float', 'popout'].includes(mode)) throw new Error('Native browser presentation mode is invalid');
     if (mode === 'popout') return this.popout(window, tab);
@@ -367,6 +380,7 @@ export class OwnedBrowserHost {
   closeTab(targetId) {
     const tab = this.tabs.get(targetId);
     if (!tab) return false;
+    tab.closing = true;
     this.unplace(tab);
     this.cdp.remove(targetId);
     const popout = this.popouts.get(targetId);

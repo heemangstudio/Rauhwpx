@@ -58,8 +58,8 @@ export class PrivateBrowserCdp {
         client.close(1003); return;
       }
       void this.command(message).then(
-        (result) => this.send({ id: message.id, ...(message.sessionId ? { sessionId: message.sessionId } : {}), result: result ?? {} }),
-        (error) => this.send({ id: message.id, ...(message.sessionId ? { sessionId: message.sessionId } : {}), error: { code: -32000, message: error.message } }),
+        (result) => this.send({ id: message.id, ...(message.sessionId ? { sessionId: message.sessionId } : {}), result: result ?? {} }, client),
+        (error) => this.send({ id: message.id, ...(message.sessionId ? { sessionId: message.sessionId } : {}), error: { code: -32000, message: error.message } }, client),
       );
     });
     client.once('close', () => {
@@ -73,11 +73,12 @@ export class PrivateBrowserCdp {
     client.on('error', () => {});
   }
 
-  send(message) {
-    if (this.client?.readyState === WebSocket.OPEN) this.client.send(JSON.stringify(message));
+  send(message, client = this.client) {
+    if (client && this.client === client && client.readyState === WebSocket.OPEN) client.send(JSON.stringify(message));
   }
 
   async add(tab) {
+    const previousTargetId = tab.targetId;
     const debuggerApi = tab.view.webContents.debugger;
     if (debuggerApi.isAttached()) throw new Error('Browser guest debugger is already owned');
     debuggerApi.attach('1.3');
@@ -103,6 +104,8 @@ export class PrivateBrowserCdp {
     debuggerApi.on('message', tab.debuggerMessage);
     debuggerApi.on('detach', tab.debuggerDetach);
     this.tabs.set(tab.targetId, tab);
+    // CDP 타깃 알림 직후 허브가 바인딩할 수 있으므로 먼저 호스트에 등록한다.
+    this.host.registerTarget?.(tab, previousTargetId);
     if (this.autoAttach) this.attach(tab);
     return tab.targetId;
   }
@@ -192,7 +195,7 @@ export class PrivateBrowserCdp {
         case 'Target.closeTarget': return { success: this.host.closeTab(params.targetId) };
         case 'Browser.close':
           // Playwright disconnect must never close the editor or surviving tabs.
-          queueMicrotask(() => this.client?.close(1000));
+          { const client = this.client; queueMicrotask(() => client?.close(1000)); }
           return {};
         case 'Browser.setDownloadBehavior': return this.host.setDownloadBehavior(params);
         case 'Browser.cancelDownload': return this.host.cancelDownload(params.guid);
