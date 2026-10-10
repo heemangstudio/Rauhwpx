@@ -42,6 +42,13 @@ export function mountEditorShell(report: (message: string) => void, eventBus: Ev
     <h3>진행 계획</h3>
     <p>1. 요구 사항 정리<br>2. 시안 검토<br>3. 구현 및 확인</p>
   `;
+  // Stands in for the editor's hidden input (input-handler.ts), so checks can type "in the document".
+  const documentInput = document.createElement('textarea');
+  documentInput.className = 'editor-fixture-input';
+  documentInput.setAttribute('data-rhwp-editor-input', '');
+  documentInput.setAttribute('aria-label', '문서 편집 입력 (fixture)');
+  documentInput.placeholder = 'DOCUMENT INPUT FIXTURE · typing here counts as typing in the document';
+  page.append(documentInput);
   const scroll = document.createElement('div');
   scroll.id = 'scroll-container';
   scroll.setAttribute('role', 'region');

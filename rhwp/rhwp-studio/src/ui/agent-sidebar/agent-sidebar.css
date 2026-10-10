@@ -796,12 +796,121 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   outline-offset: var(--ag-focus-offset);
 }
 
-/* 허브가 CLI 를 띄우지 못했을 때 대화 안에 놓이는 재시도 줄. */
-.ag-hub-error-actions {
+/* 실패 알림 — 턴 하나에 하나, 턴이 끝난 자리. 조치 버튼은 .ag-hub-retry-btn 모양을 쓴다. */
+.ag-failure-notice {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--ag-border);
+  border-left: 3px solid var(--ag-err);
+  border-radius: var(--ag-r-card);
+  background: var(--ag-surface);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-failure-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ag-failure-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: var(--ag-fw-medium);
+  overflow-wrap: anywhere;
+}
+
+.ag-failure-line {
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-failure-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.ag-hub-retry-btn:disabled {
+  opacity: 0.5;
+}
+
+.ag-hub-retry-btn:disabled:hover {
+  background: var(--ag-primary-bg);
+}
+
+.ag-failure-link,
+.ag-failure-close {
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  cursor: default;
+  border-radius: var(--ag-r-row);
+  transition: var(--ag-transition-color);
+}
+
+.ag-failure-close {
+  flex: none;
+  width: 28px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.ag-failure-link:hover,
+.ag-failure-close:hover {
+  background: var(--ag-surface-subtle);
+  color: var(--ag-text);
+}
+
+.ag-failure-link:focus-visible,
+.ag-failure-close:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-failure-detail {
+  max-height: 200px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: var(--ag-r-row);
+  background: var(--ag-surface-subtle);
+  color: var(--ag-text-secondary);
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-meta);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 오래되거나 닫은 알림은 제목 한 줄만 남는다. */
+.ag-failure-notice-compact {
+  padding: 4px 10px;
+  border-left-width: 2px;
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-failure-notice-compact .ag-failure-title {
+  font-weight: var(--ag-fw-regular, 400);
+}
+
+.ag-failure-notice-compact .ag-failure-link {
+  height: 22px;
+  font-size: var(--ag-fs-meta);
 }
 
 .ag-hub-retry-btn {
@@ -820,6 +929,46 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 
 .ag-hub-retry-btn:hover {
   background: var(--ag-primary-bg-hover);
+}
+
+/* 바깥이 끊은 턴(허브·앱 재시작, 새로고침, 엔진 멈춤)의 한 줄 — 멈춘 자리에서 이유와 이어서 진행. */
+.ag-turn-interrupted {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 8px;
+  flex-wrap: wrap;
+}
+
+.ag-turn-interrupted-queue {
+  color: var(--ag-text-tertiary);
+}
+
+.ag-turn-interrupted-resume {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+  cursor: default;
+  border-radius: var(--ag-r-row);
+  transition: var(--ag-transition-color);
+}
+
+.ag-turn-interrupted-resume:hover {
+  background: var(--ag-primary-bg-hover);
+}
+
+.ag-turn-interrupted-resume:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-turn-interrupted-resume[aria-disabled='true'] {
+  opacity: 0.5;
 }
 
 /* 사이드바 폭이 좁아져도 요약은 한 줄을 유지한다. 각 flex item 이
@@ -2670,6 +2819,79 @@ button.ag-skill-copy {
   }
 }
 
+/* 요청 말풍선의 "이 작업 전으로 되돌리기" — 호버·키보드 포커스 때만 말풍선 왼쪽에 뜬다.
+   사용자 말풍선은 오른쪽 정렬이라 왼쪽이 비어 있다. 버튼과 말풍선 사이 틈도 버튼의 히트
+   영역(::after)이라 포인터가 건너가는 동안 호버가 끊기지 않는다. */
+.ag-msg-user {
+  position: relative;
+}
+
+.ag-msg-user > .ag-msg-restore {
+  position: absolute;
+  top: 6px;
+  right: calc(100% + 6px);
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--ag-bg);
+  color: var(--ag-text-secondary);
+  cursor: default;
+  opacity: 0;
+  pointer-events: none;
+  transition: var(--ag-transition-color);
+}
+
+.ag-msg-user > .ag-msg-restore::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 6px;
+}
+
+.ag-msg-user.ag-has-skill > .ag-msg-restore {
+  top: auto;
+  bottom: 6px;
+}
+
+.ag-msg-user:hover > .ag-msg-restore,
+.ag-msg-user > .ag-msg-restore:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ag-msg-user > .ag-msg-restore:hover {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-msg-user > .ag-msg-restore[aria-disabled='true'] {
+  color: var(--ag-text-tertiary);
+}
+
+.ag-msg-user > .ag-msg-restore[aria-disabled='true']:hover {
+  background: transparent;
+  color: var(--ag-text-secondary);
+}
+
+.ag-msg-user > .ag-msg-restore:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+@media (hover: none) {
+  .ag-msg-user > .ag-msg-restore {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 /* 위로 읽는 중에 대화 아래 가장자리에 뜨는 "최신" 알약. 높이 0 의 dock 이
    대화 목록 바로 아래에 붙어 알약을 목록 위로 띄운다. */
 .ag-latest-dock {
@@ -2794,7 +3016,9 @@ button.ag-skill-copy {
   flex-direction: column;
   gap: 4px;
   padding-left: 18px;
-  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) both;
+  /* 끝 상태가 쉬는 모양과 같아 붙잡지 않는다(backwards) — 단계마다 끝난 애니메이션이
+     문서에 쌓여 getAnimations·스타일 계산이 대화 길이만큼 느려지지 않게 한다. */
+  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) backwards;
 }
 
 .ag-progress-step::before {
@@ -2978,6 +3202,139 @@ button.ag-skill-copy {
   overflow: hidden;
   padding-top: 0;
   padding-bottom: 0;
+}
+
+/* ─── 정착한 턴 접힘 ──────────────────────────────────
+   턴이 끝나면 이정표·도구 묶음·정착한 편대 카드가 한 줄 아래로 접힌다. 머리는 도구 활동
+   묶음과 같은 치수·색을 쓰고, 본문은 대화의 한 구간이라 높이 상한 없이 그대로 펼친다. */
+.ag-turn-fold {
+  display: flex;
+  align-self: stretch;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.ag-turn-fold[hidden] {
+  display: none;
+}
+
+.ag-turn-fold-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: auto;
+  max-width: 100%;
+  min-height: 32px;
+  margin: 0 0 0 -8px;
+  padding: 4px 10px 4px 8px;
+  border: none;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  font-variant-numeric: var(--ag-numeric);
+  line-height: var(--ag-lh-tight);
+  text-align: left;
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-turn-fold-toggle:hover {
+  color: var(--ag-text);
+  background: var(--ag-hover);
+}
+
+.ag-turn-fold-static .ag-turn-fold-toggle:hover {
+  color: var(--ag-text-secondary);
+  background: transparent;
+}
+
+.ag-turn-fold-toggle:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-turn-fold-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--ag-text-tertiary);
+}
+
+.ag-turn-fold-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-turn-fold-errors {
+  flex: 0 0 auto;
+  color: var(--ag-err);
+  white-space: nowrap;
+}
+
+.ag-turn-fold-chevron {
+  position: static;
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  color: var(--ag-text-tertiary);
+  transform: rotate(180deg);
+  transition: transform var(--ag-dur-base) var(--ag-spring-edge);
+}
+
+.ag-turn-fold-collapsed .ag-turn-fold-chevron {
+  transform: rotate(0deg);
+}
+
+.ag-turn-fold-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows var(--ag-dur-base) var(--ag-spring-edge),
+    opacity var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-turn-fold-collapsed .ag-turn-fold-collapse {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--ag-dur-exit) var(--ag-ease-out),
+    opacity var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+/* 접힌 본문은 높이 0 으로 잘린다. 안쪽 머리들이 왼쪽으로 내민 8px 호버 면이 잘리지 않게
+   좌우로 여백을 두고 같은 만큼 바깥으로 넓힌다. 첫·끝 여백은 자식 margin 이라 함께 잘린다. */
+.ag-turn-fold-body {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 24px;
+  overflow: hidden;
+  margin-inline: -8px;
+  padding-inline: 8px;
+}
+
+/* 접힌 본문은 스타일·배치·그리기를 건너뛴다 — 접힌 턴이 쌓여도 대화를 다시 배치할 때
+   보이지 않는 작업까지 계산하지 않는다. 사용자가 접을 때는 닫히는 전환이 끝날 때까지 그린다. */
+.ag-turn-fold-collapsed .ag-turn-fold-body {
+  content-visibility: hidden;
+  transition: content-visibility var(--ag-dur-exit) allow-discrete;
+}
+
+.ag-turn-fold-body > :first-child {
+  margin-top: 12px;
+}
+
+.ag-turn-fold-body > :last-child {
+  margin-bottom: 4px;
 }
 
 .ag-tool-row {
@@ -5304,6 +5661,198 @@ button.ag-skill-copy {
   to { opacity: 1; transform: none; }
 }
 
+/* 대기 메시지 띠 — 입력기(와 질문 카드) 바로 위. 칩과 같은 떠 있는 면에 한 줄씩 쌓고,
+   세 줄이 넘으면 목록만 스크롤한다. 붙잡힌 이유와 보내기는 맨 위 한 줄이다. */
+.ag-followups {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin: 0 12px 8px;
+  padding: 4px;
+  border-radius: var(--ag-r-card);
+  background: var(--ag-raised);
+  box-shadow: var(--ag-elev-popover);
+  animation: ag-lift-in var(--ag-dur-slow) var(--ag-spring) both;
+}
+
+.ag-followups[hidden],
+.ag-followups-hold[hidden],
+.ag-followups-hint[hidden] {
+  display: none;
+}
+
+.ag-followups-hold {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  margin: 0;
+  padding: 0 2px 0 8px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-followups-hold-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--ag-text-muted);
+}
+
+.ag-followups-hold-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ag-followups-resume {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  font: inherit;
+  font-weight: var(--ag-fw-medium);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-followups-resume:hover:not(:disabled) {
+  background: var(--ag-primary-bg-hover);
+}
+
+.ag-followups-resume:active:not(:disabled) {
+  background: var(--ag-primary-bg-pressed);
+}
+
+.ag-followups-resume:disabled {
+  background: var(--ag-primary-bg-disabled);
+}
+
+.ag-followups-hint {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-followups-list {
+  max-height: calc(3 * 30px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.ag-followup {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 2px 0 8px;
+  border-radius: var(--ag-r-row);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-followup:hover,
+.ag-followup:focus-within {
+  background: var(--ag-hover);
+}
+
+.ag-followup-index {
+  flex: 0 0 auto;
+  min-width: 1ch;
+  color: var(--ag-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-followup-skill {
+  flex: 0 0 auto;
+}
+
+.ag-followup-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-followup-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-followup-action:hover:not(:disabled) {
+  background: var(--ag-pressed);
+  color: var(--ag-text);
+}
+
+.ag-followup-action:disabled {
+  color: var(--ag-text-disabled);
+}
+
+.ag-followup.ag-editing {
+  align-items: flex-start;
+}
+
+.ag-followup.ag-editing .ag-followup-index,
+.ag-followup.ag-editing .ag-followup-action {
+  margin-top: 4px;
+}
+
+.ag-followup-edit {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: 120px;
+  margin: 3px 0;
+  padding: 4px 6px;
+  border: 1px solid var(--ag-border-strong);
+  border-radius: var(--ag-r-field);
+  background: var(--ag-input-bg);
+  color: var(--ag-text);
+  font: inherit;
+  line-height: var(--ag-lh-secondary);
+  resize: none;
+}
+
+.ag-followups :is(button, textarea):focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-fullscreen .ag-chat-page > .ag-followups {
+  box-sizing: border-box;
+  width: min(var(--ag-column-w), calc(100% - 2 * var(--ag-column-gutter)));
+  margin-inline: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-followups {
+    animation: none;
+  }
+}
+
 .ag-composer {
   position: relative;
   flex: 0 0 auto;
@@ -5868,6 +6417,12 @@ button.ag-skill-copy {
 }
 
 .ag-input:disabled {
+  opacity: 0.55;
+}
+
+/* 연결·채팅 시작·전환으로 잠깐 잠긴 입력기 — disabled 가 아니라 readOnly 라 초점과
+   한글 조합이 남는다. 모양만 비활성과 같다. */
+.ag-composer.ag-composer-locked .ag-input {
   opacity: 0.55;
 }
 
@@ -7759,7 +8314,8 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-fleet-row {
   container: fleet-row / inline-size;
   min-width: 0;
-  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) both;
+  /* 진행 단계와 같다 — 끝 상태를 붙잡지 않아 끝난 등장이 문서에 쌓이지 않는다. */
+  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) backwards;
 }
 
 .ag-fleet-row + .ag-fleet-row {
@@ -8361,6 +8917,64 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   overflow: visible;
 }
 
+/* 쓰는 중에 도착한 질문 — 입력기에 붙은 한 줄 띠. 누르거나 쓰기를 멈추면 질문이
+   열리고, 카드는 위로 자라 입력기는 제자리에 있다. */
+.ag-question-arrival {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--ag-question-text);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: var(--ag-transition-color);
+}
+
+.ag-question-arrival:hover {
+  background: var(--ag-question-raised);
+}
+
+.ag-question-arrival-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ag-err);
+}
+
+.ag-question-arrival-label {
+  flex: 0 0 auto;
+  font-weight: var(--ag-fw-strong);
+}
+
+.ag-question-arrival-hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ag-question-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ag-question-arrival-dot {
+    animation: ag-question-arrival-breathe 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes ag-question-arrival-breathe {
+  50% {
+    opacity: 0.35;
+  }
+}
+
 /* 질문은 한눈에 훑는 목록이다. 선택지는 한 줄짜리 행으로 두고, 설명은 같은
    줄에서 말줄임한다. 고른 행만 설명 전체를 펼친다. */
 .ag-question-body {
@@ -8658,11 +9272,14 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* 전이는 0 이다 — .01ms 처럼 짧은 길이를 주면 전이가 없던 요소의 기본값(all)까지 전이가 되어,
+     목록·설정에서 대화로 돌아올 때 물려받은 visibility 가 다음 프레임까지 hidden 으로 남는다.
+     그 한 프레임 동안 카드의 선택지와 제출 단추가 클릭을 받지 않는다. */
   .ag-user-question *,
   .ag-user-question *::before,
   .ag-user-question *::after {
     scroll-behavior: auto !important;
-    transition-duration: .01ms !important;
+    transition-duration: 0s !important;
     animation-duration: .01ms !important;
   }
 }
@@ -8733,6 +9350,42 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 
 @media (prefers-reduced-motion: reduce) {
   .ag-versions-badge { animation: none; }
+}
+
+/* ─── 채팅 목록 버튼의 확인 필요 수 ───────────────────── */
+/* 다른 채팅이 답·검토를 기다리거나, 멈췄거나, 보지 않은 채 끝났다 — 목록 단추 오른쪽 위의 작은 수. */
+.ag-threads-btn,
+.ag-workspace-threads-btn {
+  position: relative;
+}
+
+.ag-threads-btn-count {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-err);
+  color: var(--n-ink-inverse);
+  font-family: var(--ag-mono);
+  font-size: 9px;
+  font-weight: var(--ag-fw-strong);
+  line-height: 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  animation: ag-badge-in var(--ag-dur-base) var(--ag-spring) both;
+}
+
+.ag-threads-btn-count[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-threads-btn-count { animation: none; }
 }
 
 /* ─── 버전 창의 변경 탭 ───────────────────────────────── */

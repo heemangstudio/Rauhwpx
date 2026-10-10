@@ -1,0 +1,16 @@
+{"kind":"meta","v":1,"agent":"codex","transport":"app-server","stdin":"ndjson","provenance":"synthetic","cli":"codex-cli 0.149.0","basis":"codex app-server --stdio v2 protocol: handshake order as tests/codex-app-server.test.mjs:91-131; notification shapes from the T3 reference schema (packages/effect-codex-app-server/src/_generated/schema.gen.ts: CodexErrorInfo :17861, TurnError :29525, TurnCompletedNotification :44547, ErrorNotification :33293, AccountRateLimitsUpdatedNotification :29794, RateLimitWindow :3268); the app-server dies mid-turn: stderr then exit code 101 (codex-app-server.mjs:652-669 disconnect path). The Bearer marker in stderr is planted for redaction tests.","note":"Synthetic: hand-written, not recorded. Replace with a trimmed recording (RHWP_PROVIDER_TRANSCRIPT_DIR) when one exists."}
+{"kind":"spawn","match":{"argvIncludes":["app-server"]}}
+{"kind":"expect","json":{"method":"initialize"}}
+{"kind":"out","json":{"id":"$in.id","result":{"userAgent":"codex_cli_rs/0.149.0 (replay)"}}}
+{"kind":"expect","json":{"method":"initialized"}}
+{"kind":"expect","json":{"method":"experimentalFeature/list"}}
+{"kind":"out","json":{"id":"$in.id","result":{"data":[{"name":"default_mode_request_user_input","enabled":true,"defaultEnabled":false,"stage":"underDevelopment","displayName":null,"description":null,"announcement":null}],"nextCursor":null}}}
+{"kind":"expect","json":{"method":"thread/start"}}
+{"kind":"out","json":{"method":"thread/started","params":{"thread":{"id":"thread-replay-1"}}}}
+{"kind":"out","json":{"id":"$in.id","result":{"thread":{"id":"thread-replay-1"}}}}
+{"kind":"expect","json":{"method":"turn/start","params":{"threadId":"thread-replay-1"}}}
+{"kind":"out","json":{"method":"turn/started","params":{"threadId":"thread-replay-1","turn":{"id":"turn-replay-1","status":"inProgress","items":[]}}}}
+{"kind":"out","json":{"id":"$in.id","result":{"turn":{"id":"turn-replay-1","status":"inProgress","items":[]}}}}
+{"kind":"out","json":{"method":"item/agentMessage/delta","params":{"threadId":"thread-replay-1","turnId":"turn-replay-1","itemId":"msg-turn-replay-1","delta":"작업을 시작"}}}
+{"kind":"err","text":"thread 'tokio-runtime-worker' panicked at codex-rs/core/src/client.rs:1:1:\nrequest failed: Authorization: Bearer REPLAYSECRETcodex0123456789abcdef0123\n"}
+{"kind":"exit","code":101}

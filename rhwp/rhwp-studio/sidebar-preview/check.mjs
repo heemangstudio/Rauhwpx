@@ -11,9 +11,19 @@ import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
 import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
+import { checkComposerSendPath, checkFollowUpGap, checkFollowUpQueue } from './queue.check.mjs';
 import { checkContextPreview } from './context.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
+import { checkReloadPreview } from './reload.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
+import { checkWriterBusyPreview } from './writer-busy.check.mjs';
+import { checkTypingGuard } from './typing-guard.check.mjs';
+import { checkDelayedStatus } from './delayed-status.check.mjs';
+import { checkRestoreTurnPreview } from './restore-turn.check.mjs';
+import { checkFailureNotices } from './failures.check.mjs';
+import { checkAttention } from './attention.check.mjs';
+import { checkInterruptionPreview } from './interruption.check.mjs';
+import { checkAdoptionPreview } from './adoption.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -88,7 +98,7 @@ try {
     await page.waitForFunction(() => window.sidebarPreview);
     if (!query.includes('services=setup'))
       await page.waitForFunction(
-        () => !document.querySelector('.ag-input').disabled,
+        () => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true',
       );
   }
   async function screenshot(name) {
@@ -130,6 +140,8 @@ try {
           document.querySelector('.ag-msg-user'),
       );
   }
+  // SIDEBAR_CHECK=<text> runs only the steps whose name contains it (case-insensitive).
+  const onlyStep = process.env.SIDEBAR_CHECK?.toLowerCase();
   // 커밋 전 변경이 있으면 버전 창은 변경 탭으로 열린다. 그래프 도구는 그래프 탭에 있다.
   async function showVersionGraph() {
     await page.click('.ag-versions-tab[data-tab="history"]');
@@ -137,6 +149,7 @@ try {
     await page.waitForSelector('.ag-version-row', { visible: true });
   }
   async function step(name, run) {
+    if (onlyStep && !name.toLowerCase().includes(onlyStep)) return;
     try {
       await run();
       console.log(`PASS ${name}`);
@@ -150,7 +163,7 @@ try {
     await open('fullscreen=1');
     const startNewChat = async () => {
       await page.click('.ag-threads-new');
-      await page.waitForFunction(() => !document.querySelector('.ag-input').disabled);
+      await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
     };
     await startNewChat();
     const layout = () => page.evaluate(() => {
@@ -258,6 +271,8 @@ try {
     const turnLabel = '편집 2번 · 읽기 1번 · 도구 1번 · 오류 1';
     await page.waitForFunction((label) => !window.sidebarPreview.bridge.isTurnRunning()
       && document.querySelector('.ag-activity-label')?.textContent === label, {}, turnLabel);
+    // 끝난 턴의 작업은 한 줄로 접힌다 — 펼친 뒤 도구 묶음을 연다.
+    await page.click('.ag-turn-fold-toggle');
     await page.click('.ag-activity-toggle');
     const toolRows = async () => page.$$eval('.ag-tool-row', rows => rows.map(row => ({
       label: row.querySelector('.ag-tool-label')?.textContent,
@@ -293,6 +308,7 @@ try {
       [...list.querySelectorAll('.ag-threads-item')].find(node => node.dataset.threadId === id)?.click(), threadId);
     await page.waitForSelector('.ag-activity-label');
     assert.equal(await page.$eval('.ag-activity-label', node => node.textContent), turnLabel);
+    await page.click('.ag-turn-fold-toggle');
     await page.click('.ag-activity-toggle');
     const stored = await toolRows();
     assertToolRows(stored);
@@ -423,6 +439,12 @@ try {
   );
   await step('Plan research, revision, execution progress, and review',
     () => checkPlanPreview(page, origin, artifacts));
+  await step('Follow-up queue: Enter queues, normal ends drain, doubtful ends hold',
+    () => checkFollowUpQueue(page, origin, artifacts));
+  await step('Follow-up gap: settings lock, inline refusal, settings refusals and chat switches keep the accepted message once',
+    () => checkFollowUpGap(page, origin, artifacts));
+  await step('Composer send path: template, skill, attachments and local commands',
+    () => checkComposerSendPath(page, origin));
   await step('Question submission and resolution', async () => {
     await play('question');
     await screenshot('question');
@@ -451,12 +473,16 @@ try {
   await step('Subagent fleet, failure, and offline recovery', async () => {
     await play('fleet');
     await page.waitForSelector('.ag-fleet-slot:not([hidden]) .ag-fleet-toggle');
+    // 정착한 카드는 턴 접힘 안에 있다 — 펼친 뒤 카드를 연다.
+    await page.click('.ag-turn-fold-toggle');
     await page.click('.ag-fleet-slot:not([hidden]) .ag-fleet-toggle');
     await page.waitForFunction(() => document.querySelector('.ag-root').innerText.includes('용어를 통일'));
     await screenshot('fleet');
     await play('error');
+    // The default failure kind is a network failure: one notice with 다시 시도.
     await page.waitForFunction(() =>
-      document.querySelector('.ag-root').innerText.includes('앗, 오류에요! 네트워크 연결을 확인하세요!'),
+      document.querySelectorAll('.ag-failure-notice').length === 1
+      && document.querySelector('.ag-failure-action[data-action="retry"]'),
     );
     assert(
       !(await page.$eval('.ag-root', (element) =>
@@ -1042,6 +1068,22 @@ try {
     () => checkNewChatWhileRunning(page, origin));
   await step('A chat locked by another chat\'s edits only picks and sends in 채팅',
     () => checkChatModeLock(page));
+  await step('A write refused because another chat edits the document shows one failed tool row',
+    () => checkWriterBusyPreview(page, origin, artifacts));
+  await step('Arriving questions wait while the user types', () => checkTypingGuard(page, origin, artifacts));
+  await step('Transient statuses wait 400 ms and never blink', () => checkDelayedStatus(page, origin, artifacts));
+  await step('A request\'s accepted changes can be restored from its bubble, with confirmation and refusals',
+    () => checkRestoreTurnPreview(page, origin, artifacts));
+  await step('A reload re-adopts the chat the hub still runs instead of restarting it',
+    () => checkReloadPreview(page, origin, artifacts));
+  await step('Each provider failure shows one notice with the actions that fit it',
+    () => checkFailureNotices(page, origin, artifacts));
+  await step('Background-chat attention: rail states, chip, count, toasts and notices',
+    () => checkAttention(page, origin, artifacts));
+  await step('A turn cut off by a hub restart, an app restart, a reload or an engine trap says why and offers 이어서 진행',
+    () => checkInterruptionPreview(page, origin, artifacts));
+  await step('A reload never draws the hub chat\'s replayed or early events on the startup draft, and a late end settles only its own turn',
+    () => checkAdoptionPreview(page, origin, artifacts));
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

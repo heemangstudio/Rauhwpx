@@ -261,11 +261,13 @@ test('a 401 turn exits 0 but ends as failed with the API message', () => {
 
   // 토큰도 비용도 0 인 턴은 사용량으로 기록하지 않는다.
   assert.deepEqual(events.filter((event) => event.type === 'usage'), []);
-  assert.deepEqual(events.find((event) => event.type === 'error'), {
-    type: 'error', agent: 'pi', message: errorMessage,
-  });
+  // 실패는 정착 때 한 번만 확정되고, 허브가 분류할 단서(HTTP 상태)를 싣는다.
+  const failure = { source: 'pi', httpStatus: 401 };
+  assert.deepEqual(events.filter((event) => event.type === 'error'), [{
+    type: 'error', agent: 'pi', message: errorMessage, failure,
+  }]);
   assert.deepEqual(events.at(-1), {
-    type: 'turn-end', agent: 'pi', stopReason: 'failed', errorMessage,
+    type: 'turn-end', agent: 'pi', stopReason: 'failed', errorMessage, failure,
   });
   session.dispose();
 });
@@ -287,7 +289,9 @@ test('a startup failure reports the stderr reason without the session token', ()
   assert.match(error.message, /Model "nope\/nope" not found/);
   assert.doesNotMatch(error.message, /secret-token/);
   assert.doesNotMatch(error.message, /^Usage:/m);
-  assert.deepEqual(events.at(-1), { type: 'turn-end', agent: 'pi', stopReason: 'exited' });
+  assert.deepEqual(events.at(-1), {
+    type: 'turn-end', agent: 'pi', stopReason: 'exited', failure: { source: 'pi', code: 'process_exit' },
+  });
   session.dispose();
 });
 

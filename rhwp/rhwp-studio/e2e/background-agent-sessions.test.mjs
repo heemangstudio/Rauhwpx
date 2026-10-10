@@ -6,7 +6,6 @@
  * A 의 허브 세션으로 실제 도구를 불러 A 에 쓴다. 채팅 목록에서 A 의 채팅을 누르면 A 가
  * 다시 읽지 않고 그대로 돌아오고, 에이전트가 화면 밖에서 쓴 변경이 검토 대기로 남아 있어야 한다.
  */
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -15,11 +14,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import { registerHubSession } from '../../../desktop/agent-hub.mjs';
+import { npmCmd, removeTempDir, spawnLogged, stopServer } from './agent-bench-harness.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const studioRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(studioRoot, '..');
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const HUB_TOKEN = 'background-sessions-e2e';
 const DOC_A = 'para-001.hwp';
 const DOC_B = 'text-align-2.hwp';
@@ -50,29 +49,6 @@ async function waitForHttp(url, label, child, timeoutMs = 45_000) {
     await delay(300);
   }
   throw new Error(`${label} readiness timeout`);
-}
-
-function spawnLogged(command, args, cwd, env, logPath) {
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-  const log = fs.openSync(logPath, 'w');
-  const child = spawn(command, args, {
-    cwd,
-    env: { ...process.env, ...env },
-    stdio: ['ignore', log, log],
-  });
-  child._log = log;
-  return child;
-}
-
-async function stop(child) {
-  if (!child) return;
-  if (child.exitCode === null && !child.signalCode) {
-    const exited = new Promise((resolve) => child.once('exit', resolve));
-    child.kill('SIGTERM');
-    await Promise.race([exited, delay(4_000)]);
-    if (child.exitCode === null && !child.signalCode) child.kill('SIGKILL');
-  }
-  if (child._log !== undefined) fs.closeSync(child._log);
 }
 
 /** 턴을 끝내지 않고 살아만 있는 Pi. 허브의 턴이 열린 채로 남는다. */
@@ -492,7 +468,7 @@ try {
   });
 } finally {
   provider?.ws.close();
-  await stop(vite);
-  await stop(hub);
-  fs.rmSync(piRoot, { recursive: true, force: true });
+  await stopServer(vite);
+  await stopServer(hub);
+  removeTempDir(piRoot);
 }

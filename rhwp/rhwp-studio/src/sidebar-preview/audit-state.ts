@@ -10,6 +10,11 @@ async function until<T>(read: () => T | null | false, description: string): Prom
   throw new Error(`Could not open preview: ${description}`);
 }
 
+/** 실제 준비 상태 — 입력기의 보이는 잠금은 400ms 늦게 따라온다(data-composer-ready 는 늦지 않는다). */
+function composerReady(): boolean {
+  return document.querySelector<HTMLElement>('#agent-sidebar')?.dataset.composerReady === 'true';
+}
+
 async function click(selector: string): Promise<void> {
   const button = await until(() => {
     const element = document.querySelector<HTMLButtonElement>(selector);
@@ -44,11 +49,16 @@ async function chooseMode(mode: 'chat' | 'plan' | 'agent' | 'full'): Promise<voi
 export async function applyAuditState(preview: SidebarPreview, params: URLSearchParams): Promise<void> {
   // 저장된 대화를 다시 열면 채팅이 그 대화의 모드와 권한으로 새로 시작된다. 장면은 그 뒤에 준비한다.
   await preview.threadStore.waitForThreadsPersistence();
+  await preview.sidebar.startupChatSettled();
   await new Promise((resolve) => requestAnimationFrame(resolve));
+  // 감사 장면은 저장된 대화를 이어받는다. 앞 장면이 남긴 대기 메시지는 삭제 단추로 걷고 시작한다.
+  if (params.get('audit') === '1') {
+    for (const remove of document.querySelectorAll<HTMLButtonElement>('.ag-followup-remove:not(:disabled)')) remove.click();
+  }
   const mode = params.get('mode');
   const choosesMode = mode === 'chat' || mode === 'plan' || mode === 'agent' || mode === 'full';
   if (params.get('permission') === 'unrestricted' || choosesMode) {
-    await until(() => !document.querySelector<HTMLTextAreaElement>('.ag-input')?.disabled, 'composer');
+    await until(composerReady, 'composer');
   }
   if (params.get('permission') === 'unrestricted') preview.bridge.setPermissionProfile('unrestricted');
   if (choosesMode) await chooseMode(mode);
@@ -57,14 +67,47 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
     preview.setBrowserbaseState(browserbase === 'ready' ? 'connected' : browserbase);
   if (params.get('document') === 'empty') select('#document', 'empty');
   if (params.get('play') === '1') {
-    await until(() => {
-      const input = document.querySelector<HTMLTextAreaElement>('.ag-input');
-      return input && !input.disabled;
-    }, 'composer');
+    await until(composerReady, 'composer');
     document.querySelector<HTMLButtonElement>('#play')!.click();
-    await until(() => preview.snapshot().running, 'sample reply');
+    // 채팅 시작이 실패하는 장면은 턴 없이 실패 알림만 남는다.
+    await until(() => preview.snapshot().running || document.querySelector('.ag-failure-notice'), 'sample reply');
     if (params.get('hold') !== '1' && params.get('scenario') !== 'question') {
       await until(() => !preview.snapshot().running, 'completed reply');
+    }
+  }
+  if (params.get('questionHeld') === '1') {
+    // 사용자가 입력기에 쓰는 중에 질문이 도착한 장면 — 띠만 보이고 입력기는 그대로다.
+    await until(() => preview.snapshot().running, 'running turn');
+    const input = await until(() => document.querySelector<HTMLTextAreaElement>('.ag-input'), 'composer');
+    input.focus();
+    input.value = '2026년 3쪽 일정은';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    preview.typingHold?.start();
+    preview.askQuestion();
+    await until(() => document.querySelector('.ag-user-question[data-held="true"] .ag-question-arrival'), 'held question');
+  }
+  // 일하는 동안 입력기에 친 글을 Enter 로 대기열에 넣는다. queueHold=stopped 는 중지로 붙잡는다.
+  const queued = Math.min(Number(params.get('queue') ?? 0) || 0, 10);
+  if (queued > 0 && preview.snapshot().running) {
+    const input = document.querySelector<HTMLTextAreaElement>('.ag-input')!;
+    const samples = ['표를 정리해 줘', '맞춤법도 확인해 줘', '제목을 굵게 바꿔 줘'];
+    for (let index = 0; index < queued; index += 1) {
+      input.value = samples[index % samples.length]!;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    }
+    await until(() => document.querySelectorAll('.ag-followup').length >= queued, 'queued messages');
+    if (params.get('queueHold') === 'stopped') {
+      await click('.ag-send.ag-stop');
+      await until(() => document.querySelector('.ag-followups-hold:not([hidden])'), 'held queue');
+    }
+    // queueHold=gap: 턴이 정상으로 끝나 맨 앞을 보냈다. 허브는 그 메시지를 돌리지만 turn-start 는 아직
+    // 오지 않았다 — 설정이 잠긴 틈. 그 턴은 열리지 않는다(10분 뒤에 연다).
+    if (params.get('queueHold') === 'gap') {
+      const sent = preview.snapshot().messagesSent;
+      preview.setTurnStartDelay(600_000);
+      preview.finishTurn('completed');
+      await until(() => preview.snapshot().messagesSent > sent && !preview.snapshot().running, 'queued send');
     }
   }
   const replyIdle = () => until(() => {
@@ -126,6 +169,13 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
   const connection = params.get('connection');
   if (connection && ['connected', 'connecting', 'disconnected', 'replaced'].includes(connection)) {
     select('#connection', connection);
+    // 연결 상태와 입력기 잠금은 400ms 를 넘긴 뒤에 보인다(다른 탭 사용은 바로).
+    if (connection !== 'connected') {
+      await until(() => {
+        const dot = document.querySelector<HTMLElement>('.ag-conn-dot');
+        return dot && !dot.hidden && document.querySelector('.ag-composer.ag-composer-locked');
+      }, 'connection status');
+    }
   }
   document.body.dataset.auditReady = 'true';
 }

@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { ensureChromePath, findAvailablePort, startHub, startVite, stats, stopServer } from '../e2e/agent-bench-harness.mjs';
+import { ensureChromePath, findAvailablePort, removeTempDir, startHub, startVite, stats, stopServer } from '../e2e/agent-bench-harness.mjs';
 import { analyzeProviderTurn, joinCalls, maxOverlap, readTraceRows, round } from './tool-trace-analysis.mjs';
 
 export const arg = (name) => process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? null;
@@ -164,7 +164,7 @@ export async function startLiveStack({ agent, model, tag = 'live' }) {
     async stop() {
       await stopServer(vite);
       await stopServer(hub);
-      fs.rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5 });
+      removeTempDir(fixtureRoot);
     },
   };
 }
@@ -248,7 +248,9 @@ export async function sendThroughComposer(page, text) {
     const input = document.querySelector('#agent-sidebar textarea.ag-input');
     if (!(input instanceof HTMLTextAreaElement)) return false;
     const rect = input.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0 && !input.disabled;
+    // 입력기의 보이는 잠금은 늦게 따라온다 — 실제 준비 상태는 data-composer-ready 가 말한다.
+    return rect.width > 0 && rect.height > 0
+      && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true';
   });
   if (visible) {
     await page.focus('#agent-sidebar textarea.ag-input');

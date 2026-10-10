@@ -1,0 +1,29 @@
+{"kind":"meta","v":1,"agent":"pi","transport":"json","stdin":"text","provenance":"synthetic","cli":"1.1.0","basis":"pi 1.1.0 --mode json: session header (core/session-manager.js), JsonAgentSessionEvent (dist/modes/json-event.d.ts, core/agent-session.d.ts:47-90); Stop during streaming: the hub terminates the process; output written after the kill (a late delta and agent_settled) must be discarded (pi.mjs:728-733). The next turn spawns a fresh process (pi.mjs:509-545).","note":"Synthetic: hand-written, not recorded. Replace with a trimmed recording (RHWP_PROVIDER_TRANSCRIPT_DIR) when one exists."}
+{"kind":"spawn"}
+{"kind":"expect","end":true}
+{"kind":"out","json":{"type":"session","version":3,"id":"replay-pi-session-race","timestamp":"2026-10-01T00:00:00.000Z","cwd":"/replay/work"}}
+{"kind":"out","json":{"type":"agent_start"}}
+{"kind":"out","json":{"type":"turn_start"}}
+{"kind":"out","json":{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"[prompt]"}],"timestamp":1790000000000}}}
+{"kind":"out","json":{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"[prompt]"}],"timestamp":1790000000000}}}
+{"kind":"out","json":{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"openrouter","model":"mock-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790000000100}}}
+{"kind":"out","json":{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"첫 응답을 쓰는 중"}}}
+{"kind":"await-kill"}
+{"kind":"out","json":{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" (중단 뒤에 도착한 텍스트)"}}}
+{"kind":"out","json":{"type":"agent_settled","aborted":false}}
+{"kind":"exit","signal":"SIGTERM"}
+{"kind":"spawn"}
+{"kind":"expect","end":true}
+{"kind":"out","json":{"type":"session","version":3,"id":"replay-pi-session-race","timestamp":"2026-10-01T00:00:00.000Z","cwd":"/replay/work"}}
+{"kind":"out","json":{"type":"agent_start"}}
+{"kind":"out","json":{"type":"turn_start"}}
+{"kind":"out","json":{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"[prompt]"}],"timestamp":1790000000000}}}
+{"kind":"out","json":{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"[prompt]"}],"timestamp":1790000000000}}}
+{"kind":"out","json":{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"openrouter","model":"mock-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790000000100}}}
+{"kind":"out","json":{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"두 번째 턴"}}}
+{"kind":"out","json":{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"이 끝났습니다."}}}
+{"kind":"out","json":{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"두 번째 턴이 끝났습니다."}],"api":"openai-completions","provider":"openrouter","model":"mock-model","usage":{"input":812,"output":64,"cacheRead":0,"cacheWrite":0,"totalTokens":876,"cost":{"input":0.000812,"output":0.000256,"cacheRead":0,"cacheWrite":0,"total":0.001068}},"stopReason":"stop","timestamp":1790000000200}}}
+{"kind":"out","json":{"type":"turn_end","toolResults":[]}}
+{"kind":"out","json":{"type":"agent_end","messages":[],"willRetry":false}}
+{"kind":"out","json":{"type":"agent_settled","aborted":false}}
+{"kind":"exit","code":0}

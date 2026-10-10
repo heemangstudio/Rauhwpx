@@ -60,11 +60,32 @@ export interface AgentToolExecutorDeps {
   loadTemplateBytes?: (template: DocumentTemplate) => Promise<Uint8Array>;
   getDocumentSourcePath?: () => Promise<string | null>;
   isReadOnly?: () => boolean;
+  /** 쓰기 직전에 문서를 고칠 자리를 요구한다 (AgentBridgeDeps.claimDocumentWrite). 없으면 늘 받는다. */
+  claimDocumentWrite?: () => boolean;
+  /**
+   * 문서 쓰기 도구가 모든 문(읽기 전용·주인 자리·템플릿 검토)을 지나 문서에 닿기 직전에 부른다.
+   * 턴 체크포인트가 이때 그 턴의 첫 쓰기 전 문서를 찍는다. 던지지 않는다.
+   */
+  beforeDocumentWrite?: () => void;
   /** 참조 이미지 잘라내기 — 기본은 브라우저 캔버스 (테스트가 주입한다) */
   cropImage?: ImageCropper;
 }
 
 const DOC_NOT_LOADED_MESSAGE = '문서가 로드되지 않았습니다';
+
+/**
+ * 같은 문서의 다른 채팅이 고치는 중이라 쓰기를 받지 않았다. 문서는 그대로다 — 이번 턴에는
+ * 다시 쓰지 말고, 무엇을 바꾸려 했는지 사용자에게 알리게 한다.
+ */
+export function documentWriterBusyError(): AgentToolError {
+  return new AgentToolError(
+    'DOCUMENT_WRITER_BUSY',
+    'Another chat open on this document is editing it (its turn is running or its edits are waiting for the user\'s review). '
+      + 'A document has one editing chat at a time. Nothing was changed. '
+      + 'Do not retry document-write tools in this turn; reads still work. '
+      + 'Finish by telling the user what you would change; they can ask again after the other chat\'s edits are applied or discarded.',
+  );
+}
 
 /** 엔진 trap 뒤에는 같은 인스턴스로 다시 시도해도 실패한다 — 재시도 대신 사용자 안내로 넘긴다. */
 function engineTrappedError(detail: string): AgentToolError {
@@ -1093,6 +1114,10 @@ export class AgentToolExecutor {
           'This published template preview is read-only and cannot accept document-write tools.',
         );
       }
+      // 같은 문서의 다른 채팅이 고치는 중이면 문서에 닿기 전에 거절한다 (채팅 모드 잠금이 늦어도).
+      if (isDocumentWriteTool(tool) && this.deps.claimDocumentWrite && !this.deps.claimDocumentWrite()) {
+        throw documentWriterBusyError();
+      }
       if (isDocumentWriteTool(tool)
         && !tool.startsWith('template_')
         && this.deps.pending.hasTemplateMutation()) {
@@ -1100,6 +1125,14 @@ export class AgentToolExecutor {
           'TEMPLATE_PENDING_CONFLICT',
           'Review the pending template transfer before making other document edits.',
         );
+      }
+      // 거절되지 않은 쓰기만 여기에 닿는다 — 이 턴의 첫 쓰기라면 그 전 문서를 체크포인트로 남긴다.
+      if (isDocumentWriteTool(tool) && this.deps.beforeDocumentWrite) {
+        try {
+          this.deps.beforeDocumentWrite();
+        } catch (e) {
+          console.warn('[AgentToolExecutor] 턴 체크포인트를 남기지 못했습니다:', e);
+        }
       }
       // 스테이징 쓰기는 결과에 after 보고(와 요청 시 변경 영역 PNG)를 붙인다 —
       // render 인자는 쓰기를 적용하기 전에 검사하고, 쓰기 직전 상태를 떠 둔다.

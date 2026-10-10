@@ -9,6 +9,12 @@ import {
   clearPendingUserQuestion,
   createPendingUserQuestionDraftSnapshot,
   createEmptyThread,
+  createTurnMarker,
+  estimateTurnEnd,
+  latestTurnMarker,
+  settleStoredTurnMarker,
+  settleTurnMarker,
+  unsettledTurnMarkers,
   createUserQuestionHistoryMessage,
   expirePendingUserQuestion,
   fallbackTitle,
@@ -851,6 +857,357 @@ test('same-millisecond thread updates keep the later state newer', (t) => {
   const second = getThread(thread.id)!;
   assert.ok(second.updatedAt > first.updatedAt);
   assert.equal(second.title, '바뀐 제목');
+});
+
+test('queued follow-ups survive a store reload and never move the chat in the list', () => {
+  mem.clear();
+  const realNow = Date.now;
+  let clock = 1_000;
+  Date.now = () => clock;
+  try {
+    const mk = (text: string) => {
+      const t = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+      t.messages.push({ role: 'user', text });
+      upsertThread(t);
+      clock += 1_000;
+      return t.id;
+    };
+    const a = mk('a 채팅');
+    const b = mk('b 채팅');
+    const before = getThread(a)!.lastActivityAt;
+    const queued = getThread(a)!;
+    queued.followUps = {
+      items: [
+        { id: 'fu-1', text: '표를 정리해 줘', createdAt: 5 },
+        { id: 'fu-2', text: '', skillName: 'proofread-korean', skillIcon: 'pencil', createdAt: 6 },
+      ],
+      hold: { reason: 'stopped', at: 7 },
+    };
+    upsertThread(queued);
+    clock += 1_000;
+    // 다시 읽어도(저장소를 새로 연 것과 같다) 대기열과 붙잡음이 그대로다.
+    assert.deepEqual(getThread(a)?.followUps, queued.followUps);
+    assert.equal(getThread(a)?.lastActivityAt, before, 'the queue is not conversation activity');
+    assert.deepEqual(listThreads().map((t) => t.id), [b, a]);
+
+    // 대기열을 비우면 필드도 사라진다.
+    const drained = getThread(a)!;
+    drained.followUps = undefined;
+    upsertThread(drained);
+    assert.equal(getThread(a)?.followUps, undefined);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('stored follow-ups drop malformed items, extra items and a hold without items', () => {
+  mem.clear();
+  const base = {
+    titleRequested: false, createdAt: 1, updatedAt: 2, agent: 'claude', model: 'sonnet', effort: 'high',
+    messages: [{ role: 'user', text: '기존 메시지' }],
+  };
+  storage.setItem('rhwp-agent-threads', JSON.stringify([
+    {
+      ...base,
+      id: 'queued',
+      title: '대기열',
+      followUps: {
+        items: [
+          { id: 'ok', text: '  남는 글  ', createdAt: 1 },
+          { id: 'ok', text: '같은 id' },
+          { id: 'no-text', text: '   ' },
+          { text: 'id 없음' },
+          'not an item',
+          ...Array.from({ length: 12 }, (_, index) => ({ id: `extra-${index}`, text: `추가 ${index}` })),
+        ],
+        hold: { reason: 'made-up', at: 3 },
+      },
+    },
+    { ...base, id: 'empty-queue', title: '빈 대기열', followUps: { items: [], hold: { reason: 'stopped', at: 3 } } },
+  ]));
+  const queued = getThread('queued')?.followUps;
+  assert.equal(queued?.items.length, 10);
+  assert.deepEqual(queued?.items[0], { id: 'ok', text: '남는 글', createdAt: 1 });
+  assert.equal(queued?.hold, undefined, 'an unknown hold reason is dropped');
+  assert.equal(getThread('empty-queue')?.followUps, undefined);
+});
+
+test('턴 표식은 정착한 결과와 함께 저장소를 오간다', () => {
+  mem.clear();
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  const turn = createTurnMarker(10_000, 'turn-1');
+  thread.messages.push({ role: 'user', text: '표를 정리해 주세요' }, turn);
+  upsertThread(thread);
+  const running = getThread(thread.id)!;
+  assert.deepEqual(unsettledTurnMarkers(running.messages).map((marker) => marker.messageId), ['turn-1']);
+
+  settleTurnMarker(turn, { endedAt: 161_000, outcome: 'completed', text: '작업 2분 31초 · 표 1개 수정' });
+  thread.messages.push({ role: 'assistant', text: '정리했습니다.' });
+  upsertThread(thread);
+  const restored = getThread(thread.id)!;
+  const stored = latestTurnMarker(restored.messages);
+  assert.equal(stored?.messageId, 'turn-1');
+  assert.equal(stored?.startedAt, 10_000);
+  assert.equal(stored?.endedAt, 161_000);
+  assert.equal(stored?.outcome, 'completed');
+  assert.equal(stored?.text, '작업 2분 31초 · 표 1개 수정');
+  assert.deepEqual(unsettledTurnMarkers(restored.messages), []);
+});
+
+test('깨진 턴 표식은 버리고 나머지 대화는 그대로 복원한다', () => {
+  mem.clear();
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
+    id: 'broken-turns',
+    title: '표식',
+    titleRequested: true,
+    createdAt: 1,
+    updatedAt: 2,
+    agent: 'codex',
+    model: 'gpt-5.6-sol',
+    effort: 'high',
+    messages: [
+      { role: 'user', text: '하나' },
+      { role: 'system', kind: 'turn', messageId: 'backwards', startedAt: 5_000, endedAt: 4_000, outcome: 'completed', text: '' },
+      { role: 'system', kind: 'turn', messageId: '', startedAt: 1, endedAt: null, outcome: null, text: '' },
+      { role: 'system', kind: 'turn', messageId: 'half', startedAt: 1, endedAt: 2, outcome: null, text: '' },
+      { role: 'system', kind: 'turn', messageId: 'odd', startedAt: 1, endedAt: 2, outcome: 'exploded', text: '' },
+      { role: 'assistant', kind: 'turn', messageId: 'wrong-role', startedAt: 1, endedAt: null, outcome: null, text: '' },
+      { role: 'system', kind: 'turn', messageId: 'good', startedAt: 1, endedAt: null, outcome: null, text: '' },
+      { role: 'assistant', text: '답' },
+    ],
+  }]));
+  const restored = getThread('broken-turns')!;
+  assert.deepEqual(restored.messages.map((message) => message.kind === 'turn' ? `turn:${message.messageId}` : message.text),
+    ['하나', 'turn:good', '답']);
+});
+
+test('턴 표식은 공급자 기록에 들어가지 않는다', () => {
+  const plain = [
+    { role: 'user' as const, text: '요약해 주세요' },
+    { role: 'assistant' as const, text: '요약했습니다.' },
+    { role: 'user' as const, text: '더 짧게' },
+  ];
+  const first = createTurnMarker(1, 'turn-a');
+  settleTurnMarker(first, { endedAt: 2, outcome: 'completed', text: '작업 0초 · 문서 읽음' });
+  const withMarkers = [plain[0], first, plain[1], plain[2], createTurnMarker(3, 'turn-b')];
+  assert.deepEqual(
+    serializeThreadMessagesForProviderHistory(withMarkers),
+    serializeThreadMessagesForProviderHistory(plain),
+  );
+});
+
+test('끊긴 턴의 주인·허브 턴 id·끊김 기록(S3)은 표식과 함께 저장소를 오간다', () => {
+  mem.clear();
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  const turn = createTurnMarker(10_000, 'turn-s3');
+  turn.owner = { window: 'window-a', app: null, hub: 'hub-1' };
+  turn.hubTurnId = 'hub-turn-1';
+  thread.messages.push({ role: 'user', text: '표를 정리해 주세요' }, turn);
+  upsertThread(thread);
+  const running = latestTurnMarker(getThread(thread.id)!.messages)!;
+  assert.deepEqual(running.owner, { window: 'window-a', app: null, hub: 'hub-1' });
+  assert.equal(running.hubTurnId, 'hub-turn-1');
+  assert.equal(running.interruption, undefined);
+
+  settleTurnMarker(turn, {
+    endedAt: 40_000,
+    outcome: 'interrupted',
+    reason: 'hub-restart',
+    interruption: { reason: 'hub-restart', at: 90_000 },
+  });
+  turn.interruption!.resolution = 'resumed';
+  upsertThread(thread);
+  const restored = latestTurnMarker(getThread(thread.id)!.messages)!;
+  assert.equal(restored.outcome, 'interrupted');
+  assert.deepEqual(restored.interruption, { reason: 'hub-restart', at: 90_000, resolution: 'resumed' });
+  assert.deepEqual(restored.owner, { window: 'window-a', app: null, hub: 'hub-1' });
+});
+
+test('깨진 S3 필드는 그 필드만 버리고 턴 표식은 남긴다', () => {
+  mem.clear();
+  const base = { role: 'system', kind: 'turn', startedAt: 1, endedAt: 2, outcome: 'interrupted', text: '중단됨' };
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
+    id: 'broken-s3',
+    title: '끊김',
+    titleRequested: true,
+    createdAt: 1,
+    updatedAt: 2,
+    agent: 'codex',
+    model: 'gpt-5.6-sol',
+    effort: 'high',
+    messages: [
+      { role: 'user', text: '하나' },
+      { ...base, messageId: 'bad-owner', owner: { window: 'x'.repeat(129), app: null, hub: null }, hubTurnId: 7 },
+      { ...base, messageId: 'bad-reason', interruption: { reason: 'meteor', at: 3 } },
+      { ...base, messageId: 'bad-at', interruption: { reason: 'reload', at: -1 } },
+      { ...base, messageId: 'bad-resolution', interruption: { reason: 'reload', at: 3, resolution: 'maybe' } },
+      { ...base, messageId: 'not-interrupted', outcome: 'completed', interruption: { reason: 'reload', at: 3 } },
+      { role: 'system', kind: 'turn', messageId: 'open', startedAt: 1, endedAt: null, outcome: null, text: '', interruption: { reason: 'reload', at: 3 } },
+    ],
+  }]));
+  const markers = getThread('broken-s3')!.messages.filter((message) => message.kind === 'turn');
+  assert.deepEqual(markers.map((marker) => marker.messageId),
+    ['bad-owner', 'bad-reason', 'bad-at', 'bad-resolution', 'not-interrupted', 'open']);
+  const byId = new Map(markers.map((marker) => [marker.messageId, marker]));
+  assert.equal(byId.get('bad-owner')!.owner, undefined);
+  assert.equal(byId.get('bad-owner')!.hubTurnId, undefined);
+  assert.equal(byId.get('bad-reason')!.interruption, undefined);
+  assert.equal(byId.get('bad-at')!.interruption, undefined);
+  assert.deepEqual(byId.get('bad-resolution')!.interruption, { reason: 'reload', at: 3 });
+  assert.equal(byId.get('not-interrupted')!.interruption, undefined, 'only an interrupted turn keeps an interruption');
+  assert.equal(byId.get('open')!.interruption, undefined);
+});
+
+test('끊긴 턴은 공급자 기록에 그 턴 뒤의 끊김 한 줄로만 남는다 — 표식의 S3 필드는 싣지 않는다', () => {
+  const plain = [
+    { role: 'user' as const, text: '요약해 주세요' },
+    { role: 'assistant' as const, text: '요약하는 중' },
+  ];
+  const cut = createTurnMarker(1, 'turn-cut');
+  cut.owner = { window: 'w', app: null, hub: 'h' };
+  settleTurnMarker(cut, { endedAt: 2, outcome: 'interrupted', interruption: { reason: 'reload', at: 3 } });
+  const history = serializeThreadMessagesForProviderHistory([plain[0], cut, plain[1]]);
+  // 새로고침·재시작으로 turn-end 를 받지 못한 턴도 다음 프로바이더는 그 턴이 끝나지 못한 것을 안다(#466 의 턴 결과).
+  assert.deepEqual(history, [
+    ...serializeThreadMessagesForProviderHistory(plain),
+    { role: 'assistant', kind: 'interrupted', text: 'Turn interrupted before completion.' },
+  ]);
+  const done = createTurnMarker(1, 'turn-done');
+  settleTurnMarker(done, { endedAt: 2, outcome: 'completed' });
+  assert.deepEqual(
+    serializeThreadMessagesForProviderHistory([plain[0], done, plain[1]]),
+    serializeThreadMessagesForProviderHistory(plain),
+  );
+});
+
+test('저장소의 표식 정착은 그 id 의 정착 전 표식만 바꾸고 먼저 정한 결과를 덮지 않는다', () => {
+  mem.clear();
+  const thread = createEmptyThread({ agent: 'pi', model: 'openrouter/test', effort: 'medium' });
+  const done = createTurnMarker(1_000, 'done');
+  settleTurnMarker(done, { endedAt: 2_000, outcome: 'completed', text: '작업 1초' });
+  thread.messages.push(
+    { role: 'user', text: '하나' },
+    done,
+    { role: 'user', text: '둘' },
+    createTurnMarker(5_000, 'live'),
+    {
+      role: 'assistant', kind: 'activity', activityId: 'a1', text: '도구 호출', status: 'completed',
+      startedAt: 6_000, completedAt: 9_500, tools: [],
+    },
+  );
+  upsertThread(thread);
+  const live = latestTurnMarker(getThread(thread.id)!.messages)!;
+  assert.equal(estimateTurnEnd(getThread(thread.id)!.messages, live), 9_500);
+
+  const settled = settleStoredTurnMarker(thread.id, 'live', (stored, marker) => ({
+    endedAt: estimateTurnEnd(stored.messages, marker),
+    outcome: 'interrupted',
+    text: '중단됨 · 4초',
+    reason: 'hub-restart',
+  }));
+  assert.ok(settled);
+  const restored = getThread(thread.id)!;
+  const markers = restored.messages.filter((message) => message.kind === 'turn');
+  assert.deepEqual(markers.map((marker) => [marker.messageId, marker.outcome, marker.endedAt, marker.text]), [
+    ['done', 'completed', 2_000, '작업 1초'],
+    ['live', 'interrupted', 9_500, '중단됨 · 4초'],
+  ]);
+  assert.equal(markers[1]?.kind === 'turn' ? markers[1].reason : undefined, 'hub-restart');
+  // 이미 정착한 표식은 늦게 온 다른 결과로 덮이지 않는다.
+  assert.equal(settleStoredTurnMarker(thread.id, 'live', { endedAt: 99_000, outcome: 'completed' }), null);
+  assert.equal(settleStoredTurnMarker(thread.id, 'missing', { endedAt: 99_000, outcome: 'completed' }), null);
+  assert.equal(latestTurnMarker(getThread(thread.id)!.messages)?.outcome, 'interrupted');
+});
+
+test('정착 시각이 시작보다 앞서면 시작 시각으로 맞춘다', () => {
+  const marker = createTurnMarker(50_000, 'clock');
+  settleTurnMarker(marker, { endedAt: 10_000, outcome: 'completed' });
+  assert.equal(marker.endedAt, 50_000);
+});
+
+test('옛 빌드가 벗긴 턴 표식은 시스템 줄로 돌아오지 않고, 머리 없는 예전 id 의 온전한 표식은 그대로 읽는다', () => {
+  mem.clear();
+  const fresh = createTurnMarker(10_000);
+  settleTurnMarker(fresh, { endedAt: 161_000, outcome: 'completed', text: '작업 2분 31초 · 문단 2개 수정' });
+  // 옛 빌드의 정규화는 kind·시각·결과를 버리고 role·text·messageId 만 남겨 다시 저장한다.
+  const stripped = { role: fresh.role, text: fresh.text, messageId: fresh.messageId };
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
+    id: 'stripped-turns',
+    title: '표식',
+    titleRequested: true,
+    createdAt: 1,
+    updatedAt: 2,
+    agent: 'claude',
+    model: 'sonnet',
+    effort: 'high',
+    messages: [
+      { role: 'user', text: '고쳐 주세요' },
+      stripped,
+      { role: 'assistant', kind: 'progress', text: '확인합니다.' },
+      { role: 'assistant', text: '고쳤습니다.' },
+      { role: 'system', text: '네트워크가 끊겼습니다' },
+      { role: 'user', text: '하나 더' },
+      {
+        role: 'system', kind: 'turn', messageId: '3f2a9c1e-7a55-4d1c-9a43-0d8f6c1b2e77',
+        startedAt: 200_000, endedAt: 212_000, outcome: 'completed', text: '작업 12초',
+      },
+      { role: 'assistant', text: '했습니다.' },
+    ],
+  }]));
+  const restored = getThread('stripped-turns')!;
+  assert.deepEqual(
+    restored.messages.map((message) => message.kind === 'turn' ? `turn:${message.messageId}` : `${message.role}:${message.text}`),
+    [
+      'user:고쳐 주세요',
+      'assistant:확인합니다.',
+      'assistant:고쳤습니다.',
+      'system:네트워크가 끊겼습니다',
+      'user:하나 더',
+      'turn:3f2a9c1e-7a55-4d1c-9a43-0d8f6c1b2e77',
+      'assistant:했습니다.',
+    ],
+  );
+});
+
+test('턴 표식은 200개 대화 상한을 깎지 않는다 — 채팅만 한 대화도 마지막 100턴을 지킨다', () => {
+  mem.clear();
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  for (let index = 0; index < 150; index += 1) {
+    const turn = createTurnMarker(index * 1_000, `t${index}`);
+    settleTurnMarker(turn, { endedAt: index * 1_000 + 500, outcome: 'completed', text: '' });
+    thread.messages.push({ role: 'user', text: `질문 ${index}` }, turn, { role: 'assistant', text: `답 ${index}` });
+  }
+  upsertThread(thread);
+  const restored = getThread(thread.id)!;
+  const conversation = restored.messages.filter((message) => message.kind !== 'turn');
+  assert.equal(conversation.length, 200);
+  assert.equal(conversation[0]?.text, '질문 50');
+  assert.equal(serializeThreadMessagesForProviderHistory(restored.messages).length, 200);
+  // 남은 턴마다 표식이 그대로 있다 — 잘려 나간 턴의 표식은 남지 않는다.
+  const markers = restored.messages.filter((message) => message.kind === 'turn').map((message) => message.messageId);
+  assert.equal(markers.length, 100);
+  assert.equal(markers[0], 't50');
+  assert.equal(restored.messages[1]?.messageId, 't50');
+});
+
+test('상한이 턴 중간을 자르면 그 턴의 표식이, 정착 전 표식은 늘 남는다', () => {
+  mem.clear();
+  const thread = createEmptyThread({ agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' });
+  const crashed = createTurnMarker(1, 'crashed');
+  const big = createTurnMarker(2, 'big');
+  settleTurnMarker(big, { endedAt: 90_000, outcome: 'completed', text: '' });
+  thread.messages.push({ role: 'user', text: '먼저' }, crashed, { role: 'user', text: '크게' }, big);
+  for (let index = 0; index < 205; index += 1) {
+    thread.messages.push({ role: 'assistant', kind: 'progress', text: `단계 ${index}` });
+  }
+  upsertThread(thread);
+  const restored = getThread(thread.id)!;
+  assert.deepEqual(
+    restored.messages.slice(0, 3).map((message) => message.kind === 'turn' ? `turn:${message.messageId}` : message.text),
+    ['turn:crashed', 'turn:big', '단계 5'],
+  );
+  assert.equal(restored.messages.filter((message) => message.kind !== 'turn').length, 200);
+  assert.deepEqual(unsettledTurnMarkers(restored.messages).map((marker) => marker.messageId), ['crashed']);
 });
 
 // ─── 프로바이더 넘겨받기 · 압축 ─────────────────────────

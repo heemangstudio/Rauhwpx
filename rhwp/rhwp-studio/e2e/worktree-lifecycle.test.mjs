@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  ensureChromePath, findAvailablePort, openSample, startHub, startVite, stopServer, writeFakePi,
+  ensureChromePath, findAvailablePort, openSample, removeTempDir, startHub, startVite, stopServer, writeFakePi,
 } from './agent-bench-harness.mjs';
 
 ensureChromePath();
@@ -422,7 +422,7 @@ try {
 } finally {
   await stopServer(vite);
   await stopServer(hub);
-  fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  removeTempDir(fixtureRoot);
 }
 
 // Puppeteer와 자식 프로세스의 남은 핸들이 종료를 막을 수 있다. 모든 검증·정리를 마친 뒤 종료한다.

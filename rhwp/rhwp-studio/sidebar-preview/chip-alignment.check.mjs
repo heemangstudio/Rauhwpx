@@ -5,7 +5,7 @@ export async function checkChipAlignment(page, origin, screenshot) {
     for (const width of [1440, 900, 600, 360]) {
       await page.setViewport({ width, height: 900 });
       await page.goto(`${origin}/?theme=${theme}&controls=0`, { waitUntil: 'networkidle0' });
-      await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
+      await page.waitForFunction(() => window.sidebarPreview && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
       await page.evaluate(async () => {
         const preview = window.sidebarPreview;
         const statuses = await preview.bridge.requestAgentSetupStatus();

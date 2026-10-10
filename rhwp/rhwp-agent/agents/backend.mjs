@@ -11,9 +11,36 @@ import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
 import { HUMANIZE_KOREAN_RULES } from '../humanizer.mjs';
 
 const ANSI_ESCAPE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
-const SECRET_ASSIGNMENT = /((?:["']?(?:access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|cookie|password|secret|token|oauth[_-]?code|authorization[_-]?code|user[_-]?code|code[_-]?verifier|state)["']?)\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi;
+// 키를 감싼 따옴표는 JSON 문자열 안에서 이스케이프된 모양(`{\"api_key\":\"…\"}`)이어도 같다.
+const SECRET_ASSIGNMENT = /((?:\\?["']?(?:access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|cookie|password|secret|token|oauth[_-]?code|authorization[_-]?code|user[_-]?code|code[_-]?verifier|state)\\?["']?)\s*[:=]\s*)(?:\\?"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi;
 const AUTH_HEADER = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi;
+/**
+ * Authorization·Proxy-Authorization 헤더 값 — 스킴(Bearer·Basic·token·ApiKey·Digest·Negotiate …)과
+ * 그 값을 함께 지운다. Digest 처럼 `k="v", k=v` 매개변수 목록이면 목록 전체다. 키를 따옴표로
+ * 감싼 JSON 모양(`"authorization":"…"`)은 SECRET_ASSIGNMENT 가 맡는다.
+ */
+const AUTHORIZATION_HEADER = /\b((?:proxy-)?authorization\s*[:=]\s*)(?:[A-Za-z][\w-]*\s+)?(?:[\w-]+=(?:"[^"\r\n]*"|[^\s,;"]*)(?:\s*,\s*[\w-]+=(?:"[^"\r\n]*"|[^\s,;"]*))*|[^\s,;"]+)/gi;
 const KEY_SHAPED_SECRET = /\b(?:sk|pk)-[A-Za-z0-9_-]{12,}/g;
+/**
+ * 공급사 고유 모양의 토큰 — GitHub(ghp_/gho_/ghu_/ghs_/ghr_, github_pat_), Stripe 식
+ * (sk_live_/sk_test_/rk_live_ …), Slack(xox?-), AWS 액세스 키(AKIA…), Google API 키(AIza…),
+ * Hugging Face(hf_…). 모양이 분명해 일반 문구를 지울 위험이 없다.
+ */
+const VENDOR_SHAPED_SECRET = /\b(?:gh[oprsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|hf_[A-Za-z0-9]{30,})\b/g;
+/**
+ * PEM 개인 키 블록(RSA·EC·OPENSSH·ENCRYPTED·PGP …) 통째로. 끝 표시 없이 잘린 블록은 글 끝까지 지운다.
+ * 앞이 잘려 BEGIN 없이 남은 끝 표시는 글 처음부터 그 표시까지 지운다 — 잘린 꼬리에 남은 키 본문이다.
+ */
+const PRIVATE_KEY_BLOCK = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|$)/g;
+const ORPHAN_PRIVATE_KEY_END = /^[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/;
+/**
+ * JWT 모양의 액세스 토큰 (Codex OAuth 등): header.payload.signature. 낱말 경계 뒤의 `eyJ` 부터라
+ * `-` 로 이은 낱말 안(`x-eyJ…`)도 잡는다. header 는 [\w-] 덩어리 끝까지 가므로 덩어리 안에서
+ * 첫 `eyJ` 가 안 되면 뒤의 `eyJ` 도 안 된다 — 덩어리 첫머리에서 첫 `eyJ` 하나만 시험한다
+ * (앞보기는 되짚지 않는다). 자리마다 덩어리 끝까지 다시 훑지 않아 `-eyJ-eyJ…` 같은 긴 글에서도
+ * 선형이다. 첫 `eyJ` 앞의 낱말 조각은 $1 로 되돌린다.
+ */
+const JWT_SHAPED_SECRET = /(?<![\w-])(?=((?:\w*-)*?)eyJ)\1eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g;
 const URL_USERINFO = /(https?:\/\/)[^/\s:@]+:[^@\s/]+@/gi;
 const URL_SECRET_PARAM = /([?&#](?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|oauth[_-]?code|authorization[_-]?code|user[_-]?code|code|state|token)=)[^&#\s]+/gi;
 
@@ -25,11 +52,48 @@ export function redactDiagnosticText(value, secrets = []) {
     if (secret.length >= 4) text = text.split(secret).join('[redacted]');
   }
   return text
+    .replace(PRIVATE_KEY_BLOCK, '[redacted]')
+    .replace(ORPHAN_PRIVATE_KEY_END, '[redacted]')
     .replace(URL_USERINFO, '$1[redacted]@')
     .replace(URL_SECRET_PARAM, '$1[redacted]')
     .replace(AUTH_HEADER, '$1 [redacted]')
+    .replace(AUTHORIZATION_HEADER, '$1[redacted]')
     .replace(KEY_SHAPED_SECRET, '[redacted]')
+    .replace(VENDOR_SHAPED_SECRET, '[redacted]')
+    .replace(JWT_SHAPED_SECRET, '$1[redacted]')
     .replace(SECRET_ASSIGNMENT, '$1[redacted]');
+}
+
+/**
+ * 글의 앞쪽 `limit` 자 — 가리기 전에 자를 때 쓴다. 자른 자리가 낱말 가운데면 그 낱말 조각을 버려,
+ * 잘려서 알아볼 수 없게 된 비밀 값의 앞부분이 가림을 빠져나가지 않게 한다.
+ */
+export function redactableHead(value, limit) {
+  const text = String(value ?? '');
+  if (text.length <= limit) return text;
+  const head = text.slice(0, limit);
+  if (/\s/.test(text[limit])) return head;
+  // 뒤에서부터 공백을 찾는다 — `\S*$` 정규식은 긴 낱말 뒤에 짧은 꼬리가 붙으면 낱말의 자리마다
+  // 끝까지 다시 훑어 제곱 시간이 든다.
+  let end = head.length;
+  while (end > 0 && !/\s/.test(head[end - 1])) end -= 1;
+  return head.slice(0, end);
+}
+
+/**
+ * 글의 뒤쪽 `limit` 자 — 가리기 전에 자를 때 쓴다. 자른 자리가 줄 가운데면 그 줄 조각을 버린다:
+ * `Authorization: token …`·`api_key = …` 처럼 앞말이 있어야 알아보는 비밀이 앞말만 잘려 나가
+ * 값만 남는 일이 없다. 마지막 `limit` 자에 줄바꿈이 없으면 낱말 경계, 그것도 없으면 빈 글이다.
+ */
+export function redactableTail(value, limit) {
+  const text = String(value ?? '');
+  if (text.length <= limit) return text;
+  const tail = text.slice(-limit);
+  if (text[text.length - limit - 1] === '\n') return tail;
+  const newline = tail.indexOf('\n');
+  if (newline >= 0) return tail.slice(newline + 1);
+  const space = tail.search(/\s/);
+  return space >= 0 ? tail.slice(space + 1) : '';
 }
 
 /**
@@ -53,9 +117,22 @@ export function redactDiagnosticText(value, secrets = []) {
  *   | { type: 'usage';        agent: AgentName; model: string|null; usage: UsageTokens; costUsd?: number }
  *   | { type: 'context-usage'; agent: AgentName; usedTokens: number; maxTokens?: number; autoCompact?: boolean }
  *   | { type: 'compaction';   agent: AgentName; compactionId: string; phase: 'started'|'completed'|'failed'; trigger: 'auto'|'manual'; beforeTokens?: number; afterTokens?: number; message?: string }
- *   | { type: 'turn-end';     agent: AgentName; stopReason?: string; errorMessage?: string; resumeLost?: true; handoffUncertain?: true }
- *   | { type: 'error';        agent: AgentName; message: string }
+ *   | { type: 'turn-end';     agent: AgentName; stopReason?: string; errorMessage?: string; failure?: ProviderFailureHint; resumeLost?: true; handoffUncertain?: true }
+ *   | { type: 'error';        agent: AgentName; message: string; failure?: ProviderFailureHint }
  * )} UnifiedAgentEvent
+ *
+ * failure: 어댑터가 붙이는 해석 전 단서. 허브(makeBackendEventHandler)는 Studio 로 보내기 전에
+ * 이것을 provider-failure.mjs 의 분류 결과(ProviderFailure: class·가린 message·code·retryable·
+ * resetAt)로 바꿔 끼운다 — 같은 키지만 단서 모양은 Studio 에 닿지 않는다.
+ *
+ * @typedef {Object} ProviderFailureHint
+ * @property {'claude'|'codex'|'pi'|'hub'} source
+ * @property {string} [code] 프로바이더의 구조화된 오류 코드, 또는 공통 코드
+ *   ('process_exit' | 'cli_missing' | 'cleanup_uncertain' | 'openrouter_credits' | 'PI_MODEL_MISSING')
+ * @property {number} [httpStatus]
+ * @property {number} [resetAt] epoch ms — 프로바이더가 구조화해 알려 준 한도 리셋 시각
+ * @property {string} [terminalReason] Claude result.terminal_reason
+ * @property {boolean} [rateLimitRejected] Claude: 이 턴에 rate_limit_event status 'rejected' 가 왔다
  *
  * @typedef {Object} TaskUsage
  * @property {number} [totalTokens]
@@ -116,6 +193,7 @@ export function redactDiagnosticText(value, secrets = []) {
  * @property {string} [agentRole]
  * @property {string} [systemPromptOverride]
  * @property {number} [idleReleaseMs] How long a provider process may idle between turns before it is stopped.
+ * @property {string|null} [providerCliVersion] CLI version recorded in provider transcripts (RHWP_PROVIDER_TRANSCRIPT_DIR).
  * @property {(request: ProviderUserQuestionRequest, signal: AbortSignal) => Promise<UserQuestionOutcome>} [requestUserInput]
  * @property {(evt: UnifiedAgentEvent) => void} onEvent
  *

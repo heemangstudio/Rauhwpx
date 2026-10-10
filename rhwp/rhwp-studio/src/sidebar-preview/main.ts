@@ -4,24 +4,44 @@ import './preview.css';
 import { initAgentSidebar, type AgentSidebarHandle } from '../ui/agent-sidebar/index.ts';
 import { EventBus } from '../core/event-bus.ts';
 import { applyTheme, setThemeMode } from '../core/theme.ts';
-import { createMockBridge, scenarios, type Scenario } from './mock-bridge.ts';
+import { createMockBridge, failureKinds, scenarios, type FailureKind, type Scenario } from './mock-bridge.ts';
 import { createMockVersions } from './mock-versions.ts';
 import { showToast } from '../ui/toast.ts';
 import { userSettings } from '../core/user-settings.ts';
 import { completeInitialSetup, saveInitialSetup } from '../ui/initial-setup/state.ts';
-import { listThreads, getThread, waitForThreadsPersistence } from '../agent/threads.ts';
-import { markChatFinished, markChatWorking } from '../agent/chat-status.ts';
-import type { LibraryMoveResult } from '../library/move-to-document.ts';
+import { listThreads, getThread, upsertThread, waitForThreadsPersistence } from '../agent/threads.ts';
 import {
+  getChatStatus,
+  markChatFailed,
+  markChatFinished,
+  markChatNeedsReview,
+  getChatStatusLabel,
+  markChatWorking,
+} from '../agent/chat-status.ts';
+import {
+  connectChatAttention,
+  createChatAttentionLedger,
+  type AttentionNotice,
+} from '../agent/chat-attention.ts';
+import { loadAttentionPrefs, saveAttentionPrefs, subscribeAttentionPrefs } from '../agent/attention-prefs.ts';
+import { installAttentionToasts } from '../ui/agent-attention.ts';
+import type { LibraryMoveResult } from '../library/move-to-document.ts';
+import type { TurnRestoreControl, TurnRestoreResult, TurnRestoreStatus } from '../agent/turn-checkpoints.ts';
+import {
+  PREVIEW_WINDOW_SESSION_ID,
   SAMPLE_FINISHED_CHAT_ID,
+  SAMPLE_INTERRUPTED_CHAT_ID,
+  SAMPLE_REVIEW_CHAT_ID,
   SAMPLE_WORKING_CHAT_ID,
   sampleRecentDocuments,
+  sampleReloadQuestion,
 } from './fixtures.ts';
 import { normalizeSettingsDestination } from '../ui/agent-sidebar/settings-contract.ts';
 import { mountAuditNavigator } from './audit-scenarios.ts';
 import { mountAuditDialogs } from './audit-dialogs.ts';
 import { applyAuditState } from './audit-state.ts';
 import { mountEditorShell } from './editor-shell.ts';
+import { typingActivity, type TypingActivity } from '../ui/agent-sidebar/typing-guard.ts';
 
 const params = new URLSearchParams(location.search);
 if (params.get('usage') === 'live') {
@@ -34,17 +54,132 @@ const report = (message: string) => {
   status.value = message;
   showToast({ message, durationMs: 2500 });
 };
+/*
+ * Background-chat attention. The preview has its own ledger so `attention=away` can route every
+ * notice to the system sink (as when the window has no focus); otherwise a hidden chat's notice is
+ * an in-app toast with 열기. System notices are reported as `알림: {title} — {body}` and logged in
+ * `sidebarPreview.attentionNotices`. `notifications=granted` stubs the browser permission so the
+ * 설정 → AI → 알림 toggles show on the web build. System notices carry only the app name and the fixed
+ * phrase unless 알림에 채팅 제목과 문서 이름 표시 is on; `notificationDetails=1` turns it on at load.
+ */
+if (params.get('notifications') === 'granted' && typeof Notification === 'function') {
+  Object.defineProperty(Notification, 'permission', { configurable: true, get: () => 'granted' });
+}
+const attentionAway = params.get('attention') === 'away';
+if (params.get('notificationDetails') === '1') saveAttentionPrefs({ showChatDetails: true });
+const attention = createChatAttentionLedger({
+  getStatus: getChatStatus,
+  windowFocused: () => !attentionAway && document.visibilityState === 'visible' && document.hasFocus(),
+  showDetails: () => loadAttentionPrefs().showChatDetails,
+});
+attention.setEnabled(loadAttentionPrefs().notifications);
+subscribeAttentionPrefs((prefs) => attention.setEnabled(prefs.notifications));
+connectChatAttention(attention);
+const attentionNotices: AttentionNotice[] = [];
+const attentionCounts: number[] = [];
+attention.subscribe({
+  notice(notice) {
+    if (notice.channel !== 'system') return;
+    attentionNotices.push(notice);
+    report(`알림: ${notice.title} — ${notice.body}`);
+  },
+  count(count) {
+    attentionCounts.push(count);
+  },
+});
 const undoState = { entry: null as object | null, calls: 0 };
 const navigation = { calls: [] as Array<{ sectionIndex: number; paragraphIndex: number; charOffset: number }> };
-const mock = createMockBridge(report, () => { undoState.entry = {}; });
+/*
+ * "이 작업 전으로 되돌리기" fixture. The request whose turn produced an approved change becomes
+ * restorable. `restore=later` reports edits after it (the confirm sheet), `restore=evicted` a
+ * checkpoint that is gone (the refusal toast). A restore only counts calls; the document is a sample.
+ */
+const restoreMode = params.get('restore');
+const restoreState = {
+  calls: 0,
+  turnKey: null as string | null,
+  ready: new Set<string>(),
+  restored: new Set<string>(),
+  rebinds: [] as Array<{ from: string; to: string | null }>,
+};
+const restoreListeners = new Set<() => void>();
+const notifyRestore = () => { for (const listener of [...restoreListeners]) listener(); };
+function restoreStatus(key: string): TurnRestoreStatus {
+  if (!restoreState.ready.has(key)) return { kind: 'none' };
+  if (restoreMode === 'evicted') return { kind: 'blocked', reason: 'evicted' };
+  const restored = restoreState.restored.has(key);
+  return { kind: 'ready', laterEdits: restoreMode === 'later' && !restored, alreadyRestored: restored };
+}
+function checkRestore(key: string): TurnRestoreResult {
+  const status = restoreStatus(key);
+  if (status.kind === 'blocked') return { ok: false, reason: status.reason };
+  if (mock.bridge.isTurnRunning()) return { ok: false, reason: 'running' };
+  return status.kind === 'ready' ? { ok: true } : { ok: false, reason: 'unavailable' };
+}
+const turnRestore: TurnRestoreControl = {
+  noteTurnStart: (_threadId, key) => { restoreState.turnKey = key; },
+  // A request the hub refused is taken out of the chat; a hub turn bound to it moves to the request before.
+  rebindTurn: (_threadId, fromKey, toKey) => {
+    restoreState.rebinds.push({ from: fromKey, to: toKey });
+    if (restoreState.turnKey === fromKey) restoreState.turnKey = toKey;
+  },
+  status: (_threadId, key) => restoreStatus(key),
+  check: (_threadId, key) => checkRestore(key),
+  restore: (_threadId, key) => {
+    const checked = checkRestore(key);
+    if (!checked.ok) return checked;
+    restoreState.calls += 1;
+    restoreState.restored.add(key);
+    eventBus.emit('document-changed');
+    notifyRestore();
+    return { ok: true };
+  },
+  subscribe: (listener) => {
+    restoreListeners.add(listener);
+    return () => { restoreListeners.delete(listener); };
+  },
+};
+/*
+ * `chats=sample&reload=running|question` mounts the sidebar as after a reload while the hub still
+ * runs the 사업 제안서 chat's turn (and, for `question`, waits on its question). Without
+ * `chats=sample` the chat is not seeded again, so a second load keeps what the first one stored
+ * (its queued follow-ups, for example).
+ */
+const reload = params.get('reload');
+/*
+ * `reload=ended|failed`: the chat's turn ended (or failed) while the page reloaded — the hub replays
+ * that turn-end before its welcome, which reports the session idle. The sidebar must apply it to
+ * the re-adopted chat, not to the empty startup draft. `reload=ended-error`: the hub replays the
+ * turn's provider error and then a turn-end without a failure — the turn still failed.
+ */
+const liveChat = reload === 'running' || reload === 'question' || reload === 'ended' || reload === 'failed'
+  || reload === 'ended-error'
+  ? {
+    threadId: SAMPLE_WORKING_CHAT_ID,
+    agent: 'claude' as const,
+    ...(reload === 'question' ? { question: sampleReloadQuestion() } : {}),
+    ...(reload === 'ended' ? { ended: 'completed' as const } : reload === 'failed' ? { ended: 'failed' as const }
+      : reload === 'ended-error' ? { ended: 'error' as const } : {}),
+  }
+  : undefined;
+const mock = createMockBridge(report, () => {
+  undoState.entry = {};
+  if (restoreState.turnKey) {
+    restoreState.ready.add(restoreState.turnKey);
+    notifyRestore();
+  }
+}, { liveChat });
 if (params.get('services') === 'setup') mock.setServices(false);
 const eventBus = new EventBus();
 const versions = createMockVersions(report, params.get('history') === 'branches');
-let documentId: string | null = 'preview-proposal';
-let documentName: string | null = '사업 제안서.hwpx';
+// `document=empty` 는 문서 없이 시작한다 — 새로고침 뒤 이어 붙일 채팅의 문서가 아직 열리지 않은 상태.
+const startsEmpty = params.get('document') === 'empty';
+let documentId: string | null = startsEmpty ? null : 'preview-proposal';
+let documentName: string | null = startsEmpty ? null : '사업 제안서.hwpx';
 const recentDocuments = sampleRecentDocuments(Date.now());
 let createdDocuments = 0;
 const documentSelect = document.querySelector<HTMLSelectElement>('#document')!;
+if (startsEmpty) documentSelect.value = 'empty';
 
 /** Swap the mock document and announce it with the editor's document events. */
 function showMockDocument(id: string | null, name: string | null): void {
@@ -243,6 +378,7 @@ function createParallelChat(): PreviewChat {
     listRecentDocuments: async () => recentDocuments.map((row) => ({ ...row })),
     openChat: (request) => openChatFrom(index, request),
     chatModeLock: chatModeLockFor(index),
+    attention,
   });
   chatMock.boot();
   const chat = { sidebar: chatSidebar, mock: chatMock };
@@ -252,9 +388,32 @@ function createParallelChat(): PreviewChat {
   return chat;
 }
 
+/*
+ * `questionHeld=1` shows a question that arrived while the reviewer was typing. Page scripts
+ * cannot produce trusted keystrokes, so this fixture holds the "typing" state from start()
+ * until the real activity settles (a strip click, focus leaving a text field, a send).
+ */
+function createTypingHold() {
+  const real = typingActivity();
+  let holding = false;
+  real.onSettle(() => { holding = false; });
+  const activity: TypingActivity = {
+    isTyping: (holdsComposition) => holding || real.isTyping(holdsComposition),
+    onSettle: (listener) => real.onSettle(listener),
+    noteSend: () => real.noteSend(),
+    dispose: () => {},
+  };
+  return { activity, start: () => { holding = true; } };
+}
+const typingHold = params.get('questionHeld') === '1' ? createTypingHold() : null;
+
 const sidebar = initAgentSidebar({
   bridge: mock.bridge,
   eventBus,
+  typingActivity: typingHold?.activity,
+  attention,
+  // '리셋 후 이어서' 를 몇 초 안에 볼 수 있게 시계 차이 여유를 줄인다 (앱은 30초).
+  failureResumeGraceMs: 500,
   getDocumentContext: () => ({
     documentId,
     documentName,
@@ -280,6 +439,10 @@ const sidebar = initAgentSidebar({
     eventBus.emit('history-jumped');
     return true;
   },
+  turnRestore,
+  // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
+  interruptionScope: () => ({ windowSessionId: PREVIEW_WINDOW_SESSION_ID, appLaunchId: null }),
+  ownsWindowSession: true,
   navigateToChange: (position) => { navigation.calls.push(position); },
   openClassicVersionControl: () =>
     report('Classic document history placeholder'),
@@ -304,6 +467,7 @@ if (multiSession) {
     eventBus: new EventBus(),
     startActive: false,
     getDocumentContext: () => ({ ...BACKGROUND_DOCUMENT, selectionLabel: null }),
+    attention,
     moveToLibraryDocument: (target, options) => {
       attachSession(0);
       return moveDocument(target, options);
@@ -314,10 +478,20 @@ if (multiSession) {
   backgroundMock.boot();
   sessions.push({ sidebar: backgroundSidebar, mock: backgroundMock, documentId: () => BACKGROUND_DOCUMENT.documentId });
 }
-if (params.get('chats') === 'sample') {
-  markChatWorking(SAMPLE_WORKING_CHAT_ID);
+if (params.get('chats') === 'sample' || params.get('chats') === 'engine-trap') {
+  // 새로고침 뒤에는 옛 페이지가 떠나며(pagehide) 자기 작업 신호를 지웠다 — 허브가 아직 그 턴을 돌려도,
+  // 끝났거나 사라졌어도 그 채팅의 노란 불은 없다. 다시 잡은 사이드바가 다시 켠다.
+  if (reload === null) markChatWorking(SAMPLE_WORKING_CHAT_ID);
   markChatFinished(SAMPLE_FINISHED_CHAT_ID);
+  markChatNeedsReview(SAMPLE_REVIEW_CHAT_ID);
+  markChatFailed(SAMPLE_INTERRUPTED_CHAT_ID, { label: '중단됨' });
 }
+/** The shown chat's 열기 from a toast or notification — the same path as a rail click. */
+function openFromAttention(threadId: string): void {
+  const shown = parallelChats ? chats[shownChat] : sessions[attachedSession];
+  shown?.sidebar.openThreadFromHost(threadId);
+}
+installAttentionToasts(attention, openFromAttention);
 
 const scenarioSelect = document.querySelector<HTMLSelectElement>('#scenario')!;
 for (const name of scenarios)
@@ -328,6 +502,18 @@ if (scenarios.includes(initialScenario as Scenario))
 mock.setScenario(scenarioSelect.value as Scenario);
 // 압축 장면의 hold 는 압축 턴에만 건다 — 앞의 답변은 끝나야 압축할 수 있다.
 mock.setHold(params.get('hold') === '1' && params.get('compact') !== '1');
+// 오류 시나리오의 실패 유형 — 알림 종류마다 URL 하나로 열린다 (?scenario=error&failure=usage).
+const failureSelect = document.querySelector<HTMLSelectElement>('#failure')!;
+for (const kind of failureKinds) failureSelect.add(new Option(kind, kind));
+const initialFailure = params.get('failure');
+if (failureKinds.includes(initialFailure as FailureKind)) failureSelect.value = initialFailure!;
+mock.setFailureKind(failureSelect.value as FailureKind);
+failureSelect.addEventListener('change', () => {
+  mock.setFailureKind(failureSelect.value as FailureKind);
+  const url = new URL(location.href);
+  url.searchParams.set('failure', failureSelect.value);
+  history.replaceState(null, '', url);
+});
 scenarioSelect.addEventListener('change', () => {
   mock.bridge.interrupt();
   mock.bridge.setWorkflow('direct');
@@ -426,7 +612,7 @@ async function enterFocusMode(): Promise<void> {
 }
 // Open the requested view after the sidebar restores its saved conversation.
 if (params.get('page') === 'settings' || params.get('page') === 'versions')
-  await waitForThreadsPersistence();
+  await sidebar.startupChatSettled();
 if (params.get('fullscreen') === '1') await enterFocusMode();
 if (params.get('page') === 'settings')
   eventBus.emit('settings:open', { destination: normalizeSettingsDestination(params.get('destination')) ?? 'editing' });
@@ -437,15 +623,15 @@ async function openLockedParallelScene(): Promise<void> {
   const until = async (ready: () => boolean) => {
     while (!ready()) await new Promise((resolve) => setTimeout(resolve, 20));
   };
-  await waitForThreadsPersistence();
-  const input = sidebar.root.querySelector<HTMLTextAreaElement>('.ag-input')!;
+  // The restored chat starts first; the scene is played on top of it.
+  await sidebar.startupChatSettled();
   const modeButton = sidebar.root.querySelector<HTMLButtonElement>('.ag-mode-btn')!;
-  await until(() => !input.disabled && !modeButton.disabled);
+  await until(() => sidebar.root.dataset.composerReady === 'true' && !modeButton.disabled);
   // A restored chat may be in another mode; the first chat edits in 에이전트.
   if (modeButton.dataset.mode !== 'agent') {
     modeButton.click();
     sidebar.root.querySelector<HTMLButtonElement>('.ag-mode-item[data-mode="agent"]')!.click();
-    await until(() => modeButton.dataset.mode === 'agent' && !input.disabled);
+    await until(() => modeButton.dataset.mode === 'agent' && sidebar.root.dataset.composerReady === 'true');
   }
   mock.setHold(true);
   playSample();
@@ -456,9 +642,11 @@ async function openLockedParallelScene(): Promise<void> {
 if (parallel === 'locked') await openLockedParallelScene();
 
 // Typed hooks for browser checks and custom scenario scripts.
-const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, navigation,
-  sessions, attachSession, chats, showChat, openChatCalls,
-  threadStore: { listThreads, getThread, waitForThreadsPersistence } };
+const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold,
+  sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
+  openFromAttention,
+  threadStore: { listThreads, getThread, upsertThread, waitForThreadsPersistence },
+  chatStatus: { markChatWorking, getChatStatus, getChatStatusLabel } };
 export type SidebarPreview = typeof preview;
 Object.assign(window, { sidebarPreview: preview });
 if (params.get('audit') === '1') {

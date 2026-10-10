@@ -7,6 +7,7 @@
  */
 
 import type { SystemFontIndex } from './core/desktop-fonts.ts';
+import type { ChatAttentionLedger } from './agent/chat-attention.ts';
 import type {
   FileSystemFileHandleLike,
   FileSystemWritableFileStreamLike,
@@ -176,8 +177,12 @@ export interface RhwpDesktopApi {
   systemFontBaseUrl?: () => Promise<string>;
   /** macOS 프록시 아이콘과 미저장 점. 경로는 메인이 핸들로 찾는다. */
   setDocumentState?: (state: { edited: boolean }) => void;
-  notifyAgentTurnFinished?: (payload: { title: string; body: string }) => void;
-  setPendingReviewCount?: (count: number) => void;
+  /** 보지 않는 채팅의 알림 — 창에 초점이 없을 때만 메인이 OS 알림으로 띄운다. */
+  notifyAgentAttention?: (payload: { threadId: string; title: string; body: string }) => void;
+  /** 알렸지만 아직 보지 않은 채팅 수 — 앱 아이콘 배지(macOS·Linux)와 작업 표시줄 표시(Windows). */
+  setAgentAttentionCount?: (count: number) => void;
+  /** 알림을 누르면 그 채팅을 연다. 해제 함수를 돌려준다. */
+  onOpenAgentChat?: (callback: (threadId: string) => void) => (() => void) | void;
   showContextMenu?: (items: NativeContextMenuItem[]) => Promise<string | null>;
   /** 저장 확인을 창에 붙은 네이티브 시트로 묻는다. */
   showUnsavedChangesSheet?: (payload: { fileName: string }) => Promise<'save' | 'discard' | 'cancel'>;
@@ -1118,19 +1123,38 @@ export async function releaseDesktopDocument(win?: DesktopHost, slotId?: string)
   await desktopHost(win)?.rhwpDesktop?.releaseDocument?.(slotId);
 }
 
+/**
+ * 이 페이지가 받은 시작 파일(handleId)과 생성 문서(launchDocumentId). 데스크톱은 페이지를 다시
+ * 불러올 때마다 같은 것을 다시 보내므로, 엔진 trap 복구가 다시 여는 페이지는 이미 받은 것을
+ * 건너뛴다 — 그러지 않으면 시작 파일이 복구한 문서 위에 다시 열린다.
+ */
+const deliveredLaunchHandles = new Set<string>();
+const deliveredGeneratedDocuments = new Set<string>();
+
+export function deliveredLaunchHandleIds(): string[] {
+  return [...deliveredLaunchHandles];
+}
+
+export function deliveredGeneratedDocumentIds(): string[] {
+  return [...deliveredGeneratedDocuments];
+}
+
 export function installDesktopFileHandling(
   openHandles: (handles: FileSystemFileHandleLike[]) => void,
   win?: DesktopHost,
+  { skipHandleIds = [] }: { skipHandleIds?: readonly string[] } = {},
 ) {
   const api = desktopHost(win)?.rhwpDesktop;
   if (!api?.readNativeFile || !api.writeNativeFile) return;
-  const seen = new Set<string>();
+  const seen = new Set<string>(skipHandleIds);
+  for (const handleId of skipHandleIds) deliveredLaunchHandles.add(handleId);
   const receive = (descriptors: NativeFileHandleDescriptor[]) => {
     const handles = descriptors
       .filter(validNativeDescriptor)
       .filter((descriptor) => {
         if (seen.has(descriptor.handleId)) return false;
         seen.add(descriptor.handleId);
+        deliveredLaunchHandles.add(descriptor.handleId);
         return true;
       })
       .map((descriptor) => createNativeFileHandle(descriptor, api, { saveTarget: true }));
@@ -1149,10 +1173,12 @@ export function installDesktopGeneratedDocumentHandling(
     readOnly: boolean;
   }) => void,
   win?: DesktopHost,
+  { skipLaunchDocumentIds = [] }: { skipLaunchDocumentIds?: readonly string[] } = {},
 ) {
   const api = desktopHost(win)?.rhwpDesktop;
   if (!api?.onOpenGeneratedDocument) return false;
-  const seen = new Set<string>();
+  const seen = new Set<string>(skipLaunchDocumentIds);
+  for (const id of skipLaunchDocumentIds) deliveredGeneratedDocuments.add(id);
   const receive = (payload: {
     launchDocumentId?: string;
     bytes?: Uint8Array;
@@ -1166,6 +1192,7 @@ export function installDesktopGeneratedDocumentHandling(
     const bytes = payload?.bytes instanceof Uint8Array ? payload.bytes : null;
     if (!launchDocumentId || seen.has(launchDocumentId) || !bytes || !/\.(?:hwp|hwpx)$/iu.test(fileName)) return;
     seen.add(launchDocumentId);
+    deliveredGeneratedDocuments.add(launchDocumentId);
     openDocument({
       bytes,
       fileName,
@@ -1266,55 +1293,41 @@ export function installDesktopDocumentState(
 }
 
 /**
- * macOS 에이전트 턴 완료 알림과 Dock 배지.
- * 창이 포커스 중인지는 메인 프로세스가 판단하고, 여기서는 성공한 턴만 알린다.
+ * 데스크톱의 백그라운드 채팅 알림 — 장부(agent/chat-attention)의 시스템 알림을 메인에 넘기고,
+ * 알렸지만 아직 보지 않은 채팅 수를 앱 아이콘 배지로 보낸다. 무엇을 보일지(Dock·작업 표시줄·
+ * 런처 배지)는 메인이 플랫폼에 맞게 고른다. 알림을 누르면 openThread 로 그 채팅을 연다.
+ * 설치할 때와 해제할 때 0 을 보내 새로고침이 남긴 배지를 지운다.
  */
 export function installDesktopAgentAttention(
-  source: {
-    onEvent: (cb: (event: { type: string; event?: unknown }) => void) => () => void;
-    onPendingChange: (cb: () => void) => () => void;
-    pendingReviewCount: () => number;
-    documentTitle: () => string;
-  },
+  ledger: Pick<ChatAttentionLedger, 'subscribe' | 'count'>,
+  openThread: (threadId: string) => void,
   win?: DesktopHost,
 ): () => void {
   const api = desktopHost(win)?.rhwpDesktop;
-  if (api?.platform !== 'darwin') return () => {};
-  if (!api.notifyAgentTurnFinished && !api.setPendingReviewCount) return () => {};
-  let turnFailed = false;
+  if (!api || (!api.notifyAgentAttention && !api.setAgentAttentionCount)) return () => {};
   let lastCount = -1;
-  const syncCount = () => {
-    const count = Math.max(0, Math.floor(source.pendingReviewCount()));
+  const sendCount = (value: number) => {
+    const count = Math.max(0, Math.min(9999, Math.floor(value) || 0));
     if (count === lastCount) return;
     lastCount = count;
-    api.setPendingReviewCount?.(count);
+    api.setAgentAttentionCount?.(count);
   };
-  const offEvent = source.onEvent((sidebarEvent) => {
-    if (sidebarEvent.type !== 'agent') return;
-    const event = sidebarEvent.event as { type?: string; stopReason?: string; errorMessage?: string };
-    if (event?.type === 'turn-start') turnFailed = false;
-    else if (event?.type === 'error') turnFailed = true;
-    else if (event?.type === 'turn-end') {
-      const succeeded = !turnFailed && !event.errorMessage
-        && (event.stopReason === 'end_turn'
-          || event.stopReason === 'completed'
-          || event.stopReason === 'success');
-      turnFailed = false;
-      syncCount();
-      if (succeeded) {
-        api.notifyAgentTurnFinished?.({
-          title: source.documentTitle() || 'HamaEditor',
-          body: lastCount > 0 ? '검토할 변경이 있습니다' : '작업 완료',
-        });
-      }
-    }
+  sendCount(0);
+  sendCount(ledger.count());
+  const off = ledger.subscribe({
+    notice(notice) {
+      if (notice.channel !== 'system') return;
+      api.notifyAgentAttention?.({ threadId: notice.threadId, title: notice.title, body: notice.body });
+    },
+    count: sendCount,
   });
-  const offPending = source.onPendingChange(syncCount);
-  syncCount();
+  const offOpen = api.onOpenAgentChat?.((threadId) => {
+    if (typeof threadId === 'string' && threadId) openThread(threadId);
+  });
   return () => {
-    offEvent();
-    offPending();
-    if (lastCount > 0) api.setPendingReviewCount?.(0);
+    off();
+    if (typeof offOpen === 'function') offOpen();
+    sendCount(0);
   };
 }
 
