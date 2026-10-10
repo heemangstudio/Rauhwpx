@@ -13,7 +13,7 @@ export interface BrowserControllerState {
 }
 
 /** 뷰의 수명과 탭의 수명을 분리한다. 화면을 닫아도 런타임 탭은 닫지 않는다. */
-export function createBrowserController(bridge: SidebarBridge) {
+export function createBrowserController(bridge: SidebarBridge, options: { nativePresentation?: boolean } = {}) {
   const state: BrowserControllerState = {
     runtime: null, tabs: [], activeTabId: null, frames: new Map(), downloads: [],
     connected: bridge.getConnectionState() === 'connected', busy: false, error: null,
@@ -112,7 +112,11 @@ export function createBrowserController(bridge: SidebarBridge) {
     return current ? { tabId: current.tabId, navigationEpoch: current.navigationEpoch, controllerEpoch: current.controllerEpoch, runtimeGeneration: current.runtimeGeneration ?? state.runtime?.generation } : {};
   }
   function frame(): BrowserFrame | null { return state.activeTabId ? state.frames.get(state.activeTabId) ?? null : null; }
-  async function readFrame(): Promise<void> {
+  function usesNativePresentation(): boolean {
+    return options.nativePresentation === true && (tab()?.runtime === 'native' || state.runtime?.kind === 'native');
+  }
+  async function readFrame(force = false): Promise<void> {
+    if (!force && usesNativePresentation()) return;
     if (frameRequest || !tab() || !state.connected || disposed) return frameRequest ?? undefined;
     const target = identity();
     frameRequest = request('frame', target).then(() => undefined).catch((error) => {
@@ -121,7 +125,7 @@ export function createBrowserController(bridge: SidebarBridge) {
     return frameRequest;
   }
   return {
-    state, tab, frame, identity, action, request, refresh, readFrame,
+    state, tab, frame, identity, action, request, refresh, readFrame, usesNativePresentation,
     subscribe(callback: () => void) { listeners.add(callback); return () => { listeners.delete(callback); }; },
     select(tabId: string) {
       if (!state.tabs.some((row) => row.tabId === tabId)) return;

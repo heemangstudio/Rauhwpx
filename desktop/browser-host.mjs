@@ -211,14 +211,15 @@ export class OwnedBrowserHost {
     return tab;
   }
 
-  viewport(tab, { width, height }) {
-    if (width <= 0 || height <= 0) return Promise.resolve();
-    tab.viewport = { width, height };
+  async viewport(tab, { width, height }) {
+    if (width <= 0 || height <= 0) return;
+    if (tab.viewport?.width === width && tab.viewport?.height === height) return;
     // Unparented native views otherwise report a zero viewport. Keep a useful
     // page size while hidden, then match the actual projection when attached.
-    return tab.view.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
+    await tab.view.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
       width, height, deviceScaleFactor: 0, mobile: false,
     });
+    tab.viewport = { width, height };
   }
 
   state(tab) {
@@ -251,14 +252,19 @@ export class OwnedBrowserHost {
     if (!['dock', 'float', 'popout'].includes(mode)) throw new Error('Native browser presentation mode is invalid');
     if (mode === 'popout') return this.popout(window, tab);
     const rect = browserViewBounds(bounds, window);
-    this.unplace(tab);
-    tab.interactive = interactive === true && tab.human;
-    window.contentView.addChildView(tab.view);
+    const placementChanged = tab.placement?.window !== window || tab.placement?.mode !== mode;
+    const nextInteractive = interactive === true && tab.human;
+    const inputChanged = tab.interactive !== nextInteractive;
+    if (placementChanged) {
+      this.unplace(tab);
+      window.contentView.addChildView(tab.view);
+    }
+    tab.interactive = nextInteractive;
     tab.view.setBounds(rect);
     void this.viewport(tab, rect).catch(() => {});
     tab.view.setVisible(rect.width > 0 && rect.height > 0);
     tab.placement = { window, mode };
-    this.emit(tab, 'presentation');
+    if (placementChanged || inputChanged) this.emit(tab, 'presentation');
     return this.state(tab);
   }
 

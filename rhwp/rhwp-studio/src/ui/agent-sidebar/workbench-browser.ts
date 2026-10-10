@@ -14,7 +14,7 @@ export function createWorkbenchBrowser(options: {
   onDock(): void;
   onChat(): void;
 }) {
-  const controller = createBrowserController(options.bridge);
+  const controller = createBrowserController(options.bridge, { nativePresentation: Boolean(nativeBrowserApi()) });
   const element = document.createElement('section'); element.className = 'ag-browser';
   element.setAttribute('aria-label', '연구 브라우저');
   const toolbar = document.createElement('header'); toolbar.className = 'ag-browser-toolbar';
@@ -128,9 +128,10 @@ export function createWorkbenchBrowser(options: {
   let frameTimer: ReturnType<typeof setTimeout> | null = null; let composing = false; let committedComposition: string | null = null; let disposed = false; let selectedFrameId = ''; let nativeSequence = 0;
   let pointerStart: { x: number; y: number } | null = null;
   let tabsSignature = ''; let downloadsSignature = ''; let nativeProjection = ''; let inputChain: Promise<unknown> = Promise.resolve();
+  let lastInputAt = -Infinity;
   const presentation = createBrowserPresentation(element, (mode) => {
     visible = mode !== null; paint(); scheduleFrame(); void projectNative();
-  }, () => { void projectNative(); });
+  }, () => { layout(); });
   function navigate(direction: string): void {
     if (!controller.tab()) return;
     handle(controller.action('navigate', { ...controller.identity(), direction }).then(() => controller.readFrame()));
@@ -153,7 +154,7 @@ export function createWorkbenchBrowser(options: {
     pinned = { destination: { ...options.getDestination() }, tab: { ...tab }, frame: controller.frame() };
     destination.textContent = `첨부할 채팅 · ${pinned.destination.label || pinned.destination.threadId}`;
     annotation.hidden = false; annotationStatus.textContent = ''; annotationMode = 'page'; comment.focus(); paintAnnotation(); void projectNative();
-    handle(controller.readFrame().then(() => { if (pinned && pinned.tab.tabId === tab.tabId && pinned.tab.navigationEpoch === controller.tab()?.navigationEpoch) pinned.frame = controller.frame(); }));
+    handle(controller.readFrame(true).then(() => { if (pinned && pinned.tab.tabId === tab.tabId && pinned.tab.navigationEpoch === controller.tab()?.navigationEpoch) pinned.frame = controller.frame(); }));
   }
   function endAnnotation(): void { pinned = null; annotation.hidden = true; surface.classList.remove('ag-browser-picking'); selection.hidden = true; pointerStart = null; void projectNative(); surface.focus(); }
   async function capture(): Promise<void> {
@@ -187,7 +188,11 @@ export function createWorkbenchBrowser(options: {
     const tab = controller.tab();
     if (!tab || tab.controller.owner !== 'human' || !controller.state.connected || pinned) return;
     const identity = controller.identity();
-    inputChain = inputChain.catch(() => undefined).then(() => controller.request('input', { ...identity, ...args }));
+    lastInputAt = performance.now();
+    inputChain = inputChain.catch(() => undefined).then(() => controller.request('input', { ...identity, ...args })).then(() => {
+      // 입력을 마친 화면은 다음 정기 캡처를 기다리지 않고 바로 표시한다.
+      if (visible && !pinned && (args.type !== 'pointer' || args.event === 'up')) handle(controller.readFrame());
+    });
     handle(inputChain);
   }
   surface.addEventListener('pointerdown', event => {
@@ -282,14 +287,25 @@ export function createWorkbenchBrowser(options: {
     const placement = { tabId: target, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, mode: presentation.current() ?? 'dock', interactive: tab.controller.owner === 'human' };
     const signature = JSON.stringify(placement); if (nativeProjection === signature) return; nativeProjection = signature;
     try { await native.attach(placement); }
-    catch (failure) { if (sequence === nativeSequence) { nativeTab = null; errorMessage.textContent = failure instanceof Error ? failure.message : String(failure); error.hidden = false; } }
+    catch (failure) { if (sequence === nativeSequence) { nativeTab = null; nativeProjection = ''; errorMessage.textContent = failure instanceof Error ? failure.message : String(failure); error.hidden = false; } }
   }
-  const resizeObserver = new ResizeObserver(() => { void projectNative(); }); resizeObserver.observe(surface);
-  const layout = () => { void projectNative(); }; window.addEventListener('scroll', layout, true); window.addEventListener('resize', layout);
+  let layoutFrame: number | null = null;
+  const layout = () => {
+    if (layoutFrame !== null || disposed) return;
+    layoutFrame = requestAnimationFrame(() => { layoutFrame = null; void projectNative(); });
+  };
+  const resizeObserver = new ResizeObserver(layout); resizeObserver.observe(surface);
+  window.addEventListener('scroll', layout, true); window.addEventListener('resize', layout);
   function scheduleFrame(): void {
-    if (frameTimer) clearTimeout(frameTimer); frameTimer = null;
-    if (!visible || disposed || nativePopout) return;
-    frameTimer = setTimeout(() => { frameTimer = null; if (!pinned) handle(controller.readFrame()); scheduleFrame(); }, 700);
+    if (!visible || disposed || nativePopout || controller.usesNativePresentation() || pinned) {
+      if (frameTimer) clearTimeout(frameTimer); frameTimer = null; return;
+    }
+    if (frameTimer) return;
+    const delay = performance.now() - lastInputAt < 1500 ? 80 : controller.tab()?.status === 'loading' ? 200 : 700;
+    frameTimer = setTimeout(() => {
+      frameTimer = null;
+      handle(controller.readFrame().finally(scheduleFrame));
+    }, delay);
   }
   function paint(): void {
     if (disposed) return;
@@ -334,7 +350,7 @@ export function createWorkbenchBrowser(options: {
     for (const [label, value] of [['런타임', controller.state.runtime ? `${controller.state.runtime.kind} · ${controller.state.runtime.state} · 세대 ${controller.state.runtime.generation}` : '아직 시작하지 않음'], ['탭', tab?.tabId ?? '없음'], ['소유 채팅', tab?.threadId ?? '일반 브라우저'], ['프로젝트', tab?.projectId ?? '일반 받은 파일'], ['마지막 작업', tab?.lastAction ?? '없음'], ['탐색 / 조작 세대', tab ? `${tab.navigationEpoch} / ${tab.controllerEpoch}` : '없음']]) {
       const key = document.createElement('dt'); key.textContent = label; const content = document.createElement('dd'); content.textContent = value; inspector.append(key, content);
     }
-    paintDownloads(); void projectNative();
+    paintDownloads(); layout(); scheduleFrame();
   }
   const unsubscribe = controller.subscribe(paint);
   const unsubscribeUpload = options.bridge.onBrowserEvent((event) => {
@@ -355,7 +371,8 @@ export function createWorkbenchBrowser(options: {
       return;
     }
     if (event.type === 'browser-popout-closed' || event.type === 'popout-closed' || nativePopout && event.type === 'presentation' && (event.mode === 'hidden' || event.mode === 'dock')) { nativePopout = false; presentation.present('dock'); options.onDock(); }
-    handle(controller.refresh());
+    // 배치/이동은 페이지 상태를 바꾸지 않는다. 크기 조절마다 허브를 다시 읽지 않는다.
+    if (event.type !== 'presentation' && event.type !== 'bound') handle(controller.refresh());
   });
   paint();
   return { element, controller,
@@ -365,7 +382,7 @@ export function createWorkbenchBrowser(options: {
       else if (presentation.current() === 'dock') presentation.hide();
     },
     float() { nativePopout = false; presentation.present('float'); handle(controller.refresh().then(() => controller.readFrame())); },
-    dispose() { disposed = true; if (frameTimer) clearTimeout(frameTimer); resizeObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
+    dispose() { disposed = true; if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
   };
 }
 export type WorkbenchBrowser = ReturnType<typeof createWorkbenchBrowser>;

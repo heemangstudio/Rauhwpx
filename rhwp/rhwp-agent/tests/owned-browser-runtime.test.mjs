@@ -8,6 +8,31 @@ import { createOwnedBrowserService } from '../owned-browser-service.mjs';
 import { createBrowserNetworkGuard, createBrowserNetworkProxy } from '../owned-browser-network.mjs';
 import { inspectOwnedBrowserRuntime } from '../owned-browser-runtime.mjs';
 
+test('desktop startup selects the native adapter while explicit managed profiles remain managed', async (t) => {
+  const nativeAdapter = {};
+  for (const [name, options, savedMode, expected] of [
+    ['desktop default', { nativeAdapter }, null, nativeAdapter],
+    ['web default', {}, null, undefined],
+    ['explicit managed', { nativeAdapter, runtimeMode: 'managed' }, null, undefined],
+    ['saved managed', { nativeAdapter }, 'managed', undefined],
+  ]) await t.test(name, async (subtest) => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-browser-selection-'));
+    let selected;
+    const browser = createOwnedBrowserService({ dataDir, ...options, runtimeFactory: async (settings) => {
+      selected = settings.nativeAdapter;
+      throw Object.assign(new Error('Controlled startup boundary'), { code: 'BROWSER_START_FAILED' });
+    } });
+    subtest.after(async () => { await browser.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+    if (savedMode) {
+      await fs.mkdir(path.join(dataDir, 'browser'), { recursive: true });
+      await fs.writeFile(path.join(dataDir, 'browser', 'runtime.json'), JSON.stringify({ version: 1, mode: savedMode, headless: true }));
+    }
+    await browser.restore();
+    await assert.rejects(browser.request({ isHuman: true, clientId: 'window', threadId: 'chat', agentId: 'owner' }, 'open', {}), { code: 'BROWSER_START_FAILED' });
+    assert.equal(selected, expected);
+  });
+});
+
 test('browser network resolves every hop and permits only exact configured private origins', async () => {
   let address = '93.184.216.34';
   const guard = createBrowserNetworkGuard({ lookup: async () => [{ address, family: 4 }], workspaceTargets: ['http://localhost:7715'] });

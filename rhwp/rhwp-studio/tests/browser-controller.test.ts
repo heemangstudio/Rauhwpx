@@ -4,7 +4,7 @@ import type { SidebarBridge } from '../src/agent/bridge.ts';
 import type { BrowserEvent, BrowserFrame, BrowserResult, BrowserTab, SidebarEvent } from '../src/agent/types.ts';
 import { createBrowserController } from '../src/ui/agent-sidebar/browser-controller.ts';
 
-function fixture() {
+function fixture(nativePresentation = false) {
   const listeners = new Set<(event: BrowserEvent) => void>();
   const actions: string[] = [];
   let respond: (action: string) => Promise<BrowserResult> = async () => ({});
@@ -14,11 +14,24 @@ function fixture() {
     onEvent(_handler: (event: SidebarEvent) => void) { return () => undefined; },
     async requestBrowser(action: string) { actions.push(action); return respond(action); },
   } as unknown as SidebarBridge;
-  return { controller: createBrowserController(bridge), actions,
+  return { controller: createBrowserController(bridge, { nativePresentation }), actions,
     emit(event: BrowserEvent) { for (const handler of listeners) handler(event); },
     respond(handler: typeof respond) { respond = handler; },
   };
 }
+
+test('네이티브 페이지는 실시간으로 표시하고 의견을 붙일 때만 화면을 캡처한다', async () => {
+  const f = fixture(true); const owner = { ...tab(), runtime: 'native' as const };
+  f.emit({ type: 'owned_browser_inventory', tabs: [owner] });
+  f.controller.select(owner.tabId);
+  await f.controller.readFrame();
+  assert.deepEqual(f.actions, []);
+  f.respond(async () => ({ frame: frame(owner) }));
+  await f.controller.readFrame(true);
+  assert.deepEqual(f.actions, ['frame']);
+  assert.equal(f.controller.frame()?.tabId, owner.tabId);
+  f.controller.dispose();
+});
 function tab(navigationEpoch = 1, controllerEpoch = 1): BrowserTab {
   return { tabId: 'owned-tab', threadId: 'chat', documentId: null, projectId: 'project', url: `https://example.com/${navigationEpoch}`, title: '자료', navigationEpoch, controllerEpoch, controller: { owner: controllerEpoch === 1 ? 'agent' : 'human' }, status: 'ready' };
 }
