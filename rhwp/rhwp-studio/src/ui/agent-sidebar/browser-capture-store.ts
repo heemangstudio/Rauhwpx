@@ -41,26 +41,16 @@ export async function saveBrowserCaptureDraft(args: {
 }): Promise<BrowserCaptureDraft> {
   const id = globalThis.crypto?.randomUUID?.() ?? `browser-${Date.now()}-${Array.from(crypto.getRandomValues(new Uint32Array(4)), (value) => value.toString(16)).join('')}`;
   let sourceUrl = args.tab.url; try { const url = new URL(sourceUrl); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; sourceUrl = url.href; } catch { sourceUrl = ''; }
+  const observedViewport = args.evidence.viewport as BrowserCaptureDraft['source']['viewport'] | undefined;
   const source = { tabId: args.tab.tabId, url: sourceUrl, title: args.tab.title, navigationEpoch: args.tab.navigationEpoch,
     frameId: args.frame?.frameId ?? null, viewport: args.frame ? { width: args.frame.width, height: args.frame.height,
-      deviceScaleFactor: args.frame.deviceScaleFactor, scrollX: args.frame.scrollX, scrollY: args.frame.scrollY } : null };
+      deviceScaleFactor: args.frame.deviceScaleFactor, scrollX: args.frame.scrollX, scrollY: args.frame.scrollY } : observedViewport ?? null };
   const files: File[] = [];
-  const image = (args.evidence.screenshot ?? args.evidence.image) as { data?: string; mimeType?: string; width?: number; height?: number; clip?: { x: number; y: number; width: number; height: number } } | undefined;
+  const image = (args.evidence.screenshot ?? args.evidence.image) as { data?: string; mimeType?: string; width?: number; height?: number } | undefined;
   if (image?.data && image.data.length <= 16 * 1024 * 1024) {
     const binary = atob(image.data.replace(/^data:[^,]+,/, '')); const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
     const mime = image.mimeType === 'image/png' ? 'image/png' : 'image/jpeg';
-    let attachment: Blob = new Blob([bytes], { type: mime });
-    if (image.clip && image.width && image.height) {
-      // 저장한 픽셀만 자른다. 선택 이후 사이트가 바뀌어도 새 화면을 읽지 않는다.
-      const frozenImage = new Image(); frozenImage.src = `data:${mime};base64,${image.data}`; await frozenImage.decode();
-      const scaleX = frozenImage.naturalWidth / image.width, scaleY = frozenImage.naturalHeight / image.height;
-      const clip = image.clip; const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.ceil(clip.width * scaleX)); canvas.height = Math.max(1, Math.ceil(clip.height * scaleY));
-      if (canvas.width * canvas.height > 12_000_000) throw new Error('선택한 이미지가 너무 큽니다. 더 작은 영역을 선택해 주세요.');
-      const context = canvas.getContext('2d'); if (!context) throw new Error('선택한 이미지를 저장하지 못했습니다. 다시 시도해 주세요.');
-      context.drawImage(frozenImage, clip.x * scaleX, clip.y * scaleY, clip.width * scaleX, clip.height * scaleY, 0, 0, canvas.width, canvas.height);
-      attachment = await new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('선택한 이미지를 저장하지 못했습니다. 다시 시도해 주세요.')), mime, .85));
-    }
+    const attachment = new Blob([bytes], { type: mime });
     files.push(new File([attachment], `browser-${id}.${mime === 'image/png' ? 'png' : 'jpg'}`, { type: mime }));
   }
   const evidence = { ...args.evidence }; delete evidence.screenshot; delete evidence.image;
@@ -68,8 +58,8 @@ export async function saveBrowserCaptureDraft(args: {
     comment: args.comment, label: args.tab.title || '브라우저 자료', source, mode: args.mode, evidence, screenshotError: args.screenshotError };
   files.push(new File([JSON.stringify(record, null, 2)], `browser-${id}.json`, { type: 'application/json' }));
   const draft: BrowserCaptureDraft = { ...record, files };
-  const existing = await listBrowserCaptureDrafts(args.destination.threadId);
-  if (existing.length >= 20) throw new Error('저장한 브라우저 자료가 20개입니다. 일부를 보내거나 지워 주세요.');
+  const count = await transaction<number>('readonly', (store, set) => { const request = store.index('threadId').count(args.destination.threadId); request.onsuccess = () => set(request.result); });
+  if (count >= 20) throw new Error('저장한 브라우저 자료가 20개입니다. 일부를 보내거나 지워 주세요.');
   await transaction<void>('readwrite', (store, set) => { store.add(draft); set(undefined); });
   return draft;
 }

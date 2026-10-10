@@ -33,6 +33,7 @@ test('native page zoom changes DOM scale while retaining form state and editor o
         if (code !== 0) reject(new Error(result.error ?? stderr)); else resolve(result);
       });
     });
+    assert.deepEqual(report.viewportCapture, { bounded: true, live: true });
     assert.equal(report.zoom.percent, 150);
     assert.equal(report.zoom.formPreserved, true);
     assert.equal(report.zoom.foreignWindowRejected, true);
@@ -43,9 +44,5 @@ test('native page zoom changes DOM scale while retaining form state and editor o
     assert.equal(report.geometry.snapshotsInvalidated, true);
     assert.equal(report.geometry.staleEventsRejected, true);
     assert.equal(report.geometry.listenerDisposed, true);
-    assert.equal(report.frozenCapture.fullPage, true);
-    assert.equal(report.frozenCapture.immutable, true);
-    assert.equal(report.frozenCapture.physicalClickBlocked, true);
-    assert.equal(report.frozenCapture.guestRestored, true);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

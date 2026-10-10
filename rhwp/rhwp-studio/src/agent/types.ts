@@ -703,24 +703,6 @@ export interface BrowserFrame {
   scrollX: number;
   scrollY: number;
 }
-/** 이미지와 개체는 같은 문서 좌표를 사용하며 저장할 때 실시간 DOM을 다시 읽지 않는다. */
-export interface BrowserFrozenElement {
-  elementId: string;
-  tag: string;
-  role: string;
-  name: string;
-  text: string;
-  depth: number;
-  rect: { x: number; y: number; width: number; height: number };
-}
-export interface BrowserFrozenPage {
-  freezeId: string;
-  expiresAt: number;
-  source: { url: string; title: string; timestamp: string };
-  viewport: { width: number; height: number; deviceScaleFactor: number; scrollX: number; scrollY: number };
-  frame: BrowserFrame;
-  elements: BrowserFrozenElement[];
-}
 export interface BrowserDownload {
   downloadId: string;
   state: 'downloading' | 'downloaded' | 'importing' | 'imported' | 'cancelled' | 'interrupted' | 'import-failed';
@@ -757,7 +739,6 @@ export interface BrowserResult {
   tabs?: BrowserTab[];
   tab?: BrowserTab;
   frame?: BrowserFrame;
-  frozen?: BrowserFrozenPage;
   downloads?: BrowserDownload[];
   jobs?: BrowserDownload[];
   [key: string]: unknown;

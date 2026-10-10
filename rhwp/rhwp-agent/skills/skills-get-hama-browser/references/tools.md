@@ -103,6 +103,6 @@ After one unsuccessful recovery, report the blocker and next step. `retryable: t
 
 ## Human UI and scope
 
-Browser Settings owns installation, runtime modes, accounts, sign-in, cleanup, and policy management. Raw pointer input and file uploads are human UI capabilities, absent from the agent tool list. Human markings are user attachments; agent `browser_capture` is evidence capture.
+Browser Settings owns installation, runtime modes, accounts, sign-in, cleanup, and policy management. Raw pointer input and file uploads are human UI capabilities, absent from the agent tool list. User viewport screenshots are chat attachments; agent `browser_capture` is evidence capture.
 
 The service treats opening and assigned-tab browsing as the agent's browser territory. Secure account fill still uses broker approval and origin checks. Keep actions within the user's requested task. The [source comparison](design-sources.md) records the architecture and research sources.

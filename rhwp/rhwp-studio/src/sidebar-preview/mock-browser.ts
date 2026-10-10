@@ -1,9 +1,8 @@
-import type { BrowserEvent, BrowserFrame, BrowserFrozenPage, BrowserTab } from '../agent/types.ts';
+import type { BrowserEvent, BrowserFrame, BrowserTab } from '../agent/types.ts';
 
 /** 실제 브라우저 API 모양을 따르는 로컬 미리보기. 비밀번호는 보관하지 않는다. */
 export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThread: () => string, getProject: () => string | null) {
   let tabs: BrowserTab[] = []; let frameSequence = 0; let generation = 1;
-  let frozen: BrowserFrozenPage | null = null;
   const inputs: Array<Record<string, unknown>> = []; const captures: Array<Record<string, unknown>> = [];
   let accounts = [{ profileId: 'default', origins: ['https://accounts.google.com'], id: 'google', origin: 'https://accounts.google.com', label: 'Google 연구', hasPassword: true, agentReuseApproved: true, sessionStatus: 'authenticated' }];
   let resetCount = 0;
@@ -26,7 +25,7 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     context.font = '24px sans-serif'; context.fillText(tab.url, 90, 176, 1080);
     context.fillStyle = '#e4ece7'; context.fillRect(90, 240, 1080, 320);
     context.fillStyle = '#243f32'; context.font = '32px sans-serif'; context.fillText('브라우저 협업 미리보기', 125, 306);
-    context.font = '23px sans-serif'; context.fillText('페이지, 개체, 영역을 선택해 의견을 채팅에 첨부할 수 있습니다.', 125, 362);
+    context.font = '23px sans-serif'; context.fillText('현재 화면을 캡처해 채팅에 첨부할 수 있습니다.', 125, 362);
     context.fillStyle = '#fff'; context.fillRect(125, 411, 620, 66);
     context.fillStyle = '#26352d'; context.fillText(String(inputs.filter((entry) => entry.tabId === tab.tabId && entry.type === 'text').map((entry) => entry.text).join('')) || '입력한 글이 여기에 표시됩니다', 145, 452);
     return { frameId: `preview-frame-${++frameSequence}`, tabId: tab.tabId, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch,
@@ -100,24 +99,11 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
       if (args.controllerEpoch !== tab.controllerEpoch) throw new Error('페이지 상태를 다시 읽어 주세요.');
       inputs.push({ ...args });
     }
-    if (action === 'freeze') {
-      if (!actor.isHuman) throw new Error('사용자만 페이지를 캡처할 수 있습니다.');
-      const captured = frame(tab);
-      frozen = { freezeId: crypto.randomUUID(), expiresAt: Date.now() + 300_000, frame: captured, source: { url: tab.url, title: tab.title, timestamp: new Date().toISOString() },
-        viewport: { width: captured.width, height: captured.height, deviceScaleFactor: 1, scrollX: 0, scrollY: 0 },
-        elements: [{ elementId: 'preview-heading', tag: 'h1', role: 'heading', name: '연구 자료', text: '연구 자료', depth: 1, rect: { x: 90, y: 80, width: 380, height: 60 } },
-          { elementId: 'preview-card', tag: 'p', role: '', name: '브라우저 협업 미리보기', text: '페이지, 개체, 영역을 선택해 의견을 채팅에 첨부할 수 있습니다.', depth: 1, rect: { x: 90, y: 240, width: 1080, height: 320 } }] };
-      return { ok: true, tab: structuredClone(tab), frozen };
-    }
-    if (action === 'release-freeze') { if (frozen?.freezeId === args.freezeId) frozen = null; return { completed: true }; }
     if (action === 'capture') {
-      if (args.freezeId && args.freezeId !== frozen?.freezeId) throw new Error('페이지를 다시 캡처해 주세요.');
-      const captured = frozen?.frame ?? frame(tab); captures.push({ ...args });
-      const selected = frozen?.elements.find(element => element.elementId === args.elementId);
-      const rect = args.mode === 'element' ? selected?.rect : args.mode === 'region' ? args.rect : undefined;
+      const captured = frame(tab); captures.push({ ...args });
       return { ok: true, tab: structuredClone(tab), capture: { captureId: crypto.randomUUID(), tabId: tab.tabId, threadId: args.destinationThreadId,
-        mode: args.mode, comment: args.comment, rect, element: selected,
-        screenshot: { mimeType: captured.mimeType, data: captured.data, width: captured.width, height: captured.height, ...(rect ? { clip: rect } : {}) } } };
+        mode: args.mode, comment: args.comment,
+        screenshot: { mimeType: captured.mimeType, data: captured.data, width: captured.width, height: captured.height } } };
     }
     if (action === 'snapshot') return { tab: structuredClone(tab), snapshot: { selectedText: '연구 자료' } };
     return { ok: true, tab: structuredClone(tab), frame: frame(tab) };

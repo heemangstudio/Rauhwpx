@@ -44,7 +44,7 @@ For `BROWSER_CHALLENGE_REQUIRED`, reuse the returned tab. Offer human control or
 
 ## Evidence and downloads
 
-Use `browser_capture` for requested page, element, or region evidence. It retains the original chat/project destination. Human browser markings arrive as user attachments; they are not agent annotation tools.
+Use `browser_capture` for requested page, element, or region evidence. It retains the original chat/project destination. User viewport screenshots arrive as chat attachments.
 
 Trigger downloads through the actual page, then inspect `browser_downloads`. Confirm completion before claiming a file is saved. Keep the managed download ID and its returned reference/viewer details. Project downloads can create reference cards; downloads without a project stay in the local inbox. Preserve authenticated browser bytes instead of refetching a private URL.
 
