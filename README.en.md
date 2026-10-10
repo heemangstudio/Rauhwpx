@@ -75,8 +75,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for native builds, focused tests and prer
 
 Run `npm --prefix rhwp/rhwp-studio ci` once, then `npm run dev:sidebar` and open
 http://127.0.0.1:7715. This mounts the production sidebar with local service fixtures;
-Node is the only runtime prerequisite. `npm run test:sidebar` checks its interactions
-in headless Chrome and saves sidebar screenshots. See the
+Node is the only runtime prerequisite. `npm run test:sidebar` runs a short smoke in
+headless Chrome; feature checks run by name. See the
 [preview guide](rhwp/rhwp-studio/sidebar-preview/README.md) for scenarios and design editing.
 
 ## Layout

@@ -182,8 +182,11 @@ node rhwp/rhwp-studio/sidebar-preview/editor-shell.check.mjs
 ```
 
 The browser check starts its own Vite server on an ephemeral port and launches a
-fresh headless Chrome profile. It exercises the primary panels and mutations,
-checks request isolation, and writes **sidebar-only PNGs** to
+fresh headless Chrome profile. By default it is a short smoke: the preview boots,
+one chat turn finishes, the Agent Focus panel opens a view, and no request leaves
+the preview or reaches the document engine. Feature checks run only by name, for
+example `node rhwp/rhwp-studio/sidebar-preview/check.mjs workbench changes`; an
+unknown name prints the available list. Named checks write **sidebar-only PNGs** to
 `sidebar-preview/artifacts/` (Git-ignored). Set `CHROME_PATH` if Chrome/Chromium is
 not installed in a standard macOS/Linux location; this also supports Windows paths.
 It does not connect to or control your normal browser.
