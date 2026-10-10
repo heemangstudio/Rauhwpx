@@ -232,7 +232,19 @@ export async function checkBlockingStates(page, origin) {
   await showRail(page);
   state = await attentionState(page);
   assert.equal(rowOf(state, questionThread).status, 'needs-input', 'a question waits for input');
-  await page.click('.ag-root .ag-threads-close');
+  // 목록에서 대화로 돌아온 그 순간부터 질문 카드가 클릭을 받는다(동작 줄이기에서도 한 프레임 숨지 않는다).
+  const hitAfterReturn = await page.evaluate(async () => {
+    document.querySelector('.ag-root .ag-threads-close').click();
+    const hits = [];
+    for (let frame = 0; frame < 4; frame += 1) {
+      const option = document.querySelector('.ag-question-option');
+      const box = option.getBoundingClientRect();
+      hits.push(option.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    return hits;
+  });
+  assert.deepEqual(hitAfterReturn, [true, true, true, true], 'the question card takes clicks as soon as the chat returns');
   await page.click('.ag-question-option');
   await page.click('.ag-question-next');
   // 견본은 답을 받으면 턴을 바로 마친다 — 지켜본 채팅이라 점이 남지 않는다.

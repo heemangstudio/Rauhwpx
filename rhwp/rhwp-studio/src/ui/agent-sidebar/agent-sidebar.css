@@ -8995,11 +8995,14 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* 전이는 0 이다 — .01ms 처럼 짧은 길이를 주면 전이가 없던 요소의 기본값(all)까지 전이가 되어,
+     목록·설정에서 대화로 돌아올 때 물려받은 visibility 가 다음 프레임까지 hidden 으로 남는다.
+     그 한 프레임 동안 카드의 선택지와 제출 단추가 클릭을 받지 않는다. */
   .ag-user-question *,
   .ag-user-question *::before,
   .ag-user-question *::after {
     scroll-behavior: auto !important;
-    transition-duration: .01ms !important;
+    transition-duration: 0s !important;
     animation-duration: .01ms !important;
   }
 }
