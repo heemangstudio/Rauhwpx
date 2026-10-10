@@ -2982,7 +2982,9 @@ button.ag-skill-copy {
   flex-direction: column;
   gap: 4px;
   padding-left: 18px;
-  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) both;
+  /* 끝 상태가 쉬는 모양과 같아 붙잡지 않는다(backwards) — 단계마다 끝난 애니메이션이
+     문서에 쌓여 getAnimations·스타일 계산이 대화 길이만큼 느려지지 않게 한다. */
+  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) backwards;
 }
 
 .ag-progress-step::before {
@@ -3284,6 +3286,13 @@ button.ag-skill-copy {
   overflow: hidden;
   margin-inline: -8px;
   padding-inline: 8px;
+}
+
+/* 접힌 본문은 스타일·배치·그리기를 건너뛴다 — 접힌 턴이 쌓여도 대화를 다시 배치할 때
+   보이지 않는 작업까지 계산하지 않는다. 사용자가 접을 때는 닫히는 전환이 끝날 때까지 그린다. */
+.ag-turn-fold-collapsed .ag-turn-fold-body {
+  content-visibility: hidden;
+  transition: content-visibility var(--ag-dur-exit) allow-discrete;
 }
 
 .ag-turn-fold-body > :first-child {
@@ -8078,7 +8087,8 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-fleet-row {
   container: fleet-row / inline-size;
   min-width: 0;
-  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) both;
+  /* 진행 단계와 같다 — 끝 상태를 붙잡지 않아 끝난 등장이 문서에 쌓이지 않는다. */
+  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) backwards;
 }
 
 .ag-fleet-row + .ag-fleet-row {

@@ -703,17 +703,33 @@ function isMilestoneStep(node: Element): boolean {
     && [...node.children].some((child) => child.classList.contains('ag-progress-milestone'));
 }
 
+/**
+ * 옮긴 뒤 되살릴 스크롤 위치인가 — 보이는 창이 있는 축으로 스크롤된 요소만 센다. 접힌 도구
+ * 내역처럼 높이 0 으로 접힌 요소의 위치는 보이지 않고 펼칠 때 다시 맞추므로, 되살리느라 옮긴
+ * 작업 전체의 배치를 그 자리에서 다시 계산하게 하지 않는다.
+ */
+function visibleScroll(element: Element): { top: number; left: number } | null {
+  const top = element.scrollTop;
+  const left = element.scrollLeft;
+  if (top <= 0 && left <= 0) return null;
+  const keepTop = top > 0 && element.clientHeight > 0;
+  const keepLeft = left > 0 && element.clientWidth > 0;
+  if (!keepTop && !keepLeft) return null;
+  return { top: keepTop ? top : 0, left: keepLeft ? left : 0 };
+}
+
 /** 노드를 순서대로 target 끝으로 옮긴다. 옮기면 처음으로 돌아가는 스크롤 위치와 초점을 지킨다. */
 function moveNodes(target: HTMLElement, nodes: readonly HTMLElement[]): void {
   const doc = target.ownerDocument;
   const focused = doc.activeElement;
   const scrolled: Array<{ element: Element; top: number; left: number }> = [];
+  const keep = (element: Element) => {
+    const position = visibleScroll(element);
+    if (position) scrolled.push({ element, ...position });
+  };
   for (const node of nodes) {
-    for (const element of [node, ...node.querySelectorAll('*')]) {
-      if (element.scrollTop > 0 || element.scrollLeft > 0) {
-        scrolled.push({ element, top: element.scrollTop, left: element.scrollLeft });
-      }
-    }
+    keep(node);
+    for (const element of node.querySelectorAll('*')) keep(element);
   }
   target.append(...nodes);
   for (const entry of scrolled) {
@@ -782,15 +798,22 @@ const OUTCOME_ICON: Record<TurnFoldOutcome, SidebarIconName> = {
 
 let foldRowSeq = 0;
 
-function finishReplayedAnimations(node: HTMLElement): void {
-  if (typeof node.getAnimations !== 'function') return;
-  for (const animation of node.getAnimations({ subtree: true })) {
+/**
+ * container 안에서 다시 도는 CSS 등장 애니메이션·전환을 끝 상태로 건너뛴다. 무한 반복은 둔다.
+ * getAnimations 는 부를 때마다 문서의 모든 애니메이션을 훑고 스타일을 맞추므로 옮긴 노드마다
+ * 부르지 않고 본문에서 한 번만 부른다. 끝낼 것을 먼저 다 고른 뒤 끝낸다 — 끝낼 때마다 스타일이
+ * 더러워져 다음 타이밍 읽기가 스타일 계산을 다시 부르지 않게 한다.
+ */
+function finishReplayedAnimations(container: HTMLElement): void {
+  if (typeof container.getAnimations !== 'function') return;
+  const replayed = container.getAnimations({ subtree: true }).filter((animation) => {
     const cssDriven = (typeof CSSAnimation !== 'undefined' && animation instanceof CSSAnimation)
       || (typeof CSSTransition !== 'undefined' && animation instanceof CSSTransition);
-    if (!cssDriven) continue;
+    if (!cssDriven) return false;
     const end = animation.effect?.getComputedTiming().endTime;
-    if (typeof end === 'number' && Number.isFinite(end)) animation.finish();
-  }
+    return typeof end === 'number' && Number.isFinite(end);
+  });
+  for (const animation of replayed) animation.finish();
 }
 
 /**
@@ -847,7 +870,10 @@ export function createTurnFoldRow(turnId: string, opts: TurnFoldRowOptions = {})
     const focusInside = collapsed && body.contains(doc.activeElement);
     closing?.cancel();
     closing = null;
-    if (instant) collapse.style.transition = 'none';
+    if (instant) {
+      collapse.style.transition = 'none';
+      body.style.transition = 'none';
+    }
     root.classList.toggle('ag-turn-fold-collapsed', collapsed);
     body.inert = collapsed;
     syncExpandedState();
@@ -856,7 +882,10 @@ export function createTurnFoldRow(turnId: string, opts: TurnFoldRowOptions = {})
     if (instant) {
       void root.offsetHeight;
       collapse.style.transition = '';
+      body.style.transition = '';
     }
+    // 접힌 본문은 그리지 않아 옮겨 온 작업의 등장 애니메이션이 펼칠 때 처음부터 돈다 — 끝낸다.
+    if (!collapsed) finishReplayedAnimations(body);
   }
 
   toggle.addEventListener('click', () => {
@@ -901,7 +930,8 @@ export function createTurnFoldRow(turnId: string, opts: TurnFoldRowOptions = {})
     adopt(nodes: readonly HTMLElement[]): void {
       if (nodes.length === 0) return;
       moveNodes(body, nodes);
-      for (const node of nodes) finishReplayedAnimations(node);
+      // 접힌 본문은 그리지 않으니 펼칠 때 끝낸다(setCollapsed). 펼친 본문은 지금 끝낸다.
+      if (!isCollapsed()) finishReplayedAnimations(body);
     },
   };
 }
