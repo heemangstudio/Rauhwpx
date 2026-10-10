@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow, WebContentsView, session, ipcMain } from 'electron';
 import { OwnedBrowserHost } from '../../desktop/browser-host.mjs';
 import { removeOwnedBrowserState } from '../../rhwp/rhwp-agent/browser-cleanup.mjs';
+import { createOwnedBrowserService } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
 
 const require = createRequire(new URL('../../rhwp/rhwp-agent/package.json', import.meta.url));
 const { chromium } = require('playwright-core');
@@ -21,6 +22,9 @@ const report = {};
 let host;
 let browser;
 let proxy;
+let service;
+let serviceHost;
+let serviceSite;
 const windows = new Map();
 const html = '<!doctype html><title>Owned research fixture</title><h1>Native research page</h1><label>Draft <input id="draft"></label><label>Password <input id="password" type="password"></label><a href="/second">Next page</a><button id="download">Download PDF</button><script>document.querySelector("#download").onclick=()=>{const a=document.createElement("a");a.href=URL.createObjectURL(new Blob(["%PDF-1.4\\nOwned authenticated bytes\\n%%EOF"],{type:"application/pdf"}));a.download="native.pdf";a.click()};</script>';
 
@@ -83,6 +87,8 @@ try {
   const floatContents = host.tab('tab-one').view.webContents;
   await page.locator('#draft').focus();
   floatContents.focus();
+  host.attach(first, { tabId: 'tab-one', bounds: { x: 24, y: 104, width: 500, height: 360 }, mode: 'float', interactive: true });
+  assert.equal(floatContents.isFocused(), true, 'Moving the live view must preserve keyboard focus');
   floatContents.sendInputEvent({ type: 'keyDown', keyCode: 'X' });
   floatContents.sendInputEvent({ type: 'char', keyCode: 'x' });
   floatContents.sendInputEvent({ type: 'keyUp', keyCode: 'X' });
@@ -213,10 +219,56 @@ try {
   assert.equal(await cleanPage.evaluate(() => localStorage.getItem('owned-note')), null);
   report.browserReset = { staleOwnerRejected: true, releasedOwnerAllowed: true, guestsClosed: true, cookiesCleared: true, profileDeleted: true, storageClearedAfterRestart: true };
   console.error('OWNED_BROWSER_STAGE browser-reset');
+  serviceSite = createServer((_request, response) => { response.setHeader('content-type', 'text/html'); response.end('<title>Recovered native tab</title><input id="draft">'); });
+  await new Promise((resolve) => serviceSite.listen(0, '127.0.0.1', resolve));
+  const serviceOrigin = `http://127.0.0.1:${serviceSite.address().port}`;
+  const serviceDir = path.join(root, 'native-service');
+  const serviceOwner = { id: 'service-hub' };
+  serviceHost = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session, dataDir: serviceDir, getWindowForSession: (id) => windows.get(id) });
+  const adapter = {
+    async start(settings) { return { ...await serviceHost.start(settings, serviceOwner), close: () => serviceHost.release(serviceOwner) }; },
+    bind: (args) => serviceHost.bind(args), control: (args) => serviceHost.control(args),
+  };
+  await mkdir(path.join(serviceDir, 'browser'), { recursive: true });
+  await writeFile(path.join(serviceDir, 'browser', 'tabs.json'), JSON.stringify({ version: 1, tabs: [
+    { tabId: 'restored-tab', threadId: 'chat-one', agentId: 'owner', sessionId: 'previous-editor-session', url: serviceOrigin, title: 'Recovered native tab' },
+  ] }));
+  service = createOwnedBrowserService({ dataDir: serviceDir, nativeAdapter: adapter, workspaceTargets: [serviceOrigin] });
+  await service.restore();
+  const recovered = await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one', threadId: 'chat-one', agentId: 'owner' }, 'recover', { tabId: 'restored-tab' });
+  assert.equal(recovered.runtime.kind, 'native');
+  assert.equal(serviceHost.state(serviceHost.tab('restored-tab')).controller, 'human');
+  serviceHost.attach(first, { tabId: 'restored-tab', bounds: { x: 0, y: 80, width: 500, height: 360 }, interactive: true });
+  assert.equal(serviceHost.tab('restored-tab').interactive, true);
+  const recoveredContents = serviceHost.tab('restored-tab').view.webContents;
+  // Prepare the native backing surface before focusing it for physical input.
+  await recoveredContents.capturePage();
+  first.show();
+  first.focus();
+  await recoveredContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  await recoveredContents.executeJavaScript('document.querySelector("#draft").focus()', true);
+  recoveredContents.focus();
+  recoveredContents.sendInputEvent({ type: 'mouseDown', x: 20, y: 20, button: 'left', clickCount: 1 });
+  recoveredContents.sendInputEvent({ type: 'mouseUp', x: 20, y: 20, button: 'left', clickCount: 1 });
+  recoveredContents.sendInputEvent({ type: 'keyDown', keyCode: 'X' });
+  recoveredContents.sendInputEvent({ type: 'char', keyCode: 'x' });
+  recoveredContents.sendInputEvent({ type: 'keyUp', keyCode: 'X' });
+  const value = await recoveredContents.executeJavaScript(`new Promise((resolve) => {
+    const field = document.querySelector('#draft');
+    if (field.value === 'x') { resolve(field.value); return; }
+    const timer = setTimeout(() => resolve(field.value), 2000);
+    field.addEventListener('input', () => { clearTimeout(timer); resolve(field.value); }, { once: true });
+  })`);
+  assert.equal(value, 'x');
+  report.nativeDefaultRecovery = { native: true, currentEditorBinding: true, humanInput: true };
   report.runtime = 'Electron WebContentsView + private CDP + Playwright';
   report.fixtureUrl = 'http://browser-fixture.invalid/';
 } catch (error) { report.error = error.stack ?? String(error); }
 finally {
+  await service?.close().catch(() => {});
+  await serviceHost?.dispose().catch(() => {});
+  serviceSite?.closeAllConnections();
+  if (serviceSite) await new Promise((resolve) => serviceSite.close(resolve));
   await browser?.close().catch(() => {});
   console.error('OWNED_BROWSER_STAGE cleanup-client');
   await host?.dispose().catch(() => {});

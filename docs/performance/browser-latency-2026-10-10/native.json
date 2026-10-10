@@ -1,0 +1,19 @@
+{
+  "measurement": "Click to fixture acknowledgment after two animation frames",
+  "frameRequestsDuringBrowsing": 0,
+  "nativeTypingImeScrollingAndAnnotation": true,
+  "runtime": "native",
+  "latencyMs": [
+    18.1,
+    28.8,
+    34.5,
+    31.4,
+    34.8,
+    33.7,
+    31.6,
+    34
+  ],
+  "medianMs": 32.7,
+  "frameRequests": 1,
+  "pageErrors": []
+}

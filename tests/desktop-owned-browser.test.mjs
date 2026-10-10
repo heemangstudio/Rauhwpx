@@ -39,7 +39,7 @@ test('real native guests retain form state across dock, float, popout and hub re
       clearTimeout(timer);
       const line = stdout.split('\n').find((value) => value.startsWith('OWNED_BROWSER_REPORT '));
       if (!line) reject(new Error(`Native browser harness did not finish\n${stdout}\n${stderr}`));
-      else if (code !== 0) reject(new Error(`Native browser harness exited ${code}\n${stderr}`));
+      else if (code !== 0) reject(new Error(`Native browser harness exited ${code}\n${JSON.parse(line.slice('OWNED_BROWSER_REPORT '.length)).error ?? ''}\n${stderr}`));
       else resolve(JSON.parse(line.slice('OWNED_BROWSER_REPORT '.length)));
     });
   }).finally(() => rm(testDataDir, { recursive: true, force: true }));
@@ -61,4 +61,5 @@ test('real native guests retain form state across dock, float, popout and hub re
   assert.equal(report.debuggerOwnership.devtoolsDisabled, true);
   assert.equal(report.debuggerOwnership.debuggerRetained, true);
   assert.equal(report.browserReset.storageClearedAfterRestart, true);
+  assert.deepEqual(report.nativeDefaultRecovery, { native: true, currentEditorBinding: true, humanInput: true });
 });

@@ -69,7 +69,7 @@ export function createOwnedBrowserService(options = {}) {
   let resetFailed = false;
   let persistQueue = Promise.resolve();
   let installPromise;
-  let runtimeMode = options.runtimeMode === 'native' ? 'native' : 'managed';
+  let runtimeMode = options.runtimeMode === 'managed' ? 'managed' : nativeAdapter ? 'native' : 'managed';
   let headless = options.headless !== false;
   let checkpointTimer;
   let checkpointQueue = Promise.resolve();
@@ -296,6 +296,7 @@ export function createOwnedBrowserService(options = {}) {
       try { tab.nativeTargetId = (await session.send('Target.getTargetInfo')).targetInfo.targetId; }
       finally { await session.detach().catch(() => {}); }
       await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId });
+      await selectedAdapter().control?.({ targetId: tab.nativeTargetId, human: tab.controller.owner === 'human' });
     }
   };
 
@@ -800,9 +801,11 @@ export function createOwnedBrowserService(options = {}) {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Recover disconnected pages from Browser settings.');
       await ensureRuntime();
       tab.activeActor = actor;
-      try { if (!tab.page) { tab.controllerEpoch++; invalidate(tab); await attach(tab, await runtime.context.newPage()); if (tab.url !== 'about:blank') { markHumanOrigin(new URL(tab.url).origin); await guard.resolve(tab.url); await tab.page.goto(tab.url, { waitUntil: 'domcontentloaded' }); } } }
+      try { if (!tab.page) { tab.sessionId = actor.sessionId ?? tab.sessionId; tab.controllerEpoch++; invalidate(tab); await attach(tab, await runtime.context.newPage()); if (tab.url !== 'about:blank') { markHumanOrigin(new URL(tab.url).origin); await guard.resolve(tab.url); await tab.page.goto(tab.url, { waitUntil: 'domcontentloaded' }); } } }
       finally { tab.activeActor = null; }
-      tab.status = 'ready'; tab.controller = { owner: 'human', clientId: actor.clientId }; markHumanDocument(tab); await observeHumanSessions(); publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo(), recovery: 'Page reloaded. Previous uncertain actions were not replayed.' };
+      tab.status = 'ready'; tab.controller = { owner: 'human', clientId: actor.clientId };
+      await selectedAdapter()?.control?.({ targetId: tab.nativeTargetId, human: true });
+      markHumanDocument(tab); await observeHumanSessions(); publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo(), recovery: 'Page reloaded. Previous uncertain actions were not replayed.' };
     }
     if (action === 'control') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the user can transfer browser control.');

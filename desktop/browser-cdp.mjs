@@ -208,7 +208,12 @@ export class PrivateBrowserCdp {
         default: throw new Error(`Unsupported owned browser command: ${method}`);
       }
     }
-    if (!method.startsWith('Input.')) return entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId);
+    if (!method.startsWith('Input.')) {
+      const result = await entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId);
+      if (method === 'Emulation.setDeviceMetricsOverride') entry.tab.viewport = { width: params.width, height: params.height };
+      if (method === 'Emulation.clearDeviceMetricsOverride') entry.tab.viewport = null;
+      return result;
+    }
     entry.tab.automationInputDepth = (entry.tab.automationInputDepth ?? 0) + 1;
     try { return await entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId); }
     finally { entry.tab.automationInputDepth -= 1; }
