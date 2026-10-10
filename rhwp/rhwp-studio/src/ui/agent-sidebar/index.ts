@@ -889,6 +889,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let workbenchAgentsFrame: number | null = null;
   let composerMentions: ComposerMentions | null = null;
   let planMinimized = false;
+  /** 계획 단계의 턴이 끝나면 대화 끝에 붙는 '계획 초안 작성' 제안. 쓰거나 닫으면 사라진다. */
+  let planDraftPill: HTMLElement | null = null;
+  /** 다음 전송의 요청 본문 뒤에만 붙이는 지시. 대화에는 보이지 않는다. */
+  let hiddenRequestInstruction: string | null = null;
   /** 기록에서 연 계획은 표시 전용이며 현재 계획 workflow 상태를 절대 나타내지 않는다. */
   let activePlanHistorical = false;
   let pendingReviewOpCount = 0;
@@ -4278,21 +4282,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /**
    * 모드 전환. 모드는 (workflow, 권한 프로필) 한 쌍이고, 허브에는 두 전환을 차례로 보낸다
-   * (허브가 같은 전환 큐에서 순서대로 처리한다). 전체로 들어갈 때만 확인 시트를 띄운다.
+   * (허브가 같은 전환 큐에서 순서대로 처리한다). 전체 접근도 확인 없이 바로 바꾼다.
    */
   async function requestMode(next: AgentMode): Promise<boolean> {
     if (modeBlockedByLock(next)) return false;
-    if (modeNeedsConfirmation(next)) {
-      const confirmed = await confirmSheet(modeMenu.trigger, '전체 접근', '승인 없이 편집하고 파일에 접근합니다.', { confirmLabel: '켜기' });
-      if (!confirmed) return false;
-    }
     return switchMode(next);
-  }
-
-  /** 전체 접근으로 넘어가는 전환만 확인을 받는다. */
-  function modeNeedsConfirmation(next: AgentMode): boolean {
-    return agentModeTarget(next).permissionProfile === 'unrestricted'
-      && permissionProfile !== 'unrestricted';
   }
 
   /** 같은 문서의 다른 채팅이 편집하는 동안에는 채팅 말고는 고를 수 없다 — 칩이 이유를 보인다. */
@@ -4877,6 +4871,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   input.addEventListener('keydown', (e) => {
+    // Shift+Tab 은 채팅 → 플랜 → 에이전트 → 전체 순서로 모드를 돌린다.
+    if (e.key === 'Tab' && e.shiftKey && !e.isComposing && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      const order: AgentMode[] = ['chat', 'plan', 'agent', 'full'];
+      void requestMode(order[(order.indexOf(currentMode()) + 1) % order.length]);
+      return;
+    }
     if (questionController.hasPending()) {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && questionController.usesComposerForOther()) {
         e.preventDefault();
@@ -5046,6 +5047,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   composer.addEventListener('submit', (e) => {
     e.preventDefault();
+    const hiddenInstruction = hiddenRequestInstruction;
+    hiddenRequestInstruction = null;
     composerRest.setResting(false);
     if (readOnlyDocLabel !== null || mergeResolverLocked) return;
     if (questionController.hasPending()) {
@@ -5141,12 +5144,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         const { mode, rest } = modeCommand;
         input.value = '';
         setSlashMenuOpen(false);
-        if (modeNeedsConfirmation(mode)) {
-          // 확인 시트는 비동기다 — 본문은 입력칸에 돌려 두고 확인 뒤에 다시 보낸다.
-          if (rest) input.value = rest;
-          void requestMode(mode);
-          return;
-        }
         if (!switchMode(mode)) {
           if (rest) input.value = rest;
           return;
@@ -5199,9 +5196,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // protocol은 비어 있지 않은 text를 요구하므로 명시적 slash 호출 자체를
     // 요청 본문으로 보낸다. 자연어 fallback을 UI나 기록에 숨겨 넣지 않는다.
     const skillRequestText = requestTextForSkillInvocation(text, skillNameForMessage);
-    const requestText = revisionPlanId && (referenceLibrary.hasDrafts() || captureInbox.hasDrafts()) && !skillNameForMessage
+    const visibleRequestText = revisionPlanId && (referenceLibrary.hasDrafts() || captureInbox.hasDrafts()) && !skillNameForMessage
       ? `현재 계획(${revisionPlanId})을 다음 피드백에 맞게 수정해 주세요.\n\n${skillRequestText}`
       : skillRequestText;
+    const requestText = hiddenInstruction ? `${visibleRequestText}\n\n${hiddenInstruction}` : visibleRequestText;
+    dismissPlanDraftPill();
     if (captureInbox.hasDrafts()) {
       void sendComposerCaptures({ messageText, requestText, skillNameForMessage, skillIconForMessage });
       return;
@@ -7988,6 +7987,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
         break;
       case 'turn-end': {
+        queueMicrotask(suggestPlanDraft);
         flushPendingAssistantRender();
         const finalBubble =
           streamBubble?.parentElement === messages
@@ -8768,34 +8768,57 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return card;
   }
 
-  function buildPlanDraftCard(): HTMLElement {
-    const card = el('section', 'ag-plan-draft-card');
-    const button = el('button', 'ag-plan-draft-action', '계획 초안 작성');
-    button.type = 'button';
-    button.disabled = turnRunning || planActionPending || planningPhase !== 'planning';
-    button.addEventListener('click', () => {
-      if (button.disabled) return;
-      const text = input.value.trim();
-      input.value = text ? `${text}\n\n현재 대화를 바탕으로 계획 초안을 작성해 주세요.`
-        : '현재 대화를 바탕으로 계획 초안을 작성해 주세요.';
+  const PLAN_DRAFT_REQUEST = '현재 대화를 바탕으로 계획 초안을 작성해 주세요.';
+
+  function dismissPlanDraftPill(): void {
+    planDraftPill?.remove();
+    planDraftPill = null;
+  }
+
+  /** 계획 단계의 턴이 끝났을 때만 권한 요청처럼 대화 끝에 제안을 붙인다. */
+  function suggestPlanDraft(): void {
+    dismissPlanDraftPill();
+    if (chatWorkflow !== 'plan' || planningPhase !== 'planning' || (activePlan && !activePlanHistorical)) return;
+    const pill = el('section', 'ag-permission-pill ag-plan-suggest');
+    const write = el('button', 'ag-permission-grant');
+    write.type = 'button';
+    write.append(createIcon('plan'), el('span', 'ag-permission-label', '계획 초안 작성'));
+    const close = el('button', 'ag-permission-deny', '×');
+    close.type = 'button';
+    close.setAttribute('aria-label', '제안 닫기');
+    write.addEventListener('click', () => { if (requestPlanDraft()) dismissPlanDraftPill(); });
+    close.addEventListener('click', () => { dismissPlanDraftPill(); input.focus(); });
+    pill.append(write, close);
+    planDraftPill = pill;
+    withAutoScroll(() => appendConversation(pill));
+  }
+
+  /** 계획 초안 지시는 에이전트에게만 보낸다. 입력 중인 글이 있으면 그 글만 대화에 보인다. */
+  function requestPlanDraft(): boolean {
+    if (turnRunning || planActionPending || planningPhase !== 'planning' || connState !== 'connected') return false;
+    const hasDraft = Boolean(input.value.trim()) || (composerMentions?.list().length ?? 0) > 0
+      || referenceLibrary.hasDrafts() || captureInbox.hasDrafts();
+    if (hasDraft) {
+      hiddenRequestInstruction = PLAN_DRAFT_REQUEST;
       composer.requestSubmit();
-    });
-    card.appendChild(button);
-    return card;
+      return true;
+    }
+    prepareChatForSend();
+    followConversation = true;
+    replyPending = true;
+    updateTurnPending(selectedAgent);
+    void bridge.sendUserMessage(PLAN_DRAFT_REQUEST);
+    return true;
   }
 
   /**
    * 계획 승인. profile 은 실행 모드다 — safe 는 에이전트(편집 검토 대기), unrestricted 는
-   * 전체(편집 바로 반영). 전체로 실행할 때는 모드 칩과 같은 확인 시트를 거친다.
+   * 전체(편집 바로 반영).
    */
   async function approveActivePlan(planId: string, profile: PermissionProfile, anchor?: HTMLElement): Promise<void> {
     const canApprove = (): boolean => planApprovable && !planActionPending && chatModeLockReason === null
       && planningPhase === 'awaiting-approval' && !turnRunning && activePlan?.planId === planId;
     if (!canApprove()) return;
-    if (profile === 'unrestricted' && permissionProfile !== 'unrestricted') {
-      const confirmed = await confirmSheet(anchor ?? root, '전체 접근', '승인 없이 편집하고 파일에 접근합니다.', { confirmLabel: '실행' });
-      if (!confirmed || !canApprove()) return;
-    }
     // 정확히 이 계획 id 로만 승인한다 — 오래된 카드가 다른 계획을 통과시키지 않는다.
     planActionPending = true;
     rebuildReview();
@@ -9098,7 +9121,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       const card = buildPlanCard(activePlan);
       if (previousPlanId === activePlan.planId) card.classList.add('ag-plan-update');
       planCardSlot.appendChild(card);
-      if (activePlanHistorical && planningPhase === 'planning') planCardSlot.appendChild(buildPlanDraftCard());
       if (previousPlanId === activePlan.planId) {
         for (const details of planCardSlot.querySelectorAll<HTMLDetailsElement>('.ag-plan-step-details')) {
           if (openStepIds.has(details.closest<HTMLElement>('.ag-plan-step')?.dataset.stepId)) details.open = true;
@@ -9117,7 +9139,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
       }
     }
-    else if (planShown) planCardSlot.appendChild(buildPlanDraftCard());
     planSurface.hidden = !planShown;
     if (!planShown) {
       planMinimized = false;

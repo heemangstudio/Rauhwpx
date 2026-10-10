@@ -4391,11 +4391,6 @@ button.ag-skill-copy {
 .ag-plan-source-note { color: var(--ag-text-secondary); font-size: var(--ag-fs-meta); }
 .ag-plan-source-locator { color: var(--ag-text-secondary); font-family: var(--ag-mono); font-size: var(--ag-fs-mono); overflow-wrap: anywhere; }
 
-.ag-plan-draft-card { padding: 12px 2px; }
-.ag-plan-draft-action { padding: 8px 12px; border: 1px solid var(--ag-border); border-radius: var(--ag-r-row); background: var(--ag-bg); color: var(--ag-text); font: inherit; cursor: default; }
-.ag-plan-draft-action:hover { background: var(--ag-hover); }
-.ag-plan-draft-action:focus-visible { outline: var(--ag-focus-ring); outline-offset: var(--ag-focus-offset); }
-.ag-plan-draft-action:disabled { opacity: 0.5; cursor: default; }
 
 .ag-plan-footer {
   position: static;
@@ -8679,3 +8674,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   text-align: center;
   opacity: 0.6;
 }
+
+/* 계획 초안 제안은 권한 요청 알약과 같은 모양을 쓴다. */
+.ag-plan-suggest .ag-icon { width: 13px; height: 13px; color: var(--ag-text-secondary); }

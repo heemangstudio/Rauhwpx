@@ -10,9 +10,8 @@ const css = readFileSync(new URL('../src/ui/agent-sidebar/agent-sidebar.css', im
 test('sidebar exposes one agent mode chip without allowing changes during a turn', () => {
   assert.match(source, /createModeMenu\(\(mode\) => \{ void requestMode\(mode\); \}\)/);
   assert.doesNotMatch(source, /permissionBtn|updatePermissionButton/);
-  // 전체로 들어갈 때만 확인 시트를 띄운다.
-  assert.match(source, /if \(modeNeedsConfirmation\(next\)\) \{\s*const confirmed = await confirmSheet\(modeMenu\.trigger, '전체 접근', '승인 없이 편집하고 파일에 접근합니다\.'/);
-  assert.match(source, /agentModeTarget\(next\)\.permissionProfile === 'unrestricted'\s*&& permissionProfile !== 'unrestricted'/);
+  // 전체 접근도 확인 시트 없이 바로 바꾼다.
+  assert.doesNotMatch(source, /confirmSheet\([^)]*'전체 접근'/);
   // 계획 카드: 에이전트로 실행(safe)과 빨간 전체 접근으로 실행(unrestricted) 두 승인.
   assert.match(source, /approveActivePlan\(plan\.planId, 'safe'\)/);
   assert.match(source, /'ag-approve ag-plan-approve-full', '전체 접근으로 실행'/);
