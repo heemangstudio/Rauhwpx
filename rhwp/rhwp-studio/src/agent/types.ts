@@ -852,6 +852,34 @@ export interface AgentTaskMember {
 }
 
 /**
+ * 허브가 분류한 프로바이더 실패의 종류 (rhwp-agent/provider-failure.mjs 와 같은 닫힌 집합).
+ */
+export type ProviderFailureClass =
+  | 'auth_required'
+  | 'usage_limit'
+  | 'provider_error'
+  | 'network'
+  | 'process_exited'
+  | 'invalid_request'
+  | 'unknown';
+
+/** 분류·가림·길이 제한을 거친 프로바이더 실패 하나. */
+export interface ProviderFailure {
+  class: ProviderFailureClass;
+  agent: AgentName;
+  /** 비밀을 지우고 공백을 정리한 프로바이더 문구 (최대 2000자). '자세히' 아래에만 보인다. */
+  message: string;
+  /** 최대 64자 [A-Za-z0-9_.:-] — 예: 'claude:authentication_failed', 'codex:usageLimitExceeded', 'cli_missing'. */
+  code: string | null;
+  retryable: boolean;
+  /** epoch ms — usage_limit 에만, 프로바이더가 구조화해 알려 준 값에서만 온다. */
+  resetAt: number | null;
+}
+
+/** 실패가 어디서 났는지 — 다시 시도의 동작이 달라진다. */
+export type ProviderFailureOrigin = 'turn' | 'send' | 'start' | 'idle';
+
+/**
  * 하위 CLI(claude/codex) JSONL을 허브가 정규화한 단일 이벤트 스트림 (§1.5).
  * parentTaskId: 서브에이전트/워크플로가 낸 이벤트를 스폰한 task 에 귀속시키는
  * 선택 필드 — 있으면 그 task 카드로, 모르는 id 면 루트 활동 그룹으로 그린다.
@@ -865,8 +893,8 @@ export type AgentStreamEvent =
   | { type: 'task-start'; agent: AgentName; taskId: string; callId?: string; title: string; role?: string; taskKind: 'agent' | 'workflow'; workflowName?: string; /** Owning turn may end while this real process keeps running. */ background?: boolean }
   | { type: 'task-progress'; agent: AgentName; taskId: string; activity?: string; lastTool?: string; usage?: AgentTaskUsage; phases?: AgentTaskPhase[]; members?: AgentTaskMember[]; /** Current task-level phase when there is no child member row. */ phaseIndex?: number }
   | { type: 'task-end'; agent: AgentName; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary?: string; usage?: AgentTaskUsage }
-  | { type: 'turn-end'; agent: AgentName; stopReason?: string; errorMessage?: string; turnId?: string }
-  | { type: 'error'; agent: AgentName; message: string };
+  | { type: 'turn-end'; agent: AgentName; stopReason?: string; errorMessage?: string; turnId?: string; /** 허브가 분류한 이 턴의 실패 (실패한 턴에만). */ failure?: ProviderFailure }
+  | { type: 'error'; agent: AgentName; message: string; /** 허브가 분류한 실패 (새 허브만). */ failure?: ProviderFailure };
 
 export type SidebarEvent =
   | {
@@ -985,8 +1013,30 @@ export type SidebarEvent =
       title: string | null;
     }
   | { type: 'agent'; event: AgentStreamEvent }
-  /** messageId: 허브가 거절한 사용자 메시지의 receipt id(그 메시지에 messageId 가 있었을 때만). */
-  | { type: 'hub-error'; code: string; message: string; messageId?: string };
+  /**
+   * 한 턴(또는 거절된 전송)에 실패 알림 하나. 브리지가 턴의 error·turn-end 를 모아 하나로 낸다.
+   * turnId 는 허브 턴 ID, userInitiated 는 사용자가 보낸 메시지로 시작한 턴인지다.
+   */
+  | {
+      type: 'turn-failure';
+      failure: ProviderFailure;
+      turnId: string | null;
+      origin: ProviderFailureOrigin;
+      userInitiated?: boolean;
+      /** 실패한 턴이 문서 쓰기 도구를 하나 이상 끝냈다 — 같은 요청을 그대로 되풀이하면 안 된다. */
+      wroteDocument?: boolean;
+    }
+  | {
+      type: 'hub-error';
+      code: string;
+      message: string;
+      /** 허브가 거절한 사용자 메시지의 receipt id(그 메시지에 messageId 가 있었을 때만). */
+      messageId?: string;
+      /** 프로바이더 실패로 분류된 거절 (AGENT_AUTH_REQUIRED, PI_NOT_CONFIGURED, AGENT_SPAWN_FAILED, AGENT_PROCESS_CLEANUP_UNCERTAIN). */
+      failure?: ProviderFailure;
+      /** 'start' 는 채팅 시작 거절, 'send' 는 보낸 메시지의 거절이다. */
+      origin?: 'start' | 'send';
+    };
 
 /** 에이전트에게 보여 줄 사용자 커서·선택 (InputHandler.getUserSelectionContext 와 같은 모양). */
 export interface AgentUserSelectionContext {

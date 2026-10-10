@@ -6,10 +6,13 @@ import {
 } from '../core/idb-open.ts';
 import { isAgentWorkflow, isStructuredPlan } from './types.ts';
 import { isTurnOutcome, type TurnOutcome } from './turn-outcome.ts';
+import { readProviderFailure } from './provider-failure.ts';
 import type {
   AgentName,
   AgentWorkflow,
   ProductSkillIcon,
+  ProviderFailure,
+  ProviderFailureOrigin,
   ServiceTier,
   StructuredPlan,
   UserQuestion,
@@ -114,6 +117,36 @@ export interface UserQuestionHistoryMessage extends ThreadMessageBase {
   readonly outcome: UserQuestionOutcome;
 }
 
+/**
+ * 실패한 턴의 '다시 시도' 가 보낼 요청 — 보낼 때의 모양 그대로 (템플릿 접두어·계획 수정 문구 포함).
+ * 첨부는 첫 전송 때 이미 채팅 참고 범위에 올라갔으므로 다시 싣지 않는다.
+ */
+export interface ThreadRetryPayload {
+  /** 대화에 다시 기록할 사용자 문구 */
+  displayText: string;
+  /** 프로바이더에 보낼 요청 본문 */
+  requestText: string;
+  skillName?: string;
+  skillIcon?: ProductSkillIcon;
+  /** 실패한 시도가 문서를 고친 뒤 끊겼다 — 다시 보낼 때 먼저 문서를 다시 읽도록 알린다. */
+  afterPartialEdits?: boolean;
+}
+
+/** 저장하는 다시 시도 요청의 상한 — 허브의 MAX_CHAT_MESSAGE_CHARS 와 같다. */
+export const THREAD_RETRY_TEXT_MAX_CHARS = 128_000;
+
+/** 턴 하나의 실패 알림 — 대화 흐름 속, 턴이 끝난 자리에 남는다. 프로바이더 기록에는 들어가지 않는다. */
+export interface ThreadFailureMessage extends ThreadMessageBase {
+  readonly role: 'system';
+  readonly kind: 'error';
+  failure: ProviderFailure;
+  origin: ProviderFailureOrigin;
+  turnId?: string;
+  retry?: ThreadRetryPayload;
+  /** 알림을 만든 시각 (epoch ms) */
+  at: number;
+}
+
 export interface ThreadProviderHistoryEntry {
   role: 'user' | 'assistant';
   text: string;
@@ -150,6 +183,7 @@ export interface ThreadTurnMessage extends ThreadMessageBase {
 export type ThreadMessage =
   | UserQuestionHistoryMessage
   | ThreadTurnMessage
+  | ThreadFailureMessage
   | (ThreadMessageBase & {
       role: 'assistant';
       kind: 'plan';
@@ -443,6 +477,25 @@ function parseThreadTask(value: unknown): ThreadTaskRecord | null {
 function isAgentName(value: unknown): value is AgentName {
   return value === 'claude' || value === 'codex' || value === 'pi';
 }
+
+function normalizeRetryPayload(value: unknown): ThreadRetryPayload | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.displayText !== 'string' || typeof raw.requestText !== 'string' || !raw.requestText.trim()) return undefined;
+  if (raw.displayText.length > THREAD_RETRY_TEXT_MAX_CHARS || raw.requestText.length > THREAD_RETRY_TEXT_MAX_CHARS) return undefined;
+  const skillIcon = raw.skillIcon === 'pencil' || raw.skillIcon === 'bot' || raw.skillIcon === 'system'
+    ? raw.skillIcon
+    : undefined;
+  return {
+    displayText: raw.displayText,
+    requestText: raw.requestText,
+    ...(typeof raw.skillName === 'string' && /^[a-z0-9-]+$/.test(raw.skillName) ? { skillName: raw.skillName } : {}),
+    ...(skillIcon ? { skillIcon } : {}),
+    ...(raw.afterPartialEdits === true ? { afterPartialEdits: true } : {}),
+  };
+}
+
+const FAILURE_ORIGINS: readonly ProviderFailureOrigin[] = ['turn', 'send', 'start', 'idle'];
 
 function nonEmptyString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -852,6 +905,27 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
         outcome,
         ...metadata,
         agent: interaction.agent,
+      }];
+    }
+    if (message.kind === 'error') {
+      if (message.role !== 'system') return [];
+      const failure = readProviderFailure(message.failure, agent ?? thread.agent ?? 'claude');
+      // 깨진 실패는 평범한 시스템 줄로 남긴다 — 문구는 잃지 않는다.
+      if (!failure) return [{ role: 'system', text: message.text, ...metadata }];
+      const origin = FAILURE_ORIGINS.includes(message.origin as ProviderFailureOrigin)
+        ? message.origin as ProviderFailureOrigin
+        : 'turn';
+      const retry = normalizeRetryPayload(message.retry);
+      return [{
+        role: 'system',
+        kind: 'error',
+        text: message.text,
+        failure,
+        origin,
+        ...(typeof message.turnId === 'string' && message.turnId ? { turnId: message.turnId } : {}),
+        ...(retry ? { retry } : {}),
+        at: parseFiniteNonNegative(message.at) ?? 0,
+        ...metadata,
       }];
     }
     if (message.kind === 'plan') {

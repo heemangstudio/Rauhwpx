@@ -26,6 +26,13 @@ import { PendingRequestRegistry } from './pending-requests.ts';
 import { AgentEditFollow } from './agent-edit-follow.ts';
 import { TurnSnapshots, type BuiltTurnSnapshot } from './turn-snapshot.ts';
 import type { TurnCheckpointPort } from './turn-checkpoints.ts';
+import {
+  createTurnFailureCollector,
+  isProviderHubErrorCode,
+  legacyProviderFailure,
+  readProviderFailure,
+  type TurnFailureCollector,
+} from './provider-failure.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
 import {
   setModelCatalog,
@@ -49,6 +56,7 @@ import {
   readResponseBytesWithLimit,
 } from '../core/document-input-limits.ts';
 import type {
+  ProviderFailure,
   AgentBridgeDeps,
   AgentBridgeOptions,
   AgentEditorHost,
@@ -1380,6 +1388,10 @@ export class AgentBridgeImpl implements AgentBridge {
   private workflowSwitchPending = false;
   private workflowBeforeSwitch: { workflow: AgentWorkflow; phase: AgentPhase } | null = null;
   private turnHadError = false;
+  /** 한 턴의 error·turn-end 를 실패 알림 하나로 모은다. 테스트의 빈 인스턴스에서도 돌도록 늦게 만든다. */
+  private failureCollector?: TurnFailureCollector;
+  /** 이번 턴에 문서 쓰기 도구가 끝났다 — 실패한 턴을 다시 시도할 때 먼저 다시 읽게 한다. */
+  private turnWroteDocument = false;
   /** 에이전트에게 알릴 대기 편집 보고 — 턴 중이면 다음 도구 결과에, 아니면 다음 턴 맥락으로 보낸다 */
   private editReport: string[] = [];
   private pendingTurnOpen = false;
@@ -2525,19 +2537,7 @@ export class AgentBridgeImpl implements AgentBridge {
           // isTurnRunning() 으로 재동기화하도록 한다.
           this.emitConnection();
         }
-        if (hubLostTurn) {
-          // 허브가 턴과 함께 사라졌다 — 새 허브는 turn-end 를 보내지 않으므로 사이드바의
-          // 진행 표시·스트림·도구 행을 같은 경로로 마무리한다. 편집은 검토 대기로 남아 있다.
-          this.emit({
-            type: 'agent',
-            event: {
-              type: 'turn-end',
-              agent: lostAgent,
-              stopReason: 'exited',
-              errorMessage: '에이전트 허브가 다시 시작되어 작업이 중단됐습니다.',
-            },
-          });
-        }
+        if (hubLostTurn) this.emitHubLostTurn(lostAgent);
         break;
       }
       case 'user-question-requested': {
@@ -3029,6 +3029,15 @@ export class AgentBridgeImpl implements AgentBridge {
         // 거절된 메시지의 문서 스냅샷은 프로바이더에 닿지 않았다.
         this.turnSnapshots?.reset();
         if (typeof msg.requestId === 'string' && msg.requestId !== this.pendingChatStart?.requestId) break;
+        const failureOrigin: 'start' | 'send' = typeof msg.requestId === 'string' ? 'start' : 'send';
+        const failureAgent = (isAgentName(msg.failure?.agent) ? msg.failure.agent : null)
+          ?? this.pendingChatStart?.agent ?? this.activeAgent ?? this.selectedAgent;
+        const hubFailure = readProviderFailure(msg.failure, failureAgent)
+          ?? (isProviderHubErrorCode(msg.code)
+            ? legacyProviderFailure(failureAgent, typeof msg.message === 'string' ? msg.message : '', msg.code)
+            : null);
+        // 턴을 기다리며 모아 둔 실패는 이 거절로 기다림이 끝난다.
+        const heldFailure = this.turnFailures().flush();
         // 요청 ID 없는 오류는 보낸 메시지의 거절이다 — 턴으로 이어지지 않는다.
         this.messageAwaitingTurn = false;
         if (this.pendingChatStart && msg.session && isAgentName(msg.session.agent)) {
@@ -3087,12 +3096,16 @@ export class AgentBridgeImpl implements AgentBridge {
         } else {
           this.pendingChatStart = null;
         }
+        if (heldFailure && !hubFailure) {
+          this.emit({ type: 'turn-failure', failure: heldFailure, turnId: null, origin: 'idle', userInitiated: false });
+        }
         this.emit({
           type: 'hub-error',
           code: typeof msg.code === 'string' ? msg.code : 'RPC_ERROR',
-          message: typeof msg.message === 'string' ? msg.message : 'Unknown hub error',
+          message: hubFailure?.message ?? (typeof msg.message === 'string' ? msg.message : 'Unknown hub error'),
           // 허브가 거절한 메시지를 사이드바가 집어낼 수 있게 receipt id 를 그대로 넘긴다.
           ...(typeof msg.messageId === 'string' && msg.messageId ? { messageId: msg.messageId } : {}),
+          ...(hubFailure ? { failure: hubFailure, origin: failureOrigin } : {}),
         });
         break;
       }
@@ -3134,6 +3147,35 @@ export class AgentBridgeImpl implements AgentBridge {
     }
   }
 
+  /**
+   * 허브가 턴과 함께 사라졌다 — 새 허브는 turn-end 를 보내지 않으므로 사이드바의 진행 표시·스트림·
+   * 도구 행을 같은 경로로 마무리한다. 편집은 검토 대기로 남아 있다. 실패 알림(HUB_RESTARTED)은
+   * 이 한 곳에서만 만든다 — 중단 줄(S3)이 들어오면 이 함수가 그 줄로 바뀐다.
+   */
+  private emitHubLostTurn(agent: AgentName): void {
+    const message = '에이전트 허브가 다시 시작되어 작업이 중단됐습니다.';
+    const event: Extract<AgentStreamEvent, { type: 'turn-end' }> = {
+      type: 'turn-end',
+      agent,
+      stopReason: 'exited',
+      errorMessage: message,
+      failure: { class: 'process_exited', agent, message, code: 'HUB_RESTARTED', retryable: true, resetAt: null },
+    };
+    const lost = this.turnFailures().endTurn(event);
+    this.emit({ type: 'agent', event });
+    if (lost) {
+      this.emit({
+        type: 'turn-failure', failure: lost.failure, turnId: lost.turnId, origin: 'turn',
+        userInitiated: lost.userInitiated, wroteDocument: this.turnWroteDocument === true,
+      });
+    }
+  }
+
+  private turnFailures(): TurnFailureCollector {
+    this.failureCollector ??= createTurnFailureCollector();
+    return this.failureCollector;
+  }
+
   private handleAgentEvent(event: AgentStreamEvent): void {
     // 서브에이전트가 돈 턴에는 루트가 보지 못한 쓰기가 섞인다. Claude·Codex 서브에이전트의 도구 요청에는
     // 표시가 없으므로 task 이벤트(와 parentTaskId 가 붙은 이벤트)로 알아챈다.
@@ -3146,9 +3188,14 @@ export class AgentBridgeImpl implements AgentBridge {
       this.notifyListeners({ type: 'agent', event });
       return;
     }
+    let turnFailure: ReturnType<TurnFailureCollector['endTurn']> = null;
+    let idleFailure: ProviderFailure | null = null;
     switch (event.type) {
       case 'turn-start':
         this.turnSnapshots?.beginTurn();
+        // 보낸 메시지가 연 턴만 '다시 시도' 로 같은 요청을 다시 보낼 수 있다 — 허브가 연 턴은 아니다.
+        this.turnFailures().beginTurn(typeof event.turnId === 'string' ? event.turnId : null, this.messageAwaitingTurn);
+        this.turnWroteDocument = false;
         this.turnRunning = true;
         this.messageAwaitingTurn = false;
         this.activeProviderTurnId = typeof event.turnId === 'string' ? event.turnId : null;
@@ -3165,6 +3212,7 @@ export class AgentBridgeImpl implements AgentBridge {
       case 'turn-end': {
         const eventTurnId = typeof event.turnId === 'string' ? event.turnId : null;
         if (!providerTurnEndMatches(this.activeProviderTurnId, eventTurnId)) return;
+        turnFailure = this.turnFailures().endTurn(event);
         this.turnRunning = false;
         this.messageAwaitingTurn = false;
         this.activeProviderTurnId = null;
@@ -3204,6 +3252,7 @@ export class AgentBridgeImpl implements AgentBridge {
       }
       case 'error':
         if (this.turnRunning) this.turnHadError = true;
+        idleFailure = this.turnFailures().observeError(event, this.turnRunning || this.messageAwaitingTurn);
         break;
       case 'session-info':
         this.activeAgent = event.agent;
@@ -3214,6 +3263,19 @@ export class AgentBridgeImpl implements AgentBridge {
     }
     this.syncEditingLease();
     this.emit({ type: 'agent', event });
+    // 실패 알림은 턴의 마지막 이벤트 뒤에 하나만 낸다.
+    if (turnFailure) {
+      this.emit({
+        type: 'turn-failure',
+        failure: turnFailure.failure,
+        turnId: turnFailure.turnId,
+        origin: 'turn',
+        userInitiated: turnFailure.userInitiated,
+        wroteDocument: this.turnWroteDocument === true,
+      });
+    } else if (idleFailure) {
+      this.emit({ type: 'turn-failure', failure: idleFailure, turnId: null, origin: 'idle', userInitiated: false });
+    }
   }
 
   private handleToolRequest(msg: any): void {
@@ -3293,7 +3355,12 @@ export class AgentBridgeImpl implements AgentBridge {
       });
     void run
       .then(
-        (result) => { this.commitDirectWrite(tool); return result; },
+        (result) => {
+          this.commitDirectWrite(tool);
+          // 늦게 끝난 쓰기도 문서에는 닿았다 — 활성 여부와 상관없이 남긴다.
+          if (isDocumentWriteTool(tool)) this.turnWroteDocument = true;
+          return result;
+        },
         (e: unknown) => { this.commitDirectWrite(tool); throw e; },
       )
       .then((result) => {

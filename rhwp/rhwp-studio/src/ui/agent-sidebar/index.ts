@@ -35,6 +35,7 @@ import type {
   CatalogRow,
   SkillCatalog,
   ProductSkillIcon,
+  ProviderFailure,
   DocumentTemplate,
   TemplateCatalog,
   UserQuestionInteraction,
@@ -105,6 +106,7 @@ import {
   upsertThread,
   type ChatThread,
   type ThreadMessage,
+  type ThreadRetryPayload,
   type ThreadAttachment,
   type ThreadTaskRecord,
   type ThreadToolOutcome,
@@ -164,6 +166,7 @@ import { ownsTextInput } from '../../command/shortcut-target.ts';
 import { createFocusGreeting } from './focus-greeting.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
 import { createToolRow, type ToolRowHandle } from './tool-row.ts';
+import { createFailureNoticeController, retryRequestText } from './failure-notice.ts';
 import {
   baseToolName,
   parseToolArgs,
@@ -222,6 +225,10 @@ import './sidebar-button-modern.css';
 
 export interface AgentSidebarDeps {
   bridge: SidebarBridge;
+  /**
+   * 리셋 후 이어서 보내기의 여유 시간 (기본 30초 — 시계 차이). 미리보기·검사가 짧게 줄인다.
+   */
+  failureResumeGraceMs?: number;
   /** inset 전환 후 용지 가운데 정렬을 요청할 때 사용 */
   eventBus?: EventBus;
   editorSettingsRuntime?: EditorSettingsRuntime;
@@ -968,6 +975,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let planApprovable = activePlan !== null && planningPhase === 'awaiting-approval';
   let planActionPending = false;
   let revisionPlanId: string | null = null;
+
+  /** 실패 알림 — 턴마다 하나, 실패에 맞는 조치만. 다시 보낼 요청과 리셋 후 이어서 보내기도 여기서 기억한다. */
+  const failureNotices = createFailureNoticeController({
+    thread: () => currentThread,
+    persist: () => persistCurrentThread(),
+    append: (node) => withAutoScroll(() => appendConversation(node)),
+    agentLabel: (agent) => AGENT_LABEL[agent],
+    isTurnRunning: () => turnRunning,
+    isConnected: () => connState === 'connected',
+    reconnected: (agent) => !authFailedAgents.has(agent) && setupStatuses?.[agent]?.authenticated === true,
+    openLogin: (agent) => {
+      requestSettingsOpen('ai');
+      settingsPanel.beginAgentConnect(agent, { reauth: true });
+    },
+    openSettings: () => requestSettingsOpen('ai'),
+    restartSession: () => restartAgentSession(),
+    resend: (retry) => resendFailedRequest(retry),
+    ...(deps.failureResumeGraceMs !== undefined ? { resumeGraceMs: deps.failureResumeGraceMs } : {}),
+  });
+
   let planHistory: StructuredPlan[] = initialWorkflowState.latestPlan ? [initialWorkflowState.latestPlan] : [];
   /** 채팅별 계획 기록/모드 — 목록에서 되돌아왔을 때 표시를 복원한다. */
   const planArchives = new Map<string, StructuredPlan[]>();
@@ -2755,6 +2782,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
     }
     resumeReconnectedProviders();
+    // 로그인이 돌아오면 로그인 알림이 '다시 시도' 로 바뀐다.
+    failureNotices.refresh();
   }
 
   function providerNeedsLogin(agent: AgentName): boolean {
@@ -2790,16 +2819,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
 
-  /** CLI 가 돌려준 인증 실패 문구 — 허브 상태가 늦게 따라올 때를 잡는다. */
-  const PROVIDER_AUTH_ERROR = /\/login|not logged in|log ?in again|oauth token|token (?:has )?expired|invalid api key|authentication|unauthori[sz]ed|\b401\b/i;
-  function noteProviderAuthFailure(agent: AgentName, message: string | null | undefined): void {
-    if (!message || !PROVIDER_AUTH_ERROR.test(message)) return;
+  /** 허브가 인증 실패로 분류한 턴 — 허브 상태가 늦게 따라올 때를 잡는다. */
+  function noteProviderAuthFailure(agent: AgentName, failure: ProviderFailure): void {
+    if (failure.class !== 'auth_required') return;
     authFailedAgents.add(agent);
     authFailedAt.set(agent, Date.now());
     updateReconnectChip();
     updateCalibrationChip();
     void bridge.requestAgentSetupStatus(true);
   }
+
   const composerUtilities = el('div', 'ag-composer-utilities');
   composerUtilities.setAttribute('aria-label', '채팅 도구');
 
@@ -4900,6 +4929,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         ? `현재 계획(${spec.revisionPlanId})을 다음 피드백에 맞게 수정해 주세요.\n\n${skillRequestText}`
         : skillRequestText;
     }
+    // 실패하면 '다시 시도' 가 다시 보낼 요청 — 꾸밈 전 본문이다(꾸밈은 보낼 때마다 새로 붙는다).
+    // 인라인 프롬프트의 선택 맥락은 그 시점 문서에 묶여 있어 다시 보낼 때 싣지 않는다.
+    const retryPayload = {
+      displayText: messageText,
+      requestText: spec.origin === 'inline' ? messageText : requestText,
+      ...(skillName ? { skillName } : {}),
+      ...(skillName && spec.skillIcon ? { skillIcon: spec.skillIcon } : {}),
+    };
     requestText = decorateRequestText(requestText, currentThread.id);
     const staged = spec.staged ?? [];
     const messageAttachments: ThreadAttachment[] = staged.map((file) => ({
@@ -4915,6 +4952,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       skillName,
       spec.skillIcon,
     );
+    failureNotices.noteSend(currentThread.id, retryPayload);
     const userBubble = renderUserMessage(userMessage);
     userBubble.classList.add('ag-msg-enter');
     replyPending = true;
@@ -5005,6 +5043,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       } catch {
         sent = false;
       }
+      // 계획 수정 요청은 같은 문구로 다시 보내면 안 된다.
+      if (sent) failureNotices.clearLastSend();
       if (!sent) {
         planActionPending = false;
         updateComposer();
@@ -5600,8 +5640,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     currentThread.titleRequested = true;
     persistCurrentThread();
     const preview = currentThread.messages
-      // 턴 표식은 대화 내용이 아니다 — 제목 요청에 "어시스턴트: " 빈 줄로 새지 않게 뺀다.
-      .filter((m) => !isTurnMarker(m))
+      // 턴 표식은 대화 내용이 아니다 — 제목 요청에 "어시스턴트: " 빈 줄로 새지 않게 뺀다. 실패 알림도 빠진다.
+      .filter((m) => !isTurnMarker(m) && m.kind !== 'error')
       .slice(0, 6)
       .map((m) => {
         const text = m.role === 'user' && m.skillName
@@ -5705,6 +5745,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 저장된 메시지 하나를 그린다 (턴 표식은 renderMessagesFromThread 가 따로 다룬다). */
   function renderStoredMessage(msg: ThreadMessage, thread: ChatThread): HTMLElement {
     if (msg.role === 'user') return renderUserMessage(msg);
+    // 실패 알림은 흐름에 남는다 — 접힘으로 옮기는 작업 메시지가 아니다.
+    if (msg.kind === 'error') return failureNotices.mount(msg);
     if (msg.role !== 'assistant') return el('div', 'ag-msg ag-msg-system', msg.text);
     const agent = msg.agent ?? thread.agent;
     if (msg.kind === 'user-question') return renderUserQuestionHistory(msg);
@@ -7006,6 +7048,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateTurnPending();
     updateComposer();
     rebuildReview();
+    // 다시 시도·리셋 후 이어서는 턴이 도는 동안 막힌다.
+    failureNotices.refresh();
   }
 
   /** 턴이 정상 종료 경로 없이 꺼졌을 때(중단·재연결·오류) 노란 불을 걷는다. */
@@ -7211,6 +7255,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     questionTimelineAnchorInteractionId = null;
     turnFoldRows.clear();
     turnFoldResizeObserver?.disconnect();
+    failureNotices.forgetNodes();
     messages.replaceChildren(turnPending, messagesEnd);
   }
 
@@ -7492,19 +7537,29 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     startCurrentBridgeChat(true);
   }
 
-  /** 허브가 CLI 를 못 띄웠을 때 — 실패 메시지 아래에 재시도 한 줄을 놓는다. */
-  function appendSpawnRetryAction(): void {
-    const row = el('div', 'ag-msg ag-msg-system ag-hub-error-actions');
-    const label = el('span', 'ag-hub-error-copy', `${AGENT_LABEL[selectedAgent]} CLI 를 시작하지 못했습니다.`);
-    const retry = el('button', 'ag-hub-retry-btn', '다시 시도');
-    retry.type = 'button';
-    retry.addEventListener('click', () => {
-      retry.disabled = true;
-      restartAgentSession();
-      row.remove();
-    });
-    row.append(label, retry);
-    withAutoScroll(() => appendConversation(row));
+  /**
+   * 실패 알림의 '다시 시도' — 저장된 요청을 컴포저와 같은 길로 다시 보낸다. 입력 중인 초안은
+   * 건드리지 않고, 컴포저와 같은 조건에서만 보낸다. 보내지 못했으면 false.
+   */
+  function resendFailedRequest(retry: ThreadRetryPayload): boolean {
+    if (readOnlyDocLabel !== null || mergeResolverLocked || connState !== 'connected' || turnRunning
+      || questionController.hasPending() || planningPhase === 'switching' || workflowTransitionPending
+      || planActionPending || chatStartPendingThreadId !== null || attachmentsSending) {
+      if (active) showToast({ message: '지금은 다시 보낼 수 없어요', durationMs: 2400 });
+      return false;
+    }
+    prepareChatForSend();
+    const userMessage = recordUserMessage(retry.displayText, [], undefined, retry.skillName, retry.skillIcon);
+    failureNotices.noteSend(currentThread.id, retry);
+    const userBubble = renderUserMessage(userMessage);
+    userBubble.classList.add('ag-msg-enter');
+    followConversation = true;
+    replyPending = true;
+    appendConversation(userBubble);
+    updateTurnPending(selectedAgent);
+    scrollConversationToMessage(userBubble, { smooth: true });
+    void bridge.sendUserMessage(retryRequestText(retry), retry.skillName);
+    return true;
   }
 
   /** 설정 탭에서 저장된 기본값 — 새 대화부터 적용된다. */
@@ -8372,8 +8427,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         suppressedSpawnCalls.clear();
         fleetView.sweep();
         sweepTasksTranscript();
-        if (event.errorMessage) systemMessage(event.errorMessage);
-        noteProviderAuthFailure(event.agent, event.errorMessage);
+        // 실패 문구는 브리지가 이 뒤에 보내는 turn-failure 알림 하나로 남는다.
         const completed =
           event.stopReason !== 'interrupted'
           && event.stopReason !== 'failed'
@@ -8405,10 +8459,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         break;
       }
       case 'error':
-        // 턴 접힘과 대기열이 함께 읽는 한 플래그다.
+        // 턴 접힘과 대기열이 함께 읽는 한 플래그다. 오류 문구는 브리지가 모아 턴 끝에 turn-failure
+        // 알림 하나로 남기고, 턴 밖의 오류는 바로 알림으로 보낸다.
         if (turnRunning || openFold) turnErrorSeen = true;
-        systemMessage(event.message);
-        noteProviderAuthFailure(event.agent, event.message);
         break;
     }
   }
@@ -8485,6 +8538,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         setTurnRunning(bridge.isTurnRunning() && !hubChatUnbound());
         dropRunStatusIfIdle();
         followUps.settle();
+        failureNotices.connectionChanged(e.state === 'connected');
+        break;
+      case 'usage-report':
+        // 한도 막대의 리셋 시각 — 실패에 리셋 시각이 없을 때 쓴다.
+        failureNotices.setLimits(e.usage.limits);
+        break;
+      case 'turn-failure':
+        noteProviderAuthFailure(e.failure.agent, e.failure);
+        failureNotices.add(e.failure, {
+          origin: e.origin,
+          turnId: e.turnId,
+          userInitiated: e.userInitiated === true,
+          wroteDocument: e.wroteDocument === true,
+        });
         break;
       case 'chat-started': {
         if (e.threadId && e.threadId !== currentThread.id) break;
@@ -8684,8 +8751,18 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           renderMessagesFromThread(currentThread);
           updateComposer();
         }
-        if (!followUpBounced) systemMessage(`오류 (${e.code}): ${e.message}`);
-        if (e.code === 'AGENT_SPAWN_FAILED') appendSpawnRetryAction();
+        if (e.failure) {
+          noteProviderAuthFailure(e.failure.agent, e.failure);
+          // 되돌린 대기 메시지는 대기열 맨 앞에 있다 — 다시 시도까지 두면 보내는 길이 둘이 된다.
+          failureNotices.add(e.failure, {
+            origin: e.origin ?? 'send',
+            turnId: null,
+            userInitiated: e.origin !== 'start',
+            ...(followUpBounced ? { noRetry: true } : {}),
+          });
+        } else if (!followUpBounced) {
+          systemMessage(`오류 (${e.code}): ${e.message}`);
+        }
         workflowTransitionPending = false;
         planActionPending = false;
         syncPlanningFromBridge();
@@ -9093,6 +9170,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       if (!bridge.approvePlan(planId, profile)) {
         throw new Error('허브 연결이 끊겨 승인 요청을 보내지 못했습니다.');
       }
+      failureNotices.clearLastSend();
     } catch (err) {
       planActionPending = false;
       rebuildReview();
@@ -9874,6 +9952,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       if (railRevealTimer !== null) window.clearTimeout(railRevealTimer);
       railRevealTimer = null;
       questionController.dispose();
+      // 걸어 둔 '리셋 후 이어서' 는 창과 함께 사라진다.
+      failureNotices.dispose();
       unsubChatModeLock();
       unsubTurnRestore();
       unsubBridge();

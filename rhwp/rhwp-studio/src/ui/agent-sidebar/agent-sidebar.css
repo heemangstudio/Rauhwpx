@@ -796,12 +796,121 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   outline-offset: var(--ag-focus-offset);
 }
 
-/* 허브가 CLI 를 띄우지 못했을 때 대화 안에 놓이는 재시도 줄. */
-.ag-hub-error-actions {
+/* 실패 알림 — 턴 하나에 하나, 턴이 끝난 자리. 조치 버튼은 .ag-hub-retry-btn 모양을 쓴다. */
+.ag-failure-notice {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--ag-border);
+  border-left: 3px solid var(--ag-err);
+  border-radius: var(--ag-r-card);
+  background: var(--ag-surface);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-failure-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ag-failure-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: var(--ag-fw-medium);
+  overflow-wrap: anywhere;
+}
+
+.ag-failure-line {
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-failure-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.ag-hub-retry-btn:disabled {
+  opacity: 0.5;
+}
+
+.ag-hub-retry-btn:disabled:hover {
+  background: var(--ag-primary-bg);
+}
+
+.ag-failure-link,
+.ag-failure-close {
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  cursor: default;
+  border-radius: var(--ag-r-row);
+  transition: var(--ag-transition-color);
+}
+
+.ag-failure-close {
+  flex: none;
+  width: 28px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.ag-failure-link:hover,
+.ag-failure-close:hover {
+  background: var(--ag-surface-subtle);
+  color: var(--ag-text);
+}
+
+.ag-failure-link:focus-visible,
+.ag-failure-close:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-failure-detail {
+  max-height: 200px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: var(--ag-r-row);
+  background: var(--ag-surface-subtle);
+  color: var(--ag-text-secondary);
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-meta);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 오래되거나 닫은 알림은 제목 한 줄만 남는다. */
+.ag-failure-notice-compact {
+  padding: 4px 10px;
+  border-left-width: 2px;
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-failure-notice-compact .ag-failure-title {
+  font-weight: var(--ag-fw-regular, 400);
+}
+
+.ag-failure-notice-compact .ag-failure-link {
+  height: 22px;
+  font-size: var(--ag-fs-meta);
 }
 
 .ag-hub-retry-btn {
