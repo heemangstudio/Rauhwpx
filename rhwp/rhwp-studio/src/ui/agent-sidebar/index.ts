@@ -1874,11 +1874,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       e.preventDefault();
       return;
     }
-    if (workbench?.current()) {
+    if (workbench?.isOpen()) {
       const selected = workbench.current();
       workbench.select(null);
-      const control = isCompactWorkspace() || threadsRailCollapsed ? workspaceThreadsBtn
-        : workbench.navigation.querySelector<HTMLButtonElement>(`[data-view="${selected}"]`);
+      const control = !selected ? workspacePanelBtn
+        : isCompactWorkspace() || threadsRailCollapsed ? workspaceThreadsBtn
+          : workbench.navigation.querySelector<HTMLButtonElement>(`[data-view="${selected}"]`);
       control?.focus({ preventScroll: true });
       e.preventDefault();
       return;
@@ -2169,7 +2170,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   workspaceSettingsBtn.setAttribute('aria-expanded', 'false');
   workspaceSettingsBtn.title = '설정';
   workspaceSettingsBtn.appendChild(createIcon('gear'));
-  workspaceTrailing.append(workspaceAgentContext, environmentWrap, workspaceSettingsBtn, workspaceExitBtn);
+  // 왼쪽 대화 목록 단추와 짝을 이루는 오른쪽 작업 칸 단추.
+  const workspacePanelBtn = el('button', 'ag-workspace-icon-btn ag-workspace-panel-btn');
+  workspacePanelBtn.type = 'button';
+  workspacePanelBtn.setAttribute('aria-expanded', 'false');
+  workspacePanelBtn.setAttribute('aria-label', '작업 칸 열기');
+  workspacePanelBtn.title = '작업 칸 열기';
+  workspacePanelBtn.appendChild(createColumnIcon('ag-column-icon-end'));
+  workspacePanelBtn.addEventListener('click', () => workbench?.toggle());
+  workspaceTrailing.append(workspaceAgentContext, environmentWrap, workspaceSettingsBtn, workspaceExitBtn, workspacePanelBtn);
   workspaceBar.append(workspaceLeading, workspaceTitle, workspaceDocumentContext, workspaceTrailing);
 
   // 전역 설정이 꺼져 있어도 이 문서에 버전 기록이 있으면(예: 자동 저장본 복구) 버전 창을 연다.
@@ -3464,16 +3473,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
     },
     onSelect(view) {
-      if (view && !fullscreen) {
+      const open = workbench?.isOpen() ?? false;
+      if (open && !fullscreen) {
         workbench?.select(null);
         return;
       }
-      if (view && settingsPanelOpen && settingsPanel.isDirty()) {
+      if (open && settingsPanelOpen && settingsPanel.isDirty()) {
         workbench?.select(null);
-        void requestSettingsClose(undefined, () => workbench?.select(view));
+        void requestSettingsClose(undefined, () => (view ? workbench?.select(view) : workbench?.showLauncher({ focus: true })));
         return;
       }
-      if (view) {
+      if (open) {
         setDetailColumn(null);
         if (isCompactWorkspace()) setCompactThreadsRailOpen(false);
         setConfigPanelOpen(false);
@@ -3483,7 +3493,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         closeVersionsPage();
         fleetView.closePopup();
       }
-      root.classList.toggle('ag-workbench-open', view !== null);
+      root.classList.toggle('ag-workbench-open', open);
+      workspacePanelBtn.setAttribute('aria-expanded', String(open));
+      workspacePanelBtn.setAttribute('aria-label', open ? '작업 칸 닫기' : '작업 칸 열기');
+      workspacePanelBtn.title = workspacePanelBtn.getAttribute('aria-label')!;
       chatPage.inert = false;
       chatPage.setAttribute('aria-hidden', String(settingsPanelOpen || versionsPanelOpen));
       applyReviewColState();
@@ -3507,6 +3520,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
 
   threadsPage.insertBefore(workbench.navigation, threadsList);
+  workspacePanelBtn.setAttribute('aria-controls', workbench.element.id);
 
   stage.append(
     workspaceBar,
@@ -3810,7 +3824,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const planActive = focusLayoutActive && detailColumn === 'plan' && activePlan !== null;
     const changesActive = focusLayoutActive && detailColumn === 'changes';
     const projectActive = focusLayoutActive && detailColumn === 'project';
-    const workbenchActive = focusLayoutActive && Boolean(workbench?.current());
+    const workbenchActive = focusLayoutActive && Boolean(workbench?.isOpen());
     const detailActive = changesActive || planActive || workbenchActive;
     root.classList.toggle('ag-review-collapsed', focusLayoutActive && !changesActive);
     root.classList.toggle('ag-plan-collapsed', focusLayoutActive && !planActive);
@@ -3884,7 +3898,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (compactThreadsRailOpen && !threadsOwnFocus) setCompactThreadsRailOpen(false);
 
     const detailOwnFocus = reviewColumn.contains(target) || planColumn.contains(target)
-      || Boolean(workbench?.element.contains(target)) || reviewResize.contains(target)
+      || Boolean(workbench?.element.contains(target)) || reviewResize.contains(target) || workspacePanelBtn.contains(target)
       || Boolean(workbench?.navigation.contains(target)) || (projectHost?.contains(target) ?? false);
     const detailOpen = root.classList.contains('ag-detail-drawer-open') || root.classList.contains('ag-project-drawer-open');
     if (detailOpen && !detailOwnFocus) {

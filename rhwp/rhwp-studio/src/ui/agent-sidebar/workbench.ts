@@ -1,4 +1,4 @@
-/** 사이드바 위의 탭과 작업 면. 데이터와 문서 수명은 각 보기에서 관리한다. */
+/** 집중 화면 오른쪽의 작업 칸. 칸을 여닫는 상태와 선택한 보기는 따로 둔다. 데이터와 문서 수명은 각 보기에서 관리한다. */
 import './workbench.css';
 import { createIcon } from './icons.ts';
 import { projectIcon } from './project/project-ui.ts';
@@ -11,19 +11,30 @@ export interface SidebarWorkbench {
   /** 지금 보기의 머리 동작. 연결하는 쪽이 보기마다 채운다. */
   actions: HTMLElement;
   element: HTMLElement;
+  /** null은 칸을 닫는다. */
   select(view: WorkbenchView | null, options?: { recordTab?: boolean }): void;
+  /** 열린 칸에 탭 대신 작업 목록을 보인다. */
+  showLauncher(options?: { focus?: boolean }): void;
+  /** 닫혀 있으면 마지막 탭(없으면 작업 목록)으로 연다. */
+  toggle(): void;
+  isOpen(): boolean;
   current(): WorkbenchView | null;
   setResources(resources: readonly WorkbenchResource[], activeId: string | null): void;
   setVisible(visible: boolean): void;
   dispose(): void;
 }
 
-const views: ReadonlyArray<{ id: WorkbenchView; title: string }> = [
-  { id: 'board', title: '보드' },
-  { id: 'changes', title: '변경 사항' },
-  { id: 'agents', title: '서브에이전트' },
-  { id: 'documents', title: 'PDF · 문서' },
+const views: ReadonlyArray<{ id: WorkbenchView; title: string; key: string; code: string }> = [
+  { id: 'board', title: '보드', key: 'B', code: 'KeyB' },
+  { id: 'changes', title: '변경 사항', key: 'C', code: 'KeyC' },
+  { id: 'agents', title: '서브에이전트', key: 'S', code: 'KeyS' },
+  { id: 'documents', title: 'PDF · 문서', key: 'P', code: 'KeyP' },
 ];
+const LAUNCHER_TITLE = '작업 열기';
+function viewIcon(view: WorkbenchView): SVGSVGElement {
+  return view === 'board' ? projectIcon('board')
+    : createIcon(view === 'changes' ? 'changes' : view === 'agents' ? 'skillBot' : 'document');
+}
 let sequence = 0;
 
 export function createSidebarWorkbench(deps: {
@@ -49,12 +60,6 @@ export function createSidebarWorkbench(deps: {
   title.id = `${uid}-title`;
   title.className = 'ag-workbench-title';
   element.setAttribute('aria-labelledby', title.id);
-  const close = document.createElement('button');
-  close.className = 'ag-workbench-back';
-  close.type = 'button';
-  close.title = '대화로 돌아가기';
-  close.setAttribute('aria-label', close.title);
-  close.append(createIcon('close'));
   const body = document.createElement('div');
   body.className = 'ag-workbench-body';
   const strip = document.createElement('div');
@@ -71,10 +76,31 @@ export function createSidebarWorkbench(deps: {
     button.addEventListener('click', () => strip.scrollBy({ left: direction * strip.clientWidth * .75,
       behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
   }
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'ag-workbench-add';
+  add.title = LAUNCHER_TITLE;
+  add.setAttribute('aria-label', LAUNCHER_TITLE);
+  add.append(projectIcon('plus'));
   const actions = document.createElement('div');
   actions.className = 'ag-workbench-actions';
-  head.append(title, previous, strip, next, actions, close);
+  head.append(title, previous, strip, next, add, actions);
+  // T3 Code의 빈 칸처럼 열 수 있는 작업과 글자 단축키를 보인다.
+  const launcher = document.createElement('div');
+  launcher.className = 'ag-workbench-launcher';
+  launcher.setAttribute('role', 'group');
+  const launcherTitle = document.createElement('h3');
+  launcherTitle.id = `${uid}-launcher-title`;
+  launcherTitle.className = 'ag-workbench-launcher-title';
+  launcherTitle.textContent = LAUNCHER_TITLE;
+  launcher.setAttribute('aria-labelledby', launcherTitle.id);
+  const launcherList = document.createElement('div');
+  launcherList.className = 'ag-workbench-launcher-list';
+  launcher.append(launcherTitle, launcherList);
+  body.append(launcher);
   element.append(head, body);
+  let open = false;
+  let lastKey: string | null = null;
   let selected: WorkbenchView | null = null;
   let visible = true;
   let disposed = false;
@@ -106,15 +132,16 @@ export function createSidebarWorkbench(deps: {
     });
   }
   function updateScrollControls(): void {
-    previous.disabled = strip.scrollWidth <= strip.clientWidth + 1 || strip.scrollLeft <= 1;
-    next.disabled = strip.scrollWidth <= strip.clientWidth + 1 || strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1;
+    const overflow = strip.scrollWidth > strip.clientWidth + 1;
+    previous.disabled = !overflow || strip.scrollLeft <= 1;
+    next.disabled = !overflow || strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1;
     for (const button of [previous, next]) {
-      // 버튼 자리를 유지하여 가로 스크롤이 ResizeObserver의 선택 탭 복귀를 일으키지 않게 한다.
+      // 넘칠 때는 버튼 자리를 유지하여 가로 스크롤이 ResizeObserver의 선택 탭 복귀를 일으키지 않게 한다.
+      button.hidden = !overflow;
       button.style.visibility = button.disabled ? 'hidden' : 'visible';
     }
   }
   function activateTab(key: string): void {
-    if (key === 'chat') { deps.onChat(); return; }
     if (key.startsWith('resource:')) {
       select('documents', { recordTab: false });
       deps.selectResource?.(key.slice(9));
@@ -138,13 +165,12 @@ export function createSidebarWorkbench(deps: {
     if (activeKey() === key) {
       const after = tabKeys();
       if (after.length) activateTab(after[Math.min(index, after.length - 1)]);
-      else select(null);
+      else showLauncher();
     }
     paintTabs();
     if (restoreFocus) {
-      const target = tabRows.get(activeKey() ?? '')?.button;
-      if (target) target.focus({ preventScroll: true });
-      else deps.onChat();
+      const target = tabRows.get(activeKey() ?? '')?.button ?? launcherList.querySelector('button');
+      target?.focus({ preventScroll: true });
     }
   }
   function paintTabs(): void {
@@ -242,33 +268,75 @@ export function createSidebarWorkbench(deps: {
     button.dataset.view = view.id;
     button.setAttribute('aria-label', view.title);
     button.setAttribute('aria-controls', uid);
-    const icon = view.id === 'board' ? projectIcon('board')
-      : createIcon(view.id === 'changes' ? 'changes' : view.id === 'agents' ? 'skillBot' : 'document');
     const label = document.createElement('span');
     label.textContent = view.title;
-    button.append(icon, label);
+    button.append(viewIcon(view.id), label);
     button.addEventListener('click', () => activateTab(view.id));
     controls.set(view.id, button);
     navigation.append(button);
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'ag-workbench-launcher-item';
+    item.dataset.view = view.id;
+    item.setAttribute('aria-keyshortcuts', view.key);
+    const itemLabel = document.createElement('span');
+    itemLabel.className = 'ag-workbench-launcher-label';
+    itemLabel.textContent = view.title;
+    const key = document.createElement('kbd');
+    key.textContent = view.key;
+    item.append(viewIcon(view.id), itemLabel, key);
+    item.addEventListener('click', () => activateTab(view.id));
+    launcherList.append(item);
   }
+  launcher.addEventListener('keydown', event => {
+    if (event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
+    const items = Array.from(launcherList.querySelectorAll<HTMLButtonElement>('button'));
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    // 한글 입력 상태에서도 같은 글쇠로 열리도록 문자 대신 글쇠 위치를 본다.
+    const view = views.find(entry => entry.code === event.code);
+    let target: HTMLButtonElement | undefined;
+    if (view && !event.shiftKey) {
+      event.preventDefault();
+      activateTab(view.id);
+      return;
+    }
+    if (event.key === 'ArrowDown') target = items[(index + 1) % items.length];
+    else if (event.key === 'ArrowUp') target = items[(index - 1 + items.length) % items.length];
+    else if (event.key === 'Home') target = items[0];
+    else if (event.key === 'End') target = items[items.length - 1];
+    if (!target) return;
+    event.preventDefault();
+    target.focus();
+  });
   function paint(): void {
-    element.hidden = selected === null || !visible;
+    element.hidden = !open || !visible;
     element.inert = element.hidden;
     element.setAttribute('aria-hidden', String(element.hidden));
     head.hidden = !visible;
-    close.hidden = selected === null;
+    launcher.hidden = selected !== null;
     for (const [id, panel] of panels) {
       panel.hidden = id !== selected;
       panel.inert = panel.hidden || !visible;
     }
     for (const [view, button] of controls) {
-      button.classList.toggle('ag-selected', selected === view);
-      button.setAttribute('aria-expanded', String(selected === view && visible));
+      button.classList.toggle('ag-selected', open && selected === view);
+      button.setAttribute('aria-expanded', String(open && selected === view && visible));
     }
     paintTabs();
   }
+  function showLauncher(options?: { focus?: boolean }): void {
+    if (disposed) return;
+    open = true;
+    selected = null;
+    closingFocusedResource = null;
+    title.textContent = LAUNCHER_TITLE;
+    paint();
+    deps.onSelect(null);
+    if (options?.focus) launcherList.querySelector('button')?.focus({ preventScroll: true });
+  }
   function select(view: WorkbenchView | null, options?: { recordTab?: boolean }): void {
     if (disposed) return;
+    if (!view && open) lastKey = activeKey();
     if (view !== null && !panels.has(view)) {
       const panel = document.createElement('div');
       panel.className = `ag-workbench-panel ag-workbench-${view}`;
@@ -281,37 +349,43 @@ export function createSidebarWorkbench(deps: {
     }
     if (view && options?.recordTab !== false && !opened.includes(view)) opened.push(view);
     if (!view) closingFocusedResource = null;
+    open = view !== null;
     selected = view;
     title.textContent = views.find((entry) => entry.id === view)?.title ?? '';
     paint();
     deps.onSelect(view);
   }
-  close.addEventListener('click', () => {
-    activateTab('chat');
-  });
+  add.addEventListener('click', () => showLauncher({ focus: true }));
   element.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || event.defaultPrevented) return;
     event.preventDefault();
     event.stopPropagation();
-    close.click();
+    deps.onChat();
   });
   paint();
   return {
-    navigation, header: head, actions, element, select,
+    navigation, header: head, actions, element, select, showLauncher,
+    toggle() {
+      if (open) { select(null); return; }
+      const keys = tabKeys();
+      const key = lastKey && keys.includes(lastKey) ? lastKey : keys[keys.length - 1];
+      if (key) activateTab(key);
+      else showLauncher({ focus: true });
+    },
+    isOpen: () => open,
     current: () => selected,
     setResources(next, activeId) {
       const before = tabKeys();
       const index = before.indexOf(activeKey() ?? '');
-      const hadFocus = visible && (element.contains(document.activeElement) || document.activeElement === document.body);
+      const hadFocus = visible && open && (element.contains(document.activeElement) || document.activeElement === document.body);
       const closedActive = activeResource !== null && !activeId;
       resources = next;
       activeResource = activeId;
-      // 직접 연 자료의 마지막 탭을 닫으면 탭 없는 자료 목록이 남는다. 옆 탭으로 옮기거나 대화로 돌아간다.
+      // 직접 연 자료의 마지막 탭을 닫으면 탭 없는 자료 목록이 남는다. 옆 탭이나 작업 목록으로 옮긴다.
       if (closedActive && selected === 'documents' && !opened.includes('documents')) {
         const after = tabKeys();
         if (after.length) activateTab(after[Math.min(Math.max(index, 0), after.length - 1)]);
-        else if (hadFocus) deps.onChat();
-        else select(null);
+        else showLauncher({ focus: hadFocus });
         return;
       }
       paintTabs();

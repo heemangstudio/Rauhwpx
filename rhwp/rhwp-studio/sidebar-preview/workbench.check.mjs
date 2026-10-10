@@ -23,7 +23,7 @@ export async function checkWorkbench({ page, origin, screenshot }) {
     await page.waitForSelector(`${panel} .ag-workbench-panel[data-view="${view}"]:not([hidden])`, { visible: true });
   }
   async function back() {
-    await page.click('.ag-workbench-back');
+    await page.click('.ag-workspace-panel-btn[aria-expanded="true"]');
     await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-workbench-open'));
   }
   async function library() {
@@ -32,7 +32,8 @@ export async function checkWorkbench({ page, origin, screenshot }) {
   }
   async function item(id) {
     await library();
-    await page.click(`.ag-wdocs-card[data-item-id="${id}"]`);
+    // 프로젝트 갱신이 자료 목록을 다시 그릴 수 있어 다시 찾아 누르는 locator를 쓴다.
+    await page.locator(`.ag-wdocs-card[data-item-id="${id}"]`).click();
     await page.waitForSelector(`${resource} .ag-pp`, { visible: true });
     await page.waitForFunction((selector) => !document.querySelector(`${selector} .ag-pp-body`)?.hasAttribute('aria-busy'), {}, resource);
   }
@@ -88,6 +89,29 @@ export async function checkWorkbench({ page, origin, screenshot }) {
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
   await open('theme=light');
   assert.equal(await page.$$eval('.ag-workbench-tabs [role="tab"]', tabs => tabs.length), 0);
+  // 오른쪽 칸 단추는 빈 칸에 작업 목록을 열고, 글자 단축키와 +로 보기를 연다.
+  const launcherShown = () => page.waitForSelector(`${panel} .ag-workbench-launcher:not([hidden])`, { visible: true });
+  const launcherFocused = () => page.$eval('.ag-workbench-launcher-item', node => node === document.activeElement);
+  await page.click('.ag-workspace-panel-btn');
+  await launcherShown();
+  assert.equal(await launcherFocused(), true, 'the empty panel focuses its first surface');
+  await screenshot('workbench-launcher-empty');
+  await page.keyboard.press('KeyS');
+  await page.waitForSelector(`${panel} .ag-workbench-panel[data-view="agents"]:not([hidden])`, { visible: true });
+  await page.click('.ag-workbench-add');
+  await launcherShown();
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector(`${panel} .ag-workbench-panel[data-view="changes"]:not([hidden])`, { visible: true });
+  assert.deepEqual(await page.$$eval('.ag-workbench-tabs [role="tab"]', tabs => tabs.map(tab => tab.dataset.view)), ['agents', 'changes']);
+  await back();
+  await page.click('.ag-workspace-panel-btn');
+  await page.waitForSelector(`${panel} .ag-workbench-panel[data-view="changes"]:not([hidden])`, { visible: true });
+  await page.focus('.ag-workbench-tabs [role="tab"][data-view="changes"]');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-workbench-open'));
+  assert.equal(await page.$eval('.ag-input', node => node === document.activeElement), true, 'Escape in the panel returns to the composer');
+  await open('theme=light');
   await launch('board');
   assert.equal(await page.$$eval('.ag-workbench-tabs [role="tab"]', tabs => tabs.length), 1);
   await launch('agents');
@@ -97,9 +121,9 @@ export async function checkWorkbench({ page, origin, screenshot }) {
   await page.keyboard.press('Delete');
   await page.waitForSelector('.ag-workbench-tabs [data-view="agents"][aria-selected="true"]');
   await page.keyboard.press('Delete');
-  await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-workbench-open'));
-  assert.equal(await page.$eval('.ag-input', node => node === document.activeElement), true);
-  // 보드에서 바로 연 자료에는 자료 목록 탭이 없다. 닫으면 옆 탭으로, 마지막이면 대화로 돌아간다.
+  await launcherShown();
+  assert.equal(await launcherFocused(), true, 'closing the last tab leaves the surface list focused');
+  // 보드에서 바로 연 자료에는 자료 목록 탭이 없다. 닫으면 옆 탭으로, 마지막이면 작업 목록으로 간다.
   await launch('board');
   const boardCard = '.ag-workbench-board .ag-pcard[data-item="fa2k7q"]';
   const openFromBoard = async () => {
@@ -120,9 +144,9 @@ export async function checkWorkbench({ page, origin, screenshot }) {
   assert.deepEqual(await tabState(), ['resource:true']);
   await page.focus('.ag-workbench-tabs [data-resource-id]');
   await page.keyboard.press('Delete');
-  await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-workbench-open'));
-  assert.equal(await page.$eval('.ag-workbench-page', node => node.checkVisibility()), false, 'no library is left without a tab');
-  assert.equal(await page.$eval('.ag-input', node => node === document.activeElement), true, 'closing the last direct resource returns to chat');
+  await launcherShown();
+  assert.equal(await page.$eval('.ag-wdocs-library', node => node.checkVisibility()), false, 'no library is left without a tab');
+  assert.equal(await launcherFocused(), true, 'closing the last direct resource shows the surface list');
   await launch('board');
   await page.waitForSelector('.ag-workbench-board .ag-pcard[data-item="fa2k7q"]');
   const readItem = id => page.evaluate(key => window.sidebarPreview.projects.store.get().items.find(item => item.id === key), id);
@@ -324,6 +348,6 @@ export async function checkWorkbench({ page, origin, screenshot }) {
   assert.equal(await page.evaluate(() => window.sidebarPreview.versions.getState().commits[0].title), 'Workbench change commit');
   await screenshot('workbench-changes-committed');
   return { layouts, boardPersistence: true, boardPointerDrag: true, pdfTabReuse: true, pdfZoomRetained: true, pdfPageRetained: true, clipReusesSourceTab: true,
-    noteDraftRetained: true, dirtyCloseCancellation: true, keyboardCloseFocus: true, directResourceCloseFallback: true, malformedPdfRetry: true,
+    noteDraftRetained: true, dirtyCloseCancellation: true, keyboardCloseFocus: true, directResourceCloseFallback: true, panelToggleAndLauncher: true, malformedPdfRetry: true,
     taskFailureAndCancellation: true, draftTaskIsolation: true, changeReviewAndCommit: true };
 }
