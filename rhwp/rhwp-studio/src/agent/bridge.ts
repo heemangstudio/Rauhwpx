@@ -1447,9 +1447,21 @@ export class AgentBridgeImpl implements AgentBridge {
   private hubSessionKnownResolve: (() => void) | null = null;
   /**
    * 허브 세션에 지금 걸린 템플릿(welcome·chat-template-changed 기준). 같은 값은 다시 보내지 않는다 —
-   * 이어 붙인 턴이 도는 동안 같은 템플릿을 다시 걸면 허브가 AGENT_BUSY 로 거절한다. undefined 는 모름.
+   * 이어 붙인 턴이 도는 동안 같은 템플릿을 다시 걸면 허브가 AGENT_BUSY 로 거절한다. undefined 는 모름:
+   * 메시지가 싣고 간 템플릿은 허브가 답 없이 받으므로(받았는지도 모른다) 메시지를 보낸 뒤에도 모른다.
    */
   private hubTemplateId: string | null | undefined = undefined;
+  /**
+   * 사용자가 고른 템플릿(activeTemplateId)이 허브에 걸렸는지 아직 모른다 — 턴 중이거나 welcome 전·끊긴 동안
+   * 골랐거나, 보냈지만 허브의 답(chat-template-changed)이나 그 값을 실은 메시지의 turn-start 를 아직 못 봤다.
+   * 다음 사용자 메시지가 싣고 가고, 메시지 없이 턴을 여는 프레임(계획 승인·수정 요청·저장 알림)은 먼저 보낸다.
+   * welcome 은 이 선택을 허브의 값으로 덮지 않는다 — 사이드바의 칩이 이 선택을 보이고 있다.
+   */
+  private templateChoicePending = false;
+  /** 사용자가 템플릿을 고른 횟수 — 메시지가 싣고 간 선택이 그 뒤에 바뀌었는지 가린다. */
+  private templateChoiceSeq = 0;
+  /** turn-start 를 기다리는 메시지가 싣고 간 선택(templateChoiceSeq). 그 턴이 열리면 허브가 그 템플릿을 걸었다. */
+  private templateMessageSeq: number | null = null;
   private chatStartSent = false;
   private pendingChatStart: {
     requestId: string;
@@ -2181,6 +2193,8 @@ export class AgentBridgeImpl implements AgentBridge {
     if (!this.userEditedSincePlanningNotify) return;
     if (!this.activeAgent || this.state !== 'connected') return;
     this.userEditedSincePlanningNotify = false;
+    // 허브는 이 알림으로 다시 구상하는 턴을 연다(쉬는 중이면 곧바로) — 고른 템플릿을 먼저 건다.
+    this.flushTemplateChoice();
     const sent = this.sendJson({
       v: AGENT_PROTOCOL_VERSION,
       type: 'chat-document-saved',
@@ -2398,7 +2412,11 @@ export class AgentBridgeImpl implements AgentBridge {
       console.warn('[AgentBridge] 메시지 처리 오류:', e);
     }
     // welcome 처리의 모든 갈래(일찍 돌아가는 곳 포함)가 끝난 뒤에 푼다 — 사이드바는 그 상태로 채팅을 고른다.
-    if (msg.type === 'welcome') this.resolveHubSessionKnown();
+    if (msg.type === 'welcome') {
+      // welcome 을 기다리며 줄 선 메시지는 어느 갈래로 끝났든 이제 보낸다(시작 요청을 기다리면 그 답이 보낸다).
+      this.flushQueuedMessages();
+      this.resolveHubSessionKnown();
+    }
   }
 
   private handleMessage(msg: any): void {
@@ -2416,17 +2434,24 @@ export class AgentBridgeImpl implements AgentBridge {
         // 엔진이 멈춘 페이지가 멈추지 못한 턴은 새 페이지의 첫 welcome 에서 한 번 멈춘다 (S7).
         this.interruptStaleTurnAfterFirstWelcome(msg.session);
         let session = msg.session;
+        const pendingStart = this.pendingChatStart;
+        /** 이 welcome 전에 이 페이지가 멈춘 세션을 여기서 멈췄다 — 허브가 잃은 턴이 아니다. */
+        let stoppedBeforeWelcome = false;
         if (this.stopBeforeWelcome) {
           this.stopBeforeWelcome = false;
-          if (session) {
-            // 이 페이지가 welcome 전에 멈춘 채팅이다 — 지금 멈추고, 그 세션을 잇지 않는다. 뒤에 줄 선 시작
-            // 요청은 이 멈춤 다음에 나간다.
+          // 멈춘 뒤 같은 채팅을 다시 열었으면(사이드바의 채팅 열기는 멈춤 뒤 같은 채팅의 시작을 보낸다) 멈추지
+          // 않는다 — 아래의 시작 요청 맞추기가 살아 있는 턴을 잇거나(S2) 새로 시작한다.
+          const reopensSameChat = Boolean(session) && Boolean(pendingStart)
+            && typeof session.threadId === 'string' && session.threadId === pendingStart!.threadId;
+          if (session && !reopensSameChat) {
+            // 이 페이지가 welcome 전에 멈춘 채팅이다(초안·다른 채팅으로 옮겨 갔다) — 지금 멈추고, 그 세션을
+            // 잇지 않는다. 뒤에 줄 선 시작 요청은 이 멈춤 다음에 나간다.
             this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-stop' });
             session = null;
+            stoppedBeforeWelcome = true;
           }
         }
         const sessionThreadId = typeof session?.threadId === 'string' ? session.threadId : '';
-        const pendingStart = this.pendingChatStart;
         if (pendingStart) {
           // 붙잡아 둔 시작 요청을 스냅샷과 맞춘다. 같은 채팅의 턴이 허브에서 살아 있으면(새로고침
           // 전 페이지의 턴·질문·계획 승인 대기) 다시 시작하지 않고 그대로 잇는다.
@@ -2454,8 +2479,10 @@ export class AgentBridgeImpl implements AgentBridge {
         // 스레드만 복원된 유휴 상태는 그대로 두고, 살아 있다고 믿던 채팅만 아래에서 정리한다 —
         // 그러지 않으면 turnRunning·편집 잠금이 새 허브가 보내지 않을 turn-end 를 영영 기다린다.
         if (!session && this.threadId && !this.chatLiveLocally()) return;
-        // 스냅샷이 권위 있는 답이다 — 끊기기 전 보낸 메시지의 턴은 status 로 이어진다.
+        // 스냅샷이 권위 있는 답이다 — 끊기기 전 보낸 메시지의 턴은 status 로 이어진다. 그 메시지가 실은 템플릿은
+        // 아래에서 스냅샷의 템플릿과 견준다.
         this.messageAwaitingTurn = false;
+        this.templateMessageSeq = null;
         const wasRunning = this.turnRunning;
         const lostAgent = this.activeAgent ?? this.editingAgent;
         let hubLostTurn = false;
@@ -2479,8 +2506,12 @@ export class AgentBridgeImpl implements AgentBridge {
             : null;
           this.permissionProfile = session.permissionProfile === 'unrestricted' ? 'unrestricted' : 'safe';
           this.serviceTier = session.serviceTier === 'fast' ? 'fast' : 'standard';
-          this.activeTemplateId = typeof session.activeTemplateId === 'string' ? session.activeTemplateId : null;
-          this.hubTemplateId = this.activeTemplateId;
+          const hubTemplateId = typeof session.activeTemplateId === 'string' ? session.activeTemplateId : null;
+          this.hubTemplateId = hubTemplateId;
+          // 허브에 닿지 않은 선택(턴 중·끊긴 동안 고르거나 지운 템플릿)은 허브의 값으로 덮지 않는다 — 다음 메시지나
+          // 턴을 여는 프레임이 싣고 간다. 닿은 선택이면 허브의 값이 권위 있다.
+          if (!this.templateChoicePending) this.activeTemplateId = hubTemplateId;
+          else if (this.activeTemplateId === hubTemplateId) this.templateChoicePending = false;
           this.activeTemplate = this.activeTemplateId
             ? this.templateCatalog.templates.find((template) => template.id === this.activeTemplateId) ?? null
             : null;
@@ -2546,7 +2577,8 @@ export class AgentBridgeImpl implements AgentBridge {
           // 끊긴 사이에 끝난 턴 — 검토 단계가 없던 턴의 체크포인트 기록도 닫는다.
           if (!this.turnRunning) this.endTurnCheckpoint();
         } else {
-          hubLostTurn = wasRunning;
+          // 이 페이지가 멈춘 세션은 허브가 잃은 것이 아니다 — 끊긴 턴 줄·알림을 내지 않는다. 그 턴의 끝은 허브가 보낸다.
+          hubLostTurn = wasRunning && !stoppedBeforeWelcome;
           this.activeAgent = null;
           this.planExecutionTurn = null;
           const droppedQuestion = this.pendingUserQuestion;
@@ -2564,9 +2596,9 @@ export class AgentBridgeImpl implements AgentBridge {
               },
             });
           }
-          this.activeTemplateId = null;
-          this.activeTemplate = null;
+          // 세션과 함께 허브의 템플릿도 사라졌다. 사용자의 선택(사이드바의 칩)은 남기고, 새 세션의 첫 메시지가 싣고 간다.
           this.hubTemplateId = undefined;
+          this.templateChoicePending = true;
           this.turnRunning = false;
           this.activeProviderTurnId = null;
           this.abortActiveToolRequests();
@@ -2676,8 +2708,10 @@ export class AgentBridgeImpl implements AgentBridge {
         const replacedSession = this.pendingChatStart !== null;
         this.pendingChatStart = null;
         this.chatStartSent = false;
-        // chat-started 는 세션의 템플릿을 싣지 않는다 — 다음 선택은 그대로 보낸다.
+        // chat-started 는 세션의 템플릿을 싣지 않는다 — 다음 선택은 그대로 보낸다. 새 세션에는 사용자의 선택이
+        // 아직 걸리지 않았을 수 있다 — 첫 메시지가 싣고 가기 전의 welcome 이 그 선택을 덮지 않게 한다.
         this.hubTemplateId = undefined;
+        this.templateChoicePending = true;
         // 허브가 프로바이더를 새로 띄웠을 수 있다 — 이전 세션이 본 문서 상태는 이 세션의 것이 아니다.
         this.turnSnapshots?.reset();
         if (replacedSession) this.clearPendingQuestionCancellation();
@@ -2858,6 +2892,9 @@ export class AgentBridgeImpl implements AgentBridge {
         this.activeTemplate = readDocumentTemplate(msg.template);
         this.activeTemplateId = this.activeTemplate?.id ?? null;
         this.hubTemplateId = this.activeTemplateId;
+        // 허브의 답이 사이드바의 칩도 바꾼다 — 기다리던 선택은 없다.
+        this.templateChoicePending = false;
+        this.templateMessageSeq = null;
         this.emit({
           type: 'chat-template-changed',
           template: this.activeTemplate,
@@ -3113,8 +3150,9 @@ export class AgentBridgeImpl implements AgentBridge {
         // 거절된 메시지가 실었던 복원 안내는 다시 보낼 수 있게 되살린다. 모아 둔 실패는 아래에서
         // 기다림이 끝났을 때만 내놓는다.
         this.rearmRestoredNotice(typeof msg.messageId === 'string' && msg.messageId ? msg.messageId : null);
-        // 요청 ID 없는 오류는 보낸 메시지의 거절이다 — 턴으로 이어지지 않는다.
+        // 요청 ID 없는 오류는 보낸 메시지의 거절이다 — 턴으로 이어지지 않는다. 그 메시지가 실은 템플릿도 걸리지 않았다.
         this.messageAwaitingTurn = false;
+        this.templateMessageSeq = null;
         if (this.pendingChatStart && msg.session && isAgentName(msg.session.agent)) {
           // Validation/busy rejection leaves the previous provider alive.
           for (const message of this.queuedMessages) message.resolve(null);
@@ -3285,6 +3323,9 @@ export class AgentBridgeImpl implements AgentBridge {
         // 이 턴 뒤의 id 없는 오류는 안내를 실은 메시지의 거절로 보지 않는다.
         if (this.restoredNoticeInFlight) this.restoredNoticeInFlight.sawTurnStart = true;
         this.turnRunning = true;
+        // 보낸 메시지의 턴이 열렸다 — 허브는 그 메시지가 실은 템플릿을 걸었다(그 뒤에 다시 골랐으면 아직 기다린다).
+        if (this.messageAwaitingTurn && this.templateMessageSeq === this.templateChoiceSeq) this.templateChoicePending = false;
+        this.templateMessageSeq = null;
         this.messageAwaitingTurn = false;
         this.activeProviderTurnId = typeof event.turnId === 'string' ? event.turnId : null;
         this.editingAgent = event.agent;
@@ -3672,7 +3713,9 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   stopChat(): void {
-    const waitForAuthoritativeTurnEnd = this.state === 'connected' && this.turnRunning;
+    // welcome 전이면 chat-stop 도 welcome 에서 나가고, 그 세션을 이 페이지가 멈춘 것으로 접는다 — 허브의 turn-end 를
+    // 기다리지 않고 여기서 턴을 닫는다(끊긴 동안의 멈춤과 같다).
+    const waitForAuthoritativeTurnEnd = this.state === 'connected' && !this.awaitingWelcome && this.turnRunning;
     for (const message of this.queuedMessages) message.resolve(null);
     this.queuedMessages = [];
     this.turnSnapshots?.reset();
@@ -3776,9 +3819,10 @@ export class AgentBridgeImpl implements AgentBridge {
       message = { text, skillName, context, messageId, stagedReferenceIds: [...stagedReferenceIds], resolve: settle };
       signal?.addEventListener('abort', cancel, { once: true });
       // 끊긴 소켓에 곧바로 보내면 sendJson 실패로 메시지가 조용히 사라진다 — 재연결이
-      // 살릴 큐에 넣고, flushQueuedMessages 가 연결 뒤에 다시 보낸다.
+      // 살릴 큐에 넣고, flushQueuedMessages 가 연결 뒤에 다시 보낸다. 소켓이 열렸어도 welcome 전이면
+      // 허브에 이 채팅의 세션이 있는지 모른다(다시 뜬 허브는 AGENT_NOT_STARTED 로 거절한다) — welcome 이 보낸다.
       if (this.pendingChatStart || this.workflowSwitchPending || this.activeAgent === null
-        || this.queuedMessages.length > 0 || this.state !== 'connected') {
+        || this.queuedMessages.length > 0 || this.state !== 'connected' || this.awaitingWelcome) {
         this.queuedMessages.push(message);
         this.scheduleBusyCheck();
         if (this.activeAgent === null) {
@@ -3843,6 +3887,10 @@ export class AgentBridgeImpl implements AgentBridge {
     if (sent && built && this.phase !== 'awaiting-approval') this.turnSnapshots.markSent(built);
     if (sent) {
       this.messageAwaitingTurn = true;
+      // 허브는 메시지의 activeTemplateId 를 답 없이 건다(거절한 메시지면 걸지 않는다) — 허브의 값은 모른다.
+      // 다음에 고르는 템플릿은 앞 값과 같아 보여도 보내고, 기다리던 선택은 이 메시지의 턴이 열리면 닿은 것이다.
+      this.hubTemplateId = undefined;
+      this.templateMessageSeq = this.templateChoicePending ? this.templateChoiceSeq : null;
       if (notice) {
         this.restoredNotice = null;
         this.restoredNoticeInFlight = { notice, messageId: message.messageId ?? null, sawTurnStart: false };
@@ -3898,7 +3946,8 @@ export class AgentBridgeImpl implements AgentBridge {
   private flushQueuedMessages(): void {
     if (this.workflowSwitchPending || this.pendingChatStart) return;
     if (this.queuedMessages.length === 0) return;
-    if (this.state !== 'connected') {
+    // 끊겼거나 welcome 전이다 — welcome 이 허브의 세션과 맞춘 뒤 다시 부른다.
+    if (this.state !== 'connected' || this.awaitingWelcome) {
       if (this.activeAgent === null) this.rememberPendingChatStart();
       return;
     }
@@ -4047,10 +4096,31 @@ export class AgentBridgeImpl implements AgentBridge {
     this.activeTemplateId = id;
     this.activeTemplate = id ? (this.templateCatalog.templates.find((item) => item.id === id) ?? null) : null;
     // 허브가 이미 같은 템플릿을 쓰고 있으면 보내지 않는다. 메시지마다 activeTemplateId 도 함께 간다.
-    // 턴이 돌거나 보낸 메시지가 턴을 기다리는 동안에도 보내지 않는다 — 허브는 AGENT_BUSY 로 거절하고,
-    // 다음 메시지가 바뀐 템플릿을 싣고 간다.
-    if (this.activeAgent !== null && id !== this.hubTemplateId && !this.turnRunning && !this.messageAwaitingTurn) {
-      this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-template-set', templateId: id });
+    // 턴이 돌거나 보낸 메시지가 턴을 기다리는 동안에는 보내지 않는다 — 허브는 AGENT_BUSY 로 거절한다.
+    // 그 선택은 남겨 두었다가 다음 메시지나 턴을 여는 프레임 앞에서 보낸다.
+    this.templateChoiceSeq++;
+    this.templateChoicePending = true;
+    this.flushTemplateChoice();
+  }
+
+  /**
+   * 허브에 닿지 않은 템플릿 선택을 지금 보낼 수 있으면 보낸다. 세션이 없으면 새 세션의 첫 메시지가 싣고 가고,
+   * 턴 중·welcome 전·끊긴 동안이면 기다린다. 턴 끝에 혼자 보내지는 않는다 — 허브가 곧바로 연 턴(저장 알림의
+   * 재구상 등)에 닿으면 AGENT_BUSY 오류가 된다.
+   */
+  private flushTemplateChoice(): void {
+    if (!this.templateChoicePending) return;
+    if (this.activeTemplateId === this.hubTemplateId) {
+      this.templateChoicePending = false;
+      return;
+    }
+    if (this.activeAgent === null || this.state !== 'connected' || this.awaitingWelcome
+      || this.turnRunning || this.messageAwaitingTurn) return;
+    // 답(chat-template-changed)이 선택을 확정한다 — 그 전에 소켓이 끊겨 프레임을 잃었으면 welcome 이 선택을 덮지 않고,
+    // 다음 메시지나 턴을 여는 프레임이 다시 싣고 간다. 답 전의 다음 선택도 그대로 보낸다 — 앞 값과 같아 보여도
+    // 허브는 이 값을 건다.
+    if (this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-template-set', templateId: this.activeTemplateId })) {
+      this.hubTemplateId = undefined;
     }
   }
 
@@ -4193,6 +4263,8 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   approvePlan(planId: string, permissionProfile?: PermissionProfile): boolean {
+    // 승인은 메시지 없이 구현 턴을 연다 — 구상 중에 고른 템플릿을 그 턴보다 먼저 건다.
+    this.flushTemplateChoice();
     return this.sendJson({
       v: AGENT_PROTOCOL_VERSION, type: 'chat-plan-approve', planId,
       documentRevision: this.revision.revision,
@@ -4201,6 +4273,7 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   requestPlanChanges(planId: string, feedback?: string): boolean {
+    this.flushTemplateChoice();
     return this.sendJson({
       v: AGENT_PROTOCOL_VERSION,
       type: 'chat-plan-request-changes',

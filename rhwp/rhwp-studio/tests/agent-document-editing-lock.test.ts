@@ -61,7 +61,7 @@ test('bridge owns the lease and retains it until every in-flight tool settles', 
   assert.match(bridge, /this\.activeToolRequests \+= 1;[\s\S]*\.finally\(\(\) => \{[\s\S]*releaseEditingLease\(\)/);
   assert.match(bridge, /cancelActiveToolRequest[\s\S]*request\.controller\.abort\(\);[\s\S]*request\.releaseEditingLease\(\)/);
   assert.match(bridge, /case 'welcome':[\s\S]*this\.turnRunning = session\.status === 'running';[\s\S]*this\.syncEditingLease\(\)/);
-  assert.match(bridge, /stopChat\(\): void[\s\S]*waitForAuthoritativeTurnEnd = this\.state === 'connected' && this\.turnRunning;[\s\S]*if \(!waitForAuthoritativeTurnEnd\) \{[\s\S]*this\.turnRunning = false;[\s\S]*this\.activeProviderTurnId = null;[\s\S]*this\.abortProviderToolRequests\(\);[\s\S]*\}[\s\S]*this\.syncEditingLease\(\)/);
+  assert.match(bridge, /stopChat\(\): void[\s\S]*waitForAuthoritativeTurnEnd = this\.state === 'connected' && !this\.awaitingWelcome && this\.turnRunning;[\s\S]*if \(!waitForAuthoritativeTurnEnd\) \{[\s\S]*this\.turnRunning = false;[\s\S]*this\.activeProviderTurnId = null;[\s\S]*this\.abortProviderToolRequests\(\);[\s\S]*\}[\s\S]*this\.syncEditingLease\(\)/);
   assert.match(bridge, /dispose\(\): void[\s\S]*this\.activeToolRequests = 0;[\s\S]*this\.syncEditingLease\(\)/);
 });
 

@@ -449,3 +449,217 @@ test('trap reload: a running turn of a chat that was not interrupted keeps runni
   assert.deepEqual(plain.socket.frames('chat-interrupt'), [], 'an ordinary reload keeps the running turn');
   plain.bridge.dispose();
 });
+
+// ─── welcome 전후의 허브 동기화 ──────────────────────────────
+// 소켓이 열린 뒤 welcome 이 오기 전에는 허브가 이 채팅의 세션을 가졌는지 모른다. 그 틈의 메시지·멈춤과,
+// 허브가 답 없이 받는 템플릿 선택이 허브의 상태와 어긋나지 않아야 한다.
+
+/** 소켓을 끊고 브리지가 여는 다음 소켓을 돌려준다. */
+async function reconnect(f: Awaited<ReturnType<typeof reloadedBridge>>, from: FakeSocket = f.socket): Promise<FakeSocket> {
+  const count = FakeSocket.instances.length;
+  from.drop();
+  const deadline = Date.now() + 5_000;
+  while (FakeSocket.instances.length === count && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const next = FakeSocket.instances.at(-1)!;
+  assert.notEqual(next, from, '브리지가 다시 연결한다');
+  return next;
+}
+
+const idle = (overrides: Record<string, unknown> = {}) => session({ status: 'idle', turnId: null, phase: 'direct', ...overrides });
+const turnStart = (turnId: string) => ({ type: 'agent-event', event: { type: 'turn-start', agent: 'pi', turnId } });
+const turnEnd = (turnId: string, stopReason = 'end_turn') => ({ type: 'agent-event', event: { type: 'turn-end', agent: 'pi', turnId, stopReason } });
+
+test('a template cleared after a message carried it reaches the hub', async () => {
+  const f = await reloadedBridge();
+  f.socket.open();
+  f.socket.receive({ type: 'welcome', protocol: 5, session: idle() });
+  f.socket.receive(turnStart('t1'));
+  f.bridge.setActiveTemplate('template-1'); // 턴 중 — 허브가 거절하므로 보내지 않는다.
+  assert.deepEqual(f.socket.frames('chat-template-set'), []);
+  f.socket.receive(turnEnd('t1'));
+  void f.bridge.sendUserMessage('표를 정리해 주세요');
+  await settle();
+  // 허브는 메시지가 실은 템플릿을 답 없이 건다.
+  assert.equal(f.socket.frames('chat-user-message')[0]!.activeTemplateId, 'template-1');
+  f.socket.receive(turnStart('t2'));
+  f.socket.receive(turnEnd('t2'));
+  f.bridge.setActiveTemplate(null);
+  assert.deepEqual(
+    f.socket.frames('chat-template-set').map((frame) => frame.templateId),
+    [null],
+    '칩을 지우면 허브의 템플릿도 지운다 — 다음 계획 승인·저장 알림의 턴이 지운 템플릿을 쓰지 않는다',
+  );
+  f.bridge.dispose();
+});
+
+test('a template choice the hub has not confirmed survives a reconnect', async () => {
+  const f = await reloadedBridge();
+  f.socket.open();
+  f.socket.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-1', session: session({ activeTemplateId: 'template-1' }) });
+  await settle();
+  // 턴이 도는 동안 칩을 지웠다 — 허브는 아직 template-1 을 쓴다.
+  f.bridge.setActiveTemplate(null);
+  assert.deepEqual(f.socket.frames('chat-template-set'), []);
+  const next = await reconnect(f);
+  next.open();
+  next.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-1', session: session({ activeTemplateId: 'template-1' }) });
+  await settle();
+  assert.equal(f.bridge.getActiveTemplate(), null, 'the welcome does not bring back the template the user removed');
+  next.receive(turnEnd('turn-live'));
+  void f.bridge.sendUserMessage('다음 요청');
+  await settle();
+  assert.deepEqual(next.frames('chat-user-message').map((frame) => frame.activeTemplateId), [null]);
+
+  // 쉬는 동안 고른 템플릿도 허브의 답 전에 소켓이 끊기면(프레임을 잃었다) 다음 welcome 이 덮지 않는다.
+  next.receive(turnStart('t2'));
+  next.receive(turnEnd('t2'));
+  f.bridge.setActiveTemplate('template-2');
+  assert.deepEqual(next.frames('chat-template-set').map((frame) => frame.templateId), ['template-2']);
+  const third = await reconnect(f, next);
+  third.open();
+  third.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-1', session: idle({ activeTemplateId: null }) });
+  await settle();
+  void f.bridge.sendUserMessage('또 다른 요청');
+  await settle();
+  assert.deepEqual(third.frames('chat-user-message').map((frame) => frame.activeTemplateId), ['template-2']);
+  f.bridge.dispose();
+});
+
+test('the template a lost session used still travels with the next message to the new session', async () => {
+  const f = await reloadedBridge();
+  f.socket.open();
+  f.socket.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-1', session: idle({ activeTemplateId: 'template-1' }) });
+  await settle();
+  // 허브가 다시 떴다 — 세션과 그 템플릿이 사라졌지만 사이드바의 칩은 template-1 을 보인다.
+  const next = await reconnect(f);
+  next.open();
+  next.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-2', session: null });
+  await settle();
+  void f.bridge.sendUserMessage('이어서 해 주세요');
+  await settle();
+  const start = next.frames('chat-start')[0];
+  assert.ok(start, '새 세션을 연다');
+  next.receive({ type: 'chat-started', requestId: start.requestId, agent: 'pi', threadId: THREAD, sessionId: 's2', permissionProfile: 'safe', serviceTier: 'standard', workflow: 'direct', phase: 'direct' });
+  await settle();
+  assert.deepEqual(next.frames('chat-user-message').map((frame) => frame.activeTemplateId), ['template-1']);
+  f.bridge.dispose();
+});
+
+for (const action of ['approve', 'request-changes'] as const) {
+  test(`a template picked during a planning turn is set before the plan ${action === 'approve' ? 'is approved' : 'is sent back'}`, async () => {
+    const f = await reloadedBridge();
+    f.socket.open();
+    f.socket.receive({ type: 'welcome', protocol: 5, session: session({ turnId: 'tp', workflow: 'plan', phase: 'planning' }) });
+    await settle();
+    f.bridge.setActiveTemplate('template-1');
+    f.socket.receive(turnEnd('tp'));
+    // 승인·수정 요청은 메시지 없이 다음 턴을 연다 — 그 턴보다 템플릿이 먼저 허브에 닿아야 한다.
+    if (action === 'approve') f.bridge.approvePlan('plan-1');
+    else f.bridge.requestPlanChanges('plan-1', '표 하나를 더 넣어 주세요');
+    const order = f.socket.sent
+      .filter((frame) => frame.type !== 'chat-start')
+      .map((frame) => frame.type === 'chat-template-set' ? `template:${frame.templateId}` : frame.type);
+    assert.deepEqual(order, ['template:template-1', action === 'approve' ? 'chat-plan-approve' : 'chat-plan-request-changes']);
+    // 허브가 받았다고 답하면 다음 승인은 다시 보내지 않는다.
+    f.socket.receive({ type: 'chat-template-changed', template: {
+      id: 'template-1', name: '보고서', originalName: '보고서.hwpx', format: 'hwpx', size: 1, revision: 1,
+    } });
+    assert.equal(f.bridge.getActiveTemplate()?.id, 'template-1');
+    f.bridge.approvePlan('plan-1');
+    assert.equal(f.socket.frames('chat-template-set').length, 1);
+    f.bridge.dispose();
+  });
+}
+
+test('a stop between the socket opening and the welcome is the user’s stop, not a cut-off turn', async () => {
+  const f = await reloadedBridge();
+  f.socket.open();
+  f.socket.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-1', session: session() });
+  await settle();
+  const next = await reconnect(f);
+  next.open();
+  f.events.length = 0;
+  f.bridge.stopChat(); // 그 틈에 다른 채팅을 열거나 초안을 시작했다.
+  assert.equal(f.bridge.isTurnRunning(), false, '허브가 아직 모르는 멈춤은 여기서 턴을 닫는다');
+  next.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-1', session: session() });
+  await settle();
+  assert.deepEqual(next.sent.map((frame) => frame.type), ['chat-stop']);
+  assert.deepEqual(
+    f.events.filter((event) => event.type === 'agent').map((event) => event.event),
+    [],
+    'no agent-exit turn-end for the user’s own stop',
+  );
+  // 허브가 세션을 내리며 보내는 진짜 끝 하나만 사이드바에 닿는다.
+  next.receive(turnEnd('turn-live', 'interrupted'));
+  await settle();
+  const ends = f.events.filter((event) => event.type === 'agent' && event.event.type === 'turn-end');
+  assert.equal(ends.length, 1);
+  assert.equal(ends[0]!.event.interruption, undefined);
+  f.bridge.dispose();
+});
+
+test('a message sent after the socket reopens waits for the welcome of a restarted hub and opens a new session', async () => {
+  const f = await reloadedBridge();
+  f.socket.open();
+  f.socket.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-1', session: idle() });
+  await settle();
+  // 사용 한도 리셋 뒤 다시 보내기 같은 연결 복구 계기는 connection(connected) 를 듣는다 — welcome 보다 먼저 온다.
+  let sendOnConnect = true;
+  let receipt: Promise<string | null> | null = null;
+  f.bridge.onEvent((event) => {
+    if (event.type === 'connection' && event.state === 'connected' && sendOnConnect) {
+      sendOnConnect = false;
+      receipt = f.bridge.sendUserMessage('다시 보낼 요청', undefined, [], true);
+    }
+  });
+  const next = await reconnect(f);
+  next.open();
+  assert.ok(receipt, '연결 복구 계기가 보냈다');
+  assert.deepEqual(next.frames('chat-user-message'), [], 'nothing goes to the hub before its welcome');
+  assert.equal(f.bridge.isBusy(), true, 'the waiting message keeps the chat busy');
+  next.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-2', session: null });
+  await settle();
+  assert.deepEqual(next.frames('chat-user-message'), [], 'the restarted hub has no session for it yet');
+  const start = next.frames('chat-start')[0];
+  assert.ok(start, 'the message opens a new session');
+  assert.equal(start.threadId, THREAD);
+  next.receive({ type: 'chat-started', requestId: start.requestId, agent: 'pi', threadId: THREAD, sessionId: 's2', permissionProfile: 'safe', serviceTier: 'standard', workflow: 'direct', phase: 'direct' });
+  await settle();
+  const sent = next.frames('chat-user-message');
+  assert.deepEqual(sent.map((frame) => frame.text), ['다시 보낼 요청']);
+  assert.equal(await receipt, sent[0]!.messageId, 'the sender learns its message went out');
+  f.bridge.dispose();
+});
+
+test('a message sent after the socket reopens goes to the same hub right after its welcome', async () => {
+  const f = await reloadedBridge();
+  f.socket.open();
+  f.socket.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-1', session: idle() });
+  await settle();
+  const next = await reconnect(f);
+  next.open();
+  const receipt = f.bridge.sendUserMessage('다음 요청', undefined, [], true);
+  assert.deepEqual(next.frames('chat-user-message'), []);
+  next.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-1', session: idle() });
+  await settle();
+  assert.deepEqual(next.frames('chat-start'), [], 'the live session takes it');
+  assert.deepEqual(next.frames('chat-user-message').map((frame) => frame.text), ['다음 요청']);
+  assert.ok(await receipt);
+  f.bridge.dispose();
+});
+
+test('reload: the sidebar reopening the live chat before a late welcome adopts its turn', async () => {
+  const f = await reloadedBridge();
+  // 시작 채팅 고르기가 welcome 을 기다리다 시간이 다 됐거나 사용자가 먼저 그 채팅을 열었다 — 채팅 열기는 멈춘 뒤 시작한다.
+  f.bridge.stopChat();
+  f.bridge.startChat('pi', 'mock-model', '', true, 'safe', 'direct', THREAD, 'doc-1', '문서.hwpx', []);
+  f.socket.open();
+  f.socket.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-1', session: session({ pendingUserQuestion: question() }) });
+  await settle();
+  assert.deepEqual(f.socket.sent.map((frame) => frame.type), [], 'neither chat-stop nor chat-start kills the running turn');
+  assert.equal(f.bridge.isTurnRunning(), true);
+  assert.equal(f.bridge.getPendingUserQuestion()?.interactionId, 'question-1', 'its question stays open');
+  f.bridge.dispose();
+});

@@ -422,7 +422,8 @@ test('a turn the hub ends while shutting down is a hub restart, not a provider f
   assert.equal(events.find((e) => e.type === 'agent' && e.event.type === 'turn-end')?.event.interruption, undefined);
 });
 
-test('a chat stopped before the hub answers is stopped at the welcome, not re-adopted', () => {
+/** 새로고침 직후 welcome 전에 사이드바가 채팅을 멈추고(채팅 열기·초안) 다음 채팅을 고른 뒤, 허브의 welcome 이 t1 의 턴이 돈다고 답한다. */
+function stoppedBeforeWelcome(nextThreadId: string | null) {
   const { bridge, events } = welcomeFixture({ turnRunning: false, activeAgent: null });
   const frames: any[] = [];
   Object.assign(bridge, {
@@ -432,18 +433,39 @@ test('a chat stopped before the hub answers is stopped at the welcome, not re-ad
     serviceTier: 'standard',
     sendJson(frame: any) { frames.push(frame); return true; },
   });
-  // 새로고침 직후 welcome 전 — 편집기가 그 채팅을 멈추고 같은 채팅을 새로 연다(엔진 복구 뒤 문서 전환 등).
   bridge.stopChat();
   assert.deepEqual(frames, [], 'nothing reaches the hub before its welcome');
-  bridge.pendingChatStart = { requestId: 'chat-start-1', agent: 'claude', threadId: 't1', documentId: 'doc-1', history: [] };
+  if (nextThreadId) {
+    bridge.pendingChatStart = { requestId: 'chat-start-1', agent: 'claude', threadId: nextThreadId, documentId: 'doc-1', history: [] };
+  }
   events.length = 0;
   bridge.handleMessage({
     type: 'welcome', hubInstanceId: 'hub-a',
     session: { agent: 'claude', threadId: 't1', status: 'running', turnId: 'turn-9' },
   });
-  assert.deepEqual(frames.map((frame) => frame.type), ['chat-stop', 'chat-start'], 'the stop goes first, then the new start');
-  assert.equal(bridge.isTurnRunning(), false, 'the stopped turn is not adopted');
-  assert.ok(!events.some((event) => event.type === 'chat-started'), 'no chat-started for the stopped session');
+  return { bridge, events, frames: frames.map((frame) => frame.type) };
+}
+
+test('a chat stopped and reopened before the hub answers adopts its running turn at the welcome', () => {
+  // 사이드바의 채팅 열기는 늦은 welcome 전이면 멈춘 뒤 같은 채팅의 시작을 보낸다 — 돌던 턴과 질문을 죽이지 않는다(S2).
+  const { bridge, events, frames } = stoppedBeforeWelcome('t1');
+  assert.deepEqual(frames, [], 'neither a stop nor a restart reaches the hub');
+  assert.equal(bridge.isTurnRunning(), true, 'the running turn is adopted');
+  assert.equal(bridge.getHubChat()?.threadId, 't1');
+  assert.ok(events.some((event) => event.type === 'chat-started' && event.threadId === 't1'));
+  assert.ok(!events.some((event) => event.type === 'agent' && event.event.type === 'turn-end'), 'no cut-off turn-end');
+});
+
+test('a chat stopped before the hub answers for another chat or a draft is stopped at the welcome', () => {
+  const other = stoppedBeforeWelcome('t2');
+  assert.deepEqual(other.frames, ['chat-stop', 'chat-start'], 'the stop goes first, then the new start');
+  assert.equal(other.bridge.isTurnRunning(), false, 'the stopped turn is not adopted');
+  assert.ok(!other.events.some((event) => event.type === 'chat-started'), 'no chat-started for the stopped session');
+
+  const draft = stoppedBeforeWelcome(null);
+  assert.deepEqual(draft.frames, ['chat-stop']);
+  assert.equal(draft.bridge.isTurnRunning(), false);
+  assert.equal(draft.bridge.getHubChat(), null);
 });
 
 test('a stop with an open welcome goes out at once', () => {
