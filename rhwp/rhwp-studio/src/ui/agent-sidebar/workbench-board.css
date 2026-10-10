@@ -213,3 +213,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) { .ag-workbench-board .ag-pboard-col-toggle svg { transition: none; } }
+
+/* 카드를 옮길 때 뜨는 확인 알림은 화면에 띄우지 않고 화면 읽기 프로그램에만 남긴다. 실패 알림은 그대로 보인다. */
+.ag-workbench-board .ag-project-status:not(.ag-error) {
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  box-shadow: none;
+  clip-path: inset(50%);
+}
