@@ -91,3 +91,52 @@ test('traffic checks retain one owned tab, stop agent retries, and permit explic
   const lookalike = await browser.request(agent, 'open', { url: 'https://google.com.example.org/sorry/index' });
   assert.equal(lookalike.ok, true); assert.equal(lookalike.tab.challenge, null);
 });
+
+test('a retained native challenge keeps its original search fallback after hub restoration', async (t) => {
+  if (!(await inspectOwnedBrowserRuntime()).installed) { t.skip('Install pinned managed Chromium for browser challenge coverage.'); return; }
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-browser-challenge-restart-'));
+  let retainedRuntime;
+  let retainedPage;
+  const nativeAdapter = { bind: async () => {}, control: async () => {} };
+  const runtimeFactory = async (options) => {
+    if (!retainedRuntime) {
+      retainedRuntime = await startOwnedBrowserRuntime({ ...options, nativeAdapter: undefined });
+      const newPage = retainedRuntime.context.newPage.bind(retainedRuntime.context);
+      retainedRuntime.context.newPage = async () => {
+        const page = await newPage();
+        const goto = page.goto.bind(page);
+        page.goto = (url, settings) => goto(url.startsWith('https://www.google.com/search?') ? 'https://www.google.com/sorry/index' : url, settings);
+        await page.route('https://**/*', (route) => route.fulfill({ contentType: 'text/html', body: '<title>Traffic check</title><h1>Human verification</h1>' }));
+        return page;
+      };
+    }
+    // Model Electron retaining its guest while the hub's CDP service disconnects.
+    return { ...retainedRuntime, kind: 'native', close: async () => {} };
+  };
+  const settings = { dataDir, autoInstall: false, nativeAdapter, runtimeFactory };
+  const first = createOwnedBrowserService(settings);
+  const agent = { threadId: 'research', agentId: 'researcher', sessionId: 'editor' };
+  const query = '한국어 query & <literal> + research';
+  const blocked = await first.request(agent, 'open', { url: `https://www.google.com/search?q=${encodeURIComponent(query)}` });
+  retainedPage = retainedRuntime.context.pages().find(page => page.url().includes('/sorry/index'));
+  assert.ok(retainedPage);
+  await first.close();
+  const savedFile = path.join(dataDir, 'browser', 'tabs.json');
+  const saved = JSON.parse(await fs.readFile(savedFile, 'utf8'));
+  const record = saved.tabs.find(tab => tab.tabId === blocked.tab.tabId);
+  assert.equal(record.searchQuery, query);
+  record.challenge.fallback.url = 'https://untrusted.example/redirect';
+  await fs.writeFile(savedFile, JSON.stringify(saved));
+  const second = createOwnedBrowserService(settings);
+  t.after(async () => { await second.close(); await retainedRuntime.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  await second.restore();
+  await second.request(agent, 'open', {}); // Start the new service and adopt the surviving native target.
+  const restored = (await second.inventory(agent)).tabs.find(tab => tab.tabId === blocked.tab.tabId);
+  assert.equal(restored.nativeTargetId, blocked.tab.nativeTargetId);
+  assert.equal(restored.challenge.fallback.url, blocked.tab.challenge.fallback.url);
+  assert.equal(new URL(restored.challenge.fallback.url).searchParams.get('q'), query);
+  assert.equal(retainedRuntime.context.pages().find(page => page.url().includes('/sorry/index')), retainedPage);
+  const retry = await second.request(agent, 'open', { url: 'https://www.google.com/search?q=another+query' });
+  assert.equal(retry.tab.tabId, blocked.tab.tabId);
+  assert.equal(retry.tab.challenge.fallback.url, blocked.tab.challenge.fallback.url);
+});
