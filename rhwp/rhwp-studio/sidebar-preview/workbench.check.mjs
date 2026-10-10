@@ -283,6 +283,8 @@ export async function checkWorkbench({ page, origin, screenshot }) {
     return tab === document.activeElement && a.left >= b.left - 2 && a.right <= b.right + 2;
   });
   const lastResource = await page.$eval('.ag-workbench-tabs [role="tab"][aria-selected="true"]', node => node.dataset.resourceId);
+  // End 로 연 탭을 보이게 맞추는 프레임이 끝난 뒤에 손으로 스크롤한다.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.evaluate(() => { document.querySelector('.ag-workbench-tabs').scrollLeft = 0; });
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await page.$eval('.ag-workbench-tabs', node => node.scrollLeft), 0,

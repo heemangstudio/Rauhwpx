@@ -71,7 +71,8 @@ try {
     // 오른쪽 칸 단추가 빈 칸의 작업 목록을 열고, 거기서 보드를 고른다.
     await page.click('.ag-workspace-panel-btn');
     await page.waitForSelector('.ag-workbench-launcher:not([hidden])', { visible: true });
-    await page.click('.ag-workbench-launcher-item[data-view="board"]');
+    // 칸이 열리며 움직이는 동안에도 다시 찾아 누르도록 locator를 쓴다.
+    await page.locator('.ag-workbench-launcher-item[data-view="board"]').click();
     const card = `.ag-workbench-board .ag-pcard[data-item="${seed.itemId}"]`;
     await page.waitForSelector(card, { visible: true }).catch(async error => { throw new Error(`Board card missing: ${await railState()}`, { cause: error }); });
     await page.focus(card);

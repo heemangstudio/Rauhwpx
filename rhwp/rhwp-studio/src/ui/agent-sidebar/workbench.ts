@@ -127,13 +127,17 @@ export function createSidebarWorkbench(deps: {
     order.splice(Math.max(0, Math.min(to, order.length)), 0, key);
     paintTabs();
   }
+  /** 마지막으로 보이게 맞춘 탭. 같은 탭이면 다시 그리거나 크기가 바뀌어도 사용자가 옮긴 스크롤을 지킨다. */
+  let revealedKey: string | null = null;
   function revealActive(): void {
     if (stripFrame !== null) cancelAnimationFrame(stripFrame);
     stripFrame = requestAnimationFrame(() => {
       stripFrame = null;
       if (disposed) return;
-      const tab = tabRows.get(activeKey() ?? '')?.row;
+      const key = activeKey();
+      const tab = key === revealedKey ? null : tabRows.get(key ?? '')?.row;
       if (tab && !head.hidden) {
+        revealedKey = key;
         const rect = tab.getBoundingClientRect();
         const frame = strip.getBoundingClientRect();
         if (rect.left < frame.left) strip.scrollLeft += rect.left - frame.left;
@@ -443,7 +447,7 @@ export function createSidebarWorkbench(deps: {
       deps.mount(view, panel);
     }
     if (view && options?.recordTab !== false && !opened.includes(view)) opened.push(view);
-    if (!view) closingFocusedResource = null;
+    if (!view) { closingFocusedResource = null; revealedKey = null; }
     open = view !== null;
     selected = view;
     title.textContent = views.find((entry) => entry.id === view)?.title ?? '';
