@@ -1692,8 +1692,12 @@ export function documentGroupKey(thread: Pick<ChatThread, 'documentId' | 'docKey
   return thread.documentId ? `id:${thread.documentId}` : `name:${thread.docKey ?? ''}`;
 }
 
+/** 채팅 하나의 복사본. 그 채팅만 복제한다 — 다른 채팅까지 깊이 복제하지 않는다. */
 export function getThread(id: string): ChatThread | null {
-  return loadAll().find((t) => t.id === id) ?? null;
+  if (!idbAvailable()) return readLegacyThreads().find((t) => t.id === id) ?? null;
+  if (!hydrated) void hydrateFromIndexedDb();
+  const thread = cache.get(id);
+  return thread ? cloneThread(thread) : null;
 }
 
 /**

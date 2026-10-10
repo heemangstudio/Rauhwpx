@@ -163,3 +163,80 @@ test('thread writes after hydration keep evicted chats gone and still sync acros
     await server.close();
   }
 });
+
+test('reading one chat copies only that chat, so it costs the same however many large chats are stored', { timeout: 120_000 }, async () => {
+  const root = resolve(import.meta.dirname, '..');
+  const server = await createServer({
+    root,
+    configFile: false,
+    server: { host: '127.0.0.1', port: 0, open: false, hmr: false },
+    optimizeDeps: { entries: [HARNESS.slice(1)] },
+    logLevel: 'error',
+  });
+  await server.listen();
+  const browser = await puppeteer.launch({ executablePath: browserExecutable(), headless: true, args: browserLaunchArgs() });
+  try {
+    const origin = `http://127.0.0.1:${(server.httpServer!.address() as { port: number }).port}`;
+    const page = await browser.newPage();
+    await page.goto(`${origin}${HARNESS}`);
+    await page.evaluate(async () => {
+      localStorage.clear();
+      await new Promise<void>((done, fail) => {
+        const request = indexedDB.deleteDatabase('rhwpAgentThreads');
+        request.onsuccess = () => done();
+        request.onerror = () => fail(request.error);
+      });
+    });
+    await openStore(page, origin);
+    const timings = await page.evaluate(async (max) => {
+      const { threads } = window as any;
+      /** 도구 기록이 든 턴 40개 — 채팅 하나가 수백 KB 다. */
+      const large = (label: string) => {
+        const thread = threads.createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'medium' });
+        thread.title = label;
+        for (let turn = 0; turn < 40; turn += 1) {
+          thread.messages.push({ role: 'user', text: `요청 ${turn} ${'u'.repeat(200)}` });
+          thread.messages.push({
+            role: 'assistant', kind: 'activity', activityId: `a${turn}`, status: 'completed', startedAt: 1, completedAt: 2, text: '',
+            tools: Array.from({ length: 8 }, (_, call) => ({
+              callId: `c${turn}-${call}`, tool: 'mcp__rhwp__apply_edits', status: 'completed', elapsedMs: 10,
+              argsJson: JSON.stringify({ edits: [{ text: 'x'.repeat(500) }] }), resultPreview: 'ok '.repeat(100),
+            })),
+          });
+          thread.messages.push({ role: 'assistant', text: `완료 ${turn} ${'a'.repeat(1500)}` });
+        }
+        return thread;
+      };
+      const read = (id: string) => {
+        let best = Infinity;
+        for (let run = 0; run < 5; run += 1) {
+          const started = performance.now();
+          const thread = threads.getThread(id);
+          best = Math.min(best, performance.now() - started);
+          if (thread?.messages.length !== 120) throw new Error('getThread lost the chat');
+        }
+        return best;
+      };
+      const target = large('target');
+      threads.upsertThread(target);
+      await threads.waitForThreadsPersistence();
+      const alone = read(target.id);
+      for (let i = 1; i < max; i += 1) threads.upsertThread(large(`other ${i}`));
+      await threads.waitForThreadsPersistence();
+      const crowded = read(target.id);
+      // 돌려준 복사본을 고쳐도 저장된 채팅은 그대로다.
+      const copy = threads.getThread(target.id);
+      copy.messages.length = 0;
+      copy.title = 'changed';
+      const again = threads.getThread(target.id);
+      return { alone, crowded, stored: threads.listThreads().length, isolated: again.title === 'target' && again.messages.length === 120 };
+    }, MAX_THREADS);
+    assert.equal(timings.stored, MAX_THREADS);
+    assert.equal(timings.isolated, true, 'getThread returns a copy');
+    assert.ok(timings.crowded <= timings.alone * 4 + 15,
+      `getThread took ${timings.crowded.toFixed(1)} ms with ${MAX_THREADS} chats vs ${timings.alone.toFixed(1)} ms alone`);
+  } finally {
+    await browser.close();
+    await server.close();
+  }
+});
