@@ -5683,6 +5683,16 @@ button.ag-skill-copy {
   color: var(--ag-text);
 }
 
+/* 미뤄 둔 첫 실행 설정 칩 — 문체 칩과 같은 모양에 픽셀 하마(1배, 닫은 입) 하나. */
+.ag-setup-chip-hippo {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 20px;
+  margin-left: -4px;
+  background: url('/images/boot/hama-sprites.png') 0 0 / 104px 20px no-repeat;
+  image-rendering: pixelated;
+}
+
 /* 재연결 칩 — 문체 칩과 같은 자리. 닫기 없이, 로그인이 돌아오면 스스로 걷힌다. */
 .ag-reconnect-chip {
   padding: 2px;

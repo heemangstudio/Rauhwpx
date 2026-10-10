@@ -159,5 +159,15 @@
       "beat": "final"
     }
   ],
-  "durationMs": 2700
+  "durationMs": 2700,
+  "sprites": {
+    "cellWidth": 26,
+    "cellHeight": 20,
+    "poses": [
+      "closed",
+      "talk",
+      "open",
+      "blink"
+    ]
+  }
 }

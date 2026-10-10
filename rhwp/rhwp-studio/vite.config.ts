@@ -207,7 +207,7 @@ export default defineConfig({
       workbox: {
         // WASM (~12 MB) is kept out of precache to avoid blocking SW installation;
         // CacheFirst at runtime still gives offline access after the first load.
-        globPatterns: ['**/*.{js,css,html,png,svg,ico,woff,woff2,ttf,otf}'],
+        globPatterns: ['**/*.{js,css,html,png,gif,svg,ico,woff,woff2,ttf,otf}'],
         maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
         runtimeCaching: [
           {

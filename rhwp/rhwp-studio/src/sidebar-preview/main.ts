@@ -8,7 +8,7 @@ import { createMockBridge, scenarios, type Scenario } from './mock-bridge.ts';
 import { createMockVersions } from './mock-versions.ts';
 import { showToast } from '../ui/toast.ts';
 import { userSettings } from '../core/user-settings.ts';
-import { completeInitialSetup } from '../ui/initial-setup/state.ts';
+import { completeInitialSetup, saveInitialSetup } from '../ui/initial-setup/state.ts';
 import { listThreads, getThread, waitForThreadsPersistence } from '../agent/threads.ts';
 import { normalizeSettingsDestination } from '../ui/agent-sidebar/settings-contract.ts';
 import { mountAuditNavigator } from './audit-scenarios.ts';
@@ -36,7 +36,9 @@ const versions = createMockVersions(report, params.get('history') === 'branches'
 let documentId: string | null = 'preview-proposal';
 let documentName: string | null = '사업 제안서.hwpx';
 
-if (!params.has('initial-setup'))
+if (params.get('initial-setup') === 'deferred')
+  saveInitialSetup({ completed: false, deferred: true });
+else if (!params.has('initial-setup'))
   completeInitialSetup({
     providerStep: 'configured',
     calibrationStep: 'skipped',

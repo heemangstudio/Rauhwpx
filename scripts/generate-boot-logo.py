@@ -11,6 +11,9 @@ Outputs in rhwp/assets/logo/boot/:
   hama-boot-{dark,light}@4x.gif      4x, same timing
   hama-boot-{dark,light}-still.png   final frame (reduced motion), 1x and @4x
   hama-boot-timeline.json            frame timing and canvas size
+  hama-sprites.png                   setup-screen poses (see SPRITE_POSES), 1x
+
+The 1x GIFs, stills and sprites are also copied to rhwp-studio/public/images/boot/.
 
 Usage: python3 scripts/generate-boot-logo.py [--preview DIR]
   --preview DIR also writes looping 6x previews on the app canvas colour.
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -28,6 +32,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 MASTER = ROOT / "rhwp" / "assets" / "logo" / "hamaeditor-master.png"
 OUT_DIR = ROOT / "rhwp" / "assets" / "logo" / "boot"
+STUDIO_BOOT = ROOT / "rhwp" / "rhwp-studio" / "public" / "images" / "boot"
 
 # ---------------------------------------------------------------- palette
 HIPPO = {
@@ -369,6 +374,27 @@ def verify_icon_pose() -> None:
                 sys.exit(f"OPEN pose differs from the app icon at ({c}, {r + 6}): {got} != {want}")
 
 
+# Order is the contract with rhwp-studio/src/ui/initial-setup/hippo.ts.
+SPRITE_POSES = ("closed", "talk", "open", "blink")
+SPRITE_COLS = (5, 31)  # columns any pose uses
+
+
+def write_sprites(dest: Path) -> tuple[int, int]:
+    poses = {"closed": CLOSED, "talk": HALF, "open": OPEN, "blink": BLINK}
+    x0, x1 = SPRITE_COLS
+    cell_w, cell_h = x1 - x0, len(OPEN)
+    sheet = Image.new("RGBA", (cell_w * len(SPRITE_POSES), cell_h))
+    for i, name in enumerate(SPRITE_POSES):
+        rows = poses[name]
+        assert all(set(row[:x0] + row[x1:]) <= {"."} for row in rows), name
+        for r, row in enumerate(rows):
+            for c, ch in enumerate(row[x0:x1]):
+                if ch != ".":
+                    sheet.putpixel((i * cell_w + c, r), HIPPO[ch] + (255,))
+    sheet.save(dest, optimize=True)
+    return cell_w, cell_h
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--preview", type=Path, help="also write looping 6x previews here")
@@ -395,7 +421,14 @@ def main() -> None:
             "frames": [{"ms": ms, "beat": beat} for _, ms, beat in frames],
             "durationMs": sum(ms for _, ms, _ in frames),
         }
+    meta["sprites"] = dict(zip(("cellWidth", "cellHeight"), write_sprites(OUT_DIR / "hama-sprites.png")))
+    meta["sprites"]["poses"] = list(SPRITE_POSES)
     (OUT_DIR / "hama-boot-timeline.json").write_text(json.dumps(meta, indent=2) + "\n")
+    STUDIO_BOOT.mkdir(parents=True, exist_ok=True)
+    for name in THEMES:
+        for file in (f"hama-boot-{name}.gif", f"hama-boot-{name}-still.png"):
+            shutil.copyfile(OUT_DIR / file, STUDIO_BOOT / file)
+    shutil.copyfile(OUT_DIR / "hama-sprites.png", STUDIO_BOOT / "hama-sprites.png")
     print(f"{meta['width']}x{meta['height']} px, {len(meta['frames'])} frames, "
           f"{meta['durationMs']} ms -> {OUT_DIR.relative_to(ROOT)}")
 
