@@ -278,3 +278,37 @@ test('2.0.11 files merge once per profile state even while its storage waits or 
   const marker = JSON.parse(await fs.readFile(path.join(target, 'rebrand-import.json'), 'utf8'));
   assert.deepEqual(marker.documentIdAliases, { 'doc-2011': 'doc-2010' }, 'later launches reuse the merged aliases');
 });
+
+test('a slow 2.0.11 check never holds the first window past its budget', async (t) => {
+  const root = await tempDir(t, 'budget');
+  const source = path.join(root, 'HamaEditor');
+  const target = path.join(root, 'Rauhwpx');
+  await fs.mkdir(target, { recursive: true });
+  await write(path.join(source, 'IndexedDB', 'hamaeditor_app_0.indexeddb.leveldb', '000005.ldb'), 'threads');
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  let wroteAfterBudget = false;
+  const controller = createRebrandImportController({
+    BrowserWindow: function BrowserWindow() { throw new Error('unused'); },
+    session: { fromPath: () => { throw new Error('unused'); } },
+    userDataDir: target,
+    rebrandedDir: source,
+    tempDir: path.join(root, 'temp'),
+    preloadPath: path.join(root, 'unused.cjs'),
+    prepareBudgetMs: 50,
+    inUse: async () => false,
+    importFiles: async ({ shouldContinue }) => {
+      await sleep(400);
+      if (shouldContinue()) wroteAfterBudget = true;
+      return { documentIdAliases: {}, results: {} };
+    },
+    log: { log() {}, warn() {} },
+  });
+
+  const started = Date.now();
+  await controller.prepare();
+  assert.ok(Date.now() - started < 300, `startup waited ${Date.now() - started} ms`);
+  assert.equal(await controller.take(), null);
+  await sleep(600);
+  assert.equal(wroteAfterBudget, false, 'the late merge stops before writing');
+  await assert.rejects(fs.stat(path.join(target, 'rebrand-import.json')), { code: 'ENOENT' });
+});

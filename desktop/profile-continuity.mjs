@@ -190,6 +190,7 @@ export async function mergeNativeBookmarks({
   targetDir,
   platform = process.platform,
   write = (file, bytes) => writeNativeFileAtomically(file, bytes),
+  shouldContinue = () => true,
 }) {
   const incoming = parseBookmarks(await readBookmarkState(path.join(sourceDir, NATIVE_BOOKMARK_FILE)).catch(() => null));
   const documentIdAliases = {};
@@ -219,6 +220,7 @@ export async function mergeNativeBookmarks({
     added += 1;
   }
   if (added > 0) {
+    assertContinuing(shouldContinue);
     await write(targetFile, Buffer.from(JSON.stringify(merged), 'utf8'));
   }
   return { added, documentIdAliases };
@@ -243,15 +245,34 @@ async function copyIfMissing(sourceFile, targetFile) {
  * 2.0.11 encrypted them with a different Keychain item, so they cannot be
  * moved without the user unlocking it.
  */
-export async function importRebrandedProfileFiles({ sourceDir, targetDir, platform = process.platform, write }) {
+function assertContinuing(shouldContinue) {
+  if (!shouldContinue()) {
+    throw Object.assign(new Error('2.0.11 file merge stopped for this launch'), { code: 'REBRAND_IMPORT_DEFERRED' });
+  }
+}
+
+/**
+ * `shouldContinue` is checked before every write, so a merge that ran past the
+ * startup budget stops before touching files the app has already loaded. Every
+ * step is idempotent, so the next launch simply runs it again.
+ */
+export async function importRebrandedProfileFiles({
+  sourceDir,
+  targetDir,
+  platform = process.platform,
+  write,
+  shouldContinue = () => true,
+}) {
   const results = {};
-  const bookmarks = await mergeNativeBookmarks({ sourceDir, targetDir, platform, write });
+  const bookmarks = await mergeNativeBookmarks({ sourceDir, targetDir, platform, write, shouldContinue });
   results.bookmarks = bookmarks.added;
+  assertContinuing(shouldContinue);
   // Keeps the install counted once when someone installed 2.0.11 first.
   results.uniqueInstall = await copyIfMissing(
     path.join(sourceDir, UNIQUE_INSTALL_FILE),
     path.join(targetDir, UNIQUE_INSTALL_FILE),
   );
+  assertContinuing(shouldContinue);
   results.agentInstructions = (await mergeAgentInstructions(
     path.join(sourceDir, 'agent-instructions'),
     path.join(targetDir, 'agent-instructions'),

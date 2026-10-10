@@ -13,6 +13,8 @@ import { REBRANDED_STUDIO_SCHEME, STUDIO_HOST } from './studio-protocol.mjs';
 
 /** Covers the storage copy, the hidden window and the dump. Startup never waits longer. */
 export const REBRAND_EXPORT_TIMEOUT_MS = 20_000;
+/** Planning and the file merge before the first window. */
+export const REBRAND_PREPARE_BUDGET_MS = 5_000;
 
 const EXPORT_PAGE = '<!doctype html><meta charset="utf-8"><title>import</title>';
 
@@ -113,6 +115,7 @@ export function createRebrandImportController({
   importFiles = importRebrandedProfileFiles,
   writeMarker = writeRebrandImportMarker,
   inUse,
+  prepareBudgetMs = REBRAND_PREPARE_BUDGET_MS,
 }) {
   let pending = Promise.resolve(null);
   let marker = {};
@@ -123,31 +126,62 @@ export function createRebrandImportController({
     await writeMarker(userDataDir, marker);
   }
 
+  /**
+   * Runs before the first window. Planning and the file merge get `prepareBudgetMs`;
+   * past that the window opens and this launch's import is dropped, to be retried
+   * on the next launch. The storage export then continues in the background.
+   */
   async function prepare() {
-    await removeStaleSnapshots(tempDir);
-    const plan = await planRebrandImport({ userDataDir, rebrandedDir, platform, inUse });
-    if (!plan) return;
-    marker = plan.marker;
-    if (plan.busy) log.warn?.('[hamaeditor] 2.0.11 is running; its chats and drafts import on a later launch');
-    let documentIdAliases = marker.documentIdAliases ?? {};
-    if (plan.importFiles) {
-      try {
-        const imported = await importFiles({ sourceDir: rebrandedDir, targetDir: userDataDir, platform });
-        documentIdAliases = imported.documentIdAliases;
-        await record({
-          filesImportedFor: plan.filesKey,
-          filesImportedAt: new Date().toISOString(),
-          documentIdAliases,
-        });
-        log.log?.('[hamaeditor] imported 2.0.11 profile files:', JSON.stringify(imported.results));
-      } catch (error) {
-        // Without the merged bookmarks, chats for files both versions opened would attach
-        // to the wrong document. Leave the storage for a launch where the files merge.
-        log.warn?.('[hamaeditor] 2.0.11 profile file import failed; storage import waits:', error);
-        return;
+    let late = false;
+    const work = (async () => {
+      await removeStaleSnapshots(tempDir);
+      const plan = await planRebrandImport({ userDataDir, rebrandedDir, platform, inUse });
+      if (!plan || late) return;
+      marker = plan.marker;
+      if (plan.busy) log.warn?.('[hamaeditor] 2.0.11 is running; its chats and drafts import on a later launch');
+      let documentIdAliases = marker.documentIdAliases ?? {};
+      if (plan.importFiles) {
+        try {
+          const imported = await importFiles({
+            sourceDir: rebrandedDir,
+            targetDir: userDataDir,
+            platform,
+            shouldContinue: () => !late,
+          });
+          if (late) return;
+          documentIdAliases = imported.documentIdAliases;
+          await record({
+            filesImportedFor: plan.filesKey,
+            filesImportedAt: new Date().toISOString(),
+            documentIdAliases,
+          });
+          log.log?.('[hamaeditor] imported 2.0.11 profile files:', JSON.stringify(imported.results));
+        } catch (error) {
+          // Without the merged bookmarks, chats for files both versions opened would attach
+          // to the wrong document. Leave the storage for a launch where the files merge.
+          if (!late) log.warn?.('[hamaeditor] 2.0.11 profile file import failed; storage import waits:', error);
+          return;
+        }
       }
+      if (!plan.exportStorage || late) return;
+      startExport(plan, documentIdAliases);
+    })();
+    let timer;
+    const budget = new Promise((resolve) => {
+      timer = setTimeout(() => resolve('late'), prepareBudgetMs);
+    });
+    try {
+      if (await Promise.race([work.then(() => 'done'), budget]) === 'late') {
+        late = true;
+        work.catch(() => {});
+        log.warn?.('[hamaeditor] 2.0.11 import preparation is slow; it runs again on the next launch');
+      }
+    } finally {
+      clearTimeout(timer);
     }
-    if (!plan.exportStorage) return;
+  }
+
+  function startExport(plan, documentIdAliases) {
     const attempts = marker.storageAttempts?.fingerprint === plan.fingerprint
       ? marker.storageAttempts.count ?? 0
       : 0;
