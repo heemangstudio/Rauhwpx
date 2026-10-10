@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { app, BrowserWindow, WebContentsView, session } from 'electron';
+import { app, BrowserWindow, WebContentsView, nativeImage, session } from 'electron';
 import { OwnedBrowserHost } from '../../desktop/browser-host.mjs';
 import { NativeBrowserPasswords } from '../../desktop/browser-passwords.mjs';
 import { createIpcNativeBrowserAdapter, createOwnedBrowserService } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
@@ -124,6 +124,51 @@ try {
   const opened = await service.request(actor, 'open', { url: 'http://zoom-fixture.invalid/' });
   const serviceTab = host.tab(opened.tab.tabId);
   host.attach(owner, { tabId: serviceTab.tabId, bounds, mode: 'float', interactive: true });
+  report.frozenStage = 'setup';
+  await serviceTab.view.webContents.executeJavaScript(`(() => {
+    window.frozenClicks=0;window.frozenWheels=0;
+    const topButton=document.createElement('button');topButton.id='frozen-top';topButton.textContent='Top target';topButton.style.cssText='position:absolute;left:40px;top:40px;width:100px;height:60px';topButton.onclick=()=>window.frozenClicks++;document.body.append(topButton);
+    const space=document.createElement('div');space.style.height='5000px';document.body.append(space);
+    const bottom=document.createElement('button');bottom.id='frozen-bottom';bottom.textContent='Original native bottom';bottom.style.cssText='width:200px;height:70px;background:green';document.body.append(bottom);
+    addEventListener('wheel',()=>window.frozenWheels++);
+  })()`);
+  const freezeIdentity = { tabId: opened.tab.tabId, navigationEpoch: opened.tab.navigationEpoch, controllerEpoch: opened.tab.controllerEpoch, runtimeGeneration: opened.tab.runtimeGeneration };
+  // Renderer의 캡처 단계와 같이 게스트는 붙이고 물리적 사이트 입력만 차단한다.
+  host.attach(owner, { tabId: serviceTab.tabId, bounds, mode: 'float', interactive: false });
+  report.frozenStage = 'capture';
+  const { frozen } = await service.request(actor, 'freeze', freezeIdentity);
+  report.frozenStage = 'captured';
+  const frozenSize = nativeImage.createFromBuffer(Buffer.from(frozen.frame.data, 'base64')).getSize();
+  assert.ok(Math.abs(frozenSize.width - frozen.frame.width * frozen.frame.deviceScaleFactor) <= 1);
+  assert.ok(Math.abs(frozenSize.height - frozen.frame.height * frozen.frame.deviceScaleFactor) <= 1);
+  assert.ok(frozenSize.height > 4000, 'Native compositor must capture pixels beyond its viewport');
+  const frozenBottom = frozen.elements.find(element => element.text === 'Original native bottom');
+  assert.ok(frozenBottom.rect.y > 5000);
+  serviceTab.view.webContents.sendInputEvent({ type: 'mouseDown', x: 90, y: 70, button: 'left', clickCount: 1 });
+  serviceTab.view.webContents.sendInputEvent({ type: 'mouseUp', x: 90, y: 70, button: 'left', clickCount: 1 });
+  await serviceTab.view.webContents.executeJavaScript(`document.querySelector('#frozen-bottom').textContent='Changed native bottom';document.querySelector('#frozen-bottom').style.background='red'`);
+  host.detach(owner, { tabId: serviceTab.tabId });
+  report.frozenStage = 'save';
+  const savedFrozen = (await service.request(actor, 'capture', { ...freezeIdentity, freezeId: frozen.freezeId, mode: 'element', elementId: frozenBottom.elementId })).capture;
+  assert.equal(savedFrozen.element.text, 'Original native bottom');
+  assert.equal(savedFrozen.screenshot.data, frozen.frame.data);
+  assert.deepEqual(await serviceTab.view.webContents.executeJavaScript('({clicks:window.frozenClicks,wheels:window.frozenWheels,scroll:scrollY})'), { clicks: 0, wheels: 0, scroll: 0 });
+  await service.request(actor, 'release-freeze', { tabId: serviceTab.tabId, freezeId: frozen.freezeId });
+  host.attach(owner, { tabId: serviceTab.tabId, bounds, mode: 'float', interactive: true });
+  assert.equal(serviceTab.interactive, true);
+  report.frozenCapture = { fullPage: true, dimensions: frozenSize, immutable: true, physicalClickBlocked: true, guestRestored: true };
+  for (const factor of [.9, 1.25]) {
+    host.zoom(owner, { tabId: serviceTab.tabId, factor });
+    const freshTab = (await service.inventory(actor)).tabs.find(row => row.tabId === serviceTab.tabId);
+    host.attach(owner, { tabId: serviceTab.tabId, bounds, mode: 'float', interactive: false });
+    const { frozen: zoomedFrozen } = await service.request(actor, 'freeze', { ...freezeIdentity, controllerEpoch: freshTab.controllerEpoch });
+    const pixels = nativeImage.createFromBuffer(Buffer.from(zoomedFrozen.frame.data, 'base64')).getSize();
+    assert.ok(Math.abs(pixels.width - zoomedFrozen.frame.width / factor) <= 2);
+    assert.ok(Math.abs(pixels.height - zoomedFrozen.frame.height / factor) <= zoomedFrozen.frame.height * .002, JSON.stringify({factor,pixels,width:zoomedFrozen.frame.width,height:zoomedFrozen.frame.height,pixelScale:zoomedFrozen.frame.deviceScaleFactor}));
+    assert.ok(pixels.width * pixels.height <= 12_000_000);
+    await service.request(actor, 'release-freeze', { tabId: serviceTab.tabId, freezeId: zoomedFrozen.freezeId });
+    host.attach(owner, { tabId: serviceTab.tabId, bounds, mode: 'float', interactive: true });
+  }
   const observation = await service.request(actor, 'snapshot', { tabId: serviceTab.tabId });
   const captured = await service.request(actor, 'frame', { tabId: serviceTab.tabId });
   for (const stale of [{ generation: 'obsolete' }, { targetId: 'foreign-target' }]) {
@@ -154,7 +199,7 @@ try {
   await service.close(); service = null;
   assert.equal(ipcEvents.listenerCount('message'), 0);
   report.geometry = { snapshotsInvalidated: true, framesInvalidated: true, credentialRefsInvalidated: true, staleEventsRejected: true, navigationPreserved: true, listenerDisposed: true };
-} catch (error) { report.error = error.stack ?? String(error); }
+} catch (error) { report.error = `${report.frozenStage ?? 'zoom'}: ${error.stack ?? String(error)}`; }
 finally {
   await service?.close().catch(() => {});
   await host?.dispose().catch(() => {});

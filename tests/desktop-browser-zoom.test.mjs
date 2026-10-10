@@ -43,5 +43,9 @@ test('native page zoom changes DOM scale while retaining form state and editor o
     assert.equal(report.geometry.snapshotsInvalidated, true);
     assert.equal(report.geometry.staleEventsRejected, true);
     assert.equal(report.geometry.listenerDisposed, true);
+    assert.equal(report.frozenCapture.fullPage, true);
+    assert.equal(report.frozenCapture.immutable, true);
+    assert.equal(report.frozenCapture.physicalClickBlocked, true);
+    assert.equal(report.frozenCapture.guestRestored, true);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

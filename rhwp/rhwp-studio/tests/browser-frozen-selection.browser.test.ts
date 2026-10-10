@@ -35,6 +35,7 @@ test('캡처한 긴 페이지를 스크롤해 개체를 고르고 원본 픽셀�
         calls.push({ action, args });
         if (action === 'status') return { tabs: [tab] };
         if (action === 'freeze') {
+          if (attached !== tab.tabId || calls.filter(call => call.action === 'attach').at(-1)?.args.interactive !== false) throw new Error('Native freeze requires an attached compositor with website input blocked');
           if (hold) await new Promise<void>(resolve => { resolveFreeze = resolve; });
           frozen = { freezeId: `freeze-${++sequence}`, expiresAt: Date.now() + 300_000, source: { url: tab.url, title: tab.title, timestamp: new Date().toISOString() }, viewport: { width: 640, height: 500, deviceScaleFactor: 2, scrollX: 0, scrollY: 0 }, elements: [structuredClone(element)],
             frame: { frameId: `frozen-${sequence}`, tabId: tab.tabId, navigationEpoch: 1, controllerEpoch: 1, mimeType: 'image/png', data: canvas.toDataURL('image/png').split(',')[1], width: 640, height: 3500, deviceScaleFactor: 1, scrollX: 0, scrollY: 0 } };
@@ -75,7 +76,8 @@ test('캡처한 긴 페이지를 스크롤해 개체를 고르고 원본 픽셀�
     await page.waitForFunction(() => (window as any).frozenTest.attached === 'tab');
     await page.evaluate(() => (window as any).frozenTest.hold());
     await page.click('[aria-label="페이지·개체·영역에 의견 붙이기"]');
-    await page.waitForFunction(() => (window as any).frozenTest.attached === null);
+    await page.waitForFunction(() => (window as any).frozenTest.calls.filter((call: any) => call.action === 'attach').at(-1)?.args.interactive === false);
+    assert.equal(await page.evaluate(() => (window as any).frozenTest.attached), 'tab', 'capture keeps the compositor attached until frozen pixels arrive');
     await page.keyboard.press('Escape'); await page.evaluate(() => (window as any).frozenTest.release());
     await page.waitForFunction(() => (window as any).frozenTest.calls.filter((call: any) => call.action === 'release-freeze').length === 2);
     await page.waitForFunction(() => (window as any).frozenTest.attached === 'tab');

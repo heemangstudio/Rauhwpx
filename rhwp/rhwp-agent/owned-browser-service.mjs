@@ -684,12 +684,13 @@ export function createOwnedBrowserService(options = {}) {
     for (const [tabId, frozen] of frozenPages) if (frozen.clientId === actor.clientId) releaseFrozen(tabs.get(tabId) ?? { tabId });
     const lifetime = { navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, geometryEpoch: tab.geometryEpoch, generation, targetId: tab.nativeTargetId };
     const nativeLifetime = await assertFrozenImageAllowed(tab);
+    const pixelScale = runtime.kind === 'native' ? 1 / (nativeLifetime?.zoomFactor ?? tab.zoomFactor ?? 1) : 1;
     // 문서 좌표와 내용은 한 번만 읽는다. 입력값이나 비공개 필드의 상위 요소도 복사하지 않는다.
-    const observed = await tab.page.evaluate(({ privateSelector }) => {
+    const observed = await tab.page.evaluate(({ privateSelector, pixelScale }) => {
       const root = document.documentElement;
       const width = Math.max(innerWidth, root.scrollWidth, document.body?.scrollWidth ?? 0);
       const height = Math.max(innerHeight, root.scrollHeight, document.body?.scrollHeight ?? 0);
-      if (width > 4096 || height > 32768 || width * height > 12_000_000) return { tooLarge: true };
+      if (width > 4096 || height > 32768 || Math.ceil(width * pixelScale) > 4096 || Math.ceil(height * pixelScale) > 32768 || Math.ceil(width * pixelScale) * Math.ceil(height * pixelScale) > 12_000_000) return { tooLarge: true };
       const candidates = document.querySelectorAll('body *');
       const elements = [];
       const semantic = 'a,button,input,textarea,select,summary,h1,h2,h3,h4,h5,h6,p,li,td,th,img,svg,canvas,pre,blockquote,figure,[role],[aria-label]';
@@ -710,10 +711,11 @@ export function createOwnedBrowserService(options = {}) {
         elements.push({ elementId: `f${elements.length + 1}`, tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || '', name: String(containsPrivate ? content : el.getAttribute('aria-label') || el.getAttribute('alt') || content).slice(0, 500), text: content, rect, depth });
       }
       return { width, height, viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY }, elements };
-    }, { privateSelector: FROZEN_PRIVATE });
+    }, { privateSelector: FROZEN_PRIVATE, pixelScale });
     if (observed.tooLarge) throw error('BROWSER_FROZEN_PAGE_TOO_LARGE', 'This page is too long or wide to freeze. Open a shorter page to annotate.');
     if (!observed.tooLarge && !observed.tooManyElements && Buffer.byteLength(JSON.stringify(observed.elements), 'utf8') > 2 * 1024 * 1024) throw error('BROWSER_FROZEN_PAGE_TOO_COMPLEX', 'This page has too much content to freeze. Open a simpler page to annotate.');
     if (observed.tooManyElements) throw error('BROWSER_FROZEN_PAGE_TOO_COMPLEX', 'This page has too many elements to freeze. Open a simpler page to annotate.');
+    // Electron의 사이트 배율은 CSS 캡처의 래스터 비율에도 반영된다. 좌표는 문서 CSS 단위를 유지한다.
     const bytes = await tab.page.screenshot({ type: 'jpeg', quality: 75, scale: 'css', fullPage: true, animations: 'disabled',
       clip: { x: 0, y: 0, width: observed.width, height: observed.height },
       mask: tab.page.frames().map(frame => frame.locator(FROZEN_PRIVATE)), maskColor: '#333333', timeout: 10_000 });
@@ -724,7 +726,7 @@ export function createOwnedBrowserService(options = {}) {
     if (closed || resetting || tabs.get(tab.tabId) !== tab || !tab.page || tab.page.isClosed() || lifetime.navigationEpoch !== tab.navigationEpoch || lifetime.controllerEpoch !== tab.controllerEpoch || lifetime.geometryEpoch !== tab.geometryEpoch || lifetime.generation !== generation || lifetime.targetId !== tab.nativeTargetId) throw error('BROWSER_STALE_FREEZE', 'The page changed while freezing. Freeze the page again.', true);
     const freezeId = id('freeze'), timestamp = new Date().toISOString(), expiresAt = Date.now() + FROZEN_TTL;
     const result = { freezeId, expiresAt, source: { url: publicURL(tab.page.url()), title: tab.title, timestamp }, viewport: observed.viewport,
-      frame: { frameId: freezeId, tabId: tab.tabId, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, mimeType: 'image/jpeg', data: bytes.toString('base64'), width: observed.width, height: observed.height, deviceScaleFactor: 1, scrollX: 0, scrollY: 0 }, elements: observed.elements };
+      frame: { frameId: freezeId, tabId: tab.tabId, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, mimeType: 'image/jpeg', data: bytes.toString('base64'), width: observed.width, height: observed.height, deviceScaleFactor: pixelScale, scrollX: 0, scrollY: 0 }, elements: observed.elements };
     const timer = setTimeout(() => releaseFrozen(tab), FROZEN_TTL); timer.unref?.();
     frozenPages.set(tab.tabId, { ...result, ...lifetime, nativeLifetime, clientId: actor.clientId, sessionId: actor.sessionId, tabSessionId: tab.sessionId, timer });
     return result;
