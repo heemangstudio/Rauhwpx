@@ -197,6 +197,63 @@ function sortAndTrim(rows: RecentDoc[]): RecentDoc[] {
  * 핸들이 structured clone 불가(DataCloneError 등)한 환경이면 핸들을 떼고 메타-only
  * 로 재시도한다 — 기록 자체는 남긴다.
  */
+/** 다른 창에 알리는 최근 문서 변경. 빠진 기록 ID, 전체 삭제, 추가, 이름·표시 수정. */
+export interface RecentDocsChange {
+  removed?: string[];
+  cleared?: boolean;
+  changed?: boolean;
+  /** 이름이 바뀌었거나 못 찾음 표시가 달라진 기록. 받는 창은 다시 읽지 않고 그 자리에서 고친다. */
+  updated?: { id: string; fileName: string; missingSince?: number }[];
+}
+
+const CHANNEL_NAME = 'rhwp-recent-docs';
+let recentChannel: BroadcastChannel | null | undefined;
+
+/** 같은 출처의 창끼리 쓰는 통로. 이 창이 보낸 알림은 이 창으로 돌아오지 않는다. */
+function channel(): BroadcastChannel | null {
+  if (recentChannel === undefined) {
+    // Node 테스트에서는 열린 통로가 프로세스를 붙잡으므로 창에서만 연다.
+    recentChannel = typeof window === 'undefined' || typeof BroadcastChannel === 'undefined'
+      ? null
+      : new BroadcastChannel(CHANNEL_NAME);
+    recentChannel?.addEventListener('message', (event: MessageEvent<RecentDocsChange>) => {
+      // 다른 창이 지운 기록은 이 창의 기억에서도 뺀다.
+      if (event.data?.cleared) { memory.clear(); liveHandles.clear(); }
+      for (const id of event.data?.removed ?? []) { memory.delete(id); liveHandles.delete(id); }
+      for (const patch of event.data?.updated ?? []) {
+        const row = memory.get(patch.id);
+        if (!row) continue;
+        const next: RecentDoc = { ...row, fileName: patch.fileName };
+        if (patch.missingSince === undefined) delete next.missingSince;
+        else next.missingSince = patch.missingSince;
+        memory.set(patch.id, next);
+      }
+    });
+  }
+  return recentChannel;
+}
+
+function announce(change: RecentDocsChange): void {
+  try { channel()?.postMessage(change); } catch { /* 창이 닫히는 중이면 알리지 않는다. */ }
+}
+
+function announceUpdate(row: RecentDoc): void {
+  announce({ updated: [{
+    id: row.id,
+    fileName: row.fileName,
+    ...(row.missingSince !== undefined ? { missingSince: row.missingSince } : {}),
+  }] });
+}
+
+/** 다른 창에서 최근 문서가 바뀌면 부른다. 해제 함수를 돌려준다. */
+export function subscribeRecentDocs(listener: (change: RecentDocsChange) => void): () => void {
+  const target = channel();
+  if (!target) return () => {};
+  const handle = (event: MessageEvent<RecentDocsChange>) => { if (event.data) listener(event.data); };
+  target.addEventListener('message', handle);
+  return () => target.removeEventListener('message', handle);
+}
+
 export async function addRecentDoc(input: RecentDocInput): Promise<RecentDoc> {
   if (!input.sourceDigest) {
     throw new Error('sourceDigest is required for recent document identity');
@@ -227,18 +284,24 @@ export async function addRecentDoc(input: RecentDocInput): Promise<RecentDoc> {
         await putRow(db, metaOnly);
         stored = metaOnly;
       }
+      const removed: string[] = [];
       for (const duplicate of matches.slice(1)) {
         if (duplicate.id !== stored.id) {
           liveHandles.delete(duplicate.id);
           await deleteRow(db, duplicate.id);
+          removed.push(duplicate.id);
         }
       }
       const after = sortAndTrim(await getAllRows(db));
       const keep = new Set(after.map((r) => r.id));
       pruneLiveHandles(keep);
       for (const row of await getAllRows(db)) {
-        if (!keep.has(row.id)) await deleteRow(db, row.id);
+        if (!keep.has(row.id)) {
+          await deleteRow(db, row.id);
+          removed.push(row.id);
+        }
       }
+      announce({ changed: true, ...(removed.length ? { removed } : {}) });
       return withLiveHandle({ ...stored, ...(entry.handle ? { handle: entry.handle } : {}) });
     },
     async () => {
@@ -299,6 +362,7 @@ export async function updateRecentDoc(
       const next = row ? apply(row) : null;
       if (next) store.put(persistableRow(next));
       await withTimeout(transactionDone(tx), 800, 'recent-update');
+      if (next) announceUpdate(next);
       return next ? withLiveHandle(next) : null;
     },
     async () => {
@@ -306,6 +370,7 @@ export async function updateRecentDoc(
       if (!row) return null;
       const next = apply(row);
       memory.set(id, next);
+      announceUpdate(next);
       return withLiveHandle(next);
     },
   );
@@ -319,6 +384,7 @@ export async function removeRecentDoc(id: string): Promise<void> {
     async (db) => deleteRow(db, id),
     async () => {},
   );
+  announce({ removed: [id] });
 }
 
 /** 최근 문서 목록 전체 삭제. */
@@ -333,4 +399,5 @@ export async function clearRecentDocs(): Promise<void> {
     },
     async () => {},
   );
+  announce({ cleared: true });
 }

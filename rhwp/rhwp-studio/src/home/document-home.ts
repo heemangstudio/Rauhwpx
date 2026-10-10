@@ -7,7 +7,7 @@
  * 그 뒤에 보이는 카드부터 채운다.
  */
 import type { DocumentTemplate } from '../agent/types.ts';
-import type { RecentDoc } from '../recent/recent-store.ts';
+import { subscribeRecentDocs, type RecentDoc } from '../recent/recent-store.ts';
 import { beginInlineRename } from '../ui/inline-rename.ts';
 import { createBranchIcon, createWorktreeChip, paintWorktreeChip } from '../ui/worktree-chip.ts';
 import {
@@ -1066,6 +1066,54 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   }
 
   renderTemplates();
+
+  // 다른 창에서 빠진 문서는 이 창의 홈에서도 바로 빠지고, 새로 연 문서는 다시 읽어 보인다.
+  let syncReload: number | null = null;
+  subscribeRecentDocs((change) => {
+    if (change.cleared) {
+      rows = [];
+      documents = [];
+      expanded = null;
+      if (visible) renderRecent();
+      return;
+    }
+    const removed = new Set((change.removed ?? []).filter((id) => rows.some((row) => row.id === id)));
+    if (removed.size) {
+      if (visible) drop(removed);
+      else {
+        rows = rows.filter((row) => !removed.has(row.id));
+        documents = documents.filter((doc) => !removed.has(doc.recentId));
+      }
+    }
+    // 이름·못 찾음 표시는 그 자리에서 고친다. 다시 읽으면 파일 확인이 창끼리 오갈 수 있다.
+    if (change.updated?.length) {
+      let touched = false;
+      for (const patch of change.updated) {
+        const row = rows.find((entry) => entry.id === patch.id);
+        if (!row) continue;
+        touched = true;
+        row.fileName = patch.fileName;
+        if (patch.missingSince === undefined) {
+          delete row.missingSince;
+          if (flagged.get(row.id) === '찾을 수 없음') flagged.delete(row.id);
+        } else {
+          row.missingSince = patch.missingSince;
+          flagged.set(row.id, '찾을 수 없음');
+        }
+        documents = documents.map((doc) => doc.recentId === row.id ? { ...doc, fileName: patch.fileName } : doc);
+      }
+      if (touched) {
+        documents = sortHomeDocuments(documents, prefs.sort);
+        if (visible) renderRecent();
+      }
+    }
+    if (change.changed && visible && syncReload === null) {
+      syncReload = window.setTimeout(() => {
+        syncReload = null;
+        if (visible) void load();
+      }, 250);
+    }
+  });
 
   return {
     element: root,
