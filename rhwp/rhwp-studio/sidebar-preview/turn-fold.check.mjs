@@ -184,8 +184,9 @@ try {
     assert.deepEqual(await folds(), []);
     assert.equal(await page.$$eval('.ag-messages > .ag-turn-fold', (rows) => rows.length), 0, '숨은 자리표시도 남지 않는다');
     assert.equal(await page.$eval('.ag-messages > .ag-progress-step .ag-activity-toggle', (node) => node.checkVisibility()), true);
-    assert.equal(await page.evaluate(() => [...document.querySelectorAll('.ag-messages > .ag-msg-system')]
-      .some((node) => node.textContent.includes('네트워크 연결을 확인하세요') && node.checkVisibility())), true);
+    // 실패는 접힘 밖, 흐름에 알림 하나로 남는다(U5).
+    assert.equal(await page.evaluate(() => [...document.querySelectorAll('.ag-messages > .ag-failure-notice')]
+      .filter((node) => node.checkVisibility()).length), 1);
   });
 
   await step('(e) 정착한 서브에이전트 카드는 접히고, 백그라운드로 도는 카드는 도크에 남는다', async () => {

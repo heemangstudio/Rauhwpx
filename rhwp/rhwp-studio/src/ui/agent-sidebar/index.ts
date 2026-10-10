@@ -810,6 +810,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let openFold: { threadId: string; markerId: string } | null = null;
   /** 이번 턴에 'error' 이벤트를 받았는가 — 턴 결과를 실패로 본다. */
   let turnErrorSeen = false;
+  /** 마지막 turn-end 의 결과 — 바로 뒤에 오는 실패 알림(turn-failure)이 대기열을 붙잡을지 가른다. */
+  let lastTurnEndOutcome: TurnOutcome | null = null;
   /** 화면의 접힘 줄 — 표식 id 로 찾는다. 대화를 다시 그리면 같은 턴의 새 줄로 바뀐다. */
   const turnFoldRows = new Map<string, TurnFoldRow>();
   let followConversation = true;
@@ -8457,7 +8459,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         streamBubble = null;
         // 턴을 결과와 함께 정착하고 그 작업을 접는다. 새로고침으로 시작을 놓친 턴은 그 표식에 잇는다.
         if (!openFold) adoptUnsettledTurnFold();
-        settleOpenTurnFold(turnOutcomeFor(event, { errorSeen: turnErrorSeen }));
+        lastTurnEndOutcome = turnOutcomeFor(event, { errorSeen: turnErrorSeen });
+        settleOpenTurnFold(lastTurnEndOutcome);
         // 턴의 도구·작업 기록은 턴 끝에서 바로 남긴다.
         flushTranscriptPersist();
         // 대기 메시지: 정상 종료면 맨 앞 하나를 보내고, 미심쩍은 끝이면 붙잡는다. 같은 errorSeen 을 읽은 뒤 비운다.
@@ -8561,8 +8564,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           userInitiated: e.userInitiated === true,
           wroteDocument: e.wroteDocument === true,
         });
-        // 이 채팅의 턴이 실패했다 — 대기열을 그 이유와 함께 붙잡는다(턴 끝의 붙잡음에 설명을 더한다).
-        if (e.origin === 'turn' && (turnOwnerThreadId === null || turnOwnerThreadId === currentThread.id)) {
+        // 이 채팅의 턴이 실패로 끝났다 — 대기열을 그 이유와 함께 붙잡는다(턴 끝의 붙잡음에 설명을 더한다).
+        // 사용자가 멈춘 턴은 대기열의 '멈춤' 그대로 둔다(알림만 왜 아무것도 못 했는지 말한다).
+        if (e.origin === 'turn' && lastTurnEndOutcome === 'failed'
+          && (turnOwnerThreadId === null || turnOwnerThreadId === currentThread.id)) {
           const hold = failureNotices.queueHold(notice);
           followUps.hold(hold.reason, hold.detail);
         }

@@ -384,7 +384,7 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
      * 이 대기열을 움직이지 않는다.
      */
     turnEnded(
-      event: { stopReason?: unknown; errorMessage?: unknown },
+      event: { stopReason?: unknown; errorMessage?: unknown; failure?: unknown },
       ownerIsCurrent: boolean,
       interruptionReason?: string | null,
     ): void {

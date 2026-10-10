@@ -9,7 +9,7 @@
  * 이 모듈은 상태 전이만 담은 순수 함수다. 같은 입력에는 같은 새 값을 돌려주고 받은 값을
  * 고치지 않는다. node 테스트가 바로 읽도록 상대 경로만 들여온다.
  */
-import { turnOutcomeFor } from './turn-outcome.ts';
+import { turnOutcomeFor, type TurnEndFacts } from './turn-outcome.ts';
 import type { ProductSkillIcon } from './types.ts';
 
 /** 한 채팅에 쌓아 둘 수 있는 대기 메시지 수. */
@@ -233,7 +233,7 @@ export interface FollowUpTurnEndContext {
  * 모르는 이유 포함)은 completed. 편집 검토용 turnEndDisposition 과는 다르다.
  */
 export function followUpTurnOutcome(
-  event: { stopReason?: unknown; errorMessage?: unknown },
+  event: TurnEndFacts,
   ctx: FollowUpTurnEndContext,
 ): FollowUpTurnOutcome {
   if (ctx.sendNowId !== null) return 'send-now';

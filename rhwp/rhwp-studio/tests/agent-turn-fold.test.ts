@@ -311,4 +311,8 @@ test('턴 결과: 사용자 중단과 바깥이 끊은 턴은 중단, 오류·�
   assert.equal(turnOutcomeFor({ stopReason: 'end_turn' }, { errorSeen: true }), 'failed');
   assert.equal(turnOutcomeFor({ stopReason: 'max_tokens' }, { errorSeen: false }), 'completed');
   assert.equal(turnOutcomeFor({ stopReason: 'completed' }), 'completed');
+  // 허브가 분류한 실패(U5)가 실린 턴은 문구가 없어도 실패다. 사용자 중단은 그대로 중단이다.
+  const failure = { class: 'usage_limit', agent: 'claude', message: '한도', code: null, retryable: false, resetAt: null };
+  assert.equal(turnOutcomeFor({ stopReason: 'max_tokens', failure }, { errorSeen: false }), 'failed');
+  assert.equal(turnOutcomeFor({ stopReason: 'interrupted', failure }, { errorSeen: false }), 'interrupted');
 });

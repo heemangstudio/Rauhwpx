@@ -19,6 +19,8 @@ export function isTurnOutcome(value: unknown): value is TurnOutcome {
 export interface TurnEndFacts {
   stopReason?: unknown;
   errorMessage?: unknown;
+  /** 허브가 분류한 이 턴의 실패(U5) — 실패한 턴에만 실린다. */
+  failure?: unknown;
 }
 
 export interface TurnOutcomeContext {
@@ -34,6 +36,7 @@ export interface TurnOutcomeContext {
 export function turnOutcomeFor(event: TurnEndFacts, ctx: TurnOutcomeContext = { errorSeen: false }): TurnOutcome {
   if (typeof ctx.interruptionReason === 'string' && ctx.interruptionReason.length > 0) return 'interrupted';
   if (event.stopReason === 'interrupted') return 'interrupted';
-  if (event.errorMessage || ctx.errorSeen || event.stopReason === 'failed' || event.stopReason === 'exited') return 'failed';
+  if (event.errorMessage || event.failure || ctx.errorSeen
+    || event.stopReason === 'failed' || event.stopReason === 'exited') return 'failed';
   return 'completed';
 }

@@ -75,6 +75,11 @@ export async function checkFailureNotices(page, origin, artifacts) {
     const systemLines = await page.$$eval('.ag-msg-system:not(.ag-failure-notice)', (nodes) => nodes.map((node) => node.textContent));
     assert.deepEqual(systemLines.filter((text) => /Invalid API key|stream disconnected|Overloaded|ENOENT|오류 \(/.test(text)), [],
       `${kind}: the provider text is not repeated as a system line`);
+    // 실패한 턴은 접히지 않고, 알림은 언제나 흐름에 남는다(접힘 안으로 들어가지 않는다).
+    assert.deepEqual(await page.evaluate(() => ({
+      folds: document.querySelectorAll('.ag-messages > .ag-turn-fold:not([hidden])').length,
+      noticeInFold: Boolean(document.querySelector('.ag-failure-notice')?.closest('.ag-turn-fold')),
+    })), { folds: 0, noticeInFold: false }, `${kind}: a failed turn does not fold`);
     if (kind === 'cleanup') assert.equal(shown[0].line, '앱을 다시 시작한 뒤 계속해 주세요.');
     if (kind === 'usage') assert.match(shown[0].line ?? '', /^리셋 /, 'usage resolves the reset time from the quota report');
     await shot(page, artifacts, kind);
