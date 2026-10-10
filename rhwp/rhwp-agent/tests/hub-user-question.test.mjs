@@ -157,9 +157,35 @@ async function startHub(t, { fakePi = false, controlledCompletion = false, backe
   if (backendFixture) {
     const backendUrl = new URL(`../agents/${backendFixture.agent}.mjs`, import.meta.url).href;
     const source = backendFixture.source({ workRoot, completePi });
+    const cliSetupUrl = new URL('../cli-setup-manager.mjs', import.meta.url).href;
+    const cliSetupRoot = path.join(workRoot, 'cli-setup');
+    mkdirSync(cliSetupRoot);
+    // 대체한 제공자도 실제 로그인 검사를 거친다. 사용자 로그인 대신 격리한 테스트 키를 쓴다.
+    writeFileSync(path.join(cliSetupRoot, 'config.json'), JSON.stringify({ claude: { useLocalLogin: false } }));
+    if (backendFixture.agent !== 'pi' && backendFixture.authenticated !== false) {
+      writeFileSync(path.join(cliSetupRoot, 'secrets.json'), JSON.stringify({
+        [`rhwp.${backendFixture.agent}.api-key`]: 'permission-fixture-api-key',
+      }));
+    }
+    const isolatedSetupSource = `
+      export * from ${JSON.stringify(`${cliSetupUrl}?permission-fixture-real`)};
+      import { createCliSetupManager as createRealManager } from ${JSON.stringify(`${cliSetupUrl}?permission-fixture-real`)};
+      export function createCliSetupManager(options) {
+        return createRealManager({
+          ...options,
+          rootDir: ${JSON.stringify(cliSetupRoot)},
+          homeDir: ${JSON.stringify(path.join(workRoot, 'cli-home'))},
+          baseEnv: { PATH: process.env.PATH },
+          secretStore: null,
+          readClaudeLogin: async () => null,
+          verifyClaude: async () => 'valid',
+        });
+      }
+    `;
     writeFileSync(path.join(workRoot, 'permission-loader.mjs'), `
       export async function load(url, context, nextLoad) {
         if (url === ${JSON.stringify(backendUrl)}) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(source)} };
+        if (url === ${JSON.stringify(cliSetupUrl)}) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(isolatedSetupSource)} };
         return nextLoad(url, context);
       }
     `);
@@ -380,6 +406,35 @@ test('failed and interrupted permission reconfiguration restores native authorit
   assert.deepEqual(effectiveGrants(), [], 'an interrupted adapter cannot retain the rejected native grant');
 });
 
+test('signed-out legacy provider cannot dispatch a permission request turn', { timeout: 20_000 }, async (t) => {
+  const { port } = await startHub(t, {
+    backendFixture: {
+      agent: 'claude',
+      authenticated: false,
+      source: () => `
+        export function prepareClaudeHome() { return []; }
+        export function flushClaudeCredentialMirrors() { return true; }
+        export function createClaudeSession() {
+          return {
+            getSessionId() { return 'signed-out-permission-fixture'; },
+            dispose() { return true; },
+            sendUserMessage() { throw new Error('A signed-out provider must not receive the prompt'); },
+          };
+        }
+      `,
+    },
+  });
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=signed-out-permission&instance=signed-out-page`);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  await studio.next((frame) => frame.type === 'agent-setup-status' && frame.statuses?.claude?.authenticated === false);
+  sendFrame(studio, { type: 'chat-start', agent: 'claude', threadId: 'signed-out-thread', documentId: 'signed-out-doc' });
+  const started = await studio.next((frame) => frame.type === 'chat-started');
+  sendFrame(studio, { type: 'chat-user-message', text: 'Request a download permission.', threadId: started.threadId, documentId: started.documentId });
+  const denied = await studio.next((frame) => frame.type === 'chat-error');
+  assert.equal(denied.code, 'AGENT_AUTH_REQUIRED');
+});
+
 test('permission requests require one provider-stream root ticket for legacy MCP callers', { timeout: 40_000 }, async (t) => {
   const args = { capability: 'downloads', reason: 'Download the attached source.' };
   const { port } = await startHub(t, {
@@ -413,6 +468,7 @@ test('permission requests require one provider-stream root ticket for legacy MCP
   const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=provenance-page`);
   t.after(() => closeClient(studio));
   await studio.next((frame) => frame.type === 'welcome');
+  await studio.next((frame) => frame.type === 'agent-setup-status' && frame.statuses?.claude?.authenticated === true);
   sendFrame(studio, { type: 'chat-start', agent: 'claude', threadId: 'provenance-thread', documentId: 'provenance-doc' });
   const started = await studio.next((frame) => frame.type === 'chat-started');
   const cases = [
