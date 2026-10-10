@@ -944,6 +944,10 @@ function publish(message: ThreadPersistenceChange) {
 
 async function hydrateFromIndexedDb(force = false) {
   if (!idbAvailable()) return;
+  // 한 번 읽어 들인 뒤에는 이 탭의 쓰기가 캐시를 먼저 고치고, 다른 탭의 변경은 알림
+  // (BroadcastChannel·storage, 'reload' 는 force)으로 받는다. 쓸 때마다 전체를 다시 읽으면
+  // 저장이 늦어지고, 한도로 밀려나 지울 채팅이 지워지기 전에 잠깐 되살아난다.
+  if (hydrated && !force) return;
   if (hydrationPromise && !force) return hydrationPromise;
   const run = (async () => {
     const legacy = readLegacyThreads();
