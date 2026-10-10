@@ -1,0 +1,131 @@
+{
+  "electron": "43.4.0",
+  "playwright": "1.64.0",
+  "fixture": "tests/electron/browser-activity.mjs",
+  "sampling": "Three alternating one-second animation trials per fresh private process. CPU is Electron app.getAppMetrics renderer percentCPUUsage.",
+  "runs": [
+    {
+      "idleTrials": [
+        {
+          "forcedVisible": {
+            "frames": 60,
+            "cpuPercent": 0.5963761405637558,
+            "styleRecalculations": 61
+          },
+          "nativeHidden": {
+            "frames": 0,
+            "cpuPercent": 0.019631094857051747,
+            "styleRecalculations": 0
+          }
+        },
+        {
+          "forcedVisible": {
+            "frames": 59,
+            "cpuPercent": 0.48411847931720536,
+            "styleRecalculations": 60
+          },
+          "nativeHidden": {
+            "frames": 0,
+            "cpuPercent": 0.022104277395605543,
+            "styleRecalculations": 0
+          }
+        },
+        {
+          "forcedVisible": {
+            "frames": 59,
+            "cpuPercent": 0.5243513151316729,
+            "styleRecalculations": 60
+          },
+          "nativeHidden": {
+            "frames": 0,
+            "cpuPercent": 0.017845889173294785,
+            "styleRecalculations": 0
+          }
+        }
+      ],
+      "hiddenAction": {
+        "clicked": true,
+        "successPaused": true,
+        "errorPaused": true,
+        "formRetained": true,
+        "sessionRetained": true
+      },
+      "scope": {
+        "otherWindowRejected": true,
+        "transferPaused": true,
+        "staleEndPreservesNewLease": true,
+        "disconnectPaused": true
+      },
+      "download": {
+        "filename": "activity.pdf",
+        "bytes": 25,
+        "controlledDirectory": true
+      }
+    },
+    {
+      "idleTrials": [
+        {
+          "forcedVisible": {
+            "frames": 60,
+            "cpuPercent": 0.36858064708869837,
+            "styleRecalculations": 60
+          },
+          "nativeHidden": {
+            "frames": 0,
+            "cpuPercent": 0.012845315205984953,
+            "styleRecalculations": 0
+          }
+        },
+        {
+          "forcedVisible": {
+            "frames": 60,
+            "cpuPercent": 0.41010457760288854,
+            "styleRecalculations": 61
+          },
+          "nativeHidden": {
+            "frames": 0,
+            "cpuPercent": 0.014341965549787635,
+            "styleRecalculations": 0
+          }
+        },
+        {
+          "forcedVisible": {
+            "frames": 60,
+            "cpuPercent": 0.39150399028833505,
+            "styleRecalculations": 61
+          },
+          "nativeHidden": {
+            "frames": 0,
+            "cpuPercent": 0.015278078231626973,
+            "styleRecalculations": 0
+          }
+        }
+      ],
+      "lifecycle": {
+        "visibleUiRetained": true,
+        "navigationPaused": true,
+        "bindingPaused": true,
+        "staleChatRejected": true,
+        "releasePaused": true
+      },
+      "hiddenAction": {
+        "clicked": true,
+        "successPaused": true,
+        "errorPaused": true,
+        "formRetained": true,
+        "sessionRetained": true
+      },
+      "scope": {
+        "otherWindowRejected": true,
+        "transferPaused": true,
+        "staleEndPreservesNewLease": true,
+        "disconnectPaused": true
+      },
+      "download": {
+        "filename": "activity.pdf",
+        "bytes": 25,
+        "controlledDirectory": true
+      }
+    }
+  ]
+}

@@ -234,7 +234,7 @@ export async function startOwnedBrowserRuntime({ dataDir, guard, onEvent = () =>
     if (nativeAdapter) {
       native = await nativeAdapter.start({ profileDir, downloadsPath, proxy: proxy.settings, onEvent });
       phase = 'native-cdp';
-      browser = await chromium.connectOverCDP(native.endpointURL, { timeout: 20_000 });
+      browser = await chromium.connectOverCDP(native.endpointURL, { timeout: 20_000, noDefaults: true, artifactsDir: downloadsPath });
       context = browser.contexts()[0];
       if (!context) throw new OwnedBrowserError('BROWSER_NATIVE_UNAVAILABLE', 'The desktop browser did not provide a private session.', true);
     } else {
@@ -249,7 +249,7 @@ export async function startOwnedBrowserRuntime({ dataDir, guard, onEvent = () =>
     }
     context.setDefaultTimeout(10_000);
     context.setDefaultNavigationTimeout(20_000);
-    return { context, browser, profileDir, downloadsPath, kind: nativeAdapter ? 'native' : provider === 'chrome' ? 'chrome' : 'chromium', async close() { if (nativeAdapter) await browser.close().catch(() => {}); else await context.close().catch(() => {}); await native?.close?.(); await proxy.close(); } };
+    return { context, browser, profileDir, downloadsPath, nativeGeneration: native?.generation, kind: nativeAdapter ? 'native' : provider === 'chrome' ? 'chrome' : 'chromium', async close() { if (nativeAdapter) await browser.close().catch(() => {}); else await context.close().catch(() => {}); await native?.close?.(); await proxy.close(); } };
   } catch (error) {
     await context?.close().catch(() => {});
     await native?.close?.();

@@ -63,13 +63,13 @@ export class OwnedBrowserHost {
     this.cdp = new PrivateBrowserCdp({ host: this });
   }
 
-  async start({ profileDir, proxy }, owner) {
+  async start({ profileDir, downloadsPath, proxy }, owner) {
     if (this.startPromise) return this.startPromise;
-    this.startPromise = this.startOwned({ profileDir, proxy }, owner);
+    this.startPromise = this.startOwned({ profileDir, downloadsPath, proxy }, owner);
     try { return await this.startPromise; } finally { this.startPromise = null; }
   }
 
-  async startOwned({ profileDir, proxy }, owner) {
+  async startOwned({ profileDir, downloadsPath, proxy }, owner) {
     await this.releasePromise;
     await this.resetPromise;
     const expected = join(this.dataDir, 'browser', 'native-profile');
@@ -95,7 +95,10 @@ export class OwnedBrowserHost {
       });
       this.session.on('will-download', (event, item, contents) => this.willDownload(event, item, contents));
     }
-    if (this.owner && this.owner !== owner) await this.cdp.close();
+    if (this.owner && this.owner !== owner) {
+      await Promise.all([...this.tabs.values()].map((tab) => this.clearActivity(tab)));
+      await this.cdp.close();
+    }
     this.owner = owner;
     this.lastOwner = owner;
     this.proxy = { ...proxy, host: proxyUrl.hostname, port: Number(proxyUrl.port) };
@@ -104,11 +107,15 @@ export class OwnedBrowserHost {
     for (const tab of this.tabs.values()) {
       if (!tab.closing && !this.cdp.tabs.has(tab.targetId) && tab.view.webContents && !tab.view.webContents.isDestroyed()) {
         await this.cdp.add(tab);
+        await this.clearActivity(tab);
         const viewport = tab.viewport ?? { width: 1280, height: 800 };
         tab.viewport = null;
         await this.viewport(tab, viewport);
       }
     }
+    const transfers = join(this.dataDir, 'browser', 'transfers');
+    if (downloadsPath && resolve(downloadsPath) !== transfers) throw new Error('Native download directory is outside its owned directory');
+    await this.setDownloadBehavior({ behavior: 'allowAndName', downloadPath: transfers });
     const endpointURL = await this.cdp.listen();
     return { endpointURL, native: true, generation: this.generation, signInSupport: 'full-browser-required' };
   }
@@ -160,8 +167,8 @@ export class OwnedBrowserHost {
       this.emit(tab, 'debugger-conflict', { message: 'Close browser automation before opening developer tools.' });
     });
     for (const event of ['did-start-loading', 'did-stop-loading', 'page-title-updated']) contents.on(event, () => this.emit(tab, 'state'));
-    contents.on('did-navigate', () => { tab.navigationEpoch += 1; tab.lastError = null; this.emit(tab, 'navigation'); });
-    contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => { if (isMainFrame) { tab.navigationEpoch += 1; this.emit(tab, 'navigation'); } });
+    contents.on('did-navigate', () => { this.clearActivity(tab); tab.navigationEpoch += 1; tab.lastError = null; this.emit(tab, 'navigation'); });
+    contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => { if (isMainFrame) { this.clearActivity(tab); tab.navigationEpoch += 1; this.emit(tab, 'navigation'); } });
     contents.on('did-fail-load', (_event, code, description, _url, mainFrame) => {
       if (mainFrame && code !== -3) { tab.lastError = description; this.emit(tab, 'load-failed'); }
     });
@@ -211,10 +218,52 @@ export class OwnedBrowserHost {
     if (occupied && occupied !== targetId) throw new Error('Native browser tab binding is already owned');
     if (tab.windowId && tab.windowId !== window.id) throw new Error('Native browser tab belongs to another editor window');
     if (tab.tabId && tab.tabId !== tabId) this.aliases.delete(tab.tabId);
+    if (tab.tabId !== tabId || tab.sessionId !== sessionId || tab.chatId !== chatId) this.clearActivity(tab);
     Object.assign(tab, { tabId, sessionId, chatId, windowId: window.id });
     this.aliases.set(tabId, targetId);
     this.emit(tab, 'bound');
     return this.state(tab);
+  }
+
+  // Only the private hub operation scope can temporarily wake a hidden guest.
+  async activity({ targetId, tabId, sessionId, chatId, generation, token, active }) {
+    const tab = this.tab(targetId);
+    const currentScope = generation === this.generation && tab.targetId === targetId && tab.tabId === tabId && tab.sessionId === sessionId && tab.chatId === chatId;
+    if (active === false) {
+      if (!currentScope) return { active: false };
+      const timer = tab.activityLeases?.get(token);
+      if (!timer) return { active: false };
+      clearTimeout(timer); tab.activityLeases.delete(token);
+      await this.syncActivity(tab);
+      return { active: false };
+    }
+    if (active !== true || !currentScope || typeof token !== 'string' || !ID_RE.test(token)) throw new Error('Native activity scope is stale');
+    tab.activityLeases ??= new Map();
+    if (tab.activityLeases.has(token)) throw new Error('Native activity token is already active');
+    const timer = setTimeout(() => {
+      tab.activityLeases.delete(token);
+      void this.syncActivity(tab).catch(() => {});
+    }, 30_000);
+    timer.unref?.();
+    tab.activityLeases.set(token, timer);
+    try { await this.syncActivity(tab); }
+    catch (error) { clearTimeout(timer); tab.activityLeases.delete(token); await this.syncActivity(tab).catch(() => {}); throw error; }
+    return { active: true };
+  }
+
+  syncActivity(tab) {
+    tab.activityQueue = (tab.activityQueue ?? Promise.resolve()).catch(() => {}).then(async () => {
+      const contents = tab.view.webContents;
+      if (!contents || contents.isDestroyed() || !contents.debugger.isAttached()) return;
+      await contents.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: !!tab.activityLeases?.size });
+    });
+    return tab.activityQueue;
+  }
+
+  clearActivity(tab) {
+    for (const timer of tab.activityLeases?.values() ?? []) clearTimeout(timer);
+    tab.activityLeases?.clear();
+    return this.syncActivity(tab).catch(() => {});
   }
 
   ownedTab(id, window) {
@@ -367,6 +416,7 @@ export class OwnedBrowserHost {
 
   control({ targetId, tabId, human, owner }) {
     const tab = this.tab(targetId ?? tabId);
+    void this.clearActivity(tab);
     tab.human = human === true || owner === 'human';
     tab.interactive = tab.human && !!tab.placement;
     this.emit(tab, 'controller');
@@ -393,6 +443,7 @@ export class OwnedBrowserHost {
   closeTab(targetId) {
     const tab = this.tabs.get(targetId);
     if (!tab) return false;
+    void this.clearActivity(tab);
     tab.closing = true;
     this.unplace(tab);
     this.cdp.remove(targetId);
@@ -462,11 +513,12 @@ export class OwnedBrowserHost {
   async clearCookies() { await this.session.clearStorageData({ storages: ['cookies'] }); return {}; }
 
   onDebuggerDetached(tab, reason) {
+    void this.clearActivity(tab);
     const contents = tab.view.webContents;
     if (!contents.isDestroyed()) contents.closeDevTools();
     this.emit(tab, 'debugger-disconnected', { reason, recovery: 'reconnect' });
   }
-  onAutomationDisconnected() { for (const tab of this.tabs.values()) { tab.human = false; tab.interactive = false; this.emit(tab, 'runtime-disconnected'); } }
+  onAutomationDisconnected() { for (const tab of this.tabs.values()) { void this.clearActivity(tab); tab.human = false; tab.interactive = false; this.emit(tab, 'runtime-disconnected'); } }
 
   async release(owner) {
     if (this.owner !== owner) return false;
@@ -475,6 +527,7 @@ export class OwnedBrowserHost {
     this.proxy = null;
     this.releasePromise = (async () => {
       for (const item of this.downloads.values()) item.cancel();
+      await Promise.all([...this.tabs.values()].map((tab) => this.clearActivity(tab)));
       await this.cdp.close();
       this.onAutomationDisconnected();
       await this.session?.closeAllConnections();
@@ -538,6 +591,7 @@ export class OwnedBrowserHost {
       else {
         if (this.owner !== owner) throw new Error('Native browser request owner is stale');
         if (message.operation === 'bind') response.value = this.bind(params);
+        else if (message.operation === 'activity') response.value = await this.activity(params);
         else if (message.operation === 'control') response.value = this.control(params);
         else if (message.operation === 'release') response.value = await this.release(owner);
         else if (message.operation === 'inventory') response.value = [...this.tabs.values()].map((tab) => this.state(tab));
@@ -550,6 +604,7 @@ export class OwnedBrowserHost {
 
   async dispose() {
     this.disposing = true;
+    await Promise.all([...this.tabs.values()].map((tab) => this.clearActivity(tab)));
     await this.cdp.close();
     if (this.session) { this.session.flushStorageData(); await this.session.cookies.flushStore(); }
     for (const targetId of [...this.tabs.keys()]) this.closeTab(targetId);

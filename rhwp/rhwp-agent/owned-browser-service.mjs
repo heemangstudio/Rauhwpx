@@ -60,7 +60,7 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
   });
   return {
     async start(params) { return { ...(await call('start', params)), close: () => call('release') }; },
-    bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'), inventory: () => call('inventory'),
+    activity: (params) => call('activity', params), bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'), inventory: () => call('inventory'),
     async dispose() { events.off('message', receive); for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(error('BROWSER_CLOSED', 'The browser service closed.')); } pending.clear(); },
   };
 }
@@ -936,7 +936,18 @@ export function createOwnedBrowserService(options = {}) {
       if (actor.isHuman && mutating && action !== 'close') markHumanDocument(tab);
       try {
         if (action === 'navigate' && args.url && googleResearchURL(args.url)) tab.searchQuery = new URL(args.url).searchParams.get('q') || tab.searchQuery;
-        const value = await operate(actor, action, tab, args);
+        const adapter = selectedAdapter();
+        const activity = adapter?.activity && action !== 'close' ? {
+          targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId,
+          chatId: tab.threadId, generation: runtime.nativeGeneration, token: id('activity'),
+        } : null;
+        let value;
+        try {
+          if (activity) await adapter.activity({ ...activity, active: true });
+          value = await operate(actor, action, tab, args);
+        } finally {
+          if (activity) await adapter.activity({ ...activity, active: false }).catch(() => {});
+        }
         if (actor.isHuman) { if (mutating && action !== 'close') markHumanDocument(tab); await observeHumanSessions(); }
         else if (action !== 'close') { await recordAgentSessions(requirePage(tab).url(), agentSessionEpoch); await observeHumanSessions(); }
         if (mutating && action !== 'close' && queuedControlEpoch !== tab.controllerEpoch) throw error('BROWSER_ACTION_UNCERTAIN', 'Control changed during the action. Observe the current page before deciding what to do next.', true);

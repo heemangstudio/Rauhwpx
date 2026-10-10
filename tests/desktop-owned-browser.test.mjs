@@ -20,6 +20,34 @@ test('native browser rejects privileged URLs and clamps a projection to its owni
   assert.deepEqual(browserViewBounds({ x: -10, y: 20, width: 1000, height: 1000 }, { getContentBounds: () => ({ width: 800, height: 600 }) }), { x: 0, y: 20, width: 800, height: 580 });
 });
 
+test('native hidden guests wake only during scoped actions and preserve forms and downloads', { skip: unavailable ? 'Electron needs an installed binary and display' : false, timeout: 30_000 }, async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'hama-browser-activity-'));
+  const env = { ...process.env, RHWP_BROWSER_TEST_DATA_DIR: dataDir };
+  delete env.ELECTRON_RUN_AS_NODE;
+  try {
+    const report = await new Promise((resolve, reject) => {
+      const child = spawn(electron, [fileURLToPath(new URL('./electron/browser-activity.mjs', import.meta.url)), '--use-mock-keychain'], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = '';
+      child.stdout.on('data', data => { output += data; });
+      child.stderr.on('data', data => { output += data; });
+      const timer = setTimeout(() => child.kill('SIGKILL'), 25_000);
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.once('exit', code => {
+        clearTimeout(timer);
+        const line = output.split('\n').find(line => line.startsWith('BROWSER_ACTIVITY_REPORT '));
+        if (code !== 0 || !line) reject(new Error(output));
+        else resolve(JSON.parse(line.slice('BROWSER_ACTIVITY_REPORT '.length)));
+      });
+    });
+    assert.equal(report.error, undefined);
+    assert.equal(report.hiddenAction.clicked, true);
+    assert.equal(report.hiddenAction.errorPaused, true);
+    assert.equal(report.scope.disconnectPaused, true);
+    assert.equal(report.download.controlledDirectory, true);
+    assert.ok(report.idleTrials.every(trial => trial.nativeHidden.frames === 0));
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('real native guests retain form state across dock, float, popout and hub restart with scoped control', { skip: unavailable ? 'Electron needs an installed binary and display' : false, timeout: 60_000 }, async () => {
   const entry = fileURLToPath(new URL('./electron/owned-browser.mjs', import.meta.url));
   const env = { ...process.env };
