@@ -8908,8 +8908,3 @@ html.desktop-mac .ag-workspace-home-btn {
 html.desktop-mac .ag-root {
   --ag-workspace-home-w: 0px !important;
 }
-
-/* 토글 아이콘의 안쪽 여백만큼 워드마크를 당겨 아이콘 사이 간격을 고르게 둔다. */
-html.desktop-mac .ag-fullscreen .ag-workspace-brand {
-  margin-left: -6px;
-}
