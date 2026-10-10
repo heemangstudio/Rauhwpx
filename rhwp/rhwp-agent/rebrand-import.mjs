@@ -499,7 +499,10 @@ export async function acquireImportLock(baseDir, {
       } catch {
         continue;
       }
-      if (sameDirectory(observed, await fs.stat(parked).catch(() => null))) {
+      // Linux 는 지운 폴더의 inode 를 곧바로 다시 쓰고 생성 시각이 없을 수도 있다. 옮긴 폴더가 지금도
+      // 오래된 잠금인지 다시 확인해야 막 잡힌 잠금을 지우지 않는다.
+      if (sameDirectory(observed, await fs.stat(parked).catch(() => null))
+        && await lockIsStale(parked, await readLockOwner(parked), now(), staleMs)) {
         await fs.rm(parked, { recursive: true, force: true }).catch(() => {});
       } else {
         await fs.rename(parked, lock).catch(() => fs.rm(parked, { recursive: true, force: true }).catch(() => {}));

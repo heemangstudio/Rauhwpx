@@ -150,6 +150,31 @@ test('a long import keeps its lock fresh so a second hub cannot take it', async 
   await next();
 });
 
+test('a lock that is fresh again under the same inode is put back, not deleted', async (t) => {
+  // Linux 가 지운 잠금의 inode 를 다른 허브의 새 잠금에 다시 쓰는 경우와 같다.
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-import-lock-reuse-'));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+  const lock = path.join(base, '.rebrand-import.lock');
+  await fs.mkdir(lock);
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  await fs.utimes(lock, old, old);
+  let refreshed = false;
+
+  const stolen = await acquireImportLock(base, {
+    timeoutMs: 300,
+    staleMs: 1000,
+    beforeStaleRemoval: async () => {
+      if (refreshed) return;
+      refreshed = true;
+      const fresh = new Date();
+      await fs.utimes(lock, fresh, fresh);
+    },
+  });
+
+  assert.equal(stolen, null, 'the refreshed lock of the other hub is respected');
+  await fs.stat(lock);
+});
+
 test('a lock taken fresh while another hub clears a stale one is put back, not deleted', async (t) => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-import-lock-race-'));
   t.after(() => fs.rm(base, { recursive: true, force: true }));
