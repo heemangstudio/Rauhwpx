@@ -22,7 +22,7 @@ import {
   createChatAttentionLedger,
   type AttentionNotice,
 } from '../agent/chat-attention.ts';
-import { loadAttentionPrefs, subscribeAttentionPrefs } from '../agent/attention-prefs.ts';
+import { loadAttentionPrefs, saveAttentionPrefs, subscribeAttentionPrefs } from '../agent/attention-prefs.ts';
 import { installAttentionToasts } from '../ui/agent-attention.ts';
 import type { LibraryMoveResult } from '../library/move-to-document.ts';
 import type { TurnRestoreControl, TurnRestoreResult, TurnRestoreStatus } from '../agent/turn-checkpoints.ts';
@@ -58,15 +58,18 @@ const report = (message: string) => {
  * notice to the system sink (as when the window has no focus); otherwise a hidden chat's notice is
  * an in-app toast with 열기. System notices are reported as `알림: {title} — {body}` and logged in
  * `sidebarPreview.attentionNotices`. `notifications=granted` stubs the browser permission so the
- * 설정 → AI → 알림 toggle shows on the web build.
+ * 설정 → AI → 알림 toggles show on the web build. System notices carry only the app name and the fixed
+ * phrase unless 알림에 채팅 제목과 문서 이름 표시 is on; `notificationDetails=1` turns it on at load.
  */
 if (params.get('notifications') === 'granted' && typeof Notification === 'function') {
   Object.defineProperty(Notification, 'permission', { configurable: true, get: () => 'granted' });
 }
 const attentionAway = params.get('attention') === 'away';
+if (params.get('notificationDetails') === '1') saveAttentionPrefs({ showChatDetails: true });
 const attention = createChatAttentionLedger({
   getStatus: getChatStatus,
   windowFocused: () => !attentionAway && document.visibilityState === 'visible' && document.hasFocus(),
+  showDetails: () => loadAttentionPrefs().showChatDetails,
 });
 attention.setEnabled(loadAttentionPrefs().notifications);
 subscribeAttentionPrefs((prefs) => attention.setEnabled(prefs.notifications));

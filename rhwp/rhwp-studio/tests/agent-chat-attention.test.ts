@@ -11,12 +11,14 @@ import { installAttentionToasts, installWebAgentAttention } from '../src/ui/agen
 import { loadAttentionPrefs, saveAttentionPrefs, subscribeAttentionPrefs } from '../src/agent/attention-prefs.ts';
 import type { ToastOptions } from '../src/ui/toast.ts';
 
-function harness(opts: { focused?: boolean } = {}) {
+function harness(opts: { focused?: boolean; details?: boolean } = {}) {
   const statuses = new Map<string, ChatRunStatus | null>();
   let focused = opts.focused ?? false;
+  let details = opts.details ?? false;
   const ledger = createChatAttentionLedger({
     getStatus: (threadId) => statuses.get(threadId) ?? null,
     windowFocused: () => focused,
+    showDetails: () => details,
   });
   const notices: AttentionNotice[] = [];
   const counts: number[] = [];
@@ -38,17 +40,19 @@ function harness(opts: { focused?: boolean } = {}) {
     statuses,
     report,
     focus(next: boolean) { focused = next; },
+    showDetails(next: boolean) { details = next; },
   };
 }
 
-test('an unseen finish notifies once per turn, with the chat title and document', () => {
+test('an unseen finish notifies once per turn, showing only the app name and the fixed phrase', () => {
   const h = harness();
   h.report({ threadId: 'a', status: 'finished', key: 'turn-1:end' });
   assert.equal(h.notices.length, 1);
   assert.deepEqual(
     { title: h.notices[0]!.title, body: h.notices[0]!.body, channel: h.notices[0]!.channel },
-    { title: '사업 개요 다듬기', body: '작업을 마쳤습니다 · 사업 제안서.hwpx', channel: 'system' },
+    { title: 'Rauhwpx', body: '작업을 마쳤습니다', channel: 'system' },
   );
+  assert.doesNotMatch(JSON.stringify([h.notices[0]!.title, h.notices[0]!.body]), /사업/, 'no chat title or document name');
   h.report({ threadId: 'a', status: 'finished', key: 'turn-1:end' });
   assert.equal(h.notices.length, 1, 'the same key never notifies twice');
   assert.equal(h.ledger.count(), 1);
@@ -70,8 +74,23 @@ test('a focused window gets in-app notices for actionable states only', () => {
   assert.equal(h.ledger.count(), 4);
 });
 
-test('copy follows the reason: plan approval, interruption, a bare error, and no document', () => {
+test('with chat details on, a system notice names the chat and the document; toasts always name the chat', () => {
   const h = harness();
+  h.report({ threadId: 'quiet', status: 'needs-input', key: 't1:input:q1', reason: 'question' });
+  h.showDetails(true);
+  h.report({ threadId: 'named', status: 'needs-input', key: 't2:input:q2', reason: 'question' });
+  assert.deepEqual(h.notices.map((notice) => [notice.title, notice.body, notice.message]), [
+    ['Rauhwpx', '답변을 기다립니다', '사업 개요 다듬기 — 답변을 기다립니다'],
+    ['사업 개요 다듬기', '답변을 기다립니다 · 사업 제안서.hwpx', '사업 개요 다듬기 — 답변을 기다립니다'],
+  ], 'the setting is read at each notice');
+  h.showDetails(false);
+  h.report({ threadId: 'fail', status: 'failed', key: 't3:end', reason: 'error', summary: 'Claude 로그인이 필요해요' });
+  assert.deepEqual([h.notices[2]!.title, h.notices[2]!.body], ['Rauhwpx', 'Claude 로그인이 필요해요'],
+    'a failure shows its fixed failure title');
+});
+
+test('copy follows the reason: plan approval, interruption, a bare error, and no document', () => {
+  const h = harness({ details: true });
   h.report({ threadId: 'plan', status: 'needs-input', key: 't1:input:plan:p1', reason: 'plan' });
   h.report({ threadId: 'cut', status: 'failed', key: 't2:end', reason: 'interrupted', label: '중단됨' });
   h.report({ threadId: 'err', status: 'failed', key: 't3:end', reason: 'error' });
@@ -202,7 +221,7 @@ test('web notifications go out only when the site already has permission, and ne
   h.report({ threadId: 'b', status: 'needs-input', key: 'b:input:q', reason: 'question' });
   assert.equal(shown.length, 1);
   assert.deepEqual({ title: shown[0]!.title, body: shown[0]!.body, tag: shown[0]!.tag },
-    { title: '사업 개요 다듬기', body: '답변을 기다립니다 · 사업 제안서.hwpx', tag: 'b:input:q' });
+    { title: 'Rauhwpx', body: '답변을 기다립니다', tag: 'b:input:q' });
   assert.equal(requested, 0, 'Studio never asks for permission');
   return Promise.resolve().then(() => {
     shown[0]!.onclick?.();
@@ -212,16 +231,21 @@ test('web notifications go out only when the site already has permission, and ne
   });
 });
 
-test('the notifications preference defaults on, persists and tells every listener', () => {
+test('the notifications preference defaults on, chat details default off, both persist and tell every listener', () => {
   const mem = new Map<string, string>();
   const storage = { getItem: (key: string) => mem.get(key) ?? null, setItem: (key: string, value: string) => { mem.set(key, value); } };
-  assert.equal(loadAttentionPrefs(storage).notifications, true);
-  const heard: boolean[] = [];
-  const off = subscribeAttentionPrefs((prefs) => heard.push(prefs.notifications));
+  assert.deepEqual(loadAttentionPrefs(storage), { notifications: true, showChatDetails: false });
+  const heard: Array<[boolean, boolean]> = [];
+  const off = subscribeAttentionPrefs((prefs) => heard.push([prefs.notifications, prefs.showChatDetails]));
   saveAttentionPrefs({ notifications: false }, storage);
   assert.equal(loadAttentionPrefs(storage).notifications, false);
-  assert.deepEqual(heard, [false]);
+  saveAttentionPrefs({ showChatDetails: true }, storage);
+  assert.deepEqual(loadAttentionPrefs(storage), { notifications: false, showChatDetails: true }, 'one switch keeps the other');
+  assert.deepEqual(heard, [[false, false], [false, true]]);
   off();
+  // 이 설정이 생기기 전에 저장된 값은 제목을 싣지 않는다.
+  mem.set('rhwp-agent-attention', JSON.stringify({ notifications: true }));
+  assert.deepEqual(loadAttentionPrefs(storage), { notifications: true, showChatDetails: false });
   mem.set('rhwp-agent-attention', '{broken');
-  assert.equal(loadAttentionPrefs(storage).notifications, true);
+  assert.deepEqual(loadAttentionPrefs(storage), { notifications: true, showChatDetails: false });
 });

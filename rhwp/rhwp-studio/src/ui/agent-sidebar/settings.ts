@@ -1177,14 +1177,25 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       ? '보이지 않는 채팅이 끝나거나, 답이나 검토를 기다리거나, 멈추면 알림과 앱 아이콘 배지로 알려 줍니다.'
       : '보이지 않는 채팅이 끝나거나, 답이나 검토를 기다리거나, 멈추면 브라우저 알림으로 알려 줍니다.',
   );
-  backgroundNotifications.input.checked = loadAttentionPrefs().notifications;
+  // 알림 센터·잠금 화면에 남는 글 — 기본은 앱 이름과 정해진 문구뿐이다. 앱 안 토스트는 늘 제목을 보인다.
+  const notificationDetails = createToggleRow(
+    '알림에 채팅 제목과 문서 이름 표시',
+    '끄면 알림에는 앱 이름과 "답변을 기다립니다" 같은 문구만 보여, 잠금 화면이나 알림 센터에 채팅 내용이 드러나지 않습니다.',
+  );
+  const initialAttentionPrefs = loadAttentionPrefs();
+  backgroundNotifications.input.checked = initialAttentionPrefs.notifications;
+  notificationDetails.input.checked = initialAttentionPrefs.showChatDetails;
   backgroundNotifications.input.addEventListener('change', () => {
     saveAttentionPrefs({ notifications: backgroundNotifications.input.checked });
   });
+  notificationDetails.input.addEventListener('change', () => {
+    saveAttentionPrefs({ showChatDetails: notificationDetails.input.checked });
+  });
   const unsubscribeAttentionPrefs = subscribeAttentionPrefs((next) => {
     backgroundNotifications.input.checked = next.notifications;
+    notificationDetails.input.checked = next.showChatDetails;
   });
-  notificationsSection.body.append(backgroundNotifications.root);
+  notificationsSection.body.append(backgroundNotifications.root, notificationDetails.root);
   const syncNotificationsSection = () => {
     notificationsSection.root.hidden = !desktopShell && !webNotificationsGranted();
   };

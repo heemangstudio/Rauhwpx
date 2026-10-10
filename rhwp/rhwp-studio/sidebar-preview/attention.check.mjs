@@ -308,10 +308,11 @@ export async function checkAttentionFilter(page, origin, artifacts) {
 
 /**
  * attention=away: 창에 초점이 없을 때처럼 시스템 알림으로 — 열쇠마다 한 번. 허브 재시작으로 끊긴
- * 턴은 오류가 아니라 중단이다(레일 `중단됨`, 알림 `작업이 중단됐습니다`).
+ * 턴은 오류가 아니라 중단이다(레일 `중단됨`, 알림 `작업이 중단됐습니다`). 시스템 알림은 잠금 화면과
+ * 알림 센터에 남으므로 기본은 앱 이름과 정해진 문구뿐이고, 채팅 제목과 문서 이름은 설정을 켰을 때만 싣는다.
  */
-export async function checkSystemNotices(page, origin) {
-  await openPreview(page, origin, 'attention=away&parallel=1&scenario=chat&hold=1');
+export async function checkSystemNotices(page, origin, { details = false } = {}) {
+  await openPreview(page, origin, `attention=away${details ? '&notificationDetails=1' : ''}&parallel=1&scenario=chat&hold=1`);
   const hidden = await startHiddenChat(page);
   await page.evaluate(() => window.sidebarPreview.chats[0].mock.restartHub());
   await waitFor(page, () => window.sidebarPreview.attentionNotices.length === 1, undefined, 'one system notice');
@@ -327,7 +328,22 @@ export async function checkSystemNotices(page, origin) {
   const state = await attentionState(page);
   assert.equal(state.systemNotices.length, 1, 'notices are sent once per turn');
   assert.equal(state.systemNotices[0].threadId, hidden);
-  assert.equal(state.systemNotices[0].body, '작업이 중단됐습니다 · 사업 제안서.hwpx');
+  if (details) {
+    const chatTitle = await page.evaluate((id) => [...document.querySelectorAll('.ag-root .ag-threads-item')]
+      .find((item) => item.dataset.threadId === id)?.querySelector('.ag-threads-item-title')?.textContent, hidden);
+    assert.ok(chatTitle && chatTitle !== 'Rauhwpx', 'the hidden chat has a title of its own');
+    assert.deepEqual(
+      { title: state.systemNotices[0].title, body: state.systemNotices[0].body },
+      { title: chatTitle, body: '작업이 중단됐습니다 · 사업 제안서.hwpx' },
+      'with the setting on, the notice names the chat and the document',
+    );
+  } else {
+    assert.deepEqual(
+      { title: state.systemNotices[0].title, body: state.systemNotices[0].body },
+      { title: 'Rauhwpx', body: '작업이 중단됐습니다' },
+      'by default the notice shows the app name and the fixed phrase only',
+    );
+  }
   assert.deepEqual(state.toasts, [], 'away notices are not toasts');
   assert.equal(state.badge, 1);
 }
@@ -343,6 +359,12 @@ export async function checkAttentionSetting(page, origin, artifacts) {
   await section.evaluate((node) => node.scrollIntoView({ block: 'center' }));
   await (await page.$('.ag-root')).screenshot({ path: resolve(artifacts, 'attention-settings.png') });
   assert.equal(await toggle.evaluate((row) => row.querySelector('input').checked), true, 'on by default');
+  const details = await page.evaluateHandle(() => [...document.querySelectorAll('.ag-settings-toggle-row')]
+    .find((row) => row.textContent.includes('알림에 채팅 제목과 문서 이름 표시')));
+  assert.equal(await details.evaluate((row) => Boolean(row?.checkVisibility())), true, 'the details switch sits beside it');
+  assert.equal(await details.evaluate((row) => row.querySelector('input').checked), false, 'chat details are off by default');
+  await details.evaluate((row) => row.querySelector('input').click());
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('rhwp-agent-attention') ?? '{}').showChatDetails === true);
   await toggle.evaluate((row) => row.querySelector('input').click());
   await page.waitForFunction(() => !window.sidebarPreview.attention.isEnabled());
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('rhwp-agent-attention')).notifications), false);
@@ -361,6 +383,7 @@ export async function checkAttention(page, origin, artifacts) {
   await checkBlockingStates(page, origin);
   await checkAttentionFilter(page, origin, artifacts);
   await checkSystemNotices(page, origin);
+  await checkSystemNotices(page, origin, { details: true });
   await checkAttentionSetting(page, origin, artifacts);
 }
 

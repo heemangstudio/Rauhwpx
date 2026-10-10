@@ -761,8 +761,9 @@ test('desktop attention forwards system notices, the unseen count and opens clic
   report('thread-a', 'finished', 'a:end');
   focused = true;
   report('thread-b', 'needs-review', 'b:end');
-  // 초점이 있는 창은 토스트로 대신한다 — 메인에 보내지 않는다.
-  assert.deepEqual(sent, [{ threadId: 'thread-a', title: '표 정리', body: '작업을 마쳤습니다 · 회의록.hwpx' }]);
+  // 초점이 있는 창은 토스트로 대신한다 — 메인에 보내지 않는다. OS 알림은 기본으로 채팅 제목과
+  // 문서 이름 없이 앱 이름과 문구만 싣는다.
+  assert.deepEqual(sent, [{ threadId: 'thread-a', title: 'Rauhwpx', body: '작업을 마쳤습니다' }]);
   assert.deepEqual(counts, [0, 1, 2]);
   report('thread-b', 'needs-review', 'b:end');
   assert.deepEqual(counts, [0, 1, 2], 'unchanged counts are not resent');

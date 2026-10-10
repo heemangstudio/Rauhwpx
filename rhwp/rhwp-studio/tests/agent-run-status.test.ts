@@ -31,7 +31,12 @@ function sidebar(opts: { focused?: boolean } = {}) {
     review: false,
     seen: null as string | null,
   };
-  const ledger = createChatAttentionLedger({ getStatus: getChatStatus, windowFocused: () => opts.focused ?? false });
+  // 제목 표시를 켠 장부 — 컨트롤러가 알림에 싣는 문구와 문서 이름까지 본다.
+  const ledger = createChatAttentionLedger({
+    getStatus: getChatStatus,
+    windowFocused: () => opts.focused ?? false,
+    showDetails: () => true,
+  });
   const notices: AttentionNotice[] = [];
   ledger.subscribe({ notice: (notice) => notices.push(notice) });
   let turnSeq = 0;

@@ -9,9 +9,12 @@
  * - 창에 초점이 있으면 앱 안(in-app), 없으면 시스템(system). 완료는 앱 안에서는 알리지 않는다 —
  *   칩과 머리 숫자로 충분하다.
  * - 같은 열쇠는 다시 알리지 않는다. 한 턴의 끝 상태(검토·오류·완료)는 열쇠 하나를 나눠 쓴다.
+ * - 시스템 알림(OS·브라우저)은 잠금 화면과 알림 센터에 남는다. 그래서 기본은 앱 이름과 정해진
+ *   문구뿐이고, 채팅 제목과 문서 이름은 사용자가 켰을 때만 싣는다. 앱 안 토스트는 늘 제목을 보인다.
  *
- * 순수 장부다 — 환경(상태 읽기·창 초점)은 주입받는다.
+ * 순수 장부다 — 환경(상태 읽기·창 초점·제목 표시 설정)은 주입받는다.
  */
+import { loadAttentionPrefs } from './attention-prefs.ts';
 import { ATTENTION_STATUSES, getChatStatus, subscribeChatStatus, type ChatRunStatus } from './chat-status.ts';
 
 export type AttentionState = 'needs-input' | 'needs-review' | 'failed' | 'finished';
@@ -22,9 +25,9 @@ export interface AttentionNotice {
   threadId: string;
   key: string;
   state: AttentionState;
-  /** OS 알림 제목 — 채팅 제목. */
+  /** 시스템 알림 제목 — 앱 이름('Rauhwpx'). 제목 표시를 켰으면 채팅 제목. */
   title: string;
-  /** OS 알림 본문 — `답변을 기다립니다 · 사업 제안서.hwpx`. */
+  /** 시스템 알림 본문 — `답변을 기다립니다`. 제목 표시를 켰으면 `답변을 기다립니다 · 사업 제안서.hwpx`. */
   body: string;
   /** 앱 안 토스트 글 — `{제목} — 답변을 기다립니다`. */
   message: string;
@@ -71,11 +74,15 @@ export interface ChatAttentionEnvironment {
   getStatus(threadId: string): ChatRunStatus | null;
   /** 창이 보이고 초점이 있는가 (document.hasFocus() && visible). */
   windowFocused(): boolean;
+  /** 시스템 알림에 채팅 제목과 문서 이름을 싣는가. 없으면 싣지 않는다. 알릴 때마다 읽는다. */
+  showDetails?(): boolean;
   /** 기억할 열쇠 수. 기본 256. */
   maxKeys?: number;
 }
 
 const DEFAULT_MAX_KEYS = 256;
+/** 내용을 싣지 않는 시스템 알림의 제목. */
+export const ATTENTION_APP_NAME = 'Rauhwpx';
 const TITLE_MAX = 60;
 /** 앱 안 토스트는 손을 대야 하는 상태만 — 완료는 칩과 머리 숫자가 알린다. */
 const IN_APP_STATES: ReadonlySet<AttentionState> = new Set<AttentionState>(['needs-input', 'needs-review', 'failed']);
@@ -173,12 +180,13 @@ export function createChatAttentionLedger(env: ChatAttentionEnvironment): ChatAt
       if (channel === 'in-app' && !IN_APP_STATES.has(state)) return;
       const title = attentionTitle(report.title);
       const phrase = attentionPhrase(state, report.reason, report.label, report.summary);
-      const documentName = report.documentName?.trim();
+      const details = env.showDetails?.() === true;
+      const documentName = details ? report.documentName?.trim() : '';
       const notice: AttentionNotice = {
         threadId: report.threadId,
         key: report.key,
         state,
-        title,
+        title: details ? title : ATTENTION_APP_NAME,
         body: documentName ? `${phrase} · ${documentName}` : phrase,
         message: `${title} — ${phrase}`,
         channel,
@@ -224,6 +232,7 @@ function realWindowFocused(): boolean {
 export const chatAttention: ChatAttentionLedger = createChatAttentionLedger({
   getStatus: getChatStatus,
   windowFocused: realWindowFocused,
+  showDetails: () => loadAttentionPrefs().showChatDetails,
 });
 
 /**
