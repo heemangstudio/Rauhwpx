@@ -45,8 +45,7 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   await page.waitForFunction(() => window.sidebarPreview.snapshot().browser.tabs.length === 1);
   assert.equal(await page.$eval('.ag-workbench-tabs [aria-selected=true]', tab => tab.dataset.resourceId), `browser:${original}`, 'closing another same-site page keeps the selected page');
   assert.equal(await page.$eval(siteTab(original), tab => tab.textContent), 'Google');
-  await page.click('.ag-browser [aria-label="직접 조작"]');
-  await page.waitForFunction(() => window.sidebarPreview.snapshot().browser.tabs[0].controller.owner === 'human');
+  assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[0].controller.owner), 'agent', 'human typing coexists with agent ownership');
   await page.focus('.ag-browser-ime');
   await page.keyboard.down('Control'); await page.keyboard.press('l'); await page.keyboard.up('Control');
   assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('.ag-browser-address')), true, 'browser address shortcut leaves page input and focuses navigation');

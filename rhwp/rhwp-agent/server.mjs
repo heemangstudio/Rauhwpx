@@ -591,11 +591,13 @@ const initialBrowserConfiguration = await credentialBroker.getConfiguration();
 const browserDownloads = createBrowserDownloads({
   dataDir: OWNED_BROWSER_DATA_DIR, projectIngest, onEvent: broadcastBrowserEvent,
   maxBytes: initialBrowserConfiguration.downloads.maxFileBytes, autoImport: initialBrowserConfiguration.downloads.autoImport,
-  authorizeDownload: async ({ actor, url }) => {
+  authorizeDownload: async ({ actor, url, target }) => {
+    if (ownedBrowser.ownsTarget(actor, target)) return true;
     await browserPolicy.assertAllowed({ actor, action: 'download', url });
     return true;
   },
   authorizeImport: async (job) => {
+    if (ownedBrowser.ownsTarget(job.actor, job.target)) return true;
     const sourceUrls = [...new Set([job.source?.url, job.source?.finalUrl, job.source?.pageUrl].filter(Boolean))];
     for (const url of sourceUrls) {
       await browserPolicy.assertAllowed({ actor: job.actor, action: 'research-import', url });
@@ -6352,8 +6354,9 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       }
       if (tool === 'download_file') {
         void browserActorForMcp(record, sock, tool, args).then(async (actor) => {
-          await browserPolicy.assertAllowed({ actor, action: 'download', url: args.url });
-          return browserDownloads.downloadPublic({ actor, ...args });
+          const target = ownedBrowser.downloadTarget(actor, args.url);
+          if (!target) await browserPolicy.assertAllowed({ actor, action: 'download', url: args.url });
+          return browserDownloads.downloadPublic({ ...args, actor: target ? { ...actor, tabId: target.tabId } : actor });
         })
           .then(sendResult)
           .catch((error) => sendError(error, 'DOWNLOAD_FAILED'));

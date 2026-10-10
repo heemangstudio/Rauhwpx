@@ -136,7 +136,9 @@ export function createOwnedBrowserService(options = {}) {
     return tab;
   };
   const assertPolicy = async (actor, action, url, tab, args = {}) => {
-    if (!actor.isHuman && action !== 'close' && (humanActionsPending || humanRequestsPending.size)) throw error('BROWSER_HUMAN_SESSION_PENDING', 'Wait for the current human browser action to finish before using its shared session.', true);
+    // 앱에서 연 페이지는 소유 에이전트의 작업 영역이다. 계정 비밀을 꺼내는 별도 경로는 이 예외를 사용하지 않는다.
+    const owned = tab && tabs.get(tab.tabId);
+    if (action === 'open' || owned && (actor.isHuman || sameScope(actor, owned))) return;
     const mapped = args.intent === 'website-change' || !actor.isHuman && changesWebsiteURL(url) ? 'website-change' : action === 'download' ? 'download' : READS.has(action) || MUTATIONS.has(action) ? 'read' : 'browse';
     if (policy?.assertAllowed && url !== 'about:blank') await policy.assertAllowed({ actor, action: mapped, url, profileId: profileId() });
     else if (policy?.assertBrowserAction) await policy.assertBrowserAction({ actor, action, url, tab: tab && descriptor(tab), intent: args.intent ?? 'research' });
@@ -156,9 +158,7 @@ export function createOwnedBrowserService(options = {}) {
     if (args.runtimeGeneration !== undefined && args.runtimeGeneration !== generation) throw error('BROWSER_STALE_RUNTIME', 'The browser restarted. Refresh its inventory before continuing.', true);
   };
   const assertController = (actor, tab) => {
-    if (actor.isHuman) {
-      if (tab.controller.owner !== 'human' || tab.controller.clientId !== actor.clientId) throw error('BROWSER_CONTROL_REQUIRED', 'Take control of this tab before sending input.');
-    } else if (tab.controller.owner !== 'agent') throw error('BROWSER_HUMAN_CONTROL', 'The user controls this tab. Wait until control returns to the agent.', true);
+    if (actor.isHuman && actor.sessionId && tab.sessionId && actor.sessionId !== tab.sessionId) throw error('BROWSER_CONTROL_REQUIRED', 'This browser tab belongs to another editor window.');
   };
   const enqueue = (tab, operation) => {
     const result = tab.queue.catch(() => {}).then(operation);
@@ -295,7 +295,6 @@ export function createOwnedBrowserService(options = {}) {
     page.on('download', (download) => { void onDownload(tab, download); });
     page.on('dialog', (dialog) => { void dialog.dismiss().catch(() => {}); });
     page.on('filechooser', (chooser) => {
-      if (tab.controller.owner !== 'human') { void chooser.setFiles([]).catch(() => {}); return; }
       tab.pendingChooser = chooser;
       emit('owned_browser_file_chooser', { tabId: tab.tabId, threadId: tab.threadId, multiple: chooser.isMultiple(), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch });
     });
@@ -311,7 +310,7 @@ export function createOwnedBrowserService(options = {}) {
       try { tab.nativeTargetId = (await session.send('Target.getTargetInfo')).targetInfo.targetId; }
       finally { await session.detach().catch(() => {}); }
       await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId });
-      await selectedAdapter().control?.({ targetId: tab.nativeTargetId, human: tab.controller.owner === 'human' });
+      await selectedAdapter().control?.({ targetId: tab.nativeTargetId, human: true });
     }
   };
 
@@ -417,7 +416,7 @@ export function createOwnedBrowserService(options = {}) {
     })();
     return starting;
   };
-  const makeTab = (actor) => ({ tabId: id('tab'), threadId: actor.threadId ?? null, projectId: actor.projectId ?? null, documentId: actor.documentId ?? null, agentId: actor.agentId ?? 'human', ownerId: actor.ownerId, sessionId: actor.sessionId, taskId: actor.taskId, url: 'about:blank', title: '', status: 'ready', page: null, navigationEpoch: 0, controllerEpoch: 1, controller: actor.isHuman ? { owner: 'human', clientId: actor.clientId } : { owner: 'agent' }, queue: Promise.resolve(), heldKeys: new Set(), heldButtons: new Set(), snapshot: null, frame: null });
+  const makeTab = (actor) => ({ tabId: id('tab'), threadId: actor.threadId ?? null, projectId: actor.projectId ?? null, documentId: actor.documentId ?? null, agentId: actor.agentId ?? 'human', ownerId: actor.ownerId, sessionId: actor.sessionId, taskId: actor.taskId, url: 'about:blank', title: '', status: 'ready', page: null, navigationEpoch: 0, controllerEpoch: 1, controller: { owner: 'agent' }, queue: Promise.resolve(), heldKeys: new Set(), heldButtons: new Set(), snapshot: null, frame: null });
   const requirePage = (tab) => { if (!tab.page || tab.page.isClosed()) throw error('BROWSER_RECONNECT_REQUIRED', 'The browser page disconnected. Recover it before sending input.', true); return tab.page; };
   const saveCheckpoint = () => {
     if (resetting || resetFailed) return Promise.resolve();
@@ -565,57 +564,6 @@ export function createOwnedBrowserService(options = {}) {
     return result;
   };
 
-  const assertInputIntent = async (actor, action, tab, args) => {
-    if (actor.isHuman || !['click', 'type', 'press'].includes(action)) return;
-    const handle = args.ref ? requireRef(tab, args) : await tab.page.evaluateHandle(() => document.activeElement);
-    let target;
-    try {
-      target = await handle.evaluate((el, rules) => {
-        if (!el) return null;
-        const form = el.form ?? el.closest('form');
-        return { tag: el.tagName.toLowerCase(), role: el.getAttribute('role') ?? '', type: el.getAttribute('type') ?? '', editable: el.isContentEditable,
-          label: String(el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim().slice(0, 500),
-          name: `${el.id} ${el.getAttribute('name') ?? ''} ${el.getAttribute('placeholder') ?? ''}`,
-          href: el.href ?? '', download: el.hasAttribute('download'), form: !!form, method: (form?.method ?? 'get').toLowerCase(), action: form?.action ?? '', login: !!form?.querySelector('input[type="password"]'),
-          queryVisible: !!form && [...form.elements].some((field) => { const rect = field.getBoundingClientRect(); return field.tagName === 'INPUT' && ['search', 'text'].includes(field.type) && /^(q|query|search|term|keyword|keywords|searchquery)$/i.test(field.name) && !field.disabled && rect.width > 0 && rect.height > 0 && getComputedStyle(field).visibility !== 'hidden'; }),
-          dangerousParams: !!form && [...form.elements].some((field) => { const name = field.name.toLowerCase(); if (!rules.verbs.includes(name) && !rules.operations.includes(name)) return false; const value = String(field.value).trim().toLowerCase(); return rules.verbs.includes(name) && !rules.negative.includes(value) || rules.operations.includes(name) && rules.verbs.includes(value); }),
-          exportOnly: !!form && form.elements.length <= 64 && [...form.elements].every((field) => field.tagName === 'BUTTON' || field.tagName === 'INPUT' && ['hidden', 'submit', 'button', 'image'].includes(field.type)) };
-      }, PARAMETER_RULES);
-    } finally { if (!args.ref) await handle.dispose(); }
-    let changesWebsite = !target;
-    if (target) {
-      const dangerous = /\b(delete|remove|destroy|send|publish|buy|purchase|checkout|share|save|edit|upload|invite|subscribe|unsubscribe|logout|sign out)\b|삭제|구매|결제|공유|전송|저장|편집|게시|초대|로그아웃/i.test(target.label);
-      let destination;
-      try { destination = new URL(target.href || target.action || tab.page.url(), tab.page.url()); } catch {}
-      const dangerousPath = destination && changesWebsiteURL(destination.href);
-      changesWebsite = dangerous || !!dangerousPath || target.dangerousParams || target.editable || target.tag === 'textarea';
-      if (action === 'type') {
-        // Typing in editor surfaces and unknown POST forms can trigger autosave.
-        changesWebsite ||= target.form && target.method !== 'get' && !target.login && !/search|query|\bq\b/i.test(target.name);
-      } else if (action === 'click' || /Enter|Space/.test(args.key ?? '')) {
-        if (target.href) changesWebsite ||= !destination || !( ['https:', 'http:'].includes(destination.protocol) || target.download && destination.protocol === 'blob:' );
-        else if (target.form && (action === 'press' || target.tag === 'button' || ['button', 'menuitem'].includes(target.role) || target.tag === 'input' && ['button', 'submit', 'image'].includes(target.type))) {
-          const accounts = credentialBroker?.listAccounts ? (await credentialBroker.listAccounts()).accounts : [];
-          const loginAllowed = target.login && destination && accounts.some((account) => account.agentReuseApproved && account.origins.includes(new URL(tab.page.url()).origin) && account.origins.includes(destination.origin));
-          const host = new URL(tab.page.url()).hostname;
-          const knownSearch = ['www.google.com', 'pubmed.ncbi.nlm.nih.gov', 'pmc.ncbi.nlm.nih.gov', 'arxiv.org', 'www.arxiv.org'].includes(host) && /search|검색/i.test(target.label);
-          const knownExport = host === 'docs.google.com' && /download|export|pdf|다운로드|내보내기/i.test(target.label) && /\/presentation\/d\//.test(new URL(tab.page.url()).pathname);
-          const pdfExport = target.exportOnly && /download|export|pdf|다운로드|내보내기/i.test(target.label) && destination && /(?:\/|[-_.])(pdf|export|download)(?:\/|[-_.]|$)/i.test(destination.pathname) && !dangerousPath;
-          const searchDestination = destination && ( /^\/(?:$|(?:search|query|find|results)(?:[/.]|$))/i.test(destination.pathname) || host.endsWith('.wikipedia.org') && destination.pathname === '/w/index.php' );
-          const searchTarget = /search|query|find|검색|찾기/i.test(target.label) || action === 'press' && /(^|\s)(q|query|search|term|keyword|keywords|searchquery)(\s|$)/i.test(target.name);
-          const querySearch = target.method === 'get' && target.queryVisible && searchDestination && searchTarget;
-          const safeSubmit = !target.dangerousParams && (loginAllowed || knownSearch || knownExport || pdfExport || querySearch);
-          changesWebsite ||= !safeSubmit;
-          if (safeSubmit && destination) tab.allowedSubmit = { origin: destination.origin, pathname: destination.pathname, method: target.method.toUpperCase(), expiresAt: Date.now() + 15_000 };
-        } else if (!target.form && (target.tag === 'button' || ['button', 'menuitem'].includes(target.role) || target.tag === 'input' && ['button', 'submit', 'image'].includes(target.type))) changesWebsite = true;
-        else if (action === 'press' && !/Enter|Space/.test(args.key ?? '')) changesWebsite = true;
-      }
-    }
-    if (changesWebsite) {
-      if (!policy?.assertAllowed && !policy?.assertBrowserAction) throw error('BROWSER_WEBSITE_CHANGE_REQUIRED', 'This action can change the website. Approve website changes for this site before continuing.');
-      await assertPolicy(actor, action, tab.page.url(), tab, { ...args, intent: 'website-change' });
-    }
-  };
   const assertAgentKey = (actor, key) => {
     if (actor.isHuman) return;
     const value = String(key ?? '');
@@ -883,19 +831,19 @@ export function createOwnedBrowserService(options = {}) {
       tab.activeActor = actor;
       try { if (!tab.page) { tab.sessionId = actor.sessionId ?? tab.sessionId; tab.controllerEpoch++; invalidate(tab); await attach(tab, await runtime.context.newPage()); if (tab.url !== 'about:blank') { markHumanOrigin(new URL(tab.url).origin); await guard.resolve(tab.url); await tab.page.goto(tab.url, { waitUntil: 'domcontentloaded' }); } } }
       finally { tab.activeActor = null; }
-      tab.status = 'ready'; tab.controller = { owner: 'human', clientId: actor.clientId };
+      tab.status = 'ready'; tab.controller = { owner: 'agent' };
       await selectedAdapter()?.control?.({ targetId: tab.nativeTargetId, human: true });
       markHumanDocument(tab); await observeHumanSessions(); publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo(), recovery: 'Page reloaded. Previous uncertain actions were not replayed.' };
     }
     if (action === 'control') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the user can transfer browser control.');
       epochs(tab, args);
-      tab.controllerEpoch++; tab.controller = args.owner === 'agent' ? { owner: 'agent' } : { owner: 'human', clientId: actor.clientId };
+      tab.controllerEpoch++; tab.controller = { owner: 'agent' };
       if (tab.controller.owner === 'human') markHumanDocument(tab);
       credentialBroker?.invalidateTab?.(tab.tabId);
       // Invalidate queued agent input immediately, then drain before confirming the transfer.
       await tab.queue.catch(() => {}); await releaseInput(tab);
-      if (selectedAdapter()?.control) await selectedAdapter().control({ targetId: tab.nativeTargetId, human: tab.controller.owner === 'human' });
+      if (selectedAdapter()?.control) await selectedAdapter().control({ targetId: tab.nativeTargetId, human: true });
       publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo() };
     }
     const mutating = MUTATIONS.has(action);
@@ -911,7 +859,6 @@ export function createOwnedBrowserService(options = {}) {
       await assertPolicy(actor, action, action === 'close' ? tab.page?.url?.() ?? tab.url : requirePage(tab).url(), tab, args);
       if (!actor.isHuman && challengeFor(tab) && (mutating && action !== 'close' && !(action === 'navigate' && args.url && !googleResearchURL(args.url)))) return challengeResult(action, tab);
       if (action === 'press') assertAgentKey(actor, args.key);
-      await assertInputIntent(actor, action, tab, args);
       if (!actor.isHuman && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in.', true);
       epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
@@ -937,6 +884,18 @@ export function createOwnedBrowserService(options = {}) {
   };
   return {
     request, inventory,
+    ownsTarget(actor, target) {
+      const tab = target?.tabId && tabs.get(target.tabId);
+      return !!tab && (actor?.isHuman ? !actor.sessionId || !tab.sessionId || actor.sessionId === tab.sessionId : sameScope(actor, tab));
+    },
+    downloadTarget(actor, url) {
+      let origin; try { origin = new URL(url).origin; } catch { return null; }
+      for (const tab of tabs.values()) {
+        if (!tab.page || tab.page.isClosed() || !(actor.isHuman ? !actor.sessionId || !tab.sessionId || actor.sessionId === tab.sessionId : sameScope(actor, tab))) continue;
+        try { if (new URL(tab.page.url()).origin === origin) return descriptor(tab); } catch {}
+      }
+      return null;
+    },
     async restore() {
       try { const config = JSON.parse(await fs.readFile(path.join(dataDir, 'browser', 'runtime.json'), 'utf8')); if (config.version === 1 && ['managed', 'native'].includes(config.mode) && (config.mode !== 'native' || nativeAdapter)) { runtimeMode = config.mode; headless = config.headless !== false; } } catch {}
       let stored; try { stored = JSON.parse(await fs.readFile(descriptorFile, 'utf8')); } catch { return; }

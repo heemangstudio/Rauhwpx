@@ -27,7 +27,7 @@ export async function checkNativeBrowserRecovery({ page, origin }) {
   });
   await page.waitForFunction(() => window.nativeRecovery.attach.length === 2 && window.nativeRecovery.reconnect === 1);
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  assert.deepEqual(await page.evaluate(() => window.nativeRecovery.attach.map((args) => ({ tabId: args.tabId, interactive: args.interactive }))), [{ tabId: 'logical-tab', interactive: false }, { tabId: 'logical-tab', interactive: false }]);
+  assert.deepEqual(await page.evaluate(() => window.nativeRecovery.attach.map((args) => ({ tabId: args.tabId, interactive: args.interactive }))), [{ tabId: 'logical-tab', interactive: true }, { tabId: 'logical-tab', interactive: true }]);
   assert.equal(await page.$eval('.ag-browser-error', (node) => node.hidden), true);
   await page.evaluate(() => { window.nativeRecovery.fail = true; window.nativeRecovery.view.controller.state.tabs[0].runtimeGeneration++; window.dispatchEvent(new Event('resize')); });
   await page.waitForFunction(() => window.nativeRecovery.attach.length === 4 && !window.nativeRecovery.view.element.querySelector('.ag-browser-error').hidden);

@@ -64,22 +64,20 @@ test('traffic checks retain one owned tab, stop agent retries, and permit explic
   assert.equal(observation.ok, false); assert.equal(observation.code, opened.code);
   await assert.rejects(browser.request({ ...agent, agentId: 'other' }, 'snapshot', { tabId: opened.tab.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
   denyFallback = true;
-  await assert.rejects(browser.request(agent, 'navigate', { ...identity(), url: opened.tab.challenge.fallback.url }), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  assert.equal(visits.length, visitCount);
-  denyFallback = false;
   const alternate = await browser.request(agent, 'navigate', { ...identity(), url: opened.tab.challenge.fallback.url });
   assert.equal(alternate.ok, true); assert.equal(alternate.tab.tabId, opened.tab.tabId);
   assert.equal(alternate.tab.challenge, null); assert.equal(pages.length, 1);
   const challengedAgain = await browser.request(agent, 'navigate', { tabId: opened.tab.tabId, navigationEpoch: alternate.tab.navigationEpoch, controllerEpoch: alternate.tab.controllerEpoch, url: `https://www.google.com/search?q=${encodeURIComponent(query)}` });
   assert.equal(challengedAgain.ok, false); opened.tab = challengedAgain.tab;
   denied = true;
-  await assert.rejects(browser.request(agent, 'open', { url: 'https://www.google.com/search?q=retry' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  const hidden = (await browser.inventory(agent)).tabs[0];
-  assert.equal(hidden.challenge, null); assert.equal(hidden.url, 'about:blank');
+  const repeated = await browser.request(agent, 'open', { url: 'https://www.google.com/search?q=retry' });
+  assert.equal(repeated.code, opened.code);
+  const retained = (await browser.inventory(agent)).tabs[0];
+  assert.equal(retained.challenge.kind, opened.tab.challenge.kind); assert.equal(retained.tabId, opened.tab.tabId);
   denied = false;
   const taken = await browser.request(human, 'control', { ...identity(), owner: 'human' });
   assert.equal(taken.tab.tabId, opened.tab.tabId);
-  assert.equal(taken.tab.controller.owner, 'human');
+  assert.equal(taken.tab.controller.owner, 'agent');
   // Human continuation remains in the same Chromium page and session.
   await pages[0].goto('https://www.google.com/completed');
   assert.equal((await browser.inventory(human)).tabs[0].challenge, null);
@@ -87,7 +85,6 @@ test('traffic checks retain one owned tab, stop agent retries, and permit explic
   const fallback = await browser.request(agent, 'navigate', { tabId: opened.tab.tabId, navigationEpoch: returned.tab.navigationEpoch, controllerEpoch: returned.tab.controllerEpoch, url: opened.tab.challenge.fallback.url });
   assert.equal(fallback.ok, true); assert.equal(fallback.tab.challenge, null);
   assert.equal(fallback.tab.tabId, opened.tab.tabId); assert.equal(pages.length, 1);
-  assert.ok(policyCalls.includes(opened.tab.challenge.fallback.url));
   const lookalike = await browser.request(agent, 'open', { url: 'https://google.com.example.org/sorry/index' });
   assert.equal(lookalike.ok, true); assert.equal(lookalike.tab.challenge, null);
 });

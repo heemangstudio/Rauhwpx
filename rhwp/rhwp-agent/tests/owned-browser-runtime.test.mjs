@@ -162,7 +162,7 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   assert.ok(observation.snapshot.elements.some((element) => element.value === '한국어 research'));
   await assert.rejects(browser.request(alice, 'type', inputArgs), { code: 'BROWSER_STALE_REFERENCE' });
   const taken = await browser.request(human, 'control', { tabId: a.tabId, owner: 'human' });
-  await assert.rejects(browser.request(alice, 'press', { tabId: a.tabId, key: 'Enter', navigationEpoch: taken.tab.navigationEpoch, controllerEpoch: taken.tab.controllerEpoch }), { code: 'BROWSER_HUMAN_CONTROL' });
+  await browser.request(alice, 'press', { tabId: a.tabId, key: 'Enter', navigationEpoch: taken.tab.navigationEpoch, controllerEpoch: taken.tab.controllerEpoch });
   const stillReadable = await browser.request(alice, 'snapshot', { tabId: a.tabId });
   assert.ok(stillReadable.snapshot.text.includes('Research'));
   const frame = await browser.request(human, 'frame', { tabId: a.tabId });
@@ -218,7 +218,7 @@ test('human tab closure retains epoch and agent scope checks without requiring p
   const opened = await browser.request(agent, 'open', {});
   const identity = tab => ({ tabId: tab.tabId, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, runtimeGeneration: tab.runtimeGeneration });
   const target = identity(opened.tab);
-  await assert.rejects(browser.request(human, 'input', { ...target, type: 'release' }), { code: 'BROWSER_CONTROL_REQUIRED' });
+  await browser.request(human, 'input', { ...target, type: 'release' });
   await assert.rejects(browser.request(human, 'close', { tabId: target.tabId }), { code: 'BROWSER_EPOCH_REQUIRED' });
   await assert.rejects(browser.request(human, 'close', { ...target, navigationEpoch: target.navigationEpoch + 1 }), { code: 'BROWSER_STALE_NAVIGATION' });
   await assert.rejects(browser.request(human, 'close', { ...target, controllerEpoch: target.controllerEpoch + 1 }), { code: 'BROWSER_STALE_CONTROL' });
@@ -228,11 +228,10 @@ test('human tab closure retains epoch and agent scope checks without requiring p
   assert.equal(closed.completed, true); assert.equal(closedPages, 1); assert.equal((await browser.inventory(human)).tabs.length, 0);
   const humanOwned = await browser.request(human, 'open', {});
   const controlled = await browser.request(human, 'control', { tabId: humanOwned.tab.tabId, owner: 'human' });
-  // 사람에게 조작권을 넘긴 에이전트의 탭도 에이전트가 임의로 닫을 수 없다.
+  // 사용자의 입력 이후에도 소유 에이전트가 탭을 조작할 수 있다.
   const next = await browser.request(agent, 'open', {});
   const taken = await browser.request(human, 'control', { tabId: next.tab.tabId, owner: 'human' });
-  await assert.rejects(browser.request(agent, 'close', identity(taken.tab)), { code: 'BROWSER_HUMAN_CONTROL' });
-  await browser.request(human, 'close', identity(taken.tab));
+  await browser.request(agent, 'close', identity(taken.tab));
   await browser.request({ isHuman: true, clientId: 'another-editor' }, 'close', identity(controlled.tab));
   assert.equal(closedPages, 3);
 });
@@ -253,7 +252,7 @@ test('restored native tabs materialize once on selection without transferring co
   const bindings = [];
   let actual; let creations = 0;
   const browser = createOwnedBrowserService({ dataDir, policy, credentialBroker, workspaceTargets: [origin], autoInstall: false,
-    nativeAdapter: { async bind(binding) { bindings.push(binding); }, async control(binding) { assert.equal(binding.human, false); } },
+    nativeAdapter: { async bind(binding) { bindings.push(binding); }, async control(binding) { assert.equal(binding.human, true); } },
     runtimeFactory: async (settings) => {
       actual = await startOwnedBrowserRuntime({ ...settings, nativeAdapter: undefined });
       for (const initial of actual.context.pages()) await initial.close();
@@ -275,8 +274,13 @@ test('restored native tabs materialize once on selection without transferring co
   assert.deepEqual(first.tab.controller, { owner: 'agent' });
   assert.equal(first.tab.status, 'ready'); assert.equal(actual.context.pages().length, 1);
   assert.equal(await actual.context.pages()[0].title(), 'Restored research', 'human restoration may display the quarantined retained origin');
-  await assert.rejects(browser.request(retainedOwner, 'snapshot', args), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
-  assert.equal((await browser.request(human, 'snapshot', args)).ok, true, 'human observation is permitted without silently approving agent access');
+  assert.equal((await browser.request(retainedOwner, 'snapshot', args)).ok, true, 'owned-tab access includes the retained session');
+  assert.equal(browser.ownsTarget(retainedOwner, first.tab), true);
+  assert.equal(browser.ownsTarget({ isHuman: true, sessionId: 'wrong-window' }, first.tab), false);
+  assert.equal(browser.downloadTarget({ isHuman: true, sessionId: 'wrong-window' }, `${origin}/file.pdf`), null);
+  assert.equal(browser.ownsTarget({ ...retainedOwner, projectId: 'other-project' }, first.tab), false);
+  await assert.rejects(browser.request({ ...retainedOwner, projectId: 'other-project' }, 'snapshot', args), { code: 'BROWSER_TAB_NOT_FOUND' });
+  assert.equal((await browser.request(human, 'snapshot', args)).ok, true, 'human observation and agent control share the owned browser');
   assert.ok(bindings.every((binding) => binding.sessionId === 'new-window' && binding.chatId === 'chat-a'));
   await assert.rejects(browser.request({ agentId: 'other', threadId: 'other-chat' }, 'snapshot', args), { code: 'BROWSER_TAB_NOT_FOUND' });
   const page = actual.context.pages()[0];
@@ -298,7 +302,7 @@ test('native saved searches retain their query and failed materialization closes
   await fs.writeFile(path.join(dataDir, 'browser', 'tabs.json'), JSON.stringify({ version: 1, tabs: [{ tabId: 'saved-search', nativeTargetId: 'old', threadId: 'research', agentId: 'owner', url: 'https://www.google.com/sorry/index', searchQuery: '한국어 research', sessionId: 'old-window' }] }));
   const pages = []; const navigations = []; let failBind = true;
   const browser = createOwnedBrowserService({ dataDir, lookup: async () => [{ address: '93.184.216.34', family: 4 }],
-    nativeAdapter: { async bind() { if (failBind) { failBind = false; throw new Error('Controlled binding failure'); } }, async control({ human }) { assert.equal(human, false); } },
+    nativeAdapter: { async bind() { if (failBind) { failBind = false; throw new Error('Controlled binding failure'); } }, async control({ human }) { assert.equal(human, true); } },
     runtimeFactory: async () => ({ kind: 'native', browser: new EventEmitter(), async close() {}, context: Object.assign(new EventEmitter(), {
       async storageState() { return { cookies: [], origins: [] }; }, async route() {}, pages: () => [],
       async newCDPSession(page) { return { async send() { return { targetInfo: { targetId: page.target } }; }, async detach() {} }; },

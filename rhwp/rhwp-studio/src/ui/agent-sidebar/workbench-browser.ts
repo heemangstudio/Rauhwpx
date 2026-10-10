@@ -51,10 +51,6 @@ export function createWorkbenchBrowser(options: {
   const go = button('주소 열기', '', () => navigation.requestSubmit(), navigation); icon(go, 'browserForward');
   const newTab = button('새 브라우저 탭', '+', () => handle(controller.open()));
   const status = document.createElement('span'); status.className = 'ag-browser-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
-  const control = button('직접 조작', '직접 조작', () => {
-    const tab = controller.tab(); if (!tab) return;
-    handle(controller.action('control', { ...controller.identity(), owner: tab.controller.owner === 'human' ? 'agent' : 'human' }).then(() => controller.readFrame()));
-  });
   const recover = button('끊긴 브라우저 탭 복구', '탭 복구', () => { handle(reconnectBrowser()); });
   const annotate = button('페이지·개체·영역에 의견 붙이기', '의견 붙이기', () => beginAnnotation());
   const downloadsButton = button('다운로드 목록', '받은 파일', () => showDownloads(Boolean(downloads.hidden)));
@@ -67,14 +63,14 @@ export function createWorkbenchBrowser(options: {
     if (native && tab && (tab.runtime === 'native' || controller.state.runtime?.kind === 'native')) {
       const rect = surface.getBoundingClientRect();
       nativePopout = true;
-      handle((nativePending ?? Promise.resolve()).then(() => attachNative({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, mode: 'popout', interactive: tab.controller.owner === 'human' })).then((attached) => {
+      handle((nativePending ?? Promise.resolve()).then(() => attachNative({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, mode: 'popout', interactive: true })).then((attached) => {
         if (!attached || disposed || !visible || controller.tab()?.tabId !== tab.tabId) { nativePopout = false; return; }
         nativePopout = true; nativeTab = null; nativeProjection = ''; presentation.hide();
       }).catch(() => { nativePopout = false; nativeError = '브라우저 화면을 연결하지 못했습니다. 다시 연결해 주세요.'; paint(); }));
     } else presentation.present('popout');
   });
   const closeView = button('브라우저 보기 닫기', '', () => presentation.hide());
-  for (const [node, name] of [[back, 'browserBack'], [forward, 'browserForward'], [reload, 'refresh'], [newTab, 'insert'], [control, 'browserHand'], [recover, 'refresh'], [annotate, 'browserCapture'], [downloadsButton, 'browserDownload'], [dockButton, 'browserDock'], [floatButton, 'browserFloat'], [popoutButton, 'external'], [closeView, 'close']] as const) icon(node, name);
+  for (const [node, name] of [[back, 'browserBack'], [forward, 'browserForward'], [reload, 'refresh'], [newTab, 'insert'], [recover, 'refresh'], [annotate, 'browserCapture'], [downloadsButton, 'browserDownload'], [dockButton, 'browserDock'], [floatButton, 'browserFloat'], [popoutButton, 'external'], [closeView, 'close']] as const) icon(node, name);
   const tabBar = document.createElement('div'); tabBar.className = 'ag-browser-tabbar'; tabBar.append(tabs);
   toolbar.prepend(navigation); toolbar.append(newTab, status); element.append(tabBar, toolbar);
   const error = document.createElement('div'); error.className = 'ag-browser-error'; error.setAttribute('role', 'alert'); error.hidden = true;
@@ -85,14 +81,11 @@ export function createWorkbenchBrowser(options: {
   const challengeMessage = document.createElement('span'); challengeMessage.textContent = 'Google에서 트래픽 확인을 요청했습니다.'; challenge.append(challengeMessage);
   const continueChallenge = button('같은 탭에서 Google 확인 직접 완료', '직접 확인', () => {
     presentation.present('dock'); options.onDock();
-    handle(controller.action('control', { ...controller.identity(), owner: 'human' }).then(() => controller.readFrame()));
+    handle(controller.readFrame());
   }, challenge);
   const fallbackSearch = button('같은 검색어로 DuckDuckGo 검색', 'DuckDuckGo로 검색', () => {
     const tab = controller.tab(); const url = tab?.challenge?.fallback?.url; if (!tab || !url) return;
-    handle(controller.action('control', { ...controller.identity(tab), owner: 'human' }).then(result => {
-      if (!result.tab) return;
-      return controller.action('navigate', { ...controller.identity(result.tab), url }).then(() => controller.readFrame());
-    }));
+    handle(controller.action('navigate', { ...controller.identity(tab), url }).then(() => controller.readFrame()));
   }, challenge);
   element.append(challenge);
   const upload = document.createElement('div'); upload.className = 'ag-browser-upload'; upload.hidden = true;
@@ -256,7 +249,7 @@ export function createWorkbenchBrowser(options: {
   }
   function sendInput(args: Record<string, unknown>): void {
     const tab = controller.tab();
-    if (!tab || tab.controller.owner !== 'human' || !controller.state.connected || pinned) return;
+    if (!tab || !controller.state.connected || pinned) return;
     const identity = controller.identity();
     lastInputAt = performance.now();
     inputChain = inputChain.catch(() => undefined).then(() => controller.request('input', { ...identity, ...args })).then(() => {
@@ -272,7 +265,6 @@ export function createWorkbenchBrowser(options: {
       if (annotationMode === 'region') { pointerStart = at; surface.setPointerCapture(event.pointerId); selection.hidden = false; }
       event.preventDefault(); return;
     }
-    if (controller.tab()?.controller.owner !== 'human') return;
     event.preventDefault(); surface.setPointerCapture(event.pointerId); textInput.focus({ preventScroll: true });
     sendInput({ type: 'pointer', event: 'down', ...at, button: ['left', 'middle', 'right'][event.button] ?? 'left' });
   });
@@ -292,7 +284,7 @@ export function createWorkbenchBrowser(options: {
   });
   surface.addEventListener('pointercancel', () => { pointerStart = null; sendInput({ type: 'release' }); });
   surface.addEventListener('wheel', event => {
-    if (controller.tab()?.controller.owner !== 'human' || pinned) return;
+    if (!controller.tab() || pinned) return;
     event.preventDefault(); sendInput({ type: 'wheel', event: 'move', ...point(event), deltaX: event.deltaX, deltaY: event.deltaY });
   }, { passive: false });
   textInput.addEventListener('compositionstart', () => { composing = true; });
@@ -366,7 +358,7 @@ export function createWorkbenchBrowser(options: {
       if (!/Native browser tab is unavailable|presentation (navigation|target) is stale/.test(message)) throw failure;
       await controller.request('reconnect', { tabId: placement.tabId });
       if (disposed || !visible || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
-      await native.attach({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, interactive: controller.tab()?.controller.owner === 'human' });
+      await native.attach({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, interactive: true });
     }
     return true;
   }
@@ -380,7 +372,7 @@ export function createWorkbenchBrowser(options: {
     if (disposed || sequence !== nativeSequence || !visible || nativeOverlayOpen() || !useNative || !target || nativePopout) return;
     const rect = surface.getBoundingClientRect(); if (rect.width < 1 || rect.height < 1) return;
     nativeTab = target;
-    const placement = { tabId: target, expectedTargetId: tab.nativeTargetId, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, mode: presentation.current() ?? 'dock', interactive: tab.controller.owner === 'human' };
+    const placement = { tabId: target, expectedTargetId: tab.nativeTargetId, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, mode: presentation.current() ?? 'dock', interactive: true };
     const identity = () => JSON.stringify({ tabId: target, runtimeGeneration: controller.tab()?.runtimeGeneration, nativeTargetId: controller.tab()?.nativeTargetId });
     const signature = () => JSON.stringify({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, identity: identity() });
     if (nativeProjection === signature() || nativeFailedProjection === identity()) return;
@@ -418,8 +410,8 @@ export function createWorkbenchBrowser(options: {
     const tab = controller.tab(); const frame = pinned?.frame ?? controller.frame(); const connected = controller.state.connected;
     challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
     fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
-    status.textContent = reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'loading' ? '페이지 여는 중' : tab.controller.owner === 'human' ? '직접 조작 중' : '에이전트 조작 중';
-    status.title = tab?.controller.owner === 'human' ? '직접 조작 중 · 에이전트는 페이지를 읽을 수 있습니다.' : status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
+    status.textContent = reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'loading' ? '페이지 여는 중' : '에이전트 브라우저';
+    status.title = status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
     const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title, row.url]), tab?.tabId]);
     if (tabsSignature !== nextTabsSignature) {
     const focusedTab = tabs.contains(document.activeElement) ? (document.activeElement as HTMLElement)?.dataset.tabId : null;
@@ -441,9 +433,7 @@ export function createWorkbenchBrowser(options: {
     options.onChange?.();
     }
     if (element.ownerDocument.activeElement !== address) address.value = tab?.url ?? '';
-    for (const node of [control, annotate, reload, back, forward]) node.disabled = !tab || !connected || controller.state.busy;
-    const controlLabel = tab?.controller.owner === 'human' ? '에이전트에게 넘기기' : '직접 조작';
-    control.setAttribute('aria-label', controlLabel); control.title = controlLabel; control.setAttribute('aria-pressed', String(tab?.controller.owner === 'human')); icon(control, tab?.controller.owner === 'human' ? 'bot' : 'browserHand');
+    for (const node of [annotate, reload, back, forward]) node.disabled = !tab || !connected || controller.state.busy;
     const reloadLabel = tab?.status === 'loading' ? '페이지 열기 중지' : '새로고침'; reload.setAttribute('aria-label', reloadLabel); reload.title = reloadLabel; icon(reload, tab?.status === 'loading' ? 'browserStop' : 'refresh');
     newTab.disabled = !connected; emptyOpen.disabled = !connected;
     recover.hidden = reconnecting || !!nativePending || !tab || !['crashed', 'disconnected', 'restorable', 'failed'].includes(tab.status); recover.disabled = !connected || controller.state.busy;

@@ -105,7 +105,7 @@ test('approved agent cookie rotation keeps exact nested-path provenance through 
   assert.equal((await second.credentialBroker.listAccounts()).accounts.find((entry) => entry.id === account.id).agentReuseApproved, true);
 });
 
-test('a pending human login cannot be absorbed by a concurrent agent cookie response', async (t) => {
+test('human login and agent research coexist without changing standalone credential approval', async (t) => {
   if (!await needsBrowser(t)) return;
   let loginResponse;
   const f = await fixture(t, (request, response) => {
@@ -121,9 +121,11 @@ test('a pending human login cannot be absorbed by a concurrent agent cookie resp
   await browser.request(agent, 'open', { url: f.origin });
   const humanLogin = browser.request(human, 'open', { url: `${f.origin}/human-login` });
   await eventually(() => loginResponse);
-  await assert.rejects(browser.request(agent, 'open', { url: `${f.origin}/agent-refresh` }), (failure) => ['BROWSER_HUMAN_SESSION_PENDING', 'BROWSER_ACCOUNT_APPROVAL_REQUIRED'].includes(failure.code));
+  const refreshed = await browser.request(agent, 'open', { url: `${f.origin}/agent-refresh` });
+  assert.equal(refreshed.ok, true);
   loginResponse.end('</h1>'); await humanLogin;
-  await assert.rejects(browser.request(agent, 'open', { url: `${f.origin}/research` }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  assert.equal((await browser.request(agent, 'snapshot', { tabId: refreshed.tab.tabId })).ok, true);
+  await assert.rejects(credentialBroker.assertBrowserAccess({ actor: agent, url: f.origin }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
 });
 
 test('host-only and domain cookies with the same name retain separate approved provenance', async (t) => {
@@ -177,16 +179,17 @@ test('a delayed human storage change is not attributed to an agent response', as
   const humanTab = (await browser.request(human, 'open', {})).tab;
   await browser.request(human, 'navigate', { tabId: humanTab.tabId, navigationEpoch: humanTab.navigationEpoch, controllerEpoch: humanTab.controllerEpoch, url: `${f.origin}/human` });
   const opening = browser.request(agent, 'open', { url: `${f.origin}/agent-delayed` });
-  const rejected = assert.rejects(opening, { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  const completed = opening;
   await eventually(() => delayedResponse);
   const humanPage = context.pages().find((page) => page.url().endsWith('/human'));
   await humanPage.evaluate(() => window.storePrivateSession());
-  delayedResponse.end('<h1>Agent response</h1>'); await rejected;
-  await assert.rejects(browser.request(agent, 'open', { url: `${f.origin}/private` }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  delayedResponse.end('<h1>Agent response</h1>'); assert.equal((await completed).ok, true);
+  assert.equal((await browser.request(agent, 'open', { url: `${f.origin}/private` })).ok, true);
+  await assert.rejects(credentialBroker.assertBrowserAccess({ actor: agent, url: f.origin }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
   assert.equal((await credentialBroker.listAccounts()).accounts.length, 0);
 });
 
-test('returning human control does not approve a pending storage change or frame', async (t) => {
+test('human interaction keeps the owned page readable without approving external credential reuse', async (t) => {
   if (!await needsBrowser(t)) return;
   const f = await fixture(t, (_request, response) => { response.setHeader('Content-Type', 'text/html'); response.end('<h1>Human page</h1><script>window.storePrivateSession=()=>{localStorage.setItem("auth","DUMMY_HUMAN_IDENTITY");document.body.innerHTML="Private identity"}</script>'); });
   const policy = createBrowserPolicy({ dataDir: f.dataDir });
@@ -202,9 +205,10 @@ test('returning human control does not approve a pending storage change or frame
   const screenshot = page.screenshot.bind(page);
   page.screenshot = async (options) => { const bytes = await screenshot(options); frameStarted(); await held; return bytes; };
   const pendingFrame = browser.request(agent, 'frame', { tabId: opened.tab.tabId });
-  const rejected = assert.rejects(pendingFrame, { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
-  await ready; await page.evaluate(() => window.storePrivateSession()); releaseFrame(); await rejected;
-  await assert.rejects(browser.request(agent, 'snapshot', { tabId: opened.tab.tabId }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  const completed = pendingFrame;
+  await ready; await page.evaluate(() => window.storePrivateSession()); releaseFrame(); assert.equal((await completed).ok, true);
+  assert.ok((await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.text.includes('Private identity'));
+  await assert.rejects(credentialBroker.assertBrowserAccess({ actor: agent, url: f.origin }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
 });
 
 test('explicit account confirmation permits normal agent storage refresh and encrypted reuse', async (t) => {
@@ -256,7 +260,7 @@ test('browser reset drains its owner and removes only browser profile and accoun
   const fresh = await browser.request(agent, 'open', {}); assert.equal(fresh.tab.url, 'about:blank');
 });
 
-test('agents cannot commit through deceptive buttons, Enter, or clipboard aliases', async (t) => {
+test('owned browser agents may submit forms and website changes while secret and device boundaries remain', async (t) => {
   if (!await needsBrowser(t)) return;
   let mutations = 0;
   let searches = 0;
@@ -272,29 +276,24 @@ test('agents cannot commit through deceptive buttons, Enter, or clipboard aliase
   const browser = createOwnedBrowserService({ dataDir: fixtureState.dataDir, workspaceTargets: [fixtureState.origin], policy, credentialBroker: broker, autoInstall: false });
   fixtureState.cleanup(() => browser.close());
   const opened = await browser.request(agent, 'open', { url: fixtureState.origin });
-  let observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  const deletion = observation.snapshot.elements.find((element) => element.name.includes('Delete'));
-  await assert.rejects(browser.request(agent, 'click', { ...refArgs(observation, deletion), intent: 'research' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  const title = observation.snapshot.elements.find((element) => element.value === 'Draft');
-  await assert.rejects(browser.request(agent, 'press', { ...refArgs(observation, title), key: 'Enter' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  const deceptive = observation.snapshot.elements.find((element) => element.name === 'Confirm');
-  await assert.rejects(browser.request(agent, 'click', { ...refArgs(observation, deceptive), intent: 'search' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  await assert.rejects(browser.request(agent, 'click', { ...refArgs(observation, observation.snapshot.elements.find((element) => element.name === 'Apply confirmation')), intent: 'search' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  await assert.rejects(browser.request(agent, 'press', { ...refArgs(observation, observation.snapshot.elements.find((element) => element.name === 'Pending change')), key: 'Enter', intent: 'search' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  await assert.rejects(browser.request(agent, 'type', { ...refArgs(observation, observation.snapshot.elements.find((element) => element.name === 'Pending change')), text: 'change', intent: 'search' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  await assert.rejects(browser.request(agent, 'click', { ...refArgs(observation, observation.snapshot.elements.find((element) => element.name === 'Commit link')), intent: 'search' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  await assert.rejects(browser.request(agent, 'navigate', { tabId: opened.tab.tabId, navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch, url: `${fixtureState.origin}/apply?delete=1` }), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  await assert.rejects(browser.request(agent, 'open', { url: `${fixtureState.origin}/apply?command=delete` }), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  assert.equal(mutations, 0);
+  const reset = async () => {
+    const tab = (await browser.inventory(agent)).tabs.find((row) => row.tabId === opened.tab.tabId);
+    await browser.request(agent, 'navigate', { tabId: tab.tabId, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, url: fixtureState.origin });
+    return browser.request(agent, 'snapshot', { tabId: tab.tabId });
+  };
+  for (const [action, name, args] of [['click', 'Delete saved document', {}], ['press', 'Draft', { key: 'Enter' }], ['click', 'Confirm', {}], ['type', 'Pending change', { text: 'changed' }], ['click', 'Commit link', {}]]) {
+    const observation = await reset();
+    const element = observation.snapshot.elements.find((entry) => entry.name === name || entry.value === name);
+    await browser.request(agent, action, { ...refArgs(observation, element), ...args });
+  }
+  await eventually(() => mutations >= 5);
+  let observation = await reset();
+  await browser.request(agent, 'type', { ...refArgs(observation, observation.snapshot.elements.find((element) => element.name === 'Public query')), text: 'research' });
+  await eventually(() => mutations >= 6);
   observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  const publicQuery = observation.snapshot.elements.find((element) => element.name === 'Public query');
-  await browser.request(agent, 'type', { ...refArgs(observation, publicQuery), text: 'research' });
-  observation = await eventually(async () => { const result = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId }); return result.snapshot.text.includes('GET blocked') && result; });
-  assert.equal(mutations, 0);
   await browser.request(agent, 'click', { ...refArgs(observation, observation.snapshot.elements.find((element) => element.tag === 'button' && element.name === 'Search')) });
   assert.equal(searches, 1);
-  observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  await policy.update({ actor: human, operation: 'set-site', origin: fixtureState.origin, allowedActions: ['browse', 'read', 'download', 'website-change'] });
+  observation = await reset();
   const username = observation.snapshot.elements.find((element) => element.name === 'Saved identity');
   const password = observation.snapshot.elements.find((element) => element.sensitive);
   await browser.request(agent, 'fill-account', { ...refArgs(observation, password), accountId: 'fixture-account', usernameRef: username.ref, passwordRef: password.ref });
@@ -308,7 +307,7 @@ test('agents cannot commit through deceptive buttons, Enter, or clipboard aliase
   assert.equal(JSON.stringify(await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).includes('BROKER_PRIVATE_'), false);
 });
 
-test('outbound website websocket messages require a current website-change grant', async (t) => {
+test('owned browser website websocket messages work without a separate website-change grant', async (t) => {
   if (!await needsBrowser(t)) return;
   let mutations = 0;
   const f = await fixture(t, (_request, response) => {
@@ -325,11 +324,11 @@ test('outbound website websocket messages require a current website-change grant
   await eventually(() => sockets.clients.size > 0);
   const observation = await eventually(async () => { const result = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId }); return result.snapshot.text.includes('Ready') && result; });
   await browser.request(agent, 'type', { ...refArgs(observation, observation.snapshot.elements[0]), text: 'query' });
-  await eventually(() => sockets.clients.size === 0);
-  assert.equal(mutations, 0);
+  await eventually(() => mutations === 1);
+  assert.equal(sockets.clients.size, 1);
 });
 
-test('ordinary agent cookies survive encrypted restart while human session changes stay quarantined', async (t) => {
+test('owned-browser retained sessions remain usable across encrypted restarts after human login', async (t) => {
   if (!await needsBrowser(t)) return;
   const f = await fixture(t, (request, response) => {
     response.setHeader('Content-Type', 'text/html');
@@ -347,14 +346,14 @@ test('ordinary agent cookies survive encrypted restart while human session chang
   const reopened = await second.request(agent, 'open', { url: `${f.origin}/research` });
   assert.ok((await second.request(agent, 'snapshot', { tabId: reopened.tab.tabId })).snapshot.text.includes('Public research'));
   const humanTab = (await second.request(human, 'open', { url: `${f.origin}/human-login` })).tab;
-  await assert.rejects(second.request(agent, 'snapshot', { tabId: reopened.tab.tabId }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  assert.equal((await second.request(agent, 'snapshot', { tabId: reopened.tab.tabId })).ok, true);
   await second.request(human, 'close', { tabId: humanTab.tabId, navigationEpoch: humanTab.navigationEpoch, controllerEpoch: humanTab.controllerEpoch });
   await second.close();
   const third = build(); f.cleanup(() => third.close());
-  await assert.rejects(third.request(agent, 'open', { url: `${f.origin}/research` }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  assert.equal((await third.request(agent, 'open', { url: `${f.origin}/research` })).ok, true);
 });
 
-test('a hidden-CSRF PDF export works under default research policy and long transfers stop on revocation', async (t) => {
+test('owned-browser PDF exports ignore website grants and stop when their logical tab closes', async (t) => {
   if (!await needsBrowser(t)) return;
   let posted = false;
   const f = await fixture(t, (request, response) => {
@@ -371,10 +370,11 @@ test('a hidden-CSRF PDF export works under default research policy and long tran
     response.setHeader('Content-Type', 'text/html'); response.end('<form method="post" action="/pdf/export"><input type="hidden" name="csrf" value="fixture"><button>Export PDF</button></form><a href="/pdf/slow">Slow PDF</a>');
   });
   const policy = createBrowserPolicy({ dataDir: f.dataDir });
-  const downloads = createBrowserDownloads({ dataDir: f.dataDir, timeoutMs: 10_000 });
+  const downloads = createBrowserDownloads({ dataDir: f.dataDir, timeoutMs: 10_000, authorizeDownload: ({ actor, target }) => browser.ownsTarget(actor, target) });
   const browser = createOwnedBrowserService({ dataDir: f.dataDir, workspaceTargets: [f.origin], policy, downloads, autoInstall: false });
   f.cleanup(async () => { await browser.close(); await downloads.close(); });
   const opened = await browser.request(agent, 'open', { url: f.origin });
+  await policy.update({ actor: human, operation: 'set-default', key: 'download', enabled: false });
   let observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
   await browser.request(agent, 'click', { ...refArgs(observation, observation.snapshot.elements.find((element) => element.tag === 'button')), intent: 'research' });
   const exported = await eventually(async () => (await downloads.list(agent)).find((job) => job.state === 'downloaded'));
@@ -383,7 +383,11 @@ test('a hidden-CSRF PDF export works under default research policy and long tran
   observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
   await browser.request(agent, 'click', { ...refArgs(observation, observation.snapshot.elements.find((element) => element.tag === 'a')) });
   const slow = await eventually(async () => (await downloads.list(agent)).find((job) => job.state === 'downloading'));
-  await policy.update({ actor: human, operation: 'set-default', key: 'download', enabled: false });
+  const tab = (await browser.inventory(agent)).tabs.find((tab) => tab.tabId === opened.tab.tabId);
+  assert.equal(browser.downloadTarget(agent, `${f.origin}/public-file.pdf`).tabId, tab.tabId);
+  assert.equal(browser.downloadTarget({ ...agent, projectId: 'other-project' }, `${f.origin}/public-file.pdf`), null);
+  assert.equal(browser.downloadTarget(agent, 'https://unrelated.example/file.pdf'), null);
+  await browser.request(agent, 'close', { tabId: tab.tabId, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch });
   await eventually(async () => (await downloads.list(agent)).find((job) => job.downloadId === slow.downloadId && job.state === 'interrupted'));
   assert.ok((await downloads.list(agent)).find((job) => job.downloadId === exported.downloadId && job.state === 'downloaded'));
 });
