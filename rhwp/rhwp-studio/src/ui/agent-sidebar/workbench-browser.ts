@@ -66,9 +66,16 @@ export function createWorkbenchBrowser(options: {
   }
   function changeZoom(factor: number): void {
     const native = nativeBrowserApi(); const tab = controller.tab();
-    if (!native?.zoom || !tab || !controller.usesNativePresentation() || zoomPending) return;
+    if (!native?.zoom || !tab || !controller.usesNativePresentation() || zoomPending || pinned) return;
     zoomPending = true; nativeError = null; paint();
     handle(native.zoom({ tabId: tab.tabId, factor }).then(result => acceptZoom(tab.tabId, result)).catch(() => { nativeError = '페이지 배율을 변경하지 못했습니다.'; }).finally(() => { zoomPending = false; paint(); }));
+  }
+  function paintZoom(): void {
+    for (const tabId of tabZoom.keys()) if (!controller.state.tabs.some(tab => tab.tabId === tabId)) tabZoom.delete(tabId);
+    const tab = controller.tab(); const factor = tabZoom.get(tab?.tabId ?? '') ?? 1;
+    zoomReset.textContent = `${Math.round(factor * 100)}%`;
+    const unavailable = !nativeBrowserApi()?.zoom || !tab || !controller.state.connected || !controller.usesNativePresentation() || zoomPending || Boolean(pinned);
+    zoomReset.disabled = unavailable; zoomOut.disabled = unavailable || factor <= .25; zoomIn.disabled = unavailable || factor >= 3;
   }
   const newTab = button('새 브라우저 탭', '+', () => handle(controller.open()));
   const status = document.createElement('span'); status.className = 'ag-browser-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
@@ -210,6 +217,7 @@ export function createWorkbenchBrowser(options: {
     event.preventDefault(); event.stopPropagation(); address.value = controller.tab()?.url ?? ''; address.blur();
   });
   function paintAnnotation(): void {
+    paintZoom();
     for (const [mode, choice] of modeButtons) choice.setAttribute('aria-pressed', String(mode === annotationMode));
     annotationHint.textContent = annotationMode === 'page' ? '현재 페이지를 자료로 첨부합니다.' : annotationMode === 'element' ? '페이지에서 확인할 개체를 클릭하세요.' : '페이지에서 확인할 영역을 드래그하세요.';
     surface.classList.toggle('ag-browser-picking', annotationMode !== 'page');
@@ -217,6 +225,7 @@ export function createWorkbenchBrowser(options: {
     save.disabled = !pinned || (annotationMode === 'element' && !pickedPoint) || (annotationMode === 'region' && !pickedRect);
   }
   function beginAnnotation(): void {
+    if (zoomPending) return;
     if (pinned) { endAnnotation(); return; }
     const tab = controller.tab(); if (!tab) return;
     details.open = false; showDownloads(false, false);
@@ -232,6 +241,7 @@ export function createWorkbenchBrowser(options: {
     if (!pinned) return;
     annotationDraft = { context: pinned, mode: annotationMode, comment: comment.value, point: pickedPoint, rect: pickedRect };
     pinned = null; annotation.hidden = true; annotate.setAttribute('aria-expanded', 'false'); surface.classList.remove('ag-browser-picking'); selection.hidden = true; pointerStart = null; layout();
+    paintZoom();
     if (restoreFocus) annotate.focus({ preventScroll: true });
   }
   function showDownloads(open: boolean, restoreFocus = true): void {
@@ -484,11 +494,9 @@ export function createWorkbenchBrowser(options: {
     options.onChange?.();
     }
     if (element.ownerDocument.activeElement !== address) address.value = tab?.url ?? '';
-    const factor = tabZoom.get(tab?.tabId ?? '') ?? 1;
-    zoomReset.textContent = `${Math.round(factor * 100)}%`;
-    const zoomUnavailable = !nativeBrowserApi()?.zoom || !tab || !connected || !controller.usesNativePresentation() || zoomPending;
-    zoomReset.disabled = zoomUnavailable; zoomOut.disabled = zoomUnavailable || factor <= .25; zoomIn.disabled = zoomUnavailable || factor >= 3;
+    paintZoom();
     for (const node of [annotate, reload, back, forward]) node.disabled = !tab || !connected || controller.state.busy;
+    annotate.disabled ||= zoomPending;
     const reloadLabel = tab?.status === 'loading' ? '페이지 열기 중지' : '새로고침'; reload.setAttribute('aria-label', reloadLabel); reload.title = reloadLabel; icon(reload, tab?.status === 'loading' ? 'browserStop' : 'refresh');
     newTab.disabled = !connected; emptyOpen.disabled = !connected;
     recover.hidden = reconnecting || !!nativePending || !tab || !['crashed', 'disconnected', 'restorable', 'failed'].includes(tab.status); recover.disabled = !connected || controller.state.busy;

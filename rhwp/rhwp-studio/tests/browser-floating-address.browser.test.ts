@@ -85,6 +85,14 @@ test('떠 있는 주소창은 같은 탭을 탐색하고 입력 취소와 다른
     }
     await page.click('.ag-browser-floating-dock');
     assert.equal(await page.$eval('.ag-browser-toolbar .ag-browser-address', node => (node as HTMLInputElement).value), 'https://www.google.com/search?q=compact%20browser%20search');
+    await page.click('button[aria-label="페이지·개체·영역에 의견 붙이기"]');
+    await page.waitForFunction(() => !document.querySelector<HTMLElement>('.ag-browser-annotation')!.hidden);
+    const callsBeforePinnedZoom = await page.evaluate(() => (window as any).addressTest.calls.filter((call: any) => call.action === 'zoom').length);
+    assert.equal(await page.$$eval('.ag-browser-zoom button', nodes => nodes.every(node => (node as HTMLButtonElement).disabled)), true, 'frozen annotation geometry disables every zoom control');
+    await page.$eval('.ag-browser-zoom button:nth-child(3)', node => node.dispatchEvent(new MouseEvent('click')));
+    assert.equal(await page.evaluate(() => (window as any).addressTest.calls.filter((call: any) => call.action === 'zoom').length), callsBeforePinnedZoom, 'zoom is guarded even if a stale click reaches the handler');
+    await page.click('button[aria-label="의견 작성 닫기"]');
+    assert.equal(await page.$eval(percentage, node => (node as HTMLButtonElement).disabled), false, 'dismissing annotation restores zoom immediately');
     await page.evaluate(() => { const fixture = (window as any).addressTest; fixture.view.selectTab('browser:retained'); });
     assert.equal(await page.$eval('.ag-browser-toolbar .ag-browser-address', node => (node as HTMLInputElement).value), 'https://example.org/other');
     assert.equal(await page.$eval(percentage, node => node.textContent), '100%', 'another page starts with its own native scale');
