@@ -86,7 +86,6 @@ test('bridge reconnect keeps explicit workflow and re-synchronizes server author
   assert.match(bridgeSource, /this\.syncWorkflowState\(msg, fallbackWorkflow, fallbackPhase\)/);
   assert.match(bridgeSource, /if \(this\.workflow === 'plan' \|\| this\.workflow === 'question' \|\| this\.workflowSwitchPending\)/);
   assert.match(bridgeSource, /activeCapabilityEpoch: this\.capabilityEpoch/);
-  assert.match(bridgeSource, /this\.workflow === 'direct' \|\| this\.phase === 'implementing'/);
 });
 
 test('a failed replacement cannot dispatch into the disposed previous session', () => {

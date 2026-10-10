@@ -309,7 +309,7 @@ export function authorizeToolCall(input) {
   }
   if (input.workflow === 'question') {
     if (
-      (input.category === 'document-write' && !granted)
+      input.category === 'document-write'
       || input.category === 'instruction-write'
       || input.category === 'artifact-write'
       || input.category === 'background-control'

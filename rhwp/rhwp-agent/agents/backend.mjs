@@ -8,6 +8,7 @@ import {
 } from '../process-tree.mjs';
 import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
 import { HUMANIZE_KOREAN_RULES } from '../humanizer.mjs';
+import { normalizeChatPermissionGrants } from '../chat-permissions.mjs';
 
 const ANSI_ESCAPE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 const SECRET_ASSIGNMENT = /((?:["']?(?:access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|cookie|password|secret|token|oauth[_-]?code|authorization[_-]?code|user[_-]?code|code[_-]?verifier|state)["']?)\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi;
@@ -466,14 +467,11 @@ present_implementation_plan shows the plan card; the bundled present-plan produc
 export const PLANNING_SYSTEM_BRIEF = planningSystemBriefFor();
 
 function questionSystemBriefFor(opts = {}) {
-  const documentEdit = hasChatPermissionGrant(opts, 'document-edit');
-  const boundary = documentEdit
-    ? `The user granted document-edit for this chat; you may edit the live document through the rhwp tools. ${editLifecycleFor(opts.permissionProfile === 'unrestricted' ? 'unrestricted' : 'safe')}`
-    : 'The live document cannot be changed in this mode, whatever the permission profile.';
+  const boundary = 'The live document cannot be changed in this mode, whatever the permission profile. Switch to 에이전트 or 전체 mode to edit it.';
   const filesystem = hasLocalExecutionGrant(opts)
     ? ''
     : ' The local filesystem cannot be changed in this mode, whatever the permission profile.';
-  return `You are in 채팅 (chat) mode: ${documentEdit ? 'conversation and user-authorized document editing' : 'read-only conversation about the open document'}. You can read the live document, the workspace, attached references, and the web to summarize, explain, compare, and answer questions. ${boundary}${filesystem} present_implementation_plan is not part of it. Document work by subagents is read-only; the research project is outside that boundary. Remote files go through the rhwp download_file MCP tool instead of being written locally.
+  return `You are in 채팅 (chat) mode: read-only conversation about the open document. You can read the live document, the workspace, attached references, and the web to summarize, explain, compare, and answer questions. ${boundary}${filesystem} present_implementation_plan is not part of it. Document work by subagents is read-only; the research project is outside that boundary. Remote files go through the rhwp download_file MCP tool instead of being written locally.
 
 The user can keep editing the live document. A save injects a live-document notification so you can re-read current state.
 
@@ -552,7 +550,7 @@ export function validateExecutionMode(mode) {
 /** 명시적인 빈 배열은 기존 채팅 권한을 해제한다. */
 export function chatPermissionGrantsFor(mode = {}, current = {}) {
   const grants = mode.chatPermissionGrants ?? current.chatPermissionGrants ?? [];
-  return Array.isArray(grants) ? [...new Set(grants)] : [];
+  return normalizeChatPermissionGrants(grants);
 }
 
 /** 별도 허브 작업과 채팅은 루트 채팅의 로컬 실행 권한을 상속하지 않는다. */
@@ -567,9 +565,8 @@ export function hasLocalExecutionGrant(opts = {}) {
 }
 
 export function nativeProviderInteractionMode(opts = {}) {
-  const { workflow } = normalizeExecutionMode(opts);
-  if (hasLocalExecutionGrant(opts)
-    || (workflow === 'question' && hasChatPermissionGrant(opts, 'document-edit'))) {
+  normalizeExecutionMode(opts);
+  if (hasLocalExecutionGrant(opts)) {
     return 'default';
   }
   return providerInteractionMode(opts);
@@ -629,7 +626,7 @@ function chatPermissionBriefFor(opts) {
     : '';
   const gates = typeof opts.projectToolGates === 'function' ? opts.projectToolGates() : opts.projectToolGates;
   return grant + (gates?.requestable === true
-    ? '\n\nIf a required capability is unavailable, call request_permission with the capability and a short reason. local-execution covers local file reading, editing, and commands. A pending result is a request awaiting the user, not a grant: end your turn and wait. The user grants through the sidebar; the next user message resumes work.'
+    ? '\n\nIf a required capability is unavailable, call request_permission with project-edit, downloads, browser, or local-execution and a short reason. local-execution covers local file reading, editing, and commands. Document editing follows the current mode and cannot be granted through request_permission. A pending result is a request awaiting the user, not a grant: end your turn and wait. The user grants through the sidebar; the next user message resumes work.'
     : '');
 }
 

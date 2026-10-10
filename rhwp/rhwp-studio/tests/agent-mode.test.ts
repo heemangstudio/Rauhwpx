@@ -23,6 +23,7 @@ test('승인된 계획은 승인 때 고른 프로필의 모드로 실행되고,
   assert.equal(writesApplyDirectly('direct', 'direct', 'unrestricted'), true);
   assert.equal(writesApplyDirectly('direct', 'direct', 'safe'), false);
   assert.equal(writesApplyDirectly('question', 'questioning', 'unrestricted'), false);
+  assert.equal(writesApplyDirectly('question', 'implementing', 'unrestricted'), false);
 });
 
 test('모드 명령과 이전 별칭은 모드와 나머지 본문으로 나뉜다', () => {

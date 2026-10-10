@@ -51,7 +51,7 @@ test('chat grants authorize only their app category and preserve plan approval a
   const question = { workflow: 'question', phase: 'questioning', expectedEpoch: 7, receivedEpoch: 7, chatMayEdit: false };
   const edit = { ...question, category: 'document-write', tool: 'insert_text' };
   assert.throws(() => authorizeToolCall(edit), { code: 'QUESTION_WRITE_BLOCKED' });
-  assert.equal(authorizeToolCall({ ...edit, chatPermissionGrants: ['document-edit'] }), true);
+  assert.throws(() => authorizeToolCall({ ...edit, chatPermissionGrants: ['document-edit'] }), { code: 'QUESTION_WRITE_BLOCKED' });
   assert.throws(() => authorizeToolCall({ ...edit, chatPermissionGrants: ['local-execution'] }), { code: 'QUESTION_WRITE_BLOCKED' });
   assert.throws(() => authorizeToolCall({ ...edit, chatPermissionGrants: ['document-edit'], receivedEpoch: 6 }), { code: 'STALE_CAPABILITY_EPOCH' });
   assert.throws(() => authorizeToolCall({ ...edit, workflow: 'plan', phase: 'planning', chatPermissionGrants: ['document-edit'] }), { code: 'PLAN_WRITE_BLOCKED' });

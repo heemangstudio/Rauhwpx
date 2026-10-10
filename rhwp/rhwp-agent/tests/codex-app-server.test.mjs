@@ -967,12 +967,11 @@ test('a native chat grant and explicit revocation change only that resumed conve
   const initial = await turn(h, 'Ask for local access');
   assert.equal(initial.sandboxPolicy.type, 'readOnly');
   await h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 2, chatPermissionGrants: ['document-edit'] });
-  const documentOnly = await turn(h, 'Use the granted document tools');
-  assert.equal(documentOnly.collaborationMode.mode, 'default');
+  const documentOnly = await turn(h, 'Continue after a stale document grant');
+  assert.equal(documentOnly.collaborationMode.mode, 'plan');
   assert.equal(documentOnly.sandboxPolicy.type, 'readOnly');
-  const injected = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
-  assert.equal(injected.params.items[0].role, 'developer');
-  assert.match(injected.params.items[0].content[0].text, /The user granted document-edit/);
+  assert.deepEqual(h.opts.chatPermissionGrants, []);
+  assert.match(systemBriefFor(h.opts, 'codex'), /The live document cannot be changed in this mode/);
   const mode = { workflow: 'question', phase: 'questioning', capabilityEpoch: 3, chatPermissionGrants: ['local-execution'] };
   await h.session.setExecutionMode(mode);
   mode.chatPermissionGrants.length = 0;

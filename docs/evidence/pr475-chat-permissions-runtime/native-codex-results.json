@@ -47,5 +47,6 @@
       "fullAccessOutsideWorkspaceWriteSucceeded": true,
       "safeRefreshAcknowledgedWithoutTurn": true
     }
-  ]
+  ],
+  "status": "Historical evidence recorded before document-edit was removed. Current Chat document editing is always denied; this file is not current authorization evidence."
 }

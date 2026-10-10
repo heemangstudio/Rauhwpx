@@ -669,7 +669,16 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         stream({ type: 'turn-start', agent, turnId: `turn-${turnGeneration}` });
         if (reply === 'permission') {
           const selected = projectParams.get('permissionCapability');
-          const capability = isChatPermissionCapability(selected) ? selected : 'document-edit';
+          if (selected !== null && !isChatPermissionCapability(selected)) {
+            stream({ type: 'tool-call', agent, callId: `permission-${turnGeneration}`, tool: 'mcp__rhwp__request_permission',
+              argsJson: JSON.stringify({ capability: selected, reason: '요청한 작업을 진행합니다.' }) });
+            stream({ type: 'tool-result', agent, callId: `permission-${turnGeneration}`, ok: false,
+              resultPreview: '지원하지 않는 권한입니다.' });
+            stream({ type: 'text-delta', agent, text: '문서 편집은 에이전트 또는 전체 모드에서 가능합니다.' });
+            if (!holdReply) later(() => finish(), 100);
+            return;
+          }
+          const capability = isChatPermissionCapability(selected) ? selected : 'project-edit';
           if (!chatPermissionGrants.includes(capability)) {
             permissionRequest = { requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId,
               turnId: `turn-${turnGeneration}`, agent, capability,

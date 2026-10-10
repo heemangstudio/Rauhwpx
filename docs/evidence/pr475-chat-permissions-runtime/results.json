@@ -3,21 +3,13 @@
   "provider": "controlled Pi fixture",
   "scenarios": [
     {
-      "name": "document edit",
-      "blockedBeforeGrant": true,
-      "busyGrantRejected": true,
-      "authenticatedGrants": [
-        "document-edit"
-      ],
-      "heldForReview": true,
-      "rejectedRestoresWasm": true
-    },
-    {
       "name": "project and local execution",
       "projectWriteBeforeGrantBlocked": true,
       "projectNoteStored": true,
+      "busyGrantRejected": true,
+      "documentWriteAfterGrantsBlocked": true,
+      "documentPermissionRejected": "INVALID_ARGS",
       "authenticatedGrants": [
-        "document-edit",
         "project-edit",
         "local-execution"
       ]
@@ -31,6 +23,16 @@
       "newChatWriteBlocked": true,
       "idleChatResetGrants": [],
       "personalModeUnchanged": true
+    },
+    {
+      "name": "Agent and Full document editing",
+      "agentWorkflow": "direct",
+      "agentReviewRequired": true,
+      "rejectedRestoresWasm": true,
+      "fullWorkflow": "direct",
+      "fullProfile": "unrestricted",
+      "fullDocumentEditCommitted": true,
+      "fullReviewPending": false
     }
   ]
 }

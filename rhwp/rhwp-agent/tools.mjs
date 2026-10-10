@@ -1618,7 +1618,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'request_permission',
-    description: 'Request a missing permission for this chat only. Explain the required action. Returns pending immediately; end the turn and wait for the user to grant or deny the permission pill. A request does not authorize any action. Plan document edits still require approval of the canonical plan.',
+    description: 'Request a missing project, download, browser, or local execution permission for this chat only. Explain the required action. Returns pending immediately; end the turn and wait for the user to grant or deny the permission pill. A request does not authorize any action. Document editing requires 에이전트 or 전체 mode; Plan document edits require approval of the canonical plan.',
     shape: {
       capability: z.enum(CHAT_PERMISSION_CAPABILITIES),
       reason: z.string().trim().min(1).max(1_000),
@@ -1965,8 +1965,7 @@ export function filterToolDefinitions(profile, { projectWrites = true, homeSearc
   const requestableProfile = ['direct', 'planning', 'question', 'awaiting-approval', 'implementing'].includes(value);
   return TOOL_DEFINITIONS.filter((definition) => {
     // 루트 채팅은 요청 가능한 앱 도구의 정의만 먼저 받는다. 실제 실행은 허브가 클릭으로 부여한 권한을 검사한다.
-    const canRequest = requestable && requestableProfile && Boolean(chatPermissionForCategory(definition.category))
-      && !(definition.category === 'document-write' && ['planning', 'awaiting-approval'].includes(value));
+    const canRequest = requestable && requestableProfile && Boolean(chatPermissionForCategory(definition.category));
     if (!entries.has(definition.category) && !entries.has(definition.name) && !canRequest) return false;
     // 홈 폴더 검색은 데스크톱에서 켜졌을 때만 보인다(기본은 숨김).
     if (definition.name === 'find_home_files' && !homeSearch) return false;

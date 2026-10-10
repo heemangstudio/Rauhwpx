@@ -21,7 +21,8 @@ import {
   toolAnnotations,
 } from '../tools.mjs';
 import { toolDefinitionChars } from '../tool-telemetry.mjs';
-import { mcpCapabilityEnv } from '../agents/backend.mjs';
+import { chatPermissionGrantsFor, mcpCapabilityEnv } from '../agents/backend.mjs';
+import { normalizeChatPermissionGrants, normalizeChatPermissionRequest } from '../chat-permissions.mjs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -36,7 +37,7 @@ test('root requestable catalogs expose bounded app capabilities while plan and w
   const names = (profile, gates) => new Set(filterToolDefinitions(profile, gates).map((definition) => definition.name));
   assert.ok(names('question').has('request_permission'));
   assert.ok(!names('question').has('insert_text'));
-  assert.ok(names('question', { requestable: true }).has('insert_text'));
+  assert.ok(!names('question', { requestable: true }).has('insert_text'));
   assert.ok(names('question', { requestable: true, projectWrites: false }).has('project_edit'));
   assert.ok(names('direct', { requestable: true }).has('download_file'));
   assert.ok(names('direct', { requestable: true }).has('browserbase_navigate'));
@@ -49,6 +50,20 @@ test('root requestable catalogs expose bounded app capabilities while plan and w
   }
   assert.ok(!names('question', { requestable: true }).has('update_agent_instructions'));
   assert.ok(!names('question', { requestable: true }).has('delegate_copy_layout'));
+});
+
+test('document-edit is rejected as a chat permission capability', () => {
+  const schema = z.object(byName.get('request_permission').shape);
+  assert.equal(schema.safeParse({ capability: 'document-edit', reason: 'Edit the open document.' }).success, false);
+  assert.throws(() => normalizeChatPermissionRequest({ capability: 'document-edit', reason: 'Edit the open document.' }), { code: 'INVALID_CHAT_PERMISSION_REQUEST' });
+  const staleGrants = ['document-edit', 'local-execution', 'project-edit', 'project-edit'];
+  const validGrants = ['project-edit', 'local-execution'];
+  assert.deepEqual(normalizeChatPermissionGrants(staleGrants), validGrants);
+  assert.deepEqual(chatPermissionGrantsFor({ chatPermissionGrants: staleGrants }), validGrants);
+  assert.deepEqual(chatPermissionGrantsFor({}, { chatPermissionGrants: staleGrants }), validGrants);
+  for (const capability of ['project-edit', 'downloads', 'browser', 'local-execution']) {
+    assert.equal(schema.safeParse({ capability, reason: 'Perform the requested action.' }).success, true);
+  }
 });
 
 test('모든 도구가 허용된 카테고리로 명시 분류된다', () => {

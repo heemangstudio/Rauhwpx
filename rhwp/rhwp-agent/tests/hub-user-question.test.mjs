@@ -239,24 +239,26 @@ function questionArgs() {
   };
 }
 
-test('chat permission pills gate edits, survive reload, and reset with a new chat', { timeout: 40_000 }, async (t) => {
+test('chat permissions survive reload while document edits remain blocked and reset with a new chat', { timeout: 40_000 }, async (t) => {
   const { port, completePi } = await startHub(t, { fakePi: true, controlledCompletion: true });
   const sessionId = 'chat-permission-scope';
   const url = `ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=permission-page`;
   let studio = await openClient(url);
   t.after(() => closeClient(studio));
   await studio.next((frame) => frame.type === 'welcome');
-  sendFrame(studio, { type: 'chat-start', agent: 'pi', workflow: 'question', permissionProfile: 'safe', threadId: 'permission-thread', documentId: 'permission-doc' });
+  sendFrame(studio, { type: 'chat-start', agent: 'pi', workflow: 'question', permissionProfile: 'safe', threadId: 'permission-thread', documentId: 'permission-doc', chatPermissionGrants: ['document-edit'] });
   const started = await studio.next((frame) => frame.type === 'chat-started');
   assert.deepEqual(started.chatPermissionGrants, []);
-  sendFrame(studio, { type: 'chat-user-message', text: 'Request an edit permission.', threadId: started.threadId, documentId: started.documentId });
+  sendFrame(studio, { type: 'chat-user-message', text: 'Request a project permission.', threadId: started.threadId, documentId: started.documentId });
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
   let mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
   t.after(() => closeClient(mcp));
-  const edit = { tool: 'insert_text', args: { expectedRevision: 1, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'Granted edit' }, workflow: 'question', capabilityEpoch: started.capabilityEpoch };
-  sendFrame(mcp, { type: 'tool-call', id: 101, ...edit });
+  const edit = { tool: 'insert_text', args: { expectedRevision: 1, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'Blocked edit' }, workflow: 'question', capabilityEpoch: started.capabilityEpoch };
+  sendFrame(mcp, { type: 'tool-call', id: 101, ...edit, chatPermissionGrants: ['document-edit'] });
   assert.equal((await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 101)).error.code, 'QUESTION_WRITE_BLOCKED');
-  sendFrame(mcp, { type: 'tool-call', id: 102, tool: 'request_permission', args: { capability: 'document-edit', reason: 'Apply the requested paragraph edit.' }, workflow: 'question', capabilityEpoch: started.capabilityEpoch });
+  sendFrame(mcp, { type: 'tool-call', id: 100, tool: 'request_permission', args: { capability: 'document-edit', reason: 'Apply the requested paragraph edit.' }, workflow: 'question', capabilityEpoch: started.capabilityEpoch });
+  assert.equal((await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 100)).error.code, 'INVALID_ARGS');
+  sendFrame(mcp, { type: 'tool-call', id: 102, tool: 'request_permission', args: { capability: 'project-edit', reason: 'Save the research project note.' }, workflow: 'question', capabilityEpoch: started.capabilityEpoch });
   const requested = await studio.next((frame) => frame.type === 'chat-permission-requested');
   const pending = await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 102);
   assert.equal(pending.ok, true);
@@ -269,7 +271,7 @@ test('chat permission pills gate edits, survive reload, and reset with a new cha
   assert.equal(welcome.session.pendingChatPermissionRequest.requestId, requested.request.requestId);
   const replayed = await studio.next((frame) => frame.type === 'chat-permission-requested');
   assert.equal(replayed.replayed, true);
-  const response = { type: 'chat-permission-response', requestId: requested.request.requestId, responseId: 'grant-doc', threadId: started.threadId, documentId: started.documentId, decision: 'grant' };
+  const response = { type: 'chat-permission-response', requestId: requested.request.requestId, responseId: 'grant-project', threadId: started.threadId, documentId: started.documentId, decision: 'grant' };
   sendFrame(studio, response);
   assert.equal((await studio.next((frame) => frame.type === 'chat-permission-response-result')).code, 'AGENT_BUSY');
   completePi();
@@ -278,7 +280,7 @@ test('chat permission pills gate edits, survive reload, and reset with a new cha
   assert.equal((await studio.next((frame) => frame.type === 'chat-permission-response-result')).ok, true);
   const granted = await studio.next((frame) => frame.type === 'chat-permission-resolved');
   assert.equal(granted.outcome.status, 'granted');
-  assert.deepEqual(granted.grants, ['document-edit']);
+  assert.deepEqual(granted.grants, ['project-edit']);
   assert.equal(granted.capabilityEpoch, started.capabilityEpoch);
   sendFrame(studio, response);
   assert.equal((await studio.next((frame) => frame.type === 'chat-permission-response-result')).ok, true, 'duplicate approval is acknowledged');
@@ -286,10 +288,13 @@ test('chat permission pills gate edits, survive reload, and reset with a new cha
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
   mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
   sendFrame(mcp, { type: 'tool-call', id: 103, ...edit });
-  const forwarded = await studio.next((frame) => frame.type === 'tool-request' && frame.tool === 'insert_text');
-  assert.deepEqual(forwarded.chatPermissionGrants, ['document-edit']);
-  sendFrame(studio, { type: 'tool-response', id: forwarded.id, ok: true, result: { revision: 2 } });
-  assert.equal((await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 103)).ok, true);
+  assert.equal((await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 103)).error.code, 'QUESTION_WRITE_BLOCKED');
+  sendFrame(mcp, { type: 'tool-call', id: 104, tool: 'get_structure', args: {}, workflow: 'question', capabilityEpoch: started.capabilityEpoch });
+  const forwarded = await studio.next((frame) => frame.type === 'tool-request');
+  assert.equal(forwarded.tool, 'get_structure', 'blocked document writes never reach Studio');
+  assert.deepEqual(forwarded.chatPermissionGrants, ['project-edit']);
+  sendFrame(studio, { type: 'tool-response', id: forwarded.id, ok: true, result: { revision: 1 } });
+  assert.equal((await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 104)).ok, true);
   sendFrame(studio, { type: 'chat-interrupt' });
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
   sendFrame(studio, { type: 'chat-start', agent: 'pi', workflow: 'question', permissionProfile: 'safe', threadId: 'new-permission-thread', documentId: 'permission-doc', force: true });
@@ -535,7 +540,7 @@ test('permission denials and cancellation leave no grant and plan approval remai
   const planner = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
   t.after(() => closeClient(planner));
   sendFrame(planner, { type: 'tool-call', id: 304, tool: 'request_permission', args: { capability: 'document-edit', reason: 'Start implementing before approval.' }, workflow: 'plan', capabilityEpoch: plan.capabilityEpoch });
-  assert.equal((await planner.next((frame) => frame.type === 'tool-result' && frame.id === 304)).error.code, 'PLAN_APPROVAL_REQUIRED');
+  assert.equal((await planner.next((frame) => frame.type === 'tool-result' && frame.id === 304)).error.code, 'INVALID_ARGS');
 });
 
 function implementationPlanArgs() {

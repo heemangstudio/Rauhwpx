@@ -1,9 +1,8 @@
 import type { ChatPermissionCapability, ChatPermissionOutcome, ChatPermissionRequest } from './types.ts';
 
-const capabilities: readonly ChatPermissionCapability[] = ['document-edit', 'project-edit', 'downloads', 'browser', 'local-execution'];
+const capabilities: readonly ChatPermissionCapability[] = ['project-edit', 'downloads', 'browser', 'local-execution'];
 
 export const CHAT_PERMISSION_LABELS: Readonly<Record<ChatPermissionCapability, string>> = {
-  'document-edit': '문서 편집',
   'project-edit': '프로젝트 수정',
   downloads: '파일 다운로드',
   browser: '브라우저 사용',

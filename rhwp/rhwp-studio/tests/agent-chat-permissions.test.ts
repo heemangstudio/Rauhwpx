@@ -12,7 +12,7 @@ const { assertToolCapability } = await import('../src/agent/tool-executor.ts');
 
 const request: ChatPermissionRequest = {
   requestId: 'permission-1', threadId: 'thread-1', documentId: 'document-1', turnId: 'turn-1',
-  agent: 'codex', capability: 'document-edit', reason: '문서의 문장을 수정합니다.', createdAt: '2026-10-10T00:00:00Z',
+  agent: 'codex', capability: 'project-edit', reason: '프로젝트 자료를 수정합니다.', createdAt: '2026-10-10T00:00:00Z',
 };
 
 function fixture() {
@@ -38,6 +38,7 @@ test('permission requests validate known capabilities and exact chat/document id
     assert.equal(readChatPermissionRequest({ ...request, agent }), null);
   }
   assert.equal(readChatPermissionRequest({ ...request, capability: 'full-access' }), null);
+  assert.equal(readChatPermissionRequest({ ...request, capability: 'document-edit' }), null);
   assert.equal(readChatPermissionRequest({ ...request, documentId: undefined }), null);
   assert.deepEqual(readChatPermissionGrants(['document-edit', 'full-access']), []);
   assert.deepEqual(readChatPermissionGrants(['local-execution', 'local-execution']), ['local-execution']);
@@ -58,13 +59,13 @@ test('grant waits for scoped server confirmation and sends no continuation promp
   assert.equal(frames[0].threadId, request.threadId);
   assert.equal(frames[0].documentId, request.documentId);
   bridge.handleMessage({ type: 'chat-permission-resolved', requestId: request.requestId,
-    threadId: request.threadId, documentId: 'another-document', outcome: { status: 'granted' }, grants: ['document-edit'] });
+    threadId: request.threadId, documentId: 'another-document', outcome: { status: 'granted' }, grants: ['project-edit'] });
   assert.deepEqual(bridge.getChatPermissionGrants(), []);
   bridge.handleMessage({ type: 'chat-permission-resolved', requestId: request.requestId,
-    threadId: request.threadId, documentId: request.documentId, outcome: { status: 'granted' }, grants: ['document-edit'] });
-  assert.deepEqual(bridge.getChatPermissionGrants(), ['document-edit']);
+    threadId: request.threadId, documentId: request.documentId, outcome: { status: 'granted' }, grants: ['project-edit'] });
+  assert.deepEqual(bridge.getChatPermissionGrants(), ['project-edit']);
   assert.equal(bridge.getPendingChatPermissionRequest(), null);
-  assert.equal(bridge.canStagePendingEdits(), true);
+  assert.equal(bridge.canStagePendingEdits(), false);
   assert.equal(bridge.writesApplyDirectly(), false);
   assert.equal(frames.length, 1);
 });
@@ -92,8 +93,8 @@ test('authoritative snapshots clear grants and invalidate another chat request',
   const { bridge } = fixture();
   bridge.syncChatPermissions({ chatPermissionGrants: [], pendingChatPermissionRequest: request });
   assert.equal(bridge.getPendingChatPermissionRequest()?.requestId, request.requestId);
-  bridge.syncChatPermissions({ chatPermissionGrants: ['document-edit'], pendingChatPermissionRequest: null });
-  assert.deepEqual(bridge.getChatPermissionGrants(), ['document-edit']);
+  bridge.syncChatPermissions({ chatPermissionGrants: ['project-edit'], pendingChatPermissionRequest: null });
+  assert.deepEqual(bridge.getChatPermissionGrants(), ['project-edit']);
   bridge.threadId = 'thread-2';
   bridge.syncChatPermissions({ chatPermissionGrants: [], pendingChatPermissionRequest: request });
   assert.deepEqual(bridge.getChatPermissionGrants(), []);
@@ -118,13 +119,17 @@ test('explicit cancellation stays hidden across a stale reconnect snapshot and o
   assert.equal(bridge.getPendingChatPermissionRequest()?.requestId, next.requestId);
 });
 
-test('question document writes require both grants, current turn, and current epoch; plan approval still gates writes', () => {
-  const capability = { workflow: 'question' as const, capabilityEpoch: 2, activeCapabilityEpoch: 2,
-    chatPermissionGrants: ['document-edit' as const], activeChatPermissionGrants: ['document-edit' as const], requestIsActive: () => true };
-  assert.doesNotThrow(() => assertToolCapability('insert_text', capability));
-  for (const change of [{ chatPermissionGrants: [] }, { activeChatPermissionGrants: [] },
-    { requestIsActive: () => false }, { capabilityEpoch: 1 }, { activeCapabilityEpoch: null }]) {
-    assert.throws(() => assertToolCapability('insert_text', { ...capability, ...change }), { code: 'QUESTION_MODE_READ_ONLY' });
-  }
-  assert.throws(() => assertToolCapability('insert_text', { ...capability, workflow: 'plan', phase: 'planning', activePhase: 'planning' }), { code: 'PLAN_MODE_READ_ONLY' });
+test('chat rejects document writes even with stale grants or an implementing phase', () => {
+  const stale = { workflow: 'question' as const, phase: 'implementing', activePhase: 'implementing' as const,
+    capabilityEpoch: 2, activeCapabilityEpoch: 2,
+    chatPermissionGrants: ['document-edit'], activeChatPermissionGrants: ['document-edit'], requestIsActive: () => true };
+  assert.throws(() => assertToolCapability('insert_text', stale), { code: 'QUESTION_MODE_READ_ONLY' });
+  assert.doesNotThrow(() => assertToolCapability('insert_text', { workflow: 'direct', phase: 'direct' }));
+  assert.throws(() => assertToolCapability('insert_text', { workflow: 'plan', phase: 'planning', activePhase: 'planning' }), { code: 'PLAN_MODE_READ_ONLY' });
+  const { bridge } = fixture();
+  bridge.syncChatPermissions({ chatPermissionGrants: ['document-edit'], pendingChatPermissionRequest: { ...request, capability: 'document-edit' } });
+  assert.deepEqual(bridge.getChatPermissionGrants(), []);
+  assert.equal(bridge.getPendingChatPermissionRequest(), null);
+  bridge.phase = 'implementing';
+  assert.equal(bridge.canStagePendingEdits(), false);
 });

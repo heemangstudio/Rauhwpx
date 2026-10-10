@@ -96,7 +96,7 @@ export function writesApplyDirectly(
   phase: AgentPhase,
   permissionProfile: PermissionProfile,
 ): boolean {
-  return permissionProfile === 'unrestricted' && (workflow === 'direct' || phase === 'implementing');
+  return permissionProfile === 'unrestricted' && (workflow === 'direct' || (workflow === 'plan' && phase === 'implementing'));
 }
 
 export type UserQuestionMode = 'single' | 'multiple';
@@ -139,7 +139,7 @@ export interface UserQuestionInteraction {
 }
 
 /** 사용자가 지금 채팅에만 허용할 수 있는 추가 권한. */
-export type ChatPermissionCapability = 'document-edit' | 'project-edit' | 'downloads' | 'browser' | 'local-execution';
+export type ChatPermissionCapability = 'project-edit' | 'downloads' | 'browser' | 'local-execution';
 export type ChatPermissionDecision = 'grant' | 'deny';
 export type ChatPermissionOutcome =
   | { status: 'granted' }

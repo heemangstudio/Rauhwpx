@@ -1,11 +1,10 @@
 import crypto from 'node:crypto';
 
 export const CHAT_PERMISSION_CAPABILITIES = Object.freeze([
-  'document-edit', 'project-edit', 'downloads', 'browser', 'local-execution',
+  'project-edit', 'downloads', 'browser', 'local-execution',
 ]);
 
 export function chatPermissionForCategory(category) {
-  if (category === 'document-write') return 'document-edit';
   if (category === 'project-write' || category === 'project-ingest') return 'project-edit';
   if (category === 'download-write') return 'downloads';
   if (category === 'browser') return 'browser';

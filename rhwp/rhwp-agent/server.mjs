@@ -1160,9 +1160,14 @@ function pendingUserQuestionSnapshot(record) {
 }
 
 function pendingChatPermissionSnapshot(record) {
-  return record.pendingChatPermissionRequest
-    ? structuredClone(record.pendingChatPermissionRequest.request)
-    : null;
+  const request = record.pendingChatPermissionRequest?.request;
+  if (!request) return null;
+  try {
+    normalizeChatPermissionRequest(request);
+    return structuredClone(request);
+  } catch {
+    return null;
+  }
 }
 
 function settleChatPermissionRequest(record, outcome) {
@@ -1186,12 +1191,8 @@ function requestChatPermission(record, args, generation) {
     throw workflowError('NO_ACTIVE_TURN', 'Permission requests require the active root turn');
   }
   const normalized = normalizeChatPermissionRequest(args);
-  if (normalized.capability === 'document-edit' && activeSession.planning.workflow === 'plan'
-    && activeSession.planning.phase !== 'implementing') {
-    throw workflowError('PLAN_APPROVAL_REQUIRED', 'Approve the canonical plan before requesting document edits');
-  }
   if (activeSession.chatPermissionGrants.includes(normalized.capability)) {
-    return { status: 'granted', capability: normalized.capability, scope: 'chat', grants: [...activeSession.chatPermissionGrants] };
+    return { status: 'granted', capability: normalized.capability, scope: 'chat', grants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants) };
   }
   const pending = record.pendingChatPermissionRequest;
   if (pending) {
@@ -1240,6 +1241,7 @@ async function answerChatPermission(record, sock, msg) {
     if (!pending || pending.request.requestId !== requestId) {
       throw workflowError('CHAT_PERMISSION_NOT_FOUND', 'This permission request is no longer pending');
     }
+    normalizeChatPermissionRequest(pending.request);
     if (!activeSession || pending.session !== activeSession || pending.generation !== activeSession.generation
       || pending.providerCapabilityResource !== activeSession.providerCapabilityResource
       || pending.capabilityEpoch !== activeSession.planning.capabilityEpoch
@@ -1944,7 +1946,7 @@ function sessionInfo(record) {
       activeTemplateId: activeSession.activeTemplateId,
       pendingUserQuestion: pendingUserQuestionSnapshot(record),
       pendingChatPermissionRequest: pendingChatPermissionSnapshot(record),
-      chatPermissionGrants: [...activeSession.chatPermissionGrants],
+      chatPermissionGrants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants),
       ...activeSession.planning.snapshot(),
     }
     : null;
@@ -3462,7 +3464,7 @@ function providerModeRequest(activeSession, phase = activeSession.planning.workf
     workflow: activeSession.planning.workflow,
     phase,
     capabilityEpoch: activeSession.planning.capabilityEpoch,
-    chatPermissionGrants: [...activeSession.chatPermissionGrants],
+    chatPermissionGrants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants),
   };
 }
 
@@ -3686,7 +3688,7 @@ async function setChatWorkflow(record, sock, msg) {
       workflow: msg.workflow,
       phase,
       capabilityEpoch: nextPlanning.capabilityEpoch,
-      chatPermissionGrants: [...activeSession.chatPermissionGrants],
+      chatPermissionGrants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants),
     });
   } catch (error) {
     if (record.agentSession === activeSession) activeSession.planning = previousPlanning;
@@ -3794,7 +3796,7 @@ async function handleStudioMessage(record, sock, msg) {
           documentName: s.documentName,
           projectId: s.projectId ?? null,
           pendingChatPermissionRequest: pendingChatPermissionSnapshot(record),
-          chatPermissionGrants: [...s.chatPermissionGrants],
+          chatPermissionGrants: normalizeChatPermissionGrants(s.chatPermissionGrants),
           ...s.planning.snapshot(),
         });
         await sendProjectBound(record);
@@ -5930,7 +5932,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           workflow: record.agentSession?.planning.snapshot().workflow,
           phase: record.agentSession?.planning.snapshot().phase,
           capabilityEpoch: record.agentSession?.planning.capabilityEpoch,
-          chatPermissionGrants: !workerJob && !sock.piSubagentId && !msg.parentTaskId ? [...record.agentSession.chatPermissionGrants] : [],
+          chatPermissionGrants: !workerJob && !sock.piSubagentId && !msg.parentTaskId ? normalizeChatPermissionGrants(record.agentSession.chatPermissionGrants) : [],
           turnBound: !workerJob,
           ...(providerTurn ? { providerTurnId: providerTurn.turnId } : {}),
           ...(sock.parentTaskId ? { parentTaskId: sock.parentTaskId } : {}),

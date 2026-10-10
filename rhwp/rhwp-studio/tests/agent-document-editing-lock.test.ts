@@ -70,7 +70,7 @@ registerHooks({ load(url, context, next) {
 } });
 const { AgentBridgeImpl } = await import('../src/agent/bridge.ts');
 
-test('bridge keeps granted question edits locked until the turn and all tools settle', () => {
+test('chat never takes an editing lease and agent keeps it until all tools settle', () => {
   const leases: boolean[] = [];
   const runtime = Object.assign(Object.create(AgentBridgeImpl.prototype), {
     view: {}, workflow: 'question', phase: 'questioning', editingAgent: 'codex',
@@ -84,7 +84,11 @@ test('bridge keeps granted question edits locked until the turn and all tools se
   assert.equal(runtime.getEditingLease().active, false, 'ordinary chat keeps user editing available');
   runtime.chatPermissionGrants = ['document-edit'];
   runtime.syncEditingLease();
-  assert.equal(runtime.getEditingLease().active, true, 'granted document writes hold the lease');
+  assert.equal(runtime.getEditingLease().active, false, 'stale document grants do not unlock chat writes');
+  runtime.workflow = 'direct';
+  runtime.phase = 'direct';
+  runtime.syncEditingLease();
+  assert.equal(runtime.getEditingLease().active, true, 'agent turns hold the editing lease');
   runtime.turnRunning = false;
   runtime.activeToolRequests = 2;
   runtime.syncEditingLease();

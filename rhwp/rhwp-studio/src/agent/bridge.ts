@@ -1567,7 +1567,7 @@ export class AgentBridgeImpl implements AgentBridge {
     if (!this.isBusy()) return false;
     // stopChat 직후 채팅 시작 전에는 workflow 가 기본값(direct)이다. 요청한 워크플로로 판단한다.
     const workflow = this.pendingChatStart?.workflow ?? this.workflow;
-    return workflow !== 'question' || this.chatPermissionGrants.includes('document-edit');
+    return workflow !== 'question';
   }
 
   onBusyChange(cb: (busy: boolean) => void): () => void {
@@ -2036,8 +2036,7 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private canStagePendingEdits() {
-    return this.workflow === 'direct' || this.phase === 'implementing'
-      || (this.workflow === 'question' && this.chatPermissionGrants.includes('document-edit'));
+    return this.workflow === 'direct' || (this.workflow === 'plan' && this.phase === 'implementing');
   }
 
   /** 전체 모드: 쓰기가 검토 없이 바로 문서에 반영된다 (쓰기 도구 하나 = undo 한 단계). */
@@ -2133,13 +2132,12 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private syncEditingLease(): void {
-    const chatCanEdit = this.workflow === 'question' && this.chatPermissionGrants.includes('document-edit');
     this.documentEditingLease = deriveAgentEditingLease({
       turnRunning: this.turnRunning,
       activeToolRequests: this.activeToolRequests,
       agent: this.editingAgent,
-      workflow: chatCanEdit ? 'direct' : this.workflow,
-      phase: chatCanEdit ? 'direct' : this.phase,
+      workflow: this.workflow,
+      phase: this.phase,
       waitingForUser: this.pendingUserQuestionId !== null || this.pendingChatPermissionRequest != null,
     });
     this.publishEditingLease();
@@ -3298,8 +3296,6 @@ export class AgentBridgeImpl implements AgentBridge {
         capabilityEpoch: msg.capabilityEpoch,
         activePhase: this.phase,
         activeCapabilityEpoch: this.capabilityEpoch,
-        chatPermissionGrants: !parentTask.parentTaskId && turnBound ? readChatPermissionGrants(msg.chatPermissionGrants) : [],
-        activeChatPermissionGrants: this.chatPermissionGrants,
         template: readDocumentTemplate(msg.template) ?? undefined,
         requestIsActive,
         ...(trace ? { trace } : {}),

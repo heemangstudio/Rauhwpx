@@ -86,7 +86,7 @@ async function attachProvider(page) {
         calls.set(id, { resolve, reject, timer });
         socket.send(JSON.stringify({
           v: 5, type: 'tool-call', id, tool, args,
-          workflow: 'question', capabilityEpoch: record.session.capabilityEpoch,
+          workflow: record.session.workflow, capabilityEpoch: record.session.capabilityEpoch,
         }));
       });
     },
@@ -176,6 +176,16 @@ try {
         `.ag-permission-pill[data-request-id="${id}"]`,
       )?.dataset.status === 'granted', pending.requestId);
     };
+    const selectMode = async (mode) => {
+      await page.click('.ag-mode-btn');
+      await page.click(`.ag-mode-item[data-mode="${mode}"]`);
+      if (mode === 'full') {
+        await page.waitForSelector('.ag-sheet-confirm');
+        await page.click('.ag-sheet-confirm');
+      }
+      await waitForState(page, 'selected document editing mode', (expected) =>
+        document.querySelector('.ag-mode')?.dataset.mode === expected, mode);
+    };
     const assertChatMode = async () => {
       const state = await session();
       assert.equal(state.workflow, 'question');
@@ -184,47 +194,36 @@ try {
         'chat grants never change the personal mode preference');
     };
 
-    setTestCase('허용 전 쓰기 차단 및 바쁜 턴의 허용 거절');
-    const first = await startTurn('Ask for permission to edit this document.');
+    const rejectDocumentPermission = async () => {
+      const pillsBefore = await page.$$eval('.ag-permission-pill', (pills) => pills.length);
+      const denied = await provider.call('request_permission', {
+        capability: 'document-edit', reason: 'Attempt a document edit from Chat.',
+      });
+      assert.equal(denied.ok, false, 'document-edit is not a requestable Chat permission');
+      assert.equal(denied.error?.code, 'INVALID_ARGS');
+      assert.equal(await page.$$eval('.ag-permission-pill', (pills) => pills.length), pillsBefore,
+        'a rejected document-edit request creates no permission pill');
+      assert.equal(await page.evaluate(() => window.__agentBridge.getPendingChatPermissionRequest()), null);
+      assert.equal((await grants()).includes('document-edit'), false);
+      return denied.error.code;
+    };
+    const assertWriteBlocked = async (edit) => {
+      const current = must(await provider.call('get_structure', { format: 'json' }), 'get_structure');
+      const denied = await provider.call('insert_text', { ...edit, expectedRevision: current.revision });
+      assert.equal(denied.ok, false);
+      assert.equal(denied.error.code, 'QUESTION_WRITE_BLOCKED');
+      assert.equal(await hasMarker(edit.text), false);
+    };
+
+    setTestCase('채팅은 문서 쓰기와 문서 편집 권한 요청을 거절');
+    const first = await startTurn('Read this document without editing it.');
     assert.equal(first.workflow, 'question');
     assert.deepEqual(first.chatPermissionGrants, []);
-    const structure = must(await provider.call('get_structure', { format: 'json' }), 'get_structure');
-    const edit = { expectedRevision: structure.revision, sectionIdx: 0, paraIdx: 0, charOffset: 0,
-      text: 'Permission review marker' };
-    const deniedWrite = await provider.call('insert_text', edit);
-    assert.equal(deniedWrite.ok, false);
-    assert.equal(deniedWrite.error.code, 'QUESTION_WRITE_BLOCKED');
-    assert.equal(await hasMarker(edit.text), false);
-    const docRequest = await request('document-edit', 'Apply the requested paragraph edit and keep its review.');
-    await takeScreenshot('permission-request');
-    await page.click(`${docRequest.selector} .ag-permission-grant`);
-    await page.waitForSelector(`${docRequest.selector} .ag-permission-error`);
-    assert.deepEqual(await grants(), []);
-    assert.deepEqual((await session()).chatPermissionGrants, []);
-    assert.equal(await page.$eval(docRequest.selector, (node) => node.dataset.status), 'pending');
+    const edit = { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'Permission review marker' };
+    await assertWriteBlocked(edit);
+    const unsupportedDocumentPermission = await rejectDocumentPermission();
+    await takeScreenshot('chat-document-edit-denied');
     await finishTurn();
-
-    setTestCase('실제 pill 허용 후 다음 턴의 WASM 편집은 검토 대기');
-    await grant(docRequest);
-    assert.deepEqual((await session()).chatPermissionGrants, ['document-edit']);
-    assert.equal(await page.evaluate(() => window.__agentBridge.isTurnRunning()), false,
-      'granting a permission does not send another user message');
-    await assertChatMode();
-    await startTurn('Apply the paragraph edit now.');
-    const current = must(await provider.call('get_structure', { format: 'json' }), 'get_structure');
-    must(await provider.call('insert_text', { ...edit, expectedRevision: current.revision }), 'granted document edit');
-    assert.equal(await hasMarker(edit.text), true, 'the real WASM document shows the staged edit');
-    await finishTurn();
-    await waitForState(page, 'safe pending edit review', () => window.__agentBridge.pendingEdits.getChangeSets()
-      .some((set) => set.ops.length > 0));
-    await page.waitForSelector('.ag-review-card .ag-reject');
-    await takeScreenshot('permission-granted-review');
-    await page.click('.ag-review-card .ag-reject');
-    await waitForState(page, 'review rejection rolled back', () => !window.__agentBridge.pendingEdits.hasPending());
-    assert.equal(await hasMarker(edit.text), false, 'UI rejection restores the actual document');
-    await assertChatMode();
-    evidence.scenarios.push({ name: 'document edit', blockedBeforeGrant: true, busyGrantRejected: true,
-      authenticatedGrants: (await session()).chatPermissionGrants, heldForReview: true, rejectedRestoresWasm: true });
 
     setTestCase('프로젝트 편집과 로컬 실행은 각각 이 채팅에서 허용');
     await startTurn('Ask to update the research project.');
@@ -232,6 +231,10 @@ try {
     assert.equal(projectWrite.ok, false, 'the isolated project chat-write setting denies project edits before approval');
     assert.equal(projectWrite.error.code, 'PROJECT_CHAT_EDIT_DISABLED');
     const projectRequest = await request('project-edit', 'Add a note to this chat research project.');
+    await page.click(`${projectRequest.selector} .ag-permission-grant`);
+    await page.waitForSelector(`${projectRequest.selector} .ag-permission-error`);
+    assert.deepEqual(await grants(), [], 'a busy turn cannot grant project editing');
+    await takeScreenshot('permission-request');
     await finishTurn();
     await grant(projectRequest);
     await startTurn('Add the requested research note.');
@@ -242,11 +245,16 @@ try {
     const localRequest = await request('local-execution', 'Read local files and run the requested command.');
     await finishTurn();
     await grant(localRequest);
-    assert.deepEqual((await session()).chatPermissionGrants, ['document-edit', 'project-edit', 'local-execution']);
+    assert.deepEqual((await session()).chatPermissionGrants, ['project-edit', 'local-execution']);
     await assertChatMode();
+    await startTurn('Keep document access read-only after other grants.');
+    await assertWriteBlocked(edit);
+    assert.equal(await rejectDocumentPermission(), unsupportedDocumentPermission);
+    await finishTurn();
     await takeScreenshot('permission-chat-grants');
     evidence.scenarios.push({ name: 'project and local execution', projectWriteBeforeGrantBlocked: true,
-      projectNoteStored: true, authenticatedGrants: (await session()).chatPermissionGrants });
+      projectNoteStored: true, busyGrantRejected: true, documentWriteAfterGrantsBlocked: true,
+      documentPermissionRejected: unsupportedDocumentPermission, authenticatedGrants: (await session()).chatPermissionGrants });
 
     setTestCase('거절과 중지는 권한을 부여하지 않는다');
     await startTurn('Ask for a download permission that will be declined.');
@@ -276,8 +284,9 @@ try {
     await page.click('.ag-threads-new');
     await waitForState(page, 'new chat has no old request', () => !window.__agentBridge.getPendingChatPermissionRequest());
     await page.evaluate(() => window.__oldPermissionGrant?.click());
-    await startTurn('Start a fresh read-only chat.');
+    await startTurn('/chat Start a fresh read-only chat.');
     const fresh = await session();
+    assert.equal(fresh.workflow, 'question');
     assert.notEqual(fresh.threadId, previousThreadId);
     assert.deepEqual(fresh.chatPermissionGrants, []);
     assert.equal(fresh.pendingChatPermissionRequest, null);
@@ -286,16 +295,18 @@ try {
       'a detached old pill cannot grant a permission to the background chat');
     const freshStructure = must(await provider.call('get_structure', { format: 'json' }), 'fresh get_structure');
     const freshWrite = await provider.call('insert_text', { ...edit, expectedRevision: freshStructure.revision });
-    assert.equal(freshWrite.error?.code, 'QUESTION_WRITE_BLOCKED');
+    assert.equal(freshWrite.error?.code, 'QUESTION_WRITE_BLOCKED', JSON.stringify({ freshWrite, fresh }));
     assert.equal(await hasMarker(edit.text), false);
-    const freshDocRequest = await request('document-edit', 'Check that an idle chat grant is also reset.');
+    await rejectDocumentPermission();
+    const freshProjectRequest = await request('project-edit', 'Check that an idle chat grant is also reset.');
     await finishTurn();
-    await grant(freshDocRequest);
+    await grant(freshProjectRequest);
     const freshHubSessionId = await page.evaluate(() => window.__agentBridge.getHubFontAccess().sessionId);
     await page.click('button[aria-label="채팅 목록"]');
     await page.click('.ag-threads-new');
-    await startTurn('Start another chat after the previous grant.');
+    await startTurn('/chat Start another chat after the previous grant.');
     const idleReset = await session();
+    assert.equal(idleReset.workflow, 'question');
     assert.notEqual(idleReset.threadId, fresh.threadId);
     assert.equal(await page.evaluate(() => window.__agentBridge.getHubFontAccess().sessionId), freshHubSessionId,
       'an idle new chat reuses the Studio hub session');
@@ -309,6 +320,38 @@ try {
     evidence.scenarios.push({ name: 'deny, stop and new chat', deniedDownload: true, stoppedBrowser: true,
       oldButtonInvalid: true, newChatGrants: fresh.chatPermissionGrants, newChatWriteBlocked: true,
       idleChatResetGrants: idleReset.chatPermissionGrants, personalModeUnchanged: true });
+    setTestCase('에이전트 문서 편집 검토 거절은 실제 문서를 복구');
+    await selectMode('agent');
+    const agentSession = await startTurn('Edit the paragraph in Agent mode.');
+    assert.equal(agentSession.workflow, 'direct');
+    assert.equal(agentSession.permissionProfile, 'safe');
+    const current = must(await provider.call('get_structure', { format: 'json' }), 'agent get_structure');
+    must(await provider.call('insert_text', { ...edit, expectedRevision: current.revision }), 'Agent document edit');
+    assert.equal(await hasMarker(edit.text), true);
+    await finishTurn();
+    await page.waitForSelector('.ag-review-card .ag-reject');
+    await takeScreenshot('agent-document-review');
+    await page.click('.ag-review-card .ag-reject');
+    await waitForState(page, 'Agent review rejection restored document', () =>
+      !window.__agentBridge.pendingEdits.hasPending());
+    assert.equal(await hasMarker(edit.text), false);
+
+    setTestCase('전체 모드는 문서 편집을 바로 반영');
+    await selectMode('full');
+    const fullSession = await startTurn('Edit the paragraph in Full mode.');
+    assert.equal(fullSession.workflow, 'direct');
+    assert.equal(fullSession.permissionProfile, 'unrestricted');
+    const fullStructure = must(await provider.call('get_structure', { format: 'json' }), 'full get_structure');
+    const fullEdit = { ...edit, text: 'Full direct edit marker', expectedRevision: fullStructure.revision };
+    must(await provider.call('insert_text', fullEdit), 'Full document edit');
+    await finishTurn();
+    assert.equal(await hasMarker(fullEdit.text), true);
+    assert.equal(await page.evaluate(() => window.__agentBridge.pendingEdits.hasPending()), false);
+    assert.equal(await page.$('.ag-review-card .ag-reject'), null);
+    await takeScreenshot('full-document-edit');
+    evidence.scenarios.push({ name: 'Agent and Full document editing', agentWorkflow: agentSession.workflow,
+      agentReviewRequired: true, rejectedRestoresWasm: true, fullWorkflow: fullSession.workflow,
+      fullProfile: fullSession.permissionProfile, fullDocumentEditCommitted: true, fullReviewPending: false });
     assert.deepEqual(errors, [], 'the real editor raises no page errors');
     fs.writeFileSync(path.join(evidenceDir, 'results.json'), JSON.stringify(evidence, null, 2) + '\n');
     console.log(`  Permission evidence: ${evidenceDir}`);

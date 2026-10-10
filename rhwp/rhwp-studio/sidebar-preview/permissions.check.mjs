@@ -11,13 +11,26 @@ export async function checkChatPermissions(page, origin, screenshot) {
     assert.equal(await page.$$eval('.ag-tool-label', (labels) => labels.some((label) => label.textContent === '권한 요청')), true);
     assert.equal(await page.$$eval('.ag-tool-outcome-text', (results) => results.some((result) => result.textContent === '허용 대기')), true);
   }
+  await page.goto(`${origin}/?reset=1&theme=light&width=480&scenario=permission&permissionCapability=document-edit`,
+    { waitUntil: 'networkidle0' });
+  await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
+  await page.type('.ag-input', '문서 편집 권한을 요청해 줘');
+  await page.click('.ag-send');
+  await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning()
+    && window.sidebarPreview.snapshot().messagesSent === 1
+    && document.querySelector('.ag-tool-row'));
+  assert.equal(await page.$('.ag-permission-pill'), null, 'document editing never produces a Chat grant pill');
+  assert.equal(await page.evaluate(() => window.sidebarPreview.bridge.getPendingChatPermissionRequest()), null);
+  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.bridge.getChatPermissionGrants()), []);
+  if (screenshot) await screenshot('permission-document-edit-denied');
+
   await open();
   await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning());
   const prefs = await page.evaluate(() => localStorage.getItem('rhwp-agent-prefs'));
   const before = await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent);
   await page.click('.ag-permission-grant');
   await page.waitForSelector('.ag-permission-pill[data-status="granted"]');
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.bridge.getChatPermissionGrants()), ['document-edit']);
+  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.bridge.getChatPermissionGrants()), ['project-edit']);
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent), before, 'grant never sends a prompt');
   assert.equal(await page.evaluate(() => localStorage.getItem('rhwp-agent-prefs')), prefs, 'grant does not save preferences');
   assert.equal(await page.evaluate(() => window.sidebarPreview.bridge.getPermissionProfile()), 'safe');
