@@ -190,7 +190,8 @@ function requestVersionText(options: VersionTextPromptOptions): VersionTextPromp
   const promise = new Promise<string | null>((resolve) => {
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const promptId = `ag-version-text-prompt-${++textPromptSequence}`;
-    const overlay = el('div', 'ag-version-prompt-overlay');
+    // 모달 dialog 는 맨 위 층에 가운데로 뜬다. 사이드바 안에 붙여 색·테마 변수를 받는다.
+    const overlay = el('dialog', 'ag-version-prompt-overlay');
     const dialog = el('form', 'ag-version-prompt');
     dialog.setAttribute('role', 'dialog');
     dialog.setAttribute('aria-modal', 'true');
@@ -230,6 +231,7 @@ function requestVersionText(options: VersionTextPromptOptions): VersionTextPromp
     const finish = (value: string | null): void => {
       if (settled) return;
       settled = true;
+      if (overlay.open) overlay.close();
       overlay.remove();
       returnFocus?.focus();
       resolve(value);
@@ -268,8 +270,13 @@ function requestVersionText(options: VersionTextPromptOptions): VersionTextPromp
     overlay.addEventListener('mousedown', (event) => {
       if (event.target === overlay) finish(null);
     });
+    overlay.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      finish(null);
+    });
 
-    document.body.appendChild(overlay);
+    (document.querySelector<HTMLElement>('.ag-root:not(.ag-collapsed)') ?? document.body).appendChild(overlay);
+    overlay.showModal();
     input.focus();
     if (input instanceof HTMLInputElement) input.select();
   });
