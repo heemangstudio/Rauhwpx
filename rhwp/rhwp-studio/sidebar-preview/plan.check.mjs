@@ -8,7 +8,7 @@ export async function checkPlanPreview(page, origin, artifacts) {
     if (!params.has('scenario')) params.set('scenario', 'plan');
     if (!params.has('width')) params.set('width', '480');
     await page.goto(`${origin}/?${params}`, { waitUntil: 'networkidle0' });
-    await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
+    await page.waitForFunction(() => window.sidebarPreview && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
   };
   const submit = async (text) => {
     await page.$eval('.ag-input', (input, value) => {

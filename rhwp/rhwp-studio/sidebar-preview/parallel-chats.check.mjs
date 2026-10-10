@@ -4,7 +4,7 @@ const LOCK_REASON = '다른 채팅이 이 문서를 편집하고 있어요';
 
 async function openPreview(page, origin, query) {
   await page.goto(`${origin}/?theme=light&width=480&reset=1&${query}`, { waitUntil: 'networkidle0' });
-  await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
+  await page.waitForFunction(() => window.sidebarPreview && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
 }
 
 async function clickNewChat(page) {

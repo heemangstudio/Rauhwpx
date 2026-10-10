@@ -133,7 +133,9 @@ async function sendThroughComposer(page, text) {
     const input = document.querySelector('#agent-sidebar textarea.ag-input');
     if (!(input instanceof HTMLTextAreaElement)) return false;
     const rect = input.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0 && !input.disabled;
+    // 입력기의 보이는 잠금은 늦게 따라온다 — 실제 준비 상태는 data-composer-ready 가 말한다.
+    return rect.width > 0 && rect.height > 0
+      && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true';
   });
   if (visible) {
     await page.focus('#agent-sidebar textarea.ag-input');

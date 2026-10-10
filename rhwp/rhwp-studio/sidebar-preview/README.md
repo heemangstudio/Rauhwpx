@@ -88,10 +88,21 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?sessions=2&chats=sample` | A second live document (회의록) with its own sidebar and mock agent; its chats switch sidebars without stopping the other agent |
 | `?parallel=1` | Several chats of one document: a new chat or another chat opened while the shown chat works gets its own sidebar and mock agent, and the busy agent keeps running |
 | `?parallel=locked` | The first chat edits with a held reply and a second, new chat opens beside it, locked to 채팅 |
+| `?connection=disconnected` | The offline dot and the read-only composer lock, shown after the 400 ms status delay |
 
 Parameters can be combined. Select **Next reply**, then type a message or press
 **Play sample conversation**. Connection and service controls expose disconnected,
 reconnecting, replaced-session, and setup screens without waiting for real failures.
+
+Transient statuses are delayed like the app: the connection dot, the composer's lock
+(read-only, so focus and IME composition survive) and the "편집 중…" ring appear only
+after 400 ms and then stay at least 400 ms; the rail shows 작업 중 400 ms after a turn
+starts. Screenshots of those states must wait for them. Automation reads composer
+readiness from `#agent-sidebar[data-composer-ready="true"]`, which follows the real
+state without the delay; `.ag-input` is no longer `disabled` while connecting or starting.
+
+From the console, `sidebarPreview.setChatStartDelay(ms)` and
+`sidebarPreview.setStageDelay(ms)` slow a chat start or an attachment upload.
 
 ## Changes drawer
 
@@ -181,7 +192,11 @@ origins where the browser does not expose `crypto.randomUUID()`.
 npm run test:sidebar
 npm run build:sidebar
 node rhwp/rhwp-studio/sidebar-preview/editor-shell.check.mjs
+node rhwp/rhwp-studio/sidebar-preview/delayed-status.check.mjs
 ```
+
+`delayed-status.check.mjs` also runs as a step of `npm run test:sidebar`. Run alone,
+it starts its own server and browser like the full check.
 
 The browser check starts its own Vite server on an ephemeral port and launches a
 fresh headless Chrome profile. It exercises the primary panels and mutations,

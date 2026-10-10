@@ -52,7 +52,7 @@ async function metrics(cdp) {
 
 async function openPreview(page, query) {
   await page.goto(`${url}/?theme=light&width=480&reset=1&${query}`, { waitUntil: 'networkidle0' });
-  await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
+  await page.waitForFunction(() => window.sidebarPreview && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
   await page.click('#play');
   await page.waitForFunction(() => window.sidebarPreview.chats[0].mock.snapshot().running);
   // 샘플 답변이 끝까지 흐른 뒤(턴은 붙잡힌 채) 긴 답변을 이어 붙인다.

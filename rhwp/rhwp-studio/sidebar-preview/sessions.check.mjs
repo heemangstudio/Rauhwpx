@@ -13,7 +13,7 @@ export async function checkSessionsPreview(page, origin) {
     await page.goto(`${origin}/?theme=light&width=480&sessions=2&chats=sample&scenario=chat&hold=1`, {
       waitUntil: 'networkidle0',
     });
-    await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
+    await page.waitForFunction(() => window.sidebarPreview && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
     // The background sidebar restores its document's last chat off-screen.
     await page.waitForFunction(() =>
       window.sidebarPreview.sessions[1].sidebar.root.querySelector('.ag-msg-user'));

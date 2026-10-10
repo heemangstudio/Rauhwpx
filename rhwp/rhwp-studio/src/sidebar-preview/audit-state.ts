@@ -10,6 +10,11 @@ async function until<T>(read: () => T | null | false, description: string): Prom
   throw new Error(`Could not open preview: ${description}`);
 }
 
+/** 실제 준비 상태 — 입력기의 보이는 잠금은 400ms 늦게 따라온다(data-composer-ready 는 늦지 않는다). */
+function composerReady(): boolean {
+  return document.querySelector<HTMLElement>('#agent-sidebar')?.dataset.composerReady === 'true';
+}
+
 async function click(selector: string): Promise<void> {
   const button = await until(() => {
     const element = document.querySelector<HTMLButtonElement>(selector);
@@ -48,7 +53,7 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
   const mode = params.get('mode');
   const choosesMode = mode === 'chat' || mode === 'plan' || mode === 'agent' || mode === 'full';
   if (params.get('permission') === 'unrestricted' || choosesMode) {
-    await until(() => !document.querySelector<HTMLTextAreaElement>('.ag-input')?.disabled, 'composer');
+    await until(composerReady, 'composer');
   }
   if (params.get('permission') === 'unrestricted') preview.bridge.setPermissionProfile('unrestricted');
   if (choosesMode) await chooseMode(mode);
@@ -57,10 +62,7 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
     preview.setBrowserbaseState(browserbase === 'ready' ? 'connected' : browserbase);
   if (params.get('document') === 'empty') select('#document', 'empty');
   if (params.get('play') === '1') {
-    await until(() => {
-      const input = document.querySelector<HTMLTextAreaElement>('.ag-input');
-      return input && !input.disabled;
-    }, 'composer');
+    await until(composerReady, 'composer');
     document.querySelector<HTMLButtonElement>('#play')!.click();
     await until(() => preview.snapshot().running, 'sample reply');
     if (params.get('hold') !== '1' && params.get('scenario') !== 'question') {
@@ -102,6 +104,13 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
   const connection = params.get('connection');
   if (connection && ['connected', 'connecting', 'disconnected', 'replaced'].includes(connection)) {
     select('#connection', connection);
+    // 연결 상태와 입력기 잠금은 400ms 를 넘긴 뒤에 보인다(다른 탭 사용은 바로).
+    if (connection !== 'connected') {
+      await until(() => {
+        const dot = document.querySelector<HTMLElement>('.ag-conn-dot');
+        return dot && !dot.hidden && document.querySelector('.ag-composer.ag-composer-locked');
+      }, 'connection status');
+    }
   }
   document.body.dataset.auditReady = 'true';
 }

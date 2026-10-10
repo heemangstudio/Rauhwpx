@@ -5644,6 +5644,12 @@ button.ag-skill-copy {
   opacity: 0.55;
 }
 
+/* 연결·채팅 시작·전환으로 잠깐 잠긴 입력기 — disabled 가 아니라 readOnly 라 초점과
+   한글 조합이 남는다. 모양만 비활성과 같다. */
+.ag-composer.ag-composer-locked .ag-input {
+  opacity: 0.55;
+}
+
 /* 다른 문서의 채팅 열람 중 — 필드 전체가 잠겨 있음을 보여준다. */
 .ag-composer.ag-readonly .ag-composer-field {
   border-style: dashed;

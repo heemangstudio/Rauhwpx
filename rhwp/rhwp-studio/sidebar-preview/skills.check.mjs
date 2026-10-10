@@ -49,10 +49,7 @@ try {
   async function open(width = 480) {
     await page.goto(`${origin}/?controls=0&theme=light&width=${width}`, { waitUntil: 'networkidle0' });
     await page.waitForFunction(() => window.sidebarPreview);
-    await page.waitForFunction(() => {
-      const input = document.querySelector('.ag-input');
-      return input && !input.disabled;
-    });
+    await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
     await page.click('.ag-settings-btn');
     await page.waitForSelector('.ag-root.ag-settings-open');
     await page.click('.ag-settings-nav-button[data-destination="skills"]');

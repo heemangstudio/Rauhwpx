@@ -168,6 +168,9 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   let threadId = '';
   let scenario: Scenario = 'chat';
   let holdReply = false;
+  /** How long a chat start and an attachment upload take — checks slow them to observe the locks. */
+  let chatStartDelayMs = 20;
+  let stageDelayMs = 0;
   let permission: T.PermissionProfile = 'safe';
   let tier: T.ServiceTier = 'standard';
   let workflow: T.AgentWorkflowState = {
@@ -606,7 +609,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission });
       later(() => {
         if (chatGeneration === startGeneration) emit(started);
-      });
+      }, chatStartDelayMs);
     },
     stopChat: () => {
       generation++;
@@ -893,6 +896,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     },
     getActiveTemplate: () => activeTemplate,
     stageReference: async (scopeId, file) => {
+      if (stageDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, stageDelayMs));
       const reference: T.StagedReference = {
         id: crypto.randomUUID(),
         scope: 'chat',
@@ -1379,6 +1383,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       scenario = value;
     },
     setHold: (value: boolean) => { holdReply = value; },
+    setChatStartDelay: (ms: number) => { chatStartDelayMs = ms; },
+    setStageDelay: (ms: number) => { stageDelayMs = ms; },
     /** Delivers one provider event as the hub would, e.g. a token-by-token answer for benches. */
     streamEvent: stream,
     boot: () => {

@@ -79,7 +79,8 @@ test('composer attachments upload into removable staging drafts before their mes
   assert.match(library, /function takeReadyDrafts\(\): StagedReference\[\]/);
   assert.match(sidebar, /referenceLibrary\.takeReadyDrafts\(\)/);
   assert.match(sidebar, /bridge\.sendUserMessage\(requestText, skillNameForMessage, staged\.map/);
-  assert.match(sidebar, /send\.disabled = connState !== 'connected' \|\| attachmentsSending \|\| chatStarting[\s\S]*\|\| \(!questionPending && referenceLibrary\.hasBlockingDrafts\(\)\)/);
+  // Sending while an attachment still uploads is checked behaviorally in
+  // sidebar-preview/delayed-status.check.mjs (f): the send button stays disabled and Enter sends nothing.
   assert.match(css, /\.ag-reference-upload-remove:focus-visible/);
 });
 

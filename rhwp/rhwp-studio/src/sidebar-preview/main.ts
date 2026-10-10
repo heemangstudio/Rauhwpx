@@ -435,14 +435,13 @@ async function openLockedParallelScene(): Promise<void> {
     while (!ready()) await new Promise((resolve) => setTimeout(resolve, 20));
   };
   await waitForThreadsPersistence();
-  const input = sidebar.root.querySelector<HTMLTextAreaElement>('.ag-input')!;
   const modeButton = sidebar.root.querySelector<HTMLButtonElement>('.ag-mode-btn')!;
-  await until(() => !input.disabled && !modeButton.disabled);
+  await until(() => sidebar.root.dataset.composerReady === 'true' && !modeButton.disabled);
   // A restored chat may be in another mode; the first chat edits in 에이전트.
   if (modeButton.dataset.mode !== 'agent') {
     modeButton.click();
     sidebar.root.querySelector<HTMLButtonElement>('.ag-mode-item[data-mode="agent"]')!.click();
-    await until(() => modeButton.dataset.mode === 'agent' && !input.disabled);
+    await until(() => modeButton.dataset.mode === 'agent' && sidebar.root.dataset.composerReady === 'true');
   }
   mock.setHold(true);
   playSample();

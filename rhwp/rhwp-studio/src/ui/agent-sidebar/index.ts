@@ -138,6 +138,7 @@ import { detectPlatformKind } from '../../engine/navigation-keymap.ts';
 import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createEffortSlider } from './effort-slider.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
+import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
 import { createFocusGreeting } from './focus-greeting.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
 import { createToolRow, type ToolRowHandle } from './tool-row.ts';
@@ -617,6 +618,9 @@ const CONN_LABEL: Record<ConnectionState, string> = {
   replaced: '다른 탭에서 사용 중',
 };
 
+/** 입력기를 잠깐 잠그는 까닭. 먼저 맞는 것이 이긴다. */
+type ComposerLock = 'replaced' | 'connecting' | 'disconnected' | 'starting' | 'switching' | 'attaching';
+
 /* ── 작업 방식 (Direct / Plan / Question) ─────────────────
    계약은 `agent/types.ts`(AgentWorkflow · AgentPhase · StructuredPlan ·
    AgentWorkflowState)와 `agent/bridge.ts`(getWorkflowState · setWorkflow ·
@@ -689,6 +693,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let connState: ConnectionState = bridge.getConnectionState();
   /** 지금까지 실패한 연결 시도 수 — 점 색만 고른다. 화면에는 세지 않는다. */
   let connAttempt = 0;
+  /* 연결 점과 입력기 잠금은 400ms 를 넘긴 상태만 보인다 — 짧은 재연결이나 채팅 시작이
+     점·잠긴 입력기로 깜빡이지 않는다. 다른 탭 사용(replaced)은 바로 보인다. 판단은
+     언제나 실제 상태(connState 등)로 한다. */
+  const connStatus = createDelayedStatus<ConnectionState>(() => renderConnStatus(),
+    { immediate: (state) => state === 'replaced' });
+  /** 목록의 작업 중 표시를 드러낼 타이머와 그 시각(Date.now 기준). */
+  let railRevealTimer: number | null = null;
+  let railRevealAt = Number.POSITIVE_INFINITY;
+  /** updateComposer 안에서 잠금이 바로 바뀌면 그 자리에서 그리므로 다시 부르지 않는다. */
+  let composerUpdating = false;
+  let composerUpdateQueued = false;
+  const composerLock = createDelayedStatus<ComposerLock>(() => {
+    if (!composerUpdating) scheduleComposerUpdate();
+  }, { immediate: (lock) => lock === 'replaced' });
   let turnRunning = bridge.isTurnRunning();
   let mergeResolverLocked = false;
   /** 지금 노란 불이 붙어 있는 스레드 — 턴이 끝나면 초록 점으로 넘긴다. */
@@ -821,8 +839,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 잠금 때문에 채팅 모드로 옮기려 했던 채팅 — 허브가 거절해도 같은 채팅에서 되풀이하지 않는다. */
   let chatModeLockForcedThreadId: string | null = null;
   let chatModeLockCheckQueued = false;
-  /** 초안의 첫 메시지로 입력기가 잠깐 잠기면, 채팅이 열린 뒤 입력기에 초점을 돌려준다. */
-  let refocusInputOnChatStart = false;
   const threadComposerDrafts = new Map<string, { text: string; files: File[] }>();
   let assistantBuffer = '';
   let assistantRenderFrame: number | null = null;
@@ -2277,6 +2293,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const turnPendingLabel = el('span', 'ag-turn-pending-label');
   turnPending.append(createInkRing(), turnPendingLabel);
   messages.append(turnPending, messagesEnd);
+  /* "편집 중…" 고리는 에이전트가 400ms 넘게 조용할 때 나타나고, 나타나면 400ms 는
+     머문다 — 짧은 글과 빠른 도구가 번갈아 와도 대화 끝이 깜빡이지 않는다. 숨어
+     있는 동안 새 내용은 고리 뒤(messagesEnd 앞)에 붙고, 나타날 때 끝으로 옮긴다. */
+  const turnPendingStatus = createDelayedStatus<AgentName>((who) => {
+    turnPending.hidden = who === null;
+    if (!who) return;
+    turnPendingLabel.textContent = `${AGENT_LABEL[who]} 편집 중…`;
+    messages.insertBefore(turnPending, messagesEnd);
+  });
   /** 마지막 내용의 아래끝이 대화 영역 아래로 내려가 있으면 뒤처진 상태다. */
   function lastConversationContent(): HTMLElement | null {
     let last = messagesEnd.previousElementSibling;
@@ -4531,7 +4556,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         return;
       }
     }
-    if (e.key === 'Backspace' && !input.value && activeComposerSkill) {
+    if (e.key === 'Backspace' && !input.value && activeComposerSkill && !input.readOnly) {
       e.preventDefault();
       setComposerSkill(null);
       return;
@@ -5463,13 +5488,22 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return `${Math.floor(minutes / 60)}시간`;
   }
 
-  /** 행 오른쪽 위 — 실행 중이면 점과 짧은 상태, 아니면 마지막 대화 이후 경과. */
+  /** 행 오른쪽 위 — 실행 중이면 점과 짧은 상태, 아니면 마지막 대화 이후 경과.
+      작업 중은 시작 뒤 400ms 가 지나야 보인다 — 짧은 턴은 경과 표시에서 곧바로 완료 점으로 간다.
+      입력 대기·완료 같은 다른 상태는 바로 보인다. 삭제·보관 판단은 실제 상태를 읽는다. */
   function fillThreadWhen(when: HTMLElement, thread: ChatThread, now = Date.now()): void {
-    const status = getChatStatus(thread.id);
+    let status = getChatStatus(thread.id);
+    const since = status === 'working' ? getChatWorkingSince(thread.id) : null;
+    if (status === 'working') {
+      const reveal = revealAfterDelay(since ?? now, now);
+      if (!reveal.revealed) {
+        status = null;
+        scheduleRailReveal(reveal.revealInMs);
+      }
+    }
     when.dataset.status = status ?? '';
     let label: string;
     if (status === 'working') {
-      const since = getChatWorkingSince(thread.id);
       const elapsed = since ? formatWorkingElapsed(since, now) : '';
       label = elapsed ? `작업 중 ${elapsed}` : '작업 중';
     } else if (status === 'needs-input') {
@@ -5481,6 +5515,30 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       ...(status ? [buildStatusDot(status)] : []),
       el('span', 'ag-threads-item-when-label', label),
     );
+  }
+
+  /** 보이는 목록 행의 상태·경과만 다시 채운다. */
+  function refreshThreadWhens(): void {
+    if (!threadsListVisible()) return;
+    const now = Date.now();
+    for (const item of threadNavItems()) {
+      const entry = threadRowTargets.get(item);
+      const when = item.querySelector<HTMLElement>('.ag-threads-item-when');
+      if (entry && when) fillThreadWhen(when, entry.thread, now);
+    }
+  }
+
+  /** 아직 드러나지 않은 작업 중 표시를 위해 타이머 하나를 가장 이른 시각에 둔다. */
+  function scheduleRailReveal(inMs: number): void {
+    const at = Date.now() + inMs;
+    if (railRevealTimer !== null && railRevealAt <= at) return;
+    if (railRevealTimer !== null) window.clearTimeout(railRevealTimer);
+    railRevealAt = at;
+    railRevealTimer = window.setTimeout(() => {
+      railRevealTimer = null;
+      railRevealAt = Number.POSITIVE_INFINITY;
+      refreshThreadWhens();
+    }, inMs);
   }
 
   /** 행 버튼 → 채팅. 키보드 삭제가 버튼에서 채팅을 되찾는다. */
@@ -6175,7 +6233,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     draftChat = false;
     draftReturnThreadId = null;
     chatChosen = true;
-    refocusInputOnChatStart = active && document.activeElement === input;
     // 앞 채팅의 허브 세션을 닫고 이 스레드로 새로 연다.
     bridgeThreadId = null;
     bridge.stopChat();
@@ -6351,9 +6408,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     connState = state;
     if (typeof meta?.attempt === 'number') connAttempt = meta.attempt;
     if (state === 'connected') connAttempt = 0;
-    conn.textContent = CONN_LABEL[state];
     takeoverBtn.hidden = state !== 'replaced';
     if (state === 'replaced') setConfigPanelOpen(false);
+    // 점과 스크린리더 문구는 400ms 를 넘긴 상태만 보인다. 판단은 실제 connState 로 한다.
+    connStatus.set(state === 'connected' ? null : state);
     renderConnStatus();
     referenceLibrary.setConnectionState(state);
     updateComposer();
@@ -6362,18 +6420,22 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /**
    * 점 색: 첫 시도·잠깐의 끊김은 회색 맥박, 두 번 넘게 실패하면 빨강.
    * 백오프 중 connecting/disconnected 가 번갈아 와도 점이 깜빡이지 않는다.
+   * 400ms 안에 돌아온 연결은 점도 문구도 남기지 않는다(connStatus).
    */
   function renderConnStatus(): void {
-    const down = connState === 'disconnected' || (connState === 'connecting' && connAttempt >= 2);
-    const visual = connState === 'connected'
+    const shownState = connStatus.shown ?? 'connected';
+    const down = shownState === 'disconnected' || (shownState === 'connecting' && connAttempt >= 2);
+    const visual = shownState === 'connected'
       ? 'connected'
-      : connState === 'replaced'
+      : shownState === 'replaced'
         ? 'replaced'
         : down ? 'disconnected' : 'connecting';
+    // 같은 문구를 다시 쓰면 스크린리더가 또 읽는다.
+    if (conn.textContent !== CONN_LABEL[shownState]) conn.textContent = CONN_LABEL[shownState];
     connDot.dataset.state = visual;
     connDot.hidden = visual === 'connected';
-    connDot.setAttribute('aria-label', CONN_LABEL[connState]);
-    connDot.title = visual === 'disconnected' ? '연결 끊김' : CONN_LABEL[connState];
+    connDot.setAttribute('aria-label', CONN_LABEL[shownState]);
+    connDot.title = visual === 'disconnected' ? '연결 끊김' : CONN_LABEL[shownState];
     if (visual === 'connected' || visual === 'replaced') {
       setConnPopoverOpen(false);
       return;
@@ -6410,39 +6472,90 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     send.classList.toggle('ag-send-idle', idle);
   }
 
+  /** 입력기를 잠깐 잠그는 실제 까닭. 보이는 잠금은 composerLock 이 400ms 늦춰 정한다. */
+  function realComposerLock(): ComposerLock | null {
+    if (connState === 'replaced') return 'replaced';
+    if (connState !== 'connected') return connState;
+    if (chatStartPendingThreadId !== null) return 'starting';
+    if (workflowTransitionPending || planActionPending) return 'switching';
+    if (attachmentsSending) return 'attaching';
+    return null;
+  }
+
+  /** 잠금 상태를 microtask 로 다시 그린다 — 지연 상태의 알림이 updateComposer 에 다시 들어오지 않게. */
+  function scheduleComposerUpdate(): void {
+    if (composerUpdateQueued) return;
+    composerUpdateQueued = true;
+    queueMicrotask(() => {
+      composerUpdateQueued = false;
+      if (root.dataset.disposed !== 'true') updateComposer();
+    });
+  }
+
+  /** 보이는 잠금 — disabled 가 아니라 readOnly 라 입력기의 초점·캐럿·한글 조합이 그대로 남는다. */
+  function showComposerLock(locked: boolean): void {
+    if (input.readOnly === locked) return;
+    input.readOnly = locked;
+    if (locked) input.setAttribute('aria-disabled', 'true');
+    else input.removeAttribute('aria-disabled');
+    composer.classList.toggle('ag-composer-locked', locked);
+  }
+
   function updateComposer(): void {
     if (composerRest.resting && !canComposerRest()) composerRest.setResting(false);
     updateReconnectChip();
     updateCalibrationChip();
     syncProviderMenu();
+    const realLock = realComposerLock();
+    composerUpdating = true;
+    try {
+      composerLock.set(realLock);
+    } finally {
+      composerUpdating = false;
+    }
+    const shownLock = composerLock.shown;
+    const questionPresented = questionController.hasPending();
+    const questionUsesComposer = questionController.usesComposerForOther();
+    // 테스트·자동화가 읽는 실제 준비 상태. 보이는 잠금의 지연과 무관하다.
+    root.dataset.composerReady = String(realLock === null
+      && !mergeResolverLocked
+      && readOnlyDocLabel === null
+      && !(questionPresented && !questionUsesComposer));
     // 다른 문서의 채팅 열람 중에는 연결/작업 상태와 무관하게 잠긴다.
     if (mergeResolverLocked) {
+      showComposerLock(false);
       input.disabled = true;
       send.disabled = true;
       composerSkillClear.disabled = true;
       input.placeholder = '병합 검토 중에는 에이전트 작업을 시작할 수 없습니다';
     } else if (readOnlyDocLabel !== null) {
+      showComposerLock(false);
       input.disabled = true;
       send.disabled = true;
       composerSkillClear.disabled = true;
       input.placeholder = `"${readOnlyDocLabel}" 문서의 채팅 — 읽기 전용`;
     } else {
-      const chatStarting = chatStartPendingThreadId !== null;
-      const questionPending = questionController.hasPending();
-      const questionUsesComposer = questionController.usesComposerForOther();
-      input.disabled = connState !== 'connected' || attachmentsSending || chatStarting
-        || workflowTransitionPending || planActionPending
-        || (questionPending && !questionUsesComposer);
-      send.disabled = connState !== 'connected' || attachmentsSending || chatStarting
-        || workflowTransitionPending || planActionPending
-        || (!questionPending && referenceLibrary.hasBlockingDrafts());
-      composerSkillClear.disabled = input.disabled;
-      input.placeholder = questionPending
+      // disabled 는 구조적인 잠금(질문이 입력기를 넘겨받음)에만 쓴다. 연결·시작·전환처럼
+      // 잠깐 지나가는 잠금은 400ms 를 넘긴 뒤에만 readOnly 로 보인다. 보내기는 언제나
+      // 실제 상태로 막는다(submit 처리기).
+      const locked = shownLock !== null;
+      input.disabled = questionPresented && !questionUsesComposer;
+      showComposerLock(locked && !input.disabled);
+      send.disabled = locked
+        || (!questionPresented && referenceLibrary.hasBlockingDrafts());
+      composerSkillClear.disabled = input.disabled || locked;
+      input.placeholder = questionPresented
         ? questionUsesComposer ? '직접 답변 입력' : '위 질문에 답변'
-        : workflowTransitionPending || planActionPending
+        : shownLock === 'switching'
         ? '전환을 적용하는 중…'
-        : chatStarting
+        : shownLock === 'starting'
         ? '채팅을 여는 중…'
+        : shownLock === 'connecting'
+        ? '허브에 연결하는 중…'
+        : shownLock === 'disconnected'
+        ? '허브 연결이 끊겼어요. 다시 연결되면 입력할 수 있어요'
+        : shownLock === 'replaced'
+        ? CONN_LABEL.replaced
         : activeComposerSkill
           ? '추가 요청 (선택)'
         : chatWorkflow === 'plan' && planningPhase === 'awaiting-approval'
@@ -6453,10 +6566,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
             ? '구상할 내용 입력'
             : '문서 작업 입력';
     }
-    const questionPending = questionController.hasPending();
-    const questionUsesComposer = questionController.usesComposerForOther();
-    const stopping = turnRunning && !(questionPending && questionUsesComposer);
-    const sendLabel = questionPending && questionUsesComposer ? '답변 계속'
+    const stopping = turnRunning && !(questionPresented && questionUsesComposer);
+    const sendLabel = questionPresented && questionUsesComposer ? '답변 계속'
       : stopping ? '중지' : '보내기';
     const sendIcon = stopping ? 'stop' : 'send';
     if (send.dataset.icon !== sendIcon) {
@@ -6468,10 +6579,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     send.classList.toggle('ag-stop', stopping);
     syncSendIdle();
     // 실행 중에는 Enter 가 전송이 아니므로 힌트를 숨긴다.
-    sendHint.hidden = stopping || attachmentsSending || chatStartPendingThreadId !== null
-      || workflowTransitionPending || planActionPending
+    // 잠깐 지나가는 잠금은 입력기처럼 보이는 잠금을 따른다 — 힌트도 깜빡이지 않는다.
+    sendHint.hidden = stopping || shownLock !== null
       || referenceLibrary.hasBlockingDrafts()
-      || connState !== 'connected'
       || readOnlyDocLabel !== null
       || mergeResolverLocked;
     // 실행 중이거나 작업 방식/계획→실행 전환 중에는 모드·모델·권한을 잠근다.
@@ -6518,6 +6628,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     replyPending = false;
     settledAnswer = null;
     followConversationEnd = false;
+    turnPendingStatus.reset();
     turnPending.hidden = true;
     // 편대 카드는 도구 행처럼 휘발성이다 — 대화를 갈아 끼우면 타이머까지 버린다.
     suppressedSpawnCalls.clear();
@@ -6746,11 +6857,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 첫 문단이 완성되기 전의 빈 답변은 아직 대기 중으로 본다.
     const waiting = (replyPending || turnRunning) && !(streamBubble && hasRenderedBlocks(streamBubble));
     const show = waiting || editAgent !== null;
-    turnPending.hidden = !show;
-    if (!show) return;
-    const who = agent ?? editAgent ?? selectedAgent;
-    turnPendingLabel.textContent = `${AGENT_LABEL[who]} 편집 중…`;
-    messages.insertBefore(turnPending, messagesEnd);
+    turnPendingStatus.set(show ? agent ?? editAgent ?? selectedAgent : null);
+    // 보이는 고리는 언제나 대화 끝에 선다.
+    if (turnPendingStatus.shown !== null && turnPending.nextSibling !== messagesEnd) {
+      messages.insertBefore(turnPending, messagesEnd);
+    }
   }
 
   function scrollConversationToEnd(): void {
@@ -7634,10 +7745,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // 새 채팅(welcome)·재시작 시 작업 방식과 계획 단계를 서버와 다시 맞춘다.
         syncPlanningFromBridge();
         persistCurrentThread();
-        if (refocusInputOnChatStart) {
-          refocusInputOnChatStart = false;
-          if (active && !input.disabled) input.focus({ preventScroll: true });
-        }
         const liveQuestion = bridge.getPendingUserQuestion();
         if (liveQuestion?.threadId === currentThread.id) {
           const stored = currentThread.pendingUserQuestion
@@ -8611,15 +8718,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (threadsListVisible()) rebuildThreadsList();
   });
   /* "작업 중 2분"과 경과 표시는 목록이 보이는 동안 30초마다 고친다. */
-  const threadClock = window.setInterval(() => {
-    if (!threadsListVisible()) return;
-    const now = Date.now();
-    for (const item of threadNavItems()) {
-      const entry = threadRowTargets.get(item);
-      const when = item.querySelector<HTMLElement>('.ag-threads-item-when');
-      if (entry && when) fillThreadWhen(when, entry.thread, now);
-    }
-  }, 30_000);
+  const threadClock = window.setInterval(refreshThreadWhens, 30_000);
   void bridge.listTemplates().then((catalog) => {
     templateCatalog = catalog;
     activeTemplate = currentThread.activeTemplateId
@@ -8978,6 +9077,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       for (const url of reviewImageUrls.values()) URL.revokeObjectURL(url);
       reviewImageUrls.clear();
       threadComposerDrafts.clear();
+      connStatus.dispose();
+      composerLock.dispose();
+      turnPendingStatus.dispose();
+      if (railRevealTimer !== null) window.clearTimeout(railRevealTimer);
+      railRevealTimer = null;
       questionController.dispose();
       unsubChatModeLock();
       unsubBridge();

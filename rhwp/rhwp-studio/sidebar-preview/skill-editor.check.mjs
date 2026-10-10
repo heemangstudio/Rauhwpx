@@ -28,7 +28,7 @@ try {
   page.on('dialog', (dialog) => dialog.accept());
   await page.goto(`${origin}/?controls=0&theme=light&width=480`, { waitUntil: 'networkidle0' });
   await page.waitForFunction(() => window.sidebarPreview);
-  await page.waitForFunction(() => !document.querySelector('.ag-input')?.disabled);
+  await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
   await page.click('.ag-settings-btn');
   await page.click('.ag-settings-nav-button[data-destination="skills"]');
   await page.waitForSelector('.ag-skills-list [data-skill-name]');

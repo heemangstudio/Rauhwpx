@@ -14,6 +14,7 @@ import { checkPlanPreview } from './plan.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
 import { checkWriterBusyPreview } from './writer-busy.check.mjs';
+import { checkDelayedStatus } from './delayed-status.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -88,7 +89,7 @@ try {
     await page.waitForFunction(() => window.sidebarPreview);
     if (!query.includes('services=setup'))
       await page.waitForFunction(
-        () => !document.querySelector('.ag-input').disabled,
+        () => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true',
       );
   }
   async function screenshot(name) {
@@ -144,7 +145,7 @@ try {
     await open('fullscreen=1');
     const startNewChat = async () => {
       await page.click('.ag-threads-new');
-      await page.waitForFunction(() => !document.querySelector('.ag-input').disabled);
+      await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
     };
     await startNewChat();
     const layout = () => page.evaluate(() => {
@@ -1011,6 +1012,7 @@ try {
     () => checkChatModeLock(page));
   await step('A write refused because another chat edits the document shows one failed tool row',
     () => checkWriterBusyPreview(page, origin, artifacts));
+  await step('Transient statuses wait 400 ms and never blink', () => checkDelayedStatus(page, origin, artifacts));
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

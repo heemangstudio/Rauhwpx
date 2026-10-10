@@ -80,7 +80,8 @@ test('past chats on the active file reopen as writable and adopt stable document
 test('rapid past-chat switches cannot activate a stale provider session', () => {
   assert.match(source, /if \(force\) chatStartPendingThreadId = currentThread\.id/);
   assert.match(source, /if \(e\.threadId && e\.threadId !== currentThread\.id\) break/);
-  assert.match(source, /input\.disabled = connState !== 'connected' \|\| attachmentsSending \|\| chatStarting/);
+  // The composer cannot send while the switched-to chat starts: checked behaviorally in
+  // sidebar-preview/delayed-status.check.mjs (e), Enter during the start sends nothing.
   assert.match(bridgeSource, /msg\.threadId !== this\.threadId\) break/);
   assert.match(serverSource, /studioMessageQueue: Promise\.resolve\(\)/);
   // A replaced socket's commands are dropped. Only its tool-responses still run,
