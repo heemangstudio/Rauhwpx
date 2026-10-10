@@ -234,3 +234,83 @@ test('human tab closure retains epoch and agent scope checks without requiring p
   await browser.request({ isHuman: true, clientId: 'another-editor' }, 'close', identity(controlled.tab));
   assert.equal(closedPages, 3);
 });
+
+test('restored native tabs materialize once on selection without transferring control or reviving closed guests', async (t) => {
+  if (!await requireManagedChromium(t)) return;
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-native-reopen-'));
+  const server = http.createServer((_request, response) => { response.setHeader('Content-Type', 'text/html'); response.end('<title>Restored research</title><input id="draft">'); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  await fs.mkdir(path.join(dataDir, 'browser'), { recursive: true });
+  await fs.writeFile(path.join(dataDir, 'browser', 'tabs.json'), JSON.stringify({ version: 1, tabs: [{ tabId: 'saved-research', nativeTargetId: 'retired-target', threadId: 'chat-a', agentId: 'researcher', projectId: 'project-a', sessionId: 'retired-window', url: `${origin}/research`, navigationEpoch: 3, controllerEpoch: 2 }] }));
+  const bindings = [];
+  let actual; let creations = 0;
+  const browser = createOwnedBrowserService({ dataDir, workspaceTargets: [origin], autoInstall: false,
+    nativeAdapter: { async bind(binding) { bindings.push(binding); }, async control(binding) { assert.equal(binding.human, false); } },
+    runtimeFactory: async (settings) => {
+      actual = await startOwnedBrowserRuntime({ ...settings, nativeAdapter: undefined });
+      for (const initial of actual.context.pages()) await initial.close();
+      const newPage = actual.context.newPage.bind(actual.context);
+      actual.context.newPage = async () => { creations++; return newPage(); };
+      return { ...actual, kind: 'native' };
+    },
+  });
+  t.after(async () => { await browser.close(); await new Promise((resolve) => server.close(resolve)); await fs.rm(dataDir, { recursive: true, force: true }); });
+  await browser.restore();
+  const human = { isHuman: true, clientId: 'new-window', sessionId: 'new-window', threadId: 'chat-a', agentId: 'researcher' };
+  const args = { tabId: 'saved-research' };
+  const [first, second] = await Promise.all([browser.request(human, 'reconnect', args), browser.request(human, 'reconnect', args)]);
+  assert.equal(creations, 1);
+  assert.equal(first.tab.tabId, args.tabId);
+  assert.equal(first.tab.nativeTargetId, second.tab.nativeTargetId);
+  assert.notEqual(first.tab.nativeTargetId, 'retired-target');
+  assert.equal(first.tab.threadId, 'chat-a'); assert.equal(first.tab.projectId, 'project-a');
+  assert.deepEqual(first.tab.controller, { owner: 'agent' });
+  assert.equal(first.tab.status, 'ready'); assert.equal(actual.context.pages().length, 1);
+  assert.ok(bindings.every((binding) => binding.sessionId === 'new-window' && binding.chatId === 'chat-a'));
+  await assert.rejects(browser.request({ agentId: 'other', threadId: 'other-chat' }, 'snapshot', args), { code: 'BROWSER_TAB_NOT_FOUND' });
+  const page = actual.context.pages()[0];
+  await page.locator('#draft').fill('retained page state');
+  await browser.request(human, 'reconnect', args);
+  assert.equal(await page.locator('#draft').inputValue(), 'retained page state'); assert.equal(creations, 1);
+  await page.close();
+  await assert.rejects(browser.request(human, 'reconnect', args), { code: 'BROWSER_RECONNECT_REQUIRED' });
+  assert.equal(creations, 1, 'an in-session destroyed guest requires explicit recovery');
+  const closedTab = (await browser.inventory(human)).tabs.find((tab) => tab.tabId === args.tabId);
+  await browser.request(human, 'close', { ...args, navigationEpoch: closedTab.navigationEpoch, controllerEpoch: closedTab.controllerEpoch });
+  await assert.rejects(browser.request(human, 'reconnect', args), { code: 'BROWSER_TAB_NOT_FOUND' });
+  assert.equal(creations, 1);
+});
+
+test('native saved searches retain their query and failed materialization closes its guest before retry', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-native-search-reopen-'));
+  await fs.mkdir(path.join(dataDir, 'browser'), { recursive: true });
+  await fs.writeFile(path.join(dataDir, 'browser', 'tabs.json'), JSON.stringify({ version: 1, tabs: [{ tabId: 'saved-search', nativeTargetId: 'old', threadId: 'research', agentId: 'owner', url: 'https://www.google.com/sorry/index', searchQuery: '한국어 research', sessionId: 'old-window' }] }));
+  const pages = []; const navigations = []; let failBind = true;
+  const browser = createOwnedBrowserService({ dataDir, lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+    nativeAdapter: { async bind() { if (failBind) { failBind = false; throw new Error('Controlled binding failure'); } }, async control({ human }) { assert.equal(human, false); } },
+    runtimeFactory: async () => ({ kind: 'native', browser: new EventEmitter(), async close() {}, context: Object.assign(new EventEmitter(), {
+      async storageState() { return { cookies: [], origins: [] }; }, async route() {}, pages: () => [],
+      async newCDPSession(page) { return { async send() { return { targetInfo: { targetId: page.target } }; }, async detach() {} }; },
+      async newPage() {
+        let closed = false; let url = 'about:blank';
+        const page = Object.assign(new EventEmitter(), { target: `new-${pages.length}`, url: () => url, isClosed: () => closed, frames: () => [], async routeWebSocket() {},
+          async goto(destination) { navigations.push(destination); url = destination; }, async close() { closed = true; page.emit('close'); } });
+        pages.push(page); return page;
+      },
+    }) }),
+  });
+  t.after(async () => { await browser.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  await browser.restore();
+  const human = { isHuman: true, clientId: 'window', sessionId: 'window' };
+  const args = { tabId: 'saved-search' };
+  await assert.rejects(browser.request(human, 'reconnect', args), /Controlled binding failure/);
+  assert.equal(pages[0].isClosed(), true);
+  const result = await browser.request(human, 'reconnect', args);
+  assert.equal(result.tab.tabId, args.tabId); assert.equal(result.tab.nativeTargetId, 'new-1');
+  assert.deepEqual(navigations, ['https://www.google.com/search?q=%ED%95%9C%EA%B5%AD%EC%96%B4+research']);
+  await pages[1].close();
+  await browser.request(human, 'reconnect', { ...args, restore: true });
+  assert.equal(pages.length, 3, 'explicit user reconnect can safely reopen an unavailable guest');
+  assert.deepEqual(navigations, [navigations[0], navigations[0]]);
+});

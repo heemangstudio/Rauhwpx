@@ -389,7 +389,7 @@ export function createOwnedBrowserService(options = {}) {
           finally { await session.detach().catch(() => {}); }
           const logicalId = nativeInventory.find((tab) => tab.nativeTargetId === targetId)?.tabId;
           const retained = tabs.get(logicalId) ?? [...tabs.values()].find((tab) => tab.nativeTargetId === targetId);
-          if (retained) { retained.controller = { owner: 'agent' }; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); publish(retained); }
+          if (retained) { retained.controller = { owner: 'agent' }; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); retained.restorePending = false; publish(retained); }
         }
         runtime.browser?.on('disconnected', () => {
           if (closed) return;
@@ -843,8 +843,32 @@ export function createOwnedBrowserService(options = {}) {
         tab.sessionId = actor.sessionId ?? previousSession;
         try {
           await ensureRuntime();
+          if (tabs.get(tab.tabId) !== tab) throw error('BROWSER_TAB_NOT_FOUND', 'This browser tab was closed.');
+          if ((!tab.page || tab.page.isClosed()) && (tab.restorePending || args.restore === true)) {
+            // 앱 재시작으로 사라진 게스트만 복원한다. 입력과 조작 권한은 재생하지 않는다.
+            let url = tab.url;
+            if (googleResearchURL(url) && tab.searchQuery) {
+              const search = new URL('/search', url); search.searchParams.set('q', tab.searchQuery); url = search.href;
+            }
+            const owner = actorForTab(tab);
+            await assertPolicy(owner, 'browse', url, tab);
+            if (url !== 'about:blank') await guard.resolve(url);
+            const page = await runtime.context.newPage();
+            try {
+              tab.activeActor = owner;
+              await attach(tab, page);
+              if (url !== 'about:blank') await page.goto(url, { waitUntil: 'domcontentloaded' });
+              tab.restorePending = false;
+              tab.status = 'ready'; invalidate(tab); publish(tab); await persist();
+            } catch (failure) {
+              await page.close().catch(() => {});
+              tab.page = null; tab.nativeTargetId = undefined;
+              throw failure;
+            } finally { tab.activeActor = null; }
+          }
           requirePage(tab);
-          // 재연결은 살아 있는 게스트만 바인딩한다. 새 페이지나 조작 권한을 만들지 않는다.
+          tab.restorePending = false;
+          // 허브만 재시작한 경우 기존 게스트를 유지하며 현재 창에 다시 바인딩한다.
           await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId });
         } catch (failure) { tab.sessionId = previousSession; throw failure; }
         return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo() };
@@ -917,7 +941,7 @@ export function createOwnedBrowserService(options = {}) {
       for (const origin of Array.isArray(stored.humanStorageOrigins) ? stored.humanStorageOrigins.slice(0, 2048) : []) { try { const url = new URL(origin); if (['https:', 'http:'].includes(url.protocol) && url.origin === origin) { unconfirmedHumanOrigins.add(origin); humanOrigins.add(origin); } } catch {} }
       for (const record of stored.tabs.slice(0, limits.maxTabs)) {
         if (typeof record.tabId !== 'string' || !record.threadId || !record.agentId) continue;
-        const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, status: 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
+        const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, restorePending: true, status: 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
       }
     },
     async close() { if (closed) return; closed = true; if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) await releaseInput(tab); await persist().catch(() => {}); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); state = 'closed'; },

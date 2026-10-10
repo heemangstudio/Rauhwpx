@@ -55,7 +55,7 @@ export function createWorkbenchBrowser(options: {
     const tab = controller.tab(); if (!tab) return;
     handle(controller.action('control', { ...controller.identity(), owner: tab.controller.owner === 'human' ? 'agent' : 'human' }).then(() => controller.readFrame()));
   });
-  const recover = button('끊긴 브라우저 탭 복구', '탭 복구', () => { handle(controller.action('recover', controller.identity()).then(() => controller.readFrame())); });
+  const recover = button('끊긴 브라우저 탭 복구', '탭 복구', () => { handle(reconnectBrowser()); });
   const annotate = button('페이지·개체·영역에 의견 붙이기', '의견 붙이기', () => beginAnnotation());
   const downloadsButton = button('다운로드 목록', '받은 파일', () => showDownloads(Boolean(downloads.hidden)));
   downloadsButton.setAttribute('aria-expanded', 'false');
@@ -79,7 +79,7 @@ export function createWorkbenchBrowser(options: {
   toolbar.prepend(navigation); toolbar.append(newTab, status); element.append(tabBar, toolbar);
   const error = document.createElement('div'); error.className = 'ag-browser-error'; error.setAttribute('role', 'alert'); error.hidden = true;
   const errorMessage = document.createElement('span'); error.append(errorMessage);
-  button('상태 다시 읽기', '다시 연결', () => { nativeFailedProjection = ''; nativeError = null; handle(controller.refresh().then(() => { layout(); return controller.readFrame(); })); }, error);
+  const reconnectButton = button('브라우저 다시 연결', '다시 연결', () => { handle(reconnectBrowser()); }, error);
   element.append(error);
   const challenge = document.createElement('div'); challenge.className = 'ag-browser-challenge'; challenge.hidden = true; challenge.setAttribute('role', 'status');
   const challengeMessage = document.createElement('span'); challengeMessage.textContent = 'Google에서 트래픽 확인을 요청했습니다.'; challenge.append(challengeMessage);
@@ -172,6 +172,7 @@ export function createWorkbenchBrowser(options: {
   let visible = false; let nativeTab: string | null = null; let nativePopout = false;
   let frameTimer: ReturnType<typeof setTimeout> | null = null; let composing = false; let committedComposition: string | null = null; let disposed = false; let selectedFrameId = ''; let nativeSequence = 0;
   let pointerStart: { x: number; y: number } | null = null;
+  let reconnecting = false;
   let tabsSignature = ''; let downloadsSignature = ''; let nativeProjection = ''; let nativeFailedProjection = ''; let nativeError: string | null = null; let nativePending: Promise<boolean> | null = null; let inputChain: Promise<unknown> = Promise.resolve();
   let lastInputAt = -Infinity;
   const presentation = createBrowserPresentation(element, (mode) => {
@@ -343,6 +344,19 @@ export function createWorkbenchBrowser(options: {
       downloads.append(row);
     }
   }
+  async function reconnectBrowser(): Promise<void> {
+    if (reconnecting) return;
+    const tab = controller.tab(); if (!tab) { await controller.refresh(); return; }
+    reconnecting = true; nativeError = null; nativeFailedProjection = ''; paint();
+    try {
+      await nativePending?.catch(() => undefined);
+      await controller.refresh();
+      await controller.action(nativeBrowserApi() ? 'reconnect' : 'recover', { ...controller.identity(tab), restore: true });
+      nativeProjection = ''; nativeFailedProjection = ''; nativeError = null;
+      reconnecting = false;
+      await projectNative(); await controller.readFrame();
+    } finally { reconnecting = false; paint(); layout(); }
+  }
   async function attachNative(placement: Parameters<NonNullable<ReturnType<typeof nativeBrowserApi>>['attach']>[0]): Promise<boolean> {
     const native = nativeBrowserApi()!;
     if (disposed || !visible || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
@@ -358,7 +372,7 @@ export function createWorkbenchBrowser(options: {
   }
   async function projectNative(): Promise<void> {
     const native = nativeBrowserApi(); if (!native) return;
-    if (nativePending) return;
+    if (nativePending || reconnecting) return;
     const tab = controller.tab(); const sequence = ++nativeSequence;
     const target = tab?.tabId;
     const useNative = tab && (tab.runtime === 'native' || controller.state.runtime?.kind === 'native');
@@ -370,14 +384,16 @@ export function createWorkbenchBrowser(options: {
     const identity = () => JSON.stringify({ tabId: target, runtimeGeneration: controller.tab()?.runtimeGeneration, nativeTargetId: controller.tab()?.nativeTargetId });
     const signature = () => JSON.stringify({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, identity: identity() });
     if (nativeProjection === signature() || nativeFailedProjection === identity()) return;
+    nativeError = null;
     nativePending = attachNative(placement);
+    paint();
     try {
       await nativePending;
       if (disposed || !visible || nativeOverlayOpen() || controller.tab()?.tabId !== target || nativePopout) { await native.detach({ tabId: target }).catch(() => undefined); nativeTab = null; nativeProjection = ''; }
       else { nativeProjection = signature(); nativeFailedProjection = ''; nativeError = null; errorMessage.textContent = controller.state.error ?? ''; error.hidden = !controller.state.error; }
     } catch {
       if (!disposed && controller.tab()?.tabId === target && sequence === nativeSequence) { nativeTab = null; nativeProjection = ''; nativeFailedProjection = identity(); nativeError = '브라우저 화면을 연결하지 못했습니다. 다시 연결해 주세요.'; errorMessage.textContent = nativeError; error.hidden = false; }
-    } finally { nativePending = null; layout(); }
+    } finally { nativePending = null; paint(); layout(); }
   }
   let layoutFrame: number | null = null;
   const layout = () => {
@@ -402,7 +418,7 @@ export function createWorkbenchBrowser(options: {
     const tab = controller.tab(); const frame = pinned?.frame ?? controller.frame(); const connected = controller.state.connected;
     challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
     fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
-    status.textContent = !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'loading' ? '페이지 여는 중' : tab.controller.owner === 'human' ? '직접 조작 중' : '에이전트 조작 중';
+    status.textContent = reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'loading' ? '페이지 여는 중' : tab.controller.owner === 'human' ? '직접 조작 중' : '에이전트 조작 중';
     status.title = tab?.controller.owner === 'human' ? '직접 조작 중 · 에이전트는 페이지를 읽을 수 있습니다.' : status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
     const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title, row.url]), tab?.tabId]);
     if (tabsSignature !== nextTabsSignature) {
@@ -430,8 +446,9 @@ export function createWorkbenchBrowser(options: {
     control.setAttribute('aria-label', controlLabel); control.title = controlLabel; control.setAttribute('aria-pressed', String(tab?.controller.owner === 'human')); icon(control, tab?.controller.owner === 'human' ? 'bot' : 'browserHand');
     const reloadLabel = tab?.status === 'loading' ? '페이지 열기 중지' : '새로고침'; reload.setAttribute('aria-label', reloadLabel); reload.title = reloadLabel; icon(reload, tab?.status === 'loading' ? 'browserStop' : 'refresh');
     newTab.disabled = !connected; emptyOpen.disabled = !connected;
-    recover.hidden = !tab || !['crashed', 'disconnected', 'restorable', 'failed'].includes(tab.status); recover.disabled = !connected || controller.state.busy;
+    recover.hidden = reconnecting || !!nativePending || !tab || !['crashed', 'disconnected', 'restorable', 'failed'].includes(tab.status); recover.disabled = !connected || controller.state.busy;
     back.disabled ||= tab?.canGoBack === false; forward.disabled ||= tab?.canGoForward === false;
+    reconnectButton.disabled = reconnecting || !!nativePending; reconnectButton.textContent = reconnecting ? '연결 중…' : '다시 연결';
     errorMessage.textContent = controller.state.error ?? nativeError ?? ''; error.hidden = !controller.state.error && !nativeError;
     placeholder.hidden = Boolean(tab); image.hidden = !frame;
     if (frame && frame.frameId !== selectedFrameId) { selectedFrameId = frame.frameId; image.src = `data:${frame.mimeType};base64,${frame.data}`; image.style.aspectRatio = `${frame.width} / ${frame.height}`; }
