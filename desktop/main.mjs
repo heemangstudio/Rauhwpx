@@ -1016,7 +1016,7 @@ ipcMain.handle('desktop:get-session-context', (event, agentSessionId = null) => 
 });
 ipcMain.handle('desktop:agent-session-create', (event) => {
   sessionForEvent(event);
-  if (quitting) throw new Error('Rauhwpx is quitting');
+  if (quitting) throw new Error('HamaEditor is quitting');
   return { sessionId: sessions.addAgentSession(event.sender) };
 });
 ipcMain.handle('desktop:agent-session-release', (event, agentSessionId) => {
@@ -1205,7 +1205,7 @@ ipcMain.handle('desktop:rename-native-file', async (event, handleId, nextName) =
   try {
     app.addRecentDocument(renamed.canonicalPath);
   } catch (error) {
-    console.warn('[rauhwpx] recent document update failed:', error);
+    console.warn('[hamaeditor] recent document update failed:', error);
   }
   return { ok: true, descriptor: renamed.descriptor };
 });
