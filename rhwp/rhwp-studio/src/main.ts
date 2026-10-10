@@ -510,6 +510,9 @@ function createActiveDocumentId(): string {
 const registry = new CommandRegistry();
 
 function getContext(): EditorContext {
+  // 엔진이 멈춘 뒤에는 엔진을 부르지 않는다. 명령 상태를 갱신할 때마다 EngineTrappedError 가
+  // 나지 않도록, 복구(문서 복구)까지는 문서가 없는 읽기 전용 상태로 둔다.
+  if (engineTrap()) return trappedEditorContext();
   const hasDoc = wasm.pageCount > 0;
   const canEditFormField = inputHandler?.canEditCurrentFormField() ?? false;
   const isFormMode = editMode === 'form';
@@ -542,6 +545,38 @@ function getContext(): EditorContext {
     showParagraphMarks: wasm.getShowParagraphMarks(),
     isDirty: documentState.isDirty(),
     sourceFormat: hasDoc ? (wasm.getSourceFormat() as 'hwp' | 'hwpx' | 'hml') : undefined,
+  };
+}
+
+/** 엔진이 멈춘 창의 명령 상태 — 엔진을 부르지 않고 모든 편집 명령을 끈다. */
+function trappedEditorContext(): EditorContext {
+  return {
+    hasDocument: false,
+    hasSelection: false,
+    hasCopiedFormat: false,
+    inTable: false,
+    inCellSelectionMode: false,
+    hasMultiCellSelection: false,
+    hasTableTransposeClipboard: false,
+    inTableObjectSelection: false,
+    inPictureObjectSelection: false,
+    canArrangeSelectedObject: false,
+    canGroupSelectedObjects: false,
+    canUngroupSelectedObject: false,
+    inField: false,
+    isEditable: false,
+    readOnly: true,
+    userEditingLocked: true,
+    editMode,
+    isFormMode: editMode === 'form',
+    canEditFormField: false,
+    canUndo: false,
+    canRedo: false,
+    zoom: canvasView?.getViewportManager().getZoom() ?? 1.0,
+    showControlCodes: false,
+    showParagraphMarks: false,
+    isDirty: documentState.isDirty(),
+    sourceFormat: undefined,
   };
 }
 

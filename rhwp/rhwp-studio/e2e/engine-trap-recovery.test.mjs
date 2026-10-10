@@ -59,7 +59,11 @@ try {
       const text = message.text();
       if (message.type() === 'error' || text.startsWith('[e2e]')) console.log(`  [browser:${message.type()}] ${text}`);
     });
-    page.on('pageerror', (error) => console.log(`  [browser:pageerror] ${error.stack ?? error.message}`));
+    page.__pageErrors = [];
+    page.on('pageerror', (error) => {
+      page.__pageErrors.push(String(error?.stack ?? error?.message ?? error));
+      console.log(`  [browser:pageerror] ${error.stack ?? error.message}`);
+    });
     page.on('response', (response) => {
       if (response.status() >= 400) console.log(`  [browser:http ${response.status()}] ${response.url()}`);
     });
@@ -110,6 +114,12 @@ try {
       const { reportEngineTrap } = await import('/src/core/engine-trap.ts');
       reportEngineTrap(new WebAssembly.RuntimeError('unreachable'));
     });
+    // 멈춘 엔진을 명령 상태 갱신이 다시 부르면 갱신마다 EngineTrappedError 가 잡히지 않고 터진다.
+    const errorsBefore = page.__pageErrors?.length ?? 0;
+    await page.evaluate(() => window.__eventBus.emit('command-state-changed'));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const trapErrors = (page.__pageErrors ?? []).slice(errorsBefore).filter((text) => /EngineTrapped|ENGINE_TRAPPED/.test(text));
+    assert(trapErrors.length === 0, `Command-state refresh after the trap does not call the stopped engine (${trapErrors[0] ?? 'no errors'})`);
   }
 
   async function clickToastAction(page, label) {
