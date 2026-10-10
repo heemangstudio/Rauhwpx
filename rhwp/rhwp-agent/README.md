@@ -1,6 +1,6 @@
 # HamaEditor agent hub
 
-Local WebSocket hub. Claude, Codex, and Pi read and edit the document open in HamaEditor through MCP. The hub owns chat workflow, downloads, and the Browserbase sidecar. Document logic stays in the browser.
+Local WebSocket hub. Claude, Codex, and Pi read and edit the document open in HamaEditor through MCP. The hub owns chat workflow, downloads, and the app-owned browser runtime. Document logic stays in the browser.
 
 ```text
 agent CLI ──spawn──► mcp-stdio.mjs ──ws──► server.mjs ◄──ws── rhwp-studio
@@ -34,7 +34,7 @@ New chats start in **Safe** mode. Staged document edits wait for review. File an
 
 `direct` runs immediately. `plan` stays read-only on the document until you approve. The hub blocks document writes before that approval.
 
-AI requests send prompts and any document content read by the agent to your selected provider. Browserbase and web tools use external services.
+AI requests send prompts and any document content read by the agent to your selected provider. Browser and web tools connect to external websites; the browser runtime runs on your hub.
 
 ## MCP tools
 
@@ -67,9 +67,9 @@ Unknown provider values remain unavailable.
 ## Environment variables
 `RHWP_STUDIO_ORIGINS` (default empty) is a comma-separated list of exact HTTPS Studio origins allowed for operator-run remote previews.
 
-`browserbase_*` tools run one Stagehand sidecar per browser. Every tool takes an optional `browserId`. Omit it for the shared `main` browser. Subagents pass their own id and get an isolated browser. `BrowserbaseFleet` in `rhwp/rhwp-agent/browserbase-session.mjs` keeps at most 4 browsers per chat and returns `BROWSERBASE_BROWSER_LIMIT` beyond that. Call `browserbase_end` to free a slot. Subagent browsers close when the turn ends. The main browser survives provider restarts and closes on chat stop, hub shutdown, or 15 minutes idle. If a sidecar process dies, the call that hit it returns `BROWSERBASE_SIDECAR_EXITED` and the next call relaunches it.
+`browser_*` tools operate app-owned Chromium tabs on the same hub as the agent. Tabs belong to authenticated chat/agent scopes; actions use the returned tab and snapshot identities. Public research and managed downloads are available by default. Website changes and saved-account use follow the approvals managed in **Settings → Browser → Approved Permissions**. Browser installation and runtime status appear in Browser settings.
 
-Browserbase credentials come from the variables below or from Studio **Settings → 원격 브라우저**. `browserbase-credentials-set {apiKey, projectId?, geminiApiKey?}` validates the key against the Browserbase API and picks the project id from the account when omitted. Validation failures are `BROWSERBASE_KEY_INVALID`, `BROWSERBASE_UNREACHABLE`, `BROWSERBASE_PROJECT_NOT_FOUND`, and `BROWSERBASE_NO_PROJECT`. The override lives in hub memory per field and never on disk. `browserbase-credentials-clear` returns to the variables. `browserbase-status-request` reports the source of each field, the key tail, the project id, and open browsers. Studio keeps the override in `sessionStorage` and re-sends it on every reconnect. The hub holds the fleet on `record.browserbaseSession`. A credential change restarts the sidecars when no turn is running. During a turn, open browsers stay and the next call uses the new key.
+See [Browser and research downloads](../../docs/owned-browser.md) for account approval, human takeover, managed profiles, and PDF recovery.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -80,10 +80,10 @@ Browserbase credentials come from the variables below or from Studio **Settings 
 | `RHWP_SKILLS_DIR` | OS application-data directory | Product skill directory |
 | `RHWP_USAGE_DIR` | OS application-data directory | Token-usage log directory |
 | `RHWP_REFERENCES_DIR` | OS application-data directory | Reference file store |
+| `RHWP_BROWSER_DATA_DIR` | Persistent hub browser directory | Shared browser profiles, policy, encrypted checkpoints, and download manifests; independent of project/chat lifetime |
+| `RHWP_BROWSER_WORKSPACE_TARGETS` | `[]` | Operator-configured JSON array of exact HTTP(S) workspace origins allowed through the browser's private-network guard |
+| `RHWP_BROWSER_WRAPPING_KEY_FILE` | unset | Optional owner-only 256-bit wrapping key outside browser data for a hub without an OS vault; passwords never use a plaintext fallback |
 | `RHWP_PI_ROUTING_SORT` | `throughput` | OpenRouter provider sort for Pi: `throughput`, `latency`, `price`, or `off` (no provider routing preferences). Pi's `models.json` is rewritten at hub start, so restart the hub after changing it |
-| `BROWSERBASE_API_KEY` | — | Browserbase API key |
-| `BROWSERBASE_PROJECT_ID` | — | Browserbase project id |
-| `GEMINI_API_KEY` | — | Gemini key for the Browserbase sidecar |
 
 Studio build-time: `VITE_RHWP_AGENT_URL` (default `ws://127.0.0.1:5175`), `VITE_RHWP_AGENT_TOKEN` (default `dev`).
 
@@ -95,7 +95,6 @@ Studio build-time: `VITE_RHWP_AGENT_URL` (default `ws://127.0.0.1:5175`), `VITE_
 - `TOOL_TIMEOUT`. The MCP-to-hub call did not finish within 180s.
 - `CAPABILITY_EPOCH_REQUIRED` / `STALE_CAPABILITY_EPOCH`. Restart the provider in the current workflow phase.
 - `PLAN_WRITE_BLOCKED`. A document write ran before the plan reached `implementing`.
-- `BROWSERBASE_NOT_CONFIGURED`. Set the Browserbase variables above and restart the hub.
 - Only one Studio connection is kept. A new tab replaces the previous one.
 
 ## Tests

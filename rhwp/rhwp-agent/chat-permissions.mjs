@@ -11,6 +11,14 @@ export function chatPermissionForCategory(category) {
   return null;
 }
 
+// 연구 가져오기는 신뢰된 다운로드 작업의 이어서 처리하기에만 쓴다. 채팅의 프로젝트 수정 권한과 분리한다.
+export const DEFAULT_RESEARCH_PERMISSIONS = Object.freeze({ browse: true, downloads: true, import: true });
+
+export function effectiveResearchPermissions(policy) {
+  const value = policy && typeof policy === 'object' ? policy : DEFAULT_RESEARCH_PERMISSIONS;
+  return Object.freeze({ browse: value.browse === true, downloads: value.downloads === true, import: value.import === true });
+}
+
 export function normalizeChatPermissionGrants(grants) {
   return CHAT_PERMISSION_CAPABILITIES.filter((capability) => Array.isArray(grants) && grants.includes(capability));
 }

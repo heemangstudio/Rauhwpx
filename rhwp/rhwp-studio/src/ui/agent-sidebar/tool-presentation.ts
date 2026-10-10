@@ -578,13 +578,21 @@ const SPECS: Record<string, ToolSpec> = {
   complete_copy_layout_job: { category: 'other', label: '복제 작업 마치기', summary: (a) => str(a['outcome']) },
   register_copy_layout_template: { category: 'other', label: '서식 틀 등록', summary: (a) => quote(str(a['name'])) },
 
-  // 원격 브라우저
-  browserbase_start: { category: 'other', label: '브라우저 시작' },
-  browserbase_end: { category: 'other', label: '브라우저 종료' },
-  browserbase_navigate: { category: 'other', label: '웹 페이지 열기', summary: (a) => host(str(a['url'])) },
-  browserbase_act: { category: 'other', label: '브라우저 조작', summary: (a) => quote(str(a['action']), 32) },
-  browserbase_observe: { category: 'other', label: '페이지 살펴보기', summary: (a) => quote(str(a['instruction']), 32) },
-  browserbase_extract: { category: 'other', label: '페이지 내용 추출', summary: (a) => quote(str(a['instruction']), 32) },
+  // 앱 브라우저
+  browser_status: { category: 'other', label: '브라우저 상태' },
+  browser_open: { category: 'other', label: '브라우저 열기', summary: (a) => host(str(a['url'])) },
+  browser_close: { category: 'other', label: '브라우저 닫기' },
+  browser_navigate: { category: 'other', label: '웹 페이지 열기', summary: (a) => host(str(a['url'])) },
+  browser_snapshot: { category: 'other', label: '페이지 살펴보기' },
+  browser_click: { category: 'other', label: '페이지 요소 누르기' },
+  browser_type: { category: 'other', label: '페이지에 입력하기' },
+  browser_press: { category: 'other', label: '키 누르기', summary: (a) => str(a['key']) },
+  browser_scroll: { category: 'other', label: '페이지 스크롤' },
+  browser_wait: { category: 'other', label: '페이지 기다리기' },
+  browser_capture: { category: 'other', label: '페이지 캡처' },
+  browser_downloads: { category: 'other', label: '브라우저 다운로드' },
+  browser_fill_account: { category: 'other', label: '저장한 계정 입력' },
+  browser_request_account: { category: 'other', label: '계정 사용 요청' },
 };
 
 /** rhwp 밖의 흔한 CLI 도구 — 이름만 우리말로 바꾸고 대표 인자를 보인다. */

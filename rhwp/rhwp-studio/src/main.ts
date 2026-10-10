@@ -2321,6 +2321,8 @@ function installDocumentHome(): void {
       }
     },
     onDrop: (event) => { void handleDocumentDrop(event, { fromHome: true }); },
+    openBrowser: () => { documentHome?.hide(); attachedSession.activeChat?.sidebar.openWorkbench('browser'); },
+    openDownloads: () => { documentHome?.hide(); attachedSession.activeChat?.sidebar.openWorkbench('documents'); },
     // 문서 없이도 집중 화면 설정으로 가고, 설정을 닫으면 홈으로 돌아온다.
     openSettings: () => {
       documentHome?.hide();

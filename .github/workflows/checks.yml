@@ -83,6 +83,7 @@ jobs:
     timeout-minutes: 30
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.tools/owned-browser-chromium
     steps:
       - uses: actions/checkout@v5
         with:
@@ -110,6 +111,15 @@ jobs:
       - name: Test Studio
         if: contains(needs.changes.outputs.app, 'studio')
         run: npm --prefix rhwp/rhwp-studio test
+      - name: Cache managed Chromium
+        if: contains(needs.changes.outputs.app, 'hub')
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: owned-chromium-${{ runner.os }}-${{ hashFiles('rhwp/rhwp-agent/package-lock.json') }}
+      - name: Install managed Chromium for hub behavioral tests
+        if: contains(needs.changes.outputs.app, 'hub')
+        run: node rhwp/rhwp-agent/node_modules/playwright/cli.js install --with-deps chromium
       - name: Test agent hub
         if: contains(needs.changes.outputs.app, 'hub')
         run: |
@@ -142,6 +152,7 @@ jobs:
     timeout-minutes: 45
     env:
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.tools/owned-browser-chromium
     steps:
       - uses: actions/checkout@v5
         with:
@@ -171,6 +182,15 @@ jobs:
           npm --prefix rhwp/rhwp-studio run test:browser
       - name: Run editor smoke flows
         run: npm --prefix rhwp/rhwp-studio run e2e:smoke
+      - name: Cache managed Chromium
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: owned-chromium-${{ runner.os }}-${{ hashFiles('rhwp/rhwp-agent/package-lock.json') }}
+      - name: Install managed Chromium for owned browser flows
+        run: node rhwp/rhwp-agent/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Run owned browser research flows
+        run: node rhwp/rhwp-studio/e2e/owned-browser-live.mjs
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -178,6 +198,7 @@ jobs:
           path: |
             rhwp/target/smoke-hub.log
             rhwp/target/smoke-vite.log
+            docs/pr-evidence/owned-browser/
           if-no-files-found: ignore
           retention-days: 7
 

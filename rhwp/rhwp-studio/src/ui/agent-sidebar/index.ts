@@ -159,6 +159,7 @@ import { createFocusGreeting } from './focus-greeting.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
 import { createSidebarWorkbench, type SidebarWorkbench, type WorkbenchView } from './workbench.ts';
 import { createWorkbenchBoard, type WorkbenchBoard } from './workbench-board.ts';
+import { createWorkbenchBrowser, type WorkbenchBrowser } from './workbench-browser.ts';
 import { createWorkbenchDocuments, type WorkbenchDocuments } from './workbench-documents.ts';
 import { createWorkbenchAgents, type WorkbenchAgents } from './workbench-agents.ts';
 import './workbench-agents.css';
@@ -318,6 +319,7 @@ export interface AgentSidebarDeps {
 export interface AgentSidebarHandle {
   root: HTMLElement;
   openVersions(): void;
+  openWorkbench(view: WorkbenchView): void;
   /** 집중 보기로 들어가 프로젝트 칸을 연다. target 이 있으면 그 항목의 미리보기까지 연다. */
   openProject(target?: ProjectPreviewTarget, tab?: ProjectTab): void;
   sendInlinePrompt(submission: InlinePromptSubmission): InlinePromptSendResponse;
@@ -929,6 +931,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let workbenchBoard: WorkbenchBoard | null = null;
   let workbenchDocuments: WorkbenchDocuments | null = null;
   let workbenchAgents: WorkbenchAgents | null = null;
+  let workbenchBrowser: WorkbenchBrowser | null = null;
   let workbenchChanges: ReturnType<typeof createChangesDrawer> | null = null;
   /** 집중 화면의 변경 사항 탭이 버전 창 전체(브랜치·그래프·작업 트리·보관)를 빌려 쓰는 동안 원래 자리를 표시한다. */
   let versionsAnchor: Comment | null = null;
@@ -3165,6 +3168,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const permissionController = createChatPermissionController({
     context: () => ({ threadId: currentThread.id, documentId: currentDocumentId }),
     respond: (requestId, decision) => bridge.respondChatPermission(requestId, decision),
+    requestBrowser: (action, args) => bridge.requestBrowser(action, args),
+    submitBrowserAccount: (args) => bridge.submitBrowserAccount(args),
   });
   questionTimelineAnchor.hidden = true;
   questionTimelineAnchor.setAttribute('aria-hidden', 'true');
@@ -3431,6 +3436,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
     },
   });
+  const browserTrigger = el('button', 'ag-browser-trigger'); browserTrigger.type = 'button'; browserTrigger.setAttribute('aria-label', '브라우저 열기'); browserTrigger.title = '브라우저 열기'; browserTrigger.append(createIcon('browser'));
+  browserTrigger.addEventListener('click', () => workbench?.select('browser'));
+  composerUtilityActions.insertBefore(browserTrigger, modeMenu.root);
   composerUtilityActions.insertBefore(referenceLibrary.trigger, modeMenu.root);
   composerUtilityActions.insertBefore(contextMeter, referenceLibrary.trigger);
   composerField.insertBefore(referenceLibrary.quickAddButton, sendHint);
@@ -3781,6 +3789,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     workbenchBoard?.setVisible(visible && selected === 'board');
     workbenchDocuments?.setVisible(visible && selected === 'documents');
     workbenchAgents?.setVisible(visible && selected === 'agents');
+    workbenchBrowser?.setVisible(visible && selected === 'browser');
     changesDrawer.setOpen(visible && ((selected === 'changes' && !versionManagerPage) || (fullscreen && detailColumn === 'changes')));
   }
 
@@ -3828,8 +3837,23 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           },
         });
         host.append(workbenchBoard.element);
+      } else if (view === 'browser') {
+        workbenchBrowser ??= createWorkbenchBrowser({ bridge,
+          getDestination: () => ({ threadId: currentThread.id, documentId: currentDocumentId, projectId: bridge.projects?.store.get()?.id ?? null, label: currentThread.title || '현재 채팅' }),
+          onCapture: (draft) => {
+            if (captureInbox.queue(draft)) systemMessage('브라우저 자료를 입력창에 첨부했습니다.');
+            else systemMessage('브라우저 자료를 선택했던 채팅에 저장했습니다. 해당 채팅에서 첨부를 확인해 주세요.');
+          },
+          onOpenDownload: (job) => {
+            const open = () => { workbench?.select('documents'); void workbenchDocuments?.openDownload(job); };
+            if (!fullscreen) setFullscreen(true, { then: open }); else open();
+          },
+          onDock: () => { const dock = () => workbench?.select('browser'); if (!fullscreen) setFullscreen(true, { then: dock }); else dock(); },
+          onChat: () => { returnToChat(); },
+        });
+        workbenchBrowser.mount(host);
       } else if (view === 'documents') {
-        workbenchDocuments = createWorkbenchDocuments({ client: bridge.projects ?? null,
+        workbenchDocuments = createWorkbenchDocuments({ client: bridge.projects ?? null, bridge,
           onChange: syncWorkbenchResources,
           openDocument: (documentId) => {
             const member = bridge.projects?.store.get()?.members.find((row) => row.documentId === documentId);
@@ -3851,6 +3875,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     onSelect(view) {
       const open = workbench?.isOpen() ?? false;
       if (open && !fullscreen) {
+        if (view === 'browser') workbenchBrowser?.float();
         workbench?.select(null);
         return;
       }
@@ -10142,6 +10167,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   return {
     root,
+    openWorkbench(view: WorkbenchView): void {
+      if (root.dataset.disposed === 'true') return;
+      activate(); setCollapsed(false);
+      setFullscreen(true, { then: () => workbench?.select(view) });
+    },
     openVersions(): void {
       setCollapsed(false);
       openConfiguredVersionControl();
@@ -10286,6 +10316,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       workbenchBoard?.dispose();
       workbenchDocuments?.dispose();
       workbenchAgents?.dispose();
+      workbenchBrowser?.dispose();
       workbench?.dispose();
       // 페이지 클래스는 화면에 붙어 있던 사이드바만 걷는다.
       if (active) {

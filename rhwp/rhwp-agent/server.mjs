@@ -58,7 +58,11 @@ import {
 import { DownloadManager, fetchPublic } from './download-manager.mjs';
 import { DocumentSnapshotManager } from './document-snapshot-manager.mjs';
 import { ArtifactStore, defaultGeneratedArtifactRoot } from './artifact-store.mjs';
-import { BrowserbaseFleet, normalizeBrowserbaseOverride, validateBrowserbaseCredentials } from './browserbase-session.mjs';
+import { createOwnedBrowserService, createIpcNativeBrowserAdapter } from './owned-browser-service.mjs';
+import { createBrowserPolicy } from './browser-policy.mjs';
+import { createBrowserCredentialBroker } from './browser-credentials.mjs';
+import { createBrowserOsSecretStore } from './browser-os-secret-store.mjs';
+import { createBrowserDownloads } from './browser-downloads.mjs';
 import { createProviderHealth } from './provider-health.mjs';
 import { createUsageStore } from './usage-store.mjs';
 import { appendToolTelemetryRow, startToolCall, ToolTurnTelemetry } from './tool-telemetry.mjs';
@@ -88,7 +92,7 @@ import { createReferenceCatalog } from './reference-catalog.mjs';
 import { createReferenceHttpHandler, isAllowedStudioOrigin } from './reference-http.mjs';
 import { ProjectStore, defaultProjectsRoot, normalizeRepository, originLabels } from './project-store.mjs';
 import { ProjectSettingsStore } from './project-settings.mjs';
-import { createProjectHttpHandler, isProjectPath } from './project-http.mjs';
+import { createProjectHttpHandler, isProjectPath, createBrowserDownloadsHttpHandler, isBrowserDownloadsPath } from './project-http.mjs';
 import { executeProjectTool } from './project-tools.mjs';
 import { normalizeMentions, projectPromptContext } from './project-context.mjs';
 import { createProjectIngest } from './project-ingest.mjs';
@@ -474,7 +478,6 @@ let writingStyleCalibrationOwner = null;
 // object (and therefore its exact child/process-group identity) until this hub
 // exits. A replacement provider must never share the same work/home paths.
 const retainedUncertainBackends = new Set();
-const retainedUncertainBrowserbaseSessions = new Set();
 const sessions = new HubSessionRegistry({
   createRecord(sessionId) {
     const recordKey = `${crypto.createHash('sha256').update(sessionId).digest('hex')}-${crypto.randomUUID()}`;
@@ -530,6 +533,8 @@ const sessions = new HubSessionRegistry({
       userQuestionResponseReceipts: new Map(),
       pendingChatPermissionRequest: null,
       pendingChatPermissionScopes: [],
+      pendingBrowserScopes: [],
+      pendingBrowserAccountRequests: new Map(),
       suppressedChatPermissionCallIds: new Set(),
       chatPermissionResponseReceipts: new Map(),
       nextHubId: 1,
@@ -548,7 +553,6 @@ const sessions = new HubSessionRegistry({
       pendingTemplateCompletions: [],
       pendingDocumentSaved: null,
       pendingEditReport: null,
-      browserbaseSession: new BrowserbaseFleet({ log }),
       downloadManager,
       documentSnapshotManager,
       artifactStore: new ArtifactStore({
@@ -568,6 +572,242 @@ const sessions = new HubSessionRegistry({
   },
 });
 projectEventsLive = true;
+
+// 브라우저 프로필과 완료된 연구 자료는 채팅의 임시 recordRoot 밖에 둔다.
+const OWNED_BROWSER_DATA_DIR = path.resolve(process.env.RHWP_BROWSER_DATA_DIR
+  || path.join(path.dirname(PROJECTS_ROOT), 'browser'));
+const browserPolicy = createBrowserPolicy({ dataDir: OWNED_BROWSER_DATA_DIR, onChange: (policy) => {
+  broadcastBrowserEvent({ type: 'policy-changed', policy });
+} });
+await browserPolicy.ready();
+const browserSecretStore = await createBrowserOsSecretStore({
+  ipcStore: secretStore, dataDir: OWNED_BROWSER_DATA_DIR, allowOsKeyring: process.env.RHWP_BROWSER_OS_KEYRING !== '0',
+});
+const credentialBroker = createBrowserCredentialBroker({
+  dataDir: OWNED_BROWSER_DATA_DIR, policy: browserPolicy, secretStore: browserSecretStore, onEvent: broadcastBrowserEvent,
+});
+await credentialBroker.ready();
+const initialBrowserConfiguration = await credentialBroker.getConfiguration();
+const browserDownloads = createBrowserDownloads({
+  dataDir: OWNED_BROWSER_DATA_DIR, projectIngest, onEvent: broadcastBrowserEvent,
+  maxBytes: initialBrowserConfiguration.downloads.maxFileBytes, autoImport: initialBrowserConfiguration.downloads.autoImport,
+  authorizeDownload: async ({ actor, url }) => {
+    await browserPolicy.assertAllowed({ actor, action: 'download', url });
+    return true;
+  },
+  authorizeImport: async (job) => {
+    const sourceUrls = [...new Set([job.source?.url, job.source?.finalUrl, job.source?.pageUrl].filter(Boolean))];
+    for (const url of sourceUrls) {
+      await browserPolicy.assertAllowed({ actor: job.actor, action: 'research-import', url });
+    }
+    if (sourceUrls.length === 0 && !browserPolicy.effectiveResearch(job.actor).import) {
+      throw workflowError('RESEARCH_PERMISSION_REVOKED', 'Research imports are disabled in Browser Settings');
+    }
+    return true;
+  },
+});
+await browserDownloads.ready;
+await applyBrowserConfiguration(initialBrowserConfiguration);
+const ownedBrowser = createOwnedBrowserService({
+  dataDir: OWNED_BROWSER_DATA_DIR, credentialBroker, policy: browserPolicy,
+  downloads: browserDownloads, onEvent: broadcastBrowserEvent,
+  nativeAdapter: process.env.RHWP_BROWSER_HOST === 'ipc' && typeof process.send === 'function'
+    ? createIpcNativeBrowserAdapter() : undefined,
+  workspaceTargets: process.env.RHWP_BROWSER_WORKSPACE_TARGETS
+    ? JSON.parse(process.env.RHWP_BROWSER_WORKSPACE_TARGETS) : [],
+});
+await ownedBrowser.restore();
+
+function broadcastBrowserEvent(event) {
+  // 연결된 Studio 는 같은 허브 소유자의 인증된 UI다. provider 소켓으로는 보내지 않는다.
+  for (const record of sessions.values()) {
+    sendJson(record.studioSocket, { v: 1, type: 'browser-event', event });
+  }
+}
+
+function browserActorForRecord(record, { isHuman = false, taskId = null } = {}) {
+  const active = record.agentSession;
+  const threadId = active?.threadId ?? record.boundThreadId ?? record.referenceStagingThreadId ?? null;
+  return Object.freeze({
+    sessionId: record.sessionId,
+    threadId,
+    documentId: active?.documentId ?? record.boundDocumentId ?? null,
+    projectId: active?.projectId ?? record.boundProjectId ?? null,
+    agentId: taskId ? `${threadId}:task:${taskId}` : `${threadId ?? record.sessionId}:root`,
+    taskId,
+    clientId: record.studioInstanceId ?? record.sessionId,
+    isHuman,
+  });
+}
+
+function browserArgsFingerprint(tool, value) {
+  const parsed = toolArgSchema(tool, toolDefinitionsByName.get(tool)).parse(value ?? {});
+  const canonical = (input) => Array.isArray(input) ? input.map(canonical)
+    : input && typeof input === 'object'
+      ? Object.fromEntries(Object.keys(input).sort().map((key) => [key, canonical(input[key])]))
+      : input;
+  return JSON.stringify(canonical(parsed));
+}
+
+async function browserActorForMcp(record, sock, tool, args) {
+  if (sock.piSubagentId) return browserActorForRecord(record, { taskId: sock.parentTaskId });
+  // Claude/Codex의 공유 MCP 소켓은 provider 이벤트로 발급된 호출 표를 소비한다.
+  // msg.parentTaskId/agentId/tab 소유권은 호출자가 고를 수 없다.
+  const fingerprint = browserArgsFingerprint(tool, args);
+  const active = record.agentSession;
+  const generation = active?.generation;
+  const turnId = active?.turnId;
+  const find = () => record.pendingBrowserScopes.map((scope, index) => ({ scope, index }))
+    .filter(({ scope }) => scope.generation === generation && scope.turnId === turnId
+      && scope.agent === sock.agentLabel && scope.tool === tool && scope.fingerprint === fingerprint);
+  let matches = find();
+  if (sock.agentLabel !== 'pi' && matches.length === 0) {
+    const deadline = Date.now() + USER_QUESTION_SCOPE_WAIT_MS;
+    while (!matches.length && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (record.agentSession !== active || active?.turnId !== turnId) throw noActiveProviderTurnError();
+      matches = find();
+    }
+  }
+  if (matches.length > 1 || (sock.agentLabel !== 'pi' && matches.length !== 1)) {
+    throw workflowError('CALLER_SCOPE_UNKNOWN', 'The provider did not establish a unique browser call identity');
+  }
+  const scope = matches.length ? record.pendingBrowserScopes.splice(matches[0].index, 1)[0] : null;
+  return browserActorForRecord(record, { taskId: scope?.parentTaskId ?? null });
+}
+
+async function applyBrowserConfiguration(configuration) {
+  if (typeof browserDownloads.configure === 'function') await browserDownloads.configure(configuration.downloads);
+  else {
+    browserDownloads.maxBytes = configuration.downloads.maxFileBytes;
+    browserDownloads.autoImport = configuration.downloads.autoImport;
+  }
+  return configuration;
+}
+
+function assertBrowserAccountScope(pending, actor) {
+  if (!pending || ['threadId', 'documentId', 'projectId'].some((key) => (pending.actor?.[key] ?? pending[key] ?? null) !== (actor[key] ?? null))) {
+    throw workflowError('BROWSER_ACCOUNT_REQUEST_INVALIDATED', 'The website account request no longer belongs to this chat');
+  }
+}
+
+function publishBrowserAccountRequest(record, request) {
+  const actor = request.actor;
+  const wrapped = { ...request, threadId: actor.threadId, documentId: actor.documentId,
+    turnId: record.agentSession?.turnId ?? null, agent: record.agentSession?.agent ?? 'claude',
+    capability: 'browser', createdAt: new Date().toISOString() };
+  record.pendingBrowserAccountRequests.set(request.requestId, wrapped);
+  sendJson(record.studioSocket, { v: 1, type: 'chat-permission-requested', request: wrapped });
+}
+
+function settleBrowserAccountRequest(requestId, status = 'granted') {
+  for (const record of sessions.values()) {
+    const request = record.pendingBrowserAccountRequests.get(requestId);
+    if (!request) continue;
+    record.pendingBrowserAccountRequests.delete(requestId);
+    sendJson(record.studioSocket, { v: 1, type: 'chat-permission-resolved', requestId,
+      threadId: request.threadId, documentId: request.documentId,
+      outcome: { status, ...(status === 'denied' ? { reason: 'user-denied' } : {}) } });
+  }
+}
+
+async function answerBrowserAccountPermission(record, sock, msg) {
+  const pending = await credentialBroker.getAccountRequest(msg.requestId);
+  if (!pending) return false;
+  try {
+    if (!msg.responseId || msg.decision !== 'deny') throw workflowError('BROWSER_SECURE_CHANNEL_REQUIRED', 'Use the account approval form for this request');
+    const actor = browserActorForRecord(record, { isHuman: true });
+    assertBrowserAccountScope(pending, actor);
+    if (msg.threadId !== actor.threadId || (msg.documentId ?? null) !== actor.documentId) throw workflowError('REQUEST_INVALIDATED', 'The account request changed scope');
+    await credentialBroker.cancelAccountRequest({ actor, requestId: msg.requestId });
+    settleBrowserAccountRequest(msg.requestId, 'denied');
+    sendJson(sock, { v: 1, type: 'chat-permission-response-result', requestId: msg.requestId, responseId: msg.responseId, ok: true });
+  } catch (error) {
+    sendJson(sock, { v: 1, type: 'chat-permission-response-result', requestId: msg.requestId, responseId: msg.responseId, ok: false, ...browserError(error) });
+  }
+  return true;
+}
+
+function browserMcpResult(result) {
+  if (!result?.capture?.screenshot?.data) return result;
+  const { screenshot, ...capture } = result.capture;
+  return { ...result, capture, image: screenshot };
+}
+
+function browserError(error, fallback = 'BROWSER_REQUEST_FAILED') {
+  return { code: error?.code ?? fallback, message: error?.message ?? 'The browser request failed.', ...(typeof error?.retryable === 'boolean' ? { retryable: error.retryable } : {}) };
+}
+
+function containsBrowserSecret(value) {
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, child]) => /^(?:password|passphrase|secret|cookie|cookies|authorization|token|credentials)$/i.test(key) || containsBrowserSecret(child));
+}
+
+async function handleBrowserRequest(record, sock, msg) {
+  const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+  try {
+    if (record.studioSocket !== sock) throw workflowError('REQUEST_INVALIDATED', 'This browser UI connection was replaced');
+    if (!requestId || requestId.length > 160) throw workflowError('INVALID_REQUEST_ID', 'A browser requestId is required');
+    const actor = browserActorForRecord(record, { isHuman: true });
+    const args = msg.args && typeof msg.args === 'object' && !Array.isArray(msg.args) ? msg.args : {};
+    if (containsBrowserSecret(args)) throw workflowError('BROWSER_SECURE_CHANNEL_REQUIRED', 'Enter website credentials in the secure account form');
+    let result;
+    switch (msg.action) {
+      case 'policy.list': result = await browserPolicy.list(); break;
+      case 'policy.update': result = await browserPolicy.update({ ...args, actor }); break;
+      case 'accounts.list': result = await credentialBroker.listAccounts(); break;
+      case 'accounts.request': result = await credentialBroker.requestAccount({ ...args, actor }); break;
+      case 'accounts.approve': {
+        let approval;
+        if (args.requestId) {
+          const pending = await credentialBroker.getAccountRequest(args.requestId);
+          assertBrowserAccountScope(pending, actor);
+          approval = Object.freeze({ approved: true, requestId: args.requestId, use: true });
+        }
+        result = await credentialBroker.approveAccount({ ...args, actor, approval });
+        if (args.requestId) settleBrowserAccountRequest(args.requestId);
+        break;
+      }
+      case 'accounts.revoke': result = await credentialBroker.revokeAccount({ ...args, actor }); break;
+      case 'accounts.signout': result = await credentialBroker.signOut({ ...args, actor }); break;
+      case 'accounts.forget': result = await credentialBroker.forgetAccount({ ...args, actor }); break;
+      case 'configuration.get': result = await credentialBroker.getConfiguration(); break;
+      case 'configuration.update': result = await applyBrowserConfiguration(await credentialBroker.updateConfiguration({ ...args, actor })); break;
+      default: result = await ownedBrowser.request(actor, String(msg.action ?? ''), args);
+    }
+    replyToStudio(record, sock, { v: 1, type: 'browser-response', requestId, result });
+  } catch (error) {
+    replyToStudio(record, sock, { v: 1, type: 'browser-response', requestId, error: browserError(error) });
+  }
+}
+
+async function handleBrowserAccountSubmit(record, sock, msg) {
+  const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+  try {
+    if (record.studioSocket !== sock) throw workflowError('REQUEST_INVALIDATED', 'This account form connection was replaced');
+    if (!requestId || requestId.length > 160) throw workflowError('INVALID_REQUEST_ID', 'An account requestId is required');
+    const actor = browserActorForRecord(record, { isHuman: true });
+    const accountRequestId = String(msg.accountRequestId ?? '');
+    const pending = await credentialBroker.getAccountRequest(accountRequestId);
+    assertBrowserAccountScope(pending, actor);
+    if (msg.consent?.save !== true || typeof msg.consent?.use !== 'boolean') {
+      throw workflowError('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'Choose whether to save and reuse this account');
+    }
+    const result = await credentialBroker.submit({
+      actor, requestId: accountRequestId, account: msg.account,
+      username: msg.username, password: msg.password, remember: msg.remember === true,
+      approval: Object.freeze({ approved: true, requestId: accountRequestId, save: true, use: msg.consent.use }),
+    });
+    settleBrowserAccountRequest(accountRequestId);
+    replyToStudio(record, sock, { v: 1, type: 'browser-response', requestId, result });
+  } catch (error) {
+    // 금고 오류에는 비밀 입력을 되비추지 않는다. 일반 도구 로그/채팅에 이 payload 를 넣지 않는다.
+    replyToStudio(record, sock, { v: 1, type: 'browser-response', requestId, error: { code: error?.code ?? 'BROWSER_ACCOUNT_SAVE_FAILED', message: 'The secure account request could not be completed.' } });
+  } finally {
+    delete msg.password;
+    delete msg.username;
+  }
+}
 
 function hasAgentSessions() {
   return [...sessions.values()].some((record) => (
@@ -2652,6 +2892,17 @@ function makeBackendEventHandler(record, generation) {
         ...(evt.type === 'turn-end' && evt.status ? { status: String(evt.status) } : {}),
       });
     }
+    if (evt.type === 'tool-call' && /^(?:mcp__rhwp__)?(?:browser_|download_file$)/.test(evt.tool ?? '')) {
+      const tool = String(evt.tool).replace(/^mcp__rhwp__/, '');
+      try {
+        record.pendingBrowserScopes.push({
+          agent: evt.agent ?? activeSession.agent, callId: evt.callId, tool,
+          parentTaskId: evt.parentTaskId ?? null, generation, turnId: activeSession.turnId,
+          fingerprint: browserArgsFingerprint(tool, JSON.parse(evt.argsJson ?? '{}')),
+        });
+        if (record.pendingBrowserScopes.length > 64) record.pendingBrowserScopes.splice(0, record.pendingBrowserScopes.length - 64);
+      } catch {}
+    }
     if (evt.type === 'tool-call' && isRequestPermissionTool(evt.tool)) {
       if (evt.callId) record.suppressedChatPermissionCallIds.add(evt.callId);
       let request = null;
@@ -2762,8 +3013,6 @@ function makeBackendEventHandler(record, generation) {
         markHandoffUncertain(record, activeSession, delivery, evt.stopReason);
       }
       settleAgentTurn(record, activeSession, evt);
-      // 서브에이전트 브라우저는 턴과 함께 끝난다 — 메인 브라우저만 다음 턴까지 산다.
-      record.browserbaseSession.cleanupExtras('turn ended');
     }
     // Opt-in sends acknowledge before Studio inserts the user bubble. A
     // synchronous turn-start inside sendUserMessage must follow that receipt.
@@ -2787,6 +3036,7 @@ function makeBackendEventHandler(record, generation) {
       record.pendingUserQuestionScopes.length = 0;
       record.suppressedChatPermissionCallIds.clear();
       record.pendingChatPermissionScopes.length = 0;
+      record.pendingBrowserScopes.length = 0;
     }
     if (evt.type === 'turn-end') drainTemplateCompletion(record);
     if (evt.type === 'turn-end') drainPlanningDocumentSaved(record);
@@ -2821,6 +3071,7 @@ function disposeSession(record) {
   record.chatPermissionResponseReceipts.clear();
   record.suppressedChatPermissionCallIds.clear();
   record.pendingChatPermissionScopes.length = 0;
+  record.pendingBrowserScopes.length = 0;
   record.userQuestionResponseReceipts.clear();
   record.suppressedUserQuestionCallIds.clear();
   record.pendingUserQuestionScopes.length = 0;
@@ -2841,13 +3092,6 @@ function disposeSession(record) {
   }
   try { activeSession.releaseReferenceScopes?.(); } catch {}
   record.agentSession = null;
-  let browserbaseExit;
-  try {
-    browserbaseExit = Promise.resolve(record.browserbaseSession.cleanup('session disposed'));
-  } catch (error) {
-    log(`Browserbase session cleanup failed: ${error?.message ?? error}`);
-    browserbaseExit = Promise.resolve(false);
-  }
   if (wasRunning) {
     sendCompactionEvents(record, settleCompactionAtTurnEnd(activeSession, false, { stopReason: 'interrupted' }), disposedTurnId);
     const evt = {
@@ -2860,19 +3104,14 @@ function disposeSession(record) {
       record.missedTurnEnd = evt;
     }
   }
-  record.sessionDisposalPromise = Promise.allSettled([backendExit, browserbaseExit]).then(([backend, browserbase]) => {
+  record.sessionDisposalPromise = Promise.allSettled([backendExit]).then(([backend]) => {
     const backendCleaned = backend.status === 'fulfilled' && backend.value !== false;
-    const browserbaseCleaned = browserbase.status === 'fulfilled' && browserbase.value !== false;
     if (backend.status === 'rejected') {
       log(`session process exit wait failed: ${backend.reason?.message ?? backend.reason}`);
     }
-    if (browserbase.status === 'rejected') {
-      log(`Browserbase session exit wait failed: ${browserbase.reason?.message ?? browserbase.reason}`);
-    }
-    if (backendCleaned && browserbaseCleaned && record.processCleanupUncertain !== true) return true;
+    if (backendCleaned && record.processCleanupUncertain !== true) return true;
     record.processCleanupUncertain = true;
     if (!backendCleaned) retainedUncertainBackends.add(activeSession.backend);
-    if (!browserbaseCleaned) retainedUncertainBrowserbaseSessions.add(record.browserbaseSession);
     retainUncertainProcessCleanup(record.recordRoot);
     return false;
   }).finally(() => {
@@ -3012,7 +3251,7 @@ async function addReferenceContext(activeSession, query, prompt, messageAttachme
 
 /** MCP 등록·호출 게이트: 채팅의 프로젝트 변경 허용과 홈 폴더 검색 가능 여부. */
 function projectToolGates() {
-  return { chatMayEdit: projectSettings.get().agent.chatMayEdit, homeSearch: homeSearch.available };
+  return { chatMayEdit: projectSettings.get().agent.chatMayEdit, homeSearch: homeSearch.available, researchPermissions: browserPolicy.categoryAvailability?.() ?? browserPolicy.effectiveResearch() };
 }
 
 function sendToProjectStudios(projectId, frame) {
@@ -3839,40 +4078,6 @@ function sendPiError(record, sock, requestId, error, fallbackCode) {
   });
 }
 
-function sendBrowserbaseError(record, sock, requestId, error) {
-  replyToStudio(record, sock, {
-    v: 1,
-    type: 'browserbase-error',
-    requestId,
-    code: error?.code ?? 'BROWSERBASE_CREDENTIALS_REJECTED',
-    message: String(error?.message ?? error),
-  });
-}
-
-/**
- * 스튜디오가 입력한 Browserbase 자격 증명 — 앱이 도는 동안만 환경 변수를 덮고 디스크에는
- * 남기지 않는다. 키가 들어오면 Browserbase API 에 먼저 확인하고, 프로젝트 id 가 비어
- * 있으면 그 계정의 프로젝트를 골라 채운다 (환경 변수의 프로젝트 id 는 다른 계정일 수
- * 있어 섞지 않는다). 턴이 도는 중이면 떠 있는 브라우저는 두고 다음 호출부터 새 키를 쓴다.
- */
-async function applyBrowserbaseOverride(record, msg) {
-  const revision = record.browserbaseSession.beginCredentialChange();
-  const override = normalizeBrowserbaseOverride({
-    apiKey: msg.apiKey,
-    projectId: msg.projectId,
-    geminiApiKey: msg.geminiApiKey,
-  });
-  if (override?.apiKey) {
-    const verified = await validateBrowserbaseCredentials({ apiKey: override.apiKey, projectId: override.projectId ?? null });
-    override.projectId = verified.projectId;
-  }
-  return record.browserbaseSession.applyVerifiedOverride(
-    override,
-    { restart: record.agentSession?.status !== 'running' },
-    revision,
-  );
-}
-
 function providerModeRequest(activeSession, phase = activeSession.planning.workflow === 'direct' ? 'implementing' : activeSession.planning.phase) {
   return {
     workflow: activeSession.planning.workflow,
@@ -4110,18 +4315,6 @@ async function setChatWorkflow(record, sock, msg) {
   }
   if (record.agentSession !== activeSession) return;
   activeSession.planReviewTurnId = null;
-  if (msg.workflow === 'direct') {
-    const browserbaseCleaned = await record.browserbaseSession.cleanup('workflow changed to direct')
-      .catch(() => false);
-    if (!browserbaseCleaned) {
-      record.processCleanupUncertain = true;
-      retainedUncertainBrowserbaseSessions.add(record.browserbaseSession);
-      retainUncertainProcessCleanup(record.recordRoot);
-      // The workflow switch itself already succeeded. Report the cleanup
-      // failure separately while still publishing the authoritative new mode.
-      sendChatError(sock, agentProcessCleanupUncertain(), 'AGENT_PROCESS_CLEANUP_UNCERTAIN');
-    }
-  }
   if (previousPlanId) {
     sendJson(sock, {
       v: 1,
@@ -4597,6 +4790,7 @@ async function handleStudioMessage(record, sock, msg) {
       return;
     }
     case 'chat-permission-response': {
+      if (await answerBrowserAccountPermission(record, sock, msg)) return;
       const activeSession = record.agentSession;
       if (!activeSession) {
         void answerChatPermission(record, sock, msg);
@@ -5073,24 +5267,12 @@ async function handleStudioMessage(record, sock, msg) {
         }));
       return;
     }
-    case 'browserbase-status-request': {
-      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      replyToStudio(record, sock, { v: 1, type: 'browserbase-status', requestId, status: record.browserbaseSession.status() });
+    case 'browser-request': {
+      void handleBrowserRequest(record, sock, msg);
       return;
     }
-    case 'browserbase-credentials-set': {
-      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      void applyBrowserbaseOverride(record, msg)
-        .then((status) => replyToStudio(record, sock, { v: 1, type: 'browserbase-status', requestId, status }))
-        .catch((e) => sendBrowserbaseError(record, sock, requestId, e));
-      return;
-    }
-    case 'browserbase-credentials-clear': {
-      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      record.browserbaseSession.beginCredentialChange();
-      void record.browserbaseSession.setOverride(null, { restart: record.agentSession?.status !== 'running' })
-        .then((status) => replyToStudio(record, sock, { v: 1, type: 'browserbase-status', requestId, status }))
-        .catch((e) => sendBrowserbaseError(record, sock, requestId, e));
+    case 'browser-account-submit': {
+      void handleBrowserAccountSubmit(record, sock, msg);
       return;
     }
     case 'pi-status-request': {
@@ -5674,7 +5856,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         assertCellArgsPlacement(tool, msg.args);
         args = toolArgSchema(tool, definition).parse(msg.args ?? {});
         definition.validate?.(args);
-        if ((tool === 'present_implementation_plan' || tool === 'update_todos' || tool === 'request_permission')
+        if ((tool === 'present_implementation_plan' || tool === 'update_todos' || tool === 'request_permission' || tool === 'browser_request_account')
           && (workerJob || sock.piSubagentId || sock.agentRole !== 'chat' || msg.parentTaskId)) {
           throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may manage the plan');
         }
@@ -5708,6 +5890,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             receivedEpoch: msg.capabilityEpoch,
             chatMayEdit: gates.chatMayEdit,
             homeSearch: gates.homeSearch,
+            researchPermissions: gates.researchPermissions,
             chatPermissionGrants: !sock.piSubagentId && !msg.parentTaskId ? record.agentSession.chatPermissionGrants : [],
           });
         }
@@ -6168,7 +6351,10 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         return;
       }
       if (tool === 'download_file') {
-        void record.downloadManager.download({ sessionId: record.agentSession.chatId, ...args })
+        void browserActorForMcp(record, sock, tool, args).then(async (actor) => {
+          await browserPolicy.assertAllowed({ actor, action: 'download', url: args.url });
+          return browserDownloads.downloadPublic({ actor, ...args });
+        })
           .then(sendResult)
           .catch((error) => sendError(error, 'DOWNLOAD_FAILED'));
         return;
@@ -6238,19 +6424,24 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           });
         return;
       }
-      if (definition.category === 'browser') {
-        const sidecarTool = tool.replace(/^browserbase_/, '');
-        const { browserId, ...sidecarArgs } = args;
-        void record.browserbaseSession.call(record.agentSession.chatId, browserId, sidecarTool, sidecarArgs)
-          .then(sendResult)
-          .catch((error) => {
-            if (error?.processCleanupUncertain) {
-              record.processCleanupUncertain = true;
-              retainedUncertainBrowserbaseSessions.add(record.browserbaseSession);
-              retainUncertainProcessCleanup(record.recordRoot);
+      if (definition.category === 'browser' || tool === 'browser_request_account') {
+        void browserActorForMcp(record, sock, tool, args).then(async (actor) => {
+          if (tool === 'browser_request_account') {
+            if (actor.agentId !== `${actor.threadId}:root`) {
+              throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request website account access');
             }
-            sendError(error, 'BROWSERBASE_TOOL_FAILED');
-          });
+            const request = await credentialBroker.requestAccount({ actor, ...args });
+            publishBrowserAccountRequest(record, request);
+            return { pending: true, requestId: request.requestId, origin: request.origin };
+          }
+          const result = browserMcpResult(await ownedBrowser.request(actor, tool.slice('browser_'.length).replaceAll('_', '-'), args));
+          if (tool === 'browser_status') {
+            const accounts = await credentialBroker.listAccounts();
+            result.accounts = actor.agentId === `${actor.threadId}:root` ? accounts.accounts
+              : accounts.accounts.filter((account) => account.agentReuseApproved);
+          }
+          return result;
+        }).then(sendResult).catch((error) => sendError(error, 'BROWSER_TOOL_FAILED'));
         return;
       }
       if (workerJob && tool === 'materialize_document_snapshot') {
@@ -6497,7 +6688,6 @@ function recordHealth(record) {
     studioConnected: !!record.studioSocket && record.studioSocket.readyState === record.studioSocket.OPEN,
     mcpClients: record.mcpSockets.size,
     session: sessionInfo(record),
-    browserbase: record.browserbaseSession.status(),
   };
 }
 
@@ -6511,6 +6701,7 @@ function healthzBody() {
     uptimeMs: Date.now() - STARTED_AT,
     protocol: PROTOCOL_VERSION,
     secretBroker: secretStore.available,
+    browser: { owned: true },
     sessions: sessions.summaries(recordHealth),
     providers: providerHealth.cached(),
   };
@@ -6677,6 +6868,19 @@ const httpServer = http.createServer((req, res) => {
         });
         if (await handleTemplateHttp(req, res, url)) return;
       }
+    }
+    if (isBrowserDownloadsPath(url.pathname)) {
+      let record = null;
+      if (req.method !== 'OPTIONS') {
+        record = sessions.require(authenticateHttpSession(req, url, { audience: HUB_CAPABILITY_AUDIENCES.REFERENCE }));
+      }
+      const handleBrowserDownloadsHttp = createBrowserDownloadsHttpHandler({
+        downloads: browserDownloads,
+        tokens: record ? [requestToken(req, url)] : [],
+        actor: record ? browserActorForRecord(record, { isHuman: true }) : null,
+        canImportProject: (projectId) => Boolean(record && projectStore.hasProject(projectId)),
+      });
+      if (await handleBrowserDownloadsHttp(req, res, url)) return;
     }
     if (isProjectPath(url.pathname)) {
       // 참고 자료와 같은 REFERENCE capability 로 인증한다. 세션은 자기 프로젝트만 다룬다.
@@ -6963,6 +7167,7 @@ const httpServer = http.createServer((req, res) => {
           projectWrites: !(workflow === 'question' && gates.chatMayEdit === false),
           homeSearch: gates.homeSearch && !requestedWorkerJobId && !requestedSubagentId,
           requestable: !requestedWorkerJobId && !requestedSubagentId,
+          researchPermissions: gates.researchPermissions,
         },
       });
       sendHttpJson(res, status, body);
@@ -7241,6 +7446,9 @@ httpServer.on('upgrade', (req, socket, head) => {
       if (pendingChatPermissionRequest) sendJson(ws, {
         v: 1, type: 'chat-permission-requested', request: pendingChatPermissionRequest, replayed: true,
       });
+      for (const request of record.pendingBrowserAccountRequests.values()) {
+        if (request.expiresAt > Date.now()) sendJson(ws, { v: 1, type: 'chat-permission-requested', request, replayed: true });
+      }
       void skillRegistry.catalog()
         .then((catalog) => sendJson(ws, { v: 1, type: 'skills-catalog', catalog }))
         .catch((e) => log(`skills catalog on connect failed: ${e?.message ?? e}`));
@@ -7425,7 +7633,6 @@ async function disposeRecord(record, reason) {
     backendExit,
     ...templateBackendExits,
     stopAuxiliaryProcesses(record),
-    record.browserbaseSession.cleanup(reason),
     record.documentSnapshotManager.drain(),
   ]);
   let processCleanupSettled = record.processCleanupUncertain !== true;
@@ -7467,10 +7674,14 @@ function prepareShutdown(signal) {
     if (harnessUpdateTimer) clearTimeout(harnessUpdateTimer);
     if (ownerWatchdog) clearInterval(ownerWatchdog);
     log(`shutting down (${signal})`);
+    const browserClosed = await ownedBrowser.close().catch(() => false);
+    await credentialBroker.close?.();
+    await browserDownloads.close?.();
     const cleanupProven = await sessions.disposeAll(
       (record) => disposeRecord(record, 'hub shutdown'),
     );
     if (!cleanupProven) retainUncertainProcessCleanup(WORK_ROOT);
+    if (browserClosed === false) retainUncertainProcessCleanup(WORK_ROOT);
     // 기동 동기화가 models.json 을 쓰는 도중에 process.exit 가 오면 `.tmp-*` 사본(키 포함 가능)이 남는다.
     await Promise.race([
       piManager.close().catch((error) => log(`pi settings flush failed: ${error?.message ?? error}`)),
@@ -7481,7 +7692,7 @@ function prepareShutdown(signal) {
         try { sock.close(1001, 'server shutting down'); } catch {}
       }
     }
-    return cleanupProven;
+    return cleanupProven && browserClosed !== false;
   })();
   return shutdownPreparationPromise;
 }

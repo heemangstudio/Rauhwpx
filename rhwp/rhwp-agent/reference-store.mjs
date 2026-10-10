@@ -328,6 +328,8 @@ function validateRecord(raw, ids) {
     createdAt: raw.createdAt,
     chunkCount: raw.chunkCount,
     extractedChars: Number.isSafeInteger(raw.extractedChars) && raw.extractedChars >= 0 ? raw.extractedChars : 0,
+    ...(['pending', 'running', 'ready', 'failed'].includes(raw.extractionStatus) ? { extractionStatus: raw.extractionStatus } : {}),
+    ...(typeof raw.extractionError === 'string' ? { extractionError: raw.extractionError.slice(0, 300) } : {}),
     ...(raw.pageCount !== undefined ? { pageCount: raw.pageCount } : {}),
   };
 }
@@ -462,6 +464,8 @@ function publicFile(record) {
     status: record.status,
     createdAt: record.createdAt,
     chunkCount: record.chunkCount,
+    ...(record.extractionStatus ? { extractionStatus: record.extractionStatus } : {}),
+    ...(record.extractionError ? { extractionError: record.extractionError } : {}),
     ...(record.pageCount ? { pageCount: record.pageCount } : {}),
     kind: referenceKindForName(record.name),
   };
@@ -1541,8 +1545,9 @@ export class ReferenceStore {
     if (!Number.isSafeInteger(extractedChars)
       || extractedChars < 0
       || extractedChars > this.maxExtractedChars
-      || (expected && extractedChars !== expected.extractedChars)
-      || (expected && parsed.chunks.length !== expected.chunkCount)
+      // PDF 색인 교체와 장부 커밋 사이에 종료되면, 원본은 보존하고 다시 추출한다.
+      || (expected && (!expected.extractionStatus || expected.extractionStatus === 'ready') && extractedChars !== expected.extractedChars)
+      || (expected && (!expected.extractionStatus || expected.extractionStatus === 'ready') && parsed.chunks.length !== expected.chunkCount)
       || (extractedChars === 0 && parsed.chunks.length !== 0)
       || (extractedChars > 0 && parsed.chunks.length > extractedChars + 1)) {
       throw new ReferenceStoreError('REFERENCE_STORE_CORRUPT', `Search index size is corrupt for sha256:${sha256}`);
@@ -2022,7 +2027,7 @@ export class ReferenceStore {
     return this.addStream({ ...options, stream: stream(), contentLength: bytes.length });
   }
 
-  async addStream({ stream, name, mimeType, scope, scopeId, contentLength, transferStageId = null }) {
+  async addStream({ stream, name, mimeType, scope, scopeId, contentLength, transferStageId = null, deferExtraction = false }) {
     const scoped = this.#assertScopeHere(normalizeReferenceScope(scope, scopeId));
     const safeName = sanitizeReferenceName(name);
     const declared = Number(contentLength);
@@ -2030,6 +2035,10 @@ export class ReferenceStore {
       throw new ReferenceStoreError('REFERENCE_FILE_TOO_LARGE', `Reference files must be 1-${this.maxFileBytes} bytes`);
     }
     const extension = path.extname(safeName).toLowerCase();
+    // 브라우저 PDF 는 원본과 카드를 먼저 저장한다. 다른 업로드의 검증 순서는 유지한다.
+    if (deferExtraction && (scoped.scope !== 'project' || extension !== '.pdf')) {
+      throw new ReferenceStoreError('REFERENCE_TYPE_UNSUPPORTED', 'Deferred extraction is only available for project PDFs');
+    }
     const stagingId = transferStageId ? crypto.randomUUID() : requireGeneratedId(this.createId());
     const stagingLeaf = transferStageId
       ? `.upload-p-${crypto.createHash('sha256').update(transferStageId).digest('hex')}-${stagingId}${extension}`
@@ -2069,11 +2078,26 @@ export class ReferenceStore {
       }
       const sha256 = hash.digest('hex');
       const kind = referenceKindForName(safeName);
+      // 같은 blob 에 미완료 PDF 색인이 있으면 일반 업로드가 빈 색인을 상속하지 않게 끝낸다.
+      if (!deferExtraction && extension === '.pdf') {
+        const pending = this.metadata.files.find((file) => file.sha256 === sha256 && file.extractionStatus && file.extractionStatus !== 'ready');
+        if (pending) await this.extractFile(pending.id);
+      }
       let chunks;
       let extractedChars;
       let extracted = null;
       let resolvedMime = normalizeMime(mimeType);
-      if (kind === 'image') {
+      if (deferExtraction) {
+        const prefix = Buffer.alloc(5);
+        const pdf = await fs.open(staging, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+        try { await pdf.read(prefix, 0, 5, 0); } finally { await pdf.close(); }
+        if (prefix.toString('ascii') !== '%PDF-') {
+          throw new ReferenceExtractionError('REFERENCE_TYPE_MISMATCH', `${safeName} does not have a valid PDF signature`);
+        }
+        chunks = [];
+        extractedChars = 0;
+        resolvedMime = 'application/pdf';
+      } else if (kind === 'image') {
         const inspected = await inspectReferenceImage({ filePath: staging, name: safeName, mimeType });
         chunks = [];
         extractedChars = 0;
@@ -2177,6 +2201,8 @@ export class ReferenceStore {
           createdAt: this.now(),
           chunkCount: chunks.length,
           extractedChars,
+          ...(deferExtraction ? { extractionStatus: this.metadata.files.some((file) => file.sha256 === sha256
+            && (!file.extractionStatus || file.extractionStatus === 'ready')) ? 'ready' : 'pending' } : {}),
           ...(pageCount ? { pageCount } : {}),
         };
         const pending = {
@@ -2317,6 +2343,86 @@ export class ReferenceStore {
   getFile(fileId) {
     const record = this.metadata.files.find((file) => file.id === this.#resolveAlias(String(fileId ?? '')));
     return record ? publicFile(record) : null;
+  }
+
+  /** 원본 PDF 를 보존한 채 검색 글을 만든다. 실패 상태도 장부에 저장하여 다시 시도할 수 있다. */
+  async extractFile(fileId) {
+    this.extractions ??= new Map();
+    const known = this.getFile(fileId);
+    if (!known) throw new ReferenceStoreError('REFERENCE_NOT_FOUND', 'Reference file was not found');
+    if (this.extractions.has(known.sha256)) return this.extractions.get(known.sha256);
+    const pending = this.#extractFileNow(fileId).finally(() => this.extractions.delete(known.sha256));
+    this.extractions.set(known.sha256, pending);
+    return pending;
+  }
+
+  async #extractFileNow(fileId) {
+    const record = this.metadata.files.find((file) => file.id === this.#resolveAlias(String(fileId ?? '')));
+    if (!record) throw new ReferenceStoreError('REFERENCE_NOT_FOUND', 'Reference file was not found');
+    if (!record.extractionStatus || record.extractionStatus === 'ready') return publicFile(record);
+    const release = this.#beginScopeOperation([{ scope: record.scope, scopeId: record.scopeId }]);
+    const setStatus = async (status, error) => {
+      const prepared = await this.#exclusive(() => {
+        const current = this.metadata.files.find((file) => file.id === record.id);
+        if (!current) throw new ReferenceStoreError('REFERENCE_NOT_FOUND', 'Reference file was not found');
+        const next = { ...current, extractionStatus: status };
+        delete next.extractionError;
+        if (error) next.extractionError = error;
+        this.metadata = { ...this.metadata, files: this.metadata.files.map((file) => file === current ? next : file) };
+        return { file: next, committed: this.#persist({ rollback: () => {
+          this.metadata = { ...this.metadata, files: this.metadata.files.map((file) => file === next ? current : file) };
+        } }) };
+      });
+      await prepared.committed;
+      return prepared.file;
+    };
+    try {
+      await setStatus('running');
+      const extracted = await extractReferenceText({ filePath: this.#blobPath(record.sha256), name: record.name,
+        mimeType: record.mimeType, projectRoot: this.projectRoot });
+      const chunks = chunkReferenceText(extracted);
+      if (chunks.length === 0 && !isTextlessPdf(record.name, extracted)) {
+        throw new ReferenceExtractionError('REFERENCE_EMPTY_TEXT', `${record.name} contains no searchable chunks`);
+      }
+      const object = { schemaVersion: OBJECT_SCHEMA_VERSION, textVersion: this.textVersion,
+        sha256: record.sha256, extractedChars: extracted.text.length, chunks };
+      const objectBytes = Buffer.byteLength(JSON.stringify(object), 'utf8') + 1;
+      if (objectBytes > MAX_REFERENCE_OBJECT_BYTES) {
+        throw new ReferenceStoreError('REFERENCE_INDEX_TOO_LARGE', 'Reference search index is too large');
+      }
+      const prepared = await this.#exclusive(async () => {
+        const previousFiles = this.metadata.files;
+        const previousObject = await this.#readObject(record.sha256, record);
+        const previousPhysical = this.physicalObjects.get(record.sha256);
+        const currentBytes = previousPhysical?.objectBytes ?? Buffer.byteLength(JSON.stringify(previousObject), 'utf8') + 1;
+        this.#assertProjectedReference({ scope: record.scope, scopeId: record.scopeId, bytes: record.size,
+          extractedChars: Math.max(0, extracted.text.length - record.extractedChars), globalFiles: 0,
+          globalBytes: Math.max(0, objectBytes - currentBytes), scopeFiles: 0, scopeBytes: 0 });
+        await atomicWriteJson(this.#objectPath(record.sha256), object, { platform: this.platform });
+        this.metadata = { ...this.metadata, files: previousFiles.map((file) => file.sha256 === record.sha256
+          ? { ...file, chunkCount: chunks.length, extractedChars: extracted.text.length,
+            extractionStatus: 'ready', extractionError: undefined,
+            ...(pageCountFor(extracted, chunks) ? { pageCount: pageCountFor(extracted, chunks) } : {}) }
+          : file) };
+        try {
+          await this.#persist({ rollback: () => { this.metadata = { ...this.metadata, files: previousFiles }; } });
+        } catch (error) {
+          await atomicWriteJson(this.#objectPath(record.sha256), previousObject, { platform: this.platform });
+          throw error;
+        }
+        this.physicalObjects.set(record.sha256, { blobBytes: record.size, objectBytes });
+        this.#dropIndexedObject(record.sha256);
+        this.#indexObject({ ...object, source: 'primary' });
+        return this.metadata.files.find((file) => file.id === record.id);
+      });
+      return publicFile(prepared);
+    } catch (error) {
+      // 예외 메시지에는 자료 URL·인증 값이 있을 수 있어 코드만 저장한다.
+      await setStatus('failed', String(error?.code ?? 'REFERENCE_EXTRACTION_FAILED').slice(0, 100));
+      throw error;
+    } finally {
+      release();
+    }
   }
 
   /**

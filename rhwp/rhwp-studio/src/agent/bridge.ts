@@ -75,9 +75,9 @@ import type {
   PiCatalogModel,
   PiModelConfig,
   PiStatus,
-  BrowserbaseCredentialSource,
-  BrowserbaseOverride,
-  BrowserbaseStatus,
+  BrowserEvent,
+  BrowserResult,
+  BrowserDownload,
   CatalogRow,
   HarnessSkillRow,
   ProductSkillIcon,
@@ -350,15 +350,12 @@ export interface AgentBridge {
   setPiModels(
     models: Array<{ id: string; name: string; defaultEffort?: string }>,
   ): Promise<PiStatus | null>;
-  /** 허브가 보는 Browserbase 설정 상태. */
-  requestBrowserbaseStatus(): Promise<BrowserbaseStatus | null>;
-  /**
-   * 앱에서 입력한 Browserbase 자격 증명을 허브에 보낸다. 허브가 키를 확인하고
-   * 앱을 쓰는 동안만 환경 변수 대신 쓴다. 재연결 때마다 마지막 값을 다시 보낸다.
-   */
-  setBrowserbaseCredentials(override: BrowserbaseOverride): Promise<BrowserbaseStatus | null>;
-  /** 덮어쓰기를 거두고 허브 환경 변수로 돌아간다. */
-  clearBrowserbaseCredentials(): Promise<BrowserbaseStatus | null>;
+  /** 소유 브라우저 요청. 실패한 입력은 자동으로 다시 보내지 않는다. */
+  requestBrowser<T = BrowserResult>(action: string, args?: Record<string, unknown>): Promise<T>;
+  onBrowserEvent(handler: (event: BrowserEvent) => void): () => void;
+  submitBrowserAccount(args: Record<string, unknown>): Promise<unknown>;
+  readBrowserDownload(downloadId: string): Promise<Blob>;
+  importBrowserDownload(downloadId: string, projectId: string): Promise<BrowserDownload>;
   startChat(agent: AgentName, model?: string, effort?: string, force?: boolean, permissionProfile?: PermissionProfile, workflow?: AgentWorkflow, threadId?: string, documentId?: string | null, documentName?: string | null, history?: ChatHistoryEntry[]): void;
   /** 허브 세션을 폐기하고 새 채팅을 시작할 수 있게 한다. */
   stopChat(): void;
@@ -1167,30 +1164,6 @@ function readPiModels(value: unknown): PiModelConfig[] {
   return out;
 }
 
-function readCredentialSource(value: unknown): BrowserbaseCredentialSource {
-  return value === 'studio' || value === 'env' ? value : null;
-}
-
-function readBrowserbaseStatus(value: unknown): BrowserbaseStatus {
-  const src = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
-  const browsers = Array.isArray(src['browsers'])
-    ? (src['browsers'] as unknown[]).flatMap((entry) => {
-      const row = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>;
-      return typeof row['id'] === 'string' ? [{ id: row['id'], connected: row['connected'] === true }] : [];
-    })
-    : [];
-  return {
-    configured: src['configured'] === true,
-    missing: Array.isArray(src['missing']) ? (src['missing'] as unknown[]).filter((v): v is string => typeof v === 'string') : [],
-    keySource: readCredentialSource(src['keySource']),
-    keyTail: typeof src['keyTail'] === 'string' ? src['keyTail'] : null,
-    projectId: typeof src['projectId'] === 'string' ? src['projectId'] : null,
-    projectSource: readCredentialSource(src['projectSource']),
-    geminiSource: readCredentialSource(src['geminiSource']),
-    browsers,
-  };
-}
-
 function readPiStatus(value: unknown): PiStatus {
   const src = (value ?? {}) as Record<string, unknown>;
   return {
@@ -1352,8 +1325,6 @@ export class AgentBridgeImpl implements AgentBridge {
   private hubLaunch: Promise<boolean> | null = null;
   private reconnectSeq = 0;
   private requests = new PendingRequestRegistry();
-  /** 마지막으로 보낸 Browserbase 덮어쓰기 — 허브가 다시 뜨면 기억을 잃으므로 연결마다 재전송한다. */
-  private browserbaseOverride: BrowserbaseOverride | null = null;
   /** 끊긴 사이에 완료된 도구 결과 — 재연결 직후 다시 보낸다. */
   private toolResponses = new ToolResponseBuffer();
   /** 사용자 답변은 로컬에서 만료시키지 않고, 재연결 뒤에도 같은 응답 ID로 다시 보낸다. */
@@ -1950,9 +1921,6 @@ export class AgentBridgeImpl implements AgentBridge {
       this.flushPendingQuestionAnswer();
       for (const [key, frame] of this.pendingSetupCancels) {
         if (this.sendJson(frame)) this.pendingSetupCancels.delete(key);
-      }
-      if (this.browserbaseOverride !== null) {
-        this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'browserbase-credentials-set', ...this.browserbaseOverride });
       }
       if (this.pendingChatStart !== null) {
         this.sendPendingChatStart();
@@ -3129,20 +3097,14 @@ export class AgentBridgeImpl implements AgentBridge {
         });
         break;
       }
-      case 'browserbase-status': {
-        const status = readBrowserbaseStatus(msg.status);
-        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, status);
-        this.emit({ type: 'browserbase-status', status });
+      case 'browser-response': {
+        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, { result: msg.result, error: msg.error });
         break;
       }
-      case 'browserbase-error': {
-        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, null);
-        this.emit({
-          type: 'browserbase-error',
-          requestId: typeof msg.requestId === 'string' ? msg.requestId : '',
-          code: typeof msg.code === 'string' ? msg.code : 'BROWSERBASE_ERROR',
-          message: typeof msg.message === 'string' ? msg.message : 'Browserbase request failed',
-        });
+      case 'browser-event': {
+        if (msg.event && typeof msg.event === 'object' && typeof (msg.event as Record<string, unknown>).type === 'string') {
+          this.emit({ type: 'browser-event', event: msg.event as BrowserEvent });
+        }
         break;
       }
       case 'chat-compact-accepted': {
@@ -4600,33 +4562,45 @@ export class AgentBridgeImpl implements AgentBridge {
     return this.request<PiStatus>({ type: 'pi-set-key', key }, 'pi-set-key', 30_000);
   }
 
-  requestBrowserbaseStatus(): Promise<BrowserbaseStatus | null> {
-    return this.request<BrowserbaseStatus>({ type: 'browserbase-status-request' }, 'browserbase-status');
+  async requestBrowser<T = BrowserResult>(action: string, args: Record<string, unknown> = {}): Promise<T> {
+    const response = await this.request<{ result?: T; error?: { code?: string; message?: string; retryable?: boolean } }>(
+      { type: 'browser-request', action, args }, 'browser', 60_000,
+    );
+    if (!response) throw Object.assign(new Error('브라우저 응답을 확인하지 못했습니다. 연결을 확인한 뒤 상태를 새로 읽어 주세요.'), { code: 'BROWSER_DISCONNECTED', retryable: true });
+    if (response.error) throw Object.assign(new Error(response.error.message || '브라우저 요청에 실패했습니다.'), response.error);
+    return response.result as T;
   }
 
-  async setBrowserbaseCredentials(override: BrowserbaseOverride): Promise<BrowserbaseStatus | null> {
-    const candidate = {
-      apiKey: override.apiKey,
-      ...(override.projectId ? { projectId: override.projectId } : {}),
-      ...(override.geminiApiKey ? { geminiApiKey: override.geminiApiKey } : {}),
-    };
-    const status = await this.request<BrowserbaseStatus>(
-      { type: 'browserbase-credentials-set', ...candidate },
-      'browserbase-credentials',
-      30_000,
+  async submitBrowserAccount(args: Record<string, unknown>): Promise<unknown> {
+    const response = await this.request<{ result?: unknown; error?: { code?: string; message?: string } }>(
+      { type: 'browser-account-submit', ...args }, 'browser-account', 60_000,
     );
-    // 재연결 시에는 허브가 실제로 수락한 자격 증명만 다시 보낸다.
-    if (status) this.browserbaseOverride = candidate;
-    return status;
+    if (!response) throw new Error('계정 저장 결과를 확인하지 못했습니다. 계정 목록을 새로 읽어 주세요.');
+    if (response.error) throw Object.assign(new Error(response.error.message || '계정을 저장하지 못했습니다.'), response.error);
+    return response.result;
   }
 
-  async clearBrowserbaseCredentials(): Promise<BrowserbaseStatus | null> {
-    const status = await this.request<BrowserbaseStatus>(
-      { type: 'browserbase-credentials-clear' },
-      'browserbase-credentials',
-    );
-    if (status) this.browserbaseOverride = null;
-    return status;
+  private authenticatedBrowserFetch(url: string, init?: RequestInit): Promise<Response> {
+    return fetch(url, { ...init, headers: { Authorization: `Bearer ${this.referenceToken}`, ...init?.headers } });
+  }
+
+  async readBrowserDownload(downloadId: string): Promise<Blob> {
+    const response = await this.authenticatedBrowserFetch(this.referenceUrl(`/browser-downloads/${encodeURIComponent(downloadId)}/bytes`));
+    if (!response.ok) throw new Error('다운로드 파일을 열지 못했습니다. 받은 파일 목록을 새로 확인해 주세요.');
+    return response.blob();
+  }
+
+  async importBrowserDownload(downloadId: string, projectId: string): Promise<BrowserDownload> {
+    const response = await this.authenticatedBrowserFetch(this.referenceUrl(`/browser-downloads/${encodeURIComponent(downloadId)}/import`), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message || result.error?.message || '프로젝트로 옮기지 못했습니다.');
+    return result.job ?? result;
+  }
+
+  onBrowserEvent(handler: (event: BrowserEvent) => void): () => void {
+    return this.onEvent((event) => { if (event.type === 'browser-event') handler(event.event); });
   }
 
   requestPiCatalog(refresh = false): Promise<PiCatalogModel[] | null> {

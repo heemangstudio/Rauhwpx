@@ -152,6 +152,11 @@ export interface ChatPermissionRequest {
   turnId: string;
   agent: AgentName;
   capability: ChatPermissionCapability;
+  kind?: 'browser-save-account' | 'browser-use-account';
+  origin?: string;
+  origins?: string[];
+  accountId?: string;
+  accountLabel?: string;
   reason: string;
   createdAt: string;
 }
@@ -646,28 +651,85 @@ export interface PiStatus {
   error: string | null;
 }
 
-/** 자격 증명 한 필드의 출처 — 앱에서 입력했는지, 허브 환경 변수에서 왔는지. */
-export type BrowserbaseCredentialSource = 'studio' | 'env' | null;
-
-/** 허브가 보는 Browserbase 설정 상태. 키 본문은 오지 않고 끝 네 글자만 온다. */
-export interface BrowserbaseStatus {
-  configured: boolean;
-  /** 아직 비어 있는 환경 변수 이름들. */
-  missing: string[];
-  keySource: BrowserbaseCredentialSource;
-  keyTail: string | null;
-  projectId: string | null;
-  projectSource: BrowserbaseCredentialSource;
-  geminiSource: BrowserbaseCredentialSource;
-  /** 지금 떠 있는 원격 브라우저 — main 과 서브에이전트 id. */
-  browsers: Array<{ id: string; connected: boolean }>;
+/** 앱이 소유하는 연구 브라우저의 연결 상태와 세대. */
+export interface BrowserRuntime {
+  runtimeId: string;
+  generation: number;
+  state: string;
+  kind: string;
+  profile?: string;
+  readiness?: Record<string, unknown>;
 }
-
-/** 설정 탭에서 입력해 허브로 보내는 Browserbase 덮어쓰기 — 앱을 쓰는 동안만 산다. */
-export interface BrowserbaseOverride {
-  apiKey: string;
-  projectId?: string;
-  geminiApiKey?: string;
+export interface BrowserTab {
+  tabId: string;
+  threadId: string | null;
+  documentId: string | null;
+  projectId: string | null;
+  agentId?: string;
+  url: string;
+  title: string;
+  navigationEpoch: number;
+  controllerEpoch: number;
+  controller: { owner: 'human' | 'agent'; clientId?: string };
+  status: string;
+  presentation?: 'native' | 'stream';
+  runtime?: 'native' | 'chromium';
+  nativeTargetId?: string;
+  runtimeGeneration?: number;
+  lastAction?: string;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+}
+export interface BrowserFrame {
+  frameId: string;
+  tabId: string;
+  navigationEpoch: number;
+  controllerEpoch: number;
+  mimeType: string;
+  data: string;
+  width: number;
+  height: number;
+  deviceScaleFactor: number;
+  scrollX: number;
+  scrollY: number;
+}
+export interface BrowserDownload {
+  downloadId: string;
+  state: 'downloading' | 'downloaded' | 'importing' | 'imported' | 'cancelled' | 'interrupted' | 'import-failed';
+  filename: string;
+  mimeType?: string;
+  size: number;
+  sha256?: string;
+  target: { ownerId?: string; projectId?: string | null; threadId?: string | null; documentId?: string | null; tabId?: string; agentId?: string; taskId?: string };
+  source?: { url?: string; pageUrl?: string };
+  fileId?: string;
+  projectItemId?: string;
+  importProjectId?: string;
+  inboxMovedAt?: string;
+  extractionStatus?: 'pending' | 'running' | 'ready' | 'failed';
+  extractionError?: string | { code?: string; message?: string };
+  error?: string | { code?: string; message?: string };
+}
+export interface BrowserEvent {
+  type: string;
+  runtime?: BrowserRuntime;
+  tabs?: BrowserTab[];
+  tab?: BrowserTab;
+  tabId?: string;
+  frame?: BrowserFrame;
+  job?: BrowserDownload;
+  [key: string]: unknown;
+}
+export interface BrowserResult {
+  ok?: boolean;
+  action?: string;
+  runtime?: BrowserRuntime;
+  tabs?: BrowserTab[];
+  tab?: BrowserTab;
+  frame?: BrowserFrame;
+  downloads?: BrowserDownload[];
+  jobs?: BrowserDownload[];
+  [key: string]: unknown;
 }
 
 /** OpenRouter 잔액 — pi 사용량 카드에 표시. */
@@ -1012,8 +1074,7 @@ export type SidebarEvent =
     }
   | { type: 'pi-catalog'; requestId: string; models: PiCatalogModel[] }
   | { type: 'pi-error'; requestId: string; code: string; message: string }
-  | { type: 'browserbase-status'; status: BrowserbaseStatus }
-  | { type: 'browserbase-error'; requestId: string; code: string; message: string }
+  | { type: 'browser-event'; event: BrowserEvent }
   | {
       type: 'title-result';
       requestId: string;
@@ -1684,7 +1745,7 @@ export interface ProjectItemBase {
 }
 
 export type ProjectFileKind = 'text' | 'pdf' | 'docx' | 'hwp' | 'pptx' | 'xlsx' | 'html' | 'image' | 'other';
-export type ProjectFileSourceKind = 'upload' | 'chat-attachment' | 'web' | 'home' | 'text' | 'workspace' | 'migrated';
+export type ProjectFileSourceKind = 'upload' | 'chat-attachment' | 'web' | 'home' | 'text' | 'workspace' | 'migrated' | 'browser';
 
 export interface ProjectFileItem extends ProjectItemBase {
   kind: 'file';
@@ -1696,6 +1757,8 @@ export interface ProjectFileItem extends ProjectItemBase {
   size: number;
   fileKind: ProjectFileKind;
   status: 'processing' | 'ready' | 'failed';
+  extractionStatus?: 'pending' | 'running' | 'ready' | 'failed';
+  extractionError?: string | { code?: string; message?: string };
   chunkCount: number;
   pageCount?: number;
   source: {
@@ -1704,9 +1767,12 @@ export interface ProjectFileItem extends ProjectItemBase {
     finalUrl?: string;
     homePath?: string;
     threadId?: string;
+    downloadId?: string;
+    tabId?: string;
   };
   librarian: { status: ProjectItemLibrarianStatus; error?: string };
   locked: { title?: true; column?: true; tags?: true };
+  captures?: Array<{ downloadId: string; threadId?: string; tabId?: string; taskId?: string; capturedAt?: string; url?: string; pageUrl?: string }>;
 }
 
 export interface ProjectNoteItem extends ProjectItemBase {

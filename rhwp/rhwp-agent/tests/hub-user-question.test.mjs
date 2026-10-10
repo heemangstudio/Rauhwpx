@@ -156,7 +156,7 @@ async function startHub(t, { fakePi = false, controlledCompletion = false, backe
   const serverArgs = ['server.mjs'];
   if (backendFixture) {
     const backendUrl = new URL(`../agents/${backendFixture.agent}.mjs`, import.meta.url).href;
-    const source = backendFixture.source({ workRoot, completePi });
+    const source = await backendFixture.source({ workRoot, completePi });
     const cliSetupUrl = new URL('../cli-setup-manager.mjs', import.meta.url).href;
     const cliSetupRoot = path.join(workRoot, 'cli-setup');
     mkdirSync(cliSetupRoot);
@@ -203,6 +203,7 @@ async function startHub(t, { fakePi = false, controlledCompletion = false, backe
       RHWP_LAUNCH_ID: LAUNCH_ID,
       RHWP_WORK_DIR: workRoot, RHWP_REFERENCES_DIR: path.join(workRoot, 'references'), RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
       RHWP_TEMPLATES_DIR: path.join(workRoot, 'templates'),
+      RHWP_BROWSER_DATA_DIR: path.join(workRoot, 'browser'), RHWP_BROWSER_OS_KEYRING: '0', RHWP_BROWSER_HOST: '',
       ...(fakePi ? { RHWP_PI_DIR: piRoot } : {}),
       PATH: testPath,
     },
@@ -215,7 +216,11 @@ async function startHub(t, { fakePi = false, controlledCompletion = false, backe
     if (child.exitCode === null) await once(child, 'exit');
     rmSync(workRoot, { recursive: true, force: true });
   });
-  const readyLine = await waitForLine(child.stdout, (line) => line.startsWith('RHWP_HUB_READY '));
+  const readyLine = await waitForLine(child.stdout, (line) => line.startsWith('RHWP_HUB_READY '))
+    .catch((error) => {
+      error.message += `; exitCode=${child.exitCode}; signalCode=${child.signalCode}; stderr=${stderr}`;
+      throw error;
+    });
   const ready = JSON.parse(readyLine.slice('RHWP_HUB_READY '.length));
   return {
     port: ready.port,
@@ -505,6 +510,73 @@ test('permission requests require one provider-stream root ticket for legacy MCP
     sendFrame(studio, { type: 'chat-interrupt' });
     await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
     id += 1;
+  }
+});
+
+test('browser tab visibility follows provider-stream identity and rejects caller scope spoofing', { timeout: 40_000 }, async (t) => {
+  const threadId = 'browser-provenance-thread';
+  const { port } = await startHub(t, {
+    backendFixture: {
+      agent: 'claude',
+      source: async ({ workRoot }) => {
+        const { ProjectStore } = await import('../project-store.mjs');
+        const { createReferenceCatalog } = await import('../reference-catalog.mjs');
+        const referenceStore = await createReferenceCatalog({ referencesRoot: path.join(workRoot, 'references'), projectsRoot: path.join(workRoot, 'projects') }).init();
+        const store = await new ProjectStore({ root: path.join(workRoot, 'projects'), referenceStore }).init();
+        const projectId = await store.projectForDocument('browser-provenance-doc');
+        const browserDir = path.join(workRoot, 'browser', 'browser');
+        mkdirSync(browserDir, { recursive: true });
+        writeFileSync(path.join(browserDir, 'tabs.json'), JSON.stringify({ version: 1, tabs: [
+          ['root-tab', `${threadId}:root`], ['child-tab', `${threadId}:task:child-task`],
+          ['other-tab', 'other-thread:root'],
+        ].map(([tabId, agentId]) => ({ tabId, agentId, threadId: tabId === 'other-tab' ? 'other-thread' : threadId,
+          projectId, documentId: 'browser-provenance-doc', url: 'about:blank' })) }));
+        return `
+          export function prepareClaudeHome() { return []; }
+          export function flushClaudeCredentialMirrors() { return true; }
+          export function canResumeClaudeSession() { return false; }
+          export function createClaudeSession(opts) {
+            return {
+              getSessionId() { return 'browser-provenance-fixture'; }, dispose() { return true; }, setExecutionMode() {},
+              interrupt() { opts.onEvent({ type: 'turn-end', agent: 'claude', stopReason: 'interrupted' }); },
+              sendUserMessage(prompt) {
+                opts.onEvent({ type: 'turn-start', agent: 'claude' });
+                const event = { type: 'tool-call', agent: 'claude', tool: 'mcp__rhwp__browser_status', argsJson: '{}' };
+                if (prompt.includes('browser-root-ticket') || prompt.includes('browser-ambiguous-ticket')) opts.onEvent({ ...event, callId: 'browser-root' });
+                if (prompt.includes('browser-child-ticket') || prompt.includes('browser-ambiguous-ticket')) opts.onEvent({ ...event, callId: 'browser-child', parentTaskId: 'child-task' });
+              },
+            };
+          }
+        `;
+      },
+    },
+  });
+  const sessionId = 'browser-provider-provenance';
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=browser-provenance-page`);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  await studio.next((frame) => frame.type === 'agent-setup-status' && frame.statuses?.claude?.authenticated === true);
+  sendFrame(studio, { type: 'chat-start', agent: 'claude', threadId, documentId: 'browser-provenance-doc' });
+  await studio.next((frame) => frame.type === 'chat-started');
+  const cases = [
+    ['browser-missing-ticket', 'CALLER_SCOPE_UNKNOWN', null],
+    ['browser-ambiguous-ticket', 'CALLER_SCOPE_UNKNOWN', null],
+    ['browser-child-ticket', null, 'child-tab'],
+    ['browser-root-ticket', null, 'root-tab'],
+  ];
+  for (const [index, [trigger, expectedError, tabId]] of cases.entries()) {
+    sendFrame(studio, { type: 'chat-user-message', text: trigger, threadId, documentId: 'browser-provenance-doc' });
+    await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+    const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=claude&role=chat`);
+    t.after(() => closeClient(mcp));
+    sendFrame(mcp, { type: 'tool-call', id: 601 + index, tool: 'browser_status',
+      args: {}, actor: { isHuman: true, threadId: 'other-thread', agentId: 'other-thread:root' },
+      parentTaskId: tabId === 'child-tab' ? 'other-task' : 'child-task' });
+    const result = await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 601 + index);
+    if (expectedError) assert.equal(result.error.code, expectedError);
+    else assert.deepEqual(result.result.tabs.map((tab) => tab.tabId), [tabId]);
+    sendFrame(studio, { type: 'chat-interrupt' });
+    await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
   }
 });
 

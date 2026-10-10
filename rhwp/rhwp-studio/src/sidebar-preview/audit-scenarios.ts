@@ -10,6 +10,7 @@ const scene = (id: string, group: string, title: string, hint: string, params: R
   ({ id, group, title, hint, params });
 
 export const auditScenarios: readonly AuditScenario[] = [
+  scene('browser-settings', 'Connection and setup', 'Browser settings', 'Inspect saved accounts, approved permissions, and local browser configuration.', { page: 'settings', destination: 'browser' }),
   scene('chat-empty', 'Conversation', 'New conversation', 'Inspect the empty state, composer, provider controls, and keyboard focus.', {}),
   scene('chat-no-document', 'Conversation', 'No document open', 'Inspect document guidance and available composer actions.', { document: 'empty' }),
   scene('chat-response', 'Conversation', 'Markdown response', 'Inspect response typography, message spacing, and composer layout.', { scenario: 'chat', play: '1' }),
@@ -52,9 +53,6 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('setup-claude', 'Connection and setup', 'Claude setup', 'Inspect Claude installation, authentication, and setup guidance.', { services: 'setup', page: 'settings', destination: 'ai', surface: 'provider-setup', provider: 'claude' }),
   scene('setup-claude-terminal', 'Connection and setup', 'Claude login terminal', 'Use Enter to step through login; cancel to use an API key.', { services: 'setup', page: 'settings', destination: 'ai', surface: 'provider-setup', provider: 'claude', terminal: '1' }),
   scene('setup-pi', 'Connection and setup', 'Pi setup', 'Inspect Pi installation, authentication, and setup guidance.', { services: 'setup', page: 'settings', destination: 'ai', surface: 'provider-setup', provider: 'pi' }),
-  scene('browserbase-ready', 'Connection and setup', 'Browserbase connected', 'Inspect the connected browser service and account controls.', { page: 'settings', destination: 'ai', browserbase: 'ready' }),
-  scene('browserbase-setup', 'Connection and setup', 'Browserbase setup', 'Inspect browser service configuration and sign-in guidance.', { page: 'settings', destination: 'ai', browserbase: 'setup' }),
-  scene('browserbase-error', 'Connection and setup', 'Browserbase failure', 'Inspect browser service error feedback and recovery controls.', { page: 'settings', destination: 'ai', browserbase: 'error' }),
   scene('first-run', 'Connection and setup', 'First-run wizard', 'Inspect the theme, provider and font steps and the hippo dialogue.', { 'initial-setup': '1', services: 'setup' }),
   scene('first-run-deferred', 'Connection and setup', 'Deferred setup chip', 'Inspect the chip shown when the first launch opened a document.', { 'initial-setup': 'deferred' }),
   scene('settings-editing', 'Settings', 'Editing preferences', 'Inspect preference groups, draft changes, apply, and cancel.', { page: 'settings', destination: 'editing' }),

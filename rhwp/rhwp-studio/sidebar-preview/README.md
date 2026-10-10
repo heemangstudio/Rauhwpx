@@ -23,7 +23,7 @@ Electron, agent hub, or credentials.
 Open **http://127.0.0.1:7715/?audit=1** for a searchable checklist of sidebar
 scenarios and production dialog/menu launchers. The **Scenes** tab covers
 responses, rich Markdown, plan approval, questions, edit review, active subagents,
-connection failures, each provider's setup, Browserbase, preferences, and history.
+connection failures, each provider's setup, browser settings, preferences, and history.
 **Editor dialogs** opens production file, table, field, font, grid, and
 merge-preparation dialogs with sample values.
 

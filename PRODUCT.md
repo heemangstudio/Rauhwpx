@@ -24,7 +24,7 @@ An HWP/HWPX editor with agentic features as a first-class part of the product—
 - The desktop app runs as one Electron process with multiple document windows. Every window owns an isolated agent session while settings, recent documents, skills, references, and provider credentials remain user-wide.
 - A local Node hub (`rhwp-agent`) bridges Claude, Codex, and Pi to Studio through session-scoped WebSocket and MCP routing.
 - AI writes run autonomously with editor undo history: semantic edits use a live staged preview and commit on successful turn completion; raw engine batches are atomic and restore the prior snapshot on failure.
-- A separate planning workflow can research with web, subagents, Browserbase, and chat-scoped downloads while local files and the live document remain read-only. The agent presents a structured plan; only an explicit `Approve & execute` action unlocks implementation.
+- A separate planning workflow can research with web, subagents, the app-owned browser, and managed research downloads while local files and the live document remain read-only. The agent presents a structured plan; only an explicit `Approve & execute` action unlocks implementation.
 - Everything document-related runs locally in the browser WASM engine; the agent hub is a thin localhost router with no document logic.
 - Adjacent surfaces exist (browser extensions, VS Code viewer, embeddable npm editor, CLI) but the primary product experience for this record is the studio editor + AI sidebar.
 

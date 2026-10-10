@@ -11,7 +11,7 @@ import type { CatalogAgent, ModelCatalogEntry } from '../agent/models.ts';
 import { loadAgentPrefs } from '../agent/agent-prefs.ts';
 import { createFixtures, samplePlan, timestamp, agents } from './fixtures.ts';
 import { requestLiveUsage, consumeLiveCodexReset } from './live-usage.ts';
-import { createBrowserbaseFixture, type BrowserbaseFixtureState } from './fixtures.ts';
+import { createPreviewBrowser } from './mock-browser.ts';
 import { createPreviewProjects } from './mock-projects.ts';
 
 export const scenarios = [
@@ -126,8 +126,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       }
     }
   }
-  let browserbaseState: BrowserbaseFixtureState = 'connected';
-  let browserbase = createBrowserbaseFixture(browserbaseState);
+
   const listeners = new Set<(event: T.SidebarEvent) => void>();
   const pendingListeners = new Set<
     (event: T.PendingEditsChangeEvent) => void
@@ -300,6 +299,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     emit({ type: 'chat-permission-resolved', requestId: pending.requestId, threadId: pending.threadId,
       documentId: pending.documentId, outcome, grants: [...chatPermissionGrants] });
   };
+  const previewBrowser = createPreviewBrowser((event) => emit({ type: 'browser-event', event }), () => threadId, () => projects.store.get()?.id ?? null);
   const bridge: SidebarBridge = {
     projects,
     setProjectWorktrees: (binding) => {
@@ -385,40 +385,11 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       return models;
     },
     requestAgentSetupStatus: async () => data.setups,
-    requestBrowserbaseStatus: async () => {
-      if (browserbaseState === 'error') {
-        emit({ type: 'browserbase-error', requestId: 'preview-browserbase-status', code: 'preview-unavailable', message: '미리보기 원격 브라우저 연결을 확인하지 못했어요.' });
-        return null;
-      }
-      const status = structuredClone(browserbase);
-      emit({ type: 'browserbase-status', status });
-      return status;
-    },
-    setBrowserbaseCredentials: async (override) => {
-      if (browserbaseState === 'error' || !override.apiKey.trim()) {
-        emit({ type: 'browserbase-error', requestId: 'preview-browserbase-credentials', code: 'preview-invalid-key', message: '미리보기 키를 확인하지 못했어요.' });
-        return null;
-      }
-      // 입력한 키/프로젝트는 보관하지 않고 샘플 상태만 표시한다.
-      browserbase = {
-        ...createBrowserbaseFixture('connected'),
-        keySource: 'studio',
-        keyTail: 'demo',
-        projectSource: 'studio',
-        geminiSource: override.geminiApiKey?.trim() ? 'studio' : 'env',
-      };
-      browserbaseState = 'connected';
-      const status = structuredClone(browserbase);
-      emit({ type: 'browserbase-status', status });
-      return status;
-    },
-    clearBrowserbaseCredentials: async () => {
-      browserbaseState = 'connected';
-      browserbase = createBrowserbaseFixture('connected');
-      const status = structuredClone(browserbase);
-      emit({ type: 'browserbase-status', status });
-      return status;
-    },
+    requestBrowser: async <R = T.BrowserResult>(action: string, args?: Record<string, unknown>): Promise<R> => previewBrowser.request(action, args) as Promise<R>,
+    onBrowserEvent: (callback) => { const listener = (event: T.SidebarEvent) => { if (event.type === 'browser-event') callback(event.event); }; listeners.add(listener); return () => { listeners.delete(listener); }; },
+    submitBrowserAccount: (args) => previewBrowser.submit(args),
+    readBrowserDownload: async () => { throw new Error('미리보기에서 다운로드 파일이 없습니다.'); },
+    importBrowserDownload: async () => { throw new Error('미리보기에서 다운로드 파일이 없습니다.'); },
     installAgent: async (provider) => {
       data.setups[provider].installing = true;
       setupChanged();
@@ -1468,14 +1439,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     bridge,
     setConnection,
     setServices,
-    setBrowserbaseState: (value: BrowserbaseFixtureState) => {
-      browserbaseState = value;
-      browserbase = createBrowserbaseFixture(value);
-      emit({ type: 'browserbase-status', status: structuredClone(browserbase) });
-      if (value === 'error') {
-        emit({ type: 'browserbase-error', requestId: 'preview-browserbase-state', code: 'preview-unavailable', message: '미리보기 원격 브라우저 연결을 확인하지 못했어요.' });
-      }
-    },
     setScenario: (value: Scenario) => {
       scenario = value;
     },
@@ -1508,7 +1471,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       pendingChanges: changes.length,
       changeEvents: [...changeEvents],
       references: references.length,
-      browserbase: browserbaseState,
+      browser: previewBrowser.snapshot(),
       lastChatStart,
     }),
   };

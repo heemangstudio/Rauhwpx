@@ -20,6 +20,16 @@ const STROKE_PATHS = {
   /* 같은 형태를 안쪽으로 뒤집는다 — 사이드바로 되돌리기 */
   contract: 'M4.8 2.6v2.2H2.6M9.4 4.8H7.2V2.6M7.2 9.4V7.2h2.2M2.6 7.2h2.2v2.2',
   environment: 'M2.4 3.2h1.1M5.1 3.2h4.5M2.4 8.8h4.5M8.5 8.8h1.1M4.3 2.2v2M7.7 7.8v2',
+  browser: 'M2 2.5h8v7H2zM2 4.5h8M3.4 3.5h.1M4.8 3.5h.1',
+  browserBack: 'M7.4 2.8 4.2 6l3.2 3.2',
+  browserForward: 'M4.6 2.8 7.8 6 4.6 9.2',
+  browserStop: 'M3 3h6v6H3z',
+  browserHand: 'M3.6 6V3a.65.65 0 0 1 1.3 0v2M4.9 5V2.2a.65.65 0 0 1 1.3 0V5M6.2 5V2.8a.65.65 0 0 1 1.3 0v2.8M7.5 5.6V4a.65.65 0 0 1 1.3 0v3.2c0 2-1.1 3.2-2.8 3.2H5c-.7 0-1.4-.4-1.8-1L1.8 7.3a.7.7 0 0 1 1.1-.8L3.6 7',
+  browserCapture: 'M4.5 2H2v2.5M7.5 2H10v2.5M10 7.5V10H7.5M4.5 10H2V7.5M4.5 6h3M6 4.5v3',
+  browserDownload: 'M6 1.8v5.3M3.8 5 6 7.2 8.2 5M2.3 8.1v2.1h7.4V8.1',
+  browserDock: 'M2 2.5h8v7H2zM5 2.5v7',
+  browserFloat: 'M2 6.8V2.1h5.3M4.1 4.1h5.8v5.8H4.1z',
+  browserResize: 'M4.4 9.5 9.5 4.4M7.2 9.5 9.5 7.2',
   document: 'M3 2.2h3.8L9 4.4v5.4H3zM6.8 2.2v2.2H9',
   folder: 'M2.2 3h2.7l1 1.2h3.9v5.2H2.2z',
   /* 문서 열기 — 문서 오른쪽 아래 귀퉁이에 더하기가 붙는다. */

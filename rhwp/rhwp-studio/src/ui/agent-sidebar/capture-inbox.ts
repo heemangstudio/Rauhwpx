@@ -9,9 +9,12 @@ import type { SidebarBridge } from '../../agent/bridge.ts';
 import type { StagedReference } from '../../agent/types.ts';
 import { stageInlineReferences } from './reference-library.ts';
 import { createIcon } from './icons.ts';
+import { listBrowserCaptureDrafts, removeBrowserCaptureDrafts, type BrowserCaptureDraft } from './browser-capture-store.ts';
+type CaptureDraft = DocumentCaptureDraft | BrowserCaptureDraft;
+function isBrowserDraft(draft: CaptureDraft): draft is BrowserCaptureDraft { return 'kind' in draft && draft.kind === 'browser'; }
 
 export interface CaptureStaging {
-  drafts: DocumentCaptureDraft[];
+  drafts: CaptureDraft[];
   files: StagedReference[];
   context: string;
   controller?: AbortController;
@@ -27,7 +30,7 @@ export function createCaptureInbox(options: {
   const root = document.createElement('div');
   root.className = 'ag-reference-quick-uploads ag-capture-inbox';
   root.setAttribute('aria-label', '저장한 선택 자료');
-  let drafts: DocumentCaptureDraft[] = [];
+  let drafts: CaptureDraft[] = [];
   let revision = 0;
   let disposed = false;
   const pending = new Set<AbortController>();
@@ -52,7 +55,7 @@ export function createCaptureInbox(options: {
         revision++;
         for (const controller of pending) controller.abort();
         remove.disabled = true;
-        void removeCaptureDraft(draft.id).then(() => {
+        void (isBrowserDraft(draft) ? removeBrowserCaptureDrafts([draft.id]) : removeCaptureDraft(draft.id)).then(() => {
           if (disposed) return;
           drafts = drafts.filter((item) => item.id !== draft.id);
           render();
@@ -73,11 +76,11 @@ export function createCaptureInbox(options: {
     for (const controller of pending) controller.abort();
     drafts = [];
     render();
-    const { documentId } = options.getContext();
-    if (!documentId) return;
+    const { documentId, threadId } = options.getContext();
     try {
-      const saved = await listCaptureDrafts(documentId);
-      if (disposed || seq !== revision || documentId !== options.getContext().documentId) return;
+      const [documentDrafts, browserDrafts] = await Promise.all([documentId ? listCaptureDrafts(documentId) : Promise.resolve([]), listBrowserCaptureDrafts(threadId)]);
+      const saved: CaptureDraft[] = [...documentDrafts, ...browserDrafts];
+      if (disposed || seq !== revision || documentId !== options.getContext().documentId || threadId !== options.getContext().threadId) return;
       drafts = [...new Map([...saved, ...drafts].map((draft) => [draft.id, draft])).values()];
       render();
     } catch (error) {
@@ -85,8 +88,8 @@ export function createCaptureInbox(options: {
     }
   }
 
-  function queue(draft: DocumentCaptureDraft): boolean {
-    if (disposed || !draft.documentId || draft.documentId !== options.getContext().documentId) return false;
+  function queue(draft: CaptureDraft): boolean {
+    if (disposed || (isBrowserDraft(draft) ? draft.destination.threadId !== options.getContext().threadId : !draft.documentId || draft.documentId !== options.getContext().documentId)) return false;
     if (!drafts.some((item) => item.id === draft.id)) drafts.push(draft);
     render();
     return true;
@@ -99,23 +102,24 @@ export function createCaptureInbox(options: {
 
   async function stage(ordinaryFileCount = 0, requestTextLength = 0): Promise<CaptureStaging> {
     const context = options.getContext();
-    if (!context.documentId || !drafts.length) return { drafts: [], files: [], context: '' };
+    if (!drafts.length) return { drafts: [], files: [], context: '' };
     const seq = revision;
     const selectedIds = new Set(drafts.map((draft) => draft.id));
-    const saved = await listCaptureDrafts(context.documentId);
+    const [documentDrafts, browserDrafts] = await Promise.all([context.documentId ? listCaptureDrafts(context.documentId) : Promise.resolve([]), listBrowserCaptureDrafts(context.threadId)]);
+    const saved: CaptureDraft[] = [...documentDrafts, ...browserDrafts];
     if (disposed || seq !== revision || context.threadId !== options.getContext().threadId) {
       throw new Error('채팅이 바뀌었습니다. 자료를 다시 확인해 주세요.');
     }
     const selected = saved.filter((draft) => selectedIds.has(draft.id));
     if (selected.length !== selectedIds.size) throw new Error('저장한 자료가 바뀌었습니다. 첨부를 다시 확인해 주세요.');
-    const imageName = (draft: DocumentCaptureDraft, name: string) => `${draft.id}-${name}`;
+    const imageName = (draft: CaptureDraft, name: string) => `${draft.id}-${name}`;
     const images = selected.flatMap((draft) => draft.files.filter((file) => file.type.startsWith('image/'))
       .map((file) => new File([file], imageName(draft, file.name), { type: file.type, lastModified: file.lastModified })));
     if (images.length + ordinaryFileCount + 1 > 10) {
       throw new Error('한 번에 파일 10개까지 보낼 수 있습니다. 이미지 첨부를 줄여 주세요.');
     }
     const recordName = `selection-comments-${selected[0].id}.json`;
-    const rewriteContext = (draft: DocumentCaptureDraft, context: string): string => {
+    const rewriteContext = (draft: CaptureDraft, context: string): string => {
       for (const file of draft.files) {
         const name = file.type === 'application/json' ? recordName : imageName(draft, file.name);
         context = context.split(`첨부 파일 ${file.name}`).join(`첨부 파일 ${name}`);
@@ -126,6 +130,7 @@ export function createCaptureInbox(options: {
       const file = draft.files.find((entry) => entry.type === 'application/json');
       if (!file) throw new Error('선택 자료의 기록을 찾을 수 없습니다.');
       const record = JSON.parse(await file.text()) as DocumentCaptureRecord;
+      if (isBrowserDraft(draft)) return { ...record, files: draft.files.filter((entry) => entry.type.startsWith('image/')).map((entry) => ({ name: imageName(draft, entry.name), mimeType: entry.type })) };
       return {
         ...record,
         files: record.files.map((file) => ({ ...file, name: imageName(draft, file.name) })),
@@ -144,7 +149,15 @@ export function createCaptureInbox(options: {
     }));
     const recordFile = new File([JSON.stringify({ schemaVersion: 1, captures: records }, null, 2)], recordName, { type: 'application/json' });
     const captureContext = selected.map((draft) => {
-      const contextBlock = rewriteContext(draft, draft.selection.contextBlock);
+      const contextBlock = isBrowserDraft(draft)
+        ? `[브라우저 자료]
+${draft.source.title}
+${draft.source.url}
+탭 ${draft.source.tabId} · 탐색 ${draft.source.navigationEpoch}
+${JSON.stringify(draft.evidence)}
+${draft.files.filter((file) => file.type.startsWith('image/')).map((file) => `첨부 파일 ${imageName(draft, file.name)}`).join('\n')}
+첨부 파일 ${recordName}`
+        : rewriteContext(draft, draft.selection.contextBlock);
       return `${contextBlock}\n\n[저장한 의견]\n${draft.comment}`;
     }).join('\n\n');
     if (captureContext.length + requestTextLength + 2 > 128_000) {
@@ -176,7 +189,7 @@ export function createCaptureInbox(options: {
   async function consume(staging: CaptureStaging): Promise<void> {
     if (staging.controller) pending.delete(staging.controller);
     const ids = staging.drafts.map((draft) => draft.id);
-    await consumeCaptureDrafts(ids);
+    await Promise.all([consumeCaptureDrafts(staging.drafts.filter((draft) => !isBrowserDraft(draft)).map((draft) => draft.id)), removeBrowserCaptureDrafts(staging.drafts.filter(isBrowserDraft).map((draft) => draft.id))]);
     if (disposed) return;
     drafts = drafts.filter((draft) => !ids.includes(draft.id));
     render();

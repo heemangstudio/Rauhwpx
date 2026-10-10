@@ -7,6 +7,7 @@ import { replaceFileAtomically } from './harness-update.mjs';
 import { formatWikilinkAnchor, isProjectAnchor, parseWikilinks } from './project-links.mjs';
 import { DEFAULT_PROJECT_SETTINGS } from './project-settings.mjs';
 import { defaultReferenceRoot, tokenizeReferenceText } from './reference-store.mjs';
+import { sanitizeDownloadUrl } from './download-manager.mjs';
 
 /**
  * 연구 프로젝트 저장소. 허브 앱 데이터 `…/rhwp/projects/` 아래에
@@ -55,7 +56,7 @@ const TAG_COLORS = ['#c2410c', '#0f766e', '#1d4ed8', '#7c3aed', '#be185d', '#4d7
 const ITEM_KINDS = new Set(['file', 'note', 'clip']);
 const CLIP_SOURCE_KINDS = new Set(['pdf', 'image']);
 const LIBRARIAN_STATUSES = new Set(['queued', 'running', 'done', 'failed', 'skipped']);
-const SOURCE_KINDS = new Set(['upload', 'chat-attachment', 'web', 'home', 'text', 'workspace', 'migrated']);
+const SOURCE_KINDS = new Set(['upload', 'chat-attachment', 'web', 'home', 'text', 'workspace', 'migrated', 'browser-download']);
 const ACTOR_KINDS = new Set(['user', 'agent', 'librarian']);
 const LIBRARIAN_OPS = new Set(['rename', 'tag', 'move', 'link', 'summary']);
 const OP_LABELS = {
@@ -158,6 +159,20 @@ function sha1(text) {
 
 function sameJson(left, right) {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+function downloadOccurrence(value) {
+  if (!isPlainObject(value) || typeof value.downloadId !== 'string' || !/^bd_[a-f0-9]{32}$/.test(value.downloadId)) return null;
+  const out = { downloadId: value.downloadId };
+  for (const key of ['threadId', 'tabId', 'taskId', 'agentId']) {
+    if (typeof value[key] === 'string' && value[key] && value[key].length <= 256 && !/[\u0000-\u001f\u007f]/.test(value[key])) out[key] = value[key];
+  }
+  if (typeof value.capturedAt === 'string' && Number.isFinite(Date.parse(value.capturedAt))) out.capturedAt = value.capturedAt;
+  for (const key of ['url', 'pageUrl']) {
+    const clean = sanitizeDownloadUrl(value[key]);
+    if (clean) out[key] = clean;
+  }
+  return out;
 }
 
 function noteTitleFrom(body) {
@@ -1849,12 +1864,14 @@ export class ProjectStore {
       const groups = [];
       const added = [];
       for (const raw of entries) {
+        if (typeof raw?.authorize === 'function') await raw.authorize();
         const scope = raw?.scope === 'global' ? 'global' : 'project';
         const file = this.referenceStore.getFile(raw?.fileId);
         if (!file || file.scope !== scope || (scope === 'project' && file.scopeId !== projectId)) {
           throw projectError('PROJECT_ITEM_NOT_FOUND', `Reference file ${String(raw?.fileId)} is not stored in this project`);
         }
         const existing = draft.items.find((item) => item.kind === 'file' && item.fileId === file.id);
+        const occurrence = downloadOccurrence(raw?.capture);
         if (existing) {
           if (existing.trashedAt) {
             delete existing.trashedAt;
@@ -1866,6 +1883,11 @@ export class ProjectStore {
               expect: [{ path: `item:${existing.id}:trashed`, value: false }],
             });
           }
+          if (occurrence && !(existing.captures ?? []).some((capture) => capture.downloadId === occurrence.downloadId)) {
+            existing.captures = [...(existing.captures ?? []), occurrence].slice(-32);
+            existing.updatedAt = now;
+            groups.push({ op: { op: 'capture-reference', id: existing.id }, inverse: [], expect: [] });
+          }
           results.push(existing);
           continue;
         }
@@ -1875,7 +1897,11 @@ export class ProjectStore {
         const sourceKind = SOURCE_KINDS.has(raw?.source?.kind) ? raw.source.kind : 'upload';
         const source = { kind: sourceKind };
         for (const key of ['url', 'finalUrl', 'homePath', 'threadId']) {
-          if (typeof raw?.source?.[key] === 'string' && raw.source[key]) source[key] = raw.source[key].slice(0, 2_000);
+          if (typeof raw?.source?.[key] === 'string' && raw.source[key]) {
+            const value = sourceKind === 'browser-download' && ['url', 'finalUrl'].includes(key)
+              ? sanitizeDownloadUrl(raw.source[key]) : raw.source[key].slice(0, 2_000);
+            if (value) source[key] = value;
+          }
         }
         const column = typeof raw?.column === 'string' && draft.columns.some((entry) => entry.id === raw.column)
           ? raw.column
@@ -1911,9 +1937,12 @@ export class ProjectStore {
           fileKind: fileKindForName(file.name),
           status: file.status === 'ready' ? 'ready' : 'failed',
           chunkCount: file.chunkCount,
+          ...(file.extractionStatus ? { extractionStatus: file.extractionStatus } : {}),
+          ...(file.extractionError ? { extractionError: file.extractionError } : {}),
           ...(file.pageCount ? { pageCount: file.pageCount } : {}),
           source,
-          librarian: { status: librarianStatus },
+          librarian: { status: file.extractionStatus && file.extractionStatus !== 'ready' ? 'skipped' : librarianStatus },
+          ...(occurrence ? { captures: [occurrence] } : {}),
           locked: {},
           ...(normalizeOrigin(raw?.origin) ? { origin: normalizeOrigin(raw.origin) } : {}),
         };
@@ -1932,6 +1961,8 @@ export class ProjectStore {
       const actor = added[0]?.addedBy ?? { kind: 'user' };
       const label = summary ?? (added.length === 1 ? `파일 추가: ${added[0].title}` : `파일 추가 ${added.length}`);
       const entry = this.#activityEntry(draft, actor, label.slice(0, 160), groups);
+      // 대기 중 권한이 철회되면 카드 커밋을 중단한다. 이미 저장한 원본은 보존한다.
+      for (const raw of entries) if (typeof raw?.authorize === 'function') await raw.authorize();
       await this.#writeProject(draft);
       this.projects.set(projectId, draft);
       await this.#appendActivity(draft, entry);
@@ -1942,6 +1973,30 @@ export class ProjectStore {
   }
 
   /** 정리 도우미 진행 상태. 되돌리기 대상이 아니라 활동 기록에는 남기지 않는다. */
+  async refreshReferenceItem(projectId, fileId) {
+    return this.#withProject(projectId, async () => {
+      const file = this.referenceStore.getFile(fileId);
+      if (!file || file.scopeId !== projectId) throw projectError('PROJECT_ITEM_NOT_FOUND', 'Reference file was not found');
+      let queueItemId = null;
+      const { outcome } = await this.#mutateLocked(projectId, 'reference-extraction', (draft) => {
+        const item = draft.items.find((entry) => entry.kind === 'file' && entry.fileId === file.id);
+        if (!item) throw projectError('PROJECT_ITEM_NOT_FOUND', 'Reference card was not found');
+        item.chunkCount = file.chunkCount;
+        if (file.pageCount) item.pageCount = file.pageCount;
+        item.extractionStatus = file.extractionStatus;
+        if (file.extractionError) item.extractionError = file.extractionError;
+        else delete item.extractionError;
+        if (file.extractionStatus === 'ready' && item.librarian?.status === 'skipped' && this.settings()?.librarian?.enabled !== false) {
+          item.librarian = { status: 'queued' };
+          queueItemId = item.id;
+        }
+        return item;
+      });
+      if (queueItemId) this.#emitItemsAdded(projectId, [queueItemId]);
+      return publicItem(outcome);
+    });
+  }
+
   async setLibrarianStatus(projectId, itemId, status, error = undefined) {
     if (!LIBRARIAN_STATUSES.has(status)) throw projectError('PROJECT_OP_INVALID', `Unknown librarian status ${String(status)}`);
     return this.#withProject(projectId, async () => {

@@ -147,6 +147,19 @@ export function sanitizeFilename(value, fallback = 'download') {
   return `${path.basename(safe, ext).slice(0, stemLimit)}${ext.slice(0, 30)}`;
 }
 
+/** 연구 기록에는 인증 정보·서명 쿼리·페이지 조각을 남기지 않는다. blob 주소도 저장하지 않는다. */
+export function sanitizeDownloadUrl(value) {
+  try {
+    const url = new URL(String(value ?? ''));
+    if (!['http:', 'https:'].includes(url.protocol)) return undefined;
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.href.slice(0, 2_000);
+  } catch { return undefined; }
+}
+
 export function isPathInside(parent, candidate) {
   const relative = path.relative(path.resolve(parent), path.resolve(candidate));
   return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
@@ -246,11 +259,20 @@ async function cancelResponseBody(response) {
   } catch {}
 }
 
-async function fetchWithRedirects(url, { signal, maxRedirects, fetchImpl }) {
+async function fetchWithRedirects(url, { signal, maxRedirects, fetchImpl, authorizeUrl = null }) {
   let current = new URL(url);
   for (let count = 0; count <= maxRedirects; count++) {
     if (current.protocol !== 'http:' && current.protocol !== 'https:') {
       throw downloadError('DOWNLOAD_URL_INVALID', 'Downloads must use http or https');
+    }
+    if (current.username || current.password) throw downloadError('DOWNLOAD_URL_INVALID', 'Download URLs cannot contain embedded credentials');
+    // 기본 공개 GET 경로는 그대로 두고, 앱 연구 정책은 각 리디렉션 목적지에도 적용한다.
+    if (authorizeUrl) {
+      let allowed;
+      try { allowed = await authorizeUrl(current.href); } catch {
+        throw downloadError('DOWNLOAD_DESTINATION_BLOCKED', 'Download destination permission was revoked');
+      }
+      if (allowed === false) throw downloadError('DOWNLOAD_DESTINATION_BLOCKED', 'Download destination is blocked');
     }
     const response = await fetchImpl(current, { redirect: 'manual', signal });
     if (![301, 302, 303, 307, 308].includes(response.status)) return { response, finalUrl: current.href };
@@ -275,7 +297,8 @@ async function fetchWithRedirects(url, { signal, maxRedirects, fetchImpl }) {
  * buffered under a hard byte cap.
  * @param {string | URL} url
  * @param {{timeoutMs?: number, maxRedirects?: number, maxBytes?: number,
- *   fetchImpl?: typeof safeNetworkFetch, signal?: AbortSignal}} [options]
+ *   fetchImpl?: typeof safeNetworkFetch, signal?: AbortSignal,
+ *   authorizeUrl?: (url: string) => boolean|void|Promise<boolean|void>}} [options]
  * @returns {Promise<{bytes: Buffer, mime: string, size: number, source: string,
  *   finalUrl: string, filename: string, checksum: string}>}
  */
@@ -285,6 +308,7 @@ export async function fetchPublic(url, {
   maxBytes = DEFAULT_MAX_BYTES,
   fetchImpl = safeNetworkFetch,
   signal,
+  authorizeUrl = null,
 } = {}) {
   let originalUrl;
   try { originalUrl = new URL(url); }
@@ -304,6 +328,7 @@ export async function fetchPublic(url, {
       signal: controller.signal,
       maxRedirects,
       fetchImpl,
+      authorizeUrl,
     });
     ({ response } = fetched);
     const { finalUrl } = fetched;

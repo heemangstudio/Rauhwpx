@@ -829,3 +829,8 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
   .dh-scroll { transform: none; }
   .dh-detail-panel { animation: none; }
 }
+
+.dh-research-actions { margin-left: auto; display: flex; align-items: center; gap: 5px; }
+.dh-research-actions button { display: inline-flex; align-items: center; gap: 5px; }
+.dh-research-actions .ag-icon { width: 13px; height: 13px; }
+@media (max-width: 480px) { .dh-research-actions { gap: 1px; } .dh-research-actions button { padding-left: 7px; padding-right: 7px; font-size: 11px; } }

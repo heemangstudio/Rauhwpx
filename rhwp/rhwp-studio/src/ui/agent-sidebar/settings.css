@@ -3040,8 +3040,7 @@
 
 /* 편집기·입력칸이 든 카드는 안쪽 여백으로 묶는다. */
 #ag-settings-pane-ai :is(
-  .ag-settings-instructions-section,
-  .ag-settings-browserbase-section
+  .ag-settings-instructions-section
 ) > .ag-settings-section-body {
   box-sizing: border-box;
   min-width: 0;
@@ -3050,45 +3049,10 @@
 }
 
 #ag-settings-pane-ai :is(
-  .ag-settings-instructions-section,
-  .ag-settings-browserbase-section
+  .ag-settings-instructions-section
 ) > .ag-settings-section-body > * {
   min-width: 0;
   background-image: none;
-}
-
-.ag-settings-page .ag-settings-browserbase-section .ag-settings-status {
-  color: var(--n-text-secondary);
-  font-size: var(--ag-fs-secondary);
-}
-
-.ag-settings-page .ag-settings-browserbase-section .ag-settings-status.ag-settings-status-warn {
-  color: var(--n-text);
-}
-
-.ag-settings-page .ag-settings-browserbase-section .ag-settings-actions {
-  justify-content: flex-end;
-}
-
-#ag-settings-pane-ai .ag-settings-browserbase-section .ag-settings-field {
-  display: grid;
-  grid-template-columns: minmax(90px, 1fr) minmax(0, 1.6fr);
-  gap: 12px;
-}
-
-#ag-settings-pane-ai .ag-settings-browserbase-section .ag-settings-field-label {
-  color: var(--n-text);
-  font-size: var(--ag-fs-secondary);
-  font-weight: var(--ag-fw-medium);
-}
-
-#ag-settings-pane-ai .ag-settings-browserbase-section .ag-settings-input {
-  box-sizing: border-box;
-  width: 100%;
-  max-width: none;
-  height: 30px;
-  padding: 0 9px;
-  border-radius: var(--ag-r-row);
 }
 
 .ag-settings-page .ag-settings-instructions-section .ag-settings-actions {

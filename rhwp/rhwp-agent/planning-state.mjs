@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 
 import { humanizerPromptBlock } from './humanizer.mjs';
-import { chatPermissionForCategory } from './chat-permissions.mjs';
+import { chatPermissionForCategory, effectiveResearchPermissions } from './chat-permissions.mjs';
 
 export const WORKFLOWS = Object.freeze(['direct', 'plan', 'question']);
 
@@ -277,7 +277,7 @@ export class PlanningState {
  * 연구 프로젝트 쓰기는 문서 쓰기가 아니라 모든 모드에서 열려 있다. 설정에서 채팅의 프로젝트 변경을
  * 끄면(chatMayEdit=false) 질문 워크플로에서만 project-write·project-ingest 를 막는다.
  * find_home_files 는 데스크톱에서 홈 폴더 검색이 켜졌을 때만 허용한다(homeSearch).
- * @param {{category: string, tool: string, workflow: 'direct'|'plan'|'question', phase: string|null, expectedEpoch: number, receivedEpoch: unknown, chatMayEdit?: boolean, homeSearch?: boolean, chatPermissionGrants?: string[]}} input
+ * @param {{category: string, tool: string, workflow: 'direct'|'plan'|'question', phase: string|null, expectedEpoch: number, receivedEpoch: unknown, chatMayEdit?: boolean, homeSearch?: boolean, chatPermissionGrants?: string[], researchPermissions?: {browse: boolean, downloads: boolean, import: boolean}}} input
  */
 export function authorizeToolCall(input) {
   const capability = chatPermissionForCategory(input.category);
@@ -303,8 +303,10 @@ export function authorizeToolCall(input) {
   if ((input.category === 'planning-control' || input.category === 'plan-progress') && input.workflow !== 'plan') {
     throw workflowError('PLAN_WORKFLOW_REQUIRED', `${input.tool} is available only to chats that originated in the plan workflow`);
   }
-  if ((input.category === 'browser' || input.category === 'download-write') && !restricted && !granted) {
-    throw workflowError('PLAN_WORKFLOW_REQUIRED', `${input.tool} is available only to chats that originated in the plan or question workflow`);
+  const research = effectiveResearchPermissions(input.researchPermissions);
+  if ((input.category === 'browser' && !research.browse)
+    || (input.category === 'download-write' && !research.downloads)) {
+    throw workflowError('RESEARCH_PERMISSION_REVOKED', 'This research operation is disabled in Browser Settings');
   }
   if (input.workflow === 'question') {
     if (

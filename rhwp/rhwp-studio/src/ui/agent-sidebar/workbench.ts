@@ -3,8 +3,8 @@ import './workbench.css';
 import { createIcon } from './icons.ts';
 import { projectIcon } from './project/project-ui.ts';
 
-export type WorkbenchView = 'board' | 'changes' | 'agents' | 'documents';
-export interface WorkbenchResource { id: string; title: string; dirty: boolean; }
+export type WorkbenchView = 'board' | 'changes' | 'agents' | 'documents' | 'browser';
+export interface WorkbenchResource { id: string; title: string; dirty: boolean; view?: WorkbenchView; kind?: 'document' | 'browser'; }
 export interface SidebarWorkbench {
   header: HTMLElement;
   /** 지금 보기의 머리 동작. 연결하는 쪽이 보기마다 채운다. */
@@ -28,11 +28,12 @@ const views: ReadonlyArray<{ id: WorkbenchView; title: string; key: string; code
   { id: 'changes', title: '변경 사항', key: 'C', code: 'KeyC' },
   { id: 'agents', title: '서브에이전트', key: 'S', code: 'KeyS' },
   { id: 'documents', title: 'PDF · 문서', key: 'P', code: 'KeyP' },
+  { id: 'browser', title: '브라우저', key: 'R', code: 'KeyR' },
 ];
 const LAUNCHER_TITLE = '작업 열기';
 function viewIcon(view: WorkbenchView): SVGSVGElement {
   return view === 'board' ? projectIcon('board')
-    : createIcon(view === 'changes' ? 'changes' : view === 'agents' ? 'skillBot' : 'document');
+    : createIcon(view === 'changes' ? 'changes' : view === 'agents' ? 'skillBot' : view === 'browser' ? 'browser' : 'document');
 }
 let sequence = 0;
 
@@ -112,7 +113,7 @@ export function createSidebarWorkbench(deps: {
   let tabSequence = 0;
   const tabRows = new Map<string, { row: HTMLElement; button: HTMLButtonElement; label: HTMLElement; close: HTMLButtonElement }>();
   function activeKey(): string | null {
-    return selected === 'documents' && activeResource ? `resource:${activeResource}` : selected;
+    return activeResource && (selected === 'documents' || resources.find((resource) => resource.id === activeResource)?.view === selected) ? `resource:${activeResource}` : selected;
   }
   /** 탭 줄의 순서. 끌어서 바꾼 순서를 지키고, 새 탭은 끝에 붙이며, 닫힌 탭은 뺀다. */
   const order: string[] = [];
@@ -156,7 +157,7 @@ export function createSidebarWorkbench(deps: {
   }
   function activateTab(key: string): void {
     if (key.startsWith('resource:')) {
-      select('documents', { recordTab: false });
+      select(resources.find((resource) => resource.id === key.slice(9))?.view ?? 'documents', { recordTab: false });
       deps.selectResource?.(key.slice(9));
     } else {
       select(key as WorkbenchView);
@@ -212,7 +213,7 @@ export function createSidebarWorkbench(deps: {
         else button.dataset.view = key;
         const label = document.createElement('span');
         label.className = 'ag-workbench-tab-label';
-        const icon = key === 'board' ? projectIcon('board') : createIcon(key === 'changes' ? 'changes' : key === 'agents' ? 'skillBot' : 'document');
+        const icon = key === 'board' ? projectIcon('board') : createIcon(key === 'changes' ? 'changes' : key === 'agents' ? 'skillBot' : key === 'browser' ? 'browser' : 'document');
         button.append(icon, label);
         const closeButton = document.createElement('button');
         closeButton.className = 'ag-workbench-tab-close';
