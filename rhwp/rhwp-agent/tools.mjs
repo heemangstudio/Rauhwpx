@@ -1820,7 +1820,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_open',
-    description: 'Open a separate app-owned research tab for this agent. Public research and downloads are available by default; account reuse requires an approved saved account.',
+    description: 'Open a separate app-owned research tab for this agent. Public research and downloads are available by default; account reuse requires an approved saved account. BROWSER_CHALLENGE_REQUIRED means results are unavailable: do not retry or open duplicate tabs. Ask the user to take control of the returned tab, or browser_navigate that same tab to its explicit fallback URL.',
     shape: { url: z.string().url().max(8_000).optional(), intent: browserIntent() },
   },
   {

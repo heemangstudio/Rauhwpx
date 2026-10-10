@@ -17,6 +17,20 @@ const error = (code, message, retryable = false) => new OwnedBrowserError(code, 
 const bounded = (value, min, max, fallback) => Number.isFinite(Number(value)) ? Math.max(min, Math.min(max, Number(value))) : fallback;
 const text = (value, max = 4000) => String(value ?? '').slice(0, max);
 const publicURL = (value) => { try { const url = new URL(value); if (!['http:', 'https:'].includes(url.protocol)) return 'about:blank'; return `${url.origin}${url.pathname}`; } catch { return 'about:blank'; } };
+// Match Google's challenge endpoint, never a lookalike host or an embedded continue URL.
+const googleHost = (host) => ['google.com', 'google.co.kr', 'google.co.uk'].some((domain) => host === domain || host === `www.${domain}`);
+const googleResearchURL = (value) => { try { const url = new URL(value); return googleHost(url.hostname) && ['/search', '/sorry', '/sorry/index'].includes(url.pathname); } catch { return false; } };
+const challengeFor = (tab) => {
+  if (!tab.page || tab.page.isClosed() || ['crashed', 'disconnected', 'closed'].includes(tab.status)) return null;
+  try {
+    const url = new URL(tab.page?.url?.() ?? tab.url);
+    if (!googleHost(url.hostname) || !/^\/sorry(?:\/|$)/.test(url.pathname)) return null;
+    const query = tab.searchQuery;
+    return { code: 'BROWSER_CHALLENGE_REQUIRED', provider: 'google', retryable: false,
+      message: 'Google requires a human traffic check. Search results are unavailable. Do not retry or open another Google tab. The user can take control of this tab to complete the check, or navigate this same tab to the explicit search fallback.',
+      ...(query ? { fallback: { provider: 'duckduckgo', url: `https://duckduckgo.com/?q=${encodeURIComponent(query)}` } } : {}) };
+  } catch { return null; }
+};
 const sameScope = (actor, tab) => actor.threadId === tab.threadId && actor.agentId === tab.agentId && (actor.projectId ?? null) === tab.projectId;
 const PARAMETER_RULES = { verbs: ['delete', 'remove', 'destroy', 'send', 'publish', 'purchase', 'checkout', 'share', 'save', 'edit', 'upload', 'invite', 'logout'], operations: ['action', 'command', 'operation', 'method'], negative: ['0', 'false', 'no', 'none', 'off'] };
 const mutatingParameter = (name, value) => { const key = name.toLowerCase(), setting = String(value).trim().toLowerCase(); return PARAMETER_RULES.verbs.includes(key) && !PARAMETER_RULES.negative.includes(setting) || PARAMETER_RULES.operations.includes(key) && PARAMETER_RULES.verbs.includes(setting); };
@@ -93,7 +107,8 @@ export function createOwnedBrowserService(options = {}) {
 
   const emit = (type, payload) => { try { onEvent({ type, ...payload }); } catch {} };
   const runtimeInfo = () => ({ runtimeId, generation, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
-  const descriptor = (tab) => ({ tabId: tab.tabId, threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: publicURL(tab.page?.url?.() ?? tab.url), title: tab.title, status: tab.status, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null });
+  const descriptor = (tab) => ({ tabId: tab.tabId, threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: publicURL(tab.page?.url?.() ?? tab.url), title: tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null });
+  const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   const publish = (tab) => emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo() });
   const persist = () => {
     if (resetting || resetFailed) return Promise.resolve();
@@ -688,7 +703,7 @@ export function createOwnedBrowserService(options = {}) {
       if (!actor.isHuman && !sameScope(actor, tab)) continue;
       let current = descriptor(tab);
       if (!actor.isHuman) try { await assertPolicy(actor, 'snapshot', tab.page?.url?.() ?? tab.url, tab); }
-      catch { current = { ...current, url: 'about:blank', title: '', status: 'approval-required', snapshotId: null }; }
+      catch { current = { ...current, url: 'about:blank', title: '', status: 'approval-required', challenge: null, snapshotId: null }; }
       visible.push(current);
     }
     return { ok: true, action: 'status', runtime: runtimeInfo(), tabs: visible, limits };
@@ -781,13 +796,23 @@ export function createOwnedBrowserService(options = {}) {
     if (action === 'open') {
       const url = args.url ? guard.parse(args.url).href : 'about:blank';
       await assertPolicy(actor, action, url, null, args);
+      if (!actor.isHuman && googleResearchURL(url)) {
+        const blocked = [...tabs.values()].find((tab) => sameScope(actor, tab) && challengeFor(tab));
+        if (blocked) {
+          await assertPolicy(actor, 'snapshot', requirePage(blocked).url(), blocked);
+          blocked.searchQuery ||= new URL(url).searchParams.get('q') || undefined;
+          publish(blocked); return challengeResult(action, blocked);
+        }
+      }
       if (tabs.size >= limits.maxTabs || [...tabs.values()].filter((tab) => sameScope(actor, tab)).length >= limits.maxTabsPerAgent) throw error('BROWSER_TAB_LIMIT', 'Close an unused browser tab before opening another.');
       await ensureRuntime();
       if (closed) throw error('BROWSER_CLOSED', 'The browser service has closed.');
       if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Complete browser cleanup before opening another page.');
       if (signIn || handoffPending) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in.', true);
       await assertPolicy(actor, action, url, null, args);
-      const tab = makeTab(actor); tabs.set(tab.tabId, tab);
+      const tab = makeTab(actor);
+      if (googleResearchURL(url)) tab.searchQuery = new URL(url).searchParams.get('q') || undefined;
+      tabs.set(tab.tabId, tab);
       const agentSessionEpoch = humanSessionEpoch;
       if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }
       try { await attach(tab, await runtime.context.newPage()); tab.activeActor = actor; if (actor.isHuman && url !== 'about:blank') markHumanOrigin(new URL(url).origin); if (url !== 'about:blank') await tab.page.goto(url, { waitUntil: 'domcontentloaded' }); if (actor.isHuman) markHumanDocument(tab); }
@@ -796,7 +821,7 @@ export function createOwnedBrowserService(options = {}) {
       if (actor.isHuman) await observeHumanSessions();
       else { await recordAgentSessions(url, agentSessionEpoch); await observeHumanSessions(); }
       await assertPolicy(actor, action, requirePage(tab).url(), tab, args);
-      publish(tab); await persist(); return { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab) };
+      publish(tab); await persist(); return !actor.isHuman && challengeFor(tab) ? challengeResult(action, tab) : { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab) };
     }
     const tab = ownedTab(actor, args.tabId);
     if (action === 'reconnect') {
@@ -844,6 +869,7 @@ export function createOwnedBrowserService(options = {}) {
       if (mutating) assertController(actor, tab);
       if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Browser cleanup invalidated the pending action.');
       await assertPolicy(actor, action, action === 'close' ? tab.page?.url?.() ?? tab.url : requirePage(tab).url(), tab, args);
+      if (!actor.isHuman && challengeFor(tab) && (mutating && action !== 'close' && !(action === 'navigate' && args.url && !googleResearchURL(args.url)))) return challengeResult(action, tab);
       if (action === 'press') assertAgentKey(actor, args.key);
       await assertInputIntent(actor, action, tab, args);
       if (!actor.isHuman && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in.', true);
@@ -854,13 +880,15 @@ export function createOwnedBrowserService(options = {}) {
       if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }
       if (actor.isHuman && mutating && action !== 'close') markHumanDocument(tab);
       try {
+        if (action === 'navigate' && args.url && googleResearchURL(args.url)) tab.searchQuery = new URL(args.url).searchParams.get('q') || tab.searchQuery;
         const value = await operate(actor, action, tab, args);
         if (actor.isHuman) { if (mutating && action !== 'close') markHumanDocument(tab); await observeHumanSessions(); }
         else if (action !== 'close') { await recordAgentSessions(requirePage(tab).url(), agentSessionEpoch); await observeHumanSessions(); }
         if (mutating && action !== 'close' && queuedControlEpoch !== tab.controllerEpoch) throw error('BROWSER_ACTION_UNCERTAIN', 'Control changed during the action. Observe the current page before deciding what to do next.', true);
         if (action !== 'close') await assertPolicy(actor, action, requirePage(tab).url(), tab, args);
         if (value.capture) emit('owned_browser_capture', { capture: value.capture });
-        publish(tab); return { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab), ...value };
+        publish(tab); if (!actor.isHuman && action !== 'close' && challengeFor(tab)) return challengeResult(action, tab);
+        return { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab), ...value };
       } catch (failure) {
         if (failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_')) throw failure;
         throw error(failure.name === 'TimeoutError' ? 'BROWSER_ACTION_TIMEOUT' : 'BROWSER_ACTION_FAILED', 'The browser action did not complete. Observe the current page before retrying.', true);

@@ -67,6 +67,20 @@ export function createWorkbenchBrowser(options: {
   const errorMessage = document.createElement('span'); error.append(errorMessage);
   button('상태 다시 읽기', '다시 연결', () => { nativeFailedProjection = ''; nativeError = null; handle(controller.refresh().then(() => { layout(); return controller.readFrame(); })); }, error);
   element.append(error);
+  const challenge = document.createElement('div'); challenge.className = 'ag-browser-challenge'; challenge.hidden = true; challenge.setAttribute('role', 'status');
+  const challengeMessage = document.createElement('span'); challengeMessage.textContent = 'Google에서 트래픽 확인을 요청했습니다.'; challenge.append(challengeMessage);
+  const continueChallenge = button('같은 탭에서 Google 확인 직접 완료', '직접 확인', () => {
+    presentation.present('dock'); options.onDock();
+    handle(controller.action('control', { ...controller.identity(), owner: 'human' }).then(() => controller.readFrame()));
+  }, challenge);
+  const fallbackSearch = button('같은 검색어로 DuckDuckGo 검색', 'DuckDuckGo로 검색', () => {
+    const tab = controller.tab(); const url = tab?.challenge?.fallback?.url; if (!tab || !url) return;
+    handle(controller.action('control', { ...controller.identity(tab), owner: 'human' }).then(result => {
+      if (!result.tab) return;
+      return controller.action('navigate', { ...controller.identity(result.tab), url }).then(() => controller.readFrame());
+    }));
+  }, challenge);
+  element.append(challenge);
   const upload = document.createElement('div'); upload.className = 'ag-browser-upload'; upload.hidden = true;
   const uploadLabel = document.createElement('span'); uploadLabel.textContent = '페이지에서 파일을 요청했습니다.';
   const uploadFiles = document.createElement('input'); uploadFiles.type = 'file'; uploadFiles.hidden = true; uploadFiles.setAttribute('aria-label', '웹사이트에 보낼 파일');
@@ -335,7 +349,9 @@ export function createWorkbenchBrowser(options: {
   function paint(): void {
     if (disposed) return;
     const tab = controller.tab(); const frame = pinned?.frame ?? controller.frame(); const connected = controller.state.connected;
-    status.textContent = !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.status === 'loading' ? '페이지 여는 중' : tab.controller.owner === 'human' ? '직접 조작 중' : '에이전트 조작 중';
+    challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
+    fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
+    status.textContent = !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'loading' ? '페이지 여는 중' : tab.controller.owner === 'human' ? '직접 조작 중' : '에이전트 조작 중';
     status.title = tab?.controller.owner === 'human' ? '직접 조작 중 · 에이전트는 페이지를 읽을 수 있습니다.' : status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
     const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title]), tab?.tabId]);
     if (tabsSignature !== nextTabsSignature) {

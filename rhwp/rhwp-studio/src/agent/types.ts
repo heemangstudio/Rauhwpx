@@ -660,6 +660,14 @@ export interface BrowserRuntime {
   profile?: string;
   readiness?: Record<string, unknown>;
 }
+export interface BrowserChallenge {
+  code: 'BROWSER_CHALLENGE_REQUIRED';
+  provider: 'google';
+  retryable: false;
+  message: string;
+  fallback?: { provider: 'duckduckgo'; url: string };
+}
+
 export interface BrowserTab {
   tabId: string;
   threadId: string | null;
@@ -672,6 +680,7 @@ export interface BrowserTab {
   controllerEpoch: number;
   controller: { owner: 'human' | 'agent'; clientId?: string };
   status: string;
+  challenge?: BrowserChallenge | null;
   presentation?: 'native' | 'stream';
   runtime?: 'native' | 'chromium';
   nativeTargetId?: string;

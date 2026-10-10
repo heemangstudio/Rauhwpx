@@ -76,3 +76,7 @@
 .ag-browser-upload span { flex: 1; }
 
 @media (prefers-contrast: more) { .ag-browser-toolbar,.ag-browser-menu { border-color: currentColor; } .ag-browser button.ag-browser-icon { color: inherit; } }
+
+.ag-browser-challenge { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px; border-bottom: 1px solid var(--browser-border); }
+.ag-browser-challenge[hidden] { display: none; }
+.ag-browser-challenge span { flex: 1; }
