@@ -42,7 +42,18 @@ const changesWebsiteURL = (value) => {
 /** The native endpoint and IPC correlation IDs never enter browser tools or UI events. */
 export function createIpcNativeBrowserAdapter({ send = process.send?.bind(process), events = process, timeoutMs = 20_000 } = {}) {
   const pending = new Map();
+  const listeners = new Set();
+  let nativeGeneration;
   const receive = (message) => {
+    if (message?.type === 'rhwp-browser-event') {
+      const event = message.event;
+      if (nativeGeneration && event?.generation === nativeGeneration && event.reason === 'zoom'
+        && typeof event.tabId === 'string' && typeof event.targetId === 'string'
+        && Number.isFinite(event.zoomFactor) && event.zoomFactor >= 0.25 && event.zoomFactor <= 3.000001) {
+        for (const listener of listeners) listener(event);
+      }
+      return;
+    }
     if (message?.type !== 'rhwp-browser-response') return;
     const waiter = pending.get(message.id);
     if (!waiter) return;
@@ -59,9 +70,10 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     catch { clearTimeout(timer); pending.delete(requestId); reject(error('BROWSER_NATIVE_UNAVAILABLE', 'The desktop browser disconnected.', true)); }
   });
   return {
-    async start(params) { return { ...(await call('start', params)), close: () => call('release') }; },
+    async start(params) { const result = await call('start', params); nativeGeneration = result.generation; return { ...result, close: () => call('release') }; },
+    onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     activity: (params) => call('activity', params), bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'), inventory: () => call('inventory'),
-    async dispose() { events.off('message', receive); for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(error('BROWSER_CLOSED', 'The browser service closed.')); } pending.clear(); },
+    async dispose() { events.off('message', receive); listeners.clear(); nativeGeneration = undefined; for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(error('BROWSER_CLOSED', 'The browser service closed.')); } pending.clear(); },
   };
 }
 
@@ -109,7 +121,7 @@ export function createOwnedBrowserService(options = {}) {
 
   const emit = (type, payload) => { try { onEvent({ type, ...payload }); } catch {} };
   const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
-  const descriptor = (tab) => ({ tabId: tab.tabId, threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: publicURL(tab.page?.url?.() ?? tab.url), title: tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null });
+  const descriptor = (tab) => ({ tabId: tab.tabId, threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: publicURL(tab.page?.url?.() ?? tab.url), title: tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null });
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   const publish = (tab) => emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo() });
   const persist = () => {
@@ -153,6 +165,16 @@ export function createOwnedBrowserService(options = {}) {
     tab.frame = null;
     credentialBroker?.invalidateTab?.(tab.tabId);
   };
+  const unsubscribeNativeEvents = nativeAdapter?.onEvent?.((event) => {
+    const tab = tabs.get(event.tabId);
+    if (closed || runtimeMode !== 'native' || state !== 'ready' || !tab?.page
+      || !tab.nativeGeneration || event.reason !== 'zoom' || event.targetId !== tab.nativeTargetId
+      || event.generation !== tab.nativeGeneration || !Number.isFinite(event.zoomFactor)) return;
+    tab.zoomFactor = event.zoomFactor;
+    tab.geometryEpoch = (tab.geometryEpoch ?? 0) + 1;
+    invalidate(tab);
+    publish(tab);
+  });
   const epochs = (tab, args, required = false) => {
     if (required && (args.navigationEpoch === undefined || args.controllerEpoch === undefined)) throw error('BROWSER_EPOCH_REQUIRED', 'Refresh the browser state before sending input.');
     if (args.navigationEpoch !== undefined && args.navigationEpoch !== tab.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed. Take a new snapshot before continuing.', true);
@@ -326,7 +348,9 @@ export function createOwnedBrowserService(options = {}) {
       const session = await runtime.context.newCDPSession(page);
       try { tab.nativeTargetId = (await session.send('Target.getTargetInfo')).targetInfo.targetId; }
       finally { await session.detach().catch(() => {}); }
-      await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId });
+      const nativeState = await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId });
+      tab.nativeGeneration = nativeState?.generation;
+      tab.zoomFactor = nativeState?.zoomFactor;
       await selectedAdapter().control?.({ targetId: tab.nativeTargetId, human: true });
     }
   };
@@ -522,6 +546,7 @@ export function createOwnedBrowserService(options = {}) {
   const snapshot = async (tab) => {
     invalidate(tab);
     const navigationEpoch = tab.navigationEpoch;
+    const geometryEpoch = tab.geometryEpoch;
     const handles = await tab.page.locator(ELEMENTS).elementHandles();
     const refs = new Map();
     const elements = [];
@@ -549,6 +574,7 @@ export function createOwnedBrowserService(options = {}) {
       return String(selection).slice(0, 16_000);
     }, SENSITIVE);
     if (navigationEpoch !== tab.navigationEpoch) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true); }
+    if (geometryEpoch !== tab.geometryEpoch) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed while it was observed. Take a new snapshot.', true); }
     const result = { snapshotId: id('snapshot'), tabId: tab.tabId, navigationEpoch, controllerEpoch: tab.controllerEpoch, url: publicURL(tab.page.url()), title: tab.title, text: text(content, 24_000), selectedText, elements, truncated: handles.length > limits.maxSnapshotElements };
     tab.snapshot = { ...result, handles: refs };
     return result;
@@ -562,9 +588,11 @@ export function createOwnedBrowserService(options = {}) {
   };
   const frame = async (tab) => {
     const epoch = tab.navigationEpoch;
+    const geometryEpoch = tab.geometryEpoch;
     const viewport = await viewportInfo(tab);
     const data = await screenshot(tab);
     if (epoch !== tab.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed during capture. Request another frame.', true);
+    if (geometryEpoch !== tab.geometryEpoch) throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed during capture. Request another frame.', true);
     const result = { frameId: id('frame'), tabId: tab.tabId, navigationEpoch: epoch, controllerEpoch: tab.controllerEpoch, mimeType: 'image/jpeg', data, ...viewport };
     tab.frame = { ...result, data: undefined };
     return result;
@@ -594,6 +622,7 @@ export function createOwnedBrowserService(options = {}) {
   const capture = async (actor, tab, args) => {
     if (args.frameId && args.frameId !== tab.frame?.frameId) throw error('BROWSER_STALE_FRAME', 'The displayed browser frame is stale.', true);
     const epoch = tab.navigationEpoch;
+    const geometryEpoch = tab.geometryEpoch;
     const viewport = await viewportInfo(tab);
     const result = { captureId: id('capture'), tabId: tab.tabId, threadId: actor.isHuman ? args.destinationThreadId ?? tab.threadId : tab.threadId, projectId: tab.projectId, documentId: tab.documentId, navigationEpoch: epoch, source: { url: publicURL(tab.page.url()), title: tab.title, timestamp: new Date().toISOString() }, viewport, mode: args.mode ?? (args.ref ? 'element' : args.rect || args.region ? 'region' : 'page'), comment: text(args.comment) };
     let rect = args.rect ?? args.region;
@@ -613,6 +642,7 @@ export function createOwnedBrowserService(options = {}) {
     try { result.screenshot = { mimeType: 'image/jpeg', data: await screenshot(tab, result.rect), width: result.rect?.width ?? viewport.width, height: result.rect?.height ?? viewport.height }; }
     catch { result.screenshotError = { code: 'BROWSER_CAPTURE_IMAGE_FAILED', message: 'The screenshot failed. The annotation and page evidence were retained.' }; }
     if (epoch !== tab.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed during annotation. Capture the current page again.', true);
+    if (geometryEpoch !== tab.geometryEpoch) throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed during annotation. Capture the current page again.', true);
     return result;
   };
 
@@ -888,7 +918,9 @@ export function createOwnedBrowserService(options = {}) {
           requirePage(tab);
           tab.restorePending = false;
           // 허브만 재시작한 경우 기존 게스트를 유지하며 현재 창에 다시 바인딩한다.
-          await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId });
+          const nativeState = await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId });
+          tab.nativeGeneration = nativeState?.generation;
+          tab.zoomFactor = nativeState?.zoomFactor;
         } catch (failure) { tab.sessionId = previousSession; throw failure; }
         return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo() };
       });
@@ -985,6 +1017,6 @@ export function createOwnedBrowserService(options = {}) {
         const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, restorePending: true, status: 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
       }
     },
-    async close() { if (closed) return; closed = true; if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) await releaseInput(tab); await persist().catch(() => {}); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); state = 'closed'; },
+    async close() { if (closed) return; closed = true; unsubscribeNativeEvents?.(); if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) await releaseInput(tab); await persist().catch(() => {}); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); state = 'closed'; },
   };
 }

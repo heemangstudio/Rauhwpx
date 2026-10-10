@@ -302,6 +302,12 @@ export class OwnedBrowserHost {
     if (!tab?.targetId) return;
     const payload = { type, ...this.state(tab), ...extra };
     this.onEvent(payload);
+    if (type === 'zoom' && tab.tabId && this.owner?.connected && typeof this.owner.send === 'function') {
+      try {
+        this.owner.send({ type: 'rhwp-browser-event', event: { tabId: tab.tabId, targetId: tab.targetId,
+          generation: this.generation, reason: 'zoom', zoomFactor: payload.zoomFactor } }, () => {});
+      } catch {}
+    }
     const window = tab.sessionId && this.getWindowForSession(tab.sessionId);
     if (window && !window.isDestroyed()) window.webContents.send('desktop:browser-event', payload);
     const popout = this.popouts.get(tab.targetId);

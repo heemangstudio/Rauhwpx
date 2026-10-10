@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { EventEmitter } from 'node:events';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { app, BrowserWindow, WebContentsView, session } from 'electron';
 import { OwnedBrowserHost } from '../../desktop/browser-host.mjs';
+import { createIpcNativeBrowserAdapter, createOwnedBrowserService } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
+
+const require = createRequire(new URL('../../rhwp/rhwp-agent/package.json', import.meta.url));
+const { chromium } = require('playwright-core');
 
 app.setPath('userData', path.join(process.env.RHWP_BROWSER_TEST_DATA_DIR, 'electron'));
 app.on('window-all-closed', () => {});
 const report = {};
-let host, proxy;
+let host, proxy, service;
 const windows = new Map();
 app.whenReady().then(async () => {
 try {
@@ -25,7 +31,10 @@ try {
   host = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session,
     dataDir: path.join(process.env.RHWP_BROWSER_TEST_DATA_DIR, 'browser-data'),
     getWindowForSession: (id) => windows.get(id), onEvent: (event) => events.push(event) });
-  await host.start({ proxy: { server: `http://127.0.0.1:${proxy.address().port}`, username: 'fixture', password: 'owned' } }, {});
+  const ipcEvents = new EventEmitter();
+  const ipcOwner = { connected: true, send: (message, callback) => { ipcEvents.emit('message', message); callback?.(); } };
+  const settings = { proxy: { server: `http://127.0.0.1:${proxy.address().port}`, username: 'fixture', password: 'owned' } };
+  await host.start(settings, ipcOwner);
   const tab = await host.createTab();
   const contents = tab.view.webContents;
   await contents.loadURL('http://zoom-fixture.invalid/');
@@ -64,8 +73,59 @@ try {
   await new Promise((resolve) => { contents.once('did-finish-load', resolve); contents.reload(); });
   assert.ok(Math.abs(host.state(tab).zoomFactor - 1.25) < 0.001, 'Reload must retain native website zoom');
   report.zoom = { percent: Math.round(zoomed.zoomFactor * 100), baseline, after, formPreserved: true, placementPreserved: true, foreignWindowRejected: true, invalidRejected: true, clamped: true, reloadPreserved: true };
+  const adapter = createIpcNativeBrowserAdapter({ events: ipcEvents, send: (message) => {
+    void host.handleRequest(message, ipcOwner).then((response) => ipcEvents.emit('message', response));
+  } });
+  const invalidated = [];
+  let servicePage;
+  service = createOwnedBrowserService({ dataDir: path.join(process.env.RHWP_BROWSER_TEST_DATA_DIR, 'service'),
+    nativeAdapter: adapter, workspaceTargets: ['http://zoom-fixture.invalid/'], lookup: async () => [{ address: '127.0.0.1', family: 4 }],
+    credentialBroker: { invalidateTab: (tabId) => invalidated.push(tabId) },
+    runtimeFactory: async () => {
+      const native = await adapter.start(settings);
+      const browser = await chromium.connectOverCDP(native.endpointURL);
+      const context = browser.contexts()[0];
+      const newPage = context.newPage.bind(context);
+      context.newPage = async () => { servicePage = await newPage(); return servicePage; };
+      return { kind: 'native', context, browser, close: async () => { await browser.close(); await native.close(); } };
+    } });
+  const actor = { isHuman: true, clientId: 'owner', sessionId: 'owner', threadId: 'zoom-chat', agentId: 'owner' };
+  const opened = await service.request(actor, 'open', { url: 'http://zoom-fixture.invalid/' });
+  const serviceTab = host.tab(opened.tab.tabId);
+  host.attach(owner, { tabId: serviceTab.tabId, bounds, mode: 'float', interactive: true });
+  const observation = await service.request(actor, 'snapshot', { tabId: serviceTab.tabId });
+  const captured = await service.request(actor, 'frame', { tabId: serviceTab.tabId });
+  for (const stale of [{ generation: 'obsolete' }, { targetId: 'foreign-target' }]) {
+    ipcEvents.emit('message', { type: 'rhwp-browser-event', event: { tabId: serviceTab.tabId, targetId: serviceTab.targetId, generation: host.generation, reason: 'zoom', zoomFactor: 2, ...stale } });
+    assert.equal((await service.inventory(actor)).tabs.find((entry) => entry.tabId === serviceTab.tabId).snapshotId, observation.snapshot.snapshotId);
+  }
+  const beforeInvalidation = invalidated.length;
+  host.zoom(owner, { tabId: serviceTab.tabId, factor: 1.5 });
+  const refreshed = (await service.inventory(actor)).tabs.find((entry) => entry.tabId === serviceTab.tabId);
+  assert.equal(refreshed.snapshotId, null);
+  assert.equal(refreshed.navigationEpoch, observation.snapshot.navigationEpoch);
+  assert.ok(Math.abs(refreshed.zoomFactor - 1.5) < 0.001);
+  assert.ok(invalidated.length > beforeInvalidation);
+  await assert.rejects(service.request(actor, 'capture', { tabId: serviceTab.tabId, frameId: captured.frame.frameId }), { code: 'BROWSER_STALE_FRAME' });
+  await assert.rejects(service.request(actor, 'capture', { tabId: serviceTab.tabId, mode: 'element', snapshotId: observation.snapshot.snapshotId, ref: observation.snapshot.elements[0].ref }), { code: 'BROWSER_STALE_REFERENCE' });
+  const originalScreenshot = servicePage.screenshot.bind(servicePage);
+  let beginCapture, finishCapture;
+  const captureStarted = new Promise((resolve) => { beginCapture = resolve; });
+  const captureGate = new Promise((resolve) => { finishCapture = resolve; });
+  servicePage.screenshot = async (options) => { beginCapture(); await captureGate; return originalScreenshot(options); };
+  const pendingFrame = service.request(actor, 'frame', { tabId: serviceTab.tabId });
+  const staleGeometry = assert.rejects(pendingFrame, { code: 'BROWSER_STALE_GEOMETRY' });
+  await captureStarted;
+  host.zoom(owner, { tabId: serviceTab.tabId, factor: 1.75 });
+  finishCapture();
+  await staleGeometry;
+  servicePage.screenshot = originalScreenshot;
+  await service.close(); service = null;
+  assert.equal(ipcEvents.listenerCount('message'), 0);
+  report.geometry = { snapshotsInvalidated: true, framesInvalidated: true, credentialRefsInvalidated: true, staleEventsRejected: true, navigationPreserved: true, listenerDisposed: true };
 } catch (error) { report.error = error.stack ?? String(error); }
 finally {
+  await service?.close().catch(() => {});
   await host?.dispose().catch(() => {});
   for (const window of windows.values()) if (!window.isDestroyed()) window.destroy();
   proxy?.closeAllConnections();
