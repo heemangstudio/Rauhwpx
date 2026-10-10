@@ -71,6 +71,7 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
   });
   return {
     async start(params) { const result = await call('start', params); nativeGeneration = result.generation; return { ...result, close: () => call('release') }; },
+    importSession: (params) => call('import-session', params),
     onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     activity: (params) => call('activity', params), bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'), inventory: () => call('inventory'),
     passwordAccounts: () => call('password-accounts'), passwordSnapshot: (params) => call('password-snapshot', params),
@@ -299,10 +300,12 @@ export function createOwnedBrowserService(options = {}) {
     }
   };
 
-  const attach = async (tab, page) => {
+  const attach = async (tab, page, { protectedNative = false } = {}) => {
     tab.page = page;
     pageTabs.set(page, tab);
-    await page.routeWebSocket('**/*', async (socket) => {
+    protectedNative ||= (await selectedAdapter()?.inventory?.())?.some((entry) => entry.passwordProtected === true) ?? false;
+    // Playwright 웹소켓 바인딩은 컨텍스트 전체에 설치되어 보호된 다른 게스트도 건드린다.
+    if (!protectedNative) await page.routeWebSocket('**/*', async (socket) => {
       const url = socket.url().replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
       try {
         await guard.resolve(url);
@@ -437,7 +440,7 @@ export function createOwnedBrowserService(options = {}) {
           finally { await session.detach().catch(() => {}); }
           const logicalId = nativeInventory.find((tab) => tab.nativeTargetId === targetId)?.tabId;
           const retained = tabs.get(logicalId) ?? [...tabs.values()].find((tab) => tab.nativeTargetId === targetId);
-          if (retained) { retained.controller = { owner: 'agent' }; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); retained.restorePending = false; publish(retained); }
+          if (retained) { retained.controller = { owner: 'agent' }; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page, { protectedNative: nativeInventory.some((tab) => tab.passwordProtected === true) }); retained.restorePending = false; publish(retained); }
         }
         const observedRuntime = runtime;
         runtime.browser?.on('disconnected', () => {
@@ -480,14 +483,22 @@ export function createOwnedBrowserService(options = {}) {
     await credentialBroker.saveCheckpoint?.({ profileId: 'native', state: approved });
     await ensureRuntime();
     // 유지된 네이티브 게스트는 자동 체크포인트 복원을 건너뛰므로 승인된 세션을 직접 병합한다.
-    const retained = await runtime.context.storageState({ indexedDB: true });
-    const merged = { cookies: [...retained.cookies.filter((entry) => !matchesApprovedHost(entry)), ...approved.cookies],
-      origins: [...retained.origins.filter((entry) => !origins.has(entry.origin)), ...approved.origins] };
-    await runtime.context.setStorageState(merged);
-    sessionBaseline = sessionFingerprint(merged); cookieBaseline = new Map(merged.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
+    const adapter = selectedAdapter();
+    if (adapter?.importSession) {
+      // 메인 프로세스가 승인된 사이트만 갱신한다. 보호된 탭의 숨겨진 저장소는 읽거나 지우지 않는다.
+      await adapter.importSession({ origins: [...origins], state: approved, reload: true });
+    } else {
+      if (await adapter?.passwordStorageState?.()) throw error('BROWSER_NATIVE_SESSION_IMPORT_UNAVAILABLE', 'Reconnect the desktop browser before restoring this sign-in.', true);
+      const retained = await browserStorageState();
+      const merged = { cookies: [...retained.cookies.filter((entry) => !matchesApprovedHost(entry)), ...approved.cookies],
+        origins: [...retained.origins.filter((entry) => !origins.has(entry.origin)), ...approved.origins] };
+      await runtime.context.setStorageState(merged);
+    }
+    const restored = await browserStorageState();
+    sessionBaseline = sessionFingerprint(restored); cookieBaseline = new Map(restored.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
     for (const tab of tabs.values()) {
       if (!tab.page || tab.page.isClosed()) { tab.restorePending = true; continue; }
-      if (origins.has(new URL(tab.page.url()).origin)) {
+      if (!adapter?.importSession && origins.has(new URL(tab.page.url()).origin)) {
         await tab.page.reload({ waitUntil: 'domcontentloaded' }); tab.status = 'ready';
       }
       publish(tab);
@@ -523,6 +534,15 @@ export function createOwnedBrowserService(options = {}) {
     await ensureRuntime();
     const clearing = targetProfile === profileId() ? runtime : await runtimeFactory({ dataDir, guard, nativeAdapter: targetProfile === 'native' ? nativeAdapter : undefined, headless: true, autoInstall: false });
     try {
+    if (targetProfile === 'native' && nativeAdapter?.importSession) {
+      await nativeAdapter.importSession({ origins, state: { cookies: [], origins: [] }, clear: true });
+      for (const tab of tabs.values()) { invalidate(tab); tab.controllerEpoch++; publish(tab); }
+      if (clearing === runtime) {
+        const storage = await browserStorageState();
+        sessionBaseline = sessionFingerprint(storage); cookieBaseline = new Map(storage.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
+      }
+      return { clearedOrigins: origins };
+    }
     const hosts = origins.map((origin) => new URL(origin).hostname);
     const cookies = await clearing.context.cookies();
     const domains = [...new Set(cookies.map((cookie) => cookie.domain).filter((raw) => { const domain = raw.replace(/^\./, ''); return hosts.some((host) => host === domain || host.endsWith(`.${domain}`)); }))];

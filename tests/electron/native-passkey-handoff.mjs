@@ -1,0 +1,95 @@
+import assert from 'node:assert/strict';
+import { createServer } from 'node:https';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { app, BrowserWindow, WebContentsView, session } from 'electron';
+import { OwnedBrowserHost } from '../../desktop/browser-host.mjs';
+import { startOwnedBrowserSignIn } from '../../rhwp/rhwp-agent/owned-browser-runtime.mjs';
+import { key, cert } from '../../rhwp/rhwp-agent/tests/fixtures/owned-browser-tls.mjs';
+import { createOwnedBrowserService } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
+
+const dataDir = process.env.RHWP_WEBAUTHN_TEST_DIR;
+app.setPath('userData', path.join(dataDir, 'electron'));
+app.commandLine.appendSwitch('ignore-certificate-errors');
+app.on('window-all-closed', () => {});
+let browser; let editor; let host;
+let servedLogin;
+const served = new Promise((resolve) => { servedLogin = resolve; });
+const server = createServer({ key, cert }, (request, response) => {
+  response.setHeader('Content-Type', 'text/html');
+  if (request.url === '/login') {
+    response.setHeader('Set-Cookie', 'nativeFixture=approved; Path=/; Secure; HttpOnly; Max-Age=3600');
+    response.on('finish', servedLogin);
+    response.end('<title>Controlled Chrome session</title><h1>Local session created</h1>');
+  } else response.end(`<title>Native guest fixture</title><h1>${request.headers.cookie?.includes('nativeFixture=approved') ? 'Authenticated native guest' : 'Initial native guest'}</h1><form><input name=identity autocomplete=username><input name=secret type=password autocomplete=current-password></form>`);
+});
+const unrelatedServer = createServer({ key, cert }, (_request, response) => response.end('<title>Unrelated origin storage</title><h1>Retained storage</h1>'));
+app.whenReady().then(async () => {
+try {
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `https://127.0.0.1:${server.address().port}`;
+  await new Promise((resolve) => unrelatedServer.listen(0, '127.0.0.1', resolve));
+  const unrelatedOrigin = `https://127.0.0.1:${unrelatedServer.address().port}`;
+  editor = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  const Host = process.env.RHWP_TEST_NATIVE_PASSWORD_HOST ? (await import(process.env.RHWP_TEST_NATIVE_PASSWORD_HOST)).OwnedBrowserHost : OwnedBrowserHost;
+  host = new Host({ BrowserWindow, WebContentsView, electronSession: session, dataDir, getWindowForSession: () => editor });
+  const nativeOwner = {};
+  const passwordsModule = await import(process.env.RHWP_TEST_NATIVE_PASSWORD_HOST ? new URL('./browser-passwords.mjs', process.env.RHWP_TEST_NATIVE_PASSWORD_HOST).href : '../../desktop/browser-passwords.mjs').catch(() => null);
+  const secret = 'synthetic-native-autofill-only';
+  if (passwordsModule) new passwordsModule.NativeBrowserPasswords({ host, vault: { async withCredential(_id, use) { return use({ origin, username: 'fixture-user', password: secret }); } } });
+  const nativeAdapter = {
+    async start(params) { return { ...await host.start(params, nativeOwner), close: () => host.release(nativeOwner) }; },
+    ...(host.importSession ? { importSession: (params) => host.importSession(params) } : {}),
+    passwordStorageState: () => host.passwords?.storageState() ?? null,
+    bind: (params) => host.bind(params), control: (params) => host.control(params),
+    inventory: () => [...host.tabs.values()].map((tab) => host.state(tab)),
+  };
+  const checkpoints = new Map();
+  const account = { id: 'local-native-fixture', profileId: 'default', origins: [origin], agentReuseApproved: true };
+  const broker = {
+    async listAccounts() { return { accounts: [account] }; }, async registerSessionOrigins() {}, setSessionClearer() {},
+    async assertBrowserAccess() {}, async saveCheckpoint({ profileId, state }) { checkpoints.set(profileId, state); },
+    async restoreCheckpoint({ profileId }) { return checkpoints.get(profileId) ?? null; }, async deleteCheckpoint({ profileId }) { checkpoints.delete(profileId); },
+    async confirmAccountSession({ additionalProfileId }) { assert.equal(additionalProfileId, 'native'); return { account }; },
+  };
+  browser = createOwnedBrowserService({ dataDir, nativeAdapter, credentialBroker: broker, workspaceTargets: [origin, unrelatedOrigin], autoInstall: false, signInFactory: (settings) => startOwnedBrowserSignIn({ ...settings, spawnProcess: (executable, args, options) => spawn(executable, ['--ignore-certificate-errors', ...args], options) }) });
+  const actor = { isHuman: true, clientId: 'editor', sessionId: 'editor', threadId: 'research', agentId: 'owner' };
+  const opened = await browser.request(actor, 'open', { url: `${origin}/research` });
+  const unrelated = await browser.request(actor, 'open', { url: `${unrelatedOrigin}/other` });
+  const unrelatedContents = host.tab(unrelated.tab.tabId).view.webContents;
+  await unrelatedContents.executeJavaScript(`localStorage.setItem('retained-session', 'unrelated-local-value'); new Promise((resolve, reject) => { const request = indexedDB.open('retained-session-db', 1); request.onupgradeneeded = () => request.result.createObjectStore('values'); request.onsuccess = () => { request.result.close(); resolve(true); }; request.onerror = () => reject(request.error); })`);
+  const nativeTab = host.tab(opened.tab.tabId);
+  const before = await nativeTab.view.webContents.executeJavaScript('document.querySelector("h1").textContent');
+  assert.equal(before, 'Initial native guest');
+  if (host.passwords) {
+    const binding = { targetId: nativeTab.targetId, tabId: nativeTab.tabId, sessionId: nativeTab.sessionId, chatId: nativeTab.chatId };
+    const snapshot = await host.passwords.snapshot(binding);
+    await host.passwords.fill({ ...binding, accountId: 'fixture', snapshotId: snapshot.snapshotId, passwordRef: snapshot.elements.find((entry) => entry.inputType === 'password').ref, usernameRef: snapshot.elements.find((entry) => entry.autocomplete === 'username').ref });
+    assert.equal(nativeTab.passwordShield, true);
+  }
+  await browser.request(actor, 'sign-in', { accountId: account.id, url: `${origin}/login`, authenticationMethod: 'mac-passkey' });
+  await Promise.race([served, new Promise((_resolve, reject) => { const timer = setTimeout(() => reject(new Error('Chrome fixture failed to load')), 12000); timer.unref(); })]);
+  const confirmed = await browser.request(actor, 'confirm-sign-in', { accountId: account.id });
+  assert.equal(confirmed.runtime.mode, 'native');
+  const tabs = (await browser.inventory(actor)).tabs;
+  const retained = tabs.find((tab) => tab.tabId === opened.tab.tabId);
+  assert.equal(retained.nativeTargetId, opened.tab.nativeTargetId);
+  const contents = host.tab(opened.tab.tabId).view.webContents;
+  assert.equal(await contents.executeJavaScript('document.querySelector("h1").textContent'), 'Authenticated native guest');
+  assert.equal(await contents.executeJavaScript('location.pathname'), '/research');
+  assert.equal(await unrelatedContents.executeJavaScript("localStorage.getItem('retained-session')"), 'unrelated-local-value');
+  assert.equal(await unrelatedContents.executeJavaScript("indexedDB.databases().then(databases => databases.some(entry => entry.name === 'retained-session-db'))"), true);
+  console.log(`NATIVE_PASSKEY_REPORT ${JSON.stringify({ mode: confirmed.runtime.mode, retainedTarget: true, authenticated: true, retainedPath: '/research', protectedAutofill: !!host.passwords, unrelatedStoragePreserved: true })}`);
+} catch (error) { console.error(error.stack); process.exitCode = 1; }
+finally {
+  await browser?.close();
+  await host?.dispose();
+  await host?.session?.closeAllConnections();
+  editor?.destroy();
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+  unrelatedServer.closeAllConnections();
+  await new Promise((resolve) => unrelatedServer.close(resolve));
+  app.exit(process.exitCode ?? 0);
+}
+});

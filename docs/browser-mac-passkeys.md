@@ -4,11 +4,13 @@ Research and runtime checks recorded on 2026-10-10.
 
 ## Supported routes
 
-Existing Mac passkeys use the installed, signed Google Chrome browser. Browser settings requests `sign-in` with `authenticationMethod: 'mac-passkey'`. The website starts its WebAuthn request and macOS handles account selection and user verification. The app owns a separate `browser/chrome-profile` directory; it never opens the user's normal Chrome profile. During sign-in this Chrome process has no debugging port. After the user confirms completion, the managed browser reopens the same signed executable and profile to retain the authenticated website session.
+Existing Mac passkeys use the installed, signed Google Chrome browser. Browser settings requests `sign-in` with `authenticationMethod: 'mac-passkey'`. The website starts its WebAuthn request and macOS handles account selection and user verification. The app owns a separate `browser/chrome-profile` directory; it never opens the user's normal Chrome profile. During sign-in this Chrome process has no debugging port. After the user confirms completion, the managed browser reopens the same signed executable and profile to retain the authenticated website session. When sign-in began in the native browser, the approved website session returns to the retained native tab. The original login account stays available for later Chrome sign-ins; a linked native session approval shares sign-out, revocation, and removal cleanup.
 
 Chrome supports iCloud Keychain passkeys on macOS 13.5 and later. The operating system may ask the user to allow Chrome access to Mac passkeys. Chrome controls that prompt. [Chrome's iCloud Keychain support](https://developer.chrome.com/blog/passkeys-on-icloud-keychain)
 
 The runtime verifies Google's signing identity and `com.apple.developer.web-browser.public-key-credential` entitlement before advertising the route. `runtime.passkeys` contains `{ method: 'mac-passkey', provider: 'Google Chrome', supported, reason?, requiresUserVerification: true }`. Executable paths and credential identifiers remain local. The provider selection file stores only `chrome` or `chromium`; executable paths cannot be injected through that file.
+
+The native handback replaces only approved site cookies and origin storage through an owner-gated Electron main operation. Protected password tabs use safe main-owned cookie observation and reload without exposing the original page URL or reading their DOM through CDP. Other origins retain their cookies, localStorage and IndexedDB. A session requiring unsupported IndexedDB import or localStorage without a retained matching native tab reports an import error before mutation.
 
 ## Native Electron support
 
@@ -26,6 +28,8 @@ Apple's managed browser entitlement allows passkey requests for arbitrary relyin
 
 - `node --test tests/desktop-browser-webauthn.test.mjs`: 5 passed. The native Electron fixture created two local CDP virtual credentials, received the real account-selection session event, cancelled with `NotAllowedError`, and rejected an unrelated relying-party ID with `SecurityError`. No personal passkey or biometric prompt was used.
 - `RHWP_TEST_MAC_PASSKEY_HANDOFF=1 node --test rhwp/rhwp-agent/tests/browser-mac-passkeys.test.mjs`: 4 passed. Real signed Chrome opened a localhost fixture without debugging, retained its HttpOnly session cookie through normal process shutdown, and reopened the same private profile under managed control. The authenticated fixture page and exported session state contained the cookie. The test removed its temporary profile.
+- `RHWP_TEST_MAC_PASSKEY_HANDOFF=1 node --test tests/desktop-browser-native-passkey-handoff.test.mjs`: the real Electron native guest opened `/research`, signed Chrome created an isolated HTTPS fixture session, and confirmation restored the authenticated original native target and path. The fixture closes the host, network connections and editor before exiting, then removes its private profile. No personal account login is requested.
+- `node --test rhwp/rhwp-agent/tests/native-passkey-handoff.test.mjs`: lifecycle coverage preserves the original actionable login account, restores native mode after launch failure, preserves unrelated origin storage after protected autofill, and scopes linked native sign-out cleanup.
 - `node --test rhwp/rhwp-agent/tests/owned-browser-runtime.test.mjs`: 15 passed, including existing managed-session, checkpoint, native reconnect, and navigation cases.
 
 The controlled checks establish native WebAuthn handling and authenticated Chrome profile reuse. A website login with the user's existing Mac passkey still needs a human to choose and verify the credential through Chrome's system prompt after the integrated UI is running.

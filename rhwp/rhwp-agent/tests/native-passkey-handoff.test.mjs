@@ -13,21 +13,37 @@ const actor = { isHuman: true, clientId: 'editor', sessionId: 'editor', threadId
 const account = { id: 'approved-site', profileId: 'default', origins: [origin], agentReuseApproved: true, sessionStatus: 'saved' };
 const cookie = (name, domain, value) => ({ name, domain, value, path: '/', expires: -1, httpOnly: true, secure: true, sameSite: 'Lax' });
 
-async function harness(t, { failSignIn = false } = {}) {
+async function harness(t, { failSignIn = false, protectedAutofill = false } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-native-passkey-handoff-'));
   const checkpoints = new Map();
   const launches = [];
   const imports = [];
   const confirmations = [];
+  let clearSession;
   const bindings = [];
   const pages = [];
+  let shielded = false;
   let nativeStorage = { cookies: [cookie('oldSession', 'site.example', 'before')], origins: [] };
+  if (protectedAutofill) nativeStorage.origins = [{ origin: 'https://unrelated.example', localStorage: [{ name: 'keep', value: 'retained-private' }], indexedDB: [{ name: 'retained-database' }] }];
   const signedInStorage = { cookies: [cookie('siteSession', 'site.example', 'after'), cookie('unrelatedSession', 'unrelated.example', 'private-unrelated')],
     origins: [{ origin, localStorage: [{ name: 'sessionFlag', value: 'approved' }] }, { origin: 'https://unrelated.example', localStorage: [{ name: 'unrelatedFlag', value: 'private' }] }] };
   const nativeAdapter = {
     async bind(value) { bindings.push(value); }, async control() {},
-    async inventory() { return pages.map((page) => ({ nativeTargetId: page.target, tabId: bindings.find((entry) => entry.targetId === page.target)?.tabId })); },
+    async inventory() { return pages.map((page) => ({ nativeTargetId: page.target, passwordProtected: shielded, tabId: bindings.find((entry) => entry.targetId === page.target)?.tabId })); },
   };
+  if (protectedAutofill) Object.assign(nativeAdapter, {
+    async passwordFill() { shielded = true; return { completed: true }; },
+    async passwordStorageState() { return shielded ? { cookies: structuredClone(nativeStorage.cookies), origins: [] } : null; },
+    async importSession({ origins, state, reload }) {
+      assert.deepEqual(origins, [origin]);
+      assert.ok(state.cookies.every((entry) => entry.domain === 'site.example'));
+      assert.ok(state.origins.every((entry) => entry.origin === origin));
+      imports.push({ kind: 'main', state: structuredClone(state) });
+      nativeStorage = { cookies: [...nativeStorage.cookies.filter((entry) => entry.domain !== 'site.example'), ...state.cookies],
+        origins: [...nativeStorage.origins.filter((entry) => !origins.includes(entry.origin)), ...state.origins] };
+      if (reload) for (const page of pages) if (origins.includes(new URL(page.url()).origin)) await page.reload();
+    },
+  });
   const newNativePage = () => {
     let url = 'about:blank'; let closed = false;
     const frame = { url: () => url };
@@ -35,12 +51,12 @@ async function harness(t, { failSignIn = false } = {}) {
       authenticated: false, url: () => url, isClosed: () => closed, mainFrame: () => frame, frames: () => [frame],
       async goto(destination) { url = destination; page.navigations.push(destination); page.authenticated = nativeStorage.cookies.some((entry) => entry.name === 'siteSession'); },
       async reload() { await page.goto(url); }, async title() { return 'Fixture site'; }, async evaluate() { return 'complete'; },
-      async routeWebSocket() {}, async close() { closed = true; page.emit('close'); } });
+      async routeWebSocket() { if (shielded) throw new Error('Protected native JS binding denied'); }, async close() { closed = true; page.emit('close'); } });
     pages.push(page); return page;
   };
   const contextFor = (kind) => Object.assign(new EventEmitter(), {
-    async storageState() { return structuredClone(kind === 'native' ? nativeStorage : signedInStorage); },
-    async setStorageState(state) { imports.push({ kind, state: structuredClone(state) }); if (kind === 'native') nativeStorage = structuredClone(state); },
+    async storageState() { if (kind === 'native' && shielded) throw new Error('Raw protected storage denied'); return structuredClone(kind === 'native' ? nativeStorage : signedInStorage); },
+    async setStorageState(state) { if (kind === 'native' && shielded) throw new Error('Protected session requires a scoped main import'); imports.push({ kind, state: structuredClone(state) }); if (kind === 'native') nativeStorage = structuredClone(state); },
     async route() {}, pages: () => kind === 'native' ? pages.filter((page) => !page.isClosed()) : [],
     async newPage() { assert.equal(kind, 'native'); return newNativePage(); },
     async newCDPSession(page) { return { async send() { return { targetInfo: { targetId: page.target } }; }, async detach() {} }; },
@@ -56,7 +72,7 @@ async function harness(t, { failSignIn = false } = {}) {
       return { mode: 'standalone-no-debug', provider: 'chrome', authenticationMethod: 'mac-passkey', exited: false, async close() {} };
     },
     credentialBroker: {
-      async listAccounts() { return { accounts: [account] }; }, setSessionClearer() {},
+      async listAccounts() { return { accounts: [account] }; }, setSessionClearer(clearer) { clearSession = clearer; },
       async registerSessionOrigins() {}, async assertBrowserAccess() {},
       async saveCheckpoint({ profileId, state }) { checkpoints.set(profileId, structuredClone(state)); },
       async restoreCheckpoint({ profileId }) { return checkpoints.get(profileId) ?? null; },
@@ -66,7 +82,7 @@ async function harness(t, { failSignIn = false } = {}) {
   });
   t.after(async () => { await browser.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
   const opened = await browser.request(actor, 'open', { url: `${origin}/research` });
-  return { browser, opened, launches, imports, confirmations, pages, bindings, storage: () => nativeStorage };
+  return { browser, opened, nativeAdapter, clearSession: (...args) => clearSession(...args), launches, imports, confirmations, pages, bindings, storage: () => nativeStorage };
 }
 
 test('Mac passkey confirmation returns approved website authentication to the retained native guest', async (t) => {
@@ -139,4 +155,31 @@ test('a failed Mac passkey browser launch restores the previous native mode and 
   assert.equal(retained.nativeTargetId, before.nativeTargetId);
   assert.equal(f.confirmations.length, 0);
   assert.equal(f.storage().cookies.find((entry) => entry.name === 'oldSession')?.value, 'before');
+});
+
+
+test('passkey return after protected native autofill preserves unrelated origin storage without raw reads', async (t) => {
+  const f = await harness(t, { protectedAutofill: true });
+  await f.nativeAdapter.passwordFill();
+  await f.browser.request(actor, 'sign-in', { accountId: account.id, url: `${origin}/login`, authenticationMethod: 'mac-passkey' });
+  const confirmed = await f.browser.request(actor, 'confirm-sign-in', { accountId: account.id });
+  assert.equal(confirmed.runtime.mode, 'native');
+  assert.equal(f.pages[0].authenticated, true);
+  assert.equal(f.imports.filter((entry) => entry.kind === 'main').length, 1);
+  const unrelated = f.storage().origins.find((entry) => entry.origin === 'https://unrelated.example');
+  assert.equal(unrelated.localStorage[0].value, 'retained-private');
+  assert.equal(unrelated.indexedDB[0].name, 'retained-database');
+  assert.equal(f.storage().cookies.some((entry) => entry.name === 'unrelatedSession'), false);
+});
+
+
+test('native signout after protected autofill clears only the linked approved website', async (t) => {
+  const f = await harness(t, { protectedAutofill: true });
+  await f.nativeAdapter.passwordFill();
+  await f.browser.request(actor, 'sign-in', { accountId: account.id, url: `${origin}/login`, authenticationMethod: 'mac-passkey' });
+  await f.browser.request(actor, 'confirm-sign-in', { accountId: account.id });
+  assert.deepEqual(await f.clearSession({ profileId: 'native', origins: [origin] }), { clearedOrigins: [origin] });
+  assert.equal(f.storage().cookies.length, 0);
+  assert.deepEqual(f.storage().origins.map((entry) => entry.origin), ['https://unrelated.example']);
+  assert.equal(f.storage().origins[0].localStorage[0].value, 'retained-private');
 });
