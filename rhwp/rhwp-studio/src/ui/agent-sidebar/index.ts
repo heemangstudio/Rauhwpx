@@ -3869,8 +3869,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         workbenchBrowser ??= createWorkbenchBrowser({ bridge,
           getDestination: () => ({ threadId: currentThread.id, documentId: currentDocumentId, projectId: bridge.projects?.store.get()?.id ?? null, label: currentThread.title || '현재 채팅' }),
           onCapture: (draft) => {
-            if (captureInbox.queue(draft)) systemMessage('브라우저 자료를 입력창에 첨부했습니다.');
-            else systemMessage('브라우저 자료를 선택했던 채팅에 저장했습니다. 해당 채팅에서 첨부를 확인해 주세요.');
+            if (captureInbox.queue(draft)) {
+              systemMessage('브라우저 자료를 입력창에 첨부했습니다.');
+              return captureInbox.root.querySelector<HTMLElement>(`[data-capture-id="${draft.id}"]`) ?? composerField;
+            }
+            systemMessage('브라우저 자료를 선택했던 채팅에 저장했습니다. 해당 채팅에서 첨부를 확인해 주세요.');
           },
           onOpenDownload: (job) => {
             const open = () => { workbench?.select('documents'); void workbenchDocuments?.openDownload(job); };

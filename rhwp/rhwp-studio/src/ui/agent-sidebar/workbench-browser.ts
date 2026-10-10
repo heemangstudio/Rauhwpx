@@ -1,4 +1,5 @@
 import './workbench-browser.css';
+import { createBrowserCaptureMotion } from './browser-capture-motion.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
 import type { BrowserDownload, BrowserTab } from '../../agent/types.ts';
 import { createBrowserController } from './browser-controller.ts';
@@ -22,7 +23,7 @@ function browserTabTitle(tab: BrowserTab): string {
 export function createWorkbenchBrowser(options: {
   bridge: SidebarBridge;
   getDestination(): BrowserCaptureDestination;
-  onCapture(draft: BrowserCaptureDraft): void;
+  onCapture(draft: BrowserCaptureDraft): HTMLElement | void;
   onOpenDownload(job: BrowserDownload): void;
   onDock(): void;
   onChat(): void;
@@ -83,6 +84,7 @@ export function createWorkbenchBrowser(options: {
   const recover = button('끊긴 브라우저 탭 복구', '탭 복구', () => { handle(reconnectBrowser()); });
   let capturePending = false;
   const annotate = button('현재 화면을 캡처해 채팅에 첨부', '화면 캡처', () => { handle(capture()); });
+  const captureMotion = createBrowserCaptureMotion(annotate);
   const downloadsButton = button('다운로드 목록', '받은 파일', () => showDownloads(Boolean(downloads.hidden)));
   downloadsButton.setAttribute('aria-expanded', 'false');
   const dockButton = button('작업 칸에 붙이기', '붙이기', () => { presentation.present('dock'); options.onDock(); });
@@ -202,7 +204,7 @@ export function createWorkbenchBrowser(options: {
     const tab = controller.tab(); if (!tab || capturePending) return;
     const target = { ...tab }; const destination = { ...options.getDestination() };
     if (!destination.threadId) return;
-    capturePending = true; nativeError = null;
+    capturePending = true; nativeError = null; captureMotion.start();
     details.open = false; showDownloads(false, false); paint();
     try {
       await nativePending?.catch(() => undefined);
@@ -213,8 +215,12 @@ export function createWorkbenchBrowser(options: {
       const evidence = response.capture as Record<string, unknown> | undefined;
       if (!evidence?.screenshot) throw new Error('화면을 캡처하지 못했습니다. 다시 시도해 주세요.');
       const draft = await saveBrowserCaptureDraft({ destination, tab: target, frame: null, mode: 'page', comment: '', evidence });
-      if (!disposed) options.onCapture(draft);
+      if (!disposed) {
+        const destinationElement = options.onCapture(draft);
+        captureMotion.finish(draft.files.find(file => file.type.startsWith('image/')), destinationElement ?? null);
+      }
     } catch (failure) {
+      captureMotion.cancel();
       if (!disposed) nativeError = failure instanceof Error ? failure.message : String(failure);
     } finally { capturePending = false; paint(); }
   }
@@ -545,7 +551,7 @@ export function createWorkbenchBrowser(options: {
       else if (presentation.current() === 'dock') presentation.hide();
     },
     float() { nativePopout = false; presentation.present('float'); handle(controller.refresh().then(() => controller.readFrame())); },
-    dispose() { document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
+    dispose() { captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
   };
 }
 export type WorkbenchBrowser = ReturnType<typeof createWorkbenchBrowser>;
