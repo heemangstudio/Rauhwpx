@@ -30,7 +30,7 @@ export async function checkChangesPreview(page, origin, artifacts) {
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.snapshot().changeEvents), ['set-finalized', 'approved']);
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().pendingChanges), 0);
   assert.equal(await page.$('.ag-changes-review-slot .ag-review-card'), null);
-  assert.equal(await page.$eval('.ag-review-column-head .ag-review-column-undo', (node) => node.hidden), false);
+  assert.equal(await page.$eval('.ag-workbench-actions .ag-review-column-undo', (node) => node.hidden), false);
   assert.equal(await page.$eval('.ag-changes-overlay', (node) => node.hidden), false);
   assert.equal(await itemCount(), 5);
   assert.equal(await page.$eval('.ag-changes-latest', (node) => getComputedStyle(node).display), 'none');
@@ -51,17 +51,17 @@ export async function checkChangesPreview(page, origin, artifacts) {
     await page.click('.rhwp-toast-close');
     await page.waitForSelector('.rhwp-toast', { hidden: true });
   }
-  await page.click('.ag-review-column-head .ag-review-column-undo');
+  await page.click('.ag-workbench-actions .ag-review-column-undo');
   await page.waitForFunction(() => window.sidebarPreview.undoState.calls === 1);
   await page.waitForFunction(() => document.querySelectorAll('.ag-changes-diff-list .ag-changes-item').length === 0);
-  assert.equal(await page.$eval('.ag-review-column-head .ag-review-column-undo', (node) => node.hidden), true);
+  assert.equal(await page.$eval('.ag-workbench-actions .ag-review-column-undo', (node) => node.hidden), true);
 
   await open(fullScene);
   await page.evaluate(() => {
     window.sidebarPreview.undoState.entry = null;
     window.sidebarPreview.eventBus.emit('document-mutated');
   });
-  await page.waitForFunction(() => document.querySelector('.ag-review-column-head .ag-review-column-undo').hidden);
+  await page.waitForFunction(() => document.querySelector('.ag-workbench-actions .ag-review-column-undo').hidden);
   await page.click('.ag-changes-diff-list .ag-changes-text-button');
   await page.waitForFunction(() => window.sidebarPreview.navigation.calls.length === 1);
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.navigation.calls[0]),

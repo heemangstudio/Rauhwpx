@@ -142,6 +142,11 @@ import { createEffortSlider } from './effort-slider.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
 import { createFocusGreeting } from './focus-greeting.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
+import { createSidebarWorkbench, type SidebarWorkbench, type WorkbenchView } from './workbench.ts';
+import { createWorkbenchBoard, type WorkbenchBoard } from './workbench-board.ts';
+import { createWorkbenchDocuments, type WorkbenchDocuments } from './workbench-documents.ts';
+import { createWorkbenchAgents, type WorkbenchAgents } from './workbench-agents.ts';
+import './workbench-agents.css';
 import { createToolRow, type ToolRowHandle } from './tool-row.ts';
 import {
   baseToolName,
@@ -873,6 +878,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 집중 보기 오른쪽 칸 — 변경 사항, 계획, 프로젝트 가운데 하나만 연다. */
   let detailColumn: 'changes' | 'plan' | 'project' | null = null;
   let projectHost: ProjectHost | null = null;
+  let workbench: SidebarWorkbench | null = null;
+  let workbenchBoard: WorkbenchBoard | null = null;
+  let workbenchDocuments: WorkbenchDocuments | null = null;
+  let workbenchAgents: WorkbenchAgents | null = null;
+  let workbenchChanges: ReturnType<typeof createChangesDrawer> | null = null;
+  let workbenchAgentsFrame: number | null = null;
   let composerMentions: ComposerMentions | null = null;
   let planMinimized = false;
   /** 기록에서 연 계획은 표시 전용이며 현재 계획 workflow 상태를 절대 나타내지 않는다. */
@@ -1164,6 +1175,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (collapsed && active) dismissOpenSheets();
     root.inert = collapsed;
     root.classList.toggle('ag-collapsed', collapsed);
+    syncWorkbenchVisibility();
     setPageClass('ag-sidebar-open', !collapsed);
     const label = collapsed ? '에이전트 사이드바 펼치기' : '에이전트 사이드바 숨기기';
     collapseTab.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
@@ -1862,6 +1874,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       e.preventDefault();
       return;
     }
+    if (workbench?.current()) {
+      const selected = workbench.current();
+      workbench.select(null);
+      const control = isCompactWorkspace() || threadsRailCollapsed ? workspaceThreadsBtn
+        : workbench.navigation.querySelector<HTMLButtonElement>(`[data-view="${selected}"]`);
+      control?.focus({ preventScroll: true });
+      e.preventDefault();
+      return;
+    }
     if (isCompactWorkspace() && compactThreadsRailOpen) {
       setCompactThreadsRailOpen(false);
       workspaceThreadsBtn.focus();
@@ -2221,19 +2242,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   });
   environmentChanges.addEventListener('click', () => {
-    setReviewColCollapsed(false);
     setEnvironmentPanelOpen(false, { persist: !isCompactWorkspace() });
-    // drawer 가 열리는 도중의 focus 가 조상 스크롤을 밀어 판 전체를
-    // 옮기지 않도록 스크롤 없이 초점만 옮긴다.
-    window.requestAnimationFrame(() => reviewColumnClose.focus({ preventScroll: true }));
+    workbench?.select('changes');
   });
   environmentProject.addEventListener('click', () => {
-    if (detailColumn === 'project') {
-      setDetailColumn(null);
-      return;
-    }
     setEnvironmentPanelOpen(false, { persist: !isCompactWorkspace() });
-    openProjectColumn();
+    workbench?.select(workbench.current() === 'board' ? null : 'board');
   });
   environmentPlan.addEventListener('click', () => {
     if (!activePlan) return;
@@ -2318,6 +2332,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     client: bridge.projects ?? null,
     stage,
     messages,
+    openPreview: (target) => {
+      if (!fullscreen) return false;
+      openWorkbenchDocument(target);
+      return true;
+    },
+    openBoard: (tab) => {
+      if (!fullscreen) return false;
+      workbench?.select('board');
+      if (tab) workbenchBoard?.setTab(tab);
+      return true;
+    },
     requestOpen: (then) => openProjectColumn(then),
     requestClose: () => {
       if (detailColumn === 'project') setDetailColumn(null);
@@ -3063,6 +3088,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       documentName: getDocumentContext?.().documentName ?? currentDocKey,
     }),
     onOpenChange(open) {
+      if (open) workbench?.select(null);
       if (open && settingsPanelOpen && settingsPanel.isDirty()) {
         referenceLibrary.setOpen(false);
         void requestSettingsClose(undefined, () => referenceLibrary.setOpen(true));
@@ -3349,6 +3375,139 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   reviewResize.title = '드래그하여 너비 조절';
   reviewResize.tabIndex = 0;
 
+  function workbenchTasks(): ThreadTaskRecord[] {
+    return currentThread.messages.flatMap((message) => message.kind === 'tasks' ? message.tasks : []);
+  }
+
+  function syncWorkbenchAgents(): void {
+    workbenchAgents?.update({ threadId: currentThread.id, tasks: workbenchTasks() });
+  }
+
+  function scheduleWorkbenchAgents(): void {
+    if (!workbenchAgents || workbenchAgentsFrame !== null) return;
+    workbenchAgentsFrame = window.requestAnimationFrame(() => {
+      workbenchAgentsFrame = null;
+      syncWorkbenchAgents();
+    });
+  }
+
+  function syncWorkbenchVisibility(): void {
+    if (!workbench) return;
+    const visible = active && fullscreen && !root.classList.contains('ag-collapsed');
+    const selected = workbench?.current() ?? null;
+    workbench?.setVisible(visible);
+    workbenchBoard?.setVisible(visible && selected === 'board');
+    workbenchDocuments?.setVisible(visible && selected === 'documents');
+    workbenchAgents?.setVisible(visible && selected === 'agents');
+    changesDrawer.setOpen(visible && (selected === 'changes' || (fullscreen && detailColumn === 'changes')));
+  }
+
+  function syncWorkbenchResources(): void {
+    workbench?.setResources(workbenchDocuments?.descriptors() ?? [], workbenchDocuments?.activeTab() ?? null);
+  }
+
+  function openWorkbenchDocument(target: ProjectPreviewTarget): void {
+    workbench?.select('documents', { recordTab: false });
+    void workbenchDocuments?.open(target).then((opened) => {
+      // 열지 못한 이유는 자료 목록에 보이므로 목록 탭을 남긴다.
+      if (!opened && workbench?.current() === 'documents' && !workbenchDocuments?.activeTab()) workbench.select('documents');
+    });
+  }
+
+  workbench = createSidebarWorkbench({
+    onChat() {
+      const openChat = () => {
+        workbench?.select(null);
+        setConfigPanelOpen(false);
+        if (referenceLibrary.isOpen()) referenceLibrary.setOpen(false);
+        setThreadsPanelOpen(false);
+        closeSettingsPage();
+        closeVersionsPage();
+        input.focus({ preventScroll: true });
+      };
+      if (settingsPanelOpen && settingsPanel.isDirty()) void requestSettingsClose(undefined, openChat);
+      else openChat();
+    },
+    selectResource: (id) => { void workbenchDocuments?.selectTab(id); },
+    closeResource: (id) => {
+      if (workbenchDocuments?.descriptors().some(tab => tab.id === id && tab.dirty)) workbench?.select('documents', { recordTab: false });
+      workbenchDocuments?.closeTab(id);
+    },
+    mount(view, host) {
+      if (view === 'board') {
+        workbenchBoard = createWorkbenchBoard({ client: bridge.projects ?? null,
+          openPreview: openWorkbenchDocument,
+          openDocument: (documentId) => {
+            const member = bridge.projects?.store.get()?.members.find((row) => row.documentId === documentId);
+            void moveToDocument({ documentId, fileName: member?.name ?? null });
+          },
+        });
+        host.append(workbenchBoard.element);
+      } else if (view === 'documents') {
+        workbenchDocuments = createWorkbenchDocuments({ client: bridge.projects ?? null,
+          onChange: syncWorkbenchResources,
+          openDocument: (documentId) => {
+            const member = bridge.projects?.store.get()?.members.find((row) => row.documentId === documentId);
+            void moveToDocument({ documentId, fileName: member?.name ?? null });
+          },
+        });
+        host.append(workbenchDocuments.element);
+        syncWorkbenchResources();
+      } else if (view === 'agents') {
+        workbenchAgents = createWorkbenchAgents({});
+        host.append(workbenchAgents.element);
+        syncWorkbenchAgents();
+      } else {
+        // 같은 diff와 검토 DOM을 옮긴다. 두 번째 비교 작업이나 편집 상태를 만들지 않는다.
+        workbenchChanges = changesDrawer;
+        host.append(workbenchChanges.element);
+      }
+    },
+    onSelect(view) {
+      if (view && !fullscreen) {
+        workbench?.select(null);
+        return;
+      }
+      if (view && settingsPanelOpen && settingsPanel.isDirty()) {
+        workbench?.select(null);
+        void requestSettingsClose(undefined, () => workbench?.select(view));
+        return;
+      }
+      if (view) {
+        setDetailColumn(null);
+        if (isCompactWorkspace()) setCompactThreadsRailOpen(false);
+        setConfigPanelOpen(false);
+        if (referenceLibrary.isOpen()) referenceLibrary.setOpen(false);
+        setThreadsPanelOpen(false);
+        closeSettingsPage();
+        closeVersionsPage();
+        fleetView.closePopup();
+      }
+      root.classList.toggle('ag-workbench-open', view !== null);
+      chatPage.inert = false;
+      chatPage.setAttribute('aria-hidden', String(settingsPanelOpen || versionsPanelOpen));
+      applyReviewColState();
+      if (view === 'changes') {
+        const host = workbench?.element.querySelector('.ag-workbench-panel[data-view="changes"]');
+        host?.append(changesDrawer.element);
+        changesDrawer.setCompactHost(null);
+        changesDrawer.reviewSlot.append(review);
+        // 승인한 변경 되돌리기는 검토 칸 머리와 같은 단추를 탭 머리로 옮긴다.
+        workbench?.actions.append(reviewColumnUndo);
+      } else if (workbenchChanges) {
+        reviewColumnActions.prepend(reviewColumnUndo);
+        reviewColumn.append(changesDrawer.element);
+        changesDrawer.setCompactHost(fullscreen ? null : compactChangesHost());
+        if (fullscreen) changesDrawer.reviewSlot.append(review);
+        else chatPage.insertBefore(review, compactChanges);
+      }
+      syncWorkbenchAgents();
+      syncWorkbenchVisibility();
+    },
+  });
+
+  threadsPage.insertBefore(workbench.navigation, threadsList);
+
   stage.append(
     workspaceBar,
     workspaceDrawerScrim,
@@ -3362,6 +3521,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     planColumn,
     railResize,
     reviewResize,
+    workbench.element,
   );
 
   function applyRailWidth(width: number, opts?: { persist?: boolean }): void {
@@ -3650,23 +3810,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const planActive = focusLayoutActive && detailColumn === 'plan' && activePlan !== null;
     const changesActive = focusLayoutActive && detailColumn === 'changes';
     const projectActive = focusLayoutActive && detailColumn === 'project';
-    const detailActive = changesActive || planActive;
+    const workbenchActive = focusLayoutActive && Boolean(workbench?.current());
+    const detailActive = changesActive || planActive || workbenchActive;
     root.classList.toggle('ag-review-collapsed', focusLayoutActive && !changesActive);
     root.classList.toggle('ag-plan-collapsed', focusLayoutActive && !planActive);
     root.classList.toggle('ag-review-drawer-open', changesActive);
     root.classList.toggle('ag-plan-drawer-open', planActive);
     root.classList.toggle('ag-detail-drawer-open', detailActive);
     root.classList.toggle('ag-project-drawer-open', projectActive);
-    environmentProject.classList.toggle('ag-active', projectActive);
-    environmentProject.setAttribute('aria-expanded', projectActive ? 'true' : 'false');
+    const boardShown = projectActive || workbench?.current() === 'board';
+    const changesShown = changesActive || workbench?.current() === 'changes';
+    environmentProject.classList.toggle('ag-active', boardShown);
+    environmentProject.setAttribute('aria-expanded', boardShown ? 'true' : 'false');
     projectHost?.setActive(projectActive);
-    environmentChanges.classList.toggle('ag-active', changesActive);
-    environmentChanges.setAttribute('aria-expanded', changesActive ? 'true' : 'false');
+    environmentChanges.classList.toggle('ag-active', changesShown);
+    environmentChanges.setAttribute('aria-expanded', changesShown ? 'true' : 'false');
     environmentPlan.classList.toggle('ag-active', planActive);
     environmentPlan.setAttribute('aria-expanded', planActive ? 'true' : 'false');
     reviewColumn.setAttribute('aria-hidden', changesActive ? 'false' : 'true');
     reviewColumn.inert = !changesActive;
-    changesDrawer.setOpen(changesActive);
+    changesDrawer.setOpen(changesActive || (active && workbench?.current() === 'changes' && !root.classList.contains('ag-collapsed')));
     planColumn.setAttribute('aria-hidden', planActive ? 'false' : 'true');
     planColumn.inert = !planActive;
     reviewResize.setAttribute('aria-hidden', detailActive ? 'false' : 'true');
@@ -3680,6 +3843,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function setDetailColumn(next: typeof detailColumn): void {
+    if (next) workbench?.select(null);
     detailColumn = next;
     if (next && isCompactWorkspace()) setCompactThreadsRailOpen(false);
     applyReviewColState();
@@ -3720,9 +3884,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (compactThreadsRailOpen && !threadsOwnFocus) setCompactThreadsRailOpen(false);
 
     const detailOwnFocus = reviewColumn.contains(target) || planColumn.contains(target)
-      || (projectHost?.contains(target) ?? false);
+      || Boolean(workbench?.element.contains(target)) || reviewResize.contains(target)
+      || Boolean(workbench?.navigation.contains(target)) || (projectHost?.contains(target) ?? false);
     const detailOpen = root.classList.contains('ag-detail-drawer-open') || root.classList.contains('ag-project-drawer-open');
     if (detailOpen && !detailOwnFocus) {
+      workbench?.select(null);
       detailColumn = null;
       applyReviewColState();
     }
@@ -3886,6 +4052,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let fullscreenLayoutOn = false;
 
   function applyFullscreenLayout(on: boolean): void {
+    workbench?.select(null);
     fullscreenLayoutOn = on;
     root.classList.toggle('ag-fullscreen', on);
     setPageClass('ag-fullscreen-open', on);
@@ -4235,6 +4402,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   skillsClose.addEventListener('click', () => { setSkillsPanelOpen(false); skillsBtn.focus(); });
 
   function setSettingsPanelOpen(open: boolean, destination?: SettingsDestination): void {
+    if (open) workbench?.select(null);
     if (!open && settingsPanelOpen && settingsPanel.isDirty()) {
       void requestSettingsClose(fullscreen ? workspaceSettingsBtn : settingsBtn);
       return;
@@ -4292,6 +4460,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function setVersionsPanelOpen(open: boolean): void {
+    if (open) workbench?.select(null);
     if (!versionController) return;
     if (open && settingsPanelOpen && settingsPanel.isDirty()) {
       void requestSettingsClose(undefined, () => setVersionsPanelOpen(true));
@@ -5517,6 +5686,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function renderMessagesFromThread(thread: ChatThread): void {
+    scheduleWorkbenchAgents();
     composerRest.setResting(false);
     cancelPendingAssistantRender();
     resetConversation();
@@ -6251,6 +6421,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function setThreadsPanelOpen(open: boolean, opts?: { focus?: boolean }): void {
+    if (open) workbench?.select(null);
     // 전체 화면에서 스레드는 넘겨 보는 페이지가 아니라 상시 레일이다.
     // 목록만 갱신하고 페이지 전환은 하지 않는다.
     if (fullscreen) {
@@ -6366,6 +6537,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       threadWorkflows.delete(previousThreadId);
     }
     currentThread = nextThread;
+    scheduleWorkbenchAgents();
     draftChat = draft;
     draftReturnThreadId = draft ? returnThreadId : null;
     updateWorkspaceChatTitle();
@@ -7611,6 +7783,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function handleAgentEvent(event: AgentStreamEvent): void {
+    scheduleWorkbenchAgents();
     switch (event.type) {
       case 'turn-start':
         turnOwnerThreadId = currentThread.id;
@@ -9133,6 +9306,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function activate(): void {
     if (active || root.dataset.disposed === 'true') return;
     active = true;
+    syncWorkbenchVisibility();
     // 배치는 문서에 붙이기 전에 맞춘다 — 스타일이 한 번에 계산되어 전이가 걸리지 않는다.
     adoptPageLayout(readSidebarPageLayout());
     occupySidebarSlot(COLLAPSE_TAB_SLOT, collapseTab, () => {
@@ -9181,6 +9355,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       assistantRenderFrame = null;
     }
     active = false;
+    syncWorkbenchVisibility();
     vacateSidebarSlot(COLLAPSE_TAB_SLOT, collapseTab);
     vacateSidebarSlot(ROOT_SLOT, root);
   }
@@ -9313,6 +9488,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       captureInbox.dispose();
       composerMentions?.dispose();
       projectHost?.dispose();
+      if (workbenchAgentsFrame !== null) cancelAnimationFrame(workbenchAgentsFrame);
+      workbenchBoard?.dispose();
+      workbenchDocuments?.dispose();
+      workbenchAgents?.dispose();
+      workbench?.dispose();
       // 페이지 클래스는 화면에 붙어 있던 사이드바만 걷는다.
       if (active) {
         document.body.classList.remove(

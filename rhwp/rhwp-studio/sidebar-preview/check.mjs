@@ -15,6 +15,7 @@ import { checkSessionsPreview } from './sessions.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock, checkNewChatViewMode } from './parallel-chats.check.mjs';
 import { checkChatResume } from './chat-resume.check.mjs';
 import { checkChatPermissions } from './permissions.check.mjs';
+import { checkWorkbench } from './workbench.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -140,6 +141,8 @@ try {
       throw new Error(`${name}: ${error.message}\nRuntime errors: ${JSON.stringify(errors)}\nBlocked requests: ${JSON.stringify(forbidden)}`, { cause: error });
     }
   }
+  await step('Workbench navigation, board, documents, task scope, and change review',
+    () => checkWorkbench({ page, origin, screenshot }));
   await step('Fullscreen provider chip follows the composer column', () => checkChipAlignment(page, origin));
   await step('New chat preserves sidebar and fullscreen views', () => checkNewChatViewMode(page, origin));
   await step('Resumed idle chat releases the turn and can continue', () => checkChatResume(page, origin, screenshot));

@@ -1,0 +1,123 @@
+.ag-workbench-page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  z-index: 8;
+  color: var(--ag-text);
+  background: var(--ag-bg);
+  animation: ag-workbench-enter 150ms ease-out;
+}
+.ag-workbench-page[hidden], .ag-workbench-page [hidden] { display: none !important; }
+.ag-workbench-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; flex: 0 0 auto; border-bottom: 1px solid var(--ag-border); }
+.ag-workbench-head h2 { margin: 0; flex: 1; font: 590 14px/1.4 var(--ag-font); letter-spacing: -.015em; }
+.ag-workbench-back { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 7px; color: var(--ag-text-secondary); background: transparent; cursor: pointer; }
+.ag-workbench-back svg { width: 14px; height: 14px; }
+.ag-workbench-body, .ag-workbench-panel { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+
+.ag-workbench-changes .ag-changes-overlay { background: var(--ag-bg); }
+.ag-workbench-changes .ag-changes-drawer { width: 100%; }
+.ag-workbench-changes .ag-review { flex: 0 0 auto; }
+.ag-root:not(.ag-fullscreen) .ag-workbench-page { display: none; }
+@keyframes ag-workbench-enter { from { opacity: .65; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .ag-workbench-page { animation: none; }
+}
+/* 문서와 도구를 같은 가로 탭 줄에 놓는다. 내용 면의 중복 탭 줄은 숨긴다. */
+/* T3 Code의 탭처럼 테두리 없이 배경에 녹인다. 아이콘 자리는 hover 때 닫기 버튼이 된다. */
+.ag-workbench-head { background: var(--ag-bg); min-height: 36px; padding: 4px 6px 4px 8px; gap: 2px; }
+.ag-workbench-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.ag-workbench-tabs { display: flex; align-items: center; flex: 1; gap: 2px; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+.ag-workbench-tabs::-webkit-scrollbar { display: none; }
+.ag-workbench-tab-row { position: relative; display: flex; align-items: center; flex: 0 0 auto; min-width: 0; max-width: 180px; border-radius: 6px; color: var(--ag-text-secondary); transition: background 120ms ease, color 120ms ease; }
+.ag-workbench-tab-row:hover { color: var(--ag-text); background: var(--ag-hover); }
+.ag-workbench-tab-row.ag-selected { color: var(--ag-text); background: var(--ag-active); }
+.ag-workbench-tab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px 0 7px; border: 0; min-width: 0; color: inherit; background: transparent; font: 500 12px/1 var(--ag-font); cursor: pointer; }
+.ag-workbench-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-workbench-tab svg { flex: 0 0 auto; width: 13px; height: 13px; opacity: .8; }
+.ag-workbench-tab-row.ag-dirty .ag-workbench-tab::after { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.ag-workbench-tab-close { position: absolute; left: 4px; top: 50%; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; color: inherit; background: transparent; cursor: pointer; opacity: 0; transform: translateY(-50%); pointer-events: none; }
+.ag-workbench-tab-close svg { width: 10px; height: 10px; }
+.ag-workbench-tab-row:hover .ag-workbench-tab-close, .ag-workbench-tab-close:focus-visible { opacity: .7; pointer-events: auto; }
+.ag-workbench-tab-row:hover .ag-workbench-tab > svg { visibility: hidden; }
+.ag-workbench-tab-close:hover { opacity: 1; background: var(--ag-hover); }
+.ag-workbench-tab:focus-visible, .ag-workbench-tab-close:focus-visible, .ag-workbench-scroll:focus-visible { outline: 2px solid var(--ag-text-secondary); outline-offset: -2px; border-radius: 6px; }
+.ag-workbench-scroll { flex: 0 0 18px; height: 26px; width: 18px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--ag-text-secondary); font: 18px/1 var(--ag-font); cursor: pointer; }
+.ag-workbench-scroll:hover { background: var(--ag-hover); }
+@media (prefers-reduced-motion: reduce) { .ag-workbench-tab-row { transition: none; } }
+.ag-workbench-page .ag-wdocs-tabs, .ag-workbench-page .ag-wdocs-eyebrow { display: none; }
+.ag-workbench-page .ag-pp-kind, .ag-workbench-page .ag-pp-title { display: none; }
+.ag-workbench-page .ag-pp-tools { margin-left: auto; }
+
+.ag-workbench-head [hidden] { display: none !important; }
+.ag-workbench-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.ag-workbench-actions:empty { display: none; }
+.ag-workbench-actions .ag-header-icon-btn { width: 26px; height: 26px; }
+.ag-workbench-back:hover { background: var(--ag-hover); color: var(--ag-text); }
+.ag-workbench-back:focus-visible { outline: 2px solid var(--ag-text-secondary); outline-offset: -2px; }
+
+/* 집중 화면의 작업 칸. 문서 편집기 옆의 일반 사이드바는 원래 배치를 쓴다. */
+.ag-fullscreen .ag-workbench-page {
+  grid-column: 3;
+  grid-row: 2;
+  position: relative;
+  inset: auto;
+  border-left: 1px solid var(--ag-border);
+}
+.ag-fullscreen.ag-workbench-open .ag-stage {
+  grid-template-columns: var(--ag-rail-w, 264px) minmax(0, 1fr) var(--ag-review-w, 560px);
+}
+.ag-fullscreen.ag-workbench-open.ag-rail-collapsed .ag-stage {
+  grid-template-columns: 0 minmax(0, 1fr) var(--ag-review-w, 560px);
+}
+.ag-fullscreen.ag-workbench-open .ag-review-resize {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 10;
+}
+.ag-fullscreen.ag-workspace-compact.ag-workbench-open .ag-stage {
+  grid-template-columns: minmax(0, 1fr);
+}
+.ag-fullscreen.ag-workspace-compact .ag-workbench-page {
+  position: absolute;
+  top: var(--ag-workspace-bar-h, 48px);
+  bottom: 0;
+  right: 0;
+  width: min(var(--ag-review-w, 560px), 88vw);
+  z-index: 14;
+  box-shadow: var(--ag-elev-sheet);
+}
+.ag-fullscreen.ag-workspace-compact.ag-workbench-open .ag-review-resize { display: none; }
+
+.ag-workbench-nav { display: none; }
+.ag-fullscreen .ag-workbench-nav {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 2px;
+  margin-bottom: 4px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--ag-border);
+}
+.ag-workbench-launch {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  min-width: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: 500 12px/1.35 var(--ag-font);
+  text-align: left;
+  cursor: pointer;
+  transition: color 130ms ease, background 130ms ease;
+}
+.ag-workbench-launch svg { flex: 0 0 auto; width: 16px; height: 16px; }
+.ag-workbench-launch:hover { background: var(--ag-hover); color: var(--ag-text); }
+.ag-workbench-launch.ag-selected { background: var(--ag-raised); color: var(--ag-text); }
+.ag-workbench-launch:focus-visible { outline: 2px solid var(--ag-text-secondary); outline-offset: -2px; }
+@media (prefers-reduced-motion: reduce) { .ag-workbench-launch { transition: none; } }

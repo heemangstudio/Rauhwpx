@@ -10,7 +10,8 @@ const source = readFileSync(
 test('changes drawer exposes synchronized accessible state', () => {
   assert.match(source, /reviewColumn\.setAttribute\('aria-labelledby', 'ag-review-column-title'\)/);
   assert.match(source, /reviewColumnTitle\.id = 'ag-review-column-title'/);
-  assert.match(source, /environmentChanges\.setAttribute\('aria-expanded', changesActive \? 'true' : 'false'\)/);
+  assert.match(source, /const changesShown = changesActive \|\| workbench\?\.current\(\) === 'changes'/);
+  assert.match(source, /environmentChanges\.setAttribute\('aria-expanded', changesShown \? 'true' : 'false'\)/);
   assert.match(source, /reviewColumn\.setAttribute\('aria-hidden', changesActive \? 'false' : 'true'\)/);
   assert.match(source, /reviewColumn\.inert = !changesActive/);
   assert.match(source, /reviewResize\.setAttribute\('role', 'separator'\)/);

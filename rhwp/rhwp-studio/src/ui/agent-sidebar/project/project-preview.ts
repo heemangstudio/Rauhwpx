@@ -50,6 +50,11 @@ export interface ProjectPreviewDeps {
   /** 노트·영역 저장. ProjectStore.edit 를 넘기면 보드가 바로 따라온다. 없으면 service.applyOps 로 보낸다. */
   edit?: (ops: ProjectOp[]) => Promise<ProjectOpsResult | unknown>;
   onClose: () => void;
+  /** 탭을 쓰는 호스트는 인용을 새 항목 탭으로 연다. */
+  onOpen?: (request: ProjectPreviewRequest) => void;
+  onDirtyChange?: () => void;
+  /** 탭 호스트가 초안 확인과 뷰 해제를 맡는다. */
+  managedClose?: boolean;
   /** `d…` 문서 노드를 열 때. 없으면 미리보기가 안내만 한다. */
   openDocument?: (documentId: string) => void;
 }
@@ -63,6 +68,10 @@ export interface ProjectPreview {
   /** 열린 항목과 뒤로 가기 목록을 비운다. */
   clear(): void;
   readonly current: ProjectPreviewRequest | null;
+  setVisible(visible: boolean): void;
+  /** 같은 원본의 쪽·인용 이동은 배율과 노트 초안을 보존한다. */
+  reveal(request: ProjectPreviewRequest): Promise<void>;
+  readonly hasUnsavedChanges: boolean;
   destroy(): void;
 }
 
@@ -100,6 +109,8 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   let clipLayer: ClipLayer | null = null;
   let objectUrl: string | null = null;
   let cleanupView: (() => void) | null = null;
+  let isVisible = true;
+  let dirty = () => false;
 
   /** 조각 → 쪽 번호. 받은 값은 숫자로 바꿔 두어, 다시 그린 칩이 바로 같은 모양이 된다. */
   const chunkPages = new Map<string, number | null | Promise<number | null>>();
@@ -107,7 +118,9 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   const citations: CitationHooks = {
     resolveItem: (id) => projectCitationTarget(deps.project(), id),
     openCitation: (request) => {
-      void open({ itemId: request.id, anchor: request.anchor, quote: request.quote });
+      const target = { itemId: request.id, anchor: request.anchor, quote: request.quote };
+      if (deps.onOpen) deps.onOpen(target);
+      else void open(target);
     },
     chunkPage: (id, n) => {
       const projectId = deps.project()?.id;
@@ -133,6 +146,8 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   }
 
   function resetView(): void {
+    dirty = () => false;
+    deps.onDirtyChange?.();
     cleanupView?.();
     cleanupView = null;
     clipLayer?.destroy();
@@ -235,6 +250,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       onPageChange: (page, total) => { meta.textContent = `${page} / ${total}`; },
     });
     viewer = pdf;
+    pdf.setVisible(isVisible);
     zoomTools(() => pdf.zoomOut(), () => pdf.zoomIn());
     busy();
     const [blob, chunk] = await Promise.all([
@@ -243,7 +259,9 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     ]);
     if (token !== generation) return;
     body.replaceChildren(pdf.element);
-    await pdf.load(new Uint8Array(await blob.arrayBuffer()));
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (token !== generation) return;
+    await pdf.load(bytes);
     if (token !== generation) return;
     body.removeAttribute('aria-busy');
     const layer = mountClipLayer(projectId, item);
@@ -345,14 +363,18 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     const startEdit = () => {
       const editor = el('textarea', 'ag-pp-note-editor');
       editor.value = source;
+      dirty = () => editor.value !== source;
+      editor.addEventListener('input', () => deps.onDirtyChange?.());
       editor.setAttribute('aria-label', '노트 내용');
       editor.spellcheck = false;
       const cancel = button('ag-pp-text-button', '편집 취소', { text: '취소' });
       const save = button('ag-pp-text-button ag-pp-primary', '노트 저장', { text: '저장' });
       tools.replaceChildren(cancel, save);
       body.replaceChildren(editor);
-      editor.focus();
+      if (isVisible) editor.focus();
       const finish = () => {
+        dirty = () => false;
+        deps.onDirtyChange?.();
         tools.replaceChildren(editButton);
         body.replaceChildren(view);
       };
@@ -363,14 +385,20 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
         }
         save.disabled = true;
         cancel.disabled = true;
-        const ops: ProjectOp[] = [{ op: 'note', id: item.id, body: editor.value, mode: 'replace' }];
+        const savedBody = editor.value;
+        const ops: ProjectOp[] = [{ op: 'note', id: item.id, body: savedBody, mode: 'replace' }];
         try {
           if (deps.edit) await deps.edit(ops);
           else await deps.service.applyOps(projectId, ops);
           if (token !== generation) return;
-          source = editor.value;
+          source = savedBody;
           render();
-          finish();
+          if (editor.value === savedBody) finish();
+          else {
+            save.disabled = false;
+            cancel.disabled = false;
+            deps.onDirtyChange?.();
+          }
         } catch {
           save.disabled = false;
           cancel.disabled = false;
@@ -435,6 +463,9 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       if ((error as Error)?.message === 'closed') return;
       body.removeAttribute('aria-busy');
       message(errorText(error));
+      const retry = button('ag-pp-text-button', '다시 열기', { text: '다시 시도' });
+      retry.addEventListener('click', () => { void show(request); });
+      body.append(retry);
     }
   }
 
@@ -457,7 +488,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       void show(previous);
       return;
     }
-    clear();
+    if (!deps.managedClose) clear();
     deps.onClose();
   }
 
@@ -499,6 +530,47 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       refreshCitations(body, citations);
     },
     clear,
+    setVisible(next) {
+      isVisible = next;
+      root.inert = !next;
+      viewer?.setVisible(next);
+    },
+    async reveal(request) {
+      const found = findItem(request.itemId);
+      const source = found?.kind === 'clip' ? findItem(found.sourceId) : found;
+      const previous = current ? findItem(current.itemId) : null;
+      const previousSource = previous?.kind === 'clip' ? findItem(previous.sourceId) : previous;
+      if (!source || source.id !== previousSource?.id) return open(request);
+      current = request;
+      if (source.kind === 'note') return;
+      if (!viewer) {
+        if (found?.kind === 'clip') {
+          const box = clipLayer?.reveal(found.id);
+          box?.scrollIntoView({ block: 'center', inline: 'center' });
+        } else if (source.kind === 'file' && source.fileKind !== 'image' && (request.anchor || request.quote)) {
+          const projectId = deps.project()?.id;
+          if (projectId) await showReader(projectId, source, parseAnchor(request.anchor), request.quote?.trim() || null, ++generation);
+        }
+        return;
+      }
+      const pdf = viewer;
+      const token = generation;
+      if (found?.kind === 'clip') {
+        pdf.scrollToRegion(found.page, found.rect);
+        clipLayer?.reveal(found.id);
+        return;
+      }
+      const anchor = parseAnchor(request.anchor);
+      if (anchor?.kind === 'page') pdf.showPage(anchor.n);
+      else if (anchor?.kind === 'chunk') {
+        const projectId = deps.project()?.id;
+        if (!projectId) return;
+        const chunk = await chunkFor(projectId, source.id, anchor);
+        if (token !== generation || pdf !== viewer || !isVisible) return;
+        if (chunk?.page) await pdf.highlight(chunk.page, { chunk, quote: request.quote });
+      }
+    },
+    get hasUnsavedChanges() { return dirty(); },
     get current() {
       return current;
     },

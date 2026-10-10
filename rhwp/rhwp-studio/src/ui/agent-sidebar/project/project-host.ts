@@ -28,6 +28,9 @@ export interface ProjectHostDeps {
    */
   requestOpen(then: () => void): void;
   requestClose(): void;
+  /** 자료는 별도 작업 탭에서 연다. */
+  openPreview?(target: ProjectPreviewTarget): boolean | void;
+  openBoard?(tab?: ProjectTab): boolean | void;
   /** `d…` 문서 노드를 열 때 — 그 문서로 옮겨 간다. */
   openDocument(documentId: string): void;
   onChange?(project: ProjectSnapshot | null): void;
@@ -75,6 +78,8 @@ export function createProjectHost(deps: ProjectHostDeps): ProjectHost {
 
   function open(target?: ProjectPreviewTarget, tab?: ProjectTab): void {
     if (!client) return;
+    if (target && deps.openPreview && deps.openPreview(target) !== false) return;
+    if (!target && deps.openBoard && deps.openBoard(tab) !== false) return;
     deps.requestOpen(() => {
       const opened = ensureColumn();
       if (tab) opened?.setTab(tab);
