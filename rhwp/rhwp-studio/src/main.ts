@@ -223,6 +223,7 @@ import {
   reserveDesktopDocument,
 } from '@/desktop-integration';
 import { initAgentBridge } from './agent/bridge.ts';
+import { claimDocumentWriter, syncDocumentWriter } from './agent/document-writer.ts';
 import { renameThreadsDocument } from './agent/threads.ts';
 import { initAgentSidebar } from './ui/agent-sidebar/index.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
@@ -1686,7 +1687,12 @@ function chatModeLockFor(chat: ChatSession): { reason: string } | null {
     : null;
 }
 
-function notifyChatModeLock(session: DocumentSession): void {
+/**
+ * 채팅의 쓰기 상태가 바뀌었다. 문서를 고칠 채팅(writer)을 먼저 맞추고 잠금을 다시 읽힌다.
+ * changed 는 방금 바뀐 채팅 — 문서가 비어 있을 때 먼저 쥔 그 채팅이 주인이 된다.
+ */
+function notifyChatModeLock(session: DocumentSession, changed?: ChatSession): void {
+  syncDocumentWriter(session, changed);
   for (const listener of tapsFor(session).modeLock) listener();
 }
 
@@ -1705,6 +1711,7 @@ function installChatAgent(
   const versions = installDocumentVersions(session);
   const documentShown = () => attachedSession === session;
   const docAttached = documentShown();
+  let chat: ChatSession | undefined;
   const bridge = initAgentBridge({
     wasm: session.wasm,
     eventBus: session.bus,
@@ -1715,8 +1722,9 @@ function installChatAgent(
     commitVersion: async (message) => {
       await versions.checkpoint(message);
     },
+    // 같은 문서의 다른 채팅이 고치는 중이면 이 채팅의 쓰기는 문서에 닿지 않는다.
+    claimDocumentWrite: () => chat !== undefined && claimDocumentWriter(session, chat),
   }, hubSession ? { resolveSessionContext: hubSession.resolveContext } : undefined);
-  let chat: ChatSession | undefined;
   const shown = () => documentShown() && chat !== undefined && session.activeChat === chat;
   const sidebar = initAgentSidebar({
     bridge,
@@ -1805,7 +1813,7 @@ function installChatAgent(
       if (event.type === 'connection' && event.state === 'connected' && documentShown()) {
         connectPendingDocumentFonts();
       }
-      if (event.type === 'workflow-changed') notifyChatModeLock(session);
+      if (event.type === 'workflow-changed') notifyChatModeLock(session, created);
       for (const listener of taps.events) listener(event);
       attentionSession = session;
       try {
@@ -1815,17 +1823,17 @@ function installChatAgent(
       }
     }),
     bridge.onBusyChange((busy) => {
-      notifyChatModeLock(session);
+      notifyChatModeLock(session, created);
       // 보이지 않는 채팅이 일을 마치면 닫는다. 기록은 채팅 목록에 남고, 허브 세션과 공급자를 놓는다.
       if (!busy) closeIdleHiddenChats(session);
     }),
     bridge.pendingEdits.onChange((event) => {
       for (const listener of taps.pending) listener(event);
       notifyAttentionPendingChanged();
-      notifyChatModeLock(session);
+      notifyChatModeLock(session, created);
     }),
   );
-  notifyChatModeLock(session);
+  notifyChatModeLock(session, created);
   return created;
 }
 
@@ -1880,6 +1888,8 @@ function disposeChat(chat: ChatSession): void {
   chat.bridge.dispose();
   // 공급자 프로세스가 끝날 때까지 기다리므로 화면을 막지 않는다.
   void chat.hubSession?.release();
+  // 닫힌 채팅은 문서를 놓는다 — 다음으로 쥔 채팅이 주인이 된다.
+  if (session.writer === chat) session.writer = null;
   notifyChatModeLock(session);
   notifyAttentionPendingChanged();
 }

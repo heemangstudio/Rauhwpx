@@ -60,11 +60,27 @@ export interface AgentToolExecutorDeps {
   loadTemplateBytes?: (template: DocumentTemplate) => Promise<Uint8Array>;
   getDocumentSourcePath?: () => Promise<string | null>;
   isReadOnly?: () => boolean;
+  /** 쓰기 직전에 문서를 고칠 자리를 요구한다 (AgentBridgeDeps.claimDocumentWrite). 없으면 늘 받는다. */
+  claimDocumentWrite?: () => boolean;
   /** 참조 이미지 잘라내기 — 기본은 브라우저 캔버스 (테스트가 주입한다) */
   cropImage?: ImageCropper;
 }
 
 const DOC_NOT_LOADED_MESSAGE = '문서가 로드되지 않았습니다';
+
+/**
+ * 같은 문서의 다른 채팅이 고치는 중이라 쓰기를 받지 않았다. 문서는 그대로다 — 이번 턴에는
+ * 다시 쓰지 말고, 무엇을 바꾸려 했는지 사용자에게 알리게 한다.
+ */
+export function documentWriterBusyError(): AgentToolError {
+  return new AgentToolError(
+    'DOCUMENT_WRITER_BUSY',
+    'Another chat open on this document is editing it (its turn is running or its edits are waiting for the user\'s review). '
+      + 'A document has one editing chat at a time. Nothing was changed. '
+      + 'Do not retry document-write tools in this turn; reads still work. '
+      + 'Finish by telling the user what you would change; they can ask again after the other chat\'s edits are applied or discarded.',
+  );
+}
 
 /** 엔진 trap 뒤에는 같은 인스턴스로 다시 시도해도 실패한다 — 재시도 대신 사용자 안내로 넘긴다. */
 function engineTrappedError(detail: string): AgentToolError {
@@ -1044,6 +1060,10 @@ export class AgentToolExecutor {
           'READ_ONLY_TEMPLATE_PREVIEW',
           'This published template preview is read-only and cannot accept document-write tools.',
         );
+      }
+      // 같은 문서의 다른 채팅이 고치는 중이면 문서에 닿기 전에 거절한다 (채팅 모드 잠금이 늦어도).
+      if (isDocumentWriteTool(tool) && this.deps.claimDocumentWrite && !this.deps.claimDocumentWrite()) {
+        throw documentWriterBusyError();
       }
       if (isDocumentWriteTool(tool)
         && !tool.startsWith('template_')

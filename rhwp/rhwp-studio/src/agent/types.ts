@@ -1023,6 +1023,12 @@ export interface AgentBridgeDeps {
   isReadOnly?: () => boolean;
   /** 전체 모드 에이전트의 버전 커밋 — 사이드바 커밋 버튼과 같은 기록에 남긴다. */
   commitVersion?: (message: string) => Promise<void>;
+  /**
+   * 쓰기 도구가 문서에 닿기 직전에 이 채팅이 문서를 고칠 자리를 요구한다. 같은 문서의 다른
+   * 채팅이 고치는 중이면 false 이고, 그 쓰기는 DOCUMENT_WRITER_BUSY 로 거절된다. 없으면
+   * (채팅 하나뿐인 호스트) 모든 쓰기를 받는다.
+   */
+  claimDocumentWrite?: () => boolean;
   /** 문서 작업용 편집기. view 가 있으면 view.inputHandler 를 쓴다. */
   editor: AgentEditorHost;
   /** 화면에 붙은 편집기·캔버스. null 이면 화면 밖(백그라운드)에서 시작한다. */

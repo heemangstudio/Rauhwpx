@@ -18,7 +18,7 @@ import {
   type RendererSessionContext,
 } from '../desktop-integration.ts';
 import { RevisionTracker, timeSeededRevision } from './revision.ts';
-import { AgentToolExecutor, isDocumentWriteTool, toolTraceNow, type ToolTraceTimings } from './tool-executor.ts';
+import { AgentToolExecutor, documentWriterBusyError, isDocumentWriteTool, toolTraceNow, type ToolTraceTimings } from './tool-executor.ts';
 import { PendingEditManager, editReportNote } from './pending-edits.ts';
 import { PendingOverlayRenderer } from './pending-overlay.ts';
 import { readProviderQuota, readRemoteBalance } from './provider-quota-protocol.ts';
@@ -1257,6 +1257,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private httpBaseUrl = '';
   private readonly options?: AgentBridgeOptions;
   private readonly versionCommit?: (message: string) => Promise<void>;
+  private readonly claimDocumentWrite?: () => boolean;
   private ws: WebSocket | null = null;
   private state: ConnectionState = 'disconnected';
   /** 지금까지 실패한 연결 시도 수. 허브의 welcome 을 받으면 0 으로 돌아간다. */
@@ -1385,6 +1386,7 @@ export class AgentBridgeImpl implements AgentBridge {
 
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
     this.versionCommit = deps.commitVersion;
+    this.claimDocumentWrite = deps.claimDocumentWrite;
     this.view = deps.view ?? null;
     this.editor = this.view?.inputHandler ?? deps.editor;
     this.editorHost = {
@@ -1441,6 +1443,7 @@ export class AgentBridgeImpl implements AgentBridge {
       loadTemplateBytes: (template) => this.downloadTemplateBytes(template),
       getDocumentSourcePath: () => getNativeFileSourcePath(deps.wasm.currentFileHandle),
       isReadOnly: deps.isReadOnly,
+      claimDocumentWrite: deps.claimDocumentWrite,
     });
     this.turnSnapshots = new TurnSnapshots({
       read: (args) => this.executor.structureSnapshot(args),
@@ -1995,6 +1998,8 @@ export class AgentBridgeImpl implements AgentBridge {
     if (!this.versionCommit) {
       throw new AgentToolError('VERSIONING_UNAVAILABLE', 'Version history is not available for this document.');
     }
+    // 다른 채팅이 고치는 중이면 그 채팅의 미리보기를 이 채팅의 커밋으로 남기지 않는다.
+    if (this.claimDocumentWrite && !this.claimDocumentWrite()) throw documentWriterBusyError();
     // 열린 직접 반영 set 이 있으면 먼저 확정해 커밋에 빠짐없이 담는다.
     this.pendingEdits.commitOpen();
     try {

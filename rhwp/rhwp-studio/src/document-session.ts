@@ -73,6 +73,12 @@ export interface DocumentSession {
   /** 이 문서의 채팅들. 화면에는 activeChat 의 사이드바만 보인다. */
   readonly chats: ChatSession[];
   activeChat: ChatSession | null;
+  /**
+   * 지금 이 문서를 고칠 수 있는 채팅 (agent/document-writer.ts). 이 문서의 채팅이고 아직
+   * 쓰기를 쥐고 있을 때만 유효하다 — 턴이 돌거나 검토 대기 편집이 남아 있다. 다른 채팅의 쓰기
+   * 도구는 문서에 닿기 전에 거절된다.
+   */
+  writer: ChatSession | null;
   /** 지금 보이는 채팅의 브리지·사이드바 (activeChat 의 것) */
   readonly bridge: AgentBridge | null;
   readonly sidebar: DocumentSessionSidebar | null;
@@ -144,6 +150,7 @@ export function createDocumentSessionCore(options: DocumentSessionCoreOptions): 
     editMode: 'normal',
     chats: [],
     activeChat: null,
+    writer: null,
     get bridge() { return session.activeChat?.bridge ?? null; },
     get sidebar() { return session.activeChat?.sidebar ?? null; },
     versions: null,
