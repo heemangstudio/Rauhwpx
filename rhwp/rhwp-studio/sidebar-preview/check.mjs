@@ -19,6 +19,7 @@ import { checkWriterBusyPreview } from './writer-busy.check.mjs';
 import { checkTypingGuard } from './typing-guard.check.mjs';
 import { checkDelayedStatus } from './delayed-status.check.mjs';
 import { checkRestoreTurnPreview } from './restore-turn.check.mjs';
+import { checkFailureNotices } from './failures.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -462,8 +463,10 @@ try {
     await page.waitForFunction(() => document.querySelector('.ag-root').innerText.includes('용어를 통일'));
     await screenshot('fleet');
     await play('error');
+    // The default failure kind is a network failure: one notice with 다시 시도.
     await page.waitForFunction(() =>
-      document.querySelector('.ag-root').innerText.includes('앗, 오류에요! 네트워크 연결을 확인하세요!'),
+      document.querySelectorAll('.ag-failure-notice').length === 1
+      && document.querySelector('.ag-failure-action[data-action="retry"]'),
     );
     assert(
       !(await page.$eval('.ag-root', (element) =>
@@ -1031,6 +1034,8 @@ try {
     () => checkRestoreTurnPreview(page, origin, artifacts));
   await step('A reload re-adopts the chat the hub still runs instead of restarting it',
     () => checkReloadPreview(page, origin, artifacts));
+  await step('Each provider failure shows one notice with the actions that fit it',
+    () => checkFailureNotices(page, origin, artifacts));
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

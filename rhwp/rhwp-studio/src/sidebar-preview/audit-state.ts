@@ -69,7 +69,8 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
   if (params.get('play') === '1') {
     await until(composerReady, 'composer');
     document.querySelector<HTMLButtonElement>('#play')!.click();
-    await until(() => preview.snapshot().running, 'sample reply');
+    // 채팅 시작이 실패하는 장면은 턴 없이 실패 알림만 남는다.
+    await until(() => preview.snapshot().running || document.querySelector('.ag-failure-notice'), 'sample reply');
     if (params.get('hold') !== '1' && params.get('scenario') !== 'question') {
       await until(() => !preview.snapshot().running, 'completed reply');
     }

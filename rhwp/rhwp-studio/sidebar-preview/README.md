@@ -72,7 +72,22 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=fleet&background=1` | A subagent that keeps running after its turn: its card stays in the dock, outside the turn fold, and lands below the fold when it finishes |
 | `?scenario=tools&play=1` | A finished multi-tool turn folded into one summary row above the answer (`작업 … · 문단 3개 수정 · … · 오류 1`) |
 | `?scenario=tools&play=1&hold=1`, then Stop | A stopped turn folded as `중단됨 · …` |
-| `?scenario=error` | A failed turn; failed turns never fold |
+| `?scenario=error` | A failed turn: one network-failure notice with 다시 시도 (same as `&failure=network`); failed turns never fold |
+| `?scenario=error&failure=auth` | Login notice (Claude/Codex) with 로그인; after the fixture login it shows 다시 연결됐어요 and 다시 시도 |
+| `?scenario=error&failure=pi-auth` | Pi connection notice with 설정 열기 |
+| `?scenario=error&failure=usage` | Usage-limit notice whose reset time comes from the quota report, with 리셋 후 이어서 and 사용량 보기 |
+| `?scenario=error&failure=usage-soon` | Usage-limit notice resetting in 3 s; 리셋 후 이어서 sends by itself (the preview's clock grace is 0.5 s, the app's 30 s) |
+| `?scenario=error&failure=credits` | OpenRouter credits notice with 사용량 보기 |
+| `?scenario=error&failure=provider` | Provider overloaded or 5xx notice with 다시 시도 and 자세히 |
+| `?scenario=error&failure=network` | Network failure notice with 다시 시도 |
+| `?scenario=error&failure=exited` | CLI stopped mid-turn notice with 다시 시도 |
+| `?scenario=error&failure=cleanup` | Previous process could not be cleaned up: no retry, asks for an app restart |
+| `?scenario=error&failure=cli-missing` | CLI not found notice with 설정 열기 |
+| `?scenario=error&failure=invalid` | Conversation too long for the model (invalid request) |
+| `?scenario=error&failure=unknown` | Unclassified failure with 다시 시도 |
+| `?scenario=error&failure=start` | Chat start failure (`AGENT_SPAWN_FAILED`); 다시 시도 restarts the session |
+| `?scenario=error&failure=hub-restarted` | Turn lost to an agent hub restart |
+| `?scenario=error&failure=legacy` | An older hub's text-only failure, classified in Studio (login notice) |
 | `?scenario=writer-busy` | A write refused because another chat of the document is editing it |
 | `?scenario=review&restore=later` | After **변경 수락**, hovering the request shows **이 작업 전으로 되돌리기**; it asks before discarding later edits, then puts the request back into the empty composer |
 | `?scenario=review&restore=evicted` | The same action for a request whose checkpoint is gone: dimmed, and a click only explains why |
@@ -106,6 +121,12 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 Parameters can be combined. Select **Next reply**, then type a message or press
 **Play sample conversation**. Connection and service controls expose disconnected,
 reconnecting, replaced-session, and setup screens without waiting for real failures.
+With **Next reply** set to `Error`, **실패 유형** picks which provider failure the turn
+ends with; the mock sends the same classified failure on both the `error` and the
+`turn-end` event, and the production collector folds them into one notice.
+`node sidebar-preview/failures.check.mjs` opens every kind, exercises 로그인, 다시 시도,
+dismissal across a chat switch and a reload, and 리셋 후 이어서 / 취소, and saves
+`artifacts/failure-*.png`.
 
 Transient statuses are delayed like the app: the connection dot, the composer's lock
 (read-only, so focus and IME composition survive) and the "편집 중…" ring appear only

@@ -11,6 +11,7 @@ import { loadAgentPrefs } from '../agent/agent-prefs.ts';
 import { createFixtures, samplePlan, timestamp, agents } from './fixtures.ts';
 import { requestLiveUsage, consumeLiveCodexReset } from './live-usage.ts';
 import { createBrowserbaseFixture, type BrowserbaseFixtureState } from './fixtures.ts';
+import { createTurnFailureCollector } from '../agent/provider-failure.ts';
 
 export const scenarios = [
   'chat',
@@ -24,6 +25,69 @@ export const scenarios = [
   'writer-busy',
 ] as const;
 export type Scenario = (typeof scenarios)[number];
+
+/** `?scenario=error&failure=…` — 실패 알림 종류. 기본은 network (예전 오류 시나리오의 문구). */
+export const failureKinds = [
+  'network',
+  'auth',
+  'pi-auth',
+  'usage',
+  'usage-soon',
+  'credits',
+  'provider',
+  'exited',
+  'cleanup',
+  'cli-missing',
+  'invalid',
+  'unknown',
+  'start',
+  'hub-restarted',
+  'legacy',
+] as const;
+export type FailureKind = (typeof failureKinds)[number];
+
+/** 허브가 분류해 보내는 모양 그대로의 견본 실패. */
+function previewFailure(kind: FailureKind, agent: T.AgentName, now: number): T.ProviderFailure {
+  const failure = (
+    failureClass: T.ProviderFailureClass,
+    message: string,
+    code: string | null,
+    retryable: boolean,
+    resetAt: number | null = null,
+  ): T.ProviderFailure => ({ class: failureClass, agent, message, code, retryable, resetAt });
+  switch (kind) {
+    case 'auth':
+      return failure('auth_required', 'Invalid API key · Please run /login', `${agent}:authentication_failed`, false);
+    case 'pi-auth':
+      return { ...failure('auth_required', '401 No auth credentials found', 'http_401', false), agent: 'pi' };
+    case 'usage':
+      return failure('usage_limit', "You've hit your limit · resets 3pm (UTC)", `${agent}:rate_limit`, false);
+    case 'usage-soon':
+      return failure('usage_limit', "You've hit your limit · resets soon", `${agent}:rate_limit`, false, now + 3_000);
+    case 'credits':
+      return failure('usage_limit', 'OpenRouter 크레딧이 부족합니다.\n402 This request requires more credits, or fewer max_tokens. To increase, visit https://openrouter.ai/settings/credits?[redacted]', 'openrouter_credits', false);
+    case 'provider':
+      return failure('provider_error', 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', `${agent}:overloaded`, true);
+    case 'exited':
+      return failure('process_exited', '실행이 중단되었습니다 (code 1).\nAPI Error: Connection error.\nAuthorization: Bearer [redacted]', null, true);
+    case 'cleanup':
+      return failure('process_exited', 'The previous provider process tree could not be confirmed stopped. Restart the app before starting another provider.', 'cleanup_uncertain', false);
+    case 'cli-missing':
+      return failure('process_exited', 'process error: spawn ENOENT', 'cli_missing', false);
+    case 'invalid':
+      return failure('invalid_request', 'Codex ran out of room in the model\'s context window. Start a new thread or clear earlier history before retrying.', 'codex:contextWindowExceeded', false);
+    case 'unknown':
+      return failure('unknown', 'Unexpected provider response: the stream ended without a terminal frame.', null, true);
+    case 'start':
+      return failure('process_exited', 'spawn failed: the CLI exited before it was ready', 'AGENT_SPAWN_FAILED', true);
+    case 'hub-restarted':
+      return failure('process_exited', '에이전트 허브가 다시 시작되어 작업이 중단됐습니다.', 'HUB_RESTARTED', true);
+    case 'legacy':
+    case 'network':
+    default:
+      return failure('network', 'stream disconnected before completion: error sending request for url (https://api.example.com/v1/responses?[redacted])', null, true);
+  }
+}
 
 const sampleModelCatalogs: Record<CatalogAgent, ModelCatalogEntry[]> = {
   claude: [
@@ -205,6 +269,9 @@ export function createMockBridge(
     ? Promise.resolve()
     : new Promise<void>((resolve) => { resolveWelcome = resolve; });
   let scenario: Scenario = 'chat';
+  let failureKind: FailureKind = 'network';
+  // 실제 브리지처럼 한 턴의 error·turn-end 를 실패 알림 하나로 모은다.
+  const turnFailures = createTurnFailureCollector();
   let holdReply = false;
   /** How long a chat start and an attachment upload take — checks slow them to observe the locks. */
   let chatStartDelayMs = 20;
@@ -256,7 +323,23 @@ export function createMockBridge(
   };
   const stream = (event: T.AgentStreamEvent) => {
     if (event.type === 'turn-start') currentTurnId = event.turnId ?? null;
+    let failureEvent: T.SidebarEvent | null = null;
+    if (event.type === 'turn-start') turnFailures.beginTurn(event.turnId ?? null, true);
+    if (event.type === 'error') {
+      const idle = turnFailures.observeError(event, running);
+      if (idle) failureEvent = { type: 'turn-failure', failure: idle, turnId: null, origin: 'idle', userInitiated: false };
+    }
+    if (event.type === 'turn-end') {
+      const ended = turnFailures.endTurn(event);
+      if (ended) {
+        failureEvent = {
+          type: 'turn-failure', failure: ended.failure, turnId: ended.turnId, origin: 'turn',
+          userInitiated: ended.userInitiated, wroteDocument: false,
+        };
+      }
+    }
     emit({ type: 'agent', event });
+    if (failureEvent) emit(failureEvent);
   };
   const setRunning = (value: boolean) => {
     running = value;
@@ -265,6 +348,34 @@ export function createMockBridge(
   const finish = (stopReason = 'completed') => {
     setRunning(false);
     stream({ type: 'turn-end', agent, stopReason });
+  };
+  /** 실패한 턴: 실제 허브처럼 같은 실패를 error 와 turn-end 에 함께 싣는다 (알림은 하나만 남아야 한다). */
+  const failTurn = (kind: FailureKind, turnId: string) => {
+    const now = Date.now();
+    const failure = previewFailure(kind, agent, now);
+    if (kind === 'usage' && (agent === 'claude' || agent === 'codex') && data.usage.limits) {
+      // 실패에 리셋 시각이 없으면 사용량 보고의 다 쓴 창에서 찾는다.
+      const limits = structuredClone(data.usage.limits);
+      limits[agent].session = { percent: 100, resetsAt: now + 2 * 60 * 60 * 1000 };
+      emit({ type: 'usage-report', usage: { ...data.usage, limits } });
+    }
+    if (kind === 'hub-restarted') {
+      // 브리지가 허브 재시작으로 잃은 턴을 닫는 모양 (welcome session:null).
+      setRunning(false);
+      stream({ type: 'turn-end', agent, stopReason: 'exited', errorMessage: failure.message, failure, turnId });
+      return;
+    }
+    if (kind === 'legacy') {
+      // 이전 허브: failure 없이 문구만 온다.
+      const message = 'Invalid API key · Please run /login';
+      stream({ type: 'error', agent, message });
+      setRunning(false);
+      stream({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: message, turnId });
+      return;
+    }
+    stream({ type: 'error', agent, message: failure.message, failure });
+    setRunning(false);
+    stream({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: failure.message, failure, turnId });
   };
   const updatePlanExecution = (execution: NonNullable<T.StructuredPlan['execution']>) => {
     if (!workflow.latestPlan) return;
@@ -746,6 +857,12 @@ export function createMockBridge(
         scenario === 'chat' && workflow.workflow !== 'direct'
           ? workflow.workflow
           : scenario;
+      if (reply === 'error' && failureKind === 'start') {
+        // 채팅 시작 실패: 메시지는 프로바이더에 닿지 않는다.
+        const failure = previewFailure('start', agent, Date.now());
+        later(() => emit({ type: 'hub-error', code: 'AGENT_SPAWN_FAILED', message: failure.message, failure, origin: 'start' }));
+        return null;
+      }
       later(() => {
         if (generation !== turnGeneration) return;
         setRunning(true);
@@ -854,12 +971,7 @@ export function createMockBridge(
             });
           }
           if (reply === 'error') {
-            stream({
-              type: 'error',
-              agent,
-              message: '앗, 오류에요! 네트워크 연결을 확인하세요!',
-            });
-            finish('failed');
+            failTurn(failureKind, `turn-${turnGeneration}`);
             return;
           }
           if (reply === 'plan') {
@@ -1490,6 +1602,9 @@ export function createMockBridge(
     setScenario: (value: Scenario) => {
       scenario = value;
     },
+    setFailureKind: (value: FailureKind) => {
+      failureKind = value;
+    },
     setHold: (value: boolean) => { holdReply = value; },
     setChatStartDelay: (ms: number) => { chatStartDelayMs = ms; },
     setStageDelay: (ms: number) => { stageDelayMs = ms; },
@@ -1528,6 +1643,7 @@ export function createMockBridge(
       messagesSent,
       messageTexts: sentMessages.map((message) => message.text),
       sentMessages: sentMessages.map((message) => ({ ...message, referenceIds: [...message.referenceIds] })),
+      failureKind,
       interrupts,
       stops,
       scenario,

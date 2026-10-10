@@ -4,7 +4,7 @@ import './preview.css';
 import { initAgentSidebar, type AgentSidebarHandle } from '../ui/agent-sidebar/index.ts';
 import { EventBus } from '../core/event-bus.ts';
 import { applyTheme, setThemeMode } from '../core/theme.ts';
-import { createMockBridge, scenarios, type Scenario } from './mock-bridge.ts';
+import { createMockBridge, failureKinds, scenarios, type FailureKind, type Scenario } from './mock-bridge.ts';
 import { createMockVersions } from './mock-versions.ts';
 import { showToast } from '../ui/toast.ts';
 import { userSettings } from '../core/user-settings.ts';
@@ -340,6 +340,8 @@ const sidebar = initAgentSidebar({
   bridge: mock.bridge,
   eventBus,
   typingActivity: typingHold?.activity,
+  // '리셋 후 이어서' 를 몇 초 안에 볼 수 있게 시계 차이 여유를 줄인다 (앱은 30초).
+  failureResumeGraceMs: 500,
   getDocumentContext: () => ({
     documentId,
     documentName,
@@ -413,6 +415,18 @@ if (scenarios.includes(initialScenario as Scenario))
   scenarioSelect.value = initialScenario!;
 mock.setScenario(scenarioSelect.value as Scenario);
 mock.setHold(params.get('hold') === '1');
+// 오류 시나리오의 실패 유형 — 알림 종류마다 URL 하나로 열린다 (?scenario=error&failure=usage).
+const failureSelect = document.querySelector<HTMLSelectElement>('#failure')!;
+for (const kind of failureKinds) failureSelect.add(new Option(kind, kind));
+const initialFailure = params.get('failure');
+if (failureKinds.includes(initialFailure as FailureKind)) failureSelect.value = initialFailure!;
+mock.setFailureKind(failureSelect.value as FailureKind);
+failureSelect.addEventListener('change', () => {
+  mock.setFailureKind(failureSelect.value as FailureKind);
+  const url = new URL(location.href);
+  url.searchParams.set('failure', failureSelect.value);
+  history.replaceState(null, '', url);
+});
 scenarioSelect.addEventListener('change', () => {
   mock.bridge.interrupt();
   mock.bridge.setWorkflow('direct');
