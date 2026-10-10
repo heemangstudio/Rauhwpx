@@ -31,7 +31,7 @@ export function readChatPermissionRequest(value: unknown): ChatPermissionRequest
     || !(request['documentId'] === null || text(request['documentId'], 256))
     || !text(request['turnId'], 256)
     || typeof request['agent'] !== 'string'
-    || !['claude', 'codex', 'pi', 'grok', 'cursor', 'opencode'].includes(request['agent'])
+    || !['claude', 'codex', 'pi'].includes(request['agent'])
     || !isChatPermissionCapability(request['capability'])
     || !text(request['reason'], 1000) || !text(request['createdAt'], 128)) return null;
   return {

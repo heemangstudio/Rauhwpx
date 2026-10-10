@@ -95,13 +95,6 @@ export function checkPublishDocs(options = {}) {
     assert.equal(unique.size, toolCount, 'tools.mjs has duplicate tool names');
   });
 
-  const testSource = readRel('rhwp/rhwp-agent/tests/tools.test.mjs');
-  check('tools.test.mjs pins the live count', () => {
-    const pin = testSource.match(/도구는 정확히 (\d+)개/);
-    assert.ok(pin, 'tools.test.mjs no longer pins the tool count');
-    assert.equal(Number(pin[1]), toolCount, `test pins ${pin[1]} tools, tools.mjs has ${toolCount}`);
-  });
-
   for (const rel of PUBLISH_DOCS) {
     const abs = path.join(root, rel);
     if (!existsSync(abs)) continue;

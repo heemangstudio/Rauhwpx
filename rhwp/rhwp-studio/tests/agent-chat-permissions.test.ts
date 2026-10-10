@@ -31,6 +31,12 @@ function fixture() {
 
 test('permission requests validate known capabilities and exact chat/document identity', () => {
   assert.deepEqual(readChatPermissionRequest(request), request);
+  for (const agent of ['claude', 'codex', 'pi']) {
+    assert.deepEqual(readChatPermissionRequest({ ...request, agent }), { ...request, agent });
+  }
+  for (const agent of ['grok', 'cursor', 'opencode', 'unknown']) {
+    assert.equal(readChatPermissionRequest({ ...request, agent }), null);
+  }
   assert.equal(readChatPermissionRequest({ ...request, capability: 'full-access' }), null);
   assert.equal(readChatPermissionRequest({ ...request, documentId: undefined }), null);
   assert.deepEqual(readChatPermissionGrants(['document-edit', 'full-access']), []);
