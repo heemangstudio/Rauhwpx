@@ -833,7 +833,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         stdio: ['pipe', 'pipe', 'pipe'],
       }), {
         agent: 'codex', transport: 'app-server', stdin: 'ndjson', argv: launched.argv, env: launched.env,
-        secrets: [opts.token], cli: opts.providerCliVersion,
+        secrets: [opts.token], cli: opts.providerCliVersion, platform,
       });
     } catch (error) {
       throw new CodexAppServerUnavailableError('Failed to start Codex app-server', error);

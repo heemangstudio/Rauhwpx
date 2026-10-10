@@ -16,7 +16,7 @@ import {
 } from '../credential-mirror.mjs';
 import { applyManagedCliLaunch, resolveCommandOnPath, resolveNpmCliLaunch } from '../npm-cli-launch.mjs';
 import { TOOL_TRACE_ENABLED, traceNow, writeToolTrace } from '../tool-trace.mjs';
-import { recordingClaudeSdkSpawner, tapProviderProcess } from '../provider-transcript.mjs';
+import { recordingClaudeSdkSpawner, tapProviderProcess, withSdkStderrTail } from '../provider-transcript.mjs';
 import {
   createLineReader,
   isPlanningRestricted,
@@ -1023,9 +1023,16 @@ export function createClaudeSession(opts, {
     return outcome;
   }
 
+  /** The SDK's error text; with the recording spawner its stderr tail is put back. */
+  function sdkErrorText(owner, error) {
+    const text = error?.message ?? error;
+    return owner.stderrTail ? withSdkStderrTail(text, owner.stderrTail(), [opts.token]) : text;
+  }
+
   function failSdkTurn(owner, error) {
     if (owner !== sdkOwner || !owner.active || !turnOpen || disposed) return;
-    const message = `claude SDK error: ${redactDiagnosticText(error?.message ?? error, [opts.token])}`;
+    // 녹화 중이면 SDK 가 채우지 못한 stderr 꼬리를 붙이고, 어느 쪽이든 세션 토큰을 지운다.
+    const message = `claude SDK error: ${redactDiagnosticText(sdkErrorText(owner, error), [opts.token])}`;
     const failure = { source: 'claude', code: 'process_exit' };
     onEvent({ type: 'error', agent: 'claude', message, failure });
     void closeSdkQuery(owner).then((cleaned) => {
@@ -1063,6 +1070,8 @@ export function createClaudeSession(opts, {
       pendingPrompt: null,
       shutdown: null,
       settling: false,
+      /** Set when the recording spawner runs the CLI: the SDK then has no stderr tail. */
+      stderrTail: null,
     };
     sdkOwner = owner;
     let query;
@@ -1084,8 +1093,11 @@ export function createClaudeSession(opts, {
         if (resolvedBin) options.pathToClaudeCodeExecutable = resolvedBin;
       }
       // RHWP_PROVIDER_TRANSCRIPT_DIR 가 켜졌을 때만 SDK 스폰을 기록용으로 바꾼다.
-      const recordingSpawn = recordingClaudeSdkSpawner({ secrets: [opts.token], cli: opts.providerCliVersion });
-      if (recordingSpawn && !options.spawnClaudeCodeProcess) options.spawnClaudeCodeProcess = recordingSpawn;
+      const recordingSpawn = recordingClaudeSdkSpawner({ secrets: [opts.token], cli: opts.providerCliVersion, platform });
+      if (recordingSpawn && !options.spawnClaudeCodeProcess) {
+        options.spawnClaudeCodeProcess = recordingSpawn;
+        owner.stderrTail = recordingSpawn.stderrTail;
+      }
       query = queryAgent({
         prompt: owner.queue,
         options,
@@ -1133,7 +1145,7 @@ export function createClaudeSession(opts, {
               endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'failed' });
               return;
             }
-            process.stderr.write(`[claude] native user-input transport unavailable; using MCP fallback: ${error?.message ?? error}\n`);
+            process.stderr.write(`[claude] native user-input transport unavailable; using MCP fallback: ${redactDiagnosticText(sdkErrorText(owner, error), [opts.token])}\n`);
             try {
               dispatchLegacy(pendingPrompt);
             } catch (fallbackError) {
@@ -1226,7 +1238,7 @@ export function createClaudeSession(opts, {
       stdio: ['pipe', 'pipe', 'pipe'],
     }), {
       agent: 'claude', transport: 'cli', stdin: 'ndjson', argv: launched.argv, env: launched.env,
-      secrets: [opts.token], cli: opts.providerCliVersion,
+      secrets: [opts.token], cli: opts.providerCliVersion, platform,
     });
     writeToolTrace({ kind: 'claude', t: traceNow(), ev: 'spawn', transport: 'cli', resume });
     // 기동 중 종료한 자식에 쓰면 EPIPE 가 'error' 로 온다. 리스너가 없으면 허브 전체가

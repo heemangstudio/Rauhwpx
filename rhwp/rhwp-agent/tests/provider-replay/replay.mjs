@@ -17,9 +17,15 @@
  * - `out`    CLI -> adapter stdout line (`json` or `line`, `partial: true`
  *            omits the newline). Strings that are exactly `"$in.<path>"` (last
  *            matched input) or `"$cap.<name>"` become the typed value.
- * - `err`    stderr chunk. `sleep {ms}` waits `ms * timeScale`.
+ * - `err`    stderr text, written as is (the recorder writes one line per
+ *            record, newline included). `sleep {ms}` waits `ms * timeScale`.
  * - `await-kill` waits until the adapter terminates the process; later `out`
- *            records are output that arrives after the kill.
+ *            records are output that arrives after the kill. Pi and Codex exec
+ *            adapters terminate on Windows right after the turn's terminal
+ *            frame (`agent_settled`, `turn.completed`/`turn.failed`) and nowhere
+ *            else, so when `meta.platform` is `win32` and the replay runs on
+ *            another platform, an `await-kill` that only output separates
+ *            from such a frame is skipped.
  * - `exit {code, signal, close?, closeDelayMs?}` emits `exit`, then `close`
  *            unless `close: false` (a descendant still holds the pipes). A
  *            later recorded `close` record closes such a process.
@@ -59,6 +65,14 @@ export const REPLAY_TRANSPORT_STDIN = Object.freeze({
   json: 'text',
 });
 const STEP_KINDS = new Set(['spawn', 'in', 'expect', 'out', 'err', 'sleep', 'await-kill', 'exit', 'close']);
+/**
+ * Frames after which the adapter of `agent/transport` ends the process on
+ * Windows only (`beginTerminalCleanup` in pi.mjs and codex.mjs).
+ */
+const WINDOWS_TERMINAL_FRAMES = Object.freeze({
+  'pi/json': new Set(['agent_settled']),
+  'codex/exec': new Set(['turn.completed', 'turn.failed']),
+});
 
 export class ReplayBundleError extends Error {
   constructor(message) {
@@ -102,6 +116,9 @@ function validateMeta(record, source, line) {
   }
   if (record.terminate !== undefined && record.terminate !== 'ok' && record.terminate !== 'fail') {
     fail(source, line, "meta.terminate must be 'ok' or 'fail'");
+  }
+  if (record.platform !== undefined && (typeof record.platform !== 'string' || !record.platform)) {
+    fail(source, line, 'meta.platform must name the recording platform (process.platform)');
   }
   return Object.freeze({ ...record, stdin });
 }
@@ -251,10 +268,12 @@ function describeStep(step, index) {
  * The run returned exposes `feed(chunk)`, `feedEnd()`, `kill(signal)` and
  * the observable state used by assertions: `stdinFrames`, `unexpected`,
  * `leftover()`, `errors`, `captures`, `idMap`, `done` (resolves when the
- * script has nothing more to do).
+ * script has nothing more to do). `platform` is the platform the adapter
+ * runs as (default `process.platform`).
  */
 export function createProcessRun(meta, steps, {
   timeScale = 0,
+  platform = process.platform,
   io,
   onWrite = null,
   onChange = null,
@@ -454,6 +473,25 @@ export function createProcessRun(meta, steps, {
     return false;
   }
 
+  /**
+   * A Windows recording's kill right after the terminal frame: an adapter on
+   * another platform does not terminate there, so the step is skipped.
+   */
+  function windowsTerminalKill(index) {
+    if (meta.platform !== 'win32' || platform === 'win32') return false;
+    const terminal = WINDOWS_TERMINAL_FRAMES[`${meta.agent}/${meta.transport}`];
+    if (!terminal) return false;
+    for (let before = index - 1; before >= 0; before -= 1) {
+      const step = steps[before];
+      if (step.kind === 'out') {
+        if (isPlainObject(step.json) && terminal.has(step.json.type)) return true;
+        continue;
+      }
+      if (step.kind !== 'err' && step.kind !== 'sleep') return false;
+    }
+    return false;
+  }
+
   function hasExitAhead() {
     return steps.slice(cursor).some((step) => step.kind === 'exit');
   }
@@ -506,6 +544,7 @@ export function createProcessRun(meta, steps, {
           await sleep(step.ms * timeScale);
           break;
         case 'await-kill':
+          if (windowsTerminalKill(cursor)) break;
           if (!await waitFor(() => killed)) return;
           break;
         case 'exit': {

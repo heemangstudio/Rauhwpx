@@ -3,11 +3,21 @@
 // replays into the same adapter events.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { createClaudeSession } from '../agents/claude.mjs';
 import {
   PROVIDER_TRANSCRIPT_ENV,
   recordingClaudeSdkSpawner,
@@ -15,6 +25,7 @@ import {
 } from '../provider-transcript.mjs';
 import { processTreeSpawnOptions, terminateProcessTree } from '../process-tree.mjs';
 import { REPLAY_SESSION_TOKEN, startReplaySession } from './provider-replay/adapters.mjs';
+import { installReplayCli } from './provider-replay/replay-cli.mjs';
 import { parseReplayBundle } from './provider-replay/replay.mjs';
 import { ReplayChildProcess } from './provider-replay/replay-process.mjs';
 
@@ -254,3 +265,245 @@ for (const [fixture, cliVersion] of [['pi/interrupt-race', '1.1.0'], ['codex/app
     assert.deepEqual(replayed.events, recorded.events);
   });
 }
+
+test('stderr is redacted per line, so a secret split across pipe chunks never reaches disk', { timeout: 20_000 }, async (t) => {
+  const dir = tempDir(t, 'rhwp-transcript-stderr-');
+  // A key-shaped secret straddling the 64 KiB pipe read, a Bearer header and a
+  // session token written in two writes each; the last line has no newline.
+  const STRADDLE_KEY = 'sk-ant-api03-STRADDLEKEY0123456789abcdef';
+  const SPLIT_BEARER = 'PLANTEDSPLITBEARER0123456789abcdef';
+  const child = tapProviderProcess(spawn(process.execPath, ['-e', `
+    const write = (text) => new Promise((resolve) => process.stderr.write(text, resolve));
+    const pause = () => new Promise((resolve) => setTimeout(resolve, 60));
+    (async () => {
+      await write('x'.repeat(65536 - 13) + ' ' + ${JSON.stringify(STRADDLE_KEY)} + '\\n');
+      await pause();
+      await write('request failed: Authorization: Bearer ');
+      await pause();
+      await write(${JSON.stringify(SPLIT_BEARER)} + '\\n');
+      await pause();
+      await write('session ' + ${JSON.stringify(SESSION_TOKEN.slice(0, 12))});
+      await pause();
+      await write(${JSON.stringify(SESSION_TOKEN.slice(12))});
+    })();
+  `], { ...processTreeSpawnOptions(), stdio: ['pipe', 'pipe', 'pipe'] }), {
+    agent: 'codex',
+    transport: 'exec',
+    secrets: [SESSION_TOKEN],
+    hubEnv: { [PROVIDER_TRANSCRIPT_ENV]: dir },
+    // Large enough that the record cap never hides a leak.
+    limits: { maxRecordBytes: 256 * 1024 },
+  });
+  let delivered = '';
+  child.stderr.on('data', (chunk) => { delivered += chunk; });
+  child.stdout.resume();
+  child.stdin.end();
+  await closed(child);
+
+  assert.ok(delivered.includes(SPLIT_BEARER) && delivered.includes(SESSION_TOKEN), 'the adapter still sees the real stderr');
+  const { text } = readRecordings(dir)[0];
+  for (const fragment of ['STRADDLEKEY0123456789abcdef', SPLIT_BEARER, SESSION_TOKEN, SESSION_TOKEN.slice(12)]) {
+    assert.equal(text.includes(fragment), false, `${fragment} reached disk`);
+  }
+  const err = records(text).filter((line) => line.kind === 'err');
+  assert.equal(err.length, 3, 'one record per stderr line');
+  assert.ok(err[0].text.startsWith('xxx') && err[0].text.endsWith('[redacted]\n'));
+  assert.match(err[1].text, /^request failed: Authorization: .*\[redacted\]\n$/);
+  assert.equal(err[2].text, 'session [redacted]', 'the unterminated rest is flushed at close');
+});
+
+test('values under camelCase and prefixed secret keys and JWTs are redacted while token counts stay', async (t) => {
+  const dir = tempDir(t, 'rhwp-transcript-keys-');
+  const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJwbGFudGVkLXVzZXIifQ.c2lnbmF0dXJlLXBsYW50ZWQtand0';
+  const planted = {
+    authToken: 'planted-auth-token-value',
+    sessionToken: 'planted-session-token-value',
+    oauthToken: 'planted-oauth-token-value',
+    githubToken: 'planted-github-token-value',
+    anthropicApiKey: 'planted-anthropic-api-key',
+    'x-api-key': 'planted-x-api-key-value',
+    clientSecret: 'planted-client-secret-value',
+    privateKey: 'planted-private-key-value',
+    credentials: { user: 'planted-credential-user' },
+  };
+  const child = scripted([
+    { kind: 'expect', end: true },
+    { kind: 'out', json: { type: 'auth_status', ...planted, nested: [{ refreshToken: 'planted-refresh-token-value' }] } },
+    { kind: 'out', json: { type: 'message_end', note: `signed in with ${JWT}` } },
+    { kind: 'out', line: `token header ${JWT} done` },
+    // Usage counters as Claude, Codex and Pi report them.
+    { kind: 'out', json: { type: 'result', usage: { input_tokens: 812, output_tokens: 64, cache_read_input_tokens: 5, cache_creation_input_tokens: 6 }, modelUsage: { 'claude-sonnet-4-5': { inputTokens: 812, outputTokens: 64 } } } },
+    { kind: 'out', json: { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 3 } } },
+    { kind: 'out', json: { type: 'message_end', message: { usage: { input: 7, output: 8, totalTokens: 15 }, stopReason: 'stop' } } },
+    { kind: 'exit', code: 0 },
+  ]);
+  tapProviderProcess(child, { agent: 'pi', transport: 'json', hubEnv: { [PROVIDER_TRANSCRIPT_ENV]: dir } });
+  child.stdout.resume();
+  child.stdin.end('prompt');
+  await closed(child);
+
+  const { text } = readRecordings(dir)[0];
+  for (const secret of [...Object.values(planted).filter((value) => typeof value === 'string'), 'planted-credential-user', 'planted-refresh-token-value', JWT, 'c2lnbmF0dXJlLXBsYW50ZWQtand0']) {
+    assert.equal(text.includes(secret), false, `${secret} reached disk`);
+  }
+  const out = records(text).filter((line) => line.kind === 'out');
+  assert.equal(out[0].json.authToken, '[redacted]');
+  assert.equal(out[0].json.credentials.user, '[redacted]');
+  assert.equal(out[0].json.type, 'auth_status', 'other values stay readable');
+  assert.equal(out[1].json.note, 'signed in with [redacted]');
+  assert.equal(out[2].line, 'token header [redacted] done');
+  assert.deepEqual(out[3].json.usage, { input_tokens: 812, output_tokens: 64, cache_read_input_tokens: 5, cache_creation_input_tokens: 6 });
+  assert.deepEqual(out[3].json.modelUsage, { 'claude-sonnet-4-5': { inputTokens: 812, outputTokens: 64 } });
+  assert.deepEqual(out[4].json.usage, { input_tokens: 10, cached_input_tokens: 2, output_tokens: 3 });
+  assert.deepEqual(out[5].json.message, { usage: { input: 7, output: 8, totalTokens: 15 }, stopReason: 'stop' });
+});
+
+test('spawn records are capped like the others and stay replayable', async (t) => {
+  const dir = tempDir(t, 'rhwp-transcript-spawn-cap-');
+  const child = scripted([{ kind: 'expect', end: true }, { kind: 'exit', code: 0 }]);
+  tapProviderProcess(child, {
+    agent: 'pi',
+    transport: 'json',
+    argv: ['--mode', 'json', '--append-system-prompt', 'brief '.repeat(20_000)],
+    hubEnv: { [PROVIDER_TRANSCRIPT_ENV]: dir },
+  });
+  child.stdin.end('prompt');
+  await closed(child);
+  const { text } = readRecordings(dir)[0];
+  const spawnRecord = records(text).find((line) => line.kind === 'spawn');
+  assert.ok(Buffer.byteLength(JSON.stringify(spawnRecord)) <= 64 * 1024);
+  assert.ok(spawnRecord.truncatedBytes > 50 * 1024);
+  assert.deepEqual(spawnRecord.argv.slice(0, 3), ['--mode', 'json', '--append-system-prompt']);
+  assert.equal('text' in spawnRecord, false, 'no stray text field');
+  assert.equal(parseReplayBundle(text).processes.length, 1);
+});
+
+test('the first recording of a hub process prunes the oldest transcripts beyond the directory budget', async (t) => {
+  const dir = tempDir(t, 'rhwp-transcript-prune-');
+  const old = Date.now() / 1000 - 3_600;
+  const transcripts = Array.from({ length: 5 }, (_, index) => `pi-json-2026-10-0${index + 1}T00-00-00-000Z-1-${index + 1}.ndjson`);
+  transcripts.forEach((name, index) => {
+    writeFileSync(path.join(dir, name), 'x'.repeat(100));
+    utimesSync(path.join(dir, name), old + index, old + index);
+  });
+  // Files the recorder did not name are never touched, however old.
+  writeFileSync(path.join(dir, 'notes.txt'), 'keep');
+  writeFileSync(path.join(dir, 'fixture.ndjson'), 'keep');
+  utimesSync(path.join(dir, 'notes.txt'), old - 100, old - 100);
+  utimesSync(path.join(dir, 'fixture.ndjson'), old - 100, old - 100);
+
+  const record = async (limits) => {
+    const child = scripted([{ kind: 'expect', end: true }, { kind: 'exit', code: 0 }]);
+    tapProviderProcess(child, { agent: 'pi', transport: 'json', hubEnv: { [PROVIDER_TRANSCRIPT_ENV]: dir }, limits });
+    child.stdin.end('prompt');
+    await closed(child);
+  };
+  await record({ maxDirFiles: 3, maxDirBytes: 250 });
+  const left = readdirSync(dir).sort();
+  assert.deepEqual(left.filter((name) => transcripts.includes(name)), transcripts.slice(3), 'the two newest within 250 bytes stay');
+  assert.ok(left.includes('notes.txt') && left.includes('fixture.ndjson'));
+  assert.equal(left.filter((name) => name.endsWith('.ndjson') && !transcripts.includes(name) && name !== 'fixture.ndjson').length, 1, 'the new recording was written');
+
+  // Once per hub process: a later recording in the same directory does not prune again.
+  await record({ maxDirFiles: 1, maxDirBytes: 1 });
+  assert.deepEqual(readdirSync(dir).filter((name) => transcripts.includes(name)), transcripts.slice(3));
+});
+
+test('a Claude SDK failure shows the same stderr tail with and without recording', {
+  timeout: 60_000,
+  skip: process.platform === 'win32' && 'the Agent SDK spawns the CLI directly and cannot run the .cmd replay launcher',
+}, async (t) => {
+  const root = tempDir(t, 'rhwp-transcript-sdk-tail-');
+  const bundlePath = path.join(root, 'sdk-crash.ndjson');
+  writeFileSync(bundlePath, [
+    {
+      kind: 'meta', v: 1, agent: 'claude', transport: 'sdk', provenance: 'synthetic', cli: '2.1.296 (Claude Code)',
+      basis: '@anthropic-ai/claude-agent-sdk 0.3.281: initialize handshake, then the CLI writes stderr and exits 1 mid-turn (ProcessTransport getProcessExitError appends ". stderr: <tail>")',
+    },
+    { kind: 'spawn' },
+    { kind: 'expect', json: { type: 'control_request', request: { subtype: 'initialize' } } },
+    { kind: 'out', json: { type: 'control_response', response: { subtype: 'success', request_id: '$in.request_id', response: { commands: [], agents: [], models: [], account: {} } } } },
+    { kind: 'expect', json: { type: 'user', message: { role: 'user' } } },
+    { kind: 'out', json: { type: 'system', subtype: 'init', session_id: 'sdk-tail-session', model: 'claude-sonnet-4-5', mcp_servers: [{ name: 'rhwp', status: 'connected' }], tools: [] } },
+    { kind: 'err', text: 'API Error: Connection error.\n' },
+    { kind: 'err', text: '    at streamRequest (file:///replay/cli.js:1:1)\n' },
+    { kind: 'exit', code: 1 },
+  ].map((record) => JSON.stringify(record)).join('\n'));
+
+  const failureMessage = async (label, recordingDir) => {
+    const work = path.join(root, label);
+    mkdirSync(path.join(work, 'root'), { recursive: true });
+    mkdirSync(path.join(work, 'home'), { recursive: true });
+    const cli = installReplayCli(path.join(work, 'bin'), 'claude', bundlePath);
+    const events = [];
+    let turnEnded;
+    const ended = new Promise((resolve) => { turnEnded = resolve; });
+    const session = createClaudeSession({
+      rootDir: path.join(work, 'root'),
+      isolatedHome: path.join(work, 'home'),
+      mcpScriptPath: path.join(work, 'mcp-stdio.mjs'),
+      hubPort: 5199,
+      token: REPLAY_SESSION_TOKEN,
+      sessionId: `sdk-tail-${label}`,
+      permissionProfile: 'safe',
+      claudeBin: cli.binPath,
+      model: 'claude-sonnet-4-5',
+      agentRole: 'chat',
+      requestUserInput: async () => ({ status: 'cancelled', reason: 'user-stop' }),
+      onEvent: (event) => {
+        events.push(event);
+        if (event.type === 'turn-end') turnEnded();
+      },
+    }, { closeGraceMs: 500, flushCredentialMirrors: () => {} });
+    if (recordingDir) process.env[PROVIDER_TRANSCRIPT_ENV] = recordingDir;
+    try {
+      session.sendUserMessage('sdk prompt');
+      await ended;
+    } finally {
+      delete process.env[PROVIDER_TRANSCRIPT_ENV];
+      await session.dispose();
+    }
+    return events.filter((event) => event.type === 'error').map((event) => event.message);
+  };
+
+  const plain = await failureMessage('plain', null);
+  assert.equal(plain.length, 1);
+  assert.match(plain[0], /exited with code 1\. stderr: API Error: Connection error\.\n {4}at streamRequest/);
+  const recordingDir = path.join(root, 'recordings');
+  const recorded = await failureMessage('recorded', recordingDir);
+  assert.deepEqual(recorded, plain, 'recording does not change the error the user sees');
+  const [file] = readRecordings(recordingDir);
+  assert.ok(records(file.text).some((line) => line.kind === 'err' && line.text === 'API Error: Connection error.\n'));
+});
+
+test('a session recorded on Windows replays on another platform, where the adapter does not kill after the terminal frame', { timeout: 30_000 }, async (t) => {
+  const dir = tempDir(t, 'rhwp-transcript-windows-');
+  process.env[PROVIDER_TRANSCRIPT_ENV] = dir;
+  let windows;
+  try {
+    // The Pi adapter as on Windows: it ends the process right after agent_settled.
+    windows = startReplaySession('pi/text-turn', { t, dependencies: { platform: 'win32' } });
+    const end = await windows.runTurn('first');
+    assert.equal(end.stopReason, 'completed');
+    await windows.replay.settled();
+    await windows.close();
+  } finally {
+    delete process.env[PROVIDER_TRANSCRIPT_ENV];
+  }
+  assert.deepEqual(windows.replay.spawns[0].process.killSignals, ['SIGTERM'], 'the Windows adapter terminated the process');
+  const [file] = readRecordings(dir);
+  const recorded = records(file.text);
+  assert.equal(recorded[0].platform, 'win32');
+  const kinds = recorded.map((line) => line.kind);
+  assert.ok(kinds.indexOf('await-kill') > recorded.findIndex((line) => line.json?.type === 'agent_settled'));
+
+  const bundle = parseReplayBundle(file.text, { source: 'pi/text-turn (recorded on win32)' });
+  for (const platform of ['linux', 'win32']) {
+    const replayed = startReplaySession(bundle, { t, dependencies: { platform } });
+    const end = await replayed.runTurn('second', { timeoutMs: 5_000 });
+    assert.equal(end.stopReason, 'completed', platform);
+    await replayed.replay.settled();
+    replayed.replay.assertConsumed();
+    assert.deepEqual(replayed.events.filter((event) => event.type === 'text-delta'), windows.events.filter((event) => event.type === 'text-delta'));
+  }
+});

@@ -26,6 +26,7 @@ function epipeError() {
 export class ReplayChildProcess extends EventEmitter {
   constructor(meta, steps, {
     timeScale = 0,
+    platform = process.platform,
     spawnfile = 'replay',
     spawnargs = [],
     label = 'process',
@@ -64,6 +65,7 @@ export class ReplayChildProcess extends EventEmitter {
     this.#resolveExited = resolveExited;
     this.run = createProcessRun(meta, steps, {
       timeScale,
+      platform,
       io: {
         stdout: (text) => { if (!this.stdout.writableEnded) this.stdout.write(text); },
         stderr: (text) => { if (!this.stderr.writableEnded) this.stderr.write(text); },
@@ -128,9 +130,10 @@ export class ReplayChildProcess extends EventEmitter {
  *   replay.assertConsumed();
  *
  * `meta.terminate: 'fail'` makes `terminateProcess` report an unproven
- * cleanup (it still kills the replay process).
+ * cleanup (it still kills the replay process). `platform` is the platform
+ * the adapter runs as (its `platform` dependency, default `process.platform`).
  */
-export function createReplaySpawner(bundle, { timeScale = 0 } = {}) {
+export function createReplaySpawner(bundle, { timeScale = 0, platform = process.platform } = {}) {
   const { meta, processes } = bundle;
   const claimed = new Set();
   /** @type {Array<{command: string, argv: string[], options: any, process: ReplayChildProcess, script: number}>} */
@@ -157,6 +160,7 @@ export function createReplaySpawner(bundle, { timeScale = 0 } = {}) {
     }
     const child = new ReplayChildProcess(meta, processes[script], {
       timeScale,
+      platform,
       spawnfile: command,
       spawnargs: [command, ...args],
       label: `${bundle.source ?? 'bundle'} process #${script + 1}`,

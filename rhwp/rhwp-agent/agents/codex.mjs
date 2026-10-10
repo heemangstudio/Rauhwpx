@@ -528,7 +528,7 @@ export function createLegacyCodexSession(opts, {
           stdio: ['pipe', 'pipe', 'pipe'],
         }), {
           agent: 'codex', transport: 'exec', stdin: 'text', argv: launched.argv, env: launched.env,
-          secrets: [opts.token], cli: opts.providerCliVersion,
+          secrets: [opts.token], cli: opts.providerCliVersion, platform,
         });
       } catch (e) {
         rolloutWatcher?.stop();

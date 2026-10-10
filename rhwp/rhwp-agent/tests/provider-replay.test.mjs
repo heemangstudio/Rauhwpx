@@ -27,9 +27,9 @@ function bundle(records, meta = {}) {
   );
 }
 
-function startProcess(records, meta) {
+function startProcess(records, meta, options) {
   const parsed = bundle(records, meta);
-  const child = new ReplayChildProcess(parsed.meta, parsed.processes[0]);
+  const child = new ReplayChildProcess(parsed.meta, parsed.processes[0], options);
   const lines = [];
   let buffered = '';
   child.stdout.on('data', (chunk) => {
@@ -178,6 +178,47 @@ test('a kill racing a process that is already exiting on its own lets it finish'
   assert.deepEqual(lines, [{ type: 'agent_settled' }, { tail: true }]);
   assert.deepEqual(events, [['exit', 0, null], ['close', 0, null]]);
   assert.deepEqual(problemsOf(child), []);
+});
+
+test('a Windows recording\'s kill after the terminal frame is skipped on another platform, other kills are not', async () => {
+  const windowsPi = { agent: 'pi', transport: 'json', stdin: 'text', platform: 'win32' };
+  const afterSettled = [
+    { kind: 'out', json: { type: 'agent_settled', aborted: false } },
+    { kind: 'err', text: 'shutting down\n' },
+    { kind: 'await-kill', signal: 'SIGTERM' },
+    { kind: 'exit', code: 1 },
+  ];
+  const posix = startProcess(afterSettled, windowsPi, { platform: 'linux' });
+  await posix.child.exited;
+  await ticks();
+  assert.deepEqual(posix.events, [['exit', 1, null], ['close', 1, null]], 'the process ends without a kill');
+  assert.deepEqual(problemsOf(posix.child), []);
+
+  const onWindows = startProcess(afterSettled, windowsPi, { platform: 'win32' });
+  await ticks();
+  assert.deepEqual(onWindows.events, [], 'on Windows the adapter still has to terminate it');
+  onWindows.child.kill('SIGTERM');
+  await onWindows.child.exited;
+  assert.deepEqual(problemsOf(onWindows.child), []);
+
+  // A kill in the middle of a turn (an interrupt) stays a kill on every platform.
+  const interrupted = startProcess([
+    { kind: 'out', json: { type: 'message_update' } },
+    { kind: 'await-kill', signal: 'SIGTERM' },
+    { kind: 'exit', code: 1 },
+  ], windowsPi, { platform: 'linux' });
+  await ticks();
+  assert.deepEqual(interrupted.events, []);
+  interrupted.child.kill('SIGTERM');
+  await interrupted.child.exited;
+  assert.deepEqual(problemsOf(interrupted.child), []);
+
+  // A recording without a platform, or from the same platform, keeps every kill.
+  const unlabelled = startProcess(afterSettled, { agent: 'pi', transport: 'json', stdin: 'text' }, { platform: 'linux' });
+  await ticks();
+  assert.deepEqual(unlabelled.events, []);
+  unlabelled.child.kill('SIGTERM');
+  await unlabelled.child.exited;
 });
 
 test('exit without close emits only exit until a recorded close arrives', async () => {

@@ -3,20 +3,30 @@
  * absolute directory when the hub spawns a provider CLI.
  *
  * Each provider process becomes one NDJSON file in the replay format read by
- * `tests/provider-replay/replay.mjs`: a `meta` line, a `spawn` line (redacted
- * argv, environment variable names only), then `in` (adapter -> CLI stdin),
- * `out` (stdout lines), `err` (stderr chunks), `await-kill` (the hub started
- * terminating the process), `exit` and `close`, each with `t` in ms since the
- * spawn. Concatenating the files of one session gives a replayable bundle.
+ * `tests/provider-replay/replay.mjs`: a `meta` line (with the recording
+ * `platform`), a `spawn` line (redacted argv, environment variable names only),
+ * then `in` (adapter -> CLI stdin), `out` (stdout lines), `err` (stderr lines),
+ * `await-kill` (the hub started terminating the process), `exit` and `close`,
+ * each with `t` in ms since the spawn. Concatenating the files of one session
+ * gives a replayable bundle.
  *
- * Credentials are removed before anything reaches disk: JSON lines are parsed
- * and every string is redacted (values under secret-named keys become
- * "[redacted]"), then re-serialized so the line stays valid JSON; other text
- * goes through `redactDiagnosticText`. Prompts and document text are kept, so
- * the files are private (directory 0700, files 0600) and the hub says so once
- * on stderr. Records are capped at 64 KiB, files at 8 MiB (then one
- * `truncated` record), and a hub process writes at most 200 files. The
- * recorder never throws into an adapter: any failure stops that file.
+ * Credentials are removed before anything reaches disk: stdout, stdin and
+ * stderr are split into lines first, so a secret split across pipe chunks is
+ * still whole when it is redacted. JSON lines are parsed and every string is
+ * redacted (values under secret-named keys such as `authToken` or
+ * `anthropicApiKey` become "[redacted]"; token counts like `input_tokens`
+ * stay), then re-serialized so the line stays valid JSON; other text goes
+ * through `redactDiagnosticText` plus a JWT rule. Prompts and document text
+ * are kept, so the files are private and the hub says so once on stderr. On
+ * POSIX the directory is created 0700 and files 0600; on Windows mode bits
+ * are ignored and the files inherit the directory's ACL, so point the
+ * variable at a folder only you can read (e.g. under %LOCALAPPDATA%).
+ *
+ * Bounds: records are capped at 64 KiB, files at 8 MiB (then one `truncated`
+ * record), a hub process writes at most 200 files, and at its first recording
+ * a hub process prunes the oldest transcript files in the directory beyond
+ * 400 files or 1 GiB (only files named like ours). The recorder never throws
+ * into an adapter: any failure stops that file.
  */
 import { spawn as spawnChildProcess } from 'node:child_process';
 import fs from 'node:fs';
@@ -32,7 +42,13 @@ export const PROVIDER_TRANSCRIPT_LIMITS = Object.freeze({
   maxRecordBytes: 64 * 1024,
   maxFileBytes: 8 * 1024 * 1024,
   maxFiles: 200,
+  /** Directory budget enforced once per hub process, before its first file. */
+  maxDirFiles: 400,
+  maxDirBytes: 1024 * 1024 * 1024,
 });
+/** The Agent SDK's own stderr tail for exit errors (sdk.mjs `MC`). */
+const SDK_STDERR_TAIL_CHARS = 2048;
+const TRANSCRIPT_FILE_NAME = /^(?:claude|codex|pi)-(?:sdk|cli|app-server|exec|json)-.+\.ndjson$/;
 
 const TRANSPORT_STDIN = Object.freeze({
   sdk: 'ndjson',
@@ -42,7 +58,15 @@ const TRANSPORT_STDIN = Object.freeze({
   json: 'text',
 });
 const REDACTED = '[redacted]';
-const SECRET_JSON_KEY = /^(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|apikey|x[_-]api[_-]key|authorization|proxy[_-]?authorization|cookie|set[_-]?cookie|password|passwd|secret|client[_-]?secret|token|bearer[_-]?token|session[_-]?key|oauth[_-]?code|authorization[_-]?code|user[_-]?code|code[_-]?verifier)$/i;
+/**
+ * Secret-named JSON keys, matched on the key lowercased without separators
+ * (`authToken`, `session_token`, `x-api-key`, `anthropicApiKey`). Suffixes are
+ * singular, so usage counters (`input_tokens`, `totalTokens`) never match;
+ * numbers and booleans under a matching key are kept anyway.
+ */
+const SECRET_JSON_KEY_SUFFIX = /(?:token|apikey|secret|secretkey|accesskey|privatekey|sessionkey|passw(?:or)?d|passphrase|authorization|cookies?|credentials?|oauthcode|usercode|codeverifier)$/;
+/** header.payload.signature of a JSON Web Token (the signature may be empty). */
+const JWT_SHAPED = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g;
 const CREDENTIAL_NAME = /(?:API_KEY|AUTH_TOKEN|OAUTH_TOKEN|ACCESS_TOKEN|REFRESH_TOKEN|SECRET|ACCESS_KEY|BEARER|PASSWORD|_TOKEN$|^TOKEN$)/i;
 const MAX_JSON_DEPTH = 64;
 const TRUNCATED_RESERVE_BYTES = 128;
@@ -50,6 +74,7 @@ const TRUNCATED_RESERVE_BYTES = 128;
 let filesOpened = 0;
 let fileLimitLogged = false;
 const announcedDirs = new Set();
+const prunedDirs = new Set();
 const failedDirs = new Set();
 let relativeDirLogged = false;
 let fileSequence = 0;
@@ -76,7 +101,12 @@ function credentialValues(env) {
 }
 
 function redactString(value, secrets) {
-  return redactDiagnosticText(value, secrets);
+  return redactDiagnosticText(value, secrets).replace(JWT_SHAPED, REDACTED);
+}
+
+function isSecretJsonKey(key) {
+  const normalized = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+  return SECRET_JSON_KEY_SUFFIX.test(normalized) || CREDENTIAL_NAME.test(key);
 }
 
 function redactLeaves(value, depth) {
@@ -94,7 +124,7 @@ export function redactTranscriptJson(value, secrets = [], depth = 0) {
   if (Array.isArray(value)) return value.map((item) => redactTranscriptJson(item, secrets, depth + 1));
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [
     redactString(key, secrets),
-    SECRET_JSON_KEY.test(key) || CREDENTIAL_NAME.test(key)
+    isSecretJsonKey(key)
       ? redactLeaves(item, depth + 1)
       : redactTranscriptJson(item, secrets, depth + 1),
   ]));
@@ -139,28 +169,48 @@ function cutTextToBytes(text, maxBytes) {
 }
 
 /**
+ * The longest per-string cut of `value` (a record or its `json`) that fits
+ * `budget` once rebuilt by `rebuild`, or null when even empty strings do not.
+ */
+function fitStrings(value, rebuild, budget) {
+  let low = 0;
+  let high = longestString(value);
+  let best = null;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (Buffer.byteLength(JSON.stringify(rebuild(cutStrings(value, middle)))) <= budget) {
+      best = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best;
+}
+
+/**
  * Serialize a record within `maxBytes`: long JSON string values are cut
- * (the record gains `truncatedBytes`), text fields are cut to fit.
+ * (the record gains `truncatedBytes`), text fields are cut to fit, and the
+ * strings of other records (`spawn` argv, `meta`) are cut the same way.
  */
 export function boundTranscriptRecord(record, maxBytes) {
   const full = JSON.stringify(record);
   const fullBytes = Buffer.byteLength(full);
   if (fullBytes <= maxBytes) return full;
   const budget = maxBytes - TRUNCATED_RESERVE_BYTES;
+  if (!('json' in record) && typeof record.line !== 'string' && typeof record.text !== 'string') {
+    const { kind, ...fields } = record;
+    const rebuild = (cut) => ({ kind, ...cut });
+    const best = fitStrings(fields, rebuild, budget);
+    const bounded = best === null
+      ? { kind, ...(Number.isFinite(record.t) ? { t: record.t } : {}) }
+      : rebuild(cutStrings(fields, best));
+    const bytes = Buffer.byteLength(JSON.stringify(bounded));
+    return JSON.stringify({ ...bounded, truncatedBytes: fullBytes - bytes });
+  }
   if ('json' in record) {
-    let low = 0;
-    let high = longestString(record.json);
-    let best = null;
-    while (low <= high) {
-      const middle = Math.floor((low + high) / 2);
-      const candidate = JSON.stringify({ ...record, json: cutStrings(record.json, middle) });
-      if (Buffer.byteLength(candidate) <= budget) {
-        best = middle;
-        low = middle + 1;
-      } else {
-        high = middle - 1;
-      }
-    }
+    const rebuild = (json) => ({ ...record, json });
+    const best = fitStrings(record.json, rebuild, budget);
     if (best !== null) {
       const json = cutStrings(record.json, best);
       const bytes = Buffer.byteLength(JSON.stringify({ ...record, json }));
@@ -180,7 +230,53 @@ export function boundTranscriptRecord(record, maxBytes) {
   return JSON.stringify({ ...record, [field]: kept, truncatedBytes: Buffer.byteLength(value) - Buffer.byteLength(kept) });
 }
 
-function openTranscriptFile(dir, agent, transport) {
+/**
+ * Keep the directory within its budget across hub restarts: delete the oldest
+ * transcript files (by mtime, only names the recorder writes, never links or
+ * other files) until at most `maxDirFiles` and `maxDirBytes` remain. Runs once
+ * per directory per hub process, before its first file; a file this process
+ * opens later is bounded by `maxFiles` and `maxFileBytes`.
+ */
+function pruneTranscriptDir(dir, limits) {
+  if (prunedDirs.has(dir)) return;
+  prunedDirs.add(dir);
+  let files;
+  try {
+    files = fs.readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && TRANSCRIPT_FILE_NAME.test(entry.name))
+      .flatMap((entry) => {
+        const file = path.join(dir, entry.name);
+        try {
+          const stat = fs.lstatSync(file);
+          return stat.isFile() ? [{ file, size: stat.size, mtimeMs: stat.mtimeMs }] : [];
+        } catch {
+          return [];
+        }
+      })
+      .sort((left, right) => left.mtimeMs - right.mtimeMs || left.file.localeCompare(right.file));
+  } catch {
+    return;
+  }
+  let count = files.length;
+  let bytes = files.reduce((sum, entry) => sum + entry.size, 0);
+  let removed = 0;
+  for (const entry of files) {
+    if (count <= limits.maxDirFiles && bytes <= limits.maxDirBytes) break;
+    try {
+      fs.unlinkSync(entry.file);
+      removed += 1;
+    } catch {
+      // Still counted: another process may have removed or locked it.
+    }
+    count -= 1;
+    bytes -= entry.size;
+  }
+  if (removed > 0) {
+    process.stderr.write(`[provider-transcript] removed ${removed} oldest transcript file(s) from ${dir} to stay within ${limits.maxDirFiles} files and ${Math.round(limits.maxDirBytes / (1024 * 1024))} MiB\n`);
+  }
+}
+
+function openTranscriptFile(dir, agent, transport, limits) {
   if (failedDirs.has(dir)) return null;
   if (filesOpened >= PROVIDER_TRANSCRIPT_LIMITS.maxFiles) {
     if (!fileLimitLogged) {
@@ -191,6 +287,7 @@ function openTranscriptFile(dir, agent, transport) {
   }
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    pruneTranscriptDir(dir, limits);
     if (!announcedDirs.has(dir)) {
       announcedDirs.add(dir);
       process.stderr.write(`[provider-transcript] recording provider stdio to ${dir}; files contain prompts and document text\n`);
@@ -312,9 +409,12 @@ function createLineSplitter(onLine, maxLineBytes) {
  *   secrets?: Array<string|null|undefined>,
  *   stdin?: 'ndjson'|'text',
  *   cli?: string|null,
+ *   platform?: NodeJS.Platform,
  *   hubEnv?: NodeJS.ProcessEnv,
  *   limits?: Partial<typeof PROVIDER_TRANSCRIPT_LIMITS>,
- * }} options
+ * }} options `platform` is the adapter's platform (its Windows-only
+ *   terminal cleanup shows up as an `await-kill` that replay on another
+ *   platform treats as optional).
  * @returns {T}
  */
 export function tapProviderProcess(child, options) {
@@ -336,10 +436,11 @@ function tapChild(child, dir, {
   secrets = [],
   stdin = TRANSPORT_STDIN[transport] ?? 'ndjson',
   cli = null,
+  platform = process.platform,
   limits: limitOverrides = {},
 }) {
   const limits = { ...PROVIDER_TRANSCRIPT_LIMITS, ...limitOverrides };
-  const opened = openTranscriptFile(dir, agent, transport);
+  const opened = openTranscriptFile(dir, agent, transport, limits);
   if (!opened) return;
   const writer = createTranscriptWriter({ ...opened, limits });
   const secretValues = [
@@ -364,6 +465,7 @@ function tapChild(child, dir, {
     stdin,
     provenance: 'recorded',
     cli: typeof cli === 'string' && cli.trim() ? cli.trim() : 'unknown',
+    platform: typeof platform === 'string' && platform ? platform : process.platform,
     recordedAt: new Date().toISOString(),
     note: 'Recorded by the hub; holds prompts and document text. Trim before committing as a fixture.',
   });
@@ -388,12 +490,13 @@ function tapChild(child, dir, {
   // stdin: adapter -> CLI.
   let stdinEnded = false;
   const stdinLines = createLineSplitter((line, partial) => {
-    if (!line.trim()) return;
+    if (!writer.open || !line.trim()) return;
     writer.write(lineRecord('in', line, partial ? { partial: true } : {}));
   }, limits.maxFileBytes);
   const stdinDecoder = new StringDecoder('utf8');
+  // Once the file is capped or closed nothing is parsed or redacted any more.
   const recordStdin = (chunk) => {
-    if (stdinEnded || chunk === undefined || chunk === null || typeof chunk === 'function') return;
+    if (!writer.open || stdinEnded || chunk === undefined || chunk === null || typeof chunk === 'function') return;
     if (stdin === 'text') {
       const text = chunkText(stdinDecoder, chunk);
       if (text) writer.write({ kind: 'in', t: writer.now(), text: redactText(text) });
@@ -402,7 +505,7 @@ function tapChild(child, dir, {
     }
   };
   const recordStdinEnd = () => {
-    if (stdinEnded) return;
+    if (!writer.open || stdinEnded) return;
     if (stdin === 'text') {
       const rest = stdinDecoder.end();
       if (rest) writer.write({ kind: 'in', t: writer.now(), text: redactText(rest) });
@@ -441,11 +544,18 @@ function tapChild(child, dir, {
   // neither switches the streams to flowing mode nor races a consumer that
   // attaches its reader later (the Agent SDK does).
   const stdoutLines = createLineSplitter((line, partial) => {
-    if (!line.trim()) return;
+    if (!writer.open || !line.trim()) return;
     beforeOutput();
     writer.write(lineRecord('out', line, partial ? { partial: true } : {}));
   }, limits.maxFileBytes);
-  const stderrDecoder = new StringDecoder('utf8');
+  // stderr is split into lines like stdout so a secret written across two
+  // chunks is redacted whole; each record keeps its newline, and the
+  // unterminated rest is flushed when the stream ends.
+  const stderrLines = createLineSplitter((line, partial) => {
+    if (!writer.open) return;
+    beforeOutput();
+    writer.write({ kind: 'err', t: writer.now(), text: `${redactText(line)}${partial ? '' : '\n'}` });
+  }, limits.maxFileBytes);
   const tapReadable = (stream, onChunk, onEnd) => {
     if (!stream || typeof stream.push !== 'function') return;
     const originalPush = stream.push;
@@ -461,15 +571,16 @@ function tapChild(child, dir, {
   const endStdout = () => {
     if (stdoutEnded) return;
     stdoutEnded = true;
-    stdoutLines.end();
+    if (writer.open) stdoutLines.end();
   };
-  tapReadable(child.stdout, (chunk) => stdoutLines.write(chunk), endStdout);
-  tapReadable(child.stderr, (chunk) => {
-    const text = chunkText(stderrDecoder, chunk);
-    if (!text) return;
-    beforeOutput();
-    writer.write({ kind: 'err', t: writer.now(), text: redactText(text) });
-  }, () => {});
+  let stderrEnded = false;
+  const endStderr = () => {
+    if (stderrEnded) return;
+    stderrEnded = true;
+    if (writer.open) stderrLines.end();
+  };
+  tapReadable(child.stdout, (chunk) => { if (writer.open) stdoutLines.write(chunk); }, endStdout);
+  tapReadable(child.stderr, (chunk) => { if (writer.open) stderrLines.write(chunk); }, endStderr);
 
   // The hub's termination reaches the child through `kill` (SDK, pid-less
   // fallbacks) or through terminateProcessTree's hook.
@@ -493,6 +604,7 @@ function tapChild(child, dir, {
   child.once?.('close', (code, signal) => {
     closed = true;
     endStdout();
+    endStderr();
     exitInfo ??= { t: writer.now(), code: code ?? null, signal: signal ?? null };
     if (!exitWritten) writeExit(true);
     writer.write({ kind: 'close', t: writer.now() });
@@ -504,12 +616,15 @@ function tapChild(child, dir, {
  * While recording, the Agent SDK's spawn hook: spawns the CLI the way the
  * SDK's own local spawn does (pipes, `windowsHide`, the forwarded abort
  * signal) and taps it. The SDK never reads stderr from a custom process, so
- * the tap drains it to keep the pipe from filling. Returns undefined when
- * recording is off so the SDK keeps its own spawn.
+ * the spawner drains it, keeping the last 2048 characters as the SDK's own
+ * spawn does: `stderrTail()` returns them for the most recent process, and
+ * `withSdkStderrTail` puts them back into the SDK's exit error. Returns
+ * undefined when recording is off so the SDK keeps its own spawn.
  */
-export function recordingClaudeSdkSpawner({ secrets = [], cli = null, hubEnv = process.env } = {}) {
+export function recordingClaudeSdkSpawner({ secrets = [], cli = null, platform = process.platform, hubEnv = process.env } = {}) {
   if (!providerTranscriptDir(hubEnv)) return undefined;
-  return (sdkOptions) => {
+  let tail = '';
+  const spawnRecorded = (sdkOptions) => {
     const child = spawnChildProcess(sdkOptions.command, sdkOptions.args, {
       cwd: sdkOptions.cwd,
       env: sdkOptions.env,
@@ -517,7 +632,14 @@ export function recordingClaudeSdkSpawner({ secrets = [], cli = null, hubEnv = p
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
-    child.stderr?.resume();
+    tail = '';
+    const decoder = new StringDecoder('utf8');
+    child.stderr?.on('data', (chunk) => {
+      tail += decoder.write(chunk);
+      if (tail.length > 2 * SDK_STDERR_TAIL_CHARS) tail = tail.slice(-SDK_STDERR_TAIL_CHARS);
+    });
+    child.stderr?.once('end', () => { tail += decoder.end(); });
+    child.stderr?.on('error', () => {});
     return tapProviderProcess(child, {
       agent: 'claude',
       transport: 'sdk',
@@ -526,7 +648,34 @@ export function recordingClaudeSdkSpawner({ secrets = [], cli = null, hubEnv = p
       env: sdkOptions.env,
       secrets,
       cli,
+      platform,
       hubEnv,
     });
   };
+  spawnRecorded.stderrTail = () => tail;
+  return spawnRecorded;
+}
+
+const SDK_PROCESS_EXIT_ERROR = /Claude Code process (?:exited with code -?\d+|terminated by signal [A-Z0-9]+)/;
+
+/**
+ * The Agent SDK appends `. stderr: <tail>` to its process exit errors only for
+ * the process it spawned itself. With the recording spawner the tail lives in
+ * the spawner; this puts it back where the SDK would, so the error a user sees
+ * is the same with and without recording. Other messages pass unchanged.
+ */
+export function withSdkStderrTail(message, tail, secrets = []) {
+  const text = String(message ?? '');
+  if (typeof tail !== 'string' || !tail || text.includes('. stderr: ') || !SDK_PROCESS_EXIT_ERROR.test(text)) {
+    return text;
+  }
+  let kept = redactDiagnosticText(tail, secrets);
+  if (kept.length > SDK_STDERR_TAIL_CHARS) {
+    kept = kept.slice(-SDK_STDERR_TAIL_CHARS);
+    const first = kept.charCodeAt(0);
+    if (first >= 0xdc00 && first <= 0xdfff) kept = kept.slice(1);
+  }
+  kept = kept.trim();
+  if (!kept) return text;
+  return text.replace(SDK_PROCESS_EXIT_ERROR, (phrase) => `${phrase}. stderr: ${kept}`);
 }

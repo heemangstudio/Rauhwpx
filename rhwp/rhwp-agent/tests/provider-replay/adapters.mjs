@@ -54,7 +54,7 @@ export function startReplaySession(bundleOrName, {
   const bundle = resolveBundle(bundleOrName);
   const { agent, transport } = bundle.meta;
   const root = mkdtempSync(path.join(os.tmpdir(), `rhwp-replay-${agent}-`));
-  const replay = createReplaySpawner(bundle, { timeScale });
+  const replay = createReplaySpawner(bundle, { timeScale, platform: dependencies.platform ?? process.platform });
   const events = [];
   const listeners = new Set();
   const onEvent = (event) => {

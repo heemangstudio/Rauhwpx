@@ -556,7 +556,7 @@ export function createPiSession(opts, {
           stdio: ['pipe', 'pipe', 'pipe'],
         }), {
           agent, transport: 'json', stdin: 'text', argv: launched.argv, env: launched.env,
-          secrets: [opts.token, opts.openRouterApiKey], cli: opts.providerCliVersion,
+          secrets: [opts.token, opts.openRouterApiKey], cli: opts.providerCliVersion, platform,
         });
       } catch (e) {
         const failure = { source: 'pi', code: e?.code === 'ENOENT' ? 'cli_missing' : 'process_exit' };
