@@ -38,8 +38,8 @@ html.desktop-mac {
 
 html.desktop-mac .app-home-button {
   position: fixed;
-  /* 신호등(y 12, 지름 12)의 가운데 줄에 아이콘 가운데를 맞춘다. */
-  top: calc((var(--desktop-titlebar-height) - 28px) / 2 - 1px);
+  /* 신호등(y 12, 지름 14)·집중 화면 토글과 아이콘 가운데(19px)를 맞춘다. */
+  top: calc((var(--desktop-titlebar-height) - 28px) / 2);
   left: var(--desktop-home-left);
   /* 문서 홈(900)과 집중 화면 위, 명령 검색·대화상자·알림 아래. */
   z-index: 950;
