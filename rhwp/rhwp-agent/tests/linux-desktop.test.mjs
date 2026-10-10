@@ -52,7 +52,7 @@ test('Linux secret vault rejects plaintext and unknown storage backends', async 
         platform: 'linux',
       });
       await assert.rejects(
-        () => vault.set('hamaeditor.test', 'secret'),
+        () => vault.set('rhwp.test', 'secret'),
         /Secret Service or KWallet system keyring/,
       );
     }
@@ -73,8 +73,8 @@ test('Linux secret vault accepts secure keyrings and locks down persisted cipher
         safeStorage: fakeSafeStorage(backend),
         platform: 'linux',
       });
-      await vault.set('hamaeditor.test', `secret-${backend}`);
-      assert.equal(await vault.get('hamaeditor.test'), `secret-${backend}`);
+      await vault.set('rhwp.test', `secret-${backend}`);
+      assert.equal(await vault.get('rhwp.test'), `secret-${backend}`);
       assert.doesNotMatch(await fs.readFile(filePath, 'utf8'), new RegExp(`secret-${backend}`));
       if (process.platform !== 'win32') {
         assert.equal((await fs.stat(directory)).mode & 0o777, 0o700);
