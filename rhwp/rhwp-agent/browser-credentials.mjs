@@ -466,11 +466,18 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     assertNotResetting();
     const checkpointGeneration = dataGeneration;
     if (!storageState || !Array.isArray(storageState.cookies) || !Array.isArray(storageState.origins)) throw failure('BROWSER_AUTH_CHECKPOINT_INVALID', 'The browser session checkpoint is invalid.');
+    let checkpointState = storageState;
+    if (storageState.originsComplete === false) {
+      if (profileId !== 'native' || storageState.origins.length) throw failure('BROWSER_AUTH_CHECKPOINT_INVALID', 'Partial origin checkpoints require the protected native browser.');
+      // 보호된 탭은 원본 저장소를 읽지 않는다. 현재 승인·세션 버전과 일치하는 암호화 기록만 유지한다.
+      const previous = await restoreCheckpoint({ profileId });
+      checkpointState = { cookies: storageState.cookies, origins: previous?.origins ?? [] };
+    }
     const currentPolicy = await policy.list();
     assertNotResetting();
     if (checkpointGeneration !== dataGeneration) throw failure('BROWSER_RESET_INCOMPLETE', 'The browser authentication checkpoint was cancelled by cleanup.');
     const accounts = state.accounts.filter((account) => account.profileId === profileId).map((account) => ({ id: account.id, version: account.version, sessionVersion: account.sessionVersion ?? 0, policyVersion: currentPolicy.accounts.find((entry) => entry.accountId === account.id)?.version ?? 0 }));
-    await authStore.saveCheckpoint(profileId, { schema: 1, profileId, accounts, state: storageState });
+    await authStore.saveCheckpoint(profileId, { schema: 1, profileId, accounts, state: checkpointState });
     return { saved: true };
   }
   async function restoreCheckpoint({ profileId = 'default' } = {}) {

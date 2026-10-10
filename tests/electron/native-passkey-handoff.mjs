@@ -48,6 +48,24 @@ try {
     inventory: () => [...host.tabs.values()].map((tab) => host.state(tab)),
   };
   const checkpoints = new Map();
+  if (process.env.RHWP_TEST_NATIVE_PARTIAL_CHECKPOINT === '1') {
+    const { createBrowserCredentialBroker } = await import('../../rhwp/rhwp-agent/browser-credentials.mjs');
+    const { createBrowserPolicy } = await import('../../rhwp/rhwp-agent/browser-policy.mjs');
+    const policy = createBrowserPolicy({ dataDir });
+    const options = { dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 8) };
+    const secureBroker = createBrowserCredentialBroker(options);
+    await secureBroker.ready();
+    const human = { isHuman: true };
+    const requested = await secureBroker.requestAccount({ actor: human, origin, origins: [origin], label: 'Synthetic restart archive' });
+    const { account } = await secureBroker.approveAccount({ actor: human, requestId: requested.requestId, approval: { approved: true, requestId: requested.requestId, use: true } });
+    await secureBroker.confirmAccountSession({ actor: human, accountId: account.id, additionalProfileId: 'native' });
+    await secureBroker.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: [{ origin, localStorage: [{ name: 'fresh-archive-token', value: 'encrypted-approved-origin' }] }] } });
+    await secureBroker.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: [], originsComplete: false } });
+    const restarted = createBrowserCredentialBroker(options);
+    await restarted.ready();
+    checkpoints.set('native', await restarted.restoreCheckpoint({ profileId: 'native' }));
+    assert.equal(host.tabs.size, 0, 'the checkpoint must restore before any native guest exists');
+  }
   const account = { id: 'local-native-fixture', profileId: 'default', origins: [origin], agentReuseApproved: true };
   const broker = {
     async listAccounts() { return { accounts: [account] }; }, async registerSessionOrigins() {}, setSessionClearer() {},
@@ -62,6 +80,7 @@ try {
   const unrelatedContents = host.tab(unrelated.tab.tabId).view.webContents;
   await unrelatedContents.executeJavaScript(`localStorage.setItem('retained-session', 'unrelated-local-value'); new Promise((resolve, reject) => { const request = indexedDB.open('retained-session-db', 1); request.onupgradeneeded = () => request.result.createObjectStore('values'); request.onsuccess = () => { request.result.close(); resolve(true); }; request.onerror = () => reject(request.error); })`);
   const nativeTab = host.tab(opened.tab.tabId);
+  if (process.env.RHWP_TEST_NATIVE_PARTIAL_CHECKPOINT === '1') assert.equal(await nativeTab.view.webContents.executeJavaScript("localStorage.getItem('fresh-archive-token')"), 'encrypted-approved-origin');
   const before = await nativeTab.view.webContents.executeJavaScript('document.querySelector("h1").textContent');
   assert.equal(before, 'Initial native guest');
   if (host.zoom) host.zoom(editor, { tabId: nativeTab.tabId, factor: 1.5 });
@@ -99,7 +118,7 @@ try {
   assert.equal(await contents.executeJavaScript('document.hidden'), true);
   assert.equal(await unrelatedContents.executeJavaScript("localStorage.getItem('retained-session')"), 'unrelated-local-value');
   assert.equal(await unrelatedContents.executeJavaScript("indexedDB.databases().then(databases => databases.some(entry => entry.name === 'retained-session-db'))"), true);
-  console.log(`NATIVE_PASSKEY_REPORT ${JSON.stringify({ mode: confirmed.runtime.mode, retainedTarget: true, authenticated: true, retainedPath: '/research', protectedAutofill: !!host.passwords, unrelatedStoragePreserved: true, agentReady: true, hiddenAfterAction: true, zoomGeometry: !!host.zoom })}`);
+  console.log(`NATIVE_PASSKEY_REPORT ${JSON.stringify({ mode: confirmed.runtime.mode, retainedTarget: true, authenticated: true, retainedPath: '/research', protectedAutofill: !!host.passwords, unrelatedStoragePreserved: true, agentReady: true, hiddenAfterAction: true, zoomGeometry: !!host.zoom, freshCheckpointRestored: process.env.RHWP_TEST_NATIVE_PARTIAL_CHECKPOINT === '1' })}`);
 } catch (error) { console.error(error.stack); process.exitCode = 1; }
 finally {
   await browser?.close();

@@ -183,3 +183,32 @@ test('native signout after protected autofill clears only the linked approved we
   assert.deepEqual(f.storage().origins.map((entry) => entry.origin), ['https://unrelated.example']);
   assert.equal(f.storage().origins[0].localStorage[0].value, 'retained-private');
 });
+
+
+test('protected native partial checkpoints preserve encrypted origin storage through broker restart and honor explicit clearing', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-partial-native-checkpoint-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const policy = createBrowserPolicy({ dataDir });
+  const options = { dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 7) };
+  const broker = createBrowserCredentialBroker(options);
+  await broker.ready();
+  const requested = await broker.requestAccount({ actor, origin, origins: [origin], label: 'Fixture checkpoint website' });
+  const { account: original } = await broker.approveAccount({ actor, requestId: requested.requestId, approval: { approved: true, requestId: requested.requestId, use: true } });
+  await broker.confirmAccountSession({ actor, accountId: original.id, additionalProfileId: 'native' });
+  const savedOrigins = [{ origin, localStorage: [{ name: 'approved-token', value: 'encrypted-token' }], indexedDB: [{ name: 'approved-cache', version: 1, stores: [] }] }];
+  await broker.saveCheckpoint({ profileId: 'native', state: { cookies: [cookie('session', 'site.example', 'before')], origins: savedOrigins } });
+  await broker.saveCheckpoint({ profileId: 'native', state: { cookies: [cookie('session', 'site.example', 'after')], origins: [], originsComplete: false } });
+  const restarted = createBrowserCredentialBroker(options);
+  await restarted.ready();
+  const restored = await restarted.restoreCheckpoint({ profileId: 'native' });
+  assert.deepEqual(restored.origins, savedOrigins);
+  assert.equal(restored.cookies[0].value, 'after');
+  assert.equal('originsComplete' in restored, false);
+  await assert.rejects(restarted.saveCheckpoint({ profileId: 'default', state: { cookies: [], origins: [], originsComplete: false } }), { code: 'BROWSER_AUTH_CHECKPOINT_INVALID' });
+  await restarted.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: [] } });
+  assert.deepEqual((await restarted.restoreCheckpoint({ profileId: 'native' })).origins, []);
+  await restarted.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: savedOrigins } });
+  await restarted.revokeAccount({ actor, accountId: original.id });
+  await restarted.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: [], originsComplete: false } });
+  assert.equal(await restarted.restoreCheckpoint({ profileId: 'native' }), null);
+});
