@@ -6716,13 +6716,18 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   /**
-   * 허브의 살아 있는 턴을 이 채팅에 다시 묶은 직후(bindLiveChat)에 부른다. 지금은 할 일이 없다.
+   * 허브의 살아 있는 턴을 이 채팅에 다시 묶은 직후(bindLiveChat, 또는 대기 중이던 시작 요청을
+   * welcome 이 이어 붙인 chat-started)에 부른다. 순서를 지킨다:
    * - U4: 이 채팅의 마지막 턴 표식(kind:'turn')이 아직 열려 있으면 그 표식을 openFold 로 다시
-   *   잡아, 이어 붙인 턴의 turn-end 가 그 접힘을 닫게 한다.
-   * - S3: 이 턴을 중단으로 기록해 두었으면(live.turnId 가 같으면) 되살린다(reviveInterruptedTurn).
+   *   잡아, 이어 붙인 턴의 turn-end 가 그 접힘을 닫게 한다. (U4 가 채운다)
+   * - S3: 이 턴을 중단으로 기록해 두었으면(live.turnId 가 같으면) 되살린다(reviveInterruptedTurn). (S3 가 채운다)
+   * - U1: 대기열을 푼다(아래).
    */
-  function onLiveChatAdopted(_live: HubChat): void {
-    // U4·S3 가 채운다.
+  function onLiveChatAdopted(live: HubChat): void {
+    // 이어 붙인 턴의 끝은 이 사이드바가 본다 — 채팅을 열 때(attach) '작업이 끊겨'로 붙잡은 대기열을
+    // 풀고, 그 턴이 끝나면 보통 규칙대로 하나씩 보낸다. 돌지 않는 세션(계획 승인 대기)에는 이 사이드바가
+    // 볼 턴 끝이 없으니 붙잡은 채 둔다.
+    if (live.running) followUps.adoptLiveTurn();
   }
 
   /** 허브 세션의 에이전트·모델·속도·권한·작업 방식을 이 채팅에 맞춘다 — chat-started 와 다시 붙이기가 함께 쓴다. */

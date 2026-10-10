@@ -4,6 +4,7 @@ import { isMainModule, runStandalone } from './standalone.mjs';
 
 const RUNNING_CHAT = 'preview-chat-schedule';
 const OTHER_TEXT = '현장 인터뷰 일정\n다시 확인';
+const QUEUED = ['표 제목도 맞춰 주세요', '끝나면 요약해 주세요'];
 
 /**
  * A reload while the hub still runs the window's chat: the sidebar re-adopts that chat instead of
@@ -69,6 +70,40 @@ export async function checkReloadPreview(page, origin, artifacts) {
   await page.click('.ag-question-next');
   await page.waitForSelector('.ag-question-history');
   assert.equal((await counts()).starts, 0);
+
+  // Follow-ups queued before the reload stay queued and are released, not held as cut off: the
+  // adopted turn's end is seen here, so each normal turn end sends the next one.
+  const queueState = () => page.evaluate(() => {
+    const strip = document.querySelector('.ag-followups');
+    return {
+      rows: [...document.querySelectorAll('.ag-followup')].map((row) => row.querySelector('.ag-followup-text')?.title ?? ''),
+      hold: strip?.dataset.hold ?? null,
+      sent: window.sidebarPreview.snapshot().messageTexts,
+    };
+  });
+  await open('running');
+  for (const text of QUEUED) {
+    const before = (await queueState()).rows.length;
+    await page.focus('.ag-input');
+    await page.type('.ag-input', text);
+    await page.keyboard.press('Enter');
+    await page.waitForFunction((count) => document.querySelectorAll('.ag-followup').length === count, {}, before + 1);
+  }
+  await page.evaluate(() => window.sidebarPreview.threadStore.waitForThreadsPersistence());
+  // Reload without re-seeding the sample chats, so the stored chat keeps its queue.
+  await page.goto(`${origin}/?theme=light&width=480&reload=running`, { waitUntil: 'networkidle0' });
+  await page.waitForFunction((id) => window.sidebarPreview?.sidebar.currentThreadId() === id
+    && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true', {}, RUNNING_CHAT);
+  assert.deepEqual(await counts(), { starts: 0, stops: 0, interrupts: 0 }, 'the chat with a queue is adopted, not restarted');
+  assert.deepEqual(await queueState(), { rows: QUEUED, hold: null, sent: [] },
+    'the queue survives the reload and is not held while the adopted turn runs');
+  await (await page.$('.ag-root')).screenshot({ path: resolve(artifacts, 'reload-queued.png') });
+  await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+  await page.waitForFunction(() => window.sidebarPreview.snapshot().messageTexts.length === 1);
+  assert.deepEqual(await queueState(), { rows: [QUEUED[1]], hold: null, sent: [QUEUED[0]] },
+    'the adopted turn\'s normal end sends the first queued message');
+  await page.waitForFunction(() => window.sidebarPreview.snapshot().messageTexts.length === 2, { timeout: 10_000 });
+  assert.deepEqual((await queueState()).sent, QUEUED, 'the next normal turn end sends the second one');
 }
 
 if (isMainModule(import.meta)) await runStandalone('Reload re-adopts the live chat', checkReloadPreview);

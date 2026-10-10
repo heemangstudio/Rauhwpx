@@ -98,6 +98,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?connection=disconnected` | The offline dot and the read-only composer lock, shown after the 400 ms status delay |
 | `?chats=sample&reload=running` | Reload with the agent still working: the 사업 제안서 chat is re-adopted, not restarted (Stop stays available) |
 | `?chats=sample&reload=question` | Reload with a pending question: the draft comes back at step 2/2 with its typed `직접 입력` answer |
+| `?reload=running` (after a `chats=sample&reload=running` visit) | Reload without re-seeding the chats: follow-ups queued before the reload stay queued and released, and the adopted turn's normal end sends the next one |
 
 Parameters can be combined. Select **Next reply**, then type a message or press
 **Play sample conversation**. Connection and service controls expose disconnected,
@@ -220,8 +221,9 @@ node rhwp/rhwp-studio/sidebar-preview/reload.check.mjs
 each starts its own server and browser like the full check.
 
 `reload.check.mjs` also runs as a step of `npm run test:sidebar`. It opens both `reload=`
-URLs, asserts that the fixture bridge saw no chat start, stop or interrupt, and saves
-`reload-running.png` and `reload-question.png`.
+URLs, asserts that the fixture bridge saw no chat start, stop or interrupt, queues two
+follow-ups and reloads to check they are released and sent one per normal turn end, and saves
+`reload-running.png`, `reload-question.png` and `reload-queued.png`.
 
 The browser check starts its own Vite server on an ephemeral port and launches a
 fresh headless Chrome profile. It exercises the primary panels and mutations,

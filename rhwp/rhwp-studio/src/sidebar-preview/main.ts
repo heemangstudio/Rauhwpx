@@ -85,10 +85,12 @@ const turnRestore: TurnRestoreControl = {
 };
 /*
  * `chats=sample&reload=running|question` mounts the sidebar as after a reload while the hub still
- * runs the 사업 제안서 chat's turn (and, for `question`, waits on its question).
+ * runs the 사업 제안서 chat's turn (and, for `question`, waits on its question). Without
+ * `chats=sample` the chat is not seeded again, so a second load keeps what the first one stored
+ * (its queued follow-ups, for example).
  */
 const reload = params.get('reload');
-const liveChat = params.get('chats') === 'sample' && (reload === 'running' || reload === 'question')
+const liveChat = reload === 'running' || reload === 'question'
   ? {
     threadId: SAMPLE_WORKING_CHAT_ID,
     agent: 'claude' as const,
