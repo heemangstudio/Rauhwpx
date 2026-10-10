@@ -102,7 +102,27 @@ export interface InlineObjectAddress {
   logicalOffset?: number;
 }
 
+/** 페이지 단위(문서 좌표)의 스크린샷 영역. */
+export interface InlineScreenshotPageRegion {
+  pageIndex: number;
+  pageWidth: number;
+  pageHeight: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export type InlinePromptItem =
+  | {
+      kind: 'screenshot';
+      captureId: string;
+      comment: string;
+      pageRegions: InlineScreenshotPageRegion[];
+      elementTexts?: Array<{ pageIndex: number; sectionIdx: number; paraIdx: number; text: string }>;
+      attachmentName: string;
+      recordAttachmentName: string;
+    }
   | {
       kind: 'text';
       selection: ExtractedSelection;
@@ -266,6 +286,16 @@ function cellToolArgs(address: InlineObjectAddress, start: SelPoint, end: SelPoi
 }
 
 function itemLines(item: InlinePromptItem, index: number): string[] {
+  if (item.kind === 'screenshot') {
+    return [
+      `## ${index}. 문서 스크린샷`,
+      `- 이미지: 첨부 파일 ${item.attachmentName}`,
+      `- 캡처 기록: 첨부 파일 ${item.recordAttachmentName}`,
+      `- 페이지 영역 (0-based pageIndex, 문서 좌표): ${JSON.stringify(item.pageRegions)}`,
+      ...(item.elementTexts?.length ? [`- 영역 안의 텍스트: ${JSON.stringify(item.elementTexts)}`] : []),
+      `- 사용자 메모: ${JSON.stringify(item.comment)}`,
+    ];
+  }
   if (item.kind === 'text') {
     const { start, end } = item.selection;
     return [
@@ -325,7 +355,7 @@ export function buildInlineElementSelection(
   attachments: File[] = [],
 ): InlinePromptSelection {
   const kindLabel = (kind: string): string => ({
-    text: '텍스트', table: '표', equation: '수식', image: '이미지',
+    text: '텍스트', table: '표', equation: '수식', image: '이미지', screenshot: '스크린샷',
     shape: '도형', group: '묶음', line: '선', ole: 'OLE',
   })[kind] ?? kind;
   const counts = new Map<string, number>();
@@ -338,6 +368,7 @@ export function buildInlineElementSelection(
     if (item.kind === 'text') return selectionExcerpt(item.selection.text, 36);
     if (item.kind === 'equation') return selectionExcerpt(item.script, 36);
     if (item.kind === 'table') return `${item.rowCount}×${item.colCount} 표`;
+    if (item.kind === 'screenshot') return selectionExcerpt(item.comment, 36);
     return item.description || item.objectType;
   }).filter(Boolean);
   const context = [

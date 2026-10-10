@@ -144,8 +144,68 @@ function fixture() {
   });
   const painted = () => scrollContent.children.flatMap((layer) => layer.children)
     .filter((node) => node.className.includes('ag-pending-marker')).length;
-  return { bridge, view, headless, viewRecords, headlessRecords, leases, tool, turnStart, turnEnd, insert, painted };
+  return { bridge, frame, view, headless, viewRecords, headlessRecords, leases, tool, turnStart, turnEnd, insert, painted };
 }
+
+test('reopening a chat settles the old turn when its welcome snapshot was skipped', () => {
+  const f = fixture();
+  try {
+    f.bridge.startChat('codex', undefined, undefined, false, 'safe', 'direct', 'resumed-thread');
+    f.frame({ type: 'chat-started', agent: 'codex', threadId: 'resumed-thread' });
+    f.frame({ type: 'agent-event', event: { type: 'turn-start', agent: 'codex', turnId: 'old-turn' } });
+    assert.equal(f.bridge.isTurnRunning(), true);
+
+    // 재연결 직후 보낸 chat-start가 있으므로 welcome은 의도적으로 건너뛴다.
+    f.bridge.startChat('codex', undefined, undefined, true, 'safe', 'direct', 'resumed-thread');
+    f.frame({ type: 'welcome', session: { agent: 'codex', threadId: 'resumed-thread', status: 'idle' } });
+    assert.equal(f.bridge.isTurnRunning(), true);
+    f.frame({ type: 'chat-started', agent: 'codex', threadId: 'resumed-thread', status: 'idle', turnId: null });
+
+    assert.equal(f.bridge.isTurnRunning(), false, '새 세션은 사라진 턴의 종료 이벤트를 기다리지 않는다');
+    assert.equal(f.bridge.getEditingLease().active, false);
+    assert.equal(f.bridge.pendingEdits.getChangeSets().some((set) => set.status === 'open'), false);
+  } finally {
+    f.bridge.dispose();
+  }
+});
+
+test('reopening a running chat restores its turn identity and rejects an older turn end', () => {
+  const f = fixture();
+  try {
+    f.bridge.startChat('codex', undefined, undefined, false, 'safe', 'direct', 'resumed-thread');
+    f.frame({ type: 'chat-started', agent: 'codex', threadId: 'resumed-thread', status: 'running', turnId: 'resumed-turn' });
+    assert.equal(f.bridge.isTurnRunning(), true);
+    assert.equal(f.bridge.getEditingLease().active, true);
+
+    f.frame({ type: 'agent-event', event: { type: 'turn-end', agent: 'codex', turnId: 'older-turn', stopReason: 'interrupted' } });
+    assert.equal(f.bridge.isTurnRunning(), true, '과거 턴의 종료는 복원된 실행을 끄지 않는다');
+    f.frame({ type: 'agent-event', event: { type: 'turn-end', agent: 'codex', turnId: 'resumed-turn', stopReason: 'interrupted' } });
+    assert.equal(f.bridge.isTurnRunning(), false);
+    assert.equal(f.bridge.getEditingLease().active, false);
+  } finally {
+    f.bridge.dispose();
+  }
+});
+
+test('an idle replacement preserves edits from the lost turn for review', async () => {
+  const f = fixture();
+  try {
+    f.bridge.startChat('claude', undefined, undefined, false, 'safe', 'direct', 'resumed-thread');
+    f.frame({ type: 'chat-started', agent: 'claude', threadId: 'resumed-thread' });
+    f.turnStart();
+    await f.insert(' world');
+    f.bridge.startChat('claude', undefined, undefined, true, 'safe', 'direct', 'resumed-thread');
+    f.frame({ type: 'chat-started', agent: 'claude', threadId: 'resumed-thread', status: 'idle', turnId: null });
+
+    const [set] = f.bridge.pendingEdits.getChangeSets();
+    assert.equal(set.status, 'awaiting-review');
+    assert.equal(set.turnStopped, true);
+    assert.equal(set.ops.length, 1, '문서에 적용한 편집은 복원 과정에서 버리지 않는다');
+    assert.equal(f.bridge.isBusy(), true, '종료된 턴의 검토는 사용자가 마무리한다');
+  } finally {
+    f.bridge.dispose();
+  }
+});
 
 test('detached bridge runs the turn against the headless editor and never locks or paints the view', async () => {
   const f = fixture();

@@ -228,6 +228,7 @@ import { initAgentSidebar } from './ui/agent-sidebar/index.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
 import { AGENT_LABEL } from './ui/agent-sidebar/providers.ts';
 import { initInlinePrompt } from './agent/inline-prompt.ts';
+import { createDocumentRegionCapture } from './agent/document-region-capture.ts';
 import { DocumentVersionController, persistActiveBranch, type VersionAgentView } from './versioning/controller.ts';
 import { WorktreeOwnership } from './versioning/worktree-ownership.ts';
 import type { VersionWorktree } from './versioning/types.ts';
@@ -2010,13 +2011,26 @@ function installWindowAgentAttention(): void {
 }
 
 let inlinePrompt: { dispose(): void } | null = null;
+let documentRegionCapture: ReturnType<typeof createDocumentRegionCapture> | null = null;
 
 /** 문서 위 인라인 프롬프트는 화면에 붙은 세션의 에이전트에 보낸다. */
 function reinstallInlinePrompt(): void {
   inlinePrompt?.dispose();
   inlinePrompt = null;
+  documentRegionCapture?.dispose();
+  documentRegionCapture = null;
   const session = attachedSession;
   if (!session.bridge || !session.sidebar || !inputHandler || !canvasView) return;
+  const sidebar = session.sidebar;
+  const bridge = session.bridge;
+  documentRegionCapture = createDocumentRegionCapture({
+    wasm: session.wasm,
+    canvasView,
+    eventBus: session.bus,
+    getIdentity: () => bridge.getDocumentSelectionIdentity(),
+    getDocumentName: () => session.wasm.fileName,
+    onCapture: (draft) => { void sidebar.queueCaptureDraft(draft); },
+  });
   inlinePrompt = initInlinePrompt({
     wasm: session.wasm,
     eventBus: session.bus,
@@ -2024,6 +2038,7 @@ function reinstallInlinePrompt(): void {
     canvasView,
     bridge: session.bridge,
     submit: session.sidebar.sendInlinePrompt,
+    startScreenshot: () => documentRegionCapture?.startCapture(),
   });
 }
 
@@ -2212,6 +2227,8 @@ async function attachSessionNow(next: DocumentSession): Promise<void> {
   previous.sidebar?.deactivate();
   inlinePrompt?.dispose();
   inlinePrompt = null;
+  documentRegionCapture?.dispose();
+  documentRegionCapture = null;
 
   // 2. 페이지 퍼사드를 다음 세션으로 돌린다.
   attachedSession = next;

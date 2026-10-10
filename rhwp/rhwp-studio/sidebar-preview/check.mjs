@@ -13,6 +13,7 @@ import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock, checkNewChatViewMode } from './parallel-chats.check.mjs';
+import { checkChatResume } from './chat-resume.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -140,6 +141,7 @@ try {
   }
   await step('Fullscreen provider chip follows the composer column', () => checkChipAlignment(page, origin));
   await step('New chat preserves sidebar and fullscreen views', () => checkNewChatViewMode(page, origin));
+  await step('Resumed idle chat releases the turn and can continue', () => checkChatResume(page, origin, screenshot));
   await step('Empty focus chat centers the composer and sends it to the bottom', async () => {
     await open('fullscreen=1&reset=1');
     const startNewChat = async () => {

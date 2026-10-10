@@ -335,8 +335,10 @@ test('two active provider turns route overlapping MCP ids only to their owning S
   sendFrame(alpha, { type: 'chat-start', agent: 'pi', threadId: 'thread-alpha', documentId: 'doc-alpha' });
   sendFrame(beta, { type: 'chat-start', agent: 'pi', threadId: 'thread-beta', documentId: 'doc-beta' });
   const [alphaSession, betaSession] = await Promise.all([alphaStarted, betaStarted]);
-  assert.equal(alphaSession.status, undefined);
-  assert.equal(betaSession.status, undefined);
+  assert.equal(alphaSession.status, 'idle');
+  assert.equal(betaSession.status, 'idle');
+  assert.equal(alphaSession.turnId, null);
+  assert.equal(betaSession.turnId, null);
   assert.equal((await bindDraft(alpha, 'new-draft', 'draft-bind-active')).threadId, 'new-draft');
   assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'new-draft')).status, 201);
   assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'next-draft-alpha')).status, 403);

@@ -35,6 +35,7 @@ import {
   waitForHubReadyLine,
 } from './agent-hub.mjs';
 import { DocumentLeaseManager, releaseRendererDocuments } from './document-leases.mjs';
+import { captureDocumentRegion, installAgentContextStore } from './agent-context-store.mjs';
 import { quarantineBookmarkState, readBookmarkState } from './bookmark-state.mjs';
 import {
   MAX_GENERATED_DOCUMENT_BYTES,
@@ -963,6 +964,20 @@ function queueLaunch(request) {
 function showLaunchError(error) {
   dialog.showErrorBox('Rauhwpx could not open', error instanceof Error ? error.message : String(error));
 }
+
+installAgentContextStore({
+  ipcMain, sessionForEvent,
+  rootDir: join(app.getPath('userData'), 'document-captures'),
+  capturePageForEvent(event, rect) {
+    const { window } = sessionForEvent(event);
+    const bounds = window.getContentBounds();
+    return captureDocumentRegion({
+      webContents: window.webContents,
+      bounds: { ...bounds, scaleFactor: screen.getDisplayMatching(bounds).scaleFactor },
+      rect,
+    });
+  },
+});
 
 ipcMain.handle('desktop:get-unique-installs', async (event) => {
   sessionForEvent(event);

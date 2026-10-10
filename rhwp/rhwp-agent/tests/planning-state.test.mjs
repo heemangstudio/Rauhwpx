@@ -255,7 +255,7 @@ test('permission and plan actions share the serialized workflow transition queue
   );
   assert.match(
     serverSource,
-    /case 'chat-user-message':[\s\S]*record\.agentSession\.pendingTransitions > 0[\s\S]*code: 'WORKFLOW_SWITCHING'/,
+    /case 'chat-user-message':[\s\S]*record\.agentSession\.pendingTransitions > 0[\s\S]*rejectUserMessage\(record, sock, msg, workflowError\('WORKFLOW_SWITCHING'/,
   );
 });
 

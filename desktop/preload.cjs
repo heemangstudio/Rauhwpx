@@ -1,6 +1,11 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('rhwpDesktop', {
+  saveAgentContext: (payload) => ipcRenderer.invoke('desktop:agent-context-save', payload),
+  listAgentContexts: (documentId) => ipcRenderer.invoke('desktop:agent-context-list', documentId),
+  readAgentContextFiles: (id) => ipcRenderer.invoke('desktop:agent-context-files', id),
+  setAgentContextState: (ids, state) => ipcRenderer.invoke('desktop:agent-context-state', ids, state),
+  captureDocumentRegion: (rect) => ipcRenderer.invoke('desktop:agent-context-capture', rect),
   getSessionContext: () => ipcRenderer.invoke('desktop:get-session-context'),
   // 백그라운드 문서의 에이전트용 추가 허브 세션. 만든 창만 문맥을 받고 해제할 수 있다.
   createAgentSession: () => ipcRenderer.invoke('desktop:agent-session-create'),

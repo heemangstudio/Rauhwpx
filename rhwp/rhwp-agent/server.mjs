@@ -177,6 +177,7 @@ const TOOL_TRACE_PATH = configureToolTrace(WORK_ROOT);
 let hubPort = REQUESTED_PORT;
 const STUDIO_TOOL_TIMEOUT_MS = 30_000;
 const MAX_CHAT_MESSAGE_CHARS = 128_000;
+const MAX_USER_MESSAGE_RECEIPTS = 128;
 const PLAN_CHANGE_TEXT_LIMITS = Object.freeze({
   planId: 256,
   promptOverride: MAX_CHAT_MESSAGE_CHARS,
@@ -485,6 +486,8 @@ const sessions = new HubSessionRegistry({
       referenceStagingThreadId: null,
       processCleanupUncertain: false,
       pendingReferenceMessage: null,
+      userMessageReceipts: new Map(),
+      settledUserMessages: new WeakSet(),
       nextCapabilityEpoch: 1,
       pendingCalls: new Map(),
       toolTelemetry: null,
@@ -1308,6 +1311,14 @@ function currentPiSubagentForSocket(record, sock) {
 
 function settleAgentTurn(record, activeSession, event) {
   const settledTurnId = activeSession.turnId;
+  const succeeded = ['completed', 'end_turn', 'success'].includes(event.stopReason) && !event.errorMessage;
+  // A backend may finish synchronously inside sendUserMessage. Successful
+  // dispatch still gets its receipt after that call returns.
+  if (!succeeded) {
+    rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'The turn ended before accepting the message', {
+      session: activeSession, turnId: settledTurnId,
+    });
+  }
   if (activeSession.planning.phase === 'implementing' && activeSession.planExecutionTurnId === settledTurnId) {
     activeSession.planExecutionTurnSucceeded = ['completed', 'end_turn', 'success'].includes(event.stopReason) && !event.errorMessage;
     activeSession.planning.settleExecution(event.stopReason === 'interrupted' ? 'interrupted'
@@ -2342,7 +2353,14 @@ function makeBackendEventHandler(record, generation) {
       // 서브에이전트 브라우저는 턴과 함께 끝난다 — 메인 브라우저만 다음 턴까지 산다.
       record.browserbaseSession.cleanupExtras('turn ended');
     }
-    const delivered = sendAgentEvent(record, studioEvent);
+    // Opt-in sends acknowledge before Studio inserts the user bubble. A
+    // synchronous turn-start inside sendUserMessage must follow that receipt.
+    const pendingMessage = [...record.userMessageReceipts.values()].find((receipt) => (
+      receipt.message && receipt.session === activeSession && receipt.turnId === providerTurnId
+    ));
+    const delivered = pendingMessage
+      ? (pendingMessage.events ??= [], pendingMessage.events.push(studioEvent), true)
+      : sendAgentEvent(record, studioEvent);
     if (evt.type === 'turn-end' && !delivered) record.missedTurnEnd = studioEvent;
     if (evt.type === 'turn-end') {
       record.userQuestionResponseReceipts.clear();
@@ -2364,6 +2382,7 @@ function sendAgentEvent(record, event) {
 
 function disposeSession(record) {
   record.pendingReferenceMessage = null;
+  rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'The chat stopped before accepting the message');
   record.pendingDocumentSaved = null;
   // 채팅 중지·창 닫기·허브 종료가 겹치면 같은 공급자 종료를 기다린다.
   // agentSession 을 비웠다고 아직 살아 있는 프로세스의 작업 폴더를 지우면 안 된다.
@@ -2499,7 +2518,7 @@ function referenceScopes(activeSession) {
 }
 
 /** 연구 프로젝트 요약(언급·발췌 포함)과 메시지 첨부를 사용자 메시지 앞에 붙인다. */
-async function addReferenceContext(activeSession, query, prompt, messageAttachments = [], mentions = []) {
+async function addReferenceContext(activeSession, query, prompt, messageAttachments = [], mentions = [], { required = false } = {}) {
   try {
     const record = sessions.get(activeSession.hubSessionId ?? '') ?? null;
     const repository = record ? repositoryContext(record) : null;
@@ -2529,6 +2548,7 @@ async function addReferenceContext(activeSession, query, prompt, messageAttachme
     return [block, attached, prompt].filter(Boolean).join('\n\n');
   } catch (error) {
     log(`reference retrieval failed: ${error?.message ?? error}`);
+    if (required) throw error;
     return prompt;
   }
 }
@@ -2739,16 +2759,90 @@ function addTemplateContext(record, activeSession, prompt) {
   }
 }
 
+function userMessageFingerprint(msg, activeSession) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    threadId: activeSession.threadId,
+    documentId: activeSession.documentId,
+    text: msg.text,
+    skillName: msg.skillName ?? null,
+    mentions: normalizeMentions(msg.mentions),
+    activeTemplateId: msg.activeTemplateId ?? null,
+    attachmentCount: Array.isArray(msg.stagedReferenceIds) ? msg.stagedReferenceIds.length : 0,
+  })).digest('hex');
+}
+
+function rejectUserMessage(record, sock, msg, error, fallbackCode = 'INVALID_REQUEST', reportError = true) {
+  if (record.settledUserMessages.has(msg)) return;
+  const code = error?.code ?? fallbackCode;
+  const message = describeHubError(error);
+  let bufferedEvents = [];
+  if (msg.requireAcceptance === true && typeof msg.messageId === 'string') {
+    const receipt = record.userMessageReceipts.get(msg.messageId);
+    // A conflicting retry must not delete the receipt of the original message.
+    if (receipt?.message === msg) {
+      record.userMessageReceipts.delete(msg.messageId);
+      bufferedEvents = receipt.events ?? [];
+    }
+    record.settledUserMessages.add(msg);
+    sendJson(sock, { v: 1, type: 'chat-user-message-rejected', messageId: msg.messageId, code, message });
+  }
+  if (reportError) sendChatError(sock, error, fallbackCode);
+  for (const event of bufferedEvents) sendAgentEvent(record, event);
+}
+
+function rejectPendingUserMessages(record, code, message, { session, turnId, socket } = {}) {
+  for (const receipt of [...record.userMessageReceipts.values()]) {
+    if (!receipt.message || (session && receipt.session !== session)
+      || (turnId && receipt.turnId !== turnId) || (socket && receipt.socket !== socket)) continue;
+    rejectUserMessage(record, receipt.socket, receipt.message, workflowError(code, message), code, false);
+  }
+}
+
+function requireUserMessageAcceptanceCurrent(record, msg) {
+  if (msg.requireAcceptance !== true) return;
+  const receipt = record.userMessageReceipts.get(msg.messageId);
+  if (receipt?.message !== msg || record.studioSocket !== receipt.socket
+    || receipt.socket.readyState !== receipt.socket.OPEN) {
+    throw workflowError('REQUEST_INVALIDATED', 'The message was cancelled before the provider accepted it');
+  }
+}
+
+function acceptUserMessage(record, sock, msg) {
+  if (msg.requireAcceptance !== true) return;
+  const receipt = record.userMessageReceipts.get(msg.messageId);
+  if (receipt?.message !== msg) return;
+  record.settledUserMessages.add(msg);
+  record.userMessageReceipts.set(msg.messageId, { fingerprint: receipt.fingerprint, attachments: receipt.attachments ?? [] });
+  while (record.userMessageReceipts.size > MAX_USER_MESSAGE_RECEIPTS) {
+    const oldestAccepted = [...record.userMessageReceipts].find(([, entry]) => !entry.message);
+    if (!oldestAccepted) break;
+    record.userMessageReceipts.delete(oldestAccepted[0]);
+  }
+  sendJson(receipt.socket ?? sock, { v: 1, type: 'chat-user-message-accepted', messageId: msg.messageId });
+  for (const event of receipt.events ?? []) sendAgentEvent(record, event);
+}
+
+async function discardRepeatedMessageStages(msg, activeSession) {
+  const stageIds = Array.isArray(msg.stagedReferenceIds) ? msg.stagedReferenceIds : [];
+  await Promise.allSettled(stageIds.map((stageId) => referenceStore.discardStaged({
+    stageId, scopeId: activeSession.threadId,
+  })));
+}
+
 function dispatchUserMessage(record, sock, msg, activeSession, messageAttachments = [], discussionReady = false) {
   if (activeSession.planning.phase === 'awaiting-approval' && !discussionReady) {
     const planId = activeSession.planning.latestPlan?.planId;
     if (!planId) {
-      sendJson(sock, { v: 1, type: 'chat-error', code: 'PLAN_NOT_FOUND', message: 'The latest plan is unavailable; return to planning and present it again.' });
+      rejectUserMessage(record, sock, msg, workflowError('PLAN_NOT_FOUND', 'The latest plan is unavailable; return to planning and present it again.'));
       return;
     }
     const hasAttachments = messageAttachments.length > 0
       || (Array.isArray(msg.stagedReferenceIds) && msg.stagedReferenceIds.length > 0);
     if (!hasAttachments && isExplicitImplementationApproval(msg.text)) {
+      if (msg.requireAcceptance === true) {
+        rejectUserMessage(record, sock, msg, workflowError('PLAN_APPROVAL_REQUIRED', 'Approve the plan before sending this message'));
+        return;
+      }
       void enqueueWorkflowTransition(record, activeSession, () => approveImplementationPlan(record, sock, { planId, documentRevision: msg.documentRevision }))
         .catch((error) => sendChatError(sock, error));
       return;
@@ -2759,14 +2853,18 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       async () => {
         requireWorkflowSwitchBackend(activeSession);
         await activeSession.backend.setExecutionMode(providerModeRequest(activeSession, 'awaiting-approval'));
-        if (record.agentSession === activeSession) dispatchUserMessage(record, sock, msg, activeSession, messageAttachments, true);
+        if (record.agentSession !== activeSession) {
+          throw workflowError('REQUEST_INVALIDATED', 'The chat changed before accepting the message');
+        }
+        requireUserMessageAcceptanceCurrent(record, msg);
+        dispatchUserMessage(record, sock, msg, activeSession, messageAttachments, true);
       },
     )
-      .catch((error) => sendChatError(sock, error));
+      .catch((error) => rejectUserMessage(record, sock, msg, error, 'WORKFLOW_ERROR'));
     return;
   }
   if (activeSession.planning.phase === 'switching') {
-    sendJson(sock, { v: 1, type: 'chat-error', code: 'WORKFLOW_SWITCHING', message: 'The provider is switching into implementation mode.' });
+    rejectUserMessage(record, sock, msg, workflowError('WORKFLOW_SWITCHING', 'The provider is switching into implementation mode.'));
     return;
   }
   beginAgentTurn(record, activeSession);
@@ -2775,6 +2873,8 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
     generation: activeSession.generation,
     turnId: activeSession.turnId,
   });
+  const receipt = record.userMessageReceipts.get(msg.messageId);
+  if (receipt?.message === msg) receipt.turnId = providerTurn.turnId;
   // Studio 가 메시지에 실어 보낸 문서 읽기 — 사용자 요청 바로 앞에 둔다. 승인·수정·허브 생성 턴은 이 경로를 타지 않는다.
   // 모양이 어긋난 스냅샷은 버리고 메시지는 그대로 보낸다.
   const liveDocument = normalizeDocumentSnapshot(msg.documentSnapshot);
@@ -2789,16 +2889,26 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       // Skill context is loaded asynchronously. An interrupt can settle this
       // turn and a later message can start another turn on the same session
       // before the read completes, so session identity alone is insufficient.
-      if (!providerTurnIsCurrent(record, providerTurn)) return;
+      if (!providerTurnIsCurrent(record, providerTurn)) {
+        rejectUserMessage(record, sock, msg, workflowError('REQUEST_INVALIDATED', 'The turn ended before accepting the message'), 'REQUEST_INVALIDATED', false);
+        return;
+      }
+      requireUserMessageAcceptanceCurrent(record, msg);
       if (activeSession.planning.phase === 'awaiting-approval') {
         prompt = `The current plan remains open for review. Answer questions and research normally. If this message requests concrete changes to the plan, revise it directly with present_implementation_plan; do not ask the user to request a draft again. Never treat discussion as approval to edit the document.\n\nCurrent plan:\n${JSON.stringify(activeSession.planning.latestPlan.plan)}\n\n${prompt}`;
       }
       // 프로젝트 요약은 메모·발췌를 읽느라 비동기다 — 기다린 뒤 턴이 여전히 이 턴인지 다시 본다.
-      prompt = await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions));
-      if (!providerTurnIsCurrent(record, providerTurn)) return;
+      prompt = msg.requireAcceptance === true
+        ? await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions), { required: true })
+        : await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions));
+      if (!providerTurnIsCurrent(record, providerTurn)) {
+        rejectUserMessage(record, sock, msg, workflowError('REQUEST_INVALIDATED', 'The turn ended before accepting the message'), 'REQUEST_INVALIDATED', false);
+        return;
+      }
+      requireUserMessageAcceptanceCurrent(record, msg);
       // 스냅샷도 에이전트가 본 문서 상태다 — 읽기 도구 없이 세운 계획이 승인 때 stale 로 거절되지 않게 한다.
       if (liveDocument) activeSession.lastObservedDocumentRevision = liveDocument.revision;
-      activeSession.backend.sendUserMessage(addAgentInstructionsContext(addReopenedChatHistory(
+      const dispatched = activeSession.backend.sendUserMessage(addAgentInstructionsContext(addReopenedChatHistory(
         activeSession,
         addActiveDocumentContext(
           activeSession,
@@ -2809,16 +2919,23 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
           ),
         ),
       )));
+      // Current providers accept synchronously; a future asynchronous backend
+      // may reject its dispatch promise before acknowledging the message.
+      if (dispatched?.then) await dispatched;
+      acceptUserMessage(record, sock, msg);
     })
     .catch((e) => {
       // A stale rejection belongs to the settled turn. It must not idle or
       // report an error against a newer turn on this same backend session.
-      if (!providerTurnIsCurrent(record, providerTurn)) return;
+      if (!providerTurnIsCurrent(record, providerTurn)) {
+        rejectUserMessage(record, sock, msg, e, 'AGENT_SPAWN_FAILED', false);
+        return;
+      }
       failPendingProviderCallsForTurn(record, activeSession, providerTurn.turnId);
       activeSession.status = 'idle';
       activeSession.turnId = null;
       record.userQuestionResponseReceipts.clear();
-      sendJson(sock, { v: 1, type: 'chat-error', code: e?.code ?? 'AGENT_SPAWN_FAILED', message: describeHubError(e) });
+      rejectUserMessage(record, sock, msg, e, 'AGENT_SPAWN_FAILED');
     });
 }
 
@@ -2890,10 +3007,18 @@ async function dispatchStagedUserMessage(record, sock, msg, activeSession) {
       error: String(entry.reason?.message ?? entry.reason ?? 'Attachment processing failed'),
     });
   sendJson(sock, { v: 1, type: 'chat-reference-status', messageId: msg.messageId, attachments });
+  const receipt = record.userMessageReceipts.get(msg.messageId);
+  if (receipt?.message === msg) receipt.attachments = attachments;
   const stillCurrent = record.pendingReferenceMessage === pendingReferenceMessage;
   if (stillCurrent) record.pendingReferenceMessage = null;
   const readyFiles = settled.flatMap((entry) => entry.status === 'fulfilled' ? [entry.value.file] : []);
-  if (!stillCurrent || record.agentSession !== activeSession) return;
+  if (!stillCurrent || record.agentSession !== activeSession) {
+    throw workflowError('REQUEST_INVALIDATED', 'The chat changed while message attachments were being prepared');
+  }
+  requireUserMessageAcceptanceCurrent(record, msg);
+  if (msg.requireAcceptance === true && settled.some((entry) => entry.status === 'rejected')) {
+    throw workflowError('REFERENCE_COMMIT_FAILED', 'Some message attachments could not be prepared; retry the complete message');
+  }
   if (activeSession.status !== 'idle' || activeSession.pendingTransitions > 0) {
     throw workflowError(
       'REQUEST_INVALIDATED',
@@ -3480,6 +3605,8 @@ async function handleStudioMessage(record, sock, msg) {
           permissionProfile: s.permissionProfile,
           serviceTier: s.serviceTier,
           sessionId: s.sessionId,
+          status: s.status,
+          turnId: s.turnId,
           threadId: s.threadId,
           documentId: s.documentId,
           documentName: s.documentName,
@@ -3614,30 +3741,72 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'chat-user-message': {
       if (!record.agentSession) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'AGENT_NOT_STARTED', message: 'No agent session; send chat-start first.' });
-        return;
-      }
-      if (record.agentSession.pendingTransitions > 0) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'WORKFLOW_SWITCHING', message: 'The provider is applying a workflow or permission change.' });
+        rejectUserMessage(record, sock, msg, workflowError('AGENT_NOT_STARTED', 'No agent session; send chat-start first.'));
         return;
       }
       try {
         assertMessageScope(record.agentSession, msg);
+        if (msg.requireAcceptance === true) {
+          if (typeof msg.messageId !== 'string' || !msg.messageId || msg.messageId.length > 128
+            || /[\u0000-\u001f\u007f]/.test(msg.messageId)
+            || !Object.prototype.hasOwnProperty.call(msg, 'threadId')
+            || !Object.prototype.hasOwnProperty.call(msg, 'documentId')) {
+            throw workflowError('INVALID_REQUEST', 'Accepted message receipts require messageId, threadId and documentId');
+          }
+          if (msg.stagedReferenceIds !== undefined && (!Array.isArray(msg.stagedReferenceIds)
+            || msg.stagedReferenceIds.length > 10
+            || msg.stagedReferenceIds.some((id) => typeof id !== 'string' || !id)
+            || new Set(msg.stagedReferenceIds).size !== msg.stagedReferenceIds.length)) {
+            throw workflowError('INVALID_REFERENCE_MESSAGE', 'Message attachments require up to 10 unique staged reference ids');
+          }
+          const receipt = record.userMessageReceipts.get(msg.messageId);
+          if (receipt) {
+            if (receipt.fingerprint !== userMessageFingerprint(msg, record.agentSession)) {
+              throw workflowError('MESSAGE_ID_CONFLICT', 'messageId belongs to a different message or document context');
+            }
+            if (!receipt.message) {
+              await discardRepeatedMessageStages(msg, record.agentSession);
+              if (receipt.attachments?.length) {
+                sendJson(sock, {
+                  v: 1, type: 'chat-reference-status', messageId: msg.messageId,
+                  attachments: receipt.attachments.map((attachment, index) => ({
+                    ...attachment, stageId: msg.stagedReferenceIds[index],
+                  })),
+                });
+              }
+              sendJson(sock, { v: 1, type: 'chat-user-message-accepted', messageId: msg.messageId });
+            } else if (receipt.socket !== sock) {
+              rejectUserMessage(record, receipt.socket, receipt.message, workflowError('REQUEST_INVALIDATED', 'Studio reconnected before accepting the message'), 'REQUEST_INVALIDATED', false);
+              throw workflowError('REQUEST_INVALIDATED', 'Retry the message after reconnecting Studio');
+            }
+            return;
+          }
+        }
       } catch (error) {
-        sendChatError(sock, error, 'INVALID_REQUEST');
+        rejectUserMessage(record, sock, msg, error);
+        return;
+      }
+      if (record.agentSession.pendingTransitions > 0) {
+        rejectUserMessage(record, sock, msg, workflowError('WORKFLOW_SWITCHING', 'The provider is applying a workflow or permission change.'));
         return;
       }
       if (record.agentSession.status === 'running' || record.pendingReferenceMessage) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'AGENT_BUSY', message: 'A turn is already in progress.' });
+        rejectUserMessage(record, sock, msg, workflowError('AGENT_BUSY', 'A turn is already in progress.'));
         return;
       }
       if (typeof msg.text !== 'string' || msg.text.length === 0) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'INVALID_REQUEST', message: 'chat-user-message requires text' });
+        rejectUserMessage(record, sock, msg, workflowError('INVALID_REQUEST', 'chat-user-message requires text'));
         return;
       }
       if (msg.text.length > MAX_CHAT_MESSAGE_CHARS) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'INVALID_REQUEST', message: `chat message exceeds ${MAX_CHAT_MESSAGE_CHARS} characters` });
+        rejectUserMessage(record, sock, msg, workflowError('INVALID_REQUEST', `chat message exceeds ${MAX_CHAT_MESSAGE_CHARS} characters`));
         return;
+      }
+      if (msg.requireAcceptance === true) {
+        record.userMessageReceipts.set(msg.messageId, {
+          fingerprint: userMessageFingerprint(msg, record.agentSession),
+          message: msg, socket: sock, session: record.agentSession, turnId: null,
+        });
       }
       if (Object.prototype.hasOwnProperty.call(msg, 'activeTemplateId')) {
         try {
@@ -3648,17 +3817,21 @@ async function handleStudioMessage(record, sock, msg) {
           record.agentSession.activeTemplateId = null;
           sendJson(sock, { v: 1, type: 'chat-template-changed', template: null, reason: 'unavailable' });
           log(`message template unavailable: ${error?.message ?? error}`);
+          if (msg.requireAcceptance === true) {
+            rejectUserMessage(record, sock, msg, error, 'TEMPLATE_NOT_FOUND');
+            return;
+          }
         }
       }
       if (Array.isArray(msg.stagedReferenceIds) && msg.stagedReferenceIds.length > 0) {
         if (typeof msg.messageId !== 'string' || !msg.messageId) {
-          sendJson(sock, { v: 1, type: 'chat-error', code: 'INVALID_REFERENCE_MESSAGE', message: 'Attachment messages require messageId' });
+          rejectUserMessage(record, sock, msg, workflowError('INVALID_REFERENCE_MESSAGE', 'Attachment messages require messageId'));
           return;
         }
         void dispatchStagedUserMessage(record, sock, msg, record.agentSession)
           .catch((error) => {
             if (record.pendingReferenceMessage?.messageId === msg.messageId) record.pendingReferenceMessage = null;
-            sendChatError(sock, error, 'REFERENCE_COMMIT_FAILED');
+            rejectUserMessage(record, sock, msg, error, 'REFERENCE_COMMIT_FAILED');
           });
         return;
       }
@@ -4496,6 +4669,8 @@ async function handleStudioMessage(record, sock, msg) {
       return;
     }
     case 'chat-interrupt': {
+      record.pendingReferenceMessage = null;
+      rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'The message was cancelled before acceptance');
       if (record.agentSession) {
         const interruptedSession = record.agentSession;
         const interruptedTurnId = interruptedSession.turnId;
@@ -6364,6 +6539,7 @@ httpServer.on('upgrade', (req, socket, head) => {
         if (record.studioSocket === ws) {
           record.studioSocket = null;
           record.pendingReferenceMessage = null;
+          rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'Studio disconnected before accepting the message', { socket: ws });
           armStudioReattachGrace(record);
         }
       });

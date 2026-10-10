@@ -35,6 +35,7 @@ import type {
   CatalogRow,
   SkillCatalog,
   ProductSkillIcon,
+  MessageReferenceStatus,
   DocumentTemplate,
   TemplateCatalog,
 } from '../../agent/types.ts';
@@ -161,6 +162,8 @@ import { beginInlineRename } from '../inline-rename.ts';
 import { loadInitialSetup, saveInitialSetup } from '../initial-setup/state.ts';
 import { summarizePendingDiffs } from './pending-diff-summary.ts';
 import { createReferenceLibrary } from './reference-library.ts';
+import { createCaptureInbox, type CaptureStaging } from './capture-inbox.ts';
+import { saveSelectionCapture, removeCaptureDraft, type DocumentCaptureDraft } from '../../agent/agent-context-store.ts';
 import {
   createComposerMentions,
   createProjectHost,
@@ -272,6 +275,7 @@ export interface AgentSidebarHandle {
   /** 집중 보기로 들어가 프로젝트 칸을 연다. target 이 있으면 그 항목의 미리보기까지 연다. */
   openProject(target?: ProjectPreviewTarget, tab?: ProjectTab): void;
   sendInlinePrompt(submission: InlinePromptSubmission): InlinePromptSendResponse;
+  queueCaptureDraft(draft: DocumentCaptureDraft): InlinePromptSendResponse;
   /** 화면에 붙인다 — 페이지 배치(펼침·폭·집중 모드·목록)를 이어받고 애니메이션은 다시 돌리지 않는다. */
   activate(): void;
   /** 화면에서 내린다. 브리지와 대화 상태는 그대로 두고, 페이지 배치는 다음 사이드바에 넘긴다. */
@@ -840,6 +844,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let pendingAssistantBubble: HTMLElement | null = null;
   const assistantBubbleSources = new WeakMap<HTMLElement, string>();
   let attachmentsSending = false;
+  let captureSendPending = false;
   let threadsPanelOpen = false;
   let restoringLiveQuestion = false;
   let skillsPanelOpen = false;
@@ -882,6 +887,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let activeComposerSkill: CatalogRow | null = null;
   let templateCatalog: TemplateCatalog = { revision: 0, templates: [] };
   let activeTemplate: DocumentTemplate | null = null;
+  const captureReferenceStatuses = new Map<string, MessageReferenceStatus[]>();
   let configHideTimer: number | null = null;
   let configPanelOpen = false;
 
@@ -1791,6 +1797,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         persistCurrentThread();
       }
       referenceLibrary.contextChanged();
+      void captureInbox.contextChanged();
       rebuildThreadsList();
       return;
     }
@@ -3099,6 +3106,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   composerUtilityActions.insertBefore(referenceLibrary.trigger, modeMenu.root);
   composerField.insertBefore(referenceLibrary.quickAddButton, sendHint);
   composer.insertBefore(referenceLibrary.quickUploads, composerField);
+  const captureInbox = createCaptureInbox({
+    bridge,
+    getContext: () => ({ documentId: currentDocumentId, threadId: currentThread.id }),
+    onChange: () => updateComposer(),
+    onError: (message) => systemMessage(message),
+  });
+  composer.insertBefore(captureInbox.root, composerField);
+  void captureInbox.contextChanged();
   composerMentions = createComposerMentions({
     client: bridge.projects ?? null,
     textarea: input,
@@ -4649,6 +4664,117 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     resizeComposerInput();
     rebuildSlashMenu();
   });
+  async function sendComposerCaptures(request: {
+    messageText: string;
+    requestText: string;
+    skillNameForMessage?: string;
+    skillIconForMessage?: ProductSkillIcon;
+  }): Promise<void> {
+    const threadId = currentThread.id;
+    const documentId = currentDocumentId;
+    const inputText = input.value;
+    const sentThread = { ...currentThread, messages: [...currentThread.messages] };
+    const sentAgent = selectedAgent;
+    const ordinaryFiles = referenceLibrary.snapshotDraftFiles();
+    const mentions = composerMentions?.list() ?? [];
+    let captures: CaptureStaging | null = null;
+    let ordinary: ReturnType<typeof referenceLibrary.takeReadyDrafts> = [];
+    let accepted = false;
+    captureSendPending = true;
+    attachmentsSending = true;
+    updateComposer();
+    try {
+      captures = await captureInbox.stage(ordinaryFiles.length, request.requestText.length);
+      if (threadId !== currentThread.id || documentId !== currentDocumentId || readOnlyDocLabel !== null
+        || root.dataset.disposed === 'true') throw new Error('채팅이 바뀌었습니다. 자료를 다시 확인해 주세요.');
+      const ordinaryDigests = await Promise.all(ordinaryFiles.map(async (file) => {
+        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer()));
+        return [file.name, file.type, [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('')];
+      }));
+      const batch = new TextEncoder().encode(JSON.stringify([
+        documentId, threadId, captures.drafts.map((draft) => draft.id).sort(), request.requestText,
+        request.skillNameForMessage, mentions.map((mention) => mention.id).sort(), activeTemplate?.id ?? null,
+        ordinaryDigests,
+      ]));
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', batch));
+      const captureMessageId = `capture-${[...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+      ordinary = referenceLibrary.takeReadyDrafts();
+      const staged = [...ordinary, ...captures.files];
+      const messageId = await bridge.sendUserMessage(
+        `${captures.context}\n\n${request.requestText}`,
+        request.skillNameForMessage,
+        staged.map((file) => file.id),
+        true,
+        captures.controller?.signal,
+        mentions.map((mention) => mention.id),
+        { requireAcceptance: true, messageId: captureMessageId },
+      );
+      if (!messageId) throw new Error('선택 자료를 보내지 못했습니다. 다시 시도해 주세요.');
+      accepted = true;
+      const attachments: ThreadAttachment[] = staged.map((file) => ({
+        stageId: file.id, name: file.name, mimeType: file.mimeType, size: file.size, status: 'processing',
+      }));
+      for (const update of captureReferenceStatuses.get(messageId) ?? []) {
+        const attachment = attachments.find((item) => item.stageId === update.stageId);
+        if (!attachment) continue;
+        attachment.status = update.status;
+        if (update.file) {
+          attachment.fileId = update.file.id;
+          attachment.name = update.file.name;
+          attachment.mimeType = update.file.mimeType;
+          attachment.size = update.file.size;
+        }
+        if (update.error) attachment.error = update.error;
+      }
+      captureReferenceStatuses.delete(messageId);
+      if (threadId === currentThread.id && documentId === currentDocumentId) {
+        if (!currentThread.messages.some((message) => message.messageId === messageId)) {
+          const userMessage = recordUserMessage(request.messageText, attachments, undefined,
+            request.skillNameForMessage, request.skillIconForMessage, messageId, mentions);
+          const bubble = renderUserMessage(userMessage);
+          bubble.classList.add('ag-msg-enter');
+          followConversation = true;
+          replyPending = true;
+          appendConversation(bubble);
+          updateTurnPending(selectedAgent);
+          scrollConversationToMessage(bubble, { smooth: true });
+        }
+        composerMentions?.take();
+        if (input.value === inputText) input.value = '';
+        revisionPlanId = null;
+        setComposerSkill(null);
+        setSlashMenuOpen(false);
+        resizeComposerInput();
+      } else {
+        const thread = getThread(threadId) ?? sentThread;
+        if (!thread.messages.some((message) => message.messageId === messageId)) {
+          thread.messages.push({
+            role: 'user', text: request.messageText, agent: sentAgent, messageId, attachments, mentions,
+            ...(request.skillNameForMessage ? { skillName: request.skillNameForMessage } : {}),
+            ...(request.skillIconForMessage ? { skillIcon: request.skillIconForMessage } : {}),
+          });
+          thread.updatedAt = Date.now();
+          if (!thread.titlePinned) thread.title = fallbackTitle(thread.messages);
+          upsertThread(thread);
+        }
+      }
+      await captureInbox.consume(captures);
+    } catch (error) {
+      if (!accepted) {
+        if (captures) await captureInbox.discardStaging(captures);
+        await referenceLibrary.discardInlineFiles(ordinary);
+        if (ordinary.length && threadId === currentThread.id && documentId === currentDocumentId) {
+          referenceLibrary.stageDraftFiles(ordinaryFiles);
+        }
+      }
+      if (root.dataset.disposed !== 'true') systemMessage(error instanceof Error ? error.message : '선택 자료를 보내지 못했습니다.');
+    } finally {
+      captureSendPending = false;
+      attachmentsSending = false;
+      if (root.dataset.disposed !== 'true') updateComposer();
+    }
+  }
+
   composer.addEventListener('submit', (e) => {
     e.preventDefault();
     composerRest.setResting(false);
@@ -4665,13 +4791,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       || chatStartPendingThreadId !== null || attachmentsSending || referenceLibrary.hasBlockingDrafts()) return;
     let text = input.value.trim();
     const hasMentions = (composerMentions?.list().length ?? 0) > 0;
-    if ((!text && !activeComposerSkill && !referenceLibrary.hasDrafts() && !hasMentions) || connState !== 'connected') return;
-    if (referenceLibrary.hasImageDrafts() && !modelSupportsImages(selectedAgent, selectedModel)) {
+    if ((!text && !activeComposerSkill && !referenceLibrary.hasDrafts() && !captureInbox.hasDrafts() && !hasMentions) || connState !== 'connected') return;
+    if ((referenceLibrary.hasImageDrafts() || captureInbox.hasImages()) && !modelSupportsImages(selectedAgent, selectedModel)) {
       systemMessage(`${AGENT_LABEL[selectedAgent]} 현재 모델은 이미지 미지원 · 다른 모델 선택`);
       return;
     }
     if (!text && !activeComposerSkill) {
-      text = !referenceLibrary.hasDrafts()
+      text = captureInbox.hasDrafts() ? '첨부한 선택 자료와 의견을 확인해 주세요.' : !referenceLibrary.hasDrafts()
         ? '언급한 자료 확인 필요'
         : referenceLibrary.allDraftsAreImages()
         ? '첨부 이미지 확인 필요'
@@ -4680,7 +4806,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!activeComposerSkill && text.startsWith('//')) text = text.slice(1);
     // 잠긴 채팅은 계획 수정 요청도 채팅 모드의 질문으로 보낸다.
     if (chatModeLockReason !== null && currentMode() !== 'chat') revisionPlanId = null;
-    if (revisionPlanId && !referenceLibrary.hasDrafts() && !activeComposerSkill && text) {
+    if (revisionPlanId && !referenceLibrary.hasDrafts() && !captureInbox.hasDrafts() && !activeComposerSkill && text) {
       const planId = revisionPlanId;
       if (!planApprovable || activePlan?.planId !== planId) {
         revisionPlanId = null;
@@ -4804,9 +4930,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // protocol은 비어 있지 않은 text를 요구하므로 명시적 slash 호출 자체를
     // 요청 본문으로 보낸다. 자연어 fallback을 UI나 기록에 숨겨 넣지 않는다.
     const skillRequestText = requestTextForSkillInvocation(text, skillNameForMessage);
-    const requestText = revisionPlanId && referenceLibrary.hasDrafts() && !skillNameForMessage
+    const requestText = revisionPlanId && (referenceLibrary.hasDrafts() || captureInbox.hasDrafts()) && !skillNameForMessage
       ? `현재 계획(${revisionPlanId})을 다음 피드백에 맞게 수정해 주세요.\n\n${skillRequestText}`
       : skillRequestText;
+    if (captureInbox.hasDrafts()) {
+      void sendComposerCaptures({ messageText, requestText, skillNameForMessage, skillIconForMessage });
+      return;
+    }
     const staged = referenceLibrary.takeReadyDrafts();
     const mentions = composerMentions?.take() ?? [];
     const messageAttachments: ThreadAttachment[] = staged.map((file) => ({
@@ -6238,6 +6368,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         bridge.stopChat();
       }
       referenceLibrary.contextChanged();
+      void captureInbox.contextChanged();
       enforceChatModeLock();
       updateComposer();
       setThreadsPanelOpen(false);
@@ -6249,6 +6380,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     selectTemplate(null);
     bridge.stopChat();
     referenceLibrary.contextChanged();
+    void captureInbox.contextChanged();
     startCurrentBridgeChat(true);
   }
 
@@ -6341,6 +6473,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     };
     updateWorkspaceChatTitle();
     referenceLibrary.contextChanged();
+    void captureInbox.contextChanged();
     input.value = '';
     applyThreadMeta(currentThread);
     renderMessagesFromThread(currentThread);
@@ -6508,7 +6641,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function syncSendIdle(): void {
     const idle = !send.classList.contains('ag-stop')
       && input.value.trim() === ''
-      && activeComposerSkill === null;
+      && activeComposerSkill === null
+      && !referenceLibrary.hasDrafts()
+      && !captureInbox.hasDrafts()
+      && (composerMentions?.list().length ?? 0) === 0;
     send.classList.toggle('ag-send-idle', idle);
   }
 
@@ -7697,6 +7833,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       case 'chat-started': {
         if (e.threadId && e.threadId !== currentThread.id) break;
         chatStartPendingThreadId = null;
+        setTurnRunning(bridge.isTurnRunning());
+        dropRunStatusIfIdle();
         const prevAgent = selectedAgent;
         const prevModel = selectedModel;
         const prevEffort = selectedEffort;
@@ -7777,7 +7915,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         break;
       case 'reference-status': {
         const message = currentThread.messages.find((item) => item.messageId === e.messageId);
-        if (!message?.attachments) break;
+        if (!message?.attachments) {
+          if (e.messageId.startsWith('capture-')) {
+            const updates = new Map((captureReferenceStatuses.get(e.messageId) ?? []).map((item) => [item.stageId, item]));
+            for (const item of e.attachments) updates.set(item.stageId, item);
+            captureReferenceStatuses.set(e.messageId, [...updates.values()]);
+            if (captureReferenceStatuses.size > 20) captureReferenceStatuses.delete(captureReferenceStatuses.keys().next().value!);
+          }
+          break;
+        }
         for (const update of e.attachments) {
           const attachment = message.attachments.find((item) => item.stageId === update.stageId);
           if (!attachment) continue;
@@ -7791,7 +7937,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           if (update.error) attachment.error = update.error;
           else delete attachment.error;
         }
-        attachmentsSending = message.attachments.some((item) => item.status === 'processing');
+        attachmentsSending = captureSendPending || message.attachments.some((item) => item.status === 'processing');
         persistCurrentThread();
         renderMessagesFromThread(currentThread);
         updateComposer();
@@ -8804,89 +8950,35 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const unsubChatModeLock = chatModeLock?.subscribe(() => readChatModeLock()) ?? (() => {});
   readChatModeLock();
 
-  /**
-   * 인라인 프롬프트(문서 선택 위 입력 상자)에서 온 지시를 채팅으로 보낸다.
-   * 말풍선에는 지시만 보이고, 에이전트에게는 선택 컨텍스트 블록을 함께 보낸다.
-   */
+  /** 선택 의견은 로컬에 남기고 입력기에 첨부한다. 실제 전송은 일반 보내기에서만 한다. */
   async function sendInlinePrompt(submission: InlinePromptSubmission): Promise<Awaited<InlinePromptSendResponse>> {
     const prompt = submission.prompt.trim();
-    if (!prompt) return { ok: false, reason: '지시 입력 필요' };
-    if (mergeResolverLocked) return { ok: false, reason: '병합 검토 진행 중' };
-    if (readOnlyDocLabel !== null) return { ok: false, reason: '다른 문서의 채팅을 열람 중입니다' };
-    if (connState !== 'connected') return { ok: false, reason: '에이전트 허브에 연결되어 있지 않습니다' };
-    if (turnRunning) return { ok: false, reason: '에이전트가 응답 중입니다' };
-    if (planningPhase === 'switching' || workflowTransitionPending || planActionPending
-      || chatStartPendingThreadId !== null || attachmentsSending) {
-      return { ok: false, reason: '잠시 후 다시 시도' };
+    if (!prompt) return { ok: false, reason: '의견 입력 필요' };
+    if (submission.signal?.aborted) return { ok: false, reason: '선택 자료 저장이 취소되었습니다.' };
+    const identity = bridge.getDocumentSelectionIdentity();
+    if (identity.documentId !== submission.selection.documentId || identity.revision !== submission.selection.revision) {
+      return { ok: false, reason: '문서가 바뀌었습니다. 대상을 다시 선택해 주세요.' };
     }
+    try {
+      const draft = await saveSelectionCapture(submission.selection, prompt,
+        getDocumentContext?.().documentName ?? currentDocKey ?? '새 문서');
+      if (submission.signal?.aborted) {
+        await removeCaptureDraft(draft.id);
+        return { ok: false, reason: '선택 자료 저장이 취소되었습니다.' };
+      }
+      return queueCaptureDraft(draft);
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : '선택 자료를 저장하지 못했습니다.' };
+    }
+  }
+
+  function queueCaptureDraft(draft: DocumentCaptureDraft): Awaited<InlinePromptSendResponse> {
+    if (!captureInbox.queue(draft)) return { ok: false, reason: '저장한 자료는 해당 문서의 입력기에서 확인할 수 있습니다.' };
     setCollapsed(false);
     if (threadsPanelOpen) setThreadsPanelOpen(false);
     if (skillsPanelOpen) setSkillsPanelOpen(false);
     if (settingsPanelOpen) setSettingsPanelOpen(false);
     if (versionsPanelOpen) setVersionsPanelOpen(false);
-    const files = submission.selection.attachments ?? [];
-    let staged: Awaited<ReturnType<typeof referenceLibrary.stageInlineFiles>> = [];
-    if (files.length > 0) {
-      attachmentsSending = true;
-      updateComposer();
-      try {
-        staged = await referenceLibrary.stageInlineFiles(files, submission.signal);
-      } catch (caught) {
-        attachmentsSending = false;
-        updateComposer();
-        return { ok: false, reason: caught instanceof Error ? caught.message : '선택 이미지를 첨부하지 못했습니다' };
-      }
-    }
-    if (submission.signal?.aborted) {
-      await referenceLibrary.discardInlineFiles(staged);
-      attachmentsSending = false;
-      updateComposer();
-      return { ok: false, reason: '선택 자료 전송이 취소되었습니다.' };
-    }
-    const messageAttachments: ThreadAttachment[] = staged.map((file) => ({
-      stageId: file.id,
-      name: file.name,
-      mimeType: file.mimeType,
-      size: file.size,
-      status: 'processing',
-    }));
-    let messageId: string | null;
-    try {
-      prepareChatForSend();
-      messageId = await bridge.sendUserMessage(
-        `${submission.selection.contextBlock}\n\n${prompt}`,
-        undefined,
-        staged.map((file) => file.id),
-        true,
-        submission.signal,
-      );
-    } catch (caught) {
-      await referenceLibrary.discardInlineFiles(staged);
-      attachmentsSending = false;
-      updateComposer();
-      return { ok: false, reason: caught instanceof Error ? caught.message : '선택 자료를 보내지 못했습니다' };
-    }
-    if (!messageId) {
-      await referenceLibrary.discardInlineFiles(staged);
-      attachmentsSending = false;
-      updateComposer();
-      return { ok: false, reason: '선택 자료 전송 실패 · 다시 시도' };
-    }
-    const userMessage = recordUserMessage(prompt, messageAttachments, {
-      label: submission.selection.label,
-      excerpt: submission.selection.excerpt,
-      items: submission.selection.items,
-      documentId: submission.selection.documentId,
-      revision: submission.selection.revision,
-    }, undefined, undefined, messageId);
-    const userBubble = renderUserMessage(userMessage);
-    userBubble.classList.add('ag-msg-enter');
-    followConversation = true;
-    replyPending = true;
-    appendConversation(userBubble);
-    updateTurnPending(selectedAgent);
-    scrollConversationToMessage(userBubble, { smooth: true });
-    attachmentsSending = false;
     updateComposer();
     return { ok: true };
   }
@@ -9052,6 +9144,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       projectHost.open(target, tab);
     },
     sendInlinePrompt,
+    queueCaptureDraft,
     activate,
     deactivate,
     isActive: () => active,
@@ -9164,6 +9257,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       root.removeEventListener('drop', onAttachmentDrop);
       input.removeEventListener('paste', onAttachmentPaste);
       referenceLibrary.dispose();
+      captureInbox.dispose();
       composerMentions?.dispose();
       projectHost?.dispose();
       // 페이지 클래스는 화면에 붙어 있던 사이드바만 걷는다.

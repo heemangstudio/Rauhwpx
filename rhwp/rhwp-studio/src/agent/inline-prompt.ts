@@ -1,7 +1,7 @@
 /**
- * 인라인 프롬프트 — 문서에서 텍스트를 선택하면 선택 끝에 작은 칩이 뜨고,
+ * 인라인 프롬프트 — Control 을 두 번 눌러 다음 선택을 지정하면 작은 칩이 뜨고,
  * 칩을 누르면 그 자리에서 에이전트에게 지시할 수 있는 입력 상자가 열린다.
- * 보낸 지시는 선택 범위 컨텍스트와 함께 에이전트 사이드바 채팅으로 들어간다.
+ * 의견은 선택 범위와 함께 로컬에 저장되고 사이드바 입력기에 첨부된다.
  */
 import './inline-prompt.css';
 import type { WasmBridge } from '../core/wasm-bridge.ts';
@@ -9,7 +9,6 @@ import type { EventBus } from '../core/event-bus.ts';
 import type { CanvasView } from '../view/canvas-view.ts';
 import type { InputHandler } from '../engine/input-handler.ts';
 import type { CellPathLike, ControlLayoutItem, CursorRect, DocumentPosition } from '../core/types.ts';
-import { AGENT_MODE_LABEL, agentModeFor, type AgentMode } from './types.ts';
 import type { AgentBridge } from './bridge.ts';
 import { selectedTablesInRange } from '../engine/selected-tables.ts';
 import { cellChain } from '../engine/table-selection-rects.ts';
@@ -31,12 +30,14 @@ export interface InlinePromptDeps {
   inputHandler: InputHandler;
   canvasView: CanvasView;
   bridge: AgentBridge;
-  /** 사이드바로 전달 — 말풍선 기록과 실제 전송을 맡는다. */
+  /** 선택과 의견을 저장하고 일반 입력기에 첨부한다. */
   submit: (submission: InlinePromptSubmission) => InlinePromptSendResponse;
+  startScreenshot?: () => void;
 }
 
 /** 선택이 잠깐 흔들릴 때 칩이 따라다니지 않도록 잦아든 뒤에만 검사한다. */
 const CHECK_DEBOUNCE_MS = 200;
+const CONTROL_TAP_WINDOW_MS = 450;
 const BOX_WIDTH_PX = 340;
 const CHIP_WIDTH_ESTIMATE_PX = 96;
 const EDGE_MARGIN_PX = 8;
@@ -105,7 +106,6 @@ class InlinePromptController {
   private readonly box: HTMLDivElement;
   private readonly selectionSummary: HTMLDivElement;
   private readonly input: HTMLTextAreaElement;
-  private readonly permissionBtn: HTMLButtonElement;
   private readonly sendBtn: HTMLButtonElement;
   private readonly errorLabel: HTMLSpanElement;
   private readonly unsubs: Array<() => void> = [];
@@ -122,6 +122,12 @@ class InlinePromptController {
   private captureError = '';
   private sendAbort: AbortController | null = null;
   private previewUrls: string[] = [];
+  private armed = false;
+  private controlPressed = false;
+  private lastControlTap: number | null = null;
+  private armedSelectionKey: string | null = null;
+  private selectionStarted = false;
+  private chipSelectionKey: string | null = null;
 
   constructor(deps: InlinePromptDeps) {
     this.deps = deps;
@@ -139,13 +145,13 @@ class InlinePromptController {
     this.box = document.createElement('div');
     this.box.className = 'ag-inline-box';
     this.box.setAttribute('role', 'dialog');
-    this.box.setAttribute('aria-label', '선택 영역 인라인 지시');
+    this.box.setAttribute('aria-label', '선택 영역 의견');
     this.box.hidden = true;
 
     this.input = document.createElement('textarea');
     this.input.className = 'ag-inline-input';
     this.input.rows = 1;
-    this.input.placeholder = '선택한 부분에 대해 지시하거나 질문하세요';
+    this.input.placeholder = '선택한 부분에 의견을 남기세요';
 
     this.selectionSummary = document.createElement('div');
     this.selectionSummary.className = 'ag-inline-selection-summary';
@@ -153,16 +159,13 @@ class InlinePromptController {
 
     const actions = document.createElement('div');
     actions.className = 'ag-inline-actions';
-    this.permissionBtn = document.createElement('button');
-    this.permissionBtn.type = 'button';
-    this.permissionBtn.className = 'ag-inline-permission';
     this.errorLabel = document.createElement('span');
     this.errorLabel.className = 'ag-inline-error';
     this.sendBtn = document.createElement('button');
     this.sendBtn.type = 'button';
     this.sendBtn.className = 'ag-inline-send';
-    this.sendBtn.textContent = '보내기';
-    actions.append(this.permissionBtn, this.errorLabel, this.sendBtn);
+    this.sendBtn.textContent = '첨부';
+    actions.append(this.errorLabel, this.sendBtn);
     this.box.append(this.selectionSummary, this.input, actions);
     this.layer.append(this.chip, this.box);
 
@@ -201,7 +204,6 @@ class InlinePromptController {
       this.setError('');
     });
     this.sendBtn.addEventListener('click', () => { void this.send(); });
-    this.permissionBtn.addEventListener('click', () => this.togglePermission());
   }
 
   private bindDocumentEvents(): void {
@@ -220,7 +222,7 @@ class InlinePromptController {
     // 이미 굳혔으므로 그대로 둔다.
     for (const name of ['document-changed', 'document-page-invalidated']) {
       this.unsubs.push(eventBus.on(name, () => {
-        if (this.state === 'chip') this.hideAll();
+        if (this.state !== 'open') this.hideAll();
       }));
     }
     this.unsubs.push(eventBus.on('document-view-changed', () => this.hideAll()));
@@ -242,16 +244,82 @@ class InlinePromptController {
 
     document.addEventListener('pointerdown', this.onGlobalPointerDown, true);
     document.addEventListener('pointerup', this.onGlobalPointerUp, true);
+    document.addEventListener('keydown', this.onGlobalKeyDown, true);
+    document.addEventListener('keyup', this.onGlobalKeyUp, true);
+    window.addEventListener('blur', this.onWindowBlur);
     this.unsubs.push(() => {
       document.removeEventListener('pointerdown', this.onGlobalPointerDown, true);
       document.removeEventListener('pointerup', this.onGlobalPointerUp, true);
+      document.removeEventListener('keydown', this.onGlobalKeyDown, true);
+      document.removeEventListener('keyup', this.onGlobalKeyUp, true);
+      window.removeEventListener('blur', this.onWindowBlur);
     });
   }
 
+  private setArmed(armed: boolean): void {
+    this.armed = armed;
+    document.getElementById('scroll-container')?.classList.toggle('ag-inline-armed', armed);
+  }
+
+  private canArm(target: EventTarget | null): boolean {
+    if (!isAgentSidebarVisible() || !this.deps.wasm.hasLoadedDocument() || this.state === 'open') return false;
+    const element = target instanceof Element ? target : null;
+    if (element?.closest('.ag-root, .ag-inline-layer, [role="dialog"]')) return false;
+    const field = element?.closest('input, textarea, [contenteditable="true"]');
+    return !field || field.getAttribute('aria-label') === '문서 편집 입력';
+  }
+
+  private readonly onGlobalKeyDown = (event: KeyboardEvent): void => {
+    if (this.armed && event.key.toLowerCase() === 's' && !event.repeat
+      && !event.metaKey && !event.altKey && !event.shiftKey && this.canArm(event.target)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.hideAll();
+      this.deps.startScreenshot?.();
+      return;
+    }
+    if (event.key === 'Control') {
+      if (event.repeat || this.controlPressed) return;
+      this.controlPressed = true;
+      if (event.metaKey || event.altKey || event.shiftKey || !this.canArm(event.target)) {
+        this.lastControlTap = null;
+        return;
+      }
+      const now = performance.now();
+      if (this.lastControlTap !== null && now - this.lastControlTap <= CONTROL_TAP_WINDOW_MS) {
+        this.hideAll();
+        this.armedSelectionKey = JSON.stringify(this.currentSelection());
+        this.selectionStarted = false;
+        this.setArmed(true);
+      } else this.lastControlTap = now;
+      return;
+    }
+    this.lastControlTap = null;
+    if (this.state === 'open' || this.layer.contains(event.target as Node)) return;
+    // Shift + 방향키 선택은 준비 상태를 유지한다. 편집·다른 단축키는 해제한다.
+    const selectionKey = ['Shift', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key);
+    if (!selectionKey || event.metaKey || event.ctrlKey || event.altKey) this.hideAll();
+  };
+
+  private readonly onGlobalKeyUp = (event: KeyboardEvent): void => {
+    if (event.key === 'Control') this.controlPressed = false;
+  };
+
+  private readonly onWindowBlur = (): void => {
+    this.controlPressed = false;
+    this.lastControlTap = null;
+    if (this.state !== 'open') this.hideAll();
+  };
+
   private readonly onGlobalPointerDown = (e: PointerEvent): void => {
     if (this.layer.contains(e.target as Node)) return;
+    const selecting = this.armed && e.target instanceof Element && !!e.target.closest('#scroll-container');
     this.pointerActive = true;
     this.hideAll();
+    if (selecting) {
+      this.selectionStarted = true;
+      this.setArmed(true);
+    }
   };
 
   private readonly onGlobalPointerUp = (): void => {
@@ -283,12 +351,20 @@ class InlinePromptController {
       if (this.state === 'chip') this.hideAll();
       return;
     }
+    const selectionKey = JSON.stringify(source);
+    if (this.state === 'chip' && selectionKey !== this.chipSelectionKey) {
+      this.hideAll();
+      return;
+    }
+    if (this.state !== 'chip' && (!this.armed || (!this.selectionStarted && selectionKey === this.armedSelectionKey))) return;
     const anchor = this.probeAnchor(source);
     if (!anchor) {
       if (this.state === 'chip') this.hideAll();
       return;
     }
     this.anchor = anchor;
+    this.setArmed(false);
+    this.chipSelectionKey = selectionKey;
     this.state = 'chip';
     this.chip.hidden = false;
     this.box.hidden = true;
@@ -514,8 +590,6 @@ class InlinePromptController {
     this.chip.disabled = false;
     this.chip.removeAttribute('aria-busy');
     this.chip.hidden = true;
-    this.chip.disabled = false;
-    this.chip.removeAttribute('aria-busy');
     this.box.hidden = false;
     this.setError('');
     this.refreshControls();
@@ -972,7 +1046,7 @@ class InlinePromptController {
     try {
       result = await this.deps.submit({ prompt, selection: this.captured, signal: abort.signal });
     } catch (caught) {
-      result = { ok: false as const, reason: caught instanceof Error ? caught.message : '선택 자료를 보내지 못했습니다' };
+      result = { ok: false as const, reason: caught instanceof Error ? caught.message : '선택 자료를 저장하지 못했습니다' };
     }
     if (this.sendAbort !== abort) return;
     this.sendAbort = null;
@@ -1000,6 +1074,7 @@ class InlinePromptController {
         return `표 ${item.rowCount}×${item.colCount} · ${scope}`;
       }
       if (item.kind === 'equation') return item.script ? `수식 · ${item.script}` : '수식';
+      if (item.kind === 'screenshot') return '스크린샷';
       return ({ image: '이미지', shape: '도형', line: '선', group: '묶음', ole: 'OLE' } as Record<string, string>)[item.objectType]
         ?? item.objectType;
     };
@@ -1057,37 +1132,9 @@ class InlinePromptController {
     for (const url of this.previewUrls.splice(0)) URL.revokeObjectURL(url);
   }
 
-  /** 사이드바 모드 칩과 같은 모드. 여기서는 에이전트 ↔ 전체만 바꾼다. */
-  private currentMode(): AgentMode {
-    const { bridge } = this.deps;
-    const state = bridge.getWorkflowState();
-    return agentModeFor(state.workflow, state.phase, bridge.getPermissionProfile());
-  }
-
-  private togglePermission(): void {
-    const { bridge } = this.deps;
-    const mode = this.currentMode();
-    if (mode !== 'agent' && mode !== 'full') return;
-    if (mode === 'agent') {
-      const confirmed = window.confirm('전체 접근을 켜면 에이전트가 승인 없이 문서를 편집하고, 명령과 파일 도구가 노트북 전체에 접근할 수 있습니다. 이 채팅에서 계속 허용할까요?');
-      if (!confirmed) return;
-      bridge.setPermissionProfile('unrestricted');
-    } else {
-      bridge.setPermissionProfile('safe');
-    }
-  }
-
   private refreshControls(): void {
-    const { bridge } = this.deps;
-    const mode = this.currentMode();
-    this.permissionBtn.textContent = AGENT_MODE_LABEL[mode];
-    this.permissionBtn.dataset.mode = mode;
-    this.permissionBtn.classList.toggle('ag-inline-unrestricted', mode === 'full');
-    this.permissionBtn.disabled = mode === 'chat' || mode === 'plan';
-    this.permissionBtn.title = mode === 'full' ? '에이전트 모드로 전환' : mode === 'agent' ? '전체 모드로 전환' : '';
-    const connected = bridge.getConnectionState() === 'connected';
-    this.sendBtn.disabled = !connected || this.sending || !this.captured;
-    this.sendBtn.title = connected ? (this.sending ? '선택 자료를 보내는 중입니다' : '') : '에이전트 허브에 연결되어 있지 않습니다';
+    this.sendBtn.disabled = this.sending || !this.captured;
+    this.sendBtn.title = this.sending ? '선택 자료를 저장하는 중입니다' : '';
   }
 
   private setError(text: string): void {
@@ -1095,6 +1142,9 @@ class InlinePromptController {
   }
 
   private hideAll(): void {
+    this.setArmed(false);
+    this.lastControlTap = null;
+    this.chipSelectionKey = null;
     this.captureId++;
     this.sendAbort?.abort();
     this.sendAbort = null;
@@ -1113,6 +1163,7 @@ class InlinePromptController {
   }
 
   dispose(): void {
+    this.setArmed(false);
     this.sendAbort?.abort();
     this.releasePreviewUrls();
     if (this.checkTimer !== null) window.clearTimeout(this.checkTimer);

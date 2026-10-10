@@ -281,6 +281,7 @@ function bridgeFixture(doc = fakeDocument(), overrides: Record<string, unknown> 
     threadId: 'thread-1', documentId: 'doc-1', documentName: 'a.hwpx', activeTemplateId: null,
     revision: { get revision() { return doc.state.revision; } },
     chatHistory: [], queuedMessages: [], workflowSwitchPending: false,
+    messageReceipts: new Map(), awaitingAcceptanceId: null,
     turnRunning: false, turnHadError: false, pendingTurnOpen: false, userEditedSincePlanningNotify: false,
     activeProviderTurnId: null, interruptedProviderTurnId: null,
     activeToolRequests: 0, activeToolRequestControllers: new Map(),

@@ -351,6 +351,7 @@ export interface AgentBridge {
     signal?: AbortSignal,
     /** 입력기에서 @ 로 고른 프로젝트 항목 id (최대 20개). */
     mentions?: string[],
+    acceptance?: { requireAcceptance: true; messageId: string },
   ): Promise<string | null>;
   /** 이 채팅이 묶인 연구 프로젝트 — 참고자료와 같은 인증으로 허브에 묻는다. */
   readonly projects: ProjectClient;
@@ -1342,6 +1343,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private editingLeaseListeners = new Set<(lease: AgentEditingLease) => void>();
   /** 보낸 사용자 메시지가 아직 turn-start 로 이어지지 않았다 — 그 사이의 세션도 일하는 중이다. */
   private messageAwaitingTurn = false;
+  private awaitingAcceptanceId: string | null = null;
   /** 바쁨 상태 구독 — 첫 구독 때 만든다. 구독자가 없으면 상태를 계산하지 않는다. */
   private busyWatch: {
     listeners: Set<(busy: boolean) => void>;
@@ -1380,8 +1382,10 @@ export class AgentBridgeImpl implements AgentBridge {
     messageId?: string;
     stagedReferenceIds?: string[];
     mentions?: string[];
+    requireAcceptance?: boolean;
     resolve(messageId: string | null): void;
   }> = [];
+  private messageReceipts = new Map<string, { settle(messageId: string | null): void; timer: ReturnType<typeof setTimeout> }>();
   /** 사용자 메시지에 싣는 문서 읽기와, 이 채팅의 에이전트가 마지막으로 본 문서 상태. */
   private turnSnapshots: TurnSnapshots;
   /** 캔버스가 알린 활성 쪽 (캐럿 쪽이 보이면 그 쪽, 아니면 뷰포트 쪽). */
@@ -1953,7 +1957,12 @@ export class AgentBridgeImpl implements AgentBridge {
   private setState(state: ConnectionState): void {
     if (this.state === state) return;
     this.state = state;
+    if (state === 'disconnected' || state === 'replaced') this.clearMessageReceipts();
     this.emitConnection();
+  }
+
+  private clearMessageReceipts(): void {
+    for (const receipt of [...this.messageReceipts.values()]) receipt.settle(null);
   }
 
   private sendJson(obj: unknown): boolean {
@@ -2525,6 +2534,30 @@ export class AgentBridgeImpl implements AgentBridge {
         const fallbackPhase = this.phase;
         this.finishWorkflowSwitch();
         this.syncWorkflowState(msg, fallbackWorkflow, fallbackPhase);
+        // 시작 요청이 대기 중이면 welcome을 건너뛴다. 그 경우 이 응답이
+        // 복원된 턴의 권위 있는 상태이며, 새 세션은 옛 turn-end를 보내지 않는다.
+        if (msg.status === 'idle' || msg.status === 'running') {
+          if (msg.status === 'idle' && (this.turnRunning || this.pendingTurnOpen)) {
+            this.handleAgentEvent({
+              type: 'turn-end',
+              agent: this.editingAgent,
+              ...(this.activeProviderTurnId ? { turnId: this.activeProviderTurnId } : {}),
+              stopReason: 'interrupted',
+            });
+          }
+          this.messageAwaitingTurn = false;
+          this.turnRunning = msg.status === 'running';
+          this.activeProviderTurnId = this.turnRunning && typeof msg.turnId === 'string' ? msg.turnId : null;
+          if (this.turnRunning) {
+            this.beginPlanExecutionTurn();
+            try {
+              this.beginPendingTurn(this.editingAgent);
+            } catch (e) {
+              console.warn('[AgentBridge] chat-started beginTurn 실패:', e);
+            }
+          }
+          this.syncEditingLease();
+        }
         this.emit({
           type: 'chat-started',
           agent: isAgentName(msg.agent) ? msg.agent : this.selectedAgent,
@@ -2553,6 +2586,14 @@ export class AgentBridgeImpl implements AgentBridge {
         if (msg.serviceTier === 'fast' || msg.serviceTier === 'standard') {
           this.serviceTier = msg.serviceTier;
           this.emit({ type: 'service-tier-changed', serviceTier: this.serviceTier });
+        }
+        break;
+      }
+      case 'chat-user-message-accepted':
+      case 'chat-user-message-rejected': {
+        if (typeof msg.messageId === 'string') {
+          const receipt = this.messageReceipts.get(msg.messageId);
+          receipt?.settle(msg.type === 'chat-user-message-accepted' ? msg.messageId : null);
         }
         break;
       }
@@ -3339,6 +3380,7 @@ export class AgentBridgeImpl implements AgentBridge {
     documentName: string | null = this.documentName,
     history: ChatHistoryEntry[] = this.chatHistory,
   ): void {
+    this.clearMessageReceipts();
     this.selectedAgent = agent;
     this.selectedModel = model || null;
     this.selectedEffort = effort || null;
@@ -3369,6 +3411,7 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   stopChat(): void {
+    this.clearMessageReceipts();
     const waitForAuthoritativeTurnEnd = this.state === 'connected' && this.turnRunning;
     for (const message of this.queuedMessages) message.resolve(null);
     this.queuedMessages = [];
@@ -3446,9 +3489,12 @@ export class AgentBridgeImpl implements AgentBridge {
     requireReceipt = false,
     signal?: AbortSignal,
     mentions: string[] = [],
+    acceptance?: { requireAcceptance: true; messageId: string },
   ): Promise<string | null> {
+    if (acceptance && (this.messageReceipts.has(acceptance.messageId)
+      || this.queuedMessages.some((message) => message.messageId === acceptance.messageId))) return Promise.resolve(null);
     const context = this.referenceContext();
-    const messageId = stagedReferenceIds.length > 0 || requireReceipt ? `message-${++this.requestSeq}` : undefined;
+    const messageId = acceptance?.messageId ?? (stagedReferenceIds.length > 0 || requireReceipt ? `message-${++this.requestSeq}` : undefined);
     return new Promise((resolve) => {
       if (signal?.aborted) {
         resolve(null);
@@ -3457,8 +3503,8 @@ export class AgentBridgeImpl implements AgentBridge {
       let message: (typeof this.queuedMessages)[number];
       const cancel = (): void => {
         const index = this.queuedMessages.indexOf(message);
-        if (index < 0) return;
-        this.queuedMessages.splice(index, 1);
+        if (index >= 0) this.queuedMessages.splice(index, 1);
+        else if (messageId) this.messageReceipts.get(messageId)?.settle(null);
         this.scheduleBusyCheck();
         settle(null);
       };
@@ -3468,6 +3514,7 @@ export class AgentBridgeImpl implements AgentBridge {
       };
       message = {
         text, skillName, context, messageId, stagedReferenceIds: [...stagedReferenceIds],
+        ...(acceptance ? { requireAcceptance: true } : {}),
         ...(mentions.length ? { mentions: [...new Set(mentions)].slice(0, 20) } : {}),
         resolve: settle,
       };
@@ -3586,6 +3633,24 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private dispatchUserMessage(message: (typeof this.queuedMessages)[number]): void {
+    if (message.requireAcceptance && message.messageId) {
+      const id = message.messageId;
+      const settle = (result: string | null): void => {
+        const pending = this.messageReceipts.get(id);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        this.messageReceipts.delete(id);
+        if (this.awaitingAcceptanceId === id) {
+          this.awaitingAcceptanceId = null;
+          if (result === null && !this.turnRunning) {
+            this.messageAwaitingTurn = false;
+            this.scheduleBusyCheck();
+          }
+        }
+        message.resolve(result);
+      };
+      this.messageReceipts.set(id, { settle, timer: setTimeout(() => settle(null), 30_000) });
+    }
     // 문서 스냅샷은 프레임이 나가는 순간의 문서로, 동기로 만든다 — 프레임 순서가 스냅샷 없을 때와 같다.
     const built = this.buildTurnSnapshot();
     const sent = this.sendJson({
@@ -3599,15 +3664,19 @@ export class AgentBridgeImpl implements AgentBridge {
       ...(message.skillName ? { skillName: message.skillName } : {}),
       ...(message.messageId ? { messageId: message.messageId, stagedReferenceIds: message.stagedReferenceIds } : {}),
       ...(message.mentions?.length ? { mentions: message.mentions } : {}),
+      ...(message.requireAcceptance ? { requireAcceptance: true } : {}),
       ...(built ? { documentSnapshot: built.snapshot } : {}),
     });
     // 계획 승인 대기 중의 메시지는 허브가 승인으로 처리하면 스냅샷이 프로바이더에 닿지 않는다 — 본 것으로 치지 않는다.
     if (sent && built && this.phase !== 'awaiting-approval') this.turnSnapshots.markSent(built);
     if (sent) {
       this.messageAwaitingTurn = true;
+      this.awaitingAcceptanceId = message.requireAcceptance ? message.messageId ?? null : null;
       this.scheduleBusyCheck();
     }
-    message.resolve(sent ? (message.messageId ?? null) : null);
+    if (message.requireAcceptance && message.messageId) {
+      if (!sent) this.messageReceipts.get(message.messageId)?.settle(null);
+    } else message.resolve(sent ? (message.messageId ?? null) : null);
   }
 
   /** 스냅샷은 덤이다 — 만들지 못해도 메시지는 그대로 나간다. */
@@ -4301,6 +4370,7 @@ export class AgentBridgeImpl implements AgentBridge {
       this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-stop' });
     }
     this.disposed = true;
+    this.clearMessageReceipts();
     this.busyWatch = null;
     for (const message of this.queuedMessages) message.resolve(null);
     this.queuedMessages = [];
