@@ -349,7 +349,8 @@ export function createWorkbenchBrowser(options: {
   });
   textInput.addEventListener('blur', () => { composing = false; textInput.value = ''; sendInput({ type: 'release' }); });
   element.addEventListener('keydown', event => {
-    if (event.defaultPrevented || composing || event.isComposing) return;
+    // 주소 초안 취소는 입력창의 핸들러가 처리한다.
+    if (event.defaultPrevented || composing || event.isComposing || (event.key === 'Escape' && event.target === address)) return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (details.open) { details.open = false; summary.focus(); } else if (pinned) endAnnotation(); else if (!downloads.hidden) showDownloads(false); else if (presentation.current() === 'float') presentation.hide(); else options.onChat(); }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') { event.preventDefault(); event.stopPropagation(); if (presentation.current() === 'float') { presentation.present('dock'); options.onDock(); } address.focus(); address.select(); }
   }, { capture: true });
