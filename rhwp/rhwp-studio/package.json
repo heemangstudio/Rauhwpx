@@ -26,6 +26,7 @@
     "bench:typing-latency": "node bench/typing-latency-bench.mjs",
     "bench:typing-latency-bigdoc": "node bench/typing-latency-bigdoc.mjs",
     "bench:chat-stream": "node bench/chat-stream-bench.mjs",
+    "bench:chat-stream-frame": "node bench/chat-stream-frame-bench.mjs",
     "bench:preview-frame": "node bench/preview-frame-bench.mjs",
     "bench:typeset-line-width": "node bench/typeset-line-width-bench.mjs",
     "bench:long-document-image-cache": "node bench/long-document-image-cache.mjs",

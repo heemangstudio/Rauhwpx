@@ -12,6 +12,10 @@ To add a flow, add `smoke/NN-name.mjs` exporting `{ name, run({ page, context, u
 
 These run outside the smoke suite and CI, for changes to the areas they cover.
 
+`npm run e2e:background-sessions` starts its own hub and Vite with a fake Pi and a mock MCP provider. It checks that an agent keeps working on a document you switch away from, that its writes land only in that document, that parallel chats on one document are locked to 채팅, and that New Document and opens work while an agent runs.
+
+`npm run e2e:chat-follows-document` needs `npm run dev` running. Clicking another document's chat saves and commits the current document once, then opens that document and continues its chat.
+
 `npm run e2e:worktrees` starts an isolated hub and Studio to check worktree creation
 from current edits, independent document state, local saving, standalone export,
 close and reopen, portable history import, removal with retained history, merge
