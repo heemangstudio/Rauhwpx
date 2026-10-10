@@ -850,21 +850,24 @@ export function createOwnedBrowserService(options = {}) {
             if (googleResearchURL(url) && tab.searchQuery) {
               const search = new URL('/search', url); search.searchParams.set('q', tab.searchQuery); url = search.href;
             }
-            const owner = actorForTab(tab);
-            await assertPolicy(owner, 'browse', url, tab);
+            // 화면 복원은 사용자의 요청이다. 탭의 에이전트 조작권과 계정 승인은 유지한다.
+            await assertPolicy(actor, 'browse', url, tab);
             if (url !== 'about:blank') await guard.resolve(url);
             const page = await runtime.context.newPage();
             try {
-              tab.activeActor = owner;
+              tab.activeActor = actor; humanSessionEpoch++; humanActionsPending++;
+              if (url !== 'about:blank') markHumanOrigin(new URL(url).origin);
               await attach(tab, page);
               if (url !== 'about:blank') await page.goto(url, { waitUntil: 'domcontentloaded' });
-              tab.restorePending = false;
-              tab.status = 'ready'; invalidate(tab); publish(tab); await persist();
+              markHumanDocument(tab);
             } catch (failure) {
               await page.close().catch(() => {});
               tab.page = null; tab.nativeTargetId = undefined;
               throw failure;
-            } finally { tab.activeActor = null; }
+            } finally { tab.activeActor = null; humanActionsPending--; }
+            await observeHumanSessions();
+            tab.restorePending = false;
+            tab.status = 'ready'; invalidate(tab); publish(tab); await persist();
           }
           requirePage(tab);
           tab.restorePending = false;

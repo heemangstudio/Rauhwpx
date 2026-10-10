@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { promises as fs } from 'node:fs';
+import { createBrowserCredentialBroker } from '../browser-credentials.mjs';
+import { createBrowserPolicy } from '../browser-policy.mjs';
 import { createOwnedBrowserService } from '../owned-browser-service.mjs';
 import { createBrowserNetworkGuard, createBrowserNetworkProxy } from '../owned-browser-network.mjs';
 import { inspectOwnedBrowserRuntime, startOwnedBrowserRuntime } from '../owned-browser-runtime.mjs';
@@ -242,10 +244,15 @@ test('restored native tabs materialize once on selection without transferring co
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   await fs.mkdir(path.join(dataDir, 'browser'), { recursive: true });
-  await fs.writeFile(path.join(dataDir, 'browser', 'tabs.json'), JSON.stringify({ version: 1, tabs: [{ tabId: 'saved-research', nativeTargetId: 'retired-target', threadId: 'chat-a', agentId: 'researcher', projectId: 'project-a', sessionId: 'retired-window', url: `${origin}/research`, navigationEpoch: 3, controllerEpoch: 2 }] }));
+  await fs.writeFile(path.join(dataDir, 'browser', 'tabs.json'), JSON.stringify({ version: 1, humanStorageOrigins: [origin], tabs: [{ tabId: 'saved-research', nativeTargetId: 'retired-target', threadId: 'chat-a', agentId: 'researcher', projectId: 'project-a', sessionId: 'retired-window', url: `${origin}/research`, navigationEpoch: 3, controllerEpoch: 2 }] }));
+  const policy = createBrowserPolicy({ dataDir });
+  const credentialBroker = createBrowserCredentialBroker({ dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 7) });
+  await credentialBroker.registerSessionOrigins({ profileId: 'native', origins: [origin], source: 'human' });
+  const retainedOwner = { threadId: 'chat-a', agentId: 'researcher', projectId: 'project-a' };
+  await assert.rejects(credentialBroker.assertBrowserAccess({ actor: retainedOwner, url: origin, tab: { profileId: 'native' } }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
   const bindings = [];
   let actual; let creations = 0;
-  const browser = createOwnedBrowserService({ dataDir, workspaceTargets: [origin], autoInstall: false,
+  const browser = createOwnedBrowserService({ dataDir, policy, credentialBroker, workspaceTargets: [origin], autoInstall: false,
     nativeAdapter: { async bind(binding) { bindings.push(binding); }, async control(binding) { assert.equal(binding.human, false); } },
     runtimeFactory: async (settings) => {
       actual = await startOwnedBrowserRuntime({ ...settings, nativeAdapter: undefined });
@@ -267,6 +274,9 @@ test('restored native tabs materialize once on selection without transferring co
   assert.equal(first.tab.threadId, 'chat-a'); assert.equal(first.tab.projectId, 'project-a');
   assert.deepEqual(first.tab.controller, { owner: 'agent' });
   assert.equal(first.tab.status, 'ready'); assert.equal(actual.context.pages().length, 1);
+  assert.equal(await actual.context.pages()[0].title(), 'Restored research', 'human restoration may display the quarantined retained origin');
+  await assert.rejects(browser.request(retainedOwner, 'snapshot', args), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  assert.equal((await browser.request(human, 'snapshot', args)).ok, true, 'human observation is permitted without silently approving agent access');
   assert.ok(bindings.every((binding) => binding.sessionId === 'new-window' && binding.chatId === 'chat-a'));
   await assert.rejects(browser.request({ agentId: 'other', threadId: 'other-chat' }, 'snapshot', args), { code: 'BROWSER_TAB_NOT_FOUND' });
   const page = actual.context.pages()[0];
