@@ -534,9 +534,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 .ag-header-icon-btn.ag-active,
-.ag-header-icon-btn[aria-expanded='true'],
-.ag-header-icon-btn[aria-pressed='true'],
-.ag-workspace-icon-btn[aria-pressed='true'] {
+.ag-header-icon-btn[aria-expanded='true'] {
   background: var(--ag-selected);
   color: var(--ag-text);
 }

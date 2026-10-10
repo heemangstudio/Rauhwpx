@@ -232,8 +232,8 @@ export interface AgentSidebarDeps {
   ) => Promise<LibraryMoveResult>;
   /** 문서 열기의 "새 문서"·"파일 열기…" — 편집기의 같은 명령을 부른다. */
   createDocument?: () => void;
-  /** 문서 홈을 연다. focus 는 에이전트 전체 화면의 작업 막대 아래를 덮는다. */
-  openDocumentHome?: (surface: 'editor' | 'focus') => void;
+  /** 문서 홈(창 전체의 시작 화면)을 연다. */
+  openDocumentHome?: () => void;
   openDocumentFile?: () => void;
   /** 문서 열기가 보여 줄 최근 문서. */
   listRecentDocuments?: () => Promise<Array<{
@@ -1767,10 +1767,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   homeBtn.title = '문서 홈';
   homeBtn.appendChild(createIcon('home'));
   homeBtn.hidden = !openDocumentHome;
-  homeBtn.setAttribute('aria-pressed', String(document.documentElement.classList.contains('document-home-open')));
   homeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    openDocumentHome?.('editor');
+    openDocumentHome?.();
   });
   // pane 액션은 문서 맥락 주변의 고정된 헤더 위치를 유지한다.
   headerActions.append(connDot, takeoverBtn, agentUndoBtn, homeBtn, versionsBtn, threadsBtn, settingsBtn);
@@ -2073,8 +2072,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   workspaceHomeBtn.title = '문서 홈';
   workspaceHomeBtn.appendChild(createIcon('home'));
   workspaceHomeBtn.hidden = !openDocumentHome;
-  workspaceHomeBtn.setAttribute('aria-pressed', String(document.documentElement.classList.contains('document-home-open')));
-  workspaceHomeBtn.addEventListener('click', () => openDocumentHome?.('focus'));
+  workspaceHomeBtn.addEventListener('click', () => openDocumentHome?.());
   workspaceLeading.append(workspaceSettingsBack, workspaceThreadsBtn, workspaceHomeBtn, workspaceBrand);
 
   function updateWorkspaceChatTitle(): void {

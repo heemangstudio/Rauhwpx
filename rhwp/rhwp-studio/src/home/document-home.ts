@@ -1,14 +1,15 @@
 /**
- * 문서 홈. 위에는 새 문서(빈 문서·템플릿), 아래에는 열어 본 문서가 종이 카드로 놓인다.
- * 문서가 없을 때 편집 영역의 기본 화면이고, 문서가 열려 있으면 그 위를 덮었다가 돌아간다.
- * 모양은 styles/document-home.css.
+ * 문서 홈. 창 전체를 덮는 시작 화면이다. 위에는 새로 만들기(빈 문서·템플릿), 아래에는 열어 본
+ * 문서가 종이 카드로 놓인다. 문서가 없을 때 기본 화면이고, 문서가 열려 있으면 편집기·사이드바를
+ * 가렸다가 그대로 돌려준다. 모양은 styles/document-home.css.
  *
- * 목록은 저장소에서 바로 그리고, 파일 확인·첫 쪽 그림은 보이는 카드부터 뒤에서 채운다.
+ * 새로 만들기 줄은 바로 그리고, 목록은 저장소에서 읽는 대로 그린다. 파일 확인·첫 쪽 그림은
+ * 그 뒤에 보이는 카드부터 채운다.
  */
 import type { DocumentTemplate } from '../agent/types.ts';
 import type { RecentDoc } from '../recent/recent-store.ts';
 import { beginInlineRename } from '../ui/inline-rename.ts';
-import { createWorktreeChip, paintWorktreeChip } from '../ui/worktree-chip.ts';
+import { createBranchIcon, createWorktreeChip, paintWorktreeChip } from '../ui/worktree-chip.ts';
 import {
   displayName,
   groupHomeDocuments,
@@ -21,15 +22,21 @@ import {
 import {
   defaultHealIo,
   documentThumbnail,
-  healRecentDocuments,
-  inspectRecentDocuments,
+  inspectAndHeal,
   rememberLiveThumbnail,
   templateThumbnail,
   type DocumentPresence,
   type WorktreeData,
 } from './home-data.ts';
+import { releaseThumbnailWorker } from './thumbnail-render.ts';
 
 export type HomeOpenResult = 'opened' | 'cancelled' | 'missing' | 'failed';
+
+/** 홈을 닫으면 돌아갈 곳. 열린 문서, 또는 에이전트 전체 화면의 채팅. */
+export interface HomeReturnTarget {
+  kind: 'document' | 'chat';
+  label: string;
+}
 
 export interface DocumentHomeDeps {
   listRecent(): Promise<RecentDoc[]>;
@@ -42,6 +49,8 @@ export interface DocumentHomeDeps {
   liveDocumentIds(): ReadonlySet<string>;
   /** 열린 문서는 엔진에서 바로 그린다. 열려 있지 않으면 null. */
   liveThumbnail(documentId: string): Promise<Blob | null> | null;
+  /** 문서를 여는 중이면 끝날 때까지 기다린다. 미리보기는 그 뒤에 그린다. */
+  whenIdle(): Promise<void>;
   createBlank(): void;
   createFromTemplate(template: DocumentTemplate): Promise<void>;
   openFile(): void;
@@ -51,9 +60,9 @@ export interface DocumentHomeDeps {
   renameDocument(row: RecentDoc, name: string): Promise<string | null>;
   openInNewWindow?: (row: RecentDoc) => Promise<boolean>;
   reveal?: { label: string; run(row: RecentDoc): Promise<boolean> };
-  /** 덮고 있는 문서 이름. 문서가 없으면 null 이고 돌아가기 단추를 숨긴다. */
-  returnTarget(): string | null;
-  onReturn(): void;
+  returnTarget(): HomeReturnTarget | null;
+  /** 닫힐 때 열기 전 초점 자리가 사라졌으면 편집기나 입력기로 초점을 돌린다. */
+  restoreFocus(): void;
   onDrop?(event: DragEvent): void;
   toast(message: string): void;
 }
@@ -61,16 +70,16 @@ export interface DocumentHomeDeps {
 export interface DocumentHome {
   readonly element: HTMLElement;
   readonly visible: boolean;
-  readonly surface: 'editor' | 'focus';
-  /** surface: 'editor' 는 편집 영역을, 'focus' 는 에이전트 전체 화면의 작업 막대 아래를 덮는다. */
-  show(options?: { surface?: 'editor' | 'focus'; focus?: boolean }): void;
+  /** focus: false 면 카드에 초점을 두지 않는다(앱 시작). 키보드는 홈 안에 머문다. */
+  show(options?: { focus?: boolean }): void;
   hide(): void;
   refresh(): void;
-  onVisibilityChange(listener: (visible: boolean) => void): () => void;
 }
 
 const PREFS_KEY = 'rhwp.documentHome.v1';
 const THUMBNAIL_CONCURRENCY = 2;
+/** 열기에 두 번 실패한 기록만 목록에서 뺀다. 한 번은 잠깐의 문제일 수 있다. */
+const OPEN_FAILURES_BEFORE_FORGET = 2;
 
 interface Prefs { sort: HomeSort; view: 'grid' | 'list' }
 
@@ -122,11 +131,14 @@ function icon(path: string, size = 16): SVGSVGElement {
 const ICONS = {
   back: 'M9.5 3.5 5 8l4.5 4.5',
   plus: 'M8 3v10M3 8h10',
+  upload: 'M8 10.5V3M5 6l3-3 3 3M3 10.5v2.5h10v-2.5',
   open: 'M2.5 4.5v8h11v-6h-6l-1.5-2z',
   grid: 'M3 3h4v4H3zM9 3h4v4H9zM3 9h4v4H3zM9 9h4v4H9z',
   list: 'M5.5 4h8M5.5 8h8M5.5 12h8M2.5 4h.01M2.5 8h.01M2.5 12h.01',
   chevron: 'M4.5 6.5 8 10l3.5-3.5',
 };
+
+const reducedMotion = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   const prefs = readPrefs();
@@ -135,30 +147,37 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   root.setAttribute('aria-label', '문서 홈');
   root.hidden = true;
 
-  const scroller = el('div', 'dh-scroll');
-  root.append(scroller);
+  // ── 위 막대: 제품 표시와 돌아가기 ──────────────────────────
+  const topbar = el('header', 'dh-topbar');
+  const brand = el('span', 'dh-brand');
+  const brandMark = el('span', 'ag-rau-icon dh-brand-mark');
+  brandMark.setAttribute('aria-hidden', 'true');
+  brand.append(brandMark, el('span', 'dh-brand-name', 'Rauhwpx'));
+  const back = button('dh-back', '');
+  back.append(icon(ICONS.back, 14), el('span', 'dh-back-label'));
+  topbar.append(brand, back);
 
-  // ── 새 문서 ─────────────────────────────────────────────
+  const scroller = el('div', 'dh-scroll');
+  // 앱을 켰을 때 키보드가 머무는 자리. 카드에 초점 고리를 띄우지 않는다.
+  scroller.tabIndex = -1;
+  root.append(topbar, scroller);
+
+  // ── 새로 만들기 ─────────────────────────────────────────
   const start = el('section', 'dh-start');
   start.setAttribute('aria-labelledby', 'dh-start-title');
   const startInner = el('div', 'dh-inner');
   const startBar = el('div', 'dh-bar');
-  const back = button('dh-back', '');
-  back.append(icon(ICONS.back, 14), el('span', 'dh-back-label'));
   const startTitle = el('h2', 'dh-heading', '새로 만들기');
   startTitle.id = 'dh-start-title';
-  const openFile = button('dh-ghost', '');
-  openFile.id = 'document-open-action';
-  openFile.append(icon(ICONS.open, 14), el('span', '', '파일 열기'));
   const gallery = button('dh-ghost dh-gallery', '');
   gallery.setAttribute('aria-expanded', 'false');
   gallery.setAttribute('aria-controls', 'dh-templates');
   gallery.append(el('span', '', '템플릿 갤러리'), icon(ICONS.chevron, 14));
   gallery.hidden = true;
-  startBar.append(back, startTitle, el('span', 'dh-spacer'), openFile, gallery);
+  startBar.append(startTitle, el('span', 'dh-spacer'), gallery);
   const templates = el('ul', 'dh-templates');
   templates.id = 'dh-templates';
-  templates.setAttribute('aria-label', '새 문서 만들기');
+  templates.setAttribute('aria-label', '새로 만들기');
   startInner.append(startBar, templates);
   start.append(startInner);
 
@@ -169,6 +188,9 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   const recentBar = el('div', 'dh-bar');
   const recentTitle = el('h2', 'dh-heading', '최근 문서');
   recentTitle.id = 'dh-recent-title';
+  const openFile = button('dh-ghost', '');
+  openFile.id = 'document-open-action';
+  openFile.append(icon(ICONS.open, 14), el('span', '', '파일 열기'));
   const sortGroup = el('div', 'dh-segment');
   sortGroup.setAttribute('role', 'radiogroup');
   sortGroup.setAttribute('aria-label', '정렬');
@@ -185,7 +207,10 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   viewList.append(icon(ICONS.list, 14));
   viewList.title = '목록 보기';
   viewGroup.append(viewGrid, viewList);
-  recentBar.append(recentTitle, el('span', 'dh-spacer'), sortGroup, viewGroup);
+  for (const option of [sortRecent, sortName, viewGrid, viewList]) option.setAttribute('role', 'radio');
+  const listControls = el('span', 'dh-list-controls');
+  listControls.append(sortGroup, viewGroup);
+  recentBar.append(recentTitle, el('span', 'dh-spacer'), openFile, listControls);
   const grid = el('ul', 'dh-grid');
   grid.setAttribute('aria-label', '최근 문서');
   const status = el('p', 'dh-status');
@@ -199,25 +224,30 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   templateInput.accept = '.hwp,.hwpx';
   templateInput.hidden = true;
   root.append(templateInput);
+  document.body.append(root);
 
   let visible = false;
-  let surface: 'editor' | 'focus' = 'editor';
-  let editorHost: HTMLElement | null = null;
+  let returnFocus: HTMLElement | null = null;
   let rows: RecentDoc[] = [];
   let documents: HomeDocument[] = [];
+  let loaded = false;
   let presence = new Map<string, DocumentPresence>();
+  /** 이번에 못 찾았거나 열지 못해 흐리게 둔 기록과 그 까닭. */
+  const flagged = new Map<string, string>();
+  const openFailures = new Map<string, number>();
+  let opening: string | null = null;
   let templateList: DocumentTemplate[] | null = null;
   let galleryOpen = false;
   let expanded: string | null = null;
   let focusedId: string | null = null;
-  const listeners = new Set<(visible: boolean) => void>();
+  let loadToken = 0;
   /** 카드 그림은 다시 그려도 재사용한다. 목록에서 빠진 문서의 그림은 버린다. */
   const blobs = new Map<string, Blob>();
   let observer: IntersectionObserver | null = null;
   let queue: Array<() => Promise<void>> = [];
   let running = 0;
   const pending = new Set<string>();
-  /** 새 문서 줄과 최근 문서 격자는 따로 다시 그린다. 그림 주소도 칸마다 따로 거둔다. */
+  /** 새로 만들기 줄과 최근 문서 격자는 따로 다시 그린다. 그림 주소도 칸마다 따로 거둔다. */
   interface ThumbnailScope { generation: number; urls: Set<string> }
   const templateScope: ThumbnailScope = { generation: 0, urls: new Set() };
   const gridScope: ThumbnailScope = { generation: 0, urls: new Set() };
@@ -259,8 +289,11 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
         observer?.unobserve(entry.target);
-        const start = (entry.target as HTMLElement & { loadThumbnail?: () => Promise<void> }).loadThumbnail;
-        if (start) queue.push(start);
+        const begin = (entry.target as HTMLElement & { loadThumbnail?: () => Promise<void> }).loadThumbnail;
+        if (!begin) continue;
+        // 차례를 기다리는 동안에도 그리는 중으로 보인다.
+        entry.target.classList.add('is-loading');
+        queue.push(begin);
       }
       drain();
     }, { root: scroller, rootMargin: '240px 0px' });
@@ -276,19 +309,27 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     }
     const token = scope.generation;
     (paper as HTMLElement & { loadThumbnail?: () => Promise<void> }).loadThumbnail = async () => {
-      if (token !== scope.generation || !visible || pending.has(key)) return;
+      const papers = () => root.querySelectorAll<HTMLElement>(`[data-thumb-key="${CSS.escape(key)}"]`);
+      if (token !== scope.generation || !visible || pending.has(key)) {
+        if (!pending.has(key)) paper.classList.remove('is-loading');
+        return;
+      }
       pending.add(key);
       try {
+        // 앱을 켜며 문서를 여는 중이면 그 일이 먼저다.
+        await deps.whenIdle();
+        if (!visible) return;
         const blob = await load();
         if (!blob) return;
         blobs.set(key, blob);
         if (!visible) return;
         // 그사이 목록을 다시 그렸으면 같은 문서의 새 카드에 칠한다.
-        for (const target of root.querySelectorAll<HTMLElement>(`[data-thumb-key="${CSS.escape(key)}"]`)) {
+        for (const target of papers()) {
           if (!target.querySelector('.dh-thumb')) paintImage(scope, target, blob);
         }
       } finally {
         pending.delete(key);
+        for (const target of papers()) target.classList.remove('is-loading');
       }
     };
     ensureObserver().observe(paper);
@@ -303,17 +344,17 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   }
 
   // ── 종이 ────────────────────────────────────────────────
-  function placeholderPaper(title: string, extra = ''): HTMLElement {
+  /** 그림을 그리는 동안에는 글줄을, 그림이 없으면 형식 표시만 둔 빈 종이를 보인다. */
+  function paperFor(format: string, extra = ''): HTMLElement {
     const paper = el('span', `dh-paper${extra ? ` ${extra}` : ''}`);
     paper.setAttribute('aria-hidden', 'true');
     const sheet = el('span', 'dh-sheet');
-    sheet.append(el('span', 'dh-sheet-title', title));
-    for (let line = 0; line < 7; line += 1) sheet.append(el('span', 'dh-sheet-line'));
-    paper.append(sheet);
+    for (let line = 0; line < 6; line += 1) sheet.append(el('span', 'dh-sheet-line'));
+    paper.append(sheet, el('span', 'dh-paper-format', format.toUpperCase()));
     return paper;
   }
 
-  // ── 새 문서 줄 ──────────────────────────────────────────
+  // ── 새로 만들기 줄 ──────────────────────────────────────
   function templateCard(
     label: string,
     detail: string,
@@ -335,6 +376,9 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   }
 
   function renderTemplates(): void {
+    const focusedTemplate = templates.contains(document.activeElement)
+      ? [...templates.querySelectorAll('.dh-template-card')].indexOf(document.activeElement as Element)
+      : -1;
     resetScope(templateScope, templates);
     const items: HTMLLIElement[] = [];
     const blank = el('span', 'dh-paper dh-paper-blank');
@@ -342,9 +386,9 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     blank.append(icon(ICONS.plus, 28));
     items.push(templateCard('빈 문서', '', blank, () => deps.createBlank(), 'document-new-action'));
     for (const template of templateList ?? []) {
-      const paper = placeholderPaper(template.name);
+      const paper = paperFor(template.format);
       const pages = template.pageCount > 0 ? `${template.pageCount}쪽` : '';
-      items.push(templateCard(template.name, ['템플릿', pages].filter(Boolean).join(' · '), paper, () => {
+      items.push(templateCard(template.name, pages, paper, () => {
         void deps.createFromTemplate(template).catch((error) => {
           deps.toast(error instanceof Error ? error.message : '템플릿으로 문서를 만들지 못했습니다.');
         });
@@ -354,11 +398,14 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     if (templateList && deps.addTemplate) {
       const add = el('span', 'dh-paper dh-paper-add');
       add.setAttribute('aria-hidden', 'true');
-      add.append(icon(ICONS.plus, 20));
+      add.append(icon(ICONS.upload, 18));
       items.push(templateCard('템플릿 추가', 'HWP · HWPX', add, () => templateInput.click()));
     }
     templates.replaceChildren(...items);
     fitTemplates();
+    if (focusedTemplate >= 0) {
+      templates.querySelectorAll<HTMLElement>('.dh-template-card')[focusedTemplate]?.focus({ preventScroll: true });
+    }
   }
 
   /** 접힌 갤러리는 한 줄만 보인다. 넘치는 템플릿이 있을 때만 펼치기 단추를 둔다. */
@@ -366,7 +413,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     const width = templates.clientWidth;
     const items = [...templates.children] as HTMLElement[];
     const style = getComputedStyle(templates);
-    const card = parseFloat(style.gridTemplateColumns) || 120;
+    const card = parseFloat(style.gridTemplateColumns) || 116;
     const gap = parseFloat(style.columnGap) || 16;
     const columns = Math.max(1, Math.floor((width + gap) / (card + gap)));
     const overflow = items.length > columns;
@@ -379,27 +426,34 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
 
   // ── 최근 문서 ───────────────────────────────────────────
   const rowFor = (doc: HomeDocument) => rows.find((row) => row.id === doc.recentId) ?? null;
+  const cardFor = (id: string | null) => (id ? grid.querySelector<HTMLButtonElement>(`.dh-card[data-id="${CSS.escape(id)}"]`) : null);
+
+  /** 작업 트리 묶음 표시 하나: 가지 색 점들과 사본 수. */
+  function treeToken(doc: HomeDocument): HTMLElement {
+    const token = el('span', 'dh-tree-token');
+    token.setAttribute('aria-label', `작업 트리 ${doc.worktrees.length}개`);
+    token.title = doc.worktrees.map((tree) => tree.branch).join(', ');
+    token.append(createBranchIcon());
+    const dots = el('span', 'dh-tree-dots');
+    for (const tree of doc.worktrees.slice(0, 3)) {
+      const dot = el('span', 'dh-tree-dot');
+      dot.style.setProperty('--worktree-color', tree.color);
+      dots.append(dot);
+    }
+    token.append(dots, el('span', '', String(doc.worktrees.length)));
+    return token;
+  }
 
   function metaFor(doc: HomeDocument, liveIds: ReadonlySet<string>): HTMLElement {
     const meta = el('span', 'dh-card-meta');
-    const live = liveIds.has(doc.documentId);
-    const state = presence.get(doc.recentId)?.state;
     meta.append(el('span', 'dh-format', doc.sourceFormat.toUpperCase()));
-    if (live) meta.append(el('span', 'dh-live', '열려 있음'));
-    else if (state === 'unavailable') meta.append(el('span', 'dh-unavailable', '연결 안 됨'));
+    const state = presence.get(doc.recentId)?.state;
+    const note = flagged.get(doc.recentId);
+    if (liveIds.has(doc.documentId)) meta.append(el('span', 'dh-live', '열려 있음'));
+    else if (note) meta.append(el('span', 'dh-flag', note));
+    else if (state === 'unavailable') meta.append(el('span', 'dh-flag', '연결 안 됨'));
     else meta.append(el('span', 'dh-date', openedLabel(doc.openedAt)));
-    if (doc.worktrees.length) {
-      const trees = el('span', 'dh-tree-count');
-      trees.setAttribute('aria-label', `작업 트리 ${doc.worktrees.length}개`);
-      trees.title = doc.worktrees.map((tree) => tree.branch).join(', ');
-      for (const tree of doc.worktrees.slice(0, 3)) {
-        const dot = el('span', 'dh-tree-dot');
-        dot.style.setProperty('--worktree-color', tree.color);
-        trees.append(dot);
-      }
-      trees.append(el('span', '', `⑂ ${doc.worktrees.length}`));
-      meta.append(trees);
-    }
+    if (doc.worktrees.length) meta.append(treeToken(doc));
     return meta;
   }
 
@@ -408,14 +462,11 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     resetScope(gridScope, grid);
 
     grid.classList.toggle('is-list', prefs.view === 'list');
-    sortRecent.setAttribute('role', 'radio');
-    sortName.setAttribute('role', 'radio');
-    viewGrid.setAttribute('role', 'radio');
-    viewList.setAttribute('role', 'radio');
     sortRecent.setAttribute('aria-checked', String(prefs.sort === 'recent'));
     sortName.setAttribute('aria-checked', String(prefs.sort === 'name'));
     viewGrid.setAttribute('aria-checked', String(prefs.view === 'grid'));
     viewList.setAttribute('aria-checked', String(prefs.view === 'list'));
+    listControls.hidden = documents.length === 0;
 
     const keys = new Set(documents.map((doc) => doc.documentId));
     for (const key of [...blobs.keys()]) {
@@ -424,9 +475,11 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     if (!documents.length) {
       grid.replaceChildren();
       expanded = null;
-      const empty = el('li', 'dh-empty');
-      empty.append(el('span', 'dh-empty-title', '최근 문서가 없습니다'));
-      grid.append(empty);
+      if (loaded) {
+        const empty = el('li', 'dh-empty');
+        empty.append(el('span', 'dh-empty-title', '최근 문서가 없습니다'));
+        grid.append(empty);
+      }
       return;
     }
     if (expanded && !documents.some((doc) => doc.recentId === expanded)) expanded = null;
@@ -442,17 +495,22 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       card.setAttribute('aria-expanded', String(expanded === doc.recentId));
       card.setAttribute('aria-label', `${displayName(doc.fileName)}, ${doc.sourceFormat.toUpperCase()}, ${openedLabel(doc.openedAt)} 열람`);
       const stack = doc.worktrees.length ? ' dh-paper-stack' : '';
-      const paper = placeholderPaper(displayName(doc.fileName), `dh-doc-paper${stack}`);
+      const paper = paperFor(doc.sourceFormat, `dh-doc-paper${stack}`);
       const text = el('span', 'dh-card-text');
       const name = el('span', 'dh-card-name', displayName(doc.fileName));
       name.title = doc.fileName;
-      const chip = createWorktreeChip();
-      if (doc.branch) paintWorktreeChip(chip, { branch: doc.branch.branch, primary: doc.branch.primary, color: doc.branch.color });
       const title = el('span', 'dh-card-title');
-      title.append(name, chip);
+      title.append(name);
+      // 원본은 이름만으로 충분하다. 사본일 때만 가지를 붙인다.
+      if (doc.branch && !doc.branch.primary) {
+        const chip = createWorktreeChip();
+        paintWorktreeChip(chip, { branch: doc.branch.branch, primary: false, color: doc.branch.color });
+        title.append(chip);
+      }
       text.append(title, metaFor(doc, liveIds));
       card.append(paper, text);
-      if (presence.get(doc.recentId)?.state === 'unavailable') item.classList.add('is-unavailable');
+      const state = presence.get(doc.recentId)?.state;
+      if (state === 'unavailable' || flagged.has(doc.recentId)) item.classList.add('is-dimmed');
       item.append(card);
       items.push(item);
       const row = rowFor(doc);
@@ -470,17 +528,8 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       if (blob) void rememberLiveThumbnail(row.documentId, blob);
       return blob;
     }
-    const result = await documentThumbnail(row, presence.get(row.id));
-    if (result.corrupt) {
-      // 엔진이 읽지 못한 파일은 열 수도 없다. 목록에서 뺀다.
-      await defaultHealIo.forget(row);
-      drop(new Set([row.id]));
-      return null;
-    }
-    return result.blob;
+    return documentThumbnail(row, presence.get(row.id));
   }
-
-  const cardFor = (id: string | null) => (id ? grid.querySelector<HTMLButtonElement>(`.dh-card[data-id="${CSS.escape(id)}"]`) : null);
 
   function columns(): number {
     if (prefs.view === 'list') return 1;
@@ -489,69 +538,47 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   }
 
   // ── 펼친 작업 ───────────────────────────────────────────
-  function detailFor(doc: HomeDocument): HTMLLIElement {
-    const row = rowFor(doc)!;
+  function action(label: string, run: () => void, className = 'dh-action'): HTMLButtonElement {
+    const node = button(className, label);
+    node.addEventListener('click', run);
+    return node;
+  }
+
+  function detailFor(doc: HomeDocument, row: RecentDoc): HTMLLIElement {
     const detail = el('li', 'dh-detail');
     detail.id = 'dh-detail';
     detail.setAttribute('role', 'group');
     detail.setAttribute('aria-label', `${displayName(doc.fileName)} 작업`);
-    const main = el('div', 'dh-detail-main');
-    const head = el('div', 'dh-detail-head');
-    const name = el('span', 'dh-detail-name', doc.fileName);
-    head.append(name);
-    if (doc.branch) {
-      const chip = createWorktreeChip();
-      paintWorktreeChip(chip, { branch: doc.branch.branch, primary: doc.branch.primary, color: doc.branch.color });
-      head.append(chip);
-    }
-    const state = presence.get(doc.recentId)?.state;
-    const sub = [
-      doc.sourceFormat.toUpperCase(),
-      `${openedLabel(doc.openedAt)} 열람`,
-      deps.liveDocumentIds().has(doc.documentId) ? '이 창에 열려 있음' : '',
-      state === 'unavailable' ? '파일이 있는 위치에 연결되어 있지 않음' : '',
-    ].filter(Boolean).join(' · ');
-    main.append(head, el('p', 'dh-detail-sub', sub));
-
+    const panel = el('div', 'dh-detail-panel');
     const actions = el('div', 'dh-actions');
-    const open = button('dh-action dh-action-primary', '열기');
-    open.addEventListener('click', () => void openRow(row));
-    actions.append(open);
-    if (deps.openInNewWindow) {
-      const newWindow = button('dh-action', '새 창에서 열기');
-      newWindow.addEventListener('click', () => {
+    actions.append(action('열기', () => void openRow(row), 'dh-action dh-action-primary'));
+    const live = deps.liveDocumentIds().has(doc.documentId);
+    if (deps.openInNewWindow && !live) {
+      actions.append(action('새 창에서 열기', () => {
         void deps.openInNewWindow!(row).then((ok) => { if (!ok) deps.toast('파일을 찾을 수 없어 새 창에서 열지 못했습니다.'); });
-      });
-      actions.append(newWindow);
+      }));
     }
     if (deps.reveal) {
-      const reveal = button('dh-action', deps.reveal.label);
-      reveal.addEventListener('click', () => {
+      actions.append(action(deps.reveal.label, () => {
         void deps.reveal!.run(row).then((ok) => { if (!ok) deps.toast('파일 위치를 찾을 수 없습니다.'); });
-      });
-      actions.append(reveal);
+      }));
     }
-    if (deps.canRename(row)) {
-      const rename = button('dh-action', '이름 바꾸기');
-      rename.addEventListener('click', () => beginRename(doc, row, name));
-      actions.append(rename);
-    }
-    const forget = button('dh-action dh-action-quiet', '목록에서 제거');
-    forget.addEventListener('click', () => {
+    if (deps.canRename(row)) actions.append(action('이름 바꾸기', () => beginRename(doc, row, actions)));
+    actions.append(action('목록에서 제거', () => {
       void defaultHealIo.forget(row).then(() => {
         const index = documents.findIndex((entry) => entry.recentId === row.id);
         focusedId = documents[index + 1]?.recentId ?? documents[index - 1]?.recentId ?? null;
         drop(new Set([row.id]));
-        cardFor(focusedId)?.focus();
+        window.setTimeout(() => cardFor(focusedId)?.focus(), 200);
       });
-    });
-    actions.append(forget);
-    main.append(actions);
-    detail.append(main);
+    }, 'dh-action dh-action-quiet'));
+    panel.append(actions);
+    const note = flagged.get(doc.recentId);
+    if (note) panel.append(el('p', 'dh-detail-note', note === '열 수 없음' ? '이 파일을 열지 못했습니다.' : '파일을 찾을 수 없습니다.'));
 
     if (doc.worktrees.length) {
       const trees = el('div', 'dh-trees');
-      trees.append(el('h3', 'dh-trees-title', `작업 트리 ${doc.worktrees.length}`));
+      trees.append(el('h3', 'dh-trees-title', '작업 트리'));
       const list = el('ul', 'dh-tree-list');
       for (const tree of doc.worktrees) {
         const item = el('li');
@@ -559,7 +586,9 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
         entry.setAttribute('aria-label', `작업 트리 ${tree.branch} 열기`);
         const chip = createWorktreeChip();
         paintWorktreeChip(chip, { branch: tree.branch, primary: tree.primary, color: tree.color });
-        entry.append(chip, el('span', 'dh-tree-name', displayName(tree.fileName)), el('span', 'dh-tree-date', openedLabel(tree.updatedAt)));
+        entry.append(chip);
+        if (displayName(tree.fileName) !== displayName(doc.fileName)) entry.append(el('span', 'dh-tree-name', displayName(tree.fileName)));
+        entry.append(el('span', 'dh-tree-date', openedLabel(tree.updatedAt)));
         entry.addEventListener('click', () => {
           void deps.openWorktree(tree).catch((error) => {
             deps.toast(error instanceof Error ? error.message : '작업 트리를 열지 못했습니다.');
@@ -569,8 +598,9 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
         list.append(item);
       }
       trees.append(list);
-      detail.append(trees);
+      panel.append(trees);
     }
+    detail.append(panel);
     detail.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
       event.preventDefault();
@@ -582,26 +612,35 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     return detail;
   }
 
-  /** 펼친 작업 칸은 고른 카드가 있는 줄 바로 아래에 놓인다. */
+  /**
+   * 펼친 작업은 고른 카드가 있는 줄 바로 아래, 그 카드에 붙은 작은 판으로 놓인다. 판은 카드
+   * 쪽으로 붙되 격자 밖으로 나가지 않고, 꼭지가 카드 가운데를 가리킨다.
+   */
   function placeDetail(): void {
     grid.querySelector('.dh-detail')?.remove();
     for (const card of grid.querySelectorAll<HTMLElement>('.dh-card')) {
       card.setAttribute('aria-expanded', String(card.dataset.id === expanded));
-      card.toggleAttribute('aria-controls', false);
+      card.removeAttribute('aria-controls');
     }
     const doc = documents.find((entry) => entry.recentId === expanded);
     const card = cardFor(expanded);
-    if (!doc || !card || !rowFor(doc)) return;
+    const row = doc ? rowFor(doc) : null;
+    if (!doc || !card || !row) return;
     card.setAttribute('aria-controls', 'dh-detail');
     const index = documents.indexOf(doc);
     const perRow = columns();
     const rowEnd = Math.min(documents.length - 1, Math.floor(index / perRow) * perRow + perRow - 1);
     const anchor = grid.children[rowEnd] as HTMLElement | undefined;
-    const detail = detailFor(doc);
+    const detail = detailFor(doc, row);
+    anchor?.after(detail);
+    const panel = detail.querySelector<HTMLElement>('.dh-detail-panel')!;
     const cardBox = card.getBoundingClientRect();
     const gridBox = grid.getBoundingClientRect();
-    detail.style.setProperty('--dh-notch', `${Math.round(cardBox.left - gridBox.left + cardBox.width / 2)}px`);
-    anchor?.after(detail);
+    const panelWidth = panel.getBoundingClientRect().width;
+    const center = cardBox.left - gridBox.left + cardBox.width / 2;
+    const left = Math.max(0, Math.min(gridBox.width - panelWidth, cardBox.left - gridBox.left));
+    panel.style.setProperty('--dh-panel-left', `${Math.round(left)}px`);
+    panel.style.setProperty('--dh-notch', `${Math.round(center - left)}px`);
   }
 
   function toggle(id: string): void {
@@ -609,8 +648,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     focusedId = id;
     placeDetail();
     if (expanded) {
-      const detail = grid.querySelector<HTMLElement>('.dh-detail');
-      detail?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      grid.querySelector<HTMLElement>('.dh-detail')?.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
     }
   }
 
@@ -620,7 +658,19 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     placeDetail();
   }
 
-  function beginRename(doc: HomeDocument, row: RecentDoc, target: HTMLElement): void {
+  /** 판의 단추 줄 자리에서 이름을 고친다. 끝나면 판을 다시 그린다. */
+  function beginRename(doc: HomeDocument, row: RecentDoc, actions: HTMLElement): void {
+    const field = el('div', 'dh-rename');
+    const target = el('span', 'dh-rename-target', doc.fileName);
+    field.append(target);
+    actions.replaceWith(field);
+    field.addEventListener('focusout', () => {
+      window.setTimeout(() => {
+        if (!field.isConnected || target.querySelector('input')) return;
+        placeDetail();
+        cardFor(row.id)?.focus({ preventScroll: true });
+      }, 0);
+    });
     beginInlineRename(target, {
       value: doc.fileName,
       label: '문서 이름',
@@ -631,24 +681,37 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
         if (!renamed) return null;
         row.fileName = renamed;
         documents = documents.map((entry) => (entry.recentId === row.id ? { ...entry, fileName: renamed } : entry));
-        const card = cardFor(row.id);
-        const name = card?.querySelector('.dh-card-name');
-        if (name) { name.textContent = displayName(renamed); (name as HTMLElement).title = renamed; }
+        const name = cardFor(row.id)?.querySelector<HTMLElement>('.dh-card-name');
+        if (name) { name.textContent = displayName(renamed); name.title = renamed; }
         return renamed;
       },
     });
   }
 
   async function openRow(row: RecentDoc): Promise<void> {
-    const result = await deps.openDocument(row);
-    if (result === 'failed') {
-      // 열지 못한 파일(손상·지원하지 않는 형식)은 목록에서 뺀다. 이유는 열기 오류가 이미 알렸다.
-      await defaultHealIo.forget(row);
-      drop(new Set([row.id]));
-    } else if (result === 'missing') {
-      await defaultHealIo.forget(row);
-      drop(new Set([row.id]));
-      deps.toast(`"${displayName(row.fileName)}" 파일을 찾을 수 없어 목록에서 뺐습니다.`);
+    // 같은 문서를 거듭 눌러도 열기는 한 번만 한다.
+    if (opening) return;
+    opening = row.id;
+    try {
+      const result = await deps.openDocument(row);
+      if (result === 'opened') {
+        openFailures.delete(row.id);
+        flagged.delete(row.id);
+        return;
+      }
+      if (result !== 'failed' && result !== 'missing') return;
+      const failures = (openFailures.get(row.id) ?? 0) + 1;
+      openFailures.set(row.id, failures);
+      if (failures >= OPEN_FAILURES_BEFORE_FORGET) {
+        await defaultHealIo.forget(row);
+        drop(new Set([row.id]));
+        deps.toast(`"${displayName(row.fileName)}" 을(를) 열 수 없어 목록에서 뺐습니다.`);
+        return;
+      }
+      flagged.set(row.id, result === 'missing' ? '찾을 수 없음' : '열 수 없음');
+      if (visible) renderRecent();
+    } finally {
+      opening = null;
     }
   }
 
@@ -658,17 +721,17 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     documents = documents.filter((doc) => !ids.has(doc.recentId));
     if (expanded && ids.has(expanded)) expanded = null;
     for (const id of ids) {
-      const item = cardFor(id)?.closest('.dh-item');
-      item?.classList.add('is-leaving');
+      cardFor(id)?.closest('.dh-item')?.classList.add('is-leaving');
     }
     // 사라지는 모양을 잠깐 보인 뒤 줄을 다시 짠다.
-    window.setTimeout(() => { if (visible) renderRecent(); }, 160);
+    window.setTimeout(() => { if (visible) renderRecent(); }, reducedMotion() ? 0 : 160);
   }
 
   // ── 자료 ────────────────────────────────────────────────
   async function load(): Promise<void> {
     const token = ++loadToken;
     status.textContent = '';
+    void loadTemplates(token, 0);
     let worktreeData: WorktreeData | null = null;
     try {
       const [recentRows, trees] = await Promise.all([
@@ -686,13 +749,17 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       console.warn('[document-home] 최근 문서를 읽지 못했습니다:', error);
       rows = [];
       documents = [];
+      loaded = false;
       renderRecent();
-      grid.replaceChildren();
       status.replaceChildren(el('span', '', '최근 문서를 불러오지 못했습니다. '));
       const retry = button('dh-link', '다시 시도');
       retry.addEventListener('click', () => void load());
       status.append(retry);
       return;
+    }
+    loaded = true;
+    for (const row of rows) {
+      if (row.missingSince !== undefined && !flagged.has(row.id)) flagged.set(row.id, '찾을 수 없음');
     }
     const regroup = () => {
       documents = sortHomeDocuments(groupHomeDocuments(
@@ -704,25 +771,23 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     regroup();
     renderRecent();
 
-    // 첫 화면을 그린 뒤에 파일을 확인한다. 지워진 파일은 빠지고, 옮겨진 파일은 새 이름이 된다.
-    void (async () => {
-      const inspected = await inspectRecentDocuments(rows).catch(() => new Map<string, DocumentPresence>());
+    // 첫 화면을 그린 뒤에 파일을 확인한다. 정리는 한 번에 하나만 돈다.
+    void inspectAndHeal(rows).then(({ presence: inspected, healed }) => {
       if (token !== loadToken) return;
       presence = inspected;
-      const healed = await healRecentDocuments(rows, presence, defaultHealIo);
-      if (token !== loadToken) return;
       for (const [id, fileName] of healed.renamed) {
         const row = rows.find((entry) => entry.id === id);
-        if (row) row.fileName = fileName;
-        const current = presence.get(id);
-        if (current?.state === 'missing') presence.delete(id);
+        if (row) { row.fileName = fileName; delete row.missingSince; }
+        flagged.delete(id);
       }
+      for (const [id, state] of presence) {
+        if (state.state === 'present' && flagged.get(id) === '찾을 수 없음') flagged.delete(id);
+      }
+      for (const id of healed.stale) flagged.set(id, '찾을 수 없음');
       rows = rows.filter((row) => !healed.removed.has(row.id));
       regroup();
       if (visible) renderRecent();
-    })();
-
-    void loadTemplates(token, 0);
+    }).catch((error) => console.warn('[document-home] 파일 확인 실패:', error));
   }
 
   /** 앱을 막 켰을 때는 허브가 아직 붙지 않았을 수 있다. 몇 번만 다시 묻는다. */
@@ -737,7 +802,6 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       window.setTimeout(() => { if (visible && token === loadToken) void loadTemplates(token, attempt + 1); }, 2000 * (attempt + 1));
     }
   }
-  let loadToken = 0;
 
   // ── 입력 ────────────────────────────────────────────────
   grid.addEventListener('click', (event) => {
@@ -745,6 +809,8 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     if (!card?.dataset.id) return;
     for (const other of grid.querySelectorAll<HTMLElement>('.dh-card')) other.tabIndex = -1;
     card.tabIndex = 0;
+    // 두 번 누르기의 두 번째 누름은 펼침을 되돌리지 않는다. 열기는 dblclick 이 한다.
+    if (event.detail > 1) return;
     toggle(card.dataset.id);
   });
   grid.addEventListener('dblclick', (event) => {
@@ -793,7 +859,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       nextCard.focus();
       nextCard.scrollIntoView({ block: 'nearest' });
     }
-    // 펼친 칸은 다른 줄로 옮기면 따라간다.
+    // 펼친 판은 다른 카드로 옮기면 따라간다.
     if (expanded && expanded !== focusedId) {
       expanded = focusedId;
       placeDetail();
@@ -809,8 +875,10 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   });
   root.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
-    if (expanded) { event.preventDefault(); const id = expanded; collapse(); cardFor(id)?.focus(); return; }
-    if (canLeave()) { event.preventDefault(); leave(); }
+    // 홈이 받은 Esc 는 뒤의 앱(에이전트 전체 화면 닫기 등)으로 넘기지 않는다.
+    event.preventDefault();
+    if (expanded) { const id = expanded; collapse(); cardFor(id)?.focus(); return; }
+    if (deps.returnTarget()) hide();
   });
 
   const setSort = (sort: HomeSort) => {
@@ -847,7 +915,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     fitTemplates();
   });
   openFile.addEventListener('click', () => deps.openFile());
-  back.addEventListener('click', () => leave());
+  back.addEventListener('click', () => hide());
   templateInput.addEventListener('change', () => {
     const file = templateInput.files?.[0];
     templateInput.value = '';
@@ -873,93 +941,90 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     if (expanded) placeDetail();
   }).observe(root);
 
-  /** 에이전트 전체 화면에서는 언제나 대화로 돌아갈 수 있다. 편집 영역에서는 열린 문서가 있을 때만. */
-  const canLeave = () => surface === 'focus' || deps.returnTarget() !== null;
-
-  function leave(): void {
-    if (surface === 'focus') hide();
-    else deps.onReturn();
-  }
-
+  // ── 보이기·숨기기 ───────────────────────────────────────
   function paintReturn(): void {
-    const target = surface === 'focus' ? '대화' : deps.returnTarget();
+    const target = deps.returnTarget();
     back.hidden = target === null;
-    const label = back.querySelector('.dh-back-label')!;
-    label.textContent = target ? displayName(target) : '';
-    const action = surface === 'focus' ? '대화로 돌아가기' : '문서로 돌아가기';
-    back.setAttribute('aria-label', target && surface !== 'focus' ? `${target}(으)로 돌아가기` : action);
+    back.querySelector('.dh-back-label')!.textContent = target ? displayName(target.label) : '';
+    const action = target?.kind === 'chat' ? '채팅으로 돌아가기' : '문서로 돌아가기';
+    back.setAttribute('aria-label', action);
     back.title = `${action} (Esc)`;
   }
 
-  let focusWatch: MutationObserver | null = null;
-
-  function mount(next: 'editor' | 'focus'): void {
-    surface = next;
-    focusWatch?.disconnect();
-    focusWatch = null;
-    editorHost ??= document.getElementById('editor-area');
-    const host = next === 'focus' ? document.body : editorHost ?? document.body;
-    if (root.parentElement !== host) host.append(root);
-    root.classList.toggle('is-focus-surface', next === 'focus');
-    // 에이전트 전체 화면에서는 작업 막대를 남겨 두고 그 아래만 덮는다.
-    const bar = next === 'focus' ? document.querySelector('.ag-fullscreen .ag-workspace-bar') : null;
-    root.style.top = bar ? `${Math.round(bar.getBoundingClientRect().bottom)}px` : '';
-    // 전체 화면을 나가면 편집 영역으로 돌아온다. 문서가 열려 있으면 그 문서를 보인다.
-    const workspace = bar?.closest('.ag-fullscreen');
-    if (workspace) {
-      focusWatch = new MutationObserver(() => {
-        if (workspace.classList.contains('ag-fullscreen')) return;
-        if (deps.returnTarget() === null) mount('editor');
-        else hide();
-      });
-      focusWatch.observe(workspace, { attributes: true, attributeFilter: ['class'] });
+  /**
+   * 홈 뒤의 앱(편집기·사이드바)은 보이지도, 초점을 받지도 않는다. 레이아웃은 그대로 두어 문서의
+   * 스크롤·선택·캔버스 크기가 돌아올 때 그대로다.
+   */
+  function coverApp(covered: boolean): void {
+    document.documentElement.classList.toggle('document-home-open', covered);
+    for (const child of document.body.children) {
+      if (child.id === 'studio-root' || child.id === 'agent-sidebar') (child as HTMLElement).inert = covered;
     }
   }
 
   function hide(): void {
     if (!visible) return;
     visible = false;
-    focusWatch?.disconnect();
-    focusWatch = null;
     root.classList.remove('is-shown');
     root.hidden = true;
     expanded = null;
     resetThumbnails();
-    for (const listener of listeners) listener(false);
+    // 미리보기 일꾼의 엔진 메모리를 돌려준다. 다음에 열 때 새로 띄운다.
+    releaseThumbnailWorker();
+    coverApp(false);
+    const target = returnFocus;
+    returnFocus = null;
+    // 열기 전 초점 자리로 돌아간다. 그 자리가 사라졌거나 문서가 바뀌었으면 편집기·입력기로.
+    if (target?.isConnected && !target.closest('[inert]') && target.checkVisibility?.() !== false) {
+      target.focus({ preventScroll: true });
+    } else {
+      deps.restoreFocus();
+    }
   }
+
+  function show(options: { focus?: boolean } = {}): void {
+    paintReturn();
+    const wasVisible = visible;
+    if (!wasVisible) {
+      const active = document.activeElement;
+      returnFocus = active instanceof HTMLElement && active !== document.body ? active : null;
+      // Electron 은 창 끌기 영역을 문서 순서로 적용한다. 홈을 뒤에 두어 가린 앱의 영역을 덮는다.
+      if (root.nextElementSibling) document.body.append(root);
+      coverApp(true);
+      // 문서 그림은 열 때마다 저장소에서 다시 읽는다. 그사이 고친 문서가 옛 그림으로 남지 않는다.
+      for (const key of [...blobs.keys()]) if (key.startsWith('document:')) blobs.delete(key);
+    }
+    visible = true;
+    root.hidden = false;
+    if (!wasVisible) {
+      root.classList.remove('is-shown');
+      requestAnimationFrame(() => root.classList.add('is-shown'));
+      scroller.scrollTop = 0;
+      // 새로 만들기 줄은 목록을 기다리지 않고 바로 그린다.
+      renderTemplates();
+      renderRecent();
+    }
+    if (!root.contains(document.activeElement)) {
+      if (options.focus === false) scroller.focus({ preventScroll: true });
+      else templates.querySelector<HTMLElement>('.dh-template-card')?.focus({ preventScroll: true });
+    }
+    void load().then(() => {
+      if (options.focus === false || !visible) return;
+      // 목록이 오면 키보드를 가장 최근 문서로 옮긴다. 그사이 사용자가 옮겼으면 두고 둔다.
+      const active = document.activeElement;
+      if (active === templates.querySelector('.dh-template-card')) cardFor(focusedId)?.focus({ preventScroll: true });
+    });
+  }
+
+  renderTemplates();
 
   return {
     element: root,
     get visible() { return visible; },
-    get surface() { return surface; },
-    show(options = {}) {
-      mount(options.surface ?? (visible ? surface : 'editor'));
-      paintReturn();
-      const wasVisible = visible;
-      visible = true;
-      // 문서 그림은 열 때마다 저장소에서 다시 읽는다. 그사이 고친 문서가 옛 그림으로 남지 않는다.
-      if (!wasVisible) for (const key of [...blobs.keys()]) if (key.startsWith('document:')) blobs.delete(key);
-      root.hidden = false;
-      if (!wasVisible) {
-        root.classList.remove('is-shown');
-        // 다음 프레임에 나타나는 전환을 건다. 줄이기 설정이면 CSS 가 전환을 끈다.
-        requestAnimationFrame(() => root.classList.add('is-shown'));
-        scroller.scrollTop = 0;
-        for (const listener of listeners) listener(true);
-      }
-      void load().then(() => {
-        if (options.focus !== false && visible && !root.contains(document.activeElement)) {
-          (cardFor(focusedId) ?? templates.querySelector<HTMLElement>('.dh-template-card'))?.focus({ preventScroll: true });
-        }
-      });
-    },
+    show,
     hide,
     refresh() {
       if (visible) { paintReturn(); void load(); }
-    },
-    onVisibilityChange(listener) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
     },
   };
 }

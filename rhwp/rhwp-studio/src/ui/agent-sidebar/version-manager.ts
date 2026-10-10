@@ -7,6 +7,7 @@ import { versionErrorCode } from '../../versioning/types.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { createChevron } from '../chevron.ts';
 import { laneColor } from '../version-lanes.ts';
+import { createBranchIcon } from '../worktree-chip.ts';
 
 export type VersionTab = 'changes' | 'history' | 'branches' | 'worktrees' | 'shelves';
 
@@ -993,7 +994,9 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       chip.setAttribute('aria-pressed', String(branch.isActive));
       chip.title = branch.isActive ? `${branch.name} · 작업 중` : branch.name;
       chip.setAttribute('aria-label', `${branch.name} 브랜치로 전환`);
-      chip.appendChild(el('span', 'ag-versions-chip-name', `⑂ ${branch.name}`));
+      const chipName = el('span', 'ag-versions-chip-name');
+      chipName.append(createBranchIcon(), document.createTextNode(` ${branch.name}`));
+      chip.appendChild(chipName);
       if (branch.isActive) chip.appendChild(el('span', 'ag-versions-chip-state', '작업 중'));
       chip.addEventListener('click', () => {
         if (!branch.isActive) void perform(() => controller.switchBranch(branch.name));

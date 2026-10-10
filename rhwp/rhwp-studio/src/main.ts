@@ -1280,6 +1280,7 @@ async function initialize(): Promise<void> {
       dispatcher.dispatch(`edit:${command}`);
     });
     installDesktopPlainTextPasteHandling((text) => {
+      if (documentHome?.visible) return;
       inputHandler?.performPlainTextPaste(text);
     });
     if (isPinnedDocumentEnabled()) void loadPinnedDocument();
@@ -1816,7 +1817,7 @@ function installChatAgent(
     },
     createDocument: () => { dispatcher.dispatch('file:new-doc'); },
     openDocumentFile: () => { dispatcher.dispatch('file:open'); },
-    openDocumentHome: (surface) => openDocumentHome({ surface }),
+    openDocumentHome,
     listRecentDocuments: async () => (await listRecentDocs())
       .slice(0, 20)
       .map(({ documentId, fileName, sourceFormat, openedAt }) => (
@@ -2270,38 +2271,32 @@ function installDocumentHome(): void {
     reveal: canRevealNativeDocument()
       ? { label: `${fileManager}에서 보기`, run: (row) => revealNativeDocument(row.documentId) }
       : undefined,
-    returnTarget: () => (wasm.hasLoadedDocument() ? wasm.fileName : null),
-    onReturn: () => {
-      documentHome?.hide();
-      if (inputHandler?.isActive()) inputHandler.focus();
+    // 에이전트 전체 화면에서 열었으면 그 채팅으로, 아니면 열린 문서로 돌아간다.
+    returnTarget: () => {
+      if (document.body.classList.contains('ag-fullscreen-open')) {
+        const title = document.querySelector('#agent-sidebar .ag-workspace-chat-title')?.textContent?.trim();
+        return { kind: 'chat', label: title || '채팅' };
+      }
+      return wasm.hasLoadedDocument() ? { kind: 'document', label: wasm.fileName } : null;
     },
-    onDrop: (event) => { void handleDocumentDrop(event); },
+    whenIdle: () => whenDocumentIoIdle(),
+    restoreFocus: () => {
+      if (document.body.classList.contains('ag-fullscreen-open')) {
+        document.querySelector<HTMLElement>('#agent-sidebar .ag-input')?.focus();
+      } else if (inputHandler?.isActive()) {
+        inputHandler.focus();
+      }
+    },
+    onDrop: (event) => { void handleDocumentDrop(event, { fromHome: true }); },
     toast: (message) => showToast({ message, durationMs: 3200 }),
   });
-  // 사이드바의 홈 단추는 홈이 열려 있는 동안 눌린 모양이다.
-  documentHome.onVisibilityChange((shown) => {
-    document.documentElement.classList.toggle('document-home-open', shown);
-    for (const button of document.querySelectorAll('.ag-home-btn, .ag-workspace-home-btn')) {
-      button.setAttribute('aria-pressed', String(shown));
-    }
-  });
+  // 앱을 켤 때는 카드에 초점 고리를 띄우지 않는다. 키보드는 홈 안에 둔다.
   documentHome.show({ focus: false });
 }
 
-/**
- * 문서 홈을 연다. 에이전트 전체 화면에서 부르면 작업 막대 아래를 덮는다. 이미 그 자리에 열려
- * 있고 돌아갈 곳(대화·열린 문서)이 있으면 닫는다.
- */
-function openDocumentHome(options: { surface?: 'editor' | 'focus' } = {}): void {
-  if (!documentHome) return;
-  const surface = options.surface ?? 'editor';
-  if (documentHome.visible && documentHome.surface === surface
-    && (surface === 'focus' || wasm.hasLoadedDocument())) {
-    documentHome.hide();
-    if (surface === 'editor' && inputHandler?.isActive()) inputHandler.focus();
-    return;
-  }
-  documentHome.show({ surface });
+/** 문서 홈을 창 전체에 연다. 편집기·사이드바(에이전트 전체 화면 포함)는 닫힐 때 그대로 돌아온다. */
+function openDocumentHome(): void {
+  documentHome?.show();
 }
 
 /** 화면에 붙은 문서의 이름을 바꾼다 (제목 막대). 못 바꾸면 알리고 null. */
@@ -2687,7 +2682,16 @@ function setupGlobalShortcuts(): void {
   }, true);
   document.addEventListener('keydown', (e) => {
     const target = e.target instanceof Element ? e.target : null;
-    if (e.defaultPrevented || e.isComposing || !allowsDocumentShortcut(target)) return;
+    if (e.defaultPrevented || e.isComposing) return;
+    // 문서 홈이 떠 있으면 새 문서·열기만 받는다. 가린 문서를 고치거나 그쪽으로 초점을 옮기지 않는다.
+    if (documentHome?.visible) {
+      const commandId = matchShortcut(e, defaultShortcuts);
+      if (commandId !== 'file:new-doc' && commandId !== 'file:open') return;
+      e.preventDefault();
+      dispatcher.dispatch(commandId);
+      return;
+    }
+    if (!allowsDocumentShortcut(target)) return;
     // 문서 입력은 모드별 처리가 있으므로 같은 키를 두 번 실행하지 않는다.
     if (isEditorInput(target) && inputHandler?.isActive()) return;
     const commandId = matchShortcut(e, defaultShortcuts);
@@ -2745,8 +2749,11 @@ function setupFileInput(): void {
   });
 }
 
-/** 편집 영역·문서 홈에 놓은 파일. 문서는 열고, 그림은 지금 문서에 넣는다. */
-async function handleDocumentDrop(e: DragEvent): Promise<void> {
+/**
+ * 편집 영역·문서 홈에 놓은 파일. 문서는 열고, 그림은 지금 문서에 넣는다. 문서 홈에 놓은 그림은
+ * 가린 문서에 넣지 않는다.
+ */
+async function handleDocumentDrop(e: DragEvent, options: { fromHome?: boolean } = {}): Promise<void> {
   e.preventDefault();
   const file = e.dataTransfer?.files[0];
   if (!file) return;
@@ -2754,6 +2761,10 @@ async function handleDocumentDrop(e: DragEvent): Promise<void> {
   const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'];
   const isImage = imageExts.some(ext => dropName.endsWith(ext));
   const isDoc = isSupportedDocumentFileName(dropName);
+  if (options.fromHome && !isDoc) {
+    showToast({ message: 'HWP/HWPX/HML/RHWPX 파일을 놓으면 열립니다.', durationMs: 2600 });
+    return;
+  }
   // 문서는 지금 문서를 뒤에 두고 따로 열 수 있다. 그림은 지금 문서에 넣으므로 기다린다.
   if (agentEditingLease.active && !(isDoc && shouldOpenInNewSession())) {
     showToast({ message: '에이전트가 편집을 마친 뒤 파일을 놓을 수 있습니다.', durationMs: 2600 });
@@ -4023,6 +4034,17 @@ function createNewDocument(template?: Uint8Array): Promise<boolean> {
 
 async function createNewDocumentNow(template?: Uint8Array): Promise<boolean> {
   const msg = sbMessage();
+  // 템플릿은 세션 상태를 건드리기 전에 읽는다. 읽지 못하면 지금 문서·작업 트리·점유가 그대로다.
+  let prepared: PreparedWasmDocument | null = null;
+  if (template) {
+    try {
+      prepared = wasm.prepareNewDocument(template);
+    } catch (error) {
+      console.warn('[main] 템플릿을 읽지 못했습니다:', error);
+      showToast({ message: '이 템플릿을 문서로 읽지 못했습니다.', durationMs: 3200 });
+      return false;
+    }
+  }
   const target = attachedSession;
   if (target.worktree) {
     if (target.worktreeWritable) await target.versions?.persistWorktree();
@@ -4034,12 +4056,16 @@ async function createNewDocumentNow(template?: Uint8Array): Promise<boolean> {
   const identity = { documentId: createActiveDocumentId(), sourceDigest: null };
   const slotId = attachedSession.slotId;
   const reservationId = await reserveDesktopDocument(identity, null, undefined, slotId);
-  if (reservationId === null) throw new DocumentOwnedElsewhereError();
+  if (reservationId === null) {
+    prepared?.dispose();
+    throw new DocumentOwnedElsewhereError();
+  }
   try {
     msg.textContent = '새 문서 생성 중...';
     assertStillAttached(target);
     inputHandler?.deactivate();
-    const docInfo = wasm.createNewDocument(template);
+    const docInfo = wasm.createNewDocument(prepared ?? undefined);
+    prepared = null;
     await commitDesktopDocument(reservationId, undefined, slotId);
     attachedSession.documentId = identity.documentId;
     hostSave.reset();
@@ -4053,6 +4079,7 @@ async function createNewDocumentNow(template?: Uint8Array): Promise<boolean> {
     await initializeDocument(docInfo);
     return true;
   } catch (error) {
+    prepared?.dispose();
     await cancelDesktopDocument(reservationId, undefined, slotId).catch(() => {});
     attachedSession.documentId = null;
     eventBus.emit('document-context-changed');

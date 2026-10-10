@@ -24,6 +24,28 @@ export function worktreeLabel(identity: WorktreeIdentity): string {
   return identity.primary ? `작업 트리: ${identity.branch} (원본)` : `작업 트리: ${identity.branch}`;
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** 가지 표시 — 두 갈래로 나뉘는 줄기. 글자(⑂) 대신 그려 어느 글꼴에서도 같은 모양이다. */
+export function createBranchIcon(className = 'branch-icon'): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', className);
+  svg.setAttribute('viewBox', '0 0 12 12');
+  svg.setAttribute('width', '10');
+  svg.setAttribute('height', '10');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const path = document.createElementNS(SVG_NS, 'path');
+  path.setAttribute('d', 'M3.5 2.2v7.6M3.5 6.6c0-1.9 5-1.3 5-3.6M3.5 2.2a1 1 0 1 0 0 .01M8.5 2.2a1 1 0 1 0 0 .01M3.5 9.8a1 1 0 1 0 0 .01');
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', 'currentColor');
+  path.setAttribute('stroke-width', '1.3');
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linejoin', 'round');
+  svg.append(path);
+  return svg;
+}
+
 export function createWorktreeChip(): HTMLSpanElement {
   const chip = document.createElement('span');
   chip.className = 'worktree-chip';
@@ -34,12 +56,15 @@ export function createWorktreeChip(): HTMLSpanElement {
 export function paintWorktreeChip(chip: HTMLElement, identity: WorktreeIdentity | null): void {
   chip.hidden = !identity;
   if (!identity) {
-    chip.textContent = '';
+    chip.replaceChildren();
     chip.removeAttribute('title');
     chip.removeAttribute('aria-label');
     return;
   }
-  chip.textContent = `⑂ ${identity.branch}`;
+  const label = document.createElement('span');
+  label.className = 'worktree-chip-label';
+  label.textContent = identity.branch;
+  chip.replaceChildren(createBranchIcon(), label);
   chip.style.setProperty('--worktree-color', identity.color);
   chip.title = worktreeLabel(identity);
   chip.setAttribute('aria-label', worktreeLabel(identity));
