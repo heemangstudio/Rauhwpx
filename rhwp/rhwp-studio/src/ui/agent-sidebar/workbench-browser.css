@@ -75,12 +75,12 @@ html.desktop-mac .ag-browser-popover-header::after { content: ''; width: 22px; f
 .ag-browser-menu dd { margin: 0; overflow-wrap: anywhere; }
 @container (max-width: 500px) { .ag-browser-toolbar { flex-wrap: wrap; justify-content: flex-end; } .ag-browser-navigation { flex: 1 0 100%; margin-right: 0; margin-bottom: 2px; } .ag-browser-status { max-width: 120px; font-size: 9px; } }
 /* 네이티브 페이지 밖에 손잡이와 닫기·크기 조절 영역을 남긴다. */
-.ag-browser-floating { position: fixed; z-index: 1300; box-sizing: border-box; width: min(640px, calc(100vw - 40px)); height: min(480px, calc(100vh - 60px)); left: 24px; top: auto; bottom: 24px; min-width: min(320px, 100vw); min-height: min(280px, 100dvh); padding: 0 6px 16px; border: 1px solid var(--ag-border-strong, var(--n-hairline-strong, #d5d8d2)); border-radius: 12px; box-shadow: 0 12px 40px #0003; background: var(--ag-bg, var(--n-surface, #fafaf9)); color: var(--ag-text-secondary, var(--n-text-secondary, #737970)); overflow: hidden; display: flex; flex-direction: column; }
+.ag-browser-floating { position: fixed; z-index: 1300; box-sizing: border-box; width: min(640px, calc(100vw - 40px)); height: min(480px, calc(100vh - 60px)); left: 24px; top: auto; bottom: 24px; min-width: min(320px, 100vw); min-height: min(280px, 100dvh); padding: 0 0 12px; border: 0; border-radius: 10px; box-shadow: 0 12px 40px #0003, 0 0 0 1px #0001; background: var(--ag-bg, var(--n-surface, #fafaf9)); color: var(--ag-text-secondary, var(--n-text-secondary, #737970)); overflow: hidden; display: flex; flex-direction: column; }
 .ag-browser-floating[hidden] { display: none; }
-.ag-browser-floating .ag-browser { flex: 1; height: auto; min-height: 0; border-radius: 5px; }
+.ag-browser-floating .ag-browser { flex: 1; height: auto; min-height: 0; border-radius: 0 0 4px 4px; }
 .ag-browser[data-presentation=float]>.ag-browser-surface { min-height: 0; }
 .ag-browser[data-presentation=float]>.ag-browser-tabbar,.ag-browser[data-presentation=float]>.ag-browser-toolbar { display: none; }
-.ag-browser-floating-chrome { display: flex; height: 28px; flex: 0 0 28px; align-items: center; gap: 2px; }
+.ag-browser-floating-chrome { display: flex; height: 28px; flex: 0 0 28px; align-items: center; gap: 2px; padding: 0 4px; }
 .ag-browser-floating-chrome button { display: flex; align-items: center; justify-content: center; height: 24px; width: 24px; flex: 0 0 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
 .ag-browser-floating-chrome button:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
 .ag-browser-floating-chrome button:active { background: color-mix(in srgb, currentColor 14%, transparent); }
@@ -88,8 +88,8 @@ html.desktop-mac .ag-browser-popover-header::after { content: ''; width: 22px; f
 .ag-browser-floating-chrome .ag-browser-move { flex: 1; width: auto; cursor: move; touch-action: none; }
 .ag-browser-move::before { content: ''; width: 27px; height: 3px; border-radius: 3px; background: currentColor; opacity: .35; }
 .ag-browser-floating button:focus-visible { outline: 2px solid var(--ag-accent, #52795f); outline-offset: -2px; }
-.ag-browser-resize { position: absolute; right: 2px; bottom: 0; width: 28px; height: 16px; padding: 0; border: 0; background: transparent; cursor: nwse-resize; touch-action: none; color: inherit; }
-.ag-browser-resize .ag-icon { width: 14px; height: 14px; }
+.ag-browser-resize { position: absolute; right: 0; bottom: 0; width: 24px; height: 12px; padding: 0; border: 0; background: transparent; cursor: nwse-resize; touch-action: none; color: inherit; }
+.ag-browser-resize .ag-icon { position: absolute; right: 1px; bottom: 1px; width: 12px; height: 12px; }
 @media (max-width: 639px) { .ag-browser-floating { left: 0 !important; top: 0 !important; width: 100vw !important; height: 100dvh !important; border-radius: 0; } .ag-browser-move { cursor: default; } .ag-browser-resize { display: none; } }
 
 .ag-browser-trigger { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px; border: 0; background: transparent; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); cursor: pointer; border-radius: 4px; }
