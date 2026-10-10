@@ -49,7 +49,7 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
       if (state.runtime && (state.runtime.runtimeId !== result.runtime.runtimeId || state.runtime.generation !== result.runtime.generation)) state.frames.clear();
       state.runtime = result.runtime;
     }
-    if ('type' in result && result.type === 'owned_browser_closed' && result.tabId) {
+    if ('type' in result && result.type === 'owned_browser_closed' && typeof result.tabId === 'string') {
       const wasActive = state.activeTabId === result.tabId;
       state.tabs = state.tabs.filter((row) => row.tabId !== result.tabId);
       state.frames.delete(result.tabId);
