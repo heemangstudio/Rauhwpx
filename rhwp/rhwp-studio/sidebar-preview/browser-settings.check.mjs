@@ -5,7 +5,7 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   await page.goto(`${origin}/?reset=1&theme=light&width=560&page=settings&destination=browser`, { waitUntil: 'networkidle0' });
   await page.waitForSelector('#ag-settings-pane-browser .ag-browser-row', { visible: true });
   const click = async (text) => page.evaluate((label) => {
-    const button = [...document.querySelectorAll('#ag-settings-pane-browser button')].find(node => node.textContent === label);
+    const button = [...document.querySelectorAll('#ag-settings-pane-browser button')].find(node => node.textContent === label || node.getAttribute('aria-label') === label);
     if (!button) throw new Error(`Missing button ${label}`); button.click();
   }, text);
   const independentTabs = await page.evaluate(async () => {
@@ -30,7 +30,7 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   });
   assert.deepEqual(independentTabs, { unique: true, linked: true, independent: true }, 'coexisting panes keep independent keyboard navigation and accessibility references');
   const before = await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent);
-  await click('계정 추가');
+  await click('비밀번호 추가');
   await page.waitForSelector('.ag-browser-account-form');
   assert.equal(await page.$eval('.ag-browser-account-form input[type=password]', input => input.type), 'password');
   assert.equal(await page.$$('.ag-browser-account-option').then(rows => rows.length), 1, 'account list stays available while adding an account');
@@ -48,12 +48,12 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   assert.equal(await page.evaluate(() => JSON.stringify(window.sidebarPreview.snapshot()).includes('fixture-private-password')), false, 'snapshot never retains secret');
   assert.equal(await page.evaluate(() => Object.values(localStorage).some(value => String(value).includes('fixture-private-password'))), false, 'secret never enters localStorage');
   if (screenshot) await screenshot('browser-settings-accounts');
-  await click('Google 계정 연결');
+  await click('계정 연결');
   await page.waitForSelector('.ag-browser-account-form');
   assert.equal(await page.$('.ag-browser-account-form input[type=password]'), null, 'manual sign-in registers an account without collecting a password');
   await page.evaluate(() => {
     const inputs = [...document.querySelectorAll('.ag-browser-account-form input')];
-    inputs[2].value = 'Google 새 로그인'; inputs[3].value = 'google-owner';
+    inputs[0].value = 'https://accounts.google.com'; inputs[1].value = 'https://www.google.com, https://docs.google.com, https://drive.google.com'; inputs[2].value = 'Google 새 로그인'; inputs[3].value = 'google-owner';
   });
   await page.click('.ag-browser-account-form button[type=submit]');
   await page.waitForFunction(() => window.sidebarPreview.snapshot().browser.signIns?.length === 1);
@@ -172,6 +172,48 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   });
   assert.deepEqual(agentReset, { rejected: true, accounts: 1, resetCount: 0 }, 'agent actor cannot reset browser data');
   if (screenshot) await screenshot('browser-settings-reset');
+
+  // Many-account fixture exercises the production pane and its real selection/search controls.
+  await page.goto(`${origin}/?reset=1&controls=0&fullscreen=1&theme=light&page=settings&destination=browser`, { waitUntil: 'networkidle0' });
+  await page.evaluate(async () => {
+    const { createBrowserSettingsPane } = await import('/src/ui/agent-sidebar/browser-settings.ts');
+    const providers = ['https://accounts.google.com', 'https://login.microsoftonline.com', 'https://github.com', 'https://nid.naver.com', 'https://research.example.org'];
+    const accounts = Array.from({ length: 20 }, (_, i) => ({ id: `many-${i}`, profileId: 'default', origin: providers[i % providers.length], label: `연구 계정 ${String(i + 1).padStart(2, '0')}`, stableIdentity: i === 19 ? `many-${i}` : `researcher${i + 1}@example.org`, hasPassword: i % 3 === 0, agentReuseApproved: true, sessionStatus: 'authenticated' }));
+    accounts.push({ id: 'password-only', profileId: 'default', origin: 'https://archive.example.org', label: '자료실 비밀번호', stableIdentity: 'archive-reader', hasPassword: true, agentReuseApproved: true, sessionStatus: 'saved' });
+    const pane = createBrowserSettingsPane({ isConnected: () => true, submit: async () => ({}), request: async (action) => {
+      if (action === 'accounts.list') return { accounts, secureStorageAvailable: true };
+      if (action === 'policy.list') return { defaults: { browse: true, download: true, researchImport: true }, sites: [] };
+      if (action === 'status') return { runtime: { state: 'ready' } };
+      return {};
+    } });
+    document.querySelector('#ag-settings-pane-browser').replaceChildren(pane.element); pane.open();
+  });
+  await page.waitForFunction(() => document.querySelectorAll('.ag-browser-account-option').length === 20);
+  assert.equal(await page.$('.ag-browser-account-option[data-account-id="password-only"]'), null, 'password-only entries do not masquerade as connected sessions');
+  assert.equal(await page.$eval('.ag-browser-account-list', node => node.scrollHeight > node.clientHeight), true, '20 accounts use an independently scrolling list');
+  await page.select('.ag-browser-account-toolbar select', 'GitHub');
+  assert.equal(await page.$$('.ag-browser-account-option').then(rows => rows.length), 4, 'provider filter shows every account for the chosen provider');
+  await page.type('.ag-browser-search', 'researcher3@');
+  assert.equal(await page.$$('.ag-browser-account-option').then(rows => rows.length), 1, 'search matches account identity');
+  await page.$eval('.ag-browser-search', node => { node.value = 'missing'; node.dispatchEvent(new Event('input', { bubbles: true })); });
+  assert.equal(await page.$$('.ag-browser-account-option').then(rows => rows.length), 0, 'empty search does not leave a stale detail selection');
+  assert.equal(await page.$eval('.ag-browser-account-detail', node => node.textContent), '');
+  await page.$eval('.ag-browser-search', node => { node.value = ''; node.dispatchEvent(new Event('input', { bubbles: true })); });
+  await page.select('.ag-browser-account-toolbar select', '');
+  await page.$eval('.ag-browser-search', node => node.blur());
+  assert.equal(await page.$eval('.ag-browser-account-list', node => node.textContent.includes('many-19')), false, 'internal account IDs stay out of provider identities');
+  if (screenshot) await screenshot('browser-settings-20-accounts');
+  await page.evaluate(() => { const theme = document.querySelector('#theme'); theme.value = 'dark'; theme.dispatchEvent(new Event('change', { bubbles: true })); });
+  if (screenshot) await screenshot('browser-settings-20-accounts-dark');
+  await page.evaluate(() => { const theme = document.querySelector('#theme'); theme.value = 'light'; theme.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.evaluate(() => [...document.querySelectorAll('.ag-browser-account-kinds button')].find(node => node.textContent.startsWith('저장된 비밀번호')).click());
+  await page.click('.ag-browser-account-option[data-account-id="password-only"]');
+  assert.equal(await page.$eval('.ag-browser-account-detail', node => node.dataset.accountId), 'password-only', 'password-only record remains manageable in the password list');
+  if (screenshot) await screenshot('browser-settings-passwords');
+  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+  if (screenshot) await screenshot('browser-settings-accounts-narrow');
+  const overflow = await page.$eval('.ag-browser-settings', node => node.scrollWidth > node.clientWidth + 1);
+  assert.equal(overflow, false, 'account settings fit the narrow app viewport');
 
 
 }

@@ -38,7 +38,7 @@ export function createBrowserAccountForm(options: {
   const origins = field('함께 사용할 사이트 · 쉼표로 구분', 'text', options.account?.origins?.filter(value => value !== options.account?.origin).join(', ') ?? '');
   if (options.requestId || options.account?.id) origins.input.readOnly = true;
   const label = field('계정 이름', 'text', options.account?.label ?? ''); label.input.required = true;
-  const username = field(options.sessionOnly ? '계정 식별자 · 선택' : '로그인 아이디', 'text', options.account?.stableIdentity ?? ''); username.input.required = !options.sessionOnly;
+  const username = field(options.sessionOnly ? '계정 식별자 · 선택' : '로그인 아이디', 'text', options.account?.stableIdentity && options.account.stableIdentity !== options.account.id ? options.account.stableIdentity : ''); username.input.required = !options.sessionOnly;
   const password = field('비밀번호', 'password'); password.input.required = true;
   if (options.requestId || options.account?.id) origin.input.readOnly = true;
   const remember = node('label', 'ag-browser-check'); const rememberInput = node('input', ''); rememberInput.type = 'checkbox'; rememberInput.checked = true;
@@ -76,6 +76,17 @@ export function createBrowserAccountForm(options: {
   return { element: root, dispose() { disposed = true; clear(); root.remove(); } };
 }
 
+function siteHost(origin: string): string { try { return new URL(origin).hostname; } catch { return origin; } }
+function visibleIdentity(account: Account): string { return account.stableIdentity && account.stableIdentity !== account.id ? account.stableIdentity : siteHost(account.origin); }
+function accountProvider(account: Account): string {
+  const host = siteHost(account.origin).toLowerCase();
+  for (const [domain, label] of [['google.com', 'Google'], ['microsoft.com', 'Microsoft'], ['microsoftonline.com', 'Microsoft'], ['live.com', 'Microsoft'], ['github.com', 'GitHub'], ['apple.com', 'Apple'], ['naver.com', 'Naver'], ['kakao.com', 'Kakao']]) {
+    if (host === domain || host.endsWith(`.${domain}`)) return label!;
+  }
+  return host;
+}
+function sessionLabel(account: Account): string { return ({ authenticated: '로그인됨', saved: '비밀번호 저장됨', 'session-retained': '확인 필요', 'signed-out': '로그아웃됨' } as Record<string, string>)[account.sessionStatus] ?? '확인 필요'; }
+
 let browserSettingsSequence = 0;
 
 export function createBrowserSettingsPane(options: { request: BrowserSettingsRequest; submit: (args: Record<string, unknown>) => Promise<unknown>; isConnected(): boolean }) {
@@ -83,10 +94,13 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   const element = node('div', 'ag-browser-settings');
   const heading = node('div', 'ag-browser-heading'); heading.append(node('h2', 'ag-settings-section-title', '브라우저'));
   const message = node('p', 'ag-browser-message'); message.setAttribute('role', 'status');
-  const refresh = button('새로고침', () => void load()); heading.append(refresh);
+  const refresh = button('', () => void load()); refresh.classList.add('ag-browser-refresh');
+  refresh.title = '새로고침'; refresh.setAttribute('aria-label', '새로고침');
+  refresh.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M19.5 12a7.5 7.5 0 0 0-13-5L4 9m16 6-2.5 2a7.5 7.5 0 0 1-13-5"/></svg>'; heading.append(refresh);
   const navigation = node('div', 'ag-browser-tabs'); navigation.setAttribute('role', 'tablist');
   const body = node('div', 'ag-browser-settings-body');
   let selectedAccountId: string | null = null; let formTitle = '';
+  let accountKind = 'sessions'; let accountSearch = ''; let providerFilter = '';
   let active = 'accounts'; let disposed = false; let generation = 0; let busy = false; let resetFailed = false; let resetConfirming = false;
   let accounts: Account[] = []; let secureStorage = false; let policy: Policy | null = null; let configuration: Record<string, unknown> = {}; let status: Record<string, unknown> = {};
   let form: ReturnType<typeof createBrowserAccountForm> | null = null;
@@ -131,7 +145,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     if (!message.textContent) message.textContent = '별도로 열린 Chromium 창에서 로그인과 추가 인증을 마친 뒤 이 계정의 로그인 확인을 누르세요.';
   }
   function accountForm(account?: Partial<Account>, sessionOnly = false, openSignIn = false) {
-    clearForm(); formTitle = account?.id ? '비밀번호 변경' : openSignIn ? 'Google 계정 연결' : sessionOnly ? '로그인한 계정 등록' : '계정 추가'; form = createBrowserAccountForm({ request: options.request, submit: options.submit, canSubmit: options.isConnected, account, sessionOnly, openSignIn, complete: (saved) => { if (saved?.id) { selectedAccountId = saved.id; accounts = [...accounts.filter(account => account.id !== saved.id), saved]; } clearForm(); if (openSignIn && saved?.id) void signIn(saved); else void load(); }, cancel: () => { clearForm(); render(); } }); render();
+    clearForm(); formTitle = account?.id ? '비밀번호 변경' : openSignIn ? '계정 연결' : sessionOnly ? '계정 연결' : '비밀번호 추가'; form = createBrowserAccountForm({ request: options.request, submit: options.submit, canSubmit: options.isConnected, account, sessionOnly, openSignIn, complete: (saved) => { if (saved?.id) { accountKind = saved.sessionStatus === 'saved' ? 'passwords' : 'sessions'; providerFilter = ''; accountSearch = ''; selectedAccountId = saved.id; accounts = [...accounts.filter(account => account.id !== saved.id), saved]; } clearForm(); if (openSignIn && saved?.id) void signIn(saved); else void load(); }, cancel: () => { clearForm(); render(); } }); render();
   }
   function section(title: string, description?: string) {
     const root = node('section', 'ag-browser-section'); root.append(node('h3', 'ag-settings-section-title', title));
@@ -149,48 +163,62 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     refresh.disabled = busy || !options.isConnected(); body.replaceChildren(); body.setAttribute('role', 'tabpanel'); body.setAttribute('aria-labelledby', `${instanceId}-tab-${active}`);
     if (!options.isConnected()) { body.append(node('p', 'ag-browser-empty', '허브에 연결하면 브라우저 설정을 관리할 수 있습니다.')); return; }
     if (active === 'accounts') {
-      const registration = section('계정 등록');
-      const accountActions = node('div', 'ag-browser-account-actions'); registration.append(accountActions);
-      const add = button('계정 추가', () => accountForm()); add.disabled = busy || !secureStorage; accountActions.append(add);
-      const retain = button('로그인한 계정 등록', () => accountForm(undefined, true)); retain.disabled = busy; accountActions.append(retain);
-      const googleSignIn = button('Google 계정 연결', () => accountForm({ origin: 'https://accounts.google.com', origins: ['https://accounts.google.com', 'https://www.google.com', 'https://docs.google.com', 'https://drive.google.com'], label: 'Google' }, true, true)); googleSignIn.disabled = busy; accountActions.append(googleSignIn);
-      if (!secureStorage) registration.append(node('p', 'ag-browser-empty', '보안 저장소를 사용할 수 없습니다. 구성에서 상태를 확인하세요.'));
-      const runtime = (status.runtime ?? {}) as Record<string, unknown>;
-      const signInState = runtime.signIn as { accountId?: string } | null | undefined;
-      if (signInState?.accountId) registration.append(node('p', 'ag-browser-empty', `${accounts.find(account => account.id === signInState.accountId)?.label ?? '선택한 계정'}의 별도 Chromium 창에서 로그인한 뒤 로그인 확인을 누르세요.`));
-      const listSection = section('저장된 계정');
-      if (!accounts.length) listSection.append(node('p', 'ag-browser-empty', '저장된 계정이 없습니다.'));
-      if (!accounts.some(account => account.id === selectedAccountId)) selectedAccountId = accounts[0]?.id ?? null;
-      const list = node('div', 'ag-browser-account-list'); list.setAttribute('aria-label', '저장된 계정'); listSection.append(list);
-      const sessionLabel = (account: Account) => ({ authenticated: '로그인됨', saved: '비밀번호 저장됨', 'session-retained': '로그인 확인 필요', 'signed-out': '로그아웃됨' } as Record<string, string>)[account.sessionStatus] ?? '로그인 상태 확인 필요';
-      for (const account of accounts) {
-        const choose = button('', () => { clearForm(); selectedAccountId = account.id; render(); body.querySelector<HTMLButtonElement>('.ag-browser-account-option[aria-pressed="true"]')?.focus(); });
-        choose.classList.add('ag-browser-account-option'); choose.dataset.accountId = account.id;
-        choose.setAttribute('aria-pressed', String(account.id === selectedAccountId));
-        choose.append(node('strong', '', account.label || account.origin), node('span', '', account.origin), node('span', 'ag-browser-account-status', sessionLabel(account)));
-        list.append(choose);
+      const toolbar = node('div', 'ag-browser-account-toolbar'); body.append(toolbar);
+      const search = node('input', 'ag-settings-input ag-browser-search'); search.type = 'search'; search.placeholder = '계정 검색'; search.value = accountSearch; search.setAttribute('aria-label', '계정 검색');
+      search.addEventListener('input', () => { clearForm(); accountSearch = search.value; renderAccounts(); });
+      const filter = node('select', 'ag-settings-select'); filter.setAttribute('aria-label', '계정 제공자');
+      const all = node('option', '', '모든 제공자'); all.value = ''; filter.append(all);
+      for (const provider of [...new Set(accounts.map(accountProvider))].sort()) { const option = node('option', '', provider); option.value = provider; filter.append(option); }
+      filter.value = providerFilter; filter.addEventListener('change', () => { clearForm(); providerFilter = filter.value; renderAccounts(); });
+      const connect = button('계정 연결', () => accountForm(undefined, true, true)); connect.disabled = busy;
+      const add = button('비밀번호 추가', () => accountForm()); add.title = '비밀번호 저장'; add.disabled = busy || !secureStorage;
+      toolbar.append(search, filter, connect, add);
+      if (!secureStorage) body.append(node('p', 'ag-browser-empty', '보안 저장소를 사용할 수 없어 비밀번호를 저장할 수 없습니다.'));
+      const kindBar = node('div', 'ag-browser-account-kinds'); kindBar.setAttribute('role', 'group'); kindBar.setAttribute('aria-label', '계정 종류');
+      for (const [kind, label] of [['sessions', '연결된 계정'], ['passwords', '저장된 비밀번호']]) {
+        const count = accounts.filter(account => kind === 'sessions' ? account.sessionStatus !== 'saved' : account.hasPassword).length;
+        const choose = button(`${label} ${count}`, () => { clearForm(); accountKind = kind!; selectedAccountId = null; render(); }); choose.setAttribute('aria-pressed', String(accountKind === kind)); kindBar.append(choose);
       }
-      if (form) { section(formTitle).append(form.element); return; }
-      const account = accounts.find(account => account.id === selectedAccountId);
-      if (!account) return;
-      const details = section(account.label || account.origin); details.classList.add('ag-browser-account-detail'); details.dataset.accountId = account.id;
-      row('사이트 주소', account.origin, details);
-      row('로그인 상태', sessionLabel(account), details);
-      if (account.stableIdentity && account.stableIdentity !== account.id) row('로그인 아이디', account.stableIdentity, details);
-      row('사용 가능한 사이트', (account.origins ?? [account.origin]).join(' · '), details);
-      const loginActions = row('로그인', '별도 창에서 로그인한 뒤 로그인 확인을 눌러 주세요.', details);
-      const login = button('로그인 열기', () => void signIn(account)); login.disabled = busy || Boolean(signInState) || !account.agentReuseApproved || (account.profileId !== undefined && account.profileId !== 'default'); loginActions.append(login);
-      const confirm = button('로그인 확인', () => void mutate('confirm-sign-in', { accountId: account.id })); confirm.disabled = busy || Boolean(signInState?.accountId && signInState.accountId !== account.id); loginActions.append(confirm);
-      const passwordActions = row('비밀번호', account.hasPassword ? '저장됨' : '저장된 비밀번호 없음', details);
-      const update = button('비밀번호 변경', () => accountForm(account)); update.disabled = busy || !secureStorage; passwordActions.append(update);
-      const accessActions = row('계정 사용 승인', account.agentReuseApproved ? '다른 채팅에서도 사용 허용' : '사용 승인 철회됨', details);
-      action(accessActions, account.agentReuseApproved ? '사용 승인 철회' : '사용 허용', account.agentReuseApproved ? 'accounts.revoke' : 'accounts.approve', { accountId: account.id });
-      const management = node('div', 'ag-browser-account-management'); details.append(management);
-      const logoutActions = row('로그아웃', '사이트의 로그인 상태를 정리합니다.', management);
-      action(logoutActions, '로그아웃', 'accounts.signout', { accountId: account.id });
-      const deleteActions = row('계정 삭제', '저장된 계정과 비밀번호를 삭제하고 사용 승인을 철회합니다.', management);
-      action(deleteActions, '계정 삭제', 'accounts.forget', { accountId: account.id });
-      deleteActions.lastElementChild?.classList.add('ag-browser-reset');
+      body.append(kindBar);
+      const workspace = node('div', 'ag-browser-account-workspace'); body.append(workspace);
+      function renderAccounts() {
+        workspace.replaceChildren();
+        const visible = accounts.filter(account => (accountKind === 'sessions' ? account.sessionStatus !== 'saved' : account.hasPassword)
+          && (!providerFilter || accountProvider(account) === providerFilter)
+          && [account.label, account.origin, visibleIdentity(account), accountProvider(account)].join(' ').toLocaleLowerCase().includes(accountSearch.toLocaleLowerCase()));
+        if (!visible.some(account => account.id === selectedAccountId)) selectedAccountId = visible[0]?.id ?? null;
+        const list = node('div', 'ag-browser-account-list'); list.setAttribute('aria-label', accountKind === 'sessions' ? '연결된 계정' : '저장된 비밀번호'); workspace.append(list);
+        if (!visible.length) list.append(node('p', 'ag-browser-empty', accountSearch || providerFilter ? '검색 결과가 없습니다.' : accountKind === 'sessions' ? '연결된 계정이 없습니다.' : '저장된 비밀번호가 없습니다.'));
+        for (const account of visible) {
+          const choose = button('', () => { clearForm(); selectedAccountId = account.id; renderAccounts(); workspace.querySelector<HTMLButtonElement>('.ag-browser-account-option[aria-pressed="true"]')?.focus(); });
+          choose.classList.add('ag-browser-account-option'); choose.dataset.accountId = account.id; choose.setAttribute('aria-pressed', String(account.id === selectedAccountId));
+          const copy = node('span', 'ag-browser-account-copy'); copy.append(node('strong', '', account.label || account.origin), node('span', '', `${accountProvider(account)} · ${visibleIdentity(account)}`));
+          const mark = node('span', 'ag-browser-provider-mark', accountProvider(account).slice(0, 1).toUpperCase()); mark.setAttribute('aria-hidden', 'true');
+          choose.append(mark, copy, node('span', 'ag-browser-account-status', accountKind === 'passwords' ? '비밀번호' : sessionLabel(account))); list.append(choose);
+        }
+        const details = node('section', 'ag-browser-account-detail'); workspace.append(details);
+        if (form) { details.append(node('h3', 'ag-settings-section-title', formTitle), form.element); return; }
+        const account = visible.find(account => account.id === selectedAccountId); if (!account) return;
+        details.dataset.accountId = account.id;
+        const header = node('div', 'ag-browser-account-header'); header.append(node('h3', 'ag-settings-section-title', account.label || siteHost(account.origin)), node('p', 'ag-browser-empty', `${accountProvider(account)} · ${sessionLabel(account)}`)); details.append(header);
+        row('사이트', account.origin, details);
+        if (account.stableIdentity && account.stableIdentity !== account.id) row('아이디', account.stableIdentity, details);
+        if ((account.origins?.length ?? 0) > 1) {
+          const sites = node('details', 'ag-browser-account-sites'); sites.append(node('summary', '', `사용 가능한 사이트 ${account.origins!.length}`), node('p', 'ag-browser-empty', account.origins!.join(' · '))); details.append(sites);
+        }
+        const runtime = (status.runtime ?? {}) as Record<string, unknown>; const signInState = runtime.signIn as { accountId?: string } | null | undefined;
+        const loginActions = node('div', 'ag-browser-detail-actions'); details.append(loginActions);
+        const login = button('로그인 열기', () => void signIn(account)); login.disabled = busy || Boolean(signInState) || !account.agentReuseApproved || (account.profileId !== undefined && account.profileId !== 'default'); loginActions.append(login);
+        const confirm = button('로그인 확인', () => void mutate('confirm-sign-in', { accountId: account.id })); confirm.disabled = busy || Boolean(signInState?.accountId && signInState.accountId !== account.id); loginActions.append(confirm);
+        if (signInState?.accountId === account.id) details.append(node('p', 'ag-browser-empty', '별도 창에서 로그인을 마친 뒤 로그인 확인을 누르세요.'));
+        const passwordActions = row('비밀번호', account.hasPassword ? '저장됨' : '없음', details);
+        const update = button('비밀번호 변경', () => accountForm(account)); update.disabled = busy || !secureStorage; passwordActions.append(update);
+        const accessActions = row('계정 사용', account.agentReuseApproved ? '허용됨' : '승인 철회됨', details);
+        action(accessActions, account.agentReuseApproved ? '사용 승인 철회' : '사용 허용', account.agentReuseApproved ? 'accounts.revoke' : 'accounts.approve', { accountId: account.id });
+        const management = node('div', 'ag-browser-account-management'); details.append(management);
+        action(management, '로그아웃', 'accounts.signout', { accountId: account.id }); action(management, '계정 삭제', 'accounts.forget', { accountId: account.id }); management.lastElementChild?.classList.add('ag-browser-reset');
+      }
+      renderAccounts();
     } else if (active === 'permissions') {
       if (!policy) { body.append(node('p', 'ag-browser-empty', '권한을 불러오는 중…')); return; }
       const defaults = section('기본 연구 권한');
@@ -201,7 +229,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const accountPermissions = section('계정 사용 승인', '각 계정에 등록된 사이트에서 적용됩니다.');
       if (!accounts.length) accountPermissions.append(node('p', 'ag-browser-empty', '등록된 계정이 없습니다.'));
       for (const account of accounts) {
-        const actions = row(account.label || account.origin, `${(account.origins ?? [account.origin]).join(' · ')} · ${account.agentReuseApproved ? '다른 채팅에서도 사용 허용' : '사용 승인 철회'}`, accountPermissions);
+        const actions = row(account.label || account.origin, `${accountProvider(account)} · ${visibleIdentity(account)} · ${account.agentReuseApproved ? '허용됨' : '승인 철회됨'}`, accountPermissions);
         action(actions, account.agentReuseApproved ? '사용 승인 철회' : '사용 허용', account.agentReuseApproved ? 'accounts.revoke' : 'accounts.approve', { accountId: account.id });
       }
       const sitePermissions = section('사이트 권한');
@@ -219,8 +247,6 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const actions = node('div', 'ag-settings-actions'); actions.append(button('사이트 허용', () => addSite(true)), button('사이트 차단', () => addSite(false))); newSite.append(actions);
     } else {
       const runtime = (status.runtime ?? {}) as Record<string, unknown>; const readiness = (runtime.readiness ?? {}) as Record<string, unknown>;
-      const runtimeSection = section('브라우저 상태');
-      row('브라우저 상태', ({ ready: '준비됨', stopped: '중지됨', starting: '시작 중', 'sign-in': '별도 창에서 로그인 중', error: '연결 확인 필요' } as Record<string, string>)[String(runtime.state)] ?? '확인 필요', runtimeSection); row('실행 방식', runtime.kind === 'native' ? '앱 내 브라우저' : '로컬 Chromium', runtimeSection); row('로그인 프로필', String(configuration.profileId ?? runtime.profile ?? '기본 프로필'), runtimeSection);
       const downloadsSection = section('다운로드');
       const downloads = (configuration.downloads ?? {}) as Record<string, unknown>; row('다운로드 저장소', String(downloads.directory ?? downloads.path ?? '앱의 다운로드 저장소'), downloadsSection);
       const limit = field('파일당 다운로드 한도 · MB', 'number', String(Math.round(Number(downloads.maxFileBytes ?? 104857600) / 1048576)));
@@ -237,12 +263,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const reducedLabel = node('label', 'ag-browser-check'); reducedLabel.append(reduced, document.createTextNode('브라우저 움직임 줄이기')); displaySection.append(reducedLabel);
       const apply = button('구성 저장', () => { const mb = Number(limit.input.value); if (!Number.isInteger(mb) || mb < 1 || mb > 512) { message.textContent = '다운로드 한도는 1~512 MB로 입력하세요.'; return; } void mutate('configuration.update', { downloads: { maxFileBytes: mb * 1048576, autoImport: autoImport.checked }, preview: { mode: select.value, reducedMotion: reduced.checked } }); });
       apply.disabled = busy; body.append(apply);
-      const securitySection = section('로그인 및 비밀번호 저장');
-      const security = (configuration.security ?? {}) as Record<string, unknown>;
-      row('비밀번호 저장', security.passwords === 'os-vault' ? '운영체제 보안 저장소' : security.passwords === 'encrypted-wrapping-key' ? '암호화된 로컬 저장소' : '보안 저장소 확인 필요', securitySection);
-      const google = (configuration.googleSignIn ?? {}) as Record<string, unknown>;
-      row('Google 로그인', google.status === 'requires-compatibility-validation' ? '브라우저에서 직접 로그인 후 확인' : google.status === 'not-verified' ? '로그인 확인 필요' : google.status === 'full-browser-available' ? '브라우저에서 직접 로그인 가능' : String(google.status ?? '브라우저에서 직접 로그인'), securitySection);
-      const executionSection = section('브라우저 실행 설정');
+      const executionSection = node('details', 'ag-browser-execution'); executionSection.append(node('summary', '', '고급 브라우저 설정')); body.append(executionSection);
       const diagnostics = node('p', 'ag-browser-empty', String(readiness.message ?? readiness.reason ?? '')); if (diagnostics.textContent) executionSection.append(diagnostics);
       const actions = node('div', 'ag-settings-actions'); action(actions, '브라우저 준비', 'install', {}); action(actions, '진단 새로고침', 'status', {}); executionSection.append(actions);
       const runtimeMode = node('label', 'ag-settings-field'); runtimeMode.append(node('span', 'ag-settings-field-label', '실행 브라우저'));
