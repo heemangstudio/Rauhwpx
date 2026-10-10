@@ -171,17 +171,22 @@ export function createWorkbenchBrowser(options: {
   const presentation = createBrowserPresentation(element, (mode) => {
     if (mode === 'float' || mode === null) { details.open = false; endAnnotation(false); showDownloads(false, false); }
     visible = mode !== null; watchNativeVisibility(); paint(); scheduleFrame(); void projectNative();
-  }, () => { layout(); }, options.onDock);
+  }, () => { layout(); }, options.onDock, navigation);
   function navigate(direction: string): void {
     if (!controller.tab()) return;
     handle(controller.action('navigate', { ...controller.identity(), direction }).then(() => controller.readFrame()));
   }
   navigation.addEventListener('submit', event => {
     event.preventDefault(); const entered = address.value.trim(); if (!entered) return;
+    address.blur();
     let url = entered;
     if (!/^https?:\/\//i.test(url)) url = /^[\w.-]+\.[a-z]{2,}(?:\/|$)/i.test(url) ? `https://${url}` : `https://www.google.com/search?q=${encodeURIComponent(url)}`;
     if (!controller.tab()) handle(controller.open(url));
     else handle(controller.action('navigate', { ...controller.identity(), url }).then(() => controller.readFrame()));
+  });
+  address.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault(); event.stopPropagation(); address.value = controller.tab()?.url ?? ''; address.blur();
   });
   function paintAnnotation(): void {
     for (const [mode, choice] of modeButtons) choice.setAttribute('aria-pressed', String(mode === annotationMode));

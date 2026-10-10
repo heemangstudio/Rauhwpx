@@ -12,11 +12,14 @@ export function nativeBrowserApi(): NativeBrowserApi | undefined {
 }
 
 /** 한 DOM을 옮기며 페이지·입력·의견 상태를 유지한다. */
-export function createBrowserPresentation(element: HTMLElement, onChange: (mode: BrowserPresentationMode | null) => void, onLayout?: () => void, onDock?: () => void) {
+export function createBrowserPresentation(element: HTMLElement, onChange: (mode: BrowserPresentationMode | null) => void, onLayout?: () => void, onDock?: () => void, navigation?: HTMLElement) {
   let dock: HTMLElement | null = null;
   let mode: BrowserPresentationMode | null = null;
   let popup: Window | null = null;
   let returnFocus: HTMLElement | null = null;
+  const navigationHome = navigation?.parentElement;
+  const navigationNext = navigation?.nextSibling ?? null;
+  const restoreNavigation = () => { if (navigation && navigationHome) navigationHome.insertBefore(navigation, navigationNext); };
   const floating = document.createElement('section');
   floating.className = 'ag-browser-floating';
   floating.setAttribute('aria-label', '떠 있는 브라우저');
@@ -74,6 +77,7 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
   }
   function present(next: BrowserPresentationMode): void {
     cancelGesture?.(); syncTheme();
+    restoreNavigation();
     if (!returnFocus && document.activeElement instanceof HTMLElement) returnFocus = document.activeElement;
     if (next === 'popout') {
       popup = window.open('', 'rhwp-owned-browser', 'popup,width=1024,height=780');
@@ -88,12 +92,13 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
     }
     if (popup) { const old = popup; popup = null; if (dock) dock.append(element); old.close(); }
     floating.hidden = next !== 'float';
-    if (next === 'float') { floating.insertBefore(element, resize); clamp(); }
+    if (next === 'float') { if (navigation) chrome.insertBefore(navigation, dockButton); floating.insertBefore(element, resize); clamp(); }
     else dock?.append(element);
     element.hidden = false; set(next);
   }
   function hide(): void {
     cancelGesture?.();
+    restoreNavigation();
     if (dock) dock.append(element);
     if (popup) { const old = popup; popup = null; old.close(); }
     floating.hidden = true; element.hidden = true; set(null);
