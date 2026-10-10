@@ -77,7 +77,8 @@ function setup() {
   };
   const activity = createTypingActivity(env);
   let shown = true;
-  const guard = createArrivalGuard(activity, () => shown);
+  // 질문은 사이드바 입력기를 넘겨받는다 — 그 칸의 조합만 쉼에도 지킨다.
+  const guard = createArrivalGuard(activity, () => shown, (target) => target === composer);
   const presented: string[] = [];
   const hold = (key: string) => guard.hold(key, () => presented.push(key));
   const type = (target: FakeTarget = composer, key = 'a') => {
@@ -137,6 +138,45 @@ test('an open Hangul composition keeps the question held until it ends', () => {
   t.clock.advance(TYPING_IDLE_MS - 1);
   assert.deepEqual(t.presented, []);
   t.clock.advance(1);
+  assert.deepEqual(t.presented, ['question:a']);
+});
+
+test('a composition in the document opens the question on the pause, as the card leaves focus there', () => {
+  const t = setup();
+  // 한국어 입력기는 쉬는 동안에도 마지막 음절을 조합 중으로 둔다.
+  t.doc.activeElement = t.editorInput as unknown as Element;
+  t.doc.fire('keydown', { target: t.editorInput, key: 'Process' });
+  t.doc.fire('compositionstart', { target: t.editorInput });
+  t.doc.fire('compositionupdate', { target: t.editorInput });
+  assert.equal(t.hold('question:a'), true, 'a fresh syllable is still typing');
+  t.clock.advance(1_000);
+  t.doc.fire('compositionupdate', { target: t.editorInput });
+  t.clock.advance(TYPING_IDLE_MS - 1);
+  assert.deepEqual(t.presented, [], 'each composition update restarts the pause');
+  t.clock.advance(1);
+  assert.deepEqual(t.presented, ['question:a'], 'the pause opens it although the syllable is still composing');
+  assert.equal(t.hold('question:b'), false, 'a later arrival during the same idle composition opens at once');
+  assert.deepEqual(t.presented, ['question:a', 'question:b']);
+  t.doc.fire('compositionupdate', { target: t.editorInput });
+  assert.equal(t.hold('question:c'), true, 'composing again is typing again');
+  t.clock.advance(TYPING_IDLE_MS);
+  assert.deepEqual(t.presented, ['question:a', 'question:b', 'question:c']);
+});
+
+test('an idle composer composition still holds after a document composition opened an earlier arrival', () => {
+  const t = setup();
+  t.doc.activeElement = t.editorInput as unknown as Element;
+  t.doc.fire('compositionstart', { target: t.editorInput });
+  t.hold('question:a');
+  t.doc.fire('compositionend', { target: t.editorInput });
+  t.focus(t.composer);
+  t.clock.advance(0);
+  t.doc.fire('compositionstart', { target: t.composer });
+  t.doc.fire('compositionupdate', { target: t.composer });
+  t.clock.advance(TYPING_IDLE_MS * 4);
+  assert.deepEqual(t.presented, [], 'the composer composition keeps the question held');
+  t.doc.fire('compositionend', { target: t.composer });
+  t.clock.advance(TYPING_IDLE_MS);
   assert.deepEqual(t.presented, ['question:a']);
 });
 

@@ -290,3 +290,46 @@ test('a question that resolves while held disappears without touching the compos
   assert.equal(view.root.dataset.inactive, 'true');
   assert.equal(view.root.querySelector('.ag-question-arrival'), null);
 });
+
+test('a chat that hands its composer on keeps its own text, and the answer comes back with the chat', (t) => {
+  const view = mount();
+  t.after(view.cleanup);
+  view.composer.value = '초안';
+  view.controller.request(interaction);
+  pressDigit('3', body);
+  view.composer.value = '딱딱하게';
+  view.controller.handleComposerInput();
+  // The sidebar leaves this chat: the composer returns the chat's own text to be saved as its draft.
+  view.controller.releaseComposer();
+  assert.equal(view.composer.value, '초안');
+  assert.equal(view.controller.usesComposerForOther(), false);
+  assert.equal(view.controller.draft().otherTextByQuestionId.tone, '딱딱하게', 'the answer stays in the question draft');
+  // Another chat is shown; the question still waits there.
+  view.controller.setVisible(false);
+  view.composer.value = '다른 채팅의 글';
+  view.controller.reclaimComposer();
+  assert.equal(view.composer.value, '다른 채팅의 글', 'a hidden question never borrows another chat\'s composer');
+  // Back in the question's chat, with its draft restored: Other borrows the composer again.
+  view.controller.setVisible(true);
+  view.composer.value = '초안';
+  view.controller.reclaimComposer();
+  assert.equal(view.composer.value, '딱딱하게');
+  assert.equal(view.controller.usesComposerForOther(), true);
+  pressDigit('1', body);
+  assert.equal(view.composer.value, '초안', 'choosing an option gives the chat\'s text back');
+});
+
+test('a question that ends after its chat handed the composer on leaves the shown composer alone', (t) => {
+  const view = mount();
+  t.after(view.cleanup);
+  view.composer.value = '초안';
+  view.controller.request(interaction);
+  pressDigit('3', body);
+  view.composer.value = '딱딱하게';
+  view.controller.handleComposerInput();
+  view.controller.releaseComposer();
+  view.controller.setVisible(false);
+  view.composer.value = '';
+  view.controller.resolve('q-1', { status: 'cancelled', reason: 'user-stop' } as never);
+  assert.equal(view.composer.value, '', 'the new chat\'s composer stays empty');
+});

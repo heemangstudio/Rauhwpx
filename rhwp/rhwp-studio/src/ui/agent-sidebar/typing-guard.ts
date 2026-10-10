@@ -4,8 +4,10 @@
  *
  * 창 하나에 쓰기 활동 감시자 하나(typingActivity)를 두고, 사이드바마다 도착
  * 보류기(createArrivalGuard)를 둔다. 보류된 도착은 사용자가 쓰기를 멈춘 순간
- * — 1.5초 쉼(한글 조합이 열려 있지 않을 때), 텍스트 칸을 벗어남, 창 전환,
- * 입력기에서 보내기 — 에 도착 순서대로 한꺼번에 열린다.
+ * — 1.5초 쉼, 텍스트 칸을 벗어남, 창 전환, 입력기에서 보내기 — 에 도착 순서대로
+ * 한꺼번에 열린다. 도착이 넘겨받는 칸(사이드바의 입력기)에서 한글 조합이 열려 있으면
+ * 쉼으로는 열지 않는다 — 한국어 입력기는 쉬는 동안에도 마지막 음절을 조합 중으로
+ * 둔다. 문서나 다른 칸의 조합은 도착이 초점을 옮기지 않으므로 보통 쓰기처럼 쉼에 연다.
  */
 import { ownsTextInput } from '../../command/shortcut-target.ts';
 
@@ -16,8 +18,12 @@ export const TYPING_IDLE_MS = 1500;
 export type SettleCause = 'idle' | 'blur' | 'send';
 
 export interface TypingActivity {
-  /** 편집 가능한 곳에 초점이 있고, 1.5초 안에 쳤거나 한글 조합이 열려 있다. */
-  isTyping(): boolean;
+  /**
+   * 편집 가능한 곳에 초점이 있고, 1.5초 안에 쳤거나 한글 조합이 열려 있다.
+   * holdsComposition 을 주면 그 칸의 조합만 쓰는 중으로 센다 — 다른 칸의 조합은
+   * 1.5초 안에 바뀌었을 때만 쓰는 중이다.
+   */
+  isTyping(holdsComposition?: (target: EventTarget | null) => boolean): boolean;
   /** 쓰기를 멈춘 순간(쉼·초점 이탈·보내기)마다 부른다. 해제 함수를 돌려준다. */
   onSettle(listener: (cause: SettleCause) => void): () => void;
   /** 입력기에서 보냈다 — 쓰기가 끝났다. */
@@ -46,6 +52,8 @@ const BARE_MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock
 export function createTypingActivity(env: TypingActivityEnv): TypingActivity {
   let lastTypedAt = Number.NEGATIVE_INFINITY;
   let composing = false;
+  /** 열린 조합이 일어나는 칸 — compositionstart 의 대상. */
+  let compositionTarget: EventTarget | null = null;
   let idleTimer: number | null = null;
   let focusOutTimer: number | null = null;
   const listeners = new Set<(cause: SettleCause) => void>();
@@ -63,30 +71,35 @@ export function createTypingActivity(env: TypingActivityEnv): TypingActivity {
 
   function onIdle(): void {
     idleTimer = null;
-    // 조합 중인 음절은 쉼으로 끝나지 않는다 — compositionend 가 다시 건다.
-    if (composing) return;
     const elapsed = env.now() - lastTypedAt;
+    // 조합이 열려 있어도 쉼을 알린다. 그 조합을 지킬지는 보류기가 정한다.
     if (elapsed >= TYPING_IDLE_MS) settle('idle');
     else armIdle(TYPING_IDLE_MS - elapsed);
+  }
+
+  function endComposition(): void {
+    composing = false;
+    compositionTarget = null;
   }
 
   function settle(cause: SettleCause): void {
     lastTypedAt = Number.NEGATIVE_INFINITY;
     // 초점을 떠나거나 보내면 열린 조합도 끝난 것이다. 편집기의 숨은 입력칸은
     // blur 에서 조합을 스스로 닫아 compositionend 를 내지 않을 수 있다.
-    composing = false;
+    // 쉼은 조합을 끝내지 않는다 — 음절은 아직 열려 있다.
+    if (cause !== 'idle') endComposition();
     clearIdle();
     for (const listener of [...listeners]) listener(cause);
   }
 
   function markTyped(): void {
     lastTypedAt = env.now();
-    if (!composing) armIdle(TYPING_IDLE_MS);
+    armIdle(TYPING_IDLE_MS);
   }
 
   /** 조합이 끝났다는 compositionend 없이 조합 밖의 입력이 오면 조합은 이미 끝난 것이다. */
   function noteComposingFlag(event: Event): void {
-    if (composing && (event as KeyboardEvent | InputEvent).isComposing === false) composing = false;
+    if (composing && (event as KeyboardEvent | InputEvent).isComposing === false) endComposition();
   }
 
   // 사람이 친 것만 센다 — 코드가 보낸 input 이벤트나 값 변경은 쓰기가 아니다.
@@ -104,16 +117,16 @@ export function createTypingActivity(env: TypingActivityEnv): TypingActivity {
   };
   // 조합 이벤트는 isTrusted 를 보지 않는다. Chromium 은 조합을 확정할 때 compositionend 를
   // isTrusted=false 로 보내기도 한다. 조합 이벤트는 입력기(IME)만 낸다.
-  const onCompositionStart = (): void => {
+  const onCompositionStart = (event: Event): void => {
     composing = true;
-    lastTypedAt = env.now();
-    clearIdle();
+    compositionTarget = event.target;
+    markTyped();
   };
   const onCompositionUpdate = (): void => {
-    lastTypedAt = env.now();
+    markTyped();
   };
   const onCompositionEnd = (): void => {
-    composing = false;
+    endComposition();
     markTyped();
   };
   // 초점이 다른 텍스트 칸으로 옮겨 가면(입력기 → 문서) 아직 쓰는 중이다.
@@ -141,9 +154,10 @@ export function createTypingActivity(env: TypingActivityEnv): TypingActivity {
   env.win.addEventListener('blur', onWindowBlur);
 
   return {
-    isTyping(): boolean {
+    isTyping(holdsComposition): boolean {
       if (!env.isEditable(env.doc.activeElement)) return false;
-      return composing || env.now() - lastTypedAt < TYPING_IDLE_MS;
+      if (composing && (holdsComposition?.(compositionTarget) ?? true)) return true;
+      return env.now() - lastTypedAt < TYPING_IDLE_MS;
     },
     onSettle(listener) {
       listeners.add(listener);
@@ -200,10 +214,22 @@ export interface ArrivalGuard {
 /**
  * 사이드바 하나의 도착 보류기. 화면에 없는 사이드바(isShown false)는 초점을
  * 빼앗을 수 없으므로 바로 보여 준다. 쓰기가 멈추면 보류된 도착이 모두 열린다.
+ *
+ * holdsComposition 은 도착이 넘겨받는 칸(입력기)인가를 답한다. 그 칸에서 열린 한글
+ * 조합은 쉼으로 끊지 않고 확정·이탈·보내기를 기다린다. 다른 칸의 조합은 도착이
+ * 초점을 옮기지 않으므로 쉼에 연다. 주지 않으면 모든 조합을 기다린다.
  */
-export function createArrivalGuard(activity: TypingActivity, isShown: () => boolean): ArrivalGuard {
+export function createArrivalGuard(
+  activity: TypingActivity,
+  isShown: () => boolean,
+  holdsComposition?: (target: EventTarget | null) => boolean,
+): ArrivalGuard {
   const held = new Map<string, () => void>();
-  const unsubscribe = activity.onSettle(() => release());
+  const unsubscribe = activity.onSettle((cause) => {
+    // 쉼이 와도 입력기의 조합이 열려 있으면 음절이 확정될 때까지 기다린다.
+    if (cause === 'idle' && activity.isTyping(holdsComposition)) return;
+    release();
+  });
 
   function release(): void {
     if (held.size === 0) return;
@@ -215,7 +241,7 @@ export function createArrivalGuard(activity: TypingActivity, isShown: () => bool
   return {
     hold(key, present) {
       held.delete(key);
-      if (!isShown() || !activity.isTyping()) {
+      if (!isShown() || !activity.isTyping(holdsComposition)) {
         present();
         return false;
       }

@@ -327,7 +327,7 @@ function createTypingHold() {
   let holding = false;
   real.onSettle(() => { holding = false; });
   const activity: TypingActivity = {
-    isTyping: () => holding || real.isTyping(),
+    isTyping: (holdsComposition) => holding || real.isTyping(holdsComposition),
     onSettle: (listener) => real.onSettle(listener),
     noteSend: () => real.noteSend(),
     dispose: () => {},

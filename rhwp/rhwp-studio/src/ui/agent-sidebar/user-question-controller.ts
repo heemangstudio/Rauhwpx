@@ -468,6 +468,23 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
     isHeld: () => interaction !== null && held && visible,
     present,
     usesComposerForOther: () => composerOtherQuestionId !== null,
+    /**
+     * 사이드바가 다른 채팅·새 채팅으로 입력기를 옮기기 전에 부른다. 직접 입력의 글은
+     * 질문 초안에 남기고, 빌리기 전에 쓰던 글을 입력기에 되돌린다 — 사이드바는 그 글을
+     * 이 채팅의 초안으로 저장한다. 그 뒤 질문이 끝나도 다른 채팅의 입력기는 건드리지 않는다.
+     */
+    releaseComposer(): void {
+      setComposerOther(null);
+    },
+    /**
+     * 질문의 채팅으로 돌아와 그 채팅의 초안을 입력기에 되살린 뒤 부른다. 열린 질문이
+     * 직접 입력 중이면 입력기를 다시 빌린다(되살린 초안은 질문이 끝나면 돌아온다).
+     */
+    reclaimComposer(): void {
+      if (!interaction || held || !visible) return;
+      const question = currentQuestion();
+      if (question && otherSelected(question.id)) setComposerOther(question.id);
+    },
     request,
     answerResult,
     resolve,

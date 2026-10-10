@@ -147,10 +147,29 @@ export async function checkTypingGuard(page, origin, artifacts) {
   assert.match((await state(page)).composerValue, /한/, 'the committed syllable is in the composer');
   await cdp.detach();
 
+  // 3a. A composition in the document does not hold the question past the pause: Korean IMEs keep
+  //     the last syllable composing while the user pauses, and the card opens there without taking
+  //     the focus, so the syllable still commits into the document.
+  const documentInput = 'textarea[data-rhwp-editor-input]';
+  await open(page, origin, 'editor=1&scenario=chat&hold=1');
+  await startHeldTurn(page);
+  await page.focus(documentInput);
+  const documentIme = await page.createCDPSession();
+  await documentIme.send('Input.imeSetComposition', { text: '하', selectionStart: 1, selectionEnd: 1 });
+  await ask(page);
+  now = await state(page);
+  assert.equal(now.held, true, 'a fresh syllable in the document is still typing');
+  await waitForOpenCard(page, IDLE_MS + 1_000);
+  now = await state(page);
+  assert.equal(now.focus, 'document', 'the open card leaves focus with the composition');
+  assert.equal(now.selected, 0);
+  await documentIme.send('Input.insertText', { text: '한' });
+  assert.equal(await page.$eval(documentInput, (input) => input.value), '한', 'the syllable commits into the document');
+  await documentIme.detach();
+
   // 4. Typing in the document: the card opens after the pause but never takes the focus.
   await open(page, origin, 'editor=1&scenario=chat&hold=1');
   await startHeldTurn(page);
-  const documentInput = 'textarea[data-rhwp-editor-input]';
   await page.focus(documentInput);
   await page.type(documentInput, '본문 ', { delay: 100 });
   await ask(page);
@@ -202,6 +221,57 @@ export async function checkTypingGuard(page, origin, artifacts) {
       .find((node) => node.textContent.includes('선택한 문체'));
     return Boolean(history && reply && history.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING);
   }), true, 'the answered question stays in place above the follow-up');
+
+  // 5a. Starting a new chat while Other borrows the composer gives the composer back first: the new
+  //     chat opens empty, and the earlier chat keeps the text typed before the question.
+  const answerWithOther = async (query) => {
+    await open(page, origin, query);
+    await startHeldTurn(page);
+    await page.focus('.ag-input');
+    await page.type('.ag-input', '초안', { delay: 100 });
+    await ask(page);
+    await waitForOpenCard(page, IDLE_MS + 1_000);
+    await page.click('.ag-question-other');
+    await page.waitForFunction(() => {
+      const input = document.querySelector('.ag-input');
+      return !input.disabled && document.activeElement === input && input.value === '';
+    });
+    await page.type('.ag-input', '딱딱하게', { delay: 40 });
+    return page.evaluate(() => window.sidebarPreview.sidebar.currentThreadId());
+  };
+  let questionChat = await answerWithOther('scenario=chat&hold=1');
+  assert.ok(questionChat);
+  await page.click('.ag-header .ag-threads-btn');
+  await page.waitForSelector('.ag-root.ag-threads-open .ag-threads-new');
+  await page.click('.ag-threads-new');
+  await page.waitForFunction(() => !window.sidebarPreview.bridge.getPendingUserQuestion());
+  now = await state(page);
+  assert.equal(now.composerValue, '', 'the new chat opens with an empty composer');
+  assert.equal(now.composerDisabled, false);
+  await page.evaluate((id) => window.sidebarPreview.sidebar.openThreadById(id), questionChat);
+  assert.equal((await state(page)).composerValue, '초안', 'the earlier chat keeps the text typed before the question');
+
+  // 5b. Viewing another chat while the question waits, and the question ends there: that chat's
+  //     composer stays untouched, and the question's chat gets the text typed before it back.
+  questionChat = await answerWithOther('chats=sample&scenario=chat&hold=1');
+  const otherChat = 'preview-chat-overview';
+  assert.notEqual(questionChat, otherChat);
+  await page.evaluate((id) => window.sidebarPreview.sidebar.openThreadById(id), otherChat);
+  assert.equal((await state(page)).composerValue, '', 'the other chat does not show the answer');
+  // Coming back while the question waits shows the answer in the composer again.
+  await page.evaluate((id) => window.sidebarPreview.sidebar.openThreadById(id), questionChat);
+  now = await state(page);
+  assert.equal(now.open, true);
+  assert.equal(now.composerValue, '딱딱하게', 'Other borrows the composer again with the answer');
+  assert.equal(now.composerDisabled, false);
+  await page.evaluate((id) => window.sidebarPreview.sidebar.openThreadById(id), otherChat);
+  // The provider connection drops: the question expires while the other chat is shown.
+  await page.evaluate(() => window.sidebarPreview.setConnection('disconnected'));
+  await page.waitForFunction(() => !window.sidebarPreview.bridge.getPendingUserQuestion());
+  assert.equal((await state(page)).composerValue, '', 'the expired question leaves the other chat\'s composer alone');
+  await page.evaluate(() => window.sidebarPreview.setConnection('connected'));
+  await page.evaluate((id) => window.sidebarPreview.sidebar.openThreadById(id), questionChat);
+  assert.equal((await state(page)).composerValue, '초안', 'the question\'s chat gets the text typed before it back');
 
   // 6. In focus mode the plan column does not slide open while the user types.
   await open(page, origin, 'fullscreen=1&scenario=plan');

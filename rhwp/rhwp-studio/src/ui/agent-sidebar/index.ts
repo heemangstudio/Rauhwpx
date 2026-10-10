@@ -2164,6 +2164,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const workspaceTitle = el('div', 'ag-workspace-title');
 
   function rememberThreadComposerDraft(): void {
+    // 질문의 직접 입력이 입력기를 빌렸으면 먼저 돌려받는다 — 답은 질문 초안에 남고,
+    // 입력기에는 이 채팅에서 쓰던 글이 돌아와 그 글이 초안으로 저장된다. 그러지 않으면
+    // 질문이 나중에 끝날 때 이 채팅의 글이 그때 보이는 다른 채팅의 입력기에 쓰인다.
+    questionController.releaseComposer();
     if (readOnlyDocLabel !== null) return;
     const files = referenceLibrary.snapshotDraftFiles();
     if (input.value || files.length) threadComposerDrafts.set(currentThread.id, { text: input.value, files });
@@ -2174,6 +2178,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const draft = threadComposerDrafts.get(currentThread.id);
     input.value = draft?.text ?? '';
     if (draft?.files.length) referenceLibrary.stageDraftFiles(draft.files);
+    // 이 채팅의 질문이 직접 입력 중이었으면 되살린 초안을 맡기고 답을 다시 보인다.
+    questionController.reclaimComposer();
     resizeComposerInput();
   }
 
@@ -2972,8 +2978,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   questionTimelineAnchor.setAttribute('aria-hidden', 'true');
   let questionTimelineAnchorInteractionId: string | null = null;
   /* 쓰는 중에 도착한 질문·계획 열은 쓰기를 멈출 때까지 미룬다 — 초점·숫자 키·한글
-     조합·입력기의 글을 빼앗지 않는다. 화면에 없는 사이드바는 바로 보여 준다. */
-  const arrivalGuard = createArrivalGuard(typing, () => active);
+     조합·입력기의 글을 빼앗지 않는다. 화면에 없는 사이드바는 바로 보여 준다.
+     질문은 입력기를 넘겨받으므로 입력기에서 열린 조합만 확정될 때까지 기다린다. */
+  const arrivalGuard = createArrivalGuard(
+    typing,
+    () => active,
+    (target) => target instanceof Node && input.contains(target),
+  );
   /** 지금 미뤄 둔 질문의 보류 키 — 새 질문이 오면 앞 것을 거둔다. */
   let heldQuestionKey: string | null = null;
   const questionController = createUserQuestionController({

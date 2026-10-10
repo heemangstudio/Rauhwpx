@@ -137,8 +137,11 @@ state without the delay; `.ag-input` is no longer `disabled` while connecting or
 
 A question that arrives while the user types (in the composer, the document or any
 other text field) waits as a strip until the user pauses for 1.5 s, leaves the text
-field, presses Enter or clicks the strip. Only real (trusted) keystrokes count, so page
-scripts cannot hold it; `questionHeld=1` uses a fixture that holds the typing state.
+field, presses Enter or clicks the strip. A Hangul syllable still composing in the
+composer keeps it waiting past the pause (the card would take the composer over); one
+composing in the document or another field does not, since the card leaves the focus
+there. Only real (trusted) keystrokes count, so page scripts cannot hold it;
+`questionHeld=1` uses a fixture that holds the typing state.
 From the console, `sidebarPreview.askQuestion()` asks the sample question on the running
 turn (use `hold=1`), and `sidebarPreview.setChatStartDelay(ms)` and
 `sidebarPreview.setStageDelay(ms)` slow a chat start or an attachment upload.
