@@ -23,6 +23,7 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
   const listeners = new Set<() => void>();
   let disposed = false;
   let refreshSequence = 0;
+  let refreshRequest: Promise<void> | null = null;
   let selectionSequence = 0;
   let frameRequest: Promise<void> | null = null;
   const retiredRuntimeIds = new Set<string>();
@@ -98,17 +99,23 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
     if (result && typeof result === 'object') accept(result as BrowserResult);
     return result;
   }
-  async function refresh(): Promise<void> {
+  function refresh(): Promise<void> {
+    if (disposed) return Promise.resolve();
+    // 상태 이벤트가 겹쳐도 다운로드 목록을 포함한 읽기 한 번만 진행한다.
+    if (refreshRequest) return refreshRequest;
     const sequence = ++refreshSequence;
-    try {
-      const result = await bridge.requestBrowser('status');
-      if (disposed || sequence !== refreshSequence) return;
-      state.error = null; state.connected = true; accept(result);
-      void request('downloads', { action: 'list' }).catch(() => undefined);
-    } catch (error) {
-      if (disposed || sequence !== refreshSequence) return;
-      state.error = error instanceof Error ? error.message : String(error); notify();
-    }
+    refreshRequest = (async () => {
+      try {
+        const result = await bridge.requestBrowser('status');
+        if (disposed || sequence !== refreshSequence) return;
+        state.error = null; state.connected = true; accept(result);
+        await request('downloads', { action: 'list' }).catch(() => undefined);
+      } catch (error) {
+        if (disposed || sequence !== refreshSequence) return;
+        state.error = error instanceof Error ? error.message : String(error); notify();
+      }
+    })().finally(() => { refreshRequest = null; });
+    return refreshRequest;
   }
   async function action(name: string, args: Record<string, unknown> = {}): Promise<BrowserResult> {
     state.busy = true; state.error = null; notify();

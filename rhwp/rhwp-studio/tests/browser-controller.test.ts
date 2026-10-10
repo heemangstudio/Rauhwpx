@@ -148,3 +148,61 @@ test('활성 탭을 닫으면 인접한 탭을 선택하고 마지막 탭은 앞
   await f.controller.close('previous'); assert.equal(f.controller.tab(), null);
   f.controller.dispose();
 });
+
+test('겹친 상태 읽기는 다운로드 목록까지 한 요청을 공유하고 다음 읽기는 새 상태를 받는다', async () => {
+  const f = fixture(true);
+  let resolveStatus!: (result: BrowserResult) => void;
+  let resolveDownloads!: (result: BrowserResult) => void;
+  f.respond(async (action) => new Promise((resolve) => {
+    if (action === 'status') resolveStatus = resolve;
+    else resolveDownloads = resolve;
+  }));
+  const first = f.controller.refresh();
+  const burst = Array.from({ length: 20 }, () => f.controller.refresh());
+  assert.deepEqual(f.actions, ['status']);
+  resolveStatus({ tabs: [tab(1, 1)] });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const whileDownloading = f.controller.refresh();
+  assert.deepEqual(f.actions, ['status', 'downloads']);
+  resolveDownloads({ downloads: [] });
+  await Promise.all([first, ...burst, whileDownloading]);
+  f.respond(async (action) => action === 'status' ? { tabs: [tab(2, 2)] } : { downloads: [] });
+  await f.controller.refresh();
+  assert.deepEqual(f.actions, ['status', 'downloads', 'status', 'downloads']);
+  assert.equal(f.controller.tab()?.navigationEpoch, 2);
+  f.controller.dispose();
+});
+
+test('겹친 상태 읽기의 오래된 응답도 새 탐색과 조작권 이벤트를 되돌리지 않는다', async () => {
+  const f = fixture(true); const before = tab(1, 1);
+  f.emit({ type: 'owned_browser_inventory', tabs: [before] });
+  let resolveStatus!: (result: BrowserResult) => void;
+  f.respond(async (action) => action === 'status' ? new Promise((resolve) => { resolveStatus = resolve; }) : {});
+  const first = f.controller.refresh(); const second = f.controller.refresh();
+  assert.deepEqual(f.actions, ['status']);
+  const current = tab(2, 3);
+  f.emit({ type: 'owned_browser_tab', tab: current });
+  resolveStatus({ tabs: [before] });
+  await Promise.all([first, second]);
+  assert.deepEqual(f.controller.tab(), current);
+  assert.deepEqual(f.actions, ['status', 'downloads']);
+  f.controller.dispose();
+});
+
+test('실패한 상태 읽기를 공유한 뒤 다시 시도하고 조작 실패는 호출자에게 전달한다', async () => {
+  const f = fixture(true);
+  let rejectStatus!: (error: Error) => void;
+  f.respond(async () => new Promise((_resolve, reject) => { rejectStatus = reject; }));
+  const first = f.controller.refresh(); const second = f.controller.refresh();
+  assert.deepEqual(f.actions, ['status']);
+  rejectStatus(new Error('허브 응답 실패'));
+  await Promise.all([first, second]);
+  assert.deepEqual(f.actions, ['status']);
+  assert.equal(f.controller.state.error, '허브 응답 실패');
+  f.respond(async (action) => { if (action === 'navigate') throw new Error('탐색 실패'); return {}; });
+  await f.controller.refresh();
+  assert.equal(f.controller.state.error, null);
+  await assert.rejects(f.controller.action('navigate'), /탐색 실패/);
+  assert.equal(f.controller.state.error, '탐색 실패');
+  f.controller.dispose();
+});
