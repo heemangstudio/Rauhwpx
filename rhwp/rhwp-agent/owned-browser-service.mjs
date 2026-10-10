@@ -872,12 +872,14 @@ export function createOwnedBrowserService(options = {}) {
       publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo() };
     }
     const mutating = MUTATIONS.has(action);
+    // 편집기의 탭 닫기는 페이지 입력 조작권을 넘겨받지 않아도 실행한다.
+    const requiresControl = mutating && !(action === 'close' && actor.isHuman);
     epochs(tab, args, mutating);
-    if (mutating) assertController(actor, tab);
+    if (requiresControl) assertController(actor, tab);
     const queuedControlEpoch = tab.controllerEpoch;
     return enqueue(tab, async () => {
       epochs(tab, args, mutating);
-      if (mutating) assertController(actor, tab);
+      if (requiresControl) assertController(actor, tab);
       if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Browser cleanup invalidated the pending action.');
       await assertPolicy(actor, action, action === 'close' ? tab.page?.url?.() ?? tab.url : requirePage(tab).url(), tab, args);
       if (!actor.isHuman && challengeFor(tab) && (mutating && action !== 'close' && !(action === 'navigate' && args.url && !googleResearchURL(args.url)))) return challengeResult(action, tab);
@@ -885,7 +887,7 @@ export function createOwnedBrowserService(options = {}) {
       await assertInputIntent(actor, action, tab, args);
       if (!actor.isHuman && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in.', true);
       epochs(tab, args, mutating);
-      if (mutating) assertController(actor, tab);
+      if (requiresControl) assertController(actor, tab);
       tab.activeActor = actor;
       const agentSessionEpoch = humanSessionEpoch;
       if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }

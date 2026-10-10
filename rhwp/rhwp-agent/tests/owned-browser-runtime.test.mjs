@@ -198,3 +198,39 @@ test('encrypted profile checkpoint hooks run on shutdown and restore before obse
   await second.request(actor, 'open', {});
   assert.equal(calls.filter((value) => value === 'restore').length, 2);
 });
+
+
+test('human tab closure retains epoch and agent scope checks without requiring page input takeover', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-close-control-'));
+  let closedPages = 0;
+  const browser = createOwnedBrowserService({ dataDir, runtimeFactory: async () => {
+    const context = Object.assign(new EventEmitter(), {
+      async storageState() { return { cookies: [], origins: [] }; }, async route() {}, pages: () => [],
+      async newPage() { return Object.assign(new EventEmitter(), { url: () => 'about:blank', isClosed: () => false, async close() { closedPages++; }, async routeWebSocket() {}, frames: () => [] }); },
+    });
+    return { kind: 'chromium', context, browser: new EventEmitter(), async close() {} };
+  } });
+  t.after(async () => { await browser.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const agent = { threadId: 'research', agentId: 'owner' };
+  const human = { isHuman: true, clientId: 'editor' };
+  const opened = await browser.request(agent, 'open', {});
+  const identity = tab => ({ tabId: tab.tabId, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, runtimeGeneration: tab.runtimeGeneration });
+  const target = identity(opened.tab);
+  await assert.rejects(browser.request(human, 'input', { ...target, type: 'release' }), { code: 'BROWSER_CONTROL_REQUIRED' });
+  await assert.rejects(browser.request(human, 'close', { tabId: target.tabId }), { code: 'BROWSER_EPOCH_REQUIRED' });
+  await assert.rejects(browser.request(human, 'close', { ...target, navigationEpoch: target.navigationEpoch + 1 }), { code: 'BROWSER_STALE_NAVIGATION' });
+  await assert.rejects(browser.request(human, 'close', { ...target, controllerEpoch: target.controllerEpoch + 1 }), { code: 'BROWSER_STALE_CONTROL' });
+  await assert.rejects(browser.request(human, 'close', { ...target, runtimeGeneration: target.runtimeGeneration + 1 }), { code: 'BROWSER_STALE_RUNTIME' });
+  await assert.rejects(browser.request({ threadId: 'other', agentId: 'other' }, 'close', target), { code: 'BROWSER_TAB_NOT_FOUND' });
+  const closed = await browser.request(human, 'close', target);
+  assert.equal(closed.completed, true); assert.equal(closedPages, 1); assert.equal((await browser.inventory(human)).tabs.length, 0);
+  const humanOwned = await browser.request(human, 'open', {});
+  const controlled = await browser.request(human, 'control', { tabId: humanOwned.tab.tabId, owner: 'human' });
+  // 사람에게 조작권을 넘긴 에이전트의 탭도 에이전트가 임의로 닫을 수 없다.
+  const next = await browser.request(agent, 'open', {});
+  const taken = await browser.request(human, 'control', { tabId: next.tab.tabId, owner: 'human' });
+  await assert.rejects(browser.request(agent, 'close', identity(taken.tab)), { code: 'BROWSER_HUMAN_CONTROL' });
+  await browser.request(human, 'close', identity(taken.tab));
+  await browser.request({ isHuman: true, clientId: 'another-editor' }, 'close', identity(controlled.tab));
+  assert.equal(closedPages, 3);
+});
