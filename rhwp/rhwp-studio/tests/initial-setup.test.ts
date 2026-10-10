@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { AGENT_MODELS } from '../src/agent/models.ts';
@@ -14,17 +13,17 @@ import {
 import {
   completeInitialSetup,
   defaultInitialSetup,
+  INITIAL_SETUP_STORAGE_KEY,
   isInitialSetupComplete,
+  isInitialSetupDeferred,
   loadInitialSetup,
+  saveInitialSetup,
   shouldForceInitialSetup,
   shouldShowInitialSetup,
   shouldSuppressInitialSetup,
 } from '../src/ui/initial-setup/state.ts';
-
-const readSource = (relativePath: string) => readFileSync(
-  new URL(relativePath, import.meta.url),
-  'utf8',
-).replace(/\r\n/g, '\n');
+import { indexHasHancomFonts, planFontStep, planSteps } from '../src/ui/initial-setup/steps.ts';
+import { BOOT_FINAL_HOLD_MS, remainingBootMs } from '../src/ui/boot-screen.ts';
 
 function memoryStore(seed: Record<string, string> = {}) {
   const store = new Map(Object.entries(seed));
@@ -109,60 +108,70 @@ test('연결됨은 실행 가능한 CLI와 인증을 둘 다 확인한다', () =
   assert.equal(isProviderConfigured('pi', statuses), true);
 });
 
-test('사이드바가 첫 실행 마법사를 설정 모달·보정 창에 붙인다', () => {
-  const source = readSource('../src/ui/agent-sidebar/index.ts');
-  const setup = readSource('../src/ui/initial-setup/initial-setup.ts');
-  const css = readSource('../src/ui/initial-setup/initial-setup.css');
-  const settings = readSource('../src/ui/agent-sidebar/settings.ts');
-  const calibration = readSource('../src/ui/agent-sidebar/writing-style-calibration.ts');
-
-  assert.match(source, /maybeStartInitialSetup/);
-  assert.match(source, /settingsPanel\.openAgentSetup\(agent\)/);
-  assert.match(source, /settingsPanel\.beginAgentConnect\(agent\)/);
-  assert.match(source, /writingStyleCalibration\.open\(options\)/);
-  assert.match(source, /initialSetup\?\.notifyCalibrationClosed\(result\.completed\)/);
-  assert.match(settings, /openAgentSetup,/);
-  assert.match(settings, /beginAgentConnect,/);
-  assert.match(settings, /await startSetupAuth\('oauth'\)/);
-  assert.match(calibration, /elevate\?: boolean/);
-  assert.match(calibration, /onDismiss\?: \(result: \{ completed: boolean \}\) => void/);
-
-  assert.match(setup, /for \(const agent of PROVIDER_ORDER\)/);
-  assert.match(setup, /createProviderIcon\(agent\)/);
-  // 한 장짜리 카드: 제목, 프로바이더 타일(연결되면 ✓), 계속/나중에 버튼 하나.
-  assert.match(setup, /const SETUP_TITLE = '모델 연결'/);
-  assert.match(setup, /el\('span', 'rhwp-setup-card-check'\)/);
-  assert.match(setup, /primary\.textContent = ready \? '계속' : '나중에'/);
-  assert.match(setup, /cards\.get\(PROVIDER_ORDER\[0\]\)\?\.action\.focus\(\{ preventScroll: true \}\)/);
-  // 문체 보정은 필수 2단계가 아니다 — 사이드바 칩이 이어받는다.
-  assert.doesNotMatch(setup, /rhwp-setup-cal|보정 시작|말투를 맞출까요/);
-  assert.doesNotMatch(setup, /rhwp-setup-status|아직 연결한 모델이 없습니다/);
-  assert.doesNotMatch(setup, /rhwp-setup-kicker/);
-  assert.doesNotMatch(setup, /rhwp-setup-lead/);
-  assert.match(setup, /\(beginAgentConnect \?\? openAgentSetup\)\(agent\)/);
-  assert.match(setup, /function skipToEditor\(\)/);
-  assert.match(setup, /applyFirstRunDefaultAgent\(configuredAgents\(\), storage \?\? null\)/);
-  assert.match(source, /el\('span', 'ag-calibration-chip-text', '원고를 올리면 내 말투로 씁니다'\)/);
-  assert.match(source, /setup\.calibrationStep === 'pending'/);
-  assert.match(source, /calibrationChipOpen\.addEventListener\('click', \(\) => writingStyleCalibration\.open\(\)\)/);
-
-  assert.match(css, /grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
-  assert.match(css, /\.rhwp-setup-providers \{[\s\S]*overflow: auto/);
-  assert.match(css, /\.rhwp-setup-footer \{[\s\S]*position: sticky/);
-  assert.match(css, /prefers-reduced-motion: reduce/);
-  assert.match(css, /overflow-anchor: none/);
-  assert.match(css, /var\(--ag-spring\)/);
-  assert.match(css, /url\('\/icons\/provider-codex\.png'\)/);
-  assert.match(css, /url\('\/icons\/provider-pi\.svg'\)/);
-  assert.doesNotMatch(css, /transition: all/);
-  assert.doesNotMatch(css, /\d+ms ease(?:;|,)/);
+test('이전 버전에서 끝낸 설정은 업데이트 뒤에도 다시 열리지 않는다', () => {
+  const storage = memoryStore({
+    [INITIAL_SETUP_STORAGE_KEY]: JSON.stringify({
+      version: 1,
+      completed: true,
+      completedAt: '2026-08-01T00:00:00.000Z',
+      providerStep: 'configured',
+      calibrationStep: 'done',
+    }),
+  });
+  assert.equal(shouldShowInitialSetup(storage, ''), false);
+  const migrated = loadInitialSetup(storage);
+  assert.equal(migrated.version, 2);
+  assert.equal(migrated.providerStep, 'configured');
+  assert.equal(migrated.calibrationStep, 'done');
+  assert.equal(migrated.deferred, false);
 });
 
-test('카드를 닫으면 편집기로 가고 보정은 사이드바 칩으로 남긴다', () => {
-  const setup = readSource('../src/ui/initial-setup/initial-setup.ts');
-  assert.match(
-    setup,
-    /function skipToEditor\(\): void \{\s*\n\s*finish\(\{\s*\n\s*providerStep: configuredCount\(\) > 0 \? 'configured' : 'skipped',\s*\n\s*calibrationStep: record\.calibrationStep === 'done' \? 'done' : 'pending',/,
-  );
-  assert.match(setup, /primary\.addEventListener\('click', skipToEditor\)/);
+test('문서를 열면서 처음 켜져 미룬 설정은 자동으로 열지 않고 칩으로만 권한다', () => {
+  const storage = memoryStore();
+  saveInitialSetup({ deferred: true }, storage);
+  assert.equal(shouldShowInitialSetup(storage, ''), false);
+  assert.equal(isInitialSetupDeferred(storage), true);
+  completeInitialSetup({ themeStep: 'done', providerStep: 'skipped' }, storage);
+  assert.equal(isInitialSetupDeferred(storage), false);
+  assert.equal(isInitialSetupComplete(storage), true);
+});
+
+test('글꼴 단계는 한컴 글꼴을 스스로 찾지 못했을 때만 넣는다', () => {
+  const base = { desktop: false, hancomFonts: null, canDiscover: false };
+  // 데스크톱: 색인에 없을 때만 다시 찾기·한컴오피스 받기를 보인다.
+  assert.equal(planFontStep({ ...base, desktop: true, hancomFonts: false }), 'missing');
+  assert.equal(planFontStep({ ...base, desktop: true, hancomFonts: true }), null);
+  // 색인을 못 받았으면 없다고 단정하지 않는다.
+  assert.equal(planFontStep({ ...base, desktop: true, hancomFonts: null }), null);
+  // 브라우저: 조용히 찾았으면 묻지 않고, 못 찾았으면 한 번 눌러 찾게 한다.
+  assert.equal(planFontStep({ ...base, canDiscover: true }), 'discover');
+  assert.equal(planFontStep({ ...base, canDiscover: true, hancomFonts: false }), 'discover');
+  assert.equal(planFontStep({ ...base, canDiscover: true, hancomFonts: true }), null);
+  // 찾을 방법이 없는 브라우저는 묻지 않는다.
+  assert.equal(planFontStep(base), null);
+  assert.deepEqual(planSteps('discover'), ['theme', 'models', 'fonts']);
+  assert.deepEqual(planSteps(null), ['theme', 'models']);
+});
+
+test('한컴 설치 폴더의 글꼴이나 한컴 전용 글꼴이 있으면 한컴 글꼴이 있다고 본다', () => {
+  const face = (partial: { source?: 'system' | 'user' | 'hancom'; families?: string[]; koreanNames?: string[] }) => ({
+    source: partial.source ?? 'system',
+    families: partial.families ?? [],
+    koreanNames: partial.koreanNames ?? [],
+    fullNames: [],
+  });
+  const index = (...faces: ReturnType<typeof face>[]) => ({ faces }) as unknown as Parameters<typeof indexHasHancomFonts>[0];
+  assert.equal(indexHasHancomFonts(index(face({ families: ['Malgun Gothic'] }), face({ families: ['Batang'] }))), false);
+  assert.equal(indexHasHancomFonts(index(face({ source: 'hancom', families: ['Anything'] }))), true);
+  // 운영체제 글꼴 폴더에 설치된 한컴 글꼴도 이름으로 알아본다.
+  assert.equal(indexHasHancomFonts(index(face({ families: ['HYHeadLine-Medium'] }))), true);
+  assert.equal(indexHasHancomFonts(index(face({ koreanNames: ['휴먼명조'] }))), true);
+});
+
+test('부트 화면은 첫 실행 애니메이션이 끝나고 마지막 프레임을 잠깐 보인 뒤 걷힌다', () => {
+  const intro = { mode: 'intro' as const, shownAt: 1000, animationMs: 2700 };
+  assert.equal(remainingBootMs(intro, 1000), 2700 + BOOT_FINAL_HOLD_MS);
+  assert.equal(remainingBootMs(intro, 1000 + 2700 + BOOT_FINAL_HOLD_MS + 1), 0);
+  // 건너뛰거나 정지 로고면 기다리지 않는다.
+  assert.equal(remainingBootMs({ ...intro, mode: 'still' }, 1000), 0);
 });

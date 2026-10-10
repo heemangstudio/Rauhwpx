@@ -86,8 +86,6 @@ python tools/subset_noto_sans_kr_regular.py \
 ```
 
 출력은 `ttfs/opensource/NotoSansKR-Regular.ttf`와 `assets/fonts/NotoSansKR-Regular.woff2`다.
-`npm run e2e:canvaskit-font-coverage`는 CanvasKit 실번들에서 `■`, `▪`, `□`, `○`, `─`의 glyph ID가
-`0`이 아닌지 확인한다.
 
 2026-07-11 생성 입력의 SHA-256은
 `194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252`이다.

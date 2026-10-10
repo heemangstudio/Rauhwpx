@@ -31,8 +31,8 @@ export function installDocumentTitle(
   const update = () => {
     const loaded = bridge.hasLoadedDocument();
     document.title = loaded
-      ? (appModes.matches ? bridge.fileName : `${bridge.fileName} - Rauhwpx`)
-      : 'Rauhwpx';
+      ? (appModes.matches ? bridge.fileName : `${bridge.fileName} - HamaEditor`)
+      : 'HamaEditor';
     if (!titleHost) return;
     if (nameText && worktreeChip) {
       if (!nameText.querySelector('.inline-rename-input')) nameText.textContent = loaded ? bridge.fileName : '';

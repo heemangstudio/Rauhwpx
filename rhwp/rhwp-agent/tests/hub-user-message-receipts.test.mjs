@@ -77,6 +77,7 @@ async function fixture(t, { synchronousProvider = false } = {}) {
     const piUrl = new URL('../agents/pi.mjs', import.meta.url).href;
     const providerSource = `
       import { appendFileSync } from 'node:fs';
+      export function canResumePiSession() { return false; }
       export function createPiSession(opts) {
         return {
           getSessionId() { return 'synchronous-provider'; },

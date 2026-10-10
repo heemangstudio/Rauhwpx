@@ -25613,20 +25613,9 @@ mod tests {
 
     /// 실제 HWP 파일로 기존 Paginator와 TypesetEngine 결과 비교
     fn compare_with_hwp_file(path: &str) {
-        let data = match std::fs::read(path) {
-            Ok(d) => d,
-            Err(_) => {
-                eprintln!("skip: {} not found", path);
-                return;
-            }
-        };
-        let doc = match crate::document_core::DocumentCore::from_bytes(&data) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("skip: {} parse error: {}", path, e);
-                return;
-            }
-        };
+        let data = std::fs::read(path).unwrap_or_else(|e| panic!("{path} 읽기 실패: {e}"));
+        let doc = crate::document_core::DocumentCore::from_bytes(&data)
+            .unwrap_or_else(|e| panic!("{path} 파싱 실패: {e}"));
 
         let engine = TypesetEngine::with_default_dpi();
 
@@ -25694,13 +25683,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn test_typeset_vs_paginator_p222() {
-        // p222.hwp sec2는 표가 많아 Phase 2 전환 전까지 차이 발생 가능
-        // Phase 1에서는 비-표 문단만 검증
-        compare_with_hwp_file("samples/p222.hwp");
     }
 
     #[test]

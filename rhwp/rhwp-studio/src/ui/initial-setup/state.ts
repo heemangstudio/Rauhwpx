@@ -3,16 +3,22 @@
  *
  * 설정 탭·문체 보정과 별개인 한 칸. 한 번 끝내거나 건너뛰면
  * 다음 실행부터는 뜨지 않는다. 미리보기는 `?initial-setup=1`.
+ * 첫 실행이 문서를 열면서 시작되면 deferred 로 미뤄 두고 사이드바 칩이 이어받는다.
+ * public/boot-screen.js 도 completed·deferred 를 읽어 부트 애니메이션을 정한다.
  */
 export const INITIAL_SETUP_STORAGE_KEY = 'rhwp-initial-setup';
 
 export type InitialSetupStepState = 'pending' | 'configured' | 'skipped' | 'done';
 
 export interface InitialSetupRecord {
-  version: 1;
+  version: 2;
   completed: boolean;
   completedAt: string | null;
+  /** 파일과 함께 처음 켜져 설정을 미뤘다. 칩에서 마치거나 닫으면 completed 가 된다. */
+  deferred: boolean;
+  themeStep: Exclude<InitialSetupStepState, 'configured'>;
   providerStep: Exclude<InitialSetupStepState, 'done'>;
+  fontStep: Exclude<InitialSetupStepState, 'configured'>;
   calibrationStep: Exclude<InitialSetupStepState, 'configured'>;
 }
 
@@ -32,10 +38,13 @@ function resolveStorage(storage?: InitialSetupStorage | null): InitialSetupStora
 
 export function defaultInitialSetup(): InitialSetupRecord {
   return {
-    version: 1,
+    version: 2,
     completed: false,
     completedAt: null,
+    deferred: false,
+    themeStep: 'pending',
     providerStep: 'pending',
+    fontStep: 'pending',
     calibrationStep: 'pending',
   };
 }
@@ -50,12 +59,16 @@ function asStep<T extends InitialSetupStepState>(
 
 export function normalizeInitialSetup(raw: unknown): InitialSetupRecord {
   const src = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const visualStep = ['pending', 'done', 'skipped'] as const;
   return {
-    version: 1,
+    version: 2,
     completed: src['completed'] === true,
     completedAt: typeof src['completedAt'] === 'string' ? src['completedAt'] : null,
+    deferred: src['deferred'] === true,
+    themeStep: asStep(src['themeStep'], visualStep, 'pending'),
     providerStep: asStep(src['providerStep'], ['pending', 'configured', 'skipped'] as const, 'pending'),
-    calibrationStep: asStep(src['calibrationStep'], ['pending', 'done', 'skipped'] as const, 'pending'),
+    fontStep: asStep(src['fontStep'], visualStep, 'pending'),
+    calibrationStep: asStep(src['calibrationStep'], visualStep, 'pending'),
   };
 }
 
@@ -87,12 +100,13 @@ export function saveInitialSetup(
 }
 
 export function completeInitialSetup(
-  partial: Pick<InitialSetupRecord, 'providerStep' | 'calibrationStep'>,
+  partial: Partial<Omit<InitialSetupRecord, 'version' | 'completed' | 'completedAt'>>,
   storage?: InitialSetupStorage | null,
   now = () => new Date().toISOString(),
 ): InitialSetupRecord {
   return saveInitialSetup({
     ...partial,
+    deferred: false,
     completed: true,
     completedAt: now(),
   }, storage);
@@ -132,5 +146,12 @@ export function shouldSuppressInitialSetup(): boolean {
 export function shouldShowInitialSetup(storage?: InitialSetupStorage | null, search?: string): boolean {
   if (shouldForceInitialSetup(search)) return true;
   if (shouldSuppressInitialSetup()) return false;
-  return !isInitialSetupComplete(storage);
+  const record = loadInitialSetup(storage);
+  return !record.completed && !record.deferred;
+}
+
+/** 미뤄 둔 설정을 사이드바 칩으로 권할지. */
+export function isInitialSetupDeferred(storage?: InitialSetupStorage | null): boolean {
+  const record = loadInitialSetup(storage);
+  return record.deferred && !record.completed;
 }

@@ -24,7 +24,7 @@ import {
   validateExecutionMode,
 } from './backend.mjs';
 import { createCodexRolloutWatcher } from './codex-rollout-watcher.mjs';
-import { createCodexAppServerSession } from './codex-app-server.mjs';
+import { canResumeCodexThread, createCodexAppServerSession } from './codex-app-server.mjs';
 import { isRootUserInputContext } from './provider-user-input.mjs';
 export {
   CODEX_REQUEST_USER_INPUT_METHOD,
@@ -235,7 +235,7 @@ export function createLegacyCodexSession(opts, {
   let suppressChildOutput = () => {};
   const pendingTreeCleanups = new Set();
   let uncertainTreeCleanup = false;
-  /** @type {{ text: string } | null} */
+  /** @type {{ text: string, options?: { replaceSession?: boolean } } | null} */
   let queuedTurn = null;
   let launchPrepared = false;
   /**
@@ -257,10 +257,15 @@ export function createLegacyCodexSession(opts, {
     }
   }
 
+  // 허브가 세션 교체를 요청한 턴 — 새 스레드로 시작하고 turn-end 에 resumeLost 를 싣는다.
+  let turnResumeLost = false;
+
   function endTurn(evt) {
     if (!turnOpen) return;
     turnOpen = false;
-    onEvent(evt);
+    const lost = turnResumeLost;
+    turnResumeLost = false;
+    onEvent(lost ? { ...evt, resumeLost: true } : evt);
   }
 
   function makeHandler() {
@@ -428,7 +433,12 @@ export function createLegacyCodexSession(opts, {
     getSessionId() {
       return threadId;
     },
-    sendUserMessage(text) {
+    // exec 는 자동 압축만 하고, 그 신호를 이벤트로 내지 않는다.
+    compactionSupport: 'auto-only',
+    canResume(id) {
+      return canResumeCodexThread(opts, id);
+    },
+    sendUserMessage(text, options = {}) {
       if (disposed) return;
       if (turnOpen || queuedTurn) throw new Error('Codex already has a turn in progress');
       if (uncertainTreeCleanup) {
@@ -444,7 +454,7 @@ export function createLegacyCodexSession(opts, {
         return;
       }
       if (child) {
-        const queued = { text };
+        const queued = { text, options };
         queuedTurn = queued;
         const ownership = childExitPromise;
         void stopChild('queue');
@@ -453,7 +463,7 @@ export function createLegacyCodexSession(opts, {
           queuedTurn = null;
           if (disposed) return;
           if (cleaned && !child) {
-            session.sendUserMessage(queued.text);
+            session.sendUserMessage(queued.text, queued.options);
             return;
           }
           turnOpen = true;
@@ -519,6 +529,10 @@ export function createLegacyCodexSession(opts, {
       turnOpen = true;
       turnCompleted = false;
       turnFailureMessage = null;
+      if (options?.replaceSession) {
+        threadId = null;
+        turnResumeLost = true;
+      }
       onEvent({ type: 'turn-start', agent: 'codex' });
 
       // 프롬프트는 positional 인자가 아니라 stdin('-')으로 전달한다: '-' 로 시작하는
@@ -802,7 +816,10 @@ export function createCodexSession(opts, dependencies = {}) {
   const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
   if (typeof opts.requestUserInput !== 'function'
     || !isRootUserInputContext({ agentRole: opts.agentRole })) {
-    return withCredentialCopyback(createLegacyCodexSession(opts, dependencies), codexHome);
+    return withCredentialCopyback(createLegacyCodexSession(opts, {
+      initialThreadId: opts.resumeSessionId ?? null,
+      ...dependencies,
+    }), codexHome);
   }
   return withCredentialCopyback(createCodexAppServerSession(opts, {
     ...dependencies,

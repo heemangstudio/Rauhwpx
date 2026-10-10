@@ -181,9 +181,9 @@ export default defineConfig({
       injectRegister: false,
       includeAssets: ['favicon.ico', 'icons/*.png'],
       manifest: {
-        name: 'Rauhwpx',
-        short_name: 'Rauhwpx',
-        description: 'Rauhwpx HWP/HWPX/HML 문서 편집기',
+        name: 'HamaEditor',
+        short_name: 'HamaEditor',
+        description: 'HamaEditor HWP/HWPX/HML 문서 편집기',
         lang: 'ko',
         theme_color: '#2b6cb0',
         background_color: '#ffffff',
@@ -213,7 +213,7 @@ export default defineConfig({
       workbox: {
         // WASM (~12 MB) is kept out of precache to avoid blocking SW installation;
         // CacheFirst at runtime still gives offline access after the first load.
-        globPatterns: ['**/*.{js,css,html,png,svg,ico,woff,woff2,ttf,otf}'],
+        globPatterns: ['**/*.{js,css,html,png,gif,svg,ico,woff,woff2,ttf,otf}'],
         maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
         runtimeCaching: [
           {

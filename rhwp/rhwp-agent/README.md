@@ -1,6 +1,6 @@
-# rhwp-agent
+# HamaEditor agent hub
 
-Local WebSocket hub. Claude, Codex, and Pi read and edit the document open in rhwp-studio through MCP. The hub owns chat workflow, downloads, and the Browserbase sidecar. Document logic stays in the browser.
+Local WebSocket hub. Claude, Codex, and Pi read and edit the document open in HamaEditor through MCP. The hub owns chat workflow, downloads, and the Browserbase sidecar. Document logic stays in the browser.
 
 ```text
 agent CLI ──spawn──► mcp-stdio.mjs ──ws──► server.mjs ◄──ws── rhwp-studio

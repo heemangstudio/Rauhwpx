@@ -226,6 +226,7 @@ import {
 import { initAgentBridge } from './agent/bridge.ts';
 import { renameThreadsDocument } from './agent/threads.ts';
 import { initAgentSidebar } from './ui/agent-sidebar/index.ts';
+import { markStudioReady } from './ui/boot-screen.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
 import { AGENT_LABEL } from './ui/agent-sidebar/providers.ts';
 import { initInlinePrompt } from './agent/inline-prompt.ts';
@@ -758,8 +759,10 @@ async function updateLoadProgress(percent: number, label: string): Promise<void>
 
 /** 문서 로드가 데스크톱 글꼴 연결을 기다리는 최대 시간. 넘기면 백그라운드에서 마저 연결한다. */
 const DESKTOP_FONT_LOAD_BUDGET_MS = 4000;
-const DESKTOP_FONT_EDIT_DEBOUNCE_MS = 600;
+/** 입력 중에는 문서 글꼴 목록을 이 간격에 한 번만 다시 읽는다. */
+const DESKTOP_FONT_EDIT_INTERVAL_MS = 600;
 let desktopFontEditTimer: ReturnType<typeof setTimeout> | null = null;
+let desktopFontEditCheckedAt = -Infinity;
 
 /** 브라우저에서 저장된 글꼴 폴더를 다시 연결하는 작업. 첫 문서 로드가 잠깐 기다린다. */
 let fontFolderRestore: Promise<unknown> | null = null;
@@ -884,12 +887,16 @@ function syncLocalFontAccessMetrics(): void {
     .catch((error) => console.warn('[LocalFonts] 레이아웃 메트릭 등록 실패:', error));
 }
 
-/** 편집·에이전트·붙여넣기로 새 글꼴이 문서에 들어오면 데스크톱 글꼴에서 찾아 연결한다. */
+/**
+ * 편집·에이전트·붙여넣기로 새 글꼴이 문서에 들어오면 데스크톱 글꼴에서 찾아 연결한다.
+ * 글꼴 메뉴로 바꾼 글꼴은 바로 읽기 시작하고, 이어지는 입력은 간격마다 한 번만 확인한다.
+ */
 function scheduleDesktopFontSync(): void {
-  if (!hasSystemFontHost()) return;
-  if (desktopFontEditTimer !== null) clearTimeout(desktopFontEditTimer);
+  if (!hasSystemFontHost() || desktopFontEditTimer !== null) return;
+  const wait = Math.max(0, desktopFontEditCheckedAt + DESKTOP_FONT_EDIT_INTERVAL_MS - performance.now());
   desktopFontEditTimer = setTimeout(() => {
     desktopFontEditTimer = null;
+    desktopFontEditCheckedAt = performance.now();
     let fontsUsed: string[] | undefined;
     try {
       fontsUsed = wasm.getDocumentInfo().fontsUsed;
@@ -901,7 +908,7 @@ function scheduleDesktopFontSync(): void {
     void prepareDesktopFontsForDocument(pending)
       .then(applyLateDesktopFontReport)
       .catch((error) => console.warn('[DesktopFonts] 새 글꼴 연결 실패:', error));
-  }, DESKTOP_FONT_EDIT_DEBOUNCE_MS);
+  }, wait);
 }
 
 /**
@@ -4302,6 +4309,8 @@ function showLoadError(error: unknown): void {
 }
 
 const initPromise = initialize();
+// 실패해도 부트 화면을 걷어 오류 표시를 가리지 않는다.
+void initPromise.then(markStudioReady, markStudioReady);
 
 installEmbedRuntime({
   hostWindow: window,

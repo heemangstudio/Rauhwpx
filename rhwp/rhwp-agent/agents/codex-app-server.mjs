@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  IDLE_PROCESS_RELEASE_MS,
   isPlanningRestricted,
   chatPermissionGrantsFor,
   hasLocalExecutionGrant,
@@ -14,6 +15,8 @@ import {
   systemBriefFor,
   truncate,
   validateExecutionMode,
+  findSessionFile,
+  isSafeSessionId,
 } from './backend.mjs';
 import {
   CODEX_REQUEST_USER_INPUT_METHOD,
@@ -27,6 +30,7 @@ import {
   terminateProcessTree,
 } from '../process-tree.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
+import { codexHistoryItems } from '../chat-handoff.mjs';
 
 const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 const DEFAULT_MODE_FEATURE = 'default_mode_request_user_input';
@@ -348,6 +352,38 @@ function toolInfo(item) {
   return null;
 }
 
+/**
+ * 앱 서버가 메서드를 모른다는 거절. JSON-RPC 표준은 -32601 이지만 codex 0.162 앱 서버는 요청 enum
+ * 역직렬화에서 -32600 "Invalid request: unknown variant `<method>`, expected one of …" 를 낸다.
+ */
+function isUnknownMethodError(error, method) {
+  if (error?.code === -32601) return true;
+  return error?.code === -32600 && String(error?.message ?? '').includes(`unknown variant \`${method}\``);
+}
+
+/** 스레드 롤아웃(`<codexHome>/sessions/YYYY/MM/DD/rollout-…-<threadId>.jsonl`)이 남아 있는지 본다. */
+export async function canResumeCodexThread(opts, threadId) {
+  if (!isSafeSessionId(threadId)) return false;
+  const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+  const found = await findSessionFile(
+    path.join(codexHome, 'sessions'),
+    (name) => name.startsWith('rollout-') && name.endsWith(`-${threadId}.jsonl`),
+    { maxDepth: 3 },
+  );
+  return Boolean(found);
+}
+
+/** Codex 가 맥락 창 크기로 세는 값 — 마지막 모델 호출의 totalTokens (입력 + 출력). */
+function contextTokensOf(last) {
+  if (!last || typeof last !== 'object') return null;
+  const total = Number(last.totalTokens ?? last.total_tokens);
+  if (Number.isFinite(total) && total > 0) return Math.round(total);
+  const sum = (Number(last.inputTokens ?? last.input_tokens) || 0) + (Number(last.outputTokens ?? last.output_tokens) || 0);
+  return sum > 0 ? Math.round(sum) : null;
+}
+
+const COMPACTION_START_TIMEOUT_MS = 30_000;
+
 function normalizedUsage(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const usage = {
@@ -378,7 +414,27 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     platform = process.platform,
     nodeCommand = process.execPath,
   } = dependencies;
-  const onEvent = opts.onEvent;
+  // 재개가 사라진 턴의 turn-end 에 resumeLost 를 싣는다 — turn-end 를 내는 곳이 여럿이라 여기서 한 번에.
+  let turnResumeLost = false;
+  // 이번 턴에 thread/inject_items 를 보냈다 — 턴이 끝나지 못하면 스레드가 기록을 받았는지 알 수 없다.
+  let turnHistoryInjected = false;
+  const onEvent = (event) => {
+    if (event?.type !== 'turn-end') {
+      opts.onEvent(event);
+      return;
+    }
+    const lost = turnResumeLost;
+    const uncertain = turnHistoryInjected && (event.stopReason !== 'completed' || Boolean(event.errorMessage));
+    turnResumeLost = false;
+    turnHistoryInjected = false;
+    opts.onEvent({
+      ...event,
+      ...(lost ? { resumeLost: true } : {}),
+      ...(uncertain ? { handoffUncertain: true } : {}),
+    });
+  };
+  // 앱 서버가 thread/inject_items 를 모르면(-32601) 이 세션 동안은 인라인 기록을 보낸다.
+  let historyInjectSupported = true;
   /** @type {import('node:child_process').ChildProcess | null} */
   let proc = null;
   /** @type {CodexJsonRpcConnection | null} */
@@ -394,7 +450,20 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   let injectedPermissionBrief = null;
   let generation = 0;
   /** @type {string | null} */
-  let threadId = null;
+  let threadId = isSafeSessionId(opts.resumeSessionId) ? opts.resumeSessionId : null;
+  // 재개 커서로 받은 스레드는 처음 붙을 때까지 확인되지 않았다 — 붙지 못하면 새 스레드로 간다.
+  let resumeUnverified = Boolean(threadId);
+  // Codex writes a thread's rollout only once a turn starts. A thread opened
+  // for Plan readiness alone cannot be resumed by a fresh app-server.
+  // A resume cursor is recorded only after a turn, so it has a rollout.
+  let threadHasTurns = Boolean(threadId);
+  let resumeLostPending = false;
+  /** @type {'message'|'compact'} */
+  let turnKind = 'message';
+  let lastContextTokens = null;
+  let contextWindow = null;
+  /** @type {{ compactionId: string, trigger: 'auto'|'manual', beforeTokens?: number, afterTokens?: number, done: boolean } | null} */
+  let turnCompaction = null;
   /** @type {string | null} */
   let activeTurnId = null;
   /** @type {{ connection: CodexJsonRpcConnection, generation: number } | null} */
@@ -423,6 +492,8 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   /** @type {any} */
   let rolloutWatcher = null;
   const questionControllers = new Map();
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let idleReleaseTimer = null;
 
   function safeMessage(error, max = 1200) {
     return truncate(redactDiagnosticText(error?.message ?? error, [opts.token]), max);
@@ -452,9 +523,59 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     pendingTurnStart = null;
     settlingTurnId = null;
     pendingUsage = null;
+    turnCompaction = null;
     interruptRequested = event.stopReason === 'interrupted';
     finalizeRolloutWatcher();
     onEvent(event);
+  }
+
+  function compactionEvent(compaction, phase, extra = {}) {
+    return {
+      type: 'compaction',
+      agent: 'codex',
+      compactionId: compaction.compactionId,
+      phase,
+      trigger: compaction.trigger,
+      ...(compaction.beforeTokens !== undefined ? { beforeTokens: compaction.beforeTokens } : {}),
+      ...extra,
+    };
+  }
+
+  /** contextCompaction 항목(item/started → item/completed)과 구식 thread/compacted 를 한 계약으로 낸다. */
+  function onCompaction(phase, id) {
+    if (phase === 'started') {
+      if (turnCompaction && !turnCompaction.done) return;
+      turnCompaction = {
+        compactionId: `codex:${id}`,
+        trigger: turnKind === 'compact' ? 'manual' : 'auto',
+        ...(lastContextTokens !== null ? { beforeTokens: lastContextTokens } : {}),
+        done: false,
+      };
+      onEvent(compactionEvent(turnCompaction, 'started'));
+      return;
+    }
+    const compaction = turnCompaction && !turnCompaction.done ? turnCompaction : {
+      compactionId: `codex:${id}`,
+      trigger: turnKind === 'compact' ? 'manual' : 'auto',
+      ...(lastContextTokens !== null ? { beforeTokens: lastContextTokens } : {}),
+      done: false,
+    };
+    compaction.done = true;
+    turnCompaction = compaction;
+    onEvent(compactionEvent(compaction, 'completed', {
+      ...(compaction.afterTokens !== undefined ? { afterTokens: compaction.afterTokens } : {}),
+    }));
+  }
+
+  function emitContextUsage() {
+    if (lastContextTokens === null) return;
+    onEvent({
+      type: 'context-usage',
+      agent: 'codex',
+      usedTokens: lastContextTokens,
+      ...(contextWindow ? { maxTokens: contextWindow } : {}),
+      autoCompact: true,
+    });
   }
 
   function emitSessionInfo(id) {
@@ -488,6 +609,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     pendingTurnStart = null;
     starting = false;
     turnOpen = true;
+    threadHasTurns = true;
     onEvent({ type: 'turn-start', agent: 'codex' });
     const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
     rolloutWatcher = createRolloutWatcher?.({
@@ -558,6 +680,18 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       if (params.delta) onEvent({ type: 'text-delta', agent: 'codex', text: String(params.delta) });
       return;
     }
+    if ((method === 'item/started' || method === 'item/completed') && params.item?.type === 'contextCompaction') {
+      // 자식(서브에이전트) 스레드의 압축은 위 threadId 필터에서 이미 걸러진다.
+      if (!notificationMatchesActiveTurn(params)) return;
+      onCompaction(method === 'item/started' ? 'started' : 'completed', String(params.item.id ?? activeTurnId));
+      return;
+    }
+    if (method === 'thread/compacted') {
+      // 0.162 는 contextCompaction 항목만 낸다. 구버전 서버의 알림은 항목이 없을 때만 완료로 친다.
+      if (!notificationMatchesActiveTurn(params)) return;
+      if (!turnCompaction?.done) onCompaction('completed', `${params.turnId}:compacted`);
+      return;
+    }
     if (method === 'item/started' || method === 'item/completed') {
       if (!notificationMatchesActiveTurn(params)) return;
       const info = toolInfo(params.item);
@@ -577,6 +711,15 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     }
     if (method === 'thread/tokenUsage/updated') {
       if (!notificationMatchesActiveTurn(params)) return;
+      const window = Number(params.tokenUsage?.modelContextWindow);
+      if (Number.isFinite(window) && window > 0) contextWindow = Math.round(window);
+      const contextTokens = contextTokensOf(params.tokenUsage?.last);
+      if (contextTokens !== null) {
+        lastContextTokens = contextTokens;
+        // 압축 중의 갱신은 압축 뒤 맥락 크기다 (0.162: 17780 → 11504 확인).
+        if (turnCompaction && !turnCompaction.done) turnCompaction.afterTokens = contextTokens;
+        emitContextUsage();
+      }
       const total = normalizedUsage(params.tokenUsage?.total);
       if (total) {
         const baseline = turnUsageBaseline ?? {
@@ -695,7 +838,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
 
   async function negotiate(connection, { featureForced = false } = {}) {
     await connection.request('initialize', {
-      clientInfo: { name: 'rhwp-studio', title: 'Rau Studio', version: '4' },
+      clientInfo: { name: 'rhwp-studio', title: 'HamaEditor', version: '4' },
       capabilities: {
         experimentalApi: true,
         requestAttestation: false,
@@ -864,7 +1007,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   async function attachThread(connection) {
     if (attachedGeneration === generation) return;
     let result;
-    if (threadId) {
+    if (threadId && threadHasTurns) {
       try {
         result = await connection.request('thread/resume', {
           threadId,
@@ -876,10 +1019,15 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
           excludeTurns: true,
         });
       } catch (error) {
-        // Codex writes a thread's rollout only after its first turn. A mode switch can restart
-        // app-server before that, so the resume finds nothing; the thread has no history to keep.
-        if (!/no rollout found/i.test(String(error?.message ?? error))) throw error;
-        result = null;
+        // 재개 커서의 롤아웃이 사라졌다 ("no rollout found for thread id …", 0.162 확인).
+        // 이 백엔드에서 이미 붙었던 스레드도 롤아웃이 없으면 새 스레드로 간다. 그 밖의 실패는 그대로 올린다.
+        if (!resumeUnverified && !/no rollout found/i.test(String(error?.message ?? error))) throw error;
+        process.stderr.write(`[codex-app-server] resume failed, starting a new thread: ${safeMessage(error)}\n`);
+        resumeUnverified = false;
+        resumeLostPending = true;
+        threadId = null;
+        threadHasTurns = false;
+        lastContextTokens = null;
       }
     }
     if (!result) {
@@ -913,7 +1061,16 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       }
       permissionBriefDirty = false;
     }
+    resumeUnverified = false;
     attachedGeneration = generation;
+  }
+
+  /** 붙는 중에 재개가 사라졌으면 이번 턴이 그 사실을 turn-end 로 알린다. */
+  function takeResumeLost() {
+    if (!resumeLostPending) return false;
+    resumeLostPending = false;
+    turnResumeLost = true;
+    return true;
   }
 
   async function stopConnection() {
@@ -938,6 +1095,24 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     attachedGeneration = 0;
     expectedShutdown = false;
     return cleaned;
+  }
+
+  function cancelIdleRelease() {
+    if (idleReleaseTimer) clearTimeout(idleReleaseTimer);
+    idleReleaseTimer = null;
+  }
+
+  // Plan readiness keeps a warm app-server between turns. Release it after a
+  // quiet period; the next turn resumes the same thread in a fresh process.
+  function scheduleIdleRelease() {
+    cancelIdleRelease();
+    idleReleaseTimer = setTimeout(() => {
+      idleReleaseTimer = null;
+      if (disposed || starting || turnOpen) return;
+      const priorRestart = restartPromise;
+      restartPromise = priorRestart.then(() => (starting || turnOpen ? true : stopConnection()));
+    }, opts.idleReleaseMs ?? IDLE_PROCESS_RELEASE_MS);
+    idleReleaseTimer.unref?.();
   }
 
   async function switchToLegacy(text, error, attempt) {
@@ -979,7 +1154,29 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     fallback.sendUserMessage(text);
   }
 
-  async function startTurn(text, attempt) {
+  /**
+   * 기록을 네이티브 항목으로 넣는다. true = 주입됨(기록 없는 프롬프트를 보낸다), false = 앱 서버가
+   * 메서드를 모른다(인라인으로 보낸다). 그 밖의 오류는 스레드 상태가 불확실하므로 던진다.
+   */
+  async function injectHistory(connection, handoff) {
+    if (!historyInjectSupported) return false;
+    turnHistoryInjected = true;
+    try {
+      await connection.request('thread/inject_items', { threadId, items: codexHistoryItems(handoff) });
+      return true;
+    } catch (error) {
+      // 이 세션에서는 다시 주입하지 않는다 — 모호한 실패 뒤의 교체 턴도 인라인으로 보내야 매 턴 같은
+      // 오류로 막히지 않는다.
+      historyInjectSupported = false;
+      if (!isUnknownMethodError(error, 'thread/inject_items')) throw error;
+      // 모르는 메서드는 요청을 해석하는 단계에서 거절되어 스레드를 건드리지 않는다.
+      turnHistoryInjected = false;
+      process.stderr.write('[codex-app-server] thread/inject_items unsupported; sending history inline\n');
+      return false;
+    }
+  }
+
+  async function startTurn(text, attempt, { resumeFallbackText = null, handoff = null, resumeFallbackHandoff = null } = {}) {
     const stale = () => disposed || attempt !== turnAttempt;
     let connection;
     try {
@@ -1010,6 +1207,31 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     if (interruptRequested) {
       starting = false;
       return;
+    }
+    let history = handoff;
+    if (takeResumeLost() && resumeFallbackText) {
+      text = resumeFallbackText;
+      history = resumeFallbackHandoff;
+    }
+    if (history && Array.isArray(history.entries) && history.entries.length > 0 && typeof history.plainText === 'string') {
+      let injected;
+      try {
+        injected = await injectHistory(connection, history);
+      } catch (error) {
+        if (stale()) return;
+        starting = false;
+        const cleaned = await stopConnection();
+        const message = `Codex could not add the earlier conversation: ${safeMessage(error)}${cleaned ? '' : ' Process-tree cleanup could not be confirmed.'}`;
+        onEvent({ type: 'error', agent: 'codex', message });
+        onEvent({ type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: message });
+        return;
+      }
+      if (stale()) return;
+      if (interruptRequested) {
+        starting = false;
+        return;
+      }
+      if (injected) text = history.plainText;
     }
 
     const turnGeneration = generation;
@@ -1056,26 +1278,120 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     }
   }
 
+  /**
+   * 수동 압축은 앱 서버가 스스로 여는 턴이다: thread/compact/start 응답은 빈 객체이고
+   * turn/started → contextCompaction 항목 → turn/completed 가 뒤따른다 (0.162 확인).
+   */
+  async function startCompaction(attempt) {
+    const stale = () => disposed || attempt !== turnAttempt;
+    const failStart = async (detail) => {
+      starting = false;
+      pendingTurnStart = null;
+      const cleaned = await stopConnection();
+      const message = `Codex could not compact the conversation: ${detail}${cleaned ? '' : ' Process-tree cleanup could not be confirmed.'}`;
+      onEvent({ type: 'error', agent: 'codex', message });
+      onEvent({ type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: message });
+    };
+    let connection;
+    try {
+      connection = await ensureConnection();
+      if (stale()) return;
+      if (interruptRequested) { starting = false; return; }
+      await attachThread(connection);
+    } catch (error) {
+      if (!stale()) await failStart(safeMessage(error));
+      return;
+    }
+    if (stale()) return;
+    if (interruptRequested) { starting = false; return; }
+    if (takeResumeLost()) {
+      // 새로 연 빈 스레드는 압축할 것이 없다.
+      await failStart('the resumed Codex thread no longer exists');
+      return;
+    }
+    const turnGeneration = generation;
+    pendingTurnStart = { connection, generation: turnGeneration };
+    try {
+      await connection.request('thread/compact/start', { threadId });
+    } catch (error) {
+      if (stale() || turnOpen) return;
+      if (starting) await failStart(safeMessage(error));
+      return;
+    }
+    if (stale() || turnOpen || !starting) return;
+    // 응답과 turn/started 의 순서는 정해져 있지 않다 — 시작 알림을 잠시 기다린다.
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, COMPACTION_START_TIMEOUT_MS);
+      const poll = setInterval(() => {
+        if (stale() || turnOpen || !starting) {
+          clearInterval(poll);
+          clearTimeout(timer);
+          resolve();
+        }
+      }, 25);
+      timer.unref?.();
+      poll.unref?.();
+    });
+    if (stale() || turnOpen || !starting) return;
+    await failStart('the compaction turn did not start');
+  }
+
   return {
     agent: 'codex',
     getSessionId() {
       return fallback?.getSessionId() ?? threadId;
     },
-    sendUserMessage(text) {
+    get compactionSupport() {
+      // legacy exec 는 자동 압축만 한다.
+      return fallback ? 'auto-only' : 'manual';
+    },
+    canResume(id) {
+      return canResumeCodexThread(opts, id);
+    },
+    sendUserMessage(text, { resumeFallbackText, handoff, resumeFallbackHandoff, replaceSession } = {}) {
       if (disposed) return;
       if (fallback) {
-        fallback.sendUserMessage(text);
+        // legacy exec 는 기록을 인라인으로만 받는다.
+        fallback.sendUserMessage(text, replaceSession ? { replaceSession: true } : undefined);
         return;
       }
       if (starting || turnOpen) throw new Error('A Codex turn is already running');
+      cancelIdleRelease();
       starting = true;
       interruptRequested = false;
-      void startTurn(text, ++turnAttempt);
+      turnKind = 'message';
+      turnHistoryInjected = false;
+      if (replaceSession) {
+        // 허브가 이 스레드를 믿지 않는다 — 새 스레드를 열고 turn-end 에 resumeLost 를 싣는다.
+        threadId = null;
+        threadHasTurns = false;
+        resumeUnverified = false;
+        resumeLostPending = true;
+        attachedGeneration = 0;
+        lastContextTokens = null;
+      }
+      void startTurn(text, ++turnAttempt, {
+        resumeFallbackText: resumeFallbackText ?? null,
+        handoff: handoff ?? null,
+        resumeFallbackHandoff: resumeFallbackHandoff ?? null,
+      });
+    },
+    compact() {
+      if (disposed) return;
+      if (fallback) throw new Error('Codex legacy exec cannot compact on request');
+      if (starting || turnOpen) throw new Error('A Codex turn is already running');
+      cancelIdleRelease();
+      starting = true;
+      interruptRequested = false;
+      turnKind = 'compact';
+      turnHistoryInjected = false;
+      void startCompaction(++turnAttempt);
     },
     async setPermissionProfile(profile) {
       if (fallback) return fallback.setPermissionProfile(profile);
       if (starting || turnOpen) throw new Error('Permission profile can only change between turns');
       if (profile !== 'safe' && profile !== 'unrestricted') throw new Error(`Unknown permission profile: ${profile}`);
+      cancelIdleRelease();
       const previous = opts.permissionProfile;
       const previousBriefDirty = permissionBriefDirty;
       const previousInjectedBrief = injectedPermissionBrief;
@@ -1092,6 +1408,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         if (nativeProviderInteractionMode(opts) === 'plan' || (permissionBriefDirty && threadId)) {
           const connection = await ensureConnection();
           await attachThread(connection);
+          scheduleIdleRelease();
         }
       } catch (error) {
         opts.permissionProfile = previous;
@@ -1111,6 +1428,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         }
         return fallback.setExecutionMode(mode);
       }
+      cancelIdleRelease();
       const previous = {
         workflow: opts.workflow,
         phase: opts.phase,
@@ -1138,6 +1456,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         if (nativeProviderInteractionMode(opts) === 'plan' || (permissionBriefDirty && threadId)) {
           const connection = await ensureConnection();
           await attachThread(connection);
+          scheduleIdleRelease();
         }
       } catch (error) {
         opts.workflow = previous.workflow;
@@ -1174,6 +1493,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     },
     async dispose() {
       disposed = true;
+      cancelIdleRelease();
       starting = false;
       turnOpen = false;
       abortQuestions(Object.assign(new Error('Codex session disposed'), { code: 'PROVIDER_DISCONNECTED' }));

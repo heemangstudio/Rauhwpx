@@ -1,8 +1,8 @@
 import type { AgentBridge } from '../agent/bridge.ts';
 import type { CheckpointTitleSummary } from '../agent/types.ts';
 import { CompareSessionStore } from '../compare/session.ts';
-import { buildSnapshotFromWasm, compareDocuments, compareSnapshots } from '../compare/diff-engine.ts';
-import type { CompareOptions, DiffItem } from '../compare/types.ts';
+import { buildSnapshotFromWasmInSlices, compareDocuments, compareSnapshots } from '../compare/diff-engine.ts';
+import type { DiffItem } from '../compare/types.ts';
 import type { EventBus } from '../core/event-bus.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import { INSERTED_IMAGE_MAX_BYTES, readBlobBytesWithLimit } from '../core/document-input-limits.ts';
@@ -74,6 +74,7 @@ import {
   captureVersionSnapshot,
   fingerprintVersionContent,
   type CapturedVersionSnapshot,
+  type VersionContent,
 } from './snapshot.ts';
 
 const PAGE_SIZE = 100;
@@ -328,7 +329,8 @@ export class DocumentVersionController implements VersionManagerController {
   readonly #mergeResolver = new MergeResolverWindow();
   #state = emptyState();
   #repository: VersionRepository | null = null;
-  #savedBaseline: { documentId: string; capture: CapturedVersionSnapshot } | null = null;
+  /** 저장된 내용. 비교 스냅샷은 버전 기록을 켤 때에만 만든다. */
+  #savedBaseline: { documentId: string; content: VersionContent } | null = null;
   #refs: VersionRef[] = [];
   #commits: VersionCommit[] = [];
   #shelves: VersionShelf[] = [];
@@ -351,6 +353,7 @@ export class DocumentVersionController implements VersionManagerController {
   } | null = null;
   #operation = Promise.resolve();
   #mergeResolverActive = false;
+  #disposed = false;
   #mergeLockedHandler: InputHandler | null = null;
   #mergePreviousUserEditingLocked = false;
   readonly #pendingMergeFinalizers = new WeakMap<
@@ -402,21 +405,21 @@ export class DocumentVersionController implements VersionManagerController {
           this.#savedBaseline = null;
           return;
         }
-        const capture = this.#wasm.hasLoadedDocument() ? this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision) : null;
-        if (id && capture) this.#savedBaseline = { documentId: id, capture };
+        const content = this.#wasm.hasLoadedDocument() ? this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), this.#editorRevision) : null;
+        if (id && content) this.#savedBaseline = { documentId: id, content };
         void this.#enqueue(async () => {
-          if (!capture || id !== this.#getDocumentId() || this.#worktreeHost?.canMutate() === false) return;
+          if (!content || id !== this.#getDocumentId() || this.#worktreeHost?.canMutate() === false) return;
           await this.#refreshData(false);
           if (!this.#repository || id !== this.#getDocumentId() || this.#worktreeHost?.canMutate() === false) return;
           if (this.#worktree) {
             this.#worktree = await this.#store.saveWorktree({
               id: this.#worktree.id, expectedRevision: this.#worktree.revision,
-              bytes: capture.bytes, savedFingerprint: capture.fingerprint,
-              fileName: this.#wasm.fileName, sourceFormat: worktreeSnapshotFormat(capture.bytes),
+              bytes: content.bytes, savedFingerprint: content.fingerprint,
+              fileName: this.#wasm.fileName, sourceFormat: worktreeSnapshotFormat(content.bytes),
             });
           }
           if (!this.#worktree || this.#worktree.primary) this.#repository = await this.#store.markSaved(
-            this.#repository.id, capture.fingerprint, this.#repository.revision,
+            this.#repository.id, content.fingerprint, this.#repository.revision,
           );
           await this.#refreshData(false);
         }).catch((error) => console.warn('Version save state could not be updated', error));
@@ -442,7 +445,7 @@ export class DocumentVersionController implements VersionManagerController {
     const existingWorktree = options.fromDisk && id
       ? await this.#store.findWorktreeByDocumentId(documentId(id)) : null;
     if (id && !this.#wasm.isNewDocument && !this.#documentState.isDirty()) {
-      this.#savedBaseline = { documentId: id, capture: this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision) };
+      this.#savedBaseline = { documentId: id, content: this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), this.#editorRevision) };
     } else {
       this.#savedBaseline = null;
     }
@@ -452,15 +455,15 @@ export class DocumentVersionController implements VersionManagerController {
       await this.#enqueue(async () => {
         if (!this.#worktree?.primary || this.#getDocumentId() !== id || this.#worktreeHost?.canMutate() === false) return;
         const workspace = this.#captureWorkspaceToken();
-        const capture = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
+        const content = this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), this.#editorRevision);
         const current = await this.#store.getWorktree(this.#worktree.id);
         this.#assertWorkspaceToken(workspace);
         if (!current || current.revision !== this.#worktree.revision
           || (existingWorktree && String(current.blobId) !== String(current.savedFingerprint))) return;
         this.#worktree = await this.#store.saveWorktree({
-          id: current.id, expectedRevision: current.revision, bytes: capture.bytes,
-          savedFingerprint: capture.fingerprint, fileName: this.#wasm.fileName,
-          sourceFormat: worktreeSnapshotFormat(capture.bytes),
+          id: current.id, expectedRevision: current.revision, bytes: content.bytes,
+          savedFingerprint: content.fingerprint, fileName: this.#wasm.fileName,
+          sourceFormat: worktreeSnapshotFormat(content.bytes),
         });
         await this.#refreshData(false);
       });
@@ -489,7 +492,7 @@ export class DocumentVersionController implements VersionManagerController {
   async #enableVersioning(): Promise<void> {
       this.#guardSaved();
       await this.#guardMutation();
-      const baseline = this.#savedBaseline?.documentId === this.#getDocumentId() ? this.#savedBaseline.capture : null;
+      const baseline = this.#savedBaseline?.documentId === this.#getDocumentId() ? this.#savedBaseline.content : null;
       if (this.#documentState.isDirty() && !baseline) {
         throw new VersionError('SAVE_REQUIRED', 'Save the document before enabling version history');
       }
@@ -505,7 +508,10 @@ export class DocumentVersionController implements VersionManagerController {
         await this.#refreshData(true);
         return;
       }
-      const capture = baseline ?? this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
+      const capture = baseline
+        ? await this.#captureSavedContent(baseline)
+        : this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
+      this.#assertWorkspaceToken(workspace, { editor: false });
       const mergeManifestEntries = await this.#mergeWorker.buildDocumentManifest(capture.bytes);
       this.#assertWorkspaceToken(workspace, { editor: false });
       const analysis = analyzeVersionDiff(null, capture.compareSnapshot);
@@ -534,6 +540,34 @@ export class DocumentVersionController implements VersionManagerController {
       persistActiveBranch(id, result.branch.name);
       await this.#refreshData(true);
       this.#requestGeneratedTitle(result.commit, analysis.titleSummary);
+  }
+
+  async #captureSavedContent(saved: VersionContent): Promise<CapturedVersionSnapshot> {
+    const id = this.#getDocumentId();
+    const revision = this.#editorRevision;
+    const live = this.#snapshotCache.content(this.#wasm, id, revision);
+    if (live.fingerprint === saved.fingerprint) {
+      // 문서를 열자마자 켜지는 첫 기록이다. 스냅샷을 조각으로 나눠 만들어 입력을 막지 않는다.
+      const captured = await this.#snapshotCache.captureInSlices(
+        this.#wasm, id, revision, () => this.#getDocumentId() === id && this.#editorRevision === revision,
+      );
+      if (captured) return captured;
+    }
+    // 저장 뒤에 편집했다면 저장된 바이트를 따로 열어 그 내용의 비교 스냅샷을 만든다.
+    // 사본은 아무도 고치지 않으므로 편집과 상관없이 조각으로 끝까지 만든다.
+    const scratch = new WasmBridge();
+    try {
+      await scratch.initialize();
+      scratch.loadDocument(saved.bytes, this.#wasm.fileName);
+      const compareSnapshot = await buildSnapshotFromWasmInSlices(
+        scratch, this.#wasm.fileName, { ...VERSION_COMPARE_OPTIONS, refreshLayout: false },
+        () => !this.#disposed && this.#getDocumentId() === id,
+      );
+      if (!compareSnapshot) throw new VersionError('STALE_WORKSPACE', 'The document changed before version history was enabled');
+      return { ...saved, compareSnapshot };
+    } finally {
+      scratch.releaseDocument();
+    }
   }
 
   /**
@@ -666,16 +700,16 @@ export class DocumentVersionController implements VersionManagerController {
     if (!worktree || worktree.documentId !== this.#getDocumentId()) return;
     if (this.#worktreeHost?.canMutate() === false) throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
     const workspace = this.#captureWorkspaceToken();
-    const capture = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
+    const content = this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), this.#editorRevision);
     const branch = this.#requireActiveBranch();
     const current = await this.#store.getWorktree(worktree.id);
     if (!current) throw new VersionError('STALE_WORKSPACE', '워크트리가 삭제되었습니다.');
     this.#assertWorkspaceToken(workspace);
     this.#worktree = await this.#store.saveWorktree({
-      id: current.id, expectedRevision: current.revision, bytes: capture.bytes,
-      fileName: this.#wasm.fileName, sourceFormat: worktreeSnapshotFormat(capture.bytes),
+      id: current.id, expectedRevision: current.revision, bytes: content.bytes,
+      fileName: this.#wasm.fileName, sourceFormat: worktreeSnapshotFormat(content.bytes),
       baseCommitId: branch.target,
-      ...(saved ? { savedFingerprint: capture.fingerprint } : {}),
+      ...(saved ? { savedFingerprint: content.fingerprint } : {}),
     });
   }
 
@@ -824,7 +858,8 @@ export class DocumentVersionController implements VersionManagerController {
     const requestedDocumentId = this.#getDocumentId();
     const requestedRevision = this.#editorRevision;
     return this.#enqueue(async () => {
-      if (this.#getDocumentId() !== requestedDocumentId) {
+      // 기다리는 동안 편집됐다면 뒤따르는 갱신이 있으므로 문서를 다시 내보내지 않는다.
+      if (this.#getDocumentId() !== requestedDocumentId || this.#editorRevision !== requestedRevision) {
         throw new VersionError('STALE_WORKSPACE', 'The document changed before comparison started');
       }
       // 문서 교체 직후 refresh 가 새 repository 를 채우기 전엔 이전 문서의 repository 가
@@ -853,11 +888,21 @@ export class DocumentVersionController implements VersionManagerController {
         && cache.repositoryRevision === repository.revision) {
         return cache.items;
       }
-      // 실시간 '커밋 전' diff 는 강제 전체 재조판을 건너뛴다 — 대형 문서에서 한 번의
-      // 재조판이 입력을 수 분간 멈추게 한다 (페이지 라벨은 마지막 확정 트리 기준).
-      const compareOptions: CompareOptions = { ...VERSION_COMPARE_OPTIONS, refreshLayout: false };
-      const current = buildSnapshotFromWasm(this.#wasm, this.#wasm.fileName, compareOptions);
-      const diffs = compareSnapshots(stored.snapshot, current, compareOptions).diffItems;
+      // 지금 내용이 HEAD 와 같으면 비교 스냅샷을 만들지 않는다. 다르면 체크포인트와 같은
+      // revision 의 캡처(강제 재조판 없음)를 함께 쓰되, 캐시가 지금 내용과 다르면 버린다.
+      // 캡처는 입력을 막지 않게 조각으로 나눠 만들고, 그사이 편집이 끼면 stale 로 거절한다.
+      const revision = this.#editorRevision;
+      const live = this.#snapshotCache.reexport(this.#wasm, requestedDocumentId, revision);
+      let diffs: DiffItem[] = [];
+      if (live.fingerprint !== head.contentFingerprint) {
+        const current = await this.#snapshotCache.captureInSlices(
+          this.#wasm, requestedDocumentId, revision, () => this.#isWorkspaceTokenCurrent(workspace),
+        );
+        if (!current) throw new VersionError('STALE_WORKSPACE', 'The document changed during comparison');
+        diffs = compareSnapshots(
+          stored.snapshot, current.compareSnapshot, { ...VERSION_COMPARE_OPTIONS, refreshLayout: false },
+        ).diffItems;
+      }
       const latestBranch = await this.#store.getBranch(repository.id, branch.name);
       this.#assertWorkspaceToken(workspace);
       if (!latestBranch || latestBranch.revision !== freshBranch.revision || latestBranch.target !== freshBranch.target) {
@@ -865,7 +910,7 @@ export class DocumentVersionController implements VersionManagerController {
       }
       this.#workingDiffCache = {
         documentId: requestedDocumentId,
-        revision: this.#editorRevision,
+        revision,
         repositoryId: repository.id,
         repositoryRevision: repository.revision,
         items: diffs,
@@ -1609,6 +1654,7 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   dispose(): void {
+    this.#disposed = true;
     if (this.#persistTimer) clearTimeout(this.#persistTimer);
     this.#persistTimer = null;
     for (const unsubscribe of this.#unsubscribers) unsubscribe();
@@ -2543,7 +2589,7 @@ export class DocumentVersionController implements VersionManagerController {
     const repository = await this.#store.findRepositoryByDocumentId(documentId(id));
     if (epoch !== this.#refreshEpoch || this.#getDocumentId() !== id) return;
     this.#repository = repository;
-    const initialSavedFingerprint = this.#savedBaseline?.documentId === id ? this.#savedBaseline.capture.fingerprint : undefined;
+    const initialSavedFingerprint = this.#savedBaseline?.documentId === id ? this.#savedBaseline.content.fingerprint : undefined;
     if (repository) {
       this.#savedBaseline = null;
       this.#maintenance.schedule(repository.id);

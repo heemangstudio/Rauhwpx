@@ -741,13 +741,6 @@ test('doc-editor subagent prompt batches independent writes through apply_edits'
   assert.doesNotMatch(prompt, /one write at a time/i);
 });
 
-test('plan revision prompt applies concrete feedback without another drafting request', () => {
-  const server = readFileSync(new URL('../server.mjs', import.meta.url), 'utf8');
-  assert.match(server, /Re-read the affected document state and revise the plan directly/);
-  assert.match(server, /Ask a focused question only if a missing answer blocks/);
-  assert.match(server, /does not need to ask you to draft it again/);
-});
-
 test('resume argv retains the selected capability profile', () => {
   const opts = { ...baseOpts, workflow: 'plan', phase: 'implementing', capabilityEpoch: 42, permissionProfile: 'safe' };
   const claude = buildClaudeArgv(opts, sessionId, true);

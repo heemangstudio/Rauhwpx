@@ -4,7 +4,6 @@ import { humanizerPromptBlock } from './humanizer.mjs';
 import { chatPermissionForCategory } from './chat-permissions.mjs';
 
 export const WORKFLOWS = Object.freeze(['direct', 'plan', 'question']);
-export const PLAN_PHASES = Object.freeze(['planning', 'questioning', 'awaiting-approval', 'switching', 'implementing']);
 
 const ENGLISH_IMPLEMENTATION_APPROVALS = new Set([
   'implement the plan',

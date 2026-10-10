@@ -338,6 +338,7 @@ test('failed and interrupted permission reconfiguration restores native authorit
       agent: 'pi',
       source: ({ workRoot: root, completePi: completion }) => `
         import fs from 'node:fs';
+        export function canResumePiSession() { return false; }
         export function createPiSession(opts) {
           let running = false;
           const timer = setInterval(() => {
@@ -419,6 +420,7 @@ test('signed-out legacy provider cannot dispatch a permission request turn', { t
       source: () => `
         export function prepareClaudeHome() { return []; }
         export function flushClaudeCredentialMirrors() { return true; }
+        export function canResumeClaudeSession() { return false; }
         export function createClaudeSession() {
           return {
             getSessionId() { return 'signed-out-permission-fixture'; },
@@ -448,6 +450,7 @@ test('permission requests require one provider-stream root ticket for legacy MCP
       source: () => `
         export function prepareClaudeHome() { return []; }
         export function flushClaudeCredentialMirrors() { return true; }
+        export function canResumeClaudeSession() { return false; }
         export function createClaudeSession(opts) {
           return {
             getSessionId() { return 'permission-provenance-fixture'; },

@@ -277,7 +277,7 @@ test('packaged Studio uses a secure path-safe standard scheme', () => {
   );
   assert.equal(resolveStudioAsset('/app/dist', '/../secrets.txt'), null);
   assert.equal(resolveStudioAsset('/app/dist', '/%E0%A4%A'), null);
-  assert.match(desktopMain, /if \(!devUrl\) installStudioProtocol/);
+  assert.match(desktopMain, /root: devUrl \? null : studioDist\(\)/);
   assert.match(desktopMain, /window\.loadURL\(devUrl \|\| STUDIO_URL\)/);
   assert.match(desktopMain, /\['will-navigate', 'will-redirect'\]/);
   assert.match(desktopMain, /function sessionForEvent\(event\)[\s\S]*Untrusted renderer IPC sender/);
@@ -1006,7 +1006,7 @@ test('desktop package registers supported document associations without bundling
   );
   assert.deepEqual(hangulAssociation?.ext, ['hwp', 'hwpx', 'hml']);
   assert.deepEqual(historyAssociation?.ext, ['rhwpx']);
-  assert.equal(historyAssociation?.name, 'Rauhwpx history archive');
+  assert.equal(historyAssociation?.name, 'HamaEditor history archive');
   assert.notEqual(historyAssociation?.name, 'Hangul document');
   assert.equal(historyAssociation?.isPackage, undefined);
   assert.match(desktopMain, /desktop:pick-legacy-history-folder/);
@@ -1015,7 +1015,7 @@ test('desktop package registers supported document associations without bundling
   assert.doesNotMatch(desktopMain, /\['openFile', 'openDirectory'\]/);
   assert.doesNotMatch(desktopMain, /writePortableHistoryFolder\(/);
   assert.doesNotMatch(desktopMain, /desktop:(?:save-portable-history-file|native-file-write-portable-history)/);
-  assert.match(desktopMain, /RauHWPX history archive/);
+  assert.match(desktopMain, /HamaEditor history archive/);
   assert.ok(rootPackage.build.asarUnpack.includes('rhwp/rhwp-agent/**'));
   assert.ok(rootPackage.build.files.every((entry: string) => !/runtime|launch-work/.test(entry)));
 });

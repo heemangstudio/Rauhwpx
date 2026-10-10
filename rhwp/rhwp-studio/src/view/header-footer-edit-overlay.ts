@@ -16,7 +16,7 @@ const HEADER_FOOTER_BADGE_BASE_FONT_SIZE_PX = 10;
 const HEADER_FOOTER_BADGE_BASE_GAP_PX = 4;
 const HEADER_FOOTER_BADGE_MAX_SCALE = 2;
 
-/** HF 편집 안내 꺾쇠 — 본문 page-margin-guides 와 같은 시각 계약(Rauhwpx 인라인). */
+/** HF 편집 안내 꺾쇠 — 본문 page-margin-guides 와 같은 시각 계약(HamaEditor 인라인). */
 const HF_GUIDE_COLOR = '#C0C0C0';
 const HF_GUIDE_LINE_WIDTH = 1;
 const HF_GUIDE_MIN_SCREEN_LINE_WIDTH = 0.8;
@@ -39,7 +39,7 @@ function resolveHeaderFooterGuideLineWidth(displayScale: number): number {
 
 /**
  * 머리말/꼬리말 밴드 네 모서리에 한컴형 바깥 꺾쇠를 그린다.
- * Rauhwpx 에는 page-margin-guides 모듈이 없으므로 HF 오버레이 전용으로 둔다.
+ * HamaEditor 에는 page-margin-guides 모듈이 없으므로 HF 오버레이 전용으로 둔다.
  */
 export function drawHeaderFooterGuideCorners(
   rect: HeaderFooterBandBox,
@@ -112,7 +112,7 @@ export function resolveHeaderFooterBandBox(
   const exact = isHeader ? page.headerArea : page.footerArea;
   if (exact) return exact;
 
-  // 구 WASM / Rauhwpx: bodyLeft·bodyRight 가 없으면 PageDef 여백으로 재구성한다.
+  // 구 WASM / HamaEditor: bodyLeft·bodyRight 가 없으면 PageDef 여백으로 재구성한다.
   const x = page.bodyLeft ?? page.marginLeft;
   const right = page.bodyRight ?? (page.width - page.marginRight);
   const width = Math.max(0, right - x);

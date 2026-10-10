@@ -51,6 +51,8 @@ import {
 } from '../core/document-input-limits.ts';
 import type {
   AgentBridgeDeps,
+  ChatHistoryEntry,
+  ProviderContextUsage,
   AgentBridgeOptions,
   AgentEditorHost,
   AgentViewHost,
@@ -98,11 +100,8 @@ import type {
   StructuredPlan,
   PendingEditsChangeEvent,
   UsageModelBreakdown,
-  UsageSource,
   UsageSummary,
   UsageWindow,
-  CliproxyAccount,
-  CliproxyStatus,
   WritingStyleLanguage,
   WritingStyleCatalog,
   WritingStyleCatalogModel,
@@ -114,6 +113,7 @@ import type {
   DocumentTemplate,
   TemplateCatalog,
   AgentStreamEvent,
+  CompactionSupport,
   SidebarEvent,
   UserQuestionAnswer,
   UserQuestionInteraction,
@@ -238,11 +238,29 @@ export function turnEndDisposition(
   };
 }
 
-export interface ChatHistoryEntry {
-  role: 'user' | 'assistant';
-  text: string;
+export type { ChatHistoryEntry };
+
+/** 이 페이지 로드의 영수증 id 꼬리. requestSeq 는 새로고침마다 0 에서 다시 센다. */
+const RECEIPT_SUFFIX = globalThis.crypto?.randomUUID?.().slice(0, 8)
+  ?? Math.random().toString(36).slice(2, 10);
+
+/** chat-start 에 싣는 대화 맥락. 보내는 순간의 스레드에서 새로 만든다. */
+export interface ChatStartContext {
+  /** 커서가 없거나 재개에 실패했을 때 허브가 쓰는 전체 대화. */
+  history: ChatHistoryEntry[];
+  /** 이 채팅에서 이 프로바이더의 네이티브 세션 커서. */
+  providerSessionId?: string;
+  /** 재개에 성공했을 때만 쓰는, 이 프로바이더가 아직 못 본 메시지. */
+  handoffHistory?: ChatHistoryEntry[];
+  /** 허브가 넘겨줄 대화 예산을 정할 때 쓰는 맥락 창 정보. */
+  providerContextUsage?: ProviderContextUsage;
 }
 
+export type ChatStartContextProvider = (request: { agent: AgentName; threadId: string }) => ChatStartContext | null;
+
+export type ChatCompactResult =
+  | { ok: true; compactionId: string }
+  | { ok: false; code: string; message: string };
 /** 문서 세션을 화면에 붙이고 떼는 호스트 전용 수명 주기 — 사이드바는 쓰지 않는다. */
 type AgentBridgeHostLifecycle = 'attachView' | 'detachView' | 'isViewAttached' | 'isBusy' | 'onBusyChange'
   | 'holdsDocumentWrites';
@@ -320,10 +338,6 @@ export interface AgentBridge {
   consumeCodexReset(idempotencyKey: string, accountKey: string): Promise<CodexResetResult>;
   /** 요금제를 바꾸고 갱신된 요약을 돌려받는다. */
   setUsagePlan(agent: AgentName, plan: string): Promise<UsageSummary | null>;
-  /** CLIProxyAPI 관리 API 에 연결해 공식 요금제 사용량을 받는다. */
-  connectCliproxy(url: string, key: string): Promise<UsageSummary | null>;
-  /** 저장된 CLIProxyAPI 연결을 끊는다. */
-  disconnectCliproxy(): Promise<UsageSummary | null>;
   /** pi 하네스(설치 · 키 · 모델) 설정 상태. */
   requestPiStatus(): Promise<PiStatus | null>;
   /** pi coding agent 설치. 진행 상황은 pi-setup-progress 이벤트로 온다. */
@@ -348,6 +362,13 @@ export interface AgentBridge {
   startChat(agent: AgentName, model?: string, effort?: string, force?: boolean, permissionProfile?: PermissionProfile, workflow?: AgentWorkflow, threadId?: string, documentId?: string | null, documentName?: string | null, history?: ChatHistoryEntry[]): void;
   /** 허브 세션을 폐기하고 새 채팅을 시작할 수 있게 한다. */
   stopChat(): void;
+  /**
+   * 사이드바가 설치한다. 명시적 시작과 암묵적 재시작(허브 재연결, 실패한 시작의 재시도)
+   * 모두 chat-start 를 보내는 순간 이 함수로 대화와 커서를 새로 만든다.
+   */
+  setChatStartContextProvider(provider: ChatStartContextProvider | null): void;
+  /** 현재 세션의 맥락을 압축한다. 허브가 받으면 일반 턴처럼 turn-start … turn-end 로 감싼다. */
+  compactChat(): Promise<ChatCompactResult>;
   /** gpt-5.6-luna 로 스레드 제목 생성 요청. */
   requestTitle(threadId: string, preview: string): string;
   /** 커밋 메시지는 부수 정보다. 오프라인, 실패, 타임아웃이면 null. */
@@ -478,6 +499,56 @@ export class ToolResponseBuffer {
 /** 페이지 로드마다 새로 발급하는 스튜디오 인스턴스 id — 허브가 "잠깐 끊김"과 "새로고침·다른 탭"을 구분한다. */
 const STUDIO_INSTANCE_ID = globalThis.crypto?.randomUUID?.()
   ?? `studio-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+function readCompactionSupport(value: unknown): { compaction?: CompactionSupport } {
+  return value === 'manual' || value === 'auto-only' || value === 'none' ? { compaction: value } : {};
+}
+
+function tokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
+}
+
+/** 맥락 이벤트는 그대로 저장되므로 모양을 확인한다. 다른 이벤트는 그대로 둔다. */
+export function readContextEvent(event: AgentStreamEvent): AgentStreamEvent | null {
+  if (event.type === 'context-usage') {
+    const usedTokens = tokenCount(event.usedTokens);
+    if (!isAgentName(event.agent) || usedTokens === undefined) return null;
+    const maxTokens = tokenCount(event.maxTokens);
+    return {
+      type: 'context-usage',
+      agent: event.agent,
+      usedTokens,
+      ...(maxTokens ? { maxTokens } : {}),
+      ...(typeof event.autoCompact === 'boolean' ? { autoCompact: event.autoCompact } : {}),
+    };
+  }
+  if (event.type === 'compaction') {
+    if (!isAgentName(event.agent) || typeof event.compactionId !== 'string' || !event.compactionId
+      || (event.phase !== 'started' && event.phase !== 'completed' && event.phase !== 'failed')
+      || (event.trigger !== 'auto' && event.trigger !== 'manual')) return null;
+    const beforeTokens = tokenCount(event.beforeTokens);
+    const afterTokens = tokenCount(event.afterTokens);
+    return {
+      type: 'compaction',
+      agent: event.agent,
+      compactionId: event.compactionId,
+      phase: event.phase,
+      trigger: event.trigger,
+      ...(beforeTokens !== undefined ? { beforeTokens } : {}),
+      ...(afterTokens !== undefined ? { afterTokens } : {}),
+      ...(typeof event.message === 'string' && event.message ? { message: event.message } : {}),
+    };
+  }
+  if (event.type === 'turn-end') {
+    const { providerSessionId, resumeLost, ...rest } = event;
+    return {
+      ...rest,
+      ...(typeof providerSessionId === 'string' && providerSessionId ? { providerSessionId } : {}),
+      ...(resumeLost === true ? { resumeLost: true as const } : {}),
+    };
+  }
+  return event;
+}
 
 function isAgentName(v: unknown): v is AgentName {
   return v === 'claude' || v === 'codex' || v === 'pi';
@@ -969,51 +1040,6 @@ function readUsageWindow(value: unknown): UsageWindow {
   };
 }
 
-function readUsageSource(value: unknown): UsageSource {
-  return value === 'cliproxy' ? 'cliproxy' : 'estimate';
-}
-
-function readCliproxyWindow(value: unknown): { percent: number | null; resetsAt: number | null } {
-  const src = (value ?? {}) as Record<string, unknown>;
-  return {
-    percent: nullableNum(src['percent']),
-    resetsAt: nullableNum(src['resetsAt']),
-  };
-}
-
-function readCliproxyAccounts(value: unknown): CliproxyAccount[] {
-  if (!Array.isArray(value)) return [];
-  const out: CliproxyAccount[] = [];
-  for (const raw of value) {
-    if (!raw || typeof raw !== 'object') continue;
-    const src = raw as Record<string, unknown>;
-    const agent = src['agent'] === 'codex' ? 'codex' : src['agent'] === 'claude' ? 'claude' : null;
-    if (!agent) continue;
-    out.push({
-      agent,
-      name: typeof src['name'] === 'string' && src['name'] ? src['name'] : 'unknown',
-      email: typeof src['email'] === 'string' ? src['email'] : null,
-      planType: typeof src['planType'] === 'string' ? src['planType'] : null,
-      session: readCliproxyWindow(src['session']),
-      week: readCliproxyWindow(src['week']),
-      error: typeof src['error'] === 'string' ? src['error'] : null,
-    });
-  }
-  return out;
-}
-
-function readCliproxyStatus(value: unknown): CliproxyStatus {
-  const src = (value ?? {}) as Record<string, unknown>;
-  return {
-    configured: src['configured'] === true,
-    connected: src['connected'] === true,
-    url: typeof src['url'] === 'string' && src['url'] ? src['url'] : null,
-    error: typeof src['error'] === 'string' ? src['error'] : null,
-    checkedAt: nullableNum(src['checkedAt']),
-    accounts: readCliproxyAccounts(src['accounts']),
-  };
-}
-
 const MAX_USAGE_MODEL_ENTRIES = 512;
 const MAX_USAGE_MODEL_NAME_CHARS = 256;
 
@@ -1055,7 +1081,6 @@ function readProviderUsage(value: unknown): ProviderUsage {
       week: nullableNum(limit['week']),
     },
     updatedAt: nullableNum(src['updatedAt']),
-    source: readUsageSource(src['source']),
   };
 }
 
@@ -1088,7 +1113,6 @@ function readUsageSummary(value: unknown): UsageSummary | null {
       codex: readProviderUsage(providers['codex']),
       pi: readProviderUsage(providers['pi']),
     },
-    cliproxy: readCliproxyStatus(src['cliproxy']),
     ...(src['limits'] && typeof src['limits'] === 'object' ? {
       limits: {
         claude: readProviderQuota((src['limits'] as Record<string, unknown>)['claude']),
@@ -1424,8 +1448,12 @@ export class AgentBridgeImpl implements AgentBridge {
     documentId: string | null;
     documentName: string | null;
     history: ChatHistoryEntry[];
+    providerSessionId?: string;
+    handoffHistory?: ChatHistoryEntry[];
+    providerContextUsage?: ProviderContextUsage;
     force?: boolean;
   } | null = null;
+  private chatStartContextProvider: ChatStartContextProvider | null = null;
   private queuedMessages: Array<{
     text: string;
     skillName?: string;
@@ -1448,6 +1476,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private projectWorktreeBinding: ProjectWorktreeBinding | null = null;
   /** 보낸 chat-start 의 응답 전에 작업 공간이 바뀌었다 — 응답 뒤 다시 묶는다. */
   private projectBindPending = false;
+  /** 맥락 제공자가 없는 소비자(스크립트·테스트)용 마지막 startChat 대화. 사이드바는 제공자를 쓴다. */
   private chatHistory: ChatHistoryEntry[] = [];
   private titleRequestSeq = 0;
   private requestSeq = 0;
@@ -2429,11 +2458,18 @@ export class AgentBridgeImpl implements AgentBridge {
             permissionProfile: this.permissionProfile,
             serviceTier: this.serviceTier,
             ...this.workflowState(),
+            ...readCompactionSupport(session.compaction),
           });
           if (pendingQuestion) {
             this.syncEditingLease();
             this.emit({ type: 'user-question-requested', interaction: pendingQuestion, replayed: true });
           }
+          // 다시 붙었을 때 진행 중이던 압축은 started 를 다시 보내 "맥락 압축 중…" 표시를 되살린다.
+          const inFlight = session.compactionInFlight as Record<string, unknown> | null | undefined;
+          const replayedCompaction = inFlight && typeof inFlight === 'object'
+            ? readContextEvent({ ...inFlight, type: 'compaction', phase: 'started', agent: session.agent } as AgentStreamEvent)
+            : null;
+          if (replayedCompaction) this.emit({ type: 'agent', event: replayedCompaction });
           if (this.turnRunning) {
             this.beginPlanExecutionTurn();
             try {
@@ -2682,6 +2718,8 @@ export class AgentBridgeImpl implements AgentBridge {
           permissionProfile: this.permissionProfile,
           serviceTier: this.serviceTier,
           ...this.workflowState(),
+          ...(typeof msg.resumed === 'boolean' ? { resumed: msg.resumed } : {}),
+          ...readCompactionSupport(msg.compaction),
         });
         this.flushQueuedMessages();
         this.notifyPlanningDocumentSaved();
@@ -3105,7 +3143,20 @@ export class AgentBridgeImpl implements AgentBridge {
         });
         break;
       }
+      case 'chat-compact-accepted': {
+        if (typeof msg.requestId === 'string' && typeof msg.compactionId === 'string' && msg.compactionId) {
+          this.requests.settle(msg.requestId, { ok: true, compactionId: msg.compactionId });
+        }
+        break;
+      }
       case 'chat-error': {
+        // 압축 거절은 세션을 건드리지 않는다 — 요청자에게만 돌려준다.
+        if (typeof msg.requestId === 'string' && msg.requestId.startsWith('chat-compact-')
+          && this.requests.settle(msg.requestId, {
+            ok: false,
+            code: typeof msg.code === 'string' ? msg.code : 'RPC_ERROR',
+            message: typeof msg.message === 'string' ? msg.message : '',
+          })) break;
         // 거절된 메시지의 문서 스냅샷은 프로바이더에 닿지 않았다.
         this.turnSnapshots?.reset();
         if (typeof msg.requestId === 'string' && msg.requestId !== this.pendingChatStart?.requestId) break;
@@ -3190,9 +3241,10 @@ export class AgentBridgeImpl implements AgentBridge {
         break;
       }
       case 'agent-event': {
-        const event = msg.event as AgentStreamEvent | undefined;
-        if (!event || typeof event.type !== 'string') break;
-        this.handleAgentEvent(event);
+        const raw = msg.event as AgentStreamEvent | undefined;
+        if (!raw || typeof raw.type !== 'string') break;
+        const event = readContextEvent(raw);
+        if (event) this.handleAgentEvent(event);
         break;
       }
       case 'tool-request': {
@@ -3287,6 +3339,10 @@ export class AgentBridgeImpl implements AgentBridge {
       case 'session-info':
         this.activeAgent = event.agent;
         this.editingAgent = event.agent;
+        break;
+      case 'compaction':
+        // 압축 요약이 문서 본문을 남긴다는 보장이 없다 — 다음 메시지는 문서를 새로 싣는다.
+        if (event.phase === 'completed') this.turnSnapshots?.reset();
         break;
       default:
         break;
@@ -3668,6 +3724,22 @@ export class AgentBridgeImpl implements AgentBridge {
     this.emit({ type: 'chat-stopped' });
   }
 
+  setChatStartContextProvider(provider: ChatStartContextProvider | null): void {
+    this.chatStartContextProvider = provider;
+  }
+
+  async compactChat(): Promise<ChatCompactResult> {
+    if (this.state !== 'connected' || this.activeAgent === null || this.pendingChatStart) {
+      return { ok: false, code: 'NO_SESSION', message: 'No active agent session.' };
+    }
+    const result = await this.request<ChatCompactResult>(
+      { type: 'chat-compact', threadId: this.threadId },
+      'chat-compact',
+      30_000,
+    );
+    return result ?? { ok: false, code: 'NO_RESPONSE', message: 'The hub did not answer the compaction request.' };
+  }
+
   requestTitle(threadId: string, preview: string): string {
     const requestId = `title-${++this.titleRequestSeq}`;
     if (this.state === 'connected') {
@@ -3713,7 +3785,10 @@ export class AgentBridgeImpl implements AgentBridge {
     if (acceptance && (this.messageReceipts.has(acceptance.messageId)
       || this.queuedMessages.some((message) => message.messageId === acceptance.messageId))) return Promise.resolve(null);
     const context = this.referenceContext();
-    const messageId = acceptance?.messageId ?? (stagedReferenceIds.length > 0 || requireReceipt ? `message-${++this.requestSeq}` : undefined);
+    // 영수증 id 는 채팅 메시지의 messageId 로도 저장돼 워터마크가 된다 — 새로고침 뒤에도 겹치지 않게 한다.
+    const messageId = acceptance?.messageId ?? (stagedReferenceIds.length > 0 || requireReceipt
+      ? `message-${++this.requestSeq}-${RECEIPT_SUFFIX}`
+      : undefined);
     return new Promise((resolve) => {
       if (signal?.aborted) {
         resolve(null);
@@ -3778,6 +3853,20 @@ export class AgentBridgeImpl implements AgentBridge {
   private sendPendingChatStart(): void {
     const pending = this.pendingChatStart;
     if (!pending || this.chatStartSent || this.state !== 'connected') return;
+    // 기억해 둔 대화는 그 뒤의 턴을 모른다 — 보내는 순간의 스레드로 대화와 커서를 다시 만든다.
+    const context = this.chatStartContextProvider?.({ agent: pending.agent, threadId: pending.threadId });
+    if (context) {
+      pending.history = context.history.map((entry) => ({ ...entry }));
+      if (context.providerSessionId) {
+        pending.providerSessionId = context.providerSessionId;
+        pending.handoffHistory = (context.handoffHistory ?? []).map((entry) => ({ ...entry }));
+      } else {
+        delete pending.providerSessionId;
+        delete pending.handoffHistory;
+      }
+      if (context.providerContextUsage) pending.providerContextUsage = { ...context.providerContextUsage };
+      else delete pending.providerContextUsage;
+    }
     this.chatStartSent = this.sendJson({
       v: AGENT_PROTOCOL_VERSION,
       type: 'chat-start',
@@ -4491,14 +4580,6 @@ export class AgentBridgeImpl implements AgentBridge {
 
   setUsagePlan(agent: AgentName, plan: string): Promise<UsageSummary | null> {
     return this.request<UsageSummary>({ type: 'usage-plan-set', agent, plan }, 'usage-plan');
-  }
-
-  connectCliproxy(url: string, key: string): Promise<UsageSummary | null> {
-    return this.request<UsageSummary>({ type: 'cliproxy-connect', url, key }, 'cliproxy-connect', 20_000);
-  }
-
-  disconnectCliproxy(): Promise<UsageSummary | null> {
-    return this.request<UsageSummary>({ type: 'cliproxy-disconnect' }, 'cliproxy-disconnect');
   }
 
   requestPiStatus(): Promise<PiStatus | null> {

@@ -19,8 +19,10 @@ import { TOOL_TRACE_ENABLED, traceNow, writeToolTrace } from '../tool-trace.mjs'
 import {
   createLineReader,
   chatPermissionGrantsFor,
+  findSessionFile,
   hasLocalExecutionGrant,
   isPlanningRestricted,
+  isSafeSessionId,
   mcpCapabilityEnv,
   mcpRuntimeFor,
   normalizeExecutionMode,
@@ -223,7 +225,7 @@ function usesNativePlanMode(opts) {
     && normalizeExecutionMode(opts).workflow !== 'question';
 }
 
-export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null } = {}) {
+export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, slashCommands = false } = {}) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
   const localExecution = hasLocalExecutionGrant(opts);
   const planningRestricted = isPlanningRestricted(opts) && !localExecution;
@@ -288,7 +290,9 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null } =
     '--mcp-config', JSON.stringify(mcpConfig),
     '--strict-mcp-config',
     '--setting-sources', '',
-    '--disable-slash-commands',
+    // 수동 압축 턴만 슬래시 명령을 켠다 — 그 턴의 프롬프트는 허브가 정한 "/compact" 하나다.
+    // (--disable-slash-commands 아래에서 /compact 는 "isn't available" 로 끝난다. CLI 2.1.295 확인.)
+    ...(slashCommands ? [] : ['--disable-slash-commands']),
     '--tools', activeTools,
     '--settings', JSON.stringify(settings),
     ...(nativePlan
@@ -308,7 +312,7 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null } =
  * advertises requestUserInput. Without that host capability, buildClaudeArgv
  * remains the automatic MCP fallback.
  */
-export function buildClaudeSdkOptions(opts, sessionId, resume, abortController) {
+export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, { slashCommands = false } = {}) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
   const localExecution = hasLocalExecutionGrant(opts);
   const planningRestricted = isPlanningRestricted(opts) && !localExecution;
@@ -357,7 +361,7 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController) 
     canUseTool,
     cwd: opts.rootDir,
     env: claudeProcessEnv(opts, opts.providerEnv ?? process.env),
-    extraArgs: { 'disable-slash-commands': null },
+    extraArgs: slashCommands ? {} : { 'disable-slash-commands': null },
     forwardSubagentText: true,
     includePartialMessages: true,
     mcpServers: {
@@ -391,6 +395,40 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController) 
   };
 }
 
+/** Claude 가 세션 JSONL 을 두는 설정 폴더 — 스폰 환경(claudeProcessEnv)과 같은 규칙. */
+export function claudeConfigDir(opts, sourceEnv = opts.providerEnv ?? process.env) {
+  if (opts.isolatedHome) return path.join(String(opts.isolatedHome), '.claude');
+  return path.join(sourceEnv.HOME ?? process.env.HOME ?? os.homedir(), '.claude');
+}
+
+/**
+ * 세션 JSONL(`<config>/projects/<cwd>/<id>.jsonl`)이 남아 있는지 본다. cwd 폴더 이름 규칙은
+ * CLI 내부 사항이라 모든 프로젝트 폴더를 본다 — 어긋난 경우는 턴 시점 복구가 맡는다.
+ */
+export async function canResumeClaudeSession(opts, sessionId) {
+  if (!isSafeSessionId(sessionId)) return false;
+  const found = await findSessionFile(
+    path.join(claudeConfigDir(opts), 'projects'),
+    (name) => name === `${sessionId}.jsonl`,
+    { maxDepth: 1 },
+  );
+  return Boolean(found);
+}
+
+const MISSING_CONVERSATION = /No conversation found with session ID/i;
+
+/** `--resume` 한 세션이 저장소에 없을 때 CLI 가 내는 result (모델 호출 전, 종료 코드 1). */
+export function isMissingConversationResult(e) {
+  if (e?.type !== 'result' || e.is_error !== true) return false;
+  const errors = Array.isArray(e.errors) ? e.errors : [];
+  return [...errors, e.result].some((value) => typeof value === 'string' && MISSING_CONVERSATION.test(value));
+}
+
+function finiteTokens(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined;
+}
+
 /**
  * @param {import('./backend.mjs').BackendOptions} opts
  * @returns {import('./backend.mjs').AgentSession}
@@ -405,7 +443,8 @@ export function createClaudeSession(opts, {
   platform = process.platform,
   nodeCommand = process.execPath,
 } = {}) {
-  let sessionId = crypto.randomUUID();
+  const resumeSessionId = isSafeSessionId(opts.resumeSessionId) ? opts.resumeSessionId : null;
+  let sessionId = resumeSessionId ?? crypto.randomUUID();
   const onEvent = opts.onEvent;
 
   /** @type {import('node:child_process').ChildProcess | null} */
@@ -418,18 +457,34 @@ export function createClaudeSession(opts, {
   const childOutputDiscarders = new WeakMap();
   let suppressChildOutput = () => {};
   let uncertainTreeCleanup = false;
-  let hasCompletedTurn = false;
+  // 재개 커서로 시작하면 이미 완료된 turn 이 있는 세션이다 — 첫 스폰부터 --resume 한다.
+  let hasCompletedTurn = Boolean(resumeSessionId);
   // --session-id 는 한 번 스폰에 쓰면 소진된다: 그 스폰이 turn 을 완료하지 못한 채
   // 죽으면(인터럽트/크래시) 같은 ID 재사용 시 "Session ID … is already in use" 로
   // 영구히 실패한다. 재스폰 시 완료된 turn 이 없으면 새 UUID 를 발급한다.
-  let sessionIdConsumed = false;
+  let sessionIdConsumed = Boolean(resumeSessionId);
+  // ── 이번 턴 ───────────────────────────────────────────────
+  // 'compact' 턴은 슬래시 명령을 켜고 "/compact" 만 보낸다.
+  let turnKind = 'message';
+  /** 재개가 사라졌을 때 다시 보낼 글 (허브가 준 전체 기록 프롬프트, 없으면 원래 글). */
+  let turnRetryText = null;
+  let turnResumeLost = false;
+  let turnResumeRetried = false;
+  // 마지막 스폰이 --resume 이었는지 — stderr 의 "No conversation found" 를 해석할 때 쓴다.
+  let lastSpawnResumed = false;
+  // ── 맥락 사용량 ─────────────────────────────────────────────
+  // 루트 모델 호출 하나가 맥락 창에 실은 토큰 (input + cache read + cache creation).
+  let lastContextTokens = null;
+  let contextWindow = null;
+  /** @type {{ compactionId: string, trigger: 'auto'|'manual', beforeTokens?: number } | null} */
+  let activeCompaction = null;
   let turnOpen = false;
   let userTurnGeneration = 0;
   let sawRootTextDelta = false;
   const streamedSubagents = new Set();
   let disposed = false;
   let restartReady = Promise.resolve();
-  /** @type {{ text: string } | null} */
+  /** @type {{ text: string, retryText?: string, kind?: string, replaceSession?: boolean } | null} */
   let queuedTurn = null;
   let stderrTail = '';
   // Only root chat sessions with a host callback enter the bidirectional SDK
@@ -547,7 +602,62 @@ export function createClaudeSession(opts, {
   const workflowFingerprints = new Map();
 
   function buildArgv(resume) {
-    return buildClaudeArgv(opts, sessionId, resume, { agentsPath: writeClaudeAgentsFile(opts.isolatedHome) });
+    return buildClaudeArgv(opts, sessionId, resume, {
+      agentsPath: writeClaudeAgentsFile(opts.isolatedHome),
+      slashCommands: turnKind === 'compact',
+    });
+  }
+
+  function emitContextUsage() {
+    if (lastContextTokens === null) return;
+    onEvent({
+      type: 'context-usage',
+      agent: 'claude',
+      usedTokens: lastContextTokens,
+      ...(contextWindow ? { maxTokens: contextWindow } : {}),
+      autoCompact: true,
+    });
+  }
+
+  /** result.modelUsage 의 contextWindow — 루트 모델 항목을 먼저, 없으면 가장 큰 창. */
+  function updateContextWindow(modelUsage) {
+    if (!modelUsage || typeof modelUsage !== 'object') return;
+    const entries = Object.entries(modelUsage)
+      .filter(([, raw]) => Number.isFinite(raw?.contextWindow) && raw.contextWindow > 0);
+    if (entries.length === 0) return;
+    const root = entries.find(([model]) => model === currentModel)
+      ?? entries.find(([model]) => currentModel && (currentModel.startsWith(model) || model.startsWith(currentModel)))
+      ?? entries.sort((a, b) => b[1].contextWindow - a[1].contextWindow)[0];
+    contextWindow = root[1].contextWindow;
+  }
+
+  function compactionEvent(compaction, phase, extra = {}) {
+    return {
+      type: 'compaction',
+      agent: 'claude',
+      compactionId: compaction.compactionId,
+      phase,
+      trigger: compaction.trigger,
+      ...(compaction.beforeTokens !== undefined ? { beforeTokens: compaction.beforeTokens } : {}),
+      ...extra,
+    };
+  }
+
+  function openCompaction(id, trigger) {
+    return {
+      compactionId: `claude:${id ?? crypto.randomUUID()}`,
+      trigger: trigger === 'manual' || trigger === 'auto' ? trigger : (turnKind === 'compact' ? 'manual' : 'auto'),
+      ...(lastContextTokens !== null ? { beforeTokens: lastContextTokens } : {}),
+    };
+  }
+
+  /** 재개 세션이 저장소에 없었다 — 이후 스폰은 새 세션 ID 로 시작한다. */
+  function forgetLostResume() {
+    turnResumeLost = true;
+    sessionId = crypto.randomUUID();
+    hasCompletedTurn = false;
+    sessionIdConsumed = false;
+    lastContextTokens = null;
   }
 
   function claudeCliLaunch() {
@@ -586,7 +696,9 @@ export function createClaudeSession(opts, {
     if (!turnOpen) return;
     clearSettleTimer();
     turnOpen = false;
-    onEvent(evt);
+    if (!turnResumeLost && lastSpawnResumed && MISSING_CONVERSATION.test(stderrTail)) forgetLostResume();
+    activeCompaction = null;
+    onEvent(turnResumeLost ? { ...evt, resumeLost: true } : evt);
   }
 
   /** result 라인이 담아 온 정보로 턴을 닫는다 — 정착 판정을 거친 뒤에만 호출된다. */
@@ -834,7 +946,40 @@ export function createClaudeSession(opts, {
       });
       return;
     }
-    // 나머지 system subtype (status/thinking_tokens/background_tasks_changed/…)은
+    if (e.parent_tool_use_id) return;
+    if (e.subtype === 'status') {
+      // status:'compacting' → (압축) → status:null + compact_result. 성공의 수치는 뒤따르는
+      // compact_boundary 가 싣는다 (CLI 2.1.295 확인).
+      if (e.status === 'compacting') {
+        if (!activeCompaction) {
+          activeCompaction = openCompaction(e.uuid);
+          onEvent(compactionEvent(activeCompaction, 'started'));
+        }
+      } else if (e.compact_result === 'failed') {
+        const compaction = activeCompaction ?? openCompaction(e.uuid);
+        activeCompaction = null;
+        onEvent(compactionEvent(compaction, 'failed', {
+          ...(e.compact_error ? { message: truncate(String(e.compact_error), 500) } : {}),
+        }));
+      }
+      return;
+    }
+    if (e.subtype === 'compact_boundary') {
+      const meta = e.compact_metadata ?? {};
+      const compaction = activeCompaction ?? openCompaction(e.uuid, meta.trigger);
+      activeCompaction = null;
+      if (meta.trigger === 'manual' || meta.trigger === 'auto') compaction.trigger = meta.trigger;
+      const beforeTokens = finiteTokens(meta.pre_tokens) ?? compaction.beforeTokens;
+      const afterTokens = finiteTokens(meta.post_tokens);
+      onEvent(compactionEvent({ ...compaction, beforeTokens }, 'completed', {
+        ...(afterTokens !== undefined ? { afterTokens } : {}),
+      }));
+      // post_tokens 는 대화만 센다 — 시스템 프롬프트·도구 정의(이 앱에서 약 60k)가 빠져 맥락 크기로는
+      // 너무 작다. 압축 전 사용량도 되살아나지 않게 비워 두고, 다음 루트 호출이 실제 값을 채운다.
+      lastContextTokens = null;
+      return;
+    }
+    // 나머지 system subtype (thinking_tokens/background_tasks_changed/…)은
     // 정보성 — task_* 수명주기가 유일한 진실이므로 버린다.
   }
 
@@ -874,6 +1019,14 @@ export function createClaudeSession(opts, {
       const alreadyStreamed = parentToolUseId
         ? streamedSubagents.has(parentToolUseId)
         : sawRootTextDelta;
+      if (!parentToolUseId) {
+        const usage = e.message?.usage;
+        const contextTokens = (finiteTokens(usage?.input_tokens) ?? 0)
+          + (finiteTokens(usage?.cache_read_input_tokens) ?? 0)
+          + (finiteTokens(usage?.cache_creation_input_tokens) ?? 0);
+        // 로컬 명령의 합성 응답은 사용량이 0 이다 — 맥락 크기로 치지 않는다.
+        if (contextTokens > 0) lastContextTokens = contextTokens;
+      }
       for (const block of blocks) {
         if (block?.type === 'tool_use') {
           onEvent({
@@ -917,8 +1070,24 @@ export function createClaudeSession(opts, {
       return;
     }
     if (e?.type === 'result') {
+      if (turnOpen && !turnResumeRetried && lastSpawnResumed && isMissingConversationResult(e)) {
+        // 재개할 세션이 저장소에 없다 — 모델 호출 전이다. 새 세션으로 같은 턴을 한 번 다시 보낸다.
+        turnResumeRetried = true;
+        forgetLostResume();
+        if (turnKind === 'compact') {
+          // 빈 새 세션을 압축할 수는 없다 — 압축 턴은 실패로 닫는다.
+          lastStopReason = 'error_during_execution';
+          resultErrorMessage = 'The resumed Claude session no longer exists.';
+          settleTurn(source);
+          return;
+        }
+        retryTurnOnFreshSession(source);
+        return;
+      }
       hasCompletedTurn = true;
       emitUsage(e);
+      updateContextWindow(e.modelUsage);
+      emitContextUsage();
       if (e.permission_denials?.length) {
         // 거부된 호출은 실행되지 않았지만 모델은 이미 실패 응답을 받았다 — 턴
         // 오류가 아니라 도구 결과로 흘려 pending 행을 닫고 턴 정착에 관여하지 않는다.
@@ -1021,6 +1190,7 @@ export function createClaudeSession(opts, {
     const resume = hasCompletedTurn;
     if (!resume && sessionIdConsumed) sessionId = crypto.randomUUID();
     sessionIdConsumed = true;
+    lastSpawnResumed = resume;
     usageBaseline = new Map();
     const owner = {
       generation: ++sdkGeneration,
@@ -1045,7 +1215,7 @@ export function createClaudeSession(opts, {
         requestUserInput(request, signal) {
           return requestSdkUserInput(owner, request, signal);
         },
-      }, sessionId, resume, owner.abortController);
+      }, sessionId, resume, owner.abortController, { slashCommands: turnKind === 'compact' });
       options.env = { ...options.env, ...launch.env };
       // SDK 는 pathToClaudeCodeExecutable 이 없으면 env.PATH 를 보지 않고 자체
       // 번들 바이너리로 떨어진다 — spawn 경로와 같은 바이너리를 가리키도록 PATH
@@ -1186,6 +1356,7 @@ export function createClaudeSession(opts, {
       sessionId = crypto.randomUUID();
     }
     sessionIdConsumed = true;
+    lastSpawnResumed = resume;
     // 새 프로세스 = usage 누적 카운터 리셋 — 차분 기준선도 함께 리셋한다.
     usageBaseline = new Map();
     const spawnEnv = claudeProcessEnv(opts, opts.providerEnv ?? process.env);
@@ -1375,14 +1546,33 @@ export function createClaudeSession(opts, {
     return restartReady;
   }
 
-  function beginQueuedTurn(text) {
-    if (disposed) return;
-    userTurnGeneration += 1;
-    turnOpen = true;
-    sawRootTextDelta = false;
-    streamedSubagents.clear();
-    resetTurnTaskState();
-    onEvent({ type: 'turn-start', agent: 'claude' });
+  /**
+   * 재개 세션이 없다는 result 뒤: 그 스폰을 정리하고 같은 턴을 새 세션으로 다시 보낸다.
+   * turn-start 는 다시 내지 않는다 — 허브에는 한 턴이다.
+   */
+  function retryTurnOnFreshSession(source) {
+    const text = turnRetryText;
+    const cleanup = source ? closeSdkQuery(source) : (() => {
+      const proc = child;
+      childAlive = false;
+      return proc ? stopChildProcess(proc, true) : Promise.resolve(true);
+    })();
+    void cleanup.then((cleaned) => {
+      if (disposed || !turnOpen) return;
+      if (!cleaned) {
+        const message = 'Claude process cleanup could not be confirmed before retrying on a fresh session';
+        onEvent({ type: 'error', agent: 'claude', message });
+        endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'failed', errorMessage: message });
+        return;
+      }
+      sawRootTextDelta = false;
+      streamedSubagents.clear();
+      resetTurnTaskState();
+      dispatchTurnText(text);
+    });
+  }
+
+  function dispatchTurnText(text) {
     try {
       if (nativeUserInput) dispatchNative(text);
       else dispatchLegacy(text);
@@ -1401,6 +1591,73 @@ export function createClaudeSession(opts, {
       onEvent({ type: 'error', agent: 'claude', message: `failed to dispatch message: ${failure?.message ?? failure}` });
       endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'exited' });
     }
+  }
+
+  function beginQueuedTurn(entry) {
+    if (disposed) return;
+    userTurnGeneration += 1;
+    turnOpen = true;
+    turnKind = entry.kind;
+    turnRetryText = entry.retryText;
+    turnResumeLost = false;
+    turnResumeRetried = false;
+    if (entry.replaceSession) {
+      // 허브가 이 세션의 기록 전달을 믿지 않는다 — 새 세션 ID 로 전체 기록을 보내고 resumeLost 를 싣는다.
+      forgetLostResume();
+      turnResumeRetried = true;
+    }
+    activeCompaction = null;
+    sawRootTextDelta = false;
+    streamedSubagents.clear();
+    resetTurnTaskState();
+    onEvent({ type: 'turn-start', agent: 'claude' });
+    dispatchTurnText(entry.text);
+  }
+
+  function queueTurn(entry) {
+    if (disposed) return;
+    if (turnOpen || queuedTurn) throw new Error('Claude already has a turn in progress');
+    if (uncertainSdkCleanup) {
+      throw new Error('Claude SDK cleanup remains unconfirmed; start a new isolated session');
+    }
+    if (uncertainTreeCleanup) {
+      throw new Error('Claude process-tree cleanup remains unconfirmed; start a new isolated session');
+    }
+    // 세션 교체: 지금의 자식/SDK 쿼리를 내리고 그 정리가 끝난 뒤에 새 세션으로 시작한다.
+    if (entry.replaceSession) restartForConfigChange();
+    queuedTurn = entry;
+    void Promise.all([restartReady, sdkShutdownReady]).then(async ([, sdkCleaned]) => {
+      if (queuedTurn !== entry || disposed) return;
+      if (!sdkCleaned) {
+        failQueuedTurn(entry, new Error(
+          'Claude SDK cleanup remains unconfirmed; start a new isolated session',
+        ));
+        return;
+      }
+      if (child && !childAlive) {
+        const released = await stopChildProcess(child, false);
+        if (queuedTurn !== entry || disposed) return;
+        if (!released || child) {
+          failQueuedTurn(entry);
+          return;
+        }
+      }
+      let launch;
+      try {
+        if (opts.prepareLaunch) {
+          launch = await opts.prepareLaunch();
+          if (queuedTurn !== entry || disposed) return;
+          applyPreparedProviderLaunch(opts, 'claude', launch);
+        }
+        if (queuedTurn !== entry || disposed) return;
+        queuedTurn = null;
+        beginQueuedTurn(entry);
+      } catch (error) {
+        failQueuedTurn(entry, error);
+      } finally {
+        launch?.release?.();
+      }
+    }, (error) => failQueuedTurn(entry, error));
   }
 
   function failQueuedTurn(entry, error) {
@@ -1422,49 +1679,21 @@ export function createClaudeSession(opts, {
     getSessionId() {
       return sessionId;
     },
-    sendUserMessage(text) {
-      if (disposed) return;
-      if (turnOpen || queuedTurn) throw new Error('Claude already has a turn in progress');
-      if (uncertainSdkCleanup) {
-        throw new Error('Claude SDK cleanup remains unconfirmed; start a new isolated session');
-      }
-      if (uncertainTreeCleanup) {
-        throw new Error('Claude process-tree cleanup remains unconfirmed; start a new isolated session');
-      }
-      const entry = { text };
-      queuedTurn = entry;
-      void Promise.all([restartReady, sdkShutdownReady]).then(async ([, sdkCleaned]) => {
-        if (queuedTurn !== entry || disposed) return;
-        if (!sdkCleaned) {
-          failQueuedTurn(entry, new Error(
-            'Claude SDK cleanup remains unconfirmed; start a new isolated session',
-          ));
-          return;
-        }
-        if (child && !childAlive) {
-          const released = await stopChildProcess(child, false);
-          if (queuedTurn !== entry || disposed) return;
-          if (!released || child) {
-            failQueuedTurn(entry);
-            return;
-          }
-        }
-        let launch;
-        try {
-          if (opts.prepareLaunch) {
-            launch = await opts.prepareLaunch();
-            if (queuedTurn !== entry || disposed) return;
-            applyPreparedProviderLaunch(opts, 'claude', launch);
-          }
-          if (queuedTurn !== entry || disposed) return;
-          queuedTurn = null;
-          beginQueuedTurn(entry.text);
-        } catch (error) {
-          failQueuedTurn(entry, error);
-        } finally {
-          launch?.release?.();
-        }
-      }, (error) => failQueuedTurn(entry, error));
+    compactionSupport: 'manual',
+    canResume(id) {
+      return canResumeClaudeSession(opts, id);
+    },
+    sendUserMessage(text, { resumeFallbackText, replaceSession } = {}) {
+      queueTurn({
+        kind: 'message',
+        text,
+        retryText: typeof resumeFallbackText === 'string' && resumeFallbackText ? resumeFallbackText : text,
+        replaceSession: replaceSession === true,
+      });
+    },
+    /** 수동 압축: 슬래시 명령을 켠 스폰에 "/compact" 를 한 턴으로 보낸다. */
+    compact() {
+      queueTurn({ kind: 'compact', text: '/compact', retryText: '/compact' });
     },
     async setPermissionProfile(profile) {
       if (turnOpen || queuedTurn) throw new Error('Permission profile can only change between turns');

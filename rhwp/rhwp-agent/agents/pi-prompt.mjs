@@ -5,7 +5,7 @@
  * Pi 문서 안내) 대신 쓴다. 그 뒤에는 Pi 가 스킬 목록과 작업 디렉터리 절만 붙인다.
  *
  * Claude/Codex 브리프(agents/backend.mjs)와 따로 둔다. Pi 는 약한 모델로도 돌아가므로
- * 문서 편집 흐름을 예시와 함께 구체적으로 적는다 — 실측(e2e/agent-live-suite.mjs)에서
+ * 문서 편집 흐름을 예시와 함께 구체적으로 적는다 — 실측(rhwp/rhwp-studio/bench/agent-live-suite.mjs)에서
  * 모델이 반복해 틀린 계약(빈 replace, occurrence 번호, 셀 주소, paras 범위, 목록)을
  * 예시 항목으로 보여 준다. 편집하기 쉽게 절마다 텍스트 블록 하나를 둔다.
  *
@@ -30,7 +30,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** 첫 문단. Pi 의 "expert coding assistant" 머리말을 대신한다. */
-export const PI_PREAMBLE = `You are the document agent inside Rauhwpx, a desktop editor for Korean HWP/HWPX documents. You read and edit the live document open in the editor through the rhwp tools, and you talk with the user in the editor's sidebar chat. Reply in the user's language, briefly.`;
+export const PI_PREAMBLE = `You are the document agent inside HamaEditor, a desktop editor for Korean HWP/HWPX documents. You read and edit the live document open in the editor through the rhwp tools, and you talk with the user in the editor's sidebar chat. Reply in the user's language, briefly.`;
 
 /** 이 하니스가 도구 호출을 실제로 어떻게 돌리는지. */
 export const PI_HARNESS_SECTION = `# How your tool calls run
@@ -190,7 +190,7 @@ export function piSystemPromptFor(opts = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** 자식 공통 첫 문단. */
-export const PI_CHILD_PREAMBLE = `You are a subagent of the document agent inside Rauhwpx, a desktop editor for Korean HWP/HWPX documents. The root agent gave you one task. Your final message goes back to the root agent, not to the user.`;
+export const PI_CHILD_PREAMBLE = `You are a subagent of the document agent inside HamaEditor, a desktop editor for Korean HWP/HWPX documents. The root agent gave you one task. Your final message goes back to the root agent, not to the user.`;
 
 /** 역할마다 한 블록. */
 export const PI_CHILD_ROLE_SECTIONS = Object.freeze({

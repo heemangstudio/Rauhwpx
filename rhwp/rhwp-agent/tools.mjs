@@ -607,7 +607,7 @@ const BROWSER_ID_ARG = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/, 'bro
 const BASE_TOOL_DEFINITIONS = [
   {
     name: 'read_agent_instructions',
-    description: 'Read the app-only AGENTS.md (durable user preferences for Rauhwpx chats): content, revision, updatedAt. Read before update_agent_instructions. Not a project AGENTS.md; never shared outside this app.',
+    description: 'Read the app-only AGENTS.md (durable user preferences for HamaEditor chats): content, revision, updatedAt. Read before update_agent_instructions. Not a project AGENTS.md; never shared outside this app.',
     shape: {},
   },
   {
@@ -621,7 +621,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'read_product_skill',
-    description: 'Read an enabled rhwp product skill (start with SKILL.md) or one of its text resources; returns the directory digest and file list. Read only the referenced files you need.',
+    description: 'Read an enabled HamaEditor product skill (start with SKILL.md) or one of its text resources; returns the directory digest and file list. Read only the referenced files you need.',
     shape: {
       name: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/),
       resourcePath: z.string().min(1).max(500).default('SKILL.md').optional(),
@@ -629,7 +629,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'commit_product_skill',
-    description: 'Change the rhwp product skill library: create, write one file, replace the body, import a harness skill or delete a user skill. Send only the fields for that action; pass the current digest as base for write/body/delete/replace. Never write provider-global skill directories.',
+    description: 'Change the HamaEditor product skill library: create, write one file, replace the body, import a harness skill or delete a user skill. Send only the fields for that action; pass the current digest as base for write/body/delete/replace. Never write provider-global skill directories.',
     shape: {
       action: z.enum(['create', 'write', 'body', 'import', 'delete']),
       name: z.string().optional(),
@@ -1645,7 +1645,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'request_permission',
-    description: 'Request a missing project, download, browser, or local execution permission for this chat only. Explain the required action. Returns pending immediately; end the turn and wait for the user to grant or deny the permission pill. A request does not authorize any action. Document editing requires 에이전트 or 전체 mode; Plan document edits require approval of the canonical plan.',
+    description: 'Request a missing project, download, browser or local execution permission for this chat, explaining why. Returns pending: end the turn and wait. It authorizes nothing. Document edits need 에이전트/전체 mode or an approved plan.',
     shape: {
       capability: z.enum(CHAT_PERMISSION_CAPABILITIES),
       reason: z.string().trim().min(1).max(1_000),
@@ -1794,11 +1794,11 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'register_copy_layout_template',
-    description: 'Save a copy-layout result from this chat as a reusable template once the user asks or accepts. Pass artifactId, the id between /artifacts/ and the file name in the 템플릿 미리보기 link; it works after app restarts. Do not search files or MCP resources for it. Declining needs no call.',
+    description: 'Save a copy-layout result from this chat as a template when asked. Pass artifactId from its 템플릿 미리보기 link (/artifacts/<id>/<file>); never search files or MCP resources.',
     shape: {
       artifactId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{15,127}$/).optional()
-        .describe('Id from the /artifacts/<artifactId>/<file> link of the copy-layout card'),
-      jobId: z.string().uuid().optional().describe('Completed copy-layout jobId, when artifactId is unknown'),
+        .describe('Id in /artifacts/<id>/<file>'),
+      jobId: z.string().uuid().optional().describe('Completed copy-layout jobId'),
       name: z.string().min(1).max(80).optional(),
     },
     validate(args) {

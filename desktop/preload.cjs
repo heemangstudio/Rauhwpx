@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     agentSessionId,
   ),
   getUniqueInstalls: () => ipcRenderer.invoke('desktop:get-unique-installs'),
+  takeRebrandImport: () => ipcRenderer.invoke('desktop:take-rebrand-import'),
+  takeRebrandImportChunk: (token, index) => ipcRenderer.invoke('desktop:take-rebrand-import-chunk', token, index),
+  finishRebrandImport: (token, outcome) => ipcRenderer.invoke('desktop:finish-rebrand-import', token, outcome),
   getLaunchFiles: () => ipcRenderer.invoke('desktop:get-launch-files'),
   getLaunchGeneratedDocument: () => ipcRenderer.invoke('desktop:get-launch-generated-document'),
   openGeneratedDocumentWindow: (payload) => ipcRenderer.invoke(
@@ -99,7 +102,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   ),
   releaseDocument: (slotId) => ipcRenderer.invoke('desktop:document-release', slotId),
   listSystemFonts: (options) => ipcRenderer.invoke('desktop:fonts-list', options),
-  readSystemFont: (id) => ipcRenderer.invoke('desktop:fonts-read', id),
+  systemFontBaseUrl: () => ipcRenderer.invoke('desktop:fonts-base'),
   ensureAgentHub: () => ipcRenderer.invoke('agent-hub:ensure'),
   respondToCloseRequest: (requestId, allowClose) => (
     ipcRenderer.invoke('desktop:close-response', requestId, allowClose)

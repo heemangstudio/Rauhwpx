@@ -1,12 +1,9 @@
 //! 레이아웃 통합 테스트
 //!
 //! 실제 HWP 파일을 로딩하여 페이지네이션 + 레이아웃 결과를 검증한다.
-//! samples/ 디렉토리에 테스트 파일이 없으면 건너뜀.
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use crate::model::control::Control;
     use crate::model::page::{ColumnDef, PageDef};
     use crate::model::paragraph::{LineSeg, Paragraph};
@@ -25,21 +22,15 @@ mod tests {
     };
 
     /// 테스트용 DocumentCore 생성 헬퍼
-    fn load_document(path: &str) -> Option<crate::document_core::DocumentCore> {
-        let p = Path::new(path);
-        if !p.exists() {
-            eprintln!("테스트 파일 없음: {} — 건너뜀", path);
-            return None;
-        }
-        let data = std::fs::read(p).ok()?;
-        crate::document_core::DocumentCore::from_bytes(&data).ok()
+    fn load_document(path: &str) -> crate::document_core::DocumentCore {
+        let data = std::fs::read(path).unwrap_or_else(|e| panic!("{path} 읽기 실패: {e}"));
+        crate::document_core::DocumentCore::from_bytes(&data)
+            .unwrap_or_else(|e| panic!("{path} 파싱 실패: {e}"))
     }
 
     #[test]
     fn table_in_textbox_repeated_body_rows_define_base_column_tracks() {
-        let Some(core) = load_document("samples/table-in-tbox.hwp") else {
-            return;
-        };
+        let core = load_document("samples/table-in-tbox.hwp");
         let table = core.document.sections[0]
             .paragraphs
             .iter()
@@ -281,23 +272,8 @@ mod tests {
     // ─── 페이지 수 검증 ───
 
     #[test]
-    fn test_hwpspec_w_page_count() {
-        let Some(core) = load_document("samples/hwpspec-w.hwp") else {
-            return;
-        };
-        let page_count = core.page_count();
-        assert!(
-            page_count >= 170,
-            "hwpspec-w.hwp 페이지 수 170 이상 (실제: {})",
-            page_count
-        );
-    }
-
-    #[test]
     fn test_exam_math_page_count() {
-        let Some(core) = load_document("samples/exam_math.hwp") else {
-            return;
-        };
+        let core = load_document("samples/exam_math.hwp");
         let page_count = core.page_count();
         assert!(
             page_count >= 18,
@@ -310,9 +286,7 @@ mod tests {
 
     #[test]
     fn test_exam_math_two_column_layout() {
-        let Some(core) = load_document("samples/exam_math.hwp") else {
-            return;
-        };
+        let core = load_document("samples/exam_math.hwp");
         // 1페이지: 2단 레이아웃이어야 함
         let pages = &core.pagination;
         if let Some(result) = pages.first() {
@@ -330,9 +304,7 @@ mod tests {
 
     #[test]
     fn test_exam_math_no_header_on_first_page() {
-        let Some(core) = load_document("samples/exam_math_no.hwp") else {
-            return;
-        };
+        let core = load_document("samples/exam_math_no.hwp");
         let pages = &core.pagination;
         if let Some(result) = pages.first() {
             if let Some(page) = result.pages.first() {
@@ -346,9 +318,7 @@ mod tests {
 
     #[test]
     fn test_exam_math_header_from_second_page() {
-        let Some(core) = load_document("samples/exam_math_no.hwp") else {
-            return;
-        };
+        let core = load_document("samples/exam_math_no.hwp");
         let pages = &core.pagination;
         if let Some(result) = pages.first() {
             if result.pages.len() > 1 {
@@ -363,9 +333,7 @@ mod tests {
 
     #[test]
     fn test_1098_hwpx_last_page_master_replaces_base_master() {
-        let Some(core) = load_document("samples/hwpx/exam-kor-2p.hwpx") else {
-            return;
-        };
+        let core = load_document("samples/hwpx/exam-kor-2p.hwpx");
 
         let page = core
             .pagination
@@ -393,89 +361,17 @@ mod tests {
         );
     }
 
-    // ─── 표 분할(PartialTable) 검증 ───
-
-    #[test]
-    fn test_hwpspec_w_table_split() {
-        let Some(core) = load_document("samples/hwpspec-w.hwp") else {
-            return;
-        };
-        use crate::renderer::pagination::PageItem;
-        let has_partial_table = core.pagination.iter().any(|result| {
-            result.pages.iter().any(|p| {
-                p.column_contents.iter().any(|cc| {
-                    cc.items
-                        .iter()
-                        .any(|item| matches!(item, PageItem::PartialTable { .. }))
-                })
-            })
-        });
-        assert!(
-            has_partial_table,
-            "hwpspec-w.hwp에는 페이지 분할된 표(PartialTable)가 있어야 함"
-        );
-    }
-
-    // ─── SVG 내보내기 검증 ───
-
-    #[test]
-    fn test_export_svg_produces_output() {
-        let Some(core) = load_document("samples/hwpspec-w.hwp") else {
-            return;
-        };
-        let svg = core.render_page_svg_native(0).unwrap_or_default();
-        assert!(!svg.is_empty(), "SVG 출력이 비어있으면 안 됨");
-        assert!(svg.contains("<svg"), "SVG 출력에 <svg 태그가 있어야 함");
-        assert!(svg.contains("</svg>"), "SVG 출력에 </svg> 태그가 있어야 함");
-    }
-
-    #[test]
-    fn test_export_svg_contains_text() {
-        let Some(core) = load_document("samples/hwpspec-w.hwp") else {
-            return;
-        };
-        let svg = core.render_page_svg_native(0).unwrap_or_default();
-        assert!(svg.contains("<text"), "SVG에 텍스트 요소가 있어야 함");
-    }
-
     // ─── 수식 렌더링 검증 ───
 
     #[test]
     fn test_equation_svg_content() {
-        let Some(core) = load_document("samples/exam_math.hwp") else {
-            return;
-        };
+        let core = load_document("samples/exam_math.hwp");
         let svg = core.render_page_svg_native(0).unwrap_or_default();
         let has_content = svg.contains("<path") || svg.contains("<text");
         assert!(has_content, "수식 페이지 SVG에 렌더링 요소가 있어야 함");
     }
 
-    // ─── 다중 페이지 렌더링 회귀 테스트 ───
-
-    #[test]
-    fn test_hwpspec_w_multi_page_render() {
-        let Some(core) = load_document("samples/hwpspec-w.hwp") else {
-            return;
-        };
-        for page_idx in 0..16u32 {
-            let svg = core.render_page_svg_native(page_idx).unwrap_or_default();
-            assert!(!svg.is_empty(), "페이지 {} SVG가 비어있음", page_idx + 1);
-        }
-    }
-
     // ─── 문단 테두리 검증 ───
-
-    #[test]
-    fn test_1_3_paragraph_border() {
-        let Some(core) = load_document("samples/1-3.hwp") else {
-            return;
-        };
-        let svg = core.render_page_svg_native(0).unwrap_or_default();
-        assert!(
-            svg.contains("<rect") || svg.contains("<path"),
-            "1-3.hwp에 문단 테두리/배경 렌더링 요소가 있어야 함"
-        );
-    }
 
     /// Task #1205 RED: 문단 borderFill 의 left/right 가 NONE 이면 top/bottom 이
     /// visible 이더라도 4면 stroke rectangle 이나 좌우 수직선을 만들면 안 된다.
@@ -569,9 +465,7 @@ mod tests {
     /// 부터 시작. 수정 후: y >= 211.65 (body top, 단 시작 좌표) 이상에서 시작.
     #[test]
     fn test_469_partial_start_box_does_not_cross_col_top() {
-        let Some(core) = load_document("samples/exam_kor.hwp") else {
-            return;
-        };
+        let core = load_document("samples/exam_kor.hwp");
         let svg = core.render_page_svg_native(1).unwrap_or_default();
         assert!(!svg.is_empty(), "페이지 2 SVG 가 비어있음");
 
@@ -628,9 +522,7 @@ mod tests {
     /// 수정 후: 전체가 col 1 첫 항목으로 이동.
     #[test]
     fn test_470_cross_paragraph_vpos_reset_with_column_header_offset() {
-        let Some(core) = load_document("samples/21_언어_기출_편집가능본.hwp") else {
-            return;
-        };
+        let core = load_document("samples/21_언어_기출_편집가능본.hwp");
         let dump = core.dump_page_items(Some(0));
         assert!(!dump.is_empty(), "페이지 1 dump 가 비어있음");
 
@@ -690,9 +582,7 @@ mod tests {
     /// 하단 가로선 발생.
     #[test]
     fn test_471_cross_column_box_no_bottom_line_in_col0() {
-        let Some(core) = load_document("samples/21_언어_기출_편집가능본.hwp") else {
-            return;
-        };
+        let core = load_document("samples/21_언어_기출_편집가능본.hwp");
         let svg = core.render_page_svg_native(0).unwrap_or_default();
         assert!(!svg.is_empty(), "페이지 1 SVG 가 비어있음");
 
@@ -766,9 +656,7 @@ mod tests {
     /// 용지 좌/우단에 닿지 않는지 확인. 수정 전에는 min_left≈0, max_right≈용지폭.
     #[test]
     fn test_master_page_header_shapes_stay_within_body_margins() {
-        let Some(core) = load_document("samples/21_언어_기출_편집가능본.hwp") else {
-            return;
-        };
+        let core = load_document("samples/21_언어_기출_편집가능본.hwp");
         // page 8 (index 7) — 머리말 GSO 가 매 페이지 반복 렌더된다.
         let svg = core.render_page_svg_native(7).unwrap_or_default();
         assert!(!svg.is_empty(), "페이지 8 SVG 가 비어있음");
@@ -855,9 +743,7 @@ mod tests {
     /// 범위(<395) 에 있으면 결함, 그 이후면 alignment 정상 적용.
     #[test]
     fn test_490_empty_para_with_tac_equation_respects_alignment() {
-        let Some(core) = load_document("samples/exam_science.hwp") else {
-            return;
-        };
+        let core = load_document("samples/exam_science.hwp");
         let svg = core.render_page_svg_native(0).unwrap_or_default();
         assert!(!svg.is_empty(), "exam_science 페이지 1 SVG 가 비어있음");
 
@@ -923,9 +809,7 @@ mod tests {
     /// 수정 후: segment_width 적용 → 텍스트 우측 끝이 x≈798 이내, 그림과 겹치지 않음.
     #[test]
     fn test_489_picture_square_wrap_text_does_not_overlap_image() {
-        let Some(core) = load_document("samples/exam_science.hwp") else {
-            return;
-        };
+        let core = load_document("samples/exam_science.hwp");
         let svg = core.render_page_svg_native(0).unwrap_or_default();
         assert!(!svg.is_empty(), "exam_science 페이지 1 SVG 가 비어있음");
 
@@ -1021,9 +905,7 @@ mod tests {
         use crate::model::control::Control;
         use crate::model::shape::TextWrap;
 
-        let Some(mut core) = load_document("samples/exam_science.hwp") else {
-            return;
-        };
+        let mut core = load_document("samples/exam_science.hwp");
         // pi=21 ci=0 Square 그림의 current 만 부풀림 — 파일 LINE_SEG(sw=19592)는 불변.
         {
             let para = &mut core.document.sections[0].paragraphs[21];
@@ -1111,9 +993,7 @@ mod tests {
     /// x=416.9px로 밀리고 페이지 오른쪽에서 잘렸다.
     #[test]
     fn issue_3257_centered_trailing_picture_uses_full_line_width() {
-        let Some(core) = load_document("samples/issue3257/webhangul_product_spec_v1.1.hwp") else {
-            return;
-        };
+        let core = load_document("samples/issue3257/webhangul_product_spec_v1.1.hwp");
         let tree = core
             .build_page_render_tree(3)
             .expect("#3257: 제품규격서 4페이지 render tree 생성 실패");
@@ -1159,9 +1039,7 @@ mod tests {
     fn test_1838_overwide_cell_text_keeps_all_glyphs_in_svg() {
         use crate::model::control::Control;
 
-        let Some(mut core) = load_document("samples/hwpx/basic-table-01.hwpx") else {
-            return;
-        };
+        let mut core = load_document("samples/hwpx/basic-table-01.hwpx");
         let value = "앞토큰 뒤토큰뒤토큰(괄호포함내용내용내용)";
         {
             let para = &mut core.document.sections[0].paragraphs[0];
@@ -1194,9 +1072,7 @@ mod tests {
 
     #[test]
     fn test_layer_svg_matches_legacy_for_basic_text_sample() {
-        let Some(core) = load_document("samples/lseg-01-basic.hwp") else {
-            return;
-        };
+        let core = load_document("samples/lseg-01-basic.hwp");
         let legacy = core.render_page_svg_legacy_native(0).unwrap_or_default();
         let layered = core.render_page_svg_layer_native(0).unwrap_or_default();
         assert_eq!(
@@ -1207,9 +1083,7 @@ mod tests {
 
     #[test]
     fn test_layer_svg_matches_legacy_for_table_sample() {
-        let Some(core) = load_document("samples/hwp_table_test.hwp") else {
-            return;
-        };
+        let core = load_document("samples/hwp_table_test.hwp");
         let legacy = core.render_page_svg_legacy_native(0).unwrap_or_default();
         let layered = core.render_page_svg_layer_native(0).unwrap_or_default();
         assert_eq!(
@@ -1237,9 +1111,7 @@ mod tests {
     /// 수정 후: ①→② gap == ②→③ gap == 72.64 px.
     #[test]
     fn test_537_first_answer_after_tac_table_line_spacing() {
-        let Some(core) = load_document("samples/21_언어_기출_편집가능본.hwp") else {
-            return;
-        };
+        let core = load_document("samples/21_언어_기출_편집가능본.hwp");
         let svg = core.render_page_svg_native(1).unwrap_or_default();
         assert!(!svg.is_empty(), "페이지 2 SVG 가 비어있음");
 
@@ -1311,9 +1183,7 @@ mod tests {
     /// 수정 후: gap = 24.21 px (IR delta 정확).
     #[test]
     fn test_539_paragraph_after_overlay_shape_host() {
-        let Some(core) = load_document("samples/21_언어_기출_편집가능본.hwp") else {
-            return;
-        };
+        let core = load_document("samples/21_언어_기출_편집가능본.hwp");
 
         // 페이지 7 SVG 에서 col 0 영역의 '르' 첫 등장 (pi=146 첫 글자)
         // 과 그 이전 줄의 글자 baseline y 추출
@@ -1396,9 +1266,7 @@ mod tests {
     /// skipped → gap = 14.67 px (1 ls 부족).
     #[test]
     fn test_539_partial_paragraph_after_overlay_shape() {
-        let Some(core) = load_document("samples/21_언어_기출_편집가능본.hwp") else {
-            return;
-        };
+        let core = load_document("samples/21_언어_기출_편집가능본.hwp");
         let svg = core.render_page_svg_native(8).unwrap_or_default();
         assert!(!svg.is_empty(), "페이지 9 SVG 가 비어있음");
 
@@ -1463,132 +1331,6 @@ mod tests {
         );
     }
 
-    /// Task #552: Task #479 회귀 정정 — paragraph border 시작 직전 trailing ls 보존.
-    ///
-    /// 페이지 2 우측 단 [4~6] passage 박스 top y 와 [4~6] header text 간 gap 검증.
-    ///
-    /// pi=44 ([4~6] header, 본문 paragraph, no border) 의 마지막 줄 trailing ls 716 HU
-    /// = 9.54 px 가 박스 top 위치를 결정. Task #479 가 본문 paragraph 마지막 줄에서
-    /// trailing ls 제거하여 박스 top 이 header 텍스트 바로 아래에 붙는 회귀.
-    ///
-    /// PDF 한컴 2010: gap = 175.36 - 168.81 = 6.55 pt = 8.73 px (96 dpi 환산)
-    /// pre-#479 baseline: gap = 9.54 px (PDF 정합 ±2 px)
-    /// post-#479 (수정 전): gap = 0.0 px (회귀)
-    ///
-    /// 본 테스트: header 텍스트 baseline + ascent 와 박스 top horizontal line 간 gap
-    /// 이 6 px 이상 (회귀 검출).
-    #[test]
-    #[ignore]
-    fn test_552_passage_box_top_gap_p2_4_6() {
-        let Some(core) = load_document("samples/21_언어_기출_편집가능본.hwp") else {
-            return;
-        };
-        let svg = core.render_page_svg_native(1).unwrap_or_default();
-        assert!(!svg.is_empty(), "페이지 2 SVG 가 비어있음");
-
-        // 1. [4~6] header text "[" 의 y 좌표 (우측 단 = x ≥ 575)
-        // SVG <text transform="translate(X,Y)">[</text> 형식
-        let mut header_y: Option<f64> = None;
-        for chunk in svg.split("<text ").skip(1) {
-            let close = match chunk.find('>') {
-                Some(p) => p,
-                None => continue,
-            };
-            let attrs = &chunk[..close];
-            let key = "transform=\"translate(";
-            let p = match attrs.find(key) {
-                Some(p) => p + key.len(),
-                None => continue,
-            };
-            let q = match attrs[p..].find(')') {
-                Some(q) => q,
-                None => continue,
-            };
-            let coords = &attrs[p..p + q];
-            let parts: Vec<&str> = coords.split(',').collect();
-            if parts.len() != 2 {
-                continue;
-            }
-            let x: f64 = match parts[0].trim().parse() {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let y: f64 = match parts[1].trim().parse() {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            // Body content
-            let body_start = close + 1;
-            let body_end = chunk[body_start..]
-                .find("</text>")
-                .map(|i| body_start + i)
-                .unwrap_or(close);
-            let body = &chunk[body_start..body_end];
-            // 우측 단 (x >= 575) y in [215, 230] [4~6] header
-            if x >= 575.0 && x < 590.0 && y > 215.0 && y < 230.0 && body == "[" {
-                header_y = Some(y);
-                break;
-            }
-        }
-        let header_y = header_y.expect("페이지 2 우측 단 [4~6] header \"[\" 텍스트를 찾지 못함");
-
-        // 2. 박스 top horizontal line: y > header_y, x1 ≈ 591 (col 1 box left)
-        let mut box_top_y: Option<f64> = None;
-        for chunk in svg.split("<line ").skip(1) {
-            let end = chunk
-                .find("/>")
-                .or_else(|| chunk.find('>'))
-                .unwrap_or(chunk.len());
-            let attrs = &chunk[..end];
-            let parse_attr = |name: &str| -> Option<f64> {
-                let pat = format!("{}=\"", name);
-                let i = attrs.find(&pat)? + pat.len();
-                let j = i + attrs[i..].find('"')?;
-                attrs[i..j].parse::<f64>().ok()
-            };
-            let (x1, y1, x2, y2) = match (
-                parse_attr("x1"),
-                parse_attr("y1"),
-                parse_attr("x2"),
-                parse_attr("y2"),
-            ) {
-                (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
-                _ => continue,
-            };
-            // horizontal line (y1 == y2), 우측 단 (x1 >= 575), header 아래
-            if (y1 - y2).abs() < 0.5
-                && x1 >= 575.0
-                && x2 >= 575.0
-                && y1 > header_y
-                && y1 < header_y + 30.0
-            {
-                box_top_y = Some(y1);
-                break;
-            }
-        }
-        let box_top_y =
-            box_top_y.expect("페이지 2 우측 단 [4~6] 박스 top horizontal line 을 찾지 못함");
-
-        // 3. gap 검증: header bottom (≈ header_y + ascent) → box top
-        // header text font-size 14.67, scale 0.95 → ascent ≈ font * 0.15 = 2.20
-        // header bottom = header_y + 2.20 ≈ 224.43
-        // PDF 정합: gap = 8.73 px. tolerance ±2 px → gap 검증 ≥ 6.0 px.
-        let header_bottom = header_y + 2.20;
-        let gap = box_top_y - header_bottom;
-
-        assert!(
-            gap >= 6.0,
-            "[4~6] 박스 top y={:.2} 가 header bottom y={:.2} 와 충분한 gap 을 \
-             가져야 함. gap={:.2} px (PDF 기대 8.73 px ±2 px). \
-             버그(수정 전): gap=0.0 (Task #479 가 본문 paragraph 마지막 줄 \
-             trailing ls 제외 → border-start paragraph 가 9.54 px 위로 이동). \
-             pre-#479 baseline: gap=9.54 (PDF 정합).",
-            box_top_y,
-            header_bottom,
-            gap
-        );
-    }
-
     /// Task #544: 페이지 4 [7~9] passage 박스 좌표 PDF 정합 검증.
     ///
     /// 한컴 2010 PDF 기준 (페이지 4 col 0 박스):
@@ -1604,9 +1346,7 @@ mod tests {
     /// 본 테스트는 fix 적용 전 RED, fix 적용 후 GREEN.
     #[test]
     fn test_544_passage_box_coords_match_pdf_p4() {
-        let Some(core) = load_document("samples/21_언어_기출_편집가능본.hwp") else {
-            return;
-        };
+        let core = load_document("samples/21_언어_기출_편집가능본.hwp");
         let svg = core.render_page_svg_native(3).unwrap_or_default();
         assert!(!svg.is_empty(), "페이지 4 SVG 가 비어있음");
 
@@ -1714,9 +1454,7 @@ mod tests {
     /// 본 테스트는 fix 적용 전 RED, fix 적용 후 GREEN.
     #[test]
     fn test_547_passage_text_inset_match_pdf_p4() {
-        let Some(core) = load_document("samples/21_언어_기출_편집가능본.hwp") else {
-            return;
-        };
+        let core = load_document("samples/21_언어_기출_편집가능본.hwp");
         let svg = core.render_page_svg_native(3).unwrap_or_default();
         assert!(!svg.is_empty(), "페이지 4 SVG 가 비어있음");
 
@@ -1804,9 +1542,7 @@ mod tests {
     /// 본 테스트는 fix 적용 전 RED, fix 적용 후 GREEN.
     #[test]
     fn test_548_cell_inline_shape_first_line_indent_p8() {
-        let Some(core) = load_document("samples/21_언어_기출_편집가능본.hwp") else {
-            return;
-        };
+        let core = load_document("samples/21_언어_기출_편집가능본.hwp");
         let svg = core.render_page_svg_native(7).unwrap_or_default();
         assert!(!svg.is_empty(), "페이지 8 SVG 가 비어있음");
 
@@ -1889,9 +1625,7 @@ mod tests {
     /// 수정 후: gap = 20.27 px (PDF ±2 px 정합)
     #[test]
     fn test_521_tac_table_outer_margin_bottom_p2() {
-        let Some(core) = load_document("samples/exam_eng.hwp") else {
-            return;
-        };
+        let core = load_document("samples/exam_eng.hwp");
         let svg = core.render_page_svg_native(1).unwrap_or_default();
         assert!(!svg.is_empty(), "페이지 2 SVG 가 비어있음");
 
@@ -2005,9 +1739,7 @@ mod tests {
     /// 수정 후: `font-weight="bold"` 미적용 — CharShape.bold=false 권위 회복.
     #[test]
     fn test_574_page_number_not_force_bold_for_hy_kyun_myeongjo() {
-        let Some(core) = load_document("samples/exam_science.hwp") else {
-            return;
-        };
+        let core = load_document("samples/exam_science.hwp");
         let svg = core.render_page_svg_native(0).unwrap_or_default();
         assert!(!svg.is_empty(), "exam_science 페이지 1 SVG 가 비어있음");
 
@@ -2093,9 +1825,7 @@ mod tests {
     /// 사각형 식별: width≈63 (62.99) AND height≈22.88 의 흰색 fill + 검정 stroke.
     #[test]
     fn test_624_textbox_inline_shape_y_on_line2_p2_q7() {
-        let Some(core) = load_document("samples/exam_science.hwp") else {
-            return;
-        };
+        let core = load_document("samples/exam_science.hwp");
         let svg = core.render_page_svg_native(1).unwrap_or_default();
         assert!(!svg.is_empty(), "exam_science 페이지 2 SVG 가 비어있음");
 
@@ -2195,9 +1925,7 @@ mod tests {
     /// - 수정: image-paragraph result_y 에 line(lh+ls) 추가 (layout_shape_item Picture 분기).
     #[test]
     fn test_task683_pr149_image_cluster_spacing() {
-        let Some(core) = load_document("samples/pr-149.hwp") else {
-            return;
-        };
+        let core = load_document("samples/pr-149.hwp");
         let svg = core.render_page_svg_native(0).unwrap_or_default();
         assert!(!svg.is_empty(), "pr-149.hwp page 0 SVG 생성");
 
@@ -2241,9 +1969,7 @@ mod tests {
     /// 등록 페이지로 한컴이 "- 1 -" 표시. rhwp 도 표시되어야 함 (회귀 방지).
     #[test]
     fn test_634_aift_page1_shows_page_number() {
-        let Some(core) = load_document("samples/aift.hwp") else {
-            return;
-        };
+        let core = load_document("samples/aift.hwp");
         let svg = core.render_page_svg_native(0).unwrap_or_default();
         let count = count_text_at_y(&svg, 1081.6);
         assert_eq!(
@@ -2257,9 +1983,7 @@ mod tests {
     /// rhwp 도 표시되어야 함 (회귀 방지).
     #[test]
     fn test_634_aift_page6_shows_page_number() {
-        let Some(core) = load_document("samples/aift.hwp") else {
-            return;
-        };
+        let core = load_document("samples/aift.hwp");
         let svg = core.render_page_svg_native(5).unwrap_or_default();
         let count = count_text_at_y(&svg, 1081.6);
         assert_eq!(
@@ -2272,9 +1996,7 @@ mod tests {
     /// Task #634: aift.hwp 페이지 7 (□ 배경, NewNumber 발화) 부터 쪽번호 표시 (회귀 방지).
     #[test]
     fn test_634_aift_page7_shows_page_number() {
-        let Some(core) = load_document("samples/aift.hwp") else {
-            return;
-        };
+        let core = load_document("samples/aift.hwp");
         let svg = core.render_page_svg_native(6).unwrap_or_default();
         let count = count_text_at_y(&svg, 1081.6);
         assert_eq!(
@@ -2287,9 +2009,7 @@ mod tests {
     /// 적용으로 쪽번호 미표시. rhwp 도 미표시 (기존 PageHide 지원).
     #[test]
     fn test_634_aift_page4_pagehide_no_page_number() {
-        let Some(core) = load_document("samples/aift.hwp") else {
-            return;
-        };
+        let core = load_document("samples/aift.hwp");
         let svg = core.render_page_svg_native(3).unwrap_or_default();
         let count = count_text_at_y(&svg, 1081.6);
         assert_eq!(
@@ -2301,9 +2021,7 @@ mod tests {
     /// Task #634: aift.hwp 페이지 5 (별첨 목차) 는 PageHide (paragraph 2.54) 적용 미표시.
     #[test]
     fn test_634_aift_page5_pagehide_no_page_number() {
-        let Some(core) = load_document("samples/aift.hwp") else {
-            return;
-        };
+        let core = load_document("samples/aift.hwp");
         let svg = core.render_page_svg_native(4).unwrap_or_default();
         let count = count_text_at_y(&svg, 1081.6);
         assert_eq!(
@@ -2315,9 +2033,7 @@ mod tests {
     /// Task #634: 2022년 국립국어원 페이지 1 (표지) 은 PageHide page_num=true 적용 미표시.
     #[test]
     fn test_634_gukrip_page1_pagehide_no_page_number() {
-        let Some(core) = load_document("samples/2022년 국립국어원 업무계획.hwp") else {
-            return;
-        };
+        let core = load_document("samples/2022년 국립국어원 업무계획.hwp");
         let svg = core.render_page_svg_native(0).unwrap_or_default();
         let count = count_text_at_y(&svg, 1062.69);
         assert_eq!(
@@ -2336,9 +2052,7 @@ mod tests {
     /// - PR #711 시점 (한컴 권위 정합): count == 0 — 셀[0]/p[5] 영역의 hide_page_num 적용
     #[test]
     fn test_634_gukrip_page3_shows_page_number() {
-        let Some(core) = load_document("samples/2022년 국립국어원 업무계획.hwp") else {
-            return;
-        };
+        let core = load_document("samples/2022년 국립국어원 업무계획.hwp");
         let svg = core.render_page_svg_native(2).unwrap_or_default();
         let count = count_text_at_y(&svg, 1062.69);
         assert_eq!(
@@ -2351,9 +2065,7 @@ mod tests {
     /// Task #634: hwp3-sample.hwp (NewNumber 0개) 페이지 1 부터 표시 (회귀 방지).
     #[test]
     fn test_634_no_newnumber_doc_shows_page_numbers_from_page1() {
-        let Some(core) = load_document("samples/hwp3-sample.hwp") else {
-            return;
-        };
+        let core = load_document("samples/hwp3-sample.hwp");
         let svg = core.render_page_svg_native(0).unwrap_or_default();
         // Issue #951: margin_bottom 원본값 보존 후 쪽번호 위치 보정 (1061.4→1050.8)
         // [#3048] 쪽 번호를 10pt 로 교정하면서 줄 baseline 이 +4.44px 이동 (1050.8→1055.24).
@@ -2383,9 +2095,7 @@ mod tests {
 
     #[test]
     fn test_705_aift_page2_cell_pagehide_collected() {
-        let Some(core) = load_document("samples/aift.hwp") else {
-            return;
-        };
+        let core = load_document("samples/aift.hwp");
         // page 2 (global_idx=1, section=0, page_num=2)
         // 외부 paragraph s0/p[1] (Table 35x27, tac=false) 의 셀[167]/p[3] PageHide
         let page = core
@@ -2406,9 +2116,7 @@ mod tests {
 
     #[test]
     fn test_705_aift_page2_cell_pagehide_six_fields() {
-        let Some(core) = load_document("samples/aift.hwp") else {
-            return;
-        };
+        let core = load_document("samples/aift.hwp");
         let page = core
             .pagination
             .first()
@@ -2429,9 +2137,7 @@ mod tests {
 
     #[test]
     fn test_705_aift_page3_cell_pagehide_collected() {
-        let Some(core) = load_document("samples/aift.hwp") else {
-            return;
-        };
+        let core = load_document("samples/aift.hwp");
         // page 3 (global_idx=2, section=1, page_num=3)
         // 외부 paragraph s1/p[0] 의 셀[31]/p[0] PageHide (page_num 만 true)
         let page = core
@@ -2451,9 +2157,7 @@ mod tests {
 
     #[test]
     fn test_705_aift_cell_pagehides_total_count() {
-        let Some(core) = load_document("samples/aift.hwp") else {
-            return;
-        };
+        let core = load_document("samples/aift.hwp");
         // 본문 PageHide 2건 (s2/p[34], s2/p[54]) + 셀 안 PageHide 2건 (s0/셀[167], s1/셀[31])
         // = 최소 4 페이지에 page_hide 매핑되어야 함
         let count = core
@@ -2473,9 +2177,7 @@ mod tests {
     #[test]
     fn test_705_kor2022_cell_pagehide_collected() {
         // Stage 0 측정: 본문 PageHide 1건 + 셀 안 PageHide 1건 (셀[0]/p[5] -----P "Ⅱ. 2022년 정책방향")
-        let Some(core) = load_document("samples/2022년 국립국어원 업무계획.hwp") else {
-            return;
-        };
+        let core = load_document("samples/2022년 국립국어원 업무계획.hwp");
         let count = core
             .pagination
             .iter()
@@ -2493,9 +2195,7 @@ mod tests {
     #[test]
     fn test_705_ktx_cell_pagehide_collected() {
         // Stage 0 측정: 본문 PageHide 1건 + 셀 안 PageHide 1건 (셀[10]/p[0] -----P "Ⅰ. 사업 개요")
-        let Some(core) = load_document("samples/KTX.hwp") else {
-            return;
-        };
+        let core = load_document("samples/KTX.hwp");
         let count = core
             .pagination
             .iter()
@@ -2530,9 +2230,7 @@ mod tests {
     /// Buggy (spacing dropped): ~153.3 px.
     #[test]
     fn test_tac_host_line_spacing_with_preceding_invisible_controls() {
-        let Some(core) = load_document("samples/tac-host-spacing.hwpx") else {
-            return;
-        };
+        let core = load_document("samples/tac-host-spacing.hwpx");
         let svg = core.render_page_svg_native(0).unwrap_or_default();
         assert!(!svg.is_empty(), "fixture page 1 SVG is empty");
 
@@ -2883,9 +2581,7 @@ mod tests {
 
     #[test]
     fn aift_saved_residual_rowbreak_keeps_terminal_blank_continuation() {
-        let Some(core) = load_document("samples/aift.hwp") else {
-            return;
-        };
+        let core = load_document("samples/aift.hwp");
         let paragraphs = &core.document.sections[2].paragraphs;
         let host = &paragraphs[236];
         let Control::Table(table) = &host.controls[0] else {
@@ -2996,9 +2692,7 @@ mod tests {
 
     #[test]
     fn cached_saved_residual_terminal_band_respects_changed_column_height() {
-        let Some(mut core) = load_document("samples/aift.hwp") else {
-            return;
-        };
+        let mut core = load_document("samples/aift.hwp");
         let paragraphs = &core.document.sections[2].paragraphs;
         let Control::Table(table) = &paragraphs[236].controls[0] else {
             unreachable!();

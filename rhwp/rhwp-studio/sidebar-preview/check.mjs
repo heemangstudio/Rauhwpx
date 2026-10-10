@@ -15,6 +15,7 @@ import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
 import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
+import { checkContextPreview } from './context.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock, checkNewChatViewMode } from './parallel-chats.check.mjs';
 import { checkChatResume } from './chat-resume.check.mjs';
@@ -30,6 +31,7 @@ const focusedChecks = {
   worktrees: (h) => checkWorktrees({ page: h.page, open: h.open, screenshot: h.screenshot }),
   fleet: (h) => checkFleetPreview(h.page, h.origin),
   sessions: (h) => checkSessionsPreview(h.page, h.origin),
+  context: (h) => checkContextPreview(h.page, h.origin, h.artifacts),
   resume: (h) => checkChatResume(h.page, h.origin, h.screenshot),
   chip: (h) => checkChipAlignment(h.page, h.origin),
   'pi-models': (h) => checkPiModels(h.page, h.origin),
@@ -51,7 +53,7 @@ const executablePath = findBrowserExecutable();
 assert(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable.');
 await mkdir(artifacts, { recursive: true });
 // Own server + fresh browser profile: checks do not need or alter a running app/preview.
-const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-sidebar-check-'));
+const cacheDir = await mkdtemp(resolve(tmpdir(), 'hamaeditor-sidebar-check-'));
 const server = await createServer({
   cacheDir,
   configFile: resolve(studio, 'vite.sidebar.config.ts'),

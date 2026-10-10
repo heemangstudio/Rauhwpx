@@ -29,8 +29,13 @@ export async function checkPlanPreview(page, origin, artifacts) {
   assert.deepEqual(await page.$$eval('.ag-plan-source-pill', nodes => nodes.map(node => node.textContent)), original.sources.map(source => source.title));
   assert.deepEqual(await page.$$eval('.ag-todo-text', nodes => nodes.map(node => node.textContent)), original.steps.map(step => step.title));
   await (await page.$('.ag-root')).screenshot({ path: resolve(artifacts, 'plan-initial.png') });
+  // 계획 칸이 넘쳐도 승인 버튼은 칸 안으로 스크롤해 닿을 수 있어야 한다.
   await page.$eval('.ag-plan-card-slot', node => { node.scrollTop = node.scrollHeight; });
-  assert.equal(await page.$eval('.ag-plan-approve', node => node.checkVisibility()), true);
+  assert.equal(await page.$eval('.ag-plan-approve', node => {
+    const slot = node.closest('.ag-plan-card-slot').getBoundingClientRect();
+    const button = node.getBoundingClientRect();
+    return node.checkVisibility() && button.top >= slot.top && button.bottom <= slot.bottom;
+  }), true);
   await (await page.$('.ag-root')).screenshot({ path: resolve(artifacts, 'plan-actions.png') });
   await page.$eval('.ag-plan-card-slot', node => { node.scrollTop = 0; });
 
@@ -64,13 +69,15 @@ export async function checkPlanPreview(page, origin, artifacts) {
     });
   });
   await page.click('.ag-plan-approve');
-  await page.waitForFunction((count) => {
-    const steps = [...document.querySelectorAll('.ag-todo')];
-    return steps.length === count && steps.every(node => node.dataset.status === 'pending')
-      && document.querySelector('.ag-todo-count');
-  }, {}, revised.steps.length);
-  await page.waitForSelector('.ag-todo[data-status="in-progress"]');
-  await page.waitForFunction(() => document.querySelectorAll('.ag-todo[data-status="in-progress"]')[0]?.dataset.stepId === 'step-2');
+  const stepCount = revised.steps.length;
+  await page.waitForFunction(count => {
+    const todos = [...document.querySelectorAll('.ag-todo')];
+    return todos.length === count && todos.every(node => node.dataset.status === 'pending')
+      && document.querySelector('.ag-todo-count')?.textContent === `0/${count}`;
+  }, {}, stepCount);
+  await page.waitForFunction(() => document.querySelector('.ag-todo[data-status="in-progress"]')?.dataset.stepId === 'step-2');
+  // 실행 중 에이전트가 update_todos 로 늘린 할 일도 목록에 나타난다.
+  await page.waitForSelector('.ag-todo[data-step-id="todo-1"]');
   await new Promise(resolve => setTimeout(resolve, 350));
   await (await page.$('.ag-root')).screenshot({ path: resolve(artifacts, 'plan-running.png') });
   await page.waitForFunction(() => window.sidebarPreview.snapshot().pendingChanges === 1);

@@ -1,15 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { stripTypeScriptTypes } from 'node:module';
+import { fileURLToPath } from 'node:url';
+
+import { createTestModuleServer } from './support/module-server.ts';
 
 // 최종 mouse-up이 사용하는 실제 clamp 함수를 실행한다. DOM과 명령 모듈은 이 계산에 필요 없다.
-const source = readFileSync(new URL('../src/engine/input-handler-table.ts', import.meta.url), 'utf8');
-const start = source.indexOf('function clampCompensatedResizeDelta(');
-const end = source.indexOf('\nexport function startResizeDrag', start);
-assert.ok(start >= 0 && end > start);
-const clamp = new Function('MIN_TABLE_CELL_SIZE_HWP',
-  `${stripTypeScriptTypes(source.slice(start, end))}; return clampCompensatedResizeDelta;`)(200);
+const vite = await createTestModuleServer(fileURLToPath(new URL('../', import.meta.url)));
+const { clampCompensatedResizeDelta: clamp } = await vite.ssrLoadModule('/src/engine/input-handler-table.ts') as typeof import('../src/engine/input-handler-table.ts');
+test.after(() => vite.close());
+
 const path = [
   { controlIndex: 0, cellIndex: 0, cellParaIndex: 9 },
   { controlIndex: 0, cellIndex: 0, cellParaIndex: 0 },

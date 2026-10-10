@@ -19,7 +19,7 @@ export function createUpdateLifecycle({
   }
 
   async function reportError(error) {
-    logger.warn('[rauhwpx] update failed:', error?.message ?? error);
+    logger.warn('[hamaeditor] update failed:', error?.message ?? error);
     if (error && typeof error === 'object') {
       if (reportedErrors.has(error)) return;
       reportedErrors.add(error);
@@ -31,15 +31,15 @@ export function createUpdateLifecycle({
       try {
         const { response } = await showMessageBox({
           type: 'warning',
-          message: failedInstall ? 'Rauhwpx could not install the update' : 'Rauhwpx could not update',
-          detail: `${error?.message ?? String(error)}${failedInstall ? '\nRestart Rauhwpx to try again, or download the latest release.' : '\nChoose Check for Updates to try again.'}`,
+          message: failedInstall ? 'HamaEditor could not install the update' : 'HamaEditor could not update',
+          detail: `${error?.message ?? String(error)}${failedInstall ? '\nRestart HamaEditor to try again, or download the latest release.' : '\nChoose Check for Updates to try again.'}`,
           buttons: ['Open releases page', failedInstall ? 'Quit' : 'OK'],
           defaultId: 1,
           cancelId: 1,
         });
         if (response === 0) await openReleases();
       } catch (dialogError) {
-        logger.warn('[rauhwpx] update error dialog failed:', dialogError);
+        logger.warn('[hamaeditor] update error dialog failed:', dialogError);
       } finally {
         // Services have stopped and MacUpdater may retain a native staging
         // listener after an error. Retry in a fresh process, never a second
@@ -58,10 +58,10 @@ export function createUpdateLifecycle({
       try {
         const { response } = await showMessageBox({
           type: 'info',
-          message: `Rauhwpx ${downloaded.version ?? ''} is ready to install`,
+          message: `HamaEditor ${downloaded.version ?? ''} is ready to install`,
           detail: platform === 'win32'
             ? 'Your documents will close before the installer opens. Windows may ask you to confirm the installer. Choose Check for Updates to install later.'
-            : 'Rauhwpx will restart after your documents close. Choose Check for Updates to install later.',
+            : 'HamaEditor will restart after your documents close. Choose Check for Updates to install later.',
           buttons: [platform === 'win32' ? 'Install now' : 'Restart to install', 'Later'],
           defaultId: 1,
           cancelId: 1,
@@ -85,7 +85,7 @@ export function createUpdateLifecycle({
     updater.autoInstallOnAppQuit = false;
     updater.on('error', (error) => {
       if (handoffStarted || installRequested || isInteractive()) void reportError(error);
-      else logger.warn('[rauhwpx] background update failed:', error?.message ?? error);
+      else logger.warn('[hamaeditor] background update failed:', error?.message ?? error);
     });
     updater.on('update-downloaded', (info) => {
       const alreadyDownloaded = downloaded !== null && downloaded.version === info?.version;
@@ -98,7 +98,7 @@ export function createUpdateLifecycle({
     try {
       await cleanup();
     } catch (error) {
-      logger.warn('[rauhwpx] quit cleanup failed:', error);
+      logger.warn('[hamaeditor] quit cleanup failed:', error);
     }
     if (!installRequested) {
       app.exit(0);

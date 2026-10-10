@@ -15,7 +15,7 @@ use std::io::{self, Read, Write};
 use crate::model::bin_data::{BinData, BinDataContent, BinDataStreamEncoding, BinDataType};
 use crate::model::document::{Document, Preview};
 
-use super::body_text::{serialize_section, serialize_section_limited};
+use super::body_text::serialize_section_limited;
 use super::doc_info::{
     serialize_doc_info, serialize_doc_info_generated_limited, serialize_doc_info_limited,
     surgical_update_section_count,

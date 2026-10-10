@@ -254,9 +254,9 @@ python3 rhwp/tools/editing_parity/batch_visual_compare.py \
 
 # Existing focused Rust checks, selected according to the actual patch.
 cd rhwp
-cargo test --locked --test pr_agent_cell_equation
-cargo test --locked --test editing_parity_word_spacing
-cargo test --locked --test hwp5_strikeout_shape_parity
+cargo test --locked --test it pr_agent_cell_equation
+cargo test --locked --test it editing_parity_word_spacing
+cargo test --locked --test it hwp5_strikeout_shape_parity
 ```
 
 The commands start at the repository root, then switch to `rhwp/` for Rust fixture tests. The comparator's native-Skia and Python prerequisites are documented in the [existing guide](../rhwp/tools/editing_parity/README.md). Its native results supplement the default Canvas2D Studio checks; they do not replace them. Browser editor checks require the full Studio/WASM setup, not the sidebar-only preview.

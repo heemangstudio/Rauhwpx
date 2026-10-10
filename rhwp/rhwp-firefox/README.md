@@ -1,8 +1,8 @@
-# rhwp — HWP 문서 뷰어 & 에디터 (Firefox 확장)
+# HamaEditor — HWP 문서 뷰어 & 에디터 (Firefox 확장)
 
 브라우저에서 HWP/HWPX 파일을 열고 편집합니다. 처리는 브라우저 안 WASM에서 끝납니다.
 
-이 트리는 [Rauhwpx](https://github.com/ghandhitechnology/Rauhwpx) 포크의 확장 소스입니다. AMO 등록명은 여전히 rhwp입니다.
+이 트리는 [HamaEditor](https://github.com/ghandhitechnology/Rauhwpx) 포크의 확장 소스입니다. AMO 등록명은 여전히 rhwp입니다.
 
 ## 설치
 
@@ -12,7 +12,7 @@
 
 1. 웹에서 HWP를 받으면 뷰어 탭이 열립니다.
 2. 확장 아이콘을 누른 뒤 빈 뷰어에 파일을 끌어다 놓습니다.
-3. HWP 링크를 우클릭하고 "rhwp로 열기"를 고릅니다.
+3. HWP 링크를 우클릭하고 "HamaEditor로 열기"를 고릅니다.
 4. 페이지의 HWP 링크 옆 파란 H 배지를 누릅니다.
 
 인쇄는 Ctrl+P 또는 파일 메뉴입니다. 저장은 Ctrl+S입니다. HWP와 HWPX를 저장할 수 있고, HWPX에서 HWP로 변환 저장도 됩니다.
