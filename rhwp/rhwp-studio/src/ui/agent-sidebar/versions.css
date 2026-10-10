@@ -925,3 +925,8 @@
 
 /* 집중 화면 작업 칸에서만 검토 카드를 담는다. */
 .ag-versions-review-host:empty { display: none; }
+
+/* 가지 이름 앞의 갈래 아이콘. 글자 기준선에 맞춘다. */
+.ag-versions-chip-name .branch-icon {
+  vertical-align: -1px;
+}

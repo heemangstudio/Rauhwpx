@@ -25,7 +25,7 @@ function assertBefore(contents: string, first: string, second: string): void {
 }
 
 test('untrusted drops, dropped images, save identity reads and remote URLs stay bounded', () => {
-  const droppedImage = between('    if (isImage) {', '    // HWP/HWPX/HML/RHWPX');
+  const droppedImage = between('\n  if (isImage) {', '\n  // HWP/HWPX/HML/RHWPX');
   assertBefore(droppedImage, "readBlobBytesWithLimit(file, INSERTED_IMAGE_MAX_BYTES, '그림')", 'new Image()');
   assertBefore(droppedImage, 'assertEncodedImageDecodeDimensions(data', 'new Image()');
 

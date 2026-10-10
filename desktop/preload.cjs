@@ -84,6 +84,23 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     documentId,
     handleId,
   ),
+  inspectNativeDocuments: (documentIds) => ipcRenderer.invoke(
+    'desktop:inspect-native-documents',
+    Array.isArray(documentIds) ? documentIds.map(String) : [],
+  ),
+  relocateNativeDocument: (documentId) => ipcRenderer.invoke(
+    'desktop:relocate-native-document',
+    documentId,
+  ),
+  readRememberedNativeDocument: (documentId) => ipcRenderer.invoke(
+    'desktop:read-remembered-native-document',
+    documentId,
+  ),
+  revealNativeDocument: (documentId) => ipcRenderer.invoke('desktop:reveal-native-document', documentId),
+  openNativeDocumentWindow: (documentId) => ipcRenderer.invoke(
+    'desktop:open-native-document-window',
+    documentId,
+  ),
   reserveDocument: (identity, nativeHandleId, slotId) => ipcRenderer.invoke(
     'desktop:document-reserve',
     identity,

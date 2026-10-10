@@ -50,7 +50,7 @@ test(
     await page.waitForFunction(
       () =>
         !(
-          document.querySelector('#document-empty-state') as HTMLElement
+          document.querySelector('#document-home') as HTMLElement
         ).checkVisibility() && Boolean((window as any).__inputHandler),
       { timeout: 30000 },
     );

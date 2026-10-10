@@ -1,6 +1,8 @@
 /* 문서 이름 옆의 작업 트리 표시. 색은 버전 그래프의 그 가지 줄 색을 쓴다. */
 .worktree-chip {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   flex: 0 0 auto;
   max-width: 120px;
   margin-left: 6px;
@@ -17,3 +19,6 @@
   white-space: nowrap;
 }
 .worktree-chip[hidden] { display: none; }
+
+.worktree-chip .branch-icon { flex: none; }
+.worktree-chip-label { overflow: hidden; text-overflow: ellipsis; }

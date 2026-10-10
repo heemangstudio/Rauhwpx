@@ -397,6 +397,8 @@ export interface AgentBridge {
   deleteTemplate(id: string): Promise<void>;
   setActiveTemplate(id: string | null): void;
   getActiveTemplate(): DocumentTemplate | null;
+  /** 템플릿 원본 바이트(문서 홈의 미리보기와 새 문서 만들기). */
+  fetchTemplateContent(template: DocumentTemplate): Promise<Uint8Array>;
   /** 읽기 전용 템플릿 미리보기 창이 실제로 열렸음을 허브에 확인한다. */
   stageReference(scopeId: string, file: File, signal?: AbortSignal): Promise<StagedReference>;
   discardStagedReference(scopeId: string, stageId: string): Promise<void>;
@@ -4154,6 +4156,10 @@ export class AgentBridgeImpl implements AgentBridge {
 
   getActiveTemplate(): DocumentTemplate | null {
     return this.activeTemplate;
+  }
+
+  fetchTemplateContent(template: DocumentTemplate): Promise<Uint8Array> {
+    return this.downloadTemplateBytes(template);
   }
 
   private async downloadTemplateBytes(template: DocumentTemplate): Promise<Uint8Array> {

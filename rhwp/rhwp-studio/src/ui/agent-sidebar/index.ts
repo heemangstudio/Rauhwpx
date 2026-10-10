@@ -263,6 +263,8 @@ export interface AgentSidebarDeps {
   ) => Promise<LibraryMoveResult>;
   /** 문서 열기의 "새 문서"·"파일 열기…" — 편집기의 같은 명령을 부른다. */
   createDocument?: () => void;
+  /** 문서 홈(창 전체의 시작 화면)을 연다. */
+  openDocumentHome?: () => void;
   openDocumentFile?: () => void;
   /** 문서 열기가 보여 줄 최근 문서. */
   listRecentDocuments?: () => Promise<Array<{
@@ -309,6 +311,8 @@ export interface AgentSidebarDeps {
   };
   /** 문서 이름을 바꾼다. 바뀐 파일 이름, 바꾸지 못했으면 null (이유는 편집기가 알린다). */
   renameDocument?: (name: string) => Promise<string | null>;
+  /** 지금 문서의 이름을 바꿀 수 있는가. 바꿀 수 없으면 두 번 눌러도 칸을 열지 않는다. */
+  canRenameDocument?: () => boolean;
 }
 
 export interface AgentSidebarHandle {
@@ -715,6 +719,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     moveToLibraryDocument,
     createDocument,
     openDocumentFile,
+    openDocumentHome,
     listRecentDocuments,
     versionController,
     openClassicVersionControl,
@@ -1737,7 +1742,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     target.classList.add('ag-renamable');
     target.addEventListener('dblclick', (event) => {
       const name = getDocumentContext?.()?.documentName;
-      if (!name) return;
+      if (!name || deps.canRenameDocument?.() === false) return;
       event.preventDefault();
       beginInlineRename(target, {
         value: name,
@@ -1793,9 +1798,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     e.stopPropagation();
     openConfiguredVersionControl();
   });
+  // 문서 홈 — 열어 본 문서와 새 문서 만들기. 버전 단추 바로 앞에 둔다.
+  const homeBtn = el('button', 'ag-header-icon-btn ag-home-btn');
+  homeBtn.type = 'button';
+  homeBtn.setAttribute('aria-label', '문서 홈');
+  homeBtn.title = '문서 홈';
+  homeBtn.appendChild(createIcon('home'));
+  homeBtn.hidden = !openDocumentHome;
+  homeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openDocumentHome?.();
+  });
   // pane 액션은 문서 맥락 주변의 고정된 헤더 위치를 유지한다.
   // 설정은 집중 모드의 채팅 목록 아래와 환경 설정(Cmd+/)에서 연다.
-  headerActions.append(connDot, takeoverBtn, agentUndoBtn, versionsBtn, threadsBtn, fullscreenBtn);
+  headerActions.append(connDot, takeoverBtn, agentUndoBtn, homeBtn, versionsBtn, threadsBtn, fullscreenBtn);
 
   selectors.append(providerWrap, llmWrap, effortWrap);
   const modelSummary = el('div', 'ag-model-summary');
@@ -2093,7 +2109,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const workspaceDocumentName = el('span', 'ag-workspace-document-name', '문서 없음');
   const workspaceDocumentWorktree = createWorktreeChip();
   workspaceDocumentContext.append(workspaceChatTitle, workspaceTitleSeparator, workspaceDocumentName, workspaceDocumentWorktree);
-  workspaceLeading.append(workspaceSettingsBack, workspaceThreadsBtn, workspaceBrand);
+  const workspaceHomeBtn = el('button', 'ag-workspace-icon-btn ag-workspace-home-btn');
+  workspaceHomeBtn.type = 'button';
+  workspaceHomeBtn.setAttribute('aria-label', '문서 홈');
+  workspaceHomeBtn.title = '문서 홈';
+  workspaceHomeBtn.appendChild(createIcon('home'));
+  workspaceHomeBtn.hidden = !openDocumentHome;
+  workspaceHomeBtn.addEventListener('click', () => openDocumentHome?.());
+  workspaceLeading.append(workspaceSettingsBack, workspaceThreadsBtn, workspaceHomeBtn, workspaceBrand);
+  // 접힌 레일 칸 폭이 홈 단추 자리를 더한다.
+  if (!workspaceHomeBtn.hidden) root.style.setProperty('--ag-workspace-home-w', '40px');
   // 레일이 좁아 HamaEditor 가 들어가지 않으면 마크와 Hama 로 줄인다.
   const fitWorkspaceBrand = (): void => {
     workspaceBrand.classList.remove('ag-short');

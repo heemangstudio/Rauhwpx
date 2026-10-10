@@ -11,6 +11,8 @@ export function installDocumentTitle(
   options: {
     /** 제목을 두 번 눌러 문서 이름을 바꾼다. 바뀐 파일 이름, 못 바꿨으면 null. */
     rename?: (name: string) => Promise<string | null>;
+    /** 지금 문서의 이름을 바꿀 수 있는가. 바꿀 수 없으면 두 번 눌러도 칸을 열지 않는다. */
+    canRename?: () => boolean;
     /** 같은 이름의 작업 트리 사본을 가리는 가지 표시. */
     worktree?: () => WorktreeIdentity | null;
   } = {},
@@ -43,12 +45,15 @@ export function installDocumentTitle(
       titleHost.title = loaded ? bridge.fileName : '';
     }
     titleHost.hidden = !loaded;
+    // 이름을 바꿀 수 없는 문서의 제목은 창 끌기·확대를 그대로 받는다.
+    if (options.rename) {
+      titleHost.classList.toggle('editor-document-title-renamable', loaded && options.canRename?.() !== false);
+    }
   };
   if (titleHost && nameText && options.rename) {
     const rename = options.rename;
-    titleHost.classList.add('editor-document-title-renamable');
     titleHost.addEventListener('dblclick', (event) => {
-      if (!bridge.hasLoadedDocument()) return;
+      if (!bridge.hasLoadedDocument() || options.canRename?.() === false) return;
       event.preventDefault();
       beginInlineRename(nameText, {
         value: bridge.fileName,
