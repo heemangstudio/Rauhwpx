@@ -73,6 +73,9 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     async start(params) { const result = await call('start', params); nativeGeneration = result.generation; return { ...result, close: () => call('release') }; },
     onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     activity: (params) => call('activity', params), bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'), inventory: () => call('inventory'),
+    passwordAccounts: () => call('password-accounts'), passwordSnapshot: (params) => call('password-snapshot', params),
+    passwordFill: (params) => call('password-fill', params), passwordAction: (params) => call('password-action', params),
+    passwordStorageState: () => call('password-storage-state'),
     async dispose() { events.off('message', receive); listeners.clear(); nativeGeneration = undefined; for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(error('BROWSER_CLOSED', 'The browser service closed.')); } pending.clear(); },
   };
 }
@@ -117,6 +120,8 @@ export function createOwnedBrowserService(options = {}) {
   const unconfirmedHumanOrigins = new Set();
   const profileId = () => runtimeMode === 'native' ? 'native' : 'default';
   const selectedAdapter = () => runtimeMode === 'native' ? nativeAdapter : undefined;
+  const browserStorageState = async () => (await selectedAdapter()?.passwordStorageState?.()) ?? runtime.context.storageState({ indexedDB: true });
+  const nativePasswordBinding = (tab) => ({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId });
   const limits = { maxTabs: options.maxTabs ?? 12, maxTabsPerAgent: options.maxTabsPerAgent ?? 3, maxSnapshotElements: options.maxSnapshotElements ?? 400, maxDownloadBytes: options.maxDownloadBytes ?? 100 * 1024 * 1024, maxFrameBytes: options.maxFrameBytes ?? 5 * 1024 * 1024 };
 
   const emit = (type, payload) => { try { onEvent({ type, ...payload }); } catch {} };
@@ -210,7 +215,7 @@ export function createOwnedBrowserService(options = {}) {
   };
   const recordAgentSessions = (url, epoch, headers = []) => serializeSession(async () => {
     if (!runtime || state !== 'ready' || epoch !== humanSessionEpoch || humanActionsPending || humanRequestsPending.size || !/^https?:/.test(url)) return;
-    const storage = await runtime.context.storageState({ indexedDB: true });
+    const storage = await browserStorageState();
     const current = sessionFingerprint(storage);
     if (epoch !== humanSessionEpoch || humanActionsPending || humanRequestsPending.size) return;
     const origin = new URL(url).origin;
@@ -240,7 +245,7 @@ export function createOwnedBrowserService(options = {}) {
   const observeHumanSessions = () => serializeSession(async () => {
     if (!runtime || state !== 'ready' || !credentialBroker?.registerSessionOrigins) return;
     for (const page of runtime.context.pages()) if (!pageTabs.has(page) && /^https?:/.test(page.url())) markHumanOrigin(new URL(page.url()).origin);
-    const storage = await runtime.context.storageState({ indexedDB: true });
+    const storage = await browserStorageState();
     const current = sessionFingerprint(storage);
     const domains = [], origins = [];
     for (const [key, fingerprint] of current) {
@@ -371,7 +376,7 @@ export function createOwnedBrowserService(options = {}) {
           checkpoint = await credentialBroker.restoreCheckpoint({ profileId: profileId() });
           if (checkpoint && !handoffProfile && !(selectedAdapter() && runtime.context.pages().length)) await runtime.context.setStorageState(checkpoint);
         }
-        const initialStorage = await runtime.context.storageState({ indexedDB: true });
+        const initialStorage = await browserStorageState();
         const initialFingerprint = sessionFingerprint(initialStorage);
         if ((!checkpoint || handoffProfile) && credentialBroker?.registerSessionOrigins && (initialStorage.cookies.length || initialStorage.origins.length)) {
           const origins = initialStorage.origins.map((entry) => entry.origin).filter((origin) => !handoffProfile || initialFingerprint.get(`origin:${origin}`) !== sessionBaseline.get(`origin:${origin}`));
@@ -493,7 +498,7 @@ export function createOwnedBrowserService(options = {}) {
   const requirePage = (tab) => { if (!tab.page || tab.page.isClosed()) throw error('BROWSER_RECONNECT_REQUIRED', 'The browser page disconnected. Recover it before sending input.', true); return tab.page; };
   const saveCheckpoint = () => {
     if (resetting || resetFailed) return Promise.resolve();
-    const result = checkpointQueue.catch(() => {}).then(async () => { if (!resetting && !resetFailed && runtime && state === 'ready' && credentialBroker?.saveCheckpoint) { await observeHumanSessions(); if (!resetting && !resetFailed) await credentialBroker.saveCheckpoint({ profileId: profileId(), state: await runtime.context.storageState({ indexedDB: true }) }); } });
+    const result = checkpointQueue.catch(() => {}).then(async () => { if (!resetting && !resetFailed && runtime && state === 'ready' && credentialBroker?.saveCheckpoint) { await observeHumanSessions(); if (!resetting && !resetFailed) await credentialBroker.saveCheckpoint({ profileId: profileId(), state: await browserStorageState() }); } });
     checkpointQueue = result.catch(() => {}); return result;
   };
   credentialBroker?.setDataResetter?.(async ({ phase }) => {
@@ -547,6 +552,16 @@ export function createOwnedBrowserService(options = {}) {
     invalidate(tab);
     const navigationEpoch = tab.navigationEpoch;
     const geometryEpoch = tab.geometryEpoch;
+    if (selectedAdapter()?.passwordSnapshot && tab.nativeTargetId) {
+      const observed = await selectedAdapter().passwordSnapshot(nativePasswordBinding(tab));
+      if (observed?.available !== false) {
+        if (navigationEpoch !== tab.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true);
+        if (geometryEpoch !== tab.geometryEpoch) throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed while it was observed. Take a new snapshot.', true);
+        const result = { ...observed, tabId: tab.tabId, navigationEpoch, controllerEpoch: tab.controllerEpoch };
+        tab.snapshot = { ...result, native: true, handles: new Map(result.elements.map((element) => [element.ref, { ...element, native: true }])) };
+        return result;
+      }
+    }
     const handles = await tab.page.locator(ELEMENTS).elementHandles();
     const refs = new Map();
     const elements = [];
@@ -579,8 +594,9 @@ export function createOwnedBrowserService(options = {}) {
     tab.snapshot = { ...result, handles: refs };
     return result;
   };
-  const viewportInfo = async (tab) => tab.page.evaluate(() => ({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY }));
+  const viewportInfo = async (tab) => tab.snapshot?.native ? tab.snapshot.viewport : tab.page.evaluate(() => ({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY }));
   const screenshot = async (tab, rect) => {
+    if (tab.snapshot?.passwordProtected) throw error('BROWSER_PASSWORD_CAPTURE_PROTECTED', 'The page contains a saved password. Use a semantic snapshot for page evidence.');
     const masks = tab.page.frames().map((frame) => frame.locator(SENSITIVE));
     const bytes = await tab.page.screenshot({ type: 'jpeg', quality: 75, fullPage: false, animations: 'disabled', mask: masks, maskColor: '#333333', ...(rect ? { clip: rect } : {}), timeout: 10_000 });
     if (bytes.length > limits.maxFrameBytes) throw error('BROWSER_FRAME_TOO_LARGE', 'The captured browser frame exceeds the size limit.');
@@ -628,7 +644,7 @@ export function createOwnedBrowserService(options = {}) {
     let rect = args.rect ?? args.region;
     if (result.mode === 'element') {
       const handle = args.ref ? requireRef(tab, args) : await tab.page.evaluateHandle(({ x, y }) => document.elementFromPoint(x, y), { x: Number(args.point?.x) || 0, y: Number(args.point?.y) || 0 });
-      result.element = await handle.evaluate((el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { tag: el.tagName.toLowerCase(), role: el.getAttribute('role') ?? '', name: (el.getAttribute('aria-label') ?? '').slice(0, 500), text: el.matches('input') ? '[masked]' : String(el.textContent ?? '').slice(0, 2000), rect: { x: r.x, y: r.y, width: r.width, height: r.height } }; });
+      result.element = handle.native ? { tag: handle.tag, role: handle.role, name: handle.name, text: handle.text, rect: handle.rect } : await handle.evaluate((el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { tag: el.tagName.toLowerCase(), role: el.getAttribute('role') ?? '', name: (el.getAttribute('aria-label') ?? '').slice(0, 500), text: el.matches('input') ? '[masked]' : String(el.textContent ?? '').slice(0, 2000), rect: { x: r.x, y: r.y, width: r.width, height: r.height } }; });
       if (!args.ref) await handle.dispose();
       if (!result.element) throw error('BROWSER_ELEMENT_NOT_FOUND', 'No page element was found at this point.');
       rect = result.element.rect;
@@ -660,14 +676,27 @@ export function createOwnedBrowserService(options = {}) {
     if (action === 'snapshot') return { snapshot: await snapshot(tab) };
     if (action === 'frame') return { frame: await frame(tab) };
     if (action === 'capture') return { capture: await capture(actor, tab, args) };
+    if (tab.snapshot?.native && selectedAdapter()?.passwordAction && ['click', 'type', 'press', 'scroll'].includes(action)) {
+      if (action === 'press') assertAgentKey(actor, args.key);
+      const ref = args.ref ?? (action === 'press' ? tab.snapshot.elements.find((element) => element.tag === 'input')?.ref : undefined);
+      if (action !== 'scroll') requireRef(tab, { ...args, ref });
+      return selectedAdapter().passwordAction({ ...nativePasswordBinding(tab), action, ref, snapshotId: args.snapshotId ?? tab.snapshot.snapshotId, text: text(args.text, 16_000), key: text(args.key, 80), deltaX: bounded(args.deltaX, -2000, 2000, 0), deltaY: bounded(args.deltaY, -2000, 2000, 600) });
+    }
     if (action === 'wait') {
+      if (args.ref && tab.snapshot?.native) {
+        requireRef(tab, args);
+        return selectedAdapter().passwordAction({ ...nativePasswordBinding(tab), action: 'wait', ref: args.ref, snapshotId: args.snapshotId, state: args.state === 'hidden' ? 'hidden' : 'visible', timeoutMs: bounded(args.timeoutMs, 1, 15_000, 3000) });
+      }
       if (args.ref) await requireRef(tab, args).waitForElementState(args.state === 'hidden' ? 'hidden' : 'visible', { timeout: bounded(args.timeoutMs, 1, 15_000, 3000) });
       else await page.waitForLoadState(args.state === 'load' ? 'load' : 'domcontentloaded', { timeout: bounded(args.timeoutMs, 1, 15_000, 3000) });
       return { completed: true };
     }
     if (action === 'navigate') {
       invalidate(tab);
-      if (args.direction === 'stop') await page.evaluate(() => window.stop());
+      if (args.direction === 'stop') {
+        if (selectedAdapter()?.passwordAction && tab.nativeTargetId) await selectedAdapter().passwordAction({ ...nativePasswordBinding(tab), action: 'stop' });
+        else await page.evaluate(() => window.stop());
+      }
       else if (args.direction === 'back') await page.goBack({ waitUntil: 'domcontentloaded' });
       else if (args.direction === 'forward') await page.goForward({ waitUntil: 'domcontentloaded' });
       else if (args.direction === 'reload') await page.reload({ waitUntil: 'domcontentloaded' });
@@ -698,6 +727,13 @@ export function createOwnedBrowserService(options = {}) {
     }
     if (action === 'viewport') { await page.setViewportSize({ width: Math.floor(bounded(args.width, 320, 1920, 1280)), height: Math.floor(bounded(args.height, 240, 1080, 800)) }); tab.frame = null; return { completed: true }; }
     if (action === 'fill-account') {
+      if (tab.snapshot?.native && selectedAdapter()?.passwordFill) {
+        requireRef(tab, { ...args, ref: args.passwordRef });
+        if (args.usernameRef) requireRef(tab, { ...args, ref: args.usernameRef });
+        const result = await selectedAdapter().passwordFill({ ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef });
+        tab.snapshot.passwordProtected = true;
+        return result;
+      }
       if (!credentialBroker?.issueHandle || !credentialBroker?.fill) throw error('BROWSER_VAULT_UNAVAILABLE', 'The secure account broker is unavailable.', true);
       const passwordHandle = requireRef(tab, { ...args, ref: args.passwordRef ?? args.ref });
       const usernameHandle = args.usernameRef ? requireRef(tab, { ...args, ref: args.usernameRef }) : null;
@@ -756,7 +792,9 @@ export function createOwnedBrowserService(options = {}) {
       catch { current = { ...current, url: 'about:blank', title: '', status: 'approval-required', challenge: null, snapshotId: null }; }
       visible.push(current);
     }
-    return { ok: true, action: 'status', runtime: runtimeInfo(), tabs: visible, limits };
+    let accounts = [];
+    if (selectedAdapter()?.passwordAccounts) accounts = (await selectedAdapter().passwordAccounts()).accounts ?? [];
+    return { ok: true, action: 'status', runtime: runtimeInfo(), tabs: visible, limits, accounts };
   };
   const request = async (actor, action, args = {}) => {
     validateActor(actor);
@@ -829,7 +867,7 @@ export function createOwnedBrowserService(options = {}) {
       await observeHumanSessions();
       const result = await credentialBroker.confirmAccountSession({ actor, accountId: args.accountId, ...(handoffPreviousMode === 'native' ? { additionalProfileId: 'native' } : {}) });
       const account = result.account ?? result;
-      const confirmedStorage = await runtime.context.storageState({ indexedDB: true });
+      const confirmedStorage = await browserStorageState();
       const confirmed = sessionFingerprint(confirmedStorage);
       for (const origin of account.origins ?? []) {
         unconfirmedHumanOrigins.delete(origin);

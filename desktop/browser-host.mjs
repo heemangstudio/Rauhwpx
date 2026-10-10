@@ -87,10 +87,12 @@ export class OwnedBrowserHost {
       this.session = this.electronSession.fromPath(canonicalProfile);
       this.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
       this.session.setPermissionCheckHandler(() => false);
+      this.webAuthn?.attachSession(this.session);
       this.session.webRequest.onBeforeRequest((details, callback) => {
         try {
           const protocol = new URL(details.url).protocol;
-          callback({ cancel: !this.proxy || !['http:', 'https:', 'ws:', 'wss:', 'blob:'].includes(protocol) });
+          const protectedSession = [...this.tabs.values()].some((tab) => tab.passwordShield);
+          callback({ cancel: !this.proxy || !['http:', 'https:', 'ws:', 'wss:', 'blob:'].includes(protocol) || protectedSession && ['ws:', 'wss:'].includes(protocol) });
         } catch { callback({ cancel: true }); }
       });
       this.session.on('will-download', (event, item, contents) => this.willDownload(event, item, contents));
@@ -117,7 +119,7 @@ export class OwnedBrowserHost {
     if (downloadsPath && resolve(downloadsPath) !== transfers) throw new Error('Native download directory is outside its owned directory');
     await this.setDownloadBehavior({ behavior: 'allowAndName', downloadPath: transfers });
     const endpointURL = await this.cdp.listen();
-    return { endpointURL, native: true, generation: this.generation, signInSupport: 'full-browser-required' };
+    return { endpointURL, native: true, generation: this.generation, signInSupport: 'full-browser-required', authentication: { passkeys: this.webAuthn?.metadata() } };
   }
 
   async createTab({ url = 'about:blank', parent = null, disposition = null } = {}) {
@@ -173,7 +175,7 @@ export class OwnedBrowserHost {
       if (mainFrame && code !== -3) { tab.lastError = description; this.emit(tab, 'load-failed'); }
     });
     contents.on('render-process-gone', (_event, details) => { tab.crashed = true; this.emit(tab, 'crashed', { reason: details.reason }); });
-    contents.once('destroyed', () => { this.cdp.remove(tab.targetId); this.tabs.delete(tab.targetId); if (tab.tabId) this.aliases.delete(tab.tabId); this.emit(tab, 'closed'); });
+    contents.once('destroyed', () => { this.cdp.remove(tab.targetId); this.passwords?.forgetTab(tab); this.webAuthn?.cancelTab(tab); this.tabs.delete(tab.targetId); if (tab.tabId) this.aliases.delete(tab.tabId); this.emit(tab, 'closed'); });
     try {
       await contents.loadURL('about:blank');
       await this.cdp.add(tab);
@@ -217,6 +219,7 @@ export class OwnedBrowserHost {
     const occupied = this.aliases.get(tabId);
     if (occupied && occupied !== targetId) throw new Error('Native browser tab binding is already owned');
     if (tab.windowId && tab.windowId !== window.id) throw new Error('Native browser tab belongs to another editor window');
+    if (tab.tabId && (tab.tabId !== tabId || tab.sessionId !== sessionId || tab.chatId !== chatId)) { tab.passwordSnapshot = null; this.webAuthn?.cancelTab(tab); }
     if (tab.tabId && tab.tabId !== tabId) this.aliases.delete(tab.tabId);
     if (tab.tabId !== tabId || tab.sessionId !== sessionId || tab.chatId !== chatId) this.clearActivity(tab);
     Object.assign(tab, { tabId, sessionId, chatId, windowId: window.id });
@@ -286,8 +289,8 @@ export class OwnedBrowserHost {
   state(tab) {
     const contents = tab.view.webContents;
     const alive = contents && !contents.isDestroyed();
-    return { tabId: tab.tabId, nativeTargetId: tab.targetId, native: true,
-      generation: this.generation, navigationEpoch: tab.navigationEpoch, disposition: tab.disposition,
+    const state = { tabId: tab.tabId, nativeTargetId: tab.targetId, native: true,
+      generation: this.generation, navigationEpoch: tab.navigationEpoch, disposition: tab.disposition, passwordProtected: !!tab.passwordShield,
       url: alive ? contents.getURL() : '', title: alive ? contents.getTitle() : '',
       loading: !!alive && contents.isLoading(),
       zoomFactor: alive ? contents.getZoomFactor() : 1,
@@ -296,6 +299,12 @@ export class OwnedBrowserHost {
       controller: tab.human ? 'human' : 'agent', mode: tab.placement?.mode ?? 'hidden',
       crashed: tab.crashed, error: tab.lastError,
     };
+    if (tab.passwordShield) {
+      try { const origin = new URL(state.url).origin; state.url = tab.passwordAllowedOrigins?.has(origin) ? `${origin}/` : 'about:blank'; }
+      catch { state.url = 'about:blank'; }
+      state.title = ''; state.error = null;
+    }
+    return this.passwords ? this.passwords.redact(tab, state) : state;
   }
 
   emit(tab, type, extra = {}) {
@@ -423,6 +432,9 @@ export class OwnedBrowserHost {
   control({ targetId, tabId, human, owner }) {
     const tab = this.tab(targetId ?? tabId);
     void this.clearActivity(tab);
+    tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1;
+    tab.passwordSnapshot = null;
+    this.webAuthn?.cancelTab(tab);
     tab.human = human === true || owner === 'human';
     tab.interactive = tab.human && !!tab.placement;
     this.emit(tab, 'controller');
@@ -451,6 +463,7 @@ export class OwnedBrowserHost {
     if (!tab) return false;
     void this.clearActivity(tab);
     tab.closing = true;
+    this.webAuthn?.cancelTab(tab);
     this.unplace(tab);
     this.cdp.remove(targetId);
     const popout = this.popouts.get(targetId);
@@ -487,7 +500,7 @@ export class OwnedBrowserHost {
     item.setSavePath(join(this.downloadPath, guid));
     this.downloads.set(guid, item);
     this.cdp.send({ method: 'Browser.downloadWillBegin', params: { guid, frameId: tab.frameId,
-      url: item.getURL(), suggestedFilename: item.getFilename() } });
+      url: tab.passwordShield ? this.state(tab).url : item.getURL(), suggestedFilename: tab.passwordShield ? 'download' : item.getFilename() } });
     const progress = (state) => this.cdp.send({ method: 'Browser.downloadProgress', params: {
       guid, totalBytes: item.getTotalBytes(), receivedBytes: item.getReceivedBytes(), state,
       ...(state === 'completed' ? { filePath: item.getSavePath() } : {}),
@@ -518,13 +531,90 @@ export class OwnedBrowserHost {
   }
   async clearCookies() { await this.session.clearStorageData({ storages: ['cookies'] }); return {}; }
 
+  async importSession({ origins, state, clear = false, reload = false }) {
+    if (!Array.isArray(origins) || !origins.length || origins.length > 32 || !state || !Array.isArray(state.cookies) || !Array.isArray(state.origins) || state.cookies.length > 2048) throw new Error('Native session import is invalid');
+    const approved = new Set(origins.map((value) => {
+      const url = new URL(value);
+      if (url.protocol !== 'https:' || url.username || url.password || url.origin !== value) throw new Error('Native session import requires approved exact HTTPS origins');
+      return value;
+    }));
+    if (clear) return this.clearSession({ origins: [...approved] });
+    const hosts = [...approved].map((origin) => new URL(origin).hostname);
+    const matches = (cookie) => {
+      const domain = String(cookie.domain ?? '').replace(/^\./, '').toLowerCase();
+      return !!domain && hosts.some((host) => host === domain || domain.includes('.') && host.endsWith(`.${domain}`));
+    };
+    if (state.cookies.some((cookie) => !matches(cookie) || typeof cookie.name !== 'string' || typeof cookie.value !== 'string')) throw new Error('Native session cookies exceed the approved account origins');
+    const storage = state.origins.map((entry) => {
+      if (!approved.has(entry.origin) || !Array.isArray(entry.localStorage) || entry.localStorage.length > 2048 || entry.localStorage.some((item) => typeof item.name !== 'string' || typeof item.value !== 'string')) throw new Error('Native session storage exceeds the approved account origins');
+      if (entry.indexedDB?.length) throw Object.assign(new Error('This sign-in session requires IndexedDB storage that native handoff cannot import.'), { code: 'BROWSER_NATIVE_SESSION_STORAGE_UNSUPPORTED' });
+      const tab = [...this.tabs.values()].find((candidate) => !candidate.closing && !candidate.view.webContents.isDestroyed() && new URL(candidate.view.webContents.getURL()).origin === entry.origin);
+      if (!tab && entry.localStorage.length) throw Object.assign(new Error('Open the approved account website in a native tab before importing this session.'), { code: 'BROWSER_NATIVE_SESSION_STORAGE_UNSUPPORTED' });
+      return { entry, tab };
+    });
+    if (Buffer.byteLength(JSON.stringify(state)) > 16 * 1024 * 1024) throw new Error('Native session import exceeds its size limit');
+    const applyStorage = async (tab, origin, entries) => {
+      const code = `(${((origin, entries) => {
+        if (location.origin !== origin) return false;
+        const previous = Object.entries(localStorage).map(([name, value]) => ({ name, value }));
+        if (entries) { localStorage.clear(); for (const entry of entries) localStorage.setItem(entry.name, entry.value); }
+        return previous;
+      }).toString()})(${JSON.stringify(origin)},${JSON.stringify(entries)})`;
+      return tab.view.webContents.executeJavaScriptInIsolatedWorld(1007, [{ code }]);
+    };
+    const previousStorage = [];
+    for (const { entry, tab } of storage) if (tab) {
+      const previous = await applyStorage(tab, entry.origin, null);
+      if (previous === false) throw new Error('The native sign-in page changed before session import');
+      previousStorage.push({ tab, origin: entry.origin, previous });
+    }
+    const previousCookies = (await this.getCookies()).filter(matches);
+    const removeScopedCookies = async () => {
+      for (const cookie of (await this.getCookies()).filter(matches)) await this.session.cookies.remove(`${cookie.secure ? 'https' : 'http'}://${cookie.domain.replace(/^\./, '')}${cookie.path || '/'}`, cookie.name);
+    };
+    try {
+      await removeScopedCookies(); await this.setCookies(state.cookies);
+      for (const { entry, tab } of storage) if (tab && await applyStorage(tab, entry.origin, entry.localStorage) === false) throw new Error('The native sign-in page changed during session import');
+      let reloaded = 0;
+      if (reload) for (const tab of this.tabs.values()) {
+        const contents = tab.view.webContents;
+        if (tab.closing || contents.isDestroyed()) continue;
+        let origin; try { origin = new URL(contents.getURL()).origin; } catch { continue; }
+        if (!approved.has(origin)) continue;
+        await new Promise((resolve, reject) => {
+          const finish = (error) => { clearTimeout(timer); contents.off('did-finish-load', done); contents.off('did-fail-load', failed); contents.off('destroyed', closed); error ? reject(error) : resolve(); };
+          const done = () => finish();
+          const failed = (_event, _code, _description, _url, mainFrame) => { if (mainFrame) finish(new Error('Native session reload failed')); };
+          const closed = () => finish(new Error('Native session tab closed'));
+          const timer = setTimeout(() => finish(new Error('Native session reload timed out')), 15000);
+          contents.once('did-finish-load', done); contents.on('did-fail-load', failed); contents.once('destroyed', closed);
+          contents.reload();
+        });
+        reloaded++;
+      }
+      return { imported: true, cookies: state.cookies.length, origins: storage.filter((item) => item.tab).length, reloaded };
+    } catch {
+      await removeScopedCookies(); await this.setCookies(previousCookies);
+      for (const { tab, origin, previous } of previousStorage) if (!tab.view.webContents.isDestroyed()) await applyStorage(tab, origin, previous).catch(() => {});
+      throw new Error('The native account session could not be imported. The prior session was restored.');
+    }
+  }
+
+  async clearSession({ origins }) {
+    if (!Array.isArray(origins) || !origins.length || origins.length > 32) throw new Error('Native session clearing requires approved exact HTTPS origins');
+    const normalized = origins.map((origin) => { const url = new URL(origin); if (url.protocol !== 'https:' || url.origin !== origin || url.username || url.password) throw new Error('Native session clearing requires approved exact HTTPS origins'); return url.origin; });
+    await this.session.clearData({ origins: normalized, dataTypes: ['cookies', 'localStorage', 'indexedDB', 'serviceWorkers', 'cache'] });
+    for (const tab of this.tabs.values()) tab.passwordSnapshot = null;
+    return { clearedOrigins: normalized, clearedDomains: normalized.map((origin) => new URL(origin).hostname) };
+  }
+
   onDebuggerDetached(tab, reason) {
     void this.clearActivity(tab);
     const contents = tab.view.webContents;
     if (!contents.isDestroyed()) contents.closeDevTools();
     this.emit(tab, 'debugger-disconnected', { reason, recovery: 'reconnect' });
   }
-  onAutomationDisconnected() { for (const tab of this.tabs.values()) { void this.clearActivity(tab); tab.human = false; tab.interactive = false; this.emit(tab, 'runtime-disconnected'); } }
+  onAutomationDisconnected() { for (const tab of this.tabs.values()) { void this.clearActivity(tab); tab.passwordSnapshot = null; tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1; this.webAuthn?.cancelTab(tab); tab.human = false; tab.interactive = false; this.emit(tab, 'runtime-disconnected'); } }
 
   async release(owner) {
     if (this.owner !== owner) return false;
@@ -594,6 +684,7 @@ export class OwnedBrowserHost {
       const params = message.params ?? {};
       if (message.operation === 'start') response.value = await this.start(params, owner);
       else if (message.operation === 'reset') response.value = await this.reset(owner);
+      else if (message.operation === 'password-accounts') response.value = this.passwords ? await this.passwords.vault.list() : { accounts: [] };
       else {
         if (this.owner !== owner) throw new Error('Native browser request owner is stale');
         if (message.operation === 'bind') response.value = this.bind(params);
@@ -601,16 +692,30 @@ export class OwnedBrowserHost {
         else if (message.operation === 'control') response.value = this.control(params);
         else if (message.operation === 'release') response.value = await this.release(owner);
         else if (message.operation === 'inventory') response.value = [...this.tabs.values()].map((tab) => this.state(tab));
+        else if (message.operation === 'password-accounts') response.value = this.passwords ? await this.passwords.vault.list() : { accounts: [] };
+        else if (message.operation === 'password-snapshot') response.value = this.passwords ? await this.passwords.snapshot(params) : { available: false };
+        else if (message.operation === 'password-fill') {
+          if (!this.passwords) throw new Error('Native password storage is unavailable');
+          response.value = await this.passwords.fill(params);
+        }
+        else if (message.operation === 'password-action') {
+          if (!this.passwords) throw new Error('Native password input is unavailable');
+          response.value = await this.passwords.action(params);
+        }
+        else if (message.operation === 'password-storage-state') response.value = this.passwords ? await this.passwords.storageState() : null;
+        else if (message.operation === 'import-session') response.value = await this.importSession(params);
+        else if (message.operation === 'password-clear-session') response.value = await this.clearSession(params);
         else throw new Error('Unsupported native browser operation');
       }
       response.ok = true;
-    } catch (error) { response.ok = false; response.error = { message: error.message, code: 'NATIVE_BROWSER_FAILED' }; }
+    } catch (error) { response.ok = false; response.error = { message: error.message, code: error.code ?? 'NATIVE_BROWSER_FAILED' }; }
     return response;
   }
 
   async dispose() {
     this.disposing = true;
     await Promise.all([...this.tabs.values()].map((tab) => this.clearActivity(tab)));
+    this.webAuthn?.dispose();
     await this.cdp.close();
     if (this.session) { this.session.flushStorageData(); await this.session.cookies.flushStore(); }
     for (const targetId of [...this.tabs.keys()]) this.closeTab(targetId);

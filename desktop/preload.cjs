@@ -3,6 +3,13 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('rhwpDesktop', {
   browser: {
     native: true,
+    passwords: {
+      listProfiles: () => ipcRenderer.invoke('desktop:browser-passwords-profiles'),
+      importProfile: (payload) => ipcRenderer.invoke('desktop:browser-passwords-import', payload),
+      list: () => ipcRenderer.invoke('desktop:browser-passwords-list'),
+      remove: (payload) => ipcRenderer.invoke('desktop:browser-passwords-remove', payload),
+      fill: (payload) => ipcRenderer.invoke('desktop:browser-passwords-fill', payload),
+    },
     attach: (payload) => ipcRenderer.invoke('desktop:browser-attach', payload),
     detach: (payload) => ipcRenderer.invoke('desktop:browser-detach', payload),
     getState: (payload) => ipcRenderer.invoke('desktop:browser-state', payload),

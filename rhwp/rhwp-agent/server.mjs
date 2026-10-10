@@ -6440,8 +6440,9 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           const result = browserMcpResult(await ownedBrowser.request(actor, tool.slice('browser_'.length).replaceAll('_', '-'), args));
           if (tool === 'browser_status') {
             const accounts = await credentialBroker.listAccounts();
-            result.accounts = actor.agentId === `${actor.threadId}:root` ? accounts.accounts
-              : accounts.accounts.filter((account) => account.agentReuseApproved);
+            const nativeAccounts = result.accounts ?? [];
+            result.accounts = nativeAccounts.concat(actor.agentId === `${actor.threadId}:root` ? accounts.accounts
+              : accounts.accounts.filter((account) => account.agentReuseApproved));
           }
           return result;
         }).then(sendResult).catch((error) => sendError(error, 'BROWSER_TOOL_FAILED'));
