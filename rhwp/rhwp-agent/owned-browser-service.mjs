@@ -439,8 +439,17 @@ export function createOwnedBrowserService(options = {}) {
             const parent = opener && pageTabs.get(opener);
             if (!parent) return;
             if (tabs.size >= limits.maxTabs) { await page.close(); return; }
-            const tab = makeTab(actorForTab(parent)); tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab); await attach(tab, page);
+            const tab = makeTab(actorForTab(parent)); tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab);
+            try { await attach(tab, page); }
+            catch (failure) {
+              // 인증 보조 창은 CDP 바인딩이 끝나기 전에 스스로 닫힐 수 있다.
+              tabs.delete(tab.tabId); pageTabs.delete(page);
+              await page.close().catch(() => {}); await persist();
+              throw failure;
+            }
+            if (page.isClosed() || tabs.get(tab.tabId) !== tab) return;
             const native = tab.nativeTargetId && (await selectedAdapter()?.inventory?.())?.find((entry) => entry.nativeTargetId === tab.nativeTargetId);
+            if (page.isClosed() || tabs.get(tab.tabId) !== tab) return;
             emit('owned_browser_popup', { tab: descriptor(tab), openerTabId: parent.tabId, foreground: native?.disposition !== 'background-tab', runtime: runtimeInfo() });
             void persist();
           }).catch(() => {});

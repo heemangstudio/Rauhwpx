@@ -31,5 +31,6 @@ test('native OAuth popup keeps its opener through redirects, completes by messag
       });
     });
     assert.deepEqual(report.oauth, { returnedWindow: true, redirectOpener: true, postMessage: true, selfClose: true, cancelled: true, bindingIsolated: true, namedReuse: true, directPopup: true, targetBlank: true, backgroundTab: true, transientHelper: true });
+    assert.deepEqual(report.passwordFamily, { existingChildBeforeFill: true, inheritedBeforeAttach: true, openerReadDenied: true, secretWireAbsent: true, protectionSurvivesOpenerClose: true });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
