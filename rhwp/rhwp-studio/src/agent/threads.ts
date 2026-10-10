@@ -7,6 +7,7 @@ import {
 import { isAgentWorkflow, isStructuredPlan } from './types.ts';
 import { isTurnOutcome, type TurnOutcome } from './turn-outcome.ts';
 import { readProviderFailure } from './provider-failure.ts';
+import { isTurnInterruptionReason, type TurnInterruptionReason } from './turn-interruption-reason.ts';
 import type {
   AgentName,
   AgentWorkflow,
@@ -39,6 +40,8 @@ const TURN_REASON_MAX_CHARS = 200;
  * (normalizeStoredThread). 머리 없는 예전 id 의 온전한 표식도 그대로 읽는다.
  */
 export const TURN_MARKER_ID_PREFIX = 'turn-';
+/** 턴 표식의 주인 id(창 세션·앱 실행·허브 프로세스)와 허브 턴 id 의 길이 상한. */
+const TURN_OWNER_ID_MAX_CHARS = 128;
 
 interface ThreadMessageBase {
   text: string;
@@ -181,9 +184,37 @@ export interface ThreadTurnMessage extends ThreadMessageBase {
   outcome: TurnOutcome | null;
   /** 바깥이 끊은 턴의 이유(정착한 쪽이 붙인다). 화면 문구로는 쓰지 않는다. */
   reason?: string;
+  /**
+   * 이 턴을 돌린 창 세션·앱 실행·허브 프로세스(S3). 새로고침·재시작 뒤 끝나지 않은 표식이
+   * 누구의 것이었는지 보고 끊긴 턴인지, 끊겼다면 왜인지 가른다. 모르는 값은 null.
+   */
+  owner?: TurnOwner;
+  /** 허브가 발급한 이 턴의 id — 다시 붙인 살아 있는 턴이 같은 턴인지 본다. */
+  hubTurnId?: string | null;
+  /** 바깥이 끊은 턴(S3) — 이유와 감지 시각, 사용자가 이어 갔는지. outcome 은 interrupted 다. */
+  interruption?: TurnInterruption;
   /** 정착 때의 접힘 제목. 새 빌드는 기록에서 다시 계산한다. */
   text: string;
   planId?: never;
+}
+
+/** 턴을 돌린 쪽. window 는 페이지의 창 세션, app 은 데스크톱 앱 실행, hub 는 허브 프로세스. */
+export interface TurnOwner {
+  window: string | null;
+  app: string | null;
+  hub: string | null;
+}
+
+export interface TurnInterruption {
+  reason: TurnInterruptionReason;
+  /** 끊김을 알아챈 시각(epoch ms) */
+  at: number;
+  /**
+   * 끊긴 뒤 처음 나간 사용자 메시지가 이어 가기 블록을 싣고 나갔다. resumed 는 이어서 진행
+   * 단추, superseded 는 그 밖의 보내기(입력기·대기열·다시 시도·인라인). 없으면 아직 아무도
+   * 이어 가지 않았다.
+   */
+  resolution?: 'resumed' | 'superseded';
 }
 
 export type ThreadMessage =
@@ -826,6 +857,11 @@ function normalizeStoredTurnMarker(message: Record<string, unknown>): ThreadTurn
   const reason = typeof message.reason === 'string' && message.reason.trim()
     ? message.reason.trim().slice(0, TURN_REASON_MAX_CHARS)
     : undefined;
+  // S3 필드는 하나씩 확인하고, 깨졌으면 그 필드만 버린다 — 표식은 남는다.
+  const owner = normalizeTurnOwner(message.owner);
+  const hubTurnId = message.hubTurnId === null ? null : storedOwnerId(message.hubTurnId);
+  // 끊김 기록은 끊긴 것으로 정착한 표식에만 뜻이 있다.
+  const interruption = outcome === 'interrupted' ? normalizeTurnInterruption(message.interruption) : null;
   return {
     role: 'system',
     kind: 'turn',
@@ -834,6 +870,9 @@ function normalizeStoredTurnMarker(message: Record<string, unknown>): ThreadTurn
     endedAt,
     outcome,
     ...(reason ? { reason } : {}),
+    ...(owner ? { owner } : {}),
+    ...(hubTurnId !== undefined ? { hubTurnId } : {}),
+    ...(interruption ? { interruption } : {}),
     text: message.text,
   };
 }
@@ -842,6 +881,31 @@ function normalizeStoredTurnMarker(message: Record<string, unknown>): ThreadTurn
 function isStrippedTurnMarker(message: Record<string, unknown>): boolean {
   return message.role === 'system' && message.kind === undefined
     && typeof message.messageId === 'string' && message.messageId.startsWith(TURN_MARKER_ID_PREFIX);
+}
+
+/** 1–128자 문자열만 id 로 받는다. */
+function storedOwnerId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 && value.length <= TURN_OWNER_ID_MAX_CHARS ? value : undefined;
+}
+
+function normalizeTurnOwner(value: unknown): TurnOwner | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const part = (field: unknown): string | null | undefined => (field === null ? null : storedOwnerId(field));
+  const window = part(raw.window);
+  const app = part(raw.app);
+  const hub = part(raw.hub);
+  if (window === undefined || app === undefined || hub === undefined) return null;
+  return { window, app, hub };
+}
+
+function normalizeTurnInterruption(value: unknown): TurnInterruption | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (!isTurnInterruptionReason(raw.reason)) return null;
+  if (typeof raw.at !== 'number' || !Number.isFinite(raw.at) || raw.at < 0) return null;
+  const resolution = raw.resolution === 'resumed' || raw.resolution === 'superseded' ? raw.resolution : undefined;
+  return { reason: raw.reason, at: raw.at, ...(resolution ? { resolution } : {}) };
 }
 
 function normalizeStoredThread(thread: StoredChatThread): ChatThread {
@@ -1300,6 +1364,8 @@ export interface TurnMarkerSettlement {
   text?: string;
   /** 바깥이 끊은 이유. 화면 문구로는 쓰지 않는다. */
   reason?: string | null;
+  /** 바깥이 끊은 턴의 기록(S3) — outcome 이 interrupted 일 때만 남는다. */
+  interruption?: TurnInterruption | null;
 }
 
 /**
@@ -1314,6 +1380,9 @@ export function settleTurnMarker(marker: ThreadTurnMessage, settlement: TurnMark
   if (settlement.text !== undefined) marker.text = settlement.text;
   const reason = settlement.reason?.trim();
   if (reason) marker.reason = reason.slice(0, TURN_REASON_MAX_CHARS);
+  if (settlement.interruption && settlement.outcome === 'interrupted') {
+    marker.interruption = { ...settlement.interruption };
+  }
   return marker;
 }
 
@@ -1715,18 +1784,6 @@ export function upsertThread(thread: ChatThread): void {
   trimCache();
   publish({ type: 'upsert', thread: cloneThread(capped) });
   persistUpsert(capped);
-}
-
-/**
- * 저장된 채팅 끝에 시스템 안내 한 줄을 덧붙인다. 그 채팅을 열어 둔 사이드바가 없을 때 쓴다 —
- * 열린 사이드바는 자기 사본을 다시 저장하며 이 줄을 덮는다. 채팅이 없으면 false.
- * (엔진 trap 복구의 중단 표시 대체 구현. S3 의 중단 표시가 들어오면 지운다.)
- */
-export function appendThreadSystemNotice(threadId: string, text: string): boolean {
-  const thread = getThread(threadId);
-  if (!thread) return false;
-  upsertThread({ ...thread, messages: [...thread.messages, { role: 'system', text }] });
-  return true;
 }
 
 export function removeThread(id: string): void {

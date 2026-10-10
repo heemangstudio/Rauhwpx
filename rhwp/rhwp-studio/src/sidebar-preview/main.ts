@@ -9,7 +9,7 @@ import { createMockVersions } from './mock-versions.ts';
 import { showToast } from '../ui/toast.ts';
 import { userSettings } from '../core/user-settings.ts';
 import { completeInitialSetup } from '../ui/initial-setup/state.ts';
-import { listThreads, getThread, waitForThreadsPersistence } from '../agent/threads.ts';
+import { listThreads, getThread, upsertThread, waitForThreadsPersistence } from '../agent/threads.ts';
 import {
   getChatStatus,
   markChatFailed,
@@ -27,6 +27,7 @@ import { installAttentionToasts } from '../ui/agent-attention.ts';
 import type { LibraryMoveResult } from '../library/move-to-document.ts';
 import type { TurnRestoreControl, TurnRestoreResult, TurnRestoreStatus } from '../agent/turn-checkpoints.ts';
 import {
+  PREVIEW_WINDOW_SESSION_ID,
   SAMPLE_FINISHED_CHAT_ID,
   SAMPLE_INTERRUPTED_CHAT_ID,
   SAMPLE_REVIEW_CHAT_ID,
@@ -141,11 +142,17 @@ const turnRestore: TurnRestoreControl = {
  * (its queued follow-ups, for example).
  */
 const reload = params.get('reload');
-const liveChat = reload === 'running' || reload === 'question'
+/*
+ * `reload=ended|failed`: the chat's turn ended (or failed) while the page reloaded — the hub replays
+ * that turn-end before its welcome, which reports the session idle. The sidebar must apply it to
+ * the re-adopted chat, not to the empty startup draft.
+ */
+const liveChat = reload === 'running' || reload === 'question' || reload === 'ended' || reload === 'failed'
   ? {
     threadId: SAMPLE_WORKING_CHAT_ID,
     agent: 'claude' as const,
     ...(reload === 'question' ? { question: sampleReloadQuestion() } : {}),
+    ...(reload === 'ended' ? { ended: 'completed' as const } : reload === 'failed' ? { ended: 'failed' as const } : {}),
   }
   : undefined;
 const mock = createMockBridge(report, () => {
@@ -158,11 +165,14 @@ const mock = createMockBridge(report, () => {
 if (params.get('services') === 'setup') mock.setServices(false);
 const eventBus = new EventBus();
 const versions = createMockVersions(report, params.get('history') === 'branches');
-let documentId: string | null = 'preview-proposal';
-let documentName: string | null = '사업 제안서.hwpx';
+// `document=empty` 는 문서 없이 시작한다 — 새로고침 뒤 이어 붙일 채팅의 문서가 아직 열리지 않은 상태.
+const startsEmpty = params.get('document') === 'empty';
+let documentId: string | null = startsEmpty ? null : 'preview-proposal';
+let documentName: string | null = startsEmpty ? null : '사업 제안서.hwpx';
 const recentDocuments = sampleRecentDocuments(Date.now());
 let createdDocuments = 0;
 const documentSelect = document.querySelector<HTMLSelectElement>('#document')!;
+if (startsEmpty) documentSelect.value = 'empty';
 
 /** Swap the mock document and announce it with the editor's document events. */
 function showMockDocument(id: string | null, name: string | null): void {
@@ -421,6 +431,9 @@ const sidebar = initAgentSidebar({
     return true;
   },
   turnRestore,
+  // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
+  interruptionScope: () => ({ windowSessionId: PREVIEW_WINDOW_SESSION_ID, appLaunchId: null }),
+  ownsWindowSession: true,
   navigateToChange: (position) => { navigation.calls.push(position); },
   openClassicVersionControl: () =>
     report('Classic document history placeholder'),
@@ -457,7 +470,8 @@ if (multiSession) {
   sessions.push({ sidebar: backgroundSidebar, mock: backgroundMock, documentId: () => BACKGROUND_DOCUMENT.documentId });
 }
 if (params.get('chats') === 'sample' || params.get('chats') === 'engine-trap') {
-  markChatWorking(SAMPLE_WORKING_CHAT_ID);
+  // reload=lost: 그 턴은 새로고침과 함께 사라졌다 — 옛 페이지의 작업 신호는 떠날 때 지워졌다.
+  if (params.get('reload') !== 'lost') markChatWorking(SAMPLE_WORKING_CHAT_ID);
   markChatFinished(SAMPLE_FINISHED_CHAT_ID);
   markChatNeedsReview(SAMPLE_REVIEW_CHAT_ID);
   markChatFailed(SAMPLE_INTERRUPTED_CHAT_ID, { label: '중단됨' });
@@ -620,7 +634,8 @@ if (parallel === 'locked') await openLockedParallelScene();
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold,
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,
-  threadStore: { listThreads, getThread, waitForThreadsPersistence } };
+  threadStore: { listThreads, getThread, upsertThread, waitForThreadsPersistence },
+  chatStatus: { markChatWorking } };
 export type SidebarPreview = typeof preview;
 Object.assign(window, { sidebarPreview: preview });
 if (params.get('audit') === '1') {

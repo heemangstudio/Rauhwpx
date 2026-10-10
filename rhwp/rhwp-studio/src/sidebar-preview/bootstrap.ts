@@ -42,7 +42,7 @@ if (url.searchParams.get('reset') === '1') {
 const chatsParam = url.searchParams.get('chats');
 if (chatsParam === 'sample' || chatsParam === 'engine-trap') {
   const {
-    engineTrapInterruptedChat, sampleChats, sampleInterruptedChat, sampleReloadQuestionDraft, sampleRunningTurnWork,
+    engineTrapInterruptedChat, sampleChats, sampleLostTurnWork, sampleReloadQuestionDraft, sampleRunningTurnWork,
     SAMPLE_WORKING_CHAT_ID,
   } = await import('./fixtures.ts');
   const key = 'rhwp-agent-threads';
@@ -50,7 +50,6 @@ if (chatsParam === 'sample' || chatsParam === 'engine-trap') {
   // 같은 id 가 둘이면 앞의 것이 남는다.
   const seeded = [
     ...sampleChats(now),
-    sampleInterruptedChat(now),
     ...(chatsParam === 'engine-trap' ? [engineTrapInterruptedChat(now)] : []),
   ].filter((thread, index, all) => all.findIndex((other) => other.id === thread.id) === index);
   // `chats=sample&reload=running|question` opens as if the page reloaded while the working
@@ -58,11 +57,19 @@ if (chatsParam === 'sample' || chatsParam === 'engine-trap') {
   // old page saved.
   const reload = chatsParam === 'sample' ? url.searchParams.get('reload') : null;
   const working = seeded.find((thread) => thread.id === SAMPLE_WORKING_CHAT_ID);
-  if (working && (reload === 'running' || reload === 'question')) {
+  if (working && (reload === 'running' || reload === 'question' || reload === 'ended' || reload === 'failed')) {
     working.updatedAt = now;
     // 그 턴이 시작될 때 남긴 열린 표식과 지금까지의 작업 — 다시 잡은 턴의 실제 끝이 접는다.
     working.messages.push(...sampleRunningTurnWork(working.agent, now));
     if (reload === 'question') working.pendingUserQuestion = sampleReloadQuestionDraft(now);
+  }
+  // `reload=lost`: 이 창이 돌리던 턴이 새로고침과 함께 사라졌다(허브에 이을 세션이 없다) — 시작 정리가
+  // 끊긴 턴(새로고침)으로 정착하고, 남아 있던 질문 초안은 그 자리의 만료 카드가 된다.
+  if (working && reload === 'lost') {
+    working.updatedAt = now;
+    working.lastActivityAt = now;
+    working.messages.push(...sampleLostTurnWork(working.agent, now));
+    working.pendingUserQuestion = sampleReloadQuestionDraft(now);
   }
   const ids = new Set(seeded.map((thread) => thread.id));
   let pending: unknown[] = [];

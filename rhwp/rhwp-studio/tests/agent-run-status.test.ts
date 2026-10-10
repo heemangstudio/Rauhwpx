@@ -249,9 +249,9 @@ test('a provider failure reads as a short rail reason', async () => {
     failureRailLabel(failure('usage_limit', 'openrouter_credits', 'pi')),
     failureRailLabel(failure('provider_error')),
     failureRailLabel(failure('network')),
-    failureRailLabel(failure('process_exited', 'HUB_RESTARTED')),
+    failureRailLabel(failure('process_exited')),
     failureRailLabel(failure('process_exited', 'cli_missing')),
     failureRailLabel(failure('invalid_request', 'context_window')),
     failureRailLabel(failure('unknown')),
-  ], ['로그인 필요', '설정 필요', '사용 한도', '크레딧 부족', '서버 오류', '연결 실패', '중단됨', 'CLI 없음', '대화 길이 초과', '오류']);
+  ], ['로그인 필요', '설정 필요', '사용 한도', '크레딧 부족', '서버 오류', '연결 실패', '실행 중단', 'CLI 없음', '대화 길이 초과', '오류']);
 });

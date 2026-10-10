@@ -49,7 +49,7 @@ test('stopped, failed and interrupted turn ends hold the queue with that reason'
 test('plan approval, an engine trap and the merge lock hold a normal end; editing defers it', () => {
   assert.deepEqual(decideAfterTurn(queueOf('a'), 'normal', ctx({ planAwaitingApproval: true })), { kind: 'hold', reason: 'plan-approval' });
   assert.deepEqual(decideAfterTurn(queueOf('a'), 'normal', ctx({ engineTrapped: true })),
-    { kind: 'hold', reason: 'failed', detail: '문서 엔진 오류' });
+    { kind: 'hold', reason: 'failed', detail: '문서 엔진 멈춤' });
   assert.deepEqual(decideAfterTurn(queueOf('a'), 'normal', ctx({ mergeLocked: true })), { kind: 'hold', reason: 'blocked' });
   assert.deepEqual(decideAfterTurn(queueOf('a'), 'normal', ctx({ editingId: 'a' })), { kind: 'defer' });
 });

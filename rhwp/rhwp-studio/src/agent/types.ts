@@ -16,6 +16,7 @@ import type { OperationDescriptor } from '../engine/command.ts';
 import type { RendererSessionContext } from '../desktop-integration.ts';
 import type { CatalogAgent, ModelCatalogEntry } from './models.ts';
 import type { TurnCheckpointPort } from './turn-checkpoints.ts';
+import type { TurnInterruptionReason } from './turn-interruption-reason.ts';
 
 export const AGENT_PROTOCOL_VERSION = 5;
 
@@ -893,7 +894,20 @@ export type AgentStreamEvent =
   | { type: 'task-start'; agent: AgentName; taskId: string; callId?: string; title: string; role?: string; taskKind: 'agent' | 'workflow'; workflowName?: string; /** Owning turn may end while this real process keeps running. */ background?: boolean }
   | { type: 'task-progress'; agent: AgentName; taskId: string; activity?: string; lastTool?: string; usage?: AgentTaskUsage; phases?: AgentTaskPhase[]; members?: AgentTaskMember[]; /** Current task-level phase when there is no child member row. */ phaseIndex?: number }
   | { type: 'task-end'; agent: AgentName; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary?: string; usage?: AgentTaskUsage }
-  | { type: 'turn-end'; agent: AgentName; stopReason?: string; errorMessage?: string; turnId?: string; /** 허브가 분류한 이 턴의 실패 (실패한 턴에만). */ failure?: ProviderFailure }
+  | {
+      type: 'turn-end';
+      agent: AgentName;
+      stopReason?: string;
+      errorMessage?: string;
+      turnId?: string;
+      /** 허브가 분류한 이 턴의 실패 (실패한 턴에만). */
+      failure?: ProviderFailure;
+      /**
+       * Studio 만 붙이는 값 — 허브를 잃어(재시작·이 채팅 세션의 소멸) 브리지가 합성한 끝의 이유(S3).
+       * 있으면 끊긴 턴이고, errorMessage 는 옛 소비자를 위해 남긴 문구라 사이드바가 보이지 않는다.
+       */
+      interruption?: TurnInterruptionReason;
+    }
   | { type: 'error'; agent: AgentName; message: string; /** 허브가 분류한 실패 (새 허브만). */ failure?: ProviderFailure };
 
 export type SidebarEvent =

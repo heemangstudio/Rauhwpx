@@ -88,9 +88,10 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=error&failure=invalid` | Conversation too long for the model (invalid request) |
 | `?scenario=error&failure=unknown` | Unclassified failure with 다시 시도 |
 | `?scenario=error&failure=start` | Chat start failure (`AGENT_SPAWN_FAILED`); 다시 시도 restarts the session |
-| `?scenario=error&failure=hub-restarted` | Turn lost to an agent hub restart |
 | `?scenario=error&failure=legacy` | An older hub's text-only failure, classified in Studio (login notice) |
 | `?scenario=writer-busy` | A write refused because another chat of the document is editing it |
+| `?scenario=interrupted` | A turn that reads the document and asks a question, then loses the agent hub (restart): the question card reads `만료됨 · 허브 재시작`, the fold `중단됨 · …`, and one row says `에이전트 허브가 다시 시작되어 작업이 중단됐어요` with **이어서 진행** — no failure notice, no green dot |
+| `?scenario=interrupted&hold=1`, then type a follow-up and press Enter, then `sidebarPreview.askQuestion()` and `sidebarPreview.restartHub()` | The same cut-off with a queued follow-up: the queue holds as `허브 재시작 · 작업이 끊겨…` and the row says `대기 메시지 1개는 이어서 진행한 뒤 보내요`. **이어서 진행** sends `이어서 진행해 주세요.` (the agent also gets a `<turn_interrupted reason="hub-restart">` block, see `snapshot().messageTexts`), starts a new chat session first, and the queue drains when that turn ends |
 | `?scenario=review&restore=later` | After **변경 수락**, hovering the request shows **이 작업 전으로 되돌리기**; it asks before discarding later edits, then puts the request back into the empty composer |
 | `?scenario=review&restore=evicted` | The same action for a request whose checkpoint is gone: dimmed, and a click only explains why |
 | `?scenario=chat&hold=1`, then type and press Enter while it runs | Follow-ups queue above the composer instead of stopping the turn; Ctrl/⌘+Enter sends one now |
@@ -109,8 +110,10 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?theme=dark&width=360` | Dark theme and narrow sidebar |
 | `?controls=0` | Hide preview controls for clean captures |
 | `?reset=1` | Clear preview storage before mounting |
-| `?chats=sample` | Restore sample chats across three documents and no document: one running (`작업 중`), one finished but unread (green dot), one awaiting review (`검토 대기`, 분기별 예산 표 합계 확인) and one cut off (`중단됨` red ring, 안건별 담당자 표 채우기), with **확인 필요 3** under the rail toolbar and 3 on the chat-list button. 사업 개요 첫 문단 다듬기 restores a folded turn (`작업 2분 31초 · 문단 2개 수정 · 표 1개 읽음`) and 참석자 명단 표 만들기 an interrupted one (`중단됨 · 1분 12초 · 표 1개 추가`) |
-| `?chats=engine-trap` | The sample chats plus the shown document's chat that an engine trap interrupted; it opens with the interruption notice the editor adds after reopening documents |
+| `?chats=sample` | Restore sample chats across three documents and no document: one running (`작업 중`), one finished but unread (green dot), one awaiting review (`검토 대기`, 분기별 예산 표 합계 확인) and one cut off (`중단됨` red ring, 추진 일정 분기별로 나누기), with **확인 필요 3** under the rail toolbar and 3 on the chat-list button. 사업 개요 첫 문단 다듬기 restores a folded turn (`작업 2분 31초 · 문단 2개 수정 · 표 1개 읽음`) and 참석자 명단 표 만들기 an interrupted one (`중단됨 · 1분 12초 · 표 1개 추가`) |
+| `?chats=engine-trap` | The sample chats plus the shown document's chat that an engine trap interrupted; it opens with `문서 엔진이 멈춰 작업이 중단됐어요` and **이어서 진행**, as the editor marks it after reopening documents |
+| `?chats=sample`, then open 추진 일정 분기별로 나누기 | A turn the app cut off by restarting (stored sample): `앱이 다시 시작되어 작업이 중단됐어요` with **이어서 진행**, the question card `만료됨 · 앱 재시작` and one follow-up held as `앱 재시작 · …`. Set **Connection** to disconnected: the button is dimmed with `허브에 연결되면 이어서 진행할 수 있어요` |
+| `?chats=sample&reload=lost` | A reload that lost the working chat's turn (no live hub session): startup settles it as `페이지를 새로 고쳐 작업이 중단됐어요` and its stored question draft becomes the card `만료됨 · 새로고침` |
 | `?sessions=2&chats=sample` | A second live document (회의록) with its own sidebar and mock agent; its chats switch sidebars without stopping the other agent |
 | `?parallel=1` | Several chats of one document: a new chat or another chat opened while the shown chat works gets its own sidebar and mock agent, and the busy agent keeps running |
 | `?parallel=locked` | The first chat edits with a held reply and a second, new chat opens beside it, locked to 채팅 |
@@ -123,6 +126,9 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?connection=disconnected` | The offline dot and the read-only composer lock, shown after the 400 ms status delay |
 | `?chats=sample&reload=running` | Reload with the agent still working: the 사업 제안서 chat is re-adopted, not restarted (Stop stays available) |
 | `?chats=sample&reload=question` | Reload with a pending question: the draft comes back at step 2/2 with its typed `직접 입력` answer |
+| `?chats=sample&reload=ended` | The working chat's turn finished while the page reloaded: the hub replays that turn-end before its welcome, and the restored chat folds it as completed (nothing lands on the startup draft) |
+| `?chats=sample&reload=failed` | The same with a failed turn: the restored chat keeps one failure notice, the startup draft stays empty |
+| `?chats=sample&reload=running&document=empty` | The running chat's document is not open yet: events streamed meanwhile (`sidebarPreview.streamEvent(…)`) are held, and drawn when **Document** switches to 사업 제안서 and the chat is re-adopted |
 | `?reload=running` (after a `chats=sample&reload=running` visit) | Reload without re-seeding the chats: follow-ups queued before the reload stay queued and released, and the adopted turn's normal end sends the next one |
 
 Parameters can be combined. Select **Next reply**, then type a message or press
@@ -152,6 +158,28 @@ there. Only real (trusted) keystrokes count, so page scripts cannot hold it;
 From the console, `sidebarPreview.askQuestion()` asks the sample question on the running
 turn (use `hold=1`), and `sidebarPreview.setChatStartDelay(ms)` and
 `sidebarPreview.setStageDelay(ms)` slow a chat start or an attachment upload.
+
+## Interrupted turns
+
+A turn whose end Studio never heard — the agent hub restarted, the app restarted, the
+page reloaded, the chat's agent session vanished, or the document engine stopped — is
+marked where it stopped: its fold reads `중단됨 · …` and one system row below it says why,
+with **이어서 진행** on the chat's latest interruption. The button sends
+`이어서 진행해 주세요.`; the request also carries a `<turn_interrupted reason="…">` block
+telling the agent to re-read the document before editing again. Whatever the user sends
+first after an interruption (typed, queued or retried) carries the same block once.
+Queued follow-ups stay held with the reason until then. The mock exposes
+`sidebarPreview.restartHub()` to cut the running turn.
+
+`node rhwp/rhwp-studio/sidebar-preview/interruption.check.mjs` covers the live hub restart,
+resuming, a typed send after an interruption, a user stop (no row, no dot), the stored app
+restart, the reload startup path and the engine-trap chat, and saves
+`interrupted-live.png`, `interrupted-restored.png` and `interrupted-reload.png` to
+`sidebar-preview/artifacts/`. `node rhwp/rhwp-studio/sidebar-preview/adoption.check.mjs` covers
+the re-adoption edges: a turn-end the hub replays before its welcome (completed and failed),
+events that arrive before the chat is bound, a turn whose end was never replayed
+(`sidebarPreview.loseTurnEnd()`), and a late end of the adopted turn after another chat opened
+(`sidebarPreview.setLateTurnEnd(true)`).
 
 ## Turn fold
 

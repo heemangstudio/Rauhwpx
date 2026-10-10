@@ -29,6 +29,8 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('chat-error-usage', 'Conversation', 'Usage limit', 'Inspect the reset time, 리셋 후 이어서, and 사용량 보기.', { scenario: 'error', failure: 'usage', play: '1' }),
   scene('chat-error-exited', 'Conversation', 'CLI stopped mid-turn', 'Inspect the process-exit notice, 다시 시도, and 자세히.', { scenario: 'error', failure: 'exited', play: '1' }),
   scene('chat-error-start', 'Conversation', 'Chat start failed', 'Inspect the start failure notice; 다시 시도 restarts the session.', { scenario: 'error', failure: 'start', play: '1' }),
+  scene('chat-interrupted', 'Conversation', 'Turn cut off by a hub restart', 'Inspect the 중단됨 fold, the 만료됨 · 허브 재시작 question card and the row with 이어서 진행. No failure notice appears.', { scenario: 'interrupted', play: '1' }),
+  scene('chat-interrupted-reload', 'Conversation', 'Turn cut off by a reload', 'The stored turn of this window settled at startup: inspect 페이지를 새로 고쳐 작업이 중단됐어요 and the 만료됨 · 새로고침 card.', { chats: 'sample', reload: 'lost' }),
   scene('chat-streaming', 'Conversation', 'Streaming response', 'Inspect the active turn, stop control, and composer while work is running.', { scenario: 'chat', play: '1', hold: '1' }),
   scene('chat-queue', 'Conversation', 'Queued follow-ups', 'Messages entered while the agent works wait above the composer. Inspect send now, edit, and delete.', { scenario: 'chat', play: '1', hold: '1', queue: '2' }),
   scene('chat-queue-held', 'Conversation', 'Held follow-ups', 'After 중지 the queue is held. Inspect the reason line and 보내기.', { scenario: 'chat', play: '1', hold: '1', queue: '2', queueHold: 'stopped' }),

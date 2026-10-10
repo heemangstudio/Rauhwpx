@@ -21,10 +21,7 @@ test('question interaction uses strict protocol v5 and a reconnect-idempotent an
   assert.match(bridge, /this\.persistPendingQuestionCancellation\(\)/);
   assert.match(bridge, /case 'user-question-answer-result'/);
   assert.match(bridge, /case 'user-question-resolved'/);
-  assert.match(
-    bridge,
-    /const droppedQuestion = this\.pendingUserQuestion;[\s\S]*this\.pendingQuestionAnswer = null;[\s\S]*interactionId: droppedQuestion\.interactionId,[\s\S]*reason: 'hub-restarted'/,
-  );
+  // 허브를 잃은 질문의 만료 이유(허브 재시작 · 세션 소멸)는 agent-turn-outcome.test.ts 가 브리지로 확인한다.
   assert.match(
     bridge,
     /case 'chat-error': \{[\s\S]*const chatStartFailed = this\.pendingChatStart !== null;[\s\S]*if \(chatStartFailed\) \{[\s\S]*const droppedQuestion = this\.pendingUserQuestion;[\s\S]*reason: 'request-invalidated'/,
@@ -64,7 +61,8 @@ test('question resolution replaces its chronological anchor with immutable histo
 test('question history separates its label and outcome across the card header', () => {
   assert.match(sidebar, /title\.append\([\s\S]*'ag-question-history-label', '에이전트 질문'[\s\S]*'ag-question-history-status', status[\s\S]*\)/);
   assert.doesNotMatch(sidebar, /`에이전트 질문 · \$\{status\}`/);
-  assert.match(sidebar, /\? '답변 완료'[\s\S]*\? '중단됨'[\s\S]*: '만료됨'/);
+  // 카드의 결과 문구(답변 완료 · 중단됨 · 만료됨, 끊긴 턴이면 만료됨 · 이유)는 user-question-flow e2e 와
+  // sidebar-preview/interruption.check.mjs 가 그려진 카드에서 확인한다.
   assert.match(css, /\.ag-question-history-title\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;[^}]*align-items:\s*center;/s);
   assert.match(css, /\.ag-question-history-status\s*\{[^}]*text-align:\s*right;[^}]*white-space:\s*nowrap;/s);
 });

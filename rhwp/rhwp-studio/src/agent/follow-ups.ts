@@ -10,6 +10,7 @@
  * 고치지 않는다. node 테스트가 바로 읽도록 상대 경로만 들여온다.
  */
 import { turnOutcomeFor, type TurnEndFacts } from './turn-outcome.ts';
+import { INTERRUPTION_LABEL } from './turn-interruption-reason.ts';
 import type { ProductSkillIcon } from './types.ts';
 
 /** 한 채팅에 쌓아 둘 수 있는 대기 메시지 수. */
@@ -42,7 +43,7 @@ export interface FollowUpItem {
 
 export interface FollowUpHold {
   reason: FollowUpHoldReason;
-  /** 이유를 좁히는 말 — 예: '허브 재시작', '문서 엔진 오류'. */
+  /** 이유를 좁히는 말 — 예: '허브 재시작', '문서 엔진 멈춤'. */
   detail?: string;
   /** 허브가 거절한 오류 코드(rejected). */
   code?: string;
@@ -188,7 +189,7 @@ export function decideAfterTurn(
   if (outcome === 'stopped' || outcome === 'failed' || outcome === 'interrupted') {
     return { kind: 'hold', reason: outcome };
   }
-  if (ctx.engineTrapped) return { kind: 'hold', reason: 'failed', detail: '문서 엔진 오류' };
+  if (ctx.engineTrapped) return { kind: 'hold', reason: 'failed', detail: INTERRUPTION_LABEL['engine-trap'] };
   if (ctx.planAwaitingApproval) return { kind: 'hold', reason: 'plan-approval' };
   if (ctx.mergeLocked) return { kind: 'hold', reason: 'blocked' };
   if (ctx.editingId !== null) return { kind: 'defer' };

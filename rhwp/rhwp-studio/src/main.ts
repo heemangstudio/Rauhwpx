@@ -190,6 +190,7 @@ import {
 import { TrapRecoveryPage, presentTrapRecoveryReport } from '@/recovery/trap-recovery-page';
 import { holdDocumentLoadingCommands } from '@/recovery/trap-command-guard';
 import { markThreadInterruptedByEngineTrap } from '@/recovery/trap-chat-notice';
+import type { InterruptionScope } from '@/agent/turn-interruption';
 import { claimForExplorerGroup } from '@/project-file/claim';
 import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
 import { TableObjectRenderer } from '@/engine/table-object-renderer';
@@ -282,6 +283,18 @@ import {
 } from '@/core/object-address';
 
 const rendererSessionContextPromise = getRendererSessionContext();
+/**
+ * 끊긴 턴을 가르는 이 페이지의 정체성(S3) — 창 세션은 새로고침을 넘어 같고, 앱 실행 id 는 데스크톱만
+ * 안다(웹의 launchId 는 페이지나 허브마다 바뀐다). 세션 구성이 오기 전에는 null.
+ */
+let interruptionScope: InterruptionScope | null = null;
+void rendererSessionContextPromise.then((context) => {
+  if (!context) return;
+  interruptionScope = {
+    windowSessionId: context.sessionId,
+    appLaunchId: isDesktopApp() ? context.launchId : null,
+  };
+}, () => {});
 
 // ─── 문서 세션 ─────────────────────────────
 // 열린 문서마다 세션 하나. 화면은 attachedSession 하나에만 붙고, 아래 퍼사드는 그 세션을 가리킨다.
@@ -1915,6 +1928,9 @@ function installChatAgent(
     versionController: versions,
     getAgentUndoEntry: () => (shown() ? editor.getAgentUndoEntry() : null),
     undoAgentTurn: (entry) => (shown() ? editor.undoAgentTurn(entry) : false),
+    // 턴 표식의 주인(창·앱)과, 새로고침을 넘어 사는 창의 기본 허브 세션을 쓰는지(S3 부팅 정리).
+    interruptionScope: () => interruptionScope,
+    ownsWindowSession: hubSession === null,
     turnRestore: {
       noteTurnStart: (threadId, key) => session.turnCheckpoints.noteTurnStart(threadId, key),
       rebindTurn: (threadId, fromKey, toKey) => session.turnCheckpoints.rebindTurn(threadId, fromKey, toKey),
@@ -4093,7 +4109,11 @@ async function recoverDocumentsAfterTrap(run: TrapRecoveryRun<DocumentSession>):
         listDrafts: () => listAutosaveDrafts(),
         engineStopped: () => engineTrap() !== null,
         defaultSession: () => firstSession,
-        markInterrupted: (threadId) => markThreadInterruptedByEngineTrap(threadId),
+        // 그 채팅을 이미 연 사이드바가 있으면 그 사이드바가 표시한다(저장소 사본은 다음 저장 때 덮인다).
+        markInterrupted: (threadId) => markThreadInterruptedByEngineTrap(
+          threadId,
+          (id) => allChats().find((chat) => chat.sidebar.currentThreadId() === id)?.sidebar ?? null,
+        ),
         openInDefault: (entry, plan, options) => openTrapEntryInAttached(entry, plan, options),
         openInBackground: async (entry, plan, options) => {
           let fresh: DocumentSession | null = null;

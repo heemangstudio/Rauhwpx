@@ -23,6 +23,7 @@ export const scenarios = [
   'fleet',
   'error',
   'writer-busy',
+  'interrupted',
 ] as const;
 export type Scenario = (typeof scenarios)[number];
 
@@ -42,7 +43,6 @@ export const failureKinds = [
   'invalid',
   'unknown',
   'start',
-  'hub-restarted',
   'legacy',
 ] as const;
 export type FailureKind = (typeof failureKinds)[number];
@@ -84,8 +84,6 @@ function previewFailure(kind: FailureKind, agent: T.AgentName, now: number): T.P
       return failure('unknown', 'Unexpected provider response: the stream ended without a terminal frame.', null, true);
     case 'start':
       return failure('process_exited', 'spawn failed: the CLI exited before it was ready', 'AGENT_SPAWN_FAILED', true);
-    case 'hub-restarted':
-      return failure('process_exited', '에이전트 허브가 다시 시작되어 작업이 중단됐습니다.', 'HUB_RESTARTED', true);
     case 'legacy':
     case 'network':
     default:
@@ -211,6 +209,11 @@ export interface MockLiveChat {
    * the thread store's hydration. By default `boot()` delivers it, right after the sidebar mounts.
    */
   deferWelcome?: boolean;
+  /**
+   * The chat's turn ended while the page was reloading: the hub replays that turn-end (and, for
+   * `failed`, the provider error) before its welcome, which then reports the session idle.
+   */
+  ended?: 'completed' | 'failed';
 }
 
 export interface MockBridgeOptions {
@@ -273,6 +276,17 @@ export function createMockBridge(
     ? Promise.resolve()
     : new Promise<void>((resolve) => { resolveWelcome = resolve; });
   let scenario: Scenario = 'chat';
+  /**
+   * `interrupted` 시나리오: 다음 턴 하나를 허브 재시작으로 끊는다. 끊은 뒤에는(이어서 진행 포함)
+   * 보통 답으로 돈다.
+   */
+  let interruptNextTurn = true;
+  /** 멈춘 턴의 끝을 바로 보내지 않는다 — 검사가 늦게 온 끝을 직접 보낸다. */
+  let lateTurnEnd = false;
+  /** 허브 프로세스 id(welcome.hubInstanceId 흉내). 허브를 다시 띄우면 바뀐다. */
+  let hubInstance = 'preview-hub-1';
+  /** 허브를 잃어 세션이 없다 — 다음 메시지 앞에 실제 브리지처럼 chat-start 를 보낸다. */
+  let sessionLost = false;
   let failureKind: FailureKind = 'network';
   // 실제 브리지처럼 한 턴의 error·turn-end 를 실패 알림 하나로 모은다.
   const turnFailures = createTurnFailureCollector();
@@ -363,6 +377,29 @@ export function createMockBridge(
     setRunning(false);
     stream({ type: 'turn-end', agent, stopReason, ...(errorMessage ? { errorMessage } : {}) });
   };
+  /**
+   * 허브가 다시 떴다(실제 브리지가 welcome {session:null} 로 아는 것과 같은 모양): 기다리던 질문은
+   * 허브 재시작으로 만료되고, 도는 턴은 interruption 이 실린 합성 turn-end 로 닫힌다. 세션이 없으니
+   * 다음 메시지는 채팅 시작부터 간다.
+   */
+  const restartHub = () => {
+    hubInstance = `preview-hub-${Number(hubInstance.split('-').pop() ?? 1) + 1}`;
+    generation++;
+    const lostTurnId = currentTurnId;
+    completeQuestion({ status: 'expired', reason: 'hub-restarted' });
+    hubChatThreadId = null;
+    sessionLost = true;
+    if (!running) return;
+    setRunning(false);
+    stream({
+      type: 'turn-end',
+      agent,
+      stopReason: 'exited',
+      errorMessage: '에이전트 허브가 다시 시작되어 작업이 중단됐습니다.',
+      interruption: 'hub-restart',
+      ...(lostTurnId ? { turnId: lostTurnId } : {}),
+    });
+  };
   /** 실패한 턴: 실제 허브처럼 같은 실패를 error 와 turn-end 에 함께 싣는다 (알림은 하나만 남아야 한다). */
   const failTurn = (kind: FailureKind, turnId: string) => {
     const now = Date.now();
@@ -372,12 +409,6 @@ export function createMockBridge(
       const limits = structuredClone(data.usage.limits);
       limits[agent].session = { percent: 100, resetsAt: now + 2 * 60 * 60 * 1000 };
       emit({ type: 'usage-report', usage: { ...data.usage, limits } });
-    }
-    if (kind === 'hub-restarted') {
-      // 브리지가 허브 재시작으로 잃은 턴을 닫는 모양 (welcome session:null).
-      setRunning(false);
-      stream({ type: 'turn-end', agent, stopReason: 'exited', errorMessage: failure.message, failure, turnId });
-      return;
     }
     if (kind === 'legacy') {
       // 이전 허브: failure 없이 문구만 온다.
@@ -524,6 +555,7 @@ export function createMockBridge(
     isTurnRunning: () => running,
     getPendingUserQuestion: () => question,
     hubSessionKnown: () => welcome,
+    getHubIdentity: () => ({ hubInstanceId: hubInstance, hubSessionId: 'preview-session' }),
     getHubChat: () => (hubChatThreadId
       ? {
         threadId: hubChatThreadId,
@@ -866,11 +898,19 @@ export function createMockBridge(
         }));
         return receipt;
       }
+      if (sessionLost) {
+        // 실제 브리지: 세션이 없으면 대화 기록과 함께 chat-start 를 보낸 뒤 메시지를 보낸다.
+        sessionLost = false;
+        chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission });
+        hubChatThreadId = threadId;
+      }
       const turnGeneration = ++generation;
+      const cutThisTurn = scenario === 'interrupted' && interruptNextTurn;
+      if (cutThisTurn) interruptNextTurn = false;
       const reply =
         scenario === 'chat' && workflow.workflow !== 'direct'
           ? workflow.workflow
-          : scenario;
+          : scenario === 'interrupted' ? (cutThisTurn ? 'interrupted' : 'chat') : scenario;
       if (reply === 'error' && (failureKind === 'start' || failureKind === 'pi-setup')) {
         // 채팅 시작 실패: 메시지는 프로바이더에 닿지 않는다.
         const failure = previewFailure(failureKind, agent, Date.now());
@@ -901,6 +941,20 @@ export function createMockBridge(
           });
         if (reply === 'question') {
           askSampleQuestion(`turn-${turnGeneration}`);
+          return;
+        }
+        if (reply === 'interrupted') {
+          // 문서를 읽고 답을 쓰다가 질문을 남긴 채 허브가 다시 뜬다. 붙잡아 두면(hold=1) 문서를 읽은 뒤
+          // 계속 돌고, 검사가 askQuestion·restartHub 로 질문과 허브 재시작을 직접 부른다.
+          stream({ type: 'tool-call', agent, callId: `structure-${turnGeneration}`, tool: 'mcp__rhwp__get_structure', argsJson: '{}' });
+          later(() => {
+            if (generation !== turnGeneration) return;
+            stream({ type: 'tool-result', agent, callId: `structure-${turnGeneration}`, ok: true, resultPreview: '구역 1개 · 문단 42개 · 표 3개' });
+            stream({ type: 'text-delta', agent, text: '추진 일정 표를 분기별로 나누기 전에 범위를 확인하겠습니다.' });
+            if (holdReply) return;
+            askSampleQuestion(`turn-${turnGeneration}`);
+            later(() => { if (generation === turnGeneration) restartHub(); }, 900);
+          }, 400);
           return;
         }
         stream({
@@ -1495,7 +1549,8 @@ export function createMockBridge(
       interrupts += 1;
       generation++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
-      if (running) finish('interrupted');
+      // lateTurnEnd: 실제 허브처럼 멈춘 턴의 끝은 나중에 온다(streamEvent 로 보낸다).
+      if (running && !lateTurnEnd) finish('interrupted');
     },
     onEvent: (listener) => {
       listeners.add(listener);
@@ -1520,11 +1575,23 @@ export function createMockBridge(
     if (!live || welcomed) return;
     welcomed = true;
     agent = live.agent ?? agent;
+    if (live.ended) {
+      // 허브는 저장해 둔 턴의 끝(실패면 그 실패를 실은 turn-end 하나)을 welcome 보다 먼저 다시 보낸다 —
+      // 이 페이지는 아직 그 채팅을 모른다.
+      const failure = live.ended === 'failed'
+        ? previewFailure('network', agent, Date.now())
+        : null;
+      stream({
+        type: 'turn-end', agent, turnId: 'preview-turn',
+        stopReason: failure ? 'failed' : 'completed',
+        ...(failure ? { errorMessage: failure.message, failure } : {}),
+      });
+    }
     threadId = live.threadId;
     hubChatThreadId = threadId;
-    currentTurnId = 'preview-turn';
-    question = live.question ? structuredClone(live.question) : null;
-    setRunning(true);
+    currentTurnId = live.ended ? null : 'preview-turn';
+    question = live.question && !live.ended ? structuredClone(live.question) : null;
+    setRunning(!live.ended);
     emit({
       type: 'chat-started',
       agent,
@@ -1629,6 +1696,21 @@ export function createMockBridge(
     },
     setScenario: (value: Scenario) => {
       scenario = value;
+      interruptNextTurn = true;
+    },
+    /** 허브 프로세스를 다시 띄운 것처럼 — 도는 턴을 허브 재시작으로 끊는다(S3). */
+    restartHub,
+    /** 멈춘 턴의 끝을 바로 보내지 않는다(실제 허브처럼 나중에 온다). */
+    setLateTurnEnd: (value: boolean) => { lateTurnEnd = value; },
+    /**
+     * 끊긴 사이에 턴이 끝났는데 허브가 그 끝을 다시 보내지 않았다 — 실제 브리지처럼 welcome 뒤
+     * 진행 상태만 내리고 connection 으로 다시 맞추게 한다.
+     */
+    loseTurnEnd: () => {
+      generation++;
+      setRunning(false);
+      currentTurnId = null;
+      emit({ type: 'connection', state: connection, attempt: 0 });
     },
     setFailureKind: (value: FailureKind) => {
       failureKind = value;

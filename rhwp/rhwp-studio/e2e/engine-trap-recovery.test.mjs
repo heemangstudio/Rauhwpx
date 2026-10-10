@@ -12,8 +12,9 @@
  * 1. 편집한 문서 하나: 입력한 글자가 저장하지 않은 변경으로, 같은 파일에 연결된 채 돌아온다.
  *    깨끗한 문서는 파일에서 깨끗하게 돌아온다. 일반 자동 저장본 복구 안내는 뜨지 않는다.
  *    멈춘 뒤의 열기·새 문서는 엔진을 건드리지 않고 문서 복구로 안내한다 (지금 문서가 남는다).
- * 2. 두 문서: 에이전트가 일하던 문서는 뒤의 세션으로, 보던 문서는 화면에 돌아오고, 멈춘 채팅에는
- *    중단 안내가 남는다. 이어서 다시 여는 도중 또 멈추면 그 문서는 다음 복구에서 자동으로 열지 않고
+ * 2. 두 문서: 에이전트가 일하던 문서는 뒤의 세션으로, 보던 문서는 화면에 돌아오고, 멈춘 채팅의 마지막
+ *    턴은 '문서 엔진 멈춤'으로 끊긴 턴이 되어 그 자리에 이유와 이어서 진행이 선다. 이어서 다시 여는
+ *    도중 또 멈추면 그 문서는 다음 복구에서 자동으로 열지 않고
  *    결과에서 직접 열 수 있다.
  * 3. 첫 문서를 다시 여는 도중 멈추면 일반 자동 저장본 복구를 띄우지 않는다 — 그 삭제가 다음 문서
  *    복구에 쓸 복구본을 지운다. 복구본은 남아 다음 복구의 결과에서 직접 열 수 있다.
@@ -44,7 +45,7 @@ const HUB_TOKEN = 'engine-trap-recovery-e2e';
 const DOC_A = 'para-001.hwp';
 const DOC_B = 'text-align-2.hwp';
 const MARKER = 'TRAPKEEP';
-const NOTICE = '문서 엔진이 멈춰 이 작업이 중단되었습니다.';
+const NOTICE = '문서 엔진이 멈춰 작업이 중단됐어요';
 /** 멈춘 엔진을 부른 호출이 잡히지 않고 페이지 오류로 새어 나온 것 (다시 던지면 이름 없이 문구만 남는다). */
 const TRAP_PAGE_ERROR = /EngineTrapped|ENGINE_TRAPPED|문서 엔진이 멈췄습니다/;
 
@@ -351,11 +352,21 @@ try {
     assert(a?.text.startsWith(MARKER) && a.dirty, 'A kept its unsaved edit');
     assert(b?.attached === true && b.dirty === false, 'B is shown again, clean');
     assert(a?.threadId === threadA, `A's chat follows its interrupted thread (${a?.threadId} vs ${threadA})`);
-    const notice = await page.evaluate(async (threadId) => {
+    // 멈춘 채팅의 마지막 턴은 '문서 엔진 멈춤'으로 끊긴 턴이다 — 그 자리에 이유와 이어서 진행이 선다.
+    const marker = await page.evaluate(async (threadId) => {
       const { getThread } = await import('/src/agent/threads.ts');
-      return getThread(threadId)?.messages.at(-1) ?? null;
+      const markers = getThread(threadId)?.messages.filter((message) => message.kind === 'turn') ?? [];
+      return markers.at(-1) ?? null;
     }, threadA);
-    assert(notice?.role === 'system' && notice.text.startsWith(NOTICE), `The interrupted chat says why it stopped (${notice?.text})`);
+    assert(marker?.outcome === 'interrupted' && marker.interruption?.reason === 'engine-trap',
+      `The interrupted chat records why it stopped (${JSON.stringify(marker?.interruption)})`);
+    await waitForState(page, 'the interruption row in A\'s chat', () => {
+      const sidebar = window.__documentSessions.list()[0].activeChat?.sidebar.root;
+      return Boolean(sidebar?.querySelector('.ag-turn-interrupted .ag-turn-interrupted-resume:not([hidden])'));
+    });
+    const row = await page.evaluate(() => window.__documentSessions.list()[0].activeChat.sidebar.root
+      .querySelector('.ag-turn-interrupted-text')?.textContent ?? null);
+    assert(row === NOTICE, `The interrupted chat says why it stopped and offers 이어서 진행 (${row})`);
     assert(await linkedToFile(page, DOC_A) && await linkedToFile(page, DOC_B), 'Both documents are linked to their files');
     assert(!(await genericRecoveryToastShown(page)), 'The generic autosave notice does not appear');
     await screenshot(page, 'trap-recovery-4-two-documents-back');
@@ -597,11 +608,17 @@ try {
     const [back] = await loadedSessions(page);
     assert(back?.threadId === threadA && back.text.startsWith(MARKER) && back.dirty,
       `The reopened document follows its chat, and the turn no longer runs on it (${JSON.stringify(back)})`);
-    const notice = await page.evaluate(async (threadId) => {
+    // 다시 잡은 턴을 멈춘 끝이 사용자의 멈춤으로 이유를 덮지 않는다 — 마지막 턴은 여전히 엔진 멈춤으로 끊겼다.
+    const stopped = await page.evaluate(async (threadId) => {
       const { getThread } = await import('/src/agent/threads.ts');
-      return getThread(threadId)?.messages.some((message) => message.role === 'system' && message.text.startsWith('문서 엔진이 멈춰'));
+      const markers = getThread(threadId)?.messages.filter((message) => message.kind === 'turn') ?? [];
+      return markers.at(-1) ?? null;
     }, threadA);
-    assert(notice, 'The chat still says the engine stop interrupted it');
+    assert(stopped?.outcome === 'interrupted' && stopped.interruption?.reason === 'engine-trap',
+      `The chat still says the engine stop interrupted it (${JSON.stringify({ outcome: stopped?.outcome, interruption: stopped?.interruption })})`);
+    const stoppedRow = await page.evaluate(() => window.__documentSessions.list()[0].activeChat?.sidebar.root
+      .querySelector('.ag-turn-interrupted-text')?.textContent ?? null);
+    assert(stoppedRow === NOTICE, `The chat shows why it stopped (${stoppedRow})`);
     assertNoTrapPageErrors(page, 'after recovery');
   });
 } finally {

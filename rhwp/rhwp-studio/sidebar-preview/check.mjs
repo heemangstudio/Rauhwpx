@@ -21,6 +21,8 @@ import { checkDelayedStatus } from './delayed-status.check.mjs';
 import { checkRestoreTurnPreview } from './restore-turn.check.mjs';
 import { checkFailureNotices } from './failures.check.mjs';
 import { checkAttention } from './attention.check.mjs';
+import { checkInterruptionPreview } from './interruption.check.mjs';
+import { checkAdoptionPreview } from './adoption.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -1044,6 +1046,10 @@ try {
     () => checkFailureNotices(page, origin, artifacts));
   await step('Background-chat attention: rail states, chip, count, toasts and notices',
     () => checkAttention(page, origin, artifacts));
+  await step('A turn cut off by a hub restart, an app restart, a reload or an engine trap says why and offers 이어서 진행',
+    () => checkInterruptionPreview(page, origin, artifacts));
+  await step('A reload never draws the hub chat\'s replayed or early events on the startup draft, and a late end settles only its own turn',
+    () => checkAdoptionPreview(page, origin, artifacts));
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

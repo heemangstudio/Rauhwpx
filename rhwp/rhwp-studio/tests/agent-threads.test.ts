@@ -996,6 +996,82 @@ test('턴 표식은 공급자 기록에 들어가지 않는다', () => {
   );
 });
 
+test('끊긴 턴의 주인·허브 턴 id·끊김 기록(S3)은 표식과 함께 저장소를 오간다', () => {
+  mem.clear();
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  const turn = createTurnMarker(10_000, 'turn-s3');
+  turn.owner = { window: 'window-a', app: null, hub: 'hub-1' };
+  turn.hubTurnId = 'hub-turn-1';
+  thread.messages.push({ role: 'user', text: '표를 정리해 주세요' }, turn);
+  upsertThread(thread);
+  const running = latestTurnMarker(getThread(thread.id)!.messages)!;
+  assert.deepEqual(running.owner, { window: 'window-a', app: null, hub: 'hub-1' });
+  assert.equal(running.hubTurnId, 'hub-turn-1');
+  assert.equal(running.interruption, undefined);
+
+  settleTurnMarker(turn, {
+    endedAt: 40_000,
+    outcome: 'interrupted',
+    reason: 'hub-restart',
+    interruption: { reason: 'hub-restart', at: 90_000 },
+  });
+  turn.interruption!.resolution = 'resumed';
+  upsertThread(thread);
+  const restored = latestTurnMarker(getThread(thread.id)!.messages)!;
+  assert.equal(restored.outcome, 'interrupted');
+  assert.deepEqual(restored.interruption, { reason: 'hub-restart', at: 90_000, resolution: 'resumed' });
+  assert.deepEqual(restored.owner, { window: 'window-a', app: null, hub: 'hub-1' });
+});
+
+test('깨진 S3 필드는 그 필드만 버리고 턴 표식은 남긴다', () => {
+  mem.clear();
+  const base = { role: 'system', kind: 'turn', startedAt: 1, endedAt: 2, outcome: 'interrupted', text: '중단됨' };
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
+    id: 'broken-s3',
+    title: '끊김',
+    titleRequested: true,
+    createdAt: 1,
+    updatedAt: 2,
+    agent: 'codex',
+    model: 'gpt-5.6-sol',
+    effort: 'high',
+    messages: [
+      { role: 'user', text: '하나' },
+      { ...base, messageId: 'bad-owner', owner: { window: 'x'.repeat(129), app: null, hub: null }, hubTurnId: 7 },
+      { ...base, messageId: 'bad-reason', interruption: { reason: 'meteor', at: 3 } },
+      { ...base, messageId: 'bad-at', interruption: { reason: 'reload', at: -1 } },
+      { ...base, messageId: 'bad-resolution', interruption: { reason: 'reload', at: 3, resolution: 'maybe' } },
+      { ...base, messageId: 'not-interrupted', outcome: 'completed', interruption: { reason: 'reload', at: 3 } },
+      { role: 'system', kind: 'turn', messageId: 'open', startedAt: 1, endedAt: null, outcome: null, text: '', interruption: { reason: 'reload', at: 3 } },
+    ],
+  }]));
+  const markers = getThread('broken-s3')!.messages.filter((message) => message.kind === 'turn');
+  assert.deepEqual(markers.map((marker) => marker.messageId),
+    ['bad-owner', 'bad-reason', 'bad-at', 'bad-resolution', 'not-interrupted', 'open']);
+  const byId = new Map(markers.map((marker) => [marker.messageId, marker]));
+  assert.equal(byId.get('bad-owner')!.owner, undefined);
+  assert.equal(byId.get('bad-owner')!.hubTurnId, undefined);
+  assert.equal(byId.get('bad-reason')!.interruption, undefined);
+  assert.equal(byId.get('bad-at')!.interruption, undefined);
+  assert.deepEqual(byId.get('bad-resolution')!.interruption, { reason: 'reload', at: 3 });
+  assert.equal(byId.get('not-interrupted')!.interruption, undefined, 'only an interrupted turn keeps an interruption');
+  assert.equal(byId.get('open')!.interruption, undefined);
+});
+
+test('끊긴 턴의 표식은 공급자 기록을 바꾸지 않는다', () => {
+  const plain = [
+    { role: 'user' as const, text: '요약해 주세요' },
+    { role: 'assistant' as const, text: '요약하는 중' },
+  ];
+  const cut = createTurnMarker(1, 'turn-cut');
+  cut.owner = { window: 'w', app: null, hub: 'h' };
+  settleTurnMarker(cut, { endedAt: 2, outcome: 'interrupted', interruption: { reason: 'reload', at: 3 } });
+  assert.deepEqual(
+    serializeThreadMessagesForProviderHistory([plain[0], cut, plain[1]]),
+    serializeThreadMessagesForProviderHistory(plain),
+  );
+});
+
 test('저장소의 표식 정착은 그 id 의 정착 전 표식만 바꾸고 먼저 정한 결과를 덮지 않는다', () => {
   mem.clear();
   const thread = createEmptyThread({ agent: 'pi', model: 'openrouter/test', effort: 'medium' });

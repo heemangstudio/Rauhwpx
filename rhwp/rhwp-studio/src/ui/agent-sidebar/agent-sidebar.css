@@ -931,6 +931,46 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   background: var(--ag-primary-bg-hover);
 }
 
+/* 바깥이 끊은 턴(허브·앱 재시작, 새로고침, 엔진 멈춤)의 한 줄 — 멈춘 자리에서 이유와 이어서 진행. */
+.ag-turn-interrupted {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 8px;
+  flex-wrap: wrap;
+}
+
+.ag-turn-interrupted-queue {
+  color: var(--ag-text-tertiary);
+}
+
+.ag-turn-interrupted-resume {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+  cursor: default;
+  border-radius: var(--ag-r-row);
+  transition: var(--ag-transition-color);
+}
+
+.ag-turn-interrupted-resume:hover {
+  background: var(--ag-primary-bg-hover);
+}
+
+.ag-turn-interrupted-resume:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-turn-interrupted-resume[aria-disabled='true'] {
+  opacity: 0.5;
+}
+
 /* 사이드바 폭이 좁아져도 요약은 한 줄을 유지한다. 각 flex item 이
    줄어들며 긴 모델명만 말줄임되고, 마지막의 단일 chevron 은 남는다. */
 .ag-selectors {

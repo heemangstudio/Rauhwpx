@@ -23,7 +23,6 @@ const KINDS = [
   ['invalid', /^대화가 너무 길어 .+가 처리하지 못했어요$/, []],
   ['unknown', /작업 중 오류가 발생했어요$/, ['retry']],
   ['start', /CLI를 시작하지 못했어요$/, ['retry']],
-  ['hub-restarted', /^에이전트 허브가 다시 시작되어 작업이 중단됐어요$/, ['retry']],
   ['legacy', /로그인이 필요해요$/, ['login']],
 ];
 

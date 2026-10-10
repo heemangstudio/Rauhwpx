@@ -13,6 +13,7 @@ import type {
 } from '../../agent/types.ts';
 import type { ChatThread, ThreadFailureMessage, ThreadRetryPayload } from '../../agent/threads.ts';
 import { failureDismissKey, resetAtFromLimits } from '../../agent/provider-failure.ts';
+import { continuationWire, type ContinuationContext } from '../../agent/turn-interruption.ts';
 
 export type FailureActionId = 'login' | 'settings' | 'usage' | 'retry' | 'resume' | 'cancel-resume';
 
@@ -90,7 +91,6 @@ function titleFor(failure: ProviderFailure, label: string, origin: string): stri
     case 'process_exited':
       if (failure.code === 'cli_missing') return `${label} CLI를 찾지 못했어요`;
       if (failure.code && CLEANUP_CODES.has(failure.code)) return `이전 ${label} 프로세스를 정리하지 못했어요`;
-      if (failure.code === 'HUB_RESTARTED') return '에이전트 허브가 다시 시작되어 작업이 중단됐어요';
       if (origin === 'start') return `${label} CLI를 시작하지 못했어요`;
       return `${label} 실행이 중간에 멈췄어요`;
     case 'invalid_request':
@@ -171,12 +171,13 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
 
 /**
  * 실패한 턴 뒤 대기열을 붙잡는 이유와 짧은 설명 (대기열 줄: `{detail} · 작업이 오류로 끝나…`).
- * 허브 재시작은 끊긴 작업이다. 사용 한도는 아는 리셋 시각을 함께 적는다.
+ * 사용 한도는 아는 리셋 시각을 함께 적는다. 허브 재시작처럼 바깥이 끊은 턴은 실패가 아니다 —
+ * 끊김 줄(S3)이 이유(INTERRUPTION_LABEL)와 함께 'interrupted' 로 붙잡는다.
  */
 export function failureQueueHold(
   failure: ProviderFailure,
   ctx: { agentLabel: string; resetAt: number | null; now: number; timeZone?: string },
-): { reason: 'failed' | 'interrupted'; detail?: string } {
+): { reason: 'failed'; detail?: string } {
   const label = ctx.agentLabel;
   switch (failure.class) {
     case 'auth_required':
@@ -194,7 +195,6 @@ export function failureQueueHold(
     case 'network':
       return { reason: 'failed', detail: `${label} 연결 실패` };
     case 'process_exited':
-      if (failure.code === 'HUB_RESTARTED') return { reason: 'interrupted', detail: '허브 재시작' };
       if (failure.code && CLEANUP_CODES.has(failure.code)) return { reason: 'failed', detail: '프로세스 정리 실패' };
       if (failure.code === 'cli_missing') return { reason: 'failed', detail: `${label} CLI 없음` };
       return { reason: 'failed', detail: `${label} 실행 중단` };
@@ -207,7 +207,7 @@ export function failureQueueHold(
 
 /**
  * 채팅 목록의 오류 점 옆에 서는 짧은 이유(U3) — 에이전트 이름 없이 몇 글자로.
- * 허브 재시작은 오류가 아니라 끊긴 작업이다(`중단됨`).
+ * 허브 재시작으로 끊긴 턴은 실패가 아니다 — 중단(S3)으로 오고 레일에는 `중단됨`이 선다.
  */
 export function failureRailLabel(failure: ProviderFailure): string {
   switch (failure.class) {
@@ -220,7 +220,6 @@ export function failureRailLabel(failure: ProviderFailure): string {
     case 'network':
       return '연결 실패';
     case 'process_exited':
-      if (failure.code === 'HUB_RESTARTED') return '중단됨';
       if (failure.code === 'cli_missing') return 'CLI 없음';
       return '실행 중단';
     case 'invalid_request':
@@ -234,11 +233,39 @@ export function failureRailLabel(failure: ProviderFailure): string {
 export const PARTIAL_EDITS_RETRY_NOTE = '(이전 시도가 중간에 끊겨 문서 편집 일부가 이미 반영됐을 수 있습니다. 먼저 문서를 다시 읽고, 이미 반영된 편집은 반복하지 마세요.)';
 
 /**
- * '다시 시도' 가 프로바이더에 보낼 본문. 실패한 시도가 문서를 고쳤다면 처음 요청을 그대로
- * 되풀이하지 않고 다시 읽으라는 안내를 붙인다 — 이어서 진행(S3)이 들어오면 이 한 곳이 바뀐다.
+ * 턴 도중 끊긴 실패 — 프로세스가 끝났거나, 연결이 끊겼거나, 서버가 중간에 오류를 냈다. 이런 턴이
+ * 문서를 이미 고쳤으면 처음 요청을 다시 보내지 않고 이어서 진행한다(편집을 되풀이하지 않게).
  */
-export function retryRequestText(retry: ThreadRetryPayload): string {
-  return retry.afterPartialEdits ? `${retry.requestText}\n\n${PARTIAL_EDITS_RETRY_NOTE}` : retry.requestText;
+const MID_TURN_FAILURE_CLASSES: ReadonlySet<ProviderFailure['class']> = new Set(['process_exited', 'network', 'provider_error']);
+
+/**
+ * '다시 시도' 가 보낼 기록 문구와 요청문.
+ * - 문서를 고친 뒤 턴 도중 끊겼으면(MID_TURN_FAILURE_CLASSES) 이어서 진행해 주세요. + 끊긴 턴 블록(S3,
+ *   'agent-exit') — 에이전트는 문서를 다시 읽고 끊긴 자리에서 잇는다.
+ * - 다른 실패로 문서를 고친 뒤면 처음 요청에 다시 읽으라는 안내를 붙인다.
+ * - 아무것도 고치지 않았으면 처음 요청 그대로.
+ */
+export function retryWire(
+  retry: ThreadRetryPayload,
+  failure: Pick<ProviderFailure, 'class'> | null,
+  ctx: ContinuationContext,
+): { displayText: string; requestText: string } {
+  if (retry.afterPartialEdits && failure && MID_TURN_FAILURE_CLASSES.has(failure.class)) {
+    return continuationWire('agent-exit', ctx);
+  }
+  return {
+    displayText: retry.displayText,
+    requestText: retry.afterPartialEdits ? `${retry.requestText}\n\n${PARTIAL_EDITS_RETRY_NOTE}` : retry.requestText,
+  };
+}
+
+/** 다시 보내는 요청문(기록 문구 없이) — retryWire 의 requestText. */
+export function retryRequestText(
+  retry: ThreadRetryPayload,
+  failure: Pick<ProviderFailure, 'class'> | null = null,
+  ctx: ContinuationContext = { stagedAwaitingReview: false, questionExpired: false },
+): string {
+  return retryWire(retry, failure, ctx).requestText;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
@@ -382,8 +409,11 @@ export interface FailureNoticeControllerDeps {
   openSettings(): void;
   /** 채팅 시작이 실패했을 때의 다시 시도 */
   restartSession(): void;
-  /** 저장된 요청을 컴포저와 같은 길로 다시 보낸다. 지금 보낼 수 없으면 false. */
-  resend(retry: ThreadRetryPayload): boolean;
+  /**
+   * 저장된 요청을 컴포저와 같은 길로 다시 보낸다. failure 는 그 요청이 실패한 이유 — 문서를 고친 뒤
+   * 턴 도중 끊겼으면 이어서 진행으로 보낸다(retryWire). 지금 보낼 수 없으면 false.
+   */
+  resend(retry: ThreadRetryPayload, failure: ProviderFailure): boolean;
   now?: () => number;
   /** 리셋 시각 뒤 이어서 보내기까지의 여유 (시계 차이) */
   resumeGraceMs?: number;
@@ -517,7 +547,7 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
   function attemptResume(threadId: string, armed: ArmedResume): void {
     cancelResume(threadId);
     const { message } = armed;
-    const sent = deps.thread().id === threadId && message.retry !== undefined && deps.resend(message.retry);
+    const sent = deps.thread().id === threadId && message.retry !== undefined && deps.resend(message.retry, message.failure);
     if (!sent) blocked.add(message);
     refresh();
   }
@@ -568,7 +598,7 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
     }
     if (!message.retry) return;
     blocked.delete(message);
-    deps.resend(message.retry);
+    deps.resend(message.retry, message.failure);
     refresh();
   }
 

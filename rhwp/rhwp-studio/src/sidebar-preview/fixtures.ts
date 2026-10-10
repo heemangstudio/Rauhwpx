@@ -1,7 +1,6 @@
 import type * as T from '../agent/types.ts';
 import type { ChatThread, PendingUserQuestionDraftSnapshot } from '../agent/threads.ts';
 import { defaultModelForAgent, labelForModel } from '../agent/models.ts';
-import { ENGINE_TRAP_INTERRUPTED_NOTICE } from '../recovery/trap-chat-notice.ts';
 
 export type BrowserbaseFixtureState = 'connected' | 'setup' | 'error';
 
@@ -308,8 +307,13 @@ export const SAMPLE_WORKING_CHAT_ID = 'preview-chat-schedule';
 export const SAMPLE_FINISHED_CHAT_ID = 'preview-chat-minutes';
 /** Seeded chat that `chats=sample` shows as 검토 대기 (staged edits awaiting review). */
 export const SAMPLE_REVIEW_CHAT_ID = 'preview-chat-totals';
-/** Seeded chat that `chats=sample` shows as cut off (`중단됨`): its last turn never finished. */
+/**
+ * Seeded chat that `chats=sample` shows as cut off (`중단됨`): the app restarted during its turn
+ * (S3 interruption row with 이어서 진행).
+ */
 export const SAMPLE_INTERRUPTED_CHAT_ID = 'preview-chat-interrupted';
+/** The preview page's window session, as the editor passes it to the sidebar (interruptionScope). */
+export const PREVIEW_WINDOW_SESSION_ID = 'preview-window';
 
 type SampleMessage = ChatThread['messages'][number];
 
@@ -370,6 +374,116 @@ function sampleTurnWork(id: string, agent: T.AgentName, activityAt: number): Sam
   return [];
 }
 
+/** A stored question card the cut-off turn left unanswered (sample data). */
+function sampleExpiredQuestion(threadId: string, turnId: string): SampleMessage {
+  const interaction: T.UserQuestionInteraction = {
+    interactionId: `${threadId}-question`,
+    providerRequestId: `${threadId}-question-request`,
+    threadId,
+    turnId,
+    agent: 'claude',
+    source: 'native',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    questions: [{
+      id: 'range',
+      header: '범위',
+      question: '어느 기간의 일정을 분기별로 나눌까요?',
+      mode: 'single',
+      allowOther: false,
+      options: [
+        { id: 'all', label: '전체 일정', description: '착수부터 종료까지 모두 나눕니다.' },
+        { id: 'next-year', label: '내년 일정만', description: '2027년 일정만 분기로 묶습니다.' },
+      ],
+    }],
+  };
+  return {
+    role: 'assistant',
+    kind: 'user-question',
+    text: '어느 기간의 일정을 분기별로 나눌까요?\n요청 만료',
+    agent: 'claude',
+    interaction,
+    outcome: { status: 'expired', reason: 'request-invalidated' },
+  };
+}
+
+/**
+ * `chats=sample`: a 사업 제안서 chat whose turn was cut off when the app restarted (sample data).
+ * The turn read the document and asked a question; the stored marker carries the S3 interruption,
+ * so the chat opens with the interruption row, 이어서 진행, the expired question card labelled
+ * 만료됨 · 앱 재시작, and one follow-up held with that reason.
+ */
+export function interruptedSampleChat(now: number): ChatThread {
+  const id = SAMPLE_INTERRUPTED_CHAT_ID;
+  const activityAt = now - 30 * MINUTE;
+  const startedAt = activityAt - 72_000;
+  return {
+    id,
+    title: '추진 일정 분기별로 나누기',
+    titleRequested: true,
+    createdAt: startedAt - MINUTE,
+    updatedAt: activityAt,
+    lastActivityAt: activityAt,
+    agent: 'claude',
+    model: defaultModelForAgent('claude'),
+    effort: 'medium',
+    serviceTier: 'standard',
+    workflow: 'direct',
+    documentId: 'preview-proposal',
+    docKey: '사업 제안서.hwpx',
+    activeTemplateId: null,
+    followUps: {
+      items: [{ id: `${id}-follow-up`, text: '표 머리글도 굵게 해 주세요.', createdAt: activityAt - 20_000 }],
+      hold: { reason: 'interrupted', detail: '앱 재시작', at: activityAt + 5_000 },
+    },
+    messages: [
+      { role: 'user', text: '추진 일정 표를 분기별로 다시 나눠 주세요.' },
+      {
+        role: 'system', kind: 'turn', messageId: `${id}-turn-1`, startedAt, endedAt: activityAt,
+        outcome: 'interrupted', text: '중단됨 · 1분 12초 · 표 1개 읽음 · 문서 읽음',
+        owner: { window: PREVIEW_WINDOW_SESSION_ID, app: 'preview-app-run-1', hub: 'preview-hub-0' },
+        hubTurnId: `${id}-hub-turn`,
+        reason: 'app-restart',
+        interruption: { reason: 'app-restart', at: activityAt + 5_000 },
+      },
+      { role: 'assistant', kind: 'progress', agent: 'claude', text: '추진 일정 표를 읽고 분기별로 묶겠습니다.' },
+      {
+        role: 'assistant', kind: 'activity', agent: 'claude', activityId: `${id}-activity-1`, text: '도구 호출',
+        status: 'completed', startedAt: startedAt + 3_000, completedAt: startedAt + 21_000,
+        tools: [
+          sampleTool(`${id}-1`, 'get_structure', {}, '구역 1개 · 문단 42개 · 표 3개'),
+          sampleTool(`${id}-2`, 'get_table_properties', { sectionIdx: 0, paraIdx: 21, controlIdx: 0 }, '{"rows":6,"cols":4}'),
+        ],
+      },
+      sampleExpiredQuestion(id, `${id}-hub-turn`),
+    ],
+  };
+}
+
+/**
+ * `chats=sample&reload=lost`: what the old page stored for the working chat's turn before a reload
+ * that the hub did not survive for this chat — an open marker this window started (sample data).
+ * The sidebar's startup settles it as cut off by the reload.
+ */
+export function sampleLostTurnWork(agent: T.AgentName, now: number): SampleMessage[] {
+  const id = SAMPLE_WORKING_CHAT_ID;
+  const startedAt = now - 40_000;
+  return [
+    {
+      role: 'system', kind: 'turn', messageId: `${id}-turn-lost`, startedAt, endedAt: null, outcome: null, text: '',
+      owner: { window: PREVIEW_WINDOW_SESSION_ID, app: null, hub: 'preview-hub-1' },
+      hubTurnId: 'preview-lost-turn',
+    },
+    {
+      role: 'assistant', kind: 'activity', agent, activityId: `${id}-activity-lost`, text: '도구 호출',
+      status: 'completed', startedAt: startedAt + 3_000, completedAt: startedAt + 21_000,
+      tools: [
+        sampleTool(`${id}-lost-1`, 'get_table_properties', { sectionIdx: 0, paraIdx: 21, controlIdx: 0 }, '{"rows":6,"cols":4}'),
+      ],
+    },
+  ];
+}
+
 /**
  * `reload=running|question`: what the old page stored for the working chat's running turn before
  * the reload — its open turn marker and the work done so far (sample data). The re-adopted turn's
@@ -417,7 +531,7 @@ export function sampleChats(now: number): ChatThread[] {
     ['preview-chat-wording', '예산 항목 설명 문장 통일', 'claude', budget, 8 * DAY,
       '예산 항목 설명을 같은 문체로 맞춰 주세요.', '모든 항목 설명을 "~합니다" 문체로 통일했습니다.'],
   ];
-  return rows.map(([id, title, agent, document, age, request, reply]) => {
+  const chats = rows.map(([id, title, agent, document, age, request, reply]): ChatThread => {
     const activityAt = now - age;
     const messages: ChatThread['messages'] = [{ role: 'user', text: request }];
     messages.push(...sampleTurnWork(id, agent, activityAt));
@@ -439,48 +553,7 @@ export function sampleChats(now: number): ChatThread[] {
       messages,
     };
   });
-}
-
-/**
- * `chats=sample`: a chat whose last turn was cut off while the user was away — the request,
- * the work done so far, and a turn folded as interrupted, with no answer. The rail shows it
- * as `중단됨` (a red ring), and seeing it clears the mark.
- */
-export function sampleInterruptedChat(now: number): ChatThread {
-  const id = SAMPLE_INTERRUPTED_CHAT_ID;
-  const activityAt = now - 40 * MINUTE;
-  const startedAt = activityAt - 48_000;
-  return {
-    id,
-    title: '안건별 담당자 표 채우기',
-    titleRequested: true,
-    createdAt: activityAt - 3 * MINUTE,
-    updatedAt: activityAt,
-    lastActivityAt: activityAt,
-    agent: 'codex',
-    model: defaultModelForAgent('codex'),
-    effort: 'medium',
-    serviceTier: 'standard',
-    workflow: 'direct',
-    documentId: 'preview-notes',
-    docKey: '회의록.hwpx',
-    activeTemplateId: null,
-    messages: [
-      { role: 'user', text: '안건마다 담당자와 마감일을 표에 채워 주세요.' },
-      {
-        role: 'system', kind: 'turn', messageId: `${id}-turn-1`, startedAt, endedAt: activityAt,
-        outcome: 'interrupted', text: '중단됨 · 48초 · 표 1개 읽음',
-      },
-      { role: 'assistant', kind: 'progress', agent: 'codex', text: '안건 표를 읽고 담당자 칸부터 채우겠습니다.' },
-      {
-        role: 'assistant', kind: 'activity', agent: 'codex', activityId: `${id}-activity-1`, text: '도구 호출',
-        status: 'completed', startedAt: startedAt + 2_000, completedAt: startedAt + 9_000,
-        tools: [
-          sampleTool(`${id}-1`, 'get_table_properties', { sectionIdx: 0, paraIdx: 6, controlIdx: 0 }, '{"rows":7,"cols":3}'),
-        ],
-      },
-    ],
-  };
+  return [...chats, interruptedSampleChat(now)];
 }
 
 /** Seeded chat that `chats=engine-trap` restores: its turn was stopped by an engine trap. */
@@ -488,7 +561,8 @@ export const SAMPLE_ENGINE_TRAP_CHAT_ID = 'preview-chat-engine-trap';
 
 /**
  * The newest chat of the shown document, interrupted when the document engine stopped and the
- * editor reloaded to reopen every document. The sidebar restores it on load.
+ * editor reloaded to reopen every document (its last turn carries the engine-trap interruption,
+ * as markThreadInterrupted leaves it). The sidebar restores it on load.
  */
 export function engineTrapInterruptedChat(now: number): ChatThread {
   const activityAt = now - 20_000;
@@ -509,8 +583,12 @@ export function engineTrapInterruptedChat(now: number): ChatThread {
     activeTemplateId: null,
     messages: [
       { role: 'user', text: '추진 일정 표의 글꼴과 칸 너비를 본문과 맞춰 주세요.' },
+      {
+        role: 'system', kind: 'turn', messageId: `${SAMPLE_ENGINE_TRAP_CHAT_ID}-turn-1`,
+        startedAt: activityAt - 34_000, endedAt: activityAt, outcome: 'interrupted', text: '중단됨 · 34초',
+        reason: 'engine-trap', interruption: { reason: 'engine-trap', at: activityAt + 2_000 },
+      },
       { role: 'assistant', text: '일정 표의 칸 너비를 확인하고 있습니다.', agent: 'claude', kind: 'progress' },
-      { role: 'system', text: ENGINE_TRAP_INTERRUPTED_NOTICE },
     ],
   };
 }

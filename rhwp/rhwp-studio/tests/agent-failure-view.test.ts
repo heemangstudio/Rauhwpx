@@ -8,7 +8,9 @@ import {
   failureView,
   formatResetAt,
   PARTIAL_EDITS_RETRY_NOTE,
+  failureQueueHold,
   retryRequestText,
+  retryWire,
   type FailureViewContext,
 } from '../src/ui/agent-sidebar/failure-notice.ts';
 import type { ProviderFailure } from '../src/agent/types.ts';
@@ -89,8 +91,6 @@ test('retryable failures offer 다시 시도 only with something to resend, disa
   const start = failureView(failure({ class: 'process_exited', code: 'AGENT_SPAWN_FAILED' }), 'start', ctx({ hasRetryPayload: false }));
   assert.equal(start.title, 'Claude CLI를 시작하지 못했어요');
   assert.deepEqual(actions(start), ['retry']);
-  const restarted = failureView(failure({ class: 'process_exited', code: 'HUB_RESTARTED' }), 'turn', ctx());
-  assert.equal(restarted.title, '에이전트 허브가 다시 시작되어 작업이 중단됐어요');
   const context = failureView(failure({ class: 'invalid_request', code: 'codex:contextWindowExceeded', retryable: false }), 'turn', ctx({ agentLabel: 'Codex' }));
   assert.equal(context.title, '대화가 너무 길어 Codex가 처리하지 못했어요');
   assert.deepEqual(actions(context), []);
@@ -115,6 +115,31 @@ test('a resend after a turn that wrote to the document asks the agent to re-read
   const partial = retryRequestText({ displayText: 'a', requestText: '표를 정리해 줘', afterPartialEdits: true });
   assert.ok(partial.startsWith('표를 정리해 줘'));
   assert.ok(partial.endsWith(PARTIAL_EDITS_RETRY_NOTE));
+  // 로그인·사용 한도처럼 턴 도중 끊긴 실패가 아니면 처음 요청에 안내만 붙인다.
+  const auth = retryWire({ displayText: 'a', requestText: '표를 정리해 줘', afterPartialEdits: true },
+    failure({ class: 'auth_required' }), { stagedAwaitingReview: false, questionExpired: false });
+  assert.deepEqual(auth, { displayText: 'a', requestText: partial });
+});
+
+test('다시 시도 after a turn that wrote and then died mid-turn continues instead of repeating the request', () => {
+  const retry = { displayText: '표를 정리해 줘', requestText: '표를 정리해 줘', afterPartialEdits: true };
+  for (const kind of ['process_exited', 'network', 'provider_error'] as const) {
+    const wire = retryWire(retry, failure({ class: kind }), { stagedAwaitingReview: true, questionExpired: false });
+    assert.equal(wire.displayText, '이어서 진행해 주세요.', kind);
+    assert.ok(wire.requestText.startsWith('이어서 진행해 주세요.\n\n<turn_interrupted reason="agent-exit">'), kind);
+    assert.ok(!wire.requestText.includes('표를 정리해 줘'), `${kind}: the original request is not sent again`);
+    assert.match(wire.requestText, /still shown to the user as a preview/);
+    assert.ok(wire.requestText.trimEnd().endsWith('</turn_interrupted>'));
+  }
+  // 아무것도 고치지 않은 실패는 처음 요청 그대로 다시 보낸다.
+  const clean = retryWire({ displayText: '표를 정리해 줘', requestText: '표를 정리해 줘' },
+    failure({ class: 'process_exited' }), { stagedAwaitingReview: false, questionExpired: false });
+  assert.deepEqual(clean, { displayText: '표를 정리해 줘', requestText: '표를 정리해 줘' });
+});
+
+test('a failed turn holds the queue as failed with a short class label', () => {
+  const hold = failureQueueHold(failure({ class: 'process_exited' }), { agentLabel: 'Claude', resetAt: null, now: NOW });
+  assert.deepEqual(hold, { reason: 'failed', detail: 'Claude 실행 중단' });
 });
 
 test('dismissals are remembered per chat, class and text, and survive a storage that throws', () => {

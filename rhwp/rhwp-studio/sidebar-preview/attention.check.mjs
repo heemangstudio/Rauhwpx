@@ -313,8 +313,11 @@ export async function checkAttentionFilter(page, origin, artifacts) {
 export async function checkSystemNotices(page, origin) {
   await openPreview(page, origin, 'attention=away&parallel=1&scenario=chat&hold=1');
   const hidden = await startHiddenChat(page);
-  await page.evaluate(() => window.sidebarPreview.chats[0].mock.failRunningTurn('hub-restarted'));
+  await page.evaluate(() => window.sidebarPreview.chats[0].mock.restartHub());
   await waitFor(page, () => window.sidebarPreview.attentionNotices.length === 1, undefined, 'one system notice');
+  await waitFor(page, (id) => [...document.querySelectorAll('.ag-root .ag-threads-item')]
+    .find((item) => item.dataset.threadId === id)?.querySelector('.ag-threads-item-when-label')?.textContent === '중단됨',
+  hidden, 'the cut-off chat reads 중단됨 on the rail');
   // 같은 턴의 상태가 다시 바뀌어도(늦게 온 다른 이유) 다시 알리지 않는다.
   await page.evaluate(() => window.sidebarPreview.chats[0].sidebar.noteTurnFailure({ label: '서버 오류' }));
   await waitFor(page, (id) => [...document.querySelectorAll('.ag-root .ag-threads-item')]
