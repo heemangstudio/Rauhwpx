@@ -6570,7 +6570,7 @@ html.ag-fs-vt-exit::view-transition-new(root) {
    빈 면은 모두 창 드래그, 조작 가능한 자식만 no-drag 로 뺀다. */
 html.desktop-mac .ag-fullscreen {
   --ag-workspace-bar-h: var(--desktop-titlebar-height, 38px);
-  --ag-workspace-lead-inset: calc(2px + var(--desktop-home-reserve, 114px));
+  --ag-workspace-lead-inset: var(--desktop-home-reserve, 98px);
 }
 
 html.desktop-mac .ag-fullscreen .ag-workspace-bar {
@@ -7313,9 +7313,13 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
     display: none;
   }
 
-  /* 레일이 덮개로 뜨는 폭에서는 첫 칸이 내용 폭이라 워드마크가 제목을 민다. */
-  .ag-workspace-brand {
+  /* 레일이 덮개로 뜨는 폭에서는 첫 칸이 내용 폭이라 짧은 이름 Hama 만 둔다. */
+  .ag-workspace-brand .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
     display: none;
+  }
+
+  .ag-workspace-brand .ag-workspace-brand-short {
+    display: inline;
   }
 }
 
@@ -8902,4 +8906,9 @@ html.desktop-mac .ag-workspace-home-btn {
 
 html.desktop-mac .ag-root {
   --ag-workspace-home-w: 0px !important;
+}
+
+/* 토글 아이콘의 안쪽 여백만큼 워드마크를 당겨 아이콘 사이 간격을 고르게 둔다. */
+html.desktop-mac .ag-fullscreen .ag-workspace-brand {
+  margin-left: -6px;
 }
