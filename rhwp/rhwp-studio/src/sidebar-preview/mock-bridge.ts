@@ -273,14 +273,52 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     setupChanged();
     report(`${provider}: connected to a local sample account`);
   };
+  /** The sample question, asked on the given turn as a provider would. */
+  const askSampleQuestion = (turnId: string) => {
+    question = {
+      interactionId: crypto.randomUUID(),
+      providerRequestId: 'preview-request',
+      threadId,
+      turnId,
+      agent,
+      source: 'native',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      questions: [
+        {
+          id: 'tone',
+          header: '문체',
+          question: '어떤 문체로 다듬을까요?',
+          mode: 'single',
+          allowOther: true,
+          options: [
+            {
+              id: 'formal',
+              label: '공식적인 문체',
+              description: '제안서와 보고서에 적합합니다.',
+            },
+            {
+              id: 'friendly',
+              label: '친근한 문체',
+              description: '쉽고 자연스럽게 전달합니다.',
+            },
+          ],
+        },
+      ],
+    };
+    emit({ type: 'user-question-requested', interaction: question });
+    return question.interactionId;
+  };
   const completeQuestion = (outcome: T.UserQuestionOutcome) => {
     if (!question) return;
+    // As the real bridge: the question is gone before listeners hear it resolved.
+    const { interactionId } = question;
+    question = null;
     emit({
       type: 'user-question-resolved',
-      interactionId: question.interactionId,
+      interactionId,
       outcome,
     });
-    question = null;
   };
   const bridge: SidebarBridge = {
     pendingEdits: {
@@ -658,38 +696,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
             }),
           });
         if (reply === 'question') {
-          question = {
-            interactionId: crypto.randomUUID(),
-            providerRequestId: 'preview-request',
-            threadId,
-            turnId: `turn-${turnGeneration}`,
-            agent,
-            source: 'native',
-            createdAt: timestamp,
-            updatedAt: timestamp,
-            questions: [
-              {
-                id: 'tone',
-                header: '문체',
-                question: '어떤 문체로 다듬을까요?',
-                mode: 'single',
-                allowOther: true,
-                options: [
-                  {
-                    id: 'formal',
-                    label: '공식적인 문체',
-                    description: '제안서와 보고서에 적합합니다.',
-                  },
-                  {
-                    id: 'friendly',
-                    label: '친근한 문체',
-                    description: '쉽고 자연스럽게 전달합니다.',
-                  },
-                ],
-              },
-            ],
-          };
-          emit({ type: 'user-question-requested', interaction: question });
+          askSampleQuestion(`turn-${turnGeneration}`);
           return;
         }
         stream({
@@ -1385,6 +1392,17 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     setHold: (value: boolean) => { holdReply = value; },
     setChatStartDelay: (ms: number) => { chatStartDelayMs = ms; },
     setStageDelay: (ms: number) => { stageDelayMs = ms; },
+    /**
+     * Asks the sample question on the running turn (a held reply keeps it running), as the
+     * provider does mid-turn. Starts a turn first when none runs. Returns the interaction id.
+     */
+    askQuestion: () => {
+      if (!running) {
+        setRunning(true);
+        stream({ type: 'turn-start', agent, turnId: `turn-${++generation}` });
+      }
+      return askSampleQuestion(`turn-${generation}`);
+    },
     /** Delivers one provider event as the hub would, e.g. a token-by-token answer for benches. */
     streamEvent: stream,
     boot: () => {

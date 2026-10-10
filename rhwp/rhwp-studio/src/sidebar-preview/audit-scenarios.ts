@@ -17,6 +17,8 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('chat-plan', 'Conversation', 'Plan approval', 'Inspect approval, revision, and long plan scrolling.', { scenario: 'plan', play: '1' }),
   scene('plan-run-modes', 'Agent modes', 'Plan approval actions', 'Inspect 에이전트로 실행 beside the red 전체 접근으로 실행 and 수정 요청.', { mode: 'plan', scenario: 'plan', play: '1', surface: 'plan-actions' }),
   scene('chat-question', 'Conversation', 'Question and answers', 'Inspect selectable answers, free text, and submission.', { scenario: 'question', play: '1' }),
+  scene('chat-question-held', 'Conversation', 'Question held while typing', 'A question arrived while the composer had focus and text. Inspect the one-line strip; click it, or move focus out of the composer, to open the question.',
+    { scenario: 'chat', play: '1', hold: '1', questionHeld: '1' }),
   scene('chat-review', 'Conversation', 'Document change review', 'Inspect pending changes and accept/reject controls.', { scenario: 'review', play: '1' }),
   scene('chat-changes-full', 'Conversation', 'Full-screen changes', 'Inspect applied text, table, and image changes beside the conversation.',
     { scenario: 'review', review: 'full', play: '1', surface: 'changes' }),

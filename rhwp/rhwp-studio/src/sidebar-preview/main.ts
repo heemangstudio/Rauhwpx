@@ -22,6 +22,7 @@ import { mountAuditNavigator } from './audit-scenarios.ts';
 import { mountAuditDialogs } from './audit-dialogs.ts';
 import { applyAuditState } from './audit-state.ts';
 import { mountEditorShell } from './editor-shell.ts';
+import { typingActivity, type TypingActivity } from '../ui/agent-sidebar/typing-guard.ts';
 
 const params = new URLSearchParams(location.search);
 if (params.get('usage') === 'live') {
@@ -250,9 +251,29 @@ function createParallelChat(): PreviewChat {
   return chat;
 }
 
+/*
+ * `questionHeld=1` shows a question that arrived while the reviewer was typing. Page scripts
+ * cannot produce trusted keystrokes, so this fixture holds the "typing" state from start()
+ * until the real activity settles (a strip click, focus leaving a text field, a send).
+ */
+function createTypingHold() {
+  const real = typingActivity();
+  let holding = false;
+  real.onSettle(() => { holding = false; });
+  const activity: TypingActivity = {
+    isTyping: () => holding || real.isTyping(),
+    onSettle: (listener) => real.onSettle(listener),
+    noteSend: () => real.noteSend(),
+    dispose: () => {},
+  };
+  return { activity, start: () => { holding = true; } };
+}
+const typingHold = params.get('questionHeld') === '1' ? createTypingHold() : null;
+
 const sidebar = initAgentSidebar({
   bridge: mock.bridge,
   eventBus,
+  typingActivity: typingHold?.activity,
   getDocumentContext: () => ({
     documentId,
     documentName,
@@ -452,7 +473,7 @@ async function openLockedParallelScene(): Promise<void> {
 if (parallel === 'locked') await openLockedParallelScene();
 
 // Typed hooks for browser checks and custom scenario scripts.
-const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, navigation,
+const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, navigation, typingHold,
   sessions, attachSession, chats, showChat, openChatCalls,
   threadStore: { listThreads, getThread, waitForThreadsPersistence } };
 export type SidebarPreview = typeof preview;

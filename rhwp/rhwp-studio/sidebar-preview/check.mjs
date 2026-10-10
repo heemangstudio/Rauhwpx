@@ -14,6 +14,7 @@ import { checkPlanPreview } from './plan.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
 import { checkWriterBusyPreview } from './writer-busy.check.mjs';
+import { checkTypingGuard } from './typing-guard.check.mjs';
 import { checkDelayedStatus } from './delayed-status.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
@@ -1012,6 +1013,7 @@ try {
     () => checkChatModeLock(page));
   await step('A write refused because another chat edits the document shows one failed tool row',
     () => checkWriterBusyPreview(page, origin, artifacts));
+  await step('Arriving questions wait while the user types', () => checkTypingGuard(page, origin, artifacts));
   await step('Transient statuses wait 400 ms and never blink', () => checkDelayedStatus(page, origin, artifacts));
   await step(
     'Document context, reset, clean canvas, and backend isolation',

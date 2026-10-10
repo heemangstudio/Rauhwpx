@@ -8140,6 +8140,64 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   overflow: visible;
 }
 
+/* 쓰는 중에 도착한 질문 — 입력기에 붙은 한 줄 띠. 누르거나 쓰기를 멈추면 질문이
+   열리고, 카드는 위로 자라 입력기는 제자리에 있다. */
+.ag-question-arrival {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--ag-question-text);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: var(--ag-transition-color);
+}
+
+.ag-question-arrival:hover {
+  background: var(--ag-question-raised);
+}
+
+.ag-question-arrival-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ag-err);
+}
+
+.ag-question-arrival-label {
+  flex: 0 0 auto;
+  font-weight: var(--ag-fw-strong);
+}
+
+.ag-question-arrival-hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ag-question-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ag-question-arrival-dot {
+    animation: ag-question-arrival-breathe 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes ag-question-arrival-breathe {
+  50% {
+    opacity: 0.35;
+  }
+}
+
 /* 질문은 한눈에 훑는 목록이다. 선택지는 한 줄짜리 행으로 두고, 설명은 같은
    줄에서 말줄임한다. 고른 행만 설명 전체를 펼친다. */
 .ag-question-body {

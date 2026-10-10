@@ -69,6 +69,17 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
       await until(() => !preview.snapshot().running, 'completed reply');
     }
   }
+  if (params.get('questionHeld') === '1') {
+    // 사용자가 입력기에 쓰는 중에 질문이 도착한 장면 — 띠만 보이고 입력기는 그대로다.
+    await until(() => preview.snapshot().running, 'running turn');
+    const input = await until(() => document.querySelector<HTMLTextAreaElement>('.ag-input'), 'composer');
+    input.focus();
+    input.value = '2026년 3쪽 일정은';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    preview.typingHold?.start();
+    preview.askQuestion();
+    await until(() => document.querySelector('.ag-user-question[data-held="true"] .ag-question-arrival'), 'held question');
+  }
   const surface = params.get('surface');
   const surfaces: Record<string, string> = {
     skills: '.ag-settings-nav-button[data-destination="skills"]', references: '.ag-references-btn', threads: '.ag-header .ag-threads-btn',

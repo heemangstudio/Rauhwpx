@@ -17,6 +17,15 @@ interface UserQuestionControllerOptions {
   onDraftChange(interaction: UserQuestionInteraction, draft: UserQuestionDraftState): void;
   onComposerModeChange(active: boolean, usesOther: boolean): void;
   onResolved(interaction: UserQuestionInteraction, outcome: UserQuestionOutcome, draft: UserQuestionDraftState): void;
+  /** 질문이 열릴 때 초점을 질문으로 옮겨도 되는가. 문서나 다른 텍스트 칸에서 쓰던 초점은 빼앗지 않는다. */
+  canTakeFocus?(): boolean;
+  /** 보류 띠를 눌렀다 — 보류된 도착을 지금 연다. */
+  onArrivalOpen?(): void;
+}
+
+export interface UserQuestionRequestOptions {
+  /** 사용자가 쓰는 중이라 도착을 미룬다. 띠만 보이고 입력기·초점·숫자 키는 그대로 둔다. */
+  held?: boolean;
 }
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
@@ -61,7 +70,11 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
   let errorMessage = '';
   let autoAdvanceTimer: number | null = null;
   let composerOtherQuestionId: string | null = null;
+  /** 직접 입력이 입력기를 빌리기 전에 사용자가 쓰던 글 — 질문이 입력기를 돌려줄 때 되살린다. */
+  let composerTextBeforeOther: string | null = null;
   let visible = true;
+  /** 쓰는 중에 도착해 아직 열리지 않은 질문. */
+  let held = false;
   const bodyId = `ag-user-question-body-${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
 
   function announce(message: string): void {
@@ -89,14 +102,17 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
       return;
     }
     saveComposerOther();
+    const borrowing = composerOtherQuestionId === null;
     composerOtherQuestionId = questionId;
     if (questionId) {
+      if (borrowing && composerTextBeforeOther === null) composerTextBeforeOther = options.input.value;
       options.input.value = draft.otherTextByQuestionId[questionId] ?? '';
       options.input.maxLength = 2_000;
       options.input.placeholder = '직접 답변 입력';
       options.input.setAttribute('aria-label', '현재 질문의 직접 답변');
     } else {
-      options.input.value = '';
+      options.input.value = composerTextBeforeOther ?? '';
+      composerTextBeforeOther = null;
       options.input.removeAttribute('maxlength');
       options.input.setAttribute('aria-label', '에이전트 메시지 입력');
     }
@@ -199,15 +215,36 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
     options.onComposerModeChange(true, Boolean(composerOtherQuestionId));
   }
 
+  function renderArrival(): void {
+    const arrival = element('button', 'ag-question-arrival');
+    arrival.type = 'button';
+    arrival.setAttribute('aria-label', '에이전트 질문 열기');
+    arrival.append(
+      element('span', 'ag-question-arrival-dot'),
+      element('span', 'ag-question-arrival-label', '에이전트가 질문했어요'),
+      element('span', 'ag-question-arrival-hint', '입력을 멈추면 열려요'),
+    );
+    arrival.firstElementChild!.setAttribute('aria-hidden', 'true');
+    arrival.addEventListener('click', () => options.onArrivalOpen?.());
+    root.appendChild(arrival);
+  }
+
   function render(): void {
     const savedLive = live;
     root.replaceChildren(savedLive);
     if (!interaction) {
       root.dataset.inactive = 'true';
+      delete root.dataset.held;
       return;
     }
     root.dataset.inactive = visible ? 'false' : 'true';
+    if (held) root.dataset.held = 'true';
+    else delete root.dataset.held;
     if (!visible) return;
+    if (held) {
+      renderArrival();
+      return;
+    }
     const question = currentQuestion()!;
     const body = element('div', 'ag-question-body');
     body.id = bodyId;
@@ -288,9 +325,41 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
     root.append(body, actions);
   }
 
-  function request(next: UserQuestionInteraction, restored?: Partial<UserQuestionDraftState>): void {
+  /** 질문을 연다 — 입력기를 넘겨받고, 허락될 때만 초점을 질문으로 옮긴다. */
+  function applyPresented(): void {
+    if (!interaction) return;
+    // 미뤄 둔 사이 다른 채팅으로 옮겨 갔다 — 그 채팅의 입력기는 빌리지 않는다.
+    if (!visible) {
+      render();
+      return;
+    }
+    // 입력기를 잠그기 전에 정한다. 잠그면 입력기의 초점이 풀려 판단이 흐려진다.
+    const takeFocus = options.canTakeFocus?.() ?? true;
+    const question = currentQuestion();
+    setComposerOther(question && otherSelected(question.id) ? question.id : null);
+    options.onComposerModeChange(true, Boolean(composerOtherQuestionId));
+    render();
+    announce(`에이전트가 질문했습니다. 질문 ${draft.activeQuestionIndex + 1} / ${interaction.questions.length}`);
+    if (takeFocus) {
+      queueMicrotask(() => root.querySelector<HTMLElement>('.ag-question-prompt')?.focus({ preventScroll: true }));
+    }
+  }
+
+  function present(): void {
+    if (!interaction || !held) return;
+    held = false;
+    applyPresented();
+  }
+
+  function request(
+    next: UserQuestionInteraction,
+    restored?: Partial<UserQuestionDraftState>,
+    requestOptions?: UserQuestionRequestOptions,
+  ): void {
     if (interaction?.interactionId === next.interactionId
       && JSON.stringify(interaction) === JSON.stringify(next)) return;
+    // 이미 열린 질문이 다시 오면(재연결 재생) 띠로 되접지 않는다.
+    const alreadyPresented = interaction?.interactionId === next.interactionId && !held;
     if (autoAdvanceTimer !== null) {
       window.clearTimeout(autoAdvanceTimer);
       autoAdvanceTimer = null;
@@ -307,12 +376,15 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
     submitting = false;
     responseId = null;
     errorMessage = '';
-    const question = currentQuestion();
-    setComposerOther(question && otherSelected(question.id) ? question.id : null);
-    options.onComposerModeChange(true, Boolean(composerOtherQuestionId));
+    held = Boolean(requestOptions?.held) && !alreadyPresented;
+    if (!held) {
+      applyPresented();
+      return;
+    }
+    // 쓰는 중에 온 질문은 띠로만 알린다. 입력기의 글·초점·조합은 건드리지 않는다.
+    options.onComposerModeChange(false, false);
     render();
-    announce(`에이전트가 질문했습니다. 질문 1 / ${next.questions.length}`);
-    queueMicrotask(() => root.querySelector<HTMLElement>('.ag-question-prompt')?.focus({ preventScroll: true }));
+    announce('에이전트가 질문했습니다. 입력을 멈추면 질문이 열립니다.');
   }
 
   function answerResult(result: { responseId: string; ok: boolean; message?: string }): void {
@@ -336,6 +408,7 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
     const settledInteraction = interaction;
     const settledDraft = cloneDraft(draft);
     interaction = null;
+    held = false;
     submitting = false;
     responseId = null;
     errorMessage = '';
@@ -368,7 +441,8 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
 
   function handleNumberKey(event: KeyboardEvent): void {
     // 화면에서 내려간 다른 문서의 사이드바는 문서에서 떨어져 있다 — 그 질문은 숫자 키를 받지 않는다.
-    if (!interaction || !visible || submitting || !root.isConnected || isEditable(event.target)) return;
+    // 미뤄 둔 질문은 숫자 키를 받지 않는다 — 사용자가 치던 숫자는 숫자로 남는다.
+    if (!interaction || held || !visible || submitting || !root.isConnected || isEditable(event.target)) return;
     const digit = Number(event.key);
     if (!Number.isInteger(digit) || digit < 1 || digit > 9) return;
     const question = currentQuestion();
@@ -386,7 +460,13 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
 
   return {
     root,
+    /** 질문이 있다(열렸든 미뤄졌든) — 턴·목록·중지 판단용. */
     hasPending: () => interaction !== null,
+    /** 질문이 열려 입력기를 넘겨받았다 — 입력기 판단용. */
+    isPresented: () => interaction !== null && !held && visible,
+    /** 쓰는 중에 도착해 띠로만 보이는 질문이 있다. */
+    isHeld: () => interaction !== null && held && visible,
+    present,
     usesComposerForOther: () => composerOtherQuestionId !== null,
     request,
     answerResult,
@@ -398,7 +478,7 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
     setVisible(next: boolean) {
       visible = next;
       render();
-      options.onComposerModeChange(Boolean(interaction) && visible, Boolean(composerOtherQuestionId) && visible);
+      options.onComposerModeChange(Boolean(interaction) && visible && !held, Boolean(composerOtherQuestionId) && visible);
     },
     dispose() {
       if (autoAdvanceTimer !== null) window.clearTimeout(autoAdvanceTimer);

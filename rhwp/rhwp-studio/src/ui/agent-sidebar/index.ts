@@ -37,6 +37,7 @@ import type {
   ProductSkillIcon,
   DocumentTemplate,
   TemplateCatalog,
+  UserQuestionInteraction,
 } from '../../agent/types.ts';
 import {
   defaultModelForAgent,
@@ -138,7 +139,9 @@ import { detectPlatformKind } from '../../engine/navigation-keymap.ts';
 import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createEffortSlider } from './effort-slider.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
+import { createArrivalGuard, typingActivity as windowTypingActivity, type TypingActivity } from './typing-guard.ts';
 import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
+import { ownsTextInput } from '../../command/shortcut-target.ts';
 import { createFocusGreeting } from './focus-greeting.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
 import { createToolRow, type ToolRowHandle } from './tool-row.ts';
@@ -182,7 +185,7 @@ import type {
   InlinePromptSendResponse,
   InlinePromptSubmission,
 } from '../../agent/inline-prompt-context.ts';
-import { createUserQuestionController } from './user-question-controller.ts';
+import { createUserQuestionController, type UserQuestionDraftState } from './user-question-controller.ts';
 import { createModeMenu, parseModeCommand } from './mode-menu.ts';
 import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
 import './sidebar-button-modern.css';
@@ -256,6 +259,8 @@ export interface AgentSidebarDeps {
   };
   /** 문서 이름을 바꾼다. 바뀐 파일 이름, 바꾸지 못했으면 null (이유는 편집기가 알린다). */
   renameDocument?: (name: string) => Promise<string | null>;
+  /** 쓰기 활동 — 기본은 창 전체 감시자. 미리보기가 '쓰는 중' 장면을 고정할 때만 바꾼다. */
+  typingActivity?: TypingActivity;
 }
 
 export interface AgentSidebarHandle {
@@ -676,6 +681,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 단축키처럼 페이지 전체에 걸리는 일은 붙은 사이드바만 한다.
    */
   let active = deps.startActive !== false;
+  /** 창 전체의 쓰기 활동 — 쓰는 중에 도착한 질문을 미루고, 보내면 연다. */
+  const typing = deps.typingActivity ?? windowTypingActivity();
   /** 편집 영역 inset 을 이 사이드바가 커밋한 상태(body.ag-sidebar-inset 과 같다). */
   let editorInsetApplied = false;
 
@@ -2707,7 +2714,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function canComposerRest(): boolean {
     return !configPanelOpen
       && slashMenu.hidden
-      && !questionController.hasPending()
+      && !questionController.isPresented()
       && !input.value.includes('\n')
       && input.scrollHeight <= COMPOSER_REST_MAX_INPUT_PX;
   }
@@ -2801,10 +2808,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   questionTimelineAnchor.hidden = true;
   questionTimelineAnchor.setAttribute('aria-hidden', 'true');
   let questionTimelineAnchorInteractionId: string | null = null;
+  /* 쓰는 중에 도착한 질문·계획 열은 쓰기를 멈출 때까지 미룬다 — 초점·숫자 키·한글
+     조합·입력기의 글을 빼앗지 않는다. 화면에 없는 사이드바는 바로 보여 준다. */
+  const arrivalGuard = createArrivalGuard(typing, () => active);
+  /** 지금 미뤄 둔 질문의 보류 키 — 새 질문이 오면 앞 것을 거둔다. */
+  let heldQuestionKey: string | null = null;
   const questionController = createUserQuestionController({
     input,
     submitAnswers: (interactionId, answers) => bridge.answerUserQuestion(interactionId, answers),
     stop: () => bridge.interrupt(),
+    // 입력기(질문이 넘겨받는다)와 텍스트가 아닌 곳의 초점만 옮긴다. 문서나 다른 칸에서 쓰던 초점은 그대로 둔다.
+    canTakeFocus: () => active
+      && !(ownsTextInput(document.activeElement) && document.activeElement !== input),
+    onArrivalOpen: () => arrivalGuard.release(),
     onDraftChange(interaction, draft) {
       const target = interaction.threadId === currentThread.id ? currentThread : getThread(interaction.threadId);
       if (!target) return;
@@ -4531,11 +4547,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   input.addEventListener('keydown', (e) => {
-    if (questionController.hasPending()) {
+    if (questionController.isPresented()) {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && questionController.usesComposerForOther()) {
         e.preventDefault();
         composer.requestSubmit();
       }
+      return;
+    }
+    // 미뤄 둔 질문은 턴이 돌고 있다는 뜻이다. Enter 는 턴을 멈추지 않고 질문을 연다 — 쓴 글은 입력칸에 남는다.
+    if (questionController.isHeld() && e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      typing.noteSend();
       return;
     }
     if (!slashMenu.hidden && slashOptions.length > 0) {
@@ -4568,7 +4590,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
   input.addEventListener('input', () => {
     syncSendIdle();
-    if (questionController.hasPending()) {
+    if (questionController.isPresented()) {
       questionController.handleComposerInput();
       resizeComposerInput();
       return;
@@ -4591,8 +4613,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     e.preventDefault();
     composerRest.setResting(false);
     if (readOnlyDocLabel !== null || mergeResolverLocked) return;
-    if (questionController.hasPending()) {
-      if (!questionController.handleComposerSubmit()) bridge.interrupt();
+    if (questionController.isPresented()) {
+      // 입력기로 답한 것도 보내기다 — 쓰기가 끝났다.
+      if (questionController.handleComposerSubmit()) typing.noteSend();
+      else bridge.interrupt();
       return;
     }
     if (turnRunning) {
@@ -4646,6 +4670,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       scrollConversationToMessage(userBubble, { smooth: true });
       revisionPlanId = null;
       input.value = '';
+      typing.noteSend();
       resizeComposerInput();
       updateComposer();
       rebuildReview();
@@ -4780,6 +4805,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       void messageSent;
     }
     input.value = '';
+    // 보낸 글은 입력기를 떠났다 — 미뤄 둔 도착이 지금 열려도 잃을 것이 없다.
+    typing.noteSend();
     revisionPlanId = null;
     setComposerSkill(null);
     setSlashMenuOpen(false);
@@ -6514,7 +6541,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       composerUpdating = false;
     }
     const shownLock = composerLock.shown;
-    const questionPresented = questionController.hasPending();
+    const questionPresented = questionController.isPresented();
     const questionUsesComposer = questionController.usesComposerForOther();
     // 테스트·자동화가 읽는 실제 준비 상태. 보이는 잠금의 지연과 무관하다.
     root.dataset.composerReady = String(realLock === null
@@ -6614,6 +6641,23 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function appendConversation(node: HTMLElement): void {
     messages.insertBefore(node, conversationTail());
+  }
+
+  function questionArrivalKey(interactionId: string): string {
+    return `question:${interactionId}`;
+  }
+
+  /** 질문을 띄운다. 사용자가 쓰는 중이면 띠로 미루고, 쓰기를 멈추면 연다. */
+  function requestQuestion(
+    interaction: UserQuestionInteraction,
+    stored?: Partial<UserQuestionDraftState>,
+  ): void {
+    const key = questionArrivalKey(interaction.interactionId);
+    // 새 질문이 앞 질문을 갈아 치우면 앞 질문의 보류는 거둔다.
+    if (heldQuestionKey !== null && heldQuestionKey !== key) arrivalGuard.cancel(heldQuestionKey);
+    heldQuestionKey = key;
+    const held = arrivalGuard.hold(key, () => questionController.present());
+    questionController.request(interaction, stored, { held });
   }
 
   function mountQuestionTimelineAnchor(): void {
@@ -7668,7 +7712,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         target.pendingUserQuestion = stored ?? createPendingUserQuestionDraftSnapshot(e.interaction);
         if (target === currentThread) {
           questionController.setVisible(true);
-          questionController.request(e.interaction, stored);
+          requestQuestion(e.interaction, stored);
           mountQuestionTimelineAnchor();
           persistCurrentThread();
         } else {
@@ -7689,6 +7733,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         const targetThreadId = activeQuestion?.interactionId === e.interactionId
           ? activeQuestion.threadId
           : null;
+        // 미뤄 둔 채 끝난 질문은 다시 열지 않는다.
+        arrivalGuard.cancel(questionArrivalKey(e.interactionId));
+        if (heldQuestionKey === questionArrivalKey(e.interactionId)) heldQuestionKey = null;
         questionController.resolve(e.interactionId, e.outcome);
         if (targetThreadId) {
           if (e.outcome.status === 'answered' && turnRunning) markChatWorking(targetThreadId);
@@ -7752,7 +7799,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
             ? currentThread.pendingUserQuestion
             : undefined;
           questionController.setVisible(true);
-          questionController.request(liveQuestion, stored);
+          requestQuestion(liveQuestion, stored);
           mountQuestionTimelineAnchor();
         }
         if (currentThread.pendingUserQuestion) {
@@ -8395,8 +8442,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         applyWorkflow(e.workflow);
         setPlanningPhase(e.phase);
         rebuildReview();
-        // 전체 화면에서는 정리된 계획이 곧바로 옆 문서 패널로 열린다.
-        if (fullscreen && planColCollapsed) setPlanColCollapsed(false);
+        // 전체 화면에서는 정리된 계획이 곧바로 옆 문서 패널로 열린다. 쓰는 중이면 쓰기를
+        // 멈출 때 연다 — 배치가 손 밑에서 움직이지 않게.
+        if (fullscreen && planColCollapsed) {
+          const planId = e.plan.planId;
+          arrivalGuard.hold(`plan:${planId}`, () => {
+            if (fullscreen && planColCollapsed && activePlan?.planId === planId) setPlanColCollapsed(false);
+          });
+        }
         return true;
       case 'plan-approved':
         // 서버가 승인했다고 말한 계획이 지금 카드와 다르면 표시를 건드리지 않는다.
@@ -9034,6 +9087,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       assistantRenderFrame = null;
     }
     active = false;
+    // 떠나는 사이드바의 보류된 도착은 지금 연다. active 가 꺼졌으므로 초점은 옮기지 않는다.
+    arrivalGuard.release();
     vacateSidebarSlot(COLLAPSE_TAB_SLOT, collapseTab);
     vacateSidebarSlot(ROOT_SLOT, root);
   }
@@ -9077,6 +9132,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       for (const url of reviewImageUrls.values()) URL.revokeObjectURL(url);
       reviewImageUrls.clear();
       threadComposerDrafts.clear();
+      arrivalGuard.dispose();
       connStatus.dispose();
       composerLock.dispose();
       turnPendingStatus.dispose();

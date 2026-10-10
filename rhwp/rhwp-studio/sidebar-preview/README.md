@@ -88,6 +88,8 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?sessions=2&chats=sample` | A second live document (회의록) with its own sidebar and mock agent; its chats switch sidebars without stopping the other agent |
 | `?parallel=1` | Several chats of one document: a new chat or another chat opened while the shown chat works gets its own sidebar and mock agent, and the busy agent keeps running |
 | `?parallel=locked` | The first chat edits with a held reply and a second, new chat opens beside it, locked to 채팅 |
+| `?scenario=chat&play=1&hold=1&questionHeld=1` | A question that arrived while the composer had focus and text: the one-line 에이전트가 질문했어요 strip. Click it, or move focus out of the composer, to open the question |
+| `?editor=1&scenario=chat&hold=1` | Editor shell with a labeled document input fixture (`textarea[data-rhwp-editor-input]`) for typing "in the document" |
 | `?connection=disconnected` | The offline dot and the read-only composer lock, shown after the 400 ms status delay |
 
 Parameters can be combined. Select **Next reply**, then type a message or press
@@ -101,7 +103,12 @@ starts. Screenshots of those states must wait for them. Automation reads compose
 readiness from `#agent-sidebar[data-composer-ready="true"]`, which follows the real
 state without the delay; `.ag-input` is no longer `disabled` while connecting or starting.
 
-From the console, `sidebarPreview.setChatStartDelay(ms)` and
+A question that arrives while the user types (in the composer, the document or any
+other text field) waits as a strip until the user pauses for 1.5 s, leaves the text
+field, presses Enter or clicks the strip. Only real (trusted) keystrokes count, so page
+scripts cannot hold it; `questionHeld=1` uses a fixture that holds the typing state.
+From the console, `sidebarPreview.askQuestion()` asks the sample question on the running
+turn (use `hold=1`), and `sidebarPreview.setChatStartDelay(ms)` and
 `sidebarPreview.setStageDelay(ms)` slow a chat start or an attachment upload.
 
 ## Changes drawer
@@ -192,11 +199,13 @@ origins where the browser does not expose `crypto.randomUUID()`.
 npm run test:sidebar
 npm run build:sidebar
 node rhwp/rhwp-studio/sidebar-preview/editor-shell.check.mjs
+node rhwp/rhwp-studio/sidebar-preview/typing-guard.check.mjs
 node rhwp/rhwp-studio/sidebar-preview/delayed-status.check.mjs
 ```
 
-`delayed-status.check.mjs` also runs as a step of `npm run test:sidebar`. Run alone,
-it starts its own server and browser like the full check.
+`typing-guard.check.mjs` and `delayed-status.check.mjs` also run as steps of
+`npm run test:sidebar` and in `tests/agent-composer-arrivals.browser.test.ts`. Run alone,
+each starts its own server and browser like the full check.
 
 The browser check starts its own Vite server on an ephemeral port and launches a
 fresh headless Chrome profile. It exercises the primary panels and mutations,

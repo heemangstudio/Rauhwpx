@@ -44,8 +44,9 @@ test('pending question stays above the composer while its transcript position is
   assert.match(sidebar, /const questionTimelineAnchor = el\('span', 'ag-question-timeline-anchor'\)/);
   assert.match(sidebar, /function mountQuestionTimelineAnchor\(\): void \{[\s\S]*appendConversation\(questionTimelineAnchor\)/);
   assert.doesNotMatch(sidebar, /appendConversation\(questionController\.root\)/);
-  assert.match(sidebar, /case 'user-question-requested': \{[\s\S]*flushAssistantBuffer\(\{ kind: 'progress' \}\);[\s\S]*compactStreamIntoActivity\(e\.interaction\.agent\);[\s\S]*streamBubble = null;[\s\S]*questionController\.request\(e\.interaction, stored\);[\s\S]*mountQuestionTimelineAnchor\(\);/);
-  assert.match(sidebar, /if \(questionController\.hasPending\(\)\) \{[\s\S]*questionController\.handleComposerSubmit\(\)/);
+  // The question's reserved transcript position (after the streamed text, card above the
+  // composer) and Enter-to-answer through the composer are checked behaviorally in
+  // sidebar-preview/typing-guard.check.mjs and tests/agent-user-question-controller.test.ts.
   assert.match(controller, /const stop = element\('button', 'ag-question-stop', '중지'\)/);
   assert.match(controller, /stop\.addEventListener\('click', options\.stop\)/);
   assert.match(css, /\.ag-user-question \{/);
