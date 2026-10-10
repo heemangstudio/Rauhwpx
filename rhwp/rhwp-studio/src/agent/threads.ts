@@ -33,6 +33,12 @@ const MAX_THREADS = 40;
 const MAX_MESSAGES_PER_THREAD = 200;
 /** 턴 표식에 남기는 중단 이유 길이 상한. */
 const TURN_REASON_MAX_CHARS = 200;
+/**
+ * 턴 표식 id 의 머리. kind 를 모르는 옛 빌드는 표식을 읽어 다시 저장하며 kind·시각·결과를
+ * 버리고 role·text·messageId 만 남긴다. 이 머리로 그렇게 벗겨진 표식을 알아보고 버린다
+ * (normalizeStoredThread). 머리 없는 예전 id 의 온전한 표식도 그대로 읽는다.
+ */
+export const TURN_MARKER_ID_PREFIX = 'turn-';
 
 interface ThreadMessageBase {
   text: string;
@@ -832,6 +838,12 @@ function normalizeStoredTurnMarker(message: Record<string, unknown>): ThreadTurn
   };
 }
 
+/** 옛 빌드가 벗긴 턴 표식 — kind 없는 시스템 줄에 표식 id(머리 'turn-')만 남았다. */
+function isStrippedTurnMarker(message: Record<string, unknown>): boolean {
+  return message.role === 'system' && message.kind === undefined
+    && typeof message.messageId === 'string' && message.messageId.startsWith(TURN_MARKER_ID_PREFIX);
+}
+
 function normalizeStoredThread(thread: StoredChatThread): ChatThread {
   const latestPlan = isStructuredPlan(thread.latestPlan) ? thread.latestPlan : undefined;
   const plans = Array.isArray(thread.plans) ? thread.plans.filter(isStructuredPlan) : [];
@@ -961,6 +973,11 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
       // 깨진 표식은 버린다 — 그 턴은 표식 없는 옛 턴처럼 접힌다.
       const marker = normalizeStoredTurnMarker(message);
       return marker ? [marker] : [];
+    }
+    if (isStrippedTurnMarker(message)) {
+      // 옛 빌드가 kind·시각·결과를 벗기고 다시 저장한 표식 — 시스템 줄로 보이지 않게 버린다.
+      // 그 턴은 표식 없는 옛 턴처럼 접힌다.
+      return [];
     }
     if (message.kind === 'tasks') {
       if (message.role !== 'assistant' || typeof message.taskGroupId !== 'string' || !message.taskGroupId) return [];
@@ -1261,7 +1278,10 @@ export function isTurnMarker(message: ThreadMessage | null | undefined): message
 }
 
 /** 새 턴의 표식 — 아직 끝나지 않았다(endedAt·outcome 이 null). */
-export function createTurnMarker(now: number = Date.now(), id: string = createThreadId()): ThreadTurnMessage {
+export function createTurnMarker(
+  now: number = Date.now(),
+  id: string = `${TURN_MARKER_ID_PREFIX}${createThreadId()}`,
+): ThreadTurnMessage {
   return {
     role: 'system',
     kind: 'turn',

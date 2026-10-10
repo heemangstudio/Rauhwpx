@@ -1040,3 +1040,47 @@ test('정착 시각이 시작보다 앞서면 시작 시각으로 맞춘다', ()
   settleTurnMarker(marker, { endedAt: 10_000, outcome: 'completed' });
   assert.equal(marker.endedAt, 50_000);
 });
+
+test('옛 빌드가 벗긴 턴 표식은 시스템 줄로 돌아오지 않고, 머리 없는 예전 id 의 온전한 표식은 그대로 읽는다', () => {
+  mem.clear();
+  const fresh = createTurnMarker(10_000);
+  settleTurnMarker(fresh, { endedAt: 161_000, outcome: 'completed', text: '작업 2분 31초 · 문단 2개 수정' });
+  // 옛 빌드의 정규화는 kind·시각·결과를 버리고 role·text·messageId 만 남겨 다시 저장한다.
+  const stripped = { role: fresh.role, text: fresh.text, messageId: fresh.messageId };
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
+    id: 'stripped-turns',
+    title: '표식',
+    titleRequested: true,
+    createdAt: 1,
+    updatedAt: 2,
+    agent: 'claude',
+    model: 'sonnet',
+    effort: 'high',
+    messages: [
+      { role: 'user', text: '고쳐 주세요' },
+      stripped,
+      { role: 'assistant', kind: 'progress', text: '확인합니다.' },
+      { role: 'assistant', text: '고쳤습니다.' },
+      { role: 'system', text: '네트워크가 끊겼습니다' },
+      { role: 'user', text: '하나 더' },
+      {
+        role: 'system', kind: 'turn', messageId: '3f2a9c1e-7a55-4d1c-9a43-0d8f6c1b2e77',
+        startedAt: 200_000, endedAt: 212_000, outcome: 'completed', text: '작업 12초',
+      },
+      { role: 'assistant', text: '했습니다.' },
+    ],
+  }]));
+  const restored = getThread('stripped-turns')!;
+  assert.deepEqual(
+    restored.messages.map((message) => message.kind === 'turn' ? `turn:${message.messageId}` : `${message.role}:${message.text}`),
+    [
+      'user:고쳐 주세요',
+      'assistant:확인합니다.',
+      'assistant:고쳤습니다.',
+      'system:네트워크가 끊겼습니다',
+      'user:하나 더',
+      'turn:3f2a9c1e-7a55-4d1c-9a43-0d8f6c1b2e77',
+      'assistant:했습니다.',
+    ],
+  );
+});

@@ -8123,7 +8123,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 빈 채팅(새로고침 직후의 임시 채팅·초안)에는 표식을 남기지 않는다 — 표식 하나로
     // 목록에 빈 채팅이 생기거나 살아 있는 채팅을 되찾는 경로가 막히지 않게.
     if (draftChat || currentThread.messages.length === 0) return;
-    const marker = createTurnMarker(Date.now(), transcriptId('turn'));
+    const marker = createTurnMarker(Date.now());
     currentThread.messages.push(marker);
     persistCurrentThread();
     const row = mountTurnFoldRow(marker.messageId);
