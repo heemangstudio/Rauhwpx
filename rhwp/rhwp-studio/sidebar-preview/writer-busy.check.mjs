@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
  */
 export async function checkWriterBusyPreview(page, origin, artifacts) {
   await page.goto(`${origin}/?theme=light&width=480&reset=1&scenario=writer-busy`, { waitUntil: 'networkidle0' });
-  await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
+  await page.waitForFunction(() => window.sidebarPreview && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
   await page.click('#play');
   await page.waitForFunction(() => window.sidebarPreview.bridge.isTurnRunning());
   await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning()
