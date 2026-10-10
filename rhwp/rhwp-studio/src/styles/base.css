@@ -96,7 +96,7 @@
   --doc-paper-shadow: var(--n-elev-paper);
 
   /* 포커스/선택/핸들 */
-  --focus-ring: #4a90d9;
+  --focus-ring: rgba(23, 27, 34, 0.42);
   --selection-fill: #b8d7ff;
   --caret-color: #111111;
   --resize-handle: #3f78d8;
@@ -335,7 +335,7 @@
   --doc-shadow: rgba(0, 0, 0, 0.55);
   --doc-paper-shadow: var(--n-elev-paper);
 
-  --focus-ring: #ef6a62;
+  --focus-ring: rgba(230, 230, 230, 0.48);
   --selection-fill: #6a2a27;
   --caret-color: #111111;
   --resize-handle: #ef6a62;
@@ -445,6 +445,8 @@
 }
 
 /* ─── 리셋 ──────────────────────────────────────────── */
+/* 브라우저 기본 초점 테두리(파란색)도 앱의 중립 초점 색을 쓴다. */
+:focus-visible { outline-color: var(--focus-ring); }
 * {
   margin: 0;
   padding: 0;

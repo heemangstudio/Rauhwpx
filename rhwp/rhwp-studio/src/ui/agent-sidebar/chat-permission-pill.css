@@ -37,7 +37,7 @@
 .ag-permission-grant:disabled,
 .ag-permission-deny:disabled { cursor: default; opacity: .6; }
 .ag-permission-grant:focus-visible,
-.ag-permission-deny:focus-visible { outline: 2px solid var(--ag-accent); outline-offset: 3px; border-radius: 12px; }
+.ag-permission-deny:focus-visible { outline: var(--ag-focus-ring); outline-offset: 3px; border-radius: 12px; }
 .ag-permission-pill[data-status='granted'] { border-color: color-mix(in srgb, var(--ag-accent) 35%, var(--ag-border)); }
 .ag-permission-pill[data-status='denied'] .ag-permission-status,
 .ag-permission-pill[data-status='expired'] .ag-permission-status { color: var(--ag-text-muted); }
