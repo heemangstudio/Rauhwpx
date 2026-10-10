@@ -251,11 +251,11 @@ try {
   serviceHost.attach(first, { tabId: 'restored-tab', bounds: { x: 0, y: 80, width: 500, height: 360 }, interactive: true });
   assert.equal(serviceHost.tab('restored-tab').interactive, true);
   const recoveredContents = serviceHost.tab('restored-tab').view.webContents;
-  // Prepare the native backing surface before focusing it for physical input.
-  await recoveredContents.capturePage();
   first.show();
   first.focus();
+  // 배치한 게스트의 첫 프레임을 기다린 뒤 실제 backing surface를 확인한다.
   await recoveredContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  assert.equal((await recoveredContents.capturePage()).isEmpty(), false);
   await recoveredContents.executeJavaScript('document.querySelector("#draft").focus()', true);
   recoveredContents.focus();
   recoveredContents.sendInputEvent({ type: 'mouseDown', x: 20, y: 20, button: 'left', clickCount: 1 });
