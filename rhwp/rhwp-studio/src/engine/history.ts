@@ -304,6 +304,8 @@ export class CommandHistory {
   }
 
   canUndo(): boolean { return this.undoStack.length > 0; }
+  /** 이 명령이 아직 실행 취소되지 않고 undo 스택에 있다 (예산·상한으로 밀려났으면 거짓). */
+  hasUndoEntry(entry: object): boolean { return this.undoStack.includes(entry as EditCommand); }
   canRedo(): boolean { return this.redoStack.length > 0 && !this.peekUndoTop()?.retainOnFailure?.(); }
 
   /** 실패한 시험적 편집을 되돌린 뒤 해당 이력을 폐기한다. */

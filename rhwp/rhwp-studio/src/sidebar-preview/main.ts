@@ -95,6 +95,7 @@ const restoreState = {
   turnKey: null as string | null,
   ready: new Set<string>(),
   restored: new Set<string>(),
+  rebinds: [] as Array<{ from: string; to: string | null }>,
 };
 const restoreListeners = new Set<() => void>();
 const notifyRestore = () => { for (const listener of [...restoreListeners]) listener(); };
@@ -112,6 +113,11 @@ function checkRestore(key: string): TurnRestoreResult {
 }
 const turnRestore: TurnRestoreControl = {
   noteTurnStart: (_threadId, key) => { restoreState.turnKey = key; },
+  // A request the hub refused is taken out of the chat; a hub turn bound to it moves to the request before.
+  rebindTurn: (_threadId, fromKey, toKey) => {
+    restoreState.rebinds.push({ from: fromKey, to: toKey });
+    if (restoreState.turnKey === fromKey) restoreState.turnKey = toKey;
+  },
   status: (_threadId, key) => restoreStatus(key),
   check: (_threadId, key) => checkRestore(key),
   restore: (_threadId, key) => {

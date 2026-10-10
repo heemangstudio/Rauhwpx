@@ -110,10 +110,11 @@ function sessionFixture(permissionProfile: 'safe' | 'unrestricted') {
   const frame = (msg: Record<string, unknown>) => internals.handleFrame(JSON.stringify({ v: AGENT_PROTOCOL_VERSION, ...msg }));
   frame({ type: 'chat-started', agent: 'claude', sessionId: 's', threadId: THREAD, permissionProfile, workflow: 'direct', phase: 'direct' });
 
-  // 사이드바처럼 turn-start 에 그 스레드의 마지막 요청을 알린다.
+  // 사이드바처럼 turn-start 에 지금 보이는 스레드의 마지막 요청을 알린다.
   let requestKey: string | null = null;
+  let shownThread = THREAD;
   bridge.onEvent((event) => {
-    if (event.type === 'agent' && event.event.type === 'turn-start') store.noteTurnStart(THREAD, requestKey);
+    if (event.type === 'agent' && event.event.type === 'turn-start') store.noteTurnStart(shownThread, requestKey);
   });
   let toolId = 0;
   let turn = 0;
@@ -148,9 +149,34 @@ function sessionFixture(permissionProfile: 'safe' | 'unrestricted') {
     /** main.ts 의 restoreTurn 과 같은 문 — 문서 전체를 되돌리고 실행 취소 한 단계를 남긴다. */
     restore: (key: string) => {
       const result = restoreTurnWithGates(key);
-      // main.ts 처럼 되돌린 채팅의 다음 요청에 안내를 붙이게 한다.
-      if (result.ok) bridge.noteDocumentRestored();
+      // main.ts 처럼 되돌린 스레드의 다음 요청에 안내를 붙이고, 되돌리기를 실행 취소하면 거둔다.
+      if (result.ok) bridge.noteDocumentRestored(THREAD, () => store.restoreStillApplies(THREAD, key));
       return result;
+    },
+    /** 허브에 붙은 채팅처럼 나가는 프레임을 모은다. */
+    connect() {
+      const frames: Array<{ type: string; text?: string; threadId?: string }> = [];
+      const internals = bridge as unknown as { state: string; sendJson(frame: unknown): boolean };
+      internals.state = 'connected';
+      internals.sendJson = (out) => {
+        frames.push(out as { type: string; text?: string });
+        return true;
+      };
+      return {
+        frames,
+        texts: () => frames.filter((out) => out.type === 'chat-user-message').map((out) => out.text),
+      };
+    },
+    /** 한 채팅만 띄우는 호스트의 스레드 전환 — 채팅을 멈추고 다른 스레드로 다시 연다. */
+    switchThread(threadId: string, started = true) {
+      bridge.stopChat();
+      bridge.startChat('claude', undefined, undefined, false, permissionProfile, 'direct', threadId);
+      shownThread = threadId;
+      if (started) frame({ type: 'chat-started', agent: 'claude', sessionId: `s-${threadId}`, threadId, permissionProfile, workflow: 'direct', phase: 'direct' });
+    },
+    /** 허브가 방금 보낸 사용자 메시지를 거절한다. */
+    reject(code = 'AGENT_BUSY', message = 'A turn is already in progress.') {
+      frame({ type: 'chat-error', code, message });
     },
   };
   function restoreTurnWithGates(key: string) {
@@ -302,5 +328,107 @@ test('the next request after a restore tells the agent the document was restored
   await settle();
   const texts = frames.filter((frame) => frame.type === 'chat-user-message').map((frame) => frame.text);
   assert.deepEqual(texts, [`${DOCUMENT_RESTORED_NOTICE}\n\n다시 해 주세요`, '그리고 이것도']);
+  s.bridge.dispose();
+});
+
+test('a turn that ends after the chat moved to another thread still settles its own checkpoint', async () => {
+  const s = sessionFixture('unrestricted');
+  s.startTurn('request-1');
+  await s.append(' world');
+  s.connect();
+  // 턴이 도는 동안 다른 채팅을 열었다 — 브리지는 허브의 turn-end 를 기다리는 사이 새 스레드로 옮겨 간다.
+  s.switchThread('thread-other', false);
+  s.endTurn();
+  await settle();
+  assert.deepEqual(s.store.status(THREAD, 'request-1'), { kind: 'ready', laterEdits: false, alreadyRestored: false },
+    'the late end closes the record of the thread the turn ran in');
+
+  // turn-end 가 끝내 오지 않아도 다음 스레드의 턴이 시작되면 앞 턴의 기록을 닫는다.
+  const lost = sessionFixture('unrestricted');
+  lost.startTurn('request-1');
+  await lost.append(' world');
+  lost.connect();
+  lost.switchThread('thread-other');
+  lost.startTurn('request-2');
+  await settle();
+  assert.equal(lost.store.status(THREAD, 'request-1').kind, 'ready');
+  s.bridge.dispose();
+  lost.bridge.dispose();
+});
+
+test('the restored notice goes only to the restored thread and is dropped when the chat moves on', async () => {
+  const s = sessionFixture('unrestricted');
+  s.startTurn('request-1');
+  await s.append(' world');
+  s.endTurn();
+  await settle();
+  const out = s.connect();
+  // 다른 스레드의 요청을 되돌린 안내는 이 스레드의 메시지에 붙지 않는다.
+  s.bridge.noteDocumentRestored('thread-elsewhere');
+  void s.bridge.sendUserMessage('이 채팅의 요청');
+  await settle();
+  assert.deepEqual(out.texts(), ['이 채팅의 요청']);
+  out.frames.length = 0;
+  assert.deepEqual(s.restore('request-1'), { ok: true });
+  s.switchThread('thread-other');
+  void s.bridge.sendUserMessage('다른 채팅의 요청');
+  s.switchThread(THREAD);
+  void s.bridge.sendUserMessage('돌아와서 보낸 요청');
+  await settle();
+  assert.deepEqual(out.texts(), ['다른 채팅의 요청', '돌아와서 보낸 요청']);
+  s.bridge.dispose();
+});
+
+test('a refused message gives the restored notice back to the next one', async () => {
+  const s = sessionFixture('unrestricted');
+  s.startTurn('request-1');
+  await s.append(' world');
+  s.endTurn();
+  await settle();
+  const out = s.connect();
+  assert.deepEqual(s.restore('request-1'), { ok: true });
+  void s.bridge.sendUserMessage('다시 해 주세요');
+  await settle();
+  s.reject();
+  void s.bridge.sendUserMessage('다시 해 주세요');
+  void s.bridge.sendUserMessage('그리고 이것도');
+  await settle();
+  assert.deepEqual(out.texts(), [
+    `${DOCUMENT_RESTORED_NOTICE}\n\n다시 해 주세요`,
+    `${DOCUMENT_RESTORED_NOTICE}\n\n다시 해 주세요`,
+    '그리고 이것도',
+  ]);
+  s.bridge.dispose();
+});
+
+test('undoing the restore withdraws the notice', async () => {
+  const s = sessionFixture('unrestricted');
+  s.startTurn('request-1');
+  await s.append(' world');
+  s.endTurn();
+  await settle();
+  const out = s.connect();
+  assert.deepEqual(s.restore('request-1'), { ok: true });
+  s.history.undo(s.env.wasm);
+  assert.equal(s.env.body[0], 'Hello world');
+  void s.bridge.sendUserMessage('이어서 해 주세요');
+  await settle();
+  assert.deepEqual(out.texts(), ['이어서 해 주세요'], 'the agent\'s edits are back, so nothing was restored');
+  s.bridge.dispose();
+});
+
+test('a typed plan approval is sent as typed, and the notice waits for the next message', async () => {
+  const s = sessionFixture('unrestricted');
+  s.startTurn('request-1');
+  await s.append(' world');
+  s.endTurn();
+  await settle();
+  const out = s.connect();
+  assert.deepEqual(s.restore('request-1'), { ok: true });
+  void s.bridge.sendUserMessage('계획을 실행해 주세요.');
+  void s.bridge.sendUserMessage('표도 고쳐 주세요');
+  await settle();
+  assert.deepEqual(out.texts(), ['계획을 실행해 주세요.', `${DOCUMENT_RESTORED_NOTICE}\n\n표도 고쳐 주세요`],
+    'the hub must read the approval phrase alone');
   s.bridge.dispose();
 });

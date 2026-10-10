@@ -4918,6 +4918,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const index = currentThread.messages.lastIndexOf(message);
     if (index >= 0) currentThread.messages.splice(index, 1);
     bubble.remove();
+    // 그 사이 허브가 스스로 시작한 턴이 이 요청에 묶였으면 남은 마지막 요청으로 옮긴다 — 되돌리기 단추가
+    // 사라진 말풍선을 가리키지 않게.
+    if (message.role === 'user' && message.turnKey) {
+      deps.turnRestore?.rebindTurn(currentThread.id, message.turnKey, latestUserTurnKey());
+    }
     persistCurrentThread();
     updateTurnPending();
   }

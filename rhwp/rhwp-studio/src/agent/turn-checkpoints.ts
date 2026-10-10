@@ -71,6 +71,8 @@ export interface CheckpointHistory {
   retainExternalSnapshot(count?: number): void;
   releaseExternalSnapshot(count?: number): void;
   peekUndoTop(): { readonly type: string } | null;
+  /** 이 항목이 아직 실행 취소되지 않고 undo 스택에 있다. */
+  hasUndoEntry(entry: object): boolean;
 }
 
 /** 브리지가 부르는 부분 (AgentBridgeDeps.turnCheckpoints). */
@@ -79,6 +81,8 @@ export type TurnCheckpointPort = Pick<TurnCheckpoints, 'beforeWrite' | 'settleSe
 /** 사이드바가 쓰는 부분 (AgentSidebarDeps.turnRestore). restore 는 편집기가 문(門)을 채워 넘긴다. */
 export interface TurnRestoreControl {
   noteTurnStart(threadId: string, messageKey: string | null): void;
+  /** 요청 말풍선이 허브에 거절돼 걷혔다 — 그 요청에 묶였던 턴을 앞 요청(toKey)으로 옮긴다. */
+  rebindTurn(threadId: string, fromKey: string, toKey: string | null): void;
   status(threadId: string, messageKey: string): TurnRestoreStatus;
   /** 지금 되돌릴 수 있는지만 본다 (문서를 건드리지 않는다) — 확인을 묻기 전에 거절 사유를 먼저 알린다. */
   check(threadId: string, messageKey: string): TurnRestoreResult;
@@ -121,6 +125,8 @@ interface Checkpoint {
   blocked: TurnRestoreBlock | null;
   /** 마지막으로 되돌린 직후의 히스토리 번호 */
   restoredAtVersion: number | null;
+  /** 마지막으로 되돌린 히스토리 항목 — 실행 취소하면 undo 스택에서 빠진다. */
+  restoredEntry: object | null;
 }
 
 const recordKey = (threadId: string, messageKey: string) => `${threadId}\u0000${messageKey}`;
@@ -186,9 +192,54 @@ export class TurnCheckpoints {
           open: true,
           blocked: null,
           restoredAtVersion: null,
+          restoredEntry: null,
         });
       }
     }
+    this.emit();
+  }
+
+  /**
+   * 요청 말풍선이 허브에 거절돼 대화에서 걷혔다 (대기 메시지의 되돌림). 그 사이 허브가 스스로 시작한
+   * 턴(계획 실행 등)의 turn-start 가 먼저 와서 걷힌 요청에 묶였으면, 그 턴을 지금 남은 마지막 요청
+   * (toKey)으로 옮긴다 — 처음부터 그 요청에 묶였을 때(noteTurnStart)와 같아진다. 앞 요청의 기록이
+   * 살아 있으면 그 기록을 다시 열어 이어 쌓고(시점이 더 이르다), 없으면 이 기록이 앞 요청의 것이 된다.
+   * 앞 요청이 없으면 기록을 버린다 — 되돌리기 단추를 달 말풍선이 없다.
+   */
+  rebindTurn(threadId: string, fromKey: string, toKey: string | null): void {
+    if (this.disposed) return;
+    const record = this.records.get(recordKey(threadId, fromKey));
+    if (!record) return;
+    this.syncDocument();
+    this.records.delete(recordKey(threadId, fromKey));
+    const target = toKey && toKey !== fromKey ? this.records.get(recordKey(threadId, toKey)) : undefined;
+    if (!toKey || toKey === fromKey) {
+      this.releaseSnapshot(record);
+    } else if (target && target.snapshotId !== null && !target.blocked) {
+      // 앞 요청의 시점이 이 턴의 시점보다 앞선다 — 그 기록이 이 턴의 몫까지 맡고, 이 기록의 스냅샷은 놓는다.
+      target.open ||= record.open;
+      target.ownCommits += record.ownCommits;
+      if (record.ownCommits > 0) target.lastOwnVersion = Math.max(target.lastOwnVersion, record.lastOwnVersion);
+      for (const id of record.ownedAwaiting) target.ownedAwaiting.add(id);
+      this.releaseSnapshot(record);
+      this.settleIfEmpty(target);
+    } else {
+      if (target) this.drop(target);
+      this.records.set(recordKey(threadId, toKey), { ...record, messageKey: toKey });
+    }
+    this.pruneTombstones();
+    this.emit();
+  }
+
+  /**
+   * 되돌리려는데 엔진에 그 스냅샷이 없다 (엔진이 상한을 넘겨 말없이 밀어냈다). 매번 실패하지 않게
+   * 밀려난 시점으로 막고 점유를 돌려준다.
+   */
+  markSnapshotMissing(threadId: string, messageKey: string): void {
+    const record = this.records.get(recordKey(threadId, messageKey));
+    if (!record || this.disposed) return;
+    this.block(record, 'evicted');
+    this.pruneTombstones();
     this.emit();
   }
 
@@ -300,8 +351,20 @@ export class TurnCheckpoints {
   markRestored(threadId: string, messageKey: string): void {
     const record = this.records.get(recordKey(threadId, messageKey));
     if (!record || this.disposed) return;
-    record.restoredAtVersion = this.history().version;
+    const history = this.history();
+    record.restoredAtVersion = history.version;
+    record.restoredEntry = history.peekUndoTop();
     this.emit();
+  }
+
+  /**
+   * 마지막 되돌리기가 아직 문서에 남아 있는가 — 실행 취소하면 거짓, 다시 실행하면 참이다. 그 뒤의
+   * 편집은 상관없다. 모르면(기록이 사라졌다) 참으로 본다 — 에이전트에게 가는 안내를 잃지 않게.
+   */
+  restoreStillApplies(threadId: string, messageKey: string): boolean {
+    const entry = this.records.get(recordKey(threadId, messageKey))?.restoredEntry;
+    if (!entry || this.disposed) return true;
+    return this.history().hasUndoEntry(entry);
   }
 
   subscribe(listener: () => void): () => void {
@@ -456,7 +519,7 @@ export function checkTurnRestore(
  * 검사는 checkTurnRestore 와 같고, 통과하면 apply 로 되돌린 뒤 되돌린 시점을 기억한다.
  */
 export function restoreTurn(
-  store: Pick<TurnCheckpoints, 'status' | 'takeSnapshotForRestore' | 'markRestored'>,
+  store: Pick<TurnCheckpoints, 'status' | 'takeSnapshotForRestore' | 'markRestored' | 'markSnapshotMissing'>,
   threadId: string,
   messageKey: string,
   gates: TurnRestoreGates,
@@ -468,8 +531,22 @@ export function restoreTurn(
   try {
     gates.apply(snapshotId);
   } catch (error) {
+    // 엔진에 시점이 남아 있지 않다 — 다시 눌러도 같으므로 밀려난 시점으로 막는다.
+    if (isMissingSnapshotError(error, snapshotId)) {
+      store.markSnapshotMissing(threadId, messageKey);
+      return { ok: false, reason: 'evicted' };
+    }
     return { ok: false, reason: 'failed', error: error instanceof Error ? error.message : String(error) };
   }
   store.markRestored(threadId, messageKey);
   return { ok: true };
+}
+
+/**
+ * 엔진이 없는 스냅샷 id 로 복원하라는 요청을 거절했는가. 엔진(rhwp/src/document_core/commands/document.rs
+ * restore_snapshot_native)은 "스냅샷 {id} 없음" 을 문자열로 던진다 (wasm_api.rs 의 HwpError → JsValue).
+ */
+export function isMissingSnapshotError(error: unknown, snapshotId: number): boolean {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  return message.includes(`스냅샷 ${snapshotId} 없음`);
 }

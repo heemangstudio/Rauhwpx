@@ -1917,12 +1917,16 @@ function installChatAgent(
     undoAgentTurn: (entry) => (shown() ? editor.undoAgentTurn(entry) : false),
     turnRestore: {
       noteTurnStart: (threadId, key) => session.turnCheckpoints.noteTurnStart(threadId, key),
+      rebindTurn: (threadId, fromKey, toKey) => session.turnCheckpoints.rebindTurn(threadId, fromKey, toKey),
       status: (threadId, key) => session.turnCheckpoints.status(threadId, key),
       check: (threadId, key) => checkTurnRestore(session.turnCheckpoints, threadId, key, restoreGates),
       restore: (threadId, key) => {
         const result = restoreTurn(session.turnCheckpoints, threadId, key, restoreGates);
-        // 이 채팅의 다음 요청에 문서를 되돌렸다는 안내를 붙인다 (에이전트가 되돌린 편집을 믿지 않게).
-        if (result.ok) bridge.noteDocumentRestored();
+        // 이 스레드의 다음 요청에 문서를 되돌렸다는 안내를 붙인다 (에이전트가 되돌린 편집을 믿지 않게).
+        // 되돌리기를 실행 취소하면 안내도 거둔다.
+        if (result.ok) {
+          bridge.noteDocumentRestored(threadId, () => session.turnCheckpoints.restoreStillApplies(threadId, key));
+        }
         return result;
       },
       subscribe: (listener) => session.turnCheckpoints.subscribe(listener),

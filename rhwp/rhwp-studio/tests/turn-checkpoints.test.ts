@@ -5,12 +5,16 @@
  * 승인·직접 확정·사용자 편집은 모두 두 id 스냅샷 명령으로 히스토리에 남는다 (편집기와 같다).
  */
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { EventBus } from '../src/core/event-bus.ts';
 import {
   TURN_CHECKPOINT_LIMIT,
   TurnCheckpoints,
   checkTurnRestore,
+  isMissingSnapshotError,
   restoreTurn,
   type TurnRestoreGates,
 } from '../src/agent/turn-checkpoints.ts';
@@ -50,7 +54,8 @@ function world(initial = ['Hello']) {
     },
     restoreSnapshot(id: number) {
       const saved = snapshots.get(id);
-      if (!saved) throw new Error(`snapshot ${id} is gone`);
+      // 실제 엔진처럼 문자열을 던진다 (wasm_api.rs 의 HwpError → JsValue).
+      if (!saved) throw `렌더링 오류: 스냅샷 ${id} 없음`;
       engine.body = [...saved];
     },
     discardSnapshot(id: number) {
@@ -133,6 +138,8 @@ function world(initial = ['Hello']) {
     store,
     discarded,
     liveSnapshots: () => snapshots.size,
+    /** 엔진이 상한을 넘겨 히스토리 몰래 스냅샷을 밀어낸 것처럼 지운다. */
+    evictBehindTheStore(id: number) { snapshots.delete(id); },
     replaceDocument(body: string[]) {
       instance += 1;
       nextId = 1;
@@ -430,4 +437,115 @@ test('closing the document session releases every checkpoint', () => {
   assert.deepEqual(w.store.status(THREAD, 'k1'), { kind: 'none' });
   w.bus.emit('document-swapped');
   assert.deepEqual(notifications, [], 'a disposed store stays quiet');
+});
+
+test('a hub turn bound to a request the hub then refused moves to the request before it', () => {
+  // 앞 요청 k1 이 문서를 고쳤다.
+  const w = world(['Hello']);
+  w.store.noteTurnStart(THREAD, 'k1');
+  w.store.beforeWrite(THREAD, []);
+  w.directWrite(' one');
+  w.store.endTurn(THREAD, []);
+  // 대기 메시지 k2 를 보낸 사이 허브가 스스로 턴을 열었다 — 그 turn-start 는 마지막 말풍선 k2 에 묶인다.
+  w.store.noteTurnStart(THREAD, 'k2');
+  // 허브가 k2 를 거절해 말풍선이 걷혔다.
+  w.store.rebindTurn(THREAD, 'k2', 'k1');
+  w.store.beforeWrite(THREAD, []);
+  w.directWrite(' two');
+  w.store.endTurn(THREAD, []);
+  assert.deepEqual(w.store.status(THREAD, 'k2'), { kind: 'none' }, 'nothing points at the removed bubble');
+  assert.equal(w.store.status(THREAD, 'k1').kind, 'ready');
+  assert.equal(w.history.external, 1, 'one checkpoint, the earlier one, holds the budget');
+  assert.deepEqual(w.restore('k1').result, { ok: true });
+  assert.equal(w.engine.body[0], 'Hello', 'the hub turn\'s work goes with the request it continued');
+
+  // 앞 요청에 기록이 없으면(쓰지 않았다) 이 턴의 기록이 그 요청의 것이 된다 — 이미 찍었어도 그대로다.
+  const moved = world(['Hello']);
+  moved.store.noteTurnStart(THREAD, 'k2');
+  moved.store.beforeWrite(THREAD, []);
+  moved.directWrite(' two');
+  moved.store.rebindTurn(THREAD, 'k2', 'k1');
+  moved.store.endTurn(THREAD, []);
+  assert.deepEqual(moved.store.status(THREAD, 'k2'), { kind: 'none' });
+  assert.equal(moved.store.status(THREAD, 'k1').kind, 'ready');
+  assert.deepEqual(moved.restore('k1').result, { ok: true });
+  assert.equal(moved.engine.body[0], 'Hello');
+
+  // 남은 요청이 없으면 기록과 스냅샷을 버린다.
+  const orphan = world(['Hello']);
+  orphan.store.noteTurnStart(THREAD, 'k2');
+  orphan.store.beforeWrite(THREAD, []);
+  orphan.store.rebindTurn(THREAD, 'k2', null);
+  orphan.directWrite(' two');
+  orphan.store.endTurn(THREAD, []);
+  assert.deepEqual(orphan.store.status(THREAD, 'k2'), { kind: 'none' });
+  assert.equal(orphan.history.external, 0, 'no checkpoint is left pinned');
+});
+
+test('a checkpoint the engine no longer has is refused as evicted instead of failing on every click', () => {
+  const w = world(['Hello']);
+  w.store.noteTurnStart(THREAD, 'k1');
+  // 체크포인트가 찍는 스냅샷 id 를 본다.
+  const save = w.engine.saveSnapshot;
+  let checkpointId = -1;
+  w.engine.saveSnapshot = () => (checkpointId = save());
+  w.store.beforeWrite(THREAD, []);
+  w.engine.saveSnapshot = save;
+  w.directWrite(' world');
+  w.store.endTurn(THREAD, []);
+  assert.equal(w.store.status(THREAD, 'k1').kind, 'ready');
+  w.evictBehindTheStore(checkpointId);
+
+  const first = w.restore('k1');
+  assert.deepEqual(first.result, { ok: false, reason: 'evicted' });
+  assert.equal(w.engine.body[0], 'Hello world', 'the document is unchanged');
+  assert.deepEqual(w.store.status(THREAD, 'k1'), { kind: 'blocked', reason: 'evicted' });
+  assert.equal(w.history.external, 0, 'the lost checkpoint no longer holds budget');
+  const second = w.restore('k1');
+  assert.deepEqual(second.result, { ok: false, reason: 'evicted' });
+  assert.deepEqual(second.applied, [], 'the next click explains without trying again');
+});
+
+test('a restore stays in effect through later edits until it is undone', () => {
+  const w = world(['Hello']);
+  w.store.noteTurnStart(THREAD, 'k1');
+  w.store.beforeWrite(THREAD, []);
+  w.directWrite(' world');
+  w.store.endTurn(THREAD, []);
+  assert.deepEqual(w.restore('k1').result, { ok: true });
+  assert.equal(w.store.restoreStillApplies(THREAD, 'k1'), true);
+  w.userEdit(' typed');
+  assert.equal(w.store.restoreStillApplies(THREAD, 'k1'), true, 'typing after the restore keeps it');
+  w.history.undo(w.engine);
+  w.history.undo(w.engine);
+  assert.equal(w.engine.body[0], 'Hello world');
+  assert.equal(w.store.restoreStillApplies(THREAD, 'k1'), false, 'undoing the restore brings the agent\'s work back');
+  w.history.redo(w.engine);
+  assert.equal(w.store.restoreStillApplies(THREAD, 'k1'), true, 'redo restores it again');
+});
+
+test('the real engine\'s refusal for a missing snapshot is recognized', async (t) => {
+  const pkg = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'pkg');
+  if (!existsSync(join(pkg, 'rhwp_bg.wasm'))) {
+    t.skip('rhwp/pkg 의 WASM 빌드가 필요하다 (wasm-pack build --target web)');
+    return;
+  }
+  const engine = await import(pathToFileURL(join(pkg, 'rhwp.js')).href);
+  engine.initSync({ module: readFileSync(join(pkg, 'rhwp_bg.wasm')) });
+  const doc = engine.HwpDocument.createEmpty();
+  doc.createBlankDocument();
+  const kept = doc.saveSnapshot();
+  const gone = doc.saveSnapshot();
+  doc.discardSnapshot(gone);
+  let refusal: unknown = null;
+  try {
+    doc.restoreSnapshot(gone);
+  } catch (error) {
+    refusal = error;
+  }
+  assert.notEqual(refusal, null, 'restoring a discarded snapshot throws');
+  assert.equal(isMissingSnapshotError(refusal, gone), true, String(refusal));
+  assert.equal(isMissingSnapshotError(refusal, kept), false, 'another id is not mistaken for it');
+  assert.equal(isMissingSnapshotError(new Error('The editor snapshot store is full'), gone), false);
+  doc.free?.();
 });

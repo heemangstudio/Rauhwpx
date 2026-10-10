@@ -33,6 +33,7 @@ import {
   readProviderFailure,
   type TurnFailureCollector,
 } from './provider-failure.ts';
+import { isPlanApprovalText } from './plan-approval-text.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
 import {
   setModelCatalog,
@@ -312,11 +313,12 @@ export interface AgentBridge {
    */
   holdsDocumentWrites(): boolean;
   /**
-   * 사용자가 이 채팅의 요청 전으로 문서를 되돌렸다 (이 작업 전으로 되돌리기). 다음으로 보내는
-   * 사용자 메시지 앞에 문서가 바뀌었다는 안내 한 줄을 붙여, 에이전트가 되돌린 편집이 남아
-   * 있다고 여기지 않게 한다. 말풍선과 대화 기록에는 붙지 않는다.
+   * 사용자가 이 채팅의 요청 전으로 문서를 되돌렸다 (이 작업 전으로 되돌리기). 그 스레드로 다음에
+   * 보내는 사용자 메시지 앞에 문서가 바뀌었다는 안내 한 줄을 붙여, 에이전트가 되돌린 편집이 남아
+   * 있다고 여기지 않게 한다. 말풍선과 대화 기록에는 붙지 않는다. threadId 는 되돌린 요청의 스레드
+   * (없으면 지금 스레드)다. stillApplies 가 false 를 돌려주면(되돌리기를 실행 취소했다) 안내를 버린다.
    */
-  noteDocumentRestored(): void;
+  noteDocumentRestored(threadId?: string, stillApplies?: () => boolean): void;
   getPermissionProfile(): PermissionProfile;
   getServiceTier(): ServiceTier;
   getWorkflowState(): AgentWorkflowState;
@@ -432,6 +434,12 @@ export interface AgentBridge {
 }
 
 type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'replaced';
+
+/** 아직 보내지 않은 되돌림 안내 — 되돌린 요청의 스레드와, 되돌리기가 아직 문서에 남아 있는지. */
+interface RestoredNotice {
+  threadId: string;
+  stillApplies?: () => boolean;
+}
 
 /** 문서를 이전 요청 전으로 되돌린 뒤 첫 사용자 메시지에 붙이는 안내 (에이전트에게만 간다). */
 export const DOCUMENT_RESTORED_NOTICE = '[문서 상태] 사용자가 문서를 이전 요청을 처리하기 전 상태로 되돌렸습니다. 문서를 다시 읽고 진행하세요.';
@@ -1300,8 +1308,15 @@ export class AgentBridgeImpl implements AgentBridge {
   private readonly turnCheckpoints?: TurnCheckpointPort;
   /** 턴 체크포인트에 알린 마지막 검토 set 목록 — 사라진 set 을 거절·폐기로 알린다. */
   private checkpointSetIds = new Set<string>();
-  /** 문서를 되돌린 뒤 아직 보내지 않은 안내 — 다음 사용자 메시지 앞에 붙는다. */
-  private documentRestoredNotice = false;
+  /** 문서를 되돌린 뒤 아직 보내지 않은 안내 — 그 스레드의 다음 사용자 메시지 앞에 붙는다. */
+  private restoredNotice: RestoredNotice | null = null;
+  /** 안내를 싣고 나갔지만 아직 턴이 열리지 않은 메시지 — 허브가 거절하면 안내를 다시 건다. */
+  private restoredNoticeInFlight: { notice: RestoredNotice; messageId: string | null; sawTurnStart: boolean } | null = null;
+  /**
+   * 체크포인트 기록이 열린 턴의 스레드 (turn-start 때의 threadId). 턴 도중 다른 스레드로 채팅을
+   * 바꿔도(startChat) 그 턴의 쓰기·검토 정리·끝은 이 스레드의 기록으로 간다.
+   */
+  private turnThreadId: string | null = null;
   private ws: WebSocket | null = null;
   private state: ConnectionState = 'disconnected';
   /** 지금까지 실패한 연결 시도 수. 허브의 welcome 을 받으면 0 으로 돌아간다. */
@@ -1512,7 +1527,7 @@ export class AgentBridgeImpl implements AgentBridge {
       claimDocumentWrite: deps.claimDocumentWrite,
       // 이 턴의 첫 쓰기 직전 문서를 체크포인트로 남긴다 (모든 쓰기 문을 지난 뒤).
       beforeDocumentWrite: deps.turnCheckpoints
-        ? () => deps.turnCheckpoints?.beforeWrite(this.threadId, this.pendingSetIds())
+        ? () => deps.turnCheckpoints?.beforeWrite(this.checkpointThreadId(), this.pendingSetIds())
         : undefined,
     });
     this.turnSnapshots = new TurnSnapshots({
@@ -1588,8 +1603,9 @@ export class AgentBridgeImpl implements AgentBridge {
       || this.pendingEdits.hasPending();
   }
 
-  noteDocumentRestored(): void {
-    this.documentRestoredNotice = true;
+  noteDocumentRestored(threadId: string = this.threadId, stillApplies?: () => boolean): void {
+    this.restoredNotice = { threadId, ...(stillApplies ? { stillApplies } : {}) };
+    this.restoredNoticeInFlight = null;
   }
 
   holdsDocumentWrites(): boolean {
@@ -2244,10 +2260,15 @@ export class AgentBridgeImpl implements AgentBridge {
     return this.pendingEdits.getChangeSets().filter((set) => set.ops.length > 0).map((set) => set.id);
   }
 
+  /** 체크포인트 기록이 열린 턴의 스레드. 이 채팅이 아직 턴을 열지 않았으면 지금 스레드다. */
+  private checkpointThreadId(): string {
+    return this.turnThreadId ?? this.threadId;
+  }
+
   /** 턴이 끝났음을 턴 체크포인트에 알린다. 이미 닫혔으면 아무 일도 없다. */
-  private endTurnCheckpoint(): void {
+  private endTurnCheckpoint(threadId: string = this.checkpointThreadId()): void {
     try {
-      this.turnCheckpoints?.endTurn(this.threadId, this.pendingSetIds());
+      this.turnCheckpoints?.endTurn(threadId, this.pendingSetIds());
     } catch (e) {
       console.warn('[AgentBridge] 턴 체크포인트 종료 실패:', e);
     }
@@ -2265,10 +2286,11 @@ export class AgentBridgeImpl implements AgentBridge {
     const current = new Set(this.pendingEdits.getChangeSets().map((set) => set.id));
     const approved = e.type === 'approved' ? e.changeSetId : null;
     try {
+      const threadId = this.checkpointThreadId();
       for (const id of this.checkpointSetIds) {
-        if (!current.has(id) && id !== approved) port.settleSet(this.threadId, id, false);
+        if (!current.has(id) && id !== approved) port.settleSet(threadId, id, false);
       }
-      if (approved) port.settleSet(this.threadId, approved, true);
+      if (approved) port.settleSet(threadId, approved, true);
     } catch (error) {
       console.warn('[AgentBridge] 턴 체크포인트 정리 실패:', error);
     }
@@ -2409,6 +2431,8 @@ export class AgentBridgeImpl implements AgentBridge {
           if (typeof session.documentId === 'string' || session.documentId === null) this.documentId = session.documentId;
           if (typeof session.documentName === 'string' || session.documentName === null) this.documentName = session.documentName;
           this.turnRunning = session.status === 'running';
+          // 다시 붙은 턴의 쓰기와 끝은 허브 세션의 스레드에 묶인다.
+          if (this.turnRunning && (!wasRunning || this.turnThreadId === null)) this.turnThreadId = this.threadId;
           this.activeProviderTurnId = this.turnRunning && typeof session.turnId === 'string'
             ? session.turnId
             : null;
@@ -3042,6 +3066,7 @@ export class AgentBridgeImpl implements AgentBridge {
             : null);
         // 턴을 기다리며 모아 둔 실패는 이 거절로 기다림이 끝난다.
         const heldFailure = this.turnFailures().flush();
+        this.rearmRestoredNotice(typeof msg.messageId === 'string' && msg.messageId ? msg.messageId : null);
         // 요청 ID 없는 오류는 보낸 메시지의 거절이다 — 턴으로 이어지지 않는다.
         this.messageAwaitingTurn = false;
         if (this.pendingChatStart && msg.session && isAgentName(msg.session.agent)) {
@@ -3200,6 +3225,11 @@ export class AgentBridgeImpl implements AgentBridge {
         // 보낸 메시지가 연 턴만 '다시 시도' 로 같은 요청을 다시 보낼 수 있다 — 허브가 연 턴은 아니다.
         this.turnFailures().beginTurn(typeof event.turnId === 'string' ? event.turnId : null, this.messageAwaitingTurn);
         this.turnWroteDocument = false;
+        // 끝을 듣지 못한 앞 턴이 다른 스레드의 것이면 그 기록을 닫는다 (같은 스레드는 저장소가 닫는다).
+        if (this.turnThreadId !== null && this.turnThreadId !== this.threadId) this.endTurnCheckpoint(this.turnThreadId);
+        this.turnThreadId = this.threadId;
+        // 이 턴 뒤의 id 없는 오류는 안내를 실은 메시지의 거절로 보지 않는다.
+        if (this.restoredNoticeInFlight) this.restoredNoticeInFlight.sawTurnStart = true;
         this.turnRunning = true;
         this.messageAwaitingTurn = false;
         this.activeProviderTurnId = typeof event.turnId === 'string' ? event.turnId : null;
@@ -3217,6 +3247,8 @@ export class AgentBridgeImpl implements AgentBridge {
         const eventTurnId = typeof event.turnId === 'string' ? event.turnId : null;
         if (!providerTurnEndMatches(this.activeProviderTurnId, eventTurnId)) return;
         turnFailure = this.turnFailures().endTurn(event);
+        // 안내를 실은 메시지의 턴이거나, 그 메시지를 거절할 허브 턴이 끝났다 — 더 기다릴 거절이 없다.
+        this.restoredNoticeInFlight = null;
         this.turnRunning = false;
         this.messageAwaitingTurn = false;
         this.activeProviderTurnId = null;
@@ -3536,6 +3568,7 @@ export class AgentBridgeImpl implements AgentBridge {
     this.selectedAgent = agent;
     this.selectedModel = model || null;
     this.selectedEffort = effort || null;
+    if (threadId !== this.threadId) this.leaveThread(threadId);
     this.threadId = threadId;
     this.documentId = documentId;
     this.documentName = documentName;
@@ -3559,6 +3592,18 @@ export class AgentBridgeImpl implements AgentBridge {
     };
     this.chatStartSent = false;
     this.sendPendingChatStart();
+  }
+
+  /**
+   * 이 채팅이 다른 스레드로 옮겨 간다 (한 채팅만 띄우는 호스트의 전환·새 채팅). 앞 스레드의 열린
+   * 체크포인트 기록을 닫는다 — 앞 턴이 아직 돌면 그 턴의 끝(turnThreadId)이 닫는다. 되돌림 안내는
+   * 그 스레드의 것이므로 버린다.
+   */
+  private leaveThread(next: string): void {
+    const previous = this.checkpointThreadId();
+    if (previous && previous !== next && !this.turnRunning) this.endTurnCheckpoint(previous);
+    this.restoredNotice = null;
+    this.restoredNoticeInFlight = null;
   }
 
   stopChat(): void {
@@ -3713,11 +3758,11 @@ export class AgentBridgeImpl implements AgentBridge {
   private dispatchUserMessage(message: (typeof this.queuedMessages)[number]): void {
     // 문서 스냅샷은 프레임이 나가는 순간의 문서로, 동기로 만든다 — 프레임 순서가 스냅샷 없을 때와 같다.
     const built = this.buildTurnSnapshot();
-    const restored = this.documentRestoredNotice;
+    const notice = this.restoredNoticeFor(message);
     const sent = this.sendJson({
       v: AGENT_PROTOCOL_VERSION,
       type: 'chat-user-message',
-      text: restored ? `${DOCUMENT_RESTORED_NOTICE}\n\n${message.text}` : message.text,
+      text: notice ? `${DOCUMENT_RESTORED_NOTICE}\n\n${message.text}` : message.text,
       documentRevision: this.revision.revision,
       threadId: message.context.threadId,
       documentId: message.context.documentId,
@@ -3730,10 +3775,47 @@ export class AgentBridgeImpl implements AgentBridge {
     if (sent && built && this.phase !== 'awaiting-approval') this.turnSnapshots.markSent(built);
     if (sent) {
       this.messageAwaitingTurn = true;
-      this.documentRestoredNotice = false;
+      if (notice) {
+        this.restoredNotice = null;
+        this.restoredNoticeInFlight = { notice, messageId: message.messageId ?? null, sawTurnStart: false };
+      }
       this.scheduleBusyCheck();
     }
     message.resolve(sent ? (message.messageId ?? null) : null);
+  }
+
+  /**
+   * 이 메시지에 붙일 되돌림 안내. 되돌린 스레드의 메시지에만 붙는다. 되돌리기를 실행 취소했으면 안내를
+   * 버린다. 계획 실행 승인 문구는 허브가 문구 그대로 읽어야 하므로 붙이지 않고, 안내는 다음 메시지에 남긴다.
+   */
+  private restoredNoticeFor(message: (typeof this.queuedMessages)[number]): RestoredNotice | null {
+    const notice = this.restoredNotice;
+    if (!notice || notice.threadId !== message.context.threadId) return null;
+    let applies = true;
+    try {
+      applies = notice.stillApplies?.() !== false;
+    } catch {
+      applies = true;
+    }
+    if (!applies) {
+      this.restoredNotice = null;
+      return null;
+    }
+    if (!message.stagedReferenceIds?.length && isPlanApprovalText(message.text)) return null;
+    return notice;
+  }
+
+  /**
+   * 허브가 메시지를 거절했다. 안내를 실은 메시지의 거절이면(id 가 같거나, id 없이 턴이 열리기 전에 왔다)
+   * 안내를 다시 건다 — 그새 새로 되돌렸으면 새 안내가 이긴다. 겹쳐 붙는 것은 괜찮지만 잃으면 안 된다.
+   */
+  private rearmRestoredNotice(messageId: string | null): void {
+    const inFlight = this.restoredNoticeInFlight;
+    if (!inFlight) return;
+    const matches = messageId !== null ? messageId === inFlight.messageId : !inFlight.sawTurnStart;
+    if (!matches) return;
+    this.restoredNoticeInFlight = null;
+    this.restoredNotice ??= inFlight.notice;
   }
 
   /** 스냅샷은 덤이다 — 만들지 못해도 메시지는 그대로 나간다. */
@@ -4458,7 +4540,7 @@ export class AgentBridgeImpl implements AgentBridge {
     // 닫히는 채팅의 턴은 끝났고, 남은 검토 set 은 이 채팅과 함께 사라진다.
     this.endTurnCheckpoint();
     for (const id of this.checkpointSetIds) {
-      try { this.turnCheckpoints?.settleSet(this.threadId, id, false); } catch { /* 세션이 먼저 닫혔다 */ }
+      try { this.turnCheckpoints?.settleSet(this.checkpointThreadId(), id, false); } catch { /* 세션이 먼저 닫혔다 */ }
     }
     this.checkpointSetIds.clear();
     this.pendingChangeUnsub?.();
