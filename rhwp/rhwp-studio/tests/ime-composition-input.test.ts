@@ -551,6 +551,7 @@ test('문서 전환은 조합 중인 preedit 을 확정하지 않고 되돌린 �
     exitPictureObjectSelection: stub,
     exitTableObjectSelection: stub,
     exitCellSelectionMode: stub,
+    exitBlockSelectionMode: stub,
   });
 
   h.handler.onCompositionStart();

@@ -42,8 +42,10 @@ test('untrusted drops, dropped images, save identity reads and remote URLs stay 
 
 test('template preview URLs open the document read-only', () => {
   assert.match(main, /documentReadOnly = new URLSearchParams[\s\S]*templatePreview/);
-  assert.match(main, /isEditable: !documentReadOnly/);
-  assert.match(main, /inputHandler\.setReadOnly\(documentReadOnly\)/);
+  // 문서 세션마다 읽기 전용을 묻지만, 템플릿 미리보기 플래그는 모든 세션에 먼저 걸린다.
+  assert.match(main, /function sessionReadOnly\([^)]*\): boolean \{\s*return documentReadOnly \|\|/);
+  assert.match(main, /isEditable: !sessionReadOnly\(\)/);
+  assert.match(main, /inputHandler\??\.setReadOnly\(sessionReadOnly\(/);
 });
 
 test('host saves and embed exports share one HostSaveTracker (#2660)', () => {
@@ -56,26 +58,26 @@ test('host saves and embed exports share one HostSaveTracker (#2660)', () => {
 });
 
 test('document replacement waits for version work and republishes context on failure', () => {
-  assert.match(main, /versionControllerRef = versionController/);
+  assert.match(main, /session\.versions = new DocumentVersionController\(/);
   assert.match(
     main,
-    /const allowed = skipUnsavedGuard[\s\S]*?if \(!allowed\) return false;\s*await versionControllerRef\?\.whenIdle\(\);\s*return true;/,
+    /const allowed = skipUnsavedGuard[\s\S]*?if \(!allowed\) return false;\s*await attachedSession\.versions\?\.whenIdle\(\);\s*return true;/,
   );
-  for (const fn of ['async function loadBytes', 'async function createNewDocument']) {
+  for (const fn of ['async function loadBytesNow', 'async function createNewDocumentNow']) {
     assert.match(
       main,
-      new RegExp(`${fn}[\\s\\S]*?catch \\(error\\) \\{[\\s\\S]*?activeDocumentId = null;\\s*eventBus\\.emit\\('document-context-changed'\\)`),
+      new RegExp(`${fn}[\\s\\S]*?catch \\(error\\) \\{[\\s\\S]*?attachedSession\\.documentId = null;\\s*eventBus\\.emit\\('document-context-changed'\\)`),
     );
   }
 });
 
 test('document identity follows verified grants and handle-backed saves', () => {
   assert.match(main, /const verifiedGrant = grant \?\?/);
-  assert.match(main, /activeDocumentId = ownership\.identity\.documentId/);
-  assert.match(main, /getDocumentId: \(\) => activeDocumentId/);
+  assert.match(main, /attachedSession\.documentId = ownership\.identity\.documentId/);
+  assert.match(main, /getDocumentId: \(\) => session\.documentId/);
   assert.match(
     main,
-    /eventBus\.on\('document-file-handle-saved',[\s\S]*?documentId = activeDocumentId;[\s\S]*?rememberNativeDocument\(documentId, saved\.fileHandle[\s\S]*?addRecentDoc\(\{[\s\S]*?handle: saved\.fileHandle/,
+    /eventBus\.on\('document-file-handle-saved',[\s\S]*?documentId = attachedSession\.documentId;[\s\S]*?rememberNativeDocument\(documentId, saved\.fileHandle[\s\S]*?addRecentDoc\(\{[\s\S]*?handle: saved\.fileHandle/,
   );
   assert.match(main, /rememberNativeDocument\(\s*ownership\.identity\.documentId,\s*fileHandle/);
 });

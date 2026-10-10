@@ -821,8 +821,7 @@ function agentReview(host: any) {
   const manager = new PendingEditManager({
     wasm: host.wasm,
     eventBus: host.eventBus,
-    inputHandler: host,
-    canvasView: {},
+    editor: host,
     overlay: { setOps() {}, clear() {} },
   });
   manager.beginTurn('claude');
