@@ -164,7 +164,9 @@ export function buildCodexArgv(opts, threadId) {
     ...(opts.toolProfile === 'copy-layout-worker'
       ? [
         '--disable', 'multi_agent', '--disable', 'shell_tool', '--disable', 'unified_exec',
-        '--disable', 'code_mode_host', '--disable', 'standalone_web_search',
+        // GPT-6 계열은 이 호스트를 거쳐 MCP 도구를 호출한다. 네이티브 실행 권한은
+        // 위의 shell/unified_exec 차단과 읽기 전용 sandbox로 따로 제한한다.
+        '--enable', 'code_mode_host', '--disable', 'standalone_web_search',
         '--disable', 'view_image', '--disable', 'shell_snapshot',
       ]
       : ['--enable', 'multi_agent']),

@@ -99,3 +99,17 @@ npm --prefix rhwp/rhwp-agent test
 - Real isolated hub/Studio reconnect E2E passed hub absence, automatic recovery, termination, manual retry, and restart recovery. Reference-file E2E used the original HWPX with a fixture provider and passed initial upload, next-draft upload, and cancellation.
 - Running Electron at `http://127.0.0.1:7745`, CDP 9475: the original `landscape-001.hwpx` staged with HTTP 201 and cancellation returned HTTP 200; document identity, revision, thread, composer, and messages remained unchanged. The new-chat toolbar kept sidebar view. Screenshots: `/tmp/rauhwpx-memo1-live-ready.png` and `/tmp/rauhwpx-memo3-live-sidebar.png`.
 - The managed Claude executable passed `--version`; real OS failed-spawn tests verified retry and cleanup. An authenticated Claude chat was not run in the user's active conversation. Its end-to-end authenticated turn remains a manual verification step.
+
+## CI fixture login independence
+
+The Auth CI job exposed a fixture dependency on the developer's Claude login. Its root-provenance test replaced the backend but still read host setup credentials, so a signed-out runner returned `AGENT_AUTH_REQUIRED` before the expected turn-start. The fixture now uses the real CLI setup manager with temporary setup/home directories and an explicit dummy credential. A signed-out fixture also verifies that authentication rejects the message before backend dispatch.
+
+The complete user-question suite passed 16 tests, and the authenticated/signed-out provenance cases passed five consecutive repetitions. The exact serialized CI hub command, `node --test --test-concurrency=1 rhwp/rhwp-agent/tests/*.test.mjs`, then passed all 1,165 tests with no failures or skips in 82 seconds.
+
+## Memo #8: Codex copy-layout workers stopped before calling tools
+
+The two reported jobs stopped after about 15 seconds with no tool calls and no completion report. An offline probe using Codex 0.162.1 and GPT-6.1-Sol model metadata reproduced the failure: the model calls MCP through `functions.exec`, while the copy-layout launch configuration disabled `code_mode_host`. Its tool output reported that the host was disabled. Direct MCP probes initially appeared healthy because they bypassed this model-visible route.
+
+Both Codex launch paths now enable that host. Workers retain the read-only sandbox, disabled shell/unified execution, disabled nested agents, and job-scoped MCP catalog. The actual CLI regression reaches progress, helper and completion tools; an attempted native patch reports the expected read-only sandbox denial and creates no file. The primary checkout passed that offline check and 101 focused provider/capability tests.
+
+An isolated Studio/hub flow with actual Codex, the document engine and copy-layout helper generated and published a 6,602-byte template artifact, reported verified geometry/safety/readability for one source and output page, and delivered completion to the owning chat. Model responses came from a local fixture; no provider quota was used. The user's Electron was restarted while idle with no unsaved edits or composer draft, and the memo's original document and chat were restored.

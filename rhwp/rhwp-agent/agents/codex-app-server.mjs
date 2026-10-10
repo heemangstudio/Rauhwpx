@@ -86,7 +86,8 @@ export function buildCodexAppServerArgv(opts, { enableDefaultModeUserInput = fal
     ...(opts.toolProfile === 'copy-layout-worker'
       ? [
         '--disable', 'multi_agent', '--disable', 'shell_tool', '--disable', 'unified_exec',
-        '--disable', 'code_mode_host', '--disable', 'standalone_web_search',
+        // GPT-6의 MCP 호출에 필요한 호스트이며 파일·셸 권한은 부여하지 않는다.
+        '--enable', 'code_mode_host', '--disable', 'standalone_web_search',
         '--disable', 'view_image', '--disable', 'shell_snapshot',
       ]
       : ['--enable', 'multi_agent']),

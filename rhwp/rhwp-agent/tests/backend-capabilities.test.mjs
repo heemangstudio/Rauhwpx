@@ -213,10 +213,13 @@ test('safe copy-layout workers have job-local reads and no native write, shell, 
 
   const codex = buildCodexArgv(opts, null);
   assert.match(codexConfig(codex, 'sandbox_mode='), /read-only/);
-  for (const feature of ['multi_agent', 'shell_tool', 'unified_exec', 'code_mode_host', 'standalone_web_search']) {
+  for (const feature of ['multi_agent', 'shell_tool', 'unified_exec', 'standalone_web_search']) {
     assert.ok(codex.some((value, index) => value === '--disable' && codex[index + 1] === feature), feature);
     const app = buildCodexAppServerArgv(opts);
     assert.ok(app.some((value, index) => value === '--disable' && app[index + 1] === feature), `app:${feature}`);
+  }
+  for (const argv of [codex, buildCodexAppServerArgv(opts)]) {
+    assert.ok(argv.some((value, index) => value === '--enable' && argv[index + 1] === 'code_mode_host'));
   }
   assert.deepEqual(codexAppServerSandboxPolicy(opts), { type: 'readOnly', networkAccess: false });
 
