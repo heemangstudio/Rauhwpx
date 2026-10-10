@@ -1991,7 +1991,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const workspaceBrandMark = el('span', 'ag-rau-icon ag-workspace-brand-mark');
   workspaceBrandMark.setAttribute('aria-hidden', 'true');
   const workspaceBrandLockup = el('span', 'ag-workspace-brand-lockup');
-  workspaceBrandLockup.append(workspaceBrandMark, el('span', 'ag-workspace-brand-name', 'Rauhwpx'));
+  workspaceBrandLockup.append(workspaceBrandMark, el('span', 'ag-workspace-brand-name', 'HamaEditor'));
   workspaceBrand.appendChild(workspaceBrandLockup);
 
   // 제목 줄 — 채팅 이름과 문서 이름을 한 줄에 나란히 둔다. 레일이 열려 있으면
