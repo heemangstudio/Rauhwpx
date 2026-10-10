@@ -3794,7 +3794,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function syncWorkbenchResources(): void {
-    workbench?.setResources(workbenchDocuments?.descriptors() ?? [], workbenchDocuments?.activeTab() ?? null);
+    const resources = [...workbenchDocuments?.descriptors() ?? [], ...workbenchBrowser?.descriptors() ?? []];
+    const activeId = workbench?.current() === 'browser' ? workbenchBrowser?.activeTab() : workbench?.current() === 'documents' ? workbenchDocuments?.activeTab() : null;
+    workbench?.setResources(resources, activeId ?? null);
   }
 
   function openWorkbenchDocument(target: ProjectPreviewTarget): void {
@@ -3822,8 +3824,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   workbench = createSidebarWorkbench({
     onChat: returnToChat,
-    selectResource: (id) => { void workbenchDocuments?.selectTab(id); },
+    selectResource: (id) => {
+      if (id?.startsWith('browser:')) workbenchBrowser?.selectTab(id);
+      else void workbenchDocuments?.selectTab(id);
+    },
     closeResource: (id) => {
+      if (id.startsWith('browser:')) { workbenchBrowser?.closeTab(id); return; }
       if (workbenchDocuments?.descriptors().some(tab => tab.id === id && tab.dirty)) workbench?.select('documents', { recordTab: false });
       workbenchDocuments?.closeTab(id);
     },
@@ -3850,8 +3856,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           },
           onDock: () => { const dock = () => workbench?.select('browser'); if (!fullscreen) setFullscreen(true, { then: dock }); else dock(); },
           onChat: () => { returnToChat(); },
+          onChange: syncWorkbenchResources,
         });
         workbenchBrowser.mount(host);
+        syncWorkbenchResources();
       } else if (view === 'documents') {
         workbenchDocuments = createWorkbenchDocuments({ client: bridge.projects ?? null, bridge,
           onChange: syncWorkbenchResources,
@@ -3922,6 +3930,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         else chatPage.insertBefore(review, compactChanges);
       }
       syncWorkbenchAgents();
+      syncWorkbenchResources();
       syncWorkbenchVisibility();
     },
   });

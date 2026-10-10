@@ -113,12 +113,12 @@ export function createSidebarWorkbench(deps: {
   let tabSequence = 0;
   const tabRows = new Map<string, { row: HTMLElement; button: HTMLButtonElement; label: HTMLElement; close: HTMLButtonElement }>();
   function activeKey(): string | null {
-    return activeResource && (selected === 'documents' || resources.find((resource) => resource.id === activeResource)?.view === selected) ? `resource:${activeResource}` : selected;
+    return activeResource && (resources.find((resource) => resource.id === activeResource)?.view ?? 'documents') === selected ? `resource:${activeResource}` : selected;
   }
   /** 탭 줄의 순서. 끌어서 바꾼 순서를 지키고, 새 탭은 끝에 붙이며, 닫힌 탭은 뺀다. */
   const order: string[] = [];
   function tabKeys(): string[] {
-    const live = [...opened, ...resources.map(resource => `resource:${resource.id}`)];
+    const live = [...opened.filter(view => view !== 'browser' || !resources.some(resource => resource.kind === 'browser')), ...resources.map(resource => `resource:${resource.id}`)];
     for (let index = order.length - 1; index >= 0; index -= 1) if (!live.includes(order[index])) order.splice(index, 1);
     for (const key of live) if (!order.includes(key)) order.push(key);
     return [...order];
@@ -208,12 +208,13 @@ export function createSidebarWorkbench(deps: {
         button.type = 'button';
         button.id = `${uid}-tab-${++tabSequence}`;
         button.setAttribute('role', 'tab');
-        button.setAttribute('aria-controls', `${uid}-panel-${key.startsWith('resource:') ? 'documents' : key}`);
+        const resource = resources.find(item => `resource:${item.id}` === key);
+        button.setAttribute('aria-controls', `${uid}-panel-${resource?.view ?? (key.startsWith('resource:') ? 'documents' : key)}`);
         if (key.startsWith('resource:')) button.dataset.resourceId = key.slice(9);
         else button.dataset.view = key;
         const label = document.createElement('span');
         label.className = 'ag-workbench-tab-label';
-        const icon = key === 'board' ? projectIcon('board') : createIcon(key === 'changes' ? 'changes' : key === 'agents' ? 'skillBot' : key === 'browser' ? 'browser' : 'document');
+        const icon = key === 'board' ? projectIcon('board') : createIcon(key === 'changes' ? 'changes' : key === 'agents' ? 'skillBot' : key === 'browser' || resource?.kind === 'browser' ? 'browser' : 'document');
         button.append(icon, label);
         const closeButton = document.createElement('button');
         closeButton.className = 'ag-workbench-tab-close';
@@ -388,7 +389,7 @@ export function createSidebarWorkbench(deps: {
   function openFromLauncher(view: WorkbenchView): void {
     const hadFocus = launcher.contains(document.activeElement);
     activateTab(view);
-    if (hadFocus) tabRows.get(view)?.button.focus({ preventScroll: true });
+    if (hadFocus) tabRows.get(activeKey() ?? view)?.button.focus({ preventScroll: true });
   }
   launcher.addEventListener('keydown', event => {
     if (event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -476,11 +477,17 @@ export function createSidebarWorkbench(deps: {
       const before = tabKeys();
       const index = before.indexOf(activeKey() ?? '');
       const hadFocus = visible && open && (element.contains(document.activeElement) || document.activeElement === document.body);
-      const closedActive = activeResource !== null && !activeId;
+      const previousKey = activeKey();
+      const closedActive = previousKey?.startsWith('resource:') && !next.some(resource => `resource:${resource.id}` === previousKey);
       resources = next;
       activeResource = activeId;
+      // 사이트가 열리면 브라우저 목록 탭 대신 각 사이트 탭을 사용한다.
+      if (resources.some(resource => resource.kind === 'browser')) {
+        const browserIndex = opened.indexOf('browser');
+        if (browserIndex >= 0) opened.splice(browserIndex, 1);
+      }
       // 직접 연 자료의 마지막 탭을 닫으면 탭 없는 자료 목록이 남는다. 옆 탭이나 작업 목록으로 옮긴다.
-      if (closedActive && selected === 'documents' && !opened.includes('documents')) {
+      if (closedActive && !activeId && (selected === 'documents' || selected === 'browser') && !opened.includes(selected)) {
         const after = tabKeys();
         if (after.length) activateTab(after[Math.min(Math.max(index, 0), after.length - 1)]);
         else showLauncher({ focus: hadFocus });

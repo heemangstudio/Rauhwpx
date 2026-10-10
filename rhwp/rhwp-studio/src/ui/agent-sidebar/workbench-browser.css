@@ -10,6 +10,8 @@
 .ag-browser button.ag-browser-icon { width: 28px; height: 28px; flex: 0 0 28px; padding: 0; border-color: transparent; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
 .ag-browser button.ag-browser-icon:hover,.ag-browser button.ag-browser-icon[aria-pressed=true] { color: var(--ag-text, var(--n-text, #20251f)); }
 .ag-browser-tabbar { display: flex; align-items: center; gap: 2px; flex-shrink: 0; min-width: 0; padding: 4px 7px 0; }
+.ag-browser[data-presentation=dock] .ag-browser-tabbar { display: none; }
+.ag-browser[data-presentation=dock] .ag-browser-status { flex: 0 0 5px; max-width: 5px; padding: 0; }
 .ag-browser-tabs { display: flex; flex: 1; gap: 3px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .ag-browser-tabs::-webkit-scrollbar { display: none; }
 .ag-browser-tab { display: flex; align-items: center; min-width: 85px; max-width: 200px; border-radius: 7px; }

@@ -1,10 +1,23 @@
 import './workbench-browser.css';
 import type { SidebarBridge } from '../../agent/bridge.ts';
-import type { BrowserDownload } from '../../agent/types.ts';
+import type { BrowserDownload, BrowserTab } from '../../agent/types.ts';
 import { createBrowserController } from './browser-controller.ts';
 import { createBrowserPresentation, nativeBrowserApi, type BrowserPresentationMode } from './browser-presentation.ts';
 import { saveBrowserCaptureDraft, type BrowserCaptureDestination, type BrowserCaptureDraft } from './browser-capture-store.ts';
 import { createIcon, type SidebarIconName } from './icons.ts';
+import type { WorkbenchResource } from './workbench.ts';
+
+/** 사이트 이름은 주소로 구분하고, 다른 사이트는 페이지 제목을 사용한다. */
+function browserTabTitle(tab: BrowserTab): string {
+  try {
+    const host = new URL(tab.url).hostname.replace(/^www\./, '');
+    const sites: ReadonlyArray<[string, string]> = [['google.com', 'Google'], ['x.com', 'X'], ['twitter.com', 'X'], ['youtube.com', 'YouTube'], ['github.com', 'GitHub'], ['naver.com', 'Naver']];
+    const site = sites.find(([domain]) => host === domain || host.endsWith(`.${domain}`));
+    if (site) return site[1];
+    const title = tab.title?.trim();
+    return title && !/^https?:\/\//i.test(title) && title !== 'about:blank' ? title : host || '새 탭';
+  } catch { return tab.title?.trim() || '새 탭'; }
+}
 
 export function createWorkbenchBrowser(options: {
   bridge: SidebarBridge;
@@ -13,6 +26,7 @@ export function createWorkbenchBrowser(options: {
   onOpenDownload(job: BrowserDownload): void;
   onDock(): void;
   onChat(): void;
+  onChange?(): void;
 }) {
   const controller = createBrowserController(options.bridge, { nativePresentation: Boolean(nativeBrowserApi()) });
   const element = document.createElement('section'); element.className = 'ag-browser';
@@ -61,8 +75,8 @@ export function createWorkbenchBrowser(options: {
   });
   const closeView = button('브라우저 보기 닫기', '', () => presentation.hide());
   for (const [node, name] of [[back, 'browserBack'], [forward, 'browserForward'], [reload, 'refresh'], [newTab, 'insert'], [control, 'browserHand'], [recover, 'refresh'], [annotate, 'browserCapture'], [downloadsButton, 'browserDownload'], [dockButton, 'browserDock'], [floatButton, 'browserFloat'], [popoutButton, 'external'], [closeView, 'close']] as const) icon(node, name);
-  const tabBar = document.createElement('div'); tabBar.className = 'ag-browser-tabbar'; tabBar.append(tabs, newTab, status);
-  toolbar.prepend(navigation); element.append(tabBar, toolbar);
+  const tabBar = document.createElement('div'); tabBar.className = 'ag-browser-tabbar'; tabBar.append(tabs);
+  toolbar.prepend(navigation); toolbar.append(newTab, status); element.append(tabBar, toolbar);
   const error = document.createElement('div'); error.className = 'ag-browser-error'; error.setAttribute('role', 'alert'); error.hidden = true;
   const errorMessage = document.createElement('span'); error.append(errorMessage);
   button('상태 다시 읽기', '다시 연결', () => { nativeFailedProjection = ''; nativeError = null; handle(controller.refresh().then(() => { layout(); return controller.readFrame(); })); }, error);
@@ -353,13 +367,13 @@ export function createWorkbenchBrowser(options: {
     fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
     status.textContent = !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'loading' ? '페이지 여는 중' : tab.controller.owner === 'human' ? '직접 조작 중' : '에이전트 조작 중';
     status.title = tab?.controller.owner === 'human' ? '직접 조작 중 · 에이전트는 페이지를 읽을 수 있습니다.' : status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
-    const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title]), tab?.tabId]);
+    const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title, row.url]), tab?.tabId]);
     if (tabsSignature !== nextTabsSignature) {
     const focusedTab = tabs.contains(document.activeElement) ? (document.activeElement as HTMLElement)?.dataset.tabId : null;
     tabsSignature = nextTabsSignature; tabs.replaceChildren();
     for (const row of controller.state.tabs) {
       const wrapper = document.createElement('div'); wrapper.className = 'ag-browser-tab';
-      const select = button(row.title || row.url || '새 탭', row.title || '새 탭', () => controller.select(row.tabId), wrapper);
+      const select = button(row.title || row.url || '새 탭', browserTabTitle(row), () => controller.select(row.tabId), wrapper);
       select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(row.tabId === tab?.tabId)); select.tabIndex = row.tabId === tab?.tabId ? 0 : -1;
       select.dataset.tabId = row.tabId; select.addEventListener('keydown', event => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -371,6 +385,7 @@ export function createWorkbenchBrowser(options: {
       tabs.append(wrapper);
     }
     if (focusedTab) tabs.querySelector<HTMLButtonElement>(`[data-tab-id="${CSS.escape(focusedTab)}"]`)?.focus();
+    options.onChange?.();
     }
     if (element.ownerDocument.activeElement !== address) address.value = tab?.url ?? '';
     for (const node of [control, annotate, reload, back, forward]) node.disabled = !tab || !connected || controller.state.busy;
@@ -417,6 +432,10 @@ export function createWorkbenchBrowser(options: {
   });
   paint();
   return { element, controller,
+    descriptors(): WorkbenchResource[] { return controller.state.tabs.map(tab => ({ id: `browser:${tab.tabId}`, title: browserTabTitle(tab), dirty: false, view: 'browser', kind: 'browser' })); },
+    activeTab(): string | null { return controller.tab() ? `browser:${controller.tab()!.tabId}` : null; },
+    selectTab(id: string) { controller.select(id.slice('browser:'.length)); },
+    closeTab(id: string) { handle(controller.close(id.slice('browser:'.length))); },
     mount(host: HTMLElement) { presentation.mount(host); },
     setVisible(next: boolean) {
       if (next) { if (presentation.current() !== 'float' && presentation.current() !== 'popout') presentation.present('dock'); handle(controller.refresh().then(() => controller.readFrame())); }

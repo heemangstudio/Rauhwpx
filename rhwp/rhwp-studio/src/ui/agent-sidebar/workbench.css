@@ -32,7 +32,7 @@
 .ag-workbench-tab-row { position: relative; display: flex; align-items: center; flex: 0 0 auto; min-width: 0; max-width: 180px; border-radius: 6px; color: var(--ag-text-secondary); transition: background 120ms ease, color 120ms ease; }
 .ag-workbench-tab-row:hover { color: var(--ag-text); background: var(--ag-hover); }
 .ag-workbench-tab-row.ag-selected { color: var(--ag-text); background: var(--ag-active); }
-.ag-workbench-tab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px 0 7px; border: 0; min-width: 0; color: inherit; background: transparent; font: 500 12px/1 var(--ag-font); cursor: pointer; }
+.ag-workbench-tab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px 0 7px; border: 0; min-width: 48px; color: inherit; background: transparent; font: 500 12px/1 var(--ag-font); cursor: pointer; }
 .ag-workbench-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ag-workbench-tab svg { flex: 0 0 auto; width: 13px; height: 13px; opacity: .8; }
 .ag-workbench-tab-row.ag-dirty .ag-workbench-tab::after { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
