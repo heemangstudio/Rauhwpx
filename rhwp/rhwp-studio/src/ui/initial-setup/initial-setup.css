@@ -77,13 +77,57 @@
   gap: 12px;
 }
 
-/* 26×20 칸 네 개(닫음·말함·벌림·깜빡임)를 3배로 키운다. */
-.rhwp-setup-hippo-sprite {
+/* 하마가 서는 자리. 반짝임은 여기 붙여 공중제비에 같이 돌지 않게 한다. */
+.rhwp-setup-hippo-stage {
+  position: relative;
   flex: none;
   width: 78px;
   height: 60px;
-  background: url('/images/boot/hama-sprites.png') 0 0 / 312px 60px no-repeat;
+  cursor: default;
+}
+
+/* 26×20 칸 여섯 개(닫음·말함·벌림·깜빡임·걸음·웅크림)를 3배로 키운다. 움직임은 hippo.ts 가
+   transform 을 3px·90° 단위로 바꿔 만든다. */
+.rhwp-setup-hippo-sprite {
+  display: block;
+  width: 78px;
+  height: 60px;
+  background: url('/images/boot/hama-sprites.png') 0 0 / 468px 60px no-repeat;
   image-rendering: pixelated;
+  transform-origin: 50% 60%;
+}
+
+/* 마지막 장면: 머리 위 반짝임 두 개가 번갈아 깜빡인다. */
+.rhwp-setup-hippo[data-excited='true'] .rhwp-setup-hippo-stage::before,
+.rhwp-setup-hippo[data-excited='true'] .rhwp-setup-hippo-stage::after {
+  content: '';
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  background: #62b3e2; /* token-ok */
+  box-shadow:
+    0 -3px 0 #62b3e2, 0 3px 0 #62b3e2, -3px 0 0 #62b3e2, 3px 0 0 #62b3e2; /* token-ok */
+  animation: rhwp-setup-twinkle 600ms steps(1, end) infinite;
+}
+
+.rhwp-setup-hippo[data-excited='true'] .rhwp-setup-hippo-stage::before {
+  left: 33px;
+  top: -18px;
+}
+
+.rhwp-setup-hippo[data-excited='true'] .rhwp-setup-hippo-stage::after {
+  left: 69px;
+  top: -6px;
+  animation-delay: -300ms;
+}
+
+@keyframes rhwp-setup-twinkle {
+  0% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.rhwp-setup-dialog[data-step='done'] .rhwp-setup-body {
+  display: none;
 }
 
 .rhwp-setup-say {
@@ -479,6 +523,10 @@
   gap: 16px;
 }
 
+.rhwp-setup-dots[hidden] {
+  display: none;
+}
+
 .rhwp-setup-dots {
   display: flex;
   gap: 6px;
@@ -534,7 +582,9 @@
   .rhwp-setup-panel,
   .rhwp-setup-check,
   .rhwp-setup-dot,
-  .rhwp-setup-font-icon {
+  .rhwp-setup-font-icon,
+  .rhwp-setup-hippo-stage::before,
+  .rhwp-setup-hippo-stage::after {
     animation: none;
     transition: none;
   }

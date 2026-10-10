@@ -132,6 +132,16 @@ EAR_FLICK = CLOSED[:5] + [
     ".............hhs..hkoh..........",
 ] + CLOSED[7:]
 
+# Setup-screen motion: the back and front legs swap, and a squat before take-off and on landing.
+STEP = CLOSED[:-3] + [
+    ".......oossooooosd..............",
+    ".......ooddssoooddd.............",
+    "......sssd....ssdd..............",
+]
+CROUCH = ["." * 32] + CLOSED[:-2] + [
+    ".....sssddd..sssddd.............",
+]
+
 TOOTH = (24, 7)  # sparkle anchor inside OPEN
 
 # ---------------------------------------------------------------- wordmark
@@ -375,12 +385,12 @@ def verify_icon_pose() -> None:
 
 
 # Order is the contract with rhwp-studio/src/ui/initial-setup/hippo.ts.
-SPRITE_POSES = ("closed", "talk", "open", "blink")
+SPRITE_POSES = ("closed", "talk", "open", "blink", "step", "crouch")
 SPRITE_COLS = (5, 31)  # columns any pose uses
 
 
 def write_sprites(dest: Path) -> tuple[int, int]:
-    poses = {"closed": CLOSED, "talk": HALF, "open": OPEN, "blink": BLINK}
+    poses = {"closed": CLOSED, "talk": HALF, "open": OPEN, "blink": BLINK, "step": STEP, "crouch": CROUCH}
     x0, x1 = SPRITE_COLS
     cell_w, cell_h = x1 - x0, len(OPEN)
     sheet = Image.new("RGBA", (cell_w * len(SPRITE_POSES), cell_h))

@@ -266,7 +266,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   /* 한컴오피스를 설치하고 돌아오면 묻지 않고 다시 찾아본다. */
   let lastFocusSearch = 0;
   function onWindowFocus(): void {
-    if (!overlay.isConnected || currentStep() !== 'fonts') return;
+    if (!overlay.isConnected || celebrating || currentStep() !== 'fonts') return;
     if (fontSearch === 'found' || fontSearch === 'searching') return;
     if (Date.now() - lastFocusSearch < 4000) return;
     lastFocusSearch = Date.now();
@@ -355,7 +355,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       return dot;
     }));
     const last = stepIndex >= steps.length - 1;
-    primary.textContent = last ? '시작' : '다음';
+    primary.textContent = last ? '완료' : '다음';
     if (spokenStep !== step && overlay.isConnected) {
       spokenStep = step;
       hippo.say(lineFor(step));
@@ -369,7 +369,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     (target ?? primary).focus({ preventScroll: true });
   }
 
-  function finish(): void {
+  /* 마지막 장면에 들어서는 순간 끝난 것으로 저장한다. 그 뒤로 닫는 방법은 상관없다. */
+  let saved = false;
+  function save(): void {
+    if (saved) return;
+    saved = true;
     applyFirstRunDefaultAgent(configuredAgents(), storage ?? null);
     record = completeInitialSetup({
       themeStep: themeStep === 'done' ? 'done' : 'skipped',
@@ -377,14 +381,35 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       fontStep: fontStepState === 'done' ? 'done' : 'skipped',
       calibrationStep: record.calibrationStep === 'done' ? 'done' : 'pending',
     }, storage);
+  }
+
+  function finish(): void {
+    save();
     close();
     deps.onFinished?.();
   }
 
+  /* 마지막 장면: 고를 것은 치우고, 하마가 신나서 완료를 알린다. */
+  let celebrating = false;
+  function showDone(): void {
+    save();
+    celebrating = true;
+    for (const panel of Object.values(panels)) panel.hidden = true;
+    dialog.dataset.step = 'done';
+    dots.hidden = true;
+    primary.textContent = '시작';
+    hippo.celebrate(HIPPO_LINES.done);
+    primary.focus({ preventScroll: true });
+  }
+
   async function next(): Promise<void> {
+    if (celebrating) {
+      finish();
+      return;
+    }
     if (currentStep() === 'models') await fontStepReady;
     if (stepIndex >= steps.length - 1) {
-      finish();
+      showDone();
       return;
     }
     stepIndex += 1;
@@ -409,6 +434,9 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     overlay.setAttribute('aria-hidden', 'false');
     stepIndex = 0;
     spokenStep = null;
+    saved = false;
+    celebrating = false;
+    dots.hidden = false;
     renderTheme();
     renderCards();
     renderFonts();
@@ -438,7 +466,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       const before = configuredAgents().length;
       setupStatuses = event.statuses;
       renderCards();
-      if (overlay.isConnected && currentStep() === 'models' && configuredAgents().length > before) {
+      if (overlay.isConnected && !celebrating && currentStep() === 'models' && configuredAgents().length > before) {
         hippo.cheer(HIPPO_LINES.modelConnected);
       }
     },

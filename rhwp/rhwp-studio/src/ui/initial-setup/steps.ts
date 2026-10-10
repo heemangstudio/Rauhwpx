@@ -37,6 +37,7 @@ export const HIPPO_LINES = {
   found: '한컴 글꼴을 찾았어요!',
   missing: '한컴 글꼴이 안 보여요. 한컴오피스를 설치하면 알아서 찾아요.',
   missingWithFolder: '한컴 글꼴이 안 보여요. 한컴오피스를 설치하거나 글꼴 폴더를 알려 주세요.',
+  done: '설정이 완료되었어요!',
 } as const;
 
 /**

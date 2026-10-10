@@ -167,7 +167,9 @@
       "closed",
       "talk",
       "open",
-      "blink"
+      "blink",
+      "step",
+      "crouch"
     ]
   }
 }

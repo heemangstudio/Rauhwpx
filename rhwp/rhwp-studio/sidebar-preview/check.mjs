@@ -666,6 +666,29 @@ try {
     await page.waitForFunction(() => document.querySelector('.ag-provider-quotas').textContent.includes('리셋 크레딧 없음'));
     assert.equal(await page.evaluate(() => localStorage.getItem('rhwp-codex-pending-reset')), null);
   });
+  await step('First-run setup walks theme, AI and fonts to the done frame', async () => {
+    await open('initial-setup=1&services=setup');
+    await page.waitForSelector('.rhwp-setup-overlay.rhwp-setup-open');
+    await page.click('.rhwp-setup-theme[data-mode="dark"]');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.themeEffective), 'dark');
+    await page.click('.rhwp-setup-theme[data-mode="light"]');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.themeEffective), 'light');
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (await page.$eval('.rhwp-setup-dialog', (dialog) => dialog.dataset.step === 'done')) break;
+      await page.click('.rhwp-setup-primary');
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    const done = await page.evaluate(() => ({
+      step: document.querySelector('.rhwp-setup-dialog').dataset.step,
+      line: document.querySelector('.rhwp-setup-say .visually-hidden').textContent,
+      pose: document.querySelector('.rhwp-setup-hippo').dataset.pose,
+      completed: JSON.parse(localStorage.getItem('rhwp-initial-setup') ?? '{}').completed,
+    }));
+    assert.deepEqual(done, { step: 'done', line: '설정이 완료되었어요!', pose: 'open', completed: true });
+    await (await page.$('.rhwp-setup-dialog')).screenshot({ path: resolve(artifacts, 'first-run-done.png') });
+    await page.click('.rhwp-setup-primary');
+    await page.waitForFunction(() => !document.querySelector('.rhwp-setup-overlay'));
+  });
   await step(
     'Unconfigured provider installation and local OAuth placeholder',
     async () => {
