@@ -29,7 +29,10 @@ import {
 const DB_NAME = 'rhwpStudioRecent';
 const DB_VER = 2;
 const STORE = 'recent';
-const MAX_RECENT = 8;
+/** 문서 홈이 보여 주는 열람 기록 상한. 파일 메뉴는 앞의 {@link RECENT_MENU_LIMIT}개만 보인다. */
+export const MAX_RECENT_DOCS = 100;
+export const RECENT_MENU_LIMIT = 8;
+const MAX_RECENT = MAX_RECENT_DOCS;
 const SAME_ENTRY_TIMEOUT_MS = 200;
 
 export interface RecentDoc {
@@ -256,6 +259,38 @@ export async function listRecentDocs(): Promise<RecentDoc[]> {
   return withDb(
     async (db) => sortAndTrim(await getAllRows(db)).map(withLiveHandle),
     async () => sortAndTrim([...memory.values()]).map(withLiveHandle),
+  );
+}
+
+/**
+ * 기록의 표시 메타를 고친다. 파일이 다른 이름으로 옮겨졌거나 이름을 바꿨을 때 쓴다.
+ * 열람 시각과 순서는 그대로 둔다. 없는 기록이면 null.
+ */
+export async function updateRecentDoc(
+  id: string,
+  patch: { fileName?: string },
+): Promise<RecentDoc | null> {
+  const apply = (row: RecentDoc): RecentDoc => ({
+    ...row,
+    ...(patch.fileName ? { fileName: patch.fileName } : {}),
+  });
+  return withDb(
+    async (db) => {
+      const row = await requestResult(
+        db.transaction(STORE, 'readonly').objectStore(STORE).get(id) as IDBRequest<RecentDoc | undefined>,
+      );
+      if (!row) return null;
+      const next = apply(row);
+      await putRow(db, persistableRow(next));
+      return withLiveHandle(next);
+    },
+    async () => {
+      const row = memory.get(id);
+      if (!row) return null;
+      const next = apply(row);
+      memory.set(id, next);
+      return withLiveHandle(next);
+    },
   );
 }
 

@@ -6,7 +6,9 @@ import {
   addRecentDoc,
   clearRecentDocs,
   listRecentDocs,
+  MAX_RECENT_DOCS,
   removeRecentDoc,
+  updateRecentDoc,
 } from '../src/recent/recent-store.ts';
 import type { FileSystemFileHandleLike } from '../src/command/file-system-access.ts';
 
@@ -15,7 +17,7 @@ import type { FileSystemFileHandleLike } from '../src/command/file-system-access
  * - 핸들 있으면 라이브 재열기용 저장, 없으면 메타-only 기록 (바이트 미보관)
  * - 동일 파일 판정은 isSameEntry 권위 (같은 파일명·다른 파일 공존)
  * - 핸들 비교가 불가능할 때만 sourceDigest로 논리 documentId 복원 (파일명 미사용)
- * - 최대 8개 상한, 목록 지우기
+ * - 상한(MAX_RECENT_DOCS), 목록 지우기
  * node 환경(IndexedDB 없음)이라 메모리 폴백 경로를 검증한다 — 스토어 로직은
  * withDb 양쪽 분기에 동일 규칙으로 구현되어 있다.
  */
@@ -199,15 +201,15 @@ test('handle-backed Save/Save As만 active document identity를 recent-store에 
   assert.match(main, /rememberNativeDocument\(\s*ownership\.identity\.documentId,\s*fileHandle/);
 });
 
-test('최대 8개 상한 — 가장 오래된 항목부터 밀려난다', async () => {
+test('상한을 넘으면 가장 오래된 항목부터 밀려난다', async () => {
   await clearRecentDocs();
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < MAX_RECENT_DOCS + 2; i++) {
     await addRecentDoc({ sourceDigest: `blake3:f${i}`, fileName: `f${i}.hwp`, sourceFormat: 'hwp', handle: makeHandle(`f${i}`) });
     await new Promise((r) => setTimeout(r, 2));
   }
   const docs = await listRecentDocs();
-  assert.equal(docs.length, 8);
-  assert.equal(docs[0].fileName, 'f9.hwp', '최신이 맨 앞');
+  assert.equal(docs.length, MAX_RECENT_DOCS);
+  assert.equal(docs[0].fileName, `f${MAX_RECENT_DOCS + 1}.hwp`, '최신이 맨 앞');
   const names = docs.map((d) => d.fileName);
   assert.ok(!names.includes('f0.hwp') && !names.includes('f1.hwp'), '가장 오래된 2개 제거');
 });
@@ -268,4 +270,17 @@ test('최근 문서 저장소는 IndexedDB 무응답에 타임아웃한다', () 
   assert.match(store, /SAME_ENTRY_TIMEOUT_MS/);
   assert.match(store, /identityKind === 'native-path'/);
   assert.match(store, /liveHandles/);
+});
+
+test('옮겨진 파일의 새 이름은 열람 순서를 바꾸지 않고 기록에 남는다', async () => {
+  await clearRecentDocs();
+  const moved = await addRecentDoc({ sourceDigest: 'blake3:m', fileName: '옛 이름.hwp', sourceFormat: 'hwp' });
+  await new Promise((r) => setTimeout(r, 2));
+  await addRecentDoc({ sourceDigest: 'blake3:n', fileName: '최신.hwp', sourceFormat: 'hwp' });
+  const updated = await updateRecentDoc(moved.id, { fileName: '새 이름.hwp' });
+  assert.equal(updated?.fileName, '새 이름.hwp');
+  assert.equal(updated?.documentId, moved.documentId);
+  const docs = await listRecentDocs();
+  assert.deepEqual(docs.map((doc) => doc.fileName), ['최신.hwp', '새 이름.hwp']);
+  assert.equal(await updateRecentDoc('없는-기록', { fileName: 'x.hwp' }), null);
 });
