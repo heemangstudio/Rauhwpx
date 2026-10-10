@@ -37,7 +37,7 @@ async function connect(url) {
   };
 }
 
-test('a chat binds its document project, and project tools, HTTP and prompt context share it', { timeout: 90_000 }, async (t) => {
+async function exerciseResearchProjectChat(t, workflow) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-hub-research-'));
   const piRoot = path.join(root, 'pi');
   const release = path.join(root, 'release-turn');
@@ -118,7 +118,7 @@ test('a chat binds its document project, and project tools, HTTP and prompt cont
 
   const studio = await connect(`ws://127.0.0.1:${ready.port}/studio?token=${capabilities.studio}&sessionId=${sessionId}&instance=research`);
   t.after(() => studio.socket.close());
-  studio.send({ type: 'chat-start', requestId: 'start-1', agent: 'pi', model: 'test/plain', workflow: 'direct',
+  studio.send({ type: 'chat-start', requestId: 'start-1', agent: 'pi', model: 'test/plain', workflow,
     threadId: THREAD, documentId: DOCUMENT, documentName: '사업 계획.hwpx' });
   const started = await studio.next((frame) => frame.requestId === 'start-1');
   assert.equal(started.type, 'chat-started', JSON.stringify(started));
@@ -140,12 +140,12 @@ test('a chat binds its document project, and project tools, HTTP and prompt cont
 
   studio.send({ type: 'chat-user-message', text: 'HOLD', threadId: THREAD, documentId: DOCUMENT });
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'text-delta');
-  const mcp = await connect(`ws://127.0.0.1:${ready.port}/mcp?token=${token}&sessionId=${sessionId}&agent=pi&role=chat`);
+  let mcp = await connect(`ws://127.0.0.1:${ready.port}/mcp?token=${token}&sessionId=${sessionId}&agent=pi&role=chat`);
   t.after(() => mcp.socket.close());
   let callId = 0;
   const call = async (tool, args) => {
     const id = ++callId;
-    mcp.send({ type: 'tool-call', id, tool, args, workflow: 'direct', capabilityEpoch: started.capabilityEpoch });
+    mcp.send({ type: 'tool-call', id, tool, args, workflow, capabilityEpoch: started.capabilityEpoch });
     return mcp.next((frame) => frame.type === 'tool-result' && frame.id === id);
   };
 
@@ -164,6 +164,15 @@ test('a chat binds its document project, and project tools, HTTP and prompt cont
   assert.match(chunk.result.text, /3억 원/);
   const imported = await call('project_import', { text: '인건비 세부 내역', name: '인건비.md' });
   assert.equal(imported.ok, true, JSON.stringify(imported));
+  assert.match((await call('read_reference_chunk', { itemId: imported.result.item.id, chunkId: 'c0' })).result.text, /인건비 세부 내역/);
+  if (workflow === 'question') {
+    const documentWrite = await call('insert_text', { anchor: { text: '본문' }, text: '바꾸면 안 된다.', expectedRevision: 0 });
+    assert.equal(documentWrite.ok, false, JSON.stringify(documentWrite));
+    assert.equal(documentWrite.error.code, 'QUESTION_WRITE_BLOCKED');
+    // 다운로드 권한은 열리지만 주소 검사는 유지된다. 외부 네트워크 없이 실제 처리 경로를 확인한다.
+    const download = await call('download_file', { url: 'http://127.0.0.1/private.txt' });
+    assert.equal(download.error.code, 'DOWNLOAD_ADDRESS_BLOCKED', JSON.stringify(download));
+  }
   assert.equal((await call('find_home_files', { query: '예산' })).error.code, 'HOME_SEARCH_DISABLED');
   writeFileSync(release, '');
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
@@ -178,10 +187,32 @@ test('a chat binds its document project, and project tools, HTTP and prompt cont
   assert.equal(payload.project.counts.files, 2);
   assert.equal(payload.mentioned[0].id, noteId);
   assert.ok(payload.excerpts.some((excerpt) => excerpt.itemId === item.id));
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
 
   const current = await (await http('/projects/current')).json();
   assert.equal(current.project.id, projectId);
   assert.equal(current.project.links.find((link) => link.origin === 'note').to, item.id);
   const activity = await (await http(`/projects/${projectId}/activity?limit=10`)).json();
   assert.ok(activity.entries.some((entry) => entry.actor.kind === 'agent'));
-});
+  if (workflow === 'question') {
+    const disabled = await http('/project-settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { librarian: { enabled: false }, agent: { chatMayEdit: false } } }),
+    });
+    assert.equal(disabled.status, 200);
+    studio.send({ type: 'chat-user-message', text: 'HOLD', threadId: THREAD, documentId: DOCUMENT });
+    await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'text-delta' && frame.event.text === 'HOLD_READY');
+    mcp.socket.close();
+    mcp = await connect(`ws://127.0.0.1:${ready.port}/mcp?token=${token}&sessionId=${sessionId}&agent=pi&role=chat`);
+    assert.equal((await call('project_import', { text: '거절해야 하는 자료', name: '거절.md' })).error.code, 'PROJECT_CHAT_EDIT_DISABLED');
+    assert.equal((await call('project_edit', { ops: [{ op: 'note', name: '거절', body: '저장하면 안 된다.' }] })).error.code, 'PROJECT_CHAT_EDIT_DISABLED');
+    assert.equal((await call('project_read', { view: 'summary' })).result.counts.files, 2);
+    writeFileSync(release, '');
+    await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  }
+}
+
+for (const workflow of ['direct', 'question']) {
+  test(`${workflow} chat binds its document project, and project tools, HTTP and prompt context share it`,
+    { timeout: 90_000 }, (t) => exerciseResearchProjectChat(t, workflow));
+}

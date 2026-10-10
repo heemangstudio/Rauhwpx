@@ -432,6 +432,17 @@ test('question workflow stays read-only without Claude native Plan mode', () => 
   const codex = buildCodexArgv(opts, null);
   assert.ok(codex.includes('sandbox_mode="read-only"'));
   assert.ok(codex.includes('web_search="live"'));
+  // 최초 실행·resume·app-server 가 모두 같은 자료 저장 권한을 전달해야 한다.
+  for (const argv of [codex, buildCodexArgv(opts, 'thread-research'), buildCodexAppServerArgv(opts)]) {
+    assert.ok(argv.includes('approval_policy="never"'));
+    assert.ok(argv.includes('sandbox_mode="read-only"'));
+    assert.ok(argv.includes('mcp_servers.rhwp.default_tools_approval_mode="auto"'));
+    const overrides = argv.filter((value) => /^mcp_servers\.rhwp\.tools\..*\.approval_mode=/.test(value));
+    assert.deepEqual(overrides, [
+      'mcp_servers.rhwp.tools.project_import.approval_mode="approve"',
+      'mcp_servers.rhwp.tools.download_file.approval_mode="approve"',
+    ]);
+  }
 });
 
 test('Claude SDK projects plan and build intent independently from access', () => {

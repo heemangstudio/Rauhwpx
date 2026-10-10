@@ -58,6 +58,9 @@ function capabilityConfig(opts) {
     '-c', `mcp_servers.rhwp.env={${mcpEnv}}`,
     '-c', 'mcp_servers.rhwp.startup_timeout_sec=20',
     '-c', 'mcp_servers.rhwp.default_tools_approval_mode="auto"',
+    // 자료 저장은 허브가 모드·설정·세션 경계를 검사하므로 승인 UI 없이 실행한다.
+    '-c', 'mcp_servers.rhwp.tools.project_import.approval_mode="approve"',
+    '-c', 'mcp_servers.rhwp.tools.download_file.approval_mode="approve"',
     '-c', 'approval_policy="never"',
     '-c', `sandbox_mode="${sandboxMode(opts)}"`,
     // app-server has no `--ignore-rules` flag. A zero project-doc budget is

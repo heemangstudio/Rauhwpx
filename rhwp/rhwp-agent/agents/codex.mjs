@@ -134,10 +134,12 @@ export function buildCodexArgv(opts, threadId) {
     '-c', `mcp_servers.rhwp.args=${JSON.stringify(runtime.args)}`,
     '-c', `mcp_servers.rhwp.env={${mcpEnv}}`,
     '-c', 'mcp_servers.rhwp.startup_timeout_sec=20',
-    // 헤드리스 MCP 호출은 승인 프롬프트를 표시할 수 없다. rhwp 도구를 자동 승인하며,
-    // Studio는 성공한 문서 편집을 자동 커밋하고 undo 이력을 보존한다. 최초 실행과
-    // resume 하위 명령이 모두 이해하는 설정 키만 사용한다.
+    // auto 는 주석에 따라 연구 자료 저장에도 승인을 요구할 수 있다. 헤드리스 실행에서
+    // 앱이 관리하는 자료 저장만 미리 승인한다. 모드·설정·세션 경계는 허브가 검사한다.
+    // 최초 실행과 resume 하위 명령이 모두 이해하는 설정 키만 사용한다.
     '-c', 'mcp_servers.rhwp.default_tools_approval_mode="auto"',
+    '-c', 'mcp_servers.rhwp.tools.project_import.approval_mode="approve"',
+    '-c', 'mcp_servers.rhwp.tools.download_file.approval_mode="approve"',
     '-c', 'approval_policy="never"',
     '-c', `sandbox_mode="${planningRestricted || opts.toolProfile === 'copy-layout-worker' ? 'read-only' : (unrestricted ? 'danger-full-access' : 'workspace-write')}"`,
     ...(opts.workflow === 'plan' || opts.workflow === 'question' ? ['-c', 'web_search="live"'] : []),
