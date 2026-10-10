@@ -31,6 +31,8 @@ export interface TurnWorkTool {
 export interface TurnWorkTask {
   taskKind: 'agent' | 'workflow';
   status: string;
+  /** 이 서브에이전트가 부른 도구의 callId — 실패한 서브에이전트의 실패한 도구는 그 실패 하나로 센다. */
+  toolCallIds?: readonly string[];
 }
 
 export interface TurnWork {
@@ -348,7 +350,8 @@ function classifyCall(name: string, a: Args, unique: string, expandBatch = true)
 /**
  * 한 턴의 작업을 문서 쪽 말로 요약한다.
  * 성공한 호출만 분류에 들어가고, 실패한 호출(되돌린 묶음 편집은 한 번)과 실패한
- * 서브에이전트는 오류로만 센다. 멈춘 호출과 도는 호출은 어디에도 세지 않는다.
+ * 서브에이전트는 오류로만 센다. 실패한 서브에이전트 안에서 실패한 도구는 그 서브에이전트의
+ * 실패 하나에 든다. 멈춘 호출과 도는 호출은 어디에도 세지 않는다.
  */
 export function summarizeTurnWork(work: TurnWork): TurnWorkSummary {
   const tally = new Map<CategoryId, Set<string>>();
@@ -359,13 +362,16 @@ export function summarizeTurnWork(work: TurnWork): TurnWorkSummary {
   };
   let errors = 0;
   const seen = new Set<string>();
+  const insideFailedTask = new Set(work.tasks
+    .filter((task) => task.status === 'failed')
+    .flatMap((task) => task.toolCallIds ?? []));
   work.tools.forEach((tool, position) => {
     if (tool.callId) {
       if (seen.has(tool.callId)) return;
       seen.add(tool.callId);
     }
     if (tool.status === 'failed') {
-      errors += 1;
+      if (!tool.callId || !insideFailedTask.has(tool.callId)) errors += 1;
       return;
     }
     if (tool.status !== 'completed') return;
@@ -470,7 +476,11 @@ function collectWork(messages: readonly ThreadMessage[]): TurnWork {
       for (const tool of message.tools) work.tools.push(tool);
     } else if (message.kind === 'tasks') {
       for (const task of message.tasks) {
-        work.tasks.push({ taskKind: task.taskKind, status: task.status });
+        work.tasks.push({
+          taskKind: task.taskKind,
+          status: task.status,
+          toolCallIds: task.tools.map((tool) => tool.callId).filter(Boolean),
+        });
         for (const tool of task.tools) work.tools.push(tool);
       }
     }

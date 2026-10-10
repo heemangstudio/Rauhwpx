@@ -280,6 +280,31 @@ test('접힘 계획: 중단된 턴은 작업이 없어도 펼칠 것 없는 한 
   ]);
 });
 
+test('실패한 서브에이전트와 그 안에서 실패한 도구는 오류 하나로 센다', () => {
+  const task = (id: string, status: 'completed' | 'failed', tools: ThreadToolRecord[]) => ({
+    taskId: id, taskKind: 'agent' as const, title: id, role: '', workflowName: '', status,
+    activity: '', summary: '', totalTokens: null, toolUses: null, durationMs: null, tools,
+  });
+  const tasksMessage = (tasks: ReturnType<typeof task>[]): ThreadMessage => ({
+    role: 'assistant', kind: 'tasks', taskGroupId: 'tasks-1', text: '서브에이전트와 워크플로', status: 'failed', tasks,
+  });
+  const turn = marker('turn-1', 0, 10_000, 'completed');
+  const errorsOf = (tasks: ReturnType<typeof task>[]) =>
+    summarizeTurnWork(turnWorkFor([user('검토'), turn, tasksMessage(tasks)], turn)).errors;
+
+  assert.equal(errorsOf([task('t1', 'failed', [record('get_text_range', { paraIdx: 0 }, 'failed')])]), 1);
+  assert.equal(errorsOf([task('t1', 'failed', [
+    record('get_text_range', { paraIdx: 0 }, 'failed'),
+    record('find_text', { query: '일정' }, 'failed'),
+  ])]), 1);
+  // 실패한 도구를 딛고 끝까지 마친 서브에이전트의 실패한 호출은 따로 센다.
+  assert.equal(errorsOf([
+    task('t1', 'failed', [record('get_text_range', { paraIdx: 0 }, 'failed')]),
+    task('t2', 'completed', [record('get_text_range', { paraIdx: 1 }, 'failed')]),
+    task('t3', 'failed', []),
+  ]), 3);
+});
+
 test('정착 때 남기는 제목은 기록에서 같은 규칙으로 만든다', () => {
   const turn = marker('turn-1', 0, null, null);
   const messages: ThreadMessage[] = [
