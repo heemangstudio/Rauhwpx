@@ -6771,7 +6771,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     persistCurrentThread();
   }
 
-  /** 브리지의 살아 있는 질문을 지금 채팅에 띄운다. 저장된 초안(단계·선택·직접 입력)이 같은 질문이면 잇는다. */
+  /**
+   * 브리지의 살아 있는 질문을 지금 채팅에 띄운다. 저장된 초안(단계·선택·직접 입력)이 같은 질문이면
+   * 잇는다. 도착한 질문과 같은 길(requestQuestion)로 띄우므로, 사용자가 쓰는 중이면 이어 붙인 질문도
+   * 띠로 미뤄 초점과 입력기를 빼앗지 않고 쓰기를 멈추면 열린다.
+   */
   function presentLiveQuestion(interaction: UserQuestionInteraction): void {
     const stored = currentThread.pendingUserQuestion
       && pendingUserQuestionMatchesInteraction(currentThread.pendingUserQuestion, interaction)
@@ -6779,7 +6783,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       : undefined;
     currentThread.pendingUserQuestion = stored ?? createPendingUserQuestionDraftSnapshot(interaction);
     questionController.setVisible(true);
-    questionController.request(interaction, stored);
+    requestQuestion(interaction, stored);
     mountQuestionTimelineAnchor();
     persistCurrentThread();
   }

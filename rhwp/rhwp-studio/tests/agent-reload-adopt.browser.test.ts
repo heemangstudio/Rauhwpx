@@ -129,7 +129,8 @@ async function settled(page: Page, threadId: string | null): Promise<void> {
   await page.waitForFunction(async (id) => {
     const { harness } = window as any;
     await harness.threads.waitForThreadsPersistence();
-    return harness.sidebar.currentThreadId() === id;
+    return harness.sidebar.currentThreadId() === id
+      && document.querySelector<HTMLElement>('#agent-sidebar')?.dataset.composerReady === 'true';
   }, { timeout: 10_000 }, threadId);
   await page.evaluate(() => new Promise((done) => setTimeout(done, 150)));
 }
@@ -242,6 +243,34 @@ test('reload re-adopts the live chat in both arrival orders without restarting i
     });
     await settled(page, LIVE);
     assert.deepEqual(await counts(page), { starts: 0, stops: 0, interrupts: 0 }, 'an early document does not start a chat over the live one');
+
+    // (j) 사용자가 문서에 쓰는 중에 이어 붙인 질문은 띠로 미뤄 초점과 글을 빼앗지 않고, 쓰기를 멈추면 열린다.
+    await seedAndReload(page, origin, true);
+    await page.evaluate(() => {
+      const field = document.createElement('textarea');
+      field.className = 'harness-document-input';
+      document.body.prepend(field);
+    });
+    await mount(page, { live: LIVE, question: true, order: 'manual', document: DOC_A });
+    await page.evaluate(() => (window as any).harness.threads.waitForThreadsPersistence());
+    await page.focus('.harness-document-input');
+    await page.keyboard.type('문서에 쓰는 중', { delay: 40 });
+    await page.evaluate(() => (window as any).harness.mock.deliverWelcome());
+    await page.keyboard.type(' 계속', { delay: 40 });
+    await settled(page, LIVE);
+    assert.deepEqual(await page.evaluate(() => ({
+      held: document.querySelector('.ag-user-question')?.getAttribute('data-held'),
+      focused: document.activeElement?.className,
+      typed: document.querySelector<HTMLTextAreaElement>('.harness-document-input')!.value,
+    })), { held: 'true', focused: 'harness-document-input', typed: '문서에 쓰는 중 계속' },
+    'a question adopted while the user types waits as a strip');
+    await page.waitForFunction(() => document.querySelector('.ag-user-question[data-inactive="false"]:not([data-held]) .ag-question-step')?.textContent === '2/2',
+      { timeout: 5_000 });
+    assert.deepEqual(await page.evaluate(() => ({
+      composer: document.querySelector<HTMLTextAreaElement>('.ag-input')!.value,
+      focused: document.activeElement?.className,
+    })), { composer: OTHER_TEXT, focused: 'harness-document-input' });
+    assert.deepEqual(await counts(page), { starts: 0, stops: 0, interrupts: 0 });
 
     assert.deepEqual(errors, []);
   } finally {
