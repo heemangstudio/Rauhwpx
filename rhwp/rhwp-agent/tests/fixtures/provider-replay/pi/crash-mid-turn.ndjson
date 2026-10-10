@@ -1,0 +1,12 @@
+{"kind":"meta","v":1,"agent":"pi","transport":"json","stdin":"text","provenance":"synthetic","cli":"1.1.0","basis":"pi 1.1.0 --mode json: session header (core/session-manager.js), JsonAgentSessionEvent (dist/modes/json-event.d.ts, core/agent-session.d.ts:47-90); the CLI dies mid-turn without agent_settled: stderr then a non-zero exit (pi.mjs:608-614, formatPiExitError 283-297). The Bearer marker in stderr is planted for redaction tests.","note":"Synthetic: hand-written, not recorded. Replace with a trimmed recording (RHWP_PROVIDER_TRANSCRIPT_DIR) when one exists."}
+{"kind":"spawn"}
+{"kind":"expect","end":true}
+{"kind":"out","json":{"type":"session","version":3,"id":"replay-pi-session-crash","timestamp":"2026-10-01T00:00:00.000Z","cwd":"/replay/work"}}
+{"kind":"out","json":{"type":"agent_start"}}
+{"kind":"out","json":{"type":"turn_start"}}
+{"kind":"out","json":{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"[prompt]"}],"timestamp":1790000000000}}}
+{"kind":"out","json":{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"[prompt]"}],"timestamp":1790000000000}}}
+{"kind":"out","json":{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"openrouter","model":"mock-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790000000100}}}
+{"kind":"out","json":{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"작업을 시작"}}}
+{"kind":"err","text":"Error: fetch failed while streaming the response\n    at OpenRouterClient.stream (file:///replay/pi/dist/providers/openrouter.js:1:1)\nrequest headers: Authorization: Bearer REPLAYSECRETpi0123456789abcdef0123456789\n"}
+{"kind":"exit","code":1}

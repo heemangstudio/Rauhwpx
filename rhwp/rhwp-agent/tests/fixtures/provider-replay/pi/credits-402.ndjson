@@ -1,0 +1,14 @@
+{"kind":"meta","v":1,"agent":"pi","transport":"json","stdin":"text","provenance":"synthetic","cli":"1.1.0","basis":"pi 1.1.0 --mode json: session header (core/session-manager.js), JsonAgentSessionEvent (dist/modes/json-event.d.ts, core/agent-session.d.ts:47-90); OpenRouter 402 surfaces as message_end stopReason error with errorMessage and exit code 0 (pi.mjs:407-412, credit text pi.mjs:50). The key-shaped marker in errorMessage is planted for redaction tests.","note":"Synthetic: hand-written, not recorded. Replace with a trimmed recording (RHWP_PROVIDER_TRANSCRIPT_DIR) when one exists."}
+{"kind":"spawn"}
+{"kind":"expect","end":true}
+{"kind":"out","json":{"type":"session","version":3,"id":"replay-pi-session-402","timestamp":"2026-10-01T00:00:00.000Z","cwd":"/replay/work"}}
+{"kind":"out","json":{"type":"agent_start"}}
+{"kind":"out","json":{"type":"turn_start"}}
+{"kind":"out","json":{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"[prompt]"}],"timestamp":1790000000000}}}
+{"kind":"out","json":{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"[prompt]"}],"timestamp":1790000000000}}}
+{"kind":"out","json":{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"openrouter","model":"mock-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790000000100}}}
+{"kind":"out","json":{"type":"message_end","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"openrouter","model":"mock-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1790000000200,"errorMessage":"402 This request requires more credits, or fewer max_tokens. You requested up to 32000 tokens, but can only afford 1312. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account (key sk-or-v1-REPLAYSECRET0123456789abcdef0123456789abcdef)"}}}
+{"kind":"out","json":{"type":"turn_end","toolResults":[]}}
+{"kind":"out","json":{"type":"agent_end","messages":[],"willRetry":false}}
+{"kind":"out","json":{"type":"agent_settled","aborted":false}}
+{"kind":"exit","code":0}
