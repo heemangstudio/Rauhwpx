@@ -3,7 +3,7 @@ import path from 'node:path';
 import { isIP } from 'node:net';
 import { promises as fs } from 'node:fs';
 import { createBrowserNetworkGuard } from './owned-browser-network.mjs';
-import { OwnedBrowserError, inspectOwnedBrowserRuntime, installOwnedBrowserRuntime, startOwnedBrowserRuntime, startOwnedBrowserSignIn } from './owned-browser-runtime.mjs';
+import { OwnedBrowserError, inspectOwnedBrowserRuntime, inspectMacPasskeyCapability, installOwnedBrowserRuntime, startOwnedBrowserRuntime, startOwnedBrowserSignIn } from './owned-browser-runtime.mjs';
 import { removeOwnedBrowserState } from './browser-cleanup.mjs';
 
 export { OwnedBrowserError } from './owned-browser-runtime.mjs';
@@ -92,6 +92,8 @@ export function createOwnedBrowserService(options = {}) {
   let handoffPending = false;
   let handoffPromise;
   let handoffProfile = false;
+  let handoffPreviousMode;
+  let passkeys;
   const sessionKey = crypto.randomBytes(32);
   let sessionBaseline = new Map();
   let cookieBaseline = new Map();
@@ -106,7 +108,7 @@ export function createOwnedBrowserService(options = {}) {
   const limits = { maxTabs: options.maxTabs ?? 12, maxTabsPerAgent: options.maxTabsPerAgent ?? 3, maxSnapshotElements: options.maxSnapshotElements ?? 400, maxDownloadBytes: options.maxDownloadBytes ?? 100 * 1024 * 1024, maxFrameBytes: options.maxFrameBytes ?? 5 * 1024 * 1024 };
 
   const emit = (type, payload) => { try { onEvent({ type, ...payload }); } catch {} };
-  const runtimeInfo = () => ({ runtimeId, generation, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
+  const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
   const descriptor = (tab) => ({ tabId: tab.tabId, threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: publicURL(tab.page?.url?.() ?? tab.url), title: tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null });
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   const publish = (tab) => emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo() });
@@ -408,8 +410,9 @@ export function createOwnedBrowserService(options = {}) {
           const retained = tabs.get(logicalId) ?? [...tabs.values()].find((tab) => tab.nativeTargetId === targetId);
           if (retained) { retained.controller = { owner: 'agent' }; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); retained.restorePending = false; publish(retained); }
         }
+        const observedRuntime = runtime;
         runtime.browser?.on('disconnected', () => {
-          if (closed) return;
+          if (closed || runtime !== observedRuntime) return;
           state = 'disconnected';
           for (const tab of tabs.values()) { tab.status = 'disconnected'; tab.controllerEpoch++; invalidate(tab); tab.page = null; publish(tab); }
           credentialBroker?.invalidateRuntime?.(generation);
@@ -435,6 +438,34 @@ export function createOwnedBrowserService(options = {}) {
     return starting;
   };
   const makeTab = (actor) => ({ tabId: id('tab'), threadId: actor.threadId ?? null, projectId: actor.projectId ?? null, documentId: actor.documentId ?? null, agentId: actor.agentId ?? 'human', ownerId: actor.ownerId, sessionId: actor.sessionId, taskId: actor.taskId, url: 'about:blank', title: '', status: 'ready', page: null, navigationEpoch: 0, controllerEpoch: 1, controller: { owner: 'agent' }, queue: Promise.resolve(), heldKeys: new Set(), heldButtons: new Set(), snapshot: null, frame: null });
+  const returnFromSignIn = async (account, storage) => {
+    const origins = new Set(account.origins);
+    const hosts = account.origins.map((origin) => new URL(origin).hostname);
+    const matchesApprovedHost = (cookie) => {
+      const domain = cookie.domain.replace(/^\./, '').toLowerCase();
+      return hosts.some((host) => host === domain || cookie.domain.startsWith('.') && host.endsWith(`.${domain}`));
+    };
+    const approved = { cookies: storage.cookies.filter(matchesApprovedHost), origins: storage.origins.filter((entry) => origins.has(entry.origin)) };
+    clearInterval(checkpointTimer);
+    await runtime.close(); runtime = null; state = 'idle'; runtimeMode = 'native';
+    await credentialBroker.saveCheckpoint?.({ profileId: 'native', state: approved });
+    await ensureRuntime();
+    // 유지된 네이티브 게스트는 자동 체크포인트 복원을 건너뛰므로 승인된 세션을 직접 병합한다.
+    const retained = await runtime.context.storageState({ indexedDB: true });
+    const merged = { cookies: [...retained.cookies.filter((entry) => !matchesApprovedHost(entry)), ...approved.cookies],
+      origins: [...retained.origins.filter((entry) => !origins.has(entry.origin)), ...approved.origins] };
+    await runtime.context.setStorageState(merged);
+    sessionBaseline = sessionFingerprint(merged); cookieBaseline = new Map(merged.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
+    for (const tab of tabs.values()) {
+      if (!tab.page || tab.page.isClosed()) { tab.restorePending = true; continue; }
+      if (origins.has(new URL(tab.page.url()).origin)) {
+        await tab.page.reload({ waitUntil: 'domcontentloaded' }); tab.status = 'ready';
+      }
+      publish(tab);
+    }
+    await persist(); await saveCheckpoint();
+    emit('owned_browser_runtime', { runtime: runtimeInfo() });
+  };
   const requirePage = (tab) => { if (!tab.page || tab.page.isClosed()) throw error('BROWSER_RECONNECT_REQUIRED', 'The browser page disconnected. Recover it before sending input.', true); return tab.page; };
   const saveCheckpoint = () => {
     if (resetting || resetFailed) return Promise.resolve();
@@ -459,24 +490,27 @@ export function createOwnedBrowserService(options = {}) {
     else { resetting = false; resetFailed = true; state = 'failed'; emit('owned_browser_runtime', { runtime: runtimeInfo() }); }
   });
   credentialBroker?.setSessionClearer?.(async ({ profileId: targetProfile, origins }) => {
-    if (targetProfile !== profileId()) throw error('BROWSER_PROFILE_NOT_ACTIVE', 'Select this account profile before signing it out.');
+    if (!['default', 'native'].includes(targetProfile)) throw error('BROWSER_PROFILE_NOT_ACTIVE', 'This browser account profile is unavailable.');
     await ensureRuntime();
+    const clearing = targetProfile === profileId() ? runtime : await runtimeFactory({ dataDir, guard, nativeAdapter: targetProfile === 'native' ? nativeAdapter : undefined, headless: true, autoInstall: false });
+    try {
     const hosts = origins.map((origin) => new URL(origin).hostname);
-    const cookies = await runtime.context.cookies();
+    const cookies = await clearing.context.cookies();
     const domains = [...new Set(cookies.map((cookie) => cookie.domain).filter((raw) => { const domain = raw.replace(/^\./, ''); return hosts.some((host) => host === domain || host.endsWith(`.${domain}`)); }))];
-    for (const domain of domains) await runtime.context.clearCookies({ domain });
-    const storage = await runtime.context.storageState({ indexedDB: true });
+    for (const domain of domains) await clearing.context.clearCookies({ domain });
+    const storage = await clearing.context.storageState({ indexedDB: true });
     const clearedOrigins = [...new Set([...origins, ...storage.origins.map((entry) => entry.origin).filter((origin) => domains.some((raw) => { const domain = raw.replace(/^\./, ''), host = new URL(origin).hostname; return host === domain || host.endsWith(`.${domain}`); }))])];
     for (const origin of clearedOrigins) {
-      const page = await runtime.context.newPage();
-      const session = await runtime.context.newCDPSession(page);
+      const page = await clearing.context.newPage();
+      const session = await clearing.context.newCDPSession(page);
       try { await session.send('Storage.clearDataForOrigin', { origin, storageTypes: 'all' }); }
       finally { await session.detach().catch(() => {}); await page.close().catch(() => {}); }
     }
     for (const tab of tabs.values()) { invalidate(tab); tab.controllerEpoch++; publish(tab); }
-    const clearedStorage = await runtime.context.storageState({ indexedDB: true });
-    sessionBaseline = sessionFingerprint(clearedStorage); cookieBaseline = new Map(clearedStorage.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
+    const clearedStorage = await clearing.context.storageState({ indexedDB: true });
+    if (clearing === runtime) { sessionBaseline = sessionFingerprint(clearedStorage); cookieBaseline = new Map(clearedStorage.cookies.map((cookie) => [cookieIdentity(cookie), cookie])); }
     return { clearedDomains: domains.map((domain) => domain.replace(/^\./, '')), clearedOrigins };
+    } finally { if (clearing !== runtime) await clearing.close(); }
   });
   const requireRef = (tab, args) => {
     if (!args.snapshotId || args.snapshotId !== tab.snapshot?.snapshotId || !args.ref) throw error('BROWSER_STALE_REFERENCE', 'Take a new snapshot and use one of its element references.', true);
@@ -674,6 +708,7 @@ export function createOwnedBrowserService(options = {}) {
 
   const inventory = async (actor) => {
     validateActor(actor);
+    passkeys = await inspectMacPasskeyCapability();
     if (!actor.isHuman) await observeHumanSessions();
     // 네이티브 창의 중지·완료 이벤트로 새로 읽을 때 실제 로딩 종료도 반영한다.
     if (runtime && state === 'ready' && selectedAdapter()?.inventory) {
@@ -706,7 +741,7 @@ export function createOwnedBrowserService(options = {}) {
     }
     if (!actor.isHuman && action !== 'status' && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in. Wait for account confirmation.', true);
     if (runtime && !actor.isHuman) await observeHumanSessions();
-    if (action === 'status') return { ...(await inventory(actor)), readiness: state === 'ready' ? { state: 'ready', installed: true } : await inspectOwnedBrowserRuntime({ dataDir }) };
+    if (action === 'status') { passkeys = await inspectMacPasskeyCapability(); return { ...(await inventory(actor)), readiness: state === 'ready' ? { state: 'ready', installed: true, passkeys } : await inspectOwnedBrowserRuntime({ dataDir }) }; }
     if (action === 'install') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Browser installation is managed from Browser settings.');
       installPromise ??= installOwnedBrowserRuntime({ dataDir, onProgress: (progress) => emit('owned_browser_runtime', { runtime: { ...runtimeInfo(), ...progress } }) }).finally(() => { installPromise = null; });
@@ -730,6 +765,7 @@ export function createOwnedBrowserService(options = {}) {
       const account = credentialBroker?.listAccounts && (await credentialBroker.listAccounts()).accounts.find((entry) => entry.id === args.accountId);
       if (!account || account.profileId !== 'default' || !account.origins.includes(new URL(url).origin)) throw error('BROWSER_ACCOUNT_REGISTRATION_REQUIRED', 'Add and approve this website account in Browser settings before opening full-browser sign-in.');
       if (signIn || handoffPending) throw error('BROWSER_SIGN_IN_ACTIVE', 'Finish the current sign-in before opening another account.');
+      handoffPreviousMode = runtimeMode;
       handoffPending = true;
       try {
         let resolveHandoff; handoffPromise = new Promise((resolve) => { resolveHandoff = resolve; });
@@ -741,9 +777,13 @@ export function createOwnedBrowserService(options = {}) {
         for (const tab of tabs.values()) { tab.page = null; tab.status = 'disconnected'; tab.controllerEpoch++; tab.controller = { owner: 'agent' }; invalidate(tab); }
         runtimeMode = 'managed'; state = 'sign-in'; signInAccountId = account.id;
         const start = options.signInFactory ?? startOwnedBrowserSignIn;
-        signIn = await start({ dataDir, url, autoInstall: options.autoInstall !== false, onExit: () => emit('owned_browser_runtime', { runtime: runtimeInfo() }) });
+        signIn = await start({ dataDir, url, authenticationMethod: args.authenticationMethod, autoInstall: options.autoInstall !== false, onExit: () => emit('owned_browser_runtime', { runtime: runtimeInfo() }) });
         } finally { resolveHandoff(); handoffPromise = null; }
-      } catch (failure) { state = 'failed'; signInAccountId = null; throw failure; }
+      } catch (failure) {
+        signInAccountId = null; handoffPending = false; runtimeMode = handoffPreviousMode ?? runtimeMode; handoffPreviousMode = null; state = 'idle';
+        await ensureRuntime().catch(() => {});
+        throw failure;
+      }
       finally { handoffPending = false; }
       emit('owned_browser_runtime', { runtime: runtimeInfo() });
       return { ok: true, action, runtime: runtimeInfo(), signIn: { mode: 'standalone-no-debug', accountId: account.id, message: 'Complete sign-in in the separate Chromium window, then confirm the account in Browser settings.' } };
@@ -757,7 +797,7 @@ export function createOwnedBrowserService(options = {}) {
         await ensureRuntime();
       }
       await observeHumanSessions();
-      const result = await credentialBroker.confirmAccountSession({ actor, accountId: args.accountId });
+      const result = await credentialBroker.confirmAccountSession({ actor, accountId: args.accountId, ...(handoffPreviousMode === 'native' ? { additionalProfileId: 'native' } : {}) });
       const account = result.account ?? result;
       const confirmedStorage = await runtime.context.storageState({ indexedDB: true });
       const confirmed = sessionFingerprint(confirmedStorage);
@@ -768,6 +808,8 @@ export function createOwnedBrowserService(options = {}) {
       }
       await persist();
       await saveCheckpoint();
+      if (handoffPreviousMode === 'native') await returnFromSignIn(account, confirmedStorage);
+      handoffPreviousMode = null;
       return { ok: true, action, account, runtime: runtimeInfo() };
     }
     if (action === 'downloads') {
