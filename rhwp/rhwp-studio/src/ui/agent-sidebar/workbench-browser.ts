@@ -47,6 +47,8 @@ export function createWorkbenchBrowser(options: {
   const forward = button('앞으로', '→', () => navigate('forward'), navigation); forward.classList.add('ag-browser-forward');
   const reload = button('새로고침', '↻', () => navigate(controller.tab()?.status === 'loading' ? 'stop' : 'reload'), navigation);
   const address = document.createElement('input'); address.className = 'ag-browser-address'; address.type = 'text'; address.inputMode = 'url'; address.autocomplete = 'off'; address.spellcheck = false;
+  let addressDraft = false; let addressOwner = '';
+  address.addEventListener('input', () => { addressDraft = true; });
   address.setAttribute('aria-label', '브라우저 주소'); address.placeholder = '주소 또는 검색어 입력'; navigation.append(address);
   const go = button('주소 열기', '', () => navigation.requestSubmit(), navigation); icon(go, 'browserForward'); go.classList.add('ag-browser-go');
   const zoom = document.createElement('div'); zoom.className = 'ag-browser-zoom'; zoom.setAttribute('role', 'group'); zoom.setAttribute('aria-label', '페이지 확대·축소'); navigation.append(zoom);
@@ -204,7 +206,7 @@ export function createWorkbenchBrowser(options: {
   }
   navigation.addEventListener('submit', event => {
     event.preventDefault(); const entered = address.value.trim(); if (!entered) return;
-    address.blur();
+    addressDraft = false; address.blur();
     let url = entered;
     if (!/^https?:\/\//i.test(url)) url = /^[\w.-]+\.[a-z]{2,}(?:\/|$)/i.test(url) ? `https://${url}` : `https://www.google.com/search?q=${encodeURIComponent(url)}`;
     if (!controller.tab()) handle(controller.open(url));
@@ -212,7 +214,7 @@ export function createWorkbenchBrowser(options: {
   });
   address.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
-    event.preventDefault(); event.stopPropagation(); address.value = controller.tab()?.url ?? ''; address.blur();
+    event.preventDefault(); event.stopPropagation(); addressDraft = false; address.value = controller.tab()?.url ?? ''; address.blur();
   });
   function paintAnnotation(): void {
     paintZoom();
@@ -492,7 +494,10 @@ export function createWorkbenchBrowser(options: {
     if (focusedTab) tabs.querySelector<HTMLButtonElement>(`[data-tab-id="${CSS.escape(focusedTab)}"]`)?.focus();
     options.onChange?.();
     }
-    if (element.ownerDocument.activeElement !== address) address.value = tab?.url ?? '';
+    const nextAddressOwner = JSON.stringify([controller.state.runtime?.runtimeId, tab?.tabId, tab?.runtimeGeneration, tab?.nativeTargetId]);
+    // 같은 탭의 로딩·상태 갱신은 제출하지 않은 주소 초안을 덮어쓰지 않는다.
+    if (addressOwner !== nextAddressOwner) { addressOwner = nextAddressOwner; addressDraft = false; address.value = tab?.url ?? ''; }
+    else if (!addressDraft && element.ownerDocument.activeElement !== address) address.value = tab?.url ?? '';
     paintZoom();
     for (const node of [annotate, reload, back, forward]) node.disabled = !tab || !connected || controller.state.busy;
     annotate.disabled ||= zoomPending;

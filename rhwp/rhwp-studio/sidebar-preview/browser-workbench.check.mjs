@@ -203,11 +203,11 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   await page.evaluate(async () => {
     const { createWorkbenchBrowser } = await import('/src/ui/agent-sidebar/workbench-browser.ts');
     const tab = { tabId: 'popover-native', nativeTargetId: 'retained-guest', runtime: 'native', runtimeGeneration: 1, url: 'https://example.org/', title: 'Retained page', navigationEpoch: 2, controllerEpoch: 3, controller: { owner: 'human' }, status: 'ready' };
-    const state = { attach: [], detach: [] }; window.popoverNative = state;
+    const state = { attach: [], detach: [], navigations: [], tab }; window.popoverNative = state;
     window.rhwpDesktop = { browser: { async attach(args) { state.attach.push(args); }, async detach(args) { state.detach.push(args); }, onEvent() { return () => {}; } } };
-    const bridge = { getConnectionState: () => 'connected', onBrowserEvent: () => () => {}, onEvent: () => () => {}, async requestBrowser(action) { return action === 'status' ? { tabs: [{ ...tab }], runtime: { runtimeId: 'popover-native-runtime', kind: 'native', state: 'ready', generation: 1 } } : {}; } };
+    const bridge = { getConnectionState: () => 'connected', onBrowserEvent: () => () => {}, onEvent: () => () => {}, async requestBrowser(action, args) { if (action === 'navigate') { state.navigations.push(args); tab.url = args.url; tab.navigationEpoch++; return { tab: { ...tab } }; } return action === 'status' ? { tabs: [{ ...tab }], runtime: { runtimeId: 'popover-native-runtime', kind: 'native', state: 'ready', generation: 1 } } : {}; } };
     const view = createWorkbenchBrowser({ bridge, getDestination: () => ({ threadId: 'native-chat', projectId: null, documentId: null }), onCapture() {}, onOpenDownload() {}, onDock() {}, onChat() {} });
-    const host = document.createElement('div'); host.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex'; document.body.append(host);
+    const host = document.createElement('div'); host.id = 'native-browser-fixture'; host.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex'; document.body.append(host);
     view.element.style.cssText = 'width:100%;height:100%'; view.mount(host); view.setVisible(true); state.view = view; state.host = host;
   });
   await page.waitForFunction(() => window.popoverNative.attach.length >= 1);
@@ -263,6 +263,33 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   await page.evaluate(() => window.popoverNative.view.float());
   await page.waitForFunction(count => window.popoverNative.attach.length > count && window.popoverNative.attach.at(-1).mode === 'float' && document.querySelector('.ag-browser-floating:not([hidden])'), {}, beforeHide.attach);
   assert.equal(await page.evaluate(() => window.popoverNative.attach.at(-1).expectedTargetId), 'retained-guest', 'close and reopen reuse the native guest');
+  await page.evaluate(() => { document.querySelector('.ag-browser-floating:not([hidden]) .ag-browser-floating-dock').click(); window.popoverNative.host.style.display = 'flex'; window.popoverNative.tab.runtimeGeneration = window.popoverNative.view.controller.tab().runtimeGeneration; });
+  const nativeAddress = '#native-browser-fixture .ag-browser-address';
+  const nativeGo = '#native-browser-fixture [aria-label="주소 열기"]';
+  await page.focus(nativeAddress);
+  await page.$eval(nativeAddress, input => input.select());
+  await page.keyboard.type('https://draft.example/');
+  await page.focus(nativeGo);
+  assert.equal(await page.$eval(nativeGo, button => button === document.activeElement), true, 'Go takes focus before a status repaint');
+  await page.evaluate(async () => { await window.popoverNative.view.controller.refresh(); });
+  assert.equal(await page.$eval(nativeAddress, input => input.value), 'https://draft.example/', 'blur and status repaint preserve an unsubmitted address');
+  await page.click(nativeGo);
+  await page.waitForFunction(() => window.popoverNative.navigations.some(args => args.url === 'https://draft.example/'));
+  assert.equal(await page.$eval(nativeAddress, input => input.value), 'https://draft.example/', 'Go navigates to the preserved draft');
+  await page.evaluate(async () => { const state = window.popoverNative; state.tab.url = 'https://redirect.example/'; state.tab.navigationEpoch++; await state.view.controller.refresh(); });
+  assert.equal(await page.$eval(nativeAddress, input => input.value), 'https://redirect.example/', 'submitted addresses follow subsequent page navigation');
+  await page.focus(nativeAddress); await page.keyboard.type('cancelled'); await page.keyboard.press('Escape');
+  await page.evaluate(async () => { const state = window.popoverNative; state.tab.url = 'https://after-cancel.example/'; state.tab.navigationEpoch++; await state.view.controller.refresh(); });
+  assert.equal(await page.$eval(nativeAddress, input => input.value), 'https://after-cancel.example/', 'cancelled addresses follow subsequent page navigation');
+  await page.focus(nativeAddress); await page.keyboard.type('stale draft');
+  await page.evaluate(() => {
+    const view = window.popoverNative.view; const first = view.controller.tab();
+    view.controller.state.tabs.push({ ...first, tabId: 'other-address-tab', url: 'https://other.example/' });
+    view.controller.select('other-address-tab');
+  });
+  assert.equal(await page.$eval(nativeAddress, input => input.value), 'https://other.example/', 'tab selection replaces a focused address draft');
+  await page.evaluate(() => window.popoverNative.view.controller.select('popover-native'));
+  assert.equal(await page.$eval(nativeAddress, input => input.value), 'https://after-cancel.example/', 'switching back does not restore an abandoned address draft');
   await page.evaluate(() => { window.popoverNative.view.dispose(); window.popoverNative.host.remove(); delete window.rhwpDesktop; });
 
 }
