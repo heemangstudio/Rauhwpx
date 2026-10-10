@@ -260,7 +260,7 @@
   align-items: center;
   justify-content: flex-end;
   gap: 5px;
-  /* hover 에서 고정·이름 바꾸기 두 버튼이 이 자리에 겹친다 — 제목이 그 밑으로 들어가지 않게 둔다. */
+  /* hover 에서 고정·이름 바꾸기·보관 버튼이 이 자리에 겹친다 — 제목이 그 밑으로 들어가지 않게 둔다. */
   min-width: 36px;
   color: var(--ag-text-tertiary);
   font-size: var(--ag-fs-meta);
@@ -367,7 +367,8 @@
 /* ── 고정 · 이름 바꾸기 ─────────────────────────────────
    버튼 안에 버튼을 넣을 수 없어 형제로 두고, hover 에서 상태 자리에 겹친다. */
 .ag-thread-rename,
-.ag-thread-pin {
+.ag-thread-pin,
+.ag-thread-archive {
   position: absolute;
   top: 8px;
   right: 6px;
@@ -387,25 +388,34 @@
   transition: var(--ag-transition-color);
 }
 
-.ag-thread-pin {
+.ag-thread-rename {
   right: 30px;
 }
 
+.ag-thread-pin {
+  right: 54px;
+}
+
 .ag-thread-rename .ag-icon,
-.ag-thread-pin .ag-icon {
+.ag-thread-pin .ag-icon,
+.ag-thread-archive .ag-icon {
   width: 12px;
   height: 12px;
 }
 
 .ag-threads-row:hover .ag-thread-rename,
 .ag-threads-row:hover .ag-thread-pin,
+.ag-threads-row:hover .ag-thread-archive,
 .ag-thread-rename:focus-visible,
-.ag-thread-pin:focus-visible {
+.ag-thread-pin:focus-visible,
+.ag-thread-archive:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
 
+/* 버튼 세 개가 겹칠 자리만큼 제목을 비켜 둔다. */
 .ag-threads-row:hover .ag-threads-item-when {
+  min-width: 62px;
   opacity: 0;
 }
 
@@ -414,12 +424,14 @@
 }
 
 .ag-thread-rename:hover,
-.ag-thread-pin:hover {
+.ag-thread-pin:hover,
+.ag-thread-archive:hover {
   color: var(--ag-text);
 }
 
 .ag-thread-rename:focus-visible,
-.ag-thread-pin:focus-visible {
+.ag-thread-pin:focus-visible,
+.ag-thread-archive:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: var(--ag-focus-offset);
 }
@@ -481,7 +493,8 @@
 }
 
 .ag-threads-list.ag-dragging .ag-thread-rename,
-.ag-threads-list.ag-dragging .ag-thread-pin {
+.ag-threads-list.ag-dragging .ag-thread-pin,
+.ag-threads-list.ag-dragging .ag-thread-archive {
   opacity: 0;
   pointer-events: none;
 }
@@ -508,7 +521,8 @@
 }
 
 .ag-threads-ghost .ag-thread-rename,
-.ag-threads-ghost .ag-thread-pin {
+.ag-threads-ghost .ag-thread-pin,
+.ag-threads-ghost .ag-thread-archive {
   display: none;
 }
 

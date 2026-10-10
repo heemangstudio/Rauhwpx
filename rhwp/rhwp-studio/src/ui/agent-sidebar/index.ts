@@ -10,7 +10,8 @@ import './motion.css';
 import './agent-sidebar.css';
 import './plan-presentation.css';
 import '../../styles/inline-rename.css';
-import { confirmSheet, dismissOpenSheets } from './sheet.ts';
+import { confirmSheet, dismissOpenSheets, openSheet } from './sheet.ts';
+import { saveArchiveConfirmChoice, shouldConfirmArchive } from './archive-confirm.ts';
 import { createChangesDrawer, createJumpButton, renderPendingOpDiff, renderPendingOpsDiff, summarizeDiffItems } from './changes-drawer.ts';
 import { TurnChanges, invalidatedMessage } from './turn-changes.ts';
 import type { DiffItem } from '../../compare/types.ts';
@@ -80,6 +81,7 @@ import {
   forgetDocumentThreads,
   listThreads,
   orderPinnedThreads,
+  archiveThread,
   pinThread,
   placeThread,
   threadListKey,
@@ -3392,6 +3394,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     reconnectSession: () => restartAgentSession(),
     skillsSettings: skillsShelf.root,
     refreshSkills: () => bridge.listSkills(),
+    deleteArchivedThread: (thread) => deleteThreadWithConfirm(thread),
   });
   const settingsPage = settingsPanel.element;
   if (active && initialSetupOwner === null) {
@@ -6076,6 +6079,38 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return true;
   }
 
+  /**
+   * 채팅을 보관함으로 옮긴다 — 기록은 그대로 두고 목록에서만 뺀다. 삭제처럼 작업 중인
+   * 채팅은 옮기지 않고, 지금 채팅이면 먼저 새 채팅으로 빠져나온다.
+   */
+  async function archiveThreadWithConfirm(thread: ChatThread): Promise<boolean> {
+    if (getChatStatus(thread.id) === 'working') {
+      showToast({ message: '작업이 끝난 뒤 보관할 수 있습니다', durationMs: 2400 });
+      return false;
+    }
+    if (shouldConfirmArchive()) {
+      const result = await openSheet({
+        anchor: root,
+        title: '채팅 보관',
+        message: '이 채팅을 보관할까요? 설정의 보관함에서 되돌릴 수 있습니다.',
+        confirmLabel: '보관',
+        choices: [
+          { id: 'pause', label: '5시간 동안 묻지 않기' },
+          { id: 'never', label: '다시 보지 않기' },
+        ],
+      });
+      if (!result.confirmed) return false;
+      if (result.choice === 'pause' || result.choice === 'never') saveArchiveConfirmChoice(result.choice);
+    }
+    // 확인을 기다리는 사이 작업이 시작됐을 수 있다.
+    if (getChatStatus(thread.id) === 'working') return false;
+    // startNewChat 이 현재 채팅을 저장하므로, 보관은 빠져나온 뒤에 한다.
+    if (thread.id === currentThread.id) startNewChat({ silent: true });
+    archiveThread(thread.id);
+    rebuildThreadsList();
+    return true;
+  }
+
   /** 고정은 맨 위에 붙고, 풀면 아래 목록의 제자리로 돌아간다. */
   function toggleThreadPin(thread: ChatThread): void {
     if (thread.pinOrder !== undefined) unpinThread(thread.id);
@@ -6094,6 +6129,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       { id: 'open', label: '열기', enabled: thread.id !== currentThread.id },
       { id: 'pin', label: pinned ? '고정 해제' : '고정' },
       { id: 'rename', label: '이름 바꾸기' },
+      { id: 'archive', label: '보관', enabled: getChatStatus(thread.id) !== 'working' },
       { type: 'separator' },
       { id: 'delete', label: '삭제', danger: true, enabled: getChatStatus(thread.id) !== 'working' },
     ], anchor);
@@ -6105,6 +6141,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       // 메뉴가 떠 있는 동안 목록이 다시 그려졌을 수 있다.
       const row = findThreadRow(thread.id);
       if (row) beginThreadRename(thread, row);
+    } else if (choice === 'archive') {
+      void archiveThreadWithConfirm(thread);
     } else if (choice === 'delete') {
       void deleteThreadWithConfirm(thread);
     }
@@ -6180,6 +6218,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       toggleThreadPin(thread);
     });
 
+    const archive = el('button', 'ag-thread-archive');
+    archive.type = 'button';
+    archive.tabIndex = -1;
+    archive.setAttribute('aria-label', `${thread.title || '새 채팅'} 보관`);
+    archive.title = '보관';
+    archive.appendChild(createIcon('archive'));
+    archive.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void archiveThreadWithConfirm(thread);
+    });
+
     li.addEventListener('contextmenu', (event) => {
       if (li.querySelector('.inline-rename-input')) return;
       event.preventDefault();
@@ -6187,7 +6236,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       void openThreadMenu(thread, contextMenuAnchor(event, li));
     });
 
-    li.append(btn, pin, rename);
+    li.append(btn, pin, rename, archive);
     return li;
   }
 

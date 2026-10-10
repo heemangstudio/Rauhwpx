@@ -16,6 +16,14 @@ export interface SheetOptions {
   destructive?: boolean;
   /** 시트를 띄울 기준 요소. 가장 가까운 .ag-root 안에 뜬다. */
   anchor?: Element | null;
+  /** 확인 버튼 위의 선택지. 하나만 고를 수 있고, 다시 누르면 고르지 않은 상태가 된다. */
+  choices?: ReadonlyArray<{ id: string; label: string }>;
+}
+
+export interface SheetResult {
+  confirmed: boolean;
+  /** 확인할 때 골라 둔 선택지. 취소하면 늘 null 이다. */
+  choice: string | null;
 }
 
 const DISMISS_DISTANCE_PX = 72;
@@ -54,6 +62,10 @@ function focusables(container: HTMLElement): HTMLElement[] {
 }
 
 export function showSheet(options: SheetOptions): Promise<boolean> {
+  return openSheet(options).then((result) => result.confirmed);
+}
+
+export function openSheet(options: SheetOptions): Promise<SheetResult> {
   const { host, docked } = resolveHost(options.anchor);
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   openCount += 1;
@@ -93,6 +105,28 @@ export function showSheet(options: SheetOptions): Promise<boolean> {
     sheet.append(message);
   }
 
+  let choice: string | null = null;
+  if (options.choices?.length) {
+    const group = document.createElement('div');
+    group.className = 'ag-sheet-choices';
+    const boxes: HTMLInputElement[] = [];
+    for (const item of options.choices) {
+      const label = document.createElement('label');
+      label.className = 'ag-sheet-choice';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.value = item.id;
+      box.addEventListener('change', () => {
+        for (const other of boxes) if (other !== box) other.checked = false;
+        choice = box.checked ? item.id : null;
+      });
+      boxes.push(box);
+      label.append(box, document.createTextNode(item.label));
+      group.append(label);
+    }
+    sheet.append(group);
+  }
+
   const actions = document.createElement('div');
   actions.className = 'ag-sheet-actions';
   const cancel = document.createElement('button');
@@ -110,7 +144,7 @@ export function showSheet(options: SheetOptions): Promise<boolean> {
   layer.append(backdrop, sheet);
   host.appendChild(layer);
 
-  return new Promise<boolean>((resolve) => {
+  return new Promise<SheetResult>((resolve) => {
     let settled = false;
 
     const finish = (result: boolean): void => {
@@ -145,7 +179,7 @@ export function showSheet(options: SheetOptions): Promise<boolean> {
       const active = document.activeElement;
       const focusInSheet = !active || active === document.body || layer.contains(active);
       if (focusInSheet && previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
-      resolve(result);
+      resolve({ confirmed: result, choice: result ? choice : null });
     };
     const dismiss = (): void => finish(false);
     liveSheets.add(dismiss);
@@ -184,7 +218,7 @@ export function showSheet(options: SheetOptions): Promise<boolean> {
       let dragging = false;
       let offset = 0;
       sheet.addEventListener('pointerdown', (event) => {
-        if (event.button !== 0 || (event.target as Element).closest('button')) return;
+        if (event.button !== 0 || (event.target as Element).closest('button, label')) return;
         dragging = true;
         startY = event.clientY;
         startT = performance.now();

@@ -174,6 +174,8 @@ export interface ChatThread {
   /** 아래 목록에 끌어 놓은 자리. 대화 활동 시각과 같은 축이라 끌지 않은 채팅과 함께
    *  정렬되고, 새 대화가 와도 그대로 남는다. 없으면 마지막 대화 활동 자리다. */
   listOrder?: number;
+  /** 보관한 시각. 있으면 목록·검색·최근 채팅 복원에서 빠지고 설정의 보관함에만 보인다. */
+  archivedAt?: number;
   createdAt: number;
   /** 저장 시계 — 탭 사이 충돌 판정에 쓰여 저장할 때마다 앞으로 간다. */
   updatedAt: number;
@@ -230,7 +232,7 @@ export function threadMatchesDocument(
   return !thread.documentId && !documentId && threadName === null && activeName === null;
 }
 
-type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion' | 'pinOrder' | 'listOrder'> & {
+type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion' | 'pinOrder' | 'listOrder' | 'archivedAt'> & {
   workflow?: unknown;
   latestPlan?: unknown;
   plans?: unknown;
@@ -240,6 +242,7 @@ type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | '
   pendingUserQuestion?: unknown;
   pinOrder?: unknown;
   listOrder?: unknown;
+  archivedAt?: unknown;
 };
 
 type ThreadPersistenceChange =
@@ -732,6 +735,7 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     pendingUserQuestion: storedPendingUserQuestion,
     pinOrder: storedPinOrder,
     listOrder: storedListOrder,
+    archivedAt: storedArchivedAt,
     ...rest
   } = thread;
   const messages = rest.messages.flatMap((raw): ThreadMessage[] => {
@@ -871,6 +875,7 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     activeTemplateId: typeof storedActiveTemplateId === 'string' && storedActiveTemplateId ? storedActiveTemplateId : null,
     ...(typeof storedPinOrder === 'number' && Number.isFinite(storedPinOrder) ? { pinOrder: storedPinOrder } : {}),
     ...(typeof storedListOrder === 'number' && Number.isFinite(storedListOrder) ? { listOrder: storedListOrder } : {}),
+    ...(typeof storedArchivedAt === 'number' && Number.isFinite(storedArchivedAt) ? { archivedAt: storedArchivedAt } : {}),
     ...(latestPlan ? { latestPlan } : {}),
     ...(plans.length ? { plans } : {}),
     ...(pendingUserQuestion && !pendingAlreadyArchived ? { pendingUserQuestion } : {}),
@@ -1303,11 +1308,47 @@ function activityStamp(thread: ChatThread): string {
   return `${thread.messages.length}|${last.role}|${last.kind ?? ''}|${last.text.length}|${status}|${items}`;
 }
 
-/** 메시지가 있는 스레드만 마지막 대화 활동 순으로. */
+/** 메시지가 있고 보관하지 않은 스레드만 마지막 대화 활동 순으로. */
 export function listThreads(): ChatThread[] {
   return loadAll()
-    .filter((t) => t.messages.length > 0)
+    .filter((t) => t.messages.length > 0 && t.archivedAt === undefined)
     .sort((a, b) => threadActivityAt(b) - threadActivityAt(a));
+}
+
+/** 보관한 스레드 — 최근에 보관한 것이 먼저. */
+export function listArchivedThreads(): ChatThread[] {
+  return loadAll()
+    .filter((t) => t.messages.length > 0 && t.archivedAt !== undefined)
+    .sort((a, b) => b.archivedAt! - a.archivedAt!);
+}
+
+/** 채팅을 보관한다. 기록과 목록 자리는 그대로 두어 복원하면 원래 자리로 돌아온다. */
+export function archiveThread(id: string): ChatThread | null {
+  const current = getThread(id);
+  if (!current || current.archivedAt !== undefined) return current;
+  const now = Date.now();
+  const next: ChatThread = {
+    ...current,
+    archivedAt: now,
+    updatedAt: Math.max(now, current.updatedAt + 1),
+    lastActivityAt: threadActivityAt(current),
+  };
+  replaceStoredThread(next);
+  return next;
+}
+
+/** 보관한 채팅을 목록으로 되돌린다. */
+export function restoreThread(id: string): ChatThread | null {
+  const current = getThread(id);
+  if (!current || current.archivedAt === undefined) return current;
+  const { archivedAt: _archived, ...rest } = current;
+  const next: ChatThread = {
+    ...rest,
+    updatedAt: Math.max(Date.now(), current.updatedAt + 1),
+    lastActivityAt: threadActivityAt(current),
+  };
+  replaceStoredThread(next);
+  return next;
 }
 
 /** 문서 묶음 키 — ID가 있으면 ID로, 없으면 파일명으로 묶인 레거시 채팅이다. */
@@ -1337,12 +1378,13 @@ export function upsertThread(thread: ChatThread): void {
     : updatedAt;
   // 목록 자리(고정·끌어 놓은 자리)는 저장소가 쥔다 — 열어 둔 채팅의 낡은 사본이
   // 저장되면서 사용자가 옮긴 자리를 되돌리지 않는다.
-  const { pinOrder: _callerPinOrder, listOrder: _callerListOrder, ...rest } = thread;
+  const { pinOrder: _callerPinOrder, listOrder: _callerListOrder, archivedAt: _callerArchivedAt, ...rest } = thread;
   const placement = previous ?? thread;
   const capped: ChatThread = {
     ...rest,
     ...(placement.pinOrder !== undefined ? { pinOrder: placement.pinOrder } : {}),
     ...(placement.listOrder !== undefined ? { listOrder: placement.listOrder } : {}),
+    ...(placement.archivedAt !== undefined ? { archivedAt: placement.archivedAt } : {}),
     messages,
     updatedAt,
     lastActivityAt,
@@ -1428,7 +1470,7 @@ export function renameThread(id: string, title: string): ChatThread | null {
 
 /** 문서 이름이 바뀌면 그 문서의 채팅들에 보이는 문서 이름도 바꾼다. 목록 자리는 그대로다. */
 export function renameThreadsDocument(documentId: string, docKey: string): void {
-  for (const thread of listThreads()) {
+  for (const thread of [...listThreads(), ...listArchivedThreads()]) {
     if (thread.documentId !== documentId || thread.docKey === docKey) continue;
     replaceStoredThread({ ...thread, docKey });
   }

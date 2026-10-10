@@ -4,6 +4,9 @@ import test from 'node:test';
 
 import {
   archivePendingUserQuestion,
+  archiveThread,
+  listArchivedThreads,
+  restoreThread,
   clearPendingUserQuestion,
   createPendingUserQuestionDraftSnapshot,
   createEmptyThread,
@@ -851,4 +854,45 @@ test('same-millisecond thread updates keep the later state newer', (t) => {
   const second = getThread(thread.id)!;
   assert.ok(second.updatedAt > first.updatedAt);
   assert.equal(second.title, '바뀐 제목');
+});
+
+test('archived chats leave the list with their history and return to their spot on restore', () => {
+  mem.clear();
+  const realNow = Date.now;
+  let clock = 1_000;
+  Date.now = () => clock;
+  try {
+    const mk = (text: string) => {
+      const t = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+      t.messages.push({ role: 'user', text });
+      upsertThread(t);
+      clock += 1_000;
+      return t.id;
+    };
+    const a = mk('a');
+    const b = mk('b');
+    const c = mk('c');
+    pinThread(a);
+    const staleB = getThread(b)!;
+
+    clock += 1_000;
+    archiveThread(b);
+    archiveThread(a);
+    assert.deepEqual(listThreads().map((t) => t.id), [c]);
+    assert.deepEqual(listArchivedThreads().map((t) => t.id), [a, b]);
+    assert.equal(getThread(b)!.messages[0]!.text, 'b');
+
+    // 열어 둔 낡은 사본이 저장돼도 보관이 풀리지 않는다.
+    upsertThread(staleB);
+    assert.deepEqual(listArchivedThreads().map((t) => t.id), [a, b]);
+
+    restoreThread(b);
+    restoreThread(a);
+    assert.deepEqual(listArchivedThreads(), []);
+    assert.deepEqual(listThreads().map((t) => t.id), [c, b, a]);
+    assert.deepEqual(orderPinnedThreads(listThreads()).map((t) => t.id), [a]);
+    assert.equal(getThread(b)!.archivedAt, undefined);
+  } finally {
+    Date.now = realNow;
+  }
 });

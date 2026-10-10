@@ -49,11 +49,12 @@ test('초안 정규화는 표시 범위와 조판 부호 불변식을 지킨다'
   assert.equal(normalized.view.showControlCodes, true);
 });
 
-test('설정 목적지는 편집·AI·스킬·프로젝트만 받고 그 외 값은 버린다', () => {
+test('설정 목적지는 편집·AI·스킬·프로젝트·보관함만 받고 그 외 값은 버린다', () => {
   assert.equal(isSettingsDestination('product'), false);
   assert.equal(normalizeSettingsDestination('project'), 'project');
   assert.equal(isSettingsDestination('editing'), true);
   assert.equal(isSettingsDestination('skills'), true);
+  assert.equal(isSettingsDestination('archive'), true);
   assert.equal(isSettingsDestination('about'), false);
   assert.equal(normalizeSettingsDestination('connections'), 'ai');
 });
