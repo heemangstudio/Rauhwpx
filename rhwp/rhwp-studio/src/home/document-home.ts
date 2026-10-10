@@ -36,7 +36,7 @@ export type HomeOpenResult = 'opened' | 'cancelled' | 'missing' | 'failed';
 
 /** 홈을 닫으면 돌아갈 곳. 열린 문서, 또는 에이전트 전체 화면의 채팅. */
 export interface HomeReturnTarget {
-  kind: 'document' | 'chat';
+  kind: 'document' | 'chat' | 'settings';
   label: string;
 }
 
@@ -994,7 +994,8 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     const target = deps.returnTarget();
     back.hidden = target === null;
     back.querySelector('.dh-back-label')!.textContent = target ? displayName(target.label) : '';
-    const action = target?.kind === 'chat' ? '채팅으로 돌아가기' : '문서로 돌아가기';
+    const action = target?.kind === 'chat' ? '채팅으로 돌아가기'
+      : target?.kind === 'settings' ? '설정으로 돌아가기' : '문서로 돌아가기';
     back.setAttribute('aria-label', action);
     back.title = `${action} (Esc)`;
   }

@@ -2296,6 +2296,10 @@ function installDocumentHome(): void {
       : undefined,
     // 에이전트 전체 화면에서 열었으면 그 채팅으로, 아니면 열린 문서로 돌아간다.
     returnTarget: () => {
+      // 집중 화면 설정에서 홈으로 왔으면 설정으로 돌아간다.
+      if (document.querySelector('#agent-sidebar.ag-fullscreen.ag-settings-open')) {
+        return { kind: 'settings', label: '설정' };
+      }
       if (document.body.classList.contains('ag-fullscreen-open')) {
         const title = document.querySelector('#agent-sidebar .ag-workspace-chat-title')?.textContent?.trim();
         return { kind: 'chat', label: title || '채팅' };
@@ -2311,9 +2315,10 @@ function installDocumentHome(): void {
       }
     },
     onDrop: (event) => { void handleDocumentDrop(event, { fromHome: true }); },
+    // 문서 없이도 집중 화면 설정으로 가고, 설정을 닫으면 홈으로 돌아온다.
     openSettings: () => {
       documentHome?.hide();
-      eventBus.emit('settings:open');
+      eventBus.emit('settings:open', { fullscreen: true, from: 'home' });
     },
     toast: (message) => showToast({ message, durationMs: 3200 }),
   });

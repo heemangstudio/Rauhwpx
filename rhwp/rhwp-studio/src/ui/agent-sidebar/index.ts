@@ -896,6 +896,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let restoringLiveQuestion = false;
   let skillsPanelOpen = false;
   let settingsPanelOpen = false;
+  // 문서 홈의 톱니로 연 설정은 닫을 때 문서 홈으로 돌아간다.
+  let settingsReturnsHome = false;
   let versionsPanelOpen = false;
   let deferredVersionsOpenTimer: number | null = null;
   /** 에이전트 집중 모드 — 스레드 레일과 대화 무대로 문서를 덮는다. */
@@ -4742,6 +4744,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 스킬·설정·목록 세 페이지는 서로를 닫는다 — 무대에는 하나만 선다. */
   function closeSettingsPage(): void {
     settingsPanelOpen = false;
+    settingsReturnsHome = false;
     root.classList.remove('ag-settings-open');
     workspaceSettingsBtn.setAttribute('aria-expanded', 'false');
     workspaceSettingsBtn.classList.remove('ag-active');
@@ -4760,11 +4763,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return true;
     }
     if (!await settingsPanel.requestClose()) return false;
+    const returnHome = settingsReturnsHome;
     closeSettingsPage();
     chatPage.setAttribute('aria-hidden', 'false');
     root.classList.remove('ag-settings-open');
     returnFocus?.focus();
     afterClose?.();
+    if (returnHome) openDocumentHome?.();
     return true;
   }
 
@@ -9910,10 +9915,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           openConfiguredVersionControl();
         }),
         eventBus.on('settings:open', (payload) => {
-          const requested = (payload as { destination?: unknown } | undefined)?.destination;
-          const destination = normalizeSettingsDestination(requested);
+          const request = payload as { destination?: unknown; fullscreen?: boolean; from?: string } | undefined;
+          const destination = normalizeSettingsDestination(request?.destination);
           setCollapsed(false);
-          setSettingsPanelOpen(true, destination);
+          const open = (): void => {
+            setSettingsPanelOpen(true, destination);
+            if (request?.from === 'home') settingsReturnsHome = true;
+          };
+          if (request?.fullscreen) setFullscreen(true, { then: open });
+          else open();
         }),
       ]
     : [];
