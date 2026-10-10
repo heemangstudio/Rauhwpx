@@ -280,6 +280,8 @@ export interface AgentSidebarDeps {
   };
   /** 문서 이름을 바꾼다. 바뀐 파일 이름, 바꾸지 못했으면 null (이유는 편집기가 알린다). */
   renameDocument?: (name: string) => Promise<string | null>;
+  /** 지금 문서의 이름을 바꿀 수 있는가. 바꿀 수 없으면 두 번 눌러도 칸을 열지 않는다. */
+  canRenameDocument?: () => boolean;
 }
 
 export interface AgentSidebarHandle {
@@ -1691,7 +1693,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     target.classList.add('ag-renamable');
     target.addEventListener('dblclick', (event) => {
       const name = getDocumentContext?.()?.documentName;
-      if (!name) return;
+      if (!name || deps.canRenameDocument?.() === false) return;
       event.preventDefault();
       beginInlineRename(target, {
         value: name,

@@ -6,8 +6,8 @@ import { createIcon } from './icons.ts';
 import { versionErrorCode } from '../../versioning/types.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { createChevron } from '../chevron.ts';
-import { laneColor } from '../version-lanes.ts';
 import { createBranchIcon } from '../worktree-chip.ts';
+import { branchColors, type BranchColors } from '../../versioning/branch-colors.ts';
 
 export type VersionTab = 'changes' | 'history' | 'branches' | 'worktrees' | 'shelves';
 
@@ -337,6 +337,15 @@ function invalidatesCompletedComparisons(
 
 const VERSION_GRAPH_ROW_HEIGHT = 30;
 
+/** 그래프·가지 칩·작업 트리 표시가 함께 쓰는 가지 색. */
+export function colorsFor(state: Pick<VersionManagerState, 'commits' | 'branches'>): BranchColors {
+  return branchColors(state.commits, state.branches.map((branch) => ({
+    name: branch.name,
+    headId: branch.headId,
+    isDefault: branch.isDefault,
+  })));
+}
+
 function laneGeometry(laneCount: number): { gap: number; width: number } {
   const width = Math.min(110, 24 + (laneCount - 1) * 17);
   const gap = laneCount === 1 ? 0 : (width - 24) / (laneCount - 1);
@@ -346,6 +355,7 @@ function laneGeometry(laneCount: number): { gap: number; width: number } {
 function laneGraph(
   commit: VersionCommitView,
   laneCount: number,
+  colors: BranchColors,
 ): HTMLElement {
   const ns = 'http://www.w3.org/2000/svg';
   const height = VERSION_GRAPH_ROW_HEIGHT;
@@ -367,14 +377,16 @@ function laneGraph(
     d: string,
     lane: number,
     kind: 'rail' | 'edge',
+    color: string,
   ): void => {
     const path = document.createElementNS(ns, 'path');
     path.setAttribute('d', d);
     path.classList.add('ag-version-lane-path', `ag-version-${kind}`);
     path.style.setProperty('--ag-parent-lane', String(lane));
-    path.style.setProperty('--ag-version-lane-color', laneColor(lane));
+    path.style.setProperty('--ag-version-lane-color', color);
     svg.appendChild(path);
   };
+  const ownColor = colors.commit(commit.id);
 
   commit.lanesBefore.forEach((id, fromLane) => {
     if (id === commit.id || !commit.activeLanesBefore.includes(id)) return;
@@ -388,47 +400,52 @@ function laneGraph(
         : `M${fromX} 0C${fromX} ${centerY} ${toX} ${centerY} ${toX} ${height}`,
       toLane,
       'rail',
+      // 지나가는 줄은 그 줄이 닿을 커밋의 가지 색이다.
+      colors.commit(id),
     );
   });
 
   if (!commit.startsLane) {
-    appendPath(`M${x} 0V${centerY}`, commit.lane, 'edge');
+    appendPath(`M${x} 0V${centerY}`, commit.lane, 'edge', ownColor);
   }
 
-  for (const parentLane of commit.parentLanes) {
+  commit.parentLanes.forEach((parentLane, index) => {
     const parentX = laneX(parentLane);
+    // 첫 부모로 내려가는 줄은 이 커밋의 가지, 병합해 들어온 줄은 그 부모의 가지 색이다.
+    const parentId = commit.parentIds[index];
     appendPath(
       parentX === x
         ? `M${x} ${centerY}V${height}`
         : `M${x} ${centerY}C${x} ${height} ${parentX} ${centerY} ${parentX} ${height}`,
       parentLane,
       'edge',
+      index === 0 || !parentId ? ownColor : colors.commit(parentId),
     );
-  }
+  });
 
   const connector = document.createElementNS(ns, 'path');
   connector.setAttribute('d', `M${width + 1} ${centerY}H${x + 7}`);
   connector.classList.add('ag-version-node-connector');
-  connector.style.setProperty('--ag-version-lane-color', laneColor(commit.lane));
+  connector.style.setProperty('--ag-version-lane-color', ownColor);
   svg.appendChild(connector);
   const arrow = document.createElementNS(ns, 'path');
   arrow.setAttribute('d', `M${width + 6} ${centerY - 3}L${width + 12} ${centerY}L${width + 6} ${centerY + 3}Z`);
   arrow.classList.add('ag-version-connector-arrow');
-  arrow.style.setProperty('--ag-version-lane-color', laneColor(commit.lane));
+  arrow.style.setProperty('--ag-version-lane-color', ownColor);
   svg.appendChild(arrow);
   const halo = document.createElementNS(ns, 'circle');
   halo.setAttribute('cx', String(x));
   halo.setAttribute('cy', String(centerY));
   halo.setAttribute('r', '6.5');
   halo.classList.add('ag-version-node-halo');
-  halo.style.setProperty('--ag-version-lane-color', laneColor(commit.lane));
+  halo.style.setProperty('--ag-version-lane-color', ownColor);
   svg.appendChild(halo);
   const node = document.createElementNS(ns, 'circle');
   node.setAttribute('cx', String(x));
   node.setAttribute('cy', String(centerY));
   node.setAttribute('r', commit.isHead ? '4' : '3.25');
   node.classList.add('ag-version-node');
-  node.style.setProperty('--ag-version-lane-color', laneColor(commit.lane));
+  node.style.setProperty('--ag-version-lane-color', ownColor);
   if (commit.isHead) node.classList.add('ag-head');
   if (commit.parentIds.length > 1) node.classList.add('ag-merge-node');
   svg.appendChild(node);
@@ -903,7 +920,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       inspector.appendChild(el('p', 'ag-versions-placeholder', '커밋을 선택하면 세부 정보가 보입니다.'));
       return;
     }
-    inspector.style.setProperty('--ag-version-lane-color', laneColor(selected.lane));
+    inspector.style.setProperty('--ag-version-lane-color', colorsFor(current).commit(selected.id));
     inspector.append(
       el('span', 'ag-versions-inspector-kicker', `${selected.shortId} · ${reasonLabel(selected.reason)}`),
       el('h3', 'ag-versions-inspector-title', selected.title),
@@ -985,12 +1002,12 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   function renderHistory(): void {
     hideDateTooltip();
     branchStrip.replaceChildren();
+    const colors = colorsFor(current);
     for (const branch of current.branches) {
-      const tip = current.commits.find((commit) => commit.id === branch.headId);
       const chip = el('button', `ag-versions-branch-chip${branch.isActive ? ' ag-current' : ''}`);
       chip.type = 'button';
       chip.dataset.versionMutation = 'true';
-      chip.style.setProperty('--ag-version-lane-color', laneColor(tip?.lane ?? 0));
+      chip.style.setProperty('--ag-version-lane-color', colors.branch(branch.name));
       chip.setAttribute('aria-pressed', String(branch.isActive));
       chip.title = branch.isActive ? `${branch.name} · 작업 중` : branch.name;
       chip.setAttribute('aria-label', `${branch.name} 브랜치로 전환`);
@@ -1016,7 +1033,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       const row = el('button', 'ag-version-row');
       row.type = 'button';
       row.dataset.commitId = commit.id;
-      row.style.setProperty('--ag-version-lane-color', laneColor(commit.lane));
+      row.style.setProperty('--ag-version-lane-color', colors.commit(commit.id));
       row.setAttribute('role', 'option');
       const accessibleRefs = [
         ...commit.branchLabels.map((branch) => (
@@ -1038,7 +1055,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       copy.appendChild(heading);
       const chevron = el('span', 'ag-version-chevron');
       chevron.setAttribute('aria-hidden', 'true');
-      row.append(laneGraph(commit, laneCount), chevron, copy);
+      row.append(laneGraph(commit, laneCount, colors), chevron, copy);
       row.addEventListener('pointerenter', () => showDateTooltip(row, commit));
       row.addEventListener('pointerleave', scheduleDateTooltipHide);
       row.addEventListener('focus', () => {

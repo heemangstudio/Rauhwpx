@@ -23,6 +23,7 @@ import {
   defaultHealIo,
   documentThumbnail,
   inspectAndHeal,
+  judgeOpenFailure,
   rememberLiveThumbnail,
   templateThumbnail,
   type DocumentPresence,
@@ -78,8 +79,6 @@ export interface DocumentHome {
 
 const PREFS_KEY = 'rhwp.documentHome.v1';
 const THUMBNAIL_CONCURRENCY = 2;
-/** 열기에 두 번 실패한 기록만 목록에서 뺀다. 한 번은 잠깐의 문제일 수 있다. */
-const OPEN_FAILURES_BEFORE_FORGET = 2;
 
 interface Prefs { sort: HomeSort; view: 'grid' | 'list' }
 
@@ -248,9 +247,35 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   let running = 0;
   const pending = new Set<string>();
   /** 새로 만들기 줄과 최근 문서 격자는 따로 다시 그린다. 그림 주소도 칸마다 따로 거둔다. */
-  interface ThumbnailScope { generation: number; urls: Set<string> }
-  const templateScope: ThumbnailScope = { generation: 0, urls: new Set() };
-  const gridScope: ThumbnailScope = { generation: 0, urls: new Set() };
+  interface ThumbnailScope { generation: number }
+  const templateScope: ThumbnailScope = { generation: 0 };
+  const gridScope: ThumbnailScope = { generation: 0 };
+  /**
+   * 그림 하나에 주소 하나. 다시 그린 카드도 같은 주소를 쓰므로, 아직 읽히는 그림의 주소를 거두는
+   * 일이 없다. 그림을 버리거나 홈을 닫을 때만 거둔다.
+   */
+  const objectUrls = new Map<string, { blob: Blob; url: string }>();
+
+  function urlFor(key: string, blob: Blob): string {
+    const known = objectUrls.get(key);
+    if (known?.blob === blob) return known.url;
+    if (known) URL.revokeObjectURL(known.url);
+    const url = URL.createObjectURL(blob);
+    objectUrls.set(key, { blob, url });
+    return url;
+  }
+
+  function forgetBlob(key: string): void {
+    blobs.delete(key);
+    const known = objectUrls.get(key);
+    if (known) URL.revokeObjectURL(known.url);
+    objectUrls.delete(key);
+  }
+
+  function revokeAllUrls(): void {
+    for (const { url } of objectUrls.values()) URL.revokeObjectURL(url);
+    objectUrls.clear();
+  }
 
   // ── 그림 ────────────────────────────────────────────────
   function resetScope(scope: ThumbnailScope, host?: HTMLElement): void {
@@ -259,13 +284,10 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     if (host && observer) {
       for (const paper of host.querySelectorAll('.dh-paper[data-thumb-key]')) observer.unobserve(paper);
     }
-    for (const url of scope.urls) URL.revokeObjectURL(url);
-    scope.urls.clear();
   }
 
-  function paintImage(scope: ThumbnailScope, paper: HTMLElement, blob: Blob): void {
-    const url = URL.createObjectURL(blob);
-    scope.urls.add(url);
+  function paintImage(paper: HTMLElement, key: string, blob: Blob): void {
+    const url = urlFor(key, blob);
     const image = el('img', 'dh-thumb');
     image.alt = '';
     image.draggable = false;
@@ -304,7 +326,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     paper.dataset.thumbKey = key;
     const known = blobs.get(key);
     if (known) {
-      paintImage(scope, paper, known);
+      paintImage(paper, key, known);
       return;
     }
     const token = scope.generation;
@@ -325,7 +347,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
         if (!visible) return;
         // 그사이 목록을 다시 그렸으면 같은 문서의 새 카드에 칠한다.
         for (const target of papers()) {
-          if (!target.querySelector('.dh-thumb')) paintImage(scope, target, blob);
+          if (!target.querySelector('.dh-thumb')) paintImage(target, key, blob);
         }
       } finally {
         pending.delete(key);
@@ -341,6 +363,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     queue = [];
     resetScope(templateScope);
     resetScope(gridScope);
+    revokeAllUrls();
   }
 
   // ── 종이 ────────────────────────────────────────────────
@@ -470,7 +493,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
 
     const keys = new Set(documents.map((doc) => doc.documentId));
     for (const key of [...blobs.keys()]) {
-      if (key.startsWith('document:') && !keys.has(key.slice('document:'.length))) blobs.delete(key);
+      if (key.startsWith('document:') && !keys.has(key.slice('document:'.length))) forgetBlob(key);
     }
     if (!documents.length) {
       grid.replaceChildren();
@@ -702,13 +725,19 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       if (result !== 'failed' && result !== 'missing') return;
       const failures = (openFailures.get(row.id) ?? 0) + 1;
       openFailures.set(row.id, failures);
-      if (failures >= OPEN_FAILURES_BEFORE_FORGET) {
+      const judged = judgeOpenFailure(row, result, failures);
+      if (judged.forget) {
         await defaultHealIo.forget(row);
         drop(new Set([row.id]));
         deps.toast(`"${displayName(row.fileName)}" 을(를) 열 수 없어 목록에서 뺐습니다.`);
         return;
       }
+      if (judged.missingSince !== undefined && row.missingSince === undefined) {
+        row.missingSince = judged.missingSince;
+        await defaultHealIo.update(row, { missingSince: judged.missingSince });
+      }
       flagged.set(row.id, result === 'missing' ? '찾을 수 없음' : '열 수 없음');
+      if (result === 'missing') deps.toast(`"${displayName(row.fileName)}" 파일을 찾을 수 없습니다.`);
       if (visible) renderRecent();
     } finally {
       opening = null;
@@ -873,13 +902,19 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     event.preventDefault();
     cards[Math.max(0, Math.min(cards.length - 1, index + (event.key === 'ArrowRight' ? 1 : -1)))]?.focus();
   });
-  root.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
+  // Esc 는 문서 전체에서 받는다. 빈 곳을 눌러 초점이 몸체로 가도 홈을 닫을 수 있다.
+  // 입력 칸·대화상자·펼친 판이 먼저 받은 Esc 는 건드리지 않는다.
+  document.addEventListener('keydown', (event) => {
+    if (!visible || event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target && target !== document.body && !root.contains(target)) return;
+    if (target?.closest('input, textarea, select, [contenteditable="true"], dialog, [role="dialog"]')) return;
     // 홈이 받은 Esc 는 뒤의 앱(에이전트 전체 화면 닫기 등)으로 넘기지 않는다.
     event.preventDefault();
     if (expanded) { const id = expanded; collapse(); cardFor(id)?.focus(); return; }
     if (deps.returnTarget()) hide();
-  });
+    // 캡처 단계에서 받는다. 가린 앱의 Esc 처리(에이전트 전체 화면 닫기 등)보다 먼저다.
+  }, true);
 
   const setSort = (sort: HomeSort) => {
     if (prefs.sort === sort) return;
@@ -992,7 +1027,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       if (root.nextElementSibling) document.body.append(root);
       coverApp(true);
       // 문서 그림은 열 때마다 저장소에서 다시 읽는다. 그사이 고친 문서가 옛 그림으로 남지 않는다.
-      for (const key of [...blobs.keys()]) if (key.startsWith('document:')) blobs.delete(key);
+      for (const key of [...blobs.keys()]) if (key.startsWith('document:')) forgetBlob(key);
     }
     visible = true;
     root.hidden = false;

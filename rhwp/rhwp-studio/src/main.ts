@@ -328,6 +328,7 @@ const wasmFacade = createAttachableFacade<WasmBridge>(firstSession.wasm, {
 const wasm = wasmFacade.facade;
 const refreshDocumentTitle = installDocumentTitle(wasm, {
   rename: (name) => renameAttachedDocument(name),
+  canRename: () => canRenameSessionDocument(attachedSession),
   worktree: () => worktreeIdentity(attachedSession.versions?.getState(), attachedSession.documentId),
 });
 const eventBus = new AttachableEventBus(firstSession.bus);
@@ -1800,6 +1801,7 @@ function installChatAgent(
       { commit: true, threadId: thread.id },
     ),
     openChat: (request) => (chat ? openChatFromChat(chat, request) : Promise.resolve('handled' as const)),
+    canRenameDocument: () => canRenameSessionDocument(session),
     renameDocument: async (name) => {
       const result = await renameDocumentInSession(session, name);
       if (result.ok) return result.fileName;
@@ -2101,6 +2103,16 @@ async function liveSessionForFile(
  * 문서 이름을 바꾼다. 파일이 있는 문서는 같은 폴더 안에서 디스크의 파일 이름을 바꾸고, 파일이
  * 없는 문서는 저장할 때 쓸 이름만 바꾼다. 확장자는 그대로 둔다. 바뀐 파일 이름을 돌려준다.
  */
+/**
+ * 이 문서의 이름을 바꿀 수 있는가. 파일이 없는 새 문서는 이름만, 데스크톱 파일은 디스크 이름까지
+ * 바꾼다. 브라우저 파일 핸들은 이름을 바꿀 수 없어 이름 바꾸기를 내놓지 않는다.
+ */
+function canRenameSessionDocument(session: DocumentSession): boolean {
+  if (!session.wasm.hasLoadedDocument()) return false;
+  const handle = session.wasm.currentFileHandle;
+  return !handle || canRenameNativeFile(handle);
+}
+
 /** 확장자는 그대로 두고 파일 이름에 쓸 수 없는 글자를 뺀다. 쓸 수 있는 이름이 없으면 null. */
 function requestedFileName(current: string, requested: string): string | null {
   const extension = current.match(/\.[^./\\]+$/)?.[0] ?? '';
@@ -2263,7 +2275,11 @@ function installDocumentHome(): void {
       await openWorktreeSession(worktree);
       documentHome?.hide();
     }),
-    canRename: (row) => Boolean(liveSessionForDocument(row.documentId)) || isDesktopApp(),
+    // 열린 문서는 그 세션의 규칙을, 닫힌 문서는 데스크톱에서만 디스크 이름을 바꾼다.
+    canRename: (row) => {
+      const live = liveSessionForDocument(row.documentId);
+      return live ? canRenameSessionDocument(live) : isDesktopApp();
+    },
     renameDocument: renameRecentDocument,
     openInNewWindow: canOpenNativeDocumentWindow()
       ? (row) => openNativeDocumentWindow(row.documentId)

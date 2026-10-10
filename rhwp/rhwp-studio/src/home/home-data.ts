@@ -15,7 +15,7 @@ import {
 } from '../desktop-integration.ts';
 import type { VersionGraphStore } from '../versioning/store.ts';
 import type { BranchRef, VersionWorktree } from '../versioning/types.ts';
-import { layoutCommitGraph, orderBranchHeadFrontier } from '../versioning/graph-layout.ts';
+import { branchColors } from '../versioning/branch-colors.ts';
 import { laneColor } from '../ui/version-lanes.ts';
 import type { HomeWorktreeInput } from './home-model.ts';
 import { deleteThumbnail, readThumbnail, writeThumbnail } from './thumbnail-cache.ts';
@@ -125,6 +125,24 @@ export async function healRecentDocuments(
     }
   }
   return result;
+}
+
+/** 열기에 두 번 실패한 기록만 목록에서 뺀다. 한 번은 잠깐의 문제일 수 있다. */
+export const OPEN_FAILURES_BEFORE_FORGET = 2;
+
+/**
+ * 카드를 열지 못했을 때 할 일. 파일이 없으면 홈의 확인과 같은 규칙(처음 못 찾은 뒤 시간이 지나도
+ * 없을 때만 뺀다)을 따르고, 읽지 못한 파일은 두 번 실패하면 뺀다.
+ */
+export function judgeOpenFailure(
+  row: Pick<RecentDoc, 'missingSince'>,
+  result: 'missing' | 'failed',
+  failures: number,
+  now = Date.now(),
+): { forget: boolean; missingSince?: number } {
+  if (result === 'failed') return { forget: failures >= OPEN_FAILURES_BEFORE_FORGET };
+  if (row.missingSince !== undefined && now - row.missingSince >= MISSING_CONFIRM_MS) return { forget: true };
+  return { forget: false, missingSince: row.missingSince ?? now };
 }
 
 export const thumbnailKey = (documentId: string) => `document:${documentId}`;
@@ -239,12 +257,12 @@ export async function loadWorktreeData(store: VersionGraphStore): Promise<Worktr
         store.listCommits(id, { limit: 100 }),
       ]);
       const branches = refs.filter((ref): ref is BranchRef => ref.kind === 'branch');
-      const loaded = new Set(commits.map((commit) => commit.id));
-      const primary = list.find((tree) => tree.primary)?.branch ?? null;
-      const heads = orderBranchHeadFrontier(branches, repository?.defaultBranch ?? null, primary)
-        .filter((head) => loaded.has(head));
-      const lanes = new Map(layoutCommitGraph(commits, [], heads).map((row) => [row.commitId, row.lane]));
-      colors.set(repositoryId, new Map(branches.map((branch) => [branch.name, laneColor(lanes.get(branch.target) ?? 0)])));
+      // 버전 그래프와 같은 규칙으로 색을 매긴다(가지에서 나온 색, 활성 가지와 무관).
+      const painted = branchColors(
+        [...commits].sort((a, b) => b.ordinal - a.ordinal).map((commit) => ({ id: commit.id, parentIds: commit.parents })),
+        branches.map((branch) => ({ name: branch.name, headId: branch.target, isDefault: branch.name === repository?.defaultBranch })),
+      );
+      colors.set(repositoryId, new Map(branches.map((branch) => [branch.name, painted.branch(branch.name)])));
     } catch (error) {
       console.warn('[document-home] 가지 색을 읽지 못했습니다:', error);
     }

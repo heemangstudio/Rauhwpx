@@ -788,15 +788,17 @@ function projectFileDeps(
 export type RecentOpenResult = 'opened' | 'cancelled' | 'missing' | 'failed';
 
 /**
- * 최근 문서 하나를 연다(문서 홈). 파일 메뉴의 "최근 문서"와 같은 경로를 쓰고, 결과를 돌려준다.
+ * 최근 문서 하나를 연다(문서 홈). 파일 메뉴의 "최근 문서"와 같은 경로로 찾되, 못 찾으면 파일 선택
+ * 창을 띄우지 않고 missing 을 돌려준다. 목록에서 빼는 일은 홈이 정한다(기록을 지우지 않는다).
  * failed 는 파일을 찾았지만 문서로 읽지 못했을 때다(손상·지원하지 않는 형식).
  */
 export async function openRecentDocument(services: CommandServices, entry: RecentDoc): Promise<RecentOpenResult> {
   const claim = claimForRecentDoc(entry);
   let loaded: OpenBytesOutcome | null = null;
-  const outcome = await openProjectFile(claim, projectFileDeps(services, claim, {
+  const { pickForProject: _picker, forgetRecent: _forget, ...deps } = projectFileDeps(services, claim, {
     onLoaded: (result) => { loaded = result; },
-  }));
+  });
+  const outcome = await openProjectFile(claim, deps);
   switch (outcome.kind) {
     case 'opened': {
       const result = loaded as OpenBytesOutcome | null;

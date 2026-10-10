@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { groupHomeDocuments, sortHomeDocuments, type HomeWorktreeInput } from '../src/home/home-model.ts';
-import { healRecentDocuments, inspectAndHeal, MISSING_CONFIRM_MS, type DocumentPresence, type HealIo } from '../src/home/home-data.ts';
+import { healRecentDocuments, inspectAndHeal, judgeOpenFailure, MISSING_CONFIRM_MS, type DocumentPresence, type HealIo } from '../src/home/home-data.ts';
 import type { RecentDoc } from '../src/recent/recent-store.ts';
 
 function recent(id: string, fileName: string, openedAt: number, digest = `blake3:${id}`): RecentDoc {
@@ -141,4 +141,12 @@ test('겹친 정리는 앞 정리가 끝난 뒤에 차례로 돈다', async () =
   release();
   await Promise.all([first, second]);
   assert.deepEqual(order, ['first:start', 'first:end', 'second']);
+});
+
+test('카드를 열다 파일이 없으면 홈의 확인과 같은 규칙으로 흐리게 두었다가 뺀다', () => {
+  assert.deepEqual(judgeOpenFailure({}, 'missing', 1, NOW), { forget: false, missingSince: NOW }, '처음은 흐리게 두고 시각을 남긴다');
+  assert.deepEqual(judgeOpenFailure({ missingSince: NOW - 1000 }, 'missing', 2, NOW), { forget: false, missingSince: NOW - 1000 });
+  assert.deepEqual(judgeOpenFailure({ missingSince: NOW - MISSING_CONFIRM_MS }, 'missing', 1, NOW), { forget: true });
+  assert.deepEqual(judgeOpenFailure({}, 'failed', 1, NOW), { forget: false }, '읽지 못한 파일은 한 번으로 빼지 않는다');
+  assert.deepEqual(judgeOpenFailure({}, 'failed', 2, NOW), { forget: true });
 });
