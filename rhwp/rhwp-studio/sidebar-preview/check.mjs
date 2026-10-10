@@ -13,6 +13,7 @@ import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
+import { checkWriterBusyPreview } from './writer-busy.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -1008,6 +1009,8 @@ try {
     () => checkNewChatWhileRunning(page, origin));
   await step('A chat locked by another chat\'s edits only picks and sends in 채팅',
     () => checkChatModeLock(page));
+  await step('A write refused because another chat edits the document shows one failed tool row',
+    () => checkWriterBusyPreview(page, origin, artifacts));
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

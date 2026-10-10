@@ -21,6 +21,7 @@ export const scenarios = [
   'review',
   'fleet',
   'error',
+  'writer-busy',
 ] as const;
 export type Scenario = (typeof scenarios)[number];
 
@@ -104,6 +105,29 @@ function toolScenarioCalls(): ToolScenarioCall[] {
     },
   ];
 }
+
+/** writer-busy 시나리오 — 같은 문서의 다른 채팅이 편집 중이라 스튜디오가 거절한 쓰기. */
+function writerBusyCall(): ToolScenarioCall & { error: NonNullable<ToolScenarioCall['error']> } {
+  return {
+    id: 'busy',
+    tool: 'mcp__rhwp__replace_range',
+    args: { expectedRevision: 12, anchor: { text: '2026년 11월 착수' }, text: '2026년 10월 착수' },
+    error: {
+      code: 'DOCUMENT_WRITER_BUSY',
+      message: 'Another chat open on this document is editing it (its turn is running or its edits are waiting for the user\'s review). '
+        + 'A document has one editing chat at a time. Nothing was changed. '
+        + 'Do not retry document-write tools in this turn; reads still work. '
+        + 'Finish by telling the user what you would change; they can ask again after the other chat\'s edits are applied or discarded.',
+    },
+  };
+}
+
+const WRITER_BUSY_REPLY = [
+  '다른 채팅이 이 문서를 편집하고 있어서 이번에는 문서를 고치지 않았어요.\n\n',
+  '바꾸려던 내용은 다음과 같아요.\n\n',
+  '- ‘2026년 11월 착수’ → ‘2026년 10월 착수’\n\n',
+  '그 채팅의 편집이 반영되거나 취소된 뒤 다시 요청해 주세요.',
+];
 
 /** Implements the actual UI contract: new bridge methods produce a type error here. */
 export function createMockBridge(report: (message: string) => void, onApproved?: () => void) {
@@ -677,6 +701,10 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
             stream({ type: 'tool-call', agent, callId: `${call.id}-${turnGeneration}`, tool: call.tool, argsJson: JSON.stringify(call.args) });
           }
         }
+        if (reply === 'writer-busy') {
+          const call = writerBusyCall();
+          stream({ type: 'tool-call', agent, callId: `${call.id}-${turnGeneration}`, tool: call.tool, argsJson: JSON.stringify(call.args) });
+        }
         if (reply === 'fleet') {
           stream({
             type: 'task-start',
@@ -729,6 +757,18 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
                   : JSON.stringify([{ type: 'text', text: JSON.stringify(call.result ?? {}) }]).slice(0, 2000),
               });
             }
+          }
+          if (reply === 'writer-busy') {
+            // 스튜디오가 문서에 닿기 전에 거절하고, 프로바이더가 같은 오류를 받는다.
+            const call = writerBusyCall();
+            emit({ type: 'tool-executed', tool: call.tool.replace(/^mcp__rhwp__/, ''), args: call.args, ok: false, error: call.error });
+            stream({
+              type: 'tool-result',
+              agent,
+              callId: `${call.id}-${turnGeneration}`,
+              ok: false,
+              resultPreview: `${call.error.code}: ${call.error.message}`,
+            });
           }
           if (reply === 'error') {
             stream({
@@ -788,6 +828,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
             '> 승인 전에는 원본 문서를 보존하고 변경 사항을 검토합니다.\n\n',
             '```json\n{ "status": "review", "sections": 3 }\n```\n\n',
             '[브랜드 가이드](#preview-reference)를 참고해 **용어**와 *문체*를 통일했습니다.\n\n');
+          if (reply === 'writer-busy') chunks.splice(0, chunks.length, ...WRITER_BUSY_REPLY);
           chunks.forEach((text, index) =>
             later(() => {
               if (generation !== turnGeneration) return;
