@@ -5150,6 +5150,198 @@ button.ag-skill-copy {
   to { opacity: 1; transform: none; }
 }
 
+/* 대기 메시지 띠 — 입력기(와 질문 카드) 바로 위. 칩과 같은 떠 있는 면에 한 줄씩 쌓고,
+   세 줄이 넘으면 목록만 스크롤한다. 붙잡힌 이유와 보내기는 맨 위 한 줄이다. */
+.ag-followups {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin: 0 12px 8px;
+  padding: 4px;
+  border-radius: var(--ag-r-card);
+  background: var(--ag-raised);
+  box-shadow: var(--ag-elev-popover);
+  animation: ag-lift-in var(--ag-dur-slow) var(--ag-spring) both;
+}
+
+.ag-followups[hidden],
+.ag-followups-hold[hidden],
+.ag-followups-hint[hidden] {
+  display: none;
+}
+
+.ag-followups-hold {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  margin: 0;
+  padding: 0 2px 0 8px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-followups-hold-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--ag-text-muted);
+}
+
+.ag-followups-hold-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ag-followups-resume {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  font: inherit;
+  font-weight: var(--ag-fw-medium);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-followups-resume:hover:not(:disabled) {
+  background: var(--ag-primary-bg-hover);
+}
+
+.ag-followups-resume:active:not(:disabled) {
+  background: var(--ag-primary-bg-pressed);
+}
+
+.ag-followups-resume:disabled {
+  background: var(--ag-primary-bg-disabled);
+}
+
+.ag-followups-hint {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-followups-list {
+  max-height: calc(3 * 30px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.ag-followup {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 2px 0 8px;
+  border-radius: var(--ag-r-row);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-followup:hover,
+.ag-followup:focus-within {
+  background: var(--ag-hover);
+}
+
+.ag-followup-index {
+  flex: 0 0 auto;
+  min-width: 1ch;
+  color: var(--ag-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-followup-skill {
+  flex: 0 0 auto;
+}
+
+.ag-followup-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-followup-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-followup-action:hover:not(:disabled) {
+  background: var(--ag-pressed);
+  color: var(--ag-text);
+}
+
+.ag-followup-action:disabled {
+  color: var(--ag-text-disabled);
+}
+
+.ag-followup.ag-editing {
+  align-items: flex-start;
+}
+
+.ag-followup.ag-editing .ag-followup-index,
+.ag-followup.ag-editing .ag-followup-action {
+  margin-top: 4px;
+}
+
+.ag-followup-edit {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: 120px;
+  margin: 3px 0;
+  padding: 4px 6px;
+  border: 1px solid var(--ag-border-strong);
+  border-radius: var(--ag-r-field);
+  background: var(--ag-input-bg);
+  color: var(--ag-text);
+  font: inherit;
+  line-height: var(--ag-lh-secondary);
+  resize: none;
+}
+
+.ag-followups :is(button, textarea):focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-fullscreen .ag-chat-page > .ag-followups {
+  box-sizing: border-box;
+  width: min(var(--ag-column-w), calc(100% - 2 * var(--ag-column-gutter)));
+  margin-inline: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-followups {
+    animation: none;
+  }
+}
+
 .ag-composer {
   position: relative;
   flex: 0 0 auto;

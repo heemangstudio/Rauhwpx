@@ -38,6 +38,7 @@ import type {
   DocumentTemplate,
   TemplateCatalog,
   UserQuestionInteraction,
+  StagedReference,
 } from '../../agent/types.ts';
 import {
   defaultModelForAgent,
@@ -164,6 +165,14 @@ import { beginInlineRename } from '../inline-rename.ts';
 import { loadInitialSetup, saveInitialSetup } from '../initial-setup/state.ts';
 import { summarizePendingDiffs } from './pending-diff-summary.ts';
 import { createReferenceLibrary } from './reference-library.ts';
+import { createFollowUpStrip } from './follow-up-strip.ts';
+import {
+  createFollowUpController,
+  type ComposedMessageOrigin,
+  type ComposedMessageResult,
+  type ComposedMessageSpec,
+} from './follow-up-controller.ts';
+import { engineTrap } from '../../core/engine-trap.ts';
 import {
   createVersionManagerPage,
   type VersionManagerController,
@@ -2833,7 +2842,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const questionController = createUserQuestionController({
     input,
     submitAnswers: (interactionId, answers) => bridge.answerUserQuestion(interactionId, answers),
-    stop: () => bridge.interrupt(),
+    stop: () => stopTurn(),
     // 입력기(질문이 넘겨받는다)와 텍스트가 아닌 곳의 초점만 옮긴다. 문서나 다른 칸에서 쓰던 초점은 그대로 둔다.
     canTakeFocus: () => active
       && !(ownsTextInput(document.activeElement) && document.activeElement !== input),
@@ -2888,10 +2897,49 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     })
     : null;
   dockResizeObserver?.observe(fleetView.root);
+  // 대기 메시지 — 에이전트가 일하는 동안 Enter 로 쌓아 두고, 턴이 정상으로 끝나면 하나씩 보낸다.
+  // 입력기 바로 위(질문 카드 위)에 띠로 보인다. 규칙은 follow-up-controller.ts 가 정한다.
+  const followUpStrip = createFollowUpStrip({
+    isMac: isMacPlatform,
+    skillDisplayName: (name) => skillDisplayName(name),
+    onResume: () => followUps.resume(),
+    onSendNow: (id) => followUps.sendNow(id),
+    onRemove: (id) => followUps.removeItem(id),
+    onEditStart: (id) => followUps.startEdit(id),
+    onEditCommit: (id, text, viaKey) => followUps.commitEdit(id, text, viaKey),
+    onEditCancel: (id) => followUps.cancelEdit(id),
+  });
+  const followUps = createFollowUpController<ThreadMessage, HTMLElement>({
+    strip: followUpStrip,
+    thread: () => currentThread,
+    persist: () => persistCurrentThread(),
+    send: (item) => sendComposedMessage({
+      text: item.text,
+      skillName: item.skillName,
+      skillIcon: item.skillIcon,
+      origin: 'queue',
+      requireReceipt: true,
+    }),
+    unsend: (message, bubble) => unrecordUserMessage(message, bubble),
+    interrupt: () => bridge.interrupt(),
+    isTurnRunning: () => turnRunning,
+    isWorking: () => agentWorking(),
+    sendBlockedReason: () => followUpSendBlockedReason(),
+    readOnly: () => readOnlyDocLabel !== null,
+    turnContext: () => ({
+      planAwaitingApproval: chatWorkflow === 'plan' && planningPhase === 'awaiting-approval',
+      engineTrapped: engineTrap() !== null,
+      mergeLocked: mergeResolverLocked,
+    }),
+    focusComposer: () => {
+      if (active && !input.disabled) input.focus({ preventScroll: true });
+    },
+    onChange: () => updateComposer(),
+  });
   // 입력기 위에 흐름으로 쌓인 것들의 높이. 떠 있는 요소는 이들을 덮지 않고 한 겹 위에 선다.
   // attached 는 입력기와 한 면을 이루는 질문 카드, stack 은 그 위의 변경 막대와 칩이다.
   // 위치만 바꾸고 크기는 건드리지 않아 관찰 고리가 생기지 않는다.
-  const composerStackNodes = [compactChanges, reconnectChip, calibrationChip];
+  const composerStackNodes = [compactChanges, reconnectChip, calibrationChip, followUpStrip.root];
   let composerStackFrame = 0;
   function syncComposerStack(): void {
     const question = questionController.root;
@@ -2930,7 +2978,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       reroll: threadChanged,
     });
   }
-  chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, calibrationChip, questionController.root, composer);
+  chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, calibrationChip, followUpStrip.root, questionController.root, composer);
   messages.after(latestDock);
 
   /** 입력기 하단 한 줄이 겹치지 않고 붙는 폭을 재서 사이드바 최솟값으로 쓴다.
@@ -3635,7 +3683,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     reviewResize.inert = !detailActive;
     if (focusLayoutActive) {
       chatPage.setAttribute('aria-hidden', 'false');
-      if (composer.parentElement !== chatPage) chatPage.append(questionController.root, composer);
+      if (composer.parentElement !== chatPage) chatPage.append(followUpStrip.root, questionController.root, composer);
     }
     applyPlanMinimizedState();
   }
@@ -3826,7 +3874,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     threadsPage.setAttribute('aria-hidden', 'true');
     chatPage.setAttribute('aria-hidden', 'false');
     // 변경 검토·계획·질문·입력기는 다시 사이드바의 분리된 inline 흐름으로 돌아간다.
-    chatPage.append(review, compactChanges, planSurface, planRestore, questionController.root, composer);
+    chatPage.append(review, compactChanges, planSurface, planRestore, followUpStrip.root, questionController.root, composer);
     changesDrawer.setCompactHost(compactChangesHost());
     updateCompactChangesVisibility();
     applyPlanMinimizedState();
@@ -4602,6 +4650,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
+      // Ctrl+Enter(macOS 는 ⌘+Enter)는 '지금 보내기'다 — 일하는 중이면 턴을 멈추고 이것부터 보낸다.
+      composerSubmitIntent = (isMacPlatform ? e.metaKey : e.ctrlKey) ? 'send-now' : 'enter';
       composer.requestSubmit();
     }
   });
@@ -4626,9 +4676,181 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     resizeComposerInput();
     rebuildSlashMenu();
   });
+  /**
+   * 입력기 제출의 뜻. Enter 는 keydown 이 정해 넘기고, 단추는 지금 모양(중지/보내기)이 정한다.
+   * requestSubmit() 처럼 단추 없이 온 제출은 Enter 와 같다.
+   */
+  let composerSubmitIntent: 'enter' | 'send-now' | null = null;
+  function takeComposerSubmitIntent(e: SubmitEvent): 'enter' | 'send-now' | 'stop' {
+    const keyed = composerSubmitIntent;
+    composerSubmitIntent = null;
+    if (keyed) return keyed;
+    return e.submitter === send && send.classList.contains('ag-stop') ? 'stop' : 'enter';
+  }
+
+  /** 턴이 돌거나, 보낸 메시지가 턴을 기다린다 — 이때 Enter 는 보내지 않고 대기열에 넣는다. */
+  function agentWorking(): boolean {
+    return turnRunning || replyPending;
+  }
+
+  /** 중지 — 입력기의 중지 단추와 질문 카드의 중지. 대기 메시지는 이 턴 끝에 '멈춤'으로 붙잡힌다. */
+  function stopTurn(): void {
+    followUps.noteUserStop();
+    bridge.interrupt();
+  }
+
+  /** 대기 메시지를 지금 보낼 수 없는 이유(단추 제목). null 이면 보낼 수 있다. */
+  function followUpSendBlockedReason(): string | null {
+    if (mergeResolverLocked) return '병합 검토가 끝나면 보낼 수 있어요';
+    if (connState !== 'connected') return '연결되면 보낼 수 있어요';
+    if (planningPhase === 'switching' || workflowTransitionPending || planActionPending
+      || chatStartPendingThreadId !== null || attachmentsSending) return '전환이 끝나면 보낼 수 있어요';
+    return null;
+  }
+
+  /** 허브가 받지 않은 대기 메시지를 기록과 대화에서 걷는다 — 대기열 맨 앞으로 돌아간다. */
+  function unrecordUserMessage(message: ThreadMessage, bubble: HTMLElement): void {
+    const index = currentThread.messages.lastIndexOf(message);
+    if (index >= 0) currentThread.messages.splice(index, 1);
+    bubble.remove();
+    persistCurrentThread();
+    updateTurnPending();
+  }
+
+  /** 일하는 동안 입력기가 대기열에 넣는다는 것을 자리 표시와 ⏎ 힌트로 말한다. */
+  function syncFollowUpComposerCues(): void {
+    const queueing = agentWorking() && !input.disabled && !questionController.hasPending();
+    if (queueing) input.placeholder = '작업이 끝나면 보낼 메시지 입력';
+    sendHint.textContent = queueing ? '⏎ 대기' : '⏎';
+    if (queueing) sendHint.hidden = (!input.value.trim() && !activeComposerSkill) || referenceLibrary.hasDrafts();
+  }
+  // 대기열에 넣지 못한 이유는 다음 입력까지만 보인다.
+  input.addEventListener('input', () => {
+    followUps.clearHint();
+    syncFollowUpComposerCues();
+  });
+
+  const userMessageDispatchListeners = new Set<(origin: ComposedMessageOrigin) => void>();
+  /** 사용자 메시지가 나갈 때마다(입력기·대기열·이어 가기) 알린다. 해제 함수를 돌려준다. */
+  function onUserMessageDispatched(listener: (origin: ComposedMessageOrigin) => void): () => void {
+    userMessageDispatchListeners.add(listener);
+    return () => userMessageDispatchListeners.delete(listener);
+  }
+  function notifyUserMessageDispatched(origin: ComposedMessageOrigin): void {
+    for (const listener of [...userMessageDispatchListeners]) {
+      try { listener(origin); } catch (error) {
+        console.warn('[agent-sidebar] 메시지 전송 리스너 오류:', error);
+      }
+    }
+  }
+
+  /**
+   * 요청문을 내보내기 직전에 꾸민다 — 모든 보내기(입력기·대기열·이어 가기·인라인)가 지나는 한 자리.
+   * 템플릿·스킬·계획 머리말을 붙인 뒤에 부른다. 지금은 그대로 돌려준다. 복원 안내(U6)는 앞에,
+   * 끊긴 작업 블록(S3)은 뒤에 붙는다.
+   */
+  function decorateRequestText(base: string, _threadId: string): string {
+    return base;
+  }
+
+  /**
+   * 사용자 메시지 한 건을 보낸다 — 입력기, 대기열, 끊긴 작업 이어 가기(S3·U5), 인라인 프롬프트가
+   * 함께 쓰는 한 길. 보내는 순간의 채팅 모드 잠금을 다시 읽어 잠겼으면 채팅 모드로 옮기고, 템플릿
+   * 머리말과 스킬 요청문을 붙여(wire 가 있으면 그대로) 기록·말풍선을 남긴 뒤 브리지에 넘긴다.
+   * 입력기를 비우는 일은 입력기 쪽이 한다. 입력기 밖에서 나가는 메시지는 사용자가 보던 패널을
+   * 닫지 않고, 자동으로 나가는 메시지(queue·resume)는 대화를 끌어내리지 않는다.
+   */
+  function sendComposedMessage(
+    spec: ComposedMessageSpec<StagedReference, NonNullable<ThreadMessage['selection']>>,
+  ): ComposedMessageResult<ThreadMessage, HTMLElement> {
+    const userAction = spec.origin === 'composer' || spec.origin === 'inline';
+    if (spec.origin === 'composer') {
+      if (threadsPanelOpen) setThreadsPanelOpen(false);
+      if (skillsPanelOpen) setSkillsPanelOpen(false);
+      if (settingsPanelOpen) setSettingsPanelOpen(false);
+    }
+    readChatModeLock();
+    prepareChatForSend();
+    const { skillName } = spec;
+    let messageText: string;
+    let requestText: string;
+    if (spec.wire) {
+      messageText = spec.wire.displayText;
+      requestText = spec.wire.requestText;
+    } else {
+      const { text } = spec;
+      messageText = activeTemplate && !skillName
+          ? `/templates ${activeTemplate.name}${text ? ` ${text}` : ''}`
+          : text;
+      // 대화 기록은 skill block만 보이도록 빈 본문을 유지한다. 다만 wire
+      // protocol은 비어 있지 않은 text를 요구하므로 명시적 slash 호출 자체를
+      // 요청 본문으로 보낸다. 자연어 fallback을 UI나 기록에 숨겨 넣지 않는다.
+      const skillRequestText = requestTextForSkillInvocation(text, skillName);
+      requestText = spec.revisionPlanId && !skillName
+        ? `현재 계획(${spec.revisionPlanId})을 다음 피드백에 맞게 수정해 주세요.\n\n${skillRequestText}`
+        : skillRequestText;
+    }
+    requestText = decorateRequestText(requestText, currentThread.id);
+    const staged = spec.staged ?? [];
+    const messageAttachments: ThreadAttachment[] = staged.map((file) => ({
+      stageId: file.id,
+      name: file.name,
+      mimeType: file.mimeType,
+      size: file.size,
+      status: 'processing',
+    }));
+    const userMessage = recordUserMessage(messageText,
+      messageAttachments,
+      spec.selection,
+      skillName,
+      spec.skillIcon,
+    );
+    const userBubble = renderUserMessage(userMessage);
+    userBubble.classList.add('ag-msg-enter');
+    replyPending = true;
+    if (userAction) {
+      followConversation = true;
+      appendConversation(userBubble);
+    } else {
+      withAutoScroll(() => appendConversation(userBubble));
+    }
+    updateTurnPending(selectedAgent);
+    if (userAction) scrollConversationToMessage(userBubble, { smooth: true });
+    const messageSent = bridge.sendUserMessage(
+      requestText,
+      skillName,
+      staged.map((file) => file.id),
+      spec.requireReceipt === true,
+      spec.signal,
+    );
+    if (staged.length > 0) attachmentsSending = true;
+    if (staged.length > 0 || spec.requireReceipt) {
+      void messageSent.then((messageId) => {
+        if (!messageId) {
+          if (staged.length > 0) {
+            attachmentsSending = false;
+            updateComposer();
+          }
+          return;
+        }
+        // 첨부 처리 상태(reference-status)는 이 receipt id 로 메시지를 찾는다.
+        userMessage.messageId = messageId;
+        persistCurrentThread();
+      });
+    }
+    updateComposer();
+    notifyUserMessageDispatched(spec.origin);
+    return { message: userMessage, bubble: userBubble, sent: messageSent };
+  }
+
   composer.addEventListener('submit', (e) => {
     e.preventDefault();
     composerRest.setResting(false);
+    const intent = takeComposerSubmitIntent(e);
+    if (intent === 'stop') {
+      stopTurn();
+      return;
+    }
     if (readOnlyDocLabel !== null || mergeResolverLocked) return;
     if (questionController.isPresented()) {
       // 입력기로 답한 것도 보내기다 — 쓰기가 끝났다.
@@ -4636,15 +4858,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       else bridge.interrupt();
       return;
     }
-    if (turnRunning) {
-      bridge.interrupt();
+    // 일하는 동안의 Enter 는 턴을 멈추지 않고 대기열에 넣는다. 멈추는 것은 중지 단추뿐이다.
+    const queueing = agentWorking();
+    if (queueing && intent === 'send-now' && !input.value.trim() && !activeComposerSkill) {
+      followUps.sendNowHead();
       return;
     }
-    if (planningPhase === 'switching' || workflowTransitionPending || planActionPending
-      || chatStartPendingThreadId !== null || attachmentsSending || referenceLibrary.hasBlockingDrafts()) return;
+    if (!queueing && (planningPhase === 'switching' || workflowTransitionPending || planActionPending
+      || chatStartPendingThreadId !== null || attachmentsSending || referenceLibrary.hasBlockingDrafts())) return;
     let text = input.value.trim();
-    if ((!text && !activeComposerSkill && !referenceLibrary.hasDrafts()) || connState !== 'connected') return;
-    if (referenceLibrary.hasImageDrafts() && !modelSupportsImages(selectedAgent, selectedModel)) {
+    if ((!text && !activeComposerSkill && !referenceLibrary.hasDrafts()) || (!queueing && connState !== 'connected')) return;
+    if (!queueing && referenceLibrary.hasImageDrafts() && !modelSupportsImages(selectedAgent, selectedModel)) {
       systemMessage(`${AGENT_LABEL[selectedAgent]} 현재 모델은 이미지 미지원 · 다른 모델 선택`);
       return;
     }
@@ -4656,7 +4880,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!activeComposerSkill && text.startsWith('//')) text = text.slice(1);
     // 잠긴 채팅은 계획 수정 요청도 채팅 모드의 질문으로 보낸다.
     if (chatModeLockReason !== null && currentMode() !== 'chat') revisionPlanId = null;
-    if (revisionPlanId && !referenceLibrary.hasDrafts() && !activeComposerSkill && text) {
+    // 일하는 동안 대기열에 넣은 글은 나중에 계획에 대한 의견으로 간다 — 수정 요청 경로를 타지 않는다.
+    if (!queueing && revisionPlanId && !referenceLibrary.hasDrafts() && !activeComposerSkill && text) {
       const planId = revisionPlanId;
       if (!planApprovable || activePlan?.planId !== planId) {
         revisionPlanId = null;
@@ -4685,6 +4910,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       appendConversation(userBubble);
       updateTurnPending(selectedAgent);
       scrollConversationToMessage(userBubble, { smooth: true });
+      notifyUserMessageDispatched('composer');
       revisionPlanId = null;
       input.value = '';
       typing.noteSend();
@@ -4694,6 +4920,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     const templateInvocation = activeComposerSkill ? null : text.match(/^\/templates(?:\s+([\s\S]*))?$/i);
+    if (templateInvocation && queueing) {
+      followUps.hint('template');
+      return;
+    }
     if (templateInvocation) {
       const tail = (templateInvocation[1] ?? '').trim();
       const match = [...templateCatalog.templates]
@@ -4770,57 +5000,34 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const skillIconForMessage = invokedSkill
       ? invokedSkill.icon ?? defaultSkillIconForName(invokedSkill.name)
       : undefined;
-    if (threadsPanelOpen) setThreadsPanelOpen(false);
-    if (skillsPanelOpen) setSkillsPanelOpen(false);
-    if (settingsPanelOpen) setSettingsPanelOpen(false);
-    prepareChatForSend();
-    const messageText = activeTemplate && !skillNameForMessage
-        ? `/templates ${activeTemplate.name}${text ? ` ${text}` : ''}`
-        : text;
-    // 대화 기록은 skill block만 보이도록 빈 본문을 유지한다. 다만 wire
-    // protocol은 비어 있지 않은 text를 요구하므로 명시적 slash 호출 자체를
-    // 요청 본문으로 보낸다. 자연어 fallback을 UI나 기록에 숨겨 넣지 않는다.
-    const skillRequestText = requestTextForSkillInvocation(text, skillNameForMessage);
-    const requestText = revisionPlanId && referenceLibrary.hasDrafts() && !skillNameForMessage
-      ? `현재 계획(${revisionPlanId})을 다음 피드백에 맞게 수정해 주세요.\n\n${skillRequestText}`
-      : skillRequestText;
-    const staged = referenceLibrary.takeReadyDrafts();
-    const messageAttachments: ThreadAttachment[] = staged.map((file) => ({
-      stageId: file.id,
-      name: file.name,
-      mimeType: file.mimeType,
-      size: file.size,
-      status: 'processing',
-    }));
-    const userMessage = recordUserMessage(messageText,
-      messageAttachments,
-      undefined,
-      skillNameForMessage,
-      skillIconForMessage,
-    );
-    const userBubble = renderUserMessage(userMessage);
-    userBubble.classList.add('ag-msg-enter');
-    followConversation = true;
-    replyPending = true;
-    appendConversation(userBubble);
-    updateTurnPending(selectedAgent);
-    scrollConversationToMessage(userBubble, { smooth: true });
-    const messageSent = bridge.sendUserMessage(requestText, skillNameForMessage, staged.map((file) => file.id));
-    if (staged.length > 0) {
-      attachmentsSending = true;
+    if (queueing) {
+      // 첨부는 지금 허브 세션의 스테이징에 묶여 있어 미뤄 보낼 수 없다 — 글은 입력기에 남긴다.
+      if (referenceLibrary.hasDrafts()) {
+        followUps.hint('attachment');
+        return;
+      }
+      const queued = followUps.enqueue(
+        { text, skillName: skillNameForMessage, skillIcon: skillIconForMessage },
+        { atHead: intent === 'send-now' },
+      );
+      if (!queued) return;
+      input.value = '';
+      setComposerSkill(null);
+      setSlashMenuOpen(false);
+      resizeComposerInput();
+      if (intent === 'send-now') followUps.sendNow(queued.id);
       updateComposer();
-      void messageSent.then((messageId) => {
-        if (!messageId) {
-          attachmentsSending = false;
-          updateComposer();
-          return;
-        }
-        userMessage.messageId = messageId;
-        persistCurrentThread();
-      });
-    } else {
-      void messageSent;
+      return;
     }
+    const revisionFeedbackPlanId = revisionPlanId && referenceLibrary.hasDrafts() ? revisionPlanId : null;
+    sendComposedMessage({
+      text,
+      skillName: skillNameForMessage,
+      skillIcon: skillIconForMessage,
+      staged: referenceLibrary.takeReadyDrafts(),
+      origin: 'composer',
+      revisionPlanId: revisionFeedbackPlanId,
+    });
     input.value = '';
     // 보낸 글은 입력기를 떠났다 — 미뤄 둔 도착이 지금 열려도 잃을 것이 없다.
     typing.noteSend();
@@ -6235,6 +6442,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const returnThreadId = previousWasDraft
       ? draftReturnThreadId
       : (previousThreadWasEmpty ? null : previousThreadId);
+    followUps.detach();
     persistCurrentThread();
     if (previousWasDraft) threadComposerDrafts.delete(previousThreadId);
     input.value = '';
@@ -6260,6 +6468,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       threadWorkflows.delete(previousThreadId);
     }
     currentThread = nextThread;
+    followUps.attach();
     draftChat = draft;
     draftReturnThreadId = draft ? returnThreadId : null;
     updateWorkspaceChatTitle();
@@ -6353,6 +6562,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const resume = draftChat && !liveQuestion && bridgeThreadId === id && bridge.getActiveAgent() !== null;
     if (!resume && !liveQuestion && turnRunning) bridge.interrupt();
     flushAssistantBuffer();
+    followUps.detach();
     persistCurrentThread();
     const loaded = getThread(id);
     if (!loaded) return;
@@ -6371,6 +6581,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       messages: loaded.messages.map((m) => ({ ...m })),
       titleRequested: Boolean(loaded.titleRequested),
     };
+    followUps.attach();
     updateWorkspaceChatTitle();
     referenceLibrary.contextChanged();
     input.value = '';
@@ -6681,6 +6892,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (selectionLocked && chatStartPendingThreadId === null) setConfigPanelOpen(false);
     updateWorkflowControl();
     scheduleChatModeLockCheck();
+    syncFollowUpComposerCues();
+    followUps.render();
   }
 
   function conversationTail(): HTMLElement {
@@ -7598,6 +7811,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // 새 턴의 서브에이전트는 새 카드에 모인다.
         suppressedSpawnCalls.clear();
         fleetView.beginTurn();
+        followUps.turnStarted();
         break;
       case 'text-delta': {
         // 서브에이전트가 낸 텍스트는 그 행의 근황일 뿐, 루트 답변 버퍼에 섞이지 않는다.
@@ -7721,11 +7935,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         streamBubble = null;
         // 턴의 도구·작업 기록은 턴 끝에서 바로 남긴다.
         flushTranscriptPersist();
+        // 대기 메시지: 정상 종료면 맨 앞 하나를 보내고, 미심쩍은 끝이면 붙잡는다.
+        followUps.turnEnded(event, turnOwnerThreadId === currentThread.id);
         break;
       }
       case 'error':
         systemMessage(event.message);
         noteProviderAuthFailure(event.agent, event.message);
+        if (turnRunning) followUps.agentError();
         break;
     }
   }
@@ -7801,6 +8018,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // 재연결 시 진행 상태를 브리지와 다시 동기화한다.
         setTurnRunning(bridge.isTurnRunning());
         dropRunStatusIfIdle();
+        followUps.settle();
         break;
       case 'chat-started': {
         if (e.threadId && e.threadId !== currentThread.id) break;
@@ -8003,6 +8221,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         sweepTasksTranscript();
         completeTurnActivity();
         streamBubble = null;
+        followUps.chatStopped();
         break;
       case 'title-result': {
         if (e.threadId !== currentThread.id && !getThread(e.threadId)) break;
@@ -8026,8 +8245,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       case 'agent':
         handleAgentEvent(e.event);
         break;
-      case 'hub-error':
+      case 'hub-error': {
         chatStartPendingThreadId = null;
+        // 보낸 대기 메시지를 허브가 받지 않았으면 대기열 맨 앞으로 되돌린다. 이유는 붙잡음 줄이 말한다.
+        const followUpBounced = followUps.hubError(e);
         if (e.code === 'REFERENCE_COMMIT_FAILED' || e.code === 'INVALID_REFERENCE_MESSAGE') {
           attachmentsSending = false;
           for (const message of currentThread.messages) {
@@ -8042,14 +8263,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           renderMessagesFromThread(currentThread);
           updateComposer();
         }
-        systemMessage(`오류 (${e.code}): ${e.message}`);
+        if (!followUpBounced) systemMessage(`오류 (${e.code}): ${e.message}`);
         if (e.code === 'AGENT_SPAWN_FAILED') appendSpawnRetryAction();
         workflowTransitionPending = false;
         planActionPending = false;
         syncPlanningFromBridge();
         setTurnRunning(bridge.isTurnRunning());
         dropRunStatusIfIdle();
+        followUps.settle();
         break;
+      }
     }
   }
 
@@ -8945,49 +9168,45 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       updateComposer();
       return { ok: false, reason: '선택 자료 전송이 취소되었습니다.' };
     }
-    const messageAttachments: ThreadAttachment[] = staged.map((file) => ({
-      stageId: file.id,
-      name: file.name,
-      mimeType: file.mimeType,
-      size: file.size,
-      status: 'processing',
-    }));
-    let messageId: string | null;
+    // 선택 맥락은 그 문서 리비전에 묶여 있어 미뤄 보낼 수 없다 — 대기열 없이 지금 보낸다.
+    // 말풍선에는 지시만 남고, 에이전트에게는 선택 맥락 블록이 앞에 붙은 요청문이 간다.
+    let sent: ComposedMessageResult<ThreadMessage, HTMLElement> | null = null;
+    let messageId: string | null = null;
+    let failure: string | null = null;
     try {
-      prepareChatForSend();
-      messageId = await bridge.sendUserMessage(
-        `${submission.selection.contextBlock}\n\n${prompt}`,
-        undefined,
-        staged.map((file) => file.id),
-        true,
-        submission.signal,
-      );
+      sent = sendComposedMessage({
+        text: prompt,
+        wire: { displayText: prompt, requestText: `${submission.selection.contextBlock}\n\n${prompt}` },
+        staged,
+        selection: {
+          label: submission.selection.label,
+          excerpt: submission.selection.excerpt,
+          items: submission.selection.items,
+          documentId: submission.selection.documentId,
+          revision: submission.selection.revision,
+        },
+        origin: 'inline',
+        requireReceipt: true,
+        signal: submission.signal,
+      });
+      messageId = await sent.sent;
     } catch (caught) {
-      await referenceLibrary.discardInlineFiles(staged);
-      attachmentsSending = false;
-      updateComposer();
-      return { ok: false, reason: caught instanceof Error ? caught.message : '선택 자료를 보내지 못했습니다' };
+      failure = caught instanceof Error ? caught.message : '선택 자료를 보내지 못했습니다';
     }
     if (!messageId) {
+      // 기록보다 늦게 실패를 안다 — 남긴 말풍선과 응답 대기를 걷는다.
+      if (sent) {
+        unrecordUserMessage(sent.message, sent.bubble);
+        if (!turnRunning) {
+          replyPending = false;
+          updateTurnPending();
+        }
+      }
       await referenceLibrary.discardInlineFiles(staged);
       attachmentsSending = false;
       updateComposer();
-      return { ok: false, reason: '선택 자료 전송 실패 · 다시 시도' };
+      return { ok: false, reason: failure ?? '선택 자료 전송 실패 · 다시 시도' };
     }
-    const userMessage = recordUserMessage(prompt, messageAttachments, {
-      label: submission.selection.label,
-      excerpt: submission.selection.excerpt,
-      items: submission.selection.items,
-      documentId: submission.selection.documentId,
-      revision: submission.selection.revision,
-    }, undefined, undefined, messageId);
-    const userBubble = renderUserMessage(userMessage);
-    userBubble.classList.add('ag-msg-enter');
-    followConversation = true;
-    replyPending = true;
-    appendConversation(userBubble);
-    updateTurnPending(selectedAgent);
-    scrollConversationToMessage(userBubble, { smooth: true });
     attachmentsSending = false;
     updateComposer();
     return { ok: true };
@@ -9177,6 +9396,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
     dispose(): void {
       if (root.dataset.disposed === 'true') return;
+      followUps.detach('interrupted');
       flushTranscriptPersist();
       // 붙어 있던 사이드바를 걷으면 다음에 붙는 사이드바가 이 배치를 이어받는다.
       if (active) writeSidebarPageLayout(pageLayoutSnapshot());

@@ -16,10 +16,7 @@ test('slash menu exposes /fast only for Codex', () => {
 
 test('local /fast commands finish before a user message is sent', () => {
   assert.match(source, /function applyFastCommand\(action: 'on' \| 'off' \| 'status' \| 'toggle'\)/);
-  const fastHandler = source.indexOf('const fastCommand = text.match');
-  assert.ok(fastHandler > 0);
-  assert.ok(fastHandler < source.indexOf('recordUserMessage(messageText,'));
-  assert.ok(fastHandler < source.indexOf('bridge.sendUserMessage(requestText, skillNameForMessage,'));
+  // '/fast' 가 사용자 메시지를 보내지 않는 것은 sidebar-preview/queue.check.mjs(checkComposerSendPath)가 본다.
   assert.match(source, /option\.local === 'fast'/);
   assert.match(source, /\/fast 인자: on, off, status/);
 });

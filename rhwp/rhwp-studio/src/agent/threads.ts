@@ -17,6 +17,7 @@ import type {
   UserQuestionOutcome,
 } from './types.ts';
 import type { InlineObjectAddress, InlinePromptItem } from './inline-prompt-context.ts';
+import { normalizeFollowUps, type ThreadFollowUps } from './follow-ups.ts';
 
 const STORAGE_KEY = 'rhwp-agent-threads';
 const NOTIFY_KEY = 'rhwp-agent-threads-notify';
@@ -196,6 +197,8 @@ export interface ChatThread {
   plans?: StructuredPlan[];
   /** Draft state only. Provider authority remains in the live hub session. */
   pendingUserQuestion?: PendingUserQuestionDraftSnapshot;
+  /** 에이전트가 일하는 동안 쌓아 둔 대기 메시지. 목록 순서(lastActivityAt)는 바꾸지 않는다. */
+  followUps?: ThreadFollowUps;
   messages: ThreadMessage[];
 }
 
@@ -228,7 +231,8 @@ export function threadMatchesDocument(
   return !thread.documentId && !documentId && threadName === null && activeName === null;
 }
 
-type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion' | 'pinOrder' | 'listOrder'> & {
+type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion' | 'pinOrder' | 'listOrder' | 'followUps'> & {
+  followUps?: unknown;
   workflow?: unknown;
   latestPlan?: unknown;
   plans?: unknown;
@@ -730,6 +734,7 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     pendingUserQuestion: storedPendingUserQuestion,
     pinOrder: storedPinOrder,
     listOrder: storedListOrder,
+    followUps: storedFollowUps,
     ...rest
   } = thread;
   const messages = rest.messages.flatMap((raw): ThreadMessage[] => {
@@ -848,6 +853,7 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     thread.id,
     thread.agent,
   );
+  const followUps = normalizeFollowUps(storedFollowUps);
   const pendingAlreadyArchived = pendingUserQuestion
     ? messages.some((message) => message.kind === 'user-question'
       && message.interaction.interactionId === pendingUserQuestion.interaction.interactionId)
@@ -865,6 +871,7 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     ...(latestPlan ? { latestPlan } : {}),
     ...(plans.length ? { plans } : {}),
     ...(pendingUserQuestion && !pendingAlreadyArchived ? { pendingUserQuestion } : {}),
+    ...(followUps ? { followUps } : {}),
   };
 }
 

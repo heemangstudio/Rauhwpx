@@ -30,9 +30,9 @@ test('changes drawer exposes synchronized accessible state', () => {
 });
 
 test('the same review node returns to its inline sidebar position after focus mode', () => {
-  assert.match(source, /chatPage\.append\(header, messages, focusGreeting\.root, review, compactChanges, planSurface, planRestore, reconnectChip, calibrationChip, questionController\.root, composer\)/);
+  // 집중 모드를 오간 뒤 검토·대기 메시지 띠·질문 카드·입력기가 제자리로 돌아오는 순서는
+  // sidebar-preview/queue.check.mjs(checkFollowUpQueue)가 실제 DOM 으로 본다.
   assert.match(source, /changesDrawer\.reviewSlot\.appendChild\(review\)/);
   assert.match(source, /planColumn\.appendChild\(planSurface\)/);
-  assert.match(source, /chatPage\.append\(review, compactChanges, planSurface, planRestore, questionController\.root, composer\)/);
   assert.doesNotMatch(source, /chatPage\.insertBefore\(review, composerUtilities\)/);
 });

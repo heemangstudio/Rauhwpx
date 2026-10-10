@@ -164,6 +164,10 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   /** 브라우저 검사가 읽는 호출 기록. */
   const chatStarts: Array<{ threadId: string; workflow: T.AgentWorkflow; permissionProfile: T.PermissionProfile }> = [];
   let messagesSent = 0;
+  /** 브리지가 받은 사용자 메시지 — 검사가 요청문·스킬·첨부·receipt 를 읽는다. */
+  const sentMessages: Array<{ text: string; skillName?: string; referenceIds: string[]; requireReceipt: boolean }> = [];
+  /** 다음 메시지를 허브가 이 코드로 거절한다(턴이 시작되지 않는다). */
+  let rejectNext: string | null = null;
   let interrupts = 0;
   let threadId = '';
   let scenario: Scenario = 'chat';
@@ -666,9 +670,24 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         }),
       ),
     requestCheckpointTitle: async () => null,
-    sendUserMessage: async (_text, _skill, referenceIds = []) => {
+    sendUserMessage: async (text, skillName, referenceIds = [], requireReceipt = false) => {
       messagesSent += 1;
+      sentMessages.push({ text, ...(skillName ? { skillName } : {}), referenceIds: [...referenceIds], requireReceipt });
       const messageId = crypto.randomUUID();
+      // 실제 브리지처럼 receipt 가 필요한 메시지(첨부·대기 메시지)만 id 를 돌려준다.
+      const receipt = referenceIds.length > 0 || requireReceipt ? messageId : null;
+      if (rejectNext) {
+        const code = rejectNext;
+        rejectNext = null;
+        // 허브가 자기 턴을 먼저 시작한 것처럼 거절한다 — 턴은 열리지 않는다.
+        later(() => emit({
+          type: 'hub-error',
+          code,
+          message: 'A turn is already in progress.',
+          ...(receipt ? { messageId: receipt } : {}),
+        }));
+        return receipt;
+      }
       const turnGeneration = ++generation;
       const reply =
         scenario === 'chat' && workflow.workflow !== 'direct'
@@ -803,7 +822,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
               latestPlan: plan,
             };
             emit({ type: 'plan-ready', plan, ...workflow });
-            finish();
+            if (!holdReply) finish();
             return;
           }
           if (reply === 'fleet') {
@@ -851,7 +870,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
           );
         }, 650);
       });
-      return messageId;
+      return receipt;
     },
     listTemplates: async () => data.templates,
     addTemplate: async (file, name) => {
@@ -1403,6 +1422,13 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       }
       return askSampleQuestion(`turn-${generation}`);
     },
+    /** 붙잡아 둔 턴을 끝낸다(턴이 없으면 허브가 연 턴의 끝처럼 turn-end 만 보낸다). */
+    finishTurn: (stopReason = 'completed') => {
+      generation++;
+      finish(stopReason);
+    },
+    /** 다음 사용자 메시지를 허브가 이 코드로 거절하게 한다. */
+    rejectNextMessage: (code = 'AGENT_BUSY') => { rejectNext = code; },
     /** Delivers one provider event as the hub would, e.g. a token-by-token answer for benches. */
     streamEvent: stream,
     boot: () => {
@@ -1416,6 +1442,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     snapshot: () => ({
       chatStarts: chatStarts.map((start) => ({ ...start })),
       messagesSent,
+      messageTexts: sentMessages.map((message) => message.text),
+      sentMessages: sentMessages.map((message) => ({ ...message, referenceIds: [...message.referenceIds] })),
       interrupts,
       scenario,
       connection,

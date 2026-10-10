@@ -11,6 +11,7 @@ import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
 import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
+import { checkComposerSendPath, checkFollowUpQueue } from './queue.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
 import { checkWriterBusyPreview } from './writer-busy.check.mjs';
@@ -420,6 +421,10 @@ try {
   );
   await step('Plan research, revision, execution progress, and review',
     () => checkPlanPreview(page, origin, artifacts));
+  await step('Follow-up queue: Enter queues, normal ends drain, doubtful ends hold',
+    () => checkFollowUpQueue(page, origin, artifacts));
+  await step('Composer send path: template, skill, attachments and local commands',
+    () => checkComposerSendPath(page, origin));
   await step('Question submission and resolution', async () => {
     await play('question');
     await screenshot('question');

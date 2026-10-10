@@ -49,7 +49,6 @@ test('slash menu supports local commands and explicit product-skill invocation',
   assert.doesNotMatch(source, /value: '\/skill-create'/);
   assert.doesNotMatch(source, /value: '\/skill-edit'/);
   assert.doesNotMatch(source, /value: '\/skill-delete'/);
-  assert.match(source, /bridge\.sendUserMessage\(requestText, skillNameForMessage, staged\.map/);
   assert.match(source, /startsWith\('\/\/'\)/);
   assert.match(source, /row\.classList\.add\('ag-command-option'\)/);
   assert.match(source, /ag-slash-command-icon/);

@@ -852,3 +852,76 @@ test('same-millisecond thread updates keep the later state newer', (t) => {
   assert.ok(second.updatedAt > first.updatedAt);
   assert.equal(second.title, '바뀐 제목');
 });
+
+test('queued follow-ups survive a store reload and never move the chat in the list', () => {
+  mem.clear();
+  const realNow = Date.now;
+  let clock = 1_000;
+  Date.now = () => clock;
+  try {
+    const mk = (text: string) => {
+      const t = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+      t.messages.push({ role: 'user', text });
+      upsertThread(t);
+      clock += 1_000;
+      return t.id;
+    };
+    const a = mk('a 채팅');
+    const b = mk('b 채팅');
+    const before = getThread(a)!.lastActivityAt;
+    const queued = getThread(a)!;
+    queued.followUps = {
+      items: [
+        { id: 'fu-1', text: '표를 정리해 줘', createdAt: 5 },
+        { id: 'fu-2', text: '', skillName: 'proofread-korean', skillIcon: 'pencil', createdAt: 6 },
+      ],
+      hold: { reason: 'stopped', at: 7 },
+    };
+    upsertThread(queued);
+    clock += 1_000;
+    // 다시 읽어도(저장소를 새로 연 것과 같다) 대기열과 붙잡음이 그대로다.
+    assert.deepEqual(getThread(a)?.followUps, queued.followUps);
+    assert.equal(getThread(a)?.lastActivityAt, before, 'the queue is not conversation activity');
+    assert.deepEqual(listThreads().map((t) => t.id), [b, a]);
+
+    // 대기열을 비우면 필드도 사라진다.
+    const drained = getThread(a)!;
+    drained.followUps = undefined;
+    upsertThread(drained);
+    assert.equal(getThread(a)?.followUps, undefined);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('stored follow-ups drop malformed items, extra items and a hold without items', () => {
+  mem.clear();
+  const base = {
+    titleRequested: false, createdAt: 1, updatedAt: 2, agent: 'claude', model: 'sonnet', effort: 'high',
+    messages: [{ role: 'user', text: '기존 메시지' }],
+  };
+  storage.setItem('rhwp-agent-threads', JSON.stringify([
+    {
+      ...base,
+      id: 'queued',
+      title: '대기열',
+      followUps: {
+        items: [
+          { id: 'ok', text: '  남는 글  ', createdAt: 1 },
+          { id: 'ok', text: '같은 id' },
+          { id: 'no-text', text: '   ' },
+          { text: 'id 없음' },
+          'not an item',
+          ...Array.from({ length: 12 }, (_, index) => ({ id: `extra-${index}`, text: `추가 ${index}` })),
+        ],
+        hold: { reason: 'made-up', at: 3 },
+      },
+    },
+    { ...base, id: 'empty-queue', title: '빈 대기열', followUps: { items: [], hold: { reason: 'stopped', at: 3 } } },
+  ]));
+  const queued = getThread('queued')?.followUps;
+  assert.equal(queued?.items.length, 10);
+  assert.deepEqual(queued?.items[0], { id: 'ok', text: '남는 글', createdAt: 1 });
+  assert.equal(queued?.hold, undefined, 'an unknown hold reason is dropped');
+  assert.equal(getThread('empty-queue')?.followUps, undefined);
+});

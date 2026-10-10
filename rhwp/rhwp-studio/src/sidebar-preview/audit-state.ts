@@ -50,6 +50,10 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
   // 저장된 대화를 다시 열면 채팅이 그 대화의 모드와 권한으로 새로 시작된다. 장면은 그 뒤에 준비한다.
   await preview.threadStore.waitForThreadsPersistence();
   await new Promise((resolve) => requestAnimationFrame(resolve));
+  // 감사 장면은 저장된 대화를 이어받는다. 앞 장면이 남긴 대기 메시지는 삭제 단추로 걷고 시작한다.
+  if (params.get('audit') === '1') {
+    for (const remove of document.querySelectorAll<HTMLButtonElement>('.ag-followup-remove:not(:disabled)')) remove.click();
+  }
   const mode = params.get('mode');
   const choosesMode = mode === 'chat' || mode === 'plan' || mode === 'agent' || mode === 'full';
   if (params.get('permission') === 'unrestricted' || choosesMode) {
@@ -79,6 +83,22 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
     preview.typingHold?.start();
     preview.askQuestion();
     await until(() => document.querySelector('.ag-user-question[data-held="true"] .ag-question-arrival'), 'held question');
+  }
+  // 일하는 동안 입력기에 친 글을 Enter 로 대기열에 넣는다. queueHold=stopped 는 중지로 붙잡는다.
+  const queued = Math.min(Number(params.get('queue') ?? 0) || 0, 10);
+  if (queued > 0 && preview.snapshot().running) {
+    const input = document.querySelector<HTMLTextAreaElement>('.ag-input')!;
+    const samples = ['표를 정리해 줘', '맞춤법도 확인해 줘', '제목을 굵게 바꿔 줘'];
+    for (let index = 0; index < queued; index += 1) {
+      input.value = samples[index % samples.length]!;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    }
+    await until(() => document.querySelectorAll('.ag-followup').length >= queued, 'queued messages');
+    if (params.get('queueHold') === 'stopped') {
+      await click('.ag-send.ag-stop');
+      await until(() => document.querySelector('.ag-followups-hold:not([hidden])'), 'held queue');
+    }
   }
   const surface = params.get('surface');
   const surfaces: Record<string, string> = {

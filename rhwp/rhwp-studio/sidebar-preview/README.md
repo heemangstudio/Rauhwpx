@@ -73,6 +73,9 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=writer-busy` | A write refused because another chat of the document is editing it |
 | `?scenario=review&restore=later` | After **변경 수락**, hovering the request shows **이 작업 전으로 되돌리기**; it asks before discarding later edits, then puts the request back into the empty composer |
 | `?scenario=review&restore=evicted` | The same action for a request whose checkpoint is gone: dimmed, and a click only explains why |
+| `?scenario=chat&hold=1`, then type and press Enter while it runs | Follow-ups queue above the composer instead of stopping the turn; Ctrl/⌘+Enter sends one now |
+| `?scenario=chat&play=1&hold=1&queue=2` | Two queued follow-ups while the reply is held |
+| `?scenario=chat&play=1&hold=1&queue=2&queueHold=stopped` | The queue held after 중지, with its reason and 보내기 |
 | `?page=settings` | Production settings panel |
 | `?page=settings&fullscreen=1` | Settings inside the full-screen focus workspace |
 | `?page=versions` | Production version graph |
@@ -173,6 +176,10 @@ origin and is unaffected.
   or a catch-all proxy that would conceal an unimplemented service method.
 - `window.sidebarPreview` exposes the typed bridge, version controller, event bus,
   scenario selector, and state snapshot for focused browser experiments.
+  `finishTurn(stopReason)` ends a held reply (or plays a hub-started turn's end),
+  `rejectNextMessage(code)` makes the hub refuse the next message, and
+  `snapshot().messageTexts` / `sentMessages` list what reached the bridge.
+  `sidebar-preview/queue.check.mjs` runs the follow-up queue checks on its own.
 
 `vite.sidebar.config.ts` is independent of the application's Vite config. Keep it
 free of the agent-hub and PWA plugins and imports of the application entry point.

@@ -78,7 +78,7 @@ test('composer attachments upload into removable staging drafts before their mes
   assert.match(library, /hasBlockingDrafts: \(\) => draftUploads\.some/);
   assert.match(library, /function takeReadyDrafts\(\): StagedReference\[\]/);
   assert.match(sidebar, /referenceLibrary\.takeReadyDrafts\(\)/);
-  assert.match(sidebar, /bridge\.sendUserMessage\(requestText, skillNameForMessage, staged\.map/);
+  // 준비된 첨부 id 가 메시지와 함께 나가는 것은 sidebar-preview/queue.check.mjs(checkComposerSendPath)가 본다.
   // Sending while an attachment still uploads is checked behaviorally in
   // sidebar-preview/delayed-status.check.mjs (f): the send button stays disabled and Enter sends nothing.
   assert.match(css, /\.ag-reference-upload-remove:focus-visible/);
