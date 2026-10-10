@@ -6570,7 +6570,8 @@ html.ag-fs-vt-exit::view-transition-new(root) {
    빈 면은 모두 창 드래그, 조작 가능한 자식만 no-drag 로 뺀다. */
 html.desktop-mac .ag-fullscreen {
   --ag-workspace-bar-h: var(--desktop-titlebar-height, 38px);
-  --ag-workspace-lead-inset: var(--desktop-home-reserve, 98px);
+  /* 레일 토글은 홈 단추에 조금 더 붙는다. 두 아이콘 사이가 5px 이다. */
+  --ag-workspace-lead-inset: calc(var(--desktop-home-reserve, 98px) - 3px);
 }
 
 html.desktop-mac .ag-fullscreen .ag-workspace-bar {
