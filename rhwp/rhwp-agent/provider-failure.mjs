@@ -15,7 +15,7 @@
  * @property {boolean} retryable
  * @property {number|null} resetAt epoch ms. usage_limit 에만, 프로바이더의 구조화된 값에서만 온다.
  */
-import { redactDiagnosticText } from './agents/backend.mjs';
+import { redactableHead, redactDiagnosticText } from './agents/backend.mjs';
 
 export const PROVIDER_FAILURE_CLASSES = Object.freeze([
   'auth_required',
@@ -291,7 +291,8 @@ function structuredClass(hint) {
  * @returns {ProviderFailure}
  */
 export function classifyProviderFailure({ agent, message, hint = null, origin = 'error', stopReason } = {}, { secrets = [] } = {}) {
-  const raw = String(message ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '').slice(0, CLASSIFY_TEXT_LIMIT);
+  const source = String(message ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+  const raw = source.slice(0, CLASSIFY_TEXT_LIMIT);
   let resolved = structuredClass(hint);
   let failureClass = resolved?.class ?? null;
   let code = resolved?.code ?? null;
@@ -340,7 +341,9 @@ export function classifyProviderFailure({ agent, message, hint = null, origin = 
     }
   }
   const safeCode = sanitizeCode(code);
-  const text = redactFailureText(raw, secrets);
+  // 보여 줄 문구는 원문을 가린 뒤에 자른다. 정규식 상한 때문에 미리 자를 때도 낱말 경계에서
+  // 잘라, 잘린 비밀 조각이 가림을 빠져나가지 않게 한다.
+  const text = redactFailureText(redactableHead(source, CLASSIFY_TEXT_LIMIT), secrets);
   return {
     class: failureClass,
     ...(agent ? { agent } : {}),

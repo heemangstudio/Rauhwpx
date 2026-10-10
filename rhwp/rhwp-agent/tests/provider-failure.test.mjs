@@ -12,6 +12,7 @@ import {
   normalizeProviderFailureEvent,
   redactFailureText,
 } from '../provider-failure.mjs';
+import { redactDiagnosticText } from '../agents/backend.mjs';
 
 const classify = (input) => classifyProviderFailure({ agent: 'claude', origin: 'error', ...input });
 
@@ -351,4 +352,45 @@ test('redaction removes vendor-shaped tokens that carry no key name', () => {
   assert.match(redacted, /line 0: \[redacted\]/);
   // 비슷하지만 토큰이 아닌 낱말은 남는다.
   assert.equal(redactFailureText('the ghp_ prefix and sk_live_ mode are documented'), 'the ghp_ prefix and sk_live_ mode are documented');
+});
+
+test('every Authorization scheme, Proxy-Authorization, PEM private keys and Hugging Face tokens are removed', () => {
+  const cases = {
+    tokenScheme: 'Authorization: token REPLAYSECRETgithubtoken01',
+    apiKeyScheme: 'authorization=ApiKey REPLAYSECRETapikey02',
+    tokenUpper: 'Authorization: Token REPLAYSECRETtoken03, retry=1',
+    negotiate: 'Authorization: Negotiate REPLAYSECRETnegotiate04',
+    proxyBasic: 'Proxy-Authorization: Basic REPLAYSECRETbasic05==',
+    proxyDigest: 'Proxy-Authorization: Digest username="me", realm="corp", nonce="n1", response="REPLAYSECRETdigest06"; next',
+    pem: 'loaded key:\n-----BEGIN RSA PRIVATE KEY-----\nREPLAYSECRETpem07\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\ndone',
+    pemCutEnd: 'key -----BEGIN OPENSSH PRIVATE KEY-----\nREPLAYSECRETpem08\nb3BlbnNzaC',
+    pemCutStart: 'REPLAYSECRETpem09\nMIIEowIBAAKCAQEA\n-----END PRIVATE KEY-----\nafter the key',
+    huggingFace: 'HF_TOKEN missing; got hf_REPLAYSECREThuggingface0123456789',
+  };
+  for (const [name, raw] of Object.entries(cases)) {
+    for (const [redactor, text] of [['diagnostic', redactDiagnosticText(raw)], ['failure', redactFailureText(raw)]]) {
+      assert.doesNotMatch(text, /REPLAYSECRET/, `${name} (${redactor}): ${text}`);
+      assert.match(text, /\[redacted\]/, `${name} (${redactor})`);
+    }
+  }
+  // 헤더 이름과 뒤따르는 글은 남아 무엇이 지워졌는지 읽힌다.
+  assert.equal(redactDiagnosticText(cases.tokenUpper), 'Authorization: [redacted], retry=1');
+  assert.equal(redactDiagnosticText(cases.proxyDigest), 'Proxy-Authorization: [redacted]; next');
+  assert.match(redactDiagnosticText(cases.pem), /^loaded key:\n\[redacted\]\ndone$/);
+  assert.match(redactDiagnosticText(cases.pemCutStart), /after the key$/);
+  // 키 이름이 아닌 문구, 공개 키는 남는다.
+  assert.equal(redactDiagnosticText('Authorization required to continue'), 'Authorization required to continue');
+  const publicKey = '-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYI\n-----END PUBLIC KEY-----';
+  assert.equal(redactDiagnosticText(publicKey), publicKey);
+});
+
+test('a secret cut by the classification length limit never shows as a fragment', () => {
+  const secret = 'hub-session-token-REPLAYSECRETcut0123456789';
+  // 분류 상한(16,000자) 가운데를 지나는 비밀 — 앞부분만 남으면 알아보지 못해 가림을 빠져나간다.
+  // 긴 공백은 문구를 정리할 때 하나로 줄어, 잘린 자리가 보이는 문구 안으로 들어온다.
+  const message = `stderr:${' '.repeat(15_983)}${secret} tail`;
+  assert.ok(message.indexOf(secret) < 16_000 && message.indexOf(secret) + secret.length > 16_000);
+  const failure = classify({ message }, { secrets: [secret] });
+  assert.doesNotMatch(failure.message, /hub-sess/);
+  assert.match(failure.message, /^stderr:/);
 });

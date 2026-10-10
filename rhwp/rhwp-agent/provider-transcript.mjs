@@ -34,7 +34,7 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { StringDecoder } from 'node:string_decoder';
 
-import { redactDiagnosticText } from './agents/backend.mjs';
+import { redactableTail, redactDiagnosticText } from './agents/backend.mjs';
 import { PROVIDER_TERMINATION_HOOK } from './process-tree.mjs';
 
 export const PROVIDER_TRANSCRIPT_ENV = 'RHWP_PROVIDER_TRANSCRIPT_DIR';
@@ -636,7 +636,9 @@ export function recordingClaudeSdkSpawner({ secrets = [], cli = null, platform =
     const decoder = new StringDecoder('utf8');
     child.stderr?.on('data', (chunk) => {
       tail += decoder.write(chunk);
-      if (tail.length > 2 * SDK_STDERR_TAIL_CHARS) tail = tail.slice(-SDK_STDERR_TAIL_CHARS);
+      // The tail is cut before redaction, so cut at a line boundary: a secret
+      // that lost its start (or its `Authorization:` prefix) never survives.
+      if (tail.length > 2 * SDK_STDERR_TAIL_CHARS) tail = redactableTail(tail, SDK_STDERR_TAIL_CHARS);
     });
     child.stderr?.once('end', () => { tail += decoder.end(); });
     child.stderr?.on('error', () => {});

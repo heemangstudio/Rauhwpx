@@ -22,6 +22,7 @@ import {
   PROVIDER_TRANSCRIPT_ENV,
   recordingClaudeSdkSpawner,
   tapProviderProcess,
+  withSdkStderrTail,
 } from '../provider-transcript.mjs';
 import { processTreeSpawnOptions, terminateProcessTree } from '../process-tree.mjs';
 import { REPLAY_SESSION_TOKEN, startReplaySession } from './provider-replay/adapters.mjs';
@@ -220,6 +221,26 @@ test('the SDK recording spawner taps a real CLI process and drains its stderr', 
   assert.ok(lines.some((line) => line.kind === 'in' && line.json?.type === 'control_request'));
   assert.ok(lines.some((line) => line.kind === 'out' && line.json?.type === 'control_response'));
   assert.ok(lines.some((line) => line.kind === 'err'));
+});
+
+test('the SDK spawner keeps its stderr tail from a line boundary, so a cut never leaves a bare secret', { timeout: 20_000 }, async (t) => {
+  const dir = tempDir(t, 'rhwp-transcript-sdk-tail-cut-');
+  const spawnRecorded = recordingClaudeSdkSpawner({ hubEnv: { [PROVIDER_TRANSCRIPT_ENV]: dir } });
+  // The kept 2048 characters start inside the token: without its `Authorization: token`
+  // prefix the rest of it looks like any other word.
+  const secret = 'PLANTEDTAILSECRET0123456789abcdefghijklmn';
+  const stderr = `${'e'.repeat(5_000)}\nrequest failed: Authorization: token ${secret} ${'z'.repeat(2_028)}`;
+  const child = spawnRecorded({
+    command: process.execPath,
+    args: ['-e', `process.stderr.write(${JSON.stringify(stderr)}, () => process.exit(1));`],
+    cwd: process.cwd(),
+    env: process.env,
+  });
+  child.stdout.on('data', () => {});
+  await new Promise((resolve) => child.once('close', resolve));
+  const message = withSdkStderrTail('Claude Code process exited with code 1', spawnRecorded.stderrTail());
+  assert.match(message, /^Claude Code process exited with code 1\. stderr: z+$/);
+  assert.equal(message.includes(secret.slice(-12)), false, 'no fragment of the token survives');
 });
 
 async function driveInterruptRace(run) {
