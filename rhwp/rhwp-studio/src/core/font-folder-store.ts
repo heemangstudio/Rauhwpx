@@ -4,7 +4,7 @@
  */
 import type { ParsedFontFileResult } from '../../../rhwp-shared/fonts/font-index-core.mjs';
 
-const DB_NAME = 'hamaeditor-font-folder';
+const DB_NAME = 'rhwp-font-folder';
 const DB_VERSION = 1;
 const HANDLE_STORE = 'handles';
 const CACHE_STORE = 'index-cache';

@@ -22,12 +22,12 @@ import type {
 } from './types.ts';
 import type { InlineObjectAddress, InlinePromptItem } from './inline-prompt-context.ts';
 
-const STORAGE_KEY = 'hamaeditor-agent-threads';
-const NOTIFY_KEY = 'hamaeditor-agent-threads-notify';
-const DB_NAME = 'hamaeditorAgentThreads';
+const STORAGE_KEY = 'rhwp-agent-threads';
+const NOTIFY_KEY = 'rhwp-agent-threads-notify';
+const DB_NAME = 'rhwpAgentThreads';
 const DB_VERSION = 1;
 const THREADS_STORE = 'threads';
-const CHANNEL_NAME = 'hamaeditor-agent-threads';
+const CHANNEL_NAME = 'rhwp-agent-threads';
 const MAX_THREADS = 40;
 const MAX_MESSAGES_PER_THREAD = 200;
 
@@ -1756,7 +1756,7 @@ function documentGroupKey(thread: ChatThread): string {
 
 /* 문서 그룹 순서는 '마지막으로 연 문서' 순이다 — 옛 채팅을 다시 열어도
    문서를 다시 열기 전에는 그룹 자리가 바뀌지 않는다. */
-const DOC_ORDER_KEY = 'hamaeditor-agent-doc-order';
+const DOC_ORDER_KEY = 'rhwp-agent-doc-order';
 const DOC_ORDER_MAX = 200;
 
 function readDocOrder(): string[] {

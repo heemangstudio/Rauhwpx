@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
-import { basename, dirname, extname, join, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   app,
@@ -52,11 +52,25 @@ import { SessionManager } from './session-manager.mjs';
 import { safeSuggestedFilename } from './safe-filename.mjs';
 import { installPdfExport, PDF_EXPORT_FRAME_NAME, pdfExportWindowOptions } from './pdf-export.mjs';
 import {
+  REBRANDED_STUDIO_SCHEME,
+  STUDIO_HOST,
+  STUDIO_SCHEME,
   STUDIO_URL,
   installStudioProtocol,
   registerStudioScheme,
   resolveDevelopmentUrl,
 } from './studio-protocol.mjs';
+import {
+  INTERNAL_APP_NAME,
+  PRODUCT_NAME,
+  importRebrandedProfileFiles,
+  planRebrandImport,
+  removeStaleSnapshots,
+  resolveProfileDirectories,
+  snapshotBrowserStorage,
+  snapshotDirectory,
+  writeRebrandImportMarker,
+} from './profile-continuity.mjs';
 import { createSecretVault, handleSecretRequest } from './secret-vault.mjs';
 import { removeRetiredCloudData } from './retired-cloud-data.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
@@ -93,6 +107,8 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const RELEASES_URL = 'https://github.com/heemangstudio/Rauhwpx/releases/latest';
 const RELEASES_API_URL = 'https://api.github.com/repos/heemangstudio/Rauhwpx/releases/latest';
 const PRELOAD_PATH = join(__dirname, 'preload.cjs');
+const REBRAND_EXPORT_PRELOAD_PATH = join(__dirname, 'rebrand-export-preload.cjs');
+const REBRAND_EXPORT_TIMEOUT_MS = 20_000;
 const devUrl = resolveDevelopmentUrl({
   packaged: app.isPackaged,
   rawUrl: process.env.RHWP_DEV_URL,
@@ -115,7 +131,7 @@ function isTrustedRendererUrl(rawUrl) {
   try {
     const url = new URL(rawUrl);
     if (devOrigin) return url.origin === devOrigin;
-    return url.protocol === 'hamaeditor:' && url.host === 'app';
+    return url.protocol === `${STUDIO_SCHEME}:` && url.host === STUDIO_HOST;
   } catch {
     return false;
   }
@@ -127,13 +143,16 @@ function sessionForEvent(event) {
   return sessions.sessionForSender(event.sender);
 }
 
-app.setName('HamaEditor');
-if (!app.isPackaged) {
-  const developmentUserData = process.env.RHWP_DESKTOP_USER_DATA
-    ? resolve(process.env.RHWP_DESKTOP_USER_DATA)
-    : join(__dirname, '..', '.run', 'desktop-user-data');
-  app.setPath('userData', developmentUserData);
-}
+// Electron 은 이 시점의 앱 이름으로 사용자 데이터 폴더와 safeStorage 키체인 항목을 정한다.
+// 내부 이름은 2.0.10 까지와 같아야 기존 데이터와 비밀이 그대로 열린다. 보이는 이름은 준비 뒤에 바꾼다.
+app.setName(INTERNAL_APP_NAME);
+const profileDirectories = resolveProfileDirectories({
+  packaged: app.isPackaged,
+  appDataDir: app.getPath('appData'),
+  env: process.env,
+  developmentUserData: join(__dirname, '..', '.run', 'desktop-user-data'),
+});
+app.setPath('userData', profileDirectories.userData);
 registerStudioScheme(protocol);
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -465,6 +484,7 @@ class AgentHubOwner {
 let quitting = false;
 let quitRequested = false;
 let desktopReady = false;
+let initialLaunchesOpened = false;
 let secretVault = null;
 const pendingLaunches = [launchRequest({ argv: process.argv, source: 'initial' })];
 const launchStorage = launchStoragePaths({
@@ -949,6 +969,132 @@ function showLaunchError(error) {
   dialog.showErrorBox('HamaEditor could not open', error instanceof Error ? error.message : String(error));
 }
 
+// ── 2.0.11 프로필 가져오기 ────────────────────────────────────────────────
+// 2.0.11 은 다른 프로필 폴더와 출처(hamaeditor://app)에 Studio 저장소를 남겼다. 그 사본을 숨은 창에서
+// 2.0.11 출처로 열어 덤프하고, 첫 Studio 창이 기동하면서 정본 저장소에 합친다. 원본은 읽기만 한다.
+let rebrandStorageImport = Promise.resolve(null);
+let rebrandImportMarker = {};
+let rebrandImportHandedOut = null;
+
+async function exportRebrandedStorage(fingerprint, documentIdAliases) {
+  const tempDir = app.getPath('temp');
+  const snapshot = await snapshotBrowserStorage(profileDirectories.rebranded, snapshotDirectory(tempDir));
+  const exportSession = electronSession.fromPath(snapshot);
+  exportSession.protocol.handle(REBRANDED_STUDIO_SCHEME, () => new Response(
+    '<!doctype html><meta charset="utf-8"><title>import</title>',
+    { headers: { 'content-type': 'text/html; charset=utf-8' } },
+  ));
+  const window = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      session: exportSession,
+      preload: REBRAND_EXPORT_PRELOAD_PATH,
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  });
+  try {
+    const dump = await new Promise((resolveDump, rejectDump) => {
+      const timer = setTimeout(
+        () => rejectDump(new Error('2.0.11 storage export timed out')),
+        REBRAND_EXPORT_TIMEOUT_MS,
+      );
+      window.webContents.ipc.once('rebrand-export:result', (_event, payload) => {
+        clearTimeout(timer);
+        resolveDump(payload);
+      });
+      window.webContents.ipc.once('rebrand-export:error', (_event, message) => {
+        clearTimeout(timer);
+        rejectDump(new Error(String(message)));
+      });
+      window.loadURL(`${REBRANDED_STUDIO_SCHEME}://${STUDIO_HOST}/export.html`).catch((error) => {
+        clearTimeout(timer);
+        rejectDump(error);
+      });
+    });
+    if (!dump?.localStorage?.length && !dump?.databases?.length) {
+      await recordRebrandStorageImport(fingerprint);
+      return null;
+    }
+    return { token: randomUUID(), fingerprint, dump, documentIdAliases };
+  } finally {
+    if (!window.isDestroyed()) window.destroy();
+    exportSession.protocol.unhandle(REBRANDED_STUDIO_SCHEME);
+    // Windows 는 열린 세션 파일을 지우지 못한다. 그때는 다음 실행이 지운다.
+    if (process.platform !== 'win32') await rm(snapshot, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function recordRebrandStorageImport(fingerprint) {
+  rebrandImportMarker = {
+    ...rebrandImportMarker,
+    storageFingerprint: fingerprint,
+    storageImportedAt: new Date().toISOString(),
+  };
+  await writeRebrandImportMarker(app.getPath('userData'), rebrandImportMarker);
+}
+
+async function prepareRebrandImport() {
+  await removeStaleSnapshots(app.getPath('temp'));
+  const plan = await planRebrandImport({
+    userDataDir: app.getPath('userData'),
+    rebrandedDir: profileDirectories.rebranded,
+  });
+  if (!plan) return;
+  rebrandImportMarker = plan.marker;
+  if (plan.busy) console.warn('[hamaeditor] 2.0.11 is running; its chats and drafts import on the next launch');
+  let documentIdAliases = {};
+  if (plan.importFiles) {
+    try {
+      const imported = await importRebrandedProfileFiles({
+        sourceDir: profileDirectories.rebranded,
+        targetDir: app.getPath('userData'),
+      });
+      documentIdAliases = imported.documentIdAliases;
+      rebrandImportMarker = { ...rebrandImportMarker, filesImportedAt: new Date().toISOString() };
+      await writeRebrandImportMarker(app.getPath('userData'), rebrandImportMarker);
+      console.log('[hamaeditor] imported 2.0.11 profile files:', JSON.stringify(imported.results));
+    } catch (error) {
+      // 파일을 못 합쳐도 채팅·복구본은 옮긴다. 표시를 남기지 않았으니 다음 실행에서 다시 한다.
+      console.warn('[hamaeditor] 2.0.11 profile file import failed:', error);
+    }
+  }
+  if (plan.exportStorage) {
+    rebrandStorageImport = exportRebrandedStorage(plan.fingerprint, documentIdAliases).catch((error) => {
+      console.warn('[hamaeditor] 2.0.11 storage export failed:', error);
+      return null;
+    });
+  }
+}
+
+ipcMain.handle('desktop:take-rebrand-import', async (event) => {
+  sessionForEvent(event);
+  const pending = await rebrandStorageImport;
+  if (!pending || rebrandImportHandedOut) return null;
+  rebrandImportHandedOut = pending.token;
+  return { token: pending.token, dump: pending.dump, documentIdAliases: pending.documentIdAliases };
+});
+ipcMain.handle('desktop:finish-rebrand-import', async (event, token, outcome) => {
+  sessionForEvent(event);
+  const pending = await rebrandStorageImport;
+  if (!pending || typeof token !== 'string' || token !== pending.token) return false;
+  if (outcome?.ok !== true) {
+    // 다른 창이 이번 실행에서 다시 시도할 수 있다. 끝내 실패하면 다음 실행에서 다시 한다.
+    rebrandImportHandedOut = null;
+    console.warn('[hamaeditor] 2.0.11 storage import incomplete:', JSON.stringify(outcome?.result?.failures ?? []));
+    return false;
+  }
+  rebrandStorageImport = Promise.resolve(null);
+  await recordRebrandStorageImport(pending.fingerprint);
+  console.log('[hamaeditor] imported 2.0.11 storage:', JSON.stringify({
+    records: outcome.result?.records,
+    repositories: outcome.result?.repositories,
+    localStorageKeys: outcome.result?.localStorageKeys,
+  }));
+  return true;
+});
+
 ipcMain.handle('desktop:get-unique-installs', async (event) => {
   sessionForEvent(event);
   await uniqueInstallSync;
@@ -1308,6 +1454,12 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    // 키체인 항목과 사용자 데이터 폴더는 이미 내부 이름으로 정해졌다. 메뉴·대화상자에는 제품 이름을 쓴다.
+    app.setName(PRODUCT_NAME);
+    // 비밀 저장소·허브·북마크보다 먼저 2.0.11 프로필의 파일을 합친다. 실패해도 앱은 뜬다.
+    await prepareRebrandImport().catch((error) => {
+      console.warn('[hamaeditor] 2.0.11 profile import failed:', error);
+    });
     const owner = { launchId, profileId: userDataProfileId, pid: process.pid };
     await Promise.all([
       writeLaunchOwnerMetadata(runtimeDir, owner),
@@ -1373,6 +1525,7 @@ if (!hasSingleInstanceLock) {
         showLaunchError(error);
       });
     }
+    initialLaunchesOpened = true;
     if (failedLaunches > 0 && sessions.windows().length === 0) {
       resolveUniqueInstallSync();
       app.quit();
@@ -1407,6 +1560,8 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on('window-all-closed', () => {
+    // 2.0.11 저장소를 읽는 숨은 창이 첫 Studio 창보다 먼저 닫혀도 앱을 끝내지 않는다.
+    if (!initialLaunchesOpened) return;
     if (process.platform !== 'darwin') app.quit();
   });
 }

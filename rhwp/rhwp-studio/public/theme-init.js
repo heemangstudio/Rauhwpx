@@ -9,7 +9,7 @@
   const isThemeMode = (value) => value === 'system' || value === 'light' || value === 'dark';
   let mode = 'system';
   try {
-    const settings = JSON.parse(localStorage.getItem('hamaeditor-settings') || '{}');
+    const settings = JSON.parse(localStorage.getItem('rhwp-settings') || '{}');
     const storedMode = settings && settings.theme && settings.theme.mode;
     if (isThemeMode(storedMode)) mode = storedMode;
   } catch {

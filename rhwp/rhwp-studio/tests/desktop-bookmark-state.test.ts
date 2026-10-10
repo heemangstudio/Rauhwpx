@@ -27,7 +27,7 @@ function lockedRename(realRename: typeof rename, { failTimes = Infinity, code = 
 }
 
 test('bookmark state is bounded, strict, and explicitly quarantined when corrupt', async (t) => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'hamaeditor-bookmarks-'));
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rauhwpx-bookmarks-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const file = path.join(root, 'native-document-bookmarks.json');
   const entries = [['document-a', '/tmp/report.hwp']];
@@ -50,7 +50,7 @@ test('bookmark state is bounded, strict, and explicitly quarantined when corrupt
 });
 
 test('bookmark reader rejects declared state beyond its configured budget before allocation', async (t) => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'hamaeditor-bookmarks-size-'));
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rauhwpx-bookmarks-size-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const file = path.join(root, 'native-document-bookmarks.json');
   writeFileSync(file, '[]');
@@ -61,7 +61,7 @@ const WINDOWS_LOCK_CODES = ['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY'] as const;
 
 test('win32 bookmark quarantine retries a locked rename then leaves a sibling', async (t) => {
   for (const code of WINDOWS_LOCK_CODES) {
-    const root = mkdtempSync(path.join(os.tmpdir(), `hamaeditor-bookmarks-retry-${code.toLowerCase()}-`));
+    const root = mkdtempSync(path.join(os.tmpdir(), `rauhwpx-bookmarks-retry-${code.toLowerCase()}-`));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const file = path.join(root, 'native-document-bookmarks.json');
     writeFileSync(file, '{not-json');
@@ -79,7 +79,7 @@ test('win32 bookmark quarantine retries a locked rename then leaves a sibling', 
 });
 
 test('win32 bookmark quarantine surfaces a lock that outlasts the delay budget', async (t) => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'hamaeditor-bookmarks-locked-'));
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rauhwpx-bookmarks-locked-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const file = path.join(root, 'native-document-bookmarks.json');
   writeFileSync(file, '{not-json');
@@ -96,7 +96,7 @@ test('win32 bookmark quarantine surfaces a lock that outlasts the delay budget',
 });
 
 test('unix bookmark quarantine does not retry a locked rename', async (t) => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'hamaeditor-bookmarks-unix-lock-'));
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rauhwpx-bookmarks-unix-lock-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const file = path.join(root, 'native-document-bookmarks.json');
   writeFileSync(file, '{not-json');

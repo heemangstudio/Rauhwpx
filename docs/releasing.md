@@ -27,6 +27,8 @@ Choosing **Later** or canceling document closure preserves the downloaded update
 
 Users on 2.0.1 or earlier should download and install 2.0.2 manually once. The 2.0.2 release fixes the in-app installation handoff. Publish a new version for updater fixes instead of replacing assets under an existing version tag.
 
+2.0.11 shipped with the app id `com.hataewook.hamaeditor`. On macOS the bundle id is back to `com.hataewook.rauhwpx`, so 2.0.10 and earlier update in place, while the 2.0.11 updater cannot install later releases and its users download the DMG once. On Windows `nsis.guid` keeps the 2.0.11 install identity, because the install folder and shortcuts follow the product name: 2.0.11 updates in place, and 2.0.10 installs the new version beside the old `Rauhwpx` entry, which can then be uninstalled. Both share one user data folder. On first launch the app imports chats, drafts, versions, settings and agent data that 2.0.11 kept under its own names and leaves those folders untouched. API keys saved in 2.0.11 are not imported because 2.0.11 encrypted them with its own Keychain item; users enter them again.
+
 ## Signing and package checks
 
 Tagged desktop releases use [.github/actions/package-desktop](../.github/actions/package-desktop/action.yml) for macOS and Windows setup, builds and verification. Tagged Linux releases build on native x64 and arm64 runners. macOS jobs use the `macos-release` environment and require these secrets:
@@ -57,4 +59,6 @@ Use `package:win` on Windows. Packaging does not reinstall dependencies or rebui
 
 ## Product and package versions
 
-Desktop, Studio's About dialog, and extension viewer About dialogs display the product version from the root `package.json`. The PWA and extension names use HamaEditor. Engine crates, extension manifests and published npm packages keep their own versions and identifiers. Those values control package compatibility and store updates; changing the product version does not automatically bump them. Historical `rhwp` paths and upstream attribution remain intact.
+Desktop, Studio's About dialog, and extension viewer About dialogs display the product version from the root `package.json`. The PWA and extension names use HamaEditor.
+
+Identities that address user data keep their original names: the app name Electron uses for the user data folder and the safeStorage Keychain item (`Rauhwpx`, set in `desktop/profile-continuity.mjs`), the Studio scheme `rauhwpx://app`, the macOS bundle id `com.hataewook.rauhwpx`, the Windows installer GUID, Studio storage keys and IndexedDB names, hub data folders and secret ids (`rhwp`), and the `.rhwpx` archive signature. Renaming any of them hides existing data from users who update. Engine crates, extension manifests and published npm packages keep their own versions and identifiers. Those values control package compatibility and store updates; changing the product version does not automatically bump them. Historical `rhwp` paths and upstream attribution remain intact.

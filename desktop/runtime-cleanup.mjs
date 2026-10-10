@@ -8,9 +8,9 @@ import { retryWindows } from './fs-replace.mjs';
 const LAUNCH_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROFILE_ID_PATTERN = /^[0-9a-f]{20}$/;
 
-export const LAUNCH_OWNER_FILE = '.hamaeditor-owner.json';
-export const LEGACY_CLEANUP_MARKER_FILE = '.hamaeditor-legacy-cleanup.json';
-export const CREDENTIAL_RETENTION_DIR = '.hamaeditor-credential-copybacks';
+export const LAUNCH_OWNER_FILE = '.rauhwpx-owner.json';
+export const LEGACY_CLEANUP_MARKER_FILE = '.rauhwpx-legacy-cleanup.json';
+export const CREDENTIAL_RETENTION_DIR = '.rauhwpx-credential-copybacks';
 export const STALE_LAUNCH_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 export const LEGACY_LAUNCH_MIN_AGE_MS = 7 * STALE_LAUNCH_MIN_AGE_MS;
 export const LEGACY_REBOOT_UPTIME_TOLERANCE_SECONDS = 60;
@@ -67,9 +67,9 @@ export function launchStoragePaths({
   if (!LAUNCH_ID_PATTERN.test(String(launchId))) throw new Error('Invalid launch id');
   const api = pathApi(platform);
   const profileId = userDataProfileId(userDataDir, { platform, realpathImpl });
-  const legacyRuntimeRoot = api.join(String(tempDir), 'hamaeditor', 'runtime');
+  const legacyRuntimeRoot = api.join(String(tempDir), 'rauhwpx', 'runtime');
   const legacyWorkRoot = api.join(String(userDataDir), 'launch-work');
-  const runtimeRoot = api.join(String(tempDir), 'hamaeditor', 'profiles', profileId, 'runtime');
+  const runtimeRoot = api.join(String(tempDir), 'rauhwpx', 'profiles', profileId, 'runtime');
   const workRoot = api.join(String(userDataDir), 'launch-work', profileId);
   return Object.freeze({
     profileId,

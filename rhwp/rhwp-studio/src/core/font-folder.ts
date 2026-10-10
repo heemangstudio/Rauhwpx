@@ -41,7 +41,7 @@ function workerBackend(): FontFolderBackend | null {
   if (typeof Worker === 'undefined' || typeof window === 'undefined') return null;
   let worker: Worker;
   try {
-    worker = new Worker(new URL('./font-folder.worker.ts', import.meta.url), { type: 'module', name: 'hamaeditor-font-folder' });
+    worker = new Worker(new URL('./font-folder.worker.ts', import.meta.url), { type: 'module', name: 'rhwp-font-folder' });
   } catch {
     return null;
   }

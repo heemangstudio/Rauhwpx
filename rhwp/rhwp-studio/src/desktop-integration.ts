@@ -254,7 +254,7 @@ const nativeHandleMetadata = new WeakMap<FileSystemFileHandleLike, {
   readonly legacyPortableHistoryFolder: boolean;
 }>();
 const browserLaunchId = createSessionId('launch');
-const BROWSER_SESSION_ID_KEY = 'hamaeditor-renderer-session-id-v1';
+const BROWSER_SESSION_ID_KEY = 'rhwp-renderer-session-id-v1';
 
 /** A browser tab must reclaim the same hub session after reload. sessionStorage
  * is tab-scoped, survives reload, and does not make unrelated tabs contend for

@@ -8,8 +8,11 @@ import { retryWindows } from './fs-replace.mjs';
 
 const SUPPORTED_EXTENSIONS = new Set(['.hwp', '.hwpx', '.hml', '.rhwpx']);
 const PORTABLE_HISTORY_INNER_FILE = 'history';
-const PORTABLE_HISTORY_MAGIC = new TextEncoder().encode('HAMAEDITOR-HISTORY\0');
-const PORTABLE_HISTORY_PREFIX_LENGTH = PORTABLE_HISTORY_MAGIC.byteLength + 4;
+// Studio writes the original signature. 2.0.11 wrote the second one; its archives stay valid.
+const PORTABLE_HISTORY_SIGNATURES = Object.freeze([
+  { magic: new TextEncoder().encode('RAUHWPX-HISTORY\0'), format: 'rauhwpx-history' },
+  { magic: new TextEncoder().encode('HAMAEDITOR-HISTORY\0'), format: 'hamaeditor-history' },
+]);
 export const MAX_NATIVE_DOCUMENT_BYTES = 512 * 1024 * 1024;
 export const MAX_PORTABLE_HISTORY_BYTES = 128 * 1024 * 1024;
 const MAX_PORTABLE_HISTORY_MANIFEST_BYTES = 32 * 1024 * 1024;
@@ -28,7 +31,7 @@ export const NATIVE_FILE_ATOMIC_UNSUPPORTED_MESSAGE = 'This filesystem cannot sa
 export const NATIVE_FILE_RECOVERY_REQUIRED_CODE = 'NATIVE_FILE_RECOVERY_REQUIRED';
 export const NATIVE_FILE_WRITE_BUSY_CODE = 'NATIVE_FILE_WRITE_BUSY';
 
-const WINDOWS_ICACLS_DACL_SUFFIX = '.hamaeditor-dacl';
+const WINDOWS_ICACLS_DACL_SUFFIX = '.rauhwpx-dacl';
 
 function startsWithBytes(bytes, signature) {
   return signature.every((value, index) => bytes[index] === value);
@@ -69,7 +72,7 @@ function nativeFileRecoveryRequiredError(original, backupPath, restoreErrors) {
 function nativeRecoveryPath(filePath) {
   const extension = extname(filePath);
   const stem = extension ? filePath.slice(0, -extension.length) : filePath;
-  return `${stem}.hamaeditor-recovery-${process.pid}-${randomUUID()}${extension}`;
+  return `${stem}.rauhwpx-recovery-${process.pid}-${randomUUID()}${extension}`;
 }
 
 function statValue(info, key, fallbackKey = null) {
@@ -310,8 +313,8 @@ export function readIcaclsSavedDacl(buffer) {
 const WINDOWS_SET_DACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   '$security = [System.Security.AccessControl.FileSecurity]::new()',
-  "$security.SetSecurityDescriptorSddlForm($env:HAMAEDITOR_DACL_SDDL, 'Access')",
-  '[System.IO.File]::SetAccessControl($env:HAMAEDITOR_DACL_TARGET, $security)',
+  "$security.SetSecurityDescriptorSddlForm($env:RAUHWPX_DACL_SDDL, 'Access')",
+  '[System.IO.File]::SetAccessControl($env:RAUHWPX_DACL_TARGET, $security)',
 ].join('; ');
 // CLR startup stalls without these, even with -NoProfile. PATH and
 // PSModulePath stay pinned so a user-writable entry cannot load a module.
@@ -373,8 +376,8 @@ async function copyWindowsDacl(
     const powershellEnv = {
       ...env,
       PSModulePath: win32.join(powershellHome, 'Modules'),
-      HAMAEDITOR_DACL_SDDL: sourceDacl,
-      HAMAEDITOR_DACL_TARGET: temporaryPath,
+      RAUHWPX_DACL_SDDL: sourceDacl,
+      RAUHWPX_DACL_TARGET: temporaryPath,
     };
     for (const key of WINDOWS_POWERSHELL_ENV_KEYS) {
       const value = sourceEnv?.[key];
@@ -514,14 +517,12 @@ function hasValidZipDirectory(bytes) {
     && view.getUint32(directoryOffset, true) === 0x02014b50;
 }
 
-function hasValidPortableHistoryLayout(bytes, manifestLength) {
+function hasValidPortableHistoryLayout(bytes, signature, manifestLength) {
+  const prefixLength = signature.magic.byteLength + 4;
   let manifest;
   try {
     manifest = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(
-      bytes.subarray(
-        PORTABLE_HISTORY_PREFIX_LENGTH,
-        PORTABLE_HISTORY_PREFIX_LENGTH + manifestLength,
-      ),
+      bytes.subarray(prefixLength, prefixLength + manifestLength),
     ));
   } catch {
     return false;
@@ -529,7 +530,7 @@ function hasValidPortableHistoryLayout(bytes, manifestLength) {
   if (
     !manifest
     || typeof manifest !== 'object'
-    || manifest.format !== 'hamaeditor-history'
+    || manifest.format !== signature.format
     || manifest.version !== 1
     || !manifest.document
     || typeof manifest.document !== 'object'
@@ -540,7 +541,7 @@ function hasValidPortableHistoryLayout(bytes, manifestLength) {
     || manifest.objects.length > MAX_PORTABLE_HISTORY_OBJECTS
   ) return false;
 
-  const payloadOffset = PORTABLE_HISTORY_PREFIX_LENGTH + manifestLength;
+  const payloadOffset = prefixLength + manifestLength;
   const descriptors = [...manifest.objects].sort((left, right) => left?.offset - right?.offset);
   let expectedOffset = 0;
   for (const descriptor of descriptors) {
@@ -572,16 +573,19 @@ export function validateNativeDocumentBytes(filePath, bytes) {
     throw new Error('Refusing to replace a document with empty or oversized data');
   }
   if (extension === '.rhwpx') {
-    const manifestLength = bytes.byteLength >= PORTABLE_HISTORY_PREFIX_LENGTH
+    const signature = PORTABLE_HISTORY_SIGNATURES.find(({ magic }) => (
+      bytes.byteLength >= magic.byteLength + 4 && startsWithBytes(bytes, magic)
+    ));
+    const manifestLength = signature
       ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-        .getUint32(PORTABLE_HISTORY_MAGIC.byteLength, true)
+        .getUint32(signature.magic.byteLength, true)
       : 0;
     if (
-      !startsWithBytes(bytes, PORTABLE_HISTORY_MAGIC)
+      !signature
       || manifestLength === 0
       || manifestLength > MAX_PORTABLE_HISTORY_MANIFEST_BYTES
-      || PORTABLE_HISTORY_PREFIX_LENGTH + manifestLength > bytes.byteLength
-      || !hasValidPortableHistoryLayout(bytes, manifestLength)
+      || signature.magic.byteLength + 4 + manifestLength > bytes.byteLength
+      || !hasValidPortableHistoryLayout(bytes, signature, manifestLength)
     ) {
       throw new Error('Refusing to replace an RHWPX file with an invalid or truncated history archive');
     }
@@ -680,11 +684,11 @@ export async function writeNativeFileAtomically(
     logger = console,
   } = {},
 ) {
-  const temporaryPath = `${filePath}.hamaeditor-${process.pid}-${randomUUID()}.tmp`;
+  const temporaryPath = `${filePath}.rauhwpx-${process.pid}-${randomUUID()}.tmp`;
   // Keep the real document extension so a recovery copy left by a power loss
   // remains visible and openable in the platform file picker.
   const backupPath = nativeRecoveryPath(filePath);
-  const linkProbePath = `${filePath}.hamaeditor-${process.pid}-${randomUUID()}.link-probe`;
+  const linkProbePath = `${filePath}.rauhwpx-${process.pid}-${randomUUID()}.link-probe`;
   let temporaryFile;
   let backupMoved = false;
   let linkProbeCreated = false;

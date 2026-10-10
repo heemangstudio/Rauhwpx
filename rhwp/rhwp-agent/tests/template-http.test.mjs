@@ -53,7 +53,7 @@ test('template HTTP catalog supports authenticated CRUD and revisioned content',
   const unauthorized = await fetch((await request('/templates')).url);
   assert.equal(unauthorized.status, 401);
   const packagedApp = await fetch(`${base}/templates`, {
-    headers: { Authorization: 'Bearer test-token', Origin: 'hamaeditor://app' },
+    headers: { Authorization: 'Bearer test-token', Origin: 'rauhwpx://app' },
   });
   assert.equal(packagedApp.status, 200);
 

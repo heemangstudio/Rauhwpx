@@ -44,14 +44,14 @@ export function defaultAgentInstructionsRoot(
     return platformPath.resolve(env.RHWP_AGENT_INSTRUCTIONS_DIR);
   }
   if (platform === 'darwin') {
-    return platformPath.join(home, 'Library', 'Application Support', 'hamaeditor', 'agent-instructions');
+    return platformPath.join(home, 'Library', 'Application Support', 'rhwp', 'agent-instructions');
   }
   if (platform === 'win32') {
     return platformPath.join(
       env.APPDATA && platformPath.isAbsolute(env.APPDATA)
         ? env.APPDATA
         : platformPath.join(home, 'AppData', 'Roaming'),
-      'hamaeditor',
+      'rhwp',
       'agent-instructions',
     );
   }
@@ -59,7 +59,7 @@ export function defaultAgentInstructionsRoot(
     env.XDG_DATA_HOME && platformPath.isAbsolute(env.XDG_DATA_HOME)
       ? env.XDG_DATA_HOME
       : platformPath.join(home, '.local', 'share'),
-    'hamaeditor',
+    'rhwp',
     'agent-instructions',
   );
 }
@@ -210,7 +210,7 @@ export class AgentInstructionsStore {
       revision: this.revision,
       updatedAt: this.updatedAt,
       maxChars: MAX_AGENT_INSTRUCTIONS_CHARS,
-      scope: 'hamaeditor-app',
+      scope: 'rauhwpx-app',
     };
   }
 

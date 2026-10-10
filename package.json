@@ -61,7 +61,7 @@
     "wait-on": "^9.1.0"
   },
   "build": {
-    "appId": "com.hataewook.hamaeditor",
+    "appId": "com.hataewook.rauhwpx",
     "productName": "HamaEditor",
     "artifactName": "HamaEditor-${version}-${arch}.${ext}",
     "asar": true,
@@ -145,7 +145,7 @@
             "CFBundleTypeRole": "Editor",
             "LSHandlerRank": "Default",
             "LSItemContentTypes": [
-              "com.hataewook.hamaeditor.hwpx-document"
+              "com.hataewook.rauhwpx.hwpx-document"
             ]
           },
           {
@@ -156,7 +156,7 @@
             "CFBundleTypeRole": "Editor",
             "LSHandlerRank": "Default",
             "LSItemContentTypes": [
-              "com.hataewook.hamaeditor.history-bundle"
+              "com.hataewook.rauhwpx.history-bundle"
             ]
           }
         ],
@@ -167,7 +167,7 @@
               "public.data"
             ],
             "UTTypeDescription": "HWPX document",
-            "UTTypeIdentifier": "com.hataewook.hamaeditor.hwpx-document",
+            "UTTypeIdentifier": "com.hataewook.rauhwpx.hwpx-document",
             "UTTypeTagSpecification": {
               "public.filename-extension": [
                 "hwpx"
@@ -180,7 +180,7 @@
               "public.data"
             ],
             "UTTypeDescription": "HamaEditor history archive",
-            "UTTypeIdentifier": "com.hataewook.hamaeditor.history-bundle",
+            "UTTypeIdentifier": "com.hataewook.rauhwpx.history-bundle",
             "UTTypeTagSpecification": {
               "public.filename-extension": [
                 "rhwpx"
@@ -253,6 +253,7 @@
       ]
     },
     "nsis": {
+      "guid": "8adf5bd4-cca1-56f0-a142-1db539378c33",
       "oneClick": false,
       "perMachine": false,
       "selectPerMachineByDefault": false,

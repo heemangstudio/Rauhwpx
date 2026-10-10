@@ -39,7 +39,7 @@ async function freshPage() {
   await page.goto(pageUrl);
   await page.evaluate(async () => {
     await new Promise<void>((resolveDelete, reject) => {
-      const request = indexedDB.deleteDatabase('hamaeditorAutosave');
+      const request = indexedDB.deleteDatabase('rhwpStudioAutosave');
       request.onsuccess = () => resolveDelete();
       request.onerror = () => reject(request.error);
       request.onblocked = () => reject(new Error('deleteDatabase was blocked'));
@@ -146,7 +146,7 @@ test('drafts written by the v2 schema are listed and restorable after the upgrad
   try {
     const result = await page.evaluate(async () => {
       await new Promise<void>((resolveSeed, reject) => {
-        const request = indexedDB.open('hamaeditorAutosave', 2);
+        const request = indexedDB.open('rhwpStudioAutosave', 2);
         request.onupgradeneeded = () => {
           request.result.createObjectStore('drafts', { keyPath: 'id' });
           request.result.createObjectStore('sessions', { keyPath: 'sessionId' });

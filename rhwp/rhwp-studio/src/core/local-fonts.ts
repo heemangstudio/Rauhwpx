@@ -124,7 +124,7 @@ interface ChromeLike {
 
 type BrowserLike = ChromeLike;
 
-const STORAGE_KEY = 'hamaeditor-local-fonts';
+const STORAGE_KEY = 'rhwp-local-fonts';
 const PROBE_FONT_SIZE = 72;
 const PROBE_WIDTH_EPSILON = 0.1;
 const PROBE_FALLBACKS = ['monospace', 'serif', 'sans-serif'];

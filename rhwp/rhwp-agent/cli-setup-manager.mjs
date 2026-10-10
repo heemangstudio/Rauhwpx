@@ -30,7 +30,7 @@ const CONFIG = Object.freeze({
 const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const STATUS_TIMEOUT_MS = 10_000;
 const AUTH_TIMEOUT_MS = 10 * 60 * 1000;
-const CLAUDE_TOKEN_SECRET = 'hamaeditor.claude.oauth-token';
+const CLAUDE_TOKEN_SECRET = 'rhwp.claude.oauth-token';
 // `claude setup-token` tokens last a year. The CLI does not report the exact
 // expiry in a machine-readable form, so the app keeps a slightly short copy.
 const CLAUDE_TOKEN_LIFETIME_MS = 364 * 24 * 60 * 60 * 1000;
@@ -55,9 +55,9 @@ export const CLAUDE_AUTH_ENV_KEYS = Object.freeze([
 export function defaultCliSetupRoot(env = process.env, platform = process.platform, home = os.homedir()) {
   const pathImpl = platform === 'win32' ? path.win32 : path.posix;
   if (env.RHWP_CLI_DIR) return pathImpl.resolve(env.RHWP_CLI_DIR);
-  if (platform === 'darwin') return pathImpl.join(home, 'Library', 'Application Support', 'hamaeditor', 'cli');
-  if (platform === 'win32') return pathImpl.join(env.APPDATA || pathImpl.join(home, 'AppData', 'Roaming'), 'hamaeditor', 'cli');
-  return pathImpl.join(env.XDG_DATA_HOME || pathImpl.join(home, '.local', 'share'), 'hamaeditor', 'cli');
+  if (platform === 'darwin') return pathImpl.join(home, 'Library', 'Application Support', 'rhwp', 'cli');
+  if (platform === 'win32') return pathImpl.join(env.APPDATA || pathImpl.join(home, 'AppData', 'Roaming'), 'rhwp', 'cli');
+  return pathImpl.join(env.XDG_DATA_HOME || pathImpl.join(home, '.local', 'share'), 'rhwp', 'cli');
 }
 function setupError(code, message, detail = null) {
   const error = new Error(message);
@@ -293,7 +293,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       // 일시적인 저장소 오류(시간 초과 등)로 키를 잃지 않도록, 실패한 에이전트는 남겨 두고 다음 호출에서 다시 읽는다.
       await Promise.all([...[...pendingSecretReads].map(async (agent) => {
         try {
-          const value = await secretStore.get(`hamaeditor.${agent}.api-key`);
+          const value = await secretStore.get(`rhwp.${agent}.api-key`);
           if (!pendingSecretReads.has(agent)) return;
           if (typeof value === 'string' && textFitsByteLimit(value, API_KEY_MAX_BYTES)) apiKeys[agent] = value.trim() || null;
           pendingSecretReads.delete(agent);
@@ -305,7 +305,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
         } catch {}
       })() : null]);
     } else {
-      try { const raw = JSON.parse(await fs.readFile(secretsPath, 'utf8')); for (const agent of Object.keys(CONFIG)) { const value = raw?.[`hamaeditor.${agent}.api-key`]; if (typeof value === 'string' && textFitsByteLimit(value, API_KEY_MAX_BYTES)) apiKeys[agent] = value.trim() || null; }
+      try { const raw = JSON.parse(await fs.readFile(secretsPath, 'utf8')); for (const agent of Object.keys(CONFIG)) { const value = raw?.[`rhwp.${agent}.api-key`]; if (typeof value === 'string' && textFitsByteLimit(value, API_KEY_MAX_BYTES)) apiKeys[agent] = value.trim() || null; }
         if (claudeTokenPending) settleClaudeToken(acceptToken(raw?.[CLAUDE_TOKEN_SECRET]), configTokenExpiresAt); } catch {}
       pendingSecretReads.clear();
       claudeTokenPending = false;
@@ -328,11 +328,11 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       ...(claudeAuth.useLocalLogin ? {} : { useLocalLogin: false }),
     };
     if (secretStore?.available) {
-      for (const agent of Object.keys(CONFIG)) if (apiKeys[agent]) await secretStore.set(`hamaeditor.${agent}.api-key`, apiKeys[agent]);
+      for (const agent of Object.keys(CONFIG)) if (apiKeys[agent]) await secretStore.set(`rhwp.${agent}.api-key`, apiKeys[agent]);
       if (claudeAuth.token) await secretStore.set(CLAUDE_TOKEN_SECRET, claudeAuth.token);
       else await secretStore.delete?.(CLAUDE_TOKEN_SECRET)?.catch?.(() => {});
     } else {
-      const secrets = Object.fromEntries(Object.keys(CONFIG).filter((agent) => apiKeys[agent]).map((agent) => [`hamaeditor.${agent}.api-key`, apiKeys[agent]]));
+      const secrets = Object.fromEntries(Object.keys(CONFIG).filter((agent) => apiKeys[agent]).map((agent) => [`rhwp.${agent}.api-key`, apiKeys[agent]]));
       if (claudeAuth.token) secrets[CLAUDE_TOKEN_SECRET] = claudeAuth.token;
       await writePrivateJson(secretsPath, secrets);
     }
@@ -423,7 +423,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       const previous = { key: apiKeys[agent], token: claudeAuth.token, tokenExpiresAt: claudeAuth.tokenExpiresAt, useLocalLogin: claudeAuth.useLocalLogin };
       settleApiKey(agent, key.trim()); if (agent === 'claude') { settleClaudeToken(null, null); claudeAuth.useLocalLogin = true; }
       try {
-        if (secretStore?.available) await secretStore.set(`hamaeditor.${agent}.api-key`, apiKeys[agent]);
+        if (secretStore?.available) await secretStore.set(`rhwp.${agent}.api-key`, apiKeys[agent]);
         await persist();
         // 저장하는 동안 취소됐으면 커밋하지 않고 이전 자격 증명으로 되돌린다.
         if (signal?.aborted) throw cancelled();
@@ -431,7 +431,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       } catch (error) {
         settleApiKey(agent, previous.key);
         if (agent === 'claude') { settleClaudeToken(previous.token, previous.tokenExpiresAt); claudeAuth.useLocalLogin = previous.useLocalLogin; }
-        if (!previous.key && secretStore?.available) await secretStore.delete?.(`hamaeditor.${agent}.api-key`)?.catch?.(() => {});
+        if (!previous.key && secretStore?.available) await secretStore.delete?.(`rhwp.${agent}.api-key`)?.catch?.(() => {});
         await persist().catch(() => {});
         throw error;
       }
@@ -559,7 +559,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       claudeAuth.rejected.delete(parsed.token);
       claudeAuth.verified = verdict === 'valid' ? { secret: parsed.token, result: 'valid', at: now() } : null;
       settleApiKey('claude', null);
-      if (secretStore?.available) await secretStore.delete?.('hamaeditor.claude.api-key')?.catch?.(() => {});
+      if (secretStore?.available) await secretStore.delete?.('rhwp.claude.api-key')?.catch?.(() => {});
       // The token is live in memory now. A failed save only loses it on the next restart.
       try { await persist(); } catch (error) { process.stderr.write(`[cli-setup] Claude 로그인 후 설정 저장 실패: ${redactDiagnosticText(String(error?.message ?? error))}\n`); }
       onProgress?.({ state: 'done' });
@@ -583,7 +583,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     claudeAuth.local = null;
     claudeAuth.verified = null;
     settleApiKey('claude', null);
-    if (secretStore?.available) await secretStore.delete?.('hamaeditor.claude.api-key')?.catch?.(() => {});
+    if (secretStore?.available) await secretStore.delete?.('rhwp.claude.api-key')?.catch?.(() => {});
     await persist();
     return status(agent);
   }

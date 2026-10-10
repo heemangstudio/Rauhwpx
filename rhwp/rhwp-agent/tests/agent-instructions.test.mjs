@@ -22,7 +22,7 @@ test('app instructions are created as a private standalone AGENTS.md', async (t)
   const snapshot = store.snapshot();
 
   assert.equal(snapshot.fileName, 'AGENTS.md');
-  assert.equal(snapshot.scope, 'hamaeditor-app');
+  assert.equal(snapshot.scope, 'rauhwpx-app');
   assert.equal(snapshot.revision, 1);
   assert.equal(snapshot.content, DEFAULT_AGENT_INSTRUCTIONS);
   assert.equal(await fs.readFile(path.join(rootDir, 'AGENTS.md'), 'utf8'), DEFAULT_AGENT_INSTRUCTIONS);
@@ -155,27 +155,27 @@ test('instruction size is bounded and platform roots stay outside project worksp
 
   assert.equal(
     defaultAgentInstructionsRoot({}, 'darwin', '/Users/example'),
-    '/Users/example/Library/Application Support/hamaeditor/agent-instructions',
+    '/Users/example/Library/Application Support/rhwp/agent-instructions',
   );
   assert.equal(
     defaultAgentInstructionsRoot({ APPDATA: 'C:\\Users\\example\\AppData\\Roaming' }, 'win32', 'C:\\Users\\example'),
-    'C:\\Users\\example\\AppData\\Roaming\\hamaeditor\\agent-instructions',
+    'C:\\Users\\example\\AppData\\Roaming\\rhwp\\agent-instructions',
   );
   assert.equal(
     defaultAgentInstructionsRoot({ APPDATA: 'relative\\roaming' }, 'win32', 'C:\\Users\\example'),
-    'C:\\Users\\example\\AppData\\Roaming\\hamaeditor\\agent-instructions',
+    'C:\\Users\\example\\AppData\\Roaming\\rhwp\\agent-instructions',
   );
   assert.equal(
     defaultAgentInstructionsRoot({ XDG_DATA_HOME: '/srv/user-data' }, 'linux', '/home/example'),
-    '/srv/user-data/hamaeditor/agent-instructions',
+    '/srv/user-data/rhwp/agent-instructions',
   );
   assert.equal(
     defaultAgentInstructionsRoot({ XDG_DATA_HOME: 'relative/data' }, 'linux', '/home/example'),
-    '/home/example/.local/share/hamaeditor/agent-instructions',
+    '/home/example/.local/share/rhwp/agent-instructions',
   );
   assert.equal(
     defaultAgentInstructionsRoot({ RHWP_AGENT_INSTRUCTIONS_DIR: 'relative/override' }, 'linux', '/home/example'),
-    '/home/example/.local/share/hamaeditor/agent-instructions',
+    '/home/example/.local/share/rhwp/agent-instructions',
   );
 });
 
@@ -217,7 +217,7 @@ test('prompt block carries the current app-scoped revision and content', async (
   const block = store.promptBlock();
 
   assert.match(block, /<app_agents_md trust="user-authored-instructions">/);
-  assert.match(block, /"scope":"hamaeditor-app"/);
+  assert.match(block, /"scope":"rauhwpx-app"/);
   assert.match(block, /"fileName":"AGENTS\.md"/);
 });
 

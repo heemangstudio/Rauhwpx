@@ -25,10 +25,10 @@ const LOCK_CODES = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES']);
 const LOCK_RETRY_DELAYS_MS = [50, 100, 200, 400, 800];
 const JOURNAL_VERSION = 1;
 const JOURNAL_ID_PATTERN = /^[0-9a-f]{16}$/;
-const OWNER_FILE = '.hamaeditor-owner.json';
-export const CREDENTIAL_ROOT_FILE = '.hamaeditor-credential-root';
-export const CREDENTIAL_RETENTION_DIR = '.hamaeditor-credential-copybacks';
-export const LAUNCH_CLEANUP_RETENTION_FILE = '.hamaeditor-legacy-cleanup.json';
+const OWNER_FILE = '.rauhwpx-owner.json';
+export const CREDENTIAL_ROOT_FILE = '.rauhwpx-credential-root';
+export const CREDENTIAL_RETENTION_DIR = '.rauhwpx-credential-copybacks';
+export const LAUNCH_CLEANUP_RETENTION_FILE = '.rauhwpx-legacy-cleanup.json';
 export const MAX_CREDENTIAL_MIRROR_BYTES = 1024 * 1024;
 export const MAX_CREDENTIAL_JOURNAL_BYTES = 64 * 1024;
 
@@ -66,11 +66,11 @@ function mirrorId(target) {
 export function credentialConflictPath(source) {
   const resolved = path.resolve(source);
   const id = createHash('sha256').update(resolved).digest('hex').slice(0, 16);
-  return path.join(path.dirname(resolved), `.hamaeditor-credential-conflict-${id}.copy`);
+  return path.join(path.dirname(resolved), `.rauhwpx-credential-conflict-${id}.copy`);
 }
 
 function journalPrefix(source) {
-  return `.${path.basename(source)}.hamaeditor-copyback-`;
+  return `.${path.basename(source)}.rauhwpx-copyback-`;
 }
 
 function journalPathFor(source, target) {
@@ -176,7 +176,7 @@ export function credentialMirrorHasPendingCopybackSync(handle) {
 
 function writeNewAtomically(target, bytes, { rename, rm }) {
   mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-  const temporary = `${target}.hamaeditor-new-${process.pid}-${randomUUID()}`;
+  const temporary = `${target}.rauhwpx-new-${process.pid}-${randomUUID()}`;
   try {
     durableWrite(temporary, bytes);
     rename(temporary, target);
@@ -328,8 +328,8 @@ function readJournal(journalPath) {
     source,
     target,
     journalPath: path.resolve(journalPath),
-    nextPath: `${source}.hamaeditor-copyback-${raw.id}.next`,
-    previousPath: `${source}.hamaeditor-copyback-${raw.id}.previous`,
+    nextPath: `${source}.rauhwpx-copyback-${raw.id}.next`,
+    previousPath: `${source}.rauhwpx-copyback-${raw.id}.previous`,
     retentionMarker,
     mode: 'copy',
   });

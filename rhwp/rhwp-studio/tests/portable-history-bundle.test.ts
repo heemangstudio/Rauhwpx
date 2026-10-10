@@ -206,6 +206,42 @@ test('portable history round trip restores commits, refs, shelves, manifests, dr
   assert.equal(await destination.getBlob(fixture.assetId), null);
 });
 
+test('history files saved by 2.0.11 under its renamed signature still open', async () => {
+  const fixture = await historyFixture();
+  const current = createPortableHistoryBundle({
+    documentFileName: 'report.hwpx',
+    sourceFormat: 'hwpx',
+    activeBranch: branchName('review'),
+    currentBlobId: fixture.head.blobId,
+    snapshot: fixture.snapshot,
+    createdAt: 123,
+  });
+  // Rewrite the archive exactly as 2.0.11 wrote it: another magic and format name, same layout.
+  const encoder = new TextEncoder();
+  const originalMagic = encoder.encode('RAUHWPX-HISTORY\0');
+  assert.deepEqual(current.subarray(0, originalMagic.byteLength), originalMagic, 'new archives keep the original signature');
+  const manifestLength = new DataView(current.buffer, current.byteOffset).getUint32(originalMagic.byteLength, true);
+  const manifest = JSON.parse(new TextDecoder().decode(
+    current.subarray(originalMagic.byteLength + 4, originalMagic.byteLength + 4 + manifestLength),
+  ));
+  manifest.format = 'hamaeditor-history';
+  const rebrandedManifest = encoder.encode(JSON.stringify(manifest));
+  const rebrandedMagic = encoder.encode('HAMAEDITOR-HISTORY\0');
+  const payload = current.subarray(originalMagic.byteLength + 4 + manifestLength);
+  const rebranded = new Uint8Array(rebrandedMagic.byteLength + 4 + rebrandedManifest.byteLength + payload.byteLength);
+  rebranded.set(rebrandedMagic, 0);
+  new DataView(rebranded.buffer).setUint32(rebrandedMagic.byteLength, rebrandedManifest.byteLength, true);
+  rebranded.set(rebrandedManifest, rebrandedMagic.byteLength + 4);
+  rebranded.set(payload, rebrandedMagic.byteLength + 4 + rebrandedManifest.byteLength);
+
+  const opened = openPortableHistoryBundle(rebranded);
+  assert.equal(opened.documentFileName, 'report.hwpx');
+  assert.equal(opened.snapshot.commits.length, 2);
+  assert.deepEqual(opened.currentDocumentBytes, fixture.snapshot.blobs.find(
+    (blob) => blob.id === fixture.head.blobId,
+  )?.bytes);
+});
+
 test('portable histories use the bounded untrusted-document memory envelope', () => {
   assert.equal(PORTABLE_HISTORY_MAX_BYTES, 128 * 1024 * 1024);
   assert.equal(PORTABLE_HISTORY_MAX_BYTES, UNTRUSTED_DOCUMENT_MAX_BYTES);
@@ -241,7 +277,7 @@ test('portable history rejects oversized repository arrays before cloning or sor
     currentBlobId: fixture.head.blobId,
     snapshot: fixture.snapshot,
   });
-  const magicLength = new TextEncoder().encode('HAMAEDITOR-HISTORY\0').byteLength;
+  const magicLength = new TextEncoder().encode('RAUHWPX-HISTORY\0').byteLength;
   const oldManifestLength = new DataView(bundle.buffer, bundle.byteOffset, bundle.byteLength)
     .getUint32(magicLength, true);
   const oldPayloadOffset = magicLength + 4 + oldManifestLength;
@@ -294,7 +330,7 @@ test('portable history rejects oversized comparison snapshots before serializing
     currentBlobId: fixture.head.blobId,
     snapshot: fixture.snapshot,
   });
-  const magicLength = new TextEncoder().encode('HAMAEDITOR-HISTORY\0').byteLength;
+  const magicLength = new TextEncoder().encode('RAUHWPX-HISTORY\0').byteLength;
   const oldManifestLength = new DataView(bundle.buffer, bundle.byteOffset, bundle.byteLength)
     .getUint32(magicLength, true);
   const oldPayloadOffset = magicLength + 4 + oldManifestLength;

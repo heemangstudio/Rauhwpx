@@ -403,7 +403,7 @@ const CONNECT_TIMEOUT_MS = 4000;
 const REQUEST_TIMEOUT_MS = 10_000;
 
 /** 페이지 새로고침 뒤에도 같은 허브 세션의 질문 취소를 이어 가는 탭별 저장 키. */
-const QUESTION_CANCELLATION_STORAGE_PREFIX = 'hamaeditor-agent-question-cancellation:';
+const QUESTION_CANCELLATION_STORAGE_PREFIX = 'rhwp-agent-question-cancellation:';
 
 /** 재연결 사이에 붙잡아 둘 tool-response 개수와 보관 기한(허브의 도구 타임아웃과 맞춘다). */
 const TOOL_RESPONSE_BUFFER_LIMIT = 32;
@@ -643,13 +643,13 @@ function readAgentInstructionsStatus(value: unknown): AgentInstructionsStatus | 
   const item = value as Record<string, unknown>;
   const revision = Number(item['revision']);
   const maxChars = Number(item['maxChars']);
-  if (item['fileName'] !== 'AGENTS.md' || item['scope'] !== 'hamaeditor-app'
+  if (item['fileName'] !== 'AGENTS.md' || item['scope'] !== 'rauhwpx-app'
     || typeof item['content'] !== 'string'
     || !Number.isSafeInteger(revision) || revision < 1
     || !Number.isSafeInteger(maxChars) || maxChars < 1) return null;
   return {
     fileName: 'AGENTS.md',
-    scope: 'hamaeditor-app',
+    scope: 'rauhwpx-app',
     content: item['content'],
     revision,
     updatedAt: typeof item['updatedAt'] === 'string' ? item['updatedAt'] : null,

@@ -38,6 +38,7 @@ import {
 } from './agents/checkpoint-title.mjs';
 import { SkillRegistry } from './skills.mjs';
 import { WritingStyleStore, assertWritingStyleAppendCompatible } from './writing-style.mjs';
+import { importRebrandedHubData } from './rebrand-import.mjs';
 import { AgentInstructionsStore } from './agent-instructions.mjs';
 import { calibrateWritingStyle } from './style-calibrator.mjs';
 import { buildWritingStyleCatalog, resolveWritingStyleSelection } from './writing-style-catalog.mjs';
@@ -244,6 +245,13 @@ function findSourceCodexAuthPath() {
   return undefined;
 }
 let sourceCodexAuthPath = findSourceCodexAuthPath();
+// 2.0.11 이 hamaeditor 폴더에 남긴 데이터를 저장소를 열기 전에 정본 폴더로 합친다.
+// 테스트 허브는 사용자의 실제 데이터 폴더를 건드리지 않는다.
+if (process.env.NODE_ENV !== 'test' || process.env.RHWP_REBRAND_IMPORT === '1') {
+  await importRebrandedHubData({ log }).catch((error) => {
+    log(`2.0.11 data import failed: ${error?.message ?? error}`);
+  });
+}
 const writingStyleStore = await new WritingStyleStore().init();
 const agentInstructionsStore = await new AgentInstructionsStore().init();
 const skillRegistry = await new SkillRegistry({ bundledRoot: BUNDLED_SKILLS, writingStyleStore }).init();
@@ -400,7 +408,7 @@ const sessions = new HubSessionRegistry({
       rootDir: hubStorageDir,
       writableRoot: workDir,
     });
-    const copyLayoutGeneratedRoot = path.join(hubStorageDir, '.hamaeditor-agent', 'copy-layout-generated');
+    const copyLayoutGeneratedRoot = path.join(hubStorageDir, '.rhwp-agent', 'copy-layout-generated');
     const hubReadOnlyRoots = Object.freeze([
       downloadManager.baseDir,
       documentSnapshotManager.baseDir,

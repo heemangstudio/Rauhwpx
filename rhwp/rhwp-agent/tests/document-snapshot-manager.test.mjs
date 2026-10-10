@@ -78,7 +78,7 @@ test('hub-private snapshots ignore provider-controlled workspace parents', async
   ]);
   await fs.symlink(
     outside,
-    path.join(writableRoot, '.hamaeditor-agent'),
+    path.join(writableRoot, '.rhwp-agent'),
     process.platform === 'win32' ? 'junction' : 'dir',
   );
   const manager = new DocumentSnapshotManager({
