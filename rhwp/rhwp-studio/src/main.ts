@@ -1,5 +1,6 @@
 import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
 import { installDocumentTitle } from '@/ui/document-title';
+import { worktreeIdentity } from '@/ui/worktree-chip';
 import { FALLBACK_DOCUMENT_FILE_NAME } from '@/core/document-names';
 import type { DocumentInfo } from '@/core/types';
 import { AttachableEventBus } from '@/core/event-bus';
@@ -315,7 +316,10 @@ const wasmFacade = createAttachableFacade<WasmBridge>(firstSession.wasm, {
   stickyKeys: ['onFileNameChanged', 'onExternalImagesInjected'],
 });
 const wasm = wasmFacade.facade;
-installDocumentTitle(wasm, { rename: (name) => renameAttachedDocument(name) });
+const refreshDocumentTitle = installDocumentTitle(wasm, {
+  rename: (name) => renameAttachedDocument(name),
+  worktree: () => worktreeIdentity(attachedSession.versions?.getState(), attachedSession.documentId),
+});
 const eventBus = new AttachableEventBus(firstSession.bus);
 const documentStateFacade = createAttachableFacade<DocumentDirtyState>(firstSession.documentState);
 const documentState = documentStateFacade.facade;
@@ -1376,6 +1380,8 @@ function installDocumentVersions(session: DocumentSession): DocumentVersionContr
   });
   // 문서의 작업 공간이 바뀌면(열기·병합·이름 바꾸기) 채팅마다 같은 프로젝트에 다시 묶는다.
   session.disposers.push(session.versions.subscribe(() => syncProjectWorktrees(session)));
+  // 작업 트리가 생기거나 사라지면 제목의 가지 표시를 다시 그린다.
+  session.disposers.push(session.versions.subscribe(() => { if (session === attachedSession) refreshDocumentTitle(); }));
   return session.versions;
 }
 
@@ -1731,6 +1737,10 @@ function installChatAgent(
     editor: docAttached ? editor : session.editorHost,
     view: docAttached ? view : null,
     isReadOnly: () => sessionReadOnly(session),
+    getDocumentWorktree: () => {
+      const identity = worktreeIdentity(session.versions?.getState(), session.documentId);
+      return identity ? { branch: identity.branch, primary: identity.primary } : null;
+    },
     commitVersion: async (message) => {
       await versions.checkpoint(message);
     },
@@ -2233,6 +2243,7 @@ async function attachSessionNow(next: DocumentSession): Promise<void> {
   // 2. 페이지 퍼사드를 다음 세션으로 돌린다.
   attachedSession = next;
   wasmFacade.retarget(next.wasm);
+  refreshDocumentTitle();
   eventBus.retarget(next.bus);
   documentStateFacade.retarget(next.documentState);
   autosaveFacade.retarget(next.autosave);

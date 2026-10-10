@@ -1042,6 +1042,8 @@ export interface AgentBridgeDeps {
   eventBus: EventBus;
   documentState: DocumentDirtyState;
   isReadOnly?: () => boolean;
+  /** 같은 이름의 작업 트리 사본이 있을 때 이 문서의 가지. 하나뿐이면 null. */
+  getDocumentWorktree?: () => { branch: string; primary: boolean } | null;
   /** 전체 모드 에이전트의 버전 커밋 — 사이드바 커밋 버튼과 같은 기록에 남긴다. */
   commitVersion?: (message: string) => Promise<void>;
   /** 문서 작업용 편집기. view 가 있으면 view.inputHandler 를 쓴다. */

@@ -10,6 +10,7 @@ import './motion.css';
 import './agent-sidebar.css';
 import './plan-presentation.css';
 import '../../styles/inline-rename.css';
+import '../../styles/worktree-chip.css';
 import { confirmSheet, dismissOpenSheets, openSheet } from './sheet.ts';
 import { saveArchiveConfirmChoice, shouldConfirmArchive } from './archive-confirm.ts';
 import { createChangesDrawer, createJumpButton, renderPendingOpDiff, renderPendingOpsDiff, summarizeDiffItems } from './changes-drawer.ts';
@@ -166,6 +167,7 @@ import {
 import { createWritingStyleCalibration } from './writing-style-calibration.ts';
 import { maybeStartInitialSetup, type InitialSetupUi } from '../initial-setup/initial-setup.ts';
 import { beginInlineRename } from '../inline-rename.ts';
+import { createWorktreeChip, paintWorktreeChip, worktreeIdentity } from '../worktree-chip.ts';
 import { loadInitialSetup, saveInitialSetup } from '../initial-setup/state.ts';
 import { summarizePendingDiffs } from './pending-diff-summary.ts';
 import { createReferenceLibrary } from './reference-library.ts';
@@ -1671,8 +1673,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   const documentContext = el('div', 'ag-document-context');
   const documentName = el('span', 'ag-document-name', '문서 없음');
+  const documentWorktree = createWorktreeChip();
   const selectionContext = el('span', 'ag-selection-context', '선택 없음');
-  documentContext.append(documentName, selectionContext);
+  documentContext.append(documentName, documentWorktree, selectionContext);
 
   function isRenaming(target: HTMLElement): boolean {
     return target.querySelector('.inline-rename-input') !== null;
@@ -1780,6 +1783,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   modelSummary.append(fullscreenBtn, contextRow, headerActions);
   header.append(modelSummary);
 
+  /** 같은 이름의 작업 트리 사본이 있으면 지금 문서의 가지를 이름 옆에 보인다. */
+  function updateDocumentWorktreeChips(): void {
+    const identity = worktreeIdentity(versionController?.getState(), getDocumentContext?.()?.documentId);
+    paintWorktreeChip(documentWorktree, identity);
+    paintWorktreeChip(workspaceDocumentWorktree, identity);
+  }
+
   function updateDocumentContext(): void {
     const context = getDocumentContext?.();
     const currentDocumentName = context?.documentName || '문서 없음';
@@ -1791,6 +1801,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!isRenaming(workspaceDocumentName)) workspaceDocumentName.textContent = currentDocumentName;
     workspaceDocumentName.title = context?.documentName || '';
     focusGreeting.setDocumentName(context?.documentName || null);
+    updateDocumentWorktreeChips();
     updateEnvironmentFilename(currentDocumentName);
     const nextKey = context?.documentName ?? null;
     const nextDocumentId = context?.documentId ?? null;
@@ -2039,7 +2050,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const workspaceTitleSeparator = el('span', 'ag-workspace-title-sep', '/');
   workspaceTitleSeparator.setAttribute('aria-hidden', 'true');
   const workspaceDocumentName = el('span', 'ag-workspace-document-name', '문서 없음');
-  workspaceDocumentContext.append(workspaceChatTitle, workspaceTitleSeparator, workspaceDocumentName);
+  const workspaceDocumentWorktree = createWorktreeChip();
+  workspaceDocumentContext.append(workspaceChatTitle, workspaceTitleSeparator, workspaceDocumentName, workspaceDocumentWorktree);
   workspaceLeading.append(workspaceSettingsBack, workspaceThreadsBtn, workspaceBrand);
 
   function updateWorkspaceChatTitle(): void {
@@ -2215,7 +2227,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   };
   applyHancomGitVisibility();
   const unsubscribeHancomGitSetting = userSettings.subscribeUseHancomGit(applyHancomGitVisibility);
-  const unsubscribeVersionState = versionController?.subscribe(applyHancomGitVisibility) ?? (() => {});
+  /** 작업 트리 묶음(문서 ID·가지·원본 여부)이 바뀔 때만 채팅 목록을 다시 그린다. */
+  let worktreeSignature = '';
+  const applyWorktreeState = (): void => {
+    updateDocumentWorktreeChips();
+    const state = versionController?.getState();
+    const next = (state?.worktrees ?? []).map((tree) => `${tree.documentId}:${tree.branch}:${tree.primary}`).join('|');
+    if (next === worktreeSignature) return;
+    worktreeSignature = next;
+    rebuildThreadsList();
+  };
+  const unsubscribeVersionState = versionController?.subscribe(() => {
+    applyHancomGitVisibility();
+    applyWorktreeState();
+  }) ?? (() => {});
   const unsubscribeHancomGitVisibility = (): void => {
     unsubscribeHancomGitSetting();
     unsubscribeVersionState();
@@ -6183,7 +6208,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const agent = el('span', 'ag-threads-item-agent');
     agent.title = `${AGENT_LABEL[thread.agent]} · ${labelForModel(thread.agent, thread.model)}`;
     agent.append(createProviderIcon(thread.agent), el('span', 'ag-sr-only', AGENT_LABEL[thread.agent]));
-    meta.append(docIcon, docName, agent);
+    // 같은 이름의 작업 트리 사본에 묶인 채팅은 어느 가지의 문서인지 함께 보인다.
+    const worktree = worktreeIdentity(versionController?.getState(), thread.documentId);
+    const worktreeChip = createWorktreeChip();
+    paintWorktreeChip(worktreeChip, worktree);
+    meta.append(docIcon, docName, ...(worktree ? [worktreeChip] : []), agent);
 
     btn.append(top, meta);
     // 두 번 누르기로는 열지 않는다 — 첫 클릭이 이미 대화를 열어버리므로

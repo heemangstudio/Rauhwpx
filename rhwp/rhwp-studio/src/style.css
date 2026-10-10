@@ -1,6 +1,7 @@
 @import './styles/base.css';
 @import './styles/menu-bar.css';
 @import './styles/inline-rename.css';
+@import './styles/worktree-chip.css';
 @import './styles/toolbar.css';
 @import './styles/style-bar.css';
 @import './styles/editor.css';

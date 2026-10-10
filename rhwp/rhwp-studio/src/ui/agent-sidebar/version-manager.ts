@@ -6,6 +6,7 @@ import { createIcon } from './icons.ts';
 import { versionErrorCode } from '../../versioning/types.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { createChevron } from '../chevron.ts';
+import { laneColor } from '../version-lanes.ts';
 
 export type VersionTab = 'changes' | 'history' | 'branches' | 'worktrees' | 'shelves';
 
@@ -334,11 +335,6 @@ function invalidatesCompletedComparisons(
 }
 
 const VERSION_GRAPH_ROW_HEIGHT = 30;
-const VERSION_LANE_COLORS = ['#379cff', '#e7ae45', '#cb79d7', '#53bdab', '#8e9dff', '#ed8592'];
-
-function laneColor(lane: number): string {
-  return VERSION_LANE_COLORS[lane % VERSION_LANE_COLORS.length];
-}
 
 function laneGeometry(laneCount: number): { gap: number; width: number } {
   const width = Math.min(110, 24 + (laneCount - 1) * 17);

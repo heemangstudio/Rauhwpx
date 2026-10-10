@@ -876,7 +876,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'get_document_info',
-    description: `Active document identity (documentId, name, sourcePath or null, digest, dirty), section/page counts, format and fonts. fontQuery lists registered names usable as fontFamily. Identify documents by documentId/digest/sourcePath, never by filename or title.`,
+    description: `Active document identity (documentId, name, sourcePath or null, digest, dirty, and worktree {branch, primary} when version worktrees share this name), section/page counts, format and fonts. When worktree is present, name the branch whenever you refer to this document, because other copies have the same file name. fontQuery lists registered names usable as fontFamily. Identify documents by documentId/digest/sourcePath, never by filename or title.`,
     shape: {
       fontQuery: z.array(z.string().min(1)).min(1).optional(),
     },

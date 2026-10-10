@@ -62,6 +62,8 @@ export interface AgentToolExecutorDeps {
   loadTemplateBytes?: (template: DocumentTemplate) => Promise<Uint8Array>;
   getDocumentSourcePath?: () => Promise<string | null>;
   isReadOnly?: () => boolean;
+  /** 같은 이름의 작업 트리 사본이 있을 때 이 문서의 가지. */
+  getDocumentWorktree?: () => { branch: string; primary: boolean } | null;
   /** 참조 이미지 잘라내기 — 기본은 브라우저 캔버스 (테스트가 주입한다) */
   cropImage?: ImageCropper;
   /** 연구 프로젝트 파일 원본 (PDF 쪽·영역 조각을 그릴 때). 브리지가 프로젝트 HTTP 로 채운다. */
@@ -2860,6 +2862,7 @@ export class AgentToolExecutor {
     try {
       sourcePath = await this.deps.getDocumentSourcePath?.() ?? null;
     } catch { /* 브라우저 문서와 해제된 데스크톱 핸들은 실제 경로가 없다 */ }
+    const worktree = this.deps.getDocumentWorktree?.() ?? null;
     return {
       revision,
       sectionCount,
@@ -2868,6 +2871,7 @@ export class AgentToolExecutor {
       digest,
       dirty,
       sourcePath,
+      ...(worktree ? { worktree } : {}),
       fontsUsed,
       fallbackFont,
       registeredFontCount: registeredFonts.length,
