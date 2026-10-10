@@ -29,9 +29,9 @@ interface MountOptions {
 }
 
 /** 앞 페이지: 저장소를 비우고 세 채팅을 저장한 뒤 새로 불러온다. */
-async function seedAndReload(page: Page, origin: string, withQuestion: boolean): Promise<void> {
+async function seedAndReload(page: Page, origin: string, withQuestion: boolean, queued: string[] = []): Promise<void> {
   await page.goto(`${origin}/tests/fixtures/agent-sidebar-harness.html`);
-  await page.evaluate(async (ids, docs, question) => {
+  await page.evaluate(async (ids, docs, question, follow: string[]) => {
     localStorage.clear();
     sessionStorage.clear();
     await new Promise<void>((done, fail) => {
@@ -54,6 +54,15 @@ async function seedAndReload(page: Page, origin: string, withQuestion: boolean):
       const interaction = { ...fixtures.sampleReloadQuestion(), threadId: ids.live };
       live.pendingUserQuestion = { ...fixtures.sampleReloadQuestionDraft(now), interaction };
     }
+    // 앞 페이지가 닫힐 때 대기열을 '끊김'으로 붙잡아 저장한 모양이다.
+    if (follow.length) {
+      Object.assign(live, {
+        followUps: {
+          items: follow.map((text, index) => ({ id: `queued-${index}`, text, createdAt: now - 1_000 + index })),
+          hold: { reason: 'interrupted', at: now - 500 },
+        },
+      });
+    }
     // 같은 문서의 더 최근 채팅 — "마지막 채팅 복원"이면 이 채팅을 열었을 것이다.
     threads.upsertThread(chat(ids.recent, docs.a, 'Most recent request', 60_000));
     threads.upsertThread(live);
@@ -62,7 +71,7 @@ async function seedAndReload(page: Page, origin: string, withQuestion: boolean):
     // upsertThread 는 저장 순서대로 활동 시각을 매긴다 — 가장 최근 채팅이 따로 있게 다시 저장한다.
     threads.upsertThread({ ...threads.getThread(ids.recent)!, messages: [...threads.getThread(ids.recent)!.messages, { role: 'assistant', text: 'Recent reply' }] });
     await threads.waitForThreadsPersistence();
-  }, { live: LIVE, recent: RECENT, otherDoc: OTHER_DOC }, { a: DOC_A, b: DOC_B }, withQuestion);
+  }, { live: LIVE, recent: RECENT, otherDoc: OTHER_DOC }, { a: DOC_A, b: DOC_B }, withQuestion, queued);
   await page.reload();
 }
 
@@ -270,6 +279,30 @@ test('reload re-adopts the live chat in both arrival orders without restarting i
       composer: document.querySelector<HTMLTextAreaElement>('.ag-input')!.value,
       focused: document.activeElement?.className,
     })), { composer: OTHER_TEXT, focused: 'harness-document-input' });
+    assert.deepEqual(await counts(page), { starts: 0, stops: 0, interrupts: 0 });
+
+    // (k) 새로고침 전에 쌓인 대기 메시지는 채팅을 고르기 전에 나가지 않고, 이어 붙인 턴이 돌면 풀려
+    // 그 턴의 정상 종료에 맨 앞 하나가 나간다.
+    const queued = ['표 제목도 맞춰 주세요', '끝나면 요약해 주세요'];
+    await seedAndReload(page, origin, false, queued);
+    await mount(page, { live: LIVE, question: false, order: 'manual', document: DOC_A });
+    await page.evaluate(async () => {
+      await (window as any).harness.threads.waitForThreadsPersistence();
+      await new Promise((done) => setTimeout(done, 300));
+    });
+    assert.equal(await page.evaluate(() => (window as any).harness.mock.snapshot().messagesSent), 0,
+      'nothing queued is sent before the hub has answered');
+    await page.evaluate(() => (window as any).harness.mock.deliverWelcome());
+    await settled(page, LIVE);
+    const followUpState = () => page.evaluate(() => ({
+      rows: [...document.querySelectorAll('.ag-followup')].length,
+      hold: document.querySelector<HTMLElement>('.ag-followups')?.dataset.hold ?? null,
+      sent: (window as any).harness.mock.snapshot().messageTexts,
+    }));
+    assert.deepEqual(await followUpState(), { rows: 2, hold: null, sent: [] }, 'the adopted running chat releases its queue');
+    await page.evaluate(() => (window as any).harness.mock.finishTurn('completed'));
+    await page.waitForFunction(() => (window as any).harness.mock.snapshot().messageTexts.length === 1);
+    assert.deepEqual((await followUpState()).sent, [queued[0]]);
     assert.deepEqual(await counts(page), { starts: 0, stops: 0, interrupts: 0 });
 
     assert.deepEqual(errors, []);
