@@ -1084,3 +1084,44 @@ test('옛 빌드가 벗긴 턴 표식은 시스템 줄로 돌아오지 않고, �
     ],
   );
 });
+
+test('턴 표식은 200개 대화 상한을 깎지 않는다 — 채팅만 한 대화도 마지막 100턴을 지킨다', () => {
+  mem.clear();
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  for (let index = 0; index < 150; index += 1) {
+    const turn = createTurnMarker(index * 1_000, `t${index}`);
+    settleTurnMarker(turn, { endedAt: index * 1_000 + 500, outcome: 'completed', text: '' });
+    thread.messages.push({ role: 'user', text: `질문 ${index}` }, turn, { role: 'assistant', text: `답 ${index}` });
+  }
+  upsertThread(thread);
+  const restored = getThread(thread.id)!;
+  const conversation = restored.messages.filter((message) => message.kind !== 'turn');
+  assert.equal(conversation.length, 200);
+  assert.equal(conversation[0]?.text, '질문 50');
+  assert.equal(serializeThreadMessagesForProviderHistory(restored.messages).length, 200);
+  // 남은 턴마다 표식이 그대로 있다 — 잘려 나간 턴의 표식은 남지 않는다.
+  const markers = restored.messages.filter((message) => message.kind === 'turn').map((message) => message.messageId);
+  assert.equal(markers.length, 100);
+  assert.equal(markers[0], 't50');
+  assert.equal(restored.messages[1]?.messageId, 't50');
+});
+
+test('상한이 턴 중간을 자르면 그 턴의 표식이, 정착 전 표식은 늘 남는다', () => {
+  mem.clear();
+  const thread = createEmptyThread({ agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' });
+  const crashed = createTurnMarker(1, 'crashed');
+  const big = createTurnMarker(2, 'big');
+  settleTurnMarker(big, { endedAt: 90_000, outcome: 'completed', text: '' });
+  thread.messages.push({ role: 'user', text: '먼저' }, crashed, { role: 'user', text: '크게' }, big);
+  for (let index = 0; index < 205; index += 1) {
+    thread.messages.push({ role: 'assistant', kind: 'progress', text: `단계 ${index}` });
+  }
+  upsertThread(thread);
+  const restored = getThread(thread.id)!;
+  assert.deepEqual(
+    restored.messages.slice(0, 3).map((message) => message.kind === 'turn' ? `turn:${message.messageId}` : message.text),
+    ['turn:crashed', 'turn:big', '단계 5'],
+  );
+  assert.equal(restored.messages.filter((message) => message.kind !== 'turn').length, 200);
+  assert.deepEqual(unsettledTurnMarkers(restored.messages).map((marker) => marker.messageId), ['crashed']);
+});

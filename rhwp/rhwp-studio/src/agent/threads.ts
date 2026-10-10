@@ -1620,6 +1620,56 @@ export function getThread(id: string): ChatThread | null {
   return loadAll().find((t) => t.id === id) ?? null;
 }
 
+/**
+ * 저장할 메시지 — 대화 메시지는 마지막 MAX_MESSAGES_PER_THREAD 개를 남긴다. 턴 표식은 이 수에
+ * 들지 않는다(턴마다 하나씩 붙어 대화와 공급자 기록을 깎지 않게). 표식은 따로 묶는다:
+ * 남은 메시지 안의 표식, 남은 메시지가 걸쳐 시작하는 턴의 표식, 정착 전 표식만 남기고,
+ * 그래도 상한을 넘으면 오래된 정착한 표식부터 버린다.
+ */
+function capThreadMessages(messages: readonly ThreadMessage[]): ThreadMessage[] {
+  const keep = new Set<number>();
+  let conversation = 0;
+  let cut = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (isTurnMarker(messages[i])) continue;
+    if (conversation === MAX_MESSAGES_PER_THREAD) {
+      cut = i + 1;
+      break;
+    }
+    conversation += 1;
+  }
+  for (let i = cut; i < messages.length; i += 1) keep.add(i);
+  if (cut > 0) {
+    // 잘린 자리가 턴 중간이면 그 턴의 표식을 남긴다 — 남은 작업이 시간·결과와 함께 접힌다.
+    const first = messages[cut];
+    if (first && first.role !== 'user' && !isTurnMarker(first)) {
+      for (let i = cut - 1; i >= 0; i -= 1) {
+        const message = messages[i];
+        if (message.role === 'user') break;
+        if (isTurnMarker(message)) {
+          keep.add(i);
+          break;
+        }
+      }
+    }
+    // 정착 전 표식은 끊긴 턴을 복구하는 쪽이 찾는다.
+    messages.forEach((message, i) => {
+      if (i < cut && isTurnMarker(message) && message.endedAt === null) keep.add(i);
+    });
+  }
+  const markers = [...keep].filter((i) => isTurnMarker(messages[i])).sort((a, b) => a - b);
+  let excess = markers.length - MAX_MESSAGES_PER_THREAD;
+  for (const i of markers) {
+    if (excess <= 0) break;
+    const marker = messages[i];
+    if (isTurnMarker(marker) && marker.endedAt !== null) {
+      keep.delete(i);
+      excess -= 1;
+    }
+  }
+  return messages.filter((_, i) => keep.has(i));
+}
+
 /** 메시지가 있을 때만 저장한다. 빈 스레드는 목록에 올리지 않는다. */
 export function upsertThread(thread: ChatThread): void {
   if (thread.messages.length === 0) {
@@ -1632,7 +1682,7 @@ export function upsertThread(thread: ChatThread): void {
   const previousUpdatedAt = previous?.updatedAt ?? 0;
   const updatedAt = Math.max(Date.now(), thread.updatedAt + 1, previousUpdatedAt + 1);
   // 채팅을 열거나 떠날 때도 저장은 일어난다 — 대화가 움직였을 때만 목록에서 위로 올린다.
-  const messages = thread.messages.slice(-MAX_MESSAGES_PER_THREAD);
+  const messages = capThreadMessages(thread.messages);
   const lastActivityAt = previous && activityStamp(previous) === activityStamp({ ...thread, messages })
     ? threadActivityAt(previous)
     : updatedAt;
