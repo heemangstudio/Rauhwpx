@@ -10,6 +10,7 @@ import { checkSetupTerminal } from './setup-terminal.check.mjs';
 import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
+import { checkContextPreview } from './context.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -20,7 +21,7 @@ await mkdir(artifacts, { recursive: true });
 const sampleFile = resolve(artifacts, 'sample.txt');
 await writeFile(sampleFile, '문서 디자인을 위한 샘플 참고자료입니다.');
 // Own server + fresh browser profile: checks do not need or alter a running app/preview.
-const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-sidebar-check-'));
+const cacheDir = await mkdtemp(resolve(tmpdir(), 'hamaeditor-sidebar-check-'));
 const server = await createServer({
   cacheDir,
   configFile: resolve(studio, 'vite.sidebar.config.ts'),
@@ -128,6 +129,12 @@ try {
           !window.sidebarPreview.bridge.isTurnRunning() &&
           document.querySelector('.ag-msg-user'),
       );
+  }
+  // 커밋 전 변경이 있으면 버전 창은 변경 탭으로 열린다. 그래프 도구는 그래프 탭에 있다.
+  async function showVersionGraph() {
+    await page.click('.ag-versions-tab[data-tab="history"]');
+    await page.waitForSelector('.ag-versions-tab[data-tab="history"][aria-selected="true"]');
+    await page.waitForSelector('.ag-version-row', { visible: true });
   }
   async function step(name, run) {
     try {
@@ -407,6 +414,7 @@ try {
     await page.evaluate(() => window.sidebarPreview.setServices(false));
     assert.deepEqual(await visible(), []);
   });
+  await step('Context meter, compaction, and provider handoff', () => checkContextPreview(page, origin, artifacts));
   await step('Compact live subagent previews', () => checkFleetPreview(page, origin));
   await step('Full-screen changes, history, commit, discard, and review',
     () => checkChangesPreview(page, origin, artifacts));
@@ -721,6 +729,7 @@ try {
     async () => {
       await open('page=versions');
       await page.waitForSelector('.ag-root.ag-versions-open');
+      await showVersionGraph();
       await screenshot('versions');
       await page.click('[aria-label="새 커밋 만들기"]');
       await page.waitForSelector('.ag-version-prompt-input', { visible: true });
@@ -754,6 +763,7 @@ try {
   );
   await step('Branch commits keep their graph lane and move the branch label', async () => {
     await open('page=versions&history=branches&theme=dark&width=480');
+    await showVersionGraph();
     await screenshot('versions-dark');
     assert.equal(await page.$$eval('.ag-version-meta, .ag-version-time', (items) => items.length), 0);
     const initialRowHeight = await page.$eval('.ag-version-row', (row) => row.getBoundingClientRect().height);
@@ -762,6 +772,11 @@ try {
     assert.match(await page.$eval('.ag-version-date-tooltip', (tip) => tip.textContent), /월/);
     assert.equal(await page.$eval('.ag-version-row', (row) => row.getBoundingClientRect().height), initialRowHeight);
     await screenshot('versions-date-hover');
+    // 요소 스크린샷이 창 크기 변경을 일으켜 날짜 풍선을 닫는다. 다시 띄운 뒤 Escape 를 본다.
+    await page.mouse.move(0, 0);
+    await page.waitForFunction(() => !document.querySelector('.ag-version-date-tooltip').classList.contains('ag-visible'));
+    await page.hover('.ag-version-row');
+    await page.waitForSelector('.ag-version-date-tooltip.ag-visible', { visible: true });
     await page.focus('.ag-version-row');
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => !document.querySelector('.ag-version-date-tooltip').classList.contains('ag-visible'));

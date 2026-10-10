@@ -6219,7 +6219,9 @@ export class InputHandler {
       const parts: string[] = [];
       for (let paragraph = footnote.start.fnParaIdx; paragraph <= footnote.end.fnParaIdx; paragraph++) {
         const chars = Array.from(info.texts[paragraph] ?? '');
-        parts.push(chars.slice(paragraph === footnote.start.fnParaIdx ? footnote.start.charOffset : 0,
+        const from = paragraph === footnote.start.fnParaIdx ? footnote.start.charOffset : 0;
+        // The note number keeps a placeholder space at the start of the first paragraph.
+        parts.push(chars.slice(paragraph === 0 ? Math.max(from, 1) : from,
           paragraph === footnote.end.fnParaIdx ? footnote.end.charOffset : chars.length).join(''));
       }
       return parts.join('\n');

@@ -2537,6 +2537,8 @@ pub struct LayoutEngine {
     pre_emitted_host_paras: std::cell::RefCell<std::collections::HashSet<usize>>,
     /// [#2015] pre-emit 한 host 텍스트 높이(px) — vert_offset 이중계상 보정용.
     pre_emitted_host_heights: std::cell::RefCell<std::collections::HashMap<usize, f64>>,
+    /// 새 쪽으로 이월된 문단 기준 자리차지 표 — 첫 조각에 세로 오프셋을 적용하지 않는다.
+    fresh_page_float_tables: std::cell::RefCell<std::collections::HashSet<(usize, usize)>>,
     /// 렌더용 가상 미주 문단 시작 인덱스
     endnote_para_base: std::cell::Cell<usize>,
     /// 가상 미주 문단별 원본 위치
@@ -2684,6 +2686,7 @@ impl LayoutEngine {
             hidden_empty_paras: std::cell::RefCell::new(std::collections::HashSet::new()),
             pre_emitted_host_paras: std::cell::RefCell::new(std::collections::HashSet::new()),
             pre_emitted_host_heights: std::cell::RefCell::new(std::collections::HashMap::new()),
+            fresh_page_float_tables: std::cell::RefCell::new(std::collections::HashSet::new()),
             endnote_para_base: std::cell::Cell::new(usize::MAX),
             endnote_para_sources: std::cell::RefCell::new(Vec::new()),
             endnote_between_notes_hu: std::cell::Cell::new(0),
@@ -2958,6 +2961,22 @@ impl LayoutEngine {
     /// [#2015] pre-emit 된 host 텍스트 높이 맵 설정 (vert_offset 이중계상 보정용)
     pub fn set_pre_emitted_host_heights(&self, heights: &std::collections::HashMap<usize, f64>) {
         *self.pre_emitted_host_heights.borrow_mut() = heights.clone();
+    }
+
+    /// 새 쪽으로 이월된 문단 기준 자리차지 표 집합 설정 (세로 오프셋 미적용)
+    pub fn set_fresh_page_float_tables(&self, tables: &std::collections::HashSet<(usize, usize)>) {
+        *self.fresh_page_float_tables.borrow_mut() = tables.clone();
+    }
+
+    /// 이 표가 앵커 쪽에서 새 쪽으로 이월되어 세로 오프셋을 버리는지 여부.
+    pub(crate) fn is_fresh_page_float_table(
+        &self,
+        para_index: usize,
+        control_index: usize,
+    ) -> bool {
+        self.fresh_page_float_tables
+            .borrow()
+            .contains(&(para_index, control_index))
     }
 
     /// 렌더용 가상 미주 문단과 원본 Endnote 내부 문단의 매핑을 설정한다.

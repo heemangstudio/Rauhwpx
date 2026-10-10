@@ -4,6 +4,7 @@ import type { CompareDocumentSnapshot } from '../src/compare/types.ts';
 import {
   clearHistory,
   getHistoryPayload,
+  listHistoryMeta,
   saveHistoryIrSnapshot,
 } from '../src/history/idb-store.ts';
 
@@ -37,5 +38,22 @@ test('memory history stores serialized snapshots without sharing caller objects'
     assert.equal(payload.snapshot.paragraphs[0].text, '원본 텍스트😀');
     assert.notEqual(payload.snapshot, snapshot);
   }
+  await clearHistory();
+});
+
+test('memory history drops the oldest snapshots once their total size passes the cap', async () => {
+  await clearHistory();
+  const large = (text: string): CompareDocumentSnapshot => ({
+    meta: { name: 'large', sectionCount: 1, pageCount: 1 },
+    paragraphs: [],
+    controls: [],
+    text,
+  } as CompareDocumentSnapshot);
+  const first = await saveHistoryIrSnapshot('first', 'long.hwpx', large('a'.repeat(17 * 1024 * 1024)));
+  const second = await saveHistoryIrSnapshot('second', 'long.hwpx', large('b'.repeat(17 * 1024 * 1024)));
+
+  assert.deepEqual((await listHistoryMeta()).map((row) => row.id), [second.id]);
+  assert.equal(await getHistoryPayload(first.id), null);
+  assert.equal((await getHistoryPayload(second.id))?.kind, 'ir');
   await clearHistory();
 });

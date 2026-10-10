@@ -3,7 +3,11 @@ import { stat } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+// The scheme is part of the renderer origin that keys Local Storage and IndexedDB.
+// Changing it hides every chat, draft and version stored under the old origin.
 export const STUDIO_SCHEME = 'rauhwpx';
+// 2.0.11 served Studio from this scheme. It is registered only so its storage can be imported.
+export const REBRANDED_STUDIO_SCHEME = 'hamaeditor';
 export const STUDIO_HOST = 'app';
 export const STUDIO_URL = `${STUDIO_SCHEME}://${STUDIO_HOST}/index.html`;
 
@@ -47,19 +51,22 @@ const STUDIO_CSP = [
   "form-action 'none'",
 ].join('; ');
 
+const STUDIO_SCHEME_PRIVILEGES = Object.freeze({
+  standard: true,
+  secure: true,
+  supportFetchAPI: true,
+  corsEnabled: true,
+  stream: true,
+  // V8 코드 캐시로 두 번째 실행부터 번들 JS 파싱·컴파일을 건너뛴다.
+  codeCache: true,
+});
+
 export function registerStudioScheme(protocol) {
-  protocol.registerSchemesAsPrivileged([{
-    scheme: STUDIO_SCHEME,
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      corsEnabled: true,
-      stream: true,
-      // V8 코드 캐시로 두 번째 실행부터 번들 JS 파싱·컴파일을 건너뛴다.
-      codeCache: true,
-    },
-  }]);
+  // registerSchemesAsPrivileged 는 한 번만 부를 수 있다. 2.0.11 출처도 같은 권한이어야 그 저장소가 그대로 열린다.
+  protocol.registerSchemesAsPrivileged([STUDIO_SCHEME, REBRANDED_STUDIO_SCHEME].map((scheme) => ({
+    scheme,
+    privileges: { ...STUDIO_SCHEME_PRIVILEGES },
+  })));
 }
 
 // file:// 응답의 MIME 추정에 기대지 않는다. 특히 .wasm 이 application/wasm 이어야

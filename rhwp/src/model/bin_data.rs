@@ -180,11 +180,22 @@ pub struct BinDataPayloadCache {
 }
 
 impl BinDataPayloadCache {
-    fn load(&self, resolver: &dyn BinDataResolver, key: &str) -> std::sync::Arc<[u8]> {
+    /// Locks the map after dropping entries whose payload is gone. A `Weak<[u8]>`
+    /// keeps the whole `Arc` allocation, payload bytes included, until the weak
+    /// handle itself drops, so dead entries would pin every image ever rendered.
+    fn live_payloads(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, std::sync::Weak<[u8]>>> {
         let mut cached = self
             .payloads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cached.retain(|_, payload| payload.strong_count() > 0);
+        cached
+    }
+
+    fn load(&self, resolver: &dyn BinDataResolver, key: &str) -> std::sync::Arc<[u8]> {
+        let mut cached = self.live_payloads();
         if let Some(payload) = cached.get(key).and_then(std::sync::Weak::upgrade) {
             return payload;
         }
@@ -199,10 +210,7 @@ impl BinDataPayloadCache {
         key: &str,
         max_bytes: usize,
     ) -> Option<std::sync::Arc<[u8]>> {
-        let mut cached = self
-            .payloads
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cached = self.live_payloads();
         if let Some(payload) = cached.get(key).and_then(std::sync::Weak::upgrade) {
             return (payload.len() <= max_bytes).then_some(payload);
         }
@@ -599,6 +607,26 @@ mod tests {
         let reloaded = duplicate_entries[0].load_shared();
         assert_eq!(reloaded.len(), PAYLOAD_BYTES);
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn released_payloads_leave_no_cache_entry_pinning_their_allocation() {
+        let resolver = std::sync::Arc::new(CountingResolver {
+            calls: AtomicUsize::new(0),
+            payload_bytes: 4096,
+        });
+        let shared = std::sync::Arc::new(SharedBinDataResolver::new(resolver));
+        let first = BinDataBytes::lazy(shared.clone(), "BinData/first.jpg".to_string());
+        let second = BinDataBytes::lazy(shared.clone(), "BinData/second.jpg".to_string());
+
+        drop(first.load_shared());
+        let live = second.load_shared();
+
+        // 죽은 Weak<[u8]> 도 Arc 할당(그림 바이트 포함)을 붙들므로 남아 있으면 안 된다.
+        let cached = shared.cache.payloads.lock().unwrap();
+        assert_eq!(cached.len(), 1);
+        assert!(cached.values().all(|payload| payload.strong_count() > 0));
+        drop(live);
     }
 
     #[test]

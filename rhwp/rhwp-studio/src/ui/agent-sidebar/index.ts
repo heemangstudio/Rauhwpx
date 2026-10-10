@@ -24,6 +24,8 @@ import type {
   AgentStreamEvent,
   AgentWorkflow,
   AgentWorkflowState,
+  CompactionSupport,
+  CompactionTrigger,
   PermissionProfile,
   ServiceTier,
   PendingChangeSet,
@@ -82,7 +84,14 @@ import {
   removeThread,
   renameThread,
   setThreadTitle,
-  serializeThreadMessagesForProviderHistory,
+  addCompactionMarker,
+  addHandoffMarker,
+  captureTurnWatermark,
+  createThreadMessageId,
+  forgetProviderSession,
+  providerStartContext,
+  rememberProviderSession,
+  setTurnOutcome,
   pendingUserQuestionMatchesInteraction,
   subscribeThreadChanges,
   waitForThreadsPersistence,
@@ -91,6 +100,8 @@ import {
   type ChatThread,
   type DocumentThreadGroup,
   type ThreadMessage,
+  type ThreadTurnOutcome,
+  type ThreadMarkerMessage,
   type ThreadAttachment,
   type ThreadTaskRecord,
   type ThreadToolOutcome,
@@ -113,6 +124,7 @@ import { createInkRing, createIcon, createStopIcon } from './icons.ts';
 import { detectPlatformKind } from '../../engine/navigation-keymap.ts';
 import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createEffortSlider } from './effort-slider.ts';
+import { formatTokens } from './usage-format.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
 import { createToolRow, type ToolRowHandle } from './tool-row.ts';
@@ -718,6 +730,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   // 환경 패널의 `변경 사항` 행을 눌렀을 때만 열린다.
   const turnChanges = new TurnChanges();
   let turnOwnerThreadId: string | null = null;
+  /** 이번 턴이 성공하면 커서 워터마크가 될 사용자 메시지. 수동 압축 턴은 잡지 않는다. */
+  let turnWatermark: { threadId: string; agent: AgentName; messageId: string } | null = null;
   let workingDiff: DiffItem[] = [];
   let compactChangesOpen = false;
   let changesRefreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -757,16 +771,29 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   const planArchives = new Map<string, StructuredPlan[]>();
   const threadWorkflows = new Map<string, AgentWorkflow>();
 
+  /** 대기열에 있어 아직 프로바이더에 닿지 않은 사용자 메시지 — chat-start 대화에서 뺀다. */
+  const undeliveredMessages = new Set<ThreadMessage>();
+  /** 지금 세션의 압축 지원. chat-started 가 알린다. */
+  let sessionCompaction: CompactionSupport = 'none';
+  /** 진행 중인 압축. 수동 압축은 허브가 받아들이기 전까지 id 를 모른다. */
+  let activeCompaction: { compactionId: string | null; trigger: CompactionTrigger } | null = null;
+
   function startCurrentBridgeChat(force = false): void {
     // 새 채팅·스레드 전환(force)만 입력기를 잠근다. 모델/추론 강도만 바꿀 때는
     // 같은 대화를 다시 열 뿐이라 입력칸·피커가 비활성으로 깜빡이지 않게 둔다.
     bridge.setServiceTier(selectedServiceTier);
     if (force) chatStartPendingThreadId = currentThread.id;
-    const history = serializeThreadMessagesForProviderHistory(currentThread.messages);
+    // 브리지는 보내는 순간 제공자로 대화와 커서를 다시 만든다. 이 값은 제공자가 없을 때의 대비다.
+    const { history } = providerStartContext(currentThread, selectedAgent, undeliveredMessages);
     bridge.startChat(selectedAgent, selectedModel, selectedEffort, force, permissionProfile, chatWorkflow,
       currentThread.id, currentThread.documentId, currentThread.docKey, history);
     if (force) updateComposer();
   }
+
+  bridge.setChatStartContextProvider(({ agent, threadId }) => {
+    const thread = threadId === currentThread.id ? currentThread : getThread(threadId);
+    return thread ? providerStartContext(thread, agent, undeliveredMessages) : null;
+  });
 
   // ── DOM 구성 ──────────────────────────────────────────
   const root = document.createElement('aside');
@@ -2400,6 +2427,122 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   const composerUtilityActions = el('div', 'ag-composer-utility-actions');
   composerUtilityActions.append(phaseBadge, modeMenu.root);
   composerUtilities.append(composerUtilityActions);
+
+  /* 맥락 창 사용량 — 사용량을 안 뒤에만 보이는 작은 고리. 올리거나 누르면 압축 팝오버가 열린다. */
+  const contextMeter = el('div', 'ag-context');
+  contextMeter.hidden = true;
+  const contextTrigger = el('button', 'ag-context-btn');
+  contextTrigger.type = 'button';
+  contextTrigger.setAttribute('aria-haspopup', 'dialog');
+  contextTrigger.setAttribute('aria-expanded', 'false');
+  contextTrigger.setAttribute('aria-controls', 'ag-context-popover');
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const contextRing = document.createElementNS(SVG_NS, 'svg');
+  contextRing.setAttribute('class', 'ag-context-ring');
+  contextRing.setAttribute('viewBox', '0 0 16 16');
+  contextRing.setAttribute('aria-hidden', 'true');
+  const contextRingTrack = document.createElementNS(SVG_NS, 'circle');
+  const contextRingValue = document.createElementNS(SVG_NS, 'circle');
+  for (const [circle, name] of [[contextRingTrack, 'ag-context-ring-track'], [contextRingValue, 'ag-context-ring-value']] as const) {
+    circle.setAttribute('class', name);
+    circle.setAttribute('cx', '8');
+    circle.setAttribute('cy', '8');
+    circle.setAttribute('r', '6');
+    circle.setAttribute('pathLength', '100');
+  }
+  contextRing.append(contextRingTrack, contextRingValue);
+  contextTrigger.appendChild(contextRing);
+  const contextPopover = el('div', 'ag-context-popover');
+  contextPopover.id = 'ag-context-popover';
+  contextPopover.setAttribute('role', 'dialog');
+  contextPopover.setAttribute('aria-label', '맥락 사용량');
+  const contextPercent = el('span', 'ag-context-percent');
+  const contextCount = el('span', 'ag-context-count');
+  const contextHead = el('div', 'ag-context-head');
+  contextHead.append(contextPercent, contextCount);
+  const contextBar = el('div', 'ag-context-bar');
+  const contextBarFill = el('span', 'ag-context-bar-fill');
+  contextBar.appendChild(contextBarFill);
+  const contextCompact = el('button', 'ag-context-compact', '압축');
+  contextCompact.type = 'button';
+  contextPopover.append(contextHead, contextBar, contextCompact);
+  contextMeter.append(contextTrigger, contextPopover);
+  let contextPopoverPinned = false;
+  let contextHoverTimer: number | null = null;
+
+  function setContextPopoverOpen(open: boolean, pinned = false): void {
+    if (contextHoverTimer !== null) window.clearTimeout(contextHoverTimer);
+    contextHoverTimer = null;
+    contextPopoverPinned = open && (pinned || contextPopoverPinned);
+    contextMeter.classList.toggle('ag-context-open', open);
+    contextTrigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function scheduleContextPopover(open: boolean): void {
+    if (contextPopoverPinned) return;
+    if (contextHoverTimer !== null) window.clearTimeout(contextHoverTimer);
+    contextHoverTimer = window.setTimeout(() => setContextPopoverOpen(open), open ? 120 : 180);
+  }
+
+  contextMeter.addEventListener('pointerenter', (event) => {
+    if (event.pointerType === 'mouse') scheduleContextPopover(true);
+  });
+  contextMeter.addEventListener('pointerleave', (event) => {
+    if (event.pointerType === 'mouse') scheduleContextPopover(false);
+  });
+  contextTrigger.addEventListener('click', (event) => {
+    const open = !(contextMeter.classList.contains('ag-context-open') && contextPopoverPinned);
+    setContextPopoverOpen(open, open);
+    // 키보드로 열었을 때만 압축 버튼으로 초점을 옮긴다 (detail 0 = 키보드 활성화).
+    if (open && event.detail === 0 && contextCompact.getAttribute('aria-disabled') !== 'true') {
+      contextCompact.focus({ preventScroll: true });
+    }
+  });
+  contextCompact.addEventListener('click', () => {
+    if (contextCompact.getAttribute('aria-disabled') === 'true') return;
+    void requestCompaction();
+  });
+  contextMeter.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !contextMeter.classList.contains('ag-context-open')) return;
+    event.stopPropagation();
+    setContextPopoverOpen(false);
+    contextTrigger.focus();
+  });
+  const onContextPopoverOutside = (event: PointerEvent): void => {
+    if (!contextMeter.classList.contains('ag-context-open')) return;
+    if (contextMeter.contains(event.target as Node)) return;
+    setContextPopoverOpen(false);
+  };
+  document.addEventListener('pointerdown', onContextPopoverOutside);
+
+  /** 맥락 표시는 지금 고른 프로바이더의 사용량만 보인다. 다른 프로바이더 것은 숨긴다. */
+  function renderContextMeter(): void {
+    const usage = currentThread.contextUsage;
+    const visible = Boolean(usage && usage.agent === selectedAgent && readOnlyDocLabel === null);
+    contextMeter.hidden = !visible;
+    if (!visible || !usage) {
+      setContextPopoverOpen(false);
+      return;
+    }
+    const percent = usage.maxTokens
+      ? Math.max(0, Math.min(100, Math.round((usage.usedTokens / usage.maxTokens) * 100)))
+      : null;
+    contextMeter.dataset.level = percent !== null && percent >= 90 ? 'high' : 'normal';
+    contextRingValue.style.strokeDasharray = `${percent ?? 0} 100`;
+    contextPercent.textContent = percent !== null ? `${percent}%` : '';
+    contextPercent.hidden = percent === null;
+    contextCount.textContent = usage.maxTokens
+      ? `${formatTokens(usage.usedTokens)} / ${formatTokens(usage.maxTokens)}`
+      : formatTokens(usage.usedTokens);
+    contextBar.hidden = percent === null;
+    contextBarFill.style.width = `${percent ?? 0}%`;
+    const label = percent !== null ? `맥락 ${percent}% 사용` : `맥락 ${formatTokens(usage.usedTokens)} 사용`;
+    contextTrigger.setAttribute('aria-label', label);
+    contextTrigger.title = label;
+    const reason = compactUnavailableReason();
+    contextCompact.setAttribute('aria-disabled', reason ? 'true' : 'false');
+    contextCompact.title = reason ?? '';
+  }
   const composer = el('form', 'ag-composer');
   let composerBottomDistance: number | null = null;
   const composerRest = createComposerRestingMotion({
@@ -2750,6 +2893,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     },
   });
   composerUtilityActions.insertBefore(referenceLibrary.trigger, modeMenu.root);
+  composerUtilityActions.insertBefore(contextMeter, referenceLibrary.trigger);
   composerField.insertBefore(referenceLibrary.quickAddButton, sendHint);
   composer.insertBefore(referenceLibrary.quickUploads, composerField);
 
@@ -3881,7 +4025,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     value: string;
     label: string;
     detail: string;
-    local?: 'skills' | 'calibration' | 'settings' | 'templates' | 'fast';
+    local?: 'skills' | 'calibration' | 'settings' | 'templates' | 'fast' | 'compact';
     mode?: AgentMode;
     templateId?: string;
     skillName?: string;
@@ -4034,6 +4178,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
             local: 'fast' as const,
           }]
         : []),
+      { value: '/compact', label: '/compact', detail: '맥락 압축', local: 'compact' },
       { value: '/calibration', label: '/calibration', detail: '말투 맞추기', local: 'calibration' },
       { value: '/settings', label: '/settings', detail: '설정 열기 (연결·기본값·사용량)', local: 'settings' },
       { value: '/templates', label: '/templates', detail: '문서 템플릿 선택', local: 'templates' },
@@ -4111,6 +4256,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     }
     if (option.local === 'skills') { input.value = ''; setSkillsPanelOpen(true); return; }
     if (option.local === 'fast') { input.value = ''; applyFastCommand(selectedServiceTier === 'fast' ? 'off' : 'on'); return; }
+    if (option.local === 'compact') { input.value = ''; resizeComposerInput(); void requestCompaction(); return; }
     input.value = `${option.value} `;
     input.focus();
   }
@@ -4294,6 +4440,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         systemMessage('/fast 인자: on, off, status');
         return;
       }
+      if (text === '/compact') { input.value = ''; setSlashMenuOpen(false); resizeComposerInput(); void requestCompaction(); return; }
       if (text === '/calibration') { input.value = ''; writingStyleCalibration.open(); return; }
       if (text === '/settings') { input.value = ''; requestSettingsOpen(); return; }
       if (text === '/skills') { input.value = ''; setSkillsPanelOpen(true); return; }
@@ -4345,7 +4492,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     appendConversation(userBubble);
     updateTurnPending(selectedAgent);
     scrollConversationToMessage(userBubble, { smooth: true });
+    undeliveredMessages.add(userMessage);
     const messageSent = bridge.sendUserMessage(requestText, skillNameForMessage, staged.map((file) => file.id));
+    void messageSent.finally(() => undeliveredMessages.delete(userMessage));
     if (staged.length > 0) {
       attachmentsSending = true;
       updateComposer();
@@ -4477,6 +4626,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     skillIcon?: ProductSkillIcon,
     messageId?: string,
   ): ThreadMessage {
+    // 다른 프로바이더로 가는 첫 메시지 앞에 전환 구분선을 남긴다.
+    const handoff = addHandoffMarker(currentThread, selectedAgent);
+    if (handoff) appendConversation(renderThreadMarker(handoff));
     const message: ThreadMessage = {
       role: 'user',
       text,
@@ -4485,7 +4637,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       ...(skillName && skillIcon ? { skillIcon } : {}),
       ...(attachments.length ? { attachments } : {}),
       ...(selection ? { selection } : {}),
-      ...(messageId ? { messageId } : {}),
+      messageId: messageId ?? createThreadMessageId(),
     };
     currentThread.messages.push(message);
     currentThread.updatedAt = Date.now();
@@ -4888,10 +5040,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
           renderAssistantMessage(bubble, msg.text);
           appendConversation(bubble);
         }
+      } else if (msg.kind === 'marker') {
+        appendConversation(renderThreadMarker(msg));
       } else {
         appendConversation(el('div', 'ag-msg ag-msg-system', msg.text));
       }
     }
+    renderContextMeter();
     if (questionController.interaction()?.threadId === thread.id) {
       questionController.setVisible(true);
       mountQuestionTimelineAnchor();
@@ -5738,6 +5893,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     if (composerRest.resting && !canComposerRest()) composerRest.setResting(false);
     updateReconnectChip();
     updateCalibrationChip();
+    renderContextMeter();
     syncProviderMenu();
     // 다른 문서의 채팅 열람 중에는 연결/작업 상태와 무관하게 잠긴다.
     if (mergeResolverLocked) {
@@ -6034,12 +6190,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     const editAgent = bridge.pendingEdits.getChangeSets()
       .find((set) => set.status === 'open')?.agent ?? null;
     // 첫 문단이 완성되기 전의 빈 답변은 아직 대기 중으로 본다.
-    const waiting = (replyPending || turnRunning) && !(streamBubble && hasRenderedBlocks(streamBubble));
+    const compacting = activeCompaction !== null;
+    const waiting = compacting
+      || ((replyPending || turnRunning) && !(streamBubble && hasRenderedBlocks(streamBubble)));
     const show = waiting || editAgent !== null;
     turnPending.hidden = !show;
     if (!show) return;
     const who = agent ?? editAgent ?? selectedAgent;
-    turnPendingLabel.textContent = `${AGENT_LABEL[who]} 편집 중…`;
+    turnPendingLabel.textContent = compacting ? '맥락 압축 중…' : `${AGENT_LABEL[who]} 편집 중…`;
     messages.insertBefore(turnPending, messagesEnd);
   }
 
@@ -6074,8 +6232,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     });
   }
 
-  function systemMessage(text: string): void {
-    currentThread.messages.push({ role: 'system', text, agent: selectedAgent });
+  function systemMessage(text: string, severity?: 'error'): void {
+    currentThread.messages.push({ role: 'system', text, agent: selectedAgent, ...(severity ? { severity } : {}) });
     persistCurrentThread();
     withAutoScroll(() => appendConversation(el('div', 'ag-msg ag-msg-system ag-msg-enter', text)));
   }
@@ -6645,6 +6803,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     switch (event.type) {
       case 'turn-start':
         turnOwnerThreadId = currentThread.id;
+        captureTurnStartWatermark(event.agent);
         turnChanges.begin(currentThread.id);
         rebuildReview();
         // 이전 턴이 비정상 종료돼 남긴 실행 상태를 먼저 닫는다.
@@ -6750,6 +6909,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         }
         break;
       case 'turn-end': {
+        applyTurnEndCursor(event);
+        activeCompaction = null;
         flushPendingAssistantRender();
         const finalBubble =
           streamBubble?.parentElement === messages
@@ -6772,7 +6933,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         suppressedSpawnCalls.clear();
         fleetView.sweep();
         sweepTasksTranscript();
-        if (event.errorMessage) systemMessage(event.errorMessage);
+        if (event.errorMessage && event.errorMessage !== lastCompactionFailure) systemMessage(event.errorMessage, 'error');
+        lastCompactionFailure = null;
         noteProviderAuthFailure(event.agent, event.errorMessage);
         const completed =
           event.stopReason !== 'interrupted'
@@ -6797,10 +6959,206 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         break;
       }
       case 'error':
-        systemMessage(event.message);
+        systemMessage(event.message, 'error');
         noteProviderAuthFailure(event.agent, event.message);
         break;
+      case 'context-usage':
+        applyContextUsage(event);
+        break;
+      case 'compaction':
+        handleCompactionEvent(event);
+        break;
     }
+  }
+
+  // ── 맥락: 세션 커서 · 사용량 · 압축 ───────────────────
+
+  /** 이벤트가 속한 채팅. 다른 채팅을 연 뒤 늦게 온 턴 이벤트는 그 턴의 채팅에 남긴다. */
+  function eventThreadId(): string {
+    return turnRunning ? (turnOwnerThreadId ?? currentThread.id) : currentThread.id;
+  }
+
+  function updateEventThread(mutate: (thread: ChatThread) => boolean): void {
+    const ownerId = eventThreadId();
+    if (ownerId === currentThread.id) {
+      if (mutate(currentThread)) persistCurrentThread();
+      return;
+    }
+    const stored = getThread(ownerId);
+    if (stored && mutate(stored)) upsertThread(stored);
+  }
+
+  /** 턴을 시작한 사용자 메시지를 잡아 둔다. 수동 압축 턴은 대화를 옮기지 않는다. */
+  function captureTurnStartWatermark(agent: AgentName): void {
+    turnWatermark = null;
+    if (activeCompaction?.trigger === 'manual') return;
+    const captured = captureTurnWatermark(currentThread, agent, undeliveredMessages);
+    if (!captured) return;
+    if (captured.assigned) persistCurrentThread();
+    turnWatermark = { threadId: currentThread.id, agent, messageId: captured.messageId };
+  }
+
+  function turnEndOutcome(event: Extract<AgentStreamEvent, { type: 'turn-end' }>): ThreadTurnOutcome | null {
+    if (event.providerSessionId) return null;
+    if (event.stopReason === 'interrupted') return 'interrupted';
+    if (event.errorMessage || event.stopReason === 'failed' || event.stopReason === 'exited'
+      || event.stopReason === 'error') return 'failed';
+    return null;
+  }
+
+  /**
+   * 성공한 턴은 커서와 워터마크(그 턴의 사용자 메시지)를 남기고, 끝나지 못한 턴은 그 메시지에
+   * 결과를 남긴다. 실패한 턴은 워터마크를 옮기지 않으므로 다음 넘겨주기에 다시 간다.
+   */
+  function applyTurnEndCursor(event: Extract<AgentStreamEvent, { type: 'turn-end' }>): void {
+    const watermark = turnWatermark?.agent === event.agent ? turnWatermark : null;
+    turnWatermark = null;
+    if (!event.resumeLost && !event.providerSessionId && !watermark) return;
+    const outcome = turnEndOutcome(event);
+    updateEventThread((thread) => {
+      let changed = false;
+      const seenThroughMessageId = watermark?.threadId === thread.id ? watermark.messageId : undefined;
+      if (seenThroughMessageId) changed = setTurnOutcome(thread, seenThroughMessageId, outcome) || changed;
+      if (event.resumeLost) changed = forgetProviderSession(thread, event.agent) || changed;
+      if (event.providerSessionId) {
+        changed = rememberProviderSession(thread, event.agent, event.providerSessionId, Date.now(), seenThroughMessageId)
+          || changed;
+      }
+      return changed;
+    });
+  }
+
+  function applyContextUsage(event: Extract<AgentStreamEvent, { type: 'context-usage' }>): void {
+    updateEventThread((thread) => {
+      const previous = thread.contextUsage;
+      const maxTokens = event.maxTokens
+        ?? (previous?.agent === event.agent ? previous.maxTokens : undefined);
+      if (previous?.agent === event.agent && previous.usedTokens === event.usedTokens
+        && previous.maxTokens === maxTokens) return false;
+      thread.contextUsage = {
+        agent: event.agent,
+        usedTokens: event.usedTokens,
+        ...(maxTokens ? { maxTokens } : {}),
+        updatedAt: Date.now(),
+      };
+      return true;
+    });
+    renderContextMeter();
+  }
+
+  /** 실패 문구를 턴 끝 오류로 한 번 더 받으면 겹쳐 쓰지 않는다. */
+  let lastCompactionFailure: string | null = null;
+
+  function handleCompactionEvent(event: Extract<AgentStreamEvent, { type: 'compaction' }>): void {
+    const matchesActive = activeCompaction !== null
+      && (activeCompaction.compactionId === event.compactionId
+        || (activeCompaction.compactionId === null && event.trigger === 'manual'));
+    if (event.phase === 'started') {
+      activeCompaction = { compactionId: event.compactionId, trigger: event.trigger };
+      updateTurnPending(event.agent);
+      updateComposer();
+      return;
+    }
+    if (matchesActive) activeCompaction = null;
+    // 수동 압축 턴은 끝날 때까지 "맥락 압축 중…"으로 둔다 — 완료 뒤 turn-end 전에 편집 중으로 깜빡이지 않는다.
+    if (matchesActive && event.trigger === 'manual' && event.phase === 'completed' && turnRunning) {
+      activeCompaction = { compactionId: event.compactionId, trigger: event.trigger };
+    }
+    if (event.phase === 'failed') {
+      lastCompactionFailure = event.message ?? null;
+      systemMessage(event.message ? `맥락 압축 실패 · ${event.message}` : '맥락 압축 실패');
+      updateTurnPending(event.agent);
+      updateComposer();
+      return;
+    }
+    if (eventThreadId() === currentThread.id) {
+      // 진행 중인 답변 조각은 구분선 앞에 이정표로 남긴다 — 다시 열어도 순서가 같다.
+      flushPendingAssistantRender();
+      flushAssistantBuffer({ kind: 'progress' });
+      compactStreamIntoActivity(event.agent);
+      closeCurrentActivityGroup();
+      streamBubble = null;
+    }
+    updateEventThread((thread) => {
+      const marker = addCompactionMarker(thread, event);
+      if (!marker) return false;
+      if (thread === currentThread) withAutoScroll(() => appendConversation(renderThreadMarker(marker)));
+      if (thread.contextUsage?.agent === event.agent) {
+        // Claude 의 post_tokens 는 시스템 프롬프트·도구 정의(약 60K)를 빼고 센다 — 다음 호출이
+        // 실제 값을 보고할 때까지 계기를 숨긴다. Codex/Pi 의 afterTokens 는 창 전체 기준이다.
+        if (event.agent === 'claude' || event.afterTokens === undefined) delete thread.contextUsage;
+        else thread.contextUsage = { ...thread.contextUsage, usedTokens: event.afterTokens, updatedAt: Date.now() };
+      }
+      return true;
+    });
+    updateTurnPending(event.agent);
+    updateComposer();
+  }
+
+  function compactUnavailableReason(): string | null {
+    if (connState !== 'connected') return '허브에 연결되지 않았습니다';
+    if (activeCompaction !== null) return '압축하는 중입니다';
+    if (readOnlyDocLabel !== null || isControlLocked() || questionController.hasPending()) {
+      return '작업이 끝나면 압축할 수 있습니다';
+    }
+    if (sessionCompaction === 'auto-only') return '자동 압축만 지원합니다';
+    if (sessionCompaction !== 'manual') return '압축을 지원하지 않습니다';
+    if (!currentThread.providerSessions?.[selectedAgent]) return '압축할 대화가 없습니다';
+    return null;
+  }
+
+  const COMPACT_REJECTION: Readonly<Record<string, string>> = {
+    AGENT_BUSY: '작업이 끝나면 압축할 수 있습니다',
+    COMPACTION_UNSUPPORTED: '압축을 지원하지 않습니다',
+    NOTHING_TO_COMPACT: '압축할 대화가 없습니다',
+    NO_SESSION: '압축할 세션이 없습니다',
+  };
+
+  async function requestCompaction(): Promise<void> {
+    const reason = compactUnavailableReason();
+    if (reason) {
+      systemMessage(reason);
+      return;
+    }
+    setContextPopoverOpen(false);
+    activeCompaction = { compactionId: null, trigger: 'manual' };
+    followConversation = true;
+    updateTurnPending(selectedAgent);
+    updateComposer();
+    scrollConversationToEnd();
+    const result = await bridge.compactChat();
+    if (result.ok) {
+      if (activeCompaction?.compactionId === null) activeCompaction.compactionId = result.compactionId;
+      return;
+    }
+    if (activeCompaction?.compactionId === null) activeCompaction = null;
+    systemMessage(COMPACT_REJECTION[result.code] ?? (result.message || '맥락 압축 실패'));
+    updateTurnPending();
+    updateComposer();
+  }
+
+  /** 다른 프로바이더로 넘어가는 이름 뒤의 조사. 받침 있는 이름만 '으로'. */
+  const TO_PARTICLE: Partial<Record<AgentName, string>> = { grok: '으로' };
+
+  function threadMarkerLabel(message: ThreadMarkerMessage): string {
+    if (message.marker === 'handoff') return `${AGENT_LABEL[message.to]}${TO_PARTICLE[message.to] ?? '로'} 전환`;
+    return message.beforeTokens !== undefined && message.afterTokens !== undefined
+      ? `맥락 압축됨 · ${formatTokens(message.beforeTokens)} → ${formatTokens(message.afterTokens)}`
+      : '맥락 압축됨';
+  }
+
+  function renderThreadMarker(message: ThreadMarkerMessage): HTMLElement {
+    const label = threadMarkerLabel(message);
+    const row = el('div', `ag-marker ag-marker-${message.marker}`);
+    row.setAttribute('role', 'separator');
+    row.setAttribute('aria-label', label);
+    if (message.marker === 'compaction') row.dataset.compactionId = message.compactionId;
+    const icon = message.marker === 'handoff' ? createProviderIcon(message.to) : createIcon('contract');
+    icon.classList.add('ag-marker-icon');
+    const text = el('span', 'ag-marker-label', label);
+    text.setAttribute('aria-hidden', 'true');
+    row.append(el('span', 'ag-marker-line'), icon, text, el('span', 'ag-marker-line'));
+    return row;
   }
 
   function handleSidebarEvent(e: SidebarEvent): void {
@@ -6875,6 +7233,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       case 'chat-started': {
         if (e.threadId && e.threadId !== currentThread.id) break;
         chatStartPendingThreadId = null;
+        sessionCompaction = e.compaction ?? 'none';
         const prevAgent = selectedAgent;
         const prevModel = selectedModel;
         const prevEffort = selectedEffort;
@@ -7061,6 +7420,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       case 'pi-error':
         break;
       case 'chat-stopped':
+        activeCompaction = null;
+        sessionCompaction = 'none';
         setTurnRunning(false);
         dropRunStatusIfIdle();
         flushPendingAssistantRender();
@@ -7112,7 +7473,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
           renderMessagesFromThread(currentThread);
           updateComposer();
         }
-        systemMessage(`오류 (${e.code}): ${e.message}`);
+        systemMessage(`오류 (${e.code}): ${e.message}`, 'error');
         if (e.code === 'AGENT_SPAWN_FAILED') appendSpawnRetryAction();
         workflowTransitionPending = false;
         planActionPending = false;
@@ -7161,7 +7522,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   function isControlLocked(): boolean {
     if (mergeResolverLocked) return true;
     return turnRunning || attachmentsSending || chatStartPendingThreadId !== null
-      || workflowTransitionPending || planActionPending || planningPhase === 'switching';
+      || workflowTransitionPending || planActionPending || planningPhase === 'switching'
+      || activeCompaction !== null;
   }
 
   function hasPendingDocumentEdits(): boolean {
@@ -8082,6 +8444,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     dispose(): void {
       if (root.dataset.disposed === 'true') return;
       root.dataset.disposed = 'true';
+      bridge.setChatStartContextProvider(null);
+      document.removeEventListener('pointerdown', onContextPopoverOutside);
+      if (contextHoverTimer !== null) window.clearTimeout(contextHoverTimer);
       for (const url of reviewImageUrls.values()) URL.revokeObjectURL(url);
       reviewImageUrls.clear();
       threadComposerDrafts.clear();

@@ -397,6 +397,8 @@ pub struct ResolvedStyleSet {
     pub hwp3_variant: bool,
     /// '쪽 번호'(Page Number) 스타일의 글자 모양 ID — 쪽 번호 매기기 글꼴/크기 기준.
     pub page_number_char_shape: Option<u32>,
+    /// HWPX 호환성 `applyNextspacingOfLastPara` — 셀 마지막 문단의 줄 간격과 아래 간격 유지.
+    pub apply_next_spacing_of_last_para: bool,
 }
 
 /// DocInfo 참조 테이블을 해소된 스타일 목록으로 변환한다.
@@ -431,6 +433,7 @@ pub fn resolve_styles_with_variant(
         bullets,
         hwp3_variant: is_hwp3_variant,
         page_number_char_shape: page_number_char_shape(doc_info),
+        apply_next_spacing_of_last_para: doc_info.apply_next_spacing_of_last_para,
     }
 }
 

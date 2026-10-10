@@ -173,6 +173,67 @@ fn scaled_canvas_extent(page_extent: f64, scale: f64) -> u32 {
     (page_extent * scale).max(1.0).min(MAX_CANVAS_DIMENSION) as u32
 }
 
+/// 쪽 일부만 그리는 canvas 의 장치 픽셀 영역. 원점은 배율을 적용한 쪽의 왼쪽 위다.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CanvasRegion {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+/// 영역 렌더 배율. 한 변 16384px 한도는 쪽 전체가 아니라 영역 canvas 에 건다.
+#[cfg(any(target_arch = "wasm32", test))]
+fn normalize_region_scale(requested_scale: f64) -> f64 {
+    if requested_scale <= 0.0 || !requested_scale.is_finite() {
+        1.0
+    } else {
+        requested_scale.clamp(0.25, 12.0)
+    }
+}
+
+/// 요청 영역을 정수 장치 픽셀로 맞추고, 쪽 전체 canvas 와 같은 범위(배율 적용 쪽 크기를
+/// 버림) 및 한 변 16384px 안으로 자른다.
+#[cfg(any(target_arch = "wasm32", test))]
+fn clip_canvas_region(
+    page_width: f64,
+    page_height: f64,
+    scale: f64,
+    region: (f64, f64, f64, f64),
+) -> Result<CanvasRegion, &'static str> {
+    if !page_width.is_finite()
+        || !page_height.is_finite()
+        || page_width <= 0.0
+        || page_height <= 0.0
+    {
+        return Err("invalid page dimensions");
+    }
+    let (x, y, width, height) = region;
+    if ![x, y, width, height].iter().all(|value| value.is_finite()) {
+        return Err("invalid canvas region");
+    }
+    let clip = |start: f64, extent: f64, page_extent: f64| {
+        let limit = (page_extent * scale).floor().max(1.0);
+        let lo = start.round().clamp(0.0, limit);
+        let hi = (start.round() + extent.round())
+            .clamp(lo, limit)
+            .min(lo + MAX_CANVAS_DIMENSION);
+        (lo, hi - lo)
+    };
+    let (x, width) = clip(x, width, page_width);
+    let (y, height) = clip(y, height, page_height);
+    if width < 1.0 || height < 1.0 {
+        return Err("empty canvas region");
+    }
+    Ok(CanvasRegion {
+        x: x as u32,
+        y: y as u32,
+        width: width as u32,
+        height: height as u32,
+    })
+}
+
 #[cfg(target_arch = "wasm32")]
 fn render_page_to_canvas_filtered_with_profile_impl(
     document: &HwpDocument,
@@ -181,7 +242,8 @@ fn render_page_to_canvas_filtered_with_profile_impl(
     scale: f64,
     layer_kind: &str,
     profile: &str,
-) -> Result<(), JsValue> {
+    region: Option<(f64, f64, f64, f64)>,
+) -> Result<u32, JsValue> {
     use crate::model::shape::TextWrap;
     use crate::paint::RenderProfile;
     use crate::renderer::layer_renderer::LayerRenderer;
@@ -208,19 +270,32 @@ fn render_page_to_canvas_filtered_with_profile_impl(
         .build_page_layer_tree_with_profile(page_num, profile)
         .map_err(JsValue::from)?;
 
-    let scale = normalize_canvas_scale(tree.page_width, tree.page_height, scale)
-        .map_err(JsValue::from_str)?;
-
-    canvas.set_width(scaled_canvas_extent(tree.page_width, scale));
-    canvas.set_height(scaled_canvas_extent(tree.page_height, scale));
+    let (scale, origin) = match region {
+        Some(region) => {
+            let scale = normalize_region_scale(scale);
+            let region = clip_canvas_region(tree.page_width, tree.page_height, scale, region)
+                .map_err(JsValue::from_str)?;
+            canvas.set_width(region.width);
+            canvas.set_height(region.height);
+            (scale, (region.x as f64, region.y as f64))
+        }
+        None => {
+            let scale = normalize_canvas_scale(tree.page_width, tree.page_height, scale)
+                .map_err(JsValue::from_str)?;
+            canvas.set_width(scaled_canvas_extent(tree.page_width, scale));
+            canvas.set_height(scaled_canvas_extent(tree.page_height, scale));
+            (scale, (0.0, 0.0))
+        }
+    };
 
     let mut renderer = WebCanvasRenderer::new(canvas)?;
     renderer.show_paragraph_marks = document.show_paragraph_marks;
     renderer.show_control_codes = document.show_control_codes;
     renderer.set_scale(scale);
+    renderer.set_device_origin(origin.0, origin.1);
     renderer.set_layer_filter(filter);
     renderer.render_page(&tree).map_err(JsValue::from)?;
-    Ok(())
+    Ok(renderer.pending_pictures())
 }
 
 fn get_page_layer_tree_with_profile_impl(
@@ -852,6 +927,8 @@ impl HwpDocument {
     ///
     /// WASM 환경에서만 사용 가능하다. Canvas 크기는 페이지 크기 × scale로 설정된다.
     /// scale이 0 이하이면 1.0으로 처리한다 (하위호환).
+    /// 반환값은 디코드를 기다리느라 빠진 그림 수다. 0 이 아니면 디코드 뒤 다시 그려야 한다
+    /// (`setWebCanvasPictureListener`).
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = renderPageToCanvas)]
     pub fn render_page_to_canvas(
@@ -859,7 +936,7 @@ impl HwpDocument {
         page_num: u32,
         canvas: &HtmlCanvasElement,
         scale: f64,
-    ) -> Result<(), JsValue> {
+    ) -> Result<u32, JsValue> {
         use crate::renderer::layer_renderer::LayerRenderer;
         use crate::renderer::web_canvas::WebCanvasRenderer;
 
@@ -879,16 +956,18 @@ impl HwpDocument {
         renderer.show_control_codes = self.show_control_codes;
         renderer.set_scale(scale);
         renderer.render_page(&tree).map_err(JsValue::from)?;
-        Ok(())
+        Ok(renderer.pending_pictures())
     }
 
-    /// 구역 첫 페이지에 요청한 머리말/꼬리말 정의를 가상 투영해 Canvas 2D로 렌더링한다.
+    /// 구역 첫 페이지에 요청한 머리말/꼬리말 정의를 가상 투영해 Canvas 2D로 영역만 렌더링한다.
     ///
-    /// 일반 page tree cache와 pagination active target은 바꾸지 않는다. Studio는 결과 canvas를
-    /// 머리말/꼬리말 밴드에만 clip해 편집 중 비인쇄 overlay로 사용한다.
+    /// 일반 page tree cache와 pagination active target은 바꾸지 않는다. Studio 는 머리말/꼬리말
+    /// 밴드만 덮는 canvas 를 화면 배율 그대로 그려 편집 중 비인쇄 overlay 로 쓴다. 영역 좌표는
+    /// `renderPageRegionToCanvas` 와 같다.
     #[cfg(target_arch = "wasm32")]
-    #[wasm_bindgen(js_name = renderHeaderFooterEditPreviewToCanvas)]
-    pub fn render_header_footer_edit_preview_to_canvas(
+    #[wasm_bindgen(js_name = renderHeaderFooterEditPreviewRegionToCanvas)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_header_footer_edit_preview_region_to_canvas(
         &self,
         page_num: u32,
         section_idx: u32,
@@ -896,7 +975,11 @@ impl HwpDocument {
         apply_to: u8,
         canvas: &HtmlCanvasElement,
         scale: f64,
-    ) -> Result<(), JsValue> {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> Result<u32, JsValue> {
         use crate::renderer::web_canvas::WebCanvasRenderer;
 
         let tree = self
@@ -907,18 +990,25 @@ impl HwpDocument {
                 apply_to,
             )
             .map_err(JsValue::from)?;
-        let scale = normalize_canvas_scale(tree.root.bbox.width, tree.root.bbox.height, scale)
-            .map_err(JsValue::from_str)?;
+        let scale = normalize_region_scale(scale);
+        let region = clip_canvas_region(
+            tree.root.bbox.width,
+            tree.root.bbox.height,
+            scale,
+            (x, y, width, height),
+        )
+        .map_err(JsValue::from_str)?;
 
-        canvas.set_width(scaled_canvas_extent(tree.root.bbox.width, scale));
-        canvas.set_height(scaled_canvas_extent(tree.root.bbox.height, scale));
+        canvas.set_width(region.width);
+        canvas.set_height(region.height);
 
         let mut renderer = WebCanvasRenderer::new(canvas)?;
         renderer.show_paragraph_marks = self.show_paragraph_marks;
         renderer.show_control_codes = self.show_control_codes;
         renderer.set_scale(scale);
+        renderer.set_device_origin(region.x as f64, region.y as f64);
         renderer.render_tree(&tree);
-        Ok(())
+        Ok(renderer.pending_pictures())
     }
 
     /// 다층 레이어 필터를 적용한 Canvas 렌더링 (Task #516, Stage 5.2).
@@ -933,6 +1023,7 @@ impl HwpDocument {
     /// - `"front"` → InFrontOfText overlay layer
     ///
     /// 본문 Canvas 와 overlay 컨테이너를 분리하는 다층 layer 아키텍처에서 사용.
+    /// 반환값은 `renderPageToCanvas` 와 같이 디코드를 기다리는 그림 수다.
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = renderPageToCanvasFiltered)]
     pub fn render_page_to_canvas_filtered(
@@ -941,7 +1032,7 @@ impl HwpDocument {
         canvas: &HtmlCanvasElement,
         scale: f64,
         layer_kind: &str,
-    ) -> Result<(), JsValue> {
+    ) -> Result<u32, JsValue> {
         self.render_page_to_canvas_filtered_with_profile(
             page_num, canvas, scale, layer_kind, "screen",
         )
@@ -956,23 +1047,55 @@ impl HwpDocument {
         scale: f64,
         layer_kind: &str,
         profile: &str,
-    ) -> Result<(), JsValue> {
+    ) -> Result<u32, JsValue> {
         #[cfg(feature = "subsecond-dev")]
         {
             let mut hot =
                 subsecond::HotFn::current(render_page_to_canvas_filtered_with_profile_impl);
-            return hot.call((self, page_num, canvas, scale, layer_kind, profile));
+            return hot.call((self, page_num, canvas, scale, layer_kind, profile, None));
         }
         #[cfg(not(feature = "subsecond-dev"))]
         render_page_to_canvas_filtered_with_profile_impl(
-            self, page_num, canvas, scale, layer_kind, profile,
+            self, page_num, canvas, scale, layer_kind, profile, None,
+        )
+    }
+
+    /// 쪽의 일부 영역만 Canvas 2D 에 렌더링한다. 고배율에서 쪽 전체 canvas 를 배율 상한으로
+    /// 그린 뒤, 화면에 보이는 부분만 원래 배율로 덧그릴 때 쓴다.
+    ///
+    /// `x`·`y`·`width`·`height` 는 `scale` 을 적용한 쪽 좌표계의 장치 픽셀이다. 원점은 정수
+    /// 픽셀로 반올림하고 영역은 쪽 범위와 한 변 16384px 안으로 자른다. canvas 크기는 자른
+    /// 영역 크기가 된다. `layer_kind`·`profile` 은 `renderPageToCanvasFilteredWithProfile` 과 같다.
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen(js_name = renderPageRegionToCanvas)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_page_region_to_canvas(
+        &self,
+        page_num: u32,
+        canvas: &HtmlCanvasElement,
+        scale: f64,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        layer_kind: &str,
+        profile: &str,
+    ) -> Result<u32, JsValue> {
+        render_page_to_canvas_filtered_with_profile_impl(
+            self,
+            page_num,
+            canvas,
+            scale,
+            layer_kind,
+            profile,
+            Some((x, y, width, height)),
         )
     }
 
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = getWebCanvasImageCacheStats)]
     pub fn get_web_canvas_image_cache_stats(&self) -> String {
-        crate::renderer::web_canvas::image_cache_stats_json()
+        crate::renderer::web_picture_cache::image_cache_stats_json()
     }
 
     /// 특정 페이지를 기존 PageRenderTree 경로로 Canvas 2D에 직접 렌더링한다.
@@ -983,7 +1106,7 @@ impl HwpDocument {
         page_num: u32,
         canvas: &HtmlCanvasElement,
         scale: f64,
-    ) -> Result<(), JsValue> {
+    ) -> Result<u32, JsValue> {
         use crate::renderer::web_canvas::WebCanvasRenderer;
 
         let tree = self
@@ -1002,7 +1125,7 @@ impl HwpDocument {
         renderer.show_control_codes = self.show_control_codes;
         renderer.set_scale(scale);
         renderer.render_tree(&tree);
-        Ok(())
+        Ok(renderer.pending_pictures())
     }
 
     /// 페이지 렌더 트리를 JSON 문자열로 반환한다.

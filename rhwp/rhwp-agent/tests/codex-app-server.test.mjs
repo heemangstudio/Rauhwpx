@@ -125,6 +125,7 @@ function appServerResponder({
       return reply({ thread: { id: 'thread-native' } })(frame, process);
     }
     if (frame.method === 'thread/resume') return reply({ thread: { id: frame.params.threadId } })(frame, process);
+    if (frame.method === 'thread/inject_items') return reply({})(frame, process);
     if (frame.method === 'turn/start') {
       process.send({
         method: 'turn/started',
@@ -151,6 +152,7 @@ function harness(t, {
   responder = appServerResponder(),
   requestUserInput = async () => ({ status: 'cancelled', reason: 'user-stop' }),
   terminateProcess = (process) => process.kill('SIGTERM'),
+  extraOpts = {},
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-codex-app-server-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -171,6 +173,7 @@ function harness(t, {
     agentRole: 'chat',
     requestUserInput,
     onEvent: (event) => events.push(event),
+    ...extraOpts,
   };
   const session = createCodexSession(opts, {
     spawnProcess(command, argv, options) {
@@ -757,7 +760,8 @@ for (const entry of [
 ]) {
   test(`default-mode ${entry.name} falls back to legacy exec before starting a turn`, async (t) => {
     const h = harness(t, { responder: entry.responder });
-    h.session.sendUserMessage('Fallback prompt');
+    // legacy exec 는 네이티브 주입이 없으므로 기록이 붙은 인라인 글을 그대로 받는다.
+    h.session.sendUserMessage('Fallback prompt', { handoff: HANDOFF });
     await settle(24);
     assert.equal(h.spawns.length, entry.name === 'enablement failure' ? 3 : 2);
     assert.equal(h.spawns[0].native, true);
@@ -1128,4 +1132,244 @@ test('Stop aborts a blocked question and sends turn/interrupt to Codex', async (
   );
   assert.equal(h.events.filter((event) => event.type === 'turn-end').at(-1).stopReason, 'interrupted');
   await h.session.dispose();
+});
+
+// 아래 알림 모양은 실제 codex-cli 0.162.0 app-server 캡처(thread/compact/start 턴)를 다듬어 옮겼다.
+function tokenUsage(threadId, turnId, lastTotal) {
+  const breakdown = (totalTokens) => ({
+    totalTokens, inputTokens: totalTokens, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0,
+  });
+  return {
+    method: 'thread/tokenUsage/updated',
+    params: { threadId, turnId, tokenUsage: { total: breakdown(17780), last: breakdown(lastTotal), modelContextWindow: 258400 } },
+  };
+}
+
+test('manual compaction runs thread/compact/start as a turn and maps contextCompaction items', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    responder(frame, process) {
+      if (frame.method === 'turn/start') {
+        const { threadId } = frame.params;
+        process.send({ method: 'turn/started', params: { threadId, turn: { id: 'turn-1', status: 'inProgress' } } });
+        process.send({ id: frame.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });
+        process.send(tokenUsage(threadId, 'turn-1', 17780));
+        // 이 응답 도중의 자동 압축은 구식 thread/compacted 로만 알린다.
+        process.send({ method: 'thread/compacted', params: { threadId, turnId: 'turn-1' } });
+        process.send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-1', status: 'completed' } } });
+        return;
+      }
+      if (frame.method === 'thread/compact/start') {
+        const { threadId } = frame.params;
+        process.send({ id: frame.id, result: {} });
+        process.send({ method: 'turn/started', params: { threadId, turn: { id: 'turn-compact', status: 'inProgress' } } });
+        // 자식 스레드의 압축은 루트 대화의 압축이 아니다.
+        process.send({ method: 'item/started', params: { threadId: 'child-thread', turnId: 'turn-compact', item: { type: 'contextCompaction', id: 'child-item' } } });
+        process.send({ method: 'item/started', params: { threadId, turnId: 'turn-compact', item: { type: 'contextCompaction', id: 'item-1' } } });
+        process.send(tokenUsage(threadId, 'turn-compact', 11504));
+        process.send({ method: 'item/completed', params: { threadId, turnId: 'turn-compact', item: { type: 'contextCompaction', id: 'item-1' } } });
+        process.send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-compact', status: 'completed' } } });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+  assert.equal(h.session.compactionSupport, 'manual');
+  h.session.sendUserMessage('Remember MANGO-77');
+  await settle(24);
+  assert.deepEqual(h.events.filter((event) => event.type === 'compaction').map(({ phase, trigger }) => [phase, trigger]), [['completed', 'auto']]);
+
+  h.events.length = 0;
+  h.session.compact();
+  await settle(32);
+  const compactRequest = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/compact/start');
+  assert.deepEqual(compactRequest.params, { threadId: 'thread-native' });
+  assert.equal(h.spawns.at(-1).process.frames.some((frame) => frame.method === 'turn/start'), false);
+  assert.deepEqual(h.events.filter((event) => event.type !== 'session-info').map((event) => event.type), [
+    'turn-start', 'compaction', 'context-usage', 'compaction', 'turn-end',
+  ]);
+  const [started, completed] = h.events.filter((event) => event.type === 'compaction');
+  assert.deepEqual(started, {
+    type: 'compaction', agent: 'codex', compactionId: 'codex:item-1', phase: 'started', trigger: 'manual', beforeTokens: 17780,
+  });
+  assert.deepEqual(completed, { ...started, phase: 'completed', afterTokens: 11504 });
+  assert.deepEqual(h.events.find((event) => event.type === 'context-usage'), {
+    type: 'context-usage', agent: 'codex', usedTokens: 11504, maxTokens: 258400, autoCompact: true,
+  });
+  assert.equal(h.events.at(-1).stopReason, 'completed');
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('a resume cursor whose rollout is gone starts a new thread with the full-history fallback', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    extraOpts: { resumeSessionId: 'thread-gone' },
+    responder(frame, process) {
+      if (frame.method === 'thread/resume') {
+        process.send({ id: frame.id, error: { code: -32600, message: 'no rollout found for thread id thread-gone' } });
+        return;
+      }
+      if (frame.method === 'turn/start') {
+        const { threadId } = frame.params;
+        process.send({ method: 'turn/started', params: { threadId, turn: { id: 'turn-1', status: 'inProgress' } } });
+        process.send({ id: frame.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });
+        process.send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-1', status: 'completed' } } });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+  assert.equal(h.session.getSessionId(), 'thread-gone');
+  h.session.sendUserMessage('delta only', { resumeFallbackText: 'full transcript' });
+  await settle(32);
+  const frames = h.spawns.at(-1).process.frames;
+  assert.deepEqual(frames.filter((frame) => frame.method?.startsWith('thread/')).map((frame) => frame.method), ['thread/resume', 'thread/start']);
+  const turn = frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(turn.params.threadId, 'thread-native');
+  assert.deepEqual(turn.params.input, [{ type: 'text', text: 'full transcript' }]);
+  const turnEnd = h.events.find((event) => event.type === 'turn-end');
+  assert.equal(turnEnd.stopReason, 'completed');
+  assert.equal(turnEnd.resumeLost, true);
+  assert.equal(h.session.getSessionId(), 'thread-native');
+  assert.equal(await h.session.dispose(), true);
+});
+
+// 0.162 generate-ts: thread/inject_items {threadId, items: ResponseItem[]} → {}.
+const HANDOFF = Object.freeze({
+  header: 'Context handoff: 2 of 2 earlier chat entries included (0 omitted). Sources: Claude.\nHistorical entries are context, not a new request.',
+  entries: [
+    { role: 'user', text: '[user · Claude]\nThe project codename is PLUM-314.' },
+    { role: 'assistant', text: '[assistant · Claude]\nNoted.' },
+  ],
+  plainText: 'What is the codename?',
+});
+const INLINE = '<chat_history>PLUM-314</chat_history>\n\nWhat is the codename?';
+
+function completingResponder({ inject } = {}) {
+  const base = appServerResponder();
+  let turn = 0;
+  return (frame, process) => {
+    if (frame.method === 'thread/inject_items' && inject) return inject(frame, process);
+    if (frame.method === 'turn/start') {
+      const { threadId } = frame.params;
+      const id = `turn-${++turn}`;
+      process.send({ method: 'turn/started', params: { threadId, turn: { id, status: 'inProgress' } } });
+      process.send({ id: frame.id, result: { turn: { id, status: 'inProgress' } } });
+      process.send({ method: 'turn/completed', params: { threadId, turn: { id, status: 'completed' } } });
+      return;
+    }
+    return base(frame, process);
+  };
+}
+
+function sentFrames(h, method) {
+  return h.spawns.flatMap((spawn) => spawn.process.frames).filter((frame) => frame.method === method);
+}
+
+test('Codex receives handoff history as native items and the turn carries only the request', async (t) => {
+  const h = harness(t, { responder: completingResponder() });
+  h.session.sendUserMessage(INLINE, { handoff: HANDOFF });
+  await settle(32);
+  const [inject] = sentFrames(h, 'thread/inject_items');
+  assert.equal(inject.params.threadId, 'thread-native');
+  assert.deepEqual(inject.params.items, [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: HANDOFF.header }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: HANDOFF.entries[0].text }] },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: HANDOFF.entries[1].text }] },
+  ]);
+  const [turn] = sentFrames(h, 'turn/start');
+  assert.deepEqual(turn.params.input, [{ type: 'text', text: 'What is the codename?' }]);
+  const frames = h.spawns[0].process.frames.map((frame) => frame.method);
+  assert.ok(frames.indexOf('thread/inject_items') < frames.indexOf('turn/start'));
+  const end = h.events.find((event) => event.type === 'turn-end');
+  assert.equal(end.stopReason, 'completed');
+  assert.equal(end.handoffUncertain, undefined);
+  assert.equal(await h.session.dispose(), true);
+});
+
+for (const [name, error] of [
+  ['JSON-RPC method not found', { code: -32601, message: 'Method not found' }],
+  // codex 0.162 앱 서버가 모르는 메서드에 실제로 내는 응답.
+  ['unknown request variant', { code: -32600, message: 'Invalid request: unknown variant `thread/inject_items`, expected one of `initialize`, `thread/start`' }],
+]) test(`an app-server without thread/inject_items (${name}) gets the inline history and is not asked again`, async (t) => {
+  const h = harness(t, {
+    responder: completingResponder({
+      inject: (frame, process) => process.send({ id: frame.id, error }),
+    }),
+  });
+  h.session.sendUserMessage(INLINE, { handoff: HANDOFF });
+  await settle(32);
+  assert.deepEqual(sentFrames(h, 'turn/start')[0].params.input, [{ type: 'text', text: INLINE }]);
+  assert.equal(h.events.find((event) => event.type === 'turn-end').stopReason, 'completed');
+
+  h.session.sendUserMessage(INLINE, { handoff: HANDOFF });
+  await settle(32);
+  assert.equal(sentFrames(h, 'thread/inject_items').length, 1);
+  assert.deepEqual(sentFrames(h, 'turn/start')[1].params.input, [{ type: 'text', text: INLINE }]);
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('an ambiguous inject failure fails the turn without sending it and marks the handoff uncertain', async (t) => {
+  const h = harness(t, {
+    responder: completingResponder({
+      inject: (frame, process) => process.send({ id: frame.id, error: { code: -32603, message: 'history write failed' } }),
+    }),
+  });
+  h.session.sendUserMessage(INLINE, { handoff: HANDOFF });
+  await settle(32);
+  assert.equal(sentFrames(h, 'turn/start').length, 0);
+  assert.equal(h.events.some((event) => event.type === 'turn-start'), false);
+  const end = h.events.find((event) => event.type === 'turn-end');
+  assert.equal(end.stopReason, 'failed');
+  assert.equal(end.handoffUncertain, true);
+  assert.match(end.errorMessage, /history write failed/);
+
+  // 허브의 교체 턴은 새 스레드에 인라인으로 간다 — 같은 주입 오류로 다시 막히지 않는다.
+  h.events.length = 0;
+  h.session.sendUserMessage(INLINE, { handoff: HANDOFF, replaceSession: true });
+  await settle(32);
+  assert.equal(sentFrames(h, 'thread/inject_items').length, 1);
+  assert.deepEqual(sentFrames(h, 'turn/start')[0].params.input, [{ type: 'text', text: INLINE }]);
+  const replaced = h.events.find((event) => event.type === 'turn-end');
+  assert.equal(replaced.stopReason, 'completed');
+  assert.equal(replaced.resumeLost, true);
+  assert.equal(replaced.handoffUncertain, undefined);
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('replaceSession abandons the resumed thread and delivers the full history to a new one', async (t) => {
+  const h = harness(t, { extraOpts: { resumeSessionId: 'thread-old' }, responder: completingResponder() });
+  h.session.sendUserMessage(INLINE, { handoff: HANDOFF, replaceSession: true });
+  await settle(32);
+  const frames = h.spawns[0].process.frames.map((frame) => frame.method).filter((method) => method?.startsWith('thread/'));
+  assert.deepEqual(frames, ['thread/start', 'thread/inject_items']);
+  assert.equal(sentFrames(h, 'thread/inject_items')[0].params.threadId, 'thread-native');
+  assert.deepEqual(sentFrames(h, 'turn/start')[0].params.input, [{ type: 'text', text: HANDOFF.plainText }]);
+  const end = h.events.find((event) => event.type === 'turn-end');
+  assert.equal(end.resumeLost, true);
+  assert.equal(h.session.getSessionId(), 'thread-native');
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('a lost resume injects the full-history handoff instead of the delta', async (t) => {
+  const base = completingResponder();
+  const h = harness(t, {
+    extraOpts: { resumeSessionId: 'thread-gone' },
+    responder(frame, process) {
+      if (frame.method === 'thread/resume') {
+        process.send({ id: frame.id, error: { code: -32600, message: 'no rollout found for thread id thread-gone' } });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+  const delta = { ...HANDOFF, entries: [HANDOFF.entries[1]] };
+  h.session.sendUserMessage('delta prompt', {
+    handoff: delta, resumeFallbackText: INLINE, resumeFallbackHandoff: HANDOFF,
+  });
+  await settle(32);
+  assert.deepEqual(sentFrames(h, 'thread/inject_items')[0].params.items.length, 3);
+  assert.deepEqual(sentFrames(h, 'turn/start')[0].params.input, [{ type: 'text', text: HANDOFF.plainText }]);
+  assert.equal(h.events.find((event) => event.type === 'turn-end').resumeLost, true);
+  assert.equal(await h.session.dispose(), true);
 });

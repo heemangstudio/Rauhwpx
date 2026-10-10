@@ -9,5 +9,5 @@
   판정 → 문단 0.8 이 표 아래(≈875px)로 밀려 345px 변위.
 - 기대(한글 정합): 문단 0.8 첫 줄 y≈529.9px — 저장 lineseg vpos=34925 및 HWP5 재파스
   렌더와 일치.
-- 검증: `cargo test --test issue_1789_exclusion_probe_line_spacing` /
+- 검증: `cargo test --test it issue_1789_exclusion_probe_line_spacing` /
   `rhwp render-diff samples/task1789/exclusion_probe_line_spacing.hwpx --via hwp`

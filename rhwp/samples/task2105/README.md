@@ -11,4 +11,4 @@
 - 기대(한글 정합): RowBreak 는 나눔 허용이지 강제가 아님 — 선언 fit 시 통째 1쪽,
   AFTER TABLE 2쪽, 전체 2쪽.
 - 검증: `rhwp dump-pages samples/task2105/rowbreak_table_declared_fits.hwpx` /
-  `cargo test --test issue_2105_rowbreak_table_declared_fits`
+  `cargo test --test it page_count_pins`

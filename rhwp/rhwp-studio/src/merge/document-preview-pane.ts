@@ -33,6 +33,7 @@ export class DocumentPreviewPane {
   private pageIndex = 0;
   private anchor: DiffAnchor | null = null;
   private resizeObserver: ResizeObserver | null = null;
+  private stopPictureWait: (() => void) | null = null;
 
   constructor(options: DocumentPreviewPaneOptions) {
     this.onPageChange = options.onPageChange;
@@ -173,6 +174,8 @@ export class DocumentPreviewPane {
     ++this.loadingToken;
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
+    this.stopPictureWait?.();
+    this.stopPictureWait = null;
     try { this.wasm?.releaseDocument(); } catch { /* best-effort preview cleanup */ }
     this.wasm = null;
     this.source = null;
@@ -188,7 +191,9 @@ export class DocumentPreviewPane {
       const scale = Math.max(0.15, Math.min(this.maxScale, available / Math.max(1, info.width)));
       this.canvas.width = Math.max(1, Math.floor(info.width * scale));
       this.canvas.height = Math.max(1, Math.floor(info.height * scale));
-      this.wasm.renderPageToCanvasFiltered(this.pageIndex, this.canvas, scale, 'all');
+      if (this.wasm.renderPageToCanvasFiltered(this.pageIndex, this.canvas, scale, 'all') > 0) {
+        this.repaintAfterPictures();
+      }
       this.pageInput.value = String(this.pageIndex + 1);
       this.setStatus(`${this.source.label ?? this.source.fileName} / ${this.pageIndex + 1}쪽`, 'ready');
       if (this.anchor?.pageIndex === this.pageIndex) {
@@ -204,6 +209,17 @@ export class DocumentPreviewPane {
       this.setStatus(`미리보기 실패: ${mergeErrorMessage(error, '문서를 미리 볼 수 없습니다.')}`, 'error');
       this.clearCanvas();
     }
+  }
+
+  /** 그림 디코드가 모두 끝나면 다시 그린다. */
+  private repaintAfterPictures(): void {
+    if (this.stopPictureWait || !this.wasm) return;
+    this.stopPictureWait = this.wasm.onPictureDecoded((pendingDecodes) => {
+      if (pendingDecodes > 0) return;
+      this.stopPictureWait?.();
+      this.stopPictureWait = null;
+      this.render();
+    });
   }
 
   private setStatus(text: string, state: PreviewStatusState): void {

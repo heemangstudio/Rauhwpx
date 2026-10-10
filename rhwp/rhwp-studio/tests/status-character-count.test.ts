@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { StatusCharacterCounter, countWrittenCharacters, type StatusCountDocument, type StatusCountInput } from '../src/ui/status-character-count.ts';
+import { StatusCharacterCounter, countCharacters, type StatusCountDocument, type StatusCountInput } from '../src/ui/status-character-count.ts';
 
-test('counts Korean syllable blocks and emoji clusters, excluding spaces and control markers', () => {
-  assert.equal(countWrittenCharacters('한글 한 👩‍💻\n'), 4);
-  assert.equal(countWrittenCharacters('\u0002\uFFFC\u200B'), 0);
+test('counts spaces and tabs per code point, excluding line breaks and object markers', () => {
+  assert.equal(countCharacters('한글 한\t\u{1F469}\u200D\u{1F4BB}\n'), 8);
+  assert.equal(countCharacters('\u0002\uFFFC\u200B'), 1);
 });
 
 test('uses model total and updates selection or current-cell numerator without rescanning total', () => {
@@ -15,14 +15,14 @@ test('uses model total and updates selection or current-cell numerator without r
   const wasm = {
     getDocumentCharacterCount: () => { totalReads++; return total; },
     getBodyRangeCharacterCount: (_ss: number, _sp: number, from: number, _es: number, _ep: number, to: number) =>
-      countWrittenCharacters(Array.from(body).slice(from, to).join('')),
+      countCharacters(Array.from(body).slice(from, to).join('')),
     getContainerCharacterCountByPath: (_sec: number, _para: number, json: string) => {
       const path = JSON.parse(json) as Array<{ cellIndex: number }>;
-      return countWrittenCharacters(cells[path.at(-1)!.cellIndex]);
+      return countCharacters(cells[path.at(-1)!.cellIndex]);
     },
     getContainerRangeCharacterCountByPath: (_sec: number, _para: number, json: string, _sp: number, from: number, _ep: number, to: number) => {
       const path = JSON.parse(json) as Array<{ cellIndex: number }>;
-      return countWrittenCharacters(Array.from(cells[path.at(-1)!.cellIndex]).slice(from, to).join(''));
+      return countCharacters(Array.from(cells[path.at(-1)!.cellIndex]).slice(from, to).join(''));
     },
     getTableDimensions: () => ({ cellCount: 2 }),
     getCellInfo: (_sec: number, _para: number, _control: number, cell: number) => ({ row: 0, col: cell }),
@@ -45,16 +45,16 @@ test('uses model total and updates selection or current-cell numerator without r
   selection = { start: { ...position, charOffset: 0 }, end: { ...position, charOffset: 2 } };
   assert.deepEqual(counter.read(wasm, input), { current: 2, total: 8, scope: 'selection' });
   input.getAuxiliaryTextSelection = () => '주석 두 글';
-  assert.deepEqual(counter.read(wasm, input), { current: 4, total: 8, scope: 'selection' });
+  assert.deepEqual(counter.read(wasm, input), { current: 6, total: 8, scope: 'selection' });
   input.getAuxiliaryTextSelection = () => null;
   selection = null;
   Object.assign(position, { parentParaIndex: 0, controlIndex: 0, cellIndex: 0, cellParaIndex: 0 });
-  assert.deepEqual(counter.read(wasm, input), { current: 2, total: 8, scope: 'cell' });
+  assert.deepEqual(counter.read(wasm, input), { current: 3, total: 8, scope: 'cell' });
   selection = { start: { ...position, charOffset: 0 }, end: { ...position, charOffset: 1 } };
   assert.deepEqual(counter.read(wasm, input), { current: 1, total: 8, scope: 'selection' });
   selection = null;
   cellSelection = true;
-  assert.deepEqual(counter.read(wasm, input), { current: 3, total: 8, scope: 'selection' });
+  assert.deepEqual(counter.read(wasm, input), { current: 4, total: 8, scope: 'selection' });
   excludedCells.add('0,0');
   assert.deepEqual(counter.read(wasm, input), { current: 1, total: 8, scope: 'selection' });
   assert.equal(totalReads, 1);

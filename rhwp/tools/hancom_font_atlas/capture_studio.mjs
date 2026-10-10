@@ -115,9 +115,9 @@ try {
       mkdirSync(output, { recursive: true });
       const captures = [];
       for (let index = 0; index < pageCount; index += 1) {
-        const shot = await page.evaluate(({ index, scale }) => {
+        const shot = await page.evaluate(async ({ index, scale }) => {
           const canvas = document.createElement('canvas');
-          window.__wasm.renderPageToCanvas(index, canvas, scale);
+          await window.__wasm.renderPageToCanvasWithPictures(index, canvas, scale);
           return { width: canvas.width, height: canvas.height, png: canvas.toDataURL('image/png') };
         }, { index, scale: args.dpi / 96 });
         const file = path.join(output, `ours_${String(index + 1).padStart(3, '0')}.png`);

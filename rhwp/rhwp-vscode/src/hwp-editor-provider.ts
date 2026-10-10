@@ -242,7 +242,7 @@ export class HwpEditorProvider implements vscode.CustomReadonlyEditorProvider {
              font-src ${cspSource} https://cdn.jsdelivr.net;
              connect-src ${cspSource} https://cdn.jsdelivr.net">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HWP Viewer</title>
+  <title>HamaEditor</title>
   <style nonce="${nonce}">
     ${fontFaceCSS}
     * { margin: 0; padding: 0; box-sizing: border-box; }

@@ -175,9 +175,9 @@ export default defineConfig({
       injectRegister: false,
       includeAssets: ['favicon.ico', 'icons/*.png'],
       manifest: {
-        name: 'Rauhwpx',
-        short_name: 'Rauhwpx',
-        description: 'Rauhwpx HWP/HWPX/HML 문서 편집기',
+        name: 'HamaEditor',
+        short_name: 'HamaEditor',
+        description: 'HamaEditor HWP/HWPX/HML 문서 편집기',
         lang: 'ko',
         theme_color: '#2b6cb0',
         background_color: '#ffffff',

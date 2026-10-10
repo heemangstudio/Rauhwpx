@@ -67,21 +67,41 @@ skia-safe = { version = "0.99.0", optional = true, default-features = false, fea
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3", features = [
+    "Blob",
+    "BlobPropertyBag",
     "CanvasRenderingContext2d",
     "CanvasGradient",
     "CanvasPattern",
+    "ColorSpaceConversion",
+    "DomMatrix",
     "HtmlCanvasElement",
     "HtmlImageElement",
+    "ImageBitmap",
+    "ImageBitmapOptions",
     "ImageData",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
+    "ResizeQuality",
+    "Url",
     "TextMetrics",
     "Document",
     "Window",
     "console",
 ] }
 js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
 
-[dev-dependencies]
-wasm-bindgen-test = "0.3"
+# 통합 테스트는 바이너리 하나(`it`)로 묶어 빌드·링크를 한 번에 끝낸다.
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
+# 말뭉치 sweep 과 느린 테스트. 기본 `cargo test` 에서 빠지고
+# `cargo test --profile release-test --test sweeps` 로 돈다.
+[[test]]
+name = "sweeps"
+path = "tests/sweeps/main.rs"
+test = false
 
 # ── Clippy 린트 정책 ──
 # 리팩토링(타스크 142) 각 단계 완료 시 allow → warn → deny 전환
@@ -156,6 +176,10 @@ unused_assignments = "allow"
 unused_macros = "allow"
 # wmf 모듈의 tracing feature cfg 경고 억제
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("tracing", "svg"))'] }
+
+[profile.dev]
+# 줄 번호 정보만 남겨 디버그 빌드와 링크 시간을 줄인다(백트레이스 위치는 유지).
+debug = "line-tables-only"
 
 [profile.release]
 lto = true

@@ -76,7 +76,6 @@ export function createFixtures() {
       byModel: {},
       limit: { session5h: 90000, week: 500000 },
       updatedAt: Date.parse(timestamp),
-      source: 'estimate',
     })),
   };
   const quotaScenario = new URLSearchParams(location.search).get('quota');

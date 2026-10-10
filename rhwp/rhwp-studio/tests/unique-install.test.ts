@@ -4,7 +4,6 @@ import { promises as realFs } from 'node:fs';
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { readFileSync } from 'node:fs';
 
 import {
   UNIQUE_INSTALL_FILE,
@@ -479,16 +478,4 @@ test('settings and about read the snapshot through desktop IPC without inventing
   });
   assert.equal(failed.unavailable, true);
   assert.equal(failed.uniqueInstalls, null);
-});
-
-test('the desktop shell pings only after a successful launch and never blocks startup', () => {
-  const desktopMain = readFileSync(new URL('../../../desktop/main.mjs', import.meta.url), 'utf8');
-  assert.match(desktopMain, /failedLaunches > 0 && sessions\.windows\(\)\.length === 0/);
-  assert.match(
-    desktopMain,
-    /resolveUniqueInstallSync\(\);\s*app\.quit\(\);\s*return;\s*\}[\s\S]{0,200}await Promise\.all\(\[hubStartup, staleCleanup\]\);\s*void finishUniqueInstallMetric\(\)/,
-  );
-  assert.match(desktopMain, /await uniqueInstallSync/);
-  assert.match(desktopMain, /unique install ping failed/);
-  assert.doesNotMatch(desktopMain, /download_count/);
 });

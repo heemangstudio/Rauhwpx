@@ -4,15 +4,12 @@
 //! web-sys를 통해 CanvasRenderingContext2d에 직접 그린다.
 
 #[cfg(target_arch = "wasm32")]
-use base64::Engine;
-#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 #[cfg(target_arch = "wasm32")]
-use web_sys::{CanvasGradient, CanvasRenderingContext2d, HtmlCanvasElement, HtmlImageElement};
+use web_sys::{CanvasGradient, CanvasRenderingContext2d, HtmlCanvasElement};
 
-use super::cache_budget::WeightedLruBudget;
 use super::layer_renderer::{LayerRenderResult, LayerRenderer};
 use super::pua_oldhangul::display_pua_old_hangul;
 use super::render_tree::{
@@ -38,9 +35,6 @@ use crate::paint::{
 };
 
 const TEXT_MARK_CLIP_RIGHT_PAD: f64 = 48.0;
-const WEB_IMAGE_CACHE_MAX_ENTRIES: usize = 200;
-const DECODED_CANVAS_CACHE_MAX_PIXELS: usize = 16_777_216;
-const HTML_IMAGE_CACHE_MAX_SOURCE_BYTES: usize = 33_554_432;
 
 /// Native Hangul paints a thin horizontal/vertical rule as one opaque device pixel.
 /// Keep the document coordinates and widths for layout; align only screen paint.
@@ -225,239 +219,6 @@ use super::layout::{
 };
 use crate::model::control::FormType;
 
-#[cfg(target_arch = "wasm32")]
-struct DecodedCanvasCache {
-    entries: std::collections::HashMap<u64, Option<HtmlCanvasElement>>,
-    budget: WeightedLruBudget,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl DecodedCanvasCache {
-    fn new() -> Self {
-        Self {
-            entries: std::collections::HashMap::new(),
-            budget: WeightedLruBudget::new(
-                WEB_IMAGE_CACHE_MAX_ENTRIES,
-                DECODED_CANVAS_CACHE_MAX_PIXELS,
-            ),
-        }
-    }
-
-    fn get(&mut self, key: u64) -> Option<Option<HtmlCanvasElement>> {
-        let value = self.entries.get(&key).cloned();
-        if value.is_some() {
-            self.budget.touch(key);
-        }
-        value
-    }
-
-    fn insert(&mut self, key: u64, value: Option<HtmlCanvasElement>) {
-        let pixels = value
-            .as_ref()
-            .map(|canvas| canvas.width() as usize * canvas.height() as usize)
-            .unwrap_or(0);
-        self.entries.insert(key, value);
-        for evicted in self.budget.record(key, pixels) {
-            if let Some(Some(canvas)) = self.entries.remove(&evicted) {
-                canvas.set_width(0);
-                canvas.set_height(0);
-            }
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-struct HtmlImageCache {
-    entries: std::collections::HashMap<u64, HtmlImageElement>,
-    budget: WeightedLruBudget,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl HtmlImageCache {
-    fn new() -> Self {
-        Self {
-            entries: std::collections::HashMap::new(),
-            budget: WeightedLruBudget::new(
-                WEB_IMAGE_CACHE_MAX_ENTRIES,
-                HTML_IMAGE_CACHE_MAX_SOURCE_BYTES,
-            ),
-        }
-    }
-
-    fn get(&mut self, key: u64) -> Option<HtmlImageElement> {
-        let value = self.entries.get(&key).cloned();
-        if value.is_some() {
-            self.budget.touch(key);
-        }
-        value
-    }
-
-    fn insert(&mut self, key: u64, value: HtmlImageElement, source_bytes: usize) {
-        self.entries.insert(key, value);
-        for evicted in self.budget.record(key, source_bytes) {
-            self.entries.remove(&evicted);
-        }
-    }
-}
-
-// 이미지 캐시: data 해시 → HtmlImageElement
-// WASM 단일 스레드이므로 thread_local 안전
-#[cfg(target_arch = "wasm32")]
-thread_local! {
-    static IMAGE_CACHE: std::cell::RefCell<HtmlImageCache> =
-        std::cell::RefCell::new(HtmlImageCache::new());
-    static DECODED_CANVAS_CACHE: std::cell::RefCell<DecodedCanvasCache> =
-        std::cell::RefCell::new(DecodedCanvasCache::new());
-}
-
-#[cfg(target_arch = "wasm32")]
-fn decode_image_to_canvas(data: &[u8]) -> Option<HtmlCanvasElement> {
-    let dynimg = image::load_from_memory(data).ok()?;
-    let rgba = dynimg.into_rgba8();
-    let (iw, ih) = (rgba.width(), rgba.height());
-    if iw == 0 || ih == 0 {
-        return None;
-    }
-
-    let buf = rgba.into_raw();
-    let image_data =
-        web_sys::ImageData::new_with_u8_clamped_array_and_sh(wasm_bindgen::Clamped(&buf), iw, ih)
-            .ok()?;
-
-    let document = web_sys::window()?.document()?;
-    let canvas: HtmlCanvasElement = document
-        .create_element("canvas")
-        .ok()?
-        .dyn_into::<HtmlCanvasElement>()
-        .ok()?;
-    canvas.set_width(iw);
-    canvas.set_height(ih);
-
-    let ctx = canvas
-        .get_context("2d")
-        .ok()??
-        .dyn_into::<CanvasRenderingContext2d>()
-        .ok()?;
-    ctx.put_image_data(&image_data, 0.0, 0.0).ok()?;
-    Some(canvas)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn get_or_decode_image_canvas(key: u64, data: &[u8]) -> Option<HtmlCanvasElement> {
-    if let Some(cached) = DECODED_CANVAS_CACHE.with(|cache| cache.borrow_mut().get(key)) {
-        return cached;
-    }
-    let canvas = decode_image_to_canvas(data);
-    DECODED_CANVAS_CACHE.with(|cache| cache.borrow_mut().insert(key, canvas.clone()));
-    canvas
-}
-
-/// 캐시된 HtmlImageElement를 반환하고, 없으면 새로 만들어 로드를 시작한다.
-///
-/// 로드 중인 요소도 캐시에 남아 있으므로 같은 이미지를 다시 변환·인코딩하지 않는다.
-/// 로드에 실패한 요소도 그대로 두어, 같은 바이트로 반복 재시도하지 않는다.
-#[cfg(target_arch = "wasm32")]
-fn get_or_load_html_image(key: u64, data: &[u8]) -> Option<HtmlImageElement> {
-    if let Some(img) = IMAGE_CACHE.with(|cache| cache.borrow_mut().get(key)) {
-        return Some(img);
-    }
-
-    let mime_type = detect_image_mime_type(data);
-
-    // WMF → SVG 변환 (브라우저는 WMF를 렌더링할 수 없으므로 SVG로 변환)
-    // PCX → PNG 변환 (브라우저는 PCX 포맷을 native 렌더링하지 못함, Task #514)
-    let (render_data, render_mime): (std::borrow::Cow<[u8]>, &str) = if mime_type == "image/x-wmf" {
-        match crate::renderer::svg::convert_wmf_to_svg(data) {
-            Some(svg_bytes) => (std::borrow::Cow::Owned(svg_bytes), "image/svg+xml"),
-            None => (std::borrow::Cow::Borrowed(data), mime_type),
-        }
-    } else if mime_type == "image/x-pcx" {
-        match crate::renderer::image_resolver::pcx_bytes_to_png_bytes(data) {
-            Some(png_bytes) => (std::borrow::Cow::Owned(png_bytes), "image/png"),
-            None => (std::borrow::Cow::Borrowed(data), mime_type),
-        }
-    } else {
-        (std::borrow::Cow::Borrowed(data), mime_type)
-    };
-
-    let base64_data = base64::engine::general_purpose::STANDARD.encode(&*render_data);
-    let data_url = format!("data:{};base64,{}", render_mime, base64_data);
-
-    let img = HtmlImageElement::new().ok()?;
-    img.set_src(&data_url);
-    IMAGE_CACHE.with(|cache| {
-        cache.borrow_mut().insert(key, img.clone(), data_url.len());
-    });
-    Some(img)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn html_image_ready(img: &HtmlImageElement) -> bool {
-    img.complete() && img.natural_width() > 0
-}
-
-pub(crate) fn image_cache_stats_json() -> String {
-    let (decoded_entries, decoded_pixels) = DECODED_CANVAS_CACHE.with(|cache| {
-        let cache = cache.borrow();
-        (cache.budget.len(), cache.budget.total_weight())
-    });
-    let (html_entries, html_source_bytes) = IMAGE_CACHE.with(|cache| {
-        let cache = cache.borrow();
-        (cache.budget.len(), cache.budget.total_weight())
-    });
-    serde_json::json!({
-        "decodedCanvasEntries": decoded_entries,
-        "decodedCanvasPixels": decoded_pixels,
-        "decodedCanvasRgbaBytes": decoded_pixels.saturating_mul(4),
-        "htmlImageEntries": html_entries,
-        "htmlImageSourceBytes": html_source_bytes,
-    })
-    .to_string()
-}
-
-/// 빠른 해시 (FNV-1a 64비트)
-#[cfg(target_arch = "wasm32")]
-fn hash_bytes(data: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for &b in data {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
-}
-
-/// 이미지 MIME 타입 감지
-#[cfg(target_arch = "wasm32")]
-fn detect_image_mime_type(data: &[u8]) -> &'static str {
-    if data.len() >= 8 && &data[0..8] == b"\x89PNG\r\n\x1a\n" {
-        "image/png"
-    } else if data.len() >= 2 && data[0] == 0xFF && data[1] == 0xD8 {
-        "image/jpeg"
-    } else if data.len() >= 6 && (&data[0..6] == b"GIF87a" || &data[0..6] == b"GIF89a") {
-        "image/gif"
-    } else if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
-        "image/webp"
-    } else if data.len() >= 4 && &data[0..4] == b"\x00\x00\x01\x00" {
-        "image/x-icon"
-    } else if data.len() >= 2 && &data[0..2] == b"BM" {
-        "image/bmp"
-    } else if data.len() >= 4
-        && (data.starts_with(&[0xD7, 0xCD, 0xC6, 0x9A])
-            || data.starts_with(&[0x01, 0x00, 0x09, 0x00]))
-    {
-        "image/x-wmf"
-    } else if data.len() >= 2 && data.starts_with(&[0x0A, 0x05]) {
-        // PCX: 0A 05 (ZSoft Paintbrush v3.0+, Task #514)
-        // 브라우저 native 미지원 → emit 시 PNG 변환 필요 (svg::pcx_bytes_to_png_bytes)
-        "image/x-pcx"
-    } else if super::svg_fragment::is_svg_prefix(data) {
-        // Task #275: RawSvg 래퍼 경로 — <svg 또는 <?xml + <svg
-        "image/svg+xml"
-    } else {
-        "application/octet-stream"
-    }
-}
-
 /// 그림 효과 / 밝기 / 대비를 CSS filter 문자열로 합성한다 (Task #516).
 ///
 /// CSS filter ↔ SVG feComponentTransfer 매핑은 미세 차이 가능 (Stage 5 시각 판정 게이트).
@@ -498,7 +259,7 @@ fn compose_image_filter(
 }
 
 /// 이미지 데이터에서 픽셀 크기(width, height)를 파싱한다.
-fn parse_image_dimensions_canvas(data: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn parse_image_dimensions_canvas(data: &[u8]) -> Option<(u32, u32)> {
     if data.len() < 24 {
         return None;
     }
@@ -608,6 +369,8 @@ pub struct WebCanvasRenderer {
     pub show_control_codes: bool,
     /// 줌 스케일 (1.0 = 100%)
     scale: f64,
+    /// 쪽 일부만 그릴 때 canvas 왼쪽 위가 놓이는 배율 적용 쪽 좌표 (정수 장치 픽셀).
+    device_origin: (f64, f64),
     /// 다층 레이어 필터 (Task #516, 기본 All 은 기존 동작 보존)
     pub layer_filter: LayerFilter,
     /// BehindText plane 을 별도 canvas layer 로 합성할 때 flow Canvas 의 페이지 배경을
@@ -622,6 +385,8 @@ pub struct WebCanvasRenderer {
     native_run_shaping: bool,
     /// Legacy 자식 노드는 상위 도형의 변환을 상속하므로 전체 깊이를 추적한다.
     active_shape_transform_depth: usize,
+    /// 디코드를 기다리느라 빠졌거나 작은 단계로 그린 그림 수. 0 이 아니면 디코드 뒤 다시 그린다.
+    pending_pictures: u32,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -648,18 +413,31 @@ impl WebCanvasRenderer {
             show_paragraph_marks: false,
             show_control_codes: false,
             scale: 1.0,
+            device_origin: (0.0, 0.0),
             layer_filter: LayerFilter::All,
             transparent_page_background: false,
             active_replay_plane: None,
             render_profile: RenderProfile::Screen,
             native_run_shaping: false,
             active_shape_transform_depth: 0,
+            pending_pictures: 0,
         })
+    }
+
+    /// 이번 렌더에서 디코드를 기다리는 그림 수
+    pub fn pending_pictures(&self) -> u32 {
+        self.pending_pictures
     }
 
     /// 줌 스케일 설정 (1.0 = 100%, 2.0 = 200%)
     pub fn set_scale(&mut self, scale: f64) {
         self.scale = scale;
+    }
+
+    /// canvas 가 배율 적용 쪽의 (x, y) 장치 픽셀부터 그리게 한다. 정수 픽셀이어야
+    /// 머리카락선 픽셀 맞춤(`pixel_aligned_hairline`)이 쪽 전체 렌더와 같은 픽셀에 떨어진다.
+    pub fn set_device_origin(&mut self, x: f64, y: f64) {
+        self.device_origin = (x, y);
     }
 
     /// 다층 레이어 필터 설정 (Task #516, Stage 5.2)
@@ -2961,6 +2739,10 @@ impl Renderer for WebCanvasRenderer {
     fn begin_page(&mut self, width: f64, height: f64) {
         self.width = width;
         self.height = height;
+        let (origin_x, origin_y) = self.device_origin;
+        if origin_x != 0.0 || origin_y != 0.0 {
+            let _ = self.ctx.translate(-origin_x, -origin_y);
+        }
         // 줌 스케일 적용: 렌더트리 좌표(문서 단위)를 캔버스 해상도에 맞게 확대
         if self.scale != 1.0 {
             let _ = self.ctx.scale(self.scale, self.scale);
@@ -3156,33 +2938,7 @@ impl Renderer for WebCanvasRenderer {
     }
 
     fn draw_image(&mut self, data: &[u8], x: f64, y: f64, w: f64, h: f64) {
-        let key = hash_bytes(data);
-
-        let decoded = get_or_decode_image_canvas(key, data);
-        if let Some(canvas) = decoded {
-            let _ = self
-                .ctx
-                .draw_image_with_html_canvas_element_and_dw_and_dh(&canvas, x, y, w, h);
-            return;
-        }
-
-        // 로드 중인 이미지는 그대로 두고, 로드가 끝난 이미지만 그린다.
-        match get_or_load_html_image(key, data) {
-            Some(img) => {
-                if html_image_ready(&img) {
-                    let _ = self
-                        .ctx
-                        .draw_image_with_html_image_element_and_dw_and_dh(&img, x, y, w, h);
-                }
-            }
-            None => {
-                // Image 생성 실패 시 플레이스홀더
-                self.ctx.set_fill_style_str("#eeeeee");
-                self.ctx.fill_rect(x, y, w, h);
-                self.ctx.set_stroke_style_str("#cccccc");
-                self.ctx.stroke_rect(x, y, w, h);
-            }
-        }
+        self.draw_picture(data, None, x, y, w, h);
     }
 
     fn draw_path(&mut self, commands: &[PathCommand], style: &ShapeStyle) {
@@ -3221,7 +2977,7 @@ impl WebCanvasRenderer {
         self.ctx.fill();
     }
 
-    /// crop 영역만 표시하는 drawImage (9인자 버전)
+    /// crop 영역만 표시하는 drawImage (9인자 버전). source rect 는 원본 픽셀 기준이다.
     fn draw_image_cropped(
         &mut self,
         data: &[u8],
@@ -3234,28 +2990,54 @@ impl WebCanvasRenderer {
         dw: f64,
         dh: f64,
     ) {
-        let key = hash_bytes(data);
+        self.draw_picture(data, Some((sx, sy, sw, sh)), dx, dy, dw, dh);
+    }
 
-        let decoded = get_or_decode_image_canvas(key, data);
-        if let Some(canvas) = decoded {
-            let _ = self
-                .ctx
-                .draw_image_with_html_canvas_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
-                    &canvas, sx, sy, sw, sh, dx, dy, dw, dh,
-                );
+    /// 그림 캐시의 비트맵을 그린다. 디코드 전이면 비워 두고(crop 없는 원본이 한 프레임
+    /// 보이지 않게), 다시 그려야 할 그림으로 센다.
+    fn draw_picture(
+        &mut self,
+        data: &[u8],
+        src: Option<(f64, f64, f64, f64)>,
+        dx: f64,
+        dy: f64,
+        dw: f64,
+        dh: f64,
+    ) {
+        let (scale_x, scale_y) = match self.ctx.get_transform() {
+            Ok(m) => (m.a().hypot(m.b()), m.c().hypot(m.d())),
+            Err(_) => (self.scale, self.scale),
+        };
+        let picture = super::web_picture_cache::picture_for_draw(
+            data,
+            (dw.abs() * scale_x, dh.abs() * scale_y),
+            (dw, dh),
+            src.map(|(_, _, sw, sh)| (sw, sh)),
+        );
+        if picture.pending {
+            self.pending_pictures += 1;
+        }
+        let Some((bitmap, kx, ky)) = picture.bitmap else {
             return;
-        }
-
-        // 로드가 끝나기 전에는 그리지 않는다. crop 없는 원본이 한 프레임 그려지는 것을 막는다.
-        if let Some(img) = get_or_load_html_image(key, data) {
-            if html_image_ready(&img) {
-                let _ = self
-                    .ctx
-                    .draw_image_with_html_image_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
-                        &img, sx, sy, sw, sh, dx, dy, dw, dh,
-                    );
-            }
-        }
+        };
+        let _ = match src {
+            None => self
+                .ctx
+                .draw_image_with_image_bitmap_and_dw_and_dh(&bitmap, dx, dy, dw, dh),
+            Some((sx, sy, sw, sh)) => self
+                .ctx
+                .draw_image_with_image_bitmap_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+                    &bitmap,
+                    sx * kx,
+                    sy * ky,
+                    sw * kx,
+                    sh * ky,
+                    dx,
+                    dy,
+                    dw,
+                    dh,
+                ),
+        };
     }
 
     /// 텍스트 변형 효과 렌더링 (외곽선/그림자/양각/음각)
