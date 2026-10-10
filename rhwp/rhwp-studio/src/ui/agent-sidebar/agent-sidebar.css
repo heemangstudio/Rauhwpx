@@ -6664,7 +6664,8 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 /* 레일이 접히면 마크와 짧은 이름 Hama 만 토글 옆에 남는다. */
 .ag-workspace-brand-short,
 .ag-workspace-brand.ag-short .ag-workspace-brand-name:not(.ag-workspace-brand-short),
-.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-name:not(.ag-workspace-brand-short),
+.ag-fullscreen.ag-rail-brand-transition .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
   display: none;
 }
 
@@ -6674,7 +6675,8 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 }
 
 .ag-workspace-brand.ag-short .ag-workspace-brand-short,
-.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-short {
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-short,
+.ag-fullscreen.ag-rail-brand-transition .ag-workspace-brand-short {
   display: inline;
 }
 
@@ -6714,6 +6716,10 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   justify-content: center;
   padding: 0;
   border-radius: var(--ag-r-row);
+}
+
+.ag-workspace-icon-btn[hidden] {
+  display: none;
 }
 
 .ag-workspace-icon-btn .ui-column-icon,

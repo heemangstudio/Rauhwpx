@@ -2074,6 +2074,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
      이 bar는 viewport 전체를 가로지르며 pane 토글, 문서 맥락,
      대화 제목, 실행 맥락과 종료 동작을 한 축에 고정한다. */
   const workspaceBar = el('header', 'ag-workspace-bar');
+  workspaceBar.addEventListener('transitionend', (event) => {
+    if (event.target === workspaceBar && event.propertyName === 'grid-template-columns') {
+      root.classList.remove('ag-rail-brand-transition');
+    }
+  });
   const workspaceDrawerScrim = el('button', 'ag-workspace-drawer-scrim');
   workspaceDrawerScrim.type = 'button';
   workspaceDrawerScrim.tabIndex = -1;
@@ -4078,9 +4083,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    */
   /* 스레드 레일 접기 — 전체 화면에서만 뜻이 있다. 헤더의 목록
      버튼이 토글이고, 접힘 여부는 사이드바 폭처럼 세션 간 유지된다. */
+  let previousThreadsRailExpanded: boolean | null = null;
   function applyThreadsRailState(): void {
     const compact = isCompactWorkspace();
     const expanded = fullscreen && (compact ? compactThreadsRailOpen : !threadsRailCollapsed);
+    if (fullscreen && !compact && previousThreadsRailExpanded !== null && previousThreadsRailExpanded !== expanded
+      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      root.classList.add('ag-rail-brand-transition');
+    } else if (!fullscreen || compact) {
+      root.classList.remove('ag-rail-brand-transition');
+    }
+    previousThreadsRailExpanded = expanded;
     root.classList.toggle('ag-compact-rail-open', compact && compactThreadsRailOpen);
     root.classList.toggle('ag-compact-rail-hover-open', compact && compactRailHoverOpen);
     root.classList.toggle('ag-rail-collapsed', fullscreen && !expanded);
