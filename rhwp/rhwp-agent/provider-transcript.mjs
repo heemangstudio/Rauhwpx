@@ -18,15 +18,23 @@
  * stay), then re-serialized so the line stays valid JSON; other text goes
  * through `redactDiagnosticText` plus a JWT rule. Prompts and document text
  * are kept, so the files are private and the hub says so once on stderr. On
- * POSIX the directory is created 0700 and files 0600; on Windows mode bits
- * are ignored and the files inherit the directory's ACL, so point the
- * variable at a folder only you can read (e.g. under %LOCALAPPDATA%).
+ * POSIX the directory is created 0700 and files 0600; an existing directory
+ * is refused (one stderr warning) when it is a symbolic link, belongs to
+ * another user or is group- or world-writable, and is otherwise narrowed to
+ * 0700. On Windows mode bits are ignored and the files inherit the
+ * directory's ACL, so point the variable at a folder only you can read (e.g.
+ * under %LOCALAPPDATA%).
+ *
+ * The desktop app's hub (RHWP_AGENT_MODE or NODE_ENV `production`) ignores
+ * the variable unless `RHWP_PROVIDER_TRANSCRIPT_ALLOW_PRODUCTION=1` is set as
+ * well, so a directory left in a shell profile never records a user's
+ * documents by accident.
  *
  * Bounds: records are capped at 64 KiB, files at 8 MiB (then one `truncated`
  * record), a hub process writes at most 200 files, and at its first recording
- * a hub process prunes the oldest transcript files in the directory beyond
- * 400 files or 1 GiB (only files named like ours). The recorder never throws
- * into an adapter: any failure stops that file.
+ * a hub process deletes transcript files older than 14 days and then the
+ * oldest beyond 400 files or 1 GiB (only regular files named like ours). The
+ * recorder never throws into an adapter: any failure stops that file.
  */
 import { spawn as spawnChildProcess } from 'node:child_process';
 import fs from 'node:fs';
@@ -38,6 +46,8 @@ import { redactableTail, redactDiagnosticText } from './agents/backend.mjs';
 import { PROVIDER_TERMINATION_HOOK } from './process-tree.mjs';
 
 export const PROVIDER_TRANSCRIPT_ENV = 'RHWP_PROVIDER_TRANSCRIPT_DIR';
+/** Second opt-in the desktop app's (production) hub needs before it records. */
+export const PROVIDER_TRANSCRIPT_PRODUCTION_ENV = 'RHWP_PROVIDER_TRANSCRIPT_ALLOW_PRODUCTION';
 export const PROVIDER_TRANSCRIPT_LIMITS = Object.freeze({
   maxRecordBytes: 64 * 1024,
   maxFileBytes: 8 * 1024 * 1024,
@@ -45,6 +55,8 @@ export const PROVIDER_TRANSCRIPT_LIMITS = Object.freeze({
   /** Directory budget enforced once per hub process, before its first file. */
   maxDirFiles: 400,
   maxDirBytes: 1024 * 1024 * 1024,
+  /** Transcript files older than this are deleted with the directory budget. */
+  maxFileAgeMs: 14 * 24 * 60 * 60 * 1000,
 });
 /** The Agent SDK's own stderr tail for exit errors (sdk.mjs `MC`). */
 const SDK_STDERR_TAIL_CHARS = 2048;
@@ -77,12 +89,21 @@ const announcedDirs = new Set();
 const prunedDirs = new Set();
 const failedDirs = new Set();
 let relativeDirLogged = false;
+let productionLogged = false;
 let fileSequence = 0;
 
 /** Absolute recording directory, or null when recording is off. */
 export function providerTranscriptDir(env = process.env) {
   const value = env?.[PROVIDER_TRANSCRIPT_ENV];
   if (typeof value !== 'string' || !value.trim()) return null;
+  const production = env.NODE_ENV === 'production' || env.RHWP_AGENT_MODE === 'production';
+  if (production && env[PROVIDER_TRANSCRIPT_PRODUCTION_ENV] !== '1') {
+    if (!productionLogged) {
+      productionLogged = true;
+      process.stderr.write(`[provider-transcript] ${PROVIDER_TRANSCRIPT_ENV} is ignored by the desktop app's hub; set ${PROVIDER_TRANSCRIPT_PRODUCTION_ENV}=1 as well to record\n`);
+    }
+    return null;
+  }
   if (!path.isAbsolute(value)) {
     if (!relativeDirLogged) {
       relativeDirLogged = true;
@@ -231,11 +252,38 @@ export function boundTranscriptRecord(record, maxBytes) {
 }
 
 /**
- * Keep the directory within its budget across hub restarts: delete the oldest
- * transcript files (by mtime, only names the recorder writes, never links or
- * other files) until at most `maxDirFiles` and `maxDirBytes` remain. Runs once
- * per directory per hub process, before its first file; a file this process
- * opens later is bounded by `maxFiles` and `maxFileBytes`.
+ * Refuse a recording directory other users could read, swap or fill: on POSIX
+ * it must be a real directory (not a symbolic link) owned by this user and not
+ * group- or world-writable; it is then narrowed to 0700, since `mkdirSync`'s
+ * mode applies only to a directory it creates. Returns why it was refused, or
+ * null. Windows has no mode bits; the folder's ACL decides.
+ */
+function insecureTranscriptDir(dir) {
+  if (process.platform === 'win32') return null;
+  const link = fs.lstatSync(dir);
+  if (link.isSymbolicLink()) return 'it is a symbolic link';
+  if (!link.isDirectory()) return 'it is not a directory';
+  const { O_RDONLY, O_DIRECTORY = 0, O_NOFOLLOW = 0 } = fs.constants;
+  const fd = fs.openSync(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isDirectory()) return 'it is not a directory';
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return 'it belongs to another user';
+    if (stat.mode & 0o022) return 'other users can write to it';
+    if ((stat.mode & 0o777) !== 0o700) fs.fchmodSync(fd, 0o700);
+    return null;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Keep the directory within its budget across hub restarts: delete transcript
+ * files older than `maxFileAgeMs`, then the oldest (by mtime) until at most
+ * `maxDirFiles` and `maxDirBytes` remain; only regular files with names the
+ * recorder writes, never links or other files. Runs once per directory per
+ * hub process, before its first file; a file this process opens later is
+ * bounded by `maxFiles` and `maxFileBytes`.
  */
 function pruneTranscriptDir(dir, limits) {
   if (prunedDirs.has(dir)) return;
@@ -260,8 +308,10 @@ function pruneTranscriptDir(dir, limits) {
   let count = files.length;
   let bytes = files.reduce((sum, entry) => sum + entry.size, 0);
   let removed = 0;
+  const cutoff = Date.now() - limits.maxFileAgeMs;
   for (const entry of files) {
-    if (count <= limits.maxDirFiles && bytes <= limits.maxDirBytes) break;
+    const expired = entry.mtimeMs < cutoff;
+    if (!expired && count <= limits.maxDirFiles && bytes <= limits.maxDirBytes) break;
     try {
       fs.unlinkSync(entry.file);
       removed += 1;
@@ -272,7 +322,7 @@ function pruneTranscriptDir(dir, limits) {
     bytes -= entry.size;
   }
   if (removed > 0) {
-    process.stderr.write(`[provider-transcript] removed ${removed} oldest transcript file(s) from ${dir} to stay within ${limits.maxDirFiles} files and ${Math.round(limits.maxDirBytes / (1024 * 1024))} MiB\n`);
+    process.stderr.write(`[provider-transcript] removed ${removed} transcript file(s) from ${dir} older than ${Math.round(limits.maxFileAgeMs / 86_400_000)} days or beyond ${limits.maxDirFiles} files and ${Math.round(limits.maxDirBytes / (1024 * 1024))} MiB\n`);
   }
 }
 
@@ -287,6 +337,12 @@ function openTranscriptFile(dir, agent, transport, limits) {
   }
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const refused = insecureTranscriptDir(dir);
+    if (refused) {
+      failedDirs.add(dir);
+      process.stderr.write(`[provider-transcript] not recording to ${dir}: ${refused}; use a private directory only you can write to\n`);
+      return null;
+    }
     pruneTranscriptDir(dir, limits);
     if (!announcedDirs.has(dir)) {
       announcedDirs.add(dir);

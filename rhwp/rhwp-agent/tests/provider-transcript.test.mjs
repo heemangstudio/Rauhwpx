@@ -4,12 +4,16 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
+  chmodSync,
+  chownSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -20,6 +24,7 @@ import test from 'node:test';
 import { createClaudeSession } from '../agents/claude.mjs';
 import {
   PROVIDER_TRANSCRIPT_ENV,
+  PROVIDER_TRANSCRIPT_PRODUCTION_ENV,
   recordingClaudeSdkSpawner,
   tapProviderProcess,
   withSdkStderrTail,
@@ -428,6 +433,95 @@ test('the first recording of a hub process prunes the oldest transcripts beyond 
   // Once per hub process: a later recording in the same directory does not prune again.
   await record({ maxDirFiles: 1, maxDirBytes: 1 });
   assert.deepEqual(readdirSync(dir).filter((name) => transcripts.includes(name)), transcripts.slice(3));
+});
+
+async function recordOnce(hubEnv, limits) {
+  const child = scripted([{ kind: 'expect', end: true }, { kind: 'exit', code: 0 }]);
+  tapProviderProcess(child, { agent: 'pi', transport: 'json', hubEnv, limits });
+  child.stdin.end('prompt');
+  await closed(child);
+}
+
+function captureStderr(t) {
+  const lines = [];
+  const write = process.stderr.write;
+  process.stderr.write = function capture(chunk, ...rest) {
+    lines.push(String(chunk));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => { process.stderr.write = write; });
+  return lines;
+}
+
+test('transcripts older than 14 days are deleted even within the directory budget', async (t) => {
+  const dir = tempDir(t, 'rhwp-transcript-age-');
+  const day = 24 * 60 * 60;
+  const now = Date.now() / 1000;
+  const expired = 'codex-exec-2026-09-01T00-00-00-000Z-1-1.ndjson';
+  const recent = 'codex-exec-2026-09-28T00-00-00-000Z-1-2.ndjson';
+  for (const [name, age] of [[expired, 15 * day], [recent, 13 * day], ['notes.ndjson', 30 * day]]) {
+    writeFileSync(path.join(dir, name), 'x');
+    utimesSync(path.join(dir, name), now - age, now - age);
+  }
+  await recordOnce({ [PROVIDER_TRANSCRIPT_ENV]: dir });
+  const left = readdirSync(dir);
+  assert.equal(left.includes(expired), false, 'a 15-day-old transcript is deleted');
+  assert.ok(left.includes(recent), 'a 13-day-old transcript stays');
+  assert.ok(left.includes('notes.ndjson'), 'files the recorder did not name are never touched');
+  assert.equal(left.filter((name) => name.startsWith('pi-json-')).length, 1, 'the new recording was written');
+});
+
+test('an existing directory is narrowed to 0700, and a link, a shared or another user\'s directory is refused', {
+  skip: process.platform === 'win32' && 'Windows has no mode bits; the folder ACL decides',
+}, async (t) => {
+  const root = tempDir(t, 'rhwp-transcript-perm-');
+  const stderr = captureStderr(t);
+  const recordings = (dir) => readdirSync(dir).filter((name) => name.endsWith('.ndjson'));
+
+  const open = path.join(root, 'readable');
+  mkdirSync(open, { mode: 0o755 });
+  chmodSync(open, 0o755);
+  await recordOnce({ [PROVIDER_TRANSCRIPT_ENV]: open });
+  assert.equal(statSync(open).mode & 0o777, 0o700, 'other users can no longer list or read it');
+  assert.equal(recordings(open).length, 1);
+
+  const shared = path.join(root, 'shared');
+  mkdirSync(shared);
+  chmodSync(shared, 0o777);
+  await recordOnce({ [PROVIDER_TRANSCRIPT_ENV]: shared });
+  await recordOnce({ [PROVIDER_TRANSCRIPT_ENV]: shared });
+  assert.deepEqual(recordings(shared), [], 'a world-writable directory is refused');
+  assert.equal(stderr.filter((line) => line.includes(`not recording to ${shared}`)).length, 1, 'one warning');
+
+  const target = path.join(root, 'target');
+  mkdirSync(target, { mode: 0o700 });
+  const link = path.join(root, 'link');
+  symlinkSync(target, link);
+  await recordOnce({ [PROVIDER_TRANSCRIPT_ENV]: link });
+  assert.deepEqual(recordings(target), [], 'a symbolic link is refused');
+  assert.ok(stderr.some((line) => line.includes(`not recording to ${link}: it is a symbolic link`)));
+
+  if (process.getuid?.() === 0) {
+    const foreign = path.join(root, 'foreign');
+    mkdirSync(foreign, { mode: 0o700 });
+    chownSync(foreign, 65_534, 65_534);
+    await recordOnce({ [PROVIDER_TRANSCRIPT_ENV]: foreign });
+    assert.deepEqual(recordings(foreign), [], 'another user\'s directory is refused');
+    assert.ok(stderr.some((line) => line.includes(`not recording to ${foreign}: it belongs to another user`)));
+  }
+});
+
+test('the desktop app\'s hub records only with the second opt-in', async (t) => {
+  const root = tempDir(t, 'rhwp-transcript-production-');
+  const ignored = path.join(root, 'ignored');
+  const allowed = path.join(root, 'allowed');
+  for (const mode of [{ RHWP_AGENT_MODE: 'production' }, { NODE_ENV: 'production' }]) {
+    await recordOnce({ ...mode, [PROVIDER_TRANSCRIPT_ENV]: ignored });
+    assert.equal(recordingClaudeSdkSpawner({ hubEnv: { ...mode, [PROVIDER_TRANSCRIPT_ENV]: ignored } }), undefined);
+  }
+  assert.equal(existsSync(ignored), false, 'a stray directory variable records nothing');
+  await recordOnce({ RHWP_AGENT_MODE: 'production', [PROVIDER_TRANSCRIPT_ENV]: allowed, [PROVIDER_TRANSCRIPT_PRODUCTION_ENV]: '1' });
+  assert.equal(readdirSync(allowed).filter((name) => name.endsWith('.ndjson')).length, 1);
 });
 
 test('a Claude SDK failure shows the same stderr tail with and without recording', {
