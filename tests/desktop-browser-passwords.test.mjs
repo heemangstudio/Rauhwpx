@@ -170,6 +170,12 @@ test('native account filling fences chat, origin, snapshot, navigation, control 
   f.tab.passwordControlEpoch--;
   const other = await vault.importCredential({ origin: 'https://other.invalid', username: 'andy', password: 'other-secret' });
   await assert.rejects(f.passwords.fill({ ...request, accountId: other.id }), { code: 'BROWSER_PASSWORD_ORIGIN_MISMATCH' });
+  const run = f.passwords.run.bind(f.passwords);
+  f.passwords.run = async () => ({ error: 'target' });
+  await assert.rejects(f.passwords.fill(request), { code: 'BROWSER_PASSWORD_TARGET_INVALID' });
+  assert.equal(f.tab.passwordShield, undefined);
+  assert.equal(f.tab.protectedPasswords, undefined);
+  f.passwords.run = run;
   const filled = await f.passwords.fill(request);
   assert.deepEqual(filled, { completed: true, accountId: account.id });
   assert.equal(JSON.stringify(filled).includes('fixture-password'), false);

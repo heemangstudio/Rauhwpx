@@ -6,6 +6,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
+import { createRequire } from 'node:module';
 import { app, BrowserWindow, WebContentsView, session, ipcMain } from 'electron';
 import { OwnedBrowserHost } from '../../desktop/browser-host.mjs';
 import { NativeBrowserPasswords } from '../../desktop/browser-passwords.mjs';
@@ -13,6 +14,7 @@ import { LocalBrowserPasswordVault } from '../../desktop/browser-local-password-
 import { createOwnedBrowserService, createIpcNativeBrowserAdapter } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
 import { startOwnedBrowserRuntime } from '../../rhwp/rhwp-agent/owned-browser-runtime.mjs';
 import { key, cert } from '../../rhwp/rhwp-agent/tests/fixtures/owned-browser-tls.mjs';
+const { WebSocketServer } = createRequire(new URL('../../rhwp/rhwp-agent/package.json', import.meta.url))('ws');
 
 // No real Chrome profiles, keychain records, accounts or application windows are used.
 const root = mkdtempSync(join(tmpdir(), 'hama-native-password-test-'));
@@ -26,7 +28,7 @@ const safeStorage = {
   encryptStringAsync: async (value) => { const iv = randomBytes(12); const cipher = createCipheriv('aes-256-gcm', keyBytes, iv); const body = Buffer.concat([cipher.update(value), cipher.final()]); return Buffer.concat([iv, cipher.getAuthTag(), body]); },
   decryptStringAsync: async (value) => { const cipher = createDecipheriv('aes-256-gcm', keyBytes, value.subarray(0, 12)); cipher.setAuthTag(value.subarray(12, 28)); return { result: Buffer.concat([cipher.update(value.subarray(28)), cipher.final()]).toString() }; },
 };
-let server; let host; let service; let editor;
+let server; let webSockets; let host; let service; let editor;
 let autocompleteListener;
 const sockets = new Set();
 const report = {};
@@ -34,15 +36,17 @@ const timer = setTimeout(() => { console.error('NATIVE_PASSWORD_TIMEOUT', report
 async function main() {
 try {
   report.stage = 'ready';
-  let submitted = false;
+  let submitted = false; let receivedWebSocket = false;
   server = createServer({ key, cert }, (request, response) => {
     response.setHeader('content-type', 'text/html');
     if (request.method === 'POST') {
       let body = ''; request.on('data', (chunk) => { body += chunk; });
-      request.on('end', () => { const form = new URLSearchParams(body); submitted = form.get('identity') === 'fixture-user' && form.get('secret') === secret; response.end('<title>Signed in</title><h1>Account research fixture</h1><input id="research"><button id="next">Continue research</button>'); });
+      request.on('end', () => { const form = new URLSearchParams(body); submitted = form.get('identity') === 'fixture-user' && form.get('secret') === secret; response.end(`<title>Signed in</title><h1>Account research fixture</h1><input id="research"><button id="next">Continue research</button><script>window.socket=new WebSocket(location.origin.replace('https:','wss:')+'/channel');socket.onopen=()=>socket.send(${JSON.stringify(secret)});socket.onmessage=()=>{window.socketReady=true;};</script>`); });
     } else response.end('<title>Sign in fixture</title><form action="/signed-in" method="post"><label>Username <input id="identity" name="identity" autocomplete="username"></label><label>Password <input id="secret" name="secret" type="password" autocomplete="current-password"></label><button id="submit" type="submit">Sign in</button></form>');
   });
   server.on('connection', (socket) => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
+  webSockets = new WebSocketServer({ server, path: '/channel' });
+  webSockets.on('connection', (socket) => socket.on('message', (message) => { receivedWebSocket = message.toString() === secret; socket.send(secret); }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const origin = `https://127.0.0.1:${server.address().port}`;
   const dataDir = join(root, 'browser-data');
@@ -83,6 +87,7 @@ try {
   await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: other.id, passwordRef: password.ref }), /different website/);
   await tab.view.webContents.executeJavaScript(`document.querySelector('form').action='https://other.invalid/'`);
   await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, passwordRef: password.ref }), /same-origin/);
+  assert.equal(tab.passwordShield, undefined);
   await tab.view.webContents.executeJavaScript(`document.querySelector('form').action='/signed-in'`);
   await service.request(actor, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref });
   report.stage = 'filled';
@@ -117,6 +122,12 @@ try {
   await Promise.race([navigation, new Promise((_, reject) => setTimeout(() => reject(new Error('Native submit did not navigate')), 10000))]);
   assert.equal(submitted, true);
   await service.request(actor, 'wait', { tabId, state: 'load' });
+  const socketDeadline = Date.now() + 3000;
+  while (!receivedWebSocket || !await tab.view.webContents.executeJavaScript('!!window.socketReady')) {
+    if (Date.now() >= socketDeadline) throw new Error('Protected native WSS did not complete its encrypted round trip');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  report.protectedWebSocket = true;
   let signedIn;
   const deadline = Date.now() + 3000;
   while (!signedIn) {
@@ -136,6 +147,7 @@ finally {
   if (autocompleteListener) ipcMain.off('desktop:browser-guest-autocomplete', autocompleteListener);
   await service?.close().catch(() => {}); await host?.dispose().catch(() => {});
   if (editor && !editor.isDestroyed()) editor.destroy();
+  if (webSockets) { for (const socket of webSockets.clients) socket.terminate(); await new Promise((resolve) => webSockets.close(resolve)); }
   for (const socket of sockets) socket.destroy();
   if (server) await new Promise((resolve) => server.close(resolve));
   await rm(root, { recursive: true, force: true });

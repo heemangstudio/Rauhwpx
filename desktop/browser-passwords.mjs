@@ -41,13 +41,14 @@ function pageAction(payload) {
   if (payload.action === 'wait') return { completed: payload.state === 'hidden' ? !ready(el) : ready(el) };
   if (payload.action === 'scroll') { window.scrollBy(payload.deltaX, payload.deltaY); return { completed: true }; }
   if (!ready(el)) return { error: 'target' };
-  if (payload.action === 'fill') {
+  if (payload.action === 'fill' || payload.action === 'validate-fill') {
     const password = current.refs.get(payload.passwordRef);
     const username = payload.usernameRef ? current.refs.get(payload.usernameRef) : null;
     if (!ready(password) || !(password instanceof HTMLInputElement) || password.type !== 'password' || username && (!ready(username) || !(username instanceof HTMLInputElement) || !['text', 'email', 'tel'].includes(username.type))) return { error: 'target' };
     const form = password.form;
     if (username && username.form !== form) return { error: 'target' };
     if (form?.action && new URL(form.action, location.href).origin !== payload.origin) return { error: 'origin' };
+    if (payload.action === 'validate-fill') return { completed: true };
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     if (username) { username.setAttribute('data-rhwp-private-field', 'true'); setter.call(username, payload.username); }
     password.setAttribute('data-rhwp-private-field', 'true'); setter.call(password, payload.password);
@@ -129,6 +130,10 @@ export class NativeBrowserPasswords {
     return this.vault.withCredential(params.accountId, async (credential) => {
       this.assertSnapshot(tab, params);
       if (credential.origin !== origin) throw passwordFailure('BROWSER_PASSWORD_ORIGIN_MISMATCH', 'This saved account belongs to a different website.');
+      const target = { snapshotId: snapshot.snapshotId, ref: params.passwordRef, passwordRef: params.passwordRef, usernameRef: params.usernameRef, origin };
+      const checked = await this.run(tab, pageAction, [{ ...target, action: 'validate-fill' }]);
+      this.assertSnapshot(tab, params);
+      if (!checked?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
       // Stop outstanding raw reads before the first secret enters the guest DOM.
       const firstProtection = !tab.passwordShield;
       tab.passwordShield = true;
@@ -136,7 +141,7 @@ export class NativeBrowserPasswords {
       tab.protectedPasswords ??= new Set(); tab.protectedPasswords.add(credential.password);
       if (firstProtection) await this.host.session?.closeAllConnections();
       this.assertSnapshot(tab, params);
-      const result = await this.run(tab, pageAction, [{ action: 'fill', snapshotId: snapshot.snapshotId, ref: params.passwordRef, passwordRef: params.passwordRef, usernameRef: params.usernameRef, origin, username: credential.username, password: credential.password }]);
+      const result = await this.run(tab, pageAction, [{ ...target, action: 'fill', username: credential.username, password: credential.password }]);
       if (!result?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
       return { completed: true, accountId: params.accountId };
     });

@@ -14,7 +14,7 @@ test('real native password fill submits without exposing secrets to hub and pres
   const entry = fileURLToPath(new URL('./electron/browser-passwords.mjs', import.meta.url));
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
   const report = await new Promise((resolve, reject) => {
-    const child = spawn(electron, [entry, '--use-mock-keychain'], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(electron, [entry, '--use-mock-keychain', '-ApplePersistenceIgnoreState', 'YES'], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
     child.stdout.on('data', (data) => { stdout += data; }); child.stderr.on('data', (data) => { stderr += data; });
     const timer = setTimeout(() => child.kill('SIGKILL'), 50_000);
@@ -29,5 +29,5 @@ test('real native password fill submits without exposing secrets to hub and pres
     });
   });
   assert.equal(report.error, undefined);
-  for (const key of ['nativeFill', 'humanAutocomplete', 'nativeSubmit', 'postNavigationInput', 'noSecretInHub', 'staleAndWrongOriginRejected', 'rawReadbackAndCaptureBlocked']) assert.equal(report[key], true, key);
+  for (const key of ['nativeFill', 'humanAutocomplete', 'nativeSubmit', 'protectedWebSocket', 'postNavigationInput', 'noSecretInHub', 'staleAndWrongOriginRejected', 'rawReadbackAndCaptureBlocked']) assert.equal(report[key], true, key);
 });
