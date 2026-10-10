@@ -6,7 +6,31 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { createOwnedBrowserService } from '../owned-browser-service.mjs';
 import { createBrowserNetworkGuard, createBrowserNetworkProxy } from '../owned-browser-network.mjs';
-import { inspectOwnedBrowserRuntime } from '../owned-browser-runtime.mjs';
+import { inspectOwnedBrowserRuntime, startOwnedBrowserRuntime } from '../owned-browser-runtime.mjs';
+
+test('native CDP connection failure reports its phase without disclosing the private endpoint', async (t) => {
+  const previousCache = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  t.after(() => { if (previousCache === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH; else process.env.PLAYWRIGHT_BROWSERS_PATH = previousCache; });
+  // 기존 실행 파일 캐시를 먼저 읽어 다른 실제 런타임 테스트의 설치 경로를 바꾸지 않는다.
+  await inspectOwnedBrowserRuntime();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-native-connect-failure-'));
+  const server = http.createServer((_request, response) => { response.writeHead(403); response.end(); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await new Promise((resolve) => server.close(resolve)); await fs.rm(dataDir, { recursive: true, force: true }); });
+  let released = false;
+  const secret = 'private-native-endpoint-token';
+  await assert.rejects(startOwnedBrowserRuntime({ dataDir, guard: createBrowserNetworkGuard(), nativeAdapter: {
+    async start() { return { endpointURL: `ws://127.0.0.1:${server.address().port}/browser/${secret}`, close: async () => { released = true; } }; },
+  } }), (failure) => {
+    assert.equal(failure.code, 'BROWSER_NATIVE_CONNECT_FAILED');
+    assert.equal(failure.details.phase, 'native-cdp');
+    assert.match(failure.details.reason, /WebSocket|403/);
+    assert.equal(JSON.stringify({ message: failure.message, details: failure.details, cause: failure.cause.message }).includes(secret), false);
+    assert.equal(failure.message.includes('competing'), false);
+    return true;
+  });
+  assert.equal(released, true);
+});
 
 test('desktop startup selects the native adapter while explicit managed profiles remain managed', async (t) => {
   const nativeAdapter = {};

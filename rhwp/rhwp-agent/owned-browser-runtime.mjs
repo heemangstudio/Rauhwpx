@@ -134,9 +134,11 @@ export async function startOwnedBrowserRuntime({ dataDir, guard, onEvent = () =>
   let native;
   let context;
   let browser;
+  let phase = nativeAdapter ? 'native-host' : 'managed-launch';
   try {
     if (nativeAdapter) {
       native = await nativeAdapter.start({ profileDir, downloadsPath, proxy: proxy.settings, onEvent });
+      phase = 'native-cdp';
       browser = await chromium.connectOverCDP(native.endpointURL, { timeout: 20_000 });
       context = browser.contexts()[0];
       if (!context) throw new OwnedBrowserError('BROWSER_NATIVE_UNAVAILABLE', 'The desktop browser did not provide a private session.', true);
@@ -157,6 +159,15 @@ export async function startOwnedBrowserRuntime({ dataDir, guard, onEvent = () =>
     await native?.close?.();
     await proxy.close();
     if (error instanceof OwnedBrowserError) throw error;
+    if (nativeAdapter) {
+      // CDP 연결 오류에는 비공개 endpoint 토큰이 들어갈 수 있으므로 원문을 기록하지 않는다.
+      const reason = String(error?.message ?? error).split('\n')[0].replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>]+/gi, '[private endpoint]').slice(0, 400);
+      const failure = new OwnedBrowserError('BROWSER_NATIVE_CONNECT_FAILED', 'The desktop browser could not reconnect. Retry its connection.', true);
+      failure.details = { phase, reason };
+      failure.cause = new Error(reason);
+      console.error('[owned-browser-runtime] native startup failed', JSON.stringify(failure.details));
+      throw failure;
+    }
     throw new OwnedBrowserError('BROWSER_START_FAILED', 'The owned browser could not start. Close competing browser owners and retry.', true);
   }
 }
