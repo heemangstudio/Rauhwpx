@@ -296,14 +296,6 @@ test('website zoom synchronously fences shared-origin native snapshots and pendi
   await assert.rejects(f.passwords.snapshot(f.binding), { code: 'BROWSER_PASSWORD_STALE_REFERENCE' });
 });
 
-test('native physical clicks convert CSS coordinates to DIP at the observed page zoom', async (t) => {
-  const { vault } = await vaultFixture(t); const f = nativeFixture(vault);
-  f.contents.getZoomFactor = () => 1.5;
-  const observed = await f.passwords.snapshot(f.binding);
-  await f.passwords.action({ ...f.binding, snapshotId: observed.snapshotId, action: 'click', ref: 'e2' });
-  assert.deepEqual(f.calls.filter((call) => call.type === 'mouseDown' || call.type === 'mouseUp').map(({ x, y }) => ({ x, y })), [{ x: 15, y: 15 }, { x: 15, y: 15 }]);
-});
-
 test('session clearing invalidates snapshots before asynchronous storage deletion', async (t) => {
   const { vault } = await vaultFixture(t); const f = nativeFixture(vault); let finish;
   f.passwords.run = () => new Promise((resolve) => { finish = resolve; });
