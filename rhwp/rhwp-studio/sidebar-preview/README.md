@@ -80,7 +80,8 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?page=settings&quota=error` | Provider quota errors and unknown health bars in AI |
 | `?page=settings&quota=empty` | Exhausted Codex quota and zero banked resets |
 | `?page=settings&quota=refresh-error` | Manual refresh fails once, then succeeds on retry |
-| `?initial-setup=1` | Production first-run setup wizard |
+| `?initial-setup=1` | Production first-run setup (theme, models, fonts) with the talking hippo |
+| `?initial-setup=deferred` | Setup postponed by a file launch: the `처음 설정` chip above the composer |
 | `?theme=dark&width=360` | Dark theme and narrow sidebar |
 | `?controls=0` | Hide preview controls for clean captures |
 | `?reset=1` | Clear preview storage before mounting |

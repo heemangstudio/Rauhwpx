@@ -179,6 +179,7 @@ import {
 } from '@/desktop-integration';
 import { initAgentBridge, type AgentBridge } from './agent/bridge.ts';
 import { initAgentSidebar } from './ui/agent-sidebar/index.ts';
+import { markStudioReady } from './ui/boot-screen.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
 import { AGENT_LABEL } from './ui/agent-sidebar/providers.ts';
 import { initInlinePrompt } from './agent/inline-prompt.ts';
@@ -2683,6 +2684,8 @@ function showLoadError(error: unknown): void {
 }
 
 const initPromise = initialize();
+// 실패해도 부트 화면을 걷어 오류 표시를 가리지 않는다.
+void initPromise.then(markStudioReady, markStudioReady);
 
 installEmbedRuntime({
   hostWindow: window,

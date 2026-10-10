@@ -142,8 +142,18 @@ import {
   type SettingsDestination,
 } from './settings-contract.ts';
 import { createWritingStyleCalibration } from './writing-style-calibration.ts';
-import { maybeStartInitialSetup, type InitialSetupUi } from '../initial-setup/initial-setup.ts';
-import { loadInitialSetup, saveInitialSetup } from '../initial-setup/state.ts';
+import {
+  createInitialSetup,
+  maybeStartInitialSetup,
+  type InitialSetupDeps,
+  type InitialSetupUi,
+} from '../initial-setup/initial-setup.ts';
+import {
+  completeInitialSetup,
+  isInitialSetupDeferred,
+  loadInitialSetup,
+  saveInitialSetup,
+} from '../initial-setup/state.ts';
 import { summarizePendingDiffs } from './pending-diff-summary.ts';
 import { createReferenceLibrary } from './reference-library.ts';
 import {
@@ -2320,6 +2330,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     calibrationChip.hidden = !eligible || !reconnectChip.hidden;
   }
 
+  /* 미뤄 둔 첫 실행 설정 칩 — 문서를 열면서 처음 켜졌을 때 같은 자리에 뜬다.
+     누르면 설정을 열고, 닫으면 다시 묻지 않는다. */
+  const setupChip = el('div', 'ag-calibration-chip ag-setup-chip');
+  setupChip.hidden = true;
+  const setupChipOpen = el('button', 'ag-calibration-chip-open');
+  setupChipOpen.type = 'button';
+  const setupChipHippo = el('span', 'ag-setup-chip-hippo');
+  setupChipHippo.setAttribute('aria-hidden', 'true');
+  setupChipOpen.append(setupChipHippo, el('span', 'ag-calibration-chip-action', '처음 설정'));
+  const setupChipClose = el('button', 'ag-calibration-chip-close');
+  setupChipClose.type = 'button';
+  setupChipClose.setAttribute('aria-label', '닫기');
+  setupChipClose.appendChild(createIcon('close'));
+  setupChip.append(setupChipOpen, setupChipClose);
+
+  /* 미룬 설정이 모델 연결을 포함하므로 그동안은 재연결 칩보다 앞선다. */
+  function updateSetupChip(): void {
+    setupChip.hidden = !isInitialSetupDeferred();
+  }
+
   /* 프로바이더 재연결 칩 — 고른 프로바이더의 로그인이 풀리면 같은 자리에 뜬다.
      누르면 설정의 로그인 모달로 바로 가고, 로그인이 돌아오면 세션을 새로 연다. */
   const reconnectChip = el('div', 'ag-calibration-chip ag-reconnect-chip');
@@ -2389,7 +2419,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       reconnectChip.dataset.agent = agent;
       reconnectChipText.textContent = `${AGENT_LABEL[agent]} 로그인 필요`;
     }
-    reconnectChip.hidden = !show;
+    reconnectChip.hidden = !show || isInitialSetupDeferred();
+    updateSetupChip();
   }
 
   /** 로그인이 돌아온 프로바이더의 세션을 새 자격 증명으로 다시 연다. */
@@ -2724,7 +2755,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   // 입력기 위에 흐름으로 쌓인 것들의 높이. 떠 있는 요소는 이들을 덮지 않고 한 겹 위에 선다.
   // attached 는 입력기와 한 면을 이루는 질문 카드, stack 은 그 위의 변경 막대와 칩이다.
   // 위치만 바꾸고 크기는 건드리지 않아 관찰 고리가 생기지 않는다.
-  const composerStackNodes = [compactChanges, reconnectChip, calibrationChip];
+  const composerStackNodes = [compactChanges, reconnectChip, setupChip, calibrationChip];
   let composerStackFrame = 0;
   function syncComposerStack(): void {
     const question = questionController.root;
@@ -2747,7 +2778,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   // 사이드바에서는 변경 검토와 계획을 분리한다. 계획은 입력기 바로 위에
   // 머물러 접었을 때 작은 진행 표시로 이어지고, 변경 검토는 가려지지 않는다.
   // 질문 카드와 입력기는 인접 형제여야 하나의 입력 면으로 이어진다.
-  chatPage.append(header, messages, review, compactChanges, planSurface, planRestore, reconnectChip, calibrationChip, questionController.root, composer);
+  chatPage.append(header, messages, review, compactChanges, planSurface, planRestore, reconnectChip, setupChip, calibrationChip, questionController.root, composer);
   messages.after(latestDock);
 
   /** 입력기 하단 한 줄이 겹치지 않고 붙는 폭을 재서 사이드바 최솟값으로 쓴다.
@@ -3074,10 +3105,28 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     refreshSkills: () => bridge.listSkills(),
   });
   const settingsPage = settingsPanel.element;
-  initialSetup = maybeStartInitialSetup({
+  const initialSetupDeps: InitialSetupDeps = {
     openAgentSetup: (agent) => settingsPanel.openAgentSetup(agent),
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
     openCalibration: (options) => writingStyleCalibration.open(options),
+    onFinished: () => {
+      updateReconnectChip();
+      updateCalibrationChip();
+    },
+  };
+  initialSetup = maybeStartInitialSetup({ ...initialSetupDeps, onDeferred: updateReconnectChip });
+  updateSetupChip();
+  setupChipOpen.addEventListener('click', () => {
+    if (!initialSetup) {
+      initialSetup = createInitialSetup(initialSetupDeps);
+      if (setupStatuses) initialSetup.handleEvent({ type: 'agent-setup-status', statuses: setupStatuses });
+    }
+    setupChip.hidden = true;
+    initialSetup.open();
+  });
+  setupChipClose.addEventListener('click', () => {
+    completeInitialSetup({ themeStep: 'skipped', providerStep: 'skipped', fontStep: 'skipped' });
+    updateReconnectChip();
   });
   settingsPage.addEventListener('ag-settings-close-request', () => {
     void requestSettingsClose(fullscreen ? workspaceSettingsBtn : settingsBtn);
