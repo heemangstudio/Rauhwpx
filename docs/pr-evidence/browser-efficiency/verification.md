@@ -98,3 +98,18 @@ git diff --check
 ```
 
 The suites report 3 native desktop checks, 15 runtime checks, and 17 security checks. Existing personal pages and the running editor were not changed by these experiments.
+
+## Native password-helper key input integration
+
+The integrated native password helper now owns semantic clicks and key input. A bounded private unplaced-guest probe confirmed its mouse click was trusted and completed under the activity lease. Enter keyDown/keyUp alone returned success but did not activate the focused button. Adding Electron's separate `char` event (`\r`) produced exactly one trusted activation without showing or focusing a window.
+
+Native key input now sends character events for Enter, Space and unmodified printable keys, and releases keyUp in `finally`. Exact Control/Meta+A shortcuts select the focused input or textarea in the validated isolated helper without reading its value. Plain character and Space input remain blocked for password and private fields. Modifier shortcuts receive no additional character event.
+
+The durable native activity fixture now installs the production password helper and verifies trusted hidden click, trusted Enter form submission exactly once, actual select-all followed by replacement input, Shift+Tab, secret character rejection and key release after an injected character-dispatch failure. The activity lease ends and animation frames stop after the failure; forms, session/history and downloads remain covered.
+
+```sh
+node --test tests/desktop-owned-browser.test.mjs tests/desktop-browser-passwords.test.mjs tests/desktop-browser-passwords-native.test.mjs
+git diff --check
+```
+
+All 22 checks passed, including actual native password submit/protected input and the hidden activity fixture. The checks used private fixture profiles and did not alter the live editor or personal browser pages.

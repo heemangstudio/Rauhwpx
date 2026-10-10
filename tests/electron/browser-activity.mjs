@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, readFile, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { NativeBrowserPasswords } from '../../desktop/browser-passwords.mjs';
 import { OwnedBrowserHost } from '../../desktop/browser-host.mjs';
 import { createOwnedBrowserService } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
 
@@ -19,7 +20,7 @@ app.whenReady().then(async () => {
         response.writeHead(200, { 'content-type': 'application/pdf', 'content-disposition': 'attachment; filename="activity.pdf"' });
         response.end('%PDF-1.4\nactivity fixture');
       } else {
-        response.end('<!doctype html><style>@keyframes spin{to{transform:rotate(360deg)}}.animated{width:40px;height:40px;background:blue;animation:spin 1s linear infinite}</style><div class="animated"></div><label>Draft<input id="draft"></label><button onclick="clicks++">Click</button><a href="/file.pdf" download>Download</a><script>window.clicks=0;window.framesRun=0;sessionStorage.setItem("state","retained");function tick(){framesRun++;requestAnimationFrame(tick)}requestAnimationFrame(tick)</script>');
+        response.end('<!doctype html><style>@keyframes spin{to{transform:rotate(360deg)}}.animated{width:40px;height:40px;background:blue;animation:spin 1s linear infinite}</style><div class="animated"></div><button id="previous">Previous</button><form onsubmit="event.preventDefault();window.submissions++;window.trustedSubmit=event.isTrusted"><label>Draft<input id="draft"></label><label>Password<input id="secret" type="password"></label><button type="button" onclick="clicks++;window.trustedClick=event.isTrusted">Click</button><button type="submit">Submit draft</button></form><a href="/file.pdf" download>Download</a><script>window.clicks=0;window.submissions=0;window.heldKeys=new Set();document.addEventListener("keydown",e=>heldKeys.add(e.key));document.addEventListener("keyup",e=>heldKeys.delete(e.key));window.framesRun=0;sessionStorage.setItem("state","retained");function tick(){framesRun++;requestAnimationFrame(tick)}requestAnimationFrame(tick)</script>');
       }
     });
     await new Promise(resolve => site.listen(0, '127.0.0.1', resolve));
@@ -27,7 +28,9 @@ app.whenReady().then(async () => {
     window = new BrowserWindow({ show: false, title: 'Browser activity fixture', width: 420, height: 320, webPreferences: { sandbox: true, contextIsolation: true } });
     const owner = { id: 'activity-fixture' };
     host = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session, dataDir: root, getWindowForSession: () => window });
+    const passwords = new NativeBrowserPasswords({ host, vault: {} });
     const adapter = {
+      passwordSnapshot: args => passwords.snapshot(args), passwordAction: args => passwords.action(args),
       async start(settings) { return { ...await host.start(settings, owner), close: () => host.release(owner) }; },
       bind: args => host.bind(args), control: args => host.control(args), activity: args => host.activity(args),
       inventory: async () => [...host.tabs.values()].map(tab => host.state(tab)),
@@ -61,7 +64,38 @@ app.whenReady().then(async () => {
     await service.request(actor, 'type', { ...ref(observed, 'Draft'), text: 'preserved draft' });
     observed = await observe();
     await service.request(actor, 'click', ref(observed, 'Click'));
-    assert.equal(await evaluate('clicks'), 1);
+    const eventually = async (expression, value) => {
+      const end = Date.now() + 1000;
+      while (await evaluate(expression) !== value && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 20));
+      assert.equal(await evaluate(expression), value);
+    };
+    await eventually('clicks', 1);
+    assert.equal(await evaluate('trustedClick'), true);
+    observed = await observe();
+    await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'Enter' });
+    await eventually('submissions', 1);
+    assert.equal(await evaluate('trustedSubmit'), true);
+    await paused();
+    assert.equal(await evaluate('submissions'), 1);
+    observed = await observe();
+    await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'ControlOrMeta+a' });
+    await eventually('document.querySelector("#draft").selectionEnd-document.querySelector("#draft").selectionStart', 'preserved draft'.length);
+    await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'q' });
+    await eventually('document.querySelector("#draft").value', 'q');
+    await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'Shift+Tab' });
+    await eventually('document.activeElement.id', 'previous');
+    await service.request(actor, 'type', { ...ref(observed, 'Draft'), text: 'preserved draft' });
+    await assert.rejects(service.request(actor, 'press', { ...ref(observed, 'Password'), key: 'q' }), { code: 'BROWSER_SECRET_CHANNEL_REQUIRED' });
+    await assert.rejects(service.request(actor, 'press', { ...ref(observed, 'Password'), key: 'Space' }), { code: 'BROWSER_SECRET_CHANNEL_REQUIRED' });
+    await paused();
+    const nativeInput = tab.view.webContents.sendInputEvent.bind(tab.view.webContents);
+    tab.view.webContents.sendInputEvent = event => { if (event.type === 'char') throw new Error('fixture input failure'); nativeInput(event); };
+    try { await assert.rejects(service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'Enter' }), { code: 'BROWSER_ACTION_FAILED' }); }
+    finally { tab.view.webContents.sendInputEvent = nativeInput; }
+    await paused();
+    await eventually('heldKeys.size', 0);
+    assert.equal(tab.automationInputDepth, 0);
+    report.nativeKeys = { trustedClick: true, trustedEnterSubmitOnce: true, printableInput: true, selectAll: true, secretCharacterBlocked: true, shiftTab: true, failedInputReleasedKey: true };
     await paused();
     observed = await observe();
     await assert.rejects(service.request(actor, 'click', { ...ref(observed, 'Click'), ref: 'missing-reference' }));

@@ -75,7 +75,12 @@ function pageAction(payload) {
     el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
     return { completed: true };
   }
-  if (payload.action === 'focus') { el.focus(); return { completed: true }; }
+  if (payload.action === 'focus') {
+    if ((payload.key === 'Space' || /^[A-Za-z0-9]$/.test(payload.key)) && el.matches(payload.sensitive)) return { error: 'secret' };
+    el.focus();
+    if (['Control+a', 'Meta+a', 'ControlOrMeta+a'].includes(payload.key) && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) el.select();
+    return { completed: true };
+  }
   return { error: 'target' };
 }
 
@@ -205,8 +210,14 @@ export class NativeBrowserPasswords {
       try {
         if (params.action === 'press') {
           keyCode = keyCode === 'Space' ? ' ' : keyCode;
-          tab.view.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
-          tab.view.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+          // Electron separates character input from physical key transitions.
+          const character = modifiers.length === 0 ? keyCode === 'Enter' ? '\r' : keyCode.length === 1 ? keyCode : null : null;
+          try {
+            tab.view.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+            if (character) tab.view.webContents.sendInputEvent({ type: 'char', keyCode: character, modifiers });
+          } finally {
+            tab.view.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+          }
         } else {
           const { x, y } = result.point;
           const zoomFactor = snapshot.zoomFactor;
