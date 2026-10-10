@@ -1,14 +1,13 @@
 // 대기 메시지(U1)와 입력기의 한 보내기 길을 실제 사이드바와 가짜 브리지로 본다.
-// 혼자 돌릴 때: node sidebar-preview/queue.check.mjs (CHROME_PATH 필요, 자기 Vite 서버를 띄운다).
+// 혼자 돌릴 때: node sidebar-preview/queue.check.mjs (CHROME_PATH 필요, standalone.mjs 가 자기 Vite 서버를 띄운다).
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isMainModule, runStandalone } from './standalone.mjs';
 
 async function openPreview(page, origin, query) {
   await page.goto(`${origin}/?theme=light&width=480&${query}`, { waitUntil: 'networkidle0' });
-  await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
+  await page.waitForFunction(() => window.sidebarPreview
+    && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
 }
 
 function queueState(page) {
@@ -183,6 +182,7 @@ export async function checkFollowUpQueue(page, origin, artifacts) {
   assert.equal(state.messagesSent, 0, 'a reload never auto-sends');
 
   // 9. 수정: Enter 로 저장하고 순서는 그대로다. Esc 는 취소, 삭제는 지운다.
+  await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
   await page.click('#play');
   await waitRunning(page);
   await enqueue(page, '세 번째 대기');
@@ -255,7 +255,7 @@ export async function checkComposerSendPath(page, origin) {
     await page.keyboard.press('Enter');
   };
   const settle = () => page.waitForFunction(() => !window.sidebarPreview.snapshot().running
-    && !document.querySelector('.ag-input').disabled);
+    && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
 
   await openPreview(page, origin, 'reset=1&scenario=chat');
   // 로컬 명령은 사용자 메시지를 보내지 않는다.
@@ -303,7 +303,8 @@ export async function checkComposerSendPath(page, origin) {
       input.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: data }));
     }
   });
-  await page.waitForFunction(() => !document.querySelector('.ag-send').disabled
+  await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true'
+    && !document.querySelector('.ag-send').disabled
     && document.querySelector('.ag-reference-upload-chip'));
   await submit('첨부를 확인해 줘');
   await page.waitForFunction(() => window.sidebarPreview.snapshot().sentMessages.length === 3);
@@ -329,54 +330,9 @@ export async function checkComposerSendPath(page, origin) {
   assert.equal(refused.composer, '첨부와 함께 대기', 'the text stays in the composer');
 }
 
-// 혼자 돌리기 — check.mjs 의 2단계 알려진 실패와 상관없이 이 검사만 본다.
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const { createServer } = await import('vite');
-  const { default: puppeteer } = await import('puppeteer-core');
-  const { browserLaunchArgs, findBrowserExecutable } = await import('../tests/browser-support.ts');
-  const studio = resolve(import.meta.dirname, '..');
-  const artifacts = resolve(import.meta.dirname, 'artifacts');
-  const executablePath = findBrowserExecutable();
-  assert(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable.');
-  await mkdir(artifacts, { recursive: true });
-  const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-queue-check-'));
-  const server = process.env.QUEUE_CHECK_ORIGIN ? null : await createServer({
-    cacheDir,
-    configFile: resolve(studio, 'vite.sidebar.config.ts'),
-    server: { port: 0, open: false, hmr: false },
-    logLevel: 'error',
-  });
-  let browser;
-  try {
-    await server?.listen();
-    const origin = process.env.QUEUE_CHECK_ORIGIN ?? `http://127.0.0.1:${server.httpServer.address().port}`;
-    browser = await puppeteer.launch({ executablePath, headless: true, args: browserLaunchArgs() });
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
-    await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
-    const errors = [];
-    // HTTP LAN 주소처럼 randomUUID 가 없는 환경에서도 대기 메시지 id 가 만들어지는지 본다.
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(crypto, 'randomUUID', { value: undefined, writable: true, configurable: true });
-    });
-    page.on('pageerror', (error) => errors.push(error.message));
-    page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
-    for (const [name, run] of [
-      ['Follow-up queue: Enter queues, normal ends drain, doubtful ends hold', () => checkFollowUpQueue(page, origin, artifacts)],
-      ['Composer send path: template, skill, attachments and local commands', () => checkComposerSendPath(page, origin)],
-    ]) {
-      try {
-        await run();
-        console.log(`PASS ${name}`);
-      } catch (error) {
-        await page.screenshot({ path: resolve(artifacts, 'failure.png') });
-        throw new Error(`${name}: ${error.message}\nRuntime errors: ${JSON.stringify(errors)}`, { cause: error });
-      }
-    }
-    assert.deepEqual(errors, []);
-  } finally {
-    await browser?.close();
-    await server?.close();
-    await rm(cacheDir, { recursive: true, force: true });
-  }
+// 혼자 돌리기 — check.mjs 의 알려진 앞 단계 실패와 상관없이 이 검사만 본다.
+if (isMainModule(import.meta)) {
+  await runStandalone('Follow-up queue: Enter queues, normal ends drain, doubtful ends hold', checkFollowUpQueue);
+  await runStandalone('Composer send path: template, skill, attachments and local commands',
+    (page, origin) => checkComposerSendPath(page, origin));
 }

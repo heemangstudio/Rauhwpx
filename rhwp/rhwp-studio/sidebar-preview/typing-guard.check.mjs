@@ -83,7 +83,8 @@ export async function checkTypingGuard(page, origin, artifacts) {
   assert.equal((await state(page)).selected, 1, 'digits answer once the card is open');
   assert.equal((await state(page)).composerValue, '2026년 3쪽', 'the typed text is kept while the card is open');
 
-  // 2. Enter while the question is held opens it at once and does not stop the agent.
+  // 2. Enter while the question is held queues the text (U1) and opens the question at once;
+  //    it does not stop the agent and sends nothing yet.
   await open(page, origin, 'scenario=chat&hold=1');
   await startHeldTurn(page);
   await page.focus('.ag-input');
@@ -91,11 +92,28 @@ export async function checkTypingGuard(page, origin, artifacts) {
   await ask(page);
   await page.type('.ag-input', 'def', { delay: 80 });
   assert.equal((await state(page)).held, true);
+  const sentBefore = await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent);
   await page.keyboard.press('Enter');
   await waitForOpenCard(page, 400);
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().interrupts), 0, 'Enter did not stop the turn');
   assert.equal(await page.evaluate(() => window.sidebarPreview.bridge.isTurnRunning()), true);
-  assert.equal((await state(page)).composerValue, 'abcdef', 'the text stays in the composer');
+  assert.deepEqual(await page.$$eval('.ag-followup .ag-followup-text', (rows) => rows.map((row) => row.title)), ['abcdef'],
+    'the typed text waits in the follow-up queue');
+  assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent), sentBefore, 'nothing is sent mid-turn');
+  assert.equal((await state(page)).composerValue, '', 'the queued text left the composer');
+
+  // 2a. Enter on an empty composer only opens the held question.
+  await open(page, origin, 'scenario=chat&hold=1');
+  await startHeldTurn(page);
+  await page.focus('.ag-input');
+  await page.type('.ag-input', 'x', { delay: 80 });
+  await ask(page);
+  await page.keyboard.press('Backspace');
+  assert.equal((await state(page)).held, true);
+  await page.keyboard.press('Enter');
+  await waitForOpenCard(page, 400);
+  assert.equal(await page.$$eval('.ag-followup', (rows) => rows.length), 0, 'an empty Enter queues nothing');
+  assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().interrupts), 0);
 
   // 2b. A question that follows the user's own Enter-send opens directly.
   await open(page, origin, 'scenario=question');

@@ -4619,8 +4619,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
       return;
     }
-    // 미뤄 둔 질문은 턴이 돌고 있다는 뜻이다. Enter 는 턴을 멈추지 않고 질문을 연다 — 쓴 글은 입력칸에 남는다.
-    if (questionController.isHeld() && e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    // 미뤄 둔 질문은 턴이 돌고 있다는 뜻이다. 글이 있는 Enter 는 아래에서 대기열에 들어가고(그러면 질문이 열린다),
+    // 빈 입력기의 Enter 는 보낼 것 없이 질문만 연다. 어느 쪽도 턴을 멈추지 않는다.
+    if (questionController.isHeld() && e.key === 'Enter' && !e.shiftKey && !e.isComposing
+      && !input.value.trim() && !activeComposerSkill) {
       e.preventDefault();
       typing.noteSend();
       return;
@@ -4719,7 +4721,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 일하는 동안 입력기가 대기열에 넣는다는 것을 자리 표시와 ⏎ 힌트로 말한다. */
   function syncFollowUpComposerCues(): void {
-    const queueing = agentWorking() && !input.disabled && !questionController.hasPending();
+    // 보이는 잠금(readOnly)이나 질문 카드가 입력기를 쥐고 있으면 그 문구가 먼저다.
+    const queueing = agentWorking() && !input.disabled && !input.readOnly && !questionController.isPresented();
     if (queueing) input.placeholder = '작업이 끝나면 보낼 메시지 입력';
     sendHint.textContent = queueing ? '⏎ 대기' : '⏎';
     if (queueing) sendHint.hidden = (!input.value.trim() && !activeComposerSkill) || referenceLibrary.hasDrafts();
@@ -4855,7 +4858,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (questionController.isPresented()) {
       // 입력기로 답한 것도 보내기다 — 쓰기가 끝났다.
       if (questionController.handleComposerSubmit()) typing.noteSend();
-      else bridge.interrupt();
+      else stopTurn();
       return;
     }
     // 일하는 동안의 Enter 는 턴을 멈추지 않고 대기열에 넣는다. 멈추는 것은 중지 단추뿐이다.
@@ -5012,6 +5015,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       );
       if (!queued) return;
       input.value = '';
+      // 대기열에 넣은 글도 입력기를 떠났다 — 미뤄 둔 질문이 지금 열려도 잃을 것이 없다.
+      typing.noteSend();
       setComposerSkill(null);
       setSlashMenuOpen(false);
       resizeComposerInput();
