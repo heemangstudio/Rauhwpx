@@ -575,20 +575,23 @@ test('journal publish does not retry a non-lock or unix lock error', async (t) =
   assert.equal(unixAttempts, 1);
 });
 
-test('a credential copyback interrupted in 2.0.11 is finished from its HamaEditor-named files', async (t) => {
+test('a credential copyback interrupted in 2.0.11 is finished and its plaintext copy removed', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-rebranded-copyback-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const providerDir = path.join(root, '.codex');
-  const launchDir = path.join(root, 'HamaEditor', 'launch-work', 'run');
+  const launchDir = path.join(root, 'launch-work', 'run');
   await fs.mkdir(providerDir, { recursive: true });
-  await fs.mkdir(launchDir, { recursive: true });
+  await fs.mkdir(path.join(launchDir, 'home'), { recursive: true });
   const source = path.join(providerDir, 'auth.json');
-  const target = path.join(launchDir, 'auth.json');
+  const target = path.join(launchDir, 'home', 'auth.json');
   const id = createHash('sha256').update(path.resolve(target)).digest('hex').slice(0, 16);
+  const marker = path.join(launchDir, '.hamaeditor-credential-copybacks', `${id}.pending`);
   // 2.0.11 moved the old file aside and crashed before installing the refreshed one.
   await fs.writeFile(`${source}.hamaeditor-copyback-${id}.previous`, 'original');
   await fs.writeFile(`${source}.hamaeditor-copyback-${id}.next`, 'refreshed');
   await fs.writeFile(target, 'refreshed');
+  await fs.mkdir(path.dirname(marker), { recursive: true });
+  await fs.writeFile(marker, 'journal');
   await fs.writeFile(path.join(providerDir, `.auth.json.hamaeditor-copyback-${id}.json`), JSON.stringify({
     version: 1,
     id,
@@ -597,12 +600,13 @@ test('a credential copyback interrupted in 2.0.11 is finished from its HamaEdito
     initialSourceDigest: createHash('sha256').update('original').digest('hex'),
     pid: 999_999,
     createdAtMs: Date.now() - 1000,
-    retentionMarker: null,
+    retentionMarker: marker,
   }));
 
   recoverCredentialMirrorsSync(source, { isAlive: () => false });
 
   assert.equal(await fs.readFile(source, 'utf8'), 'refreshed');
   assert.deepEqual((await fs.readdir(providerDir)).sort(), ['auth.json']);
-  assert.equal(await fs.readFile(target, 'utf8'), 'refreshed', 'the 2.0.11 launch folder is left as it was');
+  await assert.rejects(fs.stat(target), { code: 'ENOENT' }, 'no plaintext copy stays in the 2.0.11 launch folder');
+  await assert.rejects(fs.stat(marker), { code: 'ENOENT' }, 'the launch folder no longer looks pending to cleanup');
 });

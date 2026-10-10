@@ -337,20 +337,21 @@ function readJournal(journalPath, brand = CURRENT_JOURNAL_BRAND) {
     journalPath: path.resolve(journalPath),
     nextPath: `${source}.${brand.name}-copyback-${raw.id}.next`,
     previousPath: `${source}.${brand.name}-copyback-${raw.id}.previous`,
-    // The 2.0.11 launch folder lives in its own profile, which this app only reads.
-    retentionMarker: brand.legacy ? null : retentionMarker,
+    retentionMarker,
     brand: brand.name,
     legacy: brand.legacy,
     mode: 'copy',
   });
 }
 
-/** The 2.0.11 mirror copy sits in that version's own launch folder, which this app leaves alone. */
 function removeMirrorTarget(handle) {
-  if (!handle.legacy) rmSync(handle.target, { force: true });
+  rmSync(handle.target, { force: true });
 }
 
 function removeMirrorArtifacts(handle) {
+  // No running app owns a 2.0.11 launch folder, so its plaintext credential copy
+  // would otherwise stay there for good once the journal is finished.
+  if (handle.legacy) removeMirrorTarget(handle);
   rmSync(handle.nextPath, { force: true });
   rmSync(handle.previousPath, { force: true });
   rmSync(handle.journalPath, { force: true });
