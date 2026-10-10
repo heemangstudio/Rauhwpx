@@ -323,8 +323,51 @@ test('native saved searches retain their query and failed materialization closes
   const result = await browser.request(human, 'reconnect', args);
   assert.equal(result.tab.tabId, args.tabId); assert.equal(result.tab.nativeTargetId, 'new-1');
   assert.deepEqual(navigations, ['https://www.google.com/search?q=%ED%95%9C%EA%B5%AD%EC%96%B4+research']);
+  let releaseTitle;
+  pages[1].title = () => new Promise((resolve) => { releaseTitle = resolve; });
+  pages[1].emit('domcontentloaded');
   await pages[1].close();
   await browser.request(human, 'reconnect', { ...args, restore: true });
   assert.equal(pages.length, 3, 'explicit user reconnect can safely reopen an unavailable guest');
   assert.deepEqual(navigations, [navigations[0], navigations[0]]);
+  releaseTitle('Retired guest title');
+  pages[0].emit('domcontentloaded'); pages[0].emit('crash');
+  await new Promise((resolve) => setImmediate(resolve));
+  const recovered = (await browser.inventory(human)).tabs[0];
+  assert.equal(recovered.status, 'ready', 'late events from retired guests cannot replace the recovered guest state');
+  assert.notEqual(recovered.title, 'Retired guest title');
+});
+
+
+test('same-document navigation settles browser readiness while a real unfinished document stays loading', async (t) => {
+  if (!await requireManagedChromium(t)) return;
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-browser-navigation-ready-'));
+  let slowResponse;
+  const server = http.createServer((request, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    if (request.url === '/slow') { slowResponse = response; response.write('<html><head><title>Loading</title></head><body>Waiting'); return; }
+    response.end('<title>Ready</title><h1>Research</h1>');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  let runtime;
+  const browser = createOwnedBrowserService({ dataDir, workspaceTargets: [origin], autoInstall: false,
+    runtimeFactory: async (settings) => { runtime = await startOwnedBrowserRuntime(settings); return runtime; },
+  });
+  t.after(async () => { slowResponse?.end(); await browser.close(); await new Promise((resolve) => server.close(resolve)); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const actor = { threadId: 'research', agentId: 'owner' };
+  const opened = (await browser.request(actor, 'open', { url: origin })).tab;
+  const page = runtime.context.pages().find((page) => page.url().startsWith(origin));
+  const read = async () => (await browser.inventory(actor)).tabs.find((tab) => tab.tabId === opened.tabId);
+  const waitFor = async (predicate) => { const deadline = Date.now() + 3000; while (Date.now() < deadline) { const tab = await read(); if (predicate(tab)) return tab; await new Promise((resolve) => setTimeout(resolve, 10)); } throw new Error('Navigation state did not settle'); };
+  await page.evaluate(() => { location.hash = 'section'; });
+  const hash = await waitFor((tab) => tab.navigationEpoch > opened.navigationEpoch && tab.status === 'ready');
+  await page.evaluate(() => { history.pushState({}, '', '/research'); });
+  const pushed = await waitFor((tab) => tab.navigationEpoch > hash.navigationEpoch && tab.status === 'ready');
+  await assert.rejects(browser.request(actor, 'press', { tabId: opened.tabId, navigationEpoch: opened.navigationEpoch, controllerEpoch: opened.controllerEpoch, key: 'Enter' }), { code: 'BROWSER_STALE_NAVIGATION' });
+  const navigating = browser.request(actor, 'navigate', { tabId: pushed.tabId, navigationEpoch: pushed.navigationEpoch, controllerEpoch: pushed.controllerEpoch, url: `${origin}/slow` });
+  const loading = await waitFor((tab) => slowResponse && tab.navigationEpoch > pushed.navigationEpoch && tab.status === 'loading');
+  assert.equal(loading.status, 'loading');
+  slowResponse.end('</body></html>'); await navigating;
+  assert.equal((await waitFor((tab) => tab.status === 'ready')).status, 'ready');
 });

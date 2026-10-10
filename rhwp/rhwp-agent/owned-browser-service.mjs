@@ -300,10 +300,25 @@ export function createOwnedBrowserService(options = {}) {
     });
     page.on('framenavigated', (frame) => {
       if (frame !== page.mainFrame()) return;
-      tab.navigationEpoch++; invalidate(tab); tab.url = page.url(); tab.status = 'loading'; publish(tab); void persist();
+      if (tab.page !== page) return;
+      const epoch = ++tab.navigationEpoch;
+      invalidate(tab); tab.url = page.url(); tab.status = 'loading'; publish(tab); void persist();
+      // 해시·history 탐색은 DOMContentLoaded를 다시 보내지 않는다. 다음 탐색의 상태는 덮어쓰지 않는다.
+      void Promise.resolve().then(() => page.evaluate(() => document.readyState)).then((ready) => {
+        if (tab.page !== page || tab.navigationEpoch !== epoch || ready === 'loading' || page.isClosed()) return;
+        tab.status = 'ready'; publish(tab); void persist();
+      }).catch(() => {});
     });
-    page.on('domcontentloaded', () => { tab.status = 'ready'; void page.title().then((title) => { tab.title = text(title, 500); publish(tab); void persist(); }).catch(() => {}); });
-    page.on('crash', () => { tab.status = 'crashed'; tab.controllerEpoch++; invalidate(tab); publish(tab); });
+    page.on('domcontentloaded', () => {
+      if (tab.page !== page) return;
+      const epoch = tab.navigationEpoch;
+      tab.status = 'ready'; publish(tab);
+      void page.title().then((title) => {
+        if (tab.page !== page || tab.navigationEpoch !== epoch) return;
+        tab.title = text(title, 500); publish(tab); void persist();
+      }).catch(() => {});
+    });
+    page.on('crash', () => { if (tab.page !== page) return; tab.status = 'crashed'; tab.controllerEpoch++; invalidate(tab); publish(tab); });
     page.on('close', () => { if (tab.page !== page) return; tab.status = closed ? 'closed' : 'disconnected'; tab.page = null; tab.controllerEpoch++; invalidate(tab); publish(tab); });
     if (selectedAdapter()?.bind) {
       const session = await runtime.context.newCDPSession(page);
@@ -657,6 +672,14 @@ export function createOwnedBrowserService(options = {}) {
   const inventory = async (actor) => {
     validateActor(actor);
     if (!actor.isHuman) await observeHumanSessions();
+    // 네이티브 창의 중지·완료 이벤트로 새로 읽을 때 실제 로딩 종료도 반영한다.
+    if (runtime && state === 'ready' && selectedAdapter()?.inventory) {
+      const native = await selectedAdapter().inventory();
+      for (const tab of tabs.values()) {
+        const current = tab.nativeTargetId && native.find((entry) => entry.nativeTargetId === tab.nativeTargetId);
+        if (tab.page && !tab.page.isClosed() && tab.status === 'loading' && current?.loading === false && !current.crashed && !current.error) tab.status = 'ready';
+      }
+    }
     const visible = [];
     for (const tab of tabs.values()) {
       if (!actor.isHuman && !sameScope(actor, tab)) continue;

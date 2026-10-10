@@ -103,7 +103,7 @@ export function createWorkbenchBrowser(options: {
       return { name: file.name, mimeType: file.type || 'application/octet-stream', data: btoa(binary) };
     })).then((files) => controller.action('upload', { ...target, files })).then(() => { uploadTarget = null; upload.hidden = true; }).catch((failure) => { uploadLabel.textContent = failure instanceof Error ? failure.message : String(failure); }));
   });
-  const surface = document.createElement('div'); surface.className = 'ag-browser-surface'; surface.tabIndex = 0; surface.setAttribute('role', 'application'); surface.setAttribute('aria-label', '브라우저 페이지. 직접 조작을 선택한 뒤 입력하세요.');
+  const surface = document.createElement('div'); surface.className = 'ag-browser-surface'; surface.tabIndex = 0; surface.setAttribute('role', 'application'); surface.setAttribute('aria-label', '브라우저 페이지');
   const image = document.createElement('img'); image.className = 'ag-browser-frame'; image.alt = '브라우저 페이지'; image.draggable = false;
   const placeholder = document.createElement('div'); placeholder.className = 'ag-browser-placeholder';
   const placeholderTitle = document.createElement('strong'); placeholderTitle.textContent = '자료를 찾아보세요';
