@@ -3,10 +3,46 @@ import test from 'node:test';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { promises as fs } from 'node:fs';
 import { createOwnedBrowserService } from '../owned-browser-service.mjs';
 import { createBrowserNetworkGuard, createBrowserNetworkProxy } from '../owned-browser-network.mjs';
 import { inspectOwnedBrowserRuntime, startOwnedBrowserRuntime } from '../owned-browser-runtime.mjs';
+
+test('failed native setup releases its owned connection before retry and concurrent opens wait for setup', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-native-setup-failure-'));
+  let signalSetup; let failSetup;
+  const setupEntered = new Promise((resolve) => { signalSetup = resolve; });
+  const setup = new Promise((_resolve, reject) => { failSetup = reject; });
+  let launches = 0; let releases = 0; let pages = 0; let ownerOccupied = false;
+  const browser = createOwnedBrowserService({ dataDir, nativeAdapter: {}, runtimeFactory: async () => {
+    assert.equal(ownerOccupied, false, 'an earlier failed native runtime must release its connection');
+    ownerOccupied = true; launches++;
+    const firstLaunch = launches === 1;
+    const context = Object.assign(new EventEmitter(), {
+      async storageState() { if (firstLaunch) { signalSetup(); return setup; } return { cookies: [], origins: [] }; },
+      async route() {}, pages: () => [],
+      async newPage() { pages++; return Object.assign(new EventEmitter(), { url: () => 'about:blank', isClosed: () => false, async close() {}, async routeWebSocket() {}, frames: () => [] }); },
+    });
+    return { kind: 'native', context, browser: new EventEmitter(), async close() { releases++; ownerOccupied = false; } };
+  } });
+  t.after(async () => { await browser.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const actor = { isHuman: true, clientId: 'window', sessionId: 'window' };
+  const first = browser.request(actor, 'open', {});
+  await setupEntered;
+  const second = browser.request(actor, 'open', {});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await browser.inventory(actor)).runtime.state, 'starting');
+  assert.equal(pages, 0, 'opens must not use a partially initialized native runtime');
+  const rejected = Promise.all([assert.rejects(first, /Controlled native setup failure/), assert.rejects(second, /Controlled native setup failure/)]);
+  failSetup(new Error('Controlled native setup failure'));
+  await rejected;
+  assert.equal(releases, 1);
+  assert.equal(ownerOccupied, false);
+  assert.equal((await browser.request(actor, 'open', {})).runtime.state, 'ready');
+  assert.equal(launches, 2);
+  assert.equal(pages, 1);
+});
 
 test('native CDP connection failure reports its phase without disclosing the private endpoint', async (t) => {
   const previousCache = process.env.PLAYWRIGHT_BROWSERS_PATH;

@@ -318,14 +318,14 @@ export function createOwnedBrowserService(options = {}) {
   const ensureRuntime = async () => {
     if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Complete browser cleanup in Settings before starting another browser.', true);
     if (signIn || handoffPending) throw error('BROWSER_SIGN_IN_ACTIVE', 'Complete sign-in in the full browser, then confirm the account in Browser settings.', true);
-    if (runtime && state === 'ready') return runtime;
     if (starting) return starting;
+    if (runtime && state === 'ready') return runtime;
     state = 'starting'; emit('owned_browser_runtime', { runtime: runtimeInfo() });
     starting = (async () => {
       try {
         if (runtime) { await runtime.close().catch(() => {}); runtime = null; }
         runtime = await runtimeFactory({ dataDir, guard, nativeAdapter: selectedAdapter(), headless, autoInstall: options.autoInstall !== false, onEvent: (progress) => emit('owned_browser_runtime', { runtime: { ...runtimeInfo(), ...progress } }) });
-        generation++; state = 'ready';
+        generation++;
         let checkpoint;
         if (credentialBroker?.restoreCheckpoint) {
           checkpoint = await credentialBroker.restoreCheckpoint({ profileId: profileId() });
@@ -399,9 +399,18 @@ export function createOwnedBrowserService(options = {}) {
           emit('owned_browser_runtime', { runtime: runtimeInfo() });
         });
         if (credentialBroker?.saveCheckpoint) { clearInterval(checkpointTimer); checkpointTimer = setInterval(() => { void saveCheckpoint().catch(() => {}); }, 30_000); checkpointTimer.unref?.(); }
+        state = 'ready';
         emit('owned_browser_runtime', { runtime: runtimeInfo() });
         return runtime;
-      } catch (failure) { state = 'failed'; runtime = null; emit('owned_browser_runtime', { runtime: { ...runtimeInfo(), error: { code: failure.code ?? 'BROWSER_START_FAILED', message: failure.message } } }); throw failure; }
+      } catch (failure) {
+        const failedRuntime = runtime;
+        state = 'failed'; runtime = null;
+        // 초기화 중 실패해도 해당 연결을 닫아 다음 시작이 같은 CDP 소유자와 충돌하지 않게 한다.
+        await failedRuntime?.close().catch(() => {});
+        const reason = String(failure?.message ?? failure).split('\n')[0].replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>]+/gi, '[private endpoint]').slice(0, 400);
+        console.error('[owned-browser-service] startup failed', JSON.stringify({ phase: failedRuntime ? 'setup' : 'connect', code: failure.code ?? 'BROWSER_START_FAILED', reason }));
+        emit('owned_browser_runtime', { runtime: { ...runtimeInfo(), error: { code: failure.code ?? 'BROWSER_START_FAILED', message: failure.message } } }); throw failure;
+      }
       finally { starting = null; }
     })();
     return starting;
