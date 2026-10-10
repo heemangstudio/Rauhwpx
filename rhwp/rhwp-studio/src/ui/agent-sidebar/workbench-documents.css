@@ -111,3 +111,18 @@
 @media (prefers-reduced-motion: reduce) {
   .ag-wdocs *, .ag-wdocs *::after { animation: none !important; transition: none !important; }
 }
+
+.ag-download-inbox { border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent); padding: 15px 0; margin-top: 20px; }
+.ag-download-inbox h3 { font-size: 14px; margin: 0 0 7px; }
+.ag-download-inbox p,.ag-download-inbox-row span { font-size: 11px; color: var(--ag-muted, #687265); }
+.ag-download-inbox-row { display: flex; flex-wrap: wrap; gap: 7px; padding: 9px 0; }
+.ag-download-inbox-row strong,.ag-download-inbox-row span { flex: 1 0 100%; }
+.ag-download-inbox button { border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 5px; background: transparent; color: inherit; font: inherit; padding: 5px 8px; cursor: pointer; }
+.ag-download-inbox-viewer { margin-top: 15px; overflow: auto; max-height: 75vh; }
+.ag-download-inbox-viewer>strong { display: block; margin-bottom: 8px; }
+.ag-download-inbox-viewer>div { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.ag-download-inbox-viewer canvas { display: block; max-width: 100%; }
+
+.ag-wdocs-download-group { display: flex; flex-direction: column; min-width: 0; gap: 6px; }
+.ag-wdocs-download-group .ag-wdocs-card { width: 100%; flex: 1; }
+.ag-wdocs-list .ag-wdocs-download-group { grid-column: 1 / -1; }

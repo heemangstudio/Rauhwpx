@@ -37,6 +37,11 @@ export function readChatPermissionRequest(value: unknown): ChatPermissionRequest
     requestId: request['requestId'], threadId: request['threadId'], documentId: request['documentId'],
     turnId: request['turnId'], agent: request['agent'] as ChatPermissionRequest['agent'],
     capability: request['capability'], reason: request['reason'], createdAt: request['createdAt'],
+    ...(request['kind'] === 'browser-save-account' || request['kind'] === 'browser-use-account' ? { kind: request['kind'] } : {}),
+    ...(text(request['origin'], 2048) ? { origin: request['origin'] } : {}),
+    ...(text(request['accountId'], 256) ? { accountId: request['accountId'] } : {}),
+    ...(text(request['accountLabel'], 256) ? { accountLabel: request['accountLabel'] } : {}),
+    ...(Array.isArray(request['origins']) && request['origins'].length <= 20 && request['origins'].every((value) => text(value, 2048)) ? { origins: request['origins'] as string[] } : {}),
   };
 }
 

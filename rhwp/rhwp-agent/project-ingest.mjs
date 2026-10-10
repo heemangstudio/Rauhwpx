@@ -2,6 +2,7 @@
 // 모든 가져오기는 복사본으로 저장되고(ReferenceStore project 범위), 프로젝트 항목으로 등록됩니다.
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import { markupToText } from './reference-extractor.mjs';
 
@@ -322,6 +323,53 @@ export function createProjectIngest({
   }
 
   return {
+    /** 허브 소유 다운로드의 기존 바이트만 들인다. 이 메서드는 웹 주소를 다시 요청하지 않는다. */
+    async importDownload({ projectId, download, bytes, actor, authorize = () => true } = {}) {
+      const assertAuthorized = async () => {
+        if (!await authorize()) throw new ProjectIngestError('BROWSER_DOWNLOAD_IMPORT_BLOCKED', 'Research import permission was revoked');
+      };
+      await assertAuthorized();
+      if (!projectStore.hasProject?.(projectId)) throw new ProjectIngestError('PROJECT_NOT_FOUND', 'Project was not found');
+      const limits = ingestLimits(settings);
+      const data = Buffer.from(bytes ?? []);
+      assertSize(data.length, limits);
+      if (!download || data.length !== download.size || crypto.createHash('sha256').update(data).digest('hex') !== download.sha256) {
+        throw new ProjectIngestError('PROJECT_INGEST_CHANGED', 'Managed download bytes failed verification');
+      }
+      const ext = extensionForDownload({ filename: download.filename, mime: download.mimeType, bytes: data });
+      assertTypeAllowed(ext, limits);
+      if ((ext === 'pdf' || extensionOf(download.filename) === 'pdf') && data.subarray(0, 5).toString('ascii') !== '%PDF-') {
+        throw new ProjectIngestError('REFERENCE_TYPE_MISMATCH', 'The download is not a PDF');
+      }
+      const name = `${cleanTitle(baseName(download.filename), 'download')}.${ext}`;
+      const file = await referenceStore.addBuffer({ bytes: data, name,
+        mimeType: MIME_FOR_EXTENSION[ext] ?? 'application/octet-stream', scope: 'project', scopeId: projectId,
+        ...(ext === 'pdf' ? { deferExtraction: true } : {}) });
+      const capture = { downloadId: download.downloadId, capturedAt: download.createdAt,
+        threadId: download.target?.threadId, tabId: download.target?.tabId, taskId: download.target?.taskId,
+        agentId: download.target?.agentId, url: download.source?.url, pageUrl: download.source?.pageUrl };
+      const item = await projectStore.addFileItem(projectId, {
+        fileId: file.id, scope: 'project', title: name, source: { kind: 'browser-download',
+          ...(download.source?.url ? { url: download.source.url } : {}),
+          ...(download.source?.finalUrl ? { finalUrl: download.source.finalUrl } : {}),
+          ...(download.target?.threadId ? { threadId: download.target.threadId } : {}) },
+        capture, addedBy: addedByOf(actor), authorize: assertAuthorized,
+      });
+      return { item, file, extractionStatus: file.extractionStatus ?? 'ready' };
+    },
+
+    async extractDownload({ projectId, fileId } = {}) {
+      const file = referenceStore.getFile(fileId);
+      if (!file || file.scope !== 'project' || file.scopeId !== projectId) {
+        throw new ProjectIngestError('PROJECT_INGEST_INVALID', 'Reference is outside this project');
+      }
+      try {
+        return { file: await referenceStore.extractFile(fileId) };
+      } finally {
+        await projectStore.refreshReferenceItem(projectId, fileId);
+      }
+    },
+
     async importUrl({ projectId, url, name, column, tags, actor, origin } = {}) {
       if (typeof fetchPublic !== 'function') throw new ProjectIngestError('PROJECT_INGEST_UNAVAILABLE', 'Web import is unavailable');
       const limits = ingestLimits(settings);

@@ -1,0 +1,21 @@
+.ag-browser-settings { display: flex; flex-direction: column; gap: 16px; min-width: 0; padding: var(--ag-set-inset, 14px); }
+.ag-browser-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ag-browser-tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--n-border); padding-bottom: 8px; }
+.ag-browser-tabs [aria-selected="true"] { color: var(--n-text); background: var(--n-bg-hover); }
+.ag-browser-settings-body { display: flex; flex-direction: column; gap: 12px; }
+.ag-browser-row { display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--n-border); }
+.ag-browser-row-copy { display: flex; flex-direction: column; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
+.ag-browser-row-copy strong { font-size: var(--ag-fs-body, 13px); font-weight: 500; }
+.ag-browser-row-copy span, .ag-browser-empty, .ag-browser-message { font-size: var(--ag-fs-secondary, 12px); color: var(--n-text-secondary); line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
+.ag-browser-message:empty { display: none; }
+.ag-browser-row-actions { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; max-width: 52%; }
+.ag-browser-account-form { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--n-border); border-radius: 8px; }
+.ag-browser-account-form .ag-settings-input, .ag-browser-settings-body > .ag-settings-field .ag-settings-input { width: 100%; box-sizing: border-box; }
+.ag-browser-check { display: flex; align-items: flex-start; gap: 8px; font-size: var(--ag-fs-secondary, 12px); line-height: 1.5; }
+.ag-browser-check input { margin-top: 3px; }
+@media (max-width: 600px) { .ag-browser-row { flex-direction: column; } .ag-browser-row-actions { max-width: 100%; justify-content: flex-start; } }
+
+.ag-browser-account-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.ag-browser-cleanup { display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--n-border); }
+.ag-browser-reset { color: var(--ag-err, var(--ui-danger)); align-self: flex-start; }

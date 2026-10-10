@@ -404,7 +404,9 @@ function placeholderFocusButton(target: AgentSidebarHandle): void {
 }
 for (const session of sessions) placeholderFocusButton(session.sidebar);
 // External destinations are represented locally; never launch an OAuth page.
-window.open = () => {
+const openLocalWindow = window.open.bind(window);
+window.open = (url, target, features) => {
+  if ((!url || url === 'about:blank') && target === 'rhwp-owned-browser') return openLocalWindow(url, target, features);
   report('External page placeholder');
   return null;
 };

@@ -396,3 +396,66 @@ export function createProjectHttpHandler({
     }
   };
 }
+
+/** 프로젝트/문서가 없어도 쓸 수 있는 소유자 다운로드함. 모든 바이트 요청에 Bearer 인증을 확인한다. */
+export function isBrowserDownloadsPath(pathname) {
+  return pathname === '/browser-downloads' || pathname.startsWith('/browser-downloads/');
+}
+
+export function createBrowserDownloadsHttpHandler({ downloads, tokens, actor, canImportProject = null }) {
+  return async function handleBrowserDownloadsHttp(req, res, url) {
+    if (!isBrowserDownloadsPath(url.pathname)) return false;
+    const origin = typeof req.headers.origin === 'string' ? req.headers.origin : null;
+    if (origin && !isAllowedStudioOrigin(origin)) {
+      req.resume?.();
+      sendJson(res, 403, { status: 'error', error: { code: 'BROWSER_DOWNLOAD_ORIGIN_DENIED', message: 'Studio origin is required' } });
+      return true;
+    }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, { ...(origin ? { 'access-control-allow-origin': origin, vary: 'Origin' } : {}),
+        'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'Authorization, Content-Type' });
+      res.end(); return true;
+    }
+    if (!bearerMatchesAny(req, tokens)) {
+      req.resume?.();
+      sendJson(res, 401, { status: 'error', error: { code: 'BROWSER_DOWNLOAD_UNAUTHORIZED', message: 'A valid bearer token is required' } }, origin);
+      return true;
+    }
+    const currentActor = typeof actor === 'function' ? actor() : actor;
+    const reply = (status, body) => { sendJson(res, status, body, origin); return true; };
+    try {
+      if (url.pathname === '/browser-downloads' && req.method === 'GET') {
+        return reply(200, { downloads: await downloads.list(currentActor) });
+      }
+      const match = /^\/browser-downloads\/(bd_[a-f0-9]{32})(?:\/(bytes|cancel|retry|import))?$/.exec(url.pathname);
+      if (!match) return reply(404, { status: 'error', error: { code: 'BROWSER_DOWNLOAD_NOT_FOUND', message: 'Download was not found' } });
+      const [, downloadId, action] = match;
+      if (req.method === 'GET' && !action) return reply(200, { job: await downloads.get({ downloadId, actor: currentActor }) });
+      if (req.method === 'GET' && action === 'bytes') {
+        const { bytes, filename, mimeType } = await downloads.readBytes({ downloadId, actor: currentActor });
+        const mime = mimeType === 'application/pdf' ? 'application/pdf' : 'application/octet-stream';
+        res.writeHead(200, { 'content-type': mime, 'content-length': bytes.length, 'cache-control': 'private, no-store',
+          'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox",
+          'content-disposition': contentDisposition(null, filename, mime === 'application/pdf' ? 'pdf' : 'other'),
+          ...(origin ? { 'access-control-allow-origin': origin, vary: 'Origin' } : {}) });
+        res.end(bytes); return true;
+      }
+      if (req.method === 'POST' && ['cancel', 'retry', 'import'].includes(action)) {
+        const body = await readJsonBody(req);
+        if (action === 'import' && canImportProject && !await canImportProject(body.projectId, currentActor)) {
+          throw httpError('PROJECT_FORBIDDEN', 'Project is not available to this session');
+        }
+        const method = action === 'import' ? 'importDownload' : action;
+        const job = await downloads[method]({ downloadId, actor: currentActor, ...(action === 'import' ? { projectId: body.projectId } : {}) });
+        return reply(200, { job });
+      }
+      return reply(405, { status: 'error', error: { code: 'BROWSER_DOWNLOAD_METHOD', message: 'Method not allowed' } });
+    } catch (error) {
+      const status = error?.code === 'BROWSER_DOWNLOAD_NOT_FOUND' ? 404
+        : error?.code === 'BROWSER_DOWNLOAD_FORBIDDEN' ? 403
+          : ['BROWSER_DOWNLOAD_NOT_READY', 'BROWSER_DOWNLOAD_ALREADY_IMPORTED', 'BROWSER_DOWNLOAD_RETRY_SOURCE'].includes(error?.code) ? 409
+            : errorStatus(error);
+      return reply(status, { status: 'error', error: { code: error?.code ?? 'BROWSER_DOWNLOAD_FAILED', message: 'Download action failed' } });
+    }
+  };
+}

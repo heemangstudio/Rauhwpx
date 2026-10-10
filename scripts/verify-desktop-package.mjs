@@ -4,6 +4,7 @@ import { listPackage } from '@electron/asar';
 
 import { packagedStagedNativeExtractorPath } from '../desktop/native-rhwp-path.mjs';
 import { normalizeArchivePath } from './desktop-package-paths.mjs';
+import { verifyKeyringBinding } from './verify-keyring-binding.mjs';
 import { smokePackagedAgentHub, smokePackagedSetupTerminal } from './packaged-agent-hub-smoke.mjs';
 
 const releaseDir = resolve(process.argv[2] ?? 'release');
@@ -22,12 +23,16 @@ const required = [
   join(unpackedAgent, 'server.mjs'),
   join(unpackedAgent, 'copy-layout-runner.mjs'),
   join(unpackedAgent, 'skills', 'copy-layout', 'scripts', 'copy_layout.py'),
-  join(unpackedAgent, 'browserbase-sidecar.mjs'),
-  join(unpackedAgent, 'browserbase-sidecar-runtime.mjs'),
-  join(unpackedAgent, 'browserbase-result.mjs'),
+  join(unpackedAgent, 'owned-browser-service.mjs'),
+  join(unpackedAgent, 'owned-browser-runtime.mjs'),
+  join(unpackedAgent, 'owned-browser-network.mjs'),
+  ...['browser-policy', 'browser-credentials', 'browser-auth-store', 'browser-os-secret-store', 'browser-downloads', 'browser-cleanup']
+    .map((name) => join(unpackedAgent, `${name}.mjs`)),
   join(unpackedAgent, 'package.json'),
-  join(unpackedAgent, 'node_modules', '@browserbasehq', 'stagehand', 'package.json'),
-  join(unpackedAgent, 'node_modules', '@browserbasehq', 'stagehand', 'dist', 'assets', 'stagehand-extension.zip'),
+  join(unpackedAgent, 'node_modules', 'playwright', 'package.json'),
+  join(unpackedAgent, 'node_modules', 'playwright-core', 'package.json'),
+  join(unpackedAgent, 'node_modules', 'playwright-core', 'browsers.json'),
+  join(unpackedAgent, 'node_modules', '@napi-rs', 'keyring', 'package.json'),
   join(unpackedAgent, 'node_modules', 'ws', 'package.json'),
   extractor,
   packagedStagedNativeExtractorPath(resourcesDir, process.platform, process.arch),
@@ -36,6 +41,8 @@ const required = [
 for (const path of required) {
   if (!existsSync(path)) throw new Error(`Packaged file is missing: ${path}`);
 }
+
+verifyKeyringBinding(unpackedAgent);
 
 const forbidden = [
   join(unpackedAgent, 'README.md'),
@@ -56,6 +63,13 @@ for (const path of forbidden) {
 const archivedFiles = listPackage(archive).map(normalizeArchivePath);
 const requiredArchiveFiles = [
   '/desktop/main.mjs',
+  '/desktop/browser-host.mjs',
+  '/desktop/browser-cdp.mjs',
+  '/desktop/browser-guest-preload.cjs',
+  '/desktop/browser-popout-preload.cjs',
+  '/desktop/browser-popout.cjs',
+  '/desktop/browser-popout.css',
+  '/desktop/browser-popout.html',
   '/desktop/unique-install.mjs',
   '/desktop/system-fonts.mjs',
   '/rhwp/rhwp-shared/fonts/font-index-core.mjs',

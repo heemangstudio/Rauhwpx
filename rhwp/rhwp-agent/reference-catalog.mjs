@@ -108,6 +108,10 @@ export class ReferenceCatalog {
     return this.#storeFor(options?.scope).addBuffer(options);
   }
 
+  extractFile(fileId) {
+    return this.#storeForFile(fileId).extractFile(fileId);
+  }
+
   stageStream(options) {
     return this.legacy.stageStream(options);
   }

@@ -1,5 +1,8 @@
 /** 자료별 미리보기와 초안은 탭이 닫힐 때까지 보존한다. 저장하는 것은 항목 id와 탭 순서뿐이다. */
 import './workbench-documents.css';
+import { createBrowserDownloadInbox } from './browser-download-inbox.ts';
+import type { SidebarBridge } from '../../agent/bridge.ts';
+import type { BrowserDownload } from '../../agent/types.ts';
 import type { ProjectClient } from '../../agent/project-service.ts';
 import type { ProjectFileItem, ProjectItem, ProjectNoteItem, ProjectSnapshot } from '../../agent/types.ts';
 import { loadPdfjs, pdfDocumentParams } from '../../agent/pdf-render.ts';
@@ -10,6 +13,7 @@ import { makeProjectItemDraggable, type ProjectItemDrag } from './project/projec
 
 export interface WorkbenchDocumentsDeps {
   client: ProjectClient | null;
+  bridge?: SidebarBridge;
   openDocument?: (documentId: string) => void;
   onChange?: () => void;
 }
@@ -22,6 +26,7 @@ export interface WorkbenchDocuments {
   selectTab(id: string | null): Promise<void>;
   closeTab(id: string): void;
   open(request: ProjectPreviewRequest): Promise<boolean>;
+  openDownload(job: BrowserDownload): Promise<void>;
   setVisible(visible: boolean): void;
   setClient(client: ProjectClient | null): void;
   dispose(): void;
@@ -149,6 +154,16 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
     const item = find(itemId);
     return item && projectId ? { projectId, itemId: item.id, title: item.title } : null;
   };
+
+  const downloadInbox = deps.bridge ? createBrowserDownloadInbox({ bridge: deps.bridge, getProjectId: () => projectId,
+    onImported: () => { void client?.store.refresh(); },
+  }) : null;
+  if (downloadInbox) library.append(downloadInbox.root);
+  async function openDownload(job: BrowserDownload): Promise<void> {
+    if (job.projectItemId && (job.importProjectId ?? job.target.projectId) === projectId) { await open({ itemId: job.projectItemId }); return; }
+    await select(LIBRARY);
+    await downloadInbox?.open(job);
+  }
 
   function identify(element: HTMLElement, panel: HTMLElement, id: string): void {
     element.id = `ag-wdocs-${instance}-tab-${encodeURIComponent(id)}`;
@@ -314,11 +329,17 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
       const detail = item.kind === 'file'
         ? item.status === 'processing' ? '처리 중' : `${item.pageCount ? `${item.pageCount}쪽 · ` : ''}${item.fileKind.toUpperCase()}`
         : '노트';
-      text.append(name, el('span', 'ag-wdocs-card-meta', detail));
+      const extraction = item.kind === 'file' && item.extractionStatus && item.extractionStatus !== 'ready' ? item.extractionStatus === 'failed' ? ' · 글자 추출 실패' : ' · 글자 추출 중' : '';
+      text.append(name, el('span', 'ag-wdocs-card-meta', detail + extraction));
       card.append(cover, text);
       card.addEventListener('click', () => { void open({ itemId: item.id }); });
       makeProjectItemDraggable(card, () => dragPayload(item.id));
-      grid.append(card);
+      const downloadId = item.kind === 'file' ? item.captures?.at(-1)?.downloadId ?? item.source.downloadId : null;
+      if (item.kind === 'file' && item.extractionStatus === 'failed' && downloadId && deps.bridge) {
+        const group = el('article', 'ag-wdocs-download-group'); group.append(card);
+        const retry = button('ag-wdocs-action', `${item.title} 글자 추출 다시 시도`, { text: '글자 추출 다시 시도' });
+        retry.addEventListener('click', () => { retry.disabled = true; void deps.bridge!.requestBrowser('downloads', { action: 'retry', downloadId }).then(() => client?.store.refresh()).catch((error) => { status(error instanceof Error ? error.message : String(error)); }).finally(() => { retry.disabled = false; }); }); group.append(retry); grid.append(group);
+      } else grid.append(card);
       if (visible && active === LIBRARY && item.kind !== 'clip' && hasCover(item)) thumbnail(cover, item);
     }
   }
@@ -587,10 +608,12 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
     selectTab(id) { return id === null || tabs.some(tab => tab.id === id) ? select(id ?? LIBRARY) : Promise.resolve(); },
     closeTab(id) { const tab = tabs.find(entry => entry.id === id); if (tab) closeTab(tab); },
     open,
+    openDownload,
     setClient,
     setVisible(next) {
       if (disposed || visible === next) return;
       visible = next;
+      downloadInbox?.setVisible(next);
       root.inert = !next;
       root.setAttribute('aria-hidden', String(!next));
       sync();
@@ -607,6 +630,7 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
       disposed = true;
       generation += 1;
       unsubscribe();
+      downloadInbox?.dispose();
       cleanupThumbnails();
       for (const tab of tabs.splice(0)) tab.preview?.destroy();
       root.remove();

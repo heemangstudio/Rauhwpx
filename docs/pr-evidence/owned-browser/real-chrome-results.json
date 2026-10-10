@@ -1,0 +1,66 @@
+{
+  "runtime": "http://127.0.0.1:7940",
+  "hubPort": 5940,
+  "browser": "actual app-owned Chromium",
+  "website": "deterministic cookie/CSRF/blob research fixture",
+  "provider": "Pi turn fixture, no model inference",
+  "scenarios": [
+    {
+      "name": "Agent opens actual managed Chromium through authenticated MCP",
+      "tabId": "tab_8f1da4f0-cb97-4102-92e6-6cfc8fa3b8f2"
+    },
+    {
+      "name": "Semantic snapshot refs drive real login, typing and search"
+    },
+    {
+      "name": "Stale semantic reference rejected without replay"
+    },
+    {
+      "name": "Human takeover through production UI pauses agent input"
+    },
+    {
+      "name": "Production streamed pointer, Korean IME and clipboard paste reach the owned page once"
+    },
+    {
+      "name": "In-app floating preview drags and resizes while normal document editing and chat draft remain usable"
+    },
+    {
+      "name": "Closing the in-app preview hides presentation and reopening preserves tab, form and human controller"
+    },
+    {
+      "name": "Float and dock preserve the original authenticated research tab"
+    },
+    {
+      "name": "Popout and dock retain the same tab, authenticated page and form input"
+    },
+    {
+      "name": "Real page screenshot and comment attach to the pinned destination composer",
+      "captureId": "36acdc94-adf1-4d0d-9d32-eacd0b5365ab",
+      "sourceTabId": "tab_8f1da4f0-cb97-4102-92e6-6cfc8fa3b8f2"
+    }
+  ],
+  "errors": [],
+  "source": {
+    "sessionId": "496d8b39-c460-46a5-a897-d12346350223",
+    "tabId": "tab_8f1da4f0-cb97-4102-92e6-6cfc8fa3b8f2",
+    "projectId": "pghj3ouhhnl"
+  },
+  "status": "passed",
+  "fixtureRequests": [
+    {
+      "method": "GET",
+      "path": "/",
+      "authenticated": false
+    },
+    {
+      "method": "POST",
+      "path": "/login",
+      "authenticated": false
+    },
+    {
+      "method": "GET",
+      "path": "/research",
+      "authenticated": true
+    }
+  ]
+}

@@ -7,6 +7,7 @@ import {
   app,
   autoUpdater as nativeAutoUpdater,
   BrowserWindow,
+  WebContentsView,
   Menu,
   dialog,
   ipcMain,
@@ -66,6 +67,7 @@ import { INTERNAL_APP_NAME, PRODUCT_NAME } from './app-identity.mjs';
 import { resolveProfileDirectories } from './profile-continuity.mjs';
 import { createRebrandImportController } from './rebrand-import-controller.mjs';
 import { createSecretVault, handleSecretRequest } from './secret-vault.mjs';
+import { OwnedBrowserHost } from './browser-host.mjs';
 import { removeRetiredCloudData } from './retired-cloud-data.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
 import { createUpdateLifecycle, completeWindowClose } from './update-lifecycle.mjs';
@@ -391,6 +393,8 @@ class AgentHubOwner {
         RHWP_OWN_RUNTIME_DIR: '1',
         RHWP_OWN_WORK_DIR: '1',
         RHWP_SECRET_BROKER: 'ipc',
+        RHWP_BROWSER_HOST: 'ipc',
+        RHWP_BROWSER_DATA_DIR: join(app.getPath('userData'), 'browser'),
         ...(rhwpExecutable ? { RHWP_BIN: rhwpExecutable } : {}),
       },
     });
@@ -401,6 +405,17 @@ class AgentHubOwner {
     const child = spawnHubProcess(launch, {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       onMessage: (message, source) => {
+        if (message?.type === 'rhwp-browser-request') {
+          if (source !== this.#child || this.#stoppingChild === source || this.#disposed || quitting) {
+            if (source.connected) source.send({ type: 'rhwp-browser-response', id: message.id, ok: false,
+              error: { code: 'NATIVE_BROWSER_OWNER_STALE', message: 'The desktop browser owner is stopping.' } });
+            return;
+          }
+          void browserHost.handleRequest(message, source).then((response) => {
+            if (response && source.connected) source.send(response);
+          });
+          return;
+        }
         if (!secretVault) return;
         void handleSecretRequest(secretVault, message).then((response) => {
           if (response && source.connected) source.send(response);
@@ -410,6 +425,7 @@ class AgentHubOwner {
         console.warn('[hamaeditor] agent hub spawn error:', error);
       },
       onExit: (code, signal) => {
+        void browserHost.release(child).catch(() => {});
         console.warn('[hamaeditor] agent hub process exit:', code, signal ?? '');
         if (this.#child !== child) return;
         this.#context = null;
@@ -521,6 +537,19 @@ const sessions = new SessionManager({
   }),
   closeHubSession: closeOwnedHubSession,
 });
+const browserHost = new OwnedBrowserHost({
+  BrowserWindow,
+  WebContentsView,
+  electronSession,
+  dataDir: join(app.getPath('userData'), 'browser'),
+  getWindowForSession: (sessionId) => {
+    const session = sessions.sessionById(sessionId);
+    if (session) return session.window;
+    return sessions.windows().find((window) => (
+      sessions.sessionForSender(window.webContents).agentSessionIds.has(sessionId)
+    )) ?? null;
+  },
+});
 const documentLeases = new DocumentLeaseManager();
 const nativeFiles = new NativeFileHandleRegistry();
 const nativeBookmarkFile = join(app.getPath('userData'), 'native-document-bookmarks.json');
@@ -619,7 +648,10 @@ const updateLifecycle = createUpdateLifecycle({
   isInteractive: () => manualUpdateCheck || interactiveUpdateDownload,
   showMessageBox: (options) => dialog.showMessageBox({ title: PRODUCT_NAME, ...options }),
   openReleases: () => shell.openExternal(RELEASES_URL),
-  cleanup: () => hubOwner.teardown(),
+  cleanup: async () => {
+    await hubOwner.teardown();
+    await browserHost.dispose();
+  },
   onQuitRequested: (requested) => { quitRequested = requested; },
   onTeardown: () => { quitting = true; },
 });
@@ -831,6 +863,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     requestRendererClose();
   });
   window.on('closed', () => {
+    browserHost.detachWindow(window);
     agentAttention.forget(windowId);
     releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
     // 창의 추가 에이전트 세션도 함께 허브에서 닫힌다.
@@ -1462,6 +1495,29 @@ ipcMain.handle('agent-hub:ensure', async (event) => {
   if (quitting) return { started: false, ready: false };
   const result = await hubOwner.ensure();
   return { started: result.started, ready: result.ready };
+});
+
+function browserWindowForEvent(event) {
+  const { window } = sessionForEvent(event);
+  if (event.senderFrame !== event.sender.mainFrame) throw new Error('Native browser IPC requires the owning main frame');
+  return window;
+}
+ipcMain.handle('desktop:browser-attach', (event, payload) => browserHost.attach(browserWindowForEvent(event), payload));
+ipcMain.handle('desktop:browser-detach', (event, payload) => browserHost.detach(browserWindowForEvent(event), payload));
+ipcMain.handle('desktop:browser-state', (event, payload) => browserHost.state(browserHost.ownedTab(payload?.tabId, browserWindowForEvent(event))));
+ipcMain.handle('desktop:browser-navigate', (event, payload) => browserHost.navigate(browserWindowForEvent(event), payload));
+for (const command of ['back', 'forward', 'reload', 'stop']) {
+  ipcMain.handle(`desktop:browser-${command}`, (event, payload) => browserHost.navigation(browserWindowForEvent(event), payload, command));
+}
+ipcMain.handle('desktop:browser-popout-command', (event, payload) => {
+  if (event.senderFrame !== event.sender.mainFrame) throw new Error('Browser popout IPC requires its main frame');
+  return browserHost.popoutCommand(event.sender, payload);
+});
+ipcMain.on('desktop:browser-guest-focus', (event, payload) => {
+  const tab = [...browserHost.tabs.values()].find((value) => value.view.webContents === event.sender);
+  if (tab && event.senderFrame === event.sender.mainFrame) {
+    browserHost.emit(tab, 'sensitive-focus', { sensitive: payload?.sensitive === true });
+  }
 });
 
 if (!hasSingleInstanceLock) {

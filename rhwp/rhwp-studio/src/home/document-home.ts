@@ -67,6 +67,8 @@ export interface DocumentHomeDeps {
   restoreFocus(): void;
   /** 왼쪽 아래 톱니 단추. 홈을 닫고 설정을 연다. */
   openSettings?(): void;
+  openBrowser?(): void;
+  openDownloads?(): void;
   onDrop?(event: DragEvent): void;
   toast(message: string): void;
 }
@@ -157,7 +159,11 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   brand.append(brandMark, el('span', 'dh-brand-name', 'HamaEditor'));
   const back = button('dh-back', '');
   back.append(icon(ICONS.back, 14), el('span', 'dh-back-label'));
-  topbar.append(brand, back);
+  topbar.append(brand);
+  const research = el('nav', 'dh-research-actions'); research.setAttribute('aria-label', '연구 도구');
+  if (deps.openBrowser) { const browser = button('dh-ghost dh-browser', '브라우저', '연구 브라우저 열기'); browser.prepend(createIcon('browser')); browser.addEventListener('click', () => deps.openBrowser?.()); research.append(browser); }
+  if (deps.openDownloads) { const downloads = button('dh-ghost dh-downloads', '받은 파일', '일반 받은 파일 열기'); downloads.prepend(createIcon('document')); downloads.addEventListener('click', () => deps.openDownloads?.()); research.append(downloads); }
+  topbar.append(research, back);
 
   const scroller = el('div', 'dh-scroll');
   // 앱을 켰을 때 키보드가 머무는 자리. 카드에 초점 고리를 띄우지 않는다.

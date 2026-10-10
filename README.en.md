@@ -25,7 +25,7 @@
 
 HamaEditor opens and edits Korean HWP/HWPX documents. The Rust engine handles parsing, layout, rendering and editing; the agent sidebar connects supported AI providers to the open document through MCP tools.
 
-Document editing runs on your machine. AI requests send prompts and any document content read by the agent to your selected provider. Web research and the optional Browserbase integration also use external services. The local agent hub manages provider sessions, permissions, downloads and tool routing.
+Document editing runs on your machine. AI requests send prompts and any document content read by the agent to your selected provider. Web research connects to the websites you visit through an app-owned browser on your hub. The local agent hub manages provider sessions, permissions, downloads and tool routing.
 
 ## Editor
 

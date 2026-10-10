@@ -454,9 +454,13 @@ export function toToolContent(result) {
       ? result.mcpContent
       : [...result.mcpContent, { type: 'text', text: JSON.stringify({ editReport: result.editReport }) }];
   }
-  const image = result && typeof result === 'object' ? result.image : null;
+  const image = result && typeof result === 'object' ? result.image ?? result.capture?.screenshot : null;
   if (image && typeof image === 'object' && typeof image.data === 'string' && typeof image.mimeType === 'string') {
     const { image: _omit, ...rest } = result;
+    if (rest.capture?.screenshot === image) {
+      const { screenshot: _captureImage, ...capture } = rest.capture;
+      rest.capture = capture;
+    }
     return [
       { type: 'image', data: image.data, mimeType: image.mimeType },
       { type: 'text', text: JSON.stringify(rest) },
@@ -596,13 +600,17 @@ export const IMPLEMENTATION_PLAN_SHAPE = Object.freeze({
  * 전체 도구 정의 목록. 순서가 MCP 클라이언트에 노출되는 순서다.
  * @type {Array<{ name: string, description: string, shape: Record<string, any>, validate?: (args: any) => void }>}
  */
-/**
- * Browserbase 브라우저 선택자. 생략하면 공유 메인 브라우저, 서브에이전트는 저마다의
- * id 를 붙여 격리된 브라우저를 받는다 (browserbase-session.mjs 의 BROWSER_ID_PATTERN 과 동일).
- */
-const BROWSER_ID_ARG = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/, 'browserId: letters, digits, - or _ (max 40)')
-  .optional()
-  .describe('Omit for the shared main browser; subagents pass a short id and reuse it on every call.');
+// 탭 식별자는 허브가 만든다. 호출자는 다른 채팅이나 에이전트의 소유권을 지정할 수 없다.
+const browserTab = () => z.string().min(1).max(160);
+const browserIntent = () => z.enum(['research', 'search', 'login', 'export', 'website-change']).default('research');
+const browserRefShape = () => ({
+  tabId: browserTab(),
+  snapshotId: z.string().min(1).max(160),
+  ref: z.string().min(1).max(160),
+  navigationEpoch: z.number().int().nonnegative(),
+  controllerEpoch: z.number().int().nonnegative(),
+  intent: browserIntent(),
+});
 
 const BASE_TOOL_DEFINITIONS = [
   {
@@ -1645,7 +1653,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'request_permission',
-    description: 'Request a missing project, download, browser or local execution permission for this chat, explaining why. Returns pending: end the turn and wait. It authorizes nothing. Document edits need 에이전트/전체 mode or an approved plan.',
+    description: 'Request a missing project or local execution permission for this chat, explaining why. Ordinary public research browsing and managed downloads are enabled by default. Returns pending: end the turn and wait. It authorizes nothing. Document edits need 에이전트/전체 mode or an approved plan.',
     shape: {
       capability: z.enum(CHAT_PERMISSION_CAPABILITIES),
       reason: z.string().trim().min(1).max(1_000),
@@ -1676,7 +1684,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'download_file',
-    description: 'Download an HTTP(S) resource into this chat\'s hub-managed download directory. The hub chooses and confines the destination path; filename is only a sanitized naming hint. Returns the local path, MIME type, byte size, source URL, and SHA-256 checksum.',
+    description: 'Download a public HTTP(S) research resource into managed local storage. Project downloads add a reference card automatically; downloads without a project appear in the general Downloads inbox. Returns an opaque download ID, size, checksum and import status. Authenticated website exports use the browser download flow.',
     shape: {
       url: z.string().url().max(8_000).refine((value) => /^https?:\/\//i.test(value), 'url must use http or https'),
       filename: z.string().min(1).max(255).optional().describe('Filename hint; directory parts are discarded'),
@@ -1806,37 +1814,74 @@ const BASE_TOOL_DEFINITIONS = [
     },
   },
   {
-    name: 'browserbase_start',
-    description: 'Create or reuse a hub-owned Browserbase browser for this chat. Omit browserId for the shared main browser (the orchestrator\'s). Subagents must pass their own browserId so each gets an isolated browser; at most 4 browsers are open per chat, and subagent browsers close automatically when the turn ends.',
-    shape: { browserId: BROWSER_ID_ARG },
+    name: 'browser_status',
+    description: 'Inspect the app-owned browser runtime and tabs assigned to this agent. Tabs keep their identity when a chat is hidden or a provider turn ends.',
+    shape: {},
   },
   {
-    name: 'browserbase_end',
-    description: 'End a hub-owned Browserbase browser for this chat (the main browser when browserId is omitted).',
-    shape: { browserId: BROWSER_ID_ARG },
+    name: 'browser_open',
+    description: 'Open a separate app-owned research tab for this agent. Public research and downloads are available by default; account reuse requires an approved saved account.',
+    shape: { url: z.string().url().max(8_000).optional(), intent: browserIntent() },
   },
   {
-    name: 'browserbase_navigate',
-    description: 'Navigate a Browserbase browser to an HTTP(S) URL.',
-    shape: {
-      url: z.string().url().max(8_000).refine((value) => /^https?:\/\//i.test(value), 'url must use http or https'),
-      browserId: BROWSER_ID_ARG,
-    },
+    name: 'browser_navigate',
+    description: 'Navigate an assigned research tab. Use public HTTPS destinations or an explicitly approved workspace preview. Private services and website changes need their own permissions.',
+    shape: { tabId: browserTab(), url: z.string().url().max(8_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative(), intent: browserIntent() },
   },
   {
-    name: 'browserbase_act',
-    description: 'Perform a natural-language action in a Browserbase browser without per-action confirmation.',
-    shape: { action: z.string().min(1).max(5_000), browserId: BROWSER_ID_ARG },
+    name: 'browser_snapshot',
+    description: 'Read a semantic snapshot of an assigned tab. Use the returned snapshotId, element refs and navigationEpoch in the next action; stale refs are rejected.',
+    shape: { tabId: browserTab() },
   },
   {
-    name: 'browserbase_observe',
-    description: 'Observe actionable elements in a Browserbase browser.',
-    shape: { instruction: z.string().min(1).max(5_000), browserId: BROWSER_ID_ARG },
+    name: 'browser_click',
+    description: 'Click an element from the current semantic snapshot. Declare search, login or export intent for those research flows. Website-changing submissions require a separate site operation approval.',
+    shape: browserRefShape(),
   },
   {
-    name: 'browserbase_extract',
-    description: 'Extract structured information from the current page of a Browserbase browser. Text output is truncated at 50KB.',
-    shape: { instruction: z.string().min(1).max(5_000).optional(), browserId: BROWSER_ID_ARG },
+    name: 'browser_type',
+    description: 'Fill a current snapshot element with ordinary research text. Never pass passwords or account secrets here; request an account through browser_request_account.',
+    shape: { ...browserRefShape(), text: z.string().max(16_000), submit: z.boolean().default(false) },
+  },
+  {
+    name: 'browser_press',
+    description: 'Press a key on a current snapshot element. Human takeover pauses agent input until control is returned.',
+    shape: { ...browserRefShape(), key: z.string().min(1).max(80) },
+  },
+  {
+    name: 'browser_scroll',
+    description: 'Scroll an assigned tab and then request a fresh snapshot before choosing an element.',
+    shape: { tabId: browserTab(), deltaX: z.number().min(-10_000).max(10_000).default(0), deltaY: z.number().min(-10_000).max(10_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
+  },
+  {
+    name: 'browser_wait',
+    description: 'Wait a bounded time for a page condition, then read a fresh snapshot. Does not change ownership or control.',
+    shape: { tabId: browserTab(), condition: z.enum(['ready', 'idle', 'visible', 'text']).default('ready'), text: z.string().max(2_000).optional(), timeoutMs: z.number().int().min(1).max(30_000).default(10_000) },
+  },
+  {
+    name: 'browser_close',
+    description: 'Explicitly close an assigned browser tab. Completed managed downloads survive tab closure.',
+    shape: { tabId: browserTab(), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
+  },
+  {
+    name: 'browser_capture',
+    description: 'Capture page, element or region evidence into this tab\'s original research destination. URL provenance excludes credentials and signed query values.',
+    shape: { tabId: browserTab(), snapshotId: z.string().min(1).max(160).optional(), ref: z.string().min(1).max(160).optional(), navigationEpoch: z.number().int().nonnegative().optional(), region: z.object({ x: z.number().nonnegative(), y: z.number().nonnegative(), width: z.number().positive(), height: z.number().positive() }).strict().optional(), comment: z.string().max(4_000).optional() },
+  },
+  {
+    name: 'browser_downloads',
+    description: 'List, cancel or retry this agent\'s managed research downloads. Captured project downloads add a reference card automatically; general downloads stay in the local inbox. No general project-edit permission is granted.',
+    shape: { action: z.enum(['list', 'cancel', 'retry']).default('list'), downloadId: z.string().min(1).max(160).optional() },
+  },
+  {
+    name: 'browser_fill_account',
+    description: 'Fill a current sign-in form through the secure broker using an approved account ID from browser_status. Supply snapshot refs for username and password; no credential values enter tool arguments or results.',
+    shape: { tabId: browserTab(), accountId: z.string().uuid(), snapshotId: z.string().min(1).max(160), usernameRef: z.string().min(1).max(160).optional(), passwordRef: z.string().min(1).max(160), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
+  },
+  {
+    name: 'browser_request_account',
+    description: 'Root conversation only. Request a saved website account or a secure save-and-use form for an exact approved origin. Returns pending; end the turn and wait for the secure form. Never ask for passwords in chat or tool arguments.',
+    shape: { tabId: browserTab(), origin: z.string().url().max(2_000), label: z.string().min(1).max(120), reason: z.string().min(1).max(1_000), accountId: z.string().min(1).max(160).optional() },
   },
 ];
 
@@ -1928,12 +1973,20 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   run_copy_layout_helper: 'background-worker',
   complete_copy_layout_job: 'background-worker',
   register_copy_layout_template: 'template-write',
-  browserbase_start: 'browser',
-  browserbase_end: 'browser',
-  browserbase_navigate: 'browser',
-  browserbase_act: 'browser',
-  browserbase_observe: 'browser',
-  browserbase_extract: 'browser',
+  browser_status: 'browser',
+  browser_open: 'browser',
+  browser_navigate: 'browser',
+  browser_snapshot: 'browser',
+  browser_click: 'browser',
+  browser_type: 'browser',
+  browser_press: 'browser',
+  browser_scroll: 'browser',
+  browser_wait: 'browser',
+  browser_close: 'browser',
+  browser_capture: 'browser',
+  browser_downloads: 'browser',
+  browser_fill_account: 'browser',
+  browser_request_account: 'user-interaction',
 });
 
 export const TOOL_DEFINITIONS = Object.freeze(BASE_TOOL_DEFINITIONS.map((definition) => {
@@ -1947,7 +2000,7 @@ export const TOOL_DEFINITIONS = Object.freeze(BASE_TOOL_DEFINITIONS.map((definit
 const PROJECT_CATEGORIES = Object.freeze(['project-read', 'project-write', 'project-ingest']);
 
 export const TOOL_PROFILES = Object.freeze({
-  direct: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'artifact-write', 'user-interaction', 'background-control', ...PROJECT_CATEGORIES]),
+  direct: Object.freeze(['browser', 'download-write', 'instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'artifact-write', 'user-interaction', 'background-control', ...PROJECT_CATEGORIES]),
   planning: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', ...PROJECT_CATEGORIES]),
   question: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'browser', ...PROJECT_CATEGORIES]),
   'awaiting-approval': Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', ...PROJECT_CATEGORIES]),
@@ -1962,11 +2015,13 @@ export const TOOL_PROFILES = Object.freeze({
     'complete_copy_layout_job',
   ]),
   'doc-researcher': Object.freeze([
+    'browser',
+    'download-write',
     'instruction-read',
     'document-read',
     'reference-read',
     'template-read',
-    ...PROJECT_CATEGORIES,
+    'project-read',
   ]),
   all: TOOL_CATEGORIES,
 });
@@ -1981,6 +2036,7 @@ export function projectToolGatesFromEnv(env = process.env) {
   return {
     projectWrites: env.RHWP_PROJECT_WRITES !== '0',
     homeSearch: env.RHWP_HOME_SEARCH === '1',
+    researchPermissions: { browse: env.RHWP_RESEARCH_BROWSE !== '0', downloads: env.RHWP_RESEARCH_DOWNLOADS !== '0', import: env.RHWP_RESEARCH_IMPORT !== '0' },
     ...(env.RHWP_REQUESTABLE_TOOLS === '1' ? { requestable: true } : {}),
   };
 }
@@ -1990,7 +2046,7 @@ export function projectToolGatesFromEnv(env = process.env) {
  * Unknown entries are ignored so a typo cannot accidentally broaden access.
  * @param {string | undefined} profile
  */
-export function filterToolDefinitions(profile, { projectWrites = true, homeSearch = false, requestable = false } = {}) {
+export function filterToolDefinitions(profile, { projectWrites = true, homeSearch = false, requestable = false, researchPermissions = { browse: true, downloads: true, import: true } } = {}) {
   const value = String(profile ?? 'direct').trim();
   const named = TOOL_PROFILES[value];
   const entries = new Set(named ?? value.split(',').map((entry) => entry.trim()).filter(Boolean));
@@ -1999,6 +2055,9 @@ export function filterToolDefinitions(profile, { projectWrites = true, homeSearc
     // 루트 채팅은 요청 가능한 앱 도구의 정의만 먼저 받는다. 실제 실행은 허브가 클릭으로 부여한 권한을 검사한다.
     const canRequest = requestable && requestableProfile && Boolean(chatPermissionForCategory(definition.category));
     if (!entries.has(definition.category) && !entries.has(definition.name) && !canRequest) return false;
+    if (definition.category === 'browser' && researchPermissions.browse !== true) return false;
+    if (definition.category === 'download-write' && researchPermissions.downloads !== true) return false;
+    if (definition.name === 'browser_request_account' && !requestableProfile) return false;
     // 홈 폴더 검색은 데스크톱에서 켜졌을 때만 보인다(기본은 숨김).
     if (definition.name === 'find_home_files' && !homeSearch) return false;
     if (!projectWrites && !canRequest && (definition.category === 'project-write' || definition.category === 'project-ingest')) return false;

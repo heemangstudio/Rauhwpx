@@ -99,12 +99,12 @@ try {
   await page.click('.audit-scene-current input');
   await page.reload({ waitUntil: 'load' });
   await page.waitForSelector('.audit-scene-current input:checked');
-  await page.type('.audit-search', 'browserbase failure');
+  await page.type('.audit-search', 'browser settings');
   assert.equal(await page.$$eval('.audit-scene', (nodes) => nodes.length), 1);
   await page.click('.audit-scene-link');
-  await page.waitForFunction(() => new URLSearchParams(location.search).get('auditScene') === 'browserbase-error');
+  await page.waitForFunction(() => new URLSearchParams(location.search).get('auditScene') === 'browser-settings');
   await page.waitForFunction(() => document.body.dataset.auditReady === 'true');
-  assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browserbase), 'error');
+  await page.waitForSelector('#ag-settings-pane-browser .ag-browser-tabs');
   await open('audit=1&theme=light');
   const dialogs = await page.$$eval('[data-audit-dialog]', (nodes) => nodes.map((node) => node.dataset.auditDialog));
   for (const dialog of dialogs) {

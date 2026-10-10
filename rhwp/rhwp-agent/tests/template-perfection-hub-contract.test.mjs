@@ -90,27 +90,12 @@ test('auxiliary cleanup waits for drained output and retains identity until prov
 
 test('provider replacement and stop fail closed on an unconfirmed process tree', () => {
   assert.match(server, /const retainedUncertainBackends = new Set\(\)/);
-  assert.match(server, /const retainedUncertainBrowserbaseSessions = new Set\(\)/);
   assert.match(server, /processCleanupUncertain: false/);
   assert.match(
     server,
     /retainedUncertainBackends\.add\(activeSession\.backend\);[\s\S]*retainUncertainProcessCleanup\(record\.recordRoot\)/,
   );
-  assert.match(
-    server,
-    /retainedUncertainBrowserbaseSessions\.add\(record\.browserbaseSession\);[\s\S]*retainUncertainProcessCleanup\(record\.recordRoot\)/,
-  );
-  assert.match(server, /Promise\.allSettled\(\[backendExit, browserbaseExit\]\)/);
-  assert.doesNotMatch(server, /void record\.browserbaseSession\.cleanup/);
-  assert.match(
-    server,
-    /const browserbaseCleaned = await record\.browserbaseSession\.cleanup\('workflow changed to direct'\)[\s\S]*if \(!browserbaseCleaned\)[\s\S]*sendChatError\(sock, agentProcessCleanupUncertain\(\)/,
-  );
   assert.match(server, /error\.code = 'AGENT_PROCESS_CLEANUP_UNCERTAIN'/);
-  assert.match(
-    server,
-    /if \(error\?\.processCleanupUncertain\)[\s\S]*retainedUncertainBrowserbaseSessions\.add\(record\.browserbaseSession\)[\s\S]*retainUncertainProcessCleanup\(record\.recordRoot\)/,
-  );
   assert.match(
     server,
     /if \(!await disposeSession\(record\)\) throw agentProcessCleanupUncertain\(\)/,

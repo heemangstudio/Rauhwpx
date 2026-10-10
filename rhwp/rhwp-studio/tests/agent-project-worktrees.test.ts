@@ -52,7 +52,7 @@ function bridgeFixture(overrides: Record<string, unknown> = {}) {
     threadId: 'thread-variant', documentId: 'doc-variant', documentName: '보고서.hwpx',
     projectWorktreeBinding: null, projectBindPending: false,
     pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
-    pendingInterrupt: false, pendingSetupCancels: new Map(), browserbaseOverride: null,
+    pendingInterrupt: false, pendingSetupCancels: new Map(),
     selectedAgent: 'pi', selectedModel: null, selectedEffort: null, permissionProfile: 'safe', serviceTier: 'standard',
     chatHistory: [], messageReceipts: new Map(), awaitingAcceptanceId: null,
     turnSnapshots: { reset() {} },

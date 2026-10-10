@@ -47,6 +47,8 @@ export function createIpcSecretStore({ processRef = process, timeoutMs = 10_000 
     set: (key, value) => request('set', key, value),
     delete: (key) => request('delete', key),
     reset: () => request('reset', ''),
+    resetBrowser: () => request('resetBrowser', ''),
+    resetProviders: () => request('resetProviders', ''),
   };
 }
 
@@ -57,5 +59,9 @@ export function createMemorySecretStore(initial = {}) {
     async get(key) { return secrets.get(key) ?? null; },
     async set(key, value) { secrets.set(key, String(value)); return true; },
     async delete(key) { return secrets.delete(key); },
+    async resetBrowser() {
+      for (const key of secrets.keys()) if (/^browser\.(?:password\.|wrapping-key\.)/.test(key)) secrets.delete(key);
+      return true;
+    },
   };
 }

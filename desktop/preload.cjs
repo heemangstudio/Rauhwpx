@@ -1,6 +1,22 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('rhwpDesktop', {
+  browser: {
+    native: true,
+    attach: (payload) => ipcRenderer.invoke('desktop:browser-attach', payload),
+    detach: (payload) => ipcRenderer.invoke('desktop:browser-detach', payload),
+    getState: (payload) => ipcRenderer.invoke('desktop:browser-state', payload),
+    navigate: (payload) => ipcRenderer.invoke('desktop:browser-navigate', payload),
+    back: (payload) => ipcRenderer.invoke('desktop:browser-back', payload),
+    forward: (payload) => ipcRenderer.invoke('desktop:browser-forward', payload),
+    reload: (payload) => ipcRenderer.invoke('desktop:browser-reload', payload),
+    stop: (payload) => ipcRenderer.invoke('desktop:browser-stop', payload),
+    onEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('desktop:browser-event', listener);
+      return () => ipcRenderer.removeListener('desktop:browser-event', listener);
+    },
+  },
   saveAgentContext: (payload) => ipcRenderer.invoke('desktop:agent-context-save', payload),
   listAgentContexts: (documentId) => ipcRenderer.invoke('desktop:agent-context-list', documentId),
   readAgentContextFiles: (id) => ipcRenderer.invoke('desktop:agent-context-files', id),

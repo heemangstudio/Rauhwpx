@@ -1,0 +1,78 @@
+/* 작은 도구를 같은 줄에 묶고 페이지에 가장 넓은 자리를 남긴다. */
+.ag-browser { --browser-border: color-mix(in srgb, currentColor 12%, transparent); container-type: inline-size; display: flex; flex-direction: column; min-width: 0; height: 100%; overflow: hidden; background: var(--ag-bg, var(--n-surface, #fafaf9)); color: var(--ag-text, var(--n-text, #20251f)); font: 12px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+.ag-browser [hidden],.ag-browser[hidden] { display: none; }
+.ag-browser button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--browser-border); border-radius: 7px; background: transparent; color: inherit; padding: 5px 9px; font: inherit; cursor: pointer; white-space: nowrap; touch-action: manipulation; }
+.ag-browser button:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+.ag-browser button:active { background: color-mix(in srgb, currentColor 11%, transparent); }
+.ag-browser button:disabled { cursor: default; opacity: .35; }
+.ag-browser button:focus-visible,.ag-browser input:focus-visible,.ag-browser textarea:focus-visible,.ag-browser-surface:focus-visible,.ag-browser-details summary:focus-visible { outline: 2px solid var(--ag-accent, #52795f); outline-offset: 2px; }
+.ag-browser .ag-icon { width: 16px; height: 16px; flex-shrink: 0; }
+.ag-browser button.ag-browser-icon { width: 28px; height: 28px; flex: 0 0 28px; padding: 0; border-color: transparent; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
+.ag-browser button.ag-browser-icon:hover,.ag-browser button.ag-browser-icon[aria-pressed=true] { color: var(--ag-text, var(--n-text, #20251f)); }
+.ag-browser-tabbar { display: flex; align-items: center; gap: 2px; flex-shrink: 0; min-width: 0; padding: 4px 7px 0; }
+.ag-browser-tabs { display: flex; flex: 1; gap: 3px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.ag-browser-tabs::-webkit-scrollbar { display: none; }
+.ag-browser-tab { display: flex; align-items: center; min-width: 85px; max-width: 200px; border-radius: 7px; }
+.ag-browser-tab:has([aria-selected=true]) { background: color-mix(in srgb, currentColor 6%, transparent); }
+.ag-browser-tab button[role=tab] { flex: 1; min-width: 0; height: 27px; overflow: hidden; text-overflow: ellipsis; padding: 0 9px; border-color: transparent; text-align: left; justify-content: flex-start; font-size: 11px; }
+.ag-browser-tab button.ag-browser-tab-close { width: 22px; height: 22px; flex-basis: 22px; margin-right: 3px; }
+.ag-browser-tab-close .ag-icon { width: 12px; height: 12px; }
+.ag-browser-toolbar { position: relative; display: flex; gap: 2px; align-items: center; padding: 4px 7px 6px; flex-shrink: 0; background: color-mix(in srgb, var(--ag-bg, var(--n-surface, #fafaf9)) 94%, transparent); border-bottom: 1px solid var(--browser-border); }
+.ag-browser-navigation { display: flex; flex: 1; min-width: 140px; gap: 1px; align-items: center; margin-right: 3px; }
+.ag-browser-address { min-width: 40px; flex: 1; height: 28px; margin-left: 4px; padding: 0 9px; border: 1px solid var(--browser-border); border-radius: 8px; color: inherit; background: color-mix(in srgb, currentColor 3%, transparent); font: inherit; font-size: 11px; }
+.ag-browser-status { display: flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0; max-width: 155px; padding: 0 5px 0 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
+.ag-browser-status::before { content: ''; width: 4px; height: 4px; flex-shrink: 0; border-radius: 50%; background: currentColor; opacity: .55; }
+.ag-browser-status[data-owner=human]::before { background: var(--ag-accent, #52795f); opacity: 1; }
+.ag-browser-error { display: flex; align-items: center; gap: 8px; padding: 8px; color: #9a3e27; border-bottom: 1px solid var(--browser-border); }
+.ag-browser-error[hidden] { display: none; }
+.ag-browser-error span { flex: 1; }
+.ag-browser-surface { position: relative; flex: 1; min-height: 150px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #e4e6e2; outline-offset: -3px; }
+.ag-browser-frame { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; user-select: none; }
+.ag-browser-frame[hidden] { display: none; }
+.ag-browser-placeholder { text-align: center; padding: 25px; max-width: 380px; color: #576253; line-height: 1.6; }
+.ag-browser-placeholder[hidden] { display: none; }
+.ag-browser-placeholder strong { font-size: 17px; }
+.ag-browser-placeholder p { margin: 8px 0 16px; overflow-wrap: anywhere; }
+.ag-browser-ime { position: absolute; width: 1px; height: 1px; left: 8px; bottom: 8px; opacity: .01; resize: none; border: 0; padding: 0; overflow: hidden; }
+.ag-browser-picking { cursor: crosshair; }
+.ag-browser-selection { position: absolute; pointer-events: none; border: 2px solid #497958; background: #49795822; }
+.ag-browser-annotation { padding: 10px; border-top: 1px solid var(--browser-border); display: flex; flex-wrap: wrap; gap: 7px; flex-shrink: 0; }
+.ag-browser-annotation[hidden] { display: none; }
+.ag-browser-annotation strong,.ag-browser-annotation p,.ag-browser-annotation textarea,.ag-browser-annotation [role=status] { flex: 1 0 100%; }
+.ag-browser-annotation strong { overflow-wrap: anywhere; }
+.ag-browser-annotation p { margin: 0; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
+.ag-browser-annotation textarea { min-height: 58px; max-height: 140px; resize: vertical; background: transparent; color: inherit; font: inherit; border: 1px solid var(--browser-border); padding: 8px; border-radius: 5px; }
+.ag-browser-annotation-modes { display: flex; gap: 5px; }
+.ag-browser-annotation-modes [aria-pressed=true] { background: color-mix(in srgb, currentColor 13%, transparent); }
+.ag-browser-downloads { flex-shrink: 0; max-height: 230px; overflow: auto; border-top: 1px solid var(--browser-border); padding: 10px; }
+.ag-browser-downloads h3 { font-size: 12px; margin: 0 0 8px; }
+.ag-browser-download { display: flex; flex-wrap: wrap; gap: 6px; border-top: 1px solid var(--browser-border); padding: 8px 0; }
+.ag-browser-download strong,.ag-browser-download>span { flex: 1 0 100%; overflow-wrap: anywhere; }
+.ag-browser-download>span { font-size: 11px; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
+.ag-browser-download p { margin: 0; }
+.ag-browser-details { position: relative; margin-left: 1px; flex: 0 0 28px; }
+.ag-browser-details summary { display: flex; align-items: center; justify-content: center; list-style: none; width: 28px; height: 28px; border-radius: 7px; cursor: pointer; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
+.ag-browser-details summary::-webkit-details-marker { display: none; }
+.ag-browser-details summary:hover,.ag-browser-details[open] summary { background: color-mix(in srgb, currentColor 6%, transparent); color: var(--ag-text, var(--n-text, #20251f)); }
+.ag-browser-menu { position: absolute; z-index: 10; right: 0; top: calc(100% + 7px); width: 270px; max-width: calc(100vw - 28px); max-height: min(330px, 65vh); overflow: auto; padding: 7px; border: 1px solid var(--browser-border); border-radius: 12px; background: var(--ag-bg, var(--n-surface, #fafaf9)); box-shadow: 0 8px 30px #0002; }
+.ag-browser-menu>button { display: flex; width: 100%; justify-content: flex-start; border-color: transparent; padding: 7px 9px; }
+.ag-browser-menu dl { display: grid; grid-template-columns: 86px 1fr; gap: 7px; margin: 7px 4px 2px; padding: 10px 5px 3px; border-top: 1px solid var(--browser-border); font-size: 10px; }
+.ag-browser-menu dt { color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
+.ag-browser-menu dd { margin: 0; overflow-wrap: anywhere; }
+@container (max-width: 500px) { .ag-browser-toolbar { flex-wrap: wrap; justify-content: flex-end; } .ag-browser-navigation { flex: 1 0 100%; margin-right: 0; margin-bottom: 2px; } .ag-browser-status { max-width: 120px; font-size: 9px; } }
+.ag-browser-floating { position: fixed; z-index: 1300; width: min(640px, calc(100vw - 40px)); height: min(480px, calc(100vh - 60px)); left: 24px; top: auto; bottom: 24px; min-width: 320px; min-height: 280px; border: 1px solid var(--ag-border-strong, var(--n-hairline-strong, #d5d8d2)); border-radius: 12px; box-shadow: 0 12px 40px #0003; background: var(--ag-bg, var(--n-surface, #fafaf9)); overflow: hidden; display: flex; flex-direction: column; }
+.ag-browser-floating[hidden] { display: none; }
+.ag-browser-floating .ag-browser { flex: 1; height: auto; min-height: 0; }
+.ag-browser-move { display: flex; align-items: center; justify-content: center; height: 12px; flex-shrink: 0; padding: 0; color: var(--ag-text-secondary, var(--n-text-secondary, #737970)); background: var(--ag-bg, var(--n-surface, #fafaf9)); border: 0; text-align: left; cursor: move; touch-action: none; }
+.ag-browser-move::before { content: ''; width: 27px; height: 3px; border-radius: 3px; background: currentColor; opacity: .22; }
+.ag-browser-move:focus-visible { outline: 2px solid var(--ag-accent, #52795f); outline-offset: -2px; }
+.ag-browser-resize { position: absolute; right: 2px; bottom: 0; height: 17px; border: 0; background: transparent; cursor: nwse-resize; touch-action: none; color: var(--ag-text-secondary, var(--n-text-secondary, #737970)); }
+@media (max-width: 639px) { .ag-browser-floating { left: 0 !important; top: 0 !important; width: 100vw !important; height: 100dvh !important; border-radius: 0; min-width: 0; } .ag-browser-move { cursor: default; } .ag-browser-resize { display: none; } }
+
+.ag-browser-trigger { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px; border: 0; background: transparent; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); cursor: pointer; border-radius: 4px; }
+.ag-browser-trigger:hover { background: var(--ag-active, #e6e8e2); color: var(--ag-text, var(--n-text, #20251f)); }
+.ag-browser-upload { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; padding: 8px; border-bottom: 1px solid var(--browser-border); }
+.ag-browser-upload[hidden] { display: none; }
+.ag-browser-upload span { flex: 1; }
+
+@media (prefers-contrast: more) { .ag-browser-toolbar,.ag-browser-menu { border-color: currentColor; } .ag-browser button.ag-browser-icon { color: inherit; } }

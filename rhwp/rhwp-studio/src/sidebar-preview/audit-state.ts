@@ -52,9 +52,7 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
   }
   if (params.get('permission') === 'unrestricted') preview.bridge.setPermissionProfile('unrestricted');
   if (choosesMode) await chooseMode(mode);
-  const browserbase = params.get('browserbase');
-  if (browserbase === 'ready' || browserbase === 'setup' || browserbase === 'error')
-    preview.setBrowserbaseState(browserbase === 'ready' ? 'connected' : browserbase);
+
   if (params.get('document') === 'empty') select('#document', 'empty');
   if (params.get('play') === '1') {
     await until(() => {

@@ -1,6 +1,6 @@
 # Agent Hub stability audit — 2026-10-10
 
-Architecture and failure-path audit of PR #475. Findings below pair reproduced failures with fixes and verification.
+Architecture and failure-path audit of PR #475. Findings below pair reproduced failures with fixes and verification. Browserbase references describe that audited revision; the app-owned browser migration supersedes those runtime paths.
 
 ## Architecture and failure boundaries
 

@@ -1,0 +1,32 @@
+✔ owner cleanup removes its profile while retaining research bytes and unrelated credentials (14.726291ms)
+✔ cleanup rejects missing ownership and a redirected profile without touching the target (2.436875ms)
+✔ browser network resolves every hop and permits only exact configured private origins (5.637292ms)
+✔ network proxy denies requests without its private transport credential (5.831ms)
+✔ real managed browser keeps login shared while refs and input stay tab scoped (1065.321708ms)
+✔ encrypted profile checkpoint hooks run on shutdown and restore before observation (439.769833ms)
+▶ revocation during credential readiness prevents each subsequent secret field write
+  ✔ username (692.943708ms)
+  ✔ password (348.32975ms)
+✔ revocation during credential readiness prevents each subsequent secret field write (1182.754833ms)
+✔ approved agent cookie rotation keeps exact nested-path provenance through restart (633.856833ms)
+✔ a pending human login cannot be absorbed by a concurrent agent cookie response (290.133ms)
+✔ host-only and domain cookies with the same name retain separate approved provenance (350.295083ms)
+✔ human event streams release their header fence so public research can continue (287.787ms)
+✔ a delayed human storage change is not attributed to an agent response (273.061333ms)
+✔ returning human control does not approve a pending storage change or frame (255.455542ms)
+✔ explicit account confirmation permits normal agent storage refresh and encrypted reuse (708.844042ms)
+✔ browser reset drains its owner and removes only browser profile and account data (448.37625ms)
+✔ agents cannot commit through deceptive buttons, Enter, or clipboard aliases (479.695709ms)
+✔ outbound website websocket messages require a current website-change grant (295.849875ms)
+✔ ordinary agent cookies survive encrypted restart while human session changes stay quarantined (514.633375ms)
+✔ a hidden-CSRF PDF export works under default research policy and long transfers stop on revocation (508.48425ms)
+✔ manual sign-in waits for runtime startup and blocks the previous agent owner (170.576792ms)
+✔ standalone sign-in has no automation/debug connection and retains the owned profile (2188.034083ms)
+ℹ tests 23
+ℹ suites 0
+ℹ pass 23
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8864.764083
