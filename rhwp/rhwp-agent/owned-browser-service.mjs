@@ -46,7 +46,7 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
   });
   return {
     async start(params) { return { ...(await call('start', params)), close: () => call('release') }; },
-    bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'),
+    bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'), inventory: () => call('inventory'),
     async dispose() { events.off('message', receive); for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(error('BROWSER_CLOSED', 'The browser service closed.')); } pending.clear(); },
   };
 }
@@ -366,12 +366,14 @@ export function createOwnedBrowserService(options = {}) {
             const tab = makeTab(actorForTab(parent)); tabs.set(tab.tabId, tab); await attach(tab, page); publish(tab); void persist();
           }).catch(() => {});
         });
+        const nativeInventory = await selectedAdapter()?.inventory?.() ?? [];
         if (selectedAdapter()) for (const page of runtime.context.pages()) {
           const session = await runtime.context.newCDPSession(page);
           let targetId;
           try { targetId = (await session.send('Target.getTargetInfo')).targetInfo.targetId; }
           finally { await session.detach().catch(() => {}); }
-          const retained = [...tabs.values()].find((tab) => tab.nativeTargetId === targetId);
+          const logicalId = nativeInventory.find((tab) => tab.nativeTargetId === targetId)?.tabId;
+          const retained = tabs.get(logicalId) ?? [...tabs.values()].find((tab) => tab.nativeTargetId === targetId);
           if (retained) { retained.controller = { owner: 'agent' }; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); publish(retained); }
         }
         runtime.browser?.on('disconnected', () => {

@@ -237,6 +237,7 @@ try {
   const adapter = {
     async start(settings) { return { ...await serviceHost.start(settings, serviceOwner), close: () => serviceHost.release(serviceOwner) }; },
     bind: (args) => serviceHost.bind(args), control: (args) => serviceHost.control(args),
+    inventory: async () => [...serviceHost.tabs.values()].map((tab) => serviceHost.state(tab)),
   };
   await mkdir(path.join(serviceDir, 'browser'), { recursive: true });
   await writeFile(path.join(serviceDir, 'browser', 'tabs.json'), JSON.stringify({ version: 1, tabs: [
@@ -273,6 +274,10 @@ try {
   await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'control', { tabId: 'restored-tab', owner: 'agent' });
   const retainedTarget = serviceHost.tab('restored-tab').targetId;
   await service.close();
+  const savedTabsPath = path.join(serviceDir, 'browser', 'tabs.json');
+  const savedTabs = JSON.parse(await readFile(savedTabsPath, 'utf8'));
+  savedTabs.tabs[0].nativeTargetId = 'obsolete-native-target';
+  await writeFile(savedTabsPath, JSON.stringify(savedTabs));
   service = createOwnedBrowserService({ dataDir: serviceDir, nativeAdapter: adapter, workspaceTargets: [serviceOrigin] });
   await service.restore();
   await assert.rejects(service.request({ isHuman: false, threadId: 'chat-one', agentId: 'owner' }, 'reconnect', { tabId: 'restored-tab' }), { code: 'BROWSER_HUMAN_REQUIRED' });
