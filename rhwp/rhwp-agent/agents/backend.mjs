@@ -10,7 +10,8 @@ import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
 import { HUMANIZE_KOREAN_RULES } from '../humanizer.mjs';
 
 const ANSI_ESCAPE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
-const SECRET_ASSIGNMENT = /((?:["']?(?:access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|cookie|password|secret|token|oauth[_-]?code|authorization[_-]?code|user[_-]?code|code[_-]?verifier|state)["']?)\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi;
+// 키를 감싼 따옴표는 JSON 문자열 안에서 이스케이프된 모양(`{\"api_key\":\"…\"}`)이어도 같다.
+const SECRET_ASSIGNMENT = /((?:\\?["']?(?:access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|cookie|password|secret|token|oauth[_-]?code|authorization[_-]?code|user[_-]?code|code[_-]?verifier|state)\\?["']?)\s*[:=]\s*)(?:\\?"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi;
 const AUTH_HEADER = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 const KEY_SHAPED_SECRET = /\b(?:sk|pk)-[A-Za-z0-9_-]{12,}/g;
 /** JWT 모양의 액세스 토큰 (Codex OAuth 등): header.payload.signature. */

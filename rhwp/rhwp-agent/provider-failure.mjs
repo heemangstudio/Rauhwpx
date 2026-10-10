@@ -32,11 +32,30 @@ const MAX_CODE_LENGTH = 64;
 /** 분류용 정규식에 넘기는 원문 상한 — 거대한 stderr 가 정규식을 붙잡지 않게 한다. */
 const CLASSIFY_TEXT_LIMIT = 16_000;
 
-const URL_QUERY = /(https?:\/\/[^\s?#]+)[?#][^\s)\]}>"']*/gi;
+const ANSI_ESCAPE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
+// 스킴 길이를 묶는다 — 묶지 않으면 `a.a.a.…` 같은 긴 토큰에서 스킴 자리를 찾느라 되짚기가 제곱으로 는다.
+/** 스킴과 상관없이 URL 의 쿼리·프래그먼트 (https, ws, wss, …). */
+const URL_QUERY = /\b([a-z][a-z0-9+.-]{0,31}:\/\/[^\s?#]+)[?#][^\s)\]}>"']*/gi;
+/** 스킴과 상관없이 URL 의 userinfo — 비밀번호 없이 토큰만 든 `https://TOKEN@host` 도. */
+const URL_USERINFO_ANY = /\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/?#@]+@/gi;
+/**
+ * 스킴 없이 적힌 호스트[:포트][/경로] 뒤의 key=value 쿼리 (`api.example.com/v1?key=…`,
+ * `127.0.0.1:5175/mcp?auth=…`). URL 안쪽에서 시작하지 않게 앞 글자를 막는다.
+ */
+const BARE_HOST_QUERY = /(?<![\w.@:/\\-])((?:localhost|\d{1,3}(?:\.\d{1,3}){3}|(?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d{1,5})?(?:\/[^\s?#"'<>]*)?)[?#](?=[^\s"'<>]*=)[^\s)\]}>"']*/gi;
 
-/** 실패 문구 전용 가림: 공용 가림 + 모든 URL 쿼리·프래그먼트 제거 + 공백 정리 + 길이 제한. */
+/**
+ * 실패 문구 전용 가림: URL 쿼리·프래그먼트와 userinfo 를 먼저 통째로 지우고(그 안의 값이 공용
+ * 가림의 key=value 규칙에 반쯤 걸려 남지 않게), 공용 가림 + 공백 정리 + 길이 제한.
+ * 공용 함수(redactDiagnosticText)는 로그인 흐름이 URL 쿼리를 읽으므로 이 규칙을 갖지 않는다.
+ */
 export function redactFailureText(text, secrets = []) {
-  const redacted = redactDiagnosticText(text, secrets).replace(URL_QUERY, '$1?[redacted]');
+  const urlsRedacted = String(text ?? '')
+    .replace(ANSI_ESCAPE, '')
+    .replace(URL_USERINFO_ANY, '$1[redacted]@')
+    .replace(URL_QUERY, '$1?[redacted]')
+    .replace(BARE_HOST_QUERY, '$1?[redacted]');
+  const redacted = redactDiagnosticText(urlsRedacted, secrets);
   const normalized = redacted
     .replace(/\r\n?/g, '\n')
     // 제어 문자는 줄바꿈만 남긴다.
@@ -169,6 +188,38 @@ const CLI_MISSING_TEXT = /\bENOENT\b|command not found|is not recognized as an i
 /** Claude 레거시 사용 한도 문구의 `…|<epoch 초>` 꼬리 — 유일하게 모호하지 않은 문구 속 시각. */
 const CLAUDE_EPOCH_SUFFIX = /\|(\d{10})(?!\d)/;
 
+// 프로세스 종료 문구(가공하지 않은 stderr 꼬리) 전용 — 위 패턴은 프로바이더가 돌려준 오류
+// 문구를 위한 것이라, 스택의 줄 번호(file.js:401:12)나 경로(/login/, /authentication/)를
+// 로그인·한도로 읽는다. 여기서는 상태 코드에 HTTP 맥락을 요구하고 경로는 지운 뒤 본다.
+const HTTP_STATUS_CONTEXT = String.raw`(?:\bstatus(?:[ _]code)?|\bHTTP(?:\/\d(?:\.\d)?)?|\bcode)["']?[\s:=]+["']?`;
+const EXIT_AUTH_TEXT = new RegExp(
+  `not logged in|log ?in again|oauth token (?:has )?(?:expired|been revoked|is invalid)|token (?:has )?expired|invalid api key|invalid x-api-key|no auth credentials|incorrect api key|authentication(?:_error| (?:failed|error|required))|\\bunauthori[sz]ed\\b|${HTTP_STATUS_CONTEXT}401\\b|\\b401 unauthori[sz]ed`,
+  'i',
+);
+const EXIT_USAGE_TEXT = new RegExp(
+  `usage limit|hit your (?:usage |session |weekly )?limit|limit reached|quota exceeded|insufficient[_ ]quota|credit balance is too low|out of credits|insufficient credits|requires more credits|payment required|${HTTP_STATUS_CONTEXT}402\\b`,
+  'i',
+);
+/** 슬래시 명령 `/login` (경로의 한 조각 `a/login/b` 는 아니다). */
+const EXIT_LOGIN_COMMAND = /(?:^|[\s"'`(])\/login(?=$|[\s"'`).,;:!?])/m;
+/** 경로·URL 토큰과 스택 위치(`name:line:col`) — 그 안의 단어와 숫자는 실패 이유가 아니다. */
+const PATH_LIKE = /[\\/]|:\d+:\d+/;
+
+/** 공백으로 가른 토큰 가운데 경로처럼 보이는 것을 지운다 (토큰마다 한 번 — 긴 토큰에서도 선형). */
+function withoutPathTokens(text) {
+  return text.split(/(\s+)/).map((token) => (PATH_LIKE.test(token) ? ' ' : token)).join('');
+}
+
+/** 종료 문구가 로그인·한도·모델 문제를 말하는지 — 경로와 스택 위치를 지운 문구로 본다. */
+function exitTextClass(raw) {
+  if (EXIT_LOGIN_COMMAND.test(raw)) return { class: 'auth_required' };
+  const text = withoutPathTokens(raw);
+  if (EXIT_AUTH_TEXT.test(text)) return { class: 'auth_required' };
+  if (EXIT_USAGE_TEXT.test(text)) return { class: 'usage_limit' };
+  if (MODEL_TEXT.test(text)) return { class: 'invalid_request', code: 'model_not_found' };
+  return null;
+}
+
 function textClass(text) {
   if (AUTH_TEXT.test(text)) return { class: 'auth_required', code: null };
   if (USAGE_TEXT.test(text)) return { class: 'usage_limit', code: null };
@@ -180,8 +231,17 @@ function textClass(text) {
   return null;
 }
 
-function httpClass(status, text) {
-  if (status === 401 || status === 403) return 'auth_required';
+/** OpenRouter(Pi) 키의 지출 한도 초과 — 403 으로 온다. */
+const KEY_LIMIT_TEXT = /key limit exceeded/i;
+
+function httpClass(status, text, source) {
+  if (status === 401) return 'auth_required';
+  if (status === 403) {
+    // Pi 는 언제나 OpenRouter 를 거친다. OpenRouter 의 403 은 로그인 문제가 아니라 모더레이션에
+    // 걸린 입력이거나 키의 지출 한도다 — 로그인을 권하면 고칠 길이 없다.
+    if (source === 'pi') return USAGE_TEXT.test(text) || KEY_LIMIT_TEXT.test(text) ? 'usage_limit' : 'invalid_request';
+    return 'auth_required';
+  }
   if (status === 402) return 'usage_limit';
   if (status === 429) return USAGE_TEXT.test(text) ? 'usage_limit' : 'provider_error';
   if (status >= 500 && status <= 599) return 'provider_error';
@@ -236,13 +296,13 @@ export function classifyProviderFailure({ agent, message, hint = null, origin = 
     failureClass = 'invalid_request';
     code = 'claude:prompt_too_long';
   }
-  // 프로세스 종료 단서라도 문구가 로그인·한도를 말하면 그 조치가 먼저다.
+  // 프로세스 종료 단서라도 문구가 로그인·한도를 말하면 그 조치가 먼저다. 문구는 stderr 꼬리라
+  // 경로와 스택 줄 번호를 걸러 내는 엄격한 판정만 쓴다.
   if (failureClass === 'process_exited' && code === 'process_exit') {
-    if (AUTH_TEXT.test(raw)) failureClass = 'auth_required';
-    else if (USAGE_TEXT.test(raw)) failureClass = 'usage_limit';
-    else if (MODEL_TEXT.test(raw)) {
-      failureClass = 'invalid_request';
-      code = 'model_not_found';
+    const exit = exitTextClass(raw);
+    if (exit) {
+      failureClass = exit.class;
+      if (exit.code) code = exit.code;
     } else if (CLI_MISSING_TEXT.test(raw)) code = 'cli_missing';
     else if (CLEANUP_TEXT.test(raw)) code = 'cleanup_uncertain';
   }
@@ -252,7 +312,7 @@ export function classifyProviderFailure({ agent, message, hint = null, origin = 
   }
   const status = Number(hint?.httpStatus);
   if (!failureClass && Number.isInteger(status)) {
-    failureClass = httpClass(status, raw);
+    failureClass = httpClass(status, raw, hint?.source);
     if (failureClass) code ??= `http_${status}`;
   }
   if (!failureClass) {

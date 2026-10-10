@@ -349,6 +349,12 @@ export function createPiSession(opts, {
   let turnCompleted = false;
   let turnFailureMessage = null;
   /**
+   * 프로세스를 띄우거나 돌리지 못한 턴의 실패 단서 (spawn 'error': ENOENT 면 cli_missing). 오류는
+   * 턴이 정착할 때 한 번만 이 단서와 함께 알린다.
+   * @type {{ source: 'pi', code: 'cli_missing' | 'process_exit' } | null}
+   */
+  let turnProcessFailure = null;
+  /**
    * 마지막 assistant 시도의 API 오류. Pi 는 실패한 시도마다 message_end 를 보낸 뒤에야 자동
    * 재시도(auto_retry_*)나 압축 복구를 정한다 — 다음 시도가 정상으로 끝나면 지워지고, 턴이
    * 정착할 때 남아 있으면 그때 실패로 확정한다.
@@ -476,6 +482,7 @@ export function createPiSession(opts, {
         turnOpen = true;
         turnCompleted = false;
         turnFailureMessage = null;
+        turnProcessFailure = null;
         lastAttemptError = null;
         onEvent({
           type: 'error',
@@ -501,6 +508,7 @@ export function createPiSession(opts, {
           turnOpen = true;
           turnCompleted = false;
           turnFailureMessage = null;
+          turnProcessFailure = null;
           lastAttemptError = null;
           const message = 'Pi process tree cleanup could not be confirmed before the next turn';
           onEvent({ type: 'error', agent, message });
@@ -512,6 +520,7 @@ export function createPiSession(opts, {
           turnOpen = true;
           turnCompleted = false;
           turnFailureMessage = null;
+          turnProcessFailure = null;
           lastAttemptError = null;
           onEvent({
             type: 'error',
@@ -525,6 +534,7 @@ export function createPiSession(opts, {
       turnOpen = true;
       turnCompleted = false;
       turnFailureMessage = null;
+      turnProcessFailure = null;
       lastAttemptError = null;
       onEvent({ type: 'turn-start', agent });
 
@@ -631,7 +641,12 @@ export function createPiSession(opts, {
         completedAtDrain = fromClose && turnCompleted;
         if (turnOpen && !disposed) {
           turnFailureMessage ??= lastAttemptError;
-          if (turnFailureMessage) {
+          if (turnFailureMessage && turnProcessFailure) {
+            // Pi 를 띄우거나 돌리지 못했다 (spawn 오류) — 오류는 여기서 한 번, 그 단서와 함께 보낸다.
+            const failure = turnProcessFailure;
+            onEvent({ type: 'error', agent, message: turnFailureMessage, failure });
+            endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
+          } else if (turnFailureMessage) {
             // 재시도로도 회복하지 못한 마지막 시도의 오류 — 한 번만 보낸다.
             const detail = turnFailureMessage;
             const credit = formatOpenRouterCreditError(detail);
@@ -733,8 +748,10 @@ export function createPiSession(opts, {
         const safeError = redactDiagnosticText(err?.message ?? err, [opts.token]);
         process.stderr.write(`[pi] spawn error: ${safeError}\n`);
         if (turnOpen) {
+          // 여기서 알리지 않는다 — 출력이 닫히며 턴이 정착할 때 이 단서로 한 번만 알린다
+          // (없는 CLI 는 설정 열기, 그 밖의 프로세스 오류는 다시 시도).
           turnFailureMessage = `pi process error: ${safeError}`;
-          onEvent({ type: 'error', agent, message: turnFailureMessage });
+          turnProcessFailure = { source: 'pi', code: err?.code === 'ENOENT' ? 'cli_missing' : 'process_exit' };
         }
         void beginCleanup(true);
         scheduleCloseGrace(proc.exitCode ?? null, proc.signalCode ?? null);

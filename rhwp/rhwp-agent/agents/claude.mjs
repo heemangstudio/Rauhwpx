@@ -584,6 +584,20 @@ export function createClaudeSession(opts, {
     };
   }
 
+  /**
+   * result 없이 끝난 턴(프로세스 종료·SDK 전송 실패·폴백 실패)의 실패 단서와 문구. 이 턴에 API 오류
+   * 메시지나 오류 result 를 이미 받았다면 그것(한도·로그인 등)이 이유다 — 종료는 그 뒤에 따라온 일이고,
+   * 말풍선으로 그리지 않은 오류 문구가 여기서마저 빠지면 어디에도 남지 않는다.
+   */
+  function unsettledTurnFailure(code, detail) {
+    const held = code === 'cli_missing' ? null : turnFailureHint();
+    const reason = resultErrorMessage ?? turnErrorText;
+    return {
+      failure: held ?? { source: 'claude', code },
+      message: reason ? `${reason}\n${detail}` : detail,
+    };
+  }
+
   /** result 라인이 담아 온 정보로 턴을 닫는다 — 정착 판정을 거친 뒤에만 호출된다. */
   function settleTurn(source = null) {
     if (!turnOpen) return;
@@ -848,9 +862,13 @@ export function createClaudeSession(opts, {
     }
     if (e?.type === 'rate_limit_event') {
       // 매 턴 오는 'allowed' 는 버린다. 'rejected' 는 이 턴의 rate_limit 오류가 구독
-      // 한도 소진이라는 뜻이고, resetsAt(epoch 초)이 다시 쓸 수 있는 시각이다.
+      // 한도 소진이라는 뜻이고, resetsAt(epoch 초)이 다시 쓸 수 있는 시각이다. 다만 추가 사용량
+      // (overage)으로 넘어간 계정은 구독 창이 'rejected' 인 채로 매 턴 계속 쓴다 — CLI 도 그때는
+      // 한도 오류로 보지 않는다(isUsingOverage, overageStatus 'allowed'/'allowed_warning'). 그런 턴의
+      // 429 는 일시적인 제한이다.
       const info = e.rate_limit_info;
-      if (info?.status === 'rejected') {
+      if (info?.status === 'rejected' && !info.isUsingOverage
+        && (!info.overageStatus || info.overageStatus === 'rejected')) {
         const resetsAt = Number(info.resetsAt);
         turnRateLimit = {
           resetAt: Number.isFinite(resetsAt) && resetsAt > 0 ? resetsAt * 1000 : null,
@@ -1032,8 +1050,10 @@ export function createClaudeSession(opts, {
   function failSdkTurn(owner, error) {
     if (owner !== sdkOwner || !owner.active || !turnOpen || disposed) return;
     // 녹화 중이면 SDK 가 채우지 못한 stderr 꼬리를 붙이고, 어느 쪽이든 세션 토큰을 지운다.
-    const message = `claude SDK error: ${redactDiagnosticText(sdkErrorText(owner, error), [opts.token])}`;
-    const failure = { source: 'claude', code: 'process_exit' };
+    const { failure, message } = unsettledTurnFailure(
+      'process_exit',
+      `claude SDK error: ${redactDiagnosticText(sdkErrorText(owner, error), [opts.token])}`,
+    );
     onEvent({ type: 'error', agent: 'claude', message, failure });
     void closeSdkQuery(owner).then((cleaned) => {
       if (disposed || !turnOpen) return;
@@ -1149,13 +1169,11 @@ export function createClaudeSession(opts, {
             try {
               dispatchLegacy(pendingPrompt);
             } catch (fallbackError) {
-              const failure = { source: 'claude', code: 'process_exit' };
-              onEvent({
-                type: 'error',
-                agent: 'claude',
-                message: `failed to dispatch message: ${redactDiagnosticText(fallbackError?.message ?? fallbackError, [opts.token])}`,
-                failure,
-              });
+              const { failure, message } = unsettledTurnFailure(
+                'process_exit',
+                `failed to dispatch message: ${redactDiagnosticText(fallbackError?.message ?? fallbackError, [opts.token])}`,
+              );
+              onEvent({ type: 'error', agent: 'claude', message, failure });
               endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'exited', failure });
             }
           });
@@ -1309,14 +1327,11 @@ export function createClaudeSession(opts, {
       else discardOutput();
       lifecycleState.completedAtDrain = !turnOpen && hasCompletedTurn;
       if (turnOpen && !disposed) {
-        const failure = { source: 'claude', code: spawnCliMissing ? 'cli_missing' : 'process_exit' };
-        onEvent({
-          type: 'error',
-          agent: 'claude',
-          message: spawnErrorMessage
-            ?? formatClaudeExitError(stderrTail, code, signal, opts.token),
-          failure,
-        });
+        const { failure, message } = unsettledTurnFailure(
+          spawnCliMissing ? 'cli_missing' : 'process_exit',
+          spawnErrorMessage ?? formatClaudeExitError(stderrTail, code, signal, opts.token),
+        );
+        onEvent({ type: 'error', agent: 'claude', message, failure });
         endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'exited', failure });
       }
     };

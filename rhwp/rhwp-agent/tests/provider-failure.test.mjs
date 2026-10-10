@@ -73,18 +73,35 @@ test('retryable follows the class, and cleanup or a missing CLI never offers a r
 
 test('HTTP status classifies when no structured code resolved', () => {
   const cases = [
-    [401, 'auth_required'], [403, 'auth_required'], [402, 'usage_limit'],
+    [401, 'auth_required'], [402, 'usage_limit'],
     [429, 'provider_error'], [500, 'provider_error'], [503, 'provider_error'], [529, 'provider_error'],
     [400, 'invalid_request'], [404, 'invalid_request'], [413, 'invalid_request'],
   ];
   for (const [httpStatus, expected] of cases) {
     assert.equal(classify({ hint: { source: 'pi', httpStatus }, message: 'opaque' }).class, expected, String(httpStatus));
   }
+  assert.equal(classify({ hint: { source: 'claude', httpStatus: 403 }, message: 'opaque' }).class, 'auth_required');
   assert.equal(
     classify({ hint: { source: 'pi', httpStatus: 429 }, message: "You've hit your usage limit" }).class,
     'usage_limit',
     'a 429 that says the usage limit is spent is a usage limit',
   );
+});
+
+test('a Pi (OpenRouter) 403 is a refused request or a key spend limit, not a login problem', () => {
+  // OpenRouter: 403 = 모더레이션에 걸린 입력, 또는 키의 지출 한도. 로그인을 권하면 고칠 길이 없다.
+  const moderation = classifyProviderFailure({
+    agent: 'pi', hint: { source: 'pi', httpStatus: 403 },
+    message: '403 openai/gpt-x requires moderation on OpenRouter. Your input was flagged for "violence".',
+  });
+  assert.deepEqual([moderation.class, moderation.retryable], ['invalid_request', false]);
+  const keyLimit = classifyProviderFailure({
+    agent: 'pi', hint: { source: 'pi', httpStatus: 403 },
+    message: '403 Key limit exceeded (daily limit). Manage it using https://openrouter.ai/settings/keys',
+  });
+  assert.equal(keyLimit.class, 'usage_limit');
+  const codex = classifyProviderFailure({ agent: 'codex', hint: { source: 'codex', httpStatus: 403 }, message: 'Forbidden' });
+  assert.equal(codex.class, 'auth_required', 'other providers keep 403 as a login problem');
 });
 
 test('text patterns classify messages from older paths, in order', () => {
@@ -129,6 +146,28 @@ test('a process exit stays a process exit unless its text says login or usage li
   const exited = classifyProviderFailure({ agent: 'pi', origin: 'turn-end', stopReason: 'exited', message: '' });
   assert.equal(exited.class, 'process_exited');
   assert.ok(exited.message, 'a silent exit still carries a readable default message');
+});
+
+test('a process exit is not read as a login or usage failure from stack line numbers or file paths', () => {
+  const exit = { source: 'pi', code: 'process_exit' };
+  const exits = [
+    'Pi 실행이 중단되었습니다 (code 1).\nTypeError: Cannot read properties of undefined\n    at render (file:///opt/pi/dist/ui.js:401:12)\n    at main (main.js:402:3)',
+    'Pi 실행이 중단되었습니다 (code 1).\nError: Failed to load /Users/a/login/settings.json',
+    'Pi 실행이 중단되었습니다 (code 1).\n    at Object.<anonymous> (/srv/app/node_modules/x/lib/authentication/index.js:12:7)',
+    'Claude 실행이 중단되었습니다 (code 1).\nat parse (C:\\Users\\a\\usage limit\\cli.js:88:1)',
+    'Pi 실행이 중단되었습니다 (code 1).\n    at step (vendor.js:402:9)',
+  ];
+  for (const message of exits) {
+    const failure = classifyProviderFailure({ agent: 'pi', hint: exit, message });
+    assert.deepEqual([failure.class, failure.retryable], ['process_exited', true], message);
+  }
+  // HTTP 맥락이 있는 상태 코드와 명령으로서의 /login 은 여전히 로그인·한도다.
+  const auth = (message) => classifyProviderFailure({ agent: 'codex', hint: { source: 'codex', code: 'process_exit' }, message }).class;
+  assert.equal(auth('Codex app-server disconnected.\nERROR codex_core: unexpected status 401 Unauthorized'), 'auth_required');
+  assert.equal(auth('request failed: HTTP 401 from https://api.example.com/v1/responses'), 'auth_required');
+  assert.equal(auth('{"error":{"code":401,"message":"bad key"}}'), 'auth_required');
+  assert.equal(auth('Invalid API key · Please run /login'), 'auth_required');
+  assert.equal(auth('request failed with status code 402'), 'usage_limit');
 });
 
 test('max_output_tokens is not a failure code', () => {
@@ -177,6 +216,27 @@ test('redaction removes credentials, every query string and JWTs, and caps the l
   const failure = classify({ hint: { source: 'claude', code: 'authentication_failed' }, message: raw });
   assert.doesNotMatch(failure.message, /REPLAYSECRET/);
   assert.ok(failure.message.length <= MAX_FAILURE_MESSAGE);
+});
+
+test('redaction also covers escaped JSON pairs, token-only userinfo, any URL scheme and schemeless hosts', () => {
+  const cases = [
+    ['{"error":"{\\"api_key\\":\\"REPLAYSECRETescaped\\"}"}', /\\"api_key\\":\[redacted\]/],
+    ['GET https://REPLAYSECRETtoken0123@api.example.com/v1', /https:\/\/\[redacted\]@api\.example\.com\/v1/],
+    ['connect ws://127.0.0.1:5175/mcp?auth=REPLAYSECRETws failed', /ws:\/\/127\.0\.0\.1:5175\/mcp\?\[redacted\] failed/],
+    ['wss://user:REPLAYSECRETpw@hub.example.com/socket', /wss:\/\/\[redacted\]@hub\.example\.com\/socket/],
+    ['POST api.example.com/v1?key=REPLAYSECRETbare returned 403', /api\.example\.com\/v1\?\[redacted\] returned 403/],
+    ['dial 127.0.0.1:5175/mcp?token=REPLAYSECRETip refused', /127\.0\.0\.1:5175\/mcp\?\[redacted\] refused/],
+    ['localhost:8080/cb?code=REPLAYSECRETlocal', /localhost:8080\/cb\?\[redacted\]/],
+  ];
+  for (const [raw, expected] of cases) {
+    const text = redactFailureText(raw);
+    assert.doesNotMatch(text, /REPLAYSECRET/, raw);
+    assert.match(text, expected, raw);
+  }
+  // 쿼리를 통째로 지운 자리에 공용 가림의 꼬리가 남지 않는다.
+  assert.equal(redactFailureText('https://x.com/a?password=REPLAYSECRET'), 'https://x.com/a?[redacted]');
+  // 쿼리가 아닌 물음표 문장은 그대로다.
+  assert.equal(redactFailureText('Is the file at docs.example.com ready? yes'), 'Is the file at docs.example.com ready? yes');
 });
 
 test('resetAt comes only from structured data or the Claude epoch suffix, never from a wall-clock phrase', () => {
