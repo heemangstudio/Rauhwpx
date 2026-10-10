@@ -180,6 +180,12 @@ function bySavedAtDesc(a: { savedAt: number }, b: { savedAt: number }) {
   return b.savedAt - a.savedAt;
 }
 
+/** 2.0.11 가져오기도 이 함수로 열어 오래된 버전을 먼저 올린다. */
+export const AUTOSAVE_DB_NAME = DB_NAME;
+export function openAutosaveDatabase(): Promise<IDBDatabase | null> {
+  return openDb();
+}
+
 function openDb() {
   return openIndexedDatabase(DB_NAME, DB_VER, (db, event) => {
     if (!db.objectStoreNames.contains(DRAFTS)) {

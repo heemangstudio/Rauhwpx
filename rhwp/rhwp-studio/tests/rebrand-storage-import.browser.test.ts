@@ -125,3 +125,80 @@ test('a desktop dump of the 2.0.11 profile attaches same-file chats and history 
   assert.deepEqual(merged.drafts, ['draft-2010', 'draft-2011']);
   await page.close();
 });
+
+test('an older original store is upgraded by its own module before 2.0.11 drafts join it', { timeout: 60_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  await step(page, (fixture) => fixture.reset());
+  await step(page, async (fixture) => {
+    await fixture.writeGeneration('2011', 'doc-2011');
+    await fixture.moveToRebrandedNames();
+  });
+  await step(page, (fixture) => fixture.writeVersion2Autosave());
+
+  await step(page, (_fixture, importer) => importer.runRebrandedStorageImport());
+
+  assert.deepEqual(await step(page, (fixture) => fixture.listDraftIds()), ['draft-2007', 'draft-2011']);
+  await page.close();
+});
+
+test('a store that fails stays retryable while records already merged are never added again', { timeout: 60_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  await step(page, (fixture) => fixture.reset());
+  await step(page, async (fixture) => {
+    await fixture.writeGeneration('2011', 'doc-2011');
+    await fixture.moveToRebrandedNames();
+    await fixture.bumpRebrandedVersion('hamaeditorAutosave', 9);
+  });
+
+  const first = await step(page, async (_fixture, importer) => {
+    const dump = await importer.dumpRebrandedStorage();
+    const result = await importer.importRebrandedStorage(dump!);
+    return { complete: result.complete, failures: result.failures, ledger: result.ledger };
+  });
+  assert.equal(first.complete, false);
+  assert.ok(first.failures.some((failure) => failure.startsWith('rhwpStudioAutosave')), 'a version the build cannot read is a failure');
+  assert.deepEqual(await step(page, (fixture) => fixture.canonicalThreadIds()), ['thread-2011']);
+
+  // The user deletes the imported chat; the next attempt retries only what failed.
+  await step(page, (fixture) => fixture.deleteCanonicalThread('thread-2011'));
+  const second = await page.evaluate(async (ledger) => {
+    const importer = await import('/src/core/rebrand-storage-import.ts');
+    const dump = await importer.dumpRebrandedStorage();
+    const result = await importer.importRebrandedStorage(dump!, { ledger });
+    return { complete: result.complete, records: result.records };
+  }, first.ledger);
+  assert.deepEqual(second, { complete: false, records: 0 });
+  assert.deepEqual(await step(page, (fixture) => fixture.canonicalThreadIds()), []);
+  await page.close();
+});
+
+test('one record that cannot be stored is skipped and the rest of its store still joins', { timeout: 60_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  await step(page, (fixture) => fixture.reset());
+  const result = await step(page, async (_fixture, importer) => {
+    const recent = (id: string) => ({
+      id, documentId: `doc-${id}`, sourceDigest: `sha256:${id}`, fileName: `${id}.hwpx`, sourceFormat: 'hwpx', openedAt: 1,
+    });
+    const outcome = await importer.importRebrandedStorage({
+      localStorage: [],
+      databases: [{
+        name: 'hamaeditorRecent',
+        version: 2,
+        stores: [{
+          name: 'recent', keyPath: 'id', autoIncrement: false, indexes: [],
+          records: [
+            { key: 'broken', value: { ...recent('broken'), handle: () => undefined } },
+            { key: 'kept', value: recent('kept') },
+          ],
+        }],
+      }],
+    });
+    return { complete: outcome.complete, records: outcome.records, skipped: outcome.skipped.length };
+  });
+  assert.deepEqual(result, { complete: true, records: 1, skipped: 1 });
+  assert.deepEqual(await step(page, (fixture) => fixture.listRecentIds()), ['kept']);
+  await page.close();
+});

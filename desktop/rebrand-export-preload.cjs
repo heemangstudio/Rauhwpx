@@ -1,6 +1,6 @@
 // Runs only in the hidden window that reads a copy of the 2.0.11 profile on its
-// hamaeditor://app origin. It dumps that origin's Studio storage in the format
-// Studio's rebrand importer reads (src/core/rebrand-storage-import.ts).
+// hamaeditor://app origin. It sends that origin's Studio storage as chunks that
+// Studio's rebrand importer reassembles (src/core/rebrand-storage-import.ts).
 const { ipcRenderer } = require('electron');
 
 // Font folder handles cannot cross IPC; the user picks the folder again.
@@ -36,15 +36,33 @@ function copyKeyPath(keyPath) {
   return Array.isArray(keyPath) ? [...keyPath] : keyPath;
 }
 
-async function dumpDatabase(name) {
+// One IPC message stays well below Chromium's message size limit.
+const MAX_CHUNK_BYTES = 8 * 1024 * 1024;
+const MAX_CHUNK_RECORDS = 500;
+
+function approximateBytes(value, depth = 0) {
+  if (value === null || value === undefined) return 1;
+  if (typeof value === 'string') return value.length * 2;
+  if (typeof value !== 'object') return 8;
+  if (value instanceof ArrayBuffer) return value.byteLength;
+  if (ArrayBuffer.isView(value)) return value.byteLength;
+  if (depth > 32) return 64;
+  let total = 16;
+  for (const key of Object.keys(value)) total += key.length * 2 + approximateBytes(value[key], depth + 1);
+  return total;
+}
+
+function send(chunk) {
+  ipcRenderer.send('rebrand-export:chunk', chunk);
+}
+
+async function sendDatabase(name) {
   const db = await open(name);
-  if (!db) return null;
+  if (!db) return;
   try {
-    const stores = [];
-    for (const storeName of Array.from(db.objectStoreNames)) {
+    const stores = Array.from(db.objectStoreNames).map((storeName) => {
       const store = db.transaction(storeName, 'readonly').objectStore(storeName);
-      const [keys, values] = await Promise.all([request(store.getAllKeys()), request(store.getAll())]);
-      stores.push({
+      return {
         name: storeName,
         keyPath: copyKeyPath(store.keyPath),
         autoIncrement: store.autoIncrement,
@@ -57,10 +75,27 @@ async function dumpDatabase(name) {
             multiEntry: index.multiEntry,
           };
         }),
-        records: keys.map((key, position) => ({ key, value: values[position] })),
-      });
+      };
+    });
+    send({ kind: 'database', name, version: db.version, stores });
+    for (const { name: storeName } of stores) {
+      const store = db.transaction(storeName, 'readonly').objectStore(storeName);
+      const [keys, values] = await Promise.all([request(store.getAllKeys()), request(store.getAll())]);
+      let batch = [];
+      let bytes = 0;
+      for (let position = 0; position < keys.length; position += 1) {
+        const record = { key: keys[position], value: values[position] };
+        const size = approximateBytes(record);
+        if (batch.length && (bytes + size > MAX_CHUNK_BYTES || batch.length >= MAX_CHUNK_RECORDS)) {
+          send({ kind: 'records', database: name, store: storeName, records: batch });
+          batch = [];
+          bytes = 0;
+        }
+        batch.push(record);
+        bytes += size;
+      }
+      if (batch.length) send({ kind: 'records', database: name, store: storeName, records: batch });
     }
-    return { name, version: db.version, stores };
   } finally {
     db.close();
   }
@@ -73,19 +108,16 @@ async function dump() {
     const value = key === null ? null : localStorage.getItem(key);
     if (value !== null) entries.push([key, value]);
   }
+  send({ kind: 'localStorage', entries });
   const listed = new Set((await indexedDB.databases()).map((database) => database.name));
-  const databases = [];
   for (const name of DATABASES) {
-    if (!listed.has(name)) continue;
-    const database = await dumpDatabase(name);
-    if (database) databases.push(database);
+    if (listed.has(name)) await sendDatabase(name);
   }
-  return { localStorage: entries, databases };
 }
 
 window.addEventListener('DOMContentLoaded', () => {
   dump().then(
-    (result) => ipcRenderer.send('rebrand-export:result', result),
+    () => ipcRenderer.send('rebrand-export:done'),
     (error) => ipcRenderer.send('rebrand-export:error', String(error?.message ?? error)),
   );
 });

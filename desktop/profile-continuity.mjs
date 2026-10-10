@@ -279,6 +279,9 @@ export async function writeRebrandImportMarker(userDataDir, marker, {
  * once per change of the 2.0.11 Studio storage; storage is exported only when
  * it changed since the last successful import and 2.0.11 is not running.
  */
+/** A store that keeps failing is retried on this many launches per 2.0.11 storage state, then left alone. */
+export const MAX_STORAGE_IMPORT_ATTEMPTS = 5;
+
 export async function planRebrandImport({ userDataDir, rebrandedDir, platform = process.platform, inUse }) {
   if (!rebrandedDir || !await exists(rebrandedDir) || await sameDirectory(userDataDir, rebrandedDir)) {
     return null;
@@ -286,11 +289,13 @@ export async function planRebrandImport({ userDataDir, rebrandedDir, platform = 
   const marker = await readRebrandImportMarker(userDataDir);
   const fingerprint = await browserStorageFingerprint(rebrandedDir);
   const busy = fingerprint !== null && await (inUse ?? isChromiumProfileInUse)(rebrandedDir, { platform });
+  const pending = fingerprint !== null && marker.storageFingerprint !== fingerprint;
+  const attempts = marker.storageAttempts?.fingerprint === fingerprint ? marker.storageAttempts.count ?? 0 : 0;
   return {
     marker,
     fingerprint,
-    importFiles: !marker.filesImportedAt || (fingerprint !== null && marker.storageFingerprint !== fingerprint),
-    exportStorage: fingerprint !== null && marker.storageFingerprint !== fingerprint && !busy,
+    importFiles: !marker.filesImportedAt || pending,
+    exportStorage: pending && !busy && attempts < MAX_STORAGE_IMPORT_ATTEMPTS,
     busy,
   };
 }

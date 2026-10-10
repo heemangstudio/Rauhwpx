@@ -13,6 +13,7 @@ import {
   snapshotBrowserStorage,
   writeRebrandImportMarker,
 } from '../desktop/profile-continuity.mjs';
+import { createRebrandImportController } from '../desktop/rebrand-import-controller.mjs';
 import { createSecretVault } from '../desktop/secret-vault.mjs';
 
 async function tempDir(t, label) {
@@ -181,4 +182,29 @@ test('a live 2.0.11 process holds its profile lock; a stale lock does not', { sk
   assert.equal(await isChromiumProfileInUse(root), true);
   assert.equal(await isChromiumProfileInUse(root, { isProcessAlive: () => false }), false);
   assert.equal(await isChromiumProfileInUse(root, { hostname: 'another-mac' }), false);
+});
+
+test('when the 2.0.11 files cannot merge, its chats wait instead of losing their document links', async (t) => {
+  const root = await tempDir(t, 'files-fail');
+  const source = path.join(root, 'HamaEditor');
+  const target = path.join(root, 'Rauhwpx');
+  await fs.mkdir(target, { recursive: true });
+  await write(path.join(source, 'IndexedDB', 'hamaeditor_app_0.indexeddb.leveldb', '000005.ldb'), 'threads');
+  const opened = [];
+  const controller = createRebrandImportController({
+    BrowserWindow: function BrowserWindow() { opened.push('window'); },
+    session: { fromPath: () => { opened.push('session'); throw new Error('unused'); } },
+    userDataDir: target,
+    rebrandedDir: source,
+    tempDir: path.join(root, 'temp'),
+    preloadPath: path.join(root, 'unused.cjs'),
+    importFiles: async () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); },
+    log: { log() {}, warn() {} },
+  });
+
+  await controller.prepare();
+
+  assert.equal(await controller.take(), null);
+  assert.deepEqual(opened, [], 'the storage export does not start without the merged bookmarks');
+  await assert.rejects(fs.stat(path.join(target, 'rebrand-import.json')), { code: 'ENOENT' });
 });

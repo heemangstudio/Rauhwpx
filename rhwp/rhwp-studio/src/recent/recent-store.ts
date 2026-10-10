@@ -106,6 +106,12 @@ function createDocumentId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `document_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
+/** 2.0.11 가져오기도 이 함수로 열어 오래된 버전을 먼저 올린다. */
+export const RECENT_DB_NAME = DB_NAME;
+export function openRecentDatabase(): Promise<IDBDatabase | null> {
+  return openDb();
+}
+
 function openDb(): Promise<IDBDatabase | null> {
   return openIndexedDatabase(DB_NAME, DB_VER, (db, event) => {
     if (!db.objectStoreNames.contains(STORE)) {

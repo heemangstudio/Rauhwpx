@@ -187,3 +187,59 @@ export async function removeImportedThread(): Promise<void> {
   removeThread('thread-2011');
   await waitForThreadsPersistence();
 }
+
+/** The autosave database as 2.0.7 and earlier left it: version 2, no metadata store. */
+export async function writeVersion2Autosave(): Promise<void> {
+  const opening = indexedDB.open('rhwpStudioAutosave', 2);
+  opening.onupgradeneeded = () => {
+    opening.result.createObjectStore('drafts', { keyPath: 'id' });
+    opening.result.createObjectStore('sessions', { keyPath: 'sessionId' });
+  };
+  const db = await request(opening);
+  const tx = db.transaction('drafts', 'readwrite');
+  tx.objectStore('drafts').put({
+    id: 'draft-2007',
+    fileName: 'old.hwp',
+    sourceFormat: 'hwp',
+    savedAt: Date.now() - 1000,
+    byteLength: 2,
+    data: new Uint8Array([1, 2]).buffer,
+  });
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+
+/** Raise a 2.0.11 database to a version this build does not know, as a later release might. */
+export async function bumpRebrandedVersion(name: string, version: number): Promise<void> {
+  const db = await request(indexedDB.open(name, version));
+  db.close();
+}
+
+export async function listDraftIds(): Promise<string[]> {
+  return (await listAutosaveDrafts()).map((draft) => draft.id).sort();
+}
+
+export async function listRecentIds(): Promise<string[]> {
+  return (await listRecentDocs()).map((doc) => doc.id).sort();
+}
+
+export async function deleteCanonicalThread(id: string): Promise<void> {
+  const db = await request(indexedDB.open('rhwpAgentThreads'));
+  const tx = db.transaction('threads', 'readwrite');
+  tx.objectStore('threads').delete(id);
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+
+export async function canonicalThreadIds(): Promise<string[]> {
+  const db = await request(indexedDB.open('rhwpAgentThreads'));
+  const ids = await request(db.transaction('threads').objectStore('threads').getAllKeys());
+  db.close();
+  return ids.map(String).sort();
+}

@@ -28,10 +28,12 @@ function idb(): IDBFactory | null {
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
-function openDb(): Promise<IDBDatabase> {
+/** 2.0.11 가져오기용 연결. 이 모듈이 계속 쥐는 연결과 따로 열어 닫을 수 있다. */
+export const FONT_FOLDER_DB_NAME = DB_NAME;
+export function openFontFolderDatabase(): Promise<IDBDatabase> {
   const factory = idb();
   if (!factory) return Promise.reject(new Error('IndexedDB unavailable'));
-  dbPromise ??= new Promise<IDBDatabase>((resolve, reject) => {
+  return new Promise<IDBDatabase>((resolve, reject) => {
     const request = factory.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
@@ -40,7 +42,11 @@ function openDb(): Promise<IDBDatabase> {
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed'));
-  }).catch((error) => {
+  });
+}
+
+function openDb(): Promise<IDBDatabase> {
+  dbPromise ??= openFontFolderDatabase().catch((error) => {
     dbPromise = null;
     throw error;
   });

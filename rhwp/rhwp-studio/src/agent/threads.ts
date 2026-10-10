@@ -1,5 +1,4 @@
 import {
-  openIndexedDatabase,
   requestResult,
   transactionDone,
   withDatabase,
@@ -21,12 +20,10 @@ import type {
   UserQuestionOutcome,
 } from './types.ts';
 import type { InlineObjectAddress, InlinePromptItem } from './inline-prompt-context.ts';
+import { THREADS_DB_NAME as DB_NAME, THREADS_STORE, openThreadsDatabase } from './threads-db.ts';
 
 const STORAGE_KEY = 'rhwp-agent-threads';
 const NOTIFY_KEY = 'rhwp-agent-threads-notify';
-const DB_NAME = 'rhwpAgentThreads';
-const DB_VERSION = 1;
-const THREADS_STORE = 'threads';
 const CHANNEL_NAME = 'rhwp-agent-threads';
 const MAX_THREADS = 40;
 const MAX_MESSAGES_PER_THREAD = 200;
@@ -992,11 +989,7 @@ function cloneThread(thread: ChatThread) {
 }
 
 function openDb() {
-  return openIndexedDatabase(DB_NAME, DB_VERSION, (db) => {
-    if (!db.objectStoreNames.contains(THREADS_STORE)) {
-      db.createObjectStore(THREADS_STORE, { keyPath: 'id' });
-    }
-  });
+  return openThreadsDatabase();
 }
 
 function runWithDb<T>(operation: (db: IDBDatabase) => Promise<T>) {
