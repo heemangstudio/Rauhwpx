@@ -96,7 +96,7 @@ html.document-home-open :is(#studio-root, #agent-sidebar) *::after {
    문서 순서로 적용되므로 막대(끌기) 뒤에 오는 단추가 no-drag 로 덮는다. */
 html.desktop-mac .dh-topbar {
   height: var(--desktop-titlebar-height, 38px);
-  padding-left: calc(var(--desktop-traffic-light-inset, 78px) + 4px);
+  padding-left: calc(var(--desktop-home-reserve, 114px) + 4px);
   -webkit-app-region: drag;
 }
 

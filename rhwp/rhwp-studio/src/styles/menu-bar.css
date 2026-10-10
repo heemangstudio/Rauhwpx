@@ -26,9 +26,41 @@ html.desktop-mac.desktop-fullscreen {
   --desktop-traffic-light-inset: 0px;
 }
 
+/* 문서 홈 단추 — 신호등 바로 오른쪽에 늘 떠 있다. 편집기·집중 화면·설정·문서 홈의
+   제목 막대는 모두 이 자리(--desktop-home-reserve)를 비워 둔다. */
+html.desktop-mac {
+  --desktop-home-left: max(calc(var(--desktop-traffic-light-inset) - 2px), 8px);
+  --desktop-home-reserve: calc(var(--desktop-home-left) + 28px + 8px);
+}
+
+.app-home-button { display: none; }
+
+html.desktop-mac .app-home-button {
+  position: fixed;
+  top: calc((var(--desktop-titlebar-height) - 28px) / 2);
+  left: var(--desktop-home-left);
+  /* 문서 홈(900)과 집중 화면 위, 명령 검색·대화상자·알림 아래. */
+  z-index: 950;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ui-text-secondary);
+  -webkit-app-region: no-drag;
+}
+
+html.desktop-mac .app-home-button svg { width: 16px; height: 16px; }
+html.desktop-mac .app-home-button:hover { background: var(--ui-hover, rgba(127, 127, 127, 0.14)); color: var(--ui-text); }
+html.desktop-mac .app-home-button[aria-pressed='true'] { color: var(--ui-text); }
+html.desktop-mac .app-home-button:focus-visible { outline: 2px solid var(--focus-ring, currentColor); outline-offset: 1px; }
+
 html.desktop-mac #menu-bar {
   height: var(--desktop-titlebar-height);
-  padding-left: var(--desktop-traffic-light-inset);
+  padding-left: var(--desktop-home-reserve);
   -webkit-app-region: no-drag;
 }
 

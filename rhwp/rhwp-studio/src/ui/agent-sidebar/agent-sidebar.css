@@ -6570,7 +6570,7 @@ html.ag-fs-vt-exit::view-transition-new(root) {
    빈 면은 모두 창 드래그, 조작 가능한 자식만 no-drag 로 뺀다. */
 html.desktop-mac .ag-fullscreen {
   --ag-workspace-bar-h: var(--desktop-titlebar-height, 38px);
-  --ag-workspace-lead-inset: calc(10px + var(--desktop-traffic-light-inset, 78px));
+  --ag-workspace-lead-inset: calc(2px + var(--desktop-home-reserve, 114px));
 }
 
 html.desktop-mac .ag-fullscreen .ag-workspace-bar {
@@ -8893,3 +8893,13 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 
 /* 계획 초안 제안은 권한 요청 알약과 같은 모양을 쓴다. */
 .ag-plan-suggest .ag-icon { width: 13px; height: 13px; color: var(--ag-text-secondary); }
+
+/* macOS 셸에서는 문서 홈 단추가 신호등 옆에 늘 떠 있으므로 사이드바의 홈 단추는 숨긴다. */
+html.desktop-mac .ag-home-btn,
+html.desktop-mac .ag-workspace-home-btn {
+  display: none;
+}
+
+html.desktop-mac .ag-root {
+  --ag-workspace-home-w: 0px !important;
+}

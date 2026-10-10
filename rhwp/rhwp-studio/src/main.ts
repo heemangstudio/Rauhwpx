@@ -86,6 +86,7 @@ import {
 } from '@/recent/document-preflight';
 import { addRecentDoc, listRecentDocs, RECENT_MENU_LIMIT, updateRecentDoc, type RecentDoc } from '@/recent/recent-store';
 import { createDocumentHome, type DocumentHome } from '@/home/document-home';
+import { createIcon } from '@/ui/agent-sidebar/icons';
 import { loadWorktreeData } from '@/home/home-data';
 import { renderFirstPage } from '@/home/thumbnail-render';
 import { showDropConfirmDialog } from '@/ui/drop-confirm-dialog';
@@ -2331,6 +2332,30 @@ function installDocumentHome(): void {
   documentHome.show({ focus: false });
 }
 
+/** macOS 셸의 신호등 옆 문서 홈 단추. 어느 화면에서든 같은 자리에 떠 있다. */
+function installAppHomeButton(): void {
+  const home = document.createElement('button');
+  home.type = 'button';
+  home.className = 'app-home-button';
+  home.setAttribute('aria-label', '문서 홈');
+  home.title = '문서 홈';
+  home.setAttribute('aria-pressed', 'false');
+  home.append(createIcon('home'));
+  home.addEventListener('click', () => openDocumentHome());
+  document.body.append(home);
+  // 홈이 떠 있는 동안은 눌린 모양으로 둔다.
+  const homeElement = documentHome?.element;
+  if (homeElement) {
+    const sync = () => {
+      home.setAttribute('aria-pressed', homeElement.hidden ? 'false' : 'true');
+      // Electron 은 창 끌기 영역을 문서 순서로 덮는다. 홈이 몸통 끝으로 옮겨 가면 단추를 그 뒤에 둔다.
+      if (home.nextElementSibling) document.body.append(home);
+    };
+    new MutationObserver(sync).observe(homeElement, { attributes: true, attributeFilter: ['hidden'] });
+    sync();
+  }
+}
+
 /** 문서 홈을 창 전체에 연다. 편집기·사이드바(에이전트 전체 화면 포함)는 닫힐 때 그대로 돌아온다. */
 function openDocumentHome(): void {
   documentHome?.show();
@@ -2743,6 +2768,7 @@ function setupGlobalShortcuts(): void {
 function setupFileInput(): void {
   const fileInput = document.getElementById('file-input') as HTMLInputElement;
   installDocumentHome();
+  installAppHomeButton();
 
   fileInput.addEventListener('change', async (e) => {
     const input = e.target as HTMLInputElement;
