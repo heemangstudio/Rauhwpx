@@ -13,7 +13,7 @@ export async function checkRestoreTurnPreview(page, origin, artifacts) {
   const REQUEST = '이 문서의 핵심 내용을 검토하고 개선해 주세요.';
   const acceptReview = async (query) => {
     await page.goto(`${origin}/?theme=light&width=480&reset=1&scenario=review&${query}`, { waitUntil: 'networkidle0' });
-    await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
+    await page.waitForFunction(() => window.sidebarPreview && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
     await page.click('#play');
     await page.waitForSelector('.ag-review-card .ag-approve', { visible: true });
     assert.equal(await page.$('.ag-msg-user .ag-msg-restore'), null, 'no action while the change waits for review');
