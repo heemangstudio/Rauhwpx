@@ -43,9 +43,34 @@ Explicit composer Send stages the queued captures and requests a correlated acce
 
 Memo #6 reproduced a reconnect handoff that skipped the idle welcome while waiting for `chat-started`. That response previously omitted status, leaving the old bridge turn and editing lease active. The hub now sends status and turn ID; the bridge reconciles the authoritative snapshot through normal turn cleanup, preserving pending review edits and genuinely active turns. The sidebar updates its stop button and pending indicator from that state.
 
-## Remaining bounded follow-ups
+## Mode selector interaction
 
 Memo #7's mode menu now uses a smaller translucent surface, thin border and single-line rows. Light/dark preview checks covered mode selection, full-access confirmation/cancellation and outside dismissal. An isolated real Studio/WASM editor with a fixture Pi provider also verified click, Up/Down, Home/End, Enter to select Plan, and Escape returning focus to the selector. The existing keyboard implementation passed this flow; no additional menu handler was needed. The compact glass styling was also exercised in the running Electron editor without sending a provider prompt.
+
+## Chat-scoped permission requests
+
+An agent can call `request_permission` for document edits, project edits, downloads, browser use, or local files and commands. The tool returns `pending` immediately, and the agent ends its turn while the user decides through a permission pill. Granting refreshes the provider's capabilities when it is idle; it does not send a user message or change the saved mode preference. A busy or failed grant leaves the same pill available for retry.
+
+The hub binds each request to the authenticated root provider resource, generation, capability epoch, turn, chat, and document. Legacy Claude/Codex MCP requests consume a matching one-use provider-stream scope ticket; missing, ambiguous, or child tickets are rejected. Claude retains child provenance even when the parent task card has not been mapped. A pending request survives normal turn completion and reconnect, while interruption, replacement, or a new turn expires it. Same-chat provider reconfiguration retains granted capabilities; a new chat or document starts with an empty grant list. Grants remain in the running hub's memory.
+
+Every app tool call still passes category authorization. A document-edit grant lets a question-mode chat stage live-document changes for review; project-edit overrides only that chat's project-write setting. Download and browser grants expose those app capabilities to a direct-mode chat. Instruction changes, background-worker tools, and canonical plan approval keep their existing gates. Local-execution enables native file access and commands in the owning chat through the provider adapters.
+
+Every successful grant sends the full capability list through `setExecutionMode`, keeping provider briefs and native policies synchronized. Codex updates its resumed conversation through an acknowledged `thread/inject_items` developer message before the hub accepts the grant. A CLI without that protocol method produces an actionable update-and-retry error and restores prior permissions. Failed reconfiguration rolls back the full prior capability list. If interruption invalidates an in-flight transition, the hub reapplies prior capabilities; an unproven rollback disposes the session.
+
+## Permission verification
+
+- The focused hub/tool/planning/Pi catalog run passed 105 tests. Behavioral cases cover blocked writes before grant, immediate pending tool results, busy retry, wrong-chat rejection, reconnect replay, denial, stop, new-chat reset, canonical-plan approval, and one-use legacy root provenance. A delayed adapter fixture also proves that failure or interruption during native reconfiguration restores prior authority.
+- Real Studio, hub, and WASM at `http://127.0.0.1:7840` passed `e2e:chat-permissions` with a controlled Pi fixture. Clicking the pill authorized an actual WASM document edit, held it for review, and rejecting the review restored the document. The real project store accepted a note only after project-edit was granted. Denial, stop, detached old pills, and new-chat reset kept unauthorized writes blocked; personal mode settings remained unchanged. Results and screenshots are in [the runtime evidence directory](evidence/pr475-chat-permissions-runtime/results.json). Local-execution in this UI check validates grant state through the fixture provider.
+- Actual Codex 0.162.1 app-server completed request, document-only grant, native command grant, and revocation in the same isolated conversation. Its MCP request and document-edit responses were fixtures. After local-execution was granted, its native OS command exited zero and wrote `native-grant-success` to a temporary file outside the chat workspace. The document-only and revoked cases left their native-write probe files absent. The chat stayed in question workflow with the safe permission profile. [The compact native evidence](evidence/pr475-chat-permissions-runtime/native-codex-results.json) records those boundaries.
+- Provider-focused tests passed 186 cases, followed by 40 Codex app-server cases after the instruction-sync repair. The latter cover acknowledged grant/revoke briefs, a separate chat retaining read-only policy, and rollback when `thread/inject_items` is unavailable.
+
+## Integrated permission checks
+
+The bounded full hub rerun passed 1,164 tests. The full Studio unit rerun passed 2,541 tests with one skip, and Studio TypeScript checking passed. The bounded full Studio browser rerun passed 102 tests with zero cancellations. An earlier concurrent hub run hit a metadata timing assertion; the same case passed in isolation and in the full rerun. Obsolete guard/presentation failures from the first Studio run were corrected before the passing rerun.
+
+The Codex context refresh after later workflow/profile changes passed three focused tests and an extended actual CLI run. In the same conversation, revoking grants then switching to direct/safe enabled a workspace write, full access enabled an outside-workspace write, and switching back to safe refreshed instructions without starting a turn.
+
+## Remaining bounded follow-ups
 
 1. **Owner delete during provider startup — unproven.** A Studio `chat-start` may already be awaiting boot, auth, or project/reference setup when owner deletion disposes the record. `startSession()` has no general disposed check after those awaits; plan mode also awaits `backend.setExecutionMode()` after assigning the backend. Most starts after registry deletion should fail at capability issuance, but test a gated plan-mode start racing DELETE and verify that no disposed session is later reported or used.
 2. **Registration rollback after partial allocation — unproven.** The production `HubSessionRegistry` factory creates directories and credential mirrors before returning its record. If a later synchronous initialization step throws, there is no record to pass through `disposeRecord()`. Fault-inject a factory failure after allocation and verify the partial root is cleaned.
@@ -61,14 +86,14 @@ node --test rhwp/rhwp-agent/tests/process-tree.test.mjs rhwp/rhwp-agent/tests/tu
 npm --prefix rhwp/rhwp-agent test
 ```
 
-## Verification results
+## Verification results before permission changes
 
-- Final `node --test --test-concurrency=4 rhwp/rhwp-agent/tests/*.test.mjs`: 1,149 passed.
-- Final Studio `npm test -- --test-concurrency=4`: 2,533 passed, one skipped.
+- At commit `3ca1bbca`, `node --test --test-concurrency=4 rhwp/rhwp-agent/tests/*.test.mjs`: 1,149 passed.
+- At the same commit, Studio `npm test -- --test-concurrency=4`: 2,533 passed, one skipped.
 - Desktop suite: 42 passed; focused capture storage/native IPC suite: six passed. ACP and Studio TypeScript checks passed.
-- Final standalone sidebar build and full interaction suite passed, including resumed idle chats and later cancellation. The real Studio capture E2E passed with a fixture Pi provider: ordinary selection, intentional selection, object/table/cell context, local save without sending, rejection retention, and explicit accepted Send.
+- The standalone sidebar build and full interaction suite passed, including resumed idle chats and later cancellation. The real Studio capture E2E passed with a fixture Pi provider: ordinary selection, intentional selection, object/table/cell context, local save without sending, rejection retention, and explicit accepted Send.
 - Isolated Electron at `http://127.0.0.1:7830/?renderer=canvaskit`, profile `/tmp/rauhwpx-capture-image-evidence/user-data`: a clean `test-image.hwp` region capture matched a fresh live crop exactly (422 × 320 pixels). Save queued one pill with zero user messages; Escape cancelled another capture; reload and reopening the same fixture restored the pill. JSON and PNG were read back from disk. This check used a fixture document; no authenticated provider turn was sent.
-- The user's Electron at `http://127.0.0.1:7745`, CDP 9475, restarted gracefully with the new backend and IPC. Its original persisted document snapshot and existing 17-message Codex chat reopened with no running turn, stop button, or missing-handler error. No verification prompt was added to that chat. A subsequent authenticated resumed Codex turn remains a manual check.
+- The user's Electron at `http://127.0.0.1:7745`, CDP 9475, restarted gracefully with the new backend and IPC. Its original persisted document snapshot and existing 17-message Codex chat reopened with no running turn, stop button, or IPC error. The latest restart also confirmed an empty chat grant list. No verification prompt was added to that chat. A subsequent authenticated resumed Codex turn remains a manual check.
 - Fixture-only visual evidence is committed under `docs/evidence/pr475-memo-fixes/`: armed border, screenshot comment, queued pills, graph, and idle resumed chat.
 - ACP type checking, Studio TypeScript checking, standalone sidebar build, and the full sidebar interaction suite passed.
 - Real isolated hub/Studio reconnect E2E passed hub absence, automatic recovery, termination, manual retry, and restart recovery. Reference-file E2E used the original HWPX with a fixture provider and passed initial upload, next-draft upload, and cancellation.

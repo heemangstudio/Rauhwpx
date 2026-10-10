@@ -1,0 +1,51 @@
+{
+  "runtime": "codex-cli 0.162.1 app-server",
+  "model": "gpt-6.1-sol",
+  "conversation": "same isolated conversation across request, grants and revocation",
+  "mcp": "fixture request_permission and insert_text responses",
+  "nativeExecution": "actual provider OS command and filesystem write",
+  "scenarios": [
+    {
+      "name": "request before grant",
+      "permissionRequestReturned": "pending",
+      "turnCompleted": true,
+      "nativeCommandCalled": false
+    },
+    {
+      "name": "document edit only",
+      "grants": [
+        "document-edit"
+      ],
+      "fixtureInsertTextSucceeded": true,
+      "nativeWriteProbeExists": false,
+      "permissionProfile": "safe",
+      "workflow": "question"
+    },
+    {
+      "name": "local execution and document edit",
+      "grants": [
+        "document-edit",
+        "local-execution"
+      ],
+      "nativeCommandExitCode": 0,
+      "nativeFileOutsideWorkspaceExists": true,
+      "nativeFileContent": "native-grant-success",
+      "fixtureInsertTextSucceeded": true
+    },
+    {
+      "name": "revoked access",
+      "grants": [],
+      "nativeCommandCalled": false,
+      "nativeWriteProbeExists": false,
+      "permissionProfile": "safe",
+      "workflow": "question"
+    },
+    {
+      "name": "mode changes after revocation",
+      "grants": [],
+      "directSafeWorkspaceWriteSucceeded": true,
+      "fullAccessOutsideWorkspaceWriteSucceeded": true,
+      "safeRefreshAcknowledgedWithoutTurn": true
+    }
+  ]
+}

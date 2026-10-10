@@ -6,6 +6,8 @@ import path from 'node:path';
 import { toolProfileForPhase } from '../planning-state.mjs';
 import {
   createLineReader,
+  chatPermissionGrantsFor,
+  hasLocalExecutionGrant,
   isPlanningRestricted,
   mcpCapabilityEnv,
   normalizeExecutionMode,
@@ -102,9 +104,11 @@ export function buildPiArgv(opts, sessionId) {
   // Safe Pi has no OS write sandbox. Never expose its general shell: even
   // a hub-private sibling path is writable by the same OS user. Background
   // copy-layout work uses the structured hub runner instead.
-  if (isPlanningRestricted(opts)) argv.push('--exclude-tools', PLANNING_EXCLUDED_TOOLS);
-  else if (opts.toolProfile === 'copy-layout-worker') argv.push('--exclude-tools', SAFE_WORKER_EXCLUDED_TOOLS);
-  else if (opts.permissionProfile !== 'unrestricted') argv.push('--exclude-tools', SAFE_EXCLUDED_TOOLS);
+  if (opts.toolProfile === 'copy-layout-worker') argv.push('--exclude-tools', SAFE_WORKER_EXCLUDED_TOOLS);
+  else if (!hasLocalExecutionGrant(opts)) {
+    if (isPlanningRestricted(opts)) argv.push('--exclude-tools', PLANNING_EXCLUDED_TOOLS);
+    else if (opts.permissionProfile !== 'unrestricted') argv.push('--exclude-tools', SAFE_EXCLUDED_TOOLS);
+  }
   return argv;
 }
 
@@ -141,6 +145,7 @@ export function buildPiEnv(opts, sourceEnv = process.env) {
     RHWP_ROOT_DIR: String(opts.rootDir ?? ''),
     ...(readOnlyRoots.length > 0 ? { RHWP_READONLY_ROOTS: readOnlyRoots.join(path.delimiter) } : {}),
     RHWP_PERMISSION_PROFILE: opts.permissionProfile ?? 'safe',
+    RHWP_LOCAL_EXECUTION: hasLocalExecutionGrant(opts) ? '1' : '0',
     RHWP_TOOL_PROFILE: toolProfileFor(opts),
     RHWP_PI_BIN: String(opts.piBin ?? 'pi'),
     RHWP_PI_MODEL: String(opts.model ?? ''),
@@ -724,6 +729,7 @@ export function createPiSession(opts, {
       opts.workflow = mode.workflow;
       opts.phase = mode.phase;
       opts.capabilityEpoch = mode.capabilityEpoch;
+      opts.chatPermissionGrants = chatPermissionGrantsFor(mode, opts);
     },
     interrupt() {
       queuedTurn = null;

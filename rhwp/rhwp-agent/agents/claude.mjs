@@ -18,6 +18,8 @@ import { applyManagedCliLaunch, resolveCommandOnPath, resolveNpmCliLaunch } from
 import { TOOL_TRACE_ENABLED, traceNow, writeToolTrace } from '../tool-trace.mjs';
 import {
   createLineReader,
+  chatPermissionGrantsFor,
+  hasLocalExecutionGrant,
   isPlanningRestricted,
   mcpCapabilityEnv,
   mcpRuntimeFor,
@@ -55,6 +57,7 @@ import {
 // (CLI 확인: 2.1.235) planning 의 read-only 경계가 서브에이전트에서도 유지된다.
 const DIRECT_TOOLS = 'Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch,Agent,Workflow';
 const PLANNING_TOOLS = 'Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent,Workflow';
+const LOCAL_EXECUTION_TOOLS = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash']);
 const STDERR_TAIL_LIMIT = 16_000;
 /**
  * 백그라운드 서브에이전트/워크플로 턴의 정착 유예. task_notification 이 큐에 남긴
@@ -215,12 +218,15 @@ export function writeClaudeAgentsFile(isolatedHome) {
  * 게이트가 그대로 지킨다.
  */
 function usesNativePlanMode(opts) {
-  return providerInteractionMode(opts) === 'plan' && normalizeExecutionMode(opts).workflow !== 'question';
+  return !hasLocalExecutionGrant(opts)
+    && providerInteractionMode(opts) === 'plan'
+    && normalizeExecutionMode(opts).workflow !== 'question';
 }
 
 export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null } = {}) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
-  const planningRestricted = isPlanningRestricted(opts);
+  const localExecution = hasLocalExecutionGrant(opts);
+  const planningRestricted = isPlanningRestricted(opts) && !localExecution;
   const nativePlan = usesNativePlanMode(opts);
   const copyLayoutWorker = opts.toolProfile === 'copy-layout-worker';
   const activeTools = copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
@@ -243,6 +249,7 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null } =
     },
   };
   const allow = [
+    ...(localExecution ? [...LOCAL_EXECUTION_TOOLS] : []),
     permissionPathRule('Read', opts.rootDir),
     ...readOnlyRoots.map((root) => permissionPathRule('Read', root)),
     ...(!planningRestricted && !copyLayoutWorker ? [
@@ -254,7 +261,9 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null } =
     ...(copyLayoutWorker ? [] : ['Bash', 'WebSearch', 'WebFetch', 'Agent', 'Workflow']),
     'mcp__rhwp__*',
   ];
-  const settings = unrestricted && !planningRestricted ? {} : {
+  const settings = localExecution
+    ? { permissions: { allow }, sandbox: { enabled: false } }
+    : unrestricted && !planningRestricted ? {} : {
     permissions: { allow },
     sandbox: {
       enabled: true,
@@ -301,7 +310,8 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null } =
  */
 export function buildClaudeSdkOptions(opts, sessionId, resume, abortController) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
-  const planningRestricted = isPlanningRestricted(opts);
+  const localExecution = hasLocalExecutionGrant(opts);
+  const planningRestricted = isPlanningRestricted(opts) && !localExecution;
   const nativePlan = usesNativePlanMode(opts);
   const copyLayoutWorker = opts.toolProfile === 'copy-layout-worker';
   const activeTools = copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
@@ -309,6 +319,7 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController) 
   const readOnlyRoots = providerReadOnlyRoots(opts);
   const runtime = mcpRuntimeFor(opts);
   const allow = [
+    ...(localExecution ? [...LOCAL_EXECUTION_TOOLS] : []),
     permissionPathRule('Read', opts.rootDir),
     ...readOnlyRoots.map((root) => permissionPathRule('Read', root)),
     ...(!planningRestricted && !copyLayoutWorker ? [
@@ -320,7 +331,9 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController) 
     ...(copyLayoutWorker ? [] : ['Bash', 'WebSearch', 'WebFetch', 'Agent', 'Workflow']),
     'mcp__rhwp__*',
   ];
-  const settings = unrestricted && !planningRestricted ? {} : {
+  const settings = localExecution
+    ? { permissions: { allow }, sandbox: { enabled: false } }
+    : unrestricted && !planningRestricted ? {} : {
     permissions: { allow },
     sandbox: {
       enabled: true,
@@ -332,8 +345,11 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController) 
       },
     },
   };
-  const canUseTool = createClaudeAskUserQuestionPermissionHandler(opts);
-  if (!canUseTool) throw new Error('Claude native user input requires a root requestUserInput capability');
+  const requestPermission = createClaudeAskUserQuestionPermissionHandler(opts);
+  if (!requestPermission) throw new Error('Claude native user input requires a root requestUserInput capability');
+  const canUseTool = (toolName, input, context) => localExecution && LOCAL_EXECUTION_TOOLS.has(toolName)
+    ? Promise.resolve({ behavior: 'allow', updatedInput: input })
+    : requestPermission(toolName, input, context);
   return {
     abortController,
     agents: RHWP_SUBAGENTS,
@@ -626,7 +642,8 @@ export function createClaudeSession(opts, {
   function parentTaskIdOf(e) {
     const parent = e?.parent_tool_use_id;
     if (!parent) return undefined;
-    return taskIdByToolUse.get(String(parent));
+    // task_started 전이나 매핑 제거 후의 이벤트도 루트 권한으로 승격하지 않는다.
+    return taskIdByToolUse.get(String(parent)) ?? String(parent);
   }
 
   // ── usage: result 의 modelUsage 는 프로세스 수명 누적치다 ──────────
@@ -756,8 +773,7 @@ export function createClaudeSession(opts, {
       if (!taskId) return;
       if (e.tool_use_id) {
         taskIdByToolUse.set(String(e.tool_use_id), taskId);
-        // 긴 세션 대비 상한 — 가장 오래된 매핑부터 버린다 (늦은 child 이벤트는
-        // 귀속만 잃고 루트 스트림으로 떨어질 뿐, 유실되지 않는다).
+        // 긴 세션 대비 상한 — 늦은 child 이벤트는 원래 tool_use id로 귀속한다.
         if (taskIdByToolUse.size > 512) {
           taskIdByToolUse.delete(taskIdByToolUse.keys().next().value);
         }
@@ -1478,20 +1494,24 @@ export function createClaudeSession(opts, {
       const current = normalizeExecutionMode(opts);
       if (current.workflow === mode.workflow
         && current.phase === mode.phase
-        && String(current.capabilityEpoch) === String(mode.capabilityEpoch)) {
+        && String(current.capabilityEpoch) === String(mode.capabilityEpoch)
+        && JSON.stringify(chatPermissionGrantsFor(opts)) === JSON.stringify(chatPermissionGrantsFor(mode, opts))) {
         const [, sdkCleaned] = await Promise.all([restartReady, sdkShutdownReady]);
         if (!sdkCleaned) throw new Error('Claude SDK cleanup remains unconfirmed');
         return;
       }
+      const previousGrants = chatPermissionGrantsFor(opts);
       opts.workflow = mode.workflow;
       opts.phase = mode.phase;
       opts.capabilityEpoch = mode.capabilityEpoch;
+      opts.chatPermissionGrants = chatPermissionGrantsFor(mode, opts);
       try {
         await restartForConfigChange();
       } catch (error) {
         opts.workflow = current.workflow;
         opts.phase = current.phase;
         opts.capabilityEpoch = current.capabilityEpoch;
+        opts.chatPermissionGrants = previousGrants;
         restartReady = Promise.resolve();
         throw error;
       }

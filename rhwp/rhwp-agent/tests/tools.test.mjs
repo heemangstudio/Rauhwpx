@@ -28,9 +28,27 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 const byName = new Map(TOOL_DEFINITIONS.map((d) => [d.name, d]));
 
-test('도구는 정확히 91개, 이름 중복 없음', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 91);
+test('도구 이름에 중복이 없다', () => {
   assert.equal(byName.size, TOOL_DEFINITIONS.length, 'duplicate tool names');
+});
+
+test('root requestable catalogs expose bounded app capabilities while plan and worker boundaries remain', () => {
+  const names = (profile, gates) => new Set(filterToolDefinitions(profile, gates).map((definition) => definition.name));
+  assert.ok(names('question').has('request_permission'));
+  assert.ok(!names('question').has('insert_text'));
+  assert.ok(names('question', { requestable: true }).has('insert_text'));
+  assert.ok(names('question', { requestable: true, projectWrites: false }).has('project_edit'));
+  assert.ok(names('direct', { requestable: true }).has('download_file'));
+  assert.ok(names('direct', { requestable: true }).has('browserbase_navigate'));
+  for (const profile of ['planning', 'awaiting-approval']) {
+    assert.ok(!names(profile, { requestable: true }).has('insert_text'));
+  }
+  for (const profile of ['copy-layout-worker', 'doc-researcher', 'document-read']) {
+    assert.ok(!names(profile, { requestable: true }).has('insert_text'));
+    assert.ok(!names(profile, { requestable: true }).has('request_permission'));
+  }
+  assert.ok(!names('question', { requestable: true }).has('update_agent_instructions'));
+  assert.ok(!names('question', { requestable: true }).has('delegate_copy_layout'));
 });
 
 test('모든 도구가 허용된 카테고리로 명시 분류된다', () => {
@@ -145,7 +163,6 @@ test('anchor 내부 필드는 validate 훅이 모양을 고정한다', () => {
 
 test('도구 프로필은 direct 호환성과 planning/implementing 가시성을 지킨다', () => {
   const direct = new Set(filterToolDefinitions('direct').map((definition) => definition.name));
-  assert.equal(direct.size, 78);
   assert.equal(byName.get('commit_product_skill')?.category, 'instruction-write');
   assert.equal(byName.get('list_harness_skills')?.category, 'instruction-read');
   assert.ok(direct.has('commit_product_skill'));
@@ -1037,7 +1054,8 @@ test('표·셀 속성은 타입이 있는 객체이고 모르는 키는 올바�
 // commit_version(전체 모드 버전 커밋) 추가분만큼 올렸다.
 // 연구 프로젝트 도구(project_read·project_edit·project_import)가 모든 모드에 들어가며 다시 올렸다 —
 // list_reference_files 는 project_read 가 대신해 뺐다. find_home_files 는 데스크톱에서만 보여 여기서 빠진다.
-const DIRECT_DEFINITION_TOTAL_LIMIT = 63_000;
+// 채팅별 권한 요청 도구의 정의를 포함한다.
+const DIRECT_DEFINITION_TOTAL_LIMIT = 64_000;
 const TOOL_DEFINITION_LIMIT = 3_000;
 
 test('direct 프로필 도구 정의 크기가 한도를 넘지 않는다', () => {

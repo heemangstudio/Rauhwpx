@@ -17,6 +17,7 @@
     "test": "npm run generate:agent-edit-capabilities && node scripts/run-tests.mjs unit",
     "e2e": "node e2e/text-flow.test.mjs",
     "e2e:agent-edit-loop": "node e2e/agent-edit-loop.test.mjs --mode=headless",
+    "e2e:chat-permissions": "node e2e/chat-permissions.test.mjs --mode=headless",
     "e2e:user-question": "node e2e/user-question-flow.test.mjs --mode=headless",
     "e2e:background-sessions": "node e2e/background-agent-sessions.test.mjs --mode=headless",
     "e2e:worktrees": "node e2e/worktree-lifecycle.test.mjs --mode=headless",

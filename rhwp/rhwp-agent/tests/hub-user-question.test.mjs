@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
@@ -139,7 +139,7 @@ function prepareFakePi(root, fixtureSource = ALIVE_PI_FIXTURE_SOURCE) {
   writeFakeCliBin(binDir, 'pi', fixtureSource);
 }
 
-async function startHub(t, { fakePi = false, controlledCompletion = false } = {}) {
+async function startHub(t, { fakePi = false, controlledCompletion = false, backendFixture = null } = {}) {
   const workRoot = mkdtempSync(path.join(os.tmpdir(), 'rhwp-hub-user-question-'));
   const piRoot = path.join(workRoot, 'pi');
   const completePi = path.join(workRoot, 'complete-pi');
@@ -153,7 +153,21 @@ async function startHub(t, { fakePi = false, controlledCompletion = false } = {}
     }, 20);
   ` : ALIVE_PI_FIXTURE_SOURCE);
   const testPath = process.env.PATH;
-  const child = spawn(process.execPath, ['server.mjs'], {
+  const serverArgs = ['server.mjs'];
+  if (backendFixture) {
+    const backendUrl = new URL(`../agents/${backendFixture.agent}.mjs`, import.meta.url).href;
+    const source = backendFixture.source({ workRoot, completePi });
+    writeFileSync(path.join(workRoot, 'permission-loader.mjs'), `
+      export async function load(url, context, nextLoad) {
+        if (url === ${JSON.stringify(backendUrl)}) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(source)} };
+        return nextLoad(url, context);
+      }
+    `);
+    const preload = path.join(workRoot, 'permission-preload.mjs');
+    writeFileSync(preload, "import { register } from 'node:module'; register(new URL('./permission-loader.mjs', import.meta.url));\n");
+    serverArgs.unshift('--import', preload);
+  }
+  const child = spawn(process.execPath, serverArgs, {
     cwd: new URL('..', import.meta.url),
     env: {
       ...process.env,
@@ -179,6 +193,7 @@ async function startHub(t, { fakePi = false, controlledCompletion = false } = {}
   const ready = JSON.parse(readyLine.slice('RHWP_HUB_READY '.length));
   return {
     port: ready.port,
+    workRoot,
     completePi: () => writeFileSync(completePi, ''),
     stderr: () => stderr,
   };
@@ -197,6 +212,275 @@ function questionArgs() {
     }],
   };
 }
+
+test('chat permission pills gate edits, survive reload, and reset with a new chat', { timeout: 40_000 }, async (t) => {
+  const { port, completePi } = await startHub(t, { fakePi: true, controlledCompletion: true });
+  const sessionId = 'chat-permission-scope';
+  const url = `ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=permission-page`;
+  let studio = await openClient(url);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  sendFrame(studio, { type: 'chat-start', agent: 'pi', workflow: 'question', permissionProfile: 'safe', threadId: 'permission-thread', documentId: 'permission-doc' });
+  const started = await studio.next((frame) => frame.type === 'chat-started');
+  assert.deepEqual(started.chatPermissionGrants, []);
+  sendFrame(studio, { type: 'chat-user-message', text: 'Request an edit permission.', threadId: started.threadId, documentId: started.documentId });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  let mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
+  t.after(() => closeClient(mcp));
+  const edit = { tool: 'insert_text', args: { expectedRevision: 1, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'Granted edit' }, workflow: 'question', capabilityEpoch: started.capabilityEpoch };
+  sendFrame(mcp, { type: 'tool-call', id: 101, ...edit });
+  assert.equal((await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 101)).error.code, 'QUESTION_WRITE_BLOCKED');
+  sendFrame(mcp, { type: 'tool-call', id: 102, tool: 'request_permission', args: { capability: 'document-edit', reason: 'Apply the requested paragraph edit.' }, workflow: 'question', capabilityEpoch: started.capabilityEpoch });
+  const requested = await studio.next((frame) => frame.type === 'chat-permission-requested');
+  const pending = await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 102);
+  assert.equal(pending.ok, true);
+  assert.equal(pending.result.status, 'pending', 'the tool returns before the user responds');
+  sendFrame(studio, { type: 'chat-permission-response', requestId: requested.request.requestId, responseId: 'wrong-scope', threadId: 'another-thread', documentId: started.documentId, decision: 'grant' });
+  assert.equal((await studio.next((frame) => frame.type === 'chat-permission-response-result' && frame.responseId === 'wrong-scope')).ok, false);
+  await closeClient(studio);
+  studio = await openClient(url);
+  const welcome = await studio.next((frame) => frame.type === 'welcome');
+  assert.equal(welcome.session.pendingChatPermissionRequest.requestId, requested.request.requestId);
+  const replayed = await studio.next((frame) => frame.type === 'chat-permission-requested');
+  assert.equal(replayed.replayed, true);
+  const response = { type: 'chat-permission-response', requestId: requested.request.requestId, responseId: 'grant-doc', threadId: started.threadId, documentId: started.documentId, decision: 'grant' };
+  sendFrame(studio, response);
+  assert.equal((await studio.next((frame) => frame.type === 'chat-permission-response-result')).code, 'AGENT_BUSY');
+  completePi();
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  sendFrame(studio, response);
+  assert.equal((await studio.next((frame) => frame.type === 'chat-permission-response-result')).ok, true);
+  const granted = await studio.next((frame) => frame.type === 'chat-permission-resolved');
+  assert.equal(granted.outcome.status, 'granted');
+  assert.deepEqual(granted.grants, ['document-edit']);
+  assert.equal(granted.capabilityEpoch, started.capabilityEpoch);
+  sendFrame(studio, response);
+  assert.equal((await studio.next((frame) => frame.type === 'chat-permission-response-result')).ok, true, 'duplicate approval is acknowledged');
+  sendFrame(studio, { type: 'chat-user-message', text: 'Apply the paragraph edit now.', threadId: started.threadId, documentId: started.documentId });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
+  sendFrame(mcp, { type: 'tool-call', id: 103, ...edit });
+  const forwarded = await studio.next((frame) => frame.type === 'tool-request' && frame.tool === 'insert_text');
+  assert.deepEqual(forwarded.chatPermissionGrants, ['document-edit']);
+  sendFrame(studio, { type: 'tool-response', id: forwarded.id, ok: true, result: { revision: 2 } });
+  assert.equal((await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 103)).ok, true);
+  sendFrame(studio, { type: 'chat-interrupt' });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  sendFrame(studio, { type: 'chat-start', agent: 'pi', workflow: 'question', permissionProfile: 'safe', threadId: 'new-permission-thread', documentId: 'permission-doc', force: true });
+  const nextChat = await studio.next((frame) => frame.type === 'chat-started');
+  assert.deepEqual(nextChat.chatPermissionGrants, []);
+  assert.equal(nextChat.pendingChatPermissionRequest, null);
+  assert.equal(nextChat.permissionProfile, 'safe');
+});
+
+test('local permission waits for idle, keeps its pending request, and preserves the safe profile', { timeout: 40_000 }, async (t) => {
+  const { port, completePi } = await startHub(t, { fakePi: true, controlledCompletion: true });
+  const sessionId = 'chat-permission-native';
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=native-permission-page`);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  const started = await startRunningChat(studio, 'pi');
+  const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
+  t.after(() => closeClient(mcp));
+  sendFrame(mcp, { type: 'tool-call', id: 201, tool: 'request_permission', args: { capability: 'local-execution', reason: 'Read local files and run the requested command.' } });
+  const requested = await studio.next((frame) => frame.type === 'chat-permission-requested');
+  assert.equal((await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 201)).result.status, 'pending');
+  const response = { type: 'chat-permission-response', requestId: requested.request.requestId, responseId: 'native-grant', threadId: started.threadId, documentId: started.documentId, decision: 'grant' };
+  sendFrame(studio, response);
+  assert.equal((await studio.next((frame) => frame.type === 'chat-permission-response-result')).code, 'AGENT_BUSY');
+  completePi();
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  sendFrame(studio, response);
+  assert.equal((await studio.next((frame) => frame.type === 'chat-permission-response-result')).ok, true);
+  const resolved = await studio.next((frame) => frame.type === 'chat-permission-resolved');
+  assert.deepEqual(resolved.grants, ['local-execution']);
+  sendFrame(studio, { type: 'chat-start', agent: 'pi', threadId: started.threadId, documentId: started.documentId });
+  const retained = await studio.next((frame) => frame.type === 'chat-started');
+  assert.deepEqual(retained.chatPermissionGrants, ['local-execution']);
+  assert.equal(retained.permissionProfile, 'safe');
+});
+
+test('failed and interrupted permission reconfiguration restores native authority', { timeout: 40_000 }, async (t) => {
+  const { port, completePi, workRoot } = await startHub(t, {
+    fakePi: true,
+    backendFixture: {
+      agent: 'pi',
+      source: ({ workRoot: root, completePi: completion }) => `
+        import fs from 'node:fs';
+        export function createPiSession(opts) {
+          let running = false;
+          const timer = setInterval(() => {
+            if (!fs.existsSync(${JSON.stringify(completion)})) return;
+            fs.unlinkSync(${JSON.stringify(completion)});
+            running = false;
+            opts.onEvent({ type: 'turn-end', agent: 'pi', stopReason: 'completed' });
+          }, 10);
+          return {
+            getSessionId() { return 'permission-transition-fixture'; },
+            dispose() { clearInterval(timer); return true; },
+            interrupt() {
+              if (!running) return;
+              running = false;
+              opts.onEvent({ type: 'turn-end', agent: 'pi', stopReason: 'interrupted' });
+            },
+            sendUserMessage() { running = true; opts.onEvent({ type: 'turn-start', agent: 'pi' }); },
+            async setExecutionMode(mode) {
+              opts.chatPermissionGrants = [...mode.chatPermissionGrants];
+              fs.writeFileSync(${JSON.stringify(path.join(root, 'effective-grants.json'))}, JSON.stringify(opts.chatPermissionGrants));
+              if (!opts.chatPermissionGrants.includes('local-execution')) return;
+              fs.writeFileSync(${JSON.stringify(path.join(root, 'permission-apply-started'))}, '');
+              while (!fs.existsSync(${JSON.stringify(path.join(root, 'permission-apply-release'))})) await new Promise((resolve) => setTimeout(resolve, 10));
+              if (fs.existsSync(${JSON.stringify(path.join(root, 'permission-apply-fail'))})) throw new Error('Fixture provider reconfiguration failed');
+            },
+          };
+        }
+      `,
+    },
+  });
+  const sessionId = 'permission-transition-rollback';
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=transition-page`);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  const started = await startRunningChat(studio, 'pi');
+  const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
+  t.after(() => closeClient(mcp));
+  sendFrame(mcp, { type: 'tool-call', id: 401, tool: 'request_permission', args: { capability: 'local-execution', reason: 'Perform the requested local command.' } });
+  const requested = await studio.next((frame) => frame.type === 'chat-permission-requested');
+  await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 401);
+  completePi();
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  const response = { type: 'chat-permission-response', requestId: requested.request.requestId, responseId: 'rollback-grant', threadId: started.threadId, documentId: started.documentId, decision: 'grant' };
+  const release = path.join(workRoot, 'permission-apply-release');
+  const failure = path.join(workRoot, 'permission-apply-fail');
+  const applyStarted = path.join(workRoot, 'permission-apply-started');
+  const effectiveGrants = () => JSON.parse(readFileSync(path.join(workRoot, 'effective-grants.json'), 'utf8'));
+  writeFileSync(release, '');
+  writeFileSync(failure, '');
+  sendFrame(studio, response);
+  const failed = await studio.next((frame) => frame.type === 'chat-permission-response-result');
+  assert.equal(failed.ok, false);
+  assert.match(failed.message, /Fixture provider reconfiguration failed/);
+  assert.deepEqual(effectiveGrants(), []);
+  sendFrame(studio, { type: 'chat-start', agent: 'pi', threadId: started.threadId, documentId: started.documentId });
+  const unchanged = await studio.next((frame) => frame.type === 'chat-started');
+  assert.deepEqual(unchanged.chatPermissionGrants, []);
+  assert.equal(unchanged.pendingChatPermissionRequest.requestId, requested.request.requestId);
+  rmSync(release);
+  rmSync(failure);
+  rmSync(applyStarted);
+  sendFrame(studio, response);
+  await waitForPath(applyStarted);
+  assert.deepEqual(effectiveGrants(), ['local-execution']);
+  sendFrame(studio, { type: 'chat-interrupt' });
+  const cancelled = await studio.next((frame) => frame.type === 'chat-permission-resolved');
+  assert.equal(cancelled.outcome.status, 'expired');
+  writeFileSync(release, '');
+  const interrupted = await studio.next((frame) => frame.type === 'chat-permission-response-result');
+  assert.equal(interrupted.code, 'REQUEST_INVALIDATED');
+  assert.deepEqual(effectiveGrants(), [], 'an interrupted adapter cannot retain the rejected native grant');
+});
+
+test('permission requests require one provider-stream root ticket for legacy MCP callers', { timeout: 40_000 }, async (t) => {
+  const args = { capability: 'downloads', reason: 'Download the attached source.' };
+  const { port } = await startHub(t, {
+    backendFixture: {
+      agent: 'claude',
+      source: () => `
+        export function prepareClaudeHome() { return []; }
+        export function flushClaudeCredentialMirrors() { return true; }
+        export function createClaudeSession(opts) {
+          return {
+            getSessionId() { return 'permission-provenance-fixture'; },
+            dispose() { return true; },
+            setExecutionMode() {},
+            interrupt() { opts.onEvent({ type: 'turn-end', agent: 'claude', stopReason: 'interrupted' }); },
+            sendUserMessage(prompt) {
+              opts.onEvent({ type: 'turn-start', agent: 'claude' });
+              const event = { type: 'tool-call', agent: 'claude', tool: 'mcp__rhwp__request_permission', argsJson: ${JSON.stringify(JSON.stringify(args))} };
+              if (prompt.includes('permission-root-ticket') || prompt.includes('permission-ambiguous-ticket')) {
+                opts.onEvent({ ...event, callId: 'root-permission-call' });
+              }
+              if (prompt.includes('permission-child-ticket') || prompt.includes('permission-ambiguous-ticket')) {
+                opts.onEvent({ ...event, callId: 'child-permission-call', parentTaskId: 'child-task' });
+              }
+            },
+          };
+        }
+      `,
+    },
+  });
+  const sessionId = 'permission-root-provenance';
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=provenance-page`);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  sendFrame(studio, { type: 'chat-start', agent: 'claude', threadId: 'provenance-thread', documentId: 'provenance-doc' });
+  const started = await studio.next((frame) => frame.type === 'chat-started');
+  const cases = [
+    ['permission-missing-ticket', 'CALLER_SCOPE_UNKNOWN'],
+    ['permission-child-ticket', 'ROOT_INTERACTION_REQUIRED'],
+    ['permission-ambiguous-ticket', 'CALLER_SCOPE_UNKNOWN'],
+    ['permission-root-ticket', null],
+  ];
+  let id = 501;
+  for (const [trigger, expectedError] of cases) {
+    sendFrame(studio, { type: 'chat-user-message', text: trigger, threadId: started.threadId, documentId: started.documentId });
+    await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+    const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=claude&role=chat`);
+    t.after(() => closeClient(mcp));
+    sendFrame(mcp, { type: 'tool-call', id, tool: 'request_permission', args });
+    const result = await mcp.next((frame) => frame.type === 'tool-result' && frame.id === id);
+    if (expectedError) {
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, expectedError);
+    } else {
+      assert.equal(result.ok, true);
+      assert.equal(result.result.status, 'pending');
+      const requested = await studio.next((frame) => frame.type === 'chat-permission-requested');
+      assert.equal(requested.request.capability, 'downloads');
+    }
+    sendFrame(studio, { type: 'chat-interrupt' });
+    await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+    id += 1;
+  }
+});
+
+test('permission denials and cancellation leave no grant and plan approval remains required', { timeout: 40_000 }, async (t) => {
+  const { port } = await startHub(t, { fakePi: true });
+  const sessionId = 'chat-permission-denial';
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=denial-page`);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  const started = await startRunningChat(studio, 'pi');
+  const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
+  t.after(() => closeClient(mcp));
+  const args = { capability: 'downloads', reason: 'Fetch the source attachment.' };
+  sendFrame(mcp, { type: 'tool-call', id: 301, tool: 'request_permission', args, parentTaskId: 'child-task' });
+  assert.equal((await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 301)).error.code, 'ROOT_INTERACTION_REQUIRED');
+  sendFrame(mcp, { type: 'tool-call', id: 302, tool: 'request_permission', args });
+  const requested = await studio.next((frame) => frame.type === 'chat-permission-requested');
+  await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 302);
+  sendFrame(studio, { type: 'chat-permission-response', requestId: requested.request.requestId, responseId: 'deny-download', threadId: started.threadId, documentId: started.documentId, decision: 'deny' });
+  await studio.next((frame) => frame.type === 'chat-permission-response-result');
+  const denied = await studio.next((frame) => frame.type === 'chat-permission-resolved');
+  assert.equal(denied.outcome.status, 'denied');
+  assert.deepEqual(denied.grants, []);
+  sendFrame(mcp, { type: 'tool-call', id: 303, tool: 'request_permission', args });
+  const second = await studio.next((frame) => frame.type === 'chat-permission-requested');
+  await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 303);
+  sendFrame(studio, { type: 'chat-interrupt' });
+  const expired = await studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === second.request.requestId);
+  assert.equal(expired.outcome.status, 'expired');
+  assert.deepEqual(expired.grants, []);
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  sendFrame(studio, { type: 'chat-start', agent: 'pi', workflow: 'plan', force: true, threadId: 'plan-permission-thread', documentId: 'plan-permission-doc' });
+  const plan = await studio.next((frame) => frame.type === 'chat-started');
+  sendFrame(studio, { type: 'chat-user-message', text: 'Prepare a plan.', threadId: plan.threadId, documentId: plan.documentId });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  const planner = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
+  t.after(() => closeClient(planner));
+  sendFrame(planner, { type: 'tool-call', id: 304, tool: 'request_permission', args: { capability: 'document-edit', reason: 'Start implementing before approval.' }, workflow: 'plan', capabilityEpoch: plan.capabilityEpoch });
+  assert.equal((await planner.next((frame) => frame.type === 'tool-result' && frame.id === 304)).error.code, 'PLAN_APPROVAL_REQUIRED');
+});
 
 function implementationPlanArgs() {
   return {

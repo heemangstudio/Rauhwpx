@@ -126,6 +126,7 @@ function appServerResponder({
       return reply({ thread: { id: 'thread-native' } })(frame, process);
     }
     if (frame.method === 'thread/resume') return reply({ thread: { id: frame.params.threadId } })(frame, process);
+    if (frame.method === 'thread/inject_items') return reply({})(frame, process);
     if (frame.method === 'turn/start') {
       process.send({
         method: 'turn/started',
@@ -948,6 +949,93 @@ test('mode changes restart app-server while idle, resume the thread, and select 
   h.session.interrupt();
   await settle();
   await h.session.dispose();
+});
+
+test('a native chat grant and explicit revocation change only that resumed conversation', async (t) => {
+  const h = harness(t, { workflow: 'question', phase: 'questioning' });
+  const other = harness(t, { workflow: 'question', phase: 'questioning' });
+  t.after(() => Promise.all([h.session.dispose(), other.session.dispose()]));
+  async function turn(chat, prompt) {
+    chat.session.sendUserMessage(prompt);
+    await settle(24);
+    const process = chat.spawns.at(-1).process;
+    const start = process.frames.find((frame) => frame.method === 'turn/start');
+    process.send({ method: 'turn/completed', params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } } });
+    await settle();
+    return start.params;
+  }
+  const initial = await turn(h, 'Ask for local access');
+  assert.equal(initial.sandboxPolicy.type, 'readOnly');
+  await h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 2, chatPermissionGrants: ['document-edit'] });
+  const documentOnly = await turn(h, 'Use the granted document tools');
+  assert.equal(documentOnly.collaborationMode.mode, 'default');
+  assert.equal(documentOnly.sandboxPolicy.type, 'readOnly');
+  const injected = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
+  assert.equal(injected.params.items[0].role, 'developer');
+  assert.match(injected.params.items[0].content[0].text, /The user granted document-edit/);
+  const mode = { workflow: 'question', phase: 'questioning', capabilityEpoch: 3, chatPermissionGrants: ['local-execution'] };
+  await h.session.setExecutionMode(mode);
+  mode.chatPermissionGrants.length = 0;
+  const granted = await turn(h, 'Use the granted access');
+  assert.equal(granted.sandboxPolicy.type, 'dangerFullAccess');
+  assert.equal(granted.collaborationMode.mode, 'default');
+  assert.equal(h.opts.permissionProfile, 'safe');
+  assert.equal(h.opts.workflow, 'question');
+  assert.ok(h.spawns.at(-1).process.frames.some((frame) => frame.method === 'thread/resume'));
+  assert.equal((await turn(other, 'A separate chat')).sandboxPolicy.type, 'readOnly');
+  await h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 4, chatPermissionGrants: [] });
+  const revoked = await turn(h, 'Access was cleared');
+  assert.equal(revoked.sandboxPolicy.type, 'readOnly');
+  assert.equal(revoked.collaborationMode.mode, 'plan');
+  assert.equal(revoked.threadId, initial.threadId);
+  await h.session.setExecutionMode({ workflow: 'direct', phase: 'implementing', capabilityEpoch: 5, chatPermissionGrants: [] });
+  const directReady = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
+  assert.match(directReady.params.items[0].content[0].text, /You are in 에이전트 mode/);
+  assert.equal(h.spawns.at(-1).process.frames.some((frame) => frame.method === 'turn/start'), false);
+  const direct = await turn(h, 'Apply a document edit in agent mode');
+  assert.equal(direct.collaborationMode.mode, 'default');
+  assert.equal(direct.sandboxPolicy.type, 'workspaceWrite');
+  await h.session.setPermissionProfile('unrestricted');
+  const fullReady = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
+  assert.match(fullReady.params.items[0].content[0].text, /You are in 전체/);
+  const full = await turn(h, 'Apply the full access profile');
+  assert.equal(full.sandboxPolicy.type, 'dangerFullAccess');
+  await h.session.setPermissionProfile('safe');
+  const safeReady = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
+  assert.match(safeReady.params.items[0].content[0].text, /staged as a live preview/);
+  assert.doesNotMatch(safeReady.params.items[0].content[0].text, /You are in 전체/);
+});
+
+test('a failed native permission instruction update rolls back before acknowledging the grant', async (t) => {
+  const standard = appServerResponder();
+  const h = harness(t, {
+    workflow: 'question', phase: 'questioning',
+    responder(frame, process) {
+      if (frame.method === 'thread/inject_items') {
+        process.send({ id: frame.id, error: { code: -32601, message: 'Unsupported method' } });
+        return;
+      }
+      standard(frame, process);
+    },
+  });
+  t.after(() => h.session.dispose());
+  h.session.sendUserMessage('Ask for permission');
+  await settle();
+  h.spawns[0].process.send({ method: 'turn/completed', params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } } });
+  await settle();
+  await assert.rejects(
+    h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 2, chatPermissionGrants: ['local-execution'] }),
+    /thread\/inject_items support is required/,
+  );
+  assert.deepEqual(h.opts.chatPermissionGrants, []);
+  assert.equal(h.opts.permissionProfile, 'safe');
+  assert.equal(h.opts.capabilityEpoch, 1);
+  assert.equal(h.spawns[1].process.frames.some((frame) => frame.method === 'turn/start'), false);
+  h.session.sendUserMessage('Continue within the existing permission');
+  await settle(24);
+  const next = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(next.params.sandboxPolicy.type, 'readOnly');
+  assert.equal(next.params.collaborationMode.mode, 'plan');
 });
 
 test('approved Plan restarts advertise mutation tools and returning to planning removes them', async (t) => {

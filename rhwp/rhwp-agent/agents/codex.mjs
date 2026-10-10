@@ -10,6 +10,8 @@ import {
 } from '../credential-mirror.mjs';
 import {
   createLineReader,
+  chatPermissionGrantsFor,
+  hasLocalExecutionGrant,
   isPlanningRestricted,
   mcpCapabilityEnv,
   mcpRuntimeFor,
@@ -116,8 +118,8 @@ function withCredentialCopyback(session, codexHome) {
  * @param {string | null} threadId
  */
 export function buildCodexArgv(opts, threadId) {
-  const unrestricted = opts.permissionProfile === 'unrestricted';
-  const planningRestricted = isPlanningRestricted(opts);
+  const unrestricted = opts.permissionProfile === 'unrestricted' || hasLocalExecutionGrant(opts);
+  const planningRestricted = isPlanningRestricted(opts) && !hasLocalExecutionGrant(opts);
   const runtime = mcpRuntimeFor(opts);
   const capabilityEnv = {
     ...runtime.env,
@@ -752,6 +754,7 @@ export function createLegacyCodexSession(opts, {
       opts.workflow = mode.workflow;
       opts.phase = mode.phase;
       opts.capabilityEpoch = mode.capabilityEpoch;
+      opts.chatPermissionGrants = chatPermissionGrantsFor(mode, opts);
     },
     interrupt() {
       const hadQueuedTurn = queuedTurn !== null;

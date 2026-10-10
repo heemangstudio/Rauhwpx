@@ -6,6 +6,7 @@ import test from 'node:test';
 import { createServer } from 'vite';
 import puppeteer from 'puppeteer-core';
 import { browserExecutable, browserLaunchArgs } from './browser-support.ts';
+import type { ReferenceSearchHit } from '../src/agent/types.ts';
 
 // Mount production modules; the sidebar service boundary is the explicitly labeled preview fixture.
 let server: any, browser: any, origin: string, cache: string;
@@ -403,16 +404,20 @@ test('chat markdown and reference search treat hostile markup as data', async (t
   assert.equal(rendered.unsafe, false);
   assert.equal(rendered.injected, false);
   await page.evaluate(() => {
-    (window as any).sidebarPreview.bridge.searchReferences = async () => [
+    (window as any).sidebarPreview.bridge.searchReferences = async (): Promise<ReferenceSearchHit[]> => [
       {
         referenceId: 'hostile',
-        fileName: '<img src=x onerror=alert(1)>',
+        name: '<img src=x onerror=alert(1)>',
+        scope: 'global',
+        scopeId: 'global',
+        score: 1,
         snippet: '<script>window.reviewInjected=true</script>',
         page: 1,
       },
     ];
   });
   await page.click('.ag-references-btn');
+  await page.click('.ag-reference-tab[data-scope="global"]');
   await page.type('.ag-reference-search', 'hostile');
   await page.waitForSelector('.ag-reference-search-hit', { visible: true });
   const hit = await page.$eval(
@@ -422,8 +427,10 @@ test('chat markdown and reference search treat hostile markup as data', async (t
       injected: el.querySelectorAll('script,img').length,
     }),
   );
+  assert.match(hit.text, /<img/);
   assert.match(hit.text, /<script>/);
   assert.equal(hit.injected, 0);
+  assert.equal(await page.evaluate(() => (window as any).reviewInjected), false);
 });
 
 test('streamed chat markdown matches fresh rendering and preserves completed content', async (t) => {

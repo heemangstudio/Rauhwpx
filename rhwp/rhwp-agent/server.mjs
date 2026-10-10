@@ -95,6 +95,12 @@ import {
   validateUserQuestionAnswers,
 } from './user-question.mjs';
 import {
+  createChatPermissionRequest,
+  isRequestPermissionTool,
+  normalizeChatPermissionGrants,
+  normalizeChatPermissionRequest,
+} from './chat-permissions.mjs';
+import {
   activeDocumentIdentity,
   addActiveDocumentContext,
   assertMessageScope,
@@ -495,6 +501,10 @@ const sessions = new HubSessionRegistry({
       suppressedUserQuestionCallIds: new Set(),
       pendingUserQuestionScopes: [],
       userQuestionResponseReceipts: new Map(),
+      pendingChatPermissionRequest: null,
+      pendingChatPermissionScopes: [],
+      suppressedChatPermissionCallIds: new Set(),
+      chatPermissionResponseReceipts: new Map(),
       nextHubId: 1,
       sessionGeneration: 0,
       missedTurnEnd: null,
@@ -1149,6 +1159,133 @@ function pendingUserQuestionSnapshot(record) {
     : null;
 }
 
+function pendingChatPermissionSnapshot(record) {
+  return record.pendingChatPermissionRequest
+    ? structuredClone(record.pendingChatPermissionRequest.request)
+    : null;
+}
+
+function settleChatPermissionRequest(record, outcome) {
+  const pending = record.pendingChatPermissionRequest;
+  if (!pending) return false;
+  record.pendingChatPermissionRequest = null;
+  const { requestId, threadId, documentId } = pending.request;
+  sendJson(record.studioSocket, {
+    v: 1, type: 'chat-permission-resolved', requestId, threadId, documentId,
+    outcome,
+    grants: normalizeChatPermissionGrants(record.agentSession?.chatPermissionGrants),
+    capabilityEpoch: record.agentSession?.planning.capabilityEpoch,
+  });
+  return true;
+}
+
+function requestChatPermission(record, args, generation) {
+  const activeSession = record.agentSession;
+  if (!activeSession || activeSession.generation !== generation || activeSession.status !== 'running'
+    || !activeSession.turnId || activeSession.providerTurnStarted !== true) {
+    throw workflowError('NO_ACTIVE_TURN', 'Permission requests require the active root turn');
+  }
+  const normalized = normalizeChatPermissionRequest(args);
+  if (normalized.capability === 'document-edit' && activeSession.planning.workflow === 'plan'
+    && activeSession.planning.phase !== 'implementing') {
+    throw workflowError('PLAN_APPROVAL_REQUIRED', 'Approve the canonical plan before requesting document edits');
+  }
+  if (activeSession.chatPermissionGrants.includes(normalized.capability)) {
+    return { status: 'granted', capability: normalized.capability, scope: 'chat', grants: [...activeSession.chatPermissionGrants] };
+  }
+  const pending = record.pendingChatPermissionRequest;
+  if (pending) {
+    if (pending.request.capability !== normalized.capability || pending.request.reason !== normalized.reason) {
+      throw workflowError('INTERACTION_ALREADY_PENDING', 'Another permission request is waiting for the user');
+    }
+    return { status: 'pending', requestId: pending.request.requestId, capability: normalized.capability, scope: 'chat' };
+  }
+  if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
+    throw workflowError('NO_STUDIO', 'Studio must be connected to request a chat permission');
+  }
+  const request = createChatPermissionRequest(normalized, activeSession);
+  record.pendingChatPermissionRequest = {
+    request, session: activeSession, generation,
+    providerCapabilityResource: activeSession.providerCapabilityResource,
+    capabilityEpoch: activeSession.planning.capabilityEpoch,
+  };
+  if (!sendJson(record.studioSocket, { v: 1, type: 'chat-permission-requested', request: structuredClone(request) })) {
+    settleChatPermissionRequest(record, { status: 'expired', reason: 'studio-disconnected' });
+    throw workflowError('NO_STUDIO', 'Studio disconnected before the permission could be presented');
+  }
+  return { status: 'pending', requestId: request.requestId, capability: normalized.capability, scope: 'chat' };
+}
+
+async function answerChatPermission(record, sock, msg) {
+  const requestId = typeof msg.requestId === 'string' ? msg.requestId : '';
+  const responseId = typeof msg.responseId === 'string' ? msg.responseId : '';
+  const result = (ok, error = null) => ({
+    v: 1, type: 'chat-permission-response-result', requestId, responseId, ok,
+    ...(error ? { code: error.code ?? 'CHAT_PERMISSION_FAILED', message: String(error.message ?? error) } : {}),
+  });
+  try {
+    if (!requestId || !responseId || requestId.length > 256 || responseId.length > 256
+      || !['grant', 'deny'].includes(msg.decision)) {
+      throw workflowError('INVALID_CHAT_PERMISSION_RESPONSE', 'Provide requestId, responseId and grant or deny');
+    }
+    const fingerprint = JSON.stringify([requestId, msg.threadId, msg.documentId, msg.decision]);
+    const receipt = record.chatPermissionResponseReceipts.get(responseId);
+    if (receipt) {
+      if (receipt.fingerprint !== fingerprint) throw workflowError('RESPONSE_ID_REUSED', 'responseId already belongs to another permission response');
+      sendJson(sock, receipt.frame);
+      return;
+    }
+    const pending = record.pendingChatPermissionRequest;
+    const activeSession = record.agentSession;
+    if (!pending || pending.request.requestId !== requestId) {
+      throw workflowError('CHAT_PERMISSION_NOT_FOUND', 'This permission request is no longer pending');
+    }
+    if (!activeSession || pending.session !== activeSession || pending.generation !== activeSession.generation
+      || pending.providerCapabilityResource !== activeSession.providerCapabilityResource
+      || pending.capabilityEpoch !== activeSession.planning.capabilityEpoch
+      || pending.request.threadId !== msg.threadId || pending.request.documentId !== msg.documentId
+      || activeSession.threadId !== msg.threadId || activeSession.documentId !== msg.documentId) {
+      throw workflowError('REQUEST_INVALIDATED', 'The permission request no longer belongs to this chat and document');
+    }
+    if (msg.decision === 'grant') {
+      const grants = normalizeChatPermissionGrants([...activeSession.chatPermissionGrants, pending.request.capability]);
+      {
+        if (activeSession.status !== 'idle') throw workflowError('AGENT_BUSY', 'Wait for the agent turn to finish before granting this chat permission');
+        requireWorkflowSwitchBackend(activeSession);
+        const previousGrants = [...activeSession.chatPermissionGrants];
+        try {
+          await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: grants });
+          if (record.agentSession !== activeSession || record.pendingChatPermissionRequest !== pending) {
+            throw workflowError('REQUEST_INVALIDATED', 'The chat changed while the permission was being applied');
+          }
+        } catch (error) {
+          // 중지는 전환 대기열을 건너뛴다. 취소된 전환이 같은 공급자에 권한을 남기지 않게 되돌린다.
+          if (record.agentSession === activeSession) {
+            try {
+              await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: previousGrants });
+            } catch (rollbackError) {
+              log(`chat permission rollback failed: ${rollbackError?.message ?? rollbackError}`);
+              await disposeSession(record);
+            }
+          }
+          throw error;
+        }
+      }
+      activeSession.chatPermissionGrants.splice(0, activeSession.chatPermissionGrants.length, ...grants);
+    }
+    const frame = result(true);
+    record.chatPermissionResponseReceipts.set(responseId, { fingerprint, frame });
+    // 성공한 응답만 중복 확인에 남긴다. 바쁜 공급자·실패한 전환은 같은 요청으로 다시 시도할 수 있다.
+    if (record.chatPermissionResponseReceipts.size > 32) {
+      record.chatPermissionResponseReceipts.delete(record.chatPermissionResponseReceipts.keys().next().value);
+    }
+    sendJson(sock, frame);
+    settleChatPermissionRequest(record, { status: msg.decision === 'grant' ? 'granted' : 'denied', ...(msg.decision === 'deny' ? { reason: 'user-denied' } : {}) });
+  } catch (error) {
+    sendJson(sock, result(false, error));
+  }
+}
+
 function userQuestionOutcomeForTurnEnd(event) {
   if (event.stopReason === 'interrupted') return { status: 'cancelled', reason: 'user-stop' };
   if (event.stopReason === 'failed' || event.stopReason === 'exited' || event.errorMessage) {
@@ -1175,6 +1312,7 @@ function settleUserQuestion(record, outcome) {
 }
 
 function beginAgentTurn(record, activeSession) {
+  settleChatPermissionRequest(record, { status: 'expired', reason: 'request-invalidated' });
   if (record.pendingUserQuestion) {
     settleUserQuestion(record, { status: 'expired', reason: 'request-invalidated' });
   }
@@ -1326,6 +1464,7 @@ function settleAgentTurn(record, activeSession, event) {
     sendJson(record.studioSocket, { v: 1, type: 'plan-progress', ...activeSession.planning.snapshot() });
   }
   settleUserQuestion(record, userQuestionOutcomeForTurnEnd(event));
+  if (!succeeded) settleChatPermissionRequest(record, { status: 'expired', reason: event.stopReason === 'interrupted' ? 'user-stop' : 'provider-disconnected' });
   failPendingProviderCallsForTurn(record, activeSession, settledTurnId);
   retireProviderSockets(record, activeSession, { turnId: settledTurnId });
   retirePiSubagentsForTurn(record, activeSession);
@@ -1448,6 +1587,22 @@ async function waitForUserQuestionScopes(record, agent, questions, generation) {
     matches = matchingUserQuestionScopes(record, agent, questions);
   }
   return matches;
+}
+
+async function consumeChatPermissionScope(record, agent, args, generation) {
+  const expected = JSON.stringify(normalizeChatPermissionRequest(args));
+  const matchingScopes = () => record.pendingChatPermissionScopes
+    .map((scope, index) => ({ scope, index }))
+    .filter(({ scope }) => scope.agent === agent && scope.request && JSON.stringify(scope.request) === expected);
+  const deadline = Date.now() + USER_QUESTION_SCOPE_WAIT_MS;
+  let matches = matchingScopes();
+  while (!matches.length && record.agentSession?.generation === generation && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(20, deadline - Date.now())));
+    matches = matchingScopes();
+  }
+  if (matches.length !== 1) throw workflowError('CALLER_SCOPE_UNKNOWN', 'The provider did not establish a unique root permission request');
+  const [scope] = record.pendingChatPermissionScopes.splice(matches[0].index, 1);
+  if (scope.parentTaskId) throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request permissions');
 }
 
 function userQuestionAnswerFrame({ interactionId, responseId, ok, code, message }) {
@@ -1788,6 +1943,8 @@ function sessionInfo(record) {
       turnId: activeSession.turnId,
       activeTemplateId: activeSession.activeTemplateId,
       pendingUserQuestion: pendingUserQuestionSnapshot(record),
+      pendingChatPermissionRequest: pendingChatPermissionSnapshot(record),
+      chatPermissionGrants: [...activeSession.chatPermissionGrants],
       ...activeSession.planning.snapshot(),
     }
     : null;
@@ -2294,6 +2451,20 @@ function makeBackendEventHandler(record, generation) {
         ...(evt.type === 'turn-end' && evt.status ? { status: String(evt.status) } : {}),
       });
     }
+    if (evt.type === 'tool-call' && isRequestPermissionTool(evt.tool)) {
+      if (evt.callId) record.suppressedChatPermissionCallIds.add(evt.callId);
+      let request = null;
+      try { request = normalizeChatPermissionRequest(JSON.parse(evt.argsJson ?? '{}')); } catch {}
+      record.pendingChatPermissionScopes.push({ agent: evt.agent, callId: evt.callId, parentTaskId: evt.parentTaskId ?? null, request });
+      if (record.pendingChatPermissionScopes.length > 8) record.pendingChatPermissionScopes.splice(0, record.pendingChatPermissionScopes.length - 8);
+      return;
+    }
+    if (evt.type === 'tool-result' && record.suppressedChatPermissionCallIds.has(evt.callId)) {
+      record.suppressedChatPermissionCallIds.delete(evt.callId);
+      const index = record.pendingChatPermissionScopes.findIndex((scope) => scope.callId === evt.callId);
+      if (index >= 0) record.pendingChatPermissionScopes.splice(index, 1);
+      return;
+    }
     // The fallback question tool is a first-class blocking interaction. Keep
     // its provider bookkeeping out of the generic tool activity transcript;
     // the dedicated requested/resolved lifecycle is the only Studio surface.
@@ -2366,6 +2537,8 @@ function makeBackendEventHandler(record, generation) {
       record.userQuestionResponseReceipts.clear();
       record.suppressedUserQuestionCallIds.clear();
       record.pendingUserQuestionScopes.length = 0;
+      record.suppressedChatPermissionCallIds.clear();
+      record.pendingChatPermissionScopes.length = 0;
     }
     if (evt.type === 'turn-end') drainTemplateCompletion(record);
     if (evt.type === 'turn-end') drainPlanningDocumentSaved(record);
@@ -2396,6 +2569,10 @@ function disposeSession(record) {
   const disposedTurnId = activeSession.turnId;
   const agent = activeSession.agent;
   settleUserQuestion(record, { status: 'expired', reason: 'request-invalidated' });
+  settleChatPermissionRequest(record, { status: 'expired', reason: 'request-invalidated' });
+  record.chatPermissionResponseReceipts.clear();
+  record.suppressedChatPermissionCallIds.clear();
+  record.pendingChatPermissionScopes.length = 0;
   record.userQuestionResponseReceipts.clear();
   record.suppressedUserQuestionCallIds.clear();
   record.pendingUserQuestionScopes.length = 0;
@@ -3128,6 +3305,7 @@ async function startSession(
     model,
     effort,
     permissionProfile,
+    chatPermissionGrants: continuing ? normalizeChatPermissionGrants(currentSession.chatPermissionGrants) : [],
     serviceTier,
     isolatedHome: record.isolatedHome,
     codexHome: record.codexHome,
@@ -3162,7 +3340,7 @@ async function startSession(
     piRoot: piManager.rootDir,
     openRouterApiKey: agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
     reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
-    projectToolGates,
+    projectToolGates: () => ({ ...projectToolGates(), requestable: true }),
   };
   const createBackend = SESSION_FACTORIES[agent];
   if (!createBackend) throw unknownAgentError(agent);
@@ -3172,6 +3350,7 @@ async function startSession(
     model,
     effort,
     permissionProfile,
+    chatPermissionGrants: opts.chatPermissionGrants,
     serviceTier,
     backend,
     generation,
@@ -3278,11 +3457,12 @@ async function applyBrowserbaseOverride(record, msg) {
   );
 }
 
-function providerModeRequest(activeSession, phase) {
+function providerModeRequest(activeSession, phase = activeSession.planning.workflow === 'direct' ? 'implementing' : activeSession.planning.phase) {
   return {
-    workflow: 'plan',
+    workflow: activeSession.planning.workflow,
     phase,
     capabilityEpoch: activeSession.planning.capabilityEpoch,
+    chatPermissionGrants: [...activeSession.chatPermissionGrants],
   };
 }
 
@@ -3500,11 +3680,13 @@ async function setChatWorkflow(record, sock, msg) {
   // Codex setExecutionMode 는 자식 재시작을 기다리므로, 스냅샷·도구 게이트는
   // 재시작 전에 구상으로 바꿔 둔다. 실패하면 이전 상태로 되돌린다.
   activeSession.planning = nextPlanning;
+  settleChatPermissionRequest(record, { status: 'expired', reason: 'workflow-changed' });
   try {
     await activeSession.backend.setExecutionMode({
       workflow: msg.workflow,
       phase,
       capabilityEpoch: nextPlanning.capabilityEpoch,
+      chatPermissionGrants: [...activeSession.chatPermissionGrants],
     });
   } catch (error) {
     if (record.agentSession === activeSession) activeSession.planning = previousPlanning;
@@ -3611,6 +3793,8 @@ async function handleStudioMessage(record, sock, msg) {
           documentId: s.documentId,
           documentName: s.documentName,
           projectId: s.projectId ?? null,
+          pendingChatPermissionRequest: pendingChatPermissionSnapshot(record),
+          chatPermissionGrants: [...s.chatPermissionGrants],
           ...s.planning.snapshot(),
         });
         await sendProjectBound(record);
@@ -3983,6 +4167,15 @@ async function handleStudioMessage(record, sock, msg) {
           code: e?.code === 'AGENT_BUSY' ? 'AGENT_BUSY' : 'PERMISSION_CHANGE_FAILED',
           message: String(e?.message ?? e),
         }));
+      return;
+    }
+    case 'chat-permission-response': {
+      const activeSession = record.agentSession;
+      if (!activeSession) {
+        void answerChatPermission(record, sock, msg);
+        return;
+      }
+      void enqueueWorkflowTransition(record, activeSession, () => answerChatPermission(record, sock, msg));
       return;
     }
     case 'chat-service-tier-set': {
@@ -4675,6 +4868,7 @@ async function handleStudioMessage(record, sock, msg) {
         const interruptedSession = record.agentSession;
         const interruptedTurnId = interruptedSession.turnId;
         settleUserQuestion(record, { status: 'cancelled', reason: 'user-stop' });
+        settleChatPermissionRequest(record, { status: 'expired', reason: 'user-stop' });
         failPendingProviderCallsForTurn(
           record,
           interruptedSession,
@@ -4700,6 +4894,7 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'chat-stop': {
       settleUserQuestion(record, { status: 'cancelled', reason: 'user-stop' });
+      settleChatPermissionRequest(record, { status: 'expired', reason: 'user-stop' });
       cancelCheckpointTitleJobs(record);
       if (!await disposeSession(record)) {
         sendChatError(sock, agentProcessCleanupUncertain(), 'AGENT_PROCESS_CLEANUP_UNCERTAIN');
@@ -5025,7 +5220,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       try {
         args = toolArgSchema(tool, definition).parse(msg.args ?? {});
         definition.validate?.(args);
-        if ((tool === 'present_implementation_plan' || tool === 'update_todos')
+        if ((tool === 'present_implementation_plan' || tool === 'update_todos' || tool === 'request_permission')
           && (workerJob || sock.piSubagentId || sock.agentRole !== 'chat' || msg.parentTaskId)) {
           throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may manage the plan');
         }
@@ -5059,6 +5254,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             receivedEpoch: msg.capabilityEpoch,
             chatMayEdit: gates.chatMayEdit,
             homeSearch: gates.homeSearch,
+            chatPermissionGrants: !sock.piSubagentId && !msg.parentTaskId ? record.agentSession.chatPermissionGrants : [],
           });
         }
       } catch (error) {
@@ -5070,6 +5266,14 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         void skillRegistry.readResource(String(args.name ?? ''), String(args.resourcePath ?? 'SKILL.md'))
           .then(sendResult)
           .catch((error) => sendError(error, 'SKILLS_ERROR'));
+        return;
+      }
+      if (tool === 'request_permission') {
+        const generation = record.agentSession.generation;
+        void (async () => {
+          if (sock.agentLabel !== 'pi') await consumeChatPermissionScope(record, sock.agentLabel, args, generation);
+          return requestChatPermission(record, args, generation);
+        })().then(sendResult).catch((error) => sendError(error, 'CHAT_PERMISSION_FAILED'));
         return;
       }
       if (tool === 'commit_product_skill') {
@@ -5726,6 +5930,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           workflow: record.agentSession?.planning.snapshot().workflow,
           phase: record.agentSession?.planning.snapshot().phase,
           capabilityEpoch: record.agentSession?.planning.capabilityEpoch,
+          chatPermissionGrants: !workerJob && !sock.piSubagentId && !msg.parentTaskId ? [...record.agentSession.chatPermissionGrants] : [],
           turnBound: !workerJob,
           ...(providerTurn ? { providerTurnId: providerTurn.turnId } : {}),
           ...(sock.parentTaskId ? { parentTaskId: sock.parentTaskId } : {}),
@@ -6320,6 +6525,7 @@ const httpServer = http.createServer((req, res) => {
         gates: {
           projectWrites: !(workflow === 'question' && gates.chatMayEdit === false),
           homeSearch: gates.homeSearch && !requestedWorkerJobId && !requestedSubagentId,
+          requestable: !requestedWorkerJobId && !requestedSubagentId,
         },
       });
       sendHttpJson(res, status, body);
@@ -6594,6 +6800,10 @@ httpServer.on('upgrade', (req, socket, head) => {
           replayed: true,
         });
       }
+      const pendingChatPermissionRequest = pendingChatPermissionSnapshot(record);
+      if (pendingChatPermissionRequest) sendJson(ws, {
+        v: 1, type: 'chat-permission-requested', request: pendingChatPermissionRequest, replayed: true,
+      });
       void skillRegistry.catalog()
         .then((catalog) => sendJson(ws, { v: 1, type: 'skills-catalog', catalog }))
         .catch((e) => log(`skills catalog on connect failed: ${e?.message ?? e}`));

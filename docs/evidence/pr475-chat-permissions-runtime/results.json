@@ -1,0 +1,36 @@
+{
+  "runtime": "http://127.0.0.1:7840",
+  "provider": "controlled Pi fixture",
+  "scenarios": [
+    {
+      "name": "document edit",
+      "blockedBeforeGrant": true,
+      "busyGrantRejected": true,
+      "authenticatedGrants": [
+        "document-edit"
+      ],
+      "heldForReview": true,
+      "rejectedRestoresWasm": true
+    },
+    {
+      "name": "project and local execution",
+      "projectWriteBeforeGrantBlocked": true,
+      "projectNoteStored": true,
+      "authenticatedGrants": [
+        "document-edit",
+        "project-edit",
+        "local-execution"
+      ]
+    },
+    {
+      "name": "deny, stop and new chat",
+      "deniedDownload": true,
+      "stoppedBrowser": true,
+      "oldButtonInvalid": true,
+      "newChatGrants": [],
+      "newChatWriteBlocked": true,
+      "idleChatResetGrants": [],
+      "personalModeUnchanged": true
+    }
+  ]
+}

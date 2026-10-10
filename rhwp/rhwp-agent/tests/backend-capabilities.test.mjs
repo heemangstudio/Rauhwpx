@@ -474,6 +474,48 @@ test('Claude SDK projects plan and build intent independently from access', () =
   assert.equal(build.tools.includes('Write'), true);
 });
 
+test('a chat-local native grant preserves document workflow and safe review across providers', async () => {
+  for (const workflow of ['direct', 'question', 'plan']) {
+    const phase = workflow === 'plan' ? 'planning' : workflow === 'question' ? 'questioning' : 'implementing';
+    const opts = {
+      ...baseOpts, workflow, phase, permissionProfile: 'safe', agentRole: 'chat',
+      chatPermissionGrants: ['local-execution'], requestUserInput: async () => null,
+    };
+    for (const codex of [buildCodexArgv(opts, null), buildCodexArgv(opts, 'same-chat'), buildCodexAppServerArgv(opts)]) {
+      assert.ok(codex.includes('sandbox_mode="danger-full-access"'));
+      assert.ok(codex.includes('approval_policy="never"'));
+    }
+    assert.equal(codexAppServerSandboxPolicy(opts).type, 'dangerFullAccess');
+    const cli = buildClaudeArgv(opts, sessionId, true);
+    assert.equal(argValue(cli, '--permission-mode'), 'dontAsk');
+    assert.equal(cli.includes('--dangerously-skip-permissions'), false);
+    assert.ok(argValue(cli, '--tools').split(',').includes('Write'));
+    assert.equal(JSON.parse(argValue(cli, '--settings')).sandbox.enabled, false);
+    const sdk = buildClaudeSdkOptions(opts, sessionId, true, new AbortController());
+    for (const name of ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash']) {
+      const input = { file_path: '/outside/workspace/file.txt', command: 'test command' };
+      assert.deepEqual(await sdk.canUseTool(name, input, {}), { behavior: 'allow', updatedInput: input });
+    }
+    assert.equal((await sdk.canUseTool('UnknownTool', {}, {})).behavior, 'deny');
+    assert.equal(sdk.allowDangerouslySkipPermissions, undefined);
+    assert.equal(buildPiArgv(opts, sessionId).includes('--exclude-tools'), false);
+    const env = buildPiEnv(opts);
+    assert.equal(env.RHWP_LOCAL_EXECUTION, '1');
+    assert.equal(env.RHWP_PERMISSION_PROFILE, 'safe');
+    assert.equal(env.RHWP_AGENT_WORKFLOW, workflow);
+    assert.equal(env.RHWP_AGENT_PHASE, phase);
+    assert.equal(opts.permissionProfile, 'safe');
+  }
+
+  for (const role of ['doc-researcher', 'copy-layout-worker:job:token', 'pi-subagent.child.general']) {
+    const opts = { ...baseOpts, agentRole: role, workflow: 'question', phase: 'questioning', permissionProfile: 'safe', chatPermissionGrants: ['local-execution'] };
+    assert.equal(codexAppServerSandboxPolicy(opts).type, 'readOnly');
+    assert.ok(buildPiArgv(opts, sessionId).includes('--exclude-tools'));
+    assert.equal(buildPiEnv(opts).RHWP_LOCAL_EXECUTION, '0');
+    assert.equal(argValue(buildClaudeArgv(opts, sessionId, false), '--tools').includes('Write'), false);
+  }
+});
+
 test('phase prompts separate planning from approved implementation', () => {
   const planning = systemBriefFor({ workflow: 'plan', phase: 'planning' });
   assert.match(planning, /app-only AGENTS\.md/);
@@ -736,6 +778,43 @@ test('sessions expose an async idle execution-mode switch', async () => {
     session.dispose();
   }
 });
+
+for (const [agent, createSession] of [['claude', createClaudeSession], ['codex', createCodexSession]]) {
+  test(`${agent} legacy resume applies and clears chat grants without changing the document mode`, async (t) => {
+    const spawns = [];
+    const events = [];
+    const opts = { ...baseOpts, permissionProfile: 'safe', workflow: 'question', phase: 'questioning', capabilityEpoch: 1, agentRole: 'chat', onEvent: (event) => events.push(event) };
+    const session = createSession(opts, {
+      spawnProcess(command, argv) {
+        const process = new FakeProcess();
+        spawns.push({ argv, process });
+        return process;
+      },
+      terminateProcess(process) { process.kill('SIGTERM'); return true; },
+      waitForExit: async () => true,
+    });
+    t.after(() => session.dispose());
+    for (const [index, grants] of [[], ['local-execution'], []].entries()) {
+      await session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 1, chatPermissionGrants: grants });
+      session.sendUserMessage(`turn ${index}`);
+      await waitUntil(() => spawns.length === index + 1);
+      const { argv, process } = spawns[index];
+      if (agent === 'claude') {
+        assert.equal(argValue(argv, '--tools').split(',').includes('Write'), grants.length > 0);
+        assert.equal(JSON.parse(argValue(argv, '--settings')).sandbox.enabled, grants.length === 0);
+        process.emitJson({ type: 'system', subtype: 'init', session_id: 'same-chat' }, { type: 'result', subtype: 'success', stop_reason: 'end_turn' });
+      } else {
+        assert.ok(argv.includes(`sandbox_mode="${grants.length ? 'danger-full-access' : 'read-only'}"`));
+        process.emitJson({ type: 'thread.started', thread_id: 'same-chat' }, { type: 'turn.completed', usage: {} });
+        process.exit(0);
+      }
+      await waitUntil(() => events.filter((event) => event.type === 'turn-end').length === index + 1);
+      assert.equal(opts.permissionProfile, 'safe');
+      assert.equal(opts.workflow, 'question');
+      if (index > 0) assert.ok(argv.includes('same-chat'));
+    }
+  });
+}
 
 test('Codex recreates a purged isolated home before spawning', (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-codex-home-test-'));

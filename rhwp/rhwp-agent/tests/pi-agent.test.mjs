@@ -548,6 +548,25 @@ test('a mode switch waits for the running child to exit', async () => {
   session.dispose();
 });
 
+test('a reused Pi chat applies and clears the native execution grant', async (t) => {
+  const { session, opts, spawns } = startSession({ agentRole: 'chat', workflow: 'question', phase: 'questioning' }, {
+    terminateProcess: async () => true, waitForExit: async () => true,
+  });
+  t.after(() => session.dispose());
+  for (const [index, grants] of [[], ['local-execution'], []].entries()) {
+    await session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 1, chatPermissionGrants: grants });
+    session.sendUserMessage(`turn ${index}`);
+    const { argv, options, proc } = spawns[index];
+    assert.equal(argv.includes('--exclude-tools'), grants.length === 0);
+    assert.equal(options.env.RHWP_LOCAL_EXECUTION, grants.length ? '1' : '0');
+    assert.equal(options.env.RHWP_PERMISSION_PROFILE, 'safe');
+    assert.equal(opts.workflow, 'question');
+    proc.emitJson({ type: 'agent_end', messages: [], willRetry: false });
+    proc.exit(0);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+});
+
 test('natural Pi leader exit retains tree cleanup result for delayed disposal', async () => {
   let finishTermination;
   let finishTreeWait;

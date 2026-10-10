@@ -2,6 +2,7 @@
 // 프로세스/네트워크 부수효과가 없어야 하므로 여기에는 스키마·설명·검증 함수만 둔다.
 import { z } from 'zod/v3';
 import { MCP_USER_QUESTION_SHAPE } from './user-question.mjs';
+import { CHAT_PERMISSION_CAPABILITIES, chatPermissionForCategory } from './chat-permissions.mjs';
 
 // 공유 규칙 본문은 tool-rules.mjs 에 있다 — provider 브리프(agents/backend.mjs)가 zod 없이 가져다 쓴다.
 export { RHWP_TOOL_RULES } from './tool-rules.mjs';
@@ -1616,6 +1617,14 @@ const BASE_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'request_permission',
+    description: 'Request a missing permission for this chat only. Explain the required action. Returns pending immediately; end the turn and wait for the user to grant or deny the permission pill. A request does not authorize any action. Plan document edits still require approval of the canonical plan.',
+    shape: {
+      capability: z.enum(CHAT_PERMISSION_CAPABILITIES),
+      reason: z.string().trim().min(1).max(1_000),
+    },
+  },
+  {
     name: 'ask_user_question',
     description: 'Ask the user 1-4 focused multiple-choice questions (2-4 concise options each; multiSelect only when several may apply; “Other” is on by default) and wait for one response. Root conversation only — subagents report uncertainty to the root agent.',
     shape: MCP_USER_QUESTION_SHAPE,
@@ -1877,6 +1886,7 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   set_bookmark: 'document-write',
   verify_changes: 'document-read',
   ask_user_question: 'user-interaction',
+  request_permission: 'user-interaction',
   present_implementation_plan: 'planning-control',
   update_todos: 'plan-progress',
   download_file: 'download-write',
@@ -1939,6 +1949,7 @@ export function projectToolGatesFromEnv(env = process.env) {
   return {
     projectWrites: env.RHWP_PROJECT_WRITES !== '0',
     homeSearch: env.RHWP_HOME_SEARCH === '1',
+    ...(env.RHWP_REQUESTABLE_TOOLS === '1' ? { requestable: true } : {}),
   };
 }
 
@@ -1947,15 +1958,19 @@ export function projectToolGatesFromEnv(env = process.env) {
  * Unknown entries are ignored so a typo cannot accidentally broaden access.
  * @param {string | undefined} profile
  */
-export function filterToolDefinitions(profile, { projectWrites = true, homeSearch = false } = {}) {
+export function filterToolDefinitions(profile, { projectWrites = true, homeSearch = false, requestable = false } = {}) {
   const value = String(profile ?? 'direct').trim();
   const named = TOOL_PROFILES[value];
   const entries = new Set(named ?? value.split(',').map((entry) => entry.trim()).filter(Boolean));
+  const requestableProfile = ['direct', 'planning', 'question', 'awaiting-approval', 'implementing'].includes(value);
   return TOOL_DEFINITIONS.filter((definition) => {
-    if (!entries.has(definition.category) && !entries.has(definition.name)) return false;
+    // 루트 채팅은 요청 가능한 앱 도구의 정의만 먼저 받는다. 실제 실행은 허브가 클릭으로 부여한 권한을 검사한다.
+    const canRequest = requestable && requestableProfile && Boolean(chatPermissionForCategory(definition.category))
+      && !(definition.category === 'document-write' && ['planning', 'awaiting-approval'].includes(value));
+    if (!entries.has(definition.category) && !entries.has(definition.name) && !canRequest) return false;
     // 홈 폴더 검색은 데스크톱에서 켜졌을 때만 보인다(기본은 숨김).
     if (definition.name === 'find_home_files' && !homeSearch) return false;
-    if (!projectWrites && (definition.category === 'project-write' || definition.category === 'project-ingest')) return false;
+    if (!projectWrites && !canRequest && (definition.category === 'project-write' || definition.category === 'project-ingest')) return false;
     return true;
   });
 }

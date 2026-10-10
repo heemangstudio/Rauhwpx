@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { registerHooks } from 'node:module';
 
 import { CommandDispatcher } from '../src/command/dispatcher.ts';
 import { EventBus } from '../src/core/event-bus.ts';
@@ -54,7 +55,6 @@ test('bridge owns the lease and retains it until every in-flight tool settles', 
     deriveAgentEditingLease({ turnRunning: false, activeToolRequests: 0, agent: 'pi' }),
     { active: false, agent: 'pi' },
   );
-  assert.match(bridge, /deriveAgentEditingLease\(\{[\s\S]*turnRunning: this\.turnRunning,[\s\S]*activeToolRequests: this\.activeToolRequests[\s\S]*workflow: this\.workflow,[\s\S]*phase: this\.phase,[\s\S]*waitingForUser: this\.pendingUserQuestionId !== null/);
   assert.match(bridge, /case 'turn-start':[\s\S]*this\.editingAgent = event\.agent;[\s\S]*this\.syncEditingLease\(\)/);
   assert.match(bridge, /case 'turn-end':[\s\S]*this\.turnRunning = false;[\s\S]*this\.syncEditingLease\(\)/);
   assert.match(bridge, /const releaseEditingLease = \(\) => \{[\s\S]*this\.activeToolRequests = Math\.max\(0, this\.activeToolRequests - 1\);[\s\S]*this\.syncEditingLease\(\)/);
@@ -63,6 +63,39 @@ test('bridge owns the lease and retains it until every in-flight tool settles', 
   assert.match(bridge, /case 'welcome':[\s\S]*this\.turnRunning = session\.status === 'running';[\s\S]*this\.syncEditingLease\(\)/);
   assert.match(bridge, /stopChat\(\): void[\s\S]*waitForAuthoritativeTurnEnd = this\.state === 'connected' && this\.turnRunning;[\s\S]*if \(!waitForAuthoritativeTurnEnd\) \{[\s\S]*this\.turnRunning = false;[\s\S]*this\.activeProviderTurnId = null;[\s\S]*this\.abortProviderToolRequests\(\);[\s\S]*\}[\s\S]*this\.syncEditingLease\(\)/);
   assert.match(bridge, /dispose\(\): void[\s\S]*this\.activeToolRequests = 0;[\s\S]*this\.syncEditingLease\(\)/);
+});
+
+registerHooks({ load(url, context, next) {
+  return url.endsWith('.css') ? { format: 'module', source: 'export default {};', shortCircuit: true } : next(url, context);
+} });
+const { AgentBridgeImpl } = await import('../src/agent/bridge.ts');
+
+test('bridge keeps granted question edits locked until the turn and all tools settle', () => {
+  const leases: boolean[] = [];
+  const runtime = Object.assign(Object.create(AgentBridgeImpl.prototype), {
+    view: {}, workflow: 'question', phase: 'questioning', editingAgent: 'codex',
+    turnRunning: true, activeToolRequests: 0, pendingUserQuestionId: null,
+    pendingChatPermissionRequest: null, chatPermissionGrants: [],
+    editingLease: { active: false, agent: 'codex' }, documentEditingLease: { active: false, agent: 'codex' },
+    editingLeaseListeners: new Set([(lease: { active: boolean }) => leases.push(lease.active)]),
+    scheduleBusyCheck() {},
+  });
+  runtime.syncEditingLease();
+  assert.equal(runtime.getEditingLease().active, false, 'ordinary chat keeps user editing available');
+  runtime.chatPermissionGrants = ['document-edit'];
+  runtime.syncEditingLease();
+  assert.equal(runtime.getEditingLease().active, true, 'granted document writes hold the lease');
+  runtime.turnRunning = false;
+  runtime.activeToolRequests = 2;
+  runtime.syncEditingLease();
+  assert.equal(runtime.getEditingLease().active, true);
+  runtime.activeToolRequests = 1;
+  runtime.syncEditingLease();
+  assert.equal(runtime.getEditingLease().active, true, 'one remaining tool still holds the lease');
+  runtime.activeToolRequests = 0;
+  runtime.syncEditingLease();
+  assert.equal(runtime.getEditingLease().active, false);
+  assert.deepEqual(leases, [true, false]);
 });
 
 test('plan mode leaves the document editable while a planning turn is running', () => {

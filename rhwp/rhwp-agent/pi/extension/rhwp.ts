@@ -39,6 +39,7 @@ export interface PiExtensionConfig {
   capabilityEpoch: string | undefined;
   toolProfile: string;
   permissionProfile: string;
+  localExecution: boolean;
   rootDir: string;
   readOnlyRoots: string[];
 }
@@ -120,6 +121,10 @@ export function readExtensionConfig(
     capabilityEpoch: env.RHWP_CAPABILITY_EPOCH,
     toolProfile: env.RHWP_TOOL_PROFILE ?? (workflow === 'direct' ? 'direct' : phase === 'questioning' ? 'question' : phase),
     permissionProfile: env.RHWP_PERMISSION_PROFILE ?? 'safe',
+    localExecution: env.RHWP_LOCAL_EXECUTION === '1'
+      && agentRole === 'chat'
+      && !env.RHWP_PI_SUBAGENT_ID
+      && !copyLayoutJobId,
     rootDir: env.RHWP_ROOT_DIR ?? cwd,
     readOnlyRoots: (env.RHWP_READONLY_ROOTS ?? '').split(path.delimiter).filter(Boolean),
   };
@@ -578,8 +583,13 @@ export async function guardToolCall(
 ): Promise<ToolCallEventResult | undefined> {
   const toolName = event?.toolName;
   if (typeof toolName !== 'string') return undefined;
+  const localExecution = config.localExecution === true
+    && config.agentRole === 'chat'
+    && !config.subagentId
+    && config.toolProfile !== 'copy-layout-worker'
+    && config.toolProfile !== 'doc-researcher';
   if (PLANNING_BLOCKED_TOOLS.includes(toolName)
-    && (isPlanningRestricted(config.workflow, config.phase)
+    && ((!localExecution && isPlanningRestricted(config.workflow, config.phase))
       || config.toolProfile === 'doc-researcher')) {
     return {
       block: true,
@@ -591,13 +601,13 @@ export async function guardToolCall(
             + 'present_implementation_plan only when the user asks for a plan.',
     };
   }
-  if (config.permissionProfile === 'safe' && toolName === 'bash') {
+  if (!localExecution && config.permissionProfile === 'safe' && toolName === 'bash') {
     return {
       block: true,
       reason: 'Safe profile: the built-in shell is disabled; use the structured rhwp tools.',
     };
   }
-  if (config.permissionProfile === 'safe' && PATH_GUARDED_TOOLS.includes(toolName)) {
+  if (!localExecution && config.permissionProfile === 'safe' && PATH_GUARDED_TOOLS.includes(toolName)) {
     const target = (event?.input as any)?.path;
     const readableRoots = toolName === 'read'
       ? [config.rootDir, ...(config.readOnlyRoots ?? [])]

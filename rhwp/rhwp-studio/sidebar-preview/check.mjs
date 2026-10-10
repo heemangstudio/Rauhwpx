@@ -14,6 +14,7 @@ import { checkPlanPreview } from './plan.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock, checkNewChatViewMode } from './parallel-chats.check.mjs';
 import { checkChatResume } from './chat-resume.check.mjs';
+import { checkChatPermissions } from './permissions.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -436,6 +437,8 @@ try {
     );
   });
   await step('Shared Pi model selection', () => checkPiModels(page, origin));
+  await step('Chat-scoped permission grants, busy retry, denial, and cancellation',
+    () => checkChatPermissions(page, origin, screenshot));
   await step('Embedded CLI login terminal', () => checkSetupTerminal(page, origin));
   await step('Provider picker only lists connected providers', async () => {
     await open();

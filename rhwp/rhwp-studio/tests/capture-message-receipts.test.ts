@@ -12,7 +12,7 @@ function connectedBridge() {
     state: 'connected', activeAgent: 'pi', pendingChatStart: null, workflowSwitchPending: false,
     queuedMessages: [], messageReceipts: new Map(), requestSeq: 0, revision: { revision: 7 },
     activeTemplateId: null, phase: 'idle', workflow: 'direct', turnSnapshots: null,
-    turnRunning: false, activeToolRequests: 0, pendingUserQuestion: null, disposed: false,
+    turnRunning: false, activeToolRequests: 0, pendingUserQuestion: null, pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [], disposed: false,
     pendingEdits: { hasPending: () => false },
     referenceContext: () => ({ threadId: 'thread-1', documentId: 'document-1' }),
     buildTurnSnapshot: () => null, scheduleBusyCheck() {}, emitConnection() {},

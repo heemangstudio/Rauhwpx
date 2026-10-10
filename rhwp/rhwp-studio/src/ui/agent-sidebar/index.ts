@@ -194,6 +194,7 @@ import type {
   InlinePromptSubmission,
 } from '../../agent/inline-prompt-context.ts';
 import { createUserQuestionController } from './user-question-controller.ts';
+import { createChatPermissionController } from './chat-permission-pill.ts';
 import { createModeMenu, parseModeCommand } from './mode-menu.ts';
 import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
 import './sidebar-button-modern.css';
@@ -2839,6 +2840,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 사이드바·전체 화면 어디로 옮겨져도 입력기를 따라간다.
   composer.appendChild(fleetView.root);
   const questionTimelineAnchor = el('span', 'ag-question-timeline-anchor');
+  const permissionController = createChatPermissionController({
+    context: () => ({ threadId: currentThread.id, documentId: currentDocumentId }),
+    respond: (requestId, decision) => bridge.respondChatPermission(requestId, decision),
+  });
   questionTimelineAnchor.hidden = true;
   questionTimelineAnchor.setAttribute('aria-hidden', 'true');
   let questionTimelineAnchorInteractionId: string | null = null;
@@ -5559,6 +5564,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       questionController.setVisible(true);
       mountQuestionTimelineAnchor();
     }
+    for (const pill of permissionController.rootsForContext({ threadId: thread.id, documentId: currentDocumentId })) {
+      appendConversation(pill);
+    }
     scrollConversationToEnd();
   }
 
@@ -6323,7 +6331,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     setComposerSkill(null);
     // 초안은 앞 채팅을 멈추지 않는다. 다만 편집기가 바쁜 채팅을 따로 띄우지 않으면
     // (openChat 없음) 예전처럼 도는 턴과 질문을 끝내 초안 화면에 흘러들지 않게 한다.
-    const stopPrevious = bridge.isTurnRunning() || bridge.getPendingUserQuestion() !== null;
+    const stopPrevious = bridge.isTurnRunning() || bridge.getPendingUserQuestion() !== null
+      || bridge.getPendingChatPermissionRequest() !== null;
     if (bridge.isTurnRunning()) bridge.interrupt();
     flushAssistantBuffer();
     const previousThreadId = currentThread.id;
@@ -6434,6 +6443,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // before the drawer can bind it. Treat that snapshot as live too, so
     // opening its persisted thread never stops the still-blocked provider.
     const liveQuestion = questionController.interaction() ?? bridge.getPendingUserQuestion();
+    const liveInteraction = liveQuestion ?? bridge.getPendingChatPermissionRequest();
     const target = getThread(id);
     if (!target) return;
     // 다른 문서의 채팅은 그 문서로 옮겨 가서 잇는다. 편집기가 문서 세션을
@@ -6443,15 +6453,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       !opts?.viewOnly
       && !opts?.routed
       && !threadMatchesDocument(target, currentDocumentId, currentDocKey)
-      && (openThreadDocument !== undefined || (!liveQuestion && canFollowThreadDocument(target)))
+      && (openThreadDocument !== undefined || (!liveInteraction && canFollowThreadDocument(target)))
     ) {
       void followThreadToDocument(target);
       return;
     }
     pendingThreadSwitch = null;
     // 초안을 버리고 브리지가 아직 들고 있는 앞 채팅으로 돌아가면 다시 열지 않고 잇는다.
-    const resume = draftChat && !liveQuestion && bridgeThreadId === id && bridge.getActiveAgent() !== null;
-    if (!resume && !liveQuestion && turnRunning) bridge.interrupt();
+    const resume = draftChat && !liveInteraction && bridgeThreadId === id && bridge.getActiveAgent() !== null;
+    if (!resume && !liveInteraction && turnRunning) bridge.interrupt();
     flushAssistantBuffer();
     persistCurrentThread();
     const loaded = getThread(id);
@@ -6477,7 +6487,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     input.value = '';
     applyThreadMeta(currentThread);
     renderMessagesFromThread(currentThread);
-    if (!liveQuestion && !resume) {
+    if (!liveInteraction && !resume) {
       bridgeThreadId = null;
       bridge.stopChat();
     }
@@ -6489,7 +6499,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const showingLiveQuestion = liveQuestion?.threadId === currentThread.id;
     questionController.setVisible(showingLiveQuestion);
     if (showingLiveQuestion) mountQuestionTimelineAnchor();
-    if (liveQuestion && !showingLiveQuestion) {
+    if (liveInteraction && liveInteraction.threadId !== currentThread.id) {
       enterReadOnlyMode('에이전트가 다른 채팅에서 답변을 기다리는 중');
       setThreadsPanelOpen(false);
       return;
@@ -6507,7 +6517,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     persistCurrentThread();
     exitReadOnlyMode();
     restoreThreadComposerDraft();
-    if (liveQuestion) {
+    if (liveInteraction) {
       setThreadsPanelOpen(false);
       return;
     }
@@ -6628,6 +6638,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 턴이 정상 종료 경로 없이 꺼졌을 때(중단·재연결·오류) 노란 불을 걷는다. */
   function dropRunStatusIfIdle(): void {
     if (turnRunning || runStatusThreadId === null) return;
+    if (bridge.getPendingChatPermissionRequest()?.threadId === runStatusThreadId) {
+      markChatNeedsInput(runStatusThreadId);
+      return;
+    }
     clearChatStatus(runStatusThreadId);
     runStatusThreadId = null;
   }
@@ -7716,7 +7730,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           // 사용자가 멈춘 턴은 신호 없이 꺼진다. 계획이 승인을 기다리며 끝난
           // 턴은 빨간 점, 그 외에는 완료 점이 남는다.
           if (event.stopReason === 'interrupted') clearChatStatus(runStatusThreadId);
-          else if (chatWorkflow === 'plan' && planningPhase === 'awaiting-approval' && planApprovable) {
+          else if (bridge.getPendingChatPermissionRequest()?.threadId === runStatusThreadId) {
+            markChatNeedsInput(runStatusThreadId);
+          } else if (chatWorkflow === 'plan' && planningPhase === 'awaiting-approval' && planApprovable) {
             markChatNeedsInput(runStatusThreadId);
           } else markChatFinished(runStatusThreadId);
           runStatusThreadId = null;
@@ -7772,6 +7788,33 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       case 'tool-executed':
         handleToolExecuted(e);
         break;
+      case 'chat-permission-requested': {
+        let target = e.request.threadId === currentThread.id ? currentThread : getThread(e.request.threadId);
+        if (!target || e.request.documentId !== currentDocumentId) break;
+        if (target !== currentThread && currentThread.messages.length === 0) {
+          openThread(target.id);
+          target = currentThread.id === e.request.threadId ? currentThread : target;
+        }
+        if (!permissionController.hasRequest(e.request.requestId)) {
+          flushPendingAssistantRender();
+          flushAssistantBuffer({ kind: 'progress' });
+        }
+        const pill = permissionController.request(e.request);
+        if (target === currentThread && !pill.isConnected) withAutoScroll(() => appendConversation(pill));
+        runStatusThreadId = target.id;
+        markChatNeedsInput(target.id);
+        updateComposer();
+        break;
+      }
+      case 'chat-permission-response-result':
+        permissionController.answerResult(e);
+        break;
+      case 'chat-permission-resolved':
+        permissionController.resolve(e.requestId, e.outcome);
+        if (e.outcome.status === 'granted' && turnRunning) markChatWorking(e.threadId);
+        else clearChatStatus(e.threadId);
+        updateComposer();
+        break;
       case 'user-question-requested': {
         flushPendingAssistantRender();
         flushAssistantBuffer({ kind: 'progress' });
@@ -7826,6 +7869,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
       case 'connection':
         setConnection(e.state, { attempt: e.attempt, retryInMs: e.retryInMs });
+        permissionController.setConnection(e.state === 'connected');
         // 재연결 시 진행 상태를 브리지와 다시 동기화한다.
         setTurnRunning(bridge.isTurnRunning());
         dropRunStatusIfIdle();
@@ -7879,6 +7923,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           if (active && !input.disabled) input.focus({ preventScroll: true });
         }
         const liveQuestion = bridge.getPendingUserQuestion();
+        const livePermission = bridge.getPendingChatPermissionRequest();
+        if (livePermission) handleSidebarEvent({ type: 'chat-permission-requested', request: livePermission, replayed: true });
         if (liveQuestion?.threadId === currentThread.id) {
           const stored = currentThread.pendingUserQuestion
             && pendingUserQuestionMatchesInteraction(currentThread.pendingUserQuestion, liveQuestion)
@@ -8841,6 +8887,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const unsubThreads = subscribeThreadChanges(() => {
     if (threadsListVisible()) rebuildThreadsList();
     if (restoringLiveQuestion) return;
+    const livePermission = bridge.getPendingChatPermissionRequest();
+    if (livePermission && !permissionController.hasRequest(livePermission.requestId) && getThread(livePermission.threadId)) {
+      restoringLiveQuestion = true;
+      try { handleSidebarEvent({ type: 'chat-permission-requested', request: livePermission, replayed: true }); }
+      finally { restoringLiveQuestion = false; }
+    }
     const liveQuestion = bridge.getPendingUserQuestion();
     if (!liveQuestion || questionController.interaction()?.interactionId === liveQuestion.interactionId) return;
     const owner = getThread(liveQuestion.threadId);
@@ -9178,6 +9230,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       reviewImageUrls.clear();
       threadComposerDrafts.clear();
       questionController.dispose();
+      permissionController.dispose();
       unsubChatModeLock();
       unsubBridge();
       unsubThreads();

@@ -47,6 +47,24 @@ function state() {
   });
 }
 
+test('chat grants authorize only their app category and preserve plan approval and epochs', () => {
+  const question = { workflow: 'question', phase: 'questioning', expectedEpoch: 7, receivedEpoch: 7, chatMayEdit: false };
+  const edit = { ...question, category: 'document-write', tool: 'insert_text' };
+  assert.throws(() => authorizeToolCall(edit), { code: 'QUESTION_WRITE_BLOCKED' });
+  assert.equal(authorizeToolCall({ ...edit, chatPermissionGrants: ['document-edit'] }), true);
+  assert.throws(() => authorizeToolCall({ ...edit, chatPermissionGrants: ['local-execution'] }), { code: 'QUESTION_WRITE_BLOCKED' });
+  assert.throws(() => authorizeToolCall({ ...edit, chatPermissionGrants: ['document-edit'], receivedEpoch: 6 }), { code: 'STALE_CAPABILITY_EPOCH' });
+  assert.throws(() => authorizeToolCall({ ...edit, workflow: 'plan', phase: 'planning', chatPermissionGrants: ['document-edit'] }), { code: 'PLAN_WRITE_BLOCKED' });
+  assert.throws(() => authorizeToolCall({ ...question, tool: 'update_agent_instructions', category: 'instruction-write', chatPermissionGrants: ['document-edit'] }), { code: 'QUESTION_WRITE_BLOCKED' });
+  const project = { ...question, tool: 'project_edit', category: 'project-write' };
+  assert.throws(() => authorizeToolCall(project), { code: 'PROJECT_CHAT_EDIT_DISABLED' });
+  assert.equal(authorizeToolCall({ ...project, chatPermissionGrants: ['project-edit'] }), true);
+  const download = { ...question, workflow: 'direct', phase: null, tool: 'download_file', category: 'download-write' };
+  assert.throws(() => authorizeToolCall(download), { code: 'PLAN_WORKFLOW_REQUIRED' });
+  assert.equal(authorizeToolCall({ ...download, chatPermissionGrants: ['downloads'] }), true);
+  assert.throws(() => authorizeToolCall({ ...download, chatPermissionGrants: ['browser'] }), { code: 'PLAN_WORKFLOW_REQUIRED' });
+});
+
 test('plan transition: planning -> awaiting -> switching -> implementing', () => {
   const workflow = state();
   const ready = workflow.present(plan());

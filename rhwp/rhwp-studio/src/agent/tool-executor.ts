@@ -12,7 +12,7 @@ import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import type { CellPathEntry, CharProperties, CharShapeRun, ControlLayoutItem, DocumentPosition, LineLayoutItem, ParaProperties, SelectionRect } from '../core/types.ts';
 import type { RevisionTracker } from './revision.ts';
 import type { PendingEditManager } from './pending-edits.ts';
-import type { AgentEditorHost, AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp } from './types.ts';
+import type { AgentEditorHost, AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, ChatPermissionCapability, DocRange, DocumentTemplate, ObjectOp, PendingOp } from './types.ts';
 import { AgentToolError } from './types.ts';
 import { EditJournal, type EditJournalEntry } from './edit-journal.ts';
 import { batchItemArgs } from './batch-item.ts';
@@ -451,6 +451,8 @@ export interface ToolCapabilityContext {
   /** Server state last synchronized by the Studio bridge. */
   activePhase?: AgentPhase;
   activeCapabilityEpoch?: number | null;
+  chatPermissionGrants?: readonly ChatPermissionCapability[];
+  activeChatPermissionGrants?: readonly ChatPermissionCapability[];
   template?: DocumentTemplate;
   /** Exact hub turn/cancellation fence captured for this request. */
   requestIsActive?: () => boolean;
@@ -471,6 +473,11 @@ export function assertToolRequestActive(capability?: ToolCapabilityContext): voi
 export function assertToolCapability(tool: string, capability?: ToolCapabilityContext) {
   if (!isDocumentWriteTool(tool)) return;
   if (capability?.workflow === 'question') {
+    if (capability.chatPermissionGrants?.includes('document-edit')
+      && capability.activeChatPermissionGrants?.includes('document-edit')
+      && capability.requestIsActive?.() === true
+      && typeof capability.capabilityEpoch === 'number' && Number.isSafeInteger(capability.capabilityEpoch)
+      && capability.capabilityEpoch === capability.activeCapabilityEpoch) return;
     throw new AgentToolError(
       'QUESTION_MODE_READ_ONLY',
       'Document-write tools are unavailable in chat mode; the document is read-only here.',

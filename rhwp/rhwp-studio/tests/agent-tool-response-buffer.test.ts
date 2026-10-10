@@ -71,7 +71,7 @@ test('turn cancellation releases the editing lease before deferred tools settle'
     activeToolRequestControllers: new Map(),
     editingLease: { active: false, agent: 'pi' },
     editingLeaseListeners: new Set(),
-    pendingUserQuestionId: null,
+    pendingUserQuestionId: null, pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
     workflow: 'direct',
     phase: 'direct',
     capabilityEpoch: null,
@@ -142,8 +142,9 @@ function interruptBridgeFixture(execute: (...args: any[]) => Promise<unknown> = 
     activeProviderTurnId: 'turn-active', turnRunning: true,
     activeToolRequests: 0, activeToolRequestControllers: new Map(),
     pendingUserQuestion: null, pendingQuestionCancellation: null,
+    pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
     workflow: 'direct', phase: 'direct', activeAgent: 'codex',
-    executor: { execute }, syncEditingLease: () => {},
+    executor: { execute }, listeners: new Set(), syncEditingLease: () => {},
     sendJson: () => true, sendToolResponse: (response: unknown) => { responses.push(response); },
   });
   const request = (id: number, turnId = 'turn-active') => bridge.handleToolRequest({
@@ -173,6 +174,7 @@ test('plan completion follows the actual edit outcome and exact provider turn', 
     let sets: any[] = [];
     Object.assign(bridge, {
       phase: 'implementing', workflow: 'plan', activeProviderTurnId: null,
+      pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
       latestPlan: { planId: 'plan-1', execution: { status: 'running', steps: [{ stepId: 'step-1', status: complete ? 'completed' : 'in-progress' }] } },
       planReview: null, planExecutionTurn: null, pendingTurnOpen: false,
       activeToolRequestControllers: new Map(), permissionProfile: pending ? 'safe' : 'unrestricted',

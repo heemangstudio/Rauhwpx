@@ -1,6 +1,7 @@
 import type { SidebarBridge } from '../agent/bridge.ts';
 import type * as T from '../agent/types.ts';
 import { deriveAgentEditingLease } from '../agent/editing-lease.ts';
+import { isChatPermissionCapability } from '../agent/chat-permissions.ts';
 import {
   defaultModelForAgent,
   setModelCatalog,
@@ -19,6 +20,7 @@ export const scenarios = [
   'rich',
   'plan',
   'question',
+  'permission',
   'review',
   'fleet',
   'error',
@@ -150,6 +152,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   });
   let interrupts = 0;
   let threadId = '';
+  let chatDocumentId: string | null = null;
   let scenario: Scenario = 'chat';
   let holdReply = false;
   let permission: T.PermissionProfile = 'safe';
@@ -161,6 +164,9 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     latestPlan: null,
   };
   let question: T.UserQuestionInteraction | null = null;
+  let permissionRequest: T.ChatPermissionRequest | null = null;
+  let chatPermissionGrants: T.ChatPermissionCapability[] = [];
+  const permissionResponses: Array<{ requestId: string; decision: T.ChatPermissionDecision }> = [];
   let activeTemplate: T.DocumentTemplate | null = null;
   let changes: T.PendingChangeSet[] = [];
   const changeEvents: T.PendingEditsChangeEvent['type'][] = [];
@@ -263,6 +269,13 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     });
     question = null;
   };
+  const completePermission = (outcome: T.ChatPermissionOutcome) => {
+    if (!permissionRequest) return;
+    const pending = permissionRequest;
+    permissionRequest = null;
+    emit({ type: 'chat-permission-resolved', requestId: pending.requestId, threadId: pending.threadId,
+      documentId: pending.documentId, outcome, grants: [...chatPermissionGrants] });
+  };
   const bridge: SidebarBridge = {
     projects,
     setProjectWorktrees: (binding) => {
@@ -308,13 +321,28 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     getActiveAgent: () => agent,
     isTurnRunning: () => running,
     getPendingUserQuestion: () => question,
+    getPendingChatPermissionRequest: () => permissionRequest,
+    getChatPermissionGrants: () => [...chatPermissionGrants],
+    respondChatPermission: (requestId, decision) => request((responseId) => {
+      const pending = permissionRequest;
+      permissionResponses.push({ requestId, decision });
+      if (!pending || pending.requestId !== requestId) {
+        emit({ type: 'chat-permission-response-result', responseId, requestId, ok: false, code: 'REQUEST_INVALIDATED' });
+      } else if (decision === 'grant' && running) {
+        emit({ type: 'chat-permission-response-result', responseId, requestId, ok: false, code: 'AGENT_BUSY' });
+      } else {
+        emit({ type: 'chat-permission-response-result', responseId, requestId, ok: true });
+        if (decision === 'grant' && !chatPermissionGrants.includes(pending.capability)) chatPermissionGrants.push(pending.capability);
+        completePermission(decision === 'grant' ? { status: 'granted' } : { status: 'denied', reason: 'user-denied' });
+      }
+    }),
     getEditingLease: () =>
       deriveAgentEditingLease({
         turnRunning: running,
         activeToolRequests: 0,
         agent,
         ...workflow,
-        waitingForUser: question !== null,
+        waitingForUser: question !== null || permissionRequest !== null,
       }),
     onEditingLeaseChange: (listener) => {
       leaseListeners.add(listener);
@@ -566,12 +594,17 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       documentName,
     ) => {
       const continuing = !force && id === threadId && (mode ?? 'direct') === workflow.workflow;
+      if (!continuing || documentId !== chatDocumentId) {
+        chatPermissionGrants = [];
+        completePermission({ status: 'expired', reason: 'request-invalidated' });
+      }
       ++generation;
       const startGeneration = ++chatGeneration;
       completeQuestion({ status: 'expired', reason: 'request-invalidated' });
       setRunning(false);
       agent = provider;
       threadId = id ?? threadId;
+      chatDocumentId = documentId ?? null;
       permission = profile ?? permission;
       workflow = continuing ? workflow : {
         workflow: mode ?? 'direct',
@@ -603,6 +636,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       });
     },
     stopChat: () => {
+      chatPermissionGrants = [];
+      completePermission({ status: 'expired', reason: 'user-stop' });
       generation++;
       chatGeneration++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
@@ -632,6 +667,23 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         if (generation !== turnGeneration) return;
         setRunning(true);
         stream({ type: 'turn-start', agent, turnId: `turn-${turnGeneration}` });
+        if (reply === 'permission') {
+          const selected = projectParams.get('permissionCapability');
+          const capability = isChatPermissionCapability(selected) ? selected : 'document-edit';
+          if (!chatPermissionGrants.includes(capability)) {
+            permissionRequest = { requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId,
+              turnId: `turn-${turnGeneration}`, agent, capability,
+              reason: '요청한 작업을 이어가려면 이 권한이 필요합니다.', createdAt: new Date().toISOString() };
+            stream({ type: 'tool-call', agent, callId: `permission-${turnGeneration}`, tool: 'mcp__rhwp__request_permission',
+              argsJson: JSON.stringify({ capability, reason: permissionRequest.reason }) });
+            stream({ type: 'tool-result', agent, callId: `permission-${turnGeneration}`, ok: true,
+              resultPreview: JSON.stringify({ status: 'pending', capability, scope: 'chat', requestId: permissionRequest.requestId }) });
+            stream({ type: 'text-delta', agent, text: '작업을 이어가기 위한 권한을 요청했습니다.' });
+            emit({ type: 'chat-permission-requested', request: permissionRequest });
+            if (!holdReply) later(() => finish(), 100);
+            return;
+          }
+        }
         if (referenceIds.length)
           emit({
             type: 'reference-status',
@@ -1249,6 +1301,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       interrupts += 1;
       generation++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
+      completePermission({ status: 'expired', reason: 'user-stop' });
       if (running) finish('interrupted');
     },
     onEvent: (listener) => {
@@ -1357,6 +1410,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       scenario = value;
     },
     setHold: (value: boolean) => { holdReply = value; },
+    finishPermissionTurn: () => { if (running) finish(); },
     projects,
     /** Delivers one provider event as the hub would, e.g. a token-by-token answer for benches. */
     streamEvent: stream,
@@ -1373,6 +1427,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       messagesSent,
       sentMentions: sentMentions.map((ids) => [...ids]),
       interrupts,
+      permissionResponses: permissionResponses.map((response) => ({ ...response })),
+      chatPermissionGrants: [...chatPermissionGrants],
       scenario,
       connection,
       running,

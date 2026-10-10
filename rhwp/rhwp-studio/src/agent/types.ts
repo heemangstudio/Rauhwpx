@@ -138,6 +138,24 @@ export interface UserQuestionInteraction {
   questions: UserQuestion[];
 }
 
+/** 사용자가 지금 채팅에만 허용할 수 있는 추가 권한. */
+export type ChatPermissionCapability = 'document-edit' | 'project-edit' | 'downloads' | 'browser' | 'local-execution';
+export type ChatPermissionDecision = 'grant' | 'deny';
+export type ChatPermissionOutcome =
+  | { status: 'granted' }
+  | { status: 'denied' | 'expired'; reason?: string };
+
+export interface ChatPermissionRequest {
+  requestId: string;
+  threadId: string;
+  documentId: string | null;
+  turnId: string;
+  agent: AgentName;
+  capability: ChatPermissionCapability;
+  reason: string;
+  createdAt: string;
+}
+
 /** 에이전트 참고자료의 수명 범위. 파일 본문은 허브가 보관하며 브라우저에는 메타데이터만 둔다. */
 export type ReferenceScope = 'chat' | 'document' | 'global';
 export type ReferenceFileStatus = 'uploading' | 'extracting' | 'indexing' | 'ready' | 'error';
@@ -896,6 +914,9 @@ export type SidebarEvent =
   | { type: 'user-question-requested'; interaction: UserQuestionInteraction; replayed?: boolean }
   | { type: 'user-question-resolved'; interactionId: string; outcome: UserQuestionOutcome }
   | { type: 'user-question-answer-result'; interactionId: string; responseId: string; ok: boolean; code?: string; message?: string }
+  | { type: 'chat-permission-requested'; request: ChatPermissionRequest; replayed?: boolean }
+  | { type: 'chat-permission-resolved'; requestId: string; threadId: string; documentId: string | null; outcome: ChatPermissionOutcome; grants: ChatPermissionCapability[] }
+  | { type: 'chat-permission-response-result'; responseId: string; requestId: string; ok: boolean; code?: string; message?: string }
   | { type: 'reference-status'; messageId: string; attachments: MessageReferenceStatus[] }
   | { type: 'templates-catalog'; catalog: TemplateCatalog; change?: { type: 'added' | 'renamed' | 'replaced' | 'deleted'; template: DocumentTemplate } }
   | { type: 'agent-instructions'; status: AgentInstructionsStatus; changedBy: string }

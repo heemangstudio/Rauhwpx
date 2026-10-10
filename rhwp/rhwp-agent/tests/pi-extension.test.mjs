@@ -469,6 +469,28 @@ test('doc-researcher 프로필은 direct 턴에서도 내장 쓰기 도구를 �
   }
 });
 
+test('chat-local execution permits native files and commands while child and worker boundaries remain', async (t) => {
+  const { workspace, outsideFile } = await guardTree(t);
+  const env = { RHWP_ROOT_DIR: workspace, RHWP_AGENT_WORKFLOW: 'plan', RHWP_LOCAL_EXECUTION: '1', RHWP_PERMISSION_PROFILE: 'safe' };
+  const config = configFor(env);
+  for (const toolName of ['read', 'edit', 'write', 'bash']) {
+    assert.equal(await guardToolCall({ toolName, input: { path: outsideFile, command: 'example' } }, config, workspace), undefined);
+  }
+  assert.equal(config.permissionProfile, 'safe');
+  assert.equal(config.workflow, 'plan');
+  for (const boundary of [
+    { RHWP_LOCAL_EXECUTION: '0' },
+    { RHWP_AGENT_ROLE: 'pi-subagent.child.general', RHWP_PI_SUBAGENT_ID: 'child' },
+    { RHWP_AGENT_ROLE: 'copy-layout-worker:job:token', RHWP_TOOL_PROFILE: 'copy-layout-worker' },
+    { RHWP_TOOL_PROFILE: 'doc-researcher' },
+  ]) {
+    const restricted = configFor({ ...env, ...boundary });
+    for (const toolName of ['edit', 'write', 'bash']) {
+      assert.equal((await guardToolCall({ toolName, input: { path: outsideFile } }, restricted, workspace)).block, true);
+    }
+  }
+});
+
 test('safe 프로필은 캐논 경로를 도구에 넘기고 workspace 밖은 막는다', async (t) => {
   const { workspace, insideFile, outsideFile } = await guardTree(t);
   const safe = configFor({ RHWP_ROOT_DIR: workspace });
