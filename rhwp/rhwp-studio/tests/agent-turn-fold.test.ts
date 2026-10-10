@@ -6,8 +6,10 @@ import { turnOutcomeFor } from '../src/agent/turn-outcome.ts';
 import { formatFleetClock } from '../src/ui/agent-sidebar/subagent-fleet.ts';
 import { PRESENTED_TOOL_NAMES } from '../src/ui/agent-sidebar/tool-presentation.ts';
 import {
+  TURN_CHECK_DOCUMENT_TEXT,
   TURN_SUMMARY_IGNORED_TOOLS,
   formatTurnDuration,
+  keepsFinalMilestone,
   planTurnFolds,
   settledTurnText,
   summarizeTurnWork,
@@ -278,6 +280,51 @@ test('접힘 계획: 중단된 턴은 작업이 없어도 펼칠 것 없는 한 
     ['중단됨', false],
     ['중단됨 · 1분 12초 · 표 1개 추가', true],
   ]);
+});
+
+test('접힘 계획: 보고를 쓰고 도구를 부른 뒤 끝난 턴은 그 보고(마지막 이정표)를 흐름에 남긴다', () => {
+  const report = '전체 요약입니다. 세 절을 확인했고 일정표가 비어 있습니다.';
+  const turn = marker('turn-1', 0, 40_000, 'completed');
+  const messages: ThreadMessage[] = [
+    user('문서를 요약해 주세요'),
+    turn,
+    progress('본문을 읽습니다.'),
+    activity('a1', [record('get_text_range', { sectionIdx: 0, startParaIdx: 0, endParaIdx: 2 })]),
+    progress(report),
+    activity('a2', [record('update_todos', { todos: [] })]),
+  ];
+  const { plan, where } = placements(messages);
+  assert.deepEqual(where, ['flow', 'flow', 'turn-1', 'turn-1', 'flow', 'turn-1']);
+  assert.equal(plan.folds[0].view.title, '작업 40초 · 문단 3개 읽음');
+  assert.equal(keepsFinalMilestone(messages, turn), true);
+
+  // 편집 턴 끝의 “작업 완료 · 문서 확인” 안내는 답이 아니다 — 보고는 그대로 흐름에 남는다.
+  const withNote = [...messages, answer(TURN_CHECK_DOCUMENT_TEXT)];
+  assert.deepEqual(placements(withNote).where, ['flow', 'flow', 'turn-1', 'turn-1', 'flow', 'turn-1', 'flow']);
+
+  // 도구 뒤에 최종 답변이 있으면 이정표는 작업 노트라 접힌다.
+  const answered = [...messages, answer('요약을 마쳤습니다.')];
+  assert.deepEqual(placements(answered).where, ['flow', 'flow', 'turn-1', 'turn-1', 'turn-1', 'turn-1', 'flow']);
+  assert.equal(keepsFinalMilestone(answered, turn), false);
+
+  // 표식 없는 옛 대화도 같다.
+  const legacy = [messages[0], ...messages.slice(2)];
+  assert.deepEqual(placements(legacy).where, ['flow', 'legacy-1', 'legacy-1', 'flow', 'legacy-1']);
+});
+
+test('접힘 계획: 보고 하나만 쓰고 끝난 턴은 줄이 없고, 중단된 턴의 이정표는 그대로 접힌다', () => {
+  const only = marker('only', 0, 9_000, 'completed');
+  const reportOnly: ThreadMessage[] = [user('요약'), only, progress('요약입니다.'), activity('a1', [record('update_todos', { todos: [] })])];
+  // 보고 뒤에 할 일 정리만 있었다 — 접힘은 그 도구 하나다.
+  assert.deepEqual(placements(reportOnly).where, ['flow', 'flow', 'flow', 'only']);
+  const bare: ThreadMessage[] = [user('요약'), only, progress('요약입니다.')];
+  assert.deepEqual(placements(bare).plan.folds, []);
+  assert.equal(settledTurnText(bare, only, 'completed', 9_000), '');
+
+  const stopped = marker('stopped', 0, 9_000, 'interrupted');
+  const interrupted: ThreadMessage[] = [user('요약'), stopped, progress('본문을 읽습니다.'), activity('a1', [record('get_document_info', {})])];
+  assert.deepEqual(placements(interrupted).where, ['flow', 'flow', 'stopped', 'stopped']);
+  assert.equal(keepsFinalMilestone(interrupted, stopped), false);
 });
 
 test('실패한 서브에이전트와 그 안에서 실패한 도구는 오류 하나로 센다', () => {

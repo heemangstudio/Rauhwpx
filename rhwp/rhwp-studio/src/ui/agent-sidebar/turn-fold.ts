@@ -507,6 +507,50 @@ export function turnWorkFor(messages: readonly ThreadMessage[], marker: ThreadTu
   return collectWork(turnMessageIndexes(messages, marker).map((i) => messages[i]));
 }
 
+/** 편집 턴이 답변 없이 끝나면 사이드바가 덧붙이는 안내. 모델이 쓴 답이 아니라 최종 답변으로 치지 않는다. */
+export const TURN_CHECK_DOCUMENT_TEXT = '작업 완료 · 문서 확인';
+
+/** 모델이 쓴 최종 답변인가 — 진행 이정표·카드·안내가 아닌 어시스턴트 글. */
+function isAnswerMessage(message: ThreadMessage): boolean {
+  if (message.role !== 'assistant' || message.kind !== undefined) return false;
+  const text = message.text.trim();
+  return text !== '' && text !== TURN_CHECK_DOCUMENT_TEXT;
+}
+
+/**
+ * 흐름에 남길 마지막 이정표의 순번. 보고를 쓴 뒤 할 일 정리·버전 저장·변경 확인 같은 도구를
+ * 부르고 끝난 턴에는 최종 답변 말풍선이 없다 — 그 턴의 마지막 글(마지막 이정표)이 곧 답이라
+ * 접지 않는다. 답을 내지 못한 중단된 턴은 그대로 접는다. span 은 그 턴 메시지의 순번이다.
+ */
+function finalMilestoneIndex(
+  messages: readonly ThreadMessage[],
+  span: readonly number[],
+  outcome: TurnFoldOutcome,
+): number | null {
+  if (outcome !== 'completed' && outcome !== 'legacy') return null;
+  for (let k = span.length - 1; k >= 0; k -= 1) {
+    const message = messages[span[k]];
+    if (isAnswerMessage(message)) return null;
+    if (message.role === 'assistant' && message.kind === 'progress') return span[k];
+  }
+  return null;
+}
+
+/** 턴 메시지 가운데 접힘 본문으로 들어가는 작업 메시지의 순번 — 답이 된 마지막 이정표는 빠진다. */
+function foldMembers(messages: readonly ThreadMessage[], span: readonly number[], outcome: TurnFoldOutcome): number[] {
+  const kept = finalMilestoneIndex(messages, span, outcome);
+  return span.filter((i) => i !== kept && isTurnWorkMessage(messages[i]));
+}
+
+/**
+ * 정착한 턴이 마지막 이정표를 흐름에 남기는가 — 최종 답변 없이 끝난 완료 턴이다. 턴 끝에서
+ * 화면의 작업을 접을 때 복원(planTurnFolds)과 같은 규칙으로 고른다.
+ */
+export function keepsFinalMilestone(messages: readonly ThreadMessage[], marker: ThreadTurnMessage): boolean {
+  if (marker.endedAt === null || marker.outcome === null) return false;
+  return finalMilestoneIndex(messages, turnMessageIndexes(messages, marker), marker.outcome) !== null;
+}
+
 /** 정착한 표식의 접힘 머리 — 턴 끝에서 화면의 줄을 채울 때 쓴다. 정착 전이면 null. */
 export function settledTurnView(
   messages: readonly ThreadMessage[],
@@ -535,8 +579,7 @@ export function settledTurnText(
 ): string {
   if (outcome === 'failed') return '';
   const indexes = turnMessageIndexes(messages, marker);
-  const hasWork = indexes.some((i) => isTurnWorkMessage(messages[i]));
-  if (outcome === 'completed' && !hasWork) return '';
+  if (outcome === 'completed' && foldMembers(messages, indexes, outcome).length === 0) return '';
   const summary = summarizeTurnWork(collectWork(indexes.map((i) => messages[i])));
   return turnFoldLabel({
     outcome,
@@ -576,14 +619,16 @@ export interface TurnFoldPlan {
  * - 열린 턴 없이 작업 메시지가 오면 표식 없는 옛 턴을 그 자리에서 연다.
  * - 오류로 끝난 턴과 아직 정착하지 않은 턴은 접지 않는다. 작업 없이 끝난 턴도 줄이 없다.
  *   중단된 턴은 작업이 없어도 펼칠 것 없는 한 줄을 남긴다.
- * - 작업 메시지만 접힘으로 들어간다. 답변·질문·계획·시스템 줄은 흐름에 남는다.
+ * - 작업 메시지만 접힘으로 들어간다. 답변·질문·계획·시스템 줄은 흐름에 남는다. 최종 답변
+ *   없이 끝난 턴은 마지막 이정표가 그 턴의 답이라 흐름에 남는다.
  */
 export function planTurnFolds(messages: readonly ThreadMessage[]): TurnFoldPlan {
   interface Draft {
     id: string;
     anchorIndex: number;
     marker: ThreadTurnMessage | null;
-    members: number[];
+    /** 이 턴의 메시지 순번(표식 제외) — 다음 사용자 메시지·표식 전까지 */
+    span: number[];
   }
   const drafts: Draft[] = [];
   const unsettled: number[] = [];
@@ -594,17 +639,17 @@ export function planTurnFolds(messages: readonly ThreadMessage[]): TurnFoldPlan 
       return;
     }
     if (isMarker(message)) {
-      open = { id: message.messageId, anchorIndex: i, marker: message, members: [] };
+      open = { id: message.messageId, anchorIndex: i, marker: message, span: [] };
       drafts.push(open);
       if (message.endedAt === null) unsettled.push(i);
       return;
     }
-    if (!isTurnWorkMessage(message)) return;
     if (!open) {
-      open = { id: `legacy-${i}`, anchorIndex: i, marker: null, members: [] };
+      if (!isTurnWorkMessage(message)) return;
+      open = { id: `legacy-${i}`, anchorIndex: i, marker: null, span: [] };
       drafts.push(open);
     }
-    open.members.push(i);
+    open.span.push(i);
   });
 
   const folds: TurnFoldEntry[] = [];
@@ -618,23 +663,24 @@ export function planTurnFolds(messages: readonly ThreadMessage[]): TurnFoldPlan 
       outcome = 'legacy';
     } else {
       if (marker.endedAt === null || marker.outcome === null || marker.outcome === 'failed') continue;
-      if (marker.outcome === 'completed' && draft.members.length === 0) continue;
       outcome = marker.outcome;
       durationMs = Math.max(0, marker.endedAt - marker.startedAt);
     }
-    const summary = summarizeTurnWork(collectWork(draft.members.map((i) => messages[i])));
+    const members = foldMembers(messages, draft.span, outcome);
+    if (members.length === 0 && outcome !== 'interrupted') continue;
+    const summary = summarizeTurnWork(collectWork(members.map((i) => messages[i])));
     const foldIndex = folds.length;
     folds.push({
       id: draft.id,
       anchorIndex: draft.anchorIndex,
       outcome,
       durationMs,
-      members: draft.members,
+      members,
       summary,
-      view: turnFoldSummaryView({ outcome, durationMs, parts: summary.parts, errors: summary.errors }, draft.members.length > 0),
+      view: turnFoldSummaryView({ outcome, durationMs, parts: summary.parts, errors: summary.errors }, members.length > 0),
     });
     anchors.set(draft.anchorIndex, foldIndex);
-    for (const member of draft.members) placement[member] = foldIndex;
+    for (const member of members) placement[member] = foldIndex;
   }
   return { folds, placement, anchors, unsettled };
 }
@@ -649,6 +695,60 @@ export function planTurnFolds(messages: readonly ThreadMessage[]): TurnFoldPlan 
 export function isTurnWorkNode(node: Element): boolean {
   if (node.classList.contains('ag-fleet-slot')) return !(node as HTMLElement).hidden;
   return node.classList.contains('ag-progress-step') || node.classList.contains('ag-restored-task-group');
+}
+
+/** 이정표 글이 든 진행 단계인가 — 도구만 있는 단계는 아니다. */
+function isMilestoneStep(node: Element): boolean {
+  return node.classList.contains('ag-progress-step')
+    && [...node.children].some((child) => child.classList.contains('ag-progress-milestone'));
+}
+
+/** 노드를 순서대로 target 끝으로 옮긴다. 옮기면 처음으로 돌아가는 스크롤 위치와 초점을 지킨다. */
+function moveNodes(target: HTMLElement, nodes: readonly HTMLElement[]): void {
+  const doc = target.ownerDocument;
+  const focused = doc.activeElement;
+  const scrolled: Array<{ element: Element; top: number; left: number }> = [];
+  for (const node of nodes) {
+    for (const element of [node, ...node.querySelectorAll('*')]) {
+      if (element.scrollTop > 0 || element.scrollLeft > 0) {
+        scrolled.push({ element, top: element.scrollTop, left: element.scrollLeft });
+      }
+    }
+  }
+  target.append(...nodes);
+  for (const entry of scrolled) {
+    entry.element.scrollTop = entry.top;
+    entry.element.scrollLeft = entry.left;
+  }
+  if (focused instanceof HTMLElement && focused !== doc.activeElement
+    && nodes.some((node) => node.contains(focused))) {
+    focused.focus({ preventScroll: true });
+  }
+}
+
+/**
+ * 최종 답변 없이 끝난 턴의 마지막 이정표를 흐름에 남긴다(keepsFinalMilestone). 작업 노드에서
+ * 마지막 이정표 단계를 빼고, 그 단계에 붙은 도구 묶음·카드 슬롯은 바로 뒤의 새 도구 단계로
+ * 갈라 접힘에 넣는다 — 복원한 대화와 같은 모양이다. 접힘에 넣을 작업 노드를 돌려준다.
+ */
+export function releaseFinalMilestone(nodes: readonly HTMLElement[]): HTMLElement[] {
+  const work = [...nodes];
+  let at = work.length - 1;
+  while (at >= 0 && !isMilestoneStep(work[at])) at -= 1;
+  if (at < 0) return work;
+  const step = work[at];
+  const tail = [...step.children].filter((child): child is HTMLElement =>
+    child instanceof HTMLElement && !child.classList.contains('ag-progress-milestone'));
+  if (tail.length === 0) {
+    work.splice(at, 1);
+    return work;
+  }
+  const tools = step.ownerDocument.createElement('div');
+  tools.className = 'ag-progress-step ag-progress-step-tools-only';
+  step.after(tools);
+  moveNodes(tools, tail);
+  work.splice(at, 1, tools);
+  return work;
 }
 
 export interface TurnFoldRowOptions {
@@ -800,26 +900,8 @@ export function createTurnFoldRow(turnId: string, opts: TurnFoldRowOptions = {})
     isCollapsed,
     adopt(nodes: readonly HTMLElement[]): void {
       if (nodes.length === 0) return;
-      const focused = doc.activeElement;
-      // 옮기면 스크롤 상자는 처음으로 돌아간다 — 읽던 자리를 기억해 둔다.
-      const scrolled: Array<{ element: Element; top: number; left: number }> = [];
-      for (const node of nodes) {
-        for (const element of [node, ...node.querySelectorAll('*')]) {
-          if (element.scrollTop > 0 || element.scrollLeft > 0) {
-            scrolled.push({ element, top: element.scrollTop, left: element.scrollLeft });
-          }
-        }
-      }
-      body.append(...nodes);
-      for (const entry of scrolled) {
-        entry.element.scrollTop = entry.top;
-        entry.element.scrollLeft = entry.left;
-      }
+      moveNodes(body, nodes);
       for (const node of nodes) finishReplayedAnimations(node);
-      if (focused instanceof HTMLElement && focused !== doc.activeElement
-        && nodes.some((node) => node.contains(focused))) {
-        focused.focus({ preventScroll: true });
-      }
     },
   };
 }

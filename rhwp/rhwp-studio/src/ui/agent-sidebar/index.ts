@@ -129,9 +129,12 @@ import { chatAttention, type ChatAttentionLedger } from '../../agent/chat-attent
 import { createRunStatusController, type TurnFailureNote } from './run-status.ts';
 import { turnOutcomeFor, type TurnOutcome } from '../../agent/turn-outcome.ts';
 import {
+  TURN_CHECK_DOCUMENT_TEXT,
   createTurnFoldRow,
   isTurnWorkNode,
+  keepsFinalMilestone,
   planTurnFolds,
+  releaseFinalMilestone,
   settledTurnText,
   settledTurnView,
   type TurnFoldRow,
@@ -8091,7 +8094,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function appendCheckDocumentMessage(agent: AgentName): void {
-    const text = '작업 완료 · 문서 확인';
+    const text = TURN_CHECK_DOCUMENT_TEXT;
     const message = openAssistantBubble(agent);
     renderAssistantMessage(message, text);
     message.classList.add('ag-msg-enter');
@@ -8212,7 +8215,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!row || row.root.parentElement !== messages) return;
     // 이 턴의 작업은 줄 뒤에서 대화 끝(다음 턴의 줄) 사이에 있다. "편집 중…" 고리는 지연 동안
     // 숨은 채 그 사이에 남아 있을 수 있어 건너뛰기만 하고, 작업 노드가 아니라 접힘에 들지 않는다.
-    const nodes: HTMLElement[] = [];
+    let nodes: HTMLElement[] = [];
     for (
       let node = row.root.nextElementSibling;
       node && node !== messagesEnd && !node.classList.contains('ag-turn-fold');
@@ -8220,6 +8223,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     ) {
       if (node !== turnPending && node instanceof HTMLElement && isTurnWorkNode(node)) nodes.push(node);
     }
+    // 최종 답변 없이 끝난 턴은 마지막 이정표가 그 턴의 답이다 — 흐름에 남기고 뒤에 붙은 도구만 접는다.
+    if (keepsFinalMilestone(currentThread.messages, marker)) nodes = releaseFinalMilestone(nodes);
     const view = settledTurnView(currentThread.messages, marker, nodes.length > 0);
     if (!view || view.outcome === 'failed' || (view.outcome === 'completed' && nodes.length === 0)) {
       turnFoldResizeObserver?.unobserve(row.root);

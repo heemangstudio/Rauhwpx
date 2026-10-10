@@ -72,6 +72,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=fleet&background=1` | A subagent that keeps running after its turn: its card stays in the dock, outside the turn fold, and lands below the fold when it finishes |
 | `?scenario=tools&play=1` | A finished multi-tool turn folded into one summary row above the answer (`작업 … · 문단 3개 수정 · … · 오류 1`) |
 | `?scenario=tools&play=1&hold=1`, then Stop | A stopped turn folded as `중단됨 · …` |
+| `?scenario=chat&report=1&play=1` | A turn that writes its report and then calls one more tool (`update_todos`): the report is the turn's last prose and stays below the fold row, the trailing tool folds |
 | `?scenario=error` | A failed turn: one network-failure notice with 다시 시도 (same as `&failure=network`); failed turns never fold |
 | `?scenario=error&failure=auth` | Login notice (Claude/Codex) with 로그인; after the fixture login it shows 다시 연결됐어요 and 다시 시도 |
 | `?scenario=error&failure=pi-auth` | Pi connection notice with 설정 열기 |
@@ -156,14 +157,17 @@ turn (use `hold=1`), and `sidebarPreview.setChatStartDelay(ms)` and
 When a turn settles, its milestones, tool groups and settled subagent cards fold into
 one summary row above the final answer, such as `작업 2분 31초 · 문단 5개 수정 · 표 1개 읽음`.
 The answer, questions, plans and system lines (errors included) stay in the flow. A
+completed turn with no final answer after its last tool keeps its last milestone (its
+report) in the flow and folds only the work around it. A
 turn that ended in an error never folds, and a turn still running when the page
 reloads stays unfolded until it settles. Restored chats fold the same way; chats saved
 before turns were recorded fold by user message as `작업 내역 · …`. The row expands in
 place and collapses again whenever the chat is re-rendered.
 
 `node rhwp/rhwp-studio/sidebar-preview/turn-fold.check.mjs` covers the live, restored,
-stopped, failed, subagent and scrolled-up cases and saves `turn-fold.png`,
-`turn-fold-open.png` and `turn-fold-interrupted.png` to `sidebar-preview/artifacts/`.
+stopped, failed, subagent, scrolled-up and report-then-tool cases and saves `turn-fold.png`,
+`turn-fold-open.png`, `turn-fold-interrupted.png` and `turn-fold-report.png` to
+`sidebar-preview/artifacts/`.
 
 ## Background-chat attention
 

@@ -296,6 +296,11 @@ export function createMockBridge(
   const reviewMode = new URLSearchParams(location.search).get('review');
   /** `background=1`: the fleet scenario's first subagent is a background process that outlives its turn. */
   const backgroundTask = new URLSearchParams(location.search).get('background') === '1';
+  /**
+   * `report=1`: the reply writes its report first and then calls one more tool (update_todos), so the
+   * turn ends without a final answer bubble — the report is the turn's last prose.
+   */
+  const reportEnding = new URLSearchParams(location.search).get('report') === '1';
   const fullReview = reviewMode === 'full';
   const references: T.ReferenceFile[] = [
     {
@@ -1035,6 +1040,19 @@ export function createMockBridge(
               stream({ type: 'text-delta', agent, text });
               if (index === chunks.length - 1) {
                 if (reply === 'review') addReview();
+                if (reportEnding) {
+                  const todos = [
+                    { content: '문서 검토', status: 'completed' },
+                    { content: '보고 작성', status: 'completed' },
+                  ];
+                  stream({ type: 'tool-call', agent, callId: `todos-${turnGeneration}`, tool: 'mcp__rhwp__update_todos', argsJson: JSON.stringify({ todos }) });
+                  later(() => {
+                    if (generation !== turnGeneration) return;
+                    stream({ type: 'tool-result', agent, callId: `todos-${turnGeneration}`, ok: true, resultPreview: '할 일 2개를 갱신했습니다.' });
+                    if (!holdReply) finish();
+                  }, 140);
+                  return;
+                }
                 if (!holdReply) finish();
               }
             }, index * 140),

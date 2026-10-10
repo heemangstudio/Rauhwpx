@@ -294,7 +294,11 @@ try {
     assert.equal(rest.length, 0);
     assert.match(fold.label, /^작업 \d+초 · 표 1개 수정 · 표 1개 읽음$/);
     assert.equal(fold.collapsed, true);
-    assert.equal(await page.$$eval('.ag-messages > .ag-progress-step', (nodes) => nodes.length), 0, '다시 잡은 턴의 작업도 접힌다');
+    // 다시 잡은 턴의 도구 작업도 접힌다. 이 턴은 최종 답변 없이 끝나 마지막 글(이정표)만 흐름에 남는다.
+    assert.deepEqual(await page.evaluate(() => ({
+      toolsInFlow: [...document.querySelectorAll('.ag-messages .ag-activity')].filter((node) => !node.closest('.ag-turn-fold')).length,
+      stepsInFlow: [...document.querySelectorAll('.ag-messages > .ag-progress-step')].map((node) => node.textContent.trim()),
+    })), { toolsInFlow: 0, stepsInFlow: ['추진 일정 표를 읽고 분기별로 묶겠습니다.'] }, '다시 잡은 턴의 작업도 접힌다');
     const stored = await page.evaluate(async (id) => {
       await window.sidebarPreview.threadStore.waitForThreadsPersistence();
       return window.sidebarPreview.threadStore.getThread(id).messages
@@ -303,6 +307,51 @@ try {
     }, RUNNING_CHAT);
     assert.deepEqual(stored, [{ outcome: 'completed', settled: true }], '표식은 실제 끝의 결과로 정착한다');
     await assertRingOutsideFolds();
+  });
+
+  await step('(i) 보고를 쓴 뒤 도구를 부르고 끝난 턴은 그 보고를 접지 않는다 — 살아 있을 때와 다시 열었을 때', async () => {
+    const REPORT = '필요한 부분을 선택해 주시면 이어서 다듬겠습니다.';
+    await play('scenario=chat&report=1');
+    await turnEnded();
+    await page.waitForSelector('.ag-messages > .ag-turn-fold:not([hidden])');
+    const layout = () => page.evaluate((report) => {
+      const messages = document.querySelector('.ag-messages');
+      const row = messages.querySelector(':scope > .ag-turn-fold:not([hidden])');
+      const reports = [...messages.querySelectorAll('.ag-progress-milestone')].filter((node) => node.textContent.includes(report));
+      const todos = [...messages.querySelectorAll('.ag-activity-label')].filter((node) => node.textContent.includes('할 일 갱신'));
+      const step = reports[0]?.closest('.ag-progress-step');
+      return {
+        folds: messages.querySelectorAll(':scope > .ag-turn-fold:not([hidden])').length,
+        collapsed: row.classList.contains('ag-turn-fold-collapsed'),
+        reports: reports.length,
+        reportInFold: Boolean(reports[0]?.closest('.ag-turn-fold')),
+        reportVisible: Boolean(reports[0]?.checkVisibility()),
+        reportStepInFlow: step?.parentElement === messages,
+        reportAfterRow: Boolean(step && (row.compareDocumentPosition(step) & Node.DOCUMENT_POSITION_FOLLOWING)),
+        todosInFold: todos.length > 0 && todos.every((node) => Boolean(node.closest('.ag-turn-fold-body'))),
+        // 편집 턴 끝의 안내 줄은 답이 아니다 — 있어도 보고를 접지 않는다.
+        checkNoteInFlow: [...messages.querySelectorAll(':scope > .ag-msg-assistant')]
+          .some((node) => node.textContent.includes('작업 완료 · 문서 확인')),
+      };
+    }, REPORT);
+    const expected = {
+      folds: 1, collapsed: true, reports: 1, reportInFold: false, reportVisible: true,
+      reportStepInFlow: true, reportAfterRow: true, todosInFold: true, checkNoteInFlow: true,
+    };
+    assert.deepEqual(await layout(), expected);
+    await screenshot('turn-fold-report');
+    const threadId = await page.evaluate(async () => {
+      await window.sidebarPreview.threadStore.waitForThreadsPersistence();
+      return window.sidebarPreview.sidebar.currentThreadId();
+    });
+    await page.reload({ waitUntil: 'networkidle0' });
+    await page.waitForFunction(() => window.sidebarPreview);
+    await page.evaluate(async (id) => {
+      await window.sidebarPreview.threadStore.waitForThreadsPersistence();
+      window.sidebarPreview.sidebar.openThreadById(id);
+    }, threadId);
+    await page.waitForSelector('.ag-messages > .ag-turn-fold:not([hidden])');
+    assert.deepEqual(await layout(), expected, '다시 연 대화도 보고를 흐름에 남긴다');
   });
 
   assert.deepEqual(errors, [], 'no runtime errors');
