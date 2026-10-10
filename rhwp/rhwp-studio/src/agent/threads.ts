@@ -35,6 +35,11 @@ interface ThreadMessageBase {
   /** 호출 당시 선택된 아이콘. 이후 skill 설정이 바뀌어도 기록 모양을 유지한다. */
   skillIcon?: ProductSkillIcon;
   messageId?: string;
+  /**
+   * 사용자 메시지(요청) 하나의 정체성. 그 요청이 시작한 턴들의 체크포인트가 이 키에 묶인다
+   * (agent/turn-checkpoints.ts, "이 작업 전으로 되돌리기").
+   */
+  turnKey?: string;
   attachments?: ThreadAttachment[];
   /** 인라인 프롬프트로 보낸 메시지에 붙는 문서 선택 컨텍스트 (표시용). */
   selection?: {
@@ -764,6 +769,9 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
         : {}),
       ...(skillIcon ? { skillIcon } : {}),
       ...(typeof message.messageId === 'string' ? { messageId: message.messageId } : {}),
+      ...(message.role === 'user' && typeof message.turnKey === 'string' && message.turnKey
+        ? { turnKey: message.turnKey }
+        : {}),
       ...(attachments?.length ? { attachments } : {}),
       ...(selection ? { selection } : {}),
     };

@@ -2670,6 +2670,79 @@ button.ag-skill-copy {
   }
 }
 
+/* 요청 말풍선의 "이 작업 전으로 되돌리기" — 호버·키보드 포커스 때만 말풍선 왼쪽에 뜬다.
+   사용자 말풍선은 오른쪽 정렬이라 왼쪽이 비어 있다. 버튼과 말풍선 사이 틈도 버튼의 히트
+   영역(::after)이라 포인터가 건너가는 동안 호버가 끊기지 않는다. */
+.ag-msg-user {
+  position: relative;
+}
+
+.ag-msg-user > .ag-msg-restore {
+  position: absolute;
+  top: 6px;
+  right: calc(100% + 6px);
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--ag-bg);
+  color: var(--ag-text-secondary);
+  cursor: default;
+  opacity: 0;
+  pointer-events: none;
+  transition: var(--ag-transition-color);
+}
+
+.ag-msg-user > .ag-msg-restore::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 6px;
+}
+
+.ag-msg-user.ag-has-skill > .ag-msg-restore {
+  top: auto;
+  bottom: 6px;
+}
+
+.ag-msg-user:hover > .ag-msg-restore,
+.ag-msg-user > .ag-msg-restore:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ag-msg-user > .ag-msg-restore:hover {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-msg-user > .ag-msg-restore[aria-disabled='true'] {
+  color: var(--ag-text-tertiary);
+}
+
+.ag-msg-user > .ag-msg-restore[aria-disabled='true']:hover {
+  background: transparent;
+  color: var(--ag-text-secondary);
+}
+
+.ag-msg-user > .ag-msg-restore:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+@media (hover: none) {
+  .ag-msg-user > .ag-msg-restore {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 /* 위로 읽는 중에 대화 아래 가장자리에 뜨는 "최신" 알약. 높이 0 의 dock 이
    대화 목록 바로 아래에 붙어 알약을 목록 위로 띄운다. */
 .ag-latest-dock {

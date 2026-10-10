@@ -135,7 +135,7 @@ import {
   writeSidebarPageLayout,
   type SidebarPageLayout,
 } from './page-layout.ts';
-import { detectPlatformKind } from '../../engine/navigation-keymap.ts';
+import { detectPlatformKind, formatShortcutLabel } from '../../engine/navigation-keymap.ts';
 import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createEffortSlider } from './effort-slider.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
@@ -187,6 +187,8 @@ import type {
 } from '../../agent/inline-prompt-context.ts';
 import { createUserQuestionController, type UserQuestionDraftState } from './user-question-controller.ts';
 import { createModeMenu, parseModeCommand } from './mode-menu.ts';
+import { createTurnRestoreActions } from './turn-restore-action.ts';
+import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
 import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
 import './sidebar-button-modern.css';
 
@@ -225,6 +227,11 @@ export interface AgentSidebarDeps {
   versionController?: VersionManagerController;
   getAgentUndoEntry?: () => object | null;
   undoAgentTurn?: (entry: object) => boolean;
+  /**
+   * 요청마다 "이 작업 전으로 되돌리기" (agent/turn-checkpoints.ts). turn-start 에 그 턴의 요청을
+   * 알리고, 사용자 말풍선의 되돌리기 버튼이 상태를 읽고 되돌린다. 없으면 버튼이 없다.
+   */
+  turnRestore?: TurnRestoreControl;
   navigateToChange?: (position: DocumentPosition, anchor?: DiffItem['rightAnchor']) => void;
   /** 기존 RHWP 문서 이력 대화상자를 연다. */
   openClassicVersionControl?: () => void;
@@ -716,6 +723,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }, { immediate: (lock) => lock === 'replaced' });
   let turnRunning = bridge.isTurnRunning();
   let mergeResolverLocked = false;
+  /** 사용자 말풍선의 "이 작업 전으로 되돌리기" 버튼 */
+  const restoreActions = deps.turnRestore
+    ? createTurnRestoreActions({
+      control: deps.turnRestore,
+      threadId: () => currentThread.id,
+      // 에이전트가 일하는 동안의 누름은 무시하지 않고 거절 사유(작업 중)를 알린다.
+      locked: () => mergeResolverLocked,
+      restored: (key) => handleTurnRestored(key),
+    })
+    : null;
   /** 지금 노란 불이 붙어 있는 스레드 — 턴이 끝나면 초록 점으로 넘긴다. */
   let runStatusThreadId: string | null = null;
   let workflowTransitionPending = false;
@@ -4956,6 +4973,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       role: 'user',
       text,
       agent: selectedAgent,
+      // 이 요청이 시작한 턴들의 체크포인트가 묶이는 키 (이 작업 전으로 되돌리기)
+      turnKey: transcriptId('turn'),
       ...(skillName ? { skillName } : {}),
       ...(skillName && skillIcon ? { skillIcon } : {}),
       ...(attachments.length ? { attachments } : {}),
@@ -5048,8 +5067,39 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
       bubble.appendChild(row);
     }
+    if (message.turnKey) {
+      bubble.dataset.turnKey = message.turnKey;
+      restoreActions?.sync(bubble);
+    }
     return bubble;
   }
+
+  /** 이 대화의 마지막 요청(사용자 메시지)의 키. 계획 실행처럼 메시지 없이 시작한 턴도 그 요청에 묶인다. */
+  function latestUserTurnKey(): string | null {
+    for (let i = currentThread.messages.length - 1; i >= 0; i--) {
+      const message = currentThread.messages[i]!;
+      if (message.role === 'user') return message.turnKey ?? null;
+    }
+    return null;
+  }
+
+  /**
+   * 문서를 이 요청 전으로 되돌렸다 — 알리고, 빈 입력칸에 요청을 돌려준다 (보내지는 않는다).
+   * 다음 요청에 붙는 안내는 편집기가 이 채팅의 브리지에 알린다 (noteDocumentRestored).
+   */
+  function handleTurnRestored(key: string): void {
+    systemMessage(`문서를 이 작업 전으로 되돌렸습니다. ${formatShortcutLabel('Ctrl+Z')}로 다시 가져올 수 있습니다.`);
+    const request = currentThread.messages.find((message) => message.role === 'user' && message.turnKey === key);
+    if (request?.text && !input.value.trim() && !input.disabled) {
+      input.value = request.text;
+      resizeComposerInput();
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
+
+  /* 되돌릴 수 있는 상태가 바뀌면(턴 끝, 승인·거절, 되돌림, 문서 교체) 말풍선 버튼을 맞춘다. */
+  const unsubTurnRestore = deps.turnRestore?.subscribe(() => restoreActions?.syncAll(messages)) ?? (() => {});
 
   /* 답변마다 호버 때 뜨는 복사 버튼. 마크다운 원문을 복사하고, 결과는
      토스트 없이 버튼 자체가 잠깐 체크 표시로 알린다. 스트리밍 중 다시
@@ -7524,6 +7574,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         sweepActivityTranscripts();
         sweepTasksTranscript();
         completeTurnActivity();
+        // 이 턴을 그 스레드의 마지막 요청에 묶는다 — 첫 쓰기 직전에 되돌릴 시점이 찍힌다.
+        deps.turnRestore?.noteTurnStart(currentThread.id, latestUserTurnKey());
         setTurnRunning(true);
         runStatusThreadId = currentThread.id;
         markChatWorking(runStatusThreadId);
@@ -9140,6 +9192,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       railRevealTimer = null;
       questionController.dispose();
       unsubChatModeLock();
+      unsubTurnRestore();
       unsubBridge();
       unsubThreads();
       unsubChatStatus();

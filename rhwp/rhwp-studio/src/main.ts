@@ -242,8 +242,9 @@ import {
   restoreNativeDocument,
   reserveDesktopDocument,
 } from '@/desktop-integration';
-import { initAgentBridge } from './agent/bridge.ts';
+import { initAgentBridge, type AgentBridge } from './agent/bridge.ts';
 import { claimDocumentWriter, syncDocumentWriter } from './agent/document-writer.ts';
+import { checkTurnRestore, restoreTurn, type TurnRestoreGates } from './agent/turn-checkpoints.ts';
 import { renameThreadsDocument } from './agent/threads.ts';
 import { initAgentSidebar } from './ui/agent-sidebar/index.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
@@ -1239,6 +1240,8 @@ async function initialize(): Promise<void> {
       container, wasm, eventBus,
       canvasView.getVirtualScroll(),
       canvasView.getViewportManager(),
+      // 처음 붙은 문서 세션과 같은 히스토리를 쓴다 — 세션 단위 기록(턴 체크포인트)이 같은 것을 본다.
+      attachedSession.editorState.history,
     );
     inputHandler.setEditMode(editMode);
     inputHandler.setReadOnly(sessionReadOnly());
@@ -1802,6 +1805,17 @@ function chatModeLockFor(chat: ChatSession): { reason: string } | null {
 }
 
 /**
+ * 되돌리기를 막을 만큼 채팅이 일하는 중인가 — 턴·도구 호출·보낸 메시지·질문. 검토 대기 편집만
+ * 남은 채팅(따로 알린다)과 승인을 기다리는 계획만 있는 채팅은 일하는 중으로 보지 않는다.
+ */
+function chatWorksOnDocument(bridge: AgentBridge): boolean {
+  if (bridge.isTurnRunning() || bridge.getEditingLease().active) return true;
+  if (!bridge.isBusy() || bridge.pendingEdits.hasPending()) return false;
+  const { workflow, phase } = bridge.getWorkflowState();
+  return !(workflow === 'plan' && phase === 'awaiting-approval');
+}
+
+/**
  * 채팅의 쓰기 상태가 바뀌었다. 문서를 고칠 채팅(writer)을 먼저 맞추고 잠금을 다시 읽힌다.
  * changed 는 방금 바뀐 채팅 — 문서가 비어 있을 때 먼저 쥔 그 채팅이 주인이 된다.
  */
@@ -1838,8 +1852,18 @@ function installChatAgent(
     },
     // 같은 문서의 다른 채팅이 고치는 중이면 이 채팅의 쓰기는 문서에 닿지 않는다.
     claimDocumentWrite: () => chat !== undefined && claimDocumentWriter(session, chat),
+    turnCheckpoints: session.turnCheckpoints,
   }, hubSession ? { resolveSessionContext: hubSession.resolveContext } : undefined);
   const shown = () => documentShown() && chat !== undefined && session.activeChat === chat;
+  /** 이 작업 전으로 되돌리기의 문 — 엔진, 화면, 이 문서의 채팅들, 읽기 전용. */
+  const restoreGates: TurnRestoreGates = {
+    engineStopped: () => engineTrap() !== null,
+    documentShown,
+    turnRunning: () => session.chats.some(({ bridge: other }) => chatWorksOnDocument(other)),
+    reviewPending: () => session.chats.some(({ bridge: other }) => other.pendingEdits.hasPending()),
+    readOnly: () => sessionReadOnly(session) || editMode === 'form',
+    apply: (snapshotId) => editor.restoreDocumentSnapshot(snapshotId),
+  };
   const sidebar = initAgentSidebar({
     bridge,
     eventBus: session.bus,
@@ -1851,6 +1875,18 @@ function installChatAgent(
     versionController: versions,
     getAgentUndoEntry: () => (shown() ? editor.getAgentUndoEntry() : null),
     undoAgentTurn: (entry) => (shown() ? editor.undoAgentTurn(entry) : false),
+    turnRestore: {
+      noteTurnStart: (threadId, key) => session.turnCheckpoints.noteTurnStart(threadId, key),
+      status: (threadId, key) => session.turnCheckpoints.status(threadId, key),
+      check: (threadId, key) => checkTurnRestore(session.turnCheckpoints, threadId, key, restoreGates),
+      restore: (threadId, key) => {
+        const result = restoreTurn(session.turnCheckpoints, threadId, key, restoreGates);
+        // 이 채팅의 다음 요청에 문서를 되돌렸다는 안내를 붙인다 (에이전트가 되돌린 편집을 믿지 않게).
+        if (result.ok) bridge.noteDocumentRestored();
+        return result;
+      },
+      subscribe: (listener) => session.turnCheckpoints.subscribe(listener),
+    },
     navigateToChange: (position, anchor) => {
       if (!shown()) return;
       if (anchor && position.cellIndex === undefined) {

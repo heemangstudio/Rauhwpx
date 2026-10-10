@@ -25,6 +25,7 @@ import { readProviderQuota, readRemoteBalance } from './provider-quota-protocol.
 import { PendingRequestRegistry } from './pending-requests.ts';
 import { AgentEditFollow } from './agent-edit-follow.ts';
 import { TurnSnapshots, type BuiltTurnSnapshot } from './turn-snapshot.ts';
+import type { TurnCheckpointPort } from './turn-checkpoints.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
 import {
   setModelCatalog,
@@ -237,7 +238,7 @@ export interface ChatHistoryEntry {
 
 /** 문서 세션을 화면에 붙이고 떼는 호스트 전용 수명 주기 — 사이드바는 쓰지 않는다. */
 type AgentBridgeHostLifecycle = 'attachView' | 'detachView' | 'isViewAttached' | 'isBusy' | 'onBusyChange'
-  | 'holdsDocumentWrites';
+  | 'holdsDocumentWrites' | 'noteDocumentRestored';
 
 /** Frontend consumers only need the pending-edit review surface. */
 export type SidebarBridge = Omit<AgentBridge, 'pendingEdits' | AgentBridgeHostLifecycle> & {
@@ -282,6 +283,12 @@ export interface AgentBridge {
    * 워크플로로 일하는 중. 채팅 시작을 기다리는 동안에는 요청한 워크플로를 본다.
    */
   holdsDocumentWrites(): boolean;
+  /**
+   * 사용자가 이 채팅의 요청 전으로 문서를 되돌렸다 (이 작업 전으로 되돌리기). 다음으로 보내는
+   * 사용자 메시지 앞에 문서가 바뀌었다는 안내 한 줄을 붙여, 에이전트가 되돌린 편집이 남아
+   * 있다고 여기지 않게 한다. 말풍선과 대화 기록에는 붙지 않는다.
+   */
+  noteDocumentRestored(): void;
   getPermissionProfile(): PermissionProfile;
   getServiceTier(): ServiceTier;
   getWorkflowState(): AgentWorkflowState;
@@ -397,6 +404,9 @@ export interface AgentBridge {
 }
 
 type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'replaced';
+
+/** 문서를 이전 요청 전으로 되돌린 뒤 첫 사용자 메시지에 붙이는 안내 (에이전트에게만 간다). */
+export const DOCUMENT_RESTORED_NOTICE = '[문서 상태] 사용자가 문서를 이전 요청을 처리하기 전 상태로 되돌렸습니다. 문서를 다시 읽고 진행하세요.';
 
 /** 허브가 다른 스튜디오 탭에게 자리를 내주며 보내는 close code (server.mjs와 동일 값). */
 const CLOSE_CODE_REPLACED = 4000;
@@ -1258,6 +1268,12 @@ export class AgentBridgeImpl implements AgentBridge {
   private readonly options?: AgentBridgeOptions;
   private readonly versionCommit?: (message: string) => Promise<void>;
   private readonly claimDocumentWrite?: () => boolean;
+  /** 문서 세션의 턴 체크포인트 — 첫 쓰기 전 문서와 이 채팅의 승인·거절·턴 끝을 알린다. */
+  private readonly turnCheckpoints?: TurnCheckpointPort;
+  /** 턴 체크포인트에 알린 마지막 검토 set 목록 — 사라진 set 을 거절·폐기로 알린다. */
+  private checkpointSetIds = new Set<string>();
+  /** 문서를 되돌린 뒤 아직 보내지 않은 안내 — 다음 사용자 메시지 앞에 붙는다. */
+  private documentRestoredNotice = false;
   private ws: WebSocket | null = null;
   private state: ConnectionState = 'disconnected';
   /** 지금까지 실패한 연결 시도 수. 허브의 welcome 을 받으면 0 으로 돌아간다. */
@@ -1387,6 +1403,7 @@ export class AgentBridgeImpl implements AgentBridge {
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
     this.versionCommit = deps.commitVersion;
     this.claimDocumentWrite = deps.claimDocumentWrite;
+    this.turnCheckpoints = deps.turnCheckpoints;
     this.view = deps.view ?? null;
     this.editor = this.view?.inputHandler ?? deps.editor;
     this.editorHost = {
@@ -1432,6 +1449,7 @@ export class AgentBridgeImpl implements AgentBridge {
       const note = editReportNote(e);
       if (note) this.queueEditReport(note);
       this.handlePlanEditChange(e);
+      this.settleCheckpointSets(e);
       this.scheduleBusyCheck();
     });
     this.executor = new AgentToolExecutor({
@@ -1444,6 +1462,10 @@ export class AgentBridgeImpl implements AgentBridge {
       getDocumentSourcePath: () => getNativeFileSourcePath(deps.wasm.currentFileHandle),
       isReadOnly: deps.isReadOnly,
       claimDocumentWrite: deps.claimDocumentWrite,
+      // 이 턴의 첫 쓰기 직전 문서를 체크포인트로 남긴다 (모든 쓰기 문을 지난 뒤).
+      beforeDocumentWrite: deps.turnCheckpoints
+        ? () => deps.turnCheckpoints?.beforeWrite(this.threadId, this.pendingSetIds())
+        : undefined,
     });
     this.turnSnapshots = new TurnSnapshots({
       read: (args) => this.executor.structureSnapshot(args),
@@ -1516,6 +1538,10 @@ export class AgentBridgeImpl implements AgentBridge {
       || this.pendingUserQuestion !== null
       || (this.workflow === 'plan' && (this.phase === 'awaiting-approval' || this.phase === 'switching'))
       || this.pendingEdits.hasPending();
+  }
+
+  noteDocumentRestored(): void {
+    this.documentRestoredNotice = true;
   }
 
   holdsDocumentWrites(): boolean {
@@ -2157,7 +2183,44 @@ export class AgentBridgeImpl implements AgentBridge {
     } finally {
       this.executor.endTurn();
       this.pendingTurnOpen = false;
+      this.endTurnCheckpoint();
     }
+  }
+
+  /** 검토를 기다리는 (편집이 든) set 들. */
+  private pendingSetIds(): string[] {
+    return this.pendingEdits.getChangeSets().filter((set) => set.ops.length > 0).map((set) => set.id);
+  }
+
+  /** 턴이 끝났음을 턴 체크포인트에 알린다. 이미 닫혔으면 아무 일도 없다. */
+  private endTurnCheckpoint(): void {
+    try {
+      this.turnCheckpoints?.endTurn(this.threadId, this.pendingSetIds());
+    } catch (e) {
+      console.warn('[AgentBridge] 턴 체크포인트 종료 실패:', e);
+    }
+  }
+
+  /**
+   * 검토 set 의 정리를 턴 체크포인트에 알린다. 승인은 남긴 것(kept)이고, 승인 없이 사라진 set 은
+   * 거절·폐기다 — 이벤트 모양(거절, 문서 교체, undo 무효화, 부분 누락)에 기대지 않고 목록의 차로 본다.
+   */
+  private settleCheckpointSets(e: PendingEditsChangeEvent): void {
+    const port = this.turnCheckpoints;
+    if (!port) return;
+    // 승인·거절 도중의 부분 누락 알림 — set 은 이미 빠졌고 승인/거절 이벤트가 곧바로 뒤따른다.
+    if (e.type === 'invalidated' && e.droppedOpIds) return;
+    const current = new Set(this.pendingEdits.getChangeSets().map((set) => set.id));
+    const approved = e.type === 'approved' ? e.changeSetId : null;
+    try {
+      for (const id of this.checkpointSetIds) {
+        if (!current.has(id) && id !== approved) port.settleSet(this.threadId, id, false);
+      }
+      if (approved) port.settleSet(this.threadId, approved, true);
+    } catch (error) {
+      console.warn('[AgentBridge] 턴 체크포인트 정리 실패:', error);
+    }
+    this.checkpointSetIds = current;
   }
 
   private beginPlanExecutionTurn(): void {
@@ -2338,6 +2401,8 @@ export class AgentBridgeImpl implements AgentBridge {
               console.warn('[AgentBridge] reconnect endTurn 실패:', e);
             }
           }
+          // 끊긴 사이에 끝난 턴 — 검토 단계가 없던 턴의 체크포인트 기록도 닫는다.
+          if (!this.turnRunning) this.endTurnCheckpoint();
         } else {
           hubLostTurn = wasRunning;
           this.activeAgent = null;
@@ -2366,6 +2431,8 @@ export class AgentBridgeImpl implements AgentBridge {
               console.warn('[AgentBridge] reconnect endTurn 실패:', e);
             }
           }
+          // 허브가 턴과 함께 사라졌다 — 그 턴의 체크포인트 기록을 닫는다.
+          this.endTurnCheckpoint();
           if (this.workflow === 'plan' || this.workflow === 'question' || this.workflowSwitchPending) {
             this.finishWorkflowSwitch();
             this.syncEditingLease();
@@ -2391,6 +2458,7 @@ export class AgentBridgeImpl implements AgentBridge {
               console.warn('[AgentBridge] endTurn 실패:', e);
             }
           }
+          this.endTurnCheckpoint();
           // setState 는 상태가 같으면 무시하므로 직접 emit 해 사이드바가
           // isTurnRunning() 으로 재동기화하도록 한다.
           this.emitConnection();
@@ -2929,6 +2997,8 @@ export class AgentBridgeImpl implements AgentBridge {
               console.warn('[AgentBridge] chat-error endTurn 실패:', e);
             }
           }
+          // 시작에 실패한 채팅의 턴은 끝났다 — 체크포인트 기록이 열린 채 남지 않게 한다.
+          this.endTurnCheckpoint();
           const droppedQuestion = this.pendingUserQuestion;
           this.pendingUserQuestion = null;
           this.pendingUserQuestionId = null;
@@ -3042,6 +3112,8 @@ export class AgentBridgeImpl implements AgentBridge {
             console.warn('[AgentBridge] endTurn 실패:', e);
           }
         }
+        // 검토 단계가 없는 턴(채팅·구상)도 열어 둔 체크포인트 기록을 닫는다.
+        this.endTurnCheckpoint();
         this.flushEditReport();
         const planTurn = this.planExecutionTurn;
         this.planExecutionTurn = null;
@@ -3346,6 +3418,8 @@ export class AgentBridgeImpl implements AgentBridge {
       this.turnRunning = false;
       this.activeProviderTurnId = null;
       this.abortProviderToolRequests();
+      // 허브의 turn-end 를 기다리지 않는 멈춤 — 체크포인트 기록을 여기서 닫는다.
+      this.endTurnCheckpoint();
     }
     this.syncEditingLease();
     // 전체 접근은 현재 채팅 하나에만 적용하고 새 스레드나 다시 연 스레드의 기본값으로 삼지 않는다.
@@ -3470,10 +3544,11 @@ export class AgentBridgeImpl implements AgentBridge {
   private dispatchUserMessage(message: (typeof this.queuedMessages)[number]): void {
     // 문서 스냅샷은 프레임이 나가는 순간의 문서로, 동기로 만든다 — 프레임 순서가 스냅샷 없을 때와 같다.
     const built = this.buildTurnSnapshot();
+    const restored = this.documentRestoredNotice;
     const sent = this.sendJson({
       v: AGENT_PROTOCOL_VERSION,
       type: 'chat-user-message',
-      text: message.text,
+      text: restored ? `${DOCUMENT_RESTORED_NOTICE}\n\n${message.text}` : message.text,
       documentRevision: this.revision.revision,
       threadId: message.context.threadId,
       documentId: message.context.documentId,
@@ -3486,6 +3561,7 @@ export class AgentBridgeImpl implements AgentBridge {
     if (sent && built && this.phase !== 'awaiting-approval') this.turnSnapshots.markSent(built);
     if (sent) {
       this.messageAwaitingTurn = true;
+      this.documentRestoredNotice = false;
       this.scheduleBusyCheck();
     }
     message.resolve(sent ? (message.messageId ?? null) : null);
@@ -4189,6 +4265,12 @@ export class AgentBridgeImpl implements AgentBridge {
     this.pendingInterrupt = false;
     this.abortSocket();
     this.listeners.clear();
+    // 닫히는 채팅의 턴은 끝났고, 남은 검토 set 은 이 채팅과 함께 사라진다.
+    this.endTurnCheckpoint();
+    for (const id of this.checkpointSetIds) {
+      try { this.turnCheckpoints?.settleSet(this.threadId, id, false); } catch { /* 세션이 먼저 닫혔다 */ }
+    }
+    this.checkpointSetIds.clear();
     this.pendingChangeUnsub?.();
     this.pendingChangeUnsub = null;
     for (const off of this.documentNotifyUnsubs) off();

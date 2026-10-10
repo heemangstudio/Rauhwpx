@@ -22,6 +22,7 @@ import { exportDraftContent } from '@/versioning/snapshot';
 import { isPortableHistoryFileName } from '@/versioning/portable-bundle';
 import { documentSourceDigest } from '@/recent/document-preflight';
 import type { AgentBridge } from '@/agent/bridge';
+import { TurnCheckpoints } from '@/agent/turn-checkpoints';
 import type { AgentEditingLease } from '@/agent/types';
 import type { DocumentVersionController } from '@/versioning/controller';
 import type { VersionWorktree } from '@/versioning/types';
@@ -79,6 +80,11 @@ export interface DocumentSession {
    * 도구는 문서에 닿기 전에 거절된다.
    */
   writer: ChatSession | null;
+  /**
+   * 에이전트 턴마다 첫 쓰기 직전에 찍어 둔 문서 (이 작업 전으로 되돌리기). 채팅을 닫거나
+   * 화면에서 떼어도 남고, 세션을 닫으면 놓는다.
+   */
+  readonly turnCheckpoints: TurnCheckpoints;
   /** 지금 보이는 채팅의 브리지·사이드바 (activeChat 의 것) */
   readonly bridge: AgentBridge | null;
   readonly sidebar: DocumentSessionSidebar | null;
@@ -151,6 +157,8 @@ export function createDocumentSessionCore(options: DocumentSessionCoreOptions): 
     chats: [],
     activeChat: null,
     writer: null,
+    // 히스토리는 화면에 붙고 떨어질 때도 같은 객체지만 editorState 에서 그때그때 읽는다.
+    turnCheckpoints: new TurnCheckpoints({ engine: wasm, history: () => editorState.history, eventBus: bus }),
     get bridge() { return session.activeChat?.bridge ?? null; },
     get sidebar() { return session.activeChat?.sidebar ?? null; },
     versions: null,
@@ -158,6 +166,8 @@ export function createDocumentSessionCore(options: DocumentSessionCoreOptions): 
   };
 
   disposers.push(documentState.installBeforeUnload(window));
+  // 세션을 닫을 때 체크포인트 스냅샷을 문서보다 먼저 놓는다.
+  disposers.push(() => session.turnCheckpoints.dispose());
   void options.autosave.owner.then((context) => {
     if (context) session.autosave.setOwner({ launchId: context.launchId, sessionId: context.sessionId });
   });

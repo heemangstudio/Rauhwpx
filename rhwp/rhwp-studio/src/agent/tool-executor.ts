@@ -62,6 +62,11 @@ export interface AgentToolExecutorDeps {
   isReadOnly?: () => boolean;
   /** 쓰기 직전에 문서를 고칠 자리를 요구한다 (AgentBridgeDeps.claimDocumentWrite). 없으면 늘 받는다. */
   claimDocumentWrite?: () => boolean;
+  /**
+   * 문서 쓰기 도구가 모든 문(읽기 전용·주인 자리·템플릿 검토)을 지나 문서에 닿기 직전에 부른다.
+   * 턴 체크포인트가 이때 그 턴의 첫 쓰기 전 문서를 찍는다. 던지지 않는다.
+   */
+  beforeDocumentWrite?: () => void;
   /** 참조 이미지 잘라내기 — 기본은 브라우저 캔버스 (테스트가 주입한다) */
   cropImage?: ImageCropper;
 }
@@ -1072,6 +1077,14 @@ export class AgentToolExecutor {
           'TEMPLATE_PENDING_CONFLICT',
           'Review the pending template transfer before making other document edits.',
         );
+      }
+      // 거절되지 않은 쓰기만 여기에 닿는다 — 이 턴의 첫 쓰기라면 그 전 문서를 체크포인트로 남긴다.
+      if (isDocumentWriteTool(tool) && this.deps.beforeDocumentWrite) {
+        try {
+          this.deps.beforeDocumentWrite();
+        } catch (e) {
+          console.warn('[AgentToolExecutor] 턴 체크포인트를 남기지 못했습니다:', e);
+        }
       }
       // 스테이징 쓰기는 결과에 after 보고(와 요청 시 변경 영역 PNG)를 붙인다 —
       // render 인자는 쓰기를 적용하기 전에 검사하고, 쓰기 직전 상태를 떠 둔다.

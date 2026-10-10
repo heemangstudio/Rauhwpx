@@ -15,6 +15,7 @@ import type { CellPathEntry, CharShapeRun, DocumentPosition } from '../core/type
 import type { OperationDescriptor } from '../engine/command.ts';
 import type { RendererSessionContext } from '../desktop-integration.ts';
 import type { CatalogAgent, ModelCatalogEntry } from './models.ts';
+import type { TurnCheckpointPort } from './turn-checkpoints.ts';
 
 export const AGENT_PROTOCOL_VERSION = 5;
 
@@ -1029,6 +1030,11 @@ export interface AgentBridgeDeps {
    * (채팅 하나뿐인 호스트) 모든 쓰기를 받는다.
    */
   claimDocumentWrite?: () => boolean;
+  /**
+   * 문서 세션의 턴 체크포인트 (agent/turn-checkpoints.ts). 턴의 첫 쓰기 직전에 문서를 찍고,
+   * 검토 set 의 승인·거절과 턴 끝을 알린다. 없으면 체크포인트를 남기지 않는다.
+   */
+  turnCheckpoints?: TurnCheckpointPort;
   /** 문서 작업용 편집기. view 가 있으면 view.inputHandler 를 쓴다. */
   editor: AgentEditorHost;
   /** 화면에 붙은 편집기·캔버스. null 이면 화면 밖(백그라운드)에서 시작한다. */

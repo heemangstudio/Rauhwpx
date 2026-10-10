@@ -52,6 +52,18 @@ export class CommandHistory {
    * 히스토리의 명령은 이 문서에만 실행된다.
    */
   private ownerInstance: number | undefined;
+  /**
+   * 문서 내용이나 undo/redo 스택이 움직일 때마다 1씩 오르는 번호 (실행·기록·병합·undo·redo·
+   * 꼭대기 폐기·비우기). 예산 축출·용량 확보·redo 폐기·외부 점유는 문서를 바꾸지 않으므로 세지
+   * 않는다. 에이전트 턴 체크포인트(agent/turn-checkpoints.ts)가 그 턴 뒤에 다른 편집이
+   * 있었는지를 이 번호로 판단한다.
+   */
+  private versionCounter = 0;
+
+  /** 문서 내용이나 undo/redo 스택이 움직일 때마다 오르는 번호. */
+  get version(): number {
+    return this.versionCounter;
+  }
 
   /**
    * 다른 문서의 브리지로 불리면 이 히스토리의 명령은 그 문서에 실행할 수 없다. 스냅샷 id 는
@@ -159,6 +171,7 @@ export class CommandHistory {
     if (command.isNoOp?.()) {
       return cursorAfter;
     }
+    this.versionCounter++;
 
     // 직전 명령과 병합 시도
     if (this.undoStack.length > 0) {
@@ -220,6 +233,7 @@ export class CommandHistory {
     this.currentSnapshotId = command.undoSnapshotId?.() ?? null;
     this.undoStack.pop();
     this.redoStack.push(command);
+    this.versionCounter++;
     return cursorAfter;
   }
 
@@ -249,6 +263,7 @@ export class CommandHistory {
     this.captureExecutionEffects(command);
     this.redoStack.pop();
     this.undoStack.push(command);
+    this.versionCounter++;
     return cursorAfter;
   }
 
@@ -257,6 +272,7 @@ export class CommandHistory {
     this.bindDocument(wasm);
     this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
     this.currentSnapshotId = command.currentSnapshotId?.() ?? null;
+    this.versionCounter++;
     // 직전 명령과 병합 시도
     if (this.undoStack.length > 0) {
       const last = this.undoStack[this.undoStack.length - 1];
@@ -313,6 +329,7 @@ export class CommandHistory {
     this.bindDocument(wasm);
     this.currentSnapshotId = null;
     this.undoStack.pop()?.discard?.(wasm);
+    this.versionCounter++;
   }
 
   /**
@@ -342,5 +359,6 @@ export class CommandHistory {
     this.redoStack = [];
     this.currentSnapshotId = null;
     this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
+    this.versionCounter++;
   }
 }
