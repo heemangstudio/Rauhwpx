@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { AgentInstructionsStore } from '../agent-instructions.mjs';
-import { hubDataBase, importRebrandedHubData } from '../rebrand-import.mjs';
+import { acquireImportLock, hubDataBase, importRebrandedHubData } from '../rebrand-import.mjs';
 import { ReferenceStore } from '../reference-store.mjs';
 import { TemplateStore } from '../template-store.mjs';
 
@@ -132,4 +132,45 @@ test('two hubs starting together import the 2.0.11 data once', async (t) => {
   assert.equal(added.length, 20, 'each 2.0.11 skill is copied by exactly one hub');
   assert.equal((await fs.readdir(data.target('skills'))).filter((name) => !name.startsWith('.')).length, 20);
   await assert.rejects(fs.stat(path.join(path.dirname(data.target('skills')), '.rebrand-import.lock')), { code: 'ENOENT' });
+});
+
+test('a long import keeps its lock fresh so a second hub cannot take it', async (t) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-import-lock-'));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+  const timing = { staleMs: 150, heartbeatMs: 30 };
+  const release = await acquireImportLock(base, timing);
+  assert.ok(release);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  assert.equal(await acquireImportLock(base, { ...timing, timeoutMs: 300 }), null);
+
+  await release();
+  const next = await acquireImportLock(base, { ...timing, timeoutMs: 300 });
+  assert.ok(next, 'the lock is free once released');
+  await next();
+});
+
+test('a lock taken fresh while another hub clears a stale one is put back, not deleted', async (t) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-import-lock-race-'));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+  const lock = path.join(base, '.rebrand-import.lock');
+  await fs.mkdir(lock);
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  await fs.utimes(lock, old, old);
+  let replaced = false;
+
+  const stolen = await acquireImportLock(base, {
+    timeoutMs: 300,
+    staleMs: 1000,
+    // Another hub removes the stale lock and creates its own before this one moves it.
+    beforeStaleRemoval: async () => {
+      if (replaced) return;
+      replaced = true;
+      await fs.rm(lock, { recursive: true });
+      await fs.mkdir(lock);
+    },
+  });
+
+  assert.equal(stolen, null, 'the fresh lock of the other hub is respected');
+  await fs.stat(lock);
 });

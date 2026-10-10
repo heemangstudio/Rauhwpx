@@ -407,6 +407,7 @@ export async function mergeWritingStyle(source, target, { now = Date.now } = {})
 
 const IMPORT_LOCK_DIR = '.rebrand-import.lock';
 const IMPORT_LOCK_STALE_MS = 2 * 60 * 1000;
+const IMPORT_LOCK_HEARTBEAT_MS = 20 * 1000;
 
 function processAlive(pid) {
   try {
@@ -425,40 +426,83 @@ async function readLockOwner(lock) {
   }
 }
 
-async function lockIsStale(lock, owner, now) {
+async function writeLockOwner(lock, owner) {
+  const temporary = path.join(lock, `owner.${randomUUID()}.tmp`);
+  await fs.writeFile(temporary, JSON.stringify(owner));
+  await fs.rename(temporary, path.join(lock, 'owner.json'));
+}
+
+async function lockIsStale(lock, owner, now, staleMs) {
   if (owner && Number.isSafeInteger(owner.pid) && Number.isFinite(owner.at)) {
-    return !processAlive(owner.pid) || now - owner.at > IMPORT_LOCK_STALE_MS;
+    return !processAlive(owner.pid) || now - owner.at > staleMs;
   }
   // 주인 기록을 쓰기 전에 멈춘 잠금이다. 막 만든 잠금일 수 있으니 한동안은 그대로 둔다.
   const stat = await fs.stat(lock).catch(() => null);
-  return !stat || now - stat.mtimeMs > IMPORT_LOCK_STALE_MS;
+  return !stat || now - stat.mtimeMs > staleMs;
+}
+
+function sameDirectory(left, right) {
+  return Boolean(left && right)
+    && left.ino === right.ino
+    && left.dev === right.dev
+    && left.birthtimeMs === right.birthtimeMs;
 }
 
 /**
- * 허브 여럿이 동시에 떠도 가져오기는 한 번에 하나만 돈다. `timeoutMs` 안에 잠금을 못 얻으면
- * null 이고, 그 허브는 이번에 가져오기를 건너뛴다.
+ * 허브 여럿이 동시에 떠도 가져오기는 한 번에 하나만 돈다. 잡은 허브는 주기적으로 시각을 갱신해
+ * 오래 걸려도 잠금을 뺏기지 않는다. `timeoutMs` 안에 잠금을 못 얻으면 null 이고, 그 허브는 이번에
+ * 가져오기를 건너뛴다.
  */
-export async function acquireImportLock(baseDir, { timeoutMs = 10_000, now = Date.now } = {}) {
+export async function acquireImportLock(baseDir, {
+  timeoutMs = 10_000,
+  now = Date.now,
+  staleMs = IMPORT_LOCK_STALE_MS,
+  heartbeatMs = IMPORT_LOCK_HEARTBEAT_MS,
+  beforeStaleRemoval = async () => {},
+} = {}) {
   const lock = path.join(baseDir, IMPORT_LOCK_DIR);
   await fs.mkdir(baseDir, { recursive: true });
   const deadline = now() + timeoutMs;
   const token = randomUUID();
   for (;;) {
+    let created = false;
     try {
       await fs.mkdir(lock);
-      await fs.writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, at: now(), token }));
+      created = true;
+      await writeLockOwner(lock, { pid: process.pid, at: now(), token });
+      const heartbeat = setInterval(() => {
+        void readLockOwner(lock).then((owner) => (
+          owner?.token === token ? writeLockOwner(lock, { pid: process.pid, at: now(), token }) : undefined
+        )).catch(() => {});
+      }, heartbeatMs);
+      heartbeat.unref?.();
       return async () => {
+        clearInterval(heartbeat);
         if ((await readLockOwner(lock))?.token === token) await fs.rm(lock, { recursive: true, force: true });
       };
     } catch (error) {
+      if (created) {
+        await fs.rm(lock, { recursive: true, force: true }).catch(() => {});
+        throw error;
+      }
       if (error?.code !== 'EEXIST') throw error;
     }
-    const owner = await readLockOwner(lock);
-    if (await lockIsStale(lock, owner, now())) {
-      // 지우기 직전에 다른 허브가 새로 잡았다면 그 잠금은 건드리지 않는다.
-      const again = await readLockOwner(lock);
-      if (JSON.stringify(again) === JSON.stringify(owner)) {
-        await fs.rm(lock, { recursive: true, force: true }).catch(() => {});
+    const observed = await fs.stat(lock).catch(() => null);
+    if (!observed) continue;
+    if (await lockIsStale(lock, await readLockOwner(lock), now(), staleMs)) {
+      await beforeStaleRemoval();
+      // 옆 이름으로 먼저 옮긴 뒤, 옮긴 것이 판단한 바로 그 폴더일 때만 지운다. 그사이 다른 허브가
+      // 새로 잡은 잠금을 옮겼다면 되돌려 놓는다.
+      const parked = `${lock}.stale-${randomUUID()}`;
+      try {
+        await fs.rename(lock, parked);
+      } catch {
+        continue;
+      }
+      if (sameDirectory(observed, await fs.stat(parked).catch(() => null))) {
+        await fs.rm(parked, { recursive: true, force: true }).catch(() => {});
+      } else {
+        await fs.rename(parked, lock).catch(() => fs.rm(parked, { recursive: true, force: true }).catch(() => {}));
       }
       continue;
     }
