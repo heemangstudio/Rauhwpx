@@ -67,6 +67,9 @@ if (chatsParam === 'sample' || chatsParam === 'engine-trap') {
   } catch { /* Unreadable legacy data is replaced by the samples. */ }
   const kept = pending.filter((row) => !ids.has(String((row as { id?: unknown } | null)?.id)));
   localStorage.setItem(key, JSON.stringify([...kept, ...seeded]));
+  // fixtures 가 채팅 저장소를 함께 불러와 이미 읽어 들였을 수 있다 — 쓴 표본을 다시 읽게 한다.
+  const { reloadThreadsFromStorage } = await import('../agent/threads.ts');
+  await reloadThreadsFromStorage();
 }
 await import('./main.ts');
 export {};

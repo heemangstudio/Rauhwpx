@@ -947,8 +947,9 @@ async function hydrateFromIndexedDb(force = false) {
   // 한 번 읽어 들인 뒤에는 이 탭의 쓰기가 캐시를 먼저 고치고, 다른 탭의 변경은 알림
   // (BroadcastChannel·storage, 'reload' 는 force)으로 받는다. 쓸 때마다 전체를 다시 읽으면
   // 저장이 늦어지고, 한도로 밀려나 지울 채팅이 지워지기 전에 잠깐 되살아난다.
-  if (hydrated && !force) return;
+  // 다시 읽는 중(force)이면 기다리는 쪽은 그 읽기가 끝날 때까지 기다린다.
   if (hydrationPromise && !force) return hydrationPromise;
+  if (hydrated && !force) return;
   const run = (async () => {
     const legacy = readLegacyThreads();
     for (const thread of legacy) {
@@ -1097,6 +1098,15 @@ export function subscribeThreadChanges(listener: () => void) {
 /** IndexedDB hydration completion for startup coordination and focused tests. */
 export async function waitForThreadsPersistence() {
   await hydrateFromIndexedDb();
+  await mutationQueue;
+}
+
+/**
+ * 이 모듈을 거치지 않고 저장소(레거시 localStorage 행 포함)를 고친 뒤 부른다 — 처음 읽을 때처럼
+ * 다시 읽고 레거시 행을 IndexedDB 로 옮긴다. 다른 탭의 'reload' 알림과 같은 일이다.
+ */
+export async function reloadThreadsFromStorage() {
+  await hydrateFromIndexedDb(true);
   await mutationQueue;
 }
 

@@ -87,6 +87,27 @@ test('thread writes after hydration keep evicted chats gone and still sync acros
     assert.equal(eviction.finalCount, MAX_THREADS);
     assert.equal(eviction.stillThere, false);
 
+    // 모듈을 거치지 않고 레거시 localStorage 에 쓴 채팅은 다시 읽기를 부르면 나타나고 IndexedDB 로 옮겨진다.
+    // 그 사이 저장소 준비를 기다리는 쪽은 다시 읽기가 끝난 뒤에 풀린다.
+    const legacy = await tabA.evaluate(async () => {
+      const { threads } = window as any;
+      const seeded = threads.createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'medium' });
+      seeded.messages = [{ role: 'user', text: 'seeded outside the store' }];
+      seeded.updatedAt = Date.now() + 60_000;
+      localStorage.setItem('rhwp-agent-threads', JSON.stringify([seeded]));
+      const reloading = threads.reloadThreadsFromStorage();
+      await threads.waitForThreadsPersistence();
+      const seenByWaiter = Boolean(threads.getThread(seeded.id));
+      await reloading;
+      return { id: seeded.id, seenByWaiter, migrated: localStorage.getItem('rhwp-agent-threads') === null };
+    });
+    assert.deepEqual({ seenByWaiter: legacy.seenByWaiter, migrated: legacy.migrated }, { seenByWaiter: true, migrated: true });
+    await tabA.evaluate(async (id) => {
+      const { threads } = window as any;
+      threads.removeThread(id);
+      await threads.waitForThreadsPersistence();
+    }, legacy.id);
+
     // 두 번째 탭: 같은 저장소를 읽고, 두 탭의 쓰기·지우기가 서로에게 전해진다.
     const tabB = await browser.newPage();
     await openStore(tabB, origin);
