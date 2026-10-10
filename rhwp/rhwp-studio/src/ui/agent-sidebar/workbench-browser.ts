@@ -175,8 +175,9 @@ export function createWorkbenchBrowser(options: {
   let tabsSignature = ''; let downloadsSignature = ''; let nativeProjection = ''; let nativeFailedProjection = ''; let nativeError: string | null = null; let nativePending: Promise<boolean> | null = null; let inputChain: Promise<unknown> = Promise.resolve();
   let lastInputAt = -Infinity;
   const presentation = createBrowserPresentation(element, (mode) => {
+    if (mode === 'float' || mode === null) { details.open = false; endAnnotation(false); showDownloads(false, false); }
     visible = mode !== null; paint(); scheduleFrame(); void projectNative();
-  }, () => { layout(); });
+  }, () => { layout(); }, options.onDock);
   function navigate(direction: string): void {
     if (!controller.tab()) return;
     handle(controller.action('navigate', { ...controller.identity(), direction }).then(() => controller.readFrame()));
@@ -320,8 +321,8 @@ export function createWorkbenchBrowser(options: {
   textInput.addEventListener('blur', () => { composing = false; textInput.value = ''; sendInput({ type: 'release' }); });
   element.addEventListener('keydown', event => {
     if (event.defaultPrevented || composing || event.isComposing) return;
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (details.open) { details.open = false; summary.focus(); } else if (pinned) endAnnotation(); else if (!downloads.hidden) showDownloads(false); else options.onChat(); }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') { event.preventDefault(); event.stopPropagation(); address.focus(); address.select(); }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (details.open) { details.open = false; summary.focus(); } else if (pinned) endAnnotation(); else if (!downloads.hidden) showDownloads(false); else if (presentation.current() === 'float') presentation.hide(); else options.onChat(); }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') { event.preventDefault(); event.stopPropagation(); if (presentation.current() === 'float') { presentation.present('dock'); options.onDock(); } address.focus(); address.select(); }
   }, { capture: true });
   function paintDownloads(): void {
     const signature = JSON.stringify(controller.state.downloads); if (signature === downloadsSignature) return; downloadsSignature = signature;

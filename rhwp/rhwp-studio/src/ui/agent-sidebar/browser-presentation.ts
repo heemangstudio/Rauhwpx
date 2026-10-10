@@ -12,7 +12,7 @@ export function nativeBrowserApi(): NativeBrowserApi | undefined {
 }
 
 /** 한 DOM을 옮기며 페이지·입력·의견 상태를 유지한다. */
-export function createBrowserPresentation(element: HTMLElement, onChange: (mode: BrowserPresentationMode | null) => void, onLayout?: () => void) {
+export function createBrowserPresentation(element: HTMLElement, onChange: (mode: BrowserPresentationMode | null) => void, onLayout?: () => void, onDock?: () => void) {
   let dock: HTMLElement | null = null;
   let mode: BrowserPresentationMode | null = null;
   let popup: Window | null = null;
@@ -47,9 +47,16 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
   const resize = document.createElement('button');
   resize.type = 'button'; resize.className = 'ag-browser-resize'; resize.append(createIcon('browserResize'));
   resize.setAttribute('aria-label', '브라우저 크기 조절');
-  floating.append(moveHandle, resize); document.body.append(floating);
+  const chrome = document.createElement('header'); chrome.className = 'ag-browser-floating-chrome';
+  const dockButton = document.createElement('button'); dockButton.type = 'button'; dockButton.className = 'ag-browser-floating-dock';
+  dockButton.setAttribute('aria-label', '작업 칸에 붙이기'); dockButton.title = '작업 칸에 붙이기'; dockButton.append(createIcon('browserDock'));
+  dockButton.addEventListener('click', () => { present('dock'); onDock?.(); });
+  const close = document.createElement('button'); close.type = 'button'; close.className = 'ag-browser-floating-close';
+  close.setAttribute('aria-label', '브라우저 보기 닫기'); close.title = '브라우저 보기 닫기'; close.append(createIcon('close')); close.addEventListener('click', hide);
+  chrome.append(moveHandle, dockButton, close); floating.append(chrome, resize); document.body.append(floating);
+  let cancelGesture: (() => void) | null = null;
   const clamp = () => {
-    if (window.innerWidth < 640) return;
+    if (floating.hidden) return;
     const rect = floating.getBoundingClientRect();
     floating.style.left = `${Math.max(0, Math.min(rect.left, innerWidth - Math.min(rect.width, innerWidth)))}px`;
     floating.style.top = `${Math.max(0, Math.min(rect.top, innerHeight - Math.min(rect.height, innerHeight)))}px`;
@@ -66,7 +73,7 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
     mode = next; element.dataset.presentation = next ?? 'hidden'; onChange(next);
   }
   function present(next: BrowserPresentationMode): void {
-    syncTheme();
+    cancelGesture?.(); syncTheme();
     if (!returnFocus && document.activeElement instanceof HTMLElement) returnFocus = document.activeElement;
     if (next === 'popout') {
       popup = window.open('', 'rhwp-owned-browser', 'popup,width=1024,height=780');
@@ -86,12 +93,14 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
     element.hidden = false; set(next);
   }
   function hide(): void {
+    cancelGesture?.();
     if (dock) dock.append(element);
     if (popup) { const old = popup; popup = null; old.close(); }
     floating.hidden = true; element.hidden = true; set(null);
     returnFocus?.focus({ preventScroll: true }); returnFocus = null;
   }
   function keyboard(event: KeyboardEvent, size = false): void {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (cancelGesture) cancelGesture(); else hide(); return; }
     if (!event.key.startsWith('Arrow')) return;
     event.preventDefault(); const rect = floating.getBoundingClientRect(); const amount = event.altKey ? 1 : 20;
     const dx = event.key === 'ArrowRight' ? amount : event.key === 'ArrowLeft' ? -amount : 0;
@@ -100,19 +109,28 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
     else { floating.style.left = `${rect.left + dx}px`; floating.style.top = `${rect.top + dy}px`; }
     clamp(); remember();
   }
+  floating.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); if (cancelGesture) cancelGesture(); else hide(); } });
   moveHandle.addEventListener('keydown', event => keyboard(event)); resize.addEventListener('keydown', event => keyboard(event, true));
   for (const handle of [moveHandle, resize]) handle.addEventListener('pointerdown', event => {
     if (event.button !== 0 || innerWidth < 640) return;
-    const rect = floating.getBoundingClientRect(); const x = event.clientX; const y = event.clientY;
-    handle.setPointerCapture(event.pointerId);
+    cancelGesture?.(); event.preventDefault(); handle.focus({ preventScroll: true });
+    const rect = floating.getBoundingClientRect(); const x = event.clientX; const y = event.clientY; const id = event.pointerId;
+    handle.setPointerCapture(id);
     const move = (next: PointerEvent) => {
+      if (next.pointerId !== id) return;
       const dx = next.clientX - x; const dy = next.clientY - y;
       if (handle === resize) { floating.style.width = `${Math.max(320, rect.width + dx)}px`; floating.style.height = `${Math.max(280, rect.height + dy)}px`; }
       else { floating.style.left = `${rect.left + dx}px`; floating.style.top = `${rect.top + dy}px`; }
       clamp();
     };
-    const stop = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', stop); handle.removeEventListener('pointercancel', stop); remember(); };
-    handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', stop); handle.addEventListener('pointercancel', stop);
+    const stop = () => {
+      handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', finish); handle.removeEventListener('pointercancel', cancel); handle.removeEventListener('lostpointercapture', cancel);
+      cancelGesture = null; if (handle.hasPointerCapture(id)) handle.releasePointerCapture(id); remember();
+    };
+    const cancel = (next?: PointerEvent) => { if (next && next.pointerId !== id) return; floating.style.left = `${rect.left}px`; floating.style.top = `${rect.top}px`; floating.style.width = `${rect.width}px`; floating.style.height = `${rect.height}px`; clamp(); stop(); };
+    const finish = (next: PointerEvent) => { if (next.pointerId === id) stop(); };
+    cancelGesture = cancel;
+    handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', finish); handle.addEventListener('pointercancel', cancel); handle.addEventListener('lostpointercapture', cancel);
   });
   window.addEventListener('resize', clamp);
   return { mount(host: HTMLElement) { dock = host; syncTheme(); if (mode !== 'float' && mode !== 'popout') host.append(element); }, present, hide, current: () => mode,
