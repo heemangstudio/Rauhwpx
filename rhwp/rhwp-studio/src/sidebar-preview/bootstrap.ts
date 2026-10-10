@@ -42,7 +42,7 @@ if (url.searchParams.get('reset') === '1') {
 const chatsParam = url.searchParams.get('chats');
 if (chatsParam === 'sample' || chatsParam === 'engine-trap') {
   const {
-    engineTrapInterruptedChat, sampleChats, sampleReloadQuestionDraft, SAMPLE_WORKING_CHAT_ID,
+    engineTrapInterruptedChat, sampleChats, sampleReloadQuestionDraft, sampleRunningTurnWork, SAMPLE_WORKING_CHAT_ID,
   } = await import('./fixtures.ts');
   const key = 'rhwp-agent-threads';
   const now = Date.now();
@@ -57,6 +57,8 @@ if (chatsParam === 'sample' || chatsParam === 'engine-trap') {
   const working = seeded.find((thread) => thread.id === SAMPLE_WORKING_CHAT_ID);
   if (working && (reload === 'running' || reload === 'question')) {
     working.updatedAt = now;
+    // 그 턴이 시작될 때 남긴 열린 표식과 지금까지의 작업 — 다시 잡은 턴의 실제 끝이 접는다.
+    working.messages.push(...sampleRunningTurnWork(working.agent, now));
     if (reload === 'question') working.pendingUserQuestion = sampleReloadQuestionDraft(now);
   }
   const ids = new Set(seeded.map((thread) => thread.id));

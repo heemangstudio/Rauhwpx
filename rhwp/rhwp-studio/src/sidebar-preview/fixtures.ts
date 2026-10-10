@@ -367,6 +367,28 @@ function sampleTurnWork(id: string, agent: T.AgentName, activityAt: number): Sam
 }
 
 /**
+ * `reload=running|question`: what the old page stored for the working chat's running turn before
+ * the reload — its open turn marker and the work done so far (sample data). The re-adopted turn's
+ * real end settles the marker and folds this work.
+ */
+export function sampleRunningTurnWork(agent: T.AgentName, now: number): SampleMessage[] {
+  const id = SAMPLE_WORKING_CHAT_ID;
+  const startedAt = now - 40_000;
+  return [
+    { role: 'system', kind: 'turn', messageId: `${id}-turn-1`, startedAt, endedAt: null, outcome: null, text: '' },
+    { role: 'assistant', kind: 'progress', agent, text: '추진 일정 표를 읽고 분기별로 묶겠습니다.' },
+    {
+      role: 'assistant', kind: 'activity', agent, activityId: `${id}-activity-1`, text: '도구 호출',
+      status: 'completed', startedAt: startedAt + 3_000, completedAt: startedAt + 21_000,
+      tools: [
+        sampleTool(`${id}-1`, 'get_table_properties', { sectionIdx: 0, paraIdx: 21, controlIdx: 0 }, '{"rows":6,"cols":4}'),
+        sampleTool(`${id}-2`, 'edit_table', { sectionIdx: 0, paraIdx: 21, controlIdx: 0, op: 'insert_row', rowIdx: 1 }, '{"rowCount":7}'),
+      ],
+    },
+  ];
+}
+
+/**
  * Chats across several documents and providers for the activity-ordered list.
  * Timestamps are relative to `now`, so the list always shows fresh, varied ages.
  */

@@ -274,6 +274,36 @@ try {
     await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
   });
 
+  await step('(h) 새로고침 뒤 다시 잡은 턴은 접지 않고 있다가 실제 끝에서 정상으로 접힌다', async () => {
+    const RUNNING_CHAT = 'preview-chat-schedule';
+    await page.goto(`${origin}/?reset=1&theme=light&width=480&chats=sample&reload=running`, { waitUntil: 'networkidle0' });
+    await page.waitForFunction((id) => window.sidebarPreview?.sidebar.currentThreadId() === id
+      && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true', {}, RUNNING_CHAT);
+    // 새로고침 전에 남긴 열린 표식: 접지 않은 작업과 숨은 자리표시만 있다.
+    assert.deepEqual(await page.evaluate(() => ({
+      running: window.sidebarPreview.bridge.isTurnRunning(),
+      placeholders: document.querySelectorAll('.ag-messages > .ag-turn-fold[hidden]').length,
+      visibleFolds: document.querySelectorAll('.ag-messages > .ag-turn-fold:not([hidden])').length,
+      workInFlow: document.querySelectorAll('.ag-messages > .ag-progress-step').length > 0,
+    })), { running: true, placeholders: 1, visibleFolds: 0, workInFlow: true });
+    await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+    await turnEnded();
+    await page.waitForSelector('.ag-messages > .ag-turn-fold:not([hidden])');
+    const [fold, ...rest] = await folds();
+    assert.equal(rest.length, 0);
+    assert.match(fold.label, /^작업 \d+초 · 표 1개 수정 · 표 1개 읽음$/);
+    assert.equal(fold.collapsed, true);
+    assert.equal(await page.$$eval('.ag-messages > .ag-progress-step', (nodes) => nodes.length), 0, '다시 잡은 턴의 작업도 접힌다');
+    const stored = await page.evaluate(async (id) => {
+      await window.sidebarPreview.threadStore.waitForThreadsPersistence();
+      return window.sidebarPreview.threadStore.getThread(id).messages
+        .filter((message) => message.kind === 'turn')
+        .map((marker) => ({ outcome: marker.outcome, settled: marker.endedAt !== null }));
+    }, RUNNING_CHAT);
+    assert.deepEqual(stored, [{ outcome: 'completed', settled: true }], '표식은 실제 끝의 결과로 정착한다');
+    await assertRingOutsideFolds();
+  });
+
   assert.deepEqual(errors, [], 'no runtime errors');
 } finally {
   await browser?.close();

@@ -6813,6 +6813,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * - U1: 대기열을 푼다(아래).
    */
   function onLiveChatAdopted(live: HubChat): void {
+    // U4: 새로고침 전에 남긴 이 턴의 표식(아직 열림)을 다시 잡는다 — 그 턴의 실제 끝이 표식을
+    // 정착하고, 새로고침 뒤 다시 그린 자리표시 줄 아래로 작업을 접는다.
+    if (live.running) adoptUnsettledTurnFold();
     // 이어 붙인 턴의 끝은 이 사이드바가 본다 — 채팅을 열 때(attach) '작업이 끊겨'로 붙잡은 대기열을
     // 풀고, 그 턴이 끝나면 보통 규칙대로 하나씩 보낸다. 돌지 않는 세션(계획 승인 대기)에는 이 사이드바가
     // 볼 턴 끝이 없으니 붙잡은 채 둔다.
