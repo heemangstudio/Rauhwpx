@@ -174,6 +174,8 @@ function session(overrides: Record<string, unknown> = {}) {
 
 /** 새로고침된 페이지의 브리지 — 세션 구성은 곧바로 오고, 소켓은 테스트가 연다. */
 async function reloadedBridge() {
+  /** 턴 체크포인트(U6)에 알린 턴 끝 — 이어 붙인 턴은 끝나지 않았고, 허브가 잃은 턴은 끝났다. */
+  const endedTurns: string[] = [];
   FakeSocket.instances = [];
   const { wasm } = makeEnv(['본문']);
   const editor = {
@@ -185,6 +187,11 @@ async function reloadedBridge() {
     eventBus: new EventBus(),
     documentState: { isDirty: () => false } as never,
     editor: editor as never,
+    turnCheckpoints: {
+      beforeWrite: () => {},
+      settleSet: () => {},
+      endTurn: (threadId: string) => { endedTurns.push(threadId); },
+    } as never,
   }, {
     resolveSessionContext: async () => ({
       launchId: 'launch-1',
@@ -202,7 +209,7 @@ async function reloadedBridge() {
   await settle();
   const socket = FakeSocket.instances.at(-1);
   assert.ok(socket, '브리지가 허브 소켓을 연다');
-  return { bridge, socket, events, isKnown: () => known };
+  return { bridge, socket, events, endedTurns, isKnown: () => known };
 }
 
 test('reload: a start queued before the socket opens is held until the welcome', async () => {
@@ -344,5 +351,40 @@ test('a reconnect on the same page still delivers a start that was in flight', a
   assert.deepEqual(next.frames('chat-start'), []);
   next.receive({ type: 'welcome', protocol: 5, session: session({ status: 'idle', turnId: null }) });
   assert.equal(next.frames('chat-start').length, 1);
+  f.bridge.dispose();
+});
+
+test('an adopted live turn stays open for restore checkpoints; a turn the hub lost is closed', async () => {
+  const f = await reloadedBridge();
+  f.bridge.startChat('pi', 'mock-model', '', true, 'safe', 'direct', THREAD, 'doc-1', '문서.hwpx', []);
+  f.socket.open();
+  f.socket.receive({ type: 'welcome', protocol: 5, session: session() });
+  assert.deepEqual(f.endedTurns, [], '이어 붙인 턴은 끝난 것으로 기록하지 않는다');
+
+  // 허브가 다시 떠 세션이 없다 — 이어 붙였던 턴은 끝났다.
+  f.socket.drop();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await settle();
+  const next = FakeSocket.instances.at(-1)!;
+  next.open();
+  next.receive({ type: 'welcome', protocol: 5, session: null });
+  assert.equal(f.bridge.isTurnRunning(), false);
+  assert.ok(f.endedTurns.includes(THREAD), '허브가 잃은 턴의 체크포인트 기록을 닫는다');
+  f.bridge.dispose();
+});
+
+test('a turn that ended while the page was away is closed when the snapshot is idle', async () => {
+  const f = await reloadedBridge();
+  f.socket.open();
+  f.socket.receive({ type: 'welcome', protocol: 5, session: session() });
+  assert.deepEqual(f.endedTurns, []);
+  f.socket.drop();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await settle();
+  const next = FakeSocket.instances.at(-1)!;
+  next.open();
+  next.receive({ type: 'welcome', protocol: 5, session: session({ status: 'idle', turnId: null }) });
+  assert.equal(f.bridge.isTurnRunning(), false);
+  assert.ok(f.endedTurns.includes(THREAD));
   f.bridge.dispose();
 });
