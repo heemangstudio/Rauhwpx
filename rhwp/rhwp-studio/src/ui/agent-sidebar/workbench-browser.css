@@ -22,6 +22,9 @@
 .ag-browser-toolbar { position: relative; display: flex; gap: 2px; align-items: center; padding: 4px 7px 6px; flex-shrink: 0; background: color-mix(in srgb, var(--ag-bg, var(--n-surface, #fafaf9)) 94%, transparent); border-bottom: 1px solid var(--browser-border); }
 .ag-browser-navigation { display: flex; flex: 1; min-width: 140px; gap: 1px; align-items: center; margin-right: 3px; }
 .ag-browser-address { min-width: 40px; flex: 1; height: 28px; margin-left: 4px; padding: 0 9px; border: 1px solid var(--browser-border); border-radius: 8px; color: inherit; background: color-mix(in srgb, currentColor 3%, transparent); font: inherit; font-size: 11px; }
+.ag-browser-zoom { display: flex; flex: 0 0 auto; align-items: center; gap: 0; margin-left: 3px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.ag-browser .ag-browser-zoom button { border: 0; padding: 0; width: 20px; height: 26px; border-radius: 5px; font-size: 11px; }
+.ag-browser .ag-browser-zoom button:nth-child(2) { width: 35px; font-size: 10px; }
 .ag-browser-status { display: flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0; max-width: 155px; padding: 0 5px 0 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
 .ag-browser-status::before { content: ''; width: 4px; height: 4px; flex-shrink: 0; border-radius: 50%; background: currentColor; opacity: .55; }
 .ag-browser-status[data-owner=human]::before { background: var(--ag-accent, #52795f); opacity: 1; }
@@ -75,7 +78,7 @@ html.desktop-mac .ag-browser-popover-header::after { content: ''; width: 22px; f
 .ag-browser-menu dd { margin: 0; overflow-wrap: anywhere; }
 @container (max-width: 500px) { .ag-browser-toolbar { flex-wrap: wrap; justify-content: flex-end; } .ag-browser-navigation { flex: 1 0 100%; margin-right: 0; margin-bottom: 2px; } .ag-browser-status { max-width: 120px; font-size: 9px; } }
 /* 네이티브 페이지 밖에 손잡이와 닫기·크기 조절 영역을 남긴다. */
-.ag-browser-floating { position: fixed; z-index: 1300; box-sizing: border-box; width: min(640px, calc(100vw - 40px)); height: min(480px, calc(100vh - 60px)); left: 24px; top: auto; bottom: 24px; min-width: min(320px, 100vw); min-height: min(280px, 100dvh); padding: 0 0 12px; border: 0; border-radius: 10px; box-shadow: 0 12px 40px #0003, 0 0 0 1px #0001; background: var(--ag-bg, var(--n-surface, #fafaf9)); color: var(--ag-text-secondary, var(--n-text-secondary, #737970)); overflow: hidden; display: flex; flex-direction: column; }
+.ag-browser-floating { position: fixed; z-index: 1300; box-sizing: border-box; container: browser-float / inline-size; width: min(640px, calc(100vw - 40px)); height: min(480px, calc(100vh - 60px)); left: 24px; top: auto; bottom: 24px; min-width: min(320px, 100vw); min-height: min(280px, 100dvh); padding: 0 0 12px; border: 0; border-radius: 10px; box-shadow: 0 12px 40px #0003, 0 0 0 1px #0001; background: var(--ag-bg, var(--n-surface, #fafaf9)); color: var(--ag-text-secondary, var(--n-text-secondary, #737970)); overflow: hidden; display: flex; flex-direction: column; }
 .ag-browser-floating[hidden] { display: none; }
 html.document-home-open .ag-browser-floating { visibility: hidden; pointer-events: none; }
 .ag-browser-floating .ag-browser { flex: 1; height: auto; min-height: 0; border-radius: 0 0 4px 4px; }
@@ -90,7 +93,10 @@ html.document-home-open .ag-browser-floating { visibility: hidden; pointer-event
 .ag-browser-floating-chrome .ag-browser-navigation { flex: 1; min-width: 0; margin: 0; color: var(--ag-text, var(--n-text, #20251f)); font: 11px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
 .ag-browser-floating-chrome .ag-browser-address { box-sizing: border-box; height: 26px; margin-left: 3px; border-color: color-mix(in srgb, currentColor 10%, transparent); background: color-mix(in srgb, currentColor 4%, transparent); text-align: center; }
 .ag-browser-floating-chrome .ag-browser-address:focus { text-align: left; outline: 2px solid var(--ag-accent, #52795f); outline-offset: -1px; }
-.ag-browser-floating-chrome .ag-browser-navigation button:last-child { display: none; }
+.ag-browser-floating-chrome .ag-browser-go { display: none; }
+.ag-browser-floating-chrome .ag-browser-zoom button { width: 18px; flex: 0 0 18px; height: 24px; font-size: 11px; }
+.ag-browser-floating-chrome .ag-browser-zoom button:nth-child(2) { width: 32px; flex-basis: 32px; font-size: 9px; }
+@container browser-float (max-width: 400px) { .ag-browser-floating-chrome .ag-browser-forward { display: none; } }
 .ag-browser-floating-chrome .ag-browser-navigation button:disabled { opacity: .35; cursor: default; }
 .ag-browser-move::before { content: ''; width: 27px; height: 3px; border-radius: 3px; background: currentColor; opacity: .35; }
 .ag-browser-floating button:focus-visible { outline: 2px solid var(--ag-accent, #52795f); outline-offset: -2px; }

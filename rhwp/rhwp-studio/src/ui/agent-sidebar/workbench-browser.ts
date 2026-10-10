@@ -44,11 +44,32 @@ export function createWorkbenchBrowser(options: {
   }
   const handle = (task: Promise<unknown>) => { void task.catch(() => undefined); };
   const back = button('뒤로', '←', () => navigate('back'), navigation);
-  const forward = button('앞으로', '→', () => navigate('forward'), navigation);
+  const forward = button('앞으로', '→', () => navigate('forward'), navigation); forward.classList.add('ag-browser-forward');
   const reload = button('새로고침', '↻', () => navigate(controller.tab()?.status === 'loading' ? 'stop' : 'reload'), navigation);
   const address = document.createElement('input'); address.className = 'ag-browser-address'; address.type = 'text'; address.inputMode = 'url'; address.autocomplete = 'off'; address.spellcheck = false;
   address.setAttribute('aria-label', '브라우저 주소'); address.placeholder = '주소 또는 검색어 입력'; navigation.append(address);
-  const go = button('주소 열기', '', () => navigation.requestSubmit(), navigation); icon(go, 'browserForward');
+  const go = button('주소 열기', '', () => navigation.requestSubmit(), navigation); icon(go, 'browserForward'); go.classList.add('ag-browser-go');
+  const zoom = document.createElement('div'); zoom.className = 'ag-browser-zoom'; zoom.setAttribute('role', 'group'); zoom.setAttribute('aria-label', '페이지 확대·축소'); navigation.append(zoom);
+  const zoomFactors = [.25, .5, .67, .75, .9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+  const tabZoom = new Map<string, number>(); let zoomPending = false;
+  const zoomOut = button('페이지 축소', '−', () => stepZoom(-1), zoom);
+  const zoomReset = button('페이지 배율 100%로 초기화', '100%', () => changeZoom(1), zoom);
+  const zoomIn = button('페이지 확대', '+', () => stepZoom(1), zoom);
+  function acceptZoom(tabId: string, result: unknown): void {
+    const factor = result && typeof result === 'object' ? (result as { zoomFactor?: unknown }).zoomFactor : undefined;
+    if (typeof factor === 'number' && Number.isFinite(factor) && factor >= .25 && factor <= 3) tabZoom.set(tabId, factor);
+  }
+  function stepZoom(direction: number): void {
+    const current = tabZoom.get(controller.tab()?.tabId ?? '') ?? 1;
+    const factor = direction > 0 ? zoomFactors.find(value => value > current + .001) : [...zoomFactors].reverse().find(value => value < current - .001);
+    if (factor !== undefined) changeZoom(factor);
+  }
+  function changeZoom(factor: number): void {
+    const native = nativeBrowserApi(); const tab = controller.tab();
+    if (!native?.zoom || !tab || !controller.usesNativePresentation() || zoomPending) return;
+    zoomPending = true; nativeError = null; paint();
+    handle(native.zoom({ tabId: tab.tabId, factor }).then(result => acceptZoom(tab.tabId, result)).catch(() => { nativeError = '페이지 배율을 변경하지 못했습니다.'; }).finally(() => { zoomPending = false; paint(); }));
+  }
   const newTab = button('새 브라우저 탭', '+', () => handle(controller.open()));
   const status = document.createElement('span'); status.className = 'ag-browser-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const recover = button('끊긴 브라우저 탭 복구', '탭 복구', () => { handle(reconnectBrowser()); });
@@ -357,14 +378,14 @@ export function createWorkbenchBrowser(options: {
   async function attachNative(placement: Parameters<NonNullable<ReturnType<typeof nativeBrowserApi>>['attach']>[0]): Promise<boolean> {
     const native = nativeBrowserApi()!;
     if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
-    try { await native.attach(placement); }
+    try { acceptZoom(placement.tabId, await native.attach(placement)); }
     catch (failure) {
       const message = failure instanceof Error ? failure.message : String(failure);
       if (!/Native browser tab is unavailable|presentation (navigation|target) is stale/.test(message)) throw failure;
       if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
       await controller.request('reconnect', { tabId: placement.tabId });
       if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
-      await native.attach({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, interactive: true });
+      acceptZoom(placement.tabId, await native.attach({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, interactive: true }));
     }
     return true;
   }
@@ -463,6 +484,10 @@ export function createWorkbenchBrowser(options: {
     options.onChange?.();
     }
     if (element.ownerDocument.activeElement !== address) address.value = tab?.url ?? '';
+    const factor = tabZoom.get(tab?.tabId ?? '') ?? 1;
+    zoomReset.textContent = `${Math.round(factor * 100)}%`;
+    const zoomUnavailable = !nativeBrowserApi()?.zoom || !tab || !connected || !controller.usesNativePresentation() || zoomPending;
+    zoomReset.disabled = zoomUnavailable; zoomOut.disabled = zoomUnavailable || factor <= .25; zoomIn.disabled = zoomUnavailable || factor >= 3;
     for (const node of [annotate, reload, back, forward]) node.disabled = !tab || !connected || controller.state.busy;
     const reloadLabel = tab?.status === 'loading' ? '페이지 열기 중지' : '새로고침'; reload.setAttribute('aria-label', reloadLabel); reload.title = reloadLabel; icon(reload, tab?.status === 'loading' ? 'browserStop' : 'refresh');
     newTab.disabled = !connected; emptyOpen.disabled = !connected;
@@ -491,6 +516,11 @@ export function createWorkbenchBrowser(options: {
     uploadFiles.multiple = data.multiple === true; uploadLabel.textContent = '페이지에서 파일을 요청했습니다.'; upload.hidden = false;
   });
   const unsubscribeNative = nativeBrowserApi()?.onEvent?.((event) => {
+    if (typeof event.zoomFactor === 'number') {
+      const target = controller.state.tabs.find(row => row.tabId === event.tabId || row.nativeTargetId === event.tabId);
+      if (target) { acceptZoom(target.tabId, event); paint(); }
+    }
+    if (event.reason === 'zoom') return;
     if (event.type === 'presentation-command') {
       const target = controller.state.tabs.find((row) => row.tabId === event.tabId || row.nativeTargetId && (row.nativeTargetId === event.tabId || row.nativeTargetId === event.nativeTargetId));
       if (!target) return;

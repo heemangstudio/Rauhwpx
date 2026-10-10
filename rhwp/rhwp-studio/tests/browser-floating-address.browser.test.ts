@@ -26,7 +26,13 @@ test('떠 있는 주소창은 같은 탭을 탐색하고 입력 취소와 다른
       const calls: Array<{ action: string; args: Record<string, unknown> }> = [];
       const makeTab = (tabId: string, url: string) => ({ tabId, nativeTargetId: `target-${tabId}`, runtime: 'native', url, title: tabId, navigationEpoch: 1, controllerEpoch: 2, controller: { owner: 'human' }, status: 'ready' });
       const tabs = [makeTab('selected', 'https://example.com/first'), makeTab('retained', 'https://example.org/other')];
-      Object.assign(window, { rhwpDesktop: { browser: { async attach() {}, async detach() {}, async getState() { return {}; } } } });
+      const zoomFactors = new Map<string, number>();
+      let failZoom = false;
+      Object.assign(window, { rhwpDesktop: { browser: {
+        async attach(args: { tabId: string }) { return { zoomFactor: zoomFactors.get(args.tabId) ?? 1 }; },
+        async detach() {}, async getState() { return {}; },
+        async zoom(args: { tabId: string; factor: number }) { calls.push({ action: 'zoom', args }); if (failZoom) { failZoom = false; throw new Error('fixture zoom failure'); } zoomFactors.set(args.tabId, args.factor); return { zoomFactor: args.factor }; },
+      } } });
       const { createWorkbenchBrowser } = await import('../src/ui/agent-sidebar/workbench-browser.ts');
       const bridge = { getConnectionState: () => 'connected', onBrowserEvent: () => () => {}, onEvent: () => () => {}, async requestBrowser(action: string, args: Record<string, unknown> = {}) {
         calls.push({ action, args });
@@ -35,7 +41,7 @@ test('떠 있는 주소창은 같은 탭을 탐색하고 입력 취소와 다른
       } };
       const view = createWorkbenchBrowser({ bridge: bridge as any, getDestination: () => ({ threadId: 'fixture', projectId: null, documentId: null, label: 'Fixture' }), onCapture() {}, onOpenDownload() {}, onDock() {}, onChat() {} });
       view.mount(document.querySelector<HTMLElement>('#host')!); view.float();
-      Object.assign(window, { addressTest: { view, calls, tabs } });
+      Object.assign(window, { addressTest: { view, calls, tabs, failZoom() { failZoom = true; } } });
     });
     const input = '.ag-browser-floating-chrome .ag-browser-address';
     await page.waitForFunction(() => document.querySelector<HTMLInputElement>('.ag-browser-floating-chrome .ag-browser-address')?.value === 'https://example.com/first');
@@ -54,6 +60,23 @@ test('떠 있는 주소창은 같은 탭을 탐색하고 입력 취소와 다른
     assert.equal(state.tabs.length, 2); assert.equal(state.tabs[1].url, 'https://example.org/other');
     assert.ok(state.calls.filter((call: any) => call.action === 'navigate').every((call: any) => call.args.tabId === 'selected'));
     assert.ok(!state.calls.some((call: any) => ['open', 'close'].includes(call.action)));
+    const percentage = '.ag-browser-zoom button:nth-child(2)';
+    await page.click('.ag-browser-zoom button:nth-child(3)');
+    await page.waitForFunction(() => document.querySelector('.ag-browser-zoom button:nth-child(2)')?.textContent === '110%');
+    await page.click(percentage);
+    await page.waitForFunction(() => document.querySelector('.ag-browser-zoom button:nth-child(2)')?.textContent === '100%');
+    await page.click('.ag-browser-zoom button:first-child');
+    await page.waitForFunction(() => document.querySelector('.ag-browser-zoom button:nth-child(2)')?.textContent === '90%');
+    await page.evaluate(() => (window as any).addressTest.failZoom());
+    await page.click('.ag-browser-zoom button:nth-child(3)');
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('.ag-browser-zoom button:nth-child(3)')!.disabled);
+    assert.equal(await page.$eval(percentage, node => node.textContent), '90%', 'failed native zoom does not change the displayed page scale');
+    const zoomCalls = await page.evaluate(() => (window as any).addressTest.calls.filter((call: any) => call.action === 'zoom'));
+    assert.deepEqual(zoomCalls.map((call: any) => call.args), [{ tabId: 'selected', factor: 1.1 }, { tabId: 'selected', factor: 1 }, { tabId: 'selected', factor: .9 }, { tabId: 'selected', factor: 1 }]);
+    await page.click(percentage);
+    await page.waitForFunction(() => document.querySelector('.ag-browser-zoom button:nth-child(2)')?.textContent === '100%');
+    await page.click('.ag-browser-zoom button:first-child');
+    await page.waitForFunction(() => document.querySelector('.ag-browser-zoom button:nth-child(2)')?.textContent === '90%');
     for (const width of [320, 640]) {
       await page.$eval('.ag-browser-floating', (node, width) => { (node as HTMLElement).style.width = `${width}px`; }, width);
       const layout = await page.$eval(input, node => { const rect = node.getBoundingClientRect(); const chrome = node.closest('header')!.getBoundingClientRect(); const surface = document.querySelector('.ag-browser-surface')!.getBoundingClientRect(); return { width: rect.width, within: rect.left >= chrome.left && rect.right <= chrome.right, clear: surface.top >= rect.bottom }; });
@@ -64,6 +87,11 @@ test('떠 있는 주소창은 같은 탭을 탐색하고 입력 취소와 다른
     assert.equal(await page.$eval('.ag-browser-toolbar .ag-browser-address', node => (node as HTMLInputElement).value), 'https://www.google.com/search?q=compact%20browser%20search');
     await page.evaluate(() => { const fixture = (window as any).addressTest; fixture.view.selectTab('browser:retained'); });
     assert.equal(await page.$eval('.ag-browser-toolbar .ag-browser-address', node => (node as HTMLInputElement).value), 'https://example.org/other');
+    assert.equal(await page.$eval(percentage, node => node.textContent), '100%', 'another page starts with its own native scale');
+    await page.evaluate(() => (window as any).addressTest.view.selectTab('browser:selected'));
+    assert.equal(await page.$eval(percentage, node => node.textContent), '90%', 'switching tabs restores the page scale');
+    await page.evaluate(async () => { delete (window as any).rhwpDesktop.browser.zoom; await (window as any).addressTest.view.controller.refresh(); });
+    assert.equal(await page.$eval(percentage, node => (node as HTMLButtonElement).disabled), true, 'older native bridges cannot simulate page zoom');
     await page.evaluate(() => (window as any).addressTest.view.dispose());
   } finally { await browser?.close(); await server.close(); }
 });
