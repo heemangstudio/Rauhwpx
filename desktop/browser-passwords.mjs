@@ -158,19 +158,20 @@ export class NativeBrowserPasswords {
     const tab = this.tab(params, { human });
     const snapshot = this.assertSnapshot(tab, params);
     const origin = passwordOrigin(tab.view.webContents.getURL());
-    return this.vault.withCredential(params.accountId, async (credential) => {
+    return this.vault.withCredential(params.accountId, async (credential, lease) => {
       this.assertSnapshot(tab, params);
       if (credential.origin !== origin) throw passwordFailure('BROWSER_PASSWORD_ORIGIN_MISMATCH', 'This saved account belongs to a different website.');
       const target = { snapshotId: snapshot.snapshotId, ref: params.passwordRef, passwordRef: params.passwordRef, usernameRef: params.usernameRef, origin };
       const checked = await this.run(tab, pageAction, [{ ...target, action: 'validate-fill' }]);
       this.assertSnapshot(tab, params);
+      lease.assertCurrent();
       if (!checked?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
       // Stop outstanding raw reads before the first secret enters the guest DOM.
       const firstProtection = !tab.passwordShield;
       this.protectFamily(tab, origin, credential.password);
       if (firstProtection) await this.host.session?.closeAllConnections();
       this.assertSnapshot(tab, params);
-      const result = await this.run(tab, pageAction, [{ ...target, action: 'fill', username: credential.username, password: credential.password }]);
+      const result = await lease.write(() => this.run(tab, pageAction, [{ ...target, action: 'fill', username: credential.username, password: credential.password }]));
       if (!result?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
       return { completed: true, accountId: params.accountId };
     });

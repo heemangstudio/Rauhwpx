@@ -209,6 +209,43 @@ test('native account filling fences chat, origin, snapshot, navigation, control 
   assert.equal(f.calls.at(-1).type, 'mouseUp');
 });
 
+test('account removal cancels paused native fills and waits for an already dispatched secret write', async (t) => {
+  for (const stage of ['validate-fill', 'connections', 'fill']) await t.test(stage, async (subtest) => {
+    const { vault } = await vaultFixture(subtest); const f = nativeFixture(vault);
+    const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'andy', password: 'fixture-password' });
+    const observed = await f.passwords.snapshot(f.binding);
+    let entered; let resume; let writes = 0; let removed = false;
+    const paused = new Promise((resolve) => { entered = resolve; });
+    const barrier = new Promise((resolve) => { resume = resolve; });
+    f.passwords.run = async (_tab, _fn, [args]) => {
+      if (args.action === stage) { entered(); await barrier; }
+      if (args.action === 'fill') { assert.equal(removed, false); writes++; }
+      return { completed: true };
+    };
+    f.host.session = { closeAllConnections: async () => { if (stage === 'connections') { entered(); await barrier; } } };
+    const filling = f.passwords.fill({ ...f.binding, snapshotId: observed.snapshotId, accountId: account.id, passwordRef: 'e1' });
+    const rejection = stage !== 'fill' ? assert.rejects(filling, { code: 'BROWSER_PASSWORD_NOT_FOUND' }) : null;
+    await paused;
+    const removal = vault.remove(account.id).then((result) => { removed = true; return result; });
+    if (stage === 'fill') {
+      const deadline = Date.now() + 1000;
+      while ((await vault.list()).accounts.length) {
+        if (Date.now() >= deadline) throw new Error('Removal did not update the account metadata');
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      assert.equal(removed, false);
+      resume(); await Promise.all([filling, removal]);
+      assert.equal(writes, 1);
+    } else {
+      await removal; resume(); await rejection;
+      assert.equal(writes, 0);
+    }
+    assert.equal(removed, true);
+    assert.equal((await vault.list()).accounts.length, 0);
+    assert.equal(vault.writes.size, 0);
+  });
+});
+
 test('native fills shield the existing opener family including pending descendants and preserve unrelated tabs', async (t) => {
   const { vault } = await vaultFixture(t); const f = nativeFixture(vault);
   const ancestor = { targetId: 'ancestor', view: { webContents: f.contents } };

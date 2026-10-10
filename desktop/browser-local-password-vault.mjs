@@ -20,6 +20,7 @@ export class LocalBrowserPasswordVault {
     this.platform = platform;
     this.records = null;
     this.queue = Promise.resolve();
+    this.writes = new Map();
   }
   async ready() {
     if (this.readyPromise) return this.readyPromise;
@@ -69,7 +70,11 @@ export class LocalBrowserPasswordVault {
       if (Buffer.byteLength(encoded) > 32 * 1024 * 1024) throw passwordFailure('BROWSER_PASSWORD_LIMIT', 'The local password vault exceeds its storage limit.');
       await writeFile(temp, encoded, { flag: 'wx', mode: 0o600 });
       await rename(temp, this.file);
+      const revoked = this.records.filter((record) => !records.includes(record));
       this.records = records;
+      // A removal or replacement acknowledges only after writes which already
+      // began with the prior credential have finished. No new prior lease can start.
+      await Promise.all(revoked.flatMap((record) => [...(this.writes.get(record.id) ?? [])]));
     } finally { await unlink(temp).catch(() => {}); }
   }
   async importCredential(credential) {
@@ -117,9 +122,21 @@ export class LocalBrowserPasswordVault {
       credential = JSON.parse(decrypted);
       if (credential.id !== id || credential.origin !== record.origin || credential.username !== record.username || typeof credential.password !== 'string' || !credential.password) throw new Error();
     } catch { throw passwordFailure('BROWSER_PASSWORD_STORAGE_UNAVAILABLE', 'OS password storage could not unlock this account.'); }
-    // Re-check removal after a keychain prompt before releasing the secret to native input.
-    if (!this.records.includes(record)) throw passwordFailure('BROWSER_PASSWORD_NOT_FOUND', 'The saved website account was removed.');
-    try { return await operation(credential); } finally { credential.password = ''; }
+    const assertCurrent = () => {
+      if (!this.records.includes(record)) throw passwordFailure('BROWSER_PASSWORD_NOT_FOUND', 'The saved website account was removed or replaced.');
+    };
+    const lease = { assertCurrent, write: async (write) => {
+      assertCurrent();
+      let finish;
+      const settled = new Promise((resolve) => { finish = resolve; });
+      let writes = this.writes.get(id);
+      if (!writes) { writes = new Set(); this.writes.set(id, writes); }
+      writes.add(settled);
+      try { return await write(); }
+      finally { finish(); writes.delete(settled); if (!writes.size) this.writes.delete(id); }
+    } };
+    // Re-check removal after the OS prompt and at every async native input boundary.
+    try { assertCurrent(); return await operation(credential, lease); } finally { credential.password = ''; }
   }
   remove(id) { return this.mutate(async () => { await this.persist(this.records.filter((record) => record.id !== id)); return { removed: true }; }); }
   clear() { return this.mutate(async () => { const removed = this.records.length; await this.persist([]); return { removed }; }); }
