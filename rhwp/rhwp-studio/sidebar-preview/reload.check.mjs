@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMainModule, runStandalone } from './standalone.mjs';
 
 const RUNNING_CHAT = 'preview-chat-schedule';
 const OTHER_TEXT = '현장 인터뷰 일정\n다시 확인';
@@ -17,7 +15,8 @@ export async function checkReloadPreview(page, origin, artifacts) {
       waitUntil: 'networkidle0',
     });
     await page.waitForFunction(() => window.sidebarPreview);
-    await page.waitForFunction((id) => window.sidebarPreview.sidebar.currentThreadId() === id, {}, RUNNING_CHAT);
+    await page.waitForFunction((id) => window.sidebarPreview.sidebar.currentThreadId() === id
+      && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true', {}, RUNNING_CHAT);
   }
   const counts = () => page.evaluate(() => {
     const { chatStarts, stops, interrupts } = window.sidebarPreview.snapshot();
@@ -26,6 +25,8 @@ export async function checkReloadPreview(page, origin, artifacts) {
 
   await open('running');
   await page.waitForSelector('.ag-send.ag-stop');
+  // The working ring appears once the agent has been quiet for the status delay.
+  await page.waitForFunction(() => document.querySelector('.ag-turn-pending')?.hidden === false);
   assert.deepEqual(await counts(), { starts: 0, stops: 0, interrupts: 0 }, 'the running chat is adopted, not restarted');
   assert.deepEqual(await page.evaluate(() => ({
     running: window.sidebarPreview.bridge.isTurnRunning(),
@@ -70,43 +71,4 @@ export async function checkReloadPreview(page, origin, artifacts) {
   assert.equal((await counts()).starts, 0);
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const { createServer } = await import('vite');
-  const { default: puppeteer } = await import('puppeteer-core');
-  const { browserLaunchArgs, findBrowserExecutable } = await import('../tests/browser-support.ts');
-  const studio = resolve(import.meta.dirname, '..');
-  const artifacts = resolve(import.meta.dirname, 'artifacts');
-  const executablePath = findBrowserExecutable();
-  assert(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable.');
-  await mkdir(artifacts, { recursive: true });
-  const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-sidebar-reload-'));
-  const server = await createServer({
-    cacheDir,
-    configFile: resolve(studio, 'vite.sidebar.config.ts'),
-    server: { port: 0, open: false, hmr: false },
-    logLevel: 'error',
-  });
-  await server.listen();
-  let browser;
-  try {
-    browser = await puppeteer.launch({ executablePath, headless: true, args: browserLaunchArgs() });
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
-    await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-    page.on('console', (message) => {
-      if (message.type() === 'error') errors.push(message.text());
-    });
-    await checkReloadPreview(page, `http://127.0.0.1:${server.httpServer.address().port}`, artifacts);
-    assert.deepEqual(errors, [], 'No browser errors');
-    console.log(`PASS Reload re-adopts the live chat. Screenshots: ${artifacts}`);
-  } finally {
-    const browserProcess = browser?.process();
-    await browser?.close();
-    browserProcess?.stdout?.destroy();
-    browserProcess?.stderr?.destroy();
-    await server.close();
-    await rm(cacheDir, { recursive: true, force: true });
-  }
-}
+if (isMainModule(import.meta)) await runStandalone('Reload re-adopts the live chat', checkReloadPreview);
