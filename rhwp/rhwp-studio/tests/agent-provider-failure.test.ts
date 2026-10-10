@@ -224,3 +224,44 @@ test('chat-error: a matched chat start is origin start, a rejected message is or
   assert.equal(hubErrors[0]!.failure!.agent, 'codex', 'an older hub start failure is attributed to the starting agent');
   bridge.dispose();
 });
+
+test('a settings rejection mid-turn (AGENT_BUSY) does not release the turn\'s held failure early', () => {
+  // 턴 중에 Fast·권한을 바꾸면 허브가 AGENT_BUSY 로 거절한다. 그 거절은 턴을 끝내지 않는다 — 모아 둔
+  // 실패를 'idle' 로 먼저 내놓으면 turn-end 가 두 번째 알림을 만든다.
+  const { bridge, internals, events, frame, agentEvent, failures } = chat();
+  internals.messageAwaitingTurn = true;
+  agentEvent({ type: 'turn-start', turnId: 'turn-1' });
+  agentEvent({ type: 'error', message: 'limit', failure: failure() });
+  frame({ type: 'chat-error', code: 'AGENT_BUSY', message: 'Service tier can only change between turns.' });
+  assert.deepEqual(failures(), [], 'nothing is shown before the turn ends');
+  assert.equal(bridge.isTurnRunning(), true);
+  agentEvent({ type: 'turn-end', turnId: 'turn-1', stopReason: 'failed', errorMessage: 'limit', failure: failure() });
+  assert.deepEqual(failures().map((event) => [event.origin, event.failure.class, event.userInitiated]), [['turn', 'usage_limit', true]]);
+  assert.equal(events.filter((event) => event.type === 'hub-error').length, 1, 'the rejection itself is still reported');
+  bridge.dispose();
+});
+
+test('a rejected message releases what was held while it waited for its turn', () => {
+  const { bridge, internals, frame, agentEvent, failures } = chat();
+  internals.messageAwaitingTurn = true;
+  agentEvent({ type: 'error', message: 'stream disconnected', failure: failure({ class: 'network', message: 'stream disconnected', code: null, retryable: true }) });
+  assert.deepEqual(failures(), []);
+  frame({ type: 'chat-error', code: 'AGENT_BUSY', message: 'A turn is already in progress.' });
+  assert.deepEqual(failures().map((event) => [event.origin, event.failure.class]), [['idle', 'network']]);
+  bridge.dispose();
+});
+
+test('a message that fails before its turn starts still offers 다시 시도; an adopted hub turn does not', () => {
+  // codex app-server 는 스레드를 열지 못하면 turn-start 없이 error 와 turn-end 를 보낸다.
+  const sent = chat();
+  sent.internals.messageAwaitingTurn = true;
+  sent.agentEvent({ type: 'error', message: 'could not open the thread', failure: failure({ class: 'process_exited', message: 'could not open the thread', code: null, retryable: true }) });
+  sent.agentEvent({ type: 'turn-end', turnId: 'turn-7', stopReason: 'failed', errorMessage: 'could not open the thread', failure: failure({ class: 'process_exited', message: 'could not open the thread', code: null, retryable: true }) });
+  assert.deepEqual(sent.failures().map((event) => [event.origin, event.userInitiated]), [['turn', true]]);
+  sent.bridge.dispose();
+
+  const adopted = chat();
+  adopted.agentEvent({ type: 'turn-end', turnId: 'turn-8', stopReason: 'failed', errorMessage: 'x', failure: failure({ class: 'unknown', retryable: true }) });
+  assert.deepEqual(adopted.failures().map((event) => [event.origin, event.userInitiated]), [['turn', false]]);
+  adopted.bridge.dispose();
+});

@@ -154,8 +154,12 @@ export interface TurnFailureCollector {
    * 아니면 지금 보일 실패를 돌려준다.
    */
   observeError(event: Extract<AgentStreamEvent, { type: 'error' }>, holding: boolean): ProviderFailure | null;
-  /** 턴이 끝났다 — 이 턴의 실패 하나 또는 null. 상태는 비워진다. */
-  endTurn(event: Extract<AgentStreamEvent, { type: 'turn-end' }>): TurnFailureResult | null;
+  /**
+   * 턴이 끝났다 — 이 턴의 실패 하나 또는 null. 상태는 비워진다. messageAwaitingTurn 은 보낸 메시지가
+   * 턴을 기다리던 중인지다: 어댑터가 turn-start 없이 바로 실패를 끝내면(턴을 열지 못한 메시지)
+   * 그 메시지가 연 턴으로 본다. 붙잡은 허브 턴(기다리던 메시지 없음)은 그대로 사용자 턴이 아니다.
+   */
+  endTurn(event: Extract<AgentStreamEvent, { type: 'turn-end' }>, messageAwaitingTurn?: boolean): TurnFailureResult | null;
   /** chat-error 등으로 기다림이 끝났을 때 모아 둔 실패 하나를 내놓고 비운다. */
   flush(): ProviderFailure | null;
 }
@@ -165,18 +169,22 @@ export function createTurnFailureCollector(): TurnFailureCollector {
   let held: ProviderFailure[] = [];
   let turnId: string | null = null;
   let userInitiated = false;
+  /** 이 턴의 turn-start 를 봤다 */
+  let began = false;
   const firstHeld = (): ProviderFailure | null =>
     held.find((failure) => failure.class !== 'unknown') ?? held[0] ?? null;
   const reset = () => {
     held = [];
     turnId = null;
     userInitiated = false;
+    began = false;
   };
   return {
     beginTurn(nextTurnId, initiated) {
       held = [];
       turnId = nextTurnId;
       userInitiated = initiated;
+      began = true;
     },
     observeError(event, holding) {
       const failure = failureFromEvent(event);
@@ -187,9 +195,9 @@ export function createTurnFailureCollector(): TurnFailureCollector {
       }
       return failure;
     },
-    endTurn(event) {
+    endTurn(event, messageAwaitingTurn = false) {
       const eventTurnId = typeof event.turnId === 'string' ? event.turnId : turnId;
-      const initiated = userInitiated;
+      const initiated = began ? userInitiated : messageAwaitingTurn;
       const pending = firstHeld();
       reset();
       // 허브가 사라져 Studio 가 만든 중단(interruption)은 별도 줄이 맡는다.

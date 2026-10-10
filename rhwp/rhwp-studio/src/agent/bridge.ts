@@ -3064,8 +3064,8 @@ export class AgentBridgeImpl implements AgentBridge {
           ?? (isProviderHubErrorCode(msg.code)
             ? legacyProviderFailure(failureAgent, typeof msg.message === 'string' ? msg.message : '', msg.code)
             : null);
-        // 턴을 기다리며 모아 둔 실패는 이 거절로 기다림이 끝난다.
-        const heldFailure = this.turnFailures().flush();
+        // 거절된 메시지가 실었던 복원 안내는 다시 보낼 수 있게 되살린다. 모아 둔 실패는 아래에서
+        // 기다림이 끝났을 때만 내놓는다.
         this.rearmRestoredNotice(typeof msg.messageId === 'string' && msg.messageId ? msg.messageId : null);
         // 요청 ID 없는 오류는 보낸 메시지의 거절이다 — 턴으로 이어지지 않는다.
         this.messageAwaitingTurn = false;
@@ -3125,6 +3125,9 @@ export class AgentBridgeImpl implements AgentBridge {
         } else {
           this.pendingChatStart = null;
         }
+        // 턴을 기다리며 모아 둔 실패는 이 거절로 기다림이 끝났을 때만 내놓는다. 턴이 아직 돌면
+        // (턴 중의 설정 변경 거절 AGENT_BUSY 등) 그 턴의 turn-end 가 실패 알림 하나를 맡는다.
+        const heldFailure = this.turnRunning ? null : this.turnFailures().flush();
         if (heldFailure && !hubFailure) {
           this.emit({ type: 'turn-failure', failure: heldFailure, turnId: null, origin: 'idle', userInitiated: false });
         }
@@ -3246,7 +3249,8 @@ export class AgentBridgeImpl implements AgentBridge {
       case 'turn-end': {
         const eventTurnId = typeof event.turnId === 'string' ? event.turnId : null;
         if (!providerTurnEndMatches(this.activeProviderTurnId, eventTurnId)) return;
-        turnFailure = this.turnFailures().endTurn(event);
+        // turn-start 없이 끝난 턴(턴을 열지 못하고 실패한 메시지)은 기다리던 메시지의 턴이다 — 다시 시도를 준다.
+        turnFailure = this.turnFailures().endTurn(event, this.messageAwaitingTurn);
         // 안내를 실은 메시지의 턴이거나, 그 메시지를 거절할 허브 턴이 끝났다 — 더 기다릴 거절이 없다.
         const noticeTurn = this.restoredNoticeInFlight;
         this.restoredNoticeInFlight = null;
