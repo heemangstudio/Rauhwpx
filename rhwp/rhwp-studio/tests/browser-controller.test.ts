@@ -206,3 +206,22 @@ test('실패한 상태 읽기를 공유한 뒤 다시 시도하고 조작 실패
   assert.equal(f.controller.state.error, '탐색 실패');
   f.controller.dispose();
 });
+
+test('현재 페이지에서 열린 새 창은 즉시 선택하고 다른 페이지의 새 창은 선택을 바꾸지 않는다', () => {
+  const f = fixture(true); const parent = tab();
+  f.emit({ type: 'owned_browser_inventory', tabs: [parent] });
+  f.controller.select(parent.tabId);
+  const backgroundClick = { ...parent, tabId: 'background-click' };
+  f.emit({ type: 'owned_browser_popup', tab: backgroundClick, openerTabId: parent.tabId, foreground: false });
+  assert.equal(f.controller.tab()?.tabId, parent.tabId);
+  const popup = { ...parent, tabId: 'popup', url: 'https://example.com/result' };
+  f.emit({ type: 'owned_browser_popup', tab: popup, openerTabId: parent.tabId });
+  assert.equal(f.controller.tab()?.tabId, popup.tabId);
+  assert.deepEqual(f.controller.state.tabs.map(row => row.tabId), [parent.tabId, backgroundClick.tabId, popup.tabId]);
+  const background = { ...popup, tabId: 'background-popup' };
+  f.emit({ type: 'owned_browser_popup', tab: background, openerTabId: parent.tabId });
+  assert.equal(f.controller.tab()?.tabId, popup.tabId);
+  f.emit({ type: 'owned_browser_tab', tab: { ...parent, navigationEpoch: 2 } });
+  assert.equal(f.controller.tab()?.tabId, popup.tabId);
+  f.controller.dispose();
+});

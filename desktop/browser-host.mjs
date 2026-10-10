@@ -113,7 +113,7 @@ export class OwnedBrowserHost {
     return { endpointURL, native: true, generation: this.generation, signInSupport: 'full-browser-required' };
   }
 
-  async createTab({ url = 'about:blank', parent = null } = {}) {
+  async createTab({ url = 'about:blank', parent = null, disposition = null } = {}) {
     if (!this.owner || !this.proxy) throw new Error('Native browser runtime is disconnected');
     if (this.tabs.size >= MAX_NATIVE_TABS) throw new Error('Native browser tab limit reached');
     const destination = browserNavigationUrl(url);
@@ -128,11 +128,11 @@ export class OwnedBrowserHost {
     contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
     const tab = { view, targetId: null, tabId: null, sessionId: null, chatId: null, windowId: null,
       placement: null, human: false, interactive: false, navigationEpoch: 0,
-      frameId: null, lastError: null, crashed: false, openerTargetId: parent?.targetId };
-    contents.setWindowOpenHandler(({ url: popupUrl }) => {
+      frameId: null, lastError: null, crashed: false, openerTargetId: parent?.targetId, disposition };
+    contents.setWindowOpenHandler(({ url: popupUrl, disposition }) => {
       try {
         const popup = browserNavigationUrl(popupUrl);
-        void this.createTab({ url: popup, parent: tab }).catch(() => {});
+        void this.createTab({ url: popup, parent: tab, disposition }).catch(() => {});
       } catch {}
       return { action: 'deny' };
     });
@@ -238,7 +238,7 @@ export class OwnedBrowserHost {
     const contents = tab.view.webContents;
     const alive = contents && !contents.isDestroyed();
     return { tabId: tab.tabId, nativeTargetId: tab.targetId, native: true,
-      generation: this.generation, navigationEpoch: tab.navigationEpoch,
+      generation: this.generation, navigationEpoch: tab.navigationEpoch, disposition: tab.disposition,
       url: alive ? contents.getURL() : '', title: alive ? contents.getTitle() : '',
       loading: !!alive && contents.isLoading(),
       canGoBack: !!alive && contents.navigationHistory.canGoBack(),

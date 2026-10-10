@@ -392,7 +392,10 @@ export function createOwnedBrowserService(options = {}) {
             const parent = opener && pageTabs.get(opener);
             if (!parent) return;
             if (tabs.size >= limits.maxTabs) { await page.close(); return; }
-            const tab = makeTab(actorForTab(parent)); tabs.set(tab.tabId, tab); await attach(tab, page); publish(tab); void persist();
+            const tab = makeTab(actorForTab(parent)); tabs.set(tab.tabId, tab); await attach(tab, page);
+            const native = tab.nativeTargetId && (await selectedAdapter()?.inventory?.())?.find((entry) => entry.nativeTargetId === tab.nativeTargetId);
+            emit('owned_browser_popup', { tab: descriptor(tab), openerTabId: parent.tabId, foreground: native?.disposition !== 'background-tab', runtime: runtimeInfo() });
+            void persist();
           }).catch(() => {});
         });
         const nativeInventory = await selectedAdapter()?.inventory?.() ?? [];

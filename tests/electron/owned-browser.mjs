@@ -228,7 +228,7 @@ try {
   assert.equal(await cleanPage.evaluate(() => localStorage.getItem('owned-note')), null);
   report.browserReset = { staleOwnerRejected: true, releasedOwnerAllowed: true, guestsClosed: true, cookiesCleared: true, profileDeleted: true, storageClearedAfterRestart: true };
   console.error('OWNED_BROWSER_STAGE browser-reset');
-  serviceSite = createServer((_request, response) => { response.setHeader('content-type', 'text/html'); response.end('<title>Recovered native tab</title><input id="draft">'); });
+  serviceSite = createServer((_request, response) => { response.setHeader('content-type', 'text/html'); response.end('<title>Recovered native tab</title><input id="draft"><a id="popup" href="/popup" target="_blank">Open result</a>'); });
   await new Promise((resolve) => serviceSite.listen(0, '127.0.0.1', resolve));
   const serviceOrigin = `http://127.0.0.1:${serviceSite.address().port}`;
   const serviceDir = path.join(root, 'native-service');
@@ -243,7 +243,8 @@ try {
   await writeFile(path.join(serviceDir, 'browser', 'tabs.json'), JSON.stringify({ version: 1, tabs: [
     { tabId: 'restored-tab', threadId: 'chat-one', agentId: 'owner', sessionId: 'previous-editor-session', url: serviceOrigin, title: 'Recovered native tab' },
   ] }));
-  service = createOwnedBrowserService({ dataDir: serviceDir, nativeAdapter: adapter, workspaceTargets: [serviceOrigin] });
+  let resolvePopup;
+  service = createOwnedBrowserService({ dataDir: serviceDir, nativeAdapter: adapter, workspaceTargets: [serviceOrigin], onEvent: (event) => { if (event.type === 'owned_browser_popup') resolvePopup?.(event); } });
   await service.restore();
   const recovered = await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one', threadId: 'chat-one', agentId: 'owner' }, 'recover', { tabId: 'restored-tab' });
   assert.equal(recovered.runtime.kind, 'native');
@@ -270,6 +271,36 @@ try {
     field.addEventListener('input', () => { clearTimeout(timer); resolve(field.value); }, { once: true });
   })`);
   assert.equal(value, 'x');
+  const popupEvent = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Native popup was not published for foreground selection')), 5000);
+    resolvePopup = (event) => { clearTimeout(timer); resolve(event); };
+  });
+  const point = await recoveredContents.executeJavaScript('(()=>{const r=document.querySelector("#popup").getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()');
+  recoveredContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+  recoveredContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
+  const openedPopup = await popupEvent;
+  assert.equal(openedPopup.openerTabId, 'restored-tab');
+  assert.equal(openedPopup.foreground, true);
+  assert.equal(openedPopup.tab.threadId, 'chat-one');
+  assert.equal(openedPopup.tab.agentId, 'owner');
+  assert.equal(serviceHost.tab(openedPopup.tab.tabId).sessionId, 'window-one');
+  assert.equal(serviceHost.tab(openedPopup.tab.tabId).disposition, 'foreground-tab');
+  await assert.rejects(service.request({ isHuman: false, threadId: 'another-chat', agentId: 'owner' }, 'snapshot', { tabId: openedPopup.tab.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
+  const popupState = (await service.inventory({ isHuman: true, clientId: 'window-one' })).tabs.find(tab => tab.tabId === openedPopup.tab.tabId);
+  await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'close', popupState);
+  const backgroundEvent = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Native background popup was not published')), 5000);
+    resolvePopup = (event) => { clearTimeout(timer); resolve(event); };
+  });
+  const modifiers = [process.platform === 'darwin' ? 'meta' : 'control'];
+  recoveredContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1, modifiers });
+  recoveredContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1, modifiers });
+  const backgroundPopup = await backgroundEvent;
+  assert.equal(backgroundPopup.foreground, false);
+  assert.equal(serviceHost.tab(backgroundPopup.tab.tabId).disposition, 'background-tab');
+  const backgroundState = (await service.inventory({ isHuman: true, clientId: 'window-one' })).tabs.find(tab => tab.tabId === backgroundPopup.tab.tabId);
+  await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'close', backgroundState);
+  report.nativePopupNavigation = { foreground: true, openerBinding: true, otherChatRejected: true };
   await recoveredContents.executeJavaScript('localStorage.setItem("native-marker", "native-profile"); document.cookie="nativeAuth=native-profile; Max-Age=86400; Path=/"');
   await serviceHost.session.cookies.flushStore();
   report.nativeDefaultRecovery = { native: true, currentEditorBinding: true, humanInput: true };
@@ -290,7 +321,18 @@ try {
   assert.equal(serviceHost.tab('restored-tab').view.webContents, recoveredContents);
   await assert.rejects(service.request({ isHuman: true, clientId: 'window-two', sessionId: 'window-two' }, 'reconnect', { tabId: 'restored-tab' }), /another editor window/);
   serviceHost.attach(first, { tabId: 'restored-tab', bounds: { x: 0, y: 80, width: 500, height: 360 }, interactive: true });
-  assert.equal(serviceHost.tab('restored-tab').interactive, false);
+  assert.equal(serviceHost.tab('restored-tab').interactive, true);
+  await recoveredContents.executeJavaScript('document.querySelector("#draft").focus()', true);
+  recoveredContents.focus();
+  recoveredContents.sendInputEvent({ type: 'keyDown', keyCode: 'Z' });
+  recoveredContents.sendInputEvent({ type: 'char', keyCode: 'z' });
+  recoveredContents.sendInputEvent({ type: 'keyUp', keyCode: 'Z' });
+  assert.equal(await recoveredContents.executeJavaScript(`new Promise((resolve) => {
+    const field = document.querySelector('#draft');
+    if (field.value === 'xz') { resolve(field.value); return; }
+    const timer = setTimeout(() => resolve(field.value), 2000);
+    field.addEventListener('input', () => { clearTimeout(timer); resolve(field.value); }, { once: true });
+  })`), 'xz');
   const guestClosed = new Promise((resolve) => recoveredContents.once('destroyed', resolve));
   serviceHost.closeTab(retainedTarget);
   await assert.rejects(service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'reconnect', { tabId: 'restored-tab' }), /disconnected|unavailable/);

@@ -63,6 +63,10 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
       if (index < 0) state.tabs.push(incoming); else state.tabs[index] = incoming;
       const frame = state.frames.get(incoming.tabId);
       if (frame && (frame.navigationEpoch !== incoming.navigationEpoch || frame.controllerEpoch !== incoming.controllerEpoch)) state.frames.delete(incoming.tabId);
+      if ('type' in result && result.type === 'owned_browser_popup' && result.foreground !== false
+        && result.openerTabId === state.activeTabId && incoming === result.tab) {
+        selectionSequence++; state.activeTabId = incoming.tabId; rememberTab();
+      }
     }
     if (result.frame) {
       const owner = state.tabs.find((row) => row.tabId === result.frame!.tabId);

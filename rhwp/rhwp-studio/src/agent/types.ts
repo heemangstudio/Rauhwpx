@@ -721,6 +721,8 @@ export interface BrowserDownload {
 }
 export interface BrowserEvent {
   type: string;
+  openerTabId?: string;
+  foreground?: boolean;
   runtime?: BrowserRuntime;
   tabs?: BrowserTab[];
   tab?: BrowserTab;
