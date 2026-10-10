@@ -119,10 +119,12 @@ try {
         answerAfterRow: Boolean(row.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING),
         copyVisible: Boolean(answer.querySelector('.ag-msg-copy')?.checkVisibility()),
         userBeforeRow: Boolean(row.compareDocumentPosition(document.querySelector('.ag-msg-user')) & Node.DOCUMENT_POSITION_PRECEDING),
+        // 요청 말풍선(과 그 안의 "이 작업 전으로 되돌리기" 버튼)은 접힘 밖에 남는다.
+        userInFold: document.querySelectorAll('.ag-turn-fold .ag-msg-user').length,
         workInFlow: document.querySelectorAll('.ag-messages > .ag-progress-step:not(.ag-fleet-slot[hidden])').length,
       };
     });
-    assert.deepEqual(layout, { answerInFlow: true, answerAfterRow: true, copyVisible: true, userBeforeRow: true, workInFlow: 0 });
+    assert.deepEqual(layout, { answerInFlow: true, answerAfterRow: true, copyVisible: true, userBeforeRow: true, userInFold: 0, workInFlow: 0 });
     await assertRingOutsideFolds();
     // 접힌 본문은 클릭을 받지 않는다.
     assert.equal(await page.$eval('.ag-turn-fold .ag-activity-toggle', (node) => node.closest('[inert]') !== null), true);
