@@ -8,7 +8,8 @@
  * 정리 없이 버려 같은 상태를 남기므로 trap 으로 본다. 엔진 밖 순수 JS 재귀 오류는 아니다.
  *
  * 복구 계약: 읽기(`&self`) 호출이 trap 하면 새어 나간 것은 공유 대여뿐이라 `&self` 인
- * exportHwp/exportHwpx 는 계속 들어갈 수 있고, 멈춘 직후의 복구본 저장이 이 둘을 쓴다.
+ * exportHwp/exportHwpx/exportHml 과 getSourceFormat 은 계속 들어갈 수 있고, 멈춘 직후의
+ * 복구본 저장이 이것들을 쓴다 (저장 형식을 고르는 getSourceFormat 과 HML 원본의 exportHml 까지).
  * 쓰기(`&mut self`) 호출이 trap 하면 모델이 반쯤 바뀌었을 수 있어 내보내기도 거절되며,
  * 이때는 마지막 주기 자동 저장본이 복구 원본이다.
  */
@@ -37,8 +38,12 @@ export class EngineTrappedError extends Error {
   }
 }
 
-/** 멈춘 뒤에도 허용하는 읽기 — 복구본·사본 저장이 쓴다. */
-const CALLS_ALLOWED_AFTER_TRAP = new Set(['exportHwp', 'exportHwpx', 'free']);
+/**
+ * 멈춘 뒤에도 허용하는 읽기 — 복구본·사본 저장이 쓴다. 모두 `&self` 라 trap 이 남긴 공유 대여와
+ * 함께 들어갈 수 있다 (wasm_api.rs 의 exportHml·getSourceFormat 도 `&self`). getSourceFormat 이
+ * 막히면 확장자 없는 문서가, exportHml 이 막히면 HML 문서가 복구본을 남기지 못한다.
+ */
+const CALLS_ALLOWED_AFTER_TRAP = new Set(['exportHwp', 'exportHwpx', 'exportHml', 'getSourceFormat', 'free']);
 
 let trapped: EngineTrapInfo | null = null;
 const listeners = new Set<(info: EngineTrapInfo) => void>();
