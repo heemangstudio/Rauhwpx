@@ -10,11 +10,26 @@ import { showToast } from '../ui/toast.ts';
 import { userSettings } from '../core/user-settings.ts';
 import { completeInitialSetup } from '../ui/initial-setup/state.ts';
 import { listThreads, getThread, waitForThreadsPersistence } from '../agent/threads.ts';
-import { markChatFinished, markChatWorking } from '../agent/chat-status.ts';
+import {
+  getChatStatus,
+  markChatFailed,
+  markChatFinished,
+  markChatNeedsReview,
+  markChatWorking,
+} from '../agent/chat-status.ts';
+import {
+  connectChatAttention,
+  createChatAttentionLedger,
+  type AttentionNotice,
+} from '../agent/chat-attention.ts';
+import { loadAttentionPrefs, subscribeAttentionPrefs } from '../agent/attention-prefs.ts';
+import { installAttentionToasts } from '../ui/agent-attention.ts';
 import type { LibraryMoveResult } from '../library/move-to-document.ts';
 import type { TurnRestoreControl, TurnRestoreResult, TurnRestoreStatus } from '../agent/turn-checkpoints.ts';
 import {
   SAMPLE_FINISHED_CHAT_ID,
+  SAMPLE_INTERRUPTED_CHAT_ID,
+  SAMPLE_REVIEW_CHAT_ID,
   SAMPLE_WORKING_CHAT_ID,
   sampleRecentDocuments,
   sampleReloadQuestion,
@@ -37,6 +52,36 @@ const report = (message: string) => {
   status.value = message;
   showToast({ message, durationMs: 2500 });
 };
+/*
+ * Background-chat attention. The preview has its own ledger so `attention=away` can route every
+ * notice to the system sink (as when the window has no focus); otherwise a hidden chat's notice is
+ * an in-app toast with 열기. System notices are reported as `알림: {title} — {body}` and logged in
+ * `sidebarPreview.attentionNotices`. `notifications=granted` stubs the browser permission so the
+ * 설정 → AI → 알림 toggle shows on the web build.
+ */
+if (params.get('notifications') === 'granted' && typeof Notification === 'function') {
+  Object.defineProperty(Notification, 'permission', { configurable: true, get: () => 'granted' });
+}
+const attentionAway = params.get('attention') === 'away';
+const attention = createChatAttentionLedger({
+  getStatus: getChatStatus,
+  windowFocused: () => !attentionAway && document.visibilityState === 'visible' && document.hasFocus(),
+});
+attention.setEnabled(loadAttentionPrefs().notifications);
+subscribeAttentionPrefs((prefs) => attention.setEnabled(prefs.notifications));
+connectChatAttention(attention);
+const attentionNotices: AttentionNotice[] = [];
+const attentionCounts: number[] = [];
+attention.subscribe({
+  notice(notice) {
+    if (notice.channel !== 'system') return;
+    attentionNotices.push(notice);
+    report(`알림: ${notice.title} — ${notice.body}`);
+  },
+  count(count) {
+    attentionCounts.push(count);
+  },
+});
 const undoState = { entry: null as object | null, calls: 0 };
 const navigation = { calls: [] as Array<{ sectionIndex: number; paragraphIndex: number; charOffset: number }> };
 /*
@@ -308,6 +353,7 @@ function createParallelChat(): PreviewChat {
     listRecentDocuments: async () => recentDocuments.map((row) => ({ ...row })),
     openChat: (request) => openChatFrom(index, request),
     chatModeLock: chatModeLockFor(index),
+    attention,
   });
   chatMock.boot();
   const chat = { sidebar: chatSidebar, mock: chatMock };
@@ -340,6 +386,7 @@ const sidebar = initAgentSidebar({
   bridge: mock.bridge,
   eventBus,
   typingActivity: typingHold?.activity,
+  attention,
   // '리셋 후 이어서' 를 몇 초 안에 볼 수 있게 시계 차이 여유를 줄인다 (앱은 30초).
   failureResumeGraceMs: 500,
   getDocumentContext: () => ({
@@ -392,6 +439,7 @@ if (multiSession) {
     eventBus: new EventBus(),
     startActive: false,
     getDocumentContext: () => ({ ...BACKGROUND_DOCUMENT, selectionLabel: null }),
+    attention,
     moveToLibraryDocument: (target, options) => {
       attachSession(0);
       return moveDocument(target, options);
@@ -405,7 +453,15 @@ if (multiSession) {
 if (params.get('chats') === 'sample' || params.get('chats') === 'engine-trap') {
   markChatWorking(SAMPLE_WORKING_CHAT_ID);
   markChatFinished(SAMPLE_FINISHED_CHAT_ID);
+  markChatNeedsReview(SAMPLE_REVIEW_CHAT_ID);
+  markChatFailed(SAMPLE_INTERRUPTED_CHAT_ID, { label: '중단됨' });
 }
+/** The shown chat's 열기 from a toast or notification — the same path as a rail click. */
+function openFromAttention(threadId: string): void {
+  const shown = parallelChats ? chats[shownChat] : sessions[attachedSession];
+  shown?.sidebar.openThreadFromHost(threadId);
+}
+installAttentionToasts(attention, openFromAttention);
 
 const scenarioSelect = document.querySelector<HTMLSelectElement>('#scenario')!;
 for (const name of scenarios)
@@ -556,7 +612,8 @@ if (parallel === 'locked') await openLockedParallelScene();
 
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold,
-  sessions, attachSession, chats, showChat, openChatCalls,
+  sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
+  openFromAttention,
   threadStore: { listThreads, getThread, waitForThreadsPersistence } };
 export type SidebarPreview = typeof preview;
 Object.assign(window, { sidebarPreview: preview });

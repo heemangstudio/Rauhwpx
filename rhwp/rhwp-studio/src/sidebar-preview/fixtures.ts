@@ -306,6 +306,10 @@ export function sampleRecentDocuments(now: number): SampleDocument[] {
 export const SAMPLE_WORKING_CHAT_ID = 'preview-chat-schedule';
 /** Seeded chat that `chats=sample` shows as finished but unread. */
 export const SAMPLE_FINISHED_CHAT_ID = 'preview-chat-minutes';
+/** Seeded chat that `chats=sample` shows as 검토 대기 (staged edits awaiting review). */
+export const SAMPLE_REVIEW_CHAT_ID = 'preview-chat-totals';
+/** Seeded chat that `chats=sample` shows as cut off (`중단됨`): its last turn never finished. */
+export const SAMPLE_INTERRUPTED_CHAT_ID = 'preview-chat-interrupted';
 
 type SampleMessage = ChatThread['messages'][number];
 
@@ -435,6 +439,48 @@ export function sampleChats(now: number): ChatThread[] {
       messages,
     };
   });
+}
+
+/**
+ * `chats=sample`: a chat whose last turn was cut off while the user was away — the request,
+ * the work done so far, and a turn folded as interrupted, with no answer. The rail shows it
+ * as `중단됨` (a red ring), and seeing it clears the mark.
+ */
+export function sampleInterruptedChat(now: number): ChatThread {
+  const id = SAMPLE_INTERRUPTED_CHAT_ID;
+  const activityAt = now - 40 * MINUTE;
+  const startedAt = activityAt - 48_000;
+  return {
+    id,
+    title: '안건별 담당자 표 채우기',
+    titleRequested: true,
+    createdAt: activityAt - 3 * MINUTE,
+    updatedAt: activityAt,
+    lastActivityAt: activityAt,
+    agent: 'codex',
+    model: defaultModelForAgent('codex'),
+    effort: 'medium',
+    serviceTier: 'standard',
+    workflow: 'direct',
+    documentId: 'preview-notes',
+    docKey: '회의록.hwpx',
+    activeTemplateId: null,
+    messages: [
+      { role: 'user', text: '안건마다 담당자와 마감일을 표에 채워 주세요.' },
+      {
+        role: 'system', kind: 'turn', messageId: `${id}-turn-1`, startedAt, endedAt: activityAt,
+        outcome: 'interrupted', text: '중단됨 · 48초 · 표 1개 읽음',
+      },
+      { role: 'assistant', kind: 'progress', agent: 'codex', text: '안건 표를 읽고 담당자 칸부터 채우겠습니다.' },
+      {
+        role: 'assistant', kind: 'activity', agent: 'codex', activityId: `${id}-activity-1`, text: '도구 호출',
+        status: 'completed', startedAt: startedAt + 2_000, completedAt: startedAt + 9_000,
+        tools: [
+          sampleTool(`${id}-1`, 'get_table_properties', { sectionIdx: 0, paraIdx: 6, controlIdx: 0 }, '{"rows":7,"cols":3}'),
+        ],
+      },
+    ],
+  };
 }
 
 /** Seeded chat that `chats=engine-trap` restores: its turn was stopped by an engine trap. */

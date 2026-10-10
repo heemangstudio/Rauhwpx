@@ -1562,6 +1562,35 @@ export function listThreads(): ChatThread[] {
     .sort((a, b) => threadActivityAt(b) - threadActivityAt(a));
 }
 
+/** 목록에 오르는 채팅의 이름표 — 복제하지 않고 읽는다. */
+export interface ThreadPeek {
+  id: string;
+  title: string;
+  documentId: string | null;
+  docKey: string | null;
+}
+
+/**
+ * 목록에 오르는 채팅(메시지가 있는 것)의 id·제목·문서만. listThreads() 는 도구 그림까지
+ * 스레드마다 깊이 복제하므로, 상태가 바뀔 때마다 세는 확인 필요 숫자와 알림 제목은 이것을 쓴다.
+ */
+export function peekThreads(): ThreadPeek[] {
+  const fromCache = idbAvailable();
+  if (fromCache && !hydrated) void hydrateFromIndexedDb();
+  const source: Iterable<ChatThread> = fromCache ? cache.values() : readLegacyThreads();
+  const out: ThreadPeek[] = [];
+  for (const thread of source) {
+    if (thread.messages.length === 0) continue;
+    out.push({
+      id: thread.id,
+      title: thread.title,
+      documentId: thread.documentId ?? null,
+      docKey: thread.docKey ?? null,
+    });
+  }
+  return out;
+}
+
 /** 문서 묶음 키 — ID가 있으면 ID로, 없으면 파일명으로 묶인 레거시 채팅이다. */
 export function documentGroupKey(thread: Pick<ChatThread, 'documentId' | 'docKey'>): string {
   return thread.documentId ? `id:${thread.documentId}` : `name:${thread.docKey ?? ''}`;

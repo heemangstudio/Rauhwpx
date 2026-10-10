@@ -381,13 +381,13 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
     },
     /**
      * 턴이 끝났다. ownerIsCurrent 는 그 턴이 지금 보이는 채팅의 것인지다 — 다른 채팅의 턴 끝은
-     * 이 대기열을 움직이지 않는다.
+     * 이 대기열을 움직이지 않는다. 이 턴 끝에서 대기 메시지를 보냈으면 true.
      */
     turnEnded(
       event: { stopReason?: unknown; errorMessage?: unknown; failure?: unknown },
       ownerIsCurrent: boolean,
       interruptionReason?: string | null,
-    ): void {
+    ): boolean {
       inFlight = null;
       const outcome: FollowUpTurnOutcome = followUpTurnOutcome(event, {
         errorSeen: deps.errorSeen ? deps.errorSeen() : errorSeen,
@@ -400,7 +400,10 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       errorSeen = false;
       liveTurnAdopted = false;
       if (owned) decide(outcome);
+      // 이 턴 끝에서 대기 메시지 하나를 보냈다 — 채팅은 끝나지 않았다(레일에 완료를 남기지 않는다).
+      const drained = inFlight !== null;
       settle();
+      return drained;
     },
     /** 허브 오류. 보낸 대기 메시지의 거절이면 되돌리고 true — 일반 오류 줄은 띄우지 않는다. */
     hubError(error: { code: string; messageId?: string }): boolean {

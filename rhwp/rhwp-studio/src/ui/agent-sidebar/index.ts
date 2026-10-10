@@ -89,6 +89,7 @@ import {
   documentGroupKey,
   forgetDocumentThreads,
   listThreads,
+  peekThreads,
   orderPinnedThreads,
   pinThread,
   placeThread,
@@ -115,15 +116,17 @@ import {
   THREAD_TOOL_IMAGE_MAX_CHARS,
 } from '../../agent/threads.ts';
 import {
+  ATTENTION_STATUSES,
   clearChatStatus,
   getChatStatus,
+  getChatStatusLabel,
   getChatWorkingSince,
-  markChatFinished,
-  markChatNeedsInput,
-  markChatWorking,
+  readChatStatuses,
   subscribeChatStatus,
   type ChatRunStatus,
 } from '../../agent/chat-status.ts';
+import { chatAttention, type ChatAttentionLedger } from '../../agent/chat-attention.ts';
+import { createRunStatusController, type TurnFailureNote } from './run-status.ts';
 import { turnOutcomeFor, type TurnOutcome } from '../../agent/turn-outcome.ts';
 import {
   createTurnFoldRow,
@@ -166,7 +169,7 @@ import { ownsTextInput } from '../../command/shortcut-target.ts';
 import { createFocusGreeting } from './focus-greeting.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
 import { createToolRow, type ToolRowHandle } from './tool-row.ts';
-import { createFailureNoticeController, retryRequestText } from './failure-notice.ts';
+import { createFailureNoticeController, failureRailLabel, retryRequestText } from './failure-notice.ts';
 import {
   baseToolName,
   parseToolArgs,
@@ -303,6 +306,8 @@ export interface AgentSidebarDeps {
   renameDocument?: (name: string) => Promise<string | null>;
   /** 쓰기 활동 — 기본은 창 전체 감시자. 미리보기가 '쓰는 중' 장면을 고정할 때만 바꾼다. */
   typingActivity?: TypingActivity;
+  /** 백그라운드 채팅 알림 장부 — 기본은 페이지 하나짜리(chatAttention). 미리보기가 바꾼다. */
+  attention?: ChatAttentionLedger;
 }
 
 export interface AgentSidebarHandle {
@@ -330,11 +335,23 @@ export interface AgentSidebarHandle {
    * 잇거나 마지막 채팅을 복원한 다음이다. 그 뒤에 채팅을 다루는 스크립트·검사가 기다린다.
    */
   startupChatSettled(): Promise<void>;
+  /**
+   * 알림·토스트의 '열기' — 접힌 사이드바를 펼치고 다른 페이지를 닫은 뒤 레일에서 고른 것처럼
+   * 그 채팅을 연다(다른 채팅 창·다른 문서의 채팅이면 편집기에 맡긴다).
+   */
+  openThreadFromHost(threadId: string): void;
+  /**
+   * 방금 끝난 턴이 실패했거나 바깥 사정으로 끊겼다 — turn-end 뒤 같은 흐름에서 부른다(S3 의 중단).
+   * 그 채팅을 보지 않았으면 레일에 오류(이유)가 남고 알림에 실린다.
+   */
+  noteTurnFailure(note: TurnFailureNote): void;
   dispose(): void;
 }
 
 /* 첫 실행 안내는 페이지에 하나만 띄운다 — 문서마다 사이드바가 있어도 겹치지 않게. */
 let initialSetupOwner: object | null = null;
+/** 사이드바마다 다른 확인 필요 설명 id. */
+let attentionDescriptionSeq = 0;
 
 /** 화면에서 내려간 사이드바가 남기는 자리 표시 이름. */
 const ROOT_SLOT = 'agent-sidebar';
@@ -773,8 +790,25 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       restored: (key) => handleTurnRestored(key),
     })
     : null;
-  /** 지금 노란 불이 붙어 있는 스레드 — 턴이 끝나면 초록 점으로 넘긴다. */
-  let runStatusThreadId: string | null = null;
+  /**
+   * 레일 상태(U3) — 이 사이드바가 아는 사실(턴·질문·계획·검토·보지 않은 결과)에서 채팅마다
+   * 상태 하나를 골라 공유 저장소에 쓰고 알림 장부에 알린다. 사실이 바뀌는 곳마다 sync 한다.
+   */
+  const attention = deps.attention ?? chatAttention;
+  const runStatus = createRunStatusController({
+    attention,
+    turnRunning: () => turnRunning,
+    pendingQuestion: () => {
+      const question = bridge.getPendingUserQuestion();
+      return question ? { threadId: question.threadId, interactionId: question.interactionId } : null;
+    },
+    awaitingPlan: () => awaitingPlanApproval(),
+    reviewAwaiting: () => bridge.pendingEdits.getChangeSets()
+      .some((set) => set.status === 'awaiting-review' && set.ops.length > 0),
+    seenThreadId: () => (chatSeen() ? currentThread.id : null),
+    describe: (threadId) => describeThreadForAttention(threadId),
+    createTurnId: () => transcriptId('turn'),
+  });
   let workflowTransitionPending = false;
   /** chat-started 후 입력기를 여는 건 마지막으로 요청한 스레드뿐이다. */
   let chatStartPendingThreadId: string | null = null;
@@ -890,6 +924,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 채팅 목록 검색어와 문서 필터(키: documentGroupKey). */
   let threadQuery = '';
   let threadDocFilter: { key: string; label: string; missing: boolean } | null = null;
+  /** 확인 필요 칩을 눌러 확인이 필요한 채팅만 보는 중. */
+  let attentionFilter = false;
   let currentThread = createEmptyThread({
     agent: selectedAgent,
     model: selectedModel,
@@ -1712,6 +1748,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   threadsBtn.setAttribute('aria-controls', 'ag-threads-panel');
   threadsBtn.title = '채팅 목록';
   threadsBtn.appendChild(createColumnIcon());
+  // 확인이 필요한 다른 채팅 수 — 아이콘 오른쪽 위의 작은 수. 읽는 이름은 aria-describedby 가 더한다.
+  const threadsAttentionDescription = el('span', 'ag-sr-only');
+  threadsAttentionDescription.id = `ag-threads-attention-${++attentionDescriptionSeq}`;
+  const threadsBtnCount = el('span', 'ag-threads-btn-count');
+  threadsBtnCount.setAttribute('aria-hidden', 'true');
+  threadsBtnCount.hidden = true;
+  threadsBtn.append(threadsBtnCount, threadsAttentionDescription);
+  threadsBtn.setAttribute('aria-describedby', threadsAttentionDescription.id);
 
   /* 에이전트 모드 칩 — 채팅·플랜·에이전트·전체 중 하나. 전환 절차는 requestMode 가 맡는다. */
   const modeMenu = createModeMenu((mode) => { void requestMode(mode); });
@@ -2100,6 +2144,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   workspaceThreadsBtn.setAttribute('aria-label', '대화 목록 접기');
   workspaceThreadsBtn.title = '대화 목록 접기';
   workspaceThreadsBtn.appendChild(createColumnIcon());
+  const workspaceThreadsBtnCount = el('span', 'ag-threads-btn-count');
+  workspaceThreadsBtnCount.setAttribute('aria-hidden', 'true');
+  workspaceThreadsBtnCount.hidden = true;
+  workspaceThreadsBtn.appendChild(workspaceThreadsBtnCount);
+  workspaceThreadsBtn.setAttribute('aria-describedby', threadsAttentionDescription.id);
   const workspaceSettingsBack = el('button', 'ag-workspace-icon-btn ag-workspace-settings-back');
   workspaceSettingsBack.type = 'button';
   workspaceSettingsBack.setAttribute('aria-label', '대화로 돌아가기');
@@ -3200,6 +3249,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     onEnterList() {
       threadNavItems()[0]?.focus();
     },
+    onToggleAttention() {
+      attentionFilter = !attentionFilter;
+      rebuildThreadsList();
+    },
   });
   const threadsList = el('ul', 'ag-threads-list');
   threadsList.setAttribute('aria-label', '채팅');
@@ -3210,7 +3263,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     onDrop: (drop) => moveThread(drop.id, drop.pinned, { before: drop.before, after: drop.after }),
     onDragEnd: () => rebuildThreadsList(),
   });
-  threadsPage.append(threadsHeader, threadsToolbar.root, threadsToolbar.filterChip, threadsList);
+  threadsPage.append(threadsHeader, threadsToolbar.root, threadsToolbar.filterChip, threadsToolbar.attentionChip, threadsList);
 
   const skillsPage = el('div', 'ag-skills-page');
   skillsPage.id = 'ag-skills-panel';
@@ -5946,12 +5999,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     rebuildThreadsList();
   }
 
-  /** 실행 상태 점 — 노란 불(작업 중)·초록 점(완료)·빨간 점(승인 대기).
-      작업 중·입력 대기는 옆 글자가 말하므로 완료 점만 이름을 갖는다. */
+  /** 실행 상태 점 — 노란 불(작업 중)·빨간 점(입력 대기)·에이전트 색 점(검토 대기)·
+      빨간 고리(오류·중단)·초록 점(보지 않은 완료). 옆 글자(완료는 화면 낭독용 글)가 상태를 말한다. */
   function buildStatusDot(status: ChatRunStatus): HTMLElement {
     const dot = el('span', `ag-thread-status ag-thread-status-${status}`);
+    dot.setAttribute('aria-hidden', 'true');
     if (status === 'finished') dot.title = '완료';
-    else dot.setAttribute('aria-hidden', 'true');
     return dot;
   }
 
@@ -5983,12 +6036,21 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       label = elapsed ? `작업 중 ${elapsed}` : '작업 중';
     } else if (status === 'needs-input') {
       label = '입력 대기';
+    } else if (status === 'needs-review') {
+      label = '검토 대기';
+    } else if (status === 'failed') {
+      // 짧은 이유(중단됨·로그인 필요 …)가 없으면 '오류'.
+      label = getChatStatusLabel(thread.id) ?? '오류';
     } else {
       label = formatShortAge(threadActivityAt(thread), now);
     }
+    const labelNode = el('span', 'ag-threads-item-when-label', label);
+    if (status === 'failed') labelNode.title = label;
     when.replaceChildren(
       ...(status ? [buildStatusDot(status)] : []),
-      el('span', 'ag-threads-item-when-label', label),
+      labelNode,
+      // 초록 점은 보지 않은 완료다 — 경과 글자만으로는 알 수 없으니 화면 낭독기에 말한다.
+      ...(status === 'finished' ? [el('span', 'ag-sr-only', '완료, 읽지 않음')] : []),
     );
   }
 
@@ -6270,17 +6332,24 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       setThreadDocFilter(null, { rebuild: false });
     }
     const query = searchKey(threadQuery);
+    // 확인 필요 거름은 문서·검색 거름 뒤에 건다 — 고정·최근 구역과 순서는 그대로다.
+    const attentionIds = attentionThreadIds(all);
+    if (attentionFilter && attentionIds.size === 0) attentionFilter = false;
+    threadsToolbar.setAttention({ count: attentionIds.size, pressed: attentionFilter });
     const visible = all.filter((thread) => (
       (!threadDocFilter || documentGroupKey(thread) === threadDocFilter.key)
       && (!query
         || searchKey(thread.title || '새 채팅').includes(query)
         || searchKey(docGroupLabel(thread.docKey)).includes(query))
+      && (!attentionFilter || attentionIds.has(thread.id))
     ));
     if (visible.length === 0) {
       threadsList.appendChild(el(
         'li',
         'ag-threads-empty',
-        all.length === 0 ? '이전 채팅이 없습니다' : '일치하는 채팅이 없습니다',
+        all.length === 0
+          ? '이전 채팅이 없습니다'
+          : attentionFilter ? '확인할 채팅이 없습니다' : '일치하는 채팅이 없습니다',
       ));
       return;
     }
@@ -6722,10 +6791,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 편집기에 맡기지 않는다(문서가 맞지 않으면 읽기 전용으로 연다).
    */
   function openThread(id: string, opts?: { viewOnly?: boolean; routed?: boolean }): void {
-    // 채팅을 열어 보면 완료 점은 걷힌다. 다른 탭에서 아직 일하는 채팅의
-    // 노란 불은 그 탭의 것이므로 여기서 지우지 않는다. 화면에서 내려간
-    // 사이드바가 마지막 채팅을 되살릴 때는 아무도 보지 않았으므로 점을 남긴다.
-    if (active && getChatStatus(id) === 'finished') clearChatStatus(id);
+    // 연 채팅을 보고 있으면(열기를 마친 뒤) 완료·오류 점이 걷힌다. 입력·검토 대기와 다른 탭의
+    // 노란 불은 남는다. 화면에서 내려간 사이드바가 마지막 채팅을 되살릴 때는 아무도 보지 않았으므로 남긴다.
+    scheduleSeenCheck();
     if (id === currentThread.id) {
       setThreadsPanelOpen(false);
       return;
@@ -6843,21 +6911,18 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       serviceTier: bridge.getServiceTier(),
     });
     setTurnRunning(bridge.isTurnRunning());
-    if (turnRunning) {
-      runStatusThreadId = id;
-      markChatWorking(id);
-    }
     const interaction = bridge.getPendingUserQuestion();
     if (interaction?.threadId === id) {
       presentLiveQuestion(interaction);
-      runStatusThreadId = id;
-      markChatNeedsInput(id);
       updateComposer();
     } else {
       expireStalePendingQuestion();
     }
     const live = bridge.getHubChat();
     if (live?.threadId === id) onLiveChatAdopted(live);
+    // U3: 다시 잡은 턴(또는 질문)이 레일에 다시 선다. 알림 열쇠는 그 턴의 표식이다.
+    if (turnRunning) runStatus.adoptTurn(id, openFold?.markerId ?? null);
+    else runStatus.sync();
   }
 
   /**
@@ -7066,16 +7131,90 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     failureNotices.refresh();
   }
 
-  /** 턴이 정상 종료 경로 없이 꺼졌을 때(중단·재연결·오류) 노란 불을 걷는다. */
-  function dropRunStatusIfIdle(): void {
-    if (turnRunning || runStatusThreadId === null) return;
-    clearChatStatus(runStatusThreadId);
-    runStatusThreadId = null;
+  /** 승인을 기다리는 계획 — 그 턴이 끝났고 이 사이드바가 그 채팅의 허브 세션을 들고 있을 때만. */
+  function awaitingPlanApproval(): { threadId: string; planId: string } | null {
+    if (turnRunning || draftChat || !activePlan || bridgeThreadId !== currentThread.id) return null;
+    if (chatWorkflow !== 'plan' || planningPhase !== 'awaiting-approval' || !planApprovable) return null;
+    return { threadId: currentThread.id, planId: activePlan.planId };
   }
 
-  /** 계획에 응답이 닿았다(승인·수정 요청·무효화) — 빨간 점을 걷는다. */
-  function settlePlanAttention(): void {
-    if (getChatStatus(currentThread.id) === 'needs-input') clearChatStatus(currentThread.id);
+  /** 알림에 쓸 채팅 제목과 문서 이름. */
+  function describeThreadForAttention(threadId: string): { title: string; documentName: string | null } {
+    const thread = threadId === currentThread.id
+      ? currentThread
+      : peekThreads().find((row) => row.id === threadId) ?? null;
+    const documentName = thread?.docKey
+      ?? (threadId === currentThread.id ? getDocumentContext?.()?.documentName ?? currentDocKey : null);
+    return { title: thread?.title ?? '', documentName: documentName ?? null };
+  }
+
+  /** U5 실패 하나를 레일의 짧은 이유와 알림 문구로. 허브 재시작은 오류가 아니라 중단이다. */
+  function railFailureNote(failure: ProviderFailure, summary: string | null): TurnFailureNote {
+    return {
+      label: failureRailLabel(failure),
+      summary,
+      interrupted: failure.class === 'process_exited' && failure.code === 'HUB_RESTARTED',
+    };
+  }
+
+  /** 이 사이드바가 지금 대화를 보이고 있는가 — 붙어 있고, 펼쳐져 있고, 대화 페이지가 앞에 있다. */
+  function chatShown(): boolean {
+    return active && !draftChat && root.dataset.disposed !== 'true'
+      && !root.classList.contains('ag-collapsed')
+      && chatPage.getAttribute('aria-hidden') !== 'true';
+  }
+
+  /** 사용자가 그 대화를 보고 있는가 — 보이고, 창이 보이고, 창에 초점이 있다. */
+  function chatSeen(): boolean {
+    return chatShown() && document.visibilityState === 'visible' && document.hasFocus();
+  }
+
+  let seenCheckQueued = false;
+  /**
+   * 보고 있는지가 바뀌었을 수 있다(창 초점, 사이드바 펼침, 페이지 전환, 채팅 열기) — 한 번에 모아
+   * 보고 있는 채팅의 완료·오류 점을 걷고 확인 필요 수를 다시 센다.
+   */
+  function scheduleSeenCheck(): void {
+    if (seenCheckQueued) return;
+    seenCheckQueued = true;
+    queueMicrotask(() => {
+      seenCheckQueued = false;
+      if (root.dataset.disposed === 'true') return;
+      runStatus.markSeen();
+      refreshAttentionViews();
+    });
+  }
+
+  /** 목록에 오른 채팅 중 확인이 필요한 것(입력·검토 대기, 오류, 보지 않은 완료). */
+  function attentionThreadIds(threads: ReadonlyArray<{ id: string }> = peekThreads()): Set<string> {
+    const statuses = readChatStatuses();
+    const ids = new Set<string>();
+    for (const thread of threads) {
+      const view = statuses.get(thread.id);
+      if (view && ATTENTION_STATUSES.has(view.status)) ids.add(thread.id);
+    }
+    return ids;
+  }
+
+  /**
+   * 확인 필요 칩과 목록 단추의 수. 칩은 확인이 필요한 모든 채팅을, 단추는 지금 보이는 대화를 뺀
+   * 수를 센다. 화면에 붙은 사이드바만 그린다 — 실제 상태를 읽고, 늦춰 보이는 표시는 읽지 않는다.
+   */
+  function refreshAttentionViews(): void {
+    if (!active || root.dataset.disposed === 'true') return;
+    const ids = attentionThreadIds();
+    if (attentionFilter && ids.size === 0) {
+      attentionFilter = false;
+      if (threadsListVisible()) rebuildThreadsList();
+    }
+    threadsToolbar.setAttention({ count: ids.size, pressed: attentionFilter });
+    const count = ids.size - (chatShown() && ids.has(currentThread.id) ? 1 : 0);
+    const text = count > 9 ? '9+' : count > 0 ? String(count) : '';
+    for (const badge of [threadsBtnCount, workspaceThreadsBtnCount]) {
+      badge.hidden = count <= 0;
+      badge.textContent = text;
+    }
+    threadsAttentionDescription.textContent = count > 0 ? `확인 필요 ${count}개` : '';
   }
 
   /** 입력이 비어 있으면 보내기 버튼을 가라앉힌 색으로 쉬게 한다 — 눌림 동작은 그대로다. */
@@ -8326,8 +8465,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // 이 턴의 표식을 남긴다.
         beginTurnFold();
         setTurnRunning(true);
-        runStatusThreadId = currentThread.id;
-        markChatWorking(runStatusThreadId);
+        // U3: 레일에 노란 불 — 이 턴의 알림 열쇠는 U4 턴 표식이다.
+        runStatus.turnStarted(currentThread.id, openFold?.markerId ?? null);
         replyPending = true;
         followConversation = true;
         // 이전 턴이 turn-end 없이 끊겼다면 보류하던 마지막 문단까지 그려 둔다.
@@ -8431,15 +8570,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           && Boolean((assistantBubbleSources.get(streamBubble) ?? streamBubble.textContent ?? '').trim());
         if (finalBubble) settleFinalAnswer();
         setTurnRunning(false);
-        if (runStatusThreadId !== null) {
-          // 사용자가 멈춘 턴은 신호 없이 꺼진다. 계획이 승인을 기다리며 끝난
-          // 턴은 빨간 점, 그 외에는 완료 점이 남는다.
-          if (event.stopReason === 'interrupted') clearChatStatus(runStatusThreadId);
-          else if (chatWorkflow === 'plan' && planningPhase === 'awaiting-approval' && planApprovable) {
-            markChatNeedsInput(runStatusThreadId);
-          } else markChatFinished(runStatusThreadId);
-          runStatusThreadId = null;
-        }
         flushAssistantBuffer();
         sweepUnresolvedToolRows();
         sweepActivityTranscripts();
@@ -8475,7 +8605,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // 턴의 도구·작업 기록은 턴 끝에서 바로 남긴다.
         flushTranscriptPersist();
         // 대기 메시지: 정상 종료면 맨 앞 하나를 보내고, 미심쩍은 끝이면 붙잡는다. 같은 errorSeen 을 읽은 뒤 비운다.
-        followUps.turnEnded(event, turnOwnerThreadId === currentThread.id);
+        const drainedFollowUp = followUps.turnEnded(event, turnOwnerThreadId === currentThread.id);
+        // U3: 결과를 레일에 남긴다 — 보던 채팅, 사용자가 멈춘 턴, 대기열이 다음 메시지를 보낸 턴은 남기지 않는다.
+        // 승인을 기다리는 계획은 입력 대기로 선다. 알림은 한 마이크로태스크 뒤 — turn-failure 의 이유가 먼저 닿는다.
+        runStatus.turnEnded(lastTurnEndOutcome, { drained: drainedFollowUp });
         turnErrorSeen = false;
         break;
       }
@@ -8493,7 +8626,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     settingsPanel.handleEvent(e);
     initialSetup?.handleEvent(e);
     if (e.type === 'model-catalog') rebuildLlmMenu();
-    if (handlePlanningSidebarEvent(e)) return;
+    if (handlePlanningSidebarEvent(e)) {
+      // U3: 계획 승인 대기가 생기거나(입력 대기) 승인·수정 요청·무효화로 걷힌다.
+      runStatus.sync();
+      return;
+    }
     switch (e.type) {
       case 'tool-executed':
         handleToolExecuted(e);
@@ -8528,8 +8665,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           upsertThread(target);
           questionController.setVisible(false);
         }
-        runStatusThreadId = target.id;
-        markChatNeedsInput(target.id);
+        // U3: 답을 기다리는 채팅 — 레일에 입력 대기. 질문이 알린 턴은 그 채팅의 것이다.
+        if (turnRunning) runStatus.adoptTurn(target.id);
+        else runStatus.sync();
         updateComposer();
         break;
       }
@@ -8538,18 +8676,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         break;
       case 'user-question-resolved':
         {
-        const activeQuestion = questionController.interaction();
-        const targetThreadId = activeQuestion?.interactionId === e.interactionId
-          ? activeQuestion.threadId
-          : null;
         // 미뤄 둔 채 끝난 질문은 다시 열지 않는다.
         arrivalGuard.cancel(questionArrivalKey(e.interactionId));
         if (heldQuestionKey === questionArrivalKey(e.interactionId)) heldQuestionKey = null;
         questionController.resolve(e.interactionId, e.outcome);
-        if (targetThreadId) {
-          if (e.outcome.status === 'answered' && turnRunning) markChatWorking(targetThreadId);
-          else if (e.outcome.status !== 'answered') clearChatStatus(targetThreadId);
-        }
+        // U3: 답했으면 그 턴이 다시 일하고, 취소·만료면 입력 대기만 걷힌다.
+        runStatus.sync();
         updateComposer();
         break;
         }
@@ -8557,7 +8689,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         setConnection(e.state, { attempt: e.attempt, retryInMs: e.retryInMs });
         // 재연결 시 진행 상태를 브리지와 다시 동기화한다. 붙이지 않은 허브 턴은 초안의 일이 아니다.
         setTurnRunning(bridge.isTurnRunning() && !hubChatUnbound());
-        dropRunStatusIfIdle();
+        runStatus.settleIdle();
         followUps.settle();
         failureNotices.connectionChanged(e.state === 'connected');
         break;
@@ -8582,6 +8714,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           const hold = failureNotices.queueHold(notice);
           followUps.hold(hold.reason, hold.detail);
         }
+        // U3: 이 턴은 오류(또는 허브 재시작으로 중단)로 끝났다 — 레일에는 짧은 이유, 알림에는 알림 제목.
+        // 장부 알림은 아직 미뤄져 있어 이 이유를 싣는다. 사용자가 멈춘 턴은 아무것도 남기지 않는다.
+        if (e.origin === 'turn' && lastTurnEndOutcome === 'failed') {
+          runStatus.noteTurnFailure(railFailureNote(e.failure, notice.text));
+        }
         break;
       }
       case 'chat-started': {
@@ -8593,9 +8730,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         if (live?.threadId === currentThread.id && live.running && !turnRunning) {
           bridgeThreadId = currentThread.id;
           setTurnRunning(true);
-          runStatusThreadId = currentThread.id;
-          markChatWorking(currentThread.id);
           onLiveChatAdopted(live);
+          runStatus.adoptTurn(currentThread.id, openFold?.markerId ?? null);
         }
         const liveQuestion = bridge.getPendingUserQuestion();
         if (liveQuestion?.threadId === currentThread.id) presentLiveQuestion(liveQuestion);
@@ -8727,7 +8863,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         break;
       case 'chat-stopped':
         setTurnRunning(false);
-        dropRunStatusIfIdle();
+        runStatus.settleIdle();
         flushPendingAssistantRender();
         settleFinalAnswer();
         flushAssistantBuffer();
@@ -8782,6 +8918,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           renderMessagesFromThread(currentThread);
           updateComposer();
         }
+        let hubFailureSummary: string | null = null;
         if (e.failure) {
           noteProviderAuthFailure(e.failure.agent, e.failure);
           // 되돌린 대기 메시지는 대기열 맨 앞에 있다 — 다시 시도까지 두면 보내는 길이 둘이 된다.
@@ -8791,6 +8928,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
             userInitiated: e.origin !== 'start',
             ...(followUpBounced ? { noRetry: true } : {}),
           });
+          hubFailureSummary = notice.text;
           // 되돌린 대기 메시지의 붙잡음(거절)은 대기열이 이미 말한다.
           if (!followUpBounced) {
             const hold = failureNotices.queueHold(notice);
@@ -8805,7 +8943,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         setTurnRunning(bridge.isTurnRunning());
         // 허브 오류로 턴이 끝났으면 실패로 정착한다 — 접지 않고 모든 단계를 남긴다.
         if (!bridge.isTurnRunning()) settleOpenTurnFold('failed');
-        dropRunStatusIfIdle();
+        // U3: 허브 오류로 끝난 턴은 (보지 않았으면) 레일에 오류로 남는다.
+        if (turnRunning) runStatus.sync();
+        else if (runStatus.turnEnded('failed', { drained: false }) && e.failure) {
+          runStatus.noteTurnFailure(railFailureNote(e.failure, hubFailureSummary));
+        }
         followUps.settle();
         break;
       }
@@ -9269,7 +9411,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         planActionPending = false;
         revisionPlanId = null;
         planApprovable = false;
-        settlePlanAttention();
         setPlanningPhase(e.phase);
         systemMessage('계획을 승인했습니다. 실행 단계로 전환 중입니다.');
         return true;
@@ -9278,7 +9419,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         revisionPlanId = null;
         planApprovable = false;
         planMinimized = false;
-        settlePlanAttention();
         if (e.latestPlan) {
           activePlan = e.latestPlan;
           recordPlan(e.latestPlan);
@@ -9303,7 +9443,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         planActionPending = false;
         revisionPlanId = null;
         planApprovable = false;
-        settlePlanAttention();
         activePlanHistorical = activePlan !== null;
         setPlanningPhase(e.phase);
         if (e.reason !== 'document-saved' && e.reason !== 'workflow-changed') {
@@ -9566,11 +9705,31 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 뒤에 살아 있는 채팅을 잇는다 — 여기서 질문을 따로 되살리지 않는다.
   const unsubThreads = subscribeThreadChanges(() => {
     if (threadsListVisible()) rebuildThreadsList();
+    refreshAttentionViews();
   });
   // 다른 탭의 채팅이 일을 시작하거나 끝내면 이 탭의 목록에도 불이 옮겨 붙는다.
   const unsubChatStatus = subscribeChatStatus(() => {
+    // 다른 창에서 열어 본 채팅의 완료 점은 이 사이드바도 놓는다.
+    runStatus.storeChanged();
     if (threadsListVisible()) rebuildThreadsList();
+    refreshAttentionViews();
   });
+  // 보고 있는지가 바뀌는 곳 — 창 초점·가시성, 사이드바 펼침과 페이지 전환(뿌리 클래스·대화 페이지 숨김).
+  window.addEventListener('focus', scheduleSeenCheck);
+  document.addEventListener('visibilitychange', scheduleSeenCheck);
+  let attentionViewKey = '';
+  const attentionViewObserver = typeof MutationObserver === 'function'
+    ? new MutationObserver(() => {
+      const key = `${chatShown()}|${currentThread.id}`;
+      if (key === attentionViewKey) return;
+      attentionViewKey = key;
+      scheduleSeenCheck();
+    })
+    : null;
+  attentionViewObserver?.observe(root, { attributes: true, attributeFilter: ['class'] });
+  attentionViewObserver?.observe(chatPage, { attributes: true, attributeFilter: ['aria-hidden'] });
+  // 저장소에 이미 있는 상태(새로고침 전의 완료 점 등)로 처음 한 번 센다.
+  scheduleSeenCheck();
   /* "작업 중 2분"과 경과 표시는 목록이 보이는 동안 30초마다 고친다. */
   const threadClock = window.setInterval(refreshThreadWhens, 30_000);
   void bridge.listTemplates().then((catalog) => {
@@ -9589,6 +9748,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const unsubPending = bridge.pendingEdits.onChange((e: PendingEditsChangeEvent) => {
     turnChanges.capture(e, bridge.pendingEdits.getChangeSets(), turnOwnerThreadId ?? currentThread.id,
       currentDocumentId, deps.getAgentUndoEntry?.() ?? null);
+    // U3: 검토를 기다리는 편집은 그 턴을 돌린 채팅의 검토 대기다. 승인·거절이 걷는다.
+    if (e.type === 'set-finalized') runStatus.reviewFinalized(turnOwnerThreadId ?? currentThread.id);
+    else runStatus.sync();
     scheduleChangesRefresh();
     if (e.type === 'invalidated') systemMessage(invalidatedMessage(e));
     rebuildReview();
@@ -9903,6 +10065,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateDocumentContext();
     readChatModeLock();
     finishReplayedAnimations();
+    // 다시 보이는 채팅의 완료·오류 점을 걷고 확인 필요 수를 다시 센다.
+    scheduleSeenCheck();
   }
 
   function deactivate(): void {
@@ -9964,6 +10128,22 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return draftChat || currentThread.messages.length === 0 ? null : currentThread.id;
     },
     startupChatSettled: () => startupChatSettled,
+    openThreadFromHost(threadId: string): void {
+      if (root.dataset.disposed === 'true') return;
+      setCollapsed(false);
+      const open = () => {
+        if (skillsPanelOpen) setSkillsPanelOpen(false);
+        if (versionsPanelOpen) setVersionsPanelOpen(false);
+        if (referenceLibrary.isOpen()) referenceLibrary.setOpen(false);
+        // 레일에서 고른 것과 같은 길 — 지금 채팅이면 목록만 닫는다.
+        requestOpenThread(threadId);
+      };
+      if (settingsPanelOpen) void requestSettingsClose(undefined, open);
+      else open();
+    },
+    noteTurnFailure(note: TurnFailureNote): void {
+      runStatus.noteTurnFailure(note);
+    },
     followThreadOnNextDocument(threadId: string): void {
       if (root.dataset.disposed === 'true') return;
       // 이 채팅을 열기로 정했으니, 늦게 도는 "마지막 채팅 복원"이 덮어쓰지 않게 한다.
@@ -9990,6 +10170,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       questionController.dispose();
       // 걸어 둔 '리셋 후 이어서' 는 창과 함께 사라진다.
       failureNotices.dispose();
+      // 이 사이드바가 쓴 작업·입력·검토 점을 걷는다. 미뤄 둔 알림은 그대로 나간다.
+      runStatus.dispose();
+      attentionViewObserver?.disconnect();
+      window.removeEventListener('focus', scheduleSeenCheck);
+      document.removeEventListener('visibilitychange', scheduleSeenCheck);
       unsubChatModeLock();
       unsubTurnRestore();
       unsubBridge();

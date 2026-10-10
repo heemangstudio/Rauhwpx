@@ -205,6 +205,31 @@ export function failureQueueHold(
   }
 }
 
+/**
+ * 채팅 목록의 오류 점 옆에 서는 짧은 이유(U3) — 에이전트 이름 없이 몇 글자로.
+ * 허브 재시작은 오류가 아니라 끊긴 작업이다(`중단됨`).
+ */
+export function failureRailLabel(failure: ProviderFailure): string {
+  switch (failure.class) {
+    case 'auth_required':
+      return isPiSetupFailure(failure) ? '설정 필요' : '로그인 필요';
+    case 'usage_limit':
+      return failure.code === 'openrouter_credits' ? '크레딧 부족' : '사용 한도';
+    case 'provider_error':
+      return '서버 오류';
+    case 'network':
+      return '연결 실패';
+    case 'process_exited':
+      if (failure.code === 'HUB_RESTARTED') return '중단됨';
+      if (failure.code === 'cli_missing') return 'CLI 없음';
+      return '실행 중단';
+    case 'invalid_request':
+      return failure.code && CONTEXT_CODES.has(failure.code) ? '대화 길이 초과' : '요청 거절';
+    default:
+      return '오류';
+  }
+}
+
 /** 이전 시도가 문서를 고친 뒤 끊겼을 때 다시 보내는 요청에 덧붙이는 안내 (에이전트가 읽는다). */
 export const PARTIAL_EDITS_RETRY_NOTE = '(이전 시도가 중간에 끊겨 문서 편집 일부가 이미 반영됐을 수 있습니다. 먼저 문서를 다시 읽고, 이미 반영된 편집은 반복하지 마세요.)';
 

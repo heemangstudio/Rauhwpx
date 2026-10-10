@@ -20,6 +20,7 @@ import { checkTypingGuard } from './typing-guard.check.mjs';
 import { checkDelayedStatus } from './delayed-status.check.mjs';
 import { checkRestoreTurnPreview } from './restore-turn.check.mjs';
 import { checkFailureNotices } from './failures.check.mjs';
+import { checkAttention } from './attention.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -136,7 +137,10 @@ try {
           document.querySelector('.ag-msg-user'),
       );
   }
+  // SIDEBAR_CHECK=<text> runs only the steps whose name contains it (case-insensitive).
+  const onlyStep = process.env.SIDEBAR_CHECK?.toLowerCase();
   async function step(name, run) {
+    if (onlyStep && !name.toLowerCase().includes(onlyStep)) return;
     try {
       await run();
       console.log(`PASS ${name}`);
@@ -1036,6 +1040,8 @@ try {
     () => checkReloadPreview(page, origin, artifacts));
   await step('Each provider failure shows one notice with the actions that fit it',
     () => checkFailureNotices(page, origin, artifacts));
+  await step('Background-chat attention: rail states, chip, count, toasts and notices',
+    () => checkAttention(page, origin, artifacts));
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

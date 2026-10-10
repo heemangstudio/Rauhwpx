@@ -9072,6 +9072,42 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   .ag-versions-badge { animation: none; }
 }
 
+/* ─── 채팅 목록 버튼의 확인 필요 수 ───────────────────── */
+/* 다른 채팅이 답·검토를 기다리거나, 멈췄거나, 보지 않은 채 끝났다 — 목록 단추 오른쪽 위의 작은 수. */
+.ag-threads-btn,
+.ag-workspace-threads-btn {
+  position: relative;
+}
+
+.ag-threads-btn-count {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-err);
+  color: var(--n-ink-inverse);
+  font-family: var(--ag-mono);
+  font-size: 9px;
+  font-weight: var(--ag-fw-strong);
+  line-height: 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  animation: ag-badge-in var(--ag-dur-base) var(--ag-spring) both;
+}
+
+.ag-threads-btn-count[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-threads-btn-count { animation: none; }
+}
+
 /* ─── 버전 창의 변경 탭 ───────────────────────────────── */
 .ag-versions-tab-count {
   margin-left: 5px;

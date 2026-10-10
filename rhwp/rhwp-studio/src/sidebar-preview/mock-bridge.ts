@@ -345,9 +345,9 @@ export function createMockBridge(
     running = value;
     leaseListeners.forEach((listener) => listener(bridge.getEditingLease()));
   };
-  const finish = (stopReason = 'completed') => {
+  const finish = (stopReason = 'completed', errorMessage?: string) => {
     setRunning(false);
-    stream({ type: 'turn-end', agent, stopReason });
+    stream({ type: 'turn-end', agent, stopReason, ...(errorMessage ? { errorMessage } : {}) });
   };
   /** 실패한 턴: 실제 허브처럼 같은 실패를 error 와 turn-end 에 함께 싣는다 (알림은 하나만 남아야 한다). */
   const failTurn = (kind: FailureKind, turnId: string) => {
@@ -1619,10 +1619,13 @@ export function createMockBridge(
       }
       return askSampleQuestion(`turn-${generation}`);
     },
-    /** 붙잡아 둔 턴을 끝낸다(턴이 없으면 허브가 연 턴의 끝처럼 turn-end 만 보낸다). */
-    finishTurn: (stopReason = 'completed') => {
+    /**
+     * 붙잡아 둔 턴을 끝낸다(턴이 없으면 허브가 연 턴의 끝처럼 turn-end 만 보낸다).
+     * errorMessage 를 주면 예전 허브처럼 그 문구를 turn-end 에 싣는다.
+     */
+    finishTurn: (stopReason = 'completed', errorMessage?: string) => {
       generation++;
-      finish(stopReason);
+      finish(stopReason, errorMessage);
     },
     /** 붙잡아 둔 턴을 이 실패로 끝낸다 (error 와 turn-end 에 같은 실패). */
     failRunningTurn: (kind: FailureKind = failureKind) => {

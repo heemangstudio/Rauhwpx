@@ -42,14 +42,17 @@ if (url.searchParams.get('reset') === '1') {
 const chatsParam = url.searchParams.get('chats');
 if (chatsParam === 'sample' || chatsParam === 'engine-trap') {
   const {
-    engineTrapInterruptedChat, sampleChats, sampleReloadQuestionDraft, sampleRunningTurnWork, SAMPLE_WORKING_CHAT_ID,
+    engineTrapInterruptedChat, sampleChats, sampleInterruptedChat, sampleReloadQuestionDraft, sampleRunningTurnWork,
+    SAMPLE_WORKING_CHAT_ID,
   } = await import('./fixtures.ts');
   const key = 'rhwp-agent-threads';
   const now = Date.now();
+  // 같은 id 가 둘이면 앞의 것이 남는다.
   const seeded = [
     ...sampleChats(now),
+    sampleInterruptedChat(now),
     ...(chatsParam === 'engine-trap' ? [engineTrapInterruptedChat(now)] : []),
-  ];
+  ].filter((thread, index, all) => all.findIndex((other) => other.id === thread.id) === index);
   // `chats=sample&reload=running|question` opens as if the page reloaded while the working
   // chat's turn kept running: its stored copy is the newest, and `question` adds the draft the
   // old page saved.
