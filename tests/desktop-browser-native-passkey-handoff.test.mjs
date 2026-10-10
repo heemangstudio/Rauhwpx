@@ -24,7 +24,7 @@ test('real Electron returns an isolated signed Chrome session to its retained na
       let stdout = ''; let stderr = '';
       child.stdout.on('data', (data) => { stdout += data; });
       child.stderr.on('data', (data) => { stderr += data; });
-      const timer = setTimeout(() => child.kill('SIGTERM'), 45_000);
+      const timer = setTimeout(() => child.kill('SIGKILL'), 45_000);
       child.once('error', (error) => { clearTimeout(timer); reject(error); });
       child.once('exit', (code) => {
         clearTimeout(timer);
@@ -38,6 +38,7 @@ test('real Electron returns an isolated signed Chrome session to its retained na
     assert.equal(report.authenticated, true);
     assert.equal(report.retainedPath, '/research');
     assert.equal(report.unrelatedStoragePreserved, true);
+    assert.equal(report.agentReady, true);
     if (process.env.RHWP_TEST_NATIVE_PASSWORD_HOST) assert.equal(report.protectedAutofill, true);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
