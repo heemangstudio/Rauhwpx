@@ -2262,16 +2262,19 @@ function installDocumentHome(): void {
     },
     createBlank: () => { dispatcher.dispatch('file:new-doc'); },
     createFromTemplate: async (template) => {
+      eventBus.emit('document-open-intent');
       const bridge = templateBridge();
       if (!bridge) throw new Error('에이전트 허브에 연결되어 있지 않습니다.');
       eventBus.emit('create-new-document', { template: await bridge.fetchTemplateContent(template) });
     },
     openFile: () => { dispatcher.dispatch('file:open'); },
     openDocument: async (row) => {
+      eventBus.emit('document-open-intent');
       const live = liveSessionForDocument(row.documentId);
       if (live) {
         await runNavigation(() => attachSession(live));
         documentHome?.hide();
+        showOpenedDocumentInSidebar();
         return 'opened';
       }
       return openRecentDocument(commandServices, row);
@@ -2279,8 +2282,10 @@ function installDocumentHome(): void {
     openWorktree: (tree) => runNavigation(async () => {
       const worktree = await worktreeStore.getWorktree(tree.id);
       if (!worktree) throw new Error('워크트리가 삭제되었습니다.');
+      eventBus.emit('document-open-intent');
       await openWorktreeSession(worktree);
       documentHome?.hide();
+      showOpenedDocumentInSidebar();
     }),
     // 열린 문서는 그 세션의 규칙을, 닫힌 문서는 데스크톱에서만 디스크 이름을 바꾼다.
     canRename: (row) => {
@@ -2786,6 +2791,7 @@ function setupFileInput(): void {
  * 가린 문서에 넣지 않는다.
  */
 async function handleDocumentDrop(e: DragEvent, options: { fromHome?: boolean } = {}): Promise<void> {
+  eventBus.emit('document-open-intent');
   e.preventDefault();
   const file = e.dataTransfer?.files[0];
   if (!file) return;
@@ -3229,6 +3235,18 @@ function applySavedTextMarkSettings(): void {
   applyEditorSettingsPreview(userSettings.getEditorScalarSettings());
 }
 
+// 사용자가 직접 문서를 열면 집중 화면을 접고 사이드바 보기로 연다. 채팅 목록에서 다른
+// 문서의 채팅으로 옮겨 가며 문서가 열릴 때는 집중 화면을 그대로 둔다. 파일 선택 창을
+// 닫고 끝난 의도가 나중의 채팅 이동에 남지 않게 잠깐만 유효하다.
+const DOCUMENT_OPEN_INTENT_MS = 60_000;
+let documentOpenIntentAt = 0;
+eventBus.on('document-open-intent', () => { documentOpenIntentAt = performance.now(); });
+
+function showOpenedDocumentInSidebar(): void {
+  documentOpenIntentAt = 0;
+  for (const chat of allChats()) chat.sidebar.exitFullscreen();
+}
+
 async function initializeDocument(
   docInfo: DocumentInfo,
   options: {
@@ -3293,6 +3311,9 @@ async function initializeDocument(
     toolbar?.initStyleDropdown();
     await updateLoadProgress(94, '문서 검증 및 글꼴 확인 중...');
     documentHome?.hide();
+    if (documentOpenIntentAt && performance.now() - documentOpenIntentAt < DOCUMENT_OPEN_INTENT_MS) {
+      showOpenedDocumentInSidebar();
+    }
 
     // #177: HWPX 비표준 lineseg 감지 (진단 로그).
     // #2527: 자동 보정(reflowLinesegs)이 빈-lineseg 문서에서 글리프 좌표를 붕괴시켜

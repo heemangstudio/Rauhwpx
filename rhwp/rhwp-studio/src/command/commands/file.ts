@@ -1230,13 +1230,17 @@ export const fileCommands: CommandDef[] = [
     shortcutLabel: 'Alt+N',
     canExecute: () => true,
     execute(services) {
+      services.eventBus.emit('document-open-intent');
       services.eventBus.emit('create-new-document');
     },
   },
   {
     id: 'file:open',
     label: '열기',
-    execute: openFileViaPicker,
+    execute(services) {
+      services.eventBus.emit('document-open-intent');
+      return openFileViaPicker(services);
+    },
   },
   {
     id: 'file:import-legacy-history',
@@ -1249,6 +1253,7 @@ export const fileCommands: CommandDef[] = [
     async execute(services, params) {
       const id = typeof params?.id === 'string' ? params.id : undefined;
       if (!id) return;
+      services.eventBus.emit('document-open-intent');
       const recents = await listRecentDocs();
       const entry = recents.find((r) => r.id === id);
       if (!entry) {

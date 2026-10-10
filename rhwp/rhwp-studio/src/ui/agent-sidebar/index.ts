@@ -330,6 +330,8 @@ export interface AgentSidebarHandle {
   /** 이 문서의 채팅을 연다 — 편집기가 이 사이드바를 올린 뒤 부른다. */
   openThreadById(threadId: string): void;
   /** 이 세션에 다음으로 열리는 문서가 그 채팅의 문서면 그 채팅을 잇는다. */
+  /** 사용자가 문서를 열면 집중 화면을 접는다. */
+  exitFullscreen(): void;
   followThreadOnNextDocument(threadId: string): void;
   /**
    * 새 채팅 초안을 집중 모드로 연다. 첫 메시지를 보내기 전까지 스레드도 허브 채팅도
@@ -10166,6 +10168,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
     currentThreadId(): string | null {
       return draftChat || currentThread.messages.length === 0 ? null : currentThread.id;
+    },
+    /** 사용자가 문서를 열면 집중 화면을 접고 문서 옆 사이드바로 돌아온다. */
+    exitFullscreen(): void {
+      if (root.dataset.disposed === 'true' || !fullscreen) return;
+      setFullscreen(false);
     },
     followThreadOnNextDocument(threadId: string): void {
       if (root.dataset.disposed === 'true') return;
