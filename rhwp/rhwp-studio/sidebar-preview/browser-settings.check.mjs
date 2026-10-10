@@ -215,5 +215,62 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   const overflow = await page.$eval('.ag-browser-settings', node => node.scrollWidth > node.clientWidth + 1);
   assert.equal(overflow, false, 'account settings fit the narrow app viewport');
 
+  const nativeChecks = await page.evaluate(async () => {
+    const { createBrowserSettingsPane } = await import('/src/ui/agent-sidebar/browser-settings.ts');
+    let supported = false; let profiles = []; let accounts = []; let fail = false; let imported = 0; let removed = []; let hold = false; let releaseImport;
+    window.rhwpDesktop = { browser: { passwords: {
+      listProfiles: async () => ({ supported, profiles }),
+      list: async () => ({ accounts, secureStorageAvailable: true }),
+      importProfile: async ({ profileId }) => {
+        if (fail) { fail = false; throw new Error('fixture denial'); }
+        if (hold) await new Promise(resolve => { releaseImport = resolve; });
+        imported++; accounts = [{ id: 'local-fixture', origin: 'https://fixture.example', origins: ['https://fixture.example'], username: 'fixture-reader', label: 'Fixture account', source: 'chrome', sourceProfile: profileId, profileId: 'native', hasPassword: true, agentReuseApproved: true, sessionStatus: 'saved', updatedAt: '' }];
+        return { imported: 1, skipped: 2, unsupported: 3 };
+      },
+      remove: async ({ id }) => { removed.push(id); accounts = []; return { removed: true }; },
+    } } };
+    let hubCalls = 0;
+    const pane = createBrowserSettingsPane({ isConnected: () => false, request: async () => { hubCalls++; return {}; }, submit: async () => { throw new Error('unexpected secret submission'); } });
+    document.querySelector('#ag-settings-pane-browser').replaceChildren(pane.element);
+    const settle = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
+    const click = (label) => { const button = [...pane.element.querySelectorAll('button')].find(button => button.textContent.startsWith(label)); if (!button) throw new Error(label); button.click(); };
+    pane.open(); await settle(); click('저장된 비밀번호');
+    const unsupported = !pane.element.querySelector('.ag-browser-import-picker') && pane.element.textContent.includes('Mac에서');
+    supported = true; pane.open(); await settle();
+    const empty = pane.element.textContent.includes('프로필이 없습니다');
+    profiles = [{ id: 'Profile 1', name: 'Fixture profile' }]; click('다시 확인'); await settle();
+    fail = true; click('비밀번호 가져오기'); await settle();
+    const retry = pane.element.querySelector('[role=alert]')?.textContent.includes('다시 시도') && [...pane.element.querySelectorAll('button')].some(button => button.textContent === '비밀번호 가져오기' && !button.disabled);
+    hold = true; click('비밀번호 가져오기'); await settle();
+    const loading = pane.element.querySelector('.ag-browser-local-import[aria-busy=true]') !== null && pane.element.querySelector('.ag-browser-import-picker select').disabled;
+    releaseImport(); await settle();
+    const partial = pane.element.textContent.includes('1개 가져옴 · 2개 건너뜀 · 3개 암호화 방식 지원 안 됨');
+    const metadata = pane.element.textContent.includes('fixture-reader') && pane.element.textContent.includes('Profile 1');
+    click('비밀번호 삭제'); await settle();
+    const deleted = !pane.element.querySelector('[data-account-id="local-fixture"]');
+    pane.dispose(); delete window.rhwpDesktop;
+    return { unsupported, empty, retry: Boolean(retry), partial, loading, metadata, imported, removed, deleted, hubCalls };
+  });
+  assert.deepEqual(nativeChecks, { unsupported: true, empty: true, retry: true, partial: true, loading: true, metadata: true, imported: 1, removed: ['local-fixture'], deleted: true, hubCalls: 0 }, 'local password controls import metadata, recover from denial and delete through native API while offline');
+
+  const passkeyChecks = await page.evaluate(async () => {
+    const { createBrowserSettingsPane } = await import('/src/ui/agent-sidebar/browser-settings.ts');
+    let supported = false; const signIns = [];
+    const pane = createBrowserSettingsPane({ isConnected: () => true, submit: async () => ({}), request: async (action, args) => {
+      if (action === 'accounts.list') return { accounts: [{ id: 'passkey-fixture', origin: 'https://fixture.example', label: 'Fixture', hasPassword: false, agentReuseApproved: true, sessionStatus: 'authenticated' }], secureStorageAvailable: true };
+      if (action === 'status') return { runtime: { passkeys: { supported, provider: 'Google Chrome', requiresUserVerification: true } } };
+      if (action === 'sign-in') signIns.push(args);
+      return {};
+    } });
+    document.querySelector('#ag-settings-pane-browser').replaceChildren(pane.element);
+    const settle = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
+    pane.open(); await settle();
+    const unavailable = ![...pane.element.querySelectorAll('button')].some(button => button.textContent === 'Chrome에서 Mac 패스키 사용');
+    supported = true; pane.open(); await settle();
+    [...pane.element.querySelectorAll('button')].find(button => button.textContent === 'Chrome에서 Mac 패스키 사용').click(); await settle();
+    pane.dispose(); return { unavailable, signIns };
+  });
+  assert.deepEqual(passkeyChecks, { unavailable: true, signIns: [{ accountId: 'passkey-fixture', url: 'https://fixture.example', authenticationMethod: 'mac-passkey' }] }, 'Mac passkey action appears only when installed Chrome handoff is available');
+
 
 }

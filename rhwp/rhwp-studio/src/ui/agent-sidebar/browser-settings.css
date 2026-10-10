@@ -65,3 +65,7 @@
 .ag-browser-execution { border-top: 1px solid var(--n-hairline); padding-top: 14px; }
 .ag-browser-execution summary { cursor: pointer; font-weight: 500; padding: 4px 0; }
 .ag-browser-execution[open] > :not(summary) { margin-top: 10px; }
+.ag-browser-local-import { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 12px 0; border-top: 1px solid var(--n-hairline); }
+.ag-browser-local-import > :is(h3, p) { flex-basis: 100%; margin: 0; }
+.ag-browser-import-picker { display: flex; flex-direction: column; gap: 4px; flex: 1 1 160px; min-width: 0; }
+.ag-browser-import-picker select { width: 100%; }

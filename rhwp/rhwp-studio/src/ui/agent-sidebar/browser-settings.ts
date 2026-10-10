@@ -1,5 +1,6 @@
 import './browser-settings.css';
 import { confirmSheet } from './sheet.ts';
+import { localPasswordsApi, type LocalPasswordAccount } from './browser-local-passwords.ts';
 
 export type BrowserSettingsRequest = (action: string, args?: Record<string, unknown>) => Promise<unknown>;
 interface Account { profileId?: string; id: string; origin: string; origins?: string[]; label: string; stableIdentity?: string; hasPassword: boolean; agentReuseApproved: boolean; sessionStatus: string; }
@@ -103,6 +104,10 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   let accountKind = 'sessions'; let accountSearch = ''; let providerFilter = '';
   let active = 'accounts'; let disposed = false; let generation = 0; let busy = false; let resetFailed = false; let resetConfirming = false;
   let accounts: Account[] = []; let secureStorage = false; let policy: Policy | null = null; let configuration: Record<string, unknown> = {}; let status: Record<string, unknown> = {};
+  let localAccounts: LocalPasswordAccount[] = []; let profiles: { id: string; name: string }[] = [];
+  let profileId = ''; let localSupported = false; let localBusy = false; let localFailed = false; let localMessage = '';
+  const localApi = localPasswordsApi();
+  function allAccounts(): Account[] { return [...accounts, ...localAccounts.map(account => ({ ...account, stableIdentity: account.username }))]; }
   let form: ReturnType<typeof createBrowserAccountForm> | null = null;
   const tabs = new Map<string, HTMLButtonElement>();
   for (const [id, label] of [['accounts', '계정'], ['permissions', '승인된 권한'], ['configuration', '구성']]) {
@@ -140,8 +145,8 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       if (!disposed) { await load(); resetFailed = true; const code = (error as { code?: string })?.code; message.textContent = code === 'BROWSER_RESET_ACTIVE' ? '다른 창에서 브라우저 데이터를 정리하는 중입니다. 잠시 뒤 다시 시도하세요.' : code === 'BROWSER_RESET_UNAVAILABLE' ? '브라우저 정리 서비스를 사용할 수 없습니다. 허브 연결을 확인하고 다시 시도하세요.' : '브라우저 계정과 기록을 모두 삭제하지 못했습니다. 다시 시도하세요.'; }
     } finally { busy = false; if (!disposed) render(); }
   }
-  async function signIn(account: Account) {
-    await mutate('sign-in', { accountId: account.id, url: account.origin });
+  async function signIn(account: Account, authenticationMethod?: 'mac-passkey') {
+    await mutate('sign-in', { accountId: account.id, url: account.origin, ...(authenticationMethod ? { authenticationMethod } : {}) });
     if (!message.textContent) message.textContent = '별도로 열린 Chromium 창에서 로그인과 추가 인증을 마친 뒤 이 계정의 로그인 확인을 누르세요.';
   }
   function accountForm(account?: Partial<Account>, sessionOnly = false, openSignIn = false) {
@@ -160,30 +165,31 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   function render() {
     if (disposed) return;
     for (const [id, tab] of tabs) { tab.setAttribute('aria-selected', String(id === active)); tab.tabIndex = id === active ? 0 : -1; }
-    refresh.disabled = busy || !options.isConnected(); body.replaceChildren(); body.setAttribute('role', 'tabpanel'); body.setAttribute('aria-labelledby', `${instanceId}-tab-${active}`);
-    if (!options.isConnected()) { body.append(node('p', 'ag-browser-empty', '허브에 연결하면 브라우저 설정을 관리할 수 있습니다.')); return; }
+    refresh.disabled = busy || localBusy || (!options.isConnected() && !localApi); body.replaceChildren(); body.setAttribute('role', 'tabpanel'); body.setAttribute('aria-labelledby', `${instanceId}-tab-${active}`);
+    if (!options.isConnected() && !(active === 'accounts' && localApi)) { body.append(node('p', 'ag-browser-empty', '허브에 연결하면 브라우저 설정을 관리할 수 있습니다.')); return; }
     if (active === 'accounts') {
       const toolbar = node('div', 'ag-browser-account-toolbar'); body.append(toolbar);
       const search = node('input', 'ag-settings-input ag-browser-search'); search.type = 'search'; search.placeholder = '계정 검색'; search.value = accountSearch; search.setAttribute('aria-label', '계정 검색');
       search.addEventListener('input', () => { clearForm(); accountSearch = search.value; renderAccounts(); });
       const filter = node('select', 'ag-settings-select'); filter.setAttribute('aria-label', '계정 제공자');
       const all = node('option', '', '모든 제공자'); all.value = ''; filter.append(all);
-      for (const provider of [...new Set(accounts.map(accountProvider))].sort()) { const option = node('option', '', provider); option.value = provider; filter.append(option); }
+      for (const provider of [...new Set(allAccounts().map(accountProvider))].sort()) { const option = node('option', '', provider); option.value = provider; filter.append(option); }
       filter.value = providerFilter; filter.addEventListener('change', () => { clearForm(); providerFilter = filter.value; renderAccounts(); });
-      const connect = button('계정 연결', () => accountForm(undefined, true, true)); connect.disabled = busy;
-      const add = button('비밀번호 추가', () => accountForm()); add.title = '비밀번호 저장'; add.disabled = busy || !secureStorage;
+      const connect = button('계정 연결', () => accountForm(undefined, true, true)); connect.disabled = busy || !options.isConnected();
+      const add = button('비밀번호 추가', () => accountForm()); add.title = '비밀번호 저장'; add.disabled = busy || !secureStorage || !options.isConnected();
       toolbar.append(search, filter, connect, add);
-      if (!secureStorage) body.append(node('p', 'ag-browser-empty', '보안 저장소를 사용할 수 없어 비밀번호를 저장할 수 없습니다.'));
+      if (!secureStorage && options.isConnected()) body.append(node('p', 'ag-browser-empty', '보안 저장소를 사용할 수 없어 비밀번호를 저장할 수 없습니다.'));
       const kindBar = node('div', 'ag-browser-account-kinds'); kindBar.setAttribute('role', 'group'); kindBar.setAttribute('aria-label', '계정 종류');
       for (const [kind, label] of [['sessions', '연결된 계정'], ['passwords', '저장된 비밀번호']]) {
-        const count = accounts.filter(account => kind === 'sessions' ? account.sessionStatus !== 'saved' : account.hasPassword).length;
+        const count = allAccounts().filter(account => kind === 'sessions' ? account.sessionStatus !== 'saved' : account.hasPassword).length;
         const choose = button(`${label} ${count}`, () => { clearForm(); accountKind = kind!; selectedAccountId = null; render(); }); choose.setAttribute('aria-pressed', String(accountKind === kind)); kindBar.append(choose);
       }
       body.append(kindBar);
+      if (accountKind === 'passwords') renderLocalImport();
       const workspace = node('div', 'ag-browser-account-workspace'); body.append(workspace);
       function renderAccounts() {
         workspace.replaceChildren();
-        const visible = accounts.filter(account => (accountKind === 'sessions' ? account.sessionStatus !== 'saved' : account.hasPassword)
+        const visible = allAccounts().filter(account => (accountKind === 'sessions' ? account.sessionStatus !== 'saved' : account.hasPassword)
           && (!providerFilter || accountProvider(account) === providerFilter)
           && [account.label, account.origin, visibleIdentity(account), accountProvider(account)].join(' ').toLocaleLowerCase().includes(accountSearch.toLocaleLowerCase()));
         if (!visible.some(account => account.id === selectedAccountId)) selectedAccountId = visible[0]?.id ?? null;
@@ -206,9 +212,23 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
         if ((account.origins?.length ?? 0) > 1) {
           const sites = node('details', 'ag-browser-account-sites'); sites.append(node('summary', '', `사용 가능한 사이트 ${account.origins!.length}`), node('p', 'ag-browser-empty', account.origins!.join(' · '))); details.append(sites);
         }
+        if (account.profileId === 'native' && localApi) {
+          const local = localAccounts.find(value => value.id === account.id);
+          row('가져온 프로필', local?.sourceProfile || 'Chrome', details);
+          const actions = node('div', 'ag-browser-detail-actions'); details.append(actions);
+          details.append(node('p', 'ag-browser-empty', '로그인 페이지의 입력란을 선택하면 저장된 계정을 고를 수 있습니다.'));
+          const remove = button('비밀번호 삭제', () => void localAction(async () => { await localApi.remove({ id: account.id }); await loadLocal(); return '가져온 비밀번호를 삭제했습니다.'; }));
+          remove.disabled = localBusy; remove.classList.add('ag-browser-reset'); actions.append(remove);
+          return;
+        }
         const runtime = (status.runtime ?? {}) as Record<string, unknown>; const signInState = runtime.signIn as { accountId?: string } | null | undefined;
         const loginActions = node('div', 'ag-browser-detail-actions'); details.append(loginActions);
         const login = button('로그인 열기', () => void signIn(account)); login.disabled = busy || Boolean(signInState) || !account.agentReuseApproved || (account.profileId !== undefined && account.profileId !== 'default'); loginActions.append(login);
+        const passkeys = runtime.passkeys as { supported?: boolean; reason?: string } | undefined;
+        if (passkeys?.supported) {
+          const passkey = button('Chrome에서 Mac 패스키 사용', () => void signIn(account, 'mac-passkey'));
+          passkey.disabled = login.disabled; loginActions.append(passkey);
+        } else if (passkeys) details.append(node('p', 'ag-browser-empty', 'Mac 패스키를 사용하려면 macOS 13.5 이상과 설치된 Google Chrome이 필요합니다.'));
         const confirm = button('로그인 확인', () => void mutate('confirm-sign-in', { accountId: account.id })); confirm.disabled = busy || Boolean(signInState?.accountId && signInState.accountId !== account.id); loginActions.append(confirm);
         if (signInState?.accountId === account.id) details.append(node('p', 'ag-browser-empty', '별도 창에서 로그인을 마친 뒤 로그인 확인을 누르세요.'));
         const passwordActions = row('비밀번호', account.hasPassword ? '저장됨' : '없음', details);
@@ -275,8 +295,42 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
 
     }
   }
+  function renderLocalImport() {
+    const root = node('section', 'ag-browser-local-import'); body.append(root);
+    root.append(node('h3', 'ag-settings-section-title', 'Chrome에서 가져오기'));
+    if (!localApi) { root.append(node('p', 'ag-browser-empty', '데스크톱 앱에서 Chrome 비밀번호를 가져올 수 있습니다.')); return; }
+    if (localBusy) root.setAttribute('aria-busy', 'true');
+    if (localSupported && profiles.length) {
+      const label = node('label', 'ag-browser-import-picker'); label.append(node('span', 'ag-settings-field-label', 'Chrome 프로필'));
+      const select = node('select', 'ag-settings-select');
+      for (const profile of profiles) { const option = node('option', '', profile.name); option.value = profile.id; select.append(option); }
+      select.value = profileId; select.disabled = localBusy; select.addEventListener('change', () => { profileId = select.value; }); label.append(select); root.append(label);
+      const importButton = button(localBusy ? '가져오는 중…' : '비밀번호 가져오기', () => void localAction(async () => {
+        const result = await localApi.importProfile({ profileId }); await loadLocal();
+        return `${result.imported}개 가져옴 · ${result.skipped}개 건너뜀${result.unsupported ? ` · ${result.unsupported}개 암호화 방식 지원 안 됨` : ''}`;
+      })); importButton.disabled = localBusy; root.append(importButton);
+      root.append(node('p', 'ag-browser-empty', 'Mac 키체인 접근을 허용하면 이 앱에 암호화해 저장합니다.'));
+    } else if (!localBusy && !localFailed) root.append(node('p', 'ag-browser-empty', localSupported ? '가져올 Chrome 프로필이 없습니다.' : 'Chrome 비밀번호 가져오기는 Mac에서 사용할 수 있습니다.'));
+    const feedback = node('p', 'ag-browser-message', localMessage); feedback.setAttribute('role', localFailed ? 'alert' : 'status'); root.append(feedback);
+    if (localFailed || (localSupported && !profiles.length)) { const retry = button('다시 확인', () => void localAction(async () => { await loadLocal(); return ''; })); retry.disabled = localBusy; root.append(retry); }
+  }
+  async function loadLocal() {
+    if (!localApi) return;
+    const [available, saved] = await Promise.all([localApi.listProfiles(), localApi.list()]);
+    if (disposed) return;
+    profiles = available.profiles; localSupported = available.supported; localAccounts = saved.accounts;
+    if (!profiles.some(profile => profile.id === profileId)) profileId = profiles[0]?.id ?? '';
+  }
+  async function localAction(action: () => Promise<string>) {
+    if (disposed || localBusy) return; localBusy = true; localFailed = false; localMessage = '처리 중…'; render();
+    try { const result = await action(); if (!disposed) localMessage = result; }
+    catch { if (!disposed) { localFailed = true; localMessage = '완료하지 못했습니다. Chrome과 키체인 접근 권한을 확인하고 다시 시도하세요.'; } }
+    finally { localBusy = false; if (!disposed) render(); }
+  }
   async function load() {
-    if (disposed || !options.isConnected()) { render(); return; } const current = ++generation; message.textContent = '불러오는 중…';
+    if (disposed) return;
+    if (localApi) await localAction(async () => { await loadLocal(); return ''; });
+    if (!options.isConnected()) { render(); return; } const current = ++generation; message.textContent = '불러오는 중…';
     const results = await Promise.allSettled([options.request('accounts.list'), options.request('policy.list'), options.request('configuration.get'), options.request('status')]);
     if (disposed || generation !== current) return;
     const [a, p, c, s] = results;
