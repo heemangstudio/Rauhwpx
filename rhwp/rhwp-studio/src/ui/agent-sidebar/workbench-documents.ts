@@ -1,10 +1,11 @@
 /** 자료별 미리보기와 초안은 탭이 닫힐 때까지 보존한다. 저장하는 것은 항목 id와 탭 순서뿐이다. */
 import './workbench-documents.css';
 import type { ProjectClient } from '../../agent/project-service.ts';
-import type { ProjectFileItem, ProjectItem, ProjectSnapshot } from '../../agent/types.ts';
+import type { ProjectFileItem, ProjectItem, ProjectNoteItem, ProjectSnapshot } from '../../agent/types.ts';
 import { loadPdfjs, pdfDocumentParams } from '../../agent/pdf-render.ts';
 import { createProjectPreview, type ProjectPreview, type ProjectPreviewRequest } from './project/project-preview.ts';
 import { button, el, itemIconName, projectIcon } from './project/project-ui.ts';
+import { decodeTextBytes, prettyJson, textFormatOf, type TextFormat } from './project/text-decode.ts';
 
 export interface WorkbenchDocumentsDeps {
   client: ProjectClient | null;
@@ -39,6 +40,49 @@ interface ResourceTab {
 }
 
 const MAX_TABS = 8;
+/** 표지에 쓰는 텍스트 파일 앞부분. */
+const EXCERPT_BYTES = 16_384;
+const EXCERPT_CHARS = 1_400;
+const EXCERPT_LINES = 48;
+
+/** 표지를 그릴 수 있는 자료. 알 수 없는 형식과 글자를 못 뽑은 문서는 표지 자리만 둔다. */
+function hasCover(item: ProjectFileItem | ProjectNoteItem): boolean {
+  if (item.kind === 'note') return true;
+  if (item.status === 'processing' || item.fileKind === 'other') return false;
+  if (item.fileKind === 'pdf' || item.fileKind === 'image' || item.fileKind === 'text') return true;
+  return item.status === 'ready';
+}
+
+/** Markdown 기호를 걷어 낸 한 줄. */
+function plainMarkdownLine(line: string): string {
+  return line
+    .replace(/^\s*[-*+]\s+/, '• ')
+    .replace(/!?\[\[([^\]|]*)(?:\|([^\]]*))?\]\]/g, (_, id: string, label?: string) => label || id)
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__|`)/g, '')
+    .replace(/^>\s?/, '');
+}
+
+/** 첫 줄들을 종이 한 장처럼 그린 표지. 실제 크기로 짜고 CSS 로 줄인다. */
+function textSheet(source: string, format: TextFormat): HTMLElement | null {
+  const text = (format === 'json' ? prettyJson(source) : source).replace(/\r\n?/g, '\n').slice(0, EXCERPT_CHARS);
+  const lines = text.split('\n').slice(0, EXCERPT_LINES);
+  if (!lines.some(line => line.trim())) return null;
+  const sheet = el('span', `ag-wdocs-sheet${format === 'json' ? ' ag-wdocs-sheet-code' : ''}`);
+  const page = el('span', 'ag-wdocs-sheet-page');
+  let fence = false;
+  for (const raw of lines) {
+    if (format === 'markdown' && /^\s*(```|~~~)/.test(raw)) { fence = !fence; continue; }
+    const heading = format === 'markdown' && !fence ? /^\s{0,3}(#{1,6})\s+(.*)$/.exec(raw) : null;
+    const line = heading
+      ? el('span', `ag-wdocs-sheet-line ag-wdocs-sheet-h${Math.min(heading[1].length, 3)}`, plainMarkdownLine(heading[2]))
+      : el('span', 'ag-wdocs-sheet-line', format === 'markdown' && !fence ? plainMarkdownLine(raw) : raw);
+    if (!line.textContent?.trim()) line.classList.add('ag-wdocs-sheet-gap');
+    page.append(line);
+  }
+  sheet.append(page);
+  return sheet;
+}
 const LIBRARY = 'library';
 let nextInstance = 0;
 
@@ -143,18 +187,25 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
     }
   }
 
-  /** 보이는 표지 두 장까지만 연다. 탭 전환·프로젝트 변경은 PDF 작업도 닫는다. */
-  function thumbnail(frame: HTMLElement, item: ProjectFileItem): void {
+  /** 보이는 표지 두 장까지만 연다. 탭 전환·프로젝트 변경은 PDF 작업도 닫는다. 글자 자료는 앞부분을 종이에 옮긴다. */
+  function thumbnail(frame: HTMLElement, item: ProjectFileItem | ProjectNoteItem): void {
     const token = thumbnailGeneration;
     const owner = client;
     const scope = projectId;
     const valid = () => !disposed && visible && active === LIBRARY && token === thumbnailGeneration
-      && owner === client && scope === projectId && frame.isConnected && find(item.id)?.kind === 'file';
+      && owner === client && scope === projectId && frame.isConnected && find(item.id)?.kind === item.kind;
     const render = async () => {
       if (!owner || !scope || !valid()) return;
       let close: (() => void) | null = null;
       let canvas: HTMLCanvasElement | null = null;
       try {
+        if (item.kind === 'note' || (item.fileKind !== 'pdf' && item.fileKind !== 'image')) {
+          const excerpt = await coverText(owner, scope, item);
+          if (excerpt === null || !valid()) return;
+          const sheet = textSheet(excerpt, item.kind === 'note' ? 'markdown' : item.fileKind === 'text' ? textFormatOf(item) : 'plain');
+          if (sheet) frame.replaceChildren(sheet);
+          return;
+        }
         const blob = await owner.service.fileBlob(scope, item.id);
         if (!valid()) return;
         if (item.fileKind === 'image') {
@@ -214,6 +265,18 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
     observer.observe(frame);
   }
 
+  /** 표지에 쓸 앞부분 글자. 텍스트 파일은 원본 바이트를 직접 풀어 인코딩을 가린다. */
+  async function coverText(owner: ProjectClient, scope: string, item: ProjectFileItem | ProjectNoteItem): Promise<string | null> {
+    if (item.kind === 'note') return (await owner.service.note(scope, item.id)).body;
+    if (item.fileKind === 'text') {
+      const blob = await owner.service.fileBlob(scope, item.id);
+      const whole = blob.size <= EXCERPT_BYTES;
+      const bytes = new Uint8Array(await (whole ? blob : blob.slice(0, EXCERPT_BYTES)).arrayBuffer());
+      return decodeTextBytes(bytes, { partial: !whole });
+    }
+    return (await owner.service.fileText(scope, item.id, 1)).text;
+  }
+
   function renderLibrary(): void {
     cleanupThumbnails();
     const all = project?.items.filter(item => !item.trashedAt && item.kind !== 'clip') ?? [];
@@ -246,8 +309,7 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
       card.append(cover, text);
       card.addEventListener('click', () => { void open({ itemId: item.id }); });
       grid.append(card);
-      if (visible && active === LIBRARY && item.kind === 'file' && item.status !== 'processing'
-        && (item.fileKind === 'pdf' || item.fileKind === 'image')) thumbnail(cover, item);
+      if (visible && active === LIBRARY && item.kind !== 'clip' && hasCover(item)) thumbnail(cover, item);
     }
   }
 

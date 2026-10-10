@@ -194,7 +194,7 @@
   background: var(--ag-raised);
   color: var(--ag-text);
   font-family: var(--ag-mono);
-  font-size: var(--ag-fs-secondary);
+  font-size: var(--ag-fs-mono);
   line-height: var(--ag-lh-body);
   outline: none;
   resize: none;
@@ -248,4 +248,11 @@
 .ag-pp-clip-tool.ag-active:hover:not(:disabled) {
   background: var(--ag-selected);
   color: var(--ag-text);
+}
+
+/* JSON 같은 구조 텍스트는 고정폭으로 들여쓰기를 살린다. */
+.ag-pp-reader-code {
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-mono);
+  word-break: normal;
 }

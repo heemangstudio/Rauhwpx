@@ -7,7 +7,8 @@
  * - PDF·이미지 위에는 영역 조각 층(clip-layer.ts)을 덮는다. 조각을 열면 원본의 그 쪽으로 가서
  *   테두리로 보여 주고, 영역 도구로 새 조각을 그린다.
  * - 노트: 채팅과 같은 Markdown 렌더러로 그리고, 바로 고쳐 `note` 연산으로 저장한다.
- * - 그 밖의 문서: 허브가 뽑은 글자를 읽기 보기로 보여 주고 조각을 강조한다.
+ * - 그 밖의 문서: 허브가 뽑은 글자를 읽기 보기로 보여 주고 조각을 강조한다. Markdown 파일은
+ *   강조할 조각이 없으면 노트처럼 그리고, JSON 은 들여 쓴다.
  * 어떤 경우에도 원문 HTML 을 해석하지 않는다.
  */
 
@@ -33,6 +34,7 @@ import {
 } from '../wikilinks.ts';
 import { button, el, itemIconName, projectIcon } from './project-ui.ts';
 import { locateInText } from './passage-locate.ts';
+import { decodeTextBytes, prettyJson, textFormatOf } from './text-decode.ts';
 import { createPdfViewer, type PdfViewer } from './pdf-viewer.ts';
 
 export interface ProjectPreviewRequest {
@@ -327,19 +329,46 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   async function showReader(projectId: string, item: ProjectFileItem, anchor: WikilinkAnchor | null, quote: string | null, token: number): Promise<void> {
     root.dataset.kind = 'reader';
     busy();
-    const chunk = await chunkFor(projectId, item.id, anchor);
-    const page = chunk?.page ?? (anchor?.kind === 'page' ? anchor.n : undefined);
-    const text = await deps.service.fileText(projectId, item.id, page ?? undefined);
+    // 텍스트 파일은 허브가 못 읽은 인코딩(EUC-KR, UTF-16)도 원본 바이트에서 직접 푼다.
+    const plainFile = item.fileKind === 'text';
+    let chunk: ProjectChunk | null = null;
+    let text: { page: number | null; text: string } | null = null;
+    if (item.status === 'ready') {
+      try {
+        chunk = await chunkFor(projectId, item.id, anchor);
+        const page = chunk?.page ?? (anchor?.kind === 'page' ? anchor.n : undefined);
+        text = await deps.service.fileText(projectId, item.id, page ?? undefined);
+      } catch (error) {
+        if (!plainFile) throw error;
+      }
+    }
+    if (!text && plainFile) {
+      const decoded = decodeTextBytes(new Uint8Array(await (await deps.service.fileBlob(projectId, item.id)).arrayBuffer()));
+      if (decoded !== null) text = { page: null, text: decoded.replace(/\r\n?/g, '\n') };
+    }
     if (token !== generation) return;
+    if (!text) {
+      message('글자를 읽지 못한 파일입니다.');
+      return;
+    }
     if (text.page) meta.textContent = `p.${text.page}`;
-    const reader = el('div', 'ag-pp-reader');
     const match = chunk || quote ? locateInText(text.text, { chunk, quote }) : null;
+    const format = plainFile ? textFormatOf(item) : 'plain';
+    if (!match && format === 'markdown') {
+      const view = el('div', 'ag-pp-note ag-msg ag-msg-assistant');
+      renderChatMarkdown(view, text.text, { citations });
+      body.replaceChildren(view);
+      body.removeAttribute('aria-busy');
+      return;
+    }
+    const reader = el('div', 'ag-pp-reader');
     if (match) {
       const mark = el('mark', 'ag-pp-hit', text.text.slice(match.start, match.end));
       reader.append(document.createTextNode(text.text.slice(0, match.start)), mark, document.createTextNode(text.text.slice(match.end)));
     } else {
-      reader.textContent = text.text;
+      reader.textContent = format === 'json' ? prettyJson(text.text) : text.text;
     }
+    if (format === 'json') reader.classList.add('ag-pp-reader-code');
     body.replaceChildren(reader);
     body.removeAttribute('aria-busy');
     const hit = reader.querySelector<HTMLElement>('.ag-pp-hit');
@@ -456,7 +485,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       }
       if (item.fileKind === 'pdf') await showPdf(project.id, item, anchor, quote, token, clip);
       else if (item.fileKind === 'image') await showImage(project.id, item, token, clip);
-      else if (item.status === 'failed') message('글자를 읽지 못한 파일입니다.');
+      else if (item.status === 'failed' && item.fileKind !== 'text') message('글자를 읽지 못한 파일입니다.');
       else await showReader(project.id, item, anchor, quote, token);
     } catch (error) {
       if (token !== generation) return;

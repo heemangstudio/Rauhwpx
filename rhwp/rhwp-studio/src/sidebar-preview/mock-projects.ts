@@ -95,7 +95,39 @@ const FILES: FileSeed[] = [
   { id: 'fp5b6e', title: '광역 돌봄 콜센터 운영 매뉴얼.hwp', column: 'hold', kind: 'hwp', pages: 40, size: 760_000 },
   { id: 'fq6c7f', title: '재가급여 이용 통계 2025.xlsx', column: 'key', kind: 'xlsx', tags: ['통계'], size: 410_000 },
   { id: 'fr7d2g', title: '네덜란드 뷔르트조르흐 모델 소개', column: 'review', kind: 'html', tags: ['해외 사례'], size: 52_000, web: 'https://www.buurtzorg.com/' },
+  { id: 'fs2e3h', title: '방문간호 인터뷰 정리.md', column: 'review', kind: 'text', tags: ['인터뷰'], size: 640 },
+  { id: 'ft3f4i', title: '동 주민센터 공문.txt', column: 'inbox', kind: 'text', size: 171, failed: true },
+  { id: 'fu4g5j', title: '설문 코드북.json', column: 'hold', kind: 'text', tags: ['통계'], size: 420 },
 ];
+
+/** 텍스트 파일 원본. 공문은 허브가 읽지 못하는 EUC-KR 이다. */
+const TEXT_SOURCES: Record<string, string | Uint8Array<ArrayBuffer>> = {
+  fs2e3h: [
+    '# 방문간호 이용자 인터뷰 정리',
+    '',
+    '퇴원 직후 2주 동안 겪은 공백을 중심으로 세 분의 이야기를 묶었습니다.',
+    '',
+    '## 공통으로 나온 어려움',
+    '',
+    '- **퇴원 당일** 집에 돌아와도 방문 일정이 잡혀 있지 않았다.',
+    '- 약 복용 안내를 [[fa2k7q#c12|실태조사]]와 다르게 이해하고 있었다.',
+    '- 보호자가 낮에 없는 가구는 식사를 거르는 날이 많았다.',
+    '',
+    '## 다음에 확인할 것',
+    '',
+    '1. 퇴원 연계 담당자가 누구인지',
+    '2. 첫 방문까지 걸린 날짜',
+  ].join('\n'),
+  ft3f4i: Uint8Array.from(('b0fcb3bb20c0e7b0a120beeeb8a3bdc520b9e6b9ae20c0cfc1a420baafb0e620bec8b3bb0a0abcf6bdc53a20b0a220b5bf20'
+    + 'c1d6b9cebcbec5cd0ab9dfbdc53a20b5b9babdc1a4c3a5b0fa0a0a312e2037bff9bacec5cd20b9e6b9aeb0a3c8a320c0cfc1'
+    + 'a4c0cc20c1d62032c8b8b7ce20b9d9b2f2b4cfb4d92e0a322e20baafb0e6b5c820c0cfc1a4c7a5b4c220bad9c0d320c6c4c0'
+    + 'cfc0bb20c8aec0cec7d820c1d6bdcabdc3bfc02e0a').match(/../g)!.map((byte) => parseInt(byte, 16))),
+  fu4g5j: JSON.stringify({ survey: '2026 재가돌봄 이용자 설문', version: 3, items: [
+    { code: 'Q1', label: '최근 퇴원 여부', values: { 1: '예', 2: '아니요' } },
+    { code: 'Q2', label: '첫 방문까지 걸린 날짜', unit: '일' },
+    { code: 'Q3', label: '가장 필요했던 도움', values: { 1: '식사', 2: '복약', 3: '이동', 4: '말벗' } },
+  ] }),
+};
 
 const NOTES: NoteSeed[] = [
   { id: 'na3e4h', title: '핵심 주장 세 줄', column: 'key', tags: ['예산'], pinned: true, summary: '퇴원 후 2주 공백을 줄이는 것이 첫 과제. 근거는 실태조사 7장과 일본 사례.' },
@@ -175,7 +207,8 @@ export function sampleProject(now = Date.now()): ProjectSnapshot {
       addedBy: seed.agent ? { kind: 'agent', agent: 'Claude' } : { kind: 'user' },
       fileId: `ref-${seed.id}`,
       scope: 'project',
-      originalName: seed.web ? `${seed.title}.html` : `${seed.title.replace(/\.[a-z]+$/, '')}.${EXTENSION[seed.kind]}`,
+      originalName: seed.web ? `${seed.title}.html`
+        : seed.kind === 'text' && /\.[a-z]+$/.test(seed.title) ? seed.title : `${seed.title.replace(/\.[a-z]+$/, '')}.${EXTENSION[seed.kind]}`,
       mimeType: MIME[seed.kind],
       size: seed.size ?? 100_000,
       fileKind: seed.kind,
@@ -546,7 +579,8 @@ export function createPreviewProjects(options: PreviewProjectsOptions = {}): Pre
     },
     async fileBlob(projectId, itemId) {
       if (citationIds.has(itemId)) return citationService.fileBlob(projectId, itemId);
-      return wait(new Blob(['미리보기 픽스처'], { type: 'text/plain' }));
+      const source = TEXT_SOURCES[itemId];
+      return wait(new Blob([source ?? '미리보기 픽스처'], { type: 'text/plain' }));
     },
     async chunk(projectId, itemId, chunkId) {
       if (citationIds.has(itemId)) return citationService.chunk(projectId, itemId, chunkId);
@@ -555,6 +589,9 @@ export function createPreviewProjects(options: PreviewProjectsOptions = {}): Pre
     async fileText(projectId, itemId, page) {
       if (citationIds.has(itemId)) return citationService.fileText(projectId, itemId, page);
       const item = project.items.find((entry) => entry.id === itemId);
+      const source = TEXT_SOURCES[itemId];
+      if (source instanceof Uint8Array) throw new ProjectRequestError('REFERENCE_ENCODING_UNSUPPORTED', '글자를 읽지 못한 파일입니다.', 422);
+      if (typeof source === 'string') return wait({ page: null, text: source, chunks: [{ id: 'c0', start: 0, end: source.length }] });
       return wait({ page: page ?? 1, text: item?.summary || '미리보기 픽스처 본문', chunks: [{ id: 'c0', start: 0, end: 20 }] });
     },
     async note(projectId, noteId) {
