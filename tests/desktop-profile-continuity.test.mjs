@@ -36,6 +36,7 @@ const plainWrite = (file, bytes) => write(file, bytes);
 
 const safeStorage = {
   async isAsyncEncryptionAvailable() { return true; },
+  getSelectedStorageBackend() { return 'gnome_libsecret'; },
   async encryptStringAsync(value) { return Buffer.from(`protected:${value}`); },
   async decryptStringAsync(value) {
     return { shouldReEncrypt: false, result: value.toString().replace(/^protected:/, '') };
