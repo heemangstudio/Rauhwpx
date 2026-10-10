@@ -148,6 +148,9 @@ const REQUESTED_PORT = Number(process.env.RHWP_AGENT_PORT ?? 5175);
 const PRODUCTION = process.env.NODE_ENV === 'production' || process.env.RHWP_AGENT_MODE === 'production';
 const { token: TOKEN, development: DEVELOPMENT_AUTH, launchId: LAUNCH_ID } = resolveHubIdentity();
 const PROTOCOL_VERSION = 5;
+// 허브 프로세스 하나의 id. launchId 는 데스크톱 앱 실행 id 라 앱이 같은 실행 안에서 허브를 다시
+// 띄우면 그대로다 — Studio 는 이 값으로 허브 재시작과 새로고침을 가른다(welcome.hubInstanceId).
+const HUB_INSTANCE_ID = crypto.randomUUID();
 const HUB_NAME = 'rhwp-agent';
 const STARTED_AT = Date.now();
 // The bundle is discovery-only. Every per-window cwd, home, download, and
@@ -6023,6 +6026,7 @@ httpServer.on('upgrade', (req, socket, head) => {
         type: 'welcome',
         protocol: PROTOCOL_VERSION,
         launchId: LAUNCH_ID,
+        hubInstanceId: HUB_INSTANCE_ID,
         hubSessionId: record.sessionId,
         session: sessionInfo(record),
       });
@@ -6282,6 +6286,9 @@ function prepareShutdown(signal) {
     if (harnessUpdateTimer) clearTimeout(harnessUpdateTimer);
     if (ownerWatchdog) clearInterval(ownerWatchdog);
     log(`shutting down (${signal})`);
+    // 세션을 정리하면 도는 턴마다 turn-end 가 나간다. 그 끝이 프로바이더 실패가 아니라 허브가 내려가며
+    // 끊은 턴임을 Studio 가 알도록 먼저 알린다(S3 의 허브 재시작 줄). 옛 Studio 는 모르는 프레임을 무시한다.
+    for (const sock of studioWss.clients) sendJson(sock, { v: 1, type: 'hub-shutdown' });
     const cleanupProven = await sessions.disposeAll(
       (record) => disposeRecord(record, 'hub shutdown'),
     );
