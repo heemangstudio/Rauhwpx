@@ -41,10 +41,13 @@
 /* 보조 작업은 페이지 크기를 유지하는 작은 도구 팝오버로 연다. */
 .ag-browser-annotation,.ag-browser-downloads { position: absolute; z-index: 12; top: var(--browser-popover-top, 44px); right: 8px; width: min(296px, calc(100% - 16px)); max-height: var(--browser-popover-height, calc(100% - 60px)); box-sizing: border-box; overflow: auto; border: 1px solid var(--browser-border); border-radius: 12px; padding: 12px; background: var(--ag-bg, var(--n-surface, #fafaf9)); box-shadow: 0 8px 28px #0003, 0 2px 5px #0001; }
 .ag-browser-annotation { display: flex; flex-direction: column; gap: 9px; }
-.ag-browser-popover-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; }
+.ag-browser-popover-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; margin: -12px -12px 0; padding: 6px 9px; border-bottom: 1px solid var(--browser-border); background: color-mix(in srgb, currentColor 3%, transparent); }
 .ag-browser-popover-header>strong { font-size: 12px; font-weight: 600; }
 .ag-browser .ag-browser-popover-header button.ag-browser-icon { width: 22px; height: 22px; flex-basis: 22px; margin: -3px -3px -3px 0; }
 .ag-browser-popover-header .ag-icon { width: 13px; height: 13px; }
+html.desktop-mac .ag-browser-popover-header>strong { flex: 1; order: 1; text-align: center; }
+html.desktop-mac .ag-browser-popover-header>button { order: 0; }
+html.desktop-mac .ag-browser-popover-header::after { content: ''; width: 22px; flex: 0 0 22px; order: 2; }
 .ag-browser-annotation>strong { font-size: 10px; font-weight: 400; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ag-browser-annotation p { margin: 0; font-size: 11px; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
 .ag-browser-annotation textarea { width: 100%; box-sizing: border-box; min-height: 64px; max-height: 120px; resize: vertical; background: color-mix(in srgb, currentColor 3%, transparent); color: inherit; font: inherit; border: 1px solid var(--browser-border); padding: 8px; border-radius: 7px; }
