@@ -82,7 +82,7 @@ async function eventually(label, read, predicate, timeout = 30_000) {
 try {
   hub = await startHub({ hubPort, token, fixtureRoot, logName: 'owned-browser-live-hub.log', env: { RHWP_PI_DIR: piRoot, RHWP_BROWSER_DATA_DIR: browserDataDir, RHWP_BROWSER_WRAPPING_KEY_FILE: keyFile, RHWP_BROWSER_WORKSPACE_TARGETS: JSON.stringify([site.origin]), PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH } });
   process.env.VITE_RHWP_AGENT_URL = `ws://127.0.0.1:${hubPort}`; process.env.RHWP_AGENT_TOKEN = token; process.env.RHWP_AGENT_PORT = String(hubPort);
-  vite = await createServer({ configFile: path.join(studioRoot, 'vite.config.ts'), cacheDir: path.join(fixtureRoot, 'vite-cache'), server: { host: '127.0.0.1', port: vitePort, strictPort: true, open: false, fs: { allow: [studioRoot, path.join(root, 'rhwp/pkg'), path.join(root, 'rhwp/samples'), path.join(root, 'rhwp/npm/editor')] } }, logLevel: 'warn' });
+  vite = await createServer({ root: studioRoot, configFile: path.join(studioRoot, 'vite.config.ts'), cacheDir: path.join(fixtureRoot, 'vite-cache'), server: { host: '127.0.0.1', port: vitePort, strictPort: true, open: false, fs: { allow: [studioRoot, path.join(root, 'rhwp/pkg'), path.join(root, 'rhwp/samples'), path.join(root, 'rhwp/npm/editor')] } }, logLevel: 'warn' });
   await vite.listen(); process.env.VITE_URL = results.runtime;
   const { launchBrowser, createPage, loadApp, createNewDocument, waitForState } = await import('./helpers.mjs');
   browser = await launchBrowser(); page = await createPage(browser, 1440, 1000);
