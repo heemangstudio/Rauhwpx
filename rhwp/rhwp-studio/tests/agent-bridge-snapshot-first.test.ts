@@ -173,7 +173,7 @@ function session(overrides: Record<string, unknown> = {}) {
 }
 
 /** 새로고침된 페이지의 브리지 — 세션 구성은 곧바로 오고, 소켓은 테스트가 연다. */
-async function reloadedBridge() {
+async function reloadedBridge(options: { interruptTurnsOnFirstWelcome?: string[] } = {}) {
   /** 턴 체크포인트(U6)에 알린 턴 끝 — 이어 붙인 턴은 끝나지 않았고, 허브가 잃은 턴은 끝났다. */
   const endedTurns: string[] = [];
   FakeSocket.instances = [];
@@ -201,6 +201,7 @@ async function reloadedBridge() {
       referenceToken: 'reference-token',
       templateToken: 'template-token',
     }),
+    ...options,
   });
   const events: Array<Record<string, any>> = [];
   bridge.onEvent((event) => events.push(event as Record<string, any>));
@@ -387,4 +388,60 @@ test('a turn that ended while the page was away is closed when the snapshot is i
   assert.equal(f.bridge.isTurnRunning(), false);
   assert.ok(f.endedTurns.includes(THREAD));
   f.bridge.dispose();
+});
+
+// ─── 엔진 trap 복구: 멈추지 못한 턴 (S7) ──────────────────────
+// 엔진이 멈춘 페이지는 일하던 채팅을 멈추고 다시 불러온다. 그때 허브 연결이 끊겨 있었으면 멈춤이
+// 닿지 않아, 다시 불러온 페이지의 첫 welcome 이 그 턴을 아직 돈다고 알린다.
+
+test('trap reload: the same chat still running is adopted and then stopped once', async () => {
+  const f = await reloadedBridge({ interruptTurnsOnFirstWelcome: [THREAD] });
+  f.bridge.startChat('pi', 'mock-model', '', true, 'safe', 'direct', THREAD, 'doc-1', '문서.hwpx', []);
+  f.socket.open();
+  f.socket.receive({ type: 'welcome', protocol: 5, session: session() });
+  await settle();
+  assert.deepEqual(f.socket.frames('chat-start'), [], 'the live chat is adopted, not restarted');
+  assert.equal(f.socket.frames('chat-interrupt').length, 1, 'and the turn the trapped page meant to stop is stopped');
+
+  // 다음 재연결의 welcome 은 다시 멈추지 않는다 — 사용자가 이어서 진행한 턴일 수 있다.
+  f.socket.receive({ type: 'welcome', protocol: 5, session: session({ turnId: 'turn-resumed' }) });
+  await settle();
+  assert.equal(f.socket.frames('chat-interrupt').length, 1);
+  f.bridge.dispose();
+});
+
+test('trap reload: with no start queued, the adopted interrupted turn is stopped too', async () => {
+  const f = await reloadedBridge({ interruptTurnsOnFirstWelcome: [THREAD] });
+  f.socket.open();
+  f.socket.receive({ type: 'welcome', protocol: 5, session: session() });
+  await settle();
+  assert.equal(f.socket.frames('chat-interrupt').length, 1);
+  f.bridge.dispose();
+});
+
+test('trap reload: a running turn of a chat that was not interrupted keeps running', async () => {
+  const other = await reloadedBridge({ interruptTurnsOnFirstWelcome: [OTHER] });
+  other.socket.open();
+  other.socket.receive({ type: 'welcome', protocol: 5, session: session() });
+  await settle();
+  assert.deepEqual(other.socket.frames('chat-interrupt'), []);
+  assert.equal(other.bridge.isTurnRunning(), true);
+  other.bridge.dispose();
+
+  // 다른 채팅을 여는 시작 요청이 스냅샷을 바꾸면, 바뀔 세션의 턴은 이 채팅이 멈추지 않는다.
+  const replaced = await reloadedBridge({ interruptTurnsOnFirstWelcome: [OTHER] });
+  replaced.bridge.startChat('pi', 'mock-model', '', true, 'safe', 'direct', THREAD, 'doc-1', '문서.hwpx', []);
+  replaced.socket.open();
+  replaced.socket.receive({ type: 'welcome', protocol: 5, session: session({ threadId: OTHER }) });
+  await settle();
+  assert.equal(replaced.socket.frames('chat-start').length, 1);
+  assert.deepEqual(replaced.socket.frames('chat-interrupt'), []);
+  replaced.bridge.dispose();
+
+  const plain = await reloadedBridge();
+  plain.socket.open();
+  plain.socket.receive({ type: 'welcome', protocol: 5, session: session() });
+  await settle();
+  assert.deepEqual(plain.socket.frames('chat-interrupt'), [], 'an ordinary reload keeps the running turn');
+  plain.bridge.dispose();
 });

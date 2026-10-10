@@ -5,6 +5,7 @@ import { buildSnapshotFromWasmInSlices, compareDocuments, compareSnapshots } fro
 import type { DiffItem } from '../compare/types.ts';
 import type { EventBus } from '../core/event-bus.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
+import { engineTrap, onEngineTrap } from '../core/engine-trap.ts';
 import { INSERTED_IMAGE_MAX_BYTES, readBlobBytesWithLimit } from '../core/document-input-limits.ts';
 import { WasmBridge } from '../core/wasm-bridge.ts';
 import type { InputHandler } from '../engine/input-handler.ts';
@@ -269,6 +270,13 @@ function mergeDocumentFormat(bytes: Uint8Array): 'hwp' | 'hwpx' {
   throw new VersionError('MERGE_VALIDATION_FAILED', 'HWP와 HWPX 문서만 병합할 수 있습니다.');
 }
 
+/**
+ * 엔진이 멈춘 뒤의 버전 기록. 멈춘 엔진은 부르지 않는다 — 갱신은 마지막 상태를 그대로 두고, 변경·비교는
+ * 이 안내로 거절한다. 작업 공간 저장은 멈춘 엔진도 받아 주는 내보내기만 써서 계속한다(다시 불러오기
+ * 전의 복구본이다).
+ */
+const ENGINE_STOPPED_MESSAGE = '문서 엔진이 멈췄습니다. 문서 복구를 먼저 진행하세요.';
+
 function worktreeSnapshotFormat(bytes: Uint8Array): 'hwp' | 'hwpx' | 'hml' {
   if (bytes[0] === 0xd0 && bytes[1] === 0xcf) return 'hwp';
   if (bytes[0] === 0x50 && bytes[1] === 0x4b) return 'hwpx';
@@ -393,7 +401,12 @@ export class DocumentVersionController implements VersionManagerController {
       this.#eventBus.on('document-dirty-changed', () => this.#syncTransientState()),
       this.#eventBus.on('document-context-changed', () => {
         this.#editorRevision += 1;
-        void this.refresh();
+        void this.refresh().catch((error) => console.warn('[versions] 버전 기록을 갱신하지 못했습니다:', error));
+      }),
+      onEngineTrap(() => {
+        // 진행 중인 갱신은 다음 await 뒤 epoch 로 그만둔다. 변경 버튼은 지금 막는다.
+        this.#refreshEpoch += 1;
+        this.#syncTransientState();
       }),
       this.#eventBus.on('document-saved', () => {
         // A file save updates disk state; only an explicit commit advances HEAD.
@@ -474,6 +487,7 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   async refresh(): Promise<void> {
+    if (engineTrap()) return;
     await this.#enqueue(() => this.#refreshData(true));
   }
 
@@ -837,6 +851,7 @@ export class DocumentVersionController implements VersionManagerController {
       ]);
       this.#assertWorkspaceToken(workspace);
       if (!stored || !blob) throw new VersionError('CORRUPT_BLOB', 'Version comparison data is missing');
+      this.#assertEngineRunning();
       const current = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
       const session = compareSnapshots(stored.snapshot, current.compareSnapshot, VERSION_COMPARE_OPTIONS);
       this.#assertWorkspaceToken(workspace);
@@ -882,6 +897,7 @@ export class DocumentVersionController implements VersionManagerController {
         && cache.repositoryRevision === repository.revision) {
         return cache.items;
       }
+      this.#assertEngineRunning();
       // 지금 내용이 HEAD 와 같으면 비교 스냅샷을 만들지 않는다. 다르면 체크포인트와 같은
       // revision 의 캡처(강제 재조판 없음)를 함께 쓰되, 캐시가 지금 내용과 다르면 버린다.
       // 캡처는 입력을 막지 않게 조각으로 나눠 만들고, 그사이 편집이 끼면 stale 로 거절한다.
@@ -1553,6 +1569,7 @@ export class DocumentVersionController implements VersionManagerController {
       const payload = await getHistoryPayload(id);
       this.#assertWorkspaceToken(workspace);
       if (!payload) throw new Error('이전 기록을 읽지 못했습니다.');
+      this.#assertEngineRunning();
       const current = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
       const legacy = this.#state.legacy.find((item) => item.id === id);
       const leftName = legacy?.title ?? '이전 기록';
@@ -1709,6 +1726,10 @@ export class DocumentVersionController implements VersionManagerController {
     );
   }
 
+  #assertEngineRunning(): void {
+    if (engineTrap()) throw new Error(ENGINE_STOPPED_MESSAGE);
+  }
+
   #guardSaved(): void {
     if (!this.#getDocumentId() || this.#wasm.pageCount === 0 || (this.#wasm.isNewDocument && !this.#worktree)) {
       throw new VersionError('SAVE_REQUIRED', '먼저 문서를 저장하세요.');
@@ -1716,6 +1737,7 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   async #guardMutation(resolvePending = false): Promise<void> {
+    this.#assertEngineRunning();
     this.#guardSaved();
     if (this.#worktreeHost?.canMutate() === false) throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
     if (this.#mergeResolverActive) {
@@ -2560,6 +2582,8 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   async #refreshData(includeLegacy: boolean): Promise<void> {
+    // 멈춘 엔진으로는 문서 상태를 다시 읽지 않는다. 마지막으로 읽은 상태를 그대로 둔다.
+    if (engineTrap()) return;
     const epoch = ++this.#refreshEpoch;
     const id = this.#getDocumentId();
     this.#worktree = id ? await this.#store.findWorktreeByDocumentId(documentId(id)) : null;
@@ -2728,10 +2752,12 @@ export class DocumentVersionController implements VersionManagerController {
         : Promise.resolve(null),
     ]);
     if (this.#getDocumentId() !== expectedDocumentId) return;
+    // 멈춘 엔진에는 쪽 수를 묻지 않는다. 올라와 있던 문서는 그대로 있다.
+    const loaded = engineTrap() ? this.#wasm.hasLoadedDocument() : this.#wasm.pageCount > 0;
     this.#state = {
       documentId: this.#getDocumentId(),
-      documentName: this.#wasm.pageCount > 0 ? this.#wasm.fileName : null,
-      saved: Boolean(this.#getDocumentId() && this.#wasm.pageCount > 0 && (!this.#wasm.isNewDocument || this.#worktree)),
+      documentName: loaded ? this.#wasm.fileName : null,
+      saved: Boolean(this.#getDocumentId() && loaded && (!this.#wasm.isNewDocument || this.#worktree)),
       enabled: this.#repository !== null,
       dirty: this.#isSemanticDirty(),
       mutationBlockedReason: this.#mutationBlockedReason(),
@@ -2795,6 +2821,7 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   #mutationBlockedReason(): string | null {
+    if (engineTrap()) return ENGINE_STOPPED_MESSAGE;
     if (this.#worktreeHost?.canMutate() === false) return '다른 창에서 이 워크트리를 편집하고 있습니다.';
     if (this.#mergeResolverActive) return '병합 검토가 열려 있습니다.';
     if (this.#agentBridge.isTurnRunning()) return '에이전트가 응답 중입니다.';

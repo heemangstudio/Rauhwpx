@@ -45,6 +45,8 @@ const DOC_A = 'para-001.hwp';
 const DOC_B = 'text-align-2.hwp';
 const MARKER = 'TRAPKEEP';
 const NOTICE = '문서 엔진이 멈춰 이 작업이 중단되었습니다.';
+/** 멈춘 엔진을 부른 호출이 잡히지 않고 페이지 오류로 새어 나온 것 (다시 던지면 이름 없이 문구만 남는다). */
+const TRAP_PAGE_ERROR = /EngineTrapped|ENGINE_TRAPPED|문서 엔진이 멈췄습니다/;
 
 ensureChromePath();
 const hubPort = await findAvailablePort(Number(process.env.RHWP_AGENT_PORT || 7845));
@@ -127,8 +129,17 @@ try {
     const errorsBefore = page.__pageErrors?.length ?? 0;
     await page.evaluate(() => window.__eventBus.emit('command-state-changed'));
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const trapErrors = (page.__pageErrors ?? []).slice(errorsBefore).filter((text) => /EngineTrapped|ENGINE_TRAPPED/.test(text));
+    const trapErrors = (page.__pageErrors ?? []).slice(errorsBefore).filter((text) => TRAP_PAGE_ERROR.test(text));
     assert(trapErrors.length === 0, `Command-state refresh after the trap does not call the stopped engine (${trapErrors[0] ?? 'no errors'})`);
+  }
+
+  /**
+   * 엔진이 멈춘 뒤 다시 불러오기까지 어디에서도 멈춘 엔진을 부른 오류가 잡히지 않고 새지 않았다.
+   * 페이지 오류는 다시 불러와도 이어서 모이므로, 다시 불러오기 직전과 시나리오 끝에서 본다.
+   */
+  function assertNoTrapPageErrors(page, when) {
+    const leaked = (page.__pageErrors ?? []).filter((text) => TRAP_PAGE_ERROR.test(text));
+    assert(leaked.length === 0, `No uncaught stopped-engine error ${when} (${leaked[0]?.split('\n').slice(0, 4).join(' | ') ?? 'none'})`);
   }
 
   /** 다시 불러온 페이지가 그 파일을 읽을 때 한 번 모의 trap 을 일으킨다 (sessionStorage 로 켠다). */
@@ -178,6 +189,7 @@ try {
   }
 
   async function reopenAll(page) {
+    assertNoTrapPageErrors(page, 'between the trap and the reload');
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30_000 }),
       page.click('.trap-recovery-dialog .dialog-btn-primary'),
@@ -294,6 +306,7 @@ try {
     assert(clean?.fileName === DOC_B && clean.dirty === false, `The clean document reopened clean (${JSON.stringify(clean)})`);
     assert(await linkedToFile(page, DOC_B), 'It is linked to its file');
     assert(!(await genericRecoveryToastShown(page)), 'No autosave notice for the clean document');
+    assertNoTrapPageErrors(page, 'after recovery');
   });
 
   await runTest('engine trap: background and shown documents return, and a document that traps again is held back', async ({ page }) => {
@@ -396,6 +409,7 @@ try {
       return files.includes(a2) && files.includes(b2) && window.__documentSessions.attached().wasm.fileName === b2;
     }, DOC_A, DOC_B);
     assert(true, 'Opening B from the result keeps A open and shows B');
+    assertNoTrapPageErrors(page, 'after recovery');
   });
 
   await runTest('engine trap: a trap while reopening the first document keeps its copy for the next recovery', async ({ page }) => {
@@ -444,6 +458,7 @@ try {
     const [back] = await loadedSessions(page);
     assert(back?.text.startsWith(MARKER) && back.dirty, `A comes back with its unsaved edit from the kept copy (${JSON.stringify(back)})`);
     assert(!(await genericRecoveryToastShown(page)), 'The generic autosave notice does not appear');
+    assertNoTrapPageErrors(page, 'after recovery');
   });
 
   await runTest('engine trap: a clean document saved with its version history reopens from its .rhwpx file', async ({ page }) => {
@@ -480,6 +495,7 @@ try {
       `The document came back clean from inside the bundle (${JSON.stringify(back)})`);
     assert(await linkedToFile(page, bundleName), 'It is linked to its .rhwpx file again');
     await screenshot(page, 'trap-recovery-8-rhwpx-reopened');
+    assertNoTrapPageErrors(page, 'after recovery');
   });
 
   await runTest('engine trap: a read-only preview comes back read-only and unchanged', async ({ page }) => {
@@ -520,6 +536,7 @@ try {
     assert(back.dirty === false, 'It is not marked as unsaved: nothing in it could change');
     assert((await recoverableDraftNames(page)).length === 0, 'No recovery copy is left over for the startup dialog');
     await screenshot(page, 'trap-recovery-9-read-only-back');
+    assertNoTrapPageErrors(page, 'after recovery');
   }, { skipLoadApp: true });
 
   await runTest('engine trap: a turn the trapped page could not stop is stopped after the reload', async ({ page }) => {
@@ -585,6 +602,7 @@ try {
       return getThread(threadId)?.messages.some((message) => message.role === 'system' && message.text.startsWith('문서 엔진이 멈춰'));
     }, threadA);
     assert(notice, 'The chat still says the engine stop interrupted it');
+    assertNoTrapPageErrors(page, 'after recovery');
   });
 } finally {
   await stopServer(vite);

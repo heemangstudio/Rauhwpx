@@ -630,7 +630,8 @@ function setDocumentReadOnly(readOnly: boolean): void {
   documentReadOnly = readOnly;
   document.documentElement.dataset.documentReadOnly = sessionReadOnly() ? 'true' : 'false';
   inputHandler?.setReadOnly(sessionReadOnly());
-  toolbar?.setEnabled(wasm.pageCount > 0 && !sessionReadOnly() && !agentEditingLease.active);
+  // 멈춘 엔진에는 쪽 수를 묻지 않는다 (버전 기록이 작업 공간 점유를 다시 맞출 때도 여기를 지난다).
+  toolbar?.setEnabled(!engineTrap() && wasm.pageCount > 0 && !sessionReadOnly() && !agentEditingLease.active);
   eventBus.emit('command-state-changed');
 }
 
