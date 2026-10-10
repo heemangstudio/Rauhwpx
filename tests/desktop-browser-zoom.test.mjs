@@ -19,7 +19,7 @@ test('native page zoom changes DOM scale while retaining form state and editor o
   delete env.ELECTRON_RUN_AS_NODE;
   try {
     const report = await new Promise((resolve, reject) => {
-      const child = spawn(electron, [fileURLToPath(new URL('./electron/browser-zoom.mjs', import.meta.url)), '--use-mock-keychain'], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(electron, [fileURLToPath(new URL('./electron/browser-zoom.mjs', import.meta.url)), '--use-mock-keychain', '-ApplePersistenceIgnoreState', 'YES'], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '', stderr = '';
       child.stdout.on('data', (data) => { stdout += data; });
       child.stderr.on('data', (data) => { stderr += data; });
@@ -37,6 +37,9 @@ test('native page zoom changes DOM scale while retaining form state and editor o
     assert.equal(report.zoom.formPreserved, true);
     assert.equal(report.zoom.foreignWindowRejected, true);
     assert.equal(report.zoom.reloadPreserved, true);
+    assert.equal(report.nativePasswordZoom.clickAt150, true);
+    assert.equal(report.nativePasswordZoom.staleClickRejected, true);
+    assert.equal(report.nativePasswordZoom.sharedOriginFenced, true);
     assert.equal(report.geometry.snapshotsInvalidated, true);
     assert.equal(report.geometry.staleEventsRejected, true);
     assert.equal(report.geometry.listenerDisposed, true);

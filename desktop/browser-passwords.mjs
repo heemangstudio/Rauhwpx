@@ -110,17 +110,19 @@ export class NativeBrowserPasswords {
   assertSnapshot(tab, params) {
     if (tab.closing || !tab.view.webContents || tab.view.webContents.isDestroyed()) throw passwordFailure('BROWSER_PASSWORD_TARGET_CHANGED', 'The browser tab was closed.');
     const snapshot = tab.passwordSnapshot;
+    if (snapshot?.zoomFactor !== tab.view.webContents.getZoomFactor()) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Page zoom changed. Take a new browser snapshot.');
     if (!snapshot || params.snapshotId !== snapshot.snapshotId || snapshot.generation !== this.host.generation || snapshot.owner !== this.host.owner || snapshot.navigationEpoch !== tab.navigationEpoch || snapshot.targetId !== tab.targetId || snapshot.sessionId !== tab.sessionId || snapshot.chatId !== tab.chatId || snapshot.controlEpoch !== (tab.passwordControlEpoch ?? 0) || snapshot.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Take a new browser snapshot before using this saved account.');
     return snapshot;
   }
   async snapshot(params) {
     const tab = this.tab(params);
     const epoch = tab.navigationEpoch; const snapshotId = `native-password-${randomUUID()}`;
-    const lifetime = { generation: this.host.generation, owner: this.host.owner, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, origin: new URL(tab.view.webContents.getURL()).origin };
+    const lifetime = { generation: this.host.generation, owner: this.host.owner, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: tab.view.webContents.getZoomFactor(), origin: new URL(tab.view.webContents.getURL()).origin };
     const observed = await this.run(tab, pageSnapshot, [snapshotId, SENSITIVE, 400]);
+    if (lifetime.zoomFactor !== tab.view.webContents.getZoomFactor()) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Page zoom changed during the browser snapshot.');
     if (tab.closing || tab.view.webContents.isDestroyed() || epoch !== tab.navigationEpoch || lifetime.generation !== this.host.generation || lifetime.owner !== this.host.owner || lifetime.targetId !== tab.targetId || lifetime.sessionId !== tab.sessionId || lifetime.chatId !== tab.chatId || lifetime.controlEpoch !== (tab.passwordControlEpoch ?? 0) || lifetime.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'The page changed during the browser snapshot.');
     const url = new URL(tab.view.webContents.getURL());
-    tab.passwordSnapshot = { snapshotId, generation: this.host.generation, owner: this.host.owner, navigationEpoch: epoch, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, origin: url.origin, elements: observed.elements };
+    tab.passwordSnapshot = { snapshotId, generation: this.host.generation, owner: this.host.owner, navigationEpoch: epoch, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: lifetime.zoomFactor, origin: url.origin, elements: observed.elements };
     return this.redact(tab, { ...observed, snapshotId, nativeNavigationEpoch: epoch, url: tab.passwordShield ? `${url.origin}/` : `${url.origin}${url.pathname}`, title: tab.passwordShield ? '' : tab.view.webContents.getTitle(), passwordProtected: !!tab.passwordShield });
   }
   async fill(params, { human = false } = {}) {
@@ -179,8 +181,9 @@ export class NativeBrowserPasswords {
           tab.view.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
         } else {
           const { x, y } = result.point;
-          tab.view.webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1 });
-          tab.view.webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1 });
+          const zoomFactor = snapshot.zoomFactor;
+          tab.view.webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(x * zoomFactor), y: Math.round(y * zoomFactor), button: 'left', clickCount: 1 });
+          tab.view.webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(x * zoomFactor), y: Math.round(y * zoomFactor), button: 'left', clickCount: 1 });
         }
       } finally { tab.automationInputDepth--; }
     }

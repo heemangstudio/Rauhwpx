@@ -407,9 +407,12 @@ export class OwnedBrowserHost {
     const previous = new Map([...this.tabs.values()].map((entry) => [entry, this.state(entry).zoomFactor]));
     tab.view.webContents.setZoomFactor(Math.max(0.25, Math.min(3, factor)));
     // Chromium shares website zoom across guests with the same origin.
-    for (const [entry, before] of previous) {
-      if (Math.abs(this.state(entry).zoomFactor - before) > 0.000001) this.emit(entry, 'zoom');
+    const changed = [...previous].filter(([entry, before]) => Math.abs(this.state(entry).zoomFactor - before) > 0.000001).map(([entry]) => entry);
+    for (const entry of changed) {
+      entry.passwordSnapshot = null;
+      entry.passwordControlEpoch = (entry.passwordControlEpoch ?? 0) + 1;
     }
+    for (const entry of changed) this.emit(entry, 'zoom');
     return this.state(tab);
   }
 

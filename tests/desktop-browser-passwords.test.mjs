@@ -10,6 +10,7 @@ import { LocalBrowserPasswordVault } from '../desktop/browser-local-password-vau
 import { ChromePasswordImporter, decryptChromeMacPassword } from '../desktop/browser-chrome-password-import.mjs';
 import { NativeBrowserPasswords } from '../desktop/browser-passwords.mjs';
 import { PrivateBrowserCdp } from '../desktop/browser-cdp.mjs';
+import { OwnedBrowserHost } from '../desktop/browser-host.mjs';
 
 function fixtureStorage() {
   const key = randomBytes(32);
@@ -140,6 +141,7 @@ test('Chrome keychain cancellation keeps the vault empty and imports can retry',
 function nativeFixture(vault) {
   const calls = [];
   const contents = { isDestroyed: () => false, getURL: () => 'https://fixture.invalid/login', getTitle: () => 'Login',
+    getZoomFactor: () => 1,
     executeJavaScriptInIsolatedWorld: async (_world, scripts) => {
       const json = scripts[0].code.slice(scripts[0].code.lastIndexOf(')(...') + 5, -1);
       const args = JSON.parse(json); calls.push(args);
@@ -216,6 +218,35 @@ test('native asynchronous snapshots and physical actions reject changed document
   assert.equal(f.calls.some((call) => call.type === 'mouseDown'), false);
   f.passwords.run = async () => { f.host.owner = {}; f.host.generation = 'changed'; return { elements: [], text: '' }; };
   await assert.rejects(f.passwords.snapshot(f.binding), { code: 'BROWSER_PASSWORD_STALE_REFERENCE' });
+});
+
+test('website zoom synchronously fences shared-origin native snapshots and pending physical clicks', async (t) => {
+  const { vault } = await vaultFixture(t); const f = nativeFixture(vault);
+  let factor = 1;
+  const peer = { ...f.tab, targetId: 'peer', tabId: 'peer', passwordSnapshot: { snapshotId: 'peer-observation' } };
+  f.contents.getZoomFactor = () => factor;
+  f.contents.setZoomFactor = (value) => { factor = value; };
+  f.host.tabs.set(peer.targetId, peer);
+  f.host.ownedTab = () => f.tab;
+  f.host.state = (tab) => ({ zoomFactor: tab.view.webContents.getZoomFactor() });
+  const zoomEvents = [];
+  f.host.emit = (tab) => { zoomEvents.push(tab.tabId); assert.equal(tab.passwordSnapshot, null); };
+  const observed = await f.passwords.snapshot(f.binding);
+  f.passwords.run = async () => { OwnedBrowserHost.prototype.zoom.call(f.host, {}, { tabId: f.tab.tabId, factor: 1.5 }); return { completed: true, point: { x: 10, y: 10 } }; };
+  await assert.rejects(f.passwords.action({ ...f.binding, snapshotId: observed.snapshotId, action: 'click', ref: 'e2' }), { code: 'BROWSER_PASSWORD_STALE_REFERENCE' });
+  assert.equal(f.calls.some((call) => call.type === 'mouseDown'), false);
+  assert.deepEqual(zoomEvents.sort(), ['peer', 'tab']);
+  assert.equal(peer.passwordControlEpoch, 2);
+  f.passwords.run = async () => { factor = 2; return { elements: [], text: '' }; };
+  await assert.rejects(f.passwords.snapshot(f.binding), { code: 'BROWSER_PASSWORD_STALE_REFERENCE' });
+});
+
+test('native physical clicks convert CSS coordinates to DIP at the observed page zoom', async (t) => {
+  const { vault } = await vaultFixture(t); const f = nativeFixture(vault);
+  f.contents.getZoomFactor = () => 1.5;
+  const observed = await f.passwords.snapshot(f.binding);
+  await f.passwords.action({ ...f.binding, snapshotId: observed.snapshotId, action: 'click', ref: 'e2' });
+  assert.deepEqual(f.calls.filter((call) => call.type === 'mouseDown' || call.type === 'mouseUp').map(({ x, y }) => ({ x, y })), [{ x: 15, y: 15 }, { x: 15, y: 15 }]);
 });
 
 test('protected relay projects website-controlled network, dialog and target strings', async () => {

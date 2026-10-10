@@ -33,7 +33,7 @@ test('target announcements resolve immediately and reattachment keeps aliases an
     isAttached: () => attached, attach: () => { attached = true; }, detach: () => { attached = false; },
     sendCommand: async () => ({ targetInfo: { targetId } }),
   });
-  const contents = { debugger: debuggerApi, isDestroyed: () => false, getURL: () => 'https://example.org/', getTitle: () => 'Retained page', isLoading: () => false, navigationHistory: { canGoBack: () => false, canGoForward: () => false } };
+  const contents = { debugger: debuggerApi, isDestroyed: () => false, getURL: () => 'https://example.org/', getTitle: () => 'Retained page', getZoomFactor: () => 1, isLoading: () => false, navigationHistory: { canGoBack: () => false, canGoForward: () => false } };
   const tab = { view: { webContents: contents }, targetId: null, navigationEpoch: 7, human: false };
   host.cdp.autoAttach = true;
   host.cdp.send = (message) => {
