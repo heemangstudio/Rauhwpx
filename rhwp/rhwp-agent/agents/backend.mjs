@@ -32,8 +32,14 @@ const VENDOR_SHAPED_SECRET = /\b(?:gh[oprsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z
  */
 const PRIVATE_KEY_BLOCK = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|$)/g;
 const ORPHAN_PRIVATE_KEY_END = /^[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/;
-/** JWT 모양의 액세스 토큰 (Codex OAuth 등): header.payload.signature. */
-const JWT_SHAPED_SECRET = /\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g;
+/**
+ * JWT 모양의 액세스 토큰 (Codex OAuth 등): header.payload.signature. 낱말 경계 뒤의 `eyJ` 부터라
+ * `-` 로 이은 낱말 안(`x-eyJ…`)도 잡는다. header 는 [\w-] 덩어리 끝까지 가므로 덩어리 안에서
+ * 첫 `eyJ` 가 안 되면 뒤의 `eyJ` 도 안 된다 — 덩어리 첫머리에서 첫 `eyJ` 하나만 시험한다
+ * (앞보기는 되짚지 않는다). 자리마다 덩어리 끝까지 다시 훑지 않아 `-eyJ-eyJ…` 같은 긴 글에서도
+ * 선형이다. 첫 `eyJ` 앞의 낱말 조각은 $1 로 되돌린다.
+ */
+const JWT_SHAPED_SECRET = /(?<![\w-])(?=((?:\w*-)*?)eyJ)\1eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g;
 const URL_USERINFO = /(https?:\/\/)[^/\s:@]+:[^@\s/]+@/gi;
 const URL_SECRET_PARAM = /([?&#](?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|oauth[_-]?code|authorization[_-]?code|user[_-]?code|code|state|token)=)[^&#\s]+/gi;
 
@@ -53,7 +59,7 @@ export function redactDiagnosticText(value, secrets = []) {
     .replace(AUTHORIZATION_HEADER, '$1[redacted]')
     .replace(KEY_SHAPED_SECRET, '[redacted]')
     .replace(VENDOR_SHAPED_SECRET, '[redacted]')
-    .replace(JWT_SHAPED_SECRET, '[redacted]')
+    .replace(JWT_SHAPED_SECRET, '$1[redacted]')
     .replace(SECRET_ASSIGNMENT, '$1[redacted]');
 }
 
@@ -65,7 +71,12 @@ export function redactableHead(value, limit) {
   const text = String(value ?? '');
   if (text.length <= limit) return text;
   const head = text.slice(0, limit);
-  return /\s/.test(text[limit]) ? head : head.replace(/\S*$/, '');
+  if (/\s/.test(text[limit])) return head;
+  // 뒤에서부터 공백을 찾는다 — `\S*$` 정규식은 긴 낱말 뒤에 짧은 꼬리가 붙으면 낱말의 자리마다
+  // 끝까지 다시 훑어 제곱 시간이 든다.
+  let end = head.length;
+  while (end > 0 && !/\s/.test(head[end - 1])) end -= 1;
+  return head.slice(0, end);
 }
 
 /**

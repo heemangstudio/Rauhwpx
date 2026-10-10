@@ -34,15 +34,59 @@ const CLASSIFY_TEXT_LIMIT = 16_000;
 
 const ANSI_ESCAPE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 // 스킴 길이를 묶는다 — 묶지 않으면 `a.a.a.…` 같은 긴 토큰에서 스킴 자리를 찾느라 되짚기가 제곱으로 는다.
-/** 스킴과 상관없이 URL 의 쿼리·프래그먼트 (https, ws, wss, …). */
-const URL_QUERY = /\b([a-z][a-z0-9+.-]{0,31}:\/\/[^\s?#]+)[?#][^\s)\]}>"']*/gi;
+/**
+ * 스킴과 상관없이 URL 의 쿼리·프래그먼트 (https, ws, wss, …). 둘째 갈래는 공백(또는 끝)까지
+ * ?·# 가 없는 URL 을 가리지 않고 그대로 삼킨다(무리 1 이 없다): 그 안 어느 자리에서 시작해도
+ * 공백 전에 ?·# 가 없어 첫 갈래가 맞지 않으므로 결과는 같고, `a://a://…` 처럼 스킴이 거듭되는
+ * 긴 낱말을 시작점마다 끝까지 다시 훑지 않는다(선형).
+ */
+const URL_QUERY = /\b([a-z][a-z0-9+.-]{0,31}:\/\/[^\s?#]+)[?#][^\s)\]}>"']*|\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s?#]*(?=\s|$)/gi;
 /** 스킴과 상관없이 URL 의 userinfo — 비밀번호 없이 토큰만 든 `https://TOKEN@host` 도. */
 const URL_USERINFO_ANY = /\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/?#@]+@/gi;
 /**
- * 스킴 없이 적힌 호스트[:포트][/경로] 뒤의 key=value 쿼리 (`api.example.com/v1?key=…`,
- * `127.0.0.1:5175/mcp?auth=…`). URL 안쪽에서 시작하지 않게 앞 글자를 막는다.
+ * 스킴 없이 적힌 호스트[:포트][/경로] 뒤의 ?·# (`api.example.com/v1?key=…`,
+ * `127.0.0.1:5175/mcp?auth=…`). URL 안쪽에서 시작하지 않게 앞 글자를 막는다. 그 뒤 같은 덩어리
+ * (공백·따옴표·<> 전)에 `=` 가 있을 때만 가리고(key=value 쿼리), 가린 쿼리는
+ * BARE_HOST_QUERY_TAIL 만큼이다 — redactBareHostQueries 가 맞춘다. 둘째 갈래는 덩어리 끝까지
+ * ?·# 가 없는 호스트·경로를 그대로 삼킨다(무리 1 이 없다): 그 안 어디서 시작해도 맞지 않는다.
  */
-const BARE_HOST_QUERY = /(?<![\w.@:/\\-])((?:localhost|\d{1,3}(?:\.\d{1,3}){3}|(?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d{1,5})?(?:\/[^\s?#"'<>]*)?)[?#](?=[^\s"'<>]*=)[^\s)\]}>"']*/gi;
+const BARE_HOST_QUERY = /(?<![\w.@:/\\-])(?:((?:localhost|\d{1,3}(?:\.\d{1,3}){3}|(?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d{1,5})?(?:\/[^\s?#"'<>]*)?)[?#]|(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|(?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d{1,5})?(?:\/[^\s?#"'<>]*)?(?=[\s"'<>]|$))/gi;
+const BARE_HOST_QUERY_TAIL = /[^\s)\]}>"']*/y;
+const QUERY_REGION_END = /[\s"'<>]/g;
+
+/**
+ * BARE_HOST_QUERY 를 가린다. `=` 가 있는지를 정규식 앞보기로 보면 `a.bc?)a.bc?)…=` 처럼 쿼리가
+ * 거듭되는 긴 덩어리에서 쿼리마다 덩어리 끝까지 다시 훑는다(제곱). ?·# 자리는 앞으로만 가므로 다음
+ * `=` 와 덩어리 끝 자리를 앞으로만 찾아 한 번씩만 훑는다. `=` 가 없어 가리지 않는 쿼리면 그
+ * ?·# 까지의 시작점도 같은 이유로 맞지 않으므로 그 뒤에서 다시 찾는다.
+ */
+function redactBareHostQueries(text) {
+  let out = '';
+  let copied = 0;
+  let nextEquals = -1;
+  let regionEnd = -1;
+  BARE_HOST_QUERY.lastIndex = 0;
+  for (let found = BARE_HOST_QUERY.exec(text); found; found = BARE_HOST_QUERY.exec(text)) {
+    const head = found[1];
+    if (head === undefined) continue;
+    const mark = found.index + head.length;
+    if (nextEquals !== Infinity && nextEquals <= mark) {
+      nextEquals = text.indexOf('=', mark + 1);
+      if (nextEquals < 0) nextEquals = Infinity;
+    }
+    if (regionEnd <= mark) {
+      QUERY_REGION_END.lastIndex = mark + 1;
+      regionEnd = QUERY_REGION_END.exec(text)?.index ?? text.length;
+    }
+    if (nextEquals >= regionEnd) continue;
+    BARE_HOST_QUERY_TAIL.lastIndex = mark + 1;
+    BARE_HOST_QUERY_TAIL.exec(text);
+    out += `${text.slice(copied, found.index)}${head}?[redacted]`;
+    copied = BARE_HOST_QUERY_TAIL.lastIndex;
+    BARE_HOST_QUERY.lastIndex = copied;
+  }
+  return copied === 0 ? text : out + text.slice(copied);
+}
 
 /**
  * 실패 문구 전용 가림: URL 쿼리·프래그먼트와 userinfo 를 먼저 통째로 지우고(그 안의 값이 공용
@@ -53,9 +97,8 @@ export function redactFailureText(text, secrets = []) {
   const urlsRedacted = String(text ?? '')
     .replace(ANSI_ESCAPE, '')
     .replace(URL_USERINFO_ANY, '$1[redacted]@')
-    .replace(URL_QUERY, '$1?[redacted]')
-    .replace(BARE_HOST_QUERY, '$1?[redacted]');
-  const redacted = redactDiagnosticText(urlsRedacted, secrets);
+    .replace(URL_QUERY, (match, url) => (url === undefined ? match : `${url}?[redacted]`));
+  const redacted = redactDiagnosticText(redactBareHostQueries(urlsRedacted), secrets);
   const normalized = redacted
     .replace(/\r\n?/g, '\n')
     // 제어 문자는 줄바꿈만 남긴다.

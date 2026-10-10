@@ -90,14 +90,46 @@ const LEGACY_HUB_CODES: Readonly<Record<string, ProviderFailureClass>> = Object.
   AGENT_PROCESS_CLEANUP_UNCERTAIN: 'process_exited',
 });
 
+/**
+ * 가리기 전에 읽는 이전 허브 문구의 앞부분 — 보이는 문구(MAX_FAILURE_MESSAGE)보다 넉넉하다.
+ * 거대한 stderr 를 통째로 정규식에 넣지 않는다.
+ */
+const LEGACY_REDACT_LIMIT = 8_000;
+
+/**
+ * 글의 앞쪽 `limit` 자. 자른 자리가 낱말 가운데면 그 낱말 조각을 버린다 — 잘려서 알아볼 수 없게
+ * 된 비밀 값의 앞부분이 가림을 빠져나가지 않게 한다(허브의 redactableHead 와 같다).
+ */
+function redactableHead(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const head = text.slice(0, limit);
+  if (/\s/.test(text[limit])) return head;
+  // 뒤에서부터 공백을 찾는다 — `\S*$` 정규식은 긴 낱말 뒤 짧은 꼬리에서 제곱 시간이 든다.
+  let end = head.length;
+  while (end > 0 && !/\s/.test(head[end - 1])) end -= 1;
+  return head.slice(0, end);
+}
+
+/**
+ * JWT 모양 토큰. 낱말 경계 뒤 `eyJ` 부터라 `-` 로 이은 낱말 안도 잡는다. [\w-] 덩어리에서 첫
+ * `eyJ` 가 안 되면 뒤의 `eyJ` 도 안 되므로 첫 `eyJ` 하나만 시험한다(앞보기는 되짚지 않는다) —
+ * `-eyJ-eyJ…` 를 자리마다 끝까지 다시 훑지 않는다. 앞 낱말 조각은 $1 로 되돌린다.
+ */
+const LEGACY_JWT = /(?<![\w-])(?=((?:\w*-)*?)eyJ)\1eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g;
+/**
+ * URL 쿼리·프래그먼트. 둘째 갈래는 공백(또는 끝)까지 ?·# 가 없는 URL 을 그대로 삼킨다 — 그 안
+ * 어디서 시작해도 맞지 않으므로 결과는 같고, `http://http://…` 를 자리마다 다시 훑지 않는다.
+ */
+const LEGACY_URL_QUERY = /(https?:\/\/[^\s?#]+)[?#][^\s)\]}>"']*|https?:\/\/[^\s?#]*(?=\s|$)/gi;
+
 /** 가리지 않고 보낸 이전 허브의 문구에서 흔한 자격 증명 모양만 지운다. */
 function redactLegacyText(text: string): string {
-  return text
+  return redactableHead(text, LEGACY_REDACT_LIMIT)
     .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [redacted]')
     .replace(/\b(?:sk|pk)-[A-Za-z0-9_-]{12,}/g, '[redacted]')
-    .replace(/\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g, '[redacted]')
-    .replace(/(https?:\/\/[^\s?#]+)[?#][^\s)\]}>"']*/gi, '$1?[redacted]')
+    .replace(LEGACY_JWT, '$1[redacted]')
+    .replace(LEGACY_URL_QUERY, (match: string, url: string | undefined) => (url === undefined ? match : `${url}?[redacted]`))
     .trim();
 }
 

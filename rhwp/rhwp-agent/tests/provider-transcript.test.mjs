@@ -26,6 +26,7 @@ import {
   PROVIDER_TRANSCRIPT_ENV,
   PROVIDER_TRANSCRIPT_PRODUCTION_ENV,
   recordingClaudeSdkSpawner,
+  redactTranscriptJson,
   tapProviderProcess,
   withSdkStderrTail,
 } from '../provider-transcript.mjs';
@@ -336,6 +337,29 @@ test('stderr is redacted per line, so a secret split across pipe chunks never re
   assert.ok(err[0].text.startsWith('xxx') && err[0].text.endsWith('[redacted]\n'));
   assert.match(err[1].text, /^request failed: Authorization: .*\[redacted\]\n$/);
   assert.equal(err[2].text, 'session [redacted]', 'the unterminated rest is flushed at close');
+});
+
+test('JWTs glued to a word are redacted and a 64 KiB line of repeated JWT starts redacts in linear time', () => {
+  const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJwbGFudGVkLXVzZXIifQ.c2lnbmF0dXJlLXBsYW50ZWQtand0';
+  assert.deepEqual(redactTranscriptJson({ note: `auth-${JWT} ok`, unsigned: `${JWT.slice(0, JWT.lastIndexOf('.') + 1)} end` }), {
+    note: 'auth-[redacted] ok',
+    unsigned: '[redacted] end',
+  });
+  // 녹화는 한 줄을 64 KiB 까지 남긴다 — `-eyJ` 가 거듭되는 줄도 시작점마다 끝까지 다시 훑지 않는다.
+  const time = (size) => {
+    const line = '-eyJ'.repeat(size / 4);
+    let best = Infinity;
+    for (let run = 0; run < 3; run += 1) {
+      const started = performance.now();
+      redactTranscriptJson({ line });
+      best = Math.min(best, performance.now() - started);
+    }
+    return best;
+  };
+  time(1024);
+  const small = time(16 * 1024);
+  const large = time(64 * 1024);
+  assert.ok(large <= small * 8 + 50, `64 KiB took ${large.toFixed(1)} ms vs ${small.toFixed(1)} ms for 16 KiB`);
 });
 
 test('values under camelCase and prefixed secret keys and JWTs are redacted while token counts stay', async (t) => {

@@ -77,8 +77,15 @@ const REDACTED = '[redacted]';
  * numbers and booleans under a matching key are kept anyway.
  */
 const SECRET_JSON_KEY_SUFFIX = /(?:token|apikey|secret|secretkey|accesskey|privatekey|sessionkey|passw(?:or)?d|passphrase|authorization|cookies?|credentials?|oauthcode|usercode|codeverifier)$/;
-/** header.payload.signature of a JSON Web Token (the signature may be empty). */
-const JWT_SHAPED = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g;
+/**
+ * header.payload.signature of a JSON Web Token (the signature may be empty), starting at
+ * the first `eyJ` after a word boundary — also inside a hyphenated word (`x-eyJ…`). The
+ * header runs to the end of its [A-Za-z0-9_-] run, so when the run's first `eyJ` cannot
+ * start a token no later `eyJ` in the run can either: the (non-backtracking) lookahead
+ * tries only that one from the run's start and $1 puts back the word part before it.
+ * Rescanning the run from every `eyJ` would make `-eyJ-eyJ…` quadratic.
+ */
+const JWT_SHAPED = /(?<![\w-])(?=((?:\w*-)*?)eyJ)\1eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]*/g;
 const CREDENTIAL_NAME = /(?:API_KEY|AUTH_TOKEN|OAUTH_TOKEN|ACCESS_TOKEN|REFRESH_TOKEN|SECRET|ACCESS_KEY|BEARER|PASSWORD|_TOKEN$|^TOKEN$)/i;
 const MAX_JSON_DEPTH = 64;
 const TRUNCATED_RESERVE_BYTES = 128;
@@ -122,7 +129,7 @@ function credentialValues(env) {
 }
 
 function redactString(value, secrets) {
-  return redactDiagnosticText(value, secrets).replace(JWT_SHAPED, REDACTED);
+  return redactDiagnosticText(value, secrets).replace(JWT_SHAPED, `$1${REDACTED}`);
 }
 
 function isSecretJsonKey(key) {

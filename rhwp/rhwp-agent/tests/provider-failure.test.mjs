@@ -12,7 +12,7 @@ import {
   normalizeProviderFailureEvent,
   redactFailureText,
 } from '../provider-failure.mjs';
-import { redactDiagnosticText } from '../agents/backend.mjs';
+import { redactableHead, redactDiagnosticText } from '../agents/backend.mjs';
 
 const classify = (input) => classifyProviderFailure({ agent: 'claude', origin: 'error', ...input });
 
@@ -245,6 +245,59 @@ test('redaction also covers escaped JSON pairs, token-only userinfo, any URL sch
   assert.equal(redactFailureText('https://x.com/a?password=REPLAYSECRET'), 'https://x.com/a?[redacted]');
   // 쿼리가 아닌 물음표 문장은 그대로다.
   assert.equal(redactFailureText('Is the file at docs.example.com ready? yes'), 'Is the file at docs.example.com ready? yes');
+});
+
+test('a JWT glued to a word by a hyphen and a query after a skipped one are still removed', () => {
+  const jwt = `eyJ${'a'.repeat(24)}.${'b'.repeat(40)}.${'c'.repeat(30)}`;
+  assert.equal(redactDiagnosticText(`auth-${jwt} done`), 'auth-[redacted] done');
+  assert.equal(redactDiagnosticText(`x_${jwt}`), `x_${jwt}`, 'no word boundary inside a word');
+  assert.equal(redactDiagnosticText(`id.${jwt}`), 'id.[redacted]');
+  // 쿼리가 없는 URL·key=value 가 아닌 쿼리 뒤에 붙은 진짜 쿼리도 가린다.
+  assert.equal(
+    redactFailureText('a://x/y)a://b https://example.com/cb?code=REPLAYSECRET'),
+    'a://x/y)a://b https://example.com/cb?[redacted]',
+  );
+  assert.equal(
+    redactFailureText('a.bc?x<api.example.com/v1?key=REPLAYSECRET'),
+    'a.bc?x<api.example.com/v1?[redacted]',
+  );
+  assert.equal(redactFailureText('a.bc?x a.bc?y=1'), 'a.bc?x a.bc?[redacted]');
+});
+
+/** 16 KB 와 64 KB 에서 세 번 중 가장 빠른 시간 — 선형이면 4배 남짓, 시작점마다 끝까지 다시 훑으면 16배다. */
+function redactionTimes(redact, generate) {
+  const best = (text) => {
+    let min = Infinity;
+    for (let run = 0; run < 3; run += 1) {
+      const started = performance.now();
+      redact(text);
+      min = Math.min(min, performance.now() - started);
+    }
+    return min;
+  };
+  redact(generate(1024));
+  return { small: best(generate(16 * 1024)), large: best(generate(64 * 1024)) };
+}
+
+const repeated = (unit) => (size) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+
+test('redaction takes linear time on long words that repeat where a rule starts', () => {
+  const cases = [
+    ['JWT starts (diagnostics)', redactDiagnosticText, repeated('-eyJ')],
+    ['JWT starts (failure)', redactFailureText, repeated('-eyJ')],
+    ['URL schemes without a query', redactFailureText, repeated('a://')],
+    ['URL userinfo-like schemes', redactFailureText, repeated('https://a:')],
+    ['query after a closed query', redactFailureText, (size) => `a://x?y)${repeated('a://')(size)}`],
+    ['bare hosts with paths', redactFailureText, repeated(',a.bc/')],
+    ['bare hosts with closed queries', redactFailureText, (size) => `${repeated(',a.bc?)')(size)}=`],
+    ['bare hosts with valueless queries', redactFailureText, repeated(',a.bc?x')],
+    // 자른 자리가 긴 낱말 뒤 짧은 낱말 가운데면 그 조각만 버린다.
+    ['cut word after a long word', (text) => redactableHead(text, text.length - 4), (size) => `${'x'.repeat(size - 10)} ${'y'.repeat(9)}`],
+  ];
+  for (const [name, redact, generate] of cases) {
+    const { small, large } = redactionTimes(redact, generate);
+    assert.ok(large <= small * 8 + 50, `${name}: 64 KB took ${large.toFixed(1)} ms vs ${small.toFixed(1)} ms for 16 KB`);
+  }
 });
 
 test('resetAt comes only from structured data or the Claude epoch suffix, never from a wall-clock phrase', () => {
