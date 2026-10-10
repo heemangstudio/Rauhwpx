@@ -1272,6 +1272,44 @@ ipcMain.handle('desktop:verify-native-pick', (event, documentId, handleId) => {
   if (typeof handleId !== 'string' || !handleId) return false;
   return nativeFiles.verifyPick(session.sessionId, documentId, handleId);
 });
+// 문서 홈: 기억한 위치만 살핀다. 핸들을 만들거나 경로를 점유하지 않는다.
+const HOME_THUMBNAIL_SOURCE_MAX_BYTES = 24 * 1024 * 1024;
+ipcMain.handle('desktop:inspect-native-documents', async (event, documentIds) => {
+  sessionForEvent(event);
+  if (!Array.isArray(documentIds)) return [];
+  const ids = [...new Set(documentIds.filter((id) => typeof id === 'string' && id))].slice(0, 200);
+  return Promise.all(ids.map(async (documentId) => ({
+    documentId,
+    ...await nativeFiles.inspectDocument(documentId),
+  })));
+});
+ipcMain.handle('desktop:relocate-native-document', async (event, documentId, probeId) => {
+  const session = sessionForEvent(event);
+  if (typeof documentId !== 'string' || !documentId) return null;
+  if (typeof probeId !== 'string' || !probeId) return null;
+  const relocated = await nativeFiles.relocateDocument(session.sessionId, documentId, probeId);
+  if (relocated) await persistNativeBookmarks();
+  return relocated;
+});
+ipcMain.handle('desktop:read-remembered-native-document', async (event, documentId) => {
+  sessionForEvent(event);
+  if (typeof documentId !== 'string' || !documentId) return null;
+  return nativeFiles.readRememberedDocument(documentId, { maxBytes: HOME_THUMBNAIL_SOURCE_MAX_BYTES });
+});
+ipcMain.handle('desktop:reveal-native-document', async (event, documentId) => {
+  sessionForEvent(event);
+  if (typeof documentId !== 'string' || !documentId) return false;
+  if ((await nativeFiles.inspectDocument(documentId)).state !== 'present') return false;
+  shell.showItemInFolder(nativeFiles.bookmarkPathFor(documentId));
+  return true;
+});
+ipcMain.handle('desktop:open-native-document-window', async (event, documentId) => {
+  sessionForEvent(event);
+  if (typeof documentId !== 'string' || !documentId) return false;
+  if ((await nativeFiles.inspectDocument(documentId)).state !== 'present') return false;
+  queueLaunch(launchRequest({ openFiles: [nativeFiles.bookmarkPathFor(documentId)], source: 'document-home' }));
+  return true;
+});
 ipcMain.handle('desktop:document-reserve', (event, identity, nativeHandleId, slotId) => {
   const session = sessionForEvent(event);
   const canonicalPath = nativeHandleId

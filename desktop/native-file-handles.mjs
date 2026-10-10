@@ -1396,6 +1396,69 @@ export class NativeFileHandleRegistry {
     return this.#bookmarks.get(documentId)?.path ?? null;
   }
 
+  /**
+   * 기억한 위치의 파일이 아직 있는지 본다. 핸들을 만들거나 경로를 점유하지 않는다.
+   * 파일만 없고 폴더가 남아 있으면 missing(지워졌거나 옮겨짐), 폴더째 없으면 꺼낸 디스크일 수
+   * 있으므로 unavailable 로 구분한다.
+   */
+  async inspectDocument(documentId) {
+    const bookmark = this.#bookmarks.get(documentId);
+    if (!bookmark) return { state: 'unknown' };
+    try {
+      const info = await this.#stat(bookmark.path);
+      if (!info.isFile() && !info.isDirectory()) return { state: 'unavailable' };
+      return {
+        state: 'present',
+        fileName: basename(bookmark.path),
+        size: info.isFile() ? info.size : 0,
+        modifiedAt: Math.round(info.mtimeMs ?? 0),
+      };
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') return { state: 'unavailable' };
+    }
+    try {
+      return (await this.#stat(dirname(bookmark.path))).isDirectory()
+        ? { state: 'missing' }
+        : { state: 'unavailable' };
+    } catch {
+      return { state: 'unavailable' };
+    }
+  }
+
+  /**
+   * 근처 찾기로 받은 후보를 이 문서의 새 위치로 기억한다. 렌더러가 후보의 내용 digest 를
+   * 이 문서의 것과 맞춘 뒤에만 부른다. 그 경로를 기억하던 다른 문서는 잊는다.
+   */
+  async relocateDocument(sessionId, documentId, probeId) {
+    const probe = this.#probeForSender(sessionId, probeId);
+    const bookmark = this.#bookmarks.get(documentId);
+    if (!bookmark) return null;
+    const canonicalPath = await this.#canonicalize(probe.path);
+    const ownershipPath = this.#ownershipKey(canonicalPath);
+    for (const [otherDocumentId, other] of this.#bookmarks) {
+      if (otherDocumentId !== documentId && this.#ownershipKey(other.path) === ownershipPath) {
+        this.#bookmarks.delete(otherDocumentId);
+      }
+    }
+    bookmark.path = canonicalPath;
+    this.#probes.delete(probeId);
+    return { fileName: basename(canonicalPath) };
+  }
+
+  /** 미리보기용으로 기억한 위치의 문서 바이트를 읽는다. 폴더 묶음이나 큰 파일은 읽지 않는다. */
+  async readRememberedDocument(documentId, { maxBytes }) {
+    const bookmark = this.#bookmarks.get(documentId);
+    if (!bookmark) return null;
+    let info;
+    try {
+      info = await this.#stat(bookmark.path);
+    } catch {
+      return null;
+    }
+    if (!info.isFile() || info.size > maxBytes) return null;
+    return { name: basename(bookmark.path), bytes: await this.#readFile(bookmark.path) };
+  }
+
   async searchNearby(sessionId, documentId, { basenameHint = '' } = {}) {
     this.#forgetSessionProbes(sessionId);
     const probes = [];

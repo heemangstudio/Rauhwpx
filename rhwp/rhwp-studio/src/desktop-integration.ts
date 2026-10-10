@@ -136,6 +136,12 @@ export interface RhwpDesktopApi {
     probeId: string,
   ) => Promise<NativeFileHandleDescriptor | { owned: true } | null>;
   verifyNativePick?: (documentId: string, handleId: string) => Promise<boolean>;
+  /** 문서 홈: 기억한 위치의 파일 상태. 핸들을 만들지 않는다. */
+  inspectNativeDocuments?: (documentIds: string[]) => Promise<ReadonlyArray<NativeDocumentPresence & { documentId: string }>>;
+  relocateNativeDocument?: (documentId: string, probeId: string) => Promise<{ fileName: string } | null>;
+  readRememberedNativeDocument?: (documentId: string) => Promise<NativeFileReadResult | null>;
+  revealNativeDocument?: (documentId: string) => Promise<boolean>;
+  openNativeDocumentWindow?: (documentId: string) => Promise<boolean>;
   /** slotId 를 생략하면 창의 기본 문서 자리다. 한 창이 문서마다 다른 자리를 쓴다. */
   reserveDocument?: (
     identity: DocumentOwnershipIdentity,
@@ -1055,6 +1061,94 @@ export async function verifyNativePick(
   } catch {
     return false;
   }
+}
+
+/** 기억한 위치의 파일 상태. missing 은 폴더는 남고 파일만 없을 때, unavailable 은 폴더째 닿지 않을 때다. */
+export type NativeDocumentPresence =
+  | { state: 'present'; fileName: string; size: number; modifiedAt: number }
+  | { state: 'missing' | 'unavailable' | 'unknown' };
+
+/** 데스크톱이 아니면 null. 응답에 없는 문서는 unknown 으로 친다. */
+export async function inspectNativeDocuments(
+  documentIds: readonly string[],
+  win?: DesktopHost,
+): Promise<Map<string, NativeDocumentPresence> | null> {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.inspectNativeDocuments) return null;
+  const result = new Map<string, NativeDocumentPresence>();
+  if (!documentIds.length) return result;
+  try {
+    for (const item of await api.inspectNativeDocuments([...documentIds])) {
+      if (!item || typeof item.documentId !== 'string') continue;
+      if (item.state === 'present') {
+        if (typeof item.fileName !== 'string' || !item.fileName) continue;
+        result.set(item.documentId, {
+          state: 'present',
+          fileName: item.fileName,
+          size: Number(item.size) || 0,
+          modifiedAt: Number(item.modifiedAt) || 0,
+        });
+      } else if (item.state === 'missing' || item.state === 'unavailable') {
+        result.set(item.documentId, { state: item.state });
+      }
+    }
+  } catch (error) {
+    console.warn('[desktop] native document inspect failed:', error);
+    return null;
+  }
+  return result;
+}
+
+/** 근처 찾기 후보를 이 문서의 새 위치로 기억시킨다. 옮긴 뒤의 파일 이름을 돌려준다. */
+export async function relocateNativeDocument(
+  documentId: string,
+  probeId: string,
+  win?: DesktopHost,
+): Promise<string | null> {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.relocateNativeDocument) return null;
+  const result = await api.relocateNativeDocument(documentId, probeId);
+  return result && typeof result.fileName === 'string' && result.fileName ? result.fileName : null;
+}
+
+export async function readRememberedNativeDocument(
+  documentId: string,
+  win?: DesktopHost,
+): Promise<{ bytes: Uint8Array; fileName: string } | null> {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.readRememberedNativeDocument) return null;
+  const result = await api.readRememberedNativeDocument(documentId);
+  if (!result) return null;
+  const checked = checkedNativeFileReadResult(result);
+  return { bytes: checked.bytes, fileName: checked.name };
+}
+
+export function canRevealNativeDocument(win?: DesktopHost): boolean {
+  return typeof desktopHost(win)?.rhwpDesktop?.revealNativeDocument === 'function';
+}
+
+export async function revealNativeDocument(documentId: string, win?: DesktopHost): Promise<boolean> {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.revealNativeDocument) return false;
+  return await api.revealNativeDocument(documentId) === true;
+}
+
+export function canOpenNativeDocumentWindow(win?: DesktopHost): boolean {
+  return typeof desktopHost(win)?.rhwpDesktop?.openNativeDocumentWindow === 'function';
+}
+
+export async function openNativeDocumentWindow(documentId: string, win?: DesktopHost): Promise<boolean> {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.openNativeDocumentWindow) return false;
+  return await api.openNativeDocumentWindow(documentId) === true;
+}
+
+/** 파일 관리자 이름. macOS 는 Finder, Windows 는 탐색기. */
+export function desktopFileManagerName(win?: DesktopHost): string {
+  const platform = desktopHost(win)?.rhwpDesktop?.platform;
+  if (platform === 'darwin') return 'Finder';
+  if (platform === 'win32') return '탐색기';
+  return '파일 관리자';
 }
 
 export async function releaseReplacedNativeFileHandle(
