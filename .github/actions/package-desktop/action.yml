@@ -70,6 +70,11 @@ runs:
       env:
         PACKAGE_VERSION: ${{ inputs.version }}
       run: npm version --no-git-tag-version "$PACKAGE_VERSION"
+    # Keyed on the package version, so every nightly package gets the nightly
+    # icon and release packages keep theirs. Must run before Studio and packaging.
+    - name: Use the nightly icon for nightly versions
+      shell: bash
+      run: node scripts/apply-nightly-icon.mjs
     - name: Build Studio application
       shell: bash
       run: npm run build:studio:app

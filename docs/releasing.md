@@ -19,6 +19,8 @@ Run the full engine, browser, and agent suites through pull-request CI before me
 
 [Nightly verification](../.github/workflows/nightly.yml) runs daily at 03:00 Asia/Seoul (`0 18 * * *` UTC) on Blacksmith and also supports manual verification runs. It runs the Rust workspace tests and audits, builds the WASM engine, and uses that exact build for application, browser and security checks. Nightly installer builds and GitHub Release publication are disabled.
 
+Nightly packages use the nightly icon from [`rhwp/assets/logo/nightly/`](../rhwp/assets/logo/nightly/README.md). The desktop package action runs `scripts/apply-nightly-icon.mjs` after it sets the package version. Every `-nightly.` version replaces the macOS, Windows, Linux and Studio icons, and release versions keep the release icon. `npm run verify:package` fails a nightly package without the nightly icon, or a release package with it.
+
 ## Installing desktop updates
 
 The desktop updater installs only after the user chooses **Restart to install** or **Install now**, approves document closure, and the app stops its agent hub. The final handoff uses `electron-updater.quitAndInstall()` on macOS, Windows, and AppImage builds. On macOS, this also waits for the native updater to stage the downloaded archive before restarting. Keep `autoInstallOnAppQuit` disabled so ordinary quits cannot start an installer outside this flow.

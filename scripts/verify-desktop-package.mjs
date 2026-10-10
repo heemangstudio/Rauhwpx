@@ -1,8 +1,9 @@
 import { existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { listPackage } from '@electron/asar';
+import { extractFile, listPackage } from '@electron/asar';
 
 import { packagedStagedNativeExtractorPath } from '../desktop/native-rhwp-path.mjs';
+import { assertPackagedIcon } from './apply-nightly-icon.mjs';
 import { normalizeArchivePath } from './desktop-package-paths.mjs';
 import { smokePackagedAgentHub, smokePackagedSetupTerminal } from './packaged-agent-hub-smoke.mjs';
 
@@ -84,6 +85,12 @@ for (const prefix of forbiddenArchivePrefixes) {
     throw new Error(`Development-only archive path was packaged: ${prefix}`);
   }
 }
+
+// Nightly packages must carry the nightly icon, release packages must not.
+assertPackagedIcon({
+  version: JSON.parse(extractFile(archive, 'package.json').toString('utf8')).version,
+  favicon: extractFile(archive, join('rhwp', 'rhwp-studio', 'dist', 'favicon.ico')),
+});
 
 if (process.platform !== 'win32' && (statSync(extractor).mode & 0o111) === 0) {
   throw new Error(`Packaged document extractor is not executable: ${extractor}`);
