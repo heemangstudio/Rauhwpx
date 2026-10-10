@@ -2076,9 +2076,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const workspaceBar = el('header', 'ag-workspace-bar');
   workspaceBar.addEventListener('transitionend', (event) => {
     if (event.target === workspaceBar && event.propertyName === 'grid-template-columns') {
-      root.classList.remove('ag-rail-brand-transition');
+      clearRailBrandTransition();
     }
   });
+  workspaceBar.addEventListener('transitioncancel', (event) => {
+    if (event.target !== workspaceBar || event.propertyName !== 'grid-template-columns') return;
+    window.requestAnimationFrame(() => {
+      const railStillMoving = workspaceBar.getAnimations().some((animation) =>
+        animation instanceof CSSTransition && animation.transitionProperty === 'grid-template-columns');
+      if (!railStillMoving) clearRailBrandTransition();
+    });
+  });
+  const railReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let railReducedMotionListener: ((event: MediaQueryListEvent) => void) | null = null;
+  function clearRailBrandTransition(): void {
+    root.classList.remove('ag-rail-brand-transition');
+    if (railReducedMotionListener) {
+      railReducedMotion.removeEventListener('change', railReducedMotionListener);
+      railReducedMotionListener = null;
+    }
+  }
   const workspaceDrawerScrim = el('button', 'ag-workspace-drawer-scrim');
   workspaceDrawerScrim.type = 'button';
   workspaceDrawerScrim.tabIndex = -1;
@@ -4088,10 +4105,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const compact = isCompactWorkspace();
     const expanded = fullscreen && (compact ? compactThreadsRailOpen : !threadsRailCollapsed);
     if (fullscreen && !compact && previousThreadsRailExpanded !== null && previousThreadsRailExpanded !== expanded
-      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      && !railReducedMotion.matches) {
       root.classList.add('ag-rail-brand-transition');
+      if (!railReducedMotionListener) {
+        railReducedMotionListener = (event) => {
+          if (event.matches) clearRailBrandTransition();
+        };
+        railReducedMotion.addEventListener('change', railReducedMotionListener);
+      }
     } else if (!fullscreen || compact) {
-      root.classList.remove('ag-rail-brand-transition');
+      clearRailBrandTransition();
     }
     previousThreadsRailExpanded = expanded;
     root.classList.toggle('ag-compact-rail-open', compact && compactThreadsRailOpen);
