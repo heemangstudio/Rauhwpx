@@ -147,9 +147,10 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   }
   async function signIn(account: Account, authenticationMethod?: 'mac-passkey') {
     await mutate('sign-in', { accountId: account.id, url: account.origin, ...(authenticationMethod ? { authenticationMethod } : {}) });
-    if (!message.textContent) message.textContent = '별도로 열린 Chromium 창에서 로그인과 추가 인증을 마친 뒤 이 계정의 로그인 확인을 누르세요.';
+    if (!disposed && !message.textContent) message.textContent = authenticationMethod === 'mac-passkey' ? '별도로 열린 Google Chrome에서 Mac 패스키 인증을 마친 뒤 이 계정의 로그인 확인을 누르세요.' : '별도로 열린 Chromium 창에서 로그인과 추가 인증을 마친 뒤 이 계정의 로그인 확인을 누르세요.';
   }
   function accountForm(account?: Partial<Account>, sessionOnly = false, openSignIn = false) {
+    if (localApi && !sessionOnly) return;
     clearForm(); formTitle = account?.id ? '비밀번호 변경' : openSignIn ? '계정 연결' : sessionOnly ? '계정 연결' : '비밀번호 추가'; form = createBrowserAccountForm({ request: options.request, submit: options.submit, canSubmit: options.isConnected, account, sessionOnly, openSignIn, complete: (saved) => { if (saved?.id) { accountKind = saved.sessionStatus === 'saved' ? 'passwords' : 'sessions'; providerFilter = ''; accountSearch = ''; selectedAccountId = saved.id; accounts = [...accounts.filter(account => account.id !== saved.id), saved]; } clearForm(); if (openSignIn && saved?.id) void signIn(saved); else void load(); }, cancel: () => { clearForm(); render(); } }); render();
   }
   function section(title: string, description?: string) {
@@ -177,8 +178,8 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       filter.value = providerFilter; filter.addEventListener('change', () => { clearForm(); providerFilter = filter.value; renderAccounts(); });
       const connect = button('계정 연결', () => accountForm(undefined, true, true)); connect.disabled = busy || !options.isConnected();
       const add = button('비밀번호 추가', () => accountForm()); add.title = '비밀번호 저장'; add.disabled = busy || !secureStorage || !options.isConnected();
-      toolbar.append(search, filter, connect, add);
-      if (!secureStorage && options.isConnected()) body.append(node('p', 'ag-browser-empty', '보안 저장소를 사용할 수 없어 비밀번호를 저장할 수 없습니다.'));
+      toolbar.append(search, filter, connect); if (!localApi) toolbar.append(add);
+      if (!localApi && !secureStorage && options.isConnected()) body.append(node('p', 'ag-browser-empty', '보안 저장소를 사용할 수 없어 비밀번호를 저장할 수 없습니다.'));
       const kindBar = node('div', 'ag-browser-account-kinds'); kindBar.setAttribute('role', 'group'); kindBar.setAttribute('aria-label', '계정 종류');
       for (const [kind, label] of [['sessions', '연결된 계정'], ['passwords', '저장된 비밀번호']]) {
         const count = allAccounts().filter(account => kind === 'sessions' ? account.sessionStatus !== 'saved' : account.hasPassword).length;
@@ -228,11 +229,14 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
         if (passkeys?.supported) {
           const passkey = button('Chrome에서 Mac 패스키 사용', () => void signIn(account, 'mac-passkey'));
           passkey.disabled = login.disabled; loginActions.append(passkey);
-        } else if (passkeys) details.append(node('p', 'ag-browser-empty', 'Mac 패스키를 사용하려면 macOS 13.5 이상과 설치된 Google Chrome이 필요합니다.'));
+        } else if (passkeys) {
+          const reason = ({ 'macos-required': 'Mac 패스키는 Mac에서 사용할 수 있습니다.', 'macos-13.5-required': 'Mac 패스키를 사용하려면 macOS 13.5 이상이 필요합니다.', 'macos-version-unavailable': 'macOS 버전을 확인하지 못했습니다. 브라우저 설정을 새로고침하세요.', 'signed-chrome-required': 'Mac 패스키를 사용하려면 공식 Google Chrome을 설치하세요.' } as Record<string, string>)[passkeys.reason ?? ''];
+          details.append(node('p', 'ag-browser-empty', reason ?? 'Mac 패스키 사용 가능 여부를 확인하지 못했습니다. 브라우저 설정을 새로고침하세요.'));
+        }
         const confirm = button('로그인 확인', () => void mutate('confirm-sign-in', { accountId: account.id })); confirm.disabled = busy || Boolean(signInState?.accountId && signInState.accountId !== account.id); loginActions.append(confirm);
         if (signInState?.accountId === account.id) details.append(node('p', 'ag-browser-empty', '별도 창에서 로그인을 마친 뒤 로그인 확인을 누르세요.'));
         const passwordActions = row('비밀번호', account.hasPassword ? '저장됨' : '없음', details);
-        const update = button('비밀번호 변경', () => accountForm(account)); update.disabled = busy || !secureStorage; passwordActions.append(update);
+        if (!localApi) { const update = button('비밀번호 변경', () => accountForm(account)); update.disabled = busy || !secureStorage; passwordActions.append(update); }
         const accessActions = row('계정 사용', account.agentReuseApproved ? '허용됨' : '승인 철회됨', details);
         action(accessActions, account.agentReuseApproved ? '사용 승인 철회' : '사용 허용', account.agentReuseApproved ? 'accounts.revoke' : 'accounts.approve', { accountId: account.id });
         const management = node('div', 'ag-browser-account-management'); details.append(management);
@@ -328,7 +332,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     finally { localBusy = false; if (!disposed) render(); }
   }
   async function load() {
-    if (disposed) return;
+    if (disposed || localBusy) return;
     if (localApi) await localAction(async () => { await loadLocal(); return ''; });
     if (!options.isConnected()) { render(); return; } const current = ++generation; message.textContent = '불러오는 중…';
     const results = await Promise.allSettled([options.request('accounts.list'), options.request('policy.list'), options.request('configuration.get'), options.request('status')]);
