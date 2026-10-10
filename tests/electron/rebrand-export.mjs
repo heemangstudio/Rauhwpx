@@ -1,7 +1,7 @@
 // Electron entry for desktop-rebrand-export.test.mjs. Builds a real 2.0.11-style
 // profile on the hamaeditor://app origin, then runs the export and handoff the
 // desktop app uses and prints what it observed as one JSON line.
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -109,6 +109,29 @@ app.whenReady().then(async () => {
     const again = await controllerFor('normal', profileDir);
     await again.prepare();
     report.normal.nextLaunchTake = await again.take();
+
+    // Variants of the real reader: one dies while reading the autosave database, one has a 1 MB record limit.
+    const realPreload = await readFile(path.join(here, '..', '..', 'desktop', 'rebrand-export-preload.cjs'), 'utf8');
+    const crashOnAutosave = path.join(root, 'crash-on-autosave-preload.cjs');
+    await writeFile(crashOnAutosave, `if (new URLSearchParams(location.search).get('name') === 'hamaeditorAutosave') process.crash();\n${realPreload}`);
+    const smallRecords = path.join(root, 'small-records-preload.cjs');
+    const limited = realPreload.replace('const MAX_RECORD_BYTES = 64 * 1024 * 1024;', 'const MAX_RECORD_BYTES = 1024 * 1024;');
+    if (limited === realPreload) throw new Error('record limit not found in the reader');
+    await writeFile(smallRecords, limited);
+    const summarize = async (controller) => {
+      await controller.prepare();
+      const handoff = await controller.take();
+      const parts = [];
+      for (let index = 0; index < (handoff?.chunkCount ?? 0); index += 1) parts.push(await controller.chunk(handoff.token, index));
+      return {
+        handoff: Boolean(handoff),
+        errors: parts.filter((chunk) => chunk?.kind === 'error').map((chunk) => chunk.database),
+        skipped: parts.filter((chunk) => chunk?.kind === 'skipped').map((chunk) => chunk.key),
+        recordKeys: parts.filter((chunk) => chunk?.kind === 'records').flatMap((chunk) => chunk.records.map((record) => record.key)).sort(),
+      };
+    };
+    report.isolated = await summarize(await controllerFor('isolated', profileDir, { preloadPath: crashOnAutosave }));
+    report.oversized = await summarize(await controllerFor('oversized', profileDir, { preloadPath: smallRecords }));
 
     const silent = await controllerFor('silent', profileDir, {
       preloadPath: path.join(here, 'silent-preload.cjs'),

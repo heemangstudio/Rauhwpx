@@ -60,10 +60,23 @@ test('the desktop exports a real 2.0.11 profile in chunks, hands it over once an
   assert.deepEqual(normal.marker.storageLedger, { 'rhwpAgentThreads/threads': ['"thread-small"'] });
   assert.equal(normal.nextLaunchTake, null, 'a finished import does not run again');
 
+  assert.deepEqual(report.isolated, {
+    handoff: true,
+    errors: ['hamaeditorAutosave'],
+    skipped: [],
+    recordKeys: ['thread-big', 'thread-small'],
+  }, 'a database whose reader dies does not take the others down');
+  assert.deepEqual(report.oversized, {
+    handoff: true,
+    errors: [],
+    skipped: ['thread-big'],
+    recordKeys: ['draft-1', 'thread-small'],
+  }, 'a record too large to move is reported and the rest still arrives');
+
   assert.equal(report.timeout.take, null);
   assert.ok(report.timeout.elapsedMs < 6000, `a silent reader is abandoned after its timeout (${report.timeout.elapsedMs} ms)`);
   assert.equal(report.timeout.marker.storageFingerprint, undefined, 'a timed-out export is retried later');
-  assert.equal(report.timeout.marker.storageAttempts?.count, 1);
+  assert.equal(report.timeout.marker.storageAttempts, undefined, 'a timeout does not count toward giving up');
 
   assert.equal(report.crash.take, null);
   assert.ok(report.crash.elapsedMs < 8000, `a crashed reader fails without waiting for the timeout (${report.crash.elapsedMs} ms)`);

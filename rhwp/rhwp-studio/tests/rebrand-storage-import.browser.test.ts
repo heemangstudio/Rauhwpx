@@ -202,3 +202,33 @@ test('one record that cannot be stored is skipped and the rest of its store stil
   assert.deepEqual(await step(page, (fixture) => fixture.listRecentIds()), ['kept']);
   await page.close();
 });
+
+test('a database the desktop could not read keeps the import open while the rest joins', { timeout: 60_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  await step(page, (fixture) => fixture.reset());
+  const result = await step(page, async (_fixture, importer) => {
+    const thread = (id: string) => ({
+      id, title: id, createdAt: 1, updatedAt: 2, agent: 'claude', model: 'sonnet', effort: 'high',
+      messages: [{ role: 'user', text: id }],
+    });
+    const outcome = await importer.importRebrandedStorage(importer.assembleRebrandedChunks([
+      { kind: 'localStorage', entries: [] },
+      {
+        kind: 'database', name: 'hamaeditorAgentThreads', version: 1,
+        stores: [{ name: 'threads', keyPath: 'id', autoIncrement: false, indexes: [] }],
+      },
+      { kind: 'records', database: 'hamaeditorAgentThreads', store: 'threads', records: [{ key: 'thread-ok', value: thread('thread-ok') }] },
+      { kind: 'skipped', database: 'hamaeditorAgentThreads', store: 'threads', key: 'thread-huge', reason: 'too large' },
+      { kind: 'error', database: 'hamaeditorAutosave', message: 'reader stopped' },
+    ]));
+    return {
+      complete: outcome.complete,
+      failed: outcome.failures.some((failure) => failure.startsWith('rhwpStudioAutosave')),
+      threadLedger: outcome.ledger['rhwpAgentThreads/threads']?.slice().sort(),
+    };
+  });
+  assert.deepEqual(result, { complete: false, failed: true, threadLedger: ['"thread-huge"', '"thread-ok"'] });
+  assert.deepEqual(await step(page, (fixture) => fixture.canonicalThreadIds()), ['thread-ok']);
+  await page.close();
+});

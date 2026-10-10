@@ -40,16 +40,27 @@ export interface RebrandedDatabase {
   stores: RebrandedStore[];
 }
 
+/** 데스크톱이 2.0.11 저장소를 읽다가 겪은 문제. */
+export interface RebrandedExportProblems {
+  /** 읽지 못한 데이터베이스나 저장소. 다음 실행에서 다시 읽는다. */
+  failures: Array<{ database: string; store?: string; message: string; timedOut?: boolean }>;
+  /** 너무 커서 옮길 수 없는 기록. 다시 시도하지 않는다. */
+  skipped: Array<{ database: string; store: string; key: IDBValidKey; reason: string }>;
+}
+
 export interface RebrandedStorageDump {
   localStorage: Array<[string, string]>;
   databases: RebrandedDatabase[];
+  problems?: RebrandedExportProblems;
 }
 
 /** 메인 프로세스가 IPC 한 번에 넘기는 덤프 조각. */
 export type RebrandedStorageChunk =
   | { kind: 'localStorage'; entries: Array<[string, string]> }
   | { kind: 'database'; name: string; version: number; stores: Array<Omit<RebrandedStore, 'records'>> }
-  | { kind: 'records'; database: string; store: string; records: RebrandedRecord[] };
+  | { kind: 'records'; database: string; store: string; records: RebrandedRecord[] }
+  | { kind: 'error'; database: string; store?: string; message: string; timedOut?: boolean }
+  | { kind: 'skipped'; database: string; store: string; key: IDBValidKey; reason: string };
 
 /** 저장소 단위마다 이미 옮긴 2.0.11 기록의 키. */
 export type RebrandImportLedger = Record<string, string[]>;
@@ -277,7 +288,8 @@ export async function dumpRebrandedStorage(
 
 /** 데스크톱이 보낸 조각을 덤프 하나로 다시 모은다. */
 export function assembleRebrandedChunks(chunks: readonly RebrandedStorageChunk[]): RebrandedStorageDump {
-  const dump: RebrandedStorageDump = { localStorage: [], databases: [] };
+  const problems: RebrandedExportProblems = { failures: [], skipped: [] };
+  const dump: RebrandedStorageDump = { localStorage: [], databases: [], problems };
   const stores = new Map<string, RebrandedStore>();
   for (const chunk of chunks) {
     if (chunk?.kind === 'localStorage') {
@@ -294,6 +306,15 @@ export function assembleRebrandedChunks(chunks: readonly RebrandedStorageChunk[]
       const store = stores.get(`${chunk.database}\u0000${chunk.store}`);
       if (!store) throw new Error(`${chunk.database}/${chunk.store} 조각의 스키마가 없습니다`);
       store.records.push(...chunk.records);
+    } else if (chunk?.kind === 'error') {
+      problems.failures.push({
+        database: chunk.database,
+        ...(chunk.store ? { store: chunk.store } : {}),
+        message: chunk.message,
+        timedOut: chunk.timedOut === true,
+      });
+    } else if (chunk?.kind === 'skipped') {
+      problems.skipped.push({ database: chunk.database, store: chunk.store, key: chunk.key, reason: chunk.reason });
     }
   }
   return dump;
@@ -654,6 +675,19 @@ export async function importRebrandedStorage(
     });
   }
   let aborted = false;
+  for (const problem of dump.problems?.failures ?? []) {
+    const targetName = REBRANDED_DATABASES[problem.database] ?? problem.database;
+    result.failures.push(`${targetName}${problem.store ? `/${problem.store}` : ''}: 2.0.11 에서 읽지 못했습니다: ${problem.message}`);
+    if (problem.timedOut) aborted = true;
+  }
+  for (const problem of dump.problems?.skipped ?? []) {
+    const targetName = REBRANDED_DATABASES[problem.database] ?? problem.database;
+    const unit = targetName === VERSION_DATABASE ? `${VERSION_DATABASE}/rows:${problem.store}` : `${targetName}/${problem.store}`;
+    result.skipped.push(`${unit}: ${ledgerKey(problem.key)}: ${problem.reason}`);
+    const done = new Set(ledger[unit] ?? []);
+    done.add(ledgerKey(problem.key));
+    ledger[unit] = [...done];
+  }
   try {
     for (const database of databases) {
       checkAborted(context);

@@ -28,11 +28,53 @@ function withTimeout(promise, timeoutMs, message) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+function timeoutError(message) {
+  return Object.assign(new Error(message), { code: REBRAND_EXPORT_TIMEOUT_CODE });
+}
+
 /**
- * Reads the 2.0.11 Studio storage from a copy of its profile. A hidden window
- * opens the copy on the 2.0.11 origin; its preload sends the storage as
- * bounded chunks. Rejects when the renderer dies or the whole run, copy
- * included, exceeds `timeoutMs`.
+ * Reads one part of the copied profile in its own hidden window, so a reader
+ * that runs out of memory or crashes only loses that part. Resolves with the
+ * part's chunks; rejects when its renderer dies, it reports an error, or the
+ * deadline passes.
+ */
+function readPart({ BrowserWindow, exportSession, preloadPath, query, deadline, windows }) {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return Promise.reject(timeoutError('2.0.11 storage export ran out of time'));
+  const window = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      session: exportSession,
+      preload: preloadPath,
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  });
+  windows.add(window);
+  const chunks = [];
+  const reading = new Promise((resolve, reject) => {
+    const contents = window.webContents;
+    contents.on('render-process-gone', (_event, details) => {
+      reject(new Error(`2.0.11 storage reader stopped: ${details?.reason ?? 'unknown'}`));
+    });
+    contents.ipc.on('rebrand-export:chunk', (_event, chunk) => chunks.push(chunk));
+    contents.ipc.once('rebrand-export:done', () => resolve(chunks));
+    contents.ipc.once('rebrand-export:error', (_event, message) => reject(new Error(String(message))));
+    window.loadURL(`${REBRANDED_STUDIO_SCHEME}://${STUDIO_HOST}/export.html?${query}`).catch(reject);
+  });
+  return withTimeout(reading, remaining, '2.0.11 storage export timed out').finally(() => {
+    windows.delete(window);
+    if (!window.isDestroyed()) window.destroy();
+  });
+}
+
+/**
+ * Reads the 2.0.11 Studio storage from a copy of its profile. One hidden window
+ * lists Local Storage and the databases; each database is then read in its own
+ * window and reported as chunks. A database that fails becomes an `error`
+ * chunk and the others still arrive. Rejects only when the copy or the listing
+ * fails, or the whole run, copy included, exceeds `timeoutMs`.
  */
 export async function exportRebrandedStudioStorage({
   BrowserWindow,
@@ -43,10 +85,11 @@ export async function exportRebrandedStudioStorage({
   timeoutMs = REBRAND_EXPORT_TIMEOUT_MS,
   platform = process.platform,
 }) {
+  const deadline = Date.now() + timeoutMs;
   let cancelled = false;
-  let window = null;
   let exportSession = null;
   let snapshot = null;
+  const windows = new Set();
   const run = (async () => {
     snapshot = snapshotDirectory(tempDir);
     await snapshotBrowserStorage(sourceDir, snapshot);
@@ -55,27 +98,25 @@ export async function exportRebrandedStudioStorage({
     exportSession.protocol.handle(REBRANDED_STUDIO_SCHEME, () => new Response(EXPORT_PAGE, {
       headers: { 'content-type': 'text/html; charset=utf-8' },
     }));
-    window = new BrowserWindow({
-      show: false,
-      webPreferences: {
-        session: exportSession,
-        preload: preloadPath,
-        contextIsolation: true,
-        sandbox: true,
-        nodeIntegration: false,
-      },
-    });
-    const chunks = [];
-    return new Promise((resolve, reject) => {
-      const contents = window.webContents;
-      contents.on('render-process-gone', (_event, details) => {
-        reject(new Error(`2.0.11 storage reader stopped: ${details?.reason ?? 'unknown'}`));
-      });
-      contents.ipc.on('rebrand-export:chunk', (_event, chunk) => chunks.push(chunk));
-      contents.ipc.once('rebrand-export:done', () => resolve(chunks));
-      contents.ipc.once('rebrand-export:error', (_event, message) => reject(new Error(String(message))));
-      window.loadURL(`${REBRANDED_STUDIO_SCHEME}://${STUDIO_HOST}/export.html`).catch(reject);
-    });
+    const part = (query) => readPart({ BrowserWindow, exportSession, preloadPath, query, deadline, windows });
+    const index = await part('part=index');
+    const databases = index.find((chunk) => chunk?.kind === 'index')?.databases ?? [];
+    const chunks = index.filter((chunk) => chunk?.kind !== 'index');
+    for (const name of databases) {
+      if (cancelled) return null;
+      try {
+        chunks.push(...await part(`part=database&name=${encodeURIComponent(name)}`));
+      } catch (error) {
+        // A half-read database is dropped whole; it is read again on a later launch.
+        chunks.push({
+          kind: 'error',
+          database: name,
+          message: String(error?.message ?? error),
+          timedOut: error?.code === REBRAND_EXPORT_TIMEOUT_CODE,
+        });
+      }
+    }
+    return chunks;
   })();
   // A copy that outlives the timeout must not surface as an unhandled rejection.
   run.catch(() => {});
@@ -83,7 +124,7 @@ export async function exportRebrandedStudioStorage({
     return await withTimeout(run, timeoutMs, '2.0.11 storage export timed out');
   } finally {
     cancelled = true;
-    if (window && !window.isDestroyed()) window.destroy();
+    for (const window of windows) if (!window.isDestroyed()) window.destroy();
     exportSession?.protocol.unhandle(REBRANDED_STUDIO_SCHEME);
     // Windows keeps the session files open until the app quits; the next launch removes them.
     if (snapshot && platform !== 'win32') await rm(snapshot, { recursive: true, force: true }).catch(() => {});
@@ -95,10 +136,12 @@ function ledgerSize(ledger) {
   return Object.values(ledger).reduce((total, keys) => total + (Array.isArray(keys) ? keys.length : 0), 0);
 }
 
+/** Anything to merge or report. A database that failed to export still needs Studio to count it as a failure. */
 function hasStorage(chunks) {
   return chunks.some((chunk) => (
     (chunk?.kind === 'localStorage' && chunk.entries?.length > 0)
     || chunk?.kind === 'database'
+    || chunk?.kind === 'error'
   ));
 }
 
