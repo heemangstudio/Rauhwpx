@@ -291,10 +291,13 @@ export async function planRebrandImport({ userDataDir, rebrandedDir, platform = 
   const busy = fingerprint !== null && await (inUse ?? isChromiumProfileInUse)(rebrandedDir, { platform });
   const pending = fingerprint !== null && marker.storageFingerprint !== fingerprint;
   const attempts = marker.storageAttempts?.fingerprint === fingerprint ? marker.storageAttempts.count ?? 0 : 0;
+  // Files merge once per state of the 2.0.11 profile, even while its storage waits or was given up on.
+  const filesKey = fingerprint ?? 'no-storage';
   return {
     marker,
     fingerprint,
-    importFiles: !marker.filesImportedAt || pending,
+    filesKey,
+    importFiles: marker.filesImportedFor !== filesKey,
     exportStorage: pending && !busy && attempts < MAX_STORAGE_IMPORT_ATTEMPTS,
     busy,
   };

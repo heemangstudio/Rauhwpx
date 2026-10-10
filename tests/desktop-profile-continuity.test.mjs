@@ -152,7 +152,10 @@ test('2.0.11 Studio storage is exported once per change and never while 2.0.11 r
   const busy = await planRebrandImport({ userDataDir: target, rebrandedDir: source, inUse: async () => true });
   assert.equal(busy.exportStorage, false);
 
-  await writeRebrandImportMarker(target, { filesImportedAt: 'now', storageFingerprint: first.fingerprint }, { write: plainWrite });
+  await writeRebrandImportMarker(target, {
+    filesImportedFor: first.filesKey,
+    storageFingerprint: first.fingerprint,
+  }, { write: plainWrite });
   const done = await planRebrandImport({ userDataDir: target, rebrandedDir: source, inUse: idle });
   assert.equal(done.exportStorage, false);
   assert.equal(done.importFiles, false);
@@ -161,6 +164,7 @@ test('2.0.11 Studio storage is exported once per change and never while 2.0.11 r
   await write(path.join(source, 'IndexedDB', 'hamaeditor_app_0.indexeddb.leveldb', '000006.ldb'), 'more threads');
   const changed = await planRebrandImport({ userDataDir: target, rebrandedDir: source, inUse: idle });
   assert.equal(changed.exportStorage, true);
+  assert.equal(changed.importFiles, true, 'new 2.0.11 activity merges its files again');
 
   assert.equal(await planRebrandImport({ userDataDir: target, rebrandedDir: target }), null);
 });
@@ -240,4 +244,37 @@ test('stale 2.0.11 runtime folders in temp are cleaned unless they still hold a 
   await assert.rejects(fs.stat(dead), { code: 'ENOENT' });
   await fs.stat(alive);
   await fs.stat(pending);
+});
+
+test('2.0.11 files merge once per profile state even while its storage waits or keeps failing', async (t) => {
+  const root = await tempDir(t, 'files-once');
+  const source = path.join(root, 'HamaEditor');
+  const target = path.join(root, 'Rauhwpx');
+  await fs.mkdir(target, { recursive: true });
+  await write(path.join(source, 'IndexedDB', 'hamaeditor_app_0.indexeddb.leveldb', '000005.ldb'), 'threads');
+  let fileMerges = 0;
+  const launch = (busy) => createRebrandImportController({
+    BrowserWindow: function BrowserWindow() { throw new Error('reader unavailable'); },
+    session: { fromPath: () => { throw new Error('reader unavailable'); } },
+    userDataDir: target,
+    rebrandedDir: source,
+    tempDir: path.join(root, 'temp'),
+    preloadPath: path.join(root, 'unused.cjs'),
+    inUse: async () => busy,
+    importFiles: async () => {
+      fileMerges += 1;
+      return { documentIdAliases: { 'doc-2011': 'doc-2010' }, results: {} };
+    },
+    log: { log() {}, warn() {} },
+  });
+
+  for (const busy of [true, true, false, false, false, false, false, false, false]) {
+    const controller = launch(busy);
+    await controller.prepare();
+    await controller.take();
+  }
+
+  assert.equal(fileMerges, 1);
+  const marker = JSON.parse(await fs.readFile(path.join(target, 'rebrand-import.json'), 'utf8'));
+  assert.deepEqual(marker.documentIdAliases, { 'doc-2011': 'doc-2010' }, 'later launches reuse the merged aliases');
 });

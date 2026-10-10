@@ -112,6 +112,7 @@ export function createRebrandImportController({
   log = console,
   importFiles = importRebrandedProfileFiles,
   writeMarker = writeRebrandImportMarker,
+  inUse,
 }) {
   let pending = Promise.resolve(null);
   let marker = {};
@@ -124,16 +125,20 @@ export function createRebrandImportController({
 
   async function prepare() {
     await removeStaleSnapshots(tempDir);
-    const plan = await planRebrandImport({ userDataDir, rebrandedDir, platform });
+    const plan = await planRebrandImport({ userDataDir, rebrandedDir, platform, inUse });
     if (!plan) return;
     marker = plan.marker;
     if (plan.busy) log.warn?.('[hamaeditor] 2.0.11 is running; its chats and drafts import on a later launch');
-    let documentIdAliases = {};
+    let documentIdAliases = marker.documentIdAliases ?? {};
     if (plan.importFiles) {
       try {
         const imported = await importFiles({ sourceDir: rebrandedDir, targetDir: userDataDir, platform });
         documentIdAliases = imported.documentIdAliases;
-        await record({ filesImportedAt: new Date().toISOString() });
+        await record({
+          filesImportedFor: plan.filesKey,
+          filesImportedAt: new Date().toISOString(),
+          documentIdAliases,
+        });
         log.log?.('[hamaeditor] imported 2.0.11 profile files:', JSON.stringify(imported.results));
       } catch (error) {
         // Without the merged bookmarks, chats for files both versions opened would attach
