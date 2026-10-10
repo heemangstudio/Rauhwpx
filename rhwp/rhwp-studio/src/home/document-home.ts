@@ -151,7 +151,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   const brand = el('span', 'dh-brand');
   const brandMark = el('span', 'ag-rau-icon dh-brand-mark');
   brandMark.setAttribute('aria-hidden', 'true');
-  brand.append(brandMark, el('span', 'dh-brand-name', 'Rauhwpx'));
+  brand.append(brandMark, el('span', 'dh-brand-name', 'HamaEditor'));
   const back = button('dh-back', '');
   back.append(icon(ICONS.back, 14), el('span', 'dh-back-label'));
   topbar.append(brand, back);
