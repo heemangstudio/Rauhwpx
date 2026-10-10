@@ -139,8 +139,8 @@ function sessionFixture(permissionProfile: 'safe' | 'unrestricted') {
       turn += 1;
       frame({ type: 'agent-event', event: { type: 'turn-start', agent: 'claude', turnId: `turn-${turn}` } });
     },
-    endTurn() {
-      frame({ type: 'agent-event', event: { type: 'turn-end', agent: 'claude', turnId: `turn-${turn}`, stopReason: 'end_turn' } });
+    endTurn(stopReason = 'end_turn', extra: Record<string, unknown> = {}) {
+      frame({ type: 'agent-event', event: { type: 'turn-end', agent: 'claude', turnId: `turn-${turn}`, stopReason, ...extra } });
     },
     append: (text: string) => tool('insert_text', {
       expectedRevision: revision(), sectionIdx: 0, paraIdx: 0, charOffset: env.body[0]!.length, text,
@@ -431,4 +431,55 @@ test('a typed plan approval is sent as typed, and the notice waits for the next 
   assert.deepEqual(out.texts(), ['계획을 실행해 주세요.', `${DOCUMENT_RESTORED_NOTICE}\n\n표도 고쳐 주세요`],
     'the hub must read the approval phrase alone');
   s.bridge.dispose();
+});
+
+test('다시 시도 of a request the hub refused with a provider failure carries the restored notice once', async () => {
+  const s = sessionFixture('unrestricted');
+  s.startTurn('request-1');
+  await s.append(' world');
+  s.endTurn();
+  await settle();
+  const out = s.connect();
+  assert.deepEqual(s.restore('request-1'), { ok: true });
+  void s.bridge.sendUserMessage('다시 해 주세요');
+  await settle();
+  // 허브가 프로바이더를 띄우지 못해 메시지를 거절했다 (U5: 분류된 실패를 싣는다).
+  s.reject('AGENT_SPAWN_FAILED', 'spawn failed');
+  // 실패 알림의 다시 시도는 같은 요청문을 다시 보낸다.
+  void s.bridge.sendUserMessage('다시 해 주세요');
+  void s.bridge.sendUserMessage('그리고 이것도');
+  await settle();
+  assert.deepEqual(out.texts(), [
+    `${DOCUMENT_RESTORED_NOTICE}\n\n다시 해 주세요`,
+    `${DOCUMENT_RESTORED_NOTICE}\n\n다시 해 주세요`,
+    '그리고 이것도',
+  ]);
+  s.bridge.dispose();
+});
+
+test('a turn that failed after carrying the restored notice gives it to the retry, and a completed one does not', async () => {
+  for (const [stopReason, retried] of [['failed', true], ['end_turn', false]] as const) {
+    const s = sessionFixture('unrestricted');
+    s.startTurn('request-1');
+    await s.append(' world');
+    s.endTurn();
+    await settle();
+    const out = s.connect();
+    assert.deepEqual(s.restore('request-1'), { ok: true });
+    void s.bridge.sendUserMessage('다시 해 주세요');
+    await settle();
+    // 그 메시지의 턴이 열리고, 프로바이더 실패로(또는 정상으로) 끝난다.
+    s.startTurn('request-2');
+    s.endTurn(stopReason, stopReason === 'failed'
+      ? { failure: { class: 'rate_limited', agent: 'claude', message: 'rate limited', code: null, retryable: true, resetAt: null } }
+      : {});
+    await settle();
+    void s.bridge.sendUserMessage('다시 해 주세요');
+    await settle();
+    assert.deepEqual(out.texts(), [
+      `${DOCUMENT_RESTORED_NOTICE}\n\n다시 해 주세요`,
+      retried ? `${DOCUMENT_RESTORED_NOTICE}\n\n다시 해 주세요` : '다시 해 주세요',
+    ], stopReason);
+    s.bridge.dispose();
+  }
 });

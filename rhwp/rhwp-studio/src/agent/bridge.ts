@@ -3248,6 +3248,7 @@ export class AgentBridgeImpl implements AgentBridge {
         if (!providerTurnEndMatches(this.activeProviderTurnId, eventTurnId)) return;
         turnFailure = this.turnFailures().endTurn(event);
         // 안내를 실은 메시지의 턴이거나, 그 메시지를 거절할 허브 턴이 끝났다 — 더 기다릴 거절이 없다.
+        const noticeTurn = this.restoredNoticeInFlight;
         this.restoredNoticeInFlight = null;
         this.turnRunning = false;
         this.messageAwaitingTurn = false;
@@ -3268,6 +3269,9 @@ export class AgentBridgeImpl implements AgentBridge {
         }
         // 검토 단계가 없는 턴(채팅·구상)도 열어 둔 체크포인트 기록을 닫는다.
         this.endTurnCheckpoint();
+        // 안내를 실은 턴이 끝까지 가지 못했다(실패·중단) — 프로바이더가 그 맥락을 잇지 않을 수 있으므로
+        // 안내를 다시 건다. 다시 시도(U5)나 다음 요청이 한 번 더 싣고 간다.
+        if (noticeTurn?.sawTurnStart && (!succeeded || turnFailure)) this.restoredNotice ??= noticeTurn.notice;
         this.flushEditReport();
         const planTurn = this.planExecutionTurn;
         this.planExecutionTurn = null;
