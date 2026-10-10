@@ -10,6 +10,7 @@ import {
   ensureDesktopAgentHub,
   getNativeFileHandleVerifiedDocumentId,
   getNativeFileSourcePath,
+  installDesktopAgentAttention,
   installDesktopGeneratedDocumentHandling,
   installDesktopPlainTextPasteHandling,
   installDesktopEditCommandHandling,
@@ -32,6 +33,8 @@ import {
   type NativeFileHandleDescriptor,
 } from '../src/desktop-integration.ts';
 import { writeBlobToHandle } from '../src/command/file-system-access.ts';
+import { createChatAttentionLedger } from '../src/agent/chat-attention.ts';
+import type { ChatRunStatus } from '../src/agent/chat-status.ts';
 import {
   EXACT_LOCAL_DOCUMENT_MAX_BYTES,
   PORTABLE_HISTORY_MAX_BYTES,
@@ -725,4 +728,57 @@ test('desktop edit menu routes supported document commands once', () => {
   for (const command of ['undo', 'redo', 'select-all', 'delete', 'file:open']) listener?.(command);
   assert.deepEqual(commands, ['undo', 'redo', 'select-all', 'delete']);
   assert.equal(installDesktopEditCommandHandling(() => {}, {}), false);
+});
+
+test('desktop attention forwards system notices, the unseen count and opens clicked chats', () => {
+  const statuses = new Map<string, ChatRunStatus>();
+  let focused = false;
+  const ledger = createChatAttentionLedger({
+    getStatus: (id) => statuses.get(id) ?? null,
+    windowFocused: () => focused,
+  });
+  const sent: Array<{ threadId: string; title: string; body: string }> = [];
+  const counts: number[] = [];
+  const opened: string[] = [];
+  let openListener: ((threadId: string) => void) | null = null;
+  let unsubscribed = 0;
+  const dispose = installDesktopAgentAttention(ledger, (id) => opened.push(id), {
+    rhwpDesktop: {
+      notifyAgentAttention: (payload) => sent.push(payload),
+      setAgentAttentionCount: (count) => counts.push(count),
+      onOpenAgentChat: (callback) => {
+        openListener = callback;
+        return () => { unsubscribed += 1; };
+      },
+    },
+  });
+  // 새로고침이 남긴 배지를 지운다.
+  assert.deepEqual(counts, [0]);
+  const report = (threadId: string, status: ChatRunStatus, key: string) => {
+    statuses.set(threadId, status);
+    ledger.report({ threadId, status, key, seen: false, title: '표 정리', documentName: '회의록.hwpx' });
+  };
+  report('thread-a', 'finished', 'a:end');
+  focused = true;
+  report('thread-b', 'needs-review', 'b:end');
+  // 초점이 있는 창은 토스트로 대신한다 — 메인에 보내지 않는다.
+  assert.deepEqual(sent, [{ threadId: 'thread-a', title: '표 정리', body: '작업을 마쳤습니다 · 회의록.hwpx' }]);
+  assert.deepEqual(counts, [0, 1, 2]);
+  report('thread-b', 'needs-review', 'b:end');
+  assert.deepEqual(counts, [0, 1, 2], 'unchanged counts are not resent');
+  openListener!('thread-a');
+  assert.deepEqual(opened, ['thread-a']);
+  dispose();
+  assert.deepEqual(counts, [0, 1, 2, 0], 'uninstalling clears the badge');
+  assert.equal(unsubscribed, 1);
+  report('thread-c', 'failed', 'c:end');
+  assert.equal(sent.length, 1);
+});
+
+test('desktop attention is a no-op without the desktop API', () => {
+  const ledger = createChatAttentionLedger({ getStatus: () => null, windowFocused: () => false });
+  const dispose = installDesktopAgentAttention(ledger, () => {}, {});
+  dispose();
+  const older = installDesktopAgentAttention(ledger, () => {}, { rhwpDesktop: { ensureAgentHub: async () => true } });
+  older();
 });

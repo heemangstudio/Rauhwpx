@@ -106,14 +106,24 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   setDocumentState: (state) => {
     ipcRenderer.send('desktop:set-document-state', { edited: state?.edited === true });
   },
-  notifyAgentTurnFinished: (payload) => {
-    ipcRenderer.send('desktop:agent-turn-finished', {
+  // 보지 않는 채팅의 알림. 창에 초점이 없을 때만 메인이 OS 알림으로 띄운다.
+  notifyAgentAttention: (payload) => {
+    ipcRenderer.send('desktop:agent-attention', {
+      threadId: String(payload?.threadId ?? ''),
       title: String(payload?.title ?? ''),
       body: String(payload?.body ?? ''),
     });
   },
-  setPendingReviewCount: (count) => {
-    ipcRenderer.send('desktop:set-pending-review-count', Number(count) || 0);
+  // 알렸지만 아직 보지 않은 채팅 수 — 앱 아이콘 배지(macOS·Linux), 작업 표시줄 표시(Windows).
+  setAgentAttentionCount: (count) => {
+    ipcRenderer.send('desktop:set-agent-attention-count', Number(count) || 0);
+  },
+  onOpenAgentChat: (callback) => {
+    const listener = (_event, payload) => {
+      if (typeof payload?.threadId === 'string') callback(payload.threadId);
+    };
+    ipcRenderer.on('desktop:open-agent-chat', listener);
+    return () => ipcRenderer.removeListener('desktop:open-agent-chat', listener);
   },
   showContextMenu: (items) => ipcRenderer.invoke('desktop:show-context-menu', items),
   showUnsavedChangesSheet: (payload) => ipcRenderer.invoke(

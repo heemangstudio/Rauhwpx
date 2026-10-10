@@ -226,6 +226,7 @@ import {
   installDesktopEditCommandHandling,
   installDesktopWindowChrome,
   installWebAppShell,
+  isDesktopApp,
   isLegacyPortableHistoryFolderHandle,
   pickDesktopNativeOpenFile,
   pickDesktopNativeSaveFile,
@@ -244,6 +245,9 @@ import {
   reserveDesktopDocument,
 } from '@/desktop-integration';
 import { initAgentBridge, type AgentBridge } from './agent/bridge.ts';
+import { chatAttention, connectChatAttention } from './agent/chat-attention.ts';
+import { loadAttentionPrefs, subscribeAttentionPrefs } from './agent/attention-prefs.ts';
+import { installAttentionToasts, installWebAgentAttention } from './ui/agent-attention.ts';
 import { claimDocumentWriter, syncDocumentWriter } from './agent/document-writer.ts';
 import { checkTurnRestore, restoreTurn, type TurnRestoreGates } from './agent/turn-checkpoints.ts';
 import { renameThreadsDocument } from './agent/threads.ts';
@@ -2001,12 +2005,6 @@ function installChatAgent(
       }
       if (event.type === 'workflow-changed') notifyChatModeLock(session, created);
       for (const listener of taps.events) listener(event);
-      attentionSession = session;
-      try {
-        for (const listener of attentionEventListeners) listener(event);
-      } finally {
-        attentionSession = null;
-      }
     }),
     bridge.onBusyChange((busy) => {
       notifyChatModeLock(session, created);
@@ -2015,7 +2013,6 @@ function installChatAgent(
     }),
     bridge.pendingEdits.onChange((event) => {
       for (const listener of taps.pending) listener(event);
-      notifyAttentionPendingChanged();
       notifyChatModeLock(session, created);
     }),
   );
@@ -2088,7 +2085,6 @@ function disposeChat(chat: ChatSession): void {
   // 닫힌 채팅은 문서를 놓는다 — 다음으로 쥔 채팅이 주인이 된다.
   if (session.writer === chat) session.writer = null;
   notifyChatModeLock(session);
-  notifyAttentionPendingChanged();
 }
 
 /** 같은 문서의 다른 채팅을 보인다. 문서가 화면에 붙어 있으면 사이드바를 바꿔 끼운다. */
@@ -2169,32 +2165,27 @@ async function focusThreadInSession(session: DocumentSession, threadId: string):
   fresh.sidebar.openThreadById(threadId);
 }
 
-// Dock 배지와 완료 알림은 창에 하나다. 모든 세션의 이벤트를 한 곳으로 모아 넘긴다.
 type AttentionEvent = Parameters<Parameters<NonNullable<DocumentSession['bridge']>['onEvent']>[0]>[0];
-const attentionEventListeners = new Set<(event: AttentionEvent) => void>();
-const attentionPendingListeners = new Set<() => void>();
-let attentionSession: DocumentSession | null = null;
 
-function notifyAttentionPendingChanged(): void {
-  for (const listener of attentionPendingListeners) listener();
+/**
+ * 알림·토스트의 '열기' — 창에 붙은 채팅 창이 레일에서 고른 것처럼 연다. 다른 채팅 창에 떠 있으면
+ * 그 창을, 다른 문서의 채팅이면 그 문서를 연다. 지운 채팅이면 창만 앞으로 온다.
+ */
+function openThreadFromAttention(threadId: string): void {
+  attachedSession.sidebar?.openThreadFromHost(threadId);
 }
 
+/**
+ * 백그라운드 채팅 알림은 창에 하나다(장부 chatAttention). 사이드바마다 자기 채팅의 상태를 알리고,
+ * 여기서 알림 설정을 적용하고 데스크톱(OS 알림·배지) 또는 웹(허락된 브라우저 알림)과 앱 안 토스트로 보낸다.
+ */
 function installWindowAgentAttention(): void {
-  installDesktopAgentAttention({
-    onEvent: (cb) => {
-      attentionEventListeners.add(cb);
-      return () => { attentionEventListeners.delete(cb); };
-    },
-    onPendingChange: (cb) => {
-      attentionPendingListeners.add(cb);
-      return () => { attentionPendingListeners.delete(cb); };
-    },
-    pendingReviewCount: totalPendingReviewCount,
-    documentTitle: () => {
-      const session = attentionSession ?? attachedSession;
-      return session.wasm.hasLoadedDocument() ? session.wasm.fileName : '';
-    },
-  });
+  chatAttention.setEnabled(loadAttentionPrefs().notifications);
+  subscribeAttentionPrefs((prefs) => chatAttention.setEnabled(prefs.notifications));
+  connectChatAttention(chatAttention);
+  if (isDesktopApp()) installDesktopAgentAttention(chatAttention, openThreadFromAttention);
+  else installWebAgentAttention(chatAttention, openThreadFromAttention);
+  installAttentionToasts(chatAttention, openThreadFromAttention);
 }
 
 let inlinePrompt: { dispose(): void } | null = null;
@@ -2213,12 +2204,6 @@ function reinstallInlinePrompt(): void {
     bridge: session.bridge,
     submit: session.sidebar.sendInlinePrompt,
   });
-}
-
-/** 창 전체에서 검토를 기다리는 변경 묶음 수 (Dock 배지) */
-function totalPendingReviewCount(): number {
-  return allChats().reduce((sum, chat) => sum + chat.bridge.pendingEdits.getChangeSets()
-    .filter((set) => set.ops.length > 0).length, 0);
 }
 
 function liveSessionForDocument(documentId: string | null | undefined): DocumentSession | null {
@@ -2519,7 +2504,6 @@ async function disposeSession(session: DocumentSession, options: { persistWorktr
   worktreeOwnership.release(session);
   deniedWorktreeSessions.delete(session);
   refreshWorktreeSessions();
-  notifyAttentionPendingChanged();
   // 파일 핸들(북마크 포함)과 문서 점유를 먼저 놓는다. 방금 닫은 문서를 곧바로 다시 열면
   // 아직 이 창이 쥔 것으로 보인다. 자동 저장 정리는 그 뒤에 한다.
   await releaseReplacedNativeFileHandle(session.wasm.currentFileHandle, null)

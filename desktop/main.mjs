@@ -10,6 +10,7 @@ import {
   Menu,
   dialog,
   ipcMain,
+  nativeImage,
   nativeTheme,
   net,
   Notification as ElectronNotification,
@@ -130,6 +131,8 @@ function sessionForEvent(event) {
 }
 
 app.setName('Rauhwpx');
+// Windows 는 이 id 가 설치 바로가기(package.json build.appId)와 같아야 앱의 알림을 띄운다.
+if (process.platform === 'win32') app.setAppUserModelId('com.hataewook.rauhwpx');
 if (!app.isPackaged) {
   const developmentUserData = process.env.RHWP_DESKTOP_USER_DATA
     ? resolve(process.env.RHWP_DESKTOP_USER_DATA)
@@ -555,7 +558,7 @@ const windowFrames = new WindowFrameStore({
   screen,
   writeAtomically: writeNativeFileAtomically,
 });
-const agentAttention = new AgentAttention({ app, Notification: ElectronNotification });
+const agentAttention = new AgentAttention({ app, Notification: ElectronNotification, nativeImage });
 
 /** 열거나 저장한 네이티브 파일을 Dock·최근 사용 메뉴에 올린다. */
 function noteRecentDocument(sessionId, handleId) {
@@ -1297,20 +1300,22 @@ ipcMain.on('desktop:set-document-state', (event, state) => {
     console.warn('[rauhwpx] document state update failed:', error);
   }
 });
-ipcMain.on('desktop:set-pending-review-count', (event, count) => {
+ipcMain.on('desktop:set-agent-attention-count', (event, count) => {
   try {
-    agentAttention.setPendingCount(sessionForEvent(event).window.id, count);
+    agentAttention.setCount(sessionForEvent(event).window, count);
   } catch (error) {
-    console.warn('[rauhwpx] pending review badge update failed:', error);
+    console.warn('[rauhwpx] agent attention badge update failed:', error);
   }
 });
-ipcMain.on('desktop:agent-turn-finished', (event, payload) => {
+ipcMain.on('desktop:agent-attention', (event, payload) => {
   try {
-    agentAttention.turnFinished(sessionForEvent(event).window, payload ?? {});
+    agentAttention.notify(sessionForEvent(event).window, payload ?? {});
   } catch (error) {
-    console.warn('[rauhwpx] agent turn notification failed:', error);
+    console.warn('[rauhwpx] agent attention notification failed:', error);
   }
 });
+// 창이 초점을 얻으면 작업 표시줄 깜빡임을 멈춘다.
+app.on('browser-window-focus', (_event, window) => agentAttention.focused(window));
 ipcMain.handle('desktop:show-context-menu', (event, items) => {
   const window = sessionForEvent(event).window;
   return popupContextMenu({ Menu, window, items });
