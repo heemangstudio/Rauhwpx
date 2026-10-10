@@ -257,6 +257,8 @@ try {
     const turnLabel = '편집 2번 · 읽기 1번 · 도구 1번 · 오류 1';
     await page.waitForFunction((label) => !window.sidebarPreview.bridge.isTurnRunning()
       && document.querySelector('.ag-activity-label')?.textContent === label, {}, turnLabel);
+    // 끝난 턴의 작업은 한 줄로 접힌다 — 펼친 뒤 도구 묶음을 연다.
+    await page.click('.ag-turn-fold-toggle');
     await page.click('.ag-activity-toggle');
     const toolRows = async () => page.$$eval('.ag-tool-row', rows => rows.map(row => ({
       label: row.querySelector('.ag-tool-label')?.textContent,
@@ -292,6 +294,7 @@ try {
       [...list.querySelectorAll('.ag-threads-item')].find(node => node.dataset.threadId === id)?.click(), threadId);
     await page.waitForSelector('.ag-activity-label');
     assert.equal(await page.$eval('.ag-activity-label', node => node.textContent), turnLabel);
+    await page.click('.ag-turn-fold-toggle');
     await page.click('.ag-activity-toggle');
     const stored = await toolRows();
     assertToolRows(stored);
@@ -453,6 +456,8 @@ try {
   await step('Subagent fleet, failure, and offline recovery', async () => {
     await play('fleet');
     await page.waitForSelector('.ag-fleet-slot:not([hidden]) .ag-fleet-toggle');
+    // 정착한 카드는 턴 접힘 안에 있다 — 펼친 뒤 카드를 연다.
+    await page.click('.ag-turn-fold-toggle');
     await page.click('.ag-fleet-slot:not([hidden]) .ag-fleet-toggle');
     await page.waitForFunction(() => document.querySelector('.ag-root').innerText.includes('용어를 통일'));
     await screenshot('fleet');

@@ -307,6 +307,65 @@ export const SAMPLE_WORKING_CHAT_ID = 'preview-chat-schedule';
 /** Seeded chat that `chats=sample` shows as finished but unread. */
 export const SAMPLE_FINISHED_CHAT_ID = 'preview-chat-minutes';
 
+type SampleMessage = ChatThread['messages'][number];
+
+function sampleTool(callId: string, tool: string, args: Record<string, unknown>, resultPreview: string) {
+  return {
+    callId,
+    tool: `mcp__rhwp__${tool}`,
+    argsJson: JSON.stringify(args),
+    status: 'completed' as const,
+    resultPreview,
+    elapsedMs: 420,
+  };
+}
+
+/**
+ * Sample turn markers and recorded work, so `chats=sample` shows settled turns folded:
+ * a completed edit (`작업 2분 31초 · 문단 2개 수정 · 표 1개 읽음`) and an interrupted
+ * one (`중단됨 · 1분 12초 · 표 1개 추가`). The turn ends when the chat last moved.
+ */
+function sampleTurnWork(id: string, agent: T.AgentName, activityAt: number): SampleMessage[] {
+  if (id === 'preview-chat-overview') {
+    const startedAt = activityAt - 151_000;
+    return [
+      {
+        role: 'system', kind: 'turn', messageId: `${id}-turn-1`, startedAt, endedAt: activityAt,
+        outcome: 'completed', text: '작업 2분 31초 · 문단 2개 수정 · 표 1개 읽음',
+      },
+      { role: 'assistant', kind: 'progress', agent, text: '사업 개요 첫 문단과 추진 일정 표를 먼저 확인하겠습니다.' },
+      {
+        role: 'assistant', kind: 'activity', agent, activityId: `${id}-activity-1`, text: '도구 호출',
+        status: 'completed', startedAt: startedAt + 4_000, completedAt: activityAt - 9_000,
+        tools: [
+          sampleTool(`${id}-1`, 'get_structure', {}, '구역 1개 · 문단 42개 · 표 3개'),
+          sampleTool(`${id}-2`, 'replace_range', { sectionIdx: 0, paraIdx: 0, find: '본 사업은', text: '이 사업의 목적은' }, '{"revision":8}'),
+          sampleTool(`${id}-3`, 'replace_range', { sectionIdx: 0, paraIdx: 1, find: '배경', text: '추진 배경' }, '{"revision":9}'),
+          sampleTool(`${id}-4`, 'apply_para_format', { sectionIdx: 0, paraIdx: 1, alignment: 'justify' }, '{"revision":10}'),
+          sampleTool(`${id}-5`, 'get_table_properties', { sectionIdx: 0, paraIdx: 12, controlIdx: 0 }, '{"rows":5,"cols":4}'),
+        ],
+      },
+    ];
+  }
+  if (id === 'preview-chat-attendees') {
+    const startedAt = activityAt - 72_000;
+    return [
+      {
+        role: 'system', kind: 'turn', messageId: `${id}-turn-1`, startedAt, endedAt: activityAt,
+        outcome: 'interrupted', text: '중단됨 · 1분 12초 · 표 1개 추가',
+      },
+      {
+        role: 'assistant', kind: 'activity', agent, activityId: `${id}-activity-1`, text: '도구 호출',
+        status: 'completed', startedAt: startedAt + 3_000, completedAt: startedAt + 41_000,
+        tools: [
+          sampleTool(`${id}-1`, 'create_table', { sectionIdx: 0, paraIdx: 4, charOffset: 0, rows: 6, cols: 3 }, '{"paraIdx":4,"controlIdx":0}'),
+        ],
+      },
+    ];
+  }
+  return [];
+}
+
 /**
  * Chats across several documents and providers for the activity-ordered list.
  * Timestamps are relative to `now`, so the list always shows fresh, varied ages.
@@ -335,6 +394,7 @@ export function sampleChats(now: number): ChatThread[] {
   return rows.map(([id, title, agent, document, age, request, reply]) => {
     const activityAt = now - age;
     const messages: ChatThread['messages'] = [{ role: 'user', text: request }];
+    messages.push(...sampleTurnWork(id, agent, activityAt));
     if (reply) messages.push({ role: 'assistant', text: reply, agent });
     return {
       id,

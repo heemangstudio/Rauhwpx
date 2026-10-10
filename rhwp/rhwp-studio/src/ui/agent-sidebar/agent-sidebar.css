@@ -3019,6 +3019,132 @@ button.ag-skill-copy {
   padding-bottom: 0;
 }
 
+/* ─── 정착한 턴 접힘 ──────────────────────────────────
+   턴이 끝나면 이정표·도구 묶음·정착한 편대 카드가 한 줄 아래로 접힌다. 머리는 도구 활동
+   묶음과 같은 치수·색을 쓰고, 본문은 대화의 한 구간이라 높이 상한 없이 그대로 펼친다. */
+.ag-turn-fold {
+  display: flex;
+  align-self: stretch;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.ag-turn-fold[hidden] {
+  display: none;
+}
+
+.ag-turn-fold-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: auto;
+  max-width: 100%;
+  min-height: 32px;
+  margin: 0 0 0 -8px;
+  padding: 4px 10px 4px 8px;
+  border: none;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  font-variant-numeric: var(--ag-numeric);
+  line-height: var(--ag-lh-tight);
+  text-align: left;
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-turn-fold-toggle:hover {
+  color: var(--ag-text);
+  background: var(--ag-hover);
+}
+
+.ag-turn-fold-static .ag-turn-fold-toggle:hover {
+  color: var(--ag-text-secondary);
+  background: transparent;
+}
+
+.ag-turn-fold-toggle:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-turn-fold-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--ag-text-tertiary);
+}
+
+.ag-turn-fold-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-turn-fold-errors {
+  flex: 0 0 auto;
+  color: var(--ag-err);
+  white-space: nowrap;
+}
+
+.ag-turn-fold-chevron {
+  position: static;
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  color: var(--ag-text-tertiary);
+  transform: rotate(180deg);
+  transition: transform var(--ag-dur-base) var(--ag-spring-edge);
+}
+
+.ag-turn-fold-collapsed .ag-turn-fold-chevron {
+  transform: rotate(0deg);
+}
+
+.ag-turn-fold-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows var(--ag-dur-base) var(--ag-spring-edge),
+    opacity var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-turn-fold-collapsed .ag-turn-fold-collapse {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--ag-dur-exit) var(--ag-ease-out),
+    opacity var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+/* 접힌 본문은 높이 0 으로 잘린다. 안쪽 머리들이 왼쪽으로 내민 8px 호버 면이 잘리지 않게
+   좌우로 여백을 두고 같은 만큼 바깥으로 넓힌다. 첫·끝 여백은 자식 margin 이라 함께 잘린다. */
+.ag-turn-fold-body {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 24px;
+  overflow: hidden;
+  margin-inline: -8px;
+  padding-inline: 8px;
+}
+
+.ag-turn-fold-body > :first-child {
+  margin-top: 12px;
+}
+
+.ag-turn-fold-body > :last-child {
+  margin-bottom: 4px;
+}
+
 .ag-tool-row {
   flex: 0 0 auto;
   min-width: 0;

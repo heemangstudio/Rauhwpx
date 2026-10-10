@@ -69,7 +69,10 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=question` | A question with selectable and free-text answers |
 | `?scenario=review` | Streaming reply followed by accept/reject changes |
 | `?scenario=fleet` | Tool activity and a subagent task |
-| `?scenario=error` | A failed turn |
+| `?scenario=fleet&background=1` | A subagent that keeps running after its turn: its card stays in the dock, outside the turn fold, and lands below the fold when it finishes |
+| `?scenario=tools&play=1` | A finished multi-tool turn folded into one summary row above the answer (`작업 … · 문단 3개 수정 · … · 오류 1`) |
+| `?scenario=tools&play=1&hold=1`, then Stop | A stopped turn folded as `중단됨 · …` |
+| `?scenario=error` | A failed turn; failed turns never fold |
 | `?scenario=writer-busy` | A write refused because another chat of the document is editing it |
 | `?scenario=review&restore=later` | After **변경 수락**, hovering the request shows **이 작업 전으로 되돌리기**; it asks before discarding later edits, then puts the request back into the empty composer |
 | `?scenario=review&restore=evicted` | The same action for a request whose checkpoint is gone: dimmed, and a click only explains why |
@@ -88,7 +91,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?theme=dark&width=360` | Dark theme and narrow sidebar |
 | `?controls=0` | Hide preview controls for clean captures |
 | `?reset=1` | Clear preview storage before mounting |
-| `?chats=sample` | Restore sample chats across three documents and no document, one running and one finished |
+| `?chats=sample` | Restore sample chats across three documents and no document, one running and one finished. 사업 개요 첫 문단 다듬기 restores a folded turn (`작업 2분 31초 · 문단 2개 수정 · 표 1개 읽음`) and 참석자 명단 표 만들기 an interrupted one (`중단됨 · 1분 12초 · 표 1개 추가`) |
 | `?chats=engine-trap` | The sample chats plus the shown document's chat that an engine trap interrupted; it opens with the interruption notice the editor adds after reopening documents |
 | `?sessions=2&chats=sample` | A second live document (회의록) with its own sidebar and mock agent; its chats switch sidebars without stopping the other agent |
 | `?parallel=1` | Several chats of one document: a new chat or another chat opened while the shown chat works gets its own sidebar and mock agent, and the busy agent keeps running |
@@ -118,6 +121,20 @@ scripts cannot hold it; `questionHeld=1` uses a fixture that holds the typing st
 From the console, `sidebarPreview.askQuestion()` asks the sample question on the running
 turn (use `hold=1`), and `sidebarPreview.setChatStartDelay(ms)` and
 `sidebarPreview.setStageDelay(ms)` slow a chat start or an attachment upload.
+
+## Turn fold
+
+When a turn settles, its milestones, tool groups and settled subagent cards fold into
+one summary row above the final answer, such as `작업 2분 31초 · 문단 5개 수정 · 표 1개 읽음`.
+The answer, questions, plans and system lines (errors included) stay in the flow. A
+turn that ended in an error never folds, and a turn still running when the page
+reloads stays unfolded until it settles. Restored chats fold the same way; chats saved
+before turns were recorded fold by user message as `작업 내역 · …`. The row expands in
+place and collapses again whenever the chat is re-rendered.
+
+`node rhwp/rhwp-studio/sidebar-preview/turn-fold.check.mjs` covers the live, restored,
+stopped, failed, subagent and scrolled-up cases and saves `turn-fold.png`,
+`turn-fold-open.png` and `turn-fold-interrupted.png` to `sidebar-preview/artifacts/`.
 
 ## Changes drawer
 

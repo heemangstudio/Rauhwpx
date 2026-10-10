@@ -72,7 +72,15 @@ import {
 import {
   createEmptyThread,
   createPendingUserQuestionDraftSnapshot,
+  createTurnMarker,
   createUserQuestionHistoryMessage,
+  estimateTurnEnd,
+  findTurnMarker,
+  isTurnMarker,
+  latestTurnMarker,
+  settleStoredTurnMarker,
+  settleTurnMarker,
+  unsettledTurnMarkers,
   archivePendingUserQuestion,
   expirePendingUserQuestion,
   fallbackTitle,
@@ -101,6 +109,7 @@ import {
   type ThreadTaskRecord,
   type ThreadToolOutcome,
   type ThreadToolRecord,
+  type ThreadTurnMessage,
   THREAD_TOOL_IMAGE_MAX_CHARS,
 } from '../../agent/threads.ts';
 import {
@@ -113,6 +122,15 @@ import {
   subscribeChatStatus,
   type ChatRunStatus,
 } from '../../agent/chat-status.ts';
+import { turnOutcomeFor, type TurnOutcome } from '../../agent/turn-outcome.ts';
+import {
+  createTurnFoldRow,
+  isTurnWorkNode,
+  planTurnFolds,
+  settledTurnText,
+  settledTurnView,
+  type TurnFoldRow,
+} from './turn-fold.ts';
 import { createChevron, createColumnIcon } from '../chevron.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { setMiddleTruncatedText } from '../middle-truncate.ts';
@@ -778,6 +796,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const taskTextBuffers = new Map<string, string>();
   let turnPresentedPlan = false;
   let planCardPending = false;
+  /**
+   * 도는 턴의 표식 — 턴이 시작될 때 대화에 넣고, 끝나면 결과와 함께 정착하며 그 턴의
+   * 작업을 접는다. markerId 는 같은 턴을 가리키는 키로도 쓴다(알림 등).
+   */
+  let openFold: { threadId: string; markerId: string } | null = null;
+  /** 이번 턴에 'error' 이벤트를 받았는가 — 턴 결과를 실패로 본다. */
+  let turnErrorSeen = false;
+  /** 화면의 접힘 줄 — 표식 id 로 찾는다. 대화를 다시 그리면 같은 턴의 새 줄로 바뀐다. */
+  const turnFoldRows = new Map<string, TurnFoldRow>();
   let followConversation = true;
   let conversationScrollRaf: number | null = null;
   let conversationScrollTargetNode: HTMLElement | null = null;
@@ -2376,10 +2403,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     turnPendingLabel.textContent = `${AGENT_LABEL[who]} 편집 중…`;
     messages.insertBefore(turnPending, messagesEnd);
   });
+  /** 도는 턴의 접힘 자리표시(숨은 줄)는 내용이 아니다 — 스크롤 기준을 고를 때 건너뛴다. */
+  function skipTurnFoldPlaceholders(node: Element | null): Element | null {
+    let current = node;
+    while (current instanceof HTMLElement && current.hidden && current.classList.contains('ag-turn-fold')) {
+      current = current.previousElementSibling;
+    }
+    return current;
+  }
   /** 마지막 내용의 아래끝이 대화 영역 아래로 내려가 있으면 뒤처진 상태다. */
   function lastConversationContent(): HTMLElement | null {
     let last = messagesEnd.previousElementSibling;
     if (last === turnPending && turnPending.hidden) last = turnPending.previousElementSibling;
+    last = skipTurnFoldPlaceholders(last);
     return last instanceof HTMLElement ? last : null;
   }
   /** 마지막 내용의 아래끝이 대화 영역 아래끝보다 얼마나 내려가 있는지. */
@@ -2517,6 +2553,28 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       })
     : null;
   messagesResizeObserver?.observe(messages);
+  /*
+   * 턴 접힘 줄이 나타나고 접히는 동안, 대화를 따라가던 화면은 기준점(최종 답변·대화 끝)을
+   * 제자리에 둔다. 크기 관찰은 배치 뒤·그리기 전에 돌아 접히는 프레임과 어긋나지 않는다.
+   * 스프링이 움직이는 중이면 목표만 비워 다음 프레임에 새로 잰다.
+   */
+  const turnFoldResizeObserver = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(() => {
+        if (!active || !followConversation) return;
+        syncConversationSpacer();
+        conversationScrollTargetValue = null;
+        if (conversationScrollRaf === null) {
+          const anchor = latestTurnAnchor();
+          const target = anchor ? roundedConversationTarget(anchor) : null;
+          if (target !== null && Math.abs(target - messages.scrollTop) >= 1) {
+            lockConversationScroll(80);
+            messages.scrollTop = target;
+            conversationLastScrollTop = messages.scrollTop;
+          }
+        }
+        scheduleLatestPillUpdate();
+      })
+    : null;
 
   /* 위로 읽는 중에 보이는 "최신" 알약. 마지막 내용이 가려졌을 때만 뜨고,
      누르면 마지막 내용이 입력기 바로 위에 오도록 내려가 대화 끝을 따라간다. */
@@ -5534,6 +5592,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     currentThread.titleRequested = true;
     persistCurrentThread();
     const preview = currentThread.messages
+      // 턴 표식은 대화 내용이 아니다 — 제목 요청에 "어시스턴트: " 빈 줄로 새지 않게 뺀다.
+      .filter((m) => !isTurnMarker(m))
       .slice(0, 6)
       .map((m) => {
         const text = m.role === 'user' && m.skillName
@@ -5634,6 +5694,27 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return group;
   }
 
+  /** 저장된 메시지 하나를 그린다 (턴 표식은 renderMessagesFromThread 가 따로 다룬다). */
+  function renderStoredMessage(msg: ThreadMessage, thread: ChatThread): HTMLElement {
+    if (msg.role === 'user') return renderUserMessage(msg);
+    if (msg.role !== 'assistant') return el('div', 'ag-msg ag-msg-system', msg.text);
+    const agent = msg.agent ?? thread.agent;
+    if (msg.kind === 'user-question') return renderUserQuestionHistory(msg);
+    if (msg.kind === 'progress') {
+      const step = el('div', 'ag-progress-step ag-progress-step-restored');
+      const milestone = el('div', `ag-msg ag-progress-milestone ag-${agent}`);
+      renderAssistantMessage(milestone, msg.text);
+      step.appendChild(milestone);
+      return step;
+    }
+    if (msg.kind === 'plan') return renderPlanMessage(msg);
+    if (msg.kind === 'activity') return renderStoredActivity(msg, agent);
+    if (msg.kind === 'tasks') return renderStoredTasks(msg, agent);
+    const bubble = el('div', `ag-msg ag-msg-assistant ag-${agent}`);
+    renderAssistantMessage(bubble, msg.text);
+    return bubble;
+  }
+
   function renderMessagesFromThread(thread: ChatThread): void {
     composerRest.setResting(false);
     cancelPendingAssistantRender();
@@ -5650,34 +5731,34 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     transcriptTasks.clear();
     taskToolRecords.clear();
     taskTextBuffers.clear();
-    for (const msg of thread.messages) {
-      if (msg.role === 'user') {
-        appendConversation(renderUserMessage(msg));
-      } else if (msg.role === 'assistant') {
-        const agent = msg.agent ?? thread.agent;
-        if (msg.kind === 'user-question') {
-          appendConversation(renderUserQuestionHistory(msg));
-        } else if (msg.kind === 'progress') {
-          const step = el('div', 'ag-progress-step ag-progress-step-restored');
-          const milestone = el('div', `ag-msg ag-progress-milestone ag-${agent}`);
-          renderAssistantMessage(milestone, msg.text);
-          step.appendChild(milestone);
-          appendConversation(step);
-        } else if (msg.kind === 'plan') {
-          appendConversation(renderPlanMessage(msg));
-        } else if (msg.kind === 'activity') {
-          appendConversation(renderStoredActivity(msg, agent));
-        } else if (msg.kind === 'tasks') {
-          appendConversation(renderStoredTasks(msg, agent));
-        } else {
-          const bubble = el('div', `ag-msg ag-msg-assistant ag-${agent}`);
-          renderAssistantMessage(bubble, msg.text);
-          appendConversation(bubble);
-        }
-      } else {
-        appendConversation(el('div', 'ag-msg ag-msg-system', msg.text));
+    // 정착한 턴은 작업을 한 줄 아래로 접는다. 정착 전 표식(도는 턴·끊긴 턴)은 접지 않고
+    // 숨은 자리만 남긴다 — 살아 있는 턴이면 그 턴의 끝이 이 자리에서 접는다.
+    const plan = planTurnFolds(thread.messages);
+    const foldRows: TurnFoldRow[] = [];
+    thread.messages.forEach((msg, index) => {
+      const foldAt = plan.anchors.get(index);
+      if (foldAt !== undefined) {
+        const fold = plan.folds[foldAt];
+        const row = mountTurnFoldRow(fold.id);
+        row.setSummary(fold.view);
+        row.setCollapsed(true, { animate: false });
+        appendConversation(row.root);
+        foldRows[foldAt] = row;
       }
-    }
+      if (isTurnMarker(msg)) {
+        if (msg.endedAt === null) {
+          const placeholder = mountTurnFoldRow(msg.messageId);
+          placeholder.root.hidden = true;
+          appendConversation(placeholder.root);
+        }
+        return;
+      }
+      const node = renderStoredMessage(msg, thread);
+      const placement = plan.placement[index];
+      const row = placement === null || placement === undefined ? undefined : foldRows[placement];
+      if (row) row.body.appendChild(node);
+      else appendConversation(node);
+    });
     if (questionController.interaction()?.threadId === thread.id) {
       questionController.setVisible(true);
       mountQuestionTimelineAnchor();
@@ -7117,15 +7198,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     suppressedSpawnCalls.clear();
     fleetView.reset();
     questionTimelineAnchorInteractionId = null;
+    turnFoldRows.clear();
+    turnFoldResizeObserver?.disconnect();
     messages.replaceChildren(turnPending, messagesEnd);
   }
 
   function latestTurnAnchor(): HTMLElement | null {
     const last = messagesEnd.previousElementSibling;
-    let content = last === turnPending ? turnPending.previousElementSibling : last;
+    let content = skipTurnFoldPlaceholders(last === turnPending ? turnPending.previousElementSibling : last);
     // 첫 문단을 보류 중인 빈 답변은 감춰져 있으므로 그 앞 메시지를 기준으로 삼는다.
     const answerVisible = Boolean(streamBubble && hasRenderedBlocks(streamBubble));
-    if (streamBubble && content === streamBubble && !answerVisible) content = streamBubble.previousElementSibling;
+    if (streamBubble && content === streamBubble && !answerVisible) {
+      content = skipTurnFoldPlaceholders(streamBubble.previousElementSibling);
+    }
     if (!(content instanceof HTMLElement)) return null;
     // Keep a newly sent prompt near the top, then follow the moving end of the
     // current agent output instead of remaining pinned to that prompt.
@@ -7782,6 +7867,179 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     streamBubble = null;
   }
 
+  // ── 턴 접힘 ─────────────────────────────────────────
+  /** 펼쳐 둔 작업 — 이것이 있으면 사용자가 그 턴을 읽는 중이라 접지 않는다. */
+  const EXPANDED_TURN_WORK = '.ag-activity:not(.ag-activity-collapsed), .ag-fleet:not(.ag-collapsed), .ag-restored-task-heading[aria-expanded="true"]';
+
+  function mountTurnFoldRow(turnId: string): TurnFoldRow {
+    const row = createTurnFoldRow(turnId, {
+      // 줄을 눌러 펼치거나 접으면 그 자리를 읽는 중이다 — 끝을 따라가며 화면을 끌어가지 않는다.
+      onUserToggle: () => stopFollowingConversation(),
+    });
+    turnFoldRows.set(turnId, row);
+    turnFoldResizeObserver?.observe(row.root);
+    return row;
+  }
+
+  /**
+   * 새 턴의 표식을 대화에 넣고 곧바로 저장한다 — 턴 도중 앱이 죽어도 끝나지 않은 턴이
+   * 기록에 남는다. 접힘 줄은 숨은 채 이 턴의 내용 앞에서 턴 끝을 기다린다.
+   */
+  function beginTurnFold(): void {
+    turnErrorSeen = false;
+    // 빈 채팅(새로고침 직후의 임시 채팅·초안)에는 표식을 남기지 않는다 — 표식 하나로
+    // 목록에 빈 채팅이 생기거나 살아 있는 채팅을 되찾는 경로가 막히지 않게.
+    if (draftChat || currentThread.messages.length === 0) return;
+    const marker = createTurnMarker(Date.now(), transcriptId('turn'));
+    currentThread.messages.push(marker);
+    persistCurrentThread();
+    const row = mountTurnFoldRow(marker.messageId);
+    row.root.hidden = true;
+    appendConversation(row.root);
+    openFold = { threadId: currentThread.id, markerId: marker.messageId };
+  }
+
+  /**
+   * 끝을 듣지 못하고 남은 표식(앱이 죽었거나 새로고침으로 끊긴 턴)을 중단으로 정착한다.
+   * 새 턴이 시작됐으니 그 전 턴은 더 돌지 않는다. 화면은 다음에 다시 그릴 때 접힌다.
+   */
+  function settleStaleTurnMarkers(): void {
+    const stale = unsettledTurnMarkers(currentThread.messages);
+    if (stale.length === 0) return;
+    for (const marker of stale) {
+      const endedAt = estimateTurnEnd(currentThread.messages, marker);
+      settleTurnMarker(marker, {
+        endedAt,
+        outcome: 'interrupted',
+        text: settledTurnText(currentThread.messages, marker, 'interrupted', endedAt),
+      });
+    }
+    persistCurrentThread();
+  }
+
+  /**
+   * 살아 있는 턴을 그 표식에 다시 잇는다 — 새로고침 뒤 턴 시작을 보지 못한 채 그 턴의
+   * 끝이 오거나, 살아 있는 채팅을 다시 붙잡을 때. 이 채팅의 마지막 표식이 정착 전이어야 하고,
+   * 지켜본 턴이 다른 채팅의 것이면 잇지 않는다.
+   */
+  function adoptUnsettledTurnFold(): boolean {
+    if (openFold || draftChat || bridgeThreadId !== currentThread.id) return false;
+    if (turnOwnerThreadId !== null && turnOwnerThreadId !== currentThread.id) return false;
+    const marker = latestTurnMarker(currentThread.messages);
+    if (!marker || marker.endedAt !== null) return false;
+    openFold = { threadId: currentThread.id, markerId: marker.messageId };
+    return true;
+  }
+
+  /** 대화 영역 맨 위에 걸친 첫 내용 — 읽던 줄을 지키는 기준점. */
+  function readerTopLine(): HTMLElement | null {
+    const top = messages.getBoundingClientRect().top;
+    for (const child of messages.children) {
+      if (!(child instanceof HTMLElement) || child.hidden) continue;
+      if (child.getBoundingClientRect().bottom > top) return child;
+    }
+    return null;
+  }
+
+  /**
+   * 도는 턴을 결과와 함께 정착하고 그 턴의 작업을 접는다. 오류로 끝난 턴과 작업 없이
+   * 끝난 턴은 접지 않는다. 중단된 턴은 작업이 없어도 한 줄을 남긴다.
+   * reason 은 바깥이 턴을 끊은 이유(turnOutcomeFor 의 interruptionReason)로, 표식에 남는다.
+   */
+  function settleOpenTurnFold(outcome: TurnOutcome, reason: string | null = null): void {
+    const fold = openFold;
+    if (!fold) return;
+    openFold = null;
+    const endedAt = Date.now();
+    const marker = fold.threadId === currentThread.id ? findTurnMarker(currentThread.messages, fold.markerId) : null;
+    if (!marker) {
+      // 턴 도중 다른 채팅으로 떠났다 — 화면은 이미 없고 저장된 기록만 정착한다.
+      settleStoredTurnMarker(fold.threadId, fold.markerId, (thread, stored) => ({
+        endedAt,
+        outcome,
+        reason,
+        text: settledTurnText(thread.messages, stored, outcome, endedAt),
+      }));
+      return;
+    }
+    if (marker.endedAt !== null) return;
+    settleTurnMarker(marker, {
+      endedAt,
+      outcome,
+      reason,
+      text: settledTurnText(currentThread.messages, marker, outcome, endedAt),
+    });
+    persistCurrentThread();
+    foldSettledTurn(marker);
+  }
+
+  /** 정착한 턴의 작업 노드를 그 턴의 줄 아래로 옮긴다. 줄이 화면에 없으면 다음에 다시 그릴 때 접힌다. */
+  function foldSettledTurn(marker: ThreadTurnMessage): void {
+    const row = turnFoldRows.get(marker.messageId);
+    if (!row || row.root.parentElement !== messages) return;
+    const nodes: HTMLElement[] = [];
+    const tail = conversationTail();
+    for (
+      let node = row.root.nextElementSibling;
+      node && node !== tail && node !== messagesEnd && node !== turnPending && !node.classList.contains('ag-turn-fold');
+      node = node.nextElementSibling
+    ) {
+      if (node instanceof HTMLElement && isTurnWorkNode(node)) nodes.push(node);
+    }
+    const view = settledTurnView(currentThread.messages, marker, nodes.length > 0);
+    if (!view || view.outcome === 'failed' || (view.outcome === 'completed' && nodes.length === 0)) {
+      turnFoldResizeObserver?.unobserve(row.root);
+      turnFoldRows.delete(marker.messageId);
+      row.root.remove();
+      return;
+    }
+    row.setSummary(view);
+    // 사용자가 그 턴을 읽는 중이면(위로 올려 읽거나 무언가 펼쳐 두었거나 초점이 안에 있으면)
+    // 펼친 채로 두고 읽던 줄을 지킨다. 다음에 대화를 다시 그릴 때 접힌다.
+    const focused = document.activeElement;
+    const readerInside = active && (
+      !followConversation
+      || nodes.some((node) => node.matches(EXPANDED_TURN_WORK) || node.querySelector(EXPANDED_TURN_WORK) !== null)
+      || (focused !== null && nodes.some((node) => node.contains(focused)))
+    );
+    // 아직 백그라운드로 도는 카드가 예약한 숨은 슬롯은 작업 노드 안에 있어도 흐름에 남긴다 —
+    // 카드가 나중에 접힘 밖, 줄 바로 아래에 보이게 내려앉는다.
+    const adoptWork = () => {
+      const pendingSlots = nodes.flatMap((node) => [...node.querySelectorAll<HTMLElement>('.ag-fleet-slot[hidden]')]);
+      row.root.hidden = false;
+      row.adopt(nodes);
+      if (pendingSlots.length > 0) row.root.after(...pendingSlots);
+    };
+    if (readerInside) {
+      const anchor = readerTopLine();
+      const before = anchor ? anchor.getBoundingClientRect().top : null;
+      adoptWork();
+      row.setCollapsed(false, { animate: false });
+      if (anchor && before !== null) {
+        const delta = anchor.getBoundingClientRect().top - before;
+        if (Math.abs(delta) >= 0.5) {
+          lockConversationScroll(80);
+          messages.scrollTop += delta;
+          conversationLastScrollTop = messages.scrollTop;
+        }
+      }
+      return;
+    }
+    withAutoScroll(() => {
+      if (!active) {
+        // 가려진 사이드바는 보이지 않는 전환 없이 바로 접는다.
+        adoptWork();
+        row.setCollapsed(true, { animate: false });
+        return;
+      }
+      // 작업이 차지하던 높이에서 출발해 그 자리만 닫는다. 따라가던 화면은 크기 관찰이 제자리에 둔다.
+      const before = messagesEnd.getBoundingClientRect().top;
+      adoptWork();
+      row.setCollapsed(true, { animate: false });
+      row.collapseFrom(before - messagesEnd.getBoundingClientRect().top);
+    });
+  }
+
   function addToolRow(
     evt: Extract<AgentStreamEvent, { type: 'tool-call' }>,
     milestone?: HTMLElement | null,
@@ -7973,8 +8231,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         sweepActivityTranscripts();
         sweepTasksTranscript();
         completeTurnActivity();
+        // 끝을 듣지 못한 앞 턴은 중단으로 정착한다.
+        settleOpenTurnFold('interrupted');
+        settleStaleTurnMarkers();
         // 이 턴을 그 스레드의 마지막 요청에 묶는다 — 첫 쓰기 직전에 되돌릴 시점이 찍힌다.
         deps.turnRestore?.noteTurnStart(currentThread.id, latestUserTurnKey());
+        // 이 턴의 표식을 남긴다.
+        beginTurnFold();
         setTurnRunning(true);
         runStatusThreadId = currentThread.id;
         markChatWorking(runStatusThreadId);
@@ -8119,6 +8382,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
         completeTurnActivity();
         streamBubble = null;
+        // 턴을 결과와 함께 정착하고 그 작업을 접는다. 새로고침으로 시작을 놓친 턴은 그 표식에 잇는다.
+        if (!openFold) adoptUnsettledTurnFold();
+        settleOpenTurnFold(turnOutcomeFor(event, { errorSeen: turnErrorSeen }));
+        turnErrorSeen = false;
         // 턴의 도구·작업 기록은 턴 끝에서 바로 남긴다.
         flushTranscriptPersist();
         // 대기 메시지: 정상 종료면 맨 앞 하나를 보내고, 미심쩍은 끝이면 붙잡는다.
@@ -8126,6 +8393,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         break;
       }
       case 'error':
+        if (turnRunning || openFold) turnErrorSeen = true;
         systemMessage(event.message);
         noteProviderAuthFailure(event.agent, event.message);
         if (turnRunning) followUps.agentError();
@@ -8360,6 +8628,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         sweepTasksTranscript();
         completeTurnActivity();
         streamBubble = null;
+        // 멈춘 턴을 먼저 정착해 접고, 그다음 대기열이 다음 턴을 정한다.
+        settleOpenTurnFold('interrupted');
         followUps.chatStopped();
         break;
       case 'title-result': {
@@ -8408,6 +8678,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         planActionPending = false;
         syncPlanningFromBridge();
         setTurnRunning(bridge.isTurnRunning());
+        // 허브 오류로 턴이 끝났으면 실패로 정착한다 — 접지 않고 모든 단계를 남긴다.
+        if (!bridge.isTurnRunning()) settleOpenTurnFold('failed');
         dropRunStatusIfIdle();
         followUps.settle();
         break;
@@ -9606,6 +9878,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       contextUnsubs.forEach((unsub) => unsub());
       messagesMutationObserver?.disconnect();
       messagesResizeObserver?.disconnect();
+      turnFoldResizeObserver?.disconnect();
       if (messagesResizeFrame !== null) window.cancelAnimationFrame(messagesResizeFrame);
       dockResizeObserver?.disconnect();
       composerStackResizeObserver?.disconnect();

@@ -222,6 +222,8 @@ export function createMockBridge(
   let changes: T.PendingChangeSet[] = [];
   const changeEvents: T.PendingEditsChangeEvent['type'][] = [];
   const reviewMode = new URLSearchParams(location.search).get('review');
+  /** `background=1`: the fleet scenario's first subagent is a background process that outlives its turn. */
+  const backgroundTask = new URLSearchParams(location.search).get('background') === '1';
   const fullReview = reviewMode === 'full';
   const references: T.ReferenceFile[] = [
     {
@@ -793,6 +795,7 @@ export function createMockBridge(
             title: '문장과 용어 검토',
             taskKind: 'agent',
             role: '교정',
+            ...(backgroundTask ? { background: true } : {}),
           });
           for (const [suffix, title] of [['layout', '표 구조와 문서 서식'], ['facts', '일정과 수치 검증']]) {
             stream({ type: 'task-start', agent, taskId: `${suffix}-${turnGeneration}`, title, taskKind: 'agent' });
@@ -804,7 +807,7 @@ export function createMockBridge(
             stream({ type: 'text-delta', agent, parentTaskId: `task-${turnGeneration}`, text: activities[frame % activities.length] + '\n' });
             stream({ type: 'task-progress', agent, taskId: `task-${turnGeneration}`, usage: { totalTokens: 2400 + frame * 120, toolUses: 3 } });
             frame += 1;
-            if (holdReply) later(updateFleet, 1600);
+            if (holdReply || backgroundTask) later(updateFleet, 1600);
           };
           later(updateFleet, 500);
           stream({ type: 'tool-call', agent, parentTaskId: `layout-${turnGeneration}`, callId: `layout-read-${turnGeneration}`, tool: 'read_document', argsJson: '{"section":1}' });
@@ -887,7 +890,7 @@ export function createMockBridge(
               activity: '용어와 문장 길이를 검토했습니다.',
               usage: { totalTokens: 2400, toolUses: 3 },
             });
-            if (!holdReply) stream({
+            if (!holdReply && !backgroundTask) stream({
               type: 'task-end',
               agent,
               taskId: `task-${turnGeneration}`,
