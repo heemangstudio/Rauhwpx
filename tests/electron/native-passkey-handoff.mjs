@@ -40,6 +40,7 @@ try {
   if (passwordsModule) new passwordsModule.NativeBrowserPasswords({ host, vault: { async withCredential(_id, use) { return use({ origin, username: 'fixture-user', password: secret }); } } });
   const nativeAdapter = {
     async start(params) { return { ...await host.start(params, nativeOwner), close: () => host.release(nativeOwner) }; },
+    ...(host.activity ? { activity: (params) => host.activity(params) } : {}),
     ...(host.importSession ? { importSession: (params) => host.importSession(params) } : {}),
     passwordStorageState: () => host.passwords?.storageState() ?? null,
     ...(host.passwords ? { passwordSnapshot: (params) => host.passwords.snapshot(params), passwordAction: (params) => host.passwords.action(params), passwordFill: (params) => host.passwords.fill(params) } : {}),
@@ -63,6 +64,7 @@ try {
   const nativeTab = host.tab(opened.tab.tabId);
   const before = await nativeTab.view.webContents.executeJavaScript('document.querySelector("h1").textContent');
   assert.equal(before, 'Initial native guest');
+  if (host.zoom) host.zoom(editor, { tabId: nativeTab.tabId, factor: 1.5 });
   if (host.passwords) {
     const binding = { targetId: nativeTab.targetId, tabId: nativeTab.tabId, sessionId: nativeTab.sessionId, chatId: nativeTab.chatId };
     const snapshot = await host.passwords.snapshot(binding);
@@ -83,14 +85,21 @@ try {
   console.error('NATIVE_PASSKEY_STAGE agent-snapshot');
   const observed = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
   assert.ok(observed.snapshot.text.includes('Authenticated native guest'));
+  if (host.zoom) {
+    assert.equal(contents.getZoomFactor(), 1.5);
+    assert.ok(Math.abs(observed.snapshot.viewport.width * 1.5 - nativeTab.viewport.width) <= 2, 'zoomed snapshot must use CSS viewport dimensions');
+  }
   const field = observed.snapshot.elements.find((entry) => entry.name === 'Research field');
+  assert.ok(field?.rect.width > 0 && field.rect.x + field.rect.width <= observed.snapshot.viewport.width, 'research ref coordinates must fit the zoomed viewport');
   assert.ok(field, 'the recovered browser must expose a usable research field');
   console.error('NATIVE_PASSKEY_STAGE agent-type');
   await browser.request(agent, 'type', { tabId: opened.tab.tabId, snapshotId: observed.snapshot.snapshotId, navigationEpoch: observed.tab.navigationEpoch, controllerEpoch: observed.tab.controllerEpoch, ref: field.ref, text: 'agent research resumed' });
   assert.equal(await contents.executeJavaScript('document.querySelector("#research").value'), 'agent research resumed');
+  assert.equal(nativeTab.activityLeases?.size ?? 0, 0);
+  assert.equal(await contents.executeJavaScript('document.hidden'), true);
   assert.equal(await unrelatedContents.executeJavaScript("localStorage.getItem('retained-session')"), 'unrelated-local-value');
   assert.equal(await unrelatedContents.executeJavaScript("indexedDB.databases().then(databases => databases.some(entry => entry.name === 'retained-session-db'))"), true);
-  console.log(`NATIVE_PASSKEY_REPORT ${JSON.stringify({ mode: confirmed.runtime.mode, retainedTarget: true, authenticated: true, retainedPath: '/research', protectedAutofill: !!host.passwords, unrelatedStoragePreserved: true, agentReady: true })}`);
+  console.log(`NATIVE_PASSKEY_REPORT ${JSON.stringify({ mode: confirmed.runtime.mode, retainedTarget: true, authenticated: true, retainedPath: '/research', protectedAutofill: !!host.passwords, unrelatedStoragePreserved: true, agentReady: true, hiddenAfterAction: true, zoomGeometry: !!host.zoom })}`);
 } catch (error) { console.error(error.stack); process.exitCode = 1; }
 finally {
   await browser?.close();

@@ -39,6 +39,8 @@ test('real Electron returns an isolated signed Chrome session to its retained na
     assert.equal(report.retainedPath, '/research');
     assert.equal(report.unrelatedStoragePreserved, true);
     assert.equal(report.agentReady, true);
+    assert.equal(report.hiddenAfterAction, true);
+    if (process.env.RHWP_TEST_BROWSER_SERVICE_MODULE) assert.equal(report.zoomGeometry, true);
     if (process.env.RHWP_TEST_NATIVE_PASSWORD_HOST) assert.equal(report.protectedAutofill, true);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
