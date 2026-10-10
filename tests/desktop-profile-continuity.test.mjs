@@ -85,6 +85,26 @@ function instructionsMeta(content, revision, updatedAt) {
   });
 }
 
+test('2.0.11 bookmarks only take free slots so no 2.0.10 file loses its document', async (t) => {
+  const root = await tempDir(t, 'bookmarks-full');
+  const source = path.join(root, 'HamaEditor');
+  const target = path.join(root, 'Rauhwpx');
+  const kept = Array.from({ length: 199 }, (_, index) => [`doc-2010-${index}`, { path: `/docs/old-${index}.hwpx`, digest: null }]);
+  await write(path.join(target, 'native-document-bookmarks.json'), JSON.stringify(kept));
+  await write(path.join(source, 'native-document-bookmarks.json'), JSON.stringify([
+    ['doc-2011-a', { path: '/docs/a.hwpx', digest: null }],
+    ['doc-2011-b', { path: '/docs/b.hwpx', digest: null }],
+    ['doc-2011-c', { path: '/docs/c.hwpx', digest: null }],
+  ]));
+
+  await importRebrandedProfileFiles({ sourceDir: source, targetDir: target, write: plainWrite });
+
+  const merged = JSON.parse(await fs.readFile(path.join(target, 'native-document-bookmarks.json'), 'utf8'));
+  assert.equal(merged.length, 200);
+  assert.deepEqual(merged.slice(0, 199), kept);
+  assert.equal(merged[199][0], 'doc-2011-c', 'the newest 2.0.11 bookmark takes the last free slot');
+});
+
 test('edited app instructions from 2.0.11 replace an untouched 2.0.10 seed but never a newer edit', async (t) => {
   const root = await tempDir(t, 'instructions');
   const source = path.join(root, 'HamaEditor');

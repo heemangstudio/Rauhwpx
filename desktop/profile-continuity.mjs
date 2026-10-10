@@ -203,21 +203,23 @@ export async function mergeNativeBookmarks({
   ]));
   const merged = [...current];
   let added = 0;
-  for (const [documentId, value] of incoming) {
+  // 2.0.10 bookmarks always stay; 2.0.11 ones fill only the free slots, newest first.
+  let capacity = Math.max(0, MAX_NATIVE_BOOKMARKS - current.length);
+  for (const [documentId, value] of [...incoming].reverse()) {
     const owner = owners.get(nativePathOwnershipKey(value.path, { platform }));
     if (owner) {
       if (owner !== documentId) documentIdAliases[documentId] = owner;
       continue;
     }
-    if (ids.has(documentId)) continue;
-    merged.push([documentId, value]);
+    if (ids.has(documentId) || capacity === 0) continue;
+    capacity -= 1;
+    merged.splice(current.length, 0, [documentId, value]);
     ids.add(documentId);
     owners.set(nativePathOwnershipKey(value.path, { platform }), documentId);
     added += 1;
   }
   if (added > 0) {
-    // The registry evicts from the front; keep the newest 200 like it does.
-    await write(targetFile, Buffer.from(JSON.stringify(merged.slice(-MAX_NATIVE_BOOKMARKS)), 'utf8'));
+    await write(targetFile, Buffer.from(JSON.stringify(merged), 'utf8'));
   }
   return { added, documentIdAliases };
 }
