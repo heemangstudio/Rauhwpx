@@ -138,7 +138,7 @@ export interface RhwpDesktopApi {
   verifyNativePick?: (documentId: string, handleId: string) => Promise<boolean>;
   /** 문서 홈: 기억한 위치의 파일 상태. 핸들을 만들지 않는다. */
   inspectNativeDocuments?: (documentIds: string[]) => Promise<ReadonlyArray<NativeDocumentPresence & { documentId: string }>>;
-  relocateNativeDocument?: (documentId: string, probeId: string) => Promise<{ fileName: string } | null>;
+  relocateNativeDocument?: (documentId: string) => Promise<{ fileName: string } | null>;
   readRememberedNativeDocument?: (documentId: string) => Promise<NativeFileReadResult | null>;
   revealNativeDocument?: (documentId: string) => Promise<boolean>;
   openNativeDocumentWindow?: (documentId: string) => Promise<boolean>;
@@ -1099,15 +1099,17 @@ export async function inspectNativeDocuments(
   return result;
 }
 
-/** 근처 찾기 후보를 이 문서의 새 위치로 기억시킨다. 옮긴 뒤의 파일 이름을 돌려준다. */
+/**
+ * 옮겨진 문서를 근처 폴더에서 찾아 새 위치로 기억시킨다. 크기와 내용 해시를 맞추는 일은 메인이
+ * 한다. 찾았으면 새 파일 이름을 돌려준다.
+ */
 export async function relocateNativeDocument(
   documentId: string,
-  probeId: string,
   win?: DesktopHost,
 ): Promise<string | null> {
   const api = desktopHost(win)?.rhwpDesktop;
   if (!api?.relocateNativeDocument) return null;
-  const result = await api.relocateNativeDocument(documentId, probeId);
+  const result = await api.relocateNativeDocument(documentId);
   return result && typeof result.fileName === 'string' && result.fileName ? result.fileName : null;
 }
 

@@ -1214,6 +1214,8 @@ ipcMain.handle('desktop:native-file-write', async (event, handleId, bytes, ident
   const session = sessionForEvent(event);
   const written = await nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases);
   noteRecentDocument(session.sessionId, handleId);
+  // 저장한 내용 표시(크기·sha256)를 북마크에 남겨 옮겨진 파일을 다음 실행에도 알아본다.
+  void persistNativeBookmarks().catch(() => {});
   return written;
 });
 ipcMain.handle('desktop:native-file-is-same', (event, firstHandleId, secondHandleId) => {
@@ -1273,28 +1275,40 @@ ipcMain.handle('desktop:verify-native-pick', (event, documentId, handleId) => {
   return nativeFiles.verifyPick(session.sessionId, documentId, handleId);
 });
 // 문서 홈: 기억한 위치만 살핀다. 핸들을 만들거나 경로를 점유하지 않는다.
-const HOME_THUMBNAIL_SOURCE_MAX_BYTES = 24 * 1024 * 1024;
 ipcMain.handle('desktop:inspect-native-documents', async (event, documentIds) => {
   sessionForEvent(event);
   if (!Array.isArray(documentIds)) return [];
   const ids = [...new Set(documentIds.filter((id) => typeof id === 'string' && id))].slice(0, 200);
-  return Promise.all(ids.map(async (documentId) => ({
-    documentId,
-    ...await nativeFiles.inspectDocument(documentId),
-  })));
+  // 닿지 않는 네트워크 위치가 libuv 작업 칸을 모두 붙잡지 않게 몇 개씩만 본다.
+  const results = new Array(ids.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(4, ids.length) }, async () => {
+    while (next < ids.length) {
+      const index = next++;
+      results[index] = { documentId: ids[index], ...await nativeFiles.inspectDocument(ids[index]) };
+    }
+  }));
+  return results;
 });
-ipcMain.handle('desktop:relocate-native-document', async (event, documentId, probeId) => {
+const relocatingDocuments = new Map();
+ipcMain.handle('desktop:relocate-native-document', (event, documentId) => {
   const session = sessionForEvent(event);
   if (typeof documentId !== 'string' || !documentId) return null;
-  if (typeof probeId !== 'string' || !probeId) return null;
-  const relocated = await nativeFiles.relocateDocument(session.sessionId, documentId, probeId);
-  if (relocated) await persistNativeBookmarks();
-  return relocated;
+  // 같은 문서를 두 번 찾지 않는다. 겹친 요청은 처음 찾기의 결과를 함께 받는다.
+  const key = `${session.sessionId}\0${documentId}`;
+  const running = relocatingDocuments.get(key);
+  if (running) return running;
+  const search = nativeFiles.relocateDocument(session.sessionId, documentId).then(async (relocated) => {
+    if (relocated) await persistNativeBookmarks();
+    return relocated;
+  }).finally(() => relocatingDocuments.delete(key));
+  relocatingDocuments.set(key, search);
+  return search;
 });
 ipcMain.handle('desktop:read-remembered-native-document', async (event, documentId) => {
-  sessionForEvent(event);
+  const session = sessionForEvent(event);
   if (typeof documentId !== 'string' || !documentId) return null;
-  return nativeFiles.readRememberedDocument(documentId, { maxBytes: HOME_THUMBNAIL_SOURCE_MAX_BYTES });
+  return nativeFiles.readRememberedDocument(session.sessionId, documentId);
 });
 ipcMain.handle('desktop:reveal-native-document', async (event, documentId) => {
   sessionForEvent(event);
@@ -1303,11 +1317,20 @@ ipcMain.handle('desktop:reveal-native-document', async (event, documentId) => {
   shell.showItemInFolder(nativeFiles.bookmarkPathFor(documentId));
   return true;
 });
+const recentWindowOpens = new Map();
 ipcMain.handle('desktop:open-native-document-window', async (event, documentId) => {
-  sessionForEvent(event);
+  const session = sessionForEvent(event);
   if (typeof documentId !== 'string' || !documentId) return false;
+  // 이 창에 이미 열린 문서는 새 창으로 다시 열지 않는다.
+  if (nativeFiles.ownsDocumentPath(session.sessionId, documentId)) return false;
   if ((await nativeFiles.inspectDocument(documentId)).state !== 'present') return false;
-  queueLaunch(launchRequest({ openFiles: [nativeFiles.bookmarkPathFor(documentId)], source: 'document-home' }));
+  const path = nativeFiles.bookmarkPathFor(documentId);
+  // 연달아 누른 요청은 한 번만 연다.
+  const now = Date.now();
+  if (now - (recentWindowOpens.get(path) ?? 0) < 2000) return true;
+  recentWindowOpens.set(path, now);
+  for (const [openedPath, at] of recentWindowOpens) if (now - at > 10_000) recentWindowOpens.delete(openedPath);
+  queueLaunch(launchRequest({ openFiles: [path], source: 'document-home' }));
   return true;
 });
 ipcMain.handle('desktop:document-reserve', (event, identity, nativeHandleId, slotId) => {
