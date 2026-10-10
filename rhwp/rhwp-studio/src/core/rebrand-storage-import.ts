@@ -75,6 +75,8 @@ export interface RebrandImportResult {
   ledger: RebrandImportLedger;
   /** 모든 저장소를 끝까지 처리했다. */
   complete: boolean;
+  /** 시간 제한에 걸려 멈췄다. 실패로 세지 않는다. */
+  aborted: boolean;
 }
 
 /** 웹 경로의 진행 장부. 데스크톱은 메인 프로세스가 같은 장부를 보관한다. */
@@ -636,6 +638,7 @@ export async function importRebrandedStorage(
     failures: [],
     ledger,
     complete: false,
+    aborted: false,
   };
   const context: ImportContext = { aliases: options.documentIdAliases ?? {}, ledger, signal: options.signal, result };
   const legacyThreads = dump.localStorage
@@ -674,6 +677,7 @@ export async function importRebrandedStorage(
     aborted = true;
     result.failures.push('시간 안에 끝나지 않아 멈췄습니다');
   }
+  result.aborted = aborted;
   result.complete = !aborted && result.failures.length === 0;
   return result;
 }
@@ -690,7 +694,7 @@ interface DesktopRebrandApi {
   takeRebrandImportChunk?: (token: string, index: number) => Promise<RebrandedStorageChunk | null>;
   finishRebrandImport?: (
     token: string,
-    outcome: { complete: boolean; ledger: RebrandImportLedger; failures: string[] },
+    outcome: { complete: boolean; aborted: boolean; ledger: RebrandImportLedger; failures: string[] },
   ) => Promise<unknown>;
 }
 
@@ -718,7 +722,7 @@ function withImportLock<T>(run: () => Promise<T>): Promise<T> {
 async function importFromDesktop(desktop: DesktopRebrandApi, signal: AbortSignal): Promise<void> {
   const handoff = await desktop.takeRebrandImport?.();
   if (!handoff) return;
-  let outcome = { complete: false, ledger: handoff.ledger ?? {}, failures: [] as string[] };
+  let outcome = { complete: false, aborted: false, ledger: handoff.ledger ?? {}, failures: [] as string[] };
   try {
     if (signal.aborted) throw new ImportAborted();
     const chunks: RebrandedStorageChunk[] = [];
@@ -733,10 +737,11 @@ async function importFromDesktop(desktop: DesktopRebrandApi, signal: AbortSignal
       ledger: handoff.ledger ?? {},
       signal,
     });
-    outcome = { complete: result.complete, ledger: result.ledger, failures: result.failures };
+    outcome = { complete: result.complete, aborted: result.aborted, ledger: result.ledger, failures: result.failures };
     logResult('2.0.11 데스크톱 프로필', result);
   } catch (error) {
     outcome.failures = [message(error)];
+    outcome.aborted = error instanceof ImportAborted;
   } finally {
     await desktop.finishRebrandImport?.(handoff.token, outcome);
   }
@@ -753,9 +758,19 @@ async function importFromThisOrigin(signal: AbortSignal): Promise<void> {
   storage?.setItem(REBRAND_IMPORT_MARKER_KEY, JSON.stringify({
     ledger: result.ledger,
     complete: result.complete,
-    attempts: result.complete ? 0 : (marker.attempts ?? 0) + 1,
+    attempts: nextAttempts(marker, result),
     importedAt: Date.now(),
   } satisfies WebMarker & { importedAt: number }));
+}
+
+function ledgerSize(ledger: RebrandImportLedger | undefined): number {
+  return Object.values(ledger ?? {}).reduce((total, keys) => total + (Array.isArray(keys) ? keys.length : 0), 0);
+}
+
+/** 무언가 실패했는데 장부가 그대로일 때만 한 번으로 센다. 시간 제한으로 멈춘 것은 세지 않는다. */
+function nextAttempts(marker: WebMarker, result: RebrandImportResult): number {
+  if (result.complete || ledgerSize(result.ledger) > ledgerSize(marker.ledger)) return 0;
+  return (marker.attempts ?? 0) + (result.aborted ? 0 : 1);
 }
 
 /**

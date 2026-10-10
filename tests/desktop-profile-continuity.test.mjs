@@ -13,7 +13,10 @@ import {
   snapshotBrowserStorage,
   writeRebrandImportMarker,
 } from '../desktop/profile-continuity.mjs';
-import { createRebrandImportController } from '../desktop/rebrand-import-controller.mjs';
+import {
+  REBRAND_EXPORT_TIMEOUT_CODE,
+  createRebrandImportController,
+} from '../desktop/rebrand-import-controller.mjs';
 import {
   REBRANDED_LAUNCH_MARKERS,
   rebrandedRuntimeRoots,
@@ -311,4 +314,63 @@ test('a slow 2.0.11 check never holds the first window past its budget', async (
   await sleep(600);
   assert.equal(wroteAfterBudget, false, 'the late merge stops before writing');
   await assert.rejects(fs.stat(path.join(target, 'rebrand-import.json')), { code: 'ENOENT' });
+});
+
+test('only failures that made no progress use up the retry budget', async (t) => {
+  const sleepless = { log() {}, warn() {} };
+  async function scenario(label, launchOnce) {
+    const root = await tempDir(t, `budget-${label}`);
+    const source = path.join(root, 'HamaEditor');
+    const target = path.join(root, 'Rauhwpx');
+    await fs.mkdir(target, { recursive: true });
+    await write(path.join(source, 'IndexedDB', 'hamaeditor_app_0.indexeddb.leveldb', '000005.ldb'), 'threads');
+    const launch = (exportStorage) => createRebrandImportController({
+      BrowserWindow: null,
+      session: null,
+      userDataDir: target,
+      rebrandedDir: source,
+      tempDir: path.join(root, 'temp'),
+      preloadPath: path.join(root, 'unused.cjs'),
+      inUse: async () => false,
+      importFiles: async () => ({ documentIdAliases: {}, results: {} }),
+      exportStorage,
+      log: sleepless,
+    });
+    for (let index = 0; index < 8; index += 1) await launchOnce(launch, index);
+    // A ninth launch still exports unless the earlier ones used up the budget.
+    let exported = false;
+    const last = launch(async () => {
+      exported = true;
+      return [{ kind: 'localStorage', entries: [['hamaeditor-x', '1']] }];
+    });
+    await last.prepare();
+    await last.take();
+    return exported;
+  }
+  const chunks = [{ kind: 'localStorage', entries: [['hamaeditor-x', '1']] }];
+
+  assert.equal(await scenario('slow-with-progress', async (launch, index) => {
+    const controller = launch(async () => chunks);
+    await controller.prepare();
+    const handoff = await controller.take();
+    const keys = Array.from({ length: index + 1 }, (_, position) => `"thread-${position}"`);
+    await controller.finish(handoff.token, { complete: false, aborted: true, ledger: { 'rhwpAgentThreads/threads': keys } });
+  }), true, 'an import that keeps advancing is never abandoned');
+
+  assert.equal(await scenario('export-timeout', async (launch) => {
+    const controller = launch(async () => {
+      throw Object.assign(new Error('slow'), { code: REBRAND_EXPORT_TIMEOUT_CODE });
+    });
+    await controller.prepare();
+    await controller.take();
+  }), true, 'a slow machine is not a broken profile');
+
+  assert.equal(await scenario('stuck', async (launch) => {
+    const controller = launch(async () => chunks);
+    await controller.prepare();
+    const handoff = await controller.take();
+    if (handoff) {
+      await controller.finish(handoff.token, { complete: false, aborted: false, failures: ['rhwpStudioAutosave: broken'], ledger: {} });
+    }
+  }), false, 'a store that fails the same way every time is eventually left alone');
 });

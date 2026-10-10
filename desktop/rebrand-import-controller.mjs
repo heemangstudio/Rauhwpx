@@ -18,10 +18,12 @@ export const REBRAND_PREPARE_BUDGET_MS = 5_000;
 
 const EXPORT_PAGE = '<!doctype html><meta charset="utf-8"><title>import</title>';
 
+export const REBRAND_EXPORT_TIMEOUT_CODE = 'REBRAND_EXPORT_TIMEOUT';
+
 function withTimeout(promise, timeoutMs, message) {
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    timer = setTimeout(() => reject(Object.assign(new Error(message), { code: REBRAND_EXPORT_TIMEOUT_CODE })), timeoutMs);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
@@ -88,6 +90,11 @@ export async function exportRebrandedStudioStorage({
   }
 }
 
+function ledgerSize(ledger) {
+  if (!ledger || typeof ledger !== 'object') return 0;
+  return Object.values(ledger).reduce((total, keys) => total + (Array.isArray(keys) ? keys.length : 0), 0);
+}
+
 function hasStorage(chunks) {
   return chunks.some((chunk) => (
     (chunk?.kind === 'localStorage' && chunk.entries?.length > 0)
@@ -116,6 +123,7 @@ export function createRebrandImportController({
   writeMarker = writeRebrandImportMarker,
   inUse,
   prepareBudgetMs = REBRAND_PREPARE_BUDGET_MS,
+  exportStorage = exportRebrandedStudioStorage,
 }) {
   let pending = Promise.resolve(null);
   let marker = {};
@@ -186,7 +194,7 @@ export function createRebrandImportController({
       ? marker.storageAttempts.count ?? 0
       : 0;
     pending = (async () => {
-      const chunks = await exportRebrandedStudioStorage({
+      const chunks = await exportStorage({
         BrowserWindow,
         session,
         sourceDir: rebrandedDir,
@@ -203,7 +211,10 @@ export function createRebrandImportController({
       return { token: randomUUID(), fingerprint: plan.fingerprint, chunks, documentIdAliases, attempts };
     })().catch(async (error) => {
       log.warn?.('[hamaeditor] 2.0.11 storage export failed:', error);
-      await record({ storageAttempts: { fingerprint: plan.fingerprint, count: attempts + 1 } }).catch(() => {});
+      // A slow machine is not a broken profile; only a reader that failed counts toward giving up.
+      if (error?.code !== REBRAND_EXPORT_TIMEOUT_CODE) {
+        await record({ storageAttempts: { fingerprint: plan.fingerprint, count: attempts + 1 } }).catch(() => {});
+      }
       return null;
     });
   }
@@ -241,10 +252,14 @@ export function createRebrandImportController({
       return true;
     }
     // Merged records stay merged; the rest is retried by another window now or a later launch.
+    // An attempt counts toward giving up only when something failed and nothing moved forward.
     handedOut = null;
+    const progressed = ledgerSize(ledger) > ledgerSize(marker.storageLedger);
+    const failed = outcome?.aborted !== true;
+    const count = progressed ? 0 : current.attempts + (failed ? 1 : 0);
     await record({
       storageLedger: ledger,
-      storageAttempts: { fingerprint: current.fingerprint, count: current.attempts + 1 },
+      storageAttempts: { fingerprint: current.fingerprint, count },
     });
     log.warn?.('[hamaeditor] 2.0.11 storage import incomplete:', JSON.stringify(outcome?.failures ?? []));
     return false;
