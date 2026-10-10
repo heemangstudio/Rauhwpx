@@ -1349,6 +1349,18 @@ export function upsertThread(thread: ChatThread): void {
   persistUpsert(capped);
 }
 
+/**
+ * 저장된 채팅 끝에 시스템 안내 한 줄을 덧붙인다. 그 채팅을 열어 둔 사이드바가 없을 때 쓴다 —
+ * 열린 사이드바는 자기 사본을 다시 저장하며 이 줄을 덮는다. 채팅이 없으면 false.
+ * (엔진 trap 복구의 중단 표시 대체 구현. S3 의 중단 표시가 들어오면 지운다.)
+ */
+export function appendThreadSystemNotice(threadId: string, text: string): boolean {
+  const thread = getThread(threadId);
+  if (!thread) return false;
+  upsertThread({ ...thread, messages: [...thread.messages, { role: 'system', text }] });
+  return true;
+}
+
 export function removeThread(id: string): void {
   if (!idbAvailable()) {
     saveFallbackMutation(readLegacyThreads().filter((thread) => thread.id !== id));

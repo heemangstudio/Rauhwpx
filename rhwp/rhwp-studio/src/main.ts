@@ -69,7 +69,7 @@ import {
   type FileSystemFileHandleLike,
 } from '@/command/file-system-access';
 import { fileNameForFormat, forgetConvertedHmlSaveHandle } from '@/command/save-target';
-import { onEngineTrap } from '@/core/engine-trap';
+import { engineTrap, onEngineTrap, reportEngineTrap } from '@/core/engine-trap';
 import { ContextMenu } from '@/ui/context-menu';
 import { CommandPalette } from '@/ui/command-palette';
 import { showHmlImportWarning } from '@/ui/hml-import-warning';
@@ -145,6 +145,7 @@ import {
   deleteAutosaveDraft,
   getAutosaveDraft,
   getAutosaveDraftBase,
+  listAutosaveDrafts,
   listRecoverableAutosaveDrafts,
   markAutosaveDraftsOffered,
   type AutosaveDraft,
@@ -165,6 +166,8 @@ import {
   BLOCKED_RESTORE_MESSAGE,
   offerAutosaveRecovery,
   restoreAutosaveDraft,
+  type DraftRestoreOptions,
+  type DraftRestoreOutcome,
   type FoundOriginal,
   type MergeExternalResult,
   type OpenDraftOutcome,
@@ -172,6 +175,21 @@ import {
 } from '@/recovery/recovery-flow';
 import { showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
 import { isPinnedDocumentEnabled, startPinnedDocument } from '@/recovery/pinned-document';
+import {
+  createTrapRecoveryRun,
+  describeTrapOutcome,
+  planTrapEntry,
+  runTrapRecovery,
+  takeTrapManifest,
+  type TrapEntryPlan,
+  type TrapManifestEntry,
+  type TrapOpenResult,
+  type TrapRecoveryManifest,
+  type TrapRecoveryRun,
+} from '@/recovery/trap-recovery';
+import { TrapRecoveryPage, presentTrapRecoveryReport } from '@/recovery/trap-recovery-page';
+import { markThreadInterruptedByEngineTrap } from '@/recovery/trap-chat-notice';
+import { claimForExplorerGroup } from '@/project-file/claim';
 import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
 import { TableObjectRenderer } from '@/engine/table-object-renderer';
 import { TableResizeRenderer } from '@/engine/table-resize-renderer';
@@ -212,6 +230,8 @@ import {
   pickDesktopNativeSaveFile,
   releaseDesktopDocument,
   createAgentHubSession,
+  deliveredGeneratedDocumentIds,
+  deliveredLaunchHandleIds,
   supportsExtraAgentHubSessions,
   canRenameNativeFile,
   renameNativeDocumentFile,
@@ -321,15 +341,69 @@ const documentState = documentStateFacade.facade;
 let disposeAgentSidebar = (): void => {};
 const autosaveFacade = createAttachableFacade<AutosaveManager>(firstSession.autosave);
 const autosaveManager = autosaveFacade.facade;
-onEngineTrap(() => {
-  // 멈춘 엔진이 아직 읽기는 받아 줄 때 지금 상태를 복구본으로 남긴다. 엔진 메모리는 모든 문서가
-  // 함께 쓰므로 열린 문서 전부를 남긴다.
-  for (const session of liveSessions) void session.autosave.flushNow('engine-trap');
+/**
+ * 엔진 trap 복구는 페이지를 다시 불러와 문서를 모두 다시 연다. 문서를 호스트가 쥐는 고정 문서와
+ * 다른 페이지에 들어간 임베드는 다시 불러오면 호스트와의 연결을 잃으므로 예전처럼 사본만 받는다.
+ */
+function trapRecoveryAvailable(): boolean {
+  return !isPinnedDocumentEnabled() && window.parent === window;
+}
+
+function sessionStorageOrNull(): Storage | null {
+  try { return window.sessionStorage; } catch { return null; }
+}
+
+/** 멈춘 페이지가 남긴 다시 열 문서 목록. 읽자마자 지워 복구가 스스로 되풀이되지 않는다. */
+const trapManifestToRecover: TrapRecoveryManifest | null = (() => {
+  const manifest = takeTrapManifest(sessionStorageOrNull());
+  return manifest && trapRecoveryAvailable() ? manifest : null;
+})();
+/**
+ * 다시 연 페이지의 복구 진행. 다시 여는 도중(또는 시작하기 전에) 또 멈추면 다음 목록이 이것을
+ * 이어받아, 아직 열지 못한 문서를 잃지 않는다.
+ */
+const trapRecoveryRun: TrapRecoveryRun<DocumentSession> | null = trapManifestToRecover
+  ? createTrapRecoveryRun<DocumentSession>(trapManifestToRecover)
+  : null;
+const trapRecoveryPage = new TrapRecoveryPage({
+  sessions: () => liveSessions,
+  attached: () => attachedSession,
+  saveCopy: saveTrappedDocumentCopy,
+  run: () => trapRecoveryRun,
+  deliveredLaunchHandleIds,
+  deliveredGeneratedDocumentIds,
+  storage: sessionStorageOrNull,
+  reload: () => window.location.reload(),
+});
+
+function showTrapRecoveryToast(): void {
   showToast({
-    message: '문서 엔진이 멈춰 편집을 중단했습니다.\n사본을 저장한 뒤 앱을 다시 여세요.',
+    message: '문서 엔진이 멈췄습니다. 열린 문서를 모두 다시 열어 복구할 수 있습니다.',
     durationMs: 0,
-    action: { label: '사본 저장', onClick: saveTrappedDocumentCopy },
+    action: { label: '문서 복구', onClick: () => void openTrapRecoveryDialog() },
   });
+}
+
+async function openTrapRecoveryDialog(): Promise<void> {
+  // 닫으면 페이지를 그대로 두고(읽기만 된다) 안내를 다시 띄운다.
+  if (await trapRecoveryPage.openDialog() === 'closed') showTrapRecoveryToast();
+}
+
+onEngineTrap(() => {
+  if (!trapRecoveryAvailable()) {
+    // 멈춘 엔진이 아직 읽기는 받아 줄 때 지금 상태를 복구본으로 남긴다. 엔진 메모리는 모든 문서가
+    // 함께 쓰므로 열린 문서 전부를 남긴다.
+    for (const session of liveSessions) void session.autosave.flushNow('engine-trap');
+    showToast({
+      message: '문서 엔진이 멈춰 편집을 중단했습니다.\n사본을 저장한 뒤 앱을 다시 여세요.',
+      durationMs: 0,
+      action: { label: '사본 저장', onClick: saveTrappedDocumentCopy },
+    });
+    return;
+  }
+  // 멈춘 엔진이 아직 읽기는 받아 줄 때, 바뀐 문서마다 복구본을 하나씩 남기기 시작한다.
+  trapRecoveryPage.begin();
+  showTrapRecoveryToast();
 });
 window.addEventListener('pagehide', (event) => {
   if (!event.persisted) {
@@ -1254,11 +1328,11 @@ async function initialize(): Promise<void> {
           await handle.releaseUnusedSaveTarget?.().catch(() => {});
           if (!(error instanceof DocumentOwnedElsewhereError)) showLoadError(error);
         });
-    });
+    }, undefined, { skipHandleIds: trapManifestToRecover?.deliveredLaunchHandleIds ?? [] });
     installDesktopGeneratedDocumentHandling(({ bytes, fileName, readOnly }) => {
       if (readOnly) setDocumentReadOnly(true);
       eventBus.emit('open-document-bytes', { bytes, fileName });
-    });
+    }, undefined, { skipLaunchDocumentIds: trapManifestToRecover?.deliveredGeneratedDocumentIds ?? [] });
     installDesktopEditCommandHandling((command) => {
       const target = document.activeElement;
       if (ownsTextInput(target) && !isEditorInput(target)) {
@@ -1273,9 +1347,14 @@ async function initialize(): Promise<void> {
     installDesktopPlainTextPasteHandling((text) => {
       inputHandler?.performPlainTextPaste(text);
     });
-    if (isPinnedDocumentEnabled()) void loadPinnedDocument();
-    else void loadFromUrlParam();
-    void offerAutosaveRecoveryAtStartup();
+    if (trapManifestToRecover) {
+      // 엔진 trap 복구로 다시 불러온 페이지다. URL 문서 대신 멈추기 전에 열려 있던 문서를 다시 연다.
+      void recoverDocumentsAfterTrap(trapRecoveryRun!);
+    } else {
+      if (isPinnedDocumentEnabled()) void loadPinnedDocument();
+      else void loadFromUrlParam();
+      void offerAutosaveRecoveryAtStartup();
+    }
     installPwaFileHandling(window as FileHandlingWindowLike, {
       openDocumentBytes(payload) {
         eventBus.emit('open-document-bytes', payload);
@@ -3741,7 +3820,11 @@ async function restoreAutosaveDraftNow(draft: AutosaveDraftSummary): Promise<voi
   await restoreAutosaveDraftInAttachedSession(draft);
 }
 
-function restoreAutosaveDraftInAttachedSession(draft: AutosaveDraftSummary): Promise<void> {
+function restoreAutosaveDraftInAttachedSession(
+  draft: AutosaveDraftSummary,
+  options: DraftRestoreOptions & { canMerge?: boolean } = {},
+): Promise<DraftRestoreOutcome> {
+  const { canMerge = true, ...restoreOptions } = options;
   return restoreAutosaveDraft(draft, {
     readDraft: (id) => getAutosaveDraft(id),
     locateOriginal: locateAutosaveOriginal,
@@ -3749,7 +3832,7 @@ function restoreAutosaveDraftInAttachedSession(draft: AutosaveDraftSummary): Pro
     releaseHandle: async (handle) => {
       await handle.releaseUnusedSaveTarget?.().catch(() => {});
     },
-    canMerge: () => Boolean(attachedSession.versions || inputHandler),
+    canMerge: () => canMerge && Boolean(attachedSession.versions || inputHandler),
     releaseCurrentDocument: () => {
       if (documentState.isDirty()) documentState.markClean('autosave-restore-replace');
     },
@@ -3758,7 +3841,7 @@ function restoreAutosaveDraftInAttachedSession(draft: AutosaveDraftSummary): Pro
     deleteDraft: (id) => deleteAutosaveDraft(id),
     flush: () => autosaveManager.flushNow('autosave-recovered'),
     toast: (message, durationMs) => showToast({ message, durationMs }),
-  });
+  }, restoreOptions);
 }
 
 /**
@@ -3797,9 +3880,17 @@ async function locateAutosaveOriginal(draft: AutosaveDraft) {
   });
 }
 
-/** 자동 저장본을 dirty 로 연다. */
+/** 자동 저장본을 dirty 로 연다. clean 이면 draft 대신 원본 파일을 깨끗하게 연다. */
 async function openAutosaveDraft(draft: AutosaveDraft, target: OpenDraftTarget): Promise<OpenDraftOutcome> {
   const original = target.original;
+  if (target.clean && original) {
+    const opened = await loadRecoveredDocument(() => loadBytes(
+      original.bytes, target.fileName, original.handle, performance.now(),
+      target.documentId ? { grant: { kind: 'verified', documentId: target.documentId } } : {},
+    ));
+    if (opened !== 'opened') await original.handle.releaseUnusedSaveTarget?.().catch(() => {});
+    return opened;
+  }
   const outcome = await loadRecoveredDocument(() => loadBytes(
     draft.data, target.fileName, original?.handle ?? null, performance.now(), {
       autosaveDraftId: draft.id,
@@ -3859,6 +3950,138 @@ async function mergeAutosaveDraft(draft: AutosaveDraft, original: FoundOriginal)
   return { kind: 'merging', ...recovery };
 }
 
+// ─── 엔진 trap 복구: 다시 불러온 페이지 ─────────────────────────────
+
+/**
+ * 멈추기 전에 열려 있던 문서를 다시 연다. 기본 자리 문서는 첫 세션에, 나머지는 새 세션에 열고
+ * 보던 문서를 화면에 붙인다. 다시 연 문서의 복구본은 이 창이 이어받으므로, 끝난 뒤의 자동 저장본
+ * 제안에는 관계없는 것과 열지 못한 문서의 복구본만 남는다.
+ */
+async function recoverDocumentsAfterTrap(run: TrapRecoveryRun<DocumentSession>): Promise<void> {
+  try {
+    const report = await runNavigation(async () => {
+      // 복구한 draft 를 이 창 이름으로 다시 기록하므로 창 세션을 먼저 받는다.
+      await rendererSessionContextPromise;
+      return runTrapRecovery(run, {
+        listDrafts: () => listAutosaveDrafts(),
+        engineStopped: () => engineTrap() !== null,
+        defaultSession: () => firstSession,
+        markInterrupted: (threadId) => markThreadInterruptedByEngineTrap(threadId),
+        openInDefault: (entry, plan, options) => openTrapEntryInAttached(entry, plan, options),
+        openInBackground: async (entry, plan, options) => {
+          let fresh: DocumentSession | null = null;
+          const outcome = await openInNewSession(
+            (session) => { fresh = session; },
+            () => openTrapEntryInAttached(entry, plan, options),
+          );
+          if (!outcome) return { result: { kind: 'failed', reason: 'no-session' }, session: null };
+          if (outcome.loaded) return { result: outcome.result, session: fresh };
+          return {
+            result: outcome.result.kind === 'failed' ? outcome.result : { kind: 'failed', reason: 'error' },
+            session: null,
+          };
+        },
+        // 일하지 않는 세션도 닫지 않도록 switchToLiveSession 이 아니라 attachSession 으로 붙인다.
+        attach: (session) => attachSession(session),
+      });
+    });
+    presentTrapRecoveryReport(report, {
+      toast: (message) => showToast({ message, durationMs: 6000 }),
+      openEntry: (entry) => openTrapEntryOnDemand(entry),
+    });
+  } catch (error) {
+    console.error('[engine] 멈추기 전에 열려 있던 문서를 다시 열지 못했습니다:', error);
+    showLoadError(error);
+  } finally {
+    void offerAutosaveRecoveryAtStartup();
+  }
+}
+
+function trapResultOfRestore(outcome: DraftRestoreOutcome): TrapOpenResult {
+  switch (outcome.kind) {
+    case 'opened':
+      return { kind: 'opened', detached: outcome.detached, message: outcome.message };
+    case 'merging':
+      return { kind: 'opened', merging: true, message: outcome.message };
+    case 'blocked':
+      return { kind: 'failed', reason: 'blocked', message: outcome.message };
+    case 'cancelled':
+      return { kind: 'failed', reason: 'cancelled' };
+  }
+}
+
+/** 지금 화면에 붙은 세션에 manifest 항목 하나를 연다. 그 문서의 채팅이 따라 열린다. */
+async function openTrapEntryInAttached(
+  entry: TrapManifestEntry,
+  plan: TrapEntryPlan,
+  options: { canMerge: boolean },
+): Promise<TrapOpenResult> {
+  if (entry.activeThreadId) attachedSession.sidebar?.followThreadOnNextDocument(entry.activeThreadId);
+  try {
+    if (plan.action === 'restore-draft') {
+      const outcome = await restoreAutosaveDraftInAttachedSession(plan.draft, {
+        canMerge: options.canMerge,
+        cleanAtTrap: plan.cleanAtTrap,
+        report: () => {},
+      });
+      return trapResultOfRestore(outcome);
+    }
+    if (plan.action === 'reopen-file') return await reopenTrapFile(entry);
+    return { kind: 'failed', reason: 'cancelled' };
+  } catch (error) {
+    // 정적 파서 같은 감시 밖 호출에서 난 trap 도 엔진을 멈춘 것으로 표시해 복구가 거기서 멈추게 한다.
+    reportEngineTrap(error);
+    console.warn('[engine] 복구 중 문서를 열지 못했습니다:', error);
+    return { kind: 'failed', reason: 'error', message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 깨끗했던 문서를 파일 선택 창 없이 그 파일에서 다시 연다. */
+async function reopenTrapFile(entry: TrapManifestEntry): Promise<TrapOpenResult> {
+  const claim = claimForExplorerGroup(
+    { documentId: entry.documentId, displayName: entry.fileName },
+    await listRecentDocs().catch(() => []),
+  );
+  if (!claim) return { kind: 'failed', reason: 'not-found' };
+  const located = await locateRecoveryOriginal(claim);
+  if (located.kind === 'owned-elsewhere') return { kind: 'failed', reason: 'blocked' };
+  if (located.kind === 'permission-denied') return { kind: 'failed', reason: 'permission-denied' };
+  if (located.kind === 'missing') return { kind: 'failed', reason: 'not-found' };
+  const opened = await loadRecoveredDocument(() => loadBytes(
+    located.bytes, located.name, located.handle, performance.now(),
+    { grant: { kind: 'verified', documentId: claim.documentId } },
+  ));
+  if (opened === 'opened') return { kind: 'opened' };
+  await located.handle.releaseUnusedSaveTarget?.().catch(() => {});
+  return { kind: 'failed', reason: opened };
+}
+
+/** 복구 결과의 열기 — 자동으로 열지 않은 문서를 사용자가 직접 연다. 지금 문서는 그대로 둔다. */
+async function openTrapEntryOnDemand(entry: TrapManifestEntry): Promise<string> {
+  if (engineTrap()) return '문서 엔진이 멈춰 열 수 없습니다. 문서 복구를 다시 누르세요.';
+  const drafts = entry.draft ? await listAutosaveDrafts().catch(() => []) : [];
+  const row = entry.draft ? drafts.find((draft) => draft.id === entry.draft!.id) ?? null : null;
+  const target = { ...entry, suspect: false, attached: true };
+  const plan = planTrapEntry(target, row);
+  const result = plan.action === 'skip' ? null : await runNavigation(async (): Promise<TrapOpenResult> => {
+    if (!attachedSession.wasm.hasLoadedDocument()) return openTrapEntryInAttached(target, plan, { canMerge: true });
+    const outcome = await openInNewSession(() => {}, () => openTrapEntryInAttached(target, plan, { canMerge: true }));
+    if (outcome) {
+      if (outcome.loaded) return outcome.result;
+      return outcome.result.kind === 'failed' ? outcome.result : { kind: 'failed', reason: 'error' };
+    }
+    // 세션을 더 만들 수 없는 환경(웹 배포판)은 지금 문서를 바꿔 연다.
+    if (!await canReplaceCurrentDocument()) return { kind: 'failed', reason: 'cancelled' };
+    return openTrapEntryInAttached(target, plan, { canMerge: true });
+  });
+  return describeTrapOutcome({
+    entry: target,
+    plan,
+    status: result === null ? 'skipped' : result.kind === 'opened' ? 'opened' : 'failed',
+    result,
+    draftId: row?.id ?? null,
+  }, false).text;
+}
 
 function createNewDocument(): Promise<boolean> {
   return trackDocumentIo(createNewDocumentNow);

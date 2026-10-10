@@ -1118,19 +1118,38 @@ export async function releaseDesktopDocument(win?: DesktopHost, slotId?: string)
   await desktopHost(win)?.rhwpDesktop?.releaseDocument?.(slotId);
 }
 
+/**
+ * 이 페이지가 받은 시작 파일(handleId)과 생성 문서(launchDocumentId). 데스크톱은 페이지를 다시
+ * 불러올 때마다 같은 것을 다시 보내므로, 엔진 trap 복구가 다시 여는 페이지는 이미 받은 것을
+ * 건너뛴다 — 그러지 않으면 시작 파일이 복구한 문서 위에 다시 열린다.
+ */
+const deliveredLaunchHandles = new Set<string>();
+const deliveredGeneratedDocuments = new Set<string>();
+
+export function deliveredLaunchHandleIds(): string[] {
+  return [...deliveredLaunchHandles];
+}
+
+export function deliveredGeneratedDocumentIds(): string[] {
+  return [...deliveredGeneratedDocuments];
+}
+
 export function installDesktopFileHandling(
   openHandles: (handles: FileSystemFileHandleLike[]) => void,
   win?: DesktopHost,
+  { skipHandleIds = [] }: { skipHandleIds?: readonly string[] } = {},
 ) {
   const api = desktopHost(win)?.rhwpDesktop;
   if (!api?.readNativeFile || !api.writeNativeFile) return;
-  const seen = new Set<string>();
+  const seen = new Set<string>(skipHandleIds);
+  for (const handleId of skipHandleIds) deliveredLaunchHandles.add(handleId);
   const receive = (descriptors: NativeFileHandleDescriptor[]) => {
     const handles = descriptors
       .filter(validNativeDescriptor)
       .filter((descriptor) => {
         if (seen.has(descriptor.handleId)) return false;
         seen.add(descriptor.handleId);
+        deliveredLaunchHandles.add(descriptor.handleId);
         return true;
       })
       .map((descriptor) => createNativeFileHandle(descriptor, api, { saveTarget: true }));
@@ -1149,10 +1168,12 @@ export function installDesktopGeneratedDocumentHandling(
     readOnly: boolean;
   }) => void,
   win?: DesktopHost,
+  { skipLaunchDocumentIds = [] }: { skipLaunchDocumentIds?: readonly string[] } = {},
 ) {
   const api = desktopHost(win)?.rhwpDesktop;
   if (!api?.onOpenGeneratedDocument) return false;
-  const seen = new Set<string>();
+  const seen = new Set<string>(skipLaunchDocumentIds);
+  for (const id of skipLaunchDocumentIds) deliveredGeneratedDocuments.add(id);
   const receive = (payload: {
     launchDocumentId?: string;
     bytes?: Uint8Array;
@@ -1166,6 +1187,7 @@ export function installDesktopGeneratedDocumentHandling(
     const bytes = payload?.bytes instanceof Uint8Array ? payload.bytes : null;
     if (!launchDocumentId || seen.has(launchDocumentId) || !bytes || !/\.(?:hwp|hwpx)$/iu.test(fileName)) return;
     seen.add(launchDocumentId);
+    deliveredGeneratedDocuments.add(launchDocumentId);
     openDocument({
       bytes,
       fileName,

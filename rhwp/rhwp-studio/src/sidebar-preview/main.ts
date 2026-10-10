@@ -312,7 +312,7 @@ if (multiSession) {
   backgroundMock.boot();
   sessions.push({ sidebar: backgroundSidebar, mock: backgroundMock, documentId: () => BACKGROUND_DOCUMENT.documentId });
 }
-if (params.get('chats') === 'sample') {
+if (params.get('chats') === 'sample' || params.get('chats') === 'engine-trap') {
   markChatWorking(SAMPLE_WORKING_CHAT_ID);
   markChatFinished(SAMPLE_FINISHED_CHAT_ID);
 }

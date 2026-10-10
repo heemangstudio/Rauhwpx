@@ -74,6 +74,11 @@ export type DraftRestorePlan =
   | { readonly kind: 'legacy'; readonly fileName: string }
   /** 원본 파일이 그대로다. 원본으로 다시 열고 draft 를 dirty 로 얹는다. */
   | { readonly kind: 'reopen-dirty'; readonly original: FoundOriginal }
+  /**
+   * 엔진이 멈출 때 깨끗했던 문서이고 원본 파일이 그대로다. 원본 바이트로 깨끗하게 다시 열고
+   * draft 를 지운다.
+   */
+  | { readonly kind: 'reopen-clean'; readonly original: FoundOriginal }
   /** 원본 파일이 바뀌었다. 디스크 내용을 외부 변경으로 기록하고 draft 를 병합한다. */
   | { readonly kind: 'merge-external'; readonly original: FoundOriginal }
   /** 원본과 연결하지 않고 같은 이름으로 연다. 저장할 때 위치를 고른다. */
@@ -95,7 +100,7 @@ export function shouldLocateOriginal(draft: AutosaveDraftSummary): boolean {
 export function planDraftRestore(
   draft: AutosaveDraftSummary,
   located: LocatedOriginal | null,
-  options: { canMerge: boolean },
+  options: { canMerge: boolean; cleanAtTrap?: boolean },
 ): DraftRestorePlan {
   if (isLegacyDraft(draft)) {
     return { kind: 'legacy', fileName: fileNameForFormat(draft.fileName, 'hwp') };
@@ -113,7 +118,11 @@ export function planDraftRestore(
     case 'permission-denied':
       return { kind: 'detached', fileName: draft.fileName, why: 'permission-denied' };
     case 'found':
-      if (located.digest === base.digest) return { kind: 'reopen-dirty', original: located };
+      if (located.digest === base.digest) {
+        return options.cleanAtTrap
+          ? { kind: 'reopen-clean', original: located }
+          : { kind: 'reopen-dirty', original: located };
+      }
       if (base.mergeable && options.canMerge) return { kind: 'merge-external', original: located };
       return { kind: 'detached', fileName: draft.fileName, why: 'changed' };
   }
@@ -136,6 +145,30 @@ export interface OpenDraftTarget {
   original: FoundOriginal | null;
   /** null 이면 새 문서 ID 를 만든다(예전 draft). */
   documentId: string | null;
+  /** true 면 draft 대신 원본 바이트를 깨끗한 문서로 연다 (original 이 있어야 한다). */
+  clean?: boolean;
+}
+
+/**
+ * 복구 한 건의 결과. 여러 문서를 한꺼번에 다시 여는 쪽(엔진 trap 복구)은 알림 대신 이 결과를 모아
+ * 한 번에 보여 준다. message 는 알림으로 띄웠을 문구다.
+ */
+export type DraftRestoreOutcome =
+  | {
+    readonly kind: 'opened';
+    readonly plan: 'reopen-dirty' | 'reopen-clean' | 'legacy' | 'detached';
+    readonly detached: DetachedReason | null;
+    readonly message: string;
+  }
+  | { readonly kind: 'merging'; readonly message: string }
+  | { readonly kind: 'blocked'; readonly message: string }
+  | { readonly kind: 'cancelled' };
+
+export interface DraftRestoreOptions {
+  /** 엔진이 멈출 때 깨끗했던 문서. 원본이 그대로면 원본으로 깨끗하게 연다. */
+  cleanAtTrap?: boolean;
+  /** 있으면 알림을 띄우지 않고 결과를 여기로 보낸다. */
+  report?: (outcome: DraftRestoreOutcome) => void;
 }
 
 export type MergeExternalResult =
@@ -192,7 +225,13 @@ export interface AutosaveRestoreDeps {
 export async function restoreAutosaveDraft(
   summary: AutosaveDraftSummary,
   deps: AutosaveRestoreDeps,
-): Promise<void> {
+  options: DraftRestoreOptions = {},
+): Promise<DraftRestoreOutcome> {
+  const finish = (outcome: DraftRestoreOutcome, durationMs = 5000): DraftRestoreOutcome => {
+    if (options.report) options.report(outcome);
+    else if (outcome.kind !== 'cancelled') deps.toast(outcome.message, durationMs);
+    return outcome;
+  };
   const draft = await deps.readDraft(summary.id);
   if (!draft || draft.data.byteLength === 0) throw new Error('자동 저장본을 찾지 못했습니다.');
 
@@ -201,13 +240,16 @@ export async function restoreAutosaveDraft(
     const location = await deps.locateOriginal(draft);
     located = location.kind === 'found' ? { ...location, digest: deps.digestOf(location.bytes) } : location;
   }
-  const plan = planDraftRestore(draft, located, { canMerge: deps.canMerge() });
-  const usesOriginal = plan.kind === 'reopen-dirty' || plan.kind === 'merge-external';
+  const plan = planDraftRestore(draft, located, {
+    canMerge: deps.canMerge(),
+    cleanAtTrap: options.cleanAtTrap,
+  });
+  const usesOriginal = plan.kind === 'reopen-dirty' || plan.kind === 'reopen-clean'
+    || plan.kind === 'merge-external';
   if (located?.kind === 'found' && !usesOriginal) await deps.releaseHandle(located.handle);
 
   if (plan.kind === 'blocked') {
-    deps.toast(BLOCKED_RESTORE_MESSAGE, 5000);
-    return;
+    return finish({ kind: 'blocked', message: BLOCKED_RESTORE_MESSAGE });
   }
 
   // 버리기를 고른 문서가 dirty 로 남아 있으면 복구본을 연 뒤 clean 으로 바뀌면서
@@ -216,42 +258,60 @@ export async function restoreAutosaveDraft(
 
   if (plan.kind === 'merge-external') {
     const merged = await deps.mergeExternal(draft, plan.original);
-    if (merged.kind === 'cancelled') return;
+    if (merged.kind === 'cancelled') return finish({ kind: 'cancelled' });
     if (merged.kind === 'blocked') {
-      deps.toast(BLOCKED_RESTORE_MESSAGE, 5000);
-      return;
+      return finish({ kind: 'blocked', message: BLOCKED_RESTORE_MESSAGE });
     }
     if (merged.kind === 'detached') {
-      deps.toast(DETACHED_MESSAGES.changed, 5000);
+      const outcome = finish({
+        kind: 'opened', plan: 'detached', detached: 'changed', message: DETACHED_MESSAGES.changed,
+      });
       await deps.flush();
-      return;
+      return outcome;
     }
     const enabled = merged.enabledHistory ? '\n이 문서의 버전 기록을 켰습니다.' : '';
-    deps.toast(`디스크에서 바뀐 내용을 "외부 변경"으로 기록했습니다. 복구한 변경을 병합하세요.${enabled}`, 6000);
+    const outcome = finish({
+      kind: 'merging',
+      message: `디스크에서 바뀐 내용을 "외부 변경"으로 기록했습니다. 복구한 변경을 병합하세요.${enabled}`,
+    }, 6000);
     void merged.completion.then(async (done) => {
       if (done) await deps.deleteDraft(draft.id);
     }).catch(() => {});
-    return;
+    return outcome;
   }
 
-  const target: OpenDraftTarget = plan.kind === 'reopen-dirty'
-    ? { fileName: plan.original.name, original: plan.original, documentId: draft.documentId ?? null }
+  const target: OpenDraftTarget = plan.kind === 'reopen-dirty' || plan.kind === 'reopen-clean'
+    ? {
+      fileName: plan.original.name,
+      original: plan.original,
+      documentId: draft.documentId ?? null,
+      ...(plan.kind === 'reopen-clean' ? { clean: true } : {}),
+    }
     : plan.kind === 'detached'
       ? { fileName: plan.fileName, original: null, documentId: draft.documentId ?? null }
       : { fileName: plan.fileName, original: null, documentId: null };
-  const outcome = await deps.openDraft(draft, target);
-  if (outcome === 'cancelled') return;
-  if (outcome === 'blocked') {
-    deps.toast(BLOCKED_RESTORE_MESSAGE, 5000);
-    return;
+  const opened = await deps.openDraft(draft, target);
+  if (opened === 'cancelled') return finish({ kind: 'cancelled' });
+  if (opened === 'blocked') {
+    return finish({ kind: 'blocked', message: BLOCKED_RESTORE_MESSAGE });
   }
-  deps.toast(
-    plan.kind === 'reopen-dirty'
+  if (plan.kind === 'reopen-clean') {
+    // 깨끗하게 연 문서에는 남길 변경이 없다. 남은 draft 는 다음 시작의 복구 제안에 끼지 않게 지운다.
+    await deps.deleteDraft(draft.id);
+    return finish({
+      kind: 'opened', plan: 'reopen-clean', detached: null, message: `"${target.fileName}"을(를) 다시 열었습니다.`,
+    });
+  }
+  const outcome = finish({
+    kind: 'opened',
+    plan: plan.kind,
+    detached: plan.kind === 'detached' ? plan.why : null,
+    message: plan.kind === 'reopen-dirty'
       ? `"${target.fileName}"의 저장하지 않은 변경을 복구했습니다.`
       : plan.kind === 'detached'
         ? DETACHED_MESSAGES[plan.why]
         : `"${target.fileName}" 자동 저장본을 열었습니다.`,
-    5000,
-  );
+  });
   await deps.flush();
+  return outcome;
 }

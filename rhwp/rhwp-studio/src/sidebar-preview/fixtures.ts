@@ -1,6 +1,7 @@
 import type * as T from '../agent/types.ts';
 import type { ChatThread } from '../agent/threads.ts';
 import { defaultModelForAgent, labelForModel } from '../agent/models.ts';
+import { ENGINE_TRAP_INTERRUPTED_NOTICE } from '../recovery/trap-chat-notice.ts';
 
 export type BrowserbaseFixtureState = 'connected' | 'setup' | 'error';
 
@@ -352,4 +353,36 @@ export function sampleChats(now: number): ChatThread[] {
       messages,
     };
   });
+}
+
+/** Seeded chat that `chats=engine-trap` restores: its turn was stopped by an engine trap. */
+export const SAMPLE_ENGINE_TRAP_CHAT_ID = 'preview-chat-engine-trap';
+
+/**
+ * The newest chat of the shown document, interrupted when the document engine stopped and the
+ * editor reloaded to reopen every document. The sidebar restores it on load.
+ */
+export function engineTrapInterruptedChat(now: number): ChatThread {
+  const activityAt = now - 20_000;
+  return {
+    id: SAMPLE_ENGINE_TRAP_CHAT_ID,
+    title: '추진 일정 표 서식 맞추기',
+    titleRequested: true,
+    createdAt: activityAt - 3 * MINUTE,
+    updatedAt: activityAt,
+    lastActivityAt: activityAt,
+    agent: 'claude',
+    model: defaultModelForAgent('claude'),
+    effort: 'medium',
+    serviceTier: 'standard',
+    workflow: 'direct',
+    documentId: 'preview-proposal',
+    docKey: '사업 제안서.hwpx',
+    activeTemplateId: null,
+    messages: [
+      { role: 'user', text: '추진 일정 표의 글꼴과 칸 너비를 본문과 맞춰 주세요.' },
+      { role: 'assistant', text: '일정 표의 칸 너비를 확인하고 있습니다.', agent: 'claude', kind: 'progress' },
+      { role: 'system', text: ENGINE_TRAP_INTERRUPTED_NOTICE },
+    ],
+  };
 }

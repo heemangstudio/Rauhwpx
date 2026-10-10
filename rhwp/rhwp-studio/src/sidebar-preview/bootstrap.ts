@@ -38,10 +38,16 @@ if (url.searchParams.get('reset') === '1') {
 // `chats=sample` restores the sample chats on every load. They go through the
 // thread store's legacy localStorage import, the only path that keeps their
 // past timestamps, so they must be written before the store hydrates on import.
-if (url.searchParams.get('chats') === 'sample') {
-  const { sampleChats } = await import('./fixtures.ts');
+// `chats=engine-trap` adds the shown document's chat stopped by an engine trap.
+const chatsParam = url.searchParams.get('chats');
+if (chatsParam === 'sample' || chatsParam === 'engine-trap') {
+  const { engineTrapInterruptedChat, sampleChats } = await import('./fixtures.ts');
   const key = 'rhwp-agent-threads';
-  const seeded = sampleChats(Date.now());
+  const now = Date.now();
+  const seeded = [
+    ...sampleChats(now),
+    ...(chatsParam === 'engine-trap' ? [engineTrapInterruptedChat(now)] : []),
+  ];
   const ids = new Set(seeded.map((thread) => thread.id));
   let pending: unknown[] = [];
   try {

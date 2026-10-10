@@ -93,6 +93,15 @@ test('restore plans follow the draft link and what is on disk', () => {
   assert.equal(plan({ ...linked, dataFormat: 'hwp' }, found('blake3:disk')), 'detached:format:보고서.hwp');
 });
 
+test('a document that was clean when the engine stopped reopens clean from an unchanged original', () => {
+  const kind = (located: LocatedOriginal, cleanAtTrap?: boolean) => planDraftRestore(
+    linked, located, { canMerge: true, ...(cleanAtTrap === undefined ? {} : { cleanAtTrap }) },
+  ).kind;
+  assert.equal(kind(found('blake3:disk'), true), 'reopen-clean');
+  assert.equal(kind(found('blake3:disk')), 'reopen-dirty', 'ordinary recovery keeps the draft as changes');
+  assert.equal(kind(found('blake3:edited'), true), 'merge-external', 'a changed file is never mistaken for the clean copy');
+});
+
 function restoreDeps(overrides: Partial<AutosaveRestoreDeps> = {}) {
   const calls: string[] = [];
   const toasts: string[] = [];
@@ -126,6 +135,28 @@ test('an unchanged original reopens as itself, dirty, and keeps the draft until 
   const { deps, calls } = restoreDeps();
   await restoreAutosaveDraft(linked, deps);
   assert.deepEqual(calls, ['locate', 'release-current', 'open:보고서.hwpx:doc-1:original', 'flush']);
+});
+
+test('a clean reopen opens the original itself, not the draft, and deletes the draft', async () => {
+  const targets: Array<{ clean?: boolean; original: boolean; documentId: string | null }> = [];
+  const reports: string[] = [];
+  const { deps, calls, toasts } = restoreDeps({
+    openDraft: async (_draft, target) => {
+      targets.push({ clean: target.clean, original: target.original !== null, documentId: target.documentId });
+      calls.push('open');
+      return 'opened';
+    },
+  });
+  const outcome = await restoreAutosaveDraft(linked, deps, {
+    cleanAtTrap: true,
+    report: (result) => reports.push(result.kind === 'opened' ? result.plan : result.kind),
+  });
+  assert.deepEqual(targets, [{ clean: true, original: true, documentId: 'doc-1' }]);
+  assert.deepEqual(calls, ['locate', 'release-current', 'open', 'delete:linked-draft']);
+  assert.ok(!calls.includes('flush'), 'nothing re-records a draft for a clean document');
+  assert.equal(outcome.kind === 'opened' && outcome.plan, 'reopen-clean');
+  assert.deepEqual(reports, ['reopen-clean']);
+  assert.deepEqual(toasts, [], 'a report sink replaces the toast');
 });
 
 test('an old draft without a document link opens under its own name with a new identity', async () => {
