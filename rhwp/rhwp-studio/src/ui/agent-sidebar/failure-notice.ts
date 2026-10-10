@@ -169,6 +169,42 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
   return { title, line, actions, detail, compact: false };
 }
 
+/**
+ * 실패한 턴 뒤 대기열을 붙잡는 이유와 짧은 설명 (대기열 줄: `{detail} · 작업이 오류로 끝나…`).
+ * 허브 재시작은 끊긴 작업이다. 사용 한도는 아는 리셋 시각을 함께 적는다.
+ */
+export function failureQueueHold(
+  failure: ProviderFailure,
+  ctx: { agentLabel: string; resetAt: number | null; now: number; timeZone?: string },
+): { reason: 'failed' | 'interrupted'; detail?: string } {
+  const label = ctx.agentLabel;
+  switch (failure.class) {
+    case 'auth_required':
+      return { reason: 'failed', detail: isPiSetupFailure(failure) ? 'Pi 설정 필요' : `${label} 로그인 필요` };
+    case 'usage_limit': {
+      if (failure.code === 'openrouter_credits') return { reason: 'failed', detail: 'OpenRouter 크레딧 부족' };
+      const future = ctx.resetAt !== null && ctx.resetAt > ctx.now;
+      return {
+        reason: 'failed',
+        detail: future ? `사용 한도 · 리셋 ${formatResetAt(ctx.resetAt!, ctx.now, ctx.timeZone)}` : '사용 한도',
+      };
+    }
+    case 'provider_error':
+      return { reason: 'failed', detail: `${label} 서버 오류` };
+    case 'network':
+      return { reason: 'failed', detail: `${label} 연결 실패` };
+    case 'process_exited':
+      if (failure.code === 'HUB_RESTARTED') return { reason: 'interrupted', detail: '허브 재시작' };
+      if (failure.code && CLEANUP_CODES.has(failure.code)) return { reason: 'failed', detail: '프로세스 정리 실패' };
+      if (failure.code === 'cli_missing') return { reason: 'failed', detail: `${label} CLI 없음` };
+      return { reason: 'failed', detail: `${label} 실행 중단` };
+    case 'invalid_request':
+      return { reason: 'failed', detail: failure.code && CONTEXT_CODES.has(failure.code) ? '대화 길이 초과' : '요청 거절' };
+    default:
+      return { reason: 'failed' };
+  }
+}
+
 /** 이전 시도가 문서를 고친 뒤 끊겼을 때 다시 보내는 요청에 덧붙이는 안내 (에이전트가 읽는다). */
 export const PARTIAL_EDITS_RETRY_NOTE = '(이전 시도가 중간에 끊겨 문서 편집 일부가 이미 반영됐을 수 있습니다. 먼저 문서를 다시 읽고, 이미 반영된 편집은 반복하지 마세요.)';
 
@@ -590,6 +626,14 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
       const node = render(message);
       nodes.set(message, node);
       return node;
+    },
+    /** 이 실패 뒤 대기열을 붙잡을 이유 (사용 한도는 아는 리셋 시각 포함). */
+    queueHold(message: ThreadFailureMessage): ReturnType<typeof failureQueueHold> {
+      return failureQueueHold(message.failure, {
+        agentLabel: deps.agentLabel(message.failure.agent),
+        resetAt: resolvedResetAt(message),
+        now: now(),
+      });
     },
     /** 대화를 갈아 끼웠다 — 그려 둔 알림을 잊는다. */
     forgetNodes(): void {

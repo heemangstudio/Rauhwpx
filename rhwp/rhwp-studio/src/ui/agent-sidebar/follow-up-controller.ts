@@ -32,10 +32,10 @@ import type { ProductSkillIcon } from '../../agent/types.ts';
 import type { FollowUpStrip } from './follow-up-strip.ts';
 
 /**
- * 사용자 메시지가 어디서 나갔나 — 입력기, 대기열, 끊긴 작업 이어 가기(S3), 문서 위 인라인 프롬프트.
- * U5 가 다시 시도('retry')를 더한다.
+ * 사용자 메시지가 어디서 나갔나 — 입력기, 대기열, 끊긴 작업 이어 가기(S3), 문서 위 인라인 프롬프트,
+ * 실패 알림의 다시 시도·리셋 후 이어서(U5).
  */
-export type ComposedMessageOrigin = 'composer' | 'queue' | 'resume' | 'inline';
+export type ComposedMessageOrigin = 'composer' | 'queue' | 'resume' | 'inline' | 'retry';
 
 /** 입력기·대기열·이어 가기·인라인 프롬프트가 함께 쓰는 보내기 한 건(sendComposedMessage 의 인자). */
 export interface ComposedMessageSpec<Staged = never, Selection = never> {

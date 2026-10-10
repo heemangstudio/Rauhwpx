@@ -1624,6 +1624,11 @@ export function createMockBridge(
       generation++;
       finish(stopReason);
     },
+    /** 붙잡아 둔 턴을 이 실패로 끝낸다 (error 와 turn-end 에 같은 실패). */
+    failRunningTurn: (kind: FailureKind = failureKind) => {
+      generation++;
+      failTurn(kind, currentTurnId ?? `turn-${generation}`);
+    },
     /** 다음 사용자 메시지를 허브가 이 코드로 거절하게 한다. */
     rejectNextMessage: (code = 'AGENT_BUSY') => { rejectNext = code; },
     /** Delivers one provider event as the hub would, e.g. a token-by-token answer for benches. */

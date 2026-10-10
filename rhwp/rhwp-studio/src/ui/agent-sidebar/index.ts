@@ -982,7 +982,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     persist: () => persistCurrentThread(),
     append: (node) => withAutoScroll(() => appendConversation(node)),
     agentLabel: (agent) => AGENT_LABEL[agent],
-    isTurnRunning: () => turnRunning,
+    // 보낸 메시지가 턴을 기다리는 동안도 다시 시도는 막힌다 — 같은 요청이 두 번 나간다.
+    isTurnRunning: () => agentWorking(),
     isConnected: () => connState === 'connected',
     reconnected: (agent) => !authFailedAgents.has(agent) && setupStatuses?.[agent]?.authenticated === true,
     openLogin: (agent) => {
@@ -4902,7 +4903,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function sendComposedMessage(
     spec: ComposedMessageSpec<StagedReference, NonNullable<ThreadMessage['selection']>>,
   ): ComposedMessageResult<ThreadMessage, HTMLElement> {
-    const userAction = spec.origin === 'composer' || spec.origin === 'inline';
+    const userAction = spec.origin === 'composer' || spec.origin === 'inline' || spec.origin === 'retry';
     if (spec.origin === 'composer') {
       if (threadsPanelOpen) setThreadsPanelOpen(false);
       if (skillsPanelOpen) setSkillsPanelOpen(false);
@@ -7542,23 +7543,29 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 건드리지 않고, 컴포저와 같은 조건에서만 보낸다. 보내지 못했으면 false.
    */
   function resendFailedRequest(retry: ThreadRetryPayload): boolean {
-    if (readOnlyDocLabel !== null || mergeResolverLocked || connState !== 'connected' || turnRunning
-      || questionController.hasPending() || planningPhase === 'switching' || workflowTransitionPending
-      || planActionPending || chatStartPendingThreadId !== null || attachmentsSending) {
+    if (readOnlyDocLabel !== null || agentWorking() || questionController.hasPending()
+      || engineTrap() !== null || followUpSendBlockedReason() !== null) {
       if (active) showToast({ message: '지금은 다시 보낼 수 없어요', durationMs: 2400 });
       return false;
     }
-    prepareChatForSend();
-    const userMessage = recordUserMessage(retry.displayText, [], undefined, retry.skillName, retry.skillIcon);
-    failureNotices.noteSend(currentThread.id, retry);
-    const userBubble = renderUserMessage(userMessage);
-    userBubble.classList.add('ag-msg-enter');
-    followConversation = true;
-    replyPending = true;
-    appendConversation(userBubble);
-    updateTurnPending(selectedAgent);
-    scrollConversationToMessage(userBubble, { smooth: true });
-    void bridge.sendUserMessage(retryRequestText(retry), retry.skillName);
+    const base: ThreadRetryPayload = {
+      displayText: retry.displayText,
+      requestText: retry.requestText,
+      ...(retry.skillName ? { skillName: retry.skillName } : {}),
+      ...(retry.skillName && retry.skillIcon ? { skillIcon: retry.skillIcon } : {}),
+    };
+    // 보내는 길은 하나다 — 템플릿·스킬 머리말은 다시 만들지 않고 저장한 요청문을 그대로 싣는다.
+    sendComposedMessage({
+      text: retry.displayText,
+      origin: 'retry',
+      wire: { displayText: retry.displayText, requestText: retryRequestText(retry) },
+      ...(base.skillName ? { skillName: base.skillName } : {}),
+      ...(base.skillIcon ? { skillIcon: base.skillIcon } : {}),
+    });
+    // 다음 실패의 다시 시도는 안내를 붙이기 전 본문에서 다시 시작한다 — 안내가 겹쳐 쌓이지 않는다.
+    failureNotices.noteSend(currentThread.id, base);
+    // 다시 보낸 요청이 대기열 앞에 선다. 붙잡음을 풀어 그 턴의 정상 종료가 맨 앞을 보내게 한다.
+    followUps.release();
     return true;
   }
 
@@ -8544,15 +8551,23 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // 한도 막대의 리셋 시각 — 실패에 리셋 시각이 없을 때 쓴다.
         failureNotices.setLimits(e.usage.limits);
         break;
-      case 'turn-failure':
+      case 'turn-failure': {
+        // 붙이지 않은 허브 턴의 실패는 초안 화면에 그리지 않는다 — 그리면 초안이 그 알림으로 저장된다.
+        if (hubChatUnbound()) break;
         noteProviderAuthFailure(e.failure.agent, e.failure);
-        failureNotices.add(e.failure, {
+        const notice = failureNotices.add(e.failure, {
           origin: e.origin,
           turnId: e.turnId,
           userInitiated: e.userInitiated === true,
           wroteDocument: e.wroteDocument === true,
         });
+        // 이 채팅의 턴이 실패했다 — 대기열을 그 이유와 함께 붙잡는다(턴 끝의 붙잡음에 설명을 더한다).
+        if (e.origin === 'turn' && (turnOwnerThreadId === null || turnOwnerThreadId === currentThread.id)) {
+          const hold = failureNotices.queueHold(notice);
+          followUps.hold(hold.reason, hold.detail);
+        }
         break;
+      }
       case 'chat-started': {
         if (e.threadId && e.threadId !== currentThread.id) break;
         applyChatSessionState(e);
@@ -8754,12 +8769,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         if (e.failure) {
           noteProviderAuthFailure(e.failure.agent, e.failure);
           // 되돌린 대기 메시지는 대기열 맨 앞에 있다 — 다시 시도까지 두면 보내는 길이 둘이 된다.
-          failureNotices.add(e.failure, {
+          const notice = failureNotices.add(e.failure, {
             origin: e.origin ?? 'send',
             turnId: null,
             userInitiated: e.origin !== 'start',
             ...(followUpBounced ? { noRetry: true } : {}),
           });
+          // 되돌린 대기 메시지의 붙잡음(거절)은 대기열이 이미 말한다.
+          if (!followUpBounced) {
+            const hold = failureNotices.queueHold(notice);
+            followUps.hold(hold.reason, hold.detail);
+          }
         } else if (!followUpBounced) {
           systemMessage(`오류 (${e.code}): ${e.message}`);
         }

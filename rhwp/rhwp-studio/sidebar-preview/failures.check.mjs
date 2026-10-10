@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMainModule, runStandalone } from './standalone.mjs';
 
 /**
  * Typed provider failures in the production sidebar against the preview mock: one notice per
@@ -42,7 +40,13 @@ const userBubbles = (page) => page.$$eval('.ag-msg-user', (nodes) => nodes.lengt
 
 async function openFailure(page, origin, kind, { reset = true } = {}) {
   await page.goto(`${origin}/?theme=light&width=480${reset ? '&reset=1' : ''}&scenario=error&failure=${kind}`, { waitUntil: 'networkidle0' });
-  await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
+  await composerReady(page);
+}
+
+/** 입력기가 실제로 보낼 수 있다 (보이는 잠금의 지연과 무관한 준비 플래그). */
+async function composerReady(page) {
+  await page.waitForFunction(() => window.sidebarPreview
+    && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
 }
 
 async function waitForNotices(page, count) {
@@ -149,6 +153,37 @@ export async function checkFailureNotices(page, origin, artifacts) {
   });
   await shot(page, artifacts, 'dismissed');
 
+  // A failed turn holds the follow-up queue with the failure's reason (a usage limit with its reset
+  // time); 다시 시도 releases it, so the queued message goes out after the retried turn ends normally.
+  const holdText = () => page.evaluate(() =>
+    document.querySelector('.ag-followups-hold:not([hidden]) .ag-followups-hold-text')?.textContent ?? null);
+  const queueFailingTurn = async (kind) => {
+    await page.goto(`${origin}/?theme=light&width=480&reset=1&scenario=chat&hold=1&failure=${kind}`, { waitUntil: 'networkidle0' });
+    await composerReady(page);
+    await page.click('#play');
+    await page.waitForFunction(() => window.sidebarPreview.snapshot().running);
+    await page.focus('.ag-input');
+    await page.type('.ag-input', '표도 정리해 주세요');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => document.querySelectorAll('.ag-followup').length === 1);
+    await page.evaluate((kind) => window.sidebarPreview.failRunningTurn(kind), kind);
+    await waitForNotices(page, 1);
+  };
+  await queueFailingTurn('usage-soon');
+  assert.match(await holdText() ?? '', /^사용 한도 · 리셋 .+ · 작업이 오류로 끝나/, 'the usage limit and its reset time explain the held queue');
+  await shot(page, artifacts, 'queue-held');
+  await queueFailingTurn('network');
+  assert.match(await holdText() ?? '', /연결 실패 · /);
+  const heldBefore = await snapshot(page);
+  await page.click('.ag-failure-action[data-action="retry"]');
+  await page.waitForFunction(() => window.sidebarPreview.snapshot().running);
+  assert.equal(await holdText(), null, '다시 시도 releases the held queue');
+  const retried = await snapshot(page);
+  assert.equal(retried.messageTexts.at(-1), heldBefore.messageTexts.at(-1), 'the retry resends the failed request, not the queued one');
+  await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+  await page.waitForFunction(() => window.sidebarPreview.snapshot().messageTexts.at(-1)?.includes('표도 정리해 주세요'));
+  assert.equal(await page.$$eval('.ag-followup', (rows) => rows.length), 0, 'the queued message went out after the retried turn');
+
   // 리셋 후 이어서 sends by itself after the reset; 취소 stops it.
   await openFailure(page, origin, 'usage-soon');
   await playFailure(page);
@@ -170,43 +205,4 @@ export async function checkFailureNotices(page, origin, artifacts) {
 }
 
 // Run on its own: `node sidebar-preview/failures.check.mjs` (own Vite server and browser profile).
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [{ createServer }, { default: puppeteer }, { browserLaunchArgs, findBrowserExecutable }] = await Promise.all([
-    import('vite'),
-    import('puppeteer-core'),
-    import('../tests/browser-support.ts'),
-  ]);
-  const studio = resolve(import.meta.dirname, '..');
-  const artifacts = resolve(import.meta.dirname, 'artifacts');
-  const executablePath = findBrowserExecutable();
-  assert(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable.');
-  await mkdir(artifacts, { recursive: true });
-  const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-failures-check-'));
-  const server = await createServer({
-    cacheDir,
-    configFile: resolve(studio, 'vite.sidebar.config.ts'),
-    server: { port: 0, open: false, hmr: false },
-    logLevel: 'error',
-  });
-  let browser;
-  try {
-    await server.listen();
-    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-    browser = await puppeteer.launch({ executablePath, headless: true, args: browserLaunchArgs() });
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
-    await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-    page.on('console', (message) => {
-      if (message.type() === 'error') errors.push(message.text());
-    });
-    await checkFailureNotices(page, origin, artifacts);
-    assert.deepEqual(errors, [], 'The failure notices produce no browser errors.');
-    console.log(`PASS Typed provider failure notices (${resolve(artifacts, 'failure-*.png')})`);
-  } finally {
-    await browser?.close();
-    await server.close();
-    await rm(cacheDir, { recursive: true, force: true });
-  }
-}
+if (isMainModule(import.meta)) await runStandalone('Typed provider failure notices', checkFailureNotices);

@@ -213,14 +213,21 @@ test('reload re-adopts the live chat in both arrival orders without restarting i
     await page.evaluate(() => new Promise((done) => setTimeout(done, 200)));
     assert.equal(await page.$('.ag-send.ag-stop'), null, 'the draft does not offer to stop a turn it does not show');
     await page.evaluate(() => {
-      (window as any).harness.mock.streamEvent({ type: 'turn-end', agent: 'claude', stopReason: 'end_turn' });
+      const { mock } = (window as any).harness;
+      // 그 턴이 실패를 남기고 끝나도 실패 알림(U5)은 초안에 그리지도 저장하지도 않는다.
+      mock.streamEvent({
+        type: 'error', agent: 'claude', message: 'stream disconnected',
+        failure: { class: 'network', agent: 'claude', message: 'stream disconnected', code: null, retryable: true, resetAt: null },
+      });
+      mock.streamEvent({ type: 'turn-end', agent: 'claude', stopReason: 'end_turn' });
     });
     await page.evaluate(() => new Promise((done) => setTimeout(done, 200)));
     assert.deepEqual(await page.evaluate(() => ({
       current: (window as any).harness.sidebar.currentThreadId(),
       assistant: document.querySelectorAll('.ag-msg-assistant').length,
+      notices: document.querySelectorAll('.ag-failure-notice').length,
       threads: (window as any).harness.threadCount(),
-    })), { current: null, assistant: 0, threads: before }, 'the unbound turn is not drawn into or saved as the draft');
+    })), { current: null, assistant: 0, notices: 0, threads: before }, 'the unbound turn is not drawn into or saved as the draft');
     assert.deepEqual(await counts(page), { starts: 0, stops: 0, interrupts: 0 }, 'waiting for the document stops nothing');
     // 앞의 turn-end 로 턴은 끝났다 — 다시 돌리고(허브가 여전히 돈다) 문서를 연다.
     await page.evaluate(() => {
