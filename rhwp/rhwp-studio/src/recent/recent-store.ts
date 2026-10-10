@@ -108,12 +108,12 @@ function createDocumentId(): string {
 
 /** 2.0.11 가져오기도 이 함수로 열어 오래된 버전을 먼저 올린다. */
 export const RECENT_DB_NAME = DB_NAME;
-export function openRecentDatabase(): Promise<IDBDatabase | null> {
-  return openDb();
+export function openRecentDatabase(name = DB_NAME): Promise<IDBDatabase | null> {
+  return openDb(name);
 }
 
-function openDb(): Promise<IDBDatabase | null> {
-  return openIndexedDatabase(DB_NAME, DB_VER, (db, event) => {
+function openDb(name = DB_NAME): Promise<IDBDatabase | null> {
+  return openIndexedDatabase(name, DB_VER, (db, event) => {
     if (!db.objectStoreNames.contains(STORE)) {
       db.createObjectStore(STORE, { keyPath: 'id' });
     } else if (event.oldVersion < 2) {
@@ -126,7 +126,7 @@ function openDb(): Promise<IDBDatabase | null> {
 }
 
 function withDb<T>(fn: (db: IDBDatabase) => Promise<T>, fallback: () => Promise<T>) {
-  return withDatabase(openDb, DB_NAME, fn, fallback);
+  return withDatabase(() => openDb(), DB_NAME, fn, fallback);
 }
 
 function getAllRows(db: IDBDatabase): Promise<RecentDoc[]> {

@@ -189,8 +189,8 @@ export async function removeImportedThread(): Promise<void> {
 }
 
 /** The autosave database as 2.0.7 and earlier left it: version 2, no metadata store. */
-export async function writeVersion2Autosave(): Promise<void> {
-  const opening = indexedDB.open('rhwpStudioAutosave', 2);
+export async function writeVersion2Autosave(name = 'rhwpStudioAutosave', id = 'draft-2007'): Promise<void> {
+  const opening = indexedDB.open(name, 2);
   opening.onupgradeneeded = () => {
     opening.result.createObjectStore('drafts', { keyPath: 'id' });
     opening.result.createObjectStore('sessions', { keyPath: 'sessionId' });
@@ -198,7 +198,7 @@ export async function writeVersion2Autosave(): Promise<void> {
   const db = await request(opening);
   const tx = db.transaction('drafts', 'readwrite');
   tx.objectStore('drafts').put({
-    id: 'draft-2007',
+    id,
     fileName: 'old.hwp',
     sourceFormat: 'hwp',
     savedAt: Date.now() - 1000,

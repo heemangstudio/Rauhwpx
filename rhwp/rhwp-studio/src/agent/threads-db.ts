@@ -8,8 +8,9 @@ export const THREADS_DB_NAME = 'rhwpAgentThreads';
 export const THREADS_DB_VERSION = 1;
 export const THREADS_STORE = 'threads';
 
-export function openThreadsDatabase(): Promise<IDBDatabase | null> {
-  return openIndexedDatabase(THREADS_DB_NAME, THREADS_DB_VERSION, (db) => {
+/** `name` 은 가져오기가 2.0.11 기록을 같은 올림 처리로 옮길 때만 바꾼다. */
+export function openThreadsDatabase(name = THREADS_DB_NAME): Promise<IDBDatabase | null> {
+  return openIndexedDatabase(name, THREADS_DB_VERSION, (db) => {
     if (!db.objectStoreNames.contains(THREADS_STORE)) {
       db.createObjectStore(THREADS_STORE, { keyPath: 'id' });
     }

@@ -118,12 +118,14 @@ export const REBRANDED_DATABASES: Readonly<Record<string, string>> = Object.free
 });
 
 /** 정본은 그 저장소 모듈의 열기 함수로 연다. 오래된 정본도 이때 올림 처리를 거친다. */
-const TARGET_OPENERS: Readonly<Record<string, () => Promise<IDBDatabase | null>>> = {
-  [THREADS_DATABASE]: async () => (await import('../agent/threads-db.ts')).openThreadsDatabase(),
-  rhwpStudioDocHistory: async () => (await import('../history/idb-store.ts')).openDocHistoryDatabase(),
-  rhwpStudioRecent: async () => (await import('../recent/recent-store.ts')).openRecentDatabase(),
-  rhwpStudioAutosave: async () => (await import('../recovery/autosave-store.ts')).openAutosaveDatabase(),
-  'rhwp-font-folder': async () => (await import('./font-folder-store.ts')).openFontFolderDatabase(),
+/** 이름을 주면 그 이름의 데이터베이스를 같은 올림 처리로 연다. 오래된 2.0.11 기록을 옮길 때 쓴다. */
+type TargetOpener = (name?: string) => Promise<IDBDatabase | null>;
+const TARGET_OPENERS: Readonly<Record<string, TargetOpener>> = {
+  [THREADS_DATABASE]: async (name) => (await import('../agent/threads-db.ts')).openThreadsDatabase(name),
+  rhwpStudioDocHistory: async (name) => (await import('../history/idb-store.ts')).openDocHistoryDatabase(name),
+  rhwpStudioRecent: async (name) => (await import('../recent/recent-store.ts')).openRecentDatabase(name),
+  rhwpStudioAutosave: async (name) => (await import('../recovery/autosave-store.ts')).openAutosaveDatabase(name),
+  'rhwp-font-folder': async (name) => (await import('./font-folder-store.ts')).openFontFolderDatabase(name),
 };
 
 type StorePolicy = 'add' | 'newer' | 'skip';
@@ -422,14 +424,98 @@ function checkAborted(context: ImportContext) {
   if (context.signal?.aborted) throw new ImportAborted();
 }
 
-async function mergeDatabase(
+function deleteDatabase(name: string): Promise<void> {
+  return new Promise((resolve) => {
+    const request = indexedDB.deleteDatabase(name);
+    request.onsuccess = () => resolve();
+    request.onerror = () => resolve();
+  });
+}
+
+/**
+ * 2.0.11 이 이 빌드보다 오래된 형식으로 남긴 데이터베이스를 정본 모듈의 올림 처리에 통과시킨다.
+ * 같은 스키마의 임시 데이터베이스에 기록을 옮긴 뒤 모듈로 열어 올리고, 올라간 기록을 읽어 온다.
+ */
+async function upgradeThroughModule(
   source: RebrandedDatabase,
+  targetName: string,
+  opener: TargetOpener,
+): Promise<RebrandedDatabase> {
+  const staging = `rhwpRebrandStaging-${targetName}`;
+  await deleteDatabase(staging);
+  try {
+    const created = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(staging, source.version);
+      request.onupgradeneeded = () => {
+        for (const store of source.stores) {
+          const objectStore = request.result.createObjectStore(store.name, {
+            ...(store.keyPath === null ? {} : { keyPath: store.keyPath }),
+            autoIncrement: store.autoIncrement,
+          });
+          for (const index of store.indexes) {
+            objectStore.createIndex(index.name, index.keyPath, { unique: index.unique, multiEntry: index.multiEntry });
+          }
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error(`${staging} 을 만들지 못했습니다`));
+    });
+    try {
+      for (const store of source.stores) {
+        if (!store.records.length) continue;
+        const tx = created.transaction(store.name, 'readwrite');
+        const committed = transactionDone(tx);
+        const objectStore = tx.objectStore(store.name);
+        for (const record of store.records) {
+          if (objectStore.keyPath === null) objectStore.put(record.value, record.key);
+          else objectStore.put(record.value);
+        }
+        await committed;
+      }
+    } finally {
+      created.close();
+    }
+    const upgraded = await opener(staging);
+    if (!upgraded) throw new Error(`${targetName} 형식으로 올리지 못했습니다`);
+    upgraded.close();
+    return await dumpDatabase(indexedDB, staging);
+  } finally {
+    await deleteDatabase(staging);
+  }
+}
+
+async function mergeDatabase(
+  original: RebrandedDatabase,
   targetName: string,
   extraThreads: readonly RebrandedRecord[],
   context: ImportContext,
 ): Promise<void> {
   const { ledger, result, aliases } = context;
   const policies = STORE_POLICIES[targetName] ?? {};
+  const hasPending = original.stores.some((store) => (
+    (policies[store.name] ?? 'add') !== 'skip'
+    && [...store.records, ...extraThreads].some((record) => !(ledger[`${targetName}/${store.name}`] ?? []).includes(ledgerKey(record.key)))
+  ));
+  if (!hasPending) return;
+
+  const opener = TARGET_OPENERS[targetName];
+  let db: IDBDatabase | null;
+  try {
+    db = opener ? await opener() : null;
+  } catch (error) {
+    throw new Error(`${targetName} 을 열지 못했습니다: ${message(error)}`);
+  }
+  if (!db) throw new Error(`${targetName} 을 열지 못했습니다`);
+  let source = original;
+  try {
+    if (original.version > db.version) {
+      throw new Error(`${targetName}: 2.0.11 기록(버전 ${original.version})이 이 빌드(버전 ${db.version})보다 새 형식입니다`);
+    }
+    if (original.version < db.version) source = await upgradeThroughModule(original, targetName, opener!);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   const units = source.stores
     .map((store) => {
       const unit = `${targetName}/${store.name}`;
@@ -440,20 +526,7 @@ async function mergeDatabase(
       return { store, unit, done, records: all.filter((record) => !done.has(ledgerKey(record.key))) };
     })
     .filter(({ store, records }) => (policies[store.name] ?? 'add') !== 'skip' && records.length > 0);
-  if (units.length === 0) return;
-
-  const opener = TARGET_OPENERS[targetName];
-  let db: IDBDatabase | null;
   try {
-    db = opener ? await opener() : null;
-  } catch (error) {
-    throw new Error(`${targetName} 을 열지 못했습니다: ${message(error)}`);
-  }
-  if (!db) throw new Error(`${targetName} 을 열지 못했습니다`);
-  try {
-    if (db.version !== source.version) {
-      throw new Error(`${targetName} 버전 ${db.version} 과 2.0.11 버전 ${source.version} 이 다릅니다`);
-    }
     for (const { store, unit, done, records } of units) {
       checkAborted(context);
       try {

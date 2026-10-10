@@ -256,3 +256,17 @@ test('a full Local Storage cannot make a deleted chat come back on the next load
   assert.deepEqual(await step(page, (fixture) => fixture.canonicalThreadIds()), []);
   await page.close();
 });
+
+test('2.0.11 data in an older format is upgraded by the store module instead of being refused', { timeout: 60_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  await step(page, (fixture) => fixture.reset());
+  // A 2.0.11 profile whose autosave database still has the version 2 layout (no metadata store).
+  await step(page, (fixture) => fixture.writeVersion2Autosave('hamaeditorAutosave', 'draft-old-format'));
+
+  await step(page, (_fixture, importer) => importer.runRebrandedStorageImport());
+
+  assert.deepEqual(await step(page, (fixture) => fixture.listDraftIds()), ['draft-old-format']);
+  assert.ok(!(await step(page, (fixture) => fixture.databaseNames())).some((name) => name.startsWith('rhwpRebrandStaging')));
+  await page.close();
+});

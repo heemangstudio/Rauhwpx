@@ -30,11 +30,11 @@ let dbPromise: Promise<IDBDatabase> | null = null;
 
 /** 2.0.11 가져오기용 연결. 이 모듈이 계속 쥐는 연결과 따로 열어 닫을 수 있다. */
 export const FONT_FOLDER_DB_NAME = DB_NAME;
-export function openFontFolderDatabase(): Promise<IDBDatabase> {
+export function openFontFolderDatabase(name = DB_NAME): Promise<IDBDatabase> {
   const factory = idb();
   if (!factory) return Promise.reject(new Error('IndexedDB unavailable'));
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = factory.open(DB_NAME, DB_VERSION);
+    const request = factory.open(name, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(HANDLE_STORE)) db.createObjectStore(HANDLE_STORE);
