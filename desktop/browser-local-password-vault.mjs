@@ -122,4 +122,5 @@ export class LocalBrowserPasswordVault {
     try { return await operation(credential); } finally { credential.password = ''; }
   }
   remove(id) { return this.mutate(async () => { await this.persist(this.records.filter((record) => record.id !== id)); return { removed: true }; }); }
+  clear() { return this.mutate(async () => { const removed = this.records.length; await this.persist([]); return { removed }; }); }
 }

@@ -78,6 +78,9 @@ test('batch import persists once and preserves prior accounts if any encryption 
   vault.persist = async (records) => { writes++; return persist(records); };
   assert.equal((await vault.importCredentials(batch)).length, 2);
   assert.equal(writes, 1);
+  assert.deepEqual(await vault.clear(), { removed: 2 });
+  const reopened = new LocalBrowserPasswordVault({ dataDir: join(root, 'vault'), safeStorage });
+  assert.equal((await reopened.list()).accounts.length, 0);
 });
 
 test('explicit Chrome profile import takes a WAL-consistent readonly snapshot and reports unsupported records', async (t) => {

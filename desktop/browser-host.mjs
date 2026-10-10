@@ -92,7 +92,9 @@ export class OwnedBrowserHost {
         try {
           const protocol = new URL(details.url).protocol;
           const protectedSession = [...this.tabs.values()].some((tab) => tab.passwordShield);
-          callback({ cancel: !this.proxy || !['http:', 'https:', 'ws:', 'wss:', 'blob:'].includes(protocol) || protectedSession && ['ws:', 'wss:'].includes(protocol) });
+          // WSS stays TLS-encrypted through the guarded pinned CONNECT tunnel;
+          // native guests never install Playwright's plaintext WebSocket route.
+          callback({ cancel: !this.proxy || !['http:', 'https:', 'ws:', 'wss:', 'blob:'].includes(protocol) || protectedSession && protocol === 'ws:' });
         } catch { callback({ cancel: true }); }
       });
       this.session.on('will-download', (event, item, contents) => this.willDownload(event, item, contents));
@@ -658,6 +660,7 @@ export class OwnedBrowserHost {
       this.tabs.clear();
       this.aliases.clear();
       this.popouts.clear();
+      await this.passwords?.vault.clear();
       // Electron caches sessions by path. Clear both memory and disk before the
       // hub removes this profile, so a later session cannot revive old login data.
       if (this.session) {
