@@ -435,9 +435,13 @@ export class OwnedBrowserHost {
   async setCookies(cookies) {
     for (const cookie of cookies) {
       const url = cookie.url ?? `${cookie.secure ? 'https' : 'http'}://${String(cookie.domain).replace(/^\./, '')}${cookie.path || '/'}`;
-      await this.session.cookies.set({ ...cookie, url,
+      const details = { ...cookie, url,
         ...(cookie.expires >= 0 ? { expirationDate: cookie.expires } : {}),
-        sameSite: { None: 'no_restriction', Lax: 'lax', Strict: 'strict' }[cookie.sameSite] ?? 'unspecified' });
+        sameSite: { None: 'no_restriction', Lax: 'lax', Strict: 'strict' }[cookie.sameSite] ?? 'unspecified' };
+      // Chromium 체크포인트의 점 없는 domain은 host-only다. domain을 넘기면
+      // Electron이 도메인 쿠키로 바꾸어 유효한 __Host- 인증 쿠키도 거부한다.
+      if (cookie.hostOnly === true || cookie.domain && !cookie.domain.startsWith('.')) delete details.domain;
+      await this.session.cookies.set(details);
     }
     await this.session.cookies.flushStore();
     return {};

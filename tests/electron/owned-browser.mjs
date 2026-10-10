@@ -270,6 +270,8 @@ try {
     field.addEventListener('input', () => { clearTimeout(timer); resolve(field.value); }, { once: true });
   })`);
   assert.equal(value, 'x');
+  await recoveredContents.executeJavaScript('localStorage.setItem("native-marker", "native-profile"); document.cookie="nativeAuth=native-profile; Max-Age=86400; Path=/"');
+  await serviceHost.session.cookies.flushStore();
   report.nativeDefaultRecovery = { native: true, currentEditorBinding: true, humanInput: true };
   await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'control', { tabId: 'restored-tab', owner: 'agent' });
   const retainedTarget = serviceHost.tab('restored-tab').targetId;
@@ -295,6 +297,33 @@ try {
   await guestClosed;
   assert.equal(serviceHost.tabs.size, 0);
   report.nativePresentationReconnect = { retainedForm: true, agentOwnership: true, windowIsolation: true, closedGuestNotRecreated: true };
+  await service.close();
+  const checkpoint = { cookies: [
+    { name: 'nativeAuth', value: 'checkpoint-auth', domain: '127.0.0.1', path: '/', expires: Date.now() / 1000 + 86400, httpOnly: false, secure: false, sameSite: 'Lax' },
+    { name: '__Host-native-auth', value: 'fixture-host-auth', domain: 'secure-fixture.invalid', path: '/', expires: Date.now() / 1000 + 86400, httpOnly: true, secure: true, sameSite: 'None' },
+    { name: '__Secure-native-auth', value: 'fixture-domain-auth', domain: '.secure-fixture.invalid', path: '/', expires: Date.now() / 1000 + 86400, httpOnly: true, secure: true, sameSite: 'Lax' },
+  ], origins: [{ origin: serviceOrigin, localStorage: [{ name: 'native-marker', value: 'checkpoint-auth' }] }] };
+  service = createOwnedBrowserService({ dataDir: serviceDir, nativeAdapter: adapter, workspaceTargets: [serviceOrigin], credentialBroker: {
+    restoreCheckpoint: async () => checkpoint, assertBrowserAccess: async () => {},
+  } });
+  await service.restore();
+  const checkpointOpened = await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'open', { url: serviceOrigin });
+  const checkpointContents = serviceHost.tab(checkpointOpened.tab.tabId).view.webContents;
+  assert.equal(await checkpointContents.executeJavaScript('localStorage.getItem("native-marker")'), 'checkpoint-auth');
+  assert.match(await checkpointContents.executeJavaScript('document.cookie'), /nativeAuth=checkpoint-auth/);
+  const prefixCookies = await serviceHost.session.cookies.get({ domain: 'secure-fixture.invalid' });
+  assert.equal(prefixCookies.find((cookie) => cookie.name === '__Host-native-auth').hostOnly, true);
+  assert.equal(prefixCookies.find((cookie) => cookie.name === '__Host-native-auth').secure, true);
+  assert.equal(prefixCookies.find((cookie) => cookie.name === '__Secure-native-auth').hostOnly, false);
+  assert.equal(prefixCookies.find((cookie) => cookie.name === '__Secure-native-auth').secure, true);
+  const roundtrip = (await serviceHost.getCookies()).filter((cookie) => cookie.name.startsWith('__'));
+  await serviceHost.session.cookies.remove('https://secure-fixture.invalid/', '__Host-native-auth');
+  await serviceHost.session.cookies.remove('https://secure-fixture.invalid/', '__Secure-native-auth');
+  await serviceHost.setCookies(roundtrip);
+  assert.deepEqual((await serviceHost.getCookies()).filter((cookie) => cookie.name.startsWith('__')).map(({ name, value, domain, hostOnly, secure, path }) => ({ name, value, domain, hostOnly, secure, path })), roundtrip.map(({ name, value, domain, hostOnly, secure, path }) => ({ name, value, domain, hostOnly, secure, path })));
+  await assert.rejects(serviceHost.setCookies([{ ...checkpoint.cookies[1], domain: '.secure-fixture.invalid' }]), /invalid __Host- or __Secure- prefix/);
+  await assert.rejects(serviceHost.setCookies([{ ...checkpoint.cookies[2], secure: false }]), /invalid __Host- or __Secure- prefix/);
+  report.nativeCheckpointStartup = { freshGuestOpened: true, checkpointAuthentication: true, hostOnlyPrefix: true, securePrefix: true, invalidPrefixRejected: true };
   report.runtime = 'Electron WebContentsView + private CDP + Playwright';
   report.fixtureUrl = 'http://browser-fixture.invalid/';
 } catch (error) { report.error = error.stack ?? String(error); }

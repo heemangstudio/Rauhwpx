@@ -63,4 +63,5 @@ test('real native guests retain form state across dock, float, popout and hub re
   assert.equal(report.browserReset.storageClearedAfterRestart, true);
   assert.deepEqual(report.nativeDefaultRecovery, { native: true, currentEditorBinding: true, humanInput: true });
   assert.deepEqual(report.nativePresentationReconnect, { retainedForm: true, agentOwnership: true, windowIsolation: true, closedGuestNotRecreated: true });
+  assert.deepEqual(report.nativeCheckpointStartup, { freshGuestOpened: true, checkpointAuthentication: true, hostOnlyPrefix: true, securePrefix: true, invalidPrefixRejected: true });
 });
