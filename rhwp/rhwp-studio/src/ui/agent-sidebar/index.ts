@@ -1880,12 +1880,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     if (workbench?.isOpen()) {
-      const selected = workbench.current();
       workbench.select(null);
-      const control = !selected ? workspacePanelBtn
-        : isCompactWorkspace() || threadsRailCollapsed ? workspaceThreadsBtn
-          : workbench.navigation.querySelector<HTMLButtonElement>(`[data-view="${selected}"]`);
-      control?.focus({ preventScroll: true });
+      workspacePanelBtn.focus({ preventScroll: true });
       e.preventDefault();
       return;
     }
@@ -3565,7 +3561,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
   });
 
-  threadsPage.insertBefore(workbench.navigation, threadsList);
   workspacePanelBtn.setAttribute('aria-controls', workbench.element.id);
 
   stage.append(
@@ -3947,7 +3942,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
     const detailOwnFocus = reviewColumn.contains(target) || planColumn.contains(target)
       || Boolean(workbench?.element.contains(target)) || reviewResize.contains(target) || workspacePanelBtn.contains(target)
-      || Boolean(workbench?.navigation.contains(target)) || (projectHost?.contains(target) ?? false);
+      || (projectHost?.contains(target) ?? false);
     const detailOpen = root.classList.contains('ag-detail-drawer-open') || root.classList.contains('ag-project-drawer-open');
     if (detailOpen && !detailOwnFocus) {
       workbench?.select(null);

@@ -104,35 +104,10 @@
 }
 .ag-fullscreen.ag-workspace-compact.ag-workbench-open .ag-review-resize { display: none; }
 
-.ag-workbench-nav { display: none; }
-.ag-fullscreen .ag-workbench-nav {
-  display: grid;
-  flex: 0 0 auto;
-  gap: 2px;
-  margin-bottom: 4px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--ag-border);
-}
-.ag-workbench-launch {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 8px 10px;
-  min-width: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ag-text-secondary);
-  font: 500 12px/1.35 var(--ag-font);
-  text-align: left;
-  cursor: pointer;
-  transition: color 130ms ease, background 130ms ease;
-}
-.ag-workbench-launch svg { flex: 0 0 auto; width: 16px; height: 16px; }
-.ag-workbench-launch:hover { background: var(--ag-hover); color: var(--ag-text); }
-.ag-workbench-launch.ag-selected { background: var(--ag-raised); color: var(--ag-text); }
-.ag-workbench-launch:focus-visible { outline: 2px solid var(--ag-text-secondary); outline-offset: -2px; }
-@media (prefers-reduced-motion: reduce) { .ag-workbench-launch { transition: none; } }
+.ag-workbench-tab-row.ag-dragging { z-index: 2; color: var(--ag-text); background: var(--ag-active); box-shadow: var(--ag-elev-popover); }
+.ag-workbench-tab-row.ag-dragging .ag-workbench-tab-close { opacity: 0; pointer-events: none; }
+.ag-workbench-tab-row.ag-dragging .ag-workbench-tab > svg { visibility: visible; }
+.ag-workbench-tabs.ag-tab-dragging, .ag-workbench-tabs.ag-tab-dragging * { cursor: grabbing; }
 
 /* 오른쪽 작업 칸 단추. 대화 목록 단추의 아이콘을 좌우로 뒤집는다. */
 .ag-workspace-panel-btn .ag-column-icon-end { transform: scaleX(-1); }

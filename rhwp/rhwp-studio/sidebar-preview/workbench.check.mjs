@@ -15,10 +15,10 @@ export async function checkWorkbench({ page, origin, screenshot }) {
     if (await page.$(`.ag-workbench-tabs [role="tab"][data-view="${view}"]`) && await page.$eval('.ag-workbench-page', node => node.checkVisibility())) {
       await page.click(`.ag-workbench-tabs [role="tab"][data-view="${view}"]`);
     } else {
-      if (await page.$eval('.ag-root', node => node.classList.contains('ag-rail-collapsed') || node.classList.contains('ag-workspace-compact'))) {
-        await page.click('.ag-workspace-threads-btn');
-      }
-      await page.click(`.ag-workbench-nav .ag-workbench-launch[data-view="${view}"]`);
+      // 오른쪽 칸 단추로 칸을 열고 + 의 작업 목록에서 보기를 고른다.
+      if (!await page.$eval('.ag-root', node => node.classList.contains('ag-workbench-open'))) await page.click('.ag-workspace-panel-btn');
+      await page.click('.ag-workbench-add');
+      await page.click(`.ag-workbench-launcher-item[data-view="${view}"]`);
     }
     await page.waitForSelector(`${panel} .ag-workbench-panel[data-view="${view}"]:not([hidden])`, { visible: true });
   }
@@ -46,7 +46,7 @@ export async function checkWorkbench({ page, origin, screenshot }) {
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
   await open('fullscreen=0&theme=light');
   const normalSize = await page.$eval('.ag-root', node => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height }));
-  assert.equal(await page.$eval('.ag-workbench-nav', node => node.checkVisibility()), false);
+  assert.equal(await page.$('.ag-workbench-nav'), null, 'the chat rail has no workbench entries');
   assert.equal(await page.$eval('.ag-workbench-page', node => node.checkVisibility()), false);
   assert.equal(await page.$eval('.ag-workbench-head', node => node.checkVisibility()), false);
   await page.type('.ag-input', 'Focus transition draft');
@@ -55,7 +55,6 @@ export async function checkWorkbench({ page, origin, screenshot }) {
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } })));
   await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-fullscreen'));
   assert.equal(await page.$eval('.ag-workbench-page', node => node.checkVisibility()), false);
-  assert.equal(await page.$eval('.ag-workbench-nav', node => node.checkVisibility()), false);
   assert.equal(await page.$eval('.ag-input', node => node.value), 'Focus transition draft');
   const restoredSize = await page.$eval('.ag-root', node => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height }));
   assert(Math.abs(normalSize.width - restoredSize.width) <= 2 && Math.abs(normalSize.height - restoredSize.height) <= 2,
@@ -121,6 +120,28 @@ export async function checkWorkbench({ page, origin, screenshot }) {
   await launch('agents');
   await launch('board');
   assert.equal(await page.$$eval('.ag-workbench-tabs [role="tab"]', tabs => tabs.length), 2);
+  // 탭은 마우스로 끌어 순서를 바꾸고, Alt+화살표로도 옮긴다. 끄는 중 Esc는 원래 순서로 돌린다.
+  const tabOrder = () => page.$$eval('.ag-workbench-tabs [role="tab"]', tabs => tabs.map(tab => tab.dataset.view));
+  const tabBox = async view => (await page.$(`.ag-workbench-tabs [data-view="${view}"]`)).boundingBox();
+  assert.deepEqual(await tabOrder(), ['board', 'agents']);
+  let grab = await tabBox('agents');
+  const drop = await tabBox('board');
+  await page.mouse.move(grab.x + grab.width / 2, grab.y + grab.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(drop.x + 6, drop.y + drop.height / 2, { steps: 10 });
+  await page.mouse.up();
+  assert.deepEqual(await tabOrder(), ['agents', 'board'], 'dragging a tab reorders the strip');
+  await page.focus('.ag-workbench-tabs [role="tab"][data-view="agents"]');
+  await alt('ArrowRight');
+  assert.deepEqual(await tabOrder(), ['board', 'agents'], 'Alt+arrow moves the focused tab');
+  grab = await tabBox('agents');
+  await page.mouse.move(grab.x + grab.width / 2, grab.y + grab.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(drop.x + 6, drop.y + drop.height / 2, { steps: 10 });
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  assert.deepEqual(await tabOrder(), ['board', 'agents'], 'Escape cancels a drag');
+  assert.equal(await page.$eval('.ag-root', node => node.classList.contains('ag-workbench-open')), true);
   await page.focus('.ag-workbench-tabs [role="tab"][data-view="board"]');
   await page.keyboard.press('Delete');
   await page.waitForSelector('.ag-workbench-tabs [data-view="agents"][aria-selected="true"]');
@@ -370,6 +391,6 @@ export async function checkWorkbench({ page, origin, screenshot }) {
   assert.equal(await page.$eval('.ag-root', node => node.classList.contains('ag-fullscreen')), true);
   await screenshot('workbench-changes-graph');
   return { layouts, boardPersistence: true, boardPointerDrag: true, pdfTabReuse: true, pdfZoomRetained: true, pdfPageRetained: true, clipReusesSourceTab: true,
-    noteDraftRetained: true, dirtyCloseCancellation: true, keyboardCloseFocus: true, directResourceCloseFallback: true, panelToggleAndLauncher: true, compactBoardSections: true, malformedPdfRetry: true,
+    noteDraftRetained: true, dirtyCloseCancellation: true, keyboardCloseFocus: true, directResourceCloseFallback: true, panelToggleAndLauncher: true, tabDragReorder: true, compactBoardSections: true, malformedPdfRetry: true,
     taskFailureAndCancellation: true, draftTaskIsolation: true, changeReviewAndCommit: true, versionManagerInPanel: true };
 }

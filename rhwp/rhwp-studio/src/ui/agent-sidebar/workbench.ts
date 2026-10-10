@@ -6,7 +6,6 @@ import { projectIcon } from './project/project-ui.ts';
 export type WorkbenchView = 'board' | 'changes' | 'agents' | 'documents';
 export interface WorkbenchResource { id: string; title: string; dirty: boolean; }
 export interface SidebarWorkbench {
-  navigation: HTMLElement;
   header: HTMLElement;
   /** 지금 보기의 머리 동작. 연결하는 쪽이 보기마다 채운다. */
   actions: HTMLElement;
@@ -45,10 +44,6 @@ export function createSidebarWorkbench(deps: {
   closeResource?(id: string): void;
 }): SidebarWorkbench {
   const uid = `ag-workbench-${++sequence}`;
-  const navigation = document.createElement('nav');
-  navigation.className = 'ag-workbench-nav';
-  navigation.setAttribute('aria-label', '작업 보기');
-  const controls = new Map<WorkbenchView, HTMLButtonElement>();
   const element = document.createElement('section');
   element.className = 'ag-workbench-page';
   element.id = uid;
@@ -101,6 +96,8 @@ export function createSidebarWorkbench(deps: {
   element.append(head, body);
   let open = false;
   let lastKey: string | null = null;
+  let tabDrag: { key: string; row: HTMLElement; pointerId: number; startX: number; grabX: number; moved: boolean } | null = null;
+  let suppressTabClick = false;
   let selected: WorkbenchView | null = null;
   let visible = true;
   let disposed = false;
@@ -115,7 +112,21 @@ export function createSidebarWorkbench(deps: {
   function activeKey(): string | null {
     return selected === 'documents' && activeResource ? `resource:${activeResource}` : selected;
   }
-  function tabKeys(): string[] { return [...opened, ...resources.map(resource => `resource:${resource.id}`)]; }
+  /** 탭 줄의 순서. 끌어서 바꾼 순서를 지키고, 새 탭은 끝에 붙이며, 닫힌 탭은 뺀다. */
+  const order: string[] = [];
+  function tabKeys(): string[] {
+    const live = [...opened, ...resources.map(resource => `resource:${resource.id}`)];
+    for (let index = order.length - 1; index >= 0; index -= 1) if (!live.includes(order[index])) order.splice(index, 1);
+    for (const key of live) if (!order.includes(key)) order.push(key);
+    return [...order];
+  }
+  function moveTab(key: string, to: number): void {
+    const from = tabKeys().indexOf(key);
+    if (from < 0) return;
+    order.splice(from, 1);
+    order.splice(Math.max(0, Math.min(to, order.length)), 0, key);
+    paintTabs();
+  }
   function revealActive(): void {
     if (stripFrame !== null) cancelAnimationFrame(stripFrame);
     stripFrame = requestAnimationFrame(() => {
@@ -214,7 +225,7 @@ export function createSidebarWorkbench(deps: {
         tabRows.set(key, tab);
         strip.append(row);
       }
-      if (strip.children[index] !== tab.row) strip.insertBefore(tab.row, strip.children[index] ?? null);
+      if (!tabDrag?.moved && strip.children[index] !== tab.row) strip.insertBefore(tab.row, strip.children[index] ?? null);
       const resource = key.startsWith('resource:') ? resources.find(item => `resource:${item.id}` === key) : null;
       const label = resource?.title ?? (views.find(view => view.id === key)?.title ?? '');
       tab.label.textContent = label;
@@ -242,6 +253,14 @@ export function createSidebarWorkbench(deps: {
     const current = Array.from(tabRows.entries()).find(([, tab]) => tab.button === event.target);
     if (!current) return;
     if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); closeTab(current[0]); return; }
+    if (event.altKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+      // 마우스 끌기와 같은 일을 키보드로 한다.
+      event.preventDefault();
+      event.stopPropagation();
+      moveTab(current[0], tabKeys().indexOf(current[0]) + (event.key === 'ArrowRight' ? 1 : -1));
+      tabRows.get(current[0])?.button.focus({ preventScroll: true });
+      return;
+    }
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -252,6 +271,92 @@ export function createSidebarWorkbench(deps: {
     activateTab(keys[position]);
     tabRows.get(keys[position])?.button.focus({ preventScroll: true });
   });
+  // ── 끌어서 순서 바꾸기 ── 4px 넘게 움직이면 끌기로 본다. 끄는 탭은 포인터를 따르고 나머지는 자리를 비켜 준다.
+  function keyForRow(row: Element | null): string | null {
+    for (const [key, tab] of tabRows) if (tab.row === row) return key;
+    return null;
+  }
+  function onTabPointerDown(event: PointerEvent): void {
+    if (event.button !== 0 || tabDrag || !(event.target instanceof Element)) return;
+    if (event.target.closest('.ag-workbench-tab-close')) return;
+    const row = event.target.closest<HTMLElement>('.ag-workbench-tab-row');
+    const key = keyForRow(row);
+    if (!row || !key) return;
+    tabDrag = { key, row, pointerId: event.pointerId, startX: event.clientX, grabX: event.clientX - row.getBoundingClientRect().left, moved: false };
+  }
+  function onTabPointerMove(event: PointerEvent): void {
+    const drag = tabDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (!drag.moved) {
+      if (Math.abs(event.clientX - drag.startX) < 4) return;
+      drag.moved = true;
+      strip.setPointerCapture(drag.pointerId);
+      // 줄 안에서 옮기면 탭의 초점이 풀리므로 Esc는 창에서 받는다.
+      window.addEventListener('keydown', onTabDragKeyDown, true);
+      drag.row.classList.add('ag-dragging');
+      strip.classList.add('ag-tab-dragging');
+    }
+    event.preventDefault();
+    const frame = strip.getBoundingClientRect();
+    if (event.clientX < frame.left + 24) strip.scrollLeft -= 10;
+    else if (event.clientX > frame.right - 24) strip.scrollLeft += 10;
+    const others = Array.from(strip.children).filter((row): row is HTMLElement => row !== drag.row && row instanceof HTMLElement);
+    let index = others.findIndex((row) => {
+      const rect = row.getBoundingClientRect();
+      return event.clientX < rect.left + rect.width / 2;
+    });
+    if (index < 0) index = others.length;
+    if (index !== Array.from(strip.children).indexOf(drag.row)) {
+      const before = new Map(others.map((row) => [row, row.getBoundingClientRect().left]));
+      strip.insertBefore(drag.row, others[index] ?? null);
+      if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        for (const row of others) {
+          const dx = before.get(row)! - row.getBoundingClientRect().left;
+          if (dx) row.animate([{ transform: `translateX(${dx}px)` }, { transform: 'translateX(0)' }], { duration: 150, easing: 'ease-out' });
+        }
+      }
+    }
+    drag.row.style.transform = '';
+    drag.row.style.transform = `translateX(${event.clientX - drag.grabX - drag.row.getBoundingClientRect().left}px)`;
+  }
+  function onTabDragKeyDown(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || !tabDrag?.moved) return;
+    event.preventDefault();
+    event.stopPropagation();
+    endTabDrag(false);
+  }
+  function endTabDrag(commit: boolean): void {
+    const drag = tabDrag;
+    if (!drag) return;
+    tabDrag = null;
+    window.removeEventListener('keydown', onTabDragKeyDown, true);
+    if (strip.hasPointerCapture(drag.pointerId)) strip.releasePointerCapture(drag.pointerId);
+    if (!drag.moved) return;
+    suppressTabClick = true;
+    window.setTimeout(() => { suppressTabClick = false; }, 0);
+    drag.row.style.transform = '';
+    drag.row.classList.remove('ag-dragging');
+    strip.classList.remove('ag-tab-dragging');
+    if (commit) {
+      const keys = Array.from(strip.children).map((row) => keyForRow(row)).filter((key): key is string => key !== null);
+      order.splice(0, order.length, ...keys);
+      if (drag.key !== activeKey()) activateTab(drag.key);
+    }
+    // 취소하면 원래 순서로, 끝내면 새 순서로 DOM을 맞춘다.
+    paintTabs();
+    tabRows.get(drag.key)?.button.focus({ preventScroll: true });
+  }
+  strip.addEventListener('pointerdown', onTabPointerDown);
+  strip.addEventListener('pointermove', onTabPointerMove);
+  strip.addEventListener('pointerup', (event) => { if (event.pointerId === tabDrag?.pointerId) endTabDrag(true); });
+  strip.addEventListener('pointercancel', () => endTabDrag(false));
+  strip.addEventListener('lostpointercapture', () => { if (tabDrag?.moved) endTabDrag(true); });
+  // 끌기를 끝낸 뒤 따라오는 click은 탭 전환이나 닫기로 쓰지 않는다.
+  strip.addEventListener('click', (event) => {
+    if (!suppressTabClick) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
   const onWheel = (event: WheelEvent) => {
     if (event.ctrlKey || event.metaKey || event.deltaX || strip.scrollWidth <= strip.clientWidth) return;
     event.preventDefault();
@@ -262,18 +367,6 @@ export function createSidebarWorkbench(deps: {
   const observer = new ResizeObserver(revealActive);
   observer.observe(strip);
   for (const view of views) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'ag-workbench-launch';
-    button.dataset.view = view.id;
-    button.setAttribute('aria-label', view.title);
-    button.setAttribute('aria-controls', uid);
-    const label = document.createElement('span');
-    label.textContent = view.title;
-    button.append(viewIcon(view.id), label);
-    button.addEventListener('click', () => activateTab(view.id));
-    controls.set(view.id, button);
-    navigation.append(button);
     const item = document.createElement('button');
     item.type = 'button';
     item.className = 'ag-workbench-launcher-item';
@@ -324,10 +417,6 @@ export function createSidebarWorkbench(deps: {
       panel.hidden = id !== selected;
       panel.inert = panel.hidden || !visible;
     }
-    for (const [view, button] of controls) {
-      button.classList.toggle('ag-selected', open && selected === view);
-      button.setAttribute('aria-expanded', String(open && selected === view && visible));
-    }
     paintTabs();
   }
   function showLauncher(options?: { focus?: boolean }): void {
@@ -370,7 +459,7 @@ export function createSidebarWorkbench(deps: {
   });
   paint();
   return {
-    navigation, header: head, actions, element, select, showLauncher,
+    header: head, actions, element, select, showLauncher,
     toggle() {
       if (open) { select(null); return; }
       const keys = tabKeys();
@@ -397,7 +486,7 @@ export function createSidebarWorkbench(deps: {
       paintTabs();
     },
     setVisible(next) { visible = next; paint(); },
-    dispose() { disposed = true; observer.disconnect(); if (stripFrame !== null) cancelAnimationFrame(stripFrame);
-      strip.removeEventListener('wheel', onWheel); element.remove(); head.remove(); navigation.remove(); controls.clear(); panels.clear(); tabRows.clear(); },
+    dispose() { disposed = true; endTabDrag(false); observer.disconnect(); if (stripFrame !== null) cancelAnimationFrame(stripFrame);
+      strip.removeEventListener('wheel', onWheel); element.remove(); head.remove(); panels.clear(); tabRows.clear(); },
   };
 }

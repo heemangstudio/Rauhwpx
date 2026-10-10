@@ -68,12 +68,10 @@ try {
     await waitForState(page, 'Agent Focus ready', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen')
       && !document.documentElement.classList.contains('ag-fs-vt'));
     const railState = () => page.$eval('.ag-root', node => node.className);
-    if (await page.$eval('.ag-root', node => node.classList.contains('ag-rail-collapsed') || node.classList.contains('ag-workspace-compact'))) await page.click('.ag-workspace-threads-btn');
-    const boardLaunch = '.ag-workbench-nav .ag-workbench-launch[data-view="board"]';
-    await page.waitForSelector(boardLaunch, { visible: true }).catch(async error => { throw new Error(`Board launcher hidden: ${await railState()}`, { cause: error }); });
-    // 레일이 펼쳐지는 동안에는 단추가 움직인다. 칸 전이가 끝난 뒤 누른다.
-    await waitForState(page, 'threads rail settled', () => document.querySelector('.ag-stage').getAnimations().length === 0);
-    await page.click(boardLaunch);
+    // 오른쪽 칸 단추가 빈 칸의 작업 목록을 열고, 거기서 보드를 고른다.
+    await page.click('.ag-workspace-panel-btn');
+    await page.waitForSelector('.ag-workbench-launcher:not([hidden])', { visible: true });
+    await page.click('.ag-workbench-launcher-item[data-view="board"]');
     const card = `.ag-workbench-board .ag-pcard[data-item="${seed.itemId}"]`;
     await page.waitForSelector(card, { visible: true }).catch(async error => { throw new Error(`Board card missing: ${await railState()}`, { cause: error }); });
     await page.focus(card);
