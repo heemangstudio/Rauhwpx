@@ -388,6 +388,9 @@
   padding: 0 2px 0 9px;
 }
 
+/* 열 접기는 좁은 작업 칸의 세로 묶음에서만 쓴다. */
+.ag-pboard-col-toggle { display: none; }
+
 .ag-pboard-col-dot {
   flex: 0 0 auto;
   width: 7px;

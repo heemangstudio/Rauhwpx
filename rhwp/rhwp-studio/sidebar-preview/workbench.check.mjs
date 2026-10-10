@@ -76,6 +76,10 @@ export async function checkWorkbench({ page, origin, screenshot }) {
         layouts.push({ theme, viewport, view, ...bounds });
         assert(bounds.width >= 280 && bounds.height > 200, `${view} has usable ${theme}/${viewport} bounds`);
         assert(bounds.overflow <= 2, `${view} outer surface overflows ${theme}/${viewport}`);
+        if (view === 'board') {
+          const board = await page.$eval('.ag-workbench-board .ag-pboard', node => node.scrollWidth - node.clientWidth);
+          assert(board <= 1, `the side-panel board fits without horizontal scrolling at ${theme}/${viewport}`);
+        }
         assert.equal(await page.$eval('.ag-chat-page', node => node.inert), false);
         assert.equal(await page.$eval('.ag-chat-page', node => node.checkVisibility()), true);
         assert.equal(await page.$eval('.ag-input', node => node.value), 'Keep this unsent draft');
@@ -156,6 +160,19 @@ export async function checkWorkbench({ page, origin, screenshot }) {
   await page.waitForFunction(id => window.sidebarPreview.projects.store.get().items.find(item => item.id === id).column !== 'key', {}, 'fa2k7q');
   const moved = await readItem('fa2k7q');
   assert.notEqual(moved.column, before.column, 'Alt+arrow moves the actual project item');
+  // 좁은 칸의 열 묶음은 접히고, 접힌 열로 옮긴 카드는 그 열을 다시 펴서 초점을 지킨다.
+  const keyColumn = '.ag-workbench-board .ag-pboard-col[data-column="key"]';
+  await page.click(`${keyColumn} .ag-pboard-col-toggle`);
+  assert.equal(await page.$eval(`${keyColumn} .ag-pboard-cards`, node => node.checkVisibility()), false, 'a folded section hides its rows');
+  assert.equal(await page.$eval(`${keyColumn} .ag-pboard-col-toggle`, node => node.getAttribute('aria-expanded')), 'false');
+  await page.focus('.ag-workbench-board .ag-pcard[data-item="fa2k7q"]');
+  await alt('ArrowRight');
+  await page.waitForFunction(id => window.sidebarPreview.projects.store.get().items.find(item => item.id === id).column === 'key', {}, 'fa2k7q');
+  await page.waitForFunction(selector => document.querySelector(`${selector} .ag-pboard-cards`).checkVisibility()
+    && document.activeElement?.dataset.item === 'fa2k7q', {}, keyColumn);
+  await screenshot('workbench-board-compact');
+  await alt('ArrowLeft');
+  await page.waitForFunction((id, column) => window.sidebarPreview.projects.store.get().items.find(item => item.id === id).column === column, {}, 'fa2k7q', moved.column);
   await back();
   await launch('board');
   assert.equal((await readItem('fa2k7q')).column, moved.column, 'board changes survive workbench navigation');
@@ -348,6 +365,6 @@ export async function checkWorkbench({ page, origin, screenshot }) {
   assert.equal(await page.evaluate(() => window.sidebarPreview.versions.getState().commits[0].title), 'Workbench change commit');
   await screenshot('workbench-changes-committed');
   return { layouts, boardPersistence: true, boardPointerDrag: true, pdfTabReuse: true, pdfZoomRetained: true, pdfPageRetained: true, clipReusesSourceTab: true,
-    noteDraftRetained: true, dirtyCloseCancellation: true, keyboardCloseFocus: true, directResourceCloseFallback: true, panelToggleAndLauncher: true, malformedPdfRetry: true,
+    noteDraftRetained: true, dirtyCloseCancellation: true, keyboardCloseFocus: true, directResourceCloseFallback: true, panelToggleAndLauncher: true, compactBoardSections: true, malformedPdfRetry: true,
     taskFailureAndCancellation: true, draftTaskIsolation: true, changeReviewAndCommit: true };
 }

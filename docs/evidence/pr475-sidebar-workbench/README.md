@@ -25,7 +25,7 @@ The test starts its own Studio (Vite), an authenticated local hub and the built 
 - Panel button: it opens an empty panel on the surface list with the first item focused. Letter shortcuts, arrow keys and + open views. The button closes the panel and reopens the last tab, and Escape returns to the composer (`workbench-launcher-empty`).
 - Tabs: the strip starts empty, records opened views, and Delete closes tabs. Closing the last tab shows the surface list with its first item focused.
 - Direct documents: a document opened from the board has no library tab. Closing it selects the neighbouring tab, and closing the last one shows the surface list instead of an untabbed library.
-- Board: keyboard and pointer moves persist; a failed write rolls back (`workbench-board-*`).
+- Board: below 720 px the board becomes a compact list. Columns stack as foldable sections with one-line rows and tag dots, and no width overflows horizontally. Keyboard and pointer moves persist, a failed write rolls back, and moving a card into a folded section unfolds it (`workbench-board-*`).
 - Documents: PDF tabs are reused per file, keep zoom and page, and a source clip reuses its PDF tab. Note drafts survive tab switches, and closing a dirty note asks first. A malformed PDF shows a retry that recovers (`workbench-document-*`).
 - Subagents: streamed task records, failures, filters and stop are shown; a new draft chat starts with no tasks (`workbench-agents-*`).
 - Changes: pending review and commit run from the panel, and the tab head carries the undo button for approved changes. The same review card stays in the changes drawer after the panel closes (`workbench-changes-*`). `sidebar-preview/changes.check.mjs` covers undo, history, commit and discard through this tab.
