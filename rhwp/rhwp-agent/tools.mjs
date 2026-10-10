@@ -508,6 +508,7 @@ export const TOOL_CATEGORIES = Object.freeze([
   'document-write',
   'reference-read',
   'template-read',
+  'template-write',
   'download-write',
   'artifact-write',
   'user-interaction',
@@ -528,7 +529,7 @@ export const TOOL_CATEGORIES = Object.freeze([
  * destructive 로 표시하지 않는다. 그렇게 표시하면 Codex 안전 모드
  * (`workspace-write` + `approval_policy=never`)가 문서 편집 도구를 거절한다.
  *
- * @param {'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'} category
+ * @param {'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'} category
  */
 export function toolAnnotations(category) {
   return {
@@ -1767,10 +1768,15 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'register_copy_layout_template',
-    description: 'Register the completed copy-layout artifact as a reusable template after the user explicitly accepts the final save/register action. Never call before that reply; declining needs no tool call.',
+    description: 'Save a copy-layout result from this chat as a reusable template once the user asks or accepts. Pass artifactId, the id between /artifacts/ and the file name in the 템플릿 미리보기 link; it works after app restarts. Do not search files or MCP resources for it. Declining needs no call.',
     shape: {
-      jobId: z.string().uuid(),
+      artifactId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{15,127}$/).optional()
+        .describe('Id from the /artifacts/<artifactId>/<file> link of the copy-layout card'),
+      jobId: z.string().uuid().optional().describe('Completed copy-layout jobId, when artifactId is unknown'),
       name: z.string().min(1).max(80).optional(),
+    },
+    validate(args) {
+      if (!args.artifactId && !args.jobId) throw invalidArgs('register_copy_layout_template requires artifactId');
     },
   },
   {
@@ -1808,7 +1814,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
 ];
 
-/** @type {Readonly<Record<string, 'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'>>} */
+/** @type {Readonly<Record<string, 'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'>>} */
 export const TOOL_CLASSIFICATIONS = Object.freeze({
   read_agent_instructions: 'instruction-read',
   update_agent_instructions: 'instruction-write',
@@ -1895,7 +1901,7 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   update_copy_layout_job: 'background-worker',
   run_copy_layout_helper: 'background-worker',
   complete_copy_layout_job: 'background-worker',
-  register_copy_layout_template: 'background-control',
+  register_copy_layout_template: 'template-write',
   browserbase_start: 'browser',
   browserbase_end: 'browser',
   browserbase_navigate: 'browser',
@@ -1915,11 +1921,11 @@ export const TOOL_DEFINITIONS = Object.freeze(BASE_TOOL_DEFINITIONS.map((definit
 const PROJECT_CATEGORIES = Object.freeze(['project-read', 'project-write', 'project-ingest']);
 
 export const TOOL_PROFILES = Object.freeze({
-  direct: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'artifact-write', 'user-interaction', 'background-control', ...PROJECT_CATEGORIES]),
-  planning: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'download-write', 'user-interaction', 'planning-control', 'browser', ...PROJECT_CATEGORIES]),
-  question: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'download-write', 'user-interaction', 'browser', ...PROJECT_CATEGORIES]),
-  'awaiting-approval': Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'download-write', 'user-interaction', 'planning-control', 'browser', ...PROJECT_CATEGORIES]),
-  implementing: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'background-control', ...PROJECT_CATEGORIES]),
+  direct: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'artifact-write', 'user-interaction', 'background-control', ...PROJECT_CATEGORIES]),
+  planning: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', ...PROJECT_CATEGORIES]),
+  question: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'browser', ...PROJECT_CATEGORIES]),
+  'awaiting-approval': Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', ...PROJECT_CATEGORIES]),
+  implementing: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'background-control', ...PROJECT_CATEGORIES]),
   'copy-layout-worker': Object.freeze([
     'read_product_skill',
     'get_document_info',

@@ -190,8 +190,17 @@ import {
   isDesktopApp,
   openPublishedDocumentInNewWindow,
   parsePublishedDocumentLink,
+  type PublishedDocumentLink,
 } from '../../desktop-integration.ts';
 import { showToast } from '../toast.ts';
+
+const GENERATED_ARTIFACT_GONE_MESSAGE = '이 문서는 더 이상 열 수 없습니다. 다시 만들어 달라고 요청하세요.';
+
+/** Electron IPC 오류의 "Error invoking remote method …" 머리를 떼고 본문만 남긴다. */
+function readableIpcError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/u, '');
+}
 import { fuzzyTemplateScore } from './template-fuzzy.ts';
 import {
   defaultSkillIconForName,
@@ -5660,27 +5669,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         el('span', 'ag-md-artifact-name', artifact.fileName),
         el('span', 'ag-md-artifact-hint', originalLabel),
       );
-      link.replaceChildren(icon, copy, el('span', 'ag-md-artifact-action', '열기'));
-      link.addEventListener('click', (event) => {
-        event.preventDefault();
-        if (link.getAttribute('aria-busy') === 'true') return;
-        link.setAttribute('aria-busy', 'true');
-        link.classList.remove('ag-failed');
-        void openPublishedDocumentInNewWindow(artifact, undefined, { readOnly: artifact.readOnly === true })
-          .catch((error) => {
-            link.classList.add('ag-failed');
-            const message = error instanceof Error ? error.message : String(error);
-            showToast({ message: `문서를 열지 못했습니다: ${message}`, durationMs: 5000 });
-          })
-          .finally(() => link.removeAttribute('aria-busy'));
-      });
+      const action = el('span', 'ag-md-artifact-action', '열기');
+      link.replaceChildren(icon, copy, action);
 
       const download = document.createElement('a');
       download.className = 'ag-md-artifact-download';
-      download.href = artifact.downloadUrl;
-      download.target = '_blank';
-      download.rel = 'noopener noreferrer';
-      download.download = artifact.fileName;
+      download.href = '#';
       download.textContent = '다운로드';
       download.title = `${artifact.fileName} 다운로드`;
       const card = el('span', 'ag-md-artifact-card');
@@ -5691,6 +5685,56 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       } else {
         link.insertAdjacentElement('afterend', download);
       }
+
+      const markGone = (): void => {
+        card.classList.add('ag-gone');
+        link.classList.remove('ag-failed');
+        link.setAttribute('aria-disabled', 'true');
+        link.title = GENERATED_ARTIFACT_GONE_MESSAGE;
+        link.setAttribute('aria-label', `${artifact.fileName}: ${GENERATED_ARTIFACT_GONE_MESSAGE}`);
+        copy.lastElementChild!.textContent = GENERATED_ARTIFACT_GONE_MESSAGE;
+        action.remove();
+        download.remove();
+      };
+      // 대화에 남은 주소는 허브를 다시 켜면 포트·세션·토큰이 달라 쓸 수 없다.
+      // 누를 때마다 artifactId로 지금 허브 세션의 주소를 새로 받는다.
+      const withFreshArtifact = (control: HTMLElement, run: (fresh: PublishedDocumentLink) => Promise<void> | void): void => {
+        if (card.classList.contains('ag-gone') || control.getAttribute('aria-busy') === 'true') return;
+        control.setAttribute('aria-busy', 'true');
+        link.classList.remove('ag-failed');
+        void bridge.requestGeneratedArtifact(artifact.artifactId, currentThread.id)
+          .then(async (lookup) => {
+            if (!lookup) throw new Error('에이전트에 연결되지 않았습니다. 잠시 후 다시 시도하세요.');
+            if (lookup.status === 'gone') {
+              markGone();
+              return;
+            }
+            if (lookup.status !== 'ready') throw new Error(lookup.message);
+            await run({ ...artifact, downloadUrl: lookup.downloadUrl, fileName: lookup.fileName });
+          })
+          .catch((error) => {
+            link.classList.add('ag-failed');
+            showToast({ message: `문서를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 });
+          })
+          .finally(() => control.removeAttribute('aria-busy'));
+      };
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        withFreshArtifact(link, (fresh) => openPublishedDocumentInNewWindow(
+          fresh, undefined, { readOnly: artifact.readOnly === true },
+        ));
+      });
+      download.addEventListener('click', (event) => {
+        event.preventDefault();
+        withFreshArtifact(download, (fresh) => {
+          const anchor = document.createElement('a');
+          anchor.href = fresh.downloadUrl;
+          anchor.download = fresh.fileName;
+          anchor.target = '_blank';
+          anchor.rel = 'noopener noreferrer';
+          anchor.click();
+        });
+      });
     }
   }
 

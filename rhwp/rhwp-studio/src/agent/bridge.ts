@@ -83,6 +83,7 @@ import type {
   SkillCommitChange,
   SkillCommitOutcome,
   SkillEditorDocument,
+  GeneratedArtifactLookup,
   SkillHarnessId,
   ProviderHealth,
   ProviderStatusMap,
@@ -393,6 +394,8 @@ export interface AgentBridge {
   listHarnessSkills(): string;
   commitSkill(change: SkillCommitChange): string;
   readSkillEditor(name: string): Promise<SkillEditorDocument | null>;
+  /** 채팅 카드의 생성 문서를 열거나 받을 때 지금 허브 세션의 주소를 새로 받는다. 연결이 없으면 null. */
+  requestGeneratedArtifact(artifactId: string, threadId: string): Promise<GeneratedArtifactLookup | null>;
   saveSkillEditor(name: string, body: string, base: string): Promise<SkillCommitOutcome | null>;
   requestWritingStyleStatus(): string;
   requestAgentInstructions(): Promise<AgentInstructionsStatus | null>;
@@ -2816,6 +2819,23 @@ export class AgentBridgeImpl implements AgentBridge {
         }
         break;
       }
+      case 'artifact-descriptor': {
+        if (typeof msg.requestId !== 'string') break;
+        const artifact = msg.artifact && typeof msg.artifact === 'object'
+          ? msg.artifact as Record<string, unknown> : null;
+        const error = msg.error && typeof msg.error === 'object' ? msg.error as Record<string, unknown> : null;
+        let lookup: GeneratedArtifactLookup;
+        if (artifact && typeof artifact.artifactId === 'string' && typeof artifact.fileName === 'string'
+          && typeof artifact.downloadUrl === 'string') {
+          lookup = { status: 'ready', artifactId: artifact.artifactId, fileName: artifact.fileName, downloadUrl: artifact.downloadUrl };
+        } else if (error?.code === 'ARTIFACT_NOT_FOUND') {
+          lookup = { status: 'gone' };
+        } else {
+          lookup = { status: 'unavailable', message: typeof error?.message === 'string' ? error.message : '허브가 문서를 찾지 못했습니다.' };
+        }
+        this.requests.settle(msg.requestId, lookup);
+        break;
+      }
       case 'skill-editor-read-result': {
         const document = msg.document && typeof msg.document === 'object'
           ? msg.document as SkillEditorDocument : null;
@@ -4183,6 +4203,13 @@ export class AgentBridgeImpl implements AgentBridge {
 
   readSkillEditor(name: string): Promise<SkillEditorDocument | null> {
     return this.request<SkillEditorDocument>({ type: 'skill-editor-read', name }, 'skill-editor-read');
+  }
+
+  requestGeneratedArtifact(artifactId: string, threadId: string): Promise<GeneratedArtifactLookup | null> {
+    return this.request<GeneratedArtifactLookup>(
+      { type: 'artifact-descriptor-request', artifactId, threadId },
+      'artifact-descriptor',
+    );
   }
 
   saveSkillEditor(name: string, body: string, base: string): Promise<SkillCommitOutcome | null> {

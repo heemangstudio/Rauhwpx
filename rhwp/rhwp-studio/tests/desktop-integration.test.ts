@@ -174,9 +174,10 @@ test('browser hub identity is stable across reloads but scoped to its tab storag
 test('published artifact links open through a fresh editor window on desktop', async () => {
   const href = 'http://127.0.0.1:5175/artifacts/artifact_token_1234567890/%EB%B3%B4%EA%B3%A0%EC%84%9C%28%ED%8C%80%29.hwp?sessionId=a&token=b';
   const artifact = parsePublishedDocumentLink(href);
-  assert.deepEqual(artifact, { downloadUrl: href, fileName: '보고서(팀).hwp' });
+  assert.deepEqual(artifact, { artifactId: 'artifact_token_1234567890', downloadUrl: href, fileName: '보고서(팀).hwp' });
   const templateHref = `${href}&templatePreview=1`;
   assert.deepEqual(parsePublishedDocumentLink(templateHref), {
+    artifactId: 'artifact_token_1234567890',
     downloadUrl: templateHref,
     fileName: '보고서(팀).hwp',
     readOnly: true,

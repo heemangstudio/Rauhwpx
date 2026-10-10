@@ -21,7 +21,7 @@ test('template artifact opens read-only only after its main-chat card is clicked
   assert.doesNotMatch(bridge, /template-preview-opened/);
   assert.match(desktopIntegration, /templatePreview'\) === '1' \? \{ readOnly: true \}/);
   assert.match(sidebar, /const card = el\('span', 'ag-md-artifact-card'\)/);
-  assert.match(sidebar, /openPublishedDocumentInNewWindow\(artifact, undefined, \{ readOnly: artifact\.readOnly === true \}\)/);
+  assert.match(sidebar, /fresh, undefined, \{ readOnly: artifact\.readOnly === true \},/);
   assert.match(css, /\.ag-md-artifact-card\s*\{[^}]*display:\s*flex;[^}]*border:/s);
   assert.match(css, /\.ag-md-artifact-open\s*\{[^}]*flex:\s*1 1 auto;/s);
 });

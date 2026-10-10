@@ -1108,6 +1108,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
           ],
         }),
       ),
+    // 미리보기에는 허브가 없다. 생성 문서 카드는 보관 기간이 지난 경우처럼 보인다.
+    requestGeneratedArtifact: async (): Promise<T.GeneratedArtifactLookup> => ({ status: 'gone' }),
     readSkillEditor: async (name: string) => {
       const row = data.skills.rows.find((item) => item.name === name);
       if (!row || row.kind !== 'skill' || row.editable !== true)

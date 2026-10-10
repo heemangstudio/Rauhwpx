@@ -812,6 +812,12 @@ export interface SkillCatalog {
 
 export interface SkillEditorDocument { name: string; body: string; digest: string; }
 
+/** 허브가 지금 세션 기준으로 새로 만든 생성 문서 주소, 또는 더 이상 없다는 답. */
+export type GeneratedArtifactLookup =
+  | { status: 'ready'; artifactId: string; fileName: string; downloadUrl: string }
+  | { status: 'gone' }
+  | { status: 'unavailable'; message: string };
+
 export interface HarnessSkillRow {
   harness: SkillHarnessId;
   name: string;

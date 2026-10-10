@@ -689,6 +689,37 @@ test('two active provider turns route overlapping MCP ids only to their owning S
   crossSessionArtifactUrl.searchParams.set('token', betaToken);
   assert.equal((await fetch(crossSessionArtifactUrl)).status, 401);
 
+  // 대화에 남은 주소 대신 artifactId로 지금 세션의 주소를 새로 받는다. 채팅 소유권은 그대로 지킨다.
+  const requestDescriptor = (socket, requestId, artifactId, threadId) => {
+    const reply = waitForMessage(socket, (msg) => msg.type === 'artifact-descriptor' && msg.requestId === requestId);
+    sendFrame(socket, { type: 'artifact-descriptor-request', requestId, artifactId, threadId });
+    return reply;
+  };
+  const fresh = await requestDescriptor(alpha, 'artifact-fresh', published.artifactId, 'thread-alpha');
+  assert.equal(fresh.artifact?.artifactId, published.artifactId, JSON.stringify(fresh));
+  assert.notEqual(fresh.artifact.downloadUrl, published.downloadUrl);
+  assert.equal(new URL(fresh.artifact.downloadUrl).searchParams.get('sessionId'), 'alpha');
+  const freshDownload = await fetch(fresh.artifact.downloadUrl, { headers: { Origin: studioOrigin } });
+  assert.equal(freshDownload.status, 200);
+  assert.deepEqual(Buffer.from(await freshDownload.arrayBuffer()), snapshotBytes);
+  for (const [socket, requestId, artifactId, threadId] of [
+    [alpha, 'artifact-other-thread', published.artifactId, 'thread-other'],
+    [beta, 'artifact-other-session', published.artifactId, 'thread-beta'],
+    [alpha, 'artifact-missing', 'artifact_missing_1234567890', 'thread-alpha'],
+  ]) {
+    const reply = await requestDescriptor(socket, requestId, artifactId, threadId);
+    assert.equal(reply.artifact, undefined);
+    assert.equal(reply.error?.code, 'ARTIFACT_NOT_FOUND', requestId);
+  }
+  assert.equal(existsSync(path.join(workRoot, 'generated-artifacts', `${published.artifactId}.json`)), true);
+  const registerResult = waitForMessage(alphaMcp, (msg) => msg.type === 'tool-result' && msg.id === 11);
+  sendFrame(alphaMcp, {
+    type: 'tool-call', id: 11, tool: 'register_copy_layout_template',
+    args: { artifactId: published.artifactId },
+    workflow: 'direct', capabilityEpoch: alphaSession.capabilityEpoch,
+  });
+  assert.equal((await registerResult).error?.code, 'COPY_LAYOUT_JOB_NOT_READY');
+
   const alphaTemplateCleared = waitForMessage(alpha, (msg) => msg.type === 'chat-template-changed' && msg.reason === 'deleted');
   const betaTemplateCleared = waitForMessage(beta, (msg) => msg.type === 'chat-template-changed' && msg.reason === 'deleted');
   const alphaCatalogDeleted = waitForMessage(alpha, (msg) => msg.type === 'templates-catalog' && msg.change?.type === 'deleted');

@@ -64,4 +64,8 @@ Page count, pagination, geometry/render similarity, and native-format difference
 
 The successful structured completion contains the exact immutable artifact, quality, warnings, counts, and representative preview data. Do not open it automatically. Include exactly one Markdown link using the returned `artifact.downloadUrl` with the label `템플릿 미리보기`: `[템플릿 미리보기](<artifact.downloadUrl>)`. Studio renders that link as a document card; only a user click opens the artifact in a new read-only template-preview window.
 
-Report the result concisely, show the card, then ask exactly one final question: whether to save/register this exact artifact as a reusable template. If the user accepts, call `register_copy_layout_template` with the completed `jobId` (and a name only if they supplied one). If the user declines, do not call it; the artifact card remains available without registering a template.
+Report the result concisely, show the card, then ask exactly one final question: whether to save/register this exact artifact as a reusable template. If the user declines, do not call it; the artifact card remains available without registering a template.
+
+## Saving the result as a template
+
+Whenever the user accepts or later asks to save the result (for example "저장해 줘"), call `register_copy_layout_template` directly with `artifactId` (and a name only if they supplied one). The `artifactId` is the path segment between `/artifacts/` and the file name in the `템플릿 미리보기` link, for example `artifact_AbC…` in `http://127.0.0.1:…/artifacts/artifact_AbC…/name.hwpx?…`. It stays valid after the hub or app restarts, in any chat mode. Do not inspect a work log, run shell or filesystem searches, or call MCP resource tools to find the result. If the tool returns `ARTIFACT_NOT_FOUND`, tell the user the generated document is no longer stored and offer to run copy-layout again.

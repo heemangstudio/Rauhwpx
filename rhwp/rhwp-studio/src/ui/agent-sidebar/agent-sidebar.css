@@ -4664,6 +4664,12 @@ button.ag-skill-copy {
   color: var(--ag-err);
 }
 
+.ag-md-artifact-card.ag-gone .ag-md-artifact-open { cursor: default; }
+.ag-md-artifact-card.ag-gone .ag-md-artifact-open:hover { background: transparent; }
+.ag-md-artifact-card.ag-gone .ag-md-artifact-icon,
+.ag-md-artifact-card.ag-gone .ag-md-artifact-name { opacity: 0.55; }
+.ag-md-artifact-card.ag-gone .ag-md-artifact-hint { white-space: normal; }
+
 .ag-md-artifact-download {
   display: inline-flex;
   flex: 0 0 auto;

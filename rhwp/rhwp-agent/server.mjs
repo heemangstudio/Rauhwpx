@@ -46,7 +46,7 @@ import {
 } from './planning-state.mjs';
 import { DownloadManager, fetchPublic } from './download-manager.mjs';
 import { DocumentSnapshotManager } from './document-snapshot-manager.mjs';
-import { ArtifactStore } from './artifact-store.mjs';
+import { ArtifactStore, defaultGeneratedArtifactRoot } from './artifact-store.mjs';
 import { BrowserbaseFleet, normalizeBrowserbaseOverride, validateBrowserbaseCredentials } from './browserbase-session.mjs';
 import { createProviderHealth } from './provider-health.mjs';
 import { createUsageStore } from './usage-store.mjs';
@@ -126,7 +126,7 @@ import {
   claimCopyLayoutSnapshot,
   COPY_LAYOUT_MAX_ITERATIONS,
   copyLayoutPhaseIndex,
-  defaultTemplateName,
+  registerCopyLayoutArtifact,
   releaseCopyLayoutPublication,
   releaseCopyLayoutSnapshot,
   taskProgressForJob,
@@ -177,6 +177,9 @@ const RUNTIME_ROOT = process.env.RHWP_RUNTIME_DIR
   ? path.resolve(process.env.RHWP_RUNTIME_DIR)
   : null;
 const RECORDS_ROOT = path.join(WORK_ROOT, 'sessions');
+// 작업 폴더는 실행마다 새로 만들고 지운다. 생성 문서는 앱 데이터 폴더에 남겨
+// 허브나 앱을 다시 켜도 채팅의 문서 카드가 열리게 한다.
+const GENERATED_ARTIFACTS_ROOT = defaultGeneratedArtifactRoot();
 await fs.mkdir(RECORDS_ROOT, { recursive: true, mode: 0o700 });
 ensureCredentialRetentionRootSync(WORK_ROOT);
 const TOOL_TRACE_PATH = configureToolTrace(WORK_ROOT);
@@ -522,7 +525,12 @@ const sessions = new HubSessionRegistry({
       browserbaseSession: new BrowserbaseFleet({ log }),
       downloadManager,
       documentSnapshotManager,
-      artifactStore: new ArtifactStore({ rootDir: workDir, trustedReadRoots: hubReadOnlyRoots }),
+      artifactStore: new ArtifactStore({
+        rootDir: workDir,
+        trustedReadRoots: hubReadOnlyRoots,
+        persistDir: GENERATED_ARTIFACTS_ROOT,
+        onPersistError: (error) => log(`generated artifact persistence failed: ${error?.message ?? error}`),
+      }),
       recordRoot,
       workDir,
       hubStorageDir,
@@ -1975,6 +1983,35 @@ function artifactDownloadDescriptor(record, artifactId, artifact) {
     checksum: artifact.checksum,
     downloadUrl: downloadUrl.href,
   };
+}
+
+/**
+ * 대화에 남은 카드의 artifactId로 지금 허브 세션의 다운로드 주소를 새로 만든다.
+ * 예전 주소는 허브 포트·세션·토큰이 바뀌면 쓸 수 없다.
+ */
+async function freshArtifactDescriptor(record, artifactId, threadId) {
+  const id = String(artifactId ?? '');
+  const metadata = await record.artifactStore.describe(id);
+  if (!metadata.owner?.threadId || metadata.owner.threadId !== threadId) {
+    throw workflowError('ARTIFACT_NOT_FOUND', 'Generated artifact is unavailable or expired');
+  }
+  return artifactDownloadDescriptor(record, id, metadata);
+}
+
+async function registerCopyLayoutTemplate(record, args) {
+  const job = args.jobId ? record.templateJobs.get(args.jobId) ?? null : null;
+  const outcome = await registerCopyLayoutArtifact({
+    artifactStore: record.artifactStore,
+    templateStore,
+    threadId: record.agentSession?.threadId ?? null,
+    args,
+    job,
+  });
+  if (!outcome.alreadyRegistered) {
+    if (job) job.registeredTemplateId = outcome.template.id;
+    broadcastTemplateCatalog({ type: 'added', template: outcome.template });
+  }
+  return outcome;
 }
 
 function sendTemplateJobEvent(record, event) {
@@ -4304,6 +4341,22 @@ async function handleStudioMessage(record, sock, msg) {
         .catch((e) => sendJson(sock, { v: 1, type: 'skills-error', requestId: msg.requestId ?? null, code: e?.code ?? 'SKILLS_ERROR', message: String(e?.message ?? e) }));
       return;
     }
+    case 'artifact-descriptor-request': {
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      const threadId = typeof msg.threadId === 'string' ? msg.threadId : '';
+      void freshArtifactDescriptor(record, msg.artifactId, threadId)
+        .then((artifact) => replyToStudio(record, sock, { v: 1, type: 'artifact-descriptor', requestId, artifact }))
+        .catch((error) => replyToStudio(record, sock, {
+          v: 1,
+          type: 'artifact-descriptor',
+          requestId,
+          error: {
+            code: error?.code === 'ARTIFACT_NOT_FOUND' ? 'ARTIFACT_NOT_FOUND' : 'ARTIFACT_UNAVAILABLE',
+            message: String(error?.message ?? error),
+          },
+        }));
+      return;
+    }
     case 'skill-editor-read': {
       void skillRegistry.readEditor(String(msg.name ?? ''))
         .then((document) => sendJson(sock, { v: 1, type: 'skill-editor-read-result', requestId: msg.requestId ?? null, document }))
@@ -5521,7 +5574,16 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         const completion = (async () => {
           let artifact = null;
           if (args.outcome === 'succeeded') {
-            artifact = await record.artifactStore.read(args.artifactId);
+            artifact = await record.artifactStore.annotate(args.artifactId, {
+              template: {
+                kind: 'copy-layout',
+                jobId: workerJob.jobId,
+                quality: completionClaims.quality,
+                pageCount: completionClaims.preview.outputPageCount,
+                sectionCount: completionClaims.preview.outputSectionCount,
+                registeredTemplateId: null,
+              },
+            });
           }
           workerJob.status = args.outcome === 'succeeded' ? 'completed' : 'failed';
           workerJob.activity = args.summary;
@@ -5560,37 +5622,8 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         return;
       }
       if (tool === 'register_copy_layout_template') {
-        const job = record.templateJobs.get(args.jobId);
-        if (!job || job.ownerThreadId !== record.agentSession?.threadId) {
-          sendError(workflowError('COPY_LAYOUT_JOB_NOT_FOUND', 'No completed copy-layout job belongs to this chat'));
-          return;
-        }
-        if (job.status !== 'completed' || !job.result?.artifact) {
-          sendError(workflowError('COPY_LAYOUT_JOB_NOT_READY', 'The copy-layout artifact is not ready for registration'));
-          return;
-        }
-        if (job.registeredTemplateId) {
-          try {
-            sendResult({ template: templateStore.get(job.registeredTemplateId), alreadyRegistered: true });
-          } catch (error) {
-            sendError(error, 'TEMPLATE_NOT_FOUND');
-          }
-          return;
-        }
-        void record.artifactStore.read(job.result.artifact.artifactId)
-          .then((artifact) => templateStore.add({
-            name: args.name ?? defaultTemplateName(artifact.fileName),
-            originalName: artifact.fileName,
-            format: path.extname(artifact.fileName).slice(1).toLowerCase(),
-            pageCount: job.result.preview.outputPageCount,
-            sectionCount: job.result.preview.outputSectionCount,
-            bytes: artifact.bytes,
-          }))
-          .then((template) => {
-            job.registeredTemplateId = template.id;
-            broadcastTemplateCatalog({ type: 'added', template });
-            sendResult({ template, alreadyRegistered: false });
-          })
+        void registerCopyLayoutTemplate(record, args)
+          .then(sendResult)
           .catch((error) => sendError(error, 'TEMPLATE_REGISTER_FAILED'));
         return;
       }
@@ -5759,7 +5792,10 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           }
           workerPublishClaimed = true;
         }
-        void record.artifactStore.publish(args)
+        const artifactOwner = workerJob
+          ? { threadId: workerJob.ownerThreadId, documentId: workerJob.binding?.documentId ?? null }
+          : { threadId: record.agentSession?.threadId ?? null, documentId: record.agentSession?.documentId ?? null };
+        void record.artifactStore.publish({ ...args, owner: artifactOwner })
           .then(async ({ artifactId, fileName, mime, size, checksum }) => {
             if (workerJob) {
               await Promise.resolve(workerJob.helperPromise);

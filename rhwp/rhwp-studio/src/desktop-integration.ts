@@ -198,6 +198,8 @@ export interface DesktopHost {
 }
 
 export interface PublishedDocumentLink {
+  /** 대화에 남는 안정된 참조. 열 때마다 허브에 새 다운로드 주소를 받는다. */
+  readonly artifactId: string;
   readonly downloadUrl: string;
   readonly fileName: string;
   readonly readOnly?: boolean;
@@ -213,16 +215,17 @@ export function parsePublishedDocumentLink(raw: string): PublishedDocumentLink |
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
   if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost' && url.hostname !== '[::1]') return null;
-  const match = url.pathname.match(/^\/artifacts\/[A-Za-z0-9_-]{16,128}\/([^/]+)$/u);
+  const match = url.pathname.match(/^\/artifacts\/([A-Za-z0-9_-]{16,128})\/([^/]+)$/u);
   if (!match) return null;
   let fileName;
   try {
-    fileName = decodeURIComponent(match[1]);
+    fileName = decodeURIComponent(match[2]);
   } catch {
     return null;
   }
   if (!/\.(?:hwp|hwpx)$/iu.test(fileName) || fileName.includes('\0')) return null;
   return {
+    artifactId: match[1],
     downloadUrl: url.href,
     fileName,
     ...(url.searchParams.get('templatePreview') === '1' ? { readOnly: true } : {}),
