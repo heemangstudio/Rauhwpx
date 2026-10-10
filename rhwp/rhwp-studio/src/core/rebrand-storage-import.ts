@@ -800,6 +800,7 @@ export async function importRebrandedStorage(
     });
   }
   let aborted = false;
+  const unreadDatabases = new Set((dump.problems?.failures ?? []).map((problem) => problem.database));
   for (const problem of dump.problems?.failures ?? []) {
     const targetName = REBRANDED_DATABASES[problem.database] ?? problem.database;
     result.failures.push(`${targetName}${problem.store ? `/${problem.store}` : ''}: 2.0.11 에서 읽지 못했습니다: ${problem.message}`);
@@ -820,7 +821,9 @@ export async function importRebrandedStorage(
       if (!targetName) continue;
       try {
         if (targetName === VERSION_DATABASE) {
-          await mergeVersionGraph(database, context);
+          // 버전 저장소 하나의 행은 여러 저장소에 흩어져 있다. 일부만 읽혔으면 멀쩡한 저장소도 불완전해
+          // 보이므로 이번에는 합치지 않는다. 위에서 실패로 남겼으니 다음 실행에서 처음부터 다시 읽는다.
+          if (!unreadDatabases.has(database.name)) await mergeVersionGraph(database, context);
         } else {
           await mergeDatabase(database, targetName, targetName === THREADS_DATABASE ? legacyThreads : [], context);
         }

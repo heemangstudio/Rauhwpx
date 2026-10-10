@@ -313,3 +313,39 @@ test('a chat that changed in 2.0.11 after it was imported is refreshed, but neve
   assert.deepEqual(outcome, { afterRefresh: 'continued in 2.0.11', afterDelete: null });
   await page.close();
 });
+
+test('a version history read that broke partway is not merged, so no healthy repository is given up on', { timeout: 60_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  await step(page, (fixture) => fixture.reset());
+  await step(page, async (fixture) => {
+    await fixture.writeGeneration('first', 'doc-first');
+    await fixture.writeGeneration('second', 'doc-second');
+    await fixture.moveToRebrandedNames();
+  });
+  const outcome = await step(page, async (_fixture, importer) => {
+    const full = await importer.dumpRebrandedStorage();
+    if (!full) throw new Error('no 2.0.11 storage');
+    const versions = full.databases.find((db) => db.name === 'hamaeditorVersionGraph')!;
+    // The desktop reader stopped after the first commit row and reported the store as failed.
+    const partial = structuredClone({ ...full, databases: [versions] });
+    const commits = partial.databases[0].stores.find((store) => store.name === 'commits')!;
+    commits.records = commits.records.slice(0, 1);
+    partial.problems = { failures: [{ database: 'hamaeditorVersionGraph', store: 'commits', message: 'cursor failed' }], skipped: [] };
+    const broken = await importer.importRebrandedStorage(partial);
+    const retried = await importer.importRebrandedStorage({ ...full, databases: [versions] }, { ledger: broken.ledger });
+    return {
+      brokenComplete: broken.complete,
+      brokenAborted: broken.aborted,
+      ledgeredRepositories: broken.ledger['rhwpStudioVersionGraph/repositories'] ?? [],
+      retriedRepositories: retried.repositories,
+    };
+  });
+  assert.deepEqual(outcome, {
+    brokenComplete: false,
+    brokenAborted: false,
+    ledgeredRepositories: [],
+    retriedRepositories: 2,
+  });
+  await page.close();
+});
