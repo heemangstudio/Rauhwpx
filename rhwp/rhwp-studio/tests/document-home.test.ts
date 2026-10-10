@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { groupHomeDocuments, sortHomeDocuments, type HomeWorktreeInput } from '../src/home/home-model.ts';
-import { healRecentDocuments, relocateByDigest, type DocumentPresence, type HealIo } from '../src/home/home-data.ts';
+import { healRecentDocuments, inspectAndHeal, MISSING_CONFIRM_MS, type DocumentPresence, type HealIo } from '../src/home/home-data.ts';
 import type { RecentDoc } from '../src/recent/recent-store.ts';
 
 function recent(id: string, fileName: string, openedAt: number, digest = `blake3:${id}`): RecentDoc {
@@ -52,56 +52,93 @@ test('정렬은 최근 순(열람 시각)과 이름 순(숫자를 숫자로)을 
   assert.deepEqual(sortHomeDocuments(documents, 'name').map((doc) => doc.fileName), ['가계부.hwp', '보고서 2.hwp', '보고서 10.hwp']);
 });
 
-function recordingIo(relocated: Record<string, string | null> = {}): HealIo & { forgotten: string[]; renamed: [string, string][] } {
+function recordingIo(relocated: Record<string, string | null> = {}): HealIo & {
+  forgotten: string[];
+  updates: [string, { fileName?: string; missingSince?: number | null }][];
+} {
   const io = {
     forgotten: [] as string[],
-    renamed: [] as [string, string][],
+    updates: [] as [string, { fileName?: string; missingSince?: number | null }][],
     relocate: async (row: RecentDoc) => relocated[row.id] ?? null,
     forget: async (row: RecentDoc) => { io.forgotten.push(row.id); },
-    rename: async (row: RecentDoc, fileName: string) => { io.renamed.push([row.id, fileName]); },
+    update: async (row: RecentDoc, patch: { fileName?: string; missingSince?: number | null }) => { io.updates.push([row.id, patch]); },
   };
   return io;
 }
 
-test('지워진 파일은 목록에서 빠지고, 옮겨진 파일은 새 이름으로 남는다', async () => {
+const NOW = 1_000_000_000;
+
+test('처음 못 찾은 파일은 흐리게 남기고, 시간이 지나 다시 확인해도 없을 때만 뺀다', async () => {
   const rows = [
-    recent('deleted', '지운 문서.hwp', 1),
-    recent('moved', '옮긴 문서.hwp', 2),
-    recent('renamed', '옛 이름.hwp', 3),
-    recent('unplugged', '외장 디스크.hwp', 4),
-    recent('unknown', '확인 못함.hwp', 5),
-    recent('browser', '브라우저.hwp', 6),
+    recent('first', '처음 못 찾음.hwp', 1),
+    { ...recent('recent', '방금 못 찾음.hwp', 2), missingSince: NOW - 60_000 },
+    { ...recent('confirmed', '오래 없음.hwp', 3), missingSince: NOW - MISSING_CONFIRM_MS },
+    recent('browser', '브라우저.hwp', 4),
+    recent('unplugged', '외장 디스크.hwp', 5),
+    recent('unknown', '확인 못함.hwp', 6),
   ];
   const presence = new Map<string, DocumentPresence>([
-    ['deleted', { state: 'missing', source: 'desktop' }],
-    ['moved', { state: 'missing', source: 'desktop' }],
-    ['renamed', { state: 'present', fileName: '새 이름.hwp', stamp: '1:1', source: 'desktop' }],
+    ['first', { state: 'missing', source: 'desktop' }],
+    ['recent', { state: 'missing', source: 'desktop' }],
+    ['confirmed', { state: 'missing', source: 'desktop' }],
+    ['browser', { state: 'missing', source: 'handle' }],
     ['unplugged', { state: 'unavailable' }],
     ['unknown', { state: 'unknown' }],
-    ['browser', { state: 'missing', source: 'handle' }],
   ]);
-  const io = recordingIo({ moved: '보관함의 문서.hwp' });
-  const result = await healRecentDocuments(rows, presence, io);
+  const io = recordingIo();
+  const result = await healRecentDocuments(rows, presence, io, NOW);
 
-  assert.deepEqual([...result.removed].sort(), ['browser', 'deleted']);
-  assert.deepEqual([...result.renamed], [['moved', '보관함의 문서.hwp'], ['renamed', '새 이름.hwp']]);
-  assert.deepEqual(io.forgotten.sort(), ['browser', 'deleted']);
-  assert.deepEqual(io.renamed, [['moved', '보관함의 문서.hwp'], ['renamed', '새 이름.hwp']]);
+  assert.deepEqual([...result.removed], ['confirmed']);
+  assert.deepEqual([...result.stale].sort(), ['browser', 'first', 'recent']);
+  assert.deepEqual(io.forgotten, ['confirmed']);
+  // 처음 못 찾은 시각은 처음 한 번만 남긴다.
+  assert.deepEqual(io.updates, [['first', { missingSince: NOW }], ['browser', { missingSince: NOW }]]);
 });
 
-test('옮겨진 파일은 근처 후보 중 내용 digest 가 같은 파일로만 따라간다', async () => {
-  const row = recent('a', '보고서.hwp', 1, 'blake3:same');
-  const relocations: string[] = [];
-  const io = {
-    search: async () => [{ probeId: 'p1', fileName: '보고서.hwp' }, { probeId: 'p2', fileName: '보고서 사본.hwp' }],
-    read: async (probeId: string) => new TextEncoder().encode(probeId === 'p2' ? 'same' : 'other'),
-    digest: (bytes: Uint8Array) => `blake3:${new TextDecoder().decode(bytes)}`,
-    relocate: async (_documentId: string, probeId: string) => { relocations.push(probeId); return '보고서 사본.hwp'; },
-  };
-  assert.equal(await relocateByDigest(row, io), '보고서 사본.hwp');
-  assert.deepEqual(relocations, ['p2'], '내용이 다른 후보는 새 위치로 삼지 않는다');
+test('옮겨지거나 이름이 바뀐 파일은 새 이름으로 남고 못 찾은 표시가 지워진다', async () => {
+  const rows = [
+    { ...recent('moved', '옮긴 문서.hwp', 1), missingSince: NOW - MISSING_CONFIRM_MS * 2 },
+    recent('renamed', '옛 이름.hwp', 2),
+    { ...recent('back', '돌아옴.hwp', 3), missingSince: NOW - 1000 },
+  ];
+  const presence = new Map<string, DocumentPresence>([
+    ['moved', { state: 'missing', source: 'desktop' }],
+    ['renamed', { state: 'present', fileName: '새 이름.hwp', stamp: '1:1', source: 'desktop' }],
+    ['back', { state: 'present', fileName: '돌아옴.hwp', stamp: '1:1', source: 'handle' }],
+  ]);
+  const io = recordingIo({ moved: '보관함의 문서.hwp' });
+  const result = await healRecentDocuments(rows, presence, io, NOW);
 
-  const unmatched = { ...io, read: async () => new TextEncoder().encode('other') };
-  assert.equal(await relocateByDigest(row, unmatched), null);
-  assert.equal(await relocateByDigest({ ...row, sourceDigest: 'sha256:x' }, io), null, 'blake3 digest 가 없으면 찾지 않는다');
+  assert.equal(result.removed.size, 0, '옮겨진 파일은 오래 못 찾았어도 지우지 않는다');
+  assert.deepEqual([...result.renamed], [['moved', '보관함의 문서.hwp'], ['renamed', '새 이름.hwp']]);
+  assert.deepEqual(io.updates, [
+    ['moved', { fileName: '보관함의 문서.hwp', missingSince: null }],
+    ['renamed', { fileName: '새 이름.hwp', missingSince: null }],
+    ['back', { missingSince: null }],
+  ]);
+});
+
+test('겹친 정리는 앞 정리가 끝난 뒤에 차례로 돈다', async () => {
+  const order: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const slow: HealIo = {
+    relocate: async () => { order.push('first:start'); await gate; order.push('first:end'); return null; },
+    forget: async () => {},
+    update: async () => {},
+  };
+  const fast: HealIo = {
+    relocate: async () => { order.push('second'); return null; },
+    forget: async () => {},
+    update: async () => {},
+  };
+  const row = recent('a', '보고서.hwp', 1);
+  const missing = async () => new Map<string, DocumentPresence>([[row.id, { state: 'missing', source: 'desktop' }]]);
+  const first = inspectAndHeal([row], slow, missing);
+  const second = inspectAndHeal([row], fast, missing);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(order, ['first:start'], '앞 정리가 끝나기 전에는 다음 정리가 옮겨진 곳을 찾지 않는다');
+  release();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ['first:start', 'first:end', 'second']);
 });

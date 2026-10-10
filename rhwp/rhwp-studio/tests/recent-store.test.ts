@@ -284,3 +284,15 @@ test('옮겨진 파일의 새 이름은 열람 순서를 바꾸지 않고 기록
   assert.deepEqual(docs.map((doc) => doc.fileName), ['최신.hwp', '새 이름.hwp']);
   assert.equal(await updateRecentDoc('없는-기록', { fileName: 'x.hwp' }), null);
 });
+
+test('못 찾은 표시는 다시 찾거나 다시 열면 지워진다', async () => {
+  await clearRecentDocs();
+  const row = await addRecentDoc({ sourceDigest: 'blake3:gone', fileName: '없어진 문서.hwp', sourceFormat: 'hwp' });
+  assert.equal((await updateRecentDoc(row.id, { missingSince: 1234 }))?.missingSince, 1234);
+  assert.equal((await listRecentDocs())[0]?.missingSince, 1234);
+  assert.equal((await updateRecentDoc(row.id, { missingSince: null }))?.missingSince, undefined);
+  await updateRecentDoc(row.id, { missingSince: 5678 });
+  const reopened = await addRecentDoc({ sourceDigest: 'blake3:gone', fileName: '없어진 문서.hwp', sourceFormat: 'hwp' });
+  assert.equal(reopened.id, row.id);
+  assert.equal(reopened.missingSince, undefined, '다시 연 문서는 있는 것이다');
+});

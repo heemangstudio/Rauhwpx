@@ -54,6 +54,11 @@ export interface RecentDoc {
    * (`handle` 미존재), 이 경우 자동 재열기는 불가하고 목록/이력 표시에만 쓰인다.
    */
   handle?: FileSystemFileHandleLike;
+  /**
+   * 문서 홈이 파일을 찾지 못한 첫 시각. 한 번 못 찾았다고 바로 지우지 않고, 시간이 지나
+   * 다시 확인해도 없을 때만 목록에서 뺀다. 다시 열거나 찾으면 없어진다.
+   */
+  missingSince?: number;
 }
 
 /** addRecentDoc 입력 (id/openedAt는 내부 생성) */
@@ -142,8 +147,12 @@ function deleteRow(db: IDBDatabase, id: string): Promise<void> {
   return transactionDone(tx);
 }
 
-/** 동일 파일 판정 — 핸들 비교가 불가능할 때만 원본 digest로 폴백한다. */
-async function isSameFile(a: RecentDocInput, existing: RecentDoc): Promise<boolean> {
+/**
+ * 동일 파일 판정 — 핸들 비교가 불가능할 때만 원본 digest로 폴백한다. digest 폴백은 최근
+ * {@link RECENT_MENU_LIMIT}개 안에서만 한다. 오래된 기록까지 내용만으로 맞추면 같은 내용의 다른
+ * 파일(복사본·양식)이 남의 문서 ID를 물려받는다.
+ */
+async function isSameFile(a: RecentDocInput, existing: RecentDoc, allowDigest = true): Promise<boolean> {
   if (a.documentId && a.documentId === existing.documentId) return true;
 
   const ha = a.handle;
@@ -159,7 +168,14 @@ async function isSameFile(a: RecentDocInput, existing: RecentDoc): Promise<boole
       // 권한/브라우저 제약·무응답이면 digest로 폴백한다.
     }
   }
-  return a.sourceDigest === existing.sourceDigest;
+  return allowDigest && a.sourceDigest === existing.sourceDigest;
+}
+
+/** 같은 파일로 보이는 기록(최신순). 핸들 비교는 한꺼번에 해 기록이 많아도 한 번의 대기로 끝난다. */
+async function sameFileMatches(input: RecentDocInput, rows: readonly RecentDoc[]): Promise<RecentDoc[]> {
+  const ordered = [...rows].sort((a, b) => b.openedAt - a.openedAt);
+  const same = await Promise.all(ordered.map((row, index) => isSameFile(input, row, index < RECENT_MENU_LIMIT)));
+  return ordered.filter((_, index) => same[index]);
 }
 
 /** 최신순(openedAt 내림차순)으로 정렬해 상한까지 자른다. */
@@ -182,11 +198,7 @@ export async function addRecentDoc(input: RecentDocInput): Promise<RecentDoc> {
 
   return withDb(
     async (db) => {
-      const rows = await getAllRows(db);
-      const matches: RecentDoc[] = [];
-      for (const row of [...rows].sort((a, b) => b.openedAt - a.openedAt)) {
-        if (await isSameFile(input, row)) matches.push(row);
-      }
+      const matches = await sameFileMatches(input, await getAllRows(db));
 
       const previous = matches[0] ? withLiveHandle(matches[0]) : undefined;
       const entry: RecentDoc = {
@@ -224,11 +236,7 @@ export async function addRecentDoc(input: RecentDocInput): Promise<RecentDoc> {
       return withLiveHandle({ ...stored, ...(entry.handle ? { handle: entry.handle } : {}) });
     },
     async () => {
-      const rows = [...memory.values()].sort((a, b) => b.openedAt - a.openedAt);
-      const matches: RecentDoc[] = [];
-      for (const row of rows) {
-        if (await isSameFile(input, row)) matches.push(row);
-      }
+      const matches = await sameFileMatches(input, [...memory.values()]);
       const previous = matches[0] ? withLiveHandle(matches[0]) : undefined;
       const entry: RecentDoc = {
         id: previous?.id ?? createRecentId(),
@@ -239,8 +247,8 @@ export async function addRecentDoc(input: RecentDocInput): Promise<RecentDoc> {
         openedAt: Date.now(),
         ...(input.handle || previous?.handle ? { handle: input.handle ?? previous?.handle } : {}),
       };
-      for (const [id, row] of memory) {
-        if (id !== entry.id && await isSameFile(input, row)) memory.delete(id);
+      for (const match of matches) {
+        if (match.id !== entry.id) memory.delete(match.id);
       }
       rememberLiveHandle(entry.id, entry.handle);
       memory.set(entry.id, persistableRow(entry));
@@ -263,26 +271,29 @@ export async function listRecentDocs(): Promise<RecentDoc[]> {
 }
 
 /**
- * 기록의 표시 메타를 고친다. 파일이 다른 이름으로 옮겨졌거나 이름을 바꿨을 때 쓴다.
- * 열람 시각과 순서는 그대로 둔다. 없는 기록이면 null.
+ * 기록의 표시 메타를 고친다. 파일이 다른 이름으로 옮겨졌거나 이름을 바꿨을 때, 문서 홈이 파일을
+ * 찾지 못했을 때 쓴다. 열람 시각과 순서는 그대로 두고, 읽기와 쓰기를 한 트랜잭션에서 해 그사이
+ * 들어온 열기 기록을 되돌리지 않는다. 없는 기록이면 null.
  */
 export async function updateRecentDoc(
   id: string,
-  patch: { fileName?: string },
+  patch: { fileName?: string; missingSince?: number | null },
 ): Promise<RecentDoc | null> {
-  const apply = (row: RecentDoc): RecentDoc => ({
-    ...row,
-    ...(patch.fileName ? { fileName: patch.fileName } : {}),
-  });
+  const apply = (row: RecentDoc): RecentDoc => {
+    const next: RecentDoc = { ...row, ...(patch.fileName ? { fileName: patch.fileName } : {}) };
+    if (patch.missingSince === null) delete next.missingSince;
+    else if (patch.missingSince !== undefined) next.missingSince = patch.missingSince;
+    return next;
+  };
   return withDb(
     async (db) => {
-      const row = await requestResult(
-        db.transaction(STORE, 'readonly').objectStore(STORE).get(id) as IDBRequest<RecentDoc | undefined>,
-      );
-      if (!row) return null;
-      const next = apply(row);
-      await putRow(db, persistableRow(next));
-      return withLiveHandle(next);
+      const tx = db.transaction(STORE, 'readwrite');
+      const store = tx.objectStore(STORE);
+      const row = await requestResult(store.get(id) as IDBRequest<RecentDoc | undefined>);
+      const next = row ? apply(row) : null;
+      if (next) store.put(persistableRow(next));
+      await withTimeout(transactionDone(tx), 800, 'recent-update');
+      return next ? withLiveHandle(next) : null;
     },
     async () => {
       const row = memory.get(id);

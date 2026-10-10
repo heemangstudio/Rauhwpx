@@ -1,16 +1,16 @@
 /**
  * 문서 홈이 읽는 바깥 상태: 파일이 아직 있는지, 옮겨졌는지, 첫 쪽 그림, 작업 트리 색.
- * 모두 게으르게 한다. 목록을 먼저 그린 뒤 보이는 항목만 확인하고, 디스크 전체를 훑지 않는다.
+ * 모두 게으르게 한다. 목록을 먼저 그린 뒤 확인하고, 디스크 전체를 훑지 않는다.
+ *
+ * 목록에서 빼는 일은 확실한 증거가 거듭될 때만 한다. 한 번 못 찾으면 "찾을 수 없음"으로
+ * 흐리게 두고, 시간이 지나 다시 확인해도 없을 때 뺀다. 미리보기를 못 그린 것은 증거가 아니다.
  */
 import type { RecentDoc } from '../recent/recent-store.ts';
 import { removeRecentDoc, updateRecentDoc } from '../recent/recent-store.ts';
-import { documentSourceDigest } from '../recent/document-preflight.ts';
 import {
   inspectNativeDocuments,
-  readNativeProbe,
   readRememberedNativeDocument,
   relocateNativeDocument,
-  searchNearbyNativeDocuments,
   type NativeDocumentPresence,
 } from '../desktop-integration.ts';
 import type { VersionGraphStore } from '../versioning/store.ts';
@@ -19,16 +19,16 @@ import { layoutCommitGraph, orderBranchHeadFrontier } from '../versioning/graph-
 import { laneColor } from '../ui/version-lanes.ts';
 import type { HomeWorktreeInput } from './home-model.ts';
 import { deleteThumbnail, readThumbnail, writeThumbnail } from './thumbnail-cache.ts';
-import { renderThumbnailFromBytes, THUMBNAIL_SOURCE_MAX_BYTES, ThumbnailParseError } from './thumbnail-render.ts';
+import { renderThumbnailFromBytes, THUMBNAIL_SOURCE_MAX_BYTES } from './thumbnail-render.ts';
+
+/** 못 찾은 파일을 목록에서 빼기 전에 기다리는 시간. 저장 중 교체·잠깐 꺼낸 디스크를 넘긴다. */
+export const MISSING_CONFIRM_MS = 10 * 60 * 1000;
 
 /** 목록의 한 문서가 지금 디스크에 어떻게 있는지. stamp 는 미리보기를 다시 그릴지 가린다. */
 export type DocumentPresence =
   | { state: 'present'; fileName: string; stamp: string; source: 'desktop' | 'handle' }
   | { state: 'missing'; source: 'desktop' | 'handle' }
   | { state: 'unavailable' | 'unknown' };
-
-const isHandleMissing = (error: unknown) => error instanceof DOMException
-  && (error.name === 'NotFoundError' || error.name === 'NotReadableError');
 
 /** 브라우저 파일 핸들은 이미 읽기 권한이 있을 때만 확인한다. 권한 창을 띄우지 않는다. */
 async function inspectHandle(row: RecentDoc): Promise<{ presence: DocumentPresence; file?: File }> {
@@ -44,7 +44,9 @@ async function inspectHandle(row: RecentDoc): Promise<{ presence: DocumentPresen
       file,
     };
   } catch (error) {
-    return { presence: isHandleMissing(error) ? { state: 'missing', source: 'handle' } : { state: 'unknown' } };
+    // 파일을 읽지 못하는 것(잠김·꺼낸 디스크)은 없어진 것과 다르다. NotFoundError 만 없음으로 본다.
+    const missing = error instanceof DOMException && error.name === 'NotFoundError';
+    return { presence: missing ? { state: 'missing', source: 'handle' } : { state: 'unknown' } };
   }
 }
 
@@ -57,7 +59,7 @@ function fromNative(presence: NativeDocumentPresence | undefined): DocumentPrese
   return presence.state === 'unavailable' ? { state: 'unavailable' } : null;
 }
 
-/** 목록 전체의 상태를 한 번에 본다. 데스크톱은 경로를 stat 만 하고, 브라우저는 허락된 핸들만 연다. */
+/** 목록 전체의 상태를 본다. 데스크톱은 메인이 경로를 stat 만 하고, 브라우저는 허락된 핸들만 연다. */
 export async function inspectRecentDocuments(rows: readonly RecentDoc[]): Promise<Map<string, DocumentPresence>> {
   const native = await inspectNativeDocuments(rows.map((row) => row.documentId));
   const result = new Map<string, DocumentPresence>();
@@ -68,43 +70,54 @@ export async function inspectRecentDocuments(rows: readonly RecentDoc[]): Promis
 }
 
 export interface HealIo {
-  /** 옮겨진 파일을 찾아 새 위치를 기억시킨다. 찾았으면 새 파일 이름. */
+  /** 옮겨진 파일을 찾아 새 위치를 기억시킨다(데스크톱 메인이 내용으로 맞춘다). 찾았으면 새 이름. */
   relocate(row: RecentDoc): Promise<string | null>;
   forget(row: RecentDoc): Promise<void>;
-  rename(row: RecentDoc, fileName: string): Promise<void>;
+  update(row: RecentDoc, patch: { fileName?: string; missingSince?: number | null }): Promise<void>;
 }
 
 export interface HealResult {
   removed: Set<string>;
   renamed: Map<string, string>;
+  /** 이번에 못 찾았지만 아직 빼지 않은 기록. 화면은 흐리게 둔다. */
+  stale: Set<string>;
 }
 
+const emptyHeal = (): HealResult => ({ removed: new Set(), renamed: new Map(), stale: new Set() });
+
 /**
- * 확인 결과로 목록을 고친다. 지워진 파일은 빼고, 옮겨지거나 이름이 바뀐 파일은 새 이름으로
- * 남긴다. 닿지 않는 위치(꺼낸 디스크)와 확인할 수 없는 기록은 그대로 둔다.
+ * 확인 결과로 목록을 고친다. 옮겨지거나 이름이 바뀐 파일은 새 이름으로 남긴다. 없어진 파일은
+ * 처음 못 찾은 시각을 남기고, {@link MISSING_CONFIRM_MS} 뒤에도 없을 때만 뺀다. 닿지 않는
+ * 위치(꺼낸 디스크)와 확인할 수 없는 기록은 그대로 둔다.
  */
 export async function healRecentDocuments(
   rows: readonly RecentDoc[],
   presence: ReadonlyMap<string, DocumentPresence>,
   io: HealIo,
+  now = Date.now(),
 ): Promise<HealResult> {
-  const result: HealResult = { removed: new Set(), renamed: new Map() };
+  const result = emptyHeal();
   for (const row of rows) {
     const state = presence.get(row.id);
     if (!state) continue;
     try {
-      if (state.state === 'present' && state.fileName !== row.fileName) {
-        await io.rename(row, state.fileName);
-        result.renamed.set(row.id, state.fileName);
+      if (state.state === 'present') {
+        const renamed = state.fileName !== row.fileName;
+        if (renamed || row.missingSince !== undefined) {
+          await io.update(row, { ...(renamed ? { fileName: state.fileName } : {}), missingSince: null });
+        }
+        if (renamed) result.renamed.set(row.id, state.fileName);
       } else if (state.state === 'missing') {
-        // 옮겨진 곳 찾기는 데스크톱만 할 수 있다. 하나씩 차례로 찾는다.
         const moved = state.source === 'desktop' ? await io.relocate(row) : null;
         if (moved) {
-          if (moved !== row.fileName) await io.rename(row, moved);
+          await io.update(row, { fileName: moved, missingSince: null });
           result.renamed.set(row.id, moved);
-        } else {
+        } else if (row.missingSince !== undefined && now - row.missingSince >= MISSING_CONFIRM_MS) {
           await io.forget(row);
           result.removed.add(row.id);
+        } else {
+          if (row.missingSince === undefined) await io.update(row, { missingSince: now });
+          result.stale.add(row.id);
         }
       }
     } catch (error) {
@@ -114,61 +127,49 @@ export async function healRecentDocuments(
   return result;
 }
 
-export interface RelocateIo {
-  search(documentId: string, basenameHint: string): Promise<readonly { probeId: string; fileName: string }[] | null>;
-  read(probeId: string): Promise<Uint8Array | null>;
-  digest(bytes: Uint8Array): string;
-  relocate(documentId: string, probeId: string): Promise<string | null>;
-}
-
-/** 근처 폴더의 후보 중 내용이 기록과 같은 파일을 이 문서의 새 위치로 삼는다. */
-export async function relocateByDigest(row: RecentDoc, io: RelocateIo): Promise<string | null> {
-  if (!row.sourceDigest.startsWith('blake3:')) return null;
-  const probes = await io.search(row.documentId, row.fileName);
-  for (const probe of probes ?? []) {
-    let bytes: Uint8Array | null;
-    try {
-      bytes = await io.read(probe.probeId);
-    } catch {
-      continue;
-    }
-    if (bytes && io.digest(bytes) === row.sourceDigest) return io.relocate(row.documentId, probe.probeId);
-  }
-  return null;
-}
-
-const nativeRelocateIo: RelocateIo = {
-  search: (documentId, basenameHint) => searchNearbyNativeDocuments(documentId, { basenameHint }),
-  read: async (probeId) => (await readNativeProbe(probeId))?.bytes ?? null,
-  digest: documentSourceDigest,
-  relocate: relocateNativeDocument,
-};
+export const thumbnailKey = (documentId: string) => `document:${documentId}`;
 
 export const defaultHealIo: HealIo = {
-  relocate: (row) => relocateByDigest(row, nativeRelocateIo),
+  relocate: (row) => relocateNativeDocument(row.documentId).catch(() => null),
   forget: async (row) => {
     await removeRecentDoc(row.id);
     await deleteThumbnail(thumbnailKey(row.documentId)).catch(() => {});
   },
-  rename: async (row, fileName) => { await updateRecentDoc(row.id, { fileName }); },
+  update: async (row, patch) => { await updateRecentDoc(row.id, patch); },
 };
 
-export const thumbnailKey = (documentId: string) => `document:${documentId}`;
+let healing: Promise<unknown> = Promise.resolve();
 
-export type ThumbnailResult = { blob: Blob | null; corrupt?: boolean };
+/**
+ * 확인과 정리를 한 번에 하나만 돌린다. 홈을 연달아 열어도 다음 정리는 앞 정리가 끝난 뒤에
+ * 시작한다 — 두 정리가 같은 파일을 두고 엇갈려 지우는 일이 없다.
+ */
+export function inspectAndHeal(
+  rows: readonly RecentDoc[],
+  io: HealIo = defaultHealIo,
+  inspect: (rows: readonly RecentDoc[]) => Promise<Map<string, DocumentPresence>> = inspectRecentDocuments,
+): Promise<{ presence: Map<string, DocumentPresence>; healed: HealResult }> {
+  const run = healing.then(async () => {
+    const presence = await inspect(rows).catch(() => new Map<string, DocumentPresence>());
+    const healed = await healRecentDocuments(rows, presence, io);
+    return { presence, healed };
+  });
+  healing = run.catch(() => {});
+  return run;
+}
 
 const canRenderThumbnail = (fileName: string) => /\.(hwpx?|hml)$/i.test(fileName);
 
 /**
  * 닫힌 문서의 첫 쪽 그림. 저장한 그림의 stamp 가 파일과 같으면 그대로 쓰고, 다르면 파일을 읽어
- * 다시 그린다. 파일에 닿을 수 없으면 마지막으로 그린 그림을 쓴다. 엔진이 읽지 못한 파일은 corrupt.
+ * 다시 그린다. 파일에 닿을 수 없거나 그리지 못하면 마지막으로 그린 그림(없으면 null)을 쓴다.
  */
-export async function documentThumbnail(row: RecentDoc, presence: DocumentPresence | undefined): Promise<ThumbnailResult> {
+export async function documentThumbnail(row: RecentDoc, presence: DocumentPresence | undefined): Promise<Blob | null> {
   const key = thumbnailKey(row.documentId);
   const cached = await readThumbnail(key).catch(() => null);
-  if (presence?.state !== 'present') return { blob: cached?.blob ?? null };
-  if (cached?.stamp === presence.stamp) return { blob: cached.blob };
-  if (!canRenderThumbnail(presence.fileName)) return { blob: cached?.blob ?? null };
+  if (presence?.state !== 'present') return cached?.blob ?? null;
+  if (cached?.stamp === presence.stamp) return cached.blob;
+  if (!canRenderThumbnail(presence.fileName)) return cached?.blob ?? null;
 
   let bytes: Uint8Array | null = null;
   try {
@@ -181,15 +182,10 @@ export async function documentThumbnail(row: RecentDoc, presence: DocumentPresen
   } catch {
     bytes = null;
   }
-  if (!bytes) return { blob: cached?.blob ?? null };
-  try {
-    const blob = await renderThumbnailFromBytes(bytes, presence.fileName);
-    if (blob) await writeThumbnail(key, presence.stamp, blob).catch(() => {});
-    return { blob: blob ?? cached?.blob ?? null };
-  } catch (error) {
-    if (error instanceof ThumbnailParseError) return { blob: null, corrupt: true };
-    return { blob: cached?.blob ?? null };
-  }
+  if (!bytes) return cached?.blob ?? null;
+  const blob = await renderThumbnailFromBytes(bytes).catch(() => null);
+  if (blob) await writeThumbnail(key, presence.stamp, blob).catch(() => {});
+  return blob ?? cached?.blob ?? null;
 }
 
 /** 열린 문서에서 바로 그린 그림을 저장한다. 파일 stamp 와 다르게 두어 닫은 뒤에는 파일로 다시 그린다. */
@@ -199,15 +195,16 @@ export async function rememberLiveThumbnail(documentId: string, blob: Blob): Pro
 
 /** 템플릿 그림. 개정 번호가 같으면 다시 받지 않는다. */
 export async function templateThumbnail(
-  template: { id: string; name: string; format: string; revision: number; contentHash: string },
+  template: { id: string; revision: number; contentHash: string; size?: number },
   fetchBytes: () => Promise<Uint8Array>,
 ): Promise<Blob | null> {
   const key = `template:${template.id}`;
   const stamp = `${template.revision}:${template.contentHash}`;
   const cached = await readThumbnail(key).catch(() => null);
   if (cached?.stamp === stamp) return cached.blob;
+  if ((template.size ?? 0) > THUMBNAIL_SOURCE_MAX_BYTES) return cached?.blob ?? null;
   try {
-    const blob = await renderThumbnailFromBytes(await fetchBytes(), `${template.name}.${template.format}`);
+    const blob = await renderThumbnailFromBytes(await fetchBytes());
     if (blob) await writeThumbnail(key, stamp, blob).catch(() => {});
     return blob ?? cached?.blob ?? null;
   } catch {
