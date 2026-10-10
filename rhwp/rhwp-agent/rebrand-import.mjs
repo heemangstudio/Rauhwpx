@@ -403,6 +403,70 @@ export async function mergeWritingStyle(source, target, { now = Date.now } = {})
   return { changed: true, reason: replaced ? 'source-newer' : 'canonical-missing' };
 }
 
+// ── 잠금 ───────────────────────────────────────────────────────────────────
+
+const IMPORT_LOCK_DIR = '.rebrand-import.lock';
+const IMPORT_LOCK_STALE_MS = 2 * 60 * 1000;
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+async function readLockOwner(lock) {
+  try {
+    return JSON.parse(await fs.readFile(path.join(lock, 'owner.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function lockIsStale(lock, owner, now) {
+  if (owner && Number.isSafeInteger(owner.pid) && Number.isFinite(owner.at)) {
+    return !processAlive(owner.pid) || now - owner.at > IMPORT_LOCK_STALE_MS;
+  }
+  // 주인 기록을 쓰기 전에 멈춘 잠금이다. 막 만든 잠금일 수 있으니 한동안은 그대로 둔다.
+  const stat = await fs.stat(lock).catch(() => null);
+  return !stat || now - stat.mtimeMs > IMPORT_LOCK_STALE_MS;
+}
+
+/**
+ * 허브 여럿이 동시에 떠도 가져오기는 한 번에 하나만 돈다. `timeoutMs` 안에 잠금을 못 얻으면
+ * null 이고, 그 허브는 이번에 가져오기를 건너뛴다.
+ */
+export async function acquireImportLock(baseDir, { timeoutMs = 10_000, now = Date.now } = {}) {
+  const lock = path.join(baseDir, IMPORT_LOCK_DIR);
+  await fs.mkdir(baseDir, { recursive: true });
+  const deadline = now() + timeoutMs;
+  const token = randomUUID();
+  for (;;) {
+    try {
+      await fs.mkdir(lock);
+      await fs.writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, at: now(), token }));
+      return async () => {
+        if ((await readLockOwner(lock))?.token === token) await fs.rm(lock, { recursive: true, force: true });
+      };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+    const owner = await readLockOwner(lock);
+    if (await lockIsStale(lock, owner, now())) {
+      // 지우기 직전에 다른 허브가 새로 잡았다면 그 잠금은 건드리지 않는다.
+      const again = await readLockOwner(lock);
+      if (JSON.stringify(again) === JSON.stringify(owner)) {
+        await fs.rm(lock, { recursive: true, force: true }).catch(() => {});
+      }
+      continue;
+    }
+    if (now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 // ── 진입점 ─────────────────────────────────────────────────────────────────
 
 const ROOTS = [
@@ -435,11 +499,25 @@ export async function importRebrandedHubData({
   home = os.homedir(),
   log = () => {},
   validators = null,
+  lockTimeoutMs = 10_000,
 } = {}) {
   const base = hubDataBase(env, platform, home);
   const sourceBase = path.join(base, REBRANDED_DATA_DIR);
   const targetBase = path.join(base, CANONICAL_DATA_DIR);
   if (!await exists(sourceBase)) return {};
+  const release = await acquireImportLock(targetBase, { timeoutMs: lockTimeoutMs });
+  if (!release) {
+    log('2.0.11 data import skipped: another hub is importing');
+    return {};
+  }
+  try {
+    return await importUnderLock({ env, sourceBase, targetBase, log, validators });
+  } finally {
+    await release().catch(() => {});
+  }
+}
+
+async function importUnderLock({ env, sourceBase, targetBase, log, validators }) {
   const markerPath = path.join(targetBase, REBRAND_IMPORT_MARKER);
   let marker = {};
   try {

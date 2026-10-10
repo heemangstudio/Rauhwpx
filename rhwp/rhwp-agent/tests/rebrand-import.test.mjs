@@ -115,3 +115,21 @@ test('a folder the user pointed elsewhere is left alone', async (t) => {
   await importRebrandedHubData({ env: { ...data.env, RHWP_SKILLS_DIR: '/elsewhere' }, home: data.home });
   await assert.rejects(fs.stat(data.target('skills')), { code: 'ENOENT' });
 });
+
+test('two hubs starting together import the 2.0.11 data once', async (t) => {
+  const data = await fixture(t);
+  for (let index = 0; index < 20; index += 1) {
+    await write(path.join(data.source('skills'), `skill-${index}`, 'SKILL.md'), `---\nname: skill-${index}\n---\n`);
+  }
+  await write(path.join(data.source('usage'), 'events.jsonl'), '{"ts":2,"agent":"codex"}\n');
+
+  const results = await Promise.all([data.run(), data.run(), data.run()]);
+
+  for (const result of results) {
+    for (const value of Object.values(result)) assert.equal(value.error, undefined, value.error);
+  }
+  const added = results.flatMap((result) => result.skills?.added ?? []);
+  assert.equal(added.length, 20, 'each 2.0.11 skill is copied by exactly one hub');
+  assert.equal((await fs.readdir(data.target('skills'))).filter((name) => !name.startsWith('.')).length, 20);
+  await assert.rejects(fs.stat(path.join(path.dirname(data.target('skills')), '.rebrand-import.lock')), { code: 'ENOENT' });
+});
