@@ -44,6 +44,17 @@ export function macPasskeyCapability(inspection) {
   return capability;
 }
 
+let passkeyCapabilityPromise;
+let passkeyCapabilityExpiresAt = 0;
+export async function inspectMacPasskeyCapability({ fresh = false } = {}) {
+  // 상태 조회는 동시에 하나만 확인한다. 실제 실행 경로는 별도로 서명을 다시 검증한다.
+  if (fresh || !passkeyCapabilityPromise || Date.now() >= passkeyCapabilityExpiresAt) {
+    passkeyCapabilityExpiresAt = Date.now() + 15_000;
+    passkeyCapabilityPromise = inspectMacPasskeyBrowser().then(macPasskeyCapability);
+  }
+  return { ...await passkeyCapabilityPromise };
+}
+
 async function managedProvider(dataDir) {
   try {
     const file = path.join(dataDir, 'browser', 'managed-provider.json');
@@ -98,9 +109,9 @@ async function disableProfilePasswordSaving(profileDir) {
   await fs.rename(temp, file);
 }
 
-export async function inspectOwnedBrowserRuntime({ dataDir } = {}) {
+export async function inspectOwnedBrowserRuntime({ dataDir, freshPasskeys = false } = {}) {
   configureBrowserCache(dataDir);
-  const passkeys = macPasskeyCapability(await inspectMacPasskeyBrowser());
+  const passkeys = await inspectMacPasskeyCapability({ fresh: freshPasskeys });
   try {
     if (dataDir && await managedProvider(dataDir) === 'chrome') {
       return passkeys.supported ? { state: 'ready', installed: true, message: 'Google Chrome is ready.', passkeys }
@@ -117,6 +128,11 @@ export async function inspectOwnedBrowserRuntime({ dataDir } = {}) {
 /** Uses the locked Playwright package's matching browser revision. No shell or global npx. */
 export async function installOwnedBrowserRuntime({ dataDir, onProgress = () => {}, timeoutMs = 180_000 } = {}) {
   configureBrowserCache(dataDir);
+  if (dataDir && await managedProvider(dataDir) === 'chrome') {
+    const readiness = await inspectOwnedBrowserRuntime({ dataDir, freshPasskeys: true });
+    if (!readiness.installed) throw new OwnedBrowserError('BROWSER_MAC_PASSKEY_UNAVAILABLE', readiness.message, true);
+    return readiness;
+  }
   await playwrightModule();
   const cli = path.join(path.dirname(fileURLToPath(import.meta.resolve('playwright/package.json'))), 'cli.js');
   await new Promise((resolve, reject) => {
