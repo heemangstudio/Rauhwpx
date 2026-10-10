@@ -8,10 +8,32 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
     const button = [...document.querySelectorAll('#ag-settings-pane-browser button')].find(node => node.textContent === label);
     if (!button) throw new Error(`Missing button ${label}`); button.click();
   }, text);
+  const independentTabs = await page.evaluate(async () => {
+    const { createBrowserSettingsPane } = await import('/src/ui/agent-sidebar/browser-settings.ts');
+    const options = { request: async () => ({}), submit: async () => ({}), isConnected: () => false };
+    const first = createBrowserSettingsPane(options); const second = createBrowserSettingsPane(options);
+    document.body.append(first.element, second.element);
+    const selectedTab = first.element.querySelector('[role=tab][aria-selected=true]');
+    selectedTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    const roots = [first.element, second.element];
+    const ids = roots.flatMap(root => [...root.querySelectorAll('[id]')].map(node => node.id));
+    const result = {
+      unique: ids.length === new Set(ids).size,
+      linked: roots.every(root => {
+        const panel = root.querySelector('[role=tabpanel]'); const tab = root.querySelector('[role=tab][aria-selected=true]');
+        return tab.getAttribute('aria-controls') === panel.id && panel.getAttribute('aria-labelledby') === tab.id;
+      }),
+      independent: first.element.querySelector('[role=tab][aria-selected=true]').textContent === '승인된 권한'
+        && second.element.querySelector('[role=tab][aria-selected=true]').textContent === '계정',
+    };
+    first.dispose(); second.dispose(); return result;
+  });
+  assert.deepEqual(independentTabs, { unique: true, linked: true, independent: true }, 'coexisting panes keep independent keyboard navigation and accessibility references');
   const before = await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent);
   await click('계정 추가');
   await page.waitForSelector('.ag-browser-account-form');
   assert.equal(await page.$eval('.ag-browser-account-form input[type=password]', input => input.type), 'password');
+  assert.equal(await page.$$('.ag-browser-account-option').then(rows => rows.length), 1, 'account list stays available while adding an account');
   await page.evaluate(() => {
     const inputs = [...document.querySelectorAll('.ag-browser-account-form input')];
     inputs[0].value = 'https://example.com/path'; inputs[2].value = '연구 계정'; inputs[3].value = 'researcher'; inputs[4].value = 'fixture-private-password';
@@ -41,17 +63,21 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   assert.equal(savedSession.hasPassword, false);
   assert.deepEqual(savedSession.origins, ['https://accounts.google.com', 'https://www.google.com', 'https://docs.google.com', 'https://drive.google.com']);
   await page.waitForFunction(() => {
-    const rows = [...document.querySelectorAll('.ag-browser-row')];
-    const chosen = rows.find(row => row.textContent.includes('Google 새 로그인'));
-    const other = rows.find(row => row.textContent.includes('Google 연구'));
-    return [...chosen.querySelectorAll('button')].find(button => button.textContent === '로그인 확인')?.disabled === false
-      && [...other.querySelectorAll('button')].find(button => button.textContent === '로그인 확인')?.disabled === true;
+    const chosen = document.querySelector('.ag-browser-account-detail');
+    return chosen?.textContent.includes('Google 새 로그인')
+      && [...chosen.querySelectorAll('button')].find(button => button.textContent === '로그인 확인')?.disabled === false;
   });
+  const chooseAccount = async (id) => page.evaluate((accountId) => {
+    [...document.querySelectorAll('.ag-browser-account-option')].find(button => button.dataset.accountId === accountId).click();
+  }, id);
+  await chooseAccount('google');
+  assert.equal(await page.evaluate(() => [...document.querySelectorAll('.ag-browser-account-detail button')].find(button => button.textContent === '로그인 확인').disabled), true, 'another account cannot confirm the pending login');
+  await chooseAccount(savedSession.id);
+  await click('새로고침');
+  await page.waitForFunction((id) => document.querySelector('.ag-browser-account-detail')?.dataset.accountId === id && !document.querySelector('.ag-browser-message')?.textContent.includes('불러오는'), {}, savedSession.id);
+  assert.equal(await page.$eval('.ag-browser-account-option[aria-pressed=true]', button => button.dataset.accountId), savedSession.id, 'refresh preserves selected account');
   if (screenshot) await screenshot('browser-settings-sign-in-pending');
-  await page.evaluate(() => {
-    const row = [...document.querySelectorAll('.ag-browser-row')].find(row => row.textContent.includes('Google 새 로그인'));
-    [...row.querySelectorAll('button')].find(button => button.textContent === '로그인 확인').click();
-  });
+  await click('로그인 확인');
   await page.waitForFunction(() => window.sidebarPreview.snapshot().browser.accounts.find(account => account.label === 'Google 새 로그인')?.sessionStatus === 'authenticated');
   const blocked = await page.evaluate(async () => {
     try { await window.sidebarPreview.bridge.requestBrowser('sign-in', { url: 'https://accounts.google.com/' }); return false; }
@@ -59,6 +85,25 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   });
   assert.equal(blocked, true, 'a URL-only sign-in cannot open an unbound shared profile');
   if (screenshot) await screenshot('browser-settings-sign-in');
+
+  await click('사용 승인 철회');
+  await page.waitForFunction((id) => window.sidebarPreview.snapshot().browser.accounts.find(account => account.id === id)?.agentReuseApproved === false, {}, savedSession.id);
+  await page.waitForFunction(() => [...document.querySelectorAll('.ag-browser-account-detail button')].find(button => button.textContent === '사용 허용'));
+  assert.equal(await page.evaluate(() => [...document.querySelectorAll('.ag-browser-account-detail button')].find(button => button.textContent === '로그인 열기').disabled), true, 'revoked account cannot open sign-in');
+  await click('사용 허용');
+  await page.waitForFunction((id) => window.sidebarPreview.snapshot().browser.accounts.find(account => account.id === id)?.agentReuseApproved === true, {}, savedSession.id);
+  await chooseAccount('google');
+  await click('비밀번호 변경');
+  await page.waitForSelector('.ag-browser-account-form');
+  await page.$eval('.ag-browser-account-form input[type=password]', input => { input.value = 'cancelled-private-password'; });
+  await chooseAccount(savedSession.id);
+  assert.equal(await page.$('.ag-browser-account-form'), null, 'changing account discards credential form');
+  assert.equal(await page.evaluate(() => JSON.stringify(window.sidebarPreview.snapshot()).includes('cancelled-private-password')), false);
+  await chooseAccount('google');
+  await click('계정 삭제');
+  await page.waitForFunction(() => !window.sidebarPreview.snapshot().browser.accounts.some(account => account.id === 'google'));
+  await page.waitForFunction(() => document.querySelector('.ag-browser-account-detail')?.dataset.accountId !== 'google');
+  assert.equal(await page.$$('.ag-browser-account-detail').then(rows => rows.length), 1, 'deleting selection shows another saved account');
 
   await click('승인된 권한');
   await page.waitForSelector('.ag-browser-settings-body .ag-browser-check input');
