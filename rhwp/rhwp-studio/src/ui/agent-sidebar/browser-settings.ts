@@ -176,7 +176,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const details = section(account.label || account.origin); details.classList.add('ag-browser-account-detail'); details.dataset.accountId = account.id;
       row('사이트 주소', account.origin, details);
       row('로그인 상태', sessionLabel(account), details);
-      if (account.stableIdentity) row('로그인 아이디', account.stableIdentity, details);
+      if (account.stableIdentity && account.stableIdentity !== account.id) row('로그인 아이디', account.stableIdentity, details);
       row('사용 가능한 사이트', (account.origins ?? [account.origin]).join(' · '), details);
       const loginActions = row('로그인', '별도 창에서 로그인한 뒤 로그인 확인을 눌러 주세요.', details);
       const login = button('로그인 열기', () => void signIn(account)); login.disabled = busy || Boolean(signInState) || !account.agentReuseApproved || (account.profileId !== undefined && account.profileId !== 'default'); loginActions.append(login);
