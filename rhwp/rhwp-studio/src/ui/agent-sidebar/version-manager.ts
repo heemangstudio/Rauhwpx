@@ -146,10 +146,13 @@ export interface VersionManagerPage {
   element: HTMLElement;
   /** 커밋 전 변경(변경 탭)이 들어갈 자리. 사이드바가 changes drawer 를 여기에 붙인다. */
   changesHost: HTMLElement;
+  /** 변경 탭 맨 위의 에이전트 검토 카드 자리. 집중 화면의 작업 칸에서만 채운다. */
+  reviewHost: HTMLElement;
   /** 커밋 전 변경 수 — 변경 탭 옆 숫자. 0 이면 숨긴다. */
   setChangeCount(count: number): void;
   showTab(tab: VersionTab): void;
-  open(): void;
+  /** focus: false 이면 열어도 초점을 옮기지 않는다. 작업 칸 탭처럼 다른 곳에 붙일 때 쓴다. */
+  open(options?: { focus?: boolean }): void;
   close(): void;
   dispose(): void;
 }
@@ -629,7 +632,9 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   changesEmpty.setAttribute('aria-label', '커밋 전 변경 없음');
   changesEmpty.append(el('pre', 'ag-dot-art', DOT_ART_CLEAN), el('span', '', '깨끗함'));
   const changesHost = el('div', 'ag-versions-changes-host');
-  changesPanel.append(changesEmpty, changesHost);
+  // 검토 카드는 changes drawer 의 검토 자리와 같은 모양을 쓴다.
+  const reviewHost = el('div', 'ag-versions-review-host ag-changes-review-slot');
+  changesPanel.append(reviewHost, changesEmpty, changesHost);
   let changeCount = 0;
   const tabPanels = new Map<VersionTab, HTMLElement>([
     ['changes', changesPanel],
@@ -1387,6 +1392,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   return {
     element: page,
     changesHost,
+    reviewHost,
     setChangeCount(count: number): void {
       changeCount = Math.max(0, count);
       const badge = tabButtons.get('changes')?.querySelector<HTMLElement>('.ag-versions-tab-count');
@@ -1401,11 +1407,11 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       tab = next;
       renderTabs();
     },
-    open(): void {
+    open(options?: { focus?: boolean }): void {
       active = true;
       void controller.refresh();
       render(controller.getState());
-      closeButton.focus();
+      if (options?.focus !== false) closeButton.focus();
     },
     close(): void {
       hideDateTooltip();

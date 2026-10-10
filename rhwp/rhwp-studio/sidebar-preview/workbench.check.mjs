@@ -364,7 +364,12 @@ export async function checkWorkbench({ page, origin, screenshot }) {
   await page.waitForFunction(() => window.sidebarPreview.versions.getState().dirty === false);
   assert.equal(await page.evaluate(() => window.sidebarPreview.versions.getState().commits[0].title), 'Workbench change commit');
   await screenshot('workbench-changes-committed');
+  // 변경 사항 탭은 버전 창 전체를 담는다. 그래프에 새 커밋이 보이고 집중 화면은 그대로다.
+  await page.evaluate(selector => [...document.querySelectorAll(`${selector} .ag-versions-tab`)].find(tab => tab.textContent.startsWith('그래프')).click(), panel);
+  await page.waitForFunction(selector => document.querySelector(`${selector} .ag-version-row .ag-version-title`)?.textContent === 'Workbench change commit', {}, panel);
+  assert.equal(await page.$eval('.ag-root', node => node.classList.contains('ag-fullscreen')), true);
+  await screenshot('workbench-changes-graph');
   return { layouts, boardPersistence: true, boardPointerDrag: true, pdfTabReuse: true, pdfZoomRetained: true, pdfPageRetained: true, clipReusesSourceTab: true,
     noteDraftRetained: true, dirtyCloseCancellation: true, keyboardCloseFocus: true, directResourceCloseFallback: true, panelToggleAndLauncher: true, compactBoardSections: true, malformedPdfRetry: true,
-    taskFailureAndCancellation: true, draftTaskIsolation: true, changeReviewAndCommit: true };
+    taskFailureAndCancellation: true, draftTaskIsolation: true, changeReviewAndCommit: true, versionManagerInPanel: true };
 }

@@ -860,7 +860,10 @@ export function createChangesDrawer(options: ChangesDrawerOptions): ChangesDrawe
     confirmDiscard.disabled = locked;
     message.disabled = locked;
     for (const button of historyList.querySelectorAll<HTMLButtonElement>('.ag-changes-secondary')) button.disabled = locked;
-    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-navigate-jump]')) button.disabled = locked;
+    // 커밋 전 변경 목록은 버전 창에 붙어 drawer 밖에 있을 수 있다.
+    for (const scope of [root, workingSection]) {
+      for (const button of scope.querySelectorAll<HTMLButtonElement>('[data-navigate-jump]')) button.disabled = locked;
+    }
   }
 
   function setOpen(next: boolean): void {

@@ -18,7 +18,7 @@ The test starts its own Studio (Vite), an authenticated local hub and the built 
 
 ## Fixture-backed production sidebar
 
-`sidebar-preview/workbench.check.mjs` runs inside `npm run test:sidebar` with local project and provider fixtures and the production UI.
+`sidebar-preview/workbench.check.mjs` uses local project and provider fixtures with the production UI. Run it with `node sidebar-preview/check.mjs workbench` from `rhwp/rhwp-studio`; `changes` runs the Changes tab check.
 
 - Normal sidebar: the workbench navigation, panel and tab strip stay hidden, and leaving Agent Focus restores the original sidebar size and the unsent draft.
 - Layout: every view at 1440, 1280 and 840 px in light and dark themes (`focus-workbench-*`). Measured bounds are in `results.json`.
@@ -28,4 +28,4 @@ The test starts its own Studio (Vite), an authenticated local hub and the built 
 - Board: below 720 px the board becomes a compact list. Columns stack as foldable sections with one-line rows and tag dots, and no width overflows horizontally. Keyboard and pointer moves persist, a failed write rolls back, and moving a card into a folded section unfolds it (`workbench-board-*`).
 - Documents: PDF tabs are reused per file, keep zoom and page, and a source clip reuses its PDF tab. Note drafts survive tab switches, and closing a dirty note asks first. A malformed PDF shows a retry that recovers (`workbench-document-*`).
 - Subagents: streamed task records, failures, filters and stop are shown; a new draft chat starts with no tasks (`workbench-agents-*`).
-- Changes: pending review and commit run from the panel, and the tab head carries the undo button for approved changes. The same review card stays in the changes drawer after the panel closes (`workbench-changes-*`). `sidebar-preview/changes.check.mjs` covers undo, history, commit and discard through this tab.
+- Changes: the tab hosts the full version manager without leaving Agent Focus. 변경 holds the pending agent review, diff and commit form. 그래프 has the lane graph and commit inspector, followed by 브랜치, 워크트리 and 보관함. The tab head carries the undo button for approved changes, and the review card returns to the changes drawer when the tab closes (`workbench-changes-*`). `sidebar-preview/changes.check.mjs` covers undo, graph, branches, commit, discard and jump-to-document through this tab.

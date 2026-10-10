@@ -1,5 +1,5 @@
 {
-  "runtime": "http://127.0.0.1:61900",
+  "runtime": "http://127.0.0.1:64196",
   "provider": "fixture-backed sidebar; no model calls",
   "layouts": [
     {
@@ -211,5 +211,6 @@
   "taskFailureAndCancellation": true,
   "draftTaskIsolation": true,
   "changeReviewAndCommit": true,
+  "versionManagerInPanel": true,
   "browserErrors": []
 }

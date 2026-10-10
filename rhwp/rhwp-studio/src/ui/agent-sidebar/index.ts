@@ -883,6 +883,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let workbenchDocuments: WorkbenchDocuments | null = null;
   let workbenchAgents: WorkbenchAgents | null = null;
   let workbenchChanges: ReturnType<typeof createChangesDrawer> | null = null;
+  /** 집중 화면의 변경 사항 탭이 버전 창 전체(브랜치·그래프·작업 트리·보관)를 빌려 쓰는 동안 원래 자리를 표시한다. */
+  let versionsAnchor: Comment | null = null;
   let workbenchAgentsFrame: number | null = null;
   let composerMentions: ComposerMentions | null = null;
   let planMinimized = false;
@@ -891,6 +893,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let pendingReviewOpCount = 0;
   let railWidth = readStoredRailWidth();
   let reviewWidth = readStoredReviewWidth();
+  /** 사용자가 고른 폭. 창이 줄어 잠시 줄인 폭을 창이 다시 커질 때 되돌리는 기준이다. */
+  let preferredRailWidth = railWidth;
+  let preferredReviewWidth = reviewWidth;
   // 살아 있는 세션의 권한이 우선이고, 새로 시작하는 경우에만 기본 모드의 프로필을 쓴다.
   let permissionProfile: PermissionProfile = bridge.getActiveAgent() !== null
     ? bridge.getPermissionProfile()
@@ -3373,9 +3378,41 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateCompactChangesVisibility();
   }
   versionsPage.addEventListener('ag-versions-close', () => {
+    if (versionsAnchor) {
+      returnToChat();
+      return;
+    }
     setVersionsPanelOpen(false);
     versionsBtn.focus();
   });
+
+  /** 버전 창을 변경 사항 탭으로 옮긴다. 커밋 전 변경과 검토 카드는 버전 창의 변경 탭에 둔다. */
+  function embedVersionsPage(host: Element): void {
+    if (!versionManagerPage || versionsAnchor) return;
+    versionsAnchor = document.createComment('versions');
+    versionsPage.before(versionsAnchor);
+    host.append(versionsPage);
+    versionsPage.classList.add('ag-versions-embedded');
+    versionsPage.inert = false;
+    versionsPage.setAttribute('aria-hidden', 'false');
+    changesDrawer.setCompactHost(versionManagerPage.changesHost);
+    versionManagerPage.reviewHost.append(review);
+    if (!versionsBadge.hidden) versionManagerPage.showTab('changes');
+    versionManagerPage.open({ focus: false });
+  }
+
+  function restoreVersionsPage(): void {
+    if (!versionManagerPage || !versionsAnchor) return;
+    versionManagerPage.close();
+    versionsPage.classList.remove('ag-versions-embedded');
+    versionsAnchor.replaceWith(versionsPage);
+    versionsAnchor = null;
+    versionsPage.inert = !versionsPanelOpen;
+    versionsPage.setAttribute('aria-hidden', String(!versionsPanelOpen));
+    changesDrawer.setCompactHost(fullscreen ? null : compactChangesHost());
+    if (fullscreen) changesDrawer.reviewSlot.append(review);
+    else chatPage.insertBefore(review, compactChanges);
+  }
 
   const reviewResize = el('div', 'ag-review-resize');
   reviewResize.setAttribute('role', 'separator');
@@ -3408,7 +3445,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     workbenchBoard?.setVisible(visible && selected === 'board');
     workbenchDocuments?.setVisible(visible && selected === 'documents');
     workbenchAgents?.setVisible(visible && selected === 'agents');
-    changesDrawer.setOpen(visible && (selected === 'changes' || (fullscreen && detailColumn === 'changes')));
+    changesDrawer.setOpen(visible && ((selected === 'changes' && !versionManagerPage) || (fullscreen && detailColumn === 'changes')));
   }
 
   function syncWorkbenchResources(): void {
@@ -3423,20 +3460,23 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     });
   }
 
+  /** 작업 칸을 닫고 대화 입력으로 돌아간다. */
+  function returnToChat(): void {
+    const openChat = () => {
+      workbench?.select(null);
+      setConfigPanelOpen(false);
+      if (referenceLibrary.isOpen()) referenceLibrary.setOpen(false);
+      setThreadsPanelOpen(false);
+      closeSettingsPage();
+      closeVersionsPage();
+      input.focus({ preventScroll: true });
+    };
+    if (settingsPanelOpen && settingsPanel.isDirty()) void requestSettingsClose(undefined, openChat);
+    else openChat();
+  }
+
   workbench = createSidebarWorkbench({
-    onChat() {
-      const openChat = () => {
-        workbench?.select(null);
-        setConfigPanelOpen(false);
-        if (referenceLibrary.isOpen()) referenceLibrary.setOpen(false);
-        setThreadsPanelOpen(false);
-        closeSettingsPage();
-        closeVersionsPage();
-        input.focus({ preventScroll: true });
-      };
-      if (settingsPanelOpen && settingsPanel.isDirty()) void requestSettingsClose(undefined, openChat);
-      else openChat();
-    },
+    onChat: returnToChat,
     selectResource: (id) => { void workbenchDocuments?.selectTab(id); },
     closeResource: (id) => {
       if (workbenchDocuments?.descriptors().some(tab => tab.id === id && tab.dirty)) workbench?.select('documents', { recordTab: false });
@@ -3466,8 +3506,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         workbenchAgents = createWorkbenchAgents({});
         host.append(workbenchAgents.element);
         syncWorkbenchAgents();
-      } else {
-        // 같은 diff와 검토 DOM을 옮긴다. 두 번째 비교 작업이나 편집 상태를 만들지 않는다.
+      } else if (!versionManagerPage) {
+        // 버전 기록이 없으면 같은 diff와 검토 DOM만 옮긴다. 두 번째 비교 작업이나 편집 상태를 만들지 않는다.
         workbenchChanges = changesDrawer;
         host.append(workbenchChanges.element);
       }
@@ -3502,11 +3542,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       applyReviewColState();
       if (view === 'changes') {
         const host = workbench?.element.querySelector('.ag-workbench-panel[data-view="changes"]');
-        host?.append(changesDrawer.element);
-        changesDrawer.setCompactHost(null);
-        changesDrawer.reviewSlot.append(review);
+        if (versionManagerPage && host) embedVersionsPage(host);
+        else {
+          host?.append(changesDrawer.element);
+          changesDrawer.setCompactHost(null);
+          changesDrawer.reviewSlot.append(review);
+        }
         // 승인한 변경 되돌리기는 검토 칸 머리와 같은 단추를 탭 머리로 옮긴다.
         workbench?.actions.append(reviewColumnUndo);
+      } else if (versionsAnchor) {
+        reviewColumnActions.prepend(reviewColumnUndo);
+        restoreVersionsPage();
       } else if (workbenchChanges) {
         reviewColumnActions.prepend(reviewColumnUndo);
         reviewColumn.append(changesDrawer.element);
@@ -3538,8 +3584,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     workbench.element,
   );
 
-  function applyRailWidth(width: number, opts?: { persist?: boolean }): void {
+  function applyRailWidth(width: number, opts?: { persist?: boolean; reclamp?: boolean }): void {
     railWidth = clampRailWidth(width);
+    if (!opts?.reclamp) preferredRailWidth = railWidth;
     root.style.setProperty('--ag-rail-w', `${railWidth}px`);
     railResize.setAttribute('aria-valuenow', String(railWidth));
     railResize.setAttribute('aria-valuemin', String(RAIL_WIDTH_MIN));
@@ -3547,8 +3594,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (opts?.persist) persistRailWidth(railWidth);
   }
 
-  function applyReviewWidth(width: number, opts?: { persist?: boolean }): void {
+  function applyReviewWidth(width: number, opts?: { persist?: boolean; reclamp?: boolean }): void {
     reviewWidth = clampReviewWidth(width);
+    if (!opts?.reclamp) preferredReviewWidth = reviewWidth;
     root.style.setProperty('--ag-review-w', `${reviewWidth}px`);
     reviewResize.setAttribute('aria-valuenow', String(reviewWidth));
     reviewResize.setAttribute('aria-valuemin', String(REVIEW_WIDTH_MIN));
@@ -3843,7 +3891,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     environmentPlan.setAttribute('aria-expanded', planActive ? 'true' : 'false');
     reviewColumn.setAttribute('aria-hidden', changesActive ? 'false' : 'true');
     reviewColumn.inert = !changesActive;
-    changesDrawer.setOpen(changesActive || (active && workbench?.current() === 'changes' && !root.classList.contains('ag-collapsed')));
+    changesDrawer.setOpen(changesActive || (active && workbench?.current() === 'changes' && !versionManagerPage && !root.classList.contains('ag-collapsed')));
     planColumn.setAttribute('aria-hidden', planActive ? 'false' : 'true');
     planColumn.inert = !planActive;
     reviewResize.setAttribute('aria-hidden', detailActive ? 'false' : 'true');
@@ -4107,8 +4155,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     threadsPage.setAttribute('aria-hidden', 'false');
     rebuildThreadsList();
     // 칸 폭은 클래스 규칙이 아니라 인라인 변수로 산다.
-    applyRailWidth(railWidth, { persist: false });
-    applyReviewWidth(reviewWidth, { persist: false });
+    applyRailWidth(preferredRailWidth, { persist: false, reclamp: true });
+    applyReviewWidth(preferredReviewWidth, { persist: false, reclamp: true });
     // 변경 사항과 계획은 각각의 환경 drawer에 둔다.
     setCompactChangesOpen(false);
     changesDrawer.setCompactHost(null);
@@ -4371,6 +4419,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     versionsPanelOpen = false;
     root.classList.remove('ag-versions-open');
     versionsBtn.setAttribute('aria-expanded', 'false');
+    // 변경 사항 탭이 빌려 쓰는 동안에는 탭이 닫힐 때 restoreVersionsPage 가 정리한다.
+    if (versionsAnchor) return;
     versionsPage.setAttribute('aria-hidden', 'true');
     versionsPage.inert = true;
     chatPage.inert = false;
@@ -4474,8 +4524,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function setVersionsPanelOpen(open: boolean): void {
-    if (open) workbench?.select(null);
     if (!versionController) return;
+    // 집중 화면에서는 나가지 않고 작업 칸의 변경 사항 탭에 버전 창을 연다.
+    if (fullscreen && versionManagerPage && workbench) {
+      if (open) workbench.select('changes');
+      else if (workbench.current() === 'changes') workbench.select(null);
+      return;
+    }
+    if (open) workbench?.select(null);
     if (open && settingsPanelOpen && settingsPanel.isDirty()) {
       void requestSettingsClose(undefined, () => setVersionsPanelOpen(true));
       return;
@@ -5221,9 +5277,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (fullscreen) {
       root.style.top = '0px';
       root.style.bottom = '0px';
-      // 창이 줄면 두 칸의 비율 상한이 내려간다 — 다시 클램프한다.
-      applyRailWidth(railWidth, { persist: false });
-      applyReviewWidth(reviewWidth, { persist: false });
+      // 창이 줄면 두 칸의 비율 상한이 내려간다. 고른 폭에서 다시 클램프해 창이 커지면 되돌린다.
+      applyRailWidth(preferredRailWidth, { persist: false, reclamp: true });
+      applyReviewWidth(preferredReviewWidth, { persist: false, reclamp: true });
       return;
     }
     const top = document.getElementById('editor-area')?.getBoundingClientRect().top ?? 96;

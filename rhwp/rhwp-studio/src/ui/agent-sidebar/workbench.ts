@@ -285,8 +285,14 @@ export function createSidebarWorkbench(deps: {
     const key = document.createElement('kbd');
     key.textContent = view.key;
     item.append(viewIcon(view.id), itemLabel, key);
-    item.addEventListener('click', () => activateTab(view.id));
+    item.addEventListener('click', () => openFromLauncher(view.id));
     launcherList.append(item);
+  }
+  /** 작업 목록이 사라지면 초점이 몸체로 떨어진다. 새 탭으로 옮긴다. */
+  function openFromLauncher(view: WorkbenchView): void {
+    const hadFocus = launcher.contains(document.activeElement);
+    activateTab(view);
+    if (hadFocus) tabRows.get(view)?.button.focus({ preventScroll: true });
   }
   launcher.addEventListener('keydown', event => {
     if (event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -297,7 +303,7 @@ export function createSidebarWorkbench(deps: {
     let target: HTMLButtonElement | undefined;
     if (view && !event.shiftKey) {
       event.preventDefault();
-      activateTab(view.id);
+      openFromLauncher(view.id);
       return;
     }
     if (event.key === 'ArrowDown') target = items[(index + 1) % items.length];

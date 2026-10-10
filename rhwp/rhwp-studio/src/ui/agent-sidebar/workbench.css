@@ -138,3 +138,31 @@
 .ag-workspace-panel-btn .ag-column-icon-end { transform: scaleX(-1); }
 .ag-workspace-panel-btn[aria-expanded="true"] { color: var(--ag-text); background: var(--ag-active); }
 .ag-fullscreen.ag-settings-open .ag-workspace-panel-btn { display: none; }
+
+/* 변경 사항 탭은 버전 창 전체를 빌려 쓴다. 사이드바 페이지 전환 위치·애니메이션을 풀고 탭 안을 채운다. */
+.ag-workbench-changes .ag-versions-page.ag-versions-embedded {
+  position: relative;
+  inset: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+  transition: none;
+  z-index: auto;
+}
+.ag-versions-embedded .ag-versions-close { display: none; }
+.ag-versions-embedded .ag-versions-review-host { padding: 12px 12px 4px; }
+.ag-versions-embedded .ag-versions-review-host:has(> .ag-review:empty) { display: none; }
+.ag-versions-embedded .ag-versions-review-host .ag-review {
+  display: flex;
+  flex: none;
+  width: 100%;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.ag-versions-embedded .ag-versions-review-host .ag-review-summary { max-height: none; overflow: visible; }
