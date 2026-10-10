@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, promises as fs, renameSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -93,8 +94,8 @@ test('concurrent mirrors preserve one bounded conflict and release both launch m
   await fs.mkdir(firstLaunch, { recursive: true });
   await fs.mkdir(secondLaunch, { recursive: true });
   await fs.writeFile(source, 'initial');
-  await fs.writeFile(path.join(firstLaunch, '.hamaeditor-owner.json'), '{}');
-  await fs.writeFile(path.join(secondLaunch, '.hamaeditor-owner.json'), '{}');
+  await fs.writeFile(path.join(firstLaunch, '.rauhwpx-owner.json'), '{}');
+  await fs.writeFile(path.join(secondLaunch, '.rauhwpx-owner.json'), '{}');
 
   const first = prepareCredentialMirrorSync(source, firstTarget, {
     platform: 'win32', pid: 2_222, symlink: deniedSymlink,
@@ -135,7 +136,7 @@ test('logout during a mirror is terminal and preserves only the refreshed copy',
   await fs.mkdir(path.dirname(source), { recursive: true });
   await fs.mkdir(launch, { recursive: true });
   await fs.writeFile(source, 'initial');
-  await fs.writeFile(path.join(launch, '.hamaeditor-owner.json'), '{}');
+  await fs.writeFile(path.join(launch, '.rauhwpx-owner.json'), '{}');
   const handle = prepareCredentialMirrorSync(source, target, {
     platform: 'win32', pid: 2_223, symlink: deniedSymlink,
   });
@@ -186,7 +187,7 @@ test('a launch retention marker protects a pending crash recovery target', async
   await fs.mkdir(path.dirname(source), { recursive: true });
   await fs.mkdir(launch, { recursive: true });
   await fs.writeFile(source, 'old');
-  await fs.writeFile(path.join(launch, '.hamaeditor-owner.json'), '{}');
+  await fs.writeFile(path.join(launch, '.rauhwpx-owner.json'), '{}');
 
   const handle = prepareCredentialMirrorSync(source, target, {
     platform: 'win32', pid: 555, now: () => 5_000, symlink: deniedSymlink,
@@ -422,7 +423,7 @@ test('journal publish retries a locked first rename on win32 then succeeds', asy
     delays: [0],
     symlink: deniedSymlink,
     renameFile(from, to) {
-      if (path.basename(to).includes('hamaeditor-copyback-') && to.endsWith('.json')) {
+      if (path.basename(to).includes('rauhwpx-copyback-') && to.endsWith('.json')) {
         attempts += 1;
         if (attempts === 1) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
       }
@@ -540,7 +541,7 @@ test('journal publish does not retry a non-lock or unix lock error', async (t) =
       delays: [0],
       symlink: deniedSymlink,
       renameFile(from, to) {
-        if (path.basename(to).includes('hamaeditor-copyback-') && to.endsWith('.json')) {
+        if (path.basename(to).includes('rauhwpx-copyback-') && to.endsWith('.json')) {
           attempts += 1;
           throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
         }
@@ -562,7 +563,7 @@ test('journal publish does not retry a non-lock or unix lock error', async (t) =
       pid: 2_006,
       delays: [0],
       renameFile(from, to) {
-        if (path.basename(to).includes('hamaeditor-copyback-') && to.endsWith('.json')) {
+        if (path.basename(to).includes('rauhwpx-copyback-') && to.endsWith('.json')) {
           unixAttempts += 1;
           throw Object.assign(new Error('locked'), { code: 'EPERM' });
         }
@@ -572,4 +573,40 @@ test('journal publish does not retry a non-lock or unix lock error', async (t) =
     (error) => error.code === 'EPERM',
   );
   assert.equal(unixAttempts, 1);
+});
+
+test('a credential copyback interrupted in 2.0.11 is finished and its plaintext copy removed', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-rebranded-copyback-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const providerDir = path.join(root, '.codex');
+  const launchDir = path.join(root, 'launch-work', 'run');
+  await fs.mkdir(providerDir, { recursive: true });
+  await fs.mkdir(path.join(launchDir, 'home'), { recursive: true });
+  const source = path.join(providerDir, 'auth.json');
+  const target = path.join(launchDir, 'home', 'auth.json');
+  const id = createHash('sha256').update(path.resolve(target)).digest('hex').slice(0, 16);
+  const marker = path.join(launchDir, '.hamaeditor-credential-copybacks', `${id}.pending`);
+  // 2.0.11 moved the old file aside and crashed before installing the refreshed one.
+  await fs.writeFile(`${source}.hamaeditor-copyback-${id}.previous`, 'original');
+  await fs.writeFile(`${source}.hamaeditor-copyback-${id}.next`, 'refreshed');
+  await fs.writeFile(target, 'refreshed');
+  await fs.mkdir(path.dirname(marker), { recursive: true });
+  await fs.writeFile(marker, 'journal');
+  await fs.writeFile(path.join(providerDir, `.auth.json.hamaeditor-copyback-${id}.json`), JSON.stringify({
+    version: 1,
+    id,
+    source,
+    target,
+    initialSourceDigest: createHash('sha256').update('original').digest('hex'),
+    pid: 999_999,
+    createdAtMs: Date.now() - 1000,
+    retentionMarker: marker,
+  }));
+
+  recoverCredentialMirrorsSync(source, { isAlive: () => false });
+
+  assert.equal(await fs.readFile(source, 'utf8'), 'refreshed');
+  assert.deepEqual((await fs.readdir(providerDir)).sort(), ['auth.json']);
+  await assert.rejects(fs.stat(target), { code: 'ENOENT' }, 'no plaintext copy stays in the 2.0.11 launch folder');
+  await assert.rejects(fs.stat(marker), { code: 'ENOENT' }, 'the launch folder no longer looks pending to cleanup');
 });

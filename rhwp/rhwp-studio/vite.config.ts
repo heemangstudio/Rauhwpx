@@ -192,7 +192,7 @@ export default defineConfig({
               'application/hwp+zip': ['.hwpx'],
               'application/xml': ['.hml'],
               'text/xml': ['.hml'],
-              'application/vnd.hamaeditor.history': ['.rhwpx'],
+              'application/vnd.rauhwpx.history': ['.rhwpx'],
             },
           },
         ],

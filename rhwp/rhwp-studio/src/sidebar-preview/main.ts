@@ -43,7 +43,7 @@ if (!params.has('initial-setup'))
   });
 if (params.get('width'))
   localStorage.setItem(
-    'hamaeditor-agent-sidebar-width-v3',
+    'rhwp-agent-sidebar-width-v3',
     String(Math.min(900, Math.max(280, Number(params.get('width')) || 480))),
   );
 if (!localStorage.getItem('sidebar-preview-seeded')) {

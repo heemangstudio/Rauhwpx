@@ -44,7 +44,7 @@ export function setPiModels(models: readonly PiModelConfig[]): void { piModelReg
 export function piModels(): readonly PiModelConfig[] { return piModelRegistry; }
 function findPiModel(id: string | null | undefined): PiModelConfig | undefined { return piModelRegistry.find((model) => model.id === id); }
 
-const CATALOG_STORAGE_KEY = 'hamaeditor-agent-model-catalog';
+const CATALOG_STORAGE_KEY = 'rhwp-agent-model-catalog';
 const catalogs: Record<CatalogAgent, ModelCatalogEntry[]> = { claude: [], codex: [] };
 let cacheLoaded = false;
 let selectedModels: SelectedModels = {

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
-import { basename, dirname, extname, join, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   app,
@@ -52,11 +52,16 @@ import { SessionManager } from './session-manager.mjs';
 import { safeSuggestedFilename } from './safe-filename.mjs';
 import { installPdfExport, PDF_EXPORT_FRAME_NAME, pdfExportWindowOptions } from './pdf-export.mjs';
 import {
+  STUDIO_HOST,
+  STUDIO_SCHEME,
   STUDIO_URL,
   installStudioProtocol,
   registerStudioScheme,
   resolveDevelopmentUrl,
 } from './studio-protocol.mjs';
+import { INTERNAL_APP_NAME, PRODUCT_NAME } from './app-identity.mjs';
+import { resolveProfileDirectories } from './profile-continuity.mjs';
+import { createRebrandImportController } from './rebrand-import-controller.mjs';
 import { createSecretVault, handleSecretRequest } from './secret-vault.mjs';
 import { removeRetiredCloudData } from './retired-cloud-data.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
@@ -75,8 +80,10 @@ import {
   retainLaunchRootForProcessCleanupSync,
 } from '../rhwp/rhwp-agent/credential-mirror.mjs';
 import {
+  REBRANDED_LAUNCH_MARKERS,
   launchStoragePaths,
   prepareDevelopmentCaches,
+  rebrandedRuntimeRoots,
   removeLegacyLaunchDirectories,
   removeStaleLaunchDirectories,
   writeLaunchOwnerMetadata,
@@ -93,6 +100,7 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const RELEASES_URL = 'https://github.com/heemangstudio/Rauhwpx/releases/latest';
 const RELEASES_API_URL = 'https://api.github.com/repos/heemangstudio/Rauhwpx/releases/latest';
 const PRELOAD_PATH = join(__dirname, 'preload.cjs');
+const REBRAND_EXPORT_PRELOAD_PATH = join(__dirname, 'rebrand-export-preload.cjs');
 const devUrl = resolveDevelopmentUrl({
   packaged: app.isPackaged,
   rawUrl: process.env.RHWP_DEV_URL,
@@ -115,7 +123,7 @@ function isTrustedRendererUrl(rawUrl) {
   try {
     const url = new URL(rawUrl);
     if (devOrigin) return url.origin === devOrigin;
-    return url.protocol === 'hamaeditor:' && url.host === 'app';
+    return url.protocol === `${STUDIO_SCHEME}:` && url.host === STUDIO_HOST;
   } catch {
     return false;
   }
@@ -127,13 +135,16 @@ function sessionForEvent(event) {
   return sessions.sessionForSender(event.sender);
 }
 
-app.setName('HamaEditor');
-if (!app.isPackaged) {
-  const developmentUserData = process.env.RHWP_DESKTOP_USER_DATA
-    ? resolve(process.env.RHWP_DESKTOP_USER_DATA)
-    : join(__dirname, '..', '.run', 'desktop-user-data');
-  app.setPath('userData', developmentUserData);
-}
+// Electron 은 앱 이름으로 사용자 데이터 폴더와 safeStorage 키체인 항목을 정한다. 실행 내내
+// 2.0.10 까지와 같은 내부 이름을 쓴다. 메뉴·대화상자에는 PRODUCT_NAME 을 직접 넘긴다.
+app.setName(INTERNAL_APP_NAME);
+const profileDirectories = resolveProfileDirectories({
+  packaged: app.isPackaged,
+  appDataDir: app.getPath('appData'),
+  env: process.env,
+  developmentUserData: join(__dirname, '..', '.run', 'desktop-user-data'),
+});
+app.setPath('userData', profileDirectories.userData);
 registerStudioScheme(protocol);
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -465,6 +476,7 @@ class AgentHubOwner {
 let quitting = false;
 let quitRequested = false;
 let desktopReady = false;
+let initialLaunchesOpened = false;
 let secretVault = null;
 const pendingLaunches = [launchRequest({ argv: process.argv, source: 'initial' })];
 const launchStorage = launchStoragePaths({
@@ -587,7 +599,7 @@ const updateLifecycle = createUpdateLifecycle({
   nativeUpdater: nativeAutoUpdater,
   platform: process.platform,
   isInteractive: () => manualUpdateCheck || interactiveUpdateDownload,
-  showMessageBox: (options) => dialog.showMessageBox(options),
+  showMessageBox: (options) => dialog.showMessageBox({ title: PRODUCT_NAME, ...options }),
   openReleases: () => shell.openExternal(RELEASES_URL),
   cleanup: () => hubOwner.teardown(),
   onQuitRequested: (requested) => { quitRequested = requested; },
@@ -599,6 +611,7 @@ let updateCheckPromise = null;
 
 async function showUpToDate() {
   await dialog.showMessageBox({
+    title: PRODUCT_NAME,
     type: 'info',
     message: 'HamaEditor is up to date',
     detail: `Version ${app.getVersion()} is the latest release.`,
@@ -626,6 +639,7 @@ async function checkForDebUpdates({ manual }) {
   }
   const asset = selectDebAsset(release?.assets, process.arch);
   const { response: choice } = await dialog.showMessageBox({
+    title: PRODUCT_NAME,
     type: 'info',
     message: `HamaEditor ${String(release.tag_name).replace(/^v/i, '')} is available`,
     detail: `You are running version ${app.getVersion()}. Download the signed Debian package and install it with your system package manager.`,
@@ -652,6 +666,7 @@ function configureAutoUpdater() {
     const linuxDeb = process.platform === 'linux' && !process.env.APPIMAGE;
     if (autoUpdater.autoDownload || (!manualUpdateCheck && !linuxDeb)) return;
     void dialog.showMessageBox({
+      title: PRODUCT_NAME,
       type: 'info',
       message: `HamaEditor ${info?.version ?? ''} is available`,
       detail: linuxDeb
@@ -948,6 +963,31 @@ function queueLaunch(request) {
 function showLaunchError(error) {
   dialog.showErrorBox('HamaEditor could not open', error instanceof Error ? error.message : String(error));
 }
+
+// ── 2.0.11 프로필 가져오기 ────────────────────────────────────────────────
+// 2.0.11 은 다른 프로필 폴더와 출처(hamaeditor://app)에 Studio 저장소를 남겼다. 그 사본을 숨은 창에서
+// 2.0.11 출처로 열어 덤프하고, 첫 Studio 창이 기동하면서 정본 저장소에 합친다. 원본은 읽기만 한다.
+const rebrandImport = createRebrandImportController({
+  BrowserWindow,
+  session: electronSession,
+  userDataDir: app.getPath('userData'),
+  rebrandedDir: profileDirectories.rebranded,
+  tempDir: app.getPath('temp'),
+  preloadPath: REBRAND_EXPORT_PRELOAD_PATH,
+});
+
+ipcMain.handle('desktop:take-rebrand-import', (event) => {
+  sessionForEvent(event);
+  return rebrandImport.take();
+});
+ipcMain.handle('desktop:take-rebrand-import-chunk', (event, token, index) => {
+  sessionForEvent(event);
+  return rebrandImport.chunk(token, index);
+});
+ipcMain.handle('desktop:finish-rebrand-import', (event, token, outcome) => {
+  sessionForEvent(event);
+  return rebrandImport.finish(token, outcome);
+});
 
 ipcMain.handle('desktop:get-unique-installs', async (event) => {
   sessionForEvent(event);
@@ -1272,6 +1312,7 @@ ipcMain.handle('desktop:close-response', async (event, requestId, allowClose) =>
     onError: async (error) => {
       console.warn('[hamaeditor] document close failed:', error);
       await dialog.showMessageBox({
+        title: PRODUCT_NAME,
         type: 'warning',
         message: 'HamaEditor could not close the document',
         detail: error?.message ?? String(error),
@@ -1308,6 +1349,10 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    // 비밀 저장소·허브·북마크보다 먼저 2.0.11 프로필의 파일을 합친다. 실패해도 앱은 뜬다.
+    await rebrandImport.prepare().catch((error) => {
+      console.warn('[hamaeditor] 2.0.11 profile import failed:', error);
+    });
     const owner = { launchId, profileId: userDataProfileId, pid: process.pid };
     await Promise.all([
       writeLaunchOwnerMetadata(runtimeDir, owner),
@@ -1334,6 +1379,12 @@ if (!hasSingleInstanceLock) {
       bestEffortStartupCleanup(
         'legacy launch workspace',
         removeLegacyLaunchDirectories(legacyWorkRoot, launchId),
+      ),
+      bestEffortStartupCleanup(
+        '2.0.11 runtime',
+        rebrandedRuntimeRoots(app.getPath('temp')).then((roots) => Promise.all(roots.map((root) => (
+          removeStaleLaunchDirectories(root, launchId, { markers: REBRANDED_LAUNCH_MARKERS })
+        )))),
       ),
     ]);
     if (devUrl) {
@@ -1373,6 +1424,7 @@ if (!hasSingleInstanceLock) {
         showLaunchError(error);
       });
     }
+    initialLaunchesOpened = true;
     if (failedLaunches > 0 && sessions.windows().length === 0) {
       resolveUniqueInstallSync();
       app.quit();
@@ -1407,6 +1459,8 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on('window-all-closed', () => {
+    // 2.0.11 저장소를 읽는 숨은 창이 첫 Studio 창보다 먼저 닫혀도 앱을 끝내지 않는다.
+    if (!initialLaunchesOpened) return;
     if (process.platform !== 'darwin') app.quit();
   });
 }

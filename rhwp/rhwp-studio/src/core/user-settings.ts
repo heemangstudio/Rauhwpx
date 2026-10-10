@@ -1,7 +1,7 @@
 /**
  * 사용자 환경설정 저장/로드 서비스
  *
- * localStorage 기반, 단일 키(hamaeditor-settings)에 JSON으로 저장.
+ * localStorage 기반, 단일 키(rhwp-settings)에 JSON으로 저장.
  * 섹션별 확장 가능한 구조.
  */
 
@@ -142,7 +142,7 @@ export const BUILTIN_FONT_SETS: readonly FontSet[] = [
   },
 ];
 
-const STORAGE_KEY = 'hamaeditor-settings';
+const STORAGE_KEY = 'rhwp-settings';
 
 function defaultSettings(): AppSettings {
   return {

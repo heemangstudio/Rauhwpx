@@ -14,7 +14,7 @@ import {
 } from '../core/idb-open.ts';
 import type { DocHistoryEntryMeta } from './types';
 
-const DB_NAME = 'hamaeditorDocHistory';
+const DB_NAME = 'rhwpStudioDocHistory';
 const DB_VER = 1;
 const META = 'historyMeta';
 const BLOBS = 'historyBlobs';
@@ -37,8 +37,14 @@ export type HistoryPayload =
   | { kind: 'ir'; snapshot: CompareDocumentSnapshot }
   | { kind: 'legacy'; bytes: Uint8Array };
 
-function openDb(): Promise<IDBDatabase | null> {
-  return openIndexedDatabase(DB_NAME, DB_VER, (db) => {
+/** 2.0.11 가져오기도 이 함수로 연다. */
+export const DOC_HISTORY_DB_NAME = DB_NAME;
+export function openDocHistoryDatabase(name = DB_NAME): Promise<IDBDatabase | null> {
+  return openDb(name);
+}
+
+function openDb(name = DB_NAME): Promise<IDBDatabase | null> {
+  return openIndexedDatabase(name, DB_VER, (db) => {
     if (!db.objectStoreNames.contains(META)) db.createObjectStore(META, { keyPath: 'id' });
     if (!db.objectStoreNames.contains(BLOBS)) db.createObjectStore(BLOBS, { keyPath: 'id' });
   });
@@ -49,7 +55,7 @@ function withDb<T>(
   fallback: (error?: unknown) => Promise<T>,
   options?: { timeoutMs?: number },
 ) {
-  return withDatabase(openDb, DB_NAME, fn, fallback, options);
+  return withDatabase(() => openDb(), DB_NAME, fn, fallback, options);
 }
 
 function getAllMeta(db: IDBDatabase): Promise<MetaRow[]> {

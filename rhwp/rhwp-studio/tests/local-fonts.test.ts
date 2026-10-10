@@ -29,7 +29,7 @@ import { analyzeDocumentFonts } from '../src/core/document-font-status.ts';
 import { fontFamilyChainForDisplay, prefersImportedHancomSubstitute } from '../src/core/font-substitution.ts';
 import { setHftWasmApi, takeHftOutlineChange } from '../src/core/hft-glyphs.ts';
 
-const STORAGE_KEY = 'hamaeditor-local-fonts';
+const STORAGE_KEY = 'rhwp-local-fonts';
 
 type TestGlobals = typeof globalThis & {
   browser?: unknown;

@@ -76,8 +76,8 @@ import {
 } from './snapshot.ts';
 
 const PAGE_SIZE = 100;
-const ACTIVE_BRANCH_PREFIX = 'hamaeditor-versions-active-branch-v1:';
-const AI_TITLES_KEY = 'hamaeditor-versions-ai-titles-v1';
+const ACTIVE_BRANCH_PREFIX = 'rhwp-versions-active-branch-v1:';
+const AI_TITLES_KEY = 'rhwp-versions-ai-titles-v1';
 
 type CheckpointReason = 'manual' | 'save' | 'export' | 'agent' | 'pre-restore' | 'pre-switch' | 'pre-merge' | 'merge' | 'restore' | 'adopt';
 

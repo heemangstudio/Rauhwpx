@@ -36,15 +36,15 @@ test('RHWP_USAGE_DIR overrides the per-platform app data root', () => {
   assert.equal(defaultUsageRoot({ RHWP_USAGE_DIR: '/tmp/usage-here' }), path.resolve('/tmp/usage-here'));
   assert.equal(
     defaultUsageRoot({}, 'darwin', '/Users/tester'),
-    '/Users/tester/Library/Application Support/hamaeditor/usage',
+    '/Users/tester/Library/Application Support/rhwp/usage',
   );
   assert.equal(
     defaultUsageRoot({ APPDATA: 'C:\\data' }, 'win32', 'C:\\Users\\t'),
-    path.win32.join('C:\\data', 'hamaeditor', 'usage'),
+    path.win32.join('C:\\data', 'rhwp', 'usage'),
   );
   assert.equal(
     defaultUsageRoot({}, 'linux', '/home/t'),
-    '/home/t/.local/share/hamaeditor/usage',
+    '/home/t/.local/share/rhwp/usage',
   );
 });
 

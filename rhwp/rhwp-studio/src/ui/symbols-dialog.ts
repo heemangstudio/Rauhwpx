@@ -54,7 +54,7 @@ const UNICODE_BLOCKS: UnicodeBlock[] = [
 ];
 
 const COLS = 16;
-const RECENT_KEY = 'hamaeditor-symbols-recent';
+const RECENT_KEY = 'rhwp-symbols-recent';
 const MAX_RECENT = 32;
 
 export class SymbolsDialog {

@@ -59,11 +59,11 @@ export const PLAN_TABLES = {
 export function defaultUsageRoot(env = process.env, platform = process.platform, home = os.homedir()) {
   const platformPath = platform === 'win32' ? path.win32 : path.posix;
   if (env.RHWP_USAGE_DIR) return platformPath.resolve(env.RHWP_USAGE_DIR);
-  if (platform === 'darwin') return platformPath.join(home, 'Library', 'Application Support', 'hamaeditor', 'usage');
+  if (platform === 'darwin') return platformPath.join(home, 'Library', 'Application Support', 'rhwp', 'usage');
   if (platform === 'win32') {
-    return platformPath.join(env.APPDATA || platformPath.join(home, 'AppData', 'Roaming'), 'hamaeditor', 'usage');
+    return platformPath.join(env.APPDATA || platformPath.join(home, 'AppData', 'Roaming'), 'rhwp', 'usage');
   }
-  return platformPath.join(env.XDG_DATA_HOME || platformPath.join(home, '.local', 'share'), 'hamaeditor', 'usage');
+  return platformPath.join(env.XDG_DATA_HOME || platformPath.join(home, '.local', 'share'), 'rhwp', 'usage');
 }
 
 function toCount(value) {

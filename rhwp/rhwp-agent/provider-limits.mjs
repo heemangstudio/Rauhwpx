@@ -165,7 +165,7 @@ export function createProviderLimitsClient({
   cacheMs = 30_000,
   forceCooldownMs = 0,
   timeoutMs = REQUEST_TIMEOUT,
-  resetLedgerPath = path.join(homeDir, '.hamaeditor-provider-resets.json'),
+  resetLedgerPath = path.join(homeDir, '.rhwp-provider-resets.json'),
 } = {}) {
   let state = { claude: blankQuota(), codex: blankQuota() };
   let refreshing = null;

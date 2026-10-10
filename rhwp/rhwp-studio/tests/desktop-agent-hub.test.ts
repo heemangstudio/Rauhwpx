@@ -325,7 +325,7 @@ test('packaged Windows launch also keeps the sidecar on the bundled Node runtime
 
 test('desktop shell owns one ephemeral authenticated hub and exposes session IPC', () => {
   assert.match(desktopMain, /app\.requestSingleInstanceLock\(\)/);
-  assert.match(desktopMain, /if \(!app\.isPackaged\)[\s\S]*app\.setPath\('userData', developmentUserData\)/);
+  assert.match(desktopMain, /app\.setPath\('userData', profileDirectories\.userData\)/);
   assert.match(desktopMain, /\.run', 'desktop-user-data'/);
   assert.match(desktopMain, /app\.on\('second-instance'/);
   assert.match(desktopMain, /const hubStartup = hubOwner\.ensure\(\);[\s\S]*await openLaunch\(request\)[\s\S]*await Promise\.all\(\[hubStartup, staleCleanup\]\)/);

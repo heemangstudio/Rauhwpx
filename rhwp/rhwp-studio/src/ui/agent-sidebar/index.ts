@@ -285,7 +285,7 @@ interface ActivityTranscriptState {
   acceptingTools: boolean;
 }
 
-const SIDEBAR_WIDTH_KEY = 'hamaeditor-agent-sidebar-width-v3';
+const SIDEBAR_WIDTH_KEY = 'rhwp-agent-sidebar-width-v3';
 const SIDEBAR_WIDTH_DEFAULT = 480;
 /* 레이아웃 전·측정 실패 시 바닥. 실제 최솟값은 입력기 하단 한 줄의
    묶인 폭으로 매 프레임 다시 잰다. */
@@ -420,8 +420,8 @@ function persistSidebarWidth(width: number): void {
   }
 }
 
-const THREADS_RAIL_KEY = 'hamaeditor-agent-threads-rail-collapsed';
-const ENVIRONMENT_PANEL_OPEN_KEY = 'hamaeditor-agent-environment-panel-open';
+const THREADS_RAIL_KEY = 'rhwp-agent-threads-rail-collapsed';
+const ENVIRONMENT_PANEL_OPEN_KEY = 'rhwp-agent-environment-panel-open';
 
 function readStoredThreadsRailCollapsed(): boolean {
   try {
@@ -456,10 +456,10 @@ function persistEnvironmentPanelOpen(open: boolean): void {
 }
 
 /* 전체 화면의 대화 목록과 변경 사항 drawer 폭. */
-const RAIL_WIDTH_KEY = 'hamaeditor-agent-rail-width';
+const RAIL_WIDTH_KEY = 'rhwp-agent-rail-width';
 const RAIL_WIDTH_DEFAULT = 264;
 const RAIL_WIDTH_MIN = 200;
-const REVIEW_WIDTH_KEY = 'hamaeditor-agent-review-width';
+const REVIEW_WIDTH_KEY = 'rhwp-agent-review-width';
 const REVIEW_WIDTH_DEFAULT = 560;
 const REVIEW_WIDTH_MIN = 320;
 

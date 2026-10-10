@@ -7,7 +7,7 @@ import { retryLockedOperation } from './harness-update.mjs';
 
 export const OAUTH_CREDENTIAL_MAX_BYTES = 1024 * 1024;
 export const OAUTH_STAGING_STALE_AFTER_MS = 60 * 60 * 1000;
-export const OAUTH_STAGING_OWNER_FILE = '.hamaeditor-oauth-owner.json';
+export const OAUTH_STAGING_OWNER_FILE = '.rauhwpx-oauth-owner.json';
 export const OAUTH_STAGING_OWNER_MAX_BYTES = 1024;
 const OAUTH_STAGING_SCAN_LIMIT = 256;
 const OAUTH_STAGING_NAME = /^run-(\d{13})-(\d+)-/;

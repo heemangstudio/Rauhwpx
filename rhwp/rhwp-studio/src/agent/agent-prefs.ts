@@ -20,7 +20,7 @@ import {
 } from './models.ts';
 import { isAgentMode, type AgentMode, type AgentName } from './types.ts';
 
-const STORAGE_KEY = 'hamaeditor-agent-prefs';
+const STORAGE_KEY = 'rhwp-agent-prefs';
 
 export interface AgentPrefs {
   defaultAgent: AgentName;

@@ -85,7 +85,7 @@ test('download storage rejects a symlinked agent directory', async (t) => {
     fs.rm(rootDir, { recursive: true, force: true }),
     fs.rm(outside, { recursive: true, force: true }),
   ]));
-  await fs.symlink(outside, path.join(rootDir, '.hamaeditor-agent'));
+  await fs.symlink(outside, path.join(rootDir, '.rhwp-agent'));
   const manager = new DownloadManager({
     rootDir,
     fetchImpl: async () => new Response('must not be fetched'),
@@ -103,7 +103,7 @@ test('hub-private downloads ignore a provider-orchestrated parent swap', async (
   const writableRoot = path.join(root, 'work');
   const storageRoot = path.join(root, 'hub-storage');
   const outside = path.join(root, 'outside');
-  const providerAgentDir = path.join(writableRoot, '.hamaeditor-agent');
+  const providerAgentDir = path.join(writableRoot, '.rhwp-agent');
   await Promise.all([
     fs.mkdir(providerAgentDir, { recursive: true }),
     fs.mkdir(storageRoot),

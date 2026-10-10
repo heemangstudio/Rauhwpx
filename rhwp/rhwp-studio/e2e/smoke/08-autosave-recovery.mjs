@@ -6,7 +6,7 @@ export default {
   name: 'autosave recovery after a crash',
   async run({ page, context, url }) {
     // 유휴 자동 저장을 허용 최소값(5초)으로 줄여 실제 예약 경로가 복구본을 쓰게 한다.
-    await page.evaluate(() => localStorage.setItem('hamaeditor-settings',
+    await page.evaluate(() => localStorage.setItem('rhwp-settings',
       JSON.stringify({ autosave: { idleSaveEnabled: true, idleDelaySeconds: 5 } })));
     await loadApp(page, url);
     await newDocument(page);
@@ -14,7 +14,7 @@ export default {
     await page.keyboard.type(MARK);
     await page.waitForFunction(async (mark) => {
       const db = await new Promise((resolve, reject) => {
-        const req = indexedDB.open('hamaeditorAutosave');
+        const req = indexedDB.open('rhwpStudioAutosave');
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
       });

@@ -136,10 +136,10 @@ test('skill invocation icon survives thread persistence', () => {
   upsertThread(t);
   assert.equal(getThread(t.id)?.messages[0]?.skillIcon, 'pencil');
 
-  const raw = JSON.parse(mem.get('hamaeditor-agent-threads') ?? '[]') as Array<Record<string, unknown>>;
+  const raw = JSON.parse(mem.get('rhwp-agent-threads') ?? '[]') as Array<Record<string, unknown>>;
   const messages = raw[0]?.messages as Array<Record<string, unknown>>;
   messages[0]!.skillIcon = 'invalid';
-  mem.set('hamaeditor-agent-threads', JSON.stringify(raw));
+  mem.set('rhwp-agent-threads', JSON.stringify(raw));
   assert.equal(getThread(t.id)?.messages[0]?.skillIcon, undefined);
 });
 
@@ -252,7 +252,7 @@ test('stored user-question drafts normalize legacy fields and discard mismatched
     status: 'expired',
     reason: 'hub-restarted',
   });
-  storage.setItem('hamaeditor-agent-threads', JSON.stringify([{
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
     id: 'legacy-question-thread',
     title: 'Question history',
     titleRequested: false,
@@ -444,7 +444,7 @@ test('user-question history counts toward the existing 200-message persistence c
 
 test('persisted Pi chats remain available after reload', () => {
   mem.clear();
-  storage.setItem('hamaeditor-agent-threads', JSON.stringify([{
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
     id: 'pi-thread',
     title: 'Pi 대화',
     titleRequested: false,
@@ -460,7 +460,7 @@ test('persisted Pi chats remain available after reload', () => {
 
 test('persisted OpenCode chats are dropped because opencode is not a live agent', () => {
   mem.clear();
-  storage.setItem('hamaeditor-agent-threads', JSON.stringify([{
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
     id: 'opencode-thread',
     title: 'OpenCode 대화',
     titleRequested: false,
@@ -476,7 +476,7 @@ test('persisted OpenCode chats are dropped because opencode is not a live agent'
 
 test('legacy threads default to the standard service tier', () => {
   mem.clear();
-  storage.setItem('hamaeditor-agent-threads', JSON.stringify([{
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
     id: 'legacy-fast',
     title: '이전 대화',
     titleRequested: false,
@@ -502,7 +502,7 @@ test('Codex Fast service tier survives thread persistence', () => {
 
 test('legacy threads migrate to direct workflow', () => {
   mem.clear();
-  storage.setItem('hamaeditor-agent-threads', JSON.stringify([{
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
     id: 'legacy',
     title: '이전 대화',
     titleRequested: false,
@@ -575,7 +575,7 @@ test('threads keep their document key and legacy threads fall back to null', () 
   upsertThread(t);
   assert.equal(getThread(t.id)?.docKey, '보고서.hwpx');
 
-  storage.setItem('hamaeditor-agent-threads', JSON.stringify([{
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
     id: 'legacy',
     title: '이전 대화',
     titleRequested: false,
@@ -601,12 +601,12 @@ test('threads persist only stable document reference identity, never reference b
   t.messages.push({ role: 'user', text: '첨부한 자료로 고쳐줘' });
   upsertThread(t);
   assert.equal(getThread(t.id)?.documentId, 'doc-stable-1');
-  const raw = mem.get('hamaeditor-agent-threads') ?? '';
+  const raw = mem.get('rhwp-agent-threads') ?? '';
   assert.doesNotMatch(raw, /base64|arrayBuffer|blob:/i);
 
   const stored = JSON.parse(raw) as Array<Record<string, unknown>>;
   delete stored[0]!.documentId;
-  mem.set('hamaeditor-agent-threads', JSON.stringify(stored));
+  mem.set('rhwp-agent-threads', JSON.stringify(stored));
   assert.equal(getThread(t.id)?.documentId, null);
 });
 
@@ -637,7 +637,7 @@ test('user message attachment metadata persists without file bytes', () => {
     size: 2048,
     status: 'ready',
   });
-  assert.doesNotMatch(mem.get('hamaeditor-agent-threads') ?? '', /data:application\/pdf|base64/i);
+  assert.doesNotMatch(mem.get('rhwp-agent-threads') ?? '', /data:application\/pdf|base64/i);
 });
 
 test('threads persist only the active template stable id', () => {
@@ -648,7 +648,7 @@ test('threads persist only the active template stable id', () => {
   t.messages.push({ role: 'user', text: '이 템플릿으로 정리해줘' });
   upsertThread(t);
   assert.equal(getThread(t.id)?.activeTemplateId, 'template-stable-id');
-  const raw = mem.get('hamaeditor-agent-threads') ?? '';
+  const raw = mem.get('rhwp-agent-threads') ?? '';
   assert.doesNotMatch(raw, /contentHash|arrayBuffer|base64|blob:/i);
 });
 
@@ -659,9 +659,9 @@ test('listThreadsByDocument groups by document, groups ordered by recent activit
     t.messages.push({ role: 'user', text });
     upsertThread(t);
     // upsertThread 가 updatedAt 을 지금으로 찍으므로 저장본을 직접 되감는다.
-    const stored = JSON.parse(mem.get('hamaeditor-agent-threads') ?? '[]') as Array<Record<string, unknown>>;
+    const stored = JSON.parse(mem.get('rhwp-agent-threads') ?? '[]') as Array<Record<string, unknown>>;
     stored.find((s) => s.id === t.id)!.updatedAt = updatedAt;
-    mem.set('hamaeditor-agent-threads', JSON.stringify(stored));
+    mem.set('rhwp-agent-threads', JSON.stringify(stored));
     return t;
   };
   mk('a.hwpx', 'a 첫 채팅', 10);
@@ -745,7 +745,7 @@ test('forgetDocumentThreads removes only that document group and its open-order 
   assert.ok(removed.includes(gone.id));
   assert.equal(getThread(gone.id), null);
   assert.deepEqual(new Set(listThreads().map((t) => t.id)), new Set([legacy.id, kept.id]));
-  const orderAfterId = JSON.parse(mem.get('hamaeditor-agent-doc-order') ?? '[]') as string[];
+  const orderAfterId = JSON.parse(mem.get('rhwp-agent-doc-order') ?? '[]') as string[];
   assert.ok(!orderAfterId.includes('id:doc-a'));
   assert.ok(orderAfterId.includes('name:a.hwpx'));
 
@@ -753,7 +753,7 @@ test('forgetDocumentThreads removes only that document group and its open-order 
   forgetDocumentThreads(null, 'a.hwpx');
   assert.equal(getThread(legacy.id), null);
   assert.deepEqual(listThreads().map((t) => t.id), [kept.id]);
-  const orderAfterName = JSON.parse(mem.get('hamaeditor-agent-doc-order') ?? '[]') as string[];
+  const orderAfterName = JSON.parse(mem.get('rhwp-agent-doc-order') ?? '[]') as string[];
   assert.ok(!orderAfterName.includes('name:a.hwpx'));
   assert.ok(orderAfterName.includes('id:doc-b'));
 });
@@ -794,7 +794,7 @@ test('workflow and every presented plan persist as history without approval auth
   assert.deepEqual(restored?.plans, [previousPlan, plan]);
   assert.equal(restored?.messages[2]?.kind, 'plan');
   assert.equal(restored?.messages[2]?.kind === 'plan' ? restored.messages[2].planState : undefined, 'executed');
-  const stored = JSON.parse(mem.get('hamaeditor-agent-threads') ?? '[]') as Array<Record<string, unknown>>;
+  const stored = JSON.parse(mem.get('rhwp-agent-threads') ?? '[]') as Array<Record<string, unknown>>;
   assert.equal('phase' in stored[0]!, false);
   assert.equal('capabilityEpoch' in stored[0]!, false);
   assert.equal('approved' in stored[0]!, false);
@@ -910,7 +910,7 @@ test('markers, provider cursors, and context usage survive persistence and the m
 
 test('malformed stored markers and cursors are dropped instead of crashing the thread', () => {
   mem.clear();
-  storage.setItem('hamaeditor-agent-threads', JSON.stringify([{
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
     id: 'stored-markers', title: 't', titleRequested: true, createdAt: 1, updatedAt: 2,
     agent: 'claude', model: 'sonnet', effort: 'high',
     providerSessions: { claude: { sessionId: '' }, codex: { sessionId: 'ok', updatedAt: 3 }, nope: { sessionId: 'x' } },
