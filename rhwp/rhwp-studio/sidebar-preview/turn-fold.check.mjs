@@ -47,7 +47,7 @@ try {
   async function open(query) {
     await page.goto(`${origin}/?theme=light&width=480&${query}`, { waitUntil: 'networkidle0' });
     await page.waitForFunction(() => window.sidebarPreview);
-    await page.waitForFunction(() => !document.querySelector('.ag-input').disabled);
+    await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
   }
   async function play(query) {
     await open(`reset=1&${query}`);
@@ -71,6 +71,17 @@ try {
       await page.screenshot({ path: resolve(artifacts, 'turn-fold-failure.png') });
       throw new Error(`${name}: ${error.message}\nRuntime errors: ${JSON.stringify(errors)}`, { cause: error });
     }
+  }
+  /** "편집 중…" 고리는 지연 동안 숨은 채 대화 중간에 남아 있어도 언제나 대화 흐름에 있고 접힘에 들지 않는다. */
+  async function assertRingOutsideFolds() {
+    const ring = await page.evaluate(() => {
+      const node = document.querySelector('.ag-turn-pending');
+      return {
+        inFlow: node?.parentElement === document.querySelector('.ag-messages'),
+        inFold: Boolean(node?.closest('.ag-turn-fold')),
+      };
+    });
+    assert.deepEqual(ring, { inFlow: true, inFold: false });
   }
   /** 화면의 접힘 줄 — 머리 문구, 접힘 상태, 본문 inert, 본문 안의 작업 노드 수. */
   const folds = () => page.$$eval('.ag-messages > .ag-turn-fold:not([hidden])', (rows) => rows.map((row) => ({
@@ -112,6 +123,7 @@ try {
       };
     });
     assert.deepEqual(layout, { answerInFlow: true, answerAfterRow: true, copyVisible: true, userBeforeRow: true, workInFlow: 0 });
+    await assertRingOutsideFolds();
     // 접힌 본문은 클릭을 받지 않는다.
     assert.equal(await page.$eval('.ag-turn-fold .ag-activity-toggle', (node) => node.closest('[inert]') !== null), true);
     await screenshot('turn-fold');
@@ -160,6 +172,7 @@ try {
     const [fold] = await folds();
     assert.match(fold.label, /^중단됨/);
     assert.equal(fold.collapsed, true);
+    await assertRingOutsideFolds();
     await screenshot('turn-fold-interrupted');
   });
 
@@ -200,6 +213,7 @@ try {
       slotsInFold: document.querySelectorAll('.ag-turn-fold .ag-fleet-slot').length,
     }));
     assert.deepEqual(await fleetState(), { hostedCards: 1, hiddenSlotsInFlow: 1, cardsInFlow: 0, slotsInFold: 0 });
+    await assertRingOutsideFolds();
     // 백그라운드 작업이 턴 뒤에 끝나면 카드는 접힘 밖, 흐름의 예약 자리에 보이게 내려앉는다.
     await page.evaluate(() => {
       for (const task of window.__backgroundTasks) {
@@ -250,6 +264,7 @@ try {
     const [fold] = await folds();
     assert.match(fold.label, /^중단됨/);
     assert.deepEqual([fold.collapsed, fold.inert], [false, false], '읽는 중인 턴은 펼친 채로 둔다');
+    await assertRingOutsideFolds();
     const after = await page.evaluate(() => window.__readerLine.getBoundingClientRect().top);
     assert.ok(Math.abs(after - before.top) <= 2, `읽던 줄이 ${after - before.top}px 움직였다`);
     assert.equal(await page.evaluate(() => Boolean(window.__readerLine.closest('.ag-turn-fold-body'))

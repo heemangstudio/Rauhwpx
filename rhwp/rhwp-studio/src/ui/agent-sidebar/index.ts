@@ -2403,10 +2403,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     turnPendingLabel.textContent = `${AGENT_LABEL[who]} 편집 중…`;
     messages.insertBefore(turnPending, messagesEnd);
   });
-  /** 도는 턴의 접힘 자리표시(숨은 줄)는 내용이 아니다 — 스크롤 기준을 고를 때 건너뛴다. */
+  /**
+   * 도는 턴의 접힘 자리표시(숨은 줄)와 숨어 있는 "편집 중…" 고리는 내용이 아니다 —
+   * 스크롤 기준을 고를 때 건너뛴다. 숨은 고리는 지연 동안 대화 중간에 남아 있을 수 있다.
+   */
   function skipTurnFoldPlaceholders(node: Element | null): Element | null {
     let current = node;
-    while (current instanceof HTMLElement && current.hidden && current.classList.contains('ag-turn-fold')) {
+    while (
+      current instanceof HTMLElement && current.hidden
+      && (current === turnPending || current.classList.contains('ag-turn-fold'))
+    ) {
       current = current.previousElementSibling;
     }
     return current;
@@ -7977,14 +7983,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function foldSettledTurn(marker: ThreadTurnMessage): void {
     const row = turnFoldRows.get(marker.messageId);
     if (!row || row.root.parentElement !== messages) return;
+    // 이 턴의 작업은 줄 뒤에서 대화 끝(다음 턴의 줄) 사이에 있다. "편집 중…" 고리는 지연 동안
+    // 숨은 채 그 사이에 남아 있을 수 있어 건너뛰기만 하고, 작업 노드가 아니라 접힘에 들지 않는다.
     const nodes: HTMLElement[] = [];
-    const tail = conversationTail();
     for (
       let node = row.root.nextElementSibling;
-      node && node !== tail && node !== messagesEnd && node !== turnPending && !node.classList.contains('ag-turn-fold');
+      node && node !== messagesEnd && !node.classList.contains('ag-turn-fold');
       node = node.nextElementSibling
     ) {
-      if (node instanceof HTMLElement && isTurnWorkNode(node)) nodes.push(node);
+      if (node !== turnPending && node instanceof HTMLElement && isTurnWorkNode(node)) nodes.push(node);
     }
     const view = settledTurnView(currentThread.messages, marker, nodes.length > 0);
     if (!view || view.outcome === 'failed' || (view.outcome === 'completed' && nodes.length === 0)) {
