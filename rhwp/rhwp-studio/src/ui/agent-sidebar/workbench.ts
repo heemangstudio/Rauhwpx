@@ -61,16 +61,18 @@ export function createSidebarWorkbench(deps: {
   strip.className = 'ag-workbench-tabs';
   strip.setAttribute('role', 'tablist');
   strip.setAttribute('aria-label', '열린 작업 탭');
-  const previous = document.createElement('button');
+  // 넘친 탭은 오른쪽 화살표 하나로 넘겨 본다. 끝에 닿으면 처음으로 돌아간다.
   const next = document.createElement('button');
-  for (const [button, label, direction] of [[previous, '이전 탭 보기', -1], [next, '다음 탭 보기', 1]] as const) {
-    button.type = 'button';
-    button.className = 'ag-workbench-scroll';
-    button.setAttribute('aria-label', label);
-    button.textContent = direction === -1 ? '‹' : '›';
-    button.addEventListener('click', () => strip.scrollBy({ left: direction * strip.clientWidth * .75,
-      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
-  }
+  next.type = 'button';
+  next.className = 'ag-workbench-scroll';
+  next.setAttribute('aria-label', '다음 탭 보기');
+  next.textContent = '›';
+  next.addEventListener('click', () => {
+    const atEnd = strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1;
+    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+    if (atEnd) strip.scrollTo({ left: 0, behavior });
+    else strip.scrollBy({ left: strip.clientWidth * .75, behavior });
+  });
   const add = document.createElement('button');
   add.type = 'button';
   add.className = 'ag-workbench-add';
@@ -79,7 +81,7 @@ export function createSidebarWorkbench(deps: {
   add.append(projectIcon('plus'));
   const actions = document.createElement('div');
   actions.className = 'ag-workbench-actions';
-  head.append(title, previous, strip, next, add, actions);
+  head.append(title, strip, next, add, actions);
   // T3 Code의 빈 칸처럼 열 수 있는 작업과 글자 단축키를 보인다.
   const launcher = document.createElement('div');
   launcher.className = 'ag-workbench-launcher';
@@ -148,13 +150,9 @@ export function createSidebarWorkbench(deps: {
   }
   function updateScrollControls(): void {
     const overflow = strip.scrollWidth > strip.clientWidth + 1;
-    previous.disabled = !overflow || strip.scrollLeft <= 1;
-    next.disabled = !overflow || strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1;
-    for (const button of [previous, next]) {
-      // 넘칠 때는 버튼 자리를 유지하여 가로 스크롤이 ResizeObserver의 선택 탭 복귀를 일으키지 않게 한다.
-      button.hidden = !overflow;
-      button.style.visibility = button.disabled ? 'hidden' : 'visible';
-    }
+    next.hidden = !overflow;
+    const atEnd = strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1;
+    next.setAttribute('aria-label', atEnd ? '처음 탭 보기' : '다음 탭 보기');
   }
   function activateTab(key: string): void {
     if (key.startsWith('resource:')) {

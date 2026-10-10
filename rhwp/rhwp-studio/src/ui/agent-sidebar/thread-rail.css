@@ -79,6 +79,45 @@
   transition: var(--ag-transition-color);
 }
 
+/* 집중 모드 채팅 목록 왼쪽 아래의 설정 행. 좁은 사이드바는 환경 설정(Cmd+/)으로 연다. */
+.ag-threads-settings-btn {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  margin: 0 -6px -9px -2px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-fullscreen .ag-threads-settings-btn {
+  display: flex;
+}
+
+.ag-threads-settings-btn .ag-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.ag-threads-settings-btn:hover {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-threads-settings-btn:active {
+  background: var(--ag-pressed);
+  transition-duration: 0s;
+}
+
 .ag-threads-tool .ag-icon {
   width: 14px;
   height: 14px;

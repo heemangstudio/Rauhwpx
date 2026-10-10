@@ -19,7 +19,7 @@
 .ag-workbench-changes .ag-changes-drawer { width: 100%; }
 .ag-workbench-changes .ag-review { flex: 0 0 auto; }
 .ag-root:not(.ag-fullscreen) .ag-workbench-page { display: none; }
-@keyframes ag-workbench-enter { from { opacity: .65; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes ag-workbench-enter { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
   .ag-workbench-page { animation: none; }
 }
@@ -70,14 +70,37 @@
 .ag-workbench-actions:empty { display: none; }
 .ag-workbench-actions .ag-header-icon-btn { width: 26px; height: 26px; }
 
-/* 집중 화면의 작업 칸. 문서 편집기 옆의 일반 사이드바는 원래 배치를 쓴다. */
+/* 집중 화면의 작업 칸. 문서 편집기 옆의 일반 사이드바는 원래 배치를 쓴다.
+   T3 Code처럼 제목 막대 높이까지 올라와 탭이 칸 열기 단추와 한 줄에 선다. */
 .ag-fullscreen .ag-workbench-page {
   grid-column: 3;
-  grid-row: 2;
+  grid-row: 1 / -1;
   position: relative;
   inset: auto;
   border-left: 1px solid var(--ag-border);
 }
+.ag-fullscreen:not(.ag-workspace-compact).ag-workbench-open .ag-workspace-bar { grid-column: 1 / 3; }
+.ag-fullscreen:not(.ag-workspace-compact) .ag-workbench-head {
+  min-height: var(--ag-workspace-bar-h, 48px);
+  padding-right: 124px;
+  border-bottom: 0;
+}
+html.desktop-mac .ag-fullscreen:not(.ag-workspace-compact) .ag-workbench-head { -webkit-app-region: drag; }
+html.desktop-mac .ag-fullscreen .ag-workbench-head :is(button, [role="tab"], [tabindex]:not([tabindex="-1"])) { -webkit-app-region: no-drag; }
+
+/* 환경·닫기·칸 열기 묶음은 무대 오른쪽 위에 고정된다. 칸이 열리면 탭 줄 오른쪽 끝에 놓인다. */
+.ag-workspace-corner { display: none; }
+.ag-fullscreen .ag-workspace-corner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: absolute;
+  top: calc((var(--ag-workspace-bar-h, 48px) - 32px) / 2);
+  right: 10px;
+  z-index: 21;
+}
+html.desktop-mac .ag-fullscreen .ag-workspace-corner { -webkit-app-region: no-drag; }
+.ag-fullscreen .ag-workspace-trailing { padding-right: 124px; }
 .ag-fullscreen.ag-workbench-open .ag-stage {
   grid-template-columns: var(--ag-rail-w, 264px) minmax(0, 1fr) var(--ag-review-w, 560px);
 }

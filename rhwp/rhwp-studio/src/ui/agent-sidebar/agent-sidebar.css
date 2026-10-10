@@ -444,16 +444,8 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 .ag-model-summary {
-  min-height: 52px;
+  min-height: 44px;
   padding: 8px 12px 8px 10px;
-}
-
-/* 전체 화면 토글 — 헤더 왼쪽 모서리에 고정. 모드 전환 때
-   DOM 을 옮기지 않으므로 위치가 흔들리지 않는다. */
-.ag-model-summary > .ag-fullscreen-btn {
-  flex: 0 0 auto;
-  align-self: center;
-  margin-right: 0;
 }
 
 .ag-context-row {
@@ -463,16 +455,19 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   padding: 0 2px;
 }
 
+/* 채팅 이름 / 문서 이름 — 집중 화면 제목 줄과 같은 가로 배치. */
 .ag-document-context {
   display: flex;
   flex: 1 1 auto;
+  align-items: baseline;
+  gap: 7px;
   min-width: 0;
-  flex-direction: column;
-  gap: 0;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-tight);
 }
 
-.ag-document-name,
-.ag-selection-context {
+.ag-chat-title,
+.ag-document-name {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -480,20 +475,17 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   white-space: nowrap;
 }
 
-.ag-document-name {
+.ag-chat-title {
+  flex: 0 1 auto;
+  max-width: 60%;
   color: var(--ag-text);
-  font-size: var(--ag-fs-body);
-  font-weight: var(--ag-fw-strong);
-  letter-spacing: var(--ag-track-tight);
-  line-height: var(--ag-lh-tight);
+  font-weight: var(--ag-fw-medium);
 }
 
-/* Selection context stays secondary to the document title. */
-.ag-selection-context {
+/* 가운데 줄임이 남은 폭 전체를 재도록 내용과 무관한 폭을 갖는다. */
+.ag-document-name {
+  flex: 1 1 0;
   color: var(--ag-text-secondary);
-  font-size: var(--ag-fs-meta);
-  font-variant-numeric: var(--ag-numeric);
-  line-height: var(--ag-lh-secondary);
 }
 
 .ag-header-actions {
@@ -6509,7 +6501,7 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   grid-column: 1 / -1;
   grid-row: 1;
   display: grid;
-  /* 첫 칸은 레일 폭과 정확히 같아야 한다. 레일 최소 폭(200px)보다 큰 하한을
+  /* 첫 칸은 레일 폭과 정확히 같아야 한다. 레일 최소 폭(220px)보다 큰 하한을
      두면 제목이 레일 면을 넘어 대화 면 위에서 잘린다. */
   grid-template-columns: var(--ag-rail-w, 264px) minmax(280px, 1fr) minmax(230px, auto);
   align-items: stretch;
@@ -6523,7 +6515,8 @@ html.ag-fs-vt-exit::view-transition-new(root) {
 /* 레일이 접히면 첫 칸은 토글까지만 남아 제목이 토글 바로 뒤로 온다. */
 .ag-fullscreen.ag-rail-collapsed .ag-workspace-bar {
   grid-template-columns:
-    calc(var(--ag-workspace-lead-inset) + 32px) minmax(280px, 1fr) minmax(230px, auto);
+    calc(var(--ag-workspace-lead-inset) + 32px + 8px + var(--ag-workspace-brand-short-w, 66px) + 14px)
+    minmax(280px, 1fr) minmax(230px, auto);
 }
 
 .ag-fullscreen .ag-workspace-leading {
@@ -6667,13 +6660,21 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   letter-spacing: var(--ag-track-tight);
 }
 
-/* 레일이 접히면 칸이 줄어드는 동안 먼저 사라진다. */
-.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand {
-  opacity: 0;
-  visibility: hidden;
-  transition:
-    opacity var(--ag-dur-fast) var(--ag-ease-out),
-    visibility 0s linear var(--ag-dur-fast);
+/* 레일이 접히면 마크와 짧은 이름 Hama 만 토글 옆에 남는다. */
+.ag-workspace-brand-short,
+.ag-workspace-brand.ag-short .ag-workspace-brand-name:not(.ag-workspace-brand-short),
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
+  display: none;
+}
+
+.ag-workspace-brand.ag-short {
+  /* 가장 좁은 레일(220px)에서도 신호등 옆에 마크와 Hama 가 들어가게 오른쪽 여백을 줄인다. */
+  margin-right: 4px;
+}
+
+.ag-workspace-brand.ag-short .ag-workspace-brand-short,
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-short {
+  display: inline;
 }
 
 .ag-workspace-trailing {
@@ -7019,22 +7020,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   display: none;
 }
 
-.ag-workspace-exit-btn {
-  display: inline-flex;
-  min-height: 32px;
-  align-items: center;
-  gap: 6px;
-  margin-left: 4px;
-  padding: 0 12px;
-  border-radius: var(--ag-r-row);
-  font-size: var(--ag-fs-secondary);
-}
-
-.ag-workspace-exit-btn .ag-icon {
-  width: 16px;
-  height: 16px;
-}
-
 /* Sidebar chrome gives way to the workspace title bar in focus mode. */
 .ag-fullscreen .ag-chat-page > .ag-header {
   display: none;
@@ -7335,18 +7320,8 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 }
 
 @media (max-width: 680px) {
-  .ag-workspace-exit-label {
-    display: none;
-  }
-
   .ag-fullscreen {
     --ag-workspace-lead-inset: 8px;
-  }
-
-  .ag-workspace-exit-btn {
-    width: 34px;
-    justify-content: center;
-    padding: 0;
   }
 
   .ag-environment-panel {
@@ -7513,16 +7488,33 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   }
 }
 
-/* 설정은 focus title bar를 유지한 채 두 번째 grid row를 채운다. */
+/* 설정은 제목 막대 높이까지 올라와 왼쪽 목록이 창 위 끝까지 한 면으로 이어진다.
+   닫기는 오른쪽 위 ✕ 와 Esc 가 맡는다. */
 .ag-workspace-settings-back {
   display: none;
+}
+
+.ag-fullscreen.ag-settings-open .ag-workspace-bar {
+  background: transparent;
+}
+
+.ag-fullscreen.ag-settings-open .ag-workspace-bar::before {
+  display: none;
+}
+
+.ag-fullscreen .ag-settings-nav {
+  padding-top: calc(var(--ag-workspace-bar-h, 48px) + 8px);
+}
+
+.ag-fullscreen .ag-settings-body {
+  margin-top: var(--ag-workspace-bar-h, 48px);
 }
 
 .ag-fullscreen .ag-settings-page {
   position: relative;
   inset: auto;
   grid-column: 1 / -1;
-  grid-row: 2;
+  grid-row: 1 / -1;
   z-index: 3;
   min-width: 0;
   min-height: 0;
@@ -7534,20 +7526,11 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   display: none;
 }
 
-.ag-fullscreen.ag-settings-open .ag-workspace-settings-back {
-  display: inline-flex;
-}
-
 .ag-fullscreen.ag-settings-open .ag-workspace-threads-btn,
 .ag-fullscreen.ag-settings-open .ag-workspace-document-context,
 .ag-fullscreen.ag-settings-open .ag-workspace-agent-context,
 .ag-fullscreen.ag-settings-open .ag-environment-wrap {
   display: none;
-}
-
-.ag-fullscreen.ag-settings-open .ag-workspace-settings-btn {
-  background: var(--ag-selected);
-  color: var(--ag-text);
 }
 
 /* 집중 모드는 대화 화면을 계속 붙여 두므로 설정을 열 때 두 화면을

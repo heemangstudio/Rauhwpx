@@ -81,11 +81,6 @@
   box-shadow: none;
 }
 
-.ag-root .ag-workspace-exit-btn {
-  border-radius: var(--ag-button-radius);
-  box-shadow: none;
-}
-
 @media (prefers-reduced-motion: no-preference) {
   .ag-root button,
   .ag-root [role='button'] {

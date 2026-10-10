@@ -38,6 +38,7 @@ export interface InlinePromptDeps {
 /** 선택이 잠깐 흔들릴 때 칩이 따라다니지 않도록 잦아든 뒤에만 검사한다. */
 const CHECK_DEBOUNCE_MS = 200;
 const CONTROL_TAP_WINDOW_MS = 450;
+const ARMED_FRAME_FADE_MS = 160;
 const BOX_WIDTH_PX = 340;
 const CHIP_WIDTH_ESTIMATE_PX = 96;
 const EDGE_MARGIN_PX = 8;
@@ -258,21 +259,51 @@ class InlinePromptController {
 
   private armedFrame: HTMLElement | null = null;
 
+  private armedFrameTimer: number | null = null;
+
   /** Control 두 번으로 준비하면 편집 영역 위에 영역 캡처와 같은 옅은 틀을 띄운다. 클릭은 그대로 문서로 간다. */
   private setArmed(armed: boolean): void {
     this.armed = armed;
     const container = document.getElementById('scroll-container');
     container?.classList.toggle('ag-inline-armed', armed);
-    if (armed && container) {
-      this.armedFrame ??= Object.assign(document.createElement('div'), { className: 'ag-inline-armed-frame' });
-      this.armedFrame.setAttribute('aria-hidden', 'true');
-      this.placeArmedFrame();
-      document.body.append(this.armedFrame);
-      window.addEventListener('resize', this.placeArmedFrame);
-    } else {
-      this.armedFrame?.remove();
-      window.removeEventListener('resize', this.placeArmedFrame);
+    if (armed && container) this.showArmedFrame();
+    else this.hideArmedFrame();
+  }
+
+  private showArmedFrame(): void {
+    if (this.armedFrameTimer !== null) {
+      window.clearTimeout(this.armedFrameTimer);
+      this.armedFrameTimer = null;
     }
+    if (!this.armedFrame) {
+      this.armedFrame = Object.assign(document.createElement('div'), { className: 'ag-inline-armed-frame' });
+      this.armedFrame.setAttribute('aria-hidden', 'true');
+      // 영역 캡처처럼 지금 무엇을 할 수 있는지 위에 짧게 알린다.
+      const hint = Object.assign(document.createElement('div'), {
+        className: 'ag-inline-armed-hint',
+        textContent: '문서에서 텍스트를 선택하세요 · S 화면 캡처 · Esc 취소',
+      });
+      this.armedFrame.append(hint);
+    }
+    this.armedFrame.classList.remove('ag-leaving');
+    // 선택을 시작하면 안내는 걷고 틀만 남긴다.
+    this.armedFrame.classList.toggle('ag-selecting', this.selectionStarted);
+    this.placeArmedFrame();
+    // 클릭으로 다시 준비될 때 틀을 떼었다 붙이지 않아 깜박이지 않는다.
+    if (!this.armedFrame.isConnected) document.body.append(this.armedFrame);
+    window.addEventListener('resize', this.placeArmedFrame);
+  }
+
+  /** 틀은 바로 떼지 않고 잠깐 옅어지며 사라진다. 같은 프레임에 다시 준비되면 그대로 남는다. */
+  private hideArmedFrame(): void {
+    window.removeEventListener('resize', this.placeArmedFrame);
+    const frame = this.armedFrame;
+    if (!frame?.isConnected || this.armedFrameTimer !== null) return;
+    frame.classList.add('ag-leaving');
+    this.armedFrameTimer = window.setTimeout(() => {
+      this.armedFrameTimer = null;
+      frame.remove();
+    }, ARMED_FRAME_FADE_MS);
   }
 
   private readonly placeArmedFrame = (): void => {
@@ -374,10 +405,8 @@ class InlinePromptController {
       return;
     }
     const selectionKey = JSON.stringify(source);
-    if (this.state === 'chip' && selectionKey !== this.chipSelectionKey) {
-      this.hideAll();
-      return;
-    }
+    // 칩이 뜬 뒤 Shift+방향키로 선택을 넓히면 칩과 틀이 새 선택을 따라간다.
+    if (this.state === 'chip' && selectionKey === this.chipSelectionKey) return;
     if (this.state !== 'chip' && (!this.armed || (!this.selectionStarted && selectionKey === this.armedSelectionKey))) return;
     const anchor = this.probeAnchor(source);
     if (!anchor) {
@@ -385,7 +414,10 @@ class InlinePromptController {
       return;
     }
     this.anchor = anchor;
-    this.setArmed(false);
+    // 칩이 떠 있는 동안 틀은 남긴다. 상자가 열리거나 칩이 닫힐 때 사라진다.
+    this.armed = false;
+    document.getElementById('scroll-container')?.classList.remove('ag-inline-armed');
+    this.armedFrame?.classList.add('ag-selecting');
     this.chipSelectionKey = selectionKey;
     this.state = 'chip';
     this.chip.hidden = false;
@@ -584,6 +616,7 @@ class InlinePromptController {
       return;
     }
     this.state = 'open';
+    this.hideArmedFrame();
     this.captureError = '';
     this.chip.disabled = true;
     this.chip.setAttribute('aria-busy', 'true');
@@ -1186,6 +1219,8 @@ class InlinePromptController {
 
   dispose(): void {
     this.setArmed(false);
+    if (this.armedFrameTimer !== null) window.clearTimeout(this.armedFrameTimer);
+    this.armedFrame?.remove();
     this.sendAbort?.abort();
     this.releasePreviewUrls();
     if (this.checkTimer !== null) window.clearTimeout(this.checkTimer);

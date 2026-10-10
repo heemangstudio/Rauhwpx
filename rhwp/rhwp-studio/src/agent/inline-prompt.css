@@ -10,8 +10,24 @@
   pointer-events: none;
   animation: ag-inline-armed-in 120ms ease-out;
 }
+.ag-inline-armed-hint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--ui-surface-raised);
+  color: var(--ui-text);
+  font: 12px/1.4 var(--font-family-ui);
+  box-shadow: 0 2px 14px #0002;
+  white-space: nowrap;
+}
+.ag-inline-armed-frame.ag-selecting .ag-inline-armed-hint { display: none; }
+.ag-inline-armed-frame { transition: opacity 160ms ease-out; }
+.ag-inline-armed-frame.ag-leaving { opacity: 0; }
 @keyframes ag-inline-armed-in { from { opacity: 0; } to { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .ag-inline-armed-frame { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .ag-inline-armed-frame { animation: none; transition: none; } }
 
 .ag-inline-layer {
   position: absolute;

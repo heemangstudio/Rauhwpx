@@ -67,7 +67,7 @@ async function clickText(page: any, selector: string, text: string) {
 
 test('settings keyboard entry exposes the named region and dirty exit preserves, discards or persists the draft', async (t) => {
   const page = await open(t);
-  await page.focus('.ag-settings-btn');
+  await page.focus('#settings');
   await page.keyboard.press('Enter');
   await page.waitForSelector('.ag-root.ag-settings-open');
   assert.equal(
@@ -120,7 +120,7 @@ test('settings keyboard entry exposes the named region and dirty exit preserves,
         .querySelector('.ag-root')!
         .classList.contains('ag-settings-open'),
   );
-  await page.click('.ag-settings-btn');
+  await page.click('#settings');
   await page.click('[data-destination="editing"]');
   assert.equal(
     await page.$eval(toggle, (el: HTMLInputElement) => el.checked),

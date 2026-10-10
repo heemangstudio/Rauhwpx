@@ -604,7 +604,7 @@ function persistEnvironmentPanelOpen(open: boolean): void {
 /* 전체 화면의 대화 목록과 변경 사항 drawer 폭. */
 const RAIL_WIDTH_KEY = 'rhwp-agent-rail-width';
 const RAIL_WIDTH_DEFAULT = 264;
-const RAIL_WIDTH_MIN = 200;
+const RAIL_WIDTH_MIN = 220;
 const REVIEW_WIDTH_KEY = 'rhwp-agent-review-width';
 const REVIEW_WIDTH_DEFAULT = 560;
 const REVIEW_WIDTH_MIN = 320;
@@ -1717,11 +1717,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   takeoverBtn.hidden = true;
   takeoverBtn.addEventListener('click', () => bridge.takeOverConnection());
 
+  // 사이드바 제목 줄 — 집중 화면처럼 채팅 이름 / 문서 이름을 한 줄에 둔다.
   const documentContext = el('div', 'ag-document-context');
+  const chatTitle = el('span', 'ag-chat-title', '새 채팅');
+  const chatTitleSeparator = el('span', 'ag-workspace-title-sep', '/');
+  chatTitleSeparator.setAttribute('aria-hidden', 'true');
   const documentName = el('span', 'ag-document-name', '문서 없음');
   const documentWorktree = createWorktreeChip();
-  const selectionContext = el('span', 'ag-selection-context', '선택 없음');
-  documentContext.append(documentName, documentWorktree, selectionContext);
+  documentContext.append(chatTitle, chatTitleSeparator, documentName, documentWorktree);
 
   function isRenaming(target: HTMLElement): boolean {
     return target.querySelector('.inline-rename-input') !== null;
@@ -1774,19 +1777,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     setFullscreen(!fullscreen);
   });
 
-  // 설정 — 연결/기본값/사용량이 사는 페이지. 헤더 아이콘 한 자리만 쓴다.
-  const settingsBtn = el('button', 'ag-header-icon-btn ag-settings-btn');
-  settingsBtn.type = 'button';
-  settingsBtn.setAttribute('aria-label', '설정');
-  settingsBtn.setAttribute('aria-expanded', 'false');
-  settingsBtn.setAttribute('aria-controls', 'ag-settings-panel');
-  settingsBtn.title = '설정';
-  settingsBtn.appendChild(createIcon('gear'));
-  settingsBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    requestSettingsOpen();
-  });
-
   const versionsBtn = el('button', 'ag-header-icon-btn ag-versions-btn');
   versionsBtn.type = 'button';
   versionsBtn.setAttribute('aria-label', '버전');
@@ -1804,7 +1794,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     openConfiguredVersionControl();
   });
   // pane 액션은 문서 맥락 주변의 고정된 헤더 위치를 유지한다.
-  headerActions.append(connDot, takeoverBtn, agentUndoBtn, versionsBtn, threadsBtn, settingsBtn);
+  // 설정은 집중 모드의 채팅 목록 아래와 환경 설정(Cmd+/)에서 연다.
+  headerActions.append(connDot, takeoverBtn, agentUndoBtn, versionsBtn, threadsBtn, fullscreenBtn);
 
   selectors.append(providerWrap, llmWrap, effortWrap);
   const modelSummary = el('div', 'ag-model-summary');
@@ -1826,7 +1817,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const contextRow = el('div', 'ag-context-row');
   contextRow.append(documentContext);
 
-  modelSummary.append(fullscreenBtn, contextRow, headerActions);
+  modelSummary.append(contextRow, headerActions);
   header.append(modelSummary);
 
   /** 같은 이름의 작업 트리 사본이 있으면 지금 문서의 가지를 이름 옆에 보인다. */
@@ -1843,7 +1834,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!isRenaming(documentName)) {
       setMiddleTruncatedText(documentName, currentDocumentName, context?.documentName || '');
     }
-    selectionContext.textContent = context?.selectionLabel || '선택 없음';
     if (!isRenaming(workspaceDocumentName)) workspaceDocumentName.textContent = currentDocumentName;
     workspaceDocumentName.title = context?.documentName || '';
     focusGreeting.setDocumentName(context?.documentName || null);
@@ -2086,7 +2076,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const workspaceBrandMark = el('span', 'ag-rau-icon ag-workspace-brand-mark');
   workspaceBrandMark.setAttribute('aria-hidden', 'true');
   const workspaceBrandLockup = el('span', 'ag-workspace-brand-lockup');
-  workspaceBrandLockup.append(workspaceBrandMark, el('span', 'ag-workspace-brand-name', 'HamaEditor'));
+  // 레일을 접으면 긴 이름 대신 짧은 이름이 토글 옆에 남는다.
+  workspaceBrandLockup.append(
+    workspaceBrandMark,
+    el('span', 'ag-workspace-brand-name', 'HamaEditor'),
+    el('span', 'ag-workspace-brand-name ag-workspace-brand-short', 'Hama'),
+  );
   workspaceBrand.appendChild(workspaceBrandLockup);
 
   // 제목 줄 — 채팅 이름과 문서 이름을 한 줄에 나란히 둔다. 레일이 열려 있으면
@@ -2099,41 +2094,64 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const workspaceDocumentWorktree = createWorktreeChip();
   workspaceDocumentContext.append(workspaceChatTitle, workspaceTitleSeparator, workspaceDocumentName, workspaceDocumentWorktree);
   workspaceLeading.append(workspaceSettingsBack, workspaceThreadsBtn, workspaceBrand);
+  // 레일이 좁아 HamaEditor 가 들어가지 않으면 마크와 Hama 로 줄인다.
+  const fitWorkspaceBrand = (): void => {
+    workspaceBrand.classList.remove('ag-short');
+    workspaceBrand.classList.toggle('ag-short', workspaceBrandLockup.scrollWidth > workspaceBrand.clientWidth + 0.5);
+  };
+  // 관찰 중에 이름을 바꾸면 같은 프레임에 다시 알림이 와서 다음 프레임으로 미룬다.
+  let workspaceBrandFrame: number | null = null;
+  const workspaceBrandObserver = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(() => {
+        if (workspaceBrandFrame !== null) return;
+        workspaceBrandFrame = window.requestAnimationFrame(() => {
+          workspaceBrandFrame = null;
+          fitWorkspaceBrand();
+        });
+      })
+    : null;
+  workspaceBrandObserver?.observe(workspaceLeading);
 
   function updateWorkspaceChatTitle(): void {
-    if (isRenaming(workspaceChatTitle)) return;
     const title = currentThread.title || '새 채팅';
-    workspaceChatTitle.textContent = title;
-    workspaceChatTitle.title = title;
+    for (const target of [workspaceChatTitle, chatTitle]) {
+      if (isRenaming(target)) continue;
+      target.textContent = title;
+      target.title = title;
+    }
   }
   updateWorkspaceChatTitle();
 
-  // 집중 화면 제목 줄: 채팅 이름과 문서 이름을 두 번 눌러 그 자리에서 바꾼다.
-  workspaceChatTitle.classList.add('ag-renamable');
-  workspaceChatTitle.addEventListener('dblclick', (event) => {
-    event.preventDefault();
-    beginInlineRename(workspaceChatTitle, {
-      value: currentThread.title || '새 채팅',
-      label: '채팅 이름',
-      maxLength: 48,
-      commit: (next) => {
-        if (draftChat || currentThread.messages.length === 0) {
-          // 초안은 아직 저장되지 않는다. 첫 메시지를 보낼 때 이 이름으로 만들어진다.
-          currentThread.title = next.replace(/\s+/g, ' ').slice(0, 48);
-        } else {
-          const renamed = renameThread(currentThread.id, next);
-          if (!renamed) return null;
-          currentThread.title = renamed.title;
-        }
-        currentThread.titlePinned = true;
-        window.setTimeout(() => {
-          updateWorkspaceChatTitle();
-          if (threadsListVisible()) rebuildThreadsList();
-        }, 0);
-        return currentThread.title;
-      },
+  // 두 제목 줄 모두 채팅 이름과 문서 이름을 두 번 눌러 그 자리에서 바꾼다.
+  const bindChatTitleRename = (target: HTMLElement): void => {
+    target.classList.add('ag-renamable');
+    target.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      beginInlineRename(target, {
+        value: currentThread.title || '새 채팅',
+        label: '채팅 이름',
+        maxLength: 48,
+        commit: (next) => {
+          if (draftChat || currentThread.messages.length === 0) {
+            // 초안은 아직 저장되지 않는다. 첫 메시지를 보낼 때 이 이름으로 만들어진다.
+            currentThread.title = next.replace(/\s+/g, ' ').slice(0, 48);
+          } else {
+            const renamed = renameThread(currentThread.id, next);
+            if (!renamed) return null;
+            currentThread.title = renamed.title;
+          }
+          currentThread.titlePinned = true;
+          window.setTimeout(() => {
+            updateWorkspaceChatTitle();
+            if (threadsListVisible()) rebuildThreadsList();
+          }, 0);
+          return currentThread.title;
+        },
+      });
     });
-  });
+  };
+  bindChatTitleRename(workspaceChatTitle);
+  bindChatTitleRename(chatTitle);
   bindDocumentRename(workspaceDocumentName);
 
   // 대화 화면에서는 제목을 비운다 — 대화 위에 '대화'라고 적는 것은 정보가 없다.
@@ -2239,18 +2257,24 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   );
   environmentWrap.append(environmentToggle, environmentPanel);
 
-  const workspaceExitBtn = el('button', 'ag-workspace-exit-btn');
+  const workspaceExitBtn = el('button', 'ag-workspace-icon-btn ag-workspace-exit-btn');
   workspaceExitBtn.type = 'button';
-  workspaceExitBtn.setAttribute('aria-label', '문서 편집기로 돌아가기');
-  workspaceExitBtn.title = '문서 편집기로 돌아가기 (Esc)';
-  workspaceExitBtn.append(createIcon('contract'), el('span', 'ag-workspace-exit-label', '편집기로 돌아가기'));
-  const workspaceSettingsBtn = el('button', 'ag-workspace-icon-btn ag-workspace-settings-btn');
+  workspaceExitBtn.setAttribute('aria-label', '사이드바로 줄이기');
+  workspaceExitBtn.title = '사이드바로 줄이기 (Esc)';
+  // 평소에는 사이드바로 줄이는 단추, 설정 화면에서는 설정을 닫는 ✕ 다.
+  workspaceExitBtn.append(createIcon('contract'));
+  const applyWorkspaceExitLabel = (settingsOpen: boolean): void => {
+    workspaceExitBtn.replaceChildren(createIcon(settingsOpen ? 'close' : 'contract'));
+    const label = settingsOpen ? '설정 닫기' : '사이드바로 줄이기';
+    workspaceExitBtn.setAttribute('aria-label', label);
+    workspaceExitBtn.title = `${label} (Esc)`;
+  };
+  // 채팅 목록 왼쪽 아래 — 집중 모드에서 설정으로 가는 자리.
+  const workspaceSettingsBtn = el('button', 'ag-threads-settings-btn');
   workspaceSettingsBtn.type = 'button';
-  workspaceSettingsBtn.setAttribute('aria-label', '설정');
   workspaceSettingsBtn.setAttribute('aria-controls', 'ag-settings-panel');
   workspaceSettingsBtn.setAttribute('aria-expanded', 'false');
-  workspaceSettingsBtn.title = '설정';
-  workspaceSettingsBtn.appendChild(createIcon('gear'));
+  workspaceSettingsBtn.append(createIcon('gear'), el('span', 'ag-threads-settings-label', '설정'));
   // 왼쪽 대화 목록 단추와 짝을 이루는 오른쪽 작업 칸 단추.
   const workspacePanelBtn = el('button', 'ag-workspace-icon-btn ag-workspace-panel-btn');
   workspacePanelBtn.type = 'button';
@@ -2259,7 +2283,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   workspacePanelBtn.title = '작업 칸 열기';
   workspacePanelBtn.appendChild(createColumnIcon('ag-column-icon-end'));
   workspacePanelBtn.addEventListener('click', () => workbench?.toggle());
-  workspaceTrailing.append(workspaceAgentContext, environmentWrap, workspaceSettingsBtn, workspaceExitBtn, workspacePanelBtn);
+  workspaceTrailing.append(workspaceAgentContext);
+  // 환경·닫기·작업 칸 단추는 오른쪽 위 한 묶음이다. 작업 칸이 열리면 그 탭 줄 안에 선다.
+  const workspaceCorner = el('div', 'ag-workspace-corner');
+  workspaceCorner.append(environmentWrap, workspaceExitBtn, workspacePanelBtn);
   workspaceBar.append(workspaceLeading, workspaceTitle, workspaceDocumentContext, workspaceTrailing);
 
   // 전역 설정이 꺼져 있어도 이 문서에 버전 기록이 있으면(예: 자동 저장본 복구) 버전 창을 연다.
@@ -2359,8 +2386,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     window.requestAnimationFrame(() => planColumnClose.focus({ preventScroll: true }));
   });
   workspaceExitBtn.addEventListener('click', () => {
+    // 설정 화면에서는 ✕ 가 설정만 닫고 대화로 돌아간다.
     if (settingsPanelOpen) {
-      void requestSettingsClose(workspaceExitBtn, () => setFullscreen(false));
+      void requestSettingsClose(input);
       return;
     }
     setFullscreen(false);
@@ -3290,7 +3318,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     onDrop: (drop) => moveThread(drop.id, drop.pinned, { before: drop.before, after: drop.after }),
     onDragEnd: () => rebuildThreadsList(),
   });
-  threadsPage.append(threadsHeader, threadsToolbar.root, threadsToolbar.filterChip, threadsList);
+  threadsPage.append(threadsHeader, threadsToolbar.root, threadsToolbar.filterChip, threadsList, workspaceSettingsBtn);
 
   const skillsPage = el('div', 'ag-skills-page');
   skillsPage.id = 'ag-skills-panel';
@@ -3637,13 +3665,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateReconnectChip();
   });
   settingsPage.addEventListener('ag-settings-close-request', () => {
-    void requestSettingsClose(fullscreen ? workspaceSettingsBtn : settingsBtn);
+    void requestSettingsClose(fullscreen ? workspaceSettingsBtn : input);
   });
   settingsPage.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     e.preventDefault();
     e.stopPropagation();
-    void requestSettingsClose(fullscreen ? workspaceSettingsBtn : settingsBtn);
+    void requestSettingsClose(fullscreen ? workspaceSettingsBtn : input);
   });
 
   const versionsPage = versionManagerPage?.element ?? el('section', 'ag-versions-page');
@@ -3860,6 +3888,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     railResize,
     reviewResize,
     workbench.element,
+    workspaceCorner,
   );
 
   function applyRailWidth(width: number, opts?: { persist?: boolean; reclamp?: boolean }): void {
@@ -4689,10 +4718,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function closeSettingsPage(): void {
     settingsPanelOpen = false;
     root.classList.remove('ag-settings-open');
-    settingsBtn.setAttribute('aria-expanded', 'false');
     workspaceSettingsBtn.setAttribute('aria-expanded', 'false');
     workspaceSettingsBtn.classList.remove('ag-active');
     workspaceTitle.textContent = '';
+    applyWorkspaceExitLabel(false);
     settingsPage.setAttribute('aria-hidden', 'true');
     settingsPanel.close();
   }
@@ -4767,7 +4796,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function setSettingsPanelOpen(open: boolean, destination?: SettingsDestination): void {
     if (open) workbench?.select(null);
     if (!open && settingsPanelOpen && settingsPanel.isDirty()) {
-      void requestSettingsClose(fullscreen ? workspaceSettingsBtn : settingsBtn);
+      void requestSettingsClose(fullscreen ? workspaceSettingsBtn : input);
       return;
     }
     if (open && referenceLibrary.isOpen()) referenceLibrary.setOpen(false);
@@ -4782,10 +4811,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       closeVersionsPage();
     }
     root.classList.toggle('ag-settings-open', open);
-    settingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     workspaceSettingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     workspaceSettingsBtn.classList.toggle('ag-active', open);
     workspaceTitle.textContent = open ? '설정' : '';
+    applyWorkspaceExitLabel(open);
     settingsPage.setAttribute('aria-hidden', open ? 'false' : 'true');
     if (fullscreen) {
       // 전체 화면에서 목록 관련 aria 는 레일 접힘 상태를 뜻하므로 덮어쓰지 않는다.
@@ -10138,6 +10167,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       contextUnsubs.forEach((unsub) => unsub());
       messagesMutationObserver?.disconnect();
       messagesResizeObserver?.disconnect();
+      workspaceBrandObserver?.disconnect();
       if (messagesResizeFrame !== null) window.cancelAnimationFrame(messagesResizeFrame);
       dockResizeObserver?.disconnect();
       composerStackResizeObserver?.disconnect();
