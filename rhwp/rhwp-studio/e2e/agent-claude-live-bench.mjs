@@ -24,6 +24,7 @@ import {
   ensureChromePath,
   findAvailablePort,
   openSample,
+  removeTempDir,
   startHub,
   startVite,
   stats,
@@ -252,7 +253,7 @@ try {
     const keep = path.join(os.tmpdir(), `rhwp-claude-live-trace-${Date.now()}.jsonl`);
     try { fs.copyFileSync(traceFile, keep); console.log(`  [trace] ${keep}`); } catch { /* 추적 없음 */ }
   }
-  fs.rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5 });
+  removeTempDir(fixtureRoot);
 }
 
 /** 격리된 claude 홈의 세션 기록(.claude/projects/<cwd>/<세션>.jsonl)을 픽스처를 지우기 전에 옮긴다. */

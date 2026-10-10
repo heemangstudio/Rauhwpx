@@ -19,7 +19,6 @@
  *
  * 실행: npm run e2e:agent-edit-loop   (headless Chrome + 자체 vite/허브 프로세스 기동)
  */
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -31,11 +30,11 @@ import { PNG } from 'pngjs';
 import { registerHubSession } from '../../../desktop/agent-hub.mjs';
 import { writeFakeCliBin } from '../../rhwp-agent/tests/fake-cli-bin.mjs';
 import { ReferenceStore } from '../../rhwp-agent/reference-store.mjs';
+import { npmCmd, removeTempDir, spawnLogged, stopServer } from './agent-bench-harness.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const studioRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(studioRoot, '..');
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 const SAMPLE = 'footnote-01.hwp';
 const HUB_TOKEN = 'e2e';
@@ -73,31 +72,6 @@ async function waitForHttp(url, label, child, timeoutMs = 45000) {
     await delay(400);
   }
   throw new Error(`${label} 준비 대기 시간 초과: ${lastError?.message || 'unknown'}`);
-}
-
-function spawnLogged(cmd, args, cwd, extraEnv, logPath) {
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-  const logFile = fs.openSync(logPath, 'w');
-  const child = spawn(cmd, args, {
-    cwd,
-    stdio: ['ignore', logFile, logFile],
-    env: { ...process.env, ...extraEnv },
-  });
-  child._logFile = logFile;
-  return child;
-}
-
-async function stopServer(child) {
-  if (!child || child.exitCode !== null || child.signalCode) return;
-  const exited = new Promise((resolve) => child.once('exit', resolve));
-  child.kill('SIGTERM');
-  await Promise.race([
-    exited,
-    delay(5000).then(() => {
-      if (child.exitCode === null && !child.signalCode) child.kill('SIGKILL');
-    }),
-  ]);
-  if (child._logFile !== undefined) fs.closeSync(child._logFile);
 }
 
 // ─── 가짜 MCP WS 클라이언트 (mcp-stdio.mjs 와 동일 프레임) ─────
@@ -1012,7 +986,7 @@ try {
 } finally {
   await stopServer(vite);
   await stopServer(hub);
-  fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  removeTempDir(fixtureRoot);
 }
 
 if (failed) process.exitCode = 1;

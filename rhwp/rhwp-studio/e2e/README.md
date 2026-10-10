@@ -13,6 +13,22 @@ Name regression scripts `*.test.mjs` and make assertion failures exit nonzero.
 Helpers, render reports, and benchmark runners are not regression coverage
 merely because they execute.
 
+## Hub and Vite processes
+
+Start a hub or Vite server with `spawnLogged`, or with `startHub` and
+`startVite`, from `agent-bench-harness.mjs`, and stop it with `stopServer`. Do not
+call `child.kill()` on the server. `npm run dev` runs Vite under npm and a
+shell, so killing the child stops only npm and leaves Vite listening.
+
+Each server runs in its own process group (taskkill `/T` on Windows), and
+`stopServer` stops the whole tree. It also stops processes the server moved
+out of its group, such as the hub's Pi auto-update `npm install`, and waits
+for them to exit. If a script exits through Ctrl-C, SIGTERM, an uncaught error
+or `process.exit` before stopping its servers, the harness stops them on exit.
+Remove fixture directories with `removeTempDir`. It retries while files are
+still being released and logs a warning if removal fails, so a failed cleanup
+does not crash the run.
+
 `npm run e2e:worktrees` starts an isolated hub and Studio to check worktree creation
 from current edits, independent document state, local saving, standalone export,
 close and reopen, portable history import, removal with retained history, merge

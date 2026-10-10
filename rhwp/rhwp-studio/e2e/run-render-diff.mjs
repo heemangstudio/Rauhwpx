@@ -5,10 +5,11 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
+import { npmCmd, spawnLogged, stopServer } from './agent-bench-harness.mjs';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const studioRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(studioRoot, '..');
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const preferredPort = Number(process.env.VITE_PORT || '7700');
 
 function spawnCommand(args, extraEnv = {}, stdio = 'inherit') {
@@ -20,27 +21,6 @@ function spawnCommand(args, extraEnv = {}, stdio = 'inherit') {
       ...extraEnv,
     },
   });
-}
-
-function waitForExit(child, signal) {
-  return new Promise((resolve) => {
-    child.once('exit', () => resolve());
-    child.kill(signal);
-  });
-}
-
-async function stopServer(child) {
-  if (child.exitCode !== null || child.signalCode) {
-    return;
-  }
-  await Promise.race([
-    waitForExit(child, 'SIGTERM'),
-    delay(5000).then(async () => {
-      if (child.exitCode === null && !child.signalCode) {
-        await waitForExit(child, 'SIGKILL');
-      }
-    }),
-  ]);
 }
 
 async function waitForServer(url, child, logPath, timeoutMs = 30000) {
@@ -104,12 +84,12 @@ async function runNpmScript(script, serverUrl) {
 const serverPort = await findAvailablePort(preferredPort);
 const serverUrl = `http://127.0.0.1:${serverPort}`;
 const logPath = path.join(repoRoot, 'target', 'rhwp-studio-vite.log');
-fs.mkdirSync(path.dirname(logPath), { recursive: true });
-const logFile = fs.openSync(logPath, 'w');
-const devServer = spawnCommand(
+const devServer = spawnLogged(
+  npmCmd,
   ['run', 'dev', '--', '--host', '127.0.0.1', '--port', String(serverPort), '--strictPort'],
+  studioRoot,
   { BROWSER: 'none' },
-  ['ignore', logFile, logFile],
+  logPath,
 );
 
 try {
@@ -130,5 +110,4 @@ try {
   }
 } finally {
   await stopServer(devServer);
-  fs.closeSync(logFile);
 }

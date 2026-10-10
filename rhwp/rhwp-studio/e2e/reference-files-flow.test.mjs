@@ -6,7 +6,6 @@
  * through the hub-local MCP tools that chat references do not leak while document/global
  * references remain available.
  */
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -14,6 +13,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
+import { removeTempDir, spawnLogged, stopServer } from './agent-bench-harness.mjs';
 import { prepareFakePi, seedFakePiPrefs } from './fake-pi.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -44,29 +44,6 @@ async function waitForHttp(url, label, child, headers = {}) {
     await delay(300);
   }
   throw new Error(`${label} startup timed out`);
-}
-
-function spawnLogged(command, args, cwd, env, logPath) {
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-  const logFile = fs.openSync(logPath, 'w');
-  const child = spawn(command, args, {
-    cwd,
-    env: { ...process.env, ...env },
-    stdio: ['ignore', logFile, logFile],
-  });
-  child.logFile = logFile;
-  return child;
-}
-
-async function stop(child) {
-  if (!child) return;
-  if (child.exitCode === null && !child.signalCode) {
-    const exited = new Promise((resolve) => child.once('exit', resolve));
-    child.kill('SIGTERM');
-    await Promise.race([exited, delay(5_000)]);
-    if (child.exitCode === null && !child.signalCode) child.kill('SIGKILL');
-  }
-  if (child.logFile !== undefined) fs.closeSync(child.logFile);
 }
 
 async function chooseScope(page, scope) {
@@ -387,10 +364,10 @@ try {
   console.error(`reference-files E2E setup failed: ${error?.stack ?? error}`);
   failed = true;
 } finally {
-  await stop(vite);
-  await stop(hub);
-  fs.rmSync(referenceRoot, { recursive: true, force: true });
-  fs.rmSync(piRoot, { recursive: true, force: true });
+  await stopServer(vite);
+  await stopServer(hub);
+  removeTempDir(referenceRoot);
+  removeTempDir(piRoot);
 }
 
 if (failed) process.exitCode = 1;

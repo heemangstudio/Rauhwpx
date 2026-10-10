@@ -11,7 +11,6 @@
  *
  * 실행: npm run e2e:subagent-fleet   (headless Chrome + 자체 vite/허브 기동)
  */
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -19,10 +18,11 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
+import { npmCmd, removeTempDir, spawnLogged, stopServer } from './agent-bench-harness.mjs';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const studioRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(studioRoot, '..');
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 const SAMPLE = 'footnote-01.hwp';
 const HUB_TOKEN = 'e2e-fleet';
@@ -58,31 +58,6 @@ async function waitForHttp(url, label, child, timeoutMs = 45000) {
     await delay(400);
   }
   throw new Error(`${label} 준비 대기 시간 초과: ${lastError?.message || 'unknown'}`);
-}
-
-function spawnLogged(cmd, args, cwd, extraEnv, logPath) {
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-  const logFile = fs.openSync(logPath, 'w');
-  const child = spawn(cmd, args, {
-    cwd,
-    stdio: ['ignore', logFile, logFile],
-    env: { ...process.env, ...extraEnv },
-  });
-  child._logFile = logFile;
-  return child;
-}
-
-async function stopServer(child) {
-  if (!child || child.exitCode !== null || child.signalCode) return;
-  const exited = new Promise((resolve) => child.once('exit', resolve));
-  child.kill('SIGTERM');
-  await Promise.race([
-    exited,
-    delay(5000).then(() => {
-      if (child.exitCode === null && !child.signalCode) child.kill('SIGKILL');
-    }),
-  ]);
-  if (child._logFile !== undefined) fs.closeSync(child._logFile);
 }
 
 // ─── 가짜 claude 를 PATH 에 심는다 ─────────────────────────────
@@ -250,7 +225,7 @@ try {
   watchdog.unref?.();
   await stopServer(vite);
   await stopServer(hub);
-  fs.rmSync(stubRoot, { recursive: true, force: true });
+  removeTempDir(stubRoot);
 }
 
 // 가짜 CLI 가 실제 CLI 처럼 생존하는 탓에 이벤트 루프 핸들이 남을 수 있다 —

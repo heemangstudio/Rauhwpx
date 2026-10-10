@@ -5,7 +5,7 @@
  * issues a two-card question. The browser answers part of it, reloads, verifies
  * draft reconstruction, and submits through the original blocked call.
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -13,12 +13,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import { registerHubSession } from '../../../desktop/agent-hub.mjs';
+import { npmCmd, removeTempDir, spawnLogged, stopServer } from './agent-bench-harness.mjs';
 import { prepareFakePi, seedFakePiPrefs } from './fake-pi.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const studioRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(studioRoot, '..');
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const HUB_TOKEN = 'question-e2e';
 
 async function availablePort(start) {
@@ -45,29 +45,6 @@ async function waitForHttp(url, label, child, timeoutMs = 45_000) {
     await delay(300);
   }
   throw new Error(`${label} readiness timeout`);
-}
-
-function spawnLogged(command, args, cwd, env, logPath) {
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-  const log = fs.openSync(logPath, 'w');
-  const child = spawn(command, args, {
-    cwd,
-    env: { ...process.env, ...env },
-    stdio: ['ignore', log, log],
-  });
-  child._log = log;
-  return child;
-}
-
-async function stop(child) {
-  if (!child) return;
-  if (child.exitCode === null && !child.signalCode) {
-    const exited = new Promise((resolve) => child.once('exit', resolve));
-    child.kill('SIGTERM');
-    await Promise.race([exited, delay(4_000)]);
-    if (child.exitCode === null && !child.signalCode) child.kill('SIGKILL');
-  }
-  if (child._log !== undefined) fs.closeSync(child._log);
 }
 
 function connectQuestionProvider(hubPort, token, sessionId) {
@@ -599,7 +576,7 @@ try {
   });
 } finally {
   provider?.ws?.close();
-  await stop(vite);
-  await stop(hub);
-  fs.rmSync(piRoot, { recursive: true, force: true });
+  await stopServer(vite);
+  await stopServer(hub);
+  removeTempDir(piRoot);
 }

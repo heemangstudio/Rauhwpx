@@ -25,6 +25,7 @@ import path from 'node:path';
 import {
   ensureChromePath,
   findAvailablePort,
+  removeTempDir,
   startHub,
   startVite,
   stopServer,
@@ -355,9 +356,5 @@ try {
 } finally {
   await stopServer(vite);
   await stopServer(hub);
-  try {
-    fs.rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5 });
-  } catch (error) {
-    console.warn(`  [cleanup] ${error.message}`);
-  }
+  removeTempDir(fixtureRoot);
 }
