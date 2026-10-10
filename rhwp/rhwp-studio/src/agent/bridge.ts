@@ -1325,6 +1325,8 @@ export class AgentBridgeImpl implements AgentBridge {
   private pendingUserQuestionId: string | null = null;
   private pendingUserQuestion: UserQuestionInteraction | null = null;
   private pendingInterrupt = false;
+  /** interruptTurnsOnFirstWelcome 을 첫 welcome 에서 이미 봤다. */
+  private staleTurnChecked = false;
   /** 끊긴 사이 누른 로그인 취소. 재연결하면 보내서 허브의 로그인 실행을 끝낸다. */
   private pendingSetupCancels = new Map<string, unknown>();
   private disposed = false;
@@ -2360,6 +2362,8 @@ export class AgentBridgeImpl implements AgentBridge {
         // 소켓(다른 버전의 오래된 허브 등)이 250ms 재시도를 끝없이 반복하지 않게 한다.
         this.reconnectAttempt = 0;
         this.awaitingWelcome = false;
+        // 엔진이 멈춘 페이지가 멈추지 못한 턴은 새 페이지의 첫 welcome 에서 한 번 멈춘다 (S7).
+        this.interruptStaleTurnAfterFirstWelcome(msg.session);
         const session = msg.session;
         const sessionThreadId = typeof session?.threadId === 'string' ? session.threadId : '';
         const pendingStart = this.pendingChatStart;
@@ -4177,6 +4181,24 @@ export class AgentBridgeImpl implements AgentBridge {
     this.pendingQuestionAnswer = { interactionId, responseId, frame };
     this.sendJson(frame);
     return responseId;
+  }
+
+  /**
+   * 엔진 trap 복구 전에 멈추지 못한 턴 (AgentBridgeOptions.interruptTurnsOnFirstWelcome). 첫
+   * welcome 에서만 본다: 이 welcome 으로 그 스레드의 돌던 턴을 이어받았으면 처리가 끝난 뒤 멈춘다.
+   * 이어받지 않은 턴(다른 스레드를 고른 채팅)은 이 채팅이 보내지 않는다.
+   */
+  private interruptStaleTurnAfterFirstWelcome(session: unknown): void {
+    if (this.staleTurnChecked) return;
+    this.staleTurnChecked = true;
+    const threadIds = this.options?.interruptTurnsOnFirstWelcome ?? [];
+    const snapshot = session as { status?: unknown; threadId?: unknown } | null | undefined;
+    const threadId = typeof snapshot?.threadId === 'string' ? snapshot.threadId : '';
+    if (snapshot?.status !== 'running' || !threadId || !threadIds.includes(threadId)) return;
+    queueMicrotask(() => {
+      if (this.disposed || !this.turnRunning || this.threadId !== threadId) return;
+      this.interrupt();
+    });
   }
 
   interrupt(): void {

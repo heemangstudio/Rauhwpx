@@ -10,7 +10,9 @@ import {
   TRAP_SAVE_WAIT_MS,
   buildTrapManifest,
   describeTrapOutcome,
+  isOpeningTrapEntrySession,
   needsTrapRecoveryCopy,
+  settleUnfinishedTrapSave,
   trapRecoveryNeedsReview,
   trapRecoverySummary,
   trapSaveStateOf,
@@ -38,6 +40,8 @@ export interface TrapRecoveryPageHost {
   saveCopy(): void;
   /** 다시 연 뒤 또 멈췄으면 그 복구의 진행 상태 */
   run(): TrapRecoveryRun<DocumentSession> | null;
+  /** 읽기 전용으로 보던 문서인가 (생성 문서 미리보기 등) */
+  readOnly(session: DocumentSession): boolean;
   deliveredLaunchHandleIds(): string[];
   deliveredGeneratedDocumentIds(): string[];
   storage(): TrapManifestStorage | null;
@@ -67,6 +71,8 @@ export class TrapRecoveryPage {
   private waitCapReached = false;
   private started = false;
   private dialogOpen = false;
+  /** 엔진이 멈춘 시각. 이보다 늦게 기록된 복구본은 멈춘 뒤의 내용이다. */
+  private trappedAt = 0;
 
   constructor(private readonly host: TrapRecoveryPageHost) {}
 
@@ -77,6 +83,7 @@ export class TrapRecoveryPage {
   begin(): void {
     if (this.started) return;
     this.started = true;
+    this.trappedAt = Date.now();
     for (const session of this.host.sessions()) this.track(session);
     setTimeout(() => {
       this.waitCapReached = true;
@@ -113,12 +120,15 @@ export class TrapRecoveryPage {
 
   /**
    * 상한을 넘겨(또는 다시 불러오는 지금까지) 끝나지 않은 저장은 실패로 보고 그 전 자동 저장본을 쓴다.
+   * 그 저장이 다시 불러오기 전에 끝나면 다시 연 페이지가 그 행을 찾도록 draft id 를 함께 남긴다.
    */
   private saveStateOf(session: DocumentSession, settled = this.waitCapReached): TrapSaveState {
     const save = this.saves.get(session) ?? { state: 'failed', draftId: null, lastSavedAt: null };
-    if (save.state !== 'saving' || !settled) return save;
-    const lastSavedAt = session.autosave.getLastSavedAt();
-    return { state: 'failed', draftId: lastSavedAt ? session.autosave.getCurrentDraftId() : null, lastSavedAt };
+    if (!settled) return save;
+    return settleUnfinishedTrapSave(save, {
+      draftId: session.autosave.getCurrentDraftId(),
+      lastSavedAt: session.autosave.getLastSavedAt(),
+    }, this.trappedAt);
   }
 
   private liveSessions(): DocumentSession[] {
@@ -131,9 +141,8 @@ export class TrapRecoveryPage {
   private dialogRows(): TrapRecoveryDialogRow[] {
     const attached = this.host.attached();
     const run = this.host.run();
-    const suspectSession = run?.openingId ? run.sessions.get(run.openingId) ?? null : null;
     const rows: TrapRecoveryDialogRow[] = this.liveSessions()
-      .filter((session) => session !== suspectSession)
+      .filter((session) => !isOpeningTrapEntrySession(run, session, session.documentId))
       .map((session, index) => {
         const notes: string[] = [];
         const staged = pendingAgentOps(session);
@@ -152,7 +161,8 @@ export class TrapRecoveryPage {
       });
     if (run && run.state !== 'finished') {
       for (const entry of run.manifest.entries) {
-        if (run.openedIds.has(entry.id)) continue;
+        // 화면에 붙이다 멈춘 문서는 이미 열렸어도 suspect 로 다시 적힌다.
+        if (run.openedIds.has(entry.id) && entry.id !== run.openingId) continue;
         const status = entry.suspect || entry.id === run.openingId
           ? '이 문서를 열다가 엔진이 다시 멈췄습니다 · 자동으로 열지 않습니다'
           : entry.worktree === 'managed'
@@ -223,6 +233,7 @@ export class TrapRecoveryPage {
         pendingAgentOps: pendingAgentOps(session),
         activeThreadId: session.activeChat?.sidebar.currentThreadId() ?? null,
         interruptedThreadIds: interrupted.get(session) ?? [],
+        readOnly: this.host.readOnly(session),
         save: this.saveStateOf(session, true),
       };
       return { session, facts };

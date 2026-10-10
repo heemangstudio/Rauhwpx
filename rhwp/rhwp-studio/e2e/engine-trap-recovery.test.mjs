@@ -11,9 +11,17 @@
  *
  * 1. 편집한 문서 하나: 입력한 글자가 저장하지 않은 변경으로, 같은 파일에 연결된 채 돌아온다.
  *    깨끗한 문서는 파일에서 깨끗하게 돌아온다. 일반 자동 저장본 복구 안내는 뜨지 않는다.
+ *    멈춘 뒤의 열기·새 문서는 엔진을 건드리지 않고 문서 복구로 안내한다 (지금 문서가 남는다).
  * 2. 두 문서: 에이전트가 일하던 문서는 뒤의 세션으로, 보던 문서는 화면에 돌아오고, 멈춘 채팅에는
  *    중단 안내가 남는다. 이어서 다시 여는 도중 또 멈추면 그 문서는 다음 복구에서 자동으로 열지 않고
  *    결과에서 직접 열 수 있다.
+ * 3. 첫 문서를 다시 여는 도중 멈추면 일반 자동 저장본 복구를 띄우지 않는다 — 그 삭제가 다음 문서
+ *    복구에 쓸 복구본을 지운다. 복구본은 남아 다음 복구의 결과에서 직접 열 수 있다.
+ * 4. 버전 기록을 함께 저장한 .rhwpx 파일에 연결된 깨끗한 문서는 그 묶음에서 문서를 꺼내 다시 연다.
+ * 5. 읽기 전용으로 보던 문서(데스크톱의 생성 문서 미리보기 창 등)는 읽기 전용이고 바뀌지 않은 채
+ *    돌아온다.
+ * 6. 멈출 때 허브 연결이 끊겨 채팅의 멈춤이 닿지 않았으면, 다시 불러온 페이지가 이어받은 그 턴을
+ *    첫 welcome 에서 멈춘다 — 다시 연 문서에 계속 쓰지 않게.
  *
  * 실행: CHROME_PATH=... node e2e/engine-trap-recovery.test.mjs --mode=headless
  *       (VITE_PORT / RHWP_AGENT_PORT 로 시작 포트를 바꾼다)
@@ -52,7 +60,7 @@ try {
   vite = await startVite({ vitePort, hubPort, token: HUB_TOKEN, logName: 'engine-trap-recovery-vite.log' });
   process.env.VITE_URL = `http://127.0.0.1:${vitePort}`;
   const {
-    runTest, assert, screenshot, sampleFetchPath, waitForState, clickEditArea,
+    runTest, assert, screenshot, sampleFetchPath, waitForState, clickEditArea, loadApp,
   } = await import('./helpers.mjs');
 
   function watchConsole(page) {
@@ -121,6 +129,23 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 300));
     const trapErrors = (page.__pageErrors ?? []).slice(errorsBefore).filter((text) => /EngineTrapped|ENGINE_TRAPPED/.test(text));
     assert(trapErrors.length === 0, `Command-state refresh after the trap does not call the stopped engine (${trapErrors[0] ?? 'no errors'})`);
+  }
+
+  /** 다시 불러온 페이지가 그 파일을 읽을 때 한 번 모의 trap 을 일으킨다 (sessionStorage 로 켠다). */
+  async function armTrapOnReopen(page, name) {
+    await page.evaluateOnNewDocument((fileName) => {
+      const original = FileSystemFileHandle.prototype.getFile;
+      FileSystemFileHandle.prototype.getFile = async function getFileWithTrap(...args) {
+        if (this.name === fileName && sessionStorage.getItem('e2e-trap-on-open') === 'armed') {
+          sessionStorage.setItem('e2e-trap-on-open', 'fired');
+          const { reportEngineTrap } = await import('/src/core/engine-trap.ts');
+          console.log(`[e2e] simulated engine trap while reopening ${fileName}`);
+          reportEngineTrap(new WebAssembly.RuntimeError('unreachable'));
+        }
+        return original.apply(this, args);
+      };
+    }, name);
+    await page.evaluate(() => sessionStorage.setItem('e2e-trap-on-open', 'armed'));
   }
 
   async function clickToastAction(page, label) {
@@ -209,6 +234,37 @@ try {
     await typeAtStart(page, MARKER);
 
     await simulateTrap(page);
+    // 멈춘 엔진에 다른 문서를 올리거나 새 문서를 만들면 지금 문서를 먼저 해제한 뒤 실패해, 그 문서가
+    // 문서 복구에서 빠진다. 둘 다 엔진에 닿지 않고 문서 복구로 안내해야 한다.
+    const refused = await page.evaluate(async (url) => {
+      const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+      const requestId = 'trap-e2e-open-after-trap';
+      const opened = await new Promise((resolve) => {
+        const off = window.__eventBus.on('open-document-bytes:done', (payload) => {
+          if (payload?.requestId !== requestId) return;
+          off();
+          resolve(payload);
+        });
+        window.__eventBus.emit('open-document-bytes', { bytes, fileName: 'other.hwp', skipUnsavedGuard: true, requestId });
+      });
+      window.__dispatcher.dispatch('file:new-doc');
+      return opened;
+    }, sampleFetchPath(DOC_B));
+    const kept = await page.evaluate(() => {
+      const session = window.__documentSessions.attached();
+      return {
+        loaded: session.wasm.hasLoadedDocument(),
+        fileName: session.wasm.fileName,
+        dirty: session.documentState.isDirty(),
+        sessions: window.__documentSessions.list().length,
+        modal: Boolean(document.querySelector('.modal-overlay')),
+      };
+    });
+    assert(refused.ok === false && kept.loaded && kept.fileName === DOC_A && kept.dirty && kept.sessions === 1,
+      `Opening or creating a document after the trap leaves the edited document in place (${JSON.stringify({ refused, kept })})`);
+    assert(!kept.modal, 'No save prompt or file picker step starts on the stopped engine');
+    await waitForToast(page, '문서 복구를 먼저 진행하세요');
+    await screenshot(page, 'trap-recovery-0-open-refused');
     const rows = await openRecoveryDialogWhenSaved(page, 1);
     assert(rows[0]?.title === `${DOC_A} (화면)` && rows[0].status.startsWith('복구본 저장됨'),
       `The dialog shows the shown document with a fresh recovery copy (${JSON.stringify(rows)})`);
@@ -292,19 +348,7 @@ try {
     await screenshot(page, 'trap-recovery-4-two-documents-back');
 
     // 다시 여는 도중 B 가 또 엔진을 멈추게 한다 (B 파일을 읽을 때 모의 trap).
-    await page.evaluateOnNewDocument((name) => {
-      const original = FileSystemFileHandle.prototype.getFile;
-      FileSystemFileHandle.prototype.getFile = async function getFileWithTrap(...args) {
-        if (this.name === name && sessionStorage.getItem('e2e-trap-on-open') === 'armed') {
-          sessionStorage.setItem('e2e-trap-on-open', 'fired');
-          const { reportEngineTrap } = await import('/src/core/engine-trap.ts');
-          console.log(`[e2e] simulated engine trap while reopening ${name}`);
-          reportEngineTrap(new WebAssembly.RuntimeError('unreachable'));
-        }
-        return original.apply(this, args);
-      };
-    }, DOC_B);
-    await page.evaluate(() => sessionStorage.setItem('e2e-trap-on-open', 'armed'));
+    await armTrapOnReopen(page, DOC_B);
     await simulateTrap(page);
     await openRecoveryDialogWhenSaved(page, 2);
     await reopenAll(page);
@@ -352,6 +396,195 @@ try {
       return files.includes(a2) && files.includes(b2) && window.__documentSessions.attached().wasm.fileName === b2;
     }, DOC_A, DOC_B);
     assert(true, 'Opening B from the result keeps A open and shows B');
+  });
+
+  await runTest('engine trap: a trap while reopening the first document keeps its copy for the next recovery', async ({ page }) => {
+    watchConsole(page);
+    await openFromFile(page, DOC_A);
+    await typeAtStart(page, MARKER);
+    // 다시 불러온 페이지가 A(기본 자리, 첫 세션)의 원본을 찾으며 읽을 때 엔진이 또 멈춘다.
+    await armTrapOnReopen(page, DOC_A);
+    await simulateTrap(page);
+    await openRecoveryDialogWhenSaved(page, 1);
+    await reopenAll(page);
+    await page.waitForSelector('.trap-recovery-result-dialog', { timeout: 30_000 });
+    const stopped = await page.evaluate(() => ({
+      lead: document.querySelector('.trap-recovery-result-dialog .trap-recovery-body p')?.textContent ?? '',
+      fired: sessionStorage.getItem('e2e-trap-on-open'),
+    }));
+    assert(stopped.fired === 'fired' && stopped.lead.includes('엔진이 또 멈췄습니다'),
+      `The recovery stopped on the simulated trap while reopening A (${JSON.stringify(stopped)})`);
+    // 일반 복구 제안(대화상자나 안내)은 이 결과 대화상자 바로 뒤에 열렸다. 그만큼 기다려 뜨지 않는지 본다.
+    const offered = await page.waitForFunction(() => Boolean(document.querySelector(
+      '.recovery-dialog:not(.trap-recovery-dialog):not(.trap-recovery-result-dialog)',
+    )) || [...document.querySelectorAll('.rhwp-toast-message')]
+      .some((message) => message.textContent?.includes('복구할 수 있는 자동 저장본')), { timeout: 3_000 })
+      .then(() => true, () => false);
+    assert(!offered, 'No generic "unsaved changes" recovery opens over the result on the stopped engine');
+    assert((await recoverableDraftNames(page)).includes(DOC_A), 'A\'s recovery copy is still stored for the next recovery');
+    await screenshot(page, 'trap-recovery-7-stopped-on-first');
+    await page.click('.trap-recovery-result-dialog .dialog-btn-primary');
+
+    const carried = await openRecoveryDialogWhenSaved(page, 1);
+    assert(carried[0]?.title === DOC_A && carried[0].status.includes('자동으로 열지 않습니다'),
+      `The next recovery holds A back as the document that stopped the engine (${JSON.stringify(carried)})`);
+    await reopenAll(page);
+    await page.waitForSelector('.trap-recovery-result-dialog [data-trap-result]', { timeout: 30_000 });
+    await page.evaluate((name) => [...document.querySelectorAll('.trap-recovery-result-dialog [data-trap-result]')]
+      .find((row) => row.querySelector('.recovery-draft-title')?.textContent === name)
+      .querySelector('.trap-recovery-open').click(), DOC_A);
+    // 열기가 끝나면 그 줄의 문구가 결과로 바뀐다.
+    await waitForState(page, 'A opened on request', (name) => {
+      const row = [...document.querySelectorAll('.trap-recovery-result-dialog [data-trap-result]')]
+        .find((item) => item.querySelector('.recovery-draft-title')?.textContent === name);
+      const text = row?.querySelector('.trap-recovery-status')?.textContent ?? '';
+      return !text.startsWith('이 문서를 열다가') && window.__documentSessions.attached().wasm.fileName === name
+        && window.__documentSessions.attached().wasm.hasLoadedDocument();
+    }, DOC_A);
+    const [back] = await loadedSessions(page);
+    assert(back?.text.startsWith(MARKER) && back.dirty, `A comes back with its unsaved edit from the kept copy (${JSON.stringify(back)})`);
+    assert(!(await genericRecoveryToastShown(page)), 'The generic autosave notice does not appear');
+  });
+
+  await runTest('engine trap: a clean document saved with its version history reopens from its .rhwpx file', async ({ page }) => {
+    watchConsole(page);
+    const bundleName = 'para-001.rhwpx';
+    await openFromFile(page, DOC_A);
+    // 기록을 포함해 저장한다. 저장 위치는 OPFS 의 .rhwpx 파일이고, 문서는 그 파일에 연결된다.
+    const dispatched = await page.evaluate(async (name) => {
+      const root = await navigator.storage.getDirectory();
+      await root.removeEntry(name).catch(() => {});
+      const handle = await root.getFileHandle(name, { create: true });
+      window.showSaveFilePicker = async () => handle;
+      return window.__dispatcher.dispatch('file:save-with-history');
+    }, bundleName);
+    assert(dispatched, 'Save with history runs');
+    await waitForState(page, 'the document saved into its .rhwpx file', async (name) => {
+      if (window.__wasm.fileName !== name || window.__documentState.isDirty()) return false;
+      const { listRecentDocs } = await import('/src/recent/recent-store.ts');
+      return (await listRecentDocs()).some((entry) => entry.fileName === name && entry.handle);
+    }, bundleName);
+
+    await simulateTrap(page);
+    const rows = await openRecoveryDialogWhenSaved(page, 1);
+    assert(rows[0]?.status === '변경 없음 · 파일에서 다시 엽니다', `The bundle-backed document reopens from its file (${rows[0]?.status})`);
+    await reopenAll(page);
+    await page.waitForFunction(() => [...document.querySelectorAll('.rhwp-toast-message')]
+      .some((message) => message.textContent?.includes('다시 열었습니다'))
+      || Boolean(document.querySelector('.trap-recovery-result-dialog')), { timeout: 30_000 });
+    const result = await page.evaluate(() => [...document.querySelectorAll('.trap-recovery-result-dialog [data-trap-result]')]
+      .map((row) => row.querySelector('.trap-recovery-status')?.textContent ?? ''));
+    assert(result.length === 0, `No document failed to reopen (${JSON.stringify(result)})`);
+    const [back] = await loadedSessions(page);
+    assert(back?.fileName === bundleName && back.dirty === false && back.text.length > 0,
+      `The document came back clean from inside the bundle (${JSON.stringify(back)})`);
+    assert(await linkedToFile(page, bundleName), 'It is linked to its .rhwpx file again');
+    await screenshot(page, 'trap-recovery-8-rhwpx-reopened');
+  });
+
+  await runTest('engine trap: a read-only preview comes back read-only and unchanged', async ({ page }) => {
+    watchConsole(page);
+    await loadApp(page, '/?templatePreview=1');
+    // 파일 없이 받은 문서를 읽기 전용 창에 연다 (데스크톱의 생성 문서 미리보기 창과 같다).
+    const opened = await page.evaluate(async (url) => {
+      const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+      const requestId = 'trap-e2e-read-only';
+      return new Promise((resolve) => {
+        const off = window.__eventBus.on('open-document-bytes:done', (payload) => {
+          if (payload?.requestId !== requestId) return;
+          off();
+          resolve(payload);
+        });
+        window.__eventBus.emit('open-document-bytes', { bytes, fileName: 'preview.hwp', requestId });
+      });
+    }, sampleFetchPath(DOC_B));
+    assert(opened.ok === true, `The preview opened (${opened.error ?? 'ok'})`);
+    await waitForState(page, 'the read-only preview shown', () => window.__wasm?.fileName === 'preview.hwp'
+      && window.__wasm.pageCount > 0 && document.documentElement.dataset.documentReadOnly === 'true');
+    // 데스크톱 창은 읽기 전용을 주소가 아니라 한 번 받은 값으로 안다. 다시 불러올 주소에서 뺀다.
+    await page.evaluate(() => history.replaceState(null, '', window.location.pathname));
+
+    await simulateTrap(page);
+    const rows = await openRecoveryDialogWhenSaved(page, 1);
+    assert(rows[0]?.status.startsWith('복구본 저장됨'), `The preview has a recovery copy (${rows[0]?.status})`);
+    await reopenAll(page);
+    await waitForToast(page, '문서 1개를 다시 열었습니다.');
+    const back = await page.evaluate(() => ({
+      fileName: window.__wasm.fileName,
+      dirty: window.__documentState.isDirty(),
+      readOnly: document.documentElement.dataset.documentReadOnly,
+      location: window.location.search,
+    }));
+    assert(back.location === '' && back.fileName === 'preview.hwp' && back.readOnly === 'true',
+      `The preview is read-only again (${JSON.stringify(back)})`);
+    assert(back.dirty === false, 'It is not marked as unsaved: nothing in it could change');
+    assert((await recoverableDraftNames(page)).length === 0, 'No recovery copy is left over for the startup dialog');
+    await screenshot(page, 'trap-recovery-9-read-only-back');
+  }, { skipLoadApp: true });
+
+  await runTest('engine trap: a turn the trapped page could not stop is stopped after the reload', async ({ page }) => {
+    watchConsole(page);
+    await page.evaluate(() => localStorage.setItem('rhwp-agent-prefs', JSON.stringify({
+      defaultAgent: 'pi', defaultModel: 'mock-model', defaultEffort: '', defaultMode: 'agent',
+    })));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => window.__agentBridge?.getConnectionState?.() === 'connected', { timeout: 30_000 });
+    await openFromFile(page, DOC_A);
+    await typeAtStart(page, MARKER);
+    await page.type('.ag-input', 'A 문서의 첫 문단을 정리해 주세요.');
+    await page.click('.ag-send');
+    await page.waitForFunction(() => window.__agentBridge?.isTurnRunning?.() === true, { timeout: 30_000 });
+    const threadA = await page.evaluate(() => window.__documentSessions.attached().activeChat.sidebar.currentThreadId());
+
+    // 다시 불러온 페이지가 허브와 주고받는 프레임을 적는다.
+    await page.evaluateOnNewDocument(() => {
+      const frames = [];
+      window.__e2eHubFrames = frames;
+      const NativeWebSocket = window.WebSocket;
+      const send = NativeWebSocket.prototype.send;
+      NativeWebSocket.prototype.send = function sendRecorded(data) {
+        try { frames.push({ dir: 'out', type: JSON.parse(data).type }); } catch { /* 바이너리 */ }
+        return send.call(this, data);
+      };
+      window.WebSocket = class RecordedWebSocket extends NativeWebSocket {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener('message', (event) => {
+            try {
+              const frame = JSON.parse(event.data);
+              if (frame.type === 'welcome') {
+                frames.push({ dir: 'in', type: 'welcome', status: frame.session?.status ?? null, threadId: frame.session?.threadId ?? null });
+              }
+            } catch { /* 바이너리 */ }
+          });
+        }
+      };
+    });
+    // 멈추는 순간 허브 연결이 끊겨 있다: 이 페이지가 보내는 멈춤은 허브에 닿지 않는다.
+    await page.evaluate(() => {
+      WebSocket.prototype.send = () => { throw new Error('e2e: hub connection lost'); };
+    });
+    await simulateTrap(page);
+    const rows = await openRecoveryDialogWhenSaved(page, 1);
+    assert(rows[0]?.notes.includes('작업 중인 채팅은 중단됩니다'), `The working chat is listed as stopping (${JSON.stringify(rows[0])})`);
+    await reopenAll(page);
+    await waitForToast(page, '문서 1개를 다시 열었습니다.');
+
+    await waitForState(page, 'the first welcome after the reload', () => (window.__e2eHubFrames ?? [])
+      .some((frame) => frame.type === 'welcome'));
+    const welcome = await page.evaluate(() => window.__e2eHubFrames.find((frame) => frame.type === 'welcome'));
+    assert(welcome.status === 'running' && welcome.threadId === threadA,
+      `The hub still ran the interrupted turn when the page came back (${JSON.stringify(welcome)})`);
+    await waitForState(page, 'the adopted turn stopped', () => window.__agentBridge?.isTurnRunning?.() === false
+      && window.__e2eHubFrames.some((frame) => frame.dir === 'out' && frame.type === 'chat-interrupt'));
+    const [back] = await loadedSessions(page);
+    assert(back?.threadId === threadA && back.text.startsWith(MARKER) && back.dirty,
+      `The reopened document follows its chat, and the turn no longer runs on it (${JSON.stringify(back)})`);
+    const notice = await page.evaluate(async (threadId) => {
+      const { getThread } = await import('/src/agent/threads.ts');
+      return getThread(threadId)?.messages.some((message) => message.role === 'system' && message.text.startsWith('문서 엔진이 멈춰'));
+    }, threadA);
+    assert(notice, 'The chat still says the engine stop interrupted it');
   });
 } finally {
   await stopServer(vite);

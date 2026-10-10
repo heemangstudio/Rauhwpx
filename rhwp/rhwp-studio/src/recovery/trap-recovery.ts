@@ -49,6 +49,11 @@ export interface TrapManifestEntry {
   interruptedThreadIds: string[];
   /** 다시 여는 도중 엔진이 또 멈춘 문서. 자동으로 열지 않는다. */
   suspect: boolean;
+  /**
+   * 읽기 전용으로 보던 문서(생성 문서 미리보기 등). 다시 연 창도 읽기 전용으로 두고, 바꿀 수 없던
+   * 문서이므로 저장하지 않은 문서로 표시하지 않는다.
+   */
+  readOnly: boolean;
 }
 
 export interface TrapRecoveryManifest {
@@ -148,6 +153,7 @@ function parseEntry(value: unknown): TrapManifestEntry | null {
     activeThreadId: stringOrNull(value.activeThreadId),
     interruptedThreadIds: stringList(value.interruptedThreadIds),
     suspect: value.suspect === true,
+    readOnly: value.readOnly === true,
   };
 }
 
@@ -178,12 +184,40 @@ export type TrapSaveState =
   /** 깨끗하고 파일이 있는 문서. 파일에서 다시 연다. */
   | { readonly state: 'skipped' }
   | { readonly state: 'saved'; readonly draftId: string; readonly savedAt: number }
-  | { readonly state: 'failed'; readonly draftId: string | null; readonly lastSavedAt: number | null };
+  | {
+    readonly state: 'failed';
+    readonly draftId: string | null;
+    readonly lastSavedAt: number | null;
+    /**
+     * 기다림 상한을 넘겨 아직 기록 중이던 복구본. 다시 불러오기 전에 기록을 마치면 그 행이 since
+     * (엔진이 멈춘 시각)보다 새롭다 — 다시 연 페이지가 그 행을 이번 복구본으로 쓴다.
+     */
+    readonly unsettled?: { readonly draftId: string; readonly since: number };
+  };
 
 export function trapSaveStateOf(result: AutosaveRecoverySaveResult): TrapSaveState {
   return result.ok
     ? { state: 'saved', draftId: result.draftId, savedAt: result.savedAt }
     : { state: 'failed', draftId: result.draftId, lastSavedAt: result.lastSavedAt };
+}
+
+/**
+ * 기다림 상한이 지났는데 아직 저장 중인 문서의 상태. 실패로 보되(앞서 남긴 자동 저장본을 쓴다),
+ * 그 저장이 쓸 draft id 를 함께 남긴다. 처음 저장이라 앞선 자동 저장본이 없어도 다시 열 때
+ * 늦게 기록된 행을 찾을 수 있다.
+ */
+export function settleUnfinishedTrapSave(
+  save: TrapSaveState,
+  current: { draftId: string | null; lastSavedAt: number | null },
+  since: number,
+): TrapSaveState {
+  if (save.state !== 'saving') return save;
+  return {
+    state: 'failed',
+    draftId: current.lastSavedAt !== null ? current.draftId : null,
+    lastSavedAt: current.lastSavedAt,
+    ...(current.draftId ? { unsettled: { draftId: current.draftId, since } } : {}),
+  };
 }
 
 /** 깨끗하고 파일이 있는 문서는 파일 그대로 다시 열면 정확하다. 나머지는 복구본이 있어야 한다. */
@@ -235,12 +269,16 @@ export interface TrapEntryFacts {
   pendingAgentOps: number;
   activeThreadId: string | null;
   interruptedThreadIds: string[];
+  readOnly: boolean;
   save: TrapSaveState;
 }
 
 function draftOf(save: TrapSaveState): TrapManifestDraft | null {
   if (save.state === 'saved') return { id: save.draftId, savedAt: save.savedAt, fresh: true };
-  if (save.state === 'failed' && save.draftId && save.lastSavedAt !== null) {
+  if (save.state !== 'failed') return null;
+  // 끝나지 않은 저장: 멈춘 뒤에 기록된 행만 이번 복구본이다. 그 전 행은 앞선 자동 저장본이다.
+  if (save.unsettled) return { id: save.unsettled.draftId, savedAt: save.unsettled.since, fresh: false };
+  if (save.draftId && save.lastSavedAt !== null) {
     return { id: save.draftId, savedAt: save.lastSavedAt, fresh: false };
   }
   return null;
@@ -260,6 +298,7 @@ function entryFromFacts(facts: TrapEntryFacts): Omit<TrapManifestEntry, 'id'> {
     activeThreadId: facts.activeThreadId,
     interruptedThreadIds: [...facts.interruptedThreadIds],
     suspect: false,
+    readOnly: facts.readOnly,
   };
 }
 
@@ -285,6 +324,23 @@ export function createTrapRecoveryRun<S>(manifest: TrapRecoveryManifest): TrapRe
 }
 
 /**
+ * 복구 도중 다시 멈췄을 때 열던 항목(suspect)의 세션인가. 열기가 끝나기 전에 멈췄으면 run 에 그
+ * 세션이 아직 없으므로 같은 문서 ID 로도 알아본다 — 한 창에서 한 문서는 한 세션에만 열린다.
+ * 그러지 않으면 그 문서가 살아 있는 세션으로 한 번, suspect 로 한 번 목록에 두 번 들어간다.
+ */
+export function isOpeningTrapEntrySession<S>(
+  run: TrapRecoveryRun<S> | null,
+  session: S,
+  documentId: string | null,
+): boolean {
+  if (!run || run.state === 'finished' || !run.openingId) return false;
+  const opening = run.manifest.entries.find((entry) => entry.id === run.openingId);
+  if (!opening) return false;
+  if (run.sessions.get(opening.id) === session) return true;
+  return opening.documentId !== null && documentId === opening.documentId;
+}
+
+/**
  * 다시 불러오기 직전의 manifest. 복구 도중이 아니면 살아 있는 세션들이 곧 목록이다. 복구 도중에
  * 다시 멈췄으면 세 묶음을 합친다: 이미 다시 연 세션, 아직 열지 못한 항목(그대로), 열던 항목(suspect).
  */
@@ -300,14 +356,13 @@ export function buildTrapManifest<S>(input: {
   const openingEntry = run?.openingId
     ? run.manifest.entries.find((entry) => entry.id === run.openingId) ?? null
     : null;
-  const suspectSession = openingEntry && run ? run.sessions.get(openingEntry.id) ?? null : null;
   // 복구가 끝나기 전이면 화면에 붙일 문서는 사용자가 보던 원래 문서다.
   const intendedAttached = run?.manifest.entries.find((entry) => entry.attached) ?? null;
   const intendedAttachedSession = intendedAttached && run ? run.sessions.get(intendedAttached.id) ?? null : null;
 
   const entries: Array<Omit<TrapManifestEntry, 'id'>> = [];
   for (const { session, facts } of input.live) {
-    if (suspectSession !== null && session === suspectSession) continue;
+    if (isOpeningTrapEntrySession(run, session, facts.documentId)) continue;
     const attached = run ? session === intendedAttachedSession : session === input.attachedSession;
     entries.push({ ...entryFromFacts(facts), attached });
   }
@@ -540,8 +595,15 @@ export async function runTrapRecovery<S>(
       ?? (first ? run.sessions.get(first.entry.id) : undefined)
       ?? run.sessions.values().next().value
       ?? deps.defaultSession();
+    // 화면에 붙이면 그 문서를 다시 조판한다. 그러다 멈추면 그 문서가 다음 복구의 suspect 다.
+    run.openingId = [...run.sessions].find(([, session]) => session === target)?.[0] ?? null;
     await deps.attach(target).catch(() => {});
-    run.state = 'finished';
+    if (deps.engineStopped()) {
+      run.state = 'stopped-by-trap';
+    } else {
+      run.openingId = null;
+      run.state = 'finished';
+    }
   }
 
   return {

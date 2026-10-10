@@ -9,6 +9,7 @@ import {
   describeTrapOutcome,
   planTrapEntry,
   runTrapRecovery,
+  settleUnfinishedTrapSave,
   takeTrapManifest,
   trapRecoveryNeedsReview,
   writeTrapManifest,
@@ -45,6 +46,7 @@ function entry(id: string, overrides: Partial<TrapManifestEntry> = {}): TrapMani
     activeThreadId: null,
     interruptedThreadIds: [],
     suspect: false,
+    readOnly: false,
     ...overrides,
   };
 }
@@ -232,6 +234,7 @@ function facts(overrides: Partial<TrapEntryFacts> = {}): TrapEntryFacts {
     pendingAgentOps: 0,
     activeThreadId: null,
     interruptedThreadIds: [],
+    readOnly: false,
     save: { state: 'saved', draftId: 'draft-live', savedAt: 9_000 },
     ...overrides,
   };
@@ -339,4 +342,127 @@ test('a recovery with losses or staged agent edits is shown in a result dialog, 
     staged.deps,
   );
   assert.equal(trapRecoveryNeedsReview(stagedReport), true, 'staged edits that became content are disclosed');
+});
+
+test('a trap while the shown document is put back on screen stops the recovery and holds that document back', async () => {
+  let stopped = false;
+  const { calls, deps } = fakeDeps({ drafts });
+  deps.engineStopped = () => stopped;
+  deps.attach = async (session) => {
+    calls.push(`attach:${session}`);
+    stopped = true; // 화면에 붙이며 다시 조판하다 멈췄다
+  };
+  const run = createTrapRecoveryRun<string>(manifest([
+    entry('a', { slot: 'default', attached: true }),
+    entry('b'),
+  ]));
+  const report = await runTrapRecovery(run, deps);
+  assert.deepEqual(calls, ['default:a', 'background:b', 'attach:session-default']);
+  assert.equal(report.stoppedByTrap, true, 'the result does not claim a clean recovery on a stopped engine');
+  assert.equal(trapRecoveryNeedsReview(report), true, 'a result dialog, not the "reopened n documents" toast');
+  assert.equal(run.state, 'stopped-by-trap');
+
+  const next = buildTrapManifest({
+    now: 20,
+    live: [
+      { session: 'session-default', facts: facts({ slot: 'default', fileName: 'a-live.hwp', documentId: 'doc-a' }) },
+      { session: 'session-b', facts: facts({ fileName: 'b.hwp', documentId: 'doc-b' }) },
+    ],
+    attachedSession: 'session-default',
+    run,
+    deliveredLaunchHandleIds: [],
+    deliveredGeneratedDocumentIds: [],
+  });
+  const names = next.entries.map((item) => `${item.fileName}${item.suspect ? ':suspect' : ''}`).sort();
+  assert.deepEqual(names, ['a.hwp:suspect', 'b.hwp'], 'a is listed once, as the document that stopped the engine');
+
+  const again = fakeDeps({ drafts });
+  await runTrapRecovery(createTrapRecoveryRun<string>(next), again.deps);
+  assert.ok(!again.calls.some((call) => /^(default|background):/.test(call)
+    && next.entries.find((item) => item.id === call.split(':')[1])?.fileName === 'a.hwp'),
+  'the next recovery does not reopen a into the same trap');
+});
+
+test('a list made while a document is still opening names that document once, as the suspect', () => {
+  const run = createTrapRecoveryRun<string>(manifest([
+    entry('a', { slot: 'default' }),
+    entry('b', { documentId: 'doc-b', attached: true }),
+    entry('c'),
+  ]));
+  run.openedIds.add('a');
+  run.sessions.set('a', 'session-default');
+  // b 를 여는 중에 멈췄고, 그 열기는 아직 끝나지 않아 run 에 세션이 없다.
+  run.openingId = 'b';
+  run.state = 'running';
+  const next = buildTrapManifest({
+    now: 30,
+    live: [
+      { session: 'session-default', facts: facts({ slot: 'default', fileName: 'a.hwp', documentId: 'doc-a' }) },
+      { session: 'session-fresh', facts: facts({ fileName: 'b.hwp', documentId: 'doc-b' }) },
+    ],
+    attachedSession: 'session-fresh',
+    run,
+    deliveredLaunchHandleIds: [],
+    deliveredGeneratedDocumentIds: [],
+  });
+  const names = next.entries.map((item) => `${item.fileName}${item.suspect ? ':suspect' : ''}`).sort();
+  assert.deepEqual(names, ['a.hwp', 'b.hwp:suspect', 'c.hwp']);
+});
+
+test('a recovery copy still being written at the wait cap is used when it lands before the reload', () => {
+  // 처음 저장이 상한까지 끝나지 않았다. 앞서 남긴 자동 저장본은 없다.
+  const pending = settleUnfinishedTrapSave({ state: 'saving' }, { draftId: 'draft-a', lastSavedAt: null }, 5_000);
+  const list = buildTrapManifest({
+    now: 40_000,
+    live: [{ session: 's', facts: facts({ slot: 'default', fileName: 'a.hwp', save: pending }) }],
+    attachedSession: 's',
+    run: null,
+    deliveredLaunchHandleIds: [],
+    deliveredGeneratedDocumentIds: [],
+  });
+  const [listed] = list.entries;
+  assert.equal(listed.draft?.id, 'draft-a', 'the list still points at the copy being written');
+
+  const landed = planTrapEntry(listed, draftRow('draft-a', 6_000));
+  assert.ok(landed.action === 'restore-draft' && landed.loss === null, 'a copy written after the trap reopens without loss');
+  const missing = planTrapEntry(listed, null);
+  assert.equal(missing.loss?.kind, 'unsaved-changes', 'a copy that never landed is reported as lost');
+
+  // 앞서 남긴 자동 저장본이 있으면, 멈추기 전에 기록된 행은 그 시각의 자동 저장본이다.
+  const older = settleUnfinishedTrapSave({ state: 'saving' }, { draftId: 'draft-a', lastSavedAt: 3_000 }, 5_000);
+  const [olderEntry] = buildTrapManifest({
+    now: 40_000,
+    live: [{ session: 's', facts: facts({ slot: 'default', fileName: 'a.hwp', save: older }) }],
+    attachedSession: 's',
+    run: null,
+    deliveredLaunchHandleIds: [],
+    deliveredGeneratedDocumentIds: [],
+  }).entries;
+  const stale = planTrapEntry(olderEntry, draftRow('draft-a', 3_000));
+  assert.deepEqual(stale.loss, { kind: 'stale-draft', savedAt: 3_000 });
+  assert.equal(planTrapEntry(olderEntry, draftRow('draft-a', 7_000)).loss, null);
+
+  // 끝난 저장은 그대로다.
+  const saved = { state: 'saved', draftId: 'draft-a', savedAt: 9 } as const;
+  assert.equal(settleUnfinishedTrapSave(saved, { draftId: 'draft-a', lastSavedAt: 9 }, 5_000), saved);
+});
+
+test('a read-only document is listed as read-only and keeps that through the reload', () => {
+  const storage = memoryStorage();
+  const list = buildTrapManifest({
+    now: 50,
+    live: [{
+      session: 's',
+      facts: facts({ slot: 'default', fileName: 'preview.hwpx', dirty: false, hasFile: false, readOnly: true }),
+    }],
+    attachedSession: 's',
+    run: null,
+    deliveredLaunchHandleIds: [],
+    deliveredGeneratedDocumentIds: ['generated-1'],
+  });
+  assert.equal(writeTrapManifest(storage, list), true);
+  const [entryBack] = takeTrapManifest(storage)!.entries;
+  assert.equal(entryBack.readOnly, true);
+  const plan = planTrapEntry(entryBack, draftRow('draft-live'));
+  assert.ok(plan.action === 'restore-draft' && plan.cleanAtTrap, 'its copy is reopened as a clean document');
 });

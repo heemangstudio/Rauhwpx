@@ -251,3 +251,72 @@ test('empty drafts are never offered', async () => {
   await offerAutosaveRecovery(deps);
   assert.deepEqual(calls, []);
 });
+
+test('a read-only document with no file reopens clean from its copy, and the copy is not offered again', async () => {
+  const neverSaved: AutosaveDraft = { ...linked, base: undefined };
+  const targets: Array<{ clean?: boolean; original: boolean }> = [];
+  const { deps, calls } = restoreDeps({
+    readDraft: async () => neverSaved,
+    openDraft: async (_draft, target) => {
+      targets.push({ clean: target.clean, original: target.original !== null });
+      calls.push('open');
+      return 'opened';
+    },
+  });
+  const outcome = await restoreAutosaveDraft(neverSaved, deps, { cleanAtTrap: true, readOnly: true, report: () => {} });
+  assert.deepEqual(targets, [{ clean: true, original: false }], 'opened clean, not as unsaved changes');
+  assert.deepEqual(calls, ['release-current', 'open', 'delete:linked-draft']);
+  assert.ok(outcome.kind === 'opened' && outcome.detached === 'never-saved');
+
+  // 고칠 수 있던 문서는 지금처럼 저장하지 않은 문서로 연다.
+  targets.length = 0;
+  calls.length = 0;
+  await restoreAutosaveDraft(neverSaved, deps, { cleanAtTrap: true, report: () => {} });
+  assert.deepEqual(targets, [{ clean: undefined, original: false }]);
+  assert.deepEqual(calls, ['release-current', 'open', 'flush']);
+});
+
+test('while the engine is stopped the startup offer opens, restores and deletes nothing', async () => {
+  let stopped = true;
+  const routed: string[] = [];
+  const { deps, calls } = offerDeps({
+    engineStopped: () => stopped,
+    onEngineStopped: () => { routed.push('trap-recovery'); },
+    showDialog: async () => {
+      calls.push('dialog');
+      return { action: 'delete-all' };
+    },
+  });
+  await offerAutosaveRecovery(deps);
+  assert.deepEqual(calls, [], 'the copies the next 문서 복구 needs stay where they are');
+
+  // 엔진이 멈추기 전에 띄운 안내의 복구를 멈춘 뒤에 누르면 문서 복구로 안내한다.
+  stopped = false;
+  const notice = offerDeps({
+    hasOpenDocument: () => true,
+    engineStopped: () => stopped,
+    onEngineStopped: () => { routed.push('trap-recovery'); },
+  });
+  await offerAutosaveRecovery(notice.deps);
+  stopped = true;
+  notice.openNotice();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(notice.calls, ['notice']);
+  assert.deepEqual(routed, ['trap-recovery']);
+});
+
+test('a trap while the recovery dialog is open cancels the choice made in it', async () => {
+  for (const action of ['delete-all', 'restore'] as const) {
+    let stopped = false;
+    const { deps, calls } = offerDeps({
+      engineStopped: () => stopped,
+      showDialog: async () => {
+        calls.push('dialog');
+        stopped = true;
+        return action === 'restore' ? { action, draftId: crashed.id } : { action };
+      },
+    });
+    await offerAutosaveRecovery(deps);
+    assert.deepEqual(calls, ['offered:crashed-draft', 'dialog'], `${action} is not carried out on a stopped engine`);
+  }
+});

@@ -19,6 +19,13 @@ export interface AutosaveRecoveryOfferDeps {
   restore: (draft: AutosaveDraftSummary) => Promise<void>;
   toast: (message: string, durationMs: number) => void;
   onRestoreError: (error: unknown) => void;
+  /**
+   * 문서 엔진이 멈췄으면 true. 멈춘 엔진에는 복구본을 열 수 없고, 남은 복구본은 문서 복구(엔진 trap
+   * 복구)가 다음에 다시 열 문서의 것이다 — 이 제안은 아무것도 열거나 지우지 않는다.
+   */
+  engineStopped?: () => boolean;
+  /** 엔진이 멈춘 뒤 안내의 복구를 눌렀다. 문서 복구로 안내한다. */
+  onEngineStopped?: () => void;
 }
 
 /**
@@ -29,7 +36,13 @@ export async function offerAutosaveRecovery(
   deps: AutosaveRecoveryOfferDeps,
   { fromNotice = false }: { fromNotice?: boolean } = {},
 ): Promise<void> {
+  const stopped = () => deps.engineStopped?.() === true;
+  if (stopped()) {
+    if (fromNotice) deps.onEngineStopped?.();
+    return;
+  }
   const drafts = (await deps.listRecoverable()).filter((draft) => draft.byteLength > 0);
+  if (stopped()) return;
   if (drafts.length === 0) {
     if (fromNotice) deps.toast('복구할 자동 저장본이 없습니다.', 2200);
     return;
@@ -42,8 +55,11 @@ export async function offerAutosaveRecovery(
   }
 
   await deps.markOffered(drafts.map((draft) => draft.id)).catch(() => {});
+  if (stopped()) return;
   const choice = await deps.showDialog(drafts);
-  if (choice.action === 'later') return;
+  // 대화상자가 열린 사이 엔진이 멈췄으면 고른 것을 하지 않는다. 지우기는 다음 문서 복구가 쓸
+  // 복구본을, 복구는 멈춘 엔진에 문서를 올리다 지금 문서를 잃는다.
+  if (choice.action === 'later' || stopped()) return;
   if (choice.action === 'delete-all') {
     await deps.clearRecoverable();
     deps.toast('복구 후보를 삭제했습니다.', 2200);
@@ -145,7 +161,10 @@ export interface OpenDraftTarget {
   original: FoundOriginal | null;
   /** null 이면 새 문서 ID 를 만든다(예전 draft). */
   documentId: string | null;
-  /** true 면 draft 대신 원본 바이트를 깨끗한 문서로 연다 (original 이 있어야 한다). */
+  /**
+   * true 면 깨끗한 문서로 연다. original 이 있으면 draft 대신 원본 바이트를, 없으면 draft 바이트를
+   * 원본과 연결하지 않고 연다.
+   */
   clean?: boolean;
 }
 
@@ -167,6 +186,11 @@ export type DraftRestoreOutcome =
 export interface DraftRestoreOptions {
   /** 엔진이 멈출 때 깨끗했던 문서. 원본이 그대로면 원본으로 깨끗하게 연다. */
   cleanAtTrap?: boolean;
+  /**
+   * cleanAtTrap 과 함께: 읽기 전용으로 보던 문서. 바꿀 수 없던 문서라 원본과 연결하지 못해도
+   * 저장하지 않은 문서로 표시하지 않고 깨끗하게 연다.
+   */
+  readOnly?: boolean;
   /** 있으면 알림을 띄우지 않고 결과를 여기로 보낸다. */
   report?: (outcome: DraftRestoreOutcome) => void;
 }
@@ -280,6 +304,7 @@ export async function restoreAutosaveDraft(
     return outcome;
   }
 
+  const cleanDetached = plan.kind === 'detached' && options.cleanAtTrap === true && options.readOnly === true;
   const target: OpenDraftTarget = plan.kind === 'reopen-dirty' || plan.kind === 'reopen-clean'
     ? {
       fileName: plan.original.name,
@@ -288,18 +313,26 @@ export async function restoreAutosaveDraft(
       ...(plan.kind === 'reopen-clean' ? { clean: true } : {}),
     }
     : plan.kind === 'detached'
-      ? { fileName: plan.fileName, original: null, documentId: draft.documentId ?? null }
+      ? {
+        fileName: plan.fileName,
+        original: null,
+        documentId: draft.documentId ?? null,
+        ...(cleanDetached ? { clean: true } : {}),
+      }
       : { fileName: plan.fileName, original: null, documentId: null };
   const opened = await deps.openDraft(draft, target);
   if (opened === 'cancelled') return finish({ kind: 'cancelled' });
   if (opened === 'blocked') {
     return finish({ kind: 'blocked', message: BLOCKED_RESTORE_MESSAGE });
   }
-  if (plan.kind === 'reopen-clean') {
+  if (plan.kind === 'reopen-clean' || (plan.kind === 'detached' && cleanDetached)) {
     // 깨끗하게 연 문서에는 남길 변경이 없다. 남은 draft 는 다음 시작의 복구 제안에 끼지 않게 지운다.
     await deps.deleteDraft(draft.id);
     return finish({
-      kind: 'opened', plan: 'reopen-clean', detached: null, message: `"${target.fileName}"을(를) 다시 열었습니다.`,
+      kind: 'opened',
+      plan: plan.kind,
+      detached: plan.kind === 'detached' ? plan.why : null,
+      message: `"${target.fileName}"을(를) 다시 열었습니다.`,
     });
   }
   const outcome = finish({

@@ -1105,6 +1105,12 @@ export interface AgentBridgeOptions {
    * 대체값) 대신 이 값을 쓴다 — 한 페이지에서 문서마다 다른 허브 세션을 쥘 때 넘긴다.
    */
   resolveSessionContext?: () => Promise<RendererSessionContext | null>;
+  /**
+   * 엔진 trap 복구로 다시 불러온 페이지의 기본 허브 세션 채팅. 멈추기 전 페이지가 이 스레드들의
+   * 턴을 멈추려 했지만 연결이 끊겨 닿지 않았을 수 있다. 첫 welcome 이 그 턴이 아직 돈다고 알리면
+   * 이어받은 턴을 곧바로 멈춘다 — 다시 연 문서에 쓰지 않게. 첫 welcome 에서 한 번만 본다.
+   */
+  interruptTurnsOnFirstWelcome?: readonly string[];
 }
 
 export interface DocPoint {

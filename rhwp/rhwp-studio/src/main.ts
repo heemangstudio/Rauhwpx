@@ -69,7 +69,7 @@ import {
   type FileSystemFileHandleLike,
 } from '@/command/file-system-access';
 import { fileNameForFormat, forgetConvertedHmlSaveHandle } from '@/command/save-target';
-import { engineTrap, onEngineTrap, reportEngineTrap } from '@/core/engine-trap';
+import { EngineTrappedError, engineTrap, onEngineTrap, reportEngineTrap } from '@/core/engine-trap';
 import { ContextMenu } from '@/ui/context-menu';
 import { CommandPalette } from '@/ui/command-palette';
 import { showHmlImportWarning } from '@/ui/hml-import-warning';
@@ -188,6 +188,7 @@ import {
   type TrapRecoveryRun,
 } from '@/recovery/trap-recovery';
 import { TrapRecoveryPage, presentTrapRecoveryReport } from '@/recovery/trap-recovery-page';
+import { holdDocumentLoadingCommands } from '@/recovery/trap-command-guard';
 import { markThreadInterruptedByEngineTrap } from '@/recovery/trap-chat-notice';
 import { claimForExplorerGroup } from '@/project-file/claim';
 import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
@@ -366,11 +367,19 @@ const trapManifestToRecover: TrapRecoveryManifest | null = (() => {
 const trapRecoveryRun: TrapRecoveryRun<DocumentSession> | null = trapManifestToRecover
   ? createTrapRecoveryRun<DocumentSession>(trapManifestToRecover)
   : null;
+/**
+ * 멈추기 전 페이지가 멈추려 한 채팅의 스레드. 연결이 끊겨 멈춤이 허브에 닿지 않았으면 다시 불러와도
+ * 남는 기본 허브 세션이 그 턴을 계속 돈다 — 그 세션을 받는 첫 채팅이 첫 welcome 에서 멈춘다.
+ */
+let trapInterruptedThreadIds: string[] = trapManifestToRecover
+  ? [...new Set(trapManifestToRecover.entries.flatMap((entry) => entry.interruptedThreadIds))]
+  : [];
 const trapRecoveryPage = new TrapRecoveryPage({
   sessions: () => liveSessions,
   attached: () => attachedSession,
   saveCopy: saveTrappedDocumentCopy,
   run: () => trapRecoveryRun,
+  readOnly: () => documentReadOnly,
   deliveredLaunchHandleIds,
   deliveredGeneratedDocumentIds,
   storage: sessionStorageOrNull,
@@ -388,6 +397,30 @@ function showTrapRecoveryToast(): void {
 async function openTrapRecoveryDialog(): Promise<void> {
   // 닫으면 페이지를 그대로 두고(읽기만 된다) 안내를 다시 띄운다.
   if (await trapRecoveryPage.openDialog() === 'closed') showTrapRecoveryToast();
+}
+
+/**
+ * 엔진이 멈춘 창에서 문서를 열거나 만들려고 하면 엔진을 건드리지 않고 문서 복구로 안내한다.
+ * 멈춘 엔진에 문서를 올리면 지금 문서를 먼저 해제한 뒤 실패하고 그 복구본까지 지워, 그 문서가
+ * 문서 복구에서 빠진다. 멈췄으면 true.
+ */
+let refusedOpenNoticeUntil = 0;
+function refuseDocumentOpenWhileTrapped(): boolean {
+  if (!engineTrap()) return false;
+  // 한 번의 시도가 여러 길(명령·열기·저장 확인)을 거쳐도, 거듭 눌러도 안내는 하나만 띄운다.
+  if (Date.now() < refusedOpenNoticeUntil) return true;
+  refusedOpenNoticeUntil = Date.now() + 6000;
+  const recoverable = trapRecoveryAvailable();
+  showToast({
+    message: recoverable
+      ? '문서 엔진이 멈춰 문서를 열거나 만들 수 없습니다.\n문서 복구를 먼저 진행하세요.'
+      : '문서 엔진이 멈춰 문서를 열거나 만들 수 없습니다.\n사본을 저장한 뒤 앱을 다시 여세요.',
+    durationMs: 6000,
+    action: recoverable
+      ? { label: '문서 복구', onClick: () => void openTrapRecoveryDialog() }
+      : { label: '사본 저장', onClick: saveTrappedDocumentCopy },
+  });
+  return true;
 }
 
 onEngineTrap(() => {
@@ -702,6 +735,8 @@ registry.registerAll(insertCommands);
 registry.registerAll(tableCommands);
 registry.registerAll(pageCommands);
 registry.registerAll(toolCommands);
+// 엔진이 멈춘 뒤의 열기·새 문서는 저장 확인과 파일 선택 전에 문서 복구로 안내한다.
+holdDocumentLoadingCommands(registry, refuseDocumentOpenWhileTrapped);
 
 // 상태 바 요소
 const sbMessage = () => document.getElementById('sb-message')!;
@@ -1853,7 +1888,7 @@ function installChatAgent(
     // 같은 문서의 다른 채팅이 고치는 중이면 이 채팅의 쓰기는 문서에 닿지 않는다.
     claimDocumentWrite: () => chat !== undefined && claimDocumentWriter(session, chat),
     turnCheckpoints: session.turnCheckpoints,
-  }, hubSession ? { resolveSessionContext: hubSession.resolveContext } : undefined);
+  }, hubSession ? { resolveSessionContext: hubSession.resolveContext } : takeTrapInterruptedTurnOptions());
   const shown = () => documentShown() && chat !== undefined && session.activeChat === chat;
   /** 이 작업 전으로 되돌리기의 문 — 엔진, 화면, 이 문서의 채팅들, 읽기 전용. */
   const restoreGates: TurnRestoreGates = {
@@ -1985,6 +2020,17 @@ function installChatAgent(
   );
   notifyChatModeLock(session, created);
   return created;
+}
+
+/**
+ * 기본 허브 세션을 받는 첫 채팅에 한 번만 넘긴다. 엔진 trap 복구 전에 멈추지 못한 턴을 그 채팅이
+ * 이어받으면 첫 welcome 에서 멈춘다 (AgentBridgeOptions.interruptTurnsOnFirstWelcome).
+ */
+function takeTrapInterruptedTurnOptions(): { interruptTurnsOnFirstWelcome: string[] } | undefined {
+  if (trapInterruptedThreadIds.length === 0) return undefined;
+  const threadIds = trapInterruptedThreadIds;
+  trapInterruptedThreadIds = [];
+  return { interruptTurnsOnFirstWelcome: threadIds };
 }
 
 /**
@@ -2550,6 +2596,8 @@ function moveFromSession(
 ): Promise<LibraryMoveResult> {
   // 다른 문서를 여는 중에 누른 이동은 받지 않는다. 겹치면 열던 일이 엉뚱한 세션에 닿는다.
   if (isNavigating()) return Promise.resolve('cancelled');
+  // 멈춘 엔진에서는 저장 확인과 다른 문서 열기가 지금 문서를 잃게 한다.
+  if (refuseDocumentOpenWhileTrapped()) return Promise.resolve('cancelled');
   return runNavigation(() => moveFromSessionNow(session, target, options));
 }
 
@@ -3470,6 +3518,9 @@ async function reserveSaveHandleForWrite(
 
 /** 문서 열기는 끝날 때까지 화면 세션을 바꾸지 않는다 (trackDocumentIo). */
 function loadBytes(...args: Parameters<typeof loadBytesNow>): Promise<void> {
+  // 멈춘 엔진에 올리면 지금 문서를 먼저 해제한 뒤 실패하고 그 자동 저장본까지 지운다.
+  const trap = engineTrap();
+  if (trap) return Promise.reject(new EngineTrappedError(trap.message));
   return trackDocumentIo(async () => {
     const target = attachedSession;
     if (target.worktree && target.worktreeWritable && target.wasm.hasLoadedDocument()) {
@@ -3844,6 +3895,9 @@ async function offerAutosaveRecoveryAtStartup(): Promise<void> {
       restore: (draft) => restoreAutosaveDraftIntoEditor(draft),
       toast: (message, durationMs) => showToast({ message, durationMs }),
       onRestoreError: (error) => showLoadError(error),
+      // 멈춘 엔진에는 열 수 없고, 남은 복구본은 다음 문서 복구가 다시 열 문서의 것이다.
+      engineStopped: () => engineTrap() !== null,
+      onEngineStopped: () => { refuseDocumentOpenWhileTrapped(); },
     });
   } catch (error) {
     console.warn('[autosave] 복구 후보 확인 실패:', error);
@@ -3851,6 +3905,7 @@ async function offerAutosaveRecoveryAtStartup(): Promise<void> {
 }
 
 function restoreAutosaveDraftIntoEditor(draft: AutosaveDraftSummary): Promise<void> {
+  if (refuseDocumentOpenWhileTrapped()) return Promise.resolve();
   return runNavigation(() => restoreAutosaveDraftNow(draft));
 }
 
@@ -3951,7 +4006,10 @@ async function locateAutosaveOriginal(draft: AutosaveDraft) {
   });
 }
 
-/** 자동 저장본을 dirty 로 연다. clean 이면 draft 대신 원본 파일을 깨끗하게 연다. */
+/**
+ * 자동 저장본을 dirty 로 연다. clean 이면 깨끗하게 연다 — 원본이 있으면 draft 대신 원본 파일을,
+ * 없으면 draft 바이트를 원본과 연결하지 않고 (읽기 전용으로 보던 문서).
+ */
 async function openAutosaveDraft(draft: AutosaveDraft, target: OpenDraftTarget): Promise<OpenDraftOutcome> {
   const original = target.original;
   if (target.clean && original) {
@@ -3961,6 +4019,15 @@ async function openAutosaveDraft(draft: AutosaveDraft, target: OpenDraftTarget):
     ));
     if (opened !== 'opened') await original.handle.releaseUnusedSaveTarget?.().catch(() => {});
     return opened;
+  }
+  if (target.clean) {
+    return loadRecoveredDocument(() => loadBytes(draft.data, target.fileName, null, performance.now(), {
+      skipRecent: true,
+      autosaveBase: null,
+      ...(target.documentId
+        ? { grant: { kind: 'verified' as const, documentId: target.documentId } }
+        : { freshDocumentId: true }),
+    }));
   }
   const outcome = await loadRecoveredDocument(() => loadBytes(
     draft.data, target.fileName, original?.handle ?? null, performance.now(), {
@@ -4088,11 +4155,14 @@ async function openTrapEntryInAttached(
   options: { canMerge: boolean },
 ): Promise<TrapOpenResult> {
   if (entry.activeThreadId) attachedSession.sidebar?.followThreadOnNextDocument(entry.activeThreadId);
+  // 읽기 전용으로 보던 창(생성 문서 미리보기 등)은 다시 열어도 읽기 전용이다. 창 전체 설정이다.
+  if (entry.readOnly) setDocumentReadOnly(true);
   try {
     if (plan.action === 'restore-draft') {
       const outcome = await restoreAutosaveDraftInAttachedSession(plan.draft, {
         canMerge: options.canMerge,
         cleanAtTrap: plan.cleanAtTrap,
+        readOnly: entry.readOnly,
         report: () => {},
       });
       return trapResultOfRestore(outcome);
@@ -4107,7 +4177,10 @@ async function openTrapEntryInAttached(
   }
 }
 
-/** 깨끗했던 문서를 파일 선택 창 없이 그 파일에서 다시 연다. */
+/**
+ * 깨끗했던 문서를 파일 선택 창 없이 그 파일에서 다시 연다. 파일 열기와 같은 길로 연다 — 버전 기록을
+ * 함께 담은 .rhwpx 묶음은 문서를 꺼내 열어야 한다.
+ */
 async function reopenTrapFile(entry: TrapManifestEntry): Promise<TrapOpenResult> {
   const claim = claimForExplorerGroup(
     { documentId: entry.documentId, displayName: entry.fileName },
@@ -4118,13 +4191,25 @@ async function reopenTrapFile(entry: TrapManifestEntry): Promise<TrapOpenResult>
   if (located.kind === 'owned-elsewhere') return { kind: 'failed', reason: 'blocked' };
   if (located.kind === 'permission-denied') return { kind: 'failed', reason: 'permission-denied' };
   if (located.kind === 'missing') return { kind: 'failed', reason: 'not-found' };
-  const opened = await loadRecoveredDocument(() => loadBytes(
-    located.bytes, located.name, located.handle, performance.now(),
-    { grant: { kind: 'verified', documentId: claim.documentId } },
-  ));
-  if (opened === 'opened') return { kind: 'opened' };
-  await located.handle.releaseUnusedSaveTarget?.().catch(() => {});
-  return { kind: 'failed', reason: opened };
+  const grant = { kind: 'verified' as const, documentId: claim.documentId };
+  let replaced = true;
+  const opened = await loadRecoveredDocument(
+    isPortableHistoryFileName(located.name) || isPortableHistoryBytes(located.bytes)
+      ? async () => {
+        replaced = await openDocumentBytesInAttachedSessionNow({
+          bytes: located.bytes,
+          fileName: located.name,
+          fileHandle: located.handle,
+          grant,
+          skipUnsavedGuard: true,
+        });
+      }
+      : () => loadBytes(located.bytes, located.name, located.handle, performance.now(), { grant }),
+  );
+  if (opened === 'opened' && replaced) return { kind: 'opened' };
+  // 바꿔 열지 않았으면 열기 쪽이 이미 핸들을 놓았다. 그 밖의 실패는 여기서 놓는다.
+  if (opened !== 'opened') await located.handle.releaseUnusedSaveTarget?.().catch(() => {});
+  return { kind: 'failed', reason: opened === 'opened' ? 'cancelled' : opened };
 }
 
 /** 복구 결과의 열기 — 자동으로 열지 않은 문서를 사용자가 직접 연다. 지금 문서는 그대로 둔다. */
@@ -4155,6 +4240,8 @@ async function openTrapEntryOnDemand(entry: TrapManifestEntry): Promise<string> 
 }
 
 function createNewDocument(): Promise<boolean> {
+  // 멈춘 엔진에서는 만들기가 실패하면서 지금 문서의 자동 저장본까지 지운다.
+  if (engineTrap()) return Promise.resolve(false);
   return trackDocumentIo(createNewDocumentNow);
 }
 
@@ -4204,6 +4291,8 @@ async function createNewDocumentNow(): Promise<boolean> {
 }
 
 async function canReplaceCurrentDocument(skipUnsavedGuard?: boolean): Promise<boolean> {
+  // 저장 확인의 버리기는 지금 문서의 복구본을 지운다. 멈춘 엔진에는 바꿔 열 문서도 올릴 수 없다.
+  if (refuseDocumentOpenWhileTrapped()) return false;
   if (agentEditingLease.active) {
     showToast({ message: '에이전트가 편집을 마친 뒤 문서를 바꿀 수 있습니다.', durationMs: 2600 });
     return false;
@@ -4222,6 +4311,10 @@ function shouldOpenInNewSession(): boolean {
 }
 
 function openDocumentBytes(data: OpenDocumentBytesEvent): Promise<boolean> {
+  if (refuseDocumentOpenWhileTrapped()) {
+    void data.fileHandle?.releaseUnusedSaveTarget?.().catch(() => {});
+    return Promise.resolve(false);
+  }
   // 라이브러리 이동이 내보내는 열기는 그 이동의 일부라 줄을 서지 않는다.
   return runNavigation(() => openDocumentBytesNow(data), { nested: navigationRunning > 0 });
 }
@@ -4358,6 +4451,10 @@ eventBus.on('create-new-document', (payload) => {
     const notify = (ok: boolean, error?: string) => {
       if (options?.requestId) eventBus.emit('create-new-document:done', { requestId: options.requestId, ok, error });
     };
+    if (refuseDocumentOpenWhileTrapped()) {
+      notify(false, '문서 엔진이 멈춰 새 문서를 만들 수 없습니다.');
+      return;
+    }
     try {
       const ok = await runNavigation(async () => {
         if (shouldOpenInNewSession()) {
