@@ -143,8 +143,8 @@ function sessionForEvent(event) {
   return sessions.sessionForSender(event.sender);
 }
 
-// Electron 은 이 시점의 앱 이름으로 사용자 데이터 폴더와 safeStorage 키체인 항목을 정한다.
-// 내부 이름은 2.0.10 까지와 같아야 기존 데이터와 비밀이 그대로 열린다. 보이는 이름은 준비 뒤에 바꾼다.
+// Electron 은 앱 이름으로 사용자 데이터 폴더와 safeStorage 키체인 항목을 정한다. 실행 내내
+// 2.0.10 까지와 같은 내부 이름을 쓴다. 메뉴·대화상자에는 PRODUCT_NAME 을 직접 넘긴다.
 app.setName(INTERNAL_APP_NAME);
 const profileDirectories = resolveProfileDirectories({
   packaged: app.isPackaged,
@@ -607,7 +607,7 @@ const updateLifecycle = createUpdateLifecycle({
   nativeUpdater: nativeAutoUpdater,
   platform: process.platform,
   isInteractive: () => manualUpdateCheck || interactiveUpdateDownload,
-  showMessageBox: (options) => dialog.showMessageBox(options),
+  showMessageBox: (options) => dialog.showMessageBox({ title: PRODUCT_NAME, ...options }),
   openReleases: () => shell.openExternal(RELEASES_URL),
   cleanup: () => hubOwner.teardown(),
   onQuitRequested: (requested) => { quitRequested = requested; },
@@ -619,6 +619,7 @@ let updateCheckPromise = null;
 
 async function showUpToDate() {
   await dialog.showMessageBox({
+    title: PRODUCT_NAME,
     type: 'info',
     message: 'HamaEditor is up to date',
     detail: `Version ${app.getVersion()} is the latest release.`,
@@ -646,6 +647,7 @@ async function checkForDebUpdates({ manual }) {
   }
   const asset = selectDebAsset(release?.assets, process.arch);
   const { response: choice } = await dialog.showMessageBox({
+    title: PRODUCT_NAME,
     type: 'info',
     message: `HamaEditor ${String(release.tag_name).replace(/^v/i, '')} is available`,
     detail: `You are running version ${app.getVersion()}. Download the signed Debian package and install it with your system package manager.`,
@@ -672,6 +674,7 @@ function configureAutoUpdater() {
     const linuxDeb = process.platform === 'linux' && !process.env.APPIMAGE;
     if (autoUpdater.autoDownload || (!manualUpdateCheck && !linuxDeb)) return;
     void dialog.showMessageBox({
+      title: PRODUCT_NAME,
       type: 'info',
       message: `HamaEditor ${info?.version ?? ''} is available`,
       detail: linuxDeb
@@ -1418,6 +1421,7 @@ ipcMain.handle('desktop:close-response', async (event, requestId, allowClose) =>
     onError: async (error) => {
       console.warn('[hamaeditor] document close failed:', error);
       await dialog.showMessageBox({
+        title: PRODUCT_NAME,
         type: 'warning',
         message: 'HamaEditor could not close the document',
         detail: error?.message ?? String(error),
@@ -1454,8 +1458,6 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
-    // 키체인 항목과 사용자 데이터 폴더는 이미 내부 이름으로 정해졌다. 메뉴·대화상자에는 제품 이름을 쓴다.
-    app.setName(PRODUCT_NAME);
     // 비밀 저장소·허브·북마크보다 먼저 2.0.11 프로필의 파일을 합친다. 실패해도 앱은 뜬다.
     await prepareRebrandImport().catch((error) => {
       console.warn('[hamaeditor] 2.0.11 profile import failed:', error);

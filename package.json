@@ -232,7 +232,7 @@
       "syncDesktopName": true,
       "desktop": {
         "entry": {
-          "StartupWMClass": "HamaEditor",
+          "StartupWMClass": "Rauhwpx",
           "X-GNOME-UsesNotifications": "true"
         }
       }

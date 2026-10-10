@@ -6,17 +6,10 @@ import path from 'node:path';
 import { readBookmarkState } from './bookmark-state.mjs';
 import { nativePathOwnershipKey, writeNativeFileAtomically } from './native-file-handles.mjs';
 import { REBRANDED_STUDIO_SCHEME } from './studio-protocol.mjs';
+import { INTERNAL_APP_NAME } from './app-identity.mjs';
 import { mergeAgentInstructions } from '../rhwp/rhwp-agent/rebrand-import.mjs';
 
-/**
- * Identity that addresses user data. Electron derives the userData folder and
- * the macOS Keychain item ("Rauhwpx Safe Storage" / "Rauhwpx Key") or Linux
- * keyring entry for safeStorage from the app name when the main script loads.
- * It must stay "Rauhwpx" so data written by 2.0.10 and earlier stays readable.
- */
-export const INTERNAL_APP_NAME = 'Rauhwpx';
-/** Name users see in menus, dialogs and the About panel. */
-export const PRODUCT_NAME = 'HamaEditor';
+export { INTERNAL_APP_NAME, PRODUCT_NAME } from './app-identity.mjs';
 /** 2.0.11 kept its profile here. Its data is imported, never used live. */
 export const REBRANDED_PROFILE_NAME = 'HamaEditor';
 export const REBRAND_IMPORT_MARKER = 'rebrand-import.json';
