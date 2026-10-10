@@ -179,7 +179,7 @@ const AUTH_TEXT = /\/login|not logged in|log ?in again|oauth token|token (?:has 
 const USAGE_TEXT = /usage limit|hit your (?:usage |session |weekly )?limit|limit reached|quota exceeded|insufficient[_ ]quota|credit balance is too low|out of credits|insufficient credits|requires more credits|payment required|\b402\b/i;
 const NETWORK_TEXT = /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|socket hang up|fetch failed|network error|connection (?:error|refused|reset|closed)|timed? out|stream disconnected/i;
 const PROVIDER_TEXT = /overloaded|\b5\d\d\b|server error|internal error|service unavailable|rate.?limit|too many requests|\b429\b|capacity/i;
-const CONTEXT_TEXT = /prompt is too long|context (?:length|window)|maximum context/i;
+const CONTEXT_TEXT = /prompt is too long|context (?:length|window|limit)|maximum context/i;
 const MODEL_TEXT = /model\b.*\bnot (?:found|available)|model_not_found/i;
 const INVALID_TEXT = /invalid[_ ]request|\b40[04]\b|\b413\b/i;
 /** 허브·어댑터가 직접 쓰는 정리 실패 문구 (영문 고정 문구). */
@@ -215,6 +215,8 @@ function exitTextClass(raw) {
   if (EXIT_LOGIN_COMMAND.test(raw)) return { class: 'auth_required' };
   const text = withoutPathTokens(raw);
   if (EXIT_AUTH_TEXT.test(text)) return { class: 'auth_required' };
+  // 'Context limit reached' 는 대화 길이 문제다 — 사용 한도 문구('limit reached')보다 먼저 본다.
+  if (CONTEXT_TEXT.test(text)) return { class: 'invalid_request', code: 'context_window' };
   if (EXIT_USAGE_TEXT.test(text)) return { class: 'usage_limit' };
   if (MODEL_TEXT.test(text)) return { class: 'invalid_request', code: 'model_not_found' };
   return null;
@@ -222,9 +224,10 @@ function exitTextClass(raw) {
 
 function textClass(text) {
   if (AUTH_TEXT.test(text)) return { class: 'auth_required', code: null };
+  // 'Context limit reached' 는 대화 길이 문제다 — 사용 한도 문구('limit reached')보다 먼저 본다.
+  if (CONTEXT_TEXT.test(text)) return { class: 'invalid_request', code: 'context_window' };
   if (USAGE_TEXT.test(text)) return { class: 'usage_limit', code: null };
   if (NETWORK_TEXT.test(text)) return { class: 'network', code: null };
-  if (CONTEXT_TEXT.test(text)) return { class: 'invalid_request', code: 'context_window' };
   if (PROVIDER_TEXT.test(text)) return { class: 'provider_error', code: null };
   if (MODEL_TEXT.test(text)) return { class: 'invalid_request', code: 'model_not_found' };
   if (INVALID_TEXT.test(text)) return { class: 'invalid_request', code: null };

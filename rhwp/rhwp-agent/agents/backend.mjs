@@ -14,6 +14,12 @@ const ANSI_ESCAPE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 const SECRET_ASSIGNMENT = /((?:\\?["']?(?:access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|cookie|password|secret|token|oauth[_-]?code|authorization[_-]?code|user[_-]?code|code[_-]?verifier|state)\\?["']?)\s*[:=]\s*)(?:\\?"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi;
 const AUTH_HEADER = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 const KEY_SHAPED_SECRET = /\b(?:sk|pk)-[A-Za-z0-9_-]{12,}/g;
+/**
+ * 공급사 고유 모양의 토큰 — GitHub(ghp_/gho_/ghu_/ghs_/ghr_, github_pat_), Stripe 식
+ * (sk_live_/sk_test_/rk_live_ …), Slack(xox?-), AWS 액세스 키(AKIA…), Google API 키(AIza…).
+ * 모양이 분명해 일반 문구를 지울 위험이 없다.
+ */
+const VENDOR_SHAPED_SECRET = /\b(?:gh[oprsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{12,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35})\b/g;
 /** JWT 모양의 액세스 토큰 (Codex OAuth 등): header.payload.signature. */
 const JWT_SHAPED_SECRET = /\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g;
 const URL_USERINFO = /(https?:\/\/)[^/\s:@]+:[^@\s/]+@/gi;
@@ -31,6 +37,7 @@ export function redactDiagnosticText(value, secrets = []) {
     .replace(URL_SECRET_PARAM, '$1[redacted]')
     .replace(AUTH_HEADER, '$1 [redacted]')
     .replace(KEY_SHAPED_SECRET, '[redacted]')
+    .replace(VENDOR_SHAPED_SECRET, '[redacted]')
     .replace(JWT_SHAPED_SECRET, '[redacted]')
     .replace(SECRET_ASSIGNMENT, '$1[redacted]');
 }

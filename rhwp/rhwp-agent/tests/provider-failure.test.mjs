@@ -122,6 +122,7 @@ test('text patterns classify messages from older paths, in order', () => {
     ['upstream returned 502', 'provider_error'],
     ['Too many requests', 'provider_error'],
     ['prompt is too long: 210000 tokens > 200000 maximum', 'invalid_request'],
+    ['Context limit reached · /compact or /clear to continue', 'invalid_request'],
     ['model gpt-x not found', 'invalid_request'],
     ['invalid_request_error: messages: field required', 'invalid_request'],
     ['the mailbox exploded', 'unknown'],
@@ -130,6 +131,12 @@ test('text patterns classify messages from older paths, in order', () => {
     assert.equal(classify({ message }).class, expected, message);
   }
   assert.equal(classify({ message: 'prompt is too long' }).code, 'context_window');
+  assert.equal(classify({ message: 'Context limit reached · /compact or /clear to continue' }).code, 'context_window',
+    'a full conversation is not a usage limit even though it says "limit reached"');
+  const exited = classifyProviderFailure({
+    agent: 'claude', hint: { source: 'claude', code: 'process_exit' }, message: 'Context limit reached · /compact or /clear to continue',
+  });
+  assert.equal(exited.class, 'invalid_request', 'a CLI that exits on a full context is not reported as a usage limit');
   assert.equal(classify({ message: 'model gpt-x not found' }).code, 'model_not_found');
 });
 
@@ -325,4 +332,23 @@ test('normalizeProviderFailureEvent merges a turn into one failure and fills a s
 
   const idle = normalizeProviderFailureEvent({ type: 'error', agent: 'pi', message: 'boom' }, { agent: 'pi', running: false });
   assert.equal(idle.held, null, 'an idle error is not merged into a turn');
+});
+
+test('redaction removes vendor-shaped tokens that carry no key name', () => {
+  const secrets = {
+    github: 'ghp_0123456789abcdefABCDEF0123456789abcd',
+    githubPat: 'github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz',
+    stripeLike: 'sk_live_0123456789abcdefABCD',
+    slack: 'xoxb-1234567890-abcdefghij',
+    aws: 'AKIAABCDEFGHIJKLMNOP',
+    google: 'AIzaSyA0123456789abcdefghijklmnopqrstuv',
+  };
+  const text = Object.values(secrets).map((value, index) => `line ${index}: ${value}`).join('\n');
+  const redacted = redactFailureText(text);
+  for (const [name, value] of Object.entries(secrets)) {
+    assert.ok(!redacted.includes(value), `${name} is removed`);
+  }
+  assert.match(redacted, /line 0: \[redacted\]/);
+  // 비슷하지만 토큰이 아닌 낱말은 남는다.
+  assert.equal(redactFailureText('the ghp_ prefix and sk_live_ mode are documented'), 'the ghp_ prefix and sk_live_ mode are documented');
 });
