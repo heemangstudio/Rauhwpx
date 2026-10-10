@@ -224,3 +224,6 @@
   box-shadow: none;
   clip-path: inset(50%);
 }
+
+/* 끄는 동안 원래 카드는 목록에서 빠지고 포인터를 따르는 카드 하나만 보인다. */
+.ag-workbench-board .ag-pcard.ag-pcard-source { display: none; }
