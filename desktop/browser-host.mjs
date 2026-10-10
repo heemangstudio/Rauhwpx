@@ -47,6 +47,7 @@ export class OwnedBrowserHost {
     this.getWindowForSession = getWindowForSession;
     this.onEvent = onEvent;
     this.tabs = new Map();
+    this.pendingTabs = new Set();
     this.aliases = new Map();
     this.popouts = new Map();
     this.downloads = new Map();
@@ -125,27 +126,58 @@ export class OwnedBrowserHost {
   }
 
   async createTab({ url = 'about:blank', parent = null, disposition = null } = {}) {
-    if (!this.owner || !this.proxy) throw new Error('Native browser runtime is disconnected');
-    if (this.tabs.size >= MAX_NATIVE_TABS) throw new Error('Native browser tab limit reached');
     const destination = browserNavigationUrl(url);
-    const view = new this.WebContentsView({ webPreferences: {
-      session: this.session, preload: GUEST_PRELOAD, sandbox: true,
+    const tab = this.createNativeTab({ parent, disposition });
+    await this.initializeTab(tab, { loadBlank: true });
+    if (destination !== 'about:blank') void tab.view.webContents.loadURL(destination).catch(() => {});
+    return tab;
+  }
+
+  guestPreferences() {
+    return { session: this.session, preload: GUEST_PRELOAD, sandbox: true,
       contextIsolation: true, nodeIntegration: false, webSecurity: true,
-      webviewTag: false, allowRunningInsecureContent: false, devTools: false,
-    } });
+      webviewTag: false, allowRunningInsecureContent: false, devTools: false };
+  }
+
+  createNativeTab({ parent = null, disposition = null, options = {} } = {}) {
+    if (!this.owner || !this.proxy) throw new Error('Native browser runtime is disconnected');
+    if (this.tabs.size + this.pendingTabs.size >= MAX_NATIVE_TABS) throw new Error('Native browser tab limit reached');
+    const view = new this.WebContentsView({ ...(options.webContents ? { webContents: options.webContents } : {}),
+      webPreferences: { ...options.webPreferences, ...this.guestPreferences() } });
     view.setBounds({ x: 0, y: 0, width: 1280, height: 800 });
     view.setVisible(false);
     const contents = view.webContents;
     contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
-    const tab = { view, targetId: null, tabId: null, sessionId: null, chatId: null, windowId: null,
+    const tab = { view, targetId: null, tabId: null, sessionId: parent?.sessionId ?? null, chatId: parent?.chatId ?? null, windowId: parent?.windowId ?? null,
       placement: null, human: false, interactive: false, navigationEpoch: 0,
-      frameId: null, lastError: null, crashed: false, openerTargetId: parent?.targetId, disposition };
-    contents.setWindowOpenHandler(({ url: popupUrl, disposition }) => {
+      frameId: null, lastError: null, crashed: false, openerTab: parent, openerTargetId: parent?.targetId, disposition };
+    // 실제 opener를 읽을 수 있는 자식도 부모와 같은 비밀 보호 범위를 갖는다.
+    if (parent?.passwordShield) Object.assign(tab, { passwordShield: true,
+      protectedPasswords: new Set(parent.protectedPasswords ?? []),
+      passwordAllowedOrigins: new Set(parent.passwordAllowedOrigins ?? []), passwordSnapshot: null });
+    this.pendingTabs.add(tab);
+    contents.setWindowOpenHandler((details) => {
       try {
-        const popup = browserNavigationUrl(popupUrl);
-        void this.createTab({ url: popup, parent: tab, disposition }).catch(() => {});
-      } catch {}
-      return { action: 'deny' };
+        const destination = browserNavigationUrl(details.url);
+        if (!tab.tabId || tab.closing || !this.owner || !this.proxy || this.tabs.size + this.pendingTabs.size >= MAX_NATIVE_TABS) return { action: 'deny' };
+        return { action: 'allow', overrideBrowserWindowOptions: { webPreferences: this.guestPreferences() },
+          createWindow: (options) => {
+            // Chromium's guest carries the actual WindowProxy, opener and POST navigation.
+            // Adopting it preserves OAuth messaging without exposing a new BrowserWindow.
+            const popup = this.createNativeTab({ parent: tab, disposition: details.disposition, options });
+            // Attaching a debugger inside Electron's guest-creation callback can crash
+            // Chromium during a nonblank initial navigation. Wait for the native call to return.
+            void new Promise(resolveReady => setImmediate(resolveReady)).then(() => this.initializeTab(popup, { loadBlank: !options.webContents })).then(() => {
+              // Browser-process link opens can defer guest creation and navigation.
+              if (!options.webContents && destination !== 'about:blank') {
+                const postBody = details.postBody;
+                void popup.view.webContents.loadURL(destination, { httpReferrer: details.referrer,
+                  ...(postBody ? { postData: postBody.data, extraHeaders: `content-type: ${postBody.contentType}${postBody.boundary ? `; boundary=${postBody.boundary}` : ''}` } : {}) }).catch(() => {});
+              }
+            }).catch(() => {});
+            return popup.view.webContents;
+          } };
+      } catch { return { action: 'deny' }; }
     });
     contents.on('will-navigate', (event, rawUrl) => {
       try { browserNavigationUrl(rawUrl); } catch { event.preventDefault(); }
@@ -177,9 +209,23 @@ export class OwnedBrowserHost {
       if (mainFrame && code !== -3) { tab.lastError = description; this.emit(tab, 'load-failed'); }
     });
     contents.on('render-process-gone', (_event, details) => { tab.crashed = true; this.emit(tab, 'crashed', { reason: details.reason }); });
-    contents.once('destroyed', () => { this.cdp.remove(tab.targetId); this.passwords?.forgetTab(tab); this.webAuthn?.cancelTab(tab); this.tabs.delete(tab.targetId); if (tab.tabId) this.aliases.delete(tab.tabId); this.emit(tab, 'closed'); });
+    contents.once('destroyed', () => {
+      tab.closing = true; void this.clearActivity(tab); this.passwords?.forgetTab(tab); this.webAuthn?.cancelTab(tab); this.pendingTabs.delete(tab); this.unplace(tab);
+      this.cdp.remove(tab.targetId); this.tabs.delete(tab.targetId);
+      if (tab.tabId) this.aliases.delete(tab.tabId);
+      const popout = this.popouts.get(tab.targetId);
+      if (popout && !popout.isDestroyed()) popout.destroy();
+      this.popouts.delete(tab.targetId); this.emit(tab, 'closed');
+    });
+    return tab;
+  }
+
+  async initializeTab(tab, { loadBlank = false } = {}) {
+    const contents = tab.view.webContents;
+    if (!contents || contents.isDestroyed() || tab.closing) { this.pendingTabs.delete(tab); return tab; }
+    if (!this.owner || !this.proxy) { this.closeGuest(tab); return tab; }
     try {
-      await contents.loadURL('about:blank');
+      if (loadBlank) await contents.loadURL('about:blank');
       await this.cdp.add(tab);
       await this.viewport(tab, { width: 1280, height: 800 });
       const tree = await contents.debugger.sendCommand('Page.getFrameTree');
@@ -187,13 +233,13 @@ export class OwnedBrowserHost {
       contents.debugger.on('message', (_event, method, params) => {
         if (method === 'Page.frameNavigated' && !params.frame?.parentId) tab.frameId = params.frame.id;
       });
+      const parent = this.tabs.get(tab.openerTargetId);
       if (parent?.tabId) this.emit(parent, 'popup', { nativeTargetId: tab.targetId });
-      if (destination !== 'about:blank') void contents.loadURL(destination).catch(() => {});
       return tab;
     } catch (error) {
       if (!contents.isDestroyed()) contents.close();
       throw error;
-    }
+    } finally { this.pendingTabs.delete(tab); }
   }
 
   tab(id) {
@@ -203,6 +249,7 @@ export class OwnedBrowserHost {
   }
 
   registerTarget(tab, previousTargetId) {
+    this.pendingTabs.delete(tab);
     // 재연결은 같은 게스트를 유지한다. 대상 ID가 바뀌어도 논리 탭과 창 소유권은 유지한다.
     if (previousTargetId && previousTargetId !== tab.targetId) {
       this.tabs.delete(previousTargetId);
@@ -210,6 +257,10 @@ export class OwnedBrowserHost {
       if (popout) { this.popouts.delete(previousTargetId); this.popouts.set(tab.targetId, popout); }
     }
     this.tabs.set(tab.targetId, tab);
+    for (const child of new Set([...this.tabs.values(), ...this.pendingTabs])) if (child.openerTab === tab) {
+      child.openerTargetId = tab.targetId;
+      if (child.targetInfo) child.targetInfo.openerId = tab.targetId;
+    }
     if (tab.tabId) this.aliases.set(tab.tabId, tab.targetId);
   }
 
@@ -218,6 +269,7 @@ export class OwnedBrowserHost {
     const window = this.getWindowForSession(sessionId);
     if (!window || window.isDestroyed()) throw new Error('Native browser binding has no owning editor window');
     const tab = this.tab(targetId);
+    if (tab.openerTargetId && tab.chatId !== chatId) throw new Error('Native browser popup belongs to another chat');
     const occupied = this.aliases.get(tabId);
     if (occupied && occupied !== targetId) throw new Error('Native browser tab binding is already owned');
     if (tab.windowId && tab.windowId !== window.id) throw new Error('Native browser tab belongs to another editor window');
@@ -466,15 +518,20 @@ export class OwnedBrowserHost {
   closeTab(targetId) {
     const tab = this.tabs.get(targetId);
     if (!tab) return false;
+    return this.closeGuest(tab);
+  }
+
+  closeGuest(tab) {
     void this.clearActivity(tab);
     tab.closing = true;
     this.webAuthn?.cancelTab(tab);
     this.unplace(tab);
-    this.cdp.remove(targetId);
-    const popout = this.popouts.get(targetId);
+    this.cdp.remove(tab.targetId);
+    const popout = this.popouts.get(tab.targetId);
     if (popout && !popout.isDestroyed()) popout.destroy();
-    this.popouts.delete(targetId);
-    if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close({ waitForBeforeUnload: false });
+    this.popouts.delete(tab.targetId);
+    const contents = tab.view.webContents;
+    if (contents && !contents.isDestroyed()) contents.close({ waitForBeforeUnload: false });
     return true;
   }
 
@@ -616,7 +673,8 @@ export class OwnedBrowserHost {
   onDebuggerDetached(tab, reason) {
     void this.clearActivity(tab);
     const contents = tab.view.webContents;
-    if (!contents.isDestroyed()) contents.closeDevTools();
+    if (!contents || contents.isDestroyed() || tab.closing) return;
+    contents.closeDevTools();
     this.emit(tab, 'debugger-disconnected', { reason, recovery: 'reconnect' });
   }
   onAutomationDisconnected() { for (const tab of this.tabs.values()) { void this.clearActivity(tab); tab.passwordSnapshot = null; tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1; this.webAuthn?.cancelTab(tab); tab.human = false; tab.interactive = false; this.emit(tab, 'runtime-disconnected'); } }
@@ -627,6 +685,7 @@ export class OwnedBrowserHost {
     this.owner = null;
     this.proxy = null;
     this.releasePromise = (async () => {
+      for (const tab of this.pendingTabs) this.closeGuest(tab);
       for (const item of this.downloads.values()) item.cancel();
       await Promise.all([...this.tabs.values()].map((tab) => this.clearActivity(tab)));
       await this.cdp.close();
@@ -652,13 +711,13 @@ export class OwnedBrowserHost {
       for (const item of this.downloads.values()) item.cancel();
       this.downloads.clear();
       await this.cdp.close();
-      const guests = [...this.tabs.values()];
+      const guests = [...new Set([...this.tabs.values(), ...this.pendingTabs])];
       const closed = guests.map((tab) => new Promise((resolveClosed) => {
         const contents = tab.view.webContents;
         if (!contents || contents.isDestroyed()) resolveClosed();
         else contents.once('destroyed', resolveClosed);
       }));
-      for (const tab of guests) this.closeTab(tab.targetId);
+      for (const tab of guests) this.closeGuest(tab);
       await Promise.all(closed);
       this.tabs.clear();
       this.aliases.clear();
@@ -724,7 +783,7 @@ export class OwnedBrowserHost {
     this.webAuthn?.dispose();
     await this.cdp.close();
     if (this.session) { this.session.flushStorageData(); await this.session.cookies.flushStore(); }
-    for (const targetId of [...this.tabs.keys()]) this.closeTab(targetId);
+    for (const tab of new Set([...this.tabs.values(), ...this.pendingTabs])) this.closeGuest(tab);
     this.owner = null;
     this.lastOwner = null;
     this.proxy = null;

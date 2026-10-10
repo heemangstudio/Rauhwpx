@@ -226,6 +226,23 @@ test('현재 페이지에서 열린 새 창은 즉시 선택하고 다른 페이
   f.controller.dispose();
 });
 
+test('인증 팝업이 닫히면 원래 페이지로 돌아가고 사용자가 바꾼 선택은 유지한다', () => {
+  const f = fixture(true); const unrelated = { ...tab(), tabId: 'unrelated' }; const parent = tab();
+  const popup = { ...parent, tabId: 'oauth-popup' };
+  f.emit({ type: 'owned_browser_inventory', tabs: [unrelated, parent] });
+  f.controller.select(parent.tabId);
+  f.emit({ type: 'owned_browser_popup', tab: popup, openerTabId: parent.tabId });
+  assert.equal(f.controller.tab()?.tabId, popup.tabId);
+  f.emit({ type: 'owned_browser_closed', tabId: popup.tabId, openerTabId: parent.tabId });
+  assert.equal(f.controller.tab()?.tabId, parent.tabId);
+  assert.deepEqual(f.controller.state.tabs, [unrelated, parent]);
+  f.emit({ type: 'owned_browser_popup', tab: popup, openerTabId: parent.tabId });
+  f.controller.select(unrelated.tabId);
+  f.emit({ type: 'owned_browser_closed', tabId: popup.tabId, openerTabId: parent.tabId });
+  assert.equal(f.controller.tab()?.tabId, unrelated.tabId);
+  f.controller.dispose();
+});
+
 test('탭을 전환하면 이전 화면을 놓고 늦은 캡처를 버리지만 페이지와 조작권은 유지한다', async () => {
   const f = fixture();
   const first = tab(); const second = { ...tab(), tabId: 'second', url: 'https://example.com/second' };

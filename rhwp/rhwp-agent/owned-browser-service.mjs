@@ -127,7 +127,7 @@ export function createOwnedBrowserService(options = {}) {
 
   const emit = (type, payload) => { try { onEvent({ type, ...payload }); } catch {} };
   const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
-  const descriptor = (tab) => ({ tabId: tab.tabId, threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: publicURL(tab.page?.url?.() ?? tab.url), title: tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null });
+  const descriptor = (tab) => ({ tabId: tab.tabId, threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: publicURL(tab.page?.url?.() ?? tab.url), title: tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null });
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   const publish = (tab) => emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo() });
   const persist = () => {
@@ -350,7 +350,19 @@ export function createOwnedBrowserService(options = {}) {
       }).catch(() => {});
     });
     page.on('crash', () => { if (tab.page !== page) return; tab.status = 'crashed'; tab.controllerEpoch++; invalidate(tab); publish(tab); });
-    page.on('close', () => { if (tab.page !== page) return; tab.status = closed ? 'closed' : 'disconnected'; tab.page = null; tab.controllerEpoch++; invalidate(tab); publish(tab); });
+    page.on('close', () => {
+      if (tab.page !== page) return;
+      tab.status = closed ? 'closed' : 'disconnected'; tab.page = null; tab.controllerEpoch++; invalidate(tab);
+      if (!tab.openerTabId || closed) { publish(tab); return; }
+      // CDP 연결을 닫아도 네이티브 게스트는 남을 수 있다. 실제로 닫힌 팝업만 제거한다.
+      void Promise.resolve().then(async () => {
+        const retained = tab.nativeTargetId && (await selectedAdapter()?.inventory?.())?.some(entry => entry.nativeTargetId === tab.nativeTargetId);
+        if (retained || closed || state !== 'ready') { publish(tab); return; }
+        tab.status = 'closed'; tabs.delete(tab.tabId);
+        emit('owned_browser_closed', { tabId: tab.tabId, openerTabId: tab.openerTabId, runtime: runtimeInfo() });
+        await persist();
+      }).catch(() => publish(tab));
+    });
     if (selectedAdapter()?.bind) {
       const session = await runtime.context.newCDPSession(page);
       try { tab.nativeTargetId = (await session.send('Target.getTargetInfo')).targetInfo.targetId; }
@@ -395,7 +407,9 @@ export function createOwnedBrowserService(options = {}) {
             if (url.startsWith('data:') || url === 'about:blank') { await route.continue(); return; }
             await guard.resolve(url);
             let page; try { page = request.frame().page(); } catch {}
-            const tab = page && pageTabs.get(page);
+            let tab = page && pageTabs.get(page);
+            // 팝업의 첫 요청이 논리 탭 바인딩보다 먼저 도착해도 원래 탭의 정책을 적용한다.
+            if (!tab && page) { const opener = await page.opener().catch(() => null); tab = opener && pageTabs.get(opener); }
             if (tab) {
               const actor = tab.activeActor ?? (tab.controller.owner === 'human' ? { ...actorForTab(tab), isHuman: true, clientId: tab.controller.clientId } : actorForTab(tab));
               if (actor.isHuman) {
@@ -425,7 +439,7 @@ export function createOwnedBrowserService(options = {}) {
             const parent = opener && pageTabs.get(opener);
             if (!parent) return;
             if (tabs.size >= limits.maxTabs) { await page.close(); return; }
-            const tab = makeTab(actorForTab(parent)); tabs.set(tab.tabId, tab); await attach(tab, page);
+            const tab = makeTab(actorForTab(parent)); tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab); await attach(tab, page);
             const native = tab.nativeTargetId && (await selectedAdapter()?.inventory?.())?.find((entry) => entry.nativeTargetId === tab.nativeTargetId);
             emit('owned_browser_popup', { tab: descriptor(tab), openerTabId: parent.tabId, foreground: native?.disposition !== 'background-tab', runtime: runtimeInfo() });
             void persist();
@@ -1071,7 +1085,7 @@ export function createOwnedBrowserService(options = {}) {
       for (const origin of Array.isArray(stored.humanStorageOrigins) ? stored.humanStorageOrigins.slice(0, 2048) : []) { try { const url = new URL(origin); if (['https:', 'http:'].includes(url.protocol) && url.origin === origin) { unconfirmedHumanOrigins.add(origin); humanOrigins.add(origin); } } catch {} }
       for (const record of stored.tabs.slice(0, limits.maxTabs)) {
         if (typeof record.tabId !== 'string' || !record.threadId || !record.agentId) continue;
-        const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, restorePending: true, status: 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
+        const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), openerTabId: typeof record.openerTabId === 'string' ? text(record.openerTabId, 160) : undefined, searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, restorePending: true, status: 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
       }
     },
     async close() { if (closed) return; closed = true; unsubscribeNativeEvents?.(); if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) await releaseInput(tab); await persist().catch(() => {}); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); state = 'closed'; },

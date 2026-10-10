@@ -49,6 +49,16 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
       if (state.runtime && (state.runtime.runtimeId !== result.runtime.runtimeId || state.runtime.generation !== result.runtime.generation)) state.frames.clear();
       state.runtime = result.runtime;
     }
+    if ('type' in result && result.type === 'owned_browser_closed' && result.tabId) {
+      const wasActive = state.activeTabId === result.tabId;
+      state.tabs = state.tabs.filter((row) => row.tabId !== result.tabId);
+      state.frames.delete(result.tabId);
+      if (wasActive) {
+        selectionSequence++; state.frames.clear();
+        state.activeTabId = state.tabs.find(row => row.tabId === result.openerTabId)?.tabId ?? state.tabs[0]?.tabId ?? null;
+        rememberTab();
+      }
+    }
     if (result.tabs) {
       state.tabs = result.tabs.map(latestTab);
       for (const [id, frame] of state.frames) {
@@ -83,11 +93,6 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
   }
   const unsubscribe = bridge.onBrowserEvent((event) => {
     const data = event.payload && typeof event.payload === 'object' ? { ...event, ...event.payload } as BrowserEvent : event;
-    if (data.type === 'owned_browser_closed' && data.tabId) {
-      state.tabs = state.tabs.filter((row) => row.tabId !== data.tabId);
-      state.frames.delete(data.tabId);
-      if (state.activeTabId === data.tabId) state.activeTabId = state.tabs[0]?.tabId ?? null;
-    }
     accept(data);
   });
   const unsubscribeConnection = bridge.onEvent((event) => {
