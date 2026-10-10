@@ -256,10 +256,32 @@ class InlinePromptController {
     });
   }
 
+  private armedFrame: HTMLElement | null = null;
+
+  /** Control 두 번으로 준비하면 편집 영역 위에 영역 캡처와 같은 옅은 틀을 띄운다. 클릭은 그대로 문서로 간다. */
   private setArmed(armed: boolean): void {
     this.armed = armed;
-    document.getElementById('scroll-container')?.classList.toggle('ag-inline-armed', armed);
+    const container = document.getElementById('scroll-container');
+    container?.classList.toggle('ag-inline-armed', armed);
+    if (armed && container) {
+      this.armedFrame ??= Object.assign(document.createElement('div'), { className: 'ag-inline-armed-frame' });
+      this.armedFrame.setAttribute('aria-hidden', 'true');
+      this.placeArmedFrame();
+      document.body.append(this.armedFrame);
+      window.addEventListener('resize', this.placeArmedFrame);
+    } else {
+      this.armedFrame?.remove();
+      window.removeEventListener('resize', this.placeArmedFrame);
+    }
   }
+
+  private readonly placeArmedFrame = (): void => {
+    const rect = document.getElementById('scroll-container')?.getBoundingClientRect();
+    if (!rect || !this.armedFrame) return;
+    Object.assign(this.armedFrame.style, {
+      left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`,
+    });
+  };
 
   private canArm(target: EventTarget | null): boolean {
     if (!isAgentSidebarVisible() || !this.deps.wasm.hasLoadedDocument() || this.state === 'open') return false;
