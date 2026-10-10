@@ -600,7 +600,7 @@ export function createOwnedBrowserService(options = {}) {
     return entry;
   };
 
-  const snapshot = async (tab) => {
+  const snapshot = async (tab, accept = () => true) => {
     invalidate(tab, false);
     const navigationEpoch = tab.navigationEpoch;
     const geometryEpoch = tab.geometryEpoch;
@@ -609,6 +609,7 @@ export function createOwnedBrowserService(options = {}) {
       if (observed?.available !== false) {
         if (navigationEpoch !== tab.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true);
         if (geometryEpoch !== tab.geometryEpoch) throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed while it was observed. Take a new snapshot.', true);
+        if (!accept()) throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out before its observation completed.', true);
         const result = { ...observed, tabId: tab.tabId, navigationEpoch, controllerEpoch: tab.controllerEpoch };
         tab.snapshot = { ...result, native: true, handles: new Map(result.elements.map((element) => [element.ref, { ...element, native: true }])) };
         return result;
@@ -642,6 +643,7 @@ export function createOwnedBrowserService(options = {}) {
     }, SENSITIVE);
     if (navigationEpoch !== tab.navigationEpoch) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true); }
     if (geometryEpoch !== tab.geometryEpoch) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed while it was observed. Take a new snapshot.', true); }
+    if (!accept()) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out before its observation completed.', true); }
     const result = { snapshotId: id('snapshot'), tabId: tab.tabId, navigationEpoch, controllerEpoch: tab.controllerEpoch, url: publicURL(tab.page.url()), title: tab.title, text: text(content, 24_000), selectedText, elements, truncated: handles.length > limits.maxSnapshotElements };
     tab.snapshot = { ...result, handles: refs };
     return result;
@@ -806,6 +808,60 @@ export function createOwnedBrowserService(options = {}) {
     if (!allowed) throw error('BROWSER_SHORTCUT_BLOCKED', 'Use browser navigation and input tools. Clipboard and browser-window shortcuts are reserved for human control.');
   };
 
+  const waitForCondition = async (actor, tab, args) => {
+    const page = requirePage(tab);
+    const runtimeGeneration = generation;
+    const condition = args.condition ?? 'ready';
+    const needle = typeof args.text === 'string' ? args.text.trim() : '';
+    if (!['ready', 'idle', 'visible', 'text'].includes(condition)) throw error('BROWSER_WAIT_INVALID', 'Choose ready, idle, visible or text.');
+    if (condition === 'text' && !needle) throw error('BROWSER_WAIT_TEXT_REQUIRED', 'Text waits require nonempty text.');
+    const deadline = args.waitDeadline ?? Date.now() + bounded(args.timeoutMs, 1, 30_000, 10_000);
+    const read = async operation => {
+      if (Date.now() >= deadline) throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out.', true);
+      let timer;
+      try {
+        return await Promise.race([operation(), new Promise((_, reject) => {
+          timer = setTimeout(() => reject(error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out.', true)), Math.max(1, deadline - Date.now()));
+        })]);
+      } finally { clearTimeout(timer); }
+    };
+    const observe = () => read(() => snapshot(tab, () => Date.now() <= deadline && generation === runtimeGeneration));
+    let settledSince;
+    let observedEpoch;
+    do {
+      if (generation !== runtimeGeneration || resetting || resetFailed || ownedTab(actor, tab.tabId) !== tab || requirePage(tab) !== page) throw error('BROWSER_RECONNECT_REQUIRED', 'The browser changed while waiting. Observe the current tab before retrying.', true);
+      await read(() => assertPolicy(actor, 'wait', page.url(), tab, args));
+      let observation;
+      let satisfied;
+      if (args.ref) {
+        requireRef(tab, args);
+        const remaining = Math.max(1, deadline - Date.now());
+        if (tab.snapshot?.native) await read(() => selectedAdapter().passwordAction({ ...nativePasswordBinding(tab), action: 'wait', ref: args.ref, snapshotId: args.snapshotId, state: args.state === 'hidden' ? 'hidden' : 'visible', timeoutMs: remaining }));
+        else await read(() => requireRef(tab, args).waitForElementState(args.state === 'hidden' ? 'hidden' : 'visible', { timeout: remaining }));
+        satisfied = true;
+      } else if (condition === 'ready' || condition === 'idle') {
+        const native = selectedAdapter()?.inventory && tab.nativeTargetId ? (await read(() => selectedAdapter().inventory())).find(entry => entry.nativeTargetId === tab.nativeTargetId) : null;
+        if (selectedAdapter()?.inventory && tab.nativeTargetId && !native) throw error('BROWSER_RECONNECT_REQUIRED', 'The native browser tab disconnected while waiting.', true);
+        const ready = native ? !native.loading && !native.crashed && !native.error : tab.status === 'ready';
+        const epoch = native?.navigationEpoch ?? tab.navigationEpoch;
+        if (!ready || epoch !== observedEpoch) settledSince = undefined;
+        observedEpoch = epoch;
+        if (ready) settledSince ??= Date.now();
+        satisfied = ready && (condition === 'ready' || Date.now() - settledSince >= 500);
+      } else {
+        observation = await observe();
+        // Native observations already redact protected data in the main process.
+        satisfied = condition === 'text' ? observation.text.includes(needle) : observation.elements.some(element =>
+          element.rect?.width > 0 && element.rect?.height > 0 && (!needle || !element.sensitive && [element.name, element.text].some(value => typeof value === 'string' && value.includes(needle))));
+      }
+      if (satisfied) return { completed: true, snapshot: observation ?? await observe() };
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await new Promise(resolve => setTimeout(resolve, Math.min(250, remaining)));
+    } while (Date.now() <= deadline);
+    throw error('BROWSER_ACTION_TIMEOUT', 'The browser condition did not appear before the wait timeout.', true);
+  };
+
   const operate = async (actor, action, tab, args) => {
     if (action === 'close') { releaseFrozen(tab); await releaseInput(tab); await tab.page?.close(); tab.status = 'closed'; tabs.delete(tab.tabId); await persist(); return { completed: true }; }
     const page = requirePage(tab);
@@ -822,17 +878,16 @@ export function createOwnedBrowserService(options = {}) {
       if (action === 'press') assertAgentKey(actor, args.key);
       const ref = args.ref ?? (action === 'press' ? tab.snapshot.elements.find((element) => element.tag === 'input')?.ref : undefined);
       if (action !== 'scroll') requireRef(tab, { ...args, ref });
-      return selectedAdapter().passwordAction({ ...nativePasswordBinding(tab), action, ref, snapshotId: args.snapshotId ?? tab.snapshot.snapshotId, text: text(args.text, 16_000), key: text(args.key, 80), deltaX: bounded(args.deltaX, -2000, 2000, 0), deltaY: bounded(args.deltaY, -2000, 2000, 600) });
-    }
-    if (action === 'wait') {
-      if (args.ref && tab.snapshot?.native) {
-        requireRef(tab, args);
-        return selectedAdapter().passwordAction({ ...nativePasswordBinding(tab), action: 'wait', ref: args.ref, snapshotId: args.snapshotId, state: args.state === 'hidden' ? 'hidden' : 'visible', timeoutMs: bounded(args.timeoutMs, 1, 15_000, 3000) });
+      const parameters = { ...nativePasswordBinding(tab), action, ref, snapshotId: args.snapshotId ?? tab.snapshot.snapshotId, text: text(args.text, 16_000), key: text(args.key, 80), deltaX: bounded(args.deltaX, -2000, 2000, 0), deltaY: bounded(args.deltaY, -2000, 2000, 600) };
+      const result = await selectedAdapter().passwordAction(parameters);
+      if (action === 'type' && args.submit === true) {
+        epochs(tab, args, true); assertController(actor, tab);
+        await assertPolicy(actor, 'press', page.url(), tab, args);
+        await selectedAdapter().passwordAction({ ...parameters, action: 'press', key: 'Enter' });
       }
-      if (args.ref) await requireRef(tab, args).waitForElementState(args.state === 'hidden' ? 'hidden' : 'visible', { timeout: bounded(args.timeoutMs, 1, 15_000, 3000) });
-      else await page.waitForLoadState(args.state === 'load' ? 'load' : 'domcontentloaded', { timeout: bounded(args.timeoutMs, 1, 15_000, 3000) });
-      return { completed: true };
+      return result;
     }
+    if (action === 'wait') return waitForCondition(actor, tab, args);
     if (action === 'navigate') {
       invalidate(tab);
       if (args.direction === 'stop') {
@@ -849,7 +904,13 @@ export function createOwnedBrowserService(options = {}) {
     if (action === 'type') {
       const handle = requireRef(tab, args);
       if (await handle.evaluate((el) => el.matches('input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"]'))) throw error('BROWSER_SECRET_CHANNEL_REQUIRED', 'Use the saved-account broker to fill password fields.');
-      await handle.fill(text(args.text, 16_000), { timeout: 10_000 }); return { completed: true };
+      await handle.fill(text(args.text, 16_000), { timeout: 10_000 });
+      if (args.submit === true) {
+        epochs(tab, args, true); assertController(actor, tab);
+        await assertPolicy(actor, 'press', page.url(), tab, args);
+        await requireRef(tab, args).press('Enter', { timeout: 10_000 });
+      }
+      return { completed: true };
     }
     if (action === 'press') { assertAgentKey(actor, args.key); if (args.ref) await requireRef(tab, args).press(text(args.key, 80)); else await page.keyboard.press(text(args.key, 80)); return { completed: true }; }
     if (action === 'scroll') { await page.mouse.wheel(bounded(args.deltaX, -2000, 2000, 0), bounded(args.deltaY, -2000, 2000, 600)); return { completed: true }; }
@@ -1133,7 +1194,11 @@ export function createOwnedBrowserService(options = {}) {
     epochs(tab, args, mutating || action === 'freeze');
     if (requiresControl) assertController(actor, tab);
     const queuedControlEpoch = tab.controllerEpoch;
-    return enqueue(tab, async () => {
+    const waitDeadline = action === 'wait' ? Date.now() + bounded(args.timeoutMs, 1, 30_000, 10_000) : undefined;
+    let waitTimer;
+    const queued = enqueue(tab, async () => {
+      clearTimeout(waitTimer);
+      if (waitDeadline !== undefined && Date.now() >= waitDeadline) throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out in the tab queue.', true);
       epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
       if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Browser cleanup invalidated the pending action.');
@@ -1157,7 +1222,7 @@ export function createOwnedBrowserService(options = {}) {
         let value;
         try {
           if (activity) await adapter.activity({ ...activity, active: true });
-          value = await operate(actor, action, tab, args);
+          value = await operate(actor, action, tab, waitDeadline === undefined ? args : { ...args, waitDeadline });
         } finally {
           if (activity) await adapter.activity({ ...activity, active: false }).catch(() => {});
         }
@@ -1180,6 +1245,10 @@ export function createOwnedBrowserService(options = {}) {
         throw error(failure.name === 'TimeoutError' ? 'BROWSER_ACTION_TIMEOUT' : 'BROWSER_ACTION_FAILED', 'The browser action did not complete. Observe the current page before retrying.', true);
       } finally { tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
     });
+    if (waitDeadline === undefined) return queued;
+    return Promise.race([queued, new Promise((_, reject) => {
+      waitTimer = setTimeout(() => reject(error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out.', true)), Math.max(1, waitDeadline - Date.now()));
+    })]).finally(() => clearTimeout(waitTimer));
   };
   const request = (actor, action, args = {}) => {
     if (action !== 'freeze' || !actor?.isHuman) return performRequest(actor, action, args);

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { app, BrowserWindow, WebContentsView, session } from 'electron';
+import { createRequire } from 'node:module';
+import { TOOL_DEFINITIONS } from '../../rhwp/rhwp-agent/tools.mjs';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, realpath } from 'node:fs/promises';
 import os from 'node:os';
@@ -12,6 +14,7 @@ const root = await realpath(process.env.RHWP_BROWSER_TEST_DATA_DIR || await mkdt
 app.setPath('userData', path.join(root, 'electron'));
 app.on('window-all-closed', () => {});
 const report = {};
+const { z } = createRequire(new URL('../../rhwp/rhwp-agent/package.json', import.meta.url))('zod/v3');
 app.whenReady().then(async () => {
   let host, service, site, window;
   try {
@@ -30,7 +33,7 @@ app.whenReady().then(async () => {
     host = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session, dataDir: root, getWindowForSession: () => window });
     const passwords = new NativeBrowserPasswords({ host, vault: {} });
     const adapter = {
-      passwordSnapshot: args => passwords.snapshot(args), passwordAction: args => passwords.action(args),
+      passwordSnapshot: args => passwords.snapshot(args), passwordAction: args => passwords.action(args), passwordStorageState: () => passwords.storageState(),
       async start(settings) { return { ...await host.start(settings, owner), close: () => host.release(owner) }; },
       bind: args => host.bind(args), control: args => host.control(args), activity: args => host.activity(args),
       inventory: async () => [...host.tabs.values()].map(tab => host.state(tab)),
@@ -44,6 +47,7 @@ app.whenReady().then(async () => {
       },
     } });
     const actor = { isHuman: false, sessionId: 'window-fixture', threadId: 'chat-fixture', agentId: 'agent-fixture' };
+    const publicCall = (name, input) => service.request(actor, name.slice('browser_'.length), z.object(TOOL_DEFINITIONS.find(tool => tool.name === name).shape).parse(input));
     const opened = await service.request(actor, 'open', { url: origin });
     const tab = host.tab(opened.tab.tabId);
     const evaluate = script => tab.view.webContents.executeJavaScript(script);
@@ -61,7 +65,7 @@ app.whenReady().then(async () => {
       navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch,
       ref: observation.snapshot.elements.find(element => element.name === name)?.ref });
     let observed = await observe();
-    await service.request(actor, 'type', { ...ref(observed, 'Draft'), text: 'preserved draft' });
+    await publicCall('browser_type', { ...ref(observed, 'Draft'), text: 'preserved draft', submit: true, intent: 'search' });
     observed = await observe();
     await service.request(actor, 'click', ref(observed, 'Click'));
     const eventually = async (expression, value) => {
@@ -71,12 +75,14 @@ app.whenReady().then(async () => {
     };
     await eventually('clicks', 1);
     assert.equal(await evaluate('trustedClick'), true);
-    observed = await observe();
-    await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'Enter' });
     await eventually('submissions', 1);
     assert.equal(await evaluate('trustedSubmit'), true);
+    observed = await observe();
+    await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'Enter' });
+    await eventually('submissions', 2);
+    assert.equal(await evaluate('trustedSubmit'), true);
     await paused();
-    assert.equal(await evaluate('submissions'), 1);
+    assert.equal(await evaluate('submissions'), 2);
     observed = await observe();
     await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'ControlOrMeta+a' });
     await eventually('document.querySelector("#draft").selectionEnd-document.querySelector("#draft").selectionStart', 'preserved draft'.length);
@@ -108,6 +114,20 @@ app.whenReady().then(async () => {
     assert.match(download.bytes, /^%PDF-1.4/);
     assert.equal(path.dirname(download.file), path.join(root, 'browser', 'transfers'));
     await paused();
+    let waited;
+    for (const condition of ['ready', 'idle', 'visible', 'text']) {
+      waited = await publicCall('browser_wait', { tabId: tab.tabId, condition, ...(['visible', 'text'].includes(condition) ? { text: 'Submit draft' } : {}), timeoutMs: 2000 });
+      assert.ok(waited.snapshot.snapshotId);
+      assert.ok(waited.snapshot.elements.some(element => element.name === 'Draft'));
+    }
+    // Main-owned protection masks a fixture string echoed into visible document text.
+    await evaluate('document.body.append(Object.assign(document.createElement("p"),{textContent:"fixture-protected-string"}))');
+    passwords.protectFamily(tab, origin, 'fixture-protected-string');
+    const safeWait = await publicCall('browser_wait', { tabId: tab.tabId, condition: 'text', text: 'Submit draft', timeoutMs: 1000 });
+    assert.equal(JSON.stringify(safeWait).includes('fixture-protected-string'), false);
+    await assert.rejects(publicCall('browser_wait', { tabId: tab.tabId, condition: 'text', text: 'fixture-protected-string', timeoutMs: 70 }), { code: 'BROWSER_ACTION_TIMEOUT' });
+    await paused();
+    report.publicToolContracts = { typeSubmit: true, freshWaitSnapshot: true, conditions: true, protectedTextMasked: true };
     const scope = { targetId: tab.targetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.chatId, generation: host.generation };
     await assert.rejects(host.activity({ ...scope, sessionId: 'another-window', token: 'wrong', active: true }), /stale/);
     await host.activity({ ...scope, token: 'old', active: true });

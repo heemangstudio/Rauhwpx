@@ -1840,7 +1840,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_type',
-    description: 'Fill a current snapshot element with ordinary research text. Never pass passwords or account secrets here; request an account through browser_request_account.',
+    description: 'Fill a current snapshot element with ordinary research text. submit:true then presses trusted Enter on that element; declare the same search, login or website-change intent as a separate submission. Never pass passwords or account secrets here; request an account through browser_request_account.',
     shape: { ...browserRefShape(), text: z.string().max(16_000), submit: z.boolean().default(false) },
   },
   {
@@ -1855,8 +1855,8 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_wait',
-    description: 'Wait a bounded time for a page condition, then read a fresh snapshot. Does not change ownership or control.',
-    shape: { tabId: browserTab(), condition: z.enum(['ready', 'idle', 'visible', 'text']).default('ready'), text: z.string().max(2_000).optional(), timeoutMs: z.number().int().min(1).max(30_000).default(10_000) },
+    description: 'Wait up to timeoutMs and return a fresh snapshot. ready waits for document readiness; idle requires 500 ms without document loading/navigation. visible waits for a visible semantic element, optionally matching text; text requires nonempty text in sanitized visible document text. Streaming connections do not prevent idle. Ownership and control stay unchanged.',
+    shape: { tabId: browserTab(), condition: z.enum(['ready', 'idle', 'visible', 'text']).default('ready'), text: z.string().trim().min(1).max(2_000).optional(), timeoutMs: z.number().int().min(1).max(30_000).default(10_000) },
   },
   {
     name: 'browser_close',
