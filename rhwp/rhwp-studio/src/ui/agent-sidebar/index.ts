@@ -177,6 +177,7 @@ import {
   type ProjectHost,
 } from './project/project-host.ts';
 import type { ProjectPreviewTarget, ProjectTab } from './project/project-column.ts';
+import { readProjectItemDrag, transferHasProjectItem } from './project/project-drag.ts';
 import {
   createVersionManagerPage,
   type VersionManagerController,
@@ -485,7 +486,7 @@ function droppedFiles(data: DataTransfer | null): File[] {
 }
 
 function transferHasFiles(data: DataTransfer | null): boolean {
-  return Boolean(data && Array.from(data.types).includes('Files'));
+  return Boolean(data && Array.from(data.types).includes('Files') && !transferHasProjectItem(data));
 }
 
 function maxSidebarWidth(minWidth: number, viewportWidth = window.innerWidth): number {
@@ -3220,6 +3221,35 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   root.addEventListener('dragleave', onAttachmentDragLeave);
   root.addEventListener('drop', onAttachmentDrop);
   input.addEventListener('paste', onAttachmentPaste);
+
+  // 자료 카드·자료 탭·PDF 영역을 입력창에 끌어 놓으면 @ 멘션과 같은 칩이 된다.
+  const canDropMention = (event: DragEvent): boolean => (
+    transferHasProjectItem(event.dataTransfer) && composerMentions !== null && !input.disabled
+  );
+  const onMentionDragOver = (event: DragEvent): void => {
+    if (!canDropMention(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    composer.classList.add('ag-mention-dragging');
+  };
+  const onMentionDragLeave = (event: DragEvent): void => {
+    if (composer.contains(event.relatedTarget as Node | null)) return;
+    composer.classList.remove('ag-mention-dragging');
+  };
+  const onMentionDrop = (event: DragEvent): void => {
+    if (!transferHasProjectItem(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    composer.classList.remove('ag-mention-dragging');
+    const dropped = readProjectItemDrag(event.dataTransfer);
+    if (!dropped || !canDropMention(event)) return;
+    if (composerMentions?.addItem(dropped.projectId, dropped.itemId)) input.focus();
+  };
+  composer.addEventListener('dragenter', onMentionDragOver);
+  composer.addEventListener('dragover', onMentionDragOver);
+  composer.addEventListener('dragleave', onMentionDragLeave);
+  composer.addEventListener('drop', onMentionDrop);
 
   /* 집중 모드의 변경 사항 drawer. 대화 위의 오른쪽 가장자리에서 열리고,
      사이드바로 돌아가면 .ag-review 노드는 기존 inline 자리로 되돌아간다. */
@@ -9548,6 +9578,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       root.removeEventListener('dragover', onAttachmentDragOver);
       root.removeEventListener('dragleave', onAttachmentDragLeave);
       root.removeEventListener('drop', onAttachmentDrop);
+      composer.removeEventListener('dragenter', onMentionDragOver);
+      composer.removeEventListener('dragover', onMentionDragOver);
+      composer.removeEventListener('dragleave', onMentionDragLeave);
+      composer.removeEventListener('drop', onMentionDrop);
       input.removeEventListener('paste', onAttachmentPaste);
       referenceLibrary.dispose();
       captureInbox.dispose();

@@ -184,6 +184,8 @@ export interface ComposerMentions {
   take(): ThreadMention[];
   /** 채팅을 오가며 초안을 되살린다. */
   set(mentions: readonly ThreadMention[]): void;
+  /** 끌어 놓은 프로젝트 항목을 칩으로 더한다. 지금 프로젝트에 없는 항목이면 false. */
+  addItem(projectId: string, itemId: string): boolean;
   dispose(): void;
 }
 
@@ -250,6 +252,15 @@ export function createComposerMentions(deps: ComposerMentionsDeps): ComposerMent
         add(mention, item ? projectIcon(itemIconName(item)) : undefined);
       }
       deps.onChange?.();
+    },
+    addItem(projectId, itemId) {
+      const snapshot = client?.store.get();
+      const item = snapshot?.id === projectId
+        ? snapshot.items.find((entry) => entry.id === itemId && !entry.trashedAt)
+        : undefined;
+      if (!item) return false;
+      add({ id: item.id, title: item.title }, projectIcon(itemIconName(item)));
+      return true;
     },
     dispose() {
       unsubscribe();

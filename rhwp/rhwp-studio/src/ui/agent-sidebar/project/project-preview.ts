@@ -210,6 +210,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     const tool = button('ag-pp-text-button ag-pp-clip-tool', '영역 그리기', { icon: 'clip', text: '영역' });
     tool.setAttribute('aria-pressed', 'false');
     const layer = createClipLayer({
+      projectId,
       clips: () => (deps.project()?.items ?? []).filter((entry): entry is ProjectClipItem => (
         entry.kind === 'clip' && entry.sourceId === source.id && !entry.trashedAt
       )),

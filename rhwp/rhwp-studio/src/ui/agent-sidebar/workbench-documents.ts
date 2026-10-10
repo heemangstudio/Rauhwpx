@@ -6,6 +6,7 @@ import { loadPdfjs, pdfDocumentParams } from '../../agent/pdf-render.ts';
 import { createProjectPreview, type ProjectPreview, type ProjectPreviewRequest } from './project/project-preview.ts';
 import { button, el, itemIconName, projectIcon } from './project/project-ui.ts';
 import { decodeTextBytes, prettyJson, textFormatOf, type TextFormat } from './project/text-decode.ts';
+import { makeProjectItemDraggable, type ProjectItemDrag } from './project/project-drag.ts';
 
 export interface WorkbenchDocumentsDeps {
   client: ProjectClient | null;
@@ -143,6 +144,12 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
   const key = () => `rhwp.workbench.documents.v1:${projectId}`;
   const find = (id: string): ProjectItem | null => project?.items.find(item => item.id === id && !item.trashedAt) ?? null;
 
+  /** 입력창으로 끌어 멘션할 때 싣는 자료. 프로젝트 항목이 아니면(문서 노드 등) 끌지 않는다. */
+  const dragPayload = (itemId: string): ProjectItemDrag | null => {
+    const item = find(itemId);
+    return item && projectId ? { projectId, itemId: item.id, title: item.title } : null;
+  };
+
   function identify(element: HTMLElement, panel: HTMLElement, id: string): void {
     element.id = `ag-wdocs-${instance}-tab-${encodeURIComponent(id)}`;
     panel.id = `ag-wdocs-${instance}-panel-${encodeURIComponent(id)}`;
@@ -214,6 +221,7 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
           const image = el('img');
           image.src = url;
           image.alt = '';
+          image.draggable = false;
           frame.replaceChildren(image);
           return;
         }
@@ -244,6 +252,7 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
         const image = el('img');
         image.src = url;
         image.alt = '';
+        image.draggable = false;
         frame.replaceChildren(image);
       } catch {
         // 표지를 그릴 수 없어도 파일은 목록에서 열 수 있다.
@@ -308,6 +317,7 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
       text.append(name, el('span', 'ag-wdocs-card-meta', detail));
       card.append(cover, text);
       card.addEventListener('click', () => { void open({ itemId: item.id }); });
+      makeProjectItemDraggable(card, () => dragPayload(item.id));
       grid.append(card);
       if (visible && active === LIBRARY && item.kind !== 'clip' && hasCover(item)) thumbnail(cover, item);
     }
@@ -424,6 +434,7 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
     const tab: ResourceTab = { id, itemId, request: { itemId }, root: row, button: tabButton, label, panel, preview: null, loaded: false, loading: null };
     tabs.push(tab);
     tabButton.addEventListener('click', () => { void select(id); });
+    makeProjectItemDraggable(tabButton, () => dragPayload(itemId));
     close.addEventListener('click', () => closeTab(tab));
     row.addEventListener('auxclick', event => { if (event.button === 1) { event.preventDefault(); closeTab(tab); } });
     updateTab(tab);

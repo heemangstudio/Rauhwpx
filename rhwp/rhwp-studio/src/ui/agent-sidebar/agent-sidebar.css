@@ -5287,6 +5287,29 @@ button.ag-skill-copy {
   box-shadow: var(--ag-elev-composer);
 }
 
+/* 자료·영역을 끌어 올 때 입력창 위에 뜨는 놓기 표시. 파일 첨부 표시와 같은 모양이다. */
+.ag-composer::after {
+  content: '놓아서 메시지에 언급';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  border: 1.5px dashed var(--n-ink-tertiary);
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--ag-bg) 92%, transparent);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 140ms var(--ag-motion-out);
+}
+
+.ag-composer.ag-mention-dragging::after {
+  opacity: 1;
+}
+
 
 
 
