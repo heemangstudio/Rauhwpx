@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     attach: (payload) => ipcRenderer.invoke('desktop:browser-attach', payload),
     detach: (payload) => ipcRenderer.invoke('desktop:browser-detach', payload),
     getState: (payload) => ipcRenderer.invoke('desktop:browser-state', payload),
+    zoom: (payload) => ipcRenderer.invoke('desktop:browser-zoom', payload),
     navigate: (payload) => ipcRenderer.invoke('desktop:browser-navigate', payload),
     back: (payload) => ipcRenderer.invoke('desktop:browser-back', payload),
     forward: (payload) => ipcRenderer.invoke('desktop:browser-forward', payload),

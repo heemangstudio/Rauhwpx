@@ -241,6 +241,7 @@ export class OwnedBrowserHost {
       generation: this.generation, navigationEpoch: tab.navigationEpoch, disposition: tab.disposition,
       url: alive ? contents.getURL() : '', title: alive ? contents.getTitle() : '',
       loading: !!alive && contents.isLoading(),
+      zoomFactor: alive ? contents.getZoomFactor() : 1,
       canGoBack: !!alive && contents.navigationHistory.canGoBack(),
       canGoForward: !!alive && contents.navigationHistory.canGoForward(),
       controller: tab.human ? 'human' : 'agent', mode: tab.placement?.mode ?? 'hidden',
@@ -332,6 +333,18 @@ export class OwnedBrowserHost {
     const bounds = { x: 0, y: 76, width, height: Math.max(0, height - 76) };
     tab.view.setBounds(bounds);
     void this.viewport(tab, bounds).catch(() => {});
+  }
+
+  zoom(window, { tabId, factor }) {
+    const tab = this.ownedTab(tabId, window);
+    if (!Number.isFinite(factor)) throw new Error('Native browser zoom factor is invalid');
+    const previous = new Map([...this.tabs.values()].map((entry) => [entry, this.state(entry).zoomFactor]));
+    tab.view.webContents.setZoomFactor(Math.max(0.25, Math.min(3, factor)));
+    // Chromium shares website zoom across guests with the same origin.
+    for (const [entry, before] of previous) {
+      if (Math.abs(this.state(entry).zoomFactor - before) > 0.000001) this.emit(entry, 'zoom');
+    }
+    return this.state(tab);
   }
 
   async navigate(window, { tabId, url }) {
