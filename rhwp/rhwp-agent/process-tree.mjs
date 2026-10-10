@@ -44,9 +44,41 @@ export function processTreeSpawnOptions(platform = process.platform) {
   };
 }
 
+/**
+ * The hub's own credentials: its master token (production and development)
+ * and the launch id that, with the token, authorizes the owner endpoints
+ * (`/shutdown`, `POST|DELETE /sessions/:id`). The hub keeps them in memory and
+ * removes them from its own process.env at startup.
+ */
+export const HUB_SECRET_ENV_NAMES = Object.freeze(['RHWP_AGENT_TOKEN', 'RHWP_AGENT_DEV_TOKEN', 'RHWP_LAUNCH_ID']);
+/** Variables only the hub process reads (owner watchdog, desktop secret broker). */
+const HUB_PRIVATE_ENV_PREFIXES = Object.freeze(['RHWP_OWNER_', 'RHWP_SECRET_BROKER']);
+
+/** Whether `name` is a hub-only variable no child process may inherit (case-insensitive, as on Windows). */
+export function isHubPrivateEnvName(name) {
+  const upper = String(name).toUpperCase();
+  return HUB_SECRET_ENV_NAMES.includes(upper)
+    || HUB_PRIVATE_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix));
+}
+
+/**
+ * A copy of `sourceEnv` without the hub's credentials and owner wiring.
+ * Provider CLIs (and the shell tools they run), their MCP servers and npm
+ * lifecycle scripts start from this: a provider that inherited the master
+ * token could call the hub's HTTP endpoints with owner privileges. The MCP
+ * server receives its own session-scoped token explicitly.
+ */
+export function withoutHubPrivateEnv(sourceEnv = process.env) {
+  const env = {};
+  for (const [name, value] of Object.entries(sourceEnv ?? {})) {
+    if (!isHubPrivateEnvName(name)) env[name] = value;
+  }
+  return env;
+}
+
 /** Build an owned-child environment without losing the caller's dynamic settings. */
 export function isolatedProcessEnv(opts = {}, sourceEnv = process.env) {
-  const env = { ...sourceEnv };
+  const env = withoutHubPrivateEnv(sourceEnv);
   if (opts.isolatedHome) {
     env.HOME = String(opts.isolatedHome);
     env.USERPROFILE = String(opts.isolatedHome);

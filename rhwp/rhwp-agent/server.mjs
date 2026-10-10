@@ -120,6 +120,7 @@ import {
 import { runCopyLayoutHelper } from './copy-layout-runner.mjs';
 import { z } from 'zod/v3';
 import {
+  HUB_SECRET_ENV_NAMES,
   PROCESS_TREE_CLEANUP_OUTCOME,
   terminateAndWaitForProcessTreeExitOutcome,
   terminateProcessTree,
@@ -147,6 +148,9 @@ import {
 const REQUESTED_PORT = Number(process.env.RHWP_AGENT_PORT ?? 5175);
 const PRODUCTION = process.env.NODE_ENV === 'production' || process.env.RHWP_AGENT_MODE === 'production';
 const { token: TOKEN, development: DEVELOPMENT_AUTH, launchId: LAUNCH_ID } = resolveHubIdentity();
+// 마스터 토큰과 실행 id 는 위 상수에만 둔다. 환경에 남기면 허브가 띄우는 모든 자식(프로바이더 CLI 와
+// 그 Bash 도구, npm 설치 스크립트)이 물려받아 소유자 엔드포인트를 마스터 권한으로 부를 수 있다.
+for (const name of HUB_SECRET_ENV_NAMES) delete process.env[name];
 const PROTOCOL_VERSION = 5;
 // 허브 프로세스 하나의 id. launchId 는 데스크톱 앱 실행 id 라 앱이 같은 실행 안에서 허브를 다시
 // 띄우면 그대로다 — Studio 는 이 값으로 허브 재시작과 새로고침을 가른다(welcome.hubInstanceId).

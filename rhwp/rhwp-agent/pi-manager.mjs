@@ -24,6 +24,7 @@ import {
   processTreeSpawnOptions,
   terminateAndWaitForProcessTreeExit,
   terminateProcessTree,
+  withoutHubPrivateEnv,
 } from './process-tree.mjs';
 import { setupFailureMessage, shouldUseNpmNetworkPath } from './setup-errors.mjs';
 
@@ -677,7 +678,8 @@ export function createPiManager({
       localTarball ?? packageSpec,
     ];
     const launched = applyManagedCliLaunch(npmLaunch.command, [...npmLaunch.leadingArgs, ...argv], {
-      platform, nodeCommand, env: baseEnv, shimDir,
+      // npm 수명 주기 스크립트는 허브의 토큰을 물려받지 않는다.
+      platform, nodeCommand, env: withoutHubPrivateEnv(baseEnv), shimDir,
     });
     const npmEnv = launched.env;
     return new Promise((resolve, reject) => {
