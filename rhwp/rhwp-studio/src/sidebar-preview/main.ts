@@ -15,6 +15,7 @@ import {
   markChatFailed,
   markChatFinished,
   markChatNeedsReview,
+  getChatStatusLabel,
   markChatWorking,
 } from '../agent/chat-status.ts';
 import {
@@ -148,14 +149,17 @@ const reload = params.get('reload');
 /*
  * `reload=ended|failed`: the chat's turn ended (or failed) while the page reloaded — the hub replays
  * that turn-end before its welcome, which reports the session idle. The sidebar must apply it to
- * the re-adopted chat, not to the empty startup draft.
+ * the re-adopted chat, not to the empty startup draft. `reload=ended-error`: the hub replays the
+ * turn's provider error and then a turn-end without a failure — the turn still failed.
  */
 const liveChat = reload === 'running' || reload === 'question' || reload === 'ended' || reload === 'failed'
+  || reload === 'ended-error'
   ? {
     threadId: SAMPLE_WORKING_CHAT_ID,
     agent: 'claude' as const,
     ...(reload === 'question' ? { question: sampleReloadQuestion() } : {}),
-    ...(reload === 'ended' ? { ended: 'completed' as const } : reload === 'failed' ? { ended: 'failed' as const } : {}),
+    ...(reload === 'ended' ? { ended: 'completed' as const } : reload === 'failed' ? { ended: 'failed' as const }
+      : reload === 'ended-error' ? { ended: 'error' as const } : {}),
   }
   : undefined;
 const mock = createMockBridge(report, () => {
@@ -473,8 +477,9 @@ if (multiSession) {
   sessions.push({ sidebar: backgroundSidebar, mock: backgroundMock, documentId: () => BACKGROUND_DOCUMENT.documentId });
 }
 if (params.get('chats') === 'sample' || params.get('chats') === 'engine-trap') {
-  // reload=lost: 그 턴은 새로고침과 함께 사라졌다 — 옛 페이지의 작업 신호는 떠날 때 지워졌다.
-  if (params.get('reload') !== 'lost') markChatWorking(SAMPLE_WORKING_CHAT_ID);
+  // 새로고침 뒤에는 옛 페이지가 떠나며(pagehide) 자기 작업 신호를 지웠다 — 허브가 아직 그 턴을 돌려도,
+  // 끝났거나 사라졌어도 그 채팅의 노란 불은 없다. 다시 잡은 사이드바가 다시 켠다.
+  if (reload === null) markChatWorking(SAMPLE_WORKING_CHAT_ID);
   markChatFinished(SAMPLE_FINISHED_CHAT_ID);
   markChatNeedsReview(SAMPLE_REVIEW_CHAT_ID);
   markChatFailed(SAMPLE_INTERRUPTED_CHAT_ID, { label: '중단됨' });
@@ -638,7 +643,7 @@ const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoStat
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,
   threadStore: { listThreads, getThread, upsertThread, waitForThreadsPersistence },
-  chatStatus: { markChatWorking } };
+  chatStatus: { markChatWorking, getChatStatus, getChatStatusLabel } };
 export type SidebarPreview = typeof preview;
 Object.assign(window, { sidebarPreview: preview });
 if (params.get('audit') === '1') {

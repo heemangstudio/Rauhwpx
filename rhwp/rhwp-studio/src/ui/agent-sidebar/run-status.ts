@@ -72,8 +72,11 @@ export function createRunStatusController(deps: RunStatusControllerDeps) {
   let review: { threadId: string; turnId: string } | null = null;
   /** 보지 않은 채 끝난 턴의 결과. 보면, 그리고 그 채팅의 다음 턴이 시작되면 걷힌다. */
   let outcome: UnreadOutcome | null = null;
-  /** 방금 끝난 턴 — turn-end 뒤에 닿는 실패 이유가 여기 붙는다. */
-  let ended: { threadId: string; turnId: string; seen: boolean } | null = null;
+  /**
+   * 방금 끝난 턴 — turn-end 뒤에 닿는 실패 이유가 여기 붙는다. drained 면 그 턴 끝에서 대기 메시지가
+   * 이어 나갔다 — 채팅은 멈추지 않았으므로 그 턴의 실패를 레일과 알림에 남기지 않는다.
+   */
+  let ended: { threadId: string; turnId: string; seen: boolean; drained: boolean } | null = null;
   /** 이 사이드바가 마지막으로 쓴 상태. 떠난 채팅의 살아 있는 상태를 걷는 데 쓴다. */
   const written = new Map<string, { status: ChatRunStatus; label: string | null; input: string | null }>();
   /** 채팅마다 끝 상태(검토·오류·완료)를 남긴 턴 — 알림 열쇠 `{턴}:end`. */
@@ -203,6 +206,25 @@ export function createRunStatusController(deps: RunStatusControllerDeps) {
     }
   }
 
+  /**
+   * 방금 끝난 턴이 실패했거나 바깥 사정으로 끊겼다 — turn-end 와 같은 흐름에서 그 뒤에 부른다
+   * (U5 turn-failure 의 이유, S3 의 중단). 알림은 아직 미뤄져 있으므로 이 이유를 싣는다.
+   * 그 턴을 보고 있었거나 그 턴 끝에서 대기 메시지가 이어 나갔으면(채팅이 계속 일한다) 아무것도 남기지 않는다.
+   */
+  function noteTurnFailure(note: TurnFailureNote = {}): void {
+    if (disposed || !ended || ended.seen || ended.drained) return;
+    const label = normalizeChatStatusLabel(note.label) ?? (note.interrupted ? '중단됨' : null);
+    outcome = {
+      threadId: ended.threadId,
+      state: 'failed',
+      label,
+      summary: note.summary?.trim() || null,
+      reason: note.interrupted ? 'interrupted' : 'error',
+      turnId: ended.turnId,
+    };
+    sync();
+  }
+
   return {
     sync,
 
@@ -236,7 +258,7 @@ export function createRunStatusController(deps: RunStatusControllerDeps) {
       }
       const turnId = currentTurnId();
       const seen = deps.seenThreadId() === threadId;
-      ended = { threadId, turnId, seen };
+      ended = { threadId, turnId, seen, drained: opts.drained };
       endTurnIds.set(threadId, turnId);
       if (outcome?.threadId === threadId) outcome = null;
       const state = result === 'completed' ? 'finished' : result === 'failed' ? 'failed' : null;
@@ -247,23 +269,17 @@ export function createRunStatusController(deps: RunStatusControllerDeps) {
       return true;
     },
 
+    noteTurnFailure,
+
     /**
-     * 방금 끝난 턴이 실패했거나 바깥 사정으로 끊겼다 — turn-end 와 같은 흐름에서 그 뒤에 부른다
-     * (U5 turn-failure 의 이유, S3 의 중단). 알림은 아직 미뤄져 있으므로 이 이유를 싣는다.
-     * 그 턴을 보고 있었으면 아무것도 남기지 않는다.
+     * 방금 끝난 턴 끝에서 이어 보낸 대기 메시지를 허브가 받지 않았다(거절) — 그 채팅은 결국 멈췄고 대기열은
+     * 붙잡혔다. 남기지 않았던 그 턴의 결과를 이제 오류로 남긴다(보지 않던 채팅이면 레일과 알림). 그 사이 다른
+     * 턴이 시작했거나 보고 있었으면 아무것도 하지 않는다.
      */
-    noteTurnFailure(note: TurnFailureNote = {}): void {
-      if (disposed || !ended || ended.seen) return;
-      const label = normalizeChatStatusLabel(note.label) ?? (note.interrupted ? '중단됨' : null);
-      outcome = {
-        threadId: ended.threadId,
-        state: 'failed',
-        label,
-        summary: note.summary?.trim() || null,
-        reason: note.interrupted ? 'interrupted' : 'error',
-        turnId: ended.turnId,
-      };
-      sync();
+    followUpRejected(note: TurnFailureNote = {}): void {
+      if (disposed || !ended?.drained || runThreadId !== null) return;
+      ended.drained = false;
+      noteTurnFailure(note);
     },
 
     /** 검토 대기 편집이 생겼다(set-finalized) — 그 턴을 돌린 채팅의 것이다. */

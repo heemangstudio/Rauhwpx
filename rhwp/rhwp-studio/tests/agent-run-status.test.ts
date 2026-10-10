@@ -260,3 +260,41 @@ test('a provider failure reads as a short rail reason', async () => {
     failureRailLabel(failure('unknown')),
   ], ['로그인 필요', '설정 필요', '사용 한도', '크레딧 부족', '서버 오류', '연결 실패', '실행 중단', 'CLI 없음', '대화 길이 초과', '오류']);
 });
+
+test('a failed turn whose end sent the next queued message leaves no failure while the chat keeps working', async () => {
+  const s = sidebar();
+  s.run('bg', 'turn-1');
+  // 지금 보내기로 걸어 둔 대기 메시지가 실패한 턴 끝에서 나갔다 — 채팅은 그 메시지로 이어진다.
+  s.end('failed', true);
+  s.controller.noteTurnFailure({ label: '사용 한도', summary: 'Claude 사용 한도에 도달했어요' });
+  await settle();
+  assert.equal(getChatStatus('bg'), null, 'the rail does not show a failure for a chat that moved on');
+  assert.equal(s.notices.length, 0, 'no failure notification');
+  s.run('bg', 'turn-2');
+  assert.equal(getChatStatus('bg'), 'working');
+});
+
+test('a queued message the hub rejects after a drained turn end leaves the hidden chat failed with its reason', async () => {
+  const s = sidebar();
+  s.run('bg', 'turn-1');
+  s.end('completed', true);
+  await settle();
+  assert.equal(getChatStatus('bg'), null);
+  // 그 대기 메시지를 허브가 받지 않았다(로그인 필요) — 대기열이 붙잡힌 채 채팅이 멈췄다.
+  assert.equal(s.controller.turnEnded('failed', { drained: false }), false, 'no turn is running any more');
+  s.controller.followUpRejected({ label: '로그인 필요', summary: 'Claude 로그인이 필요해요' });
+  await settle();
+  assert.equal(getChatStatus('bg'), 'failed');
+  assert.equal(getChatStatusLabel('bg'), '로그인 필요');
+  assert.deepEqual(s.notices.map((notice) => [notice.key, notice.state]), [['turn-1:end', 'failed']]);
+
+  // 그 사이 새 턴이 열렸으면(허브가 바빠 거절) 아무것도 남기지 않는다.
+  const busy = sidebar();
+  busy.run('bg2', 'turn-1');
+  busy.end('completed', true);
+  busy.run('bg2', 'turn-2');
+  busy.controller.followUpRejected({ label: '로그인 필요' });
+  await settle();
+  assert.equal(getChatStatus('bg2'), 'working');
+  assert.equal(busy.notices.length, 0);
+});

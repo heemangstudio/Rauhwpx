@@ -162,3 +162,20 @@ test('dismissals are remembered per chat, class and text, and survive a storage 
   broken.set('thread-1', network, true);
   assert.equal(broken.has('thread-1', network), true, 'kept in memory for the page');
 });
+
+test('a resend knows its request already carries the interruption block by a flag, never by the text', () => {
+  const ctx = { stagedAwaitingReview: false, questionExpired: false };
+  // 사용자가 그 글자를 직접 썼다 — Studio 가 만든 이어서 진행이 아니다.
+  const typed = retryWire({ displayText: '<turn_interrupted> 태그를 설명해 줘', requestText: '<turn_interrupted> 태그를 설명해 줘' },
+    failure({ class: 'network' }), ctx);
+  assert.notEqual(typed.continuation, true, 'typed text that looks like the block is not a continuation');
+  // 턴 도중 끊긴 실패의 다시 시도는 이어서 진행을 새로 만든다.
+  const resumed = retryWire({ displayText: '표를 정리해 줘', requestText: '표를 정리해 줘', afterPartialEdits: true },
+    failure({ class: 'network' }), ctx);
+  assert.equal(resumed.continuation, true);
+  // 그 이어서 진행이 또 실패해 저장된 요청을 다시 보낸다 — 이미 블록을 실었다.
+  const again = retryWire({ displayText: resumed.displayText, requestText: resumed.requestText, continuation: true },
+    failure({ class: 'auth_required' }), ctx);
+  assert.equal(again.continuation, true);
+  assert.equal(again.requestText, resumed.requestText);
+});

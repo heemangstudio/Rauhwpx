@@ -25,6 +25,12 @@ const STORAGE_KEY = 'rhwp-agent-chat-status';
 const CHANNEL_NAME = 'rhwp-agent-chat-status';
 /** 작업 신호는 심장박동이 이 시간 넘게 끊기면(탭 크래시 등) 무효다. */
 const WORKING_STALE_MS = 25_000;
+/**
+ * 가려진 페이지가 쓴 작업 신호의 무효 시간. 오래 가려진 탭의 타이머는 1분에 한 번만 깬다(Chrome 의 강한
+ * 타이머 제한) — 25초로는 살아 있는 턴이 다른 창에서 죽은 것으로 보여 이어서 진행이 같은 채팅에 세션을 하나
+ * 더 연다. 한 번 놓친 깨움과 여유를 덮는다. 그 대신 가려진 채 죽은 탭의 노란 불은 그만큼 늦게 꺼진다.
+ */
+const HIDDEN_WORKING_STALE_MS = 90_000;
 const HEARTBEAT_MS = 10_000;
 /** 작업이 아닌 점은 이 시간이 지나면 정리한다 — 옛 채팅까지 점이 남지 않게. */
 const FINISHED_TTL_MS = 6 * 60 * 60 * 1000;
@@ -41,6 +47,8 @@ interface StatusEntry {
   startedAt?: number;
   /** failed 의 짧은 이유('중단됨', '로그인 필요' …). 없으면 '오류'. */
   label?: string;
+  /** working 의 무효 시간 — 가려진 페이지가 쓴 신호만 길다(HIDDEN_WORKING_STALE_MS). 없으면 기본값. */
+  staleMs?: number;
 }
 
 /** 지금 유효한 한 스레드의 상태. */
@@ -122,9 +130,26 @@ function writeMap(map: Map<string, StatusEntry>): void {
   }
 }
 
+/** 이 페이지가 지금 가려져 있다 — 타이머가 늦게 깬다. */
+function pageHidden(): boolean {
+  try {
+    return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  } catch {
+    return false;
+  }
+}
+
+/** 이 페이지가 쓰는 작업 신호의 무효 시간(가려졌으면 길다). 기본값이면 적지 않는다. */
+function writtenStaleMs(): Pick<StatusEntry, 'staleMs'> {
+  return pageHidden() ? { staleMs: HIDDEN_WORKING_STALE_MS } : {};
+}
+
 function liveStatus(entry: StatusEntry, now: number): ChatRunStatus | null {
   if (entry.status === 'working') {
-    return now - entry.updatedAt <= WORKING_STALE_MS ? 'working' : null;
+    const staleMs = typeof entry.staleMs === 'number' && Number.isFinite(entry.staleMs)
+      ? Math.min(Math.max(entry.staleMs, WORKING_STALE_MS), HIDDEN_WORKING_STALE_MS)
+      : WORKING_STALE_MS;
+    return now - entry.updatedAt <= staleMs ? 'working' : null;
   }
   // 나머지 점은 심장박동 없이 남고 TTL 로만 정리한다 — 가려진 창의 타이머가 늦어져도
   // 입력·검토 대기 점이 깜빡이지 않는다. 그 점을 쓴 페이지가 닫히면 페이지가 직접 지운다.
@@ -174,17 +199,24 @@ function syncHeartbeat(): void {
     return;
   }
   if (heartbeatTimer !== null) return;
-  heartbeatTimer = setInterval(() => {
-    mutate((map) => {
-      const now = Date.now();
-      // 살아 있는 상태는 모두 시각을 새로 한다 — 몇 시간 열어 둔 질문도 TTL 에 걸리지 않는다.
-      for (const id of ownedLive) {
-        const entry = map.get(id);
-        if (entry && isLive(entry.status)) map.set(id, { ...entry, updatedAt: now });
-      }
-    });
-  }, HEARTBEAT_MS);
+  heartbeatTimer = setInterval(beat, HEARTBEAT_MS);
   (heartbeatTimer as { unref?: () => void }).unref?.();
+}
+
+/** 이 페이지가 쓴 살아 있는 상태의 시각을 새로 한다 — 몇 시간 열어 둔 질문도 TTL 에 걸리지 않는다. */
+function beat(): void {
+  if (ownedLive.size === 0) return;
+  mutate((map) => {
+    const now = Date.now();
+    for (const id of ownedLive) {
+      const entry = map.get(id);
+      if (!entry || !isLive(entry.status)) continue;
+      const next: StatusEntry = { ...entry, updatedAt: now };
+      delete next.staleMs;
+      if (next.status === 'working') Object.assign(next, writtenStaleMs());
+      map.set(id, next);
+    }
+  });
 }
 
 function syncSweep(): void {
@@ -209,6 +241,12 @@ if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
     if (event.key === STORAGE_KEY) emitIfChanged();
   });
+  // 가려지는 순간 작업 신호를 다시 써 둔다 — 늦게 깨는 타이머 사이에도 다른 창에서 살아 있게 보인다.
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (pageHidden()) beat();
+    });
+  }
   // 탭이 닫히면 이 탭의 살아 있는 신호도 같이 꺼진다 — 죽은 불과 점을 남기지 않는다.
   // 결과 점(완료·오류)은 남는다. 새로고침 뒤 다시 잡은 채팅은 그 사이드바가 다시 그린다.
   window.addEventListener('pagehide', () => releaseOwnedLiveStatuses());
@@ -246,6 +284,7 @@ export function setChatStatus(
     const current = map.get(threadId);
     const entry: StatusEntry = { status, updatedAt: now };
     if (status === 'working') {
+      Object.assign(entry, writtenStaleMs());
       // 이미 일하는 채팅이면 시작 시각을 그대로 둔다 — 경과 시간이 되돌아가지 않는다.
       entry.startedAt = current?.status === 'working' && current.startedAt && liveStatus(current, now)
         ? current.startedAt

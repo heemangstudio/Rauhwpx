@@ -139,6 +139,11 @@ export interface ThreadRetryPayload {
   skillIcon?: ProductSkillIcon;
   /** 실패한 시도가 문서를 고친 뒤 끊겼다 — 다시 보낼 때 먼저 문서를 다시 읽도록 알린다. */
   afterPartialEdits?: boolean;
+  /**
+   * 요청문이 이미 끊긴 턴 블록(<turn_interrupted>, S3)을 싣고 있다 — Studio 가 만든 이어서 진행 요청이다.
+   * 다시 보낼 때 블록을 겹쳐 붙이지 않는다. 요청문의 글자로 가르지 않는다(사용자가 같은 글자를 쓸 수 있다).
+   */
+  continuation?: boolean;
 }
 
 /** 저장하는 다시 시도 요청의 상한 — 허브의 MAX_CHAT_MESSAGE_CHARS 와 같다. */
@@ -529,6 +534,7 @@ function normalizeRetryPayload(value: unknown): ThreadRetryPayload | undefined {
     ...(typeof raw.skillName === 'string' && /^[a-z0-9-]+$/.test(raw.skillName) ? { skillName: raw.skillName } : {}),
     ...(skillIcon ? { skillIcon } : {}),
     ...(raw.afterPartialEdits === true ? { afterPartialEdits: true } : {}),
+    ...(raw.continuation === true ? { continuation: true } : {}),
   };
 }
 

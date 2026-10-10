@@ -53,9 +53,10 @@ export interface ComposedMessageSpec<Staged = never, Selection = never> {
   revisionPlanId?: string | null;
   /**
    * 이미 만든 요청문을 그대로 보낸다 — 템플릿·스킬·계획 머리말을 다시 만들지 않는다. 기록에는
-   * displayText 가 남는다. 인라인 프롬프트(선택 맥락 블록)와 U5 의 다시 보내기가 쓴다.
+   * displayText 가 남는다. 인라인 프롬프트(선택 맥락 블록)와 U5 의 다시 보내기가 쓴다. continuation 은
+   * 요청문이 이미 끊긴 턴 블록(S3)을 실었다는 표다 — 블록을 겹쳐 붙이지 않는다.
    */
-  wire?: { displayText: string; requestText: string };
+  wire?: { displayText: string; requestText: string; continuation?: boolean };
   /** 기록에 붙는 문서 선택(인라인 프롬프트). */
   selection?: Selection;
   /** 취소되면 브리지가 아직 내보내지 않은 메시지를 버리고 sent 가 null 로 끝난다. */
@@ -137,11 +138,18 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
   let sendNowId: string | null = null;
   /** 이 턴의 중지는 사용자가 눌렀다. */
   let userStopRequested = false;
+  /**
+   * 그 중지는 보낸 메시지가 아직 턴을 열기 전에 눌렸다 — 곧 열릴 그 턴의 중지다. 그 턴의 turn-start 가
+   * 중지 뜻을 지우지 않는다(지우면 사용자가 멈춘 턴이 '끊김'으로 붙잡힌다).
+   */
+  let stopAwaitingTurn = false;
   /** 이 턴에 error 이벤트가 있었다(U4 의 errorSeen 과 같은 플래그). */
   let errorSeen = false;
   /** S2 가 새로고침 뒤 다시 잡은, 아직 도는 이 채팅의 턴 — 그 끝은 이 사이드바가 본다. */
   let liveTurnAdopted = false;
   let inFlight: Flight<Message, Bubble> | null = null;
+  /** 턴 끝이 정한, 한 마이크로태스크 뒤에 보낼 항목(turnEnded 참고). */
+  let pendingDispatch: { id: string } | null = null;
   let editingId: string | null = null;
   /** 편집 중이라 미룬 보내기 차례. */
   let drainDeferred = false;
@@ -162,6 +170,7 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       readOnly: deps.readOnly(),
       sendBlockedTitle: deps.sendBlockedReason(),
       editingId,
+      planAwaitingApproval: deps.turnContext().planAwaitingApproval,
     });
   }
 
@@ -213,16 +222,50 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
         flight.dispatched = true;
         return;
       }
-      // 브리지가 버렸다(중지·채팅 시작 실패·취소) — 보낸 적 없는 것으로 되돌린다.
-      bounce(flight, 'interrupted');
+      // 브리지가 버렸다(중지·채팅 시작 실패·취소) — 보낸 적 없는 것으로 되돌린다. 버린 까닭은 브리지가
+      // 말하지 않는다: 사용자가 멈췄으면 '멈춤', 아니면 '끊김'이다. 보낸 뒤에 더 구체적인 붙잡음(채팅 시작
+      // 실패의 이유 등 — 브리지는 메시지를 버린 다음 그 오류를 알린다)이 이미 섰으면 그것을 덮지 않는다.
+      const stopped = userStopRequested && !deps.isTurnRunning();
+      bounce(flight, stopped ? 'stopped' : 'interrupted', undefined, { keepNeedsUserHold: true });
+      // 그 중지는 이 메시지에 쓰였다 — 다음 턴에 남기지 않는다.
+      if (stopped) userStopRequested = false;
     });
   }
 
   /** 받지 않은 메시지를 대화에서 걷고 대기열 맨 앞에 되돌린 뒤 붙잡는다. */
-  function bounce(flight: Flight<Message, Bubble>, reason: FollowUpHoldReason, code?: string): void {
+  function bounce(
+    flight: Flight<Message, Bubble>,
+    reason: FollowUpHoldReason,
+    code?: string,
+    opts?: { keepNeedsUserHold?: boolean },
+  ): void {
     if (inFlight === flight) inFlight = null;
+    // 이 메시지의 턴은 오지 않는다 — 그 턴을 기다리던 중지도 끝났다.
+    stopAwaitingTurn = false;
     deps.unsend(flight.message, flight.bubble);
-    commit(holdQueue(requeueHead(queue(), flight.item), reason, code ? { code } : undefined, now()));
+    const requeued = requeueHead(queue(), flight.item);
+    // 보내면서 붙잡음을 걷었으므로(dispatch) 지금 있는 붙잡음은 보낸 뒤에 선 것이다.
+    if (opts?.keepNeedsUserHold && holdNeedsUser(requeued.hold)) {
+      commit(requeued);
+      return;
+    }
+    commit(holdQueue(requeued, reason, code ? { code } : undefined, now()));
+  }
+
+  /**
+   * 턴 끝이 고른 항목을 한 마이크로태스크 뒤에 보낸다. 브리지는 실패한 턴의 알림(turn-failure)을 turn-end
+   * 바로 뒤 같은 흐름에서 낸다 — 그 알림이 먼저 그 턴의 자리(다음 말풍선 앞)에 서고, 다시 보낼 요청과
+   * 붙잡음 이유도 그 턴의 것으로 잡힌 뒤에 다음 메시지가 나간다.
+   */
+  function scheduleDispatch(id: string): void {
+    const ticket = { id };
+    pendingDispatch = ticket;
+    queueMicrotask(() => {
+      if (pendingDispatch !== ticket) return;
+      pendingDispatch = null;
+      dispatch(id);
+      settle();
+    });
   }
 
   function apply(decision: FollowUpDecision): void {
@@ -256,8 +299,18 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       if (inFlight?.dispatched) inFlight = null;
       // 걸어 둔 지금 보내기의 턴 끝을 보지 못했다. 항목은 이미 맨 앞에 있다.
       if (sendNowId !== null && !inFlight) sendNowId = null;
+      // 턴을 기다리며 누른 중지 — 기다리던 턴이 오지 않는다. 다음 턴에 남기지 않는다.
+      if (stopAwaitingTurn && !inFlight) {
+        stopAwaitingTurn = false;
+        userStopRequested = false;
+      }
     }
-    if (isStranded(queue(), { inFlight: inFlight !== null, sendNowId, working, drainDeferred })) {
+    if (isStranded(queue(), {
+      inFlight: inFlight !== null || pendingDispatch !== null,
+      sendNowId,
+      working,
+      drainDeferred,
+    })) {
       holdWith('interrupted');
       return;
     }
@@ -275,9 +328,11 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
   function resetRuntime(): void {
     sendNowId = null;
     userStopRequested = false;
+    stopAwaitingTurn = false;
     errorSeen = false;
     liveTurnAdopted = false;
     inFlight = null;
+    pendingDispatch = null;
     editingId = null;
     drainDeferred = false;
   }
@@ -376,11 +431,14 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
     /** 중지(입력기 단추·질문 카드). 나중의 뜻이 이긴다 — 걸어 둔 지금 보내기는 취소된다. */
     noteUserStop(): void {
       userStopRequested = true;
+      // 보낸 메시지가 아직 턴을 열지 않았다 — 이 중지는 곧 열릴 그 턴을 멈춘다.
+      stopAwaitingTurn = !deps.isTurnRunning() && deps.isWorking();
       sendNowId = null;
     },
     turnStarted(): void {
       if (inFlight) inFlight.sawTurnStart = true;
-      userStopRequested = false;
+      if (!stopAwaitingTurn) userStopRequested = false;
+      stopAwaitingTurn = false;
       errorSeen = false;
     },
     /** 턴이 도는 동안의 error 이벤트 — deps.errorSeen 이 없을 때만 쓰인다. */
@@ -389,7 +447,8 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
     },
     /**
      * 턴이 끝났다. ownerIsCurrent 는 그 턴이 지금 보이는 채팅의 것인지다 — 다른 채팅의 턴 끝은
-     * 이 대기열을 움직이지 않는다. 이 턴 끝에서 대기 메시지를 보냈으면 true.
+     * 이 대기열을 움직이지 않는다. 이 턴 끝에서 대기 메시지를 보내기로 했으면 true — 보내기는 한
+     * 마이크로태스크 뒤다(scheduleDispatch): 같은 흐름의 실패 알림이 먼저 그 턴에 붙는다.
      */
     turnEnded(
       event: { stopReason?: unknown; errorMessage?: unknown; failure?: unknown },
@@ -397,6 +456,7 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       interruptionReason?: string | null,
     ): boolean {
       inFlight = null;
+      pendingDispatch = null;
       const outcome: FollowUpTurnOutcome = followUpTurnOutcome(event, {
         errorSeen: deps.errorSeen ? deps.errorSeen() : errorSeen,
         userStopRequested,
@@ -405,11 +465,16 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       });
       const owned = ownerIsCurrent || liveTurnAdopted;
       userStopRequested = false;
+      stopAwaitingTurn = false;
       errorSeen = false;
       liveTurnAdopted = false;
-      if (owned) decide(outcome);
-      // 이 턴 끝에서 대기 메시지 하나를 보냈다 — 채팅은 끝나지 않았다(레일에 완료를 남기지 않는다).
-      const drained = inFlight !== null;
+      if (owned) {
+        const decision = decideAfterTurn(queue(), outcome, { ...deps.turnContext(), sendNowId, editingId });
+        if (decision.kind === 'dispatch') scheduleDispatch(decision.itemId);
+        else apply(decision);
+      }
+      // 이 턴 끝에서 대기 메시지 하나를 보낸다 — 채팅은 끝나지 않았다(레일에 완료를 남기지 않는다).
+      const drained = pendingDispatch !== null;
       settle();
       return drained;
     },
@@ -492,12 +557,18 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
     },
     /**
      * 새로고침 뒤 S2 가 아직 도는 이 채팅의 턴을 다시 잡았다. 그 턴의 끝은 이 사이드바가 보므로
-     * attach() 가 건 붙잡음을 풀고, 끝나면 보통 규칙대로 보내거나 붙잡는다.
+     * 다시 열며 건 '끊김' 붙잡음 — 이유 없는 것(attach() 나 창을 닫을 때의 detach 가 건다)과, 되살린
+     * 끊김의 이유가 붙은 것(revivedDetail, 부팅 정리가 먼저 끊긴 것으로 정착했던 그 턴) — 만 풀고, 끝나면
+     * 보통 규칙대로 보내거나 붙잡는다. 사용자가 풀어야 하는 다른 붙잡음(멈춤·실패·계획 승인·병합 검토·거절·
+     * 엔진 멈춤처럼 이유가 붙은 끊김)은 남긴다 — 다시 잡은 턴이 정상으로 끝나도 그 대기열을 저절로 보내지 않는다.
      */
-    adoptLiveTurn(): void {
+    adoptLiveTurn(opts?: { revivedDetail?: string | null }): void {
       liveTurnAdopted = true;
       const current = queue();
-      if (current?.hold) commit(releaseQueue(current));
+      const hold = current?.hold;
+      if (!hold || hold.reason !== 'interrupted') return;
+      if (hold.detail && hold.detail !== opts?.revivedDetail) return;
+      commit(releaseQueue(current));
     },
     snapshot(): { count: number; hold: FollowUpHold | null } {
       const current = queue();

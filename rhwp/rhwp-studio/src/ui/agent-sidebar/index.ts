@@ -130,6 +130,7 @@ import {
 import { chatAttention, type ChatAttentionLedger } from '../../agent/chat-attention.ts';
 import { createRunStatusController, type TurnFailureNote } from './run-status.ts';
 import { turnOutcomeFor, type TurnOutcome } from '../../agent/turn-outcome.ts';
+import { holdFollowUps } from '../../agent/follow-ups.ts';
 import {
   TURN_CHECK_DOCUMENT_TEXT,
   createTurnFoldRow,
@@ -817,6 +818,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let connAttempt = 0;
   /** 화면의 끊긴 턴 줄 — 표식 id 로 찾는다. 대화를 다시 그리면 새 줄로 바뀐다. */
   const interruptionRows = new Map<string, TurnInterruptionRow>();
+  /** 이어 가기 블록을 실어 보낸 마지막 메시지 — 허브가 이 receipt 로 거절하면 끊김을 다시 연다(S3). */
+  let continuationMessage: { threadId: string; markerId: string; messageId: string } | null = null;
   /* 연결 점과 입력기 잠금은 400ms 를 넘긴 상태만 보인다 — 짧은 재연결이나 채팅 시작이
      점·잠긴 입력기로 깜빡이지 않는다. 다른 탭 사용(replaced)은 바로 보인다. 판단은
      언제나 실제 상태(connState 등)로 한다. */
@@ -1052,6 +1055,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let unboundThreadId: string | null = null;
   /** 붙인 뒤 미뤄 둔 이벤트를 다시 흘려보내는 중. */
   let replayingUnbound = false;
+  /** 다시 흘려보내는 이벤트 뒤에 그 턴의 끝이 아직 남았다 — 그 사이의 오류는 그 턴의 것이다. */
+  let replayAwaitsTurnEnd = false;
   let workingDiff: DiffItem[] = [];
   let compactChangesOpen = false;
   let changesRefreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -4987,6 +4992,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 허브가 받지 않은 대기 메시지를 기록과 대화에서 걷는다 — 대기열 맨 앞으로 돌아간다. */
   function unrecordUserMessage(message: ThreadMessage, bubble: HTMLElement): void {
+    // 그 사이 허브가 스스로 연 턴이 실패해도 이 메시지를 다시 보낼 요청으로 삼지 않는다 — 대기열에 있다.
+    failureNotices.forgetSend(message);
     const index = currentThread.messages.lastIndexOf(message);
     if (index >= 0) currentThread.messages.splice(index, 1);
     bubble.remove();
@@ -5032,12 +5039,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 한 자리. 템플릿·스킬·계획 머리말을 붙인 뒤에 부른다. 복원 안내(U6)는 브리지가 프레임을 낼 때
    * 앞에, 끊긴 턴 블록(S3)은 여기서 뒤에 붙는다 — 둘 다 붙어도 순서가 섞이지 않는다.
    * 끊긴 뒤 아직 아무도 이어 가지 않았으면, 어떤 길로 보내든 첫 메시지가 에이전트에게 그 사실을 알린다.
+   * carriesContinuation 은 Studio 가 만든 요청문이 이미 블록을 실었다는 표다(다시 시도의 이어서 진행) —
+   * 요청문의 글자로 가르지 않는다: 사용자가 같은 글자를 쓰면 블록이 빠진 채 끊김이 이어진 것으로 남는다.
    */
-  function decorateRequestText(base: string, threadId: string): string {
+  function decorateRequestText(base: string, threadId: string, carriesContinuation: boolean): string {
     if (draftChat || threadId !== currentThread.id) return base;
     const pending = unresolvedInterruption(currentThread);
-    // 다시 시도가 이미 이어 가기 블록을 실었으면 겹쳐 붙이지 않는다.
-    if (!pending || base.includes('<turn_interrupted')) return base;
+    if (!pending || carriesContinuation) return base;
     return appendContinuationBlock(base, pending.reason, continuationContextFor(pending.marker));
   }
 
@@ -5059,6 +5067,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     readChatModeLock();
     prepareChatForSend();
+    // 허브에 이 채팅의 세션이 없다(허브 재시작·세션 종료 뒤) — 브리지가 보낼 때 스스로 여는 시작은 마지막으로
+    // 시작할 때의 대화 기록을 싣는다(이 페이지에서 시작한 채팅이면 빈 기록). 지금 기록 — 끊긴 요청과 그 턴이
+    // 남긴 것까지 — 으로 먼저 연다. 이어 가기 블록이 말하는 '마지막 요청'이 에이전트에게 보이게.
+    if (!draftChat && bridge.getActiveAgent() === null && chatStartPendingThreadId === null) {
+      startCurrentBridgeChat(true);
+    }
     const { skillName } = spec;
     let messageText: string;
     let requestText: string;
@@ -5081,15 +5095,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 실패하면 '다시 시도' 가 다시 보낼 요청 — 꾸밈 전 본문이다(꾸밈은 보낼 때마다 새로 붙는다).
     // 인라인 프롬프트는 다시 보낼 요청을 두지 않는다: 선택 맥락이 그 시점 문서에 묶여 있어, 맥락 없이
     // 지시만 다시 보내면 ("이 부분을 표로") 에이전트가 엉뚱한 곳을 고칠 수 있다.
+    const carriesContinuation = spec.wire?.continuation === true;
     const retryPayload = {
       displayText: messageText,
       requestText,
       ...(skillName ? { skillName } : {}),
       ...(skillName && spec.skillIcon ? { skillIcon: spec.skillIcon } : {}),
+      ...(carriesContinuation ? { continuation: true } : {}),
     };
     // 끊긴 턴이 아직 이어지지 않았으면 이 메시지가 이어 간다(아래에서 resolution 을 남긴다).
     const continuedTurn = draftChat ? null : unresolvedInterruption(currentThread);
-    requestText = decorateRequestText(requestText, currentThread.id);
+    requestText = decorateRequestText(requestText, currentThread.id, carriesContinuation);
+    // 이어 가는 메시지는 언제나 receipt 를 받는다 — 브리지가 버리거나 허브가 받지 않으면 끊김을 다시 열어
+    // 다음 보내기(다시 시도 포함)가 블록을 다시 싣게 한다.
+    const requireReceipt = spec.requireReceipt === true || continuedTurn !== null;
     const staged = spec.staged ?? [];
     const messageAttachments: ThreadAttachment[] = staged.map((file) => ({
       stageId: file.id,
@@ -5104,7 +5123,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       skillName,
       spec.skillIcon,
     );
-    failureNotices.noteSend(currentThread.id, spec.origin === 'inline' ? null : retryPayload);
+    failureNotices.noteSend(currentThread.id, spec.origin === 'inline' ? null : retryPayload, userMessage);
     const userBubble = renderUserMessage(userMessage);
     userBubble.classList.add('ag-msg-enter');
     replyPending = true;
@@ -5120,11 +5139,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       requestText,
       skillName,
       staged.map((file) => file.id),
-      spec.requireReceipt === true,
+      requireReceipt,
       spec.signal,
     );
     if (staged.length > 0) attachmentsSending = true;
-    if (staged.length > 0 || spec.requireReceipt) {
+    if (staged.length > 0 || requireReceipt) {
       void messageSent.then((messageId) => {
         if (!messageId) {
           if (staged.length > 0) {
@@ -5139,7 +5158,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       });
     }
     if (continuedTurn) {
-      markInterruptionResolved(continuedTurn.marker.messageId, spec.origin, messageSent, spec.requireReceipt === true);
+      markInterruptionResolved(continuedTurn.marker.messageId, spec.origin, messageSent);
+      // 사용자가 직접 보낸 메시지가 끊김을 이어 간다 — 끊김으로 붙잡은 대기열을 풀어 그 턴이 정상으로 끝나면
+      // 보내게 한다(이어서 진행·다시 시도는 스스로 풀고, 대기열의 보내기는 보내며 푼다).
+      if ((spec.origin === 'composer' || spec.origin === 'inline') && followUps.snapshot().hold?.reason === 'interrupted') {
+        followUps.release();
+      }
     }
     updateComposer();
     notifyUserMessageDispatched(spec.origin);
@@ -6939,7 +6963,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const loaded = getThread(id);
     if (!loaded) return;
     // 끝을 듣지 못한 턴 중 아무도 돌리지 않는 것은 끊긴 턴으로 정착한다 — 그 이유가 열자마자 보인다(S3).
-    reconcileOpenedThread(loaded);
+    // 허브가 붙든 이 채팅을 다시 붙이면(adopt) 마지막 턴은 그 세션의 것이다: 도는 턴은 그대로 잇고, 쉬는
+    // 세션이면 허브가 다시 보낸 그 턴의 끝이 결과로 정착한다(bindLiveChat). 끝도 오지 않았으면
+    // onLiveChatAdopted 가 끊긴 것으로 정착한다. 여기서 끊으면 끝까지 간 턴이 '중단됨'으로 남는다.
+    reconcileOpenedThread(loaded, adopt ? bridge.getHubChat() : null);
     rememberThreadComposerDraft();
     if (draftChat) threadComposerDrafts.delete(currentThread.id);
     setComposerSkill(null);
@@ -7058,14 +7085,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       settleIdleAdoptedTurn();
     }
     // S3: 부팅 정리나 다른 탭이 이 턴을 먼저 끊긴 것으로 정착했으면 되돌린다(같은 허브 턴일 때).
-    if (live.running) reviveAdoptedTurn(live);
+    const revived = live.running ? reviveAdoptedTurn(live) : null;
     // U4: 새로고침 전에 남긴 이 턴의 표식(아직 열림)을 다시 잡는다 — 그 턴의 실제 끝이 표식을
     // 정착하고, 새로고침 뒤 다시 그린 자리표시 줄 아래로 작업을 접는다.
     if (live.running) adoptUnsettledTurnFold(live.turnId);
-    // 이어 붙인 턴의 끝은 이 사이드바가 본다 — 채팅을 열 때(attach) '작업이 끊겨'로 붙잡은 대기열을
-    // 풀고, 그 턴이 끝나면 보통 규칙대로 하나씩 보낸다. 돌지 않는 세션(계획 승인 대기)에는 이 사이드바가
-    // 볼 턴 끝이 없으니 붙잡은 채 둔다.
-    if (live.running) followUps.adoptLiveTurn();
+    // 이어 붙인 턴의 끝은 이 사이드바가 본다 — 채팅을 열 때(attach) '작업이 끊겨'로 붙잡은 대기열과 방금
+    // 되살린 끊김의 붙잡음을 풀고, 그 턴이 끝나면 보통 규칙대로 하나씩 보낸다. 사용자가 멈춘 것·실패·엔진
+    // 멈춤처럼 사용자가 풀어야 하는 붙잡음은 남는다. 돌지 않는 세션(계획 승인 대기)에는 이 사이드바가 볼
+    // 턴 끝이 없으니 붙잡은 채 둔다.
+    if (live.running) followUps.adoptLiveTurn({ revivedDetail: revived ? INTERRUPTION_LABEL[revived] : null });
   }
 
   /** 허브 세션의 에이전트·모델·속도·권한·작업 방식을 이 채팅에 맞춘다 — chat-started 와 다시 붙이기가 함께 쓴다. */
@@ -7828,9 +7856,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     // 문서를 고친 뒤 턴 도중 끊긴 실패는 처음 요청을 되풀이하지 않고 이어서 진행한다(S3 블록).
     const wire = retryWire(retry, failure, continuationContextFor(latestTurnMarker(currentThread.messages)));
-    const continuing = wire.displayText !== retry.displayText || wire.requestText.includes('<turn_interrupted');
+    const continuing = wire.continuation === true;
     const base: ThreadRetryPayload = continuing
-      ? { displayText: wire.displayText, requestText: wire.requestText }
+      ? { displayText: wire.displayText, requestText: wire.requestText, continuation: true }
       : {
         displayText: retry.displayText,
         requestText: retry.requestText,
@@ -8318,13 +8346,28 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return live && hubChatBusy(live) ? { threadId: live.threadId, turnId: live.turnId } : null;
   }
 
-  /** 이어 가기 블록이 에이전트에게 알릴 편집·질문 상태. */
+  /** 이어 가기 블록이 에이전트에게 알릴 편집·질문·계획 상태. */
   function continuationContextFor(marker: ThreadTurnMessage | null): ContinuationContext {
     return {
       // 검토를 기다리는 스테이징 편집 — 허브 재시작에도 문서에 미리보기로 남아 있다.
       stagedAwaitingReview: bridge.pendingEdits.getChangeSets().some((set) => set.status !== 'open' && set.ops.length > 0),
       questionExpired: marker ? segmentHasExpiredQuestion(currentThread.messages, marker.messageId) : false,
+      replanning: resumeReplans(),
     };
+  }
+
+  /**
+   * 끊긴 계획 실행을 이어 가면 계획부터 다시 세운다. 허브는 새 세션의 계획 상태(승인·실행 단계)를 되살리지
+   * 않는다 — 허브에 이 채팅의 세션이 없으면(허브·앱 재시작, 세션 종료) 이어 가기가 계획 단계의 새 세션을
+   * 열고(시작을 기다리는 중도 같다), 이미 새 세션이 열렸으면 그 단계가 실행이 아니다. 실행 중에 끊긴
+   * 계획(실행 기록이 돌던 중이거나 중단됨)이 있을 때만이다. 같은 세션을 다시 붙였으면(새로고침) 실행 단계
+   * 그대로 이어 간다.
+   */
+  function resumeReplans(): boolean {
+    if (chatWorkflow !== 'plan') return false;
+    const status = activePlan?.execution?.status;
+    if (status !== 'running' && status !== 'interrupted') return false;
+    return bridge.getActiveAgent() === null || chatStartPendingThreadId !== null || planningPhase !== 'implementing';
   }
 
   /**
@@ -8348,6 +8391,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       actionable,
       blockedReason: actionable ? resumeBlockedReason(true) : null,
       queued: actionable ? followUps.snapshot().count : 0,
+      replans: actionable && resumeReplans(),
     };
   }
 
@@ -8440,29 +8484,39 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /**
    * 끊긴 턴을 이어 가는 블록을 실은 메시지가 나갔다 — 이어서 진행 단추면 resumed, 다른 보내기면
-   * superseded. 허브가 받지 않았다고 알면(receipt 없음) 되돌려 다음 보내기가 다시 싣게 한다.
+   * superseded. 그 메시지는 언제나 receipt 를 받는다: 브리지가 버리거나(null) 허브가 그 receipt 로 거절하면
+   * (hub-error, continuationMessage) 되돌려 다음 보내기 — 실패 알림의 다시 시도 포함 — 가 블록을 다시 싣게 한다.
    */
   function markInterruptionResolved(
     markerId: string,
     origin: ComposedMessageOrigin,
     sent: Promise<string | null>,
-    receipt: boolean,
   ): void {
     const marker = findTurnMarker(currentThread.messages, markerId);
     if (!marker?.interruption || marker.interruption.resolution) return;
     marker.interruption.resolution = origin === 'resume' ? 'resumed' : 'superseded';
     persistCurrentThread();
     syncInterruptionRows();
-    if (!receipt) return;
     const threadId = currentThread.id;
+    continuationMessage = null;
     void sent.then((messageId) => {
-      if (messageId !== null || currentThread.id !== threadId) return;
-      const again = findTurnMarker(currentThread.messages, markerId);
-      if (!again?.interruption?.resolution) return;
-      delete again.interruption.resolution;
-      persistCurrentThread();
-      syncInterruptionRows();
+      if (messageId === null) {
+        reopenInterruption(threadId, markerId);
+        return;
+      }
+      continuationMessage = { threadId, markerId, messageId };
     });
+  }
+
+  /** 이어 가기 메시지가 닿지 못했다 — 끊김의 resolution 을 걷어 줄과 단추를 되살린다. */
+  function reopenInterruption(threadId: string, markerId: string): void {
+    if (continuationMessage?.markerId === markerId) continuationMessage = null;
+    if (draftChat || currentThread.id !== threadId) return;
+    const marker = findTurnMarker(currentThread.messages, markerId);
+    if (!marker?.interruption?.resolution) return;
+    delete marker.interruption.resolution;
+    persistCurrentThread();
+    syncInterruptionRows();
   }
 
   /** 끊긴 표식들을 한 채팅 사본에서 정착한다. 정착한 표식 수. */
@@ -8518,14 +8572,32 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 채팅을 열기 직전(저장소에서 읽은 사본) — 이 브리지가 붙든 턴도 아니고 일하는 신호도 없는 정착 전
    * 표식을 끊긴 턴으로 정착하고 저장한다(S3 의 열 때 검사).
    */
-  function reconcileOpenedThread(thread: ChatThread): void {
+  function reconcileOpenedThread(thread: ChatThread, adopted: HubChat | null = null): void {
+    const live = adopted?.threadId === thread.id
+      ? { threadId: thread.id, turnId: hubChatBusy(adopted) ? adopted.turnId : null }
+      : liveHubTurn();
+    const replayedEnds = replayedTurnEndIds(thread.id);
     const decisions = reconcileThreadOnOpen(thread, {
       now: turnOwnerNow(),
-      live: liveHubTurn(),
+      live,
       status: getChatStatus(thread.id),
-    });
+    }).filter((decision) => !markerEndReplayed(thread, decision.markerId, replayedEnds));
     if (decisions.length === 0 || settleInterruptedMarkers(thread, decisions, Date.now()) === 0) return;
     upsertThread(thread);
+  }
+
+  /** 허브가 welcome 앞에 다시 보내 붙일 때 흘려보낼 이 채팅의 턴 끝 — 그 턴은 그 끝의 결과로 정착한다. */
+  function replayedTurnEndIds(threadId: string): Set<string | null> {
+    if (unboundThreadId !== threadId) return new Set();
+    return new Set(unboundEvents.flatMap((entry) => ('agent' in entry && entry.agent.type === 'turn-end'
+      ? [entry.agent.turnId ?? null] : [])));
+  }
+
+  /** 이 표식의 턴 끝이 곧 다시 온다(허브 턴 id 가 같다) — 끊긴 턴으로 보지 않는다. */
+  function markerEndReplayed(thread: Pick<ChatThread, 'messages'>, markerId: string, replayedEnds: Set<string | null>): boolean {
+    if (replayedEnds.size === 0) return false;
+    const marker = findTurnMarker(thread.messages, markerId);
+    return Boolean(marker?.hubTurnId && replayedEnds.has(marker.hubTurnId));
   }
 
   /**
@@ -8545,12 +8617,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /**
    * S2 가 이 채팅의 살아 있는 턴을 다시 잡았다 — 부팅 정리나 다른 탭이 먼저 그 턴을 끊긴 것으로
-   * 정착했으면 되돌린다(같은 허브 턴일 때). 끊김 줄을 걷고 그 턴을 다시 펼친다.
+   * 정착했으면 되돌린다(같은 허브 턴일 때). 끊김 줄을 걷고 그 턴을 다시 펼친다. 되돌린 끊김의 이유.
    */
-  function reviveAdoptedTurn(live: HubChat): void {
-    if (draftChat || live.threadId !== currentThread.id) return;
+  function reviveAdoptedTurn(live: HubChat): TurnInterruptionReason | null {
+    if (draftChat || live.threadId !== currentThread.id) return null;
+    const reason = unresolvedInterruption(currentThread)?.reason ?? null;
     const revived = reviveInterruptedTurn(currentThread, live.turnId);
-    if (!revived) return;
+    if (!revived) return null;
     // 부팅 정리가 만료로 보관한 질문이 아직 살아 있으면 그 기록을 걷는다 — 살아 있는 카드가 대신 선다.
     const liveQuestion = bridge.getPendingUserQuestion();
     if (liveQuestion) {
@@ -8562,6 +8635,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     persistCurrentThread();
     renderMessagesFromThread(currentThread);
+    return reason;
   }
 
   /** 대화 영역 맨 위에 걸친 첫 내용 — 읽던 줄을 지키는 기준점. */
@@ -8891,19 +8965,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const events = unboundEvents.splice(0);
     unboundThreadId = null;
     replayingUnbound = true;
+    let lastTurnEnd = -1;
+    events.forEach((entry, index) => {
+      if ('agent' in entry && entry.agent.type === 'turn-end') lastTurnEnd = index;
+    });
     try {
-      for (const entry of events) {
+      events.forEach((entry, index) => {
+        replayAwaitsTurnEnd = index < lastTurnEnd;
         if ('agent' in entry) handleAgentEvent(entry.agent);
         else handleSidebarEvent(entry.failure);
-      }
+      });
     } finally {
       replayingUnbound = false;
+      replayAwaitsTurnEnd = false;
     }
   }
 
   /**
    * 그 채팅을 이 화면에 붙이지 않게 됐다(다른 채팅을 복원했거나 그 채팅을 멈췄다) — 미뤄 둔 턴의 끝을
-   * 저장된 그 채팅의 열린 표식에 그 결과로 정착하고 나머지는 버린다.
+   * 저장된 그 채팅의 열린 표식에 그 결과로 정착하고, 그 턴의 실패 알림은 그 채팅에 남기고 대기열을 그
+   * 이유로 붙잡는다(그 채팅을 열면 보인다). 나머지는 버린다.
    */
   function releaseUnboundEvents(): void {
     const events = unboundEvents.splice(0);
@@ -8911,18 +8992,29 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     unboundThreadId = null;
     if (!threadId || events.length === 0) return;
     let errorSeen = false;
+    /** 바로 앞에서 정착한 턴이 실패로 끝났다 — 뒤따르는 turn-failure 가 그 턴의 것이다. */
+    let endedFailed = false;
     for (const entry of events) {
-      if (!('agent' in entry)) continue;
+      if (!('agent' in entry)) {
+        const failure = entry.failure;
+        if (failure.origin !== 'turn' || !endedFailed) continue;
+        endedFailed = false;
+        recordUnboundTurnFailure(threadId, failure);
+        continue;
+      }
       const event = entry.agent;
       if (event.type === 'turn-start') errorSeen = false;
       else if (event.type === 'error') errorSeen = true;
       else if (event.type === 'turn-end') {
+        endedFailed = false;
         const stored = getThread(threadId);
         const marker = stored ? latestTurnMarker(stored.messages) : null;
         if (!marker || marker.endedAt !== null) continue;
         if (marker.hubTurnId && event.turnId && marker.hubTurnId !== event.turnId) continue;
         const interruption = isTurnInterruptionReason(event.interruption) ? event.interruption : null;
         const outcome = turnOutcomeFor(event, { errorSeen, interruptionReason: interruption });
+        endedFailed = outcome === 'failed';
+        errorSeen = false;
         const endedAt = Date.now();
         settleStoredTurnMarker(threadId, marker.messageId, (thread, settled) => ({
           endedAt,
@@ -8933,6 +9025,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }));
       }
     }
+  }
+
+  /**
+   * 붙이지 않은 채 끝난 턴의 실패(새로고침 사이) — 그 채팅에 알림을 저장하고(열면 복원된다) 대기열을 그
+   * 이유로 붙잡고, 레일에 오류 이유를 남긴다. 다시 보낼 요청은 없다(이 페이지가 보낸 요청이 아니다).
+   */
+  function recordUnboundTurnFailure(threadId: string, e: Extract<SidebarEvent, { type: 'turn-failure' }>): void {
+    if (!draftChat && threadId === currentThread.id) return;
+    const owner = getThread(threadId);
+    if (!owner) return;
+    noteProviderAuthFailure(e.failure.agent, e.failure);
+    const notice = failureNotices.add(e.failure, {
+      origin: e.origin,
+      turnId: e.turnId,
+      userInitiated: false,
+      wroteDocument: e.wroteDocument === true,
+    }, owner);
+    const hold = failureNotices.queueHold(notice);
+    if (holdFollowUps(owner, hold.reason, hold.detail)) upsertThread(owner);
+    markChatFailed(threadId, { label: failureRailLabel(e.failure) });
   }
 
   function handleAgentEvent(event: AgentStreamEvent): void {
@@ -9125,8 +9237,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
       case 'error':
         // 턴 접힘과 대기열이 함께 읽는 한 플래그다. 오류 문구는 브리지가 모아 턴 끝에 turn-failure
-        // 알림 하나로 남기고, 턴 밖의 오류는 바로 알림으로 보낸다.
-        if (turnRunning || openFold) turnErrorSeen = true;
+        // 알림 하나로 남기고, 턴 밖의 오류는 바로 알림으로 보낸다. 붙인 채팅에 다시 흘려보내는 이벤트
+        // (새로고침 사이에 끝난 턴의 오류)는 그 턴의 것이다 — 아직 표식을 다시 잡기 전이어도 센다.
+        if (turnRunning || openFold || replayAwaitsTurnEnd) turnErrorSeen = true;
         break;
     }
   }
@@ -9427,6 +9540,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         break;
       case 'hub-error': {
         chatStartPendingThreadId = null;
+        // 이어 가기 블록을 실은 메시지를 허브가 받지 않았다 — 끊김을 다시 열어 다음 보내기가 블록을 다시 싣는다.
+        if (e.messageId && continuationMessage?.messageId === e.messageId) {
+          reopenInterruption(continuationMessage.threadId, continuationMessage.markerId);
+        }
         // 보낸 대기 메시지를 허브가 받지 않았으면 대기열 맨 앞으로 되돌린다. 이유는 붙잡음 줄이 말한다.
         const followUpBounced = followUps.hubError(e);
         if (e.code === 'REFERENCE_COMMIT_FAILED' || e.code === 'INVALID_REFERENCE_MESSAGE') {
@@ -9470,8 +9587,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         if (!bridge.isTurnRunning()) settleOpenTurnFold('failed');
         // U3: 허브 오류로 끝난 턴은 (보지 않았으면) 레일에 오류로 남는다.
         if (turnRunning) runStatus.sync();
-        else if (runStatus.turnEnded('failed', { drained: false }) && e.failure) {
-          runStatus.noteTurnFailure(railFailureNote(e.failure, hubFailureSummary));
+        else if (runStatus.turnEnded('failed', { drained: false })) {
+          if (e.failure) runStatus.noteTurnFailure(railFailureNote(e.failure, hubFailureSummary));
+        } else if (followUpBounced && followUps.snapshot().hold?.reason !== 'busy') {
+          // 앞 턴 끝에서 이어 보낸 대기 메시지를 허브가 받지 않았다 — 채팅은 붙잡힌 대기열과 함께 멈췄다.
+          // 그 턴 끝에는 결과를 남기지 않았으므로 이제 오류로 남긴다(보지 않던 채팅의 레일과 알림).
+          runStatus.followUpRejected(e.failure ? railFailureNote(e.failure, hubFailureSummary) : {});
         }
         followUps.settle();
         break;
@@ -10386,17 +10507,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (deps.ownsWindowSession !== true) return;
     const live = decision.kind === 'adopt' || decision.kind === 'await-document' ? decision.live : null;
     // 허브가 welcome 앞에 다시 보낸 턴의 끝은 붙일 때 그 결과로 정착한다 — 끊긴 턴으로 보지 않는다.
-    const replayedEnds = new Set(unboundEvents.flatMap((entry) => ('agent' in entry && entry.agent.type === 'turn-end'
-      ? [entry.agent.turnId ?? null] : [])));
+    const replayedEnds = live ? replayedTurnEndIds(live.threadId) : new Set<string | null>();
     const keepLive = live && (hubChatBusy(live) || replayedEnds.size > 0);
     const decisions = reconcileInterruptedTurns(listThreads(), {
       now: turnOwnerNow(),
       live: keepLive ? { threadId: live.threadId, turnId: hubChatBusy(live) ? live.turnId : null } : null,
     }).filter((decision) => {
       if (replayedEnds.size === 0 || decision.threadId !== live?.threadId) return true;
-      const marker = getThread(decision.threadId)?.messages.find((message) => isTurnMarker(message)
-        && message.messageId === decision.markerId);
-      return !(marker && isTurnMarker(marker) && marker.hubTurnId && replayedEnds.has(marker.hubTurnId));
+      const stored = getThread(decision.threadId);
+      return !(stored && markerEndReplayed(stored, decision.markerId, replayedEnds));
     });
     // 시작할 때 끊긴 턴으로 정착한 채팅은 레일에 '중단됨'으로 선다(U3). 저장소만 쓰고 알리지 않는다 —
     // 이 창이 떠 있지 않던 사이의 일이다. 그 채팅을 열어 보면 걷힌다.

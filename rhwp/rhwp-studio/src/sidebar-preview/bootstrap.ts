@@ -57,7 +57,8 @@ if (chatsParam === 'sample' || chatsParam === 'engine-trap') {
   // old page saved.
   const reload = chatsParam === 'sample' ? url.searchParams.get('reload') : null;
   const working = seeded.find((thread) => thread.id === SAMPLE_WORKING_CHAT_ID);
-  if (working && (reload === 'running' || reload === 'question' || reload === 'ended' || reload === 'failed')) {
+  if (working && (reload === 'running' || reload === 'question' || reload === 'ended' || reload === 'failed'
+    || reload === 'ended-error')) {
     working.updatedAt = now;
     // 그 턴이 시작될 때 남긴 열린 표식과 지금까지의 작업 — 다시 잡은 턴의 실제 끝이 접는다.
     working.messages.push(...sampleRunningTurnWork(working.agent, now));

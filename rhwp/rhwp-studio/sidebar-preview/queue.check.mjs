@@ -205,12 +205,14 @@ export async function checkFollowUpQueue(page, origin, artifacts) {
   assert.deepEqual((await queueState(page)).rows, ['두 번째를 고쳤어요', '세 번째 대기']);
   await page.click('.ag-followup:last-child .ag-followup-remove');
   assert.deepEqual((await queueState(page)).rows, ['두 번째를 고쳤어요']);
-  // 붙잡힌 대기열은 사용자가 풀 때까지 정상 종료에도 나가지 않는다.
-  await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
-  await new Promise((done) => setTimeout(done, 150));
+  // 새로고침으로 끊긴 턴(S3)을 사용자가 직접 보낸 메시지(#play)로 이었다 — 끊김으로 붙잡았던 대기열은 그때
+  // 풀렸고, 그 턴이 정상으로 끝나면 맨 앞이 나간다.
   state = await queueState(page);
-  assert.equal(state.hold, 'interrupted');
-  assert.equal(state.messagesSent, 1);
+  assert.equal(state.hold, null, 'the user\'s own send after the interruption released the hold');
+  await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+  await waitFor(page, () => window.sidebarPreview.snapshot().messageTexts.at(-1) === '두 번째를 고쳤어요', undefined,
+    'the released queue did not drain at the normal end');
+  assert.equal((await queueState(page)).messagesSent, 2);
 
   // 8. 계획 승인을 기다리며 끝난 턴은 대기열을 붙잡는다.
   await openPreview(page, origin, 'reset=1&scenario=plan&hold=1');
@@ -223,6 +225,16 @@ export async function checkFollowUpQueue(page, origin, artifacts) {
   state = await queueState(page);
   assert.equal(state.messagesSent, 1);
   assert.match(state.holdText, /계획 승인을 기다리고/);
+  // 승인하고 실행으로 넘어가면 더 기다리는 것이 없다 — 그 메시지는 계획을 다듬는 동안 쓴 것이라 붙잡힌 채로
+  // 남고(계획에 대한 의견이었다), 줄은 승인을 기다린다고 말하지 않는다.
+  await page.click('.ag-plan-approve');
+  await page.waitForSelector('.ag-todo[data-status="in-progress"]');
+  state = await queueState(page);
+  assert.equal(state.hold, 'plan-approval', 'approving does not release the plan feedback');
+  assert.doesNotMatch(state.holdText, /승인을 기다리고/);
+  assert.match(state.holdText, /계획을 다듬는 동안 쓴 메시지/);
+  assert.equal(state.messagesSent, 1);
+  await screenshot('queue-plan-feedback-held');
 
   // 에이전트 모드에서 검토할 변경을 남기고 끝난 턴 뒤에도 대기열은 나간다. 검토 카드는 그대로 남는다.
   await openPreview(page, origin, 'reset=1&scenario=review&hold=1');
@@ -244,6 +256,34 @@ export async function checkFollowUpQueue(page, origin, artifacts) {
   await page.evaluate(() => window.sidebarPreview.finishTurn('failed'));
   await waitFor(page, () => document.querySelector('.ag-followups')?.dataset.hold === 'failed', undefined, 'a failed turn did not hold the queue');
   assert.equal((await queueState(page)).messagesSent, 1);
+
+  // 지금 보내기를 걸어 둔 턴이 멈추기 전에 실패로 끝났다 — 사용자가 고른 메시지는 나가고, 그 턴의 실패 알림은
+  // 그 턴 자리(다음 메시지 앞)에 서며 그 턴의 요청을 다시 보낼 요청으로 둔다. 채팅이 넘어갔으니 조치 없이 접힌다.
+  await openPreview(page, origin, 'reset=1&scenario=chat&hold=1');
+  await page.click('#play');
+  await waitRunning(page);
+  await enqueue(page, '지금 보낼 요청');
+  await page.evaluate(() => window.sidebarPreview.setLateTurnEnd(true));
+  await page.focus('.ag-input');
+  await sendNowKey(page);
+  await waitFor(page, () => window.sidebarPreview.snapshot().interrupts === 1, undefined, 'send now did not stop the turn');
+  await page.evaluate(() => {
+    window.sidebarPreview.setLateTurnEnd(false);
+    window.sidebarPreview.failRunningTurn('usage');
+  });
+  await waitFor(page, () => window.sidebarPreview.snapshot().messageTexts.at(-1) === '지금 보낼 요청', undefined,
+    'the send-now message did not go after the failed turn');
+  const failedTurn = await page.evaluate(() => ({
+    order: [...document.querySelectorAll('.ag-messages .ag-msg-user, .ag-messages .ag-failure-notice')].map((node) => {
+      if (!node.classList.contains('ag-failure-notice')) return node.textContent.trim();
+      return node.classList.contains('ag-failure-notice-compact') ? 'notice (compact)' : 'notice';
+    }),
+    retry: window.sidebarPreview.threadStore.getThread(window.sidebarPreview.sidebar.currentThreadId())
+      .messages.find((message) => message.kind === 'error')?.retry?.displayText ?? null,
+  }));
+  assert.deepEqual(failedTurn.order, ['이 문서의 핵심 내용을 검토하고 개선해 주세요.', 'notice (compact)', '지금 보낼 요청']);
+  assert.equal(failedTurn.retry, '이 문서의 핵심 내용을 검토하고 개선해 주세요.', 'the notice keeps the request of the turn that failed');
+  assert.equal((await queueState(page)).hold, null);
 }
 
 /**
@@ -378,7 +418,11 @@ export async function checkFollowUpGap(page, origin, artifacts) {
   assert.equal(binding.bubbles, 1, 'only the first request is left');
   assert.ok(binding.requestKey);
   assert.equal(binding.turnKey, binding.requestKey, 'the hub turn moved to the request that is still shown');
-  await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+  // 그 허브 턴이 실패해도 되돌린 메시지를 다시 시도로 내놓지 않는다 — 그 메시지는 대기열 맨 앞에 있다.
+  await page.evaluate(() => window.sidebarPreview.failRunningTurn('network'));
+  await waitFor(page, () => document.querySelector('.ag-failure-notice'), undefined, 'the hub turn failure has no notice');
+  assert.equal(await page.$('.ag-failure-notice [data-action="retry"]'), null, 'no 다시 시도 for the bounced message');
+  assert.deepEqual((await queueState(page)).rows, ['거절될 요청']);
 }
 
 async function screenshot(page, artifacts, name) {

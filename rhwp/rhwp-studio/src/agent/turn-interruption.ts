@@ -329,6 +329,19 @@ export interface ContinuationContext {
   stagedAwaitingReview: boolean;
   /** 그 턴의 질문이 답을 받지 못하고 만료됐다. */
   questionExpired: boolean;
+  /**
+   * 승인된 계획을 실행하던 턴이 끊겼고, 그 승인은 끊김을 넘지 못했다 — 이어 가는 세션은 계획 단계에서
+   * 시작한다(허브는 새 세션의 계획 상태를 되살리지 않는다). 에이전트는 남은 단계의 계획을 다시 내고
+   * 승인을 받는다.
+   */
+  replanning?: boolean;
+}
+
+/** 이어서 진행 요청 한 건 — continuation 은 요청문이 이미 끊긴 턴 블록을 실었다는 표(글자로 가르지 않는다). */
+export interface ContinuationCarryingWire {
+  displayText: string;
+  requestText: string;
+  continuation?: boolean;
 }
 
 /**
@@ -345,8 +358,17 @@ export function continuationBlock(reason: TurnInterruptionReason, ctx: Continuat
         + 'they are part of the document you will read.'
       : "Edits you had not finished, or that were still waiting for the user's review, may no longer be in the document.",
     ...(ctx.questionExpired ? ['Your question to the user expired unanswered; ask again if you still need the answer.'] : []),
-    'Re-read the parts of the document you were working on before editing again, and do not repeat edits that are '
-      + "already there. Then continue the user's last request from where you stopped.",
+    ...(ctx.replanning
+      ? [
+        'You were carrying out a plan the user had approved, but that approval did not survive the interruption: '
+          + 'this session starts again in the planning phase and cannot edit the document until a plan is approved.',
+        'Re-read the document, work out which steps of that plan are already applied, and do not repeat them. '
+          + 'Then present a plan for the remaining steps for the user to approve.',
+      ]
+      : [
+        'Re-read the parts of the document you were working on before editing again, and do not repeat edits that are '
+          + "already there. Then continue the user's last request from where you stopped.",
+      ]),
     '</turn_interrupted>',
   ].join('\n');
 }
@@ -364,8 +386,12 @@ export function appendContinuationBlock(requestText: string, reason: TurnInterru
 export function continuationWire(
   reason: TurnInterruptionReason,
   ctx: ContinuationContext,
-): { displayText: string; requestText: string } {
-  return { displayText: RESUME_MESSAGE_TEXT, requestText: appendContinuationBlock(RESUME_MESSAGE_TEXT, reason, ctx) };
+): ContinuationCarryingWire {
+  return {
+    displayText: RESUME_MESSAGE_TEXT,
+    requestText: appendContinuationBlock(RESUME_MESSAGE_TEXT, reason, ctx),
+    continuation: true,
+  };
 }
 
 /**

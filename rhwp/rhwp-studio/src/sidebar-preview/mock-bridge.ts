@@ -212,8 +212,9 @@ export interface MockLiveChat {
   /**
    * The chat's turn ended while the page was reloading: the hub replays that turn-end (and, for
    * `failed`, the provider error) before its welcome, which then reports the session idle.
+   * `error`: the hub replays the turn's provider error and then a turn-end that carries no failure.
    */
-  ended?: 'completed' | 'failed';
+  ended?: 'completed' | 'failed' | 'error';
 }
 
 export interface MockBridgeOptions {
@@ -257,7 +258,18 @@ export function createMockBridge(
   /** 채팅 시작 응답만 따로 센다 — 실제 브리지처럼 시작 직후 보낸 메시지가 시작을 덮지 않는다. */
   let chatGeneration = 0;
   /** 브라우저 검사가 읽는 호출 기록. */
-  const chatStarts: Array<{ threadId: string; workflow: T.AgentWorkflow; permissionProfile: T.PermissionProfile }> = [];
+  const chatStarts: Array<{
+    threadId: string;
+    workflow: T.AgentWorkflow;
+    permissionProfile: T.PermissionProfile;
+    /** 그 시작이 실은 대화 기록의 본문(프로바이더가 이어 받는 맥락). */
+    history: string[];
+  }> = [];
+  /**
+   * 마지막 startChat 이 건넨 대화 기록 — 실제 브리지처럼 세션을 잃은 뒤 메시지가 스스로 여는 시작은 이
+   * 기록을 다시 싣는다(그 뒤의 대화는 빠진다).
+   */
+  let startHistory: string[] = [];
   let messagesSent = 0;
   /** 브리지가 받은 사용자 메시지 — 검사가 요청문·스킬·첨부·receipt 를 읽는다. */
   const sentMessages: Array<{ text: string; skillName?: string; referenceIds: string[]; requireReceipt: boolean }> = [];
@@ -287,6 +299,8 @@ export function createMockBridge(
   let hubInstance = 'preview-hub-1';
   /** 허브를 잃어 세션이 없다 — 다음 메시지 앞에 실제 브리지처럼 chat-start 를 보낸다. */
   let sessionLost = false;
+  /** 보낸 chat-start 를 허브가 아직 확인하지 않았다 — 그 사이의 메시지는 그 시작 뒤에 간다. */
+  let startPending = false;
   let failureKind: FailureKind = 'network';
   // 실제 브리지처럼 한 턴의 error·turn-end 를 실패 알림 하나로 모은다.
   const turnFailures = createTurnFailureCollector();
@@ -551,7 +565,8 @@ export function createMockBridge(
     getDocumentSelectionIdentity: () => ({ documentId: 'sidebar-preview', revision: 0 }),
     getConnectionState: () => connection,
     getHubFontAccess: () => null,
-    getActiveAgent: () => agent,
+    // 실제 브리지처럼 허브가 세션을 잃었으면(허브 재시작) 다음 시작 전까지 활성 에이전트가 없다.
+    getActiveAgent: () => (sessionLost ? null : agent),
     isTurnRunning: () => running,
     getPendingUserQuestion: () => question,
     hubSessionKnown: () => welcome,
@@ -820,8 +835,11 @@ export function createMockBridge(
       id,
       documentId,
       documentName,
+      history,
     ) => {
       const continuing = !force && id === threadId && (mode ?? 'direct') === workflow.workflow;
+      startHistory = (history ?? []).map((entry) => entry.text);
+      startPending = true;
       ++generation;
       const startGeneration = ++chatGeneration;
       completeQuestion({ status: 'expired', reason: 'request-invalidated' });
@@ -853,17 +871,21 @@ export function createMockBridge(
         documentName,
         ...workflow,
       };
-      chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission });
+      chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission, history: [...startHistory] });
       hubChatThreadId = null;
       later(() => {
         if (chatGeneration !== startGeneration) return;
         hubChatThreadId = threadId;
+        // 실제 브리지처럼 허브가 시작을 확인해야 활성 에이전트가 생긴다.
+        sessionLost = false;
+        startPending = false;
         emit(started);
       }, chatStartDelayMs);
     },
     stopChat: () => {
       stops += 1;
       hubChatThreadId = null;
+      startPending = false;
       generation++;
       chatGeneration++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
@@ -898,10 +920,10 @@ export function createMockBridge(
         }));
         return receipt;
       }
-      if (sessionLost) {
-        // 실제 브리지: 세션이 없으면 대화 기록과 함께 chat-start 를 보낸 뒤 메시지를 보낸다.
+      if (sessionLost && !startPending) {
+        // 실제 브리지: 세션이 없으면 마지막 startChat 의 대화 기록으로 chat-start 를 보낸 뒤 메시지를 보낸다.
         sessionLost = false;
-        chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission });
+        chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission, history: [...startHistory] });
         hubChatThreadId = threadId;
       }
       const turnGeneration = ++generation;
@@ -1581,6 +1603,10 @@ export function createMockBridge(
       const failure = live.ended === 'failed'
         ? previewFailure('network', agent, Date.now())
         : null;
+      if (live.ended === 'error') {
+        const error = previewFailure('provider', agent, Date.now());
+        stream({ type: 'error', agent, message: error.message, failure: error });
+      }
       stream({
         type: 'turn-end', agent, turnId: 'preview-turn',
         stopReason: failure ? 'failed' : 'completed',
@@ -1762,7 +1788,7 @@ export function createMockBridge(
     },
     deliverWelcome,
     snapshot: () => ({
-      chatStarts: chatStarts.map((start) => ({ ...start })),
+      chatStarts: chatStarts.map((start) => ({ ...start, history: [...start.history] })),
       messagesSent,
       messageTexts: sentMessages.map((message) => message.text),
       sentMessages: sentMessages.map((message) => ({ ...message, referenceIds: [...message.referenceIds] })),

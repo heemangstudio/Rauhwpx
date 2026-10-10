@@ -91,3 +91,14 @@ test('failure notices never enter provider history', () => {
     { role: 'assistant', text: '요약입니다.' },
   ]);
 });
+
+test('a retry that already carries the interruption block keeps that mark across a reload', () => {
+  const continued: ThreadFailureMessage = {
+    ...notice,
+    retry: { displayText: '이어서 진행해 주세요.', requestText: '이어서 진행해 주세요.\n\n<turn_interrupted reason="agent-exit">…</turn_interrupted>', continuation: true },
+  };
+  const [, restored] = storeAndReload([{ role: 'user', text: '이어서 진행해 주세요.' }, continued]);
+  assert.equal((restored as ThreadFailureMessage).retry?.continuation, true);
+  const forged = storeAndReload([{ ...continued, retry: { ...continued.retry, continuation: 'yes' } }])[0] as ThreadFailureMessage;
+  assert.equal(forged.retry?.continuation, undefined, 'only a literal true is kept');
+});

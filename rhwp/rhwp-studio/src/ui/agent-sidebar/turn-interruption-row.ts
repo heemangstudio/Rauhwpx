@@ -21,6 +21,11 @@ export interface TurnInterruptionRowState {
   blockedReason: string | null;
   /** 붙잡힌 대기 메시지 수 — 있으면 이어서 진행한 뒤 보낸다고 알린다. */
   queued: number;
+  /**
+   * 승인된 계획을 실행하던 턴이고 그 승인은 끊김을 넘지 못했다 — 이어서 진행하면 남은 작업의 계획을 다시
+   * 세워 승인을 받는다고 미리 알린다.
+   */
+  replans?: boolean;
 }
 
 export interface TurnInterruptionRow {
@@ -40,6 +45,9 @@ export function queuedFollowUpsText(count: number): string {
   return `대기 메시지 ${count}개는 이어서 진행한 뒤 보내요`;
 }
 
+/** 끊긴 계획 실행을 이어 갈 때 — 승인은 끊김을 넘지 못해 남은 작업의 계획부터 다시 승인받는다. */
+export const RESUME_REPLANS_TEXT = '이어서 진행하면 남은 작업의 계획을 다시 세워 승인을 받아요';
+
 export function createTurnInterruptionRow(
   markerId: string,
   opts: { onResume(): void },
@@ -51,6 +59,8 @@ export function createTurnInterruptionRow(
   const text = el('span', 'ag-turn-interrupted-text');
   const queue = el('span', 'ag-turn-interrupted-queue');
   queue.hidden = true;
+  const replan = el('span', 'ag-turn-interrupted-queue ag-turn-interrupted-replan', RESUME_REPLANS_TEXT);
+  replan.hidden = true;
   const resume = el('button', 'ag-turn-interrupted-resume', RESUME_BUTTON_LABEL);
   resume.type = 'button';
   resume.hidden = true;
@@ -59,13 +69,14 @@ export function createTurnInterruptionRow(
     if (resume.getAttribute('aria-disabled') === 'true') return;
     opts.onResume();
   });
-  root.append(text, queue, resume);
+  root.append(text, replan, queue, resume);
   return {
     root,
     markerId,
     update(state) {
       root.dataset.reason = state.reason;
       if (text.textContent !== INTERRUPTION_NOTICE[state.reason]) text.textContent = INTERRUPTION_NOTICE[state.reason];
+      replan.hidden = !(state.actionable && state.replans === true);
       const showQueue = state.actionable && state.queued > 0;
       queue.hidden = !showQueue;
       if (showQueue) queue.textContent = queuedFollowUpsText(state.queued);

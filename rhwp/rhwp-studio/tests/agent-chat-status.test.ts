@@ -195,3 +195,27 @@ test('statuses written by an older build are still read, unknown ones are droppe
   clearChatStatus('old');
   assert.equal(getChatStatus('old'), null);
 });
+
+test('a working light written from a hidden page survives throttled heartbeats', () => {
+  mem.clear();
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { visibilityState: 'hidden' } });
+  try {
+    markChatWorking('hidden-tab');
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'document', descriptor);
+    else delete (globalThis as { document?: unknown }).document;
+  }
+  markChatWorking('visible-tab');
+  // 오래 가려진 탭의 타이머는 1분에 한 번 깬다 — 그 사이 다른 창이 그 턴을 끊긴 것으로 보면 안 된다.
+  const stored = JSON.parse(mem.get(STORAGE_KEY)!);
+  for (const id of ['hidden-tab', 'visible-tab']) stored[id].updatedAt = Date.now() - 60_000;
+  mem.set(STORAGE_KEY, JSON.stringify(stored));
+  assert.equal(getChatStatus('hidden-tab'), 'working');
+  assert.equal(getChatStatus('visible-tab'), null, 'a visible page that stops beating still goes dark quickly');
+  // 가려진 페이지라도 무한히 남지는 않는다.
+  stored['hidden-tab'].updatedAt = Date.now() - 5 * 60_000;
+  mem.set(STORAGE_KEY, JSON.stringify(stored));
+  assert.equal(getChatStatus('hidden-tab'), null);
+  releaseOwnedLiveStatuses();
+});

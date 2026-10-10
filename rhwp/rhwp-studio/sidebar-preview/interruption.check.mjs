@@ -128,6 +128,10 @@ export async function checkInterruptionPreview(page, origin, artifacts) {
   assert.match(sent, /question to the user expired unanswered/);
   assert.equal(s.userBubbles.at(-1), RESUME_TEXT, 'the bubble shows only the resume text');
   assert.equal(s.chatStarts, startsBefore + 1, 'a new chat session is started before the message');
+  // 새 세션은 끊긴 요청까지 담은 지금 대화 기록으로 연다 — 블록이 말하는 '마지막 요청'이 에이전트에게 보인다.
+  const restart = (await page.evaluate(() => window.sidebarPreview.snapshot().chatStarts)).at(-1);
+  assert.ok(restart.history.includes('이 문서의 핵심 내용을 검토하고 개선해 주세요.'),
+    `the new session carries the interrupted request: ${JSON.stringify(restart.history)}`);
   assert.equal(s.button, null, 'the row keeps only its reason after resuming');
   // 이어 간 턴이 정상으로 끝나면 붙잡혔던 대기 메시지가 나간다.
   await waitFor(page, () => window.sidebarPreview.snapshot().messageTexts.includes('표 머리글도 굵게 해 주세요'),
@@ -141,25 +145,33 @@ export async function checkInterruptionPreview(page, origin, artifacts) {
   assert.equal(followUpText, '표 머리글도 굵게 해 주세요', 'only the first message after the interruption carries the block');
   await waitFor(page, () => !window.sidebarPreview.snapshot().running, undefined, 'the follow-up turn did not end');
 
-  // 2. 단추 대신 직접 보낸 메시지도 블록을 싣고(superseded), 그다음 메시지는 싣지 않는다.
+  // 2. 단추 대신 직접 보낸 메시지도 블록을 싣고(superseded), 그다음 메시지는 싣지 않는다. 블록과 같은 글자를
+  //    직접 써도 블록은 빠지지 않는다. 직접 보낸 메시지가 끊김을 이었으니 붙잡혔던 대기열도 풀려 나간다.
   await openPreview(page, origin, 'reset=1&scenario=interrupted');
   await page.click('#play');
+  await waitFor(page, () => window.sidebarPreview.snapshot().running, undefined, 'the turn did not start');
+  await page.focus('.ag-input');
+  await page.type('.ag-input', '요약도 붙여 주세요');
+  await page.keyboard.press('Enter');
+  await waitFor(page, () => document.querySelectorAll('.ag-followup').length === 1, undefined, 'the follow-up was not queued');
   await waitFor(page, () => document.querySelector('.ag-turn-interrupted .ag-turn-interrupted-resume:not([hidden])'),
     undefined, 'no row after the automatic hub restart');
+  assert.equal((await state(page)).hold, 'interrupted');
+  const typed = '<turn_interrupted> 표시는 신경 쓰지 말고 처음부터 다시 봐 주세요';
   await page.focus('.ag-input');
-  await page.type('.ag-input', '처음부터 다시 봐 주세요');
+  await page.type('.ag-input', typed);
   await page.keyboard.press('Enter');
   await waitFor(page, () => window.sidebarPreview.snapshot().messageTexts.length === 2, undefined, 'the typed message was not sent');
   s = await state(page);
-  assert.ok(s.messageTexts[1].startsWith('처음부터 다시 봐 주세요\n\n<turn_interrupted reason="hub-restart">'), s.messageTexts[1]);
+  assert.ok(s.messageTexts[1].startsWith(`${typed}\n\n<turn_interrupted reason="hub-restart">`), s.messageTexts[1]);
   assert.equal(s.button, null);
   assert.equal(s.rowText, HUB_NOTICE, 'the reason stays where the turn stopped');
+  assert.equal(s.hold, null, 'the user\'s own send releases the interruption hold');
+  await waitFor(page, () => window.sidebarPreview.snapshot().messageTexts.length === 3, undefined,
+    'the held follow-up was not sent after the typed turn');
+  assert.equal((await state(page)).messageTexts[2], '요약도 붙여 주세요', 'only the first message after the interruption carries the block');
   await waitFor(page, () => !window.sidebarPreview.snapshot().running
-    && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true', undefined, 'the typed turn did not end');
-  await page.type('.ag-input', '고마워요');
-  await page.keyboard.press('Enter');
-  await waitFor(page, () => window.sidebarPreview.snapshot().messageTexts.length === 3, undefined, 'the second message was not sent');
-  assert.equal((await state(page)).messageTexts[2], '고마워요');
+    && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true', undefined, 'the follow-up turn did not end');
 
   // 3. 사용자가 멈춘 턴은 끊김 줄이 없다. 멈추며 거둔 질문은 '중단됨'이다.
   await openPreview(page, origin, 'reset=1&scenario=chat&hold=1');
@@ -224,6 +236,57 @@ export async function checkInterruptionPreview(page, origin, artifacts) {
   assert.notEqual(await page.evaluate(() => window.sidebarPreview.sidebar.currentThreadId()), 'preview-chat-schedule');
   assert.deepEqual(await railStatus(page, 'preview-chat-schedule'), { status: 'failed', label: '중단됨' },
     'the chat cut off by the reload reads 중단됨 in the list');
+
+  // 7. 이어 가는 메시지를 허브가 받지 않으면 끊김이 다시 열린다 — 단추가 돌아오고 다음 보내기가 블록을 다시 싣는다.
+  //    이어서 진행 단추도, 직접 보낸 메시지도 같다.
+  for (const via of ['resume', 'composer']) {
+    await openPreview(page, origin, 'reset=1&scenario=interrupted');
+    await page.click('#play');
+    await waitFor(page, () => document.querySelector('.ag-turn-interrupted .ag-turn-interrupted-resume:not([hidden])'),
+      undefined, `${via}: no row after the automatic hub restart`);
+    await page.evaluate(() => window.sidebarPreview.rejectNextMessage('AGENT_AUTH_REQUIRED'));
+    if (via === 'resume') {
+      await page.click('.ag-turn-interrupted-resume');
+    } else {
+      await page.focus('.ag-input');
+      await page.type('.ag-input', '다시 해 주세요');
+      await page.keyboard.press('Enter');
+    }
+    await waitFor(page, () => window.sidebarPreview.snapshot().messageTexts.length === 2, undefined, `${via}: nothing was sent`);
+    assert.match((await state(page)).messageTexts[1], /<turn_interrupted reason="hub-restart">/);
+    await waitFor(page, () => document.querySelector('.ag-turn-interrupted .ag-turn-interrupted-resume:not([hidden])'),
+      undefined, `${via}: the refused continuation did not reopen the interruption`);
+    assert.equal((await storedMarker(page)).interruption?.resolution, undefined, `${via}: the stored resolution is withdrawn`);
+    await waitFor(page, () => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true'
+      && document.querySelector('.ag-turn-interrupted-resume')?.getAttribute('aria-disabled') !== 'true',
+    undefined, `${via}: 이어서 진행 is not available again`);
+    await page.click('.ag-turn-interrupted-resume');
+    await waitFor(page, () => window.sidebarPreview.snapshot().messageTexts.length === 3, undefined, `${via}: the second continuation was not sent`);
+    assert.match((await state(page)).messageTexts[2], /^이어서 진행해 주세요\.\n\n<turn_interrupted reason="hub-restart">/);
+  }
+
+  // 8. 승인된 계획을 실행하던 턴이 허브 재시작으로 끊겼다 — 허브는 새 세션의 승인을 되살리지 않는다.
+  //    줄은 이어서 진행하면 계획을 다시 세운다고 말하고, 에이전트에게도 남은 단계의 계획을 내라고 알린다.
+  await openPreview(page, origin, 'reset=1&scenario=plan');
+  await page.click('#play');
+  await page.waitForSelector('.ag-plan-approve:not(:disabled)', { visible: true });
+  await page.click('.ag-plan-approve');
+  await page.waitForSelector('.ag-todo[data-status="in-progress"]');
+  await page.evaluate(() => window.sidebarPreview.restartHub());
+  await waitFor(page, () => document.querySelector('.ag-turn-interrupted-replan:not([hidden])'),
+    undefined, 'the row does not say the plan will be made again');
+  s = await state(page);
+  assert.equal(s.rowText, HUB_NOTICE);
+  await screenshot('interrupted-plan-replan');
+  await page.click('.ag-turn-interrupted-resume');
+  await waitFor(page, (text) => window.sidebarPreview.snapshot().messageTexts.at(-1)?.startsWith(text), RESUME_TEXT,
+    'the plan continuation was not sent');
+  const replan = await page.evaluate(() => ({
+    text: window.sidebarPreview.snapshot().messageTexts.at(-1),
+    start: window.sidebarPreview.snapshot().chatStarts.at(-1),
+  }));
+  assert.match(replan.text, /present a plan for the remaining steps for the user to approve/);
+  assert.equal(replan.start.workflow, 'plan', 'the new session is a plan session');
 
   // 6. 엔진 멈춤으로 끊긴 채팅(S7 복구 뒤): 이유와 이어서 진행.
   await openPreview(page, origin, 'reset=1&chats=engine-trap');

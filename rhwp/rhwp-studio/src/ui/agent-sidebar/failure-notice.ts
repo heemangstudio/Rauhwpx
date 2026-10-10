@@ -13,7 +13,11 @@ import type {
 } from '../../agent/types.ts';
 import type { ChatThread, ThreadFailureMessage, ThreadRetryPayload } from '../../agent/threads.ts';
 import { failureDismissKey, resetAtFromLimits } from '../../agent/provider-failure.ts';
-import { continuationWire, type ContinuationContext } from '../../agent/turn-interruption.ts';
+import {
+  continuationWire,
+  type ContinuationCarryingWire,
+  type ContinuationContext,
+} from '../../agent/turn-interruption.ts';
 
 export type FailureActionId = 'login' | 'settings' | 'usage' | 'retry' | 'resume' | 'cancel-resume';
 
@@ -249,13 +253,15 @@ export function retryWire(
   retry: ThreadRetryPayload,
   failure: Pick<ProviderFailure, 'class'> | null,
   ctx: ContinuationContext,
-): { displayText: string; requestText: string } {
+): ContinuationCarryingWire {
   if (retry.afterPartialEdits && failure && MID_TURN_FAILURE_CLASSES.has(failure.class)) {
     return continuationWire('agent-exit', ctx);
   }
   return {
     displayText: retry.displayText,
     requestText: retry.afterPartialEdits ? `${retry.requestText}\n\n${PARTIAL_EDITS_RETRY_NOTE}` : retry.requestText,
+    // 이어서 진행으로 보냈던 요청을 다시 보낸다 — 그 요청문이 이미 끊긴 턴 블록을 싣고 있다.
+    ...(retry.continuation ? { continuation: true } : {}),
   };
 }
 
@@ -453,7 +459,8 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
   const grace = deps.resumeGraceMs ?? 30_000;
   const connectWait = deps.connectWaitMs ?? 120_000;
   const dismissals = deps.dismissals ?? createFailureDismissals();
-  let lastSend: (SendPayload & { threadId: string }) | null = null;
+  /** 마지막 전송 요청과 그 전송을 가리키는 표(source) — 허브가 받지 않은 전송을 잊을 때 견준다. */
+  let lastSend: (SendPayload & { threadId: string; source: object | null }) | null = null;
   let limits: UsageSummary['limits'] | null = null;
   const nodes = new Map<ThreadFailureMessage, HTMLElement>();
   /** 이 페이지에서 만든 알림 — 사용량 보고에서 찾은 리셋 시각을 써 넣어도 되는 것 */
@@ -629,18 +636,27 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
      * 사용자가 이 채팅에서 요청을 보냈다 — 실패하면 다시 보낼 요청이다(null 이면 다시 보낼 수 없는
      * 요청: 인라인 프롬프트처럼 그 순간의 문서 선택에 묶인 것). 걸린 이어서 보내기는 취소된다.
      */
-    noteSend(threadId: string, payload: SendPayload | null): void {
+    noteSend(threadId: string, payload: SendPayload | null, source: object | null = null): void {
       lastSend = payload
         ? {
           threadId,
+          source,
           displayText: payload.displayText,
           requestText: payload.requestText,
           ...(payload.skillName ? { skillName: payload.skillName } : {}),
           ...(payload.skillName && payload.skillIcon ? { skillIcon: payload.skillIcon } : {}),
+          ...(payload.continuation ? { continuation: true } : {}),
         }
         : null;
       cancelResume(threadId);
       refresh();
+    },
+    /**
+     * 허브가 받지 않아 대화에서 걷은 전송(대기열로 되돌린 대기 메시지)을 잊는다 — 그 사이 허브가 연 턴이
+     * 실패해도 그 메시지를 다시 보낼 요청으로 삼지 않는다(대기열 맨 앞에 이미 있다).
+     */
+    forgetSend(source: object): void {
+      if (lastSend?.source === source) lastSend = null;
     },
     /** 계획 승인·수정처럼 다시 보내면 안 되는 전송 뒤 — 이것도 이 채팅의 전송이라 걸린 이어서 보내기를 거둔다. */
     clearLastSend(): void {
@@ -665,6 +681,7 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
           requestText: base.requestText,
           ...(base.skillName ? { skillName: base.skillName } : {}),
           ...(base.skillIcon ? { skillIcon: base.skillIcon } : {}),
+          ...(base.continuation ? { continuation: true } : {}),
           ...(input.wroteDocument ? { afterPartialEdits: true } : {}),
         }
         : undefined;

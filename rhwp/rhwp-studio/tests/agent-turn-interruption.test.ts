@@ -288,3 +288,14 @@ test('interruptLatestTurn leaves a resolved interruption alone', () => {
   assert.equal(interruptLatestTurn(thread, 'engine-trap', 3_000), null);
   assert.equal(m.interruption?.reason, 'reload');
 });
+
+test('continuing a plan implementation whose approval was lost asks for a plan of the remaining steps', () => {
+  const replan = continuationBlock('hub-restart', { stagedAwaitingReview: false, questionExpired: false, replanning: true });
+  assert.match(replan, /approval did not survive the interruption/);
+  assert.match(replan, /present a plan for the remaining steps for the user to approve/);
+  assert.doesNotMatch(replan, /continue the user's last request from where you stopped/,
+    'it does not tell a planning session to carry on editing');
+  const same = continuationBlock('hub-restart', { stagedAwaitingReview: false, questionExpired: false });
+  assert.doesNotMatch(same, /approval did not survive/);
+  assert.match(same, /continue the user's last request from where you stopped/);
+});

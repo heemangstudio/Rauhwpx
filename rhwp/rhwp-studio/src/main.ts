@@ -288,6 +288,17 @@ const rendererSessionContextPromise = getRendererSessionContext();
  * 안다(웹의 launchId 는 페이지나 허브마다 바뀐다). 세션 구성이 오기 전에는 null.
  */
 let interruptionScope: InterruptionScope | null = null;
+/**
+ * 부팅 정리(S3, reconcileInterruptedTurns)는 이 페이지에서 한 번만 돈다 — 페이지가 처음 만든, 창의 기본
+ * 허브 세션을 쓰는 채팅이 맡는다. 그 채팅이 닫힌 뒤(숨은 채팅 정리·문서 닫기) 기본 허브 세션을 물려받는
+ * 새 채팅은 정리하지 않는다: 그때는 같은 창의 다른 사이드바가 아직 턴을 돌리고 있어 끊긴 턴이 아니다.
+ */
+let bootReconcileClaimed = false;
+function claimBootReconcile(hubSession: AgentHubSessionLease | null): boolean {
+  if (hubSession !== null || bootReconcileClaimed) return false;
+  bootReconcileClaimed = true;
+  return true;
+}
 void rendererSessionContextPromise.then((context) => {
   if (!context) return;
   interruptionScope = {
@@ -1930,7 +1941,7 @@ function installChatAgent(
     undoAgentTurn: (entry) => (shown() ? editor.undoAgentTurn(entry) : false),
     // 턴 표식의 주인(창·앱)과, 새로고침을 넘어 사는 창의 기본 허브 세션을 쓰는지(S3 부팅 정리).
     interruptionScope: () => interruptionScope,
-    ownsWindowSession: hubSession === null,
+    ownsWindowSession: claimBootReconcile(hubSession),
     turnRestore: {
       noteTurnStart: (threadId, key) => session.turnCheckpoints.noteTurnStart(threadId, key),
       rebindTurn: (threadId, fromKey, toKey) => session.turnCheckpoints.rebindTurn(threadId, fromKey, toKey),

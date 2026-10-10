@@ -165,6 +165,40 @@ export async function checkHiddenFailure(page, origin) {
   assert.equal(state.headerCount, null);
 }
 
+/**
+ * 숨은 채팅의 턴이 끝나며 대기 메시지를 이어 보냈는데 허브가 그 메시지를 받지 않았다 — 채팅은 붙잡힌
+ * 대기열과 함께 멈췄으니 레일과 알림이 오류로 알린다(그 턴 끝에는 아무것도 남기지 않았다).
+ */
+export async function checkHiddenRejectedFollowUp(page, origin) {
+  await openPreview(page, origin, 'parallel=1&scenario=chat&hold=1');
+  await page.click('#play');
+  await waitFor(page, () => window.sidebarPreview.chats[0].mock.snapshot().running, undefined, 'the first chat runs');
+  await page.focus('.ag-root .ag-input');
+  await page.type('.ag-root .ag-input', '끝나면 이것도 해 주세요');
+  await page.keyboard.press('Enter');
+  await waitFor(page, () => document.querySelectorAll('.ag-root .ag-followup').length === 1, undefined, 'the follow-up was queued');
+  const hidden = await page.evaluate(() => window.sidebarPreview.chats[0].sidebar.currentThreadId());
+  await page.click('.ag-root .ag-header .ag-threads-btn');
+  await waitFor(page, () => document.querySelector('.ag-root .ag-threads-new')?.checkVisibility(), undefined, 'the rail shows 새 채팅');
+  await page.click('.ag-root .ag-threads-new');
+  await waitFor(page, () => window.sidebarPreview.chats[1]?.sidebar.isActive(), undefined, 'a second chat opens beside it');
+  await showRail(page);
+  await page.evaluate(() => {
+    const { mock } = window.sidebarPreview.chats[0];
+    mock.rejectNextMessage('STALE_CHAT_SCOPE');
+    mock.finishTurn('completed');
+  });
+  await waitFor(page, (id) => {
+    const row = [...document.querySelectorAll('.ag-root .ag-threads-item')].find((item) => item.dataset.threadId === id);
+    return row?.querySelector('.ag-threads-item-when')?.dataset.status === 'failed';
+  }, hidden, 'the hidden chat whose queued message was refused does not read as failed');
+  const state = await attentionState(page);
+  assert.equal(rowOf(state, hidden).dot, 'failed');
+  assert.equal(state.badge, 1, 'it counts as needing attention');
+  assert.equal(await page.evaluate(() => window.sidebarPreview.chats[0].sidebar.root
+    .querySelector('.ag-followups')?.dataset.hold ?? null), 'rejected');
+}
+
 /** 숨은 채팅이 끝나면 초록 점(토스트 없음). 보던 채팅이 끝나면 점이 없다. */
 export async function checkFinished(page, origin) {
   await openPreview(page, origin, 'parallel=1&scenario=chat&hold=1');
@@ -379,6 +413,7 @@ export async function checkAttentionSetting(page, origin, artifacts) {
 export async function checkAttention(page, origin, artifacts) {
   await checkHiddenReview(page, origin, artifacts);
   await checkHiddenFailure(page, origin);
+  await checkHiddenRejectedFollowUp(page, origin);
   await checkFinished(page, origin);
   await checkBlockingStates(page, origin);
   await checkAttentionFilter(page, origin, artifacts);

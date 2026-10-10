@@ -15,6 +15,12 @@ export interface FollowUpStripView {
   sendBlockedTitle: string | null;
   /** 고치고 있는 항목. */
   editingId: string | null;
+  /**
+   * 계획이 지금 승인을 기다린다. 아니면(승인·실행·수정으로 넘어갔다) 'plan-approval' 붙잡음은 계획을
+   * 다듬는 동안 쓴 메시지라는 중립 문구로 보인다 — 저절로 풀지 않는다(계획에 대한 의견이었다).
+   * 주지 않으면 기다리는 것으로 본다.
+   */
+  planAwaitingApproval?: boolean;
 }
 
 export interface FollowUpStripOptions {
@@ -42,14 +48,20 @@ export interface FollowUpStrip {
   editingText(): string | null;
 }
 
-/** 붙잡힌 이유 문구. detail 이 있으면 앞에 붙인다. */
-export function followUpHoldCopy(hold: FollowUpHold): string {
+/**
+ * 붙잡힌 이유 문구. detail 이 있으면 앞에 붙인다. planAwaitingApproval 이 거짓이면 계획 승인 붙잡음은
+ * 더 기다리는 것이 없으므로 그 메시지가 언제 쓰였는지만 말한다.
+ */
+export function followUpHoldCopy(hold: FollowUpHold, opts: { planAwaitingApproval?: boolean } = {}): string {
   const prefix = hold.detail ? `${hold.detail} · ` : '';
   switch (hold.reason) {
     case 'stopped': return `${prefix}작업을 멈춰서 대기 메시지를 보내지 않았어요`;
     case 'failed': return `${prefix}작업이 오류로 끝나 대기 메시지를 보내지 않았어요`;
     case 'interrupted': return `${prefix}작업이 끊겨 대기 메시지를 보내지 않았어요`;
-    case 'plan-approval': return `${prefix}계획 승인을 기다리고 있어 대기 메시지를 보내지 않았어요`;
+    case 'plan-approval':
+      return opts.planAwaitingApproval === false
+        ? `${prefix}계획을 다듬는 동안 쓴 메시지라 저절로 보내지 않았어요`
+        : `${prefix}계획 승인을 기다리고 있어 대기 메시지를 보내지 않았어요`;
     case 'blocked': return `${prefix}병합 검토 중이라 대기 메시지를 보내지 않았어요`;
     case 'busy': return '에이전트가 다른 작업을 먼저 시작했어요. 끝나면 보낼게요';
     case 'rejected': return `${prefix}허브가 메시지를 받지 않았어요${hold.code ? ` (${hold.code})` : ''}`;
@@ -245,7 +257,7 @@ export function createFollowUpStrip(options: FollowUpStripOptions): FollowUpStri
     if (next.hold && next.items.length > 0) {
       holdLine.hidden = false;
       holdLine.dataset.reason = next.hold.reason;
-      setText(holdText, followUpHoldCopy(next.hold));
+      setText(holdText, followUpHoldCopy(next.hold, { planAwaitingApproval: next.planAwaitingApproval }));
       resume.disabled = next.readOnly || next.sendBlockedTitle !== null;
       resume.title = !next.readOnly && next.sendBlockedTitle ? next.sendBlockedTitle : '대기 메시지 보내기';
       root.dataset.hold = next.hold.reason;
