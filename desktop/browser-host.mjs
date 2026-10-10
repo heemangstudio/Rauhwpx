@@ -608,8 +608,8 @@ export class OwnedBrowserHost {
   async clearSession({ origins }) {
     if (!Array.isArray(origins) || !origins.length || origins.length > 32) throw new Error('Native session clearing requires approved exact HTTPS origins');
     const normalized = origins.map((origin) => { const url = new URL(origin); if (url.protocol !== 'https:' || url.origin !== origin || url.username || url.password) throw new Error('Native session clearing requires approved exact HTTPS origins'); return url.origin; });
+    for (const tab of this.tabs.values()) { tab.passwordSnapshot = null; tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1; }
     await this.session.clearData({ origins: normalized, dataTypes: ['cookies', 'localStorage', 'indexedDB', 'serviceWorkers', 'cache'] });
-    for (const tab of this.tabs.values()) tab.passwordSnapshot = null;
     return { clearedOrigins: normalized, clearedDomains: normalized.map((origin) => new URL(origin).hostname) };
   }
 

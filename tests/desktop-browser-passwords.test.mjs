@@ -249,6 +249,17 @@ test('native physical clicks convert CSS coordinates to DIP at the observed page
   assert.deepEqual(f.calls.filter((call) => call.type === 'mouseDown' || call.type === 'mouseUp').map(({ x, y }) => ({ x, y })), [{ x: 15, y: 15 }, { x: 15, y: 15 }]);
 });
 
+test('session clearing invalidates snapshots before asynchronous storage deletion', async (t) => {
+  const { vault } = await vaultFixture(t); const f = nativeFixture(vault); let finish;
+  f.passwords.run = () => new Promise((resolve) => { finish = resolve; });
+  const pending = f.passwords.snapshot(f.binding);
+  f.host.session = { clearData: async () => {} };
+  await OwnedBrowserHost.prototype.clearSession.call(f.host, { origins: ['https://fixture.invalid'] });
+  finish({ elements: [], text: '' });
+  await assert.rejects(pending, { code: 'BROWSER_PASSWORD_STALE_REFERENCE' });
+  assert.equal(f.tab.passwordSnapshot, null);
+});
+
 test('protected relay projects website-controlled network, dialog and target strings', async () => {
   const secret = 'fixture password ! ~'; const transformed = Buffer.from(secret).toString('hex');
   const debuggerApi = new EventEmitter(); debuggerApi.isAttached = () => false; debuggerApi.attach = () => {};

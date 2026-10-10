@@ -93,22 +93,26 @@ try {
   report.stage = 'filled';
   assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("secret").value'), secret);
   report.nativeFill = true;
-  await tab.view.webContents.executeJavaScript('document.getElementById("secret").value=""; document.getElementById("submit").focus()');
-  const focused = new Promise((resolve) => { autocompleteShown = resolve; });
-  const point = await tab.view.webContents.executeJavaScript('(()=>{const r=document.getElementById("secret").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()');
-  tab.view.webContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
-  tab.view.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
-  await Promise.race([focused, new Promise((_, reject) => setTimeout(() => reject(new Error('Physical focus did not show native autocomplete')), 3000))]);
-  assert.equal(observed.tab.controller.owner, 'agent');
-  assert.equal(autocompleteChoices.length, 1);
-  assert.equal(autocompleteChoices[0].label, 'fixture-user');
-  autocompleteChoices[0].click();
-  const autocompleteDeadline = Date.now() + 3000;
-  while (await tab.view.webContents.executeJavaScript('document.getElementById("secret").value') !== secret) {
-    if (Date.now() >= autocompleteDeadline) throw new Error('Native autocomplete did not fill the focused form');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  report.humanAutocomplete = true;
+  const focusActivity = { targetId: tab.targetId, tabId, sessionId: tab.sessionId, chatId: tab.chatId, generation: host.generation, token: randomUUID() };
+  await host.activity({ ...focusActivity, active: true });
+  try {
+    await tab.view.webContents.executeJavaScript('document.getElementById("secret").value=""; document.getElementById("submit").focus()');
+    const focused = new Promise((resolve) => { autocompleteShown = resolve; });
+    const point = await tab.view.webContents.executeJavaScript('(()=>{const r=document.getElementById("secret").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()');
+    tab.view.webContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+    tab.view.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
+    await Promise.race([focused, new Promise((_, reject) => setTimeout(() => reject(new Error('Physical focus did not show native autocomplete')), 3000))]);
+    assert.equal(observed.tab.controller.owner, 'agent');
+    assert.equal(autocompleteChoices.length, 1);
+    assert.equal(autocompleteChoices[0].label, 'fixture-user');
+    autocompleteChoices[0].click();
+    const autocompleteDeadline = Date.now() + 3000;
+    while (await tab.view.webContents.executeJavaScript('document.getElementById("secret").value') !== secret) {
+      if (Date.now() >= autocompleteDeadline) throw new Error('Native autocomplete did not fill the focused form');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    report.humanAutocomplete = true;
+  } finally { await host.activity({ ...focusActivity, active: false }); }
   const cdpSession = tab.cdpSessionId;
   await assert.rejects(host.cdp.command({ method: 'Runtime.evaluate', sessionId: cdpSession, params: { expression: 'btoa(document.getElementById("secret").value)' } }), /protect this page/);
   await assert.rejects(host.cdp.command({ method: 'Page.captureScreenshot', sessionId: cdpSession }), /protect this page/);
