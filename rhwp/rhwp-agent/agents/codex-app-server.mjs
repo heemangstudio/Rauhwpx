@@ -26,6 +26,7 @@ import {
 } from '../process-tree.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
 import { tapProviderProcess } from '../provider-transcript.mjs';
+import { codexResetAtFromSnapshot, readCodexErrorInfo } from '../provider-failure.mjs';
 
 const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 const DEFAULT_MODE_FEATURE = 'default_mode_request_user_input';
@@ -408,6 +409,14 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   /** @type {import('./backend.mjs').AgentSession | null} */
   let fallback = null;
   let stderrTail = '';
+  /**
+   * 이번 턴에 재시도 없이 보고된 마지막 오류 (v2 error 알림). turn/completed 의 TurnError 에
+   * codexErrorInfo 가 빠졌거나 연결이 끊긴 경우의 실패 사유로 쓴다.
+   * @type {{ message: string, codexErrorInfo: unknown } | null}
+   */
+  let lastTurnError = null;
+  /** account/rateLimits/updated 의 마지막 스냅샷 — 사용 한도 실패의 리셋 시각을 꺼낸다. */
+  let latestRateLimits = null;
   /** @type {import('./backend.mjs').UsageTokens | null} */
   let pendingUsage = null;
   /** @type {import('./backend.mjs').UsageTokens | null} */
@@ -422,6 +431,19 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
 
   function safeMessage(error, max = 1200) {
     return truncate(redactDiagnosticText(error?.message ?? error, [opts.token]), max);
+  }
+
+  /** codexErrorInfo 를 허브 분류기가 읽는 단서로 옮긴다. 사용 한도면 다 쓴 창의 리셋 시각을 싣는다. */
+  function codexFailureHint(codexErrorInfo) {
+    const info = readCodexErrorInfo(codexErrorInfo);
+    if (!info) return { source: 'codex' };
+    const resetAt = info.code === 'usageLimitExceeded' ? codexResetAtFromSnapshot(latestRateLimits) : null;
+    return {
+      source: 'codex',
+      code: info.code,
+      ...(info.httpStatus ? { httpStatus: info.httpStatus } : {}),
+      ...(resetAt ? { resetAt } : {}),
+    };
   }
 
   function finalizeRolloutWatcher() {
@@ -485,6 +507,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     starting = false;
     turnOpen = true;
     threadHasTurns = true;
+    lastTurnError = null;
     onEvent({ type: 'turn-start', agent: 'codex' });
     const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
     rolloutWatcher = createRolloutWatcher?.({
@@ -505,8 +528,12 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     settlingTurnId = completedTurnId;
     const status = String(params.turn?.status ?? 'completed');
     const usage = pendingUsage;
+    const turnError = params.turn?.error ?? null;
     const failureMessage = status === 'failed'
-      ? String(params.turn?.error?.message ?? 'Codex turn failed')
+      ? String(turnError?.message ?? lastTurnError?.message ?? 'Codex turn failed')
+      : null;
+    const failure = failureMessage
+      ? codexFailureHint(turnError?.codexErrorInfo ?? lastTurnError?.codexErrorInfo)
       : null;
     abortQuestions(Object.assign(new Error('Codex turn completed'), { code: 'REQUEST_INVALIDATED' }));
     // The app-server owns the MCP stdio child. A protocol terminal frame does
@@ -526,8 +553,9 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       onEvent({ type: 'error', agent: 'codex', message });
       endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: message });
     } else if (failureMessage) {
-      onEvent({ type: 'error', agent: 'codex', message: failureMessage });
-      endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: failureMessage });
+      // 같은 문구를 error 알림으로 이미 보냈다면 한 번 더 보내지 않는다.
+      if (lastTurnError?.message !== failureMessage) onEvent({ type: 'error', agent: 'codex', message: failureMessage, failure });
+      endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: failureMessage, failure });
     } else {
       endTurn({
         type: 'turn-end', agent: 'codex',
@@ -599,9 +627,19 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       void settleCompletedTurn(connection, frameGeneration, params);
       return;
     }
-    if (method === 'error' && params.message
-      && (!params.turnId || notificationMatchesActiveTurn(params))) {
-      onEvent({ type: 'error', agent: 'codex', message: String(params.message) });
+    if (method === 'account/rateLimits/updated') {
+      if (params.rateLimits && typeof params.rateLimits === 'object') latestRateLimits = params.rateLimits;
+      return;
+    }
+    if (method === 'error' && (!params.turnId || notificationMatchesActiveTurn(params))) {
+      // v2 는 { error: { message, codexErrorInfo }, willRetry } 로 감싸 보낸다. 예전 평평한 모양도 받는다.
+      // 서버가 스스로 다시 시도하는 오류는 지나가는 소음이다 — 턴이 결국 실패하면 turn/completed 가 말한다.
+      if (params.willRetry === true) return;
+      const err = params.error && typeof params.error === 'object' ? params.error : params;
+      if (!err.message) return;
+      const message = String(err.message);
+      if (turnOpen) lastTurnError = { message, codexErrorInfo: err.codexErrorInfo ?? null };
+      onEvent({ type: 'error', agent: 'codex', message, failure: codexFailureHint(err.codexErrorInfo) });
     }
   }
 
@@ -662,11 +700,15 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     }
     if (!expectedShutdown && turnOpen && !disposed && !fallback) {
       const clean = redactDiagnosticText(stderrTail, [opts.token]);
-      const message = clean.trim()
-        ? `Codex app-server disconnected.\n${truncate(clean.trim(), 1200)}`
-        : String(error?.message ?? 'Codex app-server disconnected');
-      onEvent({ type: 'error', agent: 'codex', message });
-      endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'exited' });
+      // 끊기기 전에 서버가 보고한 오류가 stderr 꼬리보다 정확한 이유다.
+      const message = lastTurnError
+        ? `Codex app-server disconnected.\n${truncate(redactDiagnosticText(lastTurnError.message, [opts.token]), 1200)}`
+        : clean.trim()
+          ? `Codex app-server disconnected.\n${truncate(clean.trim(), 1200)}`
+          : String(error?.message ?? 'Codex app-server disconnected');
+      const failure = { source: 'codex', code: 'process_exit' };
+      onEvent({ type: 'error', agent: 'codex', message, failure });
+      endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'exited', failure });
     }
   }
 

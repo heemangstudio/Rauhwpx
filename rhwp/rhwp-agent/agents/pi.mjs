@@ -348,6 +348,13 @@ export function createPiSession(opts, {
   let turnOpen = false;
   let turnCompleted = false;
   let turnFailureMessage = null;
+  /**
+   * 마지막 assistant 시도의 API 오류. Pi 는 실패한 시도마다 message_end 를 보낸 뒤에야 자동
+   * 재시도(auto_retry_*)나 압축 복구를 정한다 — 다음 시도가 정상으로 끝나면 지워지고, 턴이
+   * 정착할 때 남아 있으면 그때 실패로 확정한다.
+   * @type {string | null}
+   */
+  let lastAttemptError = null;
   let disposed = false;
   let stderrTail = '';
   let childExitPromise = Promise.resolve(true);
@@ -405,11 +412,16 @@ export function createPiSession(opts, {
             costUsd: usage.costUsd,
           });
         }
-        if (message.stopReason === 'error') {
-          // json 모드의 API 오류는 종료 코드 0 으로 끝난다. 이유는 여기에만 있다.
-          const detail = String(message.errorMessage ?? 'pi turn failed');
-          turnFailureMessage = formatOpenRouterCreditError(detail) ?? detail;
-          onEvent({ type: 'error', agent, message: turnFailureMessage });
+        // json 모드의 API 오류는 종료 코드 0 으로 끝난다. 이유는 여기에만 있다. 바로 실패로
+        // 보내지 않는다 — Pi 가 이 시도를 스스로 다시 할 수 있다.
+        lastAttemptError = message.stopReason === 'error'
+          ? String(message.errorMessage ?? 'pi turn failed')
+          : null;
+        return;
+      }
+      if (type === 'auto_retry_end') {
+        if (e.success === false) {
+          lastAttemptError = typeof e.finalError === 'string' && e.finalError ? e.finalError : lastAttemptError;
         }
         return;
       }
@@ -464,6 +476,7 @@ export function createPiSession(opts, {
         turnOpen = true;
         turnCompleted = false;
         turnFailureMessage = null;
+        lastAttemptError = null;
         onEvent({
           type: 'error',
           agent,
@@ -488,6 +501,7 @@ export function createPiSession(opts, {
           turnOpen = true;
           turnCompleted = false;
           turnFailureMessage = null;
+          lastAttemptError = null;
           const message = 'Pi process tree cleanup could not be confirmed before the next turn';
           onEvent({ type: 'error', agent, message });
           endTurn({ type: 'turn-end', agent, stopReason: 'exited' });
@@ -498,6 +512,7 @@ export function createPiSession(opts, {
           turnOpen = true;
           turnCompleted = false;
           turnFailureMessage = null;
+          lastAttemptError = null;
           onEvent({
             type: 'error',
             agent,
@@ -510,11 +525,13 @@ export function createPiSession(opts, {
       turnOpen = true;
       turnCompleted = false;
       turnFailureMessage = null;
+      lastAttemptError = null;
       onEvent({ type: 'turn-start', agent });
 
       if (!opts.model) {
-        onEvent({ type: 'error', agent, message: 'Pi 모델이 선택되지 않았습니다.' });
-        endTurn({ type: 'turn-end', agent, stopReason: 'exited' });
+        const failure = { source: 'pi', code: 'PI_MODEL_MISSING' };
+        onEvent({ type: 'error', agent, message: 'Pi 모델이 선택되지 않았습니다.', failure });
+        endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
         return;
       }
 
@@ -542,8 +559,14 @@ export function createPiSession(opts, {
           secrets: [opts.token, opts.openRouterApiKey], cli: opts.providerCliVersion,
         });
       } catch (e) {
-        onEvent({ type: 'error', agent, message: `failed to start pi: ${e?.message ?? e}` });
-        endTurn({ type: 'turn-end', agent, stopReason: 'exited' });
+        const failure = { source: 'pi', code: e?.code === 'ENOENT' ? 'cli_missing' : 'process_exit' };
+        onEvent({
+          type: 'error',
+          agent,
+          message: `failed to start pi: ${redactDiagnosticText(e?.message ?? e, [opts.token, opts.openRouterApiKey])}`,
+          failure,
+        });
+        endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
         return;
       }
       child = proc;
@@ -607,15 +630,32 @@ export function createPiSession(opts, {
         else discardOutput();
         completedAtDrain = fromClose && turnCompleted;
         if (turnOpen && !disposed) {
+          turnFailureMessage ??= lastAttemptError;
           if (turnFailureMessage) {
-            endTurn({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: turnFailureMessage });
+            // 재시도로도 회복하지 못한 마지막 시도의 오류 — 한 번만 보낸다.
+            const detail = turnFailureMessage;
+            const credit = formatOpenRouterCreditError(detail);
+            const status = detail.match(/^\s*(\d{3})\b/);
+            const failure = {
+              source: 'pi',
+              ...(status ? { httpStatus: Number(status[1]) } : {}),
+              ...(credit ? { code: 'openrouter_credits' } : {}),
+            };
+            const message = credit ? `${credit}\n${detail}` : detail;
+            onEvent({ type: 'error', agent, message, failure });
+            endTurn({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: message, failure });
           } else if (!completedAtDrain && code !== 0) {
+            const failure = {
+              source: 'pi',
+              code: isOpenRouterCreditError(stderrTail) ? 'openrouter_credits' : 'process_exit',
+            };
             onEvent({
               type: 'error',
               agent,
               message: formatPiExitError(stderrTail, code, signal, opts.token),
+              failure,
             });
-            endTurn({ type: 'turn-end', agent, stopReason: 'exited' });
+            endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
           } else {
             endTurn({ type: 'turn-end', agent, stopReason: completedAtDrain ? 'completed' : 'exited' });
           }

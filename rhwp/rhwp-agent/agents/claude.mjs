@@ -511,6 +511,14 @@ export function createClaudeSession(opts, {
   // 이번 턴 result 들의 집계 — 정착 시 turn-end 에 실을 값.
   let lastStopReason;
   let resultErrorMessage;
+  // 실패 분류 단서 (provider-failure.mjs 가 해석한다). rate_limit_event 의 거절과
+  // 합성 API 오류 메시지의 error 코드, result 의 HTTP 상태를 턴 동안 모은다.
+  /** @type {{ resetAt: number | null, type: string | null } | null} */
+  let turnRateLimit = null;
+  /** @type {{ source: 'claude', code?: string, httpStatus?: number, terminalReason?: string } | null} */
+  let turnErrorHint = null;
+  /** 말풍선으로 그리지 않은 합성 API 오류 메시지의 본문 — result 가 오류를 싣지 않으면 이것이 이유다. */
+  let turnErrorText;
   // result 뒤에 이어지는 wake 재호출의 루트 텍스트는 별개 메시지다 — 문단을 띄운다.
   let needsWakeTextBreak = false;
   /** @type {ReturnType<typeof setTimeout> | null} */
@@ -544,6 +552,9 @@ export function createClaudeSession(opts, {
     tasksSeenThisTurn = 0;
     lastStopReason = undefined;
     resultErrorMessage = undefined;
+    turnRateLimit = null;
+    turnErrorHint = null;
+    turnErrorText = undefined;
     needsWakeTextBreak = false;
     workflowFingerprints.clear();
   }
@@ -562,14 +573,27 @@ export function createClaudeSession(opts, {
     onEvent(evt);
   }
 
+  /** 이번 턴에 모은 실패 단서. 거절된 사용 한도라면 리셋 시각을 함께 싣는다. */
+  function turnFailureHint() {
+    if (!turnErrorHint && resultErrorMessage === undefined) return null;
+    return {
+      source: 'claude',
+      ...(turnErrorHint ?? {}),
+      ...(turnRateLimit ? { rateLimitRejected: true } : {}),
+      ...(turnRateLimit?.resetAt ? { resetAt: turnRateLimit.resetAt } : {}),
+    };
+  }
+
   /** result 라인이 담아 온 정보로 턴을 닫는다 — 정착 판정을 거친 뒤에만 호출된다. */
   function settleTurn(source = null) {
     if (!turnOpen) return;
+    const failure = turnFailureHint();
     const event = {
       type: 'turn-end',
       agent: 'claude',
       stopReason: lastStopReason,
-      errorMessage: resultErrorMessage,
+      errorMessage: resultErrorMessage ?? turnErrorText,
+      ...(failure ? { failure } : {}),
     };
     if (!source) {
       const proc = child;
@@ -822,6 +846,19 @@ export function createClaudeSession(opts, {
       handleSystemEvent(e);
       return;
     }
+    if (e?.type === 'rate_limit_event') {
+      // 매 턴 오는 'allowed' 는 버린다. 'rejected' 는 이 턴의 rate_limit 오류가 구독
+      // 한도 소진이라는 뜻이고, resetsAt(epoch 초)이 다시 쓸 수 있는 시각이다.
+      const info = e.rate_limit_info;
+      if (info?.status === 'rejected') {
+        const resetsAt = Number(info.resetsAt);
+        turnRateLimit = {
+          resetAt: Number.isFinite(resetsAt) && resetsAt > 0 ? resetsAt * 1000 : null,
+          type: typeof info.rateLimitType === 'string' ? info.rateLimitType : null,
+        };
+      }
+      return;
+    }
     if (e?.type === 'stream_event') {
       const ev = e.event;
       if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
@@ -847,6 +884,15 @@ export function createClaudeSession(opts, {
       const alreadyStreamed = parentToolUseId
         ? streamedSubagents.has(parentToolUseId)
         : sawRootTextDelta;
+      // API 오류는 합성 assistant 메시지로 온다 (error 필드). 그 본문은 답이 아니라 오류
+      // 문구다 — 말풍선으로 그리지 않고 turn-end 의 실패로만 남긴다. max_output_tokens 는
+      // 실제 내용이 담긴 정상 메시지다. 이미 스트리밍된 텍스트는 화면에 있으니 그대로 둔다.
+      const apiError = !parentToolUseId && typeof e.error === 'string' && e.error && e.error !== 'max_output_tokens';
+      if (apiError) {
+        turnErrorHint = { ...(turnErrorHint ?? {}), source: 'claude', code: e.error };
+        const text = blocks.filter((block) => block?.type === 'text' && block.text).map((block) => block.text).join('\n');
+        if (text) turnErrorText = text;
+      }
       for (const block of blocks) {
         if (block?.type === 'tool_use') {
           onEvent({
@@ -860,7 +906,7 @@ export function createClaudeSession(opts, {
         } else if (block?.type === 'text') {
           // Subagent assistant messages carry parent_tool_use_id. Deduplicate
           // them independently so a root text delta never suppresses child text.
-          if (!alreadyStreamed && block.text) {
+          if (!alreadyStreamed && !apiError && block.text) {
             onEvent({
               type: 'text-delta', agent: 'claude',
               text: parentToolUseId ? block.text : rootTextWithWakeBreak(block.text),
@@ -909,7 +955,16 @@ export function createClaudeSession(opts, {
       lastStopReason = e.stop_reason ?? e.subtype;
       // result 자체의 실패는 턴 실패다 — studio 가 스테이징 편집을 커밋하지 않고
       // 검토로 남기도록 turn-end 에 실린다.
-      if (e.is_error) resultErrorMessage = String(e.result);
+      if (e.is_error) {
+        resultErrorMessage = String(e.result);
+        const httpStatus = Number(e.api_error_status);
+        turnErrorHint = {
+          ...(turnErrorHint ?? {}),
+          source: 'claude',
+          ...(Number.isInteger(httpStatus) && httpStatus > 0 ? { httpStatus } : {}),
+          ...(typeof e.terminal_reason === 'string' ? { terminalReason: e.terminal_reason } : {}),
+        };
+      }
       // 이 result 뒤에 wake 재호출이 이어질 수 있다 — 그 텍스트는 별개 문단이다.
       needsWakeTextBreak = true;
       if (pendingTasks.size > 0) return; // 백그라운드 fleet 진행 중 — 턴 유지.
@@ -970,8 +1025,9 @@ export function createClaudeSession(opts, {
 
   function failSdkTurn(owner, error) {
     if (owner !== sdkOwner || !owner.active || !turnOpen || disposed) return;
-    const message = `claude SDK error: ${error?.message ?? error}`;
-    onEvent({ type: 'error', agent: 'claude', message });
+    const message = `claude SDK error: ${redactDiagnosticText(error?.message ?? error, [opts.token])}`;
+    const failure = { source: 'claude', code: 'process_exit' };
+    onEvent({ type: 'error', agent: 'claude', message, failure });
     void closeSdkQuery(owner).then((cleaned) => {
       if (disposed || !turnOpen) return;
       if (!cleaned) {
@@ -985,6 +1041,7 @@ export function createClaudeSession(opts, {
         type: 'turn-end',
         agent: 'claude',
         stopReason: cleaned ? 'exited' : 'failed',
+        failure,
       });
     });
   }
@@ -1080,8 +1137,14 @@ export function createClaudeSession(opts, {
             try {
               dispatchLegacy(pendingPrompt);
             } catch (fallbackError) {
-              onEvent({ type: 'error', agent: 'claude', message: `failed to dispatch message: ${fallbackError?.message ?? fallbackError}` });
-              endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'exited' });
+              const failure = { source: 'claude', code: 'process_exit' };
+              onEvent({
+                type: 'error',
+                agent: 'claude',
+                message: `failed to dispatch message: ${redactDiagnosticText(fallbackError?.message ?? fallbackError, [opts.token])}`,
+                failure,
+              });
+              endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'exited', failure });
             }
           });
           return;
@@ -1178,6 +1241,7 @@ export function createClaudeSession(opts, {
     let outputEnded = false;
     let readerEnded = false;
     let spawnErrorMessage = null;
+    let spawnCliMissing = false;
     /** @type {{ code: number|null, signal: NodeJS.Signals|null } | null} */
     let exitInfo = null;
     /** @type {ReturnType<typeof setTimeout> | null} */
@@ -1233,13 +1297,15 @@ export function createClaudeSession(opts, {
       else discardOutput();
       lifecycleState.completedAtDrain = !turnOpen && hasCompletedTurn;
       if (turnOpen && !disposed) {
+        const failure = { source: 'claude', code: spawnCliMissing ? 'cli_missing' : 'process_exit' };
         onEvent({
           type: 'error',
           agent: 'claude',
           message: spawnErrorMessage
             ?? formatClaudeExitError(stderrTail, code, signal, opts.token),
+          failure,
         });
-        endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'exited' });
+        endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'exited', failure });
       }
     };
     const scheduleCloseGrace = (code, signal) => {
@@ -1268,6 +1334,7 @@ export function createClaudeSession(opts, {
       discardOutputReader();
       const safeError = redactDiagnosticText(err?.message ?? err, [opts.token]);
       spawnErrorMessage = `claude process error: ${safeError}`;
+      spawnCliMissing = err?.code === 'ENOENT';
       process.stderr.write(`[claude] spawn error: ${safeError}\n`);
       void stopChildProcess(proc, true, false);
       scheduleCloseGrace(proc.exitCode ?? null, proc.signalCode ?? null);
@@ -1364,8 +1431,14 @@ export function createClaudeSession(opts, {
           failure = fallbackError;
         }
       }
-      onEvent({ type: 'error', agent: 'claude', message: `failed to dispatch message: ${failure?.message ?? failure}` });
-      endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'exited' });
+      const hint = { source: 'claude', code: failure?.code === 'ENOENT' ? 'cli_missing' : 'process_exit' };
+      onEvent({
+        type: 'error',
+        agent: 'claude',
+        message: `failed to dispatch message: ${redactDiagnosticText(failure?.message ?? failure, [opts.token])}`,
+        failure: hint,
+      });
+      endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'exited', failure: hint });
     }
   }
 

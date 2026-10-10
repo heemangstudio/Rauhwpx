@@ -13,6 +13,8 @@ const ANSI_ESCAPE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 const SECRET_ASSIGNMENT = /((?:["']?(?:access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|cookie|password|secret|token|oauth[_-]?code|authorization[_-]?code|user[_-]?code|code[_-]?verifier|state)["']?)\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi;
 const AUTH_HEADER = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 const KEY_SHAPED_SECRET = /\b(?:sk|pk)-[A-Za-z0-9_-]{12,}/g;
+/** JWT 모양의 액세스 토큰 (Codex OAuth 등): header.payload.signature. */
+const JWT_SHAPED_SECRET = /\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g;
 const URL_USERINFO = /(https?:\/\/)[^/\s:@]+:[^@\s/]+@/gi;
 const URL_SECRET_PARAM = /([?&#](?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|oauth[_-]?code|authorization[_-]?code|user[_-]?code|code|state|token)=)[^&#\s]+/gi;
 
@@ -28,6 +30,7 @@ export function redactDiagnosticText(value, secrets = []) {
     .replace(URL_SECRET_PARAM, '$1[redacted]')
     .replace(AUTH_HEADER, '$1 [redacted]')
     .replace(KEY_SHAPED_SECRET, '[redacted]')
+    .replace(JWT_SHAPED_SECRET, '[redacted]')
     .replace(SECRET_ASSIGNMENT, '$1[redacted]');
 }
 
@@ -50,9 +53,22 @@ export function redactDiagnosticText(value, secrets = []) {
  *   | { type: 'task-progress';agent: AgentName; taskId: string; activity?: string; lastTool?: string; usage?: TaskUsage; phases?: TaskPhase[]; members?: TaskMember[]; phaseIndex?: number }
  *   | { type: 'task-end';     agent: AgentName; taskId: string; status: 'completed'|'failed'|'stopped'; summary?: string; usage?: TaskUsage }
  *   | { type: 'usage';        agent: AgentName; model: string|null; usage: UsageTokens; costUsd?: number }
- *   | { type: 'turn-end';     agent: AgentName; stopReason?: string; errorMessage?: string }
- *   | { type: 'error';        agent: AgentName; message: string }
+ *   | { type: 'turn-end';     agent: AgentName; stopReason?: string; errorMessage?: string; failure?: ProviderFailureHint }
+ *   | { type: 'error';        agent: AgentName; message: string; failure?: ProviderFailureHint }
  * )} UnifiedAgentEvent
+ *
+ * failure: 어댑터가 붙이는 해석 전 단서. 허브(makeBackendEventHandler)는 Studio 로 보내기 전에
+ * 이것을 provider-failure.mjs 의 분류 결과(ProviderFailure: class·가린 message·code·retryable·
+ * resetAt)로 바꿔 끼운다 — 같은 키지만 단서 모양은 Studio 에 닿지 않는다.
+ *
+ * @typedef {Object} ProviderFailureHint
+ * @property {'claude'|'codex'|'pi'|'hub'} source
+ * @property {string} [code] 프로바이더의 구조화된 오류 코드, 또는 공통 코드
+ *   ('process_exit' | 'cli_missing' | 'cleanup_uncertain' | 'openrouter_credits' | 'PI_MODEL_MISSING')
+ * @property {number} [httpStatus]
+ * @property {number} [resetAt] epoch ms — 프로바이더가 구조화해 알려 준 한도 리셋 시각
+ * @property {string} [terminalReason] Claude result.terminal_reason
+ * @property {boolean} [rateLimitRejected] Claude: 이 턴에 rate_limit_event status 'rejected' 가 왔다
  *
  * @typedef {Object} TaskUsage
  * @property {number} [totalTokens]

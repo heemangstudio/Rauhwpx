@@ -240,7 +240,7 @@ const SINGLE_TURN_FIXTURES = [
   ['pi/text-turn', { stopReason: 'completed' }],
   ['pi/credits-402', { failed: true }],
   ['pi/auth-401', { failed: true }],
-  ['pi/retry-then-success', {}],
+  ['pi/retry-then-success', { stopReason: 'completed' }],
   ['pi/crash-mid-turn', { stopReason: 'exited' }],
   ['claude/auth-failure', { failed: true }],
   ['claude/usage-limit', { failed: true }],
