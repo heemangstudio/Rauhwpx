@@ -16,6 +16,7 @@ import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './p
 import { checkWriterBusyPreview } from './writer-busy.check.mjs';
 import { checkTypingGuard } from './typing-guard.check.mjs';
 import { checkDelayedStatus } from './delayed-status.check.mjs';
+import { checkRestoreTurnPreview } from './restore-turn.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -1015,6 +1016,8 @@ try {
     () => checkWriterBusyPreview(page, origin, artifacts));
   await step('Arriving questions wait while the user types', () => checkTypingGuard(page, origin, artifacts));
   await step('Transient statuses wait 400 ms and never blink', () => checkDelayedStatus(page, origin, artifacts));
+  await step('A request\'s accepted changes can be restored from its bubble, with confirmation and refusals',
+    () => checkRestoreTurnPreview(page, origin, artifacts));
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

@@ -12,6 +12,7 @@ import { completeInitialSetup } from '../ui/initial-setup/state.ts';
 import { listThreads, getThread, waitForThreadsPersistence } from '../agent/threads.ts';
 import { markChatFinished, markChatWorking } from '../agent/chat-status.ts';
 import type { LibraryMoveResult } from '../library/move-to-document.ts';
+import type { TurnRestoreControl, TurnRestoreResult, TurnRestoreStatus } from '../agent/turn-checkpoints.ts';
 import {
   SAMPLE_FINISHED_CHAT_ID,
   SAMPLE_WORKING_CHAT_ID,
@@ -37,7 +38,57 @@ const report = (message: string) => {
 };
 const undoState = { entry: null as object | null, calls: 0 };
 const navigation = { calls: [] as Array<{ sectionIndex: number; paragraphIndex: number; charOffset: number }> };
-const mock = createMockBridge(report, () => { undoState.entry = {}; });
+/*
+ * "이 작업 전으로 되돌리기" fixture. The request whose turn produced an approved change becomes
+ * restorable. `restore=later` reports edits after it (the confirm sheet), `restore=evicted` a
+ * checkpoint that is gone (the refusal toast). A restore only counts calls; the document is a sample.
+ */
+const restoreMode = params.get('restore');
+const restoreState = {
+  calls: 0,
+  turnKey: null as string | null,
+  ready: new Set<string>(),
+  restored: new Set<string>(),
+};
+const restoreListeners = new Set<() => void>();
+const notifyRestore = () => { for (const listener of [...restoreListeners]) listener(); };
+function restoreStatus(key: string): TurnRestoreStatus {
+  if (!restoreState.ready.has(key)) return { kind: 'none' };
+  if (restoreMode === 'evicted') return { kind: 'blocked', reason: 'evicted' };
+  const restored = restoreState.restored.has(key);
+  return { kind: 'ready', laterEdits: restoreMode === 'later' && !restored, alreadyRestored: restored };
+}
+function checkRestore(key: string): TurnRestoreResult {
+  const status = restoreStatus(key);
+  if (status.kind === 'blocked') return { ok: false, reason: status.reason };
+  if (mock.bridge.isTurnRunning()) return { ok: false, reason: 'running' };
+  return status.kind === 'ready' ? { ok: true } : { ok: false, reason: 'unavailable' };
+}
+const turnRestore: TurnRestoreControl = {
+  noteTurnStart: (_threadId, key) => { restoreState.turnKey = key; },
+  status: (_threadId, key) => restoreStatus(key),
+  check: (_threadId, key) => checkRestore(key),
+  restore: (_threadId, key) => {
+    const checked = checkRestore(key);
+    if (!checked.ok) return checked;
+    restoreState.calls += 1;
+    restoreState.restored.add(key);
+    eventBus.emit('document-changed');
+    notifyRestore();
+    return { ok: true };
+  },
+  subscribe: (listener) => {
+    restoreListeners.add(listener);
+    return () => { restoreListeners.delete(listener); };
+  },
+};
+const mock = createMockBridge(report, () => {
+  undoState.entry = {};
+  if (restoreState.turnKey) {
+    restoreState.ready.add(restoreState.turnKey);
+    notifyRestore();
+  }
+});
 if (params.get('services') === 'setup') mock.setServices(false);
 const eventBus = new EventBus();
 const versions = createMockVersions(report, params.get('history') === 'branches');
@@ -299,6 +350,7 @@ const sidebar = initAgentSidebar({
     eventBus.emit('history-jumped');
     return true;
   },
+  turnRestore,
   navigateToChange: (position) => { navigation.calls.push(position); },
   openClassicVersionControl: () =>
     report('Classic document history placeholder'),
@@ -473,7 +525,7 @@ async function openLockedParallelScene(): Promise<void> {
 if (parallel === 'locked') await openLockedParallelScene();
 
 // Typed hooks for browser checks and custom scenario scripts.
-const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, navigation, typingHold,
+const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold,
   sessions, attachSession, chats, showChat, openChatCalls,
   threadStore: { listThreads, getThread, waitForThreadsPersistence } };
 export type SidebarPreview = typeof preview;

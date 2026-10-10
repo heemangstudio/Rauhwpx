@@ -71,6 +71,8 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=fleet` | Tool activity and a subagent task |
 | `?scenario=error` | A failed turn |
 | `?scenario=writer-busy` | A write refused because another chat of the document is editing it |
+| `?scenario=review&restore=later` | After **변경 수락**, hovering the request shows **이 작업 전으로 되돌리기**; it asks before discarding later edits, then puts the request back into the empty composer |
+| `?scenario=review&restore=evicted` | The same action for a request whose checkpoint is gone: dimmed, and a click only explains why |
 | `?page=settings` | Production settings panel |
 | `?page=settings&fullscreen=1` | Settings inside the full-screen focus workspace |
 | `?page=versions` | Production version graph |
