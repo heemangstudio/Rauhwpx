@@ -2311,6 +2311,10 @@ function installDocumentHome(): void {
       }
     },
     onDrop: (event) => { void handleDocumentDrop(event, { fromHome: true }); },
+    openSettings: () => {
+      documentHome?.hide();
+      eventBus.emit('settings:open');
+    },
     toast: (message) => showToast({ message, durationMs: 3200 }),
   });
   // 앱을 켤 때는 카드에 초점 고리를 띄우지 않는다. 키보드는 홈 안에 둔다.

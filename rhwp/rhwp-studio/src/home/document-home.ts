@@ -30,6 +30,7 @@ import {
   type WorktreeData,
 } from './home-data.ts';
 import { releaseThumbnailWorker } from './thumbnail-render.ts';
+import { createIcon } from '../ui/agent-sidebar/icons.ts';
 
 export type HomeOpenResult = 'opened' | 'cancelled' | 'missing' | 'failed';
 
@@ -64,6 +65,8 @@ export interface DocumentHomeDeps {
   returnTarget(): HomeReturnTarget | null;
   /** 닫힐 때 열기 전 초점 자리가 사라졌으면 편집기나 입력기로 초점을 돌린다. */
   restoreFocus(): void;
+  /** 왼쪽 아래 톱니 단추. 홈을 닫고 설정을 연다. */
+  openSettings?(): void;
   onDrop?(event: DragEvent): void;
   toast(message: string): void;
 }
@@ -160,6 +163,16 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   // 앱을 켰을 때 키보드가 머무는 자리. 카드에 초점 고리를 띄우지 않는다.
   scroller.tabIndex = -1;
   root.append(topbar, scroller);
+
+  // 에이전트 집중 화면의 설정 행과 같은 자리에 글자 없이 톱니만 둔다.
+  if (deps.openSettings) {
+    const settings = button('dh-settings', '');
+    settings.setAttribute('aria-label', '설정');
+    settings.title = '설정';
+    settings.append(createIcon('gear'));
+    settings.addEventListener('click', () => deps.openSettings?.());
+    root.append(settings);
+  }
 
   // ── 새로 만들기 ─────────────────────────────────────────
   const start = el('section', 'dh-start');
