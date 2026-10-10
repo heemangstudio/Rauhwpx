@@ -56,7 +56,7 @@ import {
 import { PdfPrintDialog } from '@/ui/pdf-print-dialog';
 import { userSettings } from '@/core/user-settings';
 import { showToast } from '@/ui/toast';
-import { clearRecentDocs, listRecentDocs, removeRecentDoc } from '@/recent/recent-store';
+import { clearRecentDocs, listRecentDocs, removeRecentDoc, type RecentDoc } from '@/recent/recent-store';
 import { documentSourceDigest } from '@/recent/document-preflight';
 import { claimForRecentDoc } from '@/project-file/claim';
 import {
@@ -97,17 +97,27 @@ import {
  * 문서 열기를 요청하고 다 열릴 때까지 기다린다. 기다리지 않으면 호출부가 "아직 열리지 않음"을
  * 실패로 보고 되돌린 사이에 열기가 끝나, 엉뚱한 문서 세션에 문서가 들어간다.
  */
+interface OpenBytesOutcome { ok: boolean; cancelled: boolean }
+
 function openDocumentBytesAndWait(
   services: CommandServices,
   payload: Record<string, unknown>,
 ): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+  return openDocumentBytesWithOutcome(services, payload).then((outcome) => outcome.ok);
+}
+
+/** 열기 결과. 사용자가 취소했는지(cancelled)와 문서를 읽지 못했는지를 가른다. */
+function openDocumentBytesWithOutcome(
+  services: CommandServices,
+  payload: Record<string, unknown>,
+): Promise<OpenBytesOutcome> {
+  return new Promise<OpenBytesOutcome>((resolve) => {
     const requestId = `open-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const off = services.eventBus.on('open-document-bytes:done', (done) => {
-      const result = done as { requestId?: string; ok?: boolean } | undefined;
+      const result = done as { requestId?: string; ok?: boolean; cancelled?: boolean } | undefined;
       if (result?.requestId !== requestId) return;
       off();
-      resolve(result.ok === true);
+      resolve({ ok: result.ok === true, cancelled: result.cancelled === true });
     });
     services.eventBus.emit('open-document-bytes', { ...payload, requestId });
   });
@@ -737,19 +747,22 @@ function projectFileLookupDeps(
 function projectFileDeps(
   services: CommandServices,
   claim: ProjectFileClaim,
-  { skipUnsavedGuard = false } = {},
+  { skipUnsavedGuard = false, onLoaded }: {
+    skipUnsavedGuard?: boolean;
+    onLoaded?: (outcome: OpenBytesOutcome) => void;
+  } = {},
 ): ProjectFileDeps {
   return {
     ...projectFileLookupDeps(claim),
     // 문서가 다 열린 뒤에 돌아온다. 호출부가 결과 문서를 바로 다룰 수 있어야 한다.
     loadBound: async (bytes, name, handle, documentId) => {
-      await openDocumentBytesAndWait(services, {
+      onLoaded?.(await openDocumentBytesWithOutcome(services, {
         bytes,
         fileName: name,
         fileHandle: handle,
         ...(skipUnsavedGuard ? { skipUnsavedGuard: true } : {}),
         grant: { kind: 'verified', documentId },
-      });
+      }));
     },
     pickForProject: async (displayName) => {
       const desktop = await pickDesktopNativeProjectFile({
@@ -770,6 +783,32 @@ function projectFileDeps(
     forgetRecent: removeRecentDoc,
     toast: (message, durationMs) => showToast({ message, durationMs }),
   };
+}
+
+export type RecentOpenResult = 'opened' | 'cancelled' | 'missing' | 'failed';
+
+/**
+ * 최근 문서 하나를 연다(문서 홈). 파일 메뉴의 "최근 문서"와 같은 경로를 쓰고, 결과를 돌려준다.
+ * failed 는 파일을 찾았지만 문서로 읽지 못했을 때다(손상·지원하지 않는 형식).
+ */
+export async function openRecentDocument(services: CommandServices, entry: RecentDoc): Promise<RecentOpenResult> {
+  const claim = claimForRecentDoc(entry);
+  let loaded: OpenBytesOutcome | null = null;
+  const outcome = await openProjectFile(claim, projectFileDeps(services, claim, {
+    onLoaded: (result) => { loaded = result; },
+  }));
+  switch (outcome.kind) {
+    case 'opened': {
+      const result = loaded as OpenBytesOutcome | null;
+      if (!result || result.ok) return 'opened';
+      return result.cancelled ? 'cancelled' : 'failed';
+    }
+    case 'not-found':
+    case 'untraceable':
+      return 'missing';
+    default:
+      return 'cancelled';
+  }
 }
 
 /** 자동 저장본을 복구할 때 원본 파일을 찾는다. 파일 선택 창은 띄우지 않고 최근 목록도 바꾸지 않는다. */

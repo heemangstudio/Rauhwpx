@@ -931,6 +931,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       emit({ type: 'chat-template-changed', template: activeTemplate });
     },
     getActiveTemplate: () => activeTemplate,
+    // 미리보기에는 템플릿 원본이 없다. 문서 홈은 종이 자리표시를 그린다.
+    fetchTemplateContent: async () => { throw new Error('미리보기에는 템플릿 원본이 없습니다.'); },
     stageReference: async (scopeId, file) => {
       const reference: T.StagedReference = {
         id: crypto.randomUUID(),

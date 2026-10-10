@@ -232,6 +232,8 @@ export interface AgentSidebarDeps {
   ) => Promise<LibraryMoveResult>;
   /** 문서 열기의 "새 문서"·"파일 열기…" — 편집기의 같은 명령을 부른다. */
   createDocument?: () => void;
+  /** 문서 홈을 연다. focus 는 에이전트 전체 화면의 작업 막대 아래를 덮는다. */
+  openDocumentHome?: (surface: 'editor' | 'focus') => void;
   openDocumentFile?: () => void;
   /** 문서 열기가 보여 줄 최근 문서. */
   listRecentDocuments?: () => Promise<Array<{
@@ -684,6 +686,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     moveToLibraryDocument,
     createDocument,
     openDocumentFile,
+    openDocumentHome,
     listRecentDocuments,
     versionController,
     openClassicVersionControl,
@@ -1757,8 +1760,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     e.stopPropagation();
     openConfiguredVersionControl();
   });
+  // 문서 홈 — 열어 본 문서와 새 문서 만들기. 버전 단추 바로 앞에 둔다.
+  const homeBtn = el('button', 'ag-header-icon-btn ag-home-btn');
+  homeBtn.type = 'button';
+  homeBtn.setAttribute('aria-label', '문서 홈');
+  homeBtn.title = '문서 홈';
+  homeBtn.appendChild(createIcon('home'));
+  homeBtn.hidden = !openDocumentHome;
+  homeBtn.setAttribute('aria-pressed', String(document.documentElement.classList.contains('document-home-open')));
+  homeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openDocumentHome?.('editor');
+  });
   // pane 액션은 문서 맥락 주변의 고정된 헤더 위치를 유지한다.
-  headerActions.append(connDot, takeoverBtn, agentUndoBtn, versionsBtn, threadsBtn, settingsBtn);
+  headerActions.append(connDot, takeoverBtn, agentUndoBtn, homeBtn, versionsBtn, threadsBtn, settingsBtn);
 
   selectors.append(providerWrap, llmWrap, effortWrap);
   const modelSummary = el('div', 'ag-model-summary');
@@ -2052,7 +2067,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const workspaceDocumentName = el('span', 'ag-workspace-document-name', '문서 없음');
   const workspaceDocumentWorktree = createWorktreeChip();
   workspaceDocumentContext.append(workspaceChatTitle, workspaceTitleSeparator, workspaceDocumentName, workspaceDocumentWorktree);
-  workspaceLeading.append(workspaceSettingsBack, workspaceThreadsBtn, workspaceBrand);
+  const workspaceHomeBtn = el('button', 'ag-workspace-icon-btn ag-workspace-home-btn');
+  workspaceHomeBtn.type = 'button';
+  workspaceHomeBtn.setAttribute('aria-label', '문서 홈');
+  workspaceHomeBtn.title = '문서 홈';
+  workspaceHomeBtn.appendChild(createIcon('home'));
+  workspaceHomeBtn.hidden = !openDocumentHome;
+  workspaceHomeBtn.setAttribute('aria-pressed', String(document.documentElement.classList.contains('document-home-open')));
+  workspaceHomeBtn.addEventListener('click', () => openDocumentHome?.('focus'));
+  workspaceLeading.append(workspaceSettingsBack, workspaceThreadsBtn, workspaceHomeBtn, workspaceBrand);
 
   function updateWorkspaceChatTitle(): void {
     if (isRenaming(workspaceChatTitle)) return;

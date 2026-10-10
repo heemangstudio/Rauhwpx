@@ -23,7 +23,7 @@ function assertBefore(contents: string, first: string, second: string): void {
 }
 
 test('all file insertion and assignment paths guard encoded dimensions before Image decode', () => {
-  const mainDrop = between(source('main.ts'), '    if (isImage) {', '    // HWP/HWPX/HML/RHWPX');
+  const mainDrop = between(source('main.ts'), '\n  if (isImage) {', '\n  // HWP/HWPX/HML/RHWPX');
   assertBefore(mainDrop, 'assertEncodedImageDecodeDimensions(data', 'new Image()');
 
   const assignment = between(

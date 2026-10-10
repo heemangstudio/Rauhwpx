@@ -552,7 +552,7 @@ body.window-inactive :is(
   .ag-question-option[data-selected='true'] .ag-question-option-number,
   .ag-skill-toggle[aria-pressed='true'], .ag-settings-toggle-input:checked + .ag-settings-toggle-track,
   .dialog-btn-primary, .dialog-btn-group button.active, .goto-bookmark-item.selected,
-  .form-combo-dropdown .form-combo-item.selected, .rhwp-setup-primary, #document-open-action
+  .form-combo-dropdown .form-combo-item.selected, .rhwp-setup-primary, .dh-action-primary
 ) {
   border-color: transparent;
   background-color: var(--n-inactive-fill);

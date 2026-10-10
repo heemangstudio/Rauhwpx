@@ -745,14 +745,17 @@ export class WasmBridge {
     return this.doc != null;
   }
 
-  createNewDocument(): DocumentInfo {
+  /** source 가 있으면 그 문서(템플릿)를 내용으로 하는 이름 없는 새 문서를 만든다. */
+  createNewDocument(source?: Uint8Array): DocumentInfo {
     // Studio saves new documents as HWPX. Convert the bundled HWP template
     // before editing so table margins cannot change on the first HWPX reopen.
     // Keep the core's native HWP constructor unchanged for HWP consumers.
-    const template = HwpDocument.createEmpty();
+    const template = source
+      ? HwpDocument.fromBytesWithFontMetrics(source, DEFAULT_FONT_METRICS_POLICY)
+      : HwpDocument.createEmpty();
     let bytes: Uint8Array;
     try {
-      template.createBlankDocument();
+      if (!source) template.createBlankDocument();
       bytes = template.exportHwpx();
     } finally {
       template.free();

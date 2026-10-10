@@ -18,7 +18,7 @@ runTest('전역 및 데스크톱 편집 단축키', async ({ page }) => {
   await press(page, 'Alt', 'n');
   await page.waitForFunction(() => window.__wasm.pageCount > 0);
   // 문서 초기화는 글꼴 연결(허브가 없으면 최대 4초)을 기다린 뒤 끝난다. 끝나기 전 입력은 버려진다.
-  await page.waitForFunction(() => document.getElementById('document-empty-state')?.hidden !== false, { timeout: 15000 });
+  await page.waitForFunction(() => document.getElementById('document-home')?.hidden !== false, { timeout: 15000 });
   await screenshot(page, 'global-02-new-doc');
   await page.evaluate(() => window.__inputHandler.focus());
   await typeText(page, 'shortcut text');
