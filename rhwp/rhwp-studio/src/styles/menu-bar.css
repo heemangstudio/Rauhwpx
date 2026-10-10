@@ -96,6 +96,13 @@ html.desktop-native-menu #menu-bar :is(button, input, select, textarea, a, [role
   -webkit-app-region: no-drag;
 }
 
+/* 가운데 파일 이름은 빈칸(::after) 위에 겹친다. Electron 은 끌기 영역을 문서 순서로 정하므로
+   뒤에 오는 빈칸이 이름의 no-drag 를 덮어 두 번 누르기가 창 확대로 간다. 막대 자체가 끌기
+   영역이므로 이 모드에서는 빈칸이 영역을 갖지 않게 한다. */
+html.desktop-native-menu #menu-bar::after {
+  -webkit-app-region: none;
+}
+
 html.desktop-native-menu body:is(.ag-fullscreen-open, .merge-resolver-open) #menu-bar {
   -webkit-app-region: no-drag;
 }
