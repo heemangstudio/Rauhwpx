@@ -218,7 +218,7 @@ test('plan approval is locked during transition and produces one implementation 
   );
 });
 
-test('mode changes are blocked during an active turn and entering 전체 requires confirmation', async (t) => {
+test('mode changes are blocked during an active turn and 전체 applies without a confirmation', async (t) => {
   const page = await open(t, 'scenario=chat');
   const chip = '.ag-mode-btn';
   const before = await page.$eval(chip, (b: HTMLButtonElement) => b.textContent);
@@ -242,12 +242,12 @@ test('mode changes are blocked during an active turn and entering 전체 require
   await page.click(chip);
   await page.waitForSelector('.ag-mode-item[data-mode="full"]', { visible: true });
   await page.click('.ag-mode-item[data-mode="full"]');
-  await page.waitForSelector(
-    '.ag-sheet-layer.ag-sheet-open .ag-sheet-confirm',
-    { visible: true },
+  await page.waitForFunction(
+    (selector: string) => document.querySelector(selector)?.textContent === '전체',
+    {},
+    chip,
   );
-  await page.keyboard.press('Escape');
-  assert.equal(await page.$eval(chip, (b: HTMLButtonElement) => b.textContent), before);
+  assert.equal(await page.$('.ag-sheet-layer.ag-sheet-open .ag-sheet-confirm'), null);
 });
 
 test('toolbar boundary inputs emit bounded formats and keyboard increments do not duplicate them', async (t) => {
