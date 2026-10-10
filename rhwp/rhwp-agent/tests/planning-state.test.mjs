@@ -253,10 +253,8 @@ test('permission and plan actions share the serialized workflow transition queue
     serverSource,
     /transitionOwner\.pendingTransitions \+= 1;[\s\S]*transition\.finally\(\(\) => \{[\s\S]*pendingTransitions - 1/,
   );
-  assert.match(
-    serverSource,
-    /case 'chat-user-message':[\s\S]*record\.agentSession\.pendingTransitions > 0[\s\S]*code: 'WORKFLOW_SWITCHING'/,
-  );
+  // 전환이 끝나기 전에 온 사용자 메시지가 WORKFLOW_SWITCHING 으로 거절되는 것은
+  // hub-user-message-receipt.test.mjs 가 실제 허브로 본다.
 });
 
 test('failed provider revision switch rolls back before emitting authoritative state', () => {

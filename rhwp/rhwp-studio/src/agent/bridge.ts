@@ -3023,6 +3023,8 @@ export class AgentBridgeImpl implements AgentBridge {
           type: 'hub-error',
           code: typeof msg.code === 'string' ? msg.code : 'RPC_ERROR',
           message: typeof msg.message === 'string' ? msg.message : 'Unknown hub error',
+          // 허브가 거절한 메시지를 사이드바가 집어낼 수 있게 receipt id 를 그대로 넘긴다.
+          ...(typeof msg.messageId === 'string' && msg.messageId ? { messageId: msg.messageId } : {}),
         });
         break;
       }

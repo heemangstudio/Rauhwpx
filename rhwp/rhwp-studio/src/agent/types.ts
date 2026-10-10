@@ -985,7 +985,8 @@ export type SidebarEvent =
       title: string | null;
     }
   | { type: 'agent'; event: AgentStreamEvent }
-  | { type: 'hub-error'; code: string; message: string };
+  /** messageId: 허브가 거절한 사용자 메시지의 receipt id(그 메시지에 messageId 가 있었을 때만). */
+  | { type: 'hub-error'; code: string; message: string; messageId?: string };
 
 /** 에이전트에게 보여 줄 사용자 커서·선택 (InputHandler.getUserSelectionContext 와 같은 모양). */
 export interface AgentUserSelectionContext {

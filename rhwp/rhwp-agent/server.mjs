@@ -2488,14 +2488,14 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
   if (activeSession.planning.phase === 'awaiting-approval' && !discussionReady) {
     const planId = activeSession.planning.latestPlan?.planId;
     if (!planId) {
-      sendJson(sock, { v: 1, type: 'chat-error', code: 'PLAN_NOT_FOUND', message: 'The latest plan is unavailable; return to planning and present it again.' });
+      rejectUserMessage(sock, msg, 'PLAN_NOT_FOUND', 'The latest plan is unavailable; return to planning and present it again.');
       return;
     }
     const hasAttachments = messageAttachments.length > 0
       || (Array.isArray(msg.stagedReferenceIds) && msg.stagedReferenceIds.length > 0);
     if (!hasAttachments && isExplicitImplementationApproval(msg.text)) {
       void enqueueWorkflowTransition(record, activeSession, () => approveImplementationPlan(record, sock, { planId, documentRevision: msg.documentRevision }))
-        .catch((error) => sendChatError(sock, error));
+        .catch((error) => sendChatError(sock, error, undefined, userMessageReceipt(msg)));
       return;
     }
     void enqueueWorkflowTransition(
@@ -2507,11 +2507,11 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         if (record.agentSession === activeSession) dispatchUserMessage(record, sock, msg, activeSession, messageAttachments, true);
       },
     )
-      .catch((error) => sendChatError(sock, error));
+      .catch((error) => sendChatError(sock, error, undefined, userMessageReceipt(msg)));
     return;
   }
   if (activeSession.planning.phase === 'switching') {
-    sendJson(sock, { v: 1, type: 'chat-error', code: 'WORKFLOW_SWITCHING', message: 'The provider is switching into implementation mode.' });
+    rejectUserMessage(sock, msg, 'WORKFLOW_SWITCHING', 'The provider is switching into implementation mode.');
     return;
   }
   beginAgentTurn(record, activeSession);
@@ -2560,7 +2560,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       activeSession.status = 'idle';
       activeSession.turnId = null;
       record.userQuestionResponseReceipts.clear();
-      sendJson(sock, { v: 1, type: 'chat-error', code: e?.code ?? 'AGENT_SPAWN_FAILED', message: describeHubError(e) });
+      rejectUserMessage(sock, msg, e?.code ?? 'AGENT_SPAWN_FAILED', describeHubError(e));
     });
 }
 
@@ -2799,13 +2799,29 @@ function describeHubError(error, fallback = '알 수 없는 오류가 발생했�
   return fallback;
 }
 
-function sendChatError(sock, error, fallbackCode = 'WORKFLOW_ERROR') {
+/** extra: 프레임에 덧붙일 필드(예: 거절한 사용자 메시지의 messageId). */
+function sendChatError(sock, error, fallbackCode = 'WORKFLOW_ERROR', extra = {}) {
   sendJson(sock, {
     v: 1,
     type: 'chat-error',
     code: error?.code ?? fallbackCode,
     message: describeHubError(error),
+    ...extra,
   });
+}
+
+/**
+ * Studio 가 사용자 메시지에 receipt id(messageId)를 실어 보냈으면 거절에 그대로 되돌린다.
+ * 대기 메시지는 이 id 로 자기 메시지의 거절을 알아보고 대기열 맨 앞으로 돌아간다. 없으면 빈 객체 —
+ * 예전 Studio 는 이 필드를 모른다.
+ */
+function userMessageReceipt(msg) {
+  return typeof msg?.messageId === 'string' && msg.messageId ? { messageId: msg.messageId } : {};
+}
+
+/** 사용자 메시지 거절. extra 는 sendChatError 와 같은 덧붙임 필드다. */
+function rejectUserMessage(sock, msg, code, message, extra = {}) {
+  sendJson(sock, { v: 1, type: 'chat-error', code, message, ...extra, ...userMessageReceipt(msg) });
 }
 
 /** pi 요청 실패는 채팅 오류가 아니라 설정 카드에 붙는다. 키는 절대 되돌려 보내지 않는다. */
@@ -3249,29 +3265,29 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'chat-user-message': {
       if (!record.agentSession) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'AGENT_NOT_STARTED', message: 'No agent session; send chat-start first.' });
+        rejectUserMessage(sock, msg, 'AGENT_NOT_STARTED', 'No agent session; send chat-start first.');
         return;
       }
       if (record.agentSession.pendingTransitions > 0) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'WORKFLOW_SWITCHING', message: 'The provider is applying a workflow or permission change.' });
+        rejectUserMessage(sock, msg, 'WORKFLOW_SWITCHING', 'The provider is applying a workflow or permission change.');
         return;
       }
       try {
         assertMessageScope(record.agentSession, msg);
       } catch (error) {
-        sendChatError(sock, error, 'INVALID_REQUEST');
+        sendChatError(sock, error, 'INVALID_REQUEST', userMessageReceipt(msg));
         return;
       }
       if (record.agentSession.status === 'running' || record.pendingReferenceMessage) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'AGENT_BUSY', message: 'A turn is already in progress.' });
+        rejectUserMessage(sock, msg, 'AGENT_BUSY', 'A turn is already in progress.');
         return;
       }
       if (typeof msg.text !== 'string' || msg.text.length === 0) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'INVALID_REQUEST', message: 'chat-user-message requires text' });
+        rejectUserMessage(sock, msg, 'INVALID_REQUEST', 'chat-user-message requires text');
         return;
       }
       if (msg.text.length > MAX_CHAT_MESSAGE_CHARS) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'INVALID_REQUEST', message: `chat message exceeds ${MAX_CHAT_MESSAGE_CHARS} characters` });
+        rejectUserMessage(sock, msg, 'INVALID_REQUEST', `chat message exceeds ${MAX_CHAT_MESSAGE_CHARS} characters`);
         return;
       }
       if (Object.prototype.hasOwnProperty.call(msg, 'activeTemplateId')) {
@@ -3293,7 +3309,7 @@ async function handleStudioMessage(record, sock, msg) {
         void dispatchStagedUserMessage(record, sock, msg, record.agentSession)
           .catch((error) => {
             if (record.pendingReferenceMessage?.messageId === msg.messageId) record.pendingReferenceMessage = null;
-            sendChatError(sock, error, 'REFERENCE_COMMIT_FAILED');
+            sendChatError(sock, error, 'REFERENCE_COMMIT_FAILED', userMessageReceipt(msg));
           });
         return;
       }
