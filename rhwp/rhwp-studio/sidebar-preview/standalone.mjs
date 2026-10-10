@@ -23,7 +23,7 @@ export async function runStandalone(name, check) {
   const executablePath = findBrowserExecutable();
   assert(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable.');
   await mkdir(artifacts, { recursive: true });
-  const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-sidebar-standalone-'));
+  const cacheDir = await mkdtemp(resolve(tmpdir(), 'hamaeditor-sidebar-standalone-'));
   const server = await createServer({
     cacheDir,
     configFile: resolve(studio, 'vite.sidebar.config.ts'),

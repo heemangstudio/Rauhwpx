@@ -1,0 +1,22 @@
+{"kind":"meta","v":1,"agent":"codex","transport":"app-server","stdin":"ndjson","provenance":"synthetic","cli":"codex-cli 0.162.0","basis":"codex app-server --stdio v2 protocol: handshake order as tests/codex-app-server.test.mjs:91-131; a resume cursor whose rollout is gone: thread/resume answered by JSON-RPC error -32600 'no rollout found for thread id <id>' (codex 0.162, codex-app-server.mjs attachThread), then thread/start; the full-history handoff goes in as thread/inject_items {threadId, items: ResponseItem[]} -> {} (0.162 generate-ts) before turn/start, whose input is the request without the history; turn/completed completed.","note":"Synthetic: hand-written, not recorded. Replace with a trimmed recording (RHWP_PROVIDER_TRANSCRIPT_DIR) when one exists."}
+{"kind":"spawn","match":{"argvIncludes":["app-server"]}}
+{"kind":"expect","json":{"method":"initialize"}}
+{"kind":"out","json":{"id":"$in.id","result":{"userAgent":"codex_cli_rs/0.162.0 (replay)"}}}
+{"kind":"expect","json":{"method":"initialized"}}
+{"kind":"expect","json":{"method":"experimentalFeature/list"}}
+{"kind":"out","json":{"id":"$in.id","result":{"data":[{"name":"default_mode_request_user_input","enabled":true,"defaultEnabled":false,"stage":"underDevelopment","displayName":null,"description":null,"announcement":null}],"nextCursor":null}}}
+{"kind":"expect","json":{"method":"thread/resume","params":{"threadId":"thread-replay-gone"}}}
+{"kind":"out","json":{"id":"$in.id","error":{"code":-32600,"message":"no rollout found for thread id thread-replay-gone"}}}
+{"kind":"expect","json":{"method":"thread/start"}}
+{"kind":"out","json":{"method":"thread/started","params":{"thread":{"id":"thread-replay-2"}}}}
+{"kind":"out","json":{"id":"$in.id","result":{"thread":{"id":"thread-replay-2"}}}}
+{"kind":"expect","json":{"method":"thread/inject_items","params":{"threadId":"thread-replay-2"}}}
+{"kind":"out","json":{"id":"$in.id","result":{}}}
+{"kind":"expect","json":{"method":"turn/start","params":{"threadId":"thread-replay-2"}}}
+{"kind":"out","json":{"method":"turn/started","params":{"threadId":"thread-replay-2","turn":{"id":"turn-replay-2","status":"inProgress","items":[]}}}}
+{"kind":"out","json":{"id":"$in.id","result":{"turn":{"id":"turn-replay-2","status":"inProgress","items":[]}}}}
+{"kind":"out","json":{"method":"item/agentMessage/delta","params":{"threadId":"thread-replay-2","turnId":"turn-replay-2","itemId":"msg-turn-replay-2","delta":"이전 대화를 받아 답했습니다."}}}
+{"kind":"out","json":{"method":"item/completed","params":{"threadId":"thread-replay-2","turnId":"turn-replay-2","item":{"type":"agentMessage","id":"msg-turn-replay-2","text":"이전 대화를 받아 답했습니다."}}}}
+{"kind":"out","json":{"method":"turn/completed","params":{"threadId":"thread-replay-2","turn":{"id":"turn-replay-2","status":"completed","items":[]}}}}
+{"kind":"await-kill"}
+{"kind":"exit","signal":"SIGTERM"}

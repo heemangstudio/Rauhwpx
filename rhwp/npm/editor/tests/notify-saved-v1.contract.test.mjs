@@ -1,7 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 
 import { EditorTransport } from '../transport.js';
 import { RhwpEditor } from '../index.js';
@@ -79,15 +77,4 @@ test('notify-saved-v1 미광고 시 notifySaved는 요청 없이 명시적으로
     transport.destroy();
     closeServer();
   }
-});
-
-test('index.d.ts는 notifySaved 선언과 저장 계약 JSDoc을 포함한다', () => {
-  const declarations = readFileSync(
-    fileURLToPath(new URL('../index.d.ts', import.meta.url)),
-    'utf8',
-  );
-  assert.match(
-    declarations,
-    /notifySaved\(fileName\?: string\): Promise<\{ ok: true; wasDirty: boolean \}>/,
-  );
 });

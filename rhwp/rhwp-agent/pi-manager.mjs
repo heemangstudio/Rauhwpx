@@ -3,9 +3,13 @@ import { promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { readUtf8FileBounded } from './bounded-file.mjs';
+import {
+  PI_EXTENSION_PATH,
+  PI_SKILLS_DIR,
+  PI_SUBAGENT_EXTENSION_PATH,
+} from './pi/resources.mjs';
 import { createOpenRouter } from './openrouter.mjs';
 import {
   fetchLatestPackage,
@@ -41,6 +45,12 @@ function spawn(command, argv, options) {
 }
 
 const PI_PACKAGE = '@earendil-works/pi-coding-agent';
+/**
+ * 하니스(시스템 프롬프트 파일, prepareArguments, agent_before_settle, maxTokens=0, 도구별
+ * executionMode)를 맞춰 잰 Pi 버전. 설치와 자동 업데이트 모두 이 버전으로 수렴한다 —
+ * 더 새 버전이 깔려 있어도 되돌린다. 올릴 때는 하니스 점검과 라이브 벤치를 다시 돌린다.
+ */
+export const PI_VERSION = '1.1.0';
 const CONFIG_FILE = 'config.json';
 const CONFIG_VERSION = 1;
 const MAX_MODELS = 3;
@@ -53,7 +63,9 @@ const PI_PACKAGE_MANIFEST_MAX_BYTES = 1024 * 1024;
 const EFFORTS = /** @type {const} */ (['low', 'medium', 'high']);
 const DEFAULT_EFFORT = 'medium';
 const DEFAULT_CONTEXT_WINDOW = 128_000;
-const DEFAULT_MAX_TOKENS = 8_192;
+/** OpenRouter 제공자 라우팅 정렬. off 면 provider 필드를 아예 보내지 않는다. */
+const ROUTING_SORTS = new Set(['latency', 'throughput', 'price', 'off']);
+const DEFAULT_ROUTING_SORT = 'throughput';
 const STDERR_TAIL_LIMIT = 1_200;
 const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const REGISTRY_TIMEOUT_MS = 10_000;
@@ -75,11 +87,11 @@ const INSTALL_PROGRESS = Object.freeze({
   done: 100,
 });
 
-/** 이 파일 기준 경로 — 확장/스킬은 저장소 안에 있고, pi 홈은 그것을 가리키기만 한다. */
-const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const EXTENSION_PATH = path.join(MODULE_DIR, 'pi', 'extension', 'rhwp.ts');
-const SUBAGENT_EXTENSION_PATH = path.join(MODULE_DIR, 'pi', 'extension', 'subagents.ts');
-const SKILLS_SOURCE_DIR = path.join(MODULE_DIR, 'pi', 'skills');
+/** 허브가 쓰는 파일들. 쓰다 끊긴 `<이름>.tmp-*` 는 다음 동기화에서 지운다. */
+const HUB_OWNED_AGENT_FILES = ['models.json', 'settings.json'];
+const HUB_OWNED_ROOT_FILES = [CONFIG_FILE];
+/** 이보다 오래된 임시 파일만 지운다 — 같은 루트를 쓰는 다른 허브가 지금 쓰는 중일 수 있다. */
+const STALE_TEMP_MS = 60_000;
 
 /**
  * @typedef {Object} PiModelConfig
@@ -90,7 +102,11 @@ const SKILLS_SOURCE_DIR = path.join(MODULE_DIR, 'pi', 'skills');
  * @property {string[]} efforts
  * @property {string|null} defaultEffort
  * @property {number|null} contextLength
- * @property {{ prompt: number, completion: number }} pricing
+ * @property {number|null} [maxOutputTokens] 카탈로그의 출력 토큰 상한. null 은 카탈로그에 값이 없다는 뜻이다
+ * @property {{ prompt: number, completion: number, cacheRead?: number }} pricing
+ *
+ * maxOutputTokens 와 pricing.cacheRead 는 예전 config.json 에 없던 필드다. 필드가 아예 없으면
+ * (메모리에서도 키 없음) 아직 카탈로그로 채우지 못한 것이고, syncAssets 가 다시 시도한다.
  */
 
 /**
@@ -103,8 +119,8 @@ const SKILLS_SOURCE_DIR = path.join(MODULE_DIR, 'pi', 'skills');
  * @property {PiModelConfig[]} models
  * @property {string|null} defaultModelId
  * @property {boolean} setupComplete
- * @property {string|null} latestVersion
- * @property {boolean} updateRequired
+ * @property {string|null} latestVersion 고정 버전(PI_VERSION). 레지스트리에서 확인한 뒤에만 채운다
+ * @property {boolean} updateRequired 설치본이 고정 버전과 다르다
  * @property {string|null} error
  */
 
@@ -162,6 +178,38 @@ function appendUtf8Tail(current, chunk, maxBytes) {
 /** 토큰 1개당 USD → 100만 토큰당 USD. 부동소수 찌꺼기는 6자리에서 자른다. */
 function perMillion(price) {
   return Math.round(Number(price) * 1e12) / 1e6;
+}
+
+function positiveInteger(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function nonNegativePrice(value) {
+  const price = Number(value);
+  return Number.isFinite(price) && price >= 0 ? price : 0;
+}
+
+/** 카탈로그의 출력 상한. 컨텍스트 창을 알면 그보다 크게 잡지 않는다. 모르면 null. */
+function outputCeiling(maxCompletionTokens, contextLength) {
+  const ceiling = positiveInteger(maxCompletionTokens);
+  const context = positiveInteger(contextLength);
+  return ceiling !== null && context !== null ? Math.min(ceiling, context) : ceiling;
+}
+
+/** 예전 config.json 에서 읽어 카탈로그 필드가 아직 비어 있는 모델. */
+function needsCatalogFields(model) {
+  return model.maxOutputTokens === undefined || model.pricing.cacheRead === undefined;
+}
+
+/**
+ * RHWP_PI_ROUTING_SORT 값을 정리한다. 모르는 값이나 빈 값은 throughput 으로 본다.
+ *
+ * @param {unknown} raw
+ * @returns {string} latency | throughput | price | off
+ */
+export function normalizePiRoutingSort(raw) {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return ROUTING_SORTS.has(value) ? value : DEFAULT_ROUTING_SORT;
 }
 
 function keyTailOf(key) {
@@ -228,7 +276,7 @@ export function defaultPiRoot(env = process.env, platform = process.platform, ho
 }
 
 /**
- * pi CLI 설치본과 그 에이전트 홈(모델·키·스킬)을 관리한다.
+ * pi CLI 설치본과 그 에이전트 홈(모델·키·설정)을 관리한다. 확장·스킬은 앱 번들에서 바로 싣는다.
  * 설치는 single-flight 이고, 루트가 없어도 status() 는 그냥 미설치로 답한다.
  *
  * @param {{ rootDir?: string, spawnProcess?: typeof spawn, fetchImpl?: typeof fetch,
@@ -237,7 +285,9 @@ export function defaultPiRoot(env = process.env, platform = process.platform, ho
  *           baseEnv?: NodeJS.ProcessEnv, secretStore?: object,
  *           tarballMaxBytes?: number, oauthExchangeTimeoutMs?: number,
  *           replaceFile?: typeof replaceFileAtomically,
- *           writeNodeHostFile?: typeof import('node:fs/promises').writeFile }} [deps]
+ *           writeNodeHostFile?: typeof import('node:fs/promises').writeFile,
+ *           routingSort?: string }} [deps]
+ *   routingSort: OpenRouter 제공자 정렬 (latency|throughput|price|off). 기본 throughput
  */
 export function createPiManager({
   rootDir = defaultPiRoot(),
@@ -255,7 +305,9 @@ export function createPiManager({
   oauthExchangeTimeoutMs = OAUTH_EXCHANGE_TIMEOUT_MS,
   replaceFile = replaceFileAtomically,
   writeNodeHostFile,
+  routingSort = DEFAULT_ROUTING_SORT,
 } = {}) {
+  const providerSort = normalizePiRoutingSort(routingSort);
   const tarballLimitBytes = Number.isSafeInteger(tarballMaxBytes) && tarballMaxBytes > 0
     ? Math.min(tarballMaxBytes, PI_TARBALL_MAX_BYTES)
     : PI_TARBALL_MAX_BYTES;
@@ -268,7 +320,10 @@ export function createPiManager({
   const configPath = path.join(rootDir, CONFIG_FILE);
   const modelsPath = path.join(agentDir, 'models.json');
   const settingsPath = path.join(agentDir, 'settings.json');
-  const skillsDir = path.join(agentDir, 'skills');
+  /** 예전 허브가 번들 스킬을 복사해 두던 곳. 지금은 번들에서 바로 싣고 이 사본은 지운다. */
+  const legacySkillsDir = path.join(agentDir, 'skills');
+  /** 정확한 버전이 박힌 스펙이면 그대로, 아니면 고정 버전을 붙여 npm 폴백도 같은 버전을 깐다. */
+  const installSpec = packageSpec.lastIndexOf('@') > 0 ? packageSpec : `${packageSpec}@${PI_VERSION}`;
   const piBin = path.join(prefixDir, 'node_modules', '.bin', platform === 'win32' ? 'pi.cmd' : 'pi');
   const packageJsonPath = (basePrefix = prefixDir) => path.join(
     basePrefix, 'node_modules', ...packageSpec.split('/'), 'package.json',
@@ -307,10 +362,23 @@ export function createPiManager({
   /** 설정 파일 쓰기는 직렬화한다 — 키/모델 갱신이 겹쳐도 순서가 흐트러지지 않도록. */
   let writeChain = Promise.resolve();
   let tempSeq = 0;
+  /** close() 뒤에는 새 쓰기를 받지 않는다 — 종료 중인 프로세스가 임시 파일을 남기지 않게. */
+  let closed = false;
+  /** @type {Set<Promise<void>>} 시작된 writeAtomic. close() 가 모두 끝나길 기다린다. */
+  const inflightWrites = new Set();
   /** 진행 중인 OpenRouter PKCE 로그인. 브라우저 콜백이 오면 한 번만 소비한다. */
   let oauthFlow = null;
 
-  async function writeAtomic(file, text, mode = 0o600) {
+  function writeAtomic(file, text, mode = 0o600) {
+    if (closed) return Promise.reject(piError('PI_MANAGER_CLOSED', 'Pi 설정은 허브 종료 중에 쓸 수 없어요'));
+    const write = writeAtomicNow(file, text, mode);
+    const settled = write.then(() => {}, () => {});
+    inflightWrites.add(settled);
+    void settled.then(() => inflightWrites.delete(settled));
+    return write;
+  }
+
+  async function writeAtomicNow(file, text, mode) {
     if (Buffer.byteLength(text, 'utf8') > PI_SETTINGS_MAX_BYTES) {
       throw piError(
         'PI_SETTINGS_TOO_LARGE',
@@ -346,6 +414,8 @@ export function createPiManager({
       ? raw.defaultEffort
       : (efforts.length > 0 ? DEFAULT_EFFORT : null);
     const contextLength = Number(raw.contextLength);
+    // 필드가 없으면 키도 두지 않는다 — 아직 이관하지 않았다는 표시다 (PiModelConfig 참고).
+    const cacheRead = raw?.pricing?.cacheRead;
     return {
       id,
       name,
@@ -354,9 +424,13 @@ export function createPiManager({
       efforts,
       defaultEffort,
       contextLength: Number.isFinite(contextLength) && contextLength > 0 ? Math.round(contextLength) : null,
+      ...(raw.maxOutputTokens === undefined
+        ? {}
+        : { maxOutputTokens: positiveInteger(raw.maxOutputTokens) }),
       pricing: {
         prompt: Number(raw?.pricing?.prompt) || 0,
         completion: Number(raw?.pricing?.completion) || 0,
+        ...(cacheRead === undefined ? {} : { cacheRead: nonNegativePrice(cacheRead) }),
       },
     };
   }
@@ -461,25 +535,41 @@ export function createPiManager({
 
   /** agent/models.json에는 비밀이 아닌 모델 설정만 쓴다. */
   async function writeModelsJson() {
-    const provider = {
-      baseUrl: 'https://openrouter.ai/api/v1',
-      api: 'openai-completions',
-      models: config.models.map((model) => ({
+    /** @type {Array<[string, { maxTokens: 0 }]>} */
+    const unlimited = [];
+    const models = config.models.map((model) => {
+      const maxTokens = positiveInteger(model.maxOutputTokens);
+      // 상한을 모르는 모델은 출력 토큰 필드를 아예 보내지 않게 한다. pi 는 models[] 정의의
+      // maxTokens <= 0 을 거부하고, 빠진 maxTokens 는 16384 로 채운다. modelOverrides 의
+      // maxTokens 0 만 검증 없이 들어가 max_tokens/max_completion_tokens 를 생략시킨다.
+      if (maxTokens === null) unlimited.push([model.id, { maxTokens: 0 }]);
+      return {
         id: model.id,
         name: model.name,
         reasoning: model.reasoning,
         input: model.supportsImages ? ['text', 'image'] : ['text'],
         contextWindow: model.contextLength ?? DEFAULT_CONTEXT_WINDOW,
-        maxTokens: DEFAULT_MAX_TOKENS,
+        ...(maxTokens === null ? {} : { maxTokens }),
         ...(model.reasoning ? { thinkingLevelMap: thinkingLevelMap() } : {}),
+        // pi 는 이 값을 요청의 provider 필드로 그대로 보낸다.
+        ...(providerSort === 'off'
+          ? {}
+          : { compat: { openRouterRouting: { require_parameters: true, sort: providerSort } } }),
         cost: {
           // OpenRouter 는 토큰 1개당 USD, pi 는 100만 토큰당 USD 를 쓴다.
           input: perMillion(model.pricing.prompt),
           output: perMillion(model.pricing.completion),
-          cacheRead: 0,
+          cacheRead: perMillion(model.pricing.cacheRead ?? 0),
           cacheWrite: 0,
         },
-      })),
+      };
+    });
+    const provider = {
+      baseUrl: 'https://openrouter.ai/api/v1',
+      api: 'openai-completions',
+      models,
+      // fromEntries 는 '__proto__' 같은 id 도 평범한 키로 만든다.
+      ...(unlimited.length > 0 ? { modelOverrides: Object.fromEntries(unlimited) } : {}),
     };
     // Vault가 없거나 현재 열리지 않으면 legacy 키를 보존한다. transport가
     // available이라고 광고하는 것만으로 유일한 사용 가능 복사본을 지우면 안 된다.
@@ -538,12 +628,12 @@ export function createPiManager({
   }
 
   /**
-   * 레지스트리에서 최신 타르볼 주소와 무결성 해시를 알아낸다.
+   * 레지스트리에서 고정 버전(PI_VERSION)의 타르볼 주소와 무결성 해시를 알아낸다.
    * 버전이 박힌 스펙이면 npm 에 그대로 맡기려고 null 을 돌려준다.
    */
   async function resolveDist() {
     if (packageSpec.lastIndexOf('@') > 0) return null;
-    const dist = await fetchLatestPackage(fetchImpl, packageSpec, REGISTRY_TIMEOUT_MS);
+    const dist = await fetchLatestPackage(fetchImpl, packageSpec, REGISTRY_TIMEOUT_MS, PI_VERSION);
     if (!dist.tarball) throw new Error('registry: tarball 주소가 없어요');
     return dist;
   }
@@ -675,7 +765,7 @@ export function createPiManager({
       'install', '--prefix', targetPrefix, '--no-fund', '--no-audit',
       // 폴백(npm 이 직접 내려받는) 경로에서는 http 로그가 활동 신호가 된다.
       localTarball ? '--loglevel=error' : '--loglevel=http',
-      localTarball ?? packageSpec,
+      localTarball ?? installSpec,
     ];
     const launched = applyManagedCliLaunch(npmLaunch.command, [...npmLaunch.leadingArgs, ...argv], {
       // npm 수명 주기 스크립트는 허브의 토큰을 물려받지 않는다.
@@ -805,23 +895,82 @@ export function createPiManager({
     };
   }
 
-  async function syncAssets() {
+  /**
+   * 예전 config.json 모델에 빠진 필드가 있을 때만 카탈로그를 받는다. 오프라인이거나 실패하면
+   * null — 아는 값만으로 models.json 을 쓰고, 다음 동기화에서 다시 시도한다.
+   */
+  async function catalogForMigration() {
+    if (!config.models.some(needsCatalogFields)) return null;
+    try {
+      const catalog = await client.catalog(false, apiKey);
+      return Array.isArray(catalog) ? catalog : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 카탈로그에서 같은 id 를 찾아 빠진 필드만 채운다. 바뀐 게 있으면 true. */
+  function enrichStoredModels(catalog) {
+    if (!catalog) return false;
+    const byId = new Map(catalog.flatMap((entry) => {
+      const id = normalizedModelId(entry?.id);
+      return id ? [[id, entry]] : [];
+    }));
+    let changed = false;
+    config.models = config.models.map((model) => {
+      const entry = needsCatalogFields(model) ? byId.get(model.id) : null;
+      if (!entry) return model;
+      changed = true;
+      return {
+        ...model,
+        maxOutputTokens: model.maxOutputTokens === undefined
+          ? outputCeiling(entry.maxCompletionTokens, model.contextLength)
+          : model.maxOutputTokens,
+        pricing: {
+          ...model.pricing,
+          cacheRead: model.pricing.cacheRead ?? nonNegativePrice(entry.pricing?.cacheRead),
+        },
+      };
+    });
+    return changed;
+  }
+
+  /** 허브 파일의 `.tmp-*` 형제 중 STALE_TEMP_MS 보다 오래된 것을 지운다. 키 사본이 남지 않게. */
+  async function removeStaleTemps(dir, owners) {
+    let names;
+    try {
+      names = await fs.readdir(dir);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return;
+      throw error;
+    }
+    const cutoff = now() - STALE_TEMP_MS;
+    await Promise.all(names
+      .filter((name) => owners.some((owner) => name.startsWith(`${owner}.tmp-`)))
+      .map(async (name) => {
+        const file = path.join(dir, name);
+        const stat = await fs.lstat(file).catch(() => null);
+        if (stat?.isFile() && stat.mtimeMs < cutoff) await fs.rm(file, { force: true }).catch(() => {});
+      }));
+  }
+
+  async function syncAssets(migrationCatalog = null) {
     await fs.mkdir(agentDir, { recursive: true });
     await fs.mkdir(sessionsDir, { recursive: true });
+    // 확장·스킬은 pi/resources.mjs 가 매 스폰마다 -e/--skill 로 넘긴다. 이 파일에는 경로를 두지 않아
+    // 개발 허브·벤치·패키지 앱이 같은 루트를 써도 서로의 설치 경로를 덮어쓰지 않는다.
     await writeAtomic(settingsPath, `${JSON.stringify({
       defaultProjectTrust: 'never',
       enableSkillCommands: false,
       enableInstallTelemetry: false,
-      extensions: [EXTENSION_PATH, SUBAGENT_EXTENSION_PATH],
     }, null, 2)}\n`);
+    const migrated = enrichStoredModels(migrationCatalog);
     // Rebuild the provider file on every startup so settings stay in sync.
     await writeModelsJson();
-    try {
-      await fs.cp(SKILLS_SOURCE_DIR, skillsDir, { recursive: true, force: true });
-    } catch (error) {
-      // 스킬 디렉터리는 아직 없을 수 있다 — 없으면 그냥 넘어간다.
-      if (error?.code !== 'ENOENT') throw error;
-    }
+    if (migrated) await persistConfig();
+    await fs.rm(legacySkillsDir, { recursive: true, force: true });
+    await removeStaleTemps(agentDir, HUB_OWNED_AGENT_FILES);
+    await removeStaleTemps(rootDir, HUB_OWNED_ROOT_FILES);
   }
 
   return {
@@ -833,8 +982,9 @@ export function createPiManager({
     modelsPath,
     settingsPath,
     piBin,
-    extensionPath: EXTENSION_PATH,
-    subagentExtensionPath: SUBAGENT_EXTENSION_PATH,
+    extensionPath: PI_EXTENSION_PATH,
+    subagentExtensionPath: PI_SUBAGENT_EXTENSION_PATH,
+    skillsDir: PI_SKILLS_DIR,
 
     /** 루트를 만들고 저장된 설정을 읽는다. 루트가 없어도 실패하지 않는다. */
     async init() {
@@ -853,7 +1003,7 @@ export function createPiManager({
     },
 
     /**
-     * pi CLI 를 설치하고 확장/스킬/설정을 동기화한다. 동시에 부르면 하나만 돈다.
+     * 고정 버전 pi CLI 를 설치하고 Pi 홈 설정을 쓴다. 동시에 부르면 하나만 돈다.
      *
      * @param {(progress: { state: string, detail?: string, percent?: number,
      *   receivedBytes?: number, totalBytes?: number|null, activity?: boolean }) => void} [onProgress]
@@ -930,7 +1080,7 @@ export function createPiManager({
       }
     },
 
-    /** 앱 관리 Pi CLI 를 확인하고, 실패해도 현재 prefix 는 그대로 둔다. */
+    /** 설치된 Pi 가 PI_VERSION 과 다르면 그 버전으로 바꾼다. 실패해도 현재 prefix 는 그대로 둔다. */
     async automaticUpdate({ canActivate = () => true } = {}) {
       await load();
       if (!installedVersion) return currentStatus();
@@ -978,11 +1128,25 @@ export function createPiManager({
       return currentStatus();
     },
 
-    /** 확장 경로가 담긴 settings.json 을 쓰고 저장소 스킬을 pi 홈으로 복사한다. */
+    /**
+     * settings.json 과 models.json 을 다시 쓰고, 예전 허브가 남긴 스킬 사본과 임시 파일을 지운다.
+     * 예전 설정이면 카탈로그로 빠진 모델 필드를 채운다. 네트워크는 쓰기 큐 밖에서 기다린다.
+     */
     async syncAssets() {
       await load();
-      await serialized(() => syncAssets());
+      const migrationCatalog = await catalogForMigration();
+      if (closed) return currentStatus();
+      await serialized(() => syncAssets(migrationCatalog));
       return currentStatus();
+    },
+
+    /**
+     * 허브 종료 전에 부른다. 새 쓰기를 막고 이미 줄 선 쓰기가 끝나길 기다린다 — process.exit 가
+     * 임시 파일을 쓰는 도중에 프로세스를 끊어 `.tmp-*` 를 남기지 않게.
+     */
+    async close() {
+      closed = true;
+      await Promise.all([writeChain, ...inflightWrites]);
     },
 
     /**
@@ -1222,7 +1386,12 @@ export function createPiManager({
           efforts,
           defaultEffort,
           contextLength: entry.contextLength,
-          pricing: { ...entry.pricing },
+          maxOutputTokens: outputCeiling(entry.maxCompletionTokens, entry.contextLength),
+          pricing: {
+            prompt: entry.pricing.prompt,
+            completion: entry.pricing.completion,
+            cacheRead: nonNegativePrice(entry.pricing.cacheRead),
+          },
         });
       }
       return serialized(async () => {

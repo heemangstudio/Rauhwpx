@@ -12,6 +12,7 @@ import { checkChangesPreview } from './changes.check.mjs';
 import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
 import { checkComposerSendPath, checkFollowUpGap, checkFollowUpQueue } from './queue.check.mjs';
+import { checkContextPreview } from './context.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
 import { checkReloadPreview } from './reload.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
@@ -33,7 +34,7 @@ await mkdir(artifacts, { recursive: true });
 const sampleFile = resolve(artifacts, 'sample.txt');
 await writeFile(sampleFile, '문서 디자인을 위한 샘플 참고자료입니다.');
 // Own server + fresh browser profile: checks do not need or alter a running app/preview.
-const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-sidebar-check-'));
+const cacheDir = await mkdtemp(resolve(tmpdir(), 'hamaeditor-sidebar-check-'));
 const server = await createServer({
   cacheDir,
   configFile: resolve(studio, 'vite.sidebar.config.ts'),
@@ -141,6 +142,12 @@ try {
   }
   // SIDEBAR_CHECK=<text> runs only the steps whose name contains it (case-insensitive).
   const onlyStep = process.env.SIDEBAR_CHECK?.toLowerCase();
+  // 커밋 전 변경이 있으면 버전 창은 변경 탭으로 열린다. 그래프 도구는 그래프 탭에 있다.
+  async function showVersionGraph() {
+    await page.click('.ag-versions-tab[data-tab="history"]');
+    await page.waitForSelector('.ag-versions-tab[data-tab="history"][aria-selected="true"]');
+    await page.waitForSelector('.ag-version-row', { visible: true });
+  }
   async function step(name, run) {
     if (onlyStep && !name.toLowerCase().includes(onlyStep)) return;
     try {
@@ -459,6 +466,7 @@ try {
     await page.evaluate(() => window.sidebarPreview.setServices(false));
     assert.deepEqual(await visible(), []);
   });
+  await step('Context meter, compaction, and provider handoff', () => checkContextPreview(page, origin, artifacts));
   await step('Compact live subagent previews', () => checkFleetPreview(page, origin));
   await step('Full-screen changes, history, commit, discard, and review',
     () => checkChangesPreview(page, origin, artifacts));
@@ -714,6 +722,29 @@ try {
     await page.waitForFunction(() => document.querySelector('.ag-provider-quotas').textContent.includes('리셋 크레딧 없음'));
     assert.equal(await page.evaluate(() => localStorage.getItem('rhwp-codex-pending-reset')), null);
   });
+  await step('First-run setup walks theme, AI and fonts to the done frame', async () => {
+    await open('initial-setup=1&services=setup');
+    await page.waitForSelector('.rhwp-setup-overlay.rhwp-setup-open');
+    await page.click('.rhwp-setup-theme[data-mode="dark"]');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.themeEffective), 'dark');
+    await page.click('.rhwp-setup-theme[data-mode="light"]');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.themeEffective), 'light');
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (await page.$eval('.rhwp-setup-dialog', (dialog) => dialog.dataset.step === 'done')) break;
+      await page.click('.rhwp-setup-primary');
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    const done = await page.evaluate(() => ({
+      step: document.querySelector('.rhwp-setup-dialog').dataset.step,
+      line: document.querySelector('.rhwp-setup-say .visually-hidden').textContent,
+      pose: document.querySelector('.rhwp-setup-hippo').dataset.pose,
+      completed: JSON.parse(localStorage.getItem('rhwp-initial-setup') ?? '{}').completed,
+    }));
+    assert.deepEqual(done, { step: 'done', line: '설정이 완료되었어요!', pose: 'open', completed: true });
+    await (await page.$('.rhwp-setup-dialog')).screenshot({ path: resolve(artifacts, 'first-run-done.png') });
+    await page.click('.rhwp-setup-primary');
+    await page.waitForFunction(() => !document.querySelector('.rhwp-setup-overlay'));
+  });
   await step(
     'Unconfigured provider installation and local OAuth placeholder',
     async () => {
@@ -777,7 +808,7 @@ try {
     async () => {
       await open('page=versions');
       await page.waitForSelector('.ag-root.ag-versions-open');
-      await page.click('[data-tab="history"]');
+      await showVersionGraph();
       await screenshot('versions');
       await page.click('[aria-label="새 커밋 만들기"]');
       await page.waitForSelector('.ag-version-prompt-input', { visible: true });
@@ -812,7 +843,7 @@ try {
   await step('Worktree create, open, close, removal cancellation and merge', () => checkWorktrees({ page, open, screenshot }));
   await step('Branch commits keep their graph lane and move the branch label', async () => {
     await open('page=versions&history=branches&theme=dark&width=480');
-    await page.click('[data-tab="history"]');
+    await showVersionGraph();
     await screenshot('versions-dark');
     assert.equal(await page.$$eval('.ag-version-meta, .ag-version-time', (items) => items.length), 0);
     const initialRowHeight = await page.$eval('.ag-version-row', (row) => row.getBoundingClientRect().height);
@@ -821,9 +852,12 @@ try {
     assert.match(await page.$eval('.ag-version-date-tooltip', (tip) => tip.textContent), /월/);
     assert.equal(await page.$eval('.ag-version-row', (row) => row.getBoundingClientRect().height), initialRowHeight);
     await screenshot('versions-date-hover');
-    await page.keyboard.press('Tab');
-    await page.focus('.ag-version-row');
+    // 요소 스크린샷이 창 크기 변경을 일으켜 날짜 풍선을 닫는다. 다시 띄운 뒤 Escape 를 본다.
+    await page.mouse.move(0, 0);
+    await page.waitForFunction(() => !document.querySelector('.ag-version-date-tooltip').classList.contains('ag-visible'));
+    await page.hover('.ag-version-row');
     await page.waitForSelector('.ag-version-date-tooltip.ag-visible', { visible: true });
+    await page.focus('.ag-version-row');
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => !document.querySelector('.ag-version-date-tooltip').classList.contains('ag-visible'));
     assert(await page.$eval('.ag-root', (root) => root.classList.contains('ag-versions-open')));
@@ -850,7 +884,7 @@ try {
     assert.deepEqual(result, { branchAtHead: true, parent: 'e8f21a0', separateLane: true, label: true, current: true, selected: 'true' });
     await screenshot('versions-branch-commit');
     await open('page=versions&history=branches&width=360');
-    await page.click('[data-tab="history"]');
+    await showVersionGraph();
     await screenshot('versions-light-narrow');
     assert(await page.$eval('.ag-versions-page', (el) => el.scrollWidth <= el.clientWidth), 'Narrow panel overflows');
     await open('width=480');

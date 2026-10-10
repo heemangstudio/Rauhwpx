@@ -169,7 +169,7 @@ export async function smokePackagedSetupTerminal({ executable, agentDir, timeout
 }
 
 export async function smokePackagedAgentHub({ executable, agentDir, timeoutMs = 30_000 }) {
-  const workRoot = mkdtempSync(path.join(os.tmpdir(), 'rauhwpx-packaged-hub-'));
+  const workRoot = mkdtempSync(path.join(os.tmpdir(), 'hamaeditor-packaged-hub-'));
   const token = `package-smoke-${process.pid}-${Date.now()}`;
   const launchId = `package-smoke-${process.pid}`;
   const scriptPath = path.join(agentDir, 'server.mjs');

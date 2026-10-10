@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+import { APP_ID, PRODUCT_NAME } from '../desktop/app-identity.mjs';
 import {
   AgentAttention,
-  PACKAGED_APP_USER_MODEL_ID,
   applyAppUserModelId,
   normalizeAttentionCount,
   normalizeAttentionNotice,
@@ -79,10 +79,10 @@ test('clicking a notification restores and focuses its window and opens the chat
   const { attention, shown, bounces } = setup('darwin');
   const window = fakeWindow(1, { minimized: true });
   // 렌더러는 기본으로 채팅 제목과 문서 이름 없이 앱 이름과 문구만 보낸다.
-  attention.notify(window, { threadId: 'thread-1', title: 'Rauhwpx', body: '검토할 변경이 있습니다' });
+  attention.notify(window, { threadId: 'thread-1', title: 'HamaEditor', body: '검토할 변경이 있습니다' });
   assert.deepEqual(bounces, ['informational']);
   assert.equal(shown.length, 1);
-  assert.deepEqual(shown[0].options, { title: 'Rauhwpx', body: '검토할 변경이 있습니다', silent: false });
+  assert.deepEqual(shown[0].options, { title: 'HamaEditor', body: '검토할 변경이 있습니다', silent: false });
   assert.equal(shown[0].shown, true);
   shown[0].emit('click');
   assert.deepEqual(window.calls, [
@@ -155,7 +155,8 @@ test('notice text and counts are bounded', () => {
     threadId: 'a-1:b.c_d', title: 'ㄱ'.repeat(200), body: 'ㄱ'.repeat(200),
   });
   assert.equal(normalizeAttentionNotice({ threadId: 'x'.repeat(129) }), null);
-  assert.equal(normalizeAttentionNotice({ threadId: 'ok', title: '' }).title, 'Rauhwpx');
+  // 제목이 비면 사용자가 보는 제품 이름을 쓴다(내부 앱 이름이 아니다).
+  assert.equal(normalizeAttentionNotice({ threadId: 'ok', title: '' }).title, PRODUCT_NAME);
   assert.equal(normalizeAttentionCount(-3), 0);
   assert.equal(normalizeAttentionCount('7'), 7);
   assert.equal(normalizeAttentionCount(Number.NaN), 0);
@@ -169,7 +170,7 @@ test('a window raises at most one notification per chat per 10 s and six per min
     const window = fakeWindow(1);
     const other = fakeWindow(2);
     const flashes = () => window.calls.filter(([name, on]) => name === 'flashFrame' && on === true).length;
-    const notify = (target, threadId) => attention.notify(target, { threadId, title: 'Rauhwpx', body: '작업을 마쳤습니다' });
+    const notify = (target, threadId) => attention.notify(target, { threadId, title: 'HamaEditor', body: '작업을 마쳤습니다' });
 
     notify(window, 'thread-a');
     notify(window, 'thread-a');
@@ -202,7 +203,7 @@ test('a window raises at most one notification per chat per 10 s and six per min
 test('Windows notifications use the installer app id when packaged and the executable path in development', () => {
   const calls = [];
   const fakeApp = (isPackaged) => ({ isPackaged, setAppUserModelId: (id) => calls.push(id) });
-  assert.equal(applyAppUserModelId({ app: fakeApp(true), platform: 'win32', execPath: 'C:\\Rauhwpx\\Rauhwpx.exe' }), PACKAGED_APP_USER_MODEL_ID);
+  assert.equal(applyAppUserModelId({ app: fakeApp(true), platform: 'win32', execPath: 'C:\\HamaEditor\\HamaEditor.exe' }), APP_ID);
   assert.equal(
     applyAppUserModelId({ app: fakeApp(false), platform: 'win32', execPath: 'C:\\dev\\electron.exe' }),
     'C:\\dev\\electron.exe',
@@ -210,8 +211,8 @@ test('Windows notifications use the installer app id when packaged and the execu
   );
   assert.equal(applyAppUserModelId({ app: fakeApp(true), platform: 'darwin' }), null);
   assert.equal(applyAppUserModelId({ app: fakeApp(false), platform: 'linux' }), null);
-  assert.deepEqual(calls, [PACKAGED_APP_USER_MODEL_ID, 'C:\\dev\\electron.exe']);
-  // 설치 바로가기의 id 는 electron-builder 의 build.appId 다.
+  assert.deepEqual(calls, [APP_ID, 'C:\\dev\\electron.exe']);
+  // 설치 바로가기의 id 는 electron-builder 의 build.appId 다. 리브랜드 뒤에도 내부 id 는 그대로다.
   const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.equal(PACKAGED_APP_USER_MODEL_ID, packageJson.build.appId);
+  assert.equal(APP_ID, packageJson.build.appId);
 });

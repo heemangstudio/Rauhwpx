@@ -77,7 +77,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const executablePath = findBrowserExecutable();
   assert(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable.');
   await mkdir(artifacts, { recursive: true });
-  const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-restore-turn-check-'));
+  const cacheDir = await mkdtemp(resolve(tmpdir(), 'hamaeditor-restore-turn-check-'));
   const server = await createServer({
     cacheDir,
     configFile: resolve(studio, 'vite.sidebar.config.ts'),

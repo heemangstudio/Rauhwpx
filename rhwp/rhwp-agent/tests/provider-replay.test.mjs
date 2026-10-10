@@ -347,6 +347,64 @@ for (const [name, nextStop] of INTERRUPT_RACES) {
   });
 }
 
+test('claude/resume-lost: a resumed session missing from the store is retried once on a fresh session with the full history', { timeout: 20_000 }, async (t) => {
+  const lostId = '11111111-2222-4333-8444-555555555555';
+  const run = startReplaySession('claude/resume-lost', { t, opts: { resumeSessionId: lostId } });
+  run.session.sendUserMessage('delta prompt', { resumeFallbackText: 'full history prompt' });
+  const end = await run.turnEnd(1);
+  await run.replay.settled();
+  run.replay.assertConsumed();
+
+  const [resumed, fresh] = run.replay.spawns;
+  assert.equal(resumed.argv[resumed.argv.indexOf('--resume') + 1], lostId);
+  assert.equal(fresh.argv.includes('--resume'), false);
+  const freshId = fresh.argv[fresh.argv.indexOf('--session-id') + 1];
+  assert.ok(freshId && freshId !== lostId, 'the retry starts a new session id');
+  const prompts = (spawn) => spawn.process.run.stdinFrames.map((frame) => frame.message.content[0].text);
+  assert.deepEqual(prompts(resumed), ['delta prompt']);
+  assert.deepEqual(prompts(fresh), ['full history prompt'], 'the fresh session gets the full history');
+
+  // One turn for the hub: the missing session and the first process's exit 1 are not a failure.
+  assert.equal(run.events.filter((event) => event.type === 'turn-start').length, 1);
+  assert.equal(run.events.some((event) => event.type === 'error'), false);
+  assert.equal(end.stopReason, 'end_turn');
+  assert.equal(end.resumeLost, true);
+  assert.equal(end.errorMessage, undefined);
+  assert.equal(end.failure, undefined);
+  assert.equal(run.session.getSessionId(), freshId);
+});
+
+test('codex/app-server-resume-lost: a gone thread starts a new one and receives the full history as native items', { timeout: 20_000 }, async (t) => {
+  const run = startReplaySession('codex/app-server-resume-lost', { t, opts: { resumeSessionId: 'thread-replay-gone' } });
+  const full = {
+    header: 'Context handoff: 2 of 2 earlier chat entries included (0 omitted).',
+    entries: [
+      { role: 'user', text: '[user]\nThe project codename is PLUM-314.' },
+      { role: 'assistant', text: '[assistant]\nNoted.' },
+    ],
+    plainText: 'What is the codename?',
+  };
+  run.session.sendUserMessage('delta prompt', {
+    handoff: { ...full, entries: [full.entries[1]] },
+    resumeFallbackText: '<chat_history>PLUM-314</chat_history>\n\nWhat is the codename?',
+    resumeFallbackHandoff: full,
+  });
+  const end = await run.turnEnd(1);
+  await run.replay.settled();
+  run.replay.assertConsumed();
+
+  const frames = run.replay.spawns[0].process.run.stdinFrames;
+  const inject = frames.find((frame) => frame.method === 'thread/inject_items');
+  assert.equal(inject.params.items.length, 1 + full.entries.length, 'the full history, not the delta');
+  const turn = frames.find((frame) => frame.method === 'turn/start');
+  assert.deepEqual(turn.params.input, [{ type: 'text', text: full.plainText }]);
+  assert.equal(end.stopReason, 'completed');
+  assert.equal(end.resumeLost, true);
+  assert.equal(end.handoffUncertain, undefined);
+  assert.equal(run.events.some((event) => event.type === 'error'), false);
+  assert.equal(run.session.getSessionId(), 'thread-replay-2');
+});
+
 test("meta.terminate 'fail' drives the unproven-cleanup path", { timeout: 20_000 }, async (t) => {
   const text = readFileSync(providerReplayFixture('pi/text-turn'), 'utf8').split('\n');
   const meta = { ...JSON.parse(text[0]), terminate: 'fail' };

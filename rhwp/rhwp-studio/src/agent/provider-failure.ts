@@ -192,6 +192,12 @@ export interface TurnFailureCollector {
    * 그 메시지가 연 턴으로 본다. 붙잡은 허브 턴(기다리던 메시지 없음)은 그대로 사용자 턴이 아니다.
    */
   endTurn(event: Extract<AgentStreamEvent, { type: 'turn-end' }>, messageAwaitingTurn?: boolean): TurnFailureResult | null;
+  /**
+   * 맥락 압축이 실패했다(compaction failed). 허브는 끝까지 가지 못한 턴의 끝 바로 앞에서만 이것을 낸다.
+   * 턴 안이면 그 턴의 마지막 근거로 모아 둔다 — 턴 끝이 실패를 싣지 않았을 때(문구 없는 'failed')만 쓰고,
+   * 턴 끝의 분류된 실패·오류 문구가 먼저다. 턴 밖이면 버린다(사이드바의 압축 안내가 맡는다).
+   */
+  observeCompactionFailure(event: Extract<AgentStreamEvent, { type: 'compaction' }>, holding: boolean): void;
   /** chat-error 등으로 기다림이 끝났을 때 모아 둔 실패 하나를 내놓고 비운다. */
   flush(): ProviderFailure | null;
 }
@@ -199,6 +205,8 @@ export interface TurnFailureCollector {
 /** 한 턴의 error 들과 turn-end 를 실패 알림 하나로 모은다. */
 export function createTurnFailureCollector(): TurnFailureCollector {
   let held: ProviderFailure[] = [];
+  /** 이 턴의 실패한 맥락 압축 — 다른 근거가 없을 때만 쓴다. */
+  let compaction: ProviderFailure | null = null;
   let turnId: string | null = null;
   let userInitiated = false;
   /** 이 턴의 turn-start 를 봤다 */
@@ -207,6 +215,7 @@ export function createTurnFailureCollector(): TurnFailureCollector {
     held.find((failure) => failure.class !== 'unknown') ?? held[0] ?? null;
   const reset = () => {
     held = [];
+    compaction = null;
     turnId = null;
     userInitiated = false;
     began = false;
@@ -214,6 +223,7 @@ export function createTurnFailureCollector(): TurnFailureCollector {
   return {
     beginTurn(nextTurnId, initiated) {
       held = [];
+      compaction = null;
       turnId = nextTurnId;
       userInitiated = initiated;
       began = true;
@@ -231,6 +241,7 @@ export function createTurnFailureCollector(): TurnFailureCollector {
       const eventTurnId = typeof event.turnId === 'string' ? event.turnId : turnId;
       const initiated = began ? userInitiated : messageAwaitingTurn;
       const pending = firstHeld();
+      const compactionFailure = compaction;
       reset();
       // 허브가 사라져 Studio 가 만든 중단(interruption)은 별도 줄이 맡는다.
       if ((event as { interruption?: unknown }).interruption) return null;
@@ -242,9 +253,14 @@ export function createTurnFailureCollector(): TurnFailureCollector {
       } else {
         failure = readProviderFailure(event.failure, event.agent)
           ?? pending
-          ?? (event.errorMessage ? legacyProviderFailure(event.agent, event.errorMessage) : null);
+          ?? (event.errorMessage ? legacyProviderFailure(event.agent, event.errorMessage) : null)
+          ?? compactionFailure;
       }
       return failure ? { failure, turnId: eventTurnId, userInitiated: initiated } : null;
+    },
+    observeCompactionFailure(event, holding) {
+      if (!holding || event.phase !== 'failed') return;
+      compaction = legacyProviderFailure(event.agent, event.message || '맥락 압축에 실패했습니다.');
     },
     flush() {
       const failure = firstHeld();

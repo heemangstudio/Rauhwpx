@@ -1,4 +1,5 @@
 @import './styles/base.css';
+@import './styles/boot-screen.css';
 @import './styles/menu-bar.css';
 @import './styles/inline-rename.css';
 @import './styles/toolbar.css';

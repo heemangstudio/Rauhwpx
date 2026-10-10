@@ -50,7 +50,7 @@ test('an unseen finish notifies once per turn, showing only the app name and the
   assert.equal(h.notices.length, 1);
   assert.deepEqual(
     { title: h.notices[0]!.title, body: h.notices[0]!.body, channel: h.notices[0]!.channel },
-    { title: 'Rauhwpx', body: '작업을 마쳤습니다', channel: 'system' },
+    { title: 'HamaEditor', body: '작업을 마쳤습니다', channel: 'system' },
   );
   assert.doesNotMatch(JSON.stringify([h.notices[0]!.title, h.notices[0]!.body]), /사업/, 'no chat title or document name');
   h.report({ threadId: 'a', status: 'finished', key: 'turn-1:end' });
@@ -80,12 +80,12 @@ test('with chat details on, a system notice names the chat and the document; toa
   h.showDetails(true);
   h.report({ threadId: 'named', status: 'needs-input', key: 't2:input:q2', reason: 'question' });
   assert.deepEqual(h.notices.map((notice) => [notice.title, notice.body, notice.message]), [
-    ['Rauhwpx', '답변을 기다립니다', '사업 개요 다듬기 — 답변을 기다립니다'],
+    ['HamaEditor', '답변을 기다립니다', '사업 개요 다듬기 — 답변을 기다립니다'],
     ['사업 개요 다듬기', '답변을 기다립니다 · 사업 제안서.hwpx', '사업 개요 다듬기 — 답변을 기다립니다'],
   ], 'the setting is read at each notice');
   h.showDetails(false);
   h.report({ threadId: 'fail', status: 'failed', key: 't3:end', reason: 'error', summary: 'Claude 로그인이 필요해요' });
-  assert.deepEqual([h.notices[2]!.title, h.notices[2]!.body], ['Rauhwpx', 'Claude 로그인이 필요해요'],
+  assert.deepEqual([h.notices[2]!.title, h.notices[2]!.body], ['HamaEditor', 'Claude 로그인이 필요해요'],
     'a failure shows its fixed failure title');
 });
 
@@ -221,7 +221,7 @@ test('web notifications go out only when the site already has permission, and ne
   h.report({ threadId: 'b', status: 'needs-input', key: 'b:input:q', reason: 'question' });
   assert.equal(shown.length, 1);
   assert.deepEqual({ title: shown[0]!.title, body: shown[0]!.body, tag: shown[0]!.tag },
-    { title: 'Rauhwpx', body: '답변을 기다립니다', tag: 'b:input:q' });
+    { title: 'HamaEditor', body: '답변을 기다립니다', tag: 'b:input:q' });
   assert.equal(requested, 0, 'Studio never asks for permission');
   return Promise.resolve().then(() => {
     shown[0]!.onclick?.();

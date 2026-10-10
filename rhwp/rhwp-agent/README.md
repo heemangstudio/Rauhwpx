@@ -1,6 +1,6 @@
-# rhwp-agent
+# HamaEditor agent hub
 
-Local WebSocket hub. Claude, Codex, and Pi read and edit the document open in rhwp-studio through MCP. The hub owns chat workflow, downloads, and the Browserbase sidecar. Document logic stays in the browser.
+Local WebSocket hub. Claude, Codex, and Pi read and edit the document open in HamaEditor through MCP. The hub owns chat workflow, downloads, and the Browserbase sidecar. Document logic stays in the browser.
 
 ```text
 agent CLI ──spawn──► mcp-stdio.mjs ──ws──► server.mjs ◄──ws── rhwp-studio
@@ -82,6 +82,7 @@ Browserbase credentials come from the variables below or from Studio **Settings 
 | `RHWP_REFERENCES_DIR` | OS application-data directory | Reference file store |
 | `RHWP_PROVIDER_TRANSCRIPT_DIR` | unset (off) | Absolute directory. The hub records each provider CLI process's stdin, stdout, stderr and exit there as one NDJSON file, with credentials removed. Files keep prompts and document text: on macOS and Linux the folder is created 0700 and files 0600, an existing folder is narrowed to 0700, and the hub refuses to record (one warning on stderr) into a symbolic link, a folder owned by another user, or a group- or world-writable folder. Windows ignores those modes and files inherit the folder's ACL, so use a folder only you can read (for example under `%LOCALAPPDATA%`). A hub process writes at most 200 files of 8 MiB, and at its first recording deletes transcript files older than 14 days, then the oldest beyond 400 files or 1 GiB. The desktop app's hub ignores this variable unless `RHWP_PROVIDER_TRANSCRIPT_ALLOW_PRODUCTION` is also set. Replay them with `tests/provider-replay/` |
 | `RHWP_PROVIDER_TRANSCRIPT_ALLOW_PRODUCTION` | unset | Set to `1` to let a production hub (the desktop app's, `RHWP_AGENT_MODE=production` or `NODE_ENV=production`) honour `RHWP_PROVIDER_TRANSCRIPT_DIR`. Without it a directory left in a shell profile never records a user's documents |
+| `RHWP_PI_ROUTING_SORT` | `throughput` | OpenRouter provider sort for Pi: `throughput`, `latency`, `price`, or `off` (no provider routing preferences). Pi's `models.json` is rewritten at hub start, so restart the hub after changing it |
 | `BROWSERBASE_API_KEY` | — | Browserbase API key |
 | `BROWSERBASE_PROJECT_ID` | — | Browserbase project id |
 | `GEMINI_API_KEY` | — | Gemini key for the Browserbase sidecar |
@@ -108,6 +109,10 @@ npm run typecheck:acp
 ```
 
 `typecheck:acp` checks the shared backend contract. Install Studio dependencies first.
+
+`node scripts/pi-harness-check.mjs` runs the installed Pi binary against a local stub model and a fake hub, with no network. It checks the Pi system prompt, parallel reads, serialized writes, revision fill and retry, the finish check, and image pruning. It also plants extensions, skills, `mcp.json`, `.pi/` settings and `AGENTS.md` in the Pi home, the user home and the workspace, and checks that the parent and a subagent load only the bundled resources (`RHWP_PI_CHECK_BIN` picks another binary).
+
+The app's Pi runs only with resources from the app bundle. `pi/resources.mjs` passes the `pi/extension` files and `pi/skills` on every spawn and turns off extension, skill, prompt-template, theme, context-file and project-local discovery, so the user's own Pi setup is never read. The hub installs and keeps Pi at `PI_VERSION` in `pi-manager.mjs`; raise it only after rerunning the harness check and a live bench.
 
 ## Files
 

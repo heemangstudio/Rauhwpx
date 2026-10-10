@@ -98,6 +98,8 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=chat&play=1&hold=1&queue=2` | Two queued follow-ups while the reply is held |
 | `?scenario=chat&play=1&hold=1&queue=2&queueHold=stopped` | The queue held after 중지, with its reason and 보내기 |
 | `?scenario=chat&play=1&hold=1&queue=2&queueHold=gap` | The gap after a queued follow-up is sent at a normal end: the hub runs it but has not opened its turn yet. The mode chip and model pickers stay locked; switching chats now puts the message back at the head of that chat's queue, held as stopped |
+| `?scenario=compaction` | A turn with an automatic context compaction divider |
+| `?context=92` | Start the context meter at 92% (any 1–100) |
 | `?page=settings` | Production settings panel |
 | `?page=settings&fullscreen=1` | Settings inside the full-screen focus workspace |
 | `?page=versions` | Production version graph |
@@ -106,7 +108,8 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?page=settings&quota=error` | Provider quota errors and unknown health bars in AI |
 | `?page=settings&quota=empty` | Exhausted Codex quota and zero banked resets |
 | `?page=settings&quota=refresh-error` | Manual refresh fails once, then succeeds on retry |
-| `?initial-setup=1` | Production first-run setup wizard |
+| `?initial-setup=1` | Production first-run setup (theme, models, fonts) with the talking hippo |
+| `?initial-setup=deferred` | Setup postponed by a file launch: the `처음 설정` chip above the composer |
 | `?theme=dark&width=360` | Dark theme and narrow sidebar |
 | `?controls=0` | Hide preview controls for clean captures |
 | `?reset=1` | Clear preview storage before mounting |
@@ -119,7 +122,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?parallel=locked` | The first chat edits with a held reply and a second, new chat opens beside it, locked to 채팅 |
 | `?parallel=1&scenario=review&hold=1`, play, open a new chat, then `sidebarPreview.chats[0].mock.finishTurn()` | The hidden chat ends with edits to review: its row shows `검토 대기`, the chat-list button counts 1, and a toast `{제목} — 검토할 변경이 있습니다` offers **열기**, which shows that chat |
 | `?parallel=1&scenario=chat&hold=1`, play, open a new chat, then `sidebarPreview.chats[0].mock.failRunningTurn('auth')` | The hidden chat fails: a red ring with the short reason `로그인 필요` and a toast with the failure title |
-| `?attention=away&…` | The ledger behaves as if the window had no focus: notices for hidden chats go to the system sink (`알림: {제목} — {본문}` in the status line, `sidebarPreview.attentionNotices`) instead of toasts. By default a system notice is `Rauhwpx — 작업이 중단됐습니다`: the app name and the fixed phrase, no chat title or document name |
+| `?attention=away&…` | The ledger behaves as if the window had no focus: notices for hidden chats go to the system sink (`알림: {제목} — {본문}` in the status line, `sidebarPreview.attentionNotices`) instead of toasts. By default a system notice is `HamaEditor — 작업이 중단됐습니다`: the app name and the fixed phrase, no chat title or document name |
 | `?attention=away&notificationDetails=1&…` | The same with **알림에 채팅 제목과 문서 이름 표시** on: `{채팅 제목} — 작업이 중단됐습니다 · 사업 제안서.hwpx` |
 | `?notifications=granted&page=settings&destination=ai` | 설정 → AI → **알림** with the **백그라운드 채팅 알림** switch and the **알림에 채팅 제목과 문서 이름 표시** switch (off by default), shown on the web only when the site already has notification permission |
 | `?scenario=chat&play=1&hold=1&questionHeld=1` | A question that arrived while the composer had focus and text: the one-line 에이전트가 질문했어요 strip. Click it, or move focus out of the composer, to open the question |

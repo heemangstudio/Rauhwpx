@@ -14,7 +14,7 @@ const executablePath = findBrowserExecutable();
 assert(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable.');
 await mkdir(artifacts, { recursive: true });
 
-const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-turn-fold-check-'));
+const cacheDir = await mkdtemp(resolve(tmpdir(), 'hamaeditor-turn-fold-check-'));
 const server = await createServer({
   cacheDir,
   configFile: resolve(studio, 'vite.sidebar.config.ts'),

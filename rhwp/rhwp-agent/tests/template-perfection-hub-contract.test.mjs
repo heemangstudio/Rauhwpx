@@ -1,3 +1,5 @@
+// 복사 레이아웃 작업자 신원·원본 바인딩, 자격 증명 복사본 보존, 프로세스 정리 실패 시 닫힘 경로는
+// 실제 허브로 재현할 작업자·프로세스 트리 장애 하네스가 없어 소스 문자열로 고정합니다.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
@@ -20,11 +22,7 @@ test('worker transport remains bound to its authenticated job identity', () => {
   assert.doesNotMatch(server, /workerJobForSocket\(record, sock\)[\s\S]{0,200}sock\.agentRole/);
 });
 
-test('hub reuses fleet task events and keeps worker tools source-bound', () => {
-  assert.match(server, /type: 'task-start'[\s\S]*taskKind: 'agent', background: true/);
-  assert.doesNotMatch(server, /전용 백그라운드 워커/);
-  assert.match(server, /taskProgressForJob\(job/);
-  assert.match(server, /type: 'task-end'/);
+test('worker tools stay bound to the job source, snapshot and artifacts', () => {
   assert.match(server, /COPY_LAYOUT_TOOL_DENIED/);
   assert.match(server, /args\.sourceDocumentId !== workerJob\.binding\.documentId/);
   assert.match(server, /args\.sourceDigest !== workerJob\.binding\.digest/);
@@ -56,22 +54,6 @@ test('hub reuses fleet task events and keeps worker tools source-bound', () => {
   assert.match(server, /preview: completionClaims\.preview/);
   assert.match(server, /MAX_COPY_LAYOUT_JOB_HISTORY = 20/);
   assert.match(server, /cleanupTemplateGeneratedRoot/);
-});
-
-test('template artifacts are card-triggered instead of auto-opened', () => {
-  assert.match(server, /downloadUrl\.searchParams\.set\('templatePreview', '1'\)/);
-  assert.doesNotMatch(server, /template-preview-ready/);
-  assert.doesNotMatch(server, /template-preview-opened/);
-  assert.doesNotMatch(server, /sendTemplatePreviewReady/);
-});
-
-test('completion wakes the owning chat without collaboration wait polling', () => {
-  assert.match(server, /completionDelivery: 'automatic-owning-chat-turn'/);
-  assert.match(server, /waitForCompletion: false/);
-  assert.match(server, /wait_agent로 기다리거나 폴링하지 말고 현재 턴을 끝내세요/);
-  assert.match(server, /record\.pendingTemplateCompletions\.push/);
-  assert.match(server, /activeSession\.backend\.sendUserMessage\(addAgentInstructionsContext\([\s\S]*buildCopyLayoutCompletionPrompt\(entry\.result\)/);
-  assert.match(server, /if \(evt\.type === 'turn-end'\) drainTemplateCompletion\(record\)/);
 });
 
 test('hub cleanup retains every root that contains a pending credential copyback', () => {

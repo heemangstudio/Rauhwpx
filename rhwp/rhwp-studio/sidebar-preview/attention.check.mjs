@@ -365,7 +365,7 @@ export async function checkSystemNotices(page, origin, { details = false } = {})
   if (details) {
     const chatTitle = await page.evaluate((id) => [...document.querySelectorAll('.ag-root .ag-threads-item')]
       .find((item) => item.dataset.threadId === id)?.querySelector('.ag-threads-item-title')?.textContent, hidden);
-    assert.ok(chatTitle && chatTitle !== 'Rauhwpx', 'the hidden chat has a title of its own');
+    assert.ok(chatTitle && chatTitle !== 'HamaEditor', 'the hidden chat has a title of its own');
     assert.deepEqual(
       { title: state.systemNotices[0].title, body: state.systemNotices[0].body },
       { title: chatTitle, body: '작업이 중단됐습니다 · 사업 제안서.hwpx' },
@@ -374,7 +374,7 @@ export async function checkSystemNotices(page, origin, { details = false } = {})
   } else {
     assert.deepEqual(
       { title: state.systemNotices[0].title, body: state.systemNotices[0].body },
-      { title: 'Rauhwpx', body: '작업이 중단됐습니다' },
+      { title: 'HamaEditor', body: '작업이 중단됐습니다' },
       'by default the notice shows the app name and the fixed phrase only',
     );
   }

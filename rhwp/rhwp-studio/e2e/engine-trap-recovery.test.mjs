@@ -63,8 +63,9 @@ try {
   vite = await startVite({ vitePort, hubPort, token: HUB_TOKEN, logName: 'engine-trap-recovery-vite.log' });
   process.env.VITE_URL = `http://127.0.0.1:${vitePort}`;
   const {
-    runTest, assert, screenshot, sampleFetchPath, waitForState, clickEditArea, loadApp,
+    runTest, assert, screenshot, sampleFetchPath, waitForState, loadApp,
   } = await import('./helpers.mjs');
+  const { clickPage } = await import('./smoke/lib.mjs');
 
   function watchConsole(page) {
     page.on('console', (message) => {
@@ -110,7 +111,7 @@ try {
 
   /** 편집기에서 문서 맨 앞에 키보드로 입력한다. */
   async function typeAtStart(page, text) {
-    await clickEditArea(page);
+    await clickPage(page);
     await page.evaluate(() => {
       window.__inputHandler.focus?.();
       window.__inputHandler.cursor.moveTo({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 });

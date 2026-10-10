@@ -11,7 +11,7 @@ const artifacts = resolve(import.meta.dirname, 'artifacts');
 const executablePath = findBrowserExecutable();
 assert(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable.');
 await mkdir(artifacts, { recursive: true });
-const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-skill-editor-'));
+const cacheDir = await mkdtemp(resolve(tmpdir(), 'hamaeditor-skill-editor-'));
 const server = await createServer({ cacheDir, configFile: resolve(studio, 'vite.sidebar.config.ts'),
   server: { port: 0, open: false, hmr: false }, logLevel: 'error' });
 await server.listen();

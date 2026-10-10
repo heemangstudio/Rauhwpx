@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 
+import { APP_ID, PRODUCT_NAME } from './app-identity.mjs';
 import { SerializedStateWriter } from './serialized-state-writer.mjs';
 
 /**
@@ -55,7 +56,7 @@ export class WindowFrameStore {
     this.#screen = screen;
     this.#writer = new SerializedStateWriter({
       write: (snapshot) => writeAtomically(filePath, Buffer.from(snapshot, 'utf8')),
-      onError: (error) => console.warn('[rauhwpx] window frame persist failed:', error),
+      onError: (error) => console.warn('[hamaeditor] window frame persist failed:', error),
     });
   }
 
@@ -65,7 +66,7 @@ export class WindowFrameStore {
       const bounds = normalizeBounds(parsed?.bounds);
       this.#state = bounds ? { bounds, zoomed: parsed.zoomed === true } : null;
     } catch (error) {
-      if (error?.code !== 'ENOENT') console.warn('[rauhwpx] window frame state unreadable:', error);
+      if (error?.code !== 'ENOENT') console.warn('[hamaeditor] window frame state unreadable:', error);
       this.#state = null;
     }
   }
@@ -131,17 +132,14 @@ const ATTENTION_THREAD_INTERVAL_MS = 10_000;
 const ATTENTION_WINDOW_LIMIT = 6;
 const ATTENTION_WINDOW_SPAN_MS = 60_000;
 
-/** Windows 알림의 앱 id — 설치본의 시작 메뉴 바로가기(package.json build.appId)와 같아야 한다. */
-export const PACKAGED_APP_USER_MODEL_ID = 'com.hataewook.rauhwpx';
-
 /**
  * Windows 는 앱 id 가 시작 메뉴 바로가기의 id 와 같을 때만 그 앱의 알림을 띄운다. 설치본은
- * build.appId 를, 바로가기가 없는 개발 실행은 실행 파일 경로를 쓴다(Electron 이 권하는 개발용 id) —
+ * build.appId(APP_ID)를, 바로가기가 없는 개발 실행은 실행 파일 경로를 쓴다(Electron 이 권하는 개발용 id) —
  * 개발 실행이 설치된 앱의 id 로 알림을 가로채지 않는다. 다른 플랫폼은 아무것도 하지 않는다.
  */
 export function applyAppUserModelId({ app, platform = process.platform, execPath = process.execPath }) {
   if (platform !== 'win32') return null;
-  const id = app.isPackaged ? PACKAGED_APP_USER_MODEL_ID : execPath;
+  const id = app.isPackaged ? APP_ID : execPath;
   app.setAppUserModelId(id);
   return id;
 }
@@ -154,7 +152,7 @@ export function normalizeAttentionNotice(payload) {
   const threadId = typeof payload?.threadId === 'string' ? payload.threadId : '';
   if (!ATTENTION_THREAD_ID.test(threadId)) return null;
   const text = (value) => (typeof value === 'string' ? value.slice(0, ATTENTION_TEXT_MAX) : '');
-  return { threadId, title: text(payload.title) || 'Rauhwpx', body: text(payload.body) };
+  return { threadId, title: text(payload.title) || PRODUCT_NAME, body: text(payload.body) };
 }
 
 /** 배지 수 — 0~9999 의 정수. */
@@ -227,7 +225,7 @@ export class AgentAttention {
       if (this.#platform === 'darwin') this.#app.dock?.bounce('informational');
       else window.flashFrame?.(true);
     } catch (error) {
-      console.warn('[rauhwpx] agent attention flash failed:', error);
+      console.warn('[hamaeditor] agent attention flash failed:', error);
     }
     try {
       if (!this.#Notification?.isSupported?.()) return;
@@ -248,7 +246,7 @@ export class AgentAttention {
       notification.on('close', release);
       notification.show();
     } catch (error) {
-      console.warn('[rauhwpx] agent notification failed:', error);
+      console.warn('[hamaeditor] agent notification failed:', error);
     }
   }
 
@@ -306,7 +304,7 @@ export class AgentAttention {
       // Linux 는 .desktop 파일이 있는 런처(Unity 계열)에서만 보인다 — 없으면 조용히 false 다.
       this.#app.setBadgeCount?.(this.#total());
     } catch (error) {
-      console.warn('[rauhwpx] badge update failed:', error);
+      console.warn('[hamaeditor] badge update failed:', error);
     }
   }
 
@@ -321,7 +319,7 @@ export class AgentAttention {
         window.setOverlayIcon(null, '');
       }
     } catch (error) {
-      console.warn('[rauhwpx] taskbar overlay update failed:', error);
+      console.warn('[hamaeditor] taskbar overlay update failed:', error);
     }
   }
 

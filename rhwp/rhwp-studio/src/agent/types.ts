@@ -224,7 +224,7 @@ export interface TemplateCatalog {
   templates: DocumentTemplate[];
 }
 
-/** Rauhwpx가 별도 보관하고 이 앱의 채팅에만 주입하는 AGENTS.md. */
+/** HamaEditor가 별도 보관하고 이 앱의 채팅에만 주입하는 AGENTS.md. */
 export interface AgentInstructionsStatus {
   fileName: 'AGENTS.md';
   content: string;
@@ -517,12 +517,6 @@ export interface AgentSetupAuthStart {
   expiresAt?: string | null;
 }
 
-/** 요금제 — 한도 계산의 기준이 되므로 프로바이더별로 값이 다르다. */
-export type ClaudeUsagePlan = 'pro' | 'max5x' | 'max20x' | 'api';
-export type CodexUsagePlan = 'plus' | 'pro' | 'api';
-export type ApiOnlyUsagePlan = 'api';
-export type UsagePlan = ClaudeUsagePlan | CodexUsagePlan | ApiOnlyUsagePlan;
-
 /** 한 창(세션 5시간 / 오늘 / 주간)의 누적치. percent 는 한도가 없으면 null. */
 export interface UsageWindow {
   turns: number;
@@ -533,35 +527,13 @@ export interface UsageWindow {
   weightedTokens: number;
   /** 0–100 (초과 가능, 소수 첫째 자리). 한도가 없으면 null. */
   percent: number | null;
-  /** epoch ms — CLIProxyAPI 가 알려 준 창 리셋 시각. */
+  /** epoch ms — 창 리셋 시각. */
   resetsAt?: number | null;
 }
 
-/** 5시간·주간 막대의 출처. cliproxy 는 공식 요금제 %, estimate 는 로컬 추정치. */
-export type UsageSource = 'estimate' | 'cliproxy';
-
-export interface CliproxyWindow {
+export interface QuotaWindow {
   percent: number | null;
   resetsAt: number | null;
-}
-
-export interface CliproxyAccount {
-  agent: AgentName;
-  name: string;
-  email: string | null;
-  planType: string | null;
-  session: CliproxyWindow;
-  week: CliproxyWindow;
-  error: string | null;
-}
-
-export interface CliproxyStatus {
-  configured: boolean;
-  connected: boolean;
-  url: string | null;
-  error: string | null;
-  checkedAt: number | null;
-  accounts: CliproxyAccount[];
 }
 
 export interface UsageModelBreakdown {
@@ -581,13 +553,12 @@ export interface ProviderUsage {
   limit: { session5h: number | null; week: number | null };
   /** epoch ms — 마지막으로 사용량이 기록된 시각. */
   updatedAt: number | null;
-  source?: UsageSource;
 }
 
 export interface ProviderQuota {
   status: 'ok' | 'unavailable' | 'error';
-  session: CliproxyWindow;
-  week: CliproxyWindow;
+  session: QuotaWindow;
+  week: QuotaWindow;
   updatedAt: number | null;
   error: string | null;
   accountKey: string | null;
@@ -615,7 +586,6 @@ export interface RemoteBalance {
 export interface UsageSummary {
   plans: Record<AgentName, string>;
   providers: Record<AgentName, ProviderUsage>;
-  cliproxy?: CliproxyStatus;
   limits?: { claude: ProviderQuota; codex: ProviderQuota };
   balances?: Partial<Record<'openrouter' | 'grok' | 'opencode', RemoteBalance>>;
   /** pi(OpenRouter) 가 설정돼 있을 때만 온다. */
@@ -726,32 +696,6 @@ export interface CheckpointTitleResult {
   title: string;
   provider: CheckpointTitleProvider;
   model: string;
-}
-
-export function isClaudeUsagePlan(value: unknown): value is ClaudeUsagePlan {
-  return value === 'pro' || value === 'max5x' || value === 'max20x' || value === 'api';
-}
-
-export function isCodexUsagePlan(value: unknown): value is CodexUsagePlan {
-  return value === 'plus' || value === 'pro' || value === 'api';
-}
-
-export function isApiOnlyUsagePlan(value: unknown): value is ApiOnlyUsagePlan {
-  return value === 'api';
-}
-
-/** 프로바이더마다 허용 요금제가 다르다 — 표로 갈라 새 프로바이더가 조용히 섞이지 않게 한다. */
-const USAGE_PLAN_GUARDS: Record<AgentName, (value: unknown) => boolean> = {
-  claude: isClaudeUsagePlan,
-  codex: isCodexUsagePlan,
-  pi: isApiOnlyUsagePlan,
-  grok: isApiOnlyUsagePlan,
-  cursor: isApiOnlyUsagePlan,
-  opencode: isApiOnlyUsagePlan,
-};
-
-export function isUsagePlanForAgent(agent: AgentName, value: unknown): boolean {
-  return USAGE_PLAN_GUARDS[agent](value);
 }
 
 export type ProductSkillIcon =
@@ -907,8 +851,64 @@ export type AgentStreamEvent =
        * 있으면 끊긴 턴이고, errorMessage 는 옛 소비자를 위해 남긴 문구라 사이드바가 보이지 않는다.
        */
       interruption?: TurnInterruptionReason;
+      /** 성공한 턴에만 실린다. 이 채팅에서 이 프로바이더를 다시 열 때 쓰는 네이티브 세션 커서. */
+      providerSessionId?: string;
+      /** 이번 턴에 네이티브 재개가 실패했다. 이 프로바이더의 커서를 버린다. */
+      resumeLost?: true;
     }
-  | { type: 'error'; agent: AgentName; message: string; /** 허브가 분류한 실패 (새 허브만). */ failure?: ProviderFailure };
+  | { type: 'error'; agent: AgentName; message: string; /** 허브가 분류한 실패 (새 허브만). */ failure?: ProviderFailure }
+  /** 마지막 모델 호출이 끝났을 때 맥락 창을 차지한 토큰 수. 누적 과금량이 아니다. */
+  | { type: 'context-usage'; agent: AgentName; usedTokens: number; maxTokens?: number; autoCompact?: boolean }
+  | {
+      type: 'compaction';
+      agent: AgentName;
+      /** 압축 한 번에 하나. 같은 id 가 다시 와도 한 번만 반영한다. */
+      compactionId: string;
+      phase: 'started' | 'completed' | 'failed';
+      trigger: CompactionTrigger;
+      beforeTokens?: number;
+      afterTokens?: number;
+      message?: string;
+    };
+
+export type CompactionTrigger = 'auto' | 'manual';
+/** manual = chat-compact 지원, auto-only = 프로바이더가 스스로만 압축, none = 압축 없음. */
+export type CompactionSupport = 'manual' | 'auto-only' | 'none';
+
+/**
+ * chat-start 대화 항목 종류. question = 에이전트가 사용자에게 물은 질문, answer = 사용자의 답,
+ * tools/tasks = 한 묶음의 도구·하위 에이전트 요약, interrupted = 끝나지 못한 턴.
+ */
+export type ChatHistoryKind =
+  | 'message'
+  | 'question'
+  | 'answer'
+  | 'plan'
+  | 'tools'
+  | 'tasks'
+  | 'progress'
+  | 'error'
+  | 'interrupted';
+
+/** chat-start 의 history / handoffHistory 항목. */
+export interface ChatHistoryEntry {
+  role: 'user' | 'assistant';
+  text: string;
+  /** 없으면 'message'. */
+  kind?: ChatHistoryKind;
+  /** 이 항목을 만든 프로바이더. 사용자 항목은 그 메시지를 받은 프로바이더. */
+  agent?: AgentName;
+  /** 있으면 안정적인 id (messageId, activityId, planId, taskGroupId, interactionId). */
+  id?: string;
+}
+
+/** chat-start 에 싣는 프로바이더 맥락 창 정보. 허브가 넘겨줄 대화 예산을 정한다. */
+export interface ProviderContextUsage {
+  /** 재개할 네이티브 세션이 마지막으로 차지한 토큰. 커서를 보낼 때만 싣는다. */
+  usedTokens?: number;
+  /** 이 프로바이더의 마지막으로 알려진 맥락 창 크기. */
+  maxTokens?: number;
+}
 
 export type SidebarEvent =
   | {
@@ -934,6 +934,10 @@ export type SidebarEvent =
       phase: AgentPhase;
       capabilityEpoch: number | null;
       latestPlan: StructuredPlan | null;
+      /** 허브가 Studio 가 보낸 네이티브 커서로 세션을 이었다. */
+      resumed?: boolean;
+      /** 이 세션의 압축 지원. 모르는 허브면 빠진다(= none). */
+      compaction?: CompactionSupport;
     }
   | { type: 'chat-stopped' }
   | { type: 'user-question-requested'; interaction: UserQuestionInteraction; replayed?: boolean }

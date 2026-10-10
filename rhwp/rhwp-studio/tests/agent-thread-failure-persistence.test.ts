@@ -81,15 +81,19 @@ test('a corrupt failure is bounded, and a broken one falls back to a plain line'
   assert.ok(past[0].failure.resetAt !== null, 'a past reset is kept so the notice can say it has passed');
 
   const [plain] = storeAndReload([{ role: 'system', kind: 'error', text: '알림', failure: null }]);
-  assert.deepEqual(plain, { role: 'system', text: '알림' });
+  assert.deepEqual(plain, { role: 'system', text: '알림', severity: 'error' });
 });
 
-test('failure notices never enter provider history', () => {
+test('a failure notice enters provider history as one redacted error line, never with its resend payload', () => {
   const messages = storeAndReload([{ role: 'user', text: '요약해 줘' }, notice, { role: 'assistant', text: '요약입니다.' }]);
-  assert.deepEqual(serializeThreadMessagesForProviderHistory(messages), [
-    { role: 'user', text: '요약해 줘' },
-    { role: 'assistant', text: '요약입니다.' },
+  const history = serializeThreadMessagesForProviderHistory(messages);
+  // 다른 프로바이더로 넘어가도 무엇이 실패했는지 안다 — 글은 허브가 가린 실패 문구이고, 다시 보낼 요청은 싣지 않는다.
+  assert.deepEqual(history.map((entry) => [entry.role, entry.kind, entry.text]), [
+    ['user', 'message', '요약해 줘'],
+    ['assistant', 'error', "You've hit your limit"],
+    ['assistant', 'message', '요약입니다.'],
   ]);
+  assert.equal(JSON.stringify(history).includes('/templates 보고서'), false);
 });
 
 test('a retry that already carries the interruption block keeps that mark across a reload', () => {

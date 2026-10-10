@@ -1,6 +1,11 @@
 /**
- * E2E: 끊긴 턴(S3) — 실제 허브와 Vite 개발 서버, 가짜 Pi(턴을 끝내지 않는다)로 본다.
+ * E2E: 새로고침 뒤 다시 이어 붙기(S2)와 끊긴 턴(S3) — 실제 허브와 Vite 개발 서버, 가짜 Pi(턴을 끝내지
+ * 않는다)로 본다.
  *
+ * 0. 턴이 도는 중에, 그리고 공급자가 질문을 남긴 채 기다리는 중에 새로고침한다. 같은 채팅이 허브의 같은
+ *    프로바이더 세션·턴에 다시 붙고(chat-start·chat-stop·chat-interrupt 를 보내지 않는다) Stop 이 서고
+ *    AGENT_BUSY 줄이 없다. 질문은 만료되지 않고 그 단계와 입력하던 답으로 돌아오며, 제출한 답은 질문을
+ *    보낸 원래 공급자 호출이 받는다.
  * a. 질문을 기다리며 도는 턴에서 허브 프로세스를 죽이고(띄운 프로세스의 PID 로 SIGTERM) 같은 포트·토큰으로
  *    다시 띄운다. 그 자리에 "에이전트 허브가 다시 시작되어 작업이 중단됐어요" 줄과 이어서 진행이 서고, 질문
  *    카드는 "만료됨 · 허브 재시작"이다. 실패 알림과 옛 "~습니다" 줄은 없다. 이어서 진행은 chat-start 다음
@@ -21,20 +26,24 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { registerHubSession } from '../../../desktop/agent-hub.mjs';
 import {
-  ensureChromePath, findAvailablePort, removeTempDir, startHub, startVite, stopServer,
+  ensureChromePath, findAvailablePort, removeTempDir, startHub, startVite, stopServer, writeFakePi,
 } from './agent-bench-harness.mjs';
-import { prepareFakePi, seedFakePiPrefs } from './fake-pi.mjs';
 
 const HUB_TOKEN = 'interruption-recovery-e2e';
 const HUB_NOTICE = '에이전트 허브가 다시 시작되어 작업이 중단됐어요';
 const RELOAD_NOTICE = '페이지를 새로 고쳐 작업이 중단됐어요';
 const RESUME_TEXT = '이어서 진행해 주세요.';
+const ADOPT_PROMPT = 'Begin the turn a reload must not restart.';
+const QUESTION_DRAFT = 'Keep my reload\ndraft';
+/** 새로고침이 채팅을 다시 시작하거나 멈추면 보내는 프레임. 다시 이어 붙기는 이 중 어느 것도 보내지 않는다. */
+const RESTART_FRAMES = ['chat-start', 'chat-stop', 'chat-interrupt', 'chat-user-message'];
 
 ensureChromePath();
 const hubPort = await findAvailablePort(Number(process.env.RHWP_AGENT_PORT || 7950), 5);
 const vitePort = await findAvailablePort(Number(process.env.VITE_PORT || 7955), 5);
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rhwp-interruption-e2e-'));
-const piRoot = prepareFakePi('rhwp-interruption-pi-');
+// 턴을 끝낼 파일을 만들지 않으므로 가짜 Pi 의 턴은 열린 채로 남는다.
+const { piRoot } = writeFakePi(fixtureRoot);
 
 let hub = null;
 let hubStarts = 0;
@@ -65,6 +74,21 @@ async function restartHub() {
 
 async function hubHealth() {
   return (await fetch(`http://127.0.0.1:${hubPort}/healthz?token=${HUB_TOKEN}`)).json();
+}
+
+/** 이 창이 붙은 허브 세션의 기록. 앞 시나리오의 닫힌 창 세션이 허브에 남아 있어도 이 창의 것을 고른다. */
+async function windowHubRecord(page) {
+  const sessionId = await page.evaluate(() => window.__agentBridge?.getHubFontAccess?.()?.sessionId ?? null);
+  const health = await hubHealth();
+  const record = (health.sessions ?? []).find((entry) => entry.sessionId === sessionId) ?? null;
+  return { launchId: health.launchId, sessionId, record };
+}
+
+/** 새 채팅이 이 가짜 Pi 로 시작하도록 사이드바의 개인 기본값을 심는다. 다시 불러온 뒤부터 적용된다. */
+function seedFakePiPrefs(page) {
+  return page.evaluate(() => localStorage.setItem('rhwp-agent-prefs', JSON.stringify({
+    defaultAgent: 'pi', defaultModel: 'mock-model', defaultEffort: '', defaultMode: 'agent',
+  })));
 }
 
 /** 가짜 MCP 공급자 — 허브의 MCP 소켓으로 도구를 부른다(ask_user_question 은 답이 올 때까지 막힌다). */
@@ -160,6 +184,171 @@ try {
     await page.click('.ag-send');
   }
 
+  /** 새로고침 뒤 이 페이지가 허브로 보낸 채팅 프레임 종류를 모은다 (문서마다 새로 비운다). */
+  async function recordSentFrames(page) {
+    await page.evaluateOnNewDocument(() => {
+      window.__sentFrameTypes = [];
+      const send = WebSocket.prototype.send;
+      WebSocket.prototype.send = function sendAndRecord(data) {
+        if (typeof data === 'string') {
+          try { window.__sentFrameTypes.push(JSON.parse(data)?.type ?? null); } catch { /* JSON 이 아닌 프레임 */ }
+        }
+        return send.call(this, data);
+      };
+    });
+  }
+
+  /** 새로고침한 사이드바가 시작 채팅을 고를 때까지 — 다시 시작하는 결정이 있었다면 이미 내려졌다. */
+  const startupSettled = (page) => page.waitForFunction(
+    () => window.__documentSessions?.attached()?.activeChat?.sidebar?.startupChatSettled?.().then(() => true),
+    { timeout: 30_000, polling: 100 },
+  );
+
+  const withTimeout = (promise, ms, label) => Promise.race([
+    promise,
+    delay(ms, undefined, { ref: false }).then(() => { throw new Error(`${label}: no answer within ${ms} ms`); }),
+  ]);
+
+  /** 저장된 채팅(IndexedDB)에 질문 답 초안이 들어갈 때까지 기다린다 — 새로고침이 읽는 것은 저장본이다. */
+  const storedQuestionDraft = (page, threadId, draft) => page.waitForFunction(async (id, text) => {
+    const { openThreadsDatabase, THREADS_STORE } = await import('/src/agent/threads-db.ts');
+    const db = await openThreadsDatabase();
+    if (!db) return false;
+    try {
+      const stored = await new Promise((resolve, reject) => {
+        const request = db.transaction(THREADS_STORE).objectStore(THREADS_STORE).get(id);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const pending = stored?.pendingUserQuestion;
+      return pending?.activeQuestionIndex === 1 && pending.otherTextByQuestionId?.detail === text;
+    } finally {
+      db.close();
+    }
+  }, { timeout: 10_000, polling: 100 }, threadId, draft);
+
+  await runTest('Reloading while the agent works or waits on a question keeps that chat on the same provider turn', async ({ page }) => {
+    watchConsole(page);
+    await recordSentFrames(page);
+    await seedFakePiPrefs(page);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await connected(page);
+    step('send the first message');
+    await sendFromComposer(page, ADOPT_PROMPT);
+    await page.waitForFunction(() => window.__agentBridge?.getActiveAgent?.() === 'pi'
+      && window.__agentBridge?.isTurnRunning?.() === true, { timeout: 30_000 });
+    const { launchId, sessionId, record: before } = await windowHubRecord(page);
+    assert(before?.session?.status === 'running' && Boolean(before.session.turnId),
+      `The hub runs the turn before the reload (${JSON.stringify(before?.session ?? null)})`);
+    const threadId = (await shownState(page)).threadId;
+    assert(Boolean(threadId), 'The turn belongs to a stored chat');
+    const capabilities = await registerHubSession({ port: hubPort, token: HUB_TOKEN, launchId, sessionId });
+    provider = connectProvider(capabilities.mcp, sessionId);
+    await provider.opened;
+
+    // 채팅을 다시 시작하면(chat-start force·chat-stop) 허브가 프로바이더를 내려 세션 id 가 바뀌고 턴이 끝난다.
+    async function assertAdopted(label) {
+      const { sessionId: after, record } = await windowHubRecord(page);
+      assert(after === sessionId, `${label}: the window keeps its hub session`);
+      assert(record?.session?.sessionId === before.session.sessionId && record.session.turnId === before.session.turnId
+        && record.session.status === 'running',
+      `${label}: the same provider session and turn keep running (${JSON.stringify(record?.session ?? null)})`);
+      const sent = await page.evaluate(() => window.__sentFrameTypes ?? []);
+      const restarts = sent.filter((type) => RESTART_FRAMES.includes(type));
+      assert(restarts.length === 0, `${label}: the reloaded page sends no restart, stop or message (${restarts.join(', ') || 'none'})`);
+      const shown = await shownState(page);
+      assert(shown.threadId === threadId, `${label}: the sidebar shows the same chat`);
+      assert(shown.rowText === null, `${label}: the chat is not marked as cut off (${shown.rowText})`);
+      assert(!shown.systemLines.some((text) => text.includes('AGENT_BUSY')), `${label}: no AGENT_BUSY line`);
+      assert((await storedMarker(page, threadId))?.endedAt === null, `${label}: the stored turn stays open`);
+    }
+
+    step('reload while the turn runs');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await connected(page);
+    await startupSettled(page);
+    await page.waitForFunction((text) => window.__agentBridge?.isTurnRunning?.() === true
+      && Boolean(document.querySelector('.ag-send.ag-stop'))
+      && [...document.querySelectorAll('.ag-msg-user')].some((node) => node.textContent?.includes(text)),
+    { timeout: 15_000 }, ADOPT_PROMPT);
+    await assertAdopted('Reload during a running turn');
+    await screenshot(page, 'reload-adopt-running');
+
+    step('the agent asks a question; answer part of it');
+    const answered = provider.call('ask_user_question', {
+      questions: [
+        {
+          id: 'surface', header: 'Surface', multiSelect: true,
+          question: 'Which surfaces should be verified together?',
+          options: [
+            { label: 'Question', description: 'Verify the inline transcript question card.' },
+            { label: 'History', description: 'Verify the resolved history card.' },
+            { label: 'Reconnect', description: 'Verify reload reconstruction.' },
+          ],
+        },
+        {
+          id: 'detail', header: 'Details', allowOther: true,
+          question: 'Choose the follow-up.',
+          options: [
+            { label: 'Accessibility', description: 'Inspect keyboard order and the live region.' },
+            { label: 'Persistence', description: 'Inspect draft restoration in the same blocked provider turn.' },
+          ],
+        },
+      ],
+    });
+    await page.waitForSelector('.ag-user-question[data-inactive="false"] .ag-question-option', { timeout: 15_000 });
+    // 카드가 열리면 질문이 초점을 받아 숫자 키로 고른다.
+    await page.keyboard.press('1');
+    await page.keyboard.press('2');
+    await page.click('.ag-question-next');
+    await page.waitForFunction(() => document.querySelector('.ag-question-step')?.textContent === '2/2', { timeout: 10_000 });
+    await page.click('.ag-question-other');
+    const [firstLine, secondLine] = QUESTION_DRAFT.split('\n');
+    await page.type('.ag-input', firstLine);
+    await page.keyboard.down('Shift');
+    await page.keyboard.press('Enter');
+    await page.keyboard.up('Shift');
+    await page.type('.ag-input', secondLine);
+    await storedQuestionDraft(page, threadId, QUESTION_DRAFT);
+
+    step('reload while the question waits');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await connected(page);
+    await startupSettled(page);
+    await page.waitForFunction(
+      () => document.querySelector('.ag-user-question[data-inactive="false"] .ag-question-step')?.textContent === '2/2',
+      { timeout: 30_000 },
+    );
+    assert(await page.$eval('.ag-input', (input) => input.value) === QUESTION_DRAFT,
+      'The typed answer and its Shift+Enter newline come back after the reload');
+    assert(await page.$eval('.ag-user-question[data-inactive="false"]', (node) => node.nextElementSibling?.classList.contains('ag-composer')),
+      'The question is live above the composer again');
+    assert(!(await shownState(page)).cards.some((text) => text.includes('만료')), 'The question did not expire');
+    await assertAdopted('Reload with a question pending');
+    await page.click('.ag-question-back');
+    const selected = await page.$$eval('.ag-user-question[data-inactive="false"] .ag-question-option[data-selected="true"]',
+      (nodes) => nodes.map((node) => node.querySelector('.ag-question-option-label')?.textContent));
+    assert(selected.join(',') === 'Question,History', `The earlier card's choices come back (${selected.join(',')})`);
+    await page.click('.ag-question-next');
+    await page.waitForFunction(() => document.querySelector('.ag-question-step')?.textContent === '2/2', { timeout: 10_000 });
+    await screenshot(page, 'reload-adopt-question');
+
+    step('submit the answer');
+    await page.click('.ag-input');
+    await page.keyboard.press('Enter');
+    const response = await withTimeout(answered, 30_000, 'ask_user_question');
+    assert(response.ok === true && response.result?.status === 'answered',
+      `The provider call that asked before the reload receives the answer (${JSON.stringify(response.error ?? response.result?.status ?? null)})`);
+    assert(response.result?.answers?.surface?.selected?.join(',') === 'Question,History'
+      && response.result?.answers?.detail?.otherText === QUESTION_DRAFT,
+    'The provider receives the choices and the typed answer');
+    await page.waitForFunction(() => !document.querySelector('.ag-user-question[data-inactive="false"]')
+      && document.querySelector('.ag-messages .ag-question-history'), { timeout: 10_000 });
+    assert(await page.evaluate(() => window.__agentBridge?.isTurnRunning?.() === true), 'The turn keeps running after the answer');
+    provider.ws.close();
+    provider = null;
+  });
+
   await runTest('A hub restart mid-turn leaves a resumable interruption; a new tab after another restart shows it too', async ({ page, browser }) => {
     watchConsole(page);
     await seedFakePiPrefs(page);
@@ -172,10 +361,9 @@ try {
 
     step('the turn runs');
     // 공급자가 질문을 남긴 채 턴이 돈다.
-    const health = await hubHealth();
-    const sessionId = health.sessions?.[0]?.sessionId;
-    assert(Boolean(sessionId), 'The window session is registered with the hub');
-    const capabilities = await registerHubSession({ port: hubPort, token: HUB_TOKEN, launchId: health.launchId, sessionId });
+    const { launchId, sessionId, record } = await windowHubRecord(page);
+    assert(Boolean(sessionId) && record !== null, 'The window session is registered with the hub');
+    const capabilities = await registerHubSession({ port: hubPort, token: HUB_TOKEN, launchId, sessionId });
     provider = connectProvider(capabilities.mcp, sessionId);
     await provider.opened;
     void provider.call('ask_user_question', {
@@ -317,5 +505,4 @@ try {
   await stopServer(vite);
   await stopServer(hub);
   removeTempDir(fixtureRoot);
-  removeTempDir(piRoot);
 }

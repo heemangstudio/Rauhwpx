@@ -15,7 +15,7 @@ function harness(pickedPath) {
     BrowserWindow: { fromWebContents: () => ({}) },
     isTrustedSender: (event) => event.trusted !== false,
   });
-  const sender = { printToPDF: async () => Buffer.from('%PDF-1.7 rauhwpx') };
+  const sender = { printToPDF: async () => Buffer.from('%PDF-1.7 hamaeditor') };
   const invoke = (channel, arg, event = {}) => handlers.get(channel)({ sender, ...event }, arg);
   return { invoke, revealed };
 }
@@ -30,7 +30,7 @@ test('PDF 내보내기는 고른 위치에 한 번만 쓰고 경로를 renderer 
 
     const result = await invoke('desktop:export-pdf', target.token);
     assert.equal(result.fileName, '보고서.pdf');
-    assert.equal(await readFile(path.join(dir, '보고서.pdf'), 'utf8'), '%PDF-1.7 rauhwpx');
+    assert.equal(await readFile(path.join(dir, '보고서.pdf'), 'utf8'), '%PDF-1.7 hamaeditor');
     assert.deepEqual(await readdir(dir), ['보고서.pdf'], '임시 파일을 남기지 않는다');
 
     await assert.rejects(invoke('desktop:export-pdf', target.token), /만료/);

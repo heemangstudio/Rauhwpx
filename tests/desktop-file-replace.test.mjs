@@ -133,7 +133,7 @@ test('win32 replacement removes its temp file when the original stays locked', a
 });
 
 test('win32 replacement refuses to move a directory target aside', async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-replace-dir-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hamaeditor-replace-dir-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const target = path.join(directory, 'fonts.json');
   const temp = path.join(directory, 'fonts.tmp');
@@ -148,7 +148,7 @@ test('win32 replacement refuses to move a directory target aside', async (t) => 
 });
 
 test('win32 replacement recovery does not publish over a restored directory backup', async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-replace-dir-recovery-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hamaeditor-replace-dir-recovery-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const target = path.join(directory, 'fonts.json');
   const temp = path.join(directory, 'fonts.tmp');
@@ -164,7 +164,7 @@ test('win32 replacement recovery does not publish over a restored directory back
 });
 
 test('win32 replacement restores a directory that appears between lstat and rename', async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-replace-dir-race-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hamaeditor-replace-dir-race-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const target = path.join(directory, 'fonts.json');
   const temp = path.join(directory, 'fonts.tmp');
@@ -193,7 +193,7 @@ test('win32 replacement restores a directory that appears between lstat and rena
 });
 
 test('win32 replacement leaves a raced directory stranded when restore fails', async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-replace-dir-stranded-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hamaeditor-replace-dir-stranded-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const target = path.join(directory, 'fonts.json');
   const temp = path.join(directory, 'fonts.tmp');
@@ -227,7 +227,7 @@ test('win32 replacement leaves a raced directory stranded when restore fails', a
 });
 
 test('win32 replacement restores the target when post-aside lstat fails', async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-replace-lstat-fail-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hamaeditor-replace-lstat-fail-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const target = path.join(directory, 'fonts.json');
   const temp = path.join(directory, 'fonts.tmp');
@@ -259,7 +259,7 @@ test('win32 replacement restores the target when post-aside lstat fails', async 
 });
 
 test('win32 replacement reports rollback failure when post-aside lstat restore fails', async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-replace-lstat-rollback-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hamaeditor-replace-lstat-rollback-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const target = path.join(directory, 'fonts.json');
   const temp = path.join(directory, 'fonts.tmp');
@@ -296,7 +296,7 @@ test('win32 replacement reports rollback failure when post-aside lstat restore f
 });
 
 test('win32 recovery does not recursively delete a leftover directory backup', async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-replace-dir-leftover-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hamaeditor-replace-dir-leftover-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const target = path.join(directory, 'fonts.json');
   const previous = replaceTest.backupPath(target);
@@ -317,7 +317,7 @@ test('win32 recovery does not recursively delete a leftover directory backup', a
 });
 
 test('credential startup restores an interrupted win32 persistence backup', async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-vault-recover-win32-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hamaeditor-vault-recover-win32-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const filePath = path.join(directory, 'secrets.json');
   const safeStorage = {

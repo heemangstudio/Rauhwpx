@@ -1,4 +1,4 @@
-import type { SidebarBridge } from '../agent/bridge.ts';
+import type { ChatStartContextProvider, SidebarBridge } from '../agent/bridge.ts';
 import type * as T from '../agent/types.ts';
 import { deriveAgentEditingLease } from '../agent/editing-lease.ts';
 import {
@@ -24,6 +24,7 @@ export const scenarios = [
   'error',
   'writer-busy',
   'interrupted',
+  'compaction',
 ] as const;
 export type Scenario = (typeof scenarios)[number];
 
@@ -266,8 +267,8 @@ export function createMockBridge(
     history: string[];
   }> = [];
   /**
-   * 마지막 startChat 이 건넨 대화 기록 — 실제 브리지처럼 세션을 잃은 뒤 메시지가 스스로 여는 시작은 이
-   * 기록을 다시 싣는다(그 뒤의 대화는 빠진다).
+   * 마지막 chat-start 가 실은 대화 기록. 실제 브리지처럼 보내는 순간 사이드바의 맥락 제공자로 다시
+   * 만든다(제공자가 없으면 startChat 이 건넨 기록) — 세션을 잃은 뒤 메시지가 스스로 여는 시작도 같다.
    */
   let startHistory: string[] = [];
   let messagesSent = 0;
@@ -322,6 +323,29 @@ export function createMockBridge(
     latestPlan: null,
   };
   let question: T.UserQuestionInteraction | null = null;
+  /* 맥락 창 흉내 — ?context=92 로 시작 사용률을 고른다. */
+  const CONTEXT_MAX = 200_000;
+  const contextParam = Number(new URLSearchParams(location.search).get('context'));
+  let contextShare = contextParam > 0 && contextParam <= 100 ? contextParam / 100 : 0.31;
+  let compacting: string | null = null;
+  let contextProvider: ChatStartContextProvider | null = null;
+  /** 마지막 chat-start 가 실은 맥락 — 넘겨받기 흐름을 브라우저 검사에서 확인한다. */
+  let lastChatStart: { agent: T.AgentName; providerSessionId: string | null; handoff: number; history: number } | null = null;
+  const sessionCompaction = (provider: T.AgentName): T.CompactionSupport =>
+    provider === 'pi' ? 'auto-only' : 'manual';
+  /** chat-start 를 보낸 것으로 친다: 그 순간의 맥락(대화·커서·넘겨받기)을 읽어 남긴다. */
+  const recordChatStart = () => {
+    const context = contextProvider?.({ agent, threadId }) ?? null;
+    if (context) startHistory = context.history.map((entry) => entry.text);
+    lastChatStart = {
+      agent,
+      providerSessionId: context?.providerSessionId ?? null,
+      handoff: context?.handoffHistory?.length ?? 0,
+      history: context?.history.length ?? 0,
+    };
+    chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission, history: [...startHistory] });
+    return context;
+  };
   let activeTemplate: T.DocumentTemplate | null = null;
   let changes: T.PendingChangeSet[] = [];
   const changeEvents: T.PendingEditsChangeEvent['type'][] = [];
@@ -387,9 +411,26 @@ export function createMockBridge(
     running = value;
     leaseListeners.forEach((listener) => listener(bridge.getEditingLease()));
   };
+  /** 허브처럼 턴이 끝날 때 끝나지 않은 수동 압축을 failed 로 닫는다(완료는 압축 흐름이 직접 보낸다). */
+  const settleCompaction = () => {
+    if (!compacting) return;
+    stream({ type: 'compaction', agent, compactionId: compacting, phase: 'failed', trigger: 'manual' });
+    compacting = null;
+  };
   const finish = (stopReason = 'completed', errorMessage?: string) => {
     setRunning(false);
-    stream({ type: 'turn-end', agent, stopReason, ...(errorMessage ? { errorMessage } : {}) });
+    const completed = stopReason === 'completed';
+    settleCompaction();
+    if (completed) {
+      stream({ type: 'context-usage', agent, usedTokens: Math.round(CONTEXT_MAX * contextShare), maxTokens: CONTEXT_MAX });
+    }
+    stream({
+      type: 'turn-end',
+      agent,
+      stopReason,
+      ...(errorMessage ? { errorMessage } : {}),
+      ...(completed ? { providerSessionId: `preview-${agent}-${threadId}` } : {}),
+    });
   };
   /**
    * 허브가 다시 떴다(실제 브리지가 welcome {session:null} 로 아는 것과 같은 모양): 기다리던 질문은
@@ -403,6 +444,8 @@ export function createMockBridge(
     completeQuestion({ status: 'expired', reason: 'hub-restarted' });
     hubChatThreadId = null;
     sessionLost = true;
+    // 죽은 허브는 압축의 끝을 보내지 못한다 — 실제처럼 아무것도 보내지 않고 잊는다.
+    compacting = null;
     if (!running) return;
     setRunning(false);
     stream({
@@ -429,11 +472,13 @@ export function createMockBridge(
       const message = 'Invalid API key · Please run /login';
       stream({ type: 'error', agent, message });
       setRunning(false);
+      settleCompaction();
       stream({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: message, turnId });
       return;
     }
     stream({ type: 'error', agent, message: failure.message, failure });
     setRunning(false);
+    settleCompaction();
     stream({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: failure.message, failure, turnId });
   };
   const updatePlanExecution = (execution: NonNullable<T.StructuredPlan['execution']>) => {
@@ -770,22 +815,6 @@ export function createMockBridge(
       data.usage.plans[provider] = plan;
       return data.usage;
     },
-    connectCliproxy: async () => {
-      data.usage.cliproxy = {
-        configured: true,
-        connected: true,
-        url: 'https://usage.example.test',
-        error: null,
-        checkedAt: Date.now(),
-        accounts: [],
-      };
-      report('Sample usage account connected');
-      return data.usage;
-    },
-    disconnectCliproxy: async () => {
-      delete data.usage.cliproxy;
-      return data.usage;
-    },
     requestPiStatus: async () => data.pi,
     installPi: async () => {
       await bridge.installAgent('pi');
@@ -858,10 +887,13 @@ export function createMockBridge(
         capabilityEpoch: 1,
         latestPlan: null,
       };
+      const context = recordChatStart();
       const started: T.SidebarEvent = {
         type: 'chat-started',
         agent,
         sessionId: 'preview-session',
+        resumed: Boolean(context?.providerSessionId),
+        compaction: sessionCompaction(agent),
         model: model ?? defaultModelForAgent(agent),
         effort,
         permissionProfile: permission,
@@ -871,7 +903,6 @@ export function createMockBridge(
         documentName,
         ...workflow,
       };
-      chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission, history: [...startHistory] });
       hubChatThreadId = null;
       later(() => {
         if (chatGeneration !== startGeneration) return;
@@ -882,10 +913,41 @@ export function createMockBridge(
         emit(started);
       }, chatStartDelayMs);
     },
+    setChatStartContextProvider: (provider) => {
+      contextProvider = provider;
+    },
+    compactChat: async () => {
+      if (running) return { ok: false, code: 'AGENT_BUSY', message: 'A turn is already in progress.' };
+      if (sessionCompaction(agent) !== 'manual') return { ok: false, code: 'COMPACTION_UNSUPPORTED', message: '' };
+      const turnGeneration = ++generation;
+      const compactionId = `preview-compaction-${turnGeneration}`;
+      later(() => {
+        if (generation !== turnGeneration) return;
+        setRunning(true);
+        compacting = compactionId;
+        stream({ type: 'turn-start', agent, turnId: `turn-${turnGeneration}` });
+        stream({ type: 'compaction', agent, compactionId, phase: 'started', trigger: 'manual' });
+        if (holdReply) return;
+        later(() => {
+          if (generation !== turnGeneration) return;
+          const beforeTokens = Math.round(CONTEXT_MAX * contextShare);
+          contextShare = 0.21;
+          compacting = null;
+          stream({
+            type: 'compaction', agent, compactionId, phase: 'completed', trigger: 'manual',
+            beforeTokens, afterTokens: Math.round(CONTEXT_MAX * contextShare),
+          });
+          finish();
+        }, 1400);
+      });
+      return { ok: true, compactionId };
+    },
     stopChat: () => {
       stops += 1;
       hubChatThreadId = null;
       startPending = false;
+      // chat-stopped 가 사이드바의 압축 상태를 지운다 — 다음 턴 끝에 옛 압축을 실패로 알리지 않는다.
+      compacting = null;
       generation++;
       chatGeneration++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
@@ -921,9 +983,9 @@ export function createMockBridge(
         return receipt;
       }
       if (sessionLost && !startPending) {
-        // 실제 브리지: 세션이 없으면 마지막 startChat 의 대화 기록으로 chat-start 를 보낸 뒤 메시지를 보낸다.
+        // 실제 브리지: 세션이 없으면 지금 스레드의 대화와 커서로 chat-start 를 다시 보낸 뒤 메시지를 보낸다.
         sessionLost = false;
-        chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission, history: [...startHistory] });
+        recordChatStart();
         hubChatThreadId = threadId;
       }
       const turnGeneration = ++generation;
@@ -978,6 +1040,9 @@ export function createMockBridge(
             later(() => { if (generation === turnGeneration) restartHub(); }, 900);
           }, 400);
           return;
+        }
+        if (reply === 'compaction') {
+          stream({ type: 'compaction', agent, compactionId: `preview-auto-${turnGeneration}`, phase: 'started', trigger: 'auto' });
         }
         stream({
           type: 'tool-call',
@@ -1048,6 +1113,14 @@ export function createMockBridge(
                   : JSON.stringify([{ type: 'text', text: JSON.stringify(call.result ?? {}) }]).slice(0, 2000),
               });
             }
+          }
+          if (reply === 'compaction') {
+            const beforeTokens = Math.round(CONTEXT_MAX * 0.93);
+            contextShare = 0.2;
+            stream({
+              type: 'compaction', agent, compactionId: `preview-auto-${turnGeneration}`, phase: 'completed', trigger: 'auto',
+              beforeTokens, afterTokens: Math.round(CONTEXT_MAX * contextShare),
+            });
           }
           if (reply === 'writer-busy') {
             // 스튜디오가 문서에 닿기 전에 거절하고, 프로바이더가 같은 오류를 받는다.
@@ -1622,6 +1695,8 @@ export function createMockBridge(
       type: 'chat-started',
       agent,
       sessionId: 'preview-session',
+      // 허브의 welcome 세션 요약처럼 압축 지원을 싣는다 — 이어 받은 채팅도 수동 압축을 쓴다.
+      compaction: sessionCompaction(agent),
       model: defaultModelForAgent(agent),
       permissionProfile: permission,
       serviceTier: tier,
@@ -1775,6 +1850,8 @@ export function createMockBridge(
     },
     /** 다음 사용자 메시지를 허브가 이 코드로 거절하게 한다. */
     rejectNextMessage: (code = 'AGENT_BUSY') => { rejectNext = code; },
+    /** 허브가 같은 이벤트를 다시 보내는 경우(재전송·중복)를 흉내 낸다. */
+    emitAgentEvent: (event: T.AgentStreamEvent) => stream(event),
     /** Delivers one provider event as the hub would, e.g. a token-by-token answer for benches. */
     streamEvent: stream,
     boot: () => {
@@ -1803,6 +1880,7 @@ export function createMockBridge(
       changeEvents: [...changeEvents],
       references: references.length,
       browserbase: browserbaseState,
+      lastChatStart,
     }),
   };
 }

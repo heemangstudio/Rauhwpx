@@ -103,7 +103,7 @@ function shell({ title, body }) {
 </head>
 <body>
 <div class="wrap">
-  <div class="brand"><span class="mark" aria-hidden="true"></span>Rauhwpx</div>
+  <div class="brand"><span class="mark" aria-hidden="true"></span>HamaEditor</div>
   ${body}
 </div>
 </body>
@@ -113,7 +113,7 @@ function shell({ title, body }) {
 export function renderUniqueInstallsPage({ uniqueInstalls }) {
   const count = Number.isSafeInteger(uniqueInstalls) && uniqueInstalls >= 0 ? uniqueInstalls : 0;
   return shell({
-    title: 'Rauhwpx 고유 설치',
+    title: 'HamaEditor 고유 설치',
     body: `
 <section class="card">
   <div class="hero"><span></span></div>

@@ -1,4 +1,5 @@
-/* 첫 실행 카드 — 편집기 위에 뜨는 작은 카드 하나. 색은 앱 중성 램프를 따른다. */
+/* 첫 실행 설정 — 편집기 위에 뜨는 작은 카드 하나. 설명은 하마의 말풍선이 맡고 화면에는
+   고를 것만 둔다. 색은 앱 중성 램프를 따르고, 테마 미리보기만 두 테마의 실제 값을 그린다. */
 
 .rhwp-setup-overlay {
   position: fixed;
@@ -33,7 +34,7 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 24px;
+  padding: 20px 24px 24px;
   overflow-y: auto;
   overscroll-behavior-y: contain;
   overflow-anchor: none;
@@ -60,12 +61,144 @@
   transform: none;
 }
 
-.rhwp-setup-title {
-  margin: 0;
-  font-size: var(--ag-fs-title);
-  font-weight: var(--ag-fw-strong);
-  line-height: var(--ag-lh-tight);
+/* ── 하마와 말풍선 ── */
+
+.rhwp-setup-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.rhwp-setup-hippo {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+/* 하마가 서는 자리. 반짝임은 여기 붙여 공중제비에 같이 돌지 않게 한다. */
+.rhwp-setup-hippo-stage {
+  position: relative;
+  flex: none;
+  width: 78px;
+  height: 60px;
+  cursor: default;
+}
+
+/* 26×20 칸 여섯 개(닫음·말함·벌림·깜빡임·걸음·웅크림)를 3배로 키운다. 움직임은 hippo.ts 가
+   transform 을 3px·90° 단위로 바꿔 만든다. */
+.rhwp-setup-hippo-sprite {
+  display: block;
+  width: 78px;
+  height: 60px;
+  background: url('/images/boot/hama-sprites.png') 0 0 / 468px 60px no-repeat;
+  image-rendering: pixelated;
+  transform-origin: 50% 60%;
+}
+
+/* 마지막 장면: 머리 위 반짝임 두 개가 번갈아 깜빡인다. */
+.rhwp-setup-hippo[data-excited='true'] .rhwp-setup-hippo-stage::before,
+.rhwp-setup-hippo[data-excited='true'] .rhwp-setup-hippo-stage::after {
+  content: '';
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  background: #62b3e2; /* token-ok */
+  box-shadow:
+    0 -3px 0 #62b3e2, 0 3px 0 #62b3e2, -3px 0 0 #62b3e2, 3px 0 0 #62b3e2; /* token-ok */
+  animation: rhwp-setup-twinkle 600ms steps(1, end) infinite;
+}
+
+.rhwp-setup-hippo[data-excited='true'] .rhwp-setup-hippo-stage::before {
+  left: 33px;
+  top: -18px;
+}
+
+.rhwp-setup-hippo[data-excited='true'] .rhwp-setup-hippo-stage::after {
+  left: 69px;
+  top: -6px;
+  animation-delay: -300ms;
+}
+
+@keyframes rhwp-setup-twinkle {
+  0% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.rhwp-setup-dialog[data-step='done'] .rhwp-setup-body {
+  display: none;
+}
+
+.rhwp-setup-say {
+  position: relative;
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: calc(2 * var(--ag-lh-body, 1.45) * var(--ag-fs-body) + 20px);
+  margin: 0 0 22px;
+  padding: 10px 12px;
+  border-radius: var(--ag-r-card);
+  background: var(--n-ink-fill-soft);
+  font-size: var(--ag-fs-body);
+  line-height: var(--ag-lh-body, 1.45);
   letter-spacing: var(--ag-track-tight);
+  word-break: keep-all;
+}
+
+/* 하마 입 쪽을 가리키는 꼬리 */
+.rhwp-setup-say::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  bottom: 12px;
+  border-width: 6px 6px 6px 0;
+  border-style: solid;
+  border-color: transparent var(--n-ink-fill-soft) transparent transparent;
+}
+
+.rhwp-setup-skip {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: -4px -8px 0 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--n-ink-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.rhwp-setup-skip:hover {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.rhwp-setup-skip:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+/* ── 단계 ── */
+
+.rhwp-setup-body {
+  min-height: 0;
+}
+
+.rhwp-setup-panel[hidden] {
+  display: none;
+}
+
+.rhwp-setup-panel {
+  animation: rhwp-setup-panel-in var(--ag-dur-slow) var(--ag-spring) both;
+}
+
+@keyframes rhwp-setup-panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
 }
 
 .rhwp-setup-providers {
@@ -80,7 +213,8 @@
   display: none;
 }
 
-.rhwp-setup-grid {
+.rhwp-setup-grid,
+.rhwp-setup-themes {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
@@ -92,28 +226,13 @@
   }
 }
 
-.rhwp-setup-card {
-  min-width: 0;
-  animation: rhwp-setup-card-in var(--ag-dur-slow) var(--ag-spring) both;
-}
-
-.rhwp-setup-card:nth-child(2) { animation-delay: 40ms; }
-.rhwp-setup-card:nth-child(3) { animation-delay: 80ms; }
-
-@keyframes rhwp-setup-card-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: none; }
-}
-
-.rhwp-setup-card-action {
+/* 고를 것 하나하나: 테마 타일·모델 카드·글꼴 버튼이 같은 면을 쓴다. */
+.rhwp-setup-theme,
+.rhwp-setup-card-action,
+.rhwp-setup-font-action {
   position: relative;
   box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
   width: 100%;
-  padding: 16px 8px 12px;
   border: 1px solid transparent;
   border-radius: var(--ag-r-card);
   background: var(--n-ink-fill-soft);
@@ -123,23 +242,145 @@
   transition: var(--ag-transition-color);
 }
 
-.rhwp-setup-card-action:hover {
+.rhwp-setup-theme:hover,
+.rhwp-setup-card-action:hover,
+.rhwp-setup-font-action:hover {
   background: var(--n-ink-fill-hover);
 }
 
-.rhwp-setup-card-action:active {
+.rhwp-setup-theme:active,
+.rhwp-setup-card-action:active,
+.rhwp-setup-font-action:active {
   background: var(--n-ink-fill-pressed);
   transition: none;
 }
 
-.rhwp-setup-card-action:focus-visible {
+.rhwp-setup-theme:focus-visible,
+.rhwp-setup-card-action:focus-visible,
+.rhwp-setup-font-action:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: var(--ag-focus-offset);
 }
 
-.rhwp-setup-card[data-configured='true'] .rhwp-setup-card-action {
+.rhwp-setup-theme[aria-checked='true'],
+.rhwp-setup-card[data-configured='true'] .rhwp-setup-card-action,
+.rhwp-setup-font-action[data-done='true'] {
   border-color: var(--n-ink);
   background: var(--n-surface);
+}
+
+.rhwp-setup-check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  opacity: 0;
+  transform: scale(0.5);
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    transform var(--ag-dur-base) var(--ag-spring);
+}
+
+.rhwp-setup-check .ag-icon {
+  width: 11px;
+  height: 11px;
+}
+
+.rhwp-setup-theme[aria-checked='true'] .rhwp-setup-check,
+.rhwp-setup-card[data-configured='true'] .rhwp-setup-check,
+.rhwp-setup-font-action[data-done='true'] .rhwp-setup-check {
+  opacity: 1;
+  transform: none;
+}
+
+/* ── 테마 미리보기: 크롬 막대와 흰 용지. 용지는 두 테마 모두 흰색이다. ── */
+
+.rhwp-setup-theme {
+  padding: 8px;
+}
+
+.rhwp-setup-theme-preview {
+  display: flex;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: var(--ag-r-chip);
+  box-shadow: inset 0 0 0 1px var(--n-ink-hairline);
+}
+
+.rhwp-setup-theme-pane {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.rhwp-setup-theme-pane[data-tone='light'] {
+  background: #e4e4ea; /* token-ok */
+}
+
+.rhwp-setup-theme-pane[data-tone='dark'] {
+  background: #191919; /* token-ok */
+}
+
+.rhwp-setup-theme-bar {
+  align-self: stretch;
+  flex: none;
+  height: 22%;
+}
+
+.rhwp-setup-theme-pane[data-tone='light'] .rhwp-setup-theme-bar {
+  background: #f7f7f8; /* token-ok */
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.08); /* token-ok */
+}
+
+.rhwp-setup-theme-pane[data-tone='dark'] .rhwp-setup-theme-bar {
+  background: #181818; /* token-ok */
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.08); /* token-ok */
+}
+
+.rhwp-setup-theme-page {
+  width: 54%;
+  flex: 1 1 auto;
+  margin-top: 14%;
+  border-radius: 1px;
+  background: #ffffff; /* token-ok */
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); /* token-ok */
+}
+
+/* 시스템: 왼쪽 밝게, 오른쪽 어둡게. 용지가 가운데에서 이어지게 반씩 붙인다. */
+.rhwp-setup-theme[data-mode='system'] .rhwp-setup-theme-pane[data-tone='light'] {
+  align-items: flex-end;
+}
+
+.rhwp-setup-theme[data-mode='system'] .rhwp-setup-theme-pane[data-tone='dark'] {
+  align-items: flex-start;
+}
+
+.rhwp-setup-theme[data-mode='system'] .rhwp-setup-theme-page {
+  width: 54%;
+  border-radius: 0;
+}
+
+/* ── 모델 카드 ── */
+
+.rhwp-setup-card {
+  min-width: 0;
+}
+
+.rhwp-setup-card-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 16px 8px 12px;
 }
 
 .rhwp-setup-card-logo {
@@ -196,58 +437,123 @@
   line-height: var(--ag-lh-tight);
 }
 
-.rhwp-setup-card-vendor {
-  font-size: var(--ag-fs-secondary);
-  line-height: var(--ag-lh-tight);
-  color: var(--n-ink-secondary);
+/* ── 글꼴: 찾기와 한컴오피스 받기 두 칸, 못 찾았을 때만 폴더 링크 ── */
+
+.rhwp-setup-font-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
-.rhwp-setup-card-check {
-  position: absolute;
-  top: 8px;
-  right: 8px;
+.rhwp-setup-font-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 8px 14px;
+}
+
+.rhwp-setup-font-icon {
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--ag-primary-bg);
-  color: var(--ag-primary-fg);
-  opacity: 0;
-  transform: scale(0.5);
-  transition:
-    opacity var(--ag-dur-fast) var(--ag-ease-out),
-    transform var(--ag-dur-base) var(--ag-spring);
+  width: 32px;
+  height: 32px;
+  color: var(--n-ink);
 }
 
-.rhwp-setup-card-check svg {
-  width: 11px;
-  height: 11px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.rhwp-setup-font-icon .ag-icon {
+  width: 22px;
+  height: 22px;
 }
 
-.rhwp-setup-card[data-configured='true'] .rhwp-setup-card-check {
-  opacity: 1;
-  transform: none;
+.rhwp-setup-font-action[aria-busy='true'] .rhwp-setup-font-icon {
+  animation: rhwp-setup-search 900ms var(--ag-ease-out) infinite alternate;
 }
+
+@keyframes rhwp-setup-search {
+  from { transform: translateX(-3px); }
+  to { transform: translateX(3px); }
+}
+
+.rhwp-setup-font-label {
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  letter-spacing: var(--ag-track-tight);
+  line-height: var(--ag-lh-tight);
+}
+
+.rhwp-setup-font-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  margin-top: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--n-ink-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.rhwp-setup-font-folder[hidden] {
+  display: none;
+}
+
+.rhwp-setup-font-folder:hover {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.rhwp-setup-font-folder:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+/* ── 아래: 진행 점과 다음 ── */
 
 .rhwp-setup-footer {
   position: sticky;
   bottom: 0;
   display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.rhwp-setup-dots[hidden] {
+  display: none;
+}
+
+.rhwp-setup-dots {
+  display: flex;
+  gap: 6px;
+}
+
+/* 픽셀 하마에 맞춰 점도 각지게 둔다. */
+.rhwp-setup-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--n-ink-quaternary);
+  transition: background var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.rhwp-setup-dot[data-current='true'] {
+  background: var(--n-ink);
 }
 
 .rhwp-setup-primary {
-  flex: 1 1 auto;
-  height: 40px;
+  flex: 0 0 auto;
+  min-width: 96px;
+  height: 36px;
+  margin-left: auto;
+  padding: 0 16px;
   border: 0;
   border-radius: var(--ag-r-row);
-  background: var(--n-ink-fill-hover);
-  color: var(--n-ink);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
   font: inherit;
   font-size: var(--ag-fs-body);
   font-weight: var(--ag-fw-medium);
@@ -257,11 +563,11 @@
 }
 
 .rhwp-setup-primary:hover {
-  background: var(--n-ink-fill-pressed);
+  background: var(--ag-primary-bg-hover);
 }
 
 .rhwp-setup-primary:active {
-  background: var(--n-ink-hairline-strong);
+  background: var(--ag-primary-bg-pressed);
   transition: none;
 }
 
@@ -270,24 +576,15 @@
   outline-offset: var(--ag-focus-offset);
 }
 
-.rhwp-setup-dialog[data-ready='true'] .rhwp-setup-primary {
-  background: var(--ag-primary-bg);
-  color: var(--ag-primary-fg);
-}
-
-.rhwp-setup-dialog[data-ready='true'] .rhwp-setup-primary:hover {
-  background: var(--ag-primary-bg-hover);
-}
-
-.rhwp-setup-dialog[data-ready='true'] .rhwp-setup-primary:active {
-  background: var(--ag-primary-bg-pressed);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .rhwp-setup-overlay,
   .rhwp-setup-dialog,
-  .rhwp-setup-card,
-  .rhwp-setup-card-check {
+  .rhwp-setup-panel,
+  .rhwp-setup-check,
+  .rhwp-setup-dot,
+  .rhwp-setup-font-icon,
+  .rhwp-setup-hippo-stage::before,
+  .rhwp-setup-hippo-stage::after {
     animation: none;
     transition: none;
   }

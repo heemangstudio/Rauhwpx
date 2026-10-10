@@ -1,10 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { registerHooks } from 'node:module';
 import { PendingRequestRegistry } from '../src/agent/pending-requests.ts';
 
-const bridge = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
-const types = readFileSync(new URL('../src/agent/types.ts', import.meta.url), 'utf8');
+// bridge.ts 는 오버레이 css 를 함께 들여온다 — node 테스트에서는 빈 모듈로 대체한다.
+registerHooks({
+  load(url, context, nextLoad) {
+    if (/\.css$/.test(url)) return { format: 'module', source: 'export default {};', shortCircuit: true };
+    return nextLoad(url, context);
+  },
+});
+
+const { AgentBridgeImpl } = await import('../src/agent/bridge.ts');
 
 // ─── 요청/응답 짝 맞추기 (실제 모듈) ────────────────────────
 
@@ -47,96 +54,67 @@ test('연결이 끊기면 대기 중인 모든 요청이 null 로 닫힌다', as
   assert.equal(registry.size, 0);
 });
 
-// ─── 브리지 배선 (소스 계약) ────────────────────────────────
+// ─── 브리지 배선 (실제 브리지) ──────────────────────────────
 
-test('브리지가 프로바이더 상태·사용량 요청 메시지를 보낸다', () => {
-  assert.match(bridge, /type: 'provider-status-request'/);
-  assert.match(bridge, /type: 'usage-request'/);
-  assert.match(bridge, /type: 'usage-plan-set', agent, plan/);
-  assert.match(bridge, /type: 'cliproxy-connect', url, key/);
-  assert.match(bridge, /type: 'cliproxy-disconnect'/);
-  assert.match(bridge, /requestProviderStatus\(refresh = false\): Promise<ProviderStatusMap \| null>/);
-  assert.match(bridge, /requestUsage\(refresh = false\): Promise<UsageSummary \| null>/);
-  assert.match(bridge, /setUsagePlan\(agent: AgentName, plan: string\): Promise<UsageSummary \| null>/);
-  assert.match(bridge, /connectCliproxy\(url: string, key: string\): Promise<UsageSummary \| null>/);
-  assert.match(bridge, /disconnectCliproxy\(\): Promise<UsageSummary \| null>/);
+function bridgeFixture(state: 'connected' | 'disconnected', send = true) {
+  const bridge = Object.create(AgentBridgeImpl.prototype) as any;
+  const frames: any[] = [];
+  const events: any[] = [];
+  Object.assign(bridge, {
+    state,
+    requests: new PendingRequestRegistry(),
+    requestSeq: 0,
+    listeners: new Set([(e: unknown) => { events.push(e); }]),
+    sendJson: (frame: unknown) => { if (send) frames.push(frame); return send; },
+  });
+  return { bridge, frames, events };
+}
+
+test('오프라인이거나 전송에 실패하면 사용량 요청은 곧바로 null 로 안착한다', async () => {
+  const offline = bridgeFixture('disconnected');
+  assert.equal(await offline.bridge.requestUsage(), null);
+  assert.equal(offline.frames.length, 0);
+  const unsent = bridgeFixture('connected', false);
+  assert.equal(await unsent.bridge.requestProviderStatus(), null);
+  assert.equal(unsent.bridge.requests.size, 0);
 });
 
-test('오프라인이면 요청은 곧바로 null 로 안착한다', () => {
-  assert.match(
-    bridge,
-    /if \(this\.state !== 'connected'\) return Promise\.resolve\(null\);/,
-  );
-  // 전송 실패도 같은 자리에서 닫는다.
-  assert.match(bridge, /if \(!sent\) this\.requests\.settle\(requestId, null\);/);
-  assert.match(bridge, /const REQUEST_TIMEOUT_MS = 10_000;/);
-  assert.match(bridge, /this\.requests\.create<T>\(requestId, timeoutMs\)/);
+test('usage-report 는 대기 중인 요청을 풀고 사이드바 이벤트를 낸다', async () => {
+  const { bridge, frames, events } = bridgeFixture('connected');
+  const pending = bridge.requestUsage(true);
+  assert.equal(frames[0].type, 'usage-request');
+  assert.equal(frames[0].refresh, true);
+  bridge.handleMessage({ type: 'usage-report', requestId: frames[0].requestId, usage: { providers: {} } });
+  const usage = await pending;
+  assert.ok(usage);
+  assert.deepEqual(Object.keys(usage.providers).sort(), ['claude', 'codex', 'pi']);
+  assert.equal(usage.providers.claude.session.turns, 0);
+  assert.equal(events.at(-1).type, 'usage-report');
 });
 
-test('허브 메시지는 대기 중인 요청을 풀고 사이드바 이벤트도 낸다', () => {
-  assert.match(
-    bridge,
-    /case 'provider-status': \{[\s\S]*this\.requests\.settle\(msg\.requestId, providers\)[\s\S]*this\.emit\(\{ type: 'provider-status', providers \}\)/,
-  );
-  assert.match(
-    bridge,
-    /case 'usage-report': \{[\s\S]*this\.requests\.settle\(msg\.requestId, usage\)[\s\S]*this\.emit\(\{ type: 'usage-report', usage \}\)/,
-  );
-  // usage-error/provider-error 는 던지지 않고 null 로 닫는다.
-  assert.match(bridge, /case 'usage-error':\s*case 'provider-error': \{[\s\S]*settle\(msg\.requestId, null\)/);
-  assert.match(bridge, /this\.requests\.cancelAll\(\)/);
+test('usage-error 는 던지지 않고 대기 중인 요청을 null 로 닫는다', async () => {
+  const { bridge, frames } = bridgeFixture('connected');
+  const pending = bridge.requestUsage();
+  bridge.handleMessage({ type: 'usage-error', requestId: frames[0].requestId, message: 'boom' });
+  assert.equal(await pending, null);
 });
 
-test('와이어 값은 항상 두 프로바이더가 있는 형태로 정규화된다', () => {
-  assert.match(bridge, /function readProviderStatus\(value: unknown\): ProviderStatusMap/);
-  assert.match(bridge, /function readUsageSummary\(value: unknown\): UsageSummary \| null/);
-  assert.match(bridge, /cacheReadTokens: num\(src\['cacheReadTokens'\]\)/);
-  assert.match(bridge, /session5h: nullableNum\(limit\['session5h'\]\)/);
-  assert.match(bridge, /function readCliproxyStatus\(value: unknown\): CliproxyStatus/);
-  assert.match(bridge, /source: readUsageSource\(src\['source'\]\)/);
-  assert.match(bridge, /const out = Object\.create\(null\) as Record<string, UsageModelBreakdown>/);
-  assert.match(bridge, /MAX_USAGE_MODEL_ENTRIES = 512/);
-  assert.match(bridge, /for \(const model in source\)/);
-  assert.match(bridge, /model\.length > MAX_USAGE_MODEL_NAME_CHARS/);
-});
-
-test('사용량·프로바이더 타입과 SidebarEvent 항목이 types.ts 에 산다', () => {
-  assert.match(types, /export interface ProviderHealth \{/);
-  assert.match(types, /export type ProviderStatusMap = Record<AgentName, ProviderHealth>;/);
-  assert.match(types, /export interface UsageWindow \{/);
-  assert.match(types, /export interface ProviderUsage \{/);
-  assert.match(types, /export interface UsageSummary \{/);
-  assert.match(types, /export interface CliproxyStatus \{/);
-  assert.match(types, /export type UsageSource = 'estimate' \| 'cliproxy';/);
-  assert.match(types, /export type ClaudeUsagePlan = 'pro' \| 'max5x' \| 'max20x' \| 'api';/);
-  assert.match(types, /export type CodexUsagePlan = 'plus' \| 'pro' \| 'api';/);
-  assert.match(types, /\| \{ type: 'provider-status'; providers: ProviderStatusMap \}/);
-  assert.match(types, /\| \{ type: 'usage-report'; usage: UsageSummary \}/);
-});
-
-test('프로바이더 상태·사용량 정규화는 라이브 프로바이더만 채운다', () => {
-  for (const agent of ['claude', 'codex', 'pi']) {
-    assert.match(bridge, new RegExp(`${agent}: readProviderHealth\\(src\\['${agent}'\\]\\)`));
-    assert.match(bridge, new RegExp(`${agent}: readProviderUsage\\(providers\\['${agent}'\\]\\)`));
-    assert.match(bridge, new RegExp(`${agent}: readAgentSetupStatus\\(src\\['${agent}'\\], '${agent}'\\)`));
-  }
-  assert.doesNotMatch(bridge, /grok: readProviderHealth/);
-  assert.doesNotMatch(bridge, /cursor: readProviderHealth/);
-  assert.doesNotMatch(bridge, /opencode: readProviderHealth/);
-  assert.match(bridge, /pi: typeof plans\['pi'\] === 'string' \? plans\['pi'\] : 'api'/);
-  assert.match(types, /export type ApiOnlyUsagePlan = 'api';/);
-  assert.match(types, /plans: Record<AgentName, string>;/);
-  assert.match(types, /const USAGE_PLAN_GUARDS: Record<AgentName, \(value: unknown\) => boolean>/);
-});
-
-test('pi 모델 목록은 pi-status를 타고 레지스트리로 들어간다', () => {
-  assert.match(types, /export type AgentName = 'claude' \| 'codex' \| 'pi' \| 'grok' \| 'cursor' \| 'opencode';/);
-  assert.match(types, /models\?: readonly string\[\];/);
-  assert.match(bridge, /setPiModels as setPiModelRegistry/);
-  assert.doesNotMatch(bridge, /setCursorModels as setCursorModelRegistry/);
-  assert.doesNotMatch(bridge, /setOpenCodeModels as setOpenCodeModelRegistry/);
-  const handler = bridge.slice(bridge.indexOf("case 'pi-status':"));
-  assert.ok(
-    handler.indexOf('setPiModelRegistry(status.models)') < handler.indexOf("this.emit({ type: 'pi-status'"),
-  );
+test('모델별 사용량은 항목 수·이름 길이를 제한하고 프로토타입 키를 남기지 않는다', async () => {
+  const { bridge, frames } = bridgeFixture('connected');
+  const pending = bridge.requestUsage();
+  const byModel: Record<string, unknown> = JSON.parse('{"__proto__": {"turns": 1}}');
+  byModel['x'.repeat(300)] = { turns: 1 };
+  for (let i = 0; i < 700; i += 1) byModel[`model-${i}`] = { turns: i, costUsd: 0.5 };
+  bridge.handleMessage({
+    type: 'usage-report',
+    requestId: frames[0].requestId,
+    usage: { providers: { claude: { byModel } } },
+  });
+  const usage = await pending;
+  const models = usage.providers.claude.byModel;
+  assert.equal(Object.getPrototypeOf(models), null);
+  assert.ok(Object.keys(models).length <= 512);
+  assert.ok(Object.keys(models).every((name) => name.length <= 256));
+  assert.equal(models['model-0'].costUsd, 0.5);
+  assert.equal(({} as any).turns, undefined);
 });

@@ -13,5 +13,4 @@
   출력 146쪽 = 편집기 PageCount 146 정합.
   - 주의: FileSaveAsPdf 경로는 sticky 인쇄 설정(모아찍기)을 따라가므로
     `HPrint.PrintMethod=0` 명시 후 Print 액션으로 출력해야 권위 레이아웃이 나온다.
-- 검증: `cargo test --test issue_2006_1790387_prep_pagination_pin` /
-  `rhwp dump-pages samples/issue2006/1790387_prep_final_report.hwpx`
+- 검증: `rhwp dump-pages samples/issue2006/1790387_prep_final_report.hwpx` (한글 146쪽)

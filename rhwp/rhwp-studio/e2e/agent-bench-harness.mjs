@@ -69,6 +69,8 @@ const SERVER_STOP_GRACE_MS = 5_000;
 /** 서버가 자기 그룹 밖으로 띄운 자손(예: 허브의 Pi 자동 업데이트 npm install)의 유예. */
 const ESCAPED_GROUP_GRACE_MS = 3_000;
 const DESCENDANT_POLL_MS = 200;
+/** 신호를 직접 처리하는 스크립트가 정리(서버 멈춤·임시 폴더 삭제)를 마치고 끝내기를 기다리는 상한. */
+const SIGNAL_CLEANUP_GRACE_MS = 15_000;
 
 /** 이 프로세스가 띄우고 아직 끝난 것을 확인하지 못한 서버. 종료 경로가 트리째 정리한다. */
 const ownedServers = new Set();
@@ -262,9 +264,18 @@ function installExitHooks() {
   // 서버를 별도 그룹으로 띄웠으므로 터미널의 Ctrl-C 가 서버에 직접 닿지 않는다. 신호를 받으면
   // 'exit' 경로로 서버 트리를 정리하고 관례대로 128 + 신호 번호로 끝낸다.
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(signal, () => {
+    // 서버를 띄우기 전에 스크립트가 이 신호에 단 처리기(스모크 러너처럼 서버를 멈추고 임시 폴더를
+    // 지운 뒤 스스로 끝낸다)가 남아 있으면 그 정리를 끊지 않고, 유예 안에 끝내지 않을 때만 끝낸다.
+    // 맨 앞에서 받아야 한 번만 받는(once) 처리기가 아직 목록에 있다.
+    const scriptHandlers = new Set(process.listeners(signal));
+    process.prependListener(signal, () => {
+      const code = 128 + (os.constants.signals[signal] ?? 0);
+      if (process.listeners(signal).some((listener) => scriptHandlers.has(listener))) {
+        setTimeout(() => process.exit(code), SIGNAL_CLEANUP_GRACE_MS).unref();
+        return;
+      }
       console.error(`\n  [cleanup] ${signal}: 띄운 서버를 정리하고 종료합니다`);
-      process.exit(128 + (os.constants.signals[signal] ?? 0));
+      process.exit(code);
     });
   }
 }

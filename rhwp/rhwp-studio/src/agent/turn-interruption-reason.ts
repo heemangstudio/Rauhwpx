@@ -38,8 +38,8 @@ export const INTERRUPTION_NOTICE: Readonly<Record<TurnInterruptionReason, string
 
 /** 에이전트에게 보내는 이어 가기 블록의 원인 문장(영어, 모델이 읽는다). */
 export const INTERRUPTION_CAUSE: Readonly<Record<TurnInterruptionReason, string>> = Object.freeze({
-  'hub-restart': 'the Rauhwpx agent hub restarted',
-  'app-restart': 'the Rauhwpx app was restarted',
+  'hub-restart': 'the HamaEditor agent hub restarted',
+  'app-restart': 'the HamaEditor app was restarted',
   reload: "the user's editor page was reloaded",
   'agent-exit': 'your agent session ended unexpectedly',
   'engine-trap': 'the document engine stopped and the document was reopened from a recovery copy',

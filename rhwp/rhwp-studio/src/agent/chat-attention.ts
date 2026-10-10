@@ -25,7 +25,7 @@ export interface AttentionNotice {
   threadId: string;
   key: string;
   state: AttentionState;
-  /** 시스템 알림 제목 — 앱 이름('Rauhwpx'). 제목 표시를 켰으면 채팅 제목. */
+  /** 시스템 알림 제목 — 앱 이름('HamaEditor'). 제목 표시를 켰으면 채팅 제목. */
   title: string;
   /** 시스템 알림 본문 — `답변을 기다립니다`. 제목 표시를 켰으면 `답변을 기다립니다 · 사업 제안서.hwpx`. */
   body: string;
@@ -82,7 +82,7 @@ export interface ChatAttentionEnvironment {
 
 const DEFAULT_MAX_KEYS = 256;
 /** 내용을 싣지 않는 시스템 알림의 제목. */
-export const ATTENTION_APP_NAME = 'Rauhwpx';
+export const ATTENTION_APP_NAME = 'HamaEditor';
 const TITLE_MAX = 60;
 /** 앱 안 토스트는 손을 대야 하는 상태만 — 완료는 칩과 머리 숫자가 알린다. */
 const IN_APP_STATES: ReadonlySet<AttentionState> = new Set<AttentionState>(['needs-input', 'needs-review', 'failed']);
