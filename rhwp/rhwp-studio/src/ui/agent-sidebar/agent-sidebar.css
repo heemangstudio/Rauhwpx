@@ -949,14 +949,14 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   right: 0;
   bottom: calc(100% + 6px);
   left: auto;
-  width: 212px;
+  width: 196px;
   min-width: 0;
   padding: 5px;
-  /* 배경과 확실히 갈리도록 한 단계 밝은 면 + 밝은 테두리 선. */
-  background: color-mix(in oklab, color-mix(in oklab, var(--ag-raised) 90%, var(--ag-text)) 88%, transparent);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  backdrop-filter: blur(28px) saturate(180%);
-  box-shadow: var(--ag-elev-popover), inset 0 0 0 1px var(--ag-border-strong);
+  /* 뒤쪽 내용이 비치는 유리 면과 얇은 안쪽 테두리. */
+  background: color-mix(in oklab, var(--ag-raised) 68%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+  box-shadow: var(--ag-elev-popover), inset 0 0 0 0.5px color-mix(in oklab, var(--ag-text) 18%, transparent);
   transform-origin: bottom right;
   transform: scale(0.9);
   transition:
@@ -998,9 +998,9 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 .ag-mode-item[data-mode='full'] { --ag-mode-color: var(--ag-mode-full); }
 
 .ag-mode .ag-mode-item {
-  gap: 10px;
-  min-height: 40px;
-  padding: 5px 8px 5px 10px;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 7px;
 }
 
 .ag-mode .ag-mode-item.ag-active {
@@ -1028,19 +1028,21 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
-  flex-direction: column;
-  gap: 1px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
   line-height: 1.25;
 }
 
 .ag-mode-name {
-  color: var(--ag-mode-color);
+  color: var(--ag-text);
   font-weight: var(--ag-fw-medium);
 }
 
 .ag-mode-detail {
-  color: var(--ag-text-tertiary);
+  color: var(--ag-text-secondary);
   font-size: var(--ag-fs-meta);
+  white-space: nowrap;
 }
 
 .ag-mode-check {
@@ -1057,7 +1059,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 
 .ag-mode-separator {
   height: 0.5px;
-  margin: 4px 8px;
+  margin: 3px 7px;
   background: var(--ag-border-strong);
 }
 
