@@ -77,6 +77,7 @@ html.desktop-mac .ag-browser-popover-header::after { content: ''; width: 22px; f
 /* 네이티브 페이지 밖에 손잡이와 닫기·크기 조절 영역을 남긴다. */
 .ag-browser-floating { position: fixed; z-index: 1300; box-sizing: border-box; width: min(640px, calc(100vw - 40px)); height: min(480px, calc(100vh - 60px)); left: 24px; top: auto; bottom: 24px; min-width: min(320px, 100vw); min-height: min(280px, 100dvh); padding: 0 0 12px; border: 0; border-radius: 10px; box-shadow: 0 12px 40px #0003, 0 0 0 1px #0001; background: var(--ag-bg, var(--n-surface, #fafaf9)); color: var(--ag-text-secondary, var(--n-text-secondary, #737970)); overflow: hidden; display: flex; flex-direction: column; }
 .ag-browser-floating[hidden] { display: none; }
+html.document-home-open .ag-browser-floating { visibility: hidden; pointer-events: none; }
 .ag-browser-floating .ag-browser { flex: 1; height: auto; min-height: 0; border-radius: 0 0 4px 4px; }
 .ag-browser[data-presentation=float]>.ag-browser-surface { min-height: 0; }
 .ag-browser[data-presentation=float]>.ag-browser-tabbar,.ag-browser[data-presentation=float]>.ag-browser-toolbar { display: none; }
