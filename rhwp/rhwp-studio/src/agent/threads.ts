@@ -5,6 +5,7 @@ import {
   withDatabase,
 } from '../core/idb-open.ts';
 import { isAgentWorkflow, isStructuredPlan } from './types.ts';
+import { isTurnOutcome, type TurnOutcome } from './turn-outcome.ts';
 import type {
   AgentName,
   AgentWorkflow,
@@ -27,6 +28,8 @@ const THREADS_STORE = 'threads';
 const CHANNEL_NAME = 'rhwp-agent-threads';
 const MAX_THREADS = 40;
 const MAX_MESSAGES_PER_THREAD = 200;
+/** 턴 표식에 남기는 중단 이유 길이 상한. */
+const TURN_REASON_MAX_CHARS = 200;
 
 interface ThreadMessageBase {
   text: string;
@@ -116,8 +119,37 @@ export interface ThreadProviderHistoryEntry {
   text: string;
 }
 
+/**
+ * 턴 표식 — 턴이 시작될 때 대화에 넣고 끝날 때 결과와 함께 정착한다.
+ *
+ * 대화 기록은 평평한 목록이라 어디서 턴이 시작되고 어떻게 끝났는지 따로 남긴다
+ * (계획 승인으로 시작한 턴에는 사용자 메시지가 없다). endedAt 이 null 인 표식은
+ * 아직 도는 턴이거나 끝을 듣지 못하고 끊긴 턴이다 — 접지 않고, 다음 턴 시작이나
+ * 끊긴 턴을 복구하는 쪽이 정착한다.
+ *
+ * role 이 system 이라 공급자 기록과 제목 요청에서 빠진다. kind 를 모르는 옛 빌드는
+ * text 를 한 줄 안내로 보인다 — 그래서 정착할 때 접힘 제목을 text 에 남긴다.
+ */
+export interface ThreadTurnMessage extends ThreadMessageBase {
+  role: 'system';
+  kind: 'turn';
+  /** 이 턴의 로컬 id. 접힘 줄·알림이 같은 턴을 이 값으로 가리킨다. */
+  messageId: string;
+  /** epoch ms */
+  startedAt: number;
+  /** null = 아직 안 끝남(도는 중이거나 끊김) */
+  endedAt: number | null;
+  outcome: TurnOutcome | null;
+  /** 바깥이 끊은 턴의 이유(정착한 쪽이 붙인다). 화면 문구로는 쓰지 않는다. */
+  reason?: string;
+  /** 정착 때의 접힘 제목. 새 빌드는 기록에서 다시 계산한다. */
+  text: string;
+  planId?: never;
+}
+
 export type ThreadMessage =
   | UserQuestionHistoryMessage
+  | ThreadTurnMessage
   | (ThreadMessageBase & {
       role: 'assistant';
       kind: 'plan';
@@ -721,6 +753,32 @@ function normalizeStoredSelection(value: unknown): ThreadMessageBase['selection'
   };
 }
 
+function normalizeStoredTurnMarker(message: Record<string, unknown>): ThreadTurnMessage | null {
+  if (message.role !== 'system' || typeof message.text !== 'string') return null;
+  if (typeof message.messageId !== 'string' || !message.messageId) return null;
+  const startedAt = message.startedAt;
+  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt) || startedAt < 0) return null;
+  const endedAt = message.endedAt;
+  if (endedAt !== null && (typeof endedAt !== 'number' || !Number.isFinite(endedAt) || endedAt < startedAt)) return null;
+  const outcome = message.outcome;
+  if (outcome !== null && !isTurnOutcome(outcome)) return null;
+  // 끝난 시각과 결과는 함께 정해진다 — 한쪽만 있는 표식은 믿지 않는다.
+  if ((endedAt === null) !== (outcome === null)) return null;
+  const reason = typeof message.reason === 'string' && message.reason.trim()
+    ? message.reason.trim().slice(0, TURN_REASON_MAX_CHARS)
+    : undefined;
+  return {
+    role: 'system',
+    kind: 'turn',
+    messageId: message.messageId,
+    startedAt,
+    endedAt,
+    outcome,
+    ...(reason ? { reason } : {}),
+    text: message.text,
+  };
+}
+
 function normalizeStoredThread(thread: StoredChatThread): ChatThread {
   const latestPlan = isStructuredPlan(thread.latestPlan) ? thread.latestPlan : undefined;
   const plans = Array.isArray(thread.plans) ? thread.plans.filter(isStructuredPlan) : [];
@@ -824,6 +882,11 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
         tools,
         ...metadata,
       }];
+    }
+    if (message.kind === 'turn') {
+      // 깨진 표식은 버린다 — 그 턴은 표식 없는 옛 턴처럼 접힌다.
+      const marker = normalizeStoredTurnMarker(message);
+      return marker ? [marker] : [];
     }
     if (message.kind === 'tasks') {
       if (message.role !== 'assistant' || typeof message.taskGroupId !== 'string' || !message.taskGroupId) return [];
@@ -1115,6 +1178,109 @@ export function createThreadId(): string {
     return crypto.randomUUID();
   }
   return `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ── 턴 표식 ─────────────────────────────────────────────
+
+export function isTurnMarker(message: ThreadMessage | null | undefined): message is ThreadTurnMessage {
+  return message?.kind === 'turn';
+}
+
+/** 새 턴의 표식 — 아직 끝나지 않았다(endedAt·outcome 이 null). */
+export function createTurnMarker(now: number = Date.now(), id: string = createThreadId()): ThreadTurnMessage {
+  return {
+    role: 'system',
+    kind: 'turn',
+    messageId: id,
+    startedAt: Math.max(0, now),
+    endedAt: null,
+    outcome: null,
+    text: '',
+  };
+}
+
+export interface TurnMarkerSettlement {
+  endedAt: number;
+  outcome: TurnOutcome;
+  /** 옛 빌드가 한 줄 안내로 보일 접힘 제목. 없으면 지금 값을 둔다. */
+  text?: string;
+  /** 바깥이 끊은 이유. 화면 문구로는 쓰지 않는다. */
+  reason?: string | null;
+}
+
+/**
+ * 표식을 그 자리에서 정착시킨다 — 대화 기록 안의 객체를 바꾸므로 저장은 부른 쪽이 한다.
+ * 끝난 시각은 시작보다 앞서지 않게 맞춘다(시계가 되돌아간 경우).
+ */
+export function settleTurnMarker(marker: ThreadTurnMessage, settlement: TurnMarkerSettlement): ThreadTurnMessage {
+  marker.endedAt = Number.isFinite(settlement.endedAt)
+    ? Math.max(marker.startedAt, settlement.endedAt)
+    : marker.startedAt;
+  marker.outcome = settlement.outcome;
+  if (settlement.text !== undefined) marker.text = settlement.text;
+  const reason = settlement.reason?.trim();
+  if (reason) marker.reason = reason.slice(0, TURN_REASON_MAX_CHARS);
+  return marker;
+}
+
+export function findTurnMarker(messages: readonly ThreadMessage[], markerId: string): ThreadTurnMessage | null {
+  for (const message of messages) {
+    if (isTurnMarker(message) && message.messageId === markerId) return message;
+  }
+  return null;
+}
+
+/** 아직 정착하지 않은 표식 — 도는 턴이거나 끝을 듣지 못하고 끊긴 턴. 기록 순서대로. */
+export function unsettledTurnMarkers(messages: readonly ThreadMessage[]): ThreadTurnMessage[] {
+  return messages.filter((message): message is ThreadTurnMessage => isTurnMarker(message) && message.endedAt === null);
+}
+
+/** 마지막 표식. 새로고침 뒤 살아 있는 턴을 다시 잡을 때 이 표식이 정착 전인지 본다. */
+export function latestTurnMarker(messages: readonly ThreadMessage[]): ThreadTurnMessage | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (isTurnMarker(message)) return message;
+  }
+  return null;
+}
+
+/**
+ * 끝을 듣지 못한 턴의 끝 시각 추정 — 그 턴(다음 사용자 메시지·표식 전까지)에 남은
+ * 도구 기록의 마지막 시각, 없으면 시작 시각. 실제 끝보다 늦지 않게 잡는다.
+ */
+export function estimateTurnEnd(messages: readonly ThreadMessage[], marker: ThreadTurnMessage): number {
+  let end = marker.startedAt;
+  let start = messages.indexOf(marker);
+  // 다른 사본(저장소에서 다시 읽은 대화)의 표식이면 id 로 찾는다.
+  if (start < 0) start = messages.findIndex((message) => isTurnMarker(message) && message.messageId === marker.messageId);
+  if (start < 0) return end;
+  for (let i = start + 1; i < messages.length; i += 1) {
+    const message = messages[i];
+    if (message.role === 'user' || isTurnMarker(message)) break;
+    if (message.kind !== 'activity') continue;
+    end = Math.max(end, message.startedAt, message.completedAt ?? 0);
+  }
+  return end;
+}
+
+/**
+ * 지금 화면에 없는 채팅의 표식을 저장소에서 정착시킨다 — 턴 도중 다른 채팅으로 떠났거나
+ * 끊긴 턴을 복구할 때. 이미 정착한 표식은 그대로 둔다(먼저 정한 결과가 이긴다).
+ * settlement 가 함수면 저장된 채팅과 표식을 보고 정한다(예: 기록에서 접힘 제목을 만든다).
+ * 정착했으면 저장한 채팅을, 아니면 null 을 돌려준다.
+ */
+export function settleStoredTurnMarker(
+  threadId: string,
+  markerId: string,
+  settlement: TurnMarkerSettlement | ((thread: ChatThread, marker: ThreadTurnMessage) => TurnMarkerSettlement),
+): ChatThread | null {
+  const thread = getThread(threadId);
+  if (!thread) return null;
+  const marker = findTurnMarker(thread.messages, markerId);
+  if (!marker || marker.endedAt !== null) return null;
+  settleTurnMarker(marker, typeof settlement === 'function' ? settlement(thread, marker) : settlement);
+  upsertThread(thread);
+  return thread;
 }
 
 export function fallbackTitle(messages: ThreadMessage[]): string {

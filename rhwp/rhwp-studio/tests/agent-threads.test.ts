@@ -7,6 +7,12 @@ import {
   clearPendingUserQuestion,
   createPendingUserQuestionDraftSnapshot,
   createEmptyThread,
+  createTurnMarker,
+  estimateTurnEnd,
+  latestTurnMarker,
+  settleStoredTurnMarker,
+  settleTurnMarker,
+  unsettledTurnMarkers,
   createUserQuestionHistoryMessage,
   expirePendingUserQuestion,
   fallbackTitle,
@@ -924,4 +930,113 @@ test('stored follow-ups drop malformed items, extra items and a hold without ite
   assert.deepEqual(queued?.items[0], { id: 'ok', text: '남는 글', createdAt: 1 });
   assert.equal(queued?.hold, undefined, 'an unknown hold reason is dropped');
   assert.equal(getThread('empty-queue')?.followUps, undefined);
+});
+
+test('턴 표식은 정착한 결과와 함께 저장소를 오간다', () => {
+  mem.clear();
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  const turn = createTurnMarker(10_000, 'turn-1');
+  thread.messages.push({ role: 'user', text: '표를 정리해 주세요' }, turn);
+  upsertThread(thread);
+  const running = getThread(thread.id)!;
+  assert.deepEqual(unsettledTurnMarkers(running.messages).map((marker) => marker.messageId), ['turn-1']);
+
+  settleTurnMarker(turn, { endedAt: 161_000, outcome: 'completed', text: '작업 2분 31초 · 표 1개 수정' });
+  thread.messages.push({ role: 'assistant', text: '정리했습니다.' });
+  upsertThread(thread);
+  const restored = getThread(thread.id)!;
+  const stored = latestTurnMarker(restored.messages);
+  assert.equal(stored?.messageId, 'turn-1');
+  assert.equal(stored?.startedAt, 10_000);
+  assert.equal(stored?.endedAt, 161_000);
+  assert.equal(stored?.outcome, 'completed');
+  assert.equal(stored?.text, '작업 2분 31초 · 표 1개 수정');
+  assert.deepEqual(unsettledTurnMarkers(restored.messages), []);
+});
+
+test('깨진 턴 표식은 버리고 나머지 대화는 그대로 복원한다', () => {
+  mem.clear();
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
+    id: 'broken-turns',
+    title: '표식',
+    titleRequested: true,
+    createdAt: 1,
+    updatedAt: 2,
+    agent: 'codex',
+    model: 'gpt-5.6-sol',
+    effort: 'high',
+    messages: [
+      { role: 'user', text: '하나' },
+      { role: 'system', kind: 'turn', messageId: 'backwards', startedAt: 5_000, endedAt: 4_000, outcome: 'completed', text: '' },
+      { role: 'system', kind: 'turn', messageId: '', startedAt: 1, endedAt: null, outcome: null, text: '' },
+      { role: 'system', kind: 'turn', messageId: 'half', startedAt: 1, endedAt: 2, outcome: null, text: '' },
+      { role: 'system', kind: 'turn', messageId: 'odd', startedAt: 1, endedAt: 2, outcome: 'exploded', text: '' },
+      { role: 'assistant', kind: 'turn', messageId: 'wrong-role', startedAt: 1, endedAt: null, outcome: null, text: '' },
+      { role: 'system', kind: 'turn', messageId: 'good', startedAt: 1, endedAt: null, outcome: null, text: '' },
+      { role: 'assistant', text: '답' },
+    ],
+  }]));
+  const restored = getThread('broken-turns')!;
+  assert.deepEqual(restored.messages.map((message) => message.kind === 'turn' ? `turn:${message.messageId}` : message.text),
+    ['하나', 'turn:good', '답']);
+});
+
+test('턴 표식은 공급자 기록에 들어가지 않는다', () => {
+  const plain = [
+    { role: 'user' as const, text: '요약해 주세요' },
+    { role: 'assistant' as const, text: '요약했습니다.' },
+    { role: 'user' as const, text: '더 짧게' },
+  ];
+  const first = createTurnMarker(1, 'turn-a');
+  settleTurnMarker(first, { endedAt: 2, outcome: 'completed', text: '작업 0초 · 문서 읽음' });
+  const withMarkers = [plain[0], first, plain[1], plain[2], createTurnMarker(3, 'turn-b')];
+  assert.deepEqual(
+    serializeThreadMessagesForProviderHistory(withMarkers),
+    serializeThreadMessagesForProviderHistory(plain),
+  );
+});
+
+test('저장소의 표식 정착은 그 id 의 정착 전 표식만 바꾸고 먼저 정한 결과를 덮지 않는다', () => {
+  mem.clear();
+  const thread = createEmptyThread({ agent: 'pi', model: 'openrouter/test', effort: 'medium' });
+  const done = createTurnMarker(1_000, 'done');
+  settleTurnMarker(done, { endedAt: 2_000, outcome: 'completed', text: '작업 1초' });
+  thread.messages.push(
+    { role: 'user', text: '하나' },
+    done,
+    { role: 'user', text: '둘' },
+    createTurnMarker(5_000, 'live'),
+    {
+      role: 'assistant', kind: 'activity', activityId: 'a1', text: '도구 호출', status: 'completed',
+      startedAt: 6_000, completedAt: 9_500, tools: [],
+    },
+  );
+  upsertThread(thread);
+  const live = latestTurnMarker(getThread(thread.id)!.messages)!;
+  assert.equal(estimateTurnEnd(getThread(thread.id)!.messages, live), 9_500);
+
+  const settled = settleStoredTurnMarker(thread.id, 'live', (stored, marker) => ({
+    endedAt: estimateTurnEnd(stored.messages, marker),
+    outcome: 'interrupted',
+    text: '중단됨 · 4초',
+    reason: 'hub-restart',
+  }));
+  assert.ok(settled);
+  const restored = getThread(thread.id)!;
+  const markers = restored.messages.filter((message) => message.kind === 'turn');
+  assert.deepEqual(markers.map((marker) => [marker.messageId, marker.outcome, marker.endedAt, marker.text]), [
+    ['done', 'completed', 2_000, '작업 1초'],
+    ['live', 'interrupted', 9_500, '중단됨 · 4초'],
+  ]);
+  assert.equal(markers[1]?.kind === 'turn' ? markers[1].reason : undefined, 'hub-restart');
+  // 이미 정착한 표식은 늦게 온 다른 결과로 덮이지 않는다.
+  assert.equal(settleStoredTurnMarker(thread.id, 'live', { endedAt: 99_000, outcome: 'completed' }), null);
+  assert.equal(settleStoredTurnMarker(thread.id, 'missing', { endedAt: 99_000, outcome: 'completed' }), null);
+  assert.equal(latestTurnMarker(getThread(thread.id)!.messages)?.outcome, 'interrupted');
+});
+
+test('정착 시각이 시작보다 앞서면 시작 시각으로 맞춘다', () => {
+  const marker = createTurnMarker(50_000, 'clock');
+  settleTurnMarker(marker, { endedAt: 10_000, outcome: 'completed' });
+  assert.equal(marker.endedAt, 50_000);
 });
