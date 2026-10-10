@@ -37,6 +37,9 @@ HIPPO = {
     "d": (0x1D, 0x47, 0x66),
     "k": (0x0C, 0x25, 0x36),
     "w": (0xE6, 0xF5, 0xFF),
+    # The icon's eye is a gap onto its black background. Drawing it keeps the
+    # eye on any canvas.
+    "e": (0x00, 0x00, 0x00),
 }
 
 # Wordmark ink follows the Studio --n-text tokens; canvas is --n-canvas.
@@ -81,7 +84,7 @@ OPEN = [
     "..............h..oooos..........",
     ".............hshhoooo...........",
     "...............ooooos...w.......",
-    "..............h.ooook.whohh.....",
+    "..............heooook.whohh.....",
     ".............hoooookkhoooss.....",
 ] + BODY
 
@@ -94,7 +97,7 @@ HALF = [
     "..............h....hoooos.......",
     ".............hshh.hoooos........",
     "...............hhooooskk.w......",
-    "..............hooooookkwhohh....",
+    "..............heoooookkwhohh....",
     ".............hoooooookhoooss....",
 ] + BODY
 
