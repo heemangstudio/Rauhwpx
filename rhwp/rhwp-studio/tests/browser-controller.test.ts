@@ -225,3 +225,22 @@ test('현재 페이지에서 열린 새 창은 즉시 선택하고 다른 페이
   assert.equal(f.controller.tab()?.tabId, popup.tabId);
   f.controller.dispose();
 });
+
+test('탭을 전환하면 이전 화면을 놓고 늦은 캡처를 버리지만 페이지와 조작권은 유지한다', async () => {
+  const f = fixture();
+  const first = tab(); const second = { ...tab(), tabId: 'second', url: 'https://example.com/second' };
+  f.emit({ type: 'owned_browser_inventory', tabs: [first, second], frame: frame(first) });
+  let resolve!: (result: BrowserResult) => void;
+  f.respond(async () => new Promise(done => { resolve = done; }));
+  const pending = f.controller.readFrame();
+  f.controller.select(second.tabId);
+  assert.equal(f.controller.frame(), null);
+  assert.equal(f.controller.state.frames.size, 0);
+  resolve({ frame: frame(first) }); await pending;
+  assert.equal(f.controller.state.frames.size, 0);
+  f.emit({ type: 'owned_browser_tab', tab: second, frame: frame(second) });
+  assert.equal(f.controller.frame()?.tabId, second.tabId);
+  assert.deepEqual(f.controller.state.tabs, [first, second]);
+  assert.deepEqual(f.actions, ['frame']);
+  f.controller.dispose();
+});

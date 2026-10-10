@@ -65,12 +65,12 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
       if (frame && (frame.navigationEpoch !== incoming.navigationEpoch || frame.controllerEpoch !== incoming.controllerEpoch)) state.frames.delete(incoming.tabId);
       if ('type' in result && result.type === 'owned_browser_popup' && result.foreground !== false
         && result.openerTabId === state.activeTabId && incoming === result.tab) {
-        selectionSequence++; state.activeTabId = incoming.tabId; rememberTab();
+        selectionSequence++; state.frames.clear(); state.activeTabId = incoming.tabId; rememberTab();
       }
     }
     if (result.frame) {
       const owner = state.tabs.find((row) => row.tabId === result.frame!.tabId);
-      if (owner && owner.navigationEpoch === result.frame.navigationEpoch
+      if (owner?.tabId === state.activeTabId && owner.navigationEpoch === result.frame.navigationEpoch
         && owner.controllerEpoch === result.frame.controllerEpoch) state.frames.set(owner.tabId, result.frame);
     }
     const jobs = result.downloads ?? result.jobs;
@@ -148,11 +148,11 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
     subscribe(callback: () => void) { listeners.add(callback); return () => { listeners.delete(callback); }; },
     select(tabId: string) {
       if (!state.tabs.some((row) => row.tabId === tabId)) return;
-      selectionSequence++; state.activeTabId = tabId; rememberTab(); notify(); void readFrame();
+      selectionSequence++; if (state.activeTabId !== tabId) state.frames.clear(); state.activeTabId = tabId; rememberTab(); notify(); void readFrame();
     },
     async open(url = 'https://www.google.com/') {
       const result = await action('open', { url });
-      if (result.tab) { selectionSequence++; state.activeTabId = result.tab.tabId; rememberTab(); notify(); void readFrame(); }
+      if (result.tab) { selectionSequence++; state.frames.clear(); state.activeTabId = result.tab.tabId; rememberTab(); notify(); void readFrame(); }
     },
     async close(tabId: string) {
       const target = state.tabs.find((row) => row.tabId === tabId);
