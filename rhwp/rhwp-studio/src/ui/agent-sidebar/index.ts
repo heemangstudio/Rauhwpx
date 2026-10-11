@@ -630,7 +630,7 @@ function clampRailWidth(width: number, viewportWidth = window.innerWidth): numbe
 }
 
 function maxReviewWidth(viewportWidth = window.innerWidth): number {
-  return Math.max(REVIEW_WIDTH_MIN, Math.floor(viewportWidth * 0.45));
+  return Math.max(REVIEW_WIDTH_MIN, Math.floor(viewportWidth * 2 / 3));
 }
 
 function clampReviewWidth(width: number, viewportWidth = window.innerWidth): number {
