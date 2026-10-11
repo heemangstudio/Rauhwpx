@@ -1,0 +1,24 @@
+{"kind":"meta","v":1,"agent":"pi","transport":"json","stdin":"text","provenance":"synthetic","cli":"1.1.0","basis":"pi 1.1.0 --mode json: session header (core/session-manager.js), JsonAgentSessionEvent (dist/modes/json-event.d.ts, core/agent-session.d.ts:47-90); auto retry: every attempt ends with message_end (pi-agent-core agent-loop.js:332); agent_end willRetry true, auto_retry_start, retried attempt, auto_retry_end success after the next non-error message_end (core/agent-session.js _prepareRetry and message_end handling); retry defaults settings-manager.js:683-689.","note":"Synthetic: hand-written, not recorded. Replace with a trimmed recording (RHWP_PROVIDER_TRANSCRIPT_DIR) when one exists."}
+{"kind":"spawn"}
+{"kind":"expect","end":true}
+{"kind":"out","json":{"type":"session","version":3,"id":"replay-pi-session-retry","timestamp":"2026-10-01T00:00:00.000Z","cwd":"/replay/work"}}
+{"kind":"out","json":{"type":"agent_start"}}
+{"kind":"out","json":{"type":"turn_start"}}
+{"kind":"out","json":{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"[prompt]"}],"timestamp":1790000000000}}}
+{"kind":"out","json":{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"[prompt]"}],"timestamp":1790000000000}}}
+{"kind":"out","json":{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"openrouter","model":"mock-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790000000100}}}
+{"kind":"out","json":{"type":"message_end","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"openrouter","model":"mock-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1790000000200,"errorMessage":"503 Provider returned error"}}}
+{"kind":"out","json":{"type":"turn_end","toolResults":[]}}
+{"kind":"out","json":{"type":"agent_end","messages":[],"willRetry":true}}
+{"kind":"out","json":{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":2000,"errorMessage":"503 Provider returned error"}}
+{"kind":"out","json":{"type":"agent_start"}}
+{"kind":"out","json":{"type":"turn_start"}}
+{"kind":"out","json":{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"openrouter","model":"mock-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1790000000100}}}
+{"kind":"out","json":{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"재시도 후 "}}}
+{"kind":"out","json":{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"완료했습니다."}}}
+{"kind":"out","json":{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"재시도 후 완료했습니다."}],"api":"openai-completions","provider":"openrouter","model":"mock-model","usage":{"input":812,"output":64,"cacheRead":0,"cacheWrite":0,"totalTokens":876,"cost":{"input":0.000812,"output":0.000256,"cacheRead":0,"cacheWrite":0,"total":0.001068}},"stopReason":"stop","timestamp":1790000000200}}}
+{"kind":"out","json":{"type":"auto_retry_end","success":true,"attempt":1}}
+{"kind":"out","json":{"type":"turn_end","toolResults":[]}}
+{"kind":"out","json":{"type":"agent_end","messages":[],"willRetry":false}}
+{"kind":"out","json":{"type":"agent_settled","aborted":false}}
+{"kind":"exit","code":0}

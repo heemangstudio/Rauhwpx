@@ -219,9 +219,9 @@ test('Electron host sets ELECTRON_RUN_AS_NODE when unwrapping', (t) => {
   const { cmdPath, scriptPath } = writeNpmCmdShim(root, 'claude', 'cli.js');
   const launch = resolveNpmCliLaunch(cmdPath, {
     platform: 'win32',
-    nodeCommand: path.join(root, 'Rauhwpx.exe'),
+    nodeCommand: path.join(root, 'HamaEditor.exe'),
   });
-  assert.equal(launch.command, path.join(root, 'Rauhwpx.exe'));
+  assert.equal(launch.command, path.join(root, 'HamaEditor.exe'));
   assert.deepEqual(launch.leadingArgs, [scriptPath]);
   assert.equal(launch.env.ELECTRON_RUN_AS_NODE, '1');
 });
@@ -319,7 +319,7 @@ test('native Claude SDK launch unwraps Windows .cmd and merges Electron env', as
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-claude-sdk-unwrap-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const { cmdPath, scriptPath } = writeNpmCmdShim(root, 'claude', 'cli.js');
-  const electronBin = path.join(root, 'Rauhwpx.exe');
+  const electronBin = path.join(root, 'HamaEditor.exe');
   const events = [];
   const sdkOptions = [];
   const session = createClaudeSession({
@@ -375,7 +375,7 @@ test('managed launch without env still injects ELECTRON_RUN_AS_NODE onto process
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-managed-inherit-env-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const { cmdPath, scriptPath } = writeNpmCmdShim(root, 'claude', 'cli.js');
-  const electron = path.join(root, 'Rauhwpx.exe');
+  const electron = path.join(root, 'HamaEditor.exe');
   const launched = applyManagedCliLaunch(cmdPath, ['--version'], {
     platform: 'win32',
     nodeCommand: electron,
@@ -390,7 +390,7 @@ test('managed launch prepends the Node-host PATH and unwraps a .cmd', async (t) 
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-managed-launch-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const { cmdPath, scriptPath } = writeNpmCmdShim(root, 'codex', 'cli.js');
-  const electron = path.join(root, 'Rauhwpx.exe');
+  const electron = path.join(root, 'HamaEditor.exe');
   const shimDir = path.join(root, 'node-host');
   await writeNodeHostShim(shimDir, electron, { platform: 'win32' });
   const launched = applyManagedCliLaunch(cmdPath, ['exec', '--json'], {

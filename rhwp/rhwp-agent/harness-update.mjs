@@ -159,9 +159,13 @@ export function isSafeSemverVersion(value) {
     && value.length <= 64;
 }
 
-export async function fetchLatestPackage(fetchImpl, packageName, timeoutMs = 10_000) {
+/**
+ * registry 에서 한 버전의 메타데이터(version, tarball, integrity)를 받는다. versionOrTag 는
+ * dist-tag(기본 latest)나 정확한 버전이다 — 이 엔드포인트는 semver 범위를 풀지 않는다.
+ */
+export async function fetchLatestPackage(fetchImpl, packageName, timeoutMs = 10_000, versionOrTag = 'latest') {
   const encoded = packageName.replace('/', '%2F');
-  const response = await fetchImpl(`${REGISTRY_BASE}/${encoded}/latest`, {
+  const response = await fetchImpl(`${REGISTRY_BASE}/${encoded}/${encodeURIComponent(versionOrTag)}`, {
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) {
@@ -176,6 +180,10 @@ export async function fetchLatestPackage(fetchImpl, packageName, timeoutMs = 10_
   // 있으니 비정형 메타데이터는 업데이트 실패로 간주한다.
   if (!isSafeSemverVersion(metadata?.version)) {
     throw new Error('registry version is missing or malformed');
+  }
+  if (isSafeSemverVersion(versionOrTag)
+    && metadata.version.replace(/^v/, '') !== versionOrTag.replace(/^v/, '')) {
+    throw new Error(`registry returned ${metadata.version} for ${versionOrTag}`);
   }
   return {
     version: metadata.version.replace(/^v/, ''),

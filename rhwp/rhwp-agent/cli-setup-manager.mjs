@@ -18,7 +18,7 @@ import {
 import { cleanupStaleOAuthCredentialStaging } from './oauth-credential-transaction.mjs';
 import { createSetupTerminal } from './setup-terminal.mjs';
 import { fetchLatestPackage, replaceFileAtomically } from './harness-update.mjs';
-import { processTreeSpawnOptions, terminateAndWaitForProcessTreeExit } from './process-tree.mjs';
+import { processTreeSpawnOptions, terminateAndWaitForProcessTreeExit, withoutHubPrivateEnv } from './process-tree.mjs';
 
 const require = createRequire(import.meta.url);
 let crossSpawn = null;
@@ -193,7 +193,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   function assertAgent(agent) { if (!Object.hasOwn(CONFIG, agent)) throw setupError('AGENT_SETUP_INVALID', `지원하지 않는 에이전트예요: ${agent}`); return CONFIG[agent]; }
   function binPath(agent) { const item = assertAgent(agent); return path.join(binDir, platform === 'win32' ? `${item.bin}.cmd` : item.bin); }
   function claudeCleanEnv() {
-    const env = { ...baseEnv };
+    const env = withoutHubPrivateEnv(baseEnv);
     for (const key of CLAUDE_AUTH_ENV_KEYS) delete env[key];
     delete env.OPENAI_API_KEY;
     return env;
@@ -233,7 +233,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       else if (credential?.apiKey) env.ANTHROPIC_API_KEY = credential.apiKey;
       return env;
     }
-    const env = { ...baseEnv }; delete env.ANTHROPIC_API_KEY; delete env.OPENAI_API_KEY; if (apiKeys[agent]) env[item.keyEnv] = apiKeys[agent]; return env;
+    const env = withoutHubPrivateEnv(baseEnv); delete env.ANTHROPIC_API_KEY; delete env.OPENAI_API_KEY; if (apiKeys[agent]) env[item.keyEnv] = apiKeys[agent]; return env;
   }
   /** Re-read a terminal Claude login. Skipped while the app owns a credential. */
   async function refreshLocalClaudeLogin() {
@@ -343,7 +343,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     // 실행 파일이 없거나(설치 중 교체) 실행 권한이 없거나 EMFILE 이면 spawn 이 던지거나 'error' 를 낸다.
     // 처리하지 않은 'error' 이벤트는 허브 프로세스를 끝내므로 실패한 실행 결과로 바꾼다.
     const { tree = false, timeoutMs = STATUS_TIMEOUT_MS, ...spawnOptions } = options;
-    try { child = spawnProcess(command, args, { ...spawnOptions, ...(tree ? processTreeSpawnOptions(platform) : {}), stdio: ['ignore', 'pipe', 'pipe'], env: options.env ?? baseEnv }); } catch (error) { return { code: null, stdout: '', stderr: String(error?.message ?? error) }; }
+    try { child = spawnProcess(command, args, { ...spawnOptions, ...(tree ? processTreeSpawnOptions(platform) : {}), stdio: ['ignore', 'pipe', 'pipe'], env: options.env ?? withoutHubPrivateEnv(baseEnv) }); } catch (error) { return { code: null, stdout: '', stderr: String(error?.message ?? error) }; }
     let stdout = ''; let stderr = '';
     child.stdout?.on('data', (chunk) => { stdout += String(chunk); }); child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
     return await new Promise((resolve) => {
@@ -403,7 +403,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     if (running) return running;
     const task = installQueue.then(async () => {
       await load(); await fs.mkdir(rootDir, { recursive: true, mode: 0o700 });
-      const result = await run(npmLaunch.command, [...npmLaunch.leadingArgs, 'install', '--prefix', prefixDir, `${item.package}@latest`], { env: baseEnv, timeoutMs: INSTALL_TIMEOUT_MS, tree: true });
+      const result = await run(npmLaunch.command, [...npmLaunch.leadingArgs, 'install', '--prefix', prefixDir, `${item.package}@latest`], { env: withoutHubPrivateEnv(baseEnv), timeoutMs: INSTALL_TIMEOUT_MS, tree: true });
       if (result.code !== 0) throw setupError('AGENT_INSTALL_FAILED', cleanOutput(result.stderr || result.stdout) || 'CLI 설치에 실패했어요.');
     });
     installQueue = task.catch(() => {});

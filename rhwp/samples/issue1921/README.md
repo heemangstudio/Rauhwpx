@@ -11,5 +11,5 @@
   (한글 2022 COM, Print 액션 1-up 강제 출력 37쪽 = 편집기 PageCount 37 정합).
   - 주의: FileSaveAsPdf 경로는 sticky 인쇄 설정(모아찍기)을 따라가므로
     `HPrint.PrintMethod=0` 명시 후 Print 액션으로 출력해야 권위 레이아웃이 나온다.
-- 검증: `cargo test --test issue_1921_59043_pagination_pin` /
+- 검증: `cargo test --test it issue_1921_59043_pagination_pin` /
   `rhwp dump-pages samples/issue1921/59043_regulatory_analysis.hwp`

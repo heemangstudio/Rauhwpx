@@ -6,6 +6,7 @@
  *  직전 자리에 남은 채 옅어진다. transform·opacity 만 움직이므로 대화 영역은 첫
  *  프레임부터 최종 크기다. */
 
+import './focus-greeting.css';
 import { parseCssTimeMs } from './motion-model.ts';
 
 /** 반말·존댓말이 섞이지 않도록 모두 어미 없는 짧은 구로 둔다. */
@@ -34,6 +35,7 @@ export function pickGreeting(previous: string | null, random: () => number = Mat
 export interface FocusGreeting {
   readonly root: HTMLElement;
   readonly active: boolean;
+  readonly documentButton: HTMLButtonElement;
   /** 빈 채팅 배치를 켜고 끈다. 켜질 때와 `reroll` 일 때 새 문장을 고른다.
       `animate` 는 끌 때만 뜻이 있다 — 첫 메시지를 보낸 순간의 전환이다. */
   setActive(active: boolean, opts?: { animate?: boolean; reroll?: boolean }): void;
@@ -51,11 +53,14 @@ export function createFocusGreeting(opts: {
   const { page, composer, conversation } = opts;
   const root = document.createElement('div');
   root.className = 'ag-focus-greeting';
-  // 장식 문구다 — 화면 낭독기에는 대화 기록만 남긴다.
-  root.setAttribute('aria-hidden', 'true');
+
   const line = document.createElement('p');
   line.className = 'ag-focus-greeting-line';
-  const documentLine = document.createElement('p');
+  line.setAttribute('aria-hidden', 'true');
+  const documentLine = document.createElement('button');
+  documentLine.type = 'button';
+  documentLine.setAttribute('aria-haspopup', 'dialog');
+  documentLine.setAttribute('aria-expanded', 'false');
   documentLine.className = 'ag-focus-greeting-doc';
   documentLine.hidden = true;
   root.append(line, documentLine);
@@ -146,12 +151,15 @@ export function createFocusGreeting(opts: {
   }
 
   function setDocumentName(name: string | null): void {
-    documentLine.textContent = name ?? '';
-    documentLine.hidden = !name;
+    documentLine.hidden = false;
+    documentLine.textContent = name || '문서 선택';
+    documentLine.title = '문서 전환';
+    documentLine.setAttribute('aria-label', `${name || '문서 없음'}: 문서 전환`);
   }
 
   return {
     root,
+    documentButton: documentLine,
     get active() { return active; },
     setActive,
     setDocumentName,

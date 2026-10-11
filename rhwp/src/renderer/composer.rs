@@ -4157,8 +4157,6 @@ fn compose_textbox_line_metrics(
 #[cfg(test)]
 mod lineseg_compare_tests;
 #[cfg(test)]
-mod re_sample_gen;
-#[cfg(test)]
 mod p1_text_reflow_tests {
     use super::*;
     use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle, ResolvedStyleSet};

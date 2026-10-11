@@ -62,6 +62,12 @@ html.desktop-mac #menu-bar::after {
   pointer-events: none;
   user-select: none;
 }
+/* 두 번 눌러 이름을 바꾼다. 이름 글자만 창 끌기에서 빼고 포인터를 받는다. */
+#editor-document-title.editor-document-title-renamable {
+  pointer-events: auto;
+  cursor: default;
+  -webkit-app-region: no-drag;
+}
 #editor-document-title[hidden] { display: none; }
 #editor-document-title[hidden] + #editor-command-search { margin-left: auto; }
 @media (max-width: 767px) {

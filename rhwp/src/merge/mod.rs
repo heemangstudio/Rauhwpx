@@ -6447,6 +6447,7 @@ fn merge_doc_info(
             adjust_baseline_in_fixed_line_spacing,
             "document-property"
         ),
+        apply_next_spacing_of_last_para: t!(apply_next_spacing_of_last_para, "document-property"),
         hwpml_version: t!(hwpml_version, "document-property"),
     })
 }

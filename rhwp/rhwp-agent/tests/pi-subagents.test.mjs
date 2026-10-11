@@ -13,6 +13,8 @@ import {
   LIVE_STDOUT_CAP,
   shouldRegisterSubagentTools,
 } from '../pi/extension/subagents.ts';
+import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
+import { PI_EXTENSION_PATH, PI_SUBAGENT_EXTENSION_PATH, piResourceArgs } from '../pi/resources.mjs';
 
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
@@ -57,6 +59,34 @@ test('child argv uses an internal session id and excludes nested/root interactio
   // pi는 '-'로 시작하면 플래그, '@'로 시작하면 첨부 파일 경로로 해석한다.
   assert.equal(buildChildArgv({ ...base, prompt: '--help me' }).at(-1), ' --help me');
   assert.equal(buildChildArgv({ ...base, prompt: '@doc-editor fix it' }).at(-1), ' @doc-editor fix it');
+});
+
+test('child argv carries a Pi-owned prompt for its role and mode plus the bundled resources only', () => {
+  const base = {
+    model: 'model', sessionDir: '/pi/sessions', sessionId: 'id', prompt: 'Edit p3-p9.', planningRestricted: false,
+  };
+  const promptOf = (extra) => {
+    const argv = buildChildArgv({ ...base, ...extra });
+    assert.equal(argv.includes('--append-system-prompt'), false);
+    return argv[argv.indexOf('--system-prompt') + 1];
+  };
+  const editorSafe = promptOf({ role: 'doc-editor', mode: { workflow: 'direct', permissionProfile: 'safe' } });
+  const editorFull = promptOf({ role: 'doc-editor', mode: { workflow: 'direct', permissionProfile: 'unrestricted' } });
+  const researcher = promptOf({ role: 'doc-researcher', mode: { workflow: 'direct', permissionProfile: 'safe' } });
+  const planning = promptOf({ role: 'general', planningRestricted: true });
+  assert.equal(new Set([editorSafe, editorFull, researcher, planning]).size, 4);
+  // 자식도 리비전 계약을 안다 — 예전에는 역할 문단만 받았다.
+  for (const prompt of [editorSafe, researcher, planning]) assert.ok(prompt.includes(RHWP_TOOL_RULES));
+  assert.doesNotMatch(editorSafe, /expert coding assistant/);
+
+  const argv = buildChildArgv({ ...base, role: 'general' });
+  // 자식은 예전에 settings.json 으로 확장을 받았다. 이제 부모와 같은 번들 리소스를 argv 로 받는다.
+  const resources = piResourceArgs();
+  assert.deepEqual(argv.slice(argv.indexOf('--no-extensions'), argv.indexOf('--no-extensions') + resources.length), resources);
+  assert.deepEqual(argv.filter((arg, index) => argv[index - 1] === '-e'), [PI_EXTENSION_PATH, PI_SUBAGENT_EXTENSION_PATH]);
+  assert.equal(argv.filter((arg) => arg === '--skill').length, 1);
+  assert.deepEqual(argv[argv.indexOf('--tools') + 1].split(','), ['+grep', '+find', '+ls']);
+  assert.equal(argv.at(-1), 'Edit p3-p9.');
 });
 
 test('a child extension does not register another fleet surface', () => {

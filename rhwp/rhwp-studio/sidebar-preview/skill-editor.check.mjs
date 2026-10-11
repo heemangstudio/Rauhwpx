@@ -11,7 +11,7 @@ const artifacts = resolve(import.meta.dirname, 'artifacts');
 const executablePath = findBrowserExecutable();
 assert(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable.');
 await mkdir(artifacts, { recursive: true });
-const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-skill-editor-'));
+const cacheDir = await mkdtemp(resolve(tmpdir(), 'hamaeditor-skill-editor-'));
 const server = await createServer({ cacheDir, configFile: resolve(studio, 'vite.sidebar.config.ts'),
   server: { port: 0, open: false, hmr: false }, logLevel: 'error' });
 await server.listen();
@@ -28,7 +28,7 @@ try {
   page.on('dialog', (dialog) => dialog.accept());
   await page.goto(`${origin}/?controls=0&theme=light&width=480`, { waitUntil: 'networkidle0' });
   await page.waitForFunction(() => window.sidebarPreview);
-  await page.waitForFunction(() => !document.querySelector('.ag-input')?.disabled);
+  await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
   await page.click('.ag-settings-btn');
   await page.click('.ag-settings-nav-button[data-destination="skills"]');
   await page.waitForSelector('.ag-skills-list [data-skill-name]');

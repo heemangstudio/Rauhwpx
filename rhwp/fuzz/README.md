@@ -109,7 +109,7 @@ CFB/ZIP처럼 구조 제약이 강한 컨테이너 포맷은 시드 없이는 �
    재현 입력을 최소화합니다.
 3. **회귀 입력 보존** — 최소화한 입력은 `fuzz/corpus/<타깃>/` 이 아니라
    `fuzz/regressions/<타깃>/` 에 커밋합니다(코퍼스와 회귀 케이스를 분리).
-   `cargo test --test hostile_embedded_input` 이 이 디렉터리의 모든 입력을 같은
+   `cargo test --test it hostile_embedded_input` 이 이 디렉터리의 모든 입력을 같은
    진입점으로 다시 돌립니다. 퍼저로 재생하려면
    `cargo +nightly fuzz run <타깃> fuzz/regressions/<타깃> -- -runs=0` 입니다.
 4. **이슈 → 수정 PR** — 기존 관행대로 이슈를 먼저 등록하고, 수정 PR에

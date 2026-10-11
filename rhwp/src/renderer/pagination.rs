@@ -111,6 +111,9 @@ pub struct PaginationResult {
     pub pre_emitted_host_paras: std::collections::HashSet<usize>,
     /// [#2015] pre-emit 한 host 텍스트 높이(px). layout 이 vert_offset 이중계상을 보정할 때 사용.
     pub pre_emitted_host_heights: std::collections::HashMap<usize, f64>,
+    /// 앵커 쪽에 들어가지 않아 새 쪽으로 이월된 문단 기준 자리차지 표 `(문단, 컨트롤)`.
+    /// 한컴은 이월된 표를 새 쪽 본문 상단에 두고 세로 오프셋을 다시 적용하지 않는다.
+    pub fresh_page_float_tables: std::collections::HashSet<(usize, usize)>,
     /// 섹션별 미주 목록 (문서 끝 또는 섹션 끝에 렌더)
     pub endnotes: Vec<EndnoteRef>,
     /// [Task #836] 미주 paragraphs (endnote_para_base + idx 로 lookup)

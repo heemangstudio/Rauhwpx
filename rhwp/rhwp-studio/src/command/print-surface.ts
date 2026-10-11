@@ -26,6 +26,8 @@ export interface PrintPreviewSurfaceOptions {
   hostWindow?: Window;
   surfacePath?: string;
   timeoutMs?: number;
+  /** window.open 대상 이름. 데스크톱은 PDF 내보내기 이름을 숨은 창으로 연다. */
+  frameName?: string;
 }
 
 export class PrintPreviewBlockedError extends Error {
@@ -136,7 +138,7 @@ export function createPrintPreviewSurface(
     options.surfacePath ?? DEFAULT_PRINT_SURFACE_PATH,
   );
   const timeoutMs = options.timeoutMs ?? DEFAULT_PRINT_SURFACE_TIMEOUT_MS;
-  const previewWindow = hostWindow.open(surfaceUrl, '_blank');
+  const previewWindow = hostWindow.open(surfaceUrl, options.frameName ?? '_blank');
   if (!previewWindow) {
     return Promise.reject(new PrintPreviewBlockedError());
   }
@@ -264,4 +266,26 @@ export async function waitForPrintSurfaceReady(
 
   // 인쇄 호출 직전에 style/layout 계산을 완료시킨다.
   void surface.document.documentElement.getBoundingClientRect();
+}
+
+/**
+ * Studio가 등록한 글꼴(번들 웹 글꼴, 가져온 로컬 글꼴, 데스크톱 시스템 글꼴)을
+ * 인쇄 문서에도 등록한다. 인쇄 문서는 별도 문서라 이 글꼴을 보지 못해, 수식의
+ * HyhwpEQ PUA 글리프 같은 문자가 대체 글꼴 없이 빈 상자로 찍혔다.
+ */
+export function mirrorDocumentFonts(source: Document, target: Document): number {
+  const sourceFonts = source.fonts;
+  const targetFonts = target.fonts;
+  if (!sourceFonts || !targetFonts || sourceFonts === targetFonts) return 0;
+  let mirrored = 0;
+  sourceFonts.forEach((face) => {
+    if (face.status === 'error') return;
+    try {
+      targetFonts.add(face);
+      mirrored += 1;
+    } catch (error) {
+      console.warn(`[print] 글꼴을 인쇄 문서에 등록하지 못했습니다 (${face.family}):`, error);
+    }
+  });
+  return mirrored;
 }

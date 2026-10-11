@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { requireWasmPackage } from './browser-support.ts';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -15,10 +15,7 @@ function registerHooksSupported(): boolean {
 }
 
 test('#6788 실제 WASM + Studio 혼합 모양 적용/Undo/Redo', (t) => {
-  if (!existsSync(fileURLToPath(new URL('../../pkg-node/rhwp.js', import.meta.url)))) {
-    t.skip('fresh Node WASM 필요: scripts/wasm-pack-locked.sh --target nodejs --out-dir pkg-node --no-opt');
-    return;
-  }
+  requireWasmPackage(fileURLToPath(new URL('../../pkg/', import.meta.url)));
   if (!registerHooksSupported()) {
     t.skip('현재 Node 가 module.registerHooks 미지원 — 행위 테스트 skip');
     return;

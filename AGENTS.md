@@ -52,10 +52,24 @@ Studio `npm test` imports hub modules, so `rhwp/rhwp-agent/node_modules` must ex
 
 # Commands
 
+## Test map
+
+| Layer | Command | PR check |
+| --- | --- | --- |
+| Engine | `cargo test` from `rhwp/` | Engine |
+| Studio unit | `npm --prefix rhwp/rhwp-studio test` | App |
+| Hub | `node --test rhwp/rhwp-agent/tests/*.test.mjs` | App |
+| Desktop | `npm run test:desktop` | App, Session tests (macOS, Windows) |
+| Browser | `npm --prefix rhwp/rhwp-studio run test:browser`, then `run e2e:smoke` | Browser |
+| Sidebar | `npm run test:sidebar` | nightly only |
+
+PR checks run only for the paths a change touches (`scripts/ci-changes.mjs`). Nightly adds the corpus sweeps, Skia rendering, cargo and npm audits, and the 3-OS production dependency check.
+
 ## Rust engine (from `rhwp/`)
 
 - Toolchain is pinned by `rust-toolchain.toml` and includes `wasm32-unknown-unknown`.
-- Build `cargo build`; tests `cargo test`; one file `cargo test --test <file_stem>`; one function `cargo test --test <file_stem> <fn>`. Integration tests in `tests/` are mostly named `issue_NNNN_*` / `pr_NNNN_*` and load fixtures from `samples/`.
+- Build `cargo build`; tests `cargo test` (unit tests + the single `it` integration binary); one module `cargo test --test it <module>`; one function `cargo test --test it <module>::<fn>`. Integration tests are modules in `tests/it/` (register each in `tests/it/main.rs`), mostly named `issue_NNNN_*` / `pr_NNNN_*`, and load fixtures from `samples/`; shared helpers live in `tests/it/common.rs`, Hancom page-count pins in `tests/it/page_count_pins.rs`.
+- Corpus roundtrip sweeps and tests over ~20 s in debug live in `tests/sweeps/` (`test = false`, skipped by `cargo test`): `cargo test --profile release-test --test sweeps`. Skia PNG/PDF tests compile only with `cargo test --features native-skia --test it`.
 - Faster optimized build for render comparisons: `cargo build --profile release-test --features native-skia --bin rhwp` (release without LTO).
 - Lint and format from `rhwp/`: `cargo clippy`, `cargo fmt` (max_width 100). `Cargo.toml` deliberately allows many structural lints pending a phased refactor; do not fix or tighten them in unrelated changes.
 - WASM: `wasm-pack build --target web` (wasm-pack 0.15.0), or `npm run build:wasm` from the root.
@@ -70,7 +84,7 @@ Studio `npm test` imports hub modules, so `rhwp/rhwp-agent/node_modules` must ex
 - `npm run dev` serves http://127.0.0.1:7700 and starts its own authenticated hub.
 - `npm test` runs fast Node tests and `../npm/editor/tests`; `npm run test:browser` runs browser integrations (see `tests/README.md`).
 - `npm run build` type-checks and builds.
-- E2E: `npm run e2e:<name>` (puppeteer-core, mostly `--mode=headless`). `npm run e2e:list` discovers scripts; `npm run e2e:check` validates references. See `e2e/README.md`.
+- Smoke: `npm run e2e:smoke` starts its own hub and Vite, runs eight user flows in headless Chrome (fake provider, offline) and exits nonzero on failure. Set `CHROME_PATH` if Chrome is not in `/Applications`. See `e2e/README.md`. Perf tools are `npm run bench:*` (see `bench/README.md`); the `*-quota` ones spend real provider quota.
 - To drive Studio and a real hub from a script, import `e2e/agent-bench-harness.mjs` (`findAvailablePort`, `startHub`, `startVite`, `ensureChromePath`, `stopServer`) instead of picking ports and env vars by hand.
 
 ## Hub (from `rhwp/rhwp-agent/`)

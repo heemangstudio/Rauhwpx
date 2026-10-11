@@ -11,8 +11,12 @@ import type { EventBus } from '../core/event-bus.ts';
 import type { InputHandler } from '../engine/input-handler.ts';
 import type { CanvasView } from '../view/canvas-view.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
-import type { CellPathEntry, CharShapeRun } from '../core/types.ts';
+import type { CellPathEntry, CharShapeRun, DocumentPosition } from '../core/types.ts';
+import type { OperationDescriptor } from '../engine/command.ts';
+import type { RendererSessionContext } from '../desktop-integration.ts';
 import type { CatalogAgent, ModelCatalogEntry } from './models.ts';
+import type { TurnCheckpointPort } from './turn-checkpoints.ts';
+import type { TurnInterruptionReason } from './turn-interruption-reason.ts';
 
 export const AGENT_PROTOCOL_VERSION = 5;
 
@@ -220,7 +224,7 @@ export interface TemplateCatalog {
   templates: DocumentTemplate[];
 }
 
-/** Rauhwpx가 별도 보관하고 이 앱의 채팅에만 주입하는 AGENTS.md. */
+/** HamaEditor가 별도 보관하고 이 앱의 채팅에만 주입하는 AGENTS.md. */
 export interface AgentInstructionsStatus {
   fileName: 'AGENTS.md';
   content: string;
@@ -513,12 +517,6 @@ export interface AgentSetupAuthStart {
   expiresAt?: string | null;
 }
 
-/** 요금제 — 한도 계산의 기준이 되므로 프로바이더별로 값이 다르다. */
-export type ClaudeUsagePlan = 'pro' | 'max5x' | 'max20x' | 'api';
-export type CodexUsagePlan = 'plus' | 'pro' | 'api';
-export type ApiOnlyUsagePlan = 'api';
-export type UsagePlan = ClaudeUsagePlan | CodexUsagePlan | ApiOnlyUsagePlan;
-
 /** 한 창(세션 5시간 / 오늘 / 주간)의 누적치. percent 는 한도가 없으면 null. */
 export interface UsageWindow {
   turns: number;
@@ -529,35 +527,13 @@ export interface UsageWindow {
   weightedTokens: number;
   /** 0–100 (초과 가능, 소수 첫째 자리). 한도가 없으면 null. */
   percent: number | null;
-  /** epoch ms — CLIProxyAPI 가 알려 준 창 리셋 시각. */
+  /** epoch ms — 창 리셋 시각. */
   resetsAt?: number | null;
 }
 
-/** 5시간·주간 막대의 출처. cliproxy 는 공식 요금제 %, estimate 는 로컬 추정치. */
-export type UsageSource = 'estimate' | 'cliproxy';
-
-export interface CliproxyWindow {
+export interface QuotaWindow {
   percent: number | null;
   resetsAt: number | null;
-}
-
-export interface CliproxyAccount {
-  agent: AgentName;
-  name: string;
-  email: string | null;
-  planType: string | null;
-  session: CliproxyWindow;
-  week: CliproxyWindow;
-  error: string | null;
-}
-
-export interface CliproxyStatus {
-  configured: boolean;
-  connected: boolean;
-  url: string | null;
-  error: string | null;
-  checkedAt: number | null;
-  accounts: CliproxyAccount[];
 }
 
 export interface UsageModelBreakdown {
@@ -577,13 +553,12 @@ export interface ProviderUsage {
   limit: { session5h: number | null; week: number | null };
   /** epoch ms — 마지막으로 사용량이 기록된 시각. */
   updatedAt: number | null;
-  source?: UsageSource;
 }
 
 export interface ProviderQuota {
   status: 'ok' | 'unavailable' | 'error';
-  session: CliproxyWindow;
-  week: CliproxyWindow;
+  session: QuotaWindow;
+  week: QuotaWindow;
   updatedAt: number | null;
   error: string | null;
   accountKey: string | null;
@@ -611,7 +586,6 @@ export interface RemoteBalance {
 export interface UsageSummary {
   plans: Record<AgentName, string>;
   providers: Record<AgentName, ProviderUsage>;
-  cliproxy?: CliproxyStatus;
   limits?: { claude: ProviderQuota; codex: ProviderQuota };
   balances?: Partial<Record<'openrouter' | 'grok' | 'opencode', RemoteBalance>>;
   /** pi(OpenRouter) 가 설정돼 있을 때만 온다. */
@@ -724,32 +698,6 @@ export interface CheckpointTitleResult {
   model: string;
 }
 
-export function isClaudeUsagePlan(value: unknown): value is ClaudeUsagePlan {
-  return value === 'pro' || value === 'max5x' || value === 'max20x' || value === 'api';
-}
-
-export function isCodexUsagePlan(value: unknown): value is CodexUsagePlan {
-  return value === 'plus' || value === 'pro' || value === 'api';
-}
-
-export function isApiOnlyUsagePlan(value: unknown): value is ApiOnlyUsagePlan {
-  return value === 'api';
-}
-
-/** 프로바이더마다 허용 요금제가 다르다 — 표로 갈라 새 프로바이더가 조용히 섞이지 않게 한다. */
-const USAGE_PLAN_GUARDS: Record<AgentName, (value: unknown) => boolean> = {
-  claude: isClaudeUsagePlan,
-  codex: isCodexUsagePlan,
-  pi: isApiOnlyUsagePlan,
-  grok: isApiOnlyUsagePlan,
-  cursor: isApiOnlyUsagePlan,
-  opencode: isApiOnlyUsagePlan,
-};
-
-export function isUsagePlanForAgent(agent: AgentName, value: unknown): boolean {
-  return USAGE_PLAN_GUARDS[agent](value);
-}
-
 export type ProductSkillIcon =
   | 'pencil' | 'bot' | 'system'
   | 'sparkles' | 'book' | 'target' | 'chart' | 'lightbulb'
@@ -849,6 +797,34 @@ export interface AgentTaskMember {
 }
 
 /**
+ * 허브가 분류한 프로바이더 실패의 종류 (rhwp-agent/provider-failure.mjs 와 같은 닫힌 집합).
+ */
+export type ProviderFailureClass =
+  | 'auth_required'
+  | 'usage_limit'
+  | 'provider_error'
+  | 'network'
+  | 'process_exited'
+  | 'invalid_request'
+  | 'unknown';
+
+/** 분류·가림·길이 제한을 거친 프로바이더 실패 하나. */
+export interface ProviderFailure {
+  class: ProviderFailureClass;
+  agent: AgentName;
+  /** 비밀을 지우고 공백을 정리한 프로바이더 문구 (최대 2000자). '자세히' 아래에만 보인다. */
+  message: string;
+  /** 최대 64자 [A-Za-z0-9_.:-] — 예: 'claude:authentication_failed', 'codex:usageLimitExceeded', 'cli_missing'. */
+  code: string | null;
+  retryable: boolean;
+  /** epoch ms — usage_limit 에만, 프로바이더가 구조화해 알려 준 값에서만 온다. */
+  resetAt: number | null;
+}
+
+/** 실패가 어디서 났는지 — 다시 시도의 동작이 달라진다. */
+export type ProviderFailureOrigin = 'turn' | 'send' | 'start' | 'idle';
+
+/**
  * 하위 CLI(claude/codex) JSONL을 허브가 정규화한 단일 이벤트 스트림 (§1.5).
  * parentTaskId: 서브에이전트/워크플로가 낸 이벤트를 스폰한 task 에 귀속시키는
  * 선택 필드 — 있으면 그 task 카드로, 모르는 id 면 루트 활동 그룹으로 그린다.
@@ -862,8 +838,77 @@ export type AgentStreamEvent =
   | { type: 'task-start'; agent: AgentName; taskId: string; callId?: string; title: string; role?: string; taskKind: 'agent' | 'workflow'; workflowName?: string; /** Owning turn may end while this real process keeps running. */ background?: boolean }
   | { type: 'task-progress'; agent: AgentName; taskId: string; activity?: string; lastTool?: string; usage?: AgentTaskUsage; phases?: AgentTaskPhase[]; members?: AgentTaskMember[]; /** Current task-level phase when there is no child member row. */ phaseIndex?: number }
   | { type: 'task-end'; agent: AgentName; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary?: string; usage?: AgentTaskUsage }
-  | { type: 'turn-end'; agent: AgentName; stopReason?: string; errorMessage?: string; turnId?: string }
-  | { type: 'error'; agent: AgentName; message: string };
+  | {
+      type: 'turn-end';
+      agent: AgentName;
+      stopReason?: string;
+      errorMessage?: string;
+      turnId?: string;
+      /** 허브가 분류한 이 턴의 실패 (실패한 턴에만). */
+      failure?: ProviderFailure;
+      /**
+       * Studio 만 붙이는 값 — 허브를 잃어(재시작·이 채팅 세션의 소멸) 브리지가 합성한 끝의 이유(S3).
+       * 있으면 끊긴 턴이고, errorMessage 는 옛 소비자를 위해 남긴 문구라 사이드바가 보이지 않는다.
+       */
+      interruption?: TurnInterruptionReason;
+      /** 성공한 턴에만 실린다. 이 채팅에서 이 프로바이더를 다시 열 때 쓰는 네이티브 세션 커서. */
+      providerSessionId?: string;
+      /** 이번 턴에 네이티브 재개가 실패했다. 이 프로바이더의 커서를 버린다. */
+      resumeLost?: true;
+    }
+  | { type: 'error'; agent: AgentName; message: string; /** 허브가 분류한 실패 (새 허브만). */ failure?: ProviderFailure }
+  /** 마지막 모델 호출이 끝났을 때 맥락 창을 차지한 토큰 수. 누적 과금량이 아니다. */
+  | { type: 'context-usage'; agent: AgentName; usedTokens: number; maxTokens?: number; autoCompact?: boolean }
+  | {
+      type: 'compaction';
+      agent: AgentName;
+      /** 압축 한 번에 하나. 같은 id 가 다시 와도 한 번만 반영한다. */
+      compactionId: string;
+      phase: 'started' | 'completed' | 'failed';
+      trigger: CompactionTrigger;
+      beforeTokens?: number;
+      afterTokens?: number;
+      message?: string;
+    };
+
+export type CompactionTrigger = 'auto' | 'manual';
+/** manual = chat-compact 지원, auto-only = 프로바이더가 스스로만 압축, none = 압축 없음. */
+export type CompactionSupport = 'manual' | 'auto-only' | 'none';
+
+/**
+ * chat-start 대화 항목 종류. question = 에이전트가 사용자에게 물은 질문, answer = 사용자의 답,
+ * tools/tasks = 한 묶음의 도구·하위 에이전트 요약, interrupted = 끝나지 못한 턴.
+ */
+export type ChatHistoryKind =
+  | 'message'
+  | 'question'
+  | 'answer'
+  | 'plan'
+  | 'tools'
+  | 'tasks'
+  | 'progress'
+  | 'error'
+  | 'interrupted';
+
+/** chat-start 의 history / handoffHistory 항목. */
+export interface ChatHistoryEntry {
+  role: 'user' | 'assistant';
+  text: string;
+  /** 없으면 'message'. */
+  kind?: ChatHistoryKind;
+  /** 이 항목을 만든 프로바이더. 사용자 항목은 그 메시지를 받은 프로바이더. */
+  agent?: AgentName;
+  /** 있으면 안정적인 id (messageId, activityId, planId, taskGroupId, interactionId). */
+  id?: string;
+}
+
+/** chat-start 에 싣는 프로바이더 맥락 창 정보. 허브가 넘겨줄 대화 예산을 정한다. */
+export interface ProviderContextUsage {
+  /** 재개할 네이티브 세션이 마지막으로 차지한 토큰. 커서를 보낼 때만 싣는다. */
+  usedTokens?: number;
+  /** 이 프로바이더의 마지막으로 알려진 맥락 창 크기. */
+  maxTokens?: number;
+}
 
 export type SidebarEvent =
   | {
@@ -889,6 +934,10 @@ export type SidebarEvent =
       phase: AgentPhase;
       capabilityEpoch: number | null;
       latestPlan: StructuredPlan | null;
+      /** 허브가 Studio 가 보낸 네이티브 커서로 세션을 이었다. */
+      resumed?: boolean;
+      /** 이 세션의 압축 지원. 모르는 허브면 빠진다(= none). */
+      compaction?: CompactionSupport;
     }
   | { type: 'chat-stopped' }
   | { type: 'user-question-requested'; interaction: UserQuestionInteraction; replayed?: boolean }
@@ -982,17 +1031,83 @@ export type SidebarEvent =
       title: string | null;
     }
   | { type: 'agent'; event: AgentStreamEvent }
-  | { type: 'hub-error'; code: string; message: string };
+  /**
+   * 한 턴(또는 거절된 전송)에 실패 알림 하나. 브리지가 턴의 error·turn-end 를 모아 하나로 낸다.
+   * turnId 는 허브 턴 ID, userInitiated 는 사용자가 보낸 메시지로 시작한 턴인지다.
+   */
+  | {
+      type: 'turn-failure';
+      failure: ProviderFailure;
+      turnId: string | null;
+      origin: ProviderFailureOrigin;
+      userInitiated?: boolean;
+      /** 실패한 턴이 문서 쓰기 도구를 하나 이상 끝냈다 — 같은 요청을 그대로 되풀이하면 안 된다. */
+      wroteDocument?: boolean;
+    }
+  | {
+      type: 'hub-error';
+      code: string;
+      message: string;
+      /** 허브가 거절한 사용자 메시지의 receipt id(그 메시지에 messageId 가 있었을 때만). */
+      messageId?: string;
+      /** 프로바이더 실패로 분류된 거절 (AGENT_AUTH_REQUIRED, PI_NOT_CONFIGURED, AGENT_SPAWN_FAILED, AGENT_PROCESS_CLEANUP_UNCERTAIN). */
+      failure?: ProviderFailure;
+      /** 'start' 는 채팅 시작 거절, 'send' 는 보낸 메시지의 거절이다. */
+      origin?: 'start' | 'send';
+    };
 
+/** 에이전트에게 보여 줄 사용자 커서·선택 (InputHandler.getUserSelectionContext 와 같은 모양). */
+export interface AgentUserSelectionContext {
+  cursor: DocumentPosition;
+  selection: { start: DocumentPosition; end: DocumentPosition } | null;
+}
+
+/**
+ * 에이전트 문서 작업이 쓰는 편집기 — 대기 편집 승인의 히스토리 기록, 커서 읽기, 스냅샷 예산.
+ * 화면에 붙은 문서는 InputHandler 가, 뒤에서 도는 문서는 세션 히스토리를 쥔 헤드리스 호스트가 맡는다.
+ */
+export interface AgentEditorHost {
+  getCursorPosition(): DocumentPosition;
+  executeOperation(desc: OperationDescriptor): void;
+  prepareSnapshotCapacity?(additionalIds: number): void;
+  retainExternalSnapshot?(count?: number): void;
+  releaseExternalSnapshot?(count?: number): void;
+  /** 화면에 보이는 사용자 커서·선택. 보이는 편집기가 없으면 null. */
+  getUserSelectionContext?(): AgentUserSelectionContext | null;
+}
+
+/** 문서가 화면에 붙어 있을 때의 편집기와 캔버스 — 오버레이·편집 위치 따라가기·편집 잠금이 쓴다. */
+export interface AgentViewHost {
+  inputHandler: InputHandler;
+  canvasView: CanvasView;
+}
+
+/**
+ * wasm·eventBus·documentState 는 이 브리지가 맡은 문서 세션 자신의 것이다 — 화면 문서를
+ * 따라 바뀌는 페이지 facade 를 넘기면 문서 전환이 문서 교체로 보여 대기 편집이 버려진다.
+ */
 export interface AgentBridgeDeps {
   wasm: WasmBridge;
   eventBus: EventBus;
-  inputHandler: InputHandler;
-  canvasView: CanvasView;
   documentState: DocumentDirtyState;
   isReadOnly?: () => boolean;
   /** 전체 모드 에이전트의 버전 커밋 — 사이드바 커밋 버튼과 같은 기록에 남긴다. */
   commitVersion?: (message: string) => Promise<void>;
+  /**
+   * 쓰기 도구가 문서에 닿기 직전에 이 채팅이 문서를 고칠 자리를 요구한다. 같은 문서의 다른
+   * 채팅이 고치는 중이면 false 이고, 그 쓰기는 DOCUMENT_WRITER_BUSY 로 거절된다. 없으면
+   * (채팅 하나뿐인 호스트) 모든 쓰기를 받는다.
+   */
+  claimDocumentWrite?: () => boolean;
+  /**
+   * 문서 세션의 턴 체크포인트 (agent/turn-checkpoints.ts). 턴의 첫 쓰기 직전에 문서를 찍고,
+   * 검토 set 의 승인·거절과 턴 끝을 알린다. 없으면 체크포인트를 남기지 않는다.
+   */
+  turnCheckpoints?: TurnCheckpointPort;
+  /** 문서 작업용 편집기. view 가 있으면 view.inputHandler 를 쓴다. */
+  editor: AgentEditorHost;
+  /** 화면에 붙은 편집기·캔버스. null 이면 화면 밖(백그라운드)에서 시작한다. */
+  view?: AgentViewHost | null;
 }
 
 export interface AgentBridgeOptions {
@@ -1003,6 +1118,17 @@ export interface AgentBridgeOptions {
   templateToken?: string;
   launchId?: string;
   sessionId?: string;
+  /**
+   * 허브 세션 구성 공급자. 있으면 첫 연결과 모든 재연결이 기본 페이지 세션(또는 개발용
+   * 대체값) 대신 이 값을 쓴다 — 한 페이지에서 문서마다 다른 허브 세션을 쥘 때 넘긴다.
+   */
+  resolveSessionContext?: () => Promise<RendererSessionContext | null>;
+  /**
+   * 엔진 trap 복구로 다시 불러온 페이지의 기본 허브 세션 채팅. 멈추기 전 페이지가 이 스레드들의
+   * 턴을 멈추려 했지만 연결이 끊겨 닿지 않았을 수 있다. 첫 welcome 이 그 턴이 아직 돈다고 알리면
+   * 이어받은 턴을 곧바로 멈춘다 — 다시 연 문서에 쓰지 않게. 첫 welcome 에서 한 번만 본다.
+   */
+  interruptTurnsOnFirstWelcome?: readonly string[];
 }
 
 export interface DocPoint {

@@ -563,7 +563,7 @@ function pushLocalResizeDisplayHint(
   }
 }
 
-function clampCompensatedResizeDelta(
+export function clampCompensatedResizeDelta(
   wasm: any,
   tableRef: TableRef,
   edge: BorderEdge,

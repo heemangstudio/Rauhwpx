@@ -20,7 +20,8 @@ const CATALOG_FIXTURE = {
       id: 'deepseek/deepseek-chat-v3.1',
       name: 'DeepSeek: Chat v3.1',
       context_length: 163840,
-      pricing: { prompt: '0.0000002', completion: '0.0000008' },
+      top_provider: { context_length: 163840, max_completion_tokens: 65536 },
+      pricing: { prompt: '0.0000002', completion: '0.0000008', input_cache_read: '0.00000002' },
       supported_parameters: ['tools', 'tool_choice', 'reasoning'],
       architecture: { input_modalities: ['text'], output_modalities: ['text'], modality: 'text->text' },
     },
@@ -28,6 +29,7 @@ const CATALOG_FIXTURE = {
       id: 'anthropic/claude-sonnet-4.5',
       name: 'Anthropic: Claude Sonnet 4.5',
       context_length: 1000000,
+      top_provider: { context_length: 1000000, max_completion_tokens: null },
       pricing: { prompt: '0.000003', completion: '0.000015' },
       supported_parameters: ['tools', 'include_reasoning'],
       architecture: { input_modalities: ['text', 'image'], output_modalities: ['text'], modality: 'text+image->text' },
@@ -140,7 +142,11 @@ test('catalog keeps tool-capable text models and maps pricing and reasoning', as
   assert.equal(deepseek.provider, 'deepseek');
   assert.equal(deepseek.name, 'DeepSeek: Chat v3.1');
   assert.equal(deepseek.contextLength, 163840);
-  assert.deepEqual(deepseek.pricing, { prompt: 0.0000002, completion: 0.0000008 });
+  assert.deepEqual(deepseek.pricing, { prompt: 0.0000002, completion: 0.0000008, cacheRead: 0.00000002 });
+  assert.equal(deepseek.maxCompletionTokens, 65536);
+  assert.equal(models[1].maxCompletionTokens, null, '상한이 null 이면 모른다고 본다');
+  assert.equal(models[0].maxCompletionTokens, null, 'top_provider 가 없어도 통과한다');
+  assert.equal(models[0].pricing.cacheRead, 0);
   assert.equal(deepseek.reasoning, true);
   assert.equal(models[1].reasoning, true, 'include_reasoning 도 reasoning 으로 본다');
   assert.equal(models[1].supportsImages, true);
@@ -184,6 +190,42 @@ test('catalog caches in memory and on disk, refresh bypasses both', async () => 
   clock += 2 * 60 * 60 * 1000;
   await reopened.catalog();
   assert.equal(hits, 3, '1시간이 지나면 다시 받아온다');
+
+  await fs.rm(rootDir, { recursive: true, force: true });
+});
+
+test('catalog refetches a disk cache written by an older version', async () => {
+  const rootDir = await tmpRoot();
+  // 버전 필드가 없는 예전 캐시 — 출력 상한과 캐시 단가가 빠져 있다.
+  await fs.writeFile(path.join(rootDir, 'models-cache.json'), `${JSON.stringify({
+    models: [{
+      id: 'deepseek/deepseek-chat-v3.1',
+      name: 'DeepSeek: Chat v3.1',
+      provider: 'deepseek',
+      contextLength: 163840,
+      pricing: { prompt: 0.0000002, completion: 0.0000008 },
+      reasoning: true,
+      supportsImages: false,
+    }],
+    fetchedAt: 1_000,
+  })}\n`);
+  let hits = 0;
+  const open = () => createOpenRouter({
+    cacheDir: rootDir,
+    now: () => 1_000,
+    fetchImpl: async () => {
+      hits += 1;
+      return jsonResponse(200, CATALOG_FIXTURE);
+    },
+  });
+
+  const models = await open().catalog();
+  assert.equal(hits, 1, '예전 캐시는 1시간이 안 지났어도 믿지 않는다');
+  assert.equal(models.find((model) => model.id === 'deepseek/deepseek-chat-v3.1').maxCompletionTokens, 65536);
+
+  // 새로 쓴 캐시는 다음 클라이언트가 그대로 쓴다.
+  assert.equal((await open().catalog()).length, 3);
+  assert.equal(hits, 1);
 
   await fs.rm(rootDir, { recursive: true, force: true });
 });

@@ -1,6 +1,6 @@
 # 기여하기
 
-Rauhwpx는 Rust 문서 엔진, Studio 웹 편집기, 로컬 에이전트 허브와 Electron 앱으로 구성됩니다. [edwardkim/rhwp](https://github.com/edwardkim/rhwp)의 포크이며, 엔진과 패키지 경로에는 `rhwp` 이름을 유지합니다. 문서 호환성을 검증하는 `rhwp/samples/`와 PDF 기준 자료는 보존하세요.
+HamaEditor는 Rust 문서 엔진, Studio 웹 편집기, 로컬 에이전트 허브와 Electron 앱으로 구성됩니다. [edwardkim/rhwp](https://github.com/edwardkim/rhwp)의 포크이며, 엔진과 패키지 경로에는 `rhwp` 이름을 유지합니다. 문서 호환성을 검증하는 `rhwp/samples/`와 PDF 기준 자료는 보존하세요.
 
 ## 처음 설정하기
 
@@ -38,16 +38,17 @@ npm run desktop
 
 ### Rust 엔진
 
-`rhwp/`에서 실행합니다. 전체 테스트를 돌리기 전에 바꾼 기능을 검증하는 테스트 파일이나 함수로 범위를 좁힐 수 있습니다.
+`rhwp/`에서 실행합니다. 통합 테스트는 `tests/it/` 아래 모듈로 묶인 바이너리 하나(`it`)이고, 필터로 모듈이나 함수를 고릅니다.
 
 ```sh
-cargo test --locked --test <test_file_stem>
-cargo test --locked --test <test_file_stem> <test_function>
+cargo test --locked                                  # 단위 테스트 + it
+cargo test --locked --test it <module>               # 예: issue_2743
+cargo test --locked --test it <module>::<function>
 cargo fmt --check
-cargo clippy --locked
+cargo clippy --locked --tests
 ```
 
-`tests/`의 실제 이름을 사용하세요. 전체 엔진 검증 명령은 [.github/workflows/nightly.yml](.github/workflows/nightly.yml)에 있습니다. WASM을 다시 빌드하려면 저장소 루트에서 `npm run build:wasm`을 실행하세요.
+말뭉치 라운드트립 sweep 과 느린 테스트는 `tests/sweeps/`에 있고 기본 `cargo test`에서 빠집니다. `cargo test --locked --profile release-test --test sweeps`로 실행하세요. PNG/PDF 래스터 테스트는 `cargo test --locked --features native-skia --test it`에서만 컴파일됩니다. 전체 엔진 검증 명령은 [.github/workflows/nightly.yml](.github/workflows/nightly.yml)에 있습니다. WASM을 다시 빌드하려면 저장소 루트에서 `npm run build:wasm`을 실행하세요.
 
 ### Studio와 에이전트
 
@@ -64,7 +65,7 @@ Studio의 기본 테스트는 브라우저를 실행하지 않습니다. 브라�
 
 에이전트의 타입 검사는 공유 backend 계약, ACP 세션 모듈과 그 의존성을 대상으로 합니다. Claude/Codex/Pi 제공자와 HTTP/WebSocket 허브는 검사 범위에 포함되지 않습니다.
 
-E2E 목록과 참조 검사는 Python 3가 필요합니다. 문서 조작 E2E와 수동 진단은 [E2E 안내](rhwp/rhwp-studio/e2e/README.md)를 참고하세요. `e2e:list`는 스크립트를 찾고 `e2e:check`는 실행 참조를 확인합니다. Browserbase 라이브 검사는 해당 통합을 바꿀 때 수동 실행하며 외부 서비스 계정이 필요합니다.
+앱 동작 스모크 검사는 `npm --prefix rhwp/rhwp-studio run e2e:smoke`로 실행합니다. 허브와 Vite를 직접 띄우고 여덟 가지 사용자 흐름을 headless Chrome에서 확인합니다. 자세한 내용은 [스모크 안내](rhwp/rhwp-studio/e2e/README.md)를 참고하세요. Browserbase 라이브 검사는 해당 통합을 바꿀 때 수동 실행하며 외부 서비스 계정이 필요합니다.
 
 CI는 변경 경로에 따라 작업을 선택합니다. 실제 명령과 조건은 [.github/workflows/](.github/workflows/)에 있습니다. 패키지 검증은 설치 파일을 만들 때 실행하며, nightly는 더 넓은 엔진 검증을 수행합니다.
 

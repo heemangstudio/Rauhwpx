@@ -122,7 +122,7 @@ export async function createStagehandSession({
     },
     userMetadata: {
       mcp: 'true',
-      client: 'rauhwpx',
+      client: 'hamaeditor',
     },
   });
   let browser;

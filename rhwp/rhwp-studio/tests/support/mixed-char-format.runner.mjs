@@ -1,12 +1,13 @@
-// #6788: 실제 command/history/bridge + fresh Node WASM 행위 회귀.
+// #6788: 실제 command/history/bridge + rhwp/pkg WASM 행위 회귀.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const studio = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const src = join(studio, 'src');
-const binding = join(studio, '../pkg-node/rhwp.js');
+const binding = join(studio, '../pkg/rhwp.js');
 registerHooks({
   resolve(specifier, context, next) {
     if (specifier === '@wasm/rhwp.js') return { url: pathToFileURL(binding).href, shortCircuit: true };
@@ -17,7 +18,8 @@ registerHooks({
     return next(specifier, context);
   },
 });
-const { HwpDocument } = await import(pathToFileURL(binding));
+const { HwpDocument, initSync } = await import(pathToFileURL(binding));
+initSync({ module: readFileSync(join(studio, '../pkg/rhwp_bg.wasm')) });
 const { WasmBridge } = await import(pathToFileURL(join(src, 'core/wasm-bridge.ts')));
 const { ApplyCharFormatCommand } = await import(pathToFileURL(join(src, 'engine/command.ts')));
 const { CommandHistory } = await import(pathToFileURL(join(src, 'engine/history.ts')));

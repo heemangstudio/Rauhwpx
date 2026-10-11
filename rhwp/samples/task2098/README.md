@@ -11,4 +11,4 @@
 - 기대(한글 정합): 앵커는 리셋 신호 제외 → page-bottom footer 경로(배타영역 fit)가
   1쪽 하단 배치. 전체 1쪽.
 - 검증: `rhwp dump-pages samples/task2098/page_bottom_fixed_anchor_vpos0.hwpx` /
-  `cargo test --test issue_2098_page_bottom_fixed_anchor_vpos0`
+  `cargo test --test it page_count_pins`

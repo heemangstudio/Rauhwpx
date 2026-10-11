@@ -349,6 +349,133 @@ test('welcome session:null 은 턴이 돌던 채팅의 진행·편집 잠금·�
   assert.match(turnEnd.event.errorMessage, /허브/);
 });
 
+function questionFor(threadId: string) {
+  return {
+    interactionId: 'q-1', providerRequestId: 'p-1', threadId, turnId: 'turn-1', agent: 'claude', source: 'native',
+    createdAt: '2026-10-10T00:00:00.000Z', updatedAt: '2026-10-10T00:00:00.000Z',
+    questions: [{ id: 'a', header: 'A', question: '어느 쪽?', mode: 'single', allowOther: false,
+      options: [{ id: 'x', label: 'X', description: 'x' }] }],
+  };
+}
+
+function lostTurn(previousHub: string | null, welcomeHub: string | undefined) {
+  const fixture = welcomeFixture({ turnRunning: true, activeAgent: 'claude' });
+  const { bridge, events } = fixture;
+  // 앞 welcome 이 알린 허브 프로세스 — 옛 허브면 없다.
+  if (previousHub) bridge.handleMessage({ type: 'welcome', hubInstanceId: previousHub, hubSessionId: 'window-1', session: {
+    agent: 'claude', threadId: 't1', status: 'running', turnId: 'turn-1',
+  } });
+  bridge.pendingUserQuestion = questionFor('t1');
+  bridge.pendingUserQuestionId = 'q-1';
+  events.length = 0;
+  bridge.handleMessage({
+    type: 'welcome', session: null, hubSessionId: 'window-1',
+    ...(welcomeHub ? { hubInstanceId: welcomeHub } : {}),
+  });
+  const turnEnd = events.find((e) => e.type === 'agent' && e.event.type === 'turn-end')?.event;
+  const expired = events.find((e) => e.type === 'user-question-resolved');
+  const failures = events.filter((e) => e.type === 'turn-failure');
+  return { ...fixture, turnEnd, expired, failures };
+}
+
+test('hub restart: the lost turn ends with interruption hub-restart and its question expires as hub-restarted', () => {
+  const { turnEnd, expired, failures, bridge } = lostTurn('hub-a', 'hub-b');
+  assert.equal(turnEnd?.interruption, 'hub-restart');
+  assert.equal(turnEnd?.stopReason, 'exited');
+  assert.match(turnEnd?.errorMessage ?? '', /허브/, 'older consumers still read the text');
+  assert.deepEqual(expired?.outcome, { status: 'expired', reason: 'hub-restarted' });
+  assert.deepEqual(failures, [], 'the interruption row replaces a failure notice');
+  assert.deepEqual(bridge.getHubIdentity(), { hubInstanceId: 'hub-b', hubSessionId: 'window-1' });
+});
+
+test('an unknown previous hub (older hub, first welcome) also reads as a hub restart', () => {
+  assert.equal(lostTurn(null, 'hub-b').turnEnd?.interruption, 'hub-restart');
+  const older = lostTurn('hub-a', undefined);
+  assert.equal(older.turnEnd?.interruption, 'hub-restart');
+  assert.deepEqual(older.bridge.getHubIdentity(), { hubInstanceId: null, hubSessionId: 'window-1' });
+});
+
+test('the same hub process without this chat’s session is an agent exit; its question expires as provider-disconnected', () => {
+  const { turnEnd, expired, failures } = lostTurn('hub-a', 'hub-a');
+  assert.equal(turnEnd?.interruption, 'agent-exit');
+  assert.deepEqual(expired?.outcome, { status: 'expired', reason: 'provider-disconnected' });
+  assert.deepEqual(failures, []);
+});
+
+test('a turn the hub ends while shutting down is a hub restart, not a provider failure', () => {
+  const { bridge, events } = welcomeFixture({ turnRunning: true, activeAgent: 'claude' });
+  bridge.handleMessage({ type: 'hub-shutdown' });
+  const failure = { class: 'process_exited', agent: 'claude', message: 'Pi exited (code 143)', code: null, retryable: true, resetAt: null };
+  bridge.handleMessage({ type: 'agent-event', event: { type: 'error', agent: 'claude', message: failure.message, failure } });
+  bridge.handleMessage({ type: 'agent-event', event: {
+    type: 'turn-end', agent: 'claude', turnId: 'turn-1', stopReason: 'exited', errorMessage: failure.message, failure,
+  } });
+  const turnEnd = events.find((e) => e.type === 'agent' && e.event.type === 'turn-end')?.event;
+  assert.equal(turnEnd?.interruption, 'hub-restart');
+  assert.deepEqual(events.filter((e) => e.type === 'turn-failure'), [], 'no provider failure notice');
+  assert.equal(bridge.isTurnRunning(), false);
+  // 새 허브의 welcome 뒤 턴 끝은 다시 보통의 끝이다.
+  bridge.handleMessage({ type: 'welcome', session: null, hubInstanceId: 'hub-new' });
+  bridge.handleAgentEvent({ type: 'turn-start', agent: 'claude', turnId: 'turn-2' });
+  events.length = 0;
+  bridge.handleMessage({ type: 'agent-event', event: { type: 'turn-end', agent: 'claude', turnId: 'turn-2', stopReason: 'completed' } });
+  assert.equal(events.find((e) => e.type === 'agent' && e.event.type === 'turn-end')?.event.interruption, undefined);
+});
+
+/** 새로고침 직후 welcome 전에 사이드바가 채팅을 멈추고(채팅 열기·초안) 다음 채팅을 고른 뒤, 허브의 welcome 이 t1 의 턴이 돈다고 답한다. */
+function stoppedBeforeWelcome(nextThreadId: string | null) {
+  const { bridge, events } = welcomeFixture({ turnRunning: false, activeAgent: null });
+  const frames: any[] = [];
+  Object.assign(bridge, {
+    awaitingWelcome: true,
+    chatStartSent: false,
+    chatHistory: [],
+    serviceTier: 'standard',
+    sendJson(frame: any) { frames.push(frame); return true; },
+  });
+  bridge.stopChat();
+  assert.deepEqual(frames, [], 'nothing reaches the hub before its welcome');
+  if (nextThreadId) {
+    bridge.pendingChatStart = { requestId: 'chat-start-1', agent: 'claude', threadId: nextThreadId, documentId: 'doc-1', history: [] };
+  }
+  events.length = 0;
+  bridge.handleMessage({
+    type: 'welcome', hubInstanceId: 'hub-a',
+    session: { agent: 'claude', threadId: 't1', status: 'running', turnId: 'turn-9' },
+  });
+  return { bridge, events, frames: frames.map((frame) => frame.type) };
+}
+
+test('a chat stopped and reopened before the hub answers adopts its running turn at the welcome', () => {
+  // 사이드바의 채팅 열기는 늦은 welcome 전이면 멈춘 뒤 같은 채팅의 시작을 보낸다 — 돌던 턴과 질문을 죽이지 않는다(S2).
+  const { bridge, events, frames } = stoppedBeforeWelcome('t1');
+  assert.deepEqual(frames, [], 'neither a stop nor a restart reaches the hub');
+  assert.equal(bridge.isTurnRunning(), true, 'the running turn is adopted');
+  assert.equal(bridge.getHubChat()?.threadId, 't1');
+  assert.ok(events.some((event) => event.type === 'chat-started' && event.threadId === 't1'));
+  assert.ok(!events.some((event) => event.type === 'agent' && event.event.type === 'turn-end'), 'no cut-off turn-end');
+});
+
+test('a chat stopped before the hub answers for another chat or a draft is stopped at the welcome', () => {
+  const other = stoppedBeforeWelcome('t2');
+  assert.deepEqual(other.frames, ['chat-stop', 'chat-start'], 'the stop goes first, then the new start');
+  assert.equal(other.bridge.isTurnRunning(), false, 'the stopped turn is not adopted');
+  assert.ok(!other.events.some((event) => event.type === 'chat-started'), 'no chat-started for the stopped session');
+
+  const draft = stoppedBeforeWelcome(null);
+  assert.deepEqual(draft.frames, ['chat-stop']);
+  assert.equal(draft.bridge.isTurnRunning(), false);
+  assert.equal(draft.bridge.getHubChat(), null);
+});
+
+test('a stop with an open welcome goes out at once', () => {
+  const { bridge } = welcomeFixture({ turnRunning: false, activeAgent: 'claude' });
+  const frames: any[] = [];
+  Object.assign(bridge, { awaitingWelcome: false, chatHistory: [], serviceTier: 'standard', sendJson(frame: any) { frames.push(frame); return true; } });
+  bridge.stopChat();
+  assert.deepEqual(frames.map((frame) => frame.type), ['chat-stop']);
+});
+
 test('welcome session:null 은 유휴 에이전트 채팅도 새 세션을 열게 하되 turn-end 는 만들지 않는다', () => {
   const { bridge, endTurnCalls, events } = welcomeFixture({ turnRunning: false, activeAgent: 'claude' });
   bridge.handleMessage({ type: 'welcome', session: null });

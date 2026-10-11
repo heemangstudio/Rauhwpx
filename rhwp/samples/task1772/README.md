@@ -10,5 +10,5 @@
 - 기대(한글 정합): 본문 첫 줄 y≈306.7px — 저장 lineseg pi=0 vpos=17478(= 상단여백
   75.6px + 233.0px)과 일치. 동일 문서의 HWP5 재파스본(어댑터가 common.margin 동기화)도
   306.7 로 렌더됨.
-- 검증: `cargo test --test issue_1772_table_outer_margin_sync` /
+- 검증: `cargo test --test it issue_1772_table_outer_margin_sync` /
   `rhwp export-render-tree samples/task1772/table_outer_margin_common_sync.hwpx -p 0`

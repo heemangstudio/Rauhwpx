@@ -10,6 +10,7 @@ import {
   matchDesktopFont,
   prepareDesktopFontsForDocument,
   resetDesktopFontsForTests,
+  type DesktopFontHostApi,
   type DesktopFontMatch,
   type SystemFontFace,
   type SystemFontIndex,
@@ -53,6 +54,22 @@ function face(id: string, overrides: Partial<SystemFontFace>): SystemFontFace {
     latin: true,
     ...overrides,
   };
+}
+
+const FONT_BASE = 'rauhwpx-test://fonts/';
+const realFetch = globalThis.fetch;
+
+/** 데스크톱 preload처럼 face 주소를 주고, 그 주소의 fetch는 read 결과로 답한다. */
+function streamedFontHost(
+  list: () => Promise<SystemFontIndex>,
+  read: (id: string) => Uint8Array,
+): DesktopFontHostApi {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (!url.startsWith(FONT_BASE)) return realFetch(input, init);
+    return new Response(read(decodeURIComponent(url.slice(FONT_BASE.length))));
+  }) as typeof fetch;
+  return { listSystemFonts: list, systemFontBaseUrl: async () => FONT_BASE };
 }
 
 function makeIndex(faces: SystemFontFace[], hancomFaceMap: SystemFontIndex['hancomFaceMap'] = []): SystemFontIndex {
@@ -216,8 +233,10 @@ test('desktop HY equations prepare installed auxiliary faces without replacing t
       const reads: string[] = [];
       configureDesktopFonts({
         host: {
-          listSystemFonts: async () => makeIndex([equation, body, ...(hasIntegral ? [integral] : []), ...(hasSymbols ? [symbols] : [])]),
-          readSystemFont: async id => { reads.push(id); return new Uint8Array([1, 2, 3]); },
+          ...streamedFontHost(
+            async () => makeIndex([equation, body, ...(hasIntegral ? [integral] : []), ...(hasSymbols ? [symbols] : [])]),
+            id => { reads.push(id); return new Uint8Array([1, 2, 3]); },
+          ),
         },
         metrics: { register: () => JSON.stringify({ registered: true }) },
       });
@@ -256,11 +275,10 @@ test('desktop HFT outline reads retry after registration fails', async () => {
   });
   configureDesktopFonts({
     host: {
-      listSystemFonts: async () => makeIndex([face('hft-bank', {
+      ...streamedFontHost(async () => makeIndex([face('hft-bank', {
         path: '/fonts/bank.hft', format: 'hft', source: 'hancom',
         families: ['신명 신그래픽'], koreanNames: ['신명 신그래픽'],
-      })]),
-      readSystemFont: async () => bytes,
+      })]), () => bytes),
     },
   });
   try {
@@ -316,11 +334,10 @@ test('데스크톱 글꼴은 스타일별 FontFace와 런타임 메트릭으로 
   resetLocalFontsForTests();
   configureDesktopFonts({
     host: {
-      listSystemFonts: async () => makeIndex([malgun, malgunBold]),
-      readSystemFont: async (id) => {
+      ...streamedFontHost(async () => makeIndex([malgun, malgunBold]), (id) => {
         reads.push(id);
         return new Uint8Array([1, 2, 3, id.length]);
-      },
+      }),
     },
     metrics: {
       register: (_bytes, aliasesJson, bold, italic) => {

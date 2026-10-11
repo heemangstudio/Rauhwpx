@@ -120,8 +120,7 @@ function makeEnv(headerFooterExists = true) {
   const pending = new PendingEditManager({
     wasm: wasm as never,
     eventBus: new EventBus(),
-    inputHandler: {} as never,
-    canvasView: {} as never,
+    editor: {} as never,
     overlay: { setOps: (ops: OverlayOp[]) => { lastOps = ops; }, clear: () => { lastOps = []; } } as never,
   });
   return { pending, tables, ops: () => lastOps };

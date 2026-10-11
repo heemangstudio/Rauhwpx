@@ -2289,57 +2289,6 @@ mod wrap_band_perf_tests {
         assert_eq!(plan.interval_at(8.0, 16.0), (0.0, 60.0));
         assert_eq!(plan.interval_at(60.0, 16.0), (0.0, 100.0));
     }
-
-    #[test]
-    #[ignore = "수동 장문단 성능 계측"]
-    fn long_wrap_band_fill_perf() {
-        const LINE_COUNT: usize = 20_000;
-        let text_chars = vec!['\n'; LINE_COUNT];
-        let tokens = (0..LINE_COUNT)
-            .map(|idx| BreakToken::LineBreak {
-                idx,
-                max_font_size: 12.0,
-            })
-            .collect::<Vec<_>>();
-        let plan = LineBandPlan {
-            exclusions: vec![FloatExclusion {
-                rect: LayoutRect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 80.0,
-                    height: 2_000.0,
-                },
-                geometry: WrapGeometry::Side(TextFlow::BothSides),
-            }],
-            column_w_px: 600.0,
-            generated_body: false,
-            ls_type: LineSpacingType::Percent,
-            ls_value: 160.0,
-            dpi: 96.0,
-        };
-
-        let started = std::time::Instant::now();
-        let results = fill_lines(
-            &tokens,
-            &text_chars,
-            600.0,
-            0.0,
-            (0.0, 0.0),
-            None,
-            0,
-            0,
-            0,
-            Some(&plan),
-        );
-        let elapsed = started.elapsed();
-
-        assert_eq!(results.len(), LINE_COUNT + 1);
-        eprintln!(
-            "long_wrap_band_fill lines={} elapsed_us={}",
-            LINE_COUNT,
-            elapsed.as_micros()
-        );
-    }
 }
 
 #[cfg(test)]
@@ -3414,10 +3363,7 @@ mod inline_equation_15pt_wrap_tests {
     #[test]
     fn footnote01_agent_equation_insert_stays_inside_column() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/footnote-01.hwp");
-        if !path.exists() {
-            eprintln!("테스트 파일 없음: {} — 건너뜀", path.display());
-            return;
-        }
+        assert!(path.exists(), "테스트 입력 파일 없음: {:?}", path);
         let bytes = std::fs::read(&path).unwrap();
         let mut core = crate::document_core::DocumentCore::from_bytes(&bytes).unwrap();
 
@@ -3542,10 +3488,7 @@ mod inline_equation_15pt_wrap_tests {
     #[test]
     fn footnote01_cursor_probe_equation_insert_matches_browser_layout() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/footnote-01.hwp");
-        if !path.exists() {
-            eprintln!("테스트 파일 없음: {} — 건너뜀", path.display());
-            return;
-        }
+        assert!(path.exists(), "테스트 입력 파일 없음: {:?}", path);
         let bytes = std::fs::read(&path).unwrap();
         let mut doc = crate::wasm_api::HwpDocument::from_bytes(&bytes).unwrap();
         doc.convert_to_editable().unwrap();

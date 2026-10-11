@@ -370,6 +370,17 @@ UI 활자는 하나다. 시스템 스택(`-apple-system` → `맑은 고딕` →
 튜토리얼, 사용 예시, 안심 문구는 넣지 않는다. 문서를 열면 이 면은 즉시
 사라지고 용지가 같은 자리를 차지한다.
 
+## Boot and first run
+
+픽셀 하마는 부트 화면과 첫 실행 설정에만 쓰는 의도된 예외다. 편집기 크롬에는
+픽셀 표현을 들이지 않는다.
+
+- 부트 화면(`public/boot-screen.js`, `styles/boot-screen.css`)은 `--n-canvas` 위에
+  88×36 로고 하나를 정수 배율(`image-rendering: pixelated`)로 둔다. 첫 실행은
+  애니메이션, 그 뒤로는 정지 로고다. 자산은 `scripts/generate-boot-logo.py` 가 만든다.
+- 첫 실행 설정은 고를 것만 보인다(테마 타일, 모델 카드, 글꼴 버튼). 설명은 하마가
+  말풍선 한 줄로 하고, 화면에 안내 문구·면책 문구를 따로 두지 않는다.
+
 ## Known gaps
 
 - `#editor-area` 의 `transition: margin-right` 는 레이아웃 애니메이션이지만

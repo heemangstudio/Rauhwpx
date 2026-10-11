@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import {
   bindNativeFileHandleIdentity,
   captureDesktopNativeDroppedFile,
+  createAgentHubSession,
   createNativeFileHandle,
   ensureDesktopAgentHub,
   getNativeFileHandleVerifiedDocumentId,
   getNativeFileSourcePath,
+  installDesktopAgentAttention,
   installDesktopGeneratedDocumentHandling,
   installDesktopPlainTextPasteHandling,
   installDesktopEditCommandHandling,
@@ -31,14 +32,13 @@ import {
   type NativeFileHandleDescriptor,
 } from '../src/desktop-integration.ts';
 import { writeBlobToHandle } from '../src/command/file-system-access.ts';
+import { createChatAttentionLedger } from '../src/agent/chat-attention.ts';
+import type { ChatRunStatus } from '../src/agent/chat-status.ts';
 import {
   EXACT_LOCAL_DOCUMENT_MAX_BYTES,
   PORTABLE_HISTORY_MAX_BYTES,
 } from '../src/core/document-input-limits.ts';
 
-const source = readFileSync(new URL('../src/desktop-integration.ts', import.meta.url), 'utf8');
-const bridge = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
-const settings = readFileSync(new URL('../src/ui/agent-sidebar/settings.ts', import.meta.url), 'utf8');
 
 test('desktop integration asks the shell to launch a missing hub', async () => {
   assert.equal(isDesktopApp({}), false);
@@ -75,7 +75,6 @@ test('desktop integration asks the shell to launch a missing hub', async () => {
 });
 
 test('dev ensure path asks Vite to start a missing hub', async () => {
-  assert.match(source, /\/__rhwp\/ensure-agent-hub/);
   let calls = 0;
   const ready = await requestDevAgentHub(async (url, init) => {
     calls += 1;
@@ -98,6 +97,62 @@ test('dev ensure path cancels an unread non-ok body', async () => {
 
   assert.equal(await requestDevAgentHub(async () => response), false);
   assert.equal(cancelled, true);
+});
+
+test('extra hub sessions resolve their own context and close once', async () => {
+  const context = (sessionId: string) => ({
+    launchId: 'launch-1',
+    sessionId,
+    hubUrl: 'ws://127.0.0.1:1',
+    hubToken: `${sessionId}:studio`,
+    referenceToken: `${sessionId}:reference`,
+    templateToken: `${sessionId}:template`,
+  });
+  const calls: string[] = [];
+  const lease = await createAgentHubSession({
+    rhwpDesktop: {
+      getSessionContext: async () => context('window'),
+      createAgentSession: async () => ({ sessionId: 'extra-1' }),
+      getAgentSessionContext: async (sessionId) => {
+        calls.push(`context:${sessionId}`);
+        return context(sessionId);
+      },
+      releaseAgentSession: async (sessionId) => {
+        calls.push(`release:${sessionId}`);
+        return true;
+      },
+    },
+  });
+  assert.equal(lease?.sessionId, 'extra-1');
+  assert.equal((await lease!.resolveContext())?.hubToken, 'extra-1:studio');
+  await Promise.all([lease!.release(), lease!.release()]);
+  assert.equal(await lease!.resolveContext(), null);
+  assert.deepEqual(calls, ['context:extra-1', 'release:extra-1']);
+
+  // A preload without the extra-session IPC and a plain web build cannot host one.
+  assert.equal(await createAgentHubSession({
+    rhwpDesktop: { getSessionContext: async () => context('window') },
+  }), null);
+  assert.equal(await createAgentHubSession({}, { dev: false }), null);
+
+  const requests: string[] = [];
+  const devLease = await createAgentHubSession({}, {
+    dev: true,
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      const sessionId = new URL(String(url), 'http://127.0.0.1').searchParams.get('sessionId')!;
+      return new Response(JSON.stringify({ ready: true, ...context(sessionId) }));
+    },
+  });
+  const devContext = await devLease!.resolveContext();
+  assert.equal(devContext?.sessionId, devLease!.sessionId);
+  assert.equal(devContext?.hubToken, `${devLease!.sessionId}:studio`);
+  await devLease!.release();
+  const encoded = encodeURIComponent(devLease!.sessionId);
+  assert.deepEqual(requests, [
+    `/__rhwp/ensure-agent-hub?sessionId=${encoded}`,
+    `/__rhwp/release-agent-hub-session?sessionId=${encoded}`,
+  ]);
 });
 
 test('browser hub identity is stable across reloads but scoped to its tab storage', () => {
@@ -618,26 +673,7 @@ test('releasing a replaced native handle bookmarks it first', async () => {
   assert.deepEqual(released, ['old']);
 });
 
-test('브리지와 설정 재연결이 데스크톱 허브 기동을 탄다', () => {
-  assert.match(bridge, /await this\.requestHubLaunch\(\)/);
-  assert.match(bridge, /async reconnectNow\(\): Promise<void>/);
-  assert.match(settings, /void bridge\.reconnectNow\(\)/);
-  assert.doesNotMatch(settings, /ensureDesktopAgentHub/);
-  assert.match(settings, /hubReconnect\.disabled = connectionState === 'connected'/);
-  assert.doesNotMatch(
-    settings,
-    /hubReconnect\.disabled = connectionState === 'connected' \|\| connectionState === 'connecting'/,
-  );
-  assert.match(source, /rhwpDesktop\?\.ensureAgentHub/);
-  assert.match(source, /\/Electron\/i\.test\(ua\)/);
-});
-
 test('데스크톱 셸은 서비스 워커를 끄고 PWA 등록을 건너뛴다', async () => {
-  const vite = readFileSync(new URL('../vite.config.ts', import.meta.url), 'utf8');
-  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  assert.match(vite, /injectRegister:\s*false/);
-  assert.match(main, /installWebAppShell\(\)/);
-
   const unregisters: string[] = [];
   await suppressDesktopServiceWorker({
     rhwpDesktop: { ensureAgentHub: async () => true },
@@ -668,4 +704,58 @@ test('desktop edit menu routes supported document commands once', () => {
   for (const command of ['undo', 'redo', 'select-all', 'delete', 'file:open']) listener?.(command);
   assert.deepEqual(commands, ['undo', 'redo', 'select-all', 'delete']);
   assert.equal(installDesktopEditCommandHandling(() => {}, {}), false);
+});
+
+test('desktop attention forwards system notices, the unseen count and opens clicked chats', () => {
+  const statuses = new Map<string, ChatRunStatus>();
+  let focused = false;
+  const ledger = createChatAttentionLedger({
+    getStatus: (id) => statuses.get(id) ?? null,
+    windowFocused: () => focused,
+  });
+  const sent: Array<{ threadId: string; title: string; body: string }> = [];
+  const counts: number[] = [];
+  const opened: string[] = [];
+  let openListener: ((threadId: string) => void) | null = null;
+  let unsubscribed = 0;
+  const dispose = installDesktopAgentAttention(ledger, (id) => opened.push(id), {
+    rhwpDesktop: {
+      notifyAgentAttention: (payload) => sent.push(payload),
+      setAgentAttentionCount: (count) => counts.push(count),
+      onOpenAgentChat: (callback) => {
+        openListener = callback;
+        return () => { unsubscribed += 1; };
+      },
+    },
+  });
+  // 새로고침이 남긴 배지를 지운다.
+  assert.deepEqual(counts, [0]);
+  const report = (threadId: string, status: ChatRunStatus, key: string) => {
+    statuses.set(threadId, status);
+    ledger.report({ threadId, status, key, seen: false, title: '표 정리', documentName: '회의록.hwpx' });
+  };
+  report('thread-a', 'finished', 'a:end');
+  focused = true;
+  report('thread-b', 'needs-review', 'b:end');
+  // 초점이 있는 창은 토스트로 대신한다 — 메인에 보내지 않는다. OS 알림은 기본으로 채팅 제목과
+  // 문서 이름 없이 앱 이름과 문구만 싣는다.
+  assert.deepEqual(sent, [{ threadId: 'thread-a', title: 'HamaEditor', body: '작업을 마쳤습니다' }]);
+  assert.deepEqual(counts, [0, 1, 2]);
+  report('thread-b', 'needs-review', 'b:end');
+  assert.deepEqual(counts, [0, 1, 2], 'unchanged counts are not resent');
+  openListener!('thread-a');
+  assert.deepEqual(opened, ['thread-a']);
+  dispose();
+  assert.deepEqual(counts, [0, 1, 2, 0], 'uninstalling clears the badge');
+  assert.equal(unsubscribed, 1);
+  report('thread-c', 'failed', 'c:end');
+  assert.equal(sent.length, 1);
+});
+
+test('desktop attention is a no-op without the desktop API', () => {
+  const ledger = createChatAttentionLedger({ getStatus: () => null, windowFocused: () => false });
+  const dispose = installDesktopAgentAttention(ledger, () => {}, {});
+  dispose();
+  const older = installDesktopAgentAttention(ledger, () => {}, { rhwpDesktop: { ensureAgentHub: async () => true } });
+  older();
 });

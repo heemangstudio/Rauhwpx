@@ -615,6 +615,37 @@ fn apply_page_number_layouts_for_section(result: &mut PaginationResult, section:
 
 const PAGE_RENDER_CACHE_CAPACITY: usize = 32;
 
+/// 페이지 렌더 캐시가 쥐는 그림·JSON 바이트 상한. 트리는 그림 원본을, JSON 은 그
+/// base64 사본을 들고 있어 사진 많은 쪽 32장이면 수십 MB 가 된다. WASM 선형 메모리는
+/// 최고점에서 줄지 않으므로 쪽 수와 별도로 바이트로도 묶는다. 방금 쓴 쪽은 남긴다.
+const PAGE_RENDER_CACHE_BYTE_BUDGET: usize = 24 * 1024 * 1024;
+
+/// 렌더 트리가 붙들고 있는 그림 바이트 합. 같은 그림을 여러 번 쓰면 한 번만 센다.
+fn render_tree_image_bytes(tree: &PageRenderTree) -> usize {
+    use crate::renderer::render_tree::RenderNodeType;
+
+    let mut seen: Vec<*const u8> = Vec::new();
+    let mut total = 0;
+    let mut nodes = vec![&tree.root];
+    while let Some(node) = nodes.pop() {
+        nodes.extend(node.children.iter());
+        let data = match &node.node_type {
+            RenderNodeType::Image(image) => image.data.as_ref(),
+            RenderNodeType::PageBackground(background) => {
+                background.image.as_ref().map(|image| &image.data)
+            }
+            _ => None,
+        };
+        if let Some(data) = data {
+            if !seen.contains(&data.as_ptr()) {
+                seen.push(data.as_ptr());
+                total += data.len();
+            }
+        }
+    }
+    total
+}
+
 impl DocumentCore {
     /// 페이지 렌더 트리를 생성하여 반환한다 (native bridge / 외부 렌더러용).
     pub fn build_page_render_tree(&self, page_num: u32) -> Result<PageRenderTree, HwpError> {
@@ -1635,6 +1666,7 @@ impl DocumentCore {
             }
             variants.push((fp, json.clone()));
         }
+        self.trim_page_render_cache();
         Ok(json)
     }
 
@@ -1872,9 +1904,9 @@ impl DocumentCore {
                                     }
                                 }
                             }
-                            // OLE/차트 미리보기 등은 RawSvg 로 emit 되며 web_canvas 의 draw_image
-                            // 경로(IMAGE_CACHE 비동기 디코드)를 그대로 탄다. scheduleReRender 재시도
-                            // 발화를 위해 별도 rawSvgCount 로 노출한다.
+                            // OLE/차트 미리보기 등은 RawSvg 로 emit 되며 web_canvas 그림 캐시의
+                            // 비동기 디코드를 탄다. Studio 가 본문 정적 층을 나눌 때 그림과 함께
+                            // 세도록 별도 rawSvgCount 로 노출한다.
                             PaintOp::RawSvg { .. } => {
                                 *raw_svg_count += 1;
                                 if plane == PaintReplayPlane::Flow {
@@ -3844,6 +3876,7 @@ impl DocumentCore {
                     hidden_empty_paras: std::collections::HashSet::new(),
                     pre_emitted_host_paras: std::collections::HashSet::new(),
                     pre_emitted_host_heights: std::collections::HashMap::new(),
+                    fresh_page_float_tables: std::collections::HashSet::new(),
                     endnotes: Vec::new(),
                     endnote_paragraphs: Vec::new(),
                     endnote_para_sources: Vec::new(),
@@ -4085,6 +4118,7 @@ impl DocumentCore {
                 hidden_empty_paras: std::collections::HashSet::new(),
                 pre_emitted_host_paras: std::collections::HashSet::new(),
                 pre_emitted_host_heights: std::collections::HashMap::new(),
+                fresh_page_float_tables: std::collections::HashSet::new(),
                 endnotes: Vec::new(),
                 endnote_paragraphs: Vec::new(),
                 endnote_para_sources: Vec::new(),
@@ -5727,7 +5761,7 @@ impl DocumentCore {
         }
         self.page_tree_cache_order
             .borrow_mut()
-            .retain(|page| *page < from);
+            .retain(|(page, _)| *page < from);
         // 대표 HF tree는 일반 pagination tree와 다른 active target을 담는다. 부분
         // 무효화의 원인이 HF 자체가 아니더라도 body/쪽번호/페이지 기하가 바뀔 수 있어
         // 단일 entry를 보수적으로 비운다 (#6452).
@@ -5789,7 +5823,7 @@ impl DocumentCore {
         }
         self.page_tree_cache_order
             .borrow_mut()
-            .retain(|cached_page| *cached_page != page);
+            .retain(|(cached_page, _)| *cached_page != page);
         // 대표 HF tree도 페이지 숨김 상태를 포함하므로 함께 무효화한다 (#6452).
         self.header_footer_preview_tree_cache.borrow_mut().take();
         if let Some(variants) = self.layer_tree_json_cache.borrow_mut().get_mut(page) {
@@ -5828,11 +5862,18 @@ impl DocumentCore {
 
     fn touch_page_render_cache(&self, page: usize) {
         let mut order = self.page_tree_cache_order.borrow_mut();
-        order.retain(|cached_page| *cached_page != page);
-        order.push_back(page);
+        if let Some(pos) = order
+            .iter()
+            .position(|(cached_page, _)| *cached_page == page)
+        {
+            if let Some(entry) = order.remove(pos) {
+                order.push_back(entry);
+            }
+        }
     }
 
     fn cache_page_tree(&self, page: usize, tree: std::sync::Arc<PageRenderTree>) {
+        let image_bytes = render_tree_image_bytes(&tree);
         {
             let mut cache = self.page_tree_cache.borrow_mut();
             if cache.len() <= page {
@@ -5840,24 +5881,56 @@ impl DocumentCore {
             }
             cache[page] = Some(tree);
         }
-
-        let evicted = {
+        {
             let mut order = self.page_tree_cache_order.borrow_mut();
-            order.retain(|cached_page| *cached_page != page);
-            order.push_back(page);
-            (order.len() > PAGE_RENDER_CACHE_CAPACITY)
-                .then(|| order.pop_front())
-                .flatten()
-        };
-        let Some(evicted) = evicted else {
-            return;
-        };
-
-        if let Some(slot) = self.page_tree_cache.borrow_mut().get_mut(evicted) {
-            *slot = None;
+            order.retain(|(cached_page, _)| *cached_page != page);
+            order.push_back((page, image_bytes));
         }
-        if let Some(variants) = self.layer_tree_json_cache.borrow_mut().get_mut(evicted) {
-            variants.clear();
+        self.trim_page_render_cache();
+    }
+
+    /// 쪽 수 상한과 바이트 예산을 넘는 동안 가장 오래 안 쓴 쪽의 트리와 JSON 을 버린다.
+    fn trim_page_render_cache(&self) {
+        let mut evicted = Vec::new();
+        {
+            let order = self.page_tree_cache_order.borrow();
+            let json_cache = self.layer_tree_json_cache.borrow();
+            let page_bytes = |page: usize, image_bytes: usize| {
+                image_bytes
+                    + json_cache.get(page).map_or(0, |variants| {
+                        variants.iter().map(|(_, json)| json.len()).sum()
+                    })
+            };
+            let mut count = order.len();
+            let mut total: usize = order
+                .iter()
+                .map(|&(page, image_bytes)| page_bytes(page, image_bytes))
+                .sum();
+            for &(page, image_bytes) in order.iter().take(order.len().saturating_sub(1)) {
+                if count <= PAGE_RENDER_CACHE_CAPACITY && total <= PAGE_RENDER_CACHE_BYTE_BUDGET {
+                    break;
+                }
+                count -= 1;
+                total -= page_bytes(page, image_bytes);
+                evicted.push(page);
+            }
+        }
+        if evicted.is_empty() {
+            return;
+        }
+
+        self.page_tree_cache_order
+            .borrow_mut()
+            .retain(|(page, _)| !evicted.contains(page));
+        let mut cache = self.page_tree_cache.borrow_mut();
+        let mut json_cache = self.layer_tree_json_cache.borrow_mut();
+        for page in evicted {
+            if let Some(slot) = cache.get_mut(page) {
+                *slot = None;
+            }
+            if let Some(variants) = json_cache.get_mut(page) {
+                variants.clear();
+            }
         }
     }
 
@@ -6218,6 +6291,8 @@ impl DocumentCore {
             // [#2015] pre-emit host 높이 → layout vert_offset 이중계상 보정.
             self.layout_engine
                 .set_pre_emitted_host_heights(&pr.pre_emitted_host_heights);
+            self.layout_engine
+                .set_fresh_page_float_tables(&pr.fresh_page_float_tables);
             self.layout_engine
                 .set_endnote_para_sources(paragraphs.len(), &pr.endnote_para_sources);
             // 섹션 미주 모양의 정규화 여백 전달 → HeightCursor min-gap 및 renderer overflow 판정.
@@ -7226,6 +7301,42 @@ mod tests {
             core.page_tree_cache_order.borrow().len(),
             PAGE_RENDER_CACHE_CAPACITY
         );
+    }
+
+    #[test]
+    fn page_render_cache_evicts_old_pages_past_its_byte_budget() {
+        use crate::renderer::render_tree::{BoundingBox, ImageNode, RenderNode};
+
+        let core = DocumentCore::new_empty();
+        let image_bytes = PAGE_RENDER_CACHE_BYTE_BUDGET / 3;
+        let pages = 6;
+        for page in 0..pages {
+            let mut tree = PageRenderTree::new(page as u32, 100.0, 100.0);
+            let data: std::sync::Arc<[u8]> = vec![0u8; image_bytes].into();
+            tree.root.children.push(RenderNode::new(
+                1,
+                RenderNodeType::Image(ImageNode::new_shared(1, Some(data))),
+                BoundingBox::new(0.0, 0.0, 10.0, 10.0),
+            ));
+            core.cache_page_tree(page, std::sync::Arc::new(tree));
+        }
+
+        let cache = core.page_tree_cache.borrow();
+        let kept: Vec<usize> = (0..pages).filter(|&page| cache[page].is_some()).collect();
+        assert_eq!(kept, vec![pages - 3, pages - 2, pages - 1]);
+        drop(cache);
+
+        // 예산보다 큰 한 쪽도 방금 만든 쪽이면 남는다.
+        let mut tree = PageRenderTree::new(pages as u32, 100.0, 100.0);
+        let data: std::sync::Arc<[u8]> = vec![0u8; PAGE_RENDER_CACHE_BYTE_BUDGET + 1].into();
+        tree.root.children.push(RenderNode::new(
+            1,
+            RenderNodeType::Image(ImageNode::new_shared(1, Some(data))),
+            BoundingBox::new(0.0, 0.0, 10.0, 10.0),
+        ));
+        core.cache_page_tree(pages, std::sync::Arc::new(tree));
+        assert_eq!(core.render_cache_stats().0, 1);
+        assert!(core.page_tree_cache.borrow()[pages].is_some());
     }
 
     #[test]

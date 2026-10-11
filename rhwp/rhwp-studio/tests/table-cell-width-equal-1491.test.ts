@@ -1,84 +1,54 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
+import { createTestModuleServer } from './support/module-server.ts';
 
-function source(path: string): string {
-  return readFileSync(join(rootDir, path), 'utf8');
+// #1491: 셀 너비·높이를 같게는 화면에 보이는 bbox 크기로 평균을 내고, 셀마다 로컬 resize
+// 힌트를 보내며, 마우스 resize 처럼 되돌릴 수 있는 snapshot 편집 하나로 적용한다.
+const vite = await createTestModuleServer(fileURLToPath(new URL('../', import.meta.url)));
+const { tableCommands } = await vite.ssrLoadModule('/src/command/commands/table.ts') as typeof import('../src/command/commands/table.ts');
+test.after(() => vite.close());
+
+// 1행 3열 표. 모델 폭은 모두 3000 이지만 화면 폭은 40·60·80px(=3000·4500·6000 HWPUNIT)이다.
+function run(id: string) {
+  const resized: unknown[][] = [];
+  const operations: string[] = [];
+  const pos = { sectionIndex: 0, paragraphIndex: 0, charOffset: 0, parentParaIndex: 2, controlIndex: 0, cellIndex: 0 };
+  const widths = [40, 60, 80];
+  const heights = [20, 20, 40];
+  const wasm = {
+    getTableDimensions: () => ({ rowCount: 1, colCount: 3, cellCount: 3 }),
+    getTableCellBboxes: () => widths.map((w, cellIdx) => ({ cellIdx, w, h: heights[cellIdx] })),
+    getCellInfo: (_s: number, _p: number, _c: number, i: number) => ({ row: 0, col: i, rowSpan: 1, colSpan: 1 }),
+    getCellProperties: () => ({ width: 3000, height: 1500 }),
+    resizeTableCells: (...args: unknown[]) => { resized.push(args); },
+  };
+  const ih = {
+    getCursorPosition: () => pos,
+    isInCellSelectionMode: () => false,
+    executeOperation(desc: { kind: string; operationType: string; operation(w: unknown): unknown }) {
+      operations.push(`${desc.kind}:${desc.operationType}`);
+      assert.equal(desc.operation(wasm), pos);
+    },
+  };
+  const command = tableCommands.find((c) => c.id === id)!;
+  command.execute({ wasm, getInputHandler: () => ih } as never);
+  return { resized, operations };
 }
 
-function commandBlock(commandId: string): string {
-  const tableCmd = source('src/command/commands/table.ts');
-  const start = tableCmd.indexOf(`id: '${commandId}'`);
-  assert.notEqual(start, -1, `${commandId} command not found`);
-  const end = tableCmd.indexOf('\n  {', start + 1);
-  assert.notEqual(end, -1, `${commandId} command end not found`);
-  return tableCmd.slice(start, end);
-}
-
-// #1491: 셀 너비 균등화는 현재 표시 bbox 폭을 기준으로 로컬 resize 힌트를 남겨야 한다.
-test('셀 너비를 같게는 bbox 표시 폭 기준으로 평균을 계산한다', () => {
-  const block = commandBlock('table:cell-width-equal');
-
-  assert.match(block, /getTableCellBboxes\(sec,\s*ppi,\s*ci\)/, '현재 렌더 bbox를 읽어야 함');
-  assert.match(block, /Math\.round\(bbox\.w \* 75\)/, 'bbox 폭을 HWPUNIT 표시 폭으로 변환해야 함');
-  assert.match(block, /sum \+ cell\.renderWidth/, '평균 계산은 모델 폭이 아니라 표시 폭 기준이어야 함');
-  assert.match(block, /totalWidth \/ cells\.length/, '선택된 실제 셀 개수를 기준으로 평균을 내야 함');
-  assert.doesNotMatch(block, /sum \+ cell\.width/, '표시 폭 대신 모델 폭으로 평균을 내면 안 됨');
+test('셀 너비를 같게는 표시 폭 평균으로 셀마다 로컬 resize 힌트를 보내고 undo 가능한 편집 하나로 적용한다', () => {
+  const { resized, operations } = run('table:cell-width-equal');
+  assert.deepEqual(operations, ['snapshot:equalizeTableCellWidths']);
+  assert.deepEqual(resized, [[0, 2, 0, [0, 1, 2].map((cellIdx) => ({
+    cellIdx, widthDelta: 1500, localResize: true, renderWidth: 4500,
+  }))]]);
 });
 
-test('셀 너비를 같게는 선택 셀마다 localResize/renderWidth 힌트를 보낸다', () => {
-  const block = commandBlock('table:cell-width-equal');
-
-  assert.doesNotMatch(block, /info\.colSpan > 1/, '가로 병합 셀도 균등화 대상에 포함해야 함');
-  assert.match(block, /localResize:\s*true/, '로컬 행 resize 의도를 전달해야 함');
-  assert.match(block, /renderWidth:\s*avgWidth/, '목표 렌더 폭을 WASM에 전달해야 함');
-  assert.match(block, /c\.renderWidth !== avgWidth/, 'delta가 0이어도 표시 폭이 다르면 실행해야 함');
-  assert.doesNotMatch(
-    block,
-    /if \(delta !== 0\) updates\.push/,
-    'delta가 있는 셀만 보내면 선택 행 힌트가 불완전해짐',
-  );
-});
-
-test('셀 너비를 같게는 마우스 resize와 같은 operation 경로로 적용한다', () => {
-  const block = commandBlock('table:cell-width-equal');
-
-  assert.match(block, /ih\.executeOperation\({/, '직접 WASM 호출이 아니라 InputHandler operation 경로를 사용해야 함');
-  assert.match(block, /operationType:\s*'equalizeTableCellWidths'/, '너비 균등화 전용 operationType을 기록해야 함');
-  assert.match(block, /wasm\.resizeTableCells\(sec,\s*ppi,\s*ci,\s*updates\)/, 'snapshot operation 내부에서 resizeTableCells를 호출해야 함');
-  assert.doesNotMatch(block, /services\.wasm\.resizeTableCells\(sec,\s*ppi,\s*ci,\s*updates\);/, '직접 호출하면 refresh/undo/cache 경로를 우회함');
-  assert.match(block, /restoreEditorFocus\(ih\)/, '컨텍스트 메뉴 실행 후 편집 포커스를 복원해야 함');
-});
-
-test('셀 높이를 같게는 bbox 표시 높이 기준으로 평균을 계산한다', () => {
-  const block = commandBlock('table:cell-height-equal');
-
-  assert.match(block, /getTableCellBboxes\(sec,\s*ppi,\s*ci\)/, '현재 렌더 bbox를 읽어야 함');
-  assert.match(block, /Math\.round\(bbox\.h \* 75\)/, 'bbox 높이를 HWPUNIT 표시 높이로 변환해야 함');
-  assert.match(block, /sum \+ cell\.renderHeight/, '평균 계산은 모델 높이가 아니라 표시 높이 기준이어야 함');
-  assert.match(block, /totalHeight \/ cells\.length/, '선택된 실제 셀 개수를 기준으로 평균을 내야 함');
-  assert.doesNotMatch(block, /sum \+ c\.height/, '표시 높이 대신 모델 높이로 평균을 내면 안 됨');
-});
-
-test('셀 높이를 같게는 선택 셀마다 localResize/renderHeight 힌트를 보낸다', () => {
-  const block = commandBlock('table:cell-height-equal');
-
-  assert.match(block, /localResize:\s*true/, '로컬 세로 resize 의도를 전달해야 함');
-  assert.match(block, /renderHeight:\s*avgHeight/, '목표 렌더 높이를 WASM에 전달해야 함');
-  assert.match(block, /heightDelta:\s*0/, '셀 높이 균등화는 행 모델 높이를 직접 흔들면 안 됨');
-  assert.match(block, /c\.renderHeight !== avgHeight/, 'delta가 0이어도 표시 높이가 다르면 실행해야 함');
-});
-
-test('셀 높이를 같게는 마우스 resize와 같은 operation 경로로 적용한다', () => {
-  const block = commandBlock('table:cell-height-equal');
-
-  assert.match(block, /ih\.executeOperation\({/, '직접 WASM 호출이 아니라 InputHandler operation 경로를 사용해야 함');
-  assert.match(block, /operationType:\s*'equalizeTableCellHeights'/, '높이 균등화 전용 operationType을 기록해야 함');
-  assert.match(block, /wasm\.resizeTableCells\(sec,\s*ppi,\s*ci,\s*updates\)/, 'snapshot operation 내부에서 resizeTableCells를 호출해야 함');
-  assert.doesNotMatch(block, /services\.wasm\.resizeTableCells\(sec,\s*ppi,\s*ci,\s*updates\);/, '직접 호출하면 refresh/undo/cache 경로를 우회함');
-  assert.match(block, /restoreEditorFocus\(ih\)/, '컨텍스트 메뉴 실행 후 편집 포커스를 복원해야 함');
+test('셀 높이를 같게는 표시 높이 평균으로 행 모델 높이를 건드리지 않고 적용한다', () => {
+  const { resized, operations } = run('table:cell-height-equal');
+  assert.deepEqual(operations, ['snapshot:equalizeTableCellHeights']);
+  assert.deepEqual(resized, [[0, 2, 0, [0, 1, 2].map((cellIdx) => ({
+    cellIdx, heightDelta: 0, localResize: true, renderHeight: 2000,
+  }))]]);
 });

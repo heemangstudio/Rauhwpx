@@ -200,7 +200,7 @@ function makeExecutor(cursor?: Record<string, unknown>) {
   };
   const executor = new AgentToolExecutor({
     wasm: wasm as never,
-    inputHandler: inputHandler as never,
+    editor: inputHandler as never,
     documentState: { isDirty: () => false } as never,
     revision,
     pending: pending as never,
@@ -497,8 +497,7 @@ function makeManager() {
   const mgr = new PendingEditManager({
     wasm: wasm as never,
     eventBus,
-    inputHandler: inputHandler as never,
-    canvasView: {} as never,
+    editor: inputHandler as never,
     overlay: overlay as never,
   });
   return { mgr, body, cells, calls };
@@ -667,12 +666,12 @@ function makeNestedSafeHarness() {
     getSelection: () => null,
   };
   const pending = new PendingEditManager({
-    wasm: wasm as never, eventBus, inputHandler: inputHandler as never,
-    canvasView: {} as never, overlay: { setOps: () => {}, clear: () => {} } as never,
+    wasm: wasm as never, eventBus, editor: inputHandler as never,
+    overlay: { setOps: () => {}, clear: () => {} } as never,
   });
   const revision = new RevisionTracker(eventBus);
   const executor = new AgentToolExecutor({
-    wasm: wasm as never, inputHandler: inputHandler as never,
+    wasm: wasm as never, editor: inputHandler as never,
     documentState: { isDirty: () => false } as never, revision, pending,
   });
   const safe = { permissionProfile: 'safe' as const, workflow: 'direct' as const };

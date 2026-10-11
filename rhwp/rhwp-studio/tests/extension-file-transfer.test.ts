@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -192,29 +191,74 @@ test('fails closed for every remote URL before extension messaging', async () =>
   assert.deepEqual(calls, []);
 });
 
-test('source contract forbids whole-file number-array conversion', () => {
-  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  const chromeRouter = readFileSync(
-    new URL('../../rhwp-chrome/sw/message-router.js', import.meta.url),
-    'utf8',
-  );
-  const firefoxRouter = readFileSync(
-    new URL('../../rhwp-firefox/sw/message-router.js', import.meta.url),
-    'utf8',
-  );
-  const safariBackground = readFileSync(
-    new URL('../../rhwp-safari/src/background.js', import.meta.url),
-    'utf8',
-  );
+// 확장 쪽 라우터는 원격 문서를 대신 받아 주지 않는다 — 바이트를 싣지 않고 정해진 오류만 돌려준다.
+const VIEWER_SENDER = { url: 'chrome-extension://rhwp-test/viewer.html' };
 
-  assert.match(main, /throw new ExtensionRemoteProxyUnavailableError\(\)/);
-  assert.match(main, /validatedRemoteUrl = validateRemoteDocumentUrl\(fileUrl\)/);
-  assert.match(main, /hasExtensionRuntime && validatedRemoteUrl/);
-  assert.match(main, /fetch\(validatedRemoteUrl\?\.href \?\? fileUrl\)/);
-  assert.doesNotMatch(main, /readExtensionDocumentBytes\(/);
-  assert.doesNotMatch(main, /new Uint8Array\(result\.data\)/);
-  assert.doesNotMatch(chromeRouter, /Array\.from\(bytes\)/);
-  assert.doesNotMatch(firefoxRouter, /Array\.from\(bytes\)/);
-  assert.match(safariBackground, /code: 'REMOTE_PROXY_UNAVAILABLE'/);
-  assert.match(safariBackground, /requirement: 'SERVER_FETCH_REQUIRED'/);
+for (const [browser, runtimeGlobal] of [['chrome', 'chrome'], ['firefox', 'browser']] as const) {
+  test(`${browser} service worker refuses every remote fetch-file message without bytes`, async () => {
+    const g = globalThis as Record<string, unknown>;
+    const previous = g[runtimeGlobal];
+    g[runtimeGlobal] = { runtime: { id: 'rhwp-test', getURL: (path: string) => `chrome-extension://rhwp-test/${path}` } };
+    try {
+      const { dispatchRuntimeMessage } = await import(`../../rhwp-${browser}/sw/message-router.js`);
+      for (const type of ['fetch-file-start', 'fetch-file-chunk', 'fetch-file-close']) {
+        const responses: Message[] = [];
+        dispatchRuntimeMessage(
+          { type, url: 'https://example.com/a.hwp', transferId: 'transfer-test-0001', index: 0 },
+          VIEWER_SENDER,
+          (response: Message) => responses.push(response),
+        );
+        assert.equal(responses.length, 1);
+        assert.equal(responses[0].code, 'REMOTE_PROXY_UNAVAILABLE', type);
+        assert.equal(responses[0].requirement, 'SERVER_FETCH_REQUIRED');
+        assert.equal('data' in responses[0], false);
+      }
+    } finally {
+      g[runtimeGlobal] = previous;
+    }
+  });
+}
+
+test('safari background refuses remote fetch-file without fetching', async () => {
+  const g = globalThis as Record<string, unknown>;
+  const previous = { browser: g.browser, fetch: g.fetch, security: g.RHWPFetchSecurity };
+  let listener: ((message: Message, sender: unknown, respond: (r: Message) => void) => unknown) | null = null;
+  let fetched = 0;
+  const event = { addListener() {} };
+  g.browser = {
+    runtime: {
+      getURL: (path: string) => `safari-web-extension://rhwp-test/${path}`,
+      onMessage: { addListener(fn: typeof listener) { listener = fn; } },
+      onInstalled: event,
+    },
+    storage: { local: { get: async (defaults: unknown) => defaults, set: async () => {} } },
+    contextMenus: { removeAll() {}, create() {}, onClicked: event },
+    action: { onClicked: event },
+    tabs: { create() {} },
+    i18n: { getMessage: () => '' },
+  };
+  g.fetch = async () => { fetched += 1; return new Response(new Uint8Array([1])); };
+  const log = console.log;
+  console.log = () => {};
+  try {
+    // 배포 빌드처럼 보안 모듈을 먼저 전역에 올린다.
+    await import('../../rhwp-safari/src/fetch-security.js');
+    await import('../../rhwp-safari/src/background.js');
+    assert.ok(listener, 'background must register a runtime message listener');
+    const responses: Message[] = [];
+    listener!(
+      { type: 'fetch-file', url: 'https://example.com/a.hwp' },
+      { url: 'safari-web-extension://rhwp-test/viewer.html' },
+      (response) => responses.push(response),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(responses[0]?.code, 'REMOTE_PROXY_UNAVAILABLE');
+    assert.equal('data' in responses[0], false);
+    assert.equal(fetched, 0);
+  } finally {
+    g.browser = previous.browser;
+    g.fetch = previous.fetch;
+    g.RHWPFetchSecurity = previous.security;
+    console.log = log;
+  }
 });

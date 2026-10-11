@@ -7,6 +7,10 @@ inputs:
   cache:
     description: Separate incompatible build profiles.
     required: true
+outputs:
+  cache-hit:
+    description: The Cargo cache matched this dependency set exactly.
+    value: ${{ steps.cache.outputs.cache-hit }}
 runs:
   using: composite
   steps:
@@ -15,15 +19,22 @@ runs:
         toolchain: 1.93.1
         targets: ${{ inputs.wasm == 'true' && 'wasm32-unknown-unknown' || '' }}
     - uses: actions/cache@v4
+      id: cache
       with:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
           ~/.cargo/bin/wasm-pack*
           rhwp/target
-        key: cargo-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ inputs.cache }}-${{ hashFiles('rhwp/Cargo.lock') }}-${{ github.sha }}
+        # One entry per dependency set: an exact hit skips the slow post-job save.
+        # main saves first (see cache.yml) so pull requests can restore it.
+        key: cargo-v2-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ inputs.cache }}-${{ hashFiles('rhwp/Cargo.lock') }}
         restore-keys: |
-          cargo-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ inputs.cache }}-${{ hashFiles('rhwp/Cargo.lock') }}-
+          cargo-v2-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ inputs.cache }}-
+    - name: Disable incremental compilation
+      shell: bash
+      # CI builds start from a restored cache; incremental data only adds size and time.
+      run: echo CARGO_INCREMENTAL=0 >> "$GITHUB_ENV"
     - name: Install wasm-pack
       if: inputs.wasm == 'true'
       shell: bash

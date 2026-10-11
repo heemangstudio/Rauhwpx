@@ -1,6 +1,6 @@
 # @rhwp/core
 
-**알(R), 모두의 한글** — 브라우저에서 HWP 파일을 열어보세요
+**HamaEditor** — 브라우저에서 HWP 파일을 열어보세요
 
 [![npm](https://img.shields.io/npm/v/@rhwp/core)](https://www.npmjs.com/package/@rhwp/core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)

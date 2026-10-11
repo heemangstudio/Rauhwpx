@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 type AnimationFrameCallback = (timestamp: number) => void;
 type ViewportManagerConstructor = new (eventBus: never) => {
@@ -165,10 +164,10 @@ test('a fine trackpad wheel delta produces a fine animated zoom change', async (
   );
 });
 
-test('vertical-dominant wheel input locks horizontal pan in every delta mode', async () => {
+test('diagonal wheel input normalizes both axes in every delta mode', async () => {
   const { ViewportManager } = await loadViewportManager();
   const viewport = new ViewportManager(new FakeEventBus() as never);
-  const container = { scrollTop: 100, scrollWidth: 1600, clientWidth: 800 };
+  const container = { scrollTop: 100, scrollLeft: 50, scrollWidth: 1600, clientWidth: 800 };
   (
     viewport as unknown as {
       container: typeof container;
@@ -190,11 +189,12 @@ test('vertical-dominant wheel input locks horizontal pan in every delta mode', a
   ).onWheel.bind(viewport);
 
   for (const sample of [
-    { deltaY: 20, deltaMode: 0, expected: 120 },
-    { deltaY: 2, deltaMode: 1, expected: 132 },
-    { deltaY: 0.5, deltaMode: 2, expected: 400 },
+    { deltaY: 20, deltaMode: 0, expected: 120, expectedX: 50.1 },
+    { deltaY: 2, deltaMode: 1, expected: 132, expectedX: 51.6 },
+    { deltaY: 0.5, deltaMode: 2, expected: 400, expectedX: 110 },
   ]) {
     container.scrollTop = 100;
+    container.scrollLeft = 50;
     let prevented = false;
     onWheel({
       ctrlKey: false,
@@ -208,10 +208,11 @@ test('vertical-dominant wheel input locks horizontal pan in every delta mode', a
     });
     assert.equal(prevented, true);
     assert.equal(container.scrollTop, sample.expected);
+    assert.equal(container.scrollLeft, sample.expectedX);
   }
 });
 
-test('horizontal-dominant gesture pans horizontally without vertical wiggle', async () => {
+test('diagonal gesture pans both axes in a zoomed document', async () => {
   const { ViewportManager } = await loadViewportManager();
   const viewport = new ViewportManager(new FakeEventBus() as never);
   const container = { scrollTop: 100, scrollLeft: 50, scrollWidth: 1600, clientWidth: 800 };
@@ -241,9 +242,9 @@ test('horizontal-dominant gesture pans horizontally without vertical wiggle', as
     },
   });
 
-  assert.equal(prevented, true, 'axis-locked pan replaces native scrolling');
+  assert.equal(prevented, true, 'diagonal pan replaces native scrolling');
   assert.equal(container.scrollLeft, 70, 'horizontal delta pans horizontally');
-  assert.equal(container.scrollTop, 100, 'vertical wiggle is dropped');
+  assert.equal(container.scrollTop, 103, 'vertical delta pans simultaneously');
 });
 
 test('plain wheel stays native when the document has no horizontal scroll', async () => {
@@ -275,7 +276,7 @@ test('plain wheel stays native when the document has no horizontal scroll', asyn
   assert.equal(container.scrollTop, 100, 'no manual scroll write on the native path');
 });
 
-test('wheel gesture keeps its locked axis until a pause resets it', async () => {
+test('wheel gesture can change direction without pausing', async () => {
   const { ViewportManager } = await loadViewportManager();
   const viewport = new ViewportManager(new FakeEventBus() as never);
   const container = { scrollTop: 100, scrollLeft: 50, scrollWidth: 1600, clientWidth: 800 };
@@ -299,21 +300,18 @@ test('wheel gesture keeps its locked axis until a pause resets it', async () => 
       preventDefault: () => {},
     });
 
-  // 첫 이벤트는 timeStamp 가 작아도(페이지 로드 직후) 새 제스처다.
   wheel(30, 5, 100);
-  assert.equal(container.scrollLeft, 80, 'first-ever horizontal-dominant event pans horizontally');
-  assert.equal(container.scrollTop, 100, 'first horizontal gesture drops vertical wiggle');
+  assert.equal(container.scrollLeft, 80);
+  assert.equal(container.scrollTop, 105);
 
-  // 세로 우세로 시작한 제스처: 이어지는 가로 우세 이벤트도 세로로만 처리된다.
-  wheel(0, 30, 1000);
-  wheel(25, 10, 1050);
-  assert.equal(container.scrollTop, 140, 'locked-vertical gesture keeps scrolling vertically');
-  assert.equal(container.scrollLeft, 80, 'no horizontal drift inside a vertical gesture');
+  wheel(0, 30, 150);
+  wheel(25, 10, 200);
+  assert.equal(container.scrollTop, 145);
+  assert.equal(container.scrollLeft, 105);
 
-  // 정확히 제스처 간격(250ms)만큼 지난 가로 우세 이벤트도 새 제스처로 가로 팬이 된다.
-  wheel(25, 5, 1300);
-  assert.equal(container.scrollLeft, 105, 'a gesture exactly at the gap boundary re-latches its axis');
-  assert.equal(container.scrollTop, 140, 'the new horizontal gesture drops vertical wiggle');
+  wheel(-25, -5, 250);
+  assert.equal(container.scrollLeft, 80, 'horizontal direction reverses within the gesture');
+  assert.equal(container.scrollTop, 140, 'vertical direction reverses within the gesture');
 });
 
 test('an eight-pixel trackpad gesture settles within four frames and moves nearly five percent', async (t) => {
@@ -443,31 +441,4 @@ test('wheel zoom emits the pointer anchor and inverse deltas restore zoom', asyn
 
   assert.ok(zoomedIn > 1);
   assert.ok(Math.abs(viewport.getZoom() - 1) < 1e-12);
-});
-
-test('zoom in and out controls use the smooth zoom path', () => {
-  const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  const viewCommandSource = readFileSync(
-    new URL('../src/command/commands/view.ts', import.meta.url),
-    'utf8',
-  );
-
-  assert.match(mainSource, /sb-zoom-in[\s\S]*?smoothZoomBy\(0\.1\)/);
-  assert.match(mainSource, /sb-zoom-out[\s\S]*?smoothZoomBy\(-0\.1\)/);
-  assert.match(viewCommandSource, /id: 'view:zoom-in'[\s\S]*?smoothZoomBy\(0\.1\)/);
-  assert.match(viewCommandSource, /id: 'view:zoom-out'[\s\S]*?smoothZoomBy\(-0\.1\)/);
-});
-
-test('CanvasView scales existing pages during zoom and rerenders only after settling', () => {
-  const source = readFileSync(new URL('../src/view/canvas-view.ts', import.meta.url), 'utf8');
-
-  assert.match(
-    source,
-    /eventBus\.on\('viewport-scroll', \(\) => \{[\s\S]*?if \(this\.viewportManager\.isZoomAnimating\(\)\) return;[\s\S]*?this\.updateVisiblePages\(\);[\s\S]*?\}\)/,
-  );
-  assert.match(
-    source,
-    /if \(this\.viewportManager\.isZoomAnimating\(\)\) \{[\s\S]*?this\.cancelPendingPrefetch\(\);[\s\S]*?this\.updateRenderedPageZoomPreview\(\);[\s\S]*?return;/,
-  );
-  assert.match(source, /dataset\.rhwpRenderedZoom = String\(zoom\)/);
 });

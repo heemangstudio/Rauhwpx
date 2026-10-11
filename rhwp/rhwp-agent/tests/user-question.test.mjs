@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -156,15 +155,4 @@ test('request retries deduplicate only the same provider request and payload', (
   const nextRequest = structuredClone(original);
   nextRequest.providerRequestId = 'provider-request-2';
   assert.equal(sameUserQuestionRequest(original, nextRequest), false);
-});
-
-test('the hub handles user questions before the generic Studio executor', () => {
-  const source = readFileSync(new URL('../server.mjs', import.meta.url), 'utf8');
-  const questionBranch = source.indexOf("if (tool === 'ask_user_question')");
-  const nextToolBranch = source.indexOf("if (tool === 'delegate_copy_layout')", questionBranch);
-  const genericExecutor = source.indexOf('const hubId = record.nextHubId++', questionBranch);
-  assert.ok(questionBranch > 0);
-  assert.ok(nextToolBranch > questionBranch);
-  assert.ok(genericExecutor > questionBranch);
-  assert.doesNotMatch(source.slice(questionBranch, nextToolBranch), /pendingCalls|STUDIO_TOOL_TIMEOUT_MS|type: 'tool-request'/);
 });

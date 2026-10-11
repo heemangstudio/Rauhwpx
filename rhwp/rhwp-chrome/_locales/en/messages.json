@@ -1,18 +1,18 @@
 {
   "extName": {
-    "message": "Rauhwpx - HWP Document Viewer & Editor"
+    "message": "HamaEditor - HWP Document Viewer & Editor"
   },
   "extDescription": {
     "message": "Open and edit HWP/HWPX files directly in your browser. No installation, no ads, free."
   },
   "actionTitle": {
-    "message": "Rauhwpx - HWP Viewer"
+    "message": "HamaEditor - HWP Viewer"
   },
   "contextMenuOpen": {
-    "message": "Open with Rauhwpx"
+    "message": "Open with HamaEditor"
   },
   "badgeTooltip": {
-    "message": "Open with Rauhwpx"
+    "message": "Open with HamaEditor"
   },
   "badgeTooltipWithInfo": {
     "message": "$TITLE$ ($PAGES$ pages) $SIZE$",
@@ -23,7 +23,7 @@
     }
   },
   "optionsTitle": {
-    "message": "Rauhwpx Settings"
+    "message": "HamaEditor Settings"
   },
   "optionsAutoOpen": {
     "message": "Automatically open HWP/HWPX files in viewer when downloaded"

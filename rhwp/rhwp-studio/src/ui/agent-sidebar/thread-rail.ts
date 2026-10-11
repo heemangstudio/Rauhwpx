@@ -43,6 +43,8 @@ export interface ThreadsToolbarOptions {
   onClearFilter(): void;
   /** 검색 칸에서 ↓ — 목록 첫 채팅으로 내려간다. */
   onEnterList(): void;
+  /** 확인 필요 칩 — 확인이 필요한 채팅만 보기를 켜고 끈다. */
+  onToggleAttention?(): void;
 }
 
 export interface ThreadsToolbar {
@@ -53,8 +55,12 @@ export interface ThreadsToolbar {
   readonly newButton: HTMLButtonElement;
   /** 필터가 걸렸을 때 도구 줄 아래에 서는 문서 칩 */
   readonly filterChip: HTMLElement;
+  /** 확인이 필요한 채팅이 있을 때 도구 줄 아래에 서는 칩 — 누르면 그 채팅만 남는다. */
+  readonly attentionChip: HTMLButtonElement;
   query(): string;
   setFilter(filter: { label: string; missing: boolean } | null): void;
+  /** 확인 필요 수와 거름 상태. 0 이면 칩을 숨긴다. */
+  setAttention(state: { count: number; pressed: boolean }): void;
 }
 
 export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToolbar {
@@ -89,6 +95,17 @@ export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToo
   chipClear.title = '문서 필터 해제';
   chipClear.appendChild(createIcon('close'));
   filterChip.append(chipIcon, chipLabel, chipClear);
+
+  // 확인 필요 — 자리를 옮기지 않고 거른다. 행은 원래 순서 그대로 남는다.
+  const attentionChip = el('button', 'ag-threads-attention');
+  attentionChip.type = 'button';
+  attentionChip.hidden = true;
+  attentionChip.setAttribute('aria-pressed', 'false');
+  const attentionDot = el('span', 'ag-threads-attention-dot');
+  attentionDot.setAttribute('aria-hidden', 'true');
+  const attentionLabel = el('span', 'ag-threads-attention-label');
+  attentionChip.append(attentionDot, attentionLabel);
+  attentionChip.addEventListener('click', () => options.onToggleAttention?.());
 
   search.addEventListener('input', () => options.onQueryChange(search.value));
   search.addEventListener('keydown', (event) => {
@@ -125,6 +142,7 @@ export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToo
     openButton,
     newButton,
     filterChip,
+    attentionChip,
     query: () => search.value,
     setFilter(filter) {
       filterButton.setAttribute('aria-pressed', filter ? 'true' : 'false');
@@ -135,24 +153,42 @@ export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToo
       chipLabel.title = filter?.label ?? '';
       chipIcon.classList.toggle('ag-doc-missing', Boolean(filter?.missing));
     },
+    setAttention({ count, pressed }) {
+      const shown = count > 0;
+      attentionChip.hidden = !shown;
+      attentionChip.setAttribute('aria-pressed', shown && pressed ? 'true' : 'false');
+      attentionChip.classList.toggle('ag-active', shown && pressed);
+      attentionLabel.textContent = shown && pressed ? `확인 필요 ${count} · 모두 보기` : `확인 필요 ${count}`;
+      // 눌림은 aria-pressed 가 말한다 — 이름은 그대로 둔다.
+      const label = `확인이 필요한 채팅만 보기 (${count}개)`;
+      attentionChip.title = label;
+      attentionChip.setAttribute('aria-label', label);
+    },
   };
 }
 
 // ── 떠 있는 면 ─────────────────────────────────────────
 
 interface FloatingSurface {
+  /** 팝오버를 띄운 사이드바 루트 */
+  readonly host: HTMLElement;
   close(restoreFocus?: boolean): void;
 }
 
 let openSurface: FloatingSurface | null = null;
 
-/** 지금 떠 있는 팝오버를 닫는다(레일이 접히거나 화면이 바뀔 때). */
-export function closeThreadRailSurfaces(): void {
+/**
+ * 지금 떠 있는 팝오버를 닫는다(레일이 접히거나 화면이 바뀔 때). host 를 주면
+ * 그 사이드바가 띄운 팝오버만 닫는다 — 문서마다 사이드바가 따로 있어서,
+ * 뒤에 내려가 있는 사이드바가 보이는 사이드바의 팝오버를 닫지 않게 한다.
+ */
+export function closeThreadRailSurfaces(host?: HTMLElement): void {
+  if (host && openSurface?.host !== host) return;
   openSurface?.close(false);
 }
 
-export function threadRailSurfaceOpen(): boolean {
-  return openSurface !== null;
+export function threadRailSurfaceOpen(host?: HTMLElement): boolean {
+  return openSurface !== null && (!host || openSurface.host === host);
 }
 
 /**
@@ -181,6 +217,7 @@ function mountSurface(
   };
   const onResize = () => handle.close(false);
   const handle: FloatingSurface = {
+    host,
     close(restoreFocus = true) {
       if (closed) return;
       closed = true;
@@ -379,12 +416,13 @@ function placeUnderToolbar(
   host: HTMLElement,
   trigger: HTMLElement,
   alignTo: HTMLElement,
+  centered = false,
 ): void {
   const origin = fixedOrigin(host);
   const align = alignTo.getBoundingClientRect();
   const anchor = trigger.getBoundingClientRect();
-  const width = Math.max(240, Math.min(320, align.width));
-  const left = Math.max(8, Math.min(align.left, window.innerWidth - width - 8));
+  const width = centered ? Math.min(320, window.innerWidth - 16) : Math.max(240, Math.min(320, align.width));
+  const left = Math.max(8, Math.min(centered ? anchor.left + (anchor.width - width) / 2 : align.left, window.innerWidth - width - 8));
   const top = anchor.bottom + 6;
   surface.style.width = `${width}px`;
   surface.style.left = `${left - origin.x}px`;
@@ -488,6 +526,8 @@ export function showDocumentPalette(config: {
   trigger: HTMLElement;
   alignTo: HTMLElement;
   recents: Promise<PaletteRecentDocument[]>;
+  selectedDocumentId?: string | null;
+  centered?: boolean;
   /** 빠진 동작은 줄을 만들지 않는다. */
   onCreate?: () => void;
   onOpenFile?: () => void;
@@ -523,11 +563,12 @@ export function showDocumentPalette(config: {
       label: doc.fileName,
       icon: 'document',
       trail: formatShortAge(doc.openedAt),
+      checked: doc.documentId === config.selectedDocumentId,
       section: '최근 문서',
     })),
   ];
   searchList.setOptions(options());
-  placeUnderToolbar(surface, config.host, config.trigger, config.alignTo);
+  placeUnderToolbar(surface, config.host, config.trigger, config.alignTo, config.centered);
   searchList.input.focus({ preventScroll: true });
 
   void config.recents.then((list) => {

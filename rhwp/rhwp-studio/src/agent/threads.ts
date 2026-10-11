@@ -1,14 +1,22 @@
 import {
-  openIndexedDatabase,
   requestResult,
   transactionDone,
   withDatabase,
 } from '../core/idb-open.ts';
 import { isAgentWorkflow, isStructuredPlan } from './types.ts';
+import { isTurnOutcome, type TurnOutcome } from './turn-outcome.ts';
+import { readProviderFailure } from './provider-failure.ts';
+import { isTurnInterruptionReason, type TurnInterruptionReason } from './turn-interruption-reason.ts';
+import { planToMarkdown } from '../ui/agent-sidebar/plan-markdown.ts';
 import type {
   AgentName,
   AgentWorkflow,
+  ChatHistoryEntry,
+  ProviderContextUsage,
+  CompactionTrigger,
   ProductSkillIcon,
+  ProviderFailure,
+  ProviderFailureOrigin,
   ServiceTier,
   StructuredPlan,
   UserQuestion,
@@ -17,15 +25,24 @@ import type {
   UserQuestionOutcome,
 } from './types.ts';
 import type { InlineObjectAddress, InlinePromptItem } from './inline-prompt-context.ts';
+import { normalizeFollowUps, type ThreadFollowUps } from './follow-ups.ts';
+import { THREADS_DB_NAME as DB_NAME, THREADS_STORE, openThreadsDatabase } from './threads-db.ts';
 
 const STORAGE_KEY = 'rhwp-agent-threads';
 const NOTIFY_KEY = 'rhwp-agent-threads-notify';
-const DB_NAME = 'rhwpAgentThreads';
-const DB_VERSION = 1;
-const THREADS_STORE = 'threads';
 const CHANNEL_NAME = 'rhwp-agent-threads';
 const MAX_THREADS = 40;
 const MAX_MESSAGES_PER_THREAD = 200;
+/** 턴 표식에 남기는 중단 이유 길이 상한. */
+const TURN_REASON_MAX_CHARS = 200;
+/**
+ * 턴 표식 id 의 머리. kind 를 모르는 옛 빌드는 표식을 읽어 다시 저장하며 kind·시각·결과를
+ * 버리고 role·text·messageId 만 남긴다. 이 머리로 그렇게 벗겨진 표식을 알아보고 버린다
+ * (normalizeStoredThread). 머리 없는 예전 id 의 온전한 표식도 그대로 읽는다.
+ */
+export const TURN_MARKER_ID_PREFIX = 'turn-';
+/** 턴 표식의 주인 id(창 세션·앱 실행·허브 프로세스)와 허브 턴 id 의 길이 상한. */
+const TURN_OWNER_ID_MAX_CHARS = 128;
 
 interface ThreadMessageBase {
   text: string;
@@ -35,6 +52,11 @@ interface ThreadMessageBase {
   /** 호출 당시 선택된 아이콘. 이후 skill 설정이 바뀌어도 기록 모양을 유지한다. */
   skillIcon?: ProductSkillIcon;
   messageId?: string;
+  /**
+   * 사용자 메시지(요청) 하나의 정체성. 그 요청이 시작한 턴들의 체크포인트가 이 키에 묶인다
+   * (agent/turn-checkpoints.ts, "이 작업 전으로 되돌리기").
+   */
+  turnKey?: string;
   attachments?: ThreadAttachment[];
   /** 인라인 프롬프트로 보낸 메시지에 붙는 문서 선택 컨텍스트 (표시용). */
   selection?: {
@@ -105,13 +127,134 @@ export interface UserQuestionHistoryMessage extends ThreadMessageBase {
   readonly outcome: UserQuestionOutcome;
 }
 
-export interface ThreadProviderHistoryEntry {
-  role: 'user' | 'assistant';
+/**
+ * 실패한 턴의 '다시 시도' 가 보낼 요청 — 보낼 때의 모양 그대로 (템플릿 접두어·계획 수정 문구 포함).
+ * 첨부는 첫 전송 때 이미 채팅 참고 범위에 올라갔으므로 다시 싣지 않는다.
+ */
+export interface ThreadRetryPayload {
+  /** 대화에 다시 기록할 사용자 문구 */
+  displayText: string;
+  /** 프로바이더에 보낼 요청 본문 */
+  requestText: string;
+  skillName?: string;
+  skillIcon?: ProductSkillIcon;
+  /** 실패한 시도가 문서를 고친 뒤 끊겼다 — 다시 보낼 때 먼저 문서를 다시 읽도록 알린다. */
+  afterPartialEdits?: boolean;
+  /**
+   * 요청문이 이미 끊긴 턴 블록(<turn_interrupted>, S3)을 싣고 있다 — Studio 가 만든 이어서 진행 요청이다.
+   * 다시 보낼 때 블록을 겹쳐 붙이지 않는다. 요청문의 글자로 가르지 않는다(사용자가 같은 글자를 쓸 수 있다).
+   */
+  continuation?: boolean;
+}
+
+/** 저장하는 다시 시도 요청의 상한 — 허브의 MAX_CHAT_MESSAGE_CHARS 와 같다. */
+export const THREAD_RETRY_TEXT_MAX_CHARS = 128_000;
+
+/**
+ * 턴 하나의 실패 알림 — 대화 흐름 속, 턴이 끝난 자리에 남는다. 프로바이더 기록에는 그 턴의 오류 줄
+ * (kind 'error', 가린 실패 문구) 하나로만 들어간다 — 다시 보낼 요청은 싣지 않는다.
+ */
+export interface ThreadFailureMessage extends ThreadMessageBase {
+  readonly role: 'system';
+  readonly kind: 'error';
+  failure: ProviderFailure;
+  origin: ProviderFailureOrigin;
+  turnId?: string;
+  retry?: ThreadRetryPayload;
+  /** 알림을 만든 시각 (epoch ms) */
+  at: number;
+}
+
+export type ThreadProviderHistoryEntry = ChatHistoryEntry;
+
+/** 끝나지 못한 턴. 그 턴을 시작한 사용자 메시지에 남긴다. */
+export type ThreadTurnOutcome = 'interrupted' | 'failed';
+
+/**
+ * 대화 흐름의 구분선. 프로바이더에게는 보내지 않는다.
+ * handoff = 다른 프로바이더로 넘어간 자리, compaction = 맥락을 압축한 자리.
+ */
+export type ThreadMarkerMessage =
+  | (ThreadMessageBase & {
+      role: 'system';
+      kind: 'marker';
+      marker: 'handoff';
+      from: AgentName;
+      to: AgentName;
+      planId?: never;
+    })
+  | (ThreadMessageBase & {
+      role: 'system';
+      kind: 'marker';
+      marker: 'compaction';
+      compactionId: string;
+      trigger: CompactionTrigger;
+      beforeTokens?: number;
+      afterTokens?: number;
+      planId?: never;
+    });
+
+/**
+ * 턴 표식 — 턴이 시작될 때 대화에 넣고 끝날 때 결과와 함께 정착한다.
+ *
+ * 대화 기록은 평평한 목록이라 어디서 턴이 시작되고 어떻게 끝났는지 따로 남긴다
+ * (계획 승인으로 시작한 턴에는 사용자 메시지가 없다). endedAt 이 null 인 표식은
+ * 아직 도는 턴이거나 끝을 듣지 못하고 끊긴 턴이다 — 접지 않고, 다음 턴 시작이나
+ * 끊긴 턴을 복구하는 쪽이 정착한다.
+ *
+ * role 이 system 이라 공급자 기록과 제목 요청에서 빠진다. kind 를 모르는 옛 빌드는
+ * text 를 한 줄 안내로 보인다 — 그래서 정착할 때 접힘 제목을 text 에 남긴다.
+ */
+export interface ThreadTurnMessage extends ThreadMessageBase {
+  role: 'system';
+  kind: 'turn';
+  /** 이 턴의 로컬 id. 접힘 줄·알림이 같은 턴을 이 값으로 가리킨다. */
+  messageId: string;
+  /** epoch ms */
+  startedAt: number;
+  /** null = 아직 안 끝남(도는 중이거나 끊김) */
+  endedAt: number | null;
+  outcome: TurnOutcome | null;
+  /** 바깥이 끊은 턴의 이유(정착한 쪽이 붙인다). 화면 문구로는 쓰지 않는다. */
+  reason?: string;
+  /**
+   * 이 턴을 돌린 창 세션·앱 실행·허브 프로세스(S3). 새로고침·재시작 뒤 끝나지 않은 표식이
+   * 누구의 것이었는지 보고 끊긴 턴인지, 끊겼다면 왜인지 가른다. 모르는 값은 null.
+   */
+  owner?: TurnOwner;
+  /** 허브가 발급한 이 턴의 id — 다시 붙인 살아 있는 턴이 같은 턴인지 본다. */
+  hubTurnId?: string | null;
+  /** 바깥이 끊은 턴(S3) — 이유와 감지 시각, 사용자가 이어 갔는지. outcome 은 interrupted 다. */
+  interruption?: TurnInterruption;
+  /** 정착 때의 접힘 제목. 새 빌드는 기록에서 다시 계산한다. */
   text: string;
+  planId?: never;
+}
+
+/** 턴을 돌린 쪽. window 는 페이지의 창 세션, app 은 데스크톱 앱 실행, hub 는 허브 프로세스. */
+export interface TurnOwner {
+  window: string | null;
+  app: string | null;
+  hub: string | null;
+}
+
+export interface TurnInterruption {
+  reason: TurnInterruptionReason;
+  /** 끊김을 알아챈 시각(epoch ms) */
+  at: number;
+  /**
+   * 끊긴 뒤 처음 나간 사용자 메시지가 이어 가기 블록을 싣고 나갔다. resumed 는 이어서 진행
+   * 단추, superseded 는 그 밖의 보내기(입력기·대기열·다시 시도·인라인). 없으면 아직 아무도
+   * 이어 가지 않았다.
+   */
+  resolution?: 'resumed' | 'superseded';
 }
 
 export type ThreadMessage =
   | UserQuestionHistoryMessage
+  | ThreadTurnMessage
+  | ThreadFailureMessage
+  | ThreadMarkerMessage
   | (ThreadMessageBase & {
       role: 'assistant';
       kind: 'plan';
@@ -143,6 +286,10 @@ export type ThreadMessage =
       /** Concise in-turn milestone, rendered separately from the final answer. */
       kind?: 'progress';
       planId?: never;
+      /** 시스템 줄 중 오류. 오류 줄만 다른 프로바이더에게 넘긴다. */
+      severity?: 'error';
+      /** 사용자 메시지: 이 메시지로 시작한 마지막 턴이 끝나지 못했다. */
+      turnOutcome?: ThreadTurnOutcome;
     });
 
 export interface ThreadAttachment {
@@ -191,7 +338,30 @@ export interface ChatThread {
   plans?: StructuredPlan[];
   /** Draft state only. Provider authority remains in the live hub session. */
   pendingUserQuestion?: PendingUserQuestionDraftSnapshot;
+  /** 에이전트가 일하는 동안 쌓아 둔 대기 메시지. 목록 순서(lastActivityAt)는 바꾸지 않는다. */
+  followUps?: ThreadFollowUps;
+  /** 프로바이더별 네이티브 세션 재개 커서. 성공한 턴이 끝날 때만 갱신한다. */
+  providerSessions?: Partial<Record<AgentName, ProviderSessionCursor>>;
+  /** 마지막으로 보고된 맥락 창 사용량 — 다시 열었을 때 맥락 표시를 복원한다. */
+  contextUsage?: ThreadContextUsage;
   messages: ThreadMessage[];
+}
+
+export interface ProviderSessionCursor {
+  sessionId: string;
+  updatedAt: number;
+  /** 이 세션이 성공한 턴에서 마지막으로 받은 사용자 메시지. 그 뒤만 넘겨준다. */
+  seenThroughMessageId?: string;
+  /** 그 턴이 끝났을 때 이 세션이 차지한 맥락 토큰. */
+  usedTokens?: number;
+  maxTokens?: number;
+}
+
+export interface ThreadContextUsage {
+  agent: AgentName;
+  usedTokens: number;
+  maxTokens?: number;
+  updatedAt: number;
 }
 
 export interface ThreadDraft {
@@ -223,7 +393,10 @@ export function threadMatchesDocument(
   return !thread.documentId && !documentId && threadName === null && activeName === null;
 }
 
-type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion' | 'pinOrder' | 'listOrder'> & {
+type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion' | 'providerSessions' | 'contextUsage' | 'pinOrder' | 'listOrder' | 'followUps'> & {
+  followUps?: unknown;
+  providerSessions?: unknown;
+  contextUsage?: unknown;
   workflow?: unknown;
   latestPlan?: unknown;
   plans?: unknown;
@@ -402,6 +575,26 @@ function parseThreadTask(value: unknown): ThreadTaskRecord | null {
 function isAgentName(value: unknown): value is AgentName {
   return value === 'claude' || value === 'codex' || value === 'pi';
 }
+
+function normalizeRetryPayload(value: unknown): ThreadRetryPayload | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.displayText !== 'string' || typeof raw.requestText !== 'string' || !raw.requestText.trim()) return undefined;
+  if (raw.displayText.length > THREAD_RETRY_TEXT_MAX_CHARS || raw.requestText.length > THREAD_RETRY_TEXT_MAX_CHARS) return undefined;
+  const skillIcon = raw.skillIcon === 'pencil' || raw.skillIcon === 'bot' || raw.skillIcon === 'system'
+    ? raw.skillIcon
+    : undefined;
+  return {
+    displayText: raw.displayText,
+    requestText: raw.requestText,
+    ...(typeof raw.skillName === 'string' && /^[a-z0-9-]+$/.test(raw.skillName) ? { skillName: raw.skillName } : {}),
+    ...(skillIcon ? { skillIcon } : {}),
+    ...(raw.afterPartialEdits === true ? { afterPartialEdits: true } : {}),
+    ...(raw.continuation === true ? { continuation: true } : {}),
+  };
+}
+
+const FAILURE_ORIGINS: readonly ProviderFailureOrigin[] = ['turn', 'send', 'start', 'idle'];
 
 function nonEmptyString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -712,6 +905,136 @@ function normalizeStoredSelection(value: unknown): ThreadMessageBase['selection'
   };
 }
 
+function normalizeStoredTurnMarker(message: Record<string, unknown>): ThreadTurnMessage | null {
+  if (message.role !== 'system' || typeof message.text !== 'string') return null;
+  if (typeof message.messageId !== 'string' || !message.messageId) return null;
+  const startedAt = message.startedAt;
+  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt) || startedAt < 0) return null;
+  const endedAt = message.endedAt;
+  if (endedAt !== null && (typeof endedAt !== 'number' || !Number.isFinite(endedAt) || endedAt < startedAt)) return null;
+  const outcome = message.outcome;
+  if (outcome !== null && !isTurnOutcome(outcome)) return null;
+  // 끝난 시각과 결과는 함께 정해진다 — 한쪽만 있는 표식은 믿지 않는다.
+  if ((endedAt === null) !== (outcome === null)) return null;
+  const reason = typeof message.reason === 'string' && message.reason.trim()
+    ? message.reason.trim().slice(0, TURN_REASON_MAX_CHARS)
+    : undefined;
+  // S3 필드는 하나씩 확인하고, 깨졌으면 그 필드만 버린다 — 표식은 남는다.
+  const owner = normalizeTurnOwner(message.owner);
+  const hubTurnId = message.hubTurnId === null ? null : storedOwnerId(message.hubTurnId);
+  // 끊김 기록은 끊긴 것으로 정착한 표식에만 뜻이 있다.
+  const interruption = outcome === 'interrupted' ? normalizeTurnInterruption(message.interruption) : null;
+  return {
+    role: 'system',
+    kind: 'turn',
+    messageId: message.messageId,
+    startedAt,
+    endedAt,
+    outcome,
+    ...(reason ? { reason } : {}),
+    ...(owner ? { owner } : {}),
+    ...(hubTurnId !== undefined ? { hubTurnId } : {}),
+    ...(interruption ? { interruption } : {}),
+    text: message.text,
+  };
+}
+
+/** 옛 빌드가 벗긴 턴 표식 — kind 없는 시스템 줄에 표식 id(머리 'turn-')만 남았다. */
+function isStrippedTurnMarker(message: Record<string, unknown>): boolean {
+  return message.role === 'system' && message.kind === undefined
+    && typeof message.messageId === 'string' && message.messageId.startsWith(TURN_MARKER_ID_PREFIX);
+}
+
+/** 1–128자 문자열만 id 로 받는다. */
+function storedOwnerId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 && value.length <= TURN_OWNER_ID_MAX_CHARS ? value : undefined;
+}
+
+function normalizeTurnOwner(value: unknown): TurnOwner | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const part = (field: unknown): string | null | undefined => (field === null ? null : storedOwnerId(field));
+  const window = part(raw.window);
+  const app = part(raw.app);
+  const hub = part(raw.hub);
+  if (window === undefined || app === undefined || hub === undefined) return null;
+  return { window, app, hub };
+}
+
+function normalizeTurnInterruption(value: unknown): TurnInterruption | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (!isTurnInterruptionReason(raw.reason)) return null;
+  if (typeof raw.at !== 'number' || !Number.isFinite(raw.at) || raw.at < 0) return null;
+  const resolution = raw.resolution === 'resumed' || raw.resolution === 'superseded' ? raw.resolution : undefined;
+  return { reason: raw.reason, at: raw.at, ...(resolution ? { resolution } : {}) };
+}
+
+function storedTokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
+}
+
+function normalizeProviderSessions(value: unknown): ChatThread['providerSessions'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const sessions: NonNullable<ChatThread['providerSessions']> = {};
+  for (const [agent, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!isAgentName(agent) || !raw || typeof raw !== 'object') continue;
+    const cursor = raw as Record<string, unknown>;
+    const sessionId = nonEmptyString(cursor.sessionId);
+    if (!sessionId) continue;
+    const seenThroughMessageId = nonEmptyString(cursor.seenThroughMessageId);
+    const usedTokens = storedTokenCount(cursor.usedTokens);
+    const maxTokens = storedTokenCount(cursor.maxTokens);
+    sessions[agent] = {
+      sessionId,
+      updatedAt: storedTokenCount(cursor.updatedAt) ?? 0,
+      ...(seenThroughMessageId ? { seenThroughMessageId } : {}),
+      ...(usedTokens !== undefined ? { usedTokens } : {}),
+      ...(maxTokens ? { maxTokens } : {}),
+    };
+  }
+  return Object.keys(sessions).length ? sessions : undefined;
+}
+
+function normalizeContextUsage(value: unknown): ThreadContextUsage | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const usedTokens = storedTokenCount(raw.usedTokens);
+  if (!isAgentName(raw.agent) || usedTokens === undefined) return undefined;
+  const maxTokens = storedTokenCount(raw.maxTokens);
+  return {
+    agent: raw.agent,
+    usedTokens,
+    ...(maxTokens ? { maxTokens } : {}),
+    updatedAt: storedTokenCount(raw.updatedAt) ?? 0,
+  };
+}
+
+function normalizeStoredMarker(message: Record<string, unknown>): ThreadMarkerMessage | null {
+  if (message.role !== 'system' || typeof message.text !== 'string') return null;
+  if (message.marker === 'handoff') {
+    if (!isAgentName(message.from) || !isAgentName(message.to)) return null;
+    return { role: 'system', kind: 'marker', marker: 'handoff', from: message.from, to: message.to, text: message.text };
+  }
+  if (message.marker === 'compaction') {
+    const compactionId = nonEmptyString(message.compactionId);
+    if (!compactionId || (message.trigger !== 'auto' && message.trigger !== 'manual')) return null;
+    const beforeTokens = storedTokenCount(message.beforeTokens);
+    const afterTokens = storedTokenCount(message.afterTokens);
+    return {
+      role: 'system',
+      kind: 'marker',
+      marker: 'compaction',
+      compactionId,
+      trigger: message.trigger,
+      text: message.text,
+      ...(beforeTokens !== undefined ? { beforeTokens } : {}),
+      ...(afterTokens !== undefined ? { afterTokens } : {}),
+    };
+  }
+  return null;
+}
+
 function normalizeStoredThread(thread: StoredChatThread): ChatThread {
   const latestPlan = isStructuredPlan(thread.latestPlan) ? thread.latestPlan : undefined;
   const plans = Array.isArray(thread.plans) ? thread.plans.filter(isStructuredPlan) : [];
@@ -723,13 +1046,20 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     documentId: storedDocumentId,
     activeTemplateId: storedActiveTemplateId,
     pendingUserQuestion: storedPendingUserQuestion,
+    providerSessions: storedProviderSessions,
+    contextUsage: storedContextUsage,
     pinOrder: storedPinOrder,
     listOrder: storedListOrder,
+    followUps: storedFollowUps,
     ...rest
   } = thread;
   const messages = rest.messages.flatMap((raw): ThreadMessage[] => {
     if (!raw || typeof raw !== 'object') return [];
     const message = raw as unknown as Record<string, unknown>;
+    if (message.kind === 'marker') {
+      const marker = normalizeStoredMarker(message);
+      return marker ? [marker] : [];
+    }
     if ((message.role !== 'user' && message.role !== 'assistant' && message.role !== 'system')
       || typeof message.text !== 'string') return [];
     const attachments = Array.isArray(message.attachments)
@@ -764,6 +1094,9 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
         : {}),
       ...(skillIcon ? { skillIcon } : {}),
       ...(typeof message.messageId === 'string' ? { messageId: message.messageId } : {}),
+      ...(message.role === 'user' && typeof message.turnKey === 'string' && message.turnKey
+        ? { turnKey: message.turnKey }
+        : {}),
       ...(attachments?.length ? { attachments } : {}),
       ...(selection ? { selection } : {}),
     };
@@ -781,6 +1114,27 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
         outcome,
         ...metadata,
         agent: interaction.agent,
+      }];
+    }
+    if (message.kind === 'error') {
+      if (message.role !== 'system') return [];
+      const failure = readProviderFailure(message.failure, agent ?? thread.agent ?? 'claude');
+      // 깨진 실패는 평범한 오류 줄로 남긴다 — 문구는 잃지 않는다.
+      if (!failure) return [{ role: 'system', text: message.text, severity: 'error' as const, ...metadata }];
+      const origin = FAILURE_ORIGINS.includes(message.origin as ProviderFailureOrigin)
+        ? message.origin as ProviderFailureOrigin
+        : 'turn';
+      const retry = normalizeRetryPayload(message.retry);
+      return [{
+        role: 'system',
+        kind: 'error',
+        text: message.text,
+        failure,
+        origin,
+        ...(typeof message.turnId === 'string' && message.turnId ? { turnId: message.turnId } : {}),
+        ...(retry ? { retry } : {}),
+        at: parseFiniteNonNegative(message.at) ?? 0,
+        ...metadata,
       }];
     }
     if (message.kind === 'plan') {
@@ -812,6 +1166,16 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
         ...metadata,
       }];
     }
+    if (message.kind === 'turn') {
+      // 깨진 표식은 버린다 — 그 턴은 표식 없는 옛 턴처럼 접힌다.
+      const marker = normalizeStoredTurnMarker(message);
+      return marker ? [marker] : [];
+    }
+    if (isStrippedTurnMarker(message)) {
+      // 옛 빌드가 kind·시각·결과를 벗기고 다시 저장한 표식 — 시스템 줄로 보이지 않게 버린다.
+      // 그 턴은 표식 없는 옛 턴처럼 접힌다.
+      return [];
+    }
     if (message.kind === 'tasks') {
       if (message.role !== 'assistant' || typeof message.taskGroupId !== 'string' || !message.taskGroupId) return [];
       const tasks = Array.isArray(message.tasks) ? message.tasks.flatMap((task) => {
@@ -832,6 +1196,10 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
       role: message.role,
       text: message.text,
       ...(message.kind === 'progress' ? { kind: 'progress' as const } : {}),
+      ...(message.role === 'system' && message.severity === 'error' ? { severity: 'error' as const } : {}),
+      ...(message.role === 'user' && (message.turnOutcome === 'interrupted' || message.turnOutcome === 'failed')
+        ? { turnOutcome: message.turnOutcome }
+        : {}),
       ...metadata,
     }];
   });
@@ -840,13 +1208,17 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     thread.id,
     thread.agent,
   );
+  const followUps = normalizeFollowUps(storedFollowUps);
+  const providerSessions = normalizeProviderSessions(storedProviderSessions);
+  const contextUsage = normalizeContextUsage(storedContextUsage);
   const pendingAlreadyArchived = pendingUserQuestion
     ? messages.some((message) => message.kind === 'user-question'
       && message.interaction.interactionId === pendingUserQuestion.interaction.interactionId)
     : false;
   return {
     ...rest,
-    messages,
+    // 예전에 저장한 앞선 실패 알림의 다시 시도 요청은 읽을 때 걷는다(dropStaleRetries).
+    messages: dropStaleRetries(messages),
     workflow: isAgentWorkflow(thread.workflow) ? thread.workflow : 'direct',
     serviceTier: thread.serviceTier === 'fast' ? 'fast' : 'standard',
     docKey: typeof storedDocKey === 'string' && storedDocKey ? storedDocKey : null,
@@ -857,6 +1229,9 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     ...(latestPlan ? { latestPlan } : {}),
     ...(plans.length ? { plans } : {}),
     ...(pendingUserQuestion && !pendingAlreadyArchived ? { pendingUserQuestion } : {}),
+    ...(followUps ? { followUps } : {}),
+    ...(providerSessions ? { providerSessions } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
   };
 }
 
@@ -865,11 +1240,7 @@ function cloneThread(thread: ChatThread) {
 }
 
 function openDb() {
-  return openIndexedDatabase(DB_NAME, DB_VERSION, (db) => {
-    if (!db.objectStoreNames.contains(THREADS_STORE)) {
-      db.createObjectStore(THREADS_STORE, { keyPath: 'id' });
-    }
-  });
+  return openThreadsDatabase();
 }
 
 function runWithDb<T>(operation: (db: IDBDatabase) => Promise<T>) {
@@ -929,7 +1300,12 @@ function publish(message: ThreadPersistenceChange) {
 
 async function hydrateFromIndexedDb(force = false) {
   if (!idbAvailable()) return;
+  // 한 번 읽어 들인 뒤에는 이 탭의 쓰기가 캐시를 먼저 고치고, 다른 탭의 변경은 알림
+  // (BroadcastChannel·storage, 'reload' 는 force)으로 받는다. 쓸 때마다 전체를 다시 읽으면
+  // 저장이 늦어지고, 한도로 밀려나 지울 채팅이 지워지기 전에 잠깐 되살아난다.
+  // 다시 읽는 중(force)이면 기다리는 쪽은 그 읽기가 끝날 때까지 기다린다.
   if (hydrationPromise && !force) return hydrationPromise;
+  if (hydrated && !force) return;
   const run = (async () => {
     const legacy = readLegacyThreads();
     for (const thread of legacy) {
@@ -1081,11 +1457,131 @@ export async function waitForThreadsPersistence() {
   await mutationQueue;
 }
 
+/**
+ * 이 모듈을 거치지 않고 저장소(레거시 localStorage 행 포함)를 고친 뒤 부른다 — 처음 읽을 때처럼
+ * 다시 읽고 레거시 행을 IndexedDB 로 옮긴다. 다른 탭의 'reload' 알림과 같은 일이다.
+ */
+export async function reloadThreadsFromStorage() {
+  await hydrateFromIndexedDb(true);
+  await mutationQueue;
+}
+
 export function createThreadId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
   return `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ── 턴 표식 ─────────────────────────────────────────────
+
+export function isTurnMarker(message: ThreadMessage | null | undefined): message is ThreadTurnMessage {
+  return message?.kind === 'turn';
+}
+
+/** 새 턴의 표식 — 아직 끝나지 않았다(endedAt·outcome 이 null). */
+export function createTurnMarker(
+  now: number = Date.now(),
+  id: string = `${TURN_MARKER_ID_PREFIX}${createThreadId()}`,
+): ThreadTurnMessage {
+  return {
+    role: 'system',
+    kind: 'turn',
+    messageId: id,
+    startedAt: Math.max(0, now),
+    endedAt: null,
+    outcome: null,
+    text: '',
+  };
+}
+
+export interface TurnMarkerSettlement {
+  endedAt: number;
+  outcome: TurnOutcome;
+  /** 옛 빌드가 한 줄 안내로 보일 접힘 제목. 없으면 지금 값을 둔다. */
+  text?: string;
+  /** 바깥이 끊은 이유. 화면 문구로는 쓰지 않는다. */
+  reason?: string | null;
+  /** 바깥이 끊은 턴의 기록(S3) — outcome 이 interrupted 일 때만 남는다. */
+  interruption?: TurnInterruption | null;
+}
+
+/**
+ * 표식을 그 자리에서 정착시킨다 — 대화 기록 안의 객체를 바꾸므로 저장은 부른 쪽이 한다.
+ * 끝난 시각은 시작보다 앞서지 않게 맞춘다(시계가 되돌아간 경우).
+ */
+export function settleTurnMarker(marker: ThreadTurnMessage, settlement: TurnMarkerSettlement): ThreadTurnMessage {
+  marker.endedAt = Number.isFinite(settlement.endedAt)
+    ? Math.max(marker.startedAt, settlement.endedAt)
+    : marker.startedAt;
+  marker.outcome = settlement.outcome;
+  if (settlement.text !== undefined) marker.text = settlement.text;
+  const reason = settlement.reason?.trim();
+  if (reason) marker.reason = reason.slice(0, TURN_REASON_MAX_CHARS);
+  if (settlement.interruption && settlement.outcome === 'interrupted') {
+    marker.interruption = { ...settlement.interruption };
+  }
+  return marker;
+}
+
+export function findTurnMarker(messages: readonly ThreadMessage[], markerId: string): ThreadTurnMessage | null {
+  for (const message of messages) {
+    if (isTurnMarker(message) && message.messageId === markerId) return message;
+  }
+  return null;
+}
+
+/** 아직 정착하지 않은 표식 — 도는 턴이거나 끝을 듣지 못하고 끊긴 턴. 기록 순서대로. */
+export function unsettledTurnMarkers(messages: readonly ThreadMessage[]): ThreadTurnMessage[] {
+  return messages.filter((message): message is ThreadTurnMessage => isTurnMarker(message) && message.endedAt === null);
+}
+
+/** 마지막 표식. 새로고침 뒤 살아 있는 턴을 다시 잡을 때 이 표식이 정착 전인지 본다. */
+export function latestTurnMarker(messages: readonly ThreadMessage[]): ThreadTurnMessage | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (isTurnMarker(message)) return message;
+  }
+  return null;
+}
+
+/**
+ * 끝을 듣지 못한 턴의 끝 시각 추정 — 그 턴(다음 사용자 메시지·표식 전까지)에 남은
+ * 도구 기록의 마지막 시각, 없으면 시작 시각. 실제 끝보다 늦지 않게 잡는다.
+ */
+export function estimateTurnEnd(messages: readonly ThreadMessage[], marker: ThreadTurnMessage): number {
+  let end = marker.startedAt;
+  let start = messages.indexOf(marker);
+  // 다른 사본(저장소에서 다시 읽은 대화)의 표식이면 id 로 찾는다.
+  if (start < 0) start = messages.findIndex((message) => isTurnMarker(message) && message.messageId === marker.messageId);
+  if (start < 0) return end;
+  for (let i = start + 1; i < messages.length; i += 1) {
+    const message = messages[i];
+    if (message.role === 'user' || isTurnMarker(message)) break;
+    if (message.kind !== 'activity') continue;
+    end = Math.max(end, message.startedAt, message.completedAt ?? 0);
+  }
+  return end;
+}
+
+/**
+ * 지금 화면에 없는 채팅의 표식을 저장소에서 정착시킨다 — 턴 도중 다른 채팅으로 떠났거나
+ * 끊긴 턴을 복구할 때. 이미 정착한 표식은 그대로 둔다(먼저 정한 결과가 이긴다).
+ * settlement 가 함수면 저장된 채팅과 표식을 보고 정한다(예: 기록에서 접힘 제목을 만든다).
+ * 정착했으면 저장한 채팅을, 아니면 null 을 돌려준다.
+ */
+export function settleStoredTurnMarker(
+  threadId: string,
+  markerId: string,
+  settlement: TurnMarkerSettlement | ((thread: ChatThread, marker: ThreadTurnMessage) => TurnMarkerSettlement),
+): ChatThread | null {
+  const thread = getThread(threadId);
+  if (!thread) return null;
+  const marker = findTurnMarker(thread.messages, markerId);
+  if (!marker || marker.endedAt !== null) return null;
+  settleTurnMarker(marker, typeof settlement === 'function' ? settlement(thread, marker) : settlement);
+  upsertThread(thread);
+  return thread;
 }
 
 export function fallbackTitle(messages: ThreadMessage[]): string {
@@ -1183,6 +1679,70 @@ export function clearPendingUserQuestion(
   return pending;
 }
 
+/** 도구·하위 에이전트 묶음 요약의 상한. 프로바이더에게 넘길 대화가 도구 로그로 불어나지 않게 한다. */
+const HISTORY_GROUP_MAX_LINES = 12;
+const HISTORY_GROUP_MAX_CHARS = 2_000;
+const HISTORY_TOOL_RESULT_MAX_CHARS = 160;
+const HISTORY_TASK_SUMMARY_MAX_CHARS = 300;
+
+const TURN_OUTCOME_TEXT: Readonly<Record<ThreadTurnOutcome, string>> = {
+  interrupted: 'Turn interrupted before completion.',
+  failed: 'Turn failed before completion.',
+};
+
+/** 계획 메시지를 마크다운으로 되살릴 때 쓰는 스레드의 계획 기록. */
+export type ThreadPlanLookup = Pick<ChatThread, 'plans' | 'latestPlan'>;
+
+function oneLine(text: string, limit: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
+}
+
+/** 줄 단위로 자른다 — 줄 수와 글자 수 상한을 넘는 줄은 개수만 남긴다. */
+function boundedGroupText(lines: readonly string[], trailer?: string): string {
+  const reserve = 24 + (trailer ? trailer.length + 1 : 0);
+  const kept: string[] = [];
+  let size = 0;
+  for (const line of lines) {
+    if (kept.length >= HISTORY_GROUP_MAX_LINES || size + line.length + 1 > HISTORY_GROUP_MAX_CHARS - reserve) break;
+    kept.push(line);
+    size += line.length + 1;
+  }
+  const omitted = lines.length - kept.length;
+  if (omitted > 0) kept.push(`(+${omitted} more)`);
+  if (trailer) kept.push(trailer);
+  return kept.join('\n');
+}
+
+function historyToolName(tool: string): string {
+  return oneLine(tool.replace(/^mcp__.+?__/, ''), 80);
+}
+
+function historyToolLine(tool: ThreadToolRecord): string {
+  const status = tool.status === 'completed'
+    ? (tool.outcome && !tool.outcome.ok ? 'failed' : 'ok')
+    : tool.status === 'failed' ? 'failed' : tool.status;
+  const result = oneLine(tool.outcome?.text || tool.resultPreview || '', HISTORY_TOOL_RESULT_MAX_CHARS);
+  return [historyToolName(tool.tool), status, ...(result ? [result] : [])].join(' · ');
+}
+
+function historyTaskLine(task: ThreadTaskRecord): string {
+  const title = oneLine(task.title || task.role || task.workflowName || task.taskId, 120);
+  const summary = oneLine(task.summary || task.activity || '', HISTORY_TASK_SUMMARY_MAX_CHARS);
+  return [title, task.status, ...(summary ? [summary] : [])].join(' · ');
+}
+
+function historyPlanText(planId: string, fallback: string, lookup?: ThreadPlanLookup): string {
+  const plan = lookup?.plans?.find((item) => item.planId === planId)
+    ?? (lookup?.latestPlan?.planId === planId ? lookup.latestPlan : undefined);
+  if (!plan) return fallback.trim();
+  return [
+    plan.title.trim() ? `# ${plan.title.trim()}` : '',
+    plan.goal.trim(),
+    planToMarkdown(plan),
+  ].filter(Boolean).join('\n\n');
+}
+
 function serializeUserQuestionHistoryMessage(
   message: UserQuestionHistoryMessage,
 ): ThreadProviderHistoryEntry[] {
@@ -1218,38 +1778,329 @@ function serializeUserQuestionHistoryMessage(
         }),
       }
     : { status: message.outcome.status, reason: message.outcome.reason };
+  const meta = { agent: message.interaction.agent, id: message.interaction.interactionId };
   return [
     {
       role: 'assistant',
+      kind: 'question',
       text: `<user_question_request>\n${JSON.stringify(request)}\n</user_question_request>`,
+      ...meta,
     },
     {
       role: 'user',
+      kind: 'answer',
       text: `<user_question_response>\n${JSON.stringify(response)}\n</user_question_response>`,
+      ...meta,
     },
   ];
 }
 
+function serializeThreadMessage(
+  message: ThreadMessage,
+  lookup?: ThreadPlanLookup,
+): ThreadProviderHistoryEntry[] {
+  const meta = {
+    ...(message.agent ? { agent: message.agent } : {}),
+  };
+  switch (message.kind) {
+    case 'user-question':
+      return serializeUserQuestionHistoryMessage(message);
+    case 'marker':
+    case 'turn':
+      // 구분선과 턴 표식은 대화가 아니다. 끝나지 못한 턴은 아래 serializeThreadMessagesForProviderHistory 가 남긴다.
+      return [];
+    case 'error': {
+      // 턴 하나의 실패 알림(U5)이 그 턴의 오류 줄이다 — 다른 프로바이더도 무엇이 실패했는지 안다.
+      // 문구는 허브가 가리고 줄인 실패 문구다. 다시 보낼 요청(retry)은 싣지 않는다.
+      const text = message.failure.message.trim()
+        || `${message.failure.class}${message.failure.code ? ` (${message.failure.code})` : ''}`;
+      return [{ role: 'assistant', kind: 'error', text, agent: message.failure.agent }];
+    }
+    case 'plan': {
+      const text = historyPlanText(message.planId, message.text, lookup);
+      return text ? [{ role: 'assistant', kind: 'plan', text, ...meta, id: message.planId }] : [];
+    }
+    case 'activity': {
+      const lines = message.tools.map(historyToolLine);
+      if (!lines.length) return [];
+      const text = boundedGroupText(lines, message.status === 'stopped' ? 'interrupted' : undefined);
+      return [{ role: 'assistant', kind: 'tools', text, ...meta, id: message.activityId }];
+    }
+    case 'tasks': {
+      const lines = message.tasks.map(historyTaskLine);
+      if (!lines.length) return [];
+      const text = boundedGroupText(lines, message.status === 'stopped' ? 'interrupted' : undefined);
+      return [{ role: 'assistant', kind: 'tasks', text, ...meta, id: message.taskGroupId }];
+    }
+    default:
+      break;
+  }
+  const id = message.messageId ? { id: message.messageId } : {};
+  if (message.role === 'system') {
+    // 오류 줄만 넘긴다. 모드 전환 같은 화면 안내는 대화가 아니다.
+    return message.severity === 'error' && message.text.trim()
+      ? [{ role: 'assistant', kind: 'error', text: message.text, ...meta, ...id }]
+      : [];
+  }
+  if (message.kind === 'progress') {
+    return message.role === 'assistant' && message.text.trim()
+      ? [{ role: 'assistant', kind: 'progress', text: message.text, ...meta, ...id }]
+      : [];
+  }
+  if (!message.text.trim() && !(message.role === 'user' && message.skillName)) return [];
+  return [{
+    role: message.role,
+    kind: 'message',
+    text: message.role === 'user' && message.skillName
+      ? `/${message.skillName}${message.text.trim() ? ` ${message.text}` : ''}`
+      : message.text,
+    ...meta,
+    ...id,
+  }];
+}
+
+/**
+ * 프로바이더에게 넘길 대화. 구분선과 화면 안내는 빼고, 도구·하위 에이전트는 묶음마다 짧게
+ * 요약하며, 끝나지 못한 턴은 다음 사용자 메시지 앞에 interrupted 항목으로 남긴다.
+ *
+ * 끝나지 못한 턴은 두 곳에 남는다: 턴 끝을 받은 사용자 메시지의 turnOutcome, 그리고 턴 표식의 결과.
+ * turn-end 를 받지 못한 턴(새로고침·앱 재시작·허브 재시작으로 끊김, S3)과 사용자 메시지 없이 열린 턴
+ * (계획 승인)은 표식에만 남으므로, 그 턴의 사용자 메시지가 결과를 싣지 않았을 때 표식의 결과를 쓴다.
+ * 한 턴에 항목은 하나다.
+ */
 export function serializeThreadMessagesForProviderHistory(
   messages: readonly ThreadMessage[],
+  lookup?: ThreadPlanLookup,
 ): ThreadProviderHistoryEntry[] {
-  return messages.flatMap((message): ThreadProviderHistoryEntry[] => {
-    if (message.kind === 'user-question') {
-      return serializeUserQuestionHistoryMessage(message);
-    }
-    if ((message.role !== 'user' && message.role !== 'assistant')
-      || message.kind === 'progress'
-      || message.kind === 'plan'
-      || message.kind === 'activity'
-      || message.kind === 'tasks'
-      || (!message.text.trim() && !(message.role === 'user' && message.skillName))) return [];
-    return [{
-      role: message.role,
-      text: message.role === 'user' && message.skillName
-        ? `/${message.skillName}${message.text.trim() ? ` ${message.text}` : ''}`
-        : message.text,
-    }];
+  const entries: ThreadProviderHistoryEntry[] = [];
+  let openOutcome: ThreadProviderHistoryEntry | null = null;
+  let turnAgent: AgentName | undefined;
+  const closeTurn = () => {
+    if (openOutcome) entries.push(openOutcome);
+    openOutcome = null;
+  };
+  const outcomeEntry = (outcome: ThreadTurnOutcome, agent: AgentName | undefined): ThreadProviderHistoryEntry => ({
+    role: 'assistant',
+    kind: 'interrupted',
+    text: TURN_OUTCOME_TEXT[outcome],
+    ...(agent ? { agent } : {}),
   });
+  for (const message of messages) {
+    if (message.role === 'user' && message.kind === undefined) {
+      closeTurn();
+      turnAgent = message.agent;
+      if (message.turnOutcome) openOutcome = outcomeEntry(message.turnOutcome, message.agent);
+    } else if (message.kind === 'turn' && openOutcome === null
+      && (message.outcome === 'interrupted' || message.outcome === 'failed')) {
+      openOutcome = outcomeEntry(message.outcome, turnAgent);
+    }
+    entries.push(...serializeThreadMessage(message, lookup));
+  }
+  closeTurn();
+  return entries;
+}
+
+/** 마지막으로 대화에 참여한 프로바이더. 시스템 줄과 구분선은 세지 않는다. */
+export function lastProviderAgent(messages: readonly ThreadMessage[]): AgentName | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role !== 'system' && message.agent) return message.agent;
+  }
+  return null;
+}
+
+export interface ProviderStartContext {
+  /** 커서가 없거나 재개에 실패했을 때 쓰는 전체 대화. */
+  history: ThreadProviderHistoryEntry[];
+  /** 이 프로바이더의 네이티브 세션 커서. */
+  providerSessionId?: string;
+  /** 재개에 성공했을 때만 쓰는, 이 프로바이더가 아직 못 본 메시지. */
+  handoffHistory?: ThreadProviderHistoryEntry[];
+  /** 허브가 대화 예산을 정할 때 쓰는 맥락 창 정보. */
+  providerContextUsage?: ProviderContextUsage;
+}
+
+/** 워터마크 뒤에 이어지는 이 프로바이더 자신의 출력 — 네이티브 세션이 이미 갖고 있다. */
+function isOwnOutput(message: ThreadMessage, agent: AgentName): boolean {
+  return message.role !== 'user' && (!message.agent || message.agent === agent);
+}
+
+/**
+ * 커서를 쓸 수 있으면 넘겨줄 대화가 시작하는 위치, 아니면 -1.
+ * 워터마크가 있으면 그 메시지 뒤에서, 바로 이어지는 자기 출력을 건너뛴다. 실패한 턴은
+ * 워터마크를 옮기지 않으므로 그 사용자 메시지는 다시 간다. 워터마크 메시지가 잘려 나갔으면
+ * 커서를 쓰지 않는다. 워터마크가 없는 예전 커서는 자기 마지막 메시지 뒤부터다.
+ */
+function handoffStartIndex(
+  messages: readonly ThreadMessage[],
+  cursor: ProviderSessionCursor,
+  agent: AgentName,
+): number {
+  if (cursor.seenThroughMessageId) {
+    let index = -1;
+    for (let at = messages.length - 1; at >= 0; at -= 1) {
+      if (messages[at]!.messageId === cursor.seenThroughMessageId) {
+        index = at;
+        break;
+      }
+    }
+    if (index < 0) return -1;
+    index += 1;
+    while (index < messages.length && isOwnOutput(messages[index]!, agent)) index += 1;
+    return index;
+  }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role !== 'system' && message.agent === agent) return index + 1;
+  }
+  return -1;
+}
+
+/**
+ * chat-start 에 실을 맥락. 커서가 있는 프로바이더는 워터마크 뒤에서 아직 못 본 메시지만
+ * 받는다. 커서를 쓸 수 없으면(처음, 잘림, 삭제) 커서 없이 전체 대화로 시작한다.
+ * exclude 는 아직 프로바이더에 전달되지 않은 메시지(대기열에 있는 사용자 메시지)다.
+ */
+export function providerStartContext(
+  thread: Pick<ChatThread, 'messages' | 'providerSessions' | 'contextUsage' | 'plans' | 'latestPlan'>,
+  agent: AgentName,
+  exclude?: ReadonlySet<ThreadMessage>,
+): ProviderStartContext {
+  const messages = exclude?.size
+    ? thread.messages.filter((message) => !exclude.has(message))
+    : thread.messages;
+  const history = serializeThreadMessagesForProviderHistory(messages, thread);
+  const cursor = thread.providerSessions?.[agent];
+  const maxTokens = cursor?.maxTokens
+    ?? (thread.contextUsage?.agent === agent ? thread.contextUsage.maxTokens : undefined);
+  const start = cursor ? handoffStartIndex(messages, cursor, agent) : -1;
+  if (!cursor || start < 0) {
+    return { history, ...(maxTokens ? { providerContextUsage: { maxTokens } } : {}) };
+  }
+  const usage: ProviderContextUsage = {
+    ...(cursor.usedTokens !== undefined ? { usedTokens: cursor.usedTokens } : {}),
+    ...(maxTokens ? { maxTokens } : {}),
+  };
+  return {
+    history,
+    providerSessionId: cursor.sessionId,
+    handoffHistory: serializeThreadMessagesForProviderHistory(messages.slice(start), thread),
+    ...(Object.keys(usage).length ? { providerContextUsage: usage } : {}),
+  };
+}
+
+export function createThreadMessageId(): string {
+  return `msg-${createThreadId()}`;
+}
+
+/**
+ * turn-start 때 잡는 워터마크 후보: 이 프로바이더에게 전달된 마지막 사용자 메시지.
+ * 예전 메시지에 id 가 없으면 여기서 붙인다(assigned = 저장 필요).
+ */
+export function captureTurnWatermark(
+  thread: Pick<ChatThread, 'messages'>,
+  agent: AgentName,
+  exclude?: ReadonlySet<ThreadMessage>,
+): { messageId: string; assigned: boolean } | null {
+  for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
+    const message = thread.messages[index]!;
+    if (message.role !== 'user' || message.kind !== undefined || message.agent !== agent) continue;
+    if (exclude?.has(message)) continue;
+    if (message.messageId) return { messageId: message.messageId, assigned: false };
+    message.messageId = createThreadMessageId();
+    return { messageId: message.messageId, assigned: true };
+  }
+  return null;
+}
+
+/** 이 메시지로 시작한 턴의 결과를 남긴다. null 이면 성공 — 표시를 지운다. */
+export function setTurnOutcome(
+  thread: Pick<ChatThread, 'messages'>,
+  messageId: string,
+  outcome: ThreadTurnOutcome | null,
+): boolean {
+  for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
+    const message = thread.messages[index]!;
+    if (message.messageId !== messageId) continue;
+    if (message.role !== 'user' || message.kind !== undefined) return false;
+    if ((message.turnOutcome ?? null) === outcome) return false;
+    if (outcome) message.turnOutcome = outcome;
+    else delete message.turnOutcome;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 성공한 턴의 커서를 남긴다. seenThroughMessageId 가 없으면(압축 턴, 턴 시작을 못 본 경우)
+ * 같은 세션일 때만 이전 워터마크를 이어 쓴다. 사용량은 이 프로바이더의 마지막 보고에서 가져온다.
+ */
+export function rememberProviderSession(
+  thread: ChatThread,
+  agent: AgentName,
+  sessionId: string,
+  updatedAt = Date.now(),
+  seenThroughMessageId?: string,
+): boolean {
+  const previous = thread.providerSessions?.[agent];
+  const sameSession = previous?.sessionId === sessionId;
+  const watermark = seenThroughMessageId ?? (sameSession ? previous?.seenThroughMessageId : undefined);
+  const usage = thread.contextUsage?.agent === agent ? thread.contextUsage : undefined;
+  const maxTokens = usage?.maxTokens ?? previous?.maxTokens;
+  const next: ProviderSessionCursor = {
+    sessionId,
+    updatedAt,
+    ...(watermark ? { seenThroughMessageId: watermark } : {}),
+    ...(usage ? { usedTokens: usage.usedTokens } : {}),
+    ...(maxTokens ? { maxTokens } : {}),
+  };
+  if (previous && sameSession
+    && previous.seenThroughMessageId === next.seenThroughMessageId
+    && previous.usedTokens === next.usedTokens
+    && previous.maxTokens === next.maxTokens) return false;
+  thread.providerSessions = { ...thread.providerSessions, [agent]: next };
+  return true;
+}
+
+export function forgetProviderSession(thread: ChatThread, agent: AgentName): boolean {
+  if (!thread.providerSessions?.[agent]) return false;
+  const { [agent]: _dropped, ...rest } = thread.providerSessions;
+  if (Object.keys(rest).length) thread.providerSessions = rest;
+  else delete thread.providerSessions;
+  return true;
+}
+
+/**
+ * 다른 프로바이더로 첫 메시지를 보낼 때 구분선을 남긴다. 피커만 오간 경우에는 남지 않는다.
+ */
+export function addHandoffMarker(thread: ChatThread, to: AgentName): ThreadMarkerMessage | null {
+  const from = lastProviderAgent(thread.messages);
+  if (!from || from === to) return null;
+  const marker: ThreadMarkerMessage = { role: 'system', kind: 'marker', marker: 'handoff', from, to, text: '' };
+  thread.messages.push(marker);
+  return marker;
+}
+
+/** 압축 구분선. 같은 compactionId 는 한 번만 남긴다 (재전송·중복 이벤트). */
+export function addCompactionMarker(
+  thread: ChatThread,
+  compaction: { compactionId: string; trigger: CompactionTrigger; beforeTokens?: number; afterTokens?: number },
+): ThreadMarkerMessage | null {
+  const exists = thread.messages.some((message) => message.kind === 'marker'
+    && message.marker === 'compaction' && message.compactionId === compaction.compactionId);
+  if (exists) return null;
+  const marker: ThreadMarkerMessage = {
+    role: 'system',
+    kind: 'marker',
+    marker: 'compaction',
+    compactionId: compaction.compactionId,
+    trigger: compaction.trigger,
+    text: '',
+    ...(compaction.beforeTokens !== undefined ? { beforeTokens: compaction.beforeTokens } : {}),
+    ...(compaction.afterTokens !== undefined ? { afterTokens: compaction.afterTokens } : {}),
+  };
+  thread.messages.push(marker);
+  return marker;
 }
 
 export function createEmptyThread(draft: ThreadDraft): ChatThread {
@@ -1293,13 +2144,119 @@ export function listThreads(): ChatThread[] {
     .sort((a, b) => threadActivityAt(b) - threadActivityAt(a));
 }
 
+/** 목록에 오르는 채팅의 이름표 — 복제하지 않고 읽는다. */
+export interface ThreadPeek {
+  id: string;
+  title: string;
+  documentId: string | null;
+  docKey: string | null;
+}
+
+/**
+ * 목록에 오르는 채팅(메시지가 있는 것)의 id·제목·문서만. listThreads() 는 도구 그림까지
+ * 스레드마다 깊이 복제하므로, 상태가 바뀔 때마다 세는 확인 필요 숫자와 알림 제목은 이것을 쓴다.
+ */
+export function peekThreads(): ThreadPeek[] {
+  const fromCache = idbAvailable();
+  if (fromCache && !hydrated) void hydrateFromIndexedDb();
+  const source: Iterable<ChatThread> = fromCache ? cache.values() : readLegacyThreads();
+  const out: ThreadPeek[] = [];
+  for (const thread of source) {
+    if (thread.messages.length === 0) continue;
+    out.push({
+      id: thread.id,
+      title: thread.title,
+      documentId: thread.documentId ?? null,
+      docKey: thread.docKey ?? null,
+    });
+  }
+  return out;
+}
+
 /** 문서 묶음 키 — ID가 있으면 ID로, 없으면 파일명으로 묶인 레거시 채팅이다. */
 export function documentGroupKey(thread: Pick<ChatThread, 'documentId' | 'docKey'>): string {
   return thread.documentId ? `id:${thread.documentId}` : `name:${thread.docKey ?? ''}`;
 }
 
+/** 채팅 하나의 복사본. 그 채팅만 복제한다 — 다른 채팅까지 깊이 복제하지 않는다. */
 export function getThread(id: string): ChatThread | null {
-  return loadAll().find((t) => t.id === id) ?? null;
+  if (!idbAvailable()) return readLegacyThreads().find((t) => t.id === id) ?? null;
+  if (!hydrated) void hydrateFromIndexedDb();
+  const thread = cache.get(id);
+  return thread ? cloneThread(thread) : null;
+}
+
+/**
+ * 저장할 메시지 — 대화 메시지는 마지막 MAX_MESSAGES_PER_THREAD 개를 남긴다. 턴 표식은 이 수에
+ * 들지 않는다(턴마다 하나씩 붙어 대화와 공급자 기록을 깎지 않게). 표식은 따로 묶는다:
+ * 남은 메시지 안의 표식, 남은 메시지가 걸쳐 시작하는 턴의 표식, 정착 전 표식만 남기고,
+ * 그래도 상한을 넘으면 오래된 정착한 표식부터 버린다.
+ */
+/**
+ * 다시 시도 요청(최대 128k 자 두 벌)은 채팅의 마지막 실패 알림에만 남긴다 — 조치(다시 시도·리셋 후 이어서)는
+ * 그 알림만 가진다. 앞선 알림의 요청을 남기면 그 채팅을 저장할 때마다 커진다. 바꿀 것이 없으면 같은 배열.
+ */
+export function dropStaleRetries(messages: ThreadMessage[]): ThreadMessage[] {
+  let last = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]!.kind === 'error') {
+      last = i;
+      break;
+    }
+  }
+  let changed: ThreadMessage[] | null = null;
+  for (let i = 0; i < last; i += 1) {
+    const message = messages[i]!;
+    if (message.kind !== 'error' || !(message as ThreadFailureMessage).retry) continue;
+    const { retry: _stale, ...rest } = message as ThreadFailureMessage;
+    changed ??= messages.slice();
+    changed[i] = rest as ThreadFailureMessage;
+  }
+  return changed ?? messages;
+}
+
+function capThreadMessages(messages: readonly ThreadMessage[]): ThreadMessage[] {
+  const keep = new Set<number>();
+  let conversation = 0;
+  let cut = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (isTurnMarker(messages[i])) continue;
+    if (conversation === MAX_MESSAGES_PER_THREAD) {
+      cut = i + 1;
+      break;
+    }
+    conversation += 1;
+  }
+  for (let i = cut; i < messages.length; i += 1) keep.add(i);
+  if (cut > 0) {
+    // 잘린 자리가 턴 중간이면 그 턴의 표식을 남긴다 — 남은 작업이 시간·결과와 함께 접힌다.
+    const first = messages[cut];
+    if (first && first.role !== 'user' && !isTurnMarker(first)) {
+      for (let i = cut - 1; i >= 0; i -= 1) {
+        const message = messages[i];
+        if (message.role === 'user') break;
+        if (isTurnMarker(message)) {
+          keep.add(i);
+          break;
+        }
+      }
+    }
+    // 정착 전 표식은 끊긴 턴을 복구하는 쪽이 찾는다.
+    messages.forEach((message, i) => {
+      if (i < cut && isTurnMarker(message) && message.endedAt === null) keep.add(i);
+    });
+  }
+  const markers = [...keep].filter((i) => isTurnMarker(messages[i])).sort((a, b) => a - b);
+  let excess = markers.length - MAX_MESSAGES_PER_THREAD;
+  for (const i of markers) {
+    if (excess <= 0) break;
+    const marker = messages[i];
+    if (isTurnMarker(marker) && marker.endedAt !== null) {
+      keep.delete(i);
+      excess -= 1;
+    }
+  }
+  return messages.filter((_, i) => keep.has(i));
 }
 
 /** 메시지가 있을 때만 저장한다. 빈 스레드는 목록에 올리지 않는다. */
@@ -1314,7 +2271,7 @@ export function upsertThread(thread: ChatThread): void {
   const previousUpdatedAt = previous?.updatedAt ?? 0;
   const updatedAt = Math.max(Date.now(), thread.updatedAt + 1, previousUpdatedAt + 1);
   // 채팅을 열거나 떠날 때도 저장은 일어난다 — 대화가 움직였을 때만 목록에서 위로 올린다.
-  const messages = thread.messages.slice(-MAX_MESSAGES_PER_THREAD);
+  const messages = dropStaleRetries(capThreadMessages(thread.messages));
   const lastActivityAt = previous && activityStamp(previous) === activityStamp({ ...thread, messages })
     ? threadActivityAt(previous)
     : updatedAt;
@@ -1362,15 +2319,21 @@ export function removeThread(id: string): void {
 
 /**
  * 채팅 기록 삭제 — 문서 파일은 그대로 두고, 그 문서에 속한 채팅을 모두
- * 지운다. 지운 채팅 ID 목록을 돌려준다.
+ * 지운다. keep 이 참인 채팅(다른 세션에서 아직 일하는 채팅 등)은 남긴다.
+ * 지운 채팅 ID 목록을 돌려준다.
  */
-export function forgetDocumentThreads(documentId: string | null, docKey: string | null): string[] {
+export function forgetDocumentThreads(
+  documentId: string | null,
+  docKey: string | null,
+  keep?: (thread: ChatThread) => boolean,
+): string[] {
   // 소속 판정은 documentGroupKey 와 같은 규칙이다 — ID가 있으면 ID로,
   // 없으면 파일명으로만 묶인 레거시 채팅을 지운다.
   const removed = loadAll()
     .filter((thread) => (documentId
       ? thread.documentId === documentId
       : !thread.documentId && (thread.docKey ?? '') === (docKey ?? '')))
+    .filter((thread) => !keep?.(thread))
     .map((thread) => thread.id);
   for (const id of removed) removeThread(id);
   return removed;
@@ -1401,6 +2364,14 @@ export function renameThread(id: string, title: string): ChatThread | null {
   const next = { ...current, title: cleaned.slice(0, 48), titlePinned: true };
   replaceStoredThread(next);
   return next;
+}
+
+/** 문서 이름이 바뀌면 그 문서의 채팅들에 보이는 문서 이름도 바꾼다. 목록 자리는 그대로다. */
+export function renameThreadsDocument(documentId: string, docKey: string): void {
+  for (const thread of listThreads()) {
+    if (thread.documentId !== documentId || thread.docKey === docKey) continue;
+    replaceStoredThread({ ...thread, docKey });
+  }
 }
 
 /** 고정한 채팅만 고정 구역의 순서대로. 같은 자리는 최근 대화가 먼저다. */

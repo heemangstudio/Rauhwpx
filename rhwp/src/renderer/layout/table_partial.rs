@@ -2065,9 +2065,12 @@ impl LayoutEngine {
         } else {
             0.0
         };
+        // 앵커 쪽에서 새 쪽으로 이월된 표는 본문 상단에서 시작한다 (typeset 과 같은 집합).
+        let fresh_page_float = self.is_fresh_page_float_table(para_index, control_index);
         let effective_vertical_offset = if square_first_fragment_top_offset > 0.0 {
             square_first_fragment_top_offset
         } else if !is_continuation
+            && !fresh_page_float
             && !table.common.treat_as_char
             && matches!(
                 table.common.text_wrap,

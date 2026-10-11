@@ -15,7 +15,7 @@
   `pdf/task2093/saved_single_line_spacing_after-2022.pdf`는 모두 1쪽이다.
 - 쪽 하단 saved-bounds의 실제 문서 회귀는 아래 1192000 문서가 담당한다.
 - 검증: `rhwp dump-pages samples/task2093/saved_single_line_spacing_after.hwpx` /
-  `cargo test --test issue_2093_saved_single_line_spacing_after`
+  `cargo test --test it page_count_pins::issue_2093_sa_tail`
 
 ## 1192000_hydrogen_policy_research.hwp (실문서 — 한글 정합 권위 검증)
 - 출처: hwpdocs 코퍼스 `prism_downloads/해양수산부/1192000-201900021_D0150004-1-001_
@@ -26,4 +26,4 @@
   신뢰 배제) → 수정 후 **16쪽 = 한글 16쪽** (오라클 PAGE_DELTA 83건 → MATCH).
 - 기준 PDF: `pdf/task2093/1192000_hydrogen_policy_research-2022.pdf`
   (한글 2022 COM, Print 액션 1-up 강제 출력 16쪽 = 편집기 PageCount 16 정합).
-- 검증: `cargo test --test issue_2093_1192000_real_doc_pin`
+- 검증: `cargo test --test it page_count_pins::issue_2093_hydrogen_1192000`

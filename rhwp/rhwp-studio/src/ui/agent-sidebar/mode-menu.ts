@@ -21,6 +21,8 @@ export interface ModeMenuState {
   disabled: boolean;
   /** 칩 툴팁. 비어 있으면 모드 이름만 쓴다. */
   hint?: string;
+  /** null 이 아니면 채팅만 고를 수 있다. 짧은 이유가 막힌 행의 툴팁이 된다. */
+  chatOnlyReason?: string | null;
 }
 
 export interface ModeMenu {
@@ -91,8 +93,15 @@ export function createModeMenu(onSelect: (mode: AgentMode) => void): ModeMenu {
   let current: AgentMode = 'agent';
   let open = false;
 
+  /** 키보드로 오가는 행 — 막힌 모드는 건너뛴다. */
   function menuItems(): HTMLButtonElement[] {
-    return AGENT_MODES.map((mode) => items.get(mode)!);
+    return AGENT_MODES.map((mode) => items.get(mode)!).filter((item) => !item.disabled);
+  }
+
+  /** 열 때 초점을 둘 행 — 지금 모드가 막혀 있으면 고를 수 있는 첫 행. */
+  function focusTarget(): HTMLButtonElement | undefined {
+    const item = items.get(current);
+    return item && !item.disabled ? item : menuItems()[0];
   }
 
   function setOpen(next: boolean): void {
@@ -117,13 +126,13 @@ export function createModeMenu(onSelect: (mode: AgentMode) => void): ModeMenu {
   trigger.addEventListener('click', (event) => {
     event.stopPropagation();
     setOpen(!open);
-    if (open) items.get(current)?.focus();
+    if (open) focusTarget()?.focus();
   });
   trigger.addEventListener('keydown', (event) => {
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       event.preventDefault();
       setOpen(true);
-      items.get(current)?.focus();
+      focusTarget()?.focus();
     } else if (event.key === 'Escape' && open) {
       event.preventDefault();
       setOpen(false);
@@ -162,9 +171,13 @@ export function createModeMenu(onSelect: (mode: AgentMode) => void): ModeMenu {
     trigger.setAttribute('aria-label', `에이전트 모드: ${label}`);
     trigger.title = state.hint || label;
     root.dataset.mode = state.mode;
+    const lockReason = state.chatOnlyReason ?? null;
     for (const [mode, item] of items) {
       item.setAttribute('aria-checked', String(mode === state.mode));
       item.classList.toggle('ag-active', mode === state.mode);
+      const locked = lockReason !== null && mode !== 'chat';
+      item.disabled = locked;
+      item.title = locked ? lockReason : '';
     }
     if (state.disabled) setOpen(false);
   }

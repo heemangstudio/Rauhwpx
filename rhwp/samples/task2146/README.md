@@ -37,6 +37,6 @@ P0 배치에서는 RowBreak 표의 일관된 선언 행높이 grid를 공유 측
 ### 검증
 
 ```bash
-cargo test --test issue_2146_no_ls_label_cell_declared_height
+cargo test --test it issue_2146_no_ls_label_cell_declared_height
 python tools/hangul_row_heights.py <문서>   # r0: 한글 52.4 = rhwp 52.4
 ```

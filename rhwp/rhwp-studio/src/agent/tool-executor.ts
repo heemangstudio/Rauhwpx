@@ -8,12 +8,11 @@
  */
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import { engineTrap, reportEngineTrap } from '../core/engine-trap.ts';
-import type { InputHandler } from '../engine/input-handler.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import type { CellPathEntry, CharProperties, CharShapeRun, ControlLayoutItem, DocumentPosition, LineLayoutItem, ParaProperties, SelectionRect } from '../core/types.ts';
 import type { RevisionTracker } from './revision.ts';
 import type { PendingEditManager } from './pending-edits.ts';
-import type { AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp } from './types.ts';
+import type { AgentEditorHost, AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp } from './types.ts';
 import { AgentToolError } from './types.ts';
 import { EditJournal, type EditJournalEntry } from './edit-journal.ts';
 import { batchItemArgs } from './batch-item.ts';
@@ -53,18 +52,40 @@ import {
 
 export interface AgentToolExecutorDeps {
   wasm: WasmBridge;
-  inputHandler: InputHandler;
+  /** 사용자 커서·선택을 읽는 편집기. 문서가 화면에 없으면 선택 문맥이 null 이다. */
+  editor: AgentEditorHost;
   documentState: DocumentDirtyState;
   revision: RevisionTracker;
   pending: PendingEditManager;
   loadTemplateBytes?: (template: DocumentTemplate) => Promise<Uint8Array>;
   getDocumentSourcePath?: () => Promise<string | null>;
   isReadOnly?: () => boolean;
+  /** 쓰기 직전에 문서를 고칠 자리를 요구한다 (AgentBridgeDeps.claimDocumentWrite). 없으면 늘 받는다. */
+  claimDocumentWrite?: () => boolean;
+  /**
+   * 문서 쓰기 도구가 모든 문(읽기 전용·주인 자리·템플릿 검토)을 지나 문서에 닿기 직전에 부른다.
+   * 턴 체크포인트가 이때 그 턴의 첫 쓰기 전 문서를 찍는다. 던지지 않는다.
+   */
+  beforeDocumentWrite?: () => void;
   /** 참조 이미지 잘라내기 — 기본은 브라우저 캔버스 (테스트가 주입한다) */
   cropImage?: ImageCropper;
 }
 
 const DOC_NOT_LOADED_MESSAGE = '문서가 로드되지 않았습니다';
+
+/**
+ * 같은 문서의 다른 채팅이 고치는 중이라 쓰기를 받지 않았다. 문서는 그대로다 — 이번 턴에는
+ * 다시 쓰지 말고, 무엇을 바꾸려 했는지 사용자에게 알리게 한다.
+ */
+export function documentWriterBusyError(): AgentToolError {
+  return new AgentToolError(
+    'DOCUMENT_WRITER_BUSY',
+    'Another chat open on this document is editing it (its turn is running or its edits are waiting for the user\'s review). '
+      + 'A document has one editing chat at a time. Nothing was changed. '
+      + 'Do not retry document-write tools in this turn; reads still work. '
+      + 'Finish by telling the user what you would change; they can ask again after the other chat\'s edits are applied or discarded.',
+  );
+}
 
 /** 엔진 trap 뒤에는 같은 인스턴스로 다시 시도해도 실패한다 — 재시도 대신 사용자 안내로 넘긴다. */
 function engineTrappedError(detail: string): AgentToolError {
@@ -82,6 +103,8 @@ const NESTED_TABLE_PROBE_CONTROLS = 4;
 const CELL_SELECTION_END_OFFSET = 0x7fffffff;
 
 const MAX_SVG_BYTES = 800_000;
+/** 템플릿 문서는 마지막 템플릿 도구 뒤 이만큼 쉬면 내려놓고, 다음 템플릿 도구가 다시 읽는다. */
+export const TEMPLATE_IDLE_RELEASE_MS = 60_000;
 // WebSocket text frames cap at 100 MiB. Base64 expands by 4/3, so 64 MiB
 // leaves room for the protocol envelope while still covering normal HWP/HWPX files.
 const MAX_DOCUMENT_SNAPSHOT_BYTES = 64 * 1024 * 1024;
@@ -276,7 +299,8 @@ interface ResolvedAnchor {
 const RANGE_COORD_KEYS = ['sectionIdx', 'startParaIdx', 'startCharOffset', 'endParaIdx', 'endCharOffset'] as const;
 /** 앵커 없이 부를 때 도구별로 필요한 좌표 — 누락 오류가 이 목록을 통째로 알려준다. */
 const WRITE_COORD_KEYS: Record<string, readonly string[]> = {
-  insert_text: ['sectionIdx', 'paraIdx', 'charOffset'],
+  // insert_text 의 charOffset 은 빠지면 그 문단 끝이다 (새 표 칸을 채울 때 모델이 흔히 생략한다).
+  insert_text: ['sectionIdx', 'paraIdx'],
   delete_range: RANGE_COORD_KEYS,
   replace_range: RANGE_COORD_KEYS,
   apply_char_format: ['sectionIdx', 'paraIdx', 'startOffset', 'endOffset'],
@@ -680,6 +704,23 @@ const LIST_FORMAT_MAP: Record<string, { code: number; pattern: (level: number) =
   'ㄱ.': { code: LIST_NUM_FMT.HANGUL_JAMO, pattern: (l) => `^${l + 1}.` },
 };
 
+/**
+ * 손으로 친 목록 표지 — apply_list stripMarkers 가 문단 맨 앞(들여쓴 공백 포함)에서만 지운다.
+ * 번호·글자 표지와 글머리 기호는 뒤에 공백이 있어야 한다(1.5 · -5도 같은 본문은 남긴다).
+ * 괄호 번호와 원문자는 붙여 써도 표지로 본다.
+ */
+const LIST_MARKER_SPACE = '[ \\t\\u00A0\\u3000]';
+const LIST_MARKER_LABEL = '(?:\\d{1,3}|[가나다라마바사아자차카타파하]|[ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ]|[a-zA-Z]|[ivxIVX]{1,4})';
+const TYPED_LIST_MARKER_RE = new RegExp(
+  `^${LIST_MARKER_SPACE}*(?:`
+  + `${LIST_MARKER_LABEL}[.)]${LIST_MARKER_SPACE}+`
+  + `|\\(${LIST_MARKER_LABEL}\\)${LIST_MARKER_SPACE}*`
+  + `|[\\u2460-\\u2473\\u3260-\\u327B]${LIST_MARKER_SPACE}*`
+  + `|[•·ㆍ∙◦‣▪▫■□●○◆◇▶▷►➢➤*\\-–—]${LIST_MARKER_SPACE}+`
+  + ')',
+  'u',
+);
+
 // 미지정 레벨의 기본 7수준 패턴 — 한컴 기본 "1. 가. 1) 가) (1) (가) ①" (numbering-dialog PRESETS[1]과 동일)
 const LIST_DEFAULT_LEVEL_FORMATS = ['^1.', '^2.', '^3)', '^4)', '(^5)', '(^6)', '^7'];
 const LIST_DEFAULT_NUMBER_FORMATS: number[] = [
@@ -703,6 +744,33 @@ const NON_NEGATIVE_ADDRESS_KEYS = [
   'startParaIdx', 'endParaIdx', 'startCharOffset', 'endCharOffset', 'startOffset', 'endOffset',
   'pageIndex', 'styleId',
 ] as const;
+
+/**
+ * cell 을 받는 텍스트·서식 도구. 표 좌표(controlIdx/cellIdx/cellParaIdx)를 cell 없이 최상위에 두면
+ * 무시된 채 표가 놓인 본문 문단을 고치게 되므로 고친 호출 꼴을 담아 거절한다 (rhwp-agent tools.mjs 와 같은 문구).
+ */
+const CELL_ADDRESSED_TOOLS: ReadonlySet<string> = new Set([
+  'insert_text', 'delete_range', 'replace_range', 'apply_char_format', 'apply_para_format', 'get_text_range',
+]);
+const STRAY_CELL_KEYS = ['controlIdx', 'cellIdx', 'cellParaIdx'] as const;
+
+function assertCellArgsPlacement(tool: string, args: Record<string, unknown>): void {
+  if (!CELL_ADDRESSED_TOOLS.has(tool) || (args['cell'] !== undefined && args['cell'] !== null)) return;
+  const given = (key: string) => args[key] !== undefined && args[key] !== null;
+  const stray = STRAY_CELL_KEYS.filter(given);
+  if (stray.length === 0) return;
+  const show = (key: string, fallback: string) => (typeof args[key] === 'number' ? String(args[key]) : fallback);
+  const tablePara = given('paraIdx') ? show('paraIdx', 'P') : show('startParaIdx', 'P');
+  const cell = `cell:{paraIdx:${tablePara},controlIdx:${show('controlIdx', '0')},cellIdx:${show('cellIdx', 'N')}}`;
+  const inner = show('cellParaIdx', '0');
+  const paraKeys = tool === 'delete_range' || tool === 'replace_range' ? 'startParaIdx/endParaIdx' : 'paraIdx';
+  throw new AgentToolError(
+    'INVALID_ARGS',
+    `${tool} got top-level ${stray.join('/')} without cell, which would edit the table's host paragraph instead of the cell. `
+      + `Put the cell address in ${cell} (paraIdx = the table's body paragraph from its get_structure line) `
+      + `and set ${paraKeys} to the paragraph inside the cell (${inner}), e.g. {${cell}, ${paraKeys.split('/')[0]}:${inner}, …}.`,
+  );
+}
 
 function assertNonNegativeAddress(args: Record<string, unknown>): void {
   for (const key of NON_NEGATIVE_ADDRESS_KEYS) {
@@ -987,6 +1055,8 @@ export class AgentToolExecutor {
   private templateBytes: Uint8Array | null = null;
   private templateKey: string | null = null;
   private templateInspectionKey: string | null = null;
+  private templateUses = 0;
+  private templateIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private documentInspectionRevision: number | null = null;
   /** get_structure 서식 태그의 본문 기준 글자 크기 (HWPUNIT) — structureMemoKey 마다 다시 표본을 뜬다. */
   private structureBodySizeMemo: { key: string; size: number | null } | null = null;
@@ -1007,6 +1077,9 @@ export class AgentToolExecutor {
   // 한 번으로 묶으므로 항목별 기록을 여기 모았다가 배치이 끝난 revision 에 전부
   // 귀속시킨다 (안 모으면 배치이 델타/리베이스 커버리지 구멍으로 보인다).
   private journalBatch: EditJournalEntry[] | null = null;
+  // apply_edits 진행 상황 — 지금 몇 번째 항목인지와 앞 항목들이 지우거나 바꾼 원문. 앞 항목이 매치를
+  // 먹어 occurrence 가 넘친 경우 오류가 그 사실과 먹은 항목을 짚는다.
+  private batchProgress: { index: number; tool: string; removals: Array<{ index: number; tool: string; text: string }> } | null = null;
   // verify_changes 증분 커서 — `${agent}:${changeSetId}` 별로 이번 턴에 이미 보고한 op id.
   private verifiedOpIds = new Map<string, Set<string>>();
 
@@ -1041,6 +1114,10 @@ export class AgentToolExecutor {
           'This published template preview is read-only and cannot accept document-write tools.',
         );
       }
+      // 같은 문서의 다른 채팅이 고치는 중이면 문서에 닿기 전에 거절한다 (채팅 모드 잠금이 늦어도).
+      if (isDocumentWriteTool(tool) && this.deps.claimDocumentWrite && !this.deps.claimDocumentWrite()) {
+        throw documentWriterBusyError();
+      }
       if (isDocumentWriteTool(tool)
         && !tool.startsWith('template_')
         && this.deps.pending.hasTemplateMutation()) {
@@ -1048,6 +1125,14 @@ export class AgentToolExecutor {
           'TEMPLATE_PENDING_CONFLICT',
           'Review the pending template transfer before making other document edits.',
         );
+      }
+      // 거절되지 않은 쓰기만 여기에 닿는다 — 이 턴의 첫 쓰기라면 그 전 문서를 체크포인트로 남긴다.
+      if (isDocumentWriteTool(tool) && this.deps.beforeDocumentWrite) {
+        try {
+          this.deps.beforeDocumentWrite();
+        } catch (e) {
+          console.warn('[AgentToolExecutor] 턴 체크포인트를 남기지 못했습니다:', e);
+        }
       }
       // 스테이징 쓰기는 결과에 after 보고(와 요청 시 변경 영역 PNG)를 붙인다 —
       // render 인자는 쓰기를 적용하기 전에 검사하고, 쓰기 직전 상태를 떠 둔다.
@@ -1076,6 +1161,7 @@ export class AgentToolExecutor {
   private dispatch(tool: string, rawArgs: unknown, agent: AgentName, capability?: ToolCapabilityContext): unknown {
     const args = rawArgs === undefined ? {} : asRecord(rawArgs);
     assertNonNegativeAddress(args);
+    assertCellArgsPlacement(tool, args);
     switch (tool) {
       case 'get_structure': return this.getStructure(args);
       case 'get_text_range': return this.getTextRange(args);
@@ -1093,16 +1179,16 @@ export class AgentToolExecutor {
       case 'get_engine_edit_capabilities': return this.getEngineEditCapabilities(args);
       case 'list_numberings': return this.listNumberings();
       case 'verify_changes': return this.verifyChanges(args, agent);
-      case 'template_get_structure': return this.templateGetStructure(args, capability);
-      case 'template_get_text_range': return this.templateRead('get_text_range', args, capability);
-      case 'template_get_para_format': return this.templateRead('get_para_format', args, capability);
-      case 'template_get_char_format': return this.templateRead('get_char_format', args, capability);
-      case 'template_list_styles': return this.templateRead('list_styles', args, capability);
-      case 'template_get_page_layout': return this.templateGetPageLayout(args, capability);
-      case 'template_render_page': return this.templateRead('render_page', args, capability);
-      case 'template_apply_section_layout': return this.templateApplySectionLayout(args, agent, capability);
-      case 'template_apply_paragraph_format': return this.templateApplyParagraphFormat(args, agent, capability);
-      case 'template_insert_block': return this.templateInsertBlock(args, agent, capability);
+      case 'template_get_structure': return this.holdTemplate(() => this.templateGetStructure(args, capability));
+      case 'template_get_text_range': return this.holdTemplate(() => this.templateRead('get_text_range', args, capability));
+      case 'template_get_para_format': return this.holdTemplate(() => this.templateRead('get_para_format', args, capability));
+      case 'template_get_char_format': return this.holdTemplate(() => this.templateRead('get_char_format', args, capability));
+      case 'template_list_styles': return this.holdTemplate(() => this.templateRead('list_styles', args, capability));
+      case 'template_get_page_layout': return this.holdTemplate(() => this.templateGetPageLayout(args, capability));
+      case 'template_render_page': return this.holdTemplate(() => this.templateRead('render_page', args, capability));
+      case 'template_apply_section_layout': return this.holdTemplate(() => this.templateApplySectionLayout(args, agent, capability));
+      case 'template_apply_paragraph_format': return this.holdTemplate(() => this.templateApplyParagraphFormat(args, agent, capability));
+      case 'template_insert_block': return this.holdTemplate(() => this.templateInsertBlock(args, agent, capability));
       case 'apply_edits': return this.applyEdits(args, agent);
       case 'read_batch': return this.readBatch(args, agent, capability);
       case 'insert_text': return this.insertText(args, agent);
@@ -2631,8 +2717,18 @@ export class AgentToolExecutor {
 
   private getSelection(): unknown {
     this.requireDocLoaded();
-    const { inputHandler, wasm } = this.deps;
-    const { cursor, selection: sel } = inputHandler.getUserSelectionContext();
+    const { editor, wasm } = this.deps;
+    const context = editor.getUserSelectionContext?.() ?? null;
+    if (!context) {
+      // 화면 밖에서 도는 문서 — 사용자가 이 문서를 보고 있지 않으니 커서도 선택도 없다.
+      return {
+        revision: this.revision,
+        hasSelection: false,
+        visible: false,
+        note: 'This document is not open in the editor, so the user has no cursor or selection in it. Locate text with get_structure or find_text instead.',
+      };
+    }
+    const { cursor, selection: sel } = context;
     // 커서/선택의 charOffset 은 논리 오프셋(텍스트 문자 + 앞선 인라인 컨트롤 1개당 +1)이다.
     // 다른 툴은 텍스트 오프셋을 쓰므로 본문·셀 문단 모두 텍스트 오프셋으로 변환해 반환한다.
     interface SelPoint {
@@ -3304,7 +3400,7 @@ export class AgentToolExecutor {
       }
       throw new AgentToolError(
         'INVALID_ARGS',
-        `${via} ${JSON.stringify(this.truncateForMessage(text))} matched nothing in the document — check the exact wording with find_text`,
+        `${via} ${JSON.stringify(this.truncateForMessage(text))} matched nothing in the document — check the exact wording with find_text${this.batchMatchNote(text, 0)}`,
       );
     }
     // 스캔이 cap 에 닿기 전에 멈췄다면(중첩 표 탐침 예산) 뒤쪽을 보지 못했다 — 매치가 하나뿐이어도
@@ -3320,7 +3416,7 @@ export class AgentToolExecutor {
       if (occurrence > matches.length) {
         throw new AgentToolError(
           'INVALID_ARGS',
-          `${key('occurrence')} ${occurrence} but only ${matches.length} match(es) for ${JSON.stringify(this.truncateForMessage(text))}: ${this.anchorCandidates(matches)}`,
+          `${key('occurrence')} ${occurrence} but only ${matches.length} match(es) for ${JSON.stringify(this.truncateForMessage(text))}: ${this.anchorCandidates(matches)}${this.batchMatchNote(text, matches.length)}`,
         );
       }
       picked = matches[occurrence - 1];
@@ -3477,6 +3573,27 @@ export class AgentToolExecutor {
 
   private truncateForMessage(text: string): string {
     return text.length > 60 ? `${text.slice(0, 60)}…` : text;
+  }
+
+  /** apply_edits 항목이 지우거나 덮어쓴 원문을 남긴다 — 뒤 항목의 occurrence 오류 설명용. */
+  private noteBatchRemoval(text: string): void {
+    const progress = this.batchProgress;
+    if (progress && text) progress.removals.push({ index: progress.index, tool: progress.tool, text });
+  }
+
+  /**
+   * apply_edits 둘째 항목부터의 앵커 매치 오류에 붙이는 설명. 항목은 바뀌어 가는 문서에서 차례로
+   * 돌므로 occurrence 는 앞 항목이 남긴 텍스트 기준이다 — 원문 기준으로 센 번호가 넘친 경우다.
+   */
+  private batchMatchNote(text: string, remaining: number): string {
+    const progress = this.batchProgress;
+    if (!progress || progress.index === 0) return '';
+    const consumers = [...new Set(progress.removals
+      .filter((removal) => removal.index < progress.index && removal.text.includes(text))
+      .map((removal) => `edits[${removal.index}]${removal.tool ? ` (${removal.tool})` : ''}`))];
+    return `. Earlier items in this apply_edits batch already changed the text, and occurrence counts matches in the text they left`
+      + ` (${remaining} remain${consumers.length > 0 ? `; ${consumers.join(', ')} already rewrote a match` : ''})`
+      + ' — number occurrences against the text after those items, or match a longer unique phrase';
   }
 
   /** 앵커 해석된 주소를 write 결과에 그대로 싣는다 (anchor 필드). */
@@ -4871,6 +4988,31 @@ export class AgentToolExecutor {
     return template;
   }
 
+  /** 템플릿 도구 하나를 감싼다. 도구가 도는 동안에는 템플릿 문서를 내려놓지 않는다. */
+  private async holdTemplate<T>(use: () => Promise<T>): Promise<T> {
+    this.templateUses += 1;
+    if (this.templateIdleTimer !== null) clearTimeout(this.templateIdleTimer);
+    this.templateIdleTimer = null;
+    try {
+      return await use();
+    } finally {
+      this.templateUses -= 1;
+      if (this.templateUses === 0 && this.templateWasm) {
+        this.templateIdleTimer = setTimeout(() => this.releaseTemplate(), TEMPLATE_IDLE_RELEASE_MS);
+      }
+    }
+  }
+
+  /** 템플릿 엔진과 원본 바이트를 놓는다. 읽기 확인(templateInspectionKey)은 같은 revision 이면 그대로 유효하다. */
+  private releaseTemplate(): void {
+    if (this.templateIdleTimer !== null) clearTimeout(this.templateIdleTimer);
+    this.templateIdleTimer = null;
+    this.templateWasm?.releaseDocument();
+    this.templateWasm = null;
+    this.templateBytes = null;
+    this.templateKey = null;
+  }
+
   private async ensureTemplate(capability?: ToolCapabilityContext): Promise<{ template: DocumentTemplate; wasm: WasmBridge; bytes: Uint8Array }> {
     const template = this.requireTemplate(capability);
     const loadTemplateBytes = this.deps.loadTemplateBytes;
@@ -5143,10 +5285,7 @@ export class AgentToolExecutor {
   }
 
   dispose(): void {
-    this.templateWasm?.releaseDocument();
-    this.templateWasm = null;
-    this.templateBytes = null;
-    this.templateKey = null;
+    this.releaseTemplate();
     this.templateInspectionKey = null;
     this.documentInspectionRevision = null;
   }
@@ -5186,11 +5325,15 @@ export class AgentToolExecutor {
     // 않는다 — 일부만 기록하면 구간이 "정밀 기록됨"으로 보여 그 변경이 델타·리베이스에서 빠진다.
     let unjournaled = false;
     this.journalBatch = buffered;
+    const progress: NonNullable<AgentToolExecutor['batchProgress']> = { index: 0, tool: '', removals: [] };
+    this.batchProgress = progress;
     try {
       this.runAtomicCovered((opts) => this.deps.pending.runAtomicBatch(() => {
         rawEdits.forEach((raw: unknown, index) => {
           const named = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>)['tool'] : null;
           const tool = typeof named === 'string' ? named : null;
+          progress.index = index;
+          progress.tool = tool ?? '';
           const journaledBefore = buffered.length;
           try {
             const edit = this.batchEdit(raw);
@@ -5216,6 +5359,7 @@ export class AgentToolExecutor {
       }, opts));
     } finally {
       this.journalBatch = null;
+      this.batchProgress = null;
     }
     if (!unjournaled) {
       for (const entry of buffered) {
@@ -5378,11 +5522,13 @@ export class AgentToolExecutor {
     const coords = this.coordArgs('insert_text', args);
     const sectionIdx = reqInt(coords, 'sectionIdx');
     let paraIdx = reqInt(coords, 'paraIdx');
-    const charOffset = reqInt(coords, 'charOffset');
+    const givenOffset = optIndex(coords, 'charOffset');
     const cell = optCell(args);
     const shift = this.requireRevisionRebasable(args, sectionIdx, cell ? cell.paraIdx : paraIdx, cell ? cell.paraIdx : paraIdx);
     if (cell) cell.paraIdx += shift;
     else paraIdx += shift;
+    // charOffset 이 없으면 문단(본문·셀) 끝에 덧붙인다 — validateAddress 가 문단 길이를 돌려준다.
+    const charOffset = givenOffset ?? this.validateAddress(sectionIdx, paraIdx, undefined, cell);
     return this.insertTextAt(args, agent, sectionIdx, paraIdx, charOffset, cell, shift, null);
   }
 
@@ -5536,6 +5682,7 @@ export class AgentToolExecutor {
     // 앵커/팝오버와 사이드바 카드로 검토하고, 거절 시 스냅샷으로 복원된다.
     const revBefore = this.revision;
     const r = this.deps.pending.replaceText(range, '', agent);
+    this.noteBatchRemoval(r.deletedText);
     this.recordJournal(
       revBefore, range.sectionIdx,
       range.cell ? range.cell.paraIdx : range.startParaIdx,
@@ -5569,6 +5716,8 @@ export class AgentToolExecutor {
   }
 
   private replaceRangeChecked(args: Record<string, unknown>, agent: AgentName, shift: number): unknown {
+    // 빈 text 로 바꾸기 = 지우기. 모델이 흔히 쓰는 꼴이라 거절하지 않고 delete_range 와 같은 길로 보낸다.
+    if (args['text'] === '') return this.deleteRangeChecked(args, agent, shift);
     const range = this.validateRange(args, shift);
     if (range.cell) this.guardNestedTableInCellRange(range);
     if (range.startParaIdx === range.endParaIdx && range.startCharOffset === range.endCharOffset) {
@@ -5582,6 +5731,7 @@ export class AgentToolExecutor {
     // 원자적 교체 (삭제 마크 + 끝 삽입 2-op 조합 폐기) — 서식 보존 + 스냅샷 기반 되돌림
     const revBefore = this.revision;
     const r = this.deps.pending.replaceText(range, text, agent);
+    this.noteBatchRemoval(r.deletedText);
     this.recordJournal(
       revBefore, range.sectionIdx,
       range.cell ? range.cell.paraIdx : range.startParaIdx,
@@ -6692,6 +6842,10 @@ export class AgentToolExecutor {
     if (startNumber !== undefined && startNumber < 1) {
       throw new AgentToolError('INVALID_ARGS', 'startNumber must be >= 1');
     }
+    const stripMarkers = args['stripMarkers'];
+    if (stripMarkers !== undefined && stripMarkers !== null && typeof stripMarkers !== 'boolean') {
+      throw new AgentToolError('INVALID_ARGS', 'stripMarkers must be a boolean');
+    }
     const { wasm } = this.deps;
 
     let headType: 'Number' | 'Bullet';
@@ -6747,8 +6901,23 @@ export class AgentToolExecutor {
     // 문단마다 전체 재조판이 돌지 않도록 배치로 묶는다 — 조판/이벤트/오버레이는
     // 구간 종료 시 한 번씩, 중간 실패 시 문단 일부만 적용된 상태가 남지 않는다.
     let changeSetId = '';
+    let stripped = 0;
     const revBefore = this.revision;
     this.runAtomicCovered((opts) => this.deps.pending.runAtomicBatch(() => {
+      // 손으로 친 표지를 같은 배치에서 지운다 — 목록 서식과 한 change set·한 undo 단계가 되고,
+      // 거절하면 스냅샷이 지운 표지까지 되살린다.
+      if (stripMarkers === true) {
+        for (let p = startParaIdx; p <= endParaIdx; p++) {
+          const len = wasm.getParagraphLength(sectionIdx, p);
+          const head = len > 0 ? wasm.getTextRange(sectionIdx, p, 0, Math.min(len, 16)) : '';
+          const marker = TYPED_LIST_MARKER_RE.exec(head);
+          if (!marker) continue;
+          changeSetId = this.deps.pending.replaceText({
+            sectionIdx, startParaIdx: p, startCharOffset: 0, endParaIdx: p, endCharOffset: marker[0].length,
+          }, '', agent).changeSetId;
+          stripped++;
+        }
+      }
       for (let p = startParaIdx; p <= endParaIdx; p++) {
         const obj: ObjectOp = {
           type: 'paraFormat', sectionIdx, paraIdx: p,
@@ -6765,6 +6934,7 @@ export class AgentToolExecutor {
       changeSetId,
       numberingId,
       paragraphs: endParaIdx - startParaIdx + 1,
+      ...(stripMarkers === true ? { strippedMarkers: stripped } : {}),
     };
   }
 

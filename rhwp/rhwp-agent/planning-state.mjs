@@ -3,7 +3,6 @@ import crypto from 'node:crypto';
 import { humanizerPromptBlock } from './humanizer.mjs';
 
 export const WORKFLOWS = Object.freeze(['direct', 'plan', 'question']);
-export const PLAN_PHASES = Object.freeze(['planning', 'questioning', 'awaiting-approval', 'switching', 'implementing']);
 
 const ENGLISH_IMPLEMENTATION_APPROVALS = new Set([
   'implement the plan',

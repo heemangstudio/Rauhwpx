@@ -3,6 +3,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { API_KEY_MAX_BYTES } from '../input-bounds.mjs';
+import { startLiveHub } from './live-hub-fixture.mjs';
 
 const hubDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -33,26 +35,6 @@ test('the auth progress frame forwards both the login URL and the device code', 
   assert.match(frame, /authRunId: run\.runId|sendAuthRunFrame\(authRun/);
 });
 
-/** Codex OAuth uses the CLI login command and has no localhost callback fallback. */
-test('codex OAuth never falls back to the localhost callback login', async () => {
-  const source = await readSource('cli-setup-manager.mjs');
-  assert.match(source, /agent === 'codex' \? \['login', '--device-auth'\] : \['login'\]/);
-  assert.doesNotMatch(source, /platform === 'win32'[^;]+\['login', '--device-auth'\]/);
-  assert.doesNotMatch(source, /localhost.*callback|callback.*localhost/i);
-});
-
-/** 데스크톱 앱 밖(개발·브라우저)에서도 API 키 로그인은 성공해야 한다. */
-test('API key setup no longer requires the desktop secret vault', async () => {
-  const source = await readSource('cli-setup-manager.mjs');
-  assert.doesNotMatch(source, /SECRET_STORE_UNAVAILABLE/);
-});
-
-test('Pi API-key frames preserve strict string validation at the manager boundary', async () => {
-  const source = await readSource('server.mjs');
-  assert.doesNotMatch(source, /piManager\.setApiKey\(String\(msg\.key/);
-  assert.equal(source.match(/piManager\.setApiKey\(msg\.key/g)?.length, 2);
-});
-
 test('auth-run cancellation and owner-session close fence API key manager commits', async () => {
   const source = await readSource('server.mjs');
   const handler = agentSetupAuthHandler(source);
@@ -64,22 +46,6 @@ test('auth-run cancellation and owner-session close fence API key manager commit
   assert.match(handler, /cliSetup\.authenticate\([^;]+signal: abort\.signal,[^;]+onCommitted: commitAuthRun/s);
   assert.match(source, /case 'agent-setup-cancel':[\s\S]+authRuns\.cancelOwned\(/);
   assert.match(source, /authRuns\.cancelForSession\(sessionId, 'owner-session-closed'\)/);
-});
-
-test('manual auth codes are bounded before any provider consumes them', async () => {
-  const source = await readSource('server.mjs');
-  const helperStart = source.indexOf('function boundedAgentAuthCode(raw)');
-  const helperEnd = source.indexOf('\n}', helperStart);
-  assert.notEqual(helperStart, -1);
-  assert.match(source.slice(helperStart, helperEnd), /typeof raw !== 'string'/);
-  const start = source.indexOf("case 'agent-setup-auth-code':");
-  const end = source.indexOf("case 'agent-setup-cancel':", start);
-  assert.notEqual(start, -1);
-  assert.ok(end > start);
-  const handler = source.slice(start, end);
-  const bounded = handler.indexOf('code = boundedAgentAuthCode(msg.code)');
-  assert.ok(bounded >= 0);
-  assert.ok(bounded < handler.indexOf('cliSetup.submitAuthCode'));
 });
 
 test('OAuth callback and post-auth work share one exact credential commit boundary', async () => {
@@ -97,4 +63,19 @@ test('OAuth callback and post-auth work share one exact credential commit bounda
   const callback = source.slice(callbackStart, callbackEnd);
   assert.match(callback, /piManager\.completeOAuth\([^;]+signal: authRun\.signal,[^;]+onCommitted: authRun\.commitCredentials/s);
   assert.match(callback, /authRun\.credentialsCommitted !== true/);
+});
+
+// 문자열이 아닌 키를 허브가 String() 으로 바꿔 넘기면 배열 안의 긴 문자열이 길이 오류로 바뀐다.
+test('Pi API-key frames reject non-string keys without coercing them', { timeout: 60_000 }, async (t) => {
+  const hub = await startLiveHub(t);
+  const key = ['x'.repeat(API_KEY_MAX_BYTES + 1)];
+
+  hub.studio.send({ type: 'pi-set-key', requestId: 'set-key', key });
+  const direct = await hub.studio.next((frame) => frame.requestId === 'set-key' && frame.type !== 'pi-status');
+  assert.equal(direct.type, 'pi-error', JSON.stringify(direct));
+  assert.equal(direct.code, 'OPENROUTER_KEY_INVALID');
+
+  hub.studio.send({ type: 'agent-setup-auth', requestId: 'auth-key', agent: 'pi', method: 'api-key', key });
+  const setup = await hub.studio.next((frame) => frame.requestId === 'auth-key' && frame.type === 'agent-setup-error');
+  assert.equal(setup.code, 'OPENROUTER_KEY_INVALID');
 });

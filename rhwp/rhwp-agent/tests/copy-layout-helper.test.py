@@ -469,6 +469,22 @@ class CopyLayoutHelperTests(unittest.TestCase):
                 "unsafe.xml",
             )
 
+    def test_output_path_never_overwrites_the_source_or_an_existing_file(self):
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "form.hwpx"
+            source.write_bytes(b"source")
+            with self.assertRaisesRegex(ValueError, "refusing to overwrite the source document"):
+                copy_layout.output_path_for(source, Path(raw) / "layout" / ".." / "form.hwpx")
+            taken = Path(raw) / "taken.hwpx"
+            taken.write_bytes(b"other")
+            with self.assertRaises(FileExistsError):
+                copy_layout.output_path_for(source, taken)
+            (Path(raw) / "layout").mkdir()
+            (Path(raw) / "layout" / "form - Layout.hwpx").write_bytes(b"earlier")
+            path, _ = copy_layout.output_path_for(source, None)
+            self.assertEqual(path.name, "form - Layout (2).hwpx")
+            self.assertEqual(source.read_bytes(), b"source")
+
     def test_archive_inventory_rejects_duplicate_and_traversal_entries(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -1,0 +1,26 @@
+/* 빈 채팅의 문서 이름은 문서 선택기를 여는 버튼이다. */
+.ag-focus-greeting-doc {
+  border: 0;
+  padding: 2px 4px;
+  background: transparent;
+  font-family: inherit;
+  color: var(--ag-text-muted);
+  cursor: pointer;
+  pointer-events: auto;
+  text-decoration: underline;
+  text-underline-offset: 5px;
+  text-decoration-color: var(--ag-border);
+}
+.ag-focus-greeting-doc:hover,
+.ag-focus-greeting-doc[aria-expanded="true"] {
+  color: var(--ag-text);
+  text-decoration-color: currentColor;
+}
+.ag-focus-greeting-doc:focus-visible {
+  outline: 2px solid var(--ag-accent);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+.ag-focus-greeting.ag-leaving .ag-focus-greeting-doc {
+  pointer-events: none;
+}

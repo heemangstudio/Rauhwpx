@@ -51,7 +51,7 @@ export class AboutDialog extends ModalDialog {
     // 제품 영문명
     const titleEn = document.createElement('div');
     titleEn.className = 'about-product-name';
-    titleEn.textContent = 'Rauhwpx';
+    titleEn.textContent = 'HamaEditor';
     body.appendChild(titleEn);
 
     // 제품 한글명
@@ -83,7 +83,7 @@ export class AboutDialog extends ModalDialog {
     notice.className = 'about-notice';
     notice.textContent =
       '본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다. '
-      + 'Rauhwpx는 독립 프로젝트이며 한글과컴퓨터와 무관합니다. 새 문서와 내보내기 기본 형식은 HWPX입니다.';
+      + 'HamaEditor는 독립 프로젝트이며 한글과컴퓨터와 무관합니다. 새 문서와 내보내기 기본 형식은 HWPX입니다.';
     body.appendChild(notice);
 
     // 오픈소스 라이선스

@@ -186,6 +186,9 @@ pub(super) fn parse_hwpx_header_with_margin_units(
                     b"adjustBaselineInFixedLinespacing" => {
                         doc_info.adjust_baseline_in_fixed_line_spacing = true
                     }
+                    b"applyNextspacingOfLastPara" => {
+                        doc_info.apply_next_spacing_of_last_para = true
+                    }
                     b"fontface" => {
                         // <hh:fontface lang="HANGUL"> → 언어 그룹 설정
                         for attr in e.attributes().flatten() {
@@ -259,6 +262,9 @@ pub(super) fn parse_hwpx_header_with_margin_units(
                     b"doNotAlignLastForbidden" => doc_info.do_not_align_last_forbidden = true,
                     b"adjustBaselineInFixedLinespacing" => {
                         doc_info.adjust_baseline_in_fixed_line_spacing = true
+                    }
+                    b"applyNextspacingOfLastPara" => {
+                        doc_info.apply_next_spacing_of_last_para = true
                     }
                     b"beginNum" => parse_begin_num(e, &mut doc_props),
                     b"font" => {

@@ -573,3 +573,45 @@ test('working diff captures table cells, long cell text, images, and paragraph f
     await page.close();
   }
 });
+
+test('compare snapshots keep the engine table boxes and come out the same when built in slices', { timeout: 60_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${baseUrl}/tests/fixtures/version-store-idb.html`);
+    const result = await page.evaluate(async () => {
+      const [{ WasmBridge }, diffEngine, { VERSION_COMPARE_OPTIONS }] = await Promise.all([
+        import('/src/core/wasm-bridge.ts'),
+        import('/src/compare/diff-engine.ts'),
+        import('/src/versioning/snapshot.ts'),
+      ]);
+      const response = await fetch('/samples/k-water-rfp.hwp');
+      const wasm = new WasmBridge();
+      await wasm.initialize();
+      wasm.loadDocument(new Uint8Array(await response.arrayBuffer()), 'k-water-rfp.hwp');
+      try {
+        const options = { ...VERSION_COMPARE_OPTIONS, refreshLayout: false };
+        const whole = diffEngine.buildSnapshotFromWasm(wasm, 'k-water-rfp.hwp', options);
+        const sliced = await diffEngine.buildSnapshotFromWasmInSlices(wasm, 'k-water-rfp.hwp', options, () => true);
+        const tables = whole.controls.filter((control) => control.summary.startsWith('table r='));
+        const boxMismatches = tables.filter((control) => {
+          const ci = Number(control.key.split(':').at(-2));
+          const box = wasm.getTableBBox(control.section, control.paragraph, ci);
+          return !control.summary.includes(` box=${Math.round(box.width)}x${Math.round(box.height)} `);
+        }).map((control) => control.key);
+        return {
+          tableCount: tables.length,
+          boxMismatches,
+          slicedMatches: JSON.stringify(sliced) === JSON.stringify(whole),
+        };
+      } finally {
+        wasm.releaseDocument();
+      }
+    });
+    assert.ok(result.tableCount > 0);
+    assert.deepEqual(result.boxMismatches, []);
+    assert.equal(result.slicedMatches, true);
+  } finally {
+    await page.close();
+  }
+});

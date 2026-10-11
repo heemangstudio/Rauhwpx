@@ -1843,7 +1843,7 @@ def resolve_rhwp_binary(
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return resolved
     raise ValueError(
-        "Copy-layout generation and HWP inspection require the Rauhwpx 'rhwp' "
+        "Copy-layout generation and HWP inspection require the HamaEditor 'rhwp' "
         "binary for native validation; pass --rhwp-bin, "
         "set RHWP_BIN, add rhwp (rhwp.exe on Windows) to PATH, or build it with cargo build"
     )
@@ -2590,7 +2590,7 @@ def parse_args() -> argparse.Namespace:
         "--rhwp-bin",
         type=Path,
         help=(
-            "Rauhwpx CLI path required for generation evidence and HWP input/output "
+            "HamaEditor CLI path required for generation evidence and HWP input/output "
             "(otherwise RHWP_BIN, PATH, or repo build)"
         ),
     )

@@ -90,6 +90,9 @@ mkdirSync(resolve(DIST, 'images'), { recursive: true });
 // [#1444] 다크테마 FOUC 방지 스크립트 (vite publicDir:false 라 개별 복사). 확장 CSP('self')
 // 가 인라인을 금지하므로 viewer.html 의 <script src="/theme-init.js"> 대상 파일을 둔다.
 copy(resolve(ROOT, 'rhwp-studio', 'public', 'theme-init.js'), resolve(DIST, 'theme-init.js'));
+// 부트 화면 스크립트와 로고. viewer.html 의 <script src="/boot-screen.js"> 가 가리킨다.
+copy(resolve(ROOT, 'rhwp-studio', 'public', 'boot-screen.js'), resolve(DIST, 'boot-screen.js'));
+copy(resolve(ROOT, 'rhwp-studio', 'public', 'images', 'boot'), resolve(DIST, 'images', 'boot'));
 // [#3433] 인쇄 surface. print-surface.ts 가 'print.html' 을 확장 루트 기준 상대 경로로
 // 열므로(new URL(surfacePath, baseUrl)) dist 최상위에 있어야 한다. 같은 확장 origin 이라
 // web_accessible_resources 등재는 불필요하다.
@@ -127,6 +130,7 @@ const REQUIRED_DIST_FILES = [
   'viewer.html',
   'print.html', // print-surface.ts 가 확장 루트 기준으로 연다
   'theme-init.js',
+  'boot-screen.js',
   'wasm/rhwp.js',
   'wasm/rhwp_bg.wasm',
 ];

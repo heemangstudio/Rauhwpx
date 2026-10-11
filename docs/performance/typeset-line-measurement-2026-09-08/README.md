@@ -48,7 +48,7 @@ The dedicated `typeset-line-width-bench.mjs` reuses the preview benchmark worklo
 BENCH_STUDIO_ROOT=/absolute/checkout/rhwp/rhwp-studio \
 BENCH_BURSTS=12 BENCH_BURST_SIZE=4 \
 BENCH_SAMPLES=biz_plan.hwp,kps-ai.hwp \
-  node rhwp/rhwp-studio/e2e/typeset-line-width-bench.mjs --label=typeset-run
+  npm --prefix rhwp/rhwp-studio run bench:typeset-line-width -- --label=typeset-run
 ```
 
 ## Native checks

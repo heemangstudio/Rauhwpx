@@ -1,6 +1,6 @@
 # @rhwp/editor
 
-**알(R), 모두의 한글** — 3줄로 HWP 에디터를 웹 페이지에 임베드
+**HamaEditor** — 3줄로 HWP 에디터를 웹 페이지에 임베드
 
 [![npm](https://img.shields.io/npm/v/@rhwp/editor)](https://www.npmjs.com/package/@rhwp/editor)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)

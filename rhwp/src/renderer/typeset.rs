@@ -808,6 +808,9 @@ struct TypesetState {
     /// current_height(=para_start+host_h) 기준으로 환산할 때 감액분으로 쓴다. typeset 예산과
     /// layout(table_partial.rs) 배치가 동일 감액을 적용해 정합한다.
     pre_emitted_host_heights: std::collections::HashMap<usize, f64>,
+    /// 앵커 쪽에 들어가지 않아 새 쪽 상단으로 이월된 문단 기준 자리차지 표 `(문단, 컨트롤)`.
+    /// typeset 예산과 layout 배치가 함께 세로 오프셋을 버린다(PaginationResult 로 전달).
+    fresh_page_float_tables: std::collections::HashSet<(usize, usize)>,
     /// [Task #359] 다음 pi 가 vpos-reset 가드를 발동할 예정 → 현재 pi 의 fit 안전마진 비활성화.
     /// 단독 항목 페이지 발생 차단용.
     skip_safety_margin_once: bool,
@@ -2475,6 +2478,7 @@ impl TypesetState {
             prefilled_paras: std::collections::HashSet::new(),
             pre_emitted_host_paras: std::collections::HashSet::new(),
             pre_emitted_host_heights: std::collections::HashMap::new(),
+            fresh_page_float_tables: std::collections::HashSet::new(),
             skip_safety_margin_once: false,
             skip_footnote_margin_once: false,
             tail_overflow_tolerance_once: 0.0,
@@ -3618,6 +3622,7 @@ impl TypesetEngine {
             hidden_empty_paras: state.hidden_empty_paras,
             pre_emitted_host_paras: state.pre_emitted_host_paras,
             pre_emitted_host_heights: state.pre_emitted_host_heights,
+            fresh_page_float_tables: state.fresh_page_float_tables,
             endnotes: state.endnotes,
             endnote_paragraphs: state.endnote_paragraphs,
             endnote_para_sources: state.endnote_para_sources,
@@ -5880,6 +5885,7 @@ impl TypesetEngine {
             hidden_empty_paras: st.hidden_empty_paras,
             pre_emitted_host_paras: st.pre_emitted_host_paras,
             pre_emitted_host_heights: st.pre_emitted_host_heights,
+            fresh_page_float_tables: st.fresh_page_float_tables,
             endnotes: st.endnotes,
             endnote_paragraphs: st.endnote_paragraphs,
             endnote_para_sources: st.endnote_para_sources,
@@ -19044,6 +19050,8 @@ impl TypesetEngine {
         // 이월이 실제 발생한 경우에만 placement 기준을 fresh page-local current_height 로
         // 재설정한다. #1860 의 budget_para_start_height 는 별도 예산 계약이므로 불변이다.
         let mut placement_para_start_height = para_start_height;
+        let fresh_page_offset_free_table;
+        let mut table = table;
         if st.profile.ms_word_compatible_layout()
             && st.col_count == 1
             && following_flowing_table_needs_fresh_page(
@@ -19057,6 +19065,18 @@ impl TypesetEngine {
         {
             st.advance_column_or_new_page();
             placement_para_start_height = st.current_height;
+            // 문단 기준 세로 오프셋은 앵커 쪽에서만 의미가 있다. 한컴은 앵커 쪽에서
+            // 밀려난 표를 새 쪽 본문 상단에서 시작한다 (ms_word_fresh_page_float_table_offset
+            // pi=3: 28627HU 오프셋 표가 4쪽 본문 상단 89px 에서 시작, 오프셋을 다시 적용하면
+            // 4쪽 위 절반이 비고 한 쪽이 늘어난다). 이하 예산은 오프셋 없는 표로 계산하고,
+            // layout 은 같은 집합을 보고 첫 조각의 오프셋을 버린다.
+            if signed_hwpunit(table.common.vertical_offset) > 0 {
+                st.fresh_page_float_tables.insert((para_idx, ctrl_idx));
+                let mut offset_free = table.clone();
+                offset_free.common.vertical_offset = 0;
+                fresh_page_offset_free_table = offset_free;
+                table = &fresh_page_offset_free_table;
+            }
         }
         if is_para_topbottom_float(&table.common)
             && matches!(
@@ -25593,20 +25613,9 @@ mod tests {
 
     /// 실제 HWP 파일로 기존 Paginator와 TypesetEngine 결과 비교
     fn compare_with_hwp_file(path: &str) {
-        let data = match std::fs::read(path) {
-            Ok(d) => d,
-            Err(_) => {
-                eprintln!("skip: {} not found", path);
-                return;
-            }
-        };
-        let doc = match crate::document_core::DocumentCore::from_bytes(&data) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("skip: {} parse error: {}", path, e);
-                return;
-            }
-        };
+        let data = std::fs::read(path).unwrap_or_else(|e| panic!("{path} 읽기 실패: {e}"));
+        let doc = crate::document_core::DocumentCore::from_bytes(&data)
+            .unwrap_or_else(|e| panic!("{path} 파싱 실패: {e}"));
 
         let engine = TypesetEngine::with_default_dpi();
 
@@ -25674,13 +25683,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn test_typeset_vs_paginator_p222() {
-        // p222.hwp sec2는 표가 많아 Phase 2 전환 전까지 차이 발생 가능
-        // Phase 1에서는 비-표 문단만 검증
-        compare_with_hwp_file("samples/p222.hwp");
     }
 
     #[test]

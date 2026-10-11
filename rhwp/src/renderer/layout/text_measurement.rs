@@ -5660,13 +5660,21 @@ mod tests {
         assert!(runtime::char_advance("바탕", false, false, '\u{10ffff}').is_none());
         runtime::clear();
         runtime::register(&light, &["바탕".to_owned()], false, false).unwrap();
+        // 함초롬돋움이 그리지 못하는 누락 글자는 generic 폴백의 등록 face 를 쓴다.
+        let generic_only = '┌';
+        assert!(runtime::char_advance("바탕", false, false, generic_only).is_none());
+        assert_eq!(measure(FontMetricsPolicy::HcrDeclared, generic_only), None);
+        // 글자꼴 기호(U+2100-214F)의 누락 글자는 한컴처럼 함초롬돋움 폭(0.97em)으로 잰다.
         assert!(runtime::char_advance("바탕", false, false, '™').is_none());
-        assert_eq!(measure(FontMetricsPolicy::HcrDeclared, '™'), None);
-        runtime::register(&regular, &["한컴바탕".to_owned()], false, false).unwrap();
-        assert!(runtime::char_advance("한컴바탕", false, false, '™').is_some());
         assert_eq!(
             measure(FontMetricsPolicy::HcrDeclared, '™'),
-            Some(actual(&regular, '™'))
+            Some(quantize_hwp_px(0.97 * size))
+        );
+        runtime::register(&regular, &["한컴바탕".to_owned()], false, false).unwrap();
+        assert!(runtime::char_advance("한컴바탕", false, false, generic_only).is_some());
+        assert_eq!(
+            measure(FontMetricsPolicy::HcrDeclared, generic_only),
+            Some(actual(&regular, generic_only))
         );
         // 누락 글자의 generic 폴백이 생겨도 원본에 있는 글자는 원본 face를 유지한다.
         assert_eq!(

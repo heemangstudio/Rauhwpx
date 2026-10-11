@@ -804,11 +804,22 @@ fn row_cut_unit_overflows(h: f64, fit_h: f64, avail: f64) -> bool {
 ///
 /// 조각이 저장 쪽 경계 직전 줄에서 끝나면 그 줄 간격(`trailing_trim`)은 조각에
 /// 필요 없다. 경계를 넘어 다음 줄이 같은 조각에 이어지면 간격을 그대로 둔다.
-fn cell_units_span_height(units: &[CellUnit], start: usize, end: usize) -> f64 {
+/// `applyNextspacingOfLastPara` 문서(`styles` 플래그)는 쪽 끝 조각도 마지막 줄 간격을
+/// 셀 안에 그린다 — 맞춤 판정은 여전히 간격 없이 한다 (MS Word 호환 보고서 1·2·4·5쪽:
+/// 한컴 조각 하단이 저장 쪽 경계 줄 상자보다 줄 간격만큼 아래).
+fn cell_units_span_height(
+    units: &[CellUnit],
+    start: usize,
+    end: usize,
+    styles: &ResolvedStyleSet,
+) -> f64 {
     if end <= start {
         return 0.0;
     }
     let sum: f64 = units[start..end].iter().map(|unit| unit.height).sum();
+    if styles.apply_next_spacing_of_last_para {
+        return sum;
+    }
     (sum - units[end - 1].trailing_trim).max(0.0)
 }
 
@@ -10356,7 +10367,7 @@ impl LayoutEngine {
                 .copied()
                 .unwrap_or(units.len())
                 .clamp(su, units.len());
-            let content: f64 = cell_units_span_height(&units, su, eu)
+            let content: f64 = cell_units_span_height(&units, su, eu, styles)
                 + if eu > su {
                     continuation_repeat_header_height(&units, su)
                 } else {
@@ -10403,7 +10414,7 @@ impl LayoutEngine {
         let su = start_unit.min(units.len());
         let eu = end_unit.clamp(su, units.len());
         let (visible_start, visible_end) = continuation_visible_unit_bounds(&units, su, eu);
-        let content: f64 = cell_units_span_height(&units, visible_start, visible_end)
+        let content: f64 = cell_units_span_height(&units, visible_start, visible_end, styles)
             + if visible_end > visible_start {
                 continuation_repeat_header_height(&units, visible_start)
             } else {
@@ -10516,7 +10527,7 @@ impl LayoutEngine {
                     hi -= 1;
                 }
             }
-            let content: f64 = cell_units_span_height(&units, lo, hi)
+            let content: f64 = cell_units_span_height(&units, lo, hi, styles)
                 + if hi > lo {
                     continuation_repeat_header_height(&units, lo)
                 } else {
@@ -11280,7 +11291,7 @@ impl LayoutEngine {
                     visible_end,
                 )
             };
-            let content: f64 = cell_units_span_height(&units, visible_start, visible_end)
+            let content: f64 = cell_units_span_height(&units, visible_start, visible_end, styles)
                 + mixed_nested_extra
                 + if visible_end > visible_start {
                     continuation_repeat_header_height(&units, visible_start)

@@ -1,0 +1,45 @@
+/* 부트 화면 — 픽셀 로고 하나. 정수 배율로만 키워야 픽셀이 흐려지지 않는다. */
+
+#boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  background: var(--n-canvas);
+  transition: opacity 240ms ease-out;
+  user-select: none;
+}
+
+#boot-screen[hidden] {
+  display: none;
+}
+
+#boot-screen.boot-screen-leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#boot-screen-logo {
+  width: 352px;
+  height: 144px;
+  image-rendering: pixelated;
+  -webkit-user-drag: none;
+}
+
+#boot-screen-logo:not([src]) {
+  visibility: hidden;
+}
+
+@media (max-width: 400px) {
+  #boot-screen-logo {
+    width: 264px;
+    height: 108px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #boot-screen {
+    transition: none;
+  }
+}

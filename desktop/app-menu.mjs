@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Menu, clipboard, ipcMain } from 'electron';
+import { PRODUCT_NAME } from './app-identity.mjs';
 import { documentEditMenuItem } from './edit-menu.mjs';
 import { deliverPlainTextPaste } from './plain-text-paste.mjs';
 
@@ -186,7 +187,7 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
       {
         role: 'help',
         submenu: [{
-          label: `${app.getName()} 정보`,
+          label: `${PRODUCT_NAME} 정보`,
           // 네이티브 about 패널은 "Electron 43.x" 만 보인다 — 렌더러의 제품 정보
           // 다이얼로그(앱 이름·버전·라이선스)를 연다.
           click: (_menuItem, browserWindow) => {
@@ -202,7 +203,7 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
     return;
   }
 
-  const appName = app.name;
+  const appName = PRODUCT_NAME;
   const models = new Map();
   let built = { ownerId: -1, model: undefined };
 

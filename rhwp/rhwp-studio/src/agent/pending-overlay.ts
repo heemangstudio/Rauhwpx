@@ -174,6 +174,14 @@ function cellAxisPathAt(cell: CellAddr, paraIdx: number): string {
   return JSON.stringify([{ controlIndex: cell.controlIdx, cellIndex: cell.cellIdx, cellParaIndex: paraIdx }]);
 }
 
+export interface PendingOverlayDeps {
+  /** 그릴 캔버스. null 이면 문서가 화면 밖이다 — setCanvasView 로 바꾼다. */
+  canvasView: CanvasView | null;
+  wasm: WasmBridge;
+  eventBus: EventBus;
+  getCaretPosition: () => DocumentPosition | null;
+}
+
 /**
  * 에이전트 대기 편집(pending edit)을 표시하는 오버레이.
  * replace 는 view-only exact diff 로 쪼개고, 나머지 op 는 기존 범위 렌더링을 유지한다.
@@ -205,10 +213,12 @@ export class PendingOverlayRenderer {
   private renderRafId: number | null = null;
   /** Avoid four CSS declarations per node when a projection event leaves a rect unchanged. */
   private positionedNodes = new Map<HTMLDivElement, string>();
+  private keyListening = false;
   // 파라미터 프로퍼티 대신 명시적 할당 (node --test strip-only 모드 호환).
-  private deps: { canvasView: CanvasView; wasm: WasmBridge; eventBus: EventBus; getCaretPosition: () => DocumentPosition | null };
+  private deps: PendingOverlayDeps;
 
-  constructor(deps: { canvasView: CanvasView; wasm: WasmBridge; eventBus: EventBus; getCaretPosition: () => DocumentPosition | null }) {
+  /** canvasView 가 null 이면 문서가 화면 밖이다 — op 만 기억하고 DOM 에는 그리지 않는다. */
+  constructor(deps: PendingOverlayDeps) {
     this.deps = deps;
     this.markerLayer = document.createElement('div');
     this.markerLayer.className = 'ag-pending-layer ag-pending-marker-layer';
@@ -251,7 +261,43 @@ export class PendingOverlayRenderer {
     // highlights in the composited layer.
     this.unsubs.push(deps.eventBus.on('viewport-scroll', () => this.projectNow()));
     this.unsubs.push(deps.eventBus.on('cursor-rect-updated', () => this.inspectCaret()));
-    document.addEventListener('keydown', this.onKeyDown, true);
+    if (deps.canvasView) this.listenKeys(true);
+  }
+
+  /**
+   * 오버레이를 캔버스에 붙이거나(view) 뗀다(null). 떼면 표시·팝오버·전역 리스너를 모두 걷고
+   * op 은 그대로 둔다 — 다시 붙으면 그동안 쌓인 대기 편집을 새 기하로 다시 그린다.
+   */
+  setCanvasView(canvasView: CanvasView | null): void {
+    if (this.deps.canvasView === canvasView) return;
+    this.deps.canvasView = canvasView;
+    this.geometryDirty = true;
+    this.cachedExact = null;
+    this.cachedLegacy = null;
+    if (canvasView) {
+      this.listenKeys(true);
+      this.scheduleRender();
+      return;
+    }
+    this.listenKeys(false);
+    if (this.renderRafId !== null) {
+      cancelAnimationFrame(this.renderRafId);
+      this.renderRafId = null;
+    }
+    this.detachInteractionRoot();
+    this.hoverKey = null;
+    this.pinnedKey = null;
+    this.hidePopover();
+    this.hitRegions = [];
+    this.dropAllNodes();
+    this.markerLayer.remove();
+  }
+
+  private listenKeys(on: boolean): void {
+    if (this.keyListening === on) return;
+    this.keyListening = on;
+    if (on) document.addEventListener('keydown', this.onKeyDown, true);
+    else document.removeEventListener('keydown', this.onKeyDown, true);
   }
 
   setOps(ops: OverlayOp[]): void {
@@ -295,7 +341,7 @@ export class PendingOverlayRenderer {
    * 이벤트마다 wasm rect 프로브·DOM 재조정을 반복하지 않는다.
    */
   private scheduleRender(): void {
-    if (this.renderRafId !== null) return;
+    if (this.renderRafId !== null || !this.deps.canvasView) return;
     if (typeof requestAnimationFrame !== 'function') {
       this.render();
       return;
@@ -314,6 +360,7 @@ export class PendingOverlayRenderer {
    * 에이전트 편집 버스트 코얼레싱(문서 변이 이벤트)을 되돌리지 않는다.
    */
   private projectNow(): void {
+    if (!this.deps.canvasView) return;
     if (this.geometryDirty || !this.cachedExact || !this.cachedLegacy) {
       this.scheduleRender();
       return;
@@ -328,7 +375,7 @@ export class PendingOverlayRenderer {
       cancelAnimationFrame(this.renderRafId);
       this.renderRafId = null;
     }
-    document.removeEventListener('keydown', this.onKeyDown, true);
+    this.listenKeys(false);
     this.detachInteractionRoot();
     this.ops = [];
     this.diffCache.clear();
@@ -369,11 +416,12 @@ export class PendingOverlayRenderer {
 
   /** 가상 스크롤이 아직 모르는 페이지(변이 직후 새로 생긴 페이지)는 null — 그리지 않는다. */
   private pagePosition(
+    canvasView: CanvasView,
     rect: SelectionRect,
     contentWidth: number,
     zoom: number,
   ): { left: number; top: number; width: number; height: number } | null {
-    const vs = this.deps.canvasView.getVirtualScroll();
+    const vs = canvasView.getVirtualScroll();
     if (rect.pageIndex >= vs.pageCount) return null;
     const pl = vs.getPageLeft(rect.pageIndex);
     const pageLeft = pl >= 0 ? pl : (contentWidth - vs.getPageWidth(rect.pageIndex)) / 2;
@@ -622,10 +670,10 @@ export class PendingOverlayRenderer {
    * paint, and GPU surface memory. Keep one adjacent row as a scroll cushion so
    * fast trackpad movement never reveals a blank frame.
    */
-  private renderablePages(): Set<number> {
-    const viewport = this.deps.canvasView.getViewportManager();
+  private renderablePages(canvasView: CanvasView): Set<number> {
+    const viewport = canvasView.getViewportManager();
     const size = viewport.getViewportSize();
-    const virtualScroll = this.deps.canvasView.getVirtualScroll();
+    const virtualScroll = canvasView.getVirtualScroll();
     const window = virtualScroll.getPageWindow(
       viewport.getScrollY(),
       Math.max(size.height, 1),
@@ -674,6 +722,8 @@ export class PendingOverlayRenderer {
   }
 
   private render(): void {
+    const canvasView = this.deps.canvasView;
+    if (!canvasView) return;
     const scrollContent = document.getElementById('scroll-content');
     if (!scrollContent) return;
     this.ensureAttached(scrollContent);
@@ -682,9 +732,9 @@ export class PendingOverlayRenderer {
       this.recomputeGeometry();
     }
 
-    const zoom = this.deps.canvasView.getViewportManager().getZoom();
+    const zoom = canvasView.getViewportManager().getZoom();
     const contentWidth = scrollContent.clientWidth;
-    const renderablePages = this.renderablePages();
+    const renderablePages = this.renderablePages(canvasView);
     this.hitRegions = [];
     const desired = new Set<string>();
 
@@ -693,7 +743,7 @@ export class PendingOverlayRenderer {
       if (op.kind === 'remove') {
         const rect = rects[0];
         if (!rect || !renderablePages.has(rect.pageIndex)) continue;
-        const pos = this.pagePosition(rect, contentWidth, zoom);
+        const pos = this.pagePosition(canvasView, rect, contentWidth, zoom);
         if (!pos) continue;
         const key = this.legacyNodeKey(op, 0);
         desired.add(key);
@@ -715,7 +765,7 @@ export class PendingOverlayRenderer {
       }
       rects.forEach((rect, rectIdx) => {
         if (!renderablePages.has(rect.pageIndex)) return;
-        const pos = this.pagePosition(rect, contentWidth, zoom);
+        const pos = this.pagePosition(canvasView, rect, contentWidth, zoom);
         if (!pos) return;
         const key = this.legacyNodeKey(op, rectIdx);
         desired.add(key);
@@ -740,7 +790,7 @@ export class PendingOverlayRenderer {
 
     for (const visual of this.cachedExact!) {
       if (!renderablePages.has(visual.rect.pageIndex)) continue;
-      const pos = this.pagePosition(visual.rect, contentWidth, zoom);
+      const pos = this.pagePosition(canvasView, visual.rect, contentWidth, zoom);
       if (!pos) continue;
       desired.add(visual.nodeKey);
       if (visual.anchor) {
@@ -781,6 +831,7 @@ export class PendingOverlayRenderer {
     this.cachedEnters.forEach((mark, index) => {
       if (!renderablePages.has(mark.pageIndex)) return;
       const pos = this.pagePosition(
+        canvasView,
         { pageIndex: mark.pageIndex, x: mark.x, y: mark.y, width: 0, height: mark.height },
         contentWidth,
         zoom,
@@ -880,6 +931,7 @@ export class PendingOverlayRenderer {
   }
 
   private inspectCaret(): void {
+    if (!this.deps.canvasView) return;
     const position = this.deps.getCaretPosition();
     const hit = position
       ? this.hitRegions.find((region) => region.range !== undefined && this.caretInRange(position, region.range))

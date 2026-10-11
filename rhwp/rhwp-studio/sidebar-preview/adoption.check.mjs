@@ -1,0 +1,252 @@
+// 새로고침 뒤 허브의 채팅을 이 화면에 다시 붙이는 길(S2)에서 턴의 끝을 잃거나 엉뚱한 채팅에 붙이지 않는지
+// 실제 사이드바와 가짜 브리지로 본다 — welcome 앞에 다시 보낸 턴의 끝, 붙이기 전에 온 이벤트, 다시 보내지
+// 않은 끝, 다시 잡은 턴의 늦은 끝.
+// 혼자 돌릴 때: node sidebar-preview/adoption.check.mjs (CHROME_PATH 필요, standalone.mjs 가 자기 Vite 서버를 띄운다).
+import assert from 'node:assert/strict';
+import { isMainModule, runStandalone } from './standalone.mjs';
+
+const WORKING_CHAT = 'preview-chat-schedule';
+const MARKER = `${WORKING_CHAT}-turn-1`;
+
+async function open(page, origin, query) {
+  await page.goto(`${origin}/?reset=1&theme=light&width=480&${query}`, { waitUntil: 'networkidle0' });
+  await page.waitForFunction(() => window.sidebarPreview);
+  await page.evaluate(() => window.sidebarPreview.sidebar.startupChatSettled());
+}
+
+const state = (page) => page.evaluate(() => {
+  const preview = window.sidebarPreview;
+  const threadId = preview.sidebar.currentThreadId();
+  const thread = threadId ? preview.threadStore.getThread(threadId) : null;
+  return {
+    threadId,
+    markers: (thread?.messages ?? []).filter((message) => message.kind === 'turn')
+      .map((marker) => ({ id: marker.messageId, outcome: marker.outcome, ended: marker.endedAt !== null, interruption: marker.interruption ?? null })),
+    notices: [...document.querySelectorAll('.ag-failure-notice .ag-failure-title')].map((node) => node.textContent),
+    rows: [...document.querySelectorAll('.ag-turn-interrupted-text')].map((node) => node.textContent),
+    folds: [...document.querySelectorAll('.ag-messages > .ag-turn-fold:not([hidden]) .ag-turn-fold-toggle')]
+      .map((node) => node.getAttribute('title') ?? node.textContent),
+    toolRows: document.querySelectorAll('.ag-messages .ag-tool-row, .ag-messages .ag-tool').length,
+    messagesText: document.querySelector('.ag-messages')?.textContent ?? '',
+  };
+});
+
+async function waitFor(page, predicate, arg, message) {
+  try {
+    await page.waitForFunction(predicate, { timeout: 8000 }, arg);
+  } catch (error) {
+    throw new Error(`${message}: ${JSON.stringify(await state(page))}`, { cause: error });
+  }
+}
+
+export async function checkAdoptionPreview(page, origin) {
+  // 1. 새로고침 사이에 실패로 끝난 턴: 허브가 welcome 앞에 다시 보낸 끝이 빈 시작 초안에 그려지지 않고, 다시
+  //    붙인 채팅에서 실패로 정착하며 실패 알림도 그 채팅에 남는다.
+  await open(page, origin, 'chats=sample&reload=failed');
+  await waitFor(page, (id) => window.sidebarPreview.sidebar.currentThreadId() === id, WORKING_CHAT,
+    'the chat whose turn failed during the reload was not restored');
+  await waitFor(page, () => document.querySelector('.ag-failure-notice'), undefined, 'no failure notice in the restored chat');
+  let s = await state(page);
+  assert.deepEqual(s.markers.find((marker) => marker.id === MARKER), { id: MARKER, outcome: 'failed', ended: true, interruption: null });
+  assert.equal(s.notices.length, 1, `one failure notice: ${JSON.stringify(s.notices)}`);
+  assert.deepEqual(s.rows, [], 'a failed turn is not an interruption');
+
+  // 2. 새로고침 사이에 끝까지 간 턴: 끊긴 턴이 아니라 끝난 턴으로 정착하고 접힌다.
+  await open(page, origin, 'chats=sample&reload=ended');
+  await waitFor(page, (id) => window.sidebarPreview.sidebar.currentThreadId() === id
+    && document.querySelector('.ag-messages > .ag-turn-fold:not([hidden])'), WORKING_CHAT, 'the ended turn was not folded');
+  s = await state(page);
+  assert.deepEqual(s.markers.find((marker) => marker.id === MARKER), { id: MARKER, outcome: 'completed', ended: true, interruption: null });
+  assert.deepEqual(s.rows, []);
+  assert.ok(s.folds.length === 1 && s.folds[0].startsWith('작업'), `the turn folds as completed: ${JSON.stringify(s.folds)}`);
+
+  // 2b. 새로고침 사이에 프로바이더 오류를 내고 끝난 턴 — 허브가 그 오류와, 실패를 싣지 않은 끝을 다시 보낸다.
+  //     다시 흘려보낸 오류도 그 턴의 것이다: 끝난 턴이 아니라 실패한 턴으로 정착하고 알림이 남는다.
+  await open(page, origin, 'chats=sample&reload=ended-error');
+  await waitFor(page, (id) => window.sidebarPreview.sidebar.currentThreadId() === id
+    && document.querySelector('.ag-failure-notice'), WORKING_CHAT, 'the replayed error left no notice');
+  s = await state(page);
+  assert.deepEqual(s.markers.find((marker) => marker.id === MARKER), { id: MARKER, outcome: 'failed', ended: true, interruption: null },
+    'the replayed error makes the replayed end a failure');
+  assert.deepEqual(s.rows, []);
+
+  // 3. 문서가 열리기 전에 온 이벤트: 초안에는 그리지 않고, 그 채팅을 붙이면 빠짐없이 그린다.
+  await open(page, origin, 'chats=sample&reload=running&document=empty');
+  await page.evaluate(() => {
+    const stream = window.sidebarPreview.streamEvent;
+    stream({ type: 'tool-call', agent: 'claude', callId: 'gap-1', tool: 'mcp__rhwp__get_structure', argsJson: '{}' });
+    stream({ type: 'tool-result', agent: 'claude', callId: 'gap-1', ok: true, resultPreview: '구역 1개 · 문단 42개' });
+    stream({ type: 'text-delta', agent: 'claude', text: '틈에 쓴 답의 첫 문장입니다. ' });
+    stream({ type: 'text-delta', agent: 'claude', text: '이어지는 문장입니다.\n\n' });
+  });
+  s = await state(page);
+  assert.equal(s.threadId, null, 'the draft stays empty while the chat waits for its document');
+  assert.ok(!s.messagesText.includes('틈에 쓴 답'), 'nothing from the unbound chat is drawn on the draft');
+  await page.select('#document', 'proposal');
+  await waitFor(page, (id) => window.sidebarPreview.sidebar.currentThreadId() === id, WORKING_CHAT, 'the chat was not adopted when its document opened');
+  await waitFor(page, () => document.querySelector('.ag-messages')?.textContent.includes('틈에 쓴 답의 첫 문장입니다. 이어지는 문장입니다.'),
+    undefined, 'the answer streamed before the adoption is missing');
+  await page.evaluate(() => window.sidebarPreview.finishTurn());
+  await waitFor(page, () => document.querySelector('.ag-messages > .ag-turn-fold:not([hidden])'), undefined, 'the adopted turn did not fold');
+  const tools = await page.evaluate((id) => window.sidebarPreview.threadStore.getThread(id).messages
+    .filter((message) => message.kind === 'activity').flatMap((message) => message.tools.map((tool) => tool.callId)), WORKING_CHAT);
+  assert.ok(tools.includes('gap-1'), `the tool call made before the adoption is recorded: ${JSON.stringify(tools)}`);
+
+  // 3b. 붙이기 전에 쌓인 이벤트가 많아도 화면이 멈추지 않는다 — 나눠 그리는 사이 다른 일(타이머·입력)이 돌고,
+  //     그 사이 온 이벤트는 순서를 지켜 뒤에 그려진다.
+  await open(page, origin, 'chats=sample&reload=running&document=empty');
+  const HELD = 300;
+  await page.evaluate((count) => {
+    const stream = window.sidebarPreview.streamEvent;
+    for (let i = 0; i < count; i += 1) {
+      stream({ type: 'tool-call', agent: 'claude', callId: `held-${i}`, tool: 'mcp__rhwp__apply_edits', argsJson: JSON.stringify({ expectedRevision: i, edits: [{ op: 'replace_text', sectionIdx: 0, paraIdx: i % 40, text: 'x'.repeat(500) }] }) });
+      stream({ type: 'tool-result', agent: 'claude', callId: `held-${i}`, ok: true, resultPreview: '적용됨' });
+      stream({ type: 'text-delta', agent: 'claude', text: `문단 ${i}을 고쳤습니다. ` });
+    }
+    window.__replayTicks = [];
+    window.__replayTimer = setInterval(() => window.__replayTicks.push(document.querySelectorAll('.ag-messages .ag-tool-row').length), 5);
+  }, HELD);
+  await page.select('#document', 'proposal');
+  await page.evaluate(() => window.sidebarPreview.streamEvent({ type: 'text-delta', agent: 'claude', text: '마지막 문장입니다.' }));
+  await waitFor(page, (count) => document.querySelectorAll('.ag-messages .ag-tool-row').length >= count, HELD,
+    'the held tool calls were not all drawn');
+  const ticks = await page.evaluate(() => {
+    clearInterval(window.__replayTimer);
+    return window.__replayTicks;
+  });
+  assert.ok(ticks.some((rows) => rows > 2 && rows < HELD),
+    `timers ran while the held events were drawn (the page did not freeze): ${JSON.stringify(ticks.slice(0, 20))}`);
+  await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+  await waitFor(page, () => document.querySelector('.ag-messages > .ag-turn-fold:not([hidden])'), undefined, 'the replayed turn did not fold');
+  const replayed = await page.evaluate((id) => {
+    const messages = window.sidebarPreview.threadStore.getThread(id).messages;
+    return {
+      rows: document.querySelectorAll('.ag-messages .ag-tool-row').length,
+      // 저장된 채팅은 마지막 200개 메시지만 남긴다 — 마지막 도구가 차례대로 남았는지 본다.
+      lastTools: messages.filter((message) => message.kind === 'activity').flatMap((message) => message.tools.map((tool) => tool.callId))
+        .slice(-3),
+      answer: messages.filter((message) => message.role === 'assistant' && !message.kind).at(-1)?.text ?? '',
+    };
+  }, WORKING_CHAT);
+  assert.equal(replayed.rows, HELD + 2, 'every held tool call is drawn once (plus the two from before the reload)');
+  assert.deepEqual(replayed.lastTools, [`held-${HELD - 3}`, `held-${HELD - 2}`, `held-${HELD - 1}`]);
+  assert.ok(replayed.answer.endsWith('마지막 문장입니다.'), `the live text that arrived mid-replay comes last: ${replayed.answer.slice(-60)}`);
+
+  // 4. 끊긴 사이에 끝났는데 허브가 그 끝을 다시 보내지 않은 턴: 다시 붙으면 열린 표식을 중단으로 정착한다.
+  await open(page, origin, 'scenario=chat&hold=1');
+  await page.click('#play');
+  await waitFor(page, () => window.sidebarPreview.snapshot().running && document.querySelector('.ag-messages .ag-activity'),
+    undefined, 'the held turn did not start');
+  await page.evaluate(() => window.sidebarPreview.loseTurnEnd());
+  await waitFor(page, () => {
+    const id = window.sidebarPreview.sidebar.currentThreadId();
+    const markers = window.sidebarPreview.threadStore.getThread(id).messages.filter((message) => message.kind === 'turn');
+    return markers.at(-1)?.endedAt !== null;
+  }, undefined, 'the turn whose end was lost stayed open');
+  s = await state(page);
+  assert.equal(s.markers.at(-1).outcome, 'interrupted');
+
+  // 5. 다시 잡은 턴(T)의 늦은 끝은 그 뒤에 연 다른 채팅(X)의 열린 표식을 정착하지 않는다.
+  await open(page, origin, 'chats=sample&reload=running');
+  await waitFor(page, (id) => window.sidebarPreview.sidebar.currentThreadId() === id
+    && window.sidebarPreview.bridge.isTurnRunning(), WORKING_CHAT, 'the running chat was not adopted');
+  await page.evaluate(() => {
+    const preview = window.sidebarPreview;
+    preview.setLateTurnEnd(true);
+    const base = preview.threadStore.getThread('preview-chat-overview');
+    const now = Date.now();
+    preview.threadStore.upsertThread({
+      ...base,
+      id: 'preview-chat-x',
+      title: '다른 창에서 도는 채팅',
+      messages: [
+        { role: 'user', text: '다른 창에서 보낸 요청' },
+        { role: 'system', kind: 'turn', messageId: 'x-marker', startedAt: now - 5_000, endedAt: null, outcome: null, text: '', hubTurnId: 'x-turn' },
+      ],
+    });
+    // 다른 창이 그 채팅의 턴을 돌리고 있다(심장박동) — 열 때 끊긴 것으로 보지 않는다.
+    preview.chatStatus.markChatWorking('preview-chat-x');
+    preview.sidebar.openThreadById('preview-chat-x');
+  });
+  await waitFor(page, () => window.sidebarPreview.sidebar.currentThreadId() === 'preview-chat-x'
+    && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true', undefined, 'X did not open');
+  await page.evaluate(() => window.sidebarPreview.streamEvent({
+    type: 'turn-end', agent: 'claude', turnId: 'preview-turn', stopReason: 'interrupted',
+  }));
+  await new Promise((done) => setTimeout(done, 200));
+  const after = await page.evaluate(() => {
+    const store = window.sidebarPreview.threadStore;
+    const marker = (id, markerId) => store.getThread(id).messages.find((message) => message.kind === 'turn' && message.messageId === markerId);
+    return { x: marker('preview-chat-x', 'x-marker'), t: marker('preview-chat-schedule', 'preview-chat-schedule-turn-1') };
+  });
+  assert.equal(after.x.endedAt, null, 'the late end of T does not settle X');
+  assert.equal(after.t.outcome, 'interrupted', 'T settled when it was stopped');
+
+  /** 저장된 채팅에 대기열을 심어 두고 새로고침한다(chats=sample 없이 — 심은 것이 남는다). */
+  const reloadWithQueue = async (hold, query, openTurn = false) => {
+    await open(page, origin, 'chats=sample&document=empty');
+    await page.evaluate((stored, withOpenTurn) => {
+      const preview = window.sidebarPreview;
+      const thread = preview.threadStore.getThread('preview-chat-schedule');
+      preview.threadStore.upsertThread({
+        ...thread,
+        // 그 턴이 시작될 때 옛 페이지가 남긴 열린 표식(주인 모름).
+        messages: withOpenTurn
+          ? [...thread.messages, { role: 'system', kind: 'turn', messageId: 'open-turn', startedAt: Date.now() - 30_000, endedAt: null, outcome: null, text: '' }]
+          : thread.messages,
+        followUps: { items: [{ id: 'held-1', text: '표 머리글도 굵게 해 주세요.', createdAt: Date.now() }], ...(stored ? { hold: stored } : {}) },
+      });
+      return preview.threadStore.waitForThreadsPersistence();
+    }, hold, openTurn);
+    await page.goto(`${origin}/?theme=light&width=480&${query}`, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(() => window.sidebarPreview);
+    await page.evaluate(() => window.sidebarPreview.sidebar.startupChatSettled());
+  };
+  const queue = () => page.evaluate(() => ({
+    hold: document.querySelector('.ag-followups')?.dataset.hold ?? null,
+    sent: window.sidebarPreview.snapshot().messageTexts,
+  }));
+
+  // 6. 새로고침 전에 사용자가 멈춘 대기열은 다시 잡은 턴이 끝나도 저절로 나가지 않는다.
+  await reloadWithQueue({ reason: 'stopped', at: Date.now() }, 'reload=running');
+  await waitFor(page, (id) => window.sidebarPreview.sidebar.currentThreadId() === id
+    && window.sidebarPreview.bridge.isTurnRunning(), WORKING_CHAT, 'the running chat was not adopted');
+  assert.equal((await queue()).hold, 'stopped', 'adopting the live turn keeps the stop the user made');
+  await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+  await waitFor(page, () => !window.sidebarPreview.snapshot().running, undefined, 'the adopted turn did not end');
+  await new Promise((done) => setTimeout(done, 200));
+  assert.deepEqual(await queue(), { hold: 'stopped', sent: [] }, 'nothing is sent after the adopted turn ends');
+  // 붙잡음 없이 저장된 대기열(창을 닫을 때 '끊김')은 다시 잡은 턴이 끝나면 보통대로 나간다.
+  await reloadWithQueue(null, 'reload=running');
+  await waitFor(page, (id) => window.sidebarPreview.sidebar.currentThreadId() === id
+    && window.sidebarPreview.bridge.isTurnRunning(), WORKING_CHAT, 'the running chat was not adopted');
+  assert.equal((await queue()).hold, null);
+  await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+  await waitFor(page, () => window.sidebarPreview.snapshot().messageTexts.includes('표 머리글도 굵게 해 주세요.'),
+    undefined, 'the queue did not drain after the adopted turn');
+
+  // 7. 새로고침 사이에 실패로 끝난 턴인데 그 채팅을 다시 붙이지 않았다(문서가 열려 있지 않다) — 그 실패는
+  //    그 채팅에 알림으로 남고, 대기열은 그 이유로 붙잡히며, 채팅 목록에 오류로 선다.
+  await reloadWithQueue(null, 'reload=failed&document=empty', true);
+  assert.notEqual(await page.evaluate(() => window.sidebarPreview.sidebar.currentThreadId()), WORKING_CHAT);
+  const stored = await page.evaluate((id) => {
+    const thread = window.sidebarPreview.threadStore.getThread(id);
+    return {
+      notices: thread.messages.filter((message) => message.kind === 'error').map((message) => message.failure.class),
+      hold: thread.followUps?.hold ?? null,
+      marker: thread.messages.filter((message) => message.kind === 'turn').at(-1)?.outcome ?? null,
+    };
+  }, WORKING_CHAT);
+  assert.equal(stored.marker, 'failed');
+  assert.deepEqual(stored.notices, ['network'], 'the failure notice is kept in its chat');
+  assert.equal(stored.hold?.reason, 'failed');
+  assert.match(stored.hold?.detail ?? '', /연결 실패/);
+  assert.deepEqual(await page.evaluate((id) => {
+    const status = window.sidebarPreview.chatStatus;
+    return [status.getChatStatus(id), status.getChatStatusLabel(id)];
+  }, WORKING_CHAT), ['failed', '연결 실패'], 'the chat list shows it failed and why');
+}
+
+if (isMainModule(import.meta)) {
+  await runStandalone('adoption', checkAdoptionPreview);
+}

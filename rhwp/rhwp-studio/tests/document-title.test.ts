@@ -9,7 +9,7 @@ test('파일명과 설치형 표시 모드 전환에 맞춰 제목을 갱신한�
   media.matches = false;
   const visibleTitle = { textContent: '', title: '', hidden: true };
   const pageDocument = {
-    title: 'Rauhwpx',
+    title: 'HamaEditor',
     getElementById: (id: string) => id === 'editor-document-title' ? visibleTitle : null,
   };
   let loaded = false;
@@ -22,12 +22,12 @@ test('파일명과 설치형 표시 모드 전환에 맞춰 제목을 갱신한�
   Object.defineProperty(globalThis, 'document', { configurable: true, value: pageDocument });
   try {
     installDocumentTitle(bridge);
-    assert.equal(pageDocument.title, 'Rauhwpx', '문서 없는 상태는 기본 제목');
+    assert.equal(pageDocument.title, 'HamaEditor', '문서 없는 상태는 기본 제목');
     assert.equal(visibleTitle.hidden, true);
     loaded = true;
     bridge.fileName = '검토 <원본> & 001.hwp';
     bridge.onFileNameChanged?.(bridge.fileName);
-    assert.equal(pageDocument.title, '검토 <원본> & 001.hwp - Rauhwpx');
+    assert.equal(pageDocument.title, '검토 <원본> & 001.hwp - HamaEditor');
     assert.equal(visibleTitle.textContent, bridge.fileName);
     assert.equal(visibleTitle.title, bridge.fileName);
     assert.equal(visibleTitle.hidden, false);
@@ -40,10 +40,10 @@ test('파일명과 설치형 표시 모드 전환에 맞춰 제목을 갱신한�
     assert.equal(visibleTitle.textContent, '저장.hwpx');
     media.matches = false;
     media.dispatchEvent(new Event('change'));
-    assert.equal(pageDocument.title, '저장.hwpx - Rauhwpx');
+    assert.equal(pageDocument.title, '저장.hwpx - HamaEditor');
     loaded = false;
     bridge.onFileNameChanged?.(bridge.fileName);
-    assert.equal(pageDocument.title, 'Rauhwpx', '문서가 없으면 파일명과 무관하게 기본 제목');
+    assert.equal(pageDocument.title, 'HamaEditor', '문서가 없으면 파일명과 무관하게 기본 제목');
     assert.equal(visibleTitle.hidden, true);
     assert.equal(visibleTitle.textContent, '');
   } finally {

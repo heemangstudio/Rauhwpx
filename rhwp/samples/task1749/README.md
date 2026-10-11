@@ -24,4 +24,4 @@
   930.5px)으로 3쪽 단독 문단으로 밀림 (5쪽 → 6쪽 회귀).
 - 기대(한글 정합): pi=26 은 2쪽 마지막, 전체 5쪽.
 - 검증: `rhwp dump-pages samples/task1749/saved_bounds_cumulative_page_break.hwpx` /
-  `cargo test --test issue_1749_saved_bounds_page_break`
+  `cargo test --test it issue_1749_saved_bounds_page_break`

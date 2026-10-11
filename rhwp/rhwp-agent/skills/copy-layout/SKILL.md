@@ -52,7 +52,7 @@ Keep reusable titles, headings, numbering, captions, column/row headers, categor
 
 Remove names, organizations entered into blanks, contact details, selected answers, dates, amounts, identifiers, responses, results, feedback, signatures, stamps, populated charts, photos, scans, and attachments. Reset user-entered form-control state and visual marks such as checks, highlights, colored schedule bars, or data-bearing borders/fills. Keep logos, watermarks, seals, ornaments, and other fixed design media only when the evidence is strong; pass its manifest id in `keepMedia` on a fresh candidate when necessary. Preserve a removed payload's frame and geometry.
 
-Do not rebuild from screenshots or use office-suite/third-party conversion. The helper edits HWPX packages directly and uses Rauhwpx's native HWP→HWPX→HWP pipeline with verified HWPX fallback. It strips scripts, history, rejected payloads, and unsafe previews, then creates the privacy-safe `Preview/PrvText.txt` and `Preview/PrvImage.png` entries required for publication.
+Do not rebuild from screenshots or use office-suite/third-party conversion. The helper edits HWPX packages directly and uses HamaEditor's native HWP→HWPX→HWP pipeline with verified HWPX fallback. It strips scripts, history, rejected payloads, and unsafe previews, then creates the privacy-safe `Preview/PrvText.txt` and `Preview/PrvImage.png` entries required for publication.
 
 ## Completion gates
 

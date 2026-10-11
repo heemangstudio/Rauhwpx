@@ -256,7 +256,7 @@ test('two active provider turns route overlapping MCP ids only to their owning S
   const initialInstructions = (await instructionsRead).status;
   assert.equal(initialInstructions.fileName, 'AGENTS.md');
   assert.equal(initialInstructions.scope, 'rauhwpx-app');
-  assert.match(initialInstructions.content, /Rauhwpx 안에서만 적용됩니다/);
+  assert.match(initialInstructions.content, /HamaEditor 안에서만 적용됩니다/);
 
   const instructionsSaved = waitForMessage(alpha, (msg) => (
     msg.type === 'agent-instructions' && msg.requestId === 'instructions-save-1'

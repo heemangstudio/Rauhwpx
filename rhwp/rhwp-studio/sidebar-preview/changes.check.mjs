@@ -11,24 +11,35 @@ export async function checkChangesPreview(page, origin, artifacts) {
   };
   const itemCount = () => page.$$eval('.ag-changes-diff-list .ag-changes-item', (nodes) => nodes.length);
 
+  // 사이드바에서 커밋 전 변경은 헤더 버전 아이콘의 숫자로 보이고, 버전 창의 변경 탭에서 커밋한다.
   await open('audit=1&scenario=review&review=full&permission=unrestricted&play=1', 360);
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().pendingChanges), 0);
-  assert.equal(await page.$eval('.ag-compact-changes', (node) => node.hidden), false);
-  await page.click('.ag-compact-changes-toggle');
-  await page.waitForSelector('.ag-compact-changes-content:not([hidden]) .ag-changes-diff-list .ag-changes-item');
-  assert.equal(await page.$eval('.ag-compact-changes', (node) => node.scrollWidth <= node.clientWidth), true);
-  await page.screenshot({ path: resolve(artifacts, 'changes-compact-before-commit.png') });
-  await page.type('.ag-compact-changes-content .ag-changes-message', '에이전트 수정을 반영했습니다.');
-  await page.click('.ag-compact-changes-content .ag-changes-primary');
+  await page.waitForFunction(() => {
+    const badge = document.querySelector('.ag-header .ag-versions-btn .ag-versions-badge');
+    return badge && !badge.hidden && badge.checkVisibility();
+  });
+  await page.click('.ag-header .ag-versions-btn');
+  await page.waitForFunction(() => document.querySelector('.ag-versions-page')?.getAttribute('aria-hidden') === 'false');
+  assert.equal(await page.$eval('.ag-versions-tab[data-tab="changes"]', (node) => node.getAttribute('aria-selected')), 'true');
+  await page.waitForFunction(() => [...document.querySelectorAll('.ag-versions-changes-host .ag-changes-diff-list .ag-changes-item')]
+    .some((node) => node.checkVisibility()));
+  assert.equal(await page.$eval('.ag-versions-page', (node) => node.scrollWidth <= node.clientWidth), true);
+  assert.equal(await page.$eval('.ag-versions-changes-host', (node) => node.scrollWidth <= node.clientWidth), true);
+  await page.screenshot({ path: resolve(artifacts, 'changes-versions-before-commit.png') });
+  await page.type('.ag-versions-changes-host .ag-changes-message', '에이전트 수정을 반영했습니다.');
+  await page.click('.ag-versions-changes-host .ag-changes-primary');
   await page.waitForFunction(() => window.sidebarPreview.versions.getState().dirty === false);
   assert.equal(await page.evaluate(() => window.sidebarPreview.versions.getState().commits[0].title), '에이전트 수정을 반영했습니다.');
-  assert.equal(await page.$eval('.ag-compact-changes', (node) => node.hidden), true);
+  await page.waitForFunction(() => document.querySelector('.ag-header .ag-versions-btn .ag-versions-badge').hidden);
+  assert.equal(await page.$('.ag-compact-changes:not([hidden])'), null);
 
   await open(fullScene);
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.snapshot().changeEvents), ['set-finalized', 'approved']);
+  // 전체 모드의 편집은 검토 대기(set-finalized)를 거치지 않고 바로 반영된다.
+  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.snapshot().changeEvents), ['approved']);
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().pendingChanges), 0);
   assert.equal(await page.$('.ag-changes-review-slot .ag-review-card'), null);
-  assert.equal(await page.$eval('.ag-review-column-head .ag-review-column-undo', (node) => node.hidden), false);
+  // 쓰기마다 편집기 실행 취소 한 단계가 되므로 턴 단위 되돌리기 버튼은 없다.
+  assert.equal(await page.$eval('.ag-review-column-head .ag-review-column-undo', (node) => node.hidden), true);
   assert.equal(await page.$eval('.ag-changes-overlay', (node) => node.hidden), false);
   assert.equal(await itemCount(), 5);
   assert.equal(await page.$eval('.ag-changes-latest', (node) => getComputedStyle(node).display), 'none');
@@ -44,22 +55,8 @@ export async function checkChangesPreview(page, origin, artifacts) {
   await page.waitForSelector('.ag-changes-commit-detail .ag-changes-item');
   assert.equal(await page.$eval('.ag-changes-commit-toggle', (node) => node.getAttribute('aria-expanded')), 'true');
   assert.match(await page.$eval('.ag-changes-commit-detail', (node) => node.textContent), /추진 일정과 기대 효과를 정리했습니다/);
-  // 미리보기의 반영 알림 토스트가 검토 열 머리글을 잠시 덮는다. 닫고 되돌린다.
-  if (await page.$('.rhwp-toast-close')) {
-    await page.click('.rhwp-toast-close');
-    await page.waitForSelector('.rhwp-toast', { hidden: true });
-  }
-  await page.click('.ag-review-column-head .ag-review-column-undo');
-  await page.waitForFunction(() => window.sidebarPreview.undoState.calls === 1);
-  await page.waitForFunction(() => document.querySelectorAll('.ag-changes-diff-list .ag-changes-item').length === 0);
-  assert.equal(await page.$eval('.ag-review-column-head .ag-review-column-undo', (node) => node.hidden), true);
 
   await open(fullScene);
-  await page.evaluate(() => {
-    window.sidebarPreview.undoState.entry = null;
-    window.sidebarPreview.eventBus.emit('document-mutated');
-  });
-  await page.waitForFunction(() => document.querySelector('.ag-review-column-head .ag-review-column-undo').hidden);
   await page.click('.ag-changes-diff-list .ag-changes-text-button');
   await page.waitForFunction(() => window.sidebarPreview.navigation.calls.length === 1);
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.navigation.calls[0]),
@@ -91,13 +88,53 @@ export async function checkChangesPreview(page, origin, artifacts) {
   await page.waitForFunction(() => document.querySelectorAll('.ag-changes-diff-list .ag-changes-item').length === 0);
   assert.equal(await page.evaluate(() => window.sidebarPreview.versions.getState().dirty), false);
 
-  await open('audit=1&scenario=review&review=full&play=1&surface=changes');
+  // surface=changes 는 대기 편집을 승인해 버린다. 검토 대기를 보려면 변경 칸을 직접 연다.
+  const openPendingReview = async () => {
+    await page.goto(`${origin}/?theme=light&width=480&audit=1&scenario=review&review=full&play=1`, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(() => document.body.dataset.auditReady === 'true');
+    await page.evaluate(() => window.sidebarPreview.enterFocusMode());
+    // 앞 장면의 환경 패널·변경 칸 상태가 남을 수 있다. 사용자가 누르는 순서대로 연다.
+    if (await page.$eval('.ag-environment-toggle', (node) => node.getAttribute('aria-expanded')) !== 'true') {
+      await page.click('.ag-environment-toggle');
+      await page.waitForSelector('.ag-environment-panel[aria-hidden="false"] .ag-environment-changes', { visible: true });
+    }
+    if (!await page.$('.ag-root.ag-review-drawer-open')) await page.click('.ag-environment-changes');
+    await page.waitForSelector('.ag-root.ag-review-drawer-open .ag-changes-review-slot .ag-approve');
+  };
+  await openPendingReview();
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().pendingChanges), 1);
   assert.equal(await page.$$eval('.ag-changes-review-slot .ag-changes-pending-item', (nodes) => nodes.length), 3);
   assert.equal(await page.$eval('.ag-changes-review-slot .ag-approve', (node) => node.disabled), false);
   await page.click('.ag-changes-review-slot .ag-reject');
   await page.waitForFunction(() => window.sidebarPreview.snapshot().pendingChanges === 0);
   assert.equal(await page.$('.ag-changes-review-slot .ag-approve'), null);
+
+  // 에이전트 모드에서 승인한 턴은 검토 열 머리글에서 한 번에 되돌린다.
+  const approveTurn = async () => {
+    await openPendingReview();
+    assert.equal(await page.$eval('.ag-review-column-head .ag-review-column-undo', (node) => node.hidden), true);
+    await page.click('.ag-changes-review-slot .ag-approve');
+    await page.waitForFunction(() => window.sidebarPreview.snapshot().pendingChanges === 0
+      && !document.querySelector('.ag-review-column-head .ag-review-column-undo').hidden);
+  };
+  await approveTurn();
+  // 미리보기의 반영 알림 토스트가 검토 열 머리글을 잠시 덮는다. 닫고 되돌린다.
+  if (await page.$('.rhwp-toast-close')) {
+    await page.click('.rhwp-toast-close');
+    await page.waitForSelector('.rhwp-toast', { hidden: true });
+  }
+  await page.click('.ag-review-column-head .ag-review-column-undo');
+  await page.waitForFunction(() => window.sidebarPreview.undoState.calls === 1);
+  await page.waitForFunction(() => document.querySelectorAll('.ag-changes-diff-list .ag-changes-item').length === 0);
+  assert.equal(await page.$eval('.ag-review-column-head .ag-review-column-undo', (node) => node.hidden), true);
+
+  // 편집기 실행 취소 항목이 바뀌면 되돌리기 버튼도 사라진다.
+  await approveTurn();
+  await page.evaluate(() => {
+    window.sidebarPreview.undoState.entry = null;
+    window.sidebarPreview.eventBus.emit('document-mutated');
+  });
+  await page.waitForFunction(() => document.querySelector('.ag-review-column-head .ag-review-column-undo').hidden);
 
   await open(fullScene);
   await page.evaluate(() => {

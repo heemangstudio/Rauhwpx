@@ -843,7 +843,7 @@ pub fn svgs_to_pdf_with_links(
     // 문서 정보
     let info_ref = alloc.bump();
     pdf.document_info(info_ref)
-        .producer(pdf_writer::TextStr("rhwp"));
+        .producer(pdf_writer::TextStr("HamaEditor"));
 
     Ok(pdf.finish())
 }
@@ -921,8 +921,8 @@ pub fn layer_trees_to_pdf_with_links(
         author: options.author.clone().unwrap_or_default(),
         subject: options.subject.clone().unwrap_or_default(),
         keywords: options.keywords.clone().unwrap_or_default(),
-        creator: "rhwp".to_string(),
-        producer: "rhwp PageLayerTree direct PDF (Skia)".to_string(),
+        creator: "HamaEditor".to_string(),
+        producer: "HamaEditor PageLayerTree direct PDF (Skia)".to_string(),
         raster_dpi: Some(options.raster_dpi),
         ..Default::default()
     };

@@ -27,7 +27,8 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: rhwp/pkg
-        key: wasm-pkg-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.source.outputs.digest }}-${{ hashFiles('.cargo/**', 'rust-toolchain*', '.github/actions/setup-rust/action.yml', '.github/actions/build-wasm/action.yml', 'scripts/wasm-source-fingerprint.mjs', 'package.json') }}
+        # The digest covers every input that changes rhwp/pkg (scripts/wasm-source-fingerprint.mjs).
+        key: wasm-pkg-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.source.outputs.digest }}
     - uses: ./.github/actions/setup-rust
       if: inputs.artifact == '' && inputs.setup-rust == 'true' && steps.pkg.outputs.cache-hit != 'true'
       with:

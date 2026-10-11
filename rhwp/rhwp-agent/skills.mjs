@@ -600,7 +600,7 @@ export class SkillRegistry {
       }
     }
     // Codex native image generation is available in both exec and app-server.
-    // Load Rau's document insertion instructions without requiring a slash command.
+    // Load HamaEditor's document insertion instructions without requiring a slash command.
     if (agent === 'codex' && explicitName !== CODEX_IMAGE_SKILL_NAME) {
       const imageSkill = enabled.find((row) => row.name === CODEX_IMAGE_SKILL_NAME && row.kind === 'skill');
       if (imageSkill) {

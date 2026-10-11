@@ -1,96 +1,19 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
+import { writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { createInterface } from 'node:readline';
 import test from 'node:test';
 import WebSocket from 'ws';
 
-import { ALIVE_PI_FIXTURE_SOURCE, writeFakeCliBin } from './fake-cli-bin.mjs';
-
-const TOKEN = 'hub-user-question-test-token';
-const LAUNCH_ID = 'hub-user-question-test-launch';
-
-function waitForLine(stream, predicate, timeoutMs = 20_000) {
-  return new Promise((resolve, reject) => {
-    const lines = createInterface({ input: stream });
-    const timer = setTimeout(() => {
-      lines.close();
-      reject(new Error('Timed out waiting for process output'));
-    }, timeoutMs);
-    lines.on('line', (line) => {
-      if (!predicate(line)) return;
-      clearTimeout(timer);
-      lines.close();
-      resolve(line);
-    });
-  });
-}
-
-async function waitForPath(filePath, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (!existsSync(filePath)) {
-    if (Date.now() >= deadline) throw new Error(`Timed out waiting for path: ${filePath}`);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
-
-async function registerSession(port, sessionId) {
-  const registration = await fetch(
-    `http://127.0.0.1:${port}/sessions/${encodeURIComponent(sessionId)}`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${TOKEN}`,
-        'X-Rhwp-Launch-Id': LAUNCH_ID,
-      },
-    },
-  );
-  assert.equal(registration.status, 200);
-  return registration.json();
-}
-
-async function openClient(url) {
-  const parsedUrl = new URL(url);
-  const sessionId = parsedUrl.searchParams.get('sessionId');
-  if (sessionId) await registerSession(parsedUrl.port, sessionId);
-  const socket = new WebSocket(url);
-  const buffered = [];
-  const waiters = [];
-  socket.on('message', (data) => {
-    let frame;
-    try { frame = JSON.parse(data.toString()); } catch { return; }
-    const index = waiters.findIndex((waiter) => waiter.predicate(frame));
-    if (index < 0) {
-      buffered.push(frame);
-      return;
-    }
-    const [waiter] = waiters.splice(index, 1);
-    clearTimeout(waiter.timer);
-    waiter.resolve(frame);
-  });
-  await once(socket, 'open');
-  return {
-    socket,
-    next(predicate, timeoutMs = 10_000) {
-      const index = buffered.findIndex(predicate);
-      if (index >= 0) return Promise.resolve(buffered.splice(index, 1)[0]);
-      return new Promise((resolve, reject) => {
-        const timeoutError = new Error('Timed out waiting for websocket frame');
-        const waiter = { predicate, resolve, timer: null };
-        waiter.timer = setTimeout(() => {
-          const current = waiters.indexOf(waiter);
-          if (current >= 0) waiters.splice(current, 1);
-          timeoutError.message += `; buffered=${JSON.stringify(buffered)}`;
-          reject(timeoutError);
-        }, timeoutMs);
-        waiters.push(waiter);
-      });
-    },
-  };
-}
+import {
+  HUB_TEST_LAUNCH_ID as LAUNCH_ID,
+  HUB_TEST_TOKEN as TOKEN,
+  closeClient,
+  openClient,
+  registerSession,
+  sendFrame,
+  startHub as startTestHub,
+} from './hub-harness.mjs';
 
 function rejectedUpgrade(url) {
   return new Promise((resolve, reject) => {
@@ -104,46 +27,14 @@ function rejectedUpgrade(url) {
   });
 }
 
-function sendFrame(client, frame) {
-  client.socket.send(JSON.stringify({ v: 5, ...frame }));
-}
-
-async function closeClient(client) {
-  if (!client || client.socket.readyState === WebSocket.CLOSED) return;
-  const closed = once(client.socket, 'close');
-  client.socket.close();
-  await closed;
-}
-
-function prepareFakePi(root, fixtureSource = ALIVE_PI_FIXTURE_SOURCE) {
-  const packageDir = path.join(root, 'prefix', 'node_modules', '@earendil-works', 'pi-coding-agent');
-  const binDir = path.join(root, 'prefix', 'node_modules', '.bin');
-  mkdirSync(packageDir, { recursive: true });
-  mkdirSync(binDir, { recursive: true });
-  writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({ version: '0.0.0-test' }));
-  writeFileSync(path.join(root, 'config.json'), JSON.stringify({
-    version: 1,
-    installedVersion: '0.0.0-test',
-    models: [{
-      id: 'mock-model', name: 'Mock model', reasoning: false, supportsImages: false,
-      efforts: [], defaultEffort: null, contextLength: 8_192,
-      pricing: { prompt: 0, completion: 0 },
-    }],
-    defaultModelId: 'mock-model',
-  }));
-  const agentDir = path.join(root, 'agent');
-  mkdirSync(agentDir, { recursive: true });
-  writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({
-    providers: { openrouter: { apiKey: 'test-placeholder-key' } },
-  }));
-  writeFakeCliBin(binDir, 'pi', fixtureSource);
-}
-
 async function startHub(t, { fakePi = false, controlledCompletion = false } = {}) {
-  const workRoot = mkdtempSync(path.join(os.tmpdir(), 'rhwp-hub-user-question-'));
-  const piRoot = path.join(workRoot, 'pi');
-  const completePi = path.join(workRoot, 'complete-pi');
-  if (fakePi) prepareFakePi(piRoot, controlledCompletion ? `
+  let completePi = null;
+  const hub = await startTestHub(t, {
+    prefix: 'rhwp-hub-user-question-',
+    fakePi: fakePi && controlledCompletion
+      ? ({ workRoot }) => {
+        completePi = path.join(workRoot, 'complete-pi');
+        return `
     if (process.argv.includes('--version')) { console.log('0.0.0-test'); process.exit(0); }
     const timer = setInterval(() => {
       if (!require('node:fs').existsSync(${JSON.stringify(completePi)})) return;
@@ -151,36 +42,14 @@ async function startHub(t, { fakePi = false, controlledCompletion = false } = {}
       require('node:fs').unlinkSync(${JSON.stringify(completePi)});
       console.log(JSON.stringify({ type: 'agent_settled' }));
     }, 20);
-  ` : ALIVE_PI_FIXTURE_SOURCE);
-  const testPath = process.env.PATH;
-  const child = spawn(process.execPath, ['server.mjs'], {
-    cwd: new URL('..', import.meta.url),
-    env: {
-      ...process.env,
-      NODE_ENV: 'test',
-      RHWP_AGENT_PORT: '0',
-      RHWP_AGENT_TOKEN: TOKEN,
-      RHWP_LAUNCH_ID: LAUNCH_ID,
-      RHWP_WORK_DIR: workRoot,
-      RHWP_TEMPLATES_DIR: path.join(workRoot, 'templates'),
-      ...(fakePi ? { RHWP_PI_DIR: piRoot } : {}),
-      PATH: testPath,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
+  `;
+      }
+      : fakePi,
   });
-  let stderr = '';
-  child.stderr.on('data', (chunk) => { stderr += chunk; });
-  t.after(async () => {
-    if (child.exitCode === null) child.kill('SIGTERM');
-    if (child.exitCode === null) await once(child, 'exit');
-    rmSync(workRoot, { recursive: true, force: true });
-  });
-  const readyLine = await waitForLine(child.stdout, (line) => line.startsWith('RHWP_HUB_READY '));
-  const ready = JSON.parse(readyLine.slice('RHWP_HUB_READY '.length));
   return {
-    port: ready.port,
+    port: hub.port,
     completePi: () => writeFileSync(completePi, ''),
-    stderr: () => stderr,
+    stderr: hub.stderr,
   };
 }
 
@@ -687,7 +556,7 @@ test('hub shutdown expires an active question before closing transports', { time
     method: 'POST',
     headers: {
       authorization: `Bearer ${TOKEN}`,
-      'x-rhwp-launch-id': 'hub-user-question-test-launch',
+      'x-rhwp-launch-id': LAUNCH_ID,
     },
   });
   assert.equal(response.status, 200);

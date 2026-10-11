@@ -16,6 +16,8 @@ const CREDITS_TTL_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 20_000;
 const CHAT_TIMEOUT_MS = 60_000;
 const CATALOG_CACHE_FILE = 'models-cache.json';
+/** 디스크 캐시 모양이 바뀌면 올린다 — 다른 버전의 캐시는 TTL 과 상관없이 다시 받아온다. */
+const CATALOG_CACHE_VERSION = 2;
 const SMALL_RESPONSE_LIMIT_BYTES = 64 * 1024;
 const LARGE_RESPONSE_LIMIT_BYTES = 8 * 1024 * 1024;
 const CATALOG_CACHE_LIMIT_BYTES = LARGE_RESPONSE_LIMIT_BYTES;
@@ -33,7 +35,9 @@ function creditKeyId(key) {
  * @property {string} name
  * @property {string} provider
  * @property {number|null} contextLength
- * @property {{ prompt: number, completion: number }} pricing 토큰 1개당 USD (OpenRouter 원본 단위)
+ * @property {number|null} maxCompletionTokens 최상위 제공자의 출력 토큰 상한. 모르면 null
+ * @property {{ prompt: number, completion: number, cacheRead: number }} pricing
+ *   토큰 1개당 USD (OpenRouter 원본 단위). cacheRead 는 캐시된 입력 토큰 단가
  * @property {boolean} reasoning
  * @property {boolean} supportsImages
  */
@@ -117,14 +121,19 @@ function mapModel(entry) {
   const params = Array.isArray(entry.supported_parameters) ? entry.supported_parameters : [];
   const name = typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : id;
   const contextLength = Number(entry.context_length);
+  const maxCompletionTokens = Number(entry?.top_provider?.max_completion_tokens);
   return {
     id,
     name,
     provider: id.includes('/') ? id.split('/')[0] : 'openrouter',
     contextLength: Number.isFinite(contextLength) && contextLength > 0 ? Math.round(contextLength) : null,
+    maxCompletionTokens: Number.isSafeInteger(maxCompletionTokens) && maxCompletionTokens > 0
+      ? maxCompletionTokens
+      : null,
     pricing: {
       prompt: toPrice(entry?.pricing?.prompt),
       completion: toPrice(entry?.pricing?.completion),
+      cacheRead: toPrice(entry?.pricing?.input_cache_read),
     },
     reasoning: params.includes('reasoning') || params.includes('include_reasoning'),
     supportsImages: supportsImages(entry),
@@ -239,6 +248,7 @@ export function createOpenRouter({
         maxBytes: CATALOG_CACHE_LIMIT_BYTES,
         label: 'OpenRouter catalog cache',
       }));
+      if (raw?.version !== CATALOG_CACHE_VERSION) return null;
       const fetchedAt = Number(raw?.fetchedAt);
       if (!Array.isArray(raw?.models) || !Number.isFinite(fetchedAt)) return null;
       return { models: raw.models, fetchedAt };
@@ -253,7 +263,7 @@ export function createOpenRouter({
     try {
       await fs.mkdir(path.dirname(cachePath), { recursive: true });
       temp = `${cachePath}.tmp-${process.pid}-${randomUUID()}`;
-      const serialized = `${JSON.stringify(entry)}\n`;
+      const serialized = `${JSON.stringify({ version: CATALOG_CACHE_VERSION, ...entry })}\n`;
       if (Buffer.byteLength(serialized, 'utf8') > CATALOG_CACHE_LIMIT_BYTES) return;
       await fs.writeFile(temp, serialized, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
       await replaceFileAtomically(temp, cachePath, { platform });

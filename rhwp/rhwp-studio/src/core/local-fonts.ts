@@ -9,6 +9,7 @@ import { REGISTERED_FONTS } from './font-loader.ts';
 import { convertHftToOpenType } from './hft-font.ts';
 import { isHftBytes, registerHftOutlines } from './hft-glyphs.ts';
 import { normalizeMalformedCmapSentinels, repairUnderstatedCompositeBounds } from './sfnt-repair.ts';
+import { sfntMetricsSubset } from './sfnt-subset.ts';
 
 /** queryLocalFonts 반환 타입 (DOM 표준 미포함) */
 interface FontData {
@@ -169,6 +170,8 @@ interface SessionFontFaceEntry {
   record: LocalFontRecord;
   /** 가져온 파일만 보관한다. 데스크톱 face는 null이고 필요할 때 다시 읽는다. */
   bytes: ArrayBuffer | null;
+  /** 수식 literal 측정이 동기로 읽는 데스크톱 face의 메트릭 표 사본 */
+  literalBytes: ArrayBuffer | null;
   byteLength: number;
   face: FontFace;
 }
@@ -229,14 +232,24 @@ function normalizeFamilies(families: unknown): string[] {
   return Array.from(set).sort((a, b) => a.localeCompare(b, 'ko'));
 }
 
+/** 글꼴 이름 → 정규화 별칭. 같은 이름을 수식 측정·조회마다 다시 정규화하지 않는다. */
+const normalizedFontAliases = new Map<string, string>();
+const NORMALIZED_FONT_ALIAS_LIMIT = 8192;
+
 function normalizeFontAlias(value: unknown): string {
   if (typeof value !== 'string') return '';
-  return value
-    .replace(/\u0000/g, '')
-    .normalize('NFC')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLocaleLowerCase('en-US');
+  let alias = normalizedFontAliases.get(value);
+  if (alias === undefined) {
+    alias = value
+      .replace(/\u0000/g, '')
+      .normalize('NFC')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLocaleLowerCase('en-US');
+    if (normalizedFontAliases.size >= NORMALIZED_FONT_ALIAS_LIMIT) normalizedFontAliases.clear();
+    normalizedFontAliases.set(value, alias);
+  }
+  return alias;
 }
 
 function normalizeFontNames(values: readonly unknown[]): string[] {
@@ -279,13 +292,8 @@ function addLocalFontLookupRecord(
   index: Map<string, LocalFontRecord[]>,
   name: string,
   record: LocalFontRecord,
-  normalizedNameCache: Map<string, string>,
 ): void {
-  let key = normalizedNameCache.get(name);
-  if (key === undefined) {
-    key = normalizeFontAlias(name);
-    normalizedNameCache.set(name, key);
-  }
+  const key = normalizeFontAlias(name);
   if (!key) return;
   const records = index.get(key);
   if (!records) {
@@ -297,15 +305,12 @@ function addLocalFontLookupRecord(
 
 function buildLocalFontLookup(records: readonly LocalFontRecord[]): LocalFontLookup {
   const lookup = emptyLocalFontLookup();
-  const normalizedNameCache = new Map<string, string>();
   for (const record of records) {
-    for (const alias of record.aliases) {
-      addLocalFontLookupRecord(lookup.aliases, alias, record, normalizedNameCache);
-    }
-    addLocalFontLookupRecord(lookup.postscriptNames, record.postscriptName, record, normalizedNameCache);
-    addLocalFontLookupRecord(lookup.fullNames, record.fullName, record, normalizedNameCache);
-    addLocalFontLookupRecord(lookup.familyStyles, `${record.family} ${record.style}`, record, normalizedNameCache);
-    addLocalFontLookupRecord(lookup.families, record.family, record, normalizedNameCache);
+    for (const alias of record.aliases) addLocalFontLookupRecord(lookup.aliases, alias, record);
+    addLocalFontLookupRecord(lookup.postscriptNames, record.postscriptName, record);
+    addLocalFontLookupRecord(lookup.fullNames, record.fullName, record);
+    addLocalFontLookupRecord(lookup.familyStyles, `${record.family} ${record.style}`, record);
+    addLocalFontLookupRecord(lookup.families, record.family, record);
   }
   return lookup;
 }
@@ -643,10 +648,15 @@ function sessionFontUsage(source: LocalFontFaceSource): { bytes: number; faces: 
 let importedHftOutlineBytes = 0;
 let importedHftOutlineFaces = 0;
 
-/** 세션 FontFace에 넘기는 바이트: HFT 변환과 SFNT cmap·합성 글리프 bbox 복구를 거친다. */
+/**
+ * 세션 FontFace에 넘기는 바이트: HFT 변환과 SFNT cmap·합성 글리프 bbox 복구를 거친다.
+ * `desktopFaceId`가 있으면 그 face의 bbox 복구 판정을 기억해, 고칠 글리프가 없던 face는
+ * 다음부터 전체 글리프를 다시 훑지 않는다.
+ */
 export function prepareSessionFontBytes(
   source: ArrayBuffer,
   fileName: string,
+  desktopFaceId?: string,
 ): { ok: true; bytes: ArrayBuffer; convertedFromHft: boolean } | { ok: false; reason: 'unsupported-hft' | 'invalid'; error: string } {
   let converted: ArrayBuffer | null;
   try {
@@ -655,9 +665,44 @@ export function prepareSessionFontBytes(
     return { ok: false, reason: 'unsupported-hft', error: errorMessage(error) };
   }
   try {
-    return { ok: true, bytes: repairSfntBytes(converted ?? source).bytes, convertedFromHft: converted !== null };
+    const verdict = desktopFaceId ? desktopBoundsRepairVerdicts().get(desktopFaceId) : undefined;
+    const repaired = repairSfntBytes(converted ?? source, verdict !== false);
+    if (desktopFaceId && verdict === undefined) rememberDesktopBoundsRepair(desktopFaceId, repaired.boundsRepaired);
+    return { ok: true, bytes: repaired.bytes, convertedFromHft: converted !== null };
   } catch (error) {
     return { ok: false, reason: 'invalid', error: errorMessage(error) };
+  }
+}
+
+const DESKTOP_BOUNDS_REPAIR_KEY = 'rhwp-desktop-font-bounds-repair-v1';
+const DESKTOP_BOUNDS_REPAIR_LIMIT = 4096;
+/** 데스크톱 face id(경로·크기·수정 시각에서 나온다) → 합성 글리프 bbox 복구 필요 여부 */
+let desktopBoundsRepair: Map<string, boolean> | null = null;
+
+function desktopBoundsRepairVerdicts(): Map<string, boolean> {
+  if (desktopBoundsRepair) return desktopBoundsRepair;
+  desktopBoundsRepair = new Map();
+  try {
+    const stored = JSON.parse(localStorageRef()?.getItem(DESKTOP_BOUNDS_REPAIR_KEY) ?? 'null');
+    if (stored && typeof stored === 'object') {
+      for (const [id, verdict] of Object.entries(stored)) {
+        if (typeof verdict === 'boolean') desktopBoundsRepair.set(id, verdict);
+      }
+    }
+  } catch {
+    // 읽지 못한 판정은 다시 내린다.
+  }
+  return desktopBoundsRepair;
+}
+
+function rememberDesktopBoundsRepair(faceId: string, verdict: boolean): void {
+  const verdicts = desktopBoundsRepairVerdicts();
+  verdicts.set(faceId, verdict);
+  while (verdicts.size > DESKTOP_BOUNDS_REPAIR_LIMIT) verdicts.delete(verdicts.keys().next().value!);
+  try {
+    localStorageRef()?.setItem(DESKTOP_BOUNDS_REPAIR_KEY, JSON.stringify(Object.fromEntries(verdicts)));
+  } catch {
+    // 저장하지 못해도 이번 세션에는 판정을 쓴다.
   }
 }
 
@@ -675,7 +720,7 @@ export async function registerLocalFontFace(
   const limits = sessionFontLimits(options.source);
   if (source.byteLength <= 0) return { ok: false, reason: 'invalid' };
   if (source.byteLength > limits.perFace) return { ok: false, reason: 'too-large' };
-  const prepared = prepareSessionFontBytes(source, options.fileName);
+  const prepared = prepareSessionFontBytes(source, options.fileName, options.desktopFaceId);
   if (!prepared.ok) {
     // 브라우저 face 로 변환할 수 없는 HFT 은행도 윤곽선은 읽을 수 있다.
     // 가져온 파일은 이 경로에서도 세션 용량·개수 한도를 지킨다.
@@ -771,13 +816,14 @@ export async function registerLocalFontFace(
     }
     document.fonts.add(face);
     if (latest) document.fonts.delete(latest.face);
+    // 수식 PUA 측정은 HY 수식 서체의 cmap/glyf를 동기로 읽는다. 이 서체와 HFT 변환본만
+    // 사본을 유지하고 일반 데스크톱 face는 FontFace에 맡긴다.
+    const keepBytes = options.source !== 'desktop' || convertedFromHft
+      || normalizeFontAlias(record.family) === 'hyhwpeq';
     importedFontFaces.set(faceKey, {
       record,
-      // 수식의 PUA와 literal 측정은 cmap/glyf를 동기로 읽는다. 이 서체들과
-      // HFT 변환본만 사본을 유지하고 일반 데스크톱 face는 FontFace에 맡긴다.
-      bytes: options.source === 'desktop' && !convertedFromHft
-        && !['hyhwpeq', 'hcr batang', 'batang', 'times new roman'].includes(normalizeFontAlias(record.family))
-        ? null : bytes,
+      bytes: keepBytes ? bytes : null,
+      literalBytes: keepBytes ? null : equationLiteralBytes(record.family, bytes),
       byteLength: budgetBytes,
       face,
     });
@@ -789,6 +835,15 @@ export async function registerLocalFontFace(
   } catch (error) {
     return { ok: false, reason: 'load-failed', error: errorMessage(error) };
   }
+}
+
+/**
+ * 수식 literal 측정(createEquationLiteralFontResolver)은 cmap·maxp·head·hhea만 동기로 읽으므로
+ * 이 서체들은 메트릭 표만 남긴 사본을 둔다.
+ */
+function equationLiteralBytes(family: string, bytes: ArrayBuffer): ArrayBuffer | null {
+  if (!['hcr batang', 'batang', 'times new roman'].includes(normalizeFontAlias(family))) return null;
+  return sfntMetricsSubset(bytes).slice().buffer;
 }
 
 /** 이번 세션에 등록된 face(가져온 파일·데스크톱 글꼴)만 찾는다. 설치 목록 snapshot은 보지 않는다. */
@@ -854,6 +909,7 @@ export function readSessionLocalFontBytes(faceKey: string): Promise<ArrayBuffer 
       const prepared = prepareSessionFontBytes(
         toOwnedArrayBuffer(await reader(faceId)),
         entry.record.sourcePath?.split(/[\\/]/).pop() ?? faceId,
+        faceId,
       );
       return prepared.ok ? prepared.bytes : null;
     } catch (error) {
@@ -977,9 +1033,9 @@ async function prioritizeFontImports(candidates: readonly FontImportCandidate[])
 }
 
 /** 브라우저 sanitizer/래스터라이저가 잘못 다루는 SFNT 결함을 고친다. 고칠 게 없으면 원본 버퍼다. */
-function repairSfntBytes(source: ArrayBuffer): { bytes: ArrayBuffer; boundsRepaired: boolean } {
+function repairSfntBytes(source: ArrayBuffer, repairBounds = true): { bytes: ArrayBuffer; boundsRepaired: boolean } {
   const sanitized = normalizeMalformedCmapSentinels(source);
-  const bytes = repairUnderstatedCompositeBounds(sanitized);
+  const bytes = repairBounds ? repairUnderstatedCompositeBounds(sanitized) : sanitized;
   return { bytes, boundsRepaired: bytes !== sanitized };
 }
 
@@ -1489,20 +1545,55 @@ function resolveFromLookup(
   return matches.length === 1 ? matches[0] : null;
 }
 
-/** HWP/CSS 글꼴명에서 동일한 설치 글꼴 face를 찾는다. */
-export function resolveLocalFont(fontName: string): LocalFontRecord | null {
-  const target = normalizeFontAlias(fontName);
-  if (!target) return null;
-  return resolveFromLookup(importedFontLookup, target, true)
-    ?? resolveFromLookup(cachedFontLookup, target);
+/**
+ * 조판 중 수식 측정은 같은 글꼴을 글자마다 조회한다. 글꼴 조회 결과가 바뀔 때마다 오르는
+ * localFontLookupGeneration 이 같으면 지난 결과를 그대로 쓴다.
+ */
+let lookupMemoGeneration = -1;
+const resolvedLocalFonts = new Map<string, LocalFontRecord | null>();
+const importedFontBytesByRequest = new Map<string, ArrayBuffer | null>();
+
+function syncLookupMemo(): void {
+  if (lookupMemoGeneration === localFontLookupGeneration) return;
+  lookupMemoGeneration = localFontLookupGeneration;
+  resolvedLocalFonts.clear();
+  importedFontBytesByRequest.clear();
 }
 
-/** 가져온 파일의 SFNT 바이트 복사본. 같은 family의 style face를 구분한다. */
+/** HWP/CSS 글꼴명에서 동일한 설치 글꼴 face를 찾는다. */
+export function resolveLocalFont(fontName: string): LocalFontRecord | null {
+  syncLookupMemo();
+  let record = resolvedLocalFonts.get(fontName);
+  if (record === undefined) {
+    const target = normalizeFontAlias(fontName);
+    record = target
+      ? resolveFromLookup(importedFontLookup, target, true) ?? resolveFromLookup(cachedFontLookup, target)
+      : null;
+    resolvedLocalFonts.set(fontName, record);
+  }
+  return record;
+}
+
+/**
+ * 가져온 파일·수식 글꼴의 SFNT 바이트. 같은 family의 style face를 구분한다.
+ * 세션이 보관한 버퍼를 복사하지 않고 돌려주므로 호출자는 읽기만 한다.
+ */
 export function getImportedLocalFontBytes(
   fontName: string,
   bold = false,
   italic = false,
 ): ArrayBuffer | null {
+  syncLookupMemo();
+  const key = `${fontName}\u0000${bold ? 1 : 0}${italic ? 1 : 0}`;
+  let bytes = importedFontBytesByRequest.get(key);
+  if (bytes === undefined) {
+    bytes = findImportedLocalFontBytes(fontName, bold, italic);
+    importedFontBytesByRequest.set(key, bytes);
+  }
+  return bytes;
+}
+
+function findImportedLocalFontBytes(fontName: string, bold: boolean, italic: boolean): ArrayBuffer | null {
   const record = resolveLocalFont(fontName);
   if (!record?.runtimeFamily) return null;
   const target = normalizeFontAlias(fontName);
@@ -1522,7 +1613,8 @@ export function getImportedLocalFontBytes(
       return distance(a) - distance(b);
     })[0]
     : record;
-  return importedFontFaces.get(localFontFaceKey(selected))?.bytes?.slice(0) ?? null;
+  const entry = importedFontFaces.get(localFontFaceKey(selected));
+  return entry?.bytes ?? entry?.literalBytes ?? null;
 }
 
 /** 가져온 face가 실제로 등록됐는지 바이트 복사 없이 확인한다. */
@@ -1757,6 +1849,7 @@ export function resetLocalFontsForTests(): void {
   lastStorageError = null;
   localFontBytesByPostscriptName.clear();
   sfntBoundsRepairByFaceKey.clear();
+  desktopBoundsRepair = null;
   repairedLocalFamilyByFaceKey.clear();
   localFontLookupGeneration++;
   localFamilyRepairs.clear();

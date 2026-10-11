@@ -4876,9 +4876,11 @@ mod tests {
         // 한다. 종전엔 HWP3 파서가 doc_properties 를 전혀 채우지 않아 0 이었다.
         // 정상 문서는 두 값이 1 이므로 0(미매핑) → 1(매핑) 로 red→green.
         let path = "samples/hwp3-sample.hwp";
-        if !std::path::Path::new(path).exists() {
-            return;
-        }
+        assert!(
+            std::path::Path::new(path).exists(),
+            "테스트 입력 파일 없음: {:?}",
+            path
+        );
         let mut data = Vec::new();
         File::open(path).unwrap().read_to_end(&mut data).unwrap();
         let doc = parse_hwp3(&data).expect("hwp3-sample parse failed");
@@ -4925,10 +4927,11 @@ mod tests {
         // ch=6 가 8 byte (current) 가 아닌 spec 의 42 byte 로 처리되지 않으면 paragraph
         // stream alignment 가 어긋나 28737 페이지로 폭주 인식됨.
         let path = "samples/hwp3-sample16.hwp";
-        if !std::path::Path::new(path).exists() {
-            // 샘플 미커밋 환경에서는 skip.
-            return;
-        }
+        assert!(
+            std::path::Path::new(path).exists(),
+            "테스트 입력 파일 없음: {:?}",
+            path
+        );
         let mut data = Vec::new();
         File::open(path).unwrap().read_to_end(&mut data).unwrap();
         let doc = parse_hwp3(&data).expect("sample16 parse failed");
@@ -4949,10 +4952,11 @@ mod tests {
         // 컨트롤로 변환한다. 종전에는 블록 미처리로 Link BinData 로 남아 외부 파일
         // 경로로 오노출됐다(SO-SUEOP 1쪽 글맵시 미표시·사이드카 워크어라운드).
         let path = "samples/SO-SUEOP.hwp";
-        if !std::path::Path::new(path).exists() {
-            // 샘플 미커밋 환경에서는 skip.
-            return;
-        }
+        assert!(
+            std::path::Path::new(path).exists(),
+            "테스트 입력 파일 없음: {:?}",
+            path
+        );
         let mut data = Vec::new();
         File::open(path).unwrap().read_to_end(&mut data).unwrap();
         let doc = parse_hwp3(&data).expect("SO-SUEOP parse failed");
@@ -5020,9 +5024,11 @@ mod tests {
         // hwp3-sample10.hwp 문단 0.456 은 앞에 차례 표식(코드 25)이 붙은 제목으로,
         // 정답지(hwp3-sample10-hwp5.hwp)의 텍스트는 "SAMPLE: SQL*LOADER SAMPLES PART I".
         let path = "samples/hwp3-sample10.hwp";
-        if !std::path::Path::new(path).exists() {
-            return; // 샘플 미커밋 환경(예: CI)에서는 skip.
-        }
+        assert!(
+            std::path::Path::new(path).exists(),
+            "테스트 입력 파일 없음: {:?}",
+            path
+        );
         let mut data = Vec::new();
         File::open(path).unwrap().read_to_end(&mut data).unwrap();
         let doc = parse_hwp3(&data).expect("sample10 parse failed");
@@ -5076,10 +5082,8 @@ mod tests {
         use std::io::Read;
 
         let mut data = Vec::new();
-        let mut f = match File::open("samples/hwp3-sample.hwp") {
-            Ok(f) => f,
-            Err(_) => return, // CI 환경 등 샘플 없으면 스킵
-        };
+        let mut f =
+            File::open("samples/hwp3-sample.hwp").expect("samples/hwp3-sample.hwp 열기 실패");
         f.read_to_end(&mut data).unwrap();
 
         let mut core = DocumentCore::from_bytes(&data).expect("HWP3 load failed");

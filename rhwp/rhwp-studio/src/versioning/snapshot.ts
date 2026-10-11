@@ -1,6 +1,6 @@
 import { exportDocumentForFormat } from '../command/save-document-format.ts';
 import { defaultFormatForSource, saveFormatForFileName } from '../command/save-target.ts';
-import { buildSnapshotFromWasm, compareSnapshots } from '../compare/diff-engine.ts';
+import { buildSnapshotFromWasm, buildSnapshotFromWasmInSlices, compareSnapshots } from '../compare/diff-engine.ts';
 import type { CompareDocumentSnapshot, CompareOptions } from '../compare/types.ts';
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import type { CheckpointTitleSummary } from '../agent/types.ts';
@@ -18,55 +18,129 @@ export const VERSION_COMPARE_OPTIONS: CompareOptions = {
   },
 };
 
-export interface CapturedVersionSnapshot {
+// 실시간 캡처(로드/저장 직후 베이스라인·더티 추적·커밋 전 diff)는 강제 전체 재조판을 건너뛴다.
+// 대형 문서에서 한 번의 재조판이 입력을 수 분간 멈추게 하며, 백그라운드에서
+// 진행 중인 지연 조판을 통째로 무효화한다.
+const LIVE_COMPARE_OPTIONS: CompareOptions = { ...VERSION_COMPARE_OPTIONS, refreshLayout: false };
+
+export interface VersionContent {
   bytes: Uint8Array;
   fingerprint: ContentFingerprint;
+}
+
+export interface CapturedVersionSnapshot extends VersionContent {
   compareSnapshot: CompareDocumentSnapshot;
 }
+
+/** 쓰이지 않은 내보내기 바이트와 비교 스냅샷을 내려놓기까지의 시간. 지문은 남는다. */
+const CACHE_RELEASE_MS = 30_000;
 
 /** One editor revision owns one export, shared by dirty checks and checkpoints. */
 export class VersionSnapshotCache {
   #key: string | null = null;
-  #content: { bytes: Uint8Array; fingerprint: ContentFingerprint } | null = null;
+  #fingerprint: ContentFingerprint | null = null;
+  #content: VersionContent | null = null;
   #snapshot: CapturedVersionSnapshot | null = null;
+  #releaseTimer: ReturnType<typeof setTimeout> | null = null;
 
   clear(): void {
     this.#key = null;
+    this.#fingerprint = null;
+    this.#release();
+  }
+
+  invalidateUnless(fingerprint: string): void {
+    if (this.#fingerprint !== fingerprint) this.clear();
+  }
+
+  #release(): void {
+    if (this.#releaseTimer !== null) clearTimeout(this.#releaseTimer);
+    this.#releaseTimer = null;
     this.#content = null;
     this.#snapshot = null;
   }
 
-  invalidateUnless(fingerprint: string): void {
-    if (this.#content?.fingerprint !== fingerprint) this.clear();
+  #scheduleRelease(): void {
+    if (this.#releaseTimer !== null) clearTimeout(this.#releaseTimer);
+    this.#releaseTimer = setTimeout(() => {
+      this.#releaseTimer = null;
+      this.#content = null;
+      this.#snapshot = null;
+    }, CACHE_RELEASE_MS);
+    (this.#releaseTimer as { unref?: () => void }).unref?.();
   }
 
-  #getContent(wasm: WasmBridge, documentId: string | null, revision: number) {
+  #select(wasm: WasmBridge, documentId: string | null, revision: number): void {
     const key = JSON.stringify([documentId, revision, currentSaveFormat(wasm), wasm.fileName, wasm.getSourceFormat()]);
-    if (this.#key !== key || !this.#content) {
+    if (this.#key === key) return;
+    this.clear();
+    this.#key = key;
+  }
+
+  content(wasm: WasmBridge, documentId: string | null, revision: number): VersionContent {
+    this.#select(wasm, documentId, revision);
+    if (!this.#content) {
       const bytes = exportVersionContent(wasm);
       this.#content = { bytes, fingerprint: fingerprintBytes(bytes) };
-      this.#key = key;
-      this.#snapshot = null;
+      this.#fingerprint = this.#content.fingerprint;
     }
+    this.#scheduleRelease();
+    return this.#content;
+  }
+
+  /** 문서를 다시 내보내 캐시와 맞춘다. 내용이 그대로면 캐시한 지문과 스냅샷을 그대로 쓴다. */
+  reexport(wasm: WasmBridge, documentId: string | null, revision: number): VersionContent {
+    this.#select(wasm, documentId, revision);
+    const bytes = exportVersionContent(wasm);
+    if (!this.#content || !sameBytes(this.#content.bytes, bytes)) {
+      this.#snapshot = null;
+      this.#content = { bytes, fingerprint: fingerprintBytes(bytes) };
+      this.#fingerprint = this.#content.fingerprint;
+    }
+    this.#scheduleRelease();
     return this.#content;
   }
 
   fingerprint(wasm: WasmBridge, documentId: string | null, revision: number): ContentFingerprint {
-    return this.#getContent(wasm, documentId, revision).fingerprint;
+    this.#select(wasm, documentId, revision);
+    return this.#fingerprint ?? this.content(wasm, documentId, revision).fingerprint;
   }
 
   capture(wasm: WasmBridge, documentId: string | null, revision: number): CapturedVersionSnapshot {
-    const content = this.#getContent(wasm, documentId, revision);
-    // 실시간 캡처(로드/저장 직후 베이스라인·더티 추적)는 강제 전체 재조판을 건너뛴다.
-    // 대형 문서에서 한 번의 재조판이 입력을 수 분간 멈추게 하며, 백그라운드에서
-    // 진행 중인 지연 조판을 통째로 무효화한다.
+    const content = this.content(wasm, documentId, revision);
     return this.#snapshot ??= {
       ...content,
-      compareSnapshot: buildSnapshotFromWasm(
-        wasm, wasm.fileName, { ...VERSION_COMPARE_OPTIONS, refreshLayout: false },
-      ),
+      compareSnapshot: buildSnapshotFromWasm(wasm, wasm.fileName, LIVE_COMPARE_OPTIONS),
     };
   }
+
+  /** `capture`와 같은 캡처를 입력을 막지 않게 조각으로 나눠 만든다. 그사이 문서가 바뀌면 null. */
+  async captureInSlices(
+    wasm: WasmBridge,
+    documentId: string | null,
+    revision: number,
+    isCurrent: () => boolean,
+  ): Promise<CapturedVersionSnapshot | null> {
+    const content = this.content(wasm, documentId, revision);
+    if (this.#snapshot) return this.#snapshot;
+    const key = this.#key;
+    const compareSnapshot = await buildSnapshotFromWasmInSlices(wasm, wasm.fileName, LIVE_COMPARE_OPTIONS, isCurrent);
+    if (!compareSnapshot) return null;
+    const captured = { ...content, compareSnapshot };
+    if (this.#key !== key) return captured;
+    this.#content ??= content;
+    this.#snapshot ??= captured;
+    this.#scheduleRelease();
+    return this.#snapshot;
+  }
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 export interface VersionDiffAnalysis {
@@ -88,11 +162,16 @@ export function captureVersionSnapshot(wasm: WasmBridge): CapturedVersionSnapsho
 
 /** Export the same format-preserving payload used by checkpoints and dirty checks. */
 export function exportVersionContent(wasm: WasmBridge): Uint8Array {
+  return exportDraftContent(wasm).bytes;
+}
+
+/** 저장 대상 형식으로 내보내고, 실패해 HWP 로 대신 내보냈으면 실제 형식을 함께 알린다. */
+export function exportDraftContent(wasm: WasmBridge): { bytes: Uint8Array; format: 'hml' | 'hwp' | 'hwpx' } {
   const format = currentSaveFormat(wasm);
   try {
-    return exportDocumentForFormat(wasm, format);
+    return { bytes: exportDocumentForFormat(wasm, format), format };
   } catch {
-    return wasm.exportHwp();
+    return { bytes: wasm.exportHwp(), format: 'hwp' };
   }
 }
 

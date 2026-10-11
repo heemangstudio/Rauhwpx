@@ -18,7 +18,7 @@ The baseline serves the frontend modules from `c57aaa99` alongside the rebuilt n
 
 ## Verification
 
-- `cargo test --manifest-path rhwp/Cargo.toml --test move_inline_picture -- --nocapture`: 10 tests passed, covering metadata retention, same-cell ordering, nested cells, body/cell moves, and invalid destinations.
+- `cargo test --manifest-path rhwp/Cargo.toml --test it move_inline_picture -- --nocapture`: 10 tests passed, covering metadata retention, same-cell ordering, nested cells, body/cell moves, and invalid destinations.
 - `wasm-pack build --target web` in `rhwp`: passed.
 - `npx tsc --noEmit` and `npm run build` in `rhwp/rhwp-studio`: passed.
 - `e2e/drag-table-image.test.mjs`: passed using real browser mouse events. Checks image byte identity, exactly one image, unchanged text in every cell, image containment, undo/redo, and second-row growth.

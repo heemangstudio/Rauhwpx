@@ -30,6 +30,10 @@ const MAX_MEMO_BYTES: usize = 16 * 1024 * 1024;
 /// 바이트 예산만으로는 영영 밀려나지 않는다. 조회가 선형 탐색이라 항목 수도 묶는다.
 const MAX_MEMO_ENTRIES: usize = 64;
 
+// 15MB BMP와 변환 PNG가 함께 있는 시험지 한 쪽도 매 입력마다 축출되지 않게 한다.
+// 문서 전체를 보관하지 않고 원본·변환본 합계와 항목 수로 최근 그림만 제한한다.
+const MAX_RESOLVED_MEMO_BYTES: usize = 32 * 1024 * 1024;
+
 /// 변환 종류. 같은 바이트라도 어떤 변환을 거쳤느냐에 따라 결과가 다르다.
 #[derive(Clone, Copy, Hash)]
 enum Conversion {
@@ -80,6 +84,65 @@ thread_local! {
     /// WASM 은 단일 스레드라 `thread_local` + `RefCell` 로 충분하다
     /// (`layout::text_measurement` 의 측정 캐시와 같은 방식).
     static CONVERSION_MEMO: RefCell<ConversionMemo> = RefCell::new(ConversionMemo::default());
+    /// 최근 그림의 불변 원본도 예산 안에서 쥐어 BinData weak cache의 재압축 해제를 막는다.
+    static RESOLVED_IMAGE_MEMO: RefCell<ResolvedImageMemo> = RefCell::new(ResolvedImageMemo::default());
+}
+
+struct ResolvedImageEntry {
+    source: Arc<[u8]>,
+    effect: ImageEffect,
+    brightness: i8,
+    contrast: i8,
+    payload: Option<ResolvedImagePayload>,
+    bytes: usize,
+}
+
+#[derive(Default)]
+struct ResolvedImageMemo {
+    entries: Vec<ResolvedImageEntry>,
+    bytes: usize,
+}
+
+impl ResolvedImageMemo {
+    fn get(&mut self, image: &ImageNode) -> Option<Option<ResolvedImagePayload>> {
+        let source = image.data.as_ref()?;
+        let idx = self.entries.iter().position(|entry| {
+            Arc::ptr_eq(&entry.source, source)
+                && entry.effect == image.effect
+                && entry.brightness == image.brightness
+                && entry.contrast == image.contrast
+        })?;
+        let entry = self.entries.remove(idx);
+        let payload = entry.payload.clone();
+        self.entries.push(entry);
+        Some(payload)
+    }
+
+    fn insert(&mut self, image: &ImageNode, payload: Option<ResolvedImagePayload>) {
+        let Some(source) = image.data.as_ref() else {
+            return;
+        };
+        // 원본과 변환본을 함께 세며, 큰 그림은 기존 내용 지문 경로만 사용한다.
+        let bytes = source
+            .len()
+            .saturating_add(payload.as_ref().map_or(0, |p| p.data.len()));
+        if bytes > MAX_RESOLVED_MEMO_BYTES {
+            return;
+        }
+        while self.bytes + bytes > MAX_RESOLVED_MEMO_BYTES || self.entries.len() >= MAX_MEMO_ENTRIES
+        {
+            self.bytes -= self.entries.remove(0).bytes;
+        }
+        self.bytes += bytes;
+        self.entries.push(ResolvedImageEntry {
+            source: source.clone(),
+            effect: image.effect,
+            brightness: image.brightness,
+            contrast: image.contrast,
+            payload,
+            bytes,
+        });
+    }
 }
 
 // 실제로 변환을 수행한 횟수 — 메모가 듣는지 보는 테스트용.
@@ -125,6 +188,16 @@ fn conversion_key(conversion: Conversion, data: &[u8]) -> u64 {
 }
 
 pub(crate) fn resolve_image_payload(image: &ImageNode) -> Option<ResolvedImagePayload> {
+    // Arc를 함께 보관하므로 주소 재사용이나 편집된 바이트가 옛 결과를 받을 수 없다.
+    if let Some(payload) = RESOLVED_IMAGE_MEMO.with(|memo| memo.borrow_mut().get(image)) {
+        return payload;
+    }
+    let payload = resolve_image_payload_uncached(image);
+    RESOLVED_IMAGE_MEMO.with(|memo| memo.borrow_mut().insert(image, payload.clone()));
+    payload
+}
+
+fn resolve_image_payload_uncached(image: &ImageNode) -> Option<ResolvedImagePayload> {
     let data = image.data.as_deref()?;
     let mime = detect_image_mime_type(data);
 
@@ -549,8 +622,9 @@ fn decode_image_with_format_limited(
 mod tests {
     use super::{
         bmp_bytes_to_png_bytes, grayscale_jpeg_bytes_to_png_bytes,
-        hancom_adjusted_picture_png_bytes, resolve_image_payload, ConversionMemo, CONVERSIONS_RUN,
-        MAX_MEMO_BYTES, MAX_MEMO_ENTRIES,
+        hancom_adjusted_picture_png_bytes, resolve_image_payload, ConversionMemo,
+        ResolvedImageMemo, CONVERSIONS_RUN, MAX_MEMO_BYTES, MAX_MEMO_ENTRIES,
+        MAX_RESOLVED_MEMO_BYTES, RESOLVED_IMAGE_MEMO,
     };
     use crate::model::image::ImageEffect;
     use crate::paint::ResolvedImageKind;
@@ -661,6 +735,72 @@ mod tests {
 
         assert!(std::sync::Arc::ptr_eq(&first.data, &second.data));
         assert_eq!(first.data.len(), second.data.len());
+
+        let mut adjusted = image.clone();
+        adjusted.brightness = 30;
+        let adjusted_payload = resolve_image_payload(&adjusted).expect("brightness should bake");
+        assert_eq!(adjusted_payload.kind, ResolvedImageKind::BakedWatermark);
+        assert_ne!(first.data, adjusted_payload.data);
+        let original = resolve_image_payload(&image).expect("original should remain cached");
+        assert!(std::sync::Arc::ptr_eq(&first.data, &original.data));
+    }
+
+    #[test]
+    fn rebuilding_image_nodes_reuses_lazy_source_payloads() {
+        use crate::model::bin_data::{BinDataBytes, BinDataResolver, SharedBinDataResolver};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct Source(AtomicUsize);
+        impl BinDataResolver for Source {
+            fn resolve(&self, _: &str) -> Vec<u8> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                bmp_with_middle_band([12, 34, 56])
+            }
+        }
+        let source = Arc::new(Source(AtomicUsize::new(0)));
+        let data = BinDataBytes::lazy(
+            Arc::new(SharedBinDataResolver::new(source.clone())),
+            "picture.bmp".to_string(),
+        );
+        let first = {
+            let image = ImageNode::new_shared(1, Some(data.load_shared()));
+            resolve_image_payload(&image).expect("bmp converts")
+        };
+        let image = ImageNode::new_shared(1, Some(data.load_shared()));
+        let second = resolve_image_payload(&image).expect("replacement tree reuses bmp");
+        assert_eq!(source.0.load(Ordering::Relaxed), 1);
+        assert!(Arc::ptr_eq(&first.data, &second.data));
+        // 원본도 캐시 예산/수명 밖에서는 기존 weak 공유 계약대로 해제된다.
+        drop(image);
+        RESOLVED_IMAGE_MEMO.with(|memo| *memo.borrow_mut() = ResolvedImageMemo::default());
+        let _reloaded = data.load_shared();
+        assert_eq!(source.0.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn resolved_image_memo_bounds_sources_and_releases_evicted_payloads() {
+        use std::sync::Arc;
+        let mut memo = ResolvedImageMemo::default();
+        let source: Arc<[u8]> = vec![0; MAX_RESOLVED_MEMO_BYTES / 2 + 1].into();
+        let weak = Arc::downgrade(&source);
+        let image = ImageNode::new_shared(1, Some(source));
+        memo.insert(&image, None);
+        assert!(memo.get(&image).is_some());
+        let mut changed = image.clone();
+        changed.contrast = 1;
+        assert!(memo.get(&changed).is_none());
+        drop(changed);
+        drop(image);
+        let replacement = ImageNode::new(1, Some(vec![1; MAX_RESOLVED_MEMO_BYTES / 2]));
+        memo.insert(&replacement, None);
+        assert!(weak.upgrade().is_none());
+        assert!(memo.get(&replacement).is_some());
+        let oversized = ImageNode::new(1, Some(vec![2; MAX_RESOLVED_MEMO_BYTES + 1]));
+        memo.insert(&oversized, None);
+        assert!(memo.get(&oversized).is_none());
+        assert!(memo.bytes <= MAX_RESOLVED_MEMO_BYTES);
     }
 
     /// 메모가 다른 그림의 결과를 흘리지 않는다.

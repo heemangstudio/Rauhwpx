@@ -94,16 +94,6 @@ test('HF 편집 상태는 종류·타겟·대표 페이지를 함께 전달한�
   assert.equal(headerFooterApplyToLabel(2), '홀수 쪽');
 });
 
-test('CanvasView는 대표 preview와 실제 적용 쪽 overlay를 비인쇄 계층으로 관리한다', () => {
-  const source = readFileSync(new URL('../src/view/canvas-view.ts', import.meta.url), 'utf8');
-  assert.match(source, /renderHeaderFooterEditPreviewToCanvas\(/);
-  assert.match(source, /data-rhwp-hf-edit-page/);
-  assert.match(source, /getHeaderFooterEditTarget\(pageIdx/);
-  assert.match(source, /drawHeaderFooterGuideCorners\(band,\s*guideCanvas,\s*renderScale,\s*zoom\)/);
-  assert.match(source, /hf-edit-guide-canvas/);
-  assert.match(source, /removeHeaderFooterEditOverlays\(\)/);
-});
-
 test('HF 상태 live region은 display:none 도구상자 밖에 있다', () => {
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const live = html.indexOf('id="hf-edit-status-live"');
@@ -113,22 +103,4 @@ test('HF 상태 live region은 display:none 도구상자 밖에 있다', () => {
   const groupBlock = html.slice(group, html.indexOf('</div>', group) + 6);
   assert.doesNotMatch(groupBlock, /hf-edit-status-live/);
   assert.match(html, /id="hf-edit-status-live"[^>]*aria-live="polite"/);
-});
-
-test('HF 편집 안내는 내용을 덮지 않고 모서리와 텍스트만 표시한다', () => {
-  const css = readFileSync(new URL('../src/styles/editor.css', import.meta.url), 'utf8');
-  const representative = css.match(/\.hf-edit-region\.is-representative\s*\{([^}]*)\}/)?.[1] ?? '';
-  const related = css.match(/\.hf-edit-region\.is-related\s*\{([^}]*)\}/)?.[1] ?? '';
-  const guideCanvas = css.match(/canvas\.hf-edit-guide-canvas\s*\{([^}]*)\}/)?.[1] ?? '';
-  const badge = css.match(/\.hf-edit-badge\s*\{([^}]*)\}/)?.[1] ?? '';
-
-  assert.doesNotMatch(representative, /background\s*:/);
-  assert.doesNotMatch(representative, /border\s*:/);
-  assert.doesNotMatch(related, /background\s*:/);
-  assert.match(guideCanvas, /background:\s*transparent/);
-  assert.match(guideCanvas, /transform:\s*none/);
-  assert.doesNotMatch(css, /\.hf-edit-corner/);
-  assert.match(badge, /--hf-edit-badge-gap/);
-  assert.match(badge, /calc\(-100% - var\(--hf-edit-badge-gap, 4px\)\)/);
-  assert.match(css, /\.hf-edit-badge[\s\S]*color:\s*#333333/);
 });

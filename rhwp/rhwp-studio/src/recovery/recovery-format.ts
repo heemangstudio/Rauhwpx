@@ -1,21 +1,12 @@
-import type { AutosaveDraftSummary } from './autosave-store.ts';
+import type { AutosaveDataFormat, AutosaveDraftSummary } from './autosave-store.ts';
 
-function baseNameWithoutKnownExtension(fileName: string): string {
-  const trimmed = fileName.trim() || '문서.hwp';
-  const dot = trimmed.lastIndexOf('.');
-  if (dot <= 0) return trimmed;
-
-  const ext = trimmed.slice(dot).toLowerCase();
-  if (ext === '.hwp' || ext === '.hwpx' || ext === '.hml') {
-    return trimmed.slice(0, dot);
-  }
-  return trimmed;
+/** documentId 가 없는 draft 는 v3 이전에 만든 것이다. 바이트는 항상 HWP 이고 원본과 연결되지 않는다. */
+export function isLegacyDraft(draft: Pick<AutosaveDraftSummary, 'documentId'>): boolean {
+  return !draft.documentId;
 }
 
-export function recoveryFileName(fileName: string): string {
-  const base = baseNameWithoutKnownExtension(fileName);
-  // autosave draft는 exportHwp() 결과이므로 모든 출처의 복구본은 HWP로 생성한다.
-  return `${base} 복구본.hwp`;
+export function draftDataFormat(draft: Pick<AutosaveDraftSummary, 'dataFormat'>): AutosaveDataFormat {
+  return draft.dataFormat ?? 'hwp';
 }
 
 export function formatDraftSavedAt(timestamp: number): string {
@@ -33,6 +24,9 @@ export function formatDraftSize(byteLength: number): string {
 
 export function describeDraft(draft: AutosaveDraftSummary): string {
   const format = draft.sourceFormat.toUpperCase();
-  const suffix = ['hwpx', 'hml'].includes(draft.sourceFormat.toLowerCase()) ? ' → HWP 복구본' : '';
+  // 예전 draft 는 HWP 로만 저장했다. 다른 형식에서 온 draft 는 HWP 로 열린다.
+  const suffix = isLegacyDraft(draft) && ['hwpx', 'hml'].includes(draft.sourceFormat.toLowerCase())
+    ? ' → HWP'
+    : '';
   return `${formatDraftSavedAt(draft.savedAt)} · ${formatDraftSize(draft.byteLength)} · ${format}${suffix}`;
 }

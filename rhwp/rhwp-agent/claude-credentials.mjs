@@ -6,7 +6,6 @@ import { promisify } from 'node:util';
 
 export const CLAUDE_CONFIG_DIR_ENV = 'CLAUDE_CONFIG_DIR';
 export const CLAUDE_CREDENTIAL_FILENAME = '.credentials.json';
-export const CLAUDE_CONFIG_FILENAME = '.claude.json';
 /** macOS Keychain service that owns the default profile's Claude Code login. */
 export const CLAUDE_KEYCHAIN_SERVICE = 'Claude Code-credentials';
 export const CLAUDE_CREDENTIAL_MAX_BYTES = 64 * 1024;
@@ -178,14 +177,6 @@ export async function deleteClaudeKeychainItem(service, { platform = process.pla
   } catch {
     return false;
   }
-}
-
-/** Write a resolved credential to a private seed file for isolated consumers. */
-export async function writeClaudeCredentialFile(file, text) {
-  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  await fs.writeFile(file, text, { encoding: 'utf8', mode: 0o600 });
-  await fs.chmod(file, 0o600).catch(() => {});
-  return file;
 }
 
 /** Long-lived tokens minted by `claude setup-token`. */

@@ -11,6 +11,18 @@ const PROFILE_ID_PATTERN = /^[0-9a-f]{20}$/;
 export const LAUNCH_OWNER_FILE = '.rauhwpx-owner.json';
 export const LEGACY_CLEANUP_MARKER_FILE = '.rauhwpx-legacy-cleanup.json';
 export const CREDENTIAL_RETENTION_DIR = '.rauhwpx-credential-copybacks';
+const LAUNCH_MARKERS = Object.freeze({
+  owner: LAUNCH_OWNER_FILE,
+  cleanupRetention: LEGACY_CLEANUP_MARKER_FILE,
+  credentialRetention: CREDENTIAL_RETENTION_DIR,
+});
+/** 2.0.11 named its launch markers and temp folder after HamaEditor. Its stale launches are cleaned the same way. */
+export const REBRANDED_LAUNCH_MARKERS = Object.freeze({
+  owner: '.hamaeditor-owner.json',
+  cleanupRetention: '.hamaeditor-legacy-cleanup.json',
+  credentialRetention: '.hamaeditor-credential-copybacks',
+});
+const REBRANDED_TEMP_FOLDER = 'hamaeditor';
 export const STALE_LAUNCH_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 export const LEGACY_LAUNCH_MIN_AGE_MS = 7 * STALE_LAUNCH_MIN_AGE_MS;
 export const LEGACY_REBOOT_UPTIME_TOLERANCE_SECONDS = 60;
@@ -304,10 +316,10 @@ async function readBoundedJson(filePath, {
   }
 }
 
-async function hasPendingCredentialCopyback(directory, directoryOptions) {
+async function hasPendingCredentialCopyback(directory, directoryOptions, markers = LAUNCH_MARKERS) {
   try {
     const { entries, truncated } = await readBoundedDirectory(
-      path.join(directory, CREDENTIAL_RETENTION_DIR),
+      path.join(directory, markers.credentialRetention),
       {
         ...directoryOptions,
         maxEntries: MAX_CREDENTIAL_RETENTION_ENTRIES,
@@ -323,10 +335,10 @@ async function hasPendingCredentialCopyback(directory, directoryOptions) {
   }
 }
 
-async function readCleanupRetentionMarker(directory, directoryName, fileOptions) {
+async function readCleanupRetentionMarker(directory, directoryName, fileOptions, markers = LAUNCH_MARKERS) {
   try {
     const raw = await readBoundedJson(
-      path.join(directory, LEGACY_CLEANUP_MARKER_FILE),
+      path.join(directory, markers.cleanupRetention),
       fileOptions,
     );
     return { exists: true, marker: validLegacyCleanupMarker(raw, directoryName) };
@@ -337,15 +349,33 @@ async function readCleanupRetentionMarker(directory, directoryName, fileOptions)
   }
 }
 
-async function readOwnerMetadata(directory, directoryName, expectedProfileId, fileOptions) {
+async function readOwnerMetadata(directory, directoryName, expectedProfileId, fileOptions, markers = LAUNCH_MARKERS) {
   try {
     const owner = validOwnerMetadata(await readBoundedJson(
-      path.join(directory, LAUNCH_OWNER_FILE),
+      path.join(directory, markers.owner),
       fileOptions,
     ), directoryName, expectedProfileId);
     return { exists: true, owner };
   } catch (error) {
     return { exists: error?.code !== 'ENOENT', owner: null };
+  }
+}
+
+/** Per-profile runtime folders 2.0.11 left in the temp folder, for the same stale-launch cleanup. */
+export async function rebrandedRuntimeRoots(tempDir, { opendirImpl = opendir, readdirImpl } = {}) {
+  const profilesDir = path.join(String(tempDir), REBRANDED_TEMP_FOLDER, 'profiles');
+  try {
+    const { entries } = await readBoundedDirectory(profilesDir, {
+      maxEntries: MAX_LAUNCH_DIRECTORY_ENTRIES,
+      opendirImpl,
+      readdirImpl,
+    });
+    return entries
+      .filter((entry) => entry.isDirectory() && PROFILE_ID_PATTERN.test(entry.name))
+      .map((entry) => path.join(profilesDir, entry.name, 'runtime'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
   }
 }
 
@@ -359,6 +389,7 @@ export async function removeStaleLaunchDirectories(
   activeLaunchId,
   {
     expectedProfileId = null,
+    markers = LAUNCH_MARKERS,
     minimumAgeMs = STALE_LAUNCH_MIN_AGE_MS,
     now = Date.now,
     isAlive = isProcessAlive,
@@ -399,6 +430,7 @@ export async function removeStaleLaunchDirectories(
       entry.name,
       expectedProfileId,
       fileOptions,
+      markers,
     );
     if (!owner) continue;
 
@@ -407,12 +439,13 @@ export async function removeStaleLaunchDirectories(
       || currentTime < owner.createdAtMs
       || currentTime - owner.createdAtMs < minimumAgeMs) continue;
     if (isAlive(owner.pid)) continue;
-    if (await hasPendingCredentialCopyback(directory, directoryOptions)) continue;
+    if (await hasPendingCredentialCopyback(directory, directoryOptions, markers)) continue;
 
     const cleanupRetention = await readCleanupRetentionMarker(
       directory,
       entry.name,
       fileOptions,
+      markers,
     );
     if (cleanupRetention.exists) {
       const currentUptime = Number(uptimeSeconds());

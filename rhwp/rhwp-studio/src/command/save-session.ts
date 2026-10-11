@@ -35,6 +35,11 @@ export class SaveSession {
     return this.followUp;
   }
 
+  /** 진행 중인 저장과 이어 붙은 후속 저장이 모두 끝날 때까지 기다린다. */
+  async whenIdle(): Promise<void> {
+    while (this.active || this.followUp) await (this.followUp ?? this.active);
+  }
+
   /** 다른 이름으로 저장처럼 사용자 선택이 필요한 저장. 진행 중인 저장이 있으면 실행하지 않는다. */
   exclusive(run: () => Promise<SaveOutcome>): Promise<SaveOutcome | 'busy'> {
     if (this.active) return Promise.resolve('busy');

@@ -9,7 +9,21 @@ import puppeteer from 'puppeteer-core';
 import { checkSetupTerminal } from './setup-terminal.check.mjs';
 import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
+import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
+import { checkComposerSendPath, checkFollowUpGap, checkFollowUpQueue } from './queue.check.mjs';
+import { checkContextPreview } from './context.check.mjs';
+import { checkSessionsPreview } from './sessions.check.mjs';
+import { checkReloadPreview } from './reload.check.mjs';
+import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
+import { checkWriterBusyPreview } from './writer-busy.check.mjs';
+import { checkTypingGuard } from './typing-guard.check.mjs';
+import { checkDelayedStatus } from './delayed-status.check.mjs';
+import { checkRestoreTurnPreview } from './restore-turn.check.mjs';
+import { checkFailureNotices } from './failures.check.mjs';
+import { checkAttention } from './attention.check.mjs';
+import { checkInterruptionPreview } from './interruption.check.mjs';
+import { checkAdoptionPreview } from './adoption.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -20,7 +34,7 @@ await mkdir(artifacts, { recursive: true });
 const sampleFile = resolve(artifacts, 'sample.txt');
 await writeFile(sampleFile, '문서 디자인을 위한 샘플 참고자료입니다.');
 // Own server + fresh browser profile: checks do not need or alter a running app/preview.
-const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-sidebar-check-'));
+const cacheDir = await mkdtemp(resolve(tmpdir(), 'hamaeditor-sidebar-check-'));
 const server = await createServer({
   cacheDir,
   configFile: resolve(studio, 'vite.sidebar.config.ts'),
@@ -84,7 +98,7 @@ try {
     await page.waitForFunction(() => window.sidebarPreview);
     if (!query.includes('services=setup'))
       await page.waitForFunction(
-        () => !document.querySelector('.ag-input').disabled,
+        () => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true',
       );
   }
   async function screenshot(name) {
@@ -107,12 +121,9 @@ try {
     );
     assert(clicked, `Visible ${selector} with text ${text}`);
   }
+  // New chat opens a focus-mode draft, so sidebar checks start from an empty store instead.
   async function openNewChat(query = '') {
-    await open(query);
-    await page.click('.ag-header .ag-threads-btn');
-    await page.waitForSelector('.ag-threads-new', { visible: true });
-    await page.click('.ag-threads-new');
-    await page.waitForFunction(() => !document.querySelector('.ag-input').disabled);
+    await open(query ? `reset=1&${query}` : 'reset=1');
   }
   async function play(scenario) {
     await openNewChat(`scenario=${scenario}`);
@@ -129,7 +140,16 @@ try {
           document.querySelector('.ag-msg-user'),
       );
   }
+  // SIDEBAR_CHECK=<text> runs only the steps whose name contains it (case-insensitive).
+  const onlyStep = process.env.SIDEBAR_CHECK?.toLowerCase();
+  // 커밋 전 변경이 있으면 버전 창은 변경 탭으로 열린다. 그래프 도구는 그래프 탭에 있다.
+  async function showVersionGraph() {
+    await page.click('.ag-versions-tab[data-tab="history"]');
+    await page.waitForSelector('.ag-versions-tab[data-tab="history"][aria-selected="true"]');
+    await page.waitForSelector('.ag-version-row', { visible: true });
+  }
   async function step(name, run) {
+    if (onlyStep && !name.toLowerCase().includes(onlyStep)) return;
     try {
       await run();
       console.log(`PASS ${name}`);
@@ -143,7 +163,7 @@ try {
     await open('fullscreen=1');
     const startNewChat = async () => {
       await page.click('.ag-threads-new');
-      await page.waitForFunction(() => !document.querySelector('.ag-input').disabled);
+      await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
     };
     await startNewChat();
     const layout = () => page.evaluate(() => {
@@ -251,6 +271,8 @@ try {
     const turnLabel = '편집 2번 · 읽기 1번 · 도구 1번 · 오류 1';
     await page.waitForFunction((label) => !window.sidebarPreview.bridge.isTurnRunning()
       && document.querySelector('.ag-activity-label')?.textContent === label, {}, turnLabel);
+    // 끝난 턴의 작업은 한 줄로 접힌다 — 펼친 뒤 도구 묶음을 연다.
+    await page.click('.ag-turn-fold-toggle');
     await page.click('.ag-activity-toggle');
     const toolRows = async () => page.$$eval('.ag-tool-row', rows => rows.map(row => ({
       label: row.querySelector('.ag-tool-label')?.textContent,
@@ -286,6 +308,7 @@ try {
       [...list.querySelectorAll('.ag-threads-item')].find(node => node.dataset.threadId === id)?.click(), threadId);
     await page.waitForSelector('.ag-activity-label');
     assert.equal(await page.$eval('.ag-activity-label', node => node.textContent), turnLabel);
+    await page.click('.ag-turn-fold-toggle');
     await page.click('.ag-activity-toggle');
     const stored = await toolRows();
     assertToolRows(stored);
@@ -416,6 +439,12 @@ try {
   );
   await step('Plan research, revision, execution progress, and review',
     () => checkPlanPreview(page, origin, artifacts));
+  await step('Follow-up queue: Enter queues, normal ends drain, doubtful ends hold',
+    () => checkFollowUpQueue(page, origin, artifacts));
+  await step('Follow-up gap: settings lock, inline refusal, settings refusals and chat switches keep the accepted message once',
+    () => checkFollowUpGap(page, origin, artifacts));
+  await step('Composer send path: template, skill, attachments and local commands',
+    () => checkComposerSendPath(page, origin));
   await step('Question submission and resolution', async () => {
     await play('question');
     await screenshot('question');
@@ -437,18 +466,23 @@ try {
     await page.evaluate(() => window.sidebarPreview.setServices(false));
     assert.deepEqual(await visible(), []);
   });
+  await step('Context meter, compaction, and provider handoff', () => checkContextPreview(page, origin, artifacts));
   await step('Compact live subagent previews', () => checkFleetPreview(page, origin));
   await step('Full-screen changes, history, commit, discard, and review',
     () => checkChangesPreview(page, origin, artifacts));
   await step('Subagent fleet, failure, and offline recovery', async () => {
     await play('fleet');
     await page.waitForSelector('.ag-fleet-slot:not([hidden]) .ag-fleet-toggle');
+    // 정착한 카드는 턴 접힘 안에 있다 — 펼친 뒤 카드를 연다.
+    await page.click('.ag-turn-fold-toggle');
     await page.click('.ag-fleet-slot:not([hidden]) .ag-fleet-toggle');
     await page.waitForFunction(() => document.querySelector('.ag-root').innerText.includes('용어를 통일'));
     await screenshot('fleet');
     await play('error');
+    // The default failure kind is a network failure: one notice with 다시 시도.
     await page.waitForFunction(() =>
-      document.querySelector('.ag-root').innerText.includes('앗, 오류에요! 네트워크 연결을 확인하세요!'),
+      document.querySelectorAll('.ag-failure-notice').length === 1
+      && document.querySelector('.ag-failure-action[data-action="retry"]'),
     );
     assert(
       !(await page.$eval('.ag-root', (element) =>
@@ -688,6 +722,29 @@ try {
     await page.waitForFunction(() => document.querySelector('.ag-provider-quotas').textContent.includes('리셋 크레딧 없음'));
     assert.equal(await page.evaluate(() => localStorage.getItem('rhwp-codex-pending-reset')), null);
   });
+  await step('First-run setup walks theme, AI and fonts to the done frame', async () => {
+    await open('initial-setup=1&services=setup');
+    await page.waitForSelector('.rhwp-setup-overlay.rhwp-setup-open');
+    await page.click('.rhwp-setup-theme[data-mode="dark"]');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.themeEffective), 'dark');
+    await page.click('.rhwp-setup-theme[data-mode="light"]');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.themeEffective), 'light');
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (await page.$eval('.rhwp-setup-dialog', (dialog) => dialog.dataset.step === 'done')) break;
+      await page.click('.rhwp-setup-primary');
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    const done = await page.evaluate(() => ({
+      step: document.querySelector('.rhwp-setup-dialog').dataset.step,
+      line: document.querySelector('.rhwp-setup-say .visually-hidden').textContent,
+      pose: document.querySelector('.rhwp-setup-hippo').dataset.pose,
+      completed: JSON.parse(localStorage.getItem('rhwp-initial-setup') ?? '{}').completed,
+    }));
+    assert.deepEqual(done, { step: 'done', line: '설정이 완료되었어요!', pose: 'open', completed: true });
+    await (await page.$('.rhwp-setup-dialog')).screenshot({ path: resolve(artifacts, 'first-run-done.png') });
+    await page.click('.rhwp-setup-primary');
+    await page.waitForFunction(() => !document.querySelector('.rhwp-setup-overlay'));
+  });
   await step(
     'Unconfigured provider installation and local OAuth placeholder',
     async () => {
@@ -751,6 +808,7 @@ try {
     async () => {
       await open('page=versions');
       await page.waitForSelector('.ag-root.ag-versions-open');
+      await showVersionGraph();
       await screenshot('versions');
       await page.click('[aria-label="새 커밋 만들기"]');
       await page.waitForSelector('.ag-version-prompt-input', { visible: true });
@@ -782,8 +840,10 @@ try {
       });
     },
   );
+  await step('Worktree create, open, close, removal cancellation and merge', () => checkWorktrees({ page, open, screenshot }));
   await step('Branch commits keep their graph lane and move the branch label', async () => {
     await open('page=versions&history=branches&theme=dark&width=480');
+    await showVersionGraph();
     await screenshot('versions-dark');
     assert.equal(await page.$$eval('.ag-version-meta, .ag-version-time', (items) => items.length), 0);
     const initialRowHeight = await page.$eval('.ag-version-row', (row) => row.getBoundingClientRect().height);
@@ -792,6 +852,11 @@ try {
     assert.match(await page.$eval('.ag-version-date-tooltip', (tip) => tip.textContent), /월/);
     assert.equal(await page.$eval('.ag-version-row', (row) => row.getBoundingClientRect().height), initialRowHeight);
     await screenshot('versions-date-hover');
+    // 요소 스크린샷이 창 크기 변경을 일으켜 날짜 풍선을 닫는다. 다시 띄운 뒤 Escape 를 본다.
+    await page.mouse.move(0, 0);
+    await page.waitForFunction(() => !document.querySelector('.ag-version-date-tooltip').classList.contains('ag-visible'));
+    await page.hover('.ag-version-row');
+    await page.waitForSelector('.ag-version-date-tooltip.ag-visible', { visible: true });
     await page.focus('.ag-version-row');
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => !document.querySelector('.ag-version-date-tooltip').classList.contains('ag-visible'));
@@ -819,6 +884,7 @@ try {
     assert.deepEqual(result, { branchAtHead: true, parent: 'e8f21a0', separateLane: true, label: true, current: true, selected: 'true' });
     await screenshot('versions-branch-commit');
     await open('page=versions&history=branches&width=360');
+    await showVersionGraph();
     await screenshot('versions-light-narrow');
     assert(await page.$eval('.ag-versions-page', (el) => el.scrollWidth <= el.clientWidth), 'Narrow panel overflows');
     await open('width=480');
@@ -995,6 +1061,29 @@ try {
     }
     assert.deepEqual(await sections(), []);
   });
+  await step('Background document sessions keep their agent while another sidebar is shown',
+    () => checkSessionsPreview(page, origin));
+  await step('A new chat draft creates no chat until its first send', () => checkDraftChat(page, origin));
+  await step('A new chat while the agent runs opens another chat without interrupting',
+    () => checkNewChatWhileRunning(page, origin));
+  await step('A chat locked by another chat\'s edits only picks and sends in 채팅',
+    () => checkChatModeLock(page));
+  await step('A write refused because another chat edits the document shows one failed tool row',
+    () => checkWriterBusyPreview(page, origin, artifacts));
+  await step('Arriving questions wait while the user types', () => checkTypingGuard(page, origin, artifacts));
+  await step('Transient statuses wait 400 ms and never blink', () => checkDelayedStatus(page, origin, artifacts));
+  await step('A request\'s accepted changes can be restored from its bubble, with confirmation and refusals',
+    () => checkRestoreTurnPreview(page, origin, artifacts));
+  await step('A reload re-adopts the chat the hub still runs instead of restarting it',
+    () => checkReloadPreview(page, origin, artifacts));
+  await step('Each provider failure shows one notice with the actions that fit it',
+    () => checkFailureNotices(page, origin, artifacts));
+  await step('Background-chat attention: rail states, chip, count, toasts and notices',
+    () => checkAttention(page, origin, artifacts));
+  await step('A turn cut off by a hub restart, an app restart, a reload or an engine trap says why and offers 이어서 진행',
+    () => checkInterruptionPreview(page, origin, artifacts));
+  await step('A reload never draws the hub chat\'s replayed or early events on the startup draft, and a late end settles only its own turn',
+    () => checkAdoptionPreview(page, origin, artifacts));
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

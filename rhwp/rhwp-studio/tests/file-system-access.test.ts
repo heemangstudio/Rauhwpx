@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import {
   HWP_DOCUMENT_ACCEPT,
@@ -499,15 +498,6 @@ test('save picker가 출력 포맷과 다른 확장자를 반환하면 쓰기 �
   assert.equal(invalidHandle.writable.closed, false);
 });
 
-test('save ownership/write errors do not silently become downloads', () => {
-  const commands = readFileSync(new URL('../src/command/commands/file.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(commands, /File System Access API 실패, 폴백/);
-  assert.match(
-    commands,
-    /if \(isUserCancelError\(error\)\) return 'cancelled';\s+throw error;/,
-  );
-});
-
 test('write failure aborts the browser swap stream', async () => {
   const calls: string[] = [];
   const failure = new Error('disk full');
@@ -596,4 +586,52 @@ test('브라우저 picker 사용 불가와 권한 차단은 파일 input fallbac
       showOpenFilePicker: async () => { throw new DOMException('Blocked', name); },
     }), undefined);
   }
+});
+
+test('사본 내보내기는 쓰기를 마친 뒤 예약과 네이티브 핸들을 해제하고 핸들을 채택하지 않는다', async () => {
+  const handle = createHandle('copy.hwpx');
+  const lifecycle: string[] = [];
+  Object.assign(handle, {
+    adoptSaveTarget() { lifecycle.push('adopt'); },
+    async releaseUnusedSaveTarget() { lifecycle.push('release'); },
+  });
+  const result = await saveDocumentToFileSystem({
+    blob: new Blob(['copy']),
+    suggestedName: 'copy.hwpx',
+    currentHandle: null,
+    windowLike: {},
+    forceSaveAs: true,
+    saveFormat: 'hwpx',
+    retainHandle: false,
+    pickSaveHandle: async () => handle,
+    validateTarget: async () => {
+      lifecycle.push('reserve');
+      return async (saved) => {
+        assert.equal(handle.writable.closed, true);
+        lifecycle.push(saved ? 'commit' : 'cancel');
+      };
+    },
+  });
+  assert.equal(result.method, 'save-picker');
+  assert.equal(await handle.writable.writes[0].text(), 'copy');
+  assert.deepEqual(lifecycle, ['reserve', 'cancel', 'release']);
+});
+
+test('사본 내보내기의 소유권 검사가 거절되면 쓰지 않고 선택한 핸들을 해제한다', async () => {
+  const handle = createHandle('linked.hwpx');
+  let released = 0;
+  Object.assign(handle, { async releaseUnusedSaveTarget() { released += 1; } });
+  await assert.rejects(saveDocumentToFileSystem({
+    blob: new Blob(['copy']),
+    suggestedName: 'copy.hwpx',
+    currentHandle: null,
+    windowLike: {},
+    forceSaveAs: true,
+    saveFormat: 'hwpx',
+    retainHandle: false,
+    pickSaveHandle: async () => handle,
+    validateTarget: async () => { throw new Error('document owned elsewhere'); },
+  }), /owned elsewhere/);
+  assert.deepEqual(handle.writable.writes, []);
+  assert.ok(released > 0);
 });

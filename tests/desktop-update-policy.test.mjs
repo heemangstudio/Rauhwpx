@@ -15,12 +15,12 @@ test('Debian update comparison accepts only a newer stable semantic version', ()
 
 test('Debian update selects the matching GitHub architecture asset only', () => {
   const assets = [
-    { name: 'Rauhwpx-0.1.12-arm64.deb', browser_download_url: 'https://github.com/org/repo/arm64' },
-    { name: 'Rauhwpx-0.1.12-amd64.deb', browser_download_url: 'https://github.com/org/repo/amd64' },
-    { name: 'Rauhwpx-0.1.12-x86_64.AppImage', browser_download_url: 'https://github.com/org/repo/appimage' },
-    { name: 'Rauhwpx-0.1.12-amd64.deb', browser_download_url: 'https://attacker.example/package' },
+    { name: 'HamaEditor-0.1.12-arm64.deb', browser_download_url: 'https://github.com/org/repo/arm64' },
+    { name: 'HamaEditor-0.1.12-amd64.deb', browser_download_url: 'https://github.com/org/repo/amd64' },
+    { name: 'HamaEditor-0.1.12-x86_64.AppImage', browser_download_url: 'https://github.com/org/repo/appimage' },
+    { name: 'HamaEditor-0.1.12-amd64.deb', browser_download_url: 'https://attacker.example/package' },
   ];
-  assert.equal(selectDebAsset(assets, 'arm64')?.name, 'Rauhwpx-0.1.12-arm64.deb');
-  assert.equal(selectDebAsset(assets, 'x64')?.name, 'Rauhwpx-0.1.12-amd64.deb');
+  assert.equal(selectDebAsset(assets, 'arm64')?.name, 'HamaEditor-0.1.12-arm64.deb');
+  assert.equal(selectDebAsset(assets, 'x64')?.name, 'HamaEditor-0.1.12-amd64.deb');
   assert.equal(selectDebAsset(assets.slice(2), 'x64'), null);
 });

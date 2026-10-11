@@ -184,20 +184,26 @@ const FONT_FILE_FACE_NAMES = new Map<string, string>([
   ['fonts/GowunDodum-Regular.woff2', '고운돋움'],
 ]);
 
+// 조판과 Canvas font 설정이 글자마다 조회하므로 고정 카탈로그는 한 번만 정규화한다.
+const REGISTERED_FONT_FACE_IDENTITIES = new Map<string, RegisteredFontFaceIdentity>();
+for (const entry of FONT_LIST) {
+  const normalized = normalizeFontFamily(entry.name);
+  if (REGISTERED_FONT_FACE_IDENTITIES.has(normalized)) continue;
+  const loadedFamily = FONT_FILE_FACE_NAMES.get(entry.file) ?? entry.name;
+  REGISTERED_FONT_FACE_IDENTITIES.set(normalized, {
+    requestedFamily: entry.name,
+    loadedFamily,
+    source: entry.file,
+    substituted: normalizeFontFamily(loadedFamily) !== normalized,
+  });
+}
+
 /** The physical web-font face behind a registered CSS family alias. */
 export function resolveRegisteredFontFaceIdentity(
   requestedFamily: string,
 ): RegisteredFontFaceIdentity | null {
-  const normalized = normalizeFontFamily(requestedFamily);
-  const entry = FONT_LIST.find(font => normalizeFontFamily(font.name) === normalized);
-  if (!entry) return null;
-  const loadedFamily = FONT_FILE_FACE_NAMES.get(entry.file) ?? entry.name;
-  return {
-    requestedFamily: entry.name,
-    loadedFamily,
-    source: entry.file,
-    substituted: normalizeFontFamily(loadedFamily) !== normalizeFontFamily(entry.name),
-  };
+  const identity = REGISTERED_FONT_FACE_IDENTITIES.get(normalizeFontFamily(requestedFamily));
+  return identity ? { ...identity } : null;
 }
 
 /** 등록된 CSS 별칭이 실제 선언 face 대신 다른 파일을 제공하는지 확인한다. */
