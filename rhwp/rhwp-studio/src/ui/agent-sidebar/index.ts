@@ -3866,7 +3866,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const unsubscribeAgentBrowserPreview = bridge.onBrowserEvent((event) => {
     if (event.type !== 'owned_browser_activity') return;
     const tab = event.tab ?? (event.payload as { tab?: import('../../agent/types.ts').BrowserTab } | undefined)?.tab;
-    if (tab) ensureWorkbenchBrowser().previewAgent(tab);
+    if (event.active === false) workbenchBrowser?.endAgentPreview(tab?.tabId);
+    else if (tab) ensureWorkbenchBrowser().previewAgent(tab);
   });
 
   workbench = createSidebarWorkbench({
@@ -7423,7 +7424,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function setTurnRunning(running: boolean): void {
     turnRunning = running;
-    if (!running) replyPending = false;
+    if (!running) { replyPending = false; workbenchBrowser?.endAgentPreview(undefined, true); }
     updateTurnPending();
     updateComposer();
     rebuildReview();

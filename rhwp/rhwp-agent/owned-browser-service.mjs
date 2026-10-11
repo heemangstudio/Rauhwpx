@@ -130,7 +130,7 @@ export function createOwnedBrowserService(options = {}) {
   const descriptor = (tab) => ({ tabId: tab.tabId, threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: publicURL(tab.page?.url?.() ?? tab.url), title: tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null });
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   const publish = (tab) => emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo() });
-  const previewActivity = (actor, tab) => { if (!actor.isHuman) emit('owned_browser_activity', { active: true, sessionId: tab.sessionId, tab: descriptor(tab), runtime: runtimeInfo() }); };
+  const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman) emit('owned_browser_activity', { active, sessionId: tab.sessionId, tab: descriptor(tab), runtime: runtimeInfo() }); };
   const persist = () => {
     if (resetting || resetFailed) return Promise.resolve();
     const records = [...tabs.values()].map((tab) => ({ ...descriptor(tab), sessionId: tab.sessionId, taskId: tab.taskId, searchQuery: googleResearchURL(tab.page?.url?.() ?? tab.url) && typeof tab.searchQuery === 'string' ? text(tab.searchQuery, 4000) : undefined }));
@@ -1027,7 +1027,7 @@ export function createOwnedBrowserService(options = {}) {
       if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }
       try { await attach(tab, await runtime.context.newPage()); previewActivity(actor, tab); tab.activeActor = actor; if (actor.isHuman && url !== 'about:blank') markHumanOrigin(new URL(url).origin); if (url !== 'about:blank') await tab.page.goto(url, { waitUntil: 'domcontentloaded' }); if (actor.isHuman) markHumanDocument(tab); }
       catch (failure) { await tab.page?.close().catch(() => {}); tabs.delete(tab.tabId); throw failure; }
-      finally { tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
+      finally { previewActivity(actor, tab, false); tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
       if (actor.isHuman) await observeHumanSessions();
       else { await recordAgentSessions(url, agentSessionEpoch); await observeHumanSessions(); }
       await assertPolicy(actor, action, requirePage(tab).url(), tab, args);
@@ -1144,6 +1144,7 @@ export function createOwnedBrowserService(options = {}) {
           value = await operate(actor, action, tab, waitDeadline === undefined ? args : { ...args, waitDeadline });
         } finally {
           if (activity) await adapter.activity({ ...activity, active: false }).catch(() => {});
+          if (action !== 'close') previewActivity(actor, tab, false);
         }
         if (actor.isHuman) { if (mutating && action !== 'close') markHumanDocument(tab); await observeHumanSessions(); }
         else if (action !== 'close') { await recordAgentSessions(requirePage(tab).url(), agentSessionEpoch); await observeHumanSessions(); }

@@ -155,7 +155,7 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   await assert.rejects(browser.request(bob, 'snapshot', { tabId: a.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
   assert.equal((await browser.inventory(alice)).tabs.length, 1);
   let observation = await browser.request(alice, 'snapshot', { tabId: a.tabId });
-  assert.ok(events.some(event => event.type === 'owned_browser_activity' && event.tab.tabId === a.tabId && event.sessionId === 'window-a'), 'agent activity identifies the owning preview');
+  assert.deepEqual(events.filter(event => event.type === 'owned_browser_activity' && event.tab.tabId === a.tabId && event.sessionId === 'window-a').map(event => event.active), [true, false, true, false], 'opening and observing each finish their preview activity');
   events.length = 0;
   await browser.request(human, 'snapshot', { tabId: a.tabId });
   assert.equal(events.some(event => event.type === 'owned_browser_activity'), false, 'human observation does not spawn an agent preview');

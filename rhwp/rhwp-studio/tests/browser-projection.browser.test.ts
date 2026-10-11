@@ -94,6 +94,22 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     await page.evaluate(() => document.documentElement.classList.add('document-home-open'));
     await attached('same-tab');
     assert.equal(await page.$eval('.ag-browser-floating', node => getComputedStyle(node).visibility), 'visible', 'agent preview remains visible on Home');
+    await page.evaluate(() => {
+      const view = (window as any).projectionTest.view;
+      view.endAgentPreview();
+      view.previewAgent(view.controller.tab());
+    });
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'continued activity cancels pending collapse');
+    await page.evaluate(() => (window as any).projectionTest.view.endAgentPreview());
+    await page.waitForFunction(() => (document.querySelector('.ag-browser-floating') as HTMLElement).hidden, { timeout: 2500 });
+    await attached(null);
+    assert.equal(await page.evaluate(() => (window as any).projectionTest.view.controller.tab().tabId), 'same-tab', 'collapse preserves the browser tab');
+    await page.evaluate(() => {
+      const view = (window as any).projectionTest.view;
+      view.previewAgent(view.controller.tab());
+      view.endAgentPreview(undefined, true);
+    });
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true, 'turn end collapses immediately');
     await page.evaluate(() => (window as any).projectionTest.view.dispose());
   } finally { await browser?.close(); await server.close(); }
 });
