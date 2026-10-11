@@ -304,3 +304,98 @@ test('occupied branch undo locks editing and verifies fallback compensation when
     assert.ok(result.replacementCount >= 2);
   } finally { await page.close(); }
 });
+
+test('after an engine trap, version history stops calling the engine but still keeps the worktree copy', { timeout: 45_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${baseUrl}/tests/fixtures/version-store-idb.html`);
+    const result = await page.evaluate(async () => {
+      const [{ WasmBridge }, { EventBus }, { DocumentDirtyState }, versions, { DocumentVersionController }, snapshots, hash, trap] = await Promise.all([
+        import('/src/core/wasm-bridge.ts'), import('/src/core/event-bus.ts'),
+        import('/src/core/document-dirty-state.ts'), import('/src/versioning/index.ts'),
+        import('/src/versioning/controller.ts'), import('/src/versioning/snapshot.ts'),
+        import('/src/versioning/hash.ts'), import('/src/core/engine-trap.ts'),
+      ]);
+      const wasm = new WasmBridge(); await wasm.initialize();
+      wasm.loadDocument(new Uint8Array(await (await fetch('/samples/shift-return.hwp')).arrayBuffer()), 'shift-return.hwp');
+      const eventBus = new EventBus(); const dirty = new DocumentDirtyState(eventBus);
+      const store = new versions.VersionGraphStore({ indexedDB: null });
+      const controller = new DocumentVersionController({
+        store, wasm, eventBus, documentState: dirty, getDocumentId: () => 'trap-doc',
+        getInputHandler: () => ({ canRedo: () => false, prepareSnapshotCapacity() {} }) as never,
+        agentBridge: {
+          pendingEdits: { hasPending: () => false, onChange: () => () => undefined },
+          onEvent: () => () => undefined, isTurnRunning: () => false,
+          getEditingLease: () => ({ active: false, agent: 'codex' as const }), requestCheckpointTitle: async () => null,
+        },
+        worktreeHost: {
+          ensureOwnership: async () => true, canMutate: () => true,
+          getStatus: () => ({ isOpen: true, busy: false }),
+          open: async () => {}, close: async () => {}, remove: async () => false, merge: async () => {},
+        },
+      });
+      const unhandled: string[] = [];
+      window.addEventListener('unhandledrejection', (event) => {
+        unhandled.push(String((event.reason as Error)?.message ?? event.reason));
+      });
+      try {
+        await controller.documentLoaded();
+        await controller.enable();
+        wasm.insertText(0, 0, 0, 'BEFORE TRAP ');
+        dirty.markDirty('typing'); eventBus.emit('document-mutated');
+        const atTrap = snapshots.fingerprintVersionContent(wasm);
+
+        // 엔진이 멈춘 뒤 엔진에 쪽 수를 묻는지 센다 (멈춘 엔진은 EngineTrappedError 로 거절한다).
+        let engineReadsAfterTrap = 0;
+        const pageCount = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(wasm), 'pageCount')!.get!;
+        Object.defineProperty(wasm, 'pageCount', {
+          configurable: true,
+          get() {
+            if (trap.engineTrap()) engineReadsAfterTrap += 1;
+            return pageCount.call(this);
+          },
+        });
+        // 갱신이 저장소를 읽는 사이 엔진이 멈춘다.
+        const findRepository = store.findRepositoryByDocumentId.bind(store);
+        let armed = true;
+        store.findRepositoryByDocumentId = async (...args: Parameters<typeof findRepository>) => {
+          const found = await findRepository(...args);
+          if (armed) {
+            armed = false;
+            trap.reportEngineTrap(new WebAssembly.RuntimeError('unreachable'));
+          }
+          return found;
+        };
+        let refreshError = '';
+        await controller.refresh().catch((error: Error) => { refreshError = error.message; });
+        eventBus.emit('document-context-changed');
+        await controller.refresh();
+        await controller.whenIdle();
+        let checkpointError = '';
+        try { await controller.checkpoint('after the trap'); } catch (error) { checkpointError = (error as Error).message; }
+        // 다시 불러오기 전(pagehide)의 작업 공간 저장은 내보내기만 써서 멈춘 엔진에서도 남는다.
+        await controller.persistWorktree();
+        const worktree = (await store.findWorktreeByDocumentId(versions.documentId('trap-doc')))!;
+        const persisted = (await store.getBlob(worktree.blobId))!;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return {
+          trapped: Boolean(trap.engineTrap()),
+          refreshError,
+          engineReadsAfterTrap,
+          blockedReason: controller.getState().mutationBlockedReason,
+          checkpointError,
+          worktreeKeptTrapContent: hash.fingerprintBytes(persisted.bytes) === atTrap,
+          unhandled,
+        };
+      } finally { controller.dispose(); await store.close(); }
+    });
+    assert.equal(result.trapped, true);
+    assert.equal(result.refreshError, '', 'a refresh caught by the trap ends quietly');
+    assert.equal(result.engineReadsAfterTrap, 0, 'nothing asks the stopped engine for the document');
+    assert.deepEqual(result.unhandled, [], 'no stopped-engine error escapes');
+    assert.match(result.blockedReason ?? '', /문서 복구/, 'history actions are blocked with the recovery path');
+    assert.match(result.checkpointError, /문서 복구/, 'a checkpoint is refused before it touches the engine');
+    assert.equal(result.worktreeKeptTrapContent, true, 'the worktree still records the content at the trap');
+  } finally { await page.close(); }
+});

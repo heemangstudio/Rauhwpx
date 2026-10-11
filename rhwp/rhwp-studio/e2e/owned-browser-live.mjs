@@ -118,7 +118,13 @@ try {
   await record('Stale semantic reference rejected without replay');
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } })));
   await waitForState(page, 'Agent Focus ready', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt'));
-  await page.click('.ag-workspace-panel-btn');
+  if (await page.$eval('.ag-workspace-panel-btn', (button) => button.getAttribute('aria-expanded') !== 'true')) {
+    await page.click('.ag-workspace-panel-btn');
+  }
+  await page.waitForSelector('.ag-workbench-page:not([hidden])', { visible: true });
+  if (await page.$eval('.ag-workbench-launcher', (launcher) => launcher.hidden)) {
+    await page.click('.ag-workbench-add');
+  }
   await page.waitForSelector('.ag-workbench-launcher:not([hidden])', { visible: true });
   await page.locator('.ag-workbench-launcher-item[data-view="browser"]').click();
   await page.waitForSelector('.ag-browser-frame[src^="data:image"]', { visible: true });

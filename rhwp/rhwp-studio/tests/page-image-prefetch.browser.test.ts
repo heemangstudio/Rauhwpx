@@ -14,10 +14,17 @@ async function withStudioPage<T>(fn: (page: BrowserPage) => Promise<T>): Promise
     configFile: false,
     logLevel: 'silent',
     server: { host: '127.0.0.1', port: 0 },
-  });
-  server.middlewares.use('/prefetch-test', (_request, response) => {
-    response.setHeader('Content-Type', 'text/html');
-    response.end('<!doctype html><title>Image prefetch test</title>');
+    plugins: [{
+      name: 'prefetch-test-page',
+      // Vite 의 SPA fallback 보다 먼저 둔다. 뒤에 두면 앱 index.html 이 떠서 main.ts 를 읽고,
+      // 그 사이 찾은 의존성을 다시 묶느라 페이지가 새로 고쳐져 evaluate 가 끊긴다.
+      configureServer(viteServer) {
+        viteServer.middlewares.use('/prefetch-test', (_request, response) => {
+          response.setHeader('Content-Type', 'text/html');
+          response.end('<!doctype html><title>Image prefetch test</title>');
+        });
+      },
+    }],
   });
   let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
   try {

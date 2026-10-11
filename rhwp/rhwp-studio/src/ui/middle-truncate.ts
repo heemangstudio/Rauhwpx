@@ -16,11 +16,15 @@ interface Entry {
   full: string;
   width: number;
   font: string;
-  /** 한 번이라도 문서에 붙어 그려졌는지 — 붙기 전 요소는 걷어내지 않는다. */
-  attached: boolean;
 }
 
-const entries = new Map<HTMLElement, Entry>();
+/**
+ * 등록한 요소의 이름·잰 폭. 약하게 쥔다 — 문서에 한 번도 붙지 않고 버려진 요소(그리기 전에
+ * 걷힌 화면, 가려진 채 다시 그린 목록)가 이 표 때문에 화면째 살아남지 않게 한다.
+ */
+const entries = new WeakMap<HTMLElement, Entry>();
+/** 한 번이라도 문서에 붙어 그려진 요소 — 떨어져 나가면 prune 이 걷는다. 붙기 전 요소는 걷지 않는다. */
+const rendered = new Set<HTMLElement>();
 let observer: ResizeObserver | null = null;
 let ctx: CanvasRenderingContext2D | null = null;
 let fontsHooked = false;
@@ -91,7 +95,7 @@ export function truncateMiddle(text: string, maxWidth: number, measure: (s: stri
 
 function render(el: HTMLElement, entry: Entry): void {
   if (!el.isConnected) return;
-  entry.attached = true;
+  rendered.add(el);
   const style = getComputedStyle(el);
   const width = el.clientWidth
     - (Number.parseFloat(style.paddingLeft) || 0)
@@ -131,7 +135,9 @@ function ensureObserver(): ResizeObserver | null {
     fontsHooked = true;
     // 웹폰트가 늦게 도착하면 폭이 바뀌므로 한 번 더 잰다.
     document.fonts.addEventListener?.('loadingdone', () => {
-      for (const [el, entry] of entries) {
+      for (const el of rendered) {
+        const entry = entries.get(el);
+        if (!entry) continue;
         entry.width = -1;
         render(el, entry);
       }
@@ -142,14 +148,27 @@ function ensureObserver(): ResizeObserver | null {
 
 function release(el: HTMLElement): void {
   entries.delete(el);
+  rendered.delete(el);
   observer?.unobserve(el);
 }
 
 /** 목록을 다시 그리면 떨어져 나간 요소가 남는다 — 등록할 때마다 걷어낸다. */
 function prune(): void {
-  for (const [el, entry] of entries) {
-    if (entry.attached && !el.isConnected) release(el);
+  for (const el of rendered) {
+    if (!el.isConnected) release(el);
   }
+}
+
+/**
+ * root 와 그 안에 등록한 요소를 모두 놓는다 — 화면을 걷을 때(dispose) 부른다. 문서에서 떨어져
+ * 나간 다른 요소도 함께 걷는다. 놓은 요소는 더 줄이지 않고, 다시 부르면 새로 등록한다.
+ */
+export function releaseMiddleTruncatedWithin(root: Element): void {
+  if (root instanceof HTMLElement && entries.has(root)) release(root);
+  for (const el of root.querySelectorAll<HTMLElement>('*')) {
+    if (entries.has(el)) release(el);
+  }
+  prune();
 }
 
 /**
@@ -163,7 +182,7 @@ export function setMiddleTruncatedText(el: HTMLElement, full: string, titleText:
   // 같은 이름이 다시 오면(선택 변경마다 갱신되는 머리글 등) 다시 재지 않는다.
   if (entry?.full === full) return;
   if (!entry) {
-    entry = { full, width: -1, font: '', attached: false };
+    entry = { full, width: -1, font: '' };
     entries.set(el, entry);
     ensureObserver()?.observe(el);
   } else {

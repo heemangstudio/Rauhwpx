@@ -595,12 +595,14 @@ export class InputHandler {
     private eventBus: EventBus,
     private virtualScroll: VirtualScroll,
     private viewportManager: ViewportManager,
+    /** 처음 붙는 문서의 히스토리 — 문서 세션이 같은 객체를 들고 있게 한다 (없으면 새로 만든다). */
+    initialHistory?: CommandHistory,
   ) {
     this.cursor = new CursorState(wasm);
     this.caret = new CaretRenderer(container, virtualScroll);
     this.fieldMarker = new FieldMarkerRenderer(container, virtualScroll);
     this.selectionRenderer = new SelectionRenderer(container, virtualScroll);
-    this.history = new CommandHistory();
+    this.history = initialHistory ?? new CommandHistory();
     this.deferredPaginationRunner = new DeferredPaginationRunner(
       wasm,
       (result) => this.completeResumablePagination(result.pageCount),
@@ -3310,6 +3312,23 @@ export class InputHandler {
       },
       callbacks,
     );
+  }
+
+  /**
+   * 에이전트 턴 체크포인트(엔진 스냅샷)로 문서 전체를 되돌린다 — 실행 취소 한 단계.
+   * 체크포인트 id 는 그대로 남아 다시 쓸 수 있다 (이 단계는 자기 before/after 를 따로 저장한다).
+   */
+  restoreDocumentSnapshot(snapshotId: number): void {
+    this.finalizeCompositionBeforeCursorMove();
+    this.flushDeferredPaginationIfNeeded('before-turn-restore', false);
+    // executeAppliedSnapshot 은 살아 있는 id + 2 가 98 예산 안이어야 한다. prepare 는 100 기준이라
+    // 버전 복원과 같이 4 를 비운다.
+    this.prepareSnapshotCapacity(4);
+    this.executeAppliedSnapshot('agent:restore_turn', (wasm) => {
+      wasm.restoreSnapshot(snapshotId);
+      this.clearTableResizeRuntimeCache();
+      this.resetDerivedStateAfterHistoryJump();
+    });
   }
 
   /** 승인처럼 여러 임시 스냅샷이 필요한 외부 편집기의 저장소 여유를 확보한다. */

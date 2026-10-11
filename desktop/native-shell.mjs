@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises';
 
+import { APP_ID, PRODUCT_NAME } from './app-identity.mjs';
 import { SerializedStateWriter } from './serialized-state-writer.mjs';
 
 /**
- * macOS 네이티브 셸 연동: 창 위치 복원, 문서 상태(프록시 아이콘·미저장 점),
- * 에이전트 알림과 Dock 배지, 네이티브 우클릭 메뉴, 저장 확인 시트.
+ * 네이티브 셸 연동: 창 위치 복원, 문서 상태(프록시 아이콘·미저장 점),
+ * 백그라운드 채팅 알림과 앱 아이콘 배지, 네이티브 우클릭 메뉴, 저장 확인 시트.
  * Electron 모듈은 주입받아 main.mjs 밖에서도 읽기 쉽게 둔다.
  */
 
@@ -122,42 +123,113 @@ export class WindowFrameStore {
   }
 }
 
+const ATTENTION_THREAD_ID = /^[\w.:-]{1,128}$/;
+const ATTENTION_TEXT_MAX = 200;
+const ATTENTION_COUNT_MAX = 9999;
+/** 한 창에서 같은 채팅의 알림 사이 최소 간격. */
+const ATTENTION_THREAD_INTERVAL_MS = 10_000;
+/** 한 창이 1분에 올릴 수 있는 알림 수. */
+const ATTENTION_WINDOW_LIMIT = 6;
+const ATTENTION_WINDOW_SPAN_MS = 60_000;
+
 /**
- * 창별 에이전트 상태: 미검토 변경 수를 모아 Dock 배지로, 백그라운드 턴 완료는 알림으로.
+ * Windows 는 앱 id 가 시작 메뉴 바로가기의 id 와 같을 때만 그 앱의 알림을 띄운다. 설치본은
+ * build.appId(APP_ID)를, 바로가기가 없는 개발 실행은 실행 파일 경로를 쓴다(Electron 이 권하는 개발용 id) —
+ * 개발 실행이 설치된 앱의 id 로 알림을 가로채지 않는다. 다른 플랫폼은 아무것도 하지 않는다.
+ */
+export function applyAppUserModelId({ app, platform = process.platform, execPath = process.execPath }) {
+  if (platform !== 'win32') return null;
+  const id = app.isPackaged ? APP_ID : execPath;
+  app.setAppUserModelId(id);
+  return id;
+}
+
+/**
+ * 렌더러가 보낸 백그라운드 채팅 알림을 검증한다. 채팅 id 가 맞지 않으면 null(버린다).
+ * 제목과 본문은 200자로 자른다.
+ */
+export function normalizeAttentionNotice(payload) {
+  const threadId = typeof payload?.threadId === 'string' ? payload.threadId : '';
+  if (!ATTENTION_THREAD_ID.test(threadId)) return null;
+  const text = (value) => (typeof value === 'string' ? value.slice(0, ATTENTION_TEXT_MAX) : '');
+  return { threadId, title: text(payload.title) || PRODUCT_NAME, body: text(payload.body) };
+}
+
+/** 배지 수 — 0~9999 의 정수. */
+export function normalizeAttentionCount(count) {
+  const value = Math.floor(Number(count));
+  return Number.isFinite(value) && value > 0 ? Math.min(value, ATTENTION_COUNT_MAX) : 0;
+}
+
+/** Windows 작업 표시줄의 겹침 표시 — 16×16 빨간 원(BGRA, 미리 곱한 알파). 그림 파일 없이 만든다. */
+function attentionDotBitmap() {
+  const size = 16;
+  const buffer = Buffer.alloc(size * size * 4);
+  const center = (size - 1) / 2;
+  const radius = 6.5;
+  // #d93a30 — 앱의 오류 빨강.
+  const [r, g, b] = [0xd9, 0x3a, 0x30];
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const distance = Math.hypot(x - center, y - center);
+      const alpha = Math.max(0, Math.min(1, radius + 0.5 - distance));
+      const offset = (y * size + x) * 4;
+      buffer[offset] = Math.round(b * alpha);
+      buffer[offset + 1] = Math.round(g * alpha);
+      buffer[offset + 2] = Math.round(r * alpha);
+      buffer[offset + 3] = Math.round(255 * alpha);
+    }
+  }
+  return { buffer, size };
+}
+
+/**
+ * 백그라운드 채팅 알림과 앱 아이콘 배지 — 창마다 알렸지만 아직 보지 않은 채팅 수를 모은다.
+ *
+ * - notify: 초점 없는 창의 채팅만 알린다(초점이 있으면 렌더러가 토스트로 대신한다 — 경쟁을 막는다).
+ *   macOS 는 Dock 을 튕기고, Windows·Linux 는 작업 표시줄 단추를 깜빡인다. 알림을 누르면 창을
+ *   되살려 앞으로 가져오고 그 채팅을 열게 한다. 렌더러가 고장 나거나 탈취돼도 알림을 쏟아내지
+ *   못하게 창마다 같은 채팅은 10초에 한 번, 모두 합쳐 1분에 6번까지만 알리고 나머지는 조용히 버린다.
+ * - setCount/forget: macOS·Linux 는 창들의 합을 앱 배지(app.setBadgeCount)로, Windows 는 창마다
+ *   자기 수로 작업 표시줄 겹침 표시를 단다.
+ * - focused: 창이 초점을 얻으면 깜빡임을 멈춘다.
+ *
+ * Electron 모듈과 플랫폼은 주입받는다 — 테스트가 모든 갈래를 돌린다.
  */
 export class AgentAttention {
   #app;
   #Notification;
+  #nativeImage;
+  #platform;
+  #now;
+  /** windowId → { window, count } */
   #counts = new Map();
+  /** windowId → { times: 최근 1분의 알림 시각, threads: threadId → 마지막 알림 시각 } */
+  #recent = new Map();
   #notifications = new Set();
+  #overlay = null;
 
-  constructor({ app, Notification }) {
+  constructor({ app, Notification, nativeImage = null, platform = process.platform, now = Date.now }) {
     this.#app = app;
     this.#Notification = Notification;
+    this.#nativeImage = nativeImage;
+    this.#platform = platform;
+    this.#now = now;
   }
 
-  setPendingCount(windowId, count) {
-    const id = windowId;
-    const next = Number.isSafeInteger(count) && count > 0 ? Math.min(count, 9999) : 0;
-    if (next === 0) this.#counts.delete(id);
-    else this.#counts.set(id, next);
-    this.#syncBadge();
-  }
-
-  forget(windowId) {
-    if (this.#counts.delete(windowId)) this.#syncBadge();
-  }
-
-  turnFinished(window, { title, body }) {
-    if (process.platform !== 'darwin' || window.isDestroyed() || window.isFocused()) return;
-    this.#app.dock?.bounce('informational');
+  notify(window, payload) {
+    const notice = normalizeAttentionNotice(payload);
+    if (!notice || !window || window.isDestroyed() || window.isFocused()) return;
+    if (!this.#admit(window.id, notice.threadId)) return;
     try {
-      if (!this.#Notification.isSupported()) return;
-      const notification = new this.#Notification({
-        title: typeof title === 'string' && title ? title.slice(0, 200) : 'HamaEditor',
-        body: typeof body === 'string' ? body.slice(0, 200) : '',
-        silent: false,
-      });
+      if (this.#platform === 'darwin') this.#app.dock?.bounce('informational');
+      else window.flashFrame?.(true);
+    } catch (error) {
+      console.warn('[hamaeditor] agent attention flash failed:', error);
+    }
+    try {
+      if (!this.#Notification?.isSupported?.()) return;
+      const notification = new this.#Notification({ title: notice.title, body: notice.body, silent: false });
       // 클릭 전에 GC 되지 않도록 붙잡아 둔다.
       this.#notifications.add(notification);
       const release = () => this.#notifications.delete(notification);
@@ -167,6 +239,9 @@ export class AgentAttention {
         if (window.isMinimized()) window.restore();
         window.show();
         window.focus();
+        if (!window.webContents.isDestroyed()) {
+          window.webContents.send('desktop:open-agent-chat', { threadId: notice.threadId });
+        }
       });
       notification.on('close', release);
       notification.show();
@@ -175,11 +250,83 @@ export class AgentAttention {
     }
   }
 
-  #syncBadge() {
-    if (process.platform !== 'darwin' || !this.#app.dock) return;
+  setCount(window, count) {
+    if (!window) return;
+    const next = normalizeAttentionCount(count);
+    if (next === 0) this.#counts.delete(window.id);
+    else this.#counts.set(window.id, { window, count: next });
+    this.#syncBadge();
+    if (this.#platform === 'win32') this.#syncOverlay(window, next);
+  }
+
+  forget(windowId) {
+    this.#recent.delete(windowId);
+    if (this.#counts.delete(windowId)) this.#syncBadge();
+  }
+
+  /** 이 창의 이 채팅 알림을 지금 올려도 되는가 — 되면 시각을 남긴다. */
+  #admit(windowId, threadId) {
+    const at = this.#now();
+    let entry = this.#recent.get(windowId);
+    if (!entry) {
+      entry = { times: [], threads: new Map() };
+      this.#recent.set(windowId, entry);
+    }
+    entry.times = entry.times.filter((time) => at - time < ATTENTION_WINDOW_SPAN_MS);
+    for (const [id, time] of entry.threads) {
+      if (at - time >= ATTENTION_THREAD_INTERVAL_MS) entry.threads.delete(id);
+    }
+    if (entry.threads.has(threadId) || entry.times.length >= ATTENTION_WINDOW_LIMIT) return false;
+    entry.times.push(at);
+    entry.threads.set(threadId, at);
+    return true;
+  }
+
+  focused(window) {
+    if (!window || window.isDestroyed?.()) return;
+    if (this.#platform === 'darwin') return;
+    try {
+      window.flashFrame?.(false);
+    } catch {
+      /* 깜빡임을 멈추지 못해도 다음 초점에서 다시 시도한다 */
+    }
+  }
+
+  #total() {
     let total = 0;
-    for (const count of this.#counts.values()) total += count;
-    this.#app.dock.setBadge(total > 0 ? String(total) : '');
+    for (const entry of this.#counts.values()) total += entry.count;
+    return Math.min(total, ATTENTION_COUNT_MAX);
+  }
+
+  #syncBadge() {
+    if (this.#platform !== 'darwin' && this.#platform !== 'linux') return;
+    try {
+      // Linux 는 .desktop 파일이 있는 런처(Unity 계열)에서만 보인다 — 없으면 조용히 false 다.
+      this.#app.setBadgeCount?.(this.#total());
+    } catch (error) {
+      console.warn('[hamaeditor] badge update failed:', error);
+    }
+  }
+
+  #syncOverlay(window, count) {
+    if (window.isDestroyed?.() || typeof window.setOverlayIcon !== 'function') return;
+    try {
+      if (count > 0) {
+        this.#overlay ??= this.#createOverlay();
+        if (!this.#overlay) return;
+        window.setOverlayIcon(this.#overlay, `확인할 채팅 ${count}개`);
+      } else {
+        window.setOverlayIcon(null, '');
+      }
+    } catch (error) {
+      console.warn('[hamaeditor] taskbar overlay update failed:', error);
+    }
+  }
+
+  #createOverlay() {
+    if (!this.#nativeImage?.createFromBitmap) return null;
+    const { buffer, size } = attentionDotBitmap();
+    return this.#nativeImage.createFromBitmap(buffer, { width: size, height: size });
   }
 }
 

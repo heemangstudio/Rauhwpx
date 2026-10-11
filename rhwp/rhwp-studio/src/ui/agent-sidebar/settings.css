@@ -20,6 +20,10 @@
   gap: 8px;
 }
 
+.ag-settings-section[hidden] {
+  display: none;
+}
+
 .ag-settings-section-title {
   margin: 0;
   font-size: var(--ag-fs-secondary);

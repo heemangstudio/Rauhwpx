@@ -54,7 +54,7 @@ function bridgeFixture(overrides: Record<string, unknown> = {}) {
     pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
     pendingInterrupt: false, pendingSetupCancels: new Map(),
     selectedAgent: 'pi', selectedModel: null, selectedEffort: null, permissionProfile: 'safe', serviceTier: 'standard',
-    chatHistory: [], messageReceipts: new Map(), awaitingAcceptanceId: null,
+    chatHistory: [], queuedMessages: [], messageReceipts: new Map(), awaitingAcceptanceId: null,
     turnSnapshots: { reset() {} },
     projects: { worktrees },
     emitConnection() {}, abortActiveToolRequests() {}, flushToolResponses() {},
@@ -67,14 +67,17 @@ function bridgeFixture(overrides: Record<string, unknown> = {}) {
     socket.onopen!();
     return socket;
   };
-  return { bridge, worktrees, open };
+  const welcome = () => bridge.handleFrame(JSON.stringify({ v: 5, type: 'welcome', session: null }));
+  return { bridge, worktrees, open, welcome };
 }
 
 test('reconnecting re-sends the project binding with the worktree, so project calls work before the next message', () => {
-  const { bridge, worktrees, open } = bridgeFixture();
+  const { bridge, worktrees, open, welcome } = bridgeFixture();
   bridge.setProjectWorktrees(binding());
   assert.equal(worktrees.get()?.current.branch, '요약본');
   const socket = open();
+  assert.deepEqual(socket.sent, [], 'project binding waits for the authoritative welcome');
+  welcome();
   assert.deepEqual(socket.sent, [{
     v: socket.sent[0].v,
     type: 'project-bind',
@@ -95,8 +98,10 @@ test('reconnecting re-sends the project binding with the worktree, so project ca
 });
 
 test('chat-start carries the repository only for its own document', () => {
-  const { bridge, worktrees, open } = bridgeFixture();
+  const { bridge, worktrees, open, welcome } = bridgeFixture();
   const socket = open();
+  assert.deepEqual(socket.sent, [], 'project binding waits for the authoritative welcome');
+  welcome();
   socket.sent.length = 0;
   bridge.setProjectWorktrees(binding());
   bridge.startChat('pi', undefined, undefined, true, 'safe', 'question', 'thread-variant', 'doc-variant', '보고서.hwpx', []);

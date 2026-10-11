@@ -478,3 +478,109 @@ test('drafts follow the live file name and handle after Save As', async () => {
   assert.equal(saved[0].draft.fileHandle?.name, 'after.hwp');
   assert.equal(saved[0].draft.handleKind, 'browser');
 });
+
+test('a recovery save waits for the save in flight, then records what the document holds now', async () => {
+  let content = 1;
+  const exported: number[] = [];
+  const saved: number[] = [];
+  let releaseFirst!: () => void;
+  const firstWrite = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const store: AutosaveStoreLike = {
+    async saveDraft(draft) {
+      if (saved.length === 0 && exported.length === 1) await firstWrite;
+      saved.push(draft.data[0]);
+    },
+    async deleteDraft() {},
+  };
+  let now = 1_000;
+  const manager = new AutosaveManager({
+    exportDraft: () => {
+      exported.push(content);
+      return { bytes: new Uint8Array([content]), format: 'hwp' as const };
+    },
+    schedule: { recoveryEnabled: false, idleEnabled: false },
+    idFactory: () => 'draft-trap',
+    now: () => now,
+    store,
+    logger: { debug() {}, warn() {} },
+  });
+  await manager.beginDocument({ fileName: 'trap.hwp', sourceFormat: 'hwp' });
+
+  const inFlight = manager.flushNow('typing');
+  await tick();
+  // 저장이 진행 중일 때 엔진이 멈췄고, 그 사이 문서에는 마지막 입력이 들어가 있다.
+  content = 2;
+  now = 2_000;
+  let settled = false;
+  const recovery = manager.saveForRecovery('engine-trap').then((result) => {
+    settled = true;
+    return result;
+  });
+  await tick();
+  assert.equal(settled, false, 'the recovery save does not return while the earlier save is still writing');
+
+  releaseFirst();
+  await inFlight;
+  const result = await recovery;
+  assert.deepEqual(result, { ok: true, draftId: 'draft-trap', savedAt: 2_000 });
+  assert.deepEqual(saved, [1, 2], 'a second draft write follows the one in flight');
+  assert.deepEqual(exported, [1, 2], 'the second write exports the document after the call');
+  manager.dispose();
+});
+
+test('a failed recovery save reports the earlier autosave and never retries', async () => {
+  const writes: string[] = [];
+  let exportFails = false;
+  let exports = 0;
+  const store: AutosaveStoreLike = {
+    async saveDraft(draft) { writes.push(draft.dirtyReason ?? ''); },
+    async deleteDraft() {},
+  };
+  const manager = new AutosaveManager({
+    exportDraft: () => {
+      exports += 1;
+      if (exportFails) throw new Error('recursive use of an object detected');
+      return { bytes: new Uint8Array([1]), format: 'hwp' as const };
+    },
+    schedule: { idleDelayMs: 1, recoveryIntervalMs: 1 },
+    retryDelayMs: 1,
+    maxRetryDelayMs: 1,
+    idFactory: () => 'draft-old',
+    now: () => 5_000,
+    store,
+    logger: { debug() {}, warn() {} },
+  });
+  await manager.beginDocument({ fileName: 'stuck.hwp', sourceFormat: 'hwp' });
+  await manager.flushNow('typing');
+  assert.deepEqual(writes, ['typing']);
+
+  exportFails = true;
+  const result = await manager.saveForRecovery('engine-trap');
+  assert.equal(result.ok, false);
+  assert.equal(result.ok === false && result.lastSavedAt, 5_000);
+  assert.equal(result.ok === false && result.draftId, 'draft-old');
+
+  const exportsAfterTrap = exports;
+  manager.schedule('document-mutated');
+  await manager.flushNow('window-close');
+  await sleep(60);
+  assert.equal(exports, exportsAfterTrap, 'nothing exports the stopped document again');
+  assert.deepEqual(writes, ['typing'], 'no later draft write or retry replaces the earlier autosave');
+  manager.dispose();
+});
+
+test('a recovery save that fails with no earlier autosave says there is nothing to fall back on', async () => {
+  const manager = new AutosaveManager({
+    exportDraft: () => { throw new Error('unreachable'); },
+    schedule: { recoveryEnabled: false, idleEnabled: false },
+    idFactory: () => 'draft-none',
+    store: { async saveDraft() {}, async deleteDraft() {} },
+    logger: { debug() {}, warn() {} },
+  });
+  await manager.beginDocument({ fileName: 'new.hwp', sourceFormat: 'hwp' });
+  const result = await manager.saveForRecovery('engine-trap');
+  assert.equal(result.ok, false);
+  assert.equal(result.ok === false && result.lastSavedAt, null);
+  assert.equal(result.ok === false && result.draftId, null);
+  manager.dispose();
+});

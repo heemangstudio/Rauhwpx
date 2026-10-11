@@ -25,7 +25,33 @@ import { checkBrowserSettings } from './browser-settings.check.mjs';
 import { checkBrowserWorkbench } from './browser-workbench.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
+import { checkComposerSendPath, checkFollowUpGap, checkFollowUpQueue } from './queue.check.mjs';
+import { checkReloadPreview } from './reload.check.mjs';
+import { checkWriterBusyPreview } from './writer-busy.check.mjs';
+import { checkTypingGuard } from './typing-guard.check.mjs';
+import { checkDelayedStatus } from './delayed-status.check.mjs';
+import { checkRestoreTurnPreview } from './restore-turn.check.mjs';
+import { checkFailureNotices } from './failures.check.mjs';
+import { checkAttention } from './attention.check.mjs';
+import { checkInterruptionPreview } from './interruption.check.mjs';
+import { checkAdoptionPreview } from './adoption.check.mjs';
+
 const focusedChecks = {
+  queue: async (h) => {
+    await checkComposerSendPath(h.page, h.origin, h.artifacts);
+    await checkFollowUpQueue(h.page, h.origin, h.artifacts);
+    await checkFollowUpGap(h.page, h.origin, h.artifacts);
+  },
+  reload: (h) => checkReloadPreview(h.page, h.origin, h.artifacts),
+  'writer-busy': (h) => checkWriterBusyPreview(h.page, h.origin, h.artifacts),
+  typing: (h) => checkTypingGuard(h.page, h.origin, h.artifacts),
+  status: (h) => checkDelayedStatus(h.page, h.origin, h.artifacts),
+  restore: (h) => checkRestoreTurnPreview(h.page, h.origin, h.artifacts),
+  failures: (h) => checkFailureNotices(h.page, h.origin, h.artifacts),
+  attention: (h) => checkAttention(h.page, h.origin, h.artifacts),
+  interruption: (h) => checkInterruptionPreview(h.page, h.origin, h.artifacts),
+  adoption: (h) => checkAdoptionPreview(h.page, h.origin, h.artifacts),
+
   'browser-settings': (h) => checkBrowserSettings(h),
   'browser-workbench': (h) => checkBrowserWorkbench(h),
   workbench: (h) => checkWorkbench({ page: h.page, origin: h.origin, screenshot: h.screenshot }),
@@ -106,7 +132,7 @@ try {
     await page.goto(`${origin}/?theme=light&${params}`, { waitUntil: 'networkidle0' });
     await page.waitForFunction(() => window.sidebarPreview);
     if (!query.includes('services=setup')) {
-      await page.waitForFunction(() => !document.querySelector('.ag-input').disabled);
+      await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
     }
   }
   async function screenshot(name) {
