@@ -287,6 +287,12 @@ test('protected CDP denies arbitrary/encoded reads, child sessions, nested comma
   cdp.sessions.set('main', { tab }); cdp.sessions.set('child', { tab, nativeSessionId: 'native-child' });
   const blocked = ['Runtime.evaluate', 'Runtime.callFunctionOn', 'Runtime.awaitPromise', 'Runtime.getProperties', 'DOM.getAttributes', 'DOMSnapshot.captureSnapshot', 'Page.captureScreenshot', 'Page.addScriptToEvaluateOnNewDocument', 'Network.getRequestPostData', 'Network.getResponseBody', 'Network.loadNetworkResource', 'Fetch.getResponseBody', 'IO.read', 'DOMStorage.getDOMStorageItems', 'Storage.getStorageKeyForFrame', 'Target.sendMessageToTarget'];
   for (const sessionId of ['main', 'child']) for (const method of blocked) await assert.rejects(cdp.command({ method, sessionId }), /protect this page/);
+  for (const sessionId of ['main', 'child']) {
+    assert.deepEqual(await cdp.command({ method: 'Page.reload', sessionId }), {});
+    assert.deepEqual(await cdp.command({ method: 'Page.reload', sessionId, params: { ignoreCache: true } }), {});
+    await assert.rejects(cdp.command({ method: 'Page.reload', sessionId, params: { scriptToEvaluateOnLoad: 'document.querySelector("input").value' } }), /protect this page/);
+    await assert.rejects(cdp.command({ method: 'Page.reload', sessionId, params: { ignoreCache: 'true' } }), /protect this page/);
+  }
   const worldName = `__playwright_utility_world_page@${'a'.repeat(32)}`;
   assert.deepEqual(await cdp.command({ method: 'Page.addScriptToEvaluateOnNewDocument', sessionId: 'main', params: { source: '', worldName } }), {});
   assert.deepEqual(await cdp.command({ method: 'Page.createIsolatedWorld', sessionId: 'main', params: { worldName, frameId: 'A'.repeat(32), grantUniveralAccess: true } }), {});

@@ -197,6 +197,16 @@ try {
   }
   assert.ok(autocompleteChoices.some(choice => choice.label === 'manual-fixture-user'));
   report.schoolIdAutocomplete = true;
+  const beforeReload = await service.request(actor, 'snapshot', { tabId });
+  const reload = await service.request(actor, 'navigate', { tabId, direction: 'reload', navigationEpoch: beforeReload.tab.navigationEpoch, controllerEpoch: beforeReload.tab.controllerEpoch });
+  assert.equal(reload.completed, true);
+  const afterReload = await service.request(actor, 'snapshot', { tabId });
+  assert.ok(afterReload.tab.navigationEpoch > beforeReload.tab.navigationEpoch);
+  assert.equal(tab.passwordShield, true);
+  assert.equal(JSON.stringify(afterReload).includes(secret), false);
+  const protectedReloadSession = tab.cdpSessionId;
+  await assert.rejects(host.cdp.command({ method: 'Page.reload', sessionId: protectedReloadSession, params: { scriptToEvaluateOnLoad: 'document.querySelector("input").value' } }), /protect this page/);
+  report.protectedReload = true;
   report.nativeSubmit = true; report.postNavigationInput = true; report.noSecretInHub = true; report.staleAndWrongOriginRejected = true; report.rawReadbackAndCaptureBlocked = true;
 } catch (error) { report.error = error.stack; process.exitCode = 1; }
 finally {

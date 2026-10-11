@@ -20,6 +20,8 @@ const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIO
 const RESOURCE_TYPES = new Set(['Document', 'Stylesheet', 'Image', 'Media', 'Font', 'Script', 'TextTrack', 'XHR', 'Fetch', 'EventSource', 'WebSocket', 'Manifest', 'Other']);
 const UTILITY_WORLD = /^__playwright_utility_world_page@[0-9a-f]{32}$/;
 function safePasswordSetup(tab, method, params) {
+  // 일반 새로고침은 값을 읽지 않는다. 재로딩 시 실행할 스크립트는 허용하지 않는다.
+  if (method === 'Page.reload') return Object.keys(params).every(key => key === 'ignoreCache') && (params.ignoreCache === undefined || typeof params.ignoreCache === 'boolean');
   if (method === 'Page.addScriptToEvaluateOnNewDocument' && params.source === '' && UTILITY_WORLD.test(params.worldName) && Object.keys(params).every((key) => ['source', 'worldName'].includes(key))) {
     tab.passwordUtilityWorlds ??= new Set();
     if (tab.passwordUtilityWorlds.size >= 16 && !tab.passwordUtilityWorlds.has(params.worldName)) return false;
