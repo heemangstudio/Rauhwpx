@@ -100,10 +100,10 @@ html.desktop-mac .ag-fullscreen .ag-workbench-head :is(.ag-workbench-tabs, .ag-w
 }
 html.desktop-mac .ag-fullscreen .ag-workspace-corner { -webkit-app-region: no-drag; }
 .ag-fullscreen .ag-workspace-trailing { padding-right: 124px; }
-.ag-fullscreen.ag-workbench-open .ag-stage {
+.ag-fullscreen:not(.ag-workspace-compact).ag-workbench-open .ag-stage {
   grid-template-columns: var(--ag-rail-w, 264px) minmax(0, 1fr) var(--ag-review-w, 560px);
 }
-.ag-fullscreen.ag-workbench-open.ag-rail-collapsed .ag-stage {
+.ag-fullscreen:not(.ag-workspace-compact).ag-workbench-open.ag-rail-collapsed .ag-stage {
   grid-template-columns: 0 minmax(0, 1fr) var(--ag-review-w, 560px);
 }
 .ag-fullscreen.ag-workbench-open .ag-review-resize {
