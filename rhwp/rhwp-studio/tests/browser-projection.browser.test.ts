@@ -25,9 +25,11 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     await page.evaluate(async () => {
       const calls: Array<{ action: string; tabId?: string }> = [];
       let attached: string | null = null;
+      const nativeEvents = new Set<(event: any) => void>();
       let rejectHealth: ((error: Error) => void) | undefined; let holdHealth = false;
       let hold = false; let release: (() => void) | undefined;
       Object.assign(window, { rhwpDesktop: { browser: {
+        onEvent(callback: (event: any) => void) { nativeEvents.add(callback); return () => nativeEvents.delete(callback); },
         async attach(args: { tabId: string }) { calls.push({ action: 'attach', ...args }); if (hold) await new Promise<void>(resolve => { release = resolve; }); attached = args.tabId; },
         async detach(args: { tabId: string }) { calls.push({ action: 'detach', tabId: args.tabId }); attached = null; },
         async getState() { if (holdHealth) return new Promise((_resolve, reject) => { rejectHealth = reject; }); return {}; },
@@ -38,7 +40,7 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       const createView = () => createWorkbenchBrowser({ bridge: bridge as any, getDestination: () => ({ threadId: 'chat', projectId: null, documentId: null, label: '채팅' }), onCapture() {}, onOpenDownload() {}, onDock() {}, onChat() {} });
       const view = createView();
       view.mount(document.querySelector<HTMLElement>('#host')!); view.setVisible(true);
-      Object.assign(window, { projectionTest: { view, calls, createView, holdHealth() { holdHealth = true; }, get healthStarted() { return !!rejectHealth; }, failHealth() { holdHealth = false; rejectHealth?.(new Error('Presentation hidden by menu')); }, get attached() { return attached; }, hold() { hold = true; }, release() { hold = false; release?.(); } } });
+      Object.assign(window, { projectionTest: { view, calls, createView, dropPresentation() { attached = null; for (const callback of nativeEvents) callback({ type: 'presentation', tabId: 'same-tab', mode: 'hidden' }); }, holdHealth() { holdHealth = true; }, get healthStarted() { return !!rejectHealth; }, failHealth() { holdHealth = false; rejectHealth?.(new Error('Presentation hidden by menu')); }, get attached() { return attached; }, hold() { hold = true; }, release() { hold = false; release?.(); } } });
     });
     const attached = (value: string | null) => page.waitForFunction(value => (window as any).projectionTest.attached === value, { timeout: 2000 }, value);
     await attached('same-tab');
@@ -98,6 +100,8 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'dock', 'fullscreen link focus can return a floating page to the workbench');
     assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true);
     assert.equal(await page.$eval('.ag-browser-address', node => document.activeElement === node), true, 'docked browser receives keyboard focus');
+    await page.evaluate(() => (window as any).projectionTest.dropPresentation());
+    await attached('same-tab');
     await page.evaluate(() => {
       (window as any).rhwpDesktop.showContextMenu = async (items: any[]) => { (window as any).projectionTest.menuItems = items; (window as any).projectionTest.nativeMenuOpened = true; return new Promise(resolve => { (window as any).projectionTest.closeNativeMenu = resolve; }); };
     });

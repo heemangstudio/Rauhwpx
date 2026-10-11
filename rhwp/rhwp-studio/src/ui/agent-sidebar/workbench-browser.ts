@@ -670,6 +670,10 @@ export function createWorkbenchBrowser(options: {
   });
   const unsubscribeNative = nativeBrowserApi()?.onEvent?.((event) => {
     if (event.tabId === controller.tab()?.tabId) {
+      // 이전 화면의 늦은 정리가 현재 게스트를 숨기면 캐시를 버리고 실제 배치를 복원한다.
+      if (event.type === 'presentation' && event.mode === 'hidden' && nativeTab === event.tabId && manualSleepingTab !== event.tabId && nativeSurfaceVisible() && !nativeOverlayOpen()) {
+        ++nativeSequence; nativeProjection = ''; nativeFailedProjection = ''; layout();
+      }
       if (event.type === 'browser-float-closed') { presentation.setNativeFloating(false); presentation.hide(); options.onClose?.(); return; }
       if (event.type === 'floating-geometry' || event.type === 'presentation' || event.type === 'state') {
         const bounds = event.floatingBounds as { left: number; top: number; width: number; height: number } | undefined;
