@@ -43,6 +43,8 @@ Missing secrets fail the macOS job. If the environment requires a reviewer, GitH
 
 Keep packaged runtime checks, artifact architecture checks, Developer ID verification and notarization validation when changing this workflow. npm production dependency audits block high and critical advisories. Nightly also reports lower-severity findings for maintenance review.
 
+The default Developer ID package has no provisioning profile. Keep restricted keychain access groups out of its entitlements: macOS rejects an executable with an unauthorized group before JavaScript starts, even after notarization succeeds. Native Electron Touch ID needs a provisioning profile authorizing its dedicated group; existing Mac passkeys use signed Chrome. See [macOS website passkeys](browser-mac-passkeys.md).
+
 ## Local builds
 
 Complete [development setup](../CONTRIBUTING.md) first. On the target platform, `npm run dist:mac`, `npm run dist:win`, `npm run dist:linux:x64`, or `npm run dist:linux:arm64` builds and packages the app. The macOS command needs the signing credentials configured for electron-builder.
