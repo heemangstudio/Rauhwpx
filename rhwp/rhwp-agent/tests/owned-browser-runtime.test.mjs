@@ -390,7 +390,7 @@ test('human browser tabs survive document and project switches without granting 
   t.after(async () => { await browser.close(); await restored?.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
   const first = { isHuman: true, clientId: 'window', sessionId: 'document-a', threadId: 'chat-a', documentId: 'a', projectId: 'project-a', agentId: 'chat-a:root' };
   const second = { ...first, sessionId: 'document-b', threadId: 'chat-b', documentId: 'b', projectId: 'project-b', agentId: 'chat-b:root' };
-  const opened = await browser.request(first, 'open', {});
+  const opened = await browser.request(first, 'open', { url: 'about:blank' });
   assert.equal(opened.tab.scope, 'global');
   assert.equal(opened.tab.projectId, null); assert.equal(opened.tab.documentId, null); assert.equal(opened.tab.threadId, null);
   const identity = { tabId: opened.tab.tabId, navigationEpoch: opened.tab.navigationEpoch, controllerEpoch: opened.tab.controllerEpoch };

@@ -1063,7 +1063,7 @@ export function createOwnedBrowserService(options = {}) {
       return { ok: true, action, download: job, job };
     }
     if (action === 'open') {
-      const url = args.url ? guard.parse(args.url).href : 'about:blank';
+      const url = args.url && args.url !== 'about:blank' ? guard.parse(args.url).href : 'about:blank';
       await assertPolicy(actor, action, url, null, args);
       if (!actor.isHuman && googleResearchURL(url)) {
         const blocked = [...tabs.values()].find((tab) => sameScope(actor, tab) && challengeFor(tab));
