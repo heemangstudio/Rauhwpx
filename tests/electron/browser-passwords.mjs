@@ -69,7 +69,7 @@ try {
   const adapter = createIpcNativeBrowserAdapter({ events: messages, send: (message) => { wire.push(JSON.stringify(message)); void host.handleRequest(message, owner).then((response) => { wire.push(JSON.stringify(response)); messages.emit('message', response); }); } });
   const originalSend = host.cdp.send.bind(host.cdp);
   host.cdp.send = (message, client) => { wire.push(JSON.stringify(message)); return originalSend(message, client); };
-  service = createOwnedBrowserService({ dataDir, nativeAdapter: adapter, workspaceTargets: [origin], autoInstall: false, runtimeFactory: startOwnedBrowserRuntime });
+  service = createOwnedBrowserService({ dataDir, policy: { assertAllowed: async () => {} }, nativeAdapter: adapter, workspaceTargets: [origin], autoInstall: false, runtimeFactory: startOwnedBrowserRuntime });
   report.stage = 'opening';
   const actor = { threadId: 'chat-one', agentId: 'agent-one', sessionId: 'editor', projectId: 'project-one' };
   const opened = await service.request(actor, 'open', { url: origin });
@@ -77,6 +77,13 @@ try {
   const tabId = opened.tab.tabId;
   const tab = host.tab(tabId);
   host.attach(editor, { tabId, mode: 'dock', bounds: { x: 0, y: 0, width: 800, height: 600 }, interactive: true });
+  await tab.view.webContents.executeJavaScript(`document.getElementById('secret').value='native-mirrored-secret';document.body.insertAdjacentHTML('beforeend','<div>echo:native-mirrored-secret</div>');Element.prototype.matches=()=>false;void 0;`);
+  const hostile = await service.request(actor, 'snapshot', { tabId });
+  assert.equal(JSON.stringify(hostile).includes('native-mirrored-secret'), false);
+  await assert.rejects(service.request(actor, 'frame', { tabId }), { code: 'BROWSER_PASSWORD_CAPTURE_PROTECTED' });
+  assert.equal(wire.some(message => message.includes('native-mirrored-secret')), false);
+  await service.request(actor, 'navigate', { tabId, navigationEpoch: hostile.tab.navigationEpoch, controllerEpoch: hostile.tab.controllerEpoch, url: origin });
+  report.hostileObservation = true;
   // Saving a login arms protection even before a password exists on a public page.
   tab.passwordShield = true;
   await tab.view.webContents.executeJavaScript('document.getElementById("secret").style.setProperty("visibility", "visible", "important")');

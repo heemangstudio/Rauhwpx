@@ -13,7 +13,7 @@ async function fixture(t, native = false) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-viewport-'));
   const server = http.createServer((request, response) => {
     response.setHeader('Content-Type', 'text/html');
-    response.end('<!doctype html><title>Viewport fixture</title><input type="password" value="secret"><div style="height:9000px;background:linear-gradient(green,red)">Long page</div><button onclick="window.clicked=true">Bottom</button>');
+    response.end('<!doctype html><title>Viewport fixture</title><input type="password"><div style="height:9000px;background:linear-gradient(green,red)">Long page</div><button onclick="window.clicked=true">Bottom</button>');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const origin = `http://127.0.0.1:${server.address().port}`;
   const state = { shield: false, epoch: 1, zoom: 1, page: null }; const events = [];

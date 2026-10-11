@@ -25,7 +25,7 @@ async function fixture(t) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   let runtime;
-  const browser = createOwnedBrowserService({ dataDir, workspaceTargets: [origin], autoInstall: false, runtimeFactory: async options => runtime = await startOwnedBrowserRuntime(options) });
+  const browser = createOwnedBrowserService({ dataDir, policy: { assertAllowed: async () => {} }, workspaceTargets: [origin], autoInstall: false, runtimeFactory: async options => runtime = await startOwnedBrowserRuntime(options) });
   t.after(async () => { await browser.close(); for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve)); await rm(dataDir, { recursive: true, force: true }); });
   const opened = await call(browser, 'browser_open', { url: origin });
   return { browser, tabId: opened.tab.tabId, page: runtime.context.pages().find(page => page.url().startsWith(origin)) };

@@ -169,7 +169,7 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const events = [];
-  const browser = createOwnedBrowserService({ dataDir: directory, workspaceTargets: [origin], autoInstall: false, onEvent: (event) => events.push(event) });
+  const browser = createOwnedBrowserService({ dataDir: directory, policy: { assertAllowed: async () => {} }, workspaceTargets: [origin], autoInstall: false, onEvent: (event) => events.push(event) });
   t.after(async () => { await browser.close(); await new Promise((resolve) => server.close(resolve)); await fs.rm(directory, { recursive: true, force: true }); });
   const alice = { sessionId: 'window-a', agentId: 'alice', threadId: 'chat-a', projectId: 'project-a' };
   const bob = { agentId: 'bob', threadId: 'chat-b', projectId: 'project-b' };
@@ -203,7 +203,8 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   const capture = await browser.request(human, 'capture', { tabId: a.tabId, frameId: frame.frame.frameId, mode: 'region', region: { x: 0, y: 0, width: 200, height: 100 }, comment: 'Pinned evidence', destinationThreadId: 'chat-a', navigationEpoch: frame.tab.navigationEpoch });
   assert.equal(capture.capture.threadId, 'chat-a');
   assert.equal(capture.capture.comment, 'Pinned evidence');
-  assert.ok(capture.capture.screenshot.data);
+  assert.equal(capture.capture.screenshot, undefined);
+  assert.equal(capture.capture.screenshotError.code, 'BROWSER_PASSWORD_CAPTURE_PROTECTED');
   const returned = await browser.request(human, 'control', { tabId: a.tabId, owner: 'agent' });
   await assert.rejects(browser.request(alice, 'navigate', { tabId: a.tabId, url: `${origin}/redirect-private`, navigationEpoch: returned.tab.navigationEpoch, controllerEpoch: returned.tab.controllerEpoch }), { code: 'BROWSER_ACTION_FAILED' });
   const shared = (await browser.request({ ...human, sessionId: 'window-a' }, 'open', { url: `${origin}/research` })).tab;

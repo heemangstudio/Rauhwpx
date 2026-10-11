@@ -8,6 +8,8 @@ const SECRET = 'input[type="password"],input[autocomplete="current-password"],in
 
 // These functions run only in Electron's isolated world. Page scripts never see the ref map.
 function pageSnapshot(token, selector, maxElements) {
+  const secrets = [...document.querySelectorAll('input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]')].map(el => el.value).filter(Boolean);
+  const scrub = value => { for (const secret of secrets) value = value.split(secret).join('[masked]'); return value; };
   const refs = new Map(); const elements = [];
   const candidates = document.querySelectorAll('a[href],button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="menuitem"],[role="option"],[role="tab"],[contenteditable="true"],summary');
   for (const el of candidates) {
@@ -18,13 +20,14 @@ function pageSnapshot(token, selector, maxElements) {
     const ref = `e${elements.length + 1}`; refs.set(ref, el);
     elements.push({ ref, tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', SUMMARY: 'button' })[el.tagName] || 'textbox',
       inputType: el instanceof HTMLInputElement ? el.type : undefined, autocomplete: ['username', 'current-password', 'new-password', 'one-time-code', 'email'].includes(el.autocomplete) ? el.autocomplete : undefined,
-      name: String(el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.getAttribute('placeholder') || el.textContent || '').trim().slice(0, 500),
-      text: sensitive ? '[masked]' : String(el.textContent ?? '').trim().slice(0, 1000), value: sensitive ? '[masked]' : String(el.value ?? '').slice(0, 1000), sensitive, disabled: !!el.disabled,
+      formMethod: el.closest('form')?.method, formAction: el.closest('form')?.action,
+      name: scrub(String(el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.getAttribute('placeholder') || el.textContent || '').trim().slice(0, 500)),
+      text: sensitive ? '[masked]' : scrub(String(el.textContent ?? '').trim().slice(0, 1000)), value: sensitive ? '[masked]' : scrub(String(el.value ?? '').slice(0, 1000)), sensitive, disabled: !!el.disabled,
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });
   }
   globalThis.__rhwpNativePasswordRefs = { token, refs };
   // Form values and selected text are excluded entirely from this native document observation.
-  return { elements, text: String(document.body?.innerText ?? '').slice(0, 24000), selectedText: '', truncated: candidates.length > maxElements,
+  return { elements, text: scrub(String(document.body?.innerText ?? '').slice(0, 24000)), selectedText: '', hasSecret: secrets.length > 0, truncated: candidates.length > maxElements,
     viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY } };
 }
 
@@ -168,13 +171,13 @@ export class NativeBrowserPasswords {
     const epoch = tab.navigationEpoch; const snapshotId = `native-password-${randomUUID()}`;
     const lifetime = { generation: this.host.generation, owner: this.host.owner, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: tab.view.webContents.getZoomFactor(), origin: new URL(tab.view.webContents.getURL()).origin };
     const observed = viewportOnly
-      ? await this.run(tab, () => ({ viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY } }))
+      ? await this.run(tab, captureViewport, [SECRET]).then(({ hasSecret, width, height, deviceScaleFactor, scrollX, scrollY }) => ({ hasSecret, viewport: { width, height, deviceScaleFactor, scrollX, scrollY } }))
       : await this.run(tab, pageSnapshot, [snapshotId, SENSITIVE, 400]);
     if (lifetime.zoomFactor !== tab.view.webContents.getZoomFactor()) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Page zoom changed during the browser snapshot.');
     if (tab.closing || tab.view.webContents.isDestroyed() || epoch !== tab.navigationEpoch || lifetime.generation !== this.host.generation || lifetime.owner !== this.host.owner || lifetime.targetId !== tab.targetId || lifetime.sessionId !== tab.sessionId || lifetime.chatId !== tab.chatId || lifetime.controlEpoch !== (tab.passwordControlEpoch ?? 0) || lifetime.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'The page changed during the browser snapshot.');
     const url = new URL(tab.view.webContents.getURL());
     if (!viewportOnly) tab.passwordSnapshot = { snapshotId, generation: this.host.generation, owner: this.host.owner, navigationEpoch: epoch, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: lifetime.zoomFactor, origin: url.origin, elements: observed.elements };
-    return this.redact(tab, { ...observed, snapshotId, nativeNavigationEpoch: epoch, nativeControlEpoch: lifetime.controlEpoch, zoomFactor: lifetime.zoomFactor, url: tab.passwordShield ? `${url.origin}/` : `${url.origin}${url.pathname}`, title: tab.passwordShield ? '' : tab.view.webContents.getTitle(), passwordProtected: !!tab.passwordShield });
+    return this.redact(tab, { ...observed, snapshotId, nativeNavigationEpoch: epoch, nativeControlEpoch: lifetime.controlEpoch, zoomFactor: lifetime.zoomFactor, url: tab.passwordShield || observed.hasSecret ? `${url.origin}/` : `${url.origin}${url.pathname}`, title: tab.passwordShield || observed.hasSecret ? '' : tab.view.webContents.getTitle(), passwordProtected: !!tab.passwordShield || observed.hasSecret });
   }
   async capture(params) {
     const tab = this.tab(params);

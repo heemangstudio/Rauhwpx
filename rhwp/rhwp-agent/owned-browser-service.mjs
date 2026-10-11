@@ -10,6 +10,13 @@ export { OwnedBrowserError } from './owned-browser-runtime.mjs';
 
 const ELEMENTS = 'a[href],button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="menuitem"],[role="option"],[role="tab"],[contenteditable="true"],summary';
 const SENSITIVE = 'input[type="password"],input[type="email"],input[autocomplete="username"],input[name="username"],input[name="email"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
+const SEARCH_ORIGINS = new Set(['https://www.google.com', 'https://www.google.co.kr', 'https://duckduckgo.com', 'https://www.bing.com', 'https://search.naver.com', 'https://en.wikipedia.org', 'https://ko.wikipedia.org', 'https://www.wikipedia.org', 'https://pubmed.ncbi.nlm.nih.gov', 'https://arxiv.org']);
+const redactValues = (value, secrets) => {
+  if (typeof value === 'string') { for (const secret of secrets ?? []) if (secret) for (const variant of [secret, encodeURIComponent(secret), Buffer.from(secret).toString('base64')]) value = value.split(variant).join('[masked]'); return value; }
+  if (Array.isArray(value)) return value.map(entry => redactValues(entry, secrets));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactValues(entry, secrets)]));
+  return value;
+};
 const MUTATIONS = new Set(['navigate', 'click', 'type', 'press', 'scroll', 'close', 'input', 'fill-account', 'viewport', 'upload']);
 const READS = new Set(['snapshot', 'frame', 'capture', 'wait']);
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
@@ -180,7 +187,7 @@ export function createOwnedBrowserService(options = {}) {
 
   const emit = (type, payload) => { try { onEvent({ type, ...payload }); } catch {} };
   const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
-  const descriptor = (tab) => ({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: publicURL(tab.page?.url?.() ?? tab.url), title: tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null });
+  const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null }, tab.protectedValues);
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   const publish = (tab) => emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo() });
   const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman) emit('owned_browser_activity', { active, sessionId: actor.sessionId ?? tab.sessionId, tab: descriptor(tab), runtime: runtimeInfo() }); };
@@ -210,14 +217,12 @@ export function createOwnedBrowserService(options = {}) {
     return tab;
   };
   const assertPolicy = async (actor, action, url, tab, args = {}) => {
-    // 앱에서 연 페이지는 소유 에이전트의 작업 영역이다. 계정 비밀을 꺼내는 별도 경로는 이 예외를 사용하지 않는다.
-    const owned = tab && tabs.get(tab.tabId);
-    if (action === 'open' || owned && (actor.isHuman || canAccessTab(actor, owned))) return;
+    if (actor.isHuman) return;
     const mapped = args.intent === 'website-change' || !actor.isHuman && changesWebsiteURL(url) ? 'website-change' : action === 'download' ? 'download' : READS.has(action) || MUTATIONS.has(action) ? 'read' : 'browse';
     if (policy?.assertAllowed && url !== 'about:blank') await policy.assertAllowed({ actor, action: mapped, url, profileId: profileId() });
     else if (policy?.assertBrowserAction) await policy.assertBrowserAction({ actor, action, url, tab: tab && descriptor(tab), intent: args.intent ?? 'research' });
     else if (mapped === 'website-change') throw error('BROWSER_WEBSITE_CHANGE_REQUIRED', 'Approve website changes for this site before continuing.');
-    if (credentialBroker?.assertBrowserAccess && url !== 'about:blank') await credentialBroker.assertBrowserAccess({ actor, url, tab: { ...descriptor(tab ?? { page: null, url, controller: {} }), profileId: profileId() } });
+    if (credentialBroker?.assertBrowserAccess && tab?.scope !== 'global' && (!tab || ['open', 'browse', 'navigate', 'fill-account'].includes(action) || args.intent === 'website-change') && url !== 'about:blank') await credentialBroker.assertBrowserAccess({ actor, url, tab: { ...descriptor(tab ?? { page: null, url, controller: {} }), profileId: profileId() } });
   };
   const invalidate = (tab) => {
     for (const handle of tab.snapshot?.handles?.values?.() ?? []) void handle.dispose?.().catch(() => {});
@@ -368,7 +373,7 @@ export function createOwnedBrowserService(options = {}) {
         const server = socket.connectToServer();
         socket.onMessage(async (message) => {
           const actor = tab.activeActor ?? (tab.controller.owner === 'human' ? { ...actorForTab(tab), isHuman: true, clientId: tab.controller.clientId } : actorForTab(tab));
-          try { await assertPolicy(actor, 'browse', url, tab, { intent: 'website-change' }); server.send(message); }
+          try { await assertPolicy(actor, 'browse', url, tab); server.send(message); }
           catch { await server.close({ code: 4003, reason: 'Website changes require owner approval' }); await socket.close({ code: 4003, reason: 'Website changes require owner approval' }); }
         });
         server.onMessage(async (message) => {
@@ -480,10 +485,7 @@ export function createOwnedBrowserService(options = {}) {
               }
               await assertPolicy(actor, 'browse', url, tab);
               if (!actor.isHuman && !['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
-                const destination = new URL(url);
-                const submit = tab.allowedSubmit;
-                const safeSubmit = submit && submit.expiresAt > Date.now() && submit.origin === destination.origin && submit.pathname === destination.pathname && submit.method === request.method();
-                if (!safeSubmit) await assertPolicy(actor, 'browse', url, tab, { intent: 'website-change' });
+                await assertPolicy(actor, 'browse', url, tab, { intent: 'website-change' });
               }
             }
             await route.continue();
@@ -661,23 +663,36 @@ export function createOwnedBrowserService(options = {}) {
         return result;
       }
     }
+    const sensitiveHandles = await tab.page.locator(SENSITIVE).elementHandles();
+    tab.protectedValues ??= new Set();
+    for (const field of sensitiveHandles) {
+      // 페이지가 바꾼 프로토타입을 읽지 않도록 격리된 선택 엔진을 사용한다.
+      const value = await field.inputValue().catch(() => '');
+      if (value) tab.protectedValues.add(value);
+    }
     const handles = await tab.page.locator(ELEMENTS).elementHandles();
     const refs = new Map();
     const elements = [];
     for (const handle of handles.slice(0, limits.maxSnapshotElements)) {
-      const element = await handle.evaluate((el) => {
+      const sensitive = await handle.evaluate((el, fields) => {
+        for (let index = 0; index < fields.length; index++) if (el === fields[index]) return true;
+        return false;
+      }, sensitiveHandles);
+      const value = sensitive ? '[masked]' : await handle.inputValue().catch(() => '');
+      const element = await handle.evaluate((el, observed) => {
         const rect = el.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0 || getComputedStyle(el).visibility === 'hidden') return null;
-        const sensitive = el.matches('input[type="password"],input[type="email"],input[autocomplete="username"],input[name="username"],input[name="email"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]');
+        const { sensitive, value } = observed;
         const label = el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.getAttribute('placeholder') || el.textContent || '';
-        return { tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', SUMMARY: 'button' })[el.tagName] || 'textbox', name: String(label).trim().slice(0, 500), text: sensitive ? '[masked]' : String(el.textContent ?? '').trim().slice(0, 1000), value: sensitive ? '[masked]' : String(el.value ?? '').slice(0, 1000), sensitive, disabled: !!el.disabled, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
-      }).catch(() => null);
+        return { tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', SUMMARY: 'button' })[el.tagName] || 'textbox', name: String(label).trim().slice(0, 500), text: sensitive ? '[masked]' : String(el.textContent ?? '').trim().slice(0, 1000), value: String(value).slice(0, 1000), sensitive, disabled: !!el.disabled, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+      }, { sensitive, value }).catch(() => null);
       if (!element) { await handle.dispose(); continue; }
       const ref = `e${elements.length + 1}`; refs.set(ref, handle); elements.push({ ref, ...element });
     }
     for (const handle of handles.slice(limits.maxSnapshotElements)) await handle.dispose();
+    for (const handle of sensitiveHandles) await handle.dispose();
     const content = await tab.page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
-    const selectedText = await tab.page.evaluate((selector) => {
+    const selectedText = tab.protectedValues.size ? '' : await tab.page.evaluate((selector) => {
       if (document.activeElement?.matches(selector)) return '';
       const selection = window.getSelection();
       if (!selection) return '';
@@ -690,7 +705,7 @@ export function createOwnedBrowserService(options = {}) {
     if (navigationEpoch !== tab.navigationEpoch) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true); }
     if (geometryEpoch !== tab.geometryEpoch) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed while it was observed. Take a new snapshot.', true); }
     if (!accept()) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out before its observation completed.', true); }
-    const result = { snapshotId: id('snapshot'), tabId: tab.tabId, navigationEpoch, controllerEpoch: tab.controllerEpoch, url: publicURL(tab.page.url()), title: tab.title, text: text(content, 24_000), selectedText, elements, truncated: handles.length > limits.maxSnapshotElements };
+    const result = redactValues({ snapshotId: id('snapshot'), tabId: tab.tabId, navigationEpoch, controllerEpoch: tab.controllerEpoch, url: publicURL(tab.page.url()), title: tab.title, text: text(content, 24_000), selectedText, elements, truncated: handles.length > limits.maxSnapshotElements }, tab.protectedValues);
     tab.snapshot = { ...result, handles: refs };
     return result;
   };
@@ -703,7 +718,7 @@ export function createOwnedBrowserService(options = {}) {
     }
     return tab.snapshot?.native ? tab.snapshot.viewport : tab.page.evaluate(() => ({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY }));
   };
-  const screenshot = async (tab, rect) => {
+  const screenshot = async (tab, rect, humanPreview = false) => {
     if (selectedAdapter()?.passwordCapture && tab.nativeTargetId) {
       const captured = await selectedAdapter().passwordCapture({ ...nativePasswordBinding(tab), rect });
       if (captured?.data) {
@@ -712,21 +727,22 @@ export function createOwnedBrowserService(options = {}) {
       }
     }
     if (tab.snapshot?.passwordProtected) throw error('BROWSER_PASSWORD_CAPTURE_PROTECTED', 'The page contains a saved password. Use a semantic snapshot for page evidence.');
-    const lifetime = await assertImageAllowed(tab);
+    const lifetime = humanPreview ? undefined : await assertImageAllowed(tab);
     const masks = tab.page.frames().map((frame) => frame.locator(SENSITIVE));
     const bytes = await tab.page.screenshot({ type: 'jpeg', quality: 75, fullPage: false, mask: masks, maskColor: '#333333', ...(rect ? { clip: rect } : {}), timeout: 10_000 });
-    const currentLifetime = await assertImageAllowed(tab);
+    const currentLifetime = humanPreview ? undefined : await assertImageAllowed(tab);
     if (lifetime?.zoomFactor !== currentLifetime?.zoomFactor) throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed during capture. Capture the current page again.', true);
     if (lifetime?.navigationEpoch !== currentLifetime?.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed during capture. Capture the current page again.', true);
     if (JSON.stringify(lifetime) !== JSON.stringify(currentLifetime)) throw error('BROWSER_STALE_FRAME', 'The page changed during capture. Capture the current page again.', true);
     if (bytes.length > limits.maxFrameBytes) throw error('BROWSER_FRAME_TOO_LARGE', 'The captured browser frame exceeds the size limit.');
     return bytes.toString('base64');
   };
-  const frame = async (tab) => {
+  const frame = async (tab, actor) => {
     const epoch = tab.navigationEpoch;
     const geometryEpoch = tab.geometryEpoch;
     const viewport = await viewportInfo(tab);
-    const data = await screenshot(tab);
+    // 사용자의 화면 표시는 유지하고, 모델로 보내는 이미지 증거만 비밀 값에서 차단한다.
+    const data = await screenshot(tab, undefined, actor.isHuman === true && !tab.nativeTargetId);
     if (epoch !== tab.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed during capture. Request another frame.', true);
     if (geometryEpoch !== tab.geometryEpoch) throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed during capture. Request another frame.', true);
     const result = { frameId: id('frame'), tabId: tab.tabId, navigationEpoch: epoch, controllerEpoch: tab.controllerEpoch, mimeType: 'image/jpeg', data, ...viewport };
@@ -735,7 +751,16 @@ export function createOwnedBrowserService(options = {}) {
   };
 
   const assertImageAllowed = async (tab) => {
-    if (!selectedAdapter()?.passwordSnapshot || !tab.nativeTargetId) return;
+    if (!selectedAdapter()?.passwordSnapshot || !tab.nativeTargetId) {
+      tab.protectedValues ??= new Set();
+      for (const frame of tab.page.frames()) {
+        const fields = await frame.locator(SENSITIVE).elementHandles();
+        try { for (const field of fields) { const value = await field.inputValue().catch(() => ''); if (value) tab.protectedValues.add(value); } }
+        finally { for (const field of fields) await field.dispose(); }
+      }
+      if (tab.protectedValues.size) throw error('BROWSER_PASSWORD_CAPTURE_PROTECTED', 'The page contains private sign-in data. Use a semantic snapshot for page evidence.');
+      return;
+    }
     const adapter = selectedAdapter();
     const observed = await (adapter.passwordViewport ?? adapter.passwordSnapshot)(nativePasswordBinding(tab));
     if (observed?.passwordProtected) throw error('BROWSER_PASSWORD_CAPTURE_PROTECTED', 'The page contains a saved password. Use a semantic snapshot for page evidence.');
@@ -855,7 +880,7 @@ export function createOwnedBrowserService(options = {}) {
     if (action === 'close') { await releaseInput(tab); await tab.page?.close(); tab.status = 'closed'; tabs.delete(tab.tabId); await persist(); return { completed: true }; }
     const page = requirePage(tab);
     if (action === 'snapshot') return { snapshot: await snapshot(tab) };
-    if (action === 'frame') return { frame: await frame(tab) };
+    if (action === 'frame') return { frame: await frame(tab, actor) };
     if (action === 'capture') return { capture: await capture(actor, tab, args) };
     if (tab.snapshot?.native && selectedAdapter()?.passwordAction && ['click', 'type', 'press', 'scroll'].includes(action)) {
       if (action === 'press') assertAgentKey(actor, args.key);
@@ -886,7 +911,7 @@ export function createOwnedBrowserService(options = {}) {
     if (action === 'click') { await requireRef(tab, args).click({ timeout: 10_000, button: args.button === 'right' ? 'right' : 'left' }); return { completed: true }; }
     if (action === 'type') {
       const handle = requireRef(tab, args);
-      if (await handle.evaluate((el) => el.matches('input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"]'))) throw error('BROWSER_SECRET_CHANNEL_REQUIRED', 'Use the saved-account broker to fill password fields.');
+      if ((await handle.getAttribute('type'))?.toLowerCase() === 'password' || ['current-password', 'new-password'].includes(await handle.getAttribute('autocomplete'))) throw error('BROWSER_SECRET_CHANNEL_REQUIRED', 'Use the saved-account broker to fill password fields.');
       await handle.fill(text(args.text, 16_000), { timeout: 10_000 });
       if (args.submit === true) {
         epochs(tab, args, true); assertController(actor, tab);
@@ -929,7 +954,7 @@ export function createOwnedBrowserService(options = {}) {
       await credentialBroker.fill({ actor, handle: issued.handle, binding, getBinding: async () => ({ ...binding, origin: new URL(page.url()).origin, navigationEpoch: tab.navigationEpoch, controlEpoch: tab.controllerEpoch, runtimeGeneration: generation }), fill: async ({ username, password, assertAuthorized, perform = async (write) => write() }) => {
         epochs(tab, args, true); assertController(actor, tab);
         if (new URL(page.url()).origin !== origin || await passwordHandle.ownerFrame() !== page.mainFrame()) throw error('BROWSER_CREDENTIAL_TARGET_CHANGED', 'The sign-in page or frame changed.');
-        if (!await passwordHandle.evaluate((el) => el.matches('input[type="password"]') && el.isConnected)) throw error('BROWSER_CREDENTIAL_TARGET_INVALID', 'The selected field is not a current password field.');
+        if (await passwordHandle.getAttribute('type') !== 'password') throw error('BROWSER_CREDENTIAL_TARGET_INVALID', 'The selected field is not a current password field.');
         const write = async (handle, value, isPassword) => {
           if (!isPassword) await handle.evaluate((el) => el.setAttribute('data-rhwp-private-field', 'true'));
           // Readiness waits hold no credential data and never hold a revocation fence.
@@ -939,15 +964,10 @@ export function createOwnedBrowserService(options = {}) {
           await assertPolicy(actor, 'fill-account', page.url(), tab, args);
           epochs(tab, args, true); assertController(actor, tab);
           await perform(async () => {
-            const written = await handle.evaluate((el, payload) => {
-              const rect = el.getBoundingClientRect();
-              if (location.origin !== payload.origin || !el.isConnected || el.disabled || el.readOnly || rect.width <= 0 || rect.height <= 0 || getComputedStyle(el).visibility === 'hidden' || !(el instanceof HTMLInputElement) || (payload.isPassword && el.type !== 'password')) return false;
-              Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, payload.value);
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-              return true;
-            }, { value, origin, isPassword });
-            if (!written) throw error('BROWSER_CREDENTIAL_TARGET_CHANGED', 'The sign-in field changed before credential input. Refresh it before retrying.');
+            if (new URL(page.url()).origin !== origin || isPassword && await handle.getAttribute('type') !== 'password') throw error('BROWSER_CREDENTIAL_TARGET_CHANGED', 'The sign-in field changed before credential input. Refresh it before retrying.');
+            tab.protectedValues ??= new Set(); tab.protectedValues.add(value);
+            // Playwright fills through its isolated selector engine, never a site-patched setter.
+            await handle.fill(value, { timeout: 10_000 });
           });
         };
         if (usernameHandle) await write(usernameHandle, username, false);
@@ -1217,6 +1237,26 @@ export function createOwnedBrowserService(options = {}) {
       if (!actor.isHuman && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in.', true);
       epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
+      if (!actor.isHuman && ['type', 'click', 'press'].includes(action)) {
+        const element = args.ref && tab.snapshot?.elements.find(entry => entry.ref === args.ref);
+        const handle = args.ref && !tab.snapshot?.native ? requireRef(tab, args) : null;
+        const selfButton = handle && action === 'click' ? await handle.$('xpath=self::button|self::summary|self::input[@type="submit" or @type="button" or @type="image"]') : null;
+        const role = handle ? await handle.getAttribute('role') : element?.role;
+        const writesText = action === 'type' || action === 'press' && (['Enter', 'Space'].includes(args.key) || /^[\p{L}\p{N}]$/u.test(args.key));
+        const submits = action === 'click' && element && (handle ? !!selfButton || ['button', 'menuitem'].includes(role) : ['button', 'summary'].includes(element.tag) || ['button', 'menuitem'].includes(role) || element.tag === 'input' && ['submit', 'button', 'image'].includes(element.inputType));
+        await selfButton?.dispose();
+        // Search input is a deliberate exception on exact built-in search origins, not URL-shaped arbitrary sites.
+        let search = false;
+        const currentURL = new URL(requirePage(tab).url());
+        if (SEARCH_ORIGINS.has(currentURL.origin) && element && !element.sensitive) {
+          const form = handle ? await handle.$('xpath=ancestor-or-self::form[1]') : null;
+          const method = form ? await form.getAttribute('method') : element.formMethod;
+          const destination = new URL((form ? await form.getAttribute('action') : element.formAction) || currentURL.href, currentURL);
+          search = (form || element.formAction) && (method || 'get').toLowerCase() === 'get' && destination.origin === currentURL.origin && /^(?:\/|\/search\/?|\/w\/index\.php)$/.test(destination.pathname);
+          await form?.dispose();
+        }
+        if ((writesText || submits) && !search) await assertPolicy(actor, action, requirePage(tab).url(), tab, { intent: 'website-change' });
+      }
       tab.activeActor = actor;
       const agentSessionEpoch = humanSessionEpoch;
       if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }

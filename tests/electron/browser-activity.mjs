@@ -43,7 +43,7 @@ app.whenReady().then(async () => {
     };
     let downloaded;
     const downloadReady = new Promise(resolve => { downloaded = resolve; });
-    service = createOwnedBrowserService({ dataDir: root, nativeAdapter: adapter, workspaceTargets: [origin], downloads: {
+    service = createOwnedBrowserService({ dataDir: root, policy: { assertAllowed: async () => {} }, nativeAdapter: adapter, workspaceTargets: [origin], downloads: {
       async handleBrowserDownload({ download }) {
         const file = await download.path();
         downloaded({ filename: download.suggestedFilename(), bytes: await readFile(file, 'utf8'), file });
@@ -203,8 +203,9 @@ app.whenReady().then(async () => {
       assert.equal(await sharedTab.view.webContents.executeJavaScript('document.querySelector("#draft").value'), 'global draft');
       assert.equal(await sharedTab.view.webContents.executeJavaScript('sessionStorage.getItem("global-state")'), 'kept');
       assert.throws(() => host.attach(window, { tabId: shared.tab.tabId, bounds: { x: 0, y: 0, width: 420, height: 320 } }), /another editor window/);
-      await assert.rejects(service.request(actor, 'snapshot', { tabId: shared.tab.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
-      report.globalBrowser = { pageRetained: true, draftRetained: true, sessionRetained: true, agentIsolated: true };
+      const sharedSnapshot = await service.request(actor, 'snapshot', { tabId: shared.tab.tabId });
+      assert.ok(sharedSnapshot.snapshot.elements.some(row => row.value === 'global draft'), 'agents can observe the retained global page');
+      report.globalBrowser = { pageRetained: true, draftRetained: true, sessionRetained: true, agentAccessible: true };
     } finally { sharedWindow.destroy(); }
     service.configureSleep({ idleMinutes: 1 });
     tab.lastHiddenAt = Date.now() - 61_000;
