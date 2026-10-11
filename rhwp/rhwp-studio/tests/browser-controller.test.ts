@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SidebarBridge } from '../src/agent/bridge.ts';
 import type { BrowserEvent, BrowserFrame, BrowserResult, BrowserTab, SidebarEvent } from '../src/agent/types.ts';
-import { createBrowserController } from '../src/ui/agent-sidebar/browser-controller.ts';
+import { browserPopupDestination, createBrowserController } from '../src/ui/agent-sidebar/browser-controller.ts';
 
 function fixture(nativePresentation = false) {
   const listeners = new Set<(event: BrowserEvent) => void>();
@@ -260,4 +260,15 @@ test('탭을 전환하면 이전 화면을 놓고 늦은 캡처를 버리지만 
   assert.deepEqual(f.controller.state.tabs, [first, second]);
   assert.deepEqual(f.actions, ['frame']);
   f.controller.dispose();
+});
+
+
+test('떠 있는 화면의 링크는 새 목적지를 선택하고 백그라운드 링크와 다른 화면의 링크는 유지한다', () => {
+  const popup = { ...tab(), tabId: 'new-site', url: 'https://new.example/' };
+  assert.equal(browserPopupDestination({ type: 'owned_browser_popup', tab: popup, openerTabId: 'opener' }, 'opener'), popup.tabId);
+  assert.equal(browserPopupDestination({ type: 'owned_browser_popup', tab: popup, openerTabId: 'opener', foreground: false }, 'opener'), null);
+  assert.equal(browserPopupDestination({ type: 'owned_browser_popup', tab: popup, openerTabId: 'other-site' }, 'opener'), null);
+  assert.equal(browserPopupDestination({ type: 'owned_browser_closed', tabId: popup.tabId, openerTabId: 'opener' }, popup.tabId), 'opener');
+  assert.equal(browserPopupDestination({ type: 'owned_browser_closed', tabId: popup.tabId, openerTabId: 'opener' }, 'other-site'), null);
+  assert.equal(browserPopupDestination({ type: 'owned_browser_closed', tabId: popup.tabId }, popup.tabId), null);
 });

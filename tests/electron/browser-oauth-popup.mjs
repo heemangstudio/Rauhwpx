@@ -31,11 +31,15 @@ app.whenReady().then(async () => {
 try {
   let providerOrigin;
   const openerSite = createSecureServer({ key, cert }, (request, response) => {
+    if (request.url === '/post-submit') {
+      let body = ''; request.on('data', data => { body += data; }); request.on('end', () => { assert.equal(request.method, 'POST'); assert.equal(body, 'note=link-fixture'); response.writeHead(303, { location: '/post-result' }); response.end(); }); return;
+    }
+    if (request.url === '/post-result') { response.end('<!doctype html><title>Submitted link fixture</title><h1>Submitted</h1>'); return; }
     response.setHeader('content-type', 'text/html');
     response.end(`<!doctype html><title>OAuth opener fixture</title><input id="draft" value="retained"><script>
       window.callbacks=[];addEventListener('message',e=>{if(e.origin===${JSON.stringify(providerOrigin)})callbacks.push(e.data)});
       window.startOAuth=()=>{window.authPopup=window.open('about:blank','controlled-auth','popup,width=460,height=600');return !!authPopup};
-    </script><a id="link" href="/result" target="_blank">Result</a><form action="/signed-in"><label>Password<input id="secret" type="password" autocomplete="current-password"></label></form>`);
+    </script><a id="link" href="/result" target="_blank" rel="noopener noreferrer">Result</a><form id="link-form" action="/post-submit" method="post" target="_blank"><input name="note" value="link-fixture"><button id="link-submit">Submit result</button></form><form action="/signed-in"><label>Password<input id="secret" type="password" autocomplete="current-password"></label></form>`);
   });
   const providerSite = createServer((request, response) => {
     if (request.url === '/authorize') { response.writeHead(302, { location: '/callback' }); response.end(); return; }
@@ -113,8 +117,19 @@ try {
   await contents.executeJavaScript('document.querySelector("#link").click()', true);
   const linked = await linkPopup;
   assert.equal(linked.foreground, true);
+  const linkedContents = host.tab(linked.tab.tabId).view.webContents;
+  await linkedContents.executeJavaScript("document.readyState");
+  assert.equal(linkedContents.getURL(), openerOrigin + "/result", "Opening a website link must load its destination instead of about:blank");
   const linkedState = (await service.inventory(actor)).tabs.find(tab => tab.tabId === linked.tab.tabId);
   await service.request(actor, 'close', linkedState);
+  stage = 'postedLink';
+  const postedPopup = waitForEvent('owned_browser_popup');
+  await contents.executeJavaScript('document.querySelector("#link-submit").click()', true);
+  const posted = await postedPopup; const postedContents = host.tab(posted.tab.tabId).view.webContents;
+  await postedContents.executeJavaScript('document.readyState');
+  assert.equal(postedContents.getURL(), openerOrigin + '/post-result', 'New-window form submission must preserve POST and follow the redirect');
+  assert.equal(await postedContents.executeJavaScript('document.querySelector("h1").textContent'), 'Submitted');
+  await service.request(actor, 'close', (await service.inventory(actor)).tabs.find(tab => tab.tabId === posted.tab.tabId));
   stage = 'backgroundPopup';
   const backgroundPopup = waitForEvent('owned_browser_popup');
   const point = await contents.executeJavaScript('(()=>{const r=document.querySelector("#link").getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()');

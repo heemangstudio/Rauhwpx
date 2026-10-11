@@ -160,6 +160,7 @@ import { createFocusGreeting } from './focus-greeting.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
 import { createSidebarWorkbench, type SidebarWorkbench, type WorkbenchView } from './workbench.ts';
 import { createWorkbenchBoard, type WorkbenchBoard } from './workbench-board.ts';
+import { browserPopupDestination } from './browser-controller.ts';
 import { createWorkbenchBrowser, type WorkbenchBrowser } from './workbench-browser.ts';
 import { createWorkbenchDocuments, type WorkbenchDocuments } from './workbench-documents.ts';
 import { createWorkbenchAgents, type WorkbenchAgents } from './workbench-agents.ts';
@@ -3892,7 +3893,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     browser.controller.accept({ tabs: browser.controller.state.tabs });
     await browser.releaseTab(tabId);
     if (sequence !== floatingBrowserSequence || !active || root.dataset.disposed === 'true') { floatingBrowserTab = null; return; }
-    const view = createBrowserView({ tabFilter: row => row.tabId === tabId, onDock: () => { void dockFloatingBrowser(); }, onClose: () => { void dockFloatingBrowser(); } });
+    const view = createBrowserView({ tabFilter: row => row.tabId === floatingBrowserTab, onDock: () => { void dockFloatingBrowser(); }, onClose: () => { void dockFloatingBrowser(); } });
     floatingBrowser = view; floatingBrowserHost = document.createElement('div'); floatingBrowserHost.hidden = true; root.append(floatingBrowserHost);
     view.mount(floatingBrowserHost); view.controller.accept({ tabs: [tab], runtime: browser.controller.state.runtime ?? undefined }); view.controller.select(tabId); view.float(point);
     syncWorkbenchResources();
@@ -3937,9 +3938,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
 
   const unsubscribeAgentBrowserPreview = bridge.onBrowserEvent((event) => {
-    if (event.type !== 'owned_browser_activity' || event.active === false) return;
-    const tab = event.tab ?? (event.payload as { tab?: import('../../agent/types.ts').BrowserTab } | undefined)?.tab;
-    if (tab) ensureWorkbenchBrowser().previewAgent(tab);
+    const data = event.payload && typeof event.payload === 'object' ? { ...event, ...event.payload } as import('../../agent/types.ts').BrowserEvent : event;
+    // 떠 있는 화면에서도 새 링크의 실제 게스트를 선택한다. 사이드바의 다른 페이지는 유지한다.
+    const destination = floatingBrowser && browserPopupDestination(data, floatingBrowserTab);
+    if (floatingBrowser && destination) {
+      floatingBrowserTab = destination;
+      if (data.type === 'owned_browser_popup' && data.tab) {
+        floatingBrowser.controller.accept({ tab: data.tab }); floatingBrowser.controller.select(destination);
+      } else void floatingBrowser.controller.refresh();
+      void ensureWorkbenchBrowser().controller.refresh();
+      return;
+    }
+    if (data.type !== 'owned_browser_activity' || data.active === false) return;
+    if (data.tab) ensureWorkbenchBrowser().previewAgent(data.tab);
   });
 
   workbench = createSidebarWorkbench({

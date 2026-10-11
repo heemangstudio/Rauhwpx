@@ -12,6 +12,14 @@ export interface BrowserControllerState {
   error: string | null;
 }
 
+/** 새 창 링크와 인증 창 닫기는 해당 창을 보고 있던 화면에서만 따라간다. */
+export function browserPopupDestination(event: BrowserEvent, activeTabId: string | null): string | null {
+  if (!activeTabId) return null;
+  if (event.type === 'owned_browser_popup' && event.foreground !== false && event.openerTabId === activeTabId) return event.tab?.tabId ?? null;
+  if (event.type === 'owned_browser_closed' && event.tabId === activeTabId) return event.openerTabId ?? null;
+  return null;
+}
+
 /** 뷰의 수명과 탭의 수명을 분리한다. 화면을 닫아도 런타임 탭은 닫지 않는다. */
 export function createBrowserController(bridge: SidebarBridge, options: { nativePresentation?: boolean; tabFilter?: (tab: BrowserTab) => boolean } = {}) {
   const state: BrowserControllerState = {
