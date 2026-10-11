@@ -4,7 +4,7 @@
 
 Verified on 2026-10-11 in the running HamaEditor development Electron app from `Rauhwpx-pr475`, with Studio at `http://127.0.0.1:7745`, Electron 43.7.9, and `adsf.hwpx` loaded. All four PRs (#460, #462, #475 and #481) are now merged into main. The live checks used their integrated source tree before the final version-only release change. The document remained clean; no real provider turn or personal password was submitted.
 
-After integrating the dialog fix and relaunching Electron and Vite, the editor reported product version **3.0.0**, the hub connected, and the document remained clean. Opening a fresh browser tab failed with `BROWSER_SECURE_STORAGE_UNAVAILABLE`, reporting that the operating-system credential store was locked or unavailable. This prevents a fresh browser check in the user's profile until that store becomes available; no credentials or saved sessions were reset.
+After integrating the dialog fix and relaunching Electron and Vite, the editor reported product version **3.0.0**, the hub connected, and the document remained clean. The first browser open reported `BROWSER_SECURE_STORAGE_UNAVAILABLE`; a later retry succeeded without resetting credentials or saved sessions. A fresh HTTPS tab then loaded, a native alert appeared as an editor sheet, and the main page continued returning version, document and hub state while the alert was pending. Clicking its native **OK** button continued the website script. Capturing the reparked hidden tab then returned a valid image.
 
 ## Live checks
 
@@ -21,6 +21,8 @@ After integrating the dialog fix and relaunching Electron and Vite, the editor r
 ![Native browser and three-dot menu](native-browser-menu.png)
 
 ![Dark sleeping tab after releasing its renderer](native-browser-sleep.png)
+
+![Hidden-tab capture after the live 3.0.0 alert closed](native-hidden-capture-3.0.0.jpg)
 
 ## Automated checks
 
