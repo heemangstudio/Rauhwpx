@@ -48,3 +48,26 @@ body[data-error="true"] #collaboration { color: #c14639; }
 @media (prefers-reduced-motion: reduce) { button:active:not(:disabled) { transform: none; } }
 @media (prefers-reduced-transparency: reduce) { .browser-chrome { background: Canvas; backdrop-filter: none; } }
 @media (prefers-contrast: more) { .address-field { outline: 1px solid var(--quiet); } :root { --quiet: CanvasText; } }
+
+#move-handle, #resize-grip { display: none; }
+#zoom-controls { display: flex; align-items: center; gap: 1px; }
+#zoom-percent { width: 40px; font-size: 10px; }
+body[data-presentation="float"] { background: var(--chrome); }
+body[data-presentation="float"] .browser-chrome { height: 36px; }
+body[data-presentation="float"] #navigation { height: 36px; padding: 4px; gap: 2px; }
+body[data-presentation="float"] #collaboration,
+body[data-presentation="float"] #control,
+body[data-presentation="float"] .address-icon,
+body[data-presentation="float"] #go { display: none; }
+body[data-presentation="float"] button { width: 24px; height: 24px; border-radius: 5px; }
+body[data-presentation="float"] svg { width: 14px; height: 14px; }
+body[data-presentation="float"] .address-field { height: 26px; padding-left: 0; border-radius: 7px; }
+body[data-presentation="float"] input { text-align: center; font-size: 11px; }
+body[data-presentation="float"] input:focus { text-align: left; }
+body[data-presentation="float"] #zoom-controls button { width: 18px; font-size: 11px; }
+body[data-presentation="float"] #zoom-controls #zoom-percent { width: 32px; font-size: 9px; }
+body[data-presentation="float"] #move-handle { display: block; flex: 0 0 24px; height: 24px; cursor: move; -webkit-app-region: drag; }
+body[data-presentation="float"] #move-handle::before { content: ''; display: block; width: 20px; height: 3px; margin: 10px 2px; border-radius: 3px; background: currentColor; opacity: .35; }
+body[data-presentation="float"] #resize-grip { display: block; position: fixed; right: 2px; bottom: 2px; width: 10px; height: 10px; pointer-events: none; background: linear-gradient(135deg, transparent 40%, currentColor 40%, currentColor 50%, transparent 50%, transparent 65%, currentColor 65%, currentColor 75%, transparent 75%); opacity: .4; }
+body[data-presentation="float"][data-agent-controlled="true"] { box-shadow: inset 0 0 0 1px #f59a454d; }
+@media (max-width: 400px) { body[data-presentation="float"] [data-command="forward"] { display: none; } }

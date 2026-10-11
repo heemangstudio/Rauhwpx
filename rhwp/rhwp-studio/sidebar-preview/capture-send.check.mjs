@@ -15,13 +15,12 @@ async function sendText(page, text) {
 async function attachCapture(page) {
   await page.click('.ag-browser-trigger');
   await page.waitForSelector('.ag-browser:not([hidden])', { visible: true });
-  await page.click('.ag-browser [aria-label="연구 브라우저 열기"]');
+  const emptyOpen = await page.$('.ag-browser [aria-label="연구 브라우저 열기"]');
+  if (emptyOpen && await emptyOpen.evaluate((button) => button.checkVisibility())) await emptyOpen.click();
   await page.waitForFunction(() => document.querySelector('.ag-browser-frame')?.src.startsWith('data:image'));
-  await page.click('.ag-browser [aria-label="페이지·개체·영역에 의견 붙이기"]');
-  await page.type('.ag-browser [aria-label="자료 의견"]', '캡처 근거를 확인해 주세요.');
-  await page.click('.ag-browser [aria-label="의견과 자료를 선택한 채팅에 첨부"]');
+  await page.click('[aria-label="현재 화면을 캡처해 채팅에 첨부"]');
   await page.waitForSelector('.ag-capture-inbox [data-capture-id]');
-  await page.click('.ag-browser [aria-label="브라우저 보기 닫기"]');
+  await page.click('.ag-browser-floating:not([hidden]) .ag-browser-floating-close');
 }
 
 const currentThread = (page) => page.evaluate(() => window.sidebarPreview.threadStore.getThread(window.sidebarPreview.sidebar.currentThreadId()));

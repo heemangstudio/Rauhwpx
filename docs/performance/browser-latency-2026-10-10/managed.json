@@ -1,0 +1,19 @@
+{
+  "measurement": "Click to updated displayed screenshot pixel",
+  "frameRequestsDuringBrowsing": 9,
+  "nativeTypingImeScrollingAndAnnotation": false,
+  "runtime": "chromium",
+  "latencyMs": [
+    101.5,
+    99.1,
+    100.3,
+    101.6,
+    98.7,
+    100,
+    100.2,
+    99.8
+  ],
+  "medianMs": 100.1,
+  "frameRequests": 9,
+  "pageErrors": []
+}

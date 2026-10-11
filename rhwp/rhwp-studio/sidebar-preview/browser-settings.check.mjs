@@ -5,13 +5,35 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   await page.goto(`${origin}/?reset=1&theme=light&width=560&page=settings&destination=browser`, { waitUntil: 'networkidle0' });
   await page.waitForSelector('#ag-settings-pane-browser .ag-browser-row', { visible: true });
   const click = async (text) => page.evaluate((label) => {
-    const button = [...document.querySelectorAll('#ag-settings-pane-browser button')].find(node => node.textContent === label);
+    const button = [...document.querySelectorAll('#ag-settings-pane-browser button')].find(node => node.textContent === label || node.getAttribute('aria-label') === label);
     if (!button) throw new Error(`Missing button ${label}`); button.click();
   }, text);
+  const independentTabs = await page.evaluate(async () => {
+    const { createBrowserSettingsPane } = await import('/src/ui/agent-sidebar/browser-settings.ts');
+    const options = { request: async () => ({}), submit: async () => ({}), isConnected: () => false };
+    const first = createBrowserSettingsPane(options); const second = createBrowserSettingsPane(options);
+    document.body.append(first.element, second.element);
+    const selectedTab = first.element.querySelector('[role=tab][aria-selected=true]');
+    selectedTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    const roots = [first.element, second.element];
+    const ids = roots.flatMap(root => [...root.querySelectorAll('[id]')].map(node => node.id));
+    const result = {
+      unique: ids.length === new Set(ids).size,
+      linked: roots.every(root => {
+        const panel = root.querySelector('[role=tabpanel]'); const tab = root.querySelector('[role=tab][aria-selected=true]');
+        return tab.getAttribute('aria-controls') === panel.id && panel.getAttribute('aria-labelledby') === tab.id;
+      }),
+      independent: first.element.querySelector('[role=tab][aria-selected=true]').textContent === '승인된 권한'
+        && second.element.querySelector('[role=tab][aria-selected=true]').textContent === '계정',
+    };
+    first.dispose(); second.dispose(); return result;
+  });
+  assert.deepEqual(independentTabs, { unique: true, linked: true, independent: true }, 'coexisting panes keep independent keyboard navigation and accessibility references');
   const before = await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent);
-  await click('계정 추가');
+  await click('비밀번호 추가');
   await page.waitForSelector('.ag-browser-account-form');
   assert.equal(await page.$eval('.ag-browser-account-form input[type=password]', input => input.type), 'password');
+  assert.equal(await page.$$('.ag-browser-account-option').then(rows => rows.length), 1, 'account list stays available while adding an account');
   await page.evaluate(() => {
     const inputs = [...document.querySelectorAll('.ag-browser-account-form input')];
     inputs[0].value = 'https://example.com/path'; inputs[2].value = '연구 계정'; inputs[3].value = 'researcher'; inputs[4].value = 'fixture-private-password';
@@ -26,12 +48,12 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   assert.equal(await page.evaluate(() => JSON.stringify(window.sidebarPreview.snapshot()).includes('fixture-private-password')), false, 'snapshot never retains secret');
   assert.equal(await page.evaluate(() => Object.values(localStorage).some(value => String(value).includes('fixture-private-password'))), false, 'secret never enters localStorage');
   if (screenshot) await screenshot('browser-settings-accounts');
-  await click('Google 계정 연결');
+  await click('계정 연결');
   await page.waitForSelector('.ag-browser-account-form');
   assert.equal(await page.$('.ag-browser-account-form input[type=password]'), null, 'manual sign-in registers an account without collecting a password');
   await page.evaluate(() => {
     const inputs = [...document.querySelectorAll('.ag-browser-account-form input')];
-    inputs[2].value = 'Google 새 로그인'; inputs[3].value = 'google-owner';
+    inputs[0].value = 'https://accounts.google.com'; inputs[1].value = 'https://www.google.com, https://docs.google.com, https://drive.google.com'; inputs[2].value = 'Google 새 로그인'; inputs[3].value = 'google-owner';
   });
   await page.click('.ag-browser-account-form button[type=submit]');
   await page.waitForFunction(() => window.sidebarPreview.snapshot().browser.signIns?.length === 1);
@@ -41,17 +63,21 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   assert.equal(savedSession.hasPassword, false);
   assert.deepEqual(savedSession.origins, ['https://accounts.google.com', 'https://www.google.com', 'https://docs.google.com', 'https://drive.google.com']);
   await page.waitForFunction(() => {
-    const rows = [...document.querySelectorAll('.ag-browser-row')];
-    const chosen = rows.find(row => row.textContent.includes('Google 새 로그인'));
-    const other = rows.find(row => row.textContent.includes('Google 연구'));
-    return [...chosen.querySelectorAll('button')].find(button => button.textContent === '로그인 확인')?.disabled === false
-      && [...other.querySelectorAll('button')].find(button => button.textContent === '로그인 확인')?.disabled === true;
+    const chosen = document.querySelector('.ag-browser-account-detail');
+    return chosen?.textContent.includes('Google 새 로그인')
+      && [...chosen.querySelectorAll('button')].find(button => button.textContent === '로그인 확인')?.disabled === false;
   });
+  const chooseAccount = async (id) => page.evaluate((accountId) => {
+    [...document.querySelectorAll('.ag-browser-account-option')].find(button => button.dataset.accountId === accountId).click();
+  }, id);
+  await chooseAccount('google');
+  assert.equal(await page.evaluate(() => [...document.querySelectorAll('.ag-browser-account-detail button')].find(button => button.textContent === '로그인 확인').disabled), true, 'another account cannot confirm the pending login');
+  await chooseAccount(savedSession.id);
+  await click('새로고침');
+  await page.waitForFunction((id) => document.querySelector('.ag-browser-account-detail')?.dataset.accountId === id && !document.querySelector('.ag-browser-message')?.textContent.includes('불러오는'), {}, savedSession.id);
+  assert.equal(await page.$eval('.ag-browser-account-option[aria-pressed=true]', button => button.dataset.accountId), savedSession.id, 'refresh preserves selected account');
   if (screenshot) await screenshot('browser-settings-sign-in-pending');
-  await page.evaluate(() => {
-    const row = [...document.querySelectorAll('.ag-browser-row')].find(row => row.textContent.includes('Google 새 로그인'));
-    [...row.querySelectorAll('button')].find(button => button.textContent === '로그인 확인').click();
-  });
+  await click('로그인 확인');
   await page.waitForFunction(() => window.sidebarPreview.snapshot().browser.accounts.find(account => account.label === 'Google 새 로그인')?.sessionStatus === 'authenticated');
   const blocked = await page.evaluate(async () => {
     try { await window.sidebarPreview.bridge.requestBrowser('sign-in', { url: 'https://accounts.google.com/' }); return false; }
@@ -59,6 +85,25 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   });
   assert.equal(blocked, true, 'a URL-only sign-in cannot open an unbound shared profile');
   if (screenshot) await screenshot('browser-settings-sign-in');
+
+  await click('사용 승인 철회');
+  await page.waitForFunction((id) => window.sidebarPreview.snapshot().browser.accounts.find(account => account.id === id)?.agentReuseApproved === false, {}, savedSession.id);
+  await page.waitForFunction(() => [...document.querySelectorAll('.ag-browser-account-detail button')].find(button => button.textContent === '사용 허용'));
+  assert.equal(await page.evaluate(() => [...document.querySelectorAll('.ag-browser-account-detail button')].find(button => button.textContent === '로그인 열기').disabled), true, 'revoked account cannot open sign-in');
+  await click('사용 허용');
+  await page.waitForFunction((id) => window.sidebarPreview.snapshot().browser.accounts.find(account => account.id === id)?.agentReuseApproved === true, {}, savedSession.id);
+  await chooseAccount('google');
+  await click('비밀번호 변경');
+  await page.waitForSelector('.ag-browser-account-form');
+  await page.$eval('.ag-browser-account-form input[type=password]', input => { input.value = 'cancelled-private-password'; });
+  await chooseAccount(savedSession.id);
+  assert.equal(await page.$('.ag-browser-account-form'), null, 'changing account discards credential form');
+  assert.equal(await page.evaluate(() => JSON.stringify(window.sidebarPreview.snapshot()).includes('cancelled-private-password')), false);
+  await chooseAccount('google');
+  await click('계정 삭제');
+  await page.waitForFunction(() => !window.sidebarPreview.snapshot().browser.accounts.some(account => account.id === 'google'));
+  await page.waitForFunction(() => document.querySelector('.ag-browser-account-detail')?.dataset.accountId !== 'google');
+  assert.equal(await page.$$('.ag-browser-account-detail').then(rows => rows.length), 1, 'deleting selection shows another saved account');
 
   await click('승인된 권한');
   await page.waitForSelector('.ag-browser-settings-body .ag-browser-check input');
@@ -127,6 +172,146 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   });
   assert.deepEqual(agentReset, { rejected: true, accounts: 1, resetCount: 0 }, 'agent actor cannot reset browser data');
   if (screenshot) await screenshot('browser-settings-reset');
+
+  // Many-account fixture exercises the production pane and its real selection/search controls.
+  await page.goto(`${origin}/?reset=1&controls=0&fullscreen=1&theme=light&page=settings&destination=browser`, { waitUntil: 'networkidle0' });
+  await page.evaluate(async () => {
+    const { createBrowserSettingsPane } = await import('/src/ui/agent-sidebar/browser-settings.ts');
+    const providers = ['https://accounts.google.com', 'https://login.microsoftonline.com', 'https://github.com', 'https://nid.naver.com', 'https://research.example.org'];
+    const accounts = Array.from({ length: 20 }, (_, i) => ({ id: `many-${i}`, profileId: 'default', origin: providers[i % providers.length], label: `연구 계정 ${String(i + 1).padStart(2, '0')}`, stableIdentity: i === 19 ? `many-${i}` : `researcher${i + 1}@example.org`, hasPassword: i % 3 === 0, agentReuseApproved: true, sessionStatus: 'authenticated' }));
+    accounts.push({ id: 'password-only', profileId: 'default', origin: 'https://archive.example.org', label: '자료실 비밀번호', stableIdentity: 'archive-reader', hasPassword: true, agentReuseApproved: true, sessionStatus: 'saved' });
+    const pane = createBrowserSettingsPane({ isConnected: () => true, submit: async () => ({}), request: async (action) => {
+      if (action === 'accounts.list') return { accounts, secureStorageAvailable: true };
+      if (action === 'policy.list') return { defaults: { browse: true, download: true, researchImport: true }, sites: [] };
+      if (action === 'status') return { runtime: { state: 'ready' } };
+      return {};
+    } });
+    document.querySelector('#ag-settings-pane-browser').replaceChildren(pane.element); pane.open();
+  });
+  await page.waitForFunction(() => document.querySelectorAll('.ag-browser-account-option').length === 20);
+  assert.equal(await page.$('.ag-browser-account-option[data-account-id="password-only"]'), null, 'password-only entries do not masquerade as connected sessions');
+  assert.equal(await page.$eval('.ag-browser-account-list', node => node.scrollHeight > node.clientHeight), true, '20 accounts use an independently scrolling list');
+  await page.select('.ag-browser-account-toolbar select', 'GitHub');
+  assert.equal(await page.$$('.ag-browser-account-option').then(rows => rows.length), 4, 'provider filter shows every account for the chosen provider');
+  await page.type('.ag-browser-search', 'researcher3@');
+  assert.equal(await page.$$('.ag-browser-account-option').then(rows => rows.length), 1, 'search matches account identity');
+  await page.$eval('.ag-browser-search', node => { node.value = 'missing'; node.dispatchEvent(new Event('input', { bubbles: true })); });
+  assert.equal(await page.$$('.ag-browser-account-option').then(rows => rows.length), 0, 'empty search does not leave a stale detail selection');
+  assert.equal(await page.$eval('.ag-browser-account-detail', node => node.textContent), '');
+  await page.$eval('.ag-browser-search', node => { node.value = ''; node.dispatchEvent(new Event('input', { bubbles: true })); });
+  await page.select('.ag-browser-account-toolbar select', '');
+  await page.$eval('.ag-browser-search', node => node.blur());
+  assert.equal(await page.$eval('.ag-browser-account-list', node => node.textContent.includes('many-19')), false, 'internal account IDs stay out of provider identities');
+  if (screenshot) await screenshot('browser-settings-20-accounts');
+  await page.evaluate(() => { const theme = document.querySelector('#theme'); theme.value = 'dark'; theme.dispatchEvent(new Event('change', { bubbles: true })); });
+  if (screenshot) await screenshot('browser-settings-20-accounts-dark');
+  await page.evaluate(() => { const theme = document.querySelector('#theme'); theme.value = 'light'; theme.dispatchEvent(new Event('change', { bubbles: true })); });
+  await page.evaluate(() => [...document.querySelectorAll('.ag-browser-account-kinds button')].find(node => node.textContent.startsWith('저장된 비밀번호')).click());
+  await page.click('.ag-browser-account-option[data-account-id="password-only"]');
+  assert.equal(await page.$eval('.ag-browser-account-detail', node => node.dataset.accountId), 'password-only', 'password-only record remains manageable in the password list');
+  if (screenshot) await screenshot('browser-settings-passwords');
+  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+  if (screenshot) await screenshot('browser-settings-accounts-narrow');
+  const overflow = await page.$eval('.ag-browser-settings', node => node.scrollWidth > node.clientWidth + 1);
+  assert.equal(overflow, false, 'account settings fit the narrow app viewport');
+
+  const nativeChecks = await page.evaluate(async () => {
+    const { createBrowserSettingsPane } = await import('/src/ui/agent-sidebar/browser-settings.ts');
+    let supported = false; let profiles = []; let accounts = []; let fail = false; let imported = 0; let removed = []; let hold = false; let releaseImport; let profileReads = 0;
+    window.rhwpDesktop = { browser: { passwords: {
+      listProfiles: async () => { profileReads++; return { supported, profiles }; },
+      list: async () => ({ accounts, secureStorageAvailable: true }),
+      importProfile: async ({ profileId }) => {
+        if (fail) { fail = false; throw new Error('fixture denial'); }
+        if (hold) await new Promise(resolve => { releaseImport = resolve; });
+        imported++; accounts = [{ id: 'local-fixture', origin: 'https://fixture.example', origins: ['https://fixture.example'], username: 'fixture-reader', label: 'Fixture account', source: 'chrome', sourceProfile: profileId, profileId: 'native', hasPassword: true, agentReuseApproved: true, sessionStatus: 'saved', updatedAt: '' }];
+        return { imported: 1, skipped: 2, unsupported: 3 };
+      },
+      remove: async ({ id }) => { removed.push(id); accounts = []; return { removed: true }; },
+    } } };
+    let hubCalls = 0;
+    const pane = createBrowserSettingsPane({ isConnected: () => false, request: async () => { hubCalls++; return {}; }, submit: async () => { throw new Error('unexpected secret submission'); } });
+    document.querySelector('#ag-settings-pane-browser').replaceChildren(pane.element);
+    const settle = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
+    const click = (label) => { const button = [...pane.element.querySelectorAll('button')].find(button => button.textContent.startsWith(label)); if (!button) throw new Error(label); button.click(); };
+    pane.open(); await settle(); click('저장된 비밀번호');
+    const noManualSecretForm = ![...pane.element.querySelectorAll('button')].some(button => button.textContent === '비밀번호 추가' || button.textContent === '비밀번호 변경');
+    const unsupported = !pane.element.querySelector('.ag-browser-import-picker') && pane.element.textContent.includes('Mac에서');
+    supported = true; pane.open(); await settle();
+    const empty = pane.element.textContent.includes('프로필이 없습니다');
+    profiles = [{ id: 'Profile 1', name: 'Fixture profile' }]; click('다시 확인'); await settle();
+    fail = true; click('비밀번호 가져오기'); await settle();
+    const retry = pane.element.querySelector('[role=alert]')?.textContent.includes('다시 시도') && [...pane.element.querySelectorAll('button')].some(button => button.textContent === '비밀번호 가져오기' && !button.disabled);
+    hold = true; click('비밀번호 가져오기'); await settle();
+    const loading = pane.element.querySelector('.ag-browser-local-import[aria-busy=true]') !== null && pane.element.querySelector('.ag-browser-import-picker select').disabled;
+    const readsBeforeReopen = profileReads; pane.open(); await settle();
+    const noOverlappingRefresh = readsBeforeReopen === profileReads;
+    releaseImport(); await settle();
+    const partial = pane.element.textContent.includes('1개 가져옴 · 2개 건너뜀 · 3개 암호화 방식 지원 안 됨');
+    const metadata = pane.element.textContent.includes('fixture-reader') && pane.element.textContent.includes('Profile 1');
+    click('비밀번호 삭제'); await settle();
+    const deleted = !pane.element.querySelector('[data-account-id="local-fixture"]');
+    pane.dispose(); delete window.rhwpDesktop;
+    return { noManualSecretForm, noOverlappingRefresh, unsupported, empty, retry: Boolean(retry), partial, loading, metadata, imported, removed, deleted, hubCalls };
+  });
+  assert.deepEqual(nativeChecks, { noManualSecretForm: true, noOverlappingRefresh: true, unsupported: true, empty: true, retry: true, partial: true, loading: true, metadata: true, imported: 1, removed: ['local-fixture'], deleted: true, hubCalls: 0 }, 'local password controls import metadata, recover from denial and delete through native API while offline');
+
+  const passkeyChecks = await page.evaluate(async () => {
+    const { createBrowserSettingsPane } = await import('/src/ui/agent-sidebar/browser-settings.ts');
+    let supported = false; const signIns = [];
+    window.rhwpDesktop = { browser: { passwords: { listProfiles: async () => ({ supported: true, profiles: [] }), list: async () => ({ accounts: [], secureStorageAvailable: true }) } } };
+    const pane = createBrowserSettingsPane({ isConnected: () => true, submit: async () => ({}), request: async (action, args) => {
+      if (action === 'accounts.list') return { accounts: [{ id: 'passkey-fixture', origin: 'https://fixture.example', label: 'Fixture', hasPassword: false, agentReuseApproved: true, sessionStatus: 'authenticated' }], secureStorageAvailable: true };
+      if (action === 'status') return { runtime: { passkeys: { supported, reason: 'signed-chrome-required', provider: 'Google Chrome', requiresUserVerification: true } } };
+      if (action === 'sign-in') signIns.push(args);
+      return {};
+    } });
+    document.querySelector('#ag-settings-pane-browser').replaceChildren(pane.element);
+    const settle = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
+    pane.open(); await settle();
+    const unavailable = ![...pane.element.querySelectorAll('button')].some(button => button.textContent === 'Chrome에서 Mac 패스키 사용');
+    const noPasswordChange = ![...pane.element.querySelectorAll('button')].some(button => button.textContent === '비밀번호 변경');
+    const installChrome = pane.element.textContent.includes('공식 Google Chrome을 설치');
+    supported = true; pane.open(); await settle();
+    [...pane.element.querySelectorAll('button')].find(button => button.textContent === 'Chrome에서 Mac 패스키 사용').click(); await settle();
+    const chromeInstruction = pane.element.querySelector('.ag-browser-message').textContent.includes('Google Chrome');
+    pane.dispose(); delete window.rhwpDesktop; return { unavailable, noPasswordChange, installChrome, chromeInstruction, signIns };
+  });
+  assert.deepEqual(passkeyChecks, { unavailable: true, noPasswordChange: true, installChrome: true, chromeInstruction: true, signIns: [{ accountId: 'passkey-fixture', url: 'https://fixture.example', authenticationMethod: 'mac-passkey' }] }, 'Mac passkey action appears only when installed Chrome handoff is available');
+
+  const linkedSessionChecks = await page.evaluate(async () => {
+    const { createBrowserSettingsPane } = await import('/src/ui/agent-sidebar/browser-settings.ts');
+    const source = { id: 'source-default', profileId: 'default', origin: 'https://fixture.example', label: 'Source account', hasPassword: false, agentReuseApproved: true, sessionStatus: 'authenticated' };
+    const counterpart = { ...source, id: 'native-session', sourceAccountId: source.id, profileId: 'native' };
+    let brokerAccounts = [source]; let confirmed = 0;
+    window.rhwpDesktop = { browser: { passwords: {
+      listProfiles: async () => ({ supported: true, profiles: [] }),
+      list: async () => ({ accounts: [{ ...source, id: 'imported-password', profileId: 'native', sourceAccountId: source.id, username: 'fixture-reader', source: 'chrome', sourceProfile: 'Fixture', hasPassword: true, sessionStatus: 'saved' }], secureStorageAvailable: true }),
+    } } };
+    const pane = createBrowserSettingsPane({ isConnected: () => true, submit: async () => { throw new Error('unexpected secret form'); }, request: async (action) => {
+      if (action === 'accounts.list') return { accounts: brokerAccounts, secureStorageAvailable: true };
+      if (action === 'status') return { runtime: { passkeys: { supported: true } } };
+      if (action === 'confirm-sign-in') { confirmed++; brokerAccounts = [source, counterpart]; }
+      return {};
+    } });
+    document.querySelector('#ag-settings-pane-browser').replaceChildren(pane.element);
+    const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+    const click = (label) => [...pane.element.querySelectorAll('button')].find(button => button.textContent.startsWith(label)).click();
+    pane.open(); await settle(); click('로그인 확인'); await settle();
+    const oneSource = pane.element.querySelectorAll('.ag-browser-account-option').length === 1 && pane.element.querySelector('.ag-browser-account-detail').dataset.accountId === source.id;
+    const sessionCount = [...pane.element.querySelectorAll('.ag-browser-account-kinds button')].find(button => button.textContent.startsWith('연결된 계정')).textContent;
+    const signInButtons = [...pane.element.querySelectorAll('.ag-browser-account-detail button')].filter(button => ['로그인 열기', 'Chrome에서 Mac 패스키 사용'].includes(button.textContent));
+    const signInAvailable = signInButtons.length === 2 && signInButtons.every(button => !button.disabled);
+    const noSecretForm = !pane.element.querySelector('input[type=password]') && ![...pane.element.querySelectorAll('button')].some(button => button.textContent === '비밀번호 변경');
+    brokerAccounts = [counterpart]; pane.open(); await settle();
+    const orphanVisible = pane.element.querySelector('.ag-browser-account-option')?.dataset.accountId === counterpart.id;
+    const orphanManagement = [...pane.element.querySelectorAll('.ag-browser-account-detail button')].some(button => button.textContent === '계정 삭제') && ![...pane.element.querySelectorAll('.ag-browser-account-detail button')].some(button => button.textContent === '비밀번호 삭제');
+    click('저장된 비밀번호');
+    const importedVisible = pane.element.querySelector('.ag-browser-account-option')?.dataset.accountId === 'imported-password';
+    pane.dispose(); delete window.rhwpDesktop;
+    return { confirmed, oneSource, sessionCount, signInAvailable, noSecretForm, orphanVisible, orphanManagement, importedVisible };
+  });
+  assert.deepEqual(linkedSessionChecks, { confirmed: 1, oneSource: true, sessionCount: '연결된 계정 1', signInAvailable: true, noSecretForm: true, orphanVisible: true, orphanManagement: true, importedVisible: true }, 'confirmed native sessions share the source card while orphan sessions and imported passwords remain manageable');
 
 
 }

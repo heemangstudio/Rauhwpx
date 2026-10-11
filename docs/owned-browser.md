@@ -4,7 +4,7 @@ HamaEditor's browser runs on your own agent hub. Desktop and paired web clients 
 
 ## Open and control a browser
 
-Open **Browser** from the sidebar workbench, the chat toolbar, or Home. A document or project is optional. Agents receive their own tabs; approved saved logins are shared across projects on that hub.
+Open **Browser** from the sidebar workbench, the chat toolbar, or Home. A document or project is optional. Agents can directly use user-opened tabs and receive their own tabs for separate research; approved saved logins are shared across projects on that hub.
 
 The compact icon toolbar offers navigation, reload, control, capture, downloads, and presentation. **Float** opens a draggable PiP panel inside the editor window. It keeps the document and chat available underneath. The separate-window option lives in **More**.
 
@@ -20,11 +20,21 @@ Managed Chromium is the default for desktop and web. **Settings → Browser → 
 
 Desktop uses the owner's OS vault through private IPC. Standalone hubs use macOS Keychain, Windows Credential Manager, or Linux Secret Service. A locked or unavailable secure store reports a recoverable error. Website passwords have no plaintext fallback. Credential storage is lazy so an unused browser does not interrupt editor startup.
 
-Approved account reuse survives chat/project changes and restarts. Human-created login sessions require an exact account/origin confirmation before agents may inspect them. Changing account identity, revoking approval, signing out, and forgetting an account invalidate stale access. The Google setup preset visibly includes the exact Accounts, www.google.com Search, Docs/Slides, and Drive origins in its first account approval. Approval does not extend to every Google service.
+Approved account reuse survives chat/project changes and restarts. User-opened global tabs are available directly to agents. Private agent tabs require exact account/origin confirmation before reusing human-created login sessions, including before requests that could replace session cookies. Changing account identity, revoking approval, signing out, and forgetting an account invalidate stale access. The Google setup preset visibly includes the exact Accounts, www.google.com Search, Docs/Slides, and Drive origins in its first account approval. Approval does not extend to every Google service.
 
 **Approved Permissions** controls public reading, downloads, additive research imports, exact-origin rules, and separate website changes. Google Search, Google Docs/Slides reading, Wikipedia, PubMed/PMC, and arXiv are seeded once. Your later blocks remain in effect. Ordinary publisher links use the public research defaults; private/local destinations require a configured workspace target. Purchases, external messages, deletion, and other committing website actions require their own approval.
 
 The browser uses a dedicated app-owned profile. It never imports your ordinary Chrome or Safari profile. Chromium profile files have private directory permissions; encrypted checkpoints and OS-stored passwords do not mean every active Chromium profile file is encrypted. OS account and disk protection still protect that directory.
+
+### Observation and input security
+
+Managed snapshots classify private fields with Playwright's isolated selector engine and read input values through its trusted input API. Native Electron snapshots and password writes use an isolated JavaScript world. Saved-account filling uses those trusted paths rather than setters supplied by the website.
+
+Snapshots redact known private values copied into ordinary page text. Agent frames and chat screenshot attachments are refused when private values are present, because masking only the original field cannot protect text drawn elsewhere on the page. Human managed-browser preview frames remain available so entering a password does not blank the browsing surface. Semantic snapshots remain available with private fields masked.
+
+Website scripts receive values entered into their own sign-in forms and can encode, transform, or transmit them. Field masking and known-value redaction cannot establish a confidentiality boundary against arbitrary transformations by that website. Use saved accounts only on their approved origins; password values remain outside the agent tool responses.
+
+Typing, Enter/Space submission, and button actions on unapproved origins require an exact-origin website-change grant. Search has a narrow exception for GET forms on the built-in search origins, with same-origin search destinations. Labels such as “Export PDF” and paths such as `/search` never approve an arbitrary site's submission. Non-read HTTP requests also enforce the website-change policy. Background WebSocket traffic follows browse/read policy; agent input that could feed it still requires typing approval.
 
 Private Google sign-in and MFA need the account holder. The account sign-in control pauses automation and opens the pinned Chromium executable without remote debugging or automation flags, using the same app-owned profile. Confirmation closes that window, restarts managed browsing, and asks you to confirm the exact account and selected origins before agents can reuse the session. Verify a private deck, export, restart, cross-project reuse, and revocation with your account; fixture checks do not establish private Google Slides compatibility.
 
@@ -50,3 +60,7 @@ node --test tests/desktop-owned-browser.test.mjs tests/desktop-browser-vault.tes
 ```
 
 The live research check uses isolated temporary hub/profile/project storage and a deterministic website. Its provider is a fixture, so it spends no model quota. Sidebar preview checks are frontend fixtures and are labelled separately from these real browser and Electron checks.
+
+## Agent access to the sidebar
+
+`browser_status` lists shared user-opened tabs alongside the current agent’s assigned tabs. Its `activeTabId` identifies the page currently selected in this chat’s sidebar. Agents can snapshot and control that tab directly; the sidebar stays docked and shows a faint orange outline while the agent works. The existing page stays visible when the turn finishes. Other agents’ private research tabs retain their task scope.

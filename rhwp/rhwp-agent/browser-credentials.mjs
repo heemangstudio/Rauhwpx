@@ -54,6 +54,8 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
   let dataResetter;
   let resetting = false;
   let dataGeneration = 0;
+  let checkpointEpoch = 0;
+  let checkpointMutations = 0;
   const requests = new Map();
   const handles = new Map();
   const activeUses = new Map();
@@ -87,6 +89,14 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
   function assertNotResetting() {
     if (resetting || state?.resetPending) throw failure('BROWSER_RESET_INCOMPLETE', 'Browser data cleanup must finish before saved sessions can be used. Retry cleanup in Browser settings.');
   }
+  async function mutateCheckpoints(operation) {
+    checkpointEpoch++; checkpointMutations++;
+    try { return await operation(); }
+    finally { checkpointEpoch++; checkpointMutations--; }
+  }
+  function assertCheckpointEpoch(epoch) {
+    if (checkpointMutations || checkpointEpoch !== epoch) throw failure('BROWSER_AUTH_CHECKPOINT_INVALIDATED', 'The browser authentication checkpoint was cancelled by an account change.');
+  }
   function invalidateAccount(id) {
     for (const [key, handle] of handles) if (handle.accountId === id) handles.delete(key);
     for (const use of activeUses.values()) if (use.accountId === id) use.invalidated = true;
@@ -109,6 +119,10 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     const account = state.accounts.find((entry) => entry.id === id);
     if (!account) throw failure('BROWSER_ACCOUNT_NOT_FOUND', 'The saved website account no longer exists.');
     return account;
+  }
+  function linkedAccounts(account) {
+    const sourceId = account.sourceAccountId ?? account.id;
+    return state.accounts.filter((entry) => entry.id === sourceId || entry.sourceAccountId === sourceId);
   }
   function sessionVersion(account) {
     return Math.max(0, ...state.sessions.filter((entry) => entry.profileId === account.profileId && account.origins.some((origin) => entry.origin === origin || (entry.domain && domainMatches(origin, entry.domain)))).map((entry) => entry.version));
@@ -301,17 +315,33 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
       return { quarantined: true };
     });
   }
-  async function confirmAccountSession({ actor, accountId } = {}) {
+  async function confirmAccountSession({ actor, accountId, additionalProfileId } = {}) {
     human(actor);
+    if (additionalProfileId !== undefined && additionalProfileId !== 'native') throw failure('BROWSER_ACCOUNT_PROFILE_INVALID', 'Website sign-in can return only to the native browser profile.');
     await approveAccount({ actor, accountId });
     return serialized(async () => {
       const account = findAccount(accountId);
       const confirmed = { ...account, sessionStatus: 'authenticated', updatedAt: new Date(now()).toISOString() };
-      const next = { ...state, accounts: state.accounts.map((entry) => entry.id === accountId ? confirmed : entry) };
+      let additional;
+      if (additionalProfileId && additionalProfileId !== account.profileId) {
+        if (account.profileId !== 'default') throw failure('BROWSER_ACCOUNT_PROFILE_INVALID', 'Native session transfer requires the registered full-browser account.');
+        const previous = state.accounts.find((entry) => entry.sourceAccountId === account.id && entry.profileId === additionalProfileId);
+        additional = { id: previous?.id ?? crypto.randomUUID(), sourceAccountId: account.id,
+          origin: account.origin, origins: [...account.origins], label: account.label, stableIdentity: account.stableIdentity,
+          profileId: additionalProfileId, hasPassword: false, sessionStatus: 'authenticated',
+          version: (previous?.version ?? 0) + 1, updatedAt: confirmed.updatedAt };
+        additional.sessionVersion = sessionVersion(additional);
+        invalidateAccount(additional.id);
+        await policy.update({ actor, operation: 'approve-account', accountId: additional.id, origins: additional.origins, profileId: additional.profileId });
+        await authStore.deleteCheckpoint(additional.profileId);
+      }
+      const next = { ...state, accounts: state.accounts.map((entry) => entry.id === accountId ? confirmed : entry)
+        .filter((entry) => !additional || entry.id !== additional.id).concat(additional ? [additional] : []) };
       await writeBrowserJson(filePath, next); state = next;
       const safeAccount = await metadata(confirmed);
       emit({ type: 'browser-account-changed', account: safeAccount });
-      return { account: safeAccount };
+      if (additional) emit({ type: 'browser-account-changed', account: await metadata(additional) });
+      return { account: safeAccount, ...(additional ? { additionalAccount: await metadata(additional) } : {}) };
     });
   }
   async function issueHandle({ actor, accountId, binding } = {}) {
@@ -377,14 +407,18 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
   }
   async function revokeAccount({ actor, accountId } = {}) {
     human(actor);
-    return serialized(async () => {
-      const account = findAccount(accountId);
-      invalidateAccount(account.id);
-      await policy.update({ actor, operation: 'revoke-account', accountId: account.id, origins: account.origins, profileId: account.profileId });
-      await authStore.deleteCheckpoint(account.profileId);
-      const safeAccount = await metadata(account);
-      emit({ type: 'browser-account-changed', account: safeAccount });
-      return { account: safeAccount };
+    return mutateCheckpoints(async () => {
+      return serialized(async () => {
+        const account = findAccount(accountId);
+        for (const linked of linkedAccounts(account)) {
+          invalidateAccount(linked.id);
+          await policy.update({ actor, operation: 'revoke-account', accountId: linked.id, origins: linked.origins, profileId: linked.profileId });
+          await authStore.deleteCheckpoint(linked.profileId);
+        }
+        const safeAccount = await metadata(account);
+        emit({ type: 'browser-account-changed', account: safeAccount });
+        return { account: safeAccount };
+      });
     });
   }
   async function clearSession(account) {
@@ -395,64 +429,87 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
   }
   async function signOut({ actor, accountId } = {}) {
     human(actor);
-    await readyPromise;
-    assertNotResetting();
-    const target = clone(findAccount(accountId));
-    invalidateAccount(target.id);
-    await drainWrites([target.id]);
-    const cleared = await clearSession(target);
-    return serialized(async () => {
-      const account = findAccount(accountId);
-      invalidateAccount(account.id);
-      const clearedDomains = (cleared.clearedDomains ?? []).map(normalizedDomain);
-      const clearedOrigins = (cleared.clearedOrigins ?? []).map(browserOrigin);
-      const affected = state.accounts.filter((entry) => entry.profileId === account.profileId && entry.origins.some((origin) => account.origins.includes(origin) || clearedOrigins.includes(origin) || clearedDomains.some((domain) => domainMatches(origin, domain))));
-      const affectedIds = new Set(affected.map((entry) => entry.id));
-      for (const id of affectedIds) invalidateAccount(id);
-      await drainWrites([...affectedIds]);
-      const updatedAt = new Date(now()).toISOString();
-      const next = { ...state, accounts: state.accounts.map((entry) => affectedIds.has(entry.id) ? { ...entry, sessionStatus: 'signed-out', version: entry.version + 1, updatedAt } : entry) };
-      await writeBrowserJson(filePath, next); state = next;
-      const affectedAccounts = await Promise.all(state.accounts.filter((entry) => affectedIds.has(entry.id)).map(metadata));
-      for (const record of affectedAccounts) emit({ type: 'browser-account-changed', account: record });
-      return { account: affectedAccounts.find((entry) => entry.id === account.id), affectedAccounts };
+    return mutateCheckpoints(async () => {
+      await readyPromise;
+      assertNotResetting();
+      const target = clone(findAccount(accountId));
+      const linked = linkedAccounts(target).map(clone);
+      linked.forEach((entry) => invalidateAccount(entry.id));
+      await drainWrites(linked.map((entry) => entry.id));
+      const results = [];
+      for (const entry of linked) results.push(await clearSession(entry));
+      const cleared = { clearedDomains: results.flatMap((entry) => entry.clearedDomains ?? []), clearedOrigins: results.flatMap((entry) => entry.clearedOrigins ?? []) };
+      return serialized(async () => {
+        const account = findAccount(accountId);
+        invalidateAccount(account.id);
+        const clearedDomains = (cleared.clearedDomains ?? []).map(normalizedDomain);
+        const clearedOrigins = (cleared.clearedOrigins ?? []).map(browserOrigin);
+        const affected = state.accounts.filter((entry) => linked.some((item) => item.profileId === entry.profileId) && entry.origins.some((origin) => account.origins.includes(origin) || clearedOrigins.includes(origin) || clearedDomains.some((domain) => domainMatches(origin, domain))));
+        const affectedIds = new Set(affected.map((entry) => entry.id));
+        for (const id of affectedIds) invalidateAccount(id);
+        await drainWrites([...affectedIds]);
+        const updatedAt = new Date(now()).toISOString();
+        const next = { ...state, accounts: state.accounts.map((entry) => affectedIds.has(entry.id) ? { ...entry, sessionStatus: 'signed-out', version: entry.version + 1, updatedAt } : entry) };
+        await writeBrowserJson(filePath, next); state = next;
+        const affectedAccounts = await Promise.all(state.accounts.filter((entry) => affectedIds.has(entry.id)).map(metadata));
+        for (const record of affectedAccounts) emit({ type: 'browser-account-changed', account: record });
+        return { account: affectedAccounts.find((entry) => entry.id === account.id), affectedAccounts };
+      });
     });
   }
   async function forgetAccount({ actor, accountId } = {}) {
     human(actor);
-    await revokeAccount({ actor, accountId });
-    await signOut({ actor, accountId });
-    return serialized(async () => {
-      const account = findAccount(accountId);
-      invalidateAccount(account.id);
-      await deletePassword(account.id);
-      const next = { ...state, accounts: state.accounts.filter((entry) => entry.id !== account.id) };
-      await writeBrowserJson(filePath, next); state = next;
-      await policy.update({ actor, operation: 'forget-account', accountId: account.id });
-      emit({ type: 'browser-account-forgotten', accountId: account.id });
-      return { forgotten: true, accountId: account.id };
+    return mutateCheckpoints(async () => {
+      await revokeAccount({ actor, accountId });
+      await signOut({ actor, accountId });
+      return serialized(async () => {
+        const account = findAccount(accountId);
+        const linked = linkedAccounts(account);
+        for (const entry of linked) { invalidateAccount(entry.id); await deletePassword(entry.id); }
+        const ids = new Set(linked.map((entry) => entry.id));
+        const next = { ...state, accounts: state.accounts.filter((entry) => !ids.has(entry.id)) };
+        await writeBrowserJson(filePath, next); state = next;
+        for (const entry of linked) {
+          await policy.update({ actor, operation: 'forget-account', accountId: entry.id });
+          emit({ type: 'browser-account-forgotten', accountId: entry.id });
+        }
+        return { forgotten: true, accountId: account.id };
+      });
     });
   }
   async function saveCheckpoint({ profileId = 'default', state: storageState } = {}) {
+    const epoch = checkpointEpoch;
+    assertCheckpointEpoch(epoch);
     await readyPromise;
+    assertCheckpointEpoch(epoch);
     assertNotResetting();
     const checkpointGeneration = dataGeneration;
     if (!storageState || !Array.isArray(storageState.cookies) || !Array.isArray(storageState.origins)) throw failure('BROWSER_AUTH_CHECKPOINT_INVALID', 'The browser session checkpoint is invalid.');
+    let checkpointState = storageState;
+    if (storageState.originsComplete === false) {
+      if (profileId !== 'native' || storageState.origins.length) throw failure('BROWSER_AUTH_CHECKPOINT_INVALID', 'Partial origin checkpoints require the protected native browser.');
+      // 보호된 탭은 원본 저장소를 읽지 않는다. 현재 승인·세션 버전과 일치하는 암호화 기록만 유지한다.
+      const previous = await restoreCheckpoint({ profileId });
+      checkpointState = { cookies: storageState.cookies, origins: previous?.origins ?? [] };
+    }
     const currentPolicy = await policy.list();
     assertNotResetting();
     if (checkpointGeneration !== dataGeneration) throw failure('BROWSER_RESET_INCOMPLETE', 'The browser authentication checkpoint was cancelled by cleanup.');
     const accounts = state.accounts.filter((account) => account.profileId === profileId).map((account) => ({ id: account.id, version: account.version, sessionVersion: account.sessionVersion ?? 0, policyVersion: currentPolicy.accounts.find((entry) => entry.accountId === account.id)?.version ?? 0 }));
-    await authStore.saveCheckpoint(profileId, { schema: 1, profileId, accounts, state: storageState });
+    assertCheckpointEpoch(epoch);
+    await authStore.saveCheckpoint(profileId, { schema: 1, profileId, accounts, state: checkpointState });
     return { saved: true };
   }
   async function restoreCheckpoint({ profileId = 'default' } = {}) {
+    const epoch = checkpointEpoch;
     await readyPromise;
-    if (resetting || state.resetPending) return null;
+    if (checkpointMutations || checkpointEpoch !== epoch || resetting || state.resetPending) return null;
     const checkpointGeneration = dataGeneration;
     const saved = await authStore.restoreCheckpoint(profileId);
-    if (resetting || state.resetPending || checkpointGeneration !== dataGeneration) return null;
+    if (checkpointMutations || checkpointEpoch !== epoch || resetting || state.resetPending || checkpointGeneration !== dataGeneration) return null;
     if (!saved) return null;
     const currentPolicy = await policy.list();
+    if (checkpointMutations || checkpointEpoch !== epoch || resetting || state.resetPending || checkpointGeneration !== dataGeneration) return null;
     const currentAccounts = state.accounts.filter((account) => account.profileId === profileId);
     if (saved.schema !== 1 || saved.profileId !== profileId || !Array.isArray(saved.accounts)
       || saved.accounts.length !== currentAccounts.length || saved.accounts.some((entry) => {
@@ -464,11 +521,11 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
       await authStore.deleteCheckpoint(profileId);
       return null;
     }
-    return resetting || state.resetPending || checkpointGeneration !== dataGeneration ? null : saved.state;
+    return checkpointMutations || checkpointEpoch !== epoch || resetting || state.resetPending || checkpointGeneration !== dataGeneration ? null : saved.state;
   }
   async function getConfiguration() {
     await readyPromise;
-    return { ...clone(state.configuration), security: authStore.available ? clone(authStore.protection) : { passwords: 'unavailable', checkpoints: 'unavailable', chromiumProfile: 'restricted-plaintext-profile' }, googleSignIn: { mode: 'human-owned-full-browser', status: 'requires-compatibility-validation' } };
+    return { searchEngine: 'google', performance: { idleMinutes: 15 }, ...clone(state.configuration), security: authStore.available ? clone(authStore.protection) : { passwords: 'unavailable', checkpoints: 'unavailable', chromiumProfile: 'restricted-plaintext-profile' }, googleSignIn: { mode: 'human-owned-full-browser', status: 'requires-compatibility-validation' } };
   }
   async function resetBrowserData({ actor } = {}) {
     human(actor);
@@ -513,7 +570,7 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
       }
     }, { allowDuringReset: true }).finally(() => { resetting = false; });
   }
-  async function updateConfiguration({ actor, downloads, preview } = {}) {
+  async function updateConfiguration({ actor, downloads, preview, performance, searchEngine } = {}) {
     human(actor);
     return serialized(async () => {
       const configuration = clone(state.configuration);
@@ -536,6 +593,14 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
           if (typeof preview.reducedMotion !== 'boolean') throw failure('BROWSER_CONFIGURATION_INVALID', 'The motion preference is invalid.');
           configuration.preview.reducedMotion = preview.reducedMotion;
         }
+      }
+      if (searchEngine !== undefined) {
+        if (!['duckduckgo', 'google', 'bing', 'naver'].includes(searchEngine)) throw failure('BROWSER_CONFIGURATION_INVALID', 'Choose a supported search engine.');
+        configuration.searchEngine = searchEngine;
+      }
+      if (performance) {
+        if (!Number.isInteger(performance.idleMinutes) || performance.idleMinutes < 0 || performance.idleMinutes > 1440) throw failure('BROWSER_CONFIGURATION_INVALID', 'The sleep time must be between 0 and 1440 minutes.');
+        configuration.performance = { idleMinutes: performance.idleMinutes };
       }
       const next = { ...state, configuration };
       await writeBrowserJson(filePath, next); state = next;

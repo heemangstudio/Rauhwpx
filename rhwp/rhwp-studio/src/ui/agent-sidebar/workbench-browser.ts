@@ -1,20 +1,41 @@
 import './workbench-browser.css';
+import { installBrowserTabDrag } from './browser-tab-drag.ts';
+import { browserAddressURL } from './browser-search.ts';
+import { showContextMenu } from '../native-context-menu.ts';
+import { createBrowserCaptureMotion } from './browser-capture-motion.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
-import type { BrowserDownload } from '../../agent/types.ts';
+import type { BrowserDownload, BrowserTab } from '../../agent/types.ts';
 import { createBrowserController } from './browser-controller.ts';
 import { createBrowserPresentation, nativeBrowserApi, type BrowserPresentationMode } from './browser-presentation.ts';
 import { saveBrowserCaptureDraft, type BrowserCaptureDestination, type BrowserCaptureDraft } from './browser-capture-store.ts';
 import { createIcon, type SidebarIconName } from './icons.ts';
+import type { WorkbenchResource } from './workbench.ts';
+
+/** 사이트 이름은 주소로 구분하고, 다른 사이트는 페이지 제목을 사용한다. */
+function browserTabTitle(tab: BrowserTab): string {
+  try {
+    const host = new URL(tab.url).hostname.replace(/^www\./, '');
+    const sites: ReadonlyArray<[string, string]> = [['google.com', 'Google'], ['x.com', 'X'], ['twitter.com', 'X'], ['youtube.com', 'YouTube'], ['github.com', 'GitHub'], ['naver.com', 'Naver']];
+    const site = sites.find(([domain]) => host === domain || host.endsWith(`.${domain}`));
+    if (site) return site[1];
+    const title = tab.title?.trim();
+    return title && !/^https?:\/\//i.test(title) && title !== 'about:blank' ? title : host || '새 탭';
+  } catch { return tab.title?.trim() || '새 탭'; }
+}
 
 export function createWorkbenchBrowser(options: {
   bridge: SidebarBridge;
   getDestination(): BrowserCaptureDestination;
-  onCapture(draft: BrowserCaptureDraft): void;
+  onCapture(draft: BrowserCaptureDraft): HTMLElement | void;
   onOpenDownload(job: BrowserDownload): void;
   onDock(): void;
   onChat(): void;
+  onChange?(): void;
+  tabFilter?(tab: BrowserTab): boolean;
+  onFloatTab?(tabId: string, point?: { x: number; y: number }): void;
+  onClose?(): void;
 }) {
-  const controller = createBrowserController(options.bridge);
+  const controller = createBrowserController(options.bridge, { nativePresentation: Boolean(nativeBrowserApi()), tabFilter: options.tabFilter });
   const element = document.createElement('section'); element.className = 'ag-browser';
   element.setAttribute('aria-label', '연구 브라우저');
   const toolbar = document.createElement('header'); toolbar.className = 'ag-browser-toolbar';
@@ -30,40 +51,80 @@ export function createWorkbenchBrowser(options: {
   }
   const handle = (task: Promise<unknown>) => { void task.catch(() => undefined); };
   const back = button('뒤로', '←', () => navigate('back'), navigation);
-  const forward = button('앞으로', '→', () => navigate('forward'), navigation);
+  const forward = button('앞으로', '→', () => navigate('forward'), navigation); forward.classList.add('ag-browser-forward');
   const reload = button('새로고침', '↻', () => navigate(controller.tab()?.status === 'loading' ? 'stop' : 'reload'), navigation);
   const address = document.createElement('input'); address.className = 'ag-browser-address'; address.type = 'text'; address.inputMode = 'url'; address.autocomplete = 'off'; address.spellcheck = false;
+  let addressDraft = false; let addressOwner = '';
+  address.addEventListener('input', () => { addressDraft = true; });
   address.setAttribute('aria-label', '브라우저 주소'); address.placeholder = '주소 또는 검색어 입력'; navigation.append(address);
-  const go = button('주소 열기', '', () => navigation.requestSubmit(), navigation); icon(go, 'browserForward');
-  const newTab = button('새 브라우저 탭', '+', () => handle(controller.open()));
+  const go = button('주소 열기', '', () => navigation.requestSubmit(), navigation); icon(go, 'browserForward'); go.classList.add('ag-browser-go');
+  const zoom = document.createElement('div'); zoom.className = 'ag-browser-zoom'; zoom.setAttribute('role', 'group'); zoom.setAttribute('aria-label', '페이지 확대·축소'); navigation.append(zoom);
+  const zoomFactors = [.25, .5, .67, .75, .9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+  const tabZoom = new Map<string, number>(); let zoomPending = false;
+  const zoomOut = button('페이지 축소', '−', () => stepZoom(-1), zoom);
+  const zoomReset = button('페이지 배율 100%로 초기화', '100%', () => changeZoom(1), zoom);
+  const zoomIn = button('페이지 확대', '+', () => stepZoom(1), zoom);
+  function acceptZoom(tabId: string, result: unknown): void {
+    const factor = result && typeof result === 'object' ? (result as { zoomFactor?: unknown }).zoomFactor : undefined;
+    if (typeof factor === 'number' && Number.isFinite(factor) && factor >= .25 && factor <= 3) tabZoom.set(tabId, factor);
+  }
+  function stepZoom(direction: number): void {
+    const current = tabZoom.get(controller.tab()?.tabId ?? '') ?? 1;
+    const factor = direction > 0 ? zoomFactors.find(value => value > current + .001) : [...zoomFactors].reverse().find(value => value < current - .001);
+    if (factor !== undefined) changeZoom(factor);
+  }
+  function changeZoom(factor: number): void {
+    const native = nativeBrowserApi(); const tab = controller.tab();
+    if (!native?.zoom || !tab || !controller.usesNativePresentation() || zoomPending) return;
+    zoomPending = true; nativeError = null; paint();
+    handle(native.zoom({ tabId: tab.tabId, factor }).then(result => acceptZoom(tab.tabId, result)).catch(() => { nativeError = '페이지 배율을 변경하지 못했습니다.'; }).finally(() => { zoomPending = false; paint(); }));
+  }
+  function paintZoom(): void {
+    for (const tabId of tabZoom.keys()) if (!controller.state.tabs.some(tab => tab.tabId === tabId)) tabZoom.delete(tabId);
+    const tab = controller.tab(); const factor = tabZoom.get(tab?.tabId ?? '') ?? 1;
+    zoomReset.textContent = `${Math.round(factor * 100)}%`;
+    const unavailable = !nativeBrowserApi()?.zoom || !tab || !controller.state.connected || !controller.usesNativePresentation() || zoomPending;
+    zoomReset.disabled = unavailable; zoomOut.disabled = unavailable || factor <= .25; zoomIn.disabled = unavailable || factor >= 3;
+  }
   const status = document.createElement('span'); status.className = 'ag-browser-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
-  const control = button('직접 조작', '직접 조작', () => {
-    const tab = controller.tab(); if (!tab) return;
-    handle(controller.action('control', { ...controller.identity(), owner: tab.controller.owner === 'human' ? 'agent' : 'human' }).then(() => controller.readFrame()));
-  });
-  const recover = button('끊긴 브라우저 탭 복구', '탭 복구', () => { handle(controller.action('recover', controller.identity()).then(() => controller.readFrame())); });
-  const annotate = button('페이지·개체·영역에 의견 붙이기', '의견 붙이기', () => beginAnnotation());
-  const downloadsButton = button('다운로드 목록', '받은 파일', () => { downloads.hidden = !downloads.hidden; downloadsButton.setAttribute('aria-expanded', String(!downloads.hidden)); handle(controller.request('downloads', { action: 'list' })); });
+  const recover = button('끊긴 브라우저 탭 복구', '탭 복구', () => { handle(reconnectBrowser()); });
+  let capturePending = false;
+  const annotate = button('현재 화면을 캡처해 채팅에 첨부', '화면 캡처', () => { handle(capture()); });
+  const captureMotion = createBrowserCaptureMotion(annotate);
+  const downloadsButton = button('다운로드 목록', '받은 파일', () => showDownloads(Boolean(downloads.hidden)));
   downloadsButton.setAttribute('aria-expanded', 'false');
   const dockButton = button('작업 칸에 붙이기', '붙이기', () => { presentation.present('dock'); options.onDock(); });
-  const floatButton = button('브라우저 띄우기', '띄우기', () => presentation.present('float'));
+  const floatButton = button('브라우저 띄우기', '띄우기', () => floatCurrentTab());
   const popoutButton = button('별도 창으로 열기', '새 창', () => {
     details.open = false;
     const tab = controller.tab(); const native = nativeBrowserApi();
     if (native && tab && (tab.runtime === 'native' || controller.state.runtime?.kind === 'native')) {
       const rect = surface.getBoundingClientRect();
-      handle(native.attach({ tabId: tab.nativeTargetId ?? tab.tabId, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, mode: 'popout', interactive: tab.controller.owner === 'human' }));
-      nativePopout = true; nativeTab = null; nativeProjection = ''; presentation.hide();
+      nativePopout = true;
+      handle((nativePending ?? Promise.resolve()).then(() => attachNative({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, mode: 'popout', interactive: true })).then((attached) => {
+        if (!attached || disposed || !visible || controller.tab()?.tabId !== tab.tabId) { nativePopout = false; return; }
+        nativePopout = true; nativeTab = null; nativeProjection = ''; presentation.hide();
+      }).catch(() => { nativePopout = false; nativeError = '브라우저 화면을 연결하지 못했습니다. 다시 연결해 주세요.'; paint(); }));
     } else presentation.present('popout');
   });
-  const closeView = button('브라우저 보기 닫기', '', () => presentation.hide());
-  for (const [node, name] of [[back, 'browserBack'], [forward, 'browserForward'], [reload, 'refresh'], [newTab, 'insert'], [control, 'browserHand'], [recover, 'refresh'], [annotate, 'browserCapture'], [downloadsButton, 'browserDownload'], [dockButton, 'browserDock'], [floatButton, 'browserFloat'], [popoutButton, 'external'], [closeView, 'close']] as const) icon(node, name);
-  const tabBar = document.createElement('div'); tabBar.className = 'ag-browser-tabbar'; tabBar.append(tabs, newTab, status);
-  toolbar.prepend(navigation); element.append(tabBar, toolbar);
+  for (const [node, name] of [[back, 'browserBack'], [forward, 'browserForward'], [reload, 'refresh'], [recover, 'refresh'], [annotate, 'browserCapture'], [downloadsButton, 'browserDownload'], [dockButton, 'browserDock'], [floatButton, 'browserFloat'], [popoutButton, 'external']] as const) icon(node, name);
+  const tabBar = document.createElement('div'); tabBar.className = 'ag-browser-tabbar'; tabBar.append(tabs);
+  toolbar.prepend(navigation); toolbar.append(status); element.append(tabBar, toolbar);
   const error = document.createElement('div'); error.className = 'ag-browser-error'; error.setAttribute('role', 'alert'); error.hidden = true;
   const errorMessage = document.createElement('span'); error.append(errorMessage);
-  button('상태 다시 읽기', '다시 연결', () => handle(controller.refresh().then(() => controller.readFrame())), error);
+  const reconnectButton = button('브라우저 다시 연결', '다시 연결', () => { handle(reconnectBrowser()); }, error);
   element.append(error);
+  const challenge = document.createElement('div'); challenge.className = 'ag-browser-challenge'; challenge.hidden = true; challenge.setAttribute('role', 'status');
+  const challengeMessage = document.createElement('span'); challengeMessage.textContent = 'Google에서 트래픽 확인을 요청했습니다.'; challenge.append(challengeMessage);
+  const continueChallenge = button('같은 탭에서 Google 확인 직접 완료', '직접 확인', () => {
+    presentation.present('dock'); options.onDock();
+    handle(controller.readFrame());
+  }, challenge);
+  const fallbackSearch = button('같은 검색어로 DuckDuckGo 검색', 'DuckDuckGo로 검색', () => {
+    const tab = controller.tab(); const url = tab?.challenge?.fallback?.url; if (!tab || !url) return;
+    handle(controller.action('navigate', { ...controller.identity(tab), url }).then(() => controller.readFrame()));
+  }, challenge);
+  element.append(challenge);
   const upload = document.createElement('div'); upload.className = 'ag-browser-upload'; upload.hidden = true;
   const uploadLabel = document.createElement('span'); uploadLabel.textContent = '페이지에서 파일을 요청했습니다.';
   const uploadFiles = document.createElement('input'); uploadFiles.type = 'file'; uploadFiles.hidden = true; uploadFiles.setAttribute('aria-label', '웹사이트에 보낼 파일');
@@ -79,104 +140,216 @@ export function createWorkbenchBrowser(options: {
       return { name: file.name, mimeType: file.type || 'application/octet-stream', data: btoa(binary) };
     })).then((files) => controller.action('upload', { ...target, files })).then(() => { uploadTarget = null; upload.hidden = true; }).catch((failure) => { uploadLabel.textContent = failure instanceof Error ? failure.message : String(failure); }));
   });
-  const surface = document.createElement('div'); surface.className = 'ag-browser-surface'; surface.tabIndex = 0; surface.setAttribute('role', 'application'); surface.setAttribute('aria-label', '브라우저 페이지. 직접 조작을 선택한 뒤 입력하세요.');
+  const surface = document.createElement('div'); surface.className = 'ag-browser-surface'; surface.tabIndex = 0; surface.setAttribute('role', 'application'); surface.setAttribute('aria-label', '브라우저 페이지');
   const image = document.createElement('img'); image.className = 'ag-browser-frame'; image.alt = '브라우저 페이지'; image.draggable = false;
   const placeholder = document.createElement('div'); placeholder.className = 'ag-browser-placeholder';
+  const sleepingHama = document.createElement('span'); sleepingHama.className = 'ag-browser-sleeping-hama'; sleepingHama.hidden = true; sleepingHama.setAttribute('aria-hidden', 'true');
+  const sleepingSprite = document.createElement('span'); sleepingSprite.className = 'ag-browser-sleeping-sprite'; sleepingHama.append(sleepingSprite);
+  for (let index = 0; index < 3; index++) { const snore = document.createElement('span'); snore.className = 'ag-browser-snore'; snore.textContent = 'z'; snore.style.setProperty('--snore-delay', `${index * 800}ms`); sleepingHama.append(snore); }
   const placeholderTitle = document.createElement('strong'); placeholderTitle.textContent = '자료를 찾아보세요';
   const placeholderText = document.createElement('p'); placeholderText.textContent = '웹사이트를 읽고 받은 PDF를 문서와 보드에서 확인할 수 있습니다.';
   const emptyOpen = button('연구 브라우저 열기', '브라우저 열기', () => handle(controller.open()), placeholder);
-  placeholder.prepend(placeholderTitle, placeholderText);
-  const selection = document.createElement('div'); selection.className = 'ag-browser-selection'; selection.hidden = true;
+  const wakeButton = button('탭 깨우기', '탭 깨우기', () => wakeCurrentTab(), placeholder); wakeButton.hidden = true;
+  placeholder.prepend(sleepingHama, placeholderTitle, placeholderText);
   const textInput = document.createElement('textarea'); textInput.className = 'ag-browser-ime'; textInput.setAttribute('aria-label', '브라우저 페이지에 입력'); textInput.autocomplete = 'off'; textInput.spellcheck = false;
-  surface.append(image, placeholder, selection, textInput); element.append(surface);
-  const annotation = document.createElement('section'); annotation.className = 'ag-browser-annotation'; annotation.hidden = true; annotation.setAttribute('aria-label', '브라우저 자료 의견');
-  const destination = document.createElement('strong'); const annotationHint = document.createElement('p');
-  const modes = document.createElement('div'); modes.className = 'ag-browser-annotation-modes';
-  const comment = document.createElement('textarea'); comment.placeholder = '이 자료에서 에이전트가 확인할 내용을 적어 주세요'; comment.setAttribute('aria-label', '자료 의견');
-  const annotationStatus = document.createElement('span'); annotationStatus.setAttribute('role', 'status');
-  let annotationMode: BrowserCaptureDraft['mode'] = 'page';
-  let pinned: { destination: BrowserCaptureDestination; tab: NonNullable<ReturnType<typeof controller.tab>>; frame: ReturnType<typeof controller.frame> } | null = null;
-  let pickedPoint: { x: number; y: number } | null = null;
-  let pickedRect: { x: number; y: number; width: number; height: number } | null = null;
-  const modeButtons = new Map<BrowserCaptureDraft['mode'], HTMLButtonElement>();
-  for (const [mode, title] of [['page', '페이지'], ['element', '개체 선택'], ['region', '영역 선택']] as const) {
-    const choice = button(title, title, () => { annotationMode = mode; pickedPoint = null; pickedRect = null; selection.hidden = true; paintAnnotation(); }, modes);
-    modeButtons.set(mode, choice);
+  surface.append(image, placeholder, textInput); element.append(surface);
+  const downloads = document.createElement('section'); downloads.className = 'ag-browser-downloads'; downloads.setAttribute('aria-label', '브라우저 다운로드'); downloads.setAttribute('role', 'dialog'); downloadsButton.setAttribute('aria-haspopup', 'dialog'); downloads.hidden = true; element.append(downloads);
+  let passwordSaveTab = ''; let passwordSaveEpoch: number | undefined;
+  const savePassword = button('이 페이지에서 입력하는 로그인 저장', '비밀번호 저장', () => {
+    const tab = controller.tab(); const api = nativeBrowserApi()?.passwords;
+    if (!tab || !api) return;
+    const enabled = passwordSaveTab !== tab.tabId;
+    savePassword.disabled = true;
+    void (async () => {
+      await controller.action('control', { ...controller.identity(tab), owner: 'human' });
+      if (disposed || controller.tab()?.tabId !== tab.tabId) return;
+      await projectNative();
+      if (nativePending) await nativePending;
+      if (disposed || controller.tab()?.tabId !== tab.tabId) return;
+      const result = await api.armSave({ tabId: tab.tabId, enabled });
+      icon(savePassword, 'shield'); delete savePassword.dataset.passwordSave;
+      passwordSaveTab = result.enabled ? tab.tabId : '';
+      passwordSaveEpoch = result.navigationEpoch;
+      savePassword.setAttribute('aria-pressed', String(result.enabled));
+      savePassword.title = result.enabled ? '아이디와 비밀번호를 입력하면 이 기기에 저장합니다' : '이 페이지에서 입력하는 로그인 저장';
+    })().catch(() => { savePassword.title = '비밀번호 저장을 시작하지 못했습니다. HTTPS 로그인 페이지에서 다시 시도해 주세요.'; }).finally(() => { savePassword.disabled = false; });
+  });
+  savePassword.hidden = !nativeBrowserApi()?.passwords;
+  icon(savePassword, 'shield'); savePassword.setAttribute('aria-pressed', 'false');
+  let manualSleepingTab: string | null = null;
+  async function sleepCurrentTab(): Promise<void> {
+    const tabId = controller.tab()?.tabId; if (!tabId || agentPreviewTab !== null) return;
+    if (manualSleepingTab === tabId) { wakeCurrentTab(); return; }
+    details.open = false; manualSleepingTab = tabId; cancelNativeHealth(); nativeHealthGeneration++; nativeSequence++;
+    await nativePending?.catch(() => undefined);
+    if (disposed || controller.tab()?.tabId !== tabId) { manualSleepingTab = null; return; }
+    try {
+      let result = await controller.request<{ sleeping: boolean; reason?: string }>('sleep', { tabId });
+      if (!result.sleeping && result.reason === 'protected' && window.confirm('이 탭에 입력한 내용은 사라질 수 있습니다. 탭을 잠자기로 전환할까요?')) result = await controller.request('sleep', { tabId, discard: true });
+      if (!result.sleeping) { manualSleepingTab = null; if (result.reason !== 'protected') throw new Error('작업 중인 탭은 잠자기로 전환할 수 없습니다.'); }
+      else { nativeTab = null; nativeProjection = ''; nativeFailedProjection = ''; }
+    } catch (failure) { manualSleepingTab = null; nativeError = failure instanceof Error ? failure.message : String(failure); throw failure; }
+    finally { paint(); layout(); }
   }
-  const save = button('의견과 자료를 선택한 채팅에 첨부', '채팅에 첨부', () => { void capture(); }, annotation);
-  button('의견 작성 취소', '취소', () => endAnnotation(), annotation);
-  annotation.prepend(destination, modes, annotationHint, comment, annotationStatus); element.append(annotation);
-  const downloads = document.createElement('section'); downloads.className = 'ag-browser-downloads'; downloads.setAttribute('aria-label', '브라우저 다운로드'); downloads.hidden = true; element.append(downloads);
+  function wakeCurrentTab(): void { manualSleepingTab = null; nativeHealthIdentity = ''; nativeProjection = ''; paint(); layout(); }
   const details = document.createElement('details'); details.className = 'ag-browser-details';
   const summary = document.createElement('summary'); summary.setAttribute('aria-label', '브라우저 추가 메뉴'); summary.title = '브라우저 추가 메뉴'; summary.append(createIcon('more'));
   const menu = document.createElement('div'); menu.className = 'ag-browser-menu';
-  const inspector = document.createElement('dl');
   popoutButton.classList.remove('ag-browser-icon'); popoutButton.replaceChildren(createIcon('external'), document.createTextNode('별도 창으로 열기')); menu.append(popoutButton);
   button('입력창으로 돌아가기', '채팅으로 돌아가기', () => { details.open = false; options.onChat(); }, menu).prepend(createIcon('message'));
-  button('런타임 상태 새로 읽기', '상태 새로 읽기', () => handle(controller.refresh()), menu).prepend(createIcon('refresh'));
-  menu.append(inspector); details.append(summary, menu); toolbar.append(details);
-  details.addEventListener('toggle', () => { void projectNative(); });
-  element.addEventListener('pointerdown', (event) => {
-    if (!details.open || details.contains(event.target as Node)) return;
-    details.open = false;
-    if (surface.contains(event.target as Node)) { event.preventDefault(); event.stopPropagation(); }
-  }, { capture: true });
+  const menuReload = button('새로고침', '새로고침', () => { details.open = false; navigate('reload'); }, menu);
+  menuReload.prepend(createIcon('refresh'));
+  const menuSleep = button('탭 잠자기', '탭 잠자기', () => handle(sleepCurrentTab()), menu);
+  details.append(summary, menu); toolbar.append(details);
+  let nativeMenuPending = false;
+  summary.addEventListener('click', event => {
+    if (!nativeBrowserApi() || typeof (window as Window & { rhwpDesktop?: { showContextMenu?: unknown } }).rhwpDesktop?.showContextMenu !== 'function') return;
+    event.preventDefault();
+    if (nativeMenuPending || disposed || agentPreviewTab !== null) return;
+    const tabId = controller.tab()?.tabId;
+    if (!tabId) return;
+    nativeMenuPending = true;
+    const rect = summary.getBoundingClientRect();
+    void showContextMenu([
+      { id: 'popout', label: '별도 창으로 열기', enabled: manualSleepingTab !== tabId },
+      { id: 'chat', label: '채팅으로 돌아가기' },
+      { id: 'reload', label: '새로고침', enabled: manualSleepingTab !== tabId },
+      { id: 'sleep', label: manualSleepingTab === tabId ? '탭 깨우기' : '탭 잠자기' },
+    ], { x: rect.right, y: rect.bottom }).then(choice => {
+      if (disposed || agentPreviewTab !== null || controller.tab()?.tabId !== tabId) return;
+      if (choice === 'popout') popoutButton.click();
+      else if (choice === 'chat') options.onChat();
+      else if (choice === 'reload') navigate('reload');
+      else if (choice === 'sleep') handle(sleepCurrentTab());
+    }).finally(() => { nativeMenuPending = false; });
+  });
+
+  details.addEventListener('toggle', () => { if (details.open) { cancelNativeHealth(); nativeHealthGeneration++; showDownloads(false, false); } layout(); });
+  function dismissOutside(event: PointerEvent): void {
+    const target = event.target as Node;
+    let dismissed = false;
+    if (details.open && !details.contains(target)) { details.open = false; dismissed = true; }
+    if (!downloads.hidden && !downloads.contains(target) && !downloadsButton.contains(target)) { showDownloads(false, false); dismissed = true; }
+    if (dismissed && surface.contains(target)) { event.preventDefault(); event.stopPropagation(); }
+  }
+  element.addEventListener('pointerdown', dismissOutside, { capture: true });
+  document.addEventListener('pointerdown', dismissOutside, { capture: true });
   details.addEventListener('focusout', event => {
     if (event.relatedTarget instanceof Node && !details.contains(event.relatedTarget)) details.open = false;
   });
+  let agentPreviewTab: string | null = null;
+  function endAgentPreview(): void {
+    if (disposed || !agentPreviewTab) return;
+    // 턴이 끝날 때 보기만 접고 탭과 로그인 상태는 유지한다.
+    if (presentation.current() !== 'dock') presentation.hide();
+    agentPreviewTab = null; paint(); layout();
+  }
   let visible = false; let nativeTab: string | null = null; let nativePopout = false;
   let frameTimer: ReturnType<typeof setTimeout> | null = null; let composing = false; let committedComposition: string | null = null; let disposed = false; let selectedFrameId = ''; let nativeSequence = 0;
-  let pointerStart: { x: number; y: number } | null = null;
-  let tabsSignature = ''; let downloadsSignature = ''; let nativeProjection = ''; let inputChain: Promise<unknown> = Promise.resolve();
+  let reconnecting = false;
+  let tabsSignature = ''; let downloadsSignature = ''; let nativeProjection = ''; let nativeFailedProjection = ''; let nativeError: string | null = null; let nativePending: Promise<boolean> | null = null; let inputChain: Promise<unknown> = Promise.resolve();
+  let nativeHealthGeneration = 0; let nativeRecovering = false;
+  let nativeHealthIdentity = ''; let nativeReloadedIdentity = '';
+  let nativeHealthTimer: ReturnType<typeof setTimeout> | null = null;
+  function cancelNativeHealth(): void { if (nativeHealthTimer) clearTimeout(nativeHealthTimer); nativeHealthTimer = null; }
+  let lastInputAt = -Infinity;
   const presentation = createBrowserPresentation(element, (mode) => {
-    visible = mode !== null; paint(); scheduleFrame(); void projectNative();
-  }, () => { void projectNative(); });
+    if (mode === 'float' || mode === null) { details.open = false; showDownloads(false, false); }
+    visible = mode !== null; watchNativeVisibility(); paint(); scheduleFrame(); void projectNative();
+  }, () => { layout(); }, options.onDock, navigation, annotate, options.onClose);
+  function floatCurrentTab(point?: { x: number; y: number }): void {
+    const tab = controller.tab();
+    if (tab && !agentPreviewTab && options.onFloatTab) { options.onFloatTab(tab.tabId, point); return; }
+    nativePopout = false; presentation.present('float'); if (point) presentation.position(point.x, point.y);
+  }
   function navigate(direction: string): void {
     if (!controller.tab()) return;
     handle(controller.action('navigate', { ...controller.identity(), direction }).then(() => controller.readFrame()));
   }
+  async function navigateAddress(entered: string, target = controller.tab()): Promise<void> {
+    let engine = 'google';
+    if (!/^https?:\/\//i.test(entered) && entered !== 'about:blank') {
+      const configuration = await options.bridge.requestBrowser<{ searchEngine?: string }>('configuration.get');
+      engine = configuration.searchEngine ?? 'google';
+    }
+    const url = browserAddressURL(entered, engine);
+    if (disposed) return;
+    wakeCurrentTab();
+    if (!target) await controller.open(url);
+    else await controller.action('navigate', { ...controller.identity(target), url });
+  }
   navigation.addEventListener('submit', event => {
     event.preventDefault(); const entered = address.value.trim(); if (!entered) return;
-    let url = entered;
-    if (!/^https?:\/\//i.test(url)) url = /^[\w.-]+\.[a-z]{2,}(?:\/|$)/i.test(url) ? `https://${url}` : `https://www.google.com/search?q=${encodeURIComponent(url)}`;
-    if (!controller.tab()) handle(controller.open(url));
-    else handle(controller.action('navigate', { ...controller.identity(), url }).then(() => controller.readFrame()));
+    addressDraft = false; address.blur(); handle(navigateAddress(entered));
   });
-  function paintAnnotation(): void {
-    for (const [mode, choice] of modeButtons) choice.setAttribute('aria-pressed', String(mode === annotationMode));
-    annotationHint.textContent = annotationMode === 'page' ? '현재 페이지를 자료로 첨부합니다.' : annotationMode === 'element' ? '페이지에서 확인할 개체를 클릭하세요.' : '페이지에서 확인할 영역을 드래그하세요.';
-    surface.classList.toggle('ag-browser-picking', annotationMode !== 'page');
-    save.disabled = !pinned || (annotationMode === 'element' && !pickedPoint) || (annotationMode === 'region' && !pickedRect);
+  address.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault(); event.stopPropagation(); addressDraft = false; address.value = controller.tab()?.url ?? ''; address.blur();
+  });
+  async function showNativeDownloads(): Promise<void> {
+    await controller.request('downloads', { action: 'list' });
+    const jobs = controller.state.downloads;
+    const rect = downloadsButton.getBoundingClientRect(); const anchor = { x: rect.right, y: rect.bottom };
+    const selected = await showContextMenu([
+      ...jobs.slice(0, 40).map(job => ({ id: job.downloadId, label: `${job.filename} — ${job.state === 'downloading' ? `받는 중${job.totalBytes ? ` ${Math.min(100, Math.round(job.size / job.totalBytes * 100))}%` : ''}` : job.savedPath ? '저장됨' : job.state === 'cancelled' ? '취소됨' : job.state === 'interrupted' ? '중단됨' : '받은 파일'} · ${formatDownloadSize(job.size)}` })),
+      ...(jobs.length ? [] : [{ id: 'empty', label: '받은 파일이 없습니다', enabled: false }]),
+      { type: 'separator' as const }, { id: 'refresh', label: '목록 새로고침' },
+    ], anchor);
+    if (selected === 'refresh') { handle(showNativeDownloads()); return; }
+    const job = jobs.find(item => item.downloadId === selected); if (!job || disposed) return;
+    const complete = ['downloaded', 'importing', 'imported', 'import-failed'].includes(job.state);
+    const choice = await showContextMenu([
+      ...(job.mimeType === 'application/pdf' || /\.(hwp|hwpx|rhwp|rhwpx)$/i.test(job.filename) ? [{ id: 'open', label: '문서에서 열기', enabled: complete }] : []),
+      { id: 'save', label: '다운로드 폴더에 저장', enabled: complete },
+      { id: 'reveal', label: 'Finder에서 보기', enabled: complete },
+      { id: 'copy-path', label: '파일 경로 복사', enabled: !!job.savedPath },
+      { id: 'copy-link', label: '다운로드 링크 복사', enabled: !!job.source?.url },
+      { id: 'cancel', label: '다운로드 취소', enabled: job.state === 'downloading' },
+      { id: 'retry', label: '다시 시도', enabled: job.state === 'import-failed' || job.extractionStatus === 'failed' },
+    ], anchor);
+    if (choice === 'open') options.onOpenDownload(job);
+    else if (choice === 'copy-path' && job.savedPath) await navigator.clipboard.writeText(job.savedPath);
+    else if (choice === 'copy-link' && job.source?.url) await navigator.clipboard.writeText(job.source.url);
+    else if (choice && ['save', 'reveal', 'cancel', 'retry'].includes(choice)) await controller.action('downloads', { action: choice, downloadId: job.downloadId });
   }
-  function beginAnnotation(): void {
-    const tab = controller.tab(); if (!tab) return;
-    pinned = { destination: { ...options.getDestination() }, tab: { ...tab }, frame: controller.frame() };
-    destination.textContent = `첨부할 채팅 · ${pinned.destination.label || pinned.destination.threadId}`;
-    annotation.hidden = false; annotationStatus.textContent = ''; annotationMode = 'page'; comment.focus(); paintAnnotation(); void projectNative();
-    handle(controller.readFrame().then(() => { if (pinned && pinned.tab.tabId === tab.tabId && pinned.tab.navigationEpoch === controller.tab()?.navigationEpoch) pinned.frame = controller.frame(); }));
+  function formatDownloadSize(bytes: number): string { return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`; }
+  function showDownloads(open: boolean, restoreFocus = true): void {
+    if (open && nativeBrowserApi() && typeof (window as Window & { rhwpDesktop?: { showContextMenu?: unknown } }).rhwpDesktop?.showContextMenu === 'function') { handle(showNativeDownloads()); return; }
+    if (open) { details.open = false; handle(controller.readFrame(true)); handle(controller.request('downloads', { action: 'list' })); }
+    downloads.hidden = !open; downloadsButton.setAttribute('aria-expanded', String(open)); layout();
+    if (restoreFocus) (open ? downloads.querySelector<HTMLButtonElement>('button') : downloadsButton)?.focus({ preventScroll: true });
   }
-  function endAnnotation(): void { pinned = null; annotation.hidden = true; surface.classList.remove('ag-browser-picking'); selection.hidden = true; pointerStart = null; void projectNative(); surface.focus(); }
+  function nativeOverlayOpen(): boolean { return Boolean(details.open || !downloads.hidden); }
   async function capture(): Promise<void> {
-    const context = pinned; if (!context) return;
-    const captureRequest = { mode: annotationMode, comment: comment.value, point: pickedPoint ? { ...pickedPoint } : null, rect: pickedRect ? { ...pickedRect } : null };
-    save.disabled = true; annotationStatus.textContent = '자료를 저장하고 있습니다…';
+    const tab = controller.tab(); if (!tab || capturePending) return;
+    const target = { ...tab }; const destination = { ...options.getDestination() };
+    if (!destination.threadId) return;
+    capturePending = true; nativeError = null; captureMotion.start();
+    details.open = false; showDownloads(false, false); paint();
     try {
-      const response = await controller.action('capture', { ...controller.identity(context.tab), mode: captureRequest.mode, point: captureRequest.point, rect: captureRequest.rect,
-        comment: captureRequest.comment, frameId: context.frame?.frameId, destinationThreadId: context.destination.threadId });
-      const evidence = response.capture && typeof response.capture === 'object' ? response.capture as Record<string, unknown> : response;
-      const screenshotError = evidence.screenshotError as { message?: string } | undefined;
-      const draft = await saveBrowserCaptureDraft({ destination: context.destination, tab: context.tab, frame: context.frame,
-        mode: captureRequest.mode, comment: captureRequest.comment, evidence, screenshotError: screenshotError?.message });
-      options.onCapture(draft); if (pinned === context) { comment.value = ''; endAnnotation(); }
+      await nativePending?.catch(() => undefined);
+      if (disposed) return;
+      await projectNative();
+      const response = await controller.action('capture', { ...controller.identity(target), mode: 'page', destinationThreadId: destination.threadId });
+      if (disposed) return;
+      const evidence = response.capture as Record<string, unknown> | undefined;
+      if (!evidence?.screenshot) {
+        const failure = evidence?.screenshotError;
+        const message = failure && typeof failure === 'object' && 'message' in failure && typeof failure.message === 'string' ? failure.message : '화면을 캡처하지 못했습니다. 다시 시도해 주세요.';
+        throw new Error(message);
+      }
+      const draft = await saveBrowserCaptureDraft({ destination, tab: target, frame: null, mode: 'page', comment: '', evidence });
+      if (!disposed) {
+        const destinationElement = options.onCapture(draft);
+        captureMotion.finish(destinationElement ?? null);
+      }
     } catch (failure) {
-      if (pinned !== context) return;
-      annotationStatus.textContent = failure instanceof Error ? failure.message : String(failure);
-      // 탐색이 바뀌어도 의견은 남겨 다시 캡처할 수 있다.
-      paintAnnotation();
-    }
+      captureMotion.cancel();
+      if (!disposed) nativeError = failure instanceof Error ? failure.message : String(failure);
+    } finally { capturePending = false; paint(); }
   }
   function point(event: { clientX: number; clientY: number }): { x: number; y: number } | null {
-    const frame = pinned?.frame ?? controller.frame(); if (!frame) return null;
+    const frame = controller.frame(); if (!frame) return null;
     const rect = image.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     const x = (event.clientX - rect.left) * frame.width / rect.width;
@@ -185,40 +358,31 @@ export function createWorkbenchBrowser(options: {
   }
   function sendInput(args: Record<string, unknown>): void {
     const tab = controller.tab();
-    if (!tab || tab.controller.owner !== 'human' || !controller.state.connected || pinned) return;
+    if (!tab || !controller.state.connected) return;
     const identity = controller.identity();
-    inputChain = inputChain.catch(() => undefined).then(() => controller.request('input', { ...identity, ...args }));
+    lastInputAt = performance.now();
+    inputChain = inputChain.catch(() => undefined).then(() => controller.request('input', { ...identity, ...args })).then(() => {
+      // 입력을 마친 화면은 다음 정기 캡처를 기다리지 않고 바로 표시한다.
+      if (visible && (args.type !== 'pointer' || args.event === 'up')) handle(controller.readFrame());
+    });
     handle(inputChain);
   }
   surface.addEventListener('pointerdown', event => {
     const at = point(event); if (!at) return;
-    if (pinned) {
-      if (annotationMode === 'element') { pickedPoint = at; pickedRect = null; paintAnnotation(); }
-      if (annotationMode === 'region') { pointerStart = at; surface.setPointerCapture(event.pointerId); selection.hidden = false; }
-      event.preventDefault(); return;
-    }
-    if (controller.tab()?.controller.owner !== 'human') return;
     event.preventDefault(); surface.setPointerCapture(event.pointerId); textInput.focus({ preventScroll: true });
     sendInput({ type: 'pointer', event: 'down', ...at, button: ['left', 'middle', 'right'][event.button] ?? 'left' });
   });
   surface.addEventListener('pointermove', event => {
-    const at = point(event); if (!at) return;
-    if (pointerStart && pinned) {
-      pickedRect = { x: Math.min(at.x, pointerStart.x), y: Math.min(at.y, pointerStart.y), width: Math.abs(at.x - pointerStart.x), height: Math.abs(at.y - pointerStart.y) };
-      const frame = pinned.frame; const rect = image.getBoundingClientRect(); const host = surface.getBoundingClientRect();
-      if (frame) Object.assign(selection.style, { left: `${rect.left - host.left + pickedRect.x * rect.width / frame.width}px`, top: `${rect.top - host.top + pickedRect.y * rect.height / frame.height}px`, width: `${pickedRect.width * rect.width / frame.width}px`, height: `${pickedRect.height * rect.height / frame.height}px` });
-    }
-    else if (!pinned && event.buttons) sendInput({ type: 'pointer', event: 'move', ...at });
+    const at = point(event); if (at && event.buttons) sendInput({ type: 'pointer', event: 'move', ...at });
   });
   surface.addEventListener('pointerup', event => {
     const at = point(event);
-    if (pointerStart) { pointerStart = null; paintAnnotation(); }
-    else if (at && !pinned) sendInput({ type: 'pointer', event: 'up', ...at, button: ['left', 'middle', 'right'][event.button] ?? 'left' });
+    if (at) sendInput({ type: 'pointer', event: 'up', ...at, button: ['left', 'middle', 'right'][event.button] ?? 'left' });
     if (surface.hasPointerCapture(event.pointerId)) surface.releasePointerCapture(event.pointerId);
   });
-  surface.addEventListener('pointercancel', () => { pointerStart = null; sendInput({ type: 'release' }); });
+  surface.addEventListener('pointercancel', () => sendInput({ type: 'release' }));
   surface.addEventListener('wheel', event => {
-    if (controller.tab()?.controller.owner !== 'human' || pinned) return;
+    if (!controller.tab()) return;
     event.preventDefault(); sendInput({ type: 'wheel', event: 'move', ...point(event), deltaX: event.deltaX, deltaY: event.deltaY });
   }, { passive: false });
   textInput.addEventListener('compositionstart', () => { composing = true; });
@@ -247,21 +411,28 @@ export function createWorkbenchBrowser(options: {
   });
   textInput.addEventListener('blur', () => { composing = false; textInput.value = ''; sendInput({ type: 'release' }); });
   element.addEventListener('keydown', event => {
-    if (event.defaultPrevented || composing || event.isComposing) return;
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (details.open) { details.open = false; summary.focus(); } else if (pinned) endAnnotation(); else options.onChat(); }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') { event.preventDefault(); event.stopPropagation(); address.focus(); address.select(); }
+    // 주소 초안 취소는 입력창의 핸들러가 처리한다.
+    if (event.defaultPrevented || composing || event.isComposing || (event.key === 'Escape' && event.target === address)) return;
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (details.open) { details.open = false; summary.focus(); } else if (!downloads.hidden) showDownloads(false); else if (presentation.current() === 'float') presentation.hide(); else options.onChat(); }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') { event.preventDefault(); event.stopPropagation(); if (presentation.current() === 'float') { presentation.present('dock'); options.onDock(); } address.focus(); address.select(); }
   }, { capture: true });
   function paintDownloads(): void {
+    const activeCount = controller.state.downloads.filter(job => job.state === 'downloading').length;
+    downloadsButton.dataset.downloading = String(activeCount > 0); downloadsButton.title = activeCount ? `받는 중 · ${activeCount}개` : `받은 파일 · ${controller.state.downloads.length}개`;
     const signature = JSON.stringify(controller.state.downloads); if (signature === downloadsSignature) return; downloadsSignature = signature;
-    downloads.replaceChildren(); const title = document.createElement('h3'); title.textContent = '받은 파일'; downloads.append(title);
+    downloads.replaceChildren(); const header = document.createElement('header'); header.className = 'ag-browser-popover-header'; const title = document.createElement('strong'); title.textContent = '받은 파일'; header.append(title); const close = button('다운로드 목록 닫기', '', () => showDownloads(false), header); icon(close, 'close'); downloads.append(header);
     if (!controller.state.downloads.length) { const text = document.createElement('p'); text.textContent = '받은 파일이 없습니다.'; downloads.append(text); }
     const labels: Record<BrowserDownload['state'], string> = { downloading: '받는 중', downloaded: '열 수 있음', importing: '프로젝트에 추가 중', imported: '프로젝트에 저장됨', cancelled: '취소됨', interrupted: '연결 끊김', 'import-failed': '프로젝트 추가 실패' };
     for (const job of controller.state.downloads) {
       const row = document.createElement('article'); row.className = 'ag-browser-download'; row.dataset.downloadId = job.downloadId;
       const name = document.createElement('strong'); name.textContent = job.filename;
-      const state = document.createElement('span'); state.textContent = `${labels[job.state]} · ${(job.size / 1024).toFixed(0)} KB · ${job.target.projectId || '일반 받은 파일'}`;
+      const state = document.createElement('span'); state.textContent = `${labels[job.state]} · ${formatDownloadSize(job.size)} · ${job.target.projectId || '일반 받은 파일'}`;
       row.append(name, state);
-      if (['downloaded', 'importing', 'imported', 'import-failed'].includes(job.state)) button('문서에서 열기', '문서에서 열기', () => options.onOpenDownload(job), row);
+      if (['downloaded', 'importing', 'imported', 'import-failed'].includes(job.state)) {
+        if (nativeBrowserApi()) button('다운로드 폴더에 저장', '저장', () => handle(controller.action('downloads', { action: 'save', downloadId: job.downloadId })), row);
+        if (nativeBrowserApi()) button('Finder에서 보기', 'Finder에서 보기', () => handle(controller.action('downloads', { action: 'reveal', downloadId: job.downloadId })), row);
+      }
+      if ((job.mimeType === 'application/pdf' || /\.(hwp|hwpx|rhwp|rhwpx)$/i.test(job.filename)) && ['downloaded', 'importing', 'imported', 'import-failed'].includes(job.state)) button('문서에서 열기', '문서에서 열기', () => options.onOpenDownload(job), row);
       if (job.state === 'downloading') button('다운로드 취소', '취소', () => handle(controller.action('downloads', { action: 'cancel', downloadId: job.downloadId })), row);
       if (job.state === 'interrupted' || job.state === 'import-failed' || job.state === 'imported' && job.extractionStatus === 'failed') button('다운로드 처리 다시 시도', '다시 시도', () => handle(controller.action('downloads', { action: 'retry', downloadId: job.downloadId })), row);
       if (job.extractionStatus && job.extractionStatus !== 'ready') { const extraction = document.createElement('p'); extraction.textContent = job.extractionStatus === 'failed' ? 'PDF를 열 수 있습니다. 글자 추출에 실패했습니다.' : 'PDF를 열 수 있습니다. 글자를 추출하고 있습니다.'; row.append(extraction); }
@@ -270,71 +441,242 @@ export function createWorkbenchBrowser(options: {
       downloads.append(row);
     }
   }
+  async function reconnectBrowser(): Promise<void> {
+    if (reconnecting) return;
+    const tab = controller.tab(); if (!tab) { await controller.refresh(); return; }
+    cancelNativeHealth(); nativeHealthGeneration++; nativeHealthIdentity = ''; nativeReloadedIdentity = '';
+    reconnecting = true; nativeError = null; nativeFailedProjection = ''; paint();
+    try {
+      await nativePending?.catch(() => undefined);
+      await controller.refresh();
+      await controller.action(nativeBrowserApi() ? 'reconnect' : 'recover', { ...controller.identity(tab), restore: true });
+      nativeProjection = ''; nativeFailedProjection = ''; nativeError = null;
+      reconnecting = false;
+      await projectNative(); await controller.readFrame();
+    } finally { reconnecting = false; paint(); layout(); }
+  }
+  async function attachNative(placement: Parameters<NonNullable<ReturnType<typeof nativeBrowserApi>>['attach']>[0]): Promise<boolean> {
+    const native = nativeBrowserApi()!;
+    if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
+    try { acceptZoom(placement.tabId, await native.attach(placement)); }
+    catch (failure) {
+      const message = failure instanceof Error ? failure.message : String(failure);
+      if (!/Native browser tab is unavailable|presentation (navigation|target) is stale/.test(message)) throw failure;
+      if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
+      await controller.request('reconnect', { tabId: placement.tabId, restore: true });
+      if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId) return false;
+      acceptZoom(placement.tabId, await native.attach({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId }));
+    }
+    return true;
+  }
+  async function checkNativeHealth(placement: Parameters<NonNullable<ReturnType<typeof nativeBrowserApi>>['attach']>[0], sequence: number, timedOut = false): Promise<void> {
+    const native = nativeBrowserApi(); if (!native?.getState) return;
+    const tab = controller.tab();
+    const scope = JSON.stringify([placement.tabId, placement.expectedTargetId]);
+    const epoch = tab?.navigationEpoch; const generation = nativeHealthGeneration;
+    const presented = () => !disposed && generation === nativeHealthGeneration && nativeSurfaceVisible() && !nativeOverlayOpen() && !nativePopout
+      && controller.tab()?.tabId === placement.tabId && controller.tab()?.nativeTargetId === placement.expectedTargetId;
+    const current = () => presented() && controller.tab()?.navigationEpoch === epoch;
+    if (!current()) return;
+    const state = await native.getState({ tabId: placement.tabId, expectedTargetId: placement.expectedTargetId, checkPaint: true }) as Record<string, unknown> | undefined;
+    if (!current()) return;
+    const health = state?.presentationHealth;
+    if (health === 'loading' && !timedOut) {
+      cancelNativeHealth();
+      nativeHealthTimer = setTimeout(() => { nativeHealthTimer = null; if (current()) handle(checkNativeHealth(placement, sequence, true).catch(() => { if (current()) { nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; paint(); } })); }, 15_000);
+      return;
+    }
+    if (!['failed', 'paint-timeout'].includes(String(health)) && !(health === 'loading' && timedOut)) return;
+    if (health === 'loading') return;
+    if (!native.reload || nativeReloadedIdentity === scope) throw new Error('브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.');
+    nativeReloadedIdentity = scope; cancelNativeHealth();
+    nativeRecovering = true; nativeError = null; paint();
+    try {
+      // 실패한 문서만 한 번 GET으로 연다. 폼 제출이나 이전 입력은 다시 보내지 않는다.
+      const recovered = await native.reload({ tabId: placement.tabId, expectedTargetId: placement.expectedTargetId, navigationEpoch: state?.navigationEpoch as number | undefined, recovery: true }) as { restoreRequired?: boolean } | undefined;
+      if (recovered?.restoreRequired && presented()) {
+        await controller.request('reconnect', { tabId: placement.tabId, restore: true });
+        nativeProjection = ''; nativeHealthIdentity = '';
+        await controller.refresh();
+        return;
+      }
+      if (!presented()) return;
+      await controller.refresh();
+      if (disposed || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== placement.tabId || controller.tab()?.nativeTargetId !== placement.expectedTargetId) return;
+      const generationAfterReload = nativeHealthGeneration;
+      nativeHealthTimer = setTimeout(() => { nativeHealthTimer = null; if (generationAfterReload === nativeHealthGeneration) handle(checkNativeHealth(placement, nativeSequence, true).catch(() => { if (generationAfterReload === nativeHealthGeneration && controller.tab()?.tabId === placement.tabId) { nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; paint(); } })); }, 15_000);
+    } finally { nativeRecovering = false; paint(); layout(); }
+  }
   async function projectNative(): Promise<void> {
     const native = nativeBrowserApi(); if (!native) return;
+    if (nativePending || reconnecting || nativePopout) return;
     const tab = controller.tab(); const sequence = ++nativeSequence;
-    const target = tab?.nativeTargetId ?? tab?.tabId;
+    const target = tab?.tabId;
+    if (tab?.tabId === manualSleepingTab) return;
     const useNative = tab && (tab.runtime === 'native' || controller.state.runtime?.kind === 'native');
-    if (nativeTab && (!visible || pinned || details.open || !useNative || nativeTab !== target)) { const previous = nativeTab; nativeTab = null; nativeProjection = ''; await native.detach({ tabId: previous }).catch(() => undefined); }
-    if (disposed || sequence !== nativeSequence || !visible || pinned || details.open || !useNative || !target || nativePopout) return;
+    if (nativeTab && (!nativeSurfaceVisible() || nativeOverlayOpen() || !useNative || nativeTab !== target)) {
+      cancelNativeHealth(); nativeHealthIdentity = ''; nativeHealthGeneration++;
+      const previous = nativeTab; nativeTab = null; nativeProjection = '';
+      nativePending = native.detach({ tabId: previous }).then(() => false, () => false);
+      try { await nativePending; } finally { nativePending = null; layout(); }
+    }
+    if (disposed || sequence !== nativeSequence || !nativeSurfaceVisible() || nativeOverlayOpen() || !useNative || !target || nativePopout) return;
     const rect = surface.getBoundingClientRect(); if (rect.width < 1 || rect.height < 1) return;
     nativeTab = target;
-    const placement = { tabId: target, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, mode: presentation.current() ?? 'dock', interactive: tab.controller.owner === 'human' };
-    const signature = JSON.stringify(placement); if (nativeProjection === signature) return; nativeProjection = signature;
-    try { await native.attach(placement); }
-    catch (failure) { if (sequence === nativeSequence) { nativeTab = null; errorMessage.textContent = failure instanceof Error ? failure.message : String(failure); error.hidden = false; } }
+    const placement = { tabId: target, expectedTargetId: tab.nativeTargetId, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, mode: presentation.current() ?? 'dock', interactive: agentPreviewTab === null };
+    const identity = () => JSON.stringify({ tabId: target, runtimeGeneration: controller.tab()?.runtimeGeneration, nativeTargetId: controller.tab()?.nativeTargetId });
+    const signature = () => JSON.stringify({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, identity: identity() });
+    const healthIdentity = () => JSON.stringify([identity(), controller.tab()?.navigationEpoch]);
+    if (nativeFailedProjection === identity()) return;
+    if (nativeProjection === signature()) {
+      if (nativeHealthIdentity !== healthIdentity()) {
+        cancelNativeHealth(); nativeHealthIdentity = healthIdentity();
+        nativePending = checkNativeHealth(placement, sequence).then(() => true);
+        try { await nativePending; } catch { if (!disposed && !nativeOverlayOpen() && sequence === nativeSequence && nativeSurfaceVisible()) nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; }
+        finally { nativePending = null; paint(); layout(); }
+      }
+      return;
+    }
+    const geometryOnly = !!nativeProjection && nativeHealthIdentity === healthIdentity();
+    nativeError = null;
+    nativePending = attachNative(placement);
+    if (!geometryOnly) paint();
+    try {
+      const attached = await nativePending;
+      if (attached && sequence === nativeSequence && nativeSurfaceVisible() && !nativeOverlayOpen() && controller.tab()?.tabId === target && !nativePopout && nativeHealthIdentity !== healthIdentity()) {
+        nativeHealthIdentity = healthIdentity();
+        await checkNativeHealth({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId }, sequence);
+      }
+      if (!attached || disposed || sequence !== nativeSequence || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== target || nativePopout) { await native.detach({ tabId: target }).catch(() => undefined); nativeTab = null; nativeProjection = ''; }
+      else { nativeProjection = signature(); nativeFailedProjection = ''; nativeError = null; errorMessage.textContent = controller.state.error ?? ''; error.hidden = !controller.state.error; }
+    } catch {
+      if (!disposed && nativeSurfaceVisible() && !nativeOverlayOpen() && controller.tab()?.tabId === target && sequence === nativeSequence) { nativeTab = null; nativeProjection = ''; nativeFailedProjection = identity(); nativeError = '브라우저 화면을 연결하지 못했습니다. 다시 연결해 주세요.'; errorMessage.textContent = nativeError; error.hidden = false; }
+    } finally { nativePending = null; if (!geometryOnly) paint(); layout(); }
   }
-  const resizeObserver = new ResizeObserver(() => { void projectNative(); }); resizeObserver.observe(surface);
-  const layout = () => { void projectNative(); }; window.addEventListener('scroll', layout, true); window.addEventListener('resize', layout);
+  let layoutFrame: number | null = null;
+  const layout = () => {
+    if (layoutFrame !== null || disposed) return;
+    layoutFrame = requestAnimationFrame(() => {
+      layoutFrame = null;
+      if (nativeOverlayOpen()) {
+        const host = element.getBoundingClientRect(); const bar = toolbar.getBoundingClientRect();
+        element.style.setProperty('--browser-popover-top', `${bar.bottom - host.top + 6}px`);
+        element.style.setProperty('--browser-popover-height', `${Math.max(80, host.bottom - bar.bottom - 14)}px`);
+      }
+      void projectNative();
+    });
+  };
+  function nativeSurfaceVisible(): boolean {
+    return visible && surface.isConnected && (!document.documentElement.classList.contains('document-home-open') || agentPreviewTab !== null && presentation.current() === 'float')
+      && getComputedStyle(surface).visibility === 'visible' && surface.getClientRects().length > 0;
+  }
+  let nativeSurfaceWasVisible = false;
+  // 홈은 레이아웃을 유지한 채 부모만 가리므로 크기 관찰과 별도로 표시 상태를 확인한다.
+  const visibilityObserver = new MutationObserver(watchNativeVisibility);
+  function watchNativeVisibility(): void {
+    visibilityObserver.disconnect();
+    if (disposed) return;
+    const next = nativeSurfaceVisible();
+    if (next !== nativeSurfaceWasVisible) {
+      cancelNativeHealth(); nativeHealthGeneration++; nativeHealthIdentity = ''; nativeReloadedIdentity = '';
+      nativeSurfaceWasVisible = next; ++nativeSequence; nativeProjection = ''; layout();
+    }
+    for (let parent: HTMLElement | null = surface; parent; parent = parent.parentElement) {
+      visibilityObserver.observe(parent, { attributes: true, attributeFilter: ['class', 'style', 'hidden', 'inert'], childList: true });
+    }
+    scheduleFrame();
+    if (!surface.isConnected) visibilityObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+  }
+  const resizeObserver = new ResizeObserver(layout); resizeObserver.observe(surface);
+  window.addEventListener('scroll', layout, true); window.addEventListener('resize', layout);
   function scheduleFrame(): void {
-    if (frameTimer) clearTimeout(frameTimer); frameTimer = null;
-    if (!visible || disposed || nativePopout) return;
-    frameTimer = setTimeout(() => { frameTimer = null; if (!pinned) handle(controller.readFrame()); scheduleFrame(); }, 700);
+    if (!visible || disposed || document.hidden || !nativeSurfaceVisible() || nativePopout || controller.usesNativePresentation()) {
+      if (frameTimer) clearTimeout(frameTimer); frameTimer = null; return;
+    }
+    if (frameTimer) return;
+    const delay = performance.now() - lastInputAt < 1500 ? 80 : controller.tab()?.status === 'loading' ? 200 : 700;
+    frameTimer = setTimeout(() => {
+      frameTimer = null;
+      handle(controller.readFrame().finally(scheduleFrame));
+    }, delay);
+  }
+  let reportedSidebarTab: string | null = null;
+  let reportedSidebarKey = '';
+  let sidebarViewQueue: Promise<unknown> = Promise.resolve();
+  function reportSidebarView(): void {
+    const next = !disposed && visible && presentation.current() === 'dock' ? controller.tab()?.tabId ?? null : null;
+    const key = `${controller.state.runtime?.runtimeId ?? ''}:${next ?? ''}`;
+    if (key === reportedSidebarKey) return;
+    const previous = reportedSidebarTab; reportedSidebarTab = next; reportedSidebarKey = key;
+    // 실제 선택이 바뀔 때만 알리고, 늦게 도착한 이전 보기 종료가 새 선택을 지우지 않게 한다.
+    sidebarViewQueue = sidebarViewQueue.catch(() => {}).then(async () => {
+      if (previous) await options.bridge.requestBrowser('view', { tabId: previous, visible: false }).catch(() => {});
+      if (next) await options.bridge.requestBrowser('view', { tabId: next, visible: true });
+    }).catch(() => { if (reportedSidebarKey === key) reportedSidebarKey = ''; });
   }
   function paint(): void {
     if (disposed) return;
-    const tab = controller.tab(); const frame = pinned?.frame ?? controller.frame(); const connected = controller.state.connected;
-    status.textContent = !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.status === 'loading' ? '페이지 여는 중' : tab.controller.owner === 'human' ? '직접 조작 중' : '에이전트 조작 중';
-    status.title = tab?.controller.owner === 'human' ? '직접 조작 중 · 에이전트는 페이지를 읽을 수 있습니다.' : status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
-    const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title]), tab?.tabId]);
+    const tab = controller.tab(); const connected = controller.state.connected;
+    const manuallySleeping = manualSleepingTab === tab?.tabId && tab !== null;
+    const frame = manuallySleeping ? null : controller.frame();
+    const agentControlled = agentPreviewTab !== null && tab !== null;
+    presentation.setAgentControlled(agentControlled);
+    element.dataset.agentControlled = String(agentControlled);
+    reportSidebarView();
+    element.inert = agentControlled;
+    challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
+    fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
+    menuSleep.textContent = manualSleepingTab === tab?.tabId ? '탭 깨우기' : '탭 잠자기';
+    status.textContent = manualSleepingTab === tab?.tabId ? '잠든 탭' : nativeRecovering ? '페이지 다시 여는 중' : reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'sleeping' ? '잠든 탭 깨우는 중' : tab.status === 'loading' ? '페이지 여는 중' : '에이전트 브라우저';
+    status.title = status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
+    const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title, row.url, row.status]), tab?.tabId]);
     if (tabsSignature !== nextTabsSignature) {
     const focusedTab = tabs.contains(document.activeElement) ? (document.activeElement as HTMLElement)?.dataset.tabId : null;
     tabsSignature = nextTabsSignature; tabs.replaceChildren();
     for (const row of controller.state.tabs) {
       const wrapper = document.createElement('div'); wrapper.className = 'ag-browser-tab';
-      const select = button(row.title || row.url || '새 탭', row.title || '새 탭', () => controller.select(row.tabId), wrapper);
+      const select = button(row.title || row.url || '새 탭', browserTabTitle(row), () => { wakeCurrentTab(); controller.select(row.tabId); }, wrapper);
       select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(row.tabId === tab?.tabId)); select.tabIndex = row.tabId === tab?.tabId ? 0 : -1;
-      select.dataset.tabId = row.tabId; select.addEventListener('keydown', event => {
+      if (options.onFloatTab) installBrowserTabDrag(select, () => element.getBoundingClientRect(), point => options.onFloatTab?.(row.tabId, point));
+      select.dataset.tabId = row.tabId; select.dataset.sleeping = String(row.status === 'sleeping'); if (row.status === 'sleeping') select.title += ' · 잠자기'; select.addEventListener('keydown', event => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault(); const index = controller.state.tabs.indexOf(row); const length = controller.state.tabs.length;
         const next = event.key === 'Home' ? 0 : event.key === 'End' ? length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + length) % length;
-        controller.select(controller.state.tabs[next].tabId); tabs.querySelector<HTMLButtonElement>(`[data-tab-id="${CSS.escape(controller.state.tabs[next].tabId)}"]`)?.focus();
+        wakeCurrentTab(); controller.select(controller.state.tabs[next].tabId); tabs.querySelector<HTMLButtonElement>(`[data-tab-id="${CSS.escape(controller.state.tabs[next].tabId)}"]`)?.focus();
       });
       const close = button(`${row.title || '브라우저 탭'} 닫기`, '', () => handle(controller.close(row.tabId)), wrapper); icon(close, 'close'); close.classList.add('ag-browser-tab-close'); close.tabIndex = -1;
       tabs.append(wrapper);
     }
     if (focusedTab) tabs.querySelector<HTMLButtonElement>(`[data-tab-id="${CSS.escape(focusedTab)}"]`)?.focus();
+    options.onChange?.();
     }
-    if (element.ownerDocument.activeElement !== address) address.value = tab?.url ?? '';
-    for (const node of [control, annotate, reload, back, forward]) node.disabled = !tab || !connected || controller.state.busy;
-    const controlLabel = tab?.controller.owner === 'human' ? '에이전트에게 넘기기' : '직접 조작';
-    control.setAttribute('aria-label', controlLabel); control.title = controlLabel; control.setAttribute('aria-pressed', String(tab?.controller.owner === 'human')); icon(control, tab?.controller.owner === 'human' ? 'bot' : 'browserHand');
+    const nextAddressOwner = JSON.stringify([controller.state.runtime?.runtimeId, tab?.tabId, tab?.runtimeGeneration, tab?.nativeTargetId]);
+    // 같은 탭의 로딩·상태 갱신은 제출하지 않은 주소 초안을 덮어쓰지 않는다.
+    if (addressOwner !== nextAddressOwner) { addressOwner = nextAddressOwner; addressDraft = false; address.value = tab?.url ?? ''; }
+    else if (!addressDraft && element.ownerDocument.activeElement !== address) address.value = tab?.url ?? '';
+    paintZoom();
+    menuSleep.disabled = !tab || !connected || controller.state.busy || agentControlled;
+    for (const node of [annotate, reload, menuReload, back, forward]) node.disabled = !tab || !connected || controller.state.busy || manuallySleeping;
+    annotate.disabled ||= zoomPending;
+    popoutButton.disabled = manuallySleeping;
     const reloadLabel = tab?.status === 'loading' ? '페이지 열기 중지' : '새로고침'; reload.setAttribute('aria-label', reloadLabel); reload.title = reloadLabel; icon(reload, tab?.status === 'loading' ? 'browserStop' : 'refresh');
-    newTab.disabled = !connected; emptyOpen.disabled = !connected;
-    recover.hidden = !tab || !['crashed', 'disconnected', 'restorable', 'failed'].includes(tab.status); recover.disabled = !connected || controller.state.busy;
+    emptyOpen.disabled = !connected;
+    recover.hidden = reconnecting || !!nativePending || !tab || !['crashed', 'disconnected', 'restorable', 'failed'].includes(tab.status); recover.disabled = !connected || controller.state.busy;
     back.disabled ||= tab?.canGoBack === false; forward.disabled ||= tab?.canGoForward === false;
-    errorMessage.textContent = controller.state.error ?? ''; error.hidden = !controller.state.error;
+    reconnectButton.disabled = nativeRecovering || reconnecting || !!nativePending; reconnectButton.textContent = reconnecting ? '연결 중…' : '다시 연결';
+    errorMessage.textContent = controller.state.error ?? nativeError ?? ''; error.hidden = !controller.state.error && !nativeError;
+    sleepingHama.hidden = !tab || !!frame || tab.status === 'crashed' || !!nativeProjection && !nativePending && !nativeError && tab.status === 'ready';
+    wakeButton.hidden = !manuallySleeping;
     placeholder.hidden = Boolean(tab); image.hidden = !frame;
     if (frame && frame.frameId !== selectedFrameId) { selectedFrameId = frame.frameId; image.src = `data:${frame.mimeType};base64,${frame.data}`; image.style.aspectRatio = `${frame.width} / ${frame.height}`; }
-    if (tab && !frame) { placeholder.hidden = false; placeholderTitle.textContent = tab.status === 'crashed' ? '브라우저가 종료되었습니다' : '페이지 화면을 기다리는 중'; placeholderText.textContent = tab.status === 'crashed' ? '상태를 새로 읽고 페이지를 다시 열어 주세요.' : tab.url; emptyOpen.hidden = true; }
+    if (!frame && selectedFrameId) { selectedFrameId = ''; image.removeAttribute('src'); }
+    if (tab && !frame) { placeholder.hidden = false; placeholderTitle.textContent = manuallySleeping ? '탭이 잠들어 있습니다' : tab.status === 'crashed' ? '브라우저가 종료되었습니다' : '로딩중...'; placeholderText.textContent = tab.status === 'crashed' ? '상태를 새로 읽고 페이지를 다시 열어 주세요.' : tab.url; emptyOpen.hidden = true; }
     else if (!tab) { placeholderTitle.textContent = '자료를 찾아보세요'; placeholderText.textContent = '웹사이트를 읽고 받은 PDF를 문서와 보드에서 확인할 수 있습니다.'; emptyOpen.hidden = false; }
     dockButton.hidden = presentation.current() === 'dock'; floatButton.hidden = presentation.current() === 'float';
     popoutButton.hidden = presentation.current() === 'popout';
-    inspector.replaceChildren();
-    for (const [label, value] of [['런타임', controller.state.runtime ? `${controller.state.runtime.kind} · ${controller.state.runtime.state} · 세대 ${controller.state.runtime.generation}` : '아직 시작하지 않음'], ['탭', tab?.tabId ?? '없음'], ['소유 채팅', tab?.threadId ?? '일반 브라우저'], ['프로젝트', tab?.projectId ?? '일반 받은 파일'], ['마지막 작업', tab?.lastAction ?? '없음'], ['탐색 / 조작 세대', tab ? `${tab.navigationEpoch} / ${tab.controllerEpoch}` : '없음']]) {
-      const key = document.createElement('dt'); key.textContent = label; const content = document.createElement('dd'); content.textContent = value; inspector.append(key, content);
-    }
-    paintDownloads(); void projectNative();
+    annotate.disabled ||= capturePending;
+    annotate.setAttribute('aria-busy', String(capturePending));
+    paintDownloads(); layout(); scheduleFrame();
   }
   const unsubscribe = controller.subscribe(paint);
   const unsubscribeUpload = options.bridge.onBrowserEvent((event) => {
@@ -344,28 +686,99 @@ export function createWorkbenchBrowser(options: {
     uploadFiles.multiple = data.multiple === true; uploadLabel.textContent = '페이지에서 파일을 요청했습니다.'; upload.hidden = false;
   });
   const unsubscribeNative = nativeBrowserApi()?.onEvent?.((event) => {
+    if (event.tabId === controller.tab()?.tabId) {
+      // 이전 화면의 늦은 정리가 현재 게스트를 숨기면 캐시를 버리고 실제 배치를 복원한다.
+      if (event.type === 'presentation' && event.mode === 'hidden' && nativeTab === event.tabId && manualSleepingTab !== event.tabId && nativeSurfaceVisible() && !nativeOverlayOpen()) {
+        ++nativeSequence; nativeProjection = ''; nativeFailedProjection = ''; layout();
+      }
+      if (event.type === 'browser-float-closed') { presentation.setNativeFloating(false); presentation.hide(); options.onClose?.(); return; }
+      if (event.type === 'floating-geometry' || event.type === 'presentation' || event.type === 'state') {
+        const bounds = event.floatingBounds as { left: number; top: number; width: number; height: number } | undefined;
+        presentation.setNativeFloating(event.nativeFloating === true, bounds);
+      }
+    }
+    // 창 이동은 허브 조회 없이 로컬 배치만 갱신한다.
+    if (event.type === 'floating-geometry') return;
+    if (event.type === 'password-save-mode' && event.tabId === controller.tab()?.tabId) {
+      icon(savePassword, 'shield'); delete savePassword.dataset.passwordSave;
+      passwordSaveTab = event.enabled === true ? String(event.tabId) : '';
+      passwordSaveEpoch = typeof event.navigationEpoch === 'number' ? event.navigationEpoch : undefined;
+      savePassword.setAttribute('aria-pressed', String(event.enabled === true));
+      savePassword.title = event.enabled === true ? '아이디와 비밀번호를 입력하면 이 기기에 저장합니다' : '이 페이지에서 입력하는 로그인 저장';
+      savePassword.setAttribute('aria-label', savePassword.title);
+      return;
+    }
+    if (event.tabId === passwordSaveTab && typeof event.navigationEpoch === 'number' && event.navigationEpoch !== passwordSaveEpoch) {
+      passwordSaveTab = ''; savePassword.setAttribute('aria-pressed', 'false'); savePassword.title = '이 페이지에서 입력하는 로그인 저장';
+    }
+    if (event.type === 'password-save' && event.tabId === passwordSaveTab) {
+      icon(savePassword, event.state === 'saved' ? 'check' : 'shield');
+      savePassword.dataset.passwordSave = String(event.state);
+      savePassword.title = event.state === 'saved' ? '로그인을 이 기기에 저장했습니다' : '로그인을 저장하지 못했습니다. 다시 시도해 주세요.';
+      savePassword.setAttribute('aria-label', savePassword.title);
+      savePassword.animate([{ opacity: 0.4 }, { opacity: 1 }], { duration: 250 });
+      return;
+    }
+    if (typeof event.zoomFactor === 'number') {
+      const target = controller.state.tabs.find(row => row.tabId === event.tabId || row.nativeTargetId === event.tabId);
+      if (target) { acceptZoom(target.tabId, event); paint(); }
+    }
+    if (event.reason === 'zoom') return;
     if (event.type === 'presentation-command') {
       const target = controller.state.tabs.find((row) => row.tabId === event.tabId || row.nativeTargetId && (row.nativeTargetId === event.tabId || row.nativeTargetId === event.nativeTargetId));
       if (!target) return;
       controller.select(target.tabId);
       if (event.command === 'take-control' || event.command === 'return-agent') { handle(controller.action('control', { ...controller.identity(target), owner: event.command === 'take-control' ? 'human' : 'agent' })); return; }
+      if (event.command === 'annotate' || event.command === 'capture') { handle(capture()); return; }
+      if (event.command === 'navigate' && typeof event.url === 'string') { handle(navigateAddress(event.url, target)); return; }
       nativePopout = false; presentation.present('dock'); options.onDock();
-      if (event.command === 'annotate' || event.command === 'capture') beginAnnotation();
-      if (event.command === 'downloads') { downloads.hidden = false; downloadsButton.setAttribute('aria-expanded', 'true'); handle(controller.request('downloads', { action: 'list' })); }
+      if (event.command === 'downloads') showDownloads(true);
       return;
     }
     if (event.type === 'browser-popout-closed' || event.type === 'popout-closed' || nativePopout && event.type === 'presentation' && (event.mode === 'hidden' || event.mode === 'dock')) { nativePopout = false; presentation.present('dock'); options.onDock(); }
-    handle(controller.refresh());
+    // 배치/이동은 페이지 상태를 바꾸지 않는다. 크기 조절마다 허브를 다시 읽지 않는다.
+    if (event.type !== 'presentation' && event.type !== 'bound') handle(controller.refresh());
   });
+  document.addEventListener('visibilitychange', scheduleFrame);
   paint();
   return { element, controller,
-    mount(host: HTMLElement) { presentation.mount(host); },
+    descriptors(): WorkbenchResource[] { return controller.state.tabs.map(tab => ({ id: `browser:${tab.tabId}`, title: browserTabTitle(tab), dirty: false, view: 'browser', kind: 'browser' })); },
+    activeTab(): string | null { return controller.tab() ? `browser:${controller.tab()!.tabId}` : null; },
+    previewAgent(tab: BrowserTab) {
+      if (disposed) return;
+      manualSleepingTab = null; agentPreviewTab = tab.tabId;
+      controller.accept({ tab }); controller.select(tab.tabId);
+      nativePopout = false; presentation.present(visible && presentation.current() === 'dock' ? 'dock' : 'float');
+      handle(controller.readFrame());
+    },
+    endAgentPreview,
+    suspendShared() {
+      const tab = controller.tab(); const mode = presentation.current();
+      if (agentPreviewTab || tab?.scope !== 'global' || !mode || mode === 'popout') return null;
+      presentation.hide();
+      const ready = (async () => { await nativePending?.catch(() => undefined); await projectNative(); })();
+      return { tabId: tab.tabId, mode, ready };
+    },
+    async restoreShared(tabId: string): Promise<boolean> {
+      await controller.refresh();
+      const tab = controller.state.tabs.find(row => row.tabId === tabId && row.scope === 'global');
+      if (disposed || !tab) return false;
+      if (nativeBrowserApi()) await controller.request('reconnect', { tabId, restore: true });
+      if (disposed) return false;
+      controller.select(tabId); return true;
+    },
+    selectTab(id: string) { wakeCurrentTab(); controller.select(id.slice('browser:'.length)); },
+    closeTab(id: string) { handle(controller.close(id.slice('browser:'.length))); },
+    mount(host: HTMLElement) { presentation.mount(host); watchNativeVisibility(); layout(); },
     setVisible(next: boolean) {
+      if (nativePopout) return;
       if (next) { if (presentation.current() !== 'float' && presentation.current() !== 'popout') presentation.present('dock'); handle(controller.refresh().then(() => controller.readFrame())); }
       else if (presentation.current() === 'dock') presentation.hide();
     },
-    float() { nativePopout = false; presentation.present('float'); handle(controller.refresh().then(() => controller.readFrame())); },
-    dispose() { disposed = true; if (frameTimer) clearTimeout(frameTimer); resizeObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
+    dock() { nativePopout = false; presentation.present('dock'); address.focus({ preventScroll: true }); },
+    float(point?: { x: number; y: number }) { floatCurrentTab(point); handle(controller.refresh().then(() => controller.readFrame())); },
+    async releaseTab(tabId: string): Promise<void> { await nativePending?.catch(() => undefined); if (nativeTab === tabId) { nativeTab = null; nativeProjection = ''; await nativeBrowserApi()?.detach({ tabId }); } layout(); },
+    dispose() { captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; reportSidebarView(); cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
   };
 }
 export type WorkbenchBrowser = ReturnType<typeof createWorkbenchBrowser>;

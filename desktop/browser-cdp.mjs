@@ -5,6 +5,55 @@ import { createRequire } from 'node:module';
 const require = createRequire(new URL('../rhwp/rhwp-agent/package.json', import.meta.url));
 const { WebSocketServer, WebSocket } = require('ws');
 const MAX_CDP_MESSAGE_BYTES = 8 * 1024 * 1024;
+const PASSWORD_SAFE_COMMANDS = new Set([
+  'Log.enable', 'Log.disable',
+  'Runtime.enable', 'Runtime.disable', 'Runtime.runIfWaitingForDebugger', 'Runtime.releaseObject', 'Runtime.releaseObjectGroup',
+  'Page.enable', 'Page.disable', 'Page.getFrameTree', 'Page.navigate', 'Page.navigateToHistoryEntry', 'Page.getNavigationHistory', 'Page.stopLoading', 'Page.handleJavaScriptDialog', 'Page.setLifecycleEventsEnabled', 'Page.bringToFront',
+  'Network.enable', 'Network.disable', 'Network.setCacheDisabled', 'Network.setBypassServiceWorker',
+  'Fetch.enable', 'Fetch.disable', 'Fetch.continueRequest', 'Fetch.continueResponse', 'Fetch.continueWithAuth', 'Fetch.failRequest',
+  'Emulation.setDeviceMetricsOverride', 'Emulation.clearDeviceMetricsOverride', 'Emulation.setFocusEmulationEnabled', 'Emulation.setEmulatedMedia', 'Emulation.setTouchEmulationEnabled', 'Emulation.setUserAgentOverride',
+  'Target.getTargetInfo', 'Target.getTargets', 'Target.attachToTarget', 'Target.detachFromTarget', 'Target.setAutoAttach',
+  'Input.dispatchKeyEvent', 'Input.dispatchMouseEvent', 'Input.insertText', 'Input.dispatchTouchEvent', 'Input.cancelDragging',
+]);
+const PASSWORD_SAFE_EVENTS = /^(Page\.(frame|lifecycleEvent|domContentEventFired|loadEventFired|javascriptDialog)|Network\.(requestWillBeSent|responseReceived|loadingFinished|loadingFailed)|Fetch\.(requestPaused|authRequired)|Runtime\.(executionContextCreated|executionContextDestroyed|executionContextsCleared)|Target\.(attachedToTarget|detachedFromTarget))/;
+const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
+const RESOURCE_TYPES = new Set(['Document', 'Stylesheet', 'Image', 'Media', 'Font', 'Script', 'TextTrack', 'XHR', 'Fetch', 'EventSource', 'WebSocket', 'Manifest', 'Other']);
+const UTILITY_WORLD = /^__playwright_utility_world_page@[0-9a-f]{32}$/;
+function safePasswordSetup(tab, method, params) {
+  // 일반 새로고침은 값을 읽지 않는다. 재로딩 시 실행할 스크립트는 허용하지 않는다.
+  if (method === 'Page.reload') return Object.keys(params).every(key => key === 'ignoreCache') && (params.ignoreCache === undefined || typeof params.ignoreCache === 'boolean');
+  if (method === 'Page.addScriptToEvaluateOnNewDocument' && params.source === '' && UTILITY_WORLD.test(params.worldName) && Object.keys(params).every((key) => ['source', 'worldName'].includes(key))) {
+    tab.passwordUtilityWorlds ??= new Set();
+    if (tab.passwordUtilityWorlds.size >= 16 && !tab.passwordUtilityWorlds.has(params.worldName)) return false;
+    tab.passwordUtilityWorlds.add(params.worldName); return true;
+  }
+  return method === 'Page.createIsolatedWorld' && tab.passwordUtilityWorlds?.has(params.worldName) && /^[0-9A-Fa-f]{32}$/.test(params.frameId) && params.grantUniveralAccess === true && Object.keys(params).every((key) => ['frameId', 'worldName', 'grantUniveralAccess'].includes(key));
+}
+function protectedUrl(tab, value) {
+  try { const origin = new URL(value).origin; return tab.passwordAllowedOrigins?.has(origin) ? `${origin}/` : 'about:blank'; } catch { return 'about:blank'; }
+}
+/** Website strings can encode a password. Project protocol metadata instead of forwarding them. */
+function passwordEvent(tab, method, params) {
+  const result = {};
+  for (const key of ['requestId', 'loaderId', 'frameId', 'networkId', 'sessionId']) if (typeof params[key] === 'string') result[key] = params[key];
+  for (const key of ['timestamp', 'wallTime', 'encodedDataLength', 'responseStatusCode']) if (Number.isFinite(params[key])) result[key] = params[key];
+  if (RESOURCE_TYPES.has(params.type)) result.type = params.type;
+  if (RESOURCE_TYPES.has(params.resourceType)) result.resourceType = params.resourceType;
+  if (params.request) result.request = { url: protectedUrl(tab, params.request.url), method: METHODS.has(params.request.method) ? params.request.method : 'GET', headers: {}, hasPostData: !!params.request.hasPostData };
+  if (params.response) result.response = { url: protectedUrl(tab, params.response.url), status: Number(params.response.status) || 0, statusText: '', headers: {}, mimeType: '', protocol: 'http/1.1', securityState: 'secure' };
+  if ('documentURL' in params) result.documentURL = protectedUrl(tab, params.documentURL);
+  if ('responseHeaders' in params) result.responseHeaders = [];
+  if ('url' in params) result.url = protectedUrl(tab, params.url);
+  if (params.frame) result.frame = { id: params.frame.id, parentId: params.frame.parentId, loaderId: params.frame.loaderId, url: protectedUrl(tab, params.frame.url), securityOrigin: protectedUrl(tab, params.frame.url).replace(/\/$/, ''), name: '', mimeType: 'text/html' };
+  if (method === 'Page.lifecycleEvent' && ['init', 'DOMContentLoaded', 'load', 'networkAlmostIdle', 'networkIdle', 'firstContentfulPaint'].includes(params.name)) result.name = params.name;
+  if (method === 'Page.javascriptDialogOpening') { result.type = ['alert', 'confirm', 'prompt', 'beforeunload'].includes(params.type) ? params.type : 'alert'; result.message = ''; result.defaultPrompt = ''; result.hasBrowserHandler = !!params.hasBrowserHandler; }
+  if (method === 'Page.javascriptDialogClosed') result.result = !!params.result;
+  if (method === 'Network.loadingFailed') { result.canceled = !!params.canceled; result.errorText = 'Protected browser request failed'; }
+  if (method === 'Runtime.executionContextCreated') result.context = { id: params.context?.id, origin: '', name: tab.passwordUtilityWorlds?.has(params.context?.name) ? params.context.name : '', uniqueId: params.context?.uniqueId, auxData: { isDefault: !!params.context?.auxData?.isDefault, type: 'default', frameId: params.context?.auxData?.frameId } };
+  if (method === 'Runtime.executionContextDestroyed') { result.executionContextId = params.executionContextId; result.executionContextUniqueId = params.executionContextUniqueId; }
+  if (method === 'Target.attachedToTarget') { result.waitingForDebugger = !!params.waitingForDebugger; result.targetInfo = { targetId: params.targetInfo?.targetId, type: 'iframe', title: '', url: protectedUrl(tab, params.targetInfo?.url), attached: true }; }
+  return result;
+}
 
 // The relay never opens Chromium's app-wide remote debugging port. It lends one
 // debugger per owned guest to one authenticated hub process at a time.
@@ -30,12 +79,13 @@ export class PrivateBrowserCdp {
     });
     this.wsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_CDP_MESSAGE_BYTES });
     this.server.on('upgrade', (request, socket, head) => {
-      const valid = request.url === this.path
-        && !request.headers.origin
-        && request.socket.remoteAddress === '127.0.0.1'
-        && request.headers.host === `127.0.0.1:${this.server.address().port}`
-        && !this.client;
-      if (!valid) { socket.destroy(); return; }
+      const checks = { pathMatches: request.url === this.path, originAbsent: !request.headers.origin,
+        loopback: request.socket.remoteAddress === '127.0.0.1',
+        hostMatches: request.headers.host === `127.0.0.1:${this.server.address().port}`, ownerAvailable: !this.client };
+      if (!Object.values(checks).every(Boolean)) {
+        console.warn('[owned-browser-cdp] rejected upgrade', JSON.stringify(checks));
+        socket.destroy(); return;
+      }
       this.wsServer.handleUpgrade(request, socket, head, (client) => this.connect(client));
     });
     await new Promise((resolve, reject) => {
@@ -51,6 +101,7 @@ export class PrivateBrowserCdp {
     this.autoAttach = false;
     this.sessions.clear();
     for (const tab of this.tabs.values()) tab.cdpSessionId = null;
+    for (const tab of this.tabs.values()) tab.passwordUtilityWorlds = new Set();
     client.on('message', (bytes) => {
       let message;
       try { message = JSON.parse(String(bytes)); } catch { client.close(1003); return; }
@@ -58,8 +109,8 @@ export class PrivateBrowserCdp {
         client.close(1003); return;
       }
       void this.command(message).then(
-        (result) => this.send({ id: message.id, ...(message.sessionId ? { sessionId: message.sessionId } : {}), result: result ?? {} }),
-        (error) => this.send({ id: message.id, ...(message.sessionId ? { sessionId: message.sessionId } : {}), error: { code: -32000, message: error.message } }),
+        (result) => this.send({ id: message.id, ...(message.sessionId ? { sessionId: message.sessionId } : {}), result: result ?? {} }, client),
+        (error) => this.send({ id: message.id, ...(message.sessionId ? { sessionId: message.sessionId } : {}), error: { code: -32000, message: error.message } }, client),
       );
     });
     client.once('close', () => {
@@ -73,11 +124,13 @@ export class PrivateBrowserCdp {
     client.on('error', () => {});
   }
 
-  send(message) {
-    if (this.client?.readyState === WebSocket.OPEN) this.client.send(JSON.stringify(message));
+  send(message, client = this.client) {
+    if (this.host.passwords) for (const tab of this.tabs.values()) message = this.host.passwords.redact(tab, message);
+    if (client && this.client === client && client.readyState === WebSocket.OPEN) client.send(JSON.stringify(message));
   }
 
   async add(tab) {
+    const previousTargetId = tab.targetId;
     const debuggerApi = tab.view.webContents.debugger;
     if (debuggerApi.isAttached()) throw new Error('Browser guest debugger is already owned');
     debuggerApi.attach('1.3');
@@ -94,7 +147,14 @@ export class PrivateBrowserCdp {
         tab.childSessions.delete(params.sessionId);
         this.sessions.delete(params.sessionId);
       }
-      if (tab.cdpSessionId) this.send({ method, params, sessionId: nativeSessionId || tab.cdpSessionId });
+      if (tab.cdpSessionId) {
+        // A website's console, exception or websocket payload can copy or encode
+        // filled passwords. The hub receives lifecycle events, never these values.
+        if (tab.passwordShield && !PASSWORD_SAFE_EVENTS.test(method)) return;
+        if (tab.passwordShield) params = passwordEvent(tab, method, params);
+        if (this.host.passwords) params = this.host.passwords.redact(tab, params);
+        this.send({ method, params, sessionId: nativeSessionId || tab.cdpSessionId });
+      }
     };
     tab.debuggerDetach = (_event, reason) => {
       this.remove(tab.targetId);
@@ -103,6 +163,8 @@ export class PrivateBrowserCdp {
     debuggerApi.on('message', tab.debuggerMessage);
     debuggerApi.on('detach', tab.debuggerDetach);
     this.tabs.set(tab.targetId, tab);
+    // CDP 타깃 알림 직후 허브가 바인딩할 수 있으므로 먼저 호스트에 등록한다.
+    this.host.registerTarget?.(tab, previousTargetId);
     if (this.autoAttach) this.attach(tab);
     return tab.targetId;
   }
@@ -119,7 +181,9 @@ export class PrivateBrowserCdp {
   }
 
   targetInfo(tab) {
-    return { ...tab.targetInfo, url: tab.view.webContents.getURL(), title: tab.view.webContents.getTitle(), attached: true };
+    const metadata = { ...tab.targetInfo, url: tab.view.webContents.getURL(), title: tab.view.webContents.getTitle(), attached: true };
+    if (tab.passwordShield) { metadata.url = protectedUrl(tab, metadata.url); metadata.title = ''; }
+    return this.host.passwords ? this.host.passwords.redact(tab, metadata) : metadata;
   }
 
   remove(targetId) {
@@ -145,7 +209,21 @@ export class PrivateBrowserCdp {
   async command({ method, params = {}, sessionId }) {
     const entry = sessionId ? this.sessions.get(sessionId) : null;
     if (sessionId && !entry) throw new Error('Browser debugger session is stale');
+    if (entry?.tab?.closing || entry?.tab?.view.webContents.isDestroyed?.()) throw new Error('Browser debugger target was closed');
+    const shield = entry?.tab?.passwordShield;
+    const safeSetup = entry?.tab && safePasswordSetup(entry.tab, method, params);
+    if (shield && !PASSWORD_SAFE_COMMANDS.has(method) && !safeSetup) {
+      throw new Error('Native saved passwords protect this page. Use the native semantic snapshot and input tools.');
+    }
+    if (shield && (method === 'Fetch.continueRequest' && ['url', 'method', 'headers', 'postData'].some((key) => params[key] !== undefined)
+      || method === 'Fetch.continueResponse' && ['responseHeaders', 'binaryResponseHeaders', 'responsePhrase'].some((key) => params[key] !== undefined)
+      || method === 'Page.handleJavaScriptDialog' && params.promptText !== undefined)) throw new Error('Native saved passwords prohibit modifying protected browser requests.');
+    if (shield && method === 'Page.navigate') {
+      let url; try { url = new URL(params.url); } catch {}
+      if (!url || url.href !== 'about:blank' && (url.protocol !== 'https:' || url.username || url.password)) throw new Error('Native saved passwords permit only HTTPS navigation and about:blank.');
+    }
     const browserCommand = !sessionId || entry.browser;
+    if (browserCommand && method === 'Storage.getCookies' && [...this.tabs.values()].some((tab) => tab.passwordShield)) throw new Error('Native saved passwords protect browser storage.');
     if (method === 'Target.getTargetInfo') {
       const tab = params.targetId ? this.tabs.get(params.targetId) : entry?.tab;
       return { targetInfo: tab ? this.targetInfo(tab) : { targetId: 'owned-browser', type: 'browser', title: '', url: '', attached: true } };
@@ -192,7 +270,7 @@ export class PrivateBrowserCdp {
         case 'Target.closeTarget': return { success: this.host.closeTab(params.targetId) };
         case 'Browser.close':
           // Playwright disconnect must never close the editor or surviving tabs.
-          queueMicrotask(() => this.client?.close(1000));
+          { const client = this.client; queueMicrotask(() => client?.close(1000)); }
           return {};
         case 'Browser.setDownloadBehavior': return this.host.setDownloadBehavior(params);
         case 'Browser.cancelDownload': return this.host.cancelDownload(params.guid);
@@ -208,7 +286,22 @@ export class PrivateBrowserCdp {
         default: throw new Error(`Unsupported owned browser command: ${method}`);
       }
     }
-    if (!method.startsWith('Input.')) return entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId);
+    if (!method.startsWith('Input.')) {
+      let result;
+      try { result = await entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId); }
+      catch (error) { if (entry.tab.passwordShield || entry.tab.closing || entry.tab.view.webContents.isDestroyed?.()) throw new Error('Native browser command failed'); throw error; }
+      if (entry.tab.closing || entry.tab.view.webContents.isDestroyed?.()) throw new Error('Browser debugger target was closed');
+      // A read that started before the vault fill must not return after protection began.
+      if (entry.tab.passwordShield && !PASSWORD_SAFE_COMMANDS.has(method) && !safeSetup) throw new Error('Native saved passwords protect this page. Use the native semantic snapshot and input tools.');
+      if (entry.tab.passwordShield && method === 'Page.getFrameTree') {
+        const project = (tree) => ({ frame: passwordEvent(entry.tab, 'Page.frameNavigated', { frame: tree.frame }).frame, ...(tree.childFrames ? { childFrames: tree.childFrames.map(project) } : {}) });
+        return result.frameTree ? { frameTree: project(result.frameTree) } : {};
+      }
+      if (entry.tab.passwordShield && method === 'Page.getNavigationHistory') return { currentIndex: result.currentIndex, entries: (result.entries ?? []).map((history) => ({ id: history.id, url: protectedUrl(entry.tab, history.url), userTypedURL: '', title: '', transitionType: 'other' })) };
+      if (method === 'Emulation.setDeviceMetricsOverride') entry.tab.viewport = { width: params.width, height: params.height };
+      if (method === 'Emulation.clearDeviceMetricsOverride') entry.tab.viewport = null;
+      return this.host.passwords ? this.host.passwords.redact(entry.tab, result) : result;
+    }
     entry.tab.automationInputDepth = (entry.tab.automationInputDepth ?? 0) + 1;
     try { return await entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId); }
     finally { entry.tab.automationInputDepth -= 1; }

@@ -1,5 +1,5 @@
 /* 작은 도구를 같은 줄에 묶고 페이지에 가장 넓은 자리를 남긴다. */
-.ag-browser { --browser-border: color-mix(in srgb, currentColor 12%, transparent); container-type: inline-size; display: flex; flex-direction: column; min-width: 0; height: 100%; overflow: hidden; background: var(--ag-bg, var(--n-surface, #fafaf9)); color: var(--ag-text, var(--n-text, #20251f)); font: 12px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+.ag-browser { position: relative; --browser-border: color-mix(in srgb, currentColor 12%, transparent); container-type: inline-size; display: flex; flex-direction: column; min-width: 0; height: 100%; overflow: hidden; background: var(--ag-bg, var(--n-surface, #fafaf9)); color: var(--ag-text, var(--n-text, #20251f)); font: 12px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
 .ag-browser [hidden],.ag-browser[hidden] { display: none; }
 .ag-browser button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--browser-border); border-radius: 7px; background: transparent; color: inherit; padding: 5px 9px; font: inherit; cursor: pointer; white-space: nowrap; touch-action: manipulation; }
 .ag-browser button:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
@@ -10,6 +10,8 @@
 .ag-browser button.ag-browser-icon { width: 28px; height: 28px; flex: 0 0 28px; padding: 0; border-color: transparent; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
 .ag-browser button.ag-browser-icon:hover,.ag-browser button.ag-browser-icon[aria-pressed=true] { color: var(--ag-text, var(--n-text, #20251f)); }
 .ag-browser-tabbar { display: flex; align-items: center; gap: 2px; flex-shrink: 0; min-width: 0; padding: 4px 7px 0; }
+.ag-browser[data-presentation=dock] .ag-browser-tabbar { display: none; }
+.ag-browser[data-presentation=dock] .ag-browser-status { flex: 0 0 5px; max-width: 5px; padding: 0; }
 .ag-browser-tabs { display: flex; flex: 1; gap: 3px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .ag-browser-tabs::-webkit-scrollbar { display: none; }
 .ag-browser-tab { display: flex; align-items: center; min-width: 85px; max-width: 200px; border-radius: 7px; }
@@ -20,32 +22,43 @@
 .ag-browser-toolbar { position: relative; display: flex; gap: 2px; align-items: center; padding: 4px 7px 6px; flex-shrink: 0; background: color-mix(in srgb, var(--ag-bg, var(--n-surface, #fafaf9)) 94%, transparent); border-bottom: 1px solid var(--browser-border); }
 .ag-browser-navigation { display: flex; flex: 1; min-width: 140px; gap: 1px; align-items: center; margin-right: 3px; }
 .ag-browser-address { min-width: 40px; flex: 1; height: 28px; margin-left: 4px; padding: 0 9px; border: 1px solid var(--browser-border); border-radius: 8px; color: inherit; background: color-mix(in srgb, currentColor 3%, transparent); font: inherit; font-size: 11px; }
+.ag-browser-zoom { display: flex; flex: 0 0 auto; align-items: center; gap: 0; margin-left: 3px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.ag-browser .ag-browser-zoom button { border: 0; padding: 0; width: 20px; height: 26px; border-radius: 5px; font-size: 11px; }
+.ag-browser .ag-browser-zoom button:nth-child(2) { width: 35px; font-size: 10px; }
 .ag-browser-status { display: flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0; max-width: 155px; padding: 0 5px 0 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
 .ag-browser-status::before { content: ''; width: 4px; height: 4px; flex-shrink: 0; border-radius: 50%; background: currentColor; opacity: .55; }
 .ag-browser-status[data-owner=human]::before { background: var(--ag-accent, #52795f); opacity: 1; }
 .ag-browser-error { display: flex; align-items: center; gap: 8px; padding: 8px; color: #9a3e27; border-bottom: 1px solid var(--browser-border); }
 .ag-browser-error[hidden] { display: none; }
 .ag-browser-error span { flex: 1; }
-.ag-browser-surface { position: relative; flex: 1; min-height: 150px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #e4e6e2; outline-offset: -3px; }
+.ag-browser-surface { position: relative; flex: 1; min-height: 150px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--ag-bg, var(--n-surface, #e4e6e2)); outline-offset: -3px; }
 .ag-browser-frame { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; user-select: none; }
 .ag-browser-frame[hidden] { display: none; }
-.ag-browser-placeholder { text-align: center; padding: 25px; max-width: 380px; color: #576253; line-height: 1.6; }
+.ag-browser-placeholder { text-align: center; padding: 25px; max-width: 380px; color: var(--ag-text-secondary, var(--n-text-secondary, #576253)); line-height: 1.6; }
 .ag-browser-placeholder[hidden] { display: none; }
+/* 기존 하마의 눈 감은 자세. 페이지를 기다리는 동안만 숨을 쉬고 코를 곤다. */
+.ag-browser-sleeping-hama { position: relative; display: block; width: 96px; height: 76px; margin: 0 auto 12px; }
+.ag-browser-sleeping-sprite { position: absolute; left: 9px; bottom: 0; width: 78px; height: 60px; background: url('/images/boot/hama-sprites.png') -234px 0 / 468px 60px no-repeat; image-rendering: pixelated; animation: ag-browser-hama-breathe 3200ms steps(2, end) infinite; }
+.ag-browser-snore { position: absolute; left: 16px; top: 26px; color: #62a6cd; font: 700 14px/1 ui-monospace, monospace; opacity: 0; animation: ag-browser-hama-snore 3200ms var(--snore-delay) ease-out infinite; }
+@keyframes ag-browser-hama-breathe { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes ag-browser-hama-snore { 0%, 12% { opacity: 0; transform: translate(0, 0); } 24% { opacity: .7; } 76%, 100% { opacity: 0; transform: translate(-12px, -24px); } }
+@media (prefers-reduced-motion: reduce) {
+  .ag-browser-sleeping-sprite, .ag-browser-snore { animation: none; }
+  .ag-browser-snore:nth-of-type(2) { opacity: .5; transform: translate(-6px, -12px); }
+}
 .ag-browser-placeholder strong { font-size: 17px; }
 .ag-browser-placeholder p { margin: 8px 0 16px; overflow-wrap: anywhere; }
 .ag-browser-ime { position: absolute; width: 1px; height: 1px; left: 8px; bottom: 8px; opacity: .01; resize: none; border: 0; padding: 0; overflow: hidden; }
-.ag-browser-picking { cursor: crosshair; }
-.ag-browser-selection { position: absolute; pointer-events: none; border: 2px solid #497958; background: #49795822; }
-.ag-browser-annotation { padding: 10px; border-top: 1px solid var(--browser-border); display: flex; flex-wrap: wrap; gap: 7px; flex-shrink: 0; }
-.ag-browser-annotation[hidden] { display: none; }
-.ag-browser-annotation strong,.ag-browser-annotation p,.ag-browser-annotation textarea,.ag-browser-annotation [role=status] { flex: 1 0 100%; }
-.ag-browser-annotation strong { overflow-wrap: anywhere; }
-.ag-browser-annotation p { margin: 0; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
-.ag-browser-annotation textarea { min-height: 58px; max-height: 140px; resize: vertical; background: transparent; color: inherit; font: inherit; border: 1px solid var(--browser-border); padding: 8px; border-radius: 5px; }
-.ag-browser-annotation-modes { display: flex; gap: 5px; }
-.ag-browser-annotation-modes [aria-pressed=true] { background: color-mix(in srgb, currentColor 13%, transparent); }
-.ag-browser-downloads { flex-shrink: 0; max-height: 230px; overflow: auto; border-top: 1px solid var(--browser-border); padding: 10px; }
-.ag-browser-downloads h3 { font-size: 12px; margin: 0 0 8px; }
+/* 보조 작업은 페이지 크기를 유지하는 작은 도구 팝오버로 연다. */
+.ag-browser-popover-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; margin: -12px -12px 0; padding: 6px 9px; border-bottom: 1px solid var(--browser-border); background: color-mix(in srgb, currentColor 3%, transparent); }
+.ag-browser-popover-header>strong { font-size: 12px; font-weight: 600; }
+.ag-browser .ag-browser-popover-header button.ag-browser-icon { width: 22px; height: 22px; flex-basis: 22px; margin: -3px -3px -3px 0; }
+.ag-browser-popover-header .ag-icon { width: 13px; height: 13px; }
+html.desktop-mac .ag-browser-popover-header>strong { flex: 1; order: 1; text-align: center; }
+html.desktop-mac .ag-browser-popover-header>button { order: 0; }
+html.desktop-mac .ag-browser-popover-header::after { content: ''; width: 22px; flex: 0 0 22px; order: 2; }
+.ag-browser-downloads>.ag-browser-popover-header { margin-bottom: 8px; }
+.ag-browser-downloads>p { margin: 8px 0 2px; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); font-size: 11px; }
 .ag-browser-download { display: flex; flex-wrap: wrap; gap: 6px; border-top: 1px solid var(--browser-border); padding: 8px 0; }
 .ag-browser-download strong,.ag-browser-download>span { flex: 1 0 100%; overflow-wrap: anywhere; }
 .ag-browser-download>span { font-size: 11px; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
@@ -56,18 +69,38 @@
 .ag-browser-details summary:hover,.ag-browser-details[open] summary { background: color-mix(in srgb, currentColor 6%, transparent); color: var(--ag-text, var(--n-text, #20251f)); }
 .ag-browser-menu { position: absolute; z-index: 10; right: 0; top: calc(100% + 7px); width: 270px; max-width: calc(100vw - 28px); max-height: min(330px, 65vh); overflow: auto; padding: 7px; border: 1px solid var(--browser-border); border-radius: 12px; background: var(--ag-bg, var(--n-surface, #fafaf9)); box-shadow: 0 8px 30px #0002; }
 .ag-browser-menu>button { display: flex; width: 100%; justify-content: flex-start; border-color: transparent; padding: 7px 9px; }
-.ag-browser-menu dl { display: grid; grid-template-columns: 86px 1fr; gap: 7px; margin: 7px 4px 2px; padding: 10px 5px 3px; border-top: 1px solid var(--browser-border); font-size: 10px; }
-.ag-browser-menu dt { color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); }
-.ag-browser-menu dd { margin: 0; overflow-wrap: anywhere; }
 @container (max-width: 500px) { .ag-browser-toolbar { flex-wrap: wrap; justify-content: flex-end; } .ag-browser-navigation { flex: 1 0 100%; margin-right: 0; margin-bottom: 2px; } .ag-browser-status { max-width: 120px; font-size: 9px; } }
-.ag-browser-floating { position: fixed; z-index: 1300; width: min(640px, calc(100vw - 40px)); height: min(480px, calc(100vh - 60px)); left: 24px; top: auto; bottom: 24px; min-width: 320px; min-height: 280px; border: 1px solid var(--ag-border-strong, var(--n-hairline-strong, #d5d8d2)); border-radius: 12px; box-shadow: 0 12px 40px #0003; background: var(--ag-bg, var(--n-surface, #fafaf9)); overflow: hidden; display: flex; flex-direction: column; }
+/* 네이티브 페이지 밖에 손잡이와 닫기·크기 조절 영역을 남긴다. */
+.ag-browser-floating { position: fixed; z-index: 1300; box-sizing: border-box; container: browser-float / inline-size; width: min(640px, calc(100vw - 40px)); height: min(480px, calc(100vh - 60px)); left: 24px; top: auto; bottom: 24px; min-width: min(320px, 100vw); min-height: min(280px, 100dvh); padding: 0 0 12px; border: 0; border-radius: 10px; box-shadow: 0 12px 40px #0003, 0 0 0 1px #0001; background: var(--ag-bg, var(--n-surface, #fafaf9)); color: var(--ag-text-secondary, var(--n-text-secondary, #737970)); overflow: hidden; display: flex; flex-direction: column; }
 .ag-browser-floating[hidden] { display: none; }
-.ag-browser-floating .ag-browser { flex: 1; height: auto; min-height: 0; }
-.ag-browser-move { display: flex; align-items: center; justify-content: center; height: 12px; flex-shrink: 0; padding: 0; color: var(--ag-text-secondary, var(--n-text-secondary, #737970)); background: var(--ag-bg, var(--n-surface, #fafaf9)); border: 0; text-align: left; cursor: move; touch-action: none; }
-.ag-browser-move::before { content: ''; width: 27px; height: 3px; border-radius: 3px; background: currentColor; opacity: .22; }
-.ag-browser-move:focus-visible { outline: 2px solid var(--ag-accent, #52795f); outline-offset: -2px; }
-.ag-browser-resize { position: absolute; right: 2px; bottom: 0; height: 17px; border: 0; background: transparent; cursor: nwse-resize; touch-action: none; color: var(--ag-text-secondary, var(--n-text-secondary, #737970)); }
-@media (max-width: 639px) { .ag-browser-floating { left: 0 !important; top: 0 !important; width: 100vw !important; height: 100dvh !important; border-radius: 0; min-width: 0; } .ag-browser-move { cursor: default; } .ag-browser-resize { display: none; } }
+html.document-home-open .ag-browser-floating { visibility: hidden; pointer-events: none; }
+.ag-browser-floating .ag-browser { flex: 1; height: auto; min-height: 0; border-radius: 0 0 4px 4px; }
+.ag-browser[data-presentation=float]>.ag-browser-surface { min-height: 0; }
+.ag-browser[data-presentation=float]>.ag-browser-tabbar,.ag-browser[data-presentation=float]>.ag-browser-toolbar { display: none; }
+.ag-browser-floating-chrome { display: flex; height: 36px; flex: 0 0 36px; align-items: center; gap: 2px; padding: 0 4px; }
+.ag-browser-floating-chrome button { display: flex; align-items: center; justify-content: center; height: 24px; width: 24px; flex: 0 0 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
+.ag-browser-floating-chrome button:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+.ag-browser-floating-chrome button:active { background: color-mix(in srgb, currentColor 14%, transparent); }
+.ag-browser-floating-chrome .ag-icon { width: 14px; height: 14px; }
+.ag-browser-floating-chrome .ag-browser-move { flex: 0 0 24px; width: 24px; cursor: move; touch-action: none; }
+.ag-browser-floating-chrome .ag-browser-navigation { flex: 1; min-width: 0; margin: 0; color: var(--ag-text, var(--n-text, #20251f)); font: 11px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+.ag-browser-floating-chrome .ag-browser-address { box-sizing: border-box; height: 26px; margin-left: 3px; border-color: color-mix(in srgb, currentColor 10%, transparent); background: color-mix(in srgb, currentColor 4%, transparent); text-align: center; }
+.ag-browser-floating-chrome .ag-browser-address:focus { text-align: left; outline: 2px solid var(--ag-accent, #52795f); outline-offset: -1px; }
+.ag-browser-floating-chrome .ag-browser-go { display: none; }
+.ag-browser-floating-chrome .ag-browser-zoom button { width: 18px; flex: 0 0 18px; height: 24px; font-size: 11px; }
+.ag-browser-floating-chrome .ag-browser-zoom button:nth-child(2) { width: 32px; flex-basis: 32px; font-size: 9px; }
+@container browser-float (max-width: 400px) {
+  .ag-browser-floating-chrome { flex-wrap: wrap; height: 60px; flex-basis: 60px; }
+  .ag-browser-floating-chrome .ag-browser-navigation { order: -1; flex-basis: 100%; height: 28px; }
+  .ag-browser-floating-chrome .ag-browser-forward { display: none; }
+  .ag-browser-floating-chrome .ag-browser-move { margin-right: auto; }
+}
+.ag-browser-floating-chrome .ag-browser-navigation button:disabled { opacity: .35; cursor: default; }
+.ag-browser-move::before { content: ''; width: 27px; height: 3px; border-radius: 3px; background: currentColor; opacity: .35; }
+.ag-browser-floating button:focus-visible { outline: 2px solid var(--ag-accent, #52795f); outline-offset: -2px; }
+.ag-browser-resize { position: absolute; right: 0; bottom: 0; width: 24px; height: 12px; padding: 0; border: 0; background: transparent; cursor: nwse-resize; touch-action: none; color: inherit; }
+.ag-browser-resize .ag-icon { position: absolute; right: 1px; bottom: 1px; width: 12px; height: 12px; }
+@media (max-width: 639px) { .ag-browser-floating { left: 0 !important; top: 0 !important; width: 100vw !important; height: 100dvh !important; border-radius: 0; } .ag-browser-move { cursor: default; } .ag-browser-resize { display: none; } }
 
 .ag-browser-trigger { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px; border: 0; background: transparent; color: var(--ag-text-secondary, var(--n-text-secondary, #697166)); cursor: pointer; border-radius: 4px; }
 .ag-browser-trigger:hover { background: var(--ag-active, #e6e8e2); color: var(--ag-text, var(--n-text, #20251f)); }
@@ -76,3 +109,28 @@
 .ag-browser-upload span { flex: 1; }
 
 @media (prefers-contrast: more) { .ag-browser-toolbar,.ag-browser-menu { border-color: currentColor; } .ag-browser button.ag-browser-icon { color: inherit; } }
+
+.ag-browser-challenge { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px; border-bottom: 1px solid var(--browser-border); }
+.ag-browser-challenge[hidden] { display: none; }
+.ag-browser-challenge span { flex: 1; }
+
+.ag-browser-downloads { position: absolute; z-index: 12; top: var(--browser-popover-top, 44px); right: 8px; width: min(296px, calc(100% - 16px)); max-height: var(--browser-popover-height, calc(100% - 60px)); box-sizing: border-box; overflow: auto; border: 1px solid var(--browser-border); border-radius: 12px; padding: 12px; background: var(--ag-bg, var(--n-surface, #fafaf9)); box-shadow: 0 8px 28px #0003, 0 2px 5px #0001; }
+
+.ag-browser button[data-password-save=saved] { color: var(--ag-accent, #52795f); }
+
+/* 네이티브 페이지 밖에 테두리를 두어 조작 중인 미리보기를 구분한다. */
+.ag-browser-floating[data-agent-controlled="true"] { border: 1px solid #f59a4573; box-shadow: 0 12px 40px #0003; }
+html.document-home-open .ag-browser-floating[data-agent-controlled="true"] { visibility: visible; pointer-events: auto; }
+
+.ag-browser button[data-downloading=true] { color: var(--ag-accent, #62a6cd); }
+
+.ag-browser-floating { contain: layout paint; }
+.ag-browser-floating[data-gesture] { box-shadow: 0 4px 12px #0002, 0 0 0 1px #0001; }
+
+.ag-browser-tab-drag { position: fixed; top: 0; left: 0; z-index: 3000; pointer-events: none; max-width: 240px; padding: 9px 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 10px; color: var(--ag-text, #e6e6e6); background: var(--ag-raised, #181818); box-shadow: 0 6px 18px #0003; border: 1px solid #8883; font: 13px -apple-system, BlinkMacSystemFont, sans-serif; }
+.ag-browser-tab-drag[data-detached=true] { border-color: var(--ag-accent, #62a6cd); }
+
+/* 네이티브 자식 창이 실제 미리보기를 그린다. DOM은 위치와 레이아웃만 유지한다. */
+.ag-browser-floating[data-native-floating="true"] { opacity: 0; pointer-events: none; }
+
+.ag-browser[data-presentation="dock"][data-agent-controlled="true"] { box-shadow: inset 0 0 0 1px #f59a453d; }

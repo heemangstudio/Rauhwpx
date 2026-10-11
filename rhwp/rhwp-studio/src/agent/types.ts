@@ -662,8 +662,17 @@ export interface BrowserRuntime {
   profile?: string;
   readiness?: Record<string, unknown>;
 }
+export interface BrowserChallenge {
+  code: 'BROWSER_CHALLENGE_REQUIRED';
+  provider: 'google';
+  retryable: false;
+  message: string;
+  fallback?: { provider: 'duckduckgo'; url: string };
+}
+
 export interface BrowserTab {
   tabId: string;
+  scope?: 'global' | 'agent';
   threadId: string | null;
   documentId: string | null;
   projectId: string | null;
@@ -674,9 +683,11 @@ export interface BrowserTab {
   controllerEpoch: number;
   controller: { owner: 'human' | 'agent'; clientId?: string };
   status: string;
+  challenge?: BrowserChallenge | null;
   presentation?: 'native' | 'stream';
   runtime?: 'native' | 'chromium';
   nativeTargetId?: string;
+  zoomFactor?: number;
   runtimeGeneration?: number;
   lastAction?: string;
   canGoBack?: boolean;
@@ -699,6 +710,8 @@ export interface BrowserDownload {
   downloadId: string;
   state: 'downloading' | 'downloaded' | 'importing' | 'imported' | 'cancelled' | 'interrupted' | 'import-failed';
   filename: string;
+  savedPath?: string;
+  totalBytes?: number;
   mimeType?: string;
   size: number;
   sha256?: string;
@@ -714,6 +727,8 @@ export interface BrowserDownload {
 }
 export interface BrowserEvent {
   type: string;
+  openerTabId?: string;
+  foreground?: boolean;
   runtime?: BrowserRuntime;
   tabs?: BrowserTab[];
   tab?: BrowserTab;
@@ -723,6 +738,8 @@ export interface BrowserEvent {
   [key: string]: unknown;
 }
 export interface BrowserResult {
+  /** 현재 Studio의 사이드바에서 보고 있는 탭. 에이전트는 기존 탭을 그대로 사용한다. */
+  activeTabId?: string | null;
   ok?: boolean;
   action?: string;
   runtime?: BrowserRuntime;

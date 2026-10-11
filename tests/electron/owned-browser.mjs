@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow, WebContentsView, session, ipcMain } from 'electron';
 import { OwnedBrowserHost } from '../../desktop/browser-host.mjs';
 import { removeOwnedBrowserState } from '../../rhwp/rhwp-agent/browser-cleanup.mjs';
+import { createOwnedBrowserService } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
 
 const require = createRequire(new URL('../../rhwp/rhwp-agent/package.json', import.meta.url));
 const { chromium } = require('playwright-core');
@@ -21,6 +22,9 @@ const report = {};
 let host;
 let browser;
 let proxy;
+let service;
+let serviceHost;
+let serviceSite;
 const windows = new Map();
 const html = '<!doctype html><title>Owned research fixture</title><h1>Native research page</h1><label>Draft <input id="draft"></label><label>Password <input id="password" type="password"></label><a href="/second">Next page</a><button id="download">Download PDF</button><script>document.querySelector("#download").onclick=()=>{const a=document.createElement("a");a.href=URL.createObjectURL(new Blob(["%PDF-1.4\\nOwned authenticated bytes\\n%%EOF"],{type:"application/pdf"}));a.download="native.pdf";a.click()};</script>';
 
@@ -72,22 +76,43 @@ try {
   host.attach(first, { tabId: 'tab-one', bounds: { x: 10, y: 80, width: 620, height: 410 }, mode: 'dock' });
   host.detach(first, { tabId: 'tab-one' });
   host.attach(first, { tabId: 'tab-one', bounds: { x: 20, y: 100, width: 500, height: 360 }, mode: 'float' });
+  const nativeFloat = host.floatingWindows?.get(targetInfo.targetId);
+  assert.ok(nativeFloat, 'Floating chrome and page must share a native layer above sidebar guests');
+  assert.equal(nativeFloat.getParentWindow(), first);
+  report.floatingAboveSidebar = true;
   await page.waitForFunction(() => innerWidth === 500 && innerHeight === 360);
-  host.attach(first, { tabId: 'tab-one', bounds: { x: 160, y: 120, width: 420, height: 300 }, mode: 'float' });
-  await page.waitForFunction(() => innerWidth === 420 && innerHeight === 300);
-  assert.deepEqual(host.tab('tab-one').view.getBounds(), { x: 160, y: 120, width: 420, height: 300 });
-  assert.equal(await page.locator('#draft').inputValue(), 'Kept while moving');
+  const originalFloatBounds = nativeFloat.getBounds();
+  nativeFloat.setBounds({ ...originalFloatBounds, x: originalFloatBounds.x + 140, y: originalFloatBounds.y + 140, width: 420, height: 348 });
+  const movedFloatBounds = nativeFloat.getBounds();
   host.attach(first, { tabId: 'tab-one', bounds: { x: 20, y: 100, width: 500, height: 360 }, mode: 'float' });
+  assert.deepEqual(nativeFloat.getBounds(), movedFloatBounds, 'Late editor layout must not snap a dragged or resized native window back');
+  await page.waitForFunction(() => innerWidth === 420 && innerHeight === 300);
+  assert.deepEqual(host.tab('tab-one').view.getBounds(), { x: 0, y: 36, width: 420, height: 300 });
+  assert.equal(await page.locator('#draft').inputValue(), 'Kept while moving');
+  nativeFloat.setBounds({ ...movedFloatBounds, width: 500, height: 408 });
   await page.waitForFunction(() => innerWidth === 500 && innerHeight === 360);
   host.control({ tabId: 'tab-one', human: true });
   const floatContents = host.tab('tab-one').view.webContents;
   await page.locator('#draft').focus();
+  nativeFloat.focus();
+  let resolveNativeFocus;
+  const nativeFocus = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Native fixture did not receive keyboard focus')), 2000);
+    resolveNativeFocus = () => { clearTimeout(timer); resolve(); };
+    floatContents.once('focus', resolveNativeFocus);
+  });
   floatContents.focus();
+  if (floatContents.isFocused()) resolveNativeFocus();
+  await nativeFocus;
+  host.attach(first, { tabId: 'tab-one', bounds: { x: 24, y: 104, width: 500, height: 360 }, mode: 'float', interactive: true });
+  assert.equal(floatContents.isFocused(), true, 'Moving the live view must preserve keyboard focus');
   floatContents.sendInputEvent({ type: 'keyDown', keyCode: 'X' });
   floatContents.sendInputEvent({ type: 'char', keyCode: 'x' });
   floatContents.sendInputEvent({ type: 'keyUp', keyCode: 'X' });
   await page.waitForFunction(() => document.querySelector('#draft').value === 'Kept while movingx');
-  host.detach(first, { tabId: 'tab-one' });
+  host.popoutCommand(nativeFloat.webContents, { command: 'close' });
+  assert.equal(nativeFloat.isDestroyed(), true);
+  assert.ok(events.some(event => event.type === 'browser-float-closed' && event.tabId === 'tab-one'));
   assert.equal(host.state(host.tab('tab-one')).mode, 'hidden');
   assert.equal(page.isClosed(), false);
   assert.equal(await page.locator('#draft').inputValue(), 'Kept while movingx');
@@ -213,10 +238,152 @@ try {
   assert.equal(await cleanPage.evaluate(() => localStorage.getItem('owned-note')), null);
   report.browserReset = { staleOwnerRejected: true, releasedOwnerAllowed: true, guestsClosed: true, cookiesCleared: true, profileDeleted: true, storageClearedAfterRestart: true };
   console.error('OWNED_BROWSER_STAGE browser-reset');
+  serviceSite = createServer((_request, response) => { response.setHeader('content-type', 'text/html'); response.end('<title>Recovered native tab</title><input id="draft"><a id="popup" href="/popup" target="_blank">Open result</a>'); });
+  await new Promise((resolve) => serviceSite.listen(0, '127.0.0.1', resolve));
+  const serviceOrigin = `http://127.0.0.1:${serviceSite.address().port}`;
+  const serviceDir = path.join(root, 'native-service');
+  const serviceOwner = { id: 'service-hub' };
+  serviceHost = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session, dataDir: serviceDir, getWindowForSession: (id) => windows.get(id) });
+  const adapter = {
+    async start(settings) { return { ...await serviceHost.start(settings, serviceOwner), close: () => serviceHost.release(serviceOwner) }; },
+    bind: (args) => serviceHost.bind(args), control: (args) => serviceHost.control(args),
+    inventory: async () => [...serviceHost.tabs.values()].map((tab) => serviceHost.state(tab)),
+  };
+  await mkdir(path.join(serviceDir, 'browser'), { recursive: true });
+  await writeFile(path.join(serviceDir, 'browser', 'tabs.json'), JSON.stringify({ version: 1, tabs: [
+    { tabId: 'restored-tab', threadId: 'chat-one', agentId: 'owner', sessionId: 'previous-editor-session', url: serviceOrigin, title: 'Recovered native tab' },
+  ] }));
+  let resolvePopup;
+  service = createOwnedBrowserService({ dataDir: serviceDir, nativeAdapter: adapter, workspaceTargets: [serviceOrigin], onEvent: (event) => { if (event.type === 'owned_browser_popup') resolvePopup?.(event); } });
+  await service.restore();
+  const recovered = await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one', threadId: 'chat-one', agentId: 'owner' }, 'recover', { tabId: 'restored-tab' });
+  assert.equal(recovered.runtime.kind, 'native');
+  assert.equal(serviceHost.state(serviceHost.tab('restored-tab')).controller, 'human');
+  serviceHost.attach(first, { tabId: 'restored-tab', bounds: { x: 0, y: 80, width: 500, height: 360 }, interactive: true });
+  assert.equal(serviceHost.tab('restored-tab').interactive, true);
+  const recoveredContents = serviceHost.tab('restored-tab').view.webContents;
+  first.show();
+  first.focus();
+  // 배치한 게스트의 첫 프레임을 기다린 뒤 실제 backing surface를 확인한다.
+  await recoveredContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  assert.equal((await recoveredContents.capturePage()).isEmpty(), false);
+  await recoveredContents.executeJavaScript('document.querySelector("#draft").focus()', true);
+  recoveredContents.focus();
+  recoveredContents.sendInputEvent({ type: 'mouseDown', x: 20, y: 20, button: 'left', clickCount: 1 });
+  recoveredContents.sendInputEvent({ type: 'mouseUp', x: 20, y: 20, button: 'left', clickCount: 1 });
+  recoveredContents.sendInputEvent({ type: 'keyDown', keyCode: 'X' });
+  recoveredContents.sendInputEvent({ type: 'char', keyCode: 'x' });
+  recoveredContents.sendInputEvent({ type: 'keyUp', keyCode: 'X' });
+  const value = await recoveredContents.executeJavaScript(`new Promise((resolve) => {
+    const field = document.querySelector('#draft');
+    if (field.value === 'x') { resolve(field.value); return; }
+    const timer = setTimeout(() => resolve(field.value), 2000);
+    field.addEventListener('input', () => { clearTimeout(timer); resolve(field.value); }, { once: true });
+  })`);
+  assert.equal(value, 'x');
+  const popupEvent = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Native popup was not published for foreground selection')), 5000);
+    resolvePopup = (event) => { clearTimeout(timer); resolve(event); };
+  });
+  const point = await recoveredContents.executeJavaScript('(()=>{const r=document.querySelector("#popup").getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()');
+  recoveredContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+  recoveredContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
+  const openedPopup = await popupEvent;
+  assert.equal(openedPopup.openerTabId, 'restored-tab');
+  assert.equal(openedPopup.foreground, true);
+  assert.equal(openedPopup.tab.threadId, 'chat-one');
+  assert.equal(openedPopup.tab.agentId, 'owner');
+  assert.equal(serviceHost.tab(openedPopup.tab.tabId).sessionId, 'window-one');
+  assert.equal(serviceHost.tab(openedPopup.tab.tabId).disposition, 'foreground-tab');
+  await assert.rejects(service.request({ isHuman: false, threadId: 'another-chat', agentId: 'owner' }, 'snapshot', { tabId: openedPopup.tab.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
+  const popupState = (await service.inventory({ isHuman: true, clientId: 'window-one' })).tabs.find(tab => tab.tabId === openedPopup.tab.tabId);
+  await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'close', popupState);
+  const backgroundEvent = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Native background popup was not published')), 5000);
+    resolvePopup = (event) => { clearTimeout(timer); resolve(event); };
+  });
+  const modifiers = [process.platform === 'darwin' ? 'meta' : 'control'];
+  recoveredContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1, modifiers });
+  recoveredContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1, modifiers });
+  const backgroundPopup = await backgroundEvent;
+  assert.equal(backgroundPopup.foreground, false);
+  assert.equal(serviceHost.tab(backgroundPopup.tab.tabId).disposition, 'background-tab');
+  const backgroundState = (await service.inventory({ isHuman: true, clientId: 'window-one' })).tabs.find(tab => tab.tabId === backgroundPopup.tab.tabId);
+  await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'close', backgroundState);
+  report.nativePopupNavigation = { foreground: true, openerBinding: true, otherChatRejected: true };
+  await recoveredContents.executeJavaScript('localStorage.setItem("native-marker", "native-profile"); document.cookie="nativeAuth=native-profile; Max-Age=86400; Path=/"');
+  await serviceHost.session.cookies.flushStore();
+  report.nativeDefaultRecovery = { native: true, currentEditorBinding: true, humanInput: true };
+  await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'control', { tabId: 'restored-tab', owner: 'agent' });
+  const retainedTarget = serviceHost.tab('restored-tab').targetId;
+  await service.close();
+  const savedTabsPath = path.join(serviceDir, 'browser', 'tabs.json');
+  const savedTabs = JSON.parse(await readFile(savedTabsPath, 'utf8'));
+  savedTabs.tabs[0].nativeTargetId = 'obsolete-native-target';
+  await writeFile(savedTabsPath, JSON.stringify(savedTabs));
+  service = createOwnedBrowserService({ dataDir: serviceDir, nativeAdapter: adapter, workspaceTargets: [serviceOrigin] });
+  await service.restore();
+  await assert.rejects(service.request({ isHuman: false, threadId: 'chat-one', agentId: 'owner' }, 'reconnect', { tabId: 'restored-tab' }), { code: 'BROWSER_HUMAN_REQUIRED' });
+  const reconnected = await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'reconnect', { tabId: 'restored-tab' });
+  assert.equal(reconnected.tab.nativeTargetId, retainedTarget);
+  assert.equal(reconnected.tab.controller.owner, 'agent');
+  assert.equal(await recoveredContents.executeJavaScript('document.querySelector("#draft").value'), 'x');
+  assert.equal(serviceHost.tab('restored-tab').view.webContents, recoveredContents);
+  await assert.rejects(service.request({ isHuman: true, clientId: 'window-two', sessionId: 'window-two' }, 'reconnect', { tabId: 'restored-tab' }), /another editor window/);
+  serviceHost.attach(first, { tabId: 'restored-tab', bounds: { x: 0, y: 80, width: 500, height: 360 }, interactive: true });
+  assert.equal(serviceHost.tab('restored-tab').interactive, true);
+  await recoveredContents.executeJavaScript('document.querySelector("#draft").focus()', true);
+  recoveredContents.focus();
+  recoveredContents.sendInputEvent({ type: 'keyDown', keyCode: 'Z' });
+  recoveredContents.sendInputEvent({ type: 'char', keyCode: 'z' });
+  recoveredContents.sendInputEvent({ type: 'keyUp', keyCode: 'Z' });
+  assert.equal(await recoveredContents.executeJavaScript(`new Promise((resolve) => {
+    const field = document.querySelector('#draft');
+    if (field.value === 'xz') { resolve(field.value); return; }
+    const timer = setTimeout(() => resolve(field.value), 2000);
+    field.addEventListener('input', () => { clearTimeout(timer); resolve(field.value); }, { once: true });
+  })`), 'xz');
+  const guestClosed = new Promise((resolve) => recoveredContents.once('destroyed', resolve));
+  serviceHost.closeTab(retainedTarget);
+  await assert.rejects(service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'reconnect', { tabId: 'restored-tab' }), /disconnected|unavailable/);
+  await guestClosed;
+  assert.equal(serviceHost.tabs.size, 0);
+  report.nativePresentationReconnect = { retainedForm: true, agentOwnership: true, windowIsolation: true, closedGuestNotRecreated: true };
+  await service.close();
+  const checkpoint = { cookies: [
+    { name: 'nativeAuth', value: 'checkpoint-auth', domain: '127.0.0.1', path: '/', expires: Date.now() / 1000 + 86400, httpOnly: false, secure: false, sameSite: 'Lax' },
+    { name: '__Host-native-auth', value: 'fixture-host-auth', domain: 'secure-fixture.invalid', path: '/', expires: Date.now() / 1000 + 86400, httpOnly: true, secure: true, sameSite: 'None' },
+    { name: '__Secure-native-auth', value: 'fixture-domain-auth', domain: '.secure-fixture.invalid', path: '/', expires: Date.now() / 1000 + 86400, httpOnly: true, secure: true, sameSite: 'Lax' },
+  ], origins: [{ origin: serviceOrigin, localStorage: [{ name: 'native-marker', value: 'checkpoint-auth' }] }] };
+  service = createOwnedBrowserService({ dataDir: serviceDir, nativeAdapter: adapter, workspaceTargets: [serviceOrigin], credentialBroker: {
+    restoreCheckpoint: async () => checkpoint, assertBrowserAccess: async () => {},
+  } });
+  await service.restore();
+  const checkpointOpened = await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'open', { url: serviceOrigin });
+  const checkpointContents = serviceHost.tab(checkpointOpened.tab.tabId).view.webContents;
+  assert.equal(await checkpointContents.executeJavaScript('localStorage.getItem("native-marker")'), 'checkpoint-auth');
+  assert.match(await checkpointContents.executeJavaScript('document.cookie'), /nativeAuth=checkpoint-auth/);
+  const prefixCookies = await serviceHost.session.cookies.get({ domain: 'secure-fixture.invalid' });
+  assert.equal(prefixCookies.find((cookie) => cookie.name === '__Host-native-auth').hostOnly, true);
+  assert.equal(prefixCookies.find((cookie) => cookie.name === '__Host-native-auth').secure, true);
+  assert.equal(prefixCookies.find((cookie) => cookie.name === '__Secure-native-auth').hostOnly, false);
+  assert.equal(prefixCookies.find((cookie) => cookie.name === '__Secure-native-auth').secure, true);
+  const roundtrip = (await serviceHost.getCookies()).filter((cookie) => cookie.name.startsWith('__'));
+  await serviceHost.session.cookies.remove('https://secure-fixture.invalid/', '__Host-native-auth');
+  await serviceHost.session.cookies.remove('https://secure-fixture.invalid/', '__Secure-native-auth');
+  await serviceHost.setCookies(roundtrip);
+  assert.deepEqual((await serviceHost.getCookies()).filter((cookie) => cookie.name.startsWith('__')).map(({ name, value, domain, hostOnly, secure, path }) => ({ name, value, domain, hostOnly, secure, path })), roundtrip.map(({ name, value, domain, hostOnly, secure, path }) => ({ name, value, domain, hostOnly, secure, path })));
+  await assert.rejects(serviceHost.setCookies([{ ...checkpoint.cookies[1], domain: '.secure-fixture.invalid' }]), /invalid __Host- or __Secure- prefix/);
+  await assert.rejects(serviceHost.setCookies([{ ...checkpoint.cookies[2], secure: false }]), /invalid __Host- or __Secure- prefix/);
+  report.nativeCheckpointStartup = { freshGuestOpened: true, checkpointAuthentication: true, hostOnlyPrefix: true, securePrefix: true, invalidPrefixRejected: true };
   report.runtime = 'Electron WebContentsView + private CDP + Playwright';
   report.fixtureUrl = 'http://browser-fixture.invalid/';
 } catch (error) { report.error = error.stack ?? String(error); }
 finally {
+  await service?.close().catch(() => {});
+  await serviceHost?.dispose().catch(() => {});
+  serviceSite?.closeAllConnections();
+  if (serviceSite) await new Promise((resolve) => serviceSite.close(resolve));
   await browser?.close().catch(() => {});
   console.error('OWNED_BROWSER_STAGE cleanup-client');
   await host?.dispose().catch(() => {});

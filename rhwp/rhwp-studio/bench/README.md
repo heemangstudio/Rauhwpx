@@ -8,6 +8,7 @@ Benches marked *dev server* need `npm run dev` running and `VITE_URL` pointing a
 - `npm run bench:live-agent-quota`: real `claude`/`codex`/`pi` CLI turns from the sidebar. **Spends real provider quota.**
 - `npm run bench:live-agent-suite-quota`: scored editing tasks with a real provider. **Spends real provider quota.** Compare runs with `node bench/agent-live-compare.mjs a.json b.json`.
 - `npm run bench:typing-latency` / `bench:typing-latency-bigdoc`: keypress-to-paint latency (*dev server*).
+- `node bench/browser-human-latency.mjs`: browser click latency in an isolated Electron profile (*dev server*). Also checks native typing, Korean IME, scrolling, and annotation capture. `--managed` measures the screenshot fallback; `RHWP_BROWSER_LATENCY_OUTPUT` writes JSON.
 - `npm run bench:chat-stream`: Markdown streaming cost in the sidebar (needs `npm run dev:sidebar`, `--url=`).
 - `npm run bench:chat-stream-frame`: whole-sidebar frame cost while an answer streams into a visible or hidden chat (needs `npm run dev:sidebar`, `--url=`).
 - `npm run bench:preview-frame`: document preview frame cost (`--label=`).

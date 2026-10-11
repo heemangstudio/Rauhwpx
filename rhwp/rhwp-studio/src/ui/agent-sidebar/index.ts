@@ -61,6 +61,7 @@ import {
 import { loadAgentPrefs, type AgentPrefs } from '../../agent/agent-prefs.ts';
 import { userSettings } from '../../core/user-settings.ts';
 import { renderChatMarkdown, type ChatMarkdownOptions } from './chat-markdown.ts';
+import { routeChatBrowserLinks } from './chat-browser-links.ts';
 import { safeMarkdownHref } from './plan-markdown.ts';
 import {
   clampFinite,
@@ -193,6 +194,7 @@ import { createFocusGreeting } from './focus-greeting.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
 import { createSidebarWorkbench, type SidebarWorkbench, type WorkbenchView } from './workbench.ts';
 import { createWorkbenchBoard, type WorkbenchBoard } from './workbench-board.ts';
+import { browserPopupDestination } from './browser-controller.ts';
 import { createWorkbenchBrowser, type WorkbenchBrowser } from './workbench-browser.ts';
 import { createWorkbenchDocuments, type WorkbenchDocuments } from './workbench-documents.ts';
 import { createWorkbenchAgents, type WorkbenchAgents } from './workbench-agents.ts';
@@ -465,6 +467,8 @@ export interface AgentSidebarHandle {
 
 /* 첫 실행 안내는 페이지에 하나만 띄운다 — 문서마다 사이드바가 있어도 겹치지 않게. */
 let initialSetupOwner: object | null = null;
+let sharedHumanBrowserView: ReturnType<WorkbenchBrowser['suspendShared']> = null;
+let sharedFloatingBrowserView: ReturnType<WorkbenchBrowser['suspendShared']> = null;
 /** 사이드바마다 다른 확인 필요 설명 id. */
 let attentionDescriptionSeq = 0;
 
@@ -742,6 +746,10 @@ const RAIL_WIDTH_MIN = 220;
 const REVIEW_WIDTH_KEY = 'rhwp-agent-review-width';
 const REVIEW_WIDTH_DEFAULT = 560;
 const REVIEW_WIDTH_MIN = 320;
+const REVIEW_WIDTH_MAX = 1120;
+const WORKSPACE_COMPACT_WIDTH = 960;
+const WORKSPACE_CHAT_MIN_WIDTH = 360;
+const WORKSPACE_COMPACT_GUTTER = 24;
 
 function maxRailWidth(viewportWidth = window.innerWidth): number {
   return Math.max(RAIL_WIDTH_MIN, Math.floor(viewportWidth * 0.3));
@@ -751,16 +759,15 @@ function clampRailWidth(width: number, viewportWidth = window.innerWidth): numbe
   return Math.min(maxRailWidth(viewportWidth), Math.max(RAIL_WIDTH_MIN, Math.round(width)));
 }
 
-function maxReviewWidth(viewportWidth = window.innerWidth): number {
-  return Math.max(REVIEW_WIDTH_MIN, Math.floor(viewportWidth * 0.45));
+function maxReviewWidth(viewportWidth = window.innerWidth, railWidth = RAIL_WIDTH_DEFAULT): number {
+  if (viewportWidth <= WORKSPACE_COMPACT_WIDTH) {
+    return Math.max(0, Math.min(REVIEW_WIDTH_DEFAULT, viewportWidth - WORKSPACE_COMPACT_GUTTER));
+  }
+  return Math.min(REVIEW_WIDTH_MAX, Math.max(REVIEW_WIDTH_MIN, viewportWidth - railWidth - WORKSPACE_CHAT_MIN_WIDTH));
 }
 
-function clampReviewWidth(width: number, viewportWidth = window.innerWidth): number {
-  return Math.min(maxReviewWidth(viewportWidth), Math.max(REVIEW_WIDTH_MIN, Math.round(width)));
-}
-
-function defaultReviewWidth(): number {
-  return clampReviewWidth(REVIEW_WIDTH_DEFAULT);
+function clampReviewWidth(width: number, viewportWidth = window.innerWidth, railWidth = RAIL_WIDTH_DEFAULT): number {
+  return Math.min(maxReviewWidth(viewportWidth, railWidth), Math.max(REVIEW_WIDTH_MIN, Math.round(width)));
 }
 
 function readStoredRailWidth(): number {
@@ -785,11 +792,12 @@ function persistRailWidth(width: number): void {
 function readStoredReviewWidth(): number {
   try {
     const raw = localStorage.getItem(REVIEW_WIDTH_KEY);
-    if (!raw) return defaultReviewWidth();
+    if (!raw) return REVIEW_WIDTH_DEFAULT;
     const n = Number(raw);
-    return Number.isFinite(n) ? clampReviewWidth(n) : defaultReviewWidth();
+    // 창이 좁아도 저장한 픽셀 폭을 보존하고, 실제 배치에서만 줄인다.
+    return Number.isFinite(n) ? Math.min(REVIEW_WIDTH_MAX, Math.max(REVIEW_WIDTH_MIN, Math.round(n))) : REVIEW_WIDTH_DEFAULT;
   } catch {
-    return defaultReviewWidth();
+    return REVIEW_WIDTH_DEFAULT;
   }
 }
 
@@ -1164,6 +1172,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let workbenchDocuments: WorkbenchDocuments | null = null;
   let workbenchAgents: WorkbenchAgents | null = null;
   let workbenchBrowser: WorkbenchBrowser | null = null;
+  let floatingBrowser: WorkbenchBrowser | null = null;
+  let floatingBrowserTab: string | null = null;
+  let floatingBrowserHost: HTMLElement | null = null;
+  let floatingBrowserSequence = 0;
   let workbenchChanges: ReturnType<typeof createChangesDrawer> | null = null;
   /** 집중 화면의 변경 사항 탭이 버전 창 전체(브랜치·그래프·작업 트리·보관)를 빌려 쓰는 동안 원래 자리를 표시한다. */
   let versionsAnchor: Comment | null = null;
@@ -2365,6 +2377,28 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
      이 bar는 viewport 전체를 가로지르며 pane 토글, 문서 맥락,
      대화 제목, 실행 맥락과 종료 동작을 한 축에 고정한다. */
   const workspaceBar = el('header', 'ag-workspace-bar');
+  workspaceBar.addEventListener('transitionend', (event) => {
+    if (event.target === workspaceBar && event.propertyName === 'grid-template-columns') {
+      clearRailBrandTransition();
+    }
+  });
+  workspaceBar.addEventListener('transitioncancel', (event) => {
+    if (event.target !== workspaceBar || event.propertyName !== 'grid-template-columns') return;
+    window.requestAnimationFrame(() => {
+      const railStillMoving = workspaceBar.getAnimations().some((animation) =>
+        animation instanceof CSSTransition && animation.transitionProperty === 'grid-template-columns');
+      if (!railStillMoving) clearRailBrandTransition();
+    });
+  });
+  const railReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let railReducedMotionListener: ((event: MediaQueryListEvent) => void) | null = null;
+  function clearRailBrandTransition(): void {
+    root.classList.remove('ag-rail-brand-transition');
+    if (railReducedMotionListener) {
+      railReducedMotion.removeEventListener('change', railReducedMotionListener);
+      railReducedMotionListener = null;
+    }
+  }
   const workspaceDrawerScrim = el('button', 'ag-workspace-drawer-scrim');
   workspaceDrawerScrim.type = 'button';
   workspaceDrawerScrim.tabIndex = -1;
@@ -4210,7 +4244,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function syncWorkbenchResources(): void {
-    workbench?.setResources(workbenchDocuments?.descriptors() ?? [], workbenchDocuments?.activeTab() ?? null);
+    const resources = [...workbenchDocuments?.descriptors() ?? [], ...workbenchBrowser?.descriptors() ?? [], ...floatingBrowser?.descriptors() ?? []];
+    const activeId = workbench?.current() === 'browser' ? workbenchBrowser?.activeTab() : workbench?.current() === 'documents' ? workbenchDocuments?.activeTab() : null;
+    workbench?.setResources(resources, activeId ?? null);
   }
 
   function openWorkbenchDocument(target: ProjectPreviewTarget): void {
@@ -4236,10 +4272,117 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     else openChat();
   }
 
+  function createBrowserView(extra: Partial<Parameters<typeof createWorkbenchBrowser>[0]> = {}): WorkbenchBrowser {
+    return createWorkbenchBrowser({ bridge,
+      getDestination: () => ({ threadId: currentThread.id, documentId: currentDocumentId, projectId: bridge.projects?.store.get()?.id ?? null, label: currentThread.title || '현재 채팅' }),
+      onCapture: (draft) => {
+        if (captureInbox.queue(draft)) {
+          return captureInbox.root.querySelector<HTMLElement>(`[data-capture-id="${draft.id}"]`) ?? composerField;
+        }
+        systemMessage('브라우저 자료를 선택했던 채팅에 저장했습니다. 해당 채팅에서 첨부를 확인해 주세요.');
+      },
+      onOpenDownload: (job) => {
+        const open = () => { workbench?.select('documents'); void workbenchDocuments?.openDownload(job); };
+        if (!fullscreen) setFullscreen(true, { then: open }); else open();
+      },
+      onDock: () => { const dock = () => workbench?.select('browser'); if (!fullscreen) setFullscreen(true, { then: dock }); else dock(); },
+      onChat: () => { returnToChat(); },
+      onChange: syncWorkbenchResources,
+      ...extra,
+    });
+  }
+  function ensureWorkbenchBrowser(): WorkbenchBrowser {
+    return workbenchBrowser ??= createBrowserView({ tabFilter: tab => tab.tabId !== floatingBrowserTab,
+      onFloatTab: (tabId, point) => { void floatBrowserTab(tabId, point); },
+    });
+  }
+  async function dockFloatingBrowser(): Promise<void> {
+    const view = floatingBrowser, tabId = floatingBrowserTab; if (!view || !tabId) return;
+    ++floatingBrowserSequence; floatingBrowser = null; floatingBrowserTab = null;
+    await view.releaseTab(tabId); view.dispose(); floatingBrowserHost?.remove(); floatingBrowserHost = null;
+    const browser = ensureWorkbenchBrowser(); await browser.controller.refresh(); browser.controller.select(tabId); browser.dock();
+    const dock = () => workbench?.select('browser'); if (!fullscreen) setFullscreen(true, { then: dock }); else dock();
+    syncWorkbenchResources();
+  }
+  async function floatBrowserTab(tabId: string, point?: { x: number; y: number }): Promise<void> {
+    if (floatingBrowserTab === tabId && floatingBrowser) { floatingBrowser.float(point); return; }
+    if (floatingBrowser) await dockFloatingBrowser();
+    const browser = ensureWorkbenchBrowser(); const tab = browser.controller.state.tabs.find(row => row.tabId === tabId);
+    if (!tab) return;
+    const sequence = ++floatingBrowserSequence; floatingBrowserTab = tabId;
+    browser.controller.accept({ tabs: browser.controller.state.tabs });
+    await browser.releaseTab(tabId);
+    if (sequence !== floatingBrowserSequence || !active || root.dataset.disposed === 'true') { floatingBrowserTab = null; return; }
+    const view = createBrowserView({ tabFilter: row => row.tabId === floatingBrowserTab, onDock: () => { void dockFloatingBrowser(); }, onClose: () => { void dockFloatingBrowser(); } });
+    floatingBrowser = view; floatingBrowserHost = document.createElement('div'); floatingBrowserHost.hidden = true; root.append(floatingBrowserHost);
+    view.mount(floatingBrowserHost); view.controller.accept({ tabs: [tab], runtime: browser.controller.state.runtime ?? undefined }); view.controller.select(tabId); view.float(point);
+    syncWorkbenchResources();
+  }
+
+  routeChatBrowserLinks(messages, async (url) => {
+    const browser = ensureWorkbenchBrowser();
+    await browser.controller.refresh();
+    const existing = browser.controller.state.tabs.find(tab => tab.url === url);
+    if (existing) browser.controller.select(existing.tabId);
+    else await browser.controller.open(url);
+    if (fullscreen) {
+      workbench?.select('browser');
+      browser.dock();
+    } else browser.float();
+  }, (error) => showToast({ message: `브라우저를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 }));
+
+  let browserActivation = 0;
+  function restoreSharedBrowser(): void {
+    const floatingSnapshot = sharedFloatingBrowserView;
+    if (floatingSnapshot && bridge.getConnectionState() === 'connected') void (async () => {
+      await floatingSnapshot.ready;
+      if (!active || root.dataset.disposed === 'true') return;
+      await ensureWorkbenchBrowser().controller.refresh(); await floatBrowserTab(floatingSnapshot.tabId);
+    })();
+    const snapshot = sharedHumanBrowserView; const activation = ++browserActivation;
+    if (!snapshot || bridge.getConnectionState() !== 'connected') return;
+    void (async () => {
+      await snapshot.ready;
+      if (!active || root.dataset.disposed === 'true' || activation !== browserActivation) return;
+      const browser = ensureWorkbenchBrowser();
+      if (!await browser.restoreShared(snapshot.tabId) || !active || activation !== browserActivation) return;
+      if (snapshot.mode === 'dock' && fullscreen) { workbench?.select('browser'); browser.dock(); }
+      else browser.float();
+    })().catch(error => {
+      if (active && activation === browserActivation) showToast({ message: `브라우저를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 });
+    });
+  }
+
+  const unsubscribeSharedBrowser = bridge.onEvent(event => {
+    if (event.type === 'connection' && active && bridge.getConnectionState() === 'connected') restoreSharedBrowser();
+  });
+
+  const unsubscribeAgentBrowserPreview = bridge.onBrowserEvent((event) => {
+    const data = event.payload && typeof event.payload === 'object' ? { ...event, ...event.payload } as import('../../agent/types.ts').BrowserEvent : event;
+    // 떠 있는 화면에서도 새 링크의 실제 게스트를 선택한다. 사이드바의 다른 페이지는 유지한다.
+    const destination = floatingBrowser && browserPopupDestination(data, floatingBrowserTab);
+    if (floatingBrowser && destination) {
+      floatingBrowserTab = destination;
+      if (data.type === 'owned_browser_popup' && data.tab) {
+        floatingBrowser.controller.accept({ tab: data.tab }); floatingBrowser.controller.select(destination);
+      } else void floatingBrowser.controller.refresh();
+      void ensureWorkbenchBrowser().controller.refresh();
+      return;
+    }
+    if (data.type !== 'owned_browser_activity' || data.active === false) return;
+    if (data.tab) ensureWorkbenchBrowser().previewAgent(data.tab);
+  });
+
   workbench = createSidebarWorkbench({
+    floatResource: (id, point) => { if (id.startsWith('browser:')) void floatBrowserTab(id.slice(8), point); },
+    onCreate: (view) => { if (view === 'browser') void ensureWorkbenchBrowser().controller.open().catch(error => showToast({ message: `브라우저를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 })); },
     onChat: returnToChat,
-    selectResource: (id) => { void workbenchDocuments?.selectTab(id); },
+    selectResource: (id) => {
+      if (id?.startsWith('browser:')) { if (id === `browser:${floatingBrowserTab}`) floatingBrowser?.float(); else workbenchBrowser?.selectTab(id); }
+      else void workbenchDocuments?.selectTab(id);
+    },
     closeResource: (id) => {
+      if (id.startsWith('browser:')) { if (id === `browser:${floatingBrowserTab}`) { floatingBrowser?.closeTab(id); void dockFloatingBrowser(); } else workbenchBrowser?.closeTab(id); return; }
       if (workbenchDocuments?.descriptors().some(tab => tab.id === id && tab.dirty)) workbench?.select('documents', { recordTab: false });
       workbenchDocuments?.closeTab(id);
     },
@@ -4254,20 +4397,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         });
         host.append(workbenchBoard.element);
       } else if (view === 'browser') {
-        workbenchBrowser ??= createWorkbenchBrowser({ bridge,
-          getDestination: () => ({ threadId: currentThread.id, documentId: currentDocumentId, projectId: bridge.projects?.store.get()?.id ?? null, label: currentThread.title || '현재 채팅' }),
-          onCapture: (draft) => {
-            if (captureInbox.queue(draft)) systemMessage('브라우저 자료를 입력창에 첨부했습니다.');
-            else systemMessage('브라우저 자료를 선택했던 채팅에 저장했습니다. 해당 채팅에서 첨부를 확인해 주세요.');
-          },
-          onOpenDownload: (job) => {
-            const open = () => { workbench?.select('documents'); void workbenchDocuments?.openDownload(job); };
-            if (!fullscreen) setFullscreen(true, { then: open }); else open();
-          },
-          onDock: () => { const dock = () => workbench?.select('browser'); if (!fullscreen) setFullscreen(true, { then: dock }); else dock(); },
-          onChat: () => { returnToChat(); },
-        });
-        workbenchBrowser.mount(host);
+        ensureWorkbenchBrowser().mount(host);
+        syncWorkbenchResources();
       } else if (view === 'documents') {
         workbenchDocuments = createWorkbenchDocuments({ client: bridge.projects ?? null, bridge,
           onChange: syncWorkbenchResources,
@@ -4338,6 +4469,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         else chatPage.insertBefore(review, compactChanges);
       }
       syncWorkbenchAgents();
+      syncWorkbenchResources();
       syncWorkbenchVisibility();
     },
   });
@@ -4369,15 +4501,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     railResize.setAttribute('aria-valuemin', String(RAIL_WIDTH_MIN));
     railResize.setAttribute('aria-valuemax', String(maxRailWidth()));
     if (opts?.persist) persistRailWidth(railWidth);
+    applyReviewWidth(preferredReviewWidth, { reclamp: true });
   }
 
   function applyReviewWidth(width: number, opts?: { persist?: boolean; reclamp?: boolean }): void {
-    reviewWidth = clampReviewWidth(width);
+    const availableRailWidth = threadsRailCollapsed ? 0 : railWidth;
+    reviewWidth = clampReviewWidth(width, window.innerWidth, availableRailWidth);
     if (!opts?.reclamp) preferredReviewWidth = reviewWidth;
     root.style.setProperty('--ag-review-w', `${reviewWidth}px`);
     reviewResize.setAttribute('aria-valuenow', String(reviewWidth));
-    reviewResize.setAttribute('aria-valuemin', String(REVIEW_WIDTH_MIN));
-    reviewResize.setAttribute('aria-valuemax', String(maxReviewWidth()));
+    reviewResize.setAttribute('aria-valuemin', String(Math.min(REVIEW_WIDTH_MIN, reviewWidth)));
+    reviewResize.setAttribute('aria-valuemax', String(maxReviewWidth(window.innerWidth, availableRailWidth)));
     if (opts?.persist) persistReviewWidth(reviewWidth);
   }
 
@@ -4402,7 +4536,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function beginColumnResize(kind: 'rail' | 'review', e: PointerEvent): void {
-    if (!fullscreen) return;
+    if (!fullscreen || isCompactWorkspace()) return;
     // 이미 한 손가락이 끌고 있으면 두 번째 손가락은 무시한다.
     if (columnResizing) return;
     if (e.button !== 0 && e.pointerType !== 'touch') return;
@@ -4464,7 +4598,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function onColumnResizeKeyDown(kind: 'rail' | 'review', e: KeyboardEvent): void {
-    if (!fullscreen) return;
+    if (!fullscreen || isCompactWorkspace()) return;
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     e.preventDefault();
     // 손잡이가 눌린 방향으로 움직인다 — 검토 칸은 왼쪽 모서리라 반대다.
@@ -4485,9 +4619,23 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    */
   /* 스레드 레일 접기 — 전체 화면에서만 뜻이 있다. 헤더의 목록
      버튼이 토글이고, 접힘 여부는 사이드바 폭처럼 세션 간 유지된다. */
+  let previousThreadsRailExpanded: boolean | null = null;
   function applyThreadsRailState(): void {
     const compact = isCompactWorkspace();
     const expanded = fullscreen && (compact ? compactThreadsRailOpen : !threadsRailCollapsed);
+    if (fullscreen && !compact && previousThreadsRailExpanded !== null && previousThreadsRailExpanded !== expanded
+      && !railReducedMotion.matches) {
+      root.classList.add('ag-rail-brand-transition');
+      if (!railReducedMotionListener) {
+        railReducedMotionListener = (event) => {
+          if (event.matches) clearRailBrandTransition();
+        };
+        railReducedMotion.addEventListener('change', railReducedMotionListener);
+      }
+    } else if (!fullscreen || compact) {
+      clearRailBrandTransition();
+    }
+    previousThreadsRailExpanded = expanded;
     root.classList.toggle('ag-compact-rail-open', compact && compactThreadsRailOpen);
     root.classList.toggle('ag-compact-rail-hover-open', compact && compactRailHoverOpen);
     root.classList.toggle('ag-rail-collapsed', fullscreen && !expanded);
@@ -4638,6 +4786,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     threadsRailCollapsed = collapsed;
     persistThreadsRailCollapsed(collapsed);
     applyThreadsRailState();
+    applyReviewWidth(preferredReviewWidth, { reclamp: true });
     // 접혀 있는 동안 문서가 바뀌었을 수 있다 — 다시 펼칠 때 새로 그린다.
     if (fullscreen && !collapsed) rebuildThreadsList();
   }
@@ -4671,9 +4820,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     changesDrawer.setOpen(changesActive || (active && workbench?.current() === 'changes' && !versionManagerPage && !root.classList.contains('ag-collapsed')));
     planColumn.setAttribute('aria-hidden', planActive ? 'false' : 'true');
     planColumn.inert = !planActive;
-    reviewResize.setAttribute('aria-hidden', detailActive ? 'false' : 'true');
-    reviewResize.tabIndex = detailActive ? 0 : -1;
-    reviewResize.inert = !detailActive;
+    const canResizeDetail = detailActive && !isCompactWorkspace();
+    reviewResize.setAttribute('aria-hidden', canResizeDetail ? 'false' : 'true');
+    reviewResize.tabIndex = canResizeDetail ? 0 : -1;
+    reviewResize.inert = !canResizeDetail;
     if (focusLayoutActive) {
       chatPage.setAttribute('aria-hidden', 'false');
       if (composer.parentElement !== chatPage) chatPage.append(followUpStrip.root, questionController.root, composer);
@@ -4933,7 +5083,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     rebuildThreadsList();
     // 칸 폭은 클래스 규칙이 아니라 인라인 변수로 산다.
     applyRailWidth(preferredRailWidth, { persist: false, reclamp: true });
-    applyReviewWidth(preferredReviewWidth, { persist: false, reclamp: true });
     // 변경 사항과 계획은 각각의 환경 drawer에 둔다.
     setCompactChangesOpen(false);
     changesDrawer.setCompactHost(null);
@@ -6332,8 +6481,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function measure(): void {
     updateComposerCompactLayout();
-    const nextWorkspaceCompact = fullscreen && window.innerWidth <= 960;
+    const nextWorkspaceCompact = fullscreen && window.innerWidth <= WORKSPACE_COMPACT_WIDTH;
+    const compactChanged = nextWorkspaceCompact !== workspaceCompact;
     const enteringCompact = nextWorkspaceCompact && !workspaceCompact;
+    if (enteringCompact && columnResizing) endColumnResize();
     workspaceCompact = nextWorkspaceCompact;
     root.classList.toggle('ag-workspace-compact', workspaceCompact);
     if (enteringCompact) {
@@ -6343,7 +6494,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       clearCompactRailHoverClose();
       detailColumn = null;
       if (environmentPanelOpen) setEnvironmentPanelOpen(false, { persist: false });
-      applyReviewColState();
     } else if (!workspaceCompact) {
       compactThreadsRailOpen = false;
       compactRailHoverOpen = false;
@@ -6351,13 +6501,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       clearCompactRailHoverClose();
     }
     applyThreadsRailState();
+    if (compactChanged) applyReviewColState();
     // 전체 화면은 도구 모음·상태바까지 덮는다 — 인라인 배치를 걷어낸다.
     if (fullscreen) {
       root.style.top = '0px';
       root.style.bottom = '0px';
-      // 창이 줄면 두 칸의 비율 상한이 내려간다. 고른 폭에서 다시 클램프해 창이 커지면 되돌린다.
+      // 고른 픽셀 폭은 유지하고, 대화 공간이 부족할 때만 줄였다가 되돌린다.
       applyRailWidth(preferredRailWidth, { persist: false, reclamp: true });
-      applyReviewWidth(preferredReviewWidth, { persist: false, reclamp: true });
       return;
     }
     const top = document.getElementById('editor-area')?.getBoundingClientRect().top ?? 96;
@@ -6976,6 +7126,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     /** 지금 그리는 턴을 바깥이 끊은 이유 — 그 턴의 만료된 질문 카드가 이유를 붙인다. */
     let segmentInterruption: TurnInterruptionReason | null = null;
     thread.messages.forEach((msg, index) => {
+      // 예전 캡처 성공 안내는 애니메이션과 첨부 표시로 대신한다.
+      if (msg.role === 'system' && msg.text === '브라우저 자료를 입력창에 첨부했습니다.') return;
       const foldAt = plan.anchors.get(index);
       if (foldAt !== undefined) {
         const fold = plan.folds[foldAt];
@@ -8339,7 +8491,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function setTurnRunning(running: boolean): void {
     turnRunning = running;
-    if (!running) replyPending = false;
+    if (!running) { replyPending = false; workbenchBrowser?.endAgentPreview(); }
     updateTurnPending();
     updateComposer();
     rebuildReview();
@@ -12048,7 +12200,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       threadsPanelOpen,
       sidebarWidth,
       railWidth,
-      reviewWidth,
+      reviewWidth: preferredReviewWidth,
       threadsRailCollapsed,
       environmentPanelOpen,
       desktopEnvironmentPanelOpen,
@@ -12059,9 +12211,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function adoptPageLayout(layout: SidebarPageLayout | null): void {
     applySidebarWidth(layout?.sidebarWidth ?? sidebarWidth, { persist: false, recenter: false });
     if (layout) {
-      applyRailWidth(layout.railWidth);
-      applyReviewWidth(layout.reviewWidth);
       threadsRailCollapsed = layout.threadsRailCollapsed;
+      preferredReviewWidth = layout.reviewWidth;
+      applyRailWidth(layout.railWidth);
       environmentPanelOpen = layout.environmentPanelOpen;
       desktopEnvironmentPanelOpen = layout.desktopEnvironmentPanelOpen;
     }
@@ -12152,12 +12304,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateDocumentContext();
     readChatModeLock();
     finishReplayedAnimations();
+    restoreSharedBrowser();
     // 다시 보이는 채팅의 완료·오류 점을 걷고 확인 필요 수를 다시 센다.
     scheduleSeenCheck();
   }
 
   function deactivate(): void {
     if (!active || root.dataset.disposed === 'true') return;
+    browserActivation++;
+    sharedHumanBrowserView = workbenchBrowser?.suspendShared() ?? null;
+    sharedFloatingBrowserView = floatingBrowser?.suspendShared() ?? null;
     flushTranscriptPersist();
     // 다른 채팅이나 문서로 떠나면 보내지 않은 초안은 버린다.
     discardDraft();
@@ -12190,6 +12346,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     vacateSidebarSlot(COLLAPSE_TAB_SLOT, collapseTab);
     vacateSidebarSlot(ROOT_SLOT, root);
   }
+
+  if (active) queueMicrotask(restoreSharedBrowser);
 
   return {
     root,
@@ -12228,6 +12386,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     /** 사용자가 문서를 열면 집중 화면을 접고 문서 옆 사이드바로 돌아온다. */
     exitFullscreen(): void {
       if (root.dataset.disposed === 'true' || !fullscreen) return;
+      if (workbenchBrowser?.controller.tab()?.scope === 'global' && workbenchBrowser.element.dataset.presentation === 'dock') workbenchBrowser.float();
       setFullscreen(false);
     },
     startupChatSettled: () => startupChatSettled,
@@ -12267,6 +12426,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
     dispose(): void {
       if (root.dataset.disposed === 'true') return;
+      browserActivation++;
+      if (active) { sharedHumanBrowserView = workbenchBrowser?.suspendShared() ?? null; sharedFloatingBrowserView = floatingBrowser?.suspendShared() ?? null; }
       finishReplayNow();
       followUps.detach('interrupted');
       resolveStartupChatSettled();
@@ -12390,6 +12551,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       workbenchBoard?.dispose();
       workbenchDocuments?.dispose();
       workbenchAgents?.dispose();
+      unsubscribeSharedBrowser();
+      unsubscribeAgentBrowserPreview();
+      ++floatingBrowserSequence; floatingBrowser?.dispose(); floatingBrowserHost?.remove();
       workbenchBrowser?.dispose();
       workbench?.dispose();
       // 페이지 클래스는 화면에 붙어 있던 사이드바만 걷는다.

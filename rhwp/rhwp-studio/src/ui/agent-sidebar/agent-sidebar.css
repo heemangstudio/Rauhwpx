@@ -7058,7 +7058,7 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   display: grid;
   /* 첫 칸은 레일 폭과 정확히 같아야 한다. 레일 최소 폭(220px)보다 큰 하한을
      두면 제목이 레일 면을 넘어 대화 면 위에서 잘린다. */
-  grid-template-columns: var(--ag-rail-w, 264px) minmax(280px, 1fr) minmax(230px, auto);
+  grid-template-columns: var(--ag-rail-w, 264px) minmax(0, 1fr) auto;
   align-items: stretch;
   min-width: 0;
   background: var(--ag-bg);
@@ -7071,7 +7071,7 @@ html.ag-fs-vt-exit::view-transition-new(root) {
 .ag-fullscreen.ag-rail-collapsed .ag-workspace-bar {
   grid-template-columns:
     calc(var(--ag-workspace-lead-inset) + 32px + var(--ag-workspace-home-w, 0px) + 8px + var(--ag-workspace-brand-short-w, 66px) + 14px)
-    minmax(280px, 1fr) minmax(230px, auto);
+    minmax(0, 1fr) auto;
 }
 
 .ag-fullscreen .ag-workspace-leading {
@@ -7219,7 +7219,8 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 /* 레일이 접히면 마크와 짧은 이름 Hama 만 토글 옆에 남는다. */
 .ag-workspace-brand-short,
 .ag-workspace-brand.ag-short .ag-workspace-brand-name:not(.ag-workspace-brand-short),
-.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-name:not(.ag-workspace-brand-short),
+.ag-fullscreen.ag-rail-brand-transition .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
   display: none;
 }
 
@@ -7229,7 +7230,8 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 }
 
 .ag-workspace-brand.ag-short .ag-workspace-brand-short,
-.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-short {
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-short,
+.ag-fullscreen.ag-rail-brand-transition .ag-workspace-brand-short {
   display: inline;
 }
 
@@ -7269,6 +7271,10 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   justify-content: center;
   padding: 0;
   border-radius: var(--ag-r-row);
+}
+
+.ag-workspace-icon-btn[hidden] {
+  display: none;
 }
 
 .ag-workspace-icon-btn .ui-column-icon,
@@ -9560,9 +9566,4 @@ html.desktop-mac .ag-workspace-home-btn {
 
 html.desktop-mac .ag-root {
   --ag-workspace-home-w: 0px !important;
-}
-
-/* 토글 아이콘의 안쪽 여백만큼 워드마크를 당겨 아이콘 사이 간격을 고르게 둔다. */
-html.desktop-mac .ag-fullscreen .ag-workspace-brand {
-  margin-left: -6px;
 }

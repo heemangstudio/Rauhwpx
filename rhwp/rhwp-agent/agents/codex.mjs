@@ -1,3 +1,4 @@
+import { codexManagedToolApprovalConfig } from './codex-mcp-approval.mjs';
 // cross-spawn: Windows에서 npm .cmd 심을 인자 이스케이프 손상 없이 실행한다.
 import spawn from 'cross-spawn';
 import { mkdirSync, rmSync } from 'node:fs';
@@ -141,8 +142,7 @@ export function buildCodexArgv(opts, threadId) {
     // 앱이 관리하는 자료 저장만 미리 승인한다. 모드·설정·세션 경계는 허브가 검사한다.
     // 최초 실행과 resume 하위 명령이 모두 이해하는 설정 키만 사용한다.
     '-c', 'mcp_servers.rhwp.default_tools_approval_mode="auto"',
-    '-c', 'mcp_servers.rhwp.tools.project_import.approval_mode="approve"',
-    '-c', 'mcp_servers.rhwp.tools.download_file.approval_mode="approve"',
+    ...codexManagedToolApprovalConfig(),
     '-c', 'approval_policy="never"',
     '-c', `sandbox_mode="${planningRestricted || opts.toolProfile === 'copy-layout-worker' ? 'read-only' : (unrestricted ? 'danger-full-access' : 'workspace-write')}"`,
     ...(opts.workflow === 'plan' || opts.workflow === 'question' ? ['-c', 'web_search="live"'] : []),

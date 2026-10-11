@@ -41,23 +41,25 @@ export async function saveBrowserCaptureDraft(args: {
 }): Promise<BrowserCaptureDraft> {
   const id = globalThis.crypto?.randomUUID?.() ?? `browser-${Date.now()}-${Array.from(crypto.getRandomValues(new Uint32Array(4)), (value) => value.toString(16)).join('')}`;
   let sourceUrl = args.tab.url; try { const url = new URL(sourceUrl); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; sourceUrl = url.href; } catch { sourceUrl = ''; }
+  const observedViewport = args.evidence.viewport as BrowserCaptureDraft['source']['viewport'] | undefined;
   const source = { tabId: args.tab.tabId, url: sourceUrl, title: args.tab.title, navigationEpoch: args.tab.navigationEpoch,
     frameId: args.frame?.frameId ?? null, viewport: args.frame ? { width: args.frame.width, height: args.frame.height,
-      deviceScaleFactor: args.frame.deviceScaleFactor, scrollX: args.frame.scrollX, scrollY: args.frame.scrollY } : null };
+      deviceScaleFactor: args.frame.deviceScaleFactor, scrollX: args.frame.scrollX, scrollY: args.frame.scrollY } : observedViewport ?? null };
   const files: File[] = [];
-  const image = (args.evidence.screenshot ?? args.evidence.image) as { data?: string; mimeType?: string } | undefined;
+  const image = (args.evidence.screenshot ?? args.evidence.image) as { data?: string; mimeType?: string; width?: number; height?: number } | undefined;
   if (image?.data && image.data.length <= 16 * 1024 * 1024) {
     const binary = atob(image.data.replace(/^data:[^,]+,/, '')); const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
     const mime = image.mimeType === 'image/png' ? 'image/png' : 'image/jpeg';
-    files.push(new File([bytes], `browser-${id}.${mime === 'image/png' ? 'png' : 'jpg'}`, { type: mime }));
+    const attachment = new Blob([bytes], { type: mime });
+    files.push(new File([attachment], `browser-${id}.${mime === 'image/png' ? 'png' : 'jpg'}`, { type: mime }));
   }
   const evidence = { ...args.evidence }; delete evidence.screenshot; delete evidence.image;
   const record = { schemaVersion: 1, kind: 'browser' as const, id, createdAt: new Date().toISOString(), destination: { ...args.destination },
     comment: args.comment, label: args.tab.title || '브라우저 자료', source, mode: args.mode, evidence, screenshotError: args.screenshotError };
   files.push(new File([JSON.stringify(record, null, 2)], `browser-${id}.json`, { type: 'application/json' }));
   const draft: BrowserCaptureDraft = { ...record, files };
-  const existing = await listBrowserCaptureDrafts(args.destination.threadId);
-  if (existing.length >= 20) throw new Error('저장한 브라우저 자료가 20개입니다. 일부를 보내거나 지워 주세요.');
+  const count = await transaction<number>('readonly', (store, set) => { const request = store.index('threadId').count(args.destination.threadId); request.onsuccess = () => set(request.result); });
+  if (count >= 20) throw new Error('저장한 브라우저 자료가 20개입니다. 일부를 보내거나 지워 주세요.');
   await transaction<void>('readwrite', (store, set) => { store.add(draft); set(undefined); });
   return draft;
 }

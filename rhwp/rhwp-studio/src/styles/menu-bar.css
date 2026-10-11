@@ -29,9 +29,9 @@ html.desktop-mac.desktop-fullscreen {
 /* 문서 홈 단추 — 신호등 바로 오른쪽에 늘 떠 있다. 편집기·집중 화면·설정·문서 홈의
    제목 막대는 모두 이 자리(--desktop-home-reserve)를 비워 둔다. */
 html.desktop-mac {
-  /* 신호등 사이 간격만큼 떨어져 서고, 뒤따르는 컨트롤은 단추 바로 뒤에서 시작한다. */
+  /* 신호등 옆에 서고, 뒤따르는 컨트롤은 홈 단추 뒤에 4px 간격을 둔다. */
   --desktop-home-left: max(calc(var(--desktop-traffic-light-inset) - 1px), 8px);
-  --desktop-home-reserve: calc(var(--desktop-home-left) + 26px);
+  --desktop-home-reserve: calc(var(--desktop-home-left) + 28px + 4px);
 }
 
 .app-home-button { display: none; }

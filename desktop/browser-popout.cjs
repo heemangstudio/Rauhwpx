@@ -1,3 +1,6 @@
+const floating = new URLSearchParams(location.search).get('presentation') === 'float';
+document.body.dataset.presentation = floating ? 'float' : 'popout';
+let zoomFactor = 1;
 const address = document.getElementById('url');
 const status = document.getElementById('status');
 function run(payload) {
@@ -14,10 +17,19 @@ document.getElementById('navigation').addEventListener('submit', (event) => {
 for (const button of document.querySelectorAll('[data-command]')) {
   button.addEventListener('click', () => run({ command: button.dataset.command }));
 }
+for (const button of document.querySelectorAll('[data-zoom]')) {
+  button.addEventListener('click', () => run({ command: 'zoom', factor: button.dataset.zoom === 'reset' ? 1 : Math.max(.25, Math.min(3, Math.round((zoomFactor + (button.dataset.zoom === 'out' ? -.1 : .1)) * 100) / 100)) }));
+}
+document.addEventListener('keydown', event => { if (floating && event.key === 'Escape' && document.activeElement !== address) run({ command: 'close' }); });
 document.getElementById('close').addEventListener('click', () => run({ command: 'close' }));
 window.ownedBrowserPresentation.onState((state) => {
   if (document.activeElement !== address) address.value = state.url;
   const human = state.controller === 'human';
+  if (floating) { document.body.inert = !state.interactive; document.body.dataset.agentControlled = String(!state.interactive); }
+  zoomFactor = typeof state.zoomFactor === 'number' ? state.zoomFactor : 1;
+  document.getElementById('zoom-percent').textContent = `${Math.round(zoomFactor * 100)}%`;
+  for (const button of document.querySelectorAll('[data-zoom]')) button.disabled = !human;
+  document.querySelector('.browser-chrome').title = state.error || '';
   address.readOnly = !human;
   document.getElementById('go').disabled = !human;
   document.querySelector('[data-command="back"]').disabled = !human || !state.canGoBack;

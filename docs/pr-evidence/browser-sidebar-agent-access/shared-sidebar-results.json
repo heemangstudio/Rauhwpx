@@ -1,0 +1,37 @@
+{
+  "runtime": "http://127.0.0.1:7940",
+  "hubPort": 5940,
+  "browser": "actual app-owned Chromium",
+  "website": "deterministic cookie/CSRF/blob research fixture",
+  "provider": "Pi turn fixture, no model inference",
+  "scenarios": [
+    {
+      "name": "Authenticated MCP lists shared tabs and follows the user selection"
+    },
+    {
+      "name": "Agent reads, signs into fixture, types and searches in the existing sidebar tab"
+    },
+    {
+      "name": "Turn completion restores human input without closing the sidebar"
+    }
+  ],
+  "errors": [],
+  "status": "passed",
+  "fixtureRequests": [
+    {
+      "method": "GET",
+      "path": "/",
+      "authenticated": false
+    },
+    {
+      "method": "POST",
+      "path": "/login",
+      "authenticated": false
+    },
+    {
+      "method": "GET",
+      "path": "/research",
+      "authenticated": true
+    }
+  ]
+}

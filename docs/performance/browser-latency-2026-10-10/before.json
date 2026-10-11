@@ -1,0 +1,16 @@
+{
+  "runtime": "chromium",
+  "latencyMs": [
+    510.8,
+    702.8,
+    696.3,
+    705.3,
+    698.8,
+    696.4,
+    703.3,
+    715.8
+  ],
+  "medianMs": 700.8,
+  "frameRequests": 9,
+  "pageErrors": []
+}

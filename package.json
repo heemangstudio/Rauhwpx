@@ -51,12 +51,14 @@
     "build:sidebar": "npm --prefix rhwp/rhwp-studio run build:sidebar"
   },
   "dependencies": {
+    "@ghostery/adblocker": "2.20.1",
+    "@ghostery/adblocker-electron": "2.20.1",
     "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "@electron/asar": "3.4.1",
     "cross-env": "^10.1.0",
-    "electron": "^43.3.0",
+    "electron": "^43.7.9",
     "electron-builder": "^26.15.3",
     "wait-on": "^9.1.0"
   },

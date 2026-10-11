@@ -1260,18 +1260,81 @@ test('a message racing an idle release still starts its turn', async (t) => {
   await h.session.dispose();
 });
 
-test('an active legacy Codex session cannot accept Plan mode', async (t) => {
+test('a legacy fallback recovers native Chat mode before accepting the next turn', async (t) => {
   const h = harness(t, { responder: appServerResponder({ features: [] }) });
   h.session.sendUserMessage('Use fallback');
   await settle(24);
   const legacy = h.spawns.at(-1);
   assert.equal(legacy.native, false);
+  legacy.process.send({ type: 'thread.started', thread_id: '11111111-1111-4111-8111-111111111111' });
+  await settle();
   legacy.process.exit(0);
   await settle();
-  await assert.rejects(
-    h.session.setExecutionMode({ workflow: 'plan', phase: 'planning', capabilityEpoch: 2 }),
-    /native Plan mode is unavailable while using legacy exec/,
-  );
+  await h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 2 });
+  assert.equal(h.session.compactionSupport, 'manual');
+  h.session.sendUserMessage('Continue in chat');
+  await settle(24);
+  const native = h.spawns.at(-1);
+  assert.equal(native.native, true);
+  assert.equal(native.process.frames.find((frame) => frame.method === 'thread/resume')?.params.threadId, '11111111-1111-4111-8111-111111111111');
+  const turn = native.process.frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(turn.params.collaborationMode.mode, 'plan');
+  assert.equal(turn.params.sandboxPolicy.type, 'readOnly');
+  assert.equal(turn.params.input[0].text, 'Continue in chat');
+  h.session.interrupt();
+  await settle();
+  await h.session.dispose();
+});
+
+test('a transient initialize failure retries natively without replaying a user turn', async (t) => {
+  let attempts = 0;
+  const respond = appServerResponder();
+  const h = harness(t, { responder(frame, process) {
+    if (frame.method === 'initialize' && ++attempts === 1) {
+      process.send({ id: frame.id, error: { code: -32603, message: 'temporarily unavailable' } });
+      return;
+    }
+    respond(frame, process);
+  } });
+  h.session.sendUserMessage('One request');
+  await settle(24);
+  assert.equal(h.spawns.length, 2);
+  assert.ok(h.spawns.every((entry) => entry.native));
+  assert.equal(h.spawns[0].process.signalCode, 'SIGTERM');
+  assert.equal(h.spawns.flatMap((entry) => entry.process.frames).filter((frame) => frame.method === 'turn/start').length, 1);
+  h.session.interrupt();
+  await settle();
+  await h.session.dispose();
+});
+
+test('failed native recovery leaves the legacy session usable and never sends a Plan turn', async (t) => {
+  const h = harness(t, { responder: appServerResponder({ features: [], collaborationModes: [] }) });
+  h.session.sendUserMessage('Use fallback');
+  await settle(24);
+  h.spawns.at(-1).process.exit(0);
+  await settle();
+  await assert.rejects(h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 2 }), /native Plan mode is unavailable/);
+  assert.equal(h.session.compactionSupport, 'auto-only');
+  assert.equal(h.spawns.filter((entry) => entry.native).flatMap((entry) => entry.process.frames).some((frame) => frame.method === 'turn/start'), false);
+  h.session.sendUserMessage('Continue safely');
+  await settle(24);
+  assert.equal(h.spawns.at(-1).native, false);
+  h.spawns.at(-1).process.exit(0);
+  await h.session.dispose();
+});
+
+test('native startup retry is bounded and diagnostics redact its nested cause', async (t) => {
+  const h = harness(t, { workflow: 'question', phase: 'questioning', responder(frame, process) {
+    if (frame.method === 'initialize') process.send({ id: frame.id, error: { code: -32603, message: 'init failed secret' } });
+  } });
+  h.session.sendUserMessage('One request');
+  await settle(24);
+  assert.equal(h.spawns.length, 2);
+  assert.ok(h.spawns.every((entry) => entry.native));
+  assert.equal(h.events.filter((event) => event.type === 'turn-end').length, 1);
+  const error = h.events.find((event) => event.type === 'error');
+  assert.match(error.message, /init failed/);
+  assert.equal(error.message.includes('secret'), false);
   await h.session.dispose();
 });
 

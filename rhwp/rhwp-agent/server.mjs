@@ -301,9 +301,9 @@ if (process.env.RHWP_AGENT_MODE === 'production' && !secretStore.available) {
     code: 'HUB_SECRET_BROKER_REQUIRED',
   });
 }
-const piManager = await createPiManager({
+const piManager = createPiManager({
   rootDir: PI_ROOT, openRouter, secretStore, routingSort: process.env.RHWP_PI_ROUTING_SORT,
-}).init();
+});
 const authRuns = new AuthRunRegistry();
 let npmPrefixMutationQueue = Promise.resolve();
 function mutateSharedNpmPrefix(operation) {
@@ -311,7 +311,7 @@ function mutateSharedNpmPrefix(operation) {
   npmPrefixMutationQueue = running.catch(() => {});
   return running;
 }
-const cliSetup = await createCliSetupManager({ secretStore, deleteKeychainItem: deleteClaudeKeychainItem }).init();
+const cliSetup = createCliSetupManager({ secretStore, deleteKeychainItem: deleteClaudeKeychainItem });
 /**
  * Claude children get their login from CLAUDE_CODE_OAUTH_TOKEN (see
  * cliSetup.envFor), so isolated homes only receive the portable config.
@@ -356,7 +356,11 @@ const provisionalCliSetup = {
 };
 let cliSetupStatus = { ...provisionalCliSetup };
 /** pi 상태는 동기 경로(resolveModel/startSession)에서도 필요해 캐시해 둔다. */
-let piStatus = await piManager.status();
+let piStatus = {
+  installed: existsSync(piManager.piBin), installing: false, version: null,
+  keyConfigured: false, keyTail: null, models: [], defaultModelId: null,
+  setupComplete: false, latestVersion: null, updateRequired: false, error: null,
+};
 /** OpenRouter 잔액. 키가 있을 때만 채워지고 사용량 리포트에 얹힌다. */
 let openRouterCredits = null;
 let openRouterCreditsKey = null;
@@ -368,18 +372,24 @@ let openRouterCreditsKey = null;
  */
 let bootWorkPromise = null;
 function ensureBootWork() {
-  bootWorkPromise ??= Promise.all([
-    // 저장된 Claude 토큰이 아직 받아들여지는지 한 번 확인한다. 네트워크가 없으면 그대로 둔다.
-    cliSetup.verifyAuth('claude')
-      .catch((error) => log(`claude credential check failed: ${error?.message ?? error}`)),
-    ...['claude', 'codex'].map((agent) => cliSetup.status(agent).then((status) => {
-      if (cliSetupStatus[agent] === provisionalCliSetup[agent]) cliSetupStatus[agent] = status;
-    }).catch((error) => log(`${agent} setup status failed: ${error?.message ?? error}`))),
-    // Pi 홈 설정을 다시 쓰고 예전 허브가 남긴 사본을 치운다 — 실패해도 허브는 그대로 뜬다.
-    piStatus.installed
-      ? piManager.syncAssets().catch((error) => log(`pi asset sync failed: ${error?.message ?? error}`))
-      : null,
-  ]).then(() => {});
+  // Keychain 승인을 기다려도 편집기와 브라우저의 준비 줄은 막지 않는다.
+  bootWorkPromise ??= Promise.all([piManager.init(), cliSetup.init()]).then(async () => {
+    process.env.PATH = [cliSetup.nodeHostDir(), cliSetup.binDir, process.env.PATH]
+      .filter(Boolean).join(path.delimiter);
+    piStatus = await piManager.status();
+    await Promise.all([
+      // 저장된 Claude 토큰이 아직 받아들여지는지 한 번 확인한다. 네트워크가 없으면 그대로 둔다.
+      cliSetup.verifyAuth('claude')
+        .catch((error) => log(`claude credential check failed: ${error?.message ?? error}`)),
+      ...['claude', 'codex'].map((agent) => cliSetup.status(agent).then((status) => {
+        if (cliSetupStatus[agent] === provisionalCliSetup[agent]) cliSetupStatus[agent] = status;
+      }).catch((error) => log(`${agent} setup status failed: ${error?.message ?? error}`))),
+      // Pi 홈 설정을 다시 쓰고 예전 허브가 남긴 사본을 치운다 — 실패해도 허브는 그대로 뜬다.
+      piStatus.installed
+        ? piManager.syncAssets().catch((error) => log(`pi asset sync failed: ${error?.message ?? error}`))
+        : null,
+    ]);
+  }).catch((error) => log(`provider initialization failed: ${error?.message ?? error}`));
   return bootWorkPromise;
 }
 const providerHealth = createProviderHealth({
@@ -597,13 +607,16 @@ const credentialBroker = createBrowserCredentialBroker({
 await credentialBroker.ready();
 const initialBrowserConfiguration = await credentialBroker.getConfiguration();
 const browserDownloads = createBrowserDownloads({
+  exportDirectory: process.env.RHWP_BROWSER_HOST === 'ipc' ? path.join(os.homedir(), 'Downloads') : null,
   dataDir: OWNED_BROWSER_DATA_DIR, projectIngest, onEvent: broadcastBrowserEvent,
   maxBytes: initialBrowserConfiguration.downloads.maxFileBytes, autoImport: initialBrowserConfiguration.downloads.autoImport,
-  authorizeDownload: async ({ actor, url }) => {
+  authorizeDownload: async ({ actor, url, target }) => {
+    if (ownedBrowser.ownsTarget(actor, target)) return true;
     await browserPolicy.assertAllowed({ actor, action: 'download', url });
     return true;
   },
   authorizeImport: async (job) => {
+    if (ownedBrowser.ownsTarget(job.actor, job.target)) return true;
     const sourceUrls = [...new Set([job.source?.url, job.source?.finalUrl, job.source?.pageUrl].filter(Boolean))];
     for (const url of sourceUrls) {
       await browserPolicy.assertAllowed({ actor: job.actor, action: 'research-import', url });
@@ -615,9 +628,9 @@ const browserDownloads = createBrowserDownloads({
   },
 });
 await browserDownloads.ready;
-await applyBrowserConfiguration(initialBrowserConfiguration);
 const ownedBrowser = createOwnedBrowserService({
   dataDir: OWNED_BROWSER_DATA_DIR, credentialBroker, policy: browserPolicy,
+  idleMinutes: initialBrowserConfiguration.performance?.idleMinutes ?? 15,
   downloads: browserDownloads, onEvent: broadcastBrowserEvent,
   nativeAdapter: process.env.RHWP_BROWSER_HOST === 'ipc' && typeof process.send === 'function'
     ? createIpcNativeBrowserAdapter() : undefined,
@@ -625,10 +638,12 @@ const ownedBrowser = createOwnedBrowserService({
     ? JSON.parse(process.env.RHWP_BROWSER_WORKSPACE_TARGETS) : [],
 });
 await ownedBrowser.restore();
+await applyBrowserConfiguration(initialBrowserConfiguration);
 
 function broadcastBrowserEvent(event) {
   // 연결된 Studio 는 같은 허브 소유자의 인증된 UI다. provider 소켓으로는 보내지 않는다.
   for (const record of sessions.values()) {
+    if (event.type === 'owned_browser_activity' && event.sessionId !== record.sessionId) continue;
     sendJson(record.studioSocket, { v: 1, type: 'browser-event', event });
   }
 }
@@ -644,6 +659,7 @@ function browserActorForRecord(record, { isHuman = false, taskId = null } = {}) 
     agentId: taskId ? `${threadId}:task:${taskId}` : `${threadId ?? record.sessionId}:root`,
     taskId,
     clientId: record.studioInstanceId ?? record.sessionId,
+    activeBrowserTabId: record.browserViewTabId ?? null,
     isHuman,
   });
 }
@@ -685,6 +701,7 @@ async function browserActorForMcp(record, sock, tool, args) {
 }
 
 async function applyBrowserConfiguration(configuration) {
+  ownedBrowser.configureSleep(configuration.performance);
   if (typeof browserDownloads.configure === 'function') await browserDownloads.configure(configuration.downloads);
   else {
     browserDownloads.maxBytes = configuration.downloads.maxFileBytes;
@@ -761,6 +778,13 @@ async function handleBrowserRequest(record, sock, msg) {
     if (containsBrowserSecret(args)) throw workflowError('BROWSER_SECURE_CHANNEL_REQUIRED', 'Enter website credentials in the secure account form');
     let result;
     switch (msg.action) {
+      case 'view': {
+        if (typeof args.tabId !== 'string' || !ownedBrowser.ownsTarget(actor, { tabId: args.tabId })) throw workflowError('BROWSER_TAB_NOT_FOUND', 'The viewed browser tab is unavailable.');
+        if (args.visible === true) record.browserViewTabId = args.tabId;
+        else if (args.visible === false && record.browserViewTabId === args.tabId) record.browserViewTabId = null;
+        result = { ok: true, action: 'view', activeTabId: record.browserViewTabId ?? null };
+        break;
+      }
       case 'policy.list': result = await browserPolicy.list(); break;
       case 'policy.update': result = await browserPolicy.update({ ...args, actor }); break;
       case 'accounts.list': result = await credentialBroker.listAccounts(); break;
@@ -4439,6 +4463,7 @@ async function handleStudioMessage(record, sock, msg) {
         rejectStart(new Error(`unknown agent: ${String(agent)}`));
         return;
       }
+      await ensureBootWork();
       // 설정이 끝나지 않은 pi 로는 세션을 열지 않는다 — 살아 있는 세션도 건드리지 않는다.
       if (agent === 'pi' && !piStatus.setupComplete) {
         rejectStart(Object.assign(
@@ -6437,8 +6462,9 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       }
       if (tool === 'download_file') {
         void browserActorForMcp(record, sock, tool, args).then(async (actor) => {
-          await browserPolicy.assertAllowed({ actor, action: 'download', url: args.url });
-          return browserDownloads.downloadPublic({ actor, ...args });
+          const target = ownedBrowser.downloadTarget(actor, args.url);
+          if (!target) await browserPolicy.assertAllowed({ actor, action: 'download', url: args.url });
+          return browserDownloads.downloadPublic({ ...args, actor: target ? { ...actor, tabId: target.tabId } : actor });
         })
           .then(sendResult)
           .catch((error) => sendError(error, 'DOWNLOAD_FAILED'));
@@ -6522,8 +6548,9 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           const result = browserMcpResult(await ownedBrowser.request(actor, tool.slice('browser_'.length).replaceAll('_', '-'), args));
           if (tool === 'browser_status') {
             const accounts = await credentialBroker.listAccounts();
-            result.accounts = actor.agentId === `${actor.threadId}:root` ? accounts.accounts
-              : accounts.accounts.filter((account) => account.agentReuseApproved);
+            const nativeAccounts = result.accounts ?? [];
+            result.accounts = nativeAccounts.concat(actor.agentId === `${actor.threadId}:root` ? accounts.accounts
+              : accounts.accounts.filter((account) => account.agentReuseApproved));
           }
           return result;
         }).then(sendResult).catch((error) => sendError(error, 'BROWSER_TOOL_FAILED'));

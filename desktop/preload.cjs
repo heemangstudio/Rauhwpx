@@ -3,9 +3,23 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('rhwpDesktop', {
   browser: {
     native: true,
+    adblock: {
+      get: () => ipcRenderer.invoke('desktop:browser-adblock-get'),
+      configure: (payload) => ipcRenderer.invoke('desktop:browser-adblock-configure', payload),
+      update: () => ipcRenderer.invoke('desktop:browser-adblock-update'),
+    },
+    passwords: {
+      armSave: (payload) => ipcRenderer.invoke('desktop:browser-passwords-armSave', payload),
+      listProfiles: () => ipcRenderer.invoke('desktop:browser-passwords-profiles'),
+      importProfile: (payload) => ipcRenderer.invoke('desktop:browser-passwords-import', payload),
+      list: () => ipcRenderer.invoke('desktop:browser-passwords-list'),
+      remove: (payload) => ipcRenderer.invoke('desktop:browser-passwords-remove', payload),
+      fill: (payload) => ipcRenderer.invoke('desktop:browser-passwords-fill', payload),
+    },
     attach: (payload) => ipcRenderer.invoke('desktop:browser-attach', payload),
     detach: (payload) => ipcRenderer.invoke('desktop:browser-detach', payload),
     getState: (payload) => ipcRenderer.invoke('desktop:browser-state', payload),
+    zoom: (payload) => ipcRenderer.invoke('desktop:browser-zoom', payload),
     navigate: (payload) => ipcRenderer.invoke('desktop:browser-navigate', payload),
     back: (payload) => ipcRenderer.invoke('desktop:browser-back', payload),
     forward: (payload) => ipcRenderer.invoke('desktop:browser-forward', payload),

@@ -28,6 +28,7 @@ const token = randomUUID();
 const results = { runtime: `http://127.0.0.1:${vitePort}`, hubPort, browser: 'actual app-owned Chromium', website: 'deterministic cookie/CSRF/blob research fixture', provider: 'Pi turn fixture, no model inference', scenarios: [], errors: [] };
 let hub, vite, browser, page;
 const providers = [];
+const sidebarReuseOnly = process.argv.includes('--sidebar-reuse-only');
 const inboxOnly = process.argv.includes('--inbox-only');
 const chromeOnly = process.argv.includes('--chrome-only');
 
@@ -95,6 +96,36 @@ try {
   // Public origins continue through default research policy and its semantic write gate.
   await human('policy.update', { operation: 'set-site', origin: site.origin, label: 'Isolated research export fixture', allowedActions: ['browse', 'read', 'download', 'research-import', 'website-change'], blockedActions: [] });
   let provider, tab;
+  if (sidebarReuseOnly) {
+    await createNewDocument(page);
+    await page.type('.ag-input', 'Check the shared sidebar browser.'); await page.click('.ag-send');
+    await waitForState(page, 'Pi fixture turn running', () => window.__agentBridge.isTurnRunning());
+    provider = await attachProvider();
+    tab = (await human('open', { url: site.origin })).tab;
+    assert.equal(tab.scope, 'global');
+    await page.click('.ag-fullscreen-btn');
+    await waitForState(page, 'Agent Focus ready', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt') && !document.body.classList.contains('ag-fs-vt'));
+    await page.click('.ag-browser-trigger');
+    await eventually('sidebar selection reported through authenticated MCP', () => provider.call('browser_status').then(frame => must(frame, 'agent status')), value => value.activeTabId === tab.tabId);
+    const second = (await human('open', { url: 'about:blank' })).tab;
+    await page.waitForSelector(`[data-resource-id="browser:${second.tabId}"]`);
+    await page.click(`[data-resource-id="browser:${second.tabId}"][role="tab"]`);
+    await eventually('agent sees user tab switching', () => provider.call('browser_status').then(frame => must(frame, 'agent status')), value => value.activeTabId === second.tabId);
+    await page.click(`[data-resource-id="browser:${tab.tabId}"][role="tab"]`);
+    await eventually('original sidebar selection restored', () => provider.call('browser_status').then(frame => must(frame, 'agent status')), value => value.activeTabId === tab.tabId);
+    await clickRef(provider, tab.tabId, 'Sign in to fixture account', 'login');
+    const observation = await observe(provider, tab.tabId);
+    must(await provider.call('browser_type', { ...refArgs(observation, 'Research query', 'search'), text: 'Shared sidebar query' }), 'agent types into user-opened page');
+    await clickRef(provider, tab.tabId, 'Search references', 'search');
+    assert.ok((await observe(provider, tab.tabId)).text.includes('Result: Shared sidebar query'));
+    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.dataset.presentation), 'dock');
+    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.inert), true, 'sidebar indicates and protects ongoing agent control');
+    assert.equal(await page.$$eval('.ag-browser-floating', rows => rows.some(row => !row.hidden)), false, 'agent reuses sidebar without an extra floating preview');
+    await waitForState(page, 'sidebar frame recovers after agent navigation', () => document.querySelector('.ag-workbench-page .ag-browser-error')?.hidden === true && Boolean(document.querySelector('.ag-workbench-page .ag-browser-frame')?.src));
+    await shot('shared-sidebar-agent-control');
+    await record('Authenticated MCP lists shared tabs and follows the user selection');
+    await record('Agent reads, signs into fixture, types and searches in the existing sidebar tab');
+  } else {
   if (!inboxOnly) {
   await createNewDocument(page);
   await page.type('.ag-input', 'Read the isolated research reference.'); await page.click('.ag-send');
@@ -116,24 +147,54 @@ try {
   const stale = await provider.call('browser_click', refArgs(snapshot, 'Search references', 'search'));
   assert.equal(stale.ok, false); assert.equal(stale.error.code, 'BROWSER_STALE_REFERENCE');
   await record('Stale semantic reference rejected without replay');
+  let broken;
+  if (!chromeOnly) {
+  for (const [name, intent] of [['Download authenticated GET PDF', 'export'], ['Export POST PDF', 'export'], ['Download blob PDF', 'export']]) {
+    await clickRef(provider, tab.tabId, name, intent);
+    const downloads = await eventually(`completed ${name}`, async () => must(await provider.call('browser_downloads', {}), 'managed download status').downloads, rows => rows.some(row => ['imported', 'import-failed'].includes(row.state) && !results.scenarios.some(scenario => scenario.downloadId === row.downloadId)));
+    const job = downloads.find(row => ['imported', 'import-failed'].includes(row.state) && !results.scenarios.some(scenario => scenario.downloadId === row.downloadId));
+    assert.equal(job.target.projectId, tab.projectId, 'download stays in its captured project');
+    assert.ok(job.sha256); assert.equal(job.size, site.pdf.length);
+    assert.equal(job.state, 'imported', 'project PDF creates its reference automatically');
+    assert.ok(job.projectItemId && job.fileId);
+    const saved = await page.evaluate(async ({ projectId, itemId }) => Array.from(new Uint8Array(await (await window.__agentBridge.projects.service.fileBlob(projectId, itemId)).arrayBuffer())), { projectId: tab.projectId, itemId: job.projectItemId });
+    assert.ok(Buffer.from(saved).equals(site.pdf), 'authenticated project viewer route returns original Chromium bytes');
+    await record(name, { downloadId: job.downloadId, state: job.state, projectId: job.target.projectId, fileId: job.fileId, projectItemId: job.projectItemId, size: job.size });
+  }
+  await clickRef(provider, tab.tabId, 'Download malformed PDF', 'export');
+  const malformed = await eventually('malformed PDF retained with failed extraction', async () => must(await provider.call('browser_downloads', {}), 'managed download status').downloads, rows => rows.some(row => row.filename === 'corrupt-reference.pdf' && row.state === 'imported' && row.extractionStatus === 'failed'));
+  broken = malformed.find(row => row.filename === 'corrupt-reference.pdf');
+  assert.ok(broken.fileId && broken.projectItemId, 'malformed PDF bytes and card survive parser failure');
+  await record('Failed PDF extraction preserves completed bytes and the project reference', { downloadId: broken.downloadId, extractionStatus: broken.extractionStatus });
+  await clickRef(provider, tab.tabId, 'Download slow PDF', 'export');
+  const pending = await eventually('slow transfer begins', async () => must(await provider.call('browser_downloads', {}), 'managed download status').downloads, rows => rows.some(row => row.filename === 'slow-reference.pdf' && row.state === 'downloading'));
+  const slow = pending.find(row => row.filename === 'slow-reference.pdf');
+  must(await provider.call('browser_downloads', { action: 'cancel', downloadId: slow.downloadId }), 'cancel actual browser transfer');
+  await eventually('cancelled transfer', async () => must(await provider.call('browser_downloads', {}), 'managed download status').downloads, rows => rows.some(row => row.downloadId === slow.downloadId && row.state === 'cancelled'));
+  await record('Cancelling an actual transfer preserves no partial project card', { downloadId: slow.downloadId });
+  await human('configuration.update', { downloads: { maxFileBytes: 1024 * 1024 } });
+  await clickRef(provider, tab.tabId, 'Download oversized PDF', 'export');
+  const limited = await eventually('unknown-length transfer reaches its byte cap', async () => must(await provider.call('browser_downloads', {}), 'managed download status').downloads, rows => rows.some(row => row.filename === 'large-reference.pdf' && ['interrupted', 'cancelled'].includes(row.state)));
+  const capped = limited.find(row => row.filename === 'large-reference.pdf');
+  assert.ok(!capped.projectItemId && capped.size <= 1024 * 1024);
+  await record('Unknown-length browser download enforces its configured byte limit', { downloadId: capped.downloadId, state: capped.state, size: capped.size });
+  await human('configuration.update', { downloads: { maxFileBytes: 100 * 1024 * 1024 } });
+  }
+  fs.writeFileSync(finishTurnPath, '');
+  await waitForState(page, 'agent work finishes before human browser input', () => !window.__agentBridge.isTurnRunning());
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } })));
-  await waitForState(page, 'Agent Focus ready', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt'));
+  await waitForState(page, 'Agent Focus ready', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt') && !document.body.classList.contains('ag-fs-vt'));
   if (await page.$eval('.ag-workspace-panel-btn', (button) => button.getAttribute('aria-expanded') !== 'true')) {
     await page.click('.ag-workspace-panel-btn');
   }
   await page.waitForSelector('.ag-workbench-page:not([hidden])', { visible: true });
-  if (await page.$eval('.ag-workbench-launcher', (launcher) => launcher.hidden)) {
-    await page.click('.ag-workbench-add');
-  }
-  await page.waitForSelector('.ag-workbench-launcher:not([hidden])', { visible: true });
-  await page.locator('.ag-workbench-launcher-item[data-view="browser"]').click();
+  await page.locator(`.ag-workbench-page:not([hidden]) [role="tab"][data-resource-id="browser:${tab.tabId}"]`).click();
+  await eventually('original research tab is selected for human input', human.bind(null, 'status'), status => status.activeTabId === tab.tabId);
   await page.waitForSelector('.ag-browser-frame[src^="data:image"]', { visible: true });
   await shot('real-stream-agent-research');
-  await page.click('.ag-browser [aria-label="직접 조작"]');
-  await eventually('human controller lease', () => human('status'), value => value.tabs.find(row => row.tabId === tab.tabId)?.controller.owner === 'human');
-  const paused = await provider.call('browser_type', { ...refArgs(await observe(provider, tab.tabId), 'Research query', 'search'), text: 'Must not replace human input' });
-  assert.equal(paused.ok, false); assert.equal(paused.error.code, 'BROWSER_HUMAN_CONTROL');
-  await record('Human takeover through production UI pauses agent input');
+  await human('control', { tabId: tab.tabId, owner: 'human' });
+  assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.inert), false, 'turn completion returns human input');
+  await record('Turn completion restores human browser input without a separate takeover button');
   const humanSnapshot = (await human('snapshot', { tabId: tab.tabId })).snapshot;
   await human('type', { ...refArgs(humanSnapshot, 'Research query', 'search'), text: '' });
   const queryElement = humanSnapshot.elements.find(row => row.name === 'Research query');
@@ -157,21 +218,23 @@ try {
   await eventually('clipboard paste reaches actual Chromium', async () => (await human('snapshot', { tabId: tab.tabId })).snapshot, value => value.elements.find(row => row.name === 'Research query')?.value === '자료 검토');
   await record('Production streamed pointer, Korean IME and clipboard paste reach the owned page once');
   const previousFrame = await page.$eval('.ag-browser-frame', image => image.src);
-  await page.click('.ag-browser [aria-label="브라우저 띄우기"]');
+  const dragPoint = await page.$eval(`[role="tab"][data-resource-id="browser:${tab.tabId}"]`, node => { const r = node.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+  await page.mouse.move(dragPoint.x, dragPoint.y); await page.mouse.down();
+  await page.mouse.move(160, 240, { steps: 12 }); await page.mouse.up();
   await page.waitForSelector('.ag-browser-floating:not([hidden]) .ag-browser-frame', { visible: true });
-  await page.waitForFunction(previous => document.querySelector('.ag-browser-frame')?.src !== previous, {}, previousFrame);
+  await page.waitForFunction(previous => document.querySelector('.ag-browser-floating:not([hidden]) .ag-browser-frame')?.src !== previous, {}, previousFrame);
   await shot('real-stream-human-float');
   if (chromeOnly) {
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } })));
-    await waitForState(page, 'normal editor with floating browser', () => !document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt'));
-    const floatRect = await page.$eval('.ag-browser-floating', element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
-    const resizePoint = await page.$eval('[aria-label="브라우저 크기 조절"]', element => { const rect = element.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
+    await waitForState(page, 'normal editor with floating browser', () => !document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt') && !document.body.classList.contains('ag-fs-vt'));
+    const floatRect = await page.$eval('.ag-browser-floating:not([hidden])', element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
+    const resizePoint = await page.$eval('.ag-browser-floating:not([hidden]) [aria-label="브라우저 크기 조절"]', element => { const rect = element.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
     await page.mouse.move(resizePoint.x, resizePoint.y); await page.mouse.down();
     await page.mouse.move(resizePoint.x + 560 - floatRect.width, resizePoint.y + 430 - floatRect.height, { steps: 6 }); await page.mouse.up();
-    const movePoint = await page.$eval('[aria-label="브라우저 이동"]', element => { const rect = element.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
+    const movePoint = await page.$eval('.ag-browser-floating:not([hidden]) [aria-label="브라우저 이동"]', element => { const rect = element.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
     await page.mouse.move(movePoint.x, movePoint.y); await page.mouse.down();
     await page.mouse.move(movePoint.x + 50 - floatRect.x, movePoint.y + 430 - floatRect.y, { steps: 6 }); await page.mouse.up();
-    const moved = await page.$eval('.ag-browser-floating', element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
+    const moved = await page.$eval('.ag-browser-floating:not([hidden])', element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
     assert.ok(Math.abs(moved.y - floatRect.y) > 10 && moved.width < floatRect.width, 'in-app preview moves and resizes');
     const editorPoint = await page.$eval('#scroll-container canvas', element => { const rect = element.getBoundingClientRect(); return { x: rect.x + 130, y: rect.y + 130 }; });
     assert.equal(await page.evaluate(point => document.elementFromPoint(point.x, point.y)?.tagName, editorPoint), 'CANVAS');
@@ -181,19 +244,24 @@ try {
     assert.equal(await page.$eval('.ag-input', input => input.value), 'Keep this draft beside research.');
     await shot('real-stream-editor-pip');
     await record('In-app floating preview drags and resizes while normal document editing and chat draft remain usable');
-    await page.click('.ag-browser [aria-label="브라우저 보기 닫기"]');
-    await page.waitForSelector('.ag-browser-floating[hidden]');
+    const previousController = (await human('status')).tabs.find(row => row.tabId === tab.tabId).controller;
+    await page.click('.ag-browser-floating:not([hidden]) [aria-label="브라우저 보기 닫기"]');
+    await page.waitForFunction(() => !document.querySelector('.ag-browser-floating:not([hidden])'));
+    await page.waitForSelector('.ag-workbench-page .ag-browser-frame', { visible: true });
+    await waitForState(page, 'closed preview docks before the next drag', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt') && !document.body.classList.contains('ag-fs-vt'));
     const hiddenTab = (await human('status')).tabs.find(row => row.tabId === tab.tabId);
-    assert.equal(hiddenTab.controller.owner, 'human'); assert.equal(hiddenTab.url, `${site.origin}/research`);
-    await page.click('.ag-browser-trigger[aria-label="브라우저 열기"]');
+    assert.deepEqual(hiddenTab.controller, previousController); assert.equal(hiddenTab.url, `${site.origin}/research`);
+    const resource = await page.$eval(`[role="tab"][data-resource-id="browser:${tab.tabId}"]`, element => { const rect = element.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
+    await page.mouse.move(resource.x, resource.y); await page.mouse.down();
+    await page.mouse.move(160, 240, { steps: 12 }); await page.mouse.up();
     await page.waitForSelector('.ag-browser-floating:not([hidden]) .ag-browser-frame', { visible: true });
     const reopened = (await human('snapshot', { tabId: tab.tabId })).snapshot;
     assert.equal(reopened.elements.find(row => row.name === 'Research query').value, '자료 검토');
-    await record('Closing the in-app preview hides presentation and reopening preserves tab, form and human controller');
+    await record('Closing the floating preview docks it and dragging it out preserves the tab, form and controller');
   }
-  await page.click('.ag-browser [aria-label="작업 칸에 붙이기"]');
+  await page.click('.ag-browser-floating:not([hidden]) [aria-label="작업 칸에 붙이기"]');
   await page.waitForSelector('.ag-workbench-page .ag-browser-frame', { visible: true });
-  await waitForState(page, 'docked browser transition complete', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt'));
+  await waitForState(page, 'docked browser transition complete', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt') && !document.body.classList.contains('ag-fs-vt'));
   const afterDock = await human('status');
   assert.equal(afterDock.tabs.find(row => row.tabId === tab.tabId).url, `${site.origin}/research`);
   await record('Float and dock preserve the original authenticated research tab');
@@ -219,16 +287,25 @@ try {
   const afterPopout = (await human('snapshot', { tabId: tab.tabId })).snapshot;
   assert.equal(afterPopout.elements.find(row => row.name === 'Research query').value, '자료 검토');
   await record('Popout and dock retain the same tab, authenticated page and form input');
-  await page.click('.ag-browser [aria-label="페이지·개체·영역에 의견 붙이기"]');
-  await page.type('.ag-browser [aria-label="자료 의견"]', 'Review the authenticated research export.');
-  await page.click('.ag-browser [aria-label="의견과 자료를 선택한 채팅에 첨부"]');
+  await page.click('.ag-browser [aria-label="현재 화면을 캡처해 채팅에 첨부"]');
   await page.waitForSelector('.ag-capture-inbox .ag-capture-pill', { visible: true });
-  const capture = await page.$eval('.ag-capture-inbox .ag-capture-pill', element => ({ title: element.title, id: element.dataset.captureId }));
-  assert.ok(capture.id && capture.title.includes('authenticated research export'));
+  const capture = await page.$eval('.ag-capture-inbox .ag-capture-pill', element => ({ id: element.dataset.captureId }));
+  const savedCapture = await page.evaluate(async id => {
+    const drafts = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('rhwp-browser-captures', 1);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => { const db = request.result; const tx = db.transaction('drafts'); const read = tx.objectStore('drafts').get(id);
+        read.onsuccess = () => resolve(read.result); tx.oncomplete = () => db.close(); };
+    });
+    const image = drafts?.files.find(file => file.type.startsWith('image/'));
+    return { source: drafts?.source, mode: drafts?.mode, imageBytes: image?.size ?? 0 };
+  }, capture.id);
+  assert.equal(savedCapture.source.tabId, tab.tabId);
+  assert.equal(savedCapture.source.url, `${site.origin}/research`);
+  assert.equal(savedCapture.mode, 'page');
+  assert.ok(savedCapture.imageBytes > 100, 'persisted capture contains actual page pixels');
   await shot('real-stream-capture-composer');
-  await record('Real page screenshot and comment attach to the pinned destination composer', { captureId: capture.id, sourceTabId: tab.tabId });
-  await page.click('.ag-browser [aria-label="에이전트에게 넘기기"]');
-  await eventually('agent controller lease', () => human('status'), value => value.tabs.find(row => row.tabId === tab.tabId)?.controller.owner === 'agent');
+  await record('Real page screenshot attaches to the pinned destination composer without freezing', { captureId: capture.id, sourceTabId: tab.tabId });
   if (chromeOnly) {
     fs.writeFileSync(finishTurnPath, '');
     await waitForState(page, 'initial fixture turn ended before capture send', () => !window.__agentBridge.isTurnRunning());
@@ -259,60 +336,30 @@ try {
     });
   }
   if (!chromeOnly) {
-  for (const [name, intent] of [['Download authenticated GET PDF', 'export'], ['Export POST PDF', 'export'], ['Download blob PDF', 'export']]) {
-    await clickRef(provider, tab.tabId, name, intent);
-    const downloads = await eventually(`completed ${name}`, async () => must(await provider.call('browser_downloads', {}), 'managed download status').downloads, rows => rows.some(row => ['imported', 'import-failed'].includes(row.state) && !results.scenarios.some(scenario => scenario.downloadId === row.downloadId)));
-    const job = downloads.find(row => ['imported', 'import-failed'].includes(row.state) && !results.scenarios.some(scenario => scenario.downloadId === row.downloadId));
-    assert.equal(job.target.projectId, tab.projectId, 'download stays in its captured project');
-    assert.ok(job.sha256); assert.equal(job.size, site.pdf.length);
-    assert.equal(job.state, 'imported', 'project PDF creates its reference automatically');
-    assert.ok(job.projectItemId && job.fileId);
-    const saved = await page.evaluate(async ({ projectId, itemId }) => Array.from(new Uint8Array(await (await window.__agentBridge.projects.service.fileBlob(projectId, itemId)).arrayBuffer())), { projectId: tab.projectId, itemId: job.projectItemId });
-    assert.ok(Buffer.from(saved).equals(site.pdf), 'authenticated project viewer route returns original Chromium bytes');
-    await record(name, { downloadId: job.downloadId, state: job.state, projectId: job.target.projectId, fileId: job.fileId, projectItemId: job.projectItemId, size: job.size });
-  }
   await page.click('.ag-browser [aria-label="다운로드 목록"]');
   await page.waitForSelector('.ag-browser-downloads:not([hidden])', { visible: true });
   await shot('real-stream-managed-pdfs');
-  await page.click('.ag-browser-downloads [aria-label="문서에서 열기"]');
+  const firstImported = results.scenarios.find(row => row.projectItemId);
+  await page.click(`.ag-browser-downloads [data-download-id="${firstImported.downloadId}"] [aria-label="문서에서 열기"]`);
   await page.waitForSelector('.ag-wdocs-panel:not([hidden]) canvas', { visible: true });
   await shot('real-stream-pdf-open');
   await record('Automatic project PDF reopens in the existing Documents viewer');
   await page.click('.ag-workbench-add');
   await page.locator('.ag-workbench-launcher-item[data-view="board"]').click();
-  const firstImported = results.scenarios.find(row => row.projectItemId);
   await page.waitForSelector(`.ag-workbench-board .ag-pcard[data-item="${firstImported.projectItemId}"]`, { visible: true });
   await shot('real-stream-pdf-board-card');
   await record('Captured PDF has an automatic durable reference card on the project board');
-  await page.click('.ag-workbench-tabs [role="tab"][data-view="browser"]');
-  await clickRef(provider, tab.tabId, 'Download malformed PDF', 'export');
-  const malformed = await eventually('malformed PDF retained with failed extraction', async () => must(await provider.call('browser_downloads', {}), 'managed download status').downloads, rows => rows.some(row => row.filename === 'corrupt-reference.pdf' && row.state === 'imported' && row.extractionStatus === 'failed'));
-  const broken = malformed.find(row => row.filename === 'corrupt-reference.pdf');
-  assert.ok(broken.fileId && broken.projectItemId, 'malformed PDF bytes and card survive parser failure');
-  await record('Failed PDF extraction preserves completed bytes and the project reference', { downloadId: broken.downloadId, extractionStatus: broken.extractionStatus });
+  await page.click(`[role="tab"][data-resource-id="browser:${tab.tabId}"]`);
   await page.evaluate(() => window.__agentBridge.projects.store.refresh());
   await page.click('.ag-workbench-tabs [role="tab"][data-view="documents"]');
   const retrySelector = `.ag-wdocs-download-group:has(.ag-wdocs-card[data-item-id="${broken.projectItemId}"]) [aria-label$="글자 추출 다시 시도"]`;
   await page.locator(retrySelector).click();
-  const retried = await eventually('Documents retries retained PDF extraction', async () => must(await provider.call('browser_downloads', {}), 'managed download status').downloads, rows => rows.some(row => row.downloadId === broken.downloadId && row.extractionStatus === 'failed' && row.updatedAt !== broken.updatedAt));
+  const retried = await eventually('Documents retries retained PDF extraction', async () => (await human('downloads', { action: 'list' })).downloads, rows => rows.some(row => row.downloadId === broken.downloadId && row.extractionStatus === 'failed' && row.updatedAt !== broken.updatedAt));
   const retriedJob = retried.find(row => row.downloadId === broken.downloadId);
   assert.equal(retriedJob.fileId, broken.fileId); assert.equal(retriedJob.projectItemId, broken.projectItemId);
   await shot('real-stream-pdf-extraction-retry');
   await record('Documents extraction retry keeps the original completed file and card', { downloadId: broken.downloadId, projectItemId: broken.projectItemId });
-  await page.click('.ag-workbench-tabs [role="tab"][data-view="browser"]');
-  await clickRef(provider, tab.tabId, 'Download slow PDF', 'export');
-  const pending = await eventually('slow transfer begins', async () => must(await provider.call('browser_downloads', {}), 'managed download status').downloads, rows => rows.some(row => row.filename === 'slow-reference.pdf' && row.state === 'downloading'));
-  const slow = pending.find(row => row.filename === 'slow-reference.pdf');
-  must(await provider.call('browser_downloads', { action: 'cancel', downloadId: slow.downloadId }), 'cancel actual browser transfer');
-  await eventually('cancelled transfer', async () => must(await provider.call('browser_downloads', {}), 'managed download status').downloads, rows => rows.some(row => row.downloadId === slow.downloadId && row.state === 'cancelled'));
-  await record('Cancelling an actual transfer preserves no partial project card', { downloadId: slow.downloadId });
-  await human('configuration.update', { downloads: { maxFileBytes: 1024 * 1024 } });
-  await clickRef(provider, tab.tabId, 'Download oversized PDF', 'export');
-  const limited = await eventually('unknown-length transfer reaches its byte cap', async () => must(await provider.call('browser_downloads', {}), 'managed download status').downloads, rows => rows.some(row => row.filename === 'large-reference.pdf' && ['interrupted', 'cancelled'].includes(row.state)));
-  const capped = limited.find(row => row.filename === 'large-reference.pdf');
-  assert.ok(!capped.projectItemId && capped.size <= 1024 * 1024);
-  await record('Unknown-length browser download enforces its configured byte limit', { downloadId: capped.downloadId, state: capped.state, size: capped.size });
-  await human('configuration.update', { downloads: { maxFileBytes: 100 * 1024 * 1024 } });
+  await page.click(`[role="tab"][data-resource-id="browser:${tab.tabId}"]`);
   await page.evaluate(() => window.__eventBus.emit('settings:open', { destination: 'browser', fullscreen: true }));
   await page.waitForSelector('.ag-browser-settings', { visible: true });
   await page.locator('.ag-browser-settings button::-p-text(승인된 권한)').click();
@@ -337,11 +384,6 @@ try {
   }
   const inboxTab = (await human('open', { url: `${site.origin}/research` })).tab;
   assert.equal(inboxTab.projectId, null, 'new owner client has no invented project');
-  if (provider) {
-  const crossAgent = await provider.call('browser_snapshot', { tabId: inboxTab.tabId });
-  assert.equal(crossAgent.ok, false); assert.ok(/SCOPE|OWNED|NOT_FOUND/.test(crossAgent.error.code));
-  await record('Guessed cross-agent tab ID is rejected by the real hub', { code: crossAgent.error.code });
-  }
   let inboxSnapshot = (await human('snapshot', { tabId: inboxTab.tabId })).snapshot;
   if (inboxSnapshot.elements.some(row => row.name === 'Sign in to fixture account')) {
     await human('click', refArgs(inboxSnapshot, 'Sign in to fixture account', 'login'));
@@ -354,10 +396,17 @@ try {
   const inboxBytes = await page.evaluate(async id => Array.from(new Uint8Array(await (await window.__agentBridge.readBrowserDownload(id)).arrayBuffer())), inboxJob.downloadId);
   assert.ok(Buffer.from(inboxBytes).equals(site.pdf));
   await record('No-project download is immediately available from authenticated owner inbox', { downloadId: inboxJob.downloadId });
-  await page.click('.dh-downloads');
-  await waitForState(page, 'Home downloads focus transition finished', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt'));
-  await page.waitForSelector(`.ag-download-inbox-row[data-download-id="${inboxJob.downloadId}"]`, { visible: true });
-  await page.locator(`.ag-download-inbox-row[data-download-id="${inboxJob.downloadId}"] [aria-label="받은 파일 열기"]`).click();
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } })));
+  await waitForState(page, 'standalone browser workspace ready', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt') && !document.body.classList.contains('ag-fs-vt'));
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.documentElement.classList.contains('document-home-open'));
+  await page.click('.ag-browser-trigger');
+  await page.waitForSelector('.ag-browser [aria-label="다운로드 목록"]', { visible: true });
+  await page.click('.ag-browser [aria-label="다운로드 목록"]');
+  await page.click(`.ag-browser-downloads [data-download-id="${inboxJob.downloadId}"] [aria-label="문서에서 열기"]`);
+  await waitForState(page, 'Home downloads focus transition finished', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt') && !document.body.classList.contains('ag-fs-vt'));
+
   await page.waitForFunction(() => document.querySelector('.ag-download-inbox-viewer canvas')?.width > 1 && document.querySelector('.ag-download-inbox-viewer')?.textContent.includes('1 / 1'));
   await shot('real-stream-general-inbox-pdf');
   await record('General inbox PDF opens without a document or project');
@@ -372,9 +421,15 @@ try {
   }
   await standaloneContext?.close(); if (projectPage) page = projectPage;
   }
+  }
   if (provider) {
   fs.writeFileSync(finishTurnPath, '');
   await waitForState(page, 'Pi fixture turn settled', () => !window.__agentBridge.isTurnRunning());
+  if (sidebarReuseOnly) {
+    await page.waitForFunction(() => !document.querySelector('.ag-workbench-page .ag-browser').inert);
+    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.dataset.presentation), 'dock');
+    await record('Turn completion restores human input without closing the sidebar');
+  }
   }
   assert.deepEqual(results.errors, [], 'no uncaught Studio runtime errors');
   results.status = 'passed';
@@ -388,7 +443,7 @@ try {
   console.error(error.stack); process.exitCode = 1;
 } finally {
   results.fixtureRequests = site.requests;
-  fs.writeFileSync(path.join(evidence, chromeOnly ? 'real-chrome-results.json' : inboxOnly ? 'real-inbox-results.json' : 'real-stream-results.json'), `${JSON.stringify(results, null, 2)}\n`);
+  fs.writeFileSync(path.join(evidence, sidebarReuseOnly ? 'shared-sidebar-results.json' : chromeOnly ? 'real-chrome-results.json' : inboxOnly ? 'real-inbox-results.json' : 'real-stream-results.json'), `${JSON.stringify(results, null, 2)}\n`);
   for (const provider of providers) provider.socket.close();
   await browser?.close(); await vite?.close(); await stopServer(hub); await site.close();
   fs.rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

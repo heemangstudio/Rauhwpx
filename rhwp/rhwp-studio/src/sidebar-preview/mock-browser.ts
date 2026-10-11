@@ -25,7 +25,7 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     context.font = '24px sans-serif'; context.fillText(tab.url, 90, 176, 1080);
     context.fillStyle = '#e4ece7'; context.fillRect(90, 240, 1080, 320);
     context.fillStyle = '#243f32'; context.font = '32px sans-serif'; context.fillText('브라우저 협업 미리보기', 125, 306);
-    context.font = '23px sans-serif'; context.fillText('페이지, 개체, 영역을 선택해 의견을 채팅에 첨부할 수 있습니다.', 125, 362);
+    context.font = '23px sans-serif'; context.fillText('현재 화면을 캡처해 채팅에 첨부할 수 있습니다.', 125, 362);
     context.fillStyle = '#fff'; context.fillRect(125, 411, 620, 66);
     context.fillStyle = '#26352d'; context.fillText(String(inputs.filter((entry) => entry.tabId === tab.tabId && entry.type === 'text').map((entry) => entry.text).join('')) || '입력한 글이 여기에 표시됩니다', 145, 452);
     return { frameId: `preview-frame-${++frameSequence}`, tabId: tab.tabId, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch,
@@ -92,17 +92,17 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     if (!tab) throw Object.assign(new Error('브라우저 탭을 찾을 수 없습니다.'), { code: 'BROWSER_TAB_NOT_FOUND' });
     if (args.navigationEpoch !== undefined && args.navigationEpoch !== tab.navigationEpoch) throw Object.assign(new Error('페이지가 바뀌었습니다. 다시 캡처해 주세요.'), { code: 'STALE_NAVIGATION' });
     if (action === 'close') { tabs = tabs.filter((row) => row !== tab); changed(); return { ok: true }; }
-    if (action === 'control') { tab.controller.owner = args.owner === 'human' ? 'human' : 'agent'; tab.controllerEpoch++; changed(tab); }
+    if (action === 'control') { tab.controller.owner = 'agent'; tab.controllerEpoch++; changed(tab); }
     if (action === 'navigate') { if (args.url) tab.url = String(args.url); tab.navigationEpoch++; tab.canGoBack = true; changed(tab); }
     if (action === 'recover') { generation++; tab.status = 'ready'; changed(tab); }
     if (action === 'input') {
-      if (tab.controller.owner !== 'human' || args.controllerEpoch !== tab.controllerEpoch) throw new Error('직접 조작 권한을 다시 선택해 주세요.');
+      if (args.controllerEpoch !== tab.controllerEpoch) throw new Error('페이지 상태를 다시 읽어 주세요.');
       inputs.push({ ...args });
     }
     if (action === 'capture') {
       const captured = frame(tab); captures.push({ ...args });
       return { ok: true, tab: structuredClone(tab), capture: { captureId: crypto.randomUUID(), tabId: tab.tabId, threadId: args.destinationThreadId,
-        mode: args.mode, comment: args.comment, rect: args.rect, element: args.mode === 'element' ? { role: 'heading', name: '연구 자료', text: '연구 자료' } : undefined,
+        mode: args.mode, comment: args.comment,
         screenshot: { mimeType: captured.mimeType, data: captured.data, width: captured.width, height: captured.height } } };
     }
     if (action === 'snapshot') return { tab: structuredClone(tab), snapshot: { selectedText: '연구 자료' } };

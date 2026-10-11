@@ -1815,22 +1815,22 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_status',
-    description: 'Inspect the app-owned browser runtime and tabs assigned to this agent. Tabs keep their identity when a chat is hidden or a provider turn ends.',
+    description: 'List shared user tabs, your assigned tabs and saved account metadata. activeTabId is the current sidebar tab; reuse it for the current-page task. Tabs survive hidden chats and turn endings. Accounts include imported and previously saved logins. For an exact origin match with agentReuseApproved=true, use browser_fill_account. Passwords stay local.',
     shape: {},
   },
   {
     name: 'browser_open',
-    description: 'Open a separate app-owned research tab for this agent. Public research and downloads are available by default; account reuse requires an approved saved account.',
+    description: 'Open a separate research tab. Public browsing/downloads are available; account reuse needs approval. On BROWSER_CHALLENGE_REQUIRED, use the returned tab and explicit fallback URL or ask the user to resolve the challenge. Do not retry or duplicate the tab.',
     shape: { url: z.string().url().max(8_000).optional(), intent: browserIntent() },
   },
   {
     name: 'browser_navigate',
-    description: 'Navigate an assigned research tab. Use public HTTPS destinations or an explicitly approved workspace preview. Private services and website changes need their own permissions.',
+    description: 'Navigate a shared sidebar tab or your assigned research tab. Use public HTTPS destinations or an explicitly approved workspace preview. Private services and website changes need their own permissions.',
     shape: { tabId: browserTab(), url: z.string().url().max(8_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative(), intent: browserIntent() },
   },
   {
     name: 'browser_snapshot',
-    description: 'Read a semantic snapshot of an assigned tab. Use the returned snapshotId, element refs and navigationEpoch in the next action; stale refs are rejected.',
+    description: 'Read a semantic snapshot of a shared sidebar tab or your assigned tab. Use the returned snapshotId, element refs and navigationEpoch in the next action; stale refs are rejected.',
     shape: { tabId: browserTab() },
   },
   {
@@ -1840,12 +1840,12 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_type',
-    description: 'Fill a current snapshot element with ordinary research text. Never pass passwords or account secrets here; request an account through browser_request_account.',
+    description: 'Fill a current snapshot element with ordinary research text. submit:true then presses trusted Enter on that element; declare the same search, login or website-change intent as a separate submission. Never pass passwords or account secrets here; request an account through browser_request_account.',
     shape: { ...browserRefShape(), text: z.string().max(16_000), submit: z.boolean().default(false) },
   },
   {
     name: 'browser_press',
-    description: 'Press a key on a current snapshot element. Human takeover pauses agent input until control is returned.',
+    description: 'Press a key on a current snapshot element in a shared or assigned tab.',
     shape: { ...browserRefShape(), key: z.string().min(1).max(80) },
   },
   {
@@ -1855,8 +1855,8 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_wait',
-    description: 'Wait a bounded time for a page condition, then read a fresh snapshot. Does not change ownership or control.',
-    shape: { tabId: browserTab(), condition: z.enum(['ready', 'idle', 'visible', 'text']).default('ready'), text: z.string().max(2_000).optional(), timeoutMs: z.number().int().min(1).max(30_000).default(10_000) },
+    description: 'Wait up to timeoutMs and return a fresh snapshot. ready checks document readiness; idle requires 500 ms without loading/navigation, ignoring streaming connections. visible matches a visible semantic element and optional text; text matches nonempty sanitized visible text. Preserves ownership/control.',
+    shape: { tabId: browserTab(), condition: z.enum(['ready', 'idle', 'visible', 'text']).default('ready'), text: z.string().trim().min(1).max(2_000).optional(), timeoutMs: z.number().int().min(1).max(30_000).default(10_000) },
   },
   {
     name: 'browser_close',
@@ -1870,12 +1870,12 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_downloads',
-    description: 'List, cancel or retry this agent\'s managed research downloads. Captured project downloads add a reference card automatically; general downloads stay in the local inbox. No general project-edit permission is granted.',
-    shape: { action: z.enum(['list', 'cancel', 'retry']).default('list'), downloadId: z.string().min(1).max(160).optional() },
+    description: 'List, cancel, retry or save browser downloads. Website download links start transfers. save returns savedPath in local Downloads, preserves the filename and never executes programs. Project downloads get reference cards; other downloads enter the local inbox. Grants no project-edit permission.',
+    shape: { action: z.enum(['list', 'cancel', 'retry', 'save']).default('list'), downloadId: z.string().min(1).max(160).optional() },
   },
   {
     name: 'browser_fill_account',
-    description: 'Fill a current sign-in form through the secure broker using an approved account ID from browser_status. Supply snapshot refs for username and password; no credential values enter tool arguments or results.',
+    description: 'Autofill a sign-in form locally using an account ID from browser_status, including previously typed/saved logins. For an exact origin with agentReuseApproved=true, proceed without another approval. Supply current username/password snapshot refs. Credential values never enter tool arguments/results.',
     shape: { tabId: browserTab(), accountId: z.string().uuid(), snapshotId: z.string().min(1).max(160), usernameRef: z.string().min(1).max(160).optional(), passwordRef: z.string().min(1).max(160), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
   },
   {
