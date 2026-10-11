@@ -56,12 +56,13 @@ export function createBrowserCaptureMotion(trigger: HTMLElement) {
         document.body.append(thumbnail);
         const dx = target.x + Math.min(target.width / 2, 32) - width / 2 - x;
         const dy = target.y + target.height / 2 - height / 2 - y;
+        // 같은 비율로 X/Y를 옮겨 직선으로 흘러가며 투명도만 바꾼다.
         flight = thumbnail.animate([
-          { transform: 'translate(0, 0) scale(.7)', opacity: 0 },
-          { transform: 'translate(0, -8px) scale(1.08, .92)', opacity: .95, offset: .18 },
-          { transform: `translate(${dx * .8}px, -8px) scale(.8, .9) rotate(-6deg)`, opacity: .9, offset: .55 },
-          { transform: `translate(${dx}px, ${dy}px) scale(.16, .26)`, opacity: 0 },
-        ], { duration: 1300, easing: 'cubic-bezier(.4, 0, .2, 1)', fill: 'both' });
+          { transform: 'translate(0, 0)', opacity: 0 },
+          { transform: `translate(${dx * .08}px, ${dy * .08}px)`, opacity: .65, offset: .08 },
+          { transform: `translate(${dx * .85}px, ${dy * .85}px)`, opacity: .5, offset: .85 },
+          { transform: `translate(${dx}px, ${dy}px)`, opacity: 0 },
+        ], { duration: 1300, easing: 'linear', fill: 'both' });
         void flight.finished.then(async () => {
           thumbnail.remove();
           if (!destination.isConnected || generation !== token) return;
