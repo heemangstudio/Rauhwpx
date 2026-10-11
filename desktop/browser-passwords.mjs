@@ -86,14 +86,17 @@ function pageAction(payload) {
 
 function focusedForm() {
   const focused = document.activeElement;
-  if (!(focused instanceof HTMLInputElement) || !focused.matches('input[type="password"],input[autocomplete="username"],input[type="email"]')) return null;
+  if (!(focused instanceof HTMLInputElement)) return null;
   const container = focused.form ?? document;
   const passwords = [...container.querySelectorAll('input[type="password"]')].filter((el) => !el.disabled && !el.readOnly && el.getBoundingClientRect().width > 0);
   if (passwords.length !== 1) return null;
   const password = passwords[0];
   const usernames = [...container.querySelectorAll('input[autocomplete="username"],input[type="email"],input[name="username"],input[name="email"]')].filter((el) => !el.disabled && !el.readOnly && el.getBoundingClientRect().width > 0);
+  const candidates = [...container.querySelectorAll('input')].filter(el => !el.disabled && !el.readOnly && ['text', 'email', 'tel'].includes(el.type) && el.getBoundingClientRect().width > 0 && el.compareDocumentPosition(password) & Node.DOCUMENT_POSITION_FOLLOWING);
+  const username = usernames[0] ?? candidates.at(-1);
+  if (focused !== password && focused !== username) return null;
   const refs = globalThis.__rhwpNativePasswordRefs?.refs;
-  return { passwordRef: [...refs ?? []].find(([, el]) => el === password)?.[0], usernameRef: [...refs ?? []].find(([, el]) => el === usernames[0])?.[0] };
+  return { passwordRef: [...refs ?? []].find(([, el]) => el === password)?.[0], usernameRef: [...refs ?? []].find(([, el]) => el === username)?.[0] };
 }
 
 export class NativeBrowserPasswords {

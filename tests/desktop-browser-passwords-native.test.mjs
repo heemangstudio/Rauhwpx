@@ -29,5 +29,5 @@ test('real native password fill submits without exposing secrets to hub and pres
     });
   });
   assert.equal(report.error, undefined);
-  for (const key of ['manualSave', 'nativeFill', 'humanAutocomplete', 'nativeSubmit', 'protectedWebSocket', 'postNavigationInput', 'noSecretInHub', 'staleAndWrongOriginRejected', 'rawReadbackAndCaptureBlocked']) assert.equal(report[key], true, key);
+  for (const key of ['schoolIdAutocomplete', 'schoolFormFill', 'manualSave', 'nativeFill', 'humanAutocomplete', 'nativeSubmit', 'protectedWebSocket', 'postNavigationInput', 'noSecretInHub', 'staleAndWrongOriginRejected', 'rawReadbackAndCaptureBlocked']) assert.equal(report[key], true, key);
 });

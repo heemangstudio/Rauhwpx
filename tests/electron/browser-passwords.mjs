@@ -164,6 +164,20 @@ try {
   await vault.withCredential(manual.id, credential => assert.equal(credential.password, secret));
   assert.equal(wire.some(message => message.includes(secret)), false);
   report.manualSave = true;
+  // School login forms often omit both autocomplete and name attributes.
+  await tab.view.webContents.executeJavaScript(`for (const field of document.querySelectorAll('input')) { field.removeAttribute('autocomplete'); field.removeAttribute('name'); field.value=''; } document.querySelector('#secret').focus()`);
+  await passwords.humanFill(editor, { tabId, accountId: manual.id });
+  assert.equal(await tab.view.webContents.executeJavaScript('document.querySelector("#identity").value'), 'manual-fixture-user');
+  report.schoolFormFill = true;
+  let schoolIdMenu = false; autocompleteShown = () => { schoolIdMenu = true; };
+  await tab.view.webContents.executeJavaScript('document.querySelector("#identity").focus()');
+  const menuDeadline = Date.now() + 3000;
+  while (!schoolIdMenu) {
+    if (Date.now() > menuDeadline) throw new Error('Saved-account menu did not open on an unhinted school ID field');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.ok(autocompleteChoices.some(choice => choice.label === 'manual-fixture-user'));
+  report.schoolIdAutocomplete = true;
   report.nativeSubmit = true; report.postNavigationInput = true; report.noSecretInHub = true; report.staleAndWrongOriginRejected = true; report.rawReadbackAndCaptureBlocked = true;
 } catch (error) { report.error = error.stack; process.exitCode = 1; }
 finally {
