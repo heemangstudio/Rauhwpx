@@ -100,6 +100,8 @@ html.desktop-mac .ag-fullscreen .ag-workbench-head :is(.ag-workbench-tabs, .ag-w
 }
 html.desktop-mac .ag-fullscreen .ag-workspace-corner { -webkit-app-region: no-drag; }
 .ag-fullscreen .ag-workspace-trailing { padding-right: 124px; }
+/* 작업 칸이 열리면 모서리 단추의 여백은 작업 칸 머리가 맡는다. */
+.ag-fullscreen:not(.ag-workspace-compact).ag-workbench-open .ag-workspace-trailing { padding-right: 0; }
 .ag-fullscreen:not(.ag-workspace-compact).ag-workbench-open .ag-stage {
   grid-template-columns: var(--ag-rail-w, 264px) minmax(0, 1fr) var(--ag-review-w, 560px);
 }

@@ -117,3 +117,45 @@ test('workbench tabs keep selection, close and pointer reordering separate', { t
     assert.deepEqual(errors, []);
   } finally { await browser?.close(); await server.close(); }
 });
+
+test('wide browser panes keep the chat header out of tab pointer targets', { timeout: 30_000 }, async () => {
+  const server = await createServer({ root: fileURLToPath(new URL('../', import.meta.url)), configFile: false, logLevel: 'silent', server: { host: '127.0.0.1', port: 0 },
+    plugins: [{ name: 'workspace-tabs-harness', configureServer(vite) {
+      vite.middlewares.use((request, response, next) => {
+        if (request.url !== '/workspace-tabs-harness') return next();
+        response.setHeader('Content-Type', 'text/html');
+        response.end('<!doctype html><html class="desktop-mac"><body><aside class="ag-root ag-fullscreen ag-rail-collapsed ag-workbench-open ag-review-collapsed" style="--ag-review-w:1060px;--ag-workspace-lead-inset:80px;--ag-text:#222;--ag-text-secondary:#666;--ag-bg:#fff;--ag-font:system-ui"><div class="ag-stage"><header class="ag-workspace-bar"><div class="ag-workspace-leading">Hama</div><div class="ag-workspace-title"></div><div class="ag-workspace-document-context"><span class="ag-workspace-chat-title">A long conversation title</span><span class="ag-workspace-document-name">document.hwpx</span></div><div class="ag-workspace-trailing"><span class="ag-workspace-agent-context">Codex</span></div></header></div></aside></body></html>');
+      });
+    } }],
+  });
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
+  try {
+    await server.listen(); const address = server.httpServer!.address(); assert.ok(address && typeof address !== 'string');
+    browser = await puppeteer.launch({ executablePath: browserExecutable(), headless: true, args: browserLaunchArgs() });
+    const page = await browser.newPage(); await page.setViewport({ width: 1536, height: 900 });
+    await page.goto(`http://127.0.0.1:${address.port}/workspace-tabs-harness`);
+    await page.evaluate(async () => {
+      await import('../src/ui/agent-sidebar/agent-sidebar.css');
+      const { createSidebarWorkbench } = await import('../src/ui/agent-sidebar/workbench.ts');
+      const resources = [1, 2, 3].map(n => ({ id: `browser:g${n}`, title: 'Google', dirty: false, kind: 'browser' as const, view: 'browser' as const }));
+      let active = resources[2].id;
+      const view = createSidebarWorkbench({ mount(_view, host) { host.textContent = 'Page'; }, onSelect() {}, onChat() {},
+        selectResource(id) { active = id!; view.setResources(resources, active); },
+        closeResource(id) { resources.splice(resources.findIndex(row => row.id === id), 1); active = resources[0]?.id ?? ''; view.setResources(resources, active); },
+      });
+      document.querySelector('.ag-stage')!.append(view.element); view.select('browser', { recordTab: false }); view.setResources(resources, active);
+    });
+    for (const railCollapsed of [true, false]) {
+      await page.evaluate(collapsed => document.querySelector('.ag-root')!.classList.toggle('ag-rail-collapsed', collapsed), railCollapsed);
+      for (const id of ['g1', 'g2']) {
+        const selector = `.ag-workbench-tab[data-resource-id="browser:${id}"]`;
+        assert.equal(await page.$eval(selector, node => { const r = node.getBoundingClientRect(); return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest('[role="tab"]') === node; }), true, 'first two tabs receive pointer input next to a narrow chat header');
+        await page.click(selector);
+        assert.equal(await page.$eval(selector, node => node.getAttribute('aria-selected')), 'true');
+      }
+    }
+    const row = '.ag-workbench-tab-row:has([data-resource-id="browser:g1"])';
+    await page.hover(row); await page.click(`${row} .ag-workbench-tab-close`);
+    assert.equal(await page.$('[data-resource-id="browser:g1"]'), null, 'the first close button is reachable too');
+  } finally { await browser?.close(); await server.close(); }
+});
