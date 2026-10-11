@@ -1,4 +1,3 @@
-import { installBrowserTabDrag } from './browser-tab-drag.ts';
 /** 집중 화면 오른쪽의 작업 칸. 칸을 여닫는 상태와 선택한 보기는 따로 둔다. 데이터와 문서 수명은 각 보기에서 관리한다. */
 import './workbench.css';
 import { createIcon } from './icons.ts';
@@ -102,7 +101,7 @@ export function createSidebarWorkbench(deps: {
   element.append(head, body);
   let open = false;
   let lastKey: string | null = null;
-  let tabDrag: { key: string; row: HTMLElement; pointerId: number; startX: number; grabX: number; moved: boolean } | null = null;
+  let tabDrag: { key: string; row: HTMLElement; pointerId: number; startX: number; startY: number; grabX: number; moved: boolean; box: DOMRect; ghost?: HTMLElement } | null = null;
   let suppressTabClick = false;
   let selected: WorkbenchView | null = null;
   let visible = true;
@@ -216,7 +215,6 @@ export function createSidebarWorkbench(deps: {
         const resource = resources.find(item => `resource:${item.id}` === key);
         button.setAttribute('aria-controls', `${uid}-panel-${resource?.view ?? (key.startsWith('resource:') ? 'documents' : key)}`);
         if (key.startsWith('resource:')) button.dataset.resourceId = key.slice(9);
-        if (resource?.kind === 'browser' && deps.floatResource) installBrowserTabDrag(button, () => element.getBoundingClientRect(), point => deps.floatResource?.(resource.id, point));
         else button.dataset.view = key;
         const label = document.createElement('span');
         label.className = 'ag-workbench-tab-label';
@@ -295,17 +293,24 @@ export function createSidebarWorkbench(deps: {
     const row = event.target.closest<HTMLElement>('.ag-workbench-tab-row');
     const key = keyForRow(row);
     if (!row || !key) return;
-    tabDrag = { key, row, pointerId: event.pointerId, startX: event.clientX, grabX: event.clientX - row.getBoundingClientRect().left, moved: false };
+    tabDrag = { key, row, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, grabX: event.clientX - row.getBoundingClientRect().left, moved: false, box: element.getBoundingClientRect() };
     window.addEventListener('pointermove', onTabPointerMove);
     window.addEventListener('pointerup', onTabPointerUp);
     window.addEventListener('pointercancel', cancelTabDrag);
     window.addEventListener('blur', cancelTabDrag);
   }
+  let tabDragFrame: number | null = null;
+  let pendingTabMove: PointerEvent | null = null;
   function onTabPointerMove(event: PointerEvent): void {
+    if (event.pointerId !== tabDrag?.pointerId) return;
+    pendingTabMove = event;
+    if (tabDragFrame === null) tabDragFrame = requestAnimationFrame(() => { tabDragFrame = null; const next = pendingTabMove; pendingTabMove = null; if (next) applyTabPointerMove(next); });
+  }
+  function applyTabPointerMove(event: PointerEvent): void {
     const drag = tabDrag;
     if (!drag || event.pointerId !== drag.pointerId) return;
     if (!drag.moved) {
-      if (Math.abs(event.clientX - drag.startX) < 4) return;
+      if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) return;
       drag.moved = true;
       strip.setPointerCapture(drag.pointerId);
       // 줄 안에서 옮기면 탭의 초점이 풀리므로 Esc는 창에서 받는다.
@@ -314,6 +319,15 @@ export function createSidebarWorkbench(deps: {
       strip.classList.add('ag-tab-dragging');
     }
     event.preventDefault();
+    if (drag.key.startsWith('resource:') && resources.some(row => row.id === drag.key.slice(9) && row.kind === 'browser') && deps.floatResource) {
+      const box = drag.box;
+      const outside = event.clientX < box.left - 12 || event.clientX > box.right + 12 || event.clientY < box.top - 12 || event.clientY > box.bottom + 12;
+      if (outside) {
+        if (!drag.ghost) { drag.ghost = document.createElement('div'); drag.ghost.className = 'ag-browser-tab-drag'; drag.ghost.textContent = tabRows.get(drag.key)?.button.textContent ?? ''; drag.ghost.setAttribute('aria-hidden', 'true'); drag.ghost.dataset.detached = 'true'; document.body.append(drag.ghost); }
+        drag.ghost.style.transform = `translate3d(${event.clientX + 12}px,${event.clientY + 12}px,0)`; return;
+      }
+      drag.ghost?.remove(); drag.ghost = undefined;
+    }
     const frame = strip.getBoundingClientRect();
     if (event.clientX < frame.left + 24) strip.scrollLeft -= 10;
     else if (event.clientX > frame.right - 24) strip.scrollLeft += 10;
@@ -342,13 +356,22 @@ export function createSidebarWorkbench(deps: {
     event.stopPropagation();
     endTabDrag(false);
   }
-  function onTabPointerUp(event: PointerEvent): void { if (event.pointerId === tabDrag?.pointerId) endTabDrag(true); }
+  function onTabPointerUp(event: PointerEvent): void {
+    if (pendingTabMove) { const next = pendingTabMove; pendingTabMove = null; applyTabPointerMove(next); }
+    const drag = tabDrag; if (!drag || event.pointerId !== drag.pointerId) return;
+    const resource = drag.key.startsWith('resource:') ? resources.find(row => row.id === drag.key.slice(9)) : null;
+    const box = element.getBoundingClientRect();
+    const outside = event.clientX < box.left - 12 || event.clientX > box.right + 12 || event.clientY < box.top - 12 || event.clientY > box.bottom + 12;
+    if (drag.moved && resource?.kind === 'browser' && outside && deps.floatResource) {
+      endTabDrag(false); clearSuppressedClick(); deps.floatResource(resource.id, { x: event.clientX - 32, y: event.clientY - 16 });
+    } else endTabDrag(true);
+  }
   function cancelTabDrag(): void { endTabDrag(false); }
   function clearSuppressedClick(): void { window.setTimeout(() => { suppressTabClick = false; }, 0); }
   function endTabDrag(commit: boolean): void {
     const drag = tabDrag;
     if (!drag) return;
-    tabDrag = null;
+    tabDrag = null; drag.ghost?.remove(); if (tabDragFrame !== null) cancelAnimationFrame(tabDragFrame); tabDragFrame = null; pendingTabMove = null;
     window.removeEventListener('keydown', onTabDragKeyDown, true);
     window.removeEventListener('pointermove', onTabPointerMove);
     window.removeEventListener('pointerup', onTabPointerUp);
