@@ -650,7 +650,7 @@ export function createWorkbenchBrowser(options: {
     activeTab(): string | null { return controller.tab() ? `browser:${controller.tab()!.tabId}` : null; },
     previewAgent(tab: BrowserTab) {
       if (disposed) return;
-      agentPreviewTab = tab.tabId;
+      manualSleepingTab = null; agentPreviewTab = tab.tabId;
       controller.accept({ tab }); controller.select(tab.tabId);
       nativePopout = false; presentation.present('float');
       handle(controller.readFrame());
@@ -671,7 +671,7 @@ export function createWorkbenchBrowser(options: {
       if (disposed) return false;
       controller.select(tabId); return true;
     },
-    selectTab(id: string) { controller.select(id.slice('browser:'.length)); },
+    selectTab(id: string) { wakeCurrentTab(); controller.select(id.slice('browser:'.length)); },
     closeTab(id: string) { handle(controller.close(id.slice('browser:'.length))); },
     mount(host: HTMLElement) { presentation.mount(host); watchNativeVisibility(); layout(); },
     setVisible(next: boolean) {
