@@ -25,11 +25,12 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     await page.evaluate(async () => {
       const calls: Array<{ action: string; tabId?: string }> = [];
       let attached: string | null = null;
+      let rejectHealth: ((error: Error) => void) | undefined; let holdHealth = false;
       let hold = false; let release: (() => void) | undefined;
       Object.assign(window, { rhwpDesktop: { browser: {
         async attach(args: { tabId: string }) { calls.push({ action: 'attach', ...args }); if (hold) await new Promise<void>(resolve => { release = resolve; }); attached = args.tabId; },
         async detach(args: { tabId: string }) { calls.push({ action: 'detach', tabId: args.tabId }); attached = null; },
-        async getState() { return {}; },
+        async getState() { if (holdHealth) return new Promise((_resolve, reject) => { rejectHealth = reject; }); return {}; },
       } } });
       const { createWorkbenchBrowser } = await import('../src/ui/agent-sidebar/workbench-browser.ts');
       const tab = { tabId: 'same-tab', scope: 'global', nativeTargetId: 'same-target', runtime: 'native', url: 'https://example.com/retained', title: '자료', navigationEpoch: 3, controllerEpoch: 2, controller: { owner: 'human' }, status: 'ready' };
@@ -37,7 +38,7 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       const createView = () => createWorkbenchBrowser({ bridge: bridge as any, getDestination: () => ({ threadId: 'chat', projectId: null, documentId: null, label: '채팅' }), onCapture() {}, onOpenDownload() {}, onDock() {}, onChat() {} });
       const view = createView();
       view.mount(document.querySelector<HTMLElement>('#host')!); view.setVisible(true);
-      Object.assign(window, { projectionTest: { view, calls, createView, get attached() { return attached; }, hold() { hold = true; }, release() { hold = false; release?.(); } } });
+      Object.assign(window, { projectionTest: { view, calls, createView, holdHealth() { holdHealth = true; }, get healthStarted() { return !!rejectHealth; }, failHealth() { holdHealth = false; rejectHealth?.(new Error('Presentation hidden by menu')); }, get attached() { return attached; }, hold() { hold = true; }, release() { hold = false; release?.(); } } });
     });
     const attached = (value: string | null) => page.waitForFunction(value => (window as any).projectionTest.attached === value, { timeout: 2000 }, value);
     await attached('same-tab');
@@ -81,6 +82,18 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     assert.equal(calls.filter((call: any) => call.action === 'attach').length, 8, 'each restore attaches once and a cancelled attach is replaced');
     assert.ok(calls.filter((call: any) => call.action === 'attach' || call.action === 'detach').every((call: any) => call.tabId === 'same-tab'));
     assert.ok(!calls.some((call: any) => ['open', 'close', 'reconnect'].includes(call.action)), 'visibility preserves the runtime page');
+    await page.evaluate(() => {
+      const harness = (window as any).projectionTest;
+      harness.holdHealth();
+      harness.view.controller.accept({ tab: { ...harness.view.controller.tab(), navigationEpoch: 4 } });
+    });
+    await page.waitForFunction(() => (window as any).projectionTest.healthStarted);
+    await page.evaluate(() => { (document.querySelector('.ag-browser-details') as HTMLDetailsElement).open = true; });
+    await page.evaluate(() => (window as any).projectionTest.failHealth());
+    await page.waitForFunction(() => (window as any).projectionTest.attached === null);
+    assert.equal(await page.$eval('.ag-browser-error', node => (node as HTMLElement).hidden), true, 'opening the menu during a paint check must not report a disconnection');
+    await page.evaluate(() => { (document.querySelector('.ag-browser-details') as HTMLDetailsElement).open = false; });
+    await attached('same-tab');
     await page.evaluate(() => (window as any).projectionTest.view.dock());
     assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'dock', 'fullscreen link focus can return a floating page to the workbench');
     assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true);

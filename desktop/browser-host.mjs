@@ -149,7 +149,7 @@ export class OwnedBrowserHost {
     const contents = view.webContents;
     contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
     const tab = { view, targetId: null, tabId: null, sessionId: parent?.sessionId ?? null, chatId: parent?.chatId ?? null, windowId: parent?.windowId ?? null,
-      placement: null, human: false, interactive: false, navigationEpoch: 0,
+      lastHiddenAt: Date.now(), placement: null, human: false, interactive: false, navigationEpoch: 0,
       frameId: null, lastError: null, crashed: false, openerTab: parent, openerTargetId: parent?.targetId, disposition };
     // 실제 opener를 읽을 수 있는 자식도 부모와 같은 비밀 보호 범위를 갖는다.
     if (parent?.passwordShield) Object.assign(tab, { passwordShield: true,
@@ -475,11 +475,44 @@ export class OwnedBrowserHost {
   setQuitRequested(requested) { this.quitRequested = requested === true; }
 
   unplace(tab) {
+    tab.lastHiddenAt = Date.now();
     const placement = tab.placement;
     if (placement && !placement.window.isDestroyed()) placement.window.contentView.removeChildView(tab.view);
     tab.view.setVisible(false);
     tab.placement = null;
     tab.interactive = false;
+  }
+
+  async sleep({ targetId, tabId, idleMs }) {
+    const tab = this.tab(targetId); const contents = tab.view.webContents;
+    const safe = () => tab.tabId === tabId && !tab.placement && !tab.activityLeases?.size
+      && !tab.openerTargetId && ![...this.tabs.values()].some(child => child.openerTargetId === tab.targetId)
+      && !tab.closing && !tab.passwordShield && !contents.isDestroyed() && !contents.isLoading()
+      && !contents.isCurrentlyAudible() && this.downloads.size === 0
+      && Date.now() - (tab.lastHiddenAt ?? Date.now()) >= idleMs
+      && !this.popouts.get(tab.targetId)?.isVisible();
+    if (!safe()) return { sleeping: false };
+    // 입력 값은 밖으로 보내지 않고 작성 중인 폼과 재생 중인 미디어는 유지한다.
+    let protectedPage = true;
+    try {
+      protectedPage = await contents.executeJavaScript(`(() => {
+        const protectedFrame = win => {
+          try {
+            const doc = win.document;
+            if ([...doc.querySelectorAll('input,textarea,select,[contenteditable="true"]')].some(el =>
+              el.isContentEditable ? el.textContent.trim() : el.tagName === 'SELECT' ? [...el.options].some(option => option.selected !== option.defaultSelected)
+                : ['checkbox','radio'].includes(el.type) ? el.checked !== el.defaultChecked
+                  : !['hidden','submit','button','reset'].includes(el.type) && !!el.value)) return true;
+            if ([...doc.querySelectorAll('audio,video')].some(media => !media.paused && !media.ended)) return true;
+            return Array.from({ length: win.frames.length }, (_, index) => win.frames[index]).some(protectedFrame);
+          } catch { return true; }
+        };
+        return protectedFrame(window);
+      })()`);
+    } catch {}
+    if (protectedPage || !safe()) return { sleeping: false };
+    this.closeGuest(tab);
+    return { sleeping: true };
   }
 
   detach(window, { tabId }) {
@@ -841,6 +874,7 @@ export class OwnedBrowserHost {
       else {
         if (this.owner !== owner) throw new Error('Native browser request owner is stale');
         if (message.operation === 'bind') response.value = this.bind(params);
+        else if (message.operation === 'sleep') response.value = await this.sleep(params);
         else if (message.operation === 'activity') response.value = await this.activity(params);
         else if (message.operation === 'control') response.value = this.control(params);
         else if (message.operation === 'release') response.value = await this.release(owner);

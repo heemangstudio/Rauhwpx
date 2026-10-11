@@ -19,7 +19,7 @@ app.whenReady().then(async () => {
   let host, service, site, window;
   try {
     site = createServer((request, response) => {
-      if (request.url === '/file.pdf') {
+      if (request.url === '/sleep') { response.end('<!doctype html><title>Sleep fixture</title><p>Restored page</p><textarea id="sleep-draft"></textarea>'); } else if (request.url === '/file.pdf') {
         response.writeHead(200, { 'content-type': 'application/pdf', 'content-disposition': 'attachment; filename="activity.pdf"' });
         response.end('%PDF-1.4\nactivity fixture');
       } else {
@@ -36,7 +36,7 @@ app.whenReady().then(async () => {
     const adapter = {
       passwordSnapshot: args => passwords.snapshot(args), passwordAction: args => passwords.action(args), passwordStorageState: () => passwords.storageState(),
       async start(settings) { return { ...await host.start(settings, owner), close: () => host.release(owner) }; },
-      bind: args => host.bind(args), control: args => host.control(args), activity: args => host.activity(args),
+      sleep: args => host.sleep(args), bind: args => host.bind(args), control: args => host.control(args), activity: args => host.activity(args),
       inventory: async () => [...host.tabs.values()].map(tab => host.state(tab)),
     };
     let downloaded;
@@ -193,6 +193,34 @@ app.whenReady().then(async () => {
       await assert.rejects(service.request(actor, 'snapshot', { tabId: shared.tab.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
       report.globalBrowser = { pageRetained: true, draftRetained: true, sessionRetained: true, agentIsolated: true };
     } finally { sharedWindow.destroy(); }
+    service.configureSleep({ idleMinutes: 1 });
+    tab.lastHiddenAt = Date.now() - 61_000;
+    await service.sweepSleepingTabs(Date.now() + 61_000);
+    assert.equal(tab.view.webContents.isDestroyed(), false, 'unfinished form is protected');
+    const sleeper = await service.request(actor, 'open', { url: `${origin}/sleep` });
+    const sleeperNative = host.tab(sleeper.tab.tabId);
+    const oldTarget = sleeperNative.targetId;
+    const sleeperContents = sleeperNative.view.webContents;
+    await sleeperNative.view.webContents.executeJavaScript('window.largeHeap = new Array(1000000).fill(123)');
+    sleeperNative.lastHiddenAt = Date.now() - 61_000;
+    await sleeperContents.executeJavaScript('document.querySelector("#sleep-draft").value="unsaved draft"');
+    await service.sweepSleepingTabs(Date.now() + 61_000);
+    assert.equal(sleeperContents.isDestroyed(), false, 'unfinished textarea protects memory-only edits');
+    await sleeperContents.executeJavaScript('document.querySelector("#sleep-draft").value=""');
+    service.configureSleep({ idleMinutes: 0 });
+    await service.sweepSleepingTabs(Date.now() + 61_000);
+    assert.equal(sleeperContents.isDestroyed(), false, 'disabled sleep retains page');
+    service.configureSleep({ idleMinutes: 1 });
+    await service.sweepSleepingTabs(Date.now() + 61_000);
+    if (!sleeperContents.isDestroyed()) await new Promise(resolve => sleeperContents.once('destroyed', resolve));
+    assert.equal(sleeperContents.isDestroyed(), true, 'sleep releases the renderer and its heap');
+    const inventory = await service.inventory(actor);
+    assert.equal(inventory.tabs.find(item => item.tabId === sleeper.tab.tabId).status, 'sleeping');
+    await service.request(actor, 'snapshot', { tabId: sleeper.tab.tabId });
+    const awakened = host.tab(sleeper.tab.tabId);
+    assert.notEqual(awakened.targetId, oldTarget);
+    assert.equal(await awakened.view.webContents.executeJavaScript('document.title'), 'Sleep fixture');
+    report.sleep = { rendererReleased: true, formProtected: true, disabledRespected: true, sameTabWoke: true };
     await host.activity({ ...scope, token: 'navigation', active: true });
     await evaluate('history.pushState({}, "", "#retained")');
     await paused();

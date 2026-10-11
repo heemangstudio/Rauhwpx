@@ -525,7 +525,7 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
   }
   async function getConfiguration() {
     await readyPromise;
-    return { ...clone(state.configuration), security: authStore.available ? clone(authStore.protection) : { passwords: 'unavailable', checkpoints: 'unavailable', chromiumProfile: 'restricted-plaintext-profile' }, googleSignIn: { mode: 'human-owned-full-browser', status: 'requires-compatibility-validation' } };
+    return { performance: { idleMinutes: 15 }, ...clone(state.configuration), security: authStore.available ? clone(authStore.protection) : { passwords: 'unavailable', checkpoints: 'unavailable', chromiumProfile: 'restricted-plaintext-profile' }, googleSignIn: { mode: 'human-owned-full-browser', status: 'requires-compatibility-validation' } };
   }
   async function resetBrowserData({ actor } = {}) {
     human(actor);
@@ -570,7 +570,7 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
       }
     }, { allowDuringReset: true }).finally(() => { resetting = false; });
   }
-  async function updateConfiguration({ actor, downloads, preview } = {}) {
+  async function updateConfiguration({ actor, downloads, preview, performance } = {}) {
     human(actor);
     return serialized(async () => {
       const configuration = clone(state.configuration);
@@ -593,6 +593,10 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
           if (typeof preview.reducedMotion !== 'boolean') throw failure('BROWSER_CONFIGURATION_INVALID', 'The motion preference is invalid.');
           configuration.preview.reducedMotion = preview.reducedMotion;
         }
+      }
+      if (performance) {
+        if (!Number.isInteger(performance.idleMinutes) || performance.idleMinutes < 0 || performance.idleMinutes > 1440) throw failure('BROWSER_CONFIGURATION_INVALID', 'The sleep time must be between 0 and 1440 minutes.');
+        configuration.performance = { idleMinutes: performance.idleMinutes };
       }
       const next = { ...state, configuration };
       await writeBrowserJson(filePath, next); state = next;

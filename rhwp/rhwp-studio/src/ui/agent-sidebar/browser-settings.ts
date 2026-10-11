@@ -279,6 +279,12 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const downloads = (configuration.downloads ?? {}) as Record<string, unknown>; row('다운로드 저장소', String(downloads.directory ?? downloads.path ?? '앱의 다운로드 저장소'), downloadsSection);
       const limit = field('파일당 다운로드 한도 · MB', 'number', String(Math.round(Number(downloads.maxFileBytes ?? 104857600) / 1048576)));
       limit.input.min = '1'; limit.input.max = '512'; limit.input.step = '1'; downloadsSection.append(limit.root);
+      const memorySection = section('메모리 절약');
+      const sleepLabel = node('label', 'ag-settings-field'); sleepLabel.append(node('span', 'ag-settings-field-label', '사용하지 않는 탭 잠자기'));
+      const sleepTime = node('select', 'ag-settings-select'); sleepTime.setAttribute('aria-label', '탭 잠자기 시간');
+      for (const [value, label] of [['0', '사용 안 함'], ['1', '1분'], ['5', '5분'], ['15', '15분'], ['30', '30분'], ['60', '1시간']]) { const option = node('option', '', label); option.value = value!; sleepTime.append(option); }
+      sleepTime.value = String((configuration.performance as Record<string, unknown> | undefined)?.idleMinutes ?? 15); sleepLabel.append(sleepTime); memorySection.append(sleepLabel);
+      memorySection.append(node('p', 'ag-browser-empty', '잠든 탭은 다시 열면 깨어납니다. 작성 중인 폼과 재생·다운로드 중인 페이지는 유지합니다.'));
       const displaySection = section('브라우저 표시');
       const preview = (configuration.preview ?? {}) as Record<string, unknown>;
       const mode = node('label', 'ag-settings-field'); mode.append(node('span', 'ag-settings-field-label', '브라우저 표시'));
@@ -289,7 +295,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const autoLabel = node('label', 'ag-browser-check'); autoLabel.append(autoImport, document.createTextNode('다운로드한 자료를 앱에 자동 추가')); downloadsSection.append(autoLabel);
       const reduced = node('input', ''); reduced.type = 'checkbox'; reduced.checked = preview.reducedMotion === true;
       const reducedLabel = node('label', 'ag-browser-check'); reducedLabel.append(reduced, document.createTextNode('브라우저 움직임 줄이기')); displaySection.append(reducedLabel);
-      const apply = button('구성 저장', () => { const mb = Number(limit.input.value); if (!Number.isInteger(mb) || mb < 1 || mb > 512) { message.textContent = '다운로드 한도는 1~512 MB로 입력하세요.'; return; } void mutate('configuration.update', { downloads: { maxFileBytes: mb * 1048576, autoImport: autoImport.checked }, preview: { mode: select.value, reducedMotion: reduced.checked } }); });
+      const apply = button('구성 저장', () => { const mb = Number(limit.input.value); if (!Number.isInteger(mb) || mb < 1 || mb > 512) { message.textContent = '다운로드 한도는 1~512 MB로 입력하세요.'; return; } void mutate('configuration.update', { downloads: { maxFileBytes: mb * 1048576, autoImport: autoImport.checked }, preview: { mode: select.value, reducedMotion: reduced.checked }, performance: { idleMinutes: Number(sleepTime.value) } }); });
       apply.disabled = busy; body.append(apply);
       const executionSection = node('details', 'ag-browser-execution'); executionSection.append(node('summary', '', '고급 브라우저 설정')); body.append(executionSection);
       const diagnostics = node('p', 'ag-browser-empty', String(readiness.message ?? readiness.reason ?? '')); if (diagnostics.textContent) executionSection.append(diagnostics);

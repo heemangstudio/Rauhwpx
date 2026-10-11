@@ -609,9 +609,9 @@ const browserDownloads = createBrowserDownloads({
   },
 });
 await browserDownloads.ready;
-await applyBrowserConfiguration(initialBrowserConfiguration);
 const ownedBrowser = createOwnedBrowserService({
   dataDir: OWNED_BROWSER_DATA_DIR, credentialBroker, policy: browserPolicy,
+  idleMinutes: initialBrowserConfiguration.performance?.idleMinutes ?? 15,
   downloads: browserDownloads, onEvent: broadcastBrowserEvent,
   nativeAdapter: process.env.RHWP_BROWSER_HOST === 'ipc' && typeof process.send === 'function'
     ? createIpcNativeBrowserAdapter() : undefined,
@@ -619,6 +619,7 @@ const ownedBrowser = createOwnedBrowserService({
     ? JSON.parse(process.env.RHWP_BROWSER_WORKSPACE_TARGETS) : [],
 });
 await ownedBrowser.restore();
+await applyBrowserConfiguration(initialBrowserConfiguration);
 
 function broadcastBrowserEvent(event) {
   // 연결된 Studio 는 같은 허브 소유자의 인증된 UI다. provider 소켓으로는 보내지 않는다.
@@ -680,6 +681,7 @@ async function browserActorForMcp(record, sock, tool, args) {
 }
 
 async function applyBrowserConfiguration(configuration) {
+  ownedBrowser.configureSleep(configuration.performance);
   if (typeof browserDownloads.configure === 'function') await browserDownloads.configure(configuration.downloads);
   else {
     browserDownloads.maxBytes = configuration.downloads.maxFileBytes;

@@ -177,7 +177,7 @@ export function createWorkbenchBrowser(options: {
   const menuReload = button('새로고침', '새로고침', () => { details.open = false; navigate('reload'); }, menu);
   menuReload.prepend(createIcon('refresh'));
   details.append(summary, menu); toolbar.append(details);
-  details.addEventListener('toggle', () => { if (details.open) { showDownloads(false, false); } layout(); });
+  details.addEventListener('toggle', () => { if (details.open) { cancelNativeHealth(); nativeHealthGeneration++; showDownloads(false, false); } layout(); });
   function dismissOutside(event: PointerEvent): void {
     const target = event.target as Node;
     let dismissed = false;
@@ -388,6 +388,7 @@ export function createWorkbenchBrowser(options: {
       return;
     }
     if (!['failed', 'paint-timeout'].includes(String(health)) && !(health === 'loading' && timedOut)) return;
+    if (health === 'loading') return;
     if (!native.reload || nativeReloadedIdentity === scope) throw new Error('브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.');
     nativeReloadedIdentity = scope; cancelNativeHealth();
     nativeRecovering = true; nativeError = null; paint();
@@ -431,7 +432,7 @@ export function createWorkbenchBrowser(options: {
       if (nativeHealthIdentity !== healthIdentity()) {
         cancelNativeHealth(); nativeHealthIdentity = healthIdentity();
         nativePending = checkNativeHealth(placement, sequence).then(() => true);
-        try { await nativePending; } catch { nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; }
+        try { await nativePending; } catch { if (!disposed && !nativeOverlayOpen() && sequence === nativeSequence && nativeSurfaceVisible()) nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; }
         finally { nativePending = null; paint(); layout(); }
       }
       return;
@@ -448,7 +449,7 @@ export function createWorkbenchBrowser(options: {
       if (!attached || disposed || sequence !== nativeSequence || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== target || nativePopout) { await native.detach({ tabId: target }).catch(() => undefined); nativeTab = null; nativeProjection = ''; }
       else { nativeProjection = signature(); nativeFailedProjection = ''; nativeError = null; errorMessage.textContent = controller.state.error ?? ''; error.hidden = !controller.state.error; }
     } catch {
-      if (!disposed && nativeSurfaceVisible() && controller.tab()?.tabId === target && sequence === nativeSequence) { nativeTab = null; nativeProjection = ''; nativeFailedProjection = identity(); nativeError = '브라우저 화면을 연결하지 못했습니다. 다시 연결해 주세요.'; errorMessage.textContent = nativeError; error.hidden = false; }
+      if (!disposed && nativeSurfaceVisible() && !nativeOverlayOpen() && controller.tab()?.tabId === target && sequence === nativeSequence) { nativeTab = null; nativeProjection = ''; nativeFailedProjection = identity(); nativeError = '브라우저 화면을 연결하지 못했습니다. 다시 연결해 주세요.'; errorMessage.textContent = nativeError; error.hidden = false; }
     } finally { nativePending = null; paint(); layout(); }
   }
   let layoutFrame: number | null = null;
@@ -499,9 +500,9 @@ export function createWorkbenchBrowser(options: {
     element.inert = agentControlled;
     challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
     fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
-    status.textContent = nativeRecovering ? '페이지 다시 여는 중' : reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'loading' ? '페이지 여는 중' : '에이전트 브라우저';
+    status.textContent = nativeRecovering ? '페이지 다시 여는 중' : reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'sleeping' ? '잠든 탭 깨우는 중' : tab.status === 'loading' ? '페이지 여는 중' : '에이전트 브라우저';
     status.title = status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
-    const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title, row.url]), tab?.tabId]);
+    const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title, row.url, row.status]), tab?.tabId]);
     if (tabsSignature !== nextTabsSignature) {
     const focusedTab = tabs.contains(document.activeElement) ? (document.activeElement as HTMLElement)?.dataset.tabId : null;
     tabsSignature = nextTabsSignature; tabs.replaceChildren();
@@ -509,7 +510,7 @@ export function createWorkbenchBrowser(options: {
       const wrapper = document.createElement('div'); wrapper.className = 'ag-browser-tab';
       const select = button(row.title || row.url || '새 탭', browserTabTitle(row), () => controller.select(row.tabId), wrapper);
       select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(row.tabId === tab?.tabId)); select.tabIndex = row.tabId === tab?.tabId ? 0 : -1;
-      select.dataset.tabId = row.tabId; select.addEventListener('keydown', event => {
+      select.dataset.tabId = row.tabId; select.dataset.sleeping = String(row.status === 'sleeping'); if (row.status === 'sleeping') select.title += ' · 잠자기'; select.addEventListener('keydown', event => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault(); const index = controller.state.tabs.indexOf(row); const length = controller.state.tabs.length;
         const next = event.key === 'Home' ? 0 : event.key === 'End' ? length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + length) % length;

@@ -473,3 +473,17 @@ test('cleanup drains a pending wrapping-key write before vault purge and prevent
   await assert.rejects(fs.stat(path.join(dataDir, 'browser-auth')), { code: 'ENOENT' });
   assert.equal(await broker.restoreCheckpoint(), null);
 });
+
+
+test('tab sleep preferences persist and reject invalid or agent configuration changes', async (t) => {
+  const { broker, dataDir, secretStore, policy } = await fixture(t);
+  assert.equal((await broker.getConfiguration()).performance.idleMinutes, 15);
+  await broker.updateConfiguration({ actor: owner, performance: { idleMinutes: 1 } });
+  const restarted = createBrowserCredentialBroker({ dataDir, secretStore, policy });
+  assert.equal((await restarted.getConfiguration()).performance.idleMinutes, 1);
+  for (const idleMinutes of [-1, 1.5, 1441]) await assert.rejects(broker.updateConfiguration({ actor: owner, performance: { idleMinutes } }), { code: 'BROWSER_CONFIGURATION_INVALID' });
+  await assert.rejects(broker.updateConfiguration({ actor: agent, performance: { idleMinutes: 0 } }));
+  assert.equal((await broker.getConfiguration()).performance.idleMinutes, 1);
+  await broker.updateConfiguration({ actor: owner, performance: { idleMinutes: 0 } });
+  assert.equal((await broker.getConfiguration()).performance.idleMinutes, 0);
+});

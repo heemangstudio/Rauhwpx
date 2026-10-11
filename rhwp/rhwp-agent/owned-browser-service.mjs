@@ -73,7 +73,7 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     async start(params) { const result = await call('start', params); nativeGeneration = result.generation; return { ...result, close: () => call('release') }; },
     importSession: (params) => call('import-session', params),
     onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    activity: (params) => call('activity', params), bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'), inventory: () => call('inventory'),
+    sleep: (params) => call('sleep', params), activity: (params) => call('activity', params), bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'), inventory: () => call('inventory'),
     passwordAccounts: () => call('password-accounts'), passwordSnapshot: (params) => call('password-snapshot', params),
     passwordFill: (params) => call('password-fill', params), passwordAction: (params) => call('password-action', params),
     passwordStorageState: () => call('password-storage-state'),
@@ -98,6 +98,49 @@ export function createOwnedBrowserService(options = {}) {
   let resetting = false;
   let resetFailed = false;
   let persistQueue = Promise.resolve();
+  let idleSleepMs = (options.idleMinutes ?? 15) * 60_000;
+  let sleepSweepRunning = false;
+  const sleepTimer = setInterval(() => { void sweepSleepingTabs().catch(() => {}); }, options.sleepCheckMs ?? 30_000);
+  sleepTimer.unref?.();
+  async function sweepSleepingTabs(now = Date.now()) {
+    if (sleepSweepRunning || closed || !idleSleepMs || state !== 'ready' || resetting || signIn || handoffPending || !selectedAdapter()?.sleep) return;
+    sleepSweepRunning = true;
+    try {
+      for (const tab of tabs.values()) {
+        if (!tab.page || tab.sleeping || tab.activeActor || tab.pendingChooser || now - tab.lastActivityAt < idleSleepMs) continue;
+        await enqueue(tab, async () => {
+          if (!tab.page || tab.sleeping || tab.activeActor || now - tab.lastActivityAt < idleSleepMs) return;
+          tab.sleepPending = true; const url = tab.page.url();
+          try {
+            const result = await selectedAdapter().sleep({ targetId: tab.nativeTargetId, tabId: tab.tabId, idleMs: idleSleepMs });
+            if (!result?.sleeping) return;
+            tab.url = url; tab.page = null; tab.nativeTargetId = undefined;
+            tab.sleeping = true; tab.restorePending = true; tab.status = 'sleeping';
+            invalidate(tab); publish(tab); await persist();
+          } finally { tab.sleepPending = false; }
+        });
+      }
+    } finally { sleepSweepRunning = false; }
+  }
+  async function wakeTab(actor, tab) {
+    if (!tab.sleeping) return;
+    await enqueue(tab, async () => {
+      if (!tab.sleeping) return;
+      await ensureRuntime(); await assertPolicy(actor, 'browse', tab.url, tab);
+      const url = tab.url;
+      const page = await runtime.context.newPage();
+      tab.activeActor = actor; tab.sleeping = false;
+      try {
+        if (actor.isHuman) tab.sessionId = actor.sessionId ?? tab.sessionId;
+        await attach(tab, page);
+        if (url !== 'about:blank') await page.goto(url, { waitUntil: 'domcontentloaded' });
+        tab.restorePending = false; tab.status = 'ready'; publish(tab); await persist();
+      } catch (failure) {
+        tab.sleepPending = true; await page.close().catch(() => {}); tab.sleepPending = false;
+        tab.page = null; tab.nativeTargetId = undefined; tab.sleeping = true; tab.status = 'sleeping'; throw failure;
+      } finally { tab.activeActor = null; }
+    });
+  }
   let installPromise;
   let runtimeMode = options.runtimeMode === 'managed' ? 'managed' : nativeAdapter ? 'native' : 'managed';
   let headless = options.headless !== false;
@@ -353,6 +396,7 @@ export function createOwnedBrowserService(options = {}) {
     page.on('crash', () => { if (tab.page !== page) return; tab.status = 'crashed'; tab.controllerEpoch++; invalidate(tab); publish(tab); });
     page.on('close', () => {
       if (tab.page !== page) return;
+      if (tab.sleepPending) { tab.page = null; tab.status = 'sleeping'; tab.controllerEpoch++; invalidate(tab); return; }
       tab.status = closed ? 'closed' : 'disconnected'; tab.page = null; tab.controllerEpoch++; invalidate(tab);
       if (!tab.openerTabId || closed) { publish(tab); return; }
       // CDP 연결을 닫아도 네이티브 게스트는 남을 수 있다. 실제로 닫힌 팝업만 제거한다.
@@ -492,7 +536,7 @@ export function createOwnedBrowserService(options = {}) {
     })();
     return starting;
   };
-  const makeTab = (input) => { const global = input.isHuman || input.scope === 'global'; const actor = global ? { ...input, threadId: null, projectId: null, documentId: null, agentId: 'human', taskId: null } : input; return ({ scope: global ? 'global' : 'agent', tabId: id('tab'), threadId: actor.threadId ?? null, projectId: actor.projectId ?? null, documentId: actor.documentId ?? null, agentId: actor.agentId ?? 'human', ownerId: actor.ownerId, sessionId: actor.sessionId, taskId: actor.taskId, url: 'about:blank', title: '', status: 'ready', page: null, navigationEpoch: 0, controllerEpoch: 1, controller: { owner: global ? 'human' : 'agent' }, queue: Promise.resolve(), heldKeys: new Set(), heldButtons: new Set(), snapshot: null, frame: null }); };
+  const makeTab = (input) => { const global = input.isHuman || input.scope === 'global'; const actor = global ? { ...input, threadId: null, projectId: null, documentId: null, agentId: 'human', taskId: null } : input; return ({ lastActivityAt: Date.now(), scope: global ? 'global' : 'agent', tabId: id('tab'), threadId: actor.threadId ?? null, projectId: actor.projectId ?? null, documentId: actor.documentId ?? null, agentId: actor.agentId ?? 'human', ownerId: actor.ownerId, sessionId: actor.sessionId, taskId: actor.taskId, url: 'about:blank', title: '', status: 'ready', page: null, navigationEpoch: 0, controllerEpoch: 1, controller: { owner: global ? 'human' : 'agent' }, queue: Promise.resolve(), heldKeys: new Set(), heldButtons: new Set(), snapshot: null, frame: null }); };
   const returnFromSignIn = async (account, storage) => {
     const origins = new Set(account.origins);
     const hosts = account.origins.map((origin) => new URL(origin).hostname);
@@ -1034,6 +1078,8 @@ export function createOwnedBrowserService(options = {}) {
       publish(tab); await persist(); return !actor.isHuman && challengeFor(tab) ? challengeResult(action, tab) : { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab) };
     }
     const tab = ownedTab(actor, args.tabId);
+    tab.lastActivityAt = Date.now();
+    if (tab.sleeping && !['close', 'reconnect'].includes(action)) await wakeTab(actor, tab);
     if (action === 'reconnect') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Browser presentation reconnect is managed by the editor.');
       if (!selectedAdapter()) throw error('BROWSER_RECONNECT_REQUIRED', 'This browser does not have a native presentation.', true);
@@ -1076,7 +1122,7 @@ export function createOwnedBrowserService(options = {}) {
             tab.status = 'ready'; invalidate(tab); publish(tab); await persist();
           }
           requirePage(tab);
-          tab.restorePending = false;
+          tab.restorePending = false; tab.sleeping = false;
           // 허브만 재시작한 경우 기존 게스트를 유지하며 현재 창에 다시 바인딩한다.
           const nativeState = await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId, global: tab.scope === 'global' });
           tab.nativeGeneration = nativeState?.generation;
@@ -1165,7 +1211,11 @@ export function createOwnedBrowserService(options = {}) {
   };
   const request = performRequest;
   return {
-    request, inventory,
+    request, inventory, sweepSleepingTabs,
+    configureSleep({ idleMinutes = 15 } = {}) {
+      if (!Number.isInteger(idleMinutes) || idleMinutes < 0 || idleMinutes > 1440) throw error('BROWSER_CONFIGURATION_INVALID', 'Choose an idle timeout between 0 and 1440 minutes.');
+      idleSleepMs = idleMinutes * 60_000;
+    },
     ownsTarget(actor, target) {
       const tab = target?.tabId && tabs.get(target.tabId);
       return !!tab && (actor?.isHuman ? tab.scope === 'global' || !actor.sessionId || !tab.sessionId || actor.sessionId === tab.sessionId : sameScope(actor, tab));
@@ -1185,9 +1235,9 @@ export function createOwnedBrowserService(options = {}) {
       for (const origin of Array.isArray(stored.humanStorageOrigins) ? stored.humanStorageOrigins.slice(0, 2048) : []) { try { const url = new URL(origin); if (['https:', 'http:'].includes(url.protocol) && url.origin === origin) { unconfirmedHumanOrigins.add(origin); humanOrigins.add(origin); } } catch {} }
       for (const record of stored.tabs.slice(0, limits.maxTabs)) {
         if (typeof record.tabId !== 'string' || record.scope !== 'global' && (!record.threadId || !record.agentId)) continue;
-        const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), openerTabId: typeof record.openerTabId === 'string' ? text(record.openerTabId, 160) : undefined, searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, restorePending: true, status: 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
+        const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), openerTabId: typeof record.openerTabId === 'string' ? text(record.openerTabId, 160) : undefined, searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, restorePending: true, sleeping: record.status === 'sleeping', status: record.status === 'sleeping' ? 'sleeping' : 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
       }
     },
-    async close() { if (closed) return; closed = true; unsubscribeNativeEvents?.(); if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) { await releaseInput(tab); } await persist().catch(() => {}); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); state = 'closed'; },
+    async close() { if (closed) return; closed = true; clearInterval(sleepTimer); unsubscribeNativeEvents?.(); if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) { await releaseInput(tab); } await persist().catch(() => {}); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); state = 'closed'; },
   };
 }
