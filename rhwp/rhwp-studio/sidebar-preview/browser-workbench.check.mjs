@@ -23,7 +23,7 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   await page.setViewport({ width: 1280, height: 1000, deviceScaleFactor: 1 });
   await page.waitForFunction(() => innerWidth === 1280);
   assert.equal(await paneWidth(), chosenWidth, 'window resize preserves the chosen pixel width while it fits');
-  await page.setViewport({ width: 1100, height: 1000, deviceScaleFactor: 1 });
+  await page.setViewport({ width: 980, height: 1000, deviceScaleFactor: 1 });
   await page.waitForFunction(width => document.querySelector('.ag-workbench-page').getBoundingClientRect().width < width, {}, chosenWidth);
   assert.ok(await page.$eval('.ag-chat-page', node => node.getBoundingClientRect().width) >= 360, 'a tight desktop keeps room for the conversation');
   await page.setViewport({ width: 840, height: 1000, deviceScaleFactor: 1 });
