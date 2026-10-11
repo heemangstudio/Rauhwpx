@@ -478,5 +478,5 @@ test('human link popups retain global ownership and downloads are attributed to 
   popup.emit('download', { url: () => 'about:blank', async cancel() {} });
   while (!captured && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(captured?.isHuman, true);
-  assert.equal((await service.inventory({ agentId: 'other', threadId: 'other' })).tabs.length, 0);
+  assert.equal((await service.inventory({ agentId: 'other', threadId: 'other' })).tabs.length, 2, 'user popups are shared with agents too');
 });

@@ -28,6 +28,7 @@ const token = randomUUID();
 const results = { runtime: `http://127.0.0.1:${vitePort}`, hubPort, browser: 'actual app-owned Chromium', website: 'deterministic cookie/CSRF/blob research fixture', provider: 'Pi turn fixture, no model inference', scenarios: [], errors: [] };
 let hub, vite, browser, page;
 const providers = [];
+const sidebarReuseOnly = process.argv.includes('--sidebar-reuse-only');
 const inboxOnly = process.argv.includes('--inbox-only');
 const chromeOnly = process.argv.includes('--chrome-only');
 
@@ -95,6 +96,35 @@ try {
   // Public origins continue through default research policy and its semantic write gate.
   await human('policy.update', { operation: 'set-site', origin: site.origin, label: 'Isolated research export fixture', allowedActions: ['browse', 'read', 'download', 'research-import', 'website-change'], blockedActions: [] });
   let provider, tab;
+  if (sidebarReuseOnly) {
+    await createNewDocument(page);
+    await page.type('.ag-input', 'Check the shared sidebar browser.'); await page.click('.ag-send');
+    await waitForState(page, 'Pi fixture turn running', () => window.__agentBridge.isTurnRunning());
+    provider = await attachProvider();
+    tab = (await human('open', { url: site.origin })).tab;
+    assert.equal(tab.scope, 'global');
+    await page.click('.ag-fullscreen-btn');
+    await waitForState(page, 'Agent Focus ready', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.body.classList.contains('ag-fs-vt'));
+    await page.click('.ag-browser-trigger');
+    await eventually('sidebar selection reported through authenticated MCP', () => provider.call('browser_status').then(frame => must(frame, 'agent status')), value => value.activeTabId === tab.tabId);
+    const second = (await human('open', { url: 'about:blank' })).tab;
+    await page.waitForSelector(`[data-resource-id="browser:${second.tabId}"]`);
+    await page.click(`[data-resource-id="browser:${second.tabId}"][role="tab"]`);
+    await eventually('agent sees user tab switching', () => provider.call('browser_status').then(frame => must(frame, 'agent status')), value => value.activeTabId === second.tabId);
+    await page.click(`[data-resource-id="browser:${tab.tabId}"][role="tab"]`);
+    await eventually('original sidebar selection restored', () => provider.call('browser_status').then(frame => must(frame, 'agent status')), value => value.activeTabId === tab.tabId);
+    await clickRef(provider, tab.tabId, 'Sign in to fixture account', 'login');
+    const observation = await observe(provider, tab.tabId);
+    must(await provider.call('browser_type', { ...refArgs(observation, 'Research query', 'search'), text: 'Shared sidebar query' }), 'agent types into user-opened page');
+    await clickRef(provider, tab.tabId, 'Search references', 'search');
+    assert.ok((await observe(provider, tab.tabId)).text.includes('Result: Shared sidebar query'));
+    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.dataset.presentation), 'dock');
+    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.inert), true, 'sidebar indicates and protects ongoing agent control');
+    assert.equal(await page.$$eval('.ag-browser-floating', rows => rows.some(row => !row.hidden)), false, 'agent reuses sidebar without an extra floating preview');
+    await shot('shared-sidebar-agent-control');
+    await record('Authenticated MCP lists shared tabs and follows the user selection');
+    await record('Agent reads, signs into fixture, types and searches in the existing sidebar tab');
+  } else {
   if (!inboxOnly) {
   await createNewDocument(page);
   await page.type('.ag-input', 'Read the isolated research reference.'); await page.click('.ag-send');
@@ -337,9 +367,15 @@ try {
   }
   await standaloneContext?.close(); if (projectPage) page = projectPage;
   }
+  }
   if (provider) {
   fs.writeFileSync(finishTurnPath, '');
   await waitForState(page, 'Pi fixture turn settled', () => !window.__agentBridge.isTurnRunning());
+  if (sidebarReuseOnly) {
+    await page.waitForFunction(() => !document.querySelector('.ag-workbench-page .ag-browser').inert);
+    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.dataset.presentation), 'dock');
+    await record('Turn completion restores human input without closing the sidebar');
+  }
   }
   assert.deepEqual(results.errors, [], 'no uncaught Studio runtime errors');
   results.status = 'passed';
@@ -353,7 +389,7 @@ try {
   console.error(error.stack); process.exitCode = 1;
 } finally {
   results.fixtureRequests = site.requests;
-  fs.writeFileSync(path.join(evidence, chromeOnly ? 'real-chrome-results.json' : inboxOnly ? 'real-inbox-results.json' : 'real-stream-results.json'), `${JSON.stringify(results, null, 2)}\n`);
+  fs.writeFileSync(path.join(evidence, sidebarReuseOnly ? 'shared-sidebar-results.json' : chromeOnly ? 'real-chrome-results.json' : inboxOnly ? 'real-inbox-results.json' : 'real-stream-results.json'), `${JSON.stringify(results, null, 2)}\n`);
   for (const provider of providers) provider.socket.close();
   await browser?.close(); await vite?.close(); await stopServer(hub); await site.close();
   fs.rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
