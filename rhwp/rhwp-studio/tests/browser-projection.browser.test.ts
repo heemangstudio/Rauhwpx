@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { browserExecutable, browserLaunchArgs } from './browser-support.ts';
 
 /** 실제 브라우저 UI와 레이아웃을 사용하고 Electron 연결만 대체한다. */
-test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복원하며 늦은 연결을 취소한다', { timeout: 30_000 }, async () => {
+test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복원하며 늦은 연결을 취소한다', { timeout: 30_000 }, async t => {
   const server = await createServer({ root: fileURLToPath(new URL('../', import.meta.url)), configFile: false, logLevel: 'silent', server: { host: '127.0.0.1', port: 0 },
     plugins: [{ name: 'projection-harness', configureServer(vite) {
       vite.middlewares.use((request, response, next) => {
@@ -183,6 +183,27 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     assert.deepEqual(links.opened, ['https://example.com/chat', 'https://example.com/chat']);
     assert.deepEqual(links.events, [true, false, false, false], 'web links route internally while downloads, documents and mail preserve their actions');
     assert.equal(links.middle, true, 'middle click also uses the app browser');
+    const resizeBurst = await page.evaluate(async () => {
+      const { createBrowserPresentation } = await import('../src/ui/agent-sidebar/browser-presentation.ts');
+      const panel = document.createElement('section'); panel.className = 'ag-browser';
+      const host = document.createElement('div'); document.body.append(host);
+      const presentation = createBrowserPresentation(panel, () => {}); presentation.mount(host); presentation.present('float');
+      const floating = panel.closest<HTMLElement>('.ag-browser-floating')!;
+      const grip = floating.querySelector<HTMLButtonElement>('.ag-browser-resize')!;
+      grip.setPointerCapture = () => {}; grip.hasPointerCapture = () => false;
+      const original = floating.getBoundingClientRect.bind(floating); let reads = 0;
+      floating.getBoundingClientRect = () => { reads++; return original(); };
+      const before = original();
+      grip.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 4, clientX: 0, clientY: 0 }));
+      for (let i = 1; i <= 60; i++) grip.dispatchEvent(new PointerEvent('pointermove', { pointerId: 4, clientX: -i, clientY: -i }));
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      grip.dispatchEvent(new PointerEvent('pointerup', { pointerId: 4 }));
+      const result = { reads, width: original().width, expected: before.width - 60 };
+      presentation.dispose(); host.remove(); return result;
+    });
+    assert.equal(resizeBurst.width, resizeBurst.expected, 'resize commits the latest pointer position');
+    t.diagnostic(`60 pointer moves: ${resizeBurst.reads} synchronous layout reads`);
+    assert.ok(resizeBurst.reads <= 3, `resize burst caused ${resizeBurst.reads} synchronous layout reads`);
     await page.evaluate(() => (window as any).projectionTest.view.dispose());
   } finally { await browser?.close(); await server.close(); }
 });

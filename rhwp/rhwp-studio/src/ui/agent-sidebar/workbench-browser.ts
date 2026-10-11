@@ -1,4 +1,6 @@
 import './workbench-browser.css';
+import { installBrowserTabDrag } from './browser-tab-drag.ts';
+import { browserAddressURL } from './browser-search.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { createBrowserCaptureMotion } from './browser-capture-motion.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
@@ -29,8 +31,11 @@ export function createWorkbenchBrowser(options: {
   onDock(): void;
   onChat(): void;
   onChange?(): void;
+  tabFilter?(tab: BrowserTab): boolean;
+  onFloatTab?(tabId: string, point?: { x: number; y: number }): void;
+  onClose?(): void;
 }) {
-  const controller = createBrowserController(options.bridge, { nativePresentation: Boolean(nativeBrowserApi()) });
+  const controller = createBrowserController(options.bridge, { nativePresentation: Boolean(nativeBrowserApi()), tabFilter: options.tabFilter });
   const element = document.createElement('section'); element.className = 'ag-browser';
   element.setAttribute('aria-label', '연구 브라우저');
   const toolbar = document.createElement('header'); toolbar.className = 'ag-browser-toolbar';
@@ -89,7 +94,7 @@ export function createWorkbenchBrowser(options: {
   const downloadsButton = button('다운로드 목록', '받은 파일', () => showDownloads(Boolean(downloads.hidden)));
   downloadsButton.setAttribute('aria-expanded', 'false');
   const dockButton = button('작업 칸에 붙이기', '붙이기', () => { presentation.present('dock'); options.onDock(); });
-  const floatButton = button('브라우저 띄우기', '띄우기', () => presentation.present('float'));
+  const floatButton = button('브라우저 띄우기', '띄우기', () => floatCurrentTab());
   const popoutButton = button('별도 창으로 열기', '새 창', () => {
     details.open = false;
     const tab = controller.tab(); const native = nativeBrowserApi();
@@ -250,19 +255,31 @@ export function createWorkbenchBrowser(options: {
   const presentation = createBrowserPresentation(element, (mode) => {
     if (mode === 'float' || mode === null) { details.open = false; showDownloads(false, false); }
     visible = mode !== null; watchNativeVisibility(); paint(); scheduleFrame(); void projectNative();
-  }, () => { layout(); }, options.onDock, navigation);
+  }, () => { layout(); }, options.onDock, navigation, annotate, options.onClose);
+  function floatCurrentTab(point?: { x: number; y: number }): void {
+    const tab = controller.tab();
+    if (tab && !agentPreviewTab && options.onFloatTab) { options.onFloatTab(tab.tabId, point); return; }
+    nativePopout = false; presentation.present('float'); if (point) presentation.position(point.x, point.y);
+  }
   function navigate(direction: string): void {
     if (!controller.tab()) return;
     handle(controller.action('navigate', { ...controller.identity(), direction }).then(() => controller.readFrame()));
   }
+  async function navigateAddress(entered: string, target = controller.tab()): Promise<void> {
+    let engine = 'google';
+    if (!/^https?:\/\//i.test(entered) && entered !== 'about:blank') {
+      const configuration = await options.bridge.requestBrowser<{ searchEngine?: string }>('configuration.get');
+      engine = configuration.searchEngine ?? 'google';
+    }
+    const url = browserAddressURL(entered, engine);
+    if (disposed) return;
+    wakeCurrentTab();
+    if (!target) await controller.open(url);
+    else await controller.action('navigate', { ...controller.identity(target), url });
+  }
   navigation.addEventListener('submit', event => {
     event.preventDefault(); const entered = address.value.trim(); if (!entered) return;
-    addressDraft = false; address.blur();
-    let url = entered;
-    if (!/^https?:\/\//i.test(url)) url = /^[\w.-]+\.[a-z]{2,}(?:\/|$)/i.test(url) ? `https://${url}` : `https://www.google.com/search?q=${encodeURIComponent(url)}`;
-    wakeCurrentTab();
-    if (!controller.tab()) handle(controller.open(url));
-    else handle(controller.action('navigate', { ...controller.identity(), url }).then(() => controller.readFrame()));
+    addressDraft = false; address.blur(); handle(navigateAddress(entered));
   });
   address.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
@@ -515,9 +532,10 @@ export function createWorkbenchBrowser(options: {
       }
       return;
     }
+    const geometryOnly = !!nativeProjection && nativeHealthIdentity === healthIdentity();
     nativeError = null;
     nativePending = attachNative(placement);
-    paint();
+    if (!geometryOnly) paint();
     try {
       const attached = await nativePending;
       if (attached && sequence === nativeSequence && nativeSurfaceVisible() && !nativeOverlayOpen() && controller.tab()?.tabId === target && !nativePopout && nativeHealthIdentity !== healthIdentity()) {
@@ -528,12 +546,20 @@ export function createWorkbenchBrowser(options: {
       else { nativeProjection = signature(); nativeFailedProjection = ''; nativeError = null; errorMessage.textContent = controller.state.error ?? ''; error.hidden = !controller.state.error; }
     } catch {
       if (!disposed && nativeSurfaceVisible() && !nativeOverlayOpen() && controller.tab()?.tabId === target && sequence === nativeSequence) { nativeTab = null; nativeProjection = ''; nativeFailedProjection = identity(); nativeError = '브라우저 화면을 연결하지 못했습니다. 다시 연결해 주세요.'; errorMessage.textContent = nativeError; error.hidden = false; }
-    } finally { nativePending = null; paint(); layout(); }
+    } finally { nativePending = null; if (!geometryOnly) paint(); layout(); }
   }
   let layoutFrame: number | null = null;
   const layout = () => {
     if (layoutFrame !== null || disposed) return;
-    layoutFrame = requestAnimationFrame(() => { layoutFrame = null; const host = element.getBoundingClientRect(); const bar = toolbar.getBoundingClientRect(); element.style.setProperty('--browser-popover-top', `${bar.bottom - host.top + 6}px`); element.style.setProperty('--browser-popover-height', `${Math.max(80, host.bottom - bar.bottom - 14)}px`); void projectNative(); });
+    layoutFrame = requestAnimationFrame(() => {
+      layoutFrame = null;
+      if (nativeOverlayOpen()) {
+        const host = element.getBoundingClientRect(); const bar = toolbar.getBoundingClientRect();
+        element.style.setProperty('--browser-popover-top', `${bar.bottom - host.top + 6}px`);
+        element.style.setProperty('--browser-popover-height', `${Math.max(80, host.bottom - bar.bottom - 14)}px`);
+      }
+      void projectNative();
+    });
   };
   function nativeSurfaceVisible(): boolean {
     return visible && surface.isConnected && (!document.documentElement.classList.contains('document-home-open') || agentPreviewTab !== null && presentation.current() === 'float')
@@ -590,6 +616,7 @@ export function createWorkbenchBrowser(options: {
       const wrapper = document.createElement('div'); wrapper.className = 'ag-browser-tab';
       const select = button(row.title || row.url || '새 탭', browserTabTitle(row), () => { wakeCurrentTab(); controller.select(row.tabId); }, wrapper);
       select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(row.tabId === tab?.tabId)); select.tabIndex = row.tabId === tab?.tabId ? 0 : -1;
+      if (options.onFloatTab) installBrowserTabDrag(select, () => element.getBoundingClientRect(), point => options.onFloatTab?.(row.tabId, point));
       select.dataset.tabId = row.tabId; select.dataset.sleeping = String(row.status === 'sleeping'); if (row.status === 'sleeping') select.title += ' · 잠자기'; select.addEventListener('keydown', event => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault(); const index = controller.state.tabs.indexOf(row); const length = controller.state.tabs.length;
@@ -668,8 +695,9 @@ export function createWorkbenchBrowser(options: {
       if (!target) return;
       controller.select(target.tabId);
       if (event.command === 'take-control' || event.command === 'return-agent') { handle(controller.action('control', { ...controller.identity(target), owner: event.command === 'take-control' ? 'human' : 'agent' })); return; }
+      if (event.command === 'annotate' || event.command === 'capture') { handle(capture()); return; }
+      if (event.command === 'navigate' && typeof event.url === 'string') { handle(navigateAddress(event.url, target)); return; }
       nativePopout = false; presentation.present('dock'); options.onDock();
-      if (event.command === 'annotate' || event.command === 'capture') handle(capture());
       if (event.command === 'downloads') showDownloads(true);
       return;
     }
@@ -713,7 +741,8 @@ export function createWorkbenchBrowser(options: {
       else if (presentation.current() === 'dock') presentation.hide();
     },
     dock() { nativePopout = false; presentation.present('dock'); address.focus({ preventScroll: true }); },
-    float() { nativePopout = false; presentation.present('float'); handle(controller.refresh().then(() => controller.readFrame())); },
+    float(point?: { x: number; y: number }) { floatCurrentTab(point); handle(controller.refresh().then(() => controller.readFrame())); },
+    async releaseTab(tabId: string): Promise<void> { await nativePending?.catch(() => undefined); if (nativeTab === tabId) { nativeTab = null; nativeProjection = ''; await nativeBrowserApi()?.detach({ tabId }); } layout(); },
     dispose() { captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
   };
 }

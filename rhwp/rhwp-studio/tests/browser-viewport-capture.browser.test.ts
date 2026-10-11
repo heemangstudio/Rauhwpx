@@ -19,10 +19,10 @@ test('현재 화면을 한 번 첨부하고 캡처 중에도 브라우저 입력
     const page = await browser.newPage(); page.setDefaultTimeout(5000); await page.setViewport({ width: 1000, height: 800, deviceScaleFactor: 2 });
     await page.goto(`http://127.0.0.1:${address.port}/viewport-capture`);
     await page.evaluate(async () => {
-      const calls: Array<{ action: string; args?: any }> = []; let attached: string | null = null; let release: (() => void) | undefined;
+      const calls: Array<{ action: string; args?: any }> = []; let attached: string | null = null; let release: (() => void) | undefined; let nativeEvent: ((event: any) => void) | undefined;
       Object.assign(window, { rhwpDesktop: { browser: {
         async attach(args: any) { calls.push({ action: 'attach', args }); attached = args.tabId; },
-        async detach(args: any) { calls.push({ action: 'detach', args }); attached = null; }, async getState() { return {}; },
+        async detach(args: any) { calls.push({ action: 'detach', args }); attached = null; }, async getState() { return {}; }, onEvent(callback: any) { nativeEvent = callback; return () => {}; },
       } } });
       const tab = { tabId: 'tab', nativeTargetId: 'target', runtime: 'native', zoomFactor: 1, url: 'https://fixture.invalid/long', title: 'Viewport source', navigationEpoch: 1, controllerEpoch: 1, controller: { owner: 'agent' }, status: 'ready' };
       const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 500;
@@ -40,7 +40,7 @@ test('현재 화면을 한 번 첨부하고 캡처 중에도 브라우저 입력
       const { createWorkbenchBrowser } = await import('../src/ui/agent-sidebar/workbench-browser.ts'); const drafts: any[] = [];
       const view = createWorkbenchBrowser({ bridge: bridge as any, getDestination: () => ({ threadId: 'chat', projectId: null, documentId: null }), onCapture: draft => { drafts.push(draft); return document.querySelector<HTMLElement>('#attachment')!; }, onOpenDownload() {}, onDock() {}, onChat() {} });
       view.mount(document.querySelector<HTMLElement>('#host')!); view.setVisible(true);
-      (window as any).captureTest = { view, calls, drafts, get attached() { return attached; }, release: () => release?.() };
+      (window as any).captureTest = { view, calls, drafts, get attached() { return attached; }, release: () => release?.(), emit: (event: any) => nativeEvent?.(event) };
     });
     await page.waitForFunction(() => (window as any).captureTest.attached === 'tab');
     await page.click('[aria-label="현재 화면을 캡처해 채팅에 첨부"]');
@@ -65,6 +65,19 @@ test('현재 화면을 한 번 첨부하고 캡처 중에도 브라우저 입력
     await page.click('.ag-browser-menu [aria-label="새로고침"]');
     await page.waitForFunction(() => (window as any).captureTest.calls.some((call: any) => call.action === 'navigate' && call.args.direction === 'reload'));
     await page.waitForFunction(() => (window as any).captureTest.attached === 'tab');
+    await page.evaluate(() => (window as any).captureTest.view.float());
+    await page.click('.ag-browser-floating-chrome [aria-label="현재 화면을 캡처해 채팅에 첨부"]');
+    await page.waitForFunction(() => (window as any).captureTest.calls.filter((call: any) => call.action === 'capture').length === 2);
+    await page.evaluate(() => (window as any).captureTest.release());
+    await page.waitForFunction(() => (window as any).captureTest.drafts.length === 2);
+    assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'float', 'capture leaves the floating page open');
+    await page.evaluate(() => {
+      (window as any).captureTest.emit({ type: 'presentation-command', tabId: 'tab', command: 'capture' });
+    });
+    await page.waitForFunction(() => (window as any).captureTest.calls.filter((call: any) => call.action === 'capture').length === 3);
+    await page.evaluate(() => (window as any).captureTest.release());
+    await page.waitForFunction(() => (window as any).captureTest.drafts.length === 3);
+    assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'float', 'a separate-window capture command does not dock or hide its page');
     await page.evaluate(() => (window as any).captureTest.view.dispose());
   } finally { await browser?.close(); await server.close(); }
 });

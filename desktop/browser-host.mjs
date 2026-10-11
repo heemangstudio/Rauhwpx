@@ -335,14 +335,22 @@ export class OwnedBrowserHost {
   }
 
   async viewport(tab, { width, height }) {
-    if (width <= 0 || height <= 0) return;
-    if (tab.viewport?.width === width && tab.viewport?.height === height) return;
-    // Unparented native views otherwise report a zero viewport. Keep a useful
-    // page size while hidden, then match the actual projection when attached.
-    await tab.view.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
-      width, height, deviceScaleFactor: 0, mobile: false,
-    });
-    tab.viewport = { width, height };
+    if (width <= 0 || height <= 0 || tab.closing) return;
+    tab.pendingViewport = { width, height };
+    if (tab.viewportTask) return tab.viewportTask;
+    tab.viewportTask = (async () => {
+      while (tab.pendingViewport && !tab.closing && !tab.view.webContents.isDestroyed()) {
+        const next = tab.pendingViewport; tab.pendingViewport = null;
+        if (tab.placement) {
+          if (tab.viewport) { await tab.view.webContents.debugger.sendCommand('Emulation.clearDeviceMetricsOverride'); tab.viewport = null; }
+        } else if (tab.viewport?.width !== next.width || tab.viewport?.height !== next.height) {
+          // 숨긴 게스트만 유효한 뷰포트를 유지한다. 보이는 페이지는 네이티브 크기 변경을 따른다.
+          await tab.view.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride', { ...next, deviceScaleFactor: 0, mobile: false });
+          tab.viewport = next;
+        }
+      }
+    })();
+    try { await tab.viewportTask; } finally { tab.viewportTask = null; }
   }
 
   state(tab) {
@@ -397,7 +405,9 @@ export class OwnedBrowserHost {
       window.contentView.addChildView(tab.view);
     }
     tab.interactive = nextInteractive;
-    tab.view.setBounds(rect);
+    const previous = tab.view.getBounds();
+    if (previous.x !== rect.x || previous.y !== rect.y || previous.width !== rect.width || previous.height !== rect.height) tab.view.setBounds(rect);
+    tab.placement = { window, mode };
     void this.viewport(tab, rect).catch(() => {});
     tab.view.setVisible(rect.width > 0 && rect.height > 0);
     tab.placement = { window, mode };
@@ -482,6 +492,7 @@ export class OwnedBrowserHost {
     tab.view.setVisible(false);
     tab.placement = null;
     tab.interactive = false;
+    if (!tab.closing && !tab.view.webContents.isDestroyed()) void this.viewport(tab, tab.view.getBounds()).catch(() => {});
   }
 
   async sleep({ targetId, tabId, idleMs, manual = false, discard = false }) {
@@ -625,9 +636,9 @@ export class OwnedBrowserHost {
     const ownerWindow = this.getWindowForSession(tab.sessionId);
     if (!ownerWindow) throw new Error('Browser popout owner is unavailable');
     if (command === 'close') return this.detach(ownerWindow, { tabId: tab.tabId });
-    if (['dock', 'take-control', 'return-agent', 'annotate', 'capture', 'downloads'].includes(command)) {
+    if (['dock', 'take-control', 'return-agent', 'annotate', 'capture', 'downloads', 'navigate'].includes(command)) {
       if (command === 'dock') this.detach(ownerWindow, { tabId: tab.tabId });
-      this.emit(tab, 'presentation-command', { command });
+      this.emit(tab, 'presentation-command', { command, ...(command === 'navigate' ? { url } : {}) });
       return { queued: true };
     }
     if (command === 'navigate') return this.navigate(ownerWindow, { tabId: tab.tabId, url });

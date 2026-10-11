@@ -15,14 +15,15 @@ export function nativeBrowserApi(): NativeBrowserApi | undefined {
 }
 
 /** 한 DOM을 옮기며 페이지·입력·의견 상태를 유지한다. */
-export function createBrowserPresentation(element: HTMLElement, onChange: (mode: BrowserPresentationMode | null) => void, onLayout?: () => void, onDock?: () => void, navigation?: HTMLElement) {
+export function createBrowserPresentation(element: HTMLElement, onChange: (mode: BrowserPresentationMode | null) => void, onLayout?: () => void, onDock?: () => void, navigation?: HTMLElement, captureButton?: HTMLElement, onClose?: () => void) {
   let dock: HTMLElement | null = null;
   let mode: BrowserPresentationMode | null = null;
   let popup: Window | null = null;
   let returnFocus: HTMLElement | null = null;
+  const captureHome = captureButton?.parentElement;
   const navigationHome = navigation?.parentElement;
   const navigationNext = navigation?.nextSibling ?? null;
-  const restoreNavigation = () => { if (navigation && navigationHome) navigationHome.insertBefore(navigation, navigationNext); };
+  const restoreNavigation = () => { if (captureButton && captureHome) captureHome.append(captureButton); if (navigation && navigationHome) navigationHome.insertBefore(navigation, navigationNext); };
   const floating = document.createElement('section');
   floating.className = 'ag-browser-floating';
   floating.setAttribute('aria-label', '떠 있는 브라우저');
@@ -58,7 +59,7 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
   dockButton.setAttribute('aria-label', '작업 칸에 붙이기'); dockButton.title = '작업 칸에 붙이기'; dockButton.append(createIcon('browserDock'));
   dockButton.addEventListener('click', () => { present('dock'); onDock?.(); });
   const close = document.createElement('button'); close.type = 'button'; close.className = 'ag-browser-floating-close';
-  close.setAttribute('aria-label', '브라우저 보기 닫기'); close.title = '브라우저 보기 닫기'; close.append(createIcon('close')); close.addEventListener('click', hide);
+  close.setAttribute('aria-label', '브라우저 보기 닫기'); close.title = '브라우저 보기 닫기'; close.append(createIcon('close')); close.addEventListener('click', () => { hide(); onClose?.(); });
   chrome.append(moveHandle, dockButton, close); floating.append(chrome, resize); document.body.append(floating);
   let cancelGesture: (() => void) | null = null;
   const clamp = () => {
@@ -95,7 +96,7 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
     }
     if (popup) { const old = popup; popup = null; if (dock) dock.append(element); old.close(); }
     floating.hidden = next !== 'float';
-    if (next === 'float') { if (navigation) chrome.insertBefore(navigation, dockButton); floating.insertBefore(element, resize); clamp(); }
+    if (next === 'float') { if (captureButton) chrome.insertBefore(captureButton, dockButton); if (navigation) chrome.insertBefore(navigation, dockButton); floating.insertBefore(element, resize); clamp(); }
     else dock?.append(element);
     element.hidden = false; set(next);
   }
@@ -124,24 +125,35 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
     cancelGesture?.(); event.preventDefault(); handle.focus({ preventScroll: true });
     const rect = floating.getBoundingClientRect(); const x = event.clientX; const y = event.clientY; const id = event.pointerId;
     handle.setPointerCapture(id);
+    let frame: number | null = null; let latest = { dx: 0, dy: 0 };
+    floating.dataset.gesture = handle === resize ? 'resize' : 'move';
+    const flush = () => {
+      if (frame !== null) cancelAnimationFrame(frame); frame = null;
+      const width = handle === resize ? Math.min(innerWidth, Math.max(320, rect.width + latest.dx)) : rect.width;
+      const height = handle === resize ? Math.min(innerHeight, Math.max(280, rect.height + latest.dy)) : rect.height;
+      const left = Math.max(0, Math.min(rect.left + (handle === resize ? 0 : latest.dx), innerWidth - width));
+      const top = Math.max(0, Math.min(rect.top + (handle === resize ? 0 : latest.dy), innerHeight - height));
+      floating.style.left = `${left}px`; floating.style.top = `${top}px`;
+      floating.style.width = `${width}px`; floating.style.height = `${height}px`;
+      onLayout?.();
+    };
     const move = (next: PointerEvent) => {
       if (next.pointerId !== id) return;
-      const dx = next.clientX - x; const dy = next.clientY - y;
-      if (handle === resize) { floating.style.width = `${Math.max(320, rect.width + dx)}px`; floating.style.height = `${Math.max(280, rect.height + dy)}px`; }
-      else { floating.style.left = `${rect.left + dx}px`; floating.style.top = `${rect.top + dy}px`; }
-      clamp();
+      latest = { dx: next.clientX - x, dy: next.clientY - y };
+      if (frame === null) frame = requestAnimationFrame(flush);
     };
     const stop = () => {
       handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', finish); handle.removeEventListener('pointercancel', cancel); handle.removeEventListener('lostpointercapture', cancel);
+      if (frame !== null) cancelAnimationFrame(frame); frame = null; delete floating.dataset.gesture;
       cancelGesture = null; if (handle.hasPointerCapture(id)) handle.releasePointerCapture(id); remember();
     };
     const cancel = (next?: PointerEvent) => { if (next && next.pointerId !== id) return; floating.style.left = `${rect.left}px`; floating.style.top = `${rect.top}px`; floating.style.width = `${rect.width}px`; floating.style.height = `${rect.height}px`; clamp(); stop(); };
-    const finish = (next: PointerEvent) => { if (next.pointerId === id) stop(); };
+    const finish = (next: PointerEvent) => { if (next.pointerId === id) { if (frame !== null) flush(); stop(); } };
     cancelGesture = cancel;
     handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', finish); handle.addEventListener('pointercancel', cancel); handle.addEventListener('lostpointercapture', cancel);
   });
   window.addEventListener('resize', clamp);
-  return { mount(host: HTMLElement) { dock = host; syncTheme(); if (mode !== 'float' && mode !== 'popout') host.append(element); }, present, hide, current: () => mode,
+  return { position(x: number, y: number) { floating.style.left = `${x}px`; floating.style.top = `${y}px`; clamp(); }, mount(host: HTMLElement) { dock = host; syncTheme(); if (mode !== 'float' && mode !== 'popout') host.append(element); }, present, hide, current: () => mode,
     setAgentControlled(controlled: boolean) { floating.dataset.agentControlled = String(controlled); floating.inert = controlled; floating.setAttribute('aria-label', controlled ? '에이전트가 사용 중인 브라우저 미리보기' : '떠 있는 브라우저'); },
     dispose() { hide(); themeObserver.disconnect(); window.removeEventListener('resize', clamp); floating.remove(); element.remove(); }, };
 }

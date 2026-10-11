@@ -1,3 +1,4 @@
+import { installBrowserTabDrag } from './browser-tab-drag.ts';
 /** 집중 화면 오른쪽의 작업 칸. 칸을 여닫는 상태와 선택한 보기는 따로 둔다. 데이터와 문서 수명은 각 보기에서 관리한다. */
 import './workbench.css';
 import { createIcon } from './icons.ts';
@@ -41,8 +42,10 @@ export function createSidebarWorkbench(deps: {
   mount(view: WorkbenchView, host: HTMLElement): void;
   onSelect(view: WorkbenchView | null): void;
   onChat(): void;
+  onCreate?(view: WorkbenchView): void;
   selectResource?(id: string | null): void;
   closeResource?(id: string): void;
+  floatResource?(id: string, point: { x: number; y: number }): void;
 }): SidebarWorkbench {
   const uid = `ag-workbench-${++sequence}`;
   const element = document.createElement('section');
@@ -213,6 +216,7 @@ export function createSidebarWorkbench(deps: {
         const resource = resources.find(item => `resource:${item.id}` === key);
         button.setAttribute('aria-controls', `${uid}-panel-${resource?.view ?? (key.startsWith('resource:') ? 'documents' : key)}`);
         if (key.startsWith('resource:')) button.dataset.resourceId = key.slice(9);
+        if (resource?.kind === 'browser' && deps.floatResource) installBrowserTabDrag(button, () => element.getBoundingClientRect(), point => deps.floatResource?.(resource.id, point));
         else button.dataset.view = key;
         const label = document.createElement('span');
         label.className = 'ag-workbench-tab-label';
@@ -402,7 +406,7 @@ export function createSidebarWorkbench(deps: {
   /** 작업 목록이 사라지면 초점이 몸체로 떨어진다. 새 탭으로 옮긴다. */
   function openFromLauncher(view: WorkbenchView): void {
     const hadFocus = launcher.contains(document.activeElement);
-    activateTab(view);
+    activateTab(view); deps.onCreate?.(view);
     if (hadFocus) tabRows.get(activeKey() ?? view)?.button.focus({ preventScroll: true });
   }
   launcher.addEventListener('keydown', event => {

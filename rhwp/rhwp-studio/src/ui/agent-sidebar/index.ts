@@ -349,6 +349,7 @@ export interface AgentSidebarHandle {
 /* 첫 실행 안내는 페이지에 하나만 띄운다 — 문서마다 사이드바가 있어도 겹치지 않게. */
 let initialSetupOwner: object | null = null;
 let sharedHumanBrowserView: ReturnType<WorkbenchBrowser['suspendShared']> = null;
+let sharedFloatingBrowserView: ReturnType<WorkbenchBrowser['suspendShared']> = null;
 
 /** 화면에서 내려간 사이드바가 남기는 자리 표시 이름. */
 const ROOT_SLOT = 'agent-sidebar';
@@ -934,6 +935,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let workbenchDocuments: WorkbenchDocuments | null = null;
   let workbenchAgents: WorkbenchAgents | null = null;
   let workbenchBrowser: WorkbenchBrowser | null = null;
+  let floatingBrowser: WorkbenchBrowser | null = null;
+  let floatingBrowserTab: string | null = null;
+  let floatingBrowserHost: HTMLElement | null = null;
+  let floatingBrowserSequence = 0;
   let workbenchChanges: ReturnType<typeof createChangesDrawer> | null = null;
   /** 집중 화면의 변경 사항 탭이 버전 창 전체(브랜치·그래프·작업 트리·보관)를 빌려 쓰는 동안 원래 자리를 표시한다. */
   let versionsAnchor: Comment | null = null;
@@ -3818,7 +3823,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function syncWorkbenchResources(): void {
-    const resources = [...workbenchDocuments?.descriptors() ?? [], ...workbenchBrowser?.descriptors() ?? []];
+    const resources = [...workbenchDocuments?.descriptors() ?? [], ...workbenchBrowser?.descriptors() ?? [], ...floatingBrowser?.descriptors() ?? []];
     const activeId = workbench?.current() === 'browser' ? workbenchBrowser?.activeTab() : workbench?.current() === 'documents' ? workbenchDocuments?.activeTab() : null;
     workbench?.setResources(resources, activeId ?? null);
   }
@@ -3846,8 +3851,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     else openChat();
   }
 
-  function ensureWorkbenchBrowser(): WorkbenchBrowser {
-    return workbenchBrowser ??= createWorkbenchBrowser({ bridge,
+  function createBrowserView(extra: Partial<Parameters<typeof createWorkbenchBrowser>[0]> = {}): WorkbenchBrowser {
+    return createWorkbenchBrowser({ bridge,
       getDestination: () => ({ threadId: currentThread.id, documentId: currentDocumentId, projectId: bridge.projects?.store.get()?.id ?? null, label: currentThread.title || '현재 채팅' }),
       onCapture: (draft) => {
         if (captureInbox.queue(draft)) {
@@ -3862,7 +3867,35 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       onDock: () => { const dock = () => workbench?.select('browser'); if (!fullscreen) setFullscreen(true, { then: dock }); else dock(); },
       onChat: () => { returnToChat(); },
       onChange: syncWorkbenchResources,
+      ...extra,
     });
+  }
+  function ensureWorkbenchBrowser(): WorkbenchBrowser {
+    return workbenchBrowser ??= createBrowserView({ tabFilter: tab => tab.tabId !== floatingBrowserTab,
+      onFloatTab: (tabId, point) => { void floatBrowserTab(tabId, point); },
+    });
+  }
+  async function dockFloatingBrowser(): Promise<void> {
+    const view = floatingBrowser, tabId = floatingBrowserTab; if (!view || !tabId) return;
+    ++floatingBrowserSequence; floatingBrowser = null; floatingBrowserTab = null;
+    await view.releaseTab(tabId); view.dispose(); floatingBrowserHost?.remove(); floatingBrowserHost = null;
+    const browser = ensureWorkbenchBrowser(); await browser.controller.refresh(); browser.controller.select(tabId); browser.dock();
+    const dock = () => workbench?.select('browser'); if (!fullscreen) setFullscreen(true, { then: dock }); else dock();
+    syncWorkbenchResources();
+  }
+  async function floatBrowserTab(tabId: string, point?: { x: number; y: number }): Promise<void> {
+    if (floatingBrowserTab === tabId && floatingBrowser) { floatingBrowser.float(point); return; }
+    if (floatingBrowser) await dockFloatingBrowser();
+    const browser = ensureWorkbenchBrowser(); const tab = browser.controller.state.tabs.find(row => row.tabId === tabId);
+    if (!tab) return;
+    const sequence = ++floatingBrowserSequence; floatingBrowserTab = tabId;
+    browser.controller.accept({ tabs: browser.controller.state.tabs });
+    await browser.releaseTab(tabId);
+    if (sequence !== floatingBrowserSequence || !active || root.dataset.disposed === 'true') { floatingBrowserTab = null; return; }
+    const view = createBrowserView({ tabFilter: row => row.tabId === tabId, onDock: () => { void dockFloatingBrowser(); }, onClose: () => { void dockFloatingBrowser(); } });
+    floatingBrowser = view; floatingBrowserHost = document.createElement('div'); floatingBrowserHost.hidden = true; root.append(floatingBrowserHost);
+    view.mount(floatingBrowserHost); view.controller.accept({ tabs: [tab], runtime: browser.controller.state.runtime ?? undefined }); view.controller.select(tabId); view.float(point);
+    syncWorkbenchResources();
   }
 
   routeChatBrowserLinks(messages, async (url) => {
@@ -3879,6 +3912,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   let browserActivation = 0;
   function restoreSharedBrowser(): void {
+    const floatingSnapshot = sharedFloatingBrowserView;
+    if (floatingSnapshot && bridge.getConnectionState() === 'connected') void (async () => {
+      await floatingSnapshot.ready;
+      if (!active || root.dataset.disposed === 'true') return;
+      await ensureWorkbenchBrowser().controller.refresh(); await floatBrowserTab(floatingSnapshot.tabId);
+    })();
     const snapshot = sharedHumanBrowserView; const activation = ++browserActivation;
     if (!snapshot || bridge.getConnectionState() !== 'connected') return;
     void (async () => {
@@ -3904,13 +3943,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
 
   workbench = createSidebarWorkbench({
+    floatResource: (id, point) => { if (id.startsWith('browser:')) void floatBrowserTab(id.slice(8), point); },
+    onCreate: (view) => { if (view === 'browser') void ensureWorkbenchBrowser().controller.open('about:blank'); },
     onChat: returnToChat,
     selectResource: (id) => {
-      if (id?.startsWith('browser:')) workbenchBrowser?.selectTab(id);
+      if (id?.startsWith('browser:')) { if (id === `browser:${floatingBrowserTab}`) floatingBrowser?.float(); else workbenchBrowser?.selectTab(id); }
       else void workbenchDocuments?.selectTab(id);
     },
     closeResource: (id) => {
-      if (id.startsWith('browser:')) { workbenchBrowser?.closeTab(id); return; }
+      if (id.startsWith('browser:')) { if (id === `browser:${floatingBrowserTab}`) { floatingBrowser?.closeTab(id); void dockFloatingBrowser(); } else workbenchBrowser?.closeTab(id); return; }
       if (workbenchDocuments?.descriptors().some(tab => tab.id === id && tab.dirty)) workbench?.select('documents', { recordTab: false });
       workbenchDocuments?.closeTab(id);
     },
@@ -10229,6 +10270,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!active || root.dataset.disposed === 'true') return;
     browserActivation++;
     sharedHumanBrowserView = workbenchBrowser?.suspendShared() ?? null;
+    sharedFloatingBrowserView = floatingBrowser?.suspendShared() ?? null;
     flushTranscriptPersist();
     // 다른 채팅이나 문서로 떠나면 보내지 않은 초안은 버린다.
     discardDraft();
@@ -10311,7 +10353,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     dispose(): void {
       if (root.dataset.disposed === 'true') return;
       browserActivation++;
-      if (active) sharedHumanBrowserView = workbenchBrowser?.suspendShared() ?? null;
+      if (active) { sharedHumanBrowserView = workbenchBrowser?.suspendShared() ?? null; sharedFloatingBrowserView = floatingBrowser?.suspendShared() ?? null; }
       flushTranscriptPersist();
       // 붙어 있던 사이드바를 걷으면 다음에 붙는 사이드바가 이 배치를 이어받는다.
       if (active) writeSidebarPageLayout(pageLayoutSnapshot());
@@ -10418,6 +10460,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       workbenchAgents?.dispose();
       unsubscribeSharedBrowser();
       unsubscribeAgentBrowserPreview();
+      ++floatingBrowserSequence; floatingBrowser?.dispose(); floatingBrowserHost?.remove();
       workbenchBrowser?.dispose();
       workbench?.dispose();
       // 페이지 클래스는 화면에 붙어 있던 사이드바만 걷는다.

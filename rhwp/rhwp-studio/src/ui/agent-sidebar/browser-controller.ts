@@ -13,7 +13,7 @@ export interface BrowserControllerState {
 }
 
 /** 뷰의 수명과 탭의 수명을 분리한다. 화면을 닫아도 런타임 탭은 닫지 않는다. */
-export function createBrowserController(bridge: SidebarBridge, options: { nativePresentation?: boolean } = {}) {
+export function createBrowserController(bridge: SidebarBridge, options: { nativePresentation?: boolean; tabFilter?: (tab: BrowserTab) => boolean } = {}) {
   const state: BrowserControllerState = {
     runtime: null, tabs: [], activeTabId: null, frames: new Map(), downloads: [],
     connected: bridge.getConnectionState() === 'connected', busy: false, error: null,
@@ -60,14 +60,14 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
       }
     }
     if (result.tabs) {
-      state.tabs = result.tabs.map(latestTab);
+      state.tabs = result.tabs.filter(row => options.tabFilter?.(row) !== false).map(latestTab);
       for (const [id, frame] of state.frames) {
         const owner = state.tabs.find((row) => row.tabId === id);
         if (!owner || owner.navigationEpoch !== frame.navigationEpoch || owner.controllerEpoch !== frame.controllerEpoch) state.frames.delete(id);
       }
       if (!state.tabs.some((row) => row.tabId === state.activeTabId)) state.activeTabId = state.tabs[0]?.tabId ?? null;
     }
-    if (result.tab) {
+    if (result.tab && options.tabFilter?.(result.tab) !== false) {
       const index = state.tabs.findIndex((row) => row.tabId === result.tab!.tabId);
       const incoming = latestTab(result.tab);
       if (index < 0) state.tabs.push(incoming); else state.tabs[index] = incoming;
@@ -157,7 +157,7 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
     },
     async open(url = 'https://www.google.com/') {
       const result = await action('open', { url });
-      if (result.tab) { selectionSequence++; state.frames.clear(); state.activeTabId = result.tab.tabId; rememberTab(); notify(); void readFrame(); }
+      if (result.tab && options.tabFilter?.(result.tab) !== false) { selectionSequence++; state.frames.clear(); state.activeTabId = result.tab.tabId; rememberTab(); notify(); void readFrame(); }
     },
     async close(tabId: string) {
       const target = state.tabs.find((row) => row.tabId === tabId);

@@ -118,3 +118,9 @@ html.document-home-open .ag-browser-floating { visibility: hidden; pointer-event
 html.document-home-open .ag-browser-floating[data-agent-controlled="true"] { visibility: visible; pointer-events: auto; }
 
 .ag-browser button[data-downloading=true] { color: var(--ag-accent, #62a6cd); }
+
+.ag-browser-floating { contain: layout paint; }
+.ag-browser-floating[data-gesture] { box-shadow: 0 4px 12px #0002, 0 0 0 1px #0001; }
+
+.ag-browser-tab-drag { position: fixed; top: 0; left: 0; z-index: 3000; pointer-events: none; max-width: 240px; padding: 9px 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 10px; color: var(--ag-text, #e6e6e6); background: var(--ag-raised, #181818); box-shadow: 0 6px 18px #0003; border: 1px solid #8883; font: 13px -apple-system, BlinkMacSystemFont, sans-serif; }
+.ag-browser-tab-drag[data-detached=true] { border-color: var(--ag-accent, #62a6cd); }
