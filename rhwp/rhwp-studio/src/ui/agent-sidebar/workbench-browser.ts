@@ -268,7 +268,35 @@ export function createWorkbenchBrowser(options: {
     if (event.key !== 'Escape') return;
     event.preventDefault(); event.stopPropagation(); addressDraft = false; address.value = controller.tab()?.url ?? ''; address.blur();
   });
+  async function showNativeDownloads(): Promise<void> {
+    await controller.request('downloads', { action: 'list' });
+    const jobs = controller.state.downloads;
+    const rect = downloadsButton.getBoundingClientRect(); const anchor = { x: rect.right, y: rect.bottom };
+    const selected = await showContextMenu([
+      ...jobs.slice(0, 40).map(job => ({ id: job.downloadId, label: `${job.filename} — ${job.state === 'downloading' ? `받는 중${job.totalBytes ? ` ${Math.min(100, Math.round(job.size / job.totalBytes * 100))}%` : ''}` : job.savedPath ? '저장됨' : job.state === 'cancelled' ? '취소됨' : job.state === 'interrupted' ? '중단됨' : '받은 파일'} · ${formatDownloadSize(job.size)}` })),
+      ...(jobs.length ? [] : [{ id: 'empty', label: '받은 파일이 없습니다', enabled: false }]),
+      { type: 'separator' as const }, { id: 'refresh', label: '목록 새로고침' },
+    ], anchor);
+    if (selected === 'refresh') { handle(showNativeDownloads()); return; }
+    const job = jobs.find(item => item.downloadId === selected); if (!job || disposed) return;
+    const complete = ['downloaded', 'importing', 'imported', 'import-failed'].includes(job.state);
+    const choice = await showContextMenu([
+      ...(job.mimeType === 'application/pdf' || /\.(hwp|hwpx|rhwp|rhwpx)$/i.test(job.filename) ? [{ id: 'open', label: '문서에서 열기', enabled: complete }] : []),
+      { id: 'save', label: '다운로드 폴더에 저장', enabled: complete },
+      { id: 'reveal', label: 'Finder에서 보기', enabled: complete },
+      { id: 'copy-path', label: '파일 경로 복사', enabled: !!job.savedPath },
+      { id: 'copy-link', label: '다운로드 링크 복사', enabled: !!job.source?.url },
+      { id: 'cancel', label: '다운로드 취소', enabled: job.state === 'downloading' },
+      { id: 'retry', label: '다시 시도', enabled: job.state === 'import-failed' || job.extractionStatus === 'failed' },
+    ], anchor);
+    if (choice === 'open') options.onOpenDownload(job);
+    else if (choice === 'copy-path' && job.savedPath) await navigator.clipboard.writeText(job.savedPath);
+    else if (choice === 'copy-link' && job.source?.url) await navigator.clipboard.writeText(job.source.url);
+    else if (choice && ['save', 'reveal', 'cancel', 'retry'].includes(choice)) await controller.action('downloads', { action: choice, downloadId: job.downloadId });
+  }
+  function formatDownloadSize(bytes: number): string { return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`; }
   function showDownloads(open: boolean, restoreFocus = true): void {
+    if (open && nativeBrowserApi() && typeof (window as Window & { rhwpDesktop?: { showContextMenu?: unknown } }).rhwpDesktop?.showContextMenu === 'function') { handle(showNativeDownloads()); return; }
     if (open) { details.open = false; handle(controller.readFrame(true)); handle(controller.request('downloads', { action: 'list' })); }
     downloads.hidden = !open; downloadsButton.setAttribute('aria-expanded', String(open)); layout();
     if (restoreFocus) (open ? downloads.querySelector<HTMLButtonElement>('button') : downloadsButton)?.focus({ preventScroll: true });
@@ -367,6 +395,8 @@ export function createWorkbenchBrowser(options: {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') { event.preventDefault(); event.stopPropagation(); if (presentation.current() === 'float') { presentation.present('dock'); options.onDock(); } address.focus(); address.select(); }
   }, { capture: true });
   function paintDownloads(): void {
+    const activeCount = controller.state.downloads.filter(job => job.state === 'downloading').length;
+    downloadsButton.dataset.downloading = String(activeCount > 0); downloadsButton.title = activeCount ? `받는 중 · ${activeCount}개` : `받은 파일 · ${controller.state.downloads.length}개`;
     const signature = JSON.stringify(controller.state.downloads); if (signature === downloadsSignature) return; downloadsSignature = signature;
     downloads.replaceChildren(); const header = document.createElement('header'); header.className = 'ag-browser-popover-header'; const title = document.createElement('strong'); title.textContent = '받은 파일'; header.append(title); const close = button('다운로드 목록 닫기', '', () => showDownloads(false), header); icon(close, 'close'); downloads.append(header);
     if (!controller.state.downloads.length) { const text = document.createElement('p'); text.textContent = '받은 파일이 없습니다.'; downloads.append(text); }
@@ -374,9 +404,13 @@ export function createWorkbenchBrowser(options: {
     for (const job of controller.state.downloads) {
       const row = document.createElement('article'); row.className = 'ag-browser-download'; row.dataset.downloadId = job.downloadId;
       const name = document.createElement('strong'); name.textContent = job.filename;
-      const state = document.createElement('span'); state.textContent = `${labels[job.state]} · ${(job.size / 1024).toFixed(0)} KB · ${job.target.projectId || '일반 받은 파일'}`;
+      const state = document.createElement('span'); state.textContent = `${labels[job.state]} · ${formatDownloadSize(job.size)} · ${job.target.projectId || '일반 받은 파일'}`;
       row.append(name, state);
-      if (['downloaded', 'importing', 'imported', 'import-failed'].includes(job.state)) button('문서에서 열기', '문서에서 열기', () => options.onOpenDownload(job), row);
+      if (['downloaded', 'importing', 'imported', 'import-failed'].includes(job.state)) {
+        if (nativeBrowserApi()) button('다운로드 폴더에 저장', '저장', () => handle(controller.action('downloads', { action: 'save', downloadId: job.downloadId })), row);
+        if (nativeBrowserApi()) button('Finder에서 보기', 'Finder에서 보기', () => handle(controller.action('downloads', { action: 'reveal', downloadId: job.downloadId })), row);
+      }
+      if ((job.mimeType === 'application/pdf' || /\.(hwp|hwpx|rhwp|rhwpx)$/i.test(job.filename)) && ['downloaded', 'importing', 'imported', 'import-failed'].includes(job.state)) button('문서에서 열기', '문서에서 열기', () => options.onOpenDownload(job), row);
       if (job.state === 'downloading') button('다운로드 취소', '취소', () => handle(controller.action('downloads', { action: 'cancel', downloadId: job.downloadId })), row);
       if (job.state === 'interrupted' || job.state === 'import-failed' || job.state === 'imported' && job.extractionStatus === 'failed') button('다운로드 처리 다시 시도', '다시 시도', () => handle(controller.action('downloads', { action: 'retry', downloadId: job.downloadId })), row);
       if (job.extractionStatus && job.extractionStatus !== 'ready') { const extraction = document.createElement('p'); extraction.textContent = job.extractionStatus === 'failed' ? 'PDF를 열 수 있습니다. 글자 추출에 실패했습니다.' : 'PDF를 열 수 있습니다. 글자를 추출하고 있습니다.'; row.append(extraction); }

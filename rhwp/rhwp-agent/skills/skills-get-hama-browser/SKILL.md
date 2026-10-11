@@ -46,6 +46,6 @@ For `BROWSER_CHALLENGE_REQUIRED`, reuse the returned tab. Offer human control or
 
 Use `browser_capture` for requested page, element, or region evidence. It retains the original chat/project destination. User viewport screenshots arrive as chat attachments.
 
-Trigger downloads through the actual page, then inspect `browser_downloads`. Confirm completion before claiming a file is saved. Keep the managed download ID and its returned reference/viewer details. Project downloads can create reference cards; downloads without a project stay in the local inbox. Preserve authenticated browser bytes instead of refetching a private URL.
+Trigger downloads through the actual page, then inspect `browser_downloads`. Confirm completion before claiming a file is saved. Keep the managed download ID and its returned reference/viewer details. Project downloads can create reference cards; downloads without a project stay in the local inbox. On desktop, call `browser_downloads` with `action: save` and the completed download ID to obtain its actual local `savedPath`; use that returned path for further file work. Preserve authenticated browser bytes instead of refetching a private URL.
 
 Read [references/design-sources.md](references/design-sources.md) only for implementation comparisons, evidence limits, or future tool design.

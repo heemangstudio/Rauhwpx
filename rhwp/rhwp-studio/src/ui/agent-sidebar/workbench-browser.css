@@ -116,3 +116,5 @@ html.document-home-open .ag-browser-floating { visibility: hidden; pointer-event
 /* 네이티브 페이지 밖에 테두리를 두어 조작 중인 미리보기를 구분한다. */
 .ag-browser-floating[data-agent-controlled="true"] { border: 1px solid #f59a4573; box-shadow: 0 12px 40px #0003; }
 html.document-home-open .ag-browser-floating[data-agent-controlled="true"] { visibility: visible; pointer-events: auto; }
+
+.ag-browser button[data-downloading=true] { color: var(--ag-accent, #62a6cd); }

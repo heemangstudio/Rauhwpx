@@ -1870,8 +1870,8 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_downloads',
-    description: 'List, cancel or retry this agent\'s managed research downloads. Captured project downloads add a reference card automatically; general downloads stay in the local inbox. No general project-edit permission is granted.',
-    shape: { action: z.enum(['list', 'cancel', 'retry']).default('list'), downloadId: z.string().min(1).max(160).optional() },
+    description: 'List, cancel, retry or save this agent\'s browser downloads. Clicking a website download link starts the transfer; use save after completion to get a savedPath in the local Downloads folder. Saving preserves the filename and never executes downloaded programs. Captured project downloads add a reference card automatically; general downloads stay in the local inbox. No general project-edit permission is granted.',
+    shape: { action: z.enum(['list', 'cancel', 'retry', 'save']).default('list'), downloadId: z.string().min(1).max(160).optional() },
   },
   {
     name: 'browser_fill_account',

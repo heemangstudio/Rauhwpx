@@ -68,8 +68,10 @@ export class BrowserDownloads {
   constructor({ dataDir, agentDir, projectIngest, ownerId = 'local', authorizeImport = () => true, authorizeDownload = null, onEvent = null,
     maxBytes = 100 * 1024 * 1024, maxTotalBytes = 2 * 1024 * 1024 * 1024, maxJobs = 2_000,
     maxConcurrent = 4, freeSpaceReserve = 256 * 1024 * 1024, timeoutMs = 120_000, autoImport = true,
-    fetchPublicImpl = fetchPublic } = {}) {
+    fetchPublicImpl = fetchPublic, exportDirectory = null } = {}) {
     if (!dataDir && !agentDir) throw new Error('BrowserDownloads requires hub-owned dataDir');
+    this.exportDirectory = exportDirectory ? path.resolve(exportDirectory) : null;
+    this.exportQueues = new Map();
     this.root = path.resolve(dataDir ?? agentDir, 'downloads');
     this.projectIngest = projectIngest;
     this.ownerId = ownerId;
@@ -139,9 +141,10 @@ export class BrowserDownloads {
     promise.then(() => this.pending.delete(promise), () => this.pending.delete(promise));
     return promise;
   }
-  #persist(job, patch = {}) {
+  #persist(job, patch = {}, { onlyDownloading = false } = {}) {
     const previous = this.writeQueues.get(job.downloadId) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(async () => {
+      if (onlyDownloading && job.state !== 'downloading') return publicJob(job);
       const updated = { ...job, ...patch, updatedAt: new Date().toISOString() };
       await atomicManifest(this.#file(job.downloadId, 'manifest.json'), updated);
       Object.assign(job, updated);
@@ -177,6 +180,7 @@ export class BrowserDownloads {
           target: targetOf(raw.target, null, this.ownerId), source: {}, createdAt: raw.createdAt,
           ...(raw.initiatedByUser === true ? { initiatedByUser: true } : {}),
           updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : raw.createdAt };
+        if (this.exportDirectory && typeof raw.savedPath === 'string' && path.dirname(raw.savedPath) === this.exportDirectory) job.savedPath = raw.savedPath;
         if (cleanId(raw.target?.tabId)) job.target.tabId = raw.target.tabId;
         for (const key of ['url', 'pageUrl', 'finalUrl']) { const url = sanitizeDownloadUrl(raw.source?.[key]); if (url) job.source[key] = url; }
         for (const key of ['fileId', 'projectItemId', 'importProjectId', 'extractionStatus', 'inboxMovedAt']) {
@@ -315,7 +319,7 @@ export class BrowserDownloads {
         if (size > Math.min(live.byteLimit, this.maxBytes)) throw failure('BROWSER_DOWNLOAD_TOO_LARGE', 'Download exceeds the managed byte limit');
         hash.update(chunk);
         await handle.writeFile(chunk);
-        if (Date.now() - lastProgress > 200) { await this.#persist(job, { size }); lastProgress = Date.now(); }
+        if (Date.now() - lastProgress > 200) { await this.#persist(job, { size: Math.max(job.size, size) }); lastProgress = Date.now(); }
       }
       if (live.cancelled || this.closed) throw live.failure ?? failure('BROWSER_DOWNLOAD_CANCELLED', 'Download was cancelled');
       await live.authorize();
@@ -325,8 +329,9 @@ export class BrowserDownloads {
       await fs.rename(this.#file(job.downloadId, 'transfer.part'), this.#file(job.downloadId, 'bytes.bin'));
       this.storedBytes.set(job.downloadId, size);
       const checksum = hash.digest('hex');
-      const bytes = await this.#readVerified({ ...job, size, sha256: checksum });
-      const mimeType = bytes.subarray(0, 5).toString('ascii') === '%PDF-' ? 'application/pdf' : 'application/octet-stream';
+      const sniff = await fs.open(this.#file(job.downloadId, 'bytes.bin'), 'r');
+      const bytes = Buffer.alloc(5); try { await sniff.read(bytes, 0, 5, 0); } finally { await sniff.close(); }
+      const mimeType = bytes.toString('ascii') === '%PDF-' ? 'application/pdf' : 'application/octet-stream';
       const filename = sanitizeFilename(typeof live.download.suggestedFilename === 'function' ? live.download.suggestedFilename() : job.filename);
       const finalUrl = sanitizeDownloadUrl(typeof live.download.url === 'function' ? live.download.url() : live.download.url);
       await this.#persist(job, { state: 'downloaded', size, sha256: checksum, mimeType, filename,
@@ -335,6 +340,7 @@ export class BrowserDownloads {
       clearInterval(live.policyTimer);
       // 앱 복사본이 커밋되면 Chromium 임시 원본을 먼저 정리한다. 프로젝트 복사가 세 번째가 되지 않는다.
       try { await live.download?.delete?.(); live.sourceReleased = true; } catch {}
+      if (job.initiatedByUser && this.exportDirectory) await this.save({ downloadId: job.downloadId, actor: { isHuman: true } }).catch(() => undefined);
       if (job.target.projectId) await this.#import(job, job.target.projectId, { automatic: true });
     } catch (error) {
       if (!COMPLETE.has(job.state)) {
@@ -441,6 +447,48 @@ export class BrowserDownloads {
     const job = this.#owned(downloadId, actor);
     if (!COMPLETE.has(job.state)) throw failure('BROWSER_DOWNLOAD_NOT_READY', 'Download bytes are not complete');
     return { bytes: await this.#readVerified(job), mimeType: job.mimeType, filename: job.filename, job: publicJob(job) };
+  }
+  reportProgress({ tabId, filename, receivedBytes, totalBytes }) {
+    const matching = [...this.jobs.values()].filter(job => job.state === 'downloading' && job.target.tabId === tabId && job.filename === sanitizeFilename(filename));
+    if (matching.length !== 1 || !Number.isSafeInteger(receivedBytes) || receivedBytes < 0 || receivedBytes > this.maxBytes) return;
+    const job = matching[0]; if (receivedBytes <= job.size || Date.now() - (job.progressAt ?? 0) < 200) return;
+    job.progressAt = Date.now();
+    void this.#persist(job, { size: receivedBytes, ...(Number.isSafeInteger(totalBytes) && totalBytes > 0 ? { totalBytes } : {}) }, { onlyDownloading: true }).catch(() => {});
+  }
+  async save({ downloadId, actor }) {
+    await this.ready; const job = this.#owned(downloadId, actor);
+    if (!this.exportDirectory) throw failure('BROWSER_DOWNLOAD_SAVE_UNAVAILABLE', 'Saving is available in the desktop browser.');
+    if (!COMPLETE.has(job.state)) throw failure('BROWSER_DOWNLOAD_NOT_READY', 'Download is still in progress.');
+    const previous = this.exportQueues.get(downloadId) ?? Promise.resolve();
+    const saving = previous.catch(() => {}).then(async () => {
+      if (job.savedPath && await fs.lstat(job.savedPath).then(info => info.isFile() && !info.isSymbolicLink(), () => false)) return publicJob(job);
+      await fs.mkdir(this.exportDirectory, { recursive: true });
+      const source = this.#file(downloadId, 'bytes.bin');
+      await plainDirectory(this.#directory(downloadId));
+      const info = await fs.lstat(source); if (!info.isFile() || info.isSymbolicLink() || info.size !== job.size) throw failure('BROWSER_DOWNLOAD_PATH', 'Download file changed.');
+      const handle = await fs.open(source, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+      try {
+        const held = await handle.stat(); if (held.ino !== info.ino || held.dev !== info.dev) throw failure('BROWSER_DOWNLOAD_PATH', 'Download file changed.');
+        const hash = crypto.createHash('sha256'); for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk);
+        if (hash.digest('hex') !== job.sha256) throw failure('BROWSER_DOWNLOAD_CHECKSUM', 'Download checksum changed.');
+        const parsed = path.parse(sanitizeFilename(job.filename));
+        for (let index = 0; index < 1000; index++) {
+          const savedPath = path.join(this.exportDirectory, index ? `${parsed.name} (${index})${parsed.ext}` : `${parsed.name}${parsed.ext}`);
+          let output;
+          try { output = await fs.open(savedPath, 'wx', 0o600); }
+          catch (error) { if (error.code === 'EEXIST') continue; throw error; }
+          try {
+            const copied = crypto.createHash('sha256');
+            for await (const chunk of handle.createReadStream({ start: 0, autoClose: false })) { copied.update(chunk); await output.writeFile(chunk); }
+            if (copied.digest('hex') !== job.sha256) throw failure('BROWSER_DOWNLOAD_CHECKSUM', 'Download changed during saving.');
+            await output.sync(); await output.close(); output = null;
+            return await this.#persist(job, { savedPath });
+          } catch (error) { await output?.close(); await fs.unlink(savedPath).catch(() => {}); throw error; }
+        }
+        throw failure('BROWSER_DOWNLOAD_SAVE_FAILED', 'Too many files with this name.');
+      } finally { await handle.close(); }
+    });
+    this.exportQueues.set(downloadId, saving); try { return await saving; } finally { if (this.exportQueues.get(downloadId) === saving) this.exportQueues.delete(downloadId); }
   }
   async cancel({ downloadId, actor }) {
     await this.ready;

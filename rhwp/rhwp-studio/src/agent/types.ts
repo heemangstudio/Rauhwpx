@@ -708,6 +708,8 @@ export interface BrowserDownload {
   downloadId: string;
   state: 'downloading' | 'downloaded' | 'importing' | 'imported' | 'cancelled' | 'interrupted' | 'import-failed';
   filename: string;
+  savedPath?: string;
+  totalBytes?: number;
   mimeType?: string;
   size: number;
   sha256?: string;

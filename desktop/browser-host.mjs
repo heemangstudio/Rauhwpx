@@ -1,6 +1,7 @@
+import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, realpath } from 'node:fs/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PrivateBrowserCdp } from './browser-cdp.mjs';
 
@@ -369,10 +370,10 @@ export class OwnedBrowserHost {
     if (!tab?.targetId) return;
     const payload = { type, ...this.state(tab), ...extra };
     this.onEvent(payload);
-    if (type === 'zoom' && tab.tabId && this.owner?.connected && typeof this.owner.send === 'function') {
+    if (['zoom', 'download-progress'].includes(type) && tab.tabId && this.owner?.connected && typeof this.owner.send === 'function') {
       try {
         this.owner.send({ type: 'rhwp-browser-event', event: { tabId: tab.tabId, targetId: tab.targetId,
-          generation: this.generation, reason: 'zoom', zoomFactor: payload.zoomFactor } }, () => {});
+          generation: this.generation, reason: type, ...(type === 'zoom' ? { zoomFactor: payload.zoomFactor } : extra) } }, () => {});
       } catch {}
     }
     const window = tab.sessionId && this.getWindowForSession(tab.sessionId);
@@ -688,8 +689,16 @@ export class OwnedBrowserHost {
       guid, totalBytes: item.getTotalBytes(), receivedBytes: item.getReceivedBytes(), state,
       ...(state === 'completed' ? { filePath: item.getSavePath() } : {}),
     } });
-    item.on('updated', () => progress('inProgress'));
+    item.on('updated', () => { progress('inProgress'); this.emit(tab, 'download-progress', { filename: tab.passwordShield ? 'download' : item.getFilename(), receivedBytes: item.getReceivedBytes(), totalBytes: item.getTotalBytes() }); });
     item.once('done', (_event, state) => { progress(state === 'completed' ? 'completed' : 'canceled'); this.downloads.delete(guid); });
+  }
+
+  async revealDownload({ filePath }) {
+    const root = await realpath(join(os.homedir(), 'Downloads'));
+    const file = await realpath(filePath);
+    const within = relative(root, file), info = await lstat(filePath);
+    if (!within || within === '..' || within.startsWith('..' + sep) || isAbsolute(within) || !info.isFile() || info.isSymbolicLink()) throw new Error('Download file is unavailable');
+    const { shell } = await import('electron'); shell.showItemInFolder(file); return { revealed: true };
   }
 
   cancelDownload(guid) { this.downloads.get(guid)?.cancel(); return {}; }
@@ -874,7 +883,8 @@ export class OwnedBrowserHost {
       else if (message.operation === 'password-accounts') response.value = this.passwords ? await this.passwords.vault.list() : { accounts: [] };
       else {
         if (this.owner !== owner) throw new Error('Native browser request owner is stale');
-        if (message.operation === 'bind') response.value = this.bind(params);
+        if (message.operation === 'reveal-download') response.value = await this.revealDownload(params);
+        else if (message.operation === 'bind') response.value = this.bind(params);
         else if (message.operation === 'sleep') response.value = await this.sleep(params);
         else if (message.operation === 'activity') response.value = await this.activity(params);
         else if (message.operation === 'control') response.value = this.control(params);

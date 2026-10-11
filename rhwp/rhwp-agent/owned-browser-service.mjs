@@ -73,6 +73,7 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     async start(params) { const result = await call('start', params); nativeGeneration = result.generation; return { ...result, close: () => call('release') }; },
     importSession: (params) => call('import-session', params),
     onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    revealDownload: (params) => call('reveal-download', params),
     sleep: (params) => call('sleep', params), activity: (params) => call('activity', params), bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'), inventory: () => call('inventory'),
     passwordAccounts: () => call('password-accounts'), passwordSnapshot: (params) => call('password-snapshot', params),
     passwordFill: (params) => call('password-fill', params), passwordAction: (params) => call('password-action', params),
@@ -223,6 +224,7 @@ export function createOwnedBrowserService(options = {}) {
   };
   const unsubscribeNativeEvents = nativeAdapter?.onEvent?.((event) => {
     const tab = tabs.get(event.tabId);
+    if (!closed && runtimeMode === 'native' && tab && event.reason === 'download-progress' && event.targetId === tab?.nativeTargetId && event.generation === tab?.nativeGeneration) { downloads?.reportProgress?.({ tabId: tab.tabId, ...event }); return; }
     if (closed || runtimeMode !== 'native' || state !== 'ready' || !tab?.page
       || !tab.nativeGeneration || event.reason !== 'zoom' || event.targetId !== tab.nativeTargetId
       || event.generation !== tab.nativeGeneration || !Number.isFinite(event.zoomFactor)) return;
@@ -1049,9 +1051,16 @@ export function createOwnedBrowserService(options = {}) {
       if (!downloads) throw error('BROWSER_DOWNLOADS_UNAVAILABLE', 'Managed downloads are unavailable.');
       const operation = args.action ?? 'list';
       if (operation === 'list') return { ok: true, action, downloads: await downloads.list(actor) };
-      if (!['cancel', 'retry', 'import'].includes(operation)) throw error('BROWSER_ACTION_INVALID', 'Unsupported download action.');
+      if (operation === 'reveal') {
+        if (!actor.isHuman || !selectedAdapter()?.revealDownload) throw error('BROWSER_HUMAN_REQUIRED', 'Show downloaded files from the desktop browser.');
+        const job = await downloads.save({ ...args, actor });
+        await selectedAdapter().revealDownload({ filePath: job.savedPath });
+        return { ok: true, action, job };
+      }
+      if (!['cancel', 'retry', 'import', 'save'].includes(operation)) throw error('BROWSER_ACTION_INVALID', 'Unsupported download action.');
       const method = operation === 'import' ? downloads.importDownload : downloads[operation];
-      return { ok: true, action, download: await method.call(downloads, { ...args, actor }) };
+      const job = await method.call(downloads, { ...args, actor });
+      return { ok: true, action, download: job, job };
     }
     if (action === 'open') {
       const url = args.url ? guard.parse(args.url).href : 'about:blank';

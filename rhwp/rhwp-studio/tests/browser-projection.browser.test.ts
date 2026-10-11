@@ -109,6 +109,12 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     assert.equal(await page.$eval('.ag-browser-details', node => (node as HTMLDetailsElement).open), false, 'desktop menu does not expose the loading placeholder');
     await page.evaluate(() => (window as any).projectionTest.closeNativeMenu(null));
     assert.deepEqual(await page.evaluate(() => (window as any).projectionTest.menuItems.map((item: any) => item.id)), ['popout', 'chat', 'reload', 'sleep']);
+    await page.evaluate(() => { (window as any).projectionTest.nativeMenuOpened = false; });
+    await page.click('button[aria-label="다운로드 목록"]');
+    await page.waitForFunction(() => (window as any).projectionTest.nativeMenuOpened);
+    assert.equal(await page.evaluate(() => (window as any).projectionTest.attached), 'same-tab', 'download menu preserves the actual page');
+    assert.equal(await page.evaluate(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'detach').length), beforeMenu, 'download menu never detaches the guest');
+    await page.evaluate(() => (window as any).projectionTest.closeNativeMenu(null));
     await page.click('.ag-browser-details summary');
     await page.evaluate(() => (window as any).projectionTest.closeNativeMenu('sleep'));
     await page.waitForFunction(() => (window as any).projectionTest.calls.some((call: any) => call.action === 'sleep'));

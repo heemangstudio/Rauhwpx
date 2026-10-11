@@ -473,3 +473,46 @@ test('public transfer monitoring follows the redirected delivery origin when it 
   } finally { clearTimeout(deadlineTimer); }
   assert.equal((await fx.downloads.list(actor))[0].state, 'interrupted');
 });
+
+test('desktop downloads save original filenames without overwrites and retain scoped paths after restart', async t => {
+  const exportDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'hama-saved-downloads-'));
+  t.after(() => fs.rm(exportDirectory, { recursive: true, force: true }));
+  await fs.writeFile(path.join(exportDirectory, 'Installer.dmg'), 'existing user file');
+  const fx = await fixture(t, { exportDirectory });
+  const bytes = Buffer.from('binary installer fixture');
+  const started = await fx.downloads.handleBrowserDownload({ actor: human, tab: { tabId: 'human-tab' }, download: source(bytes, { suggestedFilename: () => 'Installer.dmg' }) });
+  const completed = await fx.downloads.awaitCompletion(started.downloadId);
+  assert.equal(path.basename(completed.savedPath), 'Installer (1).dmg');
+  assert.deepEqual(await fs.readFile(completed.savedPath), bytes);
+  assert.equal(await fs.readFile(path.join(exportDirectory, 'Installer.dmg'), 'utf8'), 'existing user file');
+  assert.equal((await fx.downloads.save({ downloadId: started.downloadId, actor: human })).savedPath, completed.savedPath);
+  await assert.rejects(fx.downloads.save({ downloadId: started.downloadId, actor }), { code: 'BROWSER_DOWNLOAD_NOT_FOUND' });
+  const restarted = createBrowserDownloads({ dataDir: fx.parent, exportDirectory });
+  await restarted.ready;
+  assert.equal((await restarted.get({ downloadId: started.downloadId, actor: human })).savedPath, completed.savedPath);
+  await restarted.close();
+  const agentJob = await fx.downloads.handleBrowserDownload({ actor, tab: { tabId: 'agent-tab' }, download: source(bytes, { suggestedFilename: () => 'agent.zip' }) });
+  await fx.downloads.awaitCompletion(agentJob.downloadId);
+  const exported = await fx.downloads.save({ downloadId: agentJob.downloadId, actor });
+  assert.equal(path.basename(exported.savedPath), 'agent.zip');
+  assert.deepEqual(await fs.readFile(exported.savedPath), bytes);
+});
+
+
+test('native progress reaches observers before completion and cannot overwrite completed bytes', async t => {
+  const events = [];
+  const fx = await fixture(t, { onEvent: event => events.push(event.job) });
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const bytes = Buffer.from('completed archive');
+  const started = await fx.downloads.handleBrowserDownload({ actor, tab: { tabId: 'progress-tab' }, download: source(bytes, { createReadStream: async () => { await pending; return Readable.from([bytes]); } }) });
+  fx.downloads.reportProgress({ tabId: 'progress-tab', filename: 'report.pdf', receivedBytes: 5, totalBytes: bytes.length });
+  const deadline = Date.now() + 1000;
+  while (!events.some(job => job.size === 5) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(events.some(job => job.state === 'downloading' && job.size === 5 && job.totalBytes === bytes.length));
+  release();
+  const completed = await fx.downloads.awaitCompletion(started.downloadId);
+  fx.downloads.reportProgress({ tabId: 'progress-tab', filename: 'report.pdf', receivedBytes: 100, totalBytes: 100 });
+  assert.equal((await fx.downloads.get({ downloadId: started.downloadId, actor })).size, bytes.length);
+  assert.deepEqual((await fx.downloads.readBytes({ downloadId: completed.downloadId, actor })).bytes, bytes);
+});
