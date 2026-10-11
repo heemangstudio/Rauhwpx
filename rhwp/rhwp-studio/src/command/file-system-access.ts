@@ -95,6 +95,8 @@ export interface SaveDocumentOptions {
   forceSaveAs: boolean;
   /** 저장 picker와 확장자 검증을 결정하는 단일 출력 포맷. */
   saveFormat: SaveFormat;
+  /** 내보낸 사본의 핸들과 소유권은 현재 문서에 연결하지 않는다. */
+  retainHandle?: boolean;
   /** Desktop native Save As picker; undefined falls back to the browser picker. */
   pickSaveHandle?: (
     options: SaveFilePickerOptionsLike,
@@ -210,6 +212,7 @@ export async function writeBlobToHandle(
   handle: FileSystemFileHandleLike,
   blob: Blob,
   validateTarget?: SaveDocumentOptions['validateTarget'],
+  retainHandle = true,
 ): Promise<void> {
   let release: ((saved: boolean) => Promise<void>) | void = undefined;
   let writable: FileSystemWritableFileStreamLike | undefined;
@@ -221,7 +224,7 @@ export async function writeBlobToHandle(
     await writable.write(blob);
     await writable.close();
     saved = true;
-    handle.adoptSaveTarget?.();
+    if (retainHandle) handle.adoptSaveTarget?.();
   } catch (error) {
     // File System Access writes through a temporary swap file. Explicitly abort it
     // on write/close failure so a partially staged document cannot be committed by
@@ -229,8 +232,11 @@ export async function writeBlobToHandle(
     await writable?.abort?.(error).catch(() => {});
     throw error;
   } finally {
-    await release?.(saved);
-    if (!saved) await handle.releaseUnusedSaveTarget?.();
+    try {
+      await release?.(saved && retainHandle);
+    } finally {
+      if (!saved || !retainHandle) await handle.releaseUnusedSaveTarget?.();
+    }
   }
 }
 
@@ -318,6 +324,7 @@ export async function saveDocumentToFileSystem(options: SaveDocumentOptions): Pr
     saveFormat,
     pickSaveHandle,
     validateTarget,
+    retainHandle = true,
   } = options;
 
   // 저장 picker 형식을 출력 포맷에 맞춘다 (HML/HWP/HWPX).
@@ -330,7 +337,7 @@ export async function saveDocumentToFileSystem(options: SaveDocumentOptions): Pr
       expectedSaveExtension(saveFormat),
       null,
     );
-    await writeBlobToHandle(currentHandle, blob, validateTarget);
+    await writeBlobToHandle(currentHandle, blob, validateTarget, retainHandle);
     return {
       method: 'current-handle',
       handle: currentHandle,
@@ -355,7 +362,7 @@ export async function saveDocumentToFileSystem(options: SaveDocumentOptions): Pr
         expectedSaveExtension(saveFormat),
         forceSaveAs ? currentHandle : null,
       );
-      await writeBlobToHandle(handle, blob, validateTarget);
+      await writeBlobToHandle(handle, blob, validateTarget, retainHandle);
       return {
         method: 'save-picker',
         handle,

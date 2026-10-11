@@ -6,7 +6,6 @@ import type { LayerInfo, LayerPaintOp } from '../src/core/types';
 import {
   collectFlowImagePaintOps,
   composeImageFilter,
-  isDomDisplayableFlowImage,
   planFlowImageClip,
   rotatedFrameExtent,
   visibleFlowImageBbox,
@@ -267,36 +266,4 @@ test('비유한 회전각은 0도로 낮춰 처리한다', () => {
 
   const extent = rotatedFrameExtent(bbox, Number.NaN);
   assert.deepEqual(extent, bbox);
-});
-
-const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0WQAAAAASUVORK5CYII=';
-const GIF_1X1 = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-const JPEG_300X200 = Buffer.from([
-  0xff, 0xd8,
-  0xff, 0xe0, 0x00, 0x04, 0x00, 0x00,
-  0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0xc8, 0x01, 0x2c, 0x01, 0x01,
-  0xff, 0xd9,
-]).toString('base64');
-// placeable WMF 헤더 — 브라우저는 모르는 형식이고, 엔진은 SVG 로 바꿔 그린다.
-const WMF = Buffer.from([0xd7, 0xcd, 0xc6, 0x9a, 0, 0, 0, 0, 0, 0, 0x10, 0x27, 0x10, 0x27]).toString('base64');
-
-function pngHeaderBase64(width: number, height: number): string {
-  const png = new Uint8Array(24);
-  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
-  png.set([0x49, 0x48, 0x44, 0x52], 12);
-  new DataView(png.buffer).setUint32(16, width, false);
-  new DataView(png.buffer).setUint32(20, height, false);
-  return Buffer.from(png).toString('base64');
-}
-
-test('DOM 그림 층은 브라우저가 못 그리는 그림을 맡지 않는다', () => {
-  assert.equal(isDomDisplayableFlowImage({ mime: 'image/png', base64: PNG_1X1 }), true);
-  assert.equal(isDomDisplayableFlowImage({ mime: 'image/gif', base64: GIF_1X1 }), true);
-  assert.equal(isDomDisplayableFlowImage({ mime: 'image/jpeg', base64: JPEG_300X200 }), true);
-  // WMF 는 엔진 canvas 만 SVG 로 바꿔 그린다. `<img>` 로 띄우면 빈 칸이 된다.
-  assert.equal(isDomDisplayableFlowImage({ mime: 'image/x-wmf', base64: WMF }), false);
-  assert.equal(isDomDisplayableFlowImage({ mime: 'application/octet-stream', base64: PNG_1X1 }), false);
-  // 600dpi 스캔처럼 디코드 한도를 넘는 raster.
-  assert.equal(isDomDisplayableFlowImage({ mime: 'image/png', base64: pngHeaderBase64(20_000, 20_000) }), false);
-  assert.equal(isDomDisplayableFlowImage({ mime: 'image/png', base64: pngHeaderBase64(6_800, 5_100) }), false);
 });

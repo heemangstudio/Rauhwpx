@@ -4,7 +4,7 @@ import test from 'node:test';
 
 import type { PageInfo } from '../src/core/types.ts';
 import {
-  headerFooterPreviewRegion,
+  headerFooterClipPath,
   resolveHeaderFooterBadgeMetrics,
   resolveHeaderFooterBandBox,
 } from '../src/view/header-footer-edit-overlay.ts';
@@ -52,19 +52,10 @@ test('구 WASM은 PageDef 여백으로 같은 HF 영역을 재구성한다', () 
     width: 620,
     height: 70,
   });
-});
-
-test('HF 대표 preview 는 밴드를 바깥쪽 장치 픽셀로 덮고 밴드 밖을 잘라 낸다', () => {
-  const band = { x: 90.3, y: 60.2, width: 620, height: 40 };
-  const { region, clipPath } = headerFooterPreviewRegion(band, 3, 6);
-  // 크기는 CSS px 정수(dpr 2 에서 짝수 장치 픽셀)로 맞춰 브라우저가 다시 샘플링하지 않게 한다.
-  assert.deepEqual(region, { x: 541, y: 361, width: 3722, height: 242 });
-  const inset = clipPath.match(/^inset\((.+)\)$/)?.[1].split(' ').map(parseFloat) ?? [];
-  assert.equal(inset.length, 4);
-  // 밴드 가장자리는 canvas 상자 안 1 CSS px 이내에 있다.
-  for (const value of inset) assert.ok(value >= 0 && value < 1, clipPath);
-  assert.ok(Math.abs(region.x * 0.5 + inset[3] - band.x * 3) < 1e-9);
-  assert.ok(Math.abs(region.y * 0.5 + inset[0] - band.y * 3) < 1e-9);
+  assert.equal(
+    headerFooterClipPath(page, resolveHeaderFooterBandBox(page, true), 0.5),
+    'inset(30px 45px 500px 45px)',
+  );
 });
 
 test('HF 안내 라벨은 고배율에서 완만하게 커지고 최대 두 배로 제한된다', () => {

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { basename, dirname, extname, join, sep } from 'node:path';
@@ -10,6 +10,7 @@ import {
   Menu,
   dialog,
   ipcMain,
+  nativeImage,
   nativeTheme,
   net,
   Notification as ElectronNotification,
@@ -44,6 +45,7 @@ import {
 import { launchRequest } from './launch-routing.mjs';
 import {
   NativeFileHandleRegistry,
+  StaleNativeHandleError,
   validateNativeDocumentBytes,
   writeNativeFileAtomically,
 } from './native-file-handles.mjs';
@@ -58,6 +60,7 @@ import {
   installStudioProtocol,
   registerStudioScheme,
   resolveDevelopmentUrl,
+  systemFontBaseUrl,
 } from './studio-protocol.mjs';
 import { INTERNAL_APP_NAME, PRODUCT_NAME } from './app-identity.mjs';
 import { resolveProfileDirectories } from './profile-continuity.mjs';
@@ -70,6 +73,7 @@ import { installAppMenu } from './app-menu.mjs';
 import {
   AgentAttention,
   WindowFrameStore,
+  applyAppUserModelId,
   applyDocumentState,
   installTextContextMenu,
   popupContextMenu,
@@ -138,6 +142,9 @@ function sessionForEvent(event) {
 // Electron 은 앱 이름으로 사용자 데이터 폴더와 safeStorage 키체인 항목을 정한다. 실행 내내
 // 2.0.10 까지와 같은 내부 이름을 쓴다. 메뉴·대화상자에는 PRODUCT_NAME 을 직접 넘긴다.
 app.setName(INTERNAL_APP_NAME);
+// Windows 는 이 id 가 설치 바로가기(package.json build.appId)와 같아야 앱의 알림을 띄운다.
+// 개발 실행은 실행 파일 경로를 쓴다 — 바로가기가 없고, 설치된 앱의 알림을 가로채지 않는다.
+applyAppUserModelId({ app });
 const profileDirectories = resolveProfileDirectories({
   packaged: app.isPackaged,
   appDataDir: app.getPath('appData'),
@@ -494,6 +501,18 @@ const {
   legacyWorkRoot,
 } = launchStorage;
 const hubOwner = new AgentHubOwner({ runtimeDir, workDir });
+
+// 멈추거나 죽은 허브는 세션을 스스로 정리한다. 그 포트로 소유자 토큰을 보내지 않는다.
+async function closeOwnedHubSession(sessionId) {
+  const hub = hubOwner.context();
+  if (!hub) return;
+  try {
+    await closeHubSession({ port: hub.port, token: hubToken, launchId, sessionId });
+  } catch (error) {
+    if (error?.status !== 404) console.warn('[hamaeditor] hub session close failed:', error);
+  }
+}
+
 const sessions = new SessionManager({
   launchId,
   getHubContext: async () => (await hubOwner.ensure()).context,
@@ -503,6 +522,7 @@ const sessions = new SessionManager({
     launchId,
     sessionId,
   }),
+  closeHubSession: closeOwnedHubSession,
 });
 const documentLeases = new DocumentLeaseManager();
 const nativeFiles = new NativeFileHandleRegistry();
@@ -511,6 +531,7 @@ const systemFonts = createSystemFontService({
   cacheDir: join(app.getPath('userData'), 'fonts'),
   log: (line) => console.log(`[hamaeditor] fonts: ${line}`),
 });
+const systemFontKey = randomBytes(32).toString('hex');
 let uniqueInstallSnapshot = {
   uniqueInstalls: null,
   publicUrl: uniqueInstallsPublicUrl(),
@@ -551,7 +572,7 @@ const windowFrames = new WindowFrameStore({
   screen,
   writeAtomically: writeNativeFileAtomically,
 });
-const agentAttention = new AgentAttention({ app, Notification: ElectronNotification });
+const agentAttention = new AgentAttention({ app, Notification: ElectronNotification, nativeImage });
 
 /** 열거나 저장한 네이티브 파일을 Dock·최근 사용 메뉴에 올린다. */
 function noteRecentDocument(sessionId, handleId) {
@@ -815,20 +836,12 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   window.on('closed', () => {
     agentAttention.forget(windowId);
     releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
+    // 창의 추가 에이전트 세션도 함께 허브에서 닫힌다.
     sessions.removeWindow(window);
     if (quitRequested) setImmediate(() => {
       if (quitRequested && !quitting) app.quit();
     });
-    // 멈추거나 죽은 허브는 세션을 스스로 정리한다. 그 포트로 소유자 토큰을 보내지 않는다.
-    const hub = hubOwner.context();
-    if (hub) void closeHubSession({
-      port: hub.port,
-      token: hubToken,
-      launchId,
-      sessionId: session.sessionId,
-    }).catch((error) => {
-      if (error?.status !== 404) console.warn('[hamaeditor] hub session close failed:', error);
-    });
+    void closeOwnedHubSession(session.sessionId);
   });
   const launchFiles = [];
   try {
@@ -866,6 +879,14 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     // a reload does not resend handles that no longer exist.
     releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
     launchFiles.length = 0;
+    // Agents of the dead page's background documents cannot be reached again.
+    sessions.releaseAgentSessions(window);
+  });
+  // A reloaded page knows only its window session and reopens the default
+  // document itself. Background documents and their agents died with the old page.
+  window.webContents.on('did-navigate', () => {
+    sessions.releaseAgentSessions(window);
+    documentLeases.releaseSession(session.sessionId, { keepDefaultSlot: true });
   });
   window.webContents.setWindowOpenHandler(({ url, frameName }) => {
     // 인쇄 미리보기 같은 앱 내부 surface는 외부 브라우저가 아니라 네이티브
@@ -994,18 +1015,27 @@ ipcMain.handle('desktop:get-unique-installs', async (event) => {
   await uniqueInstallSync;
   return uniqueInstallSnapshot;
 });
-ipcMain.handle('desktop:get-session-context', (event) => {
+ipcMain.handle('desktop:get-session-context', (event, agentSessionId = null) => {
   sessionForEvent(event);
-  return sessions.contextForSender(event.sender);
+  return sessions.contextForSender(event.sender, agentSessionId);
+});
+ipcMain.handle('desktop:agent-session-create', (event) => {
+  sessionForEvent(event);
+  if (quitting) throw new Error('HamaEditor is quitting');
+  return { sessionId: sessions.addAgentSession(event.sender) };
+});
+ipcMain.handle('desktop:agent-session-release', (event, agentSessionId) => {
+  sessionForEvent(event);
+  return sessions.releaseAgentSession(event.sender, agentSessionId);
 });
 ipcMain.handle('desktop:fonts-list', (event, options = {}) => {
   sessionForEvent(event);
   if (process.env.RHWP_SYSTEM_FONTS === 'off') throw new Error('System font discovery is disabled');
   return systemFonts.list({ refresh: options?.refresh === true });
 });
-ipcMain.handle('desktop:fonts-read', (event, id) => {
+ipcMain.handle('desktop:fonts-base', (event) => {
   sessionForEvent(event);
-  return systemFonts.readFace(id);
+  return systemFontBaseUrl(systemFontKey);
 });
 ipcMain.handle('desktop:get-launch-files', (event) => {
   const session = sessionForEvent(event);
@@ -1163,17 +1193,49 @@ ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
   }
   return { ...result.descriptor, saveTargetCreated: result.created };
 });
+ipcMain.handle('desktop:rename-native-file', async (event, handleId, nextName) => {
+  const session = sessionForEvent(event);
+  if (typeof handleId !== 'string' || !handleId) throw new Error('handleId required');
+  let renamed;
+  try {
+    renamed = await nativeFiles.renameHandle(session.sessionId, handleId, nextName);
+  } catch (error) {
+    // 이미 있는 이름처럼 사용자가 고칠 수 있는 거절은 결과로 돌려준다 (오류 로그가 아니다).
+    if (error?.renameRefusal) return { ok: false, reason: error.renameRefusal };
+    throw error;
+  }
+  // 문서 점유는 경로의 소유 키로 잡혀 있다. 같은 키 형식으로 옮겨야 다음 저장이 통과한다.
+  documentLeases.renamePath(session.sessionId, renamed.previousOwnershipPath, renamed.ownershipPath);
+  await persistNativeBookmarks();
+  try {
+    app.addRecentDocument(renamed.canonicalPath);
+  } catch (error) {
+    console.warn('[hamaeditor] recent document update failed:', error);
+  }
+  return { ok: true, descriptor: renamed.descriptor };
+});
 ipcMain.handle('desktop:release-native-file', (event, handleId) => {
   const session = sessionForEvent(event);
   nativeFiles.releaseHandle(session.sessionId, handleId);
 });
-ipcMain.handle('desktop:native-file-read', (event, handleId) => {
+ipcMain.handle('desktop:native-file-read', async (event, handleId) => {
   const session = sessionForEvent(event);
-  return nativeFiles.read(session.sessionId, handleId);
+  try {
+    return await nativeFiles.read(session.sessionId, handleId);
+  } catch (error) {
+    // 옛 핸들은 렌더러가 기억해 둔 위치로 다시 연다. 오류로 던지면 메인 로그만 어지럽힌다.
+    if (error instanceof StaleNativeHandleError) return { stale: true };
+    throw error;
+  }
 });
 ipcMain.handle('desktop:native-file-source-path', (event, handleId) => {
   const session = sessionForEvent(event);
-  return nativeFiles.sourcePathForSender(session.sessionId, handleId);
+  try {
+    return nativeFiles.sourcePathForSender(session.sessionId, handleId);
+  } catch (error) {
+    if (error instanceof StaleNativeHandleError) return null;
+    throw error;
+  }
 });
 ipcMain.handle('desktop:native-file-validate-save', (event, handleId, identity) => {
   const session = sessionForEvent(event);
@@ -1241,15 +1303,17 @@ ipcMain.handle('desktop:verify-native-pick', (event, documentId, handleId) => {
   if (typeof handleId !== 'string' || !handleId) return false;
   return nativeFiles.verifyPick(session.sessionId, documentId, handleId);
 });
-ipcMain.handle('desktop:document-reserve', (event, identity, nativeHandleId) => {
+ipcMain.handle('desktop:document-reserve', (event, identity, nativeHandleId, slotId) => {
   const session = sessionForEvent(event);
   const canonicalPath = nativeHandleId
     ? nativeFiles.pathForSender(session.sessionId, nativeHandleId)
     : null;
-  const result = documentLeases.reserve(session.sessionId, identity, canonicalPath);
+  const result = documentLeases.reserve(session.sessionId, identity, canonicalPath, slotId);
   if (!result.ok) {
+    // Another slot of this window holds the document; the renderer resolves that itself.
+    if (result.ownerSessionId === session.sessionId) return { ok: false, reason: 'owned' };
     sessions.focusSession(result.ownerSessionId);
-    if (nativeHandleId && !documentLeases.leaseForSession(session.sessionId)) {
+    if (nativeHandleId && !documentLeases.hasLease(session.sessionId)) {
       setImmediate(() => {
         if (!session.window.isDestroyed()) session.window.destroy();
       });
@@ -1258,17 +1322,17 @@ ipcMain.handle('desktop:document-reserve', (event, identity, nativeHandleId) => 
   }
   return result;
 });
-ipcMain.handle('desktop:document-commit', (event, reservationId) => {
+ipcMain.handle('desktop:document-commit', (event, reservationId, slotId) => {
   const session = sessionForEvent(event);
-  documentLeases.commit(session.sessionId, reservationId);
+  documentLeases.commit(session.sessionId, reservationId, slotId);
 });
-ipcMain.handle('desktop:document-cancel', (event, reservationId) => {
+ipcMain.handle('desktop:document-cancel', (event, reservationId, slotId) => {
   const session = sessionForEvent(event);
-  documentLeases.cancel(session.sessionId, reservationId);
+  documentLeases.cancel(session.sessionId, reservationId, slotId);
 });
-ipcMain.handle('desktop:document-release', (event) => {
+ipcMain.handle('desktop:document-release', (event, slotId) => {
   const session = sessionForEvent(event);
-  documentLeases.releaseSession(session.sessionId);
+  documentLeases.releaseSlot(session.sessionId, slotId);
 });
 ipcMain.handle('window:is-fullscreen', (event) => sessionForEvent(event).window.isFullScreen());
 ipcMain.on('desktop:set-document-state', (event, state) => {
@@ -1278,20 +1342,22 @@ ipcMain.on('desktop:set-document-state', (event, state) => {
     console.warn('[hamaeditor] document state update failed:', error);
   }
 });
-ipcMain.on('desktop:set-pending-review-count', (event, count) => {
+ipcMain.on('desktop:set-agent-attention-count', (event, count) => {
   try {
-    agentAttention.setPendingCount(sessionForEvent(event).window.id, count);
+    agentAttention.setCount(sessionForEvent(event).window, count);
   } catch (error) {
-    console.warn('[hamaeditor] pending review badge update failed:', error);
+    console.warn('[hamaeditor] agent attention badge update failed:', error);
   }
 });
-ipcMain.on('desktop:agent-turn-finished', (event, payload) => {
+ipcMain.on('desktop:agent-attention', (event, payload) => {
   try {
-    agentAttention.turnFinished(sessionForEvent(event).window, payload ?? {});
+    agentAttention.notify(sessionForEvent(event).window, payload ?? {});
   } catch (error) {
-    console.warn('[hamaeditor] agent turn notification failed:', error);
+    console.warn('[hamaeditor] agent attention notification failed:', error);
   }
 });
+// 창이 초점을 얻으면 작업 표시줄 깜빡임을 멈춘다.
+app.on('browser-window-focus', (_event, window) => agentAttention.focused(window));
 ipcMain.handle('desktop:show-context-menu', (event, items) => {
   const window = sessionForEvent(event).window;
   return popupContextMenu({ Menu, window, items });
@@ -1413,7 +1479,12 @@ if (!hasSingleInstanceLock) {
     await loadNativeBookmarks();
     await windowFrames.load();
     installMenu();
-    if (!devUrl) installStudioProtocol({ protocol, net, root: studioDist() });
+    installStudioProtocol({
+      protocol,
+      net,
+      root: devUrl ? null : studioDist(),
+      systemFonts: { fonts: systemFonts, key: systemFontKey, allowOrigin: devOrigin },
+    });
     desktopReady = true;
     const launches = pendingLaunches.splice(0);
     let failedLaunches = 0;

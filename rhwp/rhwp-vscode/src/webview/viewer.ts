@@ -1,4 +1,4 @@
-import init, { HwpDocument, setWebCanvasPictureListener } from "@rhwp-wasm/rhwp.js";
+import init, { HwpDocument } from "@rhwp-wasm/rhwp.js";
 import { blake3 } from "@noble/hashes/blake3.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
@@ -146,7 +146,6 @@ fetch(wasmUri)
     // macOS 웹뷰에서 "4KB 초과 버퍼의 메인 스레드 컴파일 금지" 규칙에 차단된다.
     // async init(instantiate 기반)으로 초기화하여 전 플랫폼에서 동작하도록 한다. (#2048)
     await init({ module_or_path: buf });
-    setWebCanvasPictureListener(repaintCanvasesWaitingForPictures);
     wasmReady = true;
     stbMessage.textContent = "문서를 기다리는 중...";
     vscode.postMessage({ type: "ready" });
@@ -559,35 +558,7 @@ scrollContainer.addEventListener("scroll", () => {
 
 // ── 페이지 렌더링 ──
 
-// 엔진은 그림을 비동기로 디코드한다. 그림 없이 그린 canvas 는 디코드가 모두 끝나면 다시 그린다.
-const pictureRepaints = new Map<HTMLCanvasElement, () => void>();
-
-function repaintCanvasesWaitingForPictures(pendingDecodes: number): void {
-  if (pendingDecodes > 0) return;
-  const repaints = [...pictureRepaints];
-  pictureRepaints.clear();
-  for (const [canvas, repaint] of repaints) {
-    if (canvas.isConnected) repaint();
-  }
-}
-
-function renderCanvas2d(
-  documentAtRender: HwpDocument,
-  pageNum: number,
-  canvas: HTMLCanvasElement,
-  scale: number,
-): void {
-  const pendingPictures = documentAtRender.renderPageToCanvas(pageNum, canvas, scale);
-  if (pendingPictures > 0) {
-    pictureRepaints.set(canvas, () => {
-      if (hwpDoc === documentAtRender && rendererSelection?.backend !== "canvaskit") {
-        renderCanvas2d(documentAtRender, pageNum, canvas, scale);
-      }
-    });
-  } else {
-    pictureRepaints.delete(canvas);
-  }
-}
+const reRenderTimers = new Map<number, ReturnType<typeof setTimeout>[]>();
 
 function renderPage(pageNum: number): void {
   if (!hwpDoc) return;
@@ -621,6 +592,25 @@ function renderPage(pageNum: number): void {
   renderedCanvas.style.width = `${cssW}px`;
   renderedCanvas.style.height = `${cssH}px`;
   pi.rendered = true;
+
+  cancelReRender(pageNum);
+  if (rendererSelection?.backend === "canvaskit") return;
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  for (const delay of [200, 600]) {
+    timers.push(
+      setTimeout(() => {
+        if (
+          pi.rendered
+          && hwpDoc
+          && renderedCanvas.isConnected
+          && rendererSelection?.backend === "canvas2d"
+        ) {
+          hwpDoc.renderPageToCanvas(pageNum, renderedCanvas, scale);
+        }
+      }, delay)
+    );
+  }
+  reRenderTimers.set(pageNum, timers);
 }
 
 function renderDocumentPage(
@@ -632,7 +622,7 @@ function renderDocumentPage(
   if (!documentAtRender) throw new Error("문서가 로드되지 않았습니다");
   const selection = rendererSelection;
   if (selection?.backend !== "canvaskit" || !selection.canvaskitRenderer) {
-    renderCanvas2d(documentAtRender, pageNum, targetCanvas, scale);
+    documentAtRender.renderPageToCanvas(pageNum, targetCanvas, scale);
     return targetCanvas;
   }
 
@@ -645,7 +635,7 @@ function renderDocumentPage(
     );
   } catch (error) {
     if (!scheduleRendererFallback(error, decisionKey, "resource")) throw error;
-    renderCanvas2d(documentAtRender, pageNum, targetCanvas, scale);
+    documentAtRender.renderPageToCanvas(pageNum, targetCanvas, scale);
     return targetCanvas;
   }
 
@@ -667,7 +657,7 @@ function renderDocumentPage(
     if (!scheduleRendererFallback(error, decisionKey, "runtime")) throw error;
     renderedCanvas = currentCanvasAt(originalParent, originalIndex, renderedCanvas);
     const canvas2d = replaceCanvas(renderedCanvas);
-    renderCanvas2d(documentAtRender, pageNum, canvas2d, scale);
+    documentAtRender.renderPageToCanvas(pageNum, canvas2d, scale);
     return canvas2d;
   }
 }
@@ -737,9 +727,17 @@ function scheduleRendererFallback(
   return true;
 }
 
+function cancelReRender(pageNum: number): void {
+  const timers = reRenderTimers.get(pageNum);
+  if (timers) {
+    for (const t of timers) clearTimeout(t);
+    reRenderTimers.delete(pageNum);
+  }
+}
+
 function releasePage(pageNum: number): void {
+  cancelReRender(pageNum);
   const pi = pageInfos[pageNum];
-  pi.element?.querySelectorAll("canvas").forEach((canvas) => pictureRepaints.delete(canvas));
   if (pi.element) pi.element.innerHTML = "";
   pi.rendered = false;
 }

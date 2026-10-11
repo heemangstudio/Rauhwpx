@@ -40,6 +40,7 @@ import {
   waitForProcessTreeExit,
 } from '../process-tree.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
+import { tapProviderProcess } from '../provider-transcript.mjs';
 
 const STDERR_TAIL_LIMIT = 16_000;
 const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
@@ -218,6 +219,14 @@ export function createLegacyCodexSession(opts, {
   let turnOpen = false;
   let turnCompleted = false;
   let turnFailureMessage = null;
+  /** @type {import('./backend.mjs').ProviderFailureHint | null} */
+  let turnFailureHint = null;
+  /**
+   * `{"type":"error"}` 줄은 바로 보내지 않는다 — Codex 는 스트림 재시도 알림도 이렇게 보내고,
+   * 턴이 끝내 완료되면 지나간 소음이다. 완료 없이 끝나면 마지막 줄이 실패 사유가 된다.
+   * @type {string | null}
+   */
+  let heldErrorLine = null;
   let disposed = false;
   let loggedToolCallSample = false;
   let stderrTail = '';
@@ -388,6 +397,7 @@ export function createLegacyCodexSession(opts, {
         // Codex can emit its logical completion before the CLI process exits. Keep
         // the hub turn open until exit so a resumed implementation never overlaps it.
         turnCompleted = true;
+        heldErrorLine = null;
         const usage = normalizeUsageTokens(e.usage);
         if (usage) {
           onEvent({
@@ -405,12 +415,15 @@ export function createLegacyCodexSession(opts, {
         turnCompleted = true;
         const message = String(e.error?.message ?? e.message ?? 'turn failed');
         turnFailureMessage = message;
-        onEvent({ type: 'error', agent: 'codex', message });
+        turnFailureHint = { source: 'codex' };
+        heldErrorLine = null;
+        onEvent({ type: 'error', agent: 'codex', message, failure: turnFailureHint });
         void beginTerminalCleanup();
         return;
       }
       if (type === 'error') {
-        onEvent({ type: 'error', agent: 'codex', message: String(e.message ?? 'unknown error') });
+        heldErrorLine = String(e.message ?? 'unknown error');
+        process.stderr.write(`[codex] provider error line: ${truncate(redactDiagnosticText(heldErrorLine, [opts.token]), 500)}\n`);
         return;
       }
     };
@@ -437,6 +450,8 @@ export function createLegacyCodexSession(opts, {
         turnOpen = true;
         turnCompleted = false;
         turnFailureMessage = null;
+        turnFailureHint = null;
+        heldErrorLine = null;
         onEvent({
           type: 'error',
           agent: 'codex',
@@ -461,6 +476,8 @@ export function createLegacyCodexSession(opts, {
           turnOpen = true;
           turnCompleted = false;
           turnFailureMessage = null;
+          turnFailureHint = null;
+          heldErrorLine = null;
           onEvent({
             type: 'error',
             agent: 'codex',
@@ -488,6 +505,8 @@ export function createLegacyCodexSession(opts, {
       turnOpen = true;
       turnCompleted = false;
       turnFailureMessage = null;
+      turnFailureHint = null;
+      heldErrorLine = null;
       if (options?.replaceSession) {
         threadId = null;
         turnResumeLost = true;
@@ -496,10 +515,8 @@ export function createLegacyCodexSession(opts, {
 
       // 프롬프트는 positional 인자가 아니라 stdin('-')으로 전달한다: '-' 로 시작하는
       // 메시지가 CLI 플래그로 파싱되는 것과 초장문 메시지의 ARG_MAX 초과를 막는다.
-      const mode = normalizeExecutionMode(opts);
-      const prompt = threadId && mode.workflow === 'direct'
-        ? text
-        : systemBriefFor(opts, 'codex') + '\n\n' + text;
+      // 이어지는 직접 실행에도 최신 모드를 알려 이전 채팅 지시를 덮어쓴다.
+      const prompt = systemBriefFor(opts, 'codex') + '\n\n' + text;
       const argv = buildCodexArgv(opts, threadId);
       stderrTail = '';
 
@@ -518,17 +535,26 @@ export function createLegacyCodexSession(opts, {
         const launched = applyManagedCliLaunch(opts.codexBin ?? 'codex', argv, {
           platform, nodeCommand, env: spawnEnv,
         });
-        proc = spawnProcess(launched.command, launched.argv, {
+        proc = tapProviderProcess(spawnProcess(launched.command, launched.argv, {
           ...processTreeSpawnOptions(),
           cwd: opts.rootDir,
           env: launched.env,
           stdio: ['pipe', 'pipe', 'pipe'],
+        }), {
+          agent: 'codex', transport: 'exec', stdin: 'text', argv: launched.argv, env: launched.env,
+          secrets: [opts.token], cli: opts.providerCliVersion, platform,
         });
       } catch (e) {
         rolloutWatcher?.stop();
         rolloutWatcher = null;
-        onEvent({ type: 'error', agent: 'codex', message: `failed to start codex: ${e?.message ?? e}` });
-        endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'exited' });
+        const failure = { source: 'codex', code: e?.code === 'ENOENT' ? 'cli_missing' : 'process_exit' };
+        onEvent({
+          type: 'error',
+          agent: 'codex',
+          message: `failed to start codex: ${redactDiagnosticText(e?.message ?? e, [opts.token])}`,
+          failure,
+        });
+        endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'exited', failure });
         return;
       }
       child = proc;
@@ -601,14 +627,23 @@ export function createLegacyCodexSession(opts, {
         finalizeRolloutWatcher();
         if (turnOpen && !disposed) {
           if (turnFailureMessage) {
-            endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: turnFailureMessage });
+            endTurn({
+              type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: turnFailureMessage,
+              ...(turnFailureHint ? { failure: turnFailureHint } : {}),
+            });
+          } else if (!completedAtDrain && heldErrorLine !== null) {
+            // 완료 없이 끝난 턴 — CLI 가 마지막으로 보고한 오류가 stderr 꼬리보다 정확한 이유다.
+            onEvent({ type: 'error', agent: 'codex', message: heldErrorLine, failure: { source: 'codex' } });
+            endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'exited', failure: { source: 'codex', code: 'process_exit' } });
           } else if (!completedAtDrain && code !== 0) {
+            const failure = { source: 'codex', code: 'process_exit' };
             onEvent({
               type: 'error',
               agent: 'codex',
               message: formatCodexExitError(stderrTail, code, signal, opts.token),
+              failure,
             });
-            endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'exited' });
+            endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'exited', failure });
           } else {
             endTurn({ type: 'turn-end', agent: 'codex', stopReason: completedAtDrain ? 'completed' : 'exited' });
           }
@@ -690,7 +725,8 @@ export function createLegacyCodexSession(opts, {
         process.stderr.write(`[codex] spawn error: ${safeError}\n`);
         if (turnOpen) {
           turnFailureMessage = `codex process error: ${safeError}`;
-          onEvent({ type: 'error', agent: 'codex', message: turnFailureMessage });
+          turnFailureHint = { source: 'codex', code: err?.code === 'ENOENT' ? 'cli_missing' : 'process_exit' };
+          onEvent({ type: 'error', agent: 'codex', message: turnFailureMessage, failure: turnFailureHint });
         }
         void beginCleanup(true);
         scheduleCloseGrace(proc.exitCode ?? null, proc.signalCode ?? null);

@@ -25,6 +25,13 @@ export interface MoveToLibraryDocumentDeps {
   openProjectFile: (claim: ProjectFileClaim) => Promise<ProjectOpenOutcome>;
   openViaPicker: () => Promise<void>;
   toast: (message: string) => void;
+  /** 현재 문서의 커밋하지 않은 변경을 버전 기록에 커밋한다. 남길 것이 없으면 조용히 끝낸다. */
+  commitCurrent?: () => Promise<void>;
+}
+
+export interface MoveToLibraryDocumentOptions {
+  /** 저장한 뒤 대상 문서를 열기 전에 현재 문서를 버전 기록에 커밋한다. */
+  commit?: boolean;
 }
 
 export function isSameLibraryDocument(
@@ -54,18 +61,15 @@ export function canMoveToLibraryDocument(target: LibraryDocumentTarget): boolean
 
 const MAX_SAVE_ATTEMPTS = 3;
 
-export async function moveToLibraryDocument(
-  target: LibraryDocumentTarget,
-  deps: MoveToLibraryDocumentDeps,
-): Promise<LibraryMoveResult> {
-  if (!canMoveToLibraryDocument(target)) {
-    deps.toast('이동할 문서를 찾을 수 없습니다.');
-    return 'failed';
-  }
-
+/**
+ * 현재 문서를 떠나기 전에 바뀐 내용을 저장하고, 원하면 버전 기록에 커밋한다.
+ * 다른 문서로 옮기거나 열린 다른 문서 세션으로 넘어갈 때 함께 쓴다.
+ */
+export async function saveAndCommitBeforeLeaving(
+  deps: Pick<MoveToLibraryDocumentDeps, 'getCurrent' | 'saveCurrent' | 'toast' | 'commitCurrent'>,
+  options: MoveToLibraryDocumentOptions = {},
+): Promise<'ok' | 'cancelled' | 'failed'> {
   const current = deps.getCurrent();
-  if (isSameLibraryDocument(current, target)) return 'same';
-
   // 바뀐 내용이 있을 때만 저장한다. 깨끗한 문서를 저장하면 원본 파일이 엔진이 다시 만든
   // 바이트로 덮어써져, 이동할 때마다 서식이 조금씩 무너진다.
   // 저장하는 동안 들어온 편집도 대상 문서를 열면 사라지므로, 깨끗해질 때까지 다시 저장한다.
@@ -77,6 +81,34 @@ export async function moveToLibraryDocument(
       return 'failed';
     }
   }
+
+  // 작업은 저장으로 이미 지켰으므로 커밋에 실패해도 이동은 계속한다.
+  if (options.commit && current.hasDocument && deps.commitCurrent) {
+    try {
+      await deps.commitCurrent();
+    } catch {
+      deps.toast('버전 기록에 커밋하지 못했습니다.');
+    }
+  }
+
+  return 'ok';
+}
+
+export async function moveToLibraryDocument(
+  target: LibraryDocumentTarget,
+  deps: MoveToLibraryDocumentDeps,
+  options: MoveToLibraryDocumentOptions = {},
+): Promise<LibraryMoveResult> {
+  if (!canMoveToLibraryDocument(target)) {
+    deps.toast('이동할 문서를 찾을 수 없습니다.');
+    return 'failed';
+  }
+
+  const current = deps.getCurrent();
+  if (isSameLibraryDocument(current, target)) return 'same';
+
+  const left = await saveAndCommitBeforeLeaving(deps, options);
+  if (left !== 'ok') return left;
 
   if (!target.documentId) {
     deps.toast(
@@ -99,5 +131,8 @@ export async function moveToLibraryDocument(
   const opened = await deps.openProjectFile(claim);
   if (opened.kind === 'opened') return 'moved';
   if (opened.kind === 'cancelled') return 'cancelled';
+  if (opened.kind === 'untraceable') {
+    deps.toast(`"${claim.displayName}" 문서의 파일 위치를 알 수 없어 열 수 없습니다.`);
+  }
   return 'failed';
 }

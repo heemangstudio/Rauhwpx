@@ -1023,6 +1023,17 @@ export async function canonicalNativePath(
   return platform === 'win32' ? win32.normalize(resolved) : normalize(resolved);
 }
 
+/**
+ * 이미 놓았거나 이번 실행에서 만든 적 없는 핸들. 닫은 문서나 지난 실행의 최근 문서가 들고 있는
+ * 옛 핸들이 흔히 이렇다. 다른 창이 쥔 핸들과 달리 접근 위반이 아니라 "더는 없음"이다.
+ */
+export class StaleNativeHandleError extends Error {
+  constructor() {
+    super('Native file handle is no longer available');
+    this.name = 'StaleNativeHandleError';
+  }
+}
+
 export class NativeFileHandleRegistry {
   #byId = new Map();
   #byPath = new Map();
@@ -1129,6 +1140,79 @@ export class NativeFileHandleRegistry {
     this.#byId.set(entry.handleId, entry);
     this.#byPath.set(ownershipPath, entry);
     return { ok: true, descriptor: this.#descriptor(entry), created: true };
+  }
+
+  /**
+   * 이 창이 연 문서 파일의 이름을 같은 폴더 안에서 바꾼다. 확장자는 바꾸지 않고, 이미 있는 이름이나
+   * 다른 창이 쥔 경로는 거절한다. 핸들 id 는 그대로 두고 경로·이름·북마크를 새 경로로 옮긴다.
+   */
+  async renameHandle(sessionId, handleId, nextName) {
+    const entry = this.#entryForSender(sessionId, handleId);
+    const refuse = (reason, message) => Object.assign(new Error(message), { renameRefusal: reason });
+    if (entry.legacyPortableHistoryFolder) throw refuse('invalid', 'Legacy RHWPX folders cannot be renamed');
+    if (entry.activeWrites > 0) throw refuse('saving', 'The document is being saved; try again in a moment');
+    const name = typeof nextName === 'string' ? nextName.trim() : '';
+    if (
+      !name
+      || name !== basename(name)
+      || name.startsWith('.')
+      || name.length > 255
+      // eslint-disable-next-line no-control-regex
+      || /[\\/:*?"<>|\u0000-\u001f]/.test(name)
+    ) {
+      throw refuse('invalid', 'Invalid file name');
+    }
+    if (extname(name).toLowerCase() !== extname(entry.canonicalPath).toLowerCase()) {
+      throw refuse('extension', 'The file extension cannot change');
+    }
+    const previousPath = entry.canonicalPath;
+    const previousOwnershipPath = entry.ownershipPath;
+    const target = join(dirname(previousPath), name);
+    validateNativeDocumentPath(target);
+    if (basename(previousPath) === name) {
+      return {
+        descriptor: this.#descriptor(entry),
+        previousPath,
+        canonicalPath: previousPath,
+        previousOwnershipPath,
+        ownershipPath: previousOwnershipPath,
+      };
+    }
+    const targetOwnership = this.#ownershipKey(target);
+    // 대소문자만 다른 이름은 같은 파일이다 (대소문자를 가리지 않는 볼륨).
+    if (targetOwnership !== entry.ownershipPath) {
+      if (this.#byPath.has(targetOwnership)) throw refuse('open', 'A file with that name is already open');
+      let exists = true;
+      try {
+        await this.#stat(target);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        exists = false;
+      }
+      if (exists) throw refuse('exists', 'A file with that name already exists');
+    }
+    await rename(previousPath, target);
+    const canonicalPath = await this.#canonicalize(target);
+    this.#byPath.delete(entry.ownershipPath);
+    entry.canonicalPath = canonicalPath;
+    entry.ownershipPath = this.#ownershipKey(canonicalPath);
+    entry.name = name;
+    this.#byPath.set(entry.ownershipPath, entry);
+    // 이름을 바꾸면 파일 상태 시각이 바뀐다. 다음 저장이 바깥 수정으로 오해하지 않게 다시 잰다.
+    entry.diskFingerprint = await this.#fingerprint(canonicalPath);
+    entry.fingerprintEpoch += 1;
+    for (const bookmark of this.#bookmarks.values()) {
+      if (this.#ownershipKey(bookmark.path) === this.#ownershipKey(previousPath)) {
+        bookmark.path = canonicalPath;
+      }
+    }
+    return {
+      descriptor: this.#descriptor(entry),
+      previousPath,
+      canonicalPath,
+      previousOwnershipPath,
+      ownershipPath: entry.ownershipPath,
+    };
   }
 
   async createSaveTarget(sessionId, filePath) {
@@ -1264,17 +1348,17 @@ export class NativeFileHandleRegistry {
     // 임의 핸들 탐색을 막기 위해 둘 다 이 창의 핸들이 아니면 기존처럼 거절한다.
     const first = this.#byId.get(firstHandleId);
     const second = this.#byId.get(secondHandleId);
-    if (
-      !first
-      || !second
-      || (first.sessionId !== senderSessionId && second.sessionId !== senderSessionId)
-    ) {
+    // 놓은 핸들(최근 문서의 옛 핸들 등)은 비교할 수 없다. "다른 파일"로 답하면 맞는 파일을 거절한다.
+    if (!first || !second) return null;
+    if (first.sessionId !== senderSessionId && second.sessionId !== senderSessionId) {
       throw new Error('Native file handle does not belong to this window');
     }
     return first.ownershipPath === second.ownershipPath;
   }
 
   rememberDocument(documentId, senderSessionId, handleId, digest) {
+    // 이미 놓은 핸들은 북마크를 바꾸지 않는다. 마지막으로 기억한 위치를 그대로 둔다.
+    if (!this.#byId.has(handleId)) return this.#bookmarks.get(documentId)?.path ?? null;
     const entry = this.#entryForSender(senderSessionId, handleId);
     const previous = this.#bookmarks.get(documentId);
     if (
@@ -1389,6 +1473,8 @@ export class NativeFileHandleRegistry {
   }
 
   releaseHandle(sessionId, handleId) {
+    // 놓기는 여러 번 해도 된다. 문서를 닫는 경로가 겹쳐도 이미 놓은 핸들은 조용히 넘어간다.
+    if (!this.#byId.has(handleId)) return;
     const entry = this.#entryForSender(sessionId, handleId);
     if (entry.activeWrites > 0) {
       entry.releaseRequested = true;
@@ -1520,7 +1606,8 @@ export class NativeFileHandleRegistry {
 
   #entryForSender(senderSessionId, handleId) {
     const entry = this.#byId.get(handleId);
-    if (!entry || entry.sessionId !== senderSessionId) {
+    if (!entry) throw new StaleNativeHandleError();
+    if (entry.sessionId !== senderSessionId) {
       throw new Error('Native file handle does not belong to this window');
     }
     return entry;

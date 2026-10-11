@@ -45,7 +45,7 @@ async function open(t: any, query = '') {
   await page.waitForFunction(
     () =>
       (window as any).sidebarPreview &&
-      !(document.querySelector('.ag-input') as HTMLInputElement).disabled,
+      (document.querySelector('#agent-sidebar') as HTMLElement | null)?.dataset.composerReady === 'true',
   );
   return page;
 }

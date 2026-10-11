@@ -39,14 +39,13 @@ const recorded = [];
 const manager = new PendingEditManager({
   wasm,
   eventBus: new EventBus(),
-  inputHandler: {
+  editor: {
     getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }),
     executeOperation: (op) => { if (op.kind === 'record') recorded.push(op.command); },
     prepareSnapshotCapacity: () => {},
     retainExternalSnapshot: () => {},
     releaseExternalSnapshot: () => {},
   },
-  canvasView: {},
   overlay: { setOps: () => {}, clear: () => {} },
 });
 

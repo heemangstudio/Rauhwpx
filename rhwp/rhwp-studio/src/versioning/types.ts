@@ -67,6 +67,25 @@ export interface VersionRepository {
   lastSavedFingerprint: ContentFingerprint;
 }
 
+/** Local workspace binding. This state is excluded from portable history. */
+export interface VersionWorktree {
+  id: string;
+  documentId: DocumentId;
+  repositoryId: RepositoryId;
+  branch: BranchName;
+  branchGeneration: BranchGeneration;
+  primary: boolean;
+  fileName: string;
+  sourceFormat: string;
+  baseCommitId: CommitId;
+  blobId: BlobId;
+  savedFingerprint: ContentFingerprint;
+  mergeTarget: { name: BranchName; generation: BranchGeneration } | null;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 interface VersionCommitBase {
   id: CommitId;
   repositoryId: RepositoryId;
@@ -291,6 +310,9 @@ export type VersionErrorCode =
   | 'COMMIT_NOT_FOUND'
   | 'REF_NOT_FOUND'
   | 'BRANCH_EXISTS'
+  | 'BRANCH_OCCUPIED'
+  | 'WORKTREE_NOT_FOUND'
+  | 'PRIMARY_WORKTREE'
   | 'TAG_EXISTS'
   | 'INVALID_REF_NAME'
   | 'CURRENT_BRANCH'

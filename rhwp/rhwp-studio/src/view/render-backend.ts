@@ -159,24 +159,15 @@ export function persistRenderProfile(value: LayerRenderProfile): void {
 export const MIN_RENDER_SCALE = 0.25;
 export const MAX_RENDER_SCALE = 12;
 export const MAX_CANVAS_DIMENSION = 16_384;
-/**
- * 쪽 canvas 한 장의 물리 픽셀 수 상한 (Studio 정책, RGBA 64 MiB). Retina 에서 A4 는 약 217% 까지
- * 장치 해상도 그대로 그리고, 그 위 배율은 보이는 영역만 page-detail 층이 원래 배율로 덧그린다.
- */
-export const MAX_RENDER_PIXELS = 16_777_216;
-/** page-detail 층이 없는 CanvasKit 의 상한. iOS/WebKit 과 GPU surface 가 감당할 물리 픽셀 수다. */
-export const MAX_CANVASKIT_RENDER_PIXELS = 67_108_864;
+/** iOS/WebKit과 GPU surface가 감당할 물리 픽셀 수 상한 (Studio 정책). */
+export const MAX_RENDER_PIXELS = 67_108_864;
 
 /**
  * 쪽 canvas 물리 배율을 정한다. 엔진이 요청 배율을 [0.25, 12]와 한 변 16384px로 다시
  * 자르므로 여기서 같은 규칙을 먼저 적용해, CanvasView 가 쓰는 dpr(= 배율 / zoom)이
  * 실제 비트맵과 늘 맞게 한다. 결과는 엔진 정규화를 다시 거쳐도 바뀌지 않는다.
  */
-export function clampRenderScale(
-  pageInfo: PageInfo,
-  requestedScale: number,
-  maxPixels = MAX_RENDER_PIXELS,
-): number {
+export function clampRenderScale(pageInfo: PageInfo, requestedScale: number): number {
   const requested = Number.isFinite(requestedScale) && requestedScale > 0 ? requestedScale : 1;
   let scale = Math.min(MAX_RENDER_SCALE, Math.max(MIN_RENDER_SCALE, requested));
   const { width, height } = pageInfo;
@@ -184,25 +175,6 @@ export function clampRenderScale(
     return scale;
   }
   // 면적 한도는 배율을 낮추기만 한다 (1배 미만으로는 내리지 않는다).
-  scale = Math.min(scale, Math.max(1, Math.sqrt(maxPixels / (width * height))));
+  scale = Math.min(scale, Math.max(1, Math.sqrt(MAX_RENDER_PIXELS / (width * height))));
   return Math.min(scale, MAX_CANVAS_DIMENSION / width, MAX_CANVAS_DIMENSION / height);
-}
-
-/** 쪽 일부 영역 렌더 배율. 엔진 normalize_region_scale 의 미러 — 한 변 한도는 영역 canvas 에 건다. */
-export function regionRenderScale(requestedScale: number): number {
-  const requested = Number.isFinite(requestedScale) && requestedScale > 0 ? requestedScale : 1;
-  return Math.min(MAX_RENDER_SCALE, Math.max(MIN_RENDER_SCALE, requested));
-}
-
-/**
- * 영역 canvas 크기를 맞출 장치 픽셀 단위. 표시 크기가 CSS px 정수가 아니면 브라우저가 비트맵을
- * 다시 샘플링해 흐려지므로, 장치 픽셀 n 개가 CSS px 정수가 되는 가장 작은 n 을 돌려준다.
- * 작은 n 이 없으면 1.
- */
-export function wholeCssPixelStep(cssPerDevice: number): number {
-  for (let step = 1; step <= 12; step++) {
-    const css = step * cssPerDevice;
-    if (Math.abs(css - Math.round(css)) < 1e-6) return step;
-  }
-  return 1;
 }

@@ -6,6 +6,7 @@ import {
   clearAutosaveDrafts,
   deleteAutosaveDraft,
   getAutosaveDraft,
+  getAutosaveDraftBase,
   listAutosaveDrafts,
   listRecoverableAutosaveDrafts,
   markAutosaveDraftsOffered,
@@ -215,4 +216,64 @@ test('draft listing returns metadata only and restore reads the bytes by id', as
   assert.equal('data' in summary, false);
   assert.equal(summary.byteLength, 1);
   assert.deepEqual([...(await getAutosaveDraft('with-bytes'))!.data], [1]);
+});
+
+test('a draft keeps one base copy that is removed with the draft', async () => {
+  await clearAutosaveDrafts();
+  const base = { digest: 'blake3:base', byteLength: 2, data: new Uint8Array([7, 8]) };
+  await saveAutosaveDraft({
+    ...ownedDraft('linked', {}),
+    documentId: 'doc-1',
+    dataFormat: 'hwpx',
+    base: { digest: base.digest, byteLength: 2, mergeable: true },
+  }, { locks: null, base });
+  // 기준이 바뀌지 않은 다음 저장은 base 를 넘기지 않는다. 기존 기준이 남아야 한다.
+  await saveAutosaveDraft({
+    ...ownedDraft('linked', {}, 2),
+    documentId: 'doc-1',
+    dataFormat: 'hwpx',
+    base: { digest: base.digest, byteLength: 2, mergeable: true },
+  }, { locks: null });
+
+  const [summary] = await listAutosaveDrafts();
+  assert.equal(summary.documentId, 'doc-1');
+  assert.equal(summary.dataFormat, 'hwpx');
+  assert.deepEqual(summary.base, { digest: 'blake3:base', byteLength: 2, mergeable: true });
+  assert.deepEqual([...(await getAutosaveDraftBase('linked'))!.data], [7, 8]);
+
+  await deleteAutosaveDraft('linked');
+  assert.equal(await getAutosaveDraftBase('linked'), null);
+
+  await saveAutosaveDraft(ownedDraft('cleared', {}), { locks: null, base });
+  await clearAutosaveDrafts();
+  assert.equal(await getAutosaveDraftBase('cleared'), null);
+});
+
+test('retention pruning drops the base copy of a pruned draft', async () => {
+  await clearAutosaveDrafts();
+  const now = Date.now();
+  const base = { digest: 'blake3:old', byteLength: 1, data: new Uint8Array([1]) };
+  for (let index = 0; index < 13; index += 1) {
+    await saveAutosaveDraft(ownedDraft(`old-${index}`, {
+      ownerSessionId: `dead-${index}`, ownerHeartbeatAt: now - 60_000,
+    }, now - 1_000 + index), { now, locks: null, base });
+  }
+  await markAutosaveDraftsOffered((await listAutosaveDrafts()).map((draft) => draft.id), now);
+  await saveAutosaveDraft(ownedDraft('newest', { ownerSessionId: 'live', ownerHeartbeatAt: now }), { now, locks: null });
+  assert.equal(await getAutosaveDraftBase('old-0'), null);
+  assert.ok(await getAutosaveDraftBase('old-12'));
+});
+
+test('a desktop native-path handle is never stored with the draft', async () => {
+  await clearAutosaveDrafts();
+  const handle = {
+    name: '보고서.hwp',
+    identityKind: 'native-path' as const,
+    getFile: async () => new File([], '보고서.hwp'),
+    createWritable: async () => { throw new Error('unused'); },
+  };
+  await saveAutosaveDraft({ ...ownedDraft('native', {}), fileHandle: handle, handleKind: 'native-path' }, { locks: null });
+  const draft = await getAutosaveDraft('native');
+  assert.equal(draft?.fileHandle, undefined);
+  assert.equal(draft?.handleKind, 'native-path');
 });

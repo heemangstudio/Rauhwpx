@@ -18,13 +18,23 @@ import {
   type RendererSessionContext,
 } from '../desktop-integration.ts';
 import { RevisionTracker, timeSeededRevision } from './revision.ts';
-import { AgentToolExecutor, isDocumentWriteTool, toolTraceNow, type ToolTraceTimings } from './tool-executor.ts';
+import { AgentToolExecutor, documentWriterBusyError, isDocumentWriteTool, toolTraceNow, type ToolTraceTimings } from './tool-executor.ts';
 import { PendingEditManager, editReportNote } from './pending-edits.ts';
 import { PendingOverlayRenderer } from './pending-overlay.ts';
 import { readProviderQuota, readRemoteBalance } from './provider-quota-protocol.ts';
 import { PendingRequestRegistry } from './pending-requests.ts';
 import { AgentEditFollow } from './agent-edit-follow.ts';
 import { TurnSnapshots, type BuiltTurnSnapshot } from './turn-snapshot.ts';
+import type { TurnCheckpointPort } from './turn-checkpoints.ts';
+import {
+  createTurnFailureCollector,
+  isProviderHubErrorCode,
+  legacyProviderFailure,
+  readProviderFailure,
+  type TurnFailureCollector,
+} from './provider-failure.ts';
+import { isPlanApprovalText } from './plan-approval-text.ts';
+import { lostSessionReason, type TurnInterruptionReason } from './turn-interruption-reason.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
 import {
   setModelCatalog,
@@ -48,10 +58,13 @@ import {
   readResponseBytesWithLimit,
 } from '../core/document-input-limits.ts';
 import type {
+  ProviderFailure,
   AgentBridgeDeps,
   ChatHistoryEntry,
   ProviderContextUsage,
   AgentBridgeOptions,
+  AgentEditorHost,
+  AgentViewHost,
   AgentInstructionsDraft,
   AgentInstructionsStatus,
   AgentEditingLease,
@@ -251,9 +264,12 @@ export type ChatStartContextProvider = (request: { agent: AgentName; threadId: s
 export type ChatCompactResult =
   | { ok: true; compactionId: string }
   | { ok: false; code: string; message: string };
+/** 문서 세션을 화면에 붙이고 떼는 호스트 전용 수명 주기 — 사이드바는 쓰지 않는다. */
+type AgentBridgeHostLifecycle = 'attachView' | 'detachView' | 'isViewAttached' | 'isBusy' | 'onBusyChange'
+  | 'holdsDocumentWrites' | 'noteDocumentRestored';
 
 /** Frontend consumers only need the pending-edit review surface. */
-export type SidebarBridge = Omit<AgentBridge, 'pendingEdits'> & {
+export type SidebarBridge = Omit<AgentBridge, 'pendingEdits' | AgentBridgeHostLifecycle> & {
   readonly pendingEdits: Pick<PendingEditManager, 'getChangeSets' | 'onChange' | 'approve' | 'reject'>;
 };
 
@@ -261,6 +277,24 @@ export interface HubFontAccess {
   baseUrl: string;
   sessionId: string;
   token: string;
+}
+
+/** 지금 연결된 허브 — 끊긴 턴의 이유(허브 재시작인지)를 가를 때 쓴다. null 은 아직 모르거나 옛 허브. */
+export interface HubIdentity {
+  /** 허브 프로세스 하나의 id(welcome.hubInstanceId). 허브가 다시 뜨면 바뀐다. */
+  hubInstanceId: string | null;
+  /** 이 브리지가 붙은 허브 세션(welcome.hubSessionId). */
+  hubSessionId: string | null;
+}
+
+/** 허브에 살아 있는 이 브리지의 채팅 — 새로고침 뒤 다시 붙일지 고를 때 쓴다. */
+export interface HubChat {
+  threadId: string;
+  /** 허브가 발급한 진행 중 턴의 id. 돌고 있지 않으면 null. */
+  turnId: string | null;
+  running: boolean;
+  /** 질문 답이나 계획 승인을 기다린다. */
+  awaitingUser: boolean;
 }
 
 export interface AgentBridge {
@@ -272,8 +306,48 @@ export interface AgentBridge {
   getActiveAgent(): AgentName | null;
   isTurnRunning(): boolean;
   getPendingUserQuestion(): UserQuestionInteraction | null;
+  /**
+   * 이 페이지에서 허브의 첫 답(welcome)을 반영했거나, 첫 연결 시도가 답 없이 끝났거나(재시도 예약),
+   * 다른 탭에 밀려났거나, 폐기되면 풀린다. 새로고침 뒤 사이드바는 이것을 기다렸다가 채팅을 고른다.
+   */
+  hubSessionKnown(): Promise<void>;
+  /**
+   * 브리지가 허브에서 붙들고 있는 채팅. 시작 전·멈춘 뒤·시작 요청 대기 중에는 null.
+   * running 은 턴 진행, awaitingUser 는 질문이나 계획 승인을 기다리는 중이다.
+   */
+  getHubChat(): HubChat | null;
+  /** 마지막 welcome 이 알린 허브 프로세스·세션 id. */
+  getHubIdentity(): HubIdentity;
+  /** 화면에 붙은 동안의 편집 잠금. 화면 밖 문서는 언제나 비활성 잠금을 내건다. */
   getEditingLease(): AgentEditingLease;
   onEditingLeaseChange(cb: (lease: AgentEditingLease) => void): () => void;
+  /**
+   * 문서를 화면 편집기에 붙인다. 문서 작업이 view.inputHandler 로 옮겨 가고, 오버레이가
+   * 지금의 대기 편집을 다시 그리며, 편집 위치 따라가기와 편집 잠금이 되살아난다.
+   */
+  attachView(view: AgentViewHost): void;
+  /**
+   * 문서를 화면에서 뗀다. 문서 작업은 editor(헤드리스 호스트)로 옮겨 가고 오버레이·편집 위치
+   * 따라가기·편집 잠금은 멈춘다. 소켓·턴·도구 실행·대기 편집·계획·대기열은 그대로 돈다.
+   */
+  detachView(editor: AgentEditorHost): void;
+  isViewAttached(): boolean;
+  /** 턴 진행, 사용자 메시지 대기, 질문 대기, 계획 승인 대기, 검토 대기 편집 중 하나라도 있으면 true. */
+  isBusy(): boolean;
+  /** isBusy 가 바뀌면 부른다. 알림은 마이크로태스크로 모아 한 번만 보낸다. */
+  onBusyChange(cb: (busy: boolean) => void): () => void;
+  /**
+   * 이 채팅이 문서를 고칠 수 있는 상태로 일하는지 — 검토 대기 변경이 있거나, 채팅 모드가 아닌
+   * 워크플로로 일하는 중. 채팅 시작을 기다리는 동안에는 요청한 워크플로를 본다.
+   */
+  holdsDocumentWrites(): boolean;
+  /**
+   * 사용자가 이 채팅의 요청 전으로 문서를 되돌렸다 (이 작업 전으로 되돌리기). 그 스레드로 다음에
+   * 보내는 사용자 메시지 앞에 문서가 바뀌었다는 안내 한 줄을 붙여, 에이전트가 되돌린 편집이 남아
+   * 있다고 여기지 않게 한다. 말풍선과 대화 기록에는 붙지 않는다. threadId 는 되돌린 요청의 스레드
+   * (없으면 지금 스레드)다. stillApplies 가 false 를 돌려주면(되돌리기를 실행 취소했다) 안내를 버린다.
+   */
+  noteDocumentRestored(threadId?: string, stillApplies?: () => boolean): void;
   getPermissionProfile(): PermissionProfile;
   getServiceTier(): ServiceTier;
   getWorkflowState(): AgentWorkflowState;
@@ -387,10 +461,20 @@ export interface AgentBridge {
   answerUserQuestion(interactionId: string, answers: Record<string, UserQuestionAnswer>): string;
   interrupt(): void;
   onEvent(cb: (e: SidebarEvent) => void): () => void;
+  /** 채팅을 멈추고 소켓을 닫고 리스너·구독을 모두 걷는다. 다시 쓸 수 없다. */
   dispose(): void;
 }
 
 type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'replaced';
+
+/** 아직 보내지 않은 되돌림 안내 — 되돌린 요청의 스레드와, 되돌리기가 아직 문서에 남아 있는지. */
+interface RestoredNotice {
+  threadId: string;
+  stillApplies?: () => boolean;
+}
+
+/** 문서를 이전 요청 전으로 되돌린 뒤 첫 사용자 메시지에 붙이는 안내 (에이전트에게만 간다). */
+export const DOCUMENT_RESTORED_NOTICE = '[문서 상태] 사용자가 문서를 이전 요청을 처리하기 전 상태로 되돌렸습니다. 문서를 다시 읽고 진행하세요.';
 
 /** 허브가 다른 스튜디오 탭에게 자리를 내주며 보내는 close code (server.mjs와 동일 값). */
 const CLOSE_CODE_REPLACED = 4000;
@@ -1268,6 +1352,11 @@ export class AgentBridgeImpl implements AgentBridge {
   readonly pendingEdits: PendingEditManager;
 
   private revision: RevisionTracker;
+  /** 문서 작업용 편집기 — 화면에 붙어 있으면 view.inputHandler, 아니면 헤드리스 호스트. */
+  private editor: AgentEditorHost;
+  private view: AgentViewHost | null;
+  /** 하위 구성요소에 넘기는 전달자. 붙이기·떼기가 구성요소를 다시 만들지 않고 반영된다. */
+  private readonly editorHost: AgentEditorHost;
   private overlay: PendingOverlayRenderer;
   private editFollow: AgentEditFollow;
   private pendingChangeUnsub: (() => void) | null = null;
@@ -1281,6 +1370,33 @@ export class AgentBridgeImpl implements AgentBridge {
   private httpBaseUrl = '';
   private readonly options?: AgentBridgeOptions;
   private readonly versionCommit?: (message: string) => Promise<void>;
+  private readonly claimDocumentWrite?: () => boolean;
+  /** 문서 세션의 턴 체크포인트 — 첫 쓰기 전 문서와 이 채팅의 승인·거절·턴 끝을 알린다. */
+  private readonly turnCheckpoints?: TurnCheckpointPort;
+  /** 턴 체크포인트에 알린 마지막 검토 set 목록 — 사라진 set 을 거절·폐기로 알린다. */
+  private checkpointSetIds = new Set<string>();
+  /** 문서를 되돌린 뒤 아직 보내지 않은 안내 — 그 스레드의 다음 사용자 메시지 앞에 붙는다. */
+  private restoredNotice: RestoredNotice | null = null;
+  /** 안내를 싣고 나갔지만 아직 턴이 열리지 않은 메시지 — 허브가 거절하면 안내를 다시 건다. */
+  private restoredNoticeInFlight: { notice: RestoredNotice; messageId: string | null; sawTurnStart: boolean } | null = null;
+  /**
+   * 체크포인트 기록이 열린 턴의 스레드 (turn-start 때의 threadId). 턴 도중 다른 스레드로 채팅을
+   * 바꿔도(startChat) 그 턴의 쓰기·검토 정리·끝은 이 스레드의 기록으로 간다.
+   */
+  private turnThreadId: string | null = null;
+  /** 마지막 welcome 의 허브 프로세스·세션 id(옛 허브는 보내지 않는다). */
+  private hubInstanceId: string | null = null;
+  private hubSessionId: string | null = null;
+  /**
+   * 허브가 내려간다고 알렸다(hub-shutdown). 그 뒤 오는 turn-end 는 허브가 세션을 정리하며 끊은 턴이다 —
+   * 프로바이더 실패가 아니라 허브 재시작으로 끊긴 턴으로 넘긴다(S3). 다음 welcome 에서 풀린다.
+   */
+  private hubShuttingDown = false;
+  /**
+   * 허브의 답(welcome)을 받기 전에 채팅을 멈췄다 — 새로고침 뒤 welcome 전에는 허브에 아무것도 보내지
+   * 않는다(S2). welcome 이 세션을 알리면 그때 멈추고, 그 세션을 이어 붙이지 않는다.
+   */
+  private stopBeforeWelcome = false;
   /** 실행 중인 문서 쓰기 도구 호출 — 버전 커밋은 이들이 끝난 문서를 담는다. */
   private readonly inFlightWrites = new Set<Promise<unknown>>();
   /** 진행 중인 commit_version — 그동안 들어온 쓰기 도구는 커밋이 끝난 뒤에 실행한다. */
@@ -1308,6 +1424,8 @@ export class AgentBridgeImpl implements AgentBridge {
   private pendingUserQuestionId: string | null = null;
   private pendingUserQuestion: UserQuestionInteraction | null = null;
   private pendingInterrupt = false;
+  /** interruptTurnsOnFirstWelcome 을 첫 welcome 에서 이미 봤다. */
+  private staleTurnChecked = false;
   /** 끊긴 사이 누른 로그인 취소. 재연결하면 보내서 허브의 로그인 실행을 끝낸다. */
   private pendingSetupCancels = new Map<string, unknown>();
   private disposed = false;
@@ -1351,8 +1469,19 @@ export class AgentBridgeImpl implements AgentBridge {
     providerTurnId: string | null;
     releaseEditingLease: () => void;
   }>();
+  /** 리스너에게 알린 잠금 — 화면 밖에서는 언제나 비활성이다. */
   private editingLease: AgentEditingLease = { active: false, agent: 'codex' };
+  /** 이 문서의 턴에서 파생된 잠금. 화면에 붙어 있을 때만 그대로 알린다. */
+  private documentEditingLease: AgentEditingLease = { active: false, agent: 'codex' };
   private editingLeaseListeners = new Set<(lease: AgentEditingLease) => void>();
+  /** 보낸 사용자 메시지가 아직 turn-start 로 이어지지 않았다 — 그 사이의 세션도 일하는 중이다. */
+  private messageAwaitingTurn = false;
+  /** 바쁨 상태 구독 — 첫 구독 때 만든다. 구독자가 없으면 상태를 계산하지 않는다. */
+  private busyWatch: {
+    listeners: Set<(busy: boolean) => void>;
+    busy: boolean;
+    queued: boolean;
+  } | null = null;
   /** 구상 중 사용자 편집이 있었고, 저장 알림을 아직 보내지 않았다. */
   private userEditedSincePlanningNotify = false;
   private documentNotifyUnsubs: Array<() => void> = [];
@@ -1360,9 +1489,39 @@ export class AgentBridgeImpl implements AgentBridge {
   private workflowSwitchPending = false;
   private workflowBeforeSwitch: { workflow: AgentWorkflow; phase: AgentPhase } | null = null;
   private turnHadError = false;
+  /** 한 턴의 error·turn-end 를 실패 알림 하나로 모은다. 테스트의 빈 인스턴스에서도 돌도록 늦게 만든다. */
+  private failureCollector?: TurnFailureCollector;
+  /** 이번 턴에 문서 쓰기 도구가 끝났다 — 실패한 턴을 다시 시도할 때 먼저 다시 읽게 한다. */
+  private turnWroteDocument = false;
   /** 에이전트에게 알릴 대기 편집 보고 — 턴 중이면 다음 도구 결과에, 아니면 다음 턴 맥락으로 보낸다 */
   private editReport: string[] = [];
   private pendingTurnOpen = false;
+  /**
+   * 소켓은 열렸지만 이 연결의 welcome 을 아직 반영하지 않았다. 그동안 chat-start 를 붙잡는다 —
+   * 새로고침 전 페이지의 턴이 허브에 살아 있으면 welcome 이 그 턴을 그대로 잇게 한다.
+   */
+  private awaitingWelcome = false;
+  /** 허브의 첫 답을 알게 됐다(hubSessionKnown). 객체를 프로토타입으로 만드는 테스트에서는 비어 있다. */
+  private hubSessionKnownSettled = false;
+  private hubSessionKnownPromise: Promise<void> | null = null;
+  private hubSessionKnownResolve: (() => void) | null = null;
+  /**
+   * 허브 세션에 지금 걸린 템플릿(welcome·chat-template-changed 기준). 같은 값은 다시 보내지 않는다 —
+   * 이어 붙인 턴이 도는 동안 같은 템플릿을 다시 걸면 허브가 AGENT_BUSY 로 거절한다. undefined 는 모름:
+   * 메시지가 싣고 간 템플릿은 허브가 답 없이 받으므로(받았는지도 모른다) 메시지를 보낸 뒤에도 모른다.
+   */
+  private hubTemplateId: string | null | undefined = undefined;
+  /**
+   * 사용자가 고른 템플릿(activeTemplateId)이 허브에 걸렸는지 아직 모른다 — 턴 중이거나 welcome 전·끊긴 동안
+   * 골랐거나, 보냈지만 허브의 답(chat-template-changed)이나 그 값을 실은 메시지의 turn-start 를 아직 못 봤다.
+   * 다음 사용자 메시지가 싣고 가고, 메시지 없이 턴을 여는 프레임(계획 승인·수정 요청·저장 알림)은 먼저 보낸다.
+   * welcome 은 이 선택을 허브의 값으로 덮지 않는다 — 사이드바의 칩이 이 선택을 보이고 있다.
+   */
+  private templateChoicePending = false;
+  /** 사용자가 템플릿을 고른 횟수 — 메시지가 싣고 간 선택이 그 뒤에 바뀌었는지 가린다. */
+  private templateChoiceSeq = 0;
+  /** turn-start 를 기다리는 메시지가 싣고 간 선택(templateChoiceSeq). 그 턴이 열리면 허브가 그 템플릿을 걸었다. */
+  private templateMessageSeq: number | null = null;
   private chatStartSent = false;
   private pendingChatStart: {
     requestId: string;
@@ -1407,6 +1566,19 @@ export class AgentBridgeImpl implements AgentBridge {
 
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
     this.versionCommit = deps.commitVersion;
+    this.claimDocumentWrite = deps.claimDocumentWrite;
+    this.turnCheckpoints = deps.turnCheckpoints;
+    this.view = deps.view ?? null;
+    this.editor = this.view?.inputHandler ?? deps.editor;
+    this.editorHost = {
+      getCursorPosition: () => this.editor.getCursorPosition(),
+      executeOperation: (desc) => this.editor.executeOperation(desc),
+      prepareSnapshotCapacity: (additionalIds) => this.editor.prepareSnapshotCapacity?.(additionalIds),
+      retainExternalSnapshot: (count) => this.editor.retainExternalSnapshot?.(count),
+      releaseExternalSnapshot: (count) => this.editor.releaseExternalSnapshot?.(count),
+      // 사용자가 보고 있는 문서만 커서·선택이 있다.
+      getUserSelectionContext: () => (this.view ? this.editor.getUserSelectionContext?.() ?? null : null),
+    };
     // revision 은 문서 인스턴스에 묶고, 페이지 로드마다 다른 값에서 시작한다 — 다른 문서나
     // 새로고침 이전 페이지에서 든 expectedRevision 이 우연히 맞아 엉뚱한 문서에 쓰이지 않게 한다.
     this.revision = new RevisionTracker(deps.eventBus, {
@@ -1414,21 +1586,20 @@ export class AgentBridgeImpl implements AgentBridge {
       initialRevision: timeSeededRevision(),
     });
     this.overlay = new PendingOverlayRenderer({
-      getCaretPosition: () => deps.inputHandler.getCursorPosition(),
-      canvasView: deps.canvasView,
+      getCaretPosition: () => (this.view ? this.editor.getCursorPosition() : null),
+      canvasView: this.view?.canvasView ?? null,
       wasm: deps.wasm,
       eventBus: deps.eventBus,
     });
     this.pendingEdits = new PendingEditManager({
       wasm: deps.wasm,
       eventBus: deps.eventBus,
-      inputHandler: deps.inputHandler,
-      canvasView: deps.canvasView,
+      editor: this.editorHost,
       overlay: this.overlay,
       contentNeutral: (run) => this.executor.coverContentNeutral(run),
     });
     this.editFollow = new AgentEditFollow({
-      canvasView: deps.canvasView,
+      canvasView: this.view?.canvasView ?? null,
       wasm: deps.wasm,
       eventBus: deps.eventBus,
     });
@@ -1442,16 +1613,23 @@ export class AgentBridgeImpl implements AgentBridge {
       const note = editReportNote(e);
       if (note) this.queueEditReport(note);
       this.handlePlanEditChange(e);
+      this.settleCheckpointSets(e);
+      this.scheduleBusyCheck();
     });
     this.executor = new AgentToolExecutor({
       wasm: deps.wasm,
-      inputHandler: deps.inputHandler,
+      editor: this.editorHost,
       documentState: deps.documentState,
       revision: this.revision,
       pending: this.pendingEdits,
       loadTemplateBytes: (template) => this.downloadTemplateBytes(template),
       getDocumentSourcePath: () => getNativeFileSourcePath(deps.wasm.currentFileHandle),
       isReadOnly: deps.isReadOnly,
+      claimDocumentWrite: deps.claimDocumentWrite,
+      // 이 턴의 첫 쓰기 직전 문서를 체크포인트로 남긴다 (모든 쓰기 문을 지난 뒤).
+      beforeDocumentWrite: deps.turnCheckpoints
+        ? () => deps.turnCheckpoints?.beforeWrite(this.checkpointThreadId(), this.pendingSetIds())
+        : undefined,
     });
     this.turnSnapshots = new TurnSnapshots({
       read: (args) => this.executor.structureSnapshot(args),
@@ -1485,6 +1663,92 @@ export class AgentBridgeImpl implements AgentBridge {
     return { documentId: this.documentId, revision: this.revision.revision };
   }
 
+  // ─── view attachment ──────────────────────────────────────
+
+  attachView(view: AgentViewHost): void {
+    if (this.disposed) return;
+    this.view = view;
+    this.editor = view.inputHandler;
+    this.overlay.setCanvasView(view.canvasView);
+    this.editFollow.setCanvasView(view.canvasView);
+    // 편집기는 그동안 다른 문서의 잠금 상태를 들고 있었다 — 이 문서의 상태로 다시 맞춘다.
+    this.pendingEdits.republishTemplateLock();
+    this.publishEditingLease(true);
+  }
+
+  detachView(editor: AgentEditorHost): void {
+    if (this.disposed) return;
+    this.view = null;
+    this.editor = editor;
+    this.editFollow.setCanvasView(null);
+    this.overlay.setCanvasView(null);
+    // 화면 밖 문서의 턴이 보이는 편집기를 잠그지 않게 비활성 잠금을 알린다.
+    this.publishEditingLease();
+  }
+
+  isViewAttached(): boolean {
+    return this.view !== null;
+  }
+
+  // ─── busy ─────────────────────────────────────────────────
+
+  isBusy(): boolean {
+    if (this.disposed) return false;
+    return this.turnRunning
+      || this.activeToolRequests > 0
+      || this.messageAwaitingTurn
+      // 채팅 시작·재연결·모드 전환을 기다리는 사용자 메시지
+      || this.queuedMessages.length > 0
+      || this.pendingUserQuestion !== null
+      || (this.workflow === 'plan' && (this.phase === 'awaiting-approval' || this.phase === 'switching'))
+      || this.pendingEdits.hasPending();
+  }
+
+  noteDocumentRestored(threadId: string = this.threadId, stillApplies?: () => boolean): void {
+    this.restoredNotice = { threadId, ...(stillApplies ? { stillApplies } : {}) };
+    this.restoredNoticeInFlight = null;
+  }
+
+  holdsDocumentWrites(): boolean {
+    if (this.disposed) return false;
+    if (this.pendingEdits.getChangeSets().some((set) => set.ops.length > 0)) return true;
+    if (!this.isBusy()) return false;
+    // stopChat 직후 채팅 시작 전에는 workflow 가 기본값(direct)이다. 요청한 워크플로로 판단한다.
+    const workflow = this.pendingChatStart?.workflow ?? this.workflow;
+    return workflow !== 'question';
+  }
+
+  onBusyChange(cb: (busy: boolean) => void): () => void {
+    const watch = this.busyWatch ??= { listeners: new Set(), busy: this.isBusy(), queued: false };
+    watch.listeners.add(cb);
+    return () => {
+      watch.listeners.delete(cb);
+    };
+  }
+
+  /**
+   * 바쁨 상태를 다시 계산해 바뀌었으면 알린다. 한 프레임 처리 중의 중간 상태(턴 종료 직후
+   * 검토 대기 set 이 생기기 전 등)를 흘리지 않고, 리스너가 브리지를 정리해도 처리 중인
+   * 핸들러가 깨지지 않도록 마이크로태스크로 미룬다.
+   */
+  private scheduleBusyCheck(): void {
+    const watch = this.busyWatch;
+    if (!watch || watch.queued || this.disposed) return;
+    watch.queued = true;
+    queueMicrotask(() => {
+      watch.queued = false;
+      if (this.disposed || this.busyWatch !== watch) return;
+      const busy = this.isBusy();
+      if (busy === watch.busy) return;
+      watch.busy = busy;
+      for (const listener of [...watch.listeners]) {
+        try { listener(busy); } catch (error) {
+          console.warn('[AgentBridge] 작업 상태 리스너 오류:', error);
+        }
+      }
+    });
+  }
+
   private async initializeConnection() {
     const seq = this.reconnectSeq;
     await this.requestHubLaunch();
@@ -1507,15 +1771,29 @@ export class AgentBridgeImpl implements AgentBridge {
     this.scheduleReconnect();
   }
 
+  /** 호스트가 세션 구성을 주면 그것을, 아니면 페이지 기본 세션(개발 모드 대체값 포함)을 쓴다. */
+  private async loadSessionContext(): Promise<RendererSessionContext | null> {
+    const resolve = this.options?.resolveSessionContext;
+    if (!resolve) {
+      return resolveRendererSessionContext(undefined, {
+        hubUrl: this.options?.url,
+        hubToken: this.options?.token,
+        referenceToken: this.options?.referenceToken,
+        templateToken: this.options?.templateToken,
+        launchId: this.options?.launchId,
+        sessionId: this.options?.sessionId,
+      });
+    }
+    try {
+      return await resolve();
+    } catch (error) {
+      console.warn('[AgentBridge] 세션 구성 조회 실패:', error);
+      return null;
+    }
+  }
+
   private async refreshSessionContext() {
-    const context = await resolveRendererSessionContext(undefined, {
-      hubUrl: this.options?.url,
-      hubToken: this.options?.token,
-      referenceToken: this.options?.referenceToken,
-      templateToken: this.options?.templateToken,
-      launchId: this.options?.launchId,
-      sessionId: this.options?.sessionId,
-    });
+    const context = await this.loadSessionContext();
     if (this.disposed) return false;
     if (!context) {
       this.setState('disconnected');
@@ -1731,6 +2009,8 @@ export class AgentBridgeImpl implements AgentBridge {
       if (this.disposed || this.ws !== ws) return;
       this.clearConnectTimer();
       this.chatStartSent = false;
+      // 허브는 연결마다 welcome 을 먼저 보낸다. 시작 요청은 그 스냅샷과 맞춰 본 뒤에 보낸다.
+      this.awaitingWelcome = true;
       this.setState('connected');
       // 끊긴 사이에 끝난 도구 결과를 먼저 흘려보낸다 — 허브의 인플라이트 호출이
       // 30초 타임아웃까지 가지 않고 이 응답으로 마무리된다.
@@ -1748,9 +2028,7 @@ export class AgentBridgeImpl implements AgentBridge {
       if (this.browserbaseOverride !== null) {
         this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'browserbase-credentials-set', ...this.browserbaseOverride });
       }
-      if (this.pendingChatStart !== null) {
-        this.sendPendingChatStart();
-      }
+      // 대기 중인 chat-start 는 welcome 에서 보낸다 — 여기서 보내면 허브에 살아 있는 같은 채팅의 턴을 죽인다.
     };
     ws.onmessage = (ev) => {
       if (this.disposed || this.ws !== ws) return;
@@ -1773,6 +2051,8 @@ export class AgentBridgeImpl implements AgentBridge {
         // 허브는 이미 이 탭의 인플라이트 호출을 실패시켰으니 버퍼도 비운다.
         this.toolResponses.clear();
         this.setState('replaced');
+        // 다른 탭에 밀려난 채로는 허브의 답을 받지 못한다 — 시작 복원을 붙잡지 않는다.
+        this.resolveHubSessionKnown();
         return;
       }
       this.reconnectAttempt++;
@@ -1785,6 +2065,8 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private scheduleReconnect(): void {
+    // 첫 시도가 답 없이 끝났다 — 허브가 내려가 있으면 붙일 세션도 없으니 시작 복원을 막지 않는다.
+    this.resolveHubSessionKnown();
     if (this.disposed || this.reconnectTimer !== null) return;
     void this.requestHubLaunch();
     const step = Math.min(
@@ -1911,6 +2193,9 @@ export class AgentBridgeImpl implements AgentBridge {
     if (!this.versionCommit) {
       throw new AgentToolError('VERSIONING_UNAVAILABLE', 'Version history is not available for this document.');
     }
+    // 다른 채팅이 고치는 중이면 그 채팅의 미리보기를 이 채팅의 커밋으로 남기지 않는다. 앞선 쓰기를 기다리기
+    // 전에 곧바로 거절한다 — 커밋을 기다리는 동안에도 이 채팅이 쓰기 자리를 쥔다.
+    if (this.claimDocumentWrite && !this.claimDocumentWrite()) throw documentWriterBusyError();
     const versionCommit = this.versionCommit;
     const previous = this.versionCommitInFlight;
     // 먼저 시작한 쓰기(비동기 insert_image 등)가 끝나야 반쯤 적용된 문서를 담지 않는다. 목록은
@@ -1987,6 +2272,8 @@ export class AgentBridgeImpl implements AgentBridge {
     if (!this.userEditedSincePlanningNotify) return;
     if (!this.activeAgent || this.state !== 'connected') return;
     this.userEditedSincePlanningNotify = false;
+    // 허브는 이 알림으로 다시 구상하는 턴을 연다(쉬는 중이면 곧바로) — 고른 템플릿을 먼저 건다.
+    this.flushTemplateChoice();
     const sent = this.sendJson({
       v: AGENT_PROTOCOL_VERSION,
       type: 'chat-document-saved',
@@ -2001,7 +2288,7 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private syncEditingLease(): void {
-    const next = deriveAgentEditingLease({
+    this.documentEditingLease = deriveAgentEditingLease({
       turnRunning: this.turnRunning,
       activeToolRequests: this.activeToolRequests,
       agent: this.editingAgent,
@@ -2009,9 +2296,26 @@ export class AgentBridgeImpl implements AgentBridge {
       phase: this.phase,
       waitingForUser: this.pendingUserQuestionId !== null,
     });
-    if (next.active === this.editingLease.active
-      && next.agent === this.editingLease.agent
-      && next.waitingForUser === this.editingLease.waitingForUser) return;
+    this.publishEditingLease();
+    this.scheduleBusyCheck();
+  }
+
+  /** 화면에 붙은 동안만 이 문서의 잠금을 내건다. 화면 밖 문서의 턴이 보이는 편집기를 잠그면 안 된다. */
+  private visibleEditingLease(): AgentEditingLease {
+    const lease = this.documentEditingLease;
+    return this.view !== null
+      ? { ...lease }
+      : { active: false, agent: lease.agent };
+  }
+
+  /** 바뀐 잠금만 알린다. force 는 화면에 다시 붙을 때처럼 편집기 상태를 이 문서 기준으로 덮어쓸 때. */
+  private publishEditingLease(force = false): void {
+    const next = this.visibleEditingLease();
+    const last = this.editingLease;
+    if (!force
+      && next.active === last.active
+      && next.agent === last.agent
+      && next.waitingForUser === last.waitingForUser) return;
     this.editingLease = next;
     for (const listener of this.editingLeaseListeners) {
       try { listener({ ...next }); } catch (error) {
@@ -2064,7 +2368,50 @@ export class AgentBridgeImpl implements AgentBridge {
     } finally {
       this.executor.endTurn();
       this.pendingTurnOpen = false;
+      this.endTurnCheckpoint();
     }
+  }
+
+  /** 검토를 기다리는 (편집이 든) set 들. */
+  private pendingSetIds(): string[] {
+    return this.pendingEdits.getChangeSets().filter((set) => set.ops.length > 0).map((set) => set.id);
+  }
+
+  /** 체크포인트 기록이 열린 턴의 스레드. 이 채팅이 아직 턴을 열지 않았으면 지금 스레드다. */
+  private checkpointThreadId(): string {
+    return this.turnThreadId ?? this.threadId;
+  }
+
+  /** 턴이 끝났음을 턴 체크포인트에 알린다. 이미 닫혔으면 아무 일도 없다. */
+  private endTurnCheckpoint(threadId: string = this.checkpointThreadId()): void {
+    try {
+      this.turnCheckpoints?.endTurn(threadId, this.pendingSetIds());
+    } catch (e) {
+      console.warn('[AgentBridge] 턴 체크포인트 종료 실패:', e);
+    }
+  }
+
+  /**
+   * 검토 set 의 정리를 턴 체크포인트에 알린다. 승인은 남긴 것(kept)이고, 승인 없이 사라진 set 은
+   * 거절·폐기다 — 이벤트 모양(거절, 문서 교체, undo 무효화, 부분 누락)에 기대지 않고 목록의 차로 본다.
+   */
+  private settleCheckpointSets(e: PendingEditsChangeEvent): void {
+    const port = this.turnCheckpoints;
+    if (!port) return;
+    // 승인·거절 도중의 부분 누락 알림 — set 은 이미 빠졌고 승인/거절 이벤트가 곧바로 뒤따른다.
+    if (e.type === 'invalidated' && e.droppedOpIds) return;
+    const current = new Set(this.pendingEdits.getChangeSets().map((set) => set.id));
+    const approved = e.type === 'approved' ? e.changeSetId : null;
+    try {
+      const threadId = this.checkpointThreadId();
+      for (const id of this.checkpointSetIds) {
+        if (!current.has(id) && id !== approved) port.settleSet(threadId, id, false);
+      }
+      if (approved) port.settleSet(threadId, approved, true);
+    } catch (error) {
+      console.warn('[AgentBridge] 턴 체크포인트 정리 실패:', error);
+    }
+    this.checkpointSetIds = current;
   }
 
   private beginPlanExecutionTurn(): void {
@@ -2134,12 +2481,20 @@ export class AgentBridgeImpl implements AgentBridge {
         message: `Unsupported protocol version: ${msg.v}`,
         supportedVersions: [AGENT_PROTOCOL_VERSION],
       });
+      // 다른 버전 허브의 welcome 도 첫 답이다 — 이을 세션이 없으니 시작 복원을 붙잡지 않는다.
+      if (msg.type === 'welcome') this.resolveHubSessionKnown();
       return;
     }
     try {
       this.handleMessage(msg);
     } catch (e) {
       console.warn('[AgentBridge] 메시지 처리 오류:', e);
+    }
+    // welcome 처리의 모든 갈래(일찍 돌아가는 곳 포함)가 끝난 뒤에 푼다 — 사이드바는 그 상태로 채팅을 고른다.
+    if (msg.type === 'welcome') {
+      // welcome 을 기다리며 줄 선 메시지는 어느 갈래로 끝났든 이제 보낸다(시작 요청을 기다리면 그 답이 보낸다).
+      this.flushQueuedMessages();
+      this.resolveHubSessionKnown();
     }
   }
 
@@ -2149,10 +2504,51 @@ export class AgentBridgeImpl implements AgentBridge {
         // 백오프는 프로토콜 버전 검사를 통과한 welcome 에서만 접는다 — 열리자마자 닫히는
         // 소켓(다른 버전의 오래된 허브 등)이 250ms 재시도를 끝없이 반복하지 않게 한다.
         this.reconnectAttempt = 0;
-        // A reconnect snapshot predates the start command replayed on socket open.
-        if (this.pendingChatStart) return;
-        const session = msg.session;
+        this.awaitingWelcome = false;
+        // 허브 프로세스가 바뀌었는지는 앞 welcome 의 id 와 견준다 — 아래 일찍 돌아가는 갈래에서도 갱신한다.
+        const previousHubInstanceId = this.hubInstanceId ?? null;
+        this.hubShuttingDown = false;
+        this.hubInstanceId = typeof msg.hubInstanceId === 'string' && msg.hubInstanceId ? msg.hubInstanceId : null;
+        this.hubSessionId = typeof msg.hubSessionId === 'string' && msg.hubSessionId ? msg.hubSessionId : null;
+        // 엔진이 멈춘 페이지가 멈추지 못한 턴은 새 페이지의 첫 welcome 에서 한 번 멈춘다 (S7).
+        this.interruptStaleTurnAfterFirstWelcome(msg.session);
+        let session = msg.session;
+        const pendingStart = this.pendingChatStart;
+        /** 이 welcome 전에 이 페이지가 멈춘 세션을 여기서 멈췄다 — 허브가 잃은 턴이 아니다. */
+        let stoppedBeforeWelcome = false;
+        if (this.stopBeforeWelcome) {
+          this.stopBeforeWelcome = false;
+          // 멈춘 뒤 같은 채팅을 다시 열었으면(사이드바의 채팅 열기는 멈춤 뒤 같은 채팅의 시작을 보낸다) 멈추지
+          // 않는다 — 아래의 시작 요청 맞추기가 살아 있는 턴을 잇거나(S2) 새로 시작한다.
+          const reopensSameChat = Boolean(session) && Boolean(pendingStart)
+            && typeof session.threadId === 'string' && session.threadId === pendingStart!.threadId;
+          if (session && !reopensSameChat) {
+            // 이 페이지가 welcome 전에 멈춘 채팅이다(초안·다른 채팅으로 옮겨 갔다) — 지금 멈추고, 그 세션을
+            // 잇지 않는다. 뒤에 줄 선 시작 요청은 이 멈춤 다음에 나간다.
+            this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-stop' });
+            session = null;
+            stoppedBeforeWelcome = true;
+          }
+        }
         const sessionThreadId = typeof session?.threadId === 'string' ? session.threadId : '';
+        if (pendingStart) {
+          // 붙잡아 둔 시작 요청을 스냅샷과 맞춘다. 같은 채팅의 턴이 허브에서 살아 있으면(새로고침
+          // 전 페이지의 턴·질문·계획 승인 대기) 다시 시작하지 않고 그대로 잇는다.
+          const sameChatBusy = Boolean(session) && sessionThreadId === pendingStart.threadId
+            && (session.status === 'running'
+              || Boolean(session.pendingUserQuestion)
+              || session.phase === 'awaiting-approval');
+          if (!sameChatBusy) {
+            // 이 시작 요청이 스냅샷의 세션을 바꾼다 — 스냅샷과 그 재생 프레임은 쓰지 않는다.
+            this.sendPendingChatStart();
+            return;
+          }
+          // 바쁜 세션은 시작 뒤에 줄 선 메시지를 AGENT_BUSY 로 거절한다 — 보내지 않고 접는다.
+          for (const message of this.queuedMessages) message.resolve(null);
+          this.queuedMessages = [];
+          this.pendingChatStart = null;
+          this.chatStartSent = false;
+        }
         if (this.threadId && session && sessionThreadId !== this.threadId) {
           // pendingChatStart 는 자기 응답이 올 때까지 살아 있으므로,
           // 재연결 소켓은 이미 마지막으로 선택한 스레드를 다시 보낸 상태다.
@@ -2162,9 +2558,16 @@ export class AgentBridgeImpl implements AgentBridge {
         // 스레드만 복원된 유휴 상태는 그대로 두고, 살아 있다고 믿던 채팅만 아래에서 정리한다 —
         // 그러지 않으면 turnRunning·편집 잠금이 새 허브가 보내지 않을 turn-end 를 영영 기다린다.
         if (!session && this.threadId && !this.chatLiveLocally()) return;
+        // 스냅샷이 권위 있는 답이다 — 끊기기 전 보낸 메시지의 턴은 status 로 이어진다. 그 메시지가 실은 템플릿은
+        // 아래에서 스냅샷의 템플릿과 견준다.
+        this.messageAwaitingTurn = false;
+        this.templateMessageSeq = null;
         const wasRunning = this.turnRunning;
         const lostAgent = this.activeAgent ?? this.editingAgent;
         let hubLostTurn = false;
+        // 이 채팅의 세션이 없다는 답의 이유 — 같은 허브 프로세스면 세션만 사라졌다(에이전트 프로세스
+        // 종료), 바뀌었거나 모르면(옛 허브) 허브 재시작이다.
+        const lostReason = lostSessionReason(previousHubInstanceId, this.hubInstanceId);
         if (session && isAgentName(session.agent)) {
           this.selectedAgent = session.agent;
           this.activeAgent = session.agent;
@@ -2175,12 +2578,19 @@ export class AgentBridgeImpl implements AgentBridge {
           if (typeof session.documentId === 'string' || session.documentId === null) this.documentId = session.documentId;
           if (typeof session.documentName === 'string' || session.documentName === null) this.documentName = session.documentName;
           this.turnRunning = session.status === 'running';
+          // 다시 붙은 턴의 쓰기와 끝은 허브 세션의 스레드에 묶인다.
+          if (this.turnRunning && (!wasRunning || this.turnThreadId === null)) this.turnThreadId = this.threadId;
           this.activeProviderTurnId = this.turnRunning && typeof session.turnId === 'string'
             ? session.turnId
             : null;
           this.permissionProfile = session.permissionProfile === 'unrestricted' ? 'unrestricted' : 'safe';
           this.serviceTier = session.serviceTier === 'fast' ? 'fast' : 'standard';
-          this.activeTemplateId = typeof session.activeTemplateId === 'string' ? session.activeTemplateId : null;
+          const hubTemplateId = typeof session.activeTemplateId === 'string' ? session.activeTemplateId : null;
+          this.hubTemplateId = hubTemplateId;
+          // 허브에 닿지 않은 선택(턴 중·끊긴 동안 고르거나 지운 템플릿)은 허브의 값으로 덮지 않는다 — 다음 메시지나
+          // 턴을 여는 프레임이 싣고 간다. 닿은 선택이면 허브의 값이 권위 있다.
+          if (!this.templateChoicePending) this.activeTemplateId = hubTemplateId;
+          else if (this.activeTemplateId === hubTemplateId) this.templateChoicePending = false;
           this.activeTemplate = this.activeTemplateId
             ? this.templateCatalog.templates.find((template) => template.id === this.activeTemplateId) ?? null
             : null;
@@ -2250,8 +2660,11 @@ export class AgentBridgeImpl implements AgentBridge {
               console.warn('[AgentBridge] reconnect endTurn 실패:', e);
             }
           }
+          // 끊긴 사이에 끝난 턴 — 검토 단계가 없던 턴의 체크포인트 기록도 닫는다.
+          if (!this.turnRunning) this.endTurnCheckpoint();
         } else {
-          hubLostTurn = wasRunning;
+          // 이 페이지가 멈춘 세션은 허브가 잃은 것이 아니다 — 끊긴 턴 줄·알림을 내지 않는다. 그 턴의 끝은 허브가 보낸다.
+          hubLostTurn = wasRunning && !stoppedBeforeWelcome;
           this.activeAgent = null;
           this.planExecutionTurn = null;
           const droppedQuestion = this.pendingUserQuestion;
@@ -2263,11 +2676,15 @@ export class AgentBridgeImpl implements AgentBridge {
             this.emit({
               type: 'user-question-resolved',
               interactionId: droppedQuestion.interactionId,
-              outcome: { status: 'expired', reason: 'hub-restarted' },
+              outcome: {
+                status: 'expired',
+                reason: lostReason === 'agent-exit' ? 'provider-disconnected' : 'hub-restarted',
+              },
             });
           }
-          this.activeTemplateId = null;
-          this.activeTemplate = null;
+          // 세션과 함께 허브의 템플릿도 사라졌다. 사용자의 선택(사이드바의 칩)은 남기고, 새 세션의 첫 메시지가 싣고 간다.
+          this.hubTemplateId = undefined;
+          this.templateChoicePending = true;
           this.turnRunning = false;
           this.activeProviderTurnId = null;
           this.abortActiveToolRequests();
@@ -2278,6 +2695,8 @@ export class AgentBridgeImpl implements AgentBridge {
               console.warn('[AgentBridge] reconnect endTurn 실패:', e);
             }
           }
+          // 허브가 턴과 함께 사라졌다 — 그 턴의 체크포인트 기록을 닫는다.
+          this.endTurnCheckpoint();
           if (this.workflow === 'plan' || this.workflow === 'question' || this.workflowSwitchPending) {
             this.finishWorkflowSwitch();
             this.syncEditingLease();
@@ -2294,6 +2713,9 @@ export class AgentBridgeImpl implements AgentBridge {
         }
         if (this.planReview?.planId !== this.latestPlan?.planId) this.planReview = null;
         this.flushQueuedMessages();
+        // 허브와 함께 사라진 턴은 아래 connection 재동기화보다 먼저 끝낸다 — 사이드바가 그 끝을 끊긴 턴(S3)으로
+        // 정착한 뒤에 진행 표시를 맞춘다.
+        if (hubLostTurn) this.emitHubLostTurn(lostAgent, lostReason);
         if (wasRunning && !this.turnRunning) {
           // 연결이 끊긴 사이에 끝난 턴 — 잃어버린 turn-end 를 합성해 UI 를 되돌린다.
           if (this.pendingTurnOpen) {
@@ -2303,28 +2725,19 @@ export class AgentBridgeImpl implements AgentBridge {
               console.warn('[AgentBridge] endTurn 실패:', e);
             }
           }
+          this.endTurnCheckpoint();
           // setState 는 상태가 같으면 무시하므로 직접 emit 해 사이드바가
           // isTurnRunning() 으로 재동기화하도록 한다.
           this.emitConnection();
-        }
-        if (hubLostTurn) {
-          // 허브가 턴과 함께 사라졌다 — 새 허브는 turn-end 를 보내지 않으므로 사이드바의
-          // 진행 표시·스트림·도구 행을 같은 경로로 마무리한다. 편집은 검토 대기로 남아 있다.
-          this.emit({
-            type: 'agent',
-            event: {
-              type: 'turn-end',
-              agent: lostAgent,
-              stopReason: 'exited',
-              errorMessage: '에이전트 허브가 다시 시작되어 작업이 중단됐습니다.',
-            },
-          });
         }
         break;
       }
       case 'user-question-requested': {
         const interaction = readUserQuestionInteraction(msg.interaction);
         if (!interaction || (this.threadId && interaction.threadId !== this.threadId)) break;
+        // 이 브리지의 시작 요청이 대기 중이면 재생된 질문은 그 시작이 바꿀 세션의 것이다 —
+        // 잠깐 보였다가 만료되는 카드를 띄우지 않는다. 이어 붙였다면 시작 요청은 이미 비었다.
+        if (msg.replayed === true && this.pendingChatStart) break;
         if (this.pendingQuestionCancellation?.interactionId === interaction.interactionId) {
           // 취소 프레임과 엇갈려 도착한 재생 요청은 UI에 되살리지 않는다.
           this.flushPendingQuestionCancellation();
@@ -2381,6 +2794,10 @@ export class AgentBridgeImpl implements AgentBridge {
         const replacedSession = this.pendingChatStart !== null;
         this.pendingChatStart = null;
         this.chatStartSent = false;
+        // chat-started 는 세션의 템플릿을 싣지 않는다 — 다음 선택은 그대로 보낸다. 새 세션에는 사용자의 선택이
+        // 아직 걸리지 않았을 수 있다 — 첫 메시지가 싣고 가기 전의 welcome 이 그 선택을 덮지 않게 한다.
+        this.hubTemplateId = undefined;
+        this.templateChoicePending = true;
         // 허브가 프로바이더를 새로 띄웠을 수 있다 — 이전 세션이 본 문서 상태는 이 세션의 것이 아니다.
         this.turnSnapshots?.reset();
         if (replacedSession) this.clearPendingQuestionCancellation();
@@ -2562,6 +2979,10 @@ export class AgentBridgeImpl implements AgentBridge {
       case 'chat-template-changed': {
         this.activeTemplate = readDocumentTemplate(msg.template);
         this.activeTemplateId = this.activeTemplate?.id ?? null;
+        this.hubTemplateId = this.activeTemplateId;
+        // 허브의 답이 사이드바의 칩도 바꾼다 — 기다리던 선택은 없다.
+        this.templateChoicePending = false;
+        this.templateMessageSeq = null;
         this.emit({
           type: 'chat-template-changed',
           template: this.activeTemplate,
@@ -2820,6 +3241,19 @@ export class AgentBridgeImpl implements AgentBridge {
         // 거절된 메시지의 문서 스냅샷은 프로바이더에 닿지 않았다.
         this.turnSnapshots?.reset();
         if (typeof msg.requestId === 'string' && msg.requestId !== this.pendingChatStart?.requestId) break;
+        const failureOrigin: 'start' | 'send' = typeof msg.requestId === 'string' ? 'start' : 'send';
+        const failureAgent = (isAgentName(msg.failure?.agent) ? msg.failure.agent : null)
+          ?? this.pendingChatStart?.agent ?? this.activeAgent ?? this.selectedAgent;
+        const hubFailure = readProviderFailure(msg.failure, failureAgent)
+          ?? (isProviderHubErrorCode(msg.code)
+            ? legacyProviderFailure(failureAgent, typeof msg.message === 'string' ? msg.message : '', msg.code)
+            : null);
+        // 거절된 메시지가 실었던 복원 안내는 다시 보낼 수 있게 되살린다. 모아 둔 실패는 아래에서
+        // 기다림이 끝났을 때만 내놓는다.
+        this.rearmRestoredNotice(typeof msg.messageId === 'string' && msg.messageId ? msg.messageId : null);
+        // 요청 ID 없는 오류는 보낸 메시지의 거절이다 — 턴으로 이어지지 않는다. 그 메시지가 실은 템플릿도 걸리지 않았다.
+        this.messageAwaitingTurn = false;
+        this.templateMessageSeq = null;
         if (this.pendingChatStart && msg.session && isAgentName(msg.session.agent)) {
           // Validation/busy rejection leaves the previous provider alive.
           for (const message of this.queuedMessages) message.resolve(null);
@@ -2854,6 +3288,8 @@ export class AgentBridgeImpl implements AgentBridge {
               console.warn('[AgentBridge] chat-error endTurn 실패:', e);
             }
           }
+          // 시작에 실패한 채팅의 턴은 끝났다 — 체크포인트 기록이 열린 채 남지 않게 한다.
+          this.endTurnCheckpoint();
           const droppedQuestion = this.pendingUserQuestion;
           this.pendingUserQuestion = null;
           this.pendingUserQuestionId = null;
@@ -2874,10 +3310,19 @@ export class AgentBridgeImpl implements AgentBridge {
         } else {
           this.pendingChatStart = null;
         }
+        // 턴을 기다리며 모아 둔 실패는 이 거절로 기다림이 끝났을 때만 내놓는다. 턴이 아직 돌면
+        // (턴 중의 설정 변경 거절 AGENT_BUSY 등) 그 턴의 turn-end 가 실패 알림 하나를 맡는다.
+        const heldFailure = this.turnRunning ? null : this.turnFailures().flush();
+        if (heldFailure && !hubFailure) {
+          this.emit({ type: 'turn-failure', failure: heldFailure, turnId: null, origin: 'idle', userInitiated: false });
+        }
         this.emit({
           type: 'hub-error',
           code: typeof msg.code === 'string' ? msg.code : 'RPC_ERROR',
-          message: typeof msg.message === 'string' ? msg.message : 'Unknown hub error',
+          message: hubFailure?.message ?? (typeof msg.message === 'string' ? msg.message : 'Unknown hub error'),
+          // 허브가 거절한 메시지를 사이드바가 집어낼 수 있게 receipt id 를 그대로 넘긴다.
+          ...(typeof msg.messageId === 'string' && msg.messageId ? { messageId: msg.messageId } : {}),
+          ...(hubFailure ? { failure: hubFailure, origin: failureOrigin } : {}),
         });
         break;
       }
@@ -2899,10 +3344,18 @@ export class AgentBridgeImpl implements AgentBridge {
       case 'agent-event': {
         const raw = msg.event as AgentStreamEvent | undefined;
         if (!raw || typeof raw.type !== 'string') break;
-        const event = readContextEvent(raw);
-        if (event) this.handleAgentEvent(event);
+        let event = readContextEvent(raw);
+        if (!event) break;
+        // 허브가 내려가며 정리한 턴의 끝 — 프로바이더 실패 알림 대신 허브 재시작으로 끊긴 턴이다(S3).
+        if (this.hubShuttingDown && event.type === 'turn-end' && !event.interruption) {
+          event = { ...event, interruption: 'hub-restart' };
+        }
+        this.handleAgentEvent(event);
         break;
       }
+      case 'hub-shutdown':
+        this.hubShuttingDown = true;
+        break;
       case 'tool-request': {
         this.handleToolRequest(msg);
         break;
@@ -2920,6 +3373,33 @@ export class AgentBridgeImpl implements AgentBridge {
     }
   }
 
+  /**
+   * 허브가 턴과 함께 사라졌다 — 새 허브는 turn-end 를 보내지 않으므로 사이드바의 진행 표시·스트림·
+   * 도구 행을 같은 경로로 마무리한다. 편집은 검토 대기로 남아 있다.
+   * interruption 은 Studio 만 붙이는 끊김 이유(S3)다 — 사이드바는 그 자리에 중단 줄과 이어서 진행을
+   * 남기고, 실패 수집(U5)은 이 끝을 실패로 세지 않는다(실패 알림을 따로 내지 않는다). errorMessage 는
+   * 옛 소비자를 위해 남긴다.
+   */
+  private emitHubLostTurn(agent: AgentName, reason: TurnInterruptionReason): void {
+    const event: Extract<AgentStreamEvent, { type: 'turn-end' }> = {
+      type: 'turn-end',
+      agent,
+      stopReason: 'exited',
+      errorMessage: reason === 'agent-exit'
+        ? '에이전트 세션이 끝나 작업이 중단됐습니다.'
+        : '에이전트 허브가 다시 시작되어 작업이 중단됐습니다.',
+      interruption: reason,
+    };
+    // 수집기의 턴을 닫는다 — interruption 이 실린 끝은 실패가 아니라 null 이다.
+    this.turnFailures().endTurn(event);
+    this.emit({ type: 'agent', event });
+  }
+
+  private turnFailures(): TurnFailureCollector {
+    this.failureCollector ??= createTurnFailureCollector();
+    return this.failureCollector;
+  }
+
   private handleAgentEvent(event: AgentStreamEvent): void {
     // 서브에이전트가 돈 턴에는 루트가 보지 못한 쓰기가 섞인다. Claude·Codex 서브에이전트의 도구 요청에는
     // 표시가 없으므로 task 이벤트(와 parentTaskId 가 붙은 이벤트)로 알아챈다.
@@ -2927,10 +3407,29 @@ export class AgentBridgeImpl implements AgentBridge {
       || ('parentTaskId' in event && event.parentTaskId)) {
       this.turnSnapshots?.noteSubagentActivity();
     }
+    // 텍스트 조각은 턴·편집 잠금·바쁨 상태를 바꾸지 않는다. 토큰마다 다시 셈하지 않고 넘기기만 한다.
+    if (event.type === 'text-delta') {
+      this.notifyListeners({ type: 'agent', event });
+      return;
+    }
+    let turnFailure: ReturnType<TurnFailureCollector['endTurn']> = null;
+    let idleFailure: ProviderFailure | null = null;
     switch (event.type) {
       case 'turn-start':
         this.turnSnapshots?.beginTurn();
+        // 보낸 메시지가 연 턴만 '다시 시도' 로 같은 요청을 다시 보낼 수 있다 — 허브가 연 턴은 아니다.
+        this.turnFailures().beginTurn(typeof event.turnId === 'string' ? event.turnId : null, this.messageAwaitingTurn);
+        this.turnWroteDocument = false;
+        // 끝을 듣지 못한 앞 턴이 다른 스레드의 것이면 그 기록을 닫는다 (같은 스레드는 저장소가 닫는다).
+        if (this.turnThreadId !== null && this.turnThreadId !== this.threadId) this.endTurnCheckpoint(this.turnThreadId);
+        this.turnThreadId = this.threadId;
+        // 이 턴 뒤의 id 없는 오류는 안내를 실은 메시지의 거절로 보지 않는다.
+        if (this.restoredNoticeInFlight) this.restoredNoticeInFlight.sawTurnStart = true;
         this.turnRunning = true;
+        // 보낸 메시지의 턴이 열렸다 — 허브는 그 메시지가 실은 템플릿을 걸었다(그 뒤에 다시 골랐으면 아직 기다린다).
+        if (this.messageAwaitingTurn && this.templateMessageSeq === this.templateChoiceSeq) this.templateChoicePending = false;
+        this.templateMessageSeq = null;
+        this.messageAwaitingTurn = false;
         this.activeProviderTurnId = typeof event.turnId === 'string' ? event.turnId : null;
         this.editingAgent = event.agent;
         this.turnHadError = false;
@@ -2945,7 +3444,13 @@ export class AgentBridgeImpl implements AgentBridge {
       case 'turn-end': {
         const eventTurnId = typeof event.turnId === 'string' ? event.turnId : null;
         if (!providerTurnEndMatches(this.activeProviderTurnId, eventTurnId)) return;
+        // turn-start 없이 끝난 턴(턴을 열지 못하고 실패한 메시지)은 기다리던 메시지의 턴이다 — 다시 시도를 준다.
+        turnFailure = this.turnFailures().endTurn(event, this.messageAwaitingTurn);
+        // 안내를 실은 메시지의 턴이거나, 그 메시지를 거절할 허브 턴이 끝났다 — 더 기다릴 거절이 없다.
+        const noticeTurn = this.restoredNoticeInFlight;
+        this.restoredNoticeInFlight = null;
         this.turnRunning = false;
+        this.messageAwaitingTurn = false;
         this.activeProviderTurnId = null;
         this.abortProviderToolRequests(eventTurnId ?? undefined);
         const disposition = turnEndDisposition(event, this.permissionProfile, this.turnHadError);
@@ -2961,6 +3466,11 @@ export class AgentBridgeImpl implements AgentBridge {
             console.warn('[AgentBridge] endTurn 실패:', e);
           }
         }
+        // 검토 단계가 없는 턴(채팅·구상)도 열어 둔 체크포인트 기록을 닫는다.
+        this.endTurnCheckpoint();
+        // 안내를 실은 턴이 끝까지 가지 못했다(실패·중단) — 프로바이더가 그 맥락을 잇지 않을 수 있으므로
+        // 안내를 다시 건다. 다시 시도(U5)나 다음 요청이 한 번 더 싣고 간다.
+        if (noticeTurn?.sawTurnStart && (!succeeded || turnFailure)) this.restoredNotice ??= noticeTurn.notice;
         this.flushEditReport();
         const planTurn = this.planExecutionTurn;
         this.planExecutionTurn = null;
@@ -2981,6 +3491,9 @@ export class AgentBridgeImpl implements AgentBridge {
       }
       case 'error':
         if (this.turnRunning) this.turnHadError = true;
+        idleFailure = this.turnFailures().observeError(event, this.turnRunning || this.messageAwaitingTurn);
+        // 허브가 내려가며 끊은 세션의 오류는 실패 알림이 아니다 — 끊김 줄 하나만 남는다.
+        if (this.hubShuttingDown) idleFailure = null;
         break;
       case 'session-info':
         this.activeAgent = event.agent;
@@ -2989,12 +3502,27 @@ export class AgentBridgeImpl implements AgentBridge {
       case 'compaction':
         // 압축 요약이 문서 본문을 남긴다는 보장이 없다 — 다음 메시지는 문서를 새로 싣는다.
         if (event.phase === 'completed') this.turnSnapshots?.reset();
+        // 실패한 압축은 그 턴의 실패 알림 하나로 모인다(U5) — 턴 끝이 근거를 싣지 않았을 때의 마지막 근거다.
+        if (event.phase === 'failed') this.turnFailures().observeCompactionFailure(event, this.turnRunning);
         break;
       default:
         break;
     }
     this.syncEditingLease();
     this.emit({ type: 'agent', event });
+    // 실패 알림은 턴의 마지막 이벤트 뒤에 하나만 낸다.
+    if (turnFailure) {
+      this.emit({
+        type: 'turn-failure',
+        failure: turnFailure.failure,
+        turnId: turnFailure.turnId,
+        origin: 'turn',
+        userInitiated: turnFailure.userInitiated,
+        wroteDocument: this.turnWroteDocument === true,
+      });
+    } else if (idleFailure) {
+      this.emit({ type: 'turn-failure', failure: idleFailure, turnId: null, origin: 'idle', userInitiated: false });
+    }
   }
 
   private handleToolRequest(msg: any): void {
@@ -3085,7 +3613,12 @@ export class AgentBridgeImpl implements AgentBridge {
     }
     void run
       .then(
-        (result) => { this.commitDirectWrite(tool); return result; },
+        (result) => {
+          this.commitDirectWrite(tool);
+          // 늦게 끝난 쓰기도 문서에는 닿았다 — 활성 여부와 상관없이 남긴다.
+          if (isDocumentWriteTool(tool)) this.turnWroteDocument = true;
+          return result;
+        },
         (e: unknown) => { this.commitDirectWrite(tool); throw e; },
       )
       .then((result) => {
@@ -3193,6 +3726,37 @@ export class AgentBridgeImpl implements AgentBridge {
     return this.pendingUserQuestion ? structuredClone(this.pendingUserQuestion) : null;
   }
 
+  hubSessionKnown(): Promise<void> {
+    if (this.hubSessionKnownSettled) return Promise.resolve();
+    this.hubSessionKnownPromise ??= new Promise<void>((resolve) => {
+      this.hubSessionKnownResolve = resolve;
+    });
+    return this.hubSessionKnownPromise;
+  }
+
+  /** 첫 답을 알았다 — 여러 번 불러도 한 번만 푼다. */
+  private resolveHubSessionKnown(): void {
+    if (this.hubSessionKnownSettled) return;
+    this.hubSessionKnownSettled = true;
+    this.hubSessionKnownResolve?.();
+    this.hubSessionKnownResolve = null;
+  }
+
+  getHubIdentity(): HubIdentity {
+    return { hubInstanceId: this.hubInstanceId ?? null, hubSessionId: this.hubSessionId ?? null };
+  }
+
+  getHubChat(): HubChat | null {
+    if (this.disposed || this.activeAgent === null || this.pendingChatStart !== null || !this.threadId) return null;
+    return {
+      threadId: this.threadId,
+      turnId: this.turnRunning ? this.activeProviderTurnId : null,
+      running: this.turnRunning,
+      awaitingUser: this.pendingUserQuestion !== null
+        || (this.workflow === 'plan' && this.phase === 'awaiting-approval'),
+    };
+  }
+
   getEditingLease(): AgentEditingLease {
     return { ...this.editingLease };
   }
@@ -3230,6 +3794,7 @@ export class AgentBridgeImpl implements AgentBridge {
     this.selectedAgent = agent;
     this.selectedModel = model || null;
     this.selectedEffort = effort || null;
+    if (threadId !== this.threadId) this.leaveThread(threadId);
     this.threadId = threadId;
     this.documentId = documentId;
     this.documentName = documentName;
@@ -3255,12 +3820,27 @@ export class AgentBridgeImpl implements AgentBridge {
     this.sendPendingChatStart();
   }
 
+  /**
+   * 이 채팅이 다른 스레드로 옮겨 간다 (한 채팅만 띄우는 호스트의 전환·새 채팅). 앞 스레드의 열린
+   * 체크포인트 기록을 닫는다 — 앞 턴이 아직 돌면 그 턴의 끝(turnThreadId)이 닫는다. 되돌림 안내는
+   * 그 스레드의 것이므로 버린다.
+   */
+  private leaveThread(next: string): void {
+    const previous = this.checkpointThreadId();
+    if (previous && previous !== next && !this.turnRunning) this.endTurnCheckpoint(previous);
+    this.restoredNotice = null;
+    this.restoredNoticeInFlight = null;
+  }
+
   stopChat(): void {
-    const waitForAuthoritativeTurnEnd = this.state === 'connected' && this.turnRunning;
+    // welcome 전이면 chat-stop 도 welcome 에서 나가고, 그 세션을 이 페이지가 멈춘 것으로 접는다 — 허브의 turn-end 를
+    // 기다리지 않고 여기서 턴을 닫는다(끊긴 동안의 멈춤과 같다).
+    const waitForAuthoritativeTurnEnd = this.state === 'connected' && !this.awaitingWelcome && this.turnRunning;
     for (const message of this.queuedMessages) message.resolve(null);
     this.queuedMessages = [];
     this.turnSnapshots?.reset();
     this.pendingChatStart = null;
+    this.messageAwaitingTurn = false;
     this.chatHistory = [];
     this.activeAgent = null;
     const pendingQuestion = this.pendingUserQuestion;
@@ -3279,14 +3859,19 @@ export class AgentBridgeImpl implements AgentBridge {
       this.turnRunning = false;
       this.activeProviderTurnId = null;
       this.abortProviderToolRequests();
+      // 허브의 turn-end 를 기다리지 않는 멈춤 — 체크포인트 기록을 여기서 닫는다.
+      this.endTurnCheckpoint();
     }
     this.syncEditingLease();
     // 전체 접근은 현재 채팅 하나에만 적용하고 새 스레드나 다시 연 스레드의 기본값으로 삼지 않는다.
     this.permissionProfile = 'safe';
     this.serviceTier = 'standard';
     this.resetWorkflowState();
-    if (this.state === 'connected') {
+    if (this.state === 'connected' && !this.awaitingWelcome) {
       this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-stop' });
+    } else {
+      // 소켓이 열렸어도 welcome 전이면(또는 끊긴 동안이면) 허브의 세션을 아직 모른다 — welcome 에서 정한다.
+      this.stopBeforeWelcome = true;
     }
     this.pendingInterrupt = false;
     this.emit({ type: 'chat-stopped' });
@@ -3297,7 +3882,8 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   async compactChat(): Promise<ChatCompactResult> {
-    if (this.state !== 'connected' || this.activeAgent === null || this.pendingChatStart) {
+    // welcome 전에는 허브에 이 채팅의 세션이 아직 있는지 모른다 — 아무것도 보내지 않는다(S2).
+    if (this.state !== 'connected' || this.awaitingWelcome || this.activeAgent === null || this.pendingChatStart) {
       return { ok: false, code: 'NO_SESSION', message: 'No active agent session.' };
     }
     const result = await this.request<ChatCompactResult>(
@@ -3363,6 +3949,7 @@ export class AgentBridgeImpl implements AgentBridge {
         const index = this.queuedMessages.indexOf(message);
         if (index < 0) return;
         this.queuedMessages.splice(index, 1);
+        this.scheduleBusyCheck();
         settle(null);
       };
       const settle = (result: string | null): void => {
@@ -3372,10 +3959,12 @@ export class AgentBridgeImpl implements AgentBridge {
       message = { text, skillName, context, messageId, stagedReferenceIds: [...stagedReferenceIds], resolve: settle };
       signal?.addEventListener('abort', cancel, { once: true });
       // 끊긴 소켓에 곧바로 보내면 sendJson 실패로 메시지가 조용히 사라진다 — 재연결이
-      // 살릴 큐에 넣고, flushQueuedMessages 가 연결 뒤에 다시 보낸다.
+      // 살릴 큐에 넣고, flushQueuedMessages 가 연결 뒤에 다시 보낸다. 소켓이 열렸어도 welcome 전이면
+      // 허브에 이 채팅의 세션이 있는지 모른다(다시 뜬 허브는 AGENT_NOT_STARTED 로 거절한다) — welcome 이 보낸다.
       if (this.pendingChatStart || this.workflowSwitchPending || this.activeAgent === null
-        || this.queuedMessages.length > 0 || this.state !== 'connected') {
+        || this.queuedMessages.length > 0 || this.state !== 'connected' || this.awaitingWelcome) {
         this.queuedMessages.push(message);
+        this.scheduleBusyCheck();
         if (this.activeAgent === null) {
           // 연결 중에도 시작 대기를 남겨 재접속이 첫 메시지를 다시 보낼 수 있게 한다.
           this.rememberPendingChatStart();
@@ -3409,7 +3998,8 @@ export class AgentBridgeImpl implements AgentBridge {
 
   private sendPendingChatStart(): void {
     const pending = this.pendingChatStart;
-    if (!pending || this.chatStartSent || this.state !== 'connected') return;
+    // welcome 전에는 보내지 않는다 — welcome 이 허브의 살아 있는 세션과 맞춰 본 뒤 보낸다.
+    if (!pending || this.chatStartSent || this.state !== 'connected' || this.awaitingWelcome) return;
     // 기억해 둔 대화는 그 뒤의 턴을 모른다 — 보내는 순간의 스레드로 대화와 커서를 다시 만든다.
     const context = this.chatStartContextProvider?.({ agent: pending.agent, threadId: pending.threadId });
     if (context) {
@@ -3434,10 +4024,11 @@ export class AgentBridgeImpl implements AgentBridge {
   private dispatchUserMessage(message: (typeof this.queuedMessages)[number]): void {
     // 문서 스냅샷은 프레임이 나가는 순간의 문서로, 동기로 만든다 — 프레임 순서가 스냅샷 없을 때와 같다.
     const built = this.buildTurnSnapshot();
+    const notice = this.restoredNoticeFor(message);
     const sent = this.sendJson({
       v: AGENT_PROTOCOL_VERSION,
       type: 'chat-user-message',
-      text: message.text,
+      text: notice ? `${DOCUMENT_RESTORED_NOTICE}\n\n${message.text}` : message.text,
       documentRevision: this.revision.revision,
       threadId: message.context.threadId,
       documentId: message.context.documentId,
@@ -3448,7 +4039,53 @@ export class AgentBridgeImpl implements AgentBridge {
     });
     // 계획 승인 대기 중의 메시지는 허브가 승인으로 처리하면 스냅샷이 프로바이더에 닿지 않는다 — 본 것으로 치지 않는다.
     if (sent && built && this.phase !== 'awaiting-approval') this.turnSnapshots.markSent(built);
+    if (sent) {
+      this.messageAwaitingTurn = true;
+      // 허브는 메시지의 activeTemplateId 를 답 없이 건다(거절한 메시지면 걸지 않는다) — 허브의 값은 모른다.
+      // 다음에 고르는 템플릿은 앞 값과 같아 보여도 보내고, 기다리던 선택은 이 메시지의 턴이 열리면 닿은 것이다.
+      this.hubTemplateId = undefined;
+      this.templateMessageSeq = this.templateChoicePending ? this.templateChoiceSeq : null;
+      if (notice) {
+        this.restoredNotice = null;
+        this.restoredNoticeInFlight = { notice, messageId: message.messageId ?? null, sawTurnStart: false };
+      }
+      this.scheduleBusyCheck();
+    }
     message.resolve(sent ? (message.messageId ?? null) : null);
+  }
+
+  /**
+   * 이 메시지에 붙일 되돌림 안내. 되돌린 스레드의 메시지에만 붙는다. 되돌리기를 실행 취소했으면 안내를
+   * 버린다. 계획 실행 승인 문구는 허브가 문구 그대로 읽어야 하므로 붙이지 않고, 안내는 다음 메시지에 남긴다.
+   */
+  private restoredNoticeFor(message: (typeof this.queuedMessages)[number]): RestoredNotice | null {
+    const notice = this.restoredNotice;
+    if (!notice || notice.threadId !== message.context.threadId) return null;
+    let applies = true;
+    try {
+      applies = notice.stillApplies?.() !== false;
+    } catch {
+      applies = true;
+    }
+    if (!applies) {
+      this.restoredNotice = null;
+      return null;
+    }
+    if (!message.stagedReferenceIds?.length && isPlanApprovalText(message.text)) return null;
+    return notice;
+  }
+
+  /**
+   * 허브가 메시지를 거절했다. 안내를 실은 메시지의 거절이면(id 가 같거나, id 없이 턴이 열리기 전에 왔다)
+   * 안내를 다시 건다 — 그새 새로 되돌렸으면 새 안내가 이긴다. 겹쳐 붙는 것은 괜찮지만 잃으면 안 된다.
+   */
+  private rearmRestoredNotice(messageId: string | null): void {
+    const inFlight = this.restoredNoticeInFlight;
+    if (!inFlight) return;
+    const matches = messageId !== null ? messageId === inFlight.messageId : !inFlight.sawTurnStart;
+    if (!matches) return;
+    this.restoredNoticeInFlight = null;
+    this.restoredNotice ??= inFlight.notice;
   }
 
   /** 스냅샷은 덤이다 — 만들지 못해도 메시지는 그대로 나간다. */
@@ -3463,7 +4100,8 @@ export class AgentBridgeImpl implements AgentBridge {
   private flushQueuedMessages(): void {
     if (this.workflowSwitchPending || this.pendingChatStart) return;
     if (this.queuedMessages.length === 0) return;
-    if (this.state !== 'connected') {
+    // 끊겼거나 welcome 전이다 — welcome 이 허브의 세션과 맞춘 뒤 다시 부른다.
+    if (this.state !== 'connected' || this.awaitingWelcome) {
       if (this.activeAgent === null) this.rememberPendingChatStart();
       return;
     }
@@ -3475,6 +4113,7 @@ export class AgentBridgeImpl implements AgentBridge {
     const queued = this.queuedMessages;
     this.queuedMessages = [];
     for (const message of queued) this.dispatchUserMessage(message);
+    this.scheduleBusyCheck();
   }
 
   private referenceContext(): ReferenceScopeContext {
@@ -3610,8 +4249,32 @@ export class AgentBridgeImpl implements AgentBridge {
   setActiveTemplate(id: string | null): void {
     this.activeTemplateId = id;
     this.activeTemplate = id ? (this.templateCatalog.templates.find((item) => item.id === id) ?? null) : null;
-    if (this.activeAgent !== null) {
-      this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-template-set', templateId: id });
+    // 허브가 이미 같은 템플릿을 쓰고 있으면 보내지 않는다. 메시지마다 activeTemplateId 도 함께 간다.
+    // 턴이 돌거나 보낸 메시지가 턴을 기다리는 동안에는 보내지 않는다 — 허브는 AGENT_BUSY 로 거절한다.
+    // 그 선택은 남겨 두었다가 다음 메시지나 턴을 여는 프레임 앞에서 보낸다.
+    this.templateChoiceSeq++;
+    this.templateChoicePending = true;
+    this.flushTemplateChoice();
+  }
+
+  /**
+   * 허브에 닿지 않은 템플릿 선택을 지금 보낼 수 있으면 보낸다. 세션이 없으면 새 세션의 첫 메시지가 싣고 가고,
+   * 턴 중·welcome 전·끊긴 동안이면 기다린다. 턴 끝에 혼자 보내지는 않는다 — 허브가 곧바로 연 턴(저장 알림의
+   * 재구상 등)에 닿으면 AGENT_BUSY 오류가 된다.
+   */
+  private flushTemplateChoice(): void {
+    if (!this.templateChoicePending) return;
+    if (this.activeTemplateId === this.hubTemplateId) {
+      this.templateChoicePending = false;
+      return;
+    }
+    if (this.activeAgent === null || this.state !== 'connected' || this.awaitingWelcome
+      || this.turnRunning || this.messageAwaitingTurn) return;
+    // 답(chat-template-changed)이 선택을 확정한다 — 그 전에 소켓이 끊겨 프레임을 잃었으면 welcome 이 선택을 덮지 않고,
+    // 다음 메시지나 턴을 여는 프레임이 다시 싣고 간다. 답 전의 다음 선택도 그대로 보낸다 — 앞 값과 같아 보여도
+    // 허브는 이 값을 건다.
+    if (this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-template-set', templateId: this.activeTemplateId })) {
+      this.hubTemplateId = undefined;
     }
   }
 
@@ -3754,6 +4417,8 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   approvePlan(planId: string, permissionProfile?: PermissionProfile): boolean {
+    // 승인은 메시지 없이 구현 턴을 연다 — 구상 중에 고른 템플릿을 그 턴보다 먼저 건다.
+    this.flushTemplateChoice();
     return this.sendJson({
       v: AGENT_PROTOCOL_VERSION, type: 'chat-plan-approve', planId,
       documentRevision: this.revision.revision,
@@ -3762,6 +4427,7 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   requestPlanChanges(planId: string, feedback?: string): boolean {
+    this.flushTemplateChoice();
     return this.sendJson({
       v: AGENT_PROTOCOL_VERSION,
       type: 'chat-plan-request-changes',
@@ -3894,6 +4560,24 @@ export class AgentBridgeImpl implements AgentBridge {
     this.pendingQuestionAnswer = { interactionId, responseId, frame };
     this.sendJson(frame);
     return responseId;
+  }
+
+  /**
+   * 엔진 trap 복구 전에 멈추지 못한 턴 (AgentBridgeOptions.interruptTurnsOnFirstWelcome). 첫
+   * welcome 에서만 본다: 이 welcome 으로 그 스레드의 돌던 턴을 이어받았으면 처리가 끝난 뒤 멈춘다.
+   * 이어받지 않은 턴(다른 스레드를 고른 채팅)은 이 채팅이 보내지 않는다.
+   */
+  private interruptStaleTurnAfterFirstWelcome(session: unknown): void {
+    if (this.staleTurnChecked) return;
+    this.staleTurnChecked = true;
+    const threadIds = this.options?.interruptTurnsOnFirstWelcome ?? [];
+    const snapshot = session as { status?: unknown; threadId?: unknown } | null | undefined;
+    const threadId = typeof snapshot?.threadId === 'string' ? snapshot.threadId : '';
+    if (snapshot?.status !== 'running' || !threadId || !threadIds.includes(threadId)) return;
+    queueMicrotask(() => {
+      if (this.disposed || !this.turnRunning || this.threadId !== threadId) return;
+      this.interrupt();
+    });
   }
 
   interrupt(): void {
@@ -4093,6 +4777,12 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private emit(e: SidebarEvent): void {
+    this.notifyListeners(e);
+    // 사이드바에 알리는 상태 변화는 대개 바쁨 상태도 바꾼다 (턴·질문·계획·채팅 시작).
+    this.scheduleBusyCheck();
+  }
+
+  private notifyListeners(e: SidebarEvent): void {
     for (const cb of this.listeners) {
       try {
         cb(e);
@@ -4104,7 +4794,17 @@ export class AgentBridgeImpl implements AgentBridge {
 
   dispose(): void {
     if (this.disposed) return;
+    // 이 세션의 프로바이더도 함께 내린다 — 소켓만 닫으면 허브가 재접속을 기다리며 붙들고 있다.
+    if (this.state === 'connected'
+      && (this.activeAgent !== null || this.pendingChatStart !== null || this.turnRunning)) {
+      this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-stop' });
+    }
     this.disposed = true;
+    this.busyWatch = null;
+    for (const message of this.queuedMessages) message.resolve(null);
+    this.queuedMessages = [];
+    this.pendingChatStart = null;
+    this.messageAwaitingTurn = false;
     this.turnRunning = false;
     this.activeProviderTurnId = null;
     this.abortActiveToolRequests();
@@ -4123,7 +4823,15 @@ export class AgentBridgeImpl implements AgentBridge {
     this.pendingUserQuestion = null;
     this.pendingInterrupt = false;
     this.abortSocket();
+    // 폐기된 브리지를 기다리는 시작 복원도 풀어 준다(사이드바는 폐기 여부를 따로 본다).
+    this.resolveHubSessionKnown();
     this.listeners.clear();
+    // 닫히는 채팅의 턴은 끝났고, 남은 검토 set 은 이 채팅과 함께 사라진다.
+    this.endTurnCheckpoint();
+    for (const id of this.checkpointSetIds) {
+      try { this.turnCheckpoints?.settleSet(this.checkpointThreadId(), id, false); } catch { /* 세션이 먼저 닫혔다 */ }
+    }
+    this.checkpointSetIds.clear();
     this.pendingChangeUnsub?.();
     this.pendingChangeUnsub = null;
     for (const off of this.documentNotifyUnsubs) off();

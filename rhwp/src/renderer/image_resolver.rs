@@ -26,13 +26,13 @@ use crate::renderer::render_tree::ImageNode;
 /// 제한한다.
 const MAX_MEMO_BYTES: usize = 16 * 1024 * 1024;
 
-/// 항목 수 상한. 조회가 선형 탐색이라 항목 수도 묶는다. 긴 문서를 한 번 훑는 동안
-/// 변환 결과(BMP·회색 JPEG 의 PNG)가 밀려나 원본 전체를 다시 디코드하지 않을 만큼은 둔다.
-const MAX_MEMO_ENTRIES: usize = 256;
+/// 항목 수 상한. 변환하지 않는 색 사진은 결과가 `None` 이라 바이트를 전혀 차지하지 않아
+/// 바이트 예산만으로는 영영 밀려나지 않는다. 조회가 선형 탐색이라 항목 수도 묶는다.
+const MAX_MEMO_ENTRIES: usize = 64;
 
-/// 변환하지 않는 그림(`None`) 키 상한. 색 사진은 회색 판정에 원본 전체를 디코드하므로
-/// 한 번 본 사진을 다시 디코드하지 않게 결과 항목보다 훨씬 많이 기억한다 (키 8 byte).
-const MAX_MEMO_MISSES: usize = 4096;
+// 15MB BMP와 변환 PNG가 함께 있는 시험지 한 쪽도 매 입력마다 축출되지 않게 한다.
+// 문서 전체를 보관하지 않고 원본·변환본 합계와 항목 수로 최근 그림만 제한한다.
+const MAX_RESOLVED_MEMO_BYTES: usize = 32 * 1024 * 1024;
 
 /// 변환 종류. 같은 바이트라도 어떤 변환을 거쳤느냐에 따라 결과가 다르다.
 #[derive(Clone, Copy, Hash)]
@@ -52,45 +52,28 @@ enum Conversion {
 #[derive(Default)]
 struct ConversionMemo {
     /// (키, 결과) — 접근 순서대로, 최근 것이 뒤.
-    entries: Vec<(u64, Arc<[u8]>)>,
+    entries: Vec<(u64, Option<Arc<[u8]>>)>,
     /// 지금 들고 있는 결과 바이트 합.
     bytes: usize,
-    /// 결과가 `None` 인 키 — 들어온 순서대로.
-    misses: std::collections::VecDeque<u64>,
-    miss_set: std::collections::HashSet<u64>,
 }
 
 impl ConversionMemo {
     fn get(&mut self, key: u64) -> Option<Option<Arc<[u8]>>> {
-        if self.miss_set.contains(&key) {
-            return Some(None);
-        }
         let idx = self.entries.iter().position(|(k, _)| *k == key)?;
         let entry = self.entries.remove(idx);
         let hit = entry.1.clone();
         self.entries.push(entry);
-        Some(Some(hit))
+        Some(hit)
     }
 
     fn insert(&mut self, key: u64, value: Option<Arc<[u8]>>) {
-        let Some(value) = value else {
-            if self.miss_set.insert(key) {
-                self.misses.push_back(key);
-                if self.misses.len() > MAX_MEMO_MISSES {
-                    if let Some(oldest) = self.misses.pop_front() {
-                        self.miss_set.remove(&oldest);
-                    }
-                }
-            }
-            return;
-        };
-        let size = value.len();
+        let size = value.as_ref().map_or(0, |data| data.len());
         if size > MAX_MEMO_BYTES {
             return;
         }
         while self.bytes + size > MAX_MEMO_BYTES || self.entries.len() >= MAX_MEMO_ENTRIES {
             let (_, evicted) = self.entries.remove(0);
-            self.bytes -= evicted.len();
+            self.bytes -= evicted.as_ref().map_or(0, |data| data.len());
         }
         self.bytes += size;
         self.entries.push((key, value));
@@ -101,6 +84,65 @@ thread_local! {
     /// WASM 은 단일 스레드라 `thread_local` + `RefCell` 로 충분하다
     /// (`layout::text_measurement` 의 측정 캐시와 같은 방식).
     static CONVERSION_MEMO: RefCell<ConversionMemo> = RefCell::new(ConversionMemo::default());
+    /// 최근 그림의 불변 원본도 예산 안에서 쥐어 BinData weak cache의 재압축 해제를 막는다.
+    static RESOLVED_IMAGE_MEMO: RefCell<ResolvedImageMemo> = RefCell::new(ResolvedImageMemo::default());
+}
+
+struct ResolvedImageEntry {
+    source: Arc<[u8]>,
+    effect: ImageEffect,
+    brightness: i8,
+    contrast: i8,
+    payload: Option<ResolvedImagePayload>,
+    bytes: usize,
+}
+
+#[derive(Default)]
+struct ResolvedImageMemo {
+    entries: Vec<ResolvedImageEntry>,
+    bytes: usize,
+}
+
+impl ResolvedImageMemo {
+    fn get(&mut self, image: &ImageNode) -> Option<Option<ResolvedImagePayload>> {
+        let source = image.data.as_ref()?;
+        let idx = self.entries.iter().position(|entry| {
+            Arc::ptr_eq(&entry.source, source)
+                && entry.effect == image.effect
+                && entry.brightness == image.brightness
+                && entry.contrast == image.contrast
+        })?;
+        let entry = self.entries.remove(idx);
+        let payload = entry.payload.clone();
+        self.entries.push(entry);
+        Some(payload)
+    }
+
+    fn insert(&mut self, image: &ImageNode, payload: Option<ResolvedImagePayload>) {
+        let Some(source) = image.data.as_ref() else {
+            return;
+        };
+        // 원본과 변환본을 함께 세며, 큰 그림은 기존 내용 지문 경로만 사용한다.
+        let bytes = source
+            .len()
+            .saturating_add(payload.as_ref().map_or(0, |p| p.data.len()));
+        if bytes > MAX_RESOLVED_MEMO_BYTES {
+            return;
+        }
+        while self.bytes + bytes > MAX_RESOLVED_MEMO_BYTES || self.entries.len() >= MAX_MEMO_ENTRIES
+        {
+            self.bytes -= self.entries.remove(0).bytes;
+        }
+        self.bytes += bytes;
+        self.entries.push(ResolvedImageEntry {
+            source: source.clone(),
+            effect: image.effect,
+            brightness: image.brightness,
+            contrast: image.contrast,
+            payload,
+            bytes,
+        });
+    }
 }
 
 // 실제로 변환을 수행한 횟수 — 메모가 듣는지 보는 테스트용.
@@ -146,6 +188,16 @@ fn conversion_key(conversion: Conversion, data: &[u8]) -> u64 {
 }
 
 pub(crate) fn resolve_image_payload(image: &ImageNode) -> Option<ResolvedImagePayload> {
+    // Arc를 함께 보관하므로 주소 재사용이나 편집된 바이트가 옛 결과를 받을 수 없다.
+    if let Some(payload) = RESOLVED_IMAGE_MEMO.with(|memo| memo.borrow_mut().get(image)) {
+        return payload;
+    }
+    let payload = resolve_image_payload_uncached(image);
+    RESOLVED_IMAGE_MEMO.with(|memo| memo.borrow_mut().insert(image, payload.clone()));
+    payload
+}
+
+fn resolve_image_payload_uncached(image: &ImageNode) -> Option<ResolvedImagePayload> {
     let data = image.data.as_deref()?;
     let mime = detect_image_mime_type(data);
 
@@ -264,47 +316,40 @@ fn grayscale_jpeg_bytes_to_png_bytes_shared(data: &[u8]) -> Option<Arc<[u8]>> {
 }
 
 fn grayscale_jpeg_bytes_to_png_bytes_uncached(data: &[u8]) -> Option<Vec<u8>> {
-    use image::{DynamicImage, GrayImage, ImageFormat};
+    use image::ImageFormat;
 
     if detect_image_mime_type(data) != "image/jpeg" {
         return None;
     }
 
-    // 디코드한 채널 그대로 검사하고 인코딩한다. RGBA 로 넓히면 큰 사진 한 장이 디코드
-    // 버퍼보다 큰 사본을 하나 더 잡고, WASM 선형 메모리는 그 최고점에서 줄지 않는다.
-    let img = match decode_image_with_format_limited(data, ImageFormat::Jpeg)? {
-        DynamicImage::ImageLuma8(gray) => DynamicImage::ImageLuma8(gray),
-        decoded => {
-            let rgb = decoded.into_rgb8();
-            let has_photoshop_profile = data
-                .windows(b"Adobe Photoshop".len())
-                .any(|chunk| chunk == b"Adobe Photoshop")
-                || data
-                    .windows(b"Adobe_CM".len())
-                    .any(|chunk| chunk == b"Adobe_CM");
-            let is_gray = rgb.pixels().all(|px| {
-                let [r, g, b] = px.0;
-                let min = r.min(g).min(b);
-                let max = r.max(g).max(b);
-                max.saturating_sub(min) <= 2
-            });
-            let is_luma_plane_gray = has_photoshop_profile
-                && rgb.pixels().all(|px| {
-                    let [_, g, b] = px.0;
-                    g.abs_diff(128) <= 2 && b.abs_diff(128) <= 2
-                });
-            if is_luma_plane_gray {
-                let (width, height) = rgb.dimensions();
-                let luma = rgb.pixels().map(|px| px.0[0]).collect();
-                DynamicImage::ImageLuma8(GrayImage::from_raw(width, height, luma)?)
-            } else if is_gray {
-                DynamicImage::ImageRgb8(rgb)
-            } else {
-                return None;
-            }
-        }
-    };
+    let mut img = decode_image_with_format_limited(data, ImageFormat::Jpeg)?.to_rgba8();
     if img.width() == 0 || img.height() == 0 {
+        return None;
+    }
+
+    let has_photoshop_profile = data
+        .windows(b"Adobe Photoshop".len())
+        .any(|chunk| chunk == b"Adobe Photoshop")
+        || data
+            .windows(b"Adobe_CM".len())
+            .any(|chunk| chunk == b"Adobe_CM");
+    let is_gray = img.pixels().all(|px| {
+        let [r, g, b, _] = px.0;
+        let min = r.min(g).min(b);
+        let max = r.max(g).max(b);
+        max.saturating_sub(min) <= 2
+    });
+    let is_luma_plane_gray = has_photoshop_profile
+        && img.pixels().all(|px| {
+            let [_, g, b, _] = px.0;
+            g.abs_diff(128) <= 2 && b.abs_diff(128) <= 2
+        });
+    if is_luma_plane_gray {
+        for px in img.pixels_mut() {
+            let gray = px.0[0];
+            px.0 = [gray, gray, gray, px.0[3]];
+        }
+    } else if !is_gray {
         return None;
     }
 
@@ -577,8 +622,9 @@ fn decode_image_with_format_limited(
 mod tests {
     use super::{
         bmp_bytes_to_png_bytes, grayscale_jpeg_bytes_to_png_bytes,
-        hancom_adjusted_picture_png_bytes, resolve_image_payload, ConversionMemo, CONVERSIONS_RUN,
-        MAX_MEMO_BYTES, MAX_MEMO_MISSES,
+        hancom_adjusted_picture_png_bytes, resolve_image_payload, ConversionMemo,
+        ResolvedImageMemo, CONVERSIONS_RUN, MAX_MEMO_BYTES, MAX_MEMO_ENTRIES,
+        MAX_RESOLVED_MEMO_BYTES, RESOLVED_IMAGE_MEMO,
     };
     use crate::model::image::ImageEffect;
     use crate::paint::ResolvedImageKind;
@@ -689,6 +735,72 @@ mod tests {
 
         assert!(std::sync::Arc::ptr_eq(&first.data, &second.data));
         assert_eq!(first.data.len(), second.data.len());
+
+        let mut adjusted = image.clone();
+        adjusted.brightness = 30;
+        let adjusted_payload = resolve_image_payload(&adjusted).expect("brightness should bake");
+        assert_eq!(adjusted_payload.kind, ResolvedImageKind::BakedWatermark);
+        assert_ne!(first.data, adjusted_payload.data);
+        let original = resolve_image_payload(&image).expect("original should remain cached");
+        assert!(std::sync::Arc::ptr_eq(&first.data, &original.data));
+    }
+
+    #[test]
+    fn rebuilding_image_nodes_reuses_lazy_source_payloads() {
+        use crate::model::bin_data::{BinDataBytes, BinDataResolver, SharedBinDataResolver};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct Source(AtomicUsize);
+        impl BinDataResolver for Source {
+            fn resolve(&self, _: &str) -> Vec<u8> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                bmp_with_middle_band([12, 34, 56])
+            }
+        }
+        let source = Arc::new(Source(AtomicUsize::new(0)));
+        let data = BinDataBytes::lazy(
+            Arc::new(SharedBinDataResolver::new(source.clone())),
+            "picture.bmp".to_string(),
+        );
+        let first = {
+            let image = ImageNode::new_shared(1, Some(data.load_shared()));
+            resolve_image_payload(&image).expect("bmp converts")
+        };
+        let image = ImageNode::new_shared(1, Some(data.load_shared()));
+        let second = resolve_image_payload(&image).expect("replacement tree reuses bmp");
+        assert_eq!(source.0.load(Ordering::Relaxed), 1);
+        assert!(Arc::ptr_eq(&first.data, &second.data));
+        // 원본도 캐시 예산/수명 밖에서는 기존 weak 공유 계약대로 해제된다.
+        drop(image);
+        RESOLVED_IMAGE_MEMO.with(|memo| *memo.borrow_mut() = ResolvedImageMemo::default());
+        let _reloaded = data.load_shared();
+        assert_eq!(source.0.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn resolved_image_memo_bounds_sources_and_releases_evicted_payloads() {
+        use std::sync::Arc;
+        let mut memo = ResolvedImageMemo::default();
+        let source: Arc<[u8]> = vec![0; MAX_RESOLVED_MEMO_BYTES / 2 + 1].into();
+        let weak = Arc::downgrade(&source);
+        let image = ImageNode::new_shared(1, Some(source));
+        memo.insert(&image, None);
+        assert!(memo.get(&image).is_some());
+        let mut changed = image.clone();
+        changed.contrast = 1;
+        assert!(memo.get(&changed).is_none());
+        drop(changed);
+        drop(image);
+        let replacement = ImageNode::new(1, Some(vec![1; MAX_RESOLVED_MEMO_BYTES / 2]));
+        memo.insert(&replacement, None);
+        assert!(weak.upgrade().is_none());
+        assert!(memo.get(&replacement).is_some());
+        let oversized = ImageNode::new(1, Some(vec![2; MAX_RESOLVED_MEMO_BYTES + 1]));
+        memo.insert(&oversized, None);
+        assert!(memo.get(&oversized).is_none());
+        assert!(memo.bytes <= MAX_RESOLVED_MEMO_BYTES);
     }
 
     /// 메모가 다른 그림의 결과를 흘리지 않는다.
@@ -745,22 +857,17 @@ mod tests {
         assert!(memo.get(7).is_some(), "가장 최근 항목은 남아 있다");
     }
 
-    /// 결과가 `None` 인 키는 바이트를 차지하지 않으므로 키 수로 묶는다.
+    /// 결과가 `None` 인 항목은 바이트를 차지하지 않으므로 항목 수로 묶는다.
     #[test]
-    fn memo_bounds_miss_count() {
+    fn memo_bounds_entry_count_even_when_results_are_empty() {
         let mut memo = ConversionMemo::default();
-        for key in 0..(MAX_MEMO_MISSES as u64 * 2) {
+        for key in 0..(MAX_MEMO_ENTRIES as u64 * 2) {
             memo.insert(key, None);
         }
 
         assert_eq!(memo.bytes, 0);
-        assert_eq!(memo.misses.len(), MAX_MEMO_MISSES);
-        assert_eq!(memo.miss_set.len(), MAX_MEMO_MISSES);
-        assert!(memo.get(0).is_none(), "가장 오래된 키는 밀려나 있다");
-        assert!(matches!(
-            memo.get(MAX_MEMO_MISSES as u64 * 2 - 1),
-            Some(None)
-        ));
+        assert!(memo.entries.len() <= MAX_MEMO_ENTRIES);
+        assert!(memo.get(0).is_none(), "가장 오래된 항목은 밀려나 있다");
     }
 
     #[test]

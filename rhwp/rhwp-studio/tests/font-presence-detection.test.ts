@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { resolveRegisteredFontFaceIdentity } from '../src/core/font-loader.ts';
 import {
   createDeclaredFontAvailabilityProbe,
   createRawFontAvailabilityProbe,
@@ -33,6 +34,21 @@ function makeProbeContext(installed: readonly string[]) {
     },
   } as unknown as Pick<CanvasRenderingContext2D, 'font' | 'measureText'>;
 }
+
+test('등록 face 조회는 정규화된 별칭과 원본 서체의 출처를 유지한다', () => {
+  const original = resolveRegisteredFontFaceIdentity('HY신명조')!;
+  assert.equal(original.loadedFamily, 'Noto Serif KR');
+  assert.equal(original.substituted, true);
+  assert.deepEqual(resolveRegisteredFontFaceIdentity('  hy신명조\0  '), original);
+  const decomposed = '함초롬바탕'.normalize('NFD');
+  assert.deepEqual(
+    resolveRegisteredFontFaceIdentity(decomposed),
+    resolveRegisteredFontFaceIdentity('함초롬바탕'),
+  );
+  assert.equal(resolveRegisteredFontFaceIdentity('없는 글꼴'), null);
+  original.loadedFamily = '다른 서체';
+  assert.equal(resolveRegisteredFontFaceIdentity('HY신명조')!.loadedFamily, 'Noto Serif KR');
+});
 
 test('설치된 서체만 사용 가능으로 판정한다', () => {
   const ctx = makeProbeContext(['Apple SD Gothic Neo', 'AppleMyungjo']);

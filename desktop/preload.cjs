@@ -2,6 +2,16 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('rhwpDesktop', {
   getSessionContext: () => ipcRenderer.invoke('desktop:get-session-context'),
+  // 백그라운드 문서의 에이전트용 추가 허브 세션. 만든 창만 문맥을 받고 해제할 수 있다.
+  createAgentSession: () => ipcRenderer.invoke('desktop:agent-session-create'),
+  getAgentSessionContext: (agentSessionId) => ipcRenderer.invoke(
+    'desktop:get-session-context',
+    String(agentSessionId),
+  ),
+  releaseAgentSession: (agentSessionId) => ipcRenderer.invoke(
+    'desktop:agent-session-release',
+    agentSessionId,
+  ),
   getUniqueInstalls: () => ipcRenderer.invoke('desktop:get-unique-installs'),
   takeRebrandImport: () => ipcRenderer.invoke('desktop:take-rebrand-import'),
   takeRebrandImportChunk: (token, index) => ipcRenderer.invoke('desktop:take-rebrand-import-chunk', token, index),
@@ -20,6 +30,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   },
   pickNativeSaveFile: (options) => ipcRenderer.invoke('desktop:pick-native-save-file', options),
   releaseNativeFile: (handleId) => ipcRenderer.invoke('desktop:release-native-file', handleId),
+  renameNativeFile: (handleId, nextName) => ipcRenderer.invoke('desktop:rename-native-file', handleId, nextName),
   readNativeFile: (handleId) => ipcRenderer.invoke('desktop:native-file-read', handleId),
   getNativeFileSourcePath: (handleId) => ipcRenderer.invoke(
     'desktop:native-file-source-path',
@@ -68,16 +79,25 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     documentId,
     handleId,
   ),
-  reserveDocument: (identity, nativeHandleId) => ipcRenderer.invoke(
+  reserveDocument: (identity, nativeHandleId, slotId) => ipcRenderer.invoke(
     'desktop:document-reserve',
     identity,
     nativeHandleId,
+    slotId,
   ),
-  commitDocument: (reservationId) => ipcRenderer.invoke('desktop:document-commit', reservationId),
-  cancelDocument: (reservationId) => ipcRenderer.invoke('desktop:document-cancel', reservationId),
-  releaseDocument: () => ipcRenderer.invoke('desktop:document-release'),
+  commitDocument: (reservationId, slotId) => ipcRenderer.invoke(
+    'desktop:document-commit',
+    reservationId,
+    slotId,
+  ),
+  cancelDocument: (reservationId, slotId) => ipcRenderer.invoke(
+    'desktop:document-cancel',
+    reservationId,
+    slotId,
+  ),
+  releaseDocument: (slotId) => ipcRenderer.invoke('desktop:document-release', slotId),
   listSystemFonts: (options) => ipcRenderer.invoke('desktop:fonts-list', options),
-  readSystemFont: (id) => ipcRenderer.invoke('desktop:fonts-read', id),
+  systemFontBaseUrl: () => ipcRenderer.invoke('desktop:fonts-base'),
   ensureAgentHub: () => ipcRenderer.invoke('agent-hub:ensure'),
   respondToCloseRequest: (requestId, allowClose) => (
     ipcRenderer.invoke('desktop:close-response', requestId, allowClose)
@@ -89,14 +109,24 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   setDocumentState: (state) => {
     ipcRenderer.send('desktop:set-document-state', { edited: state?.edited === true });
   },
-  notifyAgentTurnFinished: (payload) => {
-    ipcRenderer.send('desktop:agent-turn-finished', {
+  // 보지 않는 채팅의 알림. 창에 초점이 없을 때만 메인이 OS 알림으로 띄운다.
+  notifyAgentAttention: (payload) => {
+    ipcRenderer.send('desktop:agent-attention', {
+      threadId: String(payload?.threadId ?? ''),
       title: String(payload?.title ?? ''),
       body: String(payload?.body ?? ''),
     });
   },
-  setPendingReviewCount: (count) => {
-    ipcRenderer.send('desktop:set-pending-review-count', Number(count) || 0);
+  // 알렸지만 아직 보지 않은 채팅 수 — 앱 아이콘 배지(macOS·Linux), 작업 표시줄 표시(Windows).
+  setAgentAttentionCount: (count) => {
+    ipcRenderer.send('desktop:set-agent-attention-count', Number(count) || 0);
+  },
+  onOpenAgentChat: (callback) => {
+    const listener = (_event, payload) => {
+      if (typeof payload?.threadId === 'string') callback(payload.threadId);
+    };
+    ipcRenderer.on('desktop:open-agent-chat', listener);
+    return () => ipcRenderer.removeListener('desktop:open-agent-chat', listener);
   },
   showContextMenu: (items) => ipcRenderer.invoke('desktop:show-context-menu', items),
   showUnsavedChangesSheet: (payload) => ipcRenderer.invoke(

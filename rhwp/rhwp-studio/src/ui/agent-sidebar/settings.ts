@@ -28,6 +28,9 @@ import { createIcon } from './icons.ts';
 import { createProviderQuota } from './provider-quota.ts';
 import { createEditingSettings } from './settings-editing.ts';
 import { userSettings } from '../../core/user-settings.ts';
+import { loadAttentionPrefs, saveAttentionPrefs, subscribeAttentionPrefs } from '../../agent/attention-prefs.ts';
+import { isDesktopApp } from '../../desktop-integration.ts';
+import { webNotificationsGranted } from '../agent-attention.ts';
 import {
   normalizeSettingsDestination,
   type DirtyExitChoice,
@@ -1164,6 +1167,39 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   );
   const gitSection = createSection('Git');
   gitSection.body.append(hancomGit.root);
+  // 백그라운드 채팅 알림 — 데스크톱은 늘, 웹은 이 사이트가 이미 알림을 허락받았을 때만 보인다.
+  // 꺼도 채팅 목록의 점과 확인 필요 칩은 남는다. Git 전환처럼 바꾸는 즉시 적용한다.
+  const desktopShell = isDesktopApp();
+  const notificationsSection = createSection('알림');
+  const backgroundNotifications = createToggleRow(
+    '백그라운드 채팅 알림',
+    desktopShell
+      ? '보이지 않는 채팅이 끝나거나, 답이나 검토를 기다리거나, 멈추면 알림과 앱 아이콘 배지로 알려 줍니다.'
+      : '보이지 않는 채팅이 끝나거나, 답이나 검토를 기다리거나, 멈추면 브라우저 알림으로 알려 줍니다.',
+  );
+  // 알림 센터·잠금 화면에 남는 글 — 기본은 앱 이름과 정해진 문구뿐이다. 앱 안 토스트는 늘 제목을 보인다.
+  const notificationDetails = createToggleRow(
+    '알림에 채팅 제목과 문서 이름 표시',
+    '끄면 알림에는 앱 이름과 "답변을 기다립니다" 같은 문구만 보여, 잠금 화면이나 알림 센터에 채팅 내용이 드러나지 않습니다.',
+  );
+  const initialAttentionPrefs = loadAttentionPrefs();
+  backgroundNotifications.input.checked = initialAttentionPrefs.notifications;
+  notificationDetails.input.checked = initialAttentionPrefs.showChatDetails;
+  backgroundNotifications.input.addEventListener('change', () => {
+    saveAttentionPrefs({ notifications: backgroundNotifications.input.checked });
+  });
+  notificationDetails.input.addEventListener('change', () => {
+    saveAttentionPrefs({ showChatDetails: notificationDetails.input.checked });
+  });
+  const unsubscribeAttentionPrefs = subscribeAttentionPrefs((next) => {
+    backgroundNotifications.input.checked = next.notifications;
+    notificationDetails.input.checked = next.showChatDetails;
+  });
+  notificationsSection.body.append(backgroundNotifications.root, notificationDetails.root);
+  const syncNotificationsSection = () => {
+    notificationsSection.root.hidden = !desktopShell && !webNotificationsGranted();
+  };
+  syncNotificationsSection();
 
   instructionsEditor.addEventListener('input', () => {
     instructionsDirty = instructionsEditor.value !== (agentInstructions?.content ?? '');
@@ -1367,6 +1403,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     instructionsSection.root,
     calibration.root,
     templatesSection.root,
+    notificationsSection.root,
     advanced,
     aiFooter,
   );
@@ -3290,6 +3327,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         prefsDraft = clonePrefs(prefs);
       }
       connectionState = bridge.getConnectionState();
+      // 웹의 알림 허락은 Studio 밖(사이트 설정)에서 바뀐다 — 열 때마다 다시 본다.
+      syncNotificationsSection();
       editingSettings.open();
       if (destination) selectDestination(destination);
       else selectDestination(lastDestination);
@@ -3578,6 +3617,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       if (setupProgressCreepTimer) clearInterval(setupProgressCreepTimer);
       if (piProgressCreepTimer) clearInterval(piProgressCreepTimer);
       unsubscribeHancomGit();
+      unsubscribeAttentionPrefs();
       editingSettings.dispose();
       element.remove();
       setupOverlay.remove();

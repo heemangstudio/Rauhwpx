@@ -4,7 +4,8 @@
  * Chrome 경로: CHROME_PATH 또는 PUPPETEER_EXECUTABLE_PATH, 없으면 macOS Google Chrome·Linux 시스템 Chrome 을 찾는다.
  * 앱 주소: VITE_URL (기본 http://localhost:7700). 둘 다 이 모듈을 불러올 때 고정된다.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
 
 const VITE_URL = process.env.VITE_URL || 'http://localhost:7700';
@@ -112,4 +113,23 @@ export async function runTest(title, testFn, { skipLoadApp = false } = {}) {
   } finally {
     await closeBrowser(browser);
   }
+}
+
+/** 독립 실행 흐름의 확인. 실패해도 멈추지 않고 나머지를 본 뒤 종료 코드로 알린다. */
+export function assert(condition, message) {
+  if (condition) {
+    console.log(`  PASS: ${message}`);
+  } else {
+    console.error(`  FAIL: ${message}`);
+    process.exitCode = 1;
+  }
+}
+
+/** 독립 실행 흐름의 화면을 rhwp/target/e2e-screenshots/ 에 남긴다. */
+export async function screenshot(page, name) {
+  const dir = new URL('../../target/e2e-screenshots/', import.meta.url);
+  mkdirSync(dir, { recursive: true });
+  const path = fileURLToPath(new URL(`${name}.png`, dir));
+  await page.screenshot({ path });
+  console.log(`  Screenshot: ${path}`);
 }

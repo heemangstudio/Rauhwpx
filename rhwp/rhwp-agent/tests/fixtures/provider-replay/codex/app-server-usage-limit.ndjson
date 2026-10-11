@@ -1,0 +1,18 @@
+{"kind":"meta","v":1,"agent":"codex","transport":"app-server","stdin":"ndjson","provenance":"synthetic","cli":"codex-cli 0.149.0","basis":"codex app-server --stdio v2 protocol: handshake order as tests/codex-app-server.test.mjs:91-131; notification shapes from the T3 reference schema (packages/effect-codex-app-server/src/_generated/schema.gen.ts: CodexErrorInfo :17861, TurnError :29525, TurnCompletedNotification :44547, ErrorNotification :33293, AccountRateLimitsUpdatedNotification :29794, RateLimitWindow :3268); a usage limit: account/rateLimits/updated with the primary window exhausted (resetsAt epoch seconds), an error notification willRetry false with codexErrorInfo usageLimitExceeded, then turn/completed failed.","note":"Synthetic: hand-written, not recorded. Replace with a trimmed recording (RHWP_PROVIDER_TRANSCRIPT_DIR) when one exists."}
+{"kind":"spawn","match":{"argvIncludes":["app-server"]}}
+{"kind":"expect","json":{"method":"initialize"}}
+{"kind":"out","json":{"id":"$in.id","result":{"userAgent":"codex_cli_rs/0.149.0 (replay)"}}}
+{"kind":"expect","json":{"method":"initialized"}}
+{"kind":"expect","json":{"method":"experimentalFeature/list"}}
+{"kind":"out","json":{"id":"$in.id","result":{"data":[{"name":"default_mode_request_user_input","enabled":true,"defaultEnabled":false,"stage":"underDevelopment","displayName":null,"description":null,"announcement":null}],"nextCursor":null}}}
+{"kind":"expect","json":{"method":"thread/start"}}
+{"kind":"out","json":{"method":"thread/started","params":{"thread":{"id":"thread-replay-1"}}}}
+{"kind":"out","json":{"id":"$in.id","result":{"thread":{"id":"thread-replay-1"}}}}
+{"kind":"expect","json":{"method":"turn/start","params":{"threadId":"thread-replay-1"}}}
+{"kind":"out","json":{"method":"turn/started","params":{"threadId":"thread-replay-1","turn":{"id":"turn-replay-1","status":"inProgress","items":[]}}}}
+{"kind":"out","json":{"id":"$in.id","result":{"turn":{"id":"turn-replay-1","status":"inProgress","items":[]}}}}
+{"kind":"out","json":{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","limitName":null,"planType":"plus","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":41,"windowDurationMins":10080,"resetsAt":4102876800},"credits":null}}}}
+{"kind":"out","json":{"method":"error","params":{"threadId":"thread-replay-1","turnId":"turn-replay-1","willRetry":false,"error":{"message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:15 PM.","codexErrorInfo":"usageLimitExceeded","additionalDetails":null}}}}
+{"kind":"out","json":{"method":"turn/completed","params":{"threadId":"thread-replay-1","turn":{"id":"turn-replay-1","status":"failed","items":[],"error":{"message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:15 PM.","codexErrorInfo":"usageLimitExceeded","additionalDetails":null}}}}}
+{"kind":"await-kill"}
+{"kind":"exit","signal":"SIGTERM"}

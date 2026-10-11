@@ -9,8 +9,21 @@ import puppeteer from 'puppeteer-core';
 import { checkSetupTerminal } from './setup-terminal.check.mjs';
 import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
+import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
+import { checkComposerSendPath, checkFollowUpGap, checkFollowUpQueue } from './queue.check.mjs';
 import { checkContextPreview } from './context.check.mjs';
+import { checkSessionsPreview } from './sessions.check.mjs';
+import { checkReloadPreview } from './reload.check.mjs';
+import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
+import { checkWriterBusyPreview } from './writer-busy.check.mjs';
+import { checkTypingGuard } from './typing-guard.check.mjs';
+import { checkDelayedStatus } from './delayed-status.check.mjs';
+import { checkRestoreTurnPreview } from './restore-turn.check.mjs';
+import { checkFailureNotices } from './failures.check.mjs';
+import { checkAttention } from './attention.check.mjs';
+import { checkInterruptionPreview } from './interruption.check.mjs';
+import { checkAdoptionPreview } from './adoption.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -85,7 +98,7 @@ try {
     await page.waitForFunction(() => window.sidebarPreview);
     if (!query.includes('services=setup'))
       await page.waitForFunction(
-        () => !document.querySelector('.ag-input').disabled,
+        () => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true',
       );
   }
   async function screenshot(name) {
@@ -108,12 +121,9 @@ try {
     );
     assert(clicked, `Visible ${selector} with text ${text}`);
   }
+  // New chat opens a focus-mode draft, so sidebar checks start from an empty store instead.
   async function openNewChat(query = '') {
-    await open(query);
-    await page.click('.ag-header .ag-threads-btn');
-    await page.waitForSelector('.ag-threads-new', { visible: true });
-    await page.click('.ag-threads-new');
-    await page.waitForFunction(() => !document.querySelector('.ag-input').disabled);
+    await open(query ? `reset=1&${query}` : 'reset=1');
   }
   async function play(scenario) {
     await openNewChat(`scenario=${scenario}`);
@@ -130,6 +140,8 @@ try {
           document.querySelector('.ag-msg-user'),
       );
   }
+  // SIDEBAR_CHECK=<text> runs only the steps whose name contains it (case-insensitive).
+  const onlyStep = process.env.SIDEBAR_CHECK?.toLowerCase();
   // 커밋 전 변경이 있으면 버전 창은 변경 탭으로 열린다. 그래프 도구는 그래프 탭에 있다.
   async function showVersionGraph() {
     await page.click('.ag-versions-tab[data-tab="history"]');
@@ -137,6 +149,7 @@ try {
     await page.waitForSelector('.ag-version-row', { visible: true });
   }
   async function step(name, run) {
+    if (onlyStep && !name.toLowerCase().includes(onlyStep)) return;
     try {
       await run();
       console.log(`PASS ${name}`);
@@ -146,6 +159,36 @@ try {
     }
   }
   await step('Fullscreen provider chip follows the composer column', () => checkChipAlignment(page, origin));
+  await step('Empty focus chat centers the composer and sends it to the bottom', async () => {
+    await open('fullscreen=1');
+    const startNewChat = async () => {
+      await page.click('.ag-threads-new');
+      await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
+    };
+    await startNewChat();
+    const layout = () => page.evaluate(() => {
+      const chat = document.querySelector('.ag-chat-page').getBoundingClientRect();
+      const composer = document.querySelector('.ag-composer').getBoundingClientRect();
+      const greeting = document.querySelector('.ag-focus-greeting');
+      return {
+        gapBelow: Math.round(chat.bottom - composer.bottom),
+        greeting: greeting.checkVisibility() ? greeting.textContent : '',
+      };
+    });
+    const centered = await layout();
+    assert(centered.gapBelow > 200, `centered composer leaves ${centered.gapBelow}px below`);
+    assert(centered.greeting.includes('사업 제안서'), `greeting shows the document: ${centered.greeting}`);
+    await page.type('.ag-input', '요약해 줘');
+    await page.click('.ag-send');
+    await page.waitForSelector('.ag-msg-user');
+    await page.waitForFunction(() =>
+      document.querySelector('.ag-composer').getAnimations().every((tween) => tween.playState !== 'running'));
+    const sent = await layout();
+    assert(sent.gapBelow < 40, `sent composer leaves ${sent.gapBelow}px below`);
+    assert.equal(sent.greeting, '');
+    await startNewChat();
+    assert((await layout()).gapBelow > 200, 'a new chat centers the composer again');
+  });
   await step(
     'Production shell, light/dark themes, resize and collapse',
     async () => {
@@ -228,6 +271,8 @@ try {
     const turnLabel = '편집 2번 · 읽기 1번 · 도구 1번 · 오류 1';
     await page.waitForFunction((label) => !window.sidebarPreview.bridge.isTurnRunning()
       && document.querySelector('.ag-activity-label')?.textContent === label, {}, turnLabel);
+    // 끝난 턴의 작업은 한 줄로 접힌다 — 펼친 뒤 도구 묶음을 연다.
+    await page.click('.ag-turn-fold-toggle');
     await page.click('.ag-activity-toggle');
     const toolRows = async () => page.$$eval('.ag-tool-row', rows => rows.map(row => ({
       label: row.querySelector('.ag-tool-label')?.textContent,
@@ -263,6 +308,7 @@ try {
       [...list.querySelectorAll('.ag-threads-item')].find(node => node.dataset.threadId === id)?.click(), threadId);
     await page.waitForSelector('.ag-activity-label');
     assert.equal(await page.$eval('.ag-activity-label', node => node.textContent), turnLabel);
+    await page.click('.ag-turn-fold-toggle');
     await page.click('.ag-activity-toggle');
     const stored = await toolRows();
     assertToolRows(stored);
@@ -393,6 +439,12 @@ try {
   );
   await step('Plan research, revision, execution progress, and review',
     () => checkPlanPreview(page, origin, artifacts));
+  await step('Follow-up queue: Enter queues, normal ends drain, doubtful ends hold',
+    () => checkFollowUpQueue(page, origin, artifacts));
+  await step('Follow-up gap: settings lock, inline refusal, settings refusals and chat switches keep the accepted message once',
+    () => checkFollowUpGap(page, origin, artifacts));
+  await step('Composer send path: template, skill, attachments and local commands',
+    () => checkComposerSendPath(page, origin));
   await step('Question submission and resolution', async () => {
     await play('question');
     await screenshot('question');
@@ -421,12 +473,16 @@ try {
   await step('Subagent fleet, failure, and offline recovery', async () => {
     await play('fleet');
     await page.waitForSelector('.ag-fleet-slot:not([hidden]) .ag-fleet-toggle');
+    // 정착한 카드는 턴 접힘 안에 있다 — 펼친 뒤 카드를 연다.
+    await page.click('.ag-turn-fold-toggle');
     await page.click('.ag-fleet-slot:not([hidden]) .ag-fleet-toggle');
     await page.waitForFunction(() => document.querySelector('.ag-root').innerText.includes('용어를 통일'));
     await screenshot('fleet');
     await play('error');
+    // The default failure kind is a network failure: one notice with 다시 시도.
     await page.waitForFunction(() =>
-      document.querySelector('.ag-root').innerText.includes('앗, 오류에요! 네트워크 연결을 확인하세요!'),
+      document.querySelectorAll('.ag-failure-notice').length === 1
+      && document.querySelector('.ag-failure-action[data-action="retry"]'),
     );
     assert(
       !(await page.$eval('.ag-root', (element) =>
@@ -784,6 +840,7 @@ try {
       });
     },
   );
+  await step('Worktree create, open, close, removal cancellation and merge', () => checkWorktrees({ page, open, screenshot }));
   await step('Branch commits keep their graph lane and move the branch label', async () => {
     await open('page=versions&history=branches&theme=dark&width=480');
     await showVersionGraph();
@@ -827,6 +884,7 @@ try {
     assert.deepEqual(result, { branchAtHead: true, parent: 'e8f21a0', separateLane: true, label: true, current: true, selected: 'true' });
     await screenshot('versions-branch-commit');
     await open('page=versions&history=branches&width=360');
+    await showVersionGraph();
     await screenshot('versions-light-narrow');
     assert(await page.$eval('.ag-versions-page', (el) => el.scrollWidth <= el.clientWidth), 'Narrow panel overflows');
     await open('width=480');
@@ -848,6 +906,184 @@ try {
     assert.deepEqual(await page.$$eval('.ag-llm-item', (rows) => rows.map((row) => row.dataset.model)),
       ['claude-opus-4-6', 'claude-sonnet-4-6']);
   });
+  await step('Chat rail lists every document and follows a chat to its document', async () => {
+    await open('chats=sample');
+    await page.click('.ag-header .ag-threads-btn');
+    await page.waitForSelector('.ag-root.ag-threads-open .ag-threads-item');
+    // Chats from every document share one list, newest conversation first.
+    const rows = await page.$$eval('.ag-threads-item', (items) => items.map((item) => ({
+      id: item.dataset.threadId,
+      doc: item.querySelector('.ag-threads-item-doc').textContent,
+      when: item.querySelector('.ag-threads-item-when').textContent,
+    })));
+    assert.equal(rows[0].id, 'preview-chat-schedule');
+    assert.match(rows[0].when, /작업 중/);
+    assert(new Set(rows.map((row) => row.doc)).size >= 3, 'One list holds chats from several documents');
+    await page.click('.ag-threads-doc-filter');
+    await page.waitForSelector('.ag-rail-popover [role="option"]');
+    await clickText('.ag-rail-option-label', '회의록.hwpx');
+    await page.waitForFunction(() => [...document.querySelectorAll('.ag-threads-item-doc')]
+      .every((doc) => doc.textContent === '회의록.hwpx'));
+    await page.click('.ag-threads-filter-clear');
+    // A chat from another document commits this one, opens that document and continues there.
+    await page.click('.ag-threads-item[data-thread-id="preview-chat-totals"]');
+    await page.waitForFunction(() => document.querySelector('#preview-status').value.includes('Committed'));
+    await page.waitForFunction(() => document.querySelector('#document').value === 'budget');
+    await page.waitForFunction(() => document.querySelector('.ag-msg-user')?.textContent.includes('분기별 예산 표'));
+    assert(!(await page.$eval('.ag-composer', (element) => element.classList.contains('ag-readonly'))));
+    await page.click('.ag-header .ag-threads-btn');
+    assert.equal(await page.$eval('.ag-threads-item.ag-active', (element) => element.dataset.threadId), 'preview-chat-totals');
+  });
+  await step('Dragging sorts any chat, and the pinned group pins what lands in it', async () => {
+    await open('chats=sample');
+    await page.click('.ag-header .ag-threads-btn');
+    await page.waitForSelector('.ag-root.ag-threads-open .ag-threads-item');
+    const group = (name) => page.$$eval('.ag-threads-list > *', (items, name) => {
+      const split = items.findIndex((item) => item.dataset.section === 'recent');
+      const rows = name === 'pinned' ? items.slice(0, split) : items.slice(split + 1);
+      return rows.filter((item) => item.dataset.threadId).map((item) => item.dataset.threadId);
+    }, name);
+    const pinned = () => group('pinned');
+    const recent = () => group('recent');
+    const sections = () => page.$$eval('.ag-threads-section', (items) => items
+      .filter((item) => item.checkVisibility()).map((item) => item.dataset.section));
+    const box = async (selector) => (await page.$(selector)).boundingBox();
+    // The thread store re-reads IndexedDB after the page loads and after each write, redrawing
+    // the list. Wait until the list has been quiet for a moment so element handles stay attached.
+    const settled = () => page.evaluate(() => new Promise((resolve) => {
+      const list = document.querySelector('.ag-threads-list');
+      const done = () => {
+        observer.disconnect();
+        resolve();
+      };
+      let timer = setTimeout(done, 400);
+      const observer = new MutationObserver(() => {
+        clearTimeout(timer);
+        timer = setTimeout(done, 400);
+      });
+      observer.observe(list, { childList: true });
+    }));
+    // Grabs a row, waits for the drag to reveal both groups, then drops at the y `target` picks.
+    async function drag(id, target) {
+      const from = await box(`.ag-threads-row[data-thread-id="${id}"] .ag-threads-item`);
+      const x = from.x + from.width / 2;
+      await page.mouse.move(x, from.y + from.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(x, from.y + from.height / 2 - 12, { steps: 4 });
+      await page.waitForSelector('.ag-threads-ghost');
+      await page.mouse.move(x, await target(), { steps: 14 });
+      await page.mouse.up();
+      await page.waitForFunction(() => !document.querySelector('.ag-threads-ghost'));
+      await settled();
+    }
+    const under = (selector) => async () => {
+      const header = await box(selector);
+      return header.y + header.height + 4;
+    };
+    // Just past a row's middle, so the dragged chat lands right after it.
+    const after = (id) => async () => {
+      const row = await box(`.ag-threads-row[data-thread-id="${id}"]`);
+      return row.y + row.height * 0.75;
+    };
+    const altKey = async (key) => {
+      await page.keyboard.down('Alt');
+      await page.keyboard.press(key);
+      await page.keyboard.up('Alt');
+      await settled();
+    };
+    await settled();
+    const active = () => page.$eval('.ag-threads-item.ag-active', (item) => item.dataset.threadId);
+    const openChat = await active();
+    assert.deepEqual(await sections(), [], 'No group headers until something is pinned');
+
+    // The top chat dragged down three rows stays there.
+    const start = await recent();
+    await drag(start[0], after(start[3]));
+    const sorted = [start[1], start[2], start[3], start[0], ...start.slice(4)];
+    assert.deepEqual(await recent(), sorted);
+    // Dropping is not a click: the open chat and its document stay put.
+    assert.equal(await active(), openChat);
+    assert.equal(await page.$eval('#document', (select) => select.value), 'proposal');
+
+    // Dropped into the pinned group, a chat pins at that spot.
+    await drag('preview-chat-totals', under('.ag-threads-section[data-section="pinned"]'));
+    assert.deepEqual(await pinned(), ['preview-chat-totals']);
+    assert.deepEqual(await sections(), ['pinned', 'recent']);
+    await drag('preview-chat-press', under('.ag-threads-section[data-section="pinned"]'));
+    assert.deepEqual(await pinned(), ['preview-chat-press', 'preview-chat-totals']);
+    await screenshot('chat-rail-pinned');
+
+    // Both orders survive a reload once they reach IndexedDB.
+    await page.waitForFunction(async (moved) => {
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('rhwpAgentThreads');
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const rows = await new Promise((resolve) => {
+        const request = db.transaction('threads').objectStore('threads').getAll();
+        request.onsuccess = () => resolve(request.result);
+      });
+      db.close();
+      const row = (id) => rows.find((item) => item.id === id) ?? {};
+      return row('preview-chat-press').pinOrder === 0 && row('preview-chat-totals').pinOrder === 1
+        && typeof row(moved).listOrder === 'number';
+    }, {}, start[0]);
+    const unpinned = sorted.filter((id) => id !== 'preview-chat-totals' && id !== 'preview-chat-press');
+    await open('chats=sample');
+    await page.click('.ag-header .ag-threads-btn');
+    await page.waitForSelector('.ag-root.ag-threads-open .ag-threads-item');
+    await settled();
+    assert.deepEqual(await pinned(), ['preview-chat-press', 'preview-chat-totals']);
+    assert.deepEqual(await recent(), unpinned);
+
+    // Dragged out of the pinned group, a chat unpins where it was dropped.
+    await drag('preview-chat-totals', under('.ag-threads-section[data-section="recent"]'));
+    assert.deepEqual(await pinned(), ['preview-chat-press']);
+    assert.deepEqual(await recent(), ['preview-chat-totals', ...unpinned]);
+
+    // The hover pin button and Alt+arrow keys reach the same orders.
+    await page.hover('.ag-threads-row[data-thread-id="preview-chat-overview"]');
+    await page.click('.ag-threads-row[data-thread-id="preview-chat-overview"] .ag-thread-pin');
+    await settled();
+    assert.deepEqual(await pinned(), ['preview-chat-overview', 'preview-chat-press']);
+    await page.focus('.ag-threads-item[data-thread-id="preview-chat-overview"]');
+    await altKey('ArrowDown');
+    assert.deepEqual(await pinned(), ['preview-chat-press', 'preview-chat-overview']);
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.threadId), 'preview-chat-overview');
+    const [first, second] = await recent();
+    await page.focus(`.ag-threads-item[data-thread-id="${second}"]`);
+    await altKey('ArrowUp');
+    assert.deepEqual((await recent()).slice(0, 2), [second, first]);
+    for (const id of ['preview-chat-press', 'preview-chat-overview']) {
+      await page.click(`.ag-threads-row[data-thread-id="${id}"] .ag-thread-pin`);
+      await settled();
+    }
+    assert.deepEqual(await sections(), []);
+  });
+  await step('Background document sessions keep their agent while another sidebar is shown',
+    () => checkSessionsPreview(page, origin));
+  await step('A new chat draft creates no chat until its first send', () => checkDraftChat(page, origin));
+  await step('A new chat while the agent runs opens another chat without interrupting',
+    () => checkNewChatWhileRunning(page, origin));
+  await step('A chat locked by another chat\'s edits only picks and sends in 채팅',
+    () => checkChatModeLock(page));
+  await step('A write refused because another chat edits the document shows one failed tool row',
+    () => checkWriterBusyPreview(page, origin, artifacts));
+  await step('Arriving questions wait while the user types', () => checkTypingGuard(page, origin, artifacts));
+  await step('Transient statuses wait 400 ms and never blink', () => checkDelayedStatus(page, origin, artifacts));
+  await step('A request\'s accepted changes can be restored from its bubble, with confirmation and refusals',
+    () => checkRestoreTurnPreview(page, origin, artifacts));
+  await step('A reload re-adopts the chat the hub still runs instead of restarting it',
+    () => checkReloadPreview(page, origin, artifacts));
+  await step('Each provider failure shows one notice with the actions that fit it',
+    () => checkFailureNotices(page, origin, artifacts));
+  await step('Background-chat attention: rail states, chip, count, toasts and notices',
+    () => checkAttention(page, origin, artifacts));
+  await step('A turn cut off by a hub restart, an app restart, a reload or an engine trap says why and offers 이어서 진행',
+    () => checkInterruptionPreview(page, origin, artifacts));
+  await step('A reload never draws the hub chat\'s replayed or early events on the startup draft, and a late end settles only its own turn',
+    () => checkAdoptionPreview(page, origin, artifacts));
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

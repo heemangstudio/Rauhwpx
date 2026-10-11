@@ -11,8 +11,12 @@ import type { EventBus } from '../core/event-bus.ts';
 import type { InputHandler } from '../engine/input-handler.ts';
 import type { CanvasView } from '../view/canvas-view.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
-import type { CellPathEntry, CharShapeRun } from '../core/types.ts';
+import type { CellPathEntry, CharShapeRun, DocumentPosition } from '../core/types.ts';
+import type { OperationDescriptor } from '../engine/command.ts';
+import type { RendererSessionContext } from '../desktop-integration.ts';
 import type { CatalogAgent, ModelCatalogEntry } from './models.ts';
+import type { TurnCheckpointPort } from './turn-checkpoints.ts';
+import type { TurnInterruptionReason } from './turn-interruption-reason.ts';
 
 export const AGENT_PROTOCOL_VERSION = 5;
 
@@ -793,6 +797,34 @@ export interface AgentTaskMember {
 }
 
 /**
+ * 허브가 분류한 프로바이더 실패의 종류 (rhwp-agent/provider-failure.mjs 와 같은 닫힌 집합).
+ */
+export type ProviderFailureClass =
+  | 'auth_required'
+  | 'usage_limit'
+  | 'provider_error'
+  | 'network'
+  | 'process_exited'
+  | 'invalid_request'
+  | 'unknown';
+
+/** 분류·가림·길이 제한을 거친 프로바이더 실패 하나. */
+export interface ProviderFailure {
+  class: ProviderFailureClass;
+  agent: AgentName;
+  /** 비밀을 지우고 공백을 정리한 프로바이더 문구 (최대 2000자). '자세히' 아래에만 보인다. */
+  message: string;
+  /** 최대 64자 [A-Za-z0-9_.:-] — 예: 'claude:authentication_failed', 'codex:usageLimitExceeded', 'cli_missing'. */
+  code: string | null;
+  retryable: boolean;
+  /** epoch ms — usage_limit 에만, 프로바이더가 구조화해 알려 준 값에서만 온다. */
+  resetAt: number | null;
+}
+
+/** 실패가 어디서 났는지 — 다시 시도의 동작이 달라진다. */
+export type ProviderFailureOrigin = 'turn' | 'send' | 'start' | 'idle';
+
+/**
  * 하위 CLI(claude/codex) JSONL을 허브가 정규화한 단일 이벤트 스트림 (§1.5).
  * parentTaskId: 서브에이전트/워크플로가 낸 이벤트를 스폰한 task 에 귀속시키는
  * 선택 필드 — 있으면 그 task 카드로, 모르는 id 면 루트 활동 그룹으로 그린다.
@@ -812,12 +844,19 @@ export type AgentStreamEvent =
       stopReason?: string;
       errorMessage?: string;
       turnId?: string;
+      /** 허브가 분류한 이 턴의 실패 (실패한 턴에만). */
+      failure?: ProviderFailure;
+      /**
+       * Studio 만 붙이는 값 — 허브를 잃어(재시작·이 채팅 세션의 소멸) 브리지가 합성한 끝의 이유(S3).
+       * 있으면 끊긴 턴이고, errorMessage 는 옛 소비자를 위해 남긴 문구라 사이드바가 보이지 않는다.
+       */
+      interruption?: TurnInterruptionReason;
       /** 성공한 턴에만 실린다. 이 채팅에서 이 프로바이더를 다시 열 때 쓰는 네이티브 세션 커서. */
       providerSessionId?: string;
       /** 이번 턴에 네이티브 재개가 실패했다. 이 프로바이더의 커서를 버린다. */
       resumeLost?: true;
     }
-  | { type: 'error'; agent: AgentName; message: string }
+  | { type: 'error'; agent: AgentName; message: string; /** 허브가 분류한 실패 (새 허브만). */ failure?: ProviderFailure }
   /** 마지막 모델 호출이 끝났을 때 맥락 창을 차지한 토큰 수. 누적 과금량이 아니다. */
   | { type: 'context-usage'; agent: AgentName; usedTokens: number; maxTokens?: number; autoCompact?: boolean }
   | {
@@ -992,17 +1031,83 @@ export type SidebarEvent =
       title: string | null;
     }
   | { type: 'agent'; event: AgentStreamEvent }
-  | { type: 'hub-error'; code: string; message: string };
+  /**
+   * 한 턴(또는 거절된 전송)에 실패 알림 하나. 브리지가 턴의 error·turn-end 를 모아 하나로 낸다.
+   * turnId 는 허브 턴 ID, userInitiated 는 사용자가 보낸 메시지로 시작한 턴인지다.
+   */
+  | {
+      type: 'turn-failure';
+      failure: ProviderFailure;
+      turnId: string | null;
+      origin: ProviderFailureOrigin;
+      userInitiated?: boolean;
+      /** 실패한 턴이 문서 쓰기 도구를 하나 이상 끝냈다 — 같은 요청을 그대로 되풀이하면 안 된다. */
+      wroteDocument?: boolean;
+    }
+  | {
+      type: 'hub-error';
+      code: string;
+      message: string;
+      /** 허브가 거절한 사용자 메시지의 receipt id(그 메시지에 messageId 가 있었을 때만). */
+      messageId?: string;
+      /** 프로바이더 실패로 분류된 거절 (AGENT_AUTH_REQUIRED, PI_NOT_CONFIGURED, AGENT_SPAWN_FAILED, AGENT_PROCESS_CLEANUP_UNCERTAIN). */
+      failure?: ProviderFailure;
+      /** 'start' 는 채팅 시작 거절, 'send' 는 보낸 메시지의 거절이다. */
+      origin?: 'start' | 'send';
+    };
 
+/** 에이전트에게 보여 줄 사용자 커서·선택 (InputHandler.getUserSelectionContext 와 같은 모양). */
+export interface AgentUserSelectionContext {
+  cursor: DocumentPosition;
+  selection: { start: DocumentPosition; end: DocumentPosition } | null;
+}
+
+/**
+ * 에이전트 문서 작업이 쓰는 편집기 — 대기 편집 승인의 히스토리 기록, 커서 읽기, 스냅샷 예산.
+ * 화면에 붙은 문서는 InputHandler 가, 뒤에서 도는 문서는 세션 히스토리를 쥔 헤드리스 호스트가 맡는다.
+ */
+export interface AgentEditorHost {
+  getCursorPosition(): DocumentPosition;
+  executeOperation(desc: OperationDescriptor): void;
+  prepareSnapshotCapacity?(additionalIds: number): void;
+  retainExternalSnapshot?(count?: number): void;
+  releaseExternalSnapshot?(count?: number): void;
+  /** 화면에 보이는 사용자 커서·선택. 보이는 편집기가 없으면 null. */
+  getUserSelectionContext?(): AgentUserSelectionContext | null;
+}
+
+/** 문서가 화면에 붙어 있을 때의 편집기와 캔버스 — 오버레이·편집 위치 따라가기·편집 잠금이 쓴다. */
+export interface AgentViewHost {
+  inputHandler: InputHandler;
+  canvasView: CanvasView;
+}
+
+/**
+ * wasm·eventBus·documentState 는 이 브리지가 맡은 문서 세션 자신의 것이다 — 화면 문서를
+ * 따라 바뀌는 페이지 facade 를 넘기면 문서 전환이 문서 교체로 보여 대기 편집이 버려진다.
+ */
 export interface AgentBridgeDeps {
   wasm: WasmBridge;
   eventBus: EventBus;
-  inputHandler: InputHandler;
-  canvasView: CanvasView;
   documentState: DocumentDirtyState;
   isReadOnly?: () => boolean;
   /** 전체 모드 에이전트의 버전 커밋 — 사이드바 커밋 버튼과 같은 기록에 남긴다. */
   commitVersion?: (message: string) => Promise<void>;
+  /**
+   * 쓰기 도구가 문서에 닿기 직전에 이 채팅이 문서를 고칠 자리를 요구한다. 같은 문서의 다른
+   * 채팅이 고치는 중이면 false 이고, 그 쓰기는 DOCUMENT_WRITER_BUSY 로 거절된다. 없으면
+   * (채팅 하나뿐인 호스트) 모든 쓰기를 받는다.
+   */
+  claimDocumentWrite?: () => boolean;
+  /**
+   * 문서 세션의 턴 체크포인트 (agent/turn-checkpoints.ts). 턴의 첫 쓰기 직전에 문서를 찍고,
+   * 검토 set 의 승인·거절과 턴 끝을 알린다. 없으면 체크포인트를 남기지 않는다.
+   */
+  turnCheckpoints?: TurnCheckpointPort;
+  /** 문서 작업용 편집기. view 가 있으면 view.inputHandler 를 쓴다. */
+  editor: AgentEditorHost;
+  /** 화면에 붙은 편집기·캔버스. null 이면 화면 밖(백그라운드)에서 시작한다. */
+  view?: AgentViewHost | null;
 }
 
 export interface AgentBridgeOptions {
@@ -1013,6 +1118,17 @@ export interface AgentBridgeOptions {
   templateToken?: string;
   launchId?: string;
   sessionId?: string;
+  /**
+   * 허브 세션 구성 공급자. 있으면 첫 연결과 모든 재연결이 기본 페이지 세션(또는 개발용
+   * 대체값) 대신 이 값을 쓴다 — 한 페이지에서 문서마다 다른 허브 세션을 쥘 때 넘긴다.
+   */
+  resolveSessionContext?: () => Promise<RendererSessionContext | null>;
+  /**
+   * 엔진 trap 복구로 다시 불러온 페이지의 기본 허브 세션 채팅. 멈추기 전 페이지가 이 스레드들의
+   * 턴을 멈추려 했지만 연결이 끊겨 닿지 않았을 수 있다. 첫 welcome 이 그 턴이 아직 돈다고 알리면
+   * 이어받은 턴을 곧바로 멈춘다 — 다시 연 문서에 쓰지 않게. 첫 welcome 에서 한 번만 본다.
+   */
+  interruptTurnsOnFirstWelcome?: readonly string[];
 }
 
 export interface DocPoint {

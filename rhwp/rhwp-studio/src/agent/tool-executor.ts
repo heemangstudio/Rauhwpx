@@ -8,12 +8,11 @@
  */
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import { engineTrap, reportEngineTrap } from '../core/engine-trap.ts';
-import type { InputHandler } from '../engine/input-handler.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import type { CellPathEntry, CharProperties, CharShapeRun, ControlLayoutItem, DocumentPosition, LineLayoutItem, ParaProperties, SelectionRect } from '../core/types.ts';
 import type { RevisionTracker } from './revision.ts';
 import type { PendingEditManager } from './pending-edits.ts';
-import type { AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp } from './types.ts';
+import type { AgentEditorHost, AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp } from './types.ts';
 import { AgentToolError } from './types.ts';
 import { EditJournal, type EditJournalEntry } from './edit-journal.ts';
 import { batchItemArgs } from './batch-item.ts';
@@ -53,18 +52,40 @@ import {
 
 export interface AgentToolExecutorDeps {
   wasm: WasmBridge;
-  inputHandler: InputHandler;
+  /** 사용자 커서·선택을 읽는 편집기. 문서가 화면에 없으면 선택 문맥이 null 이다. */
+  editor: AgentEditorHost;
   documentState: DocumentDirtyState;
   revision: RevisionTracker;
   pending: PendingEditManager;
   loadTemplateBytes?: (template: DocumentTemplate) => Promise<Uint8Array>;
   getDocumentSourcePath?: () => Promise<string | null>;
   isReadOnly?: () => boolean;
+  /** 쓰기 직전에 문서를 고칠 자리를 요구한다 (AgentBridgeDeps.claimDocumentWrite). 없으면 늘 받는다. */
+  claimDocumentWrite?: () => boolean;
+  /**
+   * 문서 쓰기 도구가 모든 문(읽기 전용·주인 자리·템플릿 검토)을 지나 문서에 닿기 직전에 부른다.
+   * 턴 체크포인트가 이때 그 턴의 첫 쓰기 전 문서를 찍는다. 던지지 않는다.
+   */
+  beforeDocumentWrite?: () => void;
   /** 참조 이미지 잘라내기 — 기본은 브라우저 캔버스 (테스트가 주입한다) */
   cropImage?: ImageCropper;
 }
 
 const DOC_NOT_LOADED_MESSAGE = '문서가 로드되지 않았습니다';
+
+/**
+ * 같은 문서의 다른 채팅이 고치는 중이라 쓰기를 받지 않았다. 문서는 그대로다 — 이번 턴에는
+ * 다시 쓰지 말고, 무엇을 바꾸려 했는지 사용자에게 알리게 한다.
+ */
+export function documentWriterBusyError(): AgentToolError {
+  return new AgentToolError(
+    'DOCUMENT_WRITER_BUSY',
+    'Another chat open on this document is editing it (its turn is running or its edits are waiting for the user\'s review). '
+      + 'A document has one editing chat at a time. Nothing was changed. '
+      + 'Do not retry document-write tools in this turn; reads still work. '
+      + 'Finish by telling the user what you would change; they can ask again after the other chat\'s edits are applied or discarded.',
+  );
+}
 
 /** 엔진 trap 뒤에는 같은 인스턴스로 다시 시도해도 실패한다 — 재시도 대신 사용자 안내로 넘긴다. */
 function engineTrappedError(detail: string): AgentToolError {
@@ -82,6 +103,8 @@ const NESTED_TABLE_PROBE_CONTROLS = 4;
 const CELL_SELECTION_END_OFFSET = 0x7fffffff;
 
 const MAX_SVG_BYTES = 800_000;
+/** 템플릿 문서는 마지막 템플릿 도구 뒤 이만큼 쉬면 내려놓고, 다음 템플릿 도구가 다시 읽는다. */
+export const TEMPLATE_IDLE_RELEASE_MS = 60_000;
 // WebSocket text frames cap at 100 MiB. Base64 expands by 4/3, so 64 MiB
 // leaves room for the protocol envelope while still covering normal HWP/HWPX files.
 const MAX_DOCUMENT_SNAPSHOT_BYTES = 64 * 1024 * 1024;
@@ -1032,6 +1055,8 @@ export class AgentToolExecutor {
   private templateBytes: Uint8Array | null = null;
   private templateKey: string | null = null;
   private templateInspectionKey: string | null = null;
+  private templateUses = 0;
+  private templateIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private documentInspectionRevision: number | null = null;
   /** get_structure 서식 태그의 본문 기준 글자 크기 (HWPUNIT) — structureMemoKey 마다 다시 표본을 뜬다. */
   private structureBodySizeMemo: { key: string; size: number | null } | null = null;
@@ -1089,6 +1114,10 @@ export class AgentToolExecutor {
           'This published template preview is read-only and cannot accept document-write tools.',
         );
       }
+      // 같은 문서의 다른 채팅이 고치는 중이면 문서에 닿기 전에 거절한다 (채팅 모드 잠금이 늦어도).
+      if (isDocumentWriteTool(tool) && this.deps.claimDocumentWrite && !this.deps.claimDocumentWrite()) {
+        throw documentWriterBusyError();
+      }
       if (isDocumentWriteTool(tool)
         && !tool.startsWith('template_')
         && this.deps.pending.hasTemplateMutation()) {
@@ -1096,6 +1125,14 @@ export class AgentToolExecutor {
           'TEMPLATE_PENDING_CONFLICT',
           'Review the pending template transfer before making other document edits.',
         );
+      }
+      // 거절되지 않은 쓰기만 여기에 닿는다 — 이 턴의 첫 쓰기라면 그 전 문서를 체크포인트로 남긴다.
+      if (isDocumentWriteTool(tool) && this.deps.beforeDocumentWrite) {
+        try {
+          this.deps.beforeDocumentWrite();
+        } catch (e) {
+          console.warn('[AgentToolExecutor] 턴 체크포인트를 남기지 못했습니다:', e);
+        }
       }
       // 스테이징 쓰기는 결과에 after 보고(와 요청 시 변경 영역 PNG)를 붙인다 —
       // render 인자는 쓰기를 적용하기 전에 검사하고, 쓰기 직전 상태를 떠 둔다.
@@ -1142,16 +1179,16 @@ export class AgentToolExecutor {
       case 'get_engine_edit_capabilities': return this.getEngineEditCapabilities(args);
       case 'list_numberings': return this.listNumberings();
       case 'verify_changes': return this.verifyChanges(args, agent);
-      case 'template_get_structure': return this.templateGetStructure(args, capability);
-      case 'template_get_text_range': return this.templateRead('get_text_range', args, capability);
-      case 'template_get_para_format': return this.templateRead('get_para_format', args, capability);
-      case 'template_get_char_format': return this.templateRead('get_char_format', args, capability);
-      case 'template_list_styles': return this.templateRead('list_styles', args, capability);
-      case 'template_get_page_layout': return this.templateGetPageLayout(args, capability);
-      case 'template_render_page': return this.templateRead('render_page', args, capability);
-      case 'template_apply_section_layout': return this.templateApplySectionLayout(args, agent, capability);
-      case 'template_apply_paragraph_format': return this.templateApplyParagraphFormat(args, agent, capability);
-      case 'template_insert_block': return this.templateInsertBlock(args, agent, capability);
+      case 'template_get_structure': return this.holdTemplate(() => this.templateGetStructure(args, capability));
+      case 'template_get_text_range': return this.holdTemplate(() => this.templateRead('get_text_range', args, capability));
+      case 'template_get_para_format': return this.holdTemplate(() => this.templateRead('get_para_format', args, capability));
+      case 'template_get_char_format': return this.holdTemplate(() => this.templateRead('get_char_format', args, capability));
+      case 'template_list_styles': return this.holdTemplate(() => this.templateRead('list_styles', args, capability));
+      case 'template_get_page_layout': return this.holdTemplate(() => this.templateGetPageLayout(args, capability));
+      case 'template_render_page': return this.holdTemplate(() => this.templateRead('render_page', args, capability));
+      case 'template_apply_section_layout': return this.holdTemplate(() => this.templateApplySectionLayout(args, agent, capability));
+      case 'template_apply_paragraph_format': return this.holdTemplate(() => this.templateApplyParagraphFormat(args, agent, capability));
+      case 'template_insert_block': return this.holdTemplate(() => this.templateInsertBlock(args, agent, capability));
       case 'apply_edits': return this.applyEdits(args, agent);
       case 'read_batch': return this.readBatch(args, agent, capability);
       case 'insert_text': return this.insertText(args, agent);
@@ -2680,8 +2717,18 @@ export class AgentToolExecutor {
 
   private getSelection(): unknown {
     this.requireDocLoaded();
-    const { inputHandler, wasm } = this.deps;
-    const { cursor, selection: sel } = inputHandler.getUserSelectionContext();
+    const { editor, wasm } = this.deps;
+    const context = editor.getUserSelectionContext?.() ?? null;
+    if (!context) {
+      // 화면 밖에서 도는 문서 — 사용자가 이 문서를 보고 있지 않으니 커서도 선택도 없다.
+      return {
+        revision: this.revision,
+        hasSelection: false,
+        visible: false,
+        note: 'This document is not open in the editor, so the user has no cursor or selection in it. Locate text with get_structure or find_text instead.',
+      };
+    }
+    const { cursor, selection: sel } = context;
     // 커서/선택의 charOffset 은 논리 오프셋(텍스트 문자 + 앞선 인라인 컨트롤 1개당 +1)이다.
     // 다른 툴은 텍스트 오프셋을 쓰므로 본문·셀 문단 모두 텍스트 오프셋으로 변환해 반환한다.
     interface SelPoint {
@@ -3836,7 +3883,8 @@ export class AgentToolExecutor {
       throw new AgentToolError('INVALID_ARGS', 'scale must be a number (clamped to 0.5..3)');
     }
     const scale = Math.min(3, Math.max(0.5, typeof rawScale === 'number' ? rawScale : 1.25));
-    let canvas = await this.renderPageToCanvasElement(pageIndex, scale);
+    // 래스터화는 동기(wasm 렌더) — blob 변환만 비동기다
+    let canvas = this.renderPageToCanvasElement(pageIndex, scale);
     let regionOut: { x: number; y: number; width: number; height: number } | undefined;
     if (region) {
       // mm → 캔버스 px (쪽 px × scale). 쪽 밖은 잘라낸다.
@@ -3993,13 +4041,10 @@ export class AgentToolExecutor {
     );
   }
 
-  /**
-   * 페이지를 캔버스에 그린다 — wasm 이 캔버스 크기를 페이지 크기 × scale 로 설정한다.
-   * 그림은 비동기로 디코드되므로 다 그릴 때까지 기다린다.
-   */
-  private async renderPageToCanvasElement(pageIndex: number, scale: number): Promise<HTMLCanvasElement | OffscreenCanvas> {
+  /** 페이지를 캔버스에 그린다 — wasm 이 캔버스 크기를 페이지 크기 × scale 로 설정한다 */
+  private renderPageToCanvasElement(pageIndex: number, scale: number): HTMLCanvasElement | OffscreenCanvas {
     const canvas = this.createRenderCanvas();
-    await this.deps.wasm.renderPageToCanvasWithPictures(pageIndex, canvas as unknown as HTMLCanvasElement, scale);
+    this.deps.wasm.renderPageToCanvas(pageIndex, canvas as unknown as HTMLCanvasElement, scale);
     return canvas;
   }
 
@@ -4428,7 +4473,7 @@ export class AgentToolExecutor {
         ?? 0;
       try {
         // 모든 op 이 이미 문서에 적용돼 있으므로 지금 상태를 그대로 그리면 승인 후 모습이다.
-        const canvas = await this.renderPageToCanvasElement(page, 2);
+        const canvas = this.renderPageToCanvasElement(page, 2);
         const png = await canvasToPngBase64(canvas);
         result['image'] = { data: png.data, mimeType: 'image/png' };
         result['imagePageIndex'] = page;
@@ -4901,11 +4946,12 @@ export class AgentToolExecutor {
     const plan = planStack(regions);
     const s = plan.scale;
     const rendered = new Map<number, HTMLCanvasElement | OffscreenCanvas>();
-    for (const r of plan.regions) {
-      if (!rendered.has(r.pageIndex)) rendered.set(r.pageIndex, await this.renderPageToCanvasElement(r.pageIndex, s));
-    }
     const pieces = plan.regions.map((r) => {
-      const src = rendered.get(r.pageIndex)!;
+      let src = rendered.get(r.pageIndex);
+      if (!src) {
+        src = this.renderPageToCanvasElement(r.pageIndex, s);
+        rendered.set(r.pageIndex, src);
+      }
       const sx = Math.max(0, Math.floor(r.x * s));
       const sy = Math.max(0, Math.floor(r.y * s));
       const sw = Math.max(1, Math.min(src.width - sx, Math.ceil(r.width * s)));
@@ -4940,6 +4986,31 @@ export class AgentToolExecutor {
     if (!template) throw new AgentToolError('TEMPLATE_UNAVAILABLE', 'No active template is available for this chat.');
     if (!this.deps.loadTemplateBytes) throw new AgentToolError('TEMPLATE_UNAVAILABLE', 'Template loading is unavailable in this Studio.');
     return template;
+  }
+
+  /** 템플릿 도구 하나를 감싼다. 도구가 도는 동안에는 템플릿 문서를 내려놓지 않는다. */
+  private async holdTemplate<T>(use: () => Promise<T>): Promise<T> {
+    this.templateUses += 1;
+    if (this.templateIdleTimer !== null) clearTimeout(this.templateIdleTimer);
+    this.templateIdleTimer = null;
+    try {
+      return await use();
+    } finally {
+      this.templateUses -= 1;
+      if (this.templateUses === 0 && this.templateWasm) {
+        this.templateIdleTimer = setTimeout(() => this.releaseTemplate(), TEMPLATE_IDLE_RELEASE_MS);
+      }
+    }
+  }
+
+  /** 템플릿 엔진과 원본 바이트를 놓는다. 읽기 확인(templateInspectionKey)은 같은 revision 이면 그대로 유효하다. */
+  private releaseTemplate(): void {
+    if (this.templateIdleTimer !== null) clearTimeout(this.templateIdleTimer);
+    this.templateIdleTimer = null;
+    this.templateWasm?.releaseDocument();
+    this.templateWasm = null;
+    this.templateBytes = null;
+    this.templateKey = null;
   }
 
   private async ensureTemplate(capability?: ToolCapabilityContext): Promise<{ template: DocumentTemplate; wasm: WasmBridge; bytes: Uint8Array }> {
@@ -5214,10 +5285,7 @@ export class AgentToolExecutor {
   }
 
   dispose(): void {
-    this.templateWasm?.releaseDocument();
-    this.templateWasm = null;
-    this.templateBytes = null;
-    this.templateKey = null;
+    this.releaseTemplate();
     this.templateInspectionKey = null;
     this.documentInspectionRevision = null;
   }

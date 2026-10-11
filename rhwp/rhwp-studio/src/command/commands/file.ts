@@ -59,7 +59,12 @@ import { showToast } from '@/ui/toast';
 import { clearRecentDocs, listRecentDocs, removeRecentDoc } from '@/recent/recent-store';
 import { documentSourceDigest } from '@/recent/document-preflight';
 import { claimForRecentDoc } from '@/project-file/claim';
-import { openProjectFile, type ProjectFileDeps } from '@/project-file/open';
+import {
+  locateProjectFile,
+  openProjectFile,
+  type ProjectFileDeps,
+  type ProjectFileLocation,
+} from '@/project-file/open';
 import type { ProjectFileClaim } from '@/project-file/identity';
 import {
   claimNativeProbe,
@@ -76,8 +81,10 @@ import {
 } from '@/desktop-integration';
 import {
   moveToLibraryDocument,
+  saveAndCommitBeforeLeaving,
   type LibraryDocumentTarget,
   type LibraryMoveResult,
+  type MoveToLibraryDocumentDeps,
 } from '@/library/move-to-document';
 import {
   isPortableHistoryFileName,
@@ -86,11 +93,36 @@ import {
   PORTABLE_HISTORY_MIME_TYPE,
 } from '@/versioning/portable-bundle';
 
+/**
+ * 문서 열기를 요청하고 다 열릴 때까지 기다린다. 기다리지 않으면 호출부가 "아직 열리지 않음"을
+ * 실패로 보고 되돌린 사이에 열기가 끝나, 엉뚱한 문서 세션에 문서가 들어간다.
+ */
+function openDocumentBytesAndWait(
+  services: CommandServices,
+  payload: Record<string, unknown>,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const requestId = `open-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const off = services.eventBus.on('open-document-bytes:done', (done) => {
+      const result = done as { requestId?: string; ok?: boolean } | undefined;
+      if (result?.requestId !== requestId) return;
+      off();
+      resolve(result.ok === true);
+    });
+    services.eventBus.emit('open-document-bytes', { ...payload, requestId });
+  });
+}
+
 async function openFileViaPicker(services: CommandServices): Promise<void> {
   let handle: FileSystemFileHandleLike | null | undefined;
   try {
-    const canReplace = await confirmSaveBeforeReplacingDocument(services);
-    if (!canReplace) return;
+    // 에이전트가 일하는 문서는 바꾸지 않고 뒤에 남기므로 지금은 저장을 묻지 않는다. 묻지 않았다면
+    // 파일을 고르는 사이 에이전트가 끝나 지금 문서를 바꾸게 될 때 그 자리에서 다시 묻는다.
+    const askedToSave = !services.opensDocumentsInNewSession?.();
+    if (askedToSave) {
+      const canReplace = await confirmSaveBeforeReplacingDocument(services);
+      if (!canReplace) return;
+    }
 
     const windowLike = window as FileSystemWindowLike;
     const desktopHandle = await services.pickOpenHandle?.();
@@ -104,7 +136,8 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
     if (selected === undefined) {
       const fileInput = document.getElementById('file-input') as HTMLInputElement | null;
       if (fileInput) {
-        fileInput.dataset.skipUnsavedGuard = 'true';
+        if (askedToSave) fileInput.dataset.skipUnsavedGuard = 'true';
+        else delete fileInput.dataset.skipUnsavedGuard;
         fileInput.click();
       }
       return;
@@ -112,11 +145,11 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
 
     const { bytes, name } = selected;
     handle = selected.handle;
-    services.eventBus.emit('open-document-bytes', {
+    await openDocumentBytesAndWait(services, {
       bytes,
       fileName: name,
       fileHandle: handle,
-      skipUnsavedGuard: true,
+      skipUnsavedGuard: askedToSave,
     });
   } catch (err) {
     await handle?.releaseUnusedSaveTarget?.().catch(() => {});
@@ -129,17 +162,18 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
 async function importLegacyHistoryFolder(services: CommandServices): Promise<void> {
   let handle: FileSystemFileHandleLike | null | undefined;
   try {
-    if (!await confirmSaveBeforeReplacingDocument(services)) return;
+    const askedToSave = !services.opensDocumentsInNewSession?.();
+    if (askedToSave && !await confirmSaveBeforeReplacingDocument(services)) return;
     handle = await pickDesktopLegacyHistoryFolder();
     if (handle === null) return;
 
     if (handle) {
       const { bytes, name } = await readFileFromHandle(handle);
-      services.eventBus.emit('open-document-bytes', {
+      await openDocumentBytesAndWait(services, {
         bytes,
         fileName: name,
         fileHandle: handle,
-        skipUnsavedGuard: true,
+        skipUnsavedGuard: askedToSave,
       });
       return;
     }
@@ -174,10 +208,10 @@ async function importLegacyHistoryFolder(services: CommandServices): Promise<voi
     if (bytes.byteLength !== historyFile.size) {
       throw new Error('읽는 동안 이전 기록 파일이 변경되었습니다.');
     }
-    services.eventBus.emit('open-document-bytes', {
+    await openDocumentBytesAndWait(services, {
       bytes,
       fileName: directory.name,
-      skipUnsavedGuard: true,
+      skipUnsavedGuard: askedToSave,
     });
   } catch (error) {
     await handle?.releaseUnusedSaveTarget?.().catch(() => {});
@@ -275,6 +309,7 @@ async function tryFileSystemSave(
   suggestedName: string,
   forceSaveAs: boolean,
   currentHandle: FileSystemFileHandleLike | null,
+  retainHandle = true,
 ): Promise<SaveDocumentResult | 'cancelled'> {
   try {
     return await saveDocumentToFileSystem({
@@ -286,6 +321,7 @@ async function tryFileSystemSave(
       saveFormat: format,
       pickSaveHandle: services.pickSaveHandle,
       validateTarget: services.validateSaveHandle,
+      retainHandle,
     });
   } catch (error) {
     if (isUserCancelError(error)) return 'cancelled';
@@ -300,6 +336,7 @@ function completeHandleSave(
   result: SaveDocumentResult,
   reason: 'save' | 'save-as',
   revision: number,
+  saved: SavedFileContent | null,
 ): void {
   if (sourceFormat === 'hml') markConvertedHmlSaveHandle(result.handle);
   const previousFileHandle = services.wasm.currentFileHandle;
@@ -322,7 +359,27 @@ function completeHandleSave(
       previousFileHandle,
       fileName: result.fileName,
       sourceFormat: savedFormat,
+      // 파일에 실제로 쓴 내용의 digest. 최근 문서·북마크가 지금 파일을 알아보게 한다.
+      savedDigest: saved?.digest ?? null,
+      // 자동 저장은 이 바이트를 새 복구 기준으로 삼는다.
+      savedBytes: saved?.bytes ?? null,
     });
+  }
+}
+
+interface SavedFileContent {
+  bytes: Uint8Array;
+  digest: string;
+}
+
+/** 저장한 바이트와 digest. 읽지 못해도 저장은 이미 끝났으므로 null 로 넘긴다. */
+async function savedBlobContent(blob: Blob): Promise<SavedFileContent | null> {
+  try {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    return { bytes, digest: documentSourceDigest(bytes) };
+  } catch (error) {
+    console.warn('[save] 저장한 내용의 digest 를 계산하지 못했습니다:', error);
+    return null;
   }
 }
 
@@ -366,13 +423,20 @@ async function resolvePendingAgentEditsBeforeSave(services: CommandServices): Pr
 
 async function saveAsFormat(services: CommandServices, format: SaveFormat): Promise<SaveOutcome> {
   try {
+    assertCanSaveDocument(services);
     if (!await resolvePendingAgentEditsBeforeSave(services)) return 'cancelled';
+    assertCanSaveDocument(services);
     flushDeferredPaginationBeforeExplicitOutput(services, 'save-as');
+    const managed = services.isManagedWorktree?.() === true;
+    if (managed) {
+      if (!services.persistManagedWorktree) throw new Error('작업 사본 저장 서비스를 사용할 수 없습니다.');
+      await services.persistManagedWorktree();
+    }
     const sourceFormat = services.wasm.getSourceFormat();
     const saveName = fileNameForFormat(services.wasm.fileName, format);
     const revision = services.documentState.captureRevision();
     const blob = createSaveBlob(services, format);
-    const originalHandle = sourceFormat === 'hml' ? services.wasm.currentFileHandle : null;
+    const originalHandle = !managed && sourceFormat === 'hml' ? services.wasm.currentFileHandle : null;
     const result = await tryFileSystemSave(
       services,
       format,
@@ -380,16 +444,19 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
       saveName,
       true,
       originalHandle,
+      !managed,
     );
     if (result === 'cancelled') return 'cancelled';
     if (result.method !== 'fallback') {
-      completeHandleSave(services, sourceFormat, format, result, 'save-as', revision);
+      if (managed) return 'saved';
+      completeHandleSave(services, sourceFormat, format, result, 'save-as', revision, await savedBlobContent(blob));
       return 'saved';
     }
     const downloadName = await promptFallbackName(saveName, format);
     if (!downloadName) return 'cancelled';
-    services.wasm.fileName = downloadName;
     downloadBlob(blob, downloadName);
+    if (managed) return 'saved';
+    services.wasm.fileName = downloadName;
     services.documentState.markCleanIfUnchanged(revision, 'save-as');
     services.eventBus.emit('document-context-changed');
     services.eventBus.emit('document-saved', {
@@ -406,15 +473,22 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
 
 async function saveWithHistory(services: CommandServices): Promise<SaveCurrentDocumentResult> {
   try {
+    assertCanSaveDocument(services);
     if (!await resolvePendingAgentEditsBeforeSave(services)) return 'cancelled';
+    assertCanSaveDocument(services);
     flushDeferredPaginationBeforeExplicitOutput(services, 'save-with-history');
+    const managed = services.isManagedWorktree?.() === true;
+    if (managed) {
+      if (!services.persistManagedWorktree) throw new Error('작업 사본 저장 서비스를 사용할 수 없습니다.');
+      await services.persistManagedWorktree();
+    }
     if (!services.createPortableHistoryBundle) {
       throw new Error('버전 기록 서비스를 사용할 수 없습니다.');
     }
 
     const revision = services.documentState.captureRevision();
     const archive = await services.createPortableHistoryBundle();
-    const currentHandle = services.wasm.currentFileHandle;
+    const currentHandle = managed ? null : services.wasm.currentFileHandle;
     const historyBlob = new Blob([archive.bytes as unknown as BlobPart], {
       type: PORTABLE_HISTORY_MIME_TYPE,
     });
@@ -423,7 +497,9 @@ async function saveWithHistory(services: CommandServices): Promise<SaveCurrentDo
       && isPortableHistoryFileName(currentHandle.name)
     ) {
       await writeBlobToHandle(currentHandle, historyBlob, services.validateSaveHandle);
-      completePortableHistorySave(services, currentHandle, currentHandle.name, revision);
+      completePortableHistorySave(
+        services, currentHandle, currentHandle.name, revision, (await savedBlobContent(historyBlob))?.bytes ?? null,
+      );
       return 'saved';
     }
 
@@ -451,8 +527,12 @@ async function saveWithHistory(services: CommandServices): Promise<SaveCurrentDo
         await targetHandle.releaseUnusedSaveTarget?.().catch(() => {});
         throw new Error('.rhwpx 확장자를 가진 기록 파일을 선택해야 합니다.');
       }
-      await writeBlobToHandle(targetHandle, historyBlob, services.validateSaveHandle);
-      completePortableHistorySave(services, targetHandle, targetHandle.name, revision);
+      await writeBlobToHandle(targetHandle, historyBlob, services.validateSaveHandle, !managed);
+      if (!managed) {
+        completePortableHistorySave(
+          services, targetHandle, targetHandle.name, revision, (await savedBlobContent(historyBlob))?.bytes ?? null,
+        );
+      }
       return 'saved';
     }
 
@@ -470,6 +550,7 @@ function completePortableHistorySave(
   handle: FileSystemFileHandleLike,
   fileName: string,
   revision: number,
+  savedBytes: Uint8Array | null,
 ): void {
   const previousFileHandle = services.wasm.currentFileHandle;
   services.wasm.currentFileHandle = handle;
@@ -486,6 +567,7 @@ function completePortableHistorySave(
     previousFileHandle,
     fileName,
     sourceFormat: services.wasm.getSourceFormat(),
+    savedBytes,
   });
   showToast({ message: '문서와 전체 버전 기록을 저장했습니다.', durationMs: 3000 });
 }
@@ -494,6 +576,12 @@ function reportSaveError(scope: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`[${scope}] 저장 실패:`, message);
   alert(`파일 저장에 실패했습니다:\n${message}`);
+}
+
+function assertCanSaveDocument(services: CommandServices): void {
+  if (services.canSaveDocument?.() === false) {
+    throw new Error('읽기 전용 문서는 저장할 수 없습니다. 편집 중인 창에서 저장하세요.');
+  }
 }
 
 export type SaveCurrentDocumentResult = SaveOutcome;
@@ -505,6 +593,11 @@ const saveSession = new SaveSession();
  * 현재 문서를 저장한다. 진행 중인 저장이 있으면 그 결과를 기다리고, 그사이 편집이
  * 들어와 여전히 dirty 일 때만 한 번 더 저장한다.
  */
+/** 진행 중인 저장이 모두 끝날 때까지 기다린다. 저장 도중 다른 문서로 넘어가지 않게 한다. */
+export function whenSavesIdle(): Promise<void> {
+  return saveSession.whenIdle();
+}
+
 export function saveCurrentDocument(services: CommandServices): Promise<SaveCurrentDocumentResult> {
   return saveSession.save(
     () => runSaveCurrentDocument(services),
@@ -520,14 +613,18 @@ async function runExclusiveSave(run: () => Promise<SaveOutcome>): Promise<void> 
 
 async function runSaveCurrentDocument(services: CommandServices): Promise<SaveCurrentDocumentResult> {
   try {
+    assertCanSaveDocument(services);
+    if (!await resolvePendingAgentEditsBeforeSave(services)) return 'cancelled';
+    assertCanSaveDocument(services);
+    flushDeferredPaginationBeforeExplicitOutput(services, 'save');
+    if (await services.saveManagedWorktree?.()) return 'saved';
+    if (services.isManagedWorktree?.()) throw new Error('작업 사본을 저장하지 못했습니다.');
     if (
       isPortableHistoryFileName(services.wasm.fileName)
       || isPortableHistoryFileName(services.wasm.currentFileHandle?.name ?? '')
     ) {
       return saveWithHistory(services);
     }
-    if (!await resolvePendingAgentEditsBeforeSave(services)) return 'cancelled';
-    flushDeferredPaginationBeforeExplicitOutput(services, 'save');
     const sourceFormat = services.wasm.getSourceFormat();
     let target = resolveSaveTarget(
       sourceFormat,
@@ -557,7 +654,9 @@ async function runSaveCurrentDocument(services: CommandServices): Promise<SaveCu
     );
     if (result === 'cancelled') return 'cancelled';
     if (result.method !== 'fallback') {
-      completeHandleSave(services, sourceFormat, target.format, result, 'save', revision);
+      completeHandleSave(
+        services, sourceFormat, target.format, result, 'save', revision, await savedBlobContent(blob),
+      );
       return 'saved';
     }
     const downloadName = await fallbackNameForCurrentSave(services, target);
@@ -610,17 +709,41 @@ export async function confirmSaveBeforeReplacingDocument(
   }
 }
 
+/** 파일을 찾고 읽는 데만 쓰는 의존성. 문서를 열거나 사용자에게 묻지 않는다. */
+function projectFileLookupDeps(
+  claim: ProjectFileClaim,
+): Omit<ProjectFileDeps, 'loadBound' | 'pickForProject' | 'forgetRecent' | 'toast'> {
+  return {
+    ensurePermission: ensureReadPermission,
+    readHandle: readFileFromHandle,
+    digestOf: documentSourceDigest,
+    reopenRemembered: (documentId) => restoreNativeDocument(documentId),
+    searchNearby: async (query) => searchNearbyNativeDocuments(query.documentId, {
+      basenameHint: query.basenameHint,
+    }),
+    readProbe: async (probeId) => {
+      const read = await readNativeProbe(probeId);
+      if (!read) throw new Error('Native probe expired');
+      return read;
+    },
+    claimProbe: (probeId) => claimNativeProbe(probeId),
+    locationOf: async (handle, documentId) => {
+      if (!isDesktopApp()) return 'unknown';
+      return await verifyNativePick(documentId, handle) ? 'remembered' : 'not-remembered';
+    },
+  };
+}
+
 function projectFileDeps(
   services: CommandServices,
   claim: ProjectFileClaim,
   { skipUnsavedGuard = false } = {},
 ): ProjectFileDeps {
   return {
-    ensurePermission: ensureReadPermission,
-    readHandle: readFileFromHandle,
-    digestOf: documentSourceDigest,
+    ...projectFileLookupDeps(claim),
+    // 문서가 다 열린 뒤에 돌아온다. 호출부가 결과 문서를 바로 다룰 수 있어야 한다.
     loadBound: async (bytes, name, handle, documentId) => {
-      services.eventBus.emit('open-document-bytes', {
+      await openDocumentBytesAndWait(services, {
         bytes,
         fileName: name,
         fileHandle: handle,
@@ -646,29 +769,20 @@ function projectFileDeps(
     },
     forgetRecent: removeRecentDoc,
     toast: (message, durationMs) => showToast({ message, durationMs }),
-    reopenRemembered: (documentId) => restoreNativeDocument(documentId),
-    searchNearby: async (query) => searchNearbyNativeDocuments(query.documentId, {
-      basenameHint: query.basenameHint,
-    }),
-    readProbe: async (probeId) => {
-      const read = await readNativeProbe(probeId);
-      if (!read) throw new Error('Native probe expired');
-      return read;
-    },
-    claimProbe: (probeId) => claimNativeProbe(probeId),
-    locationOf: async (handle, documentId) => {
-      if (!isDesktopApp()) return 'unknown';
-      return await verifyNativePick(documentId, handle) ? 'remembered' : 'not-remembered';
-    },
   };
 }
 
-export async function runLibraryMove(
+/** 자동 저장본을 복구할 때 원본 파일을 찾는다. 파일 선택 창은 띄우지 않고 최근 목록도 바꾸지 않는다. */
+export function locateRecoveryOriginal(claim: ProjectFileClaim): Promise<ProjectFileLocation> {
+  return locateProjectFile(claim, projectFileLookupDeps(claim));
+}
+
+function libraryMoveDeps(
   services: CommandServices,
-  target: LibraryDocumentTarget,
   getActiveDocumentId: () => string | null,
-): Promise<LibraryMoveResult> {
-  return moveToLibraryDocument(target, {
+  commitCurrent?: () => Promise<void>,
+): MoveToLibraryDocumentDeps {
+  return {
     getCurrent: () => ({
       documentId: getActiveDocumentId(),
       fileName: services.getContext().hasDocument ? services.wasm.fileName : null,
@@ -684,7 +798,34 @@ export async function runLibraryMove(
     })),
     openViaPicker: () => openFileViaPicker(services),
     toast: (message) => showToast({ message, durationMs: 3500 }),
-  });
+    commitCurrent,
+  };
+}
+
+/** commitCurrent 를 넘기면 저장한 뒤 대상 문서를 열기 전에 버전 기록 커밋을 남긴다. */
+export async function runLibraryMove(
+  services: CommandServices,
+  target: LibraryDocumentTarget,
+  getActiveDocumentId: () => string | null,
+  commitCurrent?: () => Promise<void>,
+): Promise<LibraryMoveResult> {
+  return moveToLibraryDocument(
+    target,
+    libraryMoveDeps(services, getActiveDocumentId, commitCurrent),
+    { commit: commitCurrent !== undefined },
+  );
+}
+
+/** 이미 열린 다른 문서 세션으로 넘어가기 전에 현재 문서를 저장하고 커밋한다. */
+export function runSaveBeforeLeaving(
+  services: CommandServices,
+  getActiveDocumentId: () => string | null,
+  commitCurrent?: () => Promise<void>,
+): Promise<'ok' | 'cancelled' | 'failed'> {
+  return saveAndCommitBeforeLeaving(
+    libraryMoveDeps(services, getActiveDocumentId, commitCurrent),
+    { commit: commitCurrent !== undefined },
+  );
 }
 
 function setupPrintDocument(
@@ -1107,6 +1248,12 @@ export const fileCommands: CommandDef[] = [
     canExecute: (ctx) => ctx.hasDocument,
     async execute(services) {
       await runExclusiveSave(async () => {
+        try {
+          assertCanSaveDocument(services);
+        } catch (error) {
+          reportSaveError('file:save-as', error);
+          return 'failed';
+        }
         const format = await chooseSaveAsFormat(services);
         return format === null ? 'cancelled' : saveAsFormat(services, format);
       });

@@ -23,6 +23,7 @@ import {
 } from './pi-prompt.mjs';
 import { piResourceArgs } from '../pi/resources.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
+import { tapProviderProcess } from '../provider-transcript.mjs';
 import {
   PROCESS_TREE_CLEANUP_OUTCOME,
   processTreeCleanupOutcome,
@@ -448,6 +449,19 @@ export function createPiSession(opts, {
   let turnOpen = false;
   let turnCompleted = false;
   let turnFailureMessage = null;
+  /**
+   * 프로세스를 띄우거나 돌리지 못한 턴의 실패 단서 (spawn 'error': ENOENT 면 cli_missing). 오류는
+   * 턴이 정착할 때 한 번만 이 단서와 함께 알린다.
+   * @type {{ source: 'pi', code: 'cli_missing' | 'process_exit' } | null}
+   */
+  let turnProcessFailure = null;
+  /**
+   * 마지막 assistant 시도의 API 오류. Pi 는 실패한 시도마다 message_end 를 보낸 뒤에야 자동
+   * 재시도(auto_retry_*)나 압축 복구를 정한다 — 다음 시도가 정상으로 끝나면 지워지고, 턴이
+   * 정착할 때 남아 있으면 그때 실패로 확정한다.
+   * @type {string | null}
+   */
+  let lastAttemptError = null;
   let disposed = false;
   let stderrTail = '';
   let childExitPromise = Promise.resolve(true);
@@ -570,11 +584,16 @@ export function createPiSession(opts, {
             costUsd: usage.costUsd,
           });
         }
-        if (message.stopReason === 'error') {
-          // json 모드의 API 오류는 종료 코드 0 으로 끝난다. 이유는 여기에만 있다.
-          const detail = String(message.errorMessage ?? 'pi turn failed');
-          turnFailureMessage = formatOpenRouterCreditError(detail) ?? detail;
-          onEvent({ type: 'error', agent, message: turnFailureMessage });
+        // json 모드의 API 오류는 종료 코드 0 으로 끝난다. 이유는 여기에만 있다. 바로 실패로
+        // 보내지 않는다 — Pi 가 이 시도를 스스로 다시 할 수 있다.
+        lastAttemptError = message.stopReason === 'error'
+          ? String(message.errorMessage ?? 'pi turn failed')
+          : null;
+        return;
+      }
+      if (type === 'auto_retry_end') {
+        if (e.success === false) {
+          lastAttemptError = typeof e.finalError === 'string' && e.finalError ? e.finalError : lastAttemptError;
         }
         return;
       }
@@ -634,6 +653,8 @@ export function createPiSession(opts, {
         turnOpen = true;
         turnCompleted = false;
         turnFailureMessage = null;
+        turnProcessFailure = null;
+        lastAttemptError = null;
         onEvent({
           type: 'error',
           agent,
@@ -658,6 +679,8 @@ export function createPiSession(opts, {
           turnOpen = true;
           turnCompleted = false;
           turnFailureMessage = null;
+          turnProcessFailure = null;
+          lastAttemptError = null;
           const message = 'Pi process tree cleanup could not be confirmed before the next turn';
           onEvent({ type: 'error', agent, message });
           endTurn({ type: 'turn-end', agent, stopReason: 'exited' });
@@ -668,6 +691,8 @@ export function createPiSession(opts, {
           turnOpen = true;
           turnCompleted = false;
           turnFailureMessage = null;
+          turnProcessFailure = null;
+          lastAttemptError = null;
           onEvent({
             type: 'error',
             agent,
@@ -680,6 +705,8 @@ export function createPiSession(opts, {
       turnOpen = true;
       turnCompleted = false;
       turnFailureMessage = null;
+      turnProcessFailure = null;
+      lastAttemptError = null;
       onEvent({ type: 'turn-start', agent });
 
       if (options.replaceSession) {
@@ -702,8 +729,9 @@ export function createPiSession(opts, {
       }
 
       if (!opts.model) {
-        onEvent({ type: 'error', agent, message: 'Pi 모델이 선택되지 않았습니다.' });
-        endTurn({ type: 'turn-end', agent, stopReason: 'exited' });
+        const failure = { source: 'pi', code: 'PI_MODEL_MISSING' };
+        onEvent({ type: 'error', agent, message: 'Pi 모델이 선택되지 않았습니다.', failure });
+        endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
         return;
       }
 
@@ -722,16 +750,25 @@ export function createPiSession(opts, {
         const launched = applyManagedCliLaunch(opts.piBin ?? 'pi', argv, {
           platform, nodeCommand, env: spawnEnv,
         });
-        proc = spawnProcess(launched.command, launched.argv, {
+        proc = tapProviderProcess(spawnProcess(launched.command, launched.argv, {
           ...processTreeSpawnOptions(),
           cwd: opts.rootDir,
           env: launched.env,
           // json 모드는 stdin 이 닫힐 때까지 읽는다. 프롬프트를 쓰고 바로 닫는다.
           stdio: ['pipe', 'pipe', 'pipe'],
+        }), {
+          agent, transport: 'json', stdin: 'text', argv: launched.argv, env: launched.env,
+          secrets: [opts.token, opts.openRouterApiKey], cli: opts.providerCliVersion, platform,
         });
       } catch (e) {
-        onEvent({ type: 'error', agent, message: `failed to start pi: ${e?.message ?? e}` });
-        endTurn({ type: 'turn-end', agent, stopReason: 'exited' });
+        const failure = { source: 'pi', code: e?.code === 'ENOENT' ? 'cli_missing' : 'process_exit' };
+        onEvent({
+          type: 'error',
+          agent,
+          message: `failed to start pi: ${redactDiagnosticText(e?.message ?? e, [opts.token, opts.openRouterApiKey])}`,
+          failure,
+        });
+        endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
         return;
       }
       child = proc;
@@ -795,15 +832,37 @@ export function createPiSession(opts, {
         else discardOutput();
         completedAtDrain = fromClose && turnCompleted;
         if (turnOpen && !disposed) {
-          if (turnFailureMessage) {
-            endTurn({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: turnFailureMessage });
+          turnFailureMessage ??= lastAttemptError;
+          if (turnFailureMessage && turnProcessFailure) {
+            // Pi 를 띄우거나 돌리지 못했다 (spawn 오류) — 오류는 여기서 한 번, 그 단서와 함께 보낸다.
+            const failure = turnProcessFailure;
+            onEvent({ type: 'error', agent, message: turnFailureMessage, failure });
+            endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
+          } else if (turnFailureMessage) {
+            // 재시도로도 회복하지 못한 마지막 시도의 오류 — 한 번만 보낸다.
+            const detail = turnFailureMessage;
+            const credit = formatOpenRouterCreditError(detail);
+            const status = detail.match(/^\s*(\d{3})\b/);
+            const failure = {
+              source: 'pi',
+              ...(status ? { httpStatus: Number(status[1]) } : {}),
+              ...(credit ? { code: 'openrouter_credits' } : {}),
+            };
+            const message = credit ? `${credit}\n${detail}` : detail;
+            onEvent({ type: 'error', agent, message, failure });
+            endTurn({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: message, failure });
           } else if (!completedAtDrain && code !== 0) {
+            const failure = {
+              source: 'pi',
+              code: isOpenRouterCreditError(stderrTail) ? 'openrouter_credits' : 'process_exit',
+            };
             onEvent({
               type: 'error',
               agent,
               message: formatPiExitError(stderrTail, code, signal, opts.token),
+              failure,
             });
-            endTurn({ type: 'turn-end', agent, stopReason: 'exited' });
+            endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
           } else {
             endTurn({ type: 'turn-end', agent, stopReason: completedAtDrain ? 'completed' : 'exited' });
           }
@@ -881,8 +940,10 @@ export function createPiSession(opts, {
         const safeError = redactDiagnosticText(err?.message ?? err, [opts.token]);
         process.stderr.write(`[pi] spawn error: ${safeError}\n`);
         if (turnOpen) {
+          // 여기서 알리지 않는다 — 출력이 닫히며 턴이 정착할 때 이 단서로 한 번만 알린다
+          // (없는 CLI 는 설정 열기, 그 밖의 프로세스 오류는 다시 시도).
           turnFailureMessage = `pi process error: ${safeError}`;
-          onEvent({ type: 'error', agent, message: turnFailureMessage });
+          turnProcessFailure = { source: 'pi', code: err?.code === 'ENOENT' ? 'cli_missing' : 'process_exit' };
         }
         void beginCleanup(true);
         scheduleCloseGrace(proc.exitCode ?? null, proc.signalCode ?? null);

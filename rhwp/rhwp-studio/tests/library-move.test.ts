@@ -275,3 +275,64 @@ test('권한 거부는 이동 실패로 남기고 피커를 열지 않는다', a
   assert.equal(result, 'failed');
   assert.equal(calls.picker, 0);
 });
+
+test('커밋을 요청하면 저장한 뒤, 대상을 열기 전에 커밋한다', async () => {
+  const order: string[] = [];
+  let dirty = true;
+  const { deps } = makeDeps({
+    getCurrent: () => current({ isDirty: dirty }),
+    saveCurrent: async () => {
+      order.push('save');
+      dirty = false;
+      return 'saved';
+    },
+    commitCurrent: async () => {
+      order.push('commit');
+    },
+    openProjectFile: async () => {
+      order.push('open');
+      return { kind: 'opened' };
+    },
+  });
+  const result = await moveToLibraryDocument(
+    { documentId: 'target-id', fileName: '대상.hwp' },
+    deps,
+    { commit: true },
+  );
+  assert.equal(result, 'moved');
+  assert.deepEqual(order, ['save', 'commit', 'open']);
+});
+
+test('저장을 취소하면 커밋하지 않는다', async () => {
+  let commits = 0;
+  const { deps, calls } = makeDeps({
+    saveCurrent: async () => 'cancelled',
+    commitCurrent: async () => {
+      commits += 1;
+    },
+  });
+  const result = await moveToLibraryDocument(
+    { documentId: 'target-id', fileName: '대상.hwp' },
+    deps,
+    { commit: true },
+  );
+  assert.equal(result, 'cancelled');
+  assert.equal(commits, 0);
+  assert.equal(calls.opened.length, 0);
+});
+
+test('커밋에 실패해도 대상 문서를 연다', async () => {
+  const { deps, calls } = makeDeps({
+    commitCurrent: async () => {
+      throw new Error('quota');
+    },
+  });
+  const result = await moveToLibraryDocument(
+    { documentId: 'target-id', fileName: '대상.hwp' },
+    deps,
+    { commit: true },
+  );
+  assert.equal(result, 'moved');
+  assert.deepEqual(calls.opened, ['target-id']);
+  assert.match(calls.toasts[0] ?? '', /커밋하지 못했습니다/);
+});

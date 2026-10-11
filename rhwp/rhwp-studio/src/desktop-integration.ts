@@ -7,6 +7,7 @@
  */
 
 import type { SystemFontIndex } from './core/desktop-fonts.ts';
+import type { ChatAttentionLedger } from './agent/chat-attention.ts';
 import type {
   FileSystemFileHandleLike,
   FileSystemWritableFileStreamLike,
@@ -22,6 +23,7 @@ import {
 } from './core/document-input-limits.ts';
 
 export const DEV_AGENT_HUB_ENSURE_PATH = '/__rhwp/ensure-agent-hub';
+export const DEV_AGENT_HUB_RELEASE_PATH = '/__rhwp/release-agent-hub-session';
 
 export interface RendererSessionContext {
   launchId: string;
@@ -30,6 +32,18 @@ export interface RendererSessionContext {
   hubToken: string;
   referenceToken: string;
   templateToken: string;
+}
+
+/**
+ * 백그라운드 문서의 에이전트가 쓰는 추가 허브 세션. 창 세션과 따로 등록되고,
+ * 문서를 닫을 때 release 로 허브에서 닫아야 provider 프로세스가 끝난다.
+ */
+export interface AgentHubSessionLease {
+  sessionId: string;
+  /** 허브에 (재)등록하고 브리지가 쓸 문맥을 돌려준다. 실패하거나 해제됐으면 null. */
+  resolveContext(): Promise<RendererSessionContext | null>;
+  /** 여러 번 불러도 한 번만 닫는다. 실패해도 던지지 않는다. */
+  release(): Promise<void>;
 }
 
 export interface NativeFileHandleDescriptor {
@@ -55,6 +69,9 @@ interface NativeFileReadResult {
 export interface RhwpDesktopApi {
   ensureAgentHub?: () => Promise<{ started?: boolean; ready?: boolean } | boolean>;
   getSessionContext?: () => Promise<RendererSessionContext>;
+  createAgentSession?: () => Promise<{ sessionId: string }>;
+  getAgentSessionContext?: (sessionId: string) => Promise<RendererSessionContext>;
+  releaseAgentSession?: (sessionId: string) => Promise<boolean>;
   getUniqueInstalls?: () => Promise<{
     uniqueInstalls: number | null;
     publicUrl?: string | null;
@@ -85,6 +102,10 @@ export interface RhwpDesktopApi {
     extension: 'hwp' | 'hwpx' | 'hml' | 'rhwpx';
   }) => Promise<NativeFileHandleDescriptor | { owned: true } | null>;
   releaseNativeFile?: (handleId: string) => Promise<void>;
+  renameNativeFile?: (
+    handleId: string,
+    nextName: string,
+  ) => Promise<{ ok: true; descriptor: NativeFileHandleDescriptor } | { ok: false; reason: string }>;
   readNativeFile?: (handleId: string) => Promise<NativeFileReadResult>;
   getNativeFileSourcePath?: (handleId: string) => Promise<string | null>;
   validateNativeSave?: (
@@ -96,7 +117,8 @@ export interface RhwpDesktopApi {
     bytes: Uint8Array,
     identity: DocumentOwnershipIdentity,
   ) => Promise<{ name: string; byteLength: number }>;
-  isSameNativeFile?: (firstHandleId: string, secondHandleId: string) => Promise<boolean>;
+  /** 한쪽 핸들을 이미 놓았으면 null (비교할 수 없음) */
+  isSameNativeFile?: (firstHandleId: string, secondHandleId: string) => Promise<boolean | null>;
   adoptNativeFileContent?: (handleId: string, digest: string) => Promise<boolean>;
   rememberNativeDocument?: (
     documentId: string,
@@ -115,13 +137,15 @@ export interface RhwpDesktopApi {
     probeId: string,
   ) => Promise<NativeFileHandleDescriptor | { owned: true } | null>;
   verifyNativePick?: (documentId: string, handleId: string) => Promise<boolean>;
+  /** slotId 를 생략하면 창의 기본 문서 자리다. 한 창이 문서마다 다른 자리를 쓴다. */
   reserveDocument?: (
     identity: DocumentOwnershipIdentity,
     nativeHandleId?: string,
+    slotId?: string,
   ) => Promise<{ ok: true; reservationId: string } | { ok: false; reason: 'owned' }>;
-  commitDocument?: (reservationId: string) => Promise<void>;
-  cancelDocument?: (reservationId: string) => Promise<void>;
-  releaseDocument?: () => Promise<void>;
+  commitDocument?: (reservationId: string, slotId?: string) => Promise<void>;
+  cancelDocument?: (reservationId: string, slotId?: string) => Promise<void>;
+  releaseDocument?: (slotId?: string) => Promise<void>;
   respondToCloseRequest?: (requestId: string, allowClose: boolean) => Promise<boolean>;
   onCloseRequested?: (callback: (request: {
     requestId: string;
@@ -149,12 +173,16 @@ export interface RhwpDesktopApi {
   onPastePlainText?: (callback: (text: string) => void) => void;
   /** 시스템·사용자·한컴 오피스 글꼴 색인. 권한 요청 없이 이미 설치된 글꼴만 다룬다. */
   listSystemFonts?: (options?: { refresh?: boolean }) => Promise<SystemFontIndex>;
-  /** TTC face는 단독 SFNT로 추출해 돌려준다. 파일이 바뀌었으면 'stale' 오류를 던진다. */
-  readSystemFont?: (id: string) => Promise<Uint8Array>;
+  /** face 주소의 앞부분. TTC face는 단독 SFNT로 추출되고, 파일이 바뀌었으면 409로 응답한다. */
+  systemFontBaseUrl?: () => Promise<string>;
   /** macOS 프록시 아이콘과 미저장 점. 경로는 메인이 핸들로 찾는다. */
   setDocumentState?: (state: { edited: boolean }) => void;
-  notifyAgentTurnFinished?: (payload: { title: string; body: string }) => void;
-  setPendingReviewCount?: (count: number) => void;
+  /** 보지 않는 채팅의 알림 — 창에 초점이 없을 때만 메인이 OS 알림으로 띄운다. */
+  notifyAgentAttention?: (payload: { threadId: string; title: string; body: string }) => void;
+  /** 알렸지만 아직 보지 않은 채팅 수 — 앱 아이콘 배지(macOS·Linux)와 작업 표시줄 표시(Windows). */
+  setAgentAttentionCount?: (count: number) => void;
+  /** 알림을 누르면 그 채팅을 연다. 해제 함수를 돌려준다. */
+  onOpenAgentChat?: (callback: (threadId: string) => void) => (() => void) | void;
   showContextMenu?: (items: NativeContextMenuItem[]) => Promise<string | null>;
   /** 저장 확인을 창에 붙은 네이티브 시트로 묻는다. */
   showUnsavedChangesSheet?: (payload: { fileName: string }) => Promise<'save' | 'discard' | 'cancel'>;
@@ -242,10 +270,11 @@ export async function openPublishedDocumentInNewWindow(
 
 let inflight: Promise<boolean> | null = null;
 let sessionContextInflight: Promise<RendererSessionContext | null> | null = null;
-let devHubContext: Pick<
+type DevHubContext = Pick<
   RendererSessionContext,
   'launchId' | 'hubUrl' | 'hubToken' | 'referenceToken' | 'templateToken'
-> | null = null;
+>;
+let devHubContext: DevHubContext | null = null;
 const nativeHandleMetadata = new WeakMap<FileSystemFileHandleLike, {
   api: RhwpDesktopApi;
   handleId: string;
@@ -299,39 +328,183 @@ export function isDesktopApp(win?: DesktopHost): boolean {
   return /Electron/i.test(ua);
 }
 
-export async function requestDevAgentHub(
-  fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<boolean> {
-  if (typeof fetchImpl !== 'function') return false;
+/** Vite 개발 서버에 허브 기동과 sessionId 등록을 요청한다. */
+async function ensureDevHubSession(
+  sessionId: string,
+  fetchImpl: typeof fetch,
+): Promise<{ ready: boolean; context: DevHubContext | null }> {
+  if (typeof fetchImpl !== 'function') return { ready: false, context: null };
   try {
-    const path = `${DEV_AGENT_HUB_ENSURE_PATH}?sessionId=${encodeURIComponent(browserSessionId)}`;
+    const path = `${DEV_AGENT_HUB_ENSURE_PATH}?sessionId=${encodeURIComponent(sessionId)}`;
     const response = await fetchImpl(path, { method: 'POST' });
     if (!response.ok) {
       await cancelResponseBody(response, `HTTP ${response.status}`);
-      return false;
+      return { ready: false, context: null };
     }
     const body = await response.json();
-    if (
+    const context = (
       body?.ready === true
       && typeof body.launchId === 'string'
       && typeof body.hubUrl === 'string'
       && typeof body.hubToken === 'string'
       && typeof body.referenceToken === 'string'
       && typeof body.templateToken === 'string'
-    ) {
-      devHubContext = {
+    ) ? {
         launchId: body.launchId,
         hubUrl: body.hubUrl,
         hubToken: body.hubToken,
         referenceToken: body.referenceToken,
         templateToken: body.templateToken,
-      };
-    }
-    return body?.ready === true;
+      } : null;
+    return { ready: body?.ready === true, context };
   } catch (error) {
     console.warn('[rhwp-desktop] 개발 서버 허브 기동 실패:', error);
-    return false;
+    return { ready: false, context: null };
   }
+}
+
+export async function requestDevAgentHub(
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<boolean> {
+  const result = await ensureDevHubSession(browserSessionId, fetchImpl);
+  if (result.context) devHubContext = result.context;
+  return result.ready;
+}
+
+function devHubReleaseRequest(
+  sessionId: string,
+  fetchImpl: typeof fetch,
+  init: RequestInit = {},
+): Promise<Response> {
+  const path = `${DEV_AGENT_HUB_RELEASE_PATH}?sessionId=${encodeURIComponent(sessionId)}`;
+  return fetchImpl(path, { ...init, method: 'POST' });
+}
+
+// 새로고침·탭 닫기로 페이지가 사라지면 그 페이지의 추가 세션은 다시 찾을 수 없다.
+// 남겨 두면 provider 프로세스가 허브가 끝날 때까지 살아 있으므로 pagehide 에서 닫는다.
+const liveDevAgentSessions = new Map<string, typeof fetch>();
+let devPagehideInstalled = false;
+
+function trackDevAgentSession(sessionId: string, fetchImpl: typeof fetch) {
+  liveDevAgentSessions.set(sessionId, fetchImpl);
+  if (devPagehideInstalled || typeof globalThis.addEventListener !== 'function') return;
+  devPagehideInstalled = true;
+  globalThis.addEventListener('pagehide', (event) => {
+    // bfcache 로 돌아올 수 있는 페이지는 세션을 그대로 둔다.
+    if ((event as PageTransitionEvent).persisted) return;
+    for (const [sessionId, fetchImpl] of liveDevAgentSessions) {
+      void devHubReleaseRequest(sessionId, fetchImpl, { keepalive: true }).catch(() => {});
+    }
+    liveDevAgentSessions.clear();
+  });
+}
+
+function onceAsync(run: () => Promise<void>): () => Promise<void> {
+  let pending: Promise<void> | null = null;
+  return () => {
+    pending ??= run();
+    return pending;
+  };
+}
+
+/**
+ * 창 세션과 별개인 허브 세션을 하나 만든다. 문서마다 에이전트를 따로 돌릴 때 쓴다.
+ * Electron 은 메인 프로세스가 이 창 소유로 등록하고, 창이 닫히거나 렌더러가 죽거나
+ * 새로고침되면 함께 닫는다. Vite 개발 서버는 같은 출처 라우트로 등록·해제한다.
+ * 허브를 등록할 수 없는 환경(일반 웹 빌드, 이전 preload)에서는 null 이다.
+ */
+/** 이 환경에서 허브 세션을 더 받을 수 있는지 (데스크톱 앱, 또는 개발 서버). */
+export function supportsExtraAgentHubSessions(win?: DesktopHost): boolean {
+  const host = desktopHost(win);
+  if (isDesktopApp(host)) {
+    const api = host?.rhwpDesktop;
+    return Boolean(api?.createAgentSession && api.getAgentSessionContext && api.releaseAgentSession);
+  }
+  return isDevBuild() && typeof globalThis.fetch === 'function';
+}
+
+export async function createAgentHubSession(
+  win?: DesktopHost,
+  { fetchImpl = globalThis.fetch, dev = isDevBuild() }: {
+    fetchImpl?: typeof fetch;
+    dev?: boolean;
+  } = {},
+): Promise<AgentHubSessionLease | null> {
+  const host = desktopHost(win);
+  if (isDesktopApp(host)) {
+    const api = host?.rhwpDesktop;
+    if (!api?.createAgentSession || !api.getAgentSessionContext || !api.releaseAgentSession) {
+      return null;
+    }
+    let sessionId: string;
+    try {
+      const created = await api.createAgentSession();
+      if (typeof created?.sessionId !== 'string' || !created.sessionId) {
+        throw new Error('Desktop returned an invalid agent session');
+      }
+      sessionId = created.sessionId;
+    } catch (error) {
+      console.warn('[rhwp-desktop] 추가 에이전트 세션 생성 실패:', error);
+      return null;
+    }
+    let released = false;
+    return {
+      sessionId,
+      async resolveContext() {
+        if (released) return null;
+        try {
+          const context = await api.getAgentSessionContext!(sessionId);
+          if (!validSessionContext(context) || context.sessionId !== sessionId) {
+            console.warn('[rhwp-desktop] 추가 에이전트 세션 구성이 올바르지 않습니다.');
+            return null;
+          }
+          return released ? null : context;
+        } catch (error) {
+          if (!released) console.warn('[rhwp-desktop] 추가 에이전트 세션 구성 조회 실패:', error);
+          return null;
+        }
+      },
+      release: onceAsync(async () => {
+        released = true;
+        await api.releaseAgentSession!(sessionId).then(
+          () => {},
+          (error) => console.warn('[rhwp-desktop] 추가 에이전트 세션 해제 실패:', error),
+        );
+      }),
+    };
+  }
+
+  if (!dev || typeof fetchImpl !== 'function') return null;
+  const sessionId = createSessionId('session');
+  let released = false;
+  const release = onceAsync(async () => {
+    released = true;
+    liveDevAgentSessions.delete(sessionId);
+    try {
+      const response = await devHubReleaseRequest(sessionId, fetchImpl);
+      await cancelResponseBody(response, 'released');
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      console.warn('[rhwp-desktop] 개발 서버 추가 세션 해제 실패:', error);
+    }
+  });
+  trackDevAgentSession(sessionId, fetchImpl);
+  return {
+    sessionId,
+    async resolveContext() {
+      if (released) return null;
+      const { context } = await ensureDevHubSession(sessionId, fetchImpl);
+      if (released) {
+        // 해제와 엇갈린 등록이 세션을 되살렸으면 다시 닫는다.
+        void devHubReleaseRequest(sessionId, fetchImpl)
+          .then((response) => cancelResponseBody(response, 'released'))
+          .catch(() => {});
+        return null;
+      }
+      return context ? { ...context, sessionId } : null;
+    },
+    release,
+  };
 }
 
 function readEnsureResult(result: { ready?: boolean } | boolean | undefined): boolean {
@@ -477,6 +650,10 @@ function validNativeDescriptor(value: unknown): value is NativeFileHandleDescrip
 
 function checkedNativeFileReadResult(value: unknown): NativeFileReadResult {
   if (!value || typeof value !== 'object') throw new Error('Native file read returned an invalid result');
+  // 이미 놓은 핸들(닫은 문서·지난 실행의 최근 문서). 호출부는 기억해 둔 위치로 다시 연다.
+  if ((value as { stale?: unknown }).stale === true) {
+    throw new DOMException('파일을 더 이상 이 핸들로 읽을 수 없습니다.', 'NotFoundError');
+  }
   const result = value as Partial<NativeFileReadResult>;
   if (
     typeof result.name !== 'string'
@@ -590,7 +767,10 @@ export function createNativeFileHandle(
       if (!otherMetadata || otherMetadata.api !== api || !api.isSameNativeFile) {
         throw new DOMException('Handle kinds cannot be compared', 'NotSupportedError');
       }
-      return api.isSameNativeFile(descriptor.handleId, otherMetadata.handleId);
+      const same = await api.isSameNativeFile(descriptor.handleId, otherMetadata.handleId);
+      // 놓은 핸들은 "다른 파일"이 아니라 "비교할 수 없음"이다. 호출부는 다른 근거로 판단한다.
+      if (same === null) throw new DOMException('비교할 파일 핸들이 더 이상 없습니다.', 'NotFoundError');
+      return same;
     },
     async queryPermission() {
       return 'granted';
@@ -621,6 +801,43 @@ export function isLegacyPortableHistoryFolderHandle(
   handle: FileSystemFileHandleLike | null | undefined,
 ): boolean {
   return handle ? nativeHandleMetadata.get(handle)?.legacyPortableHistoryFolder === true : false;
+}
+
+/** 파일 이름 바꾸기를 데스크톱이 거절했다. reason 은 exists·open·saving·invalid·extension. */
+export class NativeRenameRefusedError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(`Native rename refused: ${reason}`);
+    this.reason = reason;
+    this.name = 'NativeRenameRefusedError';
+  }
+}
+
+/** 이 핸들이 데스크톱에서 이름을 바꿀 수 있는 파일인지 */
+export function canRenameNativeFile(handle: FileSystemFileHandleLike | null | undefined): boolean {
+  const metadata = handle ? nativeHandleMetadata.get(handle) : null;
+  return Boolean(metadata?.api.renameNativeFile);
+}
+
+/**
+ * 열린 네이티브 문서 파일의 이름을 같은 폴더 안에서 바꾼다. 같은 파일을 가리키는 새 이름의
+ * 핸들을 돌려준다 (문서 점유와 정체성은 그대로 이어진다).
+ */
+export async function renameNativeDocumentFile(
+  handle: FileSystemFileHandleLike,
+  nextName: string,
+): Promise<FileSystemFileHandleLike> {
+  const metadata = nativeHandleMetadata.get(handle);
+  if (!metadata?.api.renameNativeFile) throw new Error('이 파일은 이름을 바꿀 수 없습니다.');
+  const result = await metadata.api.renameNativeFile(metadata.handleId, nextName);
+  // 이름이 이미 있는 등 고칠 수 있는 거절은 이유 코드로 온다 (exists·open·saving·invalid·extension).
+  if (!result.ok) throw new NativeRenameRefusedError(result.reason);
+  const renamed = createNativeFileHandle(result.descriptor, metadata.api);
+  renamed.adoptSaveTarget?.();
+  const renamedMetadata = nativeHandleMetadata.get(renamed);
+  if (renamedMetadata && metadata.identity) renamedMetadata.identity = { ...metadata.identity };
+  return renamed;
 }
 
 export function bindNativeFileHandleIdentity(
@@ -867,49 +1084,77 @@ export async function releaseReplacedNativeFileHandle(
   await previousMetadata.api.releaseNativeFile(previousMetadata.handleId);
 }
 
+/**
+ * 문서 소유권 예약. slotId 는 한 창이 여러 문서를 동시에 열 때 문서마다 다르게 준다
+ * (생략하면 기본 자리). 같은 창의 다른 자리가 이미 가진 문서도 null(소유됨)이다.
+ */
 export async function reserveDesktopDocument(
   identity: DocumentOwnershipIdentity,
   handle: FileSystemFileHandleLike | null,
   win?: DesktopHost,
+  slotId?: string,
 ): Promise<string | null | undefined> {
   const api = desktopHost(win)?.rhwpDesktop;
   if (!api?.reserveDocument) return undefined;
   const nativeHandleId = handle ? nativeHandleMetadata.get(handle)?.handleId : undefined;
-  const result = await api.reserveDocument(identity, nativeHandleId);
+  const result = await api.reserveDocument(identity, nativeHandleId, slotId);
   return result.ok ? result.reservationId : null;
 }
 
+/** 예약을 그 자리의 문서로 확정하고, 같은 자리의 이전 문서 소유권을 놓는다. */
 export async function commitDesktopDocument(
   reservationId: string | null | undefined,
   win?: DesktopHost,
+  slotId?: string,
 ) {
-  if (reservationId) await desktopHost(win)?.rhwpDesktop?.commitDocument?.(reservationId);
+  if (reservationId) await desktopHost(win)?.rhwpDesktop?.commitDocument?.(reservationId, slotId);
 }
 
 export async function cancelDesktopDocument(
   reservationId: string | null | undefined,
   win?: DesktopHost,
+  slotId?: string,
 ) {
-  if (reservationId) await desktopHost(win)?.rhwpDesktop?.cancelDocument?.(reservationId);
+  if (reservationId) await desktopHost(win)?.rhwpDesktop?.cancelDocument?.(reservationId, slotId);
 }
 
-export async function releaseDesktopDocument(win?: DesktopHost) {
-  await desktopHost(win)?.rhwpDesktop?.releaseDocument?.();
+/** 한 자리의 문서 소유권과 그 자리의 대기 예약을 놓는다. 다른 자리는 그대로다. */
+export async function releaseDesktopDocument(win?: DesktopHost, slotId?: string) {
+  await desktopHost(win)?.rhwpDesktop?.releaseDocument?.(slotId);
+}
+
+/**
+ * 이 페이지가 받은 시작 파일(handleId)과 생성 문서(launchDocumentId). 데스크톱은 페이지를 다시
+ * 불러올 때마다 같은 것을 다시 보내므로, 엔진 trap 복구가 다시 여는 페이지는 이미 받은 것을
+ * 건너뛴다 — 그러지 않으면 시작 파일이 복구한 문서 위에 다시 열린다.
+ */
+const deliveredLaunchHandles = new Set<string>();
+const deliveredGeneratedDocuments = new Set<string>();
+
+export function deliveredLaunchHandleIds(): string[] {
+  return [...deliveredLaunchHandles];
+}
+
+export function deliveredGeneratedDocumentIds(): string[] {
+  return [...deliveredGeneratedDocuments];
 }
 
 export function installDesktopFileHandling(
   openHandles: (handles: FileSystemFileHandleLike[]) => void,
   win?: DesktopHost,
+  { skipHandleIds = [] }: { skipHandleIds?: readonly string[] } = {},
 ) {
   const api = desktopHost(win)?.rhwpDesktop;
   if (!api?.readNativeFile || !api.writeNativeFile) return;
-  const seen = new Set<string>();
+  const seen = new Set<string>(skipHandleIds);
+  for (const handleId of skipHandleIds) deliveredLaunchHandles.add(handleId);
   const receive = (descriptors: NativeFileHandleDescriptor[]) => {
     const handles = descriptors
       .filter(validNativeDescriptor)
       .filter((descriptor) => {
         if (seen.has(descriptor.handleId)) return false;
         seen.add(descriptor.handleId);
+        deliveredLaunchHandles.add(descriptor.handleId);
         return true;
       })
       .map((descriptor) => createNativeFileHandle(descriptor, api, { saveTarget: true }));
@@ -928,10 +1173,12 @@ export function installDesktopGeneratedDocumentHandling(
     readOnly: boolean;
   }) => void,
   win?: DesktopHost,
+  { skipLaunchDocumentIds = [] }: { skipLaunchDocumentIds?: readonly string[] } = {},
 ) {
   const api = desktopHost(win)?.rhwpDesktop;
   if (!api?.onOpenGeneratedDocument) return false;
-  const seen = new Set<string>();
+  const seen = new Set<string>(skipLaunchDocumentIds);
+  for (const id of skipLaunchDocumentIds) deliveredGeneratedDocuments.add(id);
   const receive = (payload: {
     launchDocumentId?: string;
     bytes?: Uint8Array;
@@ -945,6 +1192,7 @@ export function installDesktopGeneratedDocumentHandling(
     const bytes = payload?.bytes instanceof Uint8Array ? payload.bytes : null;
     if (!launchDocumentId || seen.has(launchDocumentId) || !bytes || !/\.(?:hwp|hwpx)$/iu.test(fileName)) return;
     seen.add(launchDocumentId);
+    deliveredGeneratedDocuments.add(launchDocumentId);
     openDocument({
       bytes,
       fileName,
@@ -1045,55 +1293,41 @@ export function installDesktopDocumentState(
 }
 
 /**
- * macOS 에이전트 턴 완료 알림과 Dock 배지.
- * 창이 포커스 중인지는 메인 프로세스가 판단하고, 여기서는 성공한 턴만 알린다.
+ * 데스크톱의 백그라운드 채팅 알림 — 장부(agent/chat-attention)의 시스템 알림을 메인에 넘기고,
+ * 알렸지만 아직 보지 않은 채팅 수를 앱 아이콘 배지로 보낸다. 무엇을 보일지(Dock·작업 표시줄·
+ * 런처 배지)는 메인이 플랫폼에 맞게 고른다. 알림을 누르면 openThread 로 그 채팅을 연다.
+ * 설치할 때와 해제할 때 0 을 보내 새로고침이 남긴 배지를 지운다.
  */
 export function installDesktopAgentAttention(
-  source: {
-    onEvent: (cb: (event: { type: string; event?: unknown }) => void) => () => void;
-    onPendingChange: (cb: () => void) => () => void;
-    pendingReviewCount: () => number;
-    documentTitle: () => string;
-  },
+  ledger: Pick<ChatAttentionLedger, 'subscribe' | 'count'>,
+  openThread: (threadId: string) => void,
   win?: DesktopHost,
 ): () => void {
   const api = desktopHost(win)?.rhwpDesktop;
-  if (api?.platform !== 'darwin') return () => {};
-  if (!api.notifyAgentTurnFinished && !api.setPendingReviewCount) return () => {};
-  let turnFailed = false;
+  if (!api || (!api.notifyAgentAttention && !api.setAgentAttentionCount)) return () => {};
   let lastCount = -1;
-  const syncCount = () => {
-    const count = Math.max(0, Math.floor(source.pendingReviewCount()));
+  const sendCount = (value: number) => {
+    const count = Math.max(0, Math.min(9999, Math.floor(value) || 0));
     if (count === lastCount) return;
     lastCount = count;
-    api.setPendingReviewCount?.(count);
+    api.setAgentAttentionCount?.(count);
   };
-  const offEvent = source.onEvent((sidebarEvent) => {
-    if (sidebarEvent.type !== 'agent') return;
-    const event = sidebarEvent.event as { type?: string; stopReason?: string; errorMessage?: string };
-    if (event?.type === 'turn-start') turnFailed = false;
-    else if (event?.type === 'error') turnFailed = true;
-    else if (event?.type === 'turn-end') {
-      const succeeded = !turnFailed && !event.errorMessage
-        && (event.stopReason === 'end_turn'
-          || event.stopReason === 'completed'
-          || event.stopReason === 'success');
-      turnFailed = false;
-      syncCount();
-      if (succeeded) {
-        api.notifyAgentTurnFinished?.({
-          title: source.documentTitle() || 'HamaEditor',
-          body: lastCount > 0 ? '검토할 변경이 있습니다' : '작업 완료',
-        });
-      }
-    }
+  sendCount(0);
+  sendCount(ledger.count());
+  const off = ledger.subscribe({
+    notice(notice) {
+      if (notice.channel !== 'system') return;
+      api.notifyAgentAttention?.({ threadId: notice.threadId, title: notice.title, body: notice.body });
+    },
+    count: sendCount,
   });
-  const offPending = source.onPendingChange(syncCount);
-  syncCount();
+  const offOpen = api.onOpenAgentChat?.((threadId) => {
+    if (typeof threadId === 'string' && threadId) openThread(threadId);
+  });
   return () => {
-    offEvent();
-    offPending();
-    if (lastCount > 0) api.setPendingReviewCount?.(0);
+    off();
+    if (typeof offOpen === 'function') offOpen();
+    sendCount(0);
   };
 }
 

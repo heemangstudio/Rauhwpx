@@ -4,16 +4,11 @@ import type { GridViewSettings } from './grid-settings';
 const MM_TO_PX = 96 / 25.4;
 const CLIP_CORNER_LENGTH_PX = 10;
 
-/**
- * `aboveDetail` 이면 글 뒤 격자도 page-detail 층(z-index 3) 위에 둔다. detail 층이 모든 쪽
- * 층을 합쳐 덮으므로 그 아래 격자는 보이지 않는다.
- */
 export function createGridOverlay(
   pageIdx: number,
   pageInfo: PageInfo,
   zoom: number,
   settings: GridViewSettings,
-  aboveDetail = false,
 ): HTMLDivElement {
   const overlay = document.createElement('div');
   overlay.className = 'page-grid-overlay';
@@ -22,7 +17,7 @@ export function createGridOverlay(
   overlay.style.backgroundSize = `${settings.horizontalMm * MM_TO_PX * zoom}px ${settings.verticalMm * MM_TO_PX * zoom}px`;
   overlay.style.backgroundPosition = buildBackgroundPosition(pageInfo, zoom, settings);
   overlay.style.clipPath = buildClipPath(pageInfo, zoom, settings);
-  overlay.style.zIndex = settings.layer === 'inFrontOfText' || aboveDetail ? '4' : '1';
+  overlay.style.zIndex = settings.layer === 'inFrontOfText' ? '4' : '1';
   overlay.style.opacity = settings.layer === 'inFrontOfText' ? '0.85' : '1';
   return overlay;
 }
@@ -46,7 +41,6 @@ export function createGridClipCornerOverlay(
   pageInfo: PageInfo,
   zoom: number,
   settings: GridViewSettings,
-  aboveDetail = false,
 ): HTMLDivElement | null {
   if (settings.origin !== 'page') return null;
 
@@ -54,7 +48,7 @@ export function createGridClipCornerOverlay(
   const overlay = document.createElement('div');
   overlay.className = 'page-grid-clip-corners';
   overlay.dataset.rhwpGridPage = String(pageIdx);
-  overlay.style.zIndex = settings.layer === 'inFrontOfText' || aboveDetail ? '5' : '2';
+  overlay.style.zIndex = settings.layer === 'inFrontOfText' ? '5' : '2';
 
   const left = pageArea.left * zoom;
   const top = pageArea.top * zoom;

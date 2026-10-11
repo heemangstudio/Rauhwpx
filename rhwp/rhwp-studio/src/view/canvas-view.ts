@@ -8,14 +8,7 @@ import { PageRenderer, type PageRenderContext, type PageRenderResult } from './p
 import { MAX_ZOOM, MIN_ZOOM, ViewportManager } from './viewport-manager';
 import { CoordinateSystem } from './coordinate-system';
 import type { CanvasKitRenderDiagnostics } from './canvaskit-renderer';
-import {
-  MAX_CANVASKIT_RENDER_PIXELS,
-  MAX_RENDER_PIXELS,
-  clampRenderScale,
-  regionRenderScale,
-  type RenderBackend,
-} from './render-backend';
-import { PageDetailLayers, planPageDetail, type PageDetailPlan } from './page-detail';
+import { clampRenderScale, type RenderBackend } from './render-backend';
 import {
   RendererSession,
   type RendererSessionDiagnostics,
@@ -42,18 +35,14 @@ import {
   type HeaderFooterModeState,
 } from '@/engine/header-footer-mode.ts';
 import {
-  createHeaderFooterGuideCorners,
-  headerFooterPreviewRegion,
+  drawHeaderFooterGuideCorners,
+  headerFooterClipPath,
   resolveHeaderFooterBadgeMetrics,
   resolveHeaderFooterBandBox,
 } from './header-footer-edit-overlay.ts';
 
 const TEXT_EDIT_STATIC_LAYER_VERIFY_DELAY_MS = 800;
 const AUTO_RENDERER_RESELECTION_DELAY_MS = 300;
-/** 스크롤이 멎은 뒤 화면을 벗어난 detail 영역을 다시 그리기까지의 대기. */
-const PAGE_DETAIL_SCROLL_IDLE_MS = 120;
-/** 쪽 canvas 보다 이만큼 이상 선명해질 때만 detail 층을 쓴다. */
-const PAGE_DETAIL_MIN_GAIN = 1.01;
 
 type DeferredPrefetchTask =
   | { kind: 'idle'; id: number }
@@ -63,6 +52,13 @@ type IdleCallbackWindow = Window & {
   requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
   cancelIdleCallback?: (id: number) => void;
 };
+
+/** 문서마다 따로 기억했다가 다시 붙을 때 되살리는 보기 상태 */
+export interface CanvasViewState {
+  scrollTop: number;
+  scrollLeft: number;
+  zoom: number;
+}
 
 export class CanvasView {
   private virtualScroll: VirtualScroll;
@@ -82,12 +78,7 @@ export class CanvasView {
   /** 마지막으로 발행한 current-page-changed 의 `쪽|전체 쪽 수` */
   private lastCurrentPageKey = '';
   private headerFooterEditState: HeaderFooterModeState | null = null;
-  private stopHeaderFooterPictureWait: (() => void) | null = null;
   private gridOverlaysByPage = new Map<number, HTMLElement[]>();
-  private pageDetails: PageDetailLayers;
-  private pageDetailTimer: ReturnType<typeof setTimeout> | null = null;
-  private pageDetailRepaintFrame: number | null = null;
-  private pageDetailRepaintPages = new Set<number>();
   private unsubscribers: (() => void)[] = [];
   private textEditStaticLayerVerifyTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private pendingPrefetchPages = new Set<number>();
@@ -125,19 +116,15 @@ export class CanvasView {
     this.subsecondRevisionWatcher.start();
 
     this.scrollContent = container.querySelector('#scroll-content')!;
-    this.pageDetails = new PageDetailLayers(this.scrollContent);
-    this.pageRenderer.setPageRepaintListener((pageIdx) => this.queuePageDetailRepaint(pageIdx));
     this.viewportManager.attachTo(container);
     this.unsubscribers.push(this.watchDevicePixelRatio(), this.watchCanvasContextRestore());
     // trap 뒤에는 어떤 예약 작업도 엔진을 부를 수 없다. 대기 중인 이미지 재렌더·선렌더·검증
-    // 타이머가 마지막으로 그린 쪽을 지우지 않도록 모두 끊는다. 다시 그릴 수 없는 detail 층은
-    // 지워 쪽 canvas 하나의 상태만 보여 준다.
+    // 타이머가 마지막으로 그린 쪽을 지우지 않도록 모두 끊는다.
     this.unsubscribers.push(onEngineTrap(() => {
       this.pageRenderer.cancelAll();
       this.cancelPendingPrefetch();
       this.cancelTextEditStaticLayerVerification();
       this.cancelAutoRendererReselection();
-      this.clearPageDetails();
     }));
 
     this.unsubscribers.push(
@@ -198,8 +185,21 @@ export class CanvasView {
     );
   }
 
-  /** 문서 로드 후 호출 — 페이지 정보 수집 및 가상 스크롤 초기화 */
-  async loadDocument(): Promise<void> {
+  /** 지금 문서의 스크롤·배율. 다른 문서로 옮기기 전에 떠 둔다. */
+  captureViewState(): CanvasViewState {
+    return {
+      scrollTop: this.viewportManager.getScrollY(),
+      scrollLeft: this.viewportManager.getScrollX(),
+      zoom: this.viewportManager.getZoom(),
+    };
+  }
+
+  /**
+   * 문서 로드 후 호출 — 페이지 정보 수집 및 가상 스크롤 초기화.
+   * restore 를 주면 배치를 마친 뒤 그 배율과 스크롤 위치를 되살린다(다시 붙인 문서). 주지 않으면
+   * 첫 쪽 위·가운데에서 시작한다.
+   */
+  async loadDocument(restore?: CanvasViewState | null): Promise<void> {
     if (this.disposed) return;
     if (!this.documentLoadPrepared) this.prepareDocumentLoad();
     const epoch = this.rendererSelectionEpoch;
@@ -213,6 +213,11 @@ export class CanvasView {
     ) return;
     this.applyRendererSelection(selection);
 
+    // 쪽이 비어 있는 동안 배율을 바꾸면 onZoomChanged 가 옛 배치로 다시 그리지 않는다.
+    const restoredZoom = restore && Number.isFinite(restore.zoom)
+      && restore.zoom !== this.viewportManager.getZoom();
+    if (restoredZoom) this.viewportManager.setZoom(restore.zoom);
+
     const pageCount = this.wasm.pageCount;
     this.pages = this.collectPageInfo(pageCount) ?? [];
 
@@ -221,8 +226,8 @@ export class CanvasView {
       return;
     }
 
-    // 모바일: 문서 로드 시 폭 맞춤 줌 자동 적용
-    if (window.innerWidth < 1024 && this.pages.length > 0) {
+    // 모바일: 문서 로드 시 폭 맞춤 줌 자동 적용 (되살린 배율이 있으면 그대로 둔다)
+    if (!restore && window.innerWidth < 1024 && this.pages.length > 0) {
       const containerWidth = this.container.clientWidth - 20;
       const pageWidth = this.pages[0].width;
       if (pageWidth > 0 && containerWidth > 0) {
@@ -232,12 +237,19 @@ export class CanvasView {
     }
 
     this.recalcLayout();
-    this.viewportManager.setScrollLeft(
-      this.virtualScroll.getCenteredScrollLeft(this.layoutViewportSize.width),
-    );
+    if (restore) {
+      // 브라우저가 새 내용 크기 안으로 잘라 준다. 캐시 좌표도 setter 가 함께 맞춘다.
+      this.viewportManager.setScrollLeft(Math.max(0, restore.scrollLeft));
+      this.viewportManager.setScrollTop(Math.max(0, restore.scrollTop));
+      if (restoredZoom) this.eventBus.emit('zoom-level-display', this.viewportManager.getZoom());
+    } else {
+      this.viewportManager.setScrollLeft(
+        this.virtualScroll.getCenteredScrollLeft(this.layoutViewportSize.width),
+      );
 
-    // 캐시 좌표도 함께 0 으로 맞춘다 — 직접 대입하면 첫 쪽 창이 이전 문서의 위치로 계산된다.
-    this.viewportManager.setScrollTop(0);
+      // 캐시 좌표도 함께 0 으로 맞춘다 — 직접 대입하면 첫 쪽 창이 이전 문서의 위치로 계산된다.
+      this.viewportManager.setScrollTop(0);
+    }
     this.updateVisiblePages();
     // 초기 replay가 예약한 document fallback을 load 완료 전에 확정한다.
     await Promise.resolve();
@@ -437,6 +449,9 @@ export class CanvasView {
   private updateVisiblePages(): void {
     // 멈춘 엔진으로는 새 쪽을 그릴 수 없다. 이미 그린 쪽을 해제하지 않고 그대로 둔다.
     if (engineTrap()) return;
+    // 문서를 바꾸는 중(reset 뒤 renderer 선택을 기다리는 동안)에는 가상 스크롤이 아직 이전
+    // 문서의 배치를 들고 있다. 그 배치로 새 문서의 쪽을 그리지 않는다.
+    if (this.pages.length === 0 && this.canvasPool.activePages.length === 0) return;
     const scrollY = this.viewportManager.getScrollY();
     const scrollX = this.viewportManager.getScrollX();
     const { width: vpWidth, height: vpHeight } = this.viewportManager.getViewportSize();
@@ -466,7 +481,6 @@ export class CanvasView {
     this.currentVisiblePages = visiblePages;
     this.updateActivePageSnapshot();
     this.renderHeaderFooterEditOverlays();
-    this.syncPageDetails();
   }
 
   private pageIndexFromPayload(payload: unknown): number | null {
@@ -577,7 +591,7 @@ export class CanvasView {
         this.applyPageBox(existing, pageIdx);
         continue;
       }
-      if (existing) discardHeaderFooterEditOverlay(existing);
+      existing?.remove();
 
       const layer = document.createElement('div');
       layer.className = `hf-edit-surface-layer ${isPreview ? 'is-representative' : 'is-related'}`;
@@ -591,36 +605,38 @@ export class CanvasView {
       this.applyPageBox(layer, pageIdx);
 
       const band = resolveHeaderFooterBandBox(page, state.mode === 'header');
+      const rawDpr = window.devicePixelRatio || 1;
+      const renderScale = clampRenderScale(page, zoom * rawDpr);
+      const dpr = renderScale / (zoom > 0 ? zoom : 1);
       if (isPreview) {
-        // 밴드만 덮는 canvas 를 화면 배율 그대로 그린다 — 쪽 canvas 배율 상한과 무관하게 선명하다.
-        const scale = regionRenderScale(zoom * (window.devicePixelRatio || 1));
-        const { region, clipPath } = headerFooterPreviewRegion(band, zoom, scale);
         const previewCanvas = document.createElement('canvas');
         previewCanvas.className = 'hf-edit-preview-canvas';
         try {
-          const pendingPictures = this.wasm.renderHeaderFooterEditPreviewRegionToCanvas(
+          this.wasm.renderHeaderFooterEditPreviewToCanvas(
             pageIdx,
             state.sectionIdx,
             state.mode === 'header',
             state.applyTo,
             previewCanvas,
-            scale,
-            region,
+            renderScale,
           );
-          if (pendingPictures > 0) this.repaintHeaderFooterPreviewAfterDecode();
-          const cssPerDevice = zoom / scale;
-          previewCanvas.style.left = `${region.x * cssPerDevice}px`;
-          previewCanvas.style.top = `${region.y * cssPerDevice}px`;
-          previewCanvas.style.width = `${previewCanvas.width * cssPerDevice}px`;
-          previewCanvas.style.height = `${previewCanvas.height * cssPerDevice}px`;
-          previewCanvas.style.clipPath = clipPath;
+          previewCanvas.style.width = `${previewCanvas.width / dpr}px`;
+          previewCanvas.style.height = `${previewCanvas.height / dpr}px`;
+          previewCanvas.style.clipPath = headerFooterClipPath(page, band, zoom);
           layer.appendChild(previewCanvas);
         } catch (error) {
           console.error('[CanvasView] HF 대표 편집 preview 렌더링 실패:', error);
         }
       }
 
-      layer.appendChild(createHeaderFooterGuideCorners(band, page, zoom));
+      const guideCanvas = document.createElement('canvas');
+      guideCanvas.className = 'hf-edit-guide-canvas';
+      guideCanvas.width = Math.max(1, Math.round(page.width * renderScale));
+      guideCanvas.height = Math.max(1, Math.round(page.height * renderScale));
+      guideCanvas.style.width = `${guideCanvas.width / dpr}px`;
+      guideCanvas.style.height = `${guideCanvas.height / dpr}px`;
+      drawHeaderFooterGuideCorners(band, guideCanvas, renderScale, zoom);
+      layer.appendChild(guideCanvas);
 
       const region = document.createElement('div');
       region.className = `hf-edit-region ${isPreview ? 'is-representative' : 'is-related'}`;
@@ -648,23 +664,12 @@ export class CanvasView {
     this.scrollContent.querySelectorAll<HTMLElement>('[data-rhwp-hf-edit-page]')
       .forEach((element) => {
         const pageIdx = Number(element.dataset.rhwpHfEditPage);
-        if (!desiredPages.has(pageIdx)) discardHeaderFooterEditOverlay(element);
+        if (!desiredPages.has(pageIdx)) element.remove();
       });
   }
 
-  /** preview 를 그릴 때 디코드 중이던 그림이 모두 끝나면 overlay 를 다시 그린다. */
-  private repaintHeaderFooterPreviewAfterDecode(): void {
-    this.stopHeaderFooterPictureWait ??= this.wasm.onPictureDecoded((pendingDecodes) => {
-      if (pendingDecodes > 0) return;
-      this.stopHeaderFooterPictureWait?.();
-      this.stopHeaderFooterPictureWait = null;
-      if (!this.disposed && !engineTrap()) this.renderHeaderFooterEditOverlays(true);
-    });
-  }
-
   private removeHeaderFooterEditOverlays(): void {
-    this.scrollContent.querySelectorAll<HTMLElement>('[data-rhwp-hf-edit-page]')
-      .forEach(discardHeaderFooterEditOverlay);
+    this.scrollContent.querySelectorAll('[data-rhwp-hf-edit-page]').forEach((element) => element.remove());
   }
 
   /** 스크롤 중에는 다음 페이지의 선렌더를 idle time으로 미룬다. */
@@ -728,12 +733,8 @@ export class CanvasView {
     this.pageRenderer.cancelReRender(pageIdx);
     this.pageRenderer.removePageLayers(this.scrollContent, pageIdx);
     this.pageRenderer.releasePageDiagnostics(pageIdx);
-    const headerFooterOverlay = this.scrollContent.querySelector<HTMLElement>(
-      `[data-rhwp-hf-edit-page="${pageIdx}"]`,
-    );
-    if (headerFooterOverlay) discardHeaderFooterEditOverlay(headerFooterOverlay);
+    this.scrollContent.querySelector(`[data-rhwp-hf-edit-page="${pageIdx}"]`)?.remove();
     this.removeGridOverlay(pageIdx);
-    this.removePageDetail(pageIdx);
     this.canvasPool.release(pageIdx);
   }
 
@@ -773,12 +774,8 @@ export class CanvasView {
       console.error(`[CanvasView] 페이지 ${pageIdx} 정보가 없습니다`);
       return false;
     }
-    // 물리 픽셀 수를 백엔드별 상한으로 묶는다. Canvas2D 는 상한을 넘는 배율에서 page-detail 층이
-    // 보이는 영역만 원래 배율로 덧그린다.
-    const maxPixels = this.pageRenderer.getBackend() === 'canvaskit'
-      ? MAX_CANVASKIT_RENDER_PIXELS
-      : MAX_RENDER_PIXELS;
-    const renderScale = clampRenderScale(pageInfo, zoom * rawDpr, maxPixels);
+    // iOS/WebKit과 GPU surface가 감당하기 어려운 물리 픽셀 수를 중앙 정책으로 제한한다.
+    const renderScale = clampRenderScale(pageInfo, zoom * rawDpr);
     const dpr = renderScale / (zoom > 0 ? zoom : 1);
 
     // Canvas를 DOM에 추가하고 위치를 설정한다
@@ -833,7 +830,6 @@ export class CanvasView {
         ].filter((detail): detail is string => detail !== null).join('; ');
         this.pageRenderer.removePageLayers(this.scrollContent, pageIdx);
         this.removeGridOverlay(pageIdx);
-        this.removePageDetail(pageIdx);
         this.scheduleCanvasKitFallback(
           new Error(`CanvasKit runtime readiness gate failed (${details})`),
           rendererDecisionKey,
@@ -847,7 +843,6 @@ export class CanvasView {
       console.error(`[CanvasView] 페이지 ${pageIdx} 렌더링 실패:`, e);
       this.pageRenderer.removePageLayers(this.scrollContent, pageIdx);
       this.removeGridOverlay(pageIdx);
-      this.removePageDetail(pageIdx);
       if (this.pageRenderer.getBackend() === 'canvaskit' && rendererDecisionKey) {
         this.scheduleCanvasKitFallback(e, rendererDecisionKey, 'resource');
       }
@@ -861,11 +856,6 @@ export class CanvasView {
     renderedCanvas.dataset.rhwpRenderedZoom = String(zoom);
     renderedCanvas.dataset.rhwpPageIndex = String(pageIdx);
     this.renderGridOverlay(pageIdx, renderedCanvas);
-    // detail 층은 쪽을 덮으므로 쪽을 그린 같은 작업 안에서 함께 다시 그린다. 스크롤로 새로
-    // 들어온 쪽은 스크롤이 멎은 뒤 syncPageDetails 가 그린다.
-    if (this.pageDetails.has(pageIdx) || !this.scrollDrivenVisibleUpdate) {
-      this.renderPageDetail(pageIdx, renderedCanvas);
-    }
     if (renderResult.needsTextEditStaticLayerVerification) {
       this.scheduleTextEditStaticLayerVerification(pageIdx);
     } else if (renderContext.reason !== 'text-edit') {
@@ -945,12 +935,8 @@ export class CanvasView {
       const canvas = event.target;
       if (this.disposed || !(canvas instanceof HTMLCanvasElement)) return;
       // 쪽 캔버스와 그 위 개체 레이어 캔버스는 쪽 단위로 함께 다시 그린다.
-      const owner = canvas.closest<HTMLElement>(
-        '[data-rhwp-page-index], [data-rhwp-overlay-page], [data-rhwp-detail-page]',
-      );
-      const pageIdx = Number(
-        owner?.dataset.rhwpPageIndex ?? owner?.dataset.rhwpOverlayPage ?? owner?.dataset.rhwpDetailPage,
-      );
+      const owner = canvas.closest<HTMLElement>('[data-rhwp-page-index], [data-rhwp-overlay-page]');
+      const pageIdx = Number(owner?.dataset.rhwpPageIndex ?? owner?.dataset.rhwpOverlayPage);
       if (Number.isInteger(pageIdx) && this.canvasPool.has(pageIdx)) restoredPages.add(pageIdx);
       frame ??= requestAnimationFrame(flush);
     };
@@ -1085,14 +1071,11 @@ export class CanvasView {
     callback: (element: HTMLElement, pageIdx: number) => void,
   ): void {
     this.scrollContent
-      .querySelectorAll<HTMLElement>(
-        '[data-rhwp-overlay-page], [data-rhwp-grid-page], [data-rhwp-hf-edit-page], [data-rhwp-detail-page]',
-      )
+      .querySelectorAll<HTMLElement>('[data-rhwp-overlay-page], [data-rhwp-grid-page], [data-rhwp-hf-edit-page]')
       .forEach((element) => {
         const rawPage = element.dataset.rhwpOverlayPage
           ?? element.dataset.rhwpGridPage
-          ?? element.dataset.rhwpHfEditPage
-          ?? element.dataset.rhwpDetailPage;
+          ?? element.dataset.rhwpHfEditPage;
         const pageIdx = Number(rawPage);
         if (Number.isInteger(pageIdx) && this.canvasPool.has(pageIdx)) {
           callback(element, pageIdx);
@@ -1356,137 +1339,20 @@ export class CanvasView {
     if (hadFocusedPage) this.eventBus.emit('focused-page-changed', null);
     this.headerFooterEditState = null;
     this.pages = [];
+    this.lastCurrentPageKey = '';
+    // 머리말/꼬리말 preview 재사용 키를 문서 단위로도 끊는다.
+    this.documentRenderGeneration += 1;
     this.scrollContent.replaceChildren();
   }
 
   private releaseAllRenderedPages(): void {
     // pool 로 돌아가는 canvas 를 붙잡은 지연 재렌더가 남지 않게 먼저 모두 끊는다.
     this.pageRenderer.cancelAll();
-    this.pageRenderer.resetPageCaches();
+    this.pageRenderer.resetImageRetryState();
     this.pageRenderer.removeAllPageLayers(this.scrollContent);
     this.removeHeaderFooterEditOverlays();
     this.removeAllGridOverlays();
-    this.clearPageDetails();
     this.canvasPool.releaseAll();
-  }
-
-  /**
-   * 요청 배율이 쪽 canvas 배율 상한을 넘으면 detail 배율을, 아니면 null 을 돌려준다.
-   * Canvas2D 와 영역 렌더를 지원하는 엔진에서만 쓴다.
-   */
-  private pageDetailScale(pageIdx: number): number | null {
-    const page = this.pages[pageIdx];
-    if (
-      !page
-      || engineTrap()
-      || this.pageRenderer.getBackend() !== 'canvas2d'
-      || !this.wasm.supportsPageRegionRender
-    ) {
-      return null;
-    }
-    const requested = this.viewportManager.getZoom() * (window.devicePixelRatio || 1);
-    const scale = regionRenderScale(requested);
-    return scale > clampRenderScale(page, requested) * PAGE_DETAIL_MIN_GAIN ? scale : null;
-  }
-
-  private pageDetailPlan(pageIdx: number): PageDetailPlan | null {
-    const scale = this.pageDetailScale(pageIdx);
-    const page = this.pages[pageIdx];
-    if (scale === null || !page) return null;
-    const { width, height } = this.viewportManager.getViewportSize();
-    return planPageDetail({
-      pageWidth: page.width,
-      pageHeight: page.height,
-      pageLeft: this.virtualScroll.getPageLeftResolved(pageIdx, this.virtualScroll.getTotalWidth()),
-      pageTop: this.virtualScroll.getPageOffset(pageIdx),
-      zoom: this.viewportManager.getZoom(),
-      scale,
-      viewport: {
-        left: this.viewportManager.getScrollX(),
-        top: this.viewportManager.getScrollY(),
-        width,
-        height,
-      },
-    });
-  }
-
-  /** 쪽 canvas 를 덮는 detail 층을 지금 화면에 맞춰 다시 그린다. 필요 없으면 지운다. */
-  private renderPageDetail(pageIdx: number, pageCanvas: HTMLCanvasElement): void {
-    const plan = this.pageDetailPlan(pageIdx);
-    if (!plan) {
-      this.removePageDetail(pageIdx);
-      return;
-    }
-    try {
-      this.pageDetails.show(pageIdx, plan, pageCanvas, (canvas) => {
-        this.pageRenderer.renderPageRegion(pageIdx, canvas, plan.scale, plan.region);
-      });
-    } catch (error) {
-      if (!reportEngineTrap(error)) {
-        console.error(`[CanvasView] 페이지 ${pageIdx} 확대 영역 렌더링 실패:`, error);
-      }
-    }
-  }
-
-  /**
-   * 화면을 벗어난 쪽의 detail 층은 바로 지우고, 보이는 영역을 덮지 못한 쪽은 스크롤이 멎은 뒤
-   * 다시 그린다. 그 사이에는 배율 상한으로 그린 쪽 canvas 가 보인다.
-   */
-  private syncPageDetails(): void {
-    if (this.viewportManager.isZoomAnimating()) return;
-    const visible = new Set(this.currentVisiblePages);
-    for (const pageIdx of this.pageDetails.pages) {
-      if (!visible.has(pageIdx) || !this.pageDetailPlan(pageIdx)) this.removePageDetail(pageIdx);
-    }
-    const stale = this.currentVisiblePages.some((pageIdx) => this.pageDetailIsStale(pageIdx));
-    if (!stale) return;
-    if (this.pageDetailTimer !== null) clearTimeout(this.pageDetailTimer);
-    this.pageDetailTimer = setTimeout(() => {
-      this.pageDetailTimer = null;
-      if (this.disposed || this.viewportManager.isZoomAnimating()) return;
-      for (const pageIdx of this.currentVisiblePages) {
-        const canvas = this.canvasPool.getCanvas(pageIdx);
-        if (!canvas || !this.pageDetailIsStale(pageIdx)) continue;
-        this.renderPageDetail(pageIdx, canvas);
-      }
-    }, PAGE_DETAIL_SCROLL_IDLE_MS);
-  }
-
-  private pageDetailIsStale(pageIdx: number): boolean {
-    if (!this.canvasPool.has(pageIdx)) return false;
-    const plan = this.pageDetailPlan(pageIdx);
-    return plan !== null && !this.pageDetails.covers(pageIdx, plan);
-  }
-
-  /** 지연 그림 재렌더가 쪽 층을 다시 그렸다. 그 쪽의 detail 층도 다음 그리기 전에 따라 그린다. */
-  private queuePageDetailRepaint(pageIdx: number): void {
-    if (!this.pageDetails.has(pageIdx)) return;
-    this.pageDetailRepaintPages.add(pageIdx);
-    this.pageDetailRepaintFrame ??= requestAnimationFrame(() => {
-      this.pageDetailRepaintFrame = null;
-      const pages = Array.from(this.pageDetailRepaintPages);
-      this.pageDetailRepaintPages.clear();
-      // 확대 전환 중에는 쪽 층이 이전 배율 미리보기다. 전환이 끝나면 모두 다시 그린다.
-      if (this.viewportManager.isZoomAnimating()) return;
-      for (const page of pages) {
-        const canvas = this.canvasPool.getCanvas(page);
-        if (canvas && this.pageDetails.has(page) && !engineTrap()) this.renderPageDetail(page, canvas);
-      }
-    });
-  }
-
-  private removePageDetail(pageIdx: number): void {
-    this.pageDetailRepaintPages.delete(pageIdx);
-    this.pageDetails.remove(pageIdx);
-  }
-
-  private clearPageDetails(): void {
-    if (this.pageDetailTimer !== null) clearTimeout(this.pageDetailTimer);
-    this.pageDetailTimer = null;
-    if (this.pageDetailRepaintFrame !== null) cancelAnimationFrame(this.pageDetailRepaintFrame);
-    this.pageDetailRepaintFrame = null;
-    this.pageDetailRepaintPages.clear();
-    this.pageDetails.removeAll();
   }
 
   private refreshGridOverlays(): void {
@@ -1505,14 +1371,11 @@ export class CanvasView {
     const pageInfo = this.pages[pageIdx];
     if (!pageInfo) return;
 
-    // detail 층이 쪽을 덮는 배율에서는 글 뒤 격자도 그 위에 둔다.
-    const aboveDetail = this.pageDetailScale(pageIdx) !== null;
     const overlay = createGridOverlay(
       pageIdx,
       pageInfo,
       this.viewportManager.getZoom(),
       settings,
-      aboveDetail,
     );
     applyGridOverlayBox(overlay, canvas);
     this.scrollContent.appendChild(overlay);
@@ -1523,7 +1386,6 @@ export class CanvasView {
       pageInfo,
       this.viewportManager.getZoom(),
       settings,
-      aboveDetail,
     );
     if (clipCorners) {
       applyGridOverlayBox(clipCorners, canvas);
@@ -1557,7 +1419,6 @@ export class CanvasView {
     this.cancelAutoRendererReselection();
     this.reset();
     this.pageRenderer.dispose();
-    this.stopHeaderFooterPictureWait?.();
     this.rendererSession.dispose();
     this.viewportManager.detach();
     for (const unsub of this.unsubscribers) {
@@ -1593,13 +1454,4 @@ export class CanvasView {
   getCoordinateSystem(): CoordinateSystem {
     return this.coordinateSystem;
   }
-}
-
-/** 머리말/꼬리말 편집 overlay 를 떼어 낸다. preview canvas 는 크기를 0으로 비운다. */
-function discardHeaderFooterEditOverlay(element: HTMLElement): void {
-  element.querySelectorAll('canvas').forEach((canvas) => {
-    canvas.width = 0;
-    canvas.height = 0;
-  });
-  element.remove();
 }

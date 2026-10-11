@@ -925,7 +925,6 @@ dependencies = [
  "unicode-width",
  "usvg 0.45.1",
  "wasm-bindgen",
- "wasm-bindgen-futures",
  "web-sys",
  "web-time",
  "zip",

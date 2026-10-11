@@ -1,15 +1,27 @@
-// 크기를 0으로 비운 canvas 요소만 재사용한다. 엔진이 렌더할 때마다 canvas 크기를 다시 정하므로
-// 해제한 쪽의 backing store 를 남겨 둘 이유가 없다. 긴 문서에서 쪽마다 요소가 쌓이지 않도록
-// 대기 요소 수도 작게 묶는다.
+const DEFAULT_MAX_RETAINED_BACKING_PIXELS = 8_388_608;
+// Zero-sized canvases are cheap to reuse, but retaining one for every page in a
+// long document still grows the JS heap. Keep a small warm pool for scrolling
+// without letting page count become the pool's memory limit.
 const MAX_RETAINED_CANVASES = 8;
 
 export class CanvasPool {
   private available: HTMLCanvasElement[] = [];
   private inUse = new Map<number, HTMLCanvasElement>();
+  private availableBackingPixels = 0;
+  private readonly maxRetainedBackingPixels: number;
+
+  constructor(maxRetainedBackingPixels = DEFAULT_MAX_RETAINED_BACKING_PIXELS) {
+    this.maxRetainedBackingPixels = maxRetainedBackingPixels;
+  }
 
   /** Canvas를 할당한다 (풀에서 꺼내거나 새로 생성) */
   acquire(pageIdx: number): HTMLCanvasElement {
-    const canvas = this.available.pop() ?? document.createElement('canvas');
+    let canvas = this.available.pop();
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+    } else {
+      this.availableBackingPixels -= canvas.width * canvas.height;
+    }
     this.inUse.set(pageIdx, canvas);
     return canvas;
   }
@@ -25,15 +37,36 @@ export class CanvasPool {
     this.inUse.set(pageIdx, replacement);
   }
 
-  /** Canvas를 반환한다 (DOM에서 제거하고 backing store 를 비운 뒤 풀에 반환) */
+  /** Canvas를 반환한다 (DOM에서 제거 후 풀에 반환) */
   release(pageIdx: number): void {
     const canvas = this.inUse.get(pageIdx);
-    if (!canvas) return;
-    canvas.parentElement?.removeChild(canvas);
-    this.inUse.delete(pageIdx);
-    canvas.width = 0;
-    canvas.height = 0;
-    if (this.available.length < MAX_RETAINED_CANVASES) this.available.push(canvas);
+    if (canvas) {
+      canvas.parentElement?.removeChild(canvas);
+      this.inUse.delete(pageIdx);
+      const pixels = canvas.width * canvas.height;
+      // 스크롤 중 방금 해제한 한 장은 즉시 재사용될 수 있으므로 크기와 무관하게 남긴다.
+      // 그 뒤의 backing store만 예산 안에 더해 zoom/grid 고수위가 계속 남지 않게 한다.
+      const exceedsBudget = this.availableBackingPixels > 0
+        && pixels > this.maxRetainedBackingPixels - this.availableBackingPixels;
+      if (exceedsBudget) {
+        canvas.width = 0;
+        canvas.height = 0;
+        if (this.available.length < MAX_RETAINED_CANVASES) {
+          this.available.unshift(canvas);
+        }
+      } else {
+        this.availableBackingPixels += pixels;
+        if (this.available.length < MAX_RETAINED_CANVASES) {
+          this.available.push(canvas);
+        } else {
+          // The backing store is already represented by the budget. Drop the
+          // DOM object when the warm pool is full rather than retaining it.
+          canvas.width = 0;
+          canvas.height = 0;
+          this.availableBackingPixels -= pixels;
+        }
+      }
+    }
   }
 
   /** 특정 페이지에 할당된 Canvas를 조회한다 */
@@ -64,8 +97,8 @@ export class CanvasPool {
     return this.inUse.size + this.available.length;
   }
 
-  /** 풀 대기 canvas가 유지하는 RGBA backing-store 바이트. */
+  /** 풀 대기 canvas가 유지하는 RGBA backing-store 추정 바이트. */
   get retainedBackingBytes(): number {
-    return this.available.reduce((sum, canvas) => sum + canvas.width * canvas.height * 4, 0);
+    return this.availableBackingPixels * 4;
   }
 }

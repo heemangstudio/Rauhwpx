@@ -351,20 +351,6 @@
   mix-blend-mode: multiply;
 }
 
-/* 고배율 page-detail 층: 쪽 층(z-index 0–3) 위, 선택·캐럿 같은 편집 표시(4 이상) 아래 */
-#scroll-content .page-detail-layer {
-  position: absolute;
-  z-index: 3;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-#scroll-content .page-detail-layer canvas {
-  transform: none;
-  box-shadow: none;
-  background: transparent;
-}
-
 /* 여러 쪽이 나란히 놓이는 모드에서는 그림자를 한 단 낮춰 겹침을 줄인다 */
 #scroll-content.grid-mode canvas {
   box-shadow: var(--n-elev-2);
@@ -398,11 +384,13 @@
   box-shadow: none;
 }
 
-#scroll-content .hf-edit-guide {
-  position: absolute;
+#scroll-content canvas.hf-edit-guide-canvas {
   inset: 0 auto auto 0;
   z-index: 1;
-  pointer-events: none;
+  transform: none;
+  transform-origin: top left;
+  background: transparent;
+  box-shadow: none;
 }
 
 #scroll-content .hf-edit-region {

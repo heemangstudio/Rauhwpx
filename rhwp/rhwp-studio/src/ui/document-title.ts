@@ -1,3 +1,5 @@
+import { beginInlineRename } from './inline-rename.ts';
+
 /** 메인 문서만 연결한다. 비교용 bridge는 브라우저 제목을 변경하지 않는다. */
 export function installDocumentTitle(
   bridge: {
@@ -5,6 +7,10 @@ export function installDocumentTitle(
     hasLoadedDocument(): boolean;
     onFileNameChanged?: (fileName: string) => void;
   },
+  options: {
+    /** 제목을 두 번 눌러 문서 이름을 바꾼다. 바뀐 파일 이름, 못 바꿨으면 null. */
+    rename?: (name: string) => Promise<string | null>;
+  } = {},
 ): void {
   // Chromium 설치형 창은 앱 이름을 직접 붙이므로 페이지 제목에는 파일명만 둔다.
   // 일반 브라우저의 전체 화면은 설치형 창으로 분류하지 않는다.
@@ -23,6 +29,22 @@ export function installDocumentTitle(
       visibleTitle.hidden = !loaded;
     }
   };
+  const visibleTitle = document.getElementById?.('editor-document-title');
+  if (visibleTitle && options.rename) {
+    const rename = options.rename;
+    visibleTitle.classList.add('editor-document-title-renamable');
+    visibleTitle.addEventListener('dblclick', (event) => {
+      if (!bridge.hasLoadedDocument()) return;
+      event.preventDefault();
+      beginInlineRename(visibleTitle, {
+        value: bridge.fileName,
+        label: '문서 이름',
+        selectBaseName: true,
+        maxLength: 255,
+        commit: (name) => rename(name),
+      });
+    });
+  }
   bridge.onFileNameChanged = update;
   appModes.addEventListener('change', update);
   update();

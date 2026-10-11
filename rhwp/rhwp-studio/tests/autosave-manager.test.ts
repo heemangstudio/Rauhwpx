@@ -32,7 +32,7 @@ test('AutosaveManager는 dirty 이벤트 후 현재 문서를 draft로 저장한
   const { store, saved } = createStore();
   const eventBus = new EventBus();
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([1, 2, 3, 4]),
+    exportDraft: () => ({ bytes: new Uint8Array([1, 2, 3, 4]), format: 'hwp' as const }),
     debounceMs: 0,
     minSaveIntervalMs: 0,
     now: () => 1_000,
@@ -62,7 +62,7 @@ test('AutosaveManager scopes draft ownership and heartbeat to the renderer sessi
     heartbeats.push({ ...owner, at });
   };
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([4]),
+    exportDraft: () => ({ bytes: new Uint8Array([4]), format: 'hwp' as const }),
     schedule: { recoveryEnabled: false, idleEnabled: false },
     now: () => 5_000,
     idFactory: () => 'draft-owned',
@@ -92,7 +92,7 @@ test('AutosaveManager는 clean 전환 시 현재 draft를 삭제한다', async (
   const eventBus = new EventBus();
   const dirtyState = new DocumentDirtyState(eventBus);
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([5]),
+    exportDraft: () => ({ bytes: new Uint8Array([5]), format: 'hwp' as const }),
     debounceMs: 0,
     minSaveIntervalMs: 0,
     idFactory: () => 'draft-clean',
@@ -115,7 +115,7 @@ test('AutosaveManager는 새 문서 세션 시작 시 이전 draft를 정리하�
   const { store, saved, deleted } = createStore();
   let nextId = 0;
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([9]),
+    exportDraft: () => ({ bytes: new Uint8Array([9]), format: 'hwp' as const }),
     debounceMs: 0,
     minSaveIntervalMs: 0,
     idFactory: () => `draft-${++nextId}`,
@@ -142,7 +142,7 @@ test('AutosaveManager는 쉴 때 자동저장 간격 전에는 draft를 저장�
   const { store, saved } = createStore();
   const eventBus = new EventBus();
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([1]),
+    exportDraft: () => ({ bytes: new Uint8Array([1]), format: 'hwp' as const }),
     schedule: {
       recoveryEnabled: false,
       idleEnabled: true,
@@ -168,7 +168,7 @@ test('AutosaveManager는 복구용 주기 저장을 별도 타이머로 예약�
   const { store, saved } = createStore();
   const eventBus = new EventBus();
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([2]),
+    exportDraft: () => ({ bytes: new Uint8Array([2]), format: 'hwp' as const }),
     schedule: {
       recoveryEnabled: true,
       recoveryIntervalMs: 20,
@@ -194,7 +194,7 @@ test('AutosaveManager는 저장 상태 콜백을 보낸다', async () => {
   const { store } = createStore();
   const states: string[] = [];
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([3, 4]),
+    exportDraft: () => ({ bytes: new Uint8Array([3, 4]), format: 'hwp' as const }),
     schedule: {
       recoveryEnabled: false,
       idleEnabled: false,
@@ -236,7 +236,7 @@ test('AutosaveManager는 저장 진행 중 discard가 끼어들면 저장 완료
     },
   };
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([1]),
+    exportDraft: () => ({ bytes: new Uint8Array([1]), format: 'hwp' as const }),
     schedule: { recoveryEnabled: false, idleEnabled: false },
     idFactory: () => 'draft-race',
     store,
@@ -258,7 +258,7 @@ test('AutosaveManager는 저장 진행 중 discard가 끼어들면 저장 완료
 test('AutosaveManager는 discard 없는 정상 flush에서는 draft를 삭제하지 않는다', async () => {
   const { store, saved, deleted } = createStore();
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([6]),
+    exportDraft: () => ({ bytes: new Uint8Array([6]), format: 'hwp' as const }),
     schedule: { recoveryEnabled: false, idleEnabled: false },
     idFactory: () => 'draft-plain',
     store,
@@ -275,7 +275,7 @@ test('AutosaveManager는 discard 없는 정상 flush에서는 draft를 삭제하
 test('AutosaveManager는 대기 중인 저장이 없으면 설정 변경만으로 draft를 저장하지 않는다', async () => {
   const { store, saved } = createStore();
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([7]),
+    exportDraft: () => ({ bytes: new Uint8Array([7]), format: 'hwp' as const }),
     schedule: {
       recoveryEnabled: true,
       recoveryIntervalMs: 5,
@@ -309,7 +309,7 @@ test('a failed draft write reports an error and retries while the document sits 
     async deleteDraft() {},
   };
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([1]),
+    exportDraft: () => ({ bytes: new Uint8Array([1]), format: 'hwp' as const }),
     schedule: { recoveryEnabled: false, idleEnabled: false },
     idFactory: () => 'draft-retry',
     retryDelayMs: 2,
@@ -343,7 +343,7 @@ test('a recovered draft keeps its id and is never deleted before a rewrite succe
     },
   };
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([1]),
+    exportDraft: () => ({ bytes: new Uint8Array([1]), format: 'hwp' as const }),
     schedule: { recoveryEnabled: false, idleEnabled: false },
     idFactory: () => 'fresh-id',
     retryDelayMs: 60_000,
@@ -374,7 +374,7 @@ test('drafts carry the page instance only once its owner lock is held', async ()
     async query() { return { held: [] }; },
   };
   const manager = new AutosaveManager({
-    exportBytes: () => new Uint8Array([1]),
+    exportDraft: () => ({ bytes: new Uint8Array([1]), format: 'hwp' as const }),
     schedule: { recoveryEnabled: false, idleEnabled: false },
     idFactory: () => 'draft-locked',
     instanceId: 'page-1',
@@ -393,4 +393,194 @@ test('drafts carry the page instance only once its owner lock is held', async ()
   manager.dispose();
   await tick();
   assert.equal(released, true);
+});
+
+function baseRecordingStore() {
+  const saved: Array<{ draft: AutosaveDraft; base: number[] | null }> = [];
+  const store: AutosaveStoreLike = {
+    async saveDraft(draft, base) {
+      saved.push({ draft: { ...draft }, base: base ? [...base.data] : null });
+    },
+    async deleteDraft() {},
+  };
+  return { store, saved };
+}
+
+test('the base copy is written with the first draft and again only after a rebase or discard', async () => {
+  const { store, saved } = baseRecordingStore();
+  const manager = new AutosaveManager({
+    exportDraft: () => ({ bytes: new Uint8Array([1]), format: 'hwpx' }),
+    schedule: { recoveryEnabled: false, idleEnabled: false },
+    idFactory: () => 'draft-base',
+    store,
+    logger: { debug() {}, warn() {} },
+  });
+  await manager.beginDocument(
+    { fileName: '보고서.hwpx', sourceFormat: 'hwpx', documentId: 'doc-1' },
+    { base: { bytes: new Uint8Array([5]), digest: 'blake3:five', mergeable: true } },
+  );
+  await manager.flushNow('typing');
+  await manager.flushNow('typing');
+  assert.deepEqual(saved.map((entry) => entry.base), [[5], null]);
+  assert.deepEqual(saved[1].draft.base, { digest: 'blake3:five', byteLength: 1, mergeable: true });
+  assert.equal(saved[1].draft.documentId, 'doc-1');
+  assert.equal(saved[1].draft.dataFormat, 'hwpx');
+
+  // 저장한 뒤에도 dirty 면 새 기준으로 바로 다시 기록한다.
+  await manager.rebase({ bytes: new Uint8Array([6]), digest: 'blake3:six', mergeable: true }, { dirty: true });
+  assert.deepEqual(saved.at(-1)!.base, [6]);
+  assert.equal(saved.at(-1)!.draft.base?.digest, 'blake3:six');
+
+  // clean 이면 기준만 바꾸고 기록하지 않는다. draft 가 지워졌으니 다음 기록은 기준을 다시 쓴다.
+  const before = saved.length;
+  await manager.discardCurrentDraft('saved');
+  await manager.rebase({ bytes: new Uint8Array([7]), digest: 'blake3:seven', mergeable: true }, { dirty: false });
+  assert.equal(saved.length, before);
+  await manager.flushNow('typing');
+  assert.deepEqual(saved.at(-1)!.base, [7]);
+});
+
+test('a rebase for a document that has since been replaced is ignored', async () => {
+  const { store, saved } = baseRecordingStore();
+  let nextId = 0;
+  const manager = new AutosaveManager({
+    exportDraft: () => ({ bytes: new Uint8Array([1]), format: 'hwp' }),
+    schedule: { recoveryEnabled: false, idleEnabled: false },
+    idFactory: () => `draft-${nextId++}`,
+    store,
+    logger: { debug() {}, warn() {} },
+  });
+  await manager.beginDocument({ fileName: 'a.hwp', sourceFormat: 'hwp' });
+  await manager.beginDocument({ fileName: 'b.hwp', sourceFormat: 'hwp' });
+  await manager.rebase({ bytes: new Uint8Array([9]), digest: 'blake3:nine', mergeable: true }, {
+    draftId: 'draft-0',
+    dirty: true,
+  });
+  assert.equal(saved.length, 0);
+});
+
+test('drafts follow the live file name and handle after Save As', async () => {
+  const { store, saved } = baseRecordingStore();
+  const live = { documentId: 'doc-1', fileName: 'before.hwp', fileHandle: null as null | { name: string } };
+  const manager = new AutosaveManager({
+    exportDraft: () => ({ bytes: new Uint8Array([1]), format: 'hwp' }),
+    liveDocument: () => live as never,
+    schedule: { recoveryEnabled: false, idleEnabled: false },
+    idFactory: () => 'draft-live',
+    store,
+    logger: { debug() {}, warn() {} },
+  });
+  await manager.beginDocument({ fileName: 'before.hwp', sourceFormat: 'hwp', documentId: 'doc-1' });
+  live.fileName = 'after.hwp';
+  live.fileHandle = { name: 'after.hwp' };
+  await manager.flushNow('typing');
+  assert.equal(saved[0].draft.fileName, 'after.hwp');
+  assert.equal(saved[0].draft.fileHandle?.name, 'after.hwp');
+  assert.equal(saved[0].draft.handleKind, 'browser');
+});
+
+test('a recovery save waits for the save in flight, then records what the document holds now', async () => {
+  let content = 1;
+  const exported: number[] = [];
+  const saved: number[] = [];
+  let releaseFirst!: () => void;
+  const firstWrite = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const store: AutosaveStoreLike = {
+    async saveDraft(draft) {
+      if (saved.length === 0 && exported.length === 1) await firstWrite;
+      saved.push(draft.data[0]);
+    },
+    async deleteDraft() {},
+  };
+  let now = 1_000;
+  const manager = new AutosaveManager({
+    exportDraft: () => {
+      exported.push(content);
+      return { bytes: new Uint8Array([content]), format: 'hwp' as const };
+    },
+    schedule: { recoveryEnabled: false, idleEnabled: false },
+    idFactory: () => 'draft-trap',
+    now: () => now,
+    store,
+    logger: { debug() {}, warn() {} },
+  });
+  await manager.beginDocument({ fileName: 'trap.hwp', sourceFormat: 'hwp' });
+
+  const inFlight = manager.flushNow('typing');
+  await tick();
+  // 저장이 진행 중일 때 엔진이 멈췄고, 그 사이 문서에는 마지막 입력이 들어가 있다.
+  content = 2;
+  now = 2_000;
+  let settled = false;
+  const recovery = manager.saveForRecovery('engine-trap').then((result) => {
+    settled = true;
+    return result;
+  });
+  await tick();
+  assert.equal(settled, false, 'the recovery save does not return while the earlier save is still writing');
+
+  releaseFirst();
+  await inFlight;
+  const result = await recovery;
+  assert.deepEqual(result, { ok: true, draftId: 'draft-trap', savedAt: 2_000 });
+  assert.deepEqual(saved, [1, 2], 'a second draft write follows the one in flight');
+  assert.deepEqual(exported, [1, 2], 'the second write exports the document after the call');
+  manager.dispose();
+});
+
+test('a failed recovery save reports the earlier autosave and never retries', async () => {
+  const writes: string[] = [];
+  let exportFails = false;
+  let exports = 0;
+  const store: AutosaveStoreLike = {
+    async saveDraft(draft) { writes.push(draft.dirtyReason ?? ''); },
+    async deleteDraft() {},
+  };
+  const manager = new AutosaveManager({
+    exportDraft: () => {
+      exports += 1;
+      if (exportFails) throw new Error('recursive use of an object detected');
+      return { bytes: new Uint8Array([1]), format: 'hwp' as const };
+    },
+    schedule: { idleDelayMs: 1, recoveryIntervalMs: 1 },
+    retryDelayMs: 1,
+    maxRetryDelayMs: 1,
+    idFactory: () => 'draft-old',
+    now: () => 5_000,
+    store,
+    logger: { debug() {}, warn() {} },
+  });
+  await manager.beginDocument({ fileName: 'stuck.hwp', sourceFormat: 'hwp' });
+  await manager.flushNow('typing');
+  assert.deepEqual(writes, ['typing']);
+
+  exportFails = true;
+  const result = await manager.saveForRecovery('engine-trap');
+  assert.equal(result.ok, false);
+  assert.equal(result.ok === false && result.lastSavedAt, 5_000);
+  assert.equal(result.ok === false && result.draftId, 'draft-old');
+
+  const exportsAfterTrap = exports;
+  manager.schedule('document-mutated');
+  await manager.flushNow('window-close');
+  await sleep(60);
+  assert.equal(exports, exportsAfterTrap, 'nothing exports the stopped document again');
+  assert.deepEqual(writes, ['typing'], 'no later draft write or retry replaces the earlier autosave');
+  manager.dispose();
+});
+
+test('a recovery save that fails with no earlier autosave says there is nothing to fall back on', async () => {
+  const manager = new AutosaveManager({
+    exportDraft: () => { throw new Error('unreachable'); },
+    schedule: { recoveryEnabled: false, idleEnabled: false },
+    idFactory: () => 'draft-none',
+    store: { async saveDraft() {}, async deleteDraft() {} },
+    logger: { debug() {}, warn() {} },
+  });
+  await manager.beginDocument({ fileName: 'new.hwp', sourceFormat: 'hwp' });
+  const result = await manager.saveForRecovery('engine-trap');
+  assert.equal(result.ok, false);
+  assert.equal(result.ok === false && result.lastSavedAt, null);
+  assert.equal(result.ok === false && result.draftId, null);
+  manager.dispose();
 });

@@ -97,7 +97,7 @@ function tagString(value) {
   return String.fromCharCode((value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255);
 }
 
-async function readTableDirectory(source, faceOffset) {
+export async function readTableDirectory(source, faceOffset) {
   const header = await source.read(faceOffset, 12);
   const sfntVersion = u32(header, 0);
   if (!SFNT_VERSIONS.has(sfntVersion)) {
@@ -119,7 +119,7 @@ async function readTableDirectory(source, faceOffset) {
 }
 
 /** 컬렉션이면 각 서브폰트의 오프셋 표 위치를, 단일 폰트면 [0] 을 돌려준다. */
-async function faceOffsets(source) {
+export async function faceOffsets(source) {
   const head = await source.read(0, 12);
   if (u32(head, 0) !== TTCF) return { collection: false, offsets: [0] };
   const numFonts = u32(head, 8);

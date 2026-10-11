@@ -24,13 +24,13 @@ class AutosaveRecoveryDialog extends ModalDialog {
 
     const lead = document.createElement('p');
     lead.style.margin = '0 0 12px';
-    lead.textContent = '저장되지 않은 문서 복구본이 있습니다. 복구할 문서를 선택하세요.';
+    lead.textContent = '저장하지 않은 변경 내용이 있습니다. 복구할 문서를 선택하세요.';
     body.appendChild(lead);
 
     const note = document.createElement('p');
     note.style.margin = '0 0 14px';
     note.style.color = 'var(--text-muted, #8b95a1)';
-    note.textContent = '복구해도 원본 파일을 자동으로 덮어쓰지 않습니다. 저장하려면 복구 후 직접 저장하세요.';
+    note.textContent = '복구하면 원래 문서로 다시 열립니다. 직접 저장하기 전에는 파일에 아무것도 쓰지 않습니다.';
     body.appendChild(note);
 
     const list = document.createElement('div');
