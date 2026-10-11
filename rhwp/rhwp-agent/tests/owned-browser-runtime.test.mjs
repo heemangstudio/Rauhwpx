@@ -407,3 +407,26 @@ test('human browser tabs survive document and project switches without granting 
   assert.equal((await restored.inventory(first)).tabs.length, 0);
   assert.equal(closedPages, 0, 'closing a restored descriptor does not create or reload its page');
 });
+
+
+test('human link popups retain global ownership and downloads are attributed to the user', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-browser-popup-'));
+  const page = opener => Object.assign(new EventEmitter(), { url: () => 'about:blank', opener: async () => opener, isClosed: () => false, async close() {}, async routeWebSocket() {}, frames: () => [] });
+  const parent = page(null);
+  const context = Object.assign(new EventEmitter(), { async storageState() { return { cookies: [], origins: [] }; }, async route() {}, pages: () => [], async newPage() { return parent; } });
+  let captured;
+  const service = createOwnedBrowserService({ dataDir, downloads: { async handleBrowserDownload(args) { captured = args.actor; } }, runtimeFactory: async () => ({ kind: 'chromium', browser: new EventEmitter(), context, async close() {} }) });
+  t.after(async () => { await service.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const actor = { isHuman: true, sessionId: 'window', clientId: 'window' };
+  await service.request(actor, 'open', {});
+  const popup = page(parent); context.emit('page', popup);
+  const deadline = Date.now() + 1000;
+  while ((await service.inventory(actor)).tabs.length !== 2 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+  const tabs = (await service.inventory(actor)).tabs;
+  assert.equal(tabs.length, 2);
+  assert.ok(tabs.every(tab => tab.scope === 'global' && tab.controller.owner === 'human'));
+  popup.emit('download', { url: () => 'about:blank', async cancel() {} });
+  while (!captured && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(captured?.isHuman, true);
+  assert.equal((await service.inventory({ agentId: 'other', threadId: 'other' })).tabs.length, 0);
+});

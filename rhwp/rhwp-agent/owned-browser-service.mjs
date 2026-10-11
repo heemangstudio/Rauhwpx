@@ -492,7 +492,7 @@ export function createOwnedBrowserService(options = {}) {
             const parent = opener && pageTabs.get(opener);
             if (!parent) return;
             if (tabs.size >= limits.maxTabs) { await page.close(); return; }
-            const tab = makeTab(actorForTab(parent)); tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab);
+            const tab = makeTab({ ...actorForTab(parent), scope: parent.scope }); tab.controller = { ...parent.controller }; tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab);
             try { await attach(tab, page); }
             catch (failure) {
               // 인증 보조 창은 CDP 바인딩이 끝나기 전에 스스로 닫힐 수 있다.
