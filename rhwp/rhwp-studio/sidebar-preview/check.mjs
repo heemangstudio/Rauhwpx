@@ -37,6 +37,40 @@ import { checkInterruptionPreview } from './interruption.check.mjs';
 import { checkAdoptionPreview } from './adoption.check.mjs';
 
 const focusedChecks = {
+  'focus-composer': async ({ page, open }) => {
+    await open('reset=1&fullscreen=1');
+    const startNewChat = async () => {
+      if (await page.$eval('.ag-root', (root) => root.classList.contains('ag-rail-collapsed'))) {
+        await page.click('.ag-workspace-threads-btn');
+        await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-rail-collapsed'));
+      }
+      await page.click('.ag-threads-new');
+      await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
+    };
+    await startNewChat();
+    const layout = () => page.evaluate(() => {
+      const chat = document.querySelector('.ag-chat-page').getBoundingClientRect();
+      const composer = document.querySelector('.ag-composer').getBoundingClientRect();
+      const greeting = document.querySelector('.ag-focus-greeting');
+      return {
+        gapBelow: Math.round(chat.bottom - composer.bottom),
+        greeting: greeting.checkVisibility() ? greeting.textContent : '',
+      };
+    });
+    const centered = await layout();
+    assert(centered.gapBelow > 200, `centered composer leaves ${centered.gapBelow}px below`);
+    assert(centered.greeting.includes('사업 제안서'), `greeting shows the document: ${centered.greeting}`);
+    await page.type('.ag-input', '요약해 줘');
+    await page.click('.ag-send');
+    await page.waitForSelector('.ag-msg-user');
+    await page.waitForFunction(() =>
+      document.querySelector('.ag-composer').getAnimations().every((tween) => tween.playState !== 'running'));
+    const sent = await layout();
+    assert(sent.gapBelow < 40, `sent composer leaves ${sent.gapBelow}px below`);
+    assert.equal(sent.greeting, '');
+    await startNewChat();
+    assert((await layout()).gapBelow > 200, 'a new chat centers the composer again');
+  },
   queue: async (h) => {
     await checkComposerSendPath(h.page, h.origin, h.artifacts);
     await checkFollowUpQueue(h.page, h.origin, h.artifacts);
