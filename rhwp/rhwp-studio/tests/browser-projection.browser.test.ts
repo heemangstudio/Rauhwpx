@@ -34,7 +34,7 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       } } });
       const { createWorkbenchBrowser } = await import('../src/ui/agent-sidebar/workbench-browser.ts');
       const tab = { tabId: 'same-tab', scope: 'global', nativeTargetId: 'same-target', runtime: 'native', url: 'https://example.com/retained', title: '자료', navigationEpoch: 3, controllerEpoch: 2, controller: { owner: 'human' }, status: 'ready' };
-      const bridge = { getConnectionState: () => 'connected', onBrowserEvent: () => () => {}, onEvent: () => () => {}, async requestBrowser(action: string) { calls.push({ action }); return action === 'status' ? { tabs: [tab] } : {}; } };
+      const bridge = { getConnectionState: () => 'connected', onBrowserEvent: () => () => {}, onEvent: () => () => {}, async requestBrowser(action: string) { calls.push({ action }); if (action === 'sleep') { attached = null; return { sleeping: true, tab: { ...tab, status: 'sleeping', nativeTargetId: undefined } }; } return action === 'status' ? { tabs: [tab] } : {}; } };
       const createView = () => createWorkbenchBrowser({ bridge: bridge as any, getDestination: () => ({ threadId: 'chat', projectId: null, documentId: null, label: '채팅' }), onCapture() {}, onOpenDownload() {}, onDock() {}, onChat() {} });
       const view = createView();
       view.mount(document.querySelector<HTMLElement>('#host')!); view.setVisible(true);
@@ -99,7 +99,7 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true);
     assert.equal(await page.$eval('.ag-browser-address', node => document.activeElement === node), true, 'docked browser receives keyboard focus');
     await page.evaluate(() => {
-      (window as any).rhwpDesktop.showContextMenu = async () => { (window as any).projectionTest.nativeMenuOpened = true; return new Promise(resolve => { (window as any).projectionTest.closeNativeMenu = resolve; }); };
+      (window as any).rhwpDesktop.showContextMenu = async (items: any[]) => { (window as any).projectionTest.menuItems = items; (window as any).projectionTest.nativeMenuOpened = true; return new Promise(resolve => { (window as any).projectionTest.closeNativeMenu = resolve; }); };
     });
     const beforeMenu = await page.evaluate(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'detach').length);
     await page.click('.ag-browser-details summary');
@@ -108,6 +108,17 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     assert.equal(await page.evaluate(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'detach').length), beforeMenu, 'opening the menu never detaches the guest');
     assert.equal(await page.$eval('.ag-browser-details', node => (node as HTMLDetailsElement).open), false, 'desktop menu does not expose the loading placeholder');
     await page.evaluate(() => (window as any).projectionTest.closeNativeMenu(null));
+    assert.deepEqual(await page.evaluate(() => (window as any).projectionTest.menuItems.map((item: any) => item.id)), ['popout', 'chat', 'reload', 'sleep']);
+    await page.click('.ag-browser-details summary');
+    await page.evaluate(() => (window as any).projectionTest.closeNativeMenu('sleep'));
+    await page.waitForFunction(() => (window as any).projectionTest.calls.some((call: any) => call.action === 'sleep'));
+    await attached(null);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.evaluate(() => (window as any).projectionTest.attached), null, 'manually sleeping selected tab stays asleep');
+    assert.equal(await page.$eval('.ag-browser-placeholder strong', node => node.textContent), '탭이 잠들어 있습니다');
+    await page.click('.ag-browser-placeholder button[aria-label="탭 깨우기"]');
+    await attached('same-tab');
+
 
     await page.evaluate(() => {
       const view = (window as any).projectionTest.view;

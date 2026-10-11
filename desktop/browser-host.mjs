@@ -483,14 +483,14 @@ export class OwnedBrowserHost {
     tab.interactive = false;
   }
 
-  async sleep({ targetId, tabId, idleMs }) {
+  async sleep({ targetId, tabId, idleMs, manual = false, discard = false }) {
     const tab = this.tab(targetId); const contents = tab.view.webContents;
-    const safe = () => tab.tabId === tabId && !tab.placement && !tab.activityLeases?.size
+    const safe = () => tab.tabId === tabId && (manual || !tab.placement) && !tab.activityLeases?.size
       && !tab.openerTargetId && ![...this.tabs.values()].some(child => child.openerTargetId === tab.targetId)
-      && !tab.closing && !tab.passwordShield && !contents.isDestroyed() && !contents.isLoading()
+      && !tab.closing && (manual || !tab.passwordShield) && !contents.isDestroyed() && !contents.isLoading()
       && !contents.isCurrentlyAudible() && this.downloads.size === 0
-      && Date.now() - (tab.lastHiddenAt ?? Date.now()) >= idleMs
-      && !this.popouts.get(tab.targetId)?.isVisible();
+      && (manual || Date.now() - (tab.lastHiddenAt ?? Date.now()) >= idleMs)
+      && (manual || !this.popouts.get(tab.targetId)?.isVisible());
     if (!safe()) return { sleeping: false };
     // 입력 값은 밖으로 보내지 않고 작성 중인 폼과 재생 중인 미디어는 유지한다.
     let protectedPage = true;
@@ -510,7 +510,8 @@ export class OwnedBrowserHost {
         return protectedFrame(window);
       })()`);
     } catch {}
-    if (protectedPage || !safe()) return { sleeping: false };
+    if (!safe()) return { sleeping: false, reason: 'busy' };
+    if ((protectedPage || tab.passwordShield) && !(manual && discard)) return { sleeping: false, reason: 'protected' };
     this.closeGuest(tab);
     return { sleeping: true };
   }

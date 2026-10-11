@@ -144,6 +144,7 @@ export function createWorkbenchBrowser(options: {
   const placeholderTitle = document.createElement('strong'); placeholderTitle.textContent = '자료를 찾아보세요';
   const placeholderText = document.createElement('p'); placeholderText.textContent = '웹사이트를 읽고 받은 PDF를 문서와 보드에서 확인할 수 있습니다.';
   const emptyOpen = button('연구 브라우저 열기', '브라우저 열기', () => handle(controller.open()), placeholder);
+  const wakeButton = button('탭 깨우기', '탭 깨우기', () => wakeCurrentTab(), placeholder); wakeButton.hidden = true;
   placeholder.prepend(sleepingHama, placeholderTitle, placeholderText);
   const textInput = document.createElement('textarea'); textInput.className = 'ag-browser-ime'; textInput.setAttribute('aria-label', '브라우저 페이지에 입력'); textInput.autocomplete = 'off'; textInput.spellcheck = false;
   surface.append(image, placeholder, textInput); element.append(surface);
@@ -170,6 +171,22 @@ export function createWorkbenchBrowser(options: {
   });
   savePassword.hidden = !nativeBrowserApi()?.passwords;
   icon(savePassword, 'shield'); savePassword.setAttribute('aria-pressed', 'false');
+  let manualSleepingTab: string | null = null;
+  async function sleepCurrentTab(): Promise<void> {
+    const tabId = controller.tab()?.tabId; if (!tabId || agentPreviewTab !== null) return;
+    if (manualSleepingTab === tabId) { wakeCurrentTab(); return; }
+    details.open = false; manualSleepingTab = tabId; cancelNativeHealth(); nativeHealthGeneration++; nativeSequence++;
+    await nativePending?.catch(() => undefined);
+    if (disposed || controller.tab()?.tabId !== tabId) { manualSleepingTab = null; return; }
+    try {
+      let result = await controller.request<{ sleeping: boolean; reason?: string }>('sleep', { tabId });
+      if (!result.sleeping && result.reason === 'protected' && window.confirm('이 탭에 입력한 내용은 사라질 수 있습니다. 탭을 잠자기로 전환할까요?')) result = await controller.request('sleep', { tabId, discard: true });
+      if (!result.sleeping) { manualSleepingTab = null; if (result.reason !== 'protected') throw new Error('작업 중인 탭은 잠자기로 전환할 수 없습니다.'); }
+      else { nativeTab = null; nativeProjection = ''; nativeFailedProjection = ''; }
+    } catch (failure) { manualSleepingTab = null; nativeError = failure instanceof Error ? failure.message : String(failure); throw failure; }
+    finally { paint(); layout(); }
+  }
+  function wakeCurrentTab(): void { manualSleepingTab = null; nativeHealthIdentity = ''; nativeProjection = ''; paint(); layout(); }
   const details = document.createElement('details'); details.className = 'ag-browser-details';
   const summary = document.createElement('summary'); summary.setAttribute('aria-label', '브라우저 추가 메뉴'); summary.title = '브라우저 추가 메뉴'; summary.append(createIcon('more'));
   const menu = document.createElement('div'); menu.className = 'ag-browser-menu';
@@ -177,6 +194,7 @@ export function createWorkbenchBrowser(options: {
   button('입력창으로 돌아가기', '채팅으로 돌아가기', () => { details.open = false; options.onChat(); }, menu).prepend(createIcon('message'));
   const menuReload = button('새로고침', '새로고침', () => { details.open = false; navigate('reload'); }, menu);
   menuReload.prepend(createIcon('refresh'));
+  const menuSleep = button('탭 잠자기', '탭 잠자기', () => handle(sleepCurrentTab()), menu);
   details.append(summary, menu); toolbar.append(details);
   let nativeMenuPending = false;
   summary.addEventListener('click', event => {
@@ -188,14 +206,16 @@ export function createWorkbenchBrowser(options: {
     nativeMenuPending = true;
     const rect = summary.getBoundingClientRect();
     void showContextMenu([
-      { id: 'popout', label: '별도 창으로 열기' },
+      { id: 'popout', label: '별도 창으로 열기', enabled: manualSleepingTab !== tabId },
       { id: 'chat', label: '채팅으로 돌아가기' },
-      { id: 'reload', label: '새로고침' },
+      { id: 'reload', label: '새로고침', enabled: manualSleepingTab !== tabId },
+      { id: 'sleep', label: manualSleepingTab === tabId ? '탭 깨우기' : '탭 잠자기' },
     ], { x: rect.right, y: rect.bottom }).then(choice => {
       if (disposed || agentPreviewTab !== null || controller.tab()?.tabId !== tabId) return;
       if (choice === 'popout') popoutButton.click();
       else if (choice === 'chat') options.onChat();
       else if (choice === 'reload') navigate('reload');
+      else if (choice === 'sleep') handle(sleepCurrentTab());
     }).finally(() => { nativeMenuPending = false; });
   });
 
@@ -240,6 +260,7 @@ export function createWorkbenchBrowser(options: {
     addressDraft = false; address.blur();
     let url = entered;
     if (!/^https?:\/\//i.test(url)) url = /^[\w.-]+\.[a-z]{2,}(?:\/|$)/i.test(url) ? `https://${url}` : `https://www.google.com/search?q=${encodeURIComponent(url)}`;
+    wakeCurrentTab();
     if (!controller.tab()) handle(controller.open(url));
     else handle(controller.action('navigate', { ...controller.identity(), url }).then(() => controller.readFrame()));
   });
@@ -435,6 +456,7 @@ export function createWorkbenchBrowser(options: {
     if (nativePending || reconnecting) return;
     const tab = controller.tab(); const sequence = ++nativeSequence;
     const target = tab?.tabId;
+    if (tab?.tabId === manualSleepingTab) return;
     const useNative = tab && (tab.runtime === 'native' || controller.state.runtime?.kind === 'native');
     if (nativeTab && (!nativeSurfaceVisible() || nativeOverlayOpen() || !useNative || nativeTab !== target)) {
       cancelNativeHealth(); nativeHealthIdentity = ''; nativeHealthGeneration++;
@@ -516,13 +538,15 @@ export function createWorkbenchBrowser(options: {
   function paint(): void {
     if (disposed) return;
     const tab = controller.tab(); const connected = controller.state.connected;
-    const frame = controller.frame();
+    const manuallySleeping = manualSleepingTab === tab?.tabId && tab !== null;
+    const frame = manuallySleeping ? null : controller.frame();
     const agentControlled = agentPreviewTab !== null && tab !== null;
     presentation.setAgentControlled(agentControlled);
     element.inert = agentControlled;
     challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
     fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
-    status.textContent = nativeRecovering ? '페이지 다시 여는 중' : reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'sleeping' ? '잠든 탭 깨우는 중' : tab.status === 'loading' ? '페이지 여는 중' : '에이전트 브라우저';
+    menuSleep.textContent = manualSleepingTab === tab?.tabId ? '탭 깨우기' : '탭 잠자기';
+    status.textContent = manualSleepingTab === tab?.tabId ? '잠든 탭' : nativeRecovering ? '페이지 다시 여는 중' : reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'sleeping' ? '잠든 탭 깨우는 중' : tab.status === 'loading' ? '페이지 여는 중' : '에이전트 브라우저';
     status.title = status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
     const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title, row.url, row.status]), tab?.tabId]);
     if (tabsSignature !== nextTabsSignature) {
@@ -530,13 +554,13 @@ export function createWorkbenchBrowser(options: {
     tabsSignature = nextTabsSignature; tabs.replaceChildren();
     for (const row of controller.state.tabs) {
       const wrapper = document.createElement('div'); wrapper.className = 'ag-browser-tab';
-      const select = button(row.title || row.url || '새 탭', browserTabTitle(row), () => controller.select(row.tabId), wrapper);
+      const select = button(row.title || row.url || '새 탭', browserTabTitle(row), () => { wakeCurrentTab(); controller.select(row.tabId); }, wrapper);
       select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(row.tabId === tab?.tabId)); select.tabIndex = row.tabId === tab?.tabId ? 0 : -1;
       select.dataset.tabId = row.tabId; select.dataset.sleeping = String(row.status === 'sleeping'); if (row.status === 'sleeping') select.title += ' · 잠자기'; select.addEventListener('keydown', event => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault(); const index = controller.state.tabs.indexOf(row); const length = controller.state.tabs.length;
         const next = event.key === 'Home' ? 0 : event.key === 'End' ? length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + length) % length;
-        controller.select(controller.state.tabs[next].tabId); tabs.querySelector<HTMLButtonElement>(`[data-tab-id="${CSS.escape(controller.state.tabs[next].tabId)}"]`)?.focus();
+        wakeCurrentTab(); controller.select(controller.state.tabs[next].tabId); tabs.querySelector<HTMLButtonElement>(`[data-tab-id="${CSS.escape(controller.state.tabs[next].tabId)}"]`)?.focus();
       });
       const close = button(`${row.title || '브라우저 탭'} 닫기`, '', () => handle(controller.close(row.tabId)), wrapper); icon(close, 'close'); close.classList.add('ag-browser-tab-close'); close.tabIndex = -1;
       tabs.append(wrapper);
@@ -549,8 +573,10 @@ export function createWorkbenchBrowser(options: {
     if (addressOwner !== nextAddressOwner) { addressOwner = nextAddressOwner; addressDraft = false; address.value = tab?.url ?? ''; }
     else if (!addressDraft && element.ownerDocument.activeElement !== address) address.value = tab?.url ?? '';
     paintZoom();
-    for (const node of [annotate, reload, menuReload, back, forward]) node.disabled = !tab || !connected || controller.state.busy;
+    menuSleep.disabled = !tab || !connected || controller.state.busy || agentControlled;
+    for (const node of [annotate, reload, menuReload, back, forward]) node.disabled = !tab || !connected || controller.state.busy || manuallySleeping;
     annotate.disabled ||= zoomPending;
+    popoutButton.disabled = manuallySleeping;
     const reloadLabel = tab?.status === 'loading' ? '페이지 열기 중지' : '새로고침'; reload.setAttribute('aria-label', reloadLabel); reload.title = reloadLabel; icon(reload, tab?.status === 'loading' ? 'browserStop' : 'refresh');
     emptyOpen.disabled = !connected;
     recover.hidden = reconnecting || !!nativePending || !tab || !['crashed', 'disconnected', 'restorable', 'failed'].includes(tab.status); recover.disabled = !connected || controller.state.busy;
@@ -558,10 +584,11 @@ export function createWorkbenchBrowser(options: {
     reconnectButton.disabled = nativeRecovering || reconnecting || !!nativePending; reconnectButton.textContent = reconnecting ? '연결 중…' : '다시 연결';
     errorMessage.textContent = controller.state.error ?? nativeError ?? ''; error.hidden = !controller.state.error && !nativeError;
     sleepingHama.hidden = !tab || !!frame || tab.status === 'crashed' || !!nativeProjection && !nativePending && !nativeError && tab.status === 'ready';
+    wakeButton.hidden = !manuallySleeping;
     placeholder.hidden = Boolean(tab); image.hidden = !frame;
     if (frame && frame.frameId !== selectedFrameId) { selectedFrameId = frame.frameId; image.src = `data:${frame.mimeType};base64,${frame.data}`; image.style.aspectRatio = `${frame.width} / ${frame.height}`; }
     if (!frame && selectedFrameId) { selectedFrameId = ''; image.removeAttribute('src'); }
-    if (tab && !frame) { placeholder.hidden = false; placeholderTitle.textContent = tab.status === 'crashed' ? '브라우저가 종료되었습니다' : '페이지 화면을 기다리는 중'; placeholderText.textContent = tab.status === 'crashed' ? '상태를 새로 읽고 페이지를 다시 열어 주세요.' : tab.url; emptyOpen.hidden = true; }
+    if (tab && !frame) { placeholder.hidden = false; placeholderTitle.textContent = manuallySleeping ? '탭이 잠들어 있습니다' : tab.status === 'crashed' ? '브라우저가 종료되었습니다' : '페이지 화면을 기다리는 중'; placeholderText.textContent = tab.status === 'crashed' ? '상태를 새로 읽고 페이지를 다시 열어 주세요.' : tab.url; emptyOpen.hidden = true; }
     else if (!tab) { placeholderTitle.textContent = '자료를 찾아보세요'; placeholderText.textContent = '웹사이트를 읽고 받은 PDF를 문서와 보드에서 확인할 수 있습니다.'; emptyOpen.hidden = false; }
     dockButton.hidden = presentation.current() === 'dock'; floatButton.hidden = presentation.current() === 'float';
     popoutButton.hidden = presentation.current() === 'popout';

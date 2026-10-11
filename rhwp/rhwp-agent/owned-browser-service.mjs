@@ -110,17 +110,23 @@ export function createOwnedBrowserService(options = {}) {
         if (!tab.page || tab.sleeping || tab.activeActor || tab.pendingChooser || now - tab.lastActivityAt < idleSleepMs) continue;
         await enqueue(tab, async () => {
           if (!tab.page || tab.sleeping || tab.activeActor || now - tab.lastActivityAt < idleSleepMs) return;
-          tab.sleepPending = true; const url = tab.page.url();
-          try {
-            const result = await selectedAdapter().sleep({ targetId: tab.nativeTargetId, tabId: tab.tabId, idleMs: idleSleepMs });
-            if (!result?.sleeping) return;
-            tab.url = url; tab.page = null; tab.nativeTargetId = undefined;
-            tab.sleeping = true; tab.restorePending = true; tab.status = 'sleeping';
-            invalidate(tab); publish(tab); await persist();
-          } finally { tab.sleepPending = false; }
+          await sleepTab(tab);
         });
       }
     } finally { sleepSweepRunning = false; }
+  }
+  async function sleepTab(tab, { manual = false, discard = false } = {}) {
+    if (tab.sleeping) return { sleeping: true };
+    if (!tab.page || tab.activeActor || tab.pendingChooser || !selectedAdapter()?.sleep) return { sleeping: false, reason: 'busy' };
+    tab.sleepPending = true; const url = tab.page.url();
+    try {
+      const result = await selectedAdapter().sleep({ targetId: tab.nativeTargetId, tabId: tab.tabId, idleMs: idleSleepMs, manual, discard });
+      if (!result?.sleeping) return result;
+      tab.url = url; tab.page = null; tab.nativeTargetId = undefined;
+      tab.sleeping = true; tab.restorePending = true; tab.status = 'sleeping';
+      invalidate(tab); publish(tab); await persist();
+      return { sleeping: true };
+    } finally { tab.sleepPending = false; }
   }
   async function wakeTab(actor, tab) {
     if (!tab.sleeping) return;
@@ -1079,7 +1085,12 @@ export function createOwnedBrowserService(options = {}) {
     }
     const tab = ownedTab(actor, args.tabId);
     tab.lastActivityAt = Date.now();
-    if (tab.sleeping && !['close', 'reconnect'].includes(action)) await wakeTab(actor, tab);
+    if (tab.sleeping && !['close', 'reconnect', 'sleep'].includes(action)) await wakeTab(actor, tab);
+    if (action === 'sleep') {
+      if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Manual tab sleep is controlled by the user.');
+      assertController(actor, tab);
+      return enqueue(tab, async () => ({ ok: true, action, ...await sleepTab(tab, { manual: true, discard: args.discard === true }), tab: descriptor(tab), runtime: runtimeInfo() }));
+    }
     if (action === 'reconnect') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Browser presentation reconnect is managed by the editor.');
       if (!selectedAdapter()) throw error('BROWSER_RECONNECT_REQUIRED', 'This browser does not have a native presentation.', true);
