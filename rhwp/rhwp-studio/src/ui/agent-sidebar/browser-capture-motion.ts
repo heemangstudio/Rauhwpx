@@ -31,33 +31,39 @@ export function createBrowserCaptureMotion(trigger: HTMLElement) {
       }
       if (reduced() || !file || !source?.width) { highlight(destination); return; }
       const token = generation;
-      const thumbnail = document.createElement('img');
-      thumbnail.className = 'ag-browser-capture-flight'; thumbnail.alt = ''; thumbnail.setAttribute('aria-hidden', 'true');
-      const url = URL.createObjectURL(file); thumbnail.src = url;
-      // 뷰포트 전체를 복제하지 않고 작은 카드 한 장만 잠깐 유지한다.
+      const thumbnail = document.createElement('canvas');
+      thumbnail.className = 'ag-browser-capture-flight'; thumbnail.setAttribute('aria-hidden', 'true');
+      thumbnail.width = 20; thumbnail.height = 15;
+      // 실제 첨부는 원본 그대로 두고 동작에 쓸 픽셀 덩어리만 작게 만든다.
       const width = 80, height = 60;
       const x = source.x + source.width / 2 - width / 2;
       const y = Math.max(0, source.y + source.height / 2 - height / 2);
       Object.assign(thumbnail.style, { left: `${x}px`, top: `${y}px` });
       let flight: Animation | null = null; let arrival: Animation | null = null;
       const cleanup = () => {
-        flight?.cancel(); arrival?.cancel(); thumbnail.remove(); URL.revokeObjectURL(url);
+        flight?.cancel(); arrival?.cancel(); thumbnail.remove();
         if (cleanupFlight === cleanup) cleanupFlight = null;
       };
       cleanupFlight = cleanup;
-      void thumbnail.decode().then(() => {
-        if (generation !== token || !destination.isConnected) { cleanup(); return; }
+      void createImageBitmap(file, { resizeWidth: 20, resizeHeight: 15, resizeQuality: 'pixelated' }).then(bitmap => {
+        try {
+          if (generation !== token || !destination.isConnected) { cleanup(); return; }
+          const context = thumbnail.getContext('2d')!;
+          context.imageSmoothingEnabled = false;
+          context.drawImage(bitmap, 0, 0);
+          context.fillStyle = 'rgba(100, 160, 120, .18)'; context.fillRect(0, 0, 20, 15);
+        } finally { bitmap.close(); }
         document.body.append(thumbnail);
         const dx = target.x + Math.min(target.width / 2, 32) - width / 2 - x;
         const dy = target.y + target.height / 2 - height / 2 - y;
         flight = thumbnail.animate([
           { transform: 'translate(0, 0) scale(.7)', opacity: 0 },
-          { transform: 'translate(0, -8px) scale(1)', opacity: .95, offset: .18 },
-          { transform: `translate(${dx * .8}px, -8px) scale(.8)`, opacity: .9, offset: .55 },
-          { transform: `translate(${dx}px, ${dy}px) scale(.18)`, opacity: 0 },
-        ], { duration: 620, easing: 'cubic-bezier(.22, .8, .3, 1)', fill: 'both' });
+          { transform: 'translate(0, -8px) scale(1.08, .92)', opacity: .95, offset: .18 },
+          { transform: `translate(${dx * .8}px, -8px) scale(.8, .9) rotate(-6deg)`, opacity: .9, offset: .55 },
+          { transform: `translate(${dx}px, ${dy}px) scale(.16, .26)`, opacity: 0 },
+        ], { duration: 1300, easing: 'cubic-bezier(.4, 0, .2, 1)', fill: 'both' });
         void flight.finished.then(async () => {
-          thumbnail.remove(); URL.revokeObjectURL(url);
+          thumbnail.remove();
           if (!destination.isConnected || generation !== token) return;
           arrival = highlight(destination); await arrival.finished;
         }).catch(() => undefined).finally(cleanup);
