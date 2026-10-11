@@ -293,9 +293,9 @@ if (process.env.RHWP_AGENT_MODE === 'production' && !secretStore.available) {
     code: 'HUB_SECRET_BROKER_REQUIRED',
   });
 }
-const piManager = await createPiManager({
+const piManager = createPiManager({
   rootDir: PI_ROOT, openRouter, secretStore, routingSort: process.env.RHWP_PI_ROUTING_SORT,
-}).init();
+});
 const authRuns = new AuthRunRegistry();
 let npmPrefixMutationQueue = Promise.resolve();
 function mutateSharedNpmPrefix(operation) {
@@ -303,7 +303,7 @@ function mutateSharedNpmPrefix(operation) {
   npmPrefixMutationQueue = running.catch(() => {});
   return running;
 }
-const cliSetup = await createCliSetupManager({ secretStore, deleteKeychainItem: deleteClaudeKeychainItem }).init();
+const cliSetup = createCliSetupManager({ secretStore, deleteKeychainItem: deleteClaudeKeychainItem });
 /**
  * Claude children get their login from CLAUDE_CODE_OAUTH_TOKEN (see
  * cliSetup.envFor), so isolated homes only receive the portable config.
@@ -348,7 +348,11 @@ const provisionalCliSetup = {
 };
 let cliSetupStatus = { ...provisionalCliSetup };
 /** pi 상태는 동기 경로(resolveModel/startSession)에서도 필요해 캐시해 둔다. */
-let piStatus = await piManager.status();
+let piStatus = {
+  installed: existsSync(piManager.piBin), installing: false, version: null,
+  keyConfigured: false, keyTail: null, models: [], defaultModelId: null,
+  setupComplete: false, latestVersion: null, updateRequired: false, error: null,
+};
 /** OpenRouter 잔액. 키가 있을 때만 채워지고 사용량 리포트에 얹힌다. */
 let openRouterCredits = null;
 let openRouterCreditsKey = null;
@@ -360,18 +364,24 @@ let openRouterCreditsKey = null;
  */
 let bootWorkPromise = null;
 function ensureBootWork() {
-  bootWorkPromise ??= Promise.all([
-    // 저장된 Claude 토큰이 아직 받아들여지는지 한 번 확인한다. 네트워크가 없으면 그대로 둔다.
-    cliSetup.verifyAuth('claude')
-      .catch((error) => log(`claude credential check failed: ${error?.message ?? error}`)),
-    ...['claude', 'codex'].map((agent) => cliSetup.status(agent).then((status) => {
-      if (cliSetupStatus[agent] === provisionalCliSetup[agent]) cliSetupStatus[agent] = status;
-    }).catch((error) => log(`${agent} setup status failed: ${error?.message ?? error}`))),
-    // Pi 홈 설정을 다시 쓰고 예전 허브가 남긴 사본을 치운다 — 실패해도 허브는 그대로 뜬다.
-    piStatus.installed
-      ? piManager.syncAssets().catch((error) => log(`pi asset sync failed: ${error?.message ?? error}`))
-      : null,
-  ]).then(() => {});
+  // Keychain 승인을 기다려도 편집기와 브라우저의 준비 줄은 막지 않는다.
+  bootWorkPromise ??= Promise.all([piManager.init(), cliSetup.init()]).then(async () => {
+    process.env.PATH = [cliSetup.nodeHostDir(), cliSetup.binDir, process.env.PATH]
+      .filter(Boolean).join(path.delimiter);
+    piStatus = await piManager.status();
+    await Promise.all([
+      // 저장된 Claude 토큰이 아직 받아들여지는지 한 번 확인한다. 네트워크가 없으면 그대로 둔다.
+      cliSetup.verifyAuth('claude')
+        .catch((error) => log(`claude credential check failed: ${error?.message ?? error}`)),
+      ...['claude', 'codex'].map((agent) => cliSetup.status(agent).then((status) => {
+        if (cliSetupStatus[agent] === provisionalCliSetup[agent]) cliSetupStatus[agent] = status;
+      }).catch((error) => log(`${agent} setup status failed: ${error?.message ?? error}`))),
+      // Pi 홈 설정을 다시 쓰고 예전 허브가 남긴 사본을 치운다 — 실패해도 허브는 그대로 뜬다.
+      piStatus.installed
+        ? piManager.syncAssets().catch((error) => log(`pi asset sync failed: ${error?.message ?? error}`))
+        : null,
+    ]);
+  }).catch((error) => log(`provider initialization failed: ${error?.message ?? error}`));
   return bootWorkPromise;
 }
 const providerHealth = createProviderHealth({
@@ -4371,6 +4381,7 @@ async function handleStudioMessage(record, sock, msg) {
         rejectStart(new Error(`unknown agent: ${String(agent)}`));
         return;
       }
+      await ensureBootWork();
       // 설정이 끝나지 않은 pi 로는 세션을 열지 않는다 — 살아 있는 세션도 건드리지 않는다.
       if (agent === 'pi' && !piStatus.setupComplete) {
         sendJson(sock, {

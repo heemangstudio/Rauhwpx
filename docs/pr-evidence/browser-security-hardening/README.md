@@ -23,3 +23,5 @@ PLAYWRIGHT_BROWSERS_PATH=/path/to/pinned/chromium node --test \
   rhwp/rhwp-agent/tests/owned-browser-tool-contracts.test.mjs
 node --test tests/desktop-browser-passwords-native.test.mjs
 ```
+
+Final desktop relaunch found a pre-existing startup dependency: Pi and CLI initialization waited for the OS credential broker before `RHWP_HUB_READY`. Provider initialization now runs after readiness, and session startup waits for it before validating provider configuration. A real child-process regression with an unanswered credential IPC request fails on the previous implementation and passes on the fix; authenticated health remains available while approval is pending.
