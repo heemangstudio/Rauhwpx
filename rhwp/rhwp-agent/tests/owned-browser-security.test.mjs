@@ -199,8 +199,8 @@ test('human interaction keeps the owned page readable without approving external
   const held = new Promise((resolve) => { releaseFrame = resolve; });
   const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false, runtimeFactory: async (options) => { const runtime = await startOwnedBrowserRuntime(options); context = runtime.context; return runtime; } });
   f.cleanup(() => browser.close());
-  const opened = await browser.request(human, 'open', { url: f.origin });
-  await browser.request(human, 'control', { tabId: opened.tab.tabId, owner: 'agent' });
+  const opened = await browser.request(agent, 'open', { url: f.origin });
+  await browser.request(human, 'input', { tabId: opened.tab.tabId, navigationEpoch: opened.tab.navigationEpoch, controllerEpoch: opened.tab.controllerEpoch, type: 'release' });
   const page = context.pages().find((entry) => entry.url().startsWith(f.origin));
   const screenshot = page.screenshot.bind(page);
   page.screenshot = async (options) => { const bytes = await screenshot(options); frameStarted(); await held; return bytes; };

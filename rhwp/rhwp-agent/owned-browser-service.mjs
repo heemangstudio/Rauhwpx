@@ -31,7 +31,7 @@ const challengeFor = (tab) => {
       ...(query ? { fallback: { provider: 'duckduckgo', url: `https://duckduckgo.com/?q=${encodeURIComponent(query)}` } } : {}) };
   } catch { return null; }
 };
-const sameScope = (actor, tab) => actor.threadId === tab.threadId && actor.agentId === tab.agentId && (actor.projectId ?? null) === tab.projectId;
+const sameScope = (actor, tab) => tab.scope !== 'global' && actor.threadId === tab.threadId && actor.agentId === tab.agentId && (actor.projectId ?? null) === tab.projectId;
 const PARAMETER_RULES = { verbs: ['delete', 'remove', 'destroy', 'send', 'publish', 'purchase', 'checkout', 'share', 'save', 'edit', 'upload', 'invite', 'logout'], operations: ['action', 'command', 'operation', 'method'], negative: ['0', 'false', 'no', 'none', 'off'] };
 const mutatingParameter = (name, value) => { const key = name.toLowerCase(), setting = String(value).trim().toLowerCase(); return PARAMETER_RULES.verbs.includes(key) && !PARAMETER_RULES.negative.includes(setting) || PARAMETER_RULES.operations.includes(key) && PARAMETER_RULES.verbs.includes(setting); };
 const changesWebsiteURL = (value) => {
@@ -127,7 +127,7 @@ export function createOwnedBrowserService(options = {}) {
 
   const emit = (type, payload) => { try { onEvent({ type, ...payload }); } catch {} };
   const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
-  const descriptor = (tab) => ({ tabId: tab.tabId, threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: publicURL(tab.page?.url?.() ?? tab.url), title: tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null });
+  const descriptor = (tab) => ({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: publicURL(tab.page?.url?.() ?? tab.url), title: tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null });
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   const publish = (tab) => emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo() });
   const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman) emit('owned_browser_activity', { active, sessionId: tab.sessionId, tab: descriptor(tab), runtime: runtimeInfo() }); };
@@ -189,7 +189,7 @@ export function createOwnedBrowserService(options = {}) {
     if (args.runtimeGeneration !== undefined && args.runtimeGeneration !== generation) throw error('BROWSER_STALE_RUNTIME', 'The browser restarted. Refresh its inventory before continuing.', true);
   };
   const assertController = (actor, tab) => {
-    if (actor.isHuman && actor.sessionId && tab.sessionId && actor.sessionId !== tab.sessionId) throw error('BROWSER_CONTROL_REQUIRED', 'This browser tab belongs to another editor window.');
+    if (actor.isHuman && tab.scope !== 'global' && actor.sessionId && tab.sessionId && actor.sessionId !== tab.sessionId) throw error('BROWSER_CONTROL_REQUIRED', 'This browser tab belongs to another editor window.');
   };
   const enqueue = (tab, operation) => {
     const result = tab.queue.catch(() => {}).then(operation);
@@ -368,7 +368,7 @@ export function createOwnedBrowserService(options = {}) {
       const session = await runtime.context.newCDPSession(page);
       try { tab.nativeTargetId = (await session.send('Target.getTargetInfo')).targetInfo.targetId; }
       finally { await session.detach().catch(() => {}); }
-      const nativeState = await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId });
+      const nativeState = await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId, global: tab.scope === 'global' });
       tab.nativeGeneration = nativeState?.generation;
       tab.zoomFactor = nativeState?.zoomFactor;
       await selectedAdapter().control?.({ targetId: tab.nativeTargetId, human: true });
@@ -463,7 +463,7 @@ export function createOwnedBrowserService(options = {}) {
           finally { await session.detach().catch(() => {}); }
           const logicalId = nativeInventory.find((tab) => tab.nativeTargetId === targetId)?.tabId;
           const retained = tabs.get(logicalId) ?? [...tabs.values()].find((tab) => tab.nativeTargetId === targetId);
-          if (retained) { retained.controller = { owner: 'agent' }; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); retained.restorePending = false; publish(retained); }
+          if (retained) { retained.controller = { owner: retained.scope === 'global' ? 'human' : 'agent' }; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); retained.restorePending = false; publish(retained); }
         }
         const observedRuntime = runtime;
         runtime.browser?.on('disconnected', () => {
@@ -492,7 +492,7 @@ export function createOwnedBrowserService(options = {}) {
     })();
     return starting;
   };
-  const makeTab = (actor) => ({ tabId: id('tab'), threadId: actor.threadId ?? null, projectId: actor.projectId ?? null, documentId: actor.documentId ?? null, agentId: actor.agentId ?? 'human', ownerId: actor.ownerId, sessionId: actor.sessionId, taskId: actor.taskId, url: 'about:blank', title: '', status: 'ready', page: null, navigationEpoch: 0, controllerEpoch: 1, controller: { owner: 'agent' }, queue: Promise.resolve(), heldKeys: new Set(), heldButtons: new Set(), snapshot: null, frame: null });
+  const makeTab = (input) => { const global = input.isHuman || input.scope === 'global'; const actor = global ? { ...input, threadId: null, projectId: null, documentId: null, agentId: 'human', taskId: null } : input; return ({ scope: global ? 'global' : 'agent', tabId: id('tab'), threadId: actor.threadId ?? null, projectId: actor.projectId ?? null, documentId: actor.documentId ?? null, agentId: actor.agentId ?? 'human', ownerId: actor.ownerId, sessionId: actor.sessionId, taskId: actor.taskId, url: 'about:blank', title: '', status: 'ready', page: null, navigationEpoch: 0, controllerEpoch: 1, controller: { owner: global ? 'human' : 'agent' }, queue: Promise.resolve(), heldKeys: new Set(), heldButtons: new Set(), snapshot: null, frame: null }); };
   const returnFromSignIn = async (account, storage) => {
     const origins = new Set(account.origins);
     const hosts = account.origins.map((origin) => new URL(origin).hostname);
@@ -957,7 +957,7 @@ export function createOwnedBrowserService(options = {}) {
         clearInterval(checkpointTimer);
         if (runtime) { await saveCheckpoint().catch(() => {}); await runtime.close(); runtime = null; }
         await credentialBroker.deleteCheckpoint?.({ profileId: 'default' });
-        for (const tab of tabs.values()) { tab.page = null; tab.status = 'disconnected'; tab.controllerEpoch++; tab.controller = { owner: 'agent' }; invalidate(tab); }
+        for (const tab of tabs.values()) { tab.page = null; tab.status = 'disconnected'; tab.controllerEpoch++; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' }; invalidate(tab); }
         runtimeMode = 'managed'; state = 'sign-in'; signInAccountId = account.id;
         const start = options.signInFactory ?? startOwnedBrowserSignIn;
         signIn = await start({ dataDir, url, authenticationMethod: args.authenticationMethod, autoInstall: options.autoInstall !== false, onExit: () => emit('owned_browser_runtime', { runtime: runtimeInfo() }) });
@@ -1014,7 +1014,7 @@ export function createOwnedBrowserService(options = {}) {
           publish(blocked); return challengeResult(action, blocked);
         }
       }
-      if (tabs.size >= limits.maxTabs || [...tabs.values()].filter((tab) => sameScope(actor, tab)).length >= limits.maxTabsPerAgent) throw error('BROWSER_TAB_LIMIT', 'Close an unused browser tab before opening another.');
+      if (tabs.size >= limits.maxTabs || !actor.isHuman && [...tabs.values()].filter((tab) => sameScope(actor, tab)).length >= limits.maxTabsPerAgent) throw error('BROWSER_TAB_LIMIT', 'Close an unused browser tab before opening another.');
       await ensureRuntime();
       if (closed) throw error('BROWSER_CLOSED', 'The browser service has closed.');
       if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Complete browser cleanup before opening another page.');
@@ -1078,7 +1078,7 @@ export function createOwnedBrowserService(options = {}) {
           requirePage(tab);
           tab.restorePending = false;
           // 허브만 재시작한 경우 기존 게스트를 유지하며 현재 창에 다시 바인딩한다.
-          const nativeState = await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId });
+          const nativeState = await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId, global: tab.scope === 'global' });
           tab.nativeGeneration = nativeState?.generation;
           tab.zoomFactor = nativeState?.zoomFactor;
         } catch (failure) { tab.sessionId = previousSession; throw failure; }
@@ -1091,14 +1091,14 @@ export function createOwnedBrowserService(options = {}) {
       tab.activeActor = actor;
       try { if (!tab.page) { tab.sessionId = actor.sessionId ?? tab.sessionId; tab.controllerEpoch++; invalidate(tab); await attach(tab, await runtime.context.newPage()); if (tab.url !== 'about:blank') { markHumanOrigin(new URL(tab.url).origin); await guard.resolve(tab.url); await tab.page.goto(tab.url, { waitUntil: 'domcontentloaded' }); } } }
       finally { tab.activeActor = null; }
-      tab.status = 'ready'; tab.controller = { owner: 'agent' };
+      tab.status = 'ready'; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' };
       await selectedAdapter()?.control?.({ targetId: tab.nativeTargetId, human: true });
       markHumanDocument(tab); await observeHumanSessions(); publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo(), recovery: 'Page reloaded. Previous uncertain actions were not replayed.' };
     }
     if (action === 'control') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the user can transfer browser control.');
       epochs(tab, args);
-      tab.controllerEpoch++; tab.controller = { owner: 'agent' };
+      tab.controllerEpoch++; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' };
       if (tab.controller.owner === 'human') markHumanDocument(tab);
       credentialBroker?.invalidateTab?.(tab.tabId);
       // Invalidate queued agent input immediately, then drain before confirming the transfer.
@@ -1168,12 +1168,12 @@ export function createOwnedBrowserService(options = {}) {
     request, inventory,
     ownsTarget(actor, target) {
       const tab = target?.tabId && tabs.get(target.tabId);
-      return !!tab && (actor?.isHuman ? !actor.sessionId || !tab.sessionId || actor.sessionId === tab.sessionId : sameScope(actor, tab));
+      return !!tab && (actor?.isHuman ? tab.scope === 'global' || !actor.sessionId || !tab.sessionId || actor.sessionId === tab.sessionId : sameScope(actor, tab));
     },
     downloadTarget(actor, url) {
       let origin; try { origin = new URL(url).origin; } catch { return null; }
       for (const tab of tabs.values()) {
-        if (!tab.page || tab.page.isClosed() || !(actor.isHuman ? !actor.sessionId || !tab.sessionId || actor.sessionId === tab.sessionId : sameScope(actor, tab))) continue;
+        if (!tab.page || tab.page.isClosed() || !(actor.isHuman ? tab.scope === 'global' || !actor.sessionId || !tab.sessionId || actor.sessionId === tab.sessionId : sameScope(actor, tab))) continue;
         try { if (new URL(tab.page.url()).origin === origin) return descriptor(tab); } catch {}
       }
       return null;
@@ -1184,7 +1184,7 @@ export function createOwnedBrowserService(options = {}) {
       if (stored?.version !== 1 || !Array.isArray(stored.tabs)) return;
       for (const origin of Array.isArray(stored.humanStorageOrigins) ? stored.humanStorageOrigins.slice(0, 2048) : []) { try { const url = new URL(origin); if (['https:', 'http:'].includes(url.protocol) && url.origin === origin) { unconfirmedHumanOrigins.add(origin); humanOrigins.add(origin); } } catch {} }
       for (const record of stored.tabs.slice(0, limits.maxTabs)) {
-        if (typeof record.tabId !== 'string' || !record.threadId || !record.agentId) continue;
+        if (typeof record.tabId !== 'string' || record.scope !== 'global' && (!record.threadId || !record.agentId)) continue;
         const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), openerTabId: typeof record.openerTabId === 'string' ? text(record.openerTabId, 160) : undefined, searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, restorePending: true, status: 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
       }
     },

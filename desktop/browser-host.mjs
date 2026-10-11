@@ -265,7 +265,7 @@ export class OwnedBrowserHost {
     if (tab.tabId) this.aliases.set(tab.tabId, tab.targetId);
   }
 
-  bind({ targetId, tabId, sessionId, chatId }) {
+  bind({ targetId, tabId, sessionId, chatId, global = false }) {
     if (!ID_RE.test(String(tabId)) || !ID_RE.test(String(sessionId))) throw new Error('Native browser binding is invalid');
     const window = this.getWindowForSession(sessionId);
     if (!window || window.isDestroyed()) throw new Error('Native browser binding has no owning editor window');
@@ -273,11 +273,14 @@ export class OwnedBrowserHost {
     if (tab.openerTargetId && tab.chatId !== chatId) throw new Error('Native browser popup belongs to another chat');
     const occupied = this.aliases.get(tabId);
     if (occupied && occupied !== targetId) throw new Error('Native browser tab binding is already owned');
-    if (tab.windowId && tab.windowId !== window.id) throw new Error('Native browser tab belongs to another editor window');
+    if (tab.windowId && tab.windowId !== window.id) {
+      if (!global || !tab.global) throw new Error('Native browser tab belongs to another editor window');
+      this.unplace(tab); this.popouts.get(tab.targetId)?.hide();
+    }
     if (tab.tabId && (tab.tabId !== tabId || tab.sessionId !== sessionId || tab.chatId !== chatId)) { tab.passwordSnapshot = null; this.webAuthn?.cancelTab(tab); }
     if (tab.tabId && tab.tabId !== tabId) this.aliases.delete(tab.tabId);
     if (tab.tabId !== tabId || tab.sessionId !== sessionId || tab.chatId !== chatId) this.clearActivity(tab);
-    Object.assign(tab, { tabId, sessionId, chatId, windowId: window.id });
+    Object.assign(tab, { tabId, sessionId, chatId, windowId: window.id, global });
     this.aliases.set(tabId, targetId);
     this.emit(tab, 'bound');
     return this.state(tab);

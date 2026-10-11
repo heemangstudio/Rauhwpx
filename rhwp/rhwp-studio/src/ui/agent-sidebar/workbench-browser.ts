@@ -602,6 +602,21 @@ export function createWorkbenchBrowser(options: {
       handle(controller.readFrame());
     },
     endAgentPreview,
+    suspendShared() {
+      const tab = controller.tab(); const mode = presentation.current();
+      if (agentPreviewTab || tab?.scope !== 'global' || !mode || mode === 'popout') return null;
+      presentation.hide();
+      const ready = (async () => { await nativePending?.catch(() => undefined); await projectNative(); })();
+      return { tabId: tab.tabId, mode, ready };
+    },
+    async restoreShared(tabId: string): Promise<boolean> {
+      await controller.refresh();
+      const tab = controller.state.tabs.find(row => row.tabId === tabId && row.scope === 'global');
+      if (disposed || !tab) return false;
+      if (nativeBrowserApi()) await controller.request('reconnect', { tabId, restore: true });
+      if (disposed) return false;
+      controller.select(tabId); return true;
+    },
     selectTab(id: string) { controller.select(id.slice('browser:'.length)); },
     closeTab(id: string) { handle(controller.close(id.slice('browser:'.length))); },
     mount(host: HTMLElement) { presentation.mount(host); watchNativeVisibility(); layout(); },

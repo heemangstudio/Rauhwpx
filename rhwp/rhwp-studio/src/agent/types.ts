@@ -670,6 +670,7 @@ export interface BrowserChallenge {
 
 export interface BrowserTab {
   tabId: string;
+  scope?: 'global' | 'agent';
   threadId: string | null;
   documentId: string | null;
   projectId: string | null;

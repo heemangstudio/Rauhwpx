@@ -32,11 +32,12 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
         async getState() { return {}; },
       } } });
       const { createWorkbenchBrowser } = await import('../src/ui/agent-sidebar/workbench-browser.ts');
-      const tab = { tabId: 'same-tab', nativeTargetId: 'same-target', runtime: 'native', url: 'https://example.com/retained', title: '자료', navigationEpoch: 3, controllerEpoch: 2, controller: { owner: 'human' }, status: 'ready' };
+      const tab = { tabId: 'same-tab', scope: 'global', nativeTargetId: 'same-target', runtime: 'native', url: 'https://example.com/retained', title: '자료', navigationEpoch: 3, controllerEpoch: 2, controller: { owner: 'human' }, status: 'ready' };
       const bridge = { getConnectionState: () => 'connected', onBrowserEvent: () => () => {}, onEvent: () => () => {}, async requestBrowser(action: string) { calls.push({ action }); return action === 'status' ? { tabs: [tab] } : {}; } };
-      const view = createWorkbenchBrowser({ bridge: bridge as any, getDestination: () => ({ threadId: 'chat', projectId: null, documentId: null, label: '채팅' }), onCapture() {}, onOpenDownload() {}, onDock() {}, onChat() {} });
+      const createView = () => createWorkbenchBrowser({ bridge: bridge as any, getDestination: () => ({ threadId: 'chat', projectId: null, documentId: null, label: '채팅' }), onCapture() {}, onOpenDownload() {}, onDock() {}, onChat() {} });
+      const view = createView();
       view.mount(document.querySelector<HTMLElement>('#host')!); view.setVisible(true);
-      Object.assign(window, { projectionTest: { view, calls, get attached() { return attached; }, hold() { hold = true; }, release() { hold = false; release?.(); } } });
+      Object.assign(window, { projectionTest: { view, calls, createView, get attached() { return attached; }, hold() { hold = true; }, release() { hold = false; release?.(); } } });
     });
     const attached = (value: string | null) => page.waitForFunction(value => (window as any).projectionTest.attached === value, { timeout: 2000 }, value);
     await attached('same-tab');
@@ -104,6 +105,23 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true, 'turn end collapses immediately');
     await attached(null);
     assert.equal(await page.evaluate(() => (window as any).projectionTest.view.controller.tab().tabId), 'same-tab', 'collapse preserves the browser tab');
+    const handoff = await page.evaluate(async () => {
+      const harness = (window as any).projectionTest;
+      document.documentElement.classList.remove('document-home-open');
+      harness.view.float();
+      const snapshot = harness.view.suspendShared();
+      await snapshot.ready;
+      const hidden = document.querySelector<HTMLElement>('.ag-browser-floating')!.hidden;
+      harness.view.dispose();
+      const next = harness.createView();
+      next.mount(document.querySelector<HTMLElement>('#host')!);
+      const restored = await next.restoreShared(snapshot.tabId);
+      next.dock();
+      const result = { restored, hidden, tabId: next.controller.tab().tabId, mode: next.element.dataset.presentation,
+        opened: harness.calls.some((call: any) => call.action === 'open') };
+      next.dispose(); return result;
+    });
+    assert.deepEqual(handoff, { restored: true, hidden: true, tabId: 'same-tab', mode: 'dock', opened: false }, 'document handoff preserves the shared browser page instead of opening or reloading it');
     const links = await page.evaluate(async () => {
       const { routeChatBrowserLinks } = await import('../src/ui/agent-sidebar/chat-browser-links.ts');
       const host = document.createElement('div');

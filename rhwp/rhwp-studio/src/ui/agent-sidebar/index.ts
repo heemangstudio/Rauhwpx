@@ -348,6 +348,7 @@ export interface AgentSidebarHandle {
 
 /* 첫 실행 안내는 페이지에 하나만 띄운다 — 문서마다 사이드바가 있어도 겹치지 않게. */
 let initialSetupOwner: object | null = null;
+let sharedHumanBrowserView: ReturnType<WorkbenchBrowser['suspendShared']> = null;
 
 /** 화면에서 내려간 사이드바가 남기는 자리 표시 이름. */
 const ROOT_SLOT = 'agent-sidebar';
@@ -3875,6 +3876,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       browser.dock();
     } else browser.float();
   }, (error) => showToast({ message: `브라우저를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 }));
+
+  let browserActivation = 0;
+  function restoreSharedBrowser(): void {
+    const snapshot = sharedHumanBrowserView; const activation = ++browserActivation;
+    if (!snapshot || bridge.getConnectionState() !== 'connected') return;
+    void (async () => {
+      await snapshot.ready;
+      if (!active || root.dataset.disposed === 'true' || activation !== browserActivation) return;
+      const browser = ensureWorkbenchBrowser();
+      if (!await browser.restoreShared(snapshot.tabId) || !active || activation !== browserActivation) return;
+      if (snapshot.mode === 'dock' && fullscreen) { workbench?.select('browser'); browser.dock(); }
+      else browser.float();
+    })().catch(error => {
+      if (active && activation === browserActivation) showToast({ message: `브라우저를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 });
+    });
+  }
+
+  const unsubscribeSharedBrowser = bridge.onEvent(event => {
+    if (event.type === 'connection' && active && bridge.getConnectionState() === 'connected') restoreSharedBrowser();
+  });
 
   const unsubscribeAgentBrowserPreview = bridge.onBrowserEvent((event) => {
     if (event.type !== 'owned_browser_activity' || event.active === false) return;
@@ -10201,10 +10222,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateDocumentContext();
     readChatModeLock();
     finishReplayedAnimations();
+    restoreSharedBrowser();
   }
 
   function deactivate(): void {
     if (!active || root.dataset.disposed === 'true') return;
+    browserActivation++;
+    sharedHumanBrowserView = workbenchBrowser?.suspendShared() ?? null;
     flushTranscriptPersist();
     // 다른 채팅이나 문서로 떠나면 보내지 않은 초안은 버린다.
     discardDraft();
@@ -10235,6 +10259,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     vacateSidebarSlot(COLLAPSE_TAB_SLOT, collapseTab);
     vacateSidebarSlot(ROOT_SLOT, root);
   }
+
+  if (active) queueMicrotask(restoreSharedBrowser);
 
   return {
     root,
@@ -10273,6 +10299,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     /** 사용자가 문서를 열면 집중 화면을 접고 문서 옆 사이드바로 돌아온다. */
     exitFullscreen(): void {
       if (root.dataset.disposed === 'true' || !fullscreen) return;
+      if (workbenchBrowser?.controller.tab()?.scope === 'global' && workbenchBrowser.element.dataset.presentation === 'dock') workbenchBrowser.float();
       setFullscreen(false);
     },
     followThreadOnNextDocument(threadId: string): void {
@@ -10283,6 +10310,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
     dispose(): void {
       if (root.dataset.disposed === 'true') return;
+      browserActivation++;
+      if (active) sharedHumanBrowserView = workbenchBrowser?.suspendShared() ?? null;
       flushTranscriptPersist();
       // 붙어 있던 사이드바를 걷으면 다음에 붙는 사이드바가 이 배치를 이어받는다.
       if (active) writeSidebarPageLayout(pageLayoutSnapshot());
@@ -10387,6 +10416,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       workbenchBoard?.dispose();
       workbenchDocuments?.dispose();
       workbenchAgents?.dispose();
+      unsubscribeSharedBrowser();
       unsubscribeAgentBrowserPreview();
       workbenchBrowser?.dispose();
       workbench?.dispose();

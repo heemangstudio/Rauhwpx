@@ -377,3 +377,33 @@ test('same-document navigation settles browser readiness while a real unfinished
   slowResponse.end('</body></html>'); await navigating;
   assert.equal((await waitFor((tab) => tab.status === 'ready')).status, 'ready');
 });
+
+test('human browser tabs survive document and project switches without granting agent access', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-global-browser-'));
+  let closedPages = 0;
+  const runtimeFactory = async () => ({ kind: 'chromium', browser: new EventEmitter(), async close() {}, context: Object.assign(new EventEmitter(), {
+    async storageState() { return { cookies: [], origins: [] }; }, async route() {}, pages: () => [],
+    async newPage() { return Object.assign(new EventEmitter(), { url: () => 'about:blank', isClosed: () => false, async close() { closedPages++; }, async routeWebSocket() {}, frames: () => [] }); },
+  }) });
+  const browser = createOwnedBrowserService({ dataDir, runtimeFactory });
+  let restored;
+  t.after(async () => { await browser.close(); await restored?.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const first = { isHuman: true, clientId: 'window', sessionId: 'document-a', threadId: 'chat-a', documentId: 'a', projectId: 'project-a', agentId: 'chat-a:root' };
+  const second = { ...first, sessionId: 'document-b', threadId: 'chat-b', documentId: 'b', projectId: 'project-b', agentId: 'chat-b:root' };
+  const opened = await browser.request(first, 'open', {});
+  assert.equal(opened.tab.scope, 'global');
+  assert.equal(opened.tab.projectId, null); assert.equal(opened.tab.documentId, null); assert.equal(opened.tab.threadId, null);
+  const identity = { tabId: opened.tab.tabId, navigationEpoch: opened.tab.navigationEpoch, controllerEpoch: opened.tab.controllerEpoch };
+  assert.equal((await browser.inventory(second)).tabs[0].tabId, opened.tab.tabId);
+  await browser.request(second, 'input', { ...identity, type: 'release' });
+  const agent = { ...first, isHuman: false };
+  assert.equal((await browser.inventory(agent)).tabs.length, 0);
+  await assert.rejects(browser.request(agent, 'close', identity), { code: 'BROWSER_TAB_NOT_FOUND' });
+  await browser.close();
+  restored = createOwnedBrowserService({ dataDir, runtimeFactory });
+  await restored.restore();
+  assert.equal((await restored.inventory(second)).tabs[0].tabId, opened.tab.tabId, 'global tabs restore without a chat owner');
+  await restored.request(second, 'close', { ...identity, controllerEpoch: identity.controllerEpoch + 1 });
+  assert.equal((await restored.inventory(first)).tabs.length, 0);
+  assert.equal(closedPages, 0, 'closing a restored descriptor does not create or reload its page');
+});

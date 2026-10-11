@@ -30,7 +30,8 @@ app.whenReady().then(async () => {
     const origin = `http://127.0.0.1:${site.address().port}`;
     window = new BrowserWindow({ show: false, title: 'Browser activity fixture', width: 420, height: 320, webPreferences: { sandbox: true, contextIsolation: true } });
     const owner = { id: 'activity-fixture' };
-    host = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session, dataDir: root, getWindowForSession: () => window });
+    let sharedWindow;
+    host = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session, dataDir: root, getWindowForSession: id => id === 'shared-other' ? sharedWindow : window });
     const passwords = new NativeBrowserPasswords({ host, vault: {} });
     const adapter = {
       passwordSnapshot: args => passwords.snapshot(args), passwordAction: args => passwords.action(args), passwordStorageState: () => passwords.storageState(),
@@ -177,6 +178,21 @@ app.whenReady().then(async () => {
     report.preview = { humanMouseBlocked: true };
     host.detach(window, { tabId: tab.tabId }); window.hide();
     await paused();
+    const shared = await service.request({ isHuman: true, clientId: 'window-fixture', sessionId: 'window-fixture', threadId: 'chat-fixture', projectId: 'old-project' }, 'open', { url: origin });
+    const sharedTab = host.tab(shared.tab.tabId);
+    const sharedTarget = sharedTab.targetId;
+    await sharedTab.view.webContents.executeJavaScript('document.querySelector("#draft").value="global draft";sessionStorage.setItem("global-state","kept")');
+    sharedWindow = new BrowserWindow({ show: false, width: 420, height: 320, webPreferences: { sandbox: true, contextIsolation: true } });
+    try {
+      await service.request({ isHuman: true, clientId: 'other', sessionId: 'shared-other', threadId: 'another-chat', projectId: 'another-project' }, 'reconnect', { tabId: shared.tab.tabId, restore: true });
+      assert.equal(sharedTab.targetId, sharedTarget, 'switching documents or windows retains the native page');
+      assert.equal(sharedTab.windowId, sharedWindow.id);
+      assert.equal(await sharedTab.view.webContents.executeJavaScript('document.querySelector("#draft").value'), 'global draft');
+      assert.equal(await sharedTab.view.webContents.executeJavaScript('sessionStorage.getItem("global-state")'), 'kept');
+      assert.throws(() => host.attach(window, { tabId: shared.tab.tabId, bounds: { x: 0, y: 0, width: 420, height: 320 } }), /another editor window/);
+      await assert.rejects(service.request(actor, 'snapshot', { tabId: shared.tab.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
+      report.globalBrowser = { pageRetained: true, draftRetained: true, sessionRetained: true, agentIsolated: true };
+    } finally { sharedWindow.destroy(); }
     await host.activity({ ...scope, token: 'navigation', active: true });
     await evaluate('history.pushState({}, "", "#retained")');
     await paused();
