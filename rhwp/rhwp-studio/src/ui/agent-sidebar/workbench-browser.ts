@@ -217,7 +217,7 @@ export function createWorkbenchBrowser(options: {
       const draft = await saveBrowserCaptureDraft({ destination, tab: target, frame: null, mode: 'page', comment: '', evidence });
       if (!disposed) {
         const destinationElement = options.onCapture(draft);
-        captureMotion.finish(draft.files.find(file => file.type.startsWith('image/')), destinationElement ?? null);
+        captureMotion.finish(destinationElement ?? null);
       }
     } catch (failure) {
       captureMotion.cancel();

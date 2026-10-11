@@ -51,9 +51,9 @@ test('현재 화면을 한 번 첨부하고 캡처 중에도 브라우저 입력
     await page.waitForFunction(() => (window as any).captureTest.calls.some((call: any) => call.action === 'input' && call.args.type === 'wheel'));
     await page.evaluate(() => (window as any).captureTest.release());
     await page.waitForFunction(() => (window as any).captureTest.drafts.length === 1);
-    await page.waitForSelector('.ag-browser-capture-flight');
-    // 첨부 애니메이션이 저장을 지연시키지 않고 완료 후 이미지와 동작을 해제한다.
-    await page.waitForFunction(() => !document.querySelector('.ag-browser-capture-flight') && document.querySelector('#attachment')!.getAnimations().length === 0);
+    // 첨부 피드백이 저장을 지연시키지 않고 완료되면 동작을 해제한다.
+    await page.waitForFunction(() => document.querySelector('#attachment')!.getAnimations().length > 0);
+    await page.waitForFunction(() => document.querySelector('#attachment')!.getAnimations().length === 0);
     const saved = await page.evaluate(async () => {
       const fixture = (window as any).captureTest; const draft = fixture.drafts[0]; const image = await createImageBitmap(draft.files[0]);
       return { mode: draft.mode, thread: draft.destination.threadId, width: image.width, height: image.height, captures: fixture.calls.filter((call: any) => call.action === 'capture').length,
