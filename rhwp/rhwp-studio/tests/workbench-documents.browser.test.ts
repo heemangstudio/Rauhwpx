@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import puppeteer from 'puppeteer-core';
 import { createServer } from 'vite';
 import { fileURLToPath } from 'node:url';
@@ -7,7 +10,10 @@ import { browserExecutable, browserLaunchArgs } from './browser-support.ts';
 import { rhwpPdfjsAssetsPlugin } from '../vite-plugin-pdfjs-assets.mjs';
 
 test('resource tabs retain drafts, defer hidden loads, reconcile project scope and restore only the active resource', { timeout: 45_000 }, async () => {
+  // 병렬 테스트의 재최적화가 지연 로드한 PDF 모듈을 무효화하지 않게 한다.
+  const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-workbench-documents-'));
   const server = await createServer({
+    cacheDir,
     root: fileURLToPath(new URL('../', import.meta.url)), configFile: false, logLevel: 'silent',
     server: { host: '127.0.0.1', port: 0 },
     plugins: [rhwpPdfjsAssetsPlugin(), { name: 'documents-harness', configureServer(vite) {
@@ -153,5 +159,6 @@ test('resource tabs retain drafts, defer hidden loads, reconcile project scope a
   } finally {
     await browser?.close();
     await server.close();
+    await rm(cacheDir, { recursive: true, force: true });
   }
 });
