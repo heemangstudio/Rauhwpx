@@ -412,6 +412,11 @@ html.js.motion .drop.in{visibility:visible;animation:drop calc(var(--frame)*8) s
 .apply .btn:disabled{opacity:.6;cursor:default}
 .apply-note{margin:12px 0 0;min-height:22px;font-size:15px;color:var(--ink-2)}
 .apply-note.is-bad{color:#9b2c1f}
+/* 정식 출시 가격: 표 아래 점선 한 줄 */
+.offer{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin-top:26px;padding-top:20px;border-top:1px dashed var(--ink-4);max-width:560px}
+.offer b{font:800 30px/1 var(--serif);letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.offer span{font-size:15px;font-weight:500;color:var(--ink-2)}
+.offer p{flex:1 1 100%;font-size:14.5px;line-height:1.6;color:var(--ink-3)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .stub{position:relative;padding:clamp(40px,5vw,64px) 30px;background:repeating-linear-gradient(to bottom,var(--ink-3) 0 6px,transparent 6px 12px) left/1.5px 100% no-repeat}
 .stub dl{margin:0;display:grid;gap:18px}
@@ -903,6 +908,11 @@ if(!window.matchMedia||!matchMedia('(prefers-reduced-motion: reduce)').matches)d
               <button class="btn btn--ink" type="submit">체험 신청하기</button>
             </form>
             <p class="apply-note" data-apply-note role="status" aria-live="polite"></p>
+            <div class="offer">
+              <b>9,900원</b>
+              <span>부가세 포함 · 한 번 결제 · 자동 갱신 없음</span>
+              <p>정식 출시 때 Paddle로 판매할 예정이에요. 지금은 결제를 받지 않아요. AI 제공자 이용료는 따로예요.</p>
+            </div>
           </div>
           <div class="stub">
             <dl>
