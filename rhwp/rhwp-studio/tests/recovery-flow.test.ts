@@ -93,6 +93,15 @@ test('restore plans follow the draft link and what is on disk', () => {
   assert.equal(plan({ ...linked, dataFormat: 'hwp' }, found('blake3:disk')), 'detached:format:보고서.hwp');
 });
 
+test('a document that was clean when the engine stopped reopens clean from an unchanged original', () => {
+  const kind = (located: LocatedOriginal, cleanAtTrap?: boolean) => planDraftRestore(
+    linked, located, { canMerge: true, ...(cleanAtTrap === undefined ? {} : { cleanAtTrap }) },
+  ).kind;
+  assert.equal(kind(found('blake3:disk'), true), 'reopen-clean');
+  assert.equal(kind(found('blake3:disk')), 'reopen-dirty', 'ordinary recovery keeps the draft as changes');
+  assert.equal(kind(found('blake3:edited'), true), 'merge-external', 'a changed file is never mistaken for the clean copy');
+});
+
 function restoreDeps(overrides: Partial<AutosaveRestoreDeps> = {}) {
   const calls: string[] = [];
   const toasts: string[] = [];
@@ -126,6 +135,28 @@ test('an unchanged original reopens as itself, dirty, and keeps the draft until 
   const { deps, calls } = restoreDeps();
   await restoreAutosaveDraft(linked, deps);
   assert.deepEqual(calls, ['locate', 'release-current', 'open:보고서.hwpx:doc-1:original', 'flush']);
+});
+
+test('a clean reopen opens the original itself, not the draft, and deletes the draft', async () => {
+  const targets: Array<{ clean?: boolean; original: boolean; documentId: string | null }> = [];
+  const reports: string[] = [];
+  const { deps, calls, toasts } = restoreDeps({
+    openDraft: async (_draft, target) => {
+      targets.push({ clean: target.clean, original: target.original !== null, documentId: target.documentId });
+      calls.push('open');
+      return 'opened';
+    },
+  });
+  const outcome = await restoreAutosaveDraft(linked, deps, {
+    cleanAtTrap: true,
+    report: (result) => reports.push(result.kind === 'opened' ? result.plan : result.kind),
+  });
+  assert.deepEqual(targets, [{ clean: true, original: true, documentId: 'doc-1' }]);
+  assert.deepEqual(calls, ['locate', 'release-current', 'open', 'delete:linked-draft']);
+  assert.ok(!calls.includes('flush'), 'nothing re-records a draft for a clean document');
+  assert.equal(outcome.kind === 'opened' && outcome.plan, 'reopen-clean');
+  assert.deepEqual(reports, ['reopen-clean']);
+  assert.deepEqual(toasts, [], 'a report sink replaces the toast');
 });
 
 test('an old draft without a document link opens under its own name with a new identity', async () => {
@@ -219,4 +250,73 @@ test('empty drafts are never offered', async () => {
   });
   await offerAutosaveRecovery(deps);
   assert.deepEqual(calls, []);
+});
+
+test('a read-only document with no file reopens clean from its copy, and the copy is not offered again', async () => {
+  const neverSaved: AutosaveDraft = { ...linked, base: undefined };
+  const targets: Array<{ clean?: boolean; original: boolean }> = [];
+  const { deps, calls } = restoreDeps({
+    readDraft: async () => neverSaved,
+    openDraft: async (_draft, target) => {
+      targets.push({ clean: target.clean, original: target.original !== null });
+      calls.push('open');
+      return 'opened';
+    },
+  });
+  const outcome = await restoreAutosaveDraft(neverSaved, deps, { cleanAtTrap: true, readOnly: true, report: () => {} });
+  assert.deepEqual(targets, [{ clean: true, original: false }], 'opened clean, not as unsaved changes');
+  assert.deepEqual(calls, ['release-current', 'open', 'delete:linked-draft']);
+  assert.ok(outcome.kind === 'opened' && outcome.detached === 'never-saved');
+
+  // 고칠 수 있던 문서는 지금처럼 저장하지 않은 문서로 연다.
+  targets.length = 0;
+  calls.length = 0;
+  await restoreAutosaveDraft(neverSaved, deps, { cleanAtTrap: true, report: () => {} });
+  assert.deepEqual(targets, [{ clean: undefined, original: false }]);
+  assert.deepEqual(calls, ['release-current', 'open', 'flush']);
+});
+
+test('while the engine is stopped the startup offer opens, restores and deletes nothing', async () => {
+  let stopped = true;
+  const routed: string[] = [];
+  const { deps, calls } = offerDeps({
+    engineStopped: () => stopped,
+    onEngineStopped: () => { routed.push('trap-recovery'); },
+    showDialog: async () => {
+      calls.push('dialog');
+      return { action: 'delete-all' };
+    },
+  });
+  await offerAutosaveRecovery(deps);
+  assert.deepEqual(calls, [], 'the copies the next 문서 복구 needs stay where they are');
+
+  // 엔진이 멈추기 전에 띄운 안내의 복구를 멈춘 뒤에 누르면 문서 복구로 안내한다.
+  stopped = false;
+  const notice = offerDeps({
+    hasOpenDocument: () => true,
+    engineStopped: () => stopped,
+    onEngineStopped: () => { routed.push('trap-recovery'); },
+  });
+  await offerAutosaveRecovery(notice.deps);
+  stopped = true;
+  notice.openNotice();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(notice.calls, ['notice']);
+  assert.deepEqual(routed, ['trap-recovery']);
+});
+
+test('a trap while the recovery dialog is open cancels the choice made in it', async () => {
+  for (const action of ['delete-all', 'restore'] as const) {
+    let stopped = false;
+    const { deps, calls } = offerDeps({
+      engineStopped: () => stopped,
+      showDialog: async () => {
+        calls.push('dialog');
+        stopped = true;
+        return action === 'restore' ? { action, draftId: crashed.id } : { action };
+      },
+    });
+    await offerAutosaveRecovery(deps);
+    assert.deepEqual(calls, ['offered:crashed-draft', 'dialog'], `${action} is not carried out on a stopped engine`);
+  }
 });

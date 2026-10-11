@@ -43,6 +43,8 @@ export interface ThreadsToolbarOptions {
   onClearFilter(): void;
   /** 검색 칸에서 ↓ — 목록 첫 채팅으로 내려간다. */
   onEnterList(): void;
+  /** 확인 필요 칩 — 확인이 필요한 채팅만 보기를 켜고 끈다. */
+  onToggleAttention?(): void;
 }
 
 export interface ThreadsToolbar {
@@ -53,8 +55,12 @@ export interface ThreadsToolbar {
   readonly newButton: HTMLButtonElement;
   /** 필터가 걸렸을 때 도구 줄 아래에 서는 문서 칩 */
   readonly filterChip: HTMLElement;
+  /** 확인이 필요한 채팅이 있을 때 도구 줄 아래에 서는 칩 — 누르면 그 채팅만 남는다. */
+  readonly attentionChip: HTMLButtonElement;
   query(): string;
   setFilter(filter: { label: string; missing: boolean } | null): void;
+  /** 확인 필요 수와 거름 상태. 0 이면 칩을 숨긴다. */
+  setAttention(state: { count: number; pressed: boolean }): void;
 }
 
 export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToolbar {
@@ -89,6 +95,17 @@ export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToo
   chipClear.title = '문서 필터 해제';
   chipClear.appendChild(createIcon('close'));
   filterChip.append(chipIcon, chipLabel, chipClear);
+
+  // 확인 필요 — 자리를 옮기지 않고 거른다. 행은 원래 순서 그대로 남는다.
+  const attentionChip = el('button', 'ag-threads-attention');
+  attentionChip.type = 'button';
+  attentionChip.hidden = true;
+  attentionChip.setAttribute('aria-pressed', 'false');
+  const attentionDot = el('span', 'ag-threads-attention-dot');
+  attentionDot.setAttribute('aria-hidden', 'true');
+  const attentionLabel = el('span', 'ag-threads-attention-label');
+  attentionChip.append(attentionDot, attentionLabel);
+  attentionChip.addEventListener('click', () => options.onToggleAttention?.());
 
   search.addEventListener('input', () => options.onQueryChange(search.value));
   search.addEventListener('keydown', (event) => {
@@ -125,6 +142,7 @@ export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToo
     openButton,
     newButton,
     filterChip,
+    attentionChip,
     query: () => search.value,
     setFilter(filter) {
       filterButton.setAttribute('aria-pressed', filter ? 'true' : 'false');
@@ -134,6 +152,17 @@ export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToo
       chipLabel.textContent = filter?.label ?? '';
       chipLabel.title = filter?.label ?? '';
       chipIcon.classList.toggle('ag-doc-missing', Boolean(filter?.missing));
+    },
+    setAttention({ count, pressed }) {
+      const shown = count > 0;
+      attentionChip.hidden = !shown;
+      attentionChip.setAttribute('aria-pressed', shown && pressed ? 'true' : 'false');
+      attentionChip.classList.toggle('ag-active', shown && pressed);
+      attentionLabel.textContent = shown && pressed ? `확인 필요 ${count} · 모두 보기` : `확인 필요 ${count}`;
+      // 눌림은 aria-pressed 가 말한다 — 이름은 그대로 둔다.
+      const label = `확인이 필요한 채팅만 보기 (${count}개)`;
+      attentionChip.title = label;
+      attentionChip.setAttribute('aria-label', label);
     },
   };
 }

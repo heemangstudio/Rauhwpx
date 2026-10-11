@@ -1,0 +1,36 @@
+{"kind":"meta","v":1,"agent":"codex","transport":"app-server","stdin":"ndjson","provenance":"synthetic","cli":"codex-cli 0.149.0","basis":"codex app-server --stdio v2 protocol: handshake order as tests/codex-app-server.test.mjs:91-131; notification shapes from the T3 reference schema (packages/effect-codex-app-server/src/_generated/schema.gen.ts: CodexErrorInfo :17861, TurnError :29525, TurnCompletedNotification :44547, ErrorNotification :33293, AccountRateLimitsUpdatedNotification :29794, RateLimitWindow :3268); Stop during streaming: the adapter sends turn/interrupt with the live thread and turn ids and closes the app-server; a turn/completed status completed crosses the interrupt and must be discarded (codex-app-server.mjs:1124-1135). The next turn resumes the thread in a fresh app-server.","note":"Synthetic: hand-written, not recorded. Replace with a trimmed recording (RHWP_PROVIDER_TRANSCRIPT_DIR) when one exists."}
+{"kind":"spawn","match":{"argvIncludes":["app-server"]}}
+{"kind":"expect","json":{"method":"initialize"}}
+{"kind":"out","json":{"id":"$in.id","result":{"userAgent":"codex_cli_rs/0.149.0 (replay)"}}}
+{"kind":"expect","json":{"method":"initialized"}}
+{"kind":"expect","json":{"method":"experimentalFeature/list"}}
+{"kind":"out","json":{"id":"$in.id","result":{"data":[{"name":"default_mode_request_user_input","enabled":true,"defaultEnabled":false,"stage":"underDevelopment","displayName":null,"description":null,"announcement":null}],"nextCursor":null}}}
+{"kind":"expect","json":{"method":"thread/start"}}
+{"kind":"out","json":{"method":"thread/started","params":{"thread":{"id":"thread-replay-1"}}}}
+{"kind":"out","json":{"id":"$in.id","result":{"thread":{"id":"thread-replay-1"}}}}
+{"kind":"expect","json":{"method":"turn/start","params":{"threadId":"thread-replay-1"}}}
+{"kind":"out","json":{"method":"turn/started","params":{"threadId":"thread-replay-1","turn":{"id":"turn-replay-1","status":"inProgress","items":[]}}}}
+{"kind":"out","json":{"id":"$in.id","result":{"turn":{"id":"turn-replay-1","status":"inProgress","items":[]}}}}
+{"kind":"out","json":{"method":"item/agentMessage/delta","params":{"threadId":"thread-replay-1","turnId":"turn-replay-1","itemId":"msg-turn-replay-1","delta":"첫 응답을 쓰는 중"}}}
+{"kind":"expect","json":{"method":"turn/interrupt","params":{"threadId":"thread-replay-1","turnId":"turn-replay-1"}}}
+{"kind":"out","json":{"method":"item/agentMessage/delta","params":{"threadId":"thread-replay-1","turnId":"turn-replay-1","itemId":"msg-turn-replay-1","delta":" (중단 뒤에 도착한 텍스트)"}}}
+{"kind":"out","json":{"method":"turn/completed","params":{"threadId":"thread-replay-1","turn":{"id":"turn-replay-1","status":"completed","items":[]}}}}
+{"kind":"await-kill"}
+{"kind":"exit","signal":"SIGTERM"}
+{"kind":"spawn","match":{"argvIncludes":["app-server"]}}
+{"kind":"expect","json":{"method":"initialize"}}
+{"kind":"out","json":{"id":"$in.id","result":{"userAgent":"codex_cli_rs/0.149.0 (replay)"}}}
+{"kind":"expect","json":{"method":"initialized"}}
+{"kind":"expect","json":{"method":"experimentalFeature/list"}}
+{"kind":"out","json":{"id":"$in.id","result":{"data":[{"name":"default_mode_request_user_input","enabled":true,"defaultEnabled":false,"stage":"underDevelopment","displayName":null,"description":null,"announcement":null}],"nextCursor":null}}}
+{"kind":"expect","json":{"method":"thread/resume","params":{"threadId":"thread-replay-1"}}}
+{"kind":"out","json":{"id":"$in.id","result":{"thread":{"id":"thread-replay-1"}}}}
+{"kind":"expect","json":{"method":"turn/start","params":{"threadId":"thread-replay-1"}}}
+{"kind":"out","json":{"method":"turn/started","params":{"threadId":"thread-replay-1","turn":{"id":"turn-replay-2","status":"inProgress","items":[]}}}}
+{"kind":"out","json":{"id":"$in.id","result":{"turn":{"id":"turn-replay-2","status":"inProgress","items":[]}}}}
+{"kind":"out","json":{"method":"item/agentMessage/delta","params":{"threadId":"thread-replay-1","turnId":"turn-replay-2","itemId":"msg-turn-replay-2","delta":"두 번째 턴이 "}}}
+{"kind":"out","json":{"method":"item/agentMessage/delta","params":{"threadId":"thread-replay-1","turnId":"turn-replay-2","itemId":"msg-turn-replay-2","delta":"끝났습니다."}}}
+{"kind":"out","json":{"method":"item/completed","params":{"threadId":"thread-replay-1","turnId":"turn-replay-2","item":{"type":"agentMessage","id":"msg-turn-replay-2","text":"두 번째 턴이 끝났습니다."}}}}
+{"kind":"out","json":{"method":"turn/completed","params":{"threadId":"thread-replay-1","turn":{"id":"turn-replay-2","status":"completed","items":[]}}}}
+{"kind":"await-kill"}
+{"kind":"exit","signal":"SIGTERM"}

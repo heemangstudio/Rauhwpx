@@ -1,0 +1,7 @@
+{"kind":"meta","v":1,"agent":"codex","transport":"exec","stdin":"text","provenance":"synthetic","cli":"codex-cli 0.149.0","basis":"codex exec --json (legacy transport): thread.started, turn.started, turn.failed {error:{message}} and exit 1 (codex.mjs:261-410, settle 586-595). The usage-limit wording follows the Codex CLI message; no codexErrorInfo exists on this path.","note":"Synthetic: hand-written, not recorded. Replace with a trimmed recording (RHWP_PROVIDER_TRANSCRIPT_DIR) when one exists."}
+{"kind":"spawn","match":{"argvIncludes":["exec"]}}
+{"kind":"expect","end":true}
+{"kind":"out","json":{"type":"thread.started","thread_id":"thread-replay-exec-1"}}
+{"kind":"out","json":{"type":"turn.started"}}
+{"kind":"out","json":{"type":"turn.failed","error":{"message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:15 PM."}}}
+{"kind":"exit","code":1}

@@ -25,9 +25,71 @@ import { checkWorkspaceBrand } from './workspace-brand.check.mjs';
 import { checkBrowserSettings } from './browser-settings.check.mjs';
 import { checkBrowserWorkbench } from './browser-workbench.check.mjs';
 import { checkNativeBrowserRecovery } from './browser-native-recovery.check.mjs';
+import { checkCaptureSend } from './capture-send.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
+import { checkComposerSendPath, checkFollowUpGap, checkFollowUpQueue } from './queue.check.mjs';
+import { checkReloadPreview } from './reload.check.mjs';
+import { checkWriterBusyPreview } from './writer-busy.check.mjs';
+import { checkTypingGuard } from './typing-guard.check.mjs';
+import { checkDelayedStatus } from './delayed-status.check.mjs';
+import { checkRestoreTurnPreview } from './restore-turn.check.mjs';
+import { checkFailureNotices } from './failures.check.mjs';
+import { checkAttention } from './attention.check.mjs';
+import { checkInterruptionPreview } from './interruption.check.mjs';
+import { checkAdoptionPreview } from './adoption.check.mjs';
+
 const focusedChecks = {
+  'capture-send': (h) => checkCaptureSend(h),
+  'focus-composer': async ({ page, open }) => {
+    await open('reset=1&fullscreen=1');
+    const startNewChat = async () => {
+      if (await page.$eval('.ag-root', (root) => root.classList.contains('ag-rail-collapsed'))) {
+        await page.click('.ag-workspace-threads-btn');
+        await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-rail-collapsed'));
+      }
+      await page.click('.ag-threads-new');
+      await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
+    };
+    await startNewChat();
+    const layout = () => page.evaluate(() => {
+      const chat = document.querySelector('.ag-chat-page').getBoundingClientRect();
+      const composer = document.querySelector('.ag-composer').getBoundingClientRect();
+      const greeting = document.querySelector('.ag-focus-greeting');
+      return {
+        gapBelow: Math.round(chat.bottom - composer.bottom),
+        greeting: greeting.checkVisibility() ? greeting.textContent : '',
+      };
+    });
+    const centered = await layout();
+    assert(centered.gapBelow > 200, `centered composer leaves ${centered.gapBelow}px below`);
+    assert(centered.greeting.includes('사업 제안서'), `greeting shows the document: ${centered.greeting}`);
+    await page.type('.ag-input', '요약해 줘');
+    await page.click('.ag-send');
+    await page.waitForSelector('.ag-msg-user');
+    await page.waitForFunction(() =>
+      document.querySelector('.ag-composer').getAnimations().every((tween) => tween.playState !== 'running'));
+    const sent = await layout();
+    assert(sent.gapBelow < 40, `sent composer leaves ${sent.gapBelow}px below`);
+    assert.equal(sent.greeting, '');
+    await startNewChat();
+    assert((await layout()).gapBelow > 200, 'a new chat centers the composer again');
+  },
+  queue: async (h) => {
+    await checkComposerSendPath(h.page, h.origin, h.artifacts);
+    await checkFollowUpQueue(h.page, h.origin, h.artifacts);
+    await checkFollowUpGap(h.page, h.origin, h.artifacts);
+  },
+  reload: (h) => checkReloadPreview(h.page, h.origin, h.artifacts),
+  'writer-busy': (h) => checkWriterBusyPreview(h.page, h.origin, h.artifacts),
+  typing: (h) => checkTypingGuard(h.page, h.origin, h.artifacts),
+  status: (h) => checkDelayedStatus(h.page, h.origin, h.artifacts),
+  restore: (h) => checkRestoreTurnPreview(h.page, h.origin, h.artifacts),
+  failures: (h) => checkFailureNotices(h.page, h.origin, h.artifacts),
+  attention: (h) => checkAttention(h.page, h.origin, h.artifacts),
+  interruption: (h) => checkInterruptionPreview(h.page, h.origin, h.artifacts),
+  adoption: (h) => checkAdoptionPreview(h.page, h.origin, h.artifacts),
+
   'browser-settings': (h) => checkBrowserSettings(h),
   'browser-workbench': (h) => checkBrowserWorkbench(h),
   'browser-native-recovery': (h) => checkNativeBrowserRecovery(h),
@@ -110,7 +172,7 @@ try {
     await page.goto(`${origin}/?theme=light&${params}`, { waitUntil: 'networkidle0' });
     await page.waitForFunction(() => window.sidebarPreview);
     if (!query.includes('services=setup')) {
-      await page.waitForFunction(() => !document.querySelector('.ag-input').disabled);
+      await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
     }
   }
   async function screenshot(name) {

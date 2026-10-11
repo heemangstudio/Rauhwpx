@@ -31,6 +31,7 @@ import {
   ensureChromePath,
   findAvailablePort,
   openSample as openSampleInPage,
+  removeTempDir,
   repoRoot,
   startHub,
   startVite,
@@ -723,12 +724,9 @@ try {
     // 브라우저/서버 teardown 이 걸려도 결과는 이미 출력돼 있도록 여기서 찍는다.
     printSummary();
     // teardown(브라우저 close + 서버 2개 종료, 최악 ~10초)이 끝나지 않으면 강제
-    // 종료한다 (unref — 정상 종료를 막지 않음). 자식 프로세스는 고아로 남지 않게
-    // 먼저 SIGKILL 한다.
+    // 종료한다 (unref — 정상 종료를 막지 않음). 남은 서버 트리는 하니스의 종료
+    // 훅이 고아로 남지 않게 정리한다.
     setTimeout(() => {
-      for (const child of [vite, hub]) {
-        try { child?.kill('SIGKILL'); } catch { /* 이미 종료됨 */ }
-      }
       process.exit(failed || process.exitCode ? 1 : 0);
     }, 30_000).unref();
   });
@@ -738,7 +736,7 @@ try {
 } finally {
   await stopServer(vite);
   await stopServer(hub);
-  fs.rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5 });
+  removeTempDir(fixtureRoot);
 }
 
 // 요약은 테스트 콜백 안에서 이미 출력됐다 (teardown 행 방지).

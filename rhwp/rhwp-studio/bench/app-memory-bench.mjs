@@ -21,6 +21,7 @@ import {
   ensureChromePath,
   findAvailablePort,
   openSample,
+  removeTempDir,
   repoRoot,
   spawnLogged,
   startVite,
@@ -473,7 +474,7 @@ async function runOnce(runIndex, shared) {
     await shared.closeBrowser(browser);
     hub.inspector?.close();
     await stopServer(hub);
-    fs.rmSync(fixture.root, { recursive: true, force: true });
+    removeTempDir(fixture.root);
   }
   return rows;
 }

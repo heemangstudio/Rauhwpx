@@ -18,6 +18,8 @@
     "e2e:smoke": "node e2e/smoke/run.mjs",
     "e2e:chat-permissions": "node e2e/chat-permissions.test.mjs --mode=headless",
     "e2e:background-sessions": "node e2e/background-agent-sessions.test.mjs --mode=headless",
+    "e2e:engine-trap-recovery": "node e2e/engine-trap-recovery.test.mjs --mode=headless",
+    "e2e:agent-interruption-recovery": "node e2e/agent-interruption-recovery.test.mjs --mode=headless",
     "e2e:worktrees": "node e2e/worktree-lifecycle.test.mjs --mode=headless",
     "e2e:chat-follows-document": "node e2e/chat-follows-document.test.mjs --mode=headless",
     "bench:agent-tools": "node bench/agent-tool-bench.mjs",

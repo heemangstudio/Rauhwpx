@@ -184,7 +184,15 @@ try {
   await waitForState(page, 'agent work finishes before human browser input', () => !window.__agentBridge.isTurnRunning());
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } })));
   await waitForState(page, 'Agent Focus ready', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt') && !document.body.classList.contains('ag-fs-vt'));
-  await page.click('.ag-browser-trigger');
+  if (await page.$eval('.ag-workspace-panel-btn', (button) => button.getAttribute('aria-expanded') !== 'true')) {
+    await page.click('.ag-workspace-panel-btn');
+  }
+  await page.waitForSelector('.ag-workbench-page:not([hidden])', { visible: true });
+  if (await page.$eval('.ag-workbench-launcher', (launcher) => launcher.hidden)) {
+    await page.click('.ag-workbench-add');
+  }
+  await page.waitForSelector('.ag-workbench-launcher:not([hidden])', { visible: true });
+  await page.locator('.ag-workbench-launcher-item[data-view="browser"]').click();
   await page.waitForSelector('.ag-browser-frame[src^="data:image"]', { visible: true });
   await shot('real-stream-agent-research');
   await human('control', { tabId: tab.tabId, owner: 'human' });
@@ -301,6 +309,35 @@ try {
   assert.ok(savedCapture.imageBytes > 100, 'persisted capture contains actual page pixels');
   await shot('real-stream-capture-composer');
   await record('Real page screenshot attaches to the pinned destination composer without freezing', { captureId: capture.id, sourceTabId: tab.tabId });
+  if (chromeOnly) {
+    fs.writeFileSync(finishTurnPath, '');
+    await waitForState(page, 'initial fixture turn ended before capture send', () => !window.__agentBridge.isTurnRunning());
+    fs.rmSync(finishTurnPath, { force: true });
+    const captureThreadId = await page.evaluate(() => window.__agentBridge.getHubChat().threadId);
+    await page.$eval('.ag-input', input => input.select());
+    await page.type('.ag-input', 'Review the attached browser capture.');
+    await page.keyboard.press('Enter');
+    await waitForState(page, 'capture accepted and draft consumed', () => window.__agentBridge.isTurnRunning()
+      && document.querySelector('.ag-capture-inbox')?.hidden === true);
+    const captureMessage = await page.evaluate(async (threadId) => {
+      const { getThread } = await import('/src/agent/threads.ts');
+      return getThread(threadId)?.messages.filter(message => message.role === 'user'
+        && message.text === 'Review the attached browser capture.');
+    }, captureThreadId);
+    assert.equal(captureMessage.length, 1, 'accepted capture records its original thread exactly once');
+    assert.match(captureMessage[0].messageId, /^capture-/);
+    assert.equal(captureMessage[0].attachments.length, 2, 'screenshot and evidence references are retained');
+    assert.equal(new Set(captureMessage[0].attachments.map(file => file.stageId)).size, 2);
+    const remaining = await page.evaluate(async (threadId) => {
+      const { listBrowserCaptureDrafts } = await import('/src/ui/agent-sidebar/browser-capture-store.ts');
+      return (await listBrowserCaptureDrafts(threadId)).length;
+    }, captureThreadId);
+    assert.equal(remaining, 0, 'accepted capture consumes the durable source drafts');
+    await record('Real screenshot and evidence accepted once in the original destination chat', {
+      threadId: captureThreadId, messageId: captureMessage[0].messageId,
+      referenceIds: captureMessage[0].attachments.map(file => file.stageId),
+    });
+  }
   if (!chromeOnly) {
   await page.click('.ag-browser [aria-label="다운로드 목록"]');
   await page.waitForSelector('.ag-browser-downloads:not([hidden])', { visible: true });

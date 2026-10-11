@@ -119,7 +119,9 @@ try {
   });
   await vite.listen();
   process.env.VITE_URL = `http://127.0.0.1:${vitePort}`;
-  const { runTest, createNewDocument, waitForState, setTestCase } = await import('./helpers.mjs');
+  const { runTest, createNewDocument, waitForState } = await import('./helpers.mjs');
+
+  const setTestCase = (label) => console.log(`Scenario: ${label}`);
 
   await runTest('채팅별 권한 허용 및 실제 문서 편집 검토', async ({ page }) => {
     const errors = [];
@@ -179,10 +181,6 @@ try {
     const selectMode = async (mode) => {
       await page.click('.ag-mode-btn');
       await page.click(`.ag-mode-item[data-mode="${mode}"]`);
-      if (mode === 'full') {
-        await page.waitForSelector('.ag-sheet-confirm');
-        await page.click('.ag-sheet-confirm');
-      }
       await waitForState(page, 'selected document editing mode', (expected) =>
         document.querySelector('.ag-mode')?.dataset.mode === expected, mode);
     };
