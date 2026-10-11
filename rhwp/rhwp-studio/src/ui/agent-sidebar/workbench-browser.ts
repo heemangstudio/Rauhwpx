@@ -144,6 +144,19 @@ export function createWorkbenchBrowser(options: {
   const textInput = document.createElement('textarea'); textInput.className = 'ag-browser-ime'; textInput.setAttribute('aria-label', '브라우저 페이지에 입력'); textInput.autocomplete = 'off'; textInput.spellcheck = false;
   surface.append(image, placeholder, textInput); element.append(surface);
   const downloads = document.createElement('section'); downloads.className = 'ag-browser-downloads'; downloads.setAttribute('aria-label', '브라우저 다운로드'); downloads.setAttribute('role', 'dialog'); downloadsButton.setAttribute('aria-haspopup', 'dialog'); downloads.hidden = true; element.append(downloads);
+  let passwordSaveTab = ''; let passwordSaveEpoch: number | undefined;
+  const savePassword = button('이 페이지에서 입력하는 로그인 저장', '비밀번호 저장', () => {
+    const tab = controller.tab(); const api = nativeBrowserApi()?.passwords;
+    if (!tab || !api) return;
+    void api.armSave({ tabId: tab.tabId, enabled: passwordSaveTab !== tab.tabId }).then(result => {
+      passwordSaveTab = result.enabled ? tab.tabId : '';
+      passwordSaveEpoch = result.navigationEpoch;
+      savePassword.setAttribute('aria-pressed', String(result.enabled));
+      savePassword.title = result.enabled ? '아이디와 비밀번호를 입력하면 이 기기에 저장합니다' : '이 페이지에서 입력하는 로그인 저장';
+    }).catch(() => { savePassword.title = '비밀번호 저장을 시작하지 못했습니다. HTTPS 로그인 페이지에서 다시 시도해 주세요.'; });
+  });
+  savePassword.hidden = !nativeBrowserApi()?.passwords;
+  icon(savePassword, 'shield'); savePassword.setAttribute('aria-pressed', 'false');
   const details = document.createElement('details'); details.className = 'ag-browser-details';
   const summary = document.createElement('summary'); summary.setAttribute('aria-label', '브라우저 추가 메뉴'); summary.title = '브라우저 추가 메뉴'; summary.append(createIcon('more'));
   const menu = document.createElement('div'); menu.className = 'ag-browser-menu';
@@ -519,6 +532,15 @@ export function createWorkbenchBrowser(options: {
     uploadFiles.multiple = data.multiple === true; uploadLabel.textContent = '페이지에서 파일을 요청했습니다.'; upload.hidden = false;
   });
   const unsubscribeNative = nativeBrowserApi()?.onEvent?.((event) => {
+    if (event.tabId === passwordSaveTab && typeof event.navigationEpoch === 'number' && event.navigationEpoch !== passwordSaveEpoch) {
+      passwordSaveTab = ''; savePassword.setAttribute('aria-pressed', 'false'); savePassword.title = '이 페이지에서 입력하는 로그인 저장';
+    }
+    if (event.type === 'password-save' && event.tabId === passwordSaveTab) {
+      savePassword.title = event.state === 'saved' ? '로그인을 이 기기에 저장했습니다' : '로그인을 저장하지 못했습니다. 다시 시도해 주세요.';
+      savePassword.setAttribute('aria-label', savePassword.title);
+      savePassword.animate([{ opacity: 0.4 }, { opacity: 1 }], { duration: 250 });
+      return;
+    }
     if (typeof event.zoomFactor === 'number') {
       const target = controller.state.tabs.find(row => row.tabId === event.tabId || row.nativeTargetId === event.tabId);
       if (target) { acceptZoom(target.tabId, event); paint(); }

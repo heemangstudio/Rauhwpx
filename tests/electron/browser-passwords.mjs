@@ -29,7 +29,7 @@ const safeStorage = {
   decryptStringAsync: async (value) => { const cipher = createDecipheriv('aes-256-gcm', keyBytes, value.subarray(0, 12)); cipher.setAuthTag(value.subarray(12, 28)); return { result: Buffer.concat([cipher.update(value.subarray(28)), cipher.final()]).toString() }; },
 };
 let server; let webSockets; let host; let service; let editor;
-let autocompleteListener;
+let autocompleteListener; let saveListener;
 const sockets = new Set();
 const report = {};
 const timer = setTimeout(() => { console.error('NATIVE_PASSWORD_TIMEOUT', report.stage); process.exit(1); }, 45_000);
@@ -59,6 +59,8 @@ try {
   const passwords = new NativeBrowserPasswords({ host, vault, Menu });
   autocompleteListener = (event, payload) => { void passwords.autocomplete(event, payload); };
   ipcMain.on('desktop:browser-guest-autocomplete', autocompleteListener);
+  saveListener = (event, payload) => { void passwords.saveLogin(event, payload); };
+  ipcMain.on('desktop:browser-guest-save-login', saveListener);
   const account = await vault.importCredential({ origin, username: 'fixture-user', password: secret, sourceProfile: 'Synthetic Chrome import' });
   const wire = [];
   const messages = new EventEmitter();
@@ -144,10 +146,29 @@ try {
   assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("research").value'), 'Signed-in research');
   await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, passwordRef: password.ref }), /changed|snapshot|stale/i);
   assert.equal(wire.some((message) => [secret, encodeURIComponent(secret), new URLSearchParams({ secret }).toString().slice(7), Buffer.from(secret).toString('base64')].some((value) => message.includes(value))), false);
+  await tab.view.webContents.loadURL(origin);
+  host.control({ tabId, human: true });
+  host.attach(editor, { tabId, mode: 'dock', bounds: { x: 0, y: 0, width: 800, height: 600 }, interactive: true });
+  await passwords.armSave(editor, { tabId, enabled: true });
+  await tab.view.webContents.executeJavaScript('document.querySelector("#identity").focus()');
+  tab.view.webContents.insertText('manual-fixture-user');
+  await tab.view.webContents.executeJavaScript('document.querySelector("#secret").focus()');
+  tab.view.webContents.insertText(secret);
+  await tab.view.webContents.executeJavaScript('document.querySelector("#submit").focus()');
+  let manual;
+  const saveDeadline = Date.now() + 3000;
+  while (!(manual = (await vault.list()).accounts.find(account => account.username === 'manual-fixture-user'))) {
+    if (Date.now() > saveDeadline) throw new Error('Manual login was not captured on password change');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  await vault.withCredential(manual.id, credential => assert.equal(credential.password, secret));
+  assert.equal(wire.some(message => message.includes(secret)), false);
+  report.manualSave = true;
   report.nativeSubmit = true; report.postNavigationInput = true; report.noSecretInHub = true; report.staleAndWrongOriginRejected = true; report.rawReadbackAndCaptureBlocked = true;
 } catch (error) { report.error = error.stack; process.exitCode = 1; }
 finally {
   clearTimeout(timer);
+  if (saveListener) ipcMain.off('desktop:browser-guest-save-login', saveListener);
   if (autocompleteListener) ipcMain.off('desktop:browser-guest-autocomplete', autocompleteListener);
   await service?.close().catch(() => {}); await host?.dispose().catch(() => {});
   if (editor && !editor.isDestroyed()) editor.destroy();

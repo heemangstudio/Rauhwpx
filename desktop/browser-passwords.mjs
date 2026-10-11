@@ -249,6 +249,37 @@ export class NativeBrowserPasswords {
     for (const tab of this.host.tabs.values()) value = this.redact(tab, value);
     return value;
   }
+  async armSave(window, params) {
+    const tab = this.host.ownedTab(params.tabId, window);
+    if (!tab.interactive) throw passwordFailure('BROWSER_PASSWORD_HUMAN_CONTROL_REQUIRED', 'Show this browser tab before saving a login.');
+    const origin = passwordOrigin(tab.view.webContents.getURL());
+    const epoch = tab.navigationEpoch;
+    if (!await this.vault.available()) throw passwordFailure('BROWSER_PASSWORD_STORAGE_UNAVAILABLE', 'OS password storage is unavailable.');
+    if (!tab.interactive || tab.closing || tab.view.webContents.isDestroyed() || epoch !== tab.navigationEpoch || origin !== passwordOrigin(tab.view.webContents.getURL())) throw passwordFailure('BROWSER_PASSWORD_TARGET_CHANGED', 'The login page changed. Try again.');
+    const token = params.enabled === false ? null : randomUUID();
+    tab.manualPasswordSave = token ? { token, origin, epoch: tab.navigationEpoch } : null;
+    if (token) {
+      tab.passwordShield = true;
+      tab.passwordAllowedOrigins = new Set(tab.passwordAllowedOrigins ?? []); tab.passwordAllowedOrigins.add(origin);
+    }
+    tab.view.webContents.send('desktop:browser-guest-arm-save', token);
+    return { enabled: !!token, navigationEpoch: epoch };
+  }
+  async saveLogin(event, payload) {
+    const tab = [...this.host.tabs.values()].find(entry => entry.view.webContents === event.sender);
+    const armed = tab?.manualPasswordSave;
+    if (!armed || !tab.interactive || event.senderFrame !== event.sender.mainFrame || payload?.token !== armed.token || armed.epoch !== tab.navigationEpoch) return;
+    let origin;
+    try { origin = passwordOrigin(event.senderFrame.url); } catch { return; }
+    if (origin !== armed.origin || typeof payload.username !== 'string' || typeof payload.password !== 'string' || !payload.username || !payload.password || Buffer.byteLength(payload.username) + Buffer.byteLength(payload.password) > 12 * 1024) return;
+    this.protectFamily(tab, origin, payload.password);
+    try {
+      await this.vault.importCredential({ origin, username: payload.username, password: payload.password, sourceProfile: 'Hama Browser' });
+      this.host.emit(tab, 'password-save', { state: 'saved' });
+    } catch {
+      this.host.emit(tab, 'password-save', { state: 'failed' });
+    } finally { payload.password = ''; }
+  }
   async humanFill(window, params) {
     const tab = this.host.ownedTab(params.tabId, window);
     if (!tab.interactive) throw passwordFailure('BROWSER_PASSWORD_HUMAN_CONTROL_REQUIRED', 'Show this browser tab before using a saved password.');
@@ -281,9 +312,12 @@ export function registerBrowserPasswordIpc({ ipcMain, browserHost, passwords = b
     profiles: () => passwords.importer.listProfiles(), import: (_window, payload) => passwords.importer.importProfile(payload),
     list: () => passwords.vault.list(), remove: (_window, payload) => passwords.vault.remove(payload?.id),
     fill: (window, payload) => passwords.humanFill(window, payload),
+    armSave: (window, payload) => passwords.armSave(window, payload),
   };
   for (const [operation, handler] of Object.entries(handlers)) ipcMain.handle(`desktop:browser-passwords-${operation}`, (event, payload) => handler(browserWindowForEvent(event), payload));
   const autocomplete = (event, payload) => { void passwords.autocomplete(event, payload).catch(() => {}); };
   ipcMain.on('desktop:browser-guest-autocomplete', autocomplete);
-  return () => { for (const operation of Object.keys(handlers)) ipcMain.removeHandler(`desktop:browser-passwords-${operation}`); ipcMain.removeListener('desktop:browser-guest-autocomplete', autocomplete); };
+  const saveLogin = (event, payload) => { void passwords.saveLogin(event, payload).catch(() => {}); };
+  ipcMain.on('desktop:browser-guest-save-login', saveLogin);
+  return () => { for (const operation of Object.keys(handlers)) ipcMain.removeHandler(`desktop:browser-passwords-${operation}`); ipcMain.removeListener('desktop:browser-guest-autocomplete', autocomplete); ipcMain.removeListener('desktop:browser-guest-save-login', saveLogin); };
 }

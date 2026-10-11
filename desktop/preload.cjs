@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   browser: {
     native: true,
     passwords: {
+      armSave: (payload) => ipcRenderer.invoke('desktop:browser-passwords-armSave', payload),
       listProfiles: () => ipcRenderer.invoke('desktop:browser-passwords-profiles'),
       importProfile: (payload) => ipcRenderer.invoke('desktop:browser-passwords-import', payload),
       list: () => ipcRenderer.invoke('desktop:browser-passwords-list'),

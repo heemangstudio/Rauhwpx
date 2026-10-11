@@ -2,6 +2,7 @@ import { createIcon } from './icons.ts';
 
 export type BrowserPresentationMode = 'dock' | 'float' | 'popout';
 export interface NativeBrowserApi {
+  passwords?: { armSave(args: { tabId: string; enabled: boolean }): Promise<{ enabled: boolean; navigationEpoch: number }> };
   attach(args: { tabId: string; expectedTargetId?: string; bounds: { x: number; y: number; width: number; height: number }; mode: BrowserPresentationMode; interactive: boolean }): Promise<unknown>;
   detach(args: { tabId: string }): Promise<unknown>;
   getState(args: { tabId: string; expectedTargetId?: string; checkPaint?: boolean }): Promise<unknown>;

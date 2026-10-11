@@ -361,3 +361,32 @@ test('protected relay projects website-controlled network, dialog and target str
   for (const value of [secret, transformed]) assert.equal(JSON.stringify({ sent, metadata }).includes(value), false);
   assert.equal(sent[0].params.request.hasPostData, true);
 });
+
+
+test('manual login saving is document-scoped and stores only encrypted local credentials', async (t) => {
+  const { vault, root } = await vaultFixture(t); const f = nativeFixture(vault);
+  f.tab.interactive = true; f.host.ownedTab = () => f.tab;
+  const notifications = []; f.host.emit = (_tab, type, data) => notifications.push({ type, ...data });
+  let token; f.contents.send = (_channel, value) => { token = value; };
+  f.contents.mainFrame = { url: 'https://fixture.invalid/login' };
+  const event = { sender: f.contents, senderFrame: f.contents.mainFrame };
+  await f.passwords.armSave({}, { tabId: 'tab', enabled: true });
+  const secret = 'manual-fixture-secret';
+  await f.passwords.saveLogin({ ...event, senderFrame: { url: f.contents.mainFrame.url } }, { token, username: 'andy', password: secret });
+  await f.passwords.saveLogin(event, { token: 'wrong', username: 'andy', password: secret });
+  assert.equal((await vault.list()).accounts.length, 0);
+  await f.passwords.saveLogin(event, { token, username: 'andy', password: secret });
+  const accounts = (await vault.list()).accounts;
+  assert.equal(accounts.length, 1);
+  await vault.withCredential(accounts[0].id, credential => assert.equal(credential.password, secret));
+  assert.equal((await readFile(join(root, 'vault', 'local-passwords.json'), 'utf8')).includes(secret), false);
+  assert.equal(JSON.stringify(notifications).includes(secret), false);
+  assert.equal(f.tab.passwordShield, true);
+  f.tab.navigationEpoch++;
+  await f.passwords.saveLogin(event, { token, username: 'different', password: secret });
+  assert.equal((await vault.list()).accounts.length, 1);
+  await f.passwords.armSave({}, { tabId: 'tab', enabled: false });
+  assert.equal(token, null);
+  await f.passwords.saveLogin(event, { token, username: 'different', password: secret });
+  assert.equal((await vault.list()).accounts.length, 1);
+});
