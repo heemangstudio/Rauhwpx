@@ -110,7 +110,9 @@ try {
   floatContents.sendInputEvent({ type: 'char', keyCode: 'x' });
   floatContents.sendInputEvent({ type: 'keyUp', keyCode: 'X' });
   await page.waitForFunction(() => document.querySelector('#draft').value === 'Kept while movingx');
-  host.detach(first, { tabId: 'tab-one' });
+  host.popoutCommand(nativeFloat.webContents, { command: 'close' });
+  assert.equal(nativeFloat.isDestroyed(), true);
+  assert.ok(events.some(event => event.type === 'browser-float-closed' && event.tabId === 'tab-one'));
   assert.equal(host.state(host.tab('tab-one')).mode, 'hidden');
   assert.equal(page.isClosed(), false);
   assert.equal(await page.locator('#draft').inputValue(), 'Kept while movingx');

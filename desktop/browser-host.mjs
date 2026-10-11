@@ -708,7 +708,12 @@ export class OwnedBrowserHost {
     if (!ownerWindow) throw new Error('Browser popout owner is unavailable');
     if (this.floatingWindows.has(tab.targetId) && !tab.interactive) throw new Error('Floating preview is controlled by the agent');
     if (command === 'zoom') return this.zoom(ownerWindow, { tabId: tab.tabId, factor });
-    if (command === 'close') return this.detach(ownerWindow, { tabId: tab.tabId });
+    if (command === 'close') {
+      const floating = this.floatingWindows.has(tab.targetId);
+      const state = this.detach(ownerWindow, { tabId: tab.tabId });
+      if (floating) this.emit(tab, 'browser-float-closed');
+      return state;
+    }
     if (['dock', 'take-control', 'return-agent', 'annotate', 'capture', 'downloads', 'navigate'].includes(command)) {
       if (command === 'dock') this.detach(ownerWindow, { tabId: tab.tabId });
       this.emit(tab, 'presentation-command', { command, ...(command === 'navigate' ? { url } : {}) });
