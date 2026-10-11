@@ -332,7 +332,11 @@ export function createWorkbenchBrowser(options: {
       const response = await controller.action('capture', { ...controller.identity(target), mode: 'page', destinationThreadId: destination.threadId });
       if (disposed) return;
       const evidence = response.capture as Record<string, unknown> | undefined;
-      if (!evidence?.screenshot) throw new Error('화면을 캡처하지 못했습니다. 다시 시도해 주세요.');
+      if (!evidence?.screenshot) {
+        const failure = evidence?.screenshotError;
+        const message = failure && typeof failure === 'object' && 'message' in failure && typeof failure.message === 'string' ? failure.message : '화면을 캡처하지 못했습니다. 다시 시도해 주세요.';
+        throw new Error(message);
+      }
       const draft = await saveBrowserCaptureDraft({ destination, tab: target, frame: null, mode: 'page', comment: '', evidence });
       if (!disposed) {
         const destinationElement = options.onCapture(draft);

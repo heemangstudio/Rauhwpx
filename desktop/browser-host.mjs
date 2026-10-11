@@ -908,6 +908,8 @@ export class OwnedBrowserHost {
         else if (message.operation === 'inventory') response.value = [...this.tabs.values()].map((tab) => this.state(tab));
         else if (message.operation === 'password-accounts') response.value = this.passwords ? await this.passwords.vault.list() : { accounts: [] };
         else if (message.operation === 'password-snapshot') response.value = this.passwords ? await this.passwords.snapshot(params) : { available: false };
+        else if (message.operation === 'password-viewport') response.value = this.passwords ? await this.passwords.snapshot(params, { viewportOnly: true }) : { available: false };
+        else if (message.operation === 'password-capture') response.value = this.passwords ? await this.passwords.capture(params) : { available: false };
         else if (message.operation === 'password-fill') {
           if (!this.passwords) throw new Error('Native password storage is unavailable');
           response.value = await this.passwords.fill(params);

@@ -76,6 +76,8 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     revealDownload: (params) => call('reveal-download', params),
     sleep: (params) => call('sleep', params), activity: (params) => call('activity', params), bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'), inventory: () => call('inventory'),
     passwordAccounts: () => call('password-accounts'), passwordSnapshot: (params) => call('password-snapshot', params),
+    passwordViewport: (params) => call('password-viewport', params),
+    passwordCapture: (params) => call('password-capture', params),
     passwordFill: (params) => call('password-fill', params), passwordAction: (params) => call('password-action', params),
     passwordStorageState: () => call('password-storage-state'),
     async dispose() { events.off('message', receive); listeners.clear(); nativeGeneration = undefined; for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(error('BROWSER_CLOSED', 'The browser service closed.')); } pending.clear(); },
@@ -691,8 +693,23 @@ export function createOwnedBrowserService(options = {}) {
     tab.snapshot = { ...result, handles: refs };
     return result;
   };
-  const viewportInfo = async (tab) => tab.snapshot?.native ? tab.snapshot.viewport : tab.page.evaluate(() => ({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY }));
+  const viewportInfo = async (tab) => {
+    // 비밀번호 보호 탭에서는 일반 CDP 평가가 금지된다. 네이티브 관찰을 사용한다.
+    if (selectedAdapter()?.passwordSnapshot && tab.nativeTargetId) {
+      const adapter = selectedAdapter();
+      const observed = await (adapter.passwordViewport ?? adapter.passwordSnapshot)(nativePasswordBinding(tab));
+      if (observed?.viewport) return observed.viewport;
+    }
+    return tab.snapshot?.native ? tab.snapshot.viewport : tab.page.evaluate(() => ({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY }));
+  };
   const screenshot = async (tab, rect) => {
+    if (selectedAdapter()?.passwordCapture && tab.nativeTargetId) {
+      const captured = await selectedAdapter().passwordCapture({ ...nativePasswordBinding(tab), rect });
+      if (captured?.data) {
+        if (Buffer.byteLength(captured.data, 'base64') > limits.maxFrameBytes) throw error('BROWSER_FRAME_TOO_LARGE', 'The captured browser frame exceeds the size limit.');
+        return captured.data;
+      }
+    }
     if (tab.snapshot?.passwordProtected) throw error('BROWSER_PASSWORD_CAPTURE_PROTECTED', 'The page contains a saved password. Use a semantic snapshot for page evidence.');
     const lifetime = await assertImageAllowed(tab);
     const masks = tab.page.frames().map((frame) => frame.locator(SENSITIVE));
@@ -718,7 +735,8 @@ export function createOwnedBrowserService(options = {}) {
 
   const assertImageAllowed = async (tab) => {
     if (!selectedAdapter()?.passwordSnapshot || !tab.nativeTargetId) return;
-    const observed = await selectedAdapter().passwordSnapshot(nativePasswordBinding(tab));
+    const adapter = selectedAdapter();
+    const observed = await (adapter.passwordViewport ?? adapter.passwordSnapshot)(nativePasswordBinding(tab));
     if (observed?.passwordProtected) throw error('BROWSER_PASSWORD_CAPTURE_PROTECTED', 'The page contains a saved password. Use a semantic snapshot for page evidence.');
     return observed?.available === false ? undefined : { navigationEpoch: observed.nativeNavigationEpoch, controlEpoch: observed.nativeControlEpoch, zoomFactor: observed.zoomFactor };
   };
@@ -764,7 +782,7 @@ export function createOwnedBrowserService(options = {}) {
       result.rect = { x, y, width, height };
     }
     try { result.screenshot = { mimeType: 'image/jpeg', data: await screenshot(tab, result.rect), width: result.rect?.width ?? viewport.width, height: result.rect?.height ?? viewport.height }; }
-    catch { result.screenshotError = { code: 'BROWSER_CAPTURE_IMAGE_FAILED', message: 'The screenshot failed. The annotation and page evidence were retained.' }; }
+    catch (failure) { result.screenshotError = { code: failure.code?.startsWith('BROWSER_') ? failure.code : 'BROWSER_CAPTURE_IMAGE_FAILED', message: failure.code?.startsWith('BROWSER_') ? failure.message : 'The screenshot failed. The annotation and page evidence were retained.' }; }
     if (epoch !== tab.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed during annotation. Capture the current page again.', true);
     if (geometryEpoch !== tab.geometryEpoch) throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed during annotation. Capture the current page again.', true);
     return result;

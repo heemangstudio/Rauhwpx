@@ -77,6 +77,37 @@ try {
   const tabId = opened.tab.tabId;
   const tab = host.tab(tabId);
   host.attach(editor, { tabId, mode: 'dock', bounds: { x: 0, y: 0, width: 800, height: 600 }, interactive: true });
+  // Saving a login arms protection even before a password exists on a public page.
+  tab.passwordShield = true;
+  await tab.view.webContents.executeJavaScript('document.getElementById("secret").style.setProperty("visibility", "visible", "important")');
+  const unmaskedCapture = await service.request(actor, 'capture', { tabId, mode: 'page' });
+  assert.equal(unmaskedCapture.capture.screenshot, undefined);
+  assert.equal(unmaskedCapture.capture.screenshotError.code, 'BROWSER_CAPTURE_MASK_FAILED');
+  await tab.view.webContents.executeJavaScript('document.getElementById("secret").style.removeProperty("visibility")');
+  await tab.view.webContents.executeJavaScript('document.getElementById("secret").value="unsaved-fixture-password"');
+  const typedCapture = await service.request(actor, 'capture', { tabId, mode: 'page' });
+  assert.equal(typedCapture.capture.screenshot, undefined);
+  assert.equal(typedCapture.capture.screenshotError.code, 'BROWSER_PASSWORD_CAPTURE_PROTECTED');
+  await tab.view.webContents.executeJavaScript('document.getElementById("secret").value=""');
+  const armedCapture = await service.request(actor, 'capture', { tabId, mode: 'page' });
+  assert.ok(armedCapture.capture.screenshot?.data, 'Arming password save must not break safe viewport capture');
+  assert.ok(armedCapture.capture.viewport.width > 0);
+  assert.equal(tab.passwordShield, true);
+  assert.equal(await tab.view.webContents.executeJavaScript('getComputedStyle(document.getElementById("secret")).visibility'), 'visible', 'Capture must restore form visibility');
+  report.armedCapture = true;
+  const beforeCapture = await service.request(actor, 'snapshot', { tabId });
+  await service.request(actor, 'capture', { tabId, mode: 'page' });
+  const publicUsername = beforeCapture.snapshot.elements.find(el => el.autocomplete === 'username');
+  await service.request(actor, 'type', { tabId, snapshotId: beforeCapture.snapshot.snapshotId, navigationEpoch: beforeCapture.tab.navigationEpoch, controllerEpoch: beforeCapture.tab.controllerEpoch, ref: publicUsername.ref, text: 'still usable' });
+  const originalCapture = tab.view.webContents.capturePage.bind(tab.view.webContents);
+  tab.view.webContents.capturePage = async (...args) => { const image = await originalCapture(...args); tab.protectedPasswords = new Set([secret]); return image; };
+  try {
+    const racedCapture = await service.request(actor, 'capture', { tabId, mode: 'page' });
+    assert.equal(racedCapture.capture.screenshot, undefined);
+    assert.equal(racedCapture.capture.screenshotError.code, 'BROWSER_PASSWORD_CAPTURE_PROTECTED');
+    assert.equal(tab.passwordCapturePending, false);
+  } finally { tab.view.webContents.capturePage = originalCapture; tab.protectedPasswords.clear(); }
+  tab.passwordShield = false;
   const observed = await service.request(actor, 'snapshot', { tabId });
   report.stage = 'observed';
   const username = observed.snapshot.elements.find((element) => element.autocomplete === 'username');
@@ -91,12 +122,16 @@ try {
   await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: other.id, passwordRef: password.ref }), /different website/);
   await tab.view.webContents.executeJavaScript(`document.querySelector('form').action='https://other.invalid/'`);
   await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, passwordRef: password.ref }), /same-origin/);
-  assert.equal(tab.passwordShield, undefined);
+  assert.equal(tab.passwordShield, false);
   await tab.view.webContents.executeJavaScript(`document.querySelector('form').action='/signed-in'`);
   await service.request(actor, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref });
   report.stage = 'filled';
   assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("secret").value'), secret);
   report.nativeFill = true;
+  const protectedCapture = await service.request(actor, 'capture', { tabId, mode: 'page' });
+  assert.equal(protectedCapture.capture.screenshot, undefined);
+  assert.equal(protectedCapture.capture.screenshotError.code, 'BROWSER_PASSWORD_CAPTURE_PROTECTED');
+  report.protectedCapture = true;
   const focusActivity = { targetId: tab.targetId, tabId, sessionId: tab.sessionId, chatId: tab.chatId, generation: host.generation, token: randomUUID() };
   await host.activity({ ...focusActivity, active: true });
   try {

@@ -28,6 +28,18 @@ function pageSnapshot(token, selector, maxElements) {
     viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY } };
 }
 
+function captureViewport(secretSelector) {
+  const roots = [document]; let masked = true; let hasSecret = false;
+  for (let index = 0; index < roots.length; index++) {
+    for (const el of roots[index].querySelectorAll('*')) {
+      if (el.shadowRoot) roots.push(el.shadowRoot);
+      if (el.matches(secretSelector) && el.value) hasSecret = true;
+      if (el.matches('input,textarea,select,[contenteditable],iframe,frame') && getComputedStyle(el).visibility !== 'hidden') masked = false;
+    }
+  }
+  return { masked, hasSecret, width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY };
+}
+
 function pageAction(payload) {
   if (payload.action === 'stop') { window.stop(); return { completed: true }; }
   const current = globalThis.__rhwpNativePasswordRefs;
@@ -151,16 +163,71 @@ export class NativeBrowserPasswords {
     if (!snapshot || params.snapshotId !== snapshot.snapshotId || snapshot.generation !== this.host.generation || snapshot.owner !== this.host.owner || snapshot.navigationEpoch !== tab.navigationEpoch || snapshot.targetId !== tab.targetId || snapshot.sessionId !== tab.sessionId || snapshot.chatId !== tab.chatId || snapshot.controlEpoch !== (tab.passwordControlEpoch ?? 0) || snapshot.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Take a new browser snapshot before using this saved account.');
     return snapshot;
   }
-  async snapshot(params) {
+  async snapshot(params, { viewportOnly = false } = {}) {
     const tab = this.tab(params);
     const epoch = tab.navigationEpoch; const snapshotId = `native-password-${randomUUID()}`;
     const lifetime = { generation: this.host.generation, owner: this.host.owner, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: tab.view.webContents.getZoomFactor(), origin: new URL(tab.view.webContents.getURL()).origin };
-    const observed = await this.run(tab, pageSnapshot, [snapshotId, SENSITIVE, 400]);
+    const observed = viewportOnly
+      ? await this.run(tab, () => ({ viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY } }))
+      : await this.run(tab, pageSnapshot, [snapshotId, SENSITIVE, 400]);
     if (lifetime.zoomFactor !== tab.view.webContents.getZoomFactor()) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Page zoom changed during the browser snapshot.');
     if (tab.closing || tab.view.webContents.isDestroyed() || epoch !== tab.navigationEpoch || lifetime.generation !== this.host.generation || lifetime.owner !== this.host.owner || lifetime.targetId !== tab.targetId || lifetime.sessionId !== tab.sessionId || lifetime.chatId !== tab.chatId || lifetime.controlEpoch !== (tab.passwordControlEpoch ?? 0) || lifetime.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'The page changed during the browser snapshot.');
     const url = new URL(tab.view.webContents.getURL());
-    tab.passwordSnapshot = { snapshotId, generation: this.host.generation, owner: this.host.owner, navigationEpoch: epoch, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: lifetime.zoomFactor, origin: url.origin, elements: observed.elements };
+    if (!viewportOnly) tab.passwordSnapshot = { snapshotId, generation: this.host.generation, owner: this.host.owner, navigationEpoch: epoch, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: lifetime.zoomFactor, origin: url.origin, elements: observed.elements };
     return this.redact(tab, { ...observed, snapshotId, nativeNavigationEpoch: epoch, nativeControlEpoch: lifetime.controlEpoch, zoomFactor: lifetime.zoomFactor, url: tab.passwordShield ? `${url.origin}/` : `${url.origin}${url.pathname}`, title: tab.passwordShield ? '' : tab.view.webContents.getTitle(), passwordProtected: !!tab.passwordShield });
+  }
+  async capture(params) {
+    const tab = this.tab(params);
+    if (!tab.passwordShield) return { available: false };
+    const contents = tab.view.webContents;
+    // 저장된 비밀번호는 페이지 본문에도 복사될 수 있어 이미지로 내보내지 않는다.
+    const assertSafe = () => {
+      if (tab.protectedPasswords?.size) throw passwordFailure('BROWSER_PASSWORD_CAPTURE_PROTECTED', '저장된 비밀번호를 사용한 페이지는 캡처할 수 없습니다. 다른 탭에서 캡처해 주세요.');
+    };
+    assertSafe();
+    if (tab.passwordCapturePending) throw passwordFailure('BROWSER_CAPTURE_PENDING', '화면 캡처가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
+    tab.passwordCapturePending = true;
+    const epoch = tab.navigationEpoch; const controlEpoch = tab.passwordControlEpoch ?? 0;
+    const generation = this.host.generation; const owner = this.host.owner; const zoom = contents.getZoomFactor();
+    const current = () => {
+      assertSafe();
+      if (tab.closing || contents.isDestroyed() || epoch !== tab.navigationEpoch || controlEpoch !== (tab.passwordControlEpoch ?? 0) || generation !== this.host.generation || owner !== this.host.owner || zoom !== contents.getZoomFactor()) throw passwordFailure('BROWSER_STALE_FRAME', '페이지가 변경되었습니다. 현재 화면을 다시 캡처해 주세요.');
+    };
+    let css; let timer; let result;
+    try {
+      // 폼과 하위 프레임은 숨기고 실제 마스킹을 확인한다. 값은 읽거나 전송하지 않는다.
+      css = await contents.insertCSS('input,textarea,select,[contenteditable],iframe,frame { visibility: hidden !important; }');
+      current();
+      const viewport = await this.run(tab, captureViewport, [SECRET]);
+      if (viewport.hasSecret) throw passwordFailure('BROWSER_PASSWORD_CAPTURE_PROTECTED', '비밀번호가 입력된 페이지는 캡처할 수 없습니다. 다른 탭에서 캡처해 주세요.');
+      if (!viewport.masked) throw passwordFailure('BROWSER_CAPTURE_MASK_FAILED', '입력 내용을 안전하게 가릴 수 없어 캡처를 중단했습니다.');
+      const image = await Promise.race([
+        contents.capturePage({}, { stayAwake: true }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(passwordFailure('BROWSER_CAPTURE_TIMEOUT', '화면 캡처 시간이 초과되었습니다. 다시 시도해 주세요.')), 5000); }),
+      ]);
+      current();
+      const after = await this.run(tab, captureViewport, [SECRET]);
+      current();
+      if (after.hasSecret) throw passwordFailure('BROWSER_PASSWORD_CAPTURE_PROTECTED', '비밀번호가 입력된 페이지는 캡처할 수 없습니다. 다른 탭에서 캡처해 주세요.');
+      if (JSON.stringify(viewport) !== JSON.stringify(after)) throw passwordFailure('BROWSER_STALE_GEOMETRY', '페이지 크기가 변경되었습니다. 현재 화면을 다시 캡처해 주세요.');
+      if (!image || image.isEmpty()) throw passwordFailure('BROWSER_CAPTURE_IMAGE_FAILED', '화면을 캡처하지 못했습니다. 다시 시도해 주세요.');
+      let captured = image;
+      if (params.rect) {
+        const scaleX = image.getSize().width / viewport.width; const scaleY = image.getSize().height / viewport.height;
+        const r = params.rect;
+        captured = image.crop({ x: Math.floor(r.x * scaleX), y: Math.floor(r.y * scaleY), width: Math.max(1, Math.floor(r.width * scaleX)), height: Math.max(1, Math.floor(r.height * scaleY)) });
+      }
+      result = { data: captured.toJPEG(75).toString('base64') };
+    } finally {
+      clearTimeout(timer);
+      if (css && !contents.isDestroyed()) {
+        await contents.removeInsertedCSS(css).catch(() => {});
+        await this.run(tab, () => new Promise(resolve => { const timer = setTimeout(resolve, 100); requestAnimationFrame(() => { clearTimeout(timer); resolve(); }); })).catch(() => {});
+      }
+      tab.passwordCapturePending = false;
+    }
+    current();
+    return result;
   }
   async fill(params, { human = false } = {}) {
     const tab = this.tab(params, { human });
