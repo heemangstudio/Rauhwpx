@@ -588,7 +588,7 @@ export function createWorkbenchBrowser(options: {
     placeholder.hidden = Boolean(tab); image.hidden = !frame;
     if (frame && frame.frameId !== selectedFrameId) { selectedFrameId = frame.frameId; image.src = `data:${frame.mimeType};base64,${frame.data}`; image.style.aspectRatio = `${frame.width} / ${frame.height}`; }
     if (!frame && selectedFrameId) { selectedFrameId = ''; image.removeAttribute('src'); }
-    if (tab && !frame) { placeholder.hidden = false; placeholderTitle.textContent = manuallySleeping ? '탭이 잠들어 있습니다' : tab.status === 'crashed' ? '브라우저가 종료되었습니다' : '페이지 화면을 기다리는 중'; placeholderText.textContent = tab.status === 'crashed' ? '상태를 새로 읽고 페이지를 다시 열어 주세요.' : tab.url; emptyOpen.hidden = true; }
+    if (tab && !frame) { placeholder.hidden = false; placeholderTitle.textContent = manuallySleeping ? '탭이 잠들어 있습니다' : tab.status === 'crashed' ? '브라우저가 종료되었습니다' : '로딩중...'; placeholderText.textContent = tab.status === 'crashed' ? '상태를 새로 읽고 페이지를 다시 열어 주세요.' : tab.url; emptyOpen.hidden = true; }
     else if (!tab) { placeholderTitle.textContent = '자료를 찾아보세요'; placeholderText.textContent = '웹사이트를 읽고 받은 PDF를 문서와 보드에서 확인할 수 있습니다.'; emptyOpen.hidden = false; }
     dockButton.hidden = presentation.current() === 'dock'; floatButton.hidden = presentation.current() === 'float';
     popoutButton.hidden = presentation.current() === 'popout';

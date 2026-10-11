@@ -31,10 +31,10 @@
 .ag-browser-error { display: flex; align-items: center; gap: 8px; padding: 8px; color: #9a3e27; border-bottom: 1px solid var(--browser-border); }
 .ag-browser-error[hidden] { display: none; }
 .ag-browser-error span { flex: 1; }
-.ag-browser-surface { position: relative; flex: 1; min-height: 150px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #e4e6e2; outline-offset: -3px; }
+.ag-browser-surface { position: relative; flex: 1; min-height: 150px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--ag-bg, var(--n-surface, #e4e6e2)); outline-offset: -3px; }
 .ag-browser-frame { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; user-select: none; }
 .ag-browser-frame[hidden] { display: none; }
-.ag-browser-placeholder { text-align: center; padding: 25px; max-width: 380px; color: #576253; line-height: 1.6; }
+.ag-browser-placeholder { text-align: center; padding: 25px; max-width: 380px; color: var(--ag-text-secondary, var(--n-text-secondary, #576253)); line-height: 1.6; }
 .ag-browser-placeholder[hidden] { display: none; }
 /* 기존 하마의 눈 감은 자세. 페이지를 기다리는 동안만 숨을 쉬고 코를 곤다. */
 .ag-browser-sleeping-hama { position: relative; display: block; width: 96px; height: 76px; margin: 0 auto 12px; }
