@@ -78,6 +78,18 @@ test('현재 화면을 한 번 첨부하고 캡처 중에도 브라우저 입력
     await page.evaluate(() => (window as any).captureTest.release());
     await page.waitForFunction(() => (window as any).captureTest.drafts.length === 3);
     assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'float', 'a separate-window capture command does not dock or hide its page');
+    await page.evaluate(() => (document.querySelector('[aria-label="별도 창으로 열기"]') as HTMLButtonElement).click());
+    await page.waitForFunction(() => (window as any).captureTest.calls.some((call: any) => call.action === 'attach' && call.args.mode === 'popout'));
+    await page.waitForFunction(() => (document.querySelector('.ag-browser') as HTMLElement).dataset.presentation === 'hidden');
+    await page.evaluate(() => {
+      const fixture = (window as any).captureTest;
+      fixture.view.setVisible(true);
+      fixture.emit({ type: 'presentation-command', tabId: 'tab', command: 'capture' });
+    });
+    await page.waitForFunction(() => (window as any).captureTest.calls.filter((call: any) => call.action === 'capture').length === 4);
+    await page.evaluate(() => (window as any).captureTest.release());
+    await page.waitForFunction(() => (window as any).captureTest.drafts.length === 4);
+    assert.equal(await page.evaluate(() => (window as any).captureTest.calls.filter((call: any) => call.action === 'attach').at(-1).args.mode), 'popout', 'workbench refresh and capture preserve native popup ownership');
     await page.evaluate(() => (window as any).captureTest.view.dispose());
   } finally { await browser?.close(); await server.close(); }
 });
