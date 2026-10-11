@@ -10,7 +10,6 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   await page.waitForFunction(() => { const node = document.querySelector('.ag-workbench-launcher-item[data-view="browser"]'); const rect = node?.getBoundingClientRect(); return node?.checkVisibility() && rect.left >= 0 && rect.right <= innerWidth; });
   await page.click('.ag-workbench-launcher-item[data-view="browser"]');
   await page.waitForSelector('.ag-browser:not([hidden])', { visible: true });
-  await page.click('[aria-label="연구 브라우저 열기"]');
   await page.waitForFunction(() => document.querySelector('.ag-browser-frame')?.src.startsWith('data:image/jpeg'));
   const original = await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[0].tabId);
   const siteTab = id => `.ag-workbench-tabs [role="tab"][data-resource-id="browser:${id}"]`;
