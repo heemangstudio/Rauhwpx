@@ -339,6 +339,7 @@ export class OwnedBrowserHost {
     tab.pendingViewport = { width, height };
     if (tab.viewportTask) return tab.viewportTask;
     tab.viewportTask = (async () => {
+      await Promise.resolve();
       while (tab.pendingViewport && !tab.closing && !tab.view.webContents.isDestroyed()) {
         const next = tab.pendingViewport; tab.pendingViewport = null;
         if (tab.placement) {

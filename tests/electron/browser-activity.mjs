@@ -162,6 +162,17 @@ app.whenReady().then(async () => {
       assert.equal(nativeHidden.frames, 0);
       report.idleTrials.push({ forcedVisible, nativeHidden });
     }
+    window.showInactive();
+    const debuggerCommand = tab.view.webContents.debugger.sendCommand.bind(tab.view.webContents.debugger);
+    const metricCommands = [];
+    tab.view.webContents.debugger.sendCommand = (method, ...args) => { if (method.startsWith('Emulation.')) metricCommands.push(method); return debuggerCommand(method, ...args); };
+    for (let width = 320; width <= 380; width++) host.attach(window, { tabId: tab.tabId, bounds: { x: 0, y: 0, width, height: 300 } });
+    await tab.viewportTask;
+    await eventually('innerWidth', 380);
+    assert.equal(metricCommands.filter(method => method === 'Emulation.setDeviceMetricsOverride').length, 0, 'visible resize uses the native viewport');
+    assert.ok(metricCommands.filter(method => method === 'Emulation.clearDeviceMetricsOverride').length <= 1, 'resize clears emulation once rather than per frame');
+    tab.view.webContents.debugger.sendCommand = debuggerCommand;
+    report.resize = { latestWidth: 380, emulationOverrides: 0 };
     host.attach(window, { tabId: tab.tabId, bounds: { x: 0, y: 0, width: 420, height: 320 } });
     window.showInactive();
     await evaluate('new Promise(resolve => requestAnimationFrame(resolve))');
