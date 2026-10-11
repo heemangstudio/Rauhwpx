@@ -48,3 +48,13 @@ The final focused run measured 93 ms to dynamically import Ghostery and deserial
 Electron-builder's installed production dependency collector was run against the updated package graph. It included the Ghostery engine, adapter and preload, and excluded `electron` and `@electron/get`. Package verification now requires the engine, sources, notices and preload files. A signed distributable build was not produced in this worktree.
 
 ![Production browser settings in the isolated Electron app](settings.png)
+
+## Integrated live Electron check
+
+Integrated into `fix/browser-interaction-latency` at signed merge `2e4f3e3d`, preserving the unrelated local memo setup. Reinstalled root dependencies and reloaded the actual Electron build from Rauhwpx-pr475, serving http://127.0.0.1:7745/ with adsf.hwpx open.
+
+On its existing public Muxy native tab, a normal same-origin fetch returned HTTP 200. A request to `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js` failed, and Chromium emitted `Network.loadingFailed` with `net::ERR_BLOCKED_BY_CLIENT`. This confirms live request cancellation rather than only filter matching in a mock. No password page or private form was inspected.
+
+Opened the production Settings / Browser / Configuration UI and toggled advertising protection off and back on. The local desktop state reflected each change. Left protection enabled, no paused sites, and preserved the original Google search preference.
+
+![Settings in the actual running Electron build](live-settings.png)
