@@ -1102,7 +1102,12 @@ export function createOwnedBrowserService(options = {}) {
       tabs.set(tab.tabId, tab);
       const agentSessionEpoch = humanSessionEpoch;
       if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }
-      try { await attach(tab, await runtime.context.newPage()); previewActivity(actor, tab); tab.activeActor = actor; if (actor.isHuman && url !== 'about:blank') markHumanOrigin(new URL(url).origin); if (url !== 'about:blank') await tab.page.goto(url, { waitUntil: 'domcontentloaded' }); if (actor.isHuman) markHumanDocument(tab); }
+      try {
+        await attach(tab, await runtime.context.newPage());
+        // 새 탭을 만든 화면은 탐색과 계정 저장을 기다리지 않고 즉시 해당 탭을 표시한다.
+        if (actor.isHuman && typeof args.openRequestId === 'string' && args.openRequestId.length <= 160) emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo(), openRequestId: args.openRequestId });
+        previewActivity(actor, tab); tab.activeActor = actor; if (actor.isHuman && url !== 'about:blank') markHumanOrigin(new URL(url).origin); if (url !== 'about:blank') await tab.page.goto(url, { waitUntil: 'domcontentloaded' }); if (actor.isHuman) markHumanDocument(tab);
+      }
       catch (failure) { await tab.page?.close().catch(() => {}); tabs.delete(tab.tabId); throw failure; }
       finally { previewActivity(actor, tab, false); tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
       if (actor.isHuman) await observeHumanSessions();

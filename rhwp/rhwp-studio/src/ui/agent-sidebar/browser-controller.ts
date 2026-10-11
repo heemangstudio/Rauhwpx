@@ -34,6 +34,7 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
   let refreshSequence = 0;
   let refreshRequest: Promise<void> | null = null;
   let selectionSequence = 0;
+  let pendingOpen: { id: string; selection: number } | null = null;
   let frameRequest: Promise<void> | null = null;
   const retiredRuntimeIds = new Set<string>();
   const notify = () => { if (!disposed) for (const listener of listeners) listener(); };
@@ -80,6 +81,9 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
       const index = state.tabs.findIndex((row) => row.tabId === result.tab!.tabId);
       const incoming = latestTab(result.tab);
       if (index < 0) state.tabs.push(incoming); else state.tabs[index] = incoming;
+      if ('type' in result && result.type === 'owned_browser_tab' && result.openRequestId === pendingOpen?.id && pendingOpen && pendingOpen.selection === selectionSequence) {
+        pendingOpen.selection = ++selectionSequence; state.frames.clear(); state.activeTabId = incoming.tabId; rememberTab();
+      }
       const frame = state.frames.get(incoming.tabId);
       if (frame && (frame.navigationEpoch !== incoming.navigationEpoch || frame.controllerEpoch !== incoming.controllerEpoch)) state.frames.delete(incoming.tabId);
       if ('type' in result && result.type === 'owned_browser_popup' && result.foreground !== false
@@ -165,12 +169,18 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
       selectionSequence++; if (state.activeTabId !== tabId) state.frames.clear(); state.activeTabId = tabId; rememberTab(); notify(); void readFrame();
     },
     async open(url?: string) {
-      if (url === undefined) {
-        const configuration = await bridge.requestBrowser<{ searchEngine?: string }>('configuration.get').catch(() => ({} as { searchEngine?: string }));
-        url = browserHomepageURL(configuration.searchEngine);
+      const opening = { id: crypto.randomUUID(), selection: selectionSequence }; pendingOpen = opening;
+      try {
+        if (url === undefined) {
+          const configuration = await bridge.requestBrowser<{ searchEngine?: string }>('configuration.get').catch(() => ({} as { searchEngine?: string }));
+          url = browserHomepageURL(configuration.searchEngine);
+        }
+        const result = await action('open', { url, openRequestId: opening.id });
+        // 페이지 로딩이나 계정 기록이 늦게 끝나도 사용자가 바꾼 선택은 되돌리지 않는다.
+        if (pendingOpen === opening && opening.selection === selectionSequence && result.tab && options.tabFilter?.(result.tab) !== false) { selectionSequence++; state.frames.clear(); state.activeTabId = result.tab.tabId; rememberTab(); notify(); void readFrame(); }
+      } finally {
+        if (pendingOpen === opening) pendingOpen = null;
       }
-      const result = await action('open', { url });
-      if (result.tab && options.tabFilter?.(result.tab) !== false) { selectionSequence++; state.frames.clear(); state.activeTabId = result.tab.tabId; rememberTab(); notify(); void readFrame(); }
     },
     async close(tabId: string) {
       const target = state.tabs.find((row) => row.tabId === tabId);

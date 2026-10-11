@@ -11,6 +11,32 @@ import { createOwnedBrowserService } from '../owned-browser-service.mjs';
 import { createBrowserNetworkGuard, createBrowserNetworkProxy } from '../owned-browser-network.mjs';
 import { inspectOwnedBrowserRuntime, startOwnedBrowserRuntime } from '../owned-browser-runtime.mjs';
 
+test('human new tabs announce their request identity before navigation completes', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-new-tab-focus-'));
+  const events = []; let finishNavigation; let navigationStarted;
+  const started = new Promise(resolve => { navigationStarted = resolve; });
+  const navigation = new Promise(resolve => { finishNavigation = resolve; });
+  let url = 'about:blank';
+  const page = Object.assign(new EventEmitter(), { url: () => url, isClosed: () => false, frames: () => [], async routeWebSocket() {}, async close() {},
+    async goto(next) { navigationStarted(); await navigation; url = next; },
+  });
+  const service = createOwnedBrowserService({ dataDir, onEvent: event => events.push(event), lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+    runtimeFactory: async () => ({ kind: 'native', browser: new EventEmitter(), async close() {}, context: Object.assign(new EventEmitter(), {
+      async storageState() { return { cookies: [], origins: [] }; }, async route() {}, pages: () => [page], async newPage() { return page; },
+    }) }),
+  });
+  t.after(async () => { finishNavigation(); await service.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const pending = service.request({ isHuman: true, clientId: 'window', sessionId: 'window' }, 'open', { url: 'https://example.com/', openRequestId: 'new-tab-request' });
+  await started;
+  const created = events.find(event => event.openRequestId === 'new-tab-request');
+  assert.equal(created.type, 'owned_browser_tab');
+  assert.ok(created.tab.tabId);
+  finishNavigation();
+  const result = await pending;
+  assert.equal(result.tab.tabId, created.tab.tabId);
+  assert.equal(result.tab.url, 'https://example.com/');
+});
+
 test('failed native setup releases its owned connection before retry and concurrent opens wait for setup', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-native-setup-failure-'));
   let signalSetup; let failSetup;

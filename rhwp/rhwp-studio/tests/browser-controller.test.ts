@@ -60,6 +60,25 @@ test('새 탭은 선택한 검색 엔진을 열고 명시적인 링크는 그대
   assert.equal(opened.includes('about:blank'), false);
   f.controller.dispose();
 });
+
+test('새 탭이 만들어지면 로딩 완료 전에 선택하고 늦은 응답은 사람의 선택을 유지한다', async () => {
+  const f = fixture(true); const original = tab();
+  f.emit({ type: 'owned_browser_inventory', tabs: [original] }); f.controller.select(original.tabId);
+  const destination = { ...original, tabId: 'new-tab', url: 'https://example.com/new' };
+  let finish!: (result: BrowserResult) => void;
+  f.respond(async (_action, args) => {
+    f.emit({ type: 'owned_browser_tab', tab: { ...destination, tabId: 'another-window' }, openRequestId: 'unrelated' });
+    assert.equal(f.controller.tab()?.tabId, original.tabId);
+    f.emit({ type: 'owned_browser_tab', tab: destination, openRequestId: args.openRequestId });
+    return new Promise(resolve => { finish = resolve; });
+  });
+  const pending = f.controller.open(destination.url);
+  assert.equal(f.controller.tab()?.tabId, destination.tabId);
+  f.controller.select(original.tabId);
+  finish({ tab: destination }); await pending;
+  assert.equal(f.controller.tab()?.tabId, original.tabId);
+  f.controller.dispose();
+});
 function tab(navigationEpoch = 1, controllerEpoch = 1): BrowserTab {
   return { tabId: 'owned-tab', threadId: 'chat', documentId: null, projectId: 'project', url: `https://example.com/${navigationEpoch}`, title: '자료', navigationEpoch, controllerEpoch, controller: { owner: controllerEpoch === 1 ? 'agent' : 'human' }, status: 'ready' };
 }
