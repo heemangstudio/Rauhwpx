@@ -142,5 +142,6 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
   });
   window.addEventListener('resize', clamp);
   return { mount(host: HTMLElement) { dock = host; syncTheme(); if (mode !== 'float' && mode !== 'popout') host.append(element); }, present, hide, current: () => mode,
+    setAgentControlled(controlled: boolean) { floating.dataset.agentControlled = String(controlled); floating.inert = controlled; floating.setAttribute('aria-label', controlled ? '에이전트가 사용 중인 브라우저 미리보기' : '떠 있는 브라우저'); },
     dispose() { hide(); themeObserver.disconnect(); window.removeEventListener('resize', clamp); floating.remove(); element.remove(); }, };
 }

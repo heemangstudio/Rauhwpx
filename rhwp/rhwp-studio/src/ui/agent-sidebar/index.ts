@@ -3844,6 +3844,31 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     else openChat();
   }
 
+  function ensureWorkbenchBrowser(): WorkbenchBrowser {
+    return workbenchBrowser ??= createWorkbenchBrowser({ bridge,
+      getDestination: () => ({ threadId: currentThread.id, documentId: currentDocumentId, projectId: bridge.projects?.store.get()?.id ?? null, label: currentThread.title || '현재 채팅' }),
+      onCapture: (draft) => {
+        if (captureInbox.queue(draft)) {
+          return captureInbox.root.querySelector<HTMLElement>(`[data-capture-id="${draft.id}"]`) ?? composerField;
+        }
+        systemMessage('브라우저 자료를 선택했던 채팅에 저장했습니다. 해당 채팅에서 첨부를 확인해 주세요.');
+      },
+      onOpenDownload: (job) => {
+        const open = () => { workbench?.select('documents'); void workbenchDocuments?.openDownload(job); };
+        if (!fullscreen) setFullscreen(true, { then: open }); else open();
+      },
+      onDock: () => { const dock = () => workbench?.select('browser'); if (!fullscreen) setFullscreen(true, { then: dock }); else dock(); },
+      onChat: () => { returnToChat(); },
+      onChange: syncWorkbenchResources,
+    });
+  }
+
+  const unsubscribeAgentBrowserPreview = bridge.onBrowserEvent((event) => {
+    if (event.type !== 'owned_browser_activity') return;
+    const tab = event.tab ?? (event.payload as { tab?: import('../../agent/types.ts').BrowserTab } | undefined)?.tab;
+    if (tab) ensureWorkbenchBrowser().previewAgent(tab);
+  });
+
   workbench = createSidebarWorkbench({
     onChat: returnToChat,
     selectResource: (id) => {
@@ -3866,23 +3891,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         });
         host.append(workbenchBoard.element);
       } else if (view === 'browser') {
-        workbenchBrowser ??= createWorkbenchBrowser({ bridge,
-          getDestination: () => ({ threadId: currentThread.id, documentId: currentDocumentId, projectId: bridge.projects?.store.get()?.id ?? null, label: currentThread.title || '현재 채팅' }),
-          onCapture: (draft) => {
-            if (captureInbox.queue(draft)) {
-              return captureInbox.root.querySelector<HTMLElement>(`[data-capture-id="${draft.id}"]`) ?? composerField;
-            }
-            systemMessage('브라우저 자료를 선택했던 채팅에 저장했습니다. 해당 채팅에서 첨부를 확인해 주세요.');
-          },
-          onOpenDownload: (job) => {
-            const open = () => { workbench?.select('documents'); void workbenchDocuments?.openDownload(job); };
-            if (!fullscreen) setFullscreen(true, { then: open }); else open();
-          },
-          onDock: () => { const dock = () => workbench?.select('browser'); if (!fullscreen) setFullscreen(true, { then: dock }); else dock(); },
-          onChat: () => { returnToChat(); },
-          onChange: syncWorkbenchResources,
-        });
-        workbenchBrowser.mount(host);
+        ensureWorkbenchBrowser().mount(host);
         syncWorkbenchResources();
       } else if (view === 'documents') {
         workbenchDocuments = createWorkbenchDocuments({ client: bridge.projects ?? null, bridge,
@@ -10365,6 +10374,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       workbenchBoard?.dispose();
       workbenchDocuments?.dispose();
       workbenchAgents?.dispose();
+      unsubscribeAgentBrowserPreview();
       workbenchBrowser?.dispose();
       workbench?.dispose();
       // 페이지 클래스는 화면에 붙어 있던 사이드바만 걷는다.

@@ -187,6 +187,7 @@ export function createWorkbenchBrowser(options: {
   details.addEventListener('focusout', event => {
     if (event.relatedTarget instanceof Node && !details.contains(event.relatedTarget)) details.open = false;
   });
+  let agentPreviewTab: string | null = null;
   let visible = false; let nativeTab: string | null = null; let nativePopout = false;
   let frameTimer: ReturnType<typeof setTimeout> | null = null; let composing = false; let committedComposition: string | null = null; let disposed = false; let selectedFrameId = ''; let nativeSequence = 0;
   let reconnecting = false;
@@ -413,7 +414,7 @@ export function createWorkbenchBrowser(options: {
     if (disposed || sequence !== nativeSequence || !nativeSurfaceVisible() || nativeOverlayOpen() || !useNative || !target || nativePopout) return;
     const rect = surface.getBoundingClientRect(); if (rect.width < 1 || rect.height < 1) return;
     nativeTab = target;
-    const placement = { tabId: target, expectedTargetId: tab.nativeTargetId, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, mode: presentation.current() ?? 'dock', interactive: true };
+    const placement = { tabId: target, expectedTargetId: tab.nativeTargetId, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, mode: presentation.current() ?? 'dock', interactive: agentPreviewTab === null };
     const identity = () => JSON.stringify({ tabId: target, runtimeGeneration: controller.tab()?.runtimeGeneration, nativeTargetId: controller.tab()?.nativeTargetId });
     const signature = () => JSON.stringify({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, identity: identity() });
     const healthIdentity = () => JSON.stringify([identity(), controller.tab()?.navigationEpoch]);
@@ -448,7 +449,7 @@ export function createWorkbenchBrowser(options: {
     layoutFrame = requestAnimationFrame(() => { layoutFrame = null; const host = element.getBoundingClientRect(); const bar = toolbar.getBoundingClientRect(); element.style.setProperty('--browser-popover-top', `${bar.bottom - host.top + 6}px`); element.style.setProperty('--browser-popover-height', `${Math.max(80, host.bottom - bar.bottom - 14)}px`); void projectNative(); });
   };
   function nativeSurfaceVisible(): boolean {
-    return visible && surface.isConnected && !document.documentElement.classList.contains('document-home-open')
+    return visible && surface.isConnected && (!document.documentElement.classList.contains('document-home-open') || agentPreviewTab !== null && presentation.current() === 'float')
       && getComputedStyle(surface).visibility === 'visible' && surface.getClientRects().length > 0;
   }
   let nativeSurfaceWasVisible = false;
@@ -485,6 +486,9 @@ export function createWorkbenchBrowser(options: {
     if (disposed) return;
     const tab = controller.tab(); const connected = controller.state.connected;
     const frame = controller.frame();
+    const agentControlled = agentPreviewTab !== null && tab !== null;
+    presentation.setAgentControlled(agentControlled);
+    element.inert = agentControlled;
     challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
     fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
     status.textContent = nativeRecovering ? '페이지 다시 여는 중' : reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'loading' ? '페이지 여는 중' : '에이전트 브라우저';
@@ -585,6 +589,13 @@ export function createWorkbenchBrowser(options: {
   return { element, controller,
     descriptors(): WorkbenchResource[] { return controller.state.tabs.map(tab => ({ id: `browser:${tab.tabId}`, title: browserTabTitle(tab), dirty: false, view: 'browser', kind: 'browser' })); },
     activeTab(): string | null { return controller.tab() ? `browser:${controller.tab()!.tabId}` : null; },
+    previewAgent(tab: BrowserTab) {
+      if (disposed) return;
+      agentPreviewTab = tab.tabId;
+      controller.accept({ tab }); controller.select(tab.tabId);
+      nativePopout = false; presentation.present('float');
+      handle(controller.readFrame());
+    },
     selectTab(id: string) { controller.select(id.slice('browser:'.length)); },
     closeTab(id: string) { handle(controller.close(id.slice('browser:'.length))); },
     mount(host: HTMLElement) { presentation.mount(host); watchNativeVisibility(); layout(); },

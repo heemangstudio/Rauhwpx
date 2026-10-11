@@ -102,3 +102,7 @@ html.document-home-open .ag-browser-floating { visibility: hidden; pointer-event
 .ag-browser-downloads { position: absolute; z-index: 12; top: var(--browser-popover-top, 44px); right: 8px; width: min(296px, calc(100% - 16px)); max-height: var(--browser-popover-height, calc(100% - 60px)); box-sizing: border-box; overflow: auto; border: 1px solid var(--browser-border); border-radius: 12px; padding: 12px; background: var(--ag-bg, var(--n-surface, #fafaf9)); box-shadow: 0 8px 28px #0003, 0 2px 5px #0001; }
 
 .ag-browser button[data-password-save=saved] { color: var(--ag-accent, #52795f); }
+
+/* 네이티브 페이지 밖에 테두리를 두어 조작 중인 미리보기를 구분한다. */
+.ag-browser-floating[data-agent-controlled="true"] { border: 2px solid #f59a45; box-shadow: 0 12px 40px #0003; }
+html.document-home-open .ag-browser-floating[data-agent-controlled="true"] { visibility: visible; pointer-events: auto; }

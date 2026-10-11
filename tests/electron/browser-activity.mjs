@@ -167,6 +167,14 @@ app.whenReady().then(async () => {
     await host.activity({ ...scope, token: 'visible', active: true });
     await host.activity({ ...scope, token: 'visible', active: false });
     assert.equal(await evaluate('document.visibilityState'), 'visible');
+    assert.equal(tab.interactive, false);
+    const beforePreviewClick = await evaluate('clicks');
+    const point = await evaluate('(()=>{const r=document.querySelector("button[type=button]").getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()');
+    tab.view.webContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+    tab.view.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
+    await evaluate('new Promise(resolve => requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    assert.equal(await evaluate('clicks'), beforePreviewClick, 'read-only projection rejects human mouse input');
+    report.preview = { humanMouseBlocked: true };
     host.detach(window, { tabId: tab.tabId }); window.hide();
     await paused();
     await host.activity({ ...scope, token: 'navigation', active: true });

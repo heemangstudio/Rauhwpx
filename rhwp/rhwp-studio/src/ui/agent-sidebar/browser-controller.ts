@@ -149,7 +149,7 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
     return frameRequest;
   }
   return {
-    state, tab, frame, identity, action, request, refresh, readFrame, usesNativePresentation,
+    state, tab, frame, identity, action, request, refresh, readFrame, usesNativePresentation, accept,
     subscribe(callback: () => void) { listeners.add(callback); return () => { listeners.delete(callback); }; },
     select(tabId: string) {
       if (!state.tabs.some((row) => row.tabId === tabId)) return;

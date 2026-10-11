@@ -27,7 +27,7 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       let attached: string | null = null;
       let hold = false; let release: (() => void) | undefined;
       Object.assign(window, { rhwpDesktop: { browser: {
-        async attach(args: { tabId: string }) { calls.push({ action: 'attach', tabId: args.tabId }); if (hold) await new Promise<void>(resolve => { release = resolve; }); attached = args.tabId; },
+        async attach(args: { tabId: string }) { calls.push({ action: 'attach', ...args }); if (hold) await new Promise<void>(resolve => { release = resolve; }); attached = args.tabId; },
         async detach(args: { tabId: string }) { calls.push({ action: 'detach', tabId: args.tabId }); attached = null; },
         async getState() { return {}; },
       } } });
@@ -80,6 +80,20 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     assert.equal(calls.filter((call: any) => call.action === 'attach').length, 8, 'each restore attaches once and a cancelled attach is replaced');
     assert.ok(calls.filter((call: any) => call.action === 'attach' || call.action === 'detach').every((call: any) => call.tabId === 'same-tab'));
     assert.ok(!calls.some((call: any) => ['open', 'close', 'reconnect'].includes(call.action)), 'visibility preserves the runtime page');
+    await page.evaluate(() => {
+      const view = (window as any).projectionTest.view;
+      view.setVisible(false);
+      view.previewAgent({ ...view.controller.tab(), controller: { owner: 'agent' } });
+    });
+    await page.waitForFunction(() => (window as any).projectionTest.calls.at(-1)?.action === 'attach'
+      && (window as any).projectionTest.calls.at(-1)?.interactive === false);
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'agent activity opens the floating preview');
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).inert), true, 'preview chrome rejects human input');
+    assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).inert), true, 'preview page controls reject human input');
+    assert.equal(await page.$eval('.ag-browser-address', node => { (node as HTMLElement).focus(); return document.activeElement === node; }), false, 'URL input cannot steal agent control');
+    await page.evaluate(() => document.documentElement.classList.add('document-home-open'));
+    await attached('same-tab');
+    assert.equal(await page.$eval('.ag-browser-floating', node => getComputedStyle(node).visibility), 'visible', 'agent preview remains visible on Home');
     await page.evaluate(() => (window as any).projectionTest.view.dispose());
   } finally { await browser?.close(); await server.close(); }
 });

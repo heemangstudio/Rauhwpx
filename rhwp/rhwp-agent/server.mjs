@@ -623,6 +623,7 @@ await ownedBrowser.restore();
 function broadcastBrowserEvent(event) {
   // 연결된 Studio 는 같은 허브 소유자의 인증된 UI다. provider 소켓으로는 보내지 않는다.
   for (const record of sessions.values()) {
+    if (event.type === 'owned_browser_activity' && event.sessionId !== record.sessionId) continue;
     sendJson(record.studioSocket, { v: 1, type: 'browser-event', event });
   }
 }

@@ -142,9 +142,10 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const browser = createOwnedBrowserService({ dataDir: directory, workspaceTargets: [origin], autoInstall: false });
+  const events = [];
+  const browser = createOwnedBrowserService({ dataDir: directory, workspaceTargets: [origin], autoInstall: false, onEvent: (event) => events.push(event) });
   t.after(async () => { await browser.close(); await new Promise((resolve) => server.close(resolve)); await fs.rm(directory, { recursive: true, force: true }); });
-  const alice = { agentId: 'alice', threadId: 'chat-a', projectId: 'project-a' };
+  const alice = { sessionId: 'window-a', agentId: 'alice', threadId: 'chat-a', projectId: 'project-a' };
   const bob = { agentId: 'bob', threadId: 'chat-b', projectId: 'project-b' };
   const human = { isHuman: true, clientId: 'window-a', threadId: 'chat-a', agentId: 'alice', projectId: 'project-a' };
   const a = (await browser.request(alice, 'open', { url: `${origin}/login` })).tab;
@@ -154,6 +155,11 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   await assert.rejects(browser.request(bob, 'snapshot', { tabId: a.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
   assert.equal((await browser.inventory(alice)).tabs.length, 1);
   let observation = await browser.request(alice, 'snapshot', { tabId: a.tabId });
+  assert.ok(events.some(event => event.type === 'owned_browser_activity' && event.tab.tabId === a.tabId && event.sessionId === 'window-a'), 'agent activity identifies the owning preview');
+  events.length = 0;
+  await browser.request(human, 'snapshot', { tabId: a.tabId });
+  assert.equal(events.some(event => event.type === 'owned_browser_activity'), false, 'human observation does not spawn an agent preview');
+  observation = await browser.request(alice, 'snapshot', { tabId: a.tabId });
   assert.equal(JSON.stringify(observation).includes('vault-secret'), false);
   const query = observation.snapshot.elements.find((element) => element.tag === 'input' && !element.sensitive);
   const inputArgs = { tabId: a.tabId, snapshotId: observation.snapshot.snapshotId, ref: query.ref, navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch, text: '한국어 research' };
