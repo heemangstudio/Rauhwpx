@@ -148,12 +148,20 @@ export function createWorkbenchBrowser(options: {
   const savePassword = button('이 페이지에서 입력하는 로그인 저장', '비밀번호 저장', () => {
     const tab = controller.tab(); const api = nativeBrowserApi()?.passwords;
     if (!tab || !api) return;
-    void api.armSave({ tabId: tab.tabId, enabled: passwordSaveTab !== tab.tabId }).then(result => {
+    const enabled = passwordSaveTab !== tab.tabId;
+    savePassword.disabled = true;
+    void (async () => {
+      await controller.action('control', { ...controller.identity(tab), owner: 'human' });
+      if (disposed || controller.tab()?.tabId !== tab.tabId) return;
+      await projectNative();
+      if (nativePending) await nativePending;
+      if (disposed || controller.tab()?.tabId !== tab.tabId) return;
+      const result = await api.armSave({ tabId: tab.tabId, enabled });
       passwordSaveTab = result.enabled ? tab.tabId : '';
       passwordSaveEpoch = result.navigationEpoch;
       savePassword.setAttribute('aria-pressed', String(result.enabled));
       savePassword.title = result.enabled ? '아이디와 비밀번호를 입력하면 이 기기에 저장합니다' : '이 페이지에서 입력하는 로그인 저장';
-    }).catch(() => { savePassword.title = '비밀번호 저장을 시작하지 못했습니다. HTTPS 로그인 페이지에서 다시 시도해 주세요.'; });
+    })().catch(() => { savePassword.title = '비밀번호 저장을 시작하지 못했습니다. HTTPS 로그인 페이지에서 다시 시도해 주세요.'; }).finally(() => { savePassword.disabled = false; });
   });
   savePassword.hidden = !nativeBrowserApi()?.passwords;
   icon(savePassword, 'shield'); savePassword.setAttribute('aria-pressed', 'false');
