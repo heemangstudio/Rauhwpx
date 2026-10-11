@@ -3,6 +3,11 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('rhwpDesktop', {
   browser: {
     native: true,
+    adblock: {
+      get: () => ipcRenderer.invoke('desktop:browser-adblock-get'),
+      configure: (payload) => ipcRenderer.invoke('desktop:browser-adblock-configure', payload),
+      update: () => ipcRenderer.invoke('desktop:browser-adblock-update'),
+    },
     passwords: {
       armSave: (payload) => ipcRenderer.invoke('desktop:browser-passwords-armSave', payload),
       listProfiles: () => ipcRenderer.invoke('desktop:browser-passwords-profiles'),

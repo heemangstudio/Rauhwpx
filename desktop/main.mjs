@@ -70,6 +70,7 @@ import { resolveProfileDirectories } from './profile-continuity.mjs';
 import { createRebrandImportController } from './rebrand-import-controller.mjs';
 import { createSecretVault, handleSecretRequest } from './secret-vault.mjs';
 import { OwnedBrowserHost } from './browser-host.mjs';
+import { BrowserAdblock, registerBrowserAdblockIpc } from './browser-adblock.mjs';
 import { NativeBrowserPasswords, registerBrowserPasswordIpc } from './browser-passwords.mjs';
 import { BrowserWebAuthn } from './browser-webauthn.mjs';
 import { removeRetiredCloudData } from './retired-cloud-data.mjs';
@@ -554,6 +555,7 @@ const browserHost = new OwnedBrowserHost({
     )) ?? null;
   },
 });
+const browserAdblock = new BrowserAdblock({ host: browserHost, ipcMain });
 new NativeBrowserPasswords({
   host: browserHost,
   dataDir: join(app.getPath('userData'), 'browser', 'password-vault'),
@@ -1523,6 +1525,7 @@ function browserWindowForEvent(event) {
   return window;
 }
 registerBrowserPasswordIpc({ ipcMain, browserHost, browserWindowForEvent });
+registerBrowserAdblockIpc({ ipcMain, adblock: browserAdblock, browserWindowForEvent });
 ipcMain.handle('desktop:browser-zoom', (event, payload) => browserHost.zoom(browserWindowForEvent(event), payload));
 ipcMain.handle('desktop:browser-attach', (event, payload) => browserHost.attach(browserWindowForEvent(event), payload));
 ipcMain.handle('desktop:browser-detach', (event, payload) => browserHost.detach(browserWindowForEvent(event), payload));

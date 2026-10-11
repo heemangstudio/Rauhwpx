@@ -1,6 +1,7 @@
 import './browser-settings.css';
 import { confirmSheet } from './sheet.ts';
 import { localPasswordsApi, type LocalPasswordAccount } from './browser-local-passwords.ts';
+import { createAdblockSettings } from './browser-adblock-settings.ts';
 
 export type BrowserSettingsRequest = (action: string, args?: Record<string, unknown>) => Promise<unknown>;
 interface Account { sourceAccountId?: string; profileId?: string; id: string; origin: string; origins?: string[]; label: string; stableIdentity?: string; hasPassword: boolean; agentReuseApproved: boolean; sessionStatus: string; }
@@ -275,6 +276,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const actions = node('div', 'ag-settings-actions'); actions.append(button('사이트 허용', () => addSite(true)), button('사이트 차단', () => addSite(false))); newSite.append(actions);
     } else {
       const runtime = (status.runtime ?? {}) as Record<string, unknown>; const readiness = (runtime.readiness ?? {}) as Record<string, unknown>;
+      const adblock = createAdblockSettings(); if (adblock) body.append(adblock);
       const downloadsSection = section('다운로드');
       const downloads = (configuration.downloads ?? {}) as Record<string, unknown>; row('다운로드 저장소', String(downloads.directory ?? downloads.path ?? '앱의 다운로드 저장소'), downloadsSection);
       const limit = field('파일당 다운로드 한도 · MB', 'number', String(Math.round(Number(downloads.maxFileBytes ?? 104857600) / 1048576)));

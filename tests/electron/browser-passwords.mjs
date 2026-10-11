@@ -9,6 +9,7 @@ import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import { app, BrowserWindow, WebContentsView, session, ipcMain } from 'electron';
 import { OwnedBrowserHost } from '../../desktop/browser-host.mjs';
+import { BrowserAdblock } from '../../desktop/browser-adblock.mjs';
 import { NativeBrowserPasswords } from '../../desktop/browser-passwords.mjs';
 import { LocalBrowserPasswordVault } from '../../desktop/browser-local-password-vault.mjs';
 import { createOwnedBrowserService, createIpcNativeBrowserAdapter } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
@@ -53,6 +54,7 @@ try {
   editor = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
   const owner = { connected: true };
   host = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session, dataDir, getWindowForSession: (id) => id === 'editor' ? editor : null });
+  new BrowserAdblock({ host, ipcMain });
   const vault = new LocalBrowserPasswordVault({ dataDir: join(dataDir, 'password-vault'), safeStorage });
   let autocompleteChoices; let autocompleteShown;
   const Menu = { buildFromTemplate: (choices) => ({ popup: () => { autocompleteChoices = choices; autocompleteShown?.(); } }) };
