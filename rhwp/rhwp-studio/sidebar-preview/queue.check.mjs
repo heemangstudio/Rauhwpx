@@ -189,9 +189,7 @@ export async function checkFollowUpQueue(page, origin, artifacts) {
   await page.click('.ag-followup:first-child .ag-followup-edit-btn');
   await page.waitForSelector('.ag-followup-edit', { visible: true });
   assert.equal(await page.evaluate(() => document.activeElement?.classList.contains('ag-followup-edit')), true);
-  await page.keyboard.down('Control');
-  await page.keyboard.press('KeyA');
-  await page.keyboard.up('Control');
+  await page.$eval('.ag-followup-edit', (editor) => editor.select());
   await page.keyboard.type('두 번째를 고쳤어요');
   await page.keyboard.press('Enter');
   await waitFor(page, () => !document.querySelector('.ag-followup-edit'), undefined, 'Enter did not save the edit');
