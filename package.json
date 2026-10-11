@@ -1,7 +1,7 @@
 {
   "name": "hamaeditor",
   "productName": "HamaEditor",
-  "version": "2.0.11",
+  "version": "3.0.0",
   "description": "HWP/HWPX editor with a local AI agent sidebar.",
   "author": "Hataewook",
   "license": "MIT",

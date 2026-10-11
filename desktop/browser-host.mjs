@@ -40,8 +40,9 @@ async function privateDirectory(dir) {
 }
 
 export class OwnedBrowserHost {
-  constructor({ BrowserWindow, WebContentsView, electronSession, dataDir, getWindowForSession, onEvent = () => {} }) {
+  constructor({ BrowserWindow, BaseWindow = BrowserWindow, WebContentsView, electronSession, dataDir, getWindowForSession, onEvent = () => {} }) {
     this.BrowserWindow = BrowserWindow;
+    this.BaseWindow = BaseWindow;
     this.WebContentsView = WebContentsView;
     this.electronSession = electronSession;
     this.dataDir = resolve(dataDir);
@@ -50,6 +51,7 @@ export class OwnedBrowserHost {
     this.tabs = new Map();
     this.floatingWindows = new Map();
     this.pendingTabs = new Set();
+    this.parkingWindow = null;
     this.aliases = new Map();
     this.popouts = new Map();
     this.downloads = new Map();
@@ -161,6 +163,7 @@ export class OwnedBrowserHost {
     if (parent?.passwordShield) Object.assign(tab, { passwordShield: true,
       protectedPasswords: new Set(parent.protectedPasswords ?? []),
       passwordAllowedOrigins: new Set(parent.passwordAllowedOrigins ?? []), passwordSnapshot: null });
+    this.parkGuest(tab);
     this.pendingTabs.add(tab);
     contents.setWindowOpenHandler((details) => {
       try {
@@ -416,7 +419,7 @@ export class OwnedBrowserHost {
     const inputChanged = tab.interactive !== nextInteractive;
     if (placementChanged) {
       this.unplace(tab);
-      window.contentView.addChildView(tab.view);
+      this.placeGuest(tab, window);
     }
     tab.interactive = nextInteractive;
     const previous = tab.view.getBounds();
@@ -451,7 +454,7 @@ export class OwnedBrowserHost {
       const followOwner = () => { if (tab.placement?.window !== child || child.isDestroyed()) return; const area = ownerWindow.getContentBounds(); const offset = tab.floatingOffset; if (offset) child.setPosition(area.x + offset.x, area.y + offset.y); this.rememberFloat(tab); };
       ownerWindow.on('move', followOwner); ownerWindow.on('resize', followOwner);
       child.once('closed', () => { ownerWindow.removeListener('move', followOwner); ownerWindow.removeListener('resize', followOwner); });
-      child.contentView.addChildView(tab.view);
+      this.placeGuest(tab, child);
       tab.placement = { window: child, ownerWindow, mode: 'float' };
       void child.loadURL(`${POPOUT_URL}?presentation=float`);
     }
@@ -554,13 +557,59 @@ export class OwnedBrowserHost {
 
   setQuitRequested(requested) { this.quitRequested = requested === true; }
 
+  placeGuest(tab, window) {
+    if (tab.parkingWindow && !tab.parkingWindow.isDestroyed()) tab.parkingWindow.contentView.removeChildView(tab.view);
+    tab.parkingWindow = null;
+    tab.dialogParking = null;
+    window.contentView.addChildView(tab.view);
+  }
+
+  parkGuest(tab) {
+    if (this.disposing || tab.closing || tab.view.webContents.isDestroyed()) return;
+    // An ownerless guest makes Electron's website alert app-modal on macOS.
+    // A BaseWindow keeps native dialogs asynchronous without another renderer.
+    if (!this.parkingWindow || this.parkingWindow.isDestroyed()) {
+      this.parkingWindow = new this.BaseWindow({ show: false, skipTaskbar: true, title: 'Hama 브라우저' });
+    }
+    this.parkingWindow.contentView.addChildView(tab.view);
+    // The hidden window keeps the page hidden. Its view must retain a display
+    // surface so Chromium can capture a hidden tab without opening a window.
+    tab.view.setVisible(true);
+    tab.parkingWindow = this.parkingWindow;
+  }
+
+  onJavaScriptDialog(tab, method) {
+    if (tab.closing || tab.view.webContents.isDestroyed() || this.tabs.get(tab.targetId) !== tab) return;
+    if (method === 'Page.javascriptDialogOpening') {
+      if (tab.placement || !tab.sessionId) return;
+      const window = this.getWindowForSession(tab.sessionId);
+      if (!window || window.isDestroyed() || window.id !== tab.windowId) return;
+      // CDP announces the dialog before Electron selects its native parent.
+      // Keep the guest hidden while the user's editor displays the async sheet.
+      this.placeGuest(tab, window);
+      tab.view.setVisible(false);
+      tab.parkingWindow = window;
+      tab.dialogParking = { window, targetId: tab.targetId, generation: this.generation };
+    } else if (method === 'Page.javascriptDialogClosed') {
+      const parking = tab.dialogParking;
+      tab.dialogParking = null;
+      if (!parking || tab.placement || tab.parkingWindow !== parking.window
+        || parking.targetId !== tab.targetId || parking.generation !== this.generation) return;
+      this.unplace(tab);
+    }
+  }
+
   unplace(tab) {
     tab.lastHiddenAt = Date.now();
     const placement = tab.placement;
     if (placement && !placement.window.isDestroyed()) placement.window.contentView.removeChildView(tab.view);
+    if (tab.parkingWindow && !tab.parkingWindow.isDestroyed()) tab.parkingWindow.contentView.removeChildView(tab.view);
+    tab.parkingWindow = null;
+    tab.dialogParking = null;
     tab.view.setVisible(false);
     tab.placement = null;
     tab.interactive = false;
+    this.parkGuest(tab);
     if (placement?.mode === 'float' && this.floatingWindows.get(tab.targetId) === placement.window) {
       this.floatingWindows.delete(tab.targetId);
       if (!placement.window.isDestroyed()) placement.window.destroy();
@@ -633,7 +682,7 @@ export class OwnedBrowserHost {
       popout.webContents.once('did-finish-load', () => this.emit(tab, 'state'));
       void popout.loadURL(POPOUT_URL);
     }
-    popout.contentView.addChildView(tab.view);
+    this.placeGuest(tab, popout);
     tab.placement = { window: popout, ownerWindow, mode: 'popout' };
     tab.interactive = tab.human;
     tab.view.setVisible(true);
@@ -1011,6 +1060,8 @@ export class OwnedBrowserHost {
     await this.cdp.close();
     if (this.session) { this.session.flushStorageData(); await this.session.cookies.flushStore(); }
     for (const tab of new Set([...this.tabs.values(), ...this.pendingTabs])) this.closeGuest(tab);
+    if (this.parkingWindow && !this.parkingWindow.isDestroyed()) this.parkingWindow.destroy();
+    this.parkingWindow = null;
     this.owner = null;
     this.lastOwner = null;
     this.proxy = null;
