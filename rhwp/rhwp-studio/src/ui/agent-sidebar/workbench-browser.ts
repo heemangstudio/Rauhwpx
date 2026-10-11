@@ -504,7 +504,7 @@ export function createWorkbenchBrowser(options: {
   }
   async function projectNative(): Promise<void> {
     const native = nativeBrowserApi(); if (!native) return;
-    if (nativePending || reconnecting) return;
+    if (nativePending || reconnecting || nativePopout) return;
     const tab = controller.tab(); const sequence = ++nativeSequence;
     const target = tab?.tabId;
     if (tab?.tabId === manualSleepingTab) return;
