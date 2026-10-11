@@ -104,7 +104,7 @@ try {
     tab = (await human('open', { url: site.origin })).tab;
     assert.equal(tab.scope, 'global');
     await page.click('.ag-fullscreen-btn');
-    await waitForState(page, 'Agent Focus ready', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.body.classList.contains('ag-fs-vt'));
+    await waitForState(page, 'Agent Focus ready', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt') && !document.body.classList.contains('ag-fs-vt'));
     await page.click('.ag-browser-trigger');
     await eventually('sidebar selection reported through authenticated MCP', () => provider.call('browser_status').then(frame => must(frame, 'agent status')), value => value.activeTabId === tab.tabId);
     const second = (await human('open', { url: 'about:blank' })).tab;
