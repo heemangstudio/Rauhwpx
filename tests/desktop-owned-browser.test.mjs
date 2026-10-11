@@ -78,6 +78,7 @@ test('real native guests retain form state across dock, float, popout and hub re
   assert.equal(report.unattachedCapture.captured, true);
   assert.equal(report.presentation.navigations, 0);
   assert.equal(report.popoutClosePreservesPage, true);
+  assert.equal(report.floatingAboveSidebar, true);
   assert.equal(report.floatingPresentation.humanInput, true);
   assert.equal(report.floatingPresentation.moveResizeMatchesViewport, true);
   assert.equal(report.floatingPresentation.hiddenCapture, true);

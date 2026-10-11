@@ -669,6 +669,13 @@ export function createWorkbenchBrowser(options: {
     uploadFiles.multiple = data.multiple === true; uploadLabel.textContent = '페이지에서 파일을 요청했습니다.'; upload.hidden = false;
   });
   const unsubscribeNative = nativeBrowserApi()?.onEvent?.((event) => {
+    if (event.tabId === controller.tab()?.tabId) {
+      if (event.type === 'browser-float-closed') { presentation.setNativeFloating(false); presentation.hide(); options.onClose?.(); return; }
+      if (event.type === 'floating-geometry' || event.type === 'presentation' || event.type === 'state') {
+        const bounds = event.floatingBounds as { left: number; top: number; width: number; height: number } | undefined;
+        presentation.setNativeFloating(event.nativeFloating === true, bounds);
+      }
+    }
     if (event.type === 'password-save-mode' && event.tabId === controller.tab()?.tabId) {
       icon(savePassword, 'shield'); delete savePassword.dataset.passwordSave;
       passwordSaveTab = event.enabled === true ? String(event.tabId) : '';

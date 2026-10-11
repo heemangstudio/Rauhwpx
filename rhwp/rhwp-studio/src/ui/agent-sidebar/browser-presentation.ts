@@ -154,6 +154,14 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
   });
   window.addEventListener('resize', clamp);
   return { position(x: number, y: number) { floating.style.left = `${x}px`; floating.style.top = `${y}px`; clamp(); }, mount(host: HTMLElement) { dock = host; syncTheme(); if (mode !== 'float' && mode !== 'popout') host.append(element); }, present, hide, current: () => mode,
+    setNativeFloating(native: boolean, bounds?: { left: number; top: number; width: number; height: number }) {
+      floating.dataset.nativeFloating = String(native);
+      if (!native || !bounds || mode !== 'float') return;
+      const rect = floating.getBoundingClientRect();
+      if (rect.left === bounds.left && rect.top === bounds.top && rect.width === bounds.width && rect.height === bounds.height) return;
+      for (const key of ['left', 'top', 'width', 'height'] as const) floating.style.setProperty(key, `${bounds[key]}px`);
+      remember(); onLayout?.();
+    },
     setAgentControlled(controlled: boolean) { floating.dataset.agentControlled = String(controlled); floating.inert = controlled; floating.setAttribute('aria-label', controlled ? '에이전트가 사용 중인 브라우저 미리보기' : '떠 있는 브라우저'); },
     dispose() { hide(); themeObserver.disconnect(); window.removeEventListener('resize', clamp); floating.remove(); element.remove(); }, };
 }

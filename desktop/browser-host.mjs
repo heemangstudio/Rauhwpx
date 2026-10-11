@@ -48,6 +48,7 @@ export class OwnedBrowserHost {
     this.getWindowForSession = getWindowForSession;
     this.onEvent = onEvent;
     this.tabs = new Map();
+    this.floatingWindows = new Map();
     this.pendingTabs = new Set();
     this.aliases = new Map();
     this.popouts = new Map();
@@ -259,6 +260,8 @@ export class OwnedBrowserHost {
     // 재연결은 같은 게스트를 유지한다. 대상 ID가 바뀌어도 논리 탭과 창 소유권은 유지한다.
     if (previousTargetId && previousTargetId !== tab.targetId) {
       this.tabs.delete(previousTargetId);
+      const floating = this.floatingWindows.get(previousTargetId);
+      if (floating) { this.floatingWindows.delete(previousTargetId); this.floatingWindows.set(tab.targetId, floating); }
       const popout = this.popouts.get(previousTargetId);
       if (popout) { this.popouts.delete(previousTargetId); this.popouts.set(tab.targetId, popout); }
     }
@@ -368,9 +371,14 @@ export class OwnedBrowserHost {
       zoomFactor: alive ? contents.getZoomFactor() : 1,
       canGoBack: !!alive && contents.navigationHistory.canGoBack(),
       canGoForward: !!alive && contents.navigationHistory.canGoForward(),
-      controller: tab.human ? 'human' : 'agent', mode: tab.placement?.mode ?? 'hidden',
+      controller: tab.human ? 'human' : 'agent', interactive: tab.interactive === true, mode: tab.placement?.mode ?? 'hidden',
       crashed: tab.crashed, error: tab.lastError,
     };
+    if (tab.placement?.mode === 'float' && this.floatingWindows.get(tab.targetId) === tab.placement.window) {
+      const area = tab.placement.ownerWindow.getContentBounds(); const bounds = tab.placement.window.getContentBounds();
+      state.nativeFloating = true;
+      state.floatingBounds = { left: bounds.x - area.x, top: bounds.y - area.y, width: bounds.width, height: bounds.height };
+    }
     if (tab.passwordShield) {
       try { const origin = new URL(state.url).origin; state.url = tab.passwordAllowedOrigins?.has(origin) ? `${origin}/` : 'about:blank'; }
       catch { state.url = 'about:blank'; }
@@ -391,7 +399,7 @@ export class OwnedBrowserHost {
     }
     const window = tab.sessionId && this.getWindowForSession(tab.sessionId);
     if (window && !window.isDestroyed()) window.webContents.send('desktop:browser-event', payload);
-    const popout = this.popouts.get(tab.targetId);
+    const popout = this.floatingWindows.get(tab.targetId) ?? this.popouts.get(tab.targetId);
     if (popout && !popout.isDestroyed()) popout.webContents.send('desktop:browser-popout-state', payload);
   }
 
@@ -402,6 +410,7 @@ export class OwnedBrowserHost {
     if (!['dock', 'float', 'popout'].includes(mode)) throw new Error('Native browser presentation mode is invalid');
     if (mode === 'popout') return this.popout(window, tab);
     const rect = browserViewBounds(bounds, window);
+    if (mode === 'float') return this.float(window, tab, rect, interactive);
     const placementChanged = tab.placement?.window !== window || tab.placement?.mode !== mode;
     const nextInteractive = interactive === true && tab.human;
     const inputChanged = tab.interactive !== nextInteractive;
@@ -420,12 +429,65 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
+  float(ownerWindow, tab, rect, interactive) {
+    let floating = this.floatingWindows.get(tab.targetId);
+    let created = false;
+    if (tab.placement?.window !== floating || !floating || floating.isDestroyed()) {
+      this.unplace(tab);
+      created = true;
+      floating = new this.BrowserWindow({ parent: ownerWindow, frame: false, show: false, width: Math.max(320, rect.width), height: Math.max(280, rect.height + 48),
+        minWidth: 320, minHeight: 280, skipTaskbar: true, title: 'Hama 브라우저', backgroundColor: '#181818',
+        webPreferences: { preload: POPOUT_PRELOAD, sandbox: true, nodeIntegration: false, contextIsolation: true, webviewTag: false } });
+      this.floatingWindows.set(tab.targetId, floating);
+      const child = floating;
+      child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      child.webContents.on('will-navigate', event => event.preventDefault());
+      child.webContents.once('did-finish-load', () => this.emit(tab, 'state'));
+      child.once('ready-to-show', () => { if (tab.placement?.window === child && !ownerWindow.isDestroyed() && ownerWindow.isVisible()) child.showInactive(); });
+      child.on('move', () => { if (tab.placement?.window === child) { this.rememberFloat(tab); this.emit(tab, 'floating-geometry'); } });
+      child.on('resize', () => { if (tab.placement?.window === child) { this.rememberFloat(tab); this.layoutFloat(tab); this.emit(tab, 'floating-geometry'); } });
+      child.on('close', event => { if (this.disposing || this.quitRequested) return; event.preventDefault(); this.unplace(tab); this.emit(tab, 'browser-float-closed'); });
+      child.on('closed', () => { if (this.floatingWindows.get(tab.targetId) === child) this.floatingWindows.delete(tab.targetId); });
+      const followOwner = () => { if (tab.placement?.window !== child || child.isDestroyed()) return; const area = ownerWindow.getContentBounds(); const offset = tab.floatingOffset; if (offset) child.setPosition(area.x + offset.x, area.y + offset.y); this.rememberFloat(tab); };
+      ownerWindow.on('move', followOwner); ownerWindow.on('resize', followOwner);
+      child.once('closed', () => { ownerWindow.removeListener('move', followOwner); ownerWindow.removeListener('resize', followOwner); });
+      child.contentView.addChildView(tab.view);
+      tab.placement = { window: child, ownerWindow, mode: 'float' };
+      void child.loadURL(`${POPOUT_URL}?presentation=float`);
+    }
+    const area = ownerWindow.getContentBounds();
+    const bounds = { x: area.x + rect.x, y: area.y + Math.max(0, rect.y - 36), width: rect.width, height: rect.height + 48 };
+    const previous = floating.getBounds();
+    // 네이티브 창의 이동이 기준이다. 늦게 도착한 DOM 배치로 사용자의 드래그를 되돌리지 않는다.
+    if (created && Object.keys(bounds).some(key => bounds[key] !== previous[key])) floating.setBounds(bounds);
+    tab.interactive = interactive === true && tab.human;
+    tab.view.setVisible(true); this.layoutFloat(tab); this.rememberFloat(tab);
+    if (!floating.webContents.isLoadingMainFrame() && ownerWindow.isVisible() && !floating.isVisible()) floating.showInactive();
+    this.emit(tab, 'presentation');
+    return this.state(tab);
+  }
+
+  rememberFloat(tab) {
+    const placement = tab.placement; if (placement?.mode !== 'float' || placement.window.isDestroyed() || placement.ownerWindow.isDestroyed()) return;
+    const area = placement.ownerWindow.getContentBounds(); const bounds = placement.window.getBounds();
+    tab.floatingOffset = { x: bounds.x - area.x, y: bounds.y - area.y };
+  }
+
+  layoutFloat(tab) {
+    const placement = tab.placement; if (placement?.mode !== 'float' || placement.window.isDestroyed()) return;
+    const { width, height } = placement.window.getContentBounds();
+    const bounds = { x: 0, y: 36, width, height: Math.max(0, height - 48) };
+    const previous = tab.view.getBounds();
+    if (Object.keys(bounds).some(key => bounds[key] !== previous[key])) tab.view.setBounds(bounds);
+    void this.viewport(tab, bounds).catch(() => {});
+  }
+
   async presentationState(window, { tabId, expectedTargetId }) {
     const tab = this.ownedTab(tabId, window);
     if (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) throw new Error('Native browser presentation target is stale');
     const contents = tab.view.webContents;
     const placement = tab.placement; const epoch = tab.navigationEpoch; const generation = this.generation;
-    const current = () => this.generation === generation && tab.navigationEpoch === epoch && this.tabs.get(tab.targetId) === tab && tab.placement?.window === window && placement?.window === window && tab.placement?.mode === placement?.mode && window.isVisible?.() !== false && !contents.isDestroyed();
+    const current = () => this.generation === generation && tab.navigationEpoch === epoch && this.tabs.get(tab.targetId) === tab && (tab.placement?.window === window || tab.placement?.ownerWindow === window) && tab.placement?.window === placement?.window && tab.placement?.mode === placement?.mode && window.isVisible?.() !== false && placement.window.isVisible?.() !== false && !contents.isDestroyed();
     const result = health => ({ ...this.state(tab), presentationHealth: health });
     if (!current()) return result('unavailable');
     if (tab.crashed || tab.lastError) return result('failed');
@@ -497,6 +559,10 @@ export class OwnedBrowserHost {
     tab.view.setVisible(false);
     tab.placement = null;
     tab.interactive = false;
+    if (placement?.mode === 'float' && this.floatingWindows.get(tab.targetId) === placement.window) {
+      this.floatingWindows.delete(tab.targetId);
+      if (!placement.window.isDestroyed()) placement.window.destroy();
+    }
     if (!tab.closing && !tab.view.webContents.isDestroyed()) void this.viewport(tab, tab.view.getBounds()).catch(() => {});
   }
 
@@ -634,12 +700,14 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
-  popoutCommand(sender, { command, url } = {}) {
-    const pair = [...this.popouts].find(([, window]) => window.webContents === sender && !window.isDestroyed());
+  popoutCommand(sender, { command, url, factor } = {}) {
+    const pair = [...this.popouts, ...this.floatingWindows].find(([, window]) => window.webContents === sender && !window.isDestroyed());
     if (!pair) throw new Error('Browser popout sender is not owned');
     const tab = this.tab(pair[0]);
     const ownerWindow = this.getWindowForSession(tab.sessionId);
     if (!ownerWindow) throw new Error('Browser popout owner is unavailable');
+    if (this.floatingWindows.has(tab.targetId) && !tab.interactive) throw new Error('Floating preview is controlled by the agent');
+    if (command === 'zoom') return this.zoom(ownerWindow, { tabId: tab.tabId, factor });
     if (command === 'close') return this.detach(ownerWindow, { tabId: tab.tabId });
     if (['dock', 'take-control', 'return-agent', 'annotate', 'capture', 'downloads', 'navigate'].includes(command)) {
       if (command === 'dock') this.detach(ownerWindow, { tabId: tab.tabId });
