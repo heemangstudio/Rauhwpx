@@ -188,11 +188,8 @@ try {
     await page.click('.ag-workspace-panel-btn');
   }
   await page.waitForSelector('.ag-workbench-page:not([hidden])', { visible: true });
-  if (await page.$eval('.ag-workbench-launcher', (launcher) => launcher.hidden)) {
-    await page.click('.ag-workbench-add');
-  }
-  await page.waitForSelector('.ag-workbench-launcher:not([hidden])', { visible: true });
-  await page.locator('.ag-workbench-launcher-item[data-view="browser"]').click();
+  await page.locator(`.ag-workbench-page:not([hidden]) [role="tab"][data-resource-id="browser:${tab.tabId}"]`).click();
+  await eventually('original research tab is selected for human input', human.bind(null, 'status'), status => status.activeTabId === tab.tabId);
   await page.waitForSelector('.ag-browser-frame[src^="data:image"]', { visible: true });
   await shot('real-stream-agent-research');
   await human('control', { tabId: tab.tabId, owner: 'human' });
