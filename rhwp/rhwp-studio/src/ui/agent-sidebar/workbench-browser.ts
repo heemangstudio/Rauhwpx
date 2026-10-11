@@ -676,6 +676,8 @@ export function createWorkbenchBrowser(options: {
         presentation.setNativeFloating(event.nativeFloating === true, bounds);
       }
     }
+    // 창 이동은 허브 조회 없이 로컬 배치만 갱신한다.
+    if (event.type === 'floating-geometry') return;
     if (event.type === 'password-save-mode' && event.tabId === controller.tab()?.tabId) {
       icon(savePassword, 'shield'); delete savePassword.dataset.passwordSave;
       passwordSaveTab = event.enabled === true ? String(event.tabId) : '';
