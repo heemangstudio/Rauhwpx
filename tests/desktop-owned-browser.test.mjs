@@ -45,7 +45,7 @@ test('native hidden guests wake only during scoped actions and preserve forms an
     assert.equal(report.scope.disconnectPaused, true);
     assert.equal(report.download.controlledDirectory, true);
     assert.equal(report.globalBrowser.pageRetained, true);
-    assert.equal(report.globalBrowser.agentIsolated, true);
+    assert.equal(report.globalBrowser.agentAccessible, true);
     assert.deepEqual(report.sleep, { rendererReleased: true, formProtected: true, disabledRespected: true, sameTabWoke: true });
     assert.ok(report.idleTrials.every(trial => trial.nativeHidden.frames === 0));
   } finally { await rm(dataDir, { recursive: true, force: true }); }

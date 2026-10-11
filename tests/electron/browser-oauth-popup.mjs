@@ -86,7 +86,8 @@ try {
   await guest.view.webContents.executeJavaScript('document.readyState');
   assert.equal(guest.view.webContents.getURL(), providerOrigin + '/callback');
   assert.deepEqual(await guest.view.webContents.executeJavaScript('({opener:!!opener,node:typeof require,desktop:typeof window.rhwpDesktop})'), { opener: true, node: 'undefined', desktop: 'undefined' });
-  await assert.rejects(service.request({ ...actor, isHuman: false, threadId: 'different-chat' }, 'snapshot', { tabId: popup.tab.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
+  const sharedPopup = await service.request({ ...actor, isHuman: false, threadId: 'different-chat' }, 'snapshot', { tabId: popup.tab.tabId });
+  assert.ok(sharedPopup.snapshot, 'global user OAuth tabs stay available to agents');
   const closed = waitForEvent('owned_browser_closed');
   await guest.view.webContents.executeJavaScript('finish.click()', true).catch(() => {});
   const closeEvent = await closed;

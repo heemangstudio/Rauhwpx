@@ -94,7 +94,7 @@ try {
   host.control({ tabId: 'tab-one', human: true });
   const floatContents = host.tab('tab-one').view.webContents;
   await page.locator('#draft').focus();
-  first.focus();
+  nativeFloat.focus();
   let resolveNativeFocus;
   const nativeFocus = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Native fixture did not receive keyboard focus')), 2000);
