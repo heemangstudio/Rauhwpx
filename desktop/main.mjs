@@ -7,6 +7,7 @@ import {
   app,
   autoUpdater as nativeAutoUpdater,
   BrowserWindow,
+  BaseWindow,
   WebContentsView,
   Menu,
   dialog,
@@ -549,6 +550,7 @@ const sessions = new SessionManager({
 });
 const browserHost = new OwnedBrowserHost({
   BrowserWindow,
+  BaseWindow,
   WebContentsView,
   electronSession,
   dataDir: join(app.getPath('userData'), 'browser'),

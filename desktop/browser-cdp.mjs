@@ -140,6 +140,7 @@ export class PrivateBrowserCdp {
     if (tab.openerTargetId) tab.targetInfo.openerId = tab.openerTargetId;
     tab.childSessions = new Set();
     tab.debuggerMessage = (_event, method, params, nativeSessionId) => {
+      if (method === 'Page.javascriptDialogOpening' || method === 'Page.javascriptDialogClosed') this.host.onJavaScriptDialog?.(tab, method);
       if (method === 'Target.attachedToTarget' && params?.sessionId) {
         tab.childSessions.add(params.sessionId);
         this.sessions.set(params.sessionId, { tab, nativeSessionId: params.sessionId });

@@ -255,7 +255,13 @@ export function createOwnedBrowserService(options = {}) {
     tab.queue = result.catch(() => {});
     return result;
   };
+  const dismissPendingDialog = async (tab) => {
+    const dialog = tab.pendingDialog;
+    tab.pendingDialog = null;
+    await dialog?.dismiss().catch(() => {});
+  };
   const releaseInput = async (tab) => {
+    await dismissPendingDialog(tab);
     for (const key of tab.heldKeys) await tab.page?.keyboard?.up(key).catch(() => {});
     for (const button of tab.heldButtons) await tab.page?.mouse?.up({ button }).catch(() => {});
     tab.heldKeys.clear(); tab.heldButtons.clear();
@@ -384,7 +390,14 @@ export function createOwnedBrowserService(options = {}) {
       } catch { await socket.close({ code: 4003, reason: 'Browser destination blocked' }); }
     });
     page.on('download', (download) => { void onDownload(tab, download); });
-    page.on('dialog', (dialog) => { void dialog.dismiss().catch(() => {}); });
+    page.on('dialog', (dialog) => {
+      if (tab.page !== page) { void dialog.dismiss().catch(() => {}); return; }
+      tab.pendingDialog = dialog;
+      // 네이티브 사용자 확인은 창의 비동기 대화상자로 처리한다. 에이전트는 승인하지 않는다.
+      const human = tab.activeActor ? tab.activeActor.isHuman === true : tab.controller.owner === 'human';
+      if (selectedAdapter() && human && !closed) return;
+      void dismissPendingDialog(tab);
+    });
     page.on('filechooser', (chooser) => {
       tab.pendingChooser = chooser;
       emit('owned_browser_file_chooser', { tabId: tab.tabId, threadId: tab.threadId, multiple: chooser.isMultiple(), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch });
@@ -1138,6 +1151,7 @@ export function createOwnedBrowserService(options = {}) {
       publish(tab); await persist(); return !actor.isHuman && challengeFor(tab) ? challengeResult(action, tab) : { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab) };
     }
     const tab = ownedTab(actor, args.tabId);
+    if (!actor.isHuman) await dismissPendingDialog(tab);
     tab.lastActivityAt = Date.now();
     if (tab.sleeping && !['close', 'reconnect', 'sleep'].includes(action)) await wakeTab(actor, tab);
     if (action === 'sleep') {
@@ -1213,6 +1227,7 @@ export function createOwnedBrowserService(options = {}) {
       if (tab.controller.owner === 'human') markHumanDocument(tab);
       credentialBroker?.invalidateTab?.(tab.tabId);
       // Invalidate queued agent input immediately, then drain before confirming the transfer.
+      await dismissPendingDialog(tab);
       await tab.queue.catch(() => {}); await releaseInput(tab);
       if (selectedAdapter()?.control) await selectedAdapter().control({ targetId: tab.nativeTargetId, human: true });
       publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo() };
