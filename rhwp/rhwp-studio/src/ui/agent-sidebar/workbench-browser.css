@@ -89,7 +89,12 @@ html.document-home-open .ag-browser-floating { visibility: hidden; pointer-event
 .ag-browser-floating-chrome .ag-browser-go { display: none; }
 .ag-browser-floating-chrome .ag-browser-zoom button { width: 18px; flex: 0 0 18px; height: 24px; font-size: 11px; }
 .ag-browser-floating-chrome .ag-browser-zoom button:nth-child(2) { width: 32px; flex-basis: 32px; font-size: 9px; }
-@container browser-float (max-width: 400px) { .ag-browser-floating-chrome .ag-browser-forward { display: none; } }
+@container browser-float (max-width: 400px) {
+  .ag-browser-floating-chrome { flex-wrap: wrap; height: 60px; flex-basis: 60px; }
+  .ag-browser-floating-chrome .ag-browser-navigation { order: -1; flex-basis: 100%; height: 28px; }
+  .ag-browser-floating-chrome .ag-browser-forward { display: none; }
+  .ag-browser-floating-chrome .ag-browser-move { margin-right: auto; }
+}
 .ag-browser-floating-chrome .ag-browser-navigation button:disabled { opacity: .35; cursor: default; }
 .ag-browser-move::before { content: ''; width: 27px; height: 3px; border-radius: 3px; background: currentColor; opacity: .35; }
 .ag-browser-floating button:focus-visible { outline: 2px solid var(--ag-accent, #52795f); outline-offset: -2px; }

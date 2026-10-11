@@ -461,7 +461,9 @@ export class OwnedBrowserHost {
     // 네이티브 창의 이동이 기준이다. 늦게 도착한 DOM 배치로 사용자의 드래그를 되돌리지 않는다.
     if (created && Object.keys(bounds).some(key => bounds[key] !== previous[key])) floating.setBounds(bounds);
     tab.interactive = interactive === true && tab.human;
-    tab.view.setVisible(true); this.layoutFloat(tab); this.rememberFloat(tab);
+    // 이미 보이는 뷰를 다시 표시하면 macOS가 페이지의 키보드 포커스를 해제한다.
+    if (created) tab.view.setVisible(true);
+    this.layoutFloat(tab); this.rememberFloat(tab);
     if (!floating.webContents.isLoadingMainFrame() && ownerWindow.isVisible() && !floating.isVisible()) floating.showInactive();
     this.emit(tab, 'presentation');
     return this.state(tab);
