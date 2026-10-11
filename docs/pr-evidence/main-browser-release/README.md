@@ -14,6 +14,7 @@ Verified on 2026-10-11 in the running HamaEditor development Electron app from `
 - Reload retained the current HTTPS URL.
 - Opening the native three-dot menu kept the page available. Choosing the fourth item, **탭 잠자기**, released the guest renderer; **탭 깨우기** recreated it at the same URL.
 - The sleeping mascot screen used the dark theme.
+- At a 1,440-pixel window width, clicking each of the first two browser tabs selected it. The verification tab was restored afterward. At 973 pixels, the workbench stayed compact.
 
 ![Native browser and three-dot menu](native-browser-menu.png)
 
@@ -28,5 +29,9 @@ The actual owned-Chromium harness initially selected a newly created Google tab 
 ## Verification limits
 
 The macOS host became heavily loaded after the live checks (load average over 200). Subsequent startup and native-window capture attempts timed out, including an independent managed-browser run before its first scenario. A fresh live drag/resize pass after integration remains unverified; existing actual native Electron fixtures cover those paths. Local HTTP navigation requires a configured workspace preview and was intentionally rejected by policy.
+
+After the host recovered, restoring a school page reproduced a separate freeze. The page showed `비정상적인 접속입니다.` in a native JavaScript alert. A main-process sample showed `NSAlert.runModal` occupying every main-thread sample, and the app's CDP endpoint stopped replying until the alert closed. The hidden guest had no native window owner, which made Electron display an app-modal dialog. This evidence distinguishes the website-dialog failure from the earlier host load.
+
+![Website alert that blocked the main process](native-site-alert-before.png)
 
 Website scripts receive values entered into their own forms and can transform or transmit them. The browser masks private fields, redacts known copied values, and blocks agent screenshot capture when private values are present; it does not claim secrecy from arbitrary scripts on the destination website. See [browser security hardening](../browser-security-hardening/README.md) and [owned browser policy](../../owned-browser.md).
