@@ -162,6 +162,10 @@ try {
   await step('Empty focus chat centers the composer and sends it to the bottom', async () => {
     await open('fullscreen=1');
     const startNewChat = async () => {
+      if (await page.$eval('.ag-root', (root) => root.classList.contains('ag-rail-collapsed'))) {
+        await page.click('.ag-workspace-threads-btn');
+        await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-rail-collapsed'));
+      }
       await page.click('.ag-threads-new');
       await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
     };
