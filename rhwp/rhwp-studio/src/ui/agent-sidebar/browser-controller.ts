@@ -36,6 +36,7 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
   let selectionSequence = 0;
   let pendingOpen: { id: string; selection: number } | null = null;
   let frameRequest: Promise<void> | null = null;
+  let frameError: string | null = null;
   const retiredRuntimeIds = new Set<string>();
   const notify = () => { if (!disposed) for (const listener of listeners) listener(); };
   function tab(): BrowserTab | null { return state.tabs.find((row) => row.tabId === state.activeTabId) ?? null; }
@@ -94,7 +95,11 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
     if (result.frame) {
       const owner = state.tabs.find((row) => row.tabId === result.frame!.tabId);
       if (owner?.tabId === state.activeTabId && owner.navigationEpoch === result.frame.navigationEpoch
-        && owner.controllerEpoch === result.frame.controllerEpoch) state.frames.set(owner.tabId, result.frame);
+        && owner.controllerEpoch === result.frame.controllerEpoch) {
+        state.frames.set(owner.tabId, result.frame);
+        if (frameError && state.error === frameError) state.error = null;
+        frameError = null;
+      }
     }
     const jobs = result.downloads ?? result.jobs;
     if (Array.isArray(jobs)) state.downloads = jobs as BrowserDownload[];
@@ -112,6 +117,7 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
     if (event.type !== 'connection') return;
     state.connected = bridge.getConnectionState() === 'connected';
     state.frames.clear();
+    frameError = null;
     state.error = state.connected ? null : '허브 연결이 끊겼습니다. 입력 결과를 확인한 뒤 계속해 주세요.';
     notify();
     if (state.connected) void refresh();
@@ -130,7 +136,7 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
       try {
         const result = await bridge.requestBrowser('status');
         if (disposed || sequence !== refreshSequence) return;
-        state.error = null; state.connected = true; accept(result);
+        frameError = null; state.error = null; state.connected = true; accept(result);
         await request('downloads', { action: 'list' }).catch(() => undefined);
       } catch (error) {
         if (disposed || sequence !== refreshSequence) return;
@@ -140,7 +146,7 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
     return refreshRequest;
   }
   async function action(name: string, args: Record<string, unknown> = {}): Promise<BrowserResult> {
-    state.busy = true; state.error = null; notify();
+    frameError = null; state.busy = true; state.error = null; notify();
     try { return await request(name, args); }
     catch (error) { state.error = error instanceof Error ? error.message : String(error); throw error; }
     finally { state.busy = false; notify(); }
@@ -156,8 +162,16 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
     if (!force && usesNativePresentation()) return;
     if (frameRequest || !tab() || !state.connected || disposed) return frameRequest ?? undefined;
     const target = identity();
+    const runtimeId = state.runtime?.runtimeId;
     frameRequest = request('frame', target).then(() => undefined).catch((error) => {
-      state.error = error instanceof Error ? error.message : String(error); notify();
+      const current = identity();
+      // 탐색 중의 오래된 캡처는 다음 프레임에서 회복한다. 입력 조작은 재실행하지 않는다.
+      if (disposed || runtimeId !== state.runtime?.runtimeId
+        || Object.keys(target).some(key => target[key] !== current[key])
+        || ['BROWSER_STALE_NAVIGATION', 'BROWSER_STALE_CONTROL', 'BROWSER_STALE_RUNTIME', 'BROWSER_STALE_GEOMETRY', 'BROWSER_STALE_FRAME'].includes(error?.code)) return;
+      if (state.error && state.error !== frameError) return;
+      frameError = error instanceof Error ? error.message : String(error);
+      state.error = frameError; notify();
     }).finally(() => { frameRequest = null; });
     return frameRequest;
   }

@@ -121,6 +121,7 @@ try {
     assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.dataset.presentation), 'dock');
     assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.inert), true, 'sidebar indicates and protects ongoing agent control');
     assert.equal(await page.$$eval('.ag-browser-floating', rows => rows.some(row => !row.hidden)), false, 'agent reuses sidebar without an extra floating preview');
+    await waitForState(page, 'sidebar frame recovers after agent navigation', () => document.querySelector('.ag-workbench-page .ag-browser-error')?.hidden === true && Boolean(document.querySelector('.ag-workbench-page .ag-browser-frame')?.src));
     await shot('shared-sidebar-agent-control');
     await record('Authenticated MCP lists shared tabs and follows the user selection');
     await record('Agent reads, signs into fixture, types and searches in the existing sidebar tab');

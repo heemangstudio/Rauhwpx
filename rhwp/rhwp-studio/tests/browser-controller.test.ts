@@ -112,6 +112,36 @@ test('오래된 목록 응답과 조작권 응답을 받은 뒤에도 현재 화
   f.controller.dispose();
 });
 
+test('탐색 중 오래된 캡처 실패는 경고를 남기지 않고 다음 화면을 표시한다', async () => {
+  const f = fixture(); f.emit({ type: 'owned_browser_inventory', tabs: [tab()] });
+  let reject!: (error: Error) => void;
+  f.respond(async () => new Promise((_resolve, fail) => { reject = fail; }));
+  const pending = f.controller.readFrame();
+  const current = tab(2, 2); f.emit({ type: 'owned_browser_tab', tab: current });
+  reject(new Error('이전 페이지 캡처 실패')); await pending;
+  assert.equal(f.controller.state.error, null);
+  for (const code of ['BROWSER_STALE_NAVIGATION', 'BROWSER_STALE_CONTROL', 'BROWSER_STALE_RUNTIME', 'BROWSER_STALE_GEOMETRY', 'BROWSER_STALE_FRAME']) {
+    f.respond(async () => { throw Object.assign(new Error('화면이 바뀜'), { code }); });
+    await f.controller.readFrame(); assert.equal(f.controller.state.error, null);
+  }
+  f.respond(async () => ({ frame: frame(current) })); await f.controller.readFrame();
+  assert.equal(f.controller.frame()?.frameId, '2:2');
+  assert.equal(f.actions.filter(action => action !== 'frame').length, 0);
+  f.controller.dispose();
+});
+
+test('실제 캡처 실패는 회복된 화면에서 지우되 입력 실패는 유지한다', async () => {
+  const f = fixture(); const current = tab(); f.emit({ type: 'owned_browser_inventory', tabs: [current] });
+  f.respond(async () => { throw new Error('캡처 실패'); });
+  await f.controller.readFrame(); assert.equal(f.controller.state.error, '캡처 실패');
+  f.respond(async () => ({ frame: frame(current) })); await f.controller.readFrame();
+  assert.equal(f.controller.state.error, null);
+  f.respond(async action => { if (action === 'navigate') throw new Error('탐색 실패'); return { frame: frame(current) }; });
+  await assert.rejects(f.controller.action('navigate'), /탐색 실패/);
+  await f.controller.readFrame(); assert.equal(f.controller.state.error, '탐색 실패');
+  f.controller.dispose();
+});
+
 test('화면을 제거해도 브라우저 탭을 닫지 않고 이전 런타임 이벤트를 무시한다', () => {
   const f = fixture(); const owner = tab();
   f.emit({ type: 'owned_browser_inventory', runtime: { runtimeId: 'runtime', generation: 2, state: 'ready', kind: 'chromium' }, tabs: [owner], frame: frame(owner) });
