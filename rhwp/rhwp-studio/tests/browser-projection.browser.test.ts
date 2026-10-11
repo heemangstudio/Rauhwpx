@@ -99,6 +99,17 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true);
     assert.equal(await page.$eval('.ag-browser-address', node => document.activeElement === node), true, 'docked browser receives keyboard focus');
     await page.evaluate(() => {
+      (window as any).rhwpDesktop.showContextMenu = async () => { (window as any).projectionTest.nativeMenuOpened = true; return new Promise(resolve => { (window as any).projectionTest.closeNativeMenu = resolve; }); };
+    });
+    const beforeMenu = await page.evaluate(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'detach').length);
+    await page.click('.ag-browser-details summary');
+    await page.waitForFunction(() => (window as any).projectionTest.nativeMenuOpened, { timeout: 1000 });
+    assert.equal(await page.evaluate(() => (window as any).projectionTest.attached), 'same-tab', 'native menu keeps the actual page visible');
+    assert.equal(await page.evaluate(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'detach').length), beforeMenu, 'opening the menu never detaches the guest');
+    assert.equal(await page.$eval('.ag-browser-details', node => (node as HTMLDetailsElement).open), false, 'desktop menu does not expose the loading placeholder');
+    await page.evaluate(() => (window as any).projectionTest.closeNativeMenu(null));
+
+    await page.evaluate(() => {
       const view = (window as any).projectionTest.view;
       view.setVisible(false);
       view.previewAgent({ ...view.controller.tab(), controller: { owner: 'agent' } });

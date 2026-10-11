@@ -1,4 +1,5 @@
 import './workbench-browser.css';
+import { showContextMenu } from '../native-context-menu.ts';
 import { createBrowserCaptureMotion } from './browser-capture-motion.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
 import type { BrowserDownload, BrowserTab } from '../../agent/types.ts';
@@ -177,6 +178,27 @@ export function createWorkbenchBrowser(options: {
   const menuReload = button('새로고침', '새로고침', () => { details.open = false; navigate('reload'); }, menu);
   menuReload.prepend(createIcon('refresh'));
   details.append(summary, menu); toolbar.append(details);
+  let nativeMenuPending = false;
+  summary.addEventListener('click', event => {
+    if (!nativeBrowserApi() || typeof (window as Window & { rhwpDesktop?: { showContextMenu?: unknown } }).rhwpDesktop?.showContextMenu !== 'function') return;
+    event.preventDefault();
+    if (nativeMenuPending || disposed || agentPreviewTab !== null) return;
+    const tabId = controller.tab()?.tabId;
+    if (!tabId) return;
+    nativeMenuPending = true;
+    const rect = summary.getBoundingClientRect();
+    void showContextMenu([
+      { id: 'popout', label: '별도 창으로 열기' },
+      { id: 'chat', label: '채팅으로 돌아가기' },
+      { id: 'reload', label: '새로고침' },
+    ], { x: rect.right, y: rect.bottom }).then(choice => {
+      if (disposed || agentPreviewTab !== null || controller.tab()?.tabId !== tabId) return;
+      if (choice === 'popout') popoutButton.click();
+      else if (choice === 'chat') options.onChat();
+      else if (choice === 'reload') navigate('reload');
+    }).finally(() => { nativeMenuPending = false; });
+  });
+
   details.addEventListener('toggle', () => { if (details.open) { cancelNativeHealth(); nativeHealthGeneration++; showDownloads(false, false); } layout(); });
   function dismissOutside(event: PointerEvent): void {
     const target = event.target as Node;
