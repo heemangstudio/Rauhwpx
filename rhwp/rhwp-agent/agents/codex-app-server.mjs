@@ -496,7 +496,13 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   let idleReleaseTimer = null;
 
   function safeMessage(error, max = 1200) {
-    return truncate(redactDiagnosticText(error?.message ?? error, [opts.token]), max);
+    const details = [];
+    const seen = new Set();
+    for (let cause = error; cause && !seen.has(cause) && details.length < 4; cause = cause.cause) {
+      seen.add(cause);
+      details.push(String(cause.message ?? cause));
+    }
+    return truncate(redactDiagnosticText(details.join(': '), [opts.token]), max);
   }
 
   function finalizeRolloutWatcher() {
@@ -916,7 +922,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     }
   }
 
-  async function startConnection({ featureForced = false } = {}) {
+  async function startConnection({ featureForced = false, startupRetried = false } = {}) {
     const attempt = turnAttempt;
     let child;
     let launch;
@@ -968,9 +974,24 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       if (result.restartWithFeature) {
         defaultModeFlagRequired = true;
         await stopNegotiationProcess(child, connection);
-        return startConnection({ featureForced: true });
+        return startConnection({ featureForced: true, startupRetried });
       }
     } catch (error) {
+      const diagnostic = truncate(redactDiagnosticText(stderrTail, [opts.token]).trim(), 1200);
+      process.stderr.write(`[codex-app-server] native negotiation failed: ${safeMessage(error)}${diagnostic ? `; stderr: ${diagnostic}` : ''}\n`);
+      // 초기화만 재시도한다. 사용자 턴을 보낸 뒤에는 중복 실행을 피한다.
+      const startupFailure = !(error instanceof CodexAppServerUnavailableError)
+        || error.message === 'Codex app-server initialize timed out';
+      if (startupFailure && !startupRetried && !disposed && attempt === turnAttempt) {
+        process.stderr.write(`[codex-app-server] retrying native startup: ${safeMessage(error)}\n`);
+        const cleaned = await stopConnection();
+        if (cleaned && !disposed && attempt === turnAttempt) {
+          return startConnection({ featureForced, startupRetried: true });
+        }
+        if (!cleaned) {
+          throw new CodexAppServerUnavailableError('Codex app-server process tree cleanup could not be confirmed', error);
+        }
+      }
       if (!(error instanceof CodexAppServerUnavailableError)) {
         throw new CodexAppServerUnavailableError('Codex app-server negotiation failed', error);
       }
@@ -1422,11 +1443,19 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     async setExecutionMode(mode) {
       if (starting || turnOpen) throw new Error('Execution mode can only change between turns');
       validateExecutionMode(mode);
-      if (fallback) {
-        if (nativeProviderInteractionMode({ ...opts, ...mode }) === 'plan') {
-          throw new CodexAppServerUnavailableError('Codex native Plan mode is unavailable while using legacy exec');
+      const recoveringLegacy = fallback;
+      if (recoveringLegacy && nativeProviderInteractionMode({ ...opts, ...mode }) !== 'plan') {
+        return recoveringLegacy.setExecutionMode(mode);
+      }
+      // 일시적인 시작 실패가 채팅 전체를 legacy에 묶어 두지 않도록 한다.
+      // 새 네이티브 연결이 준비될 때까지 기존 세션은 복구 경로로 남긴다.
+      if (recoveringLegacy) {
+        const id = recoveringLegacy.getSessionId();
+        if (id) {
+          threadId = id;
+          threadHasTurns = true;
+          attachedGeneration = 0;
         }
-        return fallback.setExecutionMode(mode);
       }
       cancelIdleRelease();
       const previous = {
@@ -1457,6 +1486,13 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
           const connection = await ensureConnection();
           await attachThread(connection);
           scheduleIdleRelease();
+        }
+        if (recoveringLegacy) {
+          const released = await recoveringLegacy.dispose();
+          if (released === false) {
+            throw new CodexAppServerUnavailableError('Codex legacy process tree cleanup could not be confirmed');
+          }
+          fallback = null;
         }
       } catch (error) {
         opts.workflow = previous.workflow;
