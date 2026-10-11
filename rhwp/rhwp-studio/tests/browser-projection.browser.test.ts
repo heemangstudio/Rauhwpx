@@ -94,22 +94,32 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     await page.evaluate(() => document.documentElement.classList.add('document-home-open'));
     await attached('same-tab');
     assert.equal(await page.$eval('.ag-browser-floating', node => getComputedStyle(node).visibility), 'visible', 'agent preview remains visible on Home');
-    await page.evaluate(() => {
-      const view = (window as any).projectionTest.view;
-      view.endAgentPreview();
-      view.previewAgent(view.controller.tab());
-    });
-    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'continued activity cancels pending collapse');
+    await page.evaluate(() => (window as any).projectionTest.view.controller.refresh());
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'idle browser state preserves the agent preview');
     await page.evaluate(() => (window as any).projectionTest.view.endAgentPreview());
-    await page.waitForFunction(() => (document.querySelector('.ag-browser-floating') as HTMLElement).hidden, { timeout: 2500 });
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true, 'turn end collapses immediately');
     await attached(null);
     assert.equal(await page.evaluate(() => (window as any).projectionTest.view.controller.tab().tabId), 'same-tab', 'collapse preserves the browser tab');
-    await page.evaluate(() => {
-      const view = (window as any).projectionTest.view;
-      view.previewAgent(view.controller.tab());
-      view.endAgentPreview(undefined, true);
+    const links = await page.evaluate(async () => {
+      const { routeChatBrowserLinks } = await import('../src/ui/agent-sidebar/chat-browser-links.ts');
+      const host = document.createElement('div');
+      host.innerHTML = '<a href="https://example.com/chat"><span>웹 자료</span></a><a href="https://example.com/file" download>파일</a><span class="ag-md-artifact-card"><a href="https://example.com/document">문서</a></span><a href="mailto:test@example.com">메일</a>';
+      document.body.append(host);
+      const opened: string[] = [];
+      routeChatBrowserLinks(host, async url => { opened.push(url); }, error => { throw error; });
+      const events = [...host.querySelectorAll('a')].map(link => {
+        const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+        (link.firstElementChild ?? link).dispatchEvent(event);
+        return event.defaultPrevented;
+      });
+      const middle = new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true });
+      host.querySelector('a')!.dispatchEvent(middle);
+      host.remove();
+      return { opened, events, middle: middle.defaultPrevented };
     });
-    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true, 'turn end collapses immediately');
+    assert.deepEqual(links.opened, ['https://example.com/chat', 'https://example.com/chat']);
+    assert.deepEqual(links.events, [true, false, false, false], 'web links route internally while downloads, documents and mail preserve their actions');
+    assert.equal(links.middle, true, 'middle click also uses the app browser');
     await page.evaluate(() => (window as any).projectionTest.view.dispose());
   } finally { await browser?.close(); await server.close(); }
 });

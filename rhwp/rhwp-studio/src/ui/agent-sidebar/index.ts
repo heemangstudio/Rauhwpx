@@ -58,6 +58,7 @@ import {
 import { loadAgentPrefs, type AgentPrefs } from '../../agent/agent-prefs.ts';
 import { userSettings } from '../../core/user-settings.ts';
 import { renderChatMarkdown, type ChatMarkdownOptions } from './chat-markdown.ts';
+import { routeChatBrowserLinks } from './chat-browser-links.ts';
 import { safeMarkdownHref } from './plan-markdown.ts';
 import {
   clampFinite,
@@ -3863,11 +3864,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     });
   }
 
+  routeChatBrowserLinks(messages, async (url) => {
+    const browser = ensureWorkbenchBrowser();
+    await browser.controller.open(url);
+    browser.float();
+  }, (error) => showToast({ message: `브라우저를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 }));
+
   const unsubscribeAgentBrowserPreview = bridge.onBrowserEvent((event) => {
-    if (event.type !== 'owned_browser_activity') return;
+    if (event.type !== 'owned_browser_activity' || event.active === false) return;
     const tab = event.tab ?? (event.payload as { tab?: import('../../agent/types.ts').BrowserTab } | undefined)?.tab;
-    if (event.active === false) workbenchBrowser?.endAgentPreview(tab?.tabId);
-    else if (tab) ensureWorkbenchBrowser().previewAgent(tab);
+    if (tab) ensureWorkbenchBrowser().previewAgent(tab);
   });
 
   workbench = createSidebarWorkbench({
@@ -7424,7 +7430,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function setTurnRunning(running: boolean): void {
     turnRunning = running;
-    if (!running) { replyPending = false; workbenchBrowser?.endAgentPreview(undefined, true); }
+    if (!running) { replyPending = false; workbenchBrowser?.endAgentPreview(); }
     updateTurnPending();
     updateComposer();
     rebuildReview();
