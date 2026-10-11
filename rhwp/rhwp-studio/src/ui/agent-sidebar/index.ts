@@ -620,6 +620,10 @@ const RAIL_WIDTH_MIN = 220;
 const REVIEW_WIDTH_KEY = 'rhwp-agent-review-width';
 const REVIEW_WIDTH_DEFAULT = 560;
 const REVIEW_WIDTH_MIN = 320;
+const REVIEW_WIDTH_MAX = 1120;
+const WORKSPACE_COMPACT_WIDTH = 960;
+const WORKSPACE_CHAT_MIN_WIDTH = 360;
+const WORKSPACE_COMPACT_GUTTER = 24;
 
 function maxRailWidth(viewportWidth = window.innerWidth): number {
   return Math.max(RAIL_WIDTH_MIN, Math.floor(viewportWidth * 0.3));
@@ -629,16 +633,15 @@ function clampRailWidth(width: number, viewportWidth = window.innerWidth): numbe
   return Math.min(maxRailWidth(viewportWidth), Math.max(RAIL_WIDTH_MIN, Math.round(width)));
 }
 
-function maxReviewWidth(viewportWidth = window.innerWidth): number {
-  return Math.max(REVIEW_WIDTH_MIN, Math.floor(viewportWidth * 2 / 3));
+function maxReviewWidth(viewportWidth = window.innerWidth, railWidth = RAIL_WIDTH_DEFAULT): number {
+  if (viewportWidth <= WORKSPACE_COMPACT_WIDTH) {
+    return Math.max(0, Math.min(REVIEW_WIDTH_DEFAULT, viewportWidth - WORKSPACE_COMPACT_GUTTER));
+  }
+  return Math.min(REVIEW_WIDTH_MAX, Math.max(REVIEW_WIDTH_MIN, viewportWidth - railWidth - WORKSPACE_CHAT_MIN_WIDTH));
 }
 
-function clampReviewWidth(width: number, viewportWidth = window.innerWidth): number {
-  return Math.min(maxReviewWidth(viewportWidth), Math.max(REVIEW_WIDTH_MIN, Math.round(width)));
-}
-
-function defaultReviewWidth(): number {
-  return clampReviewWidth(REVIEW_WIDTH_DEFAULT);
+function clampReviewWidth(width: number, viewportWidth = window.innerWidth, railWidth = RAIL_WIDTH_DEFAULT): number {
+  return Math.min(maxReviewWidth(viewportWidth, railWidth), Math.max(REVIEW_WIDTH_MIN, Math.round(width)));
 }
 
 function readStoredRailWidth(): number {
@@ -663,11 +666,12 @@ function persistRailWidth(width: number): void {
 function readStoredReviewWidth(): number {
   try {
     const raw = localStorage.getItem(REVIEW_WIDTH_KEY);
-    if (!raw) return defaultReviewWidth();
+    if (!raw) return REVIEW_WIDTH_DEFAULT;
     const n = Number(raw);
-    return Number.isFinite(n) ? clampReviewWidth(n) : defaultReviewWidth();
+    // 창이 좁아도 저장한 픽셀 폭을 보존하고, 실제 배치에서만 줄인다.
+    return Number.isFinite(n) ? Math.min(REVIEW_WIDTH_MAX, Math.max(REVIEW_WIDTH_MIN, Math.round(n))) : REVIEW_WIDTH_DEFAULT;
   } catch {
-    return defaultReviewWidth();
+    return REVIEW_WIDTH_DEFAULT;
   }
 }
 
@@ -4081,15 +4085,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     railResize.setAttribute('aria-valuemin', String(RAIL_WIDTH_MIN));
     railResize.setAttribute('aria-valuemax', String(maxRailWidth()));
     if (opts?.persist) persistRailWidth(railWidth);
+    applyReviewWidth(preferredReviewWidth, { reclamp: true });
   }
 
   function applyReviewWidth(width: number, opts?: { persist?: boolean; reclamp?: boolean }): void {
-    reviewWidth = clampReviewWidth(width);
+    const availableRailWidth = threadsRailCollapsed ? 0 : railWidth;
+    reviewWidth = clampReviewWidth(width, window.innerWidth, availableRailWidth);
     if (!opts?.reclamp) preferredReviewWidth = reviewWidth;
     root.style.setProperty('--ag-review-w', `${reviewWidth}px`);
     reviewResize.setAttribute('aria-valuenow', String(reviewWidth));
-    reviewResize.setAttribute('aria-valuemin', String(REVIEW_WIDTH_MIN));
-    reviewResize.setAttribute('aria-valuemax', String(maxReviewWidth()));
+    reviewResize.setAttribute('aria-valuemin', String(Math.min(REVIEW_WIDTH_MIN, reviewWidth)));
+    reviewResize.setAttribute('aria-valuemax', String(maxReviewWidth(window.innerWidth, availableRailWidth)));
     if (opts?.persist) persistReviewWidth(reviewWidth);
   }
 
@@ -4114,7 +4120,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function beginColumnResize(kind: 'rail' | 'review', e: PointerEvent): void {
-    if (!fullscreen) return;
+    if (!fullscreen || isCompactWorkspace()) return;
     // 이미 한 손가락이 끌고 있으면 두 번째 손가락은 무시한다.
     if (columnResizing) return;
     if (e.button !== 0 && e.pointerType !== 'touch') return;
@@ -4176,7 +4182,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function onColumnResizeKeyDown(kind: 'rail' | 'review', e: KeyboardEvent): void {
-    if (!fullscreen) return;
+    if (!fullscreen || isCompactWorkspace()) return;
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     e.preventDefault();
     // 손잡이가 눌린 방향으로 움직인다 — 검토 칸은 왼쪽 모서리라 반대다.
@@ -4364,6 +4370,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     threadsRailCollapsed = collapsed;
     persistThreadsRailCollapsed(collapsed);
     applyThreadsRailState();
+    applyReviewWidth(preferredReviewWidth, { reclamp: true });
     // 접혀 있는 동안 문서가 바뀌었을 수 있다 — 다시 펼칠 때 새로 그린다.
     if (fullscreen && !collapsed) rebuildThreadsList();
   }
@@ -4397,9 +4404,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     changesDrawer.setOpen(changesActive || (active && workbench?.current() === 'changes' && !versionManagerPage && !root.classList.contains('ag-collapsed')));
     planColumn.setAttribute('aria-hidden', planActive ? 'false' : 'true');
     planColumn.inert = !planActive;
-    reviewResize.setAttribute('aria-hidden', detailActive ? 'false' : 'true');
-    reviewResize.tabIndex = detailActive ? 0 : -1;
-    reviewResize.inert = !detailActive;
+    const canResizeDetail = detailActive && !isCompactWorkspace();
+    reviewResize.setAttribute('aria-hidden', canResizeDetail ? 'false' : 'true');
+    reviewResize.tabIndex = canResizeDetail ? 0 : -1;
+    reviewResize.inert = !canResizeDetail;
     if (focusLayoutActive) {
       chatPage.setAttribute('aria-hidden', 'false');
       if (composer.parentElement !== chatPage) chatPage.append(questionController.root, composer);
@@ -4659,7 +4667,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     rebuildThreadsList();
     // 칸 폭은 클래스 규칙이 아니라 인라인 변수로 산다.
     applyRailWidth(preferredRailWidth, { persist: false, reclamp: true });
-    applyReviewWidth(preferredReviewWidth, { persist: false, reclamp: true });
     // 변경 사항과 계획은 각각의 환경 drawer에 둔다.
     setCompactChangesOpen(false);
     changesDrawer.setCompactHost(null);
@@ -5795,8 +5802,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function measure(): void {
     updateComposerCompactLayout();
-    const nextWorkspaceCompact = fullscreen && window.innerWidth <= 960;
+    const nextWorkspaceCompact = fullscreen && window.innerWidth <= WORKSPACE_COMPACT_WIDTH;
+    const compactChanged = nextWorkspaceCompact !== workspaceCompact;
     const enteringCompact = nextWorkspaceCompact && !workspaceCompact;
+    if (enteringCompact && columnResizing) endColumnResize();
     workspaceCompact = nextWorkspaceCompact;
     root.classList.toggle('ag-workspace-compact', workspaceCompact);
     if (enteringCompact) {
@@ -5806,7 +5815,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       clearCompactRailHoverClose();
       detailColumn = null;
       if (environmentPanelOpen) setEnvironmentPanelOpen(false, { persist: false });
-      applyReviewColState();
     } else if (!workspaceCompact) {
       compactThreadsRailOpen = false;
       compactRailHoverOpen = false;
@@ -5814,13 +5822,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       clearCompactRailHoverClose();
     }
     applyThreadsRailState();
+    if (compactChanged) applyReviewColState();
     // 전체 화면은 도구 모음·상태바까지 덮는다 — 인라인 배치를 걷어낸다.
     if (fullscreen) {
       root.style.top = '0px';
       root.style.bottom = '0px';
-      // 창이 줄면 두 칸의 비율 상한이 내려간다. 고른 폭에서 다시 클램프해 창이 커지면 되돌린다.
+      // 고른 픽셀 폭은 유지하고, 대화 공간이 부족할 때만 줄였다가 되돌린다.
       applyRailWidth(preferredRailWidth, { persist: false, reclamp: true });
-      applyReviewWidth(preferredReviewWidth, { persist: false, reclamp: true });
       return;
     }
     const top = document.getElementById('editor-area')?.getBoundingClientRect().top ?? 96;
@@ -10170,7 +10178,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       threadsPanelOpen,
       sidebarWidth,
       railWidth,
-      reviewWidth,
+      reviewWidth: preferredReviewWidth,
       threadsRailCollapsed,
       environmentPanelOpen,
       desktopEnvironmentPanelOpen,
@@ -10181,9 +10189,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function adoptPageLayout(layout: SidebarPageLayout | null): void {
     applySidebarWidth(layout?.sidebarWidth ?? sidebarWidth, { persist: false, recenter: false });
     if (layout) {
-      applyRailWidth(layout.railWidth);
-      applyReviewWidth(layout.reviewWidth);
       threadsRailCollapsed = layout.threadsRailCollapsed;
+      preferredReviewWidth = layout.reviewWidth;
+      applyRailWidth(layout.railWidth);
       environmentPanelOpen = layout.environmentPanelOpen;
       desktopEnvironmentPanelOpen = layout.desktopEnvironmentPanelOpen;
     }

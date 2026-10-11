@@ -120,7 +120,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-corner { -webkit-app-region: no-dr
   top: var(--ag-workspace-bar-h, 48px);
   bottom: 0;
   right: 0;
-  width: min(var(--ag-review-w, 560px), 88vw);
+  width: var(--ag-review-w, 560px);
   z-index: 14;
   box-shadow: var(--ag-elev-sheet);
 }
