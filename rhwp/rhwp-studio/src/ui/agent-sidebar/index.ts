@@ -3955,7 +3955,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   workbench = createSidebarWorkbench({
     floatResource: (id, point) => { if (id.startsWith('browser:')) void floatBrowserTab(id.slice(8), point); },
-    onCreate: (view) => { if (view === 'browser') void ensureWorkbenchBrowser().controller.open('about:blank'); },
+    onCreate: (view) => { if (view === 'browser') void ensureWorkbenchBrowser().controller.open().catch(error => showToast({ message: `브라우저를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 })); },
     onChat: returnToChat,
     selectResource: (id) => {
       if (id?.startsWith('browser:')) { if (id === `browser:${floatingBrowserTab}`) floatingBrowser?.float(); else workbenchBrowser?.selectTab(id); }

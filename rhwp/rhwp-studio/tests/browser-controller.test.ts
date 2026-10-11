@@ -7,7 +7,7 @@ import { browserPopupDestination, createBrowserController } from '../src/ui/agen
 function fixture(nativePresentation = false) {
   const listeners = new Set<(event: BrowserEvent) => void>();
   const actions: string[] = [];
-  let respond: (action: string, args: Record<string, unknown>) => Promise<BrowserResult> = async () => ({});
+  let respond: (action: string, args: Record<string, unknown>) => Promise<BrowserResult & { searchEngine?: string }> = async () => ({});
   const bridge = {
     getConnectionState: () => 'connected',
     onBrowserEvent(handler: (event: BrowserEvent) => void) { listeners.add(handler); return () => listeners.delete(handler); },
@@ -30,6 +30,34 @@ test('네이티브 페이지는 실시간으로 표시하고 의견을 붙일 �
   await f.controller.readFrame(true);
   assert.deepEqual(f.actions, ['frame']);
   assert.equal(f.controller.frame()?.tabId, owner.tabId);
+  f.controller.dispose();
+});
+
+test('새 탭은 선택한 검색 엔진을 열고 명시적인 링크는 그대로 연다', async () => {
+  const f = fixture(true);
+  const opened: string[] = [];
+  let engine = 'google';
+  f.respond(async (action, args) => {
+    if (action === 'configuration.get') return { searchEngine: engine };
+    if (action === 'open') { opened.push(String(args.url)); return { tab: { ...tab(), url: String(args.url) } }; }
+    return {};
+  });
+  for (const [name, url] of [['google', 'https://www.google.com/'], ['duckduckgo', 'https://duckduckgo.com/'], ['bing', 'https://www.bing.com/'], ['naver', 'https://www.naver.com/']]) {
+    engine = name;
+    await f.controller.open();
+    assert.equal(f.controller.tab()?.url, url);
+  }
+  const requests = f.actions.filter(action => action === 'configuration.get').length;
+  await f.controller.open('https://example.com/result');
+  assert.equal(f.controller.tab()?.url, 'https://example.com/result');
+  assert.equal(f.actions.filter(action => action === 'configuration.get').length, requests);
+  f.respond(async (action, args) => {
+    if (action === 'configuration.get') throw new Error('설정 읽기 실패');
+    opened.push(String(args.url)); return {};
+  });
+  await f.controller.open();
+  assert.equal(opened.at(-1), 'https://www.google.com/');
+  assert.equal(opened.includes('about:blank'), false);
   f.controller.dispose();
 });
 function tab(navigationEpoch = 1, controllerEpoch = 1): BrowserTab {

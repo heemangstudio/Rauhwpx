@@ -1,5 +1,6 @@
 import type { SidebarBridge } from '../../agent/bridge.ts';
 import type { BrowserDownload, BrowserEvent, BrowserFrame, BrowserResult, BrowserRuntime, BrowserTab } from '../../agent/types.ts';
+import { browserHomepageURL } from './browser-search.ts';
 
 export interface BrowserControllerState {
   runtime: BrowserRuntime | null;
@@ -163,7 +164,11 @@ export function createBrowserController(bridge: SidebarBridge, options: { native
       if (!state.tabs.some((row) => row.tabId === tabId)) return;
       selectionSequence++; if (state.activeTabId !== tabId) state.frames.clear(); state.activeTabId = tabId; rememberTab(); notify(); void readFrame();
     },
-    async open(url = 'https://www.google.com/') {
+    async open(url?: string) {
+      if (url === undefined) {
+        const configuration = await bridge.requestBrowser<{ searchEngine?: string }>('configuration.get').catch(() => ({} as { searchEngine?: string }));
+        url = browserHomepageURL(configuration.searchEngine);
+      }
       const result = await action('open', { url });
       if (result.tab && options.tabFilter?.(result.tab) !== false) { selectionSequence++; state.frames.clear(); state.activeTabId = result.tab.tabId; rememberTab(); notify(); void readFrame(); }
     },
