@@ -168,7 +168,18 @@ try {
   report.manualSave = true;
   // School login forms often omit both autocomplete and name attributes.
   await tab.view.webContents.executeJavaScript(`for (const field of document.querySelectorAll('input')) { field.removeAttribute('autocomplete'); field.removeAttribute('name'); field.value=''; } document.querySelector('#secret').focus()`);
-  await passwords.humanFill(editor, { tabId, accountId: manual.id });
+  const inventory = await service.request(actor, 'status', {});
+  assert.ok(inventory.accounts.some(account => account.id === manual.id && account.agentReuseApproved === true));
+  assert.equal(JSON.stringify(inventory).includes(secret), false);
+  const manualObservation = await service.request(actor, 'snapshot', { tabId });
+  const loginId = manualObservation.snapshot.elements.find(element => element.inputType === 'text');
+  const loginPassword = manualObservation.snapshot.elements.find(element => element.inputType === 'password');
+  assert.ok(loginId && loginPassword);
+  const filledManual = await service.request(actor, 'fill-account', { tabId, accountId: manual.id,
+    snapshotId: manualObservation.snapshot.snapshotId, usernameRef: loginId.ref, passwordRef: loginPassword.ref,
+    navigationEpoch: manualObservation.tab.navigationEpoch, controllerEpoch: manualObservation.tab.controllerEpoch });
+  assert.equal(JSON.stringify(filledManual).includes(secret), false);
+  report.agentManualAutofill = true;
   assert.equal(await tab.view.webContents.executeJavaScript('document.querySelector("#identity").value'), 'manual-fixture-user');
   report.schoolFormFill = true;
   await host.activity({ ...focusActivity, token: randomUUID(), active: true });

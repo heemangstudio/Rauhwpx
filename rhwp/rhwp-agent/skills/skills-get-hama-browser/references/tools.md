@@ -25,7 +25,7 @@ Agent ownership comes from the hub, not tool arguments. A tab ID from another ag
 
 | Tool | Arguments | Result and practical use |
 | --- | --- | --- |
-| `browser_status` | `{}` | `runtime`, scoped `tabs`, `limits`, and available `accounts`. Reuse assigned tabs and inspect approval/readiness metadata. |
+| `browser_status` | `{}` | `runtime`, scoped `tabs`, `limits`, and available `accounts`. Includes imported and manually saved logins. Match `origin`/`origins` to the website; `agentReuseApproved: true` permits direct local autofill for the task. Reuse assigned tabs and inspect readiness metadata. |
 | `browser_open` | Optional `url`, `intent` | Creates your tab and returns its descriptor. Omitted URL opens `about:blank`. Runtime starts lazily. |
 | `browser_navigate` | `tabId`, `url`, `epochs`; optional `intent` | Navigates the same tab. Snapshot afterward. The public schema has no back/forward/reload direction field. |
 | `browser_snapshot` | `tabId` | Returns `snapshot` and current tab state. Replaces refs, so choose actions from this result. |
@@ -37,7 +37,7 @@ Agent ownership comes from the hub, not tool arguments. A tab ID from another ag
 | `browser_close` | `tabId`, `epochs` | Explicitly closes your tab. Completed managed downloads survive. Hiding a preview is separate. |
 | `browser_capture` | `tabId`; optional `snapshotId`, `ref`, `navigationEpoch`, `region`, `comment` | Page capture by default. Element capture uses current `snapshotId` and `ref`; region uses `{x,y,width,height}` in observed page CSS coordinates. Returns `capture` provenance and an image when available. Capture stays bound to the originating destination. |
 | `browser_downloads` | Optional `action`, `downloadId` | `action` is `list`, `cancel`, or `retry`, default `list`. Use a returned ID for cancel/retry. Returns scoped jobs or one job. Importing to another project is a human UI operation, absent from this agent schema. |
-| `browser_fill_account` | `tabId`, `accountId`, `snapshotId`, `passwordRef`, `epochs`; optional `usernameRef` | Secure broker fill. `accountId` must be a UUID from status. The broker validates account, origin, field, and current binding. Returns metadata/results, never the password. |
+| `browser_fill_account` | `tabId`, `accountId`, `snapshotId`, `passwordRef`, `epochs`; optional `usernameRef` | Secure local autofill for imported or manually saved logins. `accountId` must be a UUID from status. For matching accounts with `agentReuseApproved: true`, no extra approval or password request is needed. Supply refs for both login fields, including ID fields without autocomplete hints. The broker validates account, origin, field, and current binding. Returns metadata/results, never the password. |
 | `browser_request_account` | `tabId`, `origin`, `label`, `reason`; optional `accountId` | Root conversation only. Exact origin approval or secure save/use request. Returns `pending`, `requestId`, `origin`; end the turn and wait. |
 
 URLs must satisfy the browser's network guard. Public HTTPS research is the normal path; workspace preview access needs its configured allowance. Do not substitute raw HTTP requests or another browser to evade a refusal.

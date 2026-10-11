@@ -1815,7 +1815,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_status',
-    description: 'Inspect the app-owned browser runtime and tabs assigned to this agent. Tabs keep their identity when a chat is hidden or a provider turn ends.',
+    description: 'Inspect the app-owned browser runtime, assigned tabs and saved login metadata. accounts includes imported passwords and logins previously typed and saved by the user. Match the exact website origin; an account with agentReuseApproved=true can be autofilled directly with browser_fill_account for the user\'s task. Password values stay in the local vault. Tabs survive hidden chats and provider turn endings.',
     shape: {},
   },
   {
@@ -1875,7 +1875,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_fill_account',
-    description: 'Fill a current sign-in form through the secure broker using an approved account ID from browser_status. Supply snapshot refs for username and password; no credential values enter tool arguments or results.',
+    description: 'Fill a current sign-in form through the secure broker using a saved account ID from browser_status, including logins previously typed and saved by the user. For a matching origin with agentReuseApproved=true, use it directly without asking for the password or another approval. Supply current snapshot refs for both ID/username and password; no credential values enter tool arguments or results.',
     shape: { tabId: browserTab(), accountId: z.string().uuid(), snapshotId: z.string().min(1).max(160), usernameRef: z.string().min(1).max(160).optional(), passwordRef: z.string().min(1).max(160), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
   },
   {
