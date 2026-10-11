@@ -199,6 +199,31 @@ test('PDF extraction rejects page and character floods during iteration', async 
   assert.equal(cleaned, true);
 });
 
+test('PDF pages join text items by their position, matching the shared Studio fixture', async () => {
+  const { cases } = JSON.parse(await fs.readFile(new URL('./fixtures/pdf-join-cases.json', import.meta.url), 'utf8'));
+  for (const { name, items, expected } of cases) {
+    // 두 묶음으로 흘려 보내 묶음 경계에서도 이음 상태가 이어지는지 본다.
+    const half = Math.ceil(items.length / 2);
+    const batches = [items.slice(0, half), items.slice(half)];
+    const pages = await collectPdfPages({
+      numPages: 1,
+      async getPage() {
+        return {
+          streamTextContent: () => ({
+            getReader: () => ({
+              async read() {
+                return batches.length ? { done: false, value: { items: batches.shift() } } : { done: true };
+              },
+              releaseLock() {},
+            }),
+          }),
+        };
+      },
+    }, 'join.pdf');
+    assert.equal(chunkReferenceText({ pages: [{ page: 1, text: pages[0].text.normalize('NFKC') }] })[0]?.text, expected, name);
+  }
+});
+
 test('DOCX preflight rejects ZIP entry floods and expansion bombs before Mammoth runs', () => {
   const tooMany = centralDirectoryZip([
     { name: '[Content_Types].xml' },
@@ -369,4 +394,77 @@ test('HWP cleanup uncertainty is sticky on the extraction error', async () => {
   await assert.rejects(extraction, (error) => (
     error.code === 'REFERENCE_TEXT_TOO_LARGE' && error.processCleanupUncertain === true
   ));
+});
+
+async function ooxmlArchive(files) {
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', '<?xml version="1.0"?><Types/>');
+  for (const [name, body] of Object.entries(files)) zip.file(name, body);
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
+const relsXml = (entries) => `<?xml version="1.0"?><Relationships>${entries
+  .map(([id, target]) => `<Relationship Id="${id}" Type="x" Target="${target}"/>`).join('')}</Relationships>`;
+
+test('PPTX slides become pages in presentation order', async () => {
+  const slide = (lines) => `<p:sld><p:cSld><p:spTree>${lines
+    .map((line) => `<a:p><a:pPr/><a:r><a:t>${line}</a:t></a:r></a:p>`).join('')}<a:p/></p:spTree></p:cSld></p:sld>`;
+  const archive = await ooxmlArchive({
+    'ppt/presentation.xml': '<p:presentation><p:sldIdLst><p:sldId id="257" r:id="rId3"/><p:sldId id="256" r:id="rId2"/></p:sldIdLst></p:presentation>',
+    'ppt/_rels/presentation.xml.rels': relsXml([['rId2', 'slides/slide1.xml'], ['rId3', 'slides/slide2.xml']]),
+    'ppt/slides/slide1.xml': slide(['둘째 장 &amp; 결론']),
+    'ppt/slides/slide2.xml': slide(['첫 장 제목', '본문 한 줄']),
+  });
+  const result = await extractReferenceText({ bytes: archive, name: '발표.pptx' });
+  assert.deepEqual(result.pages, [
+    { page: 1, text: '첫 장 제목\n본문 한 줄' },
+    { page: 2, text: '둘째 장 & 결론' },
+  ]);
+  const chunks = chunkReferenceText(result);
+  assert.equal(chunks[1].page, 2);
+});
+
+test('XLSX sheets become pages with tab-separated rows', async () => {
+  const archive = await ooxmlArchive({
+    'xl/workbook.xml': '<workbook><sheets><sheet name="예산" sheetId="1" r:id="rId1"/><sheet name="빈 시트" sheetId="2" r:id="rId2"/></sheets></workbook>',
+    'xl/_rels/workbook.xml.rels': relsXml([['rId1', 'worksheets/sheet1.xml'], ['rId2', '/xl/worksheets/sheet2.xml']]),
+    'xl/sharedStrings.xml': '<sst><si><t>항목</t></si><si><r><t>금</t></r><r><t>액</t></r><rPh><t>ignored</t></rPh></si><si><t>인건비</t></si></sst>',
+    'xl/worksheets/sheet1.xml': '<worksheet><sheetData>'
+      + '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1" t="s"><v>1</v></c></row>'
+      + '<row r="2"/>'
+      + '<row r="3"><c r="A3" t="s"><v>2</v></c><c r="B3" t="inlineStr"><is><t>메모\t내용</t></is></c><c r="C3"><v>1200</v></c><c r="D3" t="b"><v>1</v></c><c r="XFD3"><v>9</v></c></row>'
+      + '</sheetData></worksheet>',
+    'xl/worksheets/sheet2.xml': '<worksheet><sheetData/></worksheet>',
+  });
+  const result = await extractReferenceText({ bytes: archive, name: '예산.xlsx' });
+  assert.equal(result.pages.length, 2);
+  assert.equal(result.pages[0].text, '# 예산\n항목\t\t금액\n인건비\t메모 내용\t1200\tTRUE');
+  assert.equal(result.pages[1].text, '# 빈 시트');
+});
+
+test('PPTX and XLSX reuse the ZIP-bomb guards', async () => {
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', '<Types/>');
+  zip.file('xl/workbook.xml', '<workbook/>');
+  zip.file('xl/worksheets/sheet1.xml', 'A'.repeat(4096));
+  const forged = forgeCentralUncompressedSize(
+    await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }),
+    'xl/worksheets/sheet1.xml',
+    MAX_DOCX_EXPANDED_BYTES + 1,
+  );
+  await assert.rejects(
+    extractReferenceText({ bytes: forged, name: 'bomb.xlsx' }),
+    (error) => error.code === 'REFERENCE_ARCHIVE_TOO_LARGE' && /XLSX limit/.test(error.message),
+  );
+  const docxOnly = await ooxmlArchive({ 'word/document.xml': '<w:document/>' });
+  await assert.rejects(
+    extractReferenceText({ bytes: docxOnly, name: 'wrong.pptx' }),
+    (error) => error.code === 'REFERENCE_TYPE_MISMATCH',
+  );
+});
+
+test('CID-keyed Korean PDFs extract through the bundled pdfjs CMaps', async () => {
+  const { koreanCidPdf } = await import('./fixtures/korean-cid-pdf.mjs');
+  const result = await extractReferenceText({ bytes: koreanCidPdf('한국어 문서 추출'), name: '한글.pdf' });
+  assert.deepEqual(result.pages, [{ page: 1, text: '한국어 문서 추출' }]);
 });

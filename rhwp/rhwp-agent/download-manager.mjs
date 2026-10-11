@@ -82,7 +82,8 @@ async function resolvePublicAddress(hostname) {
   return addresses[0];
 }
 
-async function safeNetworkFetch(url, { signal } = {}) {
+/** DNS-pinned http(s) GET that refuses local, private and reserved addresses on every hop. */
+export async function safeNetworkFetch(url, { signal } = {}) {
   const target = new URL(url);
   if (target.username || target.password) {
     throw downloadError('DOWNLOAD_URL_INVALID', 'Download URLs cannot contain embedded credentials');
@@ -97,7 +98,12 @@ async function safeNetworkFetch(url, { signal } = {}) {
       port: target.port || undefined,
       path: `${target.pathname}${target.search}`,
       method: 'GET',
-      lookup: (_hostname, _options, callback) => callback(null, resolved.address, resolved.family),
+      // Many servers answer 403 to requests without a User-Agent.
+      headers: { 'user-agent': 'Mozilla/5.0 (compatible; Rauhwpx)', accept: '*/*' },
+      // Node 20+ autoSelectFamily asks with all:true and expects an array; answer with the pinned address only.
+      lookup: (_hostname, lookupOptions, callback) => (lookupOptions?.all
+        ? callback(null, [{ address: resolved.address, family: resolved.family }])
+        : callback(null, resolved.address, resolved.family)),
       ...(target.protocol === 'https:' && net.isIP(hostname) === 0 ? { servername: hostname } : {}),
     };
     const request = transport.request(options, (response) => {
@@ -139,6 +145,19 @@ export function sanitizeFilename(value, fallback = 'download') {
   const ext = path.extname(safe);
   const stemLimit = Math.max(1, 180 - ext.length);
   return `${path.basename(safe, ext).slice(0, stemLimit)}${ext.slice(0, 30)}`;
+}
+
+/** 연구 기록에는 인증 정보·서명 쿼리·페이지 조각을 남기지 않는다. blob 주소도 저장하지 않는다. */
+export function sanitizeDownloadUrl(value) {
+  try {
+    const url = new URL(String(value ?? ''));
+    if (!['http:', 'https:'].includes(url.protocol)) return undefined;
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.href.slice(0, 2_000);
+  } catch { return undefined; }
 }
 
 export function isPathInside(parent, candidate) {
@@ -240,11 +259,20 @@ async function cancelResponseBody(response) {
   } catch {}
 }
 
-async function fetchWithRedirects(url, { signal, maxRedirects, fetchImpl }) {
+async function fetchWithRedirects(url, { signal, maxRedirects, fetchImpl, authorizeUrl = null }) {
   let current = new URL(url);
   for (let count = 0; count <= maxRedirects; count++) {
     if (current.protocol !== 'http:' && current.protocol !== 'https:') {
       throw downloadError('DOWNLOAD_URL_INVALID', 'Downloads must use http or https');
+    }
+    if (current.username || current.password) throw downloadError('DOWNLOAD_URL_INVALID', 'Download URLs cannot contain embedded credentials');
+    // 기본 공개 GET 경로는 그대로 두고, 앱 연구 정책은 각 리디렉션 목적지에도 적용한다.
+    if (authorizeUrl) {
+      let allowed;
+      try { allowed = await authorizeUrl(current.href); } catch {
+        throw downloadError('DOWNLOAD_DESTINATION_BLOCKED', 'Download destination permission was revoked');
+      }
+      if (allowed === false) throw downloadError('DOWNLOAD_DESTINATION_BLOCKED', 'Download destination is blocked');
     }
     const response = await fetchImpl(current, { redirect: 'manual', signal });
     if (![301, 302, 303, 307, 308].includes(response.status)) return { response, finalUrl: current.href };
@@ -261,6 +289,89 @@ async function fetchWithRedirects(url, { signal, maxRedirects, fetchImpl }) {
     current = new URL(location, current);
   }
   throw downloadError('DOWNLOAD_REDIRECT_LIMIT', `Download exceeded ${maxRedirects} redirects`);
+}
+
+/**
+ * Public-web GET shared by download_file and project imports: http(s) only, no embedded
+ * credentials, every redirect hop re-validated against private addresses, and the body
+ * buffered under a hard byte cap.
+ * @param {string | URL} url
+ * @param {{timeoutMs?: number, maxRedirects?: number, maxBytes?: number,
+ *   fetchImpl?: typeof safeNetworkFetch, signal?: AbortSignal,
+ *   authorizeUrl?: (url: string) => boolean|void|Promise<boolean|void>}} [options]
+ * @returns {Promise<{bytes: Buffer, mime: string, size: number, source: string,
+ *   finalUrl: string, filename: string, checksum: string}>}
+ */
+export async function fetchPublic(url, {
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  maxRedirects = DEFAULT_MAX_REDIRECTS,
+  maxBytes = DEFAULT_MAX_BYTES,
+  fetchImpl = safeNetworkFetch,
+  signal,
+  authorizeUrl = null,
+} = {}) {
+  let originalUrl;
+  try { originalUrl = new URL(url); }
+  catch { throw downloadError('DOWNLOAD_URL_INVALID', 'Download URL is not a valid absolute URL'); }
+  if (originalUrl.protocol !== 'http:' && originalUrl.protocol !== 'https:') {
+    throw downloadError('DOWNLOAD_URL_INVALID', 'Downloads must use http or https');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const forwardAbort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener?.('abort', forwardAbort, { once: true });
+  let response = null;
+  let responseBodyFinished = false;
+  try {
+    const fetched = await fetchWithRedirects(originalUrl, {
+      signal: controller.signal,
+      maxRedirects,
+      fetchImpl,
+      authorizeUrl,
+    });
+    ({ response } = fetched);
+    const { finalUrl } = fetched;
+    if (!response.ok) throw downloadError('DOWNLOAD_HTTP_ERROR', `Download failed with HTTP ${response.status}`);
+    if (!response.body) throw downloadError('DOWNLOAD_EMPTY_RESPONSE', 'Download response had no body');
+    const declaredSize = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {
+      throw downloadError('DOWNLOAD_TOO_LARGE', `Download exceeds the ${maxBytes}-byte safety limit`);
+    }
+    const chunks = [];
+    const hash = crypto.createHash('sha256');
+    let size = 0;
+    for await (const rawChunk of response.body) {
+      const chunk = Buffer.from(rawChunk);
+      size += chunk.length;
+      if (size > maxBytes) throw downloadError('DOWNLOAD_TOO_LARGE', `Download exceeds the ${maxBytes}-byte safety limit`);
+      hash.update(chunk);
+      chunks.push(chunk);
+    }
+    responseBodyFinished = true;
+    return {
+      bytes: Buffer.concat(chunks, size),
+      mime: response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() || 'application/octet-stream',
+      charset: response.headers.get('content-type')?.match(/charset=["']?([^;"'\s]+)/i)?.[1]?.toLowerCase() ?? null,
+      size,
+      source: originalUrl.href,
+      finalUrl,
+      filename: filenameFromResponse(response, finalUrl),
+      checksum: `sha256:${hash.digest('hex')}`,
+    };
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw signal?.aborted
+        ? downloadError('DOWNLOAD_ABORTED', 'Download was cancelled')
+        : downloadError('DOWNLOAD_TIMEOUT', `Download timed out after ${timeoutMs}ms`);
+    }
+    if (error?.code && String(error.code).startsWith('DOWNLOAD_')) throw error;
+    throw downloadError('DOWNLOAD_FAILED', String(error?.message ?? error));
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', forwardAbort);
+    if (!responseBodyFinished) await cancelResponseBody(response);
+  }
 }
 
 export class DownloadManager {

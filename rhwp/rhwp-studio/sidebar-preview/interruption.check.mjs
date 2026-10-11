@@ -198,6 +198,9 @@ export async function checkInterruptionPreview(page, origin, artifacts) {
   await openPreview(page, origin, 'reset=1&chats=sample');
   await page.evaluate(() => window.sidebarPreview.sidebar.openThreadById('preview-chat-interrupted'));
   await waitFor(page, () => document.querySelector('.ag-turn-interrupted'), undefined, 'the stored interruption has no row');
+  await waitFor(page, () => window.sidebarPreview.bridge.getConnectionState() === 'connected'
+    && document.querySelector('.ag-turn-interrupted-resume')?.getAttribute('aria-disabled') !== 'true',
+    undefined, 'the restored chat is not ready to resume');
   s = await state(page);
   assert.equal(s.rowText, '앱이 다시 시작되어 작업이 중단됐어요');
   assert.deepEqual(s.cards, ['만료됨 · 앱 재시작']);

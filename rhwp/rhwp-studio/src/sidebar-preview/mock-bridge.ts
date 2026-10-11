@@ -1,6 +1,7 @@
 import type { ChatStartContextProvider, SidebarBridge } from '../agent/bridge.ts';
 import type * as T from '../agent/types.ts';
 import { deriveAgentEditingLease } from '../agent/editing-lease.ts';
+import { isChatPermissionCapability } from '../agent/chat-permissions.ts';
 import {
   defaultModelForAgent,
   setModelCatalog,
@@ -10,7 +11,8 @@ import type { CatalogAgent, ModelCatalogEntry } from '../agent/models.ts';
 import { loadAgentPrefs } from '../agent/agent-prefs.ts';
 import { createFixtures, samplePlan, timestamp, agents } from './fixtures.ts';
 import { requestLiveUsage, consumeLiveCodexReset } from './live-usage.ts';
-import { createBrowserbaseFixture, type BrowserbaseFixtureState } from './fixtures.ts';
+import { createPreviewBrowser } from './mock-browser.ts';
+import { createPreviewProjects } from './mock-projects.ts';
 import { createTurnFailureCollector } from '../agent/provider-failure.ts';
 
 export const scenarios = [
@@ -19,6 +21,7 @@ export const scenarios = [
   'rich',
   'plan',
   'question',
+  'permission',
   'review',
   'fleet',
   'error',
@@ -243,8 +246,7 @@ export function createMockBridge(
       }
     }
   }
-  let browserbaseState: BrowserbaseFixtureState = 'connected';
-  let browserbase = createBrowserbaseFixture(browserbaseState);
+
   const listeners = new Set<(event: T.SidebarEvent) => void>();
   const pendingListeners = new Set<
     (event: T.PendingEditsChangeEvent) => void
@@ -272,6 +274,13 @@ export function createMockBridge(
    */
   let startHistory: string[] = [];
   let messagesSent = 0;
+  const sentMentions: string[][] = [];
+  const projectParams = new URLSearchParams(location.search);
+  const projects = createPreviewProjects({
+    homeAccess: projectParams.get('home') === '1',
+    graphNodes: Number(projectParams.get('graphNodes')) || 0,
+    worktrees: projectParams.get('worktrees') === '1' ? (projectParams.get('worktree') === 'variant' ? 'variant' : 'main') : null,
+  });
   /** 브리지가 받은 사용자 메시지 — 검사가 요청문·스킬·첨부·receipt 를 읽는다. */
   const sentMessages: Array<{ text: string; skillName?: string; referenceIds: string[]; requireReceipt: boolean }> = [];
   /** 다음 메시지를 허브가 이 코드로 거절한다(턴이 시작되지 않는다). */
@@ -279,6 +288,7 @@ export function createMockBridge(
   let interrupts = 0;
   let stops = 0;
   let threadId = '';
+  let chatDocumentId: string | null = null;
   /** The chat whose session the mock hub holds; null before a start and after a stop. */
   let hubChatThreadId: string | null = null;
   let currentTurnId: string | null = null;
@@ -323,6 +333,9 @@ export function createMockBridge(
     latestPlan: null,
   };
   let question: T.UserQuestionInteraction | null = null;
+  let permissionRequest: T.ChatPermissionRequest | null = null;
+  let chatPermissionGrants: T.ChatPermissionCapability[] = [];
+  const permissionResponses: Array<{ requestId: string; decision: T.ChatPermissionDecision }> = [];
   /* 맥락 창 흉내 — ?context=92 로 시작 사용률을 고른다. */
   const CONTEXT_MAX = 200_000;
   const contextParam = Number(new URLSearchParams(location.search).get('context'));
@@ -578,7 +591,25 @@ export function createMockBridge(
       outcome,
     });
   };
+  const completePermission = (outcome: T.ChatPermissionOutcome) => {
+    if (!permissionRequest) return;
+    const pending = permissionRequest;
+    permissionRequest = null;
+    emit({ type: 'chat-permission-resolved', requestId: pending.requestId, threadId: pending.threadId,
+      documentId: pending.documentId, outcome, grants: [...chatPermissionGrants] });
+  };
+  const previewBrowser = createPreviewBrowser((event) => emit({ type: 'browser-event', event }), () => threadId, () => projects.store.get()?.id ?? null);
   const bridge: SidebarBridge = {
+    projects,
+    setProjectWorktrees: (binding) => {
+      projects.worktrees.set(binding
+        ? {
+          repositoryId: binding.repositoryId,
+          current: { id: binding.current.id, branch: binding.current.branch, primary: binding.current.primary },
+          worktrees: binding.worktrees.map(({ id, branch, primary }) => ({ id, branch, primary })),
+        }
+        : null);
+    },
     pendingEdits: {
       getChangeSets: () => changes,
       onChange: (listener) => {
@@ -614,6 +645,21 @@ export function createMockBridge(
     getActiveAgent: () => (sessionLost ? null : agent),
     isTurnRunning: () => running,
     getPendingUserQuestion: () => question,
+    getPendingChatPermissionRequest: () => permissionRequest,
+    getChatPermissionGrants: () => [...chatPermissionGrants],
+    respondChatPermission: (requestId, decision) => request((responseId) => {
+      const pending = permissionRequest;
+      permissionResponses.push({ requestId, decision });
+      if (!pending || pending.requestId !== requestId) {
+        emit({ type: 'chat-permission-response-result', responseId, requestId, ok: false, code: 'REQUEST_INVALIDATED' });
+      } else if (decision === 'grant' && running) {
+        emit({ type: 'chat-permission-response-result', responseId, requestId, ok: false, code: 'AGENT_BUSY' });
+      } else {
+        emit({ type: 'chat-permission-response-result', responseId, requestId, ok: true });
+        if (decision === 'grant' && !chatPermissionGrants.includes(pending.capability)) chatPermissionGrants.push(pending.capability);
+        completePermission(decision === 'grant' ? { status: 'granted' } : { status: 'denied', reason: 'user-denied' });
+      }
+    }),
     hubSessionKnown: () => welcome,
     getHubIdentity: () => ({ hubInstanceId: hubInstance, hubSessionId: 'preview-session' }),
     getHubChat: () => (hubChatThreadId
@@ -630,7 +676,7 @@ export function createMockBridge(
         activeToolRequests: 0,
         agent,
         ...workflow,
-        waitingForUser: question !== null,
+        waitingForUser: question !== null || permissionRequest !== null,
       }),
     onEditingLeaseChange: (listener) => {
       leaseListeners.add(listener);
@@ -649,40 +695,11 @@ export function createMockBridge(
       return models;
     },
     requestAgentSetupStatus: async () => data.setups,
-    requestBrowserbaseStatus: async () => {
-      if (browserbaseState === 'error') {
-        emit({ type: 'browserbase-error', requestId: 'preview-browserbase-status', code: 'preview-unavailable', message: '미리보기 원격 브라우저 연결을 확인하지 못했어요.' });
-        return null;
-      }
-      const status = structuredClone(browserbase);
-      emit({ type: 'browserbase-status', status });
-      return status;
-    },
-    setBrowserbaseCredentials: async (override) => {
-      if (browserbaseState === 'error' || !override.apiKey.trim()) {
-        emit({ type: 'browserbase-error', requestId: 'preview-browserbase-credentials', code: 'preview-invalid-key', message: '미리보기 키를 확인하지 못했어요.' });
-        return null;
-      }
-      // 입력한 키/프로젝트는 보관하지 않고 샘플 상태만 표시한다.
-      browserbase = {
-        ...createBrowserbaseFixture('connected'),
-        keySource: 'studio',
-        keyTail: 'demo',
-        projectSource: 'studio',
-        geminiSource: override.geminiApiKey?.trim() ? 'studio' : 'env',
-      };
-      browserbaseState = 'connected';
-      const status = structuredClone(browserbase);
-      emit({ type: 'browserbase-status', status });
-      return status;
-    },
-    clearBrowserbaseCredentials: async () => {
-      browserbaseState = 'connected';
-      browserbase = createBrowserbaseFixture('connected');
-      const status = structuredClone(browserbase);
-      emit({ type: 'browserbase-status', status });
-      return status;
-    },
+    requestBrowser: async <R = T.BrowserResult>(action: string, args?: Record<string, unknown>): Promise<R> => previewBrowser.request(action, args) as Promise<R>,
+    onBrowserEvent: (callback) => { const listener = (event: T.SidebarEvent) => { if (event.type === 'browser-event') callback(event.event); }; listeners.add(listener); return () => { listeners.delete(listener); }; },
+    submitBrowserAccount: (args) => previewBrowser.submit(args),
+    readBrowserDownload: async () => { throw new Error('미리보기에서 다운로드 파일이 없습니다.'); },
+    importBrowserDownload: async () => { throw new Error('미리보기에서 다운로드 파일이 없습니다.'); },
     installAgent: async (provider) => {
       data.setups[provider].installing = true;
       setupChanged();
@@ -867,6 +884,10 @@ export function createMockBridge(
       history,
     ) => {
       const continuing = !force && id === threadId && (mode ?? 'direct') === workflow.workflow;
+      if (!continuing || documentId !== chatDocumentId) {
+        chatPermissionGrants = [];
+        completePermission({ status: 'expired', reason: 'request-invalidated' });
+      }
       startHistory = (history ?? []).map((entry) => entry.text);
       startPending = true;
       ++generation;
@@ -875,6 +896,7 @@ export function createMockBridge(
       setRunning(false);
       agent = provider;
       threadId = id ?? threadId;
+      chatDocumentId = documentId ?? null;
       permission = profile ?? permission;
       workflow = continuing ? workflow : {
         workflow: mode ?? 'direct',
@@ -943,6 +965,8 @@ export function createMockBridge(
       return { ok: true, compactionId };
     },
     stopChat: () => {
+      chatPermissionGrants = [];
+      completePermission({ status: 'expired', reason: 'user-stop' });
       stops += 1;
       hubChatThreadId = null;
       startPending = false;
@@ -964,9 +988,10 @@ export function createMockBridge(
         }),
       ),
     requestCheckpointTitle: async () => null,
-    sendUserMessage: async (text, skillName, referenceIds = [], requireReceipt = false) => {
+    sendUserMessage: async (text, skillName, referenceIds = [], requireReceipt = false, _signal, mentions = []) => {
       messagesSent += 1;
       sentMessages.push({ text, ...(skillName ? { skillName } : {}), referenceIds: [...referenceIds], requireReceipt });
+      sentMentions.push([...mentions]);
       const messageId = crypto.randomUUID();
       // 실제 브리지처럼 receipt 가 필요한 메시지(첨부·대기 메시지)만 id 를 돌려준다.
       const receipt = referenceIds.length > 0 || requireReceipt ? messageId : null;
@@ -1006,6 +1031,32 @@ export function createMockBridge(
         if (generation !== turnGeneration) return;
         setRunning(true);
         stream({ type: 'turn-start', agent, turnId: `turn-${turnGeneration}` });
+        if (reply === 'permission') {
+          const selected = projectParams.get('permissionCapability');
+          if (selected !== null && !isChatPermissionCapability(selected)) {
+            stream({ type: 'tool-call', agent, callId: `permission-${turnGeneration}`, tool: 'mcp__rhwp__request_permission',
+              argsJson: JSON.stringify({ capability: selected, reason: '요청한 작업을 진행합니다.' }) });
+            stream({ type: 'tool-result', agent, callId: `permission-${turnGeneration}`, ok: false,
+              resultPreview: '지원하지 않는 권한입니다.' });
+            stream({ type: 'text-delta', agent, text: '문서 편집은 에이전트 또는 전체 모드에서 가능합니다.' });
+            if (!holdReply) later(() => finish(), 100);
+            return;
+          }
+          const capability = isChatPermissionCapability(selected) ? selected : 'project-edit';
+          if (!chatPermissionGrants.includes(capability)) {
+            permissionRequest = { requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId,
+              turnId: `turn-${turnGeneration}`, agent, capability,
+              reason: '요청한 작업을 이어가려면 이 권한이 필요합니다.', createdAt: new Date().toISOString() };
+            stream({ type: 'tool-call', agent, callId: `permission-${turnGeneration}`, tool: 'mcp__rhwp__request_permission',
+              argsJson: JSON.stringify({ capability, reason: permissionRequest.reason }) });
+            stream({ type: 'tool-result', agent, callId: `permission-${turnGeneration}`, ok: true,
+              resultPreview: JSON.stringify({ status: 'pending', capability, scope: 'chat', requestId: permissionRequest.requestId }) });
+            stream({ type: 'text-delta', agent, text: '작업을 이어가기 위한 권한을 요청했습니다.' });
+            emit({ type: 'chat-permission-requested', request: permissionRequest });
+            if (!holdReply) later(() => finish(), 100);
+            return;
+          }
+        }
         if (referenceIds.length)
           emit({
             type: 'reference-status',
@@ -1264,6 +1315,8 @@ export function createMockBridge(
       emit({ type: 'chat-template-changed', template: activeTemplate });
     },
     getActiveTemplate: () => activeTemplate,
+    // 미리보기에는 템플릿 원본이 없다. 문서 홈은 종이 자리표시를 그린다.
+    fetchTemplateContent: async () => { throw new Error('미리보기에는 템플릿 원본이 없습니다.'); },
     stageReference: async (scopeId, file) => {
       if (stageDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, stageDelayMs));
       const reference: T.StagedReference = {
@@ -1442,6 +1495,8 @@ export function createMockBridge(
           ],
         }),
       ),
+    // 미리보기에는 허브가 없다. 생성 문서 카드는 보관 기간이 지난 경우처럼 보인다.
+    requestGeneratedArtifact: async (): Promise<T.GeneratedArtifactLookup> => ({ status: 'gone' }),
     readSkillEditor: async (name: string) => {
       const row = data.skills.rows.find((item) => item.name === name);
       if (!row || row.kind !== 'skill' || row.editable !== true)
@@ -1644,6 +1699,7 @@ export function createMockBridge(
       interrupts += 1;
       generation++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
+      completePermission({ status: 'expired', reason: 'user-stop' });
       // lateTurnEnd: 실제 허브처럼 멈춘 턴의 끝은 나중에 온다(streamEvent 로 보낸다).
       if (running && !lateTurnEnd) finish('interrupted');
     },
@@ -1787,14 +1843,6 @@ export function createMockBridge(
     bridge,
     setConnection,
     setServices,
-    setBrowserbaseState: (value: BrowserbaseFixtureState) => {
-      browserbaseState = value;
-      browserbase = createBrowserbaseFixture(value);
-      emit({ type: 'browserbase-status', status: structuredClone(browserbase) });
-      if (value === 'error') {
-        emit({ type: 'browserbase-error', requestId: 'preview-browserbase-state', code: 'preview-unavailable', message: '미리보기 원격 브라우저 연결을 확인하지 못했어요.' });
-      }
-    },
     setScenario: (value: Scenario) => {
       scenario = value;
       interruptNextTurn = true;
@@ -1817,6 +1865,8 @@ export function createMockBridge(
       failureKind = value;
     },
     setHold: (value: boolean) => { holdReply = value; },
+    finishPermissionTurn: () => { if (running) finish(); },
+    projects,
     setChatStartDelay: (ms: number) => { chatStartDelayMs = ms; },
     setTurnStartDelay: (ms: number) => { turnStartDelayMs = ms; },
     /** Sends a hub error as the hub does for a refused frame (a settings change mid-turn, for example). */
@@ -1867,10 +1917,13 @@ export function createMockBridge(
     snapshot: () => ({
       chatStarts: chatStarts.map((start) => ({ ...start, history: [...start.history] })),
       messagesSent,
+      sentMentions: sentMentions.map((ids) => [...ids]),
+      interrupts,
+      permissionResponses: permissionResponses.map((response) => ({ ...response })),
+      chatPermissionGrants: [...chatPermissionGrants],
       messageTexts: sentMessages.map((message) => message.text),
       sentMessages: sentMessages.map((message) => ({ ...message, referenceIds: [...message.referenceIds] })),
       failureKind,
-      interrupts,
       stops,
       scenario,
       connection,
@@ -1879,7 +1932,7 @@ export function createMockBridge(
       pendingChanges: changes.length,
       changeEvents: [...changeEvents],
       references: references.length,
-      browserbase: browserbaseState,
+      browser: previewBrowser.snapshot(),
       lastChatStart,
     }),
   };

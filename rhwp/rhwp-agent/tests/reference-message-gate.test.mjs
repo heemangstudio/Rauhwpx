@@ -28,9 +28,12 @@ async function stage(hub, body = NOTES) {
   return payload.staged;
 }
 
-async function chatReferenceIds(hub) {
+/** 첨부가 들어간 범위의 파일 ID. 채팅에 연구 프로젝트가 있으면 첨부는 그 프로젝트로 간다. */
+async function attachedFileIds(hub, started) {
   const url = new URL(`http://127.0.0.1:${hub.port}/reference-files`);
-  url.search = new URLSearchParams({ sessionId: hub.sessionId, scope: 'chat', scopeId: hub.threadId }).toString();
+  url.search = new URLSearchParams(started.projectId
+    ? { sessionId: hub.sessionId, scope: 'project', scopeId: started.projectId }
+    : { sessionId: hub.sessionId, scope: 'chat', scopeId: hub.threadId }).toString();
   const response = await fetch(url, { headers: { authorization: `Bearer ${hub.capabilities.reference}` } });
   const payload = await response.json();
   return (payload.files ?? payload.references ?? payload).map((file) => file.id);
@@ -84,7 +87,7 @@ const userRequest = (prompt) => prompt.split('<user_request>').at(-1).split('</u
 
 test('a staged attachment reaches the provider only after promotion, wrapped as untrusted data', { timeout: 60_000 }, async (t) => {
   const hub = await startLiveHub(t);
-  await hub.start();
+  const started = await hub.start();
   const order = [];
   hub.studio.socket.on('message', (data) => {
     const frame = JSON.parse(String(data));
@@ -105,15 +108,15 @@ test('a staged attachment reaches the provider only after promotion, wrapped as 
   const prompt = JSON.parse(delta.event.text).prompt;
   const block = /<message_attachments trust="untrusted-data">\n(.*)\n<\/message_attachments>/.exec(prompt);
   assert.ok(block, prompt);
-  assert.deepEqual(JSON.parse(block[1]), [{ fileId: file.id, name: 'notes.txt', mimeType: 'text/plain', kind: file.kind }]);
+  assert.deepEqual(JSON.parse(block[1]), [{ ...(file.itemId ? { itemId: file.itemId } : {}), fileId: file.id, name: 'notes.txt', mimeType: 'text/plain', kind: file.kind }]);
   assert.ok(prompt.indexOf(block[0]) < prompt.lastIndexOf('<user_request>'));
   assert.equal(userRequest(prompt), 'Summarize the attached notes');
-  assert.deepEqual(await chatReferenceIds(hub), [file.id]);
+  assert.deepEqual(await attachedFileIds(hub, started), [file.id]);
 });
 
 test('a studio disconnect during promotion drops the staged message', { timeout: 60_000, skip: process.platform === 'win32' }, async (t) => {
   const hub = await startLiveHub(t);
-  await hub.start();
+  const started = await hub.start();
   const staged = await stage(hub);
   const release = await holdPromotion(t, hub, staged);
 
@@ -129,7 +132,7 @@ test('a studio disconnect during promotion drops the staged message', { timeout:
 
   await release();
   const deadline = Date.now() + 10_000;
-  while ((await chatReferenceIds(hub)).length === 0) {
+  while ((await attachedFileIds(hub, started)).length === 0) {
     assert.ok(Date.now() < deadline, 'promotion did not finish');
     await new Promise((resolve) => setTimeout(resolve, 20));
   }

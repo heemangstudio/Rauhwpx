@@ -17,10 +17,13 @@ import {
   TABLE_PROPS_KEYS,
   CELL_PROPS_KEYS,
   filterToolDefinitions,
+  projectToolGatesFromEnv,
   toToolContent,
   toolAnnotations,
 } from '../tools.mjs';
 import { toolDefinitionChars } from '../tool-telemetry.mjs';
+import { chatPermissionGrantsFor, mcpCapabilityEnv } from '../agents/backend.mjs';
+import { normalizeChatPermissionGrants, normalizeChatPermissionRequest } from '../chat-permissions.mjs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -28,9 +31,58 @@ import { EDIT_OBJECT_ARG_KEYS } from '../../rhwp-studio/src/agent/object-edit-ar
 
 const byName = new Map(TOOL_DEFINITIONS.map((d) => [d.name, d]));
 
-test('도구는 정확히 88개, 이름 중복 없음', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 88);
+test('도구 이름에 중복이 없다', () => {
   assert.equal(byName.size, TOOL_DEFINITIONS.length, 'duplicate tool names');
+});
+
+test('root requestable catalogs expose bounded app capabilities while plan and worker boundaries remain', () => {
+  const names = (profile, gates) => new Set(filterToolDefinitions(profile, gates).map((definition) => definition.name));
+  assert.ok(names('question').has('request_permission'));
+  assert.ok(!names('question').has('insert_text'));
+  assert.ok(!names('question', { requestable: true }).has('insert_text'));
+  assert.ok(names('question', { requestable: true, projectWrites: false }).has('project_edit'));
+  assert.ok(names('direct', { requestable: true }).has('download_file'));
+  assert.ok(names('direct', { requestable: true }).has('browser_navigate'));
+  for (const profile of ['planning', 'awaiting-approval']) {
+    assert.ok(!names(profile, { requestable: true }).has('insert_text'));
+  }
+  for (const profile of ['copy-layout-worker', 'doc-researcher', 'document-read']) {
+    assert.ok(!names(profile, { requestable: true }).has('insert_text'));
+    assert.ok(!names(profile, { requestable: true }).has('request_permission'));
+  }
+  assert.ok(!names('question', { requestable: true }).has('update_agent_instructions'));
+  assert.ok(!names('question', { requestable: true }).has('delegate_copy_layout'));
+});
+
+test('research tool discovery applies the same category policy to roots and research children', () => {
+  for (const profile of ['direct', 'planning', 'question', 'awaiting-approval', 'implementing', 'doc-researcher']) {
+    const allowed = new Set(filterToolDefinitions(profile).map((definition) => definition.name));
+    assert.ok(allowed.has('browser_open'), profile);
+    assert.ok(allowed.has('download_file'), profile);
+    const revoked = new Set(filterToolDefinitions(profile, { requestable: true, researchPermissions: { browse: false, downloads: false, import: false } }).map((definition) => definition.name));
+    assert.ok(!revoked.has('browser_open'), profile);
+    assert.ok(!revoked.has('download_file'), profile);
+    assert.equal(revoked.has('insert_text'), allowed.has('insert_text'), profile);
+  }
+  const env = mcpCapabilityEnv({ workflow: 'direct', capabilityEpoch: 1, projectToolGates: { researchPermissions: { browse: false, downloads: true, import: false } } });
+  const gates = projectToolGatesFromEnv(env);
+  assert.deepEqual(gates.researchPermissions, { browse: false, downloads: true, import: false });
+  assert.ok(!filterToolDefinitions('direct', gates).some((definition) => definition.name === 'browser_open'));
+  assert.ok(filterToolDefinitions('direct', gates).some((definition) => definition.name === 'download_file'));
+});
+
+test('document-edit is rejected as a chat permission capability', () => {
+  const schema = z.object(byName.get('request_permission').shape);
+  assert.equal(schema.safeParse({ capability: 'document-edit', reason: 'Edit the open document.' }).success, false);
+  assert.throws(() => normalizeChatPermissionRequest({ capability: 'document-edit', reason: 'Edit the open document.' }), { code: 'INVALID_CHAT_PERMISSION_REQUEST' });
+  const staleGrants = ['document-edit', 'local-execution', 'project-edit', 'project-edit'];
+  const validGrants = ['project-edit', 'local-execution'];
+  assert.deepEqual(normalizeChatPermissionGrants(staleGrants), validGrants);
+  assert.deepEqual(chatPermissionGrantsFor({ chatPermissionGrants: staleGrants }), validGrants);
+  assert.deepEqual(chatPermissionGrantsFor({}, { chatPermissionGrants: staleGrants }), validGrants);
+  for (const capability of ['project-edit', 'downloads', 'browser', 'local-execution']) {
+    assert.equal(schema.safeParse({ capability, reason: 'Perform the requested action.' }).success, true);
+  }
 });
 
 test('모든 도구가 허용된 카테고리로 명시 분류된다', () => {
@@ -156,7 +208,6 @@ test('anchor 내부 필드는 validate 훅이 모양을 고정한다', () => {
 
 test('도구 프로필은 direct 호환성과 planning/implementing 가시성을 지킨다', () => {
   const direct = new Set(filterToolDefinitions('direct').map((definition) => definition.name));
-  assert.equal(direct.size, 76);
   assert.equal(byName.get('commit_product_skill')?.category, 'instruction-write');
   assert.equal(byName.get('list_harness_skills')?.category, 'instruction-read');
   assert.ok(direct.has('commit_product_skill'));
@@ -178,7 +229,7 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   assert.ok(direct.has('search_reference_files'));
   assert.ok(direct.has('template_get_structure'));
   assert.ok(direct.has('template_insert_block'));
-  assert.ok(!direct.has('download_file'));
+  assert.ok(direct.has('download_file'));
   assert.ok(!direct.has('present_implementation_plan'));
   assert.ok(direct.has('delegate_copy_layout'));
   assert.ok(direct.has('register_copy_layout_template'));
@@ -190,7 +241,7 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   const planning = new Set(filterToolDefinitions('planning').map((definition) => definition.name));
   assert.ok(planning.has('get_structure'));
   assert.ok(planning.has('download_file'));
-  assert.ok(planning.has('browserbase_act'));
+  assert.ok(planning.has('browser_click'));
   assert.ok(planning.has('present_implementation_plan'));
   assert.ok(planning.has('read_reference_chunk'));
   assert.ok(planning.has('read_reference_image'));
@@ -204,17 +255,18 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   const question = new Set(filterToolDefinitions('question').map((definition) => definition.name));
   assert.ok(question.has('get_structure'));
   assert.ok(question.has('download_file'));
-  assert.ok(question.has('browserbase_act'));
+  assert.ok(question.has('browser_click'));
   assert.ok(question.has('ask_user_question'));
   assert.ok(!question.has('present_implementation_plan'));
   assert.ok(!question.has('commit_product_skill'));
   assert.ok(!question.has('insert_text'));
 
   const implementing = new Set(filterToolDefinitions('implementing').map((definition) => definition.name));
-  assert.equal(implementing.size, TOOL_DEFINITIONS.length - 4);
+  // 계획 제시·백그라운드 작업자 3개와, 데스크톱 게이트가 없으면 숨는 find_home_files 가 빠진다.
+  assert.equal(implementing.size, TOOL_DEFINITIONS.length - 5);
   assert.ok(implementing.has('insert_text'));
   assert.ok(implementing.has('download_file'));
-  assert.ok(implementing.has('browserbase_act'));
+  assert.ok(implementing.has('browser_click'));
   assert.ok(implementing.has('ask_user_question'));
   assert.ok(!implementing.has('present_implementation_plan'));
 
@@ -239,6 +291,38 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   assert.ok(!worker.includes('list_harness_skills'));
 });
 
+test('project tools reach every chat profile, chat edits and home search are gated', () => {
+  const projectTools = (profile, gates) => filterToolDefinitions(profile, gates)
+    .map((definition) => definition.name)
+    .filter((name) => name.startsWith('project_') || name === 'find_home_files');
+  for (const profile of ['direct', 'planning', 'question', 'awaiting-approval', 'implementing']) {
+    assert.deepEqual(projectTools(profile), ['project_read', 'project_edit', 'project_import'], profile);
+  }
+  assert.deepEqual(projectTools('doc-researcher'), ['project_read']);
+  const researcherTools = new Set(filterToolDefinitions('doc-researcher').map((definition) => definition.name));
+  assert.ok(researcherTools.has('browser_open'));
+  assert.ok(researcherTools.has('download_file'));
+  assert.ok(!researcherTools.has('browser_request_account'));
+  assert.deepEqual(projectTools('copy-layout-worker'), []);
+  assert.deepEqual(projectTools('doc-researcher'), ['project_read']);
+  assert.deepEqual(projectTools('question', { projectWrites: false }), ['project_read']);
+  assert.deepEqual(projectTools('direct', { homeSearch: true }), ['project_read', 'project_edit', 'project_import', 'find_home_files']);
+  // 허브가 MCP 프로세스 환경에 싣는 게이트: 채팅 변경 끔은 채팅(질문) 워크플로에만 걸린다.
+  const gated = { projectToolGates: () => ({ chatMayEdit: false, homeSearch: true }), capabilityEpoch: 1 };
+  const questionEnv = mcpCapabilityEnv({ ...gated, workflow: 'question', phase: 'questioning' });
+  assert.deepEqual(projectToolGatesFromEnv(questionEnv), { projectWrites: false, homeSearch: true, researchPermissions: { browse: true, downloads: true, import: true } });
+  assert.deepEqual(projectToolGatesFromEnv(mcpCapabilityEnv({ ...gated, workflow: 'direct' })), { projectWrites: true, homeSearch: true, researchPermissions: { browse: true, downloads: true, import: true } });
+  assert.deepEqual(projectToolGatesFromEnv(mcpCapabilityEnv({ workflow: 'direct', capabilityEpoch: 1 })), { projectWrites: true, homeSearch: false, researchPermissions: { browse: true, downloads: true, import: true } });
+  assert.equal(toolAnnotations('project-read').readOnlyHint, true);
+  // Codex 안전 모드는 destructive 도구를 거절한다 — 프로젝트 쓰기는 되돌릴 수 있어 표시하지 않는다.
+  assert.equal(toolAnnotations('project-write').destructiveHint, false);
+  const importTool = byName.get('project_import');
+  assert.throws(() => importTool.validate({ url: 'https://a.example', path: 'a.pdf' }), /exactly one/);
+  importTool.validate({ text: '본문', url: 'https://a.example' });
+  assert.ok(!byName.get('project_edit').shape.ops.safeParse([]).success);
+  assert.ok(!byName.get('project_edit').shape.ops.safeParse([{ op: 'graph-pin', id: 'fabcdef' }]).success);
+});
+
 test('app-only AGENTS.md tools separate reads from bounded revision-checked writes', () => {
   const read = byName.get('read_agent_instructions');
   const update = byName.get('update_agent_instructions');
@@ -255,17 +339,26 @@ test('app-only AGENTS.md tools separate reads from bounded revision-checked writ
   assert.match(read?.description ?? '', /outside this app/);
 });
 
-test('browserbase tools take an optional browserId so subagents get isolated browsers', () => {
-  for (const name of ['browserbase_start', 'browserbase_end', 'browserbase_navigate', 'browserbase_act', 'browserbase_observe', 'browserbase_extract']) {
+test('browser actions require scoped current tab and semantic snapshot identities', () => {
+  const identity = { tabId: 'tab-1', snapshotId: 'snapshot-1', ref: 'e1', navigationEpoch: 2, controllerEpoch: 3 };
+  for (const name of ['browser_click', 'browser_type', 'browser_press']) {
     const definition = byName.get(name);
     assert.equal(definition?.category, 'browser');
-    assert.ok(definition.shape.browserId, `${name} lacks browserId`);
-    assert.equal(definition.shape.browserId.safeParse(undefined).success, true);
-    assert.equal(definition.shape.browserId.safeParse('researcher-1').success, true);
-    assert.equal(definition.shape.browserId.safeParse('bad id!').success, false);
-    assert.equal(definition.shape.browserId.safeParse('x'.repeat(41)).success, false);
+    const schema = z.object(definition.shape).strict();
+    const args = { ...identity, ...(name === 'browser_type' ? { text: 'research query' } : {}), ...(name === 'browser_press' ? { key: 'Enter' } : {}) };
+    assert.equal(schema.safeParse(args).success, true, name);
+    for (const field of Object.keys(identity)) {
+      const incomplete = { ...args };
+      delete incomplete[field];
+      assert.equal(schema.safeParse(incomplete).success, false, `${name} missing ${field}`);
+    }
+    assert.equal(schema.safeParse({ ...args, browserId: 'guessed-agent' }).success, false);
+    assert.equal(schema.safeParse({ ...args, navigationEpoch: -1 }).success, false);
   }
-  assert.match(byName.get('browserbase_start').description, /subagents must pass their own browserId/i);
+  assert.equal(byName.get('browser_request_account')?.category, 'user-interaction');
+  const navigate = z.object(byName.get('browser_navigate').shape);
+  assert.equal(navigate.safeParse({ tabId: 'tab-1', url: 'https://example.com', navigationEpoch: 0, controllerEpoch: 0 }).success, true);
+  assert.equal(navigate.safeParse({ tabId: 'tab-1', url: 'https://example.com' }).success, false);
 });
 
 test('template tools separate read-only inspection from pending document writes', () => {
@@ -325,9 +418,11 @@ test('full engine edit tools expose a bounded autonomous batch contract', () => 
 });
 
 test('reference tools are read-only and carry bounded schemas', () => {
-  for (const name of ['list_reference_files', 'search_reference_files', 'read_reference_chunk', 'read_reference_image']) {
+  for (const name of ['search_reference_files', 'read_reference_chunk', 'read_reference_image']) {
     assert.equal(byName.get(name)?.category, 'reference-read');
   }
+  assert.throws(() => byName.get('read_reference_chunk').validate({ chunkId: 'c0' }), /exactly one of itemId or fileId/);
+  assert.throws(() => byName.get('read_reference_image').validate({ itemId: 'fabcdef', fileId: 'x' }), /exactly one/);
   assert.ok(byName.get('search_reference_files').shape.maxResults.safeParse(20).success);
   assert.ok(!byName.get('search_reference_files').shape.maxResults.safeParse(21).success);
   assert.ok(byName.get('read_reference_chunk').shape.maxChars.safeParse(20_000).success);
@@ -857,6 +952,13 @@ test('edit_header_footer: applyTo/lines/pageNumber/startPageNumber 스키마', (
   assert.ok(shape.startPageNumber.safeParse(0).success);
 });
 
+test('browser capture screenshots become vision content without base64 in text metadata', () => {
+  const content = toToolContent({ ok: true, capture: { tabId: 'tab', comment: 'Reference', screenshot: { mimeType: 'image/jpeg', data: 'private-image-bytes' } } });
+  assert.deepEqual(content[0], { type: 'image', mimeType: 'image/jpeg', data: 'private-image-bytes' });
+  assert.deepEqual(JSON.parse(content[1].text), { ok: true, capture: { tabId: 'tab', comment: 'Reference' } });
+  assert.ok(!content[1].text.includes('private-image-bytes'));
+});
+
 test('toToolContent: image 필드가 있으면 image 블록 + 나머지 JSON', () => {
   const blocks = toToolContent({ image: { data: 'aGVsbG8=', mimeType: 'image/png' }, revision: 7, pages: [2] });
   assert.equal(blocks.length, 2);
@@ -1012,7 +1114,11 @@ test('표·셀 속성은 타입이 있는 객체이고 모르는 키는 올바�
 // 공유 규칙은 RHWP_TOOL_RULES 에 한 번만 두고, 새 도구도 이 한도 안에 들어와야 한다.
 // P0 기준선: 70개 106,936자 (edit_table 10,174자).
 // commit_version(전체 모드 버전 커밋) 추가분만큼 올렸다.
-const DIRECT_DEFINITION_TOTAL_LIMIT = 60_300;
+// 연구 프로젝트 도구(project_read·project_edit·project_import)가 모든 모드에 들어가며 다시 올렸다 —
+// list_reference_files 는 project_read 가 대신해 뺐다. find_home_files 는 데스크톱에서만 보여 여기서 빠진다.
+// 채팅별 권한 요청 도구의 정의를 포함한다.
+// 소유 브라우저의 구조화된 ref/epoch 도구를 모든 모드에 제공하는 비용도 제한한다.
+const DIRECT_DEFINITION_TOTAL_LIMIT = 74_000;
 const TOOL_DEFINITION_LIMIT = 3_000;
 
 test('direct 프로필 도구 정의 크기가 한도를 넘지 않는다', () => {

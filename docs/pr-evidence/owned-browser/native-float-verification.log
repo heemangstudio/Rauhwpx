@@ -1,0 +1,23 @@
+OWNED_BROWSER_STAGE modules-loaded
+OWNED_BROWSER_STAGE ready
+OWNED_BROWSER_STAGE host-started
+OWNED_BROWSER_STAGE page-bound
+OWNED_BROWSER_STAGE float-screenshot
+OWNED_BROWSER_STAGE presentations
+OWNED_BROWSER_STAGE control
+OWNED_BROWSER_STAGE route
+OWNED_BROWSER_STAGE download
+OWNED_BROWSER_STAGE client-closed
+OWNED_BROWSER_STAGE host-released
+OWNED_BROWSER_STAGE host-restarted
+OWNED_BROWSER_STAGE client-reconnected
+OWNED_BROWSER_STAGE restored-pages-2
+OWNED_BROWSER_STAGE restored-drafts
+OWNED_BROWSER_STAGE restored-storage
+OWNED_BROWSER_STAGE devtools-attempted
+OWNED_BROWSER_STAGE browser-reset
+OWNED_BROWSER_STAGE cleanup-client
+OWNED_BROWSER_STAGE cleanup-host
+OWNED_BROWSER_STAGE cleanup-windows
+OWNED_BROWSER_STAGE cleanup-proxy
+OWNED_BROWSER_REPORT {"unattachedCapture":{"width":1280,"height":800,"captured":true},"guestIsolation":{"desktop":"undefined","presentation":"undefined","node":"undefined"},"floatingEvidence":{"screenshot":"/Users/hataewook/projects/hobbies/Rauhwpx-owned-browser/.run/owned-browser-evidence/native-float-window.png","ownerContext":"bounded document/sidebar fixture","nativeView":"actual Electron WebContentsView","bounds":{"x":470,"y":180,"width":650,"height":430},"sameWindow":true},"floatingPresentation":{"humanInput":true,"moveResizeMatchesViewport":true,"hidePreservesPage":true,"hiddenCapture":true,"dockRestoresPage":true},"popoutClosePreservesPage":true,"presentation":{"navigations":0,"draft":"Kept while moving","mode":"dock"},"control":{"agentInput":true,"nativeHumanNavigation":true,"crossWindowRejected":true,"physicalInputBlocked":true,"physicalHumanInput":true},"sharedAuthentication":true,"routeInterception":true,"download":{"filename":"native.pdf","bytes":40},"hubRestart":{"guestsSurvived":true,"retainedForm":true,"endpointRotated":true},"debuggerOwnership":{"devtoolsDisabled":true,"debuggerRetained":true,"guestPreserved":true},"browserReset":{"staleOwnerRejected":true,"releasedOwnerAllowed":true,"guestsClosed":true,"cookiesCleared":true,"profileDeleted":true,"storageClearedAfterRestart":true},"runtime":"Electron WebContentsView + private CDP + Playwright","fixtureUrl":"http://browser-fixture.invalid/"}

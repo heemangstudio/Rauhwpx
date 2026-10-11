@@ -35,16 +35,20 @@ export function beginInlineRename(target: HTMLElement, options: InlineRenameOpti
     if (settled) return;
     settled = true;
     const next = input.value.trim();
-    let shown: string | null = previousText;
-    if (save && next && next !== options.value) {
-      input.disabled = true;
-      try {
-        shown = await options.commit(next) ?? previousText;
-      } catch {
-        shown = previousText;
-      }
+    if (!save || !next || next === options.value) {
+      if (input.isConnected) target.textContent = previousText;
+      return;
     }
-    if (input.isConnected) target.textContent = shown;
+    // 새 이름을 바로 보여 준다. 디스크 이름 바꾸기가 끝날 때까지 기다리지 않아 매번 같은 속도로 끝난다.
+    if (input.isConnected) target.textContent = next;
+    let shown: string | null;
+    try {
+      shown = await options.commit(next) ?? previousText;
+    } catch {
+      shown = previousText;
+    }
+    // 소유자가 그사이 다시 그렸으면 그대로 둔다. 아직 낙관적으로 보인 이름이면 결과로 맞춘다.
+    if (target.isConnected && target.textContent === next) target.textContent = shown;
   };
 
   input.addEventListener('keydown', (event) => {

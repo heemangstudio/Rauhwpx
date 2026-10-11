@@ -5,9 +5,12 @@ import path from 'node:path';
 import {
   IDLE_PROCESS_RELEASE_MS,
   isPlanningRestricted,
+  chatPermissionGrantsFor,
+  hasLocalExecutionGrant,
   mcpCapabilityEnv,
   mcpRuntimeFor,
-  providerInteractionMode,
+  applyPreparedProviderLaunch,
+  nativeProviderInteractionMode,
   redactDiagnosticText,
   systemBriefFor,
   truncate,
@@ -63,6 +66,9 @@ function capabilityConfig(opts) {
     '-c', `mcp_servers.rhwp.env={${mcpEnv}}`,
     '-c', 'mcp_servers.rhwp.startup_timeout_sec=20',
     '-c', 'mcp_servers.rhwp.default_tools_approval_mode="auto"',
+    // 자료 저장은 허브가 모드·설정·세션 경계를 검사하므로 승인 UI 없이 실행한다.
+    '-c', 'mcp_servers.rhwp.tools.project_import.approval_mode="approve"',
+    '-c', 'mcp_servers.rhwp.tools.download_file.approval_mode="approve"',
     '-c', 'approval_policy="never"',
     '-c', `sandbox_mode="${sandboxMode(opts)}"`,
     // app-server has no `--ignore-rules` flag. A zero project-doc budget is
@@ -86,7 +92,8 @@ export function buildCodexAppServerArgv(opts, { enableDefaultModeUserInput = fal
     ...(opts.toolProfile === 'copy-layout-worker'
       ? [
         '--disable', 'multi_agent', '--disable', 'shell_tool', '--disable', 'unified_exec',
-        '--disable', 'code_mode_host', '--disable', 'standalone_web_search',
+        // GPT-6의 MCP 호출에 필요한 호스트이며 파일·셸 권한은 부여하지 않는다.
+        '--enable', 'code_mode_host', '--disable', 'standalone_web_search',
         '--disable', 'view_image', '--disable', 'shell_snapshot',
       ]
       : ['--enable', 'multi_agent']),
@@ -247,7 +254,9 @@ export class CodexJsonRpcConnection {
 }
 
 function sandboxMode(opts) {
-  if (isPlanningRestricted(opts) || opts.toolProfile === 'copy-layout-worker') return 'read-only';
+  if (opts.toolProfile === 'copy-layout-worker') return 'read-only';
+  if (hasLocalExecutionGrant(opts)) return 'danger-full-access';
+  if (isPlanningRestricted(opts)) return 'read-only';
   return opts.permissionProfile === 'unrestricted' ? 'danger-full-access' : 'workspace-write';
 }
 
@@ -270,7 +279,7 @@ function collaborationMode(opts) {
   return {
     // Codex는 현재 Plan과 Default를 노출한다. Rau의 Build 의도는 Default와
     // 독립적으로 선택한 sandbox 정책의 조합으로 대응한다.
-    mode: providerInteractionMode(opts) === 'plan' ? 'plan' : 'default',
+    mode: nativeProviderInteractionMode(opts) === 'plan' ? 'plan' : 'default',
     settings: {
       model: opts.model ?? DEFAULT_CODEX_MODEL,
       reasoning_effort: opts.effort ?? null,
@@ -439,6 +448,8 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   let expectedShutdown = false;
   let cleanupUncertain = false;
   let attachedGeneration = 0;
+  let permissionBriefDirty = false;
+  let injectedPermissionBrief = null;
   let generation = 0;
   /** @type {string | null} */
   let threadId = isSafeSessionId(opts.resumeSessionId) ? opts.resumeSessionId : null;
@@ -882,7 +893,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     });
     connection.notify('initialized');
 
-    const planNative = providerInteractionMode(opts) === 'plan';
+    const planNative = nativeProviderInteractionMode(opts) === 'plan';
     if (planNative) {
       let modes;
       try {
@@ -949,12 +960,17 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   }
 
   async function startConnection({ featureForced = false } = {}) {
-    const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
-    prepareHome(codexHome, opts.codexAuthPath);
-    stderrTail = '';
-    expectedShutdown = false;
+    const attempt = turnAttempt;
     let child;
+    let launch;
     try {
+      launch = opts.prepareLaunch ? await opts.prepareLaunch() : null;
+      if (disposed || attempt !== turnAttempt) throw new Error('Codex launch was cancelled');
+      applyPreparedProviderLaunch(opts, 'codex', launch);
+      const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+      prepareHome(codexHome, opts.codexAuthPath);
+      stderrTail = '';
+      expectedShutdown = false;
       const spawnEnv = {
         ...isolatedProcessEnv(opts, opts.providerEnv ?? process.env),
         CODEX_HOME: codexHome,
@@ -973,6 +989,8 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       });
     } catch (error) {
       throw new CodexAppServerUnavailableError('Failed to start Codex app-server', error);
+    } finally {
+      launch?.release?.();
     }
     proc = child;
     const connectionGeneration = ++generation;
@@ -1021,7 +1039,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       }
       if (!readyPromise) {
         const connecting = startConnection({
-          featureForced: defaultModeFlagRequired && providerInteractionMode(opts) !== 'plan',
+          featureForced: defaultModeFlagRequired && nativeProviderInteractionMode(opts) !== 'plan',
         }).catch((error) => {
           if (readyPromise === connecting) readyPromise = null;
           throw error;
@@ -1048,8 +1066,8 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         });
       } catch (error) {
         // 재개 커서의 롤아웃이 사라졌다 ("no rollout found for thread id …", 0.162 확인).
-        // 이 백엔드에서 이미 붙었던 스레드의 실패는 그대로 올린다.
-        if (!resumeUnverified) throw error;
+        // 이 백엔드에서 이미 붙었던 스레드도 롤아웃이 없으면 새 스레드로 간다. 그 밖의 실패는 그대로 올린다.
+        if (!resumeUnverified && !/no rollout found/i.test(String(error?.message ?? error))) throw error;
         process.stderr.write(`[codex-app-server] resume failed, starting a new thread: ${safeMessage(error)}\n`);
         resumeUnverified = false;
         resumeLostPending = true;
@@ -1071,6 +1089,24 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     const id = String(result?.thread?.id ?? threadId ?? '');
     if (!id) throw new Error('Codex app-server did not return a thread id');
     emitSessionInfo(id);
+    if (permissionBriefDirty) {
+      // Default 모드는 settings.developer_instructions를 모델 이력에 넣지 않는다.
+      // 현재 채팅 권한은 같은 스레드의 개발자 메시지로 갱신해야 실제로 적용된다.
+      try {
+        const brief = systemBriefFor(opts, 'codex');
+        await connection.request('thread/inject_items', {
+          threadId: id,
+          items: [{
+            type: 'message', role: 'developer',
+            content: [{ type: 'input_text', text: `The following is the current Rauhwpx chat capability state and replaces earlier Rauhwpx mode and permission instructions for this conversation.\n\n${brief}` }],
+          }],
+        }, { timeoutMs: NEGOTIATION_TIMEOUT_MS, label: 'Codex chat permission instructions' });
+        injectedPermissionBrief = brief;
+      } catch (error) {
+        throw new CodexAppServerUnavailableError('Codex could not update this chat permission. A CLI with thread/inject_items support is required; update Codex and retry.', error);
+      }
+      permissionBriefDirty = false;
+    }
     resumeUnverified = false;
     attachedGeneration = generation;
   }
@@ -1132,7 +1168,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       onEvent({ type: 'error', agent: 'codex', message });
       onEvent({ type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: message });
     };
-    if (providerInteractionMode(opts) === 'plan') {
+    if (nativeProviderInteractionMode(opts) === 'plan') {
       process.stderr.write(`[codex-app-server] native plan mode unavailable: ${safeMessage(error)}\n`);
       const cleaned = await stopConnection();
       if (superseded()) return;
@@ -1403,7 +1439,11 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       if (profile !== 'safe' && profile !== 'unrestricted') throw new Error(`Unknown permission profile: ${profile}`);
       cancelIdleRelease();
       const previous = opts.permissionProfile;
+      const previousBriefDirty = permissionBriefDirty;
+      const previousInjectedBrief = injectedPermissionBrief;
       opts.permissionProfile = profile;
+      permissionBriefDirty ||= injectedPermissionBrief !== null
+        && injectedPermissionBrief !== systemBriefFor(opts, 'codex');
       try {
         const priorRestart = restartPromise;
         restartPromise = priorRestart.then(() => stopConnection());
@@ -1411,13 +1451,15 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         if (!cleaned) {
           throw new CodexAppServerUnavailableError('Codex app-server process tree cleanup could not be confirmed');
         }
-        if (providerInteractionMode(opts) === 'plan') {
+        if (nativeProviderInteractionMode(opts) === 'plan' || (permissionBriefDirty && threadId)) {
           const connection = await ensureConnection();
           await attachThread(connection);
           scheduleIdleRelease();
         }
       } catch (error) {
         opts.permissionProfile = previous;
+        permissionBriefDirty = previousBriefDirty;
+        injectedPermissionBrief = previousInjectedBrief;
         try { await stopConnection(); } catch {}
         restartPromise = Promise.resolve();
         throw error;
@@ -1427,7 +1469,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       if (starting || turnOpen) throw new Error('Execution mode can only change between turns');
       validateExecutionMode(mode);
       if (fallback) {
-        if (providerInteractionMode(mode) === 'plan') {
+        if (nativeProviderInteractionMode({ ...opts, ...mode }) === 'plan') {
           throw new CodexAppServerUnavailableError('Codex native Plan mode is unavailable while using legacy exec');
         }
         return fallback.setExecutionMode(mode);
@@ -1437,10 +1479,17 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         workflow: opts.workflow,
         phase: opts.phase,
         capabilityEpoch: opts.capabilityEpoch,
+        chatPermissionGrants: chatPermissionGrantsFor(opts),
+        permissionBriefDirty,
+        injectedPermissionBrief,
       };
       opts.workflow = mode.workflow;
       opts.phase = mode.phase;
       opts.capabilityEpoch = mode.capabilityEpoch;
+      opts.chatPermissionGrants = chatPermissionGrantsFor(mode, opts);
+      permissionBriefDirty ||= JSON.stringify(previous.chatPermissionGrants) !== JSON.stringify(opts.chatPermissionGrants);
+      permissionBriefDirty ||= injectedPermissionBrief !== null
+        && injectedPermissionBrief !== systemBriefFor(opts, 'codex');
       // Preserve an earlier permission-change shutdown barrier. Replacing the
       // promise here lets two stopConnection calls race over the same child.
       const priorRestart = restartPromise;
@@ -1450,7 +1499,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         if (!cleaned) {
           throw new CodexAppServerUnavailableError('Codex app-server process tree cleanup could not be confirmed');
         }
-        if (providerInteractionMode(opts) === 'plan') {
+        if (nativeProviderInteractionMode(opts) === 'plan' || (permissionBriefDirty && threadId)) {
           const connection = await ensureConnection();
           await attachThread(connection);
           scheduleIdleRelease();
@@ -1459,6 +1508,9 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         opts.workflow = previous.workflow;
         opts.phase = previous.phase;
         opts.capabilityEpoch = previous.capabilityEpoch;
+        opts.chatPermissionGrants = previous.chatPermissionGrants;
+        permissionBriefDirty = previous.permissionBriefDirty;
+        injectedPermissionBrief = previous.injectedPermissionBrief;
         try { await stopConnection(); } catch {}
         restartPromise = Promise.resolve();
         throw error;

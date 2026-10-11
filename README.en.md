@@ -25,7 +25,7 @@
 
 HamaEditor opens and edits Korean HWP/HWPX documents. The Rust engine handles parsing, layout, rendering and editing; the agent sidebar connects supported AI providers to the open document through MCP tools.
 
-Document editing runs on your machine. AI requests send prompts and any document content read by the agent to your selected provider. Web research and the optional Browserbase integration also use external services. The local agent hub manages provider sessions, permissions, downloads and tool routing.
+Document editing runs on your machine. AI requests send prompts and any document content read by the agent to your selected provider. Web research connects to the websites you visit through an app-owned browser on your hub. The local agent hub manages provider sessions, permissions, downloads and tool routing.
 
 ## Editor
 
@@ -75,8 +75,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for native builds, focused tests and prer
 
 Run `npm --prefix rhwp/rhwp-studio ci` once, then `npm run dev:sidebar` and open
 http://127.0.0.1:7715. This mounts the production sidebar with local service fixtures;
-Node is the only runtime prerequisite. `npm run test:sidebar` checks its interactions
-in headless Chrome and saves sidebar screenshots. See the
+Node is the only runtime prerequisite. `npm run test:sidebar` runs a short smoke in
+headless Chrome; feature checks run by name. See the
 [preview guide](rhwp/rhwp-studio/sidebar-preview/README.md) for scenarios and design editing.
 
 ## Layout

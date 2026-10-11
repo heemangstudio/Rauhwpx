@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 const KEY_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/i;
+const BROWSER_KEY_RE = /^browser\.(?:password\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|wrapping-key\.v1)$/i;
 const LINUX_SECURE_STORAGE_BACKENDS = new Set([
   'gnome_libsecret',
   'kwallet',
@@ -321,6 +322,7 @@ export function createSecretVault({
 
   function assertKey(key) {
     if (!KEY_RE.test(String(key ?? ''))) throw new Error('Invalid secret identifier.');
+    if (String(key).toLowerCase().startsWith('browser.') && !BROWSER_KEY_RE.test(key)) throw new Error('Invalid website secret identifier.');
     return String(key);
   }
 
@@ -396,6 +398,19 @@ export function createSecretVault({
         return true;
       });
     },
+    async resetBrowser() {
+      return mutate(async (current) => {
+        const keys = Object.keys(current).filter((key) => BROWSER_KEY_RE.test(key));
+        for (const key of keys) delete current[key];
+        return { next: current, value: keys.length > 0 };
+      });
+    },
+    async resetProviders() {
+      return mutate(async (current) => ({
+        next: Object.fromEntries(Object.entries(current).filter(([key]) => BROWSER_KEY_RE.test(key))),
+        value: true,
+      }));
+    },
     async reset() {
       return enqueue(async () => {
         await assertAvailable();
@@ -431,6 +446,8 @@ export async function handleSecretRequest(vault, message) {
     else if (message.operation === 'set') response.value = await vault.set(message.key, message.value);
     else if (message.operation === 'delete') response.value = await vault.delete(message.key);
     else if (message.operation === 'reset') response.value = await vault.reset();
+    else if (message.operation === 'resetBrowser') response.value = await vault.resetBrowser();
+    else if (message.operation === 'resetProviders') response.value = await vault.resetProviders();
     else throw new Error('Unsupported secret operation.');
     response.ok = true;
   } catch (error) {

@@ -199,6 +199,43 @@ async function settle(rounds = 12) {
   }
 }
 
+test('native Codex launch preparation cancels before spawn and later starts with the current CLI', async (t) => {
+  const h = harness(t);
+  let release;
+  h.opts.prepareLaunch = () => new Promise((resolve) => { release = resolve; });
+  h.session.sendUserMessage('cancel this installation wait');
+  await settle(1);
+  assert.equal(h.spawns.length, 0);
+  h.session.interrupt();
+  release({ bin: '/stale-cli' });
+  await settle(1);
+  assert.equal(h.spawns.length, 0);
+  assert.equal(h.events.filter((event) => event.type === 'turn-end').length, 1);
+  assert.equal(h.events.at(-1).stopReason, 'interrupted');
+
+  h.opts.prepareLaunch = async () => ({ bin: '/fresh-native-codex', providerEnv: { RHWP_LAUNCH_ENV: 'fresh' } });
+  h.session.sendUserMessage('start after installation');
+  await settle();
+  assert.equal(h.spawns.length, 1);
+  assert.equal(h.spawns[0].command, '/fresh-native-codex');
+  assert.equal(h.spawns[0].options.env.RHWP_LAUNCH_ENV, 'fresh');
+  assert.equal(h.events.at(-1).type, 'turn-start');
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('disposing native Codex during installation prevents its deferred child from starting', async (t) => {
+  const h = harness(t);
+  let release;
+  h.opts.prepareLaunch = () => new Promise((resolve) => { release = resolve; });
+  h.session.sendUserMessage('never launch');
+  await settle(1);
+  assert.equal(await h.session.dispose(), true);
+  release({ bin: '/stale-cli' });
+  await settle(1);
+  assert.equal(h.spawns.length, 0);
+  assert.equal(h.events.some((event) => event.type === 'turn-start'), false);
+});
+
 test('JSON-RPC line overflow closes the connection before parsing', async () => {
   const process = new FakeProcess();
   let closed;
@@ -889,6 +926,31 @@ test('a resumed chat receives the current editing instructions after switching t
   await h.session.dispose();
 });
 
+test('a mode switch before the first turn starts a fresh thread when Codex has no rollout to resume', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    responder(frame, process) {
+      if (frame.method === 'thread/resume') {
+        process.send({ id: frame.id, error: { code: -32603, message: `no rollout found for thread id ${frame.params.threadId}` } });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+  await h.session.setExecutionMode({ workflow: 'plan', phase: 'planning', capabilityEpoch: 2 });
+  await h.session.setExecutionMode({ workflow: 'direct', phase: 'implementing', capabilityEpoch: 3 });
+  h.session.sendUserMessage('First after switching');
+  await settle(24);
+  const methods = h.spawns.at(-1).process.frames.map((frame) => frame.method);
+  assert.equal(methods.includes('thread/resume'), false, 'an unrun thread has no rollout to resume');
+  assert.ok(methods.includes('thread/start'), 'it starts a fresh thread instead of failing');
+  assert.ok(methods.includes('turn/start'), 'the turn still starts');
+  assert.equal(h.events.some((event) => event.type === 'error'), false);
+  h.session.interrupt();
+  await settle();
+  await h.session.dispose();
+});
+
 test('mode changes restart app-server while idle, resume the thread, and select plan mode', async (t) => {
   const h = harness(t);
   h.session.sendUserMessage('First');
@@ -917,6 +979,92 @@ test('mode changes restart app-server while idle, resume the thread, and select 
   h.session.interrupt();
   await settle();
   await h.session.dispose();
+});
+
+test('a native chat grant and explicit revocation change only that resumed conversation', async (t) => {
+  const h = harness(t, { workflow: 'question', phase: 'questioning' });
+  const other = harness(t, { workflow: 'question', phase: 'questioning' });
+  t.after(() => Promise.all([h.session.dispose(), other.session.dispose()]));
+  async function turn(chat, prompt) {
+    chat.session.sendUserMessage(prompt);
+    await settle(24);
+    const process = chat.spawns.at(-1).process;
+    const start = process.frames.find((frame) => frame.method === 'turn/start');
+    process.send({ method: 'turn/completed', params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } } });
+    await settle();
+    return start.params;
+  }
+  const initial = await turn(h, 'Ask for local access');
+  assert.equal(initial.sandboxPolicy.type, 'readOnly');
+  await h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 2, chatPermissionGrants: ['document-edit'] });
+  const documentOnly = await turn(h, 'Continue after a stale document grant');
+  assert.equal(documentOnly.collaborationMode.mode, 'plan');
+  assert.equal(documentOnly.sandboxPolicy.type, 'readOnly');
+  assert.deepEqual(h.opts.chatPermissionGrants, []);
+  assert.match(systemBriefFor(h.opts, 'codex'), /The live document cannot be changed in this mode/);
+  const mode = { workflow: 'question', phase: 'questioning', capabilityEpoch: 3, chatPermissionGrants: ['local-execution'] };
+  await h.session.setExecutionMode(mode);
+  mode.chatPermissionGrants.length = 0;
+  const granted = await turn(h, 'Use the granted access');
+  assert.equal(granted.sandboxPolicy.type, 'dangerFullAccess');
+  assert.equal(granted.collaborationMode.mode, 'default');
+  assert.equal(h.opts.permissionProfile, 'safe');
+  assert.equal(h.opts.workflow, 'question');
+  assert.ok(h.spawns.at(-1).process.frames.some((frame) => frame.method === 'thread/resume'));
+  assert.equal((await turn(other, 'A separate chat')).sandboxPolicy.type, 'readOnly');
+  await h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 4, chatPermissionGrants: [] });
+  const revoked = await turn(h, 'Access was cleared');
+  assert.equal(revoked.sandboxPolicy.type, 'readOnly');
+  assert.equal(revoked.collaborationMode.mode, 'plan');
+  assert.equal(revoked.threadId, initial.threadId);
+  await h.session.setExecutionMode({ workflow: 'direct', phase: 'implementing', capabilityEpoch: 5, chatPermissionGrants: [] });
+  const directReady = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
+  assert.match(directReady.params.items[0].content[0].text, /You are in 에이전트 mode/);
+  assert.equal(h.spawns.at(-1).process.frames.some((frame) => frame.method === 'turn/start'), false);
+  const direct = await turn(h, 'Apply a document edit in agent mode');
+  assert.equal(direct.collaborationMode.mode, 'default');
+  assert.equal(direct.sandboxPolicy.type, 'workspaceWrite');
+  await h.session.setPermissionProfile('unrestricted');
+  const fullReady = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
+  assert.match(fullReady.params.items[0].content[0].text, /You are in 전체/);
+  const full = await turn(h, 'Apply the full access profile');
+  assert.equal(full.sandboxPolicy.type, 'dangerFullAccess');
+  await h.session.setPermissionProfile('safe');
+  const safeReady = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
+  assert.match(safeReady.params.items[0].content[0].text, /staged as a live preview/);
+  assert.doesNotMatch(safeReady.params.items[0].content[0].text, /You are in 전체/);
+});
+
+test('a failed native permission instruction update rolls back before acknowledging the grant', async (t) => {
+  const standard = appServerResponder();
+  const h = harness(t, {
+    workflow: 'question', phase: 'questioning',
+    responder(frame, process) {
+      if (frame.method === 'thread/inject_items') {
+        process.send({ id: frame.id, error: { code: -32601, message: 'Unsupported method' } });
+        return;
+      }
+      standard(frame, process);
+    },
+  });
+  t.after(() => h.session.dispose());
+  h.session.sendUserMessage('Ask for permission');
+  await settle();
+  h.spawns[0].process.send({ method: 'turn/completed', params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } } });
+  await settle();
+  await assert.rejects(
+    h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 2, chatPermissionGrants: ['local-execution'] }),
+    /thread\/inject_items support is required/,
+  );
+  assert.deepEqual(h.opts.chatPermissionGrants, []);
+  assert.equal(h.opts.permissionProfile, 'safe');
+  assert.equal(h.opts.capabilityEpoch, 1);
+  assert.equal(h.spawns[1].process.frames.some((frame) => frame.method === 'turn/start'), false);
+  h.session.sendUserMessage('Continue within the existing permission');
+  await settle(24);
+  const next = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(next.params.sandboxPolicy.type, 'readOnly');
+  assert.equal(next.params.collaborationMode.mode, 'plan');
 });
 
 test('approved Plan restarts advertise mutation tools and returning to planning removes them', async (t) => {

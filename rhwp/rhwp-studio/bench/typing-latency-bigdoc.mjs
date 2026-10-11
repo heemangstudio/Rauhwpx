@@ -9,7 +9,7 @@
  * 각각 한글(IME 조합)과 영문.
  *
  * 사전 조건: WASM 빌드(pkg/) + Vite dev server
- * 실행: node bench/typing-latency-bench.mjs --mode=headless [--json=out.json] [--only=body-mid]
+ * 실행: node bench/typing-latency-bigdoc.mjs --mode=headless [--json=out.json] [--only=big-body-ko]
  *       [--profile=dir]  시나리오별 CPU 프로파일(.cpuprofile) 저장
  *       [--connect=http://127.0.0.1:9333]  떠 있는 앱(예: --remote-debugging-port 로 띄운 dev Electron)에 붙어 잰다
  */

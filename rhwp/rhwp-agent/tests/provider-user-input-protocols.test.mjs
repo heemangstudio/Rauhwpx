@@ -110,7 +110,7 @@ test('Claude native options expose AskUserQuestion in direct, plan, and question
     const sdk = buildClaudeSdkOptions(opts, '00000000-0000-4000-8000-000000000000', false, new AbortController());
     assert.ok(sdk.tools.includes('AskUserQuestion'));
     assert.equal(typeof sdk.canUseTool, 'function');
-    assert.equal(sdk.permissionMode, workflow === 'direct' ? 'default' : 'plan');
+    assert.equal(sdk.permissionMode, workflow === 'plan' ? 'plan' : 'default');
     if (workflow !== 'direct') {
       assert.ok(!sdk.tools.includes('Write'));
       assert.ok(!sdk.tools.includes('Edit'));
@@ -530,6 +530,57 @@ test('Claude waits for async SDK startup cleanup before dispatching the legacy f
   assert.equal(spawnCalls, 1);
   assert.equal(JSON.parse(stdin[0]).message.content[0].text, 'Fallback only after shutdown');
   await session.dispose();
+});
+
+test('Claude reacquires its launch reservation for SDK fallback and discards a cancelled prompt', async (t) => {
+  const stdin = [];
+  let preparations = 0;
+  let releases = 0;
+  let releaseFallback;
+  let fallbackWaiting;
+  const fallbackStarted = new Promise((resolve) => { fallbackWaiting = resolve; });
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdin = { on() {}, write(value, callback) { stdin.push(String(value)); callback?.(); } };
+  child.exitCode = null;
+  child.signalCode = null;
+  let spawns = 0;
+  const reservation = () => ({ bin: '/managed-claude', release() { releases += 1; } });
+  const session = createClaudeSession({
+    ...baseOpts,
+    prepareLaunch() {
+      preparations += 1;
+      if (preparations !== 2) return Promise.resolve(reservation());
+      fallbackWaiting();
+      return new Promise((resolve) => { releaseFallback = () => resolve(reservation()); });
+    },
+  }, {
+    queryAgent() {
+      return {
+        [Symbol.asyncIterator]() { return this; },
+        next() { return Promise.reject(new Error('async SDK startup rejection')); },
+        close() {},
+      };
+    },
+    spawnProcess() { spawns += 1; return child; },
+    terminateProcess(process) { queueMicrotask(() => process.emit('close', 0, null)); return true; },
+    waitForExit() { return true; },
+  });
+  t.after(() => session.dispose());
+
+  session.sendUserMessage('cancelled old prompt');
+  await fallbackStarted;
+  assert.equal(spawns, 0, 'fallback must reserve the newly installed executable before spawning');
+  session.interrupt();
+  session.sendUserMessage('current prompt');
+  await waitUntil(() => stdin.length === 1);
+  releaseFallback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(preparations, 3);
+  assert.equal(releases, 3, 'successful and cancelled launch reservations must all release');
+  assert.equal(spawns, 1);
+  assert.deepEqual(stdin.map((value) => JSON.parse(value).message.content[0].text), ['current prompt']);
 });
 
 test('Claude quarantines an async SDK startup failure when cleanup proof times out', async () => {

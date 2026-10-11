@@ -1,0 +1,10 @@
+{
+  "runtime": "http://127.0.0.1:7880",
+  "hubPort": 5880,
+  "provider": "controlled Pi fixture; no model inference",
+  "boardMovePersisted": true,
+  "noteDraftRetained": true,
+  "noteSavedAndReRead": true,
+  "documentTabCount": 1,
+  "browserErrors": []
+}

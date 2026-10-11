@@ -78,5 +78,5 @@
 .find-dialog :is(button, input, select):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 @media (max-width: 480px) { .find-dialog { top: 44px; right: 8px; width: calc(100vw - 16px); } .find-dialog-label { width: 56px; } }
 
-.find-dialog { --ui-surface: #f2f3f5; --ui-surface-raised: #fff; --ui-text: #171b22; --ui-text-secondary: #424a55; --ui-border: #d9dde3; --ui-border-strong: #b6bec9; --focus-ring: #356caa; }
-:root[data-theme-effective='dark'] .find-dialog { --ui-surface: #0f0f0f; --ui-surface-raised: #181818; --ui-text: #e6e6e6; --ui-text-secondary: #b4b4b4; --ui-border: #262626; --ui-border-strong: #363636; --focus-ring: #ef6a62; }
+.find-dialog { --ui-surface: #f2f3f5; --ui-surface-raised: #fff; --ui-text: #171b22; --ui-text-secondary: #424a55; --ui-border: #d9dde3; --ui-border-strong: #b6bec9; --focus-ring: rgba(23, 27, 34, 0.42); }
+:root[data-theme-effective='dark'] .find-dialog { --ui-surface: #0f0f0f; --ui-surface-raised: #181818; --ui-text: #e6e6e6; --ui-text-secondary: #b4b4b4; --ui-border: #262626; --ui-border-strong: #363636; --focus-ring: rgba(230, 230, 230, 0.48); }

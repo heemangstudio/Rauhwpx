@@ -10,5 +10,6 @@ export function ownsTextInput(target: Element | null): boolean {
 export function allowsDocumentShortcut(target: Element | null): boolean {
   if (isEditorInput(target)) return true;
   return !ownsTextInput(target)
-    && !target?.closest('dialog, [role="dialog"], [aria-modal="true"], #agent-sidebar');
+    // 문서 홈은 가린 문서를 대신한다. 홈에서 누른 키가 보이지 않는 문서를 고치지 않는다.
+    && !target?.closest('dialog, [role="dialog"], [aria-modal="true"], #agent-sidebar, #document-home');
 }

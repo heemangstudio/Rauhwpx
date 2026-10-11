@@ -56,10 +56,14 @@ import {
   isExplicitImplementationApproval,
   workflowError,
 } from './planning-state.mjs';
-import { DownloadManager } from './download-manager.mjs';
+import { DownloadManager, fetchPublic } from './download-manager.mjs';
 import { DocumentSnapshotManager } from './document-snapshot-manager.mjs';
-import { ArtifactStore } from './artifact-store.mjs';
-import { BrowserbaseFleet, normalizeBrowserbaseOverride, validateBrowserbaseCredentials } from './browserbase-session.mjs';
+import { ArtifactStore, defaultGeneratedArtifactRoot } from './artifact-store.mjs';
+import { createOwnedBrowserService, createIpcNativeBrowserAdapter } from './owned-browser-service.mjs';
+import { createBrowserPolicy } from './browser-policy.mjs';
+import { createBrowserCredentialBroker } from './browser-credentials.mjs';
+import { createBrowserOsSecretStore } from './browser-os-secret-store.mjs';
+import { createBrowserDownloads } from './browser-downloads.mjs';
 import { createProviderHealth } from './provider-health.mjs';
 import { createUsageStore } from './usage-store.mjs';
 import { appendToolTelemetryRow, startToolCall, ToolTurnTelemetry } from './tool-telemetry.mjs';
@@ -84,8 +88,17 @@ import { createIpcSecretStore } from './secret-store.mjs';
 import { handlePiToolDefinitions } from './pi/tool-schema.mjs';
 import { PiSubagentCapabilityRegistry } from './pi/subagent-capabilities.mjs';
 import { resolveHwpExtractor } from './reference-extractor.mjs';
-import { ReferenceStore } from './reference-store.mjs';
+import { defaultReferenceRoot } from './reference-store.mjs';
+import { createReferenceCatalog } from './reference-catalog.mjs';
 import { createReferenceHttpHandler, isAllowedStudioOrigin } from './reference-http.mjs';
+import { ProjectStore, defaultProjectsRoot, normalizeRepository, originLabels } from './project-store.mjs';
+import { ProjectSettingsStore } from './project-settings.mjs';
+import { createProjectHttpHandler, isProjectPath, createBrowserDownloadsHttpHandler, isBrowserDownloadsPath } from './project-http.mjs';
+import { executeProjectTool } from './project-tools.mjs';
+import { normalizeMentions, projectPromptContext } from './project-context.mjs';
+import { createProjectIngest } from './project-ingest.mjs';
+import { createHomeSearch } from './home-search.mjs';
+import { createProjectLibrarian } from './project-librarian.mjs';
 import { createFontHttpHandler, isFontPath } from './hub-fonts.mjs';
 import {
   createUserQuestionInteraction,
@@ -98,19 +111,26 @@ import {
   validateUserQuestionAnswers,
 } from './user-question.mjs';
 import {
+  createChatPermissionRequest,
+  isRequestPermissionTool,
+  normalizeChatPermissionGrants,
+  normalizeChatPermissionRequest,
+} from './chat-permissions.mjs';
+import {
   activeDocumentIdentity,
   addActiveDocumentContext,
   assertMessageScope,
   attachActiveDocumentIdentity,
   liveDocumentBlock,
   normalizeDocumentSnapshot,
+  normalizeStableScopeId,
   referenceScopesForSession,
   resolveSessionIdentity,
 } from './reference-session.mjs';
 import {
   executeReferenceTool,
-  referenceImageNeedsStudio,
-  resolveReferenceImageArgs,
+  planReferenceImageCall,
+  referenceImageCall,
 } from './reference-tools.mjs';
 import { TemplateStore } from './template-store.mjs';
 import { createTemplateHttpHandler } from './template-http.mjs';
@@ -122,7 +142,7 @@ import {
   claimCopyLayoutSnapshot,
   COPY_LAYOUT_MAX_ITERATIONS,
   copyLayoutPhaseIndex,
-  defaultTemplateName,
+  registerCopyLayoutArtifact,
   releaseCopyLayoutPublication,
   releaseCopyLayoutSnapshot,
   taskProgressForJob,
@@ -180,12 +200,16 @@ const RUNTIME_ROOT = process.env.RHWP_RUNTIME_DIR
   ? path.resolve(process.env.RHWP_RUNTIME_DIR)
   : null;
 const RECORDS_ROOT = path.join(WORK_ROOT, 'sessions');
+// 작업 폴더는 실행마다 새로 만들고 지운다. 생성 문서는 앱 데이터 폴더에 남겨
+// 허브나 앱을 다시 켜도 채팅의 문서 카드가 열리게 한다.
+const GENERATED_ARTIFACTS_ROOT = defaultGeneratedArtifactRoot();
 await fs.mkdir(RECORDS_ROOT, { recursive: true, mode: 0o700 });
 ensureCredentialRetentionRootSync(WORK_ROOT);
 const TOOL_TRACE_PATH = configureToolTrace(WORK_ROOT);
 let hubPort = REQUESTED_PORT;
 const STUDIO_TOOL_TIMEOUT_MS = 30_000;
 const MAX_CHAT_MESSAGE_CHARS = 128_000;
+const MAX_USER_MESSAGE_RECEIPTS = 128;
 const PLAN_CHANGE_TEXT_LIMITS = Object.freeze({
   planId: 256,
   promptOverride: MAX_CHAT_MESSAGE_CHARS,
@@ -384,7 +408,14 @@ const providerLimits = createProviderLimitsClient({
   },
   getCodexBin: () => cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
 });
-const referenceStore = await new ReferenceStore({ projectRoot: ROOT }).init();
+// 참고 자료: references/ 는 옛 빌드와 같은 형식으로 두고, 프로젝트 파일은 프로젝트 폴더 안에 둔다.
+const PROJECTS_ROOT = defaultProjectsRoot();
+const referenceStore = await createReferenceCatalog({
+  referencesRoot: defaultReferenceRoot(),
+  projectsRoot: PROJECTS_ROOT,
+  projectRoot: ROOT,
+  logger: log,
+}).init();
 const templateStore = await new TemplateStore().init();
 // .hwp/.hwpx/.hml 텍스트 추출은 rhwp 바이너리에 기댄다 — 없으면 첫 업로드가 아니라 기동 시점에 알린다.
 const hwpExtractor = await resolveHwpExtractor(ROOT);
@@ -395,12 +426,66 @@ const stagedReferenceCleanupTimer = setInterval(() => {
   void referenceStore.cleanupStaged().catch((error) => log(`staged reference cleanup failed: ${error?.message ?? error}`));
 }, 15 * 60 * 1000);
 stagedReferenceCleanupTimer.unref?.();
+// 연구 프로젝트: 설정 → 프로젝트 값은 호출할 때마다 읽으므로 재시작 없이 적용된다.
+const projectSettings = new ProjectSettingsStore({ root: PROJECTS_ROOT, logger: log });
+await projectSettings.load();
+const projectStore = await new ProjectStore({
+  root: PROJECTS_ROOT,
+  referenceStore,
+  settings: () => projectSettings.get(),
+  logger: log,
+}).init();
+// 홈 폴더 검색은 데스크톱 앱이 RHWP_HOME_ACCESS=1 로 허브를 띄웠을 때만 쓸 수 있다.
+const HOME_ACCESS = process.env.RHWP_HOME_ACCESS === '1';
+const homeSearch = createHomeSearch({
+  home: os.homedir(),
+  settings: () => projectSettings.get(),
+  access: HOME_ACCESS,
+});
+const projectIngest = createProjectIngest({
+  referenceStore,
+  projectStore,
+  settings: () => projectSettings.get(),
+  fetchPublic,
+  homeSearch,
+  logger: log,
+});
+// 정리 도우미가 쓸 공급자 경로를 고를 때 기준이 되는, 프로젝트에 마지막으로 묶인 채팅 기록.
+const projectRecords = new Map();
+// project-changed 는 프로젝트마다 150ms 에 한 번으로 묶는다. 세션 표가 생기기 전 이벤트는 기다린다.
+const projectChangeTimers = new Map();
+let projectEventsLive = false;
+const projectLibrarian = createProjectLibrarian({
+  projectStore,
+  referenceStore,
+  settings: () => projectSettings.get(),
+  routes: (projectId) => librarianRoutes(projectId),
+  emit: (projectId, status) => sendToProjectStudios(projectId, { v: 1, type: 'project-librarian-status', projectId, ...status }),
+  logger: log,
+});
+projectStore.setLibrarianStatusProvider((projectId) => projectLibrarian.status(projectId));
+projectStore.onItemsAdded((projectId, itemIds) => {
+  void projectLibrarian.enqueue(projectId, itemIds).catch((error) => log(`librarian enqueue failed: ${error?.message ?? error}`));
+});
+projectStore.onChange((projectId, details) => onProjectChanged(projectId, details));
+try {
+  const migrated = await projectStore.migrateDocumentReferences();
+  if (migrated > 0) log(`moved ${migrated} document reference file(s) into projects`);
+  const repaired = await projectStore.repairReferences();
+  if (repaired > 0) log(`linked ${repaired} stored project file(s) back to their projects`);
+} catch (error) {
+  log(`project storage startup work failed: ${error?.message ?? error}`);
+}
+const projectTrashTimer = setInterval(() => {
+  void projectStore.purgeExpired().catch((error) => log(`project trash purge failed: ${error?.message ?? error}`));
+}, 6 * 60 * 60 * 1000);
+projectTrashTimer.unref?.();
+void projectStore.purgeExpired().catch((error) => log(`project trash purge failed: ${error?.message ?? error}`));
 let writingStyleCalibrationOwner = null;
 // If a bounded provider cleanup cannot prove tree exit, retain the backend
 // object (and therefore its exact child/process-group identity) until this hub
 // exits. A replacement provider must never share the same work/home paths.
 const retainedUncertainBackends = new Set();
-const retainedUncertainBrowserbaseSessions = new Set();
 const sessions = new HubSessionRegistry({
   createRecord(sessionId) {
     const recordKey = `${crypto.createHash('sha256').update(sessionId).digest('hex')}-${crypto.randomUUID()}`;
@@ -441,8 +526,12 @@ const sessions = new HubSessionRegistry({
       piSubagents: new PiSubagentCapabilityRegistry(),
       studioMessageQueue: Promise.resolve(),
       agentSession: null,
+      sessionDisposalPromise: null,
+      referenceStagingThreadId: null,
       processCleanupUncertain: false,
       pendingReferenceMessage: null,
+      userMessageReceipts: new Map(),
+      settledUserMessages: new WeakSet(),
       nextCapabilityEpoch: 1,
       pendingCalls: new Map(),
       toolTelemetry: null,
@@ -450,6 +539,12 @@ const sessions = new HubSessionRegistry({
       suppressedUserQuestionCallIds: new Set(),
       pendingUserQuestionScopes: [],
       userQuestionResponseReceipts: new Map(),
+      pendingChatPermissionRequest: null,
+      pendingChatPermissionScopes: [],
+      pendingBrowserScopes: [],
+      pendingBrowserAccountRequests: new Map(),
+      suppressedChatPermissionCallIds: new Set(),
+      chatPermissionResponseReceipts: new Map(),
       nextHubId: 1,
       sessionGeneration: 0,
       missedTurnEnd: null,
@@ -466,10 +561,14 @@ const sessions = new HubSessionRegistry({
       pendingTemplateCompletions: [],
       pendingDocumentSaved: null,
       pendingEditReport: null,
-      browserbaseSession: new BrowserbaseFleet({ log }),
       downloadManager,
       documentSnapshotManager,
-      artifactStore: new ArtifactStore({ rootDir: workDir, trustedReadRoots: hubReadOnlyRoots }),
+      artifactStore: new ArtifactStore({
+        rootDir: workDir,
+        trustedReadRoots: hubReadOnlyRoots,
+        persistDir: GENERATED_ARTIFACTS_ROOT,
+        onPersistError: (error) => log(`generated artifact persistence failed: ${error?.message ?? error}`),
+      }),
       recordRoot,
       workDir,
       hubStorageDir,
@@ -480,6 +579,243 @@ const sessions = new HubSessionRegistry({
     };
   },
 });
+projectEventsLive = true;
+
+// 브라우저 프로필과 완료된 연구 자료는 채팅의 임시 recordRoot 밖에 둔다.
+const OWNED_BROWSER_DATA_DIR = path.resolve(process.env.RHWP_BROWSER_DATA_DIR
+  || path.join(path.dirname(PROJECTS_ROOT), 'browser'));
+const browserPolicy = createBrowserPolicy({ dataDir: OWNED_BROWSER_DATA_DIR, onChange: (policy) => {
+  broadcastBrowserEvent({ type: 'policy-changed', policy });
+} });
+await browserPolicy.ready();
+const browserSecretStore = await createBrowserOsSecretStore({
+  ipcStore: secretStore, dataDir: OWNED_BROWSER_DATA_DIR, allowOsKeyring: process.env.RHWP_BROWSER_OS_KEYRING !== '0',
+});
+const credentialBroker = createBrowserCredentialBroker({
+  dataDir: OWNED_BROWSER_DATA_DIR, policy: browserPolicy, secretStore: browserSecretStore, onEvent: broadcastBrowserEvent,
+});
+await credentialBroker.ready();
+const initialBrowserConfiguration = await credentialBroker.getConfiguration();
+const browserDownloads = createBrowserDownloads({
+  dataDir: OWNED_BROWSER_DATA_DIR, projectIngest, onEvent: broadcastBrowserEvent,
+  maxBytes: initialBrowserConfiguration.downloads.maxFileBytes, autoImport: initialBrowserConfiguration.downloads.autoImport,
+  authorizeDownload: async ({ actor, url }) => {
+    await browserPolicy.assertAllowed({ actor, action: 'download', url });
+    return true;
+  },
+  authorizeImport: async (job) => {
+    const sourceUrls = [...new Set([job.source?.url, job.source?.finalUrl, job.source?.pageUrl].filter(Boolean))];
+    for (const url of sourceUrls) {
+      await browserPolicy.assertAllowed({ actor: job.actor, action: 'research-import', url });
+    }
+    if (sourceUrls.length === 0 && !browserPolicy.effectiveResearch(job.actor).import) {
+      throw workflowError('RESEARCH_PERMISSION_REVOKED', 'Research imports are disabled in Browser Settings');
+    }
+    return true;
+  },
+});
+await browserDownloads.ready;
+await applyBrowserConfiguration(initialBrowserConfiguration);
+const ownedBrowser = createOwnedBrowserService({
+  dataDir: OWNED_BROWSER_DATA_DIR, credentialBroker, policy: browserPolicy,
+  downloads: browserDownloads, onEvent: broadcastBrowserEvent,
+  nativeAdapter: process.env.RHWP_BROWSER_HOST === 'ipc' && typeof process.send === 'function'
+    ? createIpcNativeBrowserAdapter() : undefined,
+  workspaceTargets: process.env.RHWP_BROWSER_WORKSPACE_TARGETS
+    ? JSON.parse(process.env.RHWP_BROWSER_WORKSPACE_TARGETS) : [],
+});
+await ownedBrowser.restore();
+
+function broadcastBrowserEvent(event) {
+  // 연결된 Studio 는 같은 허브 소유자의 인증된 UI다. provider 소켓으로는 보내지 않는다.
+  for (const record of sessions.values()) {
+    sendJson(record.studioSocket, { v: 1, type: 'browser-event', event });
+  }
+}
+
+function browserActorForRecord(record, { isHuman = false, taskId = null } = {}) {
+  const active = record.agentSession;
+  const threadId = active?.threadId ?? record.boundThreadId ?? record.referenceStagingThreadId ?? null;
+  return Object.freeze({
+    sessionId: record.sessionId,
+    threadId,
+    documentId: active?.documentId ?? record.boundDocumentId ?? null,
+    projectId: active?.projectId ?? record.boundProjectId ?? null,
+    agentId: taskId ? `${threadId}:task:${taskId}` : `${threadId ?? record.sessionId}:root`,
+    taskId,
+    clientId: record.studioInstanceId ?? record.sessionId,
+    isHuman,
+  });
+}
+
+function browserArgsFingerprint(tool, value) {
+  const parsed = toolArgSchema(tool, toolDefinitionsByName.get(tool)).parse(value ?? {});
+  const canonical = (input) => Array.isArray(input) ? input.map(canonical)
+    : input && typeof input === 'object'
+      ? Object.fromEntries(Object.keys(input).sort().map((key) => [key, canonical(input[key])]))
+      : input;
+  return JSON.stringify(canonical(parsed));
+}
+
+async function browserActorForMcp(record, sock, tool, args) {
+  if (sock.piSubagentId) return browserActorForRecord(record, { taskId: sock.parentTaskId });
+  // Claude/Codex의 공유 MCP 소켓은 provider 이벤트로 발급된 호출 표를 소비한다.
+  // msg.parentTaskId/agentId/tab 소유권은 호출자가 고를 수 없다.
+  const fingerprint = browserArgsFingerprint(tool, args);
+  const active = record.agentSession;
+  const generation = active?.generation;
+  const turnId = active?.turnId;
+  const find = () => record.pendingBrowserScopes.map((scope, index) => ({ scope, index }))
+    .filter(({ scope }) => scope.generation === generation && scope.turnId === turnId
+      && scope.agent === sock.agentLabel && scope.tool === tool && scope.fingerprint === fingerprint);
+  let matches = find();
+  if (sock.agentLabel !== 'pi' && matches.length === 0) {
+    const deadline = Date.now() + USER_QUESTION_SCOPE_WAIT_MS;
+    while (!matches.length && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (record.agentSession !== active || active?.turnId !== turnId) throw noActiveProviderTurnError();
+      matches = find();
+    }
+  }
+  if (matches.length > 1 || (sock.agentLabel !== 'pi' && matches.length !== 1)) {
+    throw workflowError('CALLER_SCOPE_UNKNOWN', 'The provider did not establish a unique browser call identity');
+  }
+  const scope = matches.length ? record.pendingBrowserScopes.splice(matches[0].index, 1)[0] : null;
+  return browserActorForRecord(record, { taskId: scope?.parentTaskId ?? null });
+}
+
+async function applyBrowserConfiguration(configuration) {
+  if (typeof browserDownloads.configure === 'function') await browserDownloads.configure(configuration.downloads);
+  else {
+    browserDownloads.maxBytes = configuration.downloads.maxFileBytes;
+    browserDownloads.autoImport = configuration.downloads.autoImport;
+  }
+  return configuration;
+}
+
+function assertBrowserAccountScope(pending, actor) {
+  if (!pending || ['threadId', 'documentId', 'projectId'].some((key) => (pending.actor?.[key] ?? pending[key] ?? null) !== (actor[key] ?? null))) {
+    throw workflowError('BROWSER_ACCOUNT_REQUEST_INVALIDATED', 'The website account request no longer belongs to this chat');
+  }
+}
+
+function publishBrowserAccountRequest(record, request) {
+  const actor = request.actor;
+  const wrapped = { ...request, threadId: actor.threadId, documentId: actor.documentId,
+    turnId: record.agentSession?.turnId ?? null, agent: record.agentSession?.agent ?? 'claude',
+    capability: 'browser', createdAt: new Date().toISOString() };
+  record.pendingBrowserAccountRequests.set(request.requestId, wrapped);
+  sendJson(record.studioSocket, { v: 1, type: 'chat-permission-requested', request: wrapped });
+}
+
+function settleBrowserAccountRequest(requestId, status = 'granted') {
+  for (const record of sessions.values()) {
+    const request = record.pendingBrowserAccountRequests.get(requestId);
+    if (!request) continue;
+    record.pendingBrowserAccountRequests.delete(requestId);
+    sendJson(record.studioSocket, { v: 1, type: 'chat-permission-resolved', requestId,
+      threadId: request.threadId, documentId: request.documentId,
+      outcome: { status, ...(status === 'denied' ? { reason: 'user-denied' } : {}) } });
+  }
+}
+
+async function answerBrowserAccountPermission(record, sock, msg) {
+  const pending = await credentialBroker.getAccountRequest(msg.requestId);
+  if (!pending) return false;
+  try {
+    if (!msg.responseId || msg.decision !== 'deny') throw workflowError('BROWSER_SECURE_CHANNEL_REQUIRED', 'Use the account approval form for this request');
+    const actor = browserActorForRecord(record, { isHuman: true });
+    assertBrowserAccountScope(pending, actor);
+    if (msg.threadId !== actor.threadId || (msg.documentId ?? null) !== actor.documentId) throw workflowError('REQUEST_INVALIDATED', 'The account request changed scope');
+    await credentialBroker.cancelAccountRequest({ actor, requestId: msg.requestId });
+    settleBrowserAccountRequest(msg.requestId, 'denied');
+    sendJson(sock, { v: 1, type: 'chat-permission-response-result', requestId: msg.requestId, responseId: msg.responseId, ok: true });
+  } catch (error) {
+    sendJson(sock, { v: 1, type: 'chat-permission-response-result', requestId: msg.requestId, responseId: msg.responseId, ok: false, ...browserError(error) });
+  }
+  return true;
+}
+
+function browserMcpResult(result) {
+  if (!result?.capture?.screenshot?.data) return result;
+  const { screenshot, ...capture } = result.capture;
+  return { ...result, capture, image: screenshot };
+}
+
+function browserError(error, fallback = 'BROWSER_REQUEST_FAILED') {
+  return { code: error?.code ?? fallback, message: error?.message ?? 'The browser request failed.', ...(typeof error?.retryable === 'boolean' ? { retryable: error.retryable } : {}) };
+}
+
+function containsBrowserSecret(value) {
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, child]) => /^(?:password|passphrase|secret|cookie|cookies|authorization|token|credentials)$/i.test(key) || containsBrowserSecret(child));
+}
+
+async function handleBrowserRequest(record, sock, msg) {
+  const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+  try {
+    if (record.studioSocket !== sock) throw workflowError('REQUEST_INVALIDATED', 'This browser UI connection was replaced');
+    if (!requestId || requestId.length > 160) throw workflowError('INVALID_REQUEST_ID', 'A browser requestId is required');
+    const actor = browserActorForRecord(record, { isHuman: true });
+    const args = msg.args && typeof msg.args === 'object' && !Array.isArray(msg.args) ? msg.args : {};
+    if (containsBrowserSecret(args)) throw workflowError('BROWSER_SECURE_CHANNEL_REQUIRED', 'Enter website credentials in the secure account form');
+    let result;
+    switch (msg.action) {
+      case 'policy.list': result = await browserPolicy.list(); break;
+      case 'policy.update': result = await browserPolicy.update({ ...args, actor }); break;
+      case 'accounts.list': result = await credentialBroker.listAccounts(); break;
+      case 'accounts.request': result = await credentialBroker.requestAccount({ ...args, actor }); break;
+      case 'accounts.approve': {
+        let approval;
+        if (args.requestId) {
+          const pending = await credentialBroker.getAccountRequest(args.requestId);
+          assertBrowserAccountScope(pending, actor);
+          approval = Object.freeze({ approved: true, requestId: args.requestId, use: true });
+        }
+        result = await credentialBroker.approveAccount({ ...args, actor, approval });
+        if (args.requestId) settleBrowserAccountRequest(args.requestId);
+        break;
+      }
+      case 'accounts.revoke': result = await credentialBroker.revokeAccount({ ...args, actor }); break;
+      case 'accounts.signout': result = await credentialBroker.signOut({ ...args, actor }); break;
+      case 'accounts.forget': result = await credentialBroker.forgetAccount({ ...args, actor }); break;
+      case 'configuration.get': result = await credentialBroker.getConfiguration(); break;
+      case 'configuration.update': result = await applyBrowserConfiguration(await credentialBroker.updateConfiguration({ ...args, actor })); break;
+      default: result = await ownedBrowser.request(actor, String(msg.action ?? ''), args);
+    }
+    replyToStudio(record, sock, { v: 1, type: 'browser-response', requestId, result });
+  } catch (error) {
+    replyToStudio(record, sock, { v: 1, type: 'browser-response', requestId, error: browserError(error) });
+  }
+}
+
+async function handleBrowserAccountSubmit(record, sock, msg) {
+  const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+  try {
+    if (record.studioSocket !== sock) throw workflowError('REQUEST_INVALIDATED', 'This account form connection was replaced');
+    if (!requestId || requestId.length > 160) throw workflowError('INVALID_REQUEST_ID', 'An account requestId is required');
+    const actor = browserActorForRecord(record, { isHuman: true });
+    const accountRequestId = String(msg.accountRequestId ?? '');
+    const pending = await credentialBroker.getAccountRequest(accountRequestId);
+    assertBrowserAccountScope(pending, actor);
+    if (msg.consent?.save !== true || typeof msg.consent?.use !== 'boolean') {
+      throw workflowError('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'Choose whether to save and reuse this account');
+    }
+    const result = await credentialBroker.submit({
+      actor, requestId: accountRequestId, account: msg.account,
+      username: msg.username, password: msg.password, remember: msg.remember === true,
+      approval: Object.freeze({ approved: true, requestId: accountRequestId, save: true, use: msg.consent.use }),
+    });
+    settleBrowserAccountRequest(accountRequestId);
+    replyToStudio(record, sock, { v: 1, type: 'browser-response', requestId, result });
+  } catch (error) {
+    // 금고 오류에는 비밀 입력을 되비추지 않는다. 일반 도구 로그/채팅에 이 payload 를 넣지 않는다.
+    replyToStudio(record, sock, { v: 1, type: 'browser-response', requestId, error: { code: error?.code ?? 'BROWSER_ACCOUNT_SAVE_FAILED', message: 'The secure account request could not be completed.' } });
+  } finally {
+    delete msg.password;
+    delete msg.username;
+  }
+}
 
 function hasAgentSessions() {
   return [...sessions.values()].some((record) => (
@@ -1115,6 +1451,135 @@ function pendingUserQuestionSnapshot(record) {
     : null;
 }
 
+function pendingChatPermissionSnapshot(record) {
+  const request = record.pendingChatPermissionRequest?.request;
+  if (!request) return null;
+  try {
+    normalizeChatPermissionRequest(request);
+    return structuredClone(request);
+  } catch {
+    return null;
+  }
+}
+
+function settleChatPermissionRequest(record, outcome) {
+  const pending = record.pendingChatPermissionRequest;
+  if (!pending) return false;
+  record.pendingChatPermissionRequest = null;
+  const { requestId, threadId, documentId } = pending.request;
+  sendJson(record.studioSocket, {
+    v: 1, type: 'chat-permission-resolved', requestId, threadId, documentId,
+    outcome,
+    grants: normalizeChatPermissionGrants(record.agentSession?.chatPermissionGrants),
+    capabilityEpoch: record.agentSession?.planning.capabilityEpoch,
+  });
+  return true;
+}
+
+function requestChatPermission(record, args, generation) {
+  const activeSession = record.agentSession;
+  if (!activeSession || activeSession.generation !== generation || activeSession.status !== 'running'
+    || !activeSession.turnId || activeSession.providerTurnStarted !== true) {
+    throw workflowError('NO_ACTIVE_TURN', 'Permission requests require the active root turn');
+  }
+  const normalized = normalizeChatPermissionRequest(args);
+  if (activeSession.chatPermissionGrants.includes(normalized.capability)) {
+    return { status: 'granted', capability: normalized.capability, scope: 'chat', grants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants) };
+  }
+  const pending = record.pendingChatPermissionRequest;
+  if (pending) {
+    if (pending.request.capability !== normalized.capability || pending.request.reason !== normalized.reason) {
+      throw workflowError('INTERACTION_ALREADY_PENDING', 'Another permission request is waiting for the user');
+    }
+    return { status: 'pending', requestId: pending.request.requestId, capability: normalized.capability, scope: 'chat' };
+  }
+  if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
+    throw workflowError('NO_STUDIO', 'Studio must be connected to request a chat permission');
+  }
+  const request = createChatPermissionRequest(normalized, activeSession);
+  record.pendingChatPermissionRequest = {
+    request, session: activeSession, generation,
+    providerCapabilityResource: activeSession.providerCapabilityResource,
+    capabilityEpoch: activeSession.planning.capabilityEpoch,
+  };
+  if (!sendJson(record.studioSocket, { v: 1, type: 'chat-permission-requested', request: structuredClone(request) })) {
+    settleChatPermissionRequest(record, { status: 'expired', reason: 'studio-disconnected' });
+    throw workflowError('NO_STUDIO', 'Studio disconnected before the permission could be presented');
+  }
+  return { status: 'pending', requestId: request.requestId, capability: normalized.capability, scope: 'chat' };
+}
+
+async function answerChatPermission(record, sock, msg) {
+  const requestId = typeof msg.requestId === 'string' ? msg.requestId : '';
+  const responseId = typeof msg.responseId === 'string' ? msg.responseId : '';
+  const result = (ok, error = null) => ({
+    v: 1, type: 'chat-permission-response-result', requestId, responseId, ok,
+    ...(error ? { code: error.code ?? 'CHAT_PERMISSION_FAILED', message: String(error.message ?? error) } : {}),
+  });
+  try {
+    if (!requestId || !responseId || requestId.length > 256 || responseId.length > 256
+      || !['grant', 'deny'].includes(msg.decision)) {
+      throw workflowError('INVALID_CHAT_PERMISSION_RESPONSE', 'Provide requestId, responseId and grant or deny');
+    }
+    const fingerprint = JSON.stringify([requestId, msg.threadId, msg.documentId, msg.decision]);
+    const receipt = record.chatPermissionResponseReceipts.get(responseId);
+    if (receipt) {
+      if (receipt.fingerprint !== fingerprint) throw workflowError('RESPONSE_ID_REUSED', 'responseId already belongs to another permission response');
+      sendJson(sock, receipt.frame);
+      return;
+    }
+    const pending = record.pendingChatPermissionRequest;
+    const activeSession = record.agentSession;
+    if (!pending || pending.request.requestId !== requestId) {
+      throw workflowError('CHAT_PERMISSION_NOT_FOUND', 'This permission request is no longer pending');
+    }
+    normalizeChatPermissionRequest(pending.request);
+    if (!activeSession || pending.session !== activeSession || pending.generation !== activeSession.generation
+      || pending.providerCapabilityResource !== activeSession.providerCapabilityResource
+      || pending.capabilityEpoch !== activeSession.planning.capabilityEpoch
+      || pending.request.threadId !== msg.threadId || pending.request.documentId !== msg.documentId
+      || activeSession.threadId !== msg.threadId || activeSession.documentId !== msg.documentId) {
+      throw workflowError('REQUEST_INVALIDATED', 'The permission request no longer belongs to this chat and document');
+    }
+    if (msg.decision === 'grant') {
+      const grants = normalizeChatPermissionGrants([...activeSession.chatPermissionGrants, pending.request.capability]);
+      {
+        if (activeSession.status !== 'idle') throw workflowError('AGENT_BUSY', 'Wait for the agent turn to finish before granting this chat permission');
+        requireWorkflowSwitchBackend(activeSession);
+        const previousGrants = [...activeSession.chatPermissionGrants];
+        try {
+          await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: grants });
+          if (record.agentSession !== activeSession || record.pendingChatPermissionRequest !== pending) {
+            throw workflowError('REQUEST_INVALIDATED', 'The chat changed while the permission was being applied');
+          }
+        } catch (error) {
+          // 중지는 전환 대기열을 건너뛴다. 취소된 전환이 같은 공급자에 권한을 남기지 않게 되돌린다.
+          if (record.agentSession === activeSession) {
+            try {
+              await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: previousGrants });
+            } catch (rollbackError) {
+              log(`chat permission rollback failed: ${rollbackError?.message ?? rollbackError}`);
+              await disposeSession(record);
+            }
+          }
+          throw error;
+        }
+      }
+      activeSession.chatPermissionGrants.splice(0, activeSession.chatPermissionGrants.length, ...grants);
+    }
+    const frame = result(true);
+    record.chatPermissionResponseReceipts.set(responseId, { fingerprint, frame });
+    // 성공한 응답만 중복 확인에 남긴다. 바쁜 공급자·실패한 전환은 같은 요청으로 다시 시도할 수 있다.
+    if (record.chatPermissionResponseReceipts.size > 32) {
+      record.chatPermissionResponseReceipts.delete(record.chatPermissionResponseReceipts.keys().next().value);
+    }
+    sendJson(sock, frame);
+    settleChatPermissionRequest(record, { status: msg.decision === 'grant' ? 'granted' : 'denied', ...(msg.decision === 'deny' ? { reason: 'user-denied' } : {}) });
+  } catch (error) {
+    sendJson(sock, result(false, error));
+  }
+}
+
 function userQuestionOutcomeForTurnEnd(event) {
   if (event.stopReason === 'interrupted') return { status: 'cancelled', reason: 'user-stop' };
   if (event.stopReason === 'failed' || event.stopReason === 'exited' || event.errorMessage) {
@@ -1141,6 +1606,7 @@ function settleUserQuestion(record, outcome) {
 }
 
 function beginAgentTurn(record, activeSession) {
+  settleChatPermissionRequest(record, { status: 'expired', reason: 'request-invalidated' });
   if (record.pendingUserQuestion) {
     settleUserQuestion(record, { status: 'expired', reason: 'request-invalidated' });
   }
@@ -1279,6 +1745,14 @@ function currentPiSubagentForSocket(record, sock) {
 
 function settleAgentTurn(record, activeSession, event) {
   const settledTurnId = activeSession.turnId;
+  const succeeded = ['completed', 'end_turn', 'success'].includes(event.stopReason) && !event.errorMessage;
+  // A backend may finish synchronously inside sendUserMessage. Successful
+  // dispatch still gets its receipt after that call returns.
+  if (!succeeded) {
+    rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'The turn ended before accepting the message', {
+      session: activeSession, turnId: settledTurnId,
+    });
+  }
   if (activeSession.planning.phase === 'implementing' && activeSession.planExecutionTurnId === settledTurnId) {
     activeSession.planExecutionTurnSucceeded = ['completed', 'end_turn', 'success'].includes(event.stopReason) && !event.errorMessage;
     activeSession.planning.settleExecution(event.stopReason === 'interrupted' ? 'interrupted'
@@ -1286,6 +1760,7 @@ function settleAgentTurn(record, activeSession, event) {
     sendJson(record.studioSocket, { v: 1, type: 'plan-progress', ...activeSession.planning.snapshot() });
   }
   settleUserQuestion(record, userQuestionOutcomeForTurnEnd(event));
+  if (!succeeded) settleChatPermissionRequest(record, { status: 'expired', reason: event.stopReason === 'interrupted' ? 'user-stop' : 'provider-disconnected' });
   failPendingProviderCallsForTurn(record, activeSession, settledTurnId);
   retireProviderSockets(record, activeSession, { turnId: settledTurnId });
   retirePiSubagentsForTurn(record, activeSession);
@@ -1408,6 +1883,22 @@ async function waitForUserQuestionScopes(record, agent, questions, generation) {
     matches = matchingUserQuestionScopes(record, agent, questions);
   }
   return matches;
+}
+
+async function consumeChatPermissionScope(record, agent, args, generation) {
+  const expected = JSON.stringify(normalizeChatPermissionRequest(args));
+  const matchingScopes = () => record.pendingChatPermissionScopes
+    .map((scope, index) => ({ scope, index }))
+    .filter(({ scope }) => scope.agent === agent && scope.request && JSON.stringify(scope.request) === expected);
+  const deadline = Date.now() + USER_QUESTION_SCOPE_WAIT_MS;
+  let matches = matchingScopes();
+  while (!matches.length && record.agentSession?.generation === generation && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(20, deadline - Date.now())));
+    matches = matchingScopes();
+  }
+  if (matches.length !== 1) throw workflowError('CALLER_SCOPE_UNKNOWN', 'The provider did not establish a unique root permission request');
+  const [scope] = record.pendingChatPermissionScopes.splice(matches[0].index, 1);
+  if (scope.parentTaskId) throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request permissions');
 }
 
 function userQuestionAnswerFrame({ interactionId, responseId, ok, code, message }) {
@@ -1748,6 +2239,8 @@ function sessionInfo(record) {
       turnId: activeSession.turnId,
       activeTemplateId: activeSession.activeTemplateId,
       pendingUserQuestion: pendingUserQuestionSnapshot(record),
+      pendingChatPermissionRequest: pendingChatPermissionSnapshot(record),
+      chatPermissionGrants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants),
       resumed: activeSession.resumed === true,
       compaction: compactionSupportOf(activeSession),
       // 다시 붙은 Studio 가 "맥락 압축 중…" 을 이어 보이거나 지운다.
@@ -1798,6 +2291,35 @@ function artifactDownloadDescriptor(record, artifactId, artifact) {
     checksum: artifact.checksum,
     downloadUrl: downloadUrl.href,
   };
+}
+
+/**
+ * 대화에 남은 카드의 artifactId로 지금 허브 세션의 다운로드 주소를 새로 만든다.
+ * 예전 주소는 허브 포트·세션·토큰이 바뀌면 쓸 수 없다.
+ */
+async function freshArtifactDescriptor(record, artifactId, threadId) {
+  const id = String(artifactId ?? '');
+  const metadata = await record.artifactStore.describe(id);
+  if (!metadata.owner?.threadId || metadata.owner.threadId !== threadId) {
+    throw workflowError('ARTIFACT_NOT_FOUND', 'Generated artifact is unavailable or expired');
+  }
+  return artifactDownloadDescriptor(record, id, metadata);
+}
+
+async function registerCopyLayoutTemplate(record, args) {
+  const job = args.jobId ? record.templateJobs.get(args.jobId) ?? null : null;
+  const outcome = await registerCopyLayoutArtifact({
+    artifactStore: record.artifactStore,
+    templateStore,
+    threadId: record.agentSession?.threadId ?? null,
+    args,
+    job,
+  });
+  if (!outcome.alreadyRegistered) {
+    if (job) job.registeredTemplateId = outcome.template.id;
+    broadcastTemplateCatalog({ type: 'added', template: outcome.template });
+  }
+  return outcome;
 }
 
 function sendTemplateJobEvent(record, event) {
@@ -2414,6 +2936,31 @@ function makeBackendEventHandler(record, generation) {
         ...(evt.type === 'turn-end' && evt.status ? { status: String(evt.status) } : {}),
       });
     }
+    if (evt.type === 'tool-call' && /^(?:mcp__rhwp__)?(?:browser_|download_file$)/.test(evt.tool ?? '')) {
+      const tool = String(evt.tool).replace(/^mcp__rhwp__/, '');
+      try {
+        record.pendingBrowserScopes.push({
+          agent: evt.agent ?? activeSession.agent, callId: evt.callId, tool,
+          parentTaskId: evt.parentTaskId ?? null, generation, turnId: activeSession.turnId,
+          fingerprint: browserArgsFingerprint(tool, JSON.parse(evt.argsJson ?? '{}')),
+        });
+        if (record.pendingBrowserScopes.length > 64) record.pendingBrowserScopes.splice(0, record.pendingBrowserScopes.length - 64);
+      } catch {}
+    }
+    if (evt.type === 'tool-call' && isRequestPermissionTool(evt.tool)) {
+      if (evt.callId) record.suppressedChatPermissionCallIds.add(evt.callId);
+      let request = null;
+      try { request = normalizeChatPermissionRequest(JSON.parse(evt.argsJson ?? '{}')); } catch {}
+      record.pendingChatPermissionScopes.push({ agent: evt.agent, callId: evt.callId, parentTaskId: evt.parentTaskId ?? null, request });
+      if (record.pendingChatPermissionScopes.length > 8) record.pendingChatPermissionScopes.splice(0, record.pendingChatPermissionScopes.length - 8);
+      return;
+    }
+    if (evt.type === 'tool-result' && record.suppressedChatPermissionCallIds.has(evt.callId)) {
+      record.suppressedChatPermissionCallIds.delete(evt.callId);
+      const index = record.pendingChatPermissionScopes.findIndex((scope) => scope.callId === evt.callId);
+      if (index >= 0) record.pendingChatPermissionScopes.splice(index, 1);
+      return;
+    }
     // The fallback question tool is a first-class blocking interaction. Keep
     // its provider bookkeeping out of the generic tool activity transcript;
     // the dedicated requested/resolved lifecycle is the only Studio surface.
@@ -2515,10 +3062,15 @@ function makeBackendEventHandler(record, generation) {
         markHandoffUncertain(record, activeSession, delivery, evt.stopReason);
       }
       settleAgentTurn(record, activeSession, evt);
-      // 서브에이전트 브라우저는 턴과 함께 끝난다 — 메인 브라우저만 다음 턴까지 산다.
-      record.browserbaseSession.cleanupExtras('turn ended');
     }
-    const delivered = sendAgentEvent(record, studioEvent);
+    // Opt-in sends acknowledge before Studio inserts the user bubble. A
+    // synchronous turn-start inside sendUserMessage must follow that receipt.
+    const pendingMessage = [...record.userMessageReceipts.values()].find((receipt) => (
+      receipt.message && receipt.session === activeSession && receipt.turnId === providerTurnId
+    ));
+    const delivered = pendingMessage
+      ? (pendingMessage.events ??= [], pendingMessage.events.push(studioEvent), true)
+      : sendAgentEvent(record, studioEvent);
     if (evt.type === 'turn-start' && activeSession.manualCompaction && !activeSession.manualCompaction.started) {
       // 수동 압축의 started 는 공급자 턴이 실제로 시작될 때 한 번 낸다.
       sendCompactionEvents(record, routeCompactionEvent(activeSession, {
@@ -2531,6 +3083,9 @@ function makeBackendEventHandler(record, generation) {
       record.userQuestionResponseReceipts.clear();
       record.suppressedUserQuestionCallIds.clear();
       record.pendingUserQuestionScopes.length = 0;
+      record.suppressedChatPermissionCallIds.clear();
+      record.pendingChatPermissionScopes.length = 0;
+      record.pendingBrowserScopes.length = 0;
     }
     if (evt.type === 'turn-end') drainTemplateCompletion(record);
     if (evt.type === 'turn-end') drainPlanningDocumentSaved(record);
@@ -2547,7 +3102,11 @@ function sendAgentEvent(record, event) {
 
 function disposeSession(record) {
   record.pendingReferenceMessage = null;
+  rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'The chat stopped before accepting the message');
   record.pendingDocumentSaved = null;
+  // 채팅 중지·창 닫기·허브 종료가 겹치면 같은 공급자 종료를 기다린다.
+  // agentSession 을 비웠다고 아직 살아 있는 프로세스의 작업 폴더를 지우면 안 된다.
+  if (record.sessionDisposalPromise) return record.sessionDisposalPromise;
   const activeSession = record.agentSession;
   if (!activeSession) {
     retireAllPiSubagents(record);
@@ -2557,6 +3116,11 @@ function disposeSession(record) {
   const disposedTurnId = activeSession.turnId;
   const agent = activeSession.agent;
   settleUserQuestion(record, { status: 'expired', reason: 'request-invalidated' });
+  settleChatPermissionRequest(record, { status: 'expired', reason: 'request-invalidated' });
+  record.chatPermissionResponseReceipts.clear();
+  record.suppressedChatPermissionCallIds.clear();
+  record.pendingChatPermissionScopes.length = 0;
+  record.pendingBrowserScopes.length = 0;
   record.userQuestionResponseReceipts.clear();
   record.suppressedUserQuestionCallIds.clear();
   record.pendingUserQuestionScopes.length = 0;
@@ -2577,13 +3141,6 @@ function disposeSession(record) {
   }
   try { activeSession.releaseReferenceScopes?.(); } catch {}
   record.agentSession = null;
-  let browserbaseExit;
-  try {
-    browserbaseExit = Promise.resolve(record.browserbaseSession.cleanup('session disposed'));
-  } catch (error) {
-    log(`Browserbase session cleanup failed: ${error?.message ?? error}`);
-    browserbaseExit = Promise.resolve(false);
-  }
   if (wasRunning) {
     sendCompactionEvents(record, settleCompactionAtTurnEnd(activeSession, false, { stopReason: 'interrupted' }), disposedTurnId);
     const evt = {
@@ -2596,22 +3153,20 @@ function disposeSession(record) {
       record.missedTurnEnd = evt;
     }
   }
-  return Promise.allSettled([backendExit, browserbaseExit]).then(([backend, browserbase]) => {
+  record.sessionDisposalPromise = Promise.allSettled([backendExit]).then(([backend]) => {
     const backendCleaned = backend.status === 'fulfilled' && backend.value !== false;
-    const browserbaseCleaned = browserbase.status === 'fulfilled' && browserbase.value !== false;
     if (backend.status === 'rejected') {
       log(`session process exit wait failed: ${backend.reason?.message ?? backend.reason}`);
     }
-    if (browserbase.status === 'rejected') {
-      log(`Browserbase session exit wait failed: ${browserbase.reason?.message ?? browserbase.reason}`);
-    }
-    if (backendCleaned && browserbaseCleaned && record.processCleanupUncertain !== true) return true;
+    if (backendCleaned && record.processCleanupUncertain !== true) return true;
     record.processCleanupUncertain = true;
     if (!backendCleaned) retainedUncertainBackends.add(activeSession.backend);
-    if (!browserbaseCleaned) retainedUncertainBrowserbaseSessions.add(record.browserbaseSession);
     retainUncertainProcessCleanup(record.recordRoot);
     return false;
+  }).finally(() => {
+    record.sessionDisposalPromise = null;
   });
+  return record.sessionDisposalPromise;
 }
 
 function agentProcessCleanupUncertain(cause = null) {
@@ -2712,17 +3267,197 @@ function referenceScopes(activeSession) {
   return referenceScopesForSession(activeSession);
 }
 
-function addReferenceContext(activeSession, query, prompt, messageAttachments = []) {
+/** 연구 프로젝트 요약(언급·발췌 포함)과 메시지 첨부를 사용자 메시지 앞에 붙인다. */
+async function addReferenceContext(activeSession, query, prompt, messageAttachments = [], mentions = [], { required = false } = {}) {
   try {
-    const block = referenceStore.promptContext({ query, scopes: referenceScopes(activeSession) });
+    const record = sessions.get(activeSession.hubSessionId ?? '') ?? null;
+    const repository = record ? repositoryContext(record) : null;
+    const block = await projectPromptContext({
+      projectStore,
+      referenceStore,
+      projectId: activeSession.projectId ?? null,
+      worktree: repository?.worktree ?? null,
+      worktreeCount: repository?.worktrees.length ?? 0,
+      worktreeBranch: (worktreeId) => (
+        repository?.worktrees.find((entry) => entry.id === worktreeId)?.branch ?? projectStore.worktreeBranch(worktreeId)
+      ),
+      scopes: referenceScopes(activeSession),
+      query,
+      mentions,
+      settings: projectSettings.get(),
+    });
     const attached = messageAttachments.length > 0
-      ? `<message_attachments trust="untrusted-data">\n${JSON.stringify(messageAttachments.map(({ id, name, mimeType, kind }) => ({ fileId: id, name, mimeType, kind })))}\n</message_attachments>`
+      ? `<message_attachments trust="untrusted-data">\n${JSON.stringify(messageAttachments.map(({ id, itemId, name, mimeType, kind }) => ({
+        ...(itemId ? { itemId } : {}),
+        fileId: id,
+        name,
+        mimeType,
+        kind,
+      })))}\n</message_attachments>`
       : '';
     return [block, attached, prompt].filter(Boolean).join('\n\n');
   } catch (error) {
     log(`reference retrieval failed: ${error?.message ?? error}`);
+    if (required) throw error;
     return prompt;
   }
+}
+
+/** MCP 등록·호출 게이트: 채팅의 프로젝트 변경 허용과 홈 폴더 검색 가능 여부. */
+function projectToolGates() {
+  return { chatMayEdit: projectSettings.get().agent.chatMayEdit, homeSearch: homeSearch.available, researchPermissions: browserPolicy.categoryAvailability?.() ?? browserPolicy.effectiveResearch() };
+}
+
+function sendToProjectStudios(projectId, frame) {
+  if (!projectEventsLive) return;
+  for (const record of sessions.values()) {
+    if (record.boundProjectId === projectId) sendJson(record.studioSocket, frame);
+  }
+}
+
+async function sendProjectBound(record) {
+  const projectId = record.boundProjectId;
+  if (!projectId) return;
+  try {
+    const project = await projectStore.get(projectId);
+    if (record.boundProjectId !== projectId) return;
+    sendJson(record.studioSocket, { v: 1, type: 'project-bound', projectId, project });
+  } catch (error) {
+    log(`project-bound failed: ${error?.message ?? error}`);
+  }
+}
+
+function onProjectChanged(projectId, details = {}) {
+  // 합류·나가기·삭제는 문서가 가리키는 프로젝트를 바꾼다 — 묶인 세션을 다시 맞춘다.
+  if (details.reason === 'deleted' || details.reason === 'merged' || details.reason === 'members') {
+    setImmediate(() => {
+      void reconcileProjectBindings().catch((error) => log(`project rebind failed: ${error?.message ?? error}`));
+    });
+  }
+  if (details.reason === 'deleted' || details.reason === 'merged' || projectChangeTimers.has(projectId)) return;
+  const timer = setTimeout(() => {
+    projectChangeTimers.delete(projectId);
+    if (!projectEventsLive) return;
+    void projectStore.get(projectId)
+      .then((project) => sendToProjectStudios(projectId, {
+        v: 1,
+        type: 'project-changed',
+        projectId,
+        revision: project.revision,
+        project,
+      }))
+      .catch(() => {});
+  }, 150);
+  timer.unref?.();
+  projectChangeTimers.set(projectId, timer);
+}
+
+/**
+ * Studio 가 보낸 저장소·작업 공간을 세션에 둔다 (chat-start·project-bind). 그 문서의 것일 때만
+ * 묶기·표시에 쓴다. 바뀌었으면 true.
+ */
+function applyRecordRepository(record, documentId, msg) {
+  const repository = typeof documentId === 'string' && documentId
+    ? normalizeRepository({ id: msg?.repositoryId, worktree: msg?.worktree, worktrees: msg?.worktrees })
+    : null;
+  const next = repository ? { documentId, repository } : null;
+  const changed = JSON.stringify(record.projectRepository ?? null) !== JSON.stringify(next);
+  record.projectRepository = next;
+  return changed;
+}
+
+/** 묶인 문서의 저장소 정보. 버전 기록이 없는 문서면 null. */
+function repositoryContext(record) {
+  const binding = record.projectRepository;
+  return binding && binding.documentId === record.boundDocumentId ? binding.repository : null;
+}
+
+/** 세션의 작업 공간 표시 규칙 ('current' 와 새 항목 자동 표시). */
+function recordLabels(record) {
+  return originLabels(repositoryContext(record));
+}
+
+/** 문서(없으면 스레드) → 프로젝트. 실패해도 채팅은 프로젝트 없이 계속된다. */
+async function bindRecordProject(record, { threadId, documentId, documentName, create = true }) {
+  let projectId = null;
+  const binding = record.projectRepository;
+  try {
+    projectId = await projectStore.bindSession({
+      threadId,
+      documentId,
+      documentName,
+      repository: binding && binding.documentId === documentId ? binding.repository : null,
+      create,
+    });
+  } catch (error) {
+    log(`project binding failed: ${error?.message ?? error}`);
+  }
+  record.boundProjectId = projectId;
+  record.boundDocumentId = documentId ?? null;
+  record.boundDocumentName = documentName ?? null;
+  record.boundThreadId = threadId ?? null;
+  if (projectId) projectRecords.set(projectId, record);
+  return projectId;
+}
+
+async function rebindRecordProject(record, { create = true } = {}) {
+  const projectId = await bindRecordProject(record, {
+    threadId: record.boundThreadId,
+    documentId: record.boundDocumentId,
+    documentName: record.agentSession?.documentName ?? record.boundDocumentName ?? null,
+    create,
+  });
+  const activeSession = record.agentSession;
+  if (activeSession && activeSession.projectId !== projectId) {
+    activeSession.projectId = projectId;
+    const scopes = referenceScopesForSession(activeSession);
+    try { activeSession.releaseReferenceScopes?.(); } catch {}
+    activeSession.releaseReferenceScopes = referenceStore.retainScopes(scopes);
+    await referenceStore.activateScopes(scopes).catch((error) => log(`reference activation failed: ${error?.message ?? error}`));
+  }
+  await sendProjectBound(record);
+  resumeLibrarianFor(projectId);
+}
+
+async function reconcileProjectBindings() {
+  if (!projectEventsLive) return;
+  for (const record of sessions.values()) {
+    if (!record.boundProjectId) continue;
+    const expected = record.boundDocumentId
+      ? projectStore.projectIdForDocument(record.boundDocumentId)
+      : (projectStore.hasProject(record.boundProjectId) ? record.boundProjectId : null);
+    if (expected !== record.boundProjectId) await rebindRecordProject(record);
+  }
+}
+
+/** 허브가 멈춘 사이 대기열에 남은 정리 항목을, 그 프로젝트에 채팅이 다시 묶일 때 이어서 돌린다. */
+function resumeLibrarianFor(projectId) {
+  if (!projectId) return;
+  const status = projectLibrarian.status(projectId);
+  if (status.queued > 0 || status.running > 0) return;
+  void projectStore.itemsNeedingLibrarian(projectId)
+    .then((items) => (items.length > 0 ? projectLibrarian.retry(projectId) : null))
+    .catch((error) => log(`librarian resume failed: ${error?.message ?? error}`));
+}
+
+/** 정리 도우미의 공급자 경로 — 그 프로젝트에 마지막으로 묶인 채팅의 공급자를 먼저 쓴다. */
+async function librarianRoutes(projectId) {
+  let record = projectRecords.get(projectId);
+  if (!record || record.disposed || sessions.get(record.sessionId) !== record) {
+    record = [...sessions.values()].find((candidate) => candidate.boundProjectId === projectId && !candidate.disposed) ?? null;
+    if (record) projectRecords.set(projectId, record);
+    else projectRecords.delete(projectId);
+  }
+  if (!record) return { readiness: {} };
+  const health = providerHealth.cached() ?? await providerHealth.check().catch(() => null);
+  const { readiness, resolveCodexTitleModel, resolvePiTitleModel, signal: _signal, ...deps } = checkpointTitleDeps(record, health, undefined);
+  return {
+    readiness,
+    chatProvider: record.agentSession?.agent ?? record.lastAgent ?? null,
+    codexQuota: providerLimits.snapshot().codex,
+    resolveModel: { codex: resolveCodexTitleModel, pi: resolvePiTitleModel },
+    deps,
+  };
 }
 
 function addAgentInstructionsContext(prompt) {
@@ -2774,16 +3509,91 @@ function addTemplateContext(record, activeSession, prompt) {
   }
 }
 
+function userMessageFingerprint(msg, activeSession) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    threadId: activeSession.threadId,
+    documentId: activeSession.documentId,
+    text: msg.text,
+    skillName: msg.skillName ?? null,
+    mentions: normalizeMentions(msg.mentions),
+    activeTemplateId: msg.activeTemplateId ?? null,
+    attachmentCount: Array.isArray(msg.stagedReferenceIds) ? msg.stagedReferenceIds.length : 0,
+  })).digest('hex');
+}
+
+function rejectUserMessage(record, sock, msg, error, fallbackCode = 'INVALID_REQUEST', reportError = true) {
+  if (record.settledUserMessages.has(msg)) return;
+  const code = error?.code ?? fallbackCode;
+  const failure = failureForHubError(code, error, record.agentSession?.agent, record.agentSession?.failureSecrets ?? []);
+  const message = failure?.message ?? describeHubError(error);
+  let bufferedEvents = [];
+  if (msg.requireAcceptance === true && typeof msg.messageId === 'string') {
+    const receipt = record.userMessageReceipts.get(msg.messageId);
+    // A conflicting retry must not delete the receipt of the original message.
+    if (receipt?.message === msg) {
+      record.userMessageReceipts.delete(msg.messageId);
+      bufferedEvents = receipt.events ?? [];
+    }
+    record.settledUserMessages.add(msg);
+    sendJson(sock, { v: 1, type: 'chat-user-message-rejected', messageId: msg.messageId, code, message });
+  }
+  if (reportError) sendChatError(sock, error, fallbackCode, { failure, ...userMessageReceipt(msg) });
+  for (const event of bufferedEvents) sendAgentEvent(record, event);
+}
+
+function rejectPendingUserMessages(record, code, message, { session, turnId, socket } = {}) {
+  for (const receipt of [...record.userMessageReceipts.values()]) {
+    if (!receipt.message || (session && receipt.session !== session)
+      || (turnId && receipt.turnId !== turnId) || (socket && receipt.socket !== socket)) continue;
+    rejectUserMessage(record, receipt.socket, receipt.message, workflowError(code, message), code, false);
+  }
+}
+
+function requireUserMessageAcceptanceCurrent(record, msg) {
+  if (msg.requireAcceptance !== true) return;
+  const receipt = record.userMessageReceipts.get(msg.messageId);
+  if (receipt?.message !== msg || record.studioSocket !== receipt.socket
+    || receipt.socket.readyState !== receipt.socket.OPEN) {
+    throw workflowError('REQUEST_INVALIDATED', 'The message was cancelled before the provider accepted it');
+  }
+}
+
+function acceptUserMessage(record, sock, msg) {
+  if (msg.requireAcceptance !== true) return;
+  const receipt = record.userMessageReceipts.get(msg.messageId);
+  if (receipt?.message !== msg) return;
+  record.settledUserMessages.add(msg);
+  record.userMessageReceipts.set(msg.messageId, { fingerprint: receipt.fingerprint, attachments: receipt.attachments ?? [] });
+  while (record.userMessageReceipts.size > MAX_USER_MESSAGE_RECEIPTS) {
+    const oldestAccepted = [...record.userMessageReceipts].find(([, entry]) => !entry.message);
+    if (!oldestAccepted) break;
+    record.userMessageReceipts.delete(oldestAccepted[0]);
+  }
+  sendJson(receipt.socket ?? sock, { v: 1, type: 'chat-user-message-accepted', messageId: msg.messageId });
+  for (const event of receipt.events ?? []) sendAgentEvent(record, event);
+}
+
+async function discardRepeatedMessageStages(msg, activeSession) {
+  const stageIds = Array.isArray(msg.stagedReferenceIds) ? msg.stagedReferenceIds : [];
+  await Promise.allSettled(stageIds.map((stageId) => referenceStore.discardStaged({
+    stageId, scopeId: activeSession.threadId,
+  })));
+}
+
 function dispatchUserMessage(record, sock, msg, activeSession, messageAttachments = [], discussionReady = false) {
   if (activeSession.planning.phase === 'awaiting-approval' && !discussionReady) {
     const planId = activeSession.planning.latestPlan?.planId;
     if (!planId) {
-      rejectUserMessage(sock, msg, 'PLAN_NOT_FOUND', 'The latest plan is unavailable; return to planning and present it again.');
+      rejectUserMessage(record, sock, msg, workflowError('PLAN_NOT_FOUND', 'The latest plan is unavailable; return to planning and present it again.'));
       return;
     }
     const hasAttachments = messageAttachments.length > 0
       || (Array.isArray(msg.stagedReferenceIds) && msg.stagedReferenceIds.length > 0);
     if (!hasAttachments && isExplicitImplementationApproval(msg.text)) {
+      if (msg.requireAcceptance === true) {
+        rejectUserMessage(record, sock, msg, workflowError('PLAN_APPROVAL_REQUIRED', 'Approve the plan before sending this message'));
+        return;
+      }
       void enqueueWorkflowTransition(record, activeSession, () => approveImplementationPlan(record, sock, { planId, documentRevision: msg.documentRevision }))
         .catch((error) => sendChatError(sock, error, undefined, userMessageReceipt(msg)));
       return;
@@ -2794,14 +3604,18 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       async () => {
         requireWorkflowSwitchBackend(activeSession);
         await activeSession.backend.setExecutionMode(providerModeRequest(activeSession, 'awaiting-approval'));
-        if (record.agentSession === activeSession) dispatchUserMessage(record, sock, msg, activeSession, messageAttachments, true);
+        if (record.agentSession !== activeSession) {
+          throw workflowError('REQUEST_INVALIDATED', 'The chat changed before accepting the message');
+        }
+        requireUserMessageAcceptanceCurrent(record, msg);
+        dispatchUserMessage(record, sock, msg, activeSession, messageAttachments, true);
       },
     )
-      .catch((error) => sendChatError(sock, error, undefined, userMessageReceipt(msg)));
+      .catch((error) => rejectUserMessage(record, sock, msg, error, 'WORKFLOW_ERROR'));
     return;
   }
   if (activeSession.planning.phase === 'switching') {
-    rejectUserMessage(sock, msg, 'WORKFLOW_SWITCHING', 'The provider is switching into implementation mode.');
+    rejectUserMessage(record, sock, msg, workflowError('WORKFLOW_SWITCHING', 'The provider is switching into implementation mode.'));
     return;
   }
   beginAgentTurn(record, activeSession);
@@ -2810,6 +3624,8 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
     generation: activeSession.generation,
     turnId: activeSession.turnId,
   });
+  const receipt = record.userMessageReceipts.get(msg.messageId);
+  if (receipt?.message === msg) receipt.turnId = providerTurn.turnId;
   // Studio 가 메시지에 실어 보낸 문서 읽기 — 사용자 요청 바로 앞에 둔다. 승인·수정·허브 생성 턴은 이 경로를 타지 않는다.
   // 모양이 어긋난 스냅샷은 버리고 메시지는 그대로 보낸다.
   const liveDocument = normalizeDocumentSnapshot(msg.documentSnapshot);
@@ -2820,22 +3636,35 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       agent: activeSession.agent,
       requestContext: liveDocumentBlock(liveDocument),
     }))
-    .then((prompt) => {
+    .then(async (prompt) => {
       // Skill context is loaded asynchronously. An interrupt can settle this
       // turn and a later message can start another turn on the same session
       // before the read completes, so session identity alone is insufficient.
-      if (!providerTurnIsCurrent(record, providerTurn)) return;
-      // 스냅샷도 에이전트가 본 문서 상태다 — 읽기 도구 없이 세운 계획이 승인 때 stale 로 거절되지 않게 한다.
-      if (liveDocument) activeSession.lastObservedDocumentRevision = liveDocument.revision;
+      if (!providerTurnIsCurrent(record, providerTurn)) {
+        rejectUserMessage(record, sock, msg, workflowError('REQUEST_INVALIDATED', 'The turn ended before accepting the message'), 'REQUEST_INVALIDATED', false);
+        return;
+      }
+      requireUserMessageAcceptanceCurrent(record, msg);
       if (activeSession.planning.phase === 'awaiting-approval') {
         prompt = `The current plan remains open for review. Answer questions and research normally. If this message requests concrete changes to the plan, revise it directly with present_implementation_plan; do not ask the user to request a draft again. Never treat discussion as approval to edit the document.\n\nCurrent plan:\n${JSON.stringify(activeSession.planning.latestPlan.plan)}\n\n${prompt}`;
       }
+      // 프로젝트 요약은 메모·발췌를 읽느라 비동기다 — 기다린 뒤 턴이 여전히 이 턴인지 다시 본다.
+      const referencedPrompt = msg.requireAcceptance === true
+        ? await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions), { required: true })
+        : await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions));
+      if (!providerTurnIsCurrent(record, providerTurn)) {
+        rejectUserMessage(record, sock, msg, workflowError('REQUEST_INVALIDATED', 'The turn ended before accepting the message'), 'REQUEST_INVALIDATED', false);
+        return;
+      }
+      requireUserMessageAcceptanceCurrent(record, msg);
+      // 스냅샷도 에이전트가 본 문서 상태다 — 읽기 도구 없이 세운 계획이 승인 때 stale 로 거절되지 않게 한다.
+      if (liveDocument) activeSession.lastObservedDocumentRevision = liveDocument.revision;
       const turnPrompt = addActiveDocumentContext(
         activeSession,
         addTemplateContext(
           record,
           activeSession,
-          addEditReportContext(record, activeSession, addReferenceContext(activeSession, msg.text, prompt, messageAttachments)),
+          addEditReportContext(record, activeSession, referencedPrompt),
         ),
       );
       // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
@@ -2866,20 +3695,25 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         fallback: withResumeFallback && Boolean(full),
         userText: typeof msg.text === 'string' ? msg.text : '',
       };
-      activeSession.backend.sendUserMessage(handoffPromptText(primary, turnPrompt), options);
+      const dispatched = activeSession.backend.sendUserMessage(handoffPromptText(primary, turnPrompt), options);
+      // Current providers accept synchronously; a future asynchronous backend
+      // may reject its dispatch promise before acknowledging the message.
+      if (dispatched?.then) await dispatched;
+      acceptUserMessage(record, sock, msg);
     })
     .catch((e) => {
       // A stale rejection belongs to the settled turn. It must not idle or
       // report an error against a newer turn on this same backend session.
-      if (!providerTurnIsCurrent(record, providerTurn)) return;
+      if (!providerTurnIsCurrent(record, providerTurn)) {
+        rejectUserMessage(record, sock, msg, e, 'AGENT_SPAWN_FAILED', false);
+        return;
+      }
       activeSession.handoffDelivery = null;
       failPendingProviderCallsForTurn(record, activeSession, providerTurn.turnId);
       activeSession.status = 'idle';
       activeSession.turnId = null;
       record.userQuestionResponseReceipts.clear();
-      rejectUserMessage(sock, msg, e?.code ?? 'AGENT_SPAWN_FAILED', describeHubError(e), {
-        failure: failureForHubError(e?.code ?? 'AGENT_SPAWN_FAILED', e, activeSession.agent, activeSession.failureSecrets),
-      });
+      rejectUserMessage(record, sock, msg, e, 'AGENT_SPAWN_FAILED');
     });
 }
 
@@ -2917,20 +3751,52 @@ async function dispatchStagedUserMessage(record, sock, msg, activeSession) {
     attachments: stageIds.map((stageId) => ({ stageId, status: 'processing' })),
   });
   const settled = await Promise.allSettled(
-    stageIds.map(async (stageId) => ({ stageId, file: await referenceStore.promoteStaged({ stageId, scopeId: activeSession.threadId }) })),
+    stageIds.map(async (stageId) => {
+      // 첨부는 채팅의 연구 프로젝트 파일로 바로 올린다. 프로젝트가 없으면 채팅 범위에 둔다.
+      const projectId = activeSession.projectId;
+      const promoted = await referenceStore.promoteStaged({
+        stageId,
+        scopeId: activeSession.threadId,
+        ...(projectId ? { to: { scope: 'project', scopeId: projectId } } : {}),
+      });
+      if (!projectId) return { stageId, file: promoted, item: null };
+      try {
+        const origin = recordLabels(record).auto;
+        const item = await projectStore.addFileItem(projectId, {
+          fileId: promoted.id,
+          scope: 'project',
+          source: { kind: 'chat-attachment', threadId: activeSession.threadId },
+          addedBy: { kind: 'user', threadId: activeSession.threadId },
+          ...(origin ? { origin } : {}),
+        });
+        return { stageId, file: { ...promoted, itemId: item.id }, item };
+      } catch (error) {
+        // 파일은 프로젝트에 들어갔다 — 항목은 다음 부팅의 복구가 붙인다.
+        log(`attachment item creation failed: ${error?.message ?? error}`);
+        return { stageId, file: promoted, item: null };
+      }
+    }),
   );
   const attachments = settled.map((entry, index) => entry.status === 'fulfilled'
-    ? { stageId: entry.value.stageId, status: 'ready', file: entry.value.file }
+    ? { stageId: entry.value.stageId, status: 'ready', file: entry.value.file, ...(entry.value.item ? { item: entry.value.item } : {}) }
     : {
       stageId: stageIds[index],
       status: 'error',
       error: String(entry.reason?.message ?? entry.reason ?? 'Attachment processing failed'),
     });
   sendJson(sock, { v: 1, type: 'chat-reference-status', messageId: msg.messageId, attachments });
+  const receipt = record.userMessageReceipts.get(msg.messageId);
+  if (receipt?.message === msg) receipt.attachments = attachments;
   const stillCurrent = record.pendingReferenceMessage === pendingReferenceMessage;
   if (stillCurrent) record.pendingReferenceMessage = null;
   const readyFiles = settled.flatMap((entry) => entry.status === 'fulfilled' ? [entry.value.file] : []);
-  if (!stillCurrent || record.agentSession !== activeSession) return;
+  if (!stillCurrent || record.agentSession !== activeSession) {
+    throw workflowError('REQUEST_INVALIDATED', 'The chat changed while message attachments were being prepared');
+  }
+  requireUserMessageAcceptanceCurrent(record, msg);
+  if (msg.requireAcceptance === true && settled.some((entry) => entry.status === 'rejected')) {
+    throw workflowError('REFERENCE_COMMIT_FAILED', 'Some message attachments could not be prepared; retry the complete message');
+  }
   if (activeSession.status !== 'idle' || activeSession.pendingTransitions > 0) {
     throw workflowError(
       'REQUEST_INVALIDATED',
@@ -3078,7 +3944,15 @@ async function startSession(
   const continuing = !force && currentSession
     && currentSession.threadId === threadId && currentSession.documentId === documentId;
   if (!await disposeSession(record)) throw agentProcessCleanupUncertain();
-  const sessionReferenceScopes = referenceScopesForSession({ threadId, documentId });
+  // 세션은 문서의 연구 프로젝트(문서가 없으면 스레드 프로젝트)에 묶인다. 이 스레드의 옛 chat 범위
+  // 자료는 이제야 문서를 알 수 있어 여기서 프로젝트로 옮긴다.
+  const projectId = await bindRecordProject(record, { threadId, documentId, documentName });
+  if (projectId) {
+    await projectStore.migrateChatReferences(threadId, projectId)
+      .catch((error) => log(`chat reference migration failed: ${error?.message ?? error}`));
+  }
+  record.lastAgent = agent;
+  const sessionReferenceScopes = referenceScopesForSession({ threadId, documentId, projectId });
   await referenceStore.activateScopes(sessionReferenceScopes);
   const planning = new PlanningState({
     workflow,
@@ -3111,12 +3985,22 @@ async function startSession(
     model,
     effort,
     permissionProfile,
+    chatPermissionGrants: continuing ? normalizeChatPermissionGrants(currentSession.chatPermissionGrants) : [],
     serviceTier,
     isolatedHome: record.isolatedHome,
     codexHome: record.codexHome,
     codexAuthPath: sourceCodexAuthPath,
     codexBin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
     claudeBin: cliSetupStatus.claude?.installed ? cliSetup.binPath('claude') : 'claude',
+    // CLI 는 채팅 시작 뒤에도 설치·갱신될 수 있다. 실제 프로세스를 만들 때 prefix 잠금을 기다린다.
+    prepareLaunch: CLI_SETUP_AGENTS.includes(agent) ? async () => {
+      const launch = await cliSetup.prepareLaunch(agent);
+      return {
+        bin: launch.bin ?? agent,
+        release: launch.release,
+        providerEnv: agent === 'claude' ? claudeRuntimeEnv(record.isolatedHome) : launch.env,
+      };
+    } : undefined,
     providerEnv: agent === 'claude'
       ? claudeRuntimeEnv(record.isolatedHome)
       : (CLI_SETUP_AGENTS.includes(agent) ? cliSetup.envFor(agent) : {}),
@@ -3137,6 +4021,7 @@ async function startSession(
     piRoot: piManager.rootDir,
     openRouterApiKey: agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
     reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
+    projectToolGates: () => ({ ...projectToolGates(), requestable: true }),
     // 기록(RHWP_PROVIDER_TRANSCRIPT_DIR)의 meta.cli 에 남길 CLI 버전.
     providerCliVersion: (agent === 'pi' ? piStatus.version : cliSetupStatus[agent]?.version) ?? null,
     ...(agent === 'pi' && piModelConfig(model)?.contextLength ? { contextWindow: piModelConfig(model).contextLength } : {}),
@@ -3166,6 +4051,7 @@ async function startSession(
     model,
     effort,
     permissionProfile,
+    chatPermissionGrants: opts.chatPermissionGrants,
     serviceTier,
     backend,
     generation,
@@ -3178,6 +4064,9 @@ async function startSession(
     threadId,
     documentId,
     documentName,
+    projectId,
+    // 프롬프트 맥락이 세션의 작업 공간을 찾을 때 쓴다.
+    hubSessionId: record.sessionId,
     // Legacy download/browser code uses chatId. It is now the stable Studio
     // thread identity rather than an unrelated hub-generated UUID.
     chatId: threadId,
@@ -3259,11 +4148,6 @@ function userMessageReceipt(msg) {
   return typeof msg?.messageId === 'string' && msg.messageId ? { messageId: msg.messageId } : {};
 }
 
-/** 사용자 메시지 거절. extra 는 sendChatError 와 같은 덧붙임 필드다 (failure 포함). */
-function rejectUserMessage(sock, msg, code, message, extra = {}) {
-  sendChatError(sock, { code, message }, code, { ...extra, ...userMessageReceipt(msg) });
-}
-
 /** pi 요청 실패는 채팅 오류가 아니라 설정 카드에 붙는다. 키는 절대 되돌려 보내지 않는다. */
 function sendPiError(record, sock, requestId, error, fallbackCode) {
   replyToStudio(record, sock, {
@@ -3275,45 +4159,12 @@ function sendPiError(record, sock, requestId, error, fallbackCode) {
   });
 }
 
-function sendBrowserbaseError(record, sock, requestId, error) {
-  replyToStudio(record, sock, {
-    v: 1,
-    type: 'browserbase-error',
-    requestId,
-    code: error?.code ?? 'BROWSERBASE_CREDENTIALS_REJECTED',
-    message: String(error?.message ?? error),
-  });
-}
-
-/**
- * 스튜디오가 입력한 Browserbase 자격 증명 — 앱이 도는 동안만 환경 변수를 덮고 디스크에는
- * 남기지 않는다. 키가 들어오면 Browserbase API 에 먼저 확인하고, 프로젝트 id 가 비어
- * 있으면 그 계정의 프로젝트를 골라 채운다 (환경 변수의 프로젝트 id 는 다른 계정일 수
- * 있어 섞지 않는다). 턴이 도는 중이면 떠 있는 브라우저는 두고 다음 호출부터 새 키를 쓴다.
- */
-async function applyBrowserbaseOverride(record, msg) {
-  const revision = record.browserbaseSession.beginCredentialChange();
-  const override = normalizeBrowserbaseOverride({
-    apiKey: msg.apiKey,
-    projectId: msg.projectId,
-    geminiApiKey: msg.geminiApiKey,
-  });
-  if (override?.apiKey) {
-    const verified = await validateBrowserbaseCredentials({ apiKey: override.apiKey, projectId: override.projectId ?? null });
-    override.projectId = verified.projectId;
-  }
-  return record.browserbaseSession.applyVerifiedOverride(
-    override,
-    { restart: record.agentSession?.status !== 'running' },
-    revision,
-  );
-}
-
-function providerModeRequest(activeSession, phase) {
+function providerModeRequest(activeSession, phase = activeSession.planning.workflow === 'direct' ? 'implementing' : activeSession.planning.phase) {
   return {
-    workflow: 'plan',
+    workflow: activeSession.planning.workflow,
     phase,
     capabilityEpoch: activeSession.planning.capabilityEpoch,
+    chatPermissionGrants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants),
   };
 }
 
@@ -3384,6 +4235,12 @@ async function approveImplementationPlan(record, sock, msg) {
     }
     await activeSession.backend.setExecutionMode(providerModeRequest(activeSession, 'implementing'));
     if (record.agentSession !== activeSession || activeSession.planning.phase !== 'switching') return;
+    const approvedPrompt = await addReferenceContext(
+      activeSession,
+      JSON.stringify(transition.approvedPlan.plan),
+      buildApprovedPlanPrompt(transition.approvedPlan),
+    );
+    if (record.agentSession !== activeSession || activeSession.planning.phase !== 'switching') return;
     activeSession.planning.completeSwitch(transition.approvedPlan.planId);
     sendJson(sock, {
       v: 1,
@@ -3392,15 +4249,10 @@ async function approveImplementationPlan(record, sock, msg) {
       ...activeSession.planning.snapshot(),
     });
     beginAgentTurn(record, activeSession);
-    const approvedPrompt = buildApprovedPlanPrompt(transition.approvedPlan);
     activeSession.backend.sendUserMessage(addAgentInstructionsContext(addTemplateContext(
       record,
       activeSession,
-      addEditReportContext(record, activeSession, addReferenceContext(
-        activeSession,
-        JSON.stringify(transition.approvedPlan.plan),
-        approvedPrompt,
-      )),
+      addEditReportContext(record, activeSession, approvedPrompt),
     )));
   } catch (error) {
     if (record.agentSession === activeSession) {
@@ -3451,26 +4303,30 @@ async function requestImplementationPlanChanges(record, sock, msg, {
       ...activeSession.planning.snapshot(),
     });
     if (promptOverride) {
+      const referenced = await addReferenceContext(activeSession, promptOverride, promptOverride);
+      if (record.agentSession !== activeSession) return;
       beginAgentTurn(record, activeSession);
       activeSession.backend.sendUserMessage(addAgentInstructionsContext(addTemplateContext(
         record,
         activeSession,
-        addReferenceContext(activeSession, promptOverride, promptOverride),
+        referenced,
       )));
       return;
     }
     if (feedback) {
-      beginAgentTurn(record, activeSession);
       const revisionPrompt = [
         'The user requested changes, so the previous implementation plan is no longer authoritative.',
         'Re-read the affected document state and revise the plan directly from this feedback. Ask a focused question only if a missing answer blocks the revision. Present a complete replacement with present_implementation_plan and a concise changeSummary. The user does not need to ask you to draft it again.',
         `Previous plan: ${JSON.stringify(activeSession.planning.latestPlan.plan)}`,
         `Feedback: ${feedback}`,
       ].join('\n\n');
+      const referenced = await addReferenceContext(activeSession, feedback, revisionPrompt);
+      if (record.agentSession !== activeSession) return;
+      beginAgentTurn(record, activeSession);
       activeSession.backend.sendUserMessage(addAgentInstructionsContext(addTemplateContext(
         record,
         activeSession,
-        addReferenceContext(activeSession, feedback, revisionPrompt),
+        referenced,
       )));
     }
   } catch (error) {
@@ -3526,11 +4382,13 @@ async function setChatWorkflow(record, sock, msg) {
   // Codex setExecutionMode 는 자식 재시작을 기다리므로, 스냅샷·도구 게이트는
   // 재시작 전에 구상으로 바꿔 둔다. 실패하면 이전 상태로 되돌린다.
   activeSession.planning = nextPlanning;
+  settleChatPermissionRequest(record, { status: 'expired', reason: 'workflow-changed' });
   try {
     await activeSession.backend.setExecutionMode({
       workflow: msg.workflow,
       phase,
       capabilityEpoch: nextPlanning.capabilityEpoch,
+      chatPermissionGrants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants),
     });
   } catch (error) {
     if (record.agentSession === activeSession) activeSession.planning = previousPlanning;
@@ -3538,20 +4396,6 @@ async function setChatWorkflow(record, sock, msg) {
   }
   if (record.agentSession !== activeSession) return;
   activeSession.planReviewTurnId = null;
-  if (msg.workflow === 'direct') {
-    const browserbaseCleaned = await record.browserbaseSession.cleanup('workflow changed to direct')
-      .catch(() => false);
-    if (!browserbaseCleaned) {
-      record.processCleanupUncertain = true;
-      retainedUncertainBrowserbaseSessions.add(record.browserbaseSession);
-      retainUncertainProcessCleanup(record.recordRoot);
-      // The workflow switch itself already succeeded. Report the cleanup
-      // failure separately while still publishing the authoritative new mode.
-      sendChatError(sock, agentProcessCleanupUncertain(), 'AGENT_PROCESS_CLEANUP_UNCERTAIN', {
-        failure: cleanupUncertainFailure(activeSession.agent),
-      });
-    }
-  }
   if (previousPlanId) {
     sendJson(sock, {
       v: 1,
@@ -3566,6 +4410,20 @@ async function setChatWorkflow(record, sock, msg) {
 
 async function handleStudioMessage(record, sock, msg) {
   switch (msg.type) {
+    case 'reference-stage-bind': {
+      // 첨부 초안은 이전 채팅의 provider 가 살아 있어도 만들 수 있다. 이 묶기는
+      // staging HTTP 만 허용하며 provider 의 자료 읽기 범위·프로젝트를 바꾸지 않는다.
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      if (!requestId) return;
+      try {
+        const threadId = normalizeStableScopeId(msg.threadId, 'threadId');
+        record.referenceStagingThreadId = threadId;
+        sendJson(sock, { v: 1, type: 'reference-stage-bound', requestId, threadId });
+      } catch (error) {
+        sendJson(sock, { v: 1, type: 'reference-stage-bound', requestId, threadId: null });
+      }
+      return;
+    }
     case 'chat-start': {
       if (record.agentSession?.workflowTransition) {
         await record.agentSession.workflowTransition;
@@ -3589,7 +4447,11 @@ async function handleStudioMessage(record, sock, msg) {
         ));
         return;
       }
+      const previousRepository = record.projectRepository ?? null;
       try {
+        // 버전 저장소가 있는 문서는 모든 작업 공간이 한 프로젝트를 함께 쓴다.
+        const repositoryChanged = applyRecordRepository(record, msg.documentId, msg);
+        const reusable = record.agentSession;
         const s = await startSession(
           record,
           agent,
@@ -3611,6 +4473,8 @@ async function handleStudioMessage(record, sock, msg) {
               : null,
           },
         );
+        // 같은 세션을 그대로 쓰면 묶기를 건너뛴다 — 작업 공간이 바뀌었으면 여기서 다시 묶는다.
+        if (repositoryChanged && s === reusable) await rebindRecordProject(record);
         const resumedCursor = !s.replaceSessionPending && (s.resumed === true || (typeof msg.providerSessionId === 'string'
           && msg.providerSessionId !== '' && msg.providerSessionId === s.backend.getSessionId?.()));
         sendJson(sock, {
@@ -3625,14 +4489,58 @@ async function handleStudioMessage(record, sock, msg) {
           permissionProfile: s.permissionProfile,
           serviceTier: s.serviceTier,
           sessionId: s.sessionId,
+          status: s.status,
+          turnId: s.turnId,
           threadId: s.threadId,
           documentId: s.documentId,
           documentName: s.documentName,
+          projectId: s.projectId ?? null,
+          pendingChatPermissionRequest: pendingChatPermissionSnapshot(record),
+          chatPermissionGrants: normalizeChatPermissionGrants(s.chatPermissionGrants),
           ...s.planning.snapshot(),
         });
+        await sendProjectBound(record);
+        resumeLibrarianFor(record.boundProjectId);
       } catch (e) {
+        // 시작하지 못한 채팅의 작업 공간은 지금 세션의 표시에 쓰지 않는다.
+        if (!record.agentSession || record.agentSession.documentId !== msg.documentId) record.projectRepository = previousRepository;
         rejectStart(e, 'AGENT_SPAWN_FAILED');
       }
+      return;
+    }
+    case 'project-bind': {
+      // 허브가 다시 떠 세션이 비었거나 작업 공간이 바뀌었을 때 Studio 가 보낸다. 다음 메시지를
+      // 기다리지 않고 프로젝트를 다시 묶어 프로젝트 칸의 HTTP 호출이 바로 통하게 한다.
+      // 이미 있는 프로젝트에만 묶는다 — 새 프로젝트는 첫 채팅이 만든다.
+      const activeSession = record.agentSession;
+      const identity = activeSession
+        ? { threadId: activeSession.threadId, documentId: activeSession.documentId ?? null, documentName: activeSession.documentName ?? null }
+        : {
+          threadId: typeof msg.threadId === 'string' && msg.threadId ? msg.threadId : null,
+          documentId: typeof msg.documentId === 'string' && msg.documentId ? msg.documentId : null,
+          documentName: typeof msg.documentName === 'string' ? msg.documentName : null,
+        };
+      if (!identity.threadId && !identity.documentId) return;
+      if (msg.documentId === identity.documentId) applyRecordRepository(record, identity.documentId, msg);
+      const previous = record.boundProjectId ?? null;
+      const projectId = await bindRecordProject(record, { ...identity, create: false });
+      if (!projectId && previous && activeSession) {
+        // 묶여 있던 세션은 프로젝트를 잃지 않는다.
+        record.boundProjectId = previous;
+        return;
+      }
+      if (activeSession && activeSession.projectId !== projectId && projectId) {
+        activeSession.projectId = projectId;
+        const scopes = referenceScopesForSession(activeSession);
+        try { activeSession.releaseReferenceScopes?.(); } catch {}
+        activeSession.releaseReferenceScopes = referenceStore.retainScopes(scopes);
+        await referenceStore.activateScopes(scopes).catch((error) => log(`reference activation failed: ${error?.message ?? error}`));
+      } else if (!activeSession && projectId) {
+        await referenceStore.activateScopes(referenceScopesForSession({ ...identity, projectId }))
+          .catch((error) => log(`reference activation failed: ${error?.message ?? error}`));
+      }
+      await sendProjectBound(record);
+      resumeLibrarianFor(projectId);
       return;
     }
     case 'title-request': {
@@ -3719,30 +4627,72 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'chat-user-message': {
       if (!record.agentSession) {
-        rejectUserMessage(sock, msg, 'AGENT_NOT_STARTED', 'No agent session; send chat-start first.');
-        return;
-      }
-      if (record.agentSession.pendingTransitions > 0) {
-        rejectUserMessage(sock, msg, 'WORKFLOW_SWITCHING', 'The provider is applying a workflow or permission change.');
+        rejectUserMessage(record, sock, msg, workflowError('AGENT_NOT_STARTED', 'No agent session; send chat-start first.'));
         return;
       }
       try {
         assertMessageScope(record.agentSession, msg);
+        if (msg.requireAcceptance === true) {
+          if (typeof msg.messageId !== 'string' || !msg.messageId || msg.messageId.length > 128
+            || /[\u0000-\u001f\u007f]/.test(msg.messageId)
+            || !Object.prototype.hasOwnProperty.call(msg, 'threadId')
+            || !Object.prototype.hasOwnProperty.call(msg, 'documentId')) {
+            throw workflowError('INVALID_REQUEST', 'Accepted message receipts require messageId, threadId and documentId');
+          }
+          if (msg.stagedReferenceIds !== undefined && (!Array.isArray(msg.stagedReferenceIds)
+            || msg.stagedReferenceIds.length > 10
+            || msg.stagedReferenceIds.some((id) => typeof id !== 'string' || !id)
+            || new Set(msg.stagedReferenceIds).size !== msg.stagedReferenceIds.length)) {
+            throw workflowError('INVALID_REFERENCE_MESSAGE', 'Message attachments require up to 10 unique staged reference ids');
+          }
+          const receipt = record.userMessageReceipts.get(msg.messageId);
+          if (receipt) {
+            if (receipt.fingerprint !== userMessageFingerprint(msg, record.agentSession)) {
+              throw workflowError('MESSAGE_ID_CONFLICT', 'messageId belongs to a different message or document context');
+            }
+            if (!receipt.message) {
+              await discardRepeatedMessageStages(msg, record.agentSession);
+              if (receipt.attachments?.length) {
+                sendJson(sock, {
+                  v: 1, type: 'chat-reference-status', messageId: msg.messageId,
+                  attachments: receipt.attachments.map((attachment, index) => ({
+                    ...attachment, stageId: msg.stagedReferenceIds[index],
+                  })),
+                });
+              }
+              sendJson(sock, { v: 1, type: 'chat-user-message-accepted', messageId: msg.messageId });
+            } else if (receipt.socket !== sock) {
+              rejectUserMessage(record, receipt.socket, receipt.message, workflowError('REQUEST_INVALIDATED', 'Studio reconnected before accepting the message'), 'REQUEST_INVALIDATED', false);
+              throw workflowError('REQUEST_INVALIDATED', 'Retry the message after reconnecting Studio');
+            }
+            return;
+          }
+        }
       } catch (error) {
-        sendChatError(sock, error, 'INVALID_REQUEST', userMessageReceipt(msg));
+        rejectUserMessage(record, sock, msg, error);
+        return;
+      }
+      if (record.agentSession.pendingTransitions > 0) {
+        rejectUserMessage(record, sock, msg, workflowError('WORKFLOW_SWITCHING', 'The provider is applying a workflow or permission change.'));
         return;
       }
       if (record.agentSession.status === 'running' || record.pendingReferenceMessage) {
-        rejectUserMessage(sock, msg, 'AGENT_BUSY', 'A turn is already in progress.');
+        rejectUserMessage(record, sock, msg, workflowError('AGENT_BUSY', 'A turn is already in progress.'));
         return;
       }
       if (typeof msg.text !== 'string' || msg.text.length === 0) {
-        rejectUserMessage(sock, msg, 'INVALID_REQUEST', 'chat-user-message requires text');
+        rejectUserMessage(record, sock, msg, workflowError('INVALID_REQUEST', 'chat-user-message requires text'));
         return;
       }
       if (msg.text.length > MAX_CHAT_MESSAGE_CHARS) {
-        rejectUserMessage(sock, msg, 'INVALID_REQUEST', `chat message exceeds ${MAX_CHAT_MESSAGE_CHARS} characters`);
+        rejectUserMessage(record, sock, msg, workflowError('INVALID_REQUEST', `chat message exceeds ${MAX_CHAT_MESSAGE_CHARS} characters`));
         return;
+      }
+      if (msg.requireAcceptance === true) {
+        record.userMessageReceipts.set(msg.messageId, {
+          fingerprint: userMessageFingerprint(msg, record.agentSession),
+          message: msg, socket: sock, session: record.agentSession, turnId: null,
+        });
       }
       if (Object.prototype.hasOwnProperty.call(msg, 'activeTemplateId')) {
         try {
@@ -3753,17 +4703,21 @@ async function handleStudioMessage(record, sock, msg) {
           record.agentSession.activeTemplateId = null;
           sendJson(sock, { v: 1, type: 'chat-template-changed', template: null, reason: 'unavailable' });
           log(`message template unavailable: ${error?.message ?? error}`);
+          if (msg.requireAcceptance === true) {
+            rejectUserMessage(record, sock, msg, error, 'TEMPLATE_NOT_FOUND');
+            return;
+          }
         }
       }
       if (Array.isArray(msg.stagedReferenceIds) && msg.stagedReferenceIds.length > 0) {
         if (typeof msg.messageId !== 'string' || !msg.messageId) {
-          sendJson(sock, { v: 1, type: 'chat-error', code: 'INVALID_REFERENCE_MESSAGE', message: 'Attachment messages require messageId' });
+          rejectUserMessage(record, sock, msg, workflowError('INVALID_REFERENCE_MESSAGE', 'Attachment messages require messageId'));
           return;
         }
         void dispatchStagedUserMessage(record, sock, msg, record.agentSession)
           .catch((error) => {
             if (record.pendingReferenceMessage?.messageId === msg.messageId) record.pendingReferenceMessage = null;
-            sendChatError(sock, error, 'REFERENCE_COMMIT_FAILED', userMessageReceipt(msg));
+            rejectUserMessage(record, sock, msg, error, 'REFERENCE_COMMIT_FAILED');
           });
         return;
       }
@@ -3917,6 +4871,16 @@ async function handleStudioMessage(record, sock, msg) {
         }));
       return;
     }
+    case 'chat-permission-response': {
+      if (await answerBrowserAccountPermission(record, sock, msg)) return;
+      const activeSession = record.agentSession;
+      if (!activeSession) {
+        void answerChatPermission(record, sock, msg);
+        return;
+      }
+      void enqueueWorkflowTransition(record, activeSession, () => answerChatPermission(record, sock, msg));
+      return;
+    }
     case 'chat-service-tier-set': {
       if (!record.agentSession) {
         sendJson(sock, { v: 1, type: 'chat-error', code: 'AGENT_NOT_STARTED', message: 'Start a chat before changing the service tier.' });
@@ -4039,6 +5003,22 @@ async function handleStudioMessage(record, sock, msg) {
           outcome: publishedSkillOutcome(outcome),
         }))
         .catch((e) => sendJson(sock, { v: 1, type: 'skills-error', requestId: msg.requestId ?? null, code: e?.code ?? 'SKILLS_ERROR', message: String(e?.message ?? e) }));
+      return;
+    }
+    case 'artifact-descriptor-request': {
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      const threadId = typeof msg.threadId === 'string' ? msg.threadId : '';
+      void freshArtifactDescriptor(record, msg.artifactId, threadId)
+        .then((artifact) => replyToStudio(record, sock, { v: 1, type: 'artifact-descriptor', requestId, artifact }))
+        .catch((error) => replyToStudio(record, sock, {
+          v: 1,
+          type: 'artifact-descriptor',
+          requestId,
+          error: {
+            code: error?.code === 'ARTIFACT_NOT_FOUND' ? 'ARTIFACT_NOT_FOUND' : 'ARTIFACT_UNAVAILABLE',
+            message: String(error?.message ?? error),
+          },
+        }));
       return;
     }
     case 'skill-editor-read': {
@@ -4369,24 +5349,12 @@ async function handleStudioMessage(record, sock, msg) {
         }));
       return;
     }
-    case 'browserbase-status-request': {
-      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      replyToStudio(record, sock, { v: 1, type: 'browserbase-status', requestId, status: record.browserbaseSession.status() });
+    case 'browser-request': {
+      void handleBrowserRequest(record, sock, msg);
       return;
     }
-    case 'browserbase-credentials-set': {
-      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      void applyBrowserbaseOverride(record, msg)
-        .then((status) => replyToStudio(record, sock, { v: 1, type: 'browserbase-status', requestId, status }))
-        .catch((e) => sendBrowserbaseError(record, sock, requestId, e));
-      return;
-    }
-    case 'browserbase-credentials-clear': {
-      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      record.browserbaseSession.beginCredentialChange();
-      void record.browserbaseSession.setOverride(null, { restart: record.agentSession?.status !== 'running' })
-        .then((status) => replyToStudio(record, sock, { v: 1, type: 'browserbase-status', requestId, status }))
-        .catch((e) => sendBrowserbaseError(record, sock, requestId, e));
+    case 'browser-account-submit': {
+      void handleBrowserAccountSubmit(record, sock, msg);
       return;
     }
     case 'pi-status-request': {
@@ -4601,10 +5569,13 @@ async function handleStudioMessage(record, sock, msg) {
       return;
     }
     case 'chat-interrupt': {
+      record.pendingReferenceMessage = null;
+      rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'The message was cancelled before acceptance');
       if (record.agentSession) {
         const interruptedSession = record.agentSession;
         const interruptedTurnId = interruptedSession.turnId;
         settleUserQuestion(record, { status: 'cancelled', reason: 'user-stop' });
+        settleChatPermissionRequest(record, { status: 'expired', reason: 'user-stop' });
         failPendingProviderCallsForTurn(
           record,
           interruptedSession,
@@ -4640,6 +5611,7 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'chat-stop': {
       settleUserQuestion(record, { status: 'cancelled', reason: 'user-stop' });
+      settleChatPermissionRequest(record, { status: 'expired', reason: 'user-stop' });
       cancelCheckpointTitleJobs(record);
       const stoppedAgent = record.agentSession?.agent;
       if (!await disposeSession(record)) {
@@ -4969,7 +5941,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         assertCellArgsPlacement(tool, msg.args);
         args = toolArgSchema(tool, definition).parse(msg.args ?? {});
         definition.validate?.(args);
-        if ((tool === 'present_implementation_plan' || tool === 'update_todos')
+        if ((tool === 'present_implementation_plan' || tool === 'update_todos' || tool === 'request_permission' || tool === 'browser_request_account')
           && (workerJob || sock.piSubagentId || sock.agentRole !== 'chat' || msg.parentTaskId)) {
           throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may manage the plan');
         }
@@ -4993,6 +5965,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           if (msg.workflow && msg.workflow !== record.agentSession.planning.workflow) {
             throw workflowError('WORKFLOW_MISMATCH', `MCP call declared ${msg.workflow} but the active workflow is ${record.agentSession.planning.workflow}`);
           }
+          const gates = projectToolGates();
           authorizeToolCall({
             category: definition.category,
             tool,
@@ -5000,6 +5973,10 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             phase: record.agentSession.planning.phase,
             expectedEpoch: record.agentSession.planning.capabilityEpoch,
             receivedEpoch: msg.capabilityEpoch,
+            chatMayEdit: gates.chatMayEdit,
+            homeSearch: gates.homeSearch,
+            researchPermissions: gates.researchPermissions,
+            chatPermissionGrants: !sock.piSubagentId && !msg.parentTaskId ? record.agentSession.chatPermissionGrants : [],
           });
         }
       } catch (error) {
@@ -5011,6 +5988,14 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         void skillRegistry.readResource(String(args.name ?? ''), String(args.resourcePath ?? 'SKILL.md'))
           .then(sendResult)
           .catch((error) => sendError(error, 'SKILLS_ERROR'));
+        return;
+      }
+      if (tool === 'request_permission') {
+        const generation = record.agentSession.generation;
+        void (async () => {
+          if (sock.agentLabel !== 'pi') await consumeChatPermissionScope(record, sock.agentLabel, args, generation);
+          return requestChatPermission(record, args, generation);
+        })().then(sendResult).catch((error) => sendError(error, 'CHAT_PERMISSION_FAILED'));
         return;
       }
       if (tool === 'commit_product_skill') {
@@ -5256,7 +6241,16 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         const completion = (async () => {
           let artifact = null;
           if (args.outcome === 'succeeded') {
-            artifact = await record.artifactStore.read(args.artifactId);
+            artifact = await record.artifactStore.annotate(args.artifactId, {
+              template: {
+                kind: 'copy-layout',
+                jobId: workerJob.jobId,
+                quality: completionClaims.quality,
+                pageCount: completionClaims.preview.outputPageCount,
+                sectionCount: completionClaims.preview.outputSectionCount,
+                registeredTemplateId: null,
+              },
+            });
           }
           workerJob.status = args.outcome === 'succeeded' ? 'completed' : 'failed';
           workerJob.activity = args.summary;
@@ -5295,37 +6289,8 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         return;
       }
       if (tool === 'register_copy_layout_template') {
-        const job = record.templateJobs.get(args.jobId);
-        if (!job || job.ownerThreadId !== record.agentSession?.threadId) {
-          sendError(workflowError('COPY_LAYOUT_JOB_NOT_FOUND', 'No completed copy-layout job belongs to this chat'));
-          return;
-        }
-        if (job.status !== 'completed' || !job.result?.artifact) {
-          sendError(workflowError('COPY_LAYOUT_JOB_NOT_READY', 'The copy-layout artifact is not ready for registration'));
-          return;
-        }
-        if (job.registeredTemplateId) {
-          try {
-            sendResult({ template: templateStore.get(job.registeredTemplateId), alreadyRegistered: true });
-          } catch (error) {
-            sendError(error, 'TEMPLATE_NOT_FOUND');
-          }
-          return;
-        }
-        void record.artifactStore.read(job.result.artifact.artifactId)
-          .then((artifact) => templateStore.add({
-            name: args.name ?? defaultTemplateName(artifact.fileName),
-            originalName: artifact.fileName,
-            format: path.extname(artifact.fileName).slice(1).toLowerCase(),
-            pageCount: job.result.preview.outputPageCount,
-            sectionCount: job.result.preview.outputSectionCount,
-            bytes: artifact.bytes,
-          }))
-          .then((template) => {
-            job.registeredTemplateId = template.id;
-            broadcastTemplateCatalog({ type: 'added', template });
-            sendResult({ template, alreadyRegistered: false });
-          })
+        void registerCopyLayoutTemplate(record, args)
+          .then(sendResult)
           .catch((error) => sendError(error, 'TEMPLATE_REGISTER_FAILED'));
         return;
       }
@@ -5389,9 +6354,30 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         }
         return;
       }
-      const referenceImageViaStudio = referenceImageNeedsStudio(tool, args);
-      if (definition.category === 'reference-read' && !referenceImageViaStudio) {
-        void executeReferenceTool({ tool, args, store: referenceStore, session: record.agentSession })
+      if (definition.category === 'project-read' || definition.category === 'project-write' || definition.category === 'project-ingest') {
+        const session = record.agentSession;
+        if (session?.projectId) projectRecords.set(session.projectId, record);
+        void executeProjectTool({
+          tool,
+          args,
+          session: session ? { ...session, agent: sock.agentLabel ?? session.agent } : null,
+          projectStore,
+          ingest: projectIngest,
+          homeSearch,
+          allowedRoots: [record.workDir, record.downloadManager.baseDir],
+          sessionKey: record.sessionId,
+          labels: recordLabels(record),
+        })
+          .then(({ handled, result }) => {
+            if (!handled) throw workflowError('UNKNOWN_TOOL', `Unknown project tool: ${tool}`);
+            sendResult(result);
+          })
+          .catch((error) => sendError(error, 'PROJECT_TOOL_FAILED'));
+        return;
+      }
+      const referenceImage = referenceImageCall(tool, args);
+      if (definition.category === 'reference-read' && !referenceImage) {
+        void executeReferenceTool({ tool, args, store: referenceStore, session: record.agentSession, projectStore })
           .then(({ handled, result }) => {
             if (!handled) throw workflowError('UNKNOWN_TOOL', `Unknown reference tool: ${tool}`);
             sendResult(result);
@@ -5450,7 +6436,10 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         return;
       }
       if (tool === 'download_file') {
-        void record.downloadManager.download({ sessionId: record.agentSession.chatId, ...args })
+        void browserActorForMcp(record, sock, tool, args).then(async (actor) => {
+          await browserPolicy.assertAllowed({ actor, action: 'download', url: args.url });
+          return browserDownloads.downloadPublic({ actor, ...args });
+        })
           .then(sendResult)
           .catch((error) => sendError(error, 'DOWNLOAD_FAILED'));
         return;
@@ -5473,7 +6462,10 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           }
           workerPublishClaimed = true;
         }
-        void record.artifactStore.publish(args)
+        const artifactOwner = workerJob
+          ? { threadId: workerJob.ownerThreadId, documentId: workerJob.binding?.documentId ?? null }
+          : { threadId: record.agentSession?.threadId ?? null, documentId: record.agentSession?.documentId ?? null };
+        void record.artifactStore.publish({ ...args, owner: artifactOwner })
           .then(async ({ artifactId, fileName, mime, size, checksum }) => {
             if (workerJob) {
               await Promise.resolve(workerJob.helperPromise);
@@ -5517,19 +6509,24 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           });
         return;
       }
-      if (definition.category === 'browser') {
-        const sidecarTool = tool.replace(/^browserbase_/, '');
-        const { browserId, ...sidecarArgs } = args;
-        void record.browserbaseSession.call(record.agentSession.chatId, browserId, sidecarTool, sidecarArgs)
-          .then(sendResult)
-          .catch((error) => {
-            if (error?.processCleanupUncertain) {
-              record.processCleanupUncertain = true;
-              retainedUncertainBrowserbaseSessions.add(record.browserbaseSession);
-              retainUncertainProcessCleanup(record.recordRoot);
+      if (definition.category === 'browser' || tool === 'browser_request_account') {
+        void browserActorForMcp(record, sock, tool, args).then(async (actor) => {
+          if (tool === 'browser_request_account') {
+            if (actor.agentId !== `${actor.threadId}:root`) {
+              throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request website account access');
             }
-            sendError(error, 'BROWSERBASE_TOOL_FAILED');
-          });
+            const request = await credentialBroker.requestAccount({ actor, ...args });
+            publishBrowserAccountRequest(record, request);
+            return { pending: true, requestId: request.requestId, origin: request.origin };
+          }
+          const result = browserMcpResult(await ownedBrowser.request(actor, tool.slice('browser_'.length).replaceAll('_', '-'), args));
+          if (tool === 'browser_status') {
+            const accounts = await credentialBroker.listAccounts();
+            result.accounts = actor.agentId === `${actor.threadId}:root` ? accounts.accounts
+              : accounts.accounts.filter((account) => account.agentReuseApproved);
+          }
+          return result;
+        }).then(sendResult).catch((error) => sendError(error, 'BROWSER_TOOL_FAILED'));
         return;
       }
       if (workerJob && tool === 'materialize_document_snapshot') {
@@ -5646,6 +6643,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           workflow: record.agentSession?.planning.snapshot().workflow,
           phase: record.agentSession?.planning.snapshot().phase,
           capabilityEpoch: record.agentSession?.planning.capabilityEpoch,
+          chatPermissionGrants: !workerJob && !sock.piSubagentId && !msg.parentTaskId ? normalizeChatPermissionGrants(record.agentSession.chatPermissionGrants) : [],
           turnBound: !workerJob,
           ...(providerTurn ? { providerTurnId: providerTurn.turnId } : {}),
           ...(sock.parentTaskId ? { parentTaskId: sock.parentTaskId } : {}),
@@ -5660,20 +6658,21 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           sendError(workflowError('NO_STUDIO', 'Studio disconnected before receiving the tool request'));
         }
       };
-      // 참조 이미지 잘라내기/삽입은 허브가 저장소 blob 을 읽어 인자를 채운 뒤 스튜디오로 넘긴다.
-      if (referenceImageViaStudio) {
-        if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
-          sendError(workflowError('NO_STUDIO', 'Studio is not connected; open rhwp-studio in a browser'));
-          return;
-        }
-        void resolveReferenceImageArgs({ tool, args, store: referenceStore, session: record.agentSession })
-          .then((resolved) => {
+      // 참조 그림: 허브가 저장소를 읽어 바로 답하거나(자르지 않는 이미지), 인자를 채워 스튜디오로 넘긴다
+      // (잘라내기·확대·삽입, PDF 쪽과 영역 조각은 스튜디오가 HTTP 로 받아 그린다).
+      if (referenceImage) {
+        void planReferenceImageCall({ tool, args, store: referenceStore, session: record.agentSession, projectStore })
+          .then((plan) => {
             if (callSettled) return;
+            if (plan.result) {
+              sendResult(plan.result);
+              return;
+            }
             if (providerTurn && !providerTurnIsActive(record, providerTurn)) {
               sendError(noActiveProviderTurnError());
               return;
             }
-            forwardToStudio(resolved);
+            forwardToStudio(plan.forward);
           })
           .catch((error) => sendError(error, 'REFERENCE_READ_FAILED'));
         return;
@@ -5774,7 +6773,6 @@ function recordHealth(record) {
     studioConnected: !!record.studioSocket && record.studioSocket.readyState === record.studioSocket.OPEN,
     mcpClients: record.mcpSockets.size,
     session: sessionInfo(record),
-    browserbase: record.browserbaseSession.status(),
   };
 }
 
@@ -5788,6 +6786,7 @@ function healthzBody() {
     uptimeMs: Date.now() - STARTED_AT,
     protocol: PROTOCOL_VERSION,
     secretBroker: secretStore.available,
+    browser: { owned: true },
     sessions: sessions.summaries(recordHealth),
     providers: providerHealth.cached(),
   };
@@ -5930,8 +6929,13 @@ const httpServer = http.createServer((req, res) => {
       // session-wide token.
       const presentedToken = requestToken(req, url);
       const expectedTokens = authSessionId ? [presentedToken] : [];
-      const allowedScopes = authSessionId
-        ? referenceScopesForSession(sessions.require(authSessionId).agentSession)
+      const referenceRecord = authSessionId ? sessions.require(authSessionId) : null;
+      const stagingPath = url.pathname === '/reference-staging' || url.pathname.startsWith('/reference-staging/');
+      // 초안 첨부만 별도로 묶는다. 저장된 자료 읽기는 살아 있는 provider 세션의 범위만 쓴다.
+      const allowedScopes = referenceRecord
+        ? referenceScopesForSession(stagingPath && referenceRecord.referenceStagingThreadId
+          ? { threadId: referenceRecord.referenceStagingThreadId }
+          : referenceRecord.agentSession)
         : [];
       if (isReferencePath(url.pathname)) {
         const handleReferenceHttp = createReferenceHttpHandler({
@@ -5949,6 +6953,49 @@ const httpServer = http.createServer((req, res) => {
         });
         if (await handleTemplateHttp(req, res, url)) return;
       }
+    }
+    if (isBrowserDownloadsPath(url.pathname)) {
+      let record = null;
+      if (req.method !== 'OPTIONS') {
+        record = sessions.require(authenticateHttpSession(req, url, { audience: HUB_CAPABILITY_AUDIENCES.REFERENCE }));
+      }
+      const handleBrowserDownloadsHttp = createBrowserDownloadsHttpHandler({
+        downloads: browserDownloads,
+        tokens: record ? [requestToken(req, url)] : [],
+        actor: record ? browserActorForRecord(record, { isHuman: true }) : null,
+        canImportProject: (projectId) => Boolean(record && projectStore.hasProject(projectId)),
+      });
+      if (await handleBrowserDownloadsHttp(req, res, url)) return;
+    }
+    if (isProjectPath(url.pathname)) {
+      // 참고 자료와 같은 REFERENCE capability 로 인증한다. 세션은 자기 프로젝트만 다룬다.
+      let record = null;
+      if (req.method !== 'OPTIONS') {
+        record = sessions.require(authenticateHttpSession(req, url, {
+          audience: HUB_CAPABILITY_AUDIENCES.REFERENCE,
+        }));
+      }
+      const handleProjectHttp = createProjectHttpHandler({
+        projectStore,
+        referenceStore,
+        settingsStore: projectSettings,
+        librarian: projectLibrarian,
+        tokens: record ? [requestToken(req, url)] : [],
+        session: record ? {
+          projectId: record.boundProjectId ?? null,
+          documentId: record.boundDocumentId ?? null,
+          documentName: record.agentSession?.documentName ?? null,
+          labels: recordLabels(record),
+        } : null,
+        homeAccess: HOME_ACCESS,
+        platform: process.platform,
+        onBindingChanged: async () => {
+          if (record) await rebindRecordProject(record);
+          await reconcileProjectBindings();
+        },
+      });
+      if (record?.boundProjectId) projectRecords.set(record.boundProjectId, record);
+      if (await handleProjectHttp(req, res, url)) return;
     }
     if (req.method === 'GET' && url.pathname === '/oauth/openrouter/callback') {
       const code = url.searchParams.get('code');
@@ -6196,7 +7243,18 @@ const httpServer = http.createServer((req, res) => {
       // Never trust a provider-supplied profile. The authenticated live
       // session/worker capability fixes the only catalog it may receive.
       authenticatedUrl.searchParams.set('profile', profile);
-      const { status, body } = handlePiToolDefinitions({ url: authenticatedUrl, token: TOKEN });
+      const gates = projectToolGates();
+      const workflow = candidateSession?.agentSession?.planning?.workflow;
+      const { status, body } = handlePiToolDefinitions({
+        url: authenticatedUrl,
+        token: TOKEN,
+        gates: {
+          projectWrites: !(workflow === 'question' && gates.chatMayEdit === false),
+          homeSearch: gates.homeSearch && !requestedWorkerJobId && !requestedSubagentId,
+          requestable: !requestedWorkerJobId && !requestedSubagentId,
+          researchPermissions: gates.researchPermissions,
+        },
+      });
       sendHttpJson(res, status, body);
       return;
     }
@@ -6414,6 +7472,7 @@ httpServer.on('upgrade', (req, socket, head) => {
         if (record.studioSocket === ws) {
           record.studioSocket = null;
           record.pendingReferenceMessage = null;
+          rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'Studio disconnected before accepting the message', { socket: ws });
           armStudioReattachGrace(record);
         }
       });
@@ -6468,6 +7527,13 @@ httpServer.on('upgrade', (req, socket, head) => {
           interaction: pendingUserQuestion,
           replayed: true,
         });
+      }
+      const pendingChatPermissionRequest = pendingChatPermissionSnapshot(record);
+      if (pendingChatPermissionRequest) sendJson(ws, {
+        v: 1, type: 'chat-permission-requested', request: pendingChatPermissionRequest, replayed: true,
+      });
+      for (const request of record.pendingBrowserAccountRequests.values()) {
+        if (request.expiresAt > Date.now()) sendJson(ws, { v: 1, type: 'chat-permission-requested', request, replayed: true });
       }
       void skillRegistry.catalog()
         .then((catalog) => sendJson(ws, { v: 1, type: 'skills-catalog', catalog }))
@@ -6653,7 +7719,6 @@ async function disposeRecord(record, reason) {
     backendExit,
     ...templateBackendExits,
     stopAuxiliaryProcesses(record),
-    record.browserbaseSession.cleanup(reason),
     record.documentSnapshotManager.drain(),
   ]);
   let processCleanupSettled = record.processCleanupUncertain !== true;
@@ -6688,16 +7753,24 @@ function prepareShutdown(signal) {
   if (shutdownPreparationPromise) return shutdownPreparationPromise;
   shutdownPreparationPromise = (async () => {
     clearInterval(stagedReferenceCleanupTimer);
+    clearInterval(projectTrashTimer);
+    for (const timer of projectChangeTimers.values()) clearTimeout(timer);
+    projectChangeTimers.clear();
+    projectLibrarian.cancelAll();
     if (harnessUpdateTimer) clearTimeout(harnessUpdateTimer);
     if (ownerWatchdog) clearInterval(ownerWatchdog);
     log(`shutting down (${signal})`);
     // 세션을 정리하면 도는 턴마다 turn-end 가 나간다. 그 끝이 프로바이더 실패가 아니라 허브가 내려가며
     // 끊은 턴임을 Studio 가 알도록 먼저 알린다(S3 의 허브 재시작 줄). 옛 Studio 는 모르는 프레임을 무시한다.
     for (const sock of studioWss.clients) sendJson(sock, { v: 1, type: 'hub-shutdown' });
+    const browserClosed = await ownedBrowser.close().catch(() => false);
+    await credentialBroker.close?.();
+    await browserDownloads.close?.();
     const cleanupProven = await sessions.disposeAll(
       (record) => disposeRecord(record, 'hub shutdown'),
     );
     if (!cleanupProven) retainUncertainProcessCleanup(WORK_ROOT);
+    if (browserClosed === false) retainUncertainProcessCleanup(WORK_ROOT);
     // 기동 동기화가 models.json 을 쓰는 도중에 process.exit 가 오면 `.tmp-*` 사본(키 포함 가능)이 남는다.
     await Promise.race([
       piManager.close().catch((error) => log(`pi settings flush failed: ${error?.message ?? error}`)),
@@ -6708,7 +7781,7 @@ function prepareShutdown(signal) {
         try { sock.close(1001, 'server shutting down'); } catch {}
       }
     }
-    return cleanupProven;
+    return cleanupProven && browserClosed !== false;
   })();
   return shutdownPreparationPromise;
 }

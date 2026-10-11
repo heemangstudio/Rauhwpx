@@ -62,9 +62,7 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
   }
   if (params.get('permission') === 'unrestricted') preview.bridge.setPermissionProfile('unrestricted');
   if (choosesMode) await chooseMode(mode);
-  const browserbase = params.get('browserbase');
-  if (browserbase === 'ready' || browserbase === 'setup' || browserbase === 'error')
-    preview.setBrowserbaseState(browserbase === 'ready' ? 'connected' : browserbase);
+
   if (params.get('document') === 'empty') select('#document', 'empty');
   if (params.get('play') === '1') {
     await until(composerReady, 'composer');
@@ -160,7 +158,7 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
     for (const set of [...preview.bridge.pendingEdits.getChangeSets()]) preview.bridge.pendingEdits.approve(set.id);
     await preview.enterFocusMode();
     await click('.ag-environment-changes');
-    await until(() => document.querySelector('.ag-root.ag-review-drawer-open'), 'changes drawer');
+    await until(() => document.querySelector('.ag-root.ag-workbench-open .ag-workbench-panel[data-view="changes"]:not([hidden])'), 'changes tab');
   }
   if (params.get('terminal') === '1' && surface === 'provider-setup' && params.get('provider') === 'claude') {
     await click('.ag-agent-setup-pane:not([hidden]) .ag-agent-setup-primary');

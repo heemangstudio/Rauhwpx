@@ -50,7 +50,7 @@ try {
     await page.goto(`${origin}/?controls=0&theme=light&width=${width}`, { waitUntil: 'networkidle0' });
     await page.waitForFunction(() => window.sidebarPreview);
     await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
-    await page.click('.ag-settings-btn');
+      await page.$eval('#settings', (button) => button.click());
     await page.waitForSelector('.ag-root.ag-settings-open');
     await page.click('.ag-settings-nav-button[data-destination="skills"]');
     await page.waitForSelector('#ag-settings-pane-skills .ag-skills-list');
@@ -135,7 +135,7 @@ try {
 
   await page.reload({ waitUntil: 'networkidle0' });
   await page.waitForFunction(() => window.sidebarPreview);
-  await page.click('.ag-settings-btn');
+  await page.$eval('#settings', (button) => button.click());
   await page.waitForSelector('.ag-root.ag-settings-open');
   await page.click('.ag-settings-nav-button[data-destination="skills"]');
   await page.waitForSelector('#ag-settings-pane-skills .ag-skills-list');
@@ -248,7 +248,7 @@ try {
   await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
   await page.goto(`${origin}/?controls=0&theme=light&width=280`, { waitUntil: 'networkidle0' });
   await page.waitForFunction(() => window.sidebarPreview);
-  await page.click('.ag-settings-btn');
+  await page.$eval('#settings', (button) => button.click());
   await page.waitForSelector('.ag-root.ag-settings-open');
   await page.click('.ag-settings-nav-button[data-destination="skills"]');
   await page.waitForSelector('#ag-settings-pane-skills .ag-skills-list');

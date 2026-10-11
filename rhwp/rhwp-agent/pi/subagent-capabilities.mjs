@@ -15,6 +15,7 @@ const ROOT_ONLY_TOOLS = new Set([
   'register_copy_layout_template',
   'update_agent_instructions',
   'commit_product_skill',
+  'browser_request_account',
 ]);
 const CHILD_DOCUMENT_CATEGORIES = new Set([
   'instruction-read',
@@ -22,6 +23,11 @@ const CHILD_DOCUMENT_CATEGORIES = new Set([
   'document-write',
   'reference-read',
   'template-read',
+  'project-read',
+  'project-write',
+  'project-ingest',
+  'browser',
+  'download-write',
 ]);
 
 function capabilityError(code, message) {

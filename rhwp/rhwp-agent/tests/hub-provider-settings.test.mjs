@@ -174,7 +174,7 @@ async function fixture(t, { holdStartupDelayMs = 0, fakeCodex = false } = {}) {
   const child = spawn(process.execPath, ['server.mjs'], {
     cwd: new URL('..', import.meta.url),
     env: { ...process.env, NODE_ENV: 'test', RHWP_AGENT_PORT: '0', RHWP_AGENT_TOKEN: token,
-      RHWP_LAUNCH_ID: launchId, RHWP_WORK_DIR: root, RHWP_PI_DIR: piRoot,
+      RHWP_LAUNCH_ID: launchId, RHWP_WORK_DIR: root, RHWP_REFERENCES_DIR: path.join(root, 'references'), RHWP_PROJECTS_DIR: path.join(root, 'projects'), RHWP_PI_DIR: piRoot,
       RHWP_TEMPLATES_DIR: path.join(root, 'templates'), RHWP_AGENT_INSTRUCTIONS_DIR: path.join(root, 'instructions'), ...codexEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -229,6 +229,8 @@ test('live hub applies model/effort/provider changes after a turn and preserves 
   const { studio, start, turn, url } = await fixture(t);
   const first = await start();
   assert.equal(first.type, 'chat-started');
+  assert.equal(first.status, 'idle');
+  assert.equal(first.turnId, null);
   assert.equal((await turn('Remember the word orchard.')).effort, 'medium');
   const history = [{ role: 'user', text: 'Remember the word orchard.' }, { role: 'assistant', text: 'orchard' }];
   const effort = await start({ effort: 'high', history });
@@ -269,6 +271,10 @@ test('busy and invalid provider changes leave the active turn intact', { timeout
   await start();
   studio.send({ type: 'chat-user-message', text: 'HOLD', threadId: 'thread-settings', documentId: 'document-settings' });
   const active = await studio.next((frame) => frame.type === 'agent-event' && frame.event.type === 'turn-start');
+  const resumed = await start();
+  assert.equal(resumed.type, 'chat-started');
+  assert.equal(resumed.status, 'running');
+  assert.equal(resumed.turnId, active.event.turnId);
   const busy = await start({ effort: 'high' });
   assert.equal(busy.code, 'AGENT_BUSY');
   assert.equal(busy.session.status, 'running');

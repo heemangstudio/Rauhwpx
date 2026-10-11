@@ -1,6 +1,27 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('rhwpDesktop', {
+  browser: {
+    native: true,
+    attach: (payload) => ipcRenderer.invoke('desktop:browser-attach', payload),
+    detach: (payload) => ipcRenderer.invoke('desktop:browser-detach', payload),
+    getState: (payload) => ipcRenderer.invoke('desktop:browser-state', payload),
+    navigate: (payload) => ipcRenderer.invoke('desktop:browser-navigate', payload),
+    back: (payload) => ipcRenderer.invoke('desktop:browser-back', payload),
+    forward: (payload) => ipcRenderer.invoke('desktop:browser-forward', payload),
+    reload: (payload) => ipcRenderer.invoke('desktop:browser-reload', payload),
+    stop: (payload) => ipcRenderer.invoke('desktop:browser-stop', payload),
+    onEvent: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('desktop:browser-event', listener);
+      return () => ipcRenderer.removeListener('desktop:browser-event', listener);
+    },
+  },
+  saveAgentContext: (payload) => ipcRenderer.invoke('desktop:agent-context-save', payload),
+  listAgentContexts: (documentId) => ipcRenderer.invoke('desktop:agent-context-list', documentId),
+  readAgentContextFiles: (id) => ipcRenderer.invoke('desktop:agent-context-files', id),
+  setAgentContextState: (ids, state) => ipcRenderer.invoke('desktop:agent-context-state', ids, state),
+  captureDocumentRegion: (rect) => ipcRenderer.invoke('desktop:agent-context-capture', rect),
   getSessionContext: () => ipcRenderer.invoke('desktop:get-session-context'),
   // 백그라운드 문서의 에이전트용 추가 허브 세션. 만든 창만 문맥을 받고 해제할 수 있다.
   createAgentSession: () => ipcRenderer.invoke('desktop:agent-session-create'),
@@ -78,6 +99,23 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     'desktop:verify-native-pick',
     documentId,
     handleId,
+  ),
+  inspectNativeDocuments: (documentIds) => ipcRenderer.invoke(
+    'desktop:inspect-native-documents',
+    Array.isArray(documentIds) ? documentIds.map(String) : [],
+  ),
+  relocateNativeDocument: (documentId) => ipcRenderer.invoke(
+    'desktop:relocate-native-document',
+    documentId,
+  ),
+  readRememberedNativeDocument: (documentId) => ipcRenderer.invoke(
+    'desktop:read-remembered-native-document',
+    documentId,
+  ),
+  revealNativeDocument: (documentId) => ipcRenderer.invoke('desktop:reveal-native-document', documentId),
+  openNativeDocumentWindow: (documentId) => ipcRenderer.invoke(
+    'desktop:open-native-document-window',
+    documentId,
   ),
   reserveDocument: (identity, nativeHandleId, slotId) => ipcRenderer.invoke(
     'desktop:document-reserve',

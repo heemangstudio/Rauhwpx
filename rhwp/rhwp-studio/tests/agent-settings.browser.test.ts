@@ -29,7 +29,8 @@ test('bridge matches rapid settings replies, reconnects, failures and queued fol
         threadId: 'test-thread', documentId: 'test-document', documentName: 'test.hwpx',
         revision: { revision: 42 },
         chatHistory: [], queuedMessages: [], workflowSwitchPending: false,
-        pendingUserQuestion: null, pendingTurnOpen: false,
+        messageReceipts: new Map(), awaitingAcceptanceId: null,
+        pendingUserQuestion: null, pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [], pendingTurnOpen: false,
         sendJson: (frame: any) => { frames.push(structuredClone(frame)); return true; },
         emit: (event: any) => events.push(event),
         // Document rendering and plan transitions are independent of settings delivery.

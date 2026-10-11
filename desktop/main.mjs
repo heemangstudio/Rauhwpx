@@ -7,6 +7,7 @@ import {
   app,
   autoUpdater as nativeAutoUpdater,
   BrowserWindow,
+  WebContentsView,
   Menu,
   dialog,
   ipcMain,
@@ -36,6 +37,7 @@ import {
   waitForHubReadyLine,
 } from './agent-hub.mjs';
 import { DocumentLeaseManager, releaseRendererDocuments } from './document-leases.mjs';
+import { captureDocumentRegion, installAgentContextStore } from './agent-context-store.mjs';
 import { quarantineBookmarkState, readBookmarkState } from './bookmark-state.mjs';
 import {
   MAX_GENERATED_DOCUMENT_BYTES,
@@ -66,6 +68,7 @@ import { INTERNAL_APP_NAME, PRODUCT_NAME } from './app-identity.mjs';
 import { resolveProfileDirectories } from './profile-continuity.mjs';
 import { createRebrandImportController } from './rebrand-import-controller.mjs';
 import { createSecretVault, handleSecretRequest } from './secret-vault.mjs';
+import { OwnedBrowserHost } from './browser-host.mjs';
 import { removeRetiredCloudData } from './retired-cloud-data.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
 import { createUpdateLifecycle, completeWindowClose } from './update-lifecycle.mjs';
@@ -388,12 +391,15 @@ class AgentHubOwner {
         RHWP_LAUNCH_ID: launchId,
         RHWP_OWNER_PID: String(process.pid),
         RHWP_OWNER_IPC: '1',
+        RHWP_HOME_ACCESS: '1',
         RHWP_RUNTIME_DIR: runtimeDir,
         RHWP_WORK_DIR: workDir,
         RHWP_AGENT_INSTRUCTIONS_DIR: join(app.getPath('userData'), 'agent-instructions'),
         RHWP_OWN_RUNTIME_DIR: '1',
         RHWP_OWN_WORK_DIR: '1',
         RHWP_SECRET_BROKER: 'ipc',
+        RHWP_BROWSER_HOST: 'ipc',
+        RHWP_BROWSER_DATA_DIR: join(app.getPath('userData'), 'browser'),
         ...(rhwpExecutable ? { RHWP_BIN: rhwpExecutable } : {}),
       },
     });
@@ -404,6 +410,17 @@ class AgentHubOwner {
     const child = spawnHubProcess(launch, {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       onMessage: (message, source) => {
+        if (message?.type === 'rhwp-browser-request') {
+          if (source !== this.#child || this.#stoppingChild === source || this.#disposed || quitting) {
+            if (source.connected) source.send({ type: 'rhwp-browser-response', id: message.id, ok: false,
+              error: { code: 'NATIVE_BROWSER_OWNER_STALE', message: 'The desktop browser owner is stopping.' } });
+            return;
+          }
+          void browserHost.handleRequest(message, source).then((response) => {
+            if (response && source.connected) source.send(response);
+          });
+          return;
+        }
         if (!secretVault) return;
         void handleSecretRequest(secretVault, message).then((response) => {
           if (response && source.connected) source.send(response);
@@ -413,6 +430,7 @@ class AgentHubOwner {
         console.warn('[hamaeditor] agent hub spawn error:', error);
       },
       onExit: (code, signal) => {
+        void browserHost.release(child).catch(() => {});
         console.warn('[hamaeditor] agent hub process exit:', code, signal ?? '');
         if (this.#child !== child) return;
         this.#context = null;
@@ -524,6 +542,19 @@ const sessions = new SessionManager({
   }),
   closeHubSession: closeOwnedHubSession,
 });
+const browserHost = new OwnedBrowserHost({
+  BrowserWindow,
+  WebContentsView,
+  electronSession,
+  dataDir: join(app.getPath('userData'), 'browser'),
+  getWindowForSession: (sessionId) => {
+    const session = sessions.sessionById(sessionId);
+    if (session) return session.window;
+    return sessions.windows().find((window) => (
+      sessions.sessionForSender(window.webContents).agentSessionIds.has(sessionId)
+    )) ?? null;
+  },
+});
 const documentLeases = new DocumentLeaseManager();
 const nativeFiles = new NativeFileHandleRegistry();
 const nativeBookmarkFile = join(app.getPath('userData'), 'native-document-bookmarks.json');
@@ -622,7 +653,10 @@ const updateLifecycle = createUpdateLifecycle({
   isInteractive: () => manualUpdateCheck || interactiveUpdateDownload,
   showMessageBox: (options) => dialog.showMessageBox({ title: PRODUCT_NAME, ...options }),
   openReleases: () => shell.openExternal(RELEASES_URL),
-  cleanup: () => hubOwner.teardown(),
+  cleanup: async () => {
+    await hubOwner.teardown();
+    await browserHost.dispose();
+  },
   onQuitRequested: (requested) => { quitRequested = requested; },
   onTeardown: () => { quitting = true; },
 });
@@ -834,6 +868,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     requestRendererClose();
   });
   window.on('closed', () => {
+    browserHost.detachWindow(window);
     agentAttention.forget(windowId);
     releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
     // 창의 추가 에이전트 세션도 함께 허브에서 닫힌다.
@@ -984,6 +1019,20 @@ function queueLaunch(request) {
 function showLaunchError(error) {
   dialog.showErrorBox('HamaEditor could not open', error instanceof Error ? error.message : String(error));
 }
+
+installAgentContextStore({
+  ipcMain, sessionForEvent,
+  rootDir: join(app.getPath('userData'), 'document-captures'),
+  capturePageForEvent(event, rect) {
+    const { window } = sessionForEvent(event);
+    const bounds = window.getContentBounds();
+    return captureDocumentRegion({
+      webContents: window.webContents,
+      bounds: { ...bounds, scaleFactor: screen.getDisplayMatching(bounds).scaleFactor },
+      rect,
+    });
+  },
+});
 
 // ── 2.0.11 프로필 가져오기 ────────────────────────────────────────────────
 // 2.0.11 은 다른 프로필 폴더와 출처(hamaeditor://app)에 Studio 저장소를 남겼다. 그 사본을 숨은 창에서
@@ -1245,6 +1294,8 @@ ipcMain.handle('desktop:native-file-write', async (event, handleId, bytes, ident
   const session = sessionForEvent(event);
   const written = await nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases);
   noteRecentDocument(session.sessionId, handleId);
+  // 저장한 내용 표시(크기·sha256)를 북마크에 남겨 옮겨진 파일을 다음 실행에도 알아본다.
+  void persistNativeBookmarks().catch(() => {});
   return written;
 });
 ipcMain.handle('desktop:native-file-is-same', (event, firstHandleId, secondHandleId) => {
@@ -1302,6 +1353,65 @@ ipcMain.handle('desktop:verify-native-pick', (event, documentId, handleId) => {
   if (typeof documentId !== 'string' || !documentId) return false;
   if (typeof handleId !== 'string' || !handleId) return false;
   return nativeFiles.verifyPick(session.sessionId, documentId, handleId);
+});
+// 문서 홈: 기억한 위치만 살핀다. 핸들을 만들거나 경로를 점유하지 않는다.
+ipcMain.handle('desktop:inspect-native-documents', async (event, documentIds) => {
+  sessionForEvent(event);
+  if (!Array.isArray(documentIds)) return [];
+  const ids = [...new Set(documentIds.filter((id) => typeof id === 'string' && id))].slice(0, 200);
+  // 닿지 않는 네트워크 위치가 libuv 작업 칸을 모두 붙잡지 않게 몇 개씩만 본다.
+  const results = new Array(ids.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(4, ids.length) }, async () => {
+    while (next < ids.length) {
+      const index = next++;
+      results[index] = { documentId: ids[index], ...await nativeFiles.inspectDocument(ids[index]) };
+    }
+  }));
+  return results;
+});
+const relocatingDocuments = new Map();
+ipcMain.handle('desktop:relocate-native-document', (event, documentId) => {
+  const session = sessionForEvent(event);
+  if (typeof documentId !== 'string' || !documentId) return null;
+  // 같은 문서를 두 번 찾지 않는다. 겹친 요청은 처음 찾기의 결과를 함께 받는다.
+  const key = `${session.sessionId}\0${documentId}`;
+  const running = relocatingDocuments.get(key);
+  if (running) return running;
+  const search = nativeFiles.relocateDocument(session.sessionId, documentId).then(async (relocated) => {
+    if (relocated) await persistNativeBookmarks();
+    return relocated;
+  }).finally(() => relocatingDocuments.delete(key));
+  relocatingDocuments.set(key, search);
+  return search;
+});
+ipcMain.handle('desktop:read-remembered-native-document', async (event, documentId) => {
+  const session = sessionForEvent(event);
+  if (typeof documentId !== 'string' || !documentId) return null;
+  return nativeFiles.readRememberedDocument(session.sessionId, documentId);
+});
+ipcMain.handle('desktop:reveal-native-document', async (event, documentId) => {
+  sessionForEvent(event);
+  if (typeof documentId !== 'string' || !documentId) return false;
+  if ((await nativeFiles.inspectDocument(documentId)).state !== 'present') return false;
+  shell.showItemInFolder(nativeFiles.bookmarkPathFor(documentId));
+  return true;
+});
+const recentWindowOpens = new Map();
+ipcMain.handle('desktop:open-native-document-window', async (event, documentId) => {
+  const session = sessionForEvent(event);
+  if (typeof documentId !== 'string' || !documentId) return false;
+  // 이 창에 이미 열린 문서는 새 창으로 다시 열지 않는다.
+  if (nativeFiles.ownsDocumentPath(session.sessionId, documentId)) return false;
+  if ((await nativeFiles.inspectDocument(documentId)).state !== 'present') return false;
+  const path = nativeFiles.bookmarkPathFor(documentId);
+  // 연달아 누른 요청은 한 번만 연다.
+  const now = Date.now();
+  if (now - (recentWindowOpens.get(path) ?? 0) < 2000) return true;
+  recentWindowOpens.set(path, now);
+  for (const [openedPath, at] of recentWindowOpens) if (now - at > 10_000) recentWindowOpens.delete(openedPath);
+  queueLaunch(launchRequest({ openFiles: [path], source: 'document-home' }));
+  return true;
 });
 ipcMain.handle('desktop:document-reserve', (event, identity, nativeHandleId, slotId) => {
   const session = sessionForEvent(event);
@@ -1392,6 +1502,29 @@ ipcMain.handle('agent-hub:ensure', async (event) => {
   if (quitting) return { started: false, ready: false };
   const result = await hubOwner.ensure();
   return { started: result.started, ready: result.ready };
+});
+
+function browserWindowForEvent(event) {
+  const { window } = sessionForEvent(event);
+  if (event.senderFrame !== event.sender.mainFrame) throw new Error('Native browser IPC requires the owning main frame');
+  return window;
+}
+ipcMain.handle('desktop:browser-attach', (event, payload) => browserHost.attach(browserWindowForEvent(event), payload));
+ipcMain.handle('desktop:browser-detach', (event, payload) => browserHost.detach(browserWindowForEvent(event), payload));
+ipcMain.handle('desktop:browser-state', (event, payload) => browserHost.state(browserHost.ownedTab(payload?.tabId, browserWindowForEvent(event))));
+ipcMain.handle('desktop:browser-navigate', (event, payload) => browserHost.navigate(browserWindowForEvent(event), payload));
+for (const command of ['back', 'forward', 'reload', 'stop']) {
+  ipcMain.handle(`desktop:browser-${command}`, (event, payload) => browserHost.navigation(browserWindowForEvent(event), payload, command));
+}
+ipcMain.handle('desktop:browser-popout-command', (event, payload) => {
+  if (event.senderFrame !== event.sender.mainFrame) throw new Error('Browser popout IPC requires its main frame');
+  return browserHost.popoutCommand(event.sender, payload);
+});
+ipcMain.on('desktop:browser-guest-focus', (event, payload) => {
+  const tab = [...browserHost.tabs.values()].find((value) => value.view.webContents === event.sender);
+  if (tab && event.senderFrame === event.sender.mainFrame) {
+    browserHost.emit(tab, 'sensitive-focus', { sensitive: payload?.sensitive === true });
+  }
 });
 
 if (!hasSingleInstanceLock) {

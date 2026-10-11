@@ -194,7 +194,7 @@ test('two active provider turns route overlapping MCP ids only to their owning S
       RHWP_AGENT_PORT: '0',
       RHWP_AGENT_TOKEN: TOKEN,
       RHWP_LAUNCH_ID: LAUNCH_ID,
-      RHWP_WORK_DIR: workRoot,
+      RHWP_WORK_DIR: workRoot, RHWP_REFERENCES_DIR: path.join(workRoot, 'references'), RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
       RHWP_TEMPLATES_DIR: path.join(workRoot, 'templates'),
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
       RHWP_PI_DIR: piRoot,
@@ -305,13 +305,50 @@ test('two active provider turns route overlapping MCP ids only to their owning S
   });
   assert.equal(crossSessionTemplateRequest.status, 401);
 
+  const bindDraft = async (socket, threadId, requestId) => {
+    const bound = waitForMessage(socket, (msg) => msg.type === 'reference-stage-bound' && msg.requestId === requestId);
+    sendFrame(socket, { type: 'reference-stage-bind', requestId, threadId });
+    return bound;
+  };
+  const stageDraft = (sessionId, token, threadId) => fetch(
+    `${httpBase}/reference-staging?sessionId=${sessionId}&scopeId=${threadId}`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`, Origin: studioOrigin,
+        'Content-Type': 'text/plain', 'X-File-Name': 'draft.txt',
+      },
+      body: 'A draft attachment before any provider starts.',
+    },
+  );
+  assert.equal((await bindDraft(alpha, 'draft-alpha', 'draft-bind-1')).threadId, 'draft-alpha');
+  const draftUpload = await stageDraft('alpha', alphaCapabilities.reference, 'draft-alpha');
+  assert.equal(draftUpload.status, 201, await draftUpload.text());
+  assert.equal((await stageDraft('beta', betaCapabilities.reference, 'draft-alpha')).status, 403);
+  assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'unbound-draft')).status, 403);
+  await bindDraft(alpha, 'next-draft-alpha', 'draft-bind-2');
+  assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'draft-alpha')).status, 403);
+  assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'next-draft-alpha')).status, 201);
+
   const alphaStarted = waitForMessage(alpha, (msg) => msg.type === 'chat-started');
   const betaStarted = waitForMessage(beta, (msg) => msg.type === 'chat-started');
   sendFrame(alpha, { type: 'chat-start', agent: 'pi', threadId: 'thread-alpha', documentId: 'doc-alpha' });
   sendFrame(beta, { type: 'chat-start', agent: 'pi', threadId: 'thread-beta', documentId: 'doc-beta' });
   const [alphaSession, betaSession] = await Promise.all([alphaStarted, betaStarted]);
-  assert.equal(alphaSession.status, undefined);
-  assert.equal(betaSession.status, undefined);
+  assert.equal(alphaSession.status, 'idle');
+  assert.equal(betaSession.status, 'idle');
+  assert.equal(alphaSession.turnId, null);
+  assert.equal(betaSession.turnId, null);
+  assert.equal((await bindDraft(alpha, 'new-draft', 'draft-bind-active')).threadId, 'new-draft');
+  assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'new-draft')).status, 201);
+  assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'next-draft-alpha')).status, 403);
+  const listReferences = (scopeId) => fetch(`${httpBase}/reference-files?sessionId=alpha&scope=chat&scopeId=${scopeId}`, {
+    headers: { Authorization: `Bearer ${alphaCapabilities.reference}`, Origin: studioOrigin },
+  });
+  assert.equal((await listReferences('new-draft')).status, 403, 'draft staging must not widen provider reference reads');
+  assert.equal((await listReferences('thread-alpha')).status, 200, 'the active provider scope remains authoritative');
+  await bindDraft(alpha, 'thread-alpha', 'draft-bind-provider');
+  assert.equal((await stageDraft('alpha', alphaCapabilities.reference, 'thread-alpha')).status, 201);
   const [alphaProviderCapabilities, betaProviderCapabilities] = await Promise.all([
     registerHubSession({
       port: ready.port, token: TOKEN, launchId: LAUNCH_ID, sessionId: 'alpha',
@@ -652,6 +689,37 @@ test('two active provider turns route overlapping MCP ids only to their owning S
   crossSessionArtifactUrl.searchParams.set('token', betaToken);
   assert.equal((await fetch(crossSessionArtifactUrl)).status, 401);
 
+  // 대화에 남은 주소 대신 artifactId로 지금 세션의 주소를 새로 받는다. 채팅 소유권은 그대로 지킨다.
+  const requestDescriptor = (socket, requestId, artifactId, threadId) => {
+    const reply = waitForMessage(socket, (msg) => msg.type === 'artifact-descriptor' && msg.requestId === requestId);
+    sendFrame(socket, { type: 'artifact-descriptor-request', requestId, artifactId, threadId });
+    return reply;
+  };
+  const fresh = await requestDescriptor(alpha, 'artifact-fresh', published.artifactId, 'thread-alpha');
+  assert.equal(fresh.artifact?.artifactId, published.artifactId, JSON.stringify(fresh));
+  assert.notEqual(fresh.artifact.downloadUrl, published.downloadUrl);
+  assert.equal(new URL(fresh.artifact.downloadUrl).searchParams.get('sessionId'), 'alpha');
+  const freshDownload = await fetch(fresh.artifact.downloadUrl, { headers: { Origin: studioOrigin } });
+  assert.equal(freshDownload.status, 200);
+  assert.deepEqual(Buffer.from(await freshDownload.arrayBuffer()), snapshotBytes);
+  for (const [socket, requestId, artifactId, threadId] of [
+    [alpha, 'artifact-other-thread', published.artifactId, 'thread-other'],
+    [beta, 'artifact-other-session', published.artifactId, 'thread-beta'],
+    [alpha, 'artifact-missing', 'artifact_missing_1234567890', 'thread-alpha'],
+  ]) {
+    const reply = await requestDescriptor(socket, requestId, artifactId, threadId);
+    assert.equal(reply.artifact, undefined);
+    assert.equal(reply.error?.code, 'ARTIFACT_NOT_FOUND', requestId);
+  }
+  assert.equal(existsSync(path.join(workRoot, 'generated-artifacts', `${published.artifactId}.json`)), true);
+  const registerResult = waitForMessage(alphaMcp, (msg) => msg.type === 'tool-result' && msg.id === 11);
+  sendFrame(alphaMcp, {
+    type: 'tool-call', id: 11, tool: 'register_copy_layout_template',
+    args: { artifactId: published.artifactId },
+    workflow: 'direct', capabilityEpoch: alphaSession.capabilityEpoch,
+  });
+  assert.equal((await registerResult).error?.code, 'COPY_LAYOUT_JOB_NOT_READY');
+
   const alphaTemplateCleared = waitForMessage(alpha, (msg) => msg.type === 'chat-template-changed' && msg.reason === 'deleted');
   const betaTemplateCleared = waitForMessage(beta, (msg) => msg.type === 'chat-template-changed' && msg.reason === 'deleted');
   const alphaCatalogDeleted = waitForMessage(alpha, (msg) => msg.type === 'templates-catalog' && msg.change?.type === 'deleted');
@@ -715,7 +783,7 @@ test('owner watchdog disposes the hub when its desktop owner exits', { timeout: 
       RHWP_LAUNCH_ID: `${LAUNCH_ID}-owner`,
       RHWP_OWNER_PID: String(owner.pid),
       RHWP_ORPHAN_IDLE_SHUTDOWN_MS: '250',
-      RHWP_WORK_DIR: workRoot,
+      RHWP_WORK_DIR: workRoot, RHWP_REFERENCES_DIR: path.join(workRoot, 'references'), RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
       RHWP_OWN_WORK_DIR: '1',
     },
@@ -751,7 +819,7 @@ test('owner watchdog has an absolute deadline even while an orphan socket stays 
       RHWP_OWNER_PID: String(owner.pid),
       RHWP_ORPHAN_IDLE_SHUTDOWN_MS: '200',
       RHWP_ORPHAN_HARD_SHUTDOWN_MS: '700',
-      RHWP_WORK_DIR: workRoot,
+      RHWP_WORK_DIR: workRoot, RHWP_REFERENCES_DIR: path.join(workRoot, 'references'), RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
       RHWP_OWN_WORK_DIR: '1',
     },

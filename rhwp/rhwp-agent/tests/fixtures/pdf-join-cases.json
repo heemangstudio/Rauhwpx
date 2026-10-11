@@ -1,0 +1,193 @@
+{
+ "description": "pdfjs text items -> page string after NFKC and trim. reference-extractor.mjs createPdfTextJoiner and rhwp-studio passage-locate.ts buildPageText must both produce it.",
+ "cases": [
+  {
+   "name": "Chrome per-glyph Korean with space items and empty EOL items",
+   "expected": "2027년 연구개발 지원사업 운영 지침\n과학기술정보통신부 고시 제2026-41호\n제1장 총칙",
+   "items": [
+    {"str":"2027","transform":[19,0,0,19,63,751.92],"width":41.81,"height":19,"dir":"ltr","hasEOL":false},
+    {"str":"년","transform":[19,0,0,19,104.81,751.92],"width":16.43,"height":19,"dir":"ltr","hasEOL":false},
+    {"str":" ","transform":[19,0,0,19,121.25,751.92],"width":6.66,"height":0,"dir":"ltr","hasEOL":false},
+    {"str":"연","transform":[19,0,0,19,126.24,751.92],"width":16.43,"height":19,"dir":"ltr","hasEOL":false},
+    {"str":"구개","transform":[19,0,0,19,142.68,751.92],"width":32.87,"height":19,"dir":"ltr","hasEOL":false},
+    {"str":"발","transform":[19,0,0,19,175.54,751.92],"width":16.43,"height":19,"dir":"ltr","hasEOL":false},
+    {"str":" ","transform":[19,0,0,19,191.97,751.92],"width":6.66,"height":0,"dir":"ltr","hasEOL":false},
+    {"str":"지원","transform":[19,0,0,19,196.97,751.92],"width":32.87,"height":19,"dir":"ltr","hasEOL":false},
+    {"str":"사","transform":[19,0,0,19,229.84,751.92],"width":16.43,"height":19,"dir":"ltr","hasEOL":false},
+    {"str":"업","transform":[19,0,0,19,246.27,751.92],"width":16.43,"height":19,"dir":"ltr","hasEOL":false},
+    {"str":" ","transform":[19,0,0,19,262.7,751.92],"width":6.66,"height":0,"dir":"ltr","hasEOL":false},
+    {"str":"운","transform":[19,0,0,19,267.7,751.92],"width":16.43,"height":19,"dir":"ltr","hasEOL":false},
+    {"str":"영","transform":[19,0,0,19,284.13,751.92],"width":16.43,"height":19,"dir":"ltr","hasEOL":false},
+    {"str":" ","transform":[19,0,0,19,300.56,751.92],"width":6.66,"height":0,"dir":"ltr","hasEOL":false},
+    {"str":"지","transform":[19,0,0,19,305.56,751.92],"width":16.43,"height":19,"dir":"ltr","hasEOL":false},
+    {"str":"침","transform":[19,0,0,19,321.99,751.92],"width":16.43,"height":19,"dir":"ltr","hasEOL":false},
+    {"str":"","transform":[11.5,0,0,11.5,63,716.67],"width":0,"height":0,"dir":"ltr","hasEOL":true},
+    {"str":"과","transform":[11.5,0,0,11.5,63,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":"학","transform":[11.5,0,0,11.5,72.95,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":"기","transform":[11.5,0,0,11.5,82.89,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":"술","transform":[11.5,0,0,11.5,92.84,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":"정","transform":[11.5,0,0,11.5,102.78,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":"보","transform":[11.5,0,0,11.5,112.73,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":"통","transform":[11.5,0,0,11.5,122.67,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":"신","transform":[11.5,0,0,11.5,132.62,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":"부","transform":[11.5,0,0,11.5,142.56,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":" ","transform":[11.5,0,0,11.5,152.51,716.67],"width":4.03,"height":0,"dir":"ltr","hasEOL":false},
+    {"str":"고","transform":[11.5,0,0,11.5,155.53,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":"시","transform":[11.5,0,0,11.5,165.48,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":" ","transform":[11.5,0,0,11.5,175.42,716.67],"width":4.03,"height":0,"dir":"ltr","hasEOL":false},
+    {"str":"제","transform":[11.5,0,0,11.5,178.45,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":"2026-41","transform":[11.5,0,0,11.5,188.39,716.67],"width":40.71,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":"호","transform":[11.5,0,0,11.5,229.1,716.67],"width":9.95,"height":11.5,"dir":"ltr","hasEOL":false},
+    {"str":"","transform":[13.5,0,0,13.5,63,664.92],"width":0,"height":0,"dir":"ltr","hasEOL":true},
+    {"str":"제","transform":[13.5,0,0,13.5,63,664.92],"width":11.68,"height":13.5,"dir":"ltr","hasEOL":false},
+    {"str":"1","transform":[13.5,0,0,13.5,74.68,664.92],"width":5.06,"height":13.5,"dir":"ltr","hasEOL":false},
+    {"str":"장","transform":[13.5,0,0,13.5,79.74,664.92],"width":11.68,"height":13.5,"dir":"ltr","hasEOL":false},
+    {"str":" ","transform":[13.5,0,0,13.5,91.42,664.92],"width":4.73,"height":0,"dir":"ltr","hasEOL":false},
+    {"str":"총칙","transform":[13.5,0,0,13.5,94.97,664.92],"width":23.35,"height":13.5,"dir":"ltr","hasEOL":false},
+    {"str":"","transform":[11.5,0,0,11.5,63,635.67],"width":0,"height":0,"dir":"ltr","hasEOL":true}
+   ]
+  },
+  {
+   "name": "touching glyph items join without a space",
+   "expected": "연구개발",
+   "items": [
+    {"str":"연","transform":[10,0,0,10,100,700],"width":10,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"구","transform":[10,0,0,10,110,700],"width":10,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"개발","transform":[10,0,0,10,120.4,700],"width":20,"height":10,"dir":"ltr","hasEOL":false}
+   ]
+  },
+  {
+   "name": "kerning overlap stays joined",
+   "expected": "WA",
+   "items": [
+    {"str":"W","transform":[10,0,0,10,100,700],"width":9.5,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"A","transform":[10,0,0,10,108.8,700],"width":7,"height":10,"dir":"ltr","hasEOL":false}
+   ]
+  },
+  {
+   "name": "a word gap with no space item becomes one space",
+   "expected": "지원 사업",
+   "items": [
+    {"str":"지원","transform":[10,0,0,10,100,700],"width":20,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"사업","transform":[10,0,0,10,123.5,700],"width":20,"height":10,"dir":"ltr","hasEOL":false}
+   ]
+  },
+  {
+   "name": "gaps at the 0.2 em threshold stay joined",
+   "expected": "ab c",
+   "items": [
+    {"str":"a","transform":[10,0,0,10,100,700],"width":5,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"b","transform":[10,0,0,10,107,700],"width":5,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"c","transform":[10,0,0,10,114.01,700],"width":5,"height":10,"dir":"ltr","hasEOL":false}
+   ]
+  },
+  {
+   "name": "existing whitespace inside items is not doubled",
+   "expected": "alpha beta gamma",
+   "items": [
+    {"str":"alpha ","transform":[10,0,0,10,100,700],"width":30,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"beta","transform":[10,0,0,10,140,700],"width":20,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":" gamma","transform":[10,0,0,10,170,700],"width":30,"height":10,"dir":"ltr","hasEOL":false}
+   ]
+  },
+  {
+   "name": "hasEOL on a text item breaks the line",
+   "expected": "첫 줄\n둘째 줄",
+   "items": [
+    {"str":"첫 줄","transform":[10,0,0,10,100,700],"width":25,"height":10,"dir":"ltr","hasEOL":true},
+    {"str":"둘째 줄","transform":[10,0,0,10,100,686],"width":35,"height":10,"dir":"ltr","hasEOL":false}
+   ]
+  },
+  {
+   "name": "baseline change without hasEOL breaks the line",
+   "expected": "제목\n본문",
+   "items": [
+    {"str":"제목","transform":[14,0,0,14,100,700],"width":28,"height":14,"dir":"ltr","hasEOL":false},
+    {"str":"본문","transform":[10,0,0,10,100,680],"width":20,"height":10,"dir":"ltr","hasEOL":false}
+   ]
+  },
+  {
+   "name": "a raised footnote mark stays on its line",
+   "expected": "결과1)를",
+   "items": [
+    {"str":"결과","transform":[10,0,0,10,100,700],"width":20,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"1)","transform":[6,0,0,6,120,704],"width":5,"height":6,"dir":"ltr","hasEOL":false},
+    {"str":"를","transform":[10,0,0,10,125.2,700],"width":10,"height":10,"dir":"ltr","hasEOL":false}
+   ]
+  },
+  {
+   "name": "a jump back to another column on the same baseline gets a space",
+   "expected": "홀수형 성명",
+   "items": [
+    {"str":"홀수","transform":[25,0,0,25,671,974],"width":44,"height":25,"dir":"ltr","hasEOL":false},
+    {"str":"형","transform":[25,0,0,25,714.2,974],"width":22.5,"height":25,"dir":"ltr","hasEOL":false},
+    {"str":"성명","transform":[16,0,0,16,227.6,972.2],"width":28.8,"height":16,"dir":"ltr","hasEOL":false}
+   ]
+  },
+  {
+   "name": "repeated empty EOL and whitespace items collapse to one break",
+   "expected": "가\n나",
+   "items": [
+    {"str":"","transform":[10,0,0,10,0,0],"width":0,"height":10,"dir":"ltr","hasEOL":true},
+    {"str":" ","transform":[10,0,0,10,90,700],"width":3,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"가","transform":[10,0,0,10,100,700],"width":10,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":" ","transform":[10,0,0,10,110,700],"width":3,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"","transform":[10,0,0,10,100,700],"width":0,"height":10,"dir":"ltr","hasEOL":true},
+    {"str":"","transform":[10,0,0,10,100,686],"width":0,"height":10,"dir":"ltr","hasEOL":true},
+    {"str":" ","transform":[10,0,0,10,100,686],"width":3,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"나","transform":[10,0,0,10,100,672],"width":10,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"  ","transform":[10,0,0,10,110,672],"width":6,"height":10,"dir":"ltr","hasEOL":true}
+   ]
+  },
+  {
+   "name": "right-to-left runs drawn leftward stay joined",
+   "expected": "םולש ךות",
+   "items": [
+    {"str":"םול","transform":[10,0,0,10,200,700],"width":20,"height":10,"dir":"rtl","hasEOL":false},
+    {"str":"ש","transform":[10,0,0,10,190,700],"width":10,"height":10,"dir":"rtl","hasEOL":false},
+    {"str":"ךות","transform":[10,0,0,10,160,700],"width":20,"height":10,"dir":"rtl","hasEOL":false}
+   ]
+  },
+  {
+   "name": "rotated text measures gaps along its own axis",
+   "expected": "세로쓰기 문장\n가로",
+   "items": [
+    {"str":"세로","transform":[0,10,-10,0,300,100],"width":20,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"쓰기","transform":[0,10,-10,0,300,120],"width":20,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"문장","transform":[0,10,-10,0,300,145],"width":20,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"가로","transform":[10,0,0,10,100,100],"width":20,"height":10,"dir":"ltr","hasEOL":false}
+   ]
+  },
+  {
+   "name": "vertical (ttb) items advance downward",
+   "expected": "세로\n다음",
+   "items": [
+    {"str":"세","transform":[10,0,0,10,500,700],"width":10,"height":10,"dir":"ttb","hasEOL":false},
+    {"str":"로","transform":[10,0,0,10,500,690],"width":10,"height":10,"dir":"ttb","hasEOL":false},
+    {"str":"다음","transform":[10,0,0,10,485,700],"width":10,"height":20,"dir":"ttb","hasEOL":false}
+   ]
+  },
+  {
+   "name": "items without geometry fall back to one space",
+   "expected": "제1조 목적 이 규정은",
+   "items": [
+    {"str":"제1조"},
+    {"str":""},
+    {"str":"목적"},
+    {"str":" "},
+    {"str":"이 규정은"}
+   ]
+  },
+  {
+   "name": "NFKC applies across joined items",
+   "expected": "file 한AB",
+   "items": [
+    {"str":"ﬁ","transform":[10,0,0,10,100,700],"width":5,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"le","transform":[10,0,0,10,105,700],"width":6,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"ᄒ","transform":[10,0,0,10,120,700],"width":5,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"ᅡᆫ","transform":[10,0,0,10,125,700],"width":5,"height":10,"dir":"ltr","hasEOL":false},
+    {"str":"ＡＢ","transform":[10,0,0,10,130,700],"width":10,"height":10,"dir":"ltr","hasEOL":false}
+   ]
+  }
+ ]
+}

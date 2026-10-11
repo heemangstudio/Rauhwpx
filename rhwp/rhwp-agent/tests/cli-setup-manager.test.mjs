@@ -297,7 +297,11 @@ test('a CLI that cannot be spawned fails its run instead of crashing the hub', a
     if (throwSynchronously) throw Object.assign(new Error('spawn EMFILE'), { code: 'EMFILE' });
     // Without an 'error' listener, this emit is an uncaught exception that ends the hub.
     const proc = new EventEmitter();
-    process.nextTick(() => proc.emit('error', Object.assign(new Error('spawn EACCES'), { code: 'EACCES' })));
+    process.nextTick(() => {
+      // A real pre-spawn EACCES leaves no PID and records the negative libuv exit code.
+      proc.exitCode = -13;
+      proc.emit('error', Object.assign(new Error('spawn EACCES'), { code: 'EACCES' }));
+    });
     return proc;
   };
   const manager = await createCliSetupManager({
@@ -416,6 +420,81 @@ test('installs share the prefix one at a time and report installing until they f
   assert.equal(calls.filter((call) => call.argv.includes('install')).length, 2);
   assert.equal(codexDone.installing, false);
   assert.equal(claudeDone.installing, false);
+});
+
+test('provider launch waits while npm replaces a managed executable', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const { spawnProcess: spawnFake } = fakeSpawner(path.join(rootDir, 'prefix'));
+  let releaseInstall;
+  const gate = new Promise((resolve) => { releaseInstall = resolve; });
+  t.after(() => releaseInstall());
+  const manager = await createCliSetupManager({
+    rootDir,
+    spawnProcess(command, argv, options) {
+      if (!argv.includes('install')) return spawnFake(command, argv, options);
+      const process = new FakeProcess();
+      void gate.then(() => spawnFake(command, argv, options).once('close', (code) => process.emit('close', code, null)));
+      return process;
+    },
+  }).init();
+  const installation = manager.install('claude');
+  let prepared = false;
+  const preparing = manager.prepareLaunch('claude').then((launch) => { prepared = true; return launch; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(prepared, false, 'launch must not use the transient missing .bin target');
+  releaseInstall();
+  await installation;
+  const launch = await preparing;
+  assert.equal(launch.bin, manager.binPath('claude'));
+  launch.release();
+});
+
+test('npm cannot replace the prefix between launch reservation and synchronous spawn', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const { calls, spawnProcess } = fakeSpawner(path.join(rootDir, 'prefix'));
+  const manager = await createCliSetupManager({ rootDir, spawnProcess }).init();
+  const launch = await manager.prepareLaunch('claude');
+  t.after(() => launch.release());
+  const installing = manager.install('codex');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.filter((call) => call.argv.includes('install')).length, 0);
+  launch.release();
+  launch.release();
+  assert.equal((await installing).installed, true);
+  assert.equal(calls.filter((call) => call.argv.includes('install')).length, 1);
+});
+
+test('an installer timeout quarantines the prefix when its process tree cannot be stopped', async (t) => {
+  const rootDir = await tmpRoot(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let installs = 0;
+  let installerStarted;
+  const started = new Promise((resolve) => { installerStarted = resolve; });
+  const manager = await createCliSetupManager({
+    rootDir, baseEnv: {}, readClaudeLogin: async () => null,
+    spawnProcess() {
+      installs += 1;
+      installerStarted();
+      const process = new FakeProcess();
+      if (installs === 1) process.kill = () => true;
+      else queueMicrotask(() => process.emit('close', 0, null));
+      return process;
+    },
+  }).init();
+  const first = manager.install('claude').catch((error) => error);
+  const second = manager.install('codex').catch((error) => error);
+  await started;
+  assert.equal(installs, 1);
+  t.mock.timers.tick(10 * 60_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(4_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  const firstResult = await first;
+  const secondResult = await second;
+  assert.equal(installs, 1, 'another npm process must not mutate a prefix still owned by the timed-out installer');
+  assert.equal(firstResult.code, 'AGENT_INSTALL_CLEANUP_UNCERTAIN');
+  assert.equal(secondResult.code, 'AGENT_INSTALL_CLEANUP_UNCERTAIN');
+  await assert.rejects(() => manager.prepareLaunch('claude'), { code: 'AGENT_INSTALL_CLEANUP_UNCERTAIN' });
 });
 
 test('Codex version output is parsed to its semantic version', async (t) => {

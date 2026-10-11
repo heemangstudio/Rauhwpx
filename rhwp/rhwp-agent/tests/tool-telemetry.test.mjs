@@ -132,7 +132,7 @@ test('the hub writes one JSONL row per turn with tool sizes, images and error co
     cwd: new URL('..', import.meta.url),
     env: {
       ...process.env, NODE_ENV: 'test', RHWP_AGENT_PORT: '0', RHWP_AGENT_TOKEN: TOKEN,
-      RHWP_LAUNCH_ID: LAUNCH_ID, RHWP_WORK_DIR: workRoot, RHWP_PI_DIR: piRoot,
+      RHWP_LAUNCH_ID: LAUNCH_ID, RHWP_WORK_DIR: workRoot, RHWP_REFERENCES_DIR: path.join(workRoot, 'references'), RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'), RHWP_PI_DIR: piRoot,
       RHWP_TEMPLATES_DIR: path.join(workRoot, 'templates'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],

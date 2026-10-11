@@ -98,6 +98,8 @@ const CATEGORIES = {
   documentRead: plain('read', '문서 읽음'),
   templateRead: plain('read', '서식 틀 읽음'),
   referenceRead: plain('read', '참고 자료 읽음'),
+  projectEdit: plain('other', '연구 자료 정리'),
+  projectImport: plain('other', '연구 자료 가져옴'),
   search: counted('search', (n) => `검색 ${n}번`),
   version: plain('other', '버전 저장'),
   fileExport: counted('other', (n) => `파일 ${n}개 내보냄`),
@@ -118,6 +120,8 @@ const CATEGORY_ORDER = Object.keys(CATEGORIES) as CategoryId[];
  */
 export const TURN_SUMMARY_IGNORED_TOOLS: ReadonlySet<string> = new Set([
   'ask_user_question',
+  'request_permission',
+  'browser_request_account',
   'present_implementation_plan',
   'update_todos',
   'get_selection',
@@ -137,7 +141,7 @@ export const TURN_SUMMARY_IGNORED_TOOLS: ReadonlySet<string> = new Set([
 const DOCUMENT_READ_TOOLS = new Set([
   'get_document_info', 'get_outline', 'get_fields', 'list_styles', 'list_numberings', 'list_footnotes', 'list_bookmarks',
 ]);
-const REFERENCE_READ_TOOLS = new Set(['list_reference_files', 'read_reference_chunk', 'read_reference_image']);
+const REFERENCE_READ_TOOLS = new Set(['list_reference_files', 'read_reference_chunk', 'read_reference_image', 'project_read']);
 const COPY_LAYOUT_TOOLS = new Set([
   'delegate_copy_layout', 'update_copy_layout_job', 'run_copy_layout_helper', 'complete_copy_layout_job',
   'register_copy_layout_template',
@@ -159,6 +163,7 @@ const INSERT_TOOLS: Readonly<Record<string, CategoryId>> = {
   download_file: 'fileDownload',
   find_text: 'search',
   search_reference_files: 'search',
+  find_home_files: 'search',
 };
 const ONCE_TOOLS: Readonly<Record<string, CategoryId>> = {
   edit_header_footer: 'headerFooter',
@@ -170,6 +175,8 @@ const ONCE_TOOLS: Readonly<Record<string, CategoryId>> = {
   commit_version: 'version',
   update_agent_instructions: 'instructions',
   commit_product_skill: 'skill',
+  project_edit: 'projectEdit',
+  project_import: 'projectImport',
 };
 
 type Args = Record<string, unknown>;
@@ -275,6 +282,7 @@ function batchHits(list: unknown, unique: string): Hit[] {
 
 /** 성공한 호출 하나가 어느 분류에 무엇을 더하는지. 모르는 도구는 “도구 N번”이다. */
 function classifyCall(name: string, a: Args, unique: string, expandBatch = true): Hit[] {
+  if (TURN_SUMMARY_IGNORED_TOOLS.has(name) || isSpawnToolName(name) || !name) return [];
   if (expandBatch && name === 'apply_edits') return batchHits(a['edits'], unique);
   if (expandBatch && name === 'read_batch') return batchHits(a['reads'], unique);
   if (PARA_TEXT_TOOLS.has(name)) {
@@ -341,9 +349,8 @@ function classifyCall(name: string, a: Args, unique: string, expandBatch = true)
   if (DOCUMENT_READ_TOOLS.has(name)) return [{ category: 'documentRead', keys: ['*'] }];
   if (REFERENCE_READ_TOOLS.has(name)) return [{ category: 'referenceRead', keys: ['*'] }];
   if (name.startsWith('template_get_') || name === 'template_list_styles') return [{ category: 'templateRead', keys: ['*'] }];
-  if (name.startsWith('browserbase_')) return [{ category: 'web', keys: ['*'] }];
+  if (name.startsWith('browser_')) return [{ category: 'web', keys: ['*'] }];
   if (COPY_LAYOUT_TOOLS.has(name)) return [{ category: 'copyLayout', keys: ['*'] }];
-  if (TURN_SUMMARY_IGNORED_TOOLS.has(name) || isSpawnToolName(name) || !name) return [];
   return [{ category: 'foreign', keys: [unique] }];
 }
 

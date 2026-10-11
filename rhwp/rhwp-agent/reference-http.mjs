@@ -33,7 +33,7 @@ export function isAllowedStudioOrigin(origin, configured = CONFIGURED_STUDIO_ORI
     || configured.has(normalized);
 }
 
-function sendJson(res, status, body, origin = null) {
+export function sendJson(res, status, body, origin = null) {
   const payload = Buffer.from(JSON.stringify(body));
   const headers = {
     'content-type': 'application/json; charset=utf-8',
@@ -48,7 +48,7 @@ function sendJson(res, status, body, origin = null) {
   res.end(payload);
 }
 
-function bearerMatchesAny(req, tokens) {
+export function bearerMatchesAny(req, tokens) {
   const header = String(req.headers.authorization ?? '');
   if (!header.startsWith('Bearer ')) return false;
   const received = Buffer.from(header.slice(7), 'utf8');
@@ -77,9 +77,10 @@ function assertScopeAllowed(scope, scopeId, allowedScopes) {
   return normalized;
 }
 
-function errorStatus(error) {
+export function referenceErrorStatus(error) {
   switch (error?.code) {
     case 'REFERENCE_NOT_FOUND': return 404;
+    case 'REFERENCE_BLOB_MISSING': return 404;
     case 'REFERENCE_STAGE_NOT_FOUND': return 404;
     case 'REFERENCE_STAGE_EXPIRED': return 410;
     case 'REFERENCE_TYPE_UNSUPPORTED':
@@ -248,7 +249,7 @@ export function createReferenceHttpHandler({ store, tokens, allowedScopes }) {
       // unread bytes into the next request. The response remains deterministic.
       try { req.resume?.(); } catch {}
       const message = String(error?.message ?? error);
-      sendJson(res, errorStatus(error), {
+      sendJson(res, referenceErrorStatus(error), {
         status: 'error',
         message,
         error: { code: error?.code ?? 'REFERENCE_REQUEST_FAILED', message },

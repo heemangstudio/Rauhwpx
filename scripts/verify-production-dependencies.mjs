@@ -5,6 +5,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { verifyKeyringBinding } from './verify-keyring-binding.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const agent = path.join(root, 'rhwp/rhwp-agent');
@@ -48,6 +49,7 @@ function braceCopies(directory, found = []) {
 }
 
 nodeFloor(process.versions.node);
+const keyring = verifyKeyringBinding(agent);
 const npm = artifact(agent, 'npm');
 const npmRequire = createRequire(path.join(npm.installed, 'package.json'));
 assert.equal(npmRequire('brace-expansion/package.json').version, '5.0.12');
@@ -72,8 +74,11 @@ if (process.argv.includes('--electron')) {
   const env = { ...environment, ELECTRON_RUN_AS_NODE: '1' };
   electronNode = run(electron, ['-p', 'process.versions.node'], env);
   nodeFloor(electronNode);
+  const keyringProbe = `const load = require('node:module').createRequire(${JSON.stringify(path.join(agent, 'package.json'))}); if (typeof load('@napi-rs/keyring').AsyncEntry !== 'function') throw new Error('Browser native keyring is unavailable');`;
+  run(electron, ['-e', keyringProbe], env);
   const launch = bundledNpmLaunch({ nodeCommand: electron });
   assert.equal(run(launch.command, [...launch.leadingArgs, '--version'], env), npm.manifest.version);
 }
 console.log(JSON.stringify({ node: process.versions.node, platform: process.platform, architecture: process.arch,
+  keyring: { package: keyring.package, version: keyring.version },
   npm: npm.manifest.version, braceCopies: copies.length, electronNode }, null, 2));

@@ -8,6 +8,7 @@
  */
 
 import type { StructuredPlan, StructuredPlanStep } from '../../agent/types.ts';
+import { readWikilinkAt, type WikilinkAnchor } from './wikilinks.ts';
 
 /* ── DOM 최소 계약 ─────────────────────────────────────────
    실제 Document·HTMLElement 가 구조적으로 이 형태를 만족한다.
@@ -32,6 +33,8 @@ export interface MarkdownRenderOptions {
   renderMath?: (node: MarkdownNode, source: string, displayMode: boolean, raw: string) => boolean;
   /** 파일 경로처럼 보이는 인라인 코드에 확장자 배지를 붙인다. */
   fileChips?: boolean;
+  /** 인용 표기 `[[id…]]` 를 칩으로 그린다. 없거나 null 을 돌려주면 원문 그대로 둔다. */
+  citation?: (token: WikilinkToken) => MarkdownNode | null;
 }
 
 /* ── 한계값 ────────────────────────────────────────────────
@@ -57,7 +60,17 @@ export type InlineToken =
   | { kind: 'em'; text: string }
   | { kind: 'del'; text: string }
   | { kind: 'link'; text: string; href: string }
-  | { kind: 'math'; source: string; raw: string };
+  | { kind: 'math'; source: string; raw: string }
+  | WikilinkToken;
+
+/** 연구 프로젝트 인용. 문법은 wikilinks.ts 한 곳에서 정한다. */
+export interface WikilinkToken {
+  kind: 'wikilink';
+  raw: string;
+  id: string;
+  anchor: WikilinkAnchor | null;
+  label: string | null;
+}
 
 export interface ListItem {
   /** 항목 첫 줄. */
@@ -583,6 +596,14 @@ export function tokenizeInline(src: string): InlineToken[] {
         continue;
       }
     }
+    if (ch === '[' && src[i + 1] === '[') {
+      const cite = readWikilinkAt(src, i);
+      if (cite) {
+        push({ kind: 'wikilink', raw: src.slice(cite.start, cite.end), id: cite.id, anchor: cite.anchor, label: cite.label });
+        i = cite.end;
+        continue;
+      }
+    }
     if (ch === '[' || (ch === '!' && src[i + 1] === '[')) {
       const link = readInlineLink(src, i);
       if (link) {
@@ -692,6 +713,9 @@ export function fileBadgeFor(code: string): string | null {
 /** 굵게·기울임 안의 코드처럼 한 겹 중첩된 인라인 마크업까지만 푼다. */
 const MAX_INLINE_DEPTH = 3;
 
+/** 인용 칩 바로 뒤에 붙는 닫는 문장부호 — 칩과 한 줄에 둔다. */
+const RE_TRAILING_PUNCTUATION = /^[.,;:!?)\]}%'"’”」』》〉…。、·]+/u;
+
 function appendInline(
   host: MarkdownHost,
   parent: MarkdownNode,
@@ -699,7 +723,9 @@ function appendInline(
   options: MarkdownRenderOptions,
   depth = 0,
 ): void {
-  for (const token of tokenizeInline(text)) {
+  const tokens = tokenizeInline(text);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
     if (token.kind === 'text') {
       add(parent, host.createTextNode(token.text));
       continue;
@@ -710,6 +736,26 @@ function appendInline(
     }
     if (token.kind === 'math') {
       appendMath(host, parent, token.source, token.raw, false, options);
+      continue;
+    }
+    if (token.kind === 'wikilink') {
+      const chip = options.citation?.(token) ?? null;
+      if (!chip) {
+        add(parent, host.createTextNode(token.raw));
+        continue;
+      }
+      // 칩 뒤의 마침표·쉼표가 홀로 다음 줄로 넘어가지 않도록 칩과 함께 묶는다.
+      const next = tokens[index + 1];
+      const punctuation = next?.kind === 'text' ? RE_TRAILING_PUNCTUATION.exec(next.text)?.[0] : undefined;
+      if (!punctuation || next?.kind !== 'text') {
+        add(parent, chip);
+        continue;
+      }
+      const group = element(host, 'span', 'ag-cite-group');
+      add(group, chip);
+      add(group, host.createTextNode(punctuation));
+      add(parent, group);
+      tokens[index + 1] = { kind: 'text', text: next.text.slice(punctuation.length) };
       continue;
     }
     if (token.kind === 'link') {

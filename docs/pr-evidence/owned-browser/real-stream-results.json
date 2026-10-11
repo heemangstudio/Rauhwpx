@@ -1,0 +1,173 @@
+{
+  "runtime": "http://127.0.0.1:7940",
+  "hubPort": 5940,
+  "browser": "actual app-owned Chromium",
+  "website": "deterministic cookie/CSRF/blob research fixture",
+  "provider": "Pi turn fixture, no model inference",
+  "scenarios": [
+    {
+      "name": "Agent opens actual managed Chromium through authenticated MCP",
+      "tabId": "tab_14debf30-a69a-4eb7-877e-a10d76302a62"
+    },
+    {
+      "name": "Semantic snapshot refs drive real login, typing and search"
+    },
+    {
+      "name": "Stale semantic reference rejected without replay"
+    },
+    {
+      "name": "Human takeover through production UI pauses agent input"
+    },
+    {
+      "name": "Production streamed pointer, Korean IME and clipboard paste reach the owned page once"
+    },
+    {
+      "name": "Float and dock preserve the original authenticated research tab"
+    },
+    {
+      "name": "Popout and dock retain the same tab, authenticated page and form input"
+    },
+    {
+      "name": "Real page screenshot and comment attach to the pinned destination composer",
+      "captureId": "a4f15d30-a6c1-472c-880a-d773d744eb76",
+      "sourceTabId": "tab_14debf30-a69a-4eb7-877e-a10d76302a62"
+    },
+    {
+      "name": "Download authenticated GET PDF",
+      "downloadId": "bd_7696d2ac1c93496552f18e02f808252b",
+      "state": "imported",
+      "projectId": "puse5w25bwg",
+      "fileId": "5e4ce33d-5d78-4ff6-8ee1-cbb23d4d5b0d",
+      "projectItemId": "fpxf7xt",
+      "size": 607
+    },
+    {
+      "name": "Export POST PDF",
+      "downloadId": "bd_2e48fecce56ba1acfd775c766a57da3a",
+      "state": "imported",
+      "projectId": "puse5w25bwg",
+      "fileId": "5e4ce33d-5d78-4ff6-8ee1-cbb23d4d5b0d",
+      "projectItemId": "fpxf7xt",
+      "size": 607
+    },
+    {
+      "name": "Download blob PDF",
+      "downloadId": "bd_4cdaad85500df955d64895e9ffa37d2b",
+      "state": "imported",
+      "projectId": "puse5w25bwg",
+      "fileId": "5e4ce33d-5d78-4ff6-8ee1-cbb23d4d5b0d",
+      "projectItemId": "fpxf7xt",
+      "size": 607
+    },
+    {
+      "name": "Automatic project PDF reopens in the existing Documents viewer"
+    },
+    {
+      "name": "Captured PDF has an automatic durable reference card on the project board"
+    },
+    {
+      "name": "Failed PDF extraction preserves completed bytes and the project reference",
+      "downloadId": "bd_d043df81194c51fb5648533d219c8e6a",
+      "extractionStatus": "failed"
+    },
+    {
+      "name": "Documents extraction retry keeps the original completed file and card",
+      "downloadId": "bd_d043df81194c51fb5648533d219c8e6a",
+      "projectItemId": "fwy3okv"
+    },
+    {
+      "name": "Cancelling an actual transfer preserves no partial project card",
+      "downloadId": "bd_3d6cf9da737f7645915a0cdb602c1b7d"
+    },
+    {
+      "name": "Unknown-length browser download enforces its configured byte limit",
+      "downloadId": "bd_00af7b8fe314d661c563c81fa3aef320",
+      "state": "interrupted",
+      "size": 0
+    },
+    {
+      "name": "Production Browser Settings exposes durable research permissions"
+    },
+    {
+      "name": "Chromium-delivered GET, POST and blob bytes retain private request state"
+    },
+    {
+      "name": "Scoped workspace fixture configured without private-network bypass"
+    },
+    {
+      "name": "Guessed cross-agent tab ID is rejected by the real hub",
+      "code": "BROWSER_TAB_NOT_FOUND"
+    },
+    {
+      "name": "No-project download is immediately available from authenticated owner inbox",
+      "downloadId": "bd_704e525444bf0826754e8d8629acf723"
+    },
+    {
+      "name": "General inbox PDF opens without a document or project"
+    },
+    {
+      "name": "Failed inbox move retains bytes and a later project move succeeds",
+      "downloadId": "bd_704e525444bf0826754e8d8629acf723",
+      "projectItemId": "fpxf7xt"
+    }
+  ],
+  "errors": [],
+  "source": {
+    "sessionId": "0b85c0c4-e0d2-44ab-8f35-c07d5b391c94",
+    "tabId": "tab_14debf30-a69a-4eb7-877e-a10d76302a62",
+    "projectId": "puse5w25bwg"
+  },
+  "fixtureRequests": [
+    {
+      "method": "GET",
+      "path": "/",
+      "authenticated": false
+    },
+    {
+      "method": "POST",
+      "path": "/login",
+      "authenticated": false
+    },
+    {
+      "method": "GET",
+      "path": "/research",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/pdf/get",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/pdf/post",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/pdf/corrupt",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/pdf/slow",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/pdf/large",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/research",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/pdf/post",
+      "authenticated": true
+    }
+  ],
+  "status": "passed"
+}

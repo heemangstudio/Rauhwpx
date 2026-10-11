@@ -1,5 +1,5 @@
 .worktrees/
-node_modules/
+node_modules
 .tools/
 release/
 build/icon.iconset/

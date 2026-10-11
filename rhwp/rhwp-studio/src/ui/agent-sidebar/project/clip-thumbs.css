@@ -1,0 +1,33 @@
+/* 영역 조각 썸네일 — 종이 바탕 위의 그림. 크기는 쓰는 자리(카드·칩·목록)가 정한다. */
+.ag-clip-thumb {
+  display: inline-flex;
+  box-sizing: border-box;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--ag-paper, #ffffff);
+  color: var(--ag-text-muted);
+  outline: 1px solid var(--ag-border);
+  outline-offset: -1px;
+}
+
+.ag-clip-thumb[data-state='loading'] {
+  background: var(--ag-hover);
+}
+
+.ag-clip-thumb[data-state='failed'] {
+  background: var(--ag-surface-subtle);
+}
+
+.ag-clip-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ag-clip-thumb .ag-icon {
+  width: 12px;
+  height: 12px;
+}

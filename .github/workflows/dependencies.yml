@@ -16,6 +16,7 @@ on:
       - build/**
       - scripts/audit-production.mjs
       - scripts/verify-production-dependencies.mjs
+      - scripts/verify-keyring-binding.mjs
       - .github/workflows/dependencies.yml
   workflow_call:
   workflow_dispatch:

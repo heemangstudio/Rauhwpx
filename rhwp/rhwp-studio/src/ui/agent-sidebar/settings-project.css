@@ -1,0 +1,184 @@
+/* 설정 → 프로젝트. 카드·글자 단계는 settings.css 의 설정 페이지 규칙을 따르고
+   이 창에만 있는 줄(토큰 목록, 열 목록, 저장 공간)만 여기서 그린다. */
+
+.ag-pset-row,
+.ag-pset-tokens,
+.ag-pset-columns {
+  box-sizing: border-box;
+  min-height: 48px;
+  padding: 10px var(--ag-set-inset, 16px);
+}
+
+.ag-pset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ag-pset-row[hidden],
+.ag-pset-tokens[hidden] { display: none; }
+
+.ag-pset-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ag-pset-tokens .ag-pset-copy,
+.ag-pset-columns .ag-pset-copy {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ag-pset-switch {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.ag-pset-switch .ag-settings-toggle-input:disabled + .ag-settings-toggle-track { opacity: 0.4; }
+
+.ag-settings-page .ag-pset-select {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 160px;
+  max-width: 60%;
+}
+
+.ag-settings-page .ag-pset-inline-btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-pset-token-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.ag-pset-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  padding: 0 2px 0 8px;
+  border-radius: var(--ag-r-chip);
+  background: var(--n-ink-fill-hover);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-meta);
+  font-variant-numeric: var(--ag-numeric);
+}
+
+.ag-pset-token-remove {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-code);
+  background: transparent;
+  color: var(--ag-text-muted);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  line-height: 1;
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-pset-token-remove:hover:not(:disabled) { background: var(--ag-hover); color: var(--ag-text); }
+.ag-pset-token-remove:disabled { opacity: 0.35; }
+
+.ag-pset-token-input {
+  flex: 1 0 96px;
+  min-width: 96px;
+  height: 24px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-pset-token-input::placeholder { color: var(--ag-text-tertiary); }
+
+.ag-pset-token-remove:focus-visible,
+.ag-pset-token-input:focus-visible,
+.ag-pset-column-input:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: 0;
+}
+
+.ag-pset-column-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-pset-column {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  padding: 0 2px 0 0;
+  border-radius: var(--ag-r-chip);
+  background: var(--n-ink-fill-hover);
+}
+
+.ag-pset-column-input {
+  box-sizing: border-box;
+  width: auto;
+  min-width: 4ch;
+  max-width: 20ch;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  field-sizing: content;
+}
+
+.ag-pset-storage { display: flex; flex-direction: column; }
+
+.ag-pset-storage > .ag-pset-row + .ag-pset-row {
+  background-image: linear-gradient(var(--ag-set-sep), var(--ag-set-sep));
+  background-position: var(--ag-set-inset, 16px) 0;
+  background-size: calc(100% - var(--ag-set-inset, 16px)) 1px;
+  background-repeat: no-repeat;
+}
+
+.ag-pset-usage {
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  font-variant-numeric: var(--ag-numeric);
+  white-space: nowrap;
+}
+
+.ag-pset-storage-actions { flex-wrap: nowrap; }
+
+.ag-pset-notice {
+  margin: 0 0 18px;
+  padding: 10px 12px;
+  border-radius: var(--ag-r-field);
+  background: var(--n-ink-fill-soft);
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-pset-notice[hidden] { display: none; }

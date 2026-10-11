@@ -26,9 +26,43 @@ html.desktop-mac.desktop-fullscreen {
   --desktop-traffic-light-inset: 0px;
 }
 
+/* 문서 홈 단추 — 신호등 바로 오른쪽에 늘 떠 있다. 편집기·집중 화면·설정·문서 홈의
+   제목 막대는 모두 이 자리(--desktop-home-reserve)를 비워 둔다. */
+html.desktop-mac {
+  /* 신호등 사이 간격만큼 떨어져 서고, 뒤따르는 컨트롤은 단추 바로 뒤에서 시작한다. */
+  --desktop-home-left: max(calc(var(--desktop-traffic-light-inset) - 1px), 8px);
+  --desktop-home-reserve: calc(var(--desktop-home-left) + 26px);
+}
+
+.app-home-button { display: none; }
+
+html.desktop-mac .app-home-button {
+  position: fixed;
+  /* 신호등(y 12, 지름 14)·집중 화면 토글과 아이콘 가운데(19px)를 맞춘다. */
+  top: calc((var(--desktop-titlebar-height) - 28px) / 2);
+  left: var(--desktop-home-left);
+  /* 문서 홈(900)과 집중 화면 위, 명령 검색·대화상자·알림 아래. */
+  z-index: 950;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ui-text-secondary);
+  -webkit-app-region: no-drag;
+}
+
+html.desktop-mac .app-home-button svg { width: 16px; height: 16px; }
+html.desktop-mac .app-home-button:hover { background: var(--ui-hover, rgba(127, 127, 127, 0.14)); color: var(--ui-text); }
+html.desktop-mac .app-home-button[aria-pressed='true'] { color: var(--ui-text); }
+html.desktop-mac .app-home-button:focus-visible { outline: 2px solid var(--focus-ring, currentColor); outline-offset: 1px; }
+
 html.desktop-mac #menu-bar {
   height: var(--desktop-titlebar-height);
-  padding-left: var(--desktop-traffic-light-inset);
+  padding-left: var(--desktop-home-reserve);
   -webkit-app-region: no-drag;
 }
 
@@ -94,6 +128,13 @@ html.desktop-native-menu #menu-bar {
 
 html.desktop-native-menu #menu-bar :is(button, input, select, textarea, a, [role="button"]) {
   -webkit-app-region: no-drag;
+}
+
+/* 가운데 파일 이름은 빈칸(::after) 위에 겹친다. Electron 은 끌기 영역을 문서 순서로 정하므로
+   뒤에 오는 빈칸이 이름의 no-drag 를 덮어 두 번 누르기가 창 확대로 간다. 막대 자체가 끌기
+   영역이므로 이 모드에서는 빈칸이 영역을 갖지 않게 한다. */
+html.desktop-native-menu #menu-bar::after {
+  -webkit-app-region: none;
 }
 
 html.desktop-native-menu body:is(.ag-fullscreen-open, .merge-resolver-open) #menu-bar {

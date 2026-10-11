@@ -7,6 +7,7 @@ import { rhwpAgentHubPlugin } from './vite-plugin-agent-hub.mjs';
 import { rhwpPinnedDocumentPlugin } from './vite-plugin-pinned-document.mjs';
 import { rhwpDevFontPackPlugin } from './vite-plugin-dev-font-pack.mjs';
 import { rhwpLocalFontsPlugin } from './vite-plugin-local-fonts.mjs';
+import { rhwpPdfjsAssetsPlugin } from './vite-plugin-pdfjs-assets.mjs';
 
 const appPackage = JSON.parse(
   readFileSync(resolve(__dirname, '..', '..', 'package.json'), 'utf-8'),
@@ -66,6 +67,10 @@ const appCommit = (() => {
 })();
 
 export default defineConfig({
+  // 같은 의존성 폴더를 쓰는 미리보기와 작업 트리도 최적화 캐시를 공유하지 않는다.
+  cacheDir: resolve(__dirname, '.run/vite-cache/studio'),
+  // 그래프를 처음 열 때 의존성을 재최적화하며 기존 모듈 URL을 만료시키지 않는다.
+  optimizeDeps: { include: ['d3-force'] },
   define: {
     __APP_VERSION__: JSON.stringify(appPackage.version),
     __APP_COMMIT__: JSON.stringify(appCommit),
@@ -133,6 +138,7 @@ export default defineConfig({
     rhwpPinnedDocumentPlugin(__dirname),
     rhwpDevFontPackPlugin(),
     rhwpLocalFontsPlugin(__dirname),
+    rhwpPdfjsAssetsPlugin(),
     {
       name: 'ignore-subsecond-patch-artifacts',
       handleHotUpdate(context) {

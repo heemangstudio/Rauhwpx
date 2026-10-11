@@ -44,8 +44,9 @@ test('an in-turn edit report rides on the next tool result once; outside a turn 
     activeProviderTurnId: 'turn-active', turnRunning: true,
     activeToolRequests: 0, activeToolRequestControllers: new Map(),
     pendingUserQuestion: null, pendingQuestionCancellation: null,
+    pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
     workflow: 'direct', phase: 'direct', activeAgent: 'claude',
-    executor: { execute: async () => ({ revision: 7 }) }, syncEditingLease: () => {},
+    executor: { execute: async () => ({ revision: 7 }) }, listeners: new Set(), syncEditingLease: () => {},
     sendJson: (frame: unknown) => { frames.push(frame); return true; },
     sendToolResponse: (response: unknown) => { responses.push(response); },
   });

@@ -50,7 +50,8 @@ export function prepareUncommittedMerge(currentBranch: string): Promise<MergePre
     dialog.addEventListener('cancel', (event) => { event.preventDefault(); finish({ kind: 'cancel' }); });
     dialog.addEventListener('close', () => finish({ kind: 'cancel' }));
     dialog.append(form);
-    document.body.append(dialog);
+    // 사이드바 안에 붙여야 사이드바의 색·테마 변수를 쓴다. 모달은 어디 붙여도 맨 위 층에 뜬다.
+    (document.querySelector<HTMLElement>('.ag-root:not(.ag-collapsed)') ?? document.body).append(dialog);
     dialog.showModal();
   });
 }

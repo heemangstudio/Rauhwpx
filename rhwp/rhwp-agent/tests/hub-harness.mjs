@@ -202,6 +202,11 @@ export async function startHub(t, {
       RHWP_AGENT_TOKEN: token,
       RHWP_LAUNCH_ID: launchId,
       RHWP_WORK_DIR: workRoot,
+      RHWP_REFERENCES_DIR: path.join(workRoot, 'references'),
+      RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
+      RHWP_BROWSER_DATA_DIR: path.join(workRoot, 'browser'),
+      RHWP_BROWSER_OS_KEYRING: '0',
+      RHWP_BROWSER_HOST: '',
       RHWP_TEMPLATES_DIR: path.join(workRoot, 'templates'),
       // Provider usage from fake CLIs must never reach the user's usage log.
       RHWP_USAGE_DIR: path.join(workRoot, 'usage'),

@@ -1,0 +1,103 @@
+/* PDF 보기. 쪽은 종이색 그대로 두고 바탕만 테마를 따른다. */
+.ag-pdf {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--ag-bg-2);
+  outline: none;
+}
+
+.ag-pdf:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ag-focus-ring-color);
+}
+
+/* 쪽 사이 12px, 좌우 16px — pdf-viewer.ts 의 PAGE_GAP·SIDE_PAD 와 같다. */
+.ag-pdf-pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
+  padding: 12px 16px 24px;
+}
+
+.ag-pdf-page {
+  position: relative;
+  flex: none;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--ag-paper);
+  box-shadow: 0 0 0 1px var(--ag-border);
+}
+
+.ag-pdf-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* pdf.js 텍스트 층의 필수 규칙만 옮긴다 (pdfjs-dist/web/pdf_viewer.css). */
+.ag-pdf .textLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: clip;
+  text-align: initial;
+  line-height: 1;
+  opacity: 1;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+}
+
+.ag-pdf .textLayer > :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+
+.ag-pdf .textLayer ::selection {
+  background: color-mix(in srgb, AccentColor, transparent 75%);
+}
+
+.ag-pdf .textLayer br::selection {
+  background: transparent;
+}
+
+.ag-pdf .textLayer .endOfContent {
+  position: absolute;
+  inset: 100% 0 0;
+  display: block;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+
+/* 인용 강조. 글자는 투명한 채로 두고 바탕만 칠한다. 글자마다 스팬이 갈린 PDF 에서
+   이웃 강조가 겹쳐 진해지지 않도록 좌우로는 넓히지 않는다. */
+.ag-pdf-hit {
+  margin: -1px 0;
+  padding: 1px 0;
+  border-radius: 2px;
+  background: var(--ag-cite-hit);
+}
+
+/* TextLayer 가 글꼴을 재려고 body 에 붙이는 캔버스. */
+.hiddenCanvasElement {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: none;
+  width: 0;
+  height: 0;
+}

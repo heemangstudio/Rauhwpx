@@ -76,10 +76,11 @@ async function readImageFile(imagePath, openFile) {
 /** Read a bounded local image and prepare the browser document tool's byte payload. */
 export async function prepareInsertImageArgs(args, allowedRoots, { openFile = open } = {}) {
   const { imagePath, imageBase64, extension, ...rest } = args ?? {};
-  // 참조 이미지는 허브가 참조 저장소에서 직접 읽는다 — 로컬 파일을 찾지 않는다.
-  if (typeof rest.referenceFileId === 'string' && rest.referenceFileId.length > 0) {
-    if (imagePath || imageBase64) {
-      throw imageError('INVALID_ARGS', 'pass only one of imagePath, imageBase64 or referenceFileId');
+  // 참조 이미지와 영역 조각은 허브가 참조 저장소에서 직접 읽는다 — 로컬 파일을 찾지 않는다.
+  const hubSource = ['referenceFileId', 'clipId'].filter((key) => typeof rest[key] === 'string' && rest[key].length > 0);
+  if (hubSource.length > 0) {
+    if (imagePath || imageBase64 || hubSource.length > 1) {
+      throw imageError('INVALID_ARGS', 'pass only one of imagePath, imageBase64, referenceFileId or clipId');
     }
     return rest;
   }

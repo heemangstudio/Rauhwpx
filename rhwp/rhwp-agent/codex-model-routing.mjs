@@ -70,7 +70,7 @@ export async function discoverCodexModels({
   for (const key of [
     'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
     'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'OPENROUTER_API_KEY',
-    'BROWSERBASE_API_KEY', 'RHWP_CLIPROXY_KEY',
+    'RHWP_CLIPROXY_KEY',
   ]) delete probeEnv[key];
   const launched = applyManagedCliLaunch(bin, ['-s', 'read-only', '-a', 'never', 'app-server', '--stdio'], {
     platform, nodeCommand, env: probeEnv,

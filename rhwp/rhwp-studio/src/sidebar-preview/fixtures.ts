@@ -2,22 +2,6 @@ import type * as T from '../agent/types.ts';
 import type { ChatThread, PendingUserQuestionDraftSnapshot } from '../agent/threads.ts';
 import { defaultModelForAgent, labelForModel } from '../agent/models.ts';
 
-export type BrowserbaseFixtureState = 'connected' | 'setup' | 'error';
-
-export function createBrowserbaseFixture(state: BrowserbaseFixtureState): T.BrowserbaseStatus {
-  const configured = state === 'connected';
-  return {
-    configured,
-    missing: configured ? [] : ['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'],
-    keySource: configured ? 'env' : null,
-    keyTail: configured ? 'demo' : null,
-    projectId: configured ? 'preview-browser-project' : null,
-    projectSource: configured ? 'env' : null,
-    geminiSource: configured ? 'env' : null,
-    browsers: configured ? [{ id: 'main', connected: true }, { id: 'preview-research', connected: false }] : [],
-  };
-}
-
 export const agents: T.AgentName[] = [
   'claude',
   'codex',
@@ -509,6 +493,9 @@ export function sampleRunningTurnWork(agent: T.AgentName, now: number): SampleMe
  * Chats across several documents and providers for the activity-ordered list.
  * Timestamps are relative to `now`, so the list always shows fresh, varied ages.
  */
+/** 설정의 보관함에만 보이는 샘플 채팅. */
+export const SAMPLE_ARCHIVED_CHAT_ID = 'preview-chat-archived';
+
 export function sampleChats(now: number): ChatThread[] {
   const proposal = { documentId: 'preview-proposal', docKey: '사업 제안서.hwpx' };
   const notes = { documentId: 'preview-notes', docKey: '회의록.hwpx' };
@@ -529,6 +516,8 @@ export function sampleChats(now: number): ChatThread[] {
       '참석자 명단을 소속별 표로 만들어 주세요.', '소속, 이름, 직책 세 열로 표를 만들었습니다.'],
     ['preview-chat-wording', '예산 항목 설명 문장 통일', 'claude', budget, 8 * DAY,
       '예산 항목 설명을 같은 문체로 맞춰 주세요.', '모든 항목 설명을 "~합니다" 문체로 통일했습니다.'],
+    [SAMPLE_ARCHIVED_CHAT_ID, '작년 회의록 서식 옮기기', 'codex', notes, 20 * DAY,
+      '작년 회의록 서식을 이번 문서에 맞춰 주세요.', '제목, 참석자, 안건 순서를 작년 서식과 맞췄습니다.'],
   ];
   const chats = rows.map(([id, title, agent, document, age, request, reply]): ChatThread => {
     const activityAt = now - age;
@@ -549,6 +538,7 @@ export function sampleChats(now: number): ChatThread[] {
       workflow: 'direct',
       ...document,
       activeTemplateId: null,
+      ...(id === SAMPLE_ARCHIVED_CHAT_ID ? { archivedAt: activityAt + DAY } : {}),
       messages,
     };
   });

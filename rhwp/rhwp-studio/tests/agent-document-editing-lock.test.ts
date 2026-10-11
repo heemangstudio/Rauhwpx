@@ -71,6 +71,38 @@ test('the derived lease stays active while a turn or tool call runs', () => {
   );
 });
 
+test('chat never takes an editing lease and agent keeps it until all tools settle', () => {
+  const leases: boolean[] = [];
+  const runtime = Object.assign(Object.create(AgentBridgeImpl.prototype), {
+    view: {}, workflow: 'question', phase: 'questioning', editingAgent: 'codex',
+    turnRunning: true, activeToolRequests: 0, pendingUserQuestionId: null,
+    pendingChatPermissionRequest: null, chatPermissionGrants: [],
+    editingLease: { active: false, agent: 'codex' }, documentEditingLease: { active: false, agent: 'codex' },
+    editingLeaseListeners: new Set([(lease: { active: boolean }) => leases.push(lease.active)]),
+    scheduleBusyCheck() {},
+  });
+  runtime.syncEditingLease();
+  assert.equal(runtime.getEditingLease().active, false, 'ordinary chat keeps user editing available');
+  runtime.chatPermissionGrants = ['document-edit'];
+  runtime.syncEditingLease();
+  assert.equal(runtime.getEditingLease().active, false, 'stale document grants do not unlock chat writes');
+  runtime.workflow = 'direct';
+  runtime.phase = 'direct';
+  runtime.syncEditingLease();
+  assert.equal(runtime.getEditingLease().active, true, 'agent turns hold the editing lease');
+  runtime.turnRunning = false;
+  runtime.activeToolRequests = 2;
+  runtime.syncEditingLease();
+  assert.equal(runtime.getEditingLease().active, true);
+  runtime.activeToolRequests = 1;
+  runtime.syncEditingLease();
+  assert.equal(runtime.getEditingLease().active, true, 'one remaining tool still holds the lease');
+  runtime.activeToolRequests = 0;
+  runtime.syncEditingLease();
+  assert.equal(runtime.getEditingLease().active, false);
+  assert.deepEqual(leases, [true, false]);
+});
+
 test('plan mode leaves the document editable while a planning turn is running', () => {
   assert.equal(planModeAllowsUserEditing('plan', 'planning'), true);
   assert.equal(planModeAllowsUserEditing('plan', 'awaiting-approval'), true);

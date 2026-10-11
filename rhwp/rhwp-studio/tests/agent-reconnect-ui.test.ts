@@ -89,3 +89,47 @@ test('manual reconnect awaits hub readiness and ignores a superseding request', 
   await f.bridge.reconnectNow();
   assert.equal(f.connections(), 1);
 });
+
+test('a reconnect superseded during session lookup cannot apply stale credentials or open a socket', async () => {
+  for (const entry of ['initializeConnection', 'connectAfterHub', 'reconnectNow']) {
+    const f = fixture();
+    delete f.bridge.refreshSessionContext;
+    const applied: unknown[] = [];
+    let release!: (value: unknown) => void;
+    f.bridge.loadSessionContext = () => new Promise((resolve) => { release = resolve; });
+    f.bridge.applySessionContext = (value: unknown) => applied.push(value);
+    f.bridge.abortSocket = () => {};
+    f.bridge.forceReconnect = () => f.bridge.connect();
+    const pending = f.bridge[entry](f.bridge.reconnectSeq);
+    await settle();
+    f.bridge.reconnectSeq++;
+    release({ sessionId: 'superseded-session', hubToken: 'superseded-capability' });
+    await pending;
+    assert.equal(applied.length, 0, `${entry} must discard a superseded session lookup`);
+    assert.equal(f.connections(), 0, `${entry} must leave the newer connection alone`);
+  }
+});
+
+test('overlapping initializers replace a pending retry and keep the latest session lookup', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture();
+  delete f.bridge.refreshSessionContext;
+  const lookups: Array<(value: unknown) => void> = [];
+  const applied: unknown[] = [];
+  f.bridge.loadSessionContext = () => new Promise((resolve) => lookups.push(resolve));
+  f.bridge.applySessionContext = (value: unknown) => applied.push(value);
+  f.bridge.scheduleReconnect();
+  const earlier = f.bridge.initializeConnection();
+  await settle();
+  const latest = f.bridge.initializeConnection();
+  await settle();
+  lookups[1]({ sessionId: 'latest-session' });
+  await latest;
+  lookups[0]({ sessionId: 'old-session' });
+  await earlier;
+  assert.deepEqual(applied, [{ sessionId: 'latest-session' }]);
+  assert.equal(f.connections(), 1);
+  t.mock.timers.runAll();
+  await settle();
+  assert.equal(f.connections(), 1, 'the superseded retry timer must not reopen the connection');
+});

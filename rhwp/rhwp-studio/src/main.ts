@@ -1,5 +1,6 @@
 import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
 import { installDocumentTitle } from '@/ui/document-title';
+import { worktreeIdentity } from '@/ui/worktree-chip';
 import { FALLBACK_DOCUMENT_FILE_NAME } from '@/core/document-names';
 import type { DocumentInfo } from '@/core/types';
 import { AttachableEventBus } from '@/core/event-bus';
@@ -44,6 +45,7 @@ import {
   confirmSaveBeforeReplacingDocument,
   fileCommands,
   locateRecoveryOriginal,
+  openRecentDocument,
   runLibraryMove,
   runSaveBeforeLeaving,
   whenSavesIdle,
@@ -82,7 +84,11 @@ import {
   type OpenDocumentBytesEvent,
   type VerifiedDocumentGrant,
 } from '@/recent/document-preflight';
-import { addRecentDoc, listRecentDocs } from '@/recent/recent-store';
+import { addRecentDoc, listRecentDocs, RECENT_MENU_LIMIT, updateRecentDoc, type RecentDoc } from '@/recent/recent-store';
+import { createDocumentHome, type DocumentHome } from '@/home/document-home';
+import { createIcon } from '@/ui/agent-sidebar/icons';
+import { loadWorktreeData } from '@/home/home-data';
+import { renderFirstPage } from '@/home/thumbnail-render';
 import { showDropConfirmDialog } from '@/ui/drop-confirm-dialog';
 import { showConfirm } from '@/ui/confirm-dialog';
 import type { LibraryDocumentTarget, LibraryMoveResult } from '@/library/move-to-document';
@@ -244,6 +250,11 @@ import {
   rememberNativeDocument,
   restoreNativeDocument,
   reserveDesktopDocument,
+  canOpenNativeDocumentWindow,
+  canRevealNativeDocument,
+  desktopFileManagerName,
+  openNativeDocumentWindow,
+  revealNativeDocument,
 } from '@/desktop-integration';
 import { initAgentBridge, type AgentBridge } from './agent/bridge.ts';
 import { chatAttention, connectChatAttention } from './agent/chat-attention.ts';
@@ -257,9 +268,11 @@ import { markStudioReady } from './ui/boot-screen.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
 import { AGENT_LABEL } from './ui/agent-sidebar/providers.ts';
 import { initInlinePrompt } from './agent/inline-prompt.ts';
+import { createDocumentRegionCapture } from './agent/document-region-capture.ts';
 import { DocumentVersionController, persistActiveBranch, type VersionAgentView } from './versioning/controller.ts';
 import { WorktreeOwnership } from './versioning/worktree-ownership.ts';
 import type { VersionWorktree } from './versioning/types.ts';
+import type { ProjectWorktreeBinding } from './agent/types.ts';
 import {
   VersionGraphStore,
   documentId as versionDocumentId,
@@ -365,7 +378,11 @@ const wasmFacade = createAttachableFacade<WasmBridge>(firstSession.wasm, {
   stickyKeys: ['onFileNameChanged', 'onExternalImagesInjected'],
 });
 const wasm = wasmFacade.facade;
-installDocumentTitle(wasm, { rename: (name) => renameAttachedDocument(name) });
+const refreshDocumentTitle = installDocumentTitle(wasm, {
+  rename: (name) => renameAttachedDocument(name),
+  canRename: () => canRenameSessionDocument(attachedSession),
+  worktree: () => worktreeIdentity(attachedSession.versions?.getState(), attachedSession.documentId),
+});
 const eventBus = new AttachableEventBus(firstSession.bus);
 const documentStateFacade = createAttachableFacade<DocumentDirtyState>(firstSession.documentState);
 const documentState = documentStateFacade.facade;
@@ -1448,6 +1465,7 @@ async function initialize(): Promise<void> {
       dispatcher.dispatch(`edit:${command}`);
     });
     installDesktopPlainTextPasteHandling((text) => {
+      if (documentHome?.visible) return;
       inputHandler?.performPlainTextPaste(text);
     });
     if (trapManifestToRecover) {
@@ -1561,7 +1579,32 @@ function installDocumentVersions(session: DocumentSession): DocumentVersionContr
       merge: (worktree) => runNavigation(() => mergeWorktreeSession(worktree)),
     },
   });
+  // 문서의 작업 공간이 바뀌면(열기·병합·이름 바꾸기) 채팅마다 같은 프로젝트에 다시 묶는다.
+  session.disposers.push(session.versions.subscribe(() => syncProjectWorktrees(session)));
+  // 작업 트리가 생기거나 사라지면 제목의 가지 표시를 다시 그린다.
+  session.disposers.push(session.versions.subscribe(() => { if (session === attachedSession) refreshDocumentTitle(); }));
   return session.versions;
+}
+
+/** 문서 세션의 작업 공간 묶음. 버전 기록이 꺼졌거나 작업 공간을 아직 모르면 null. */
+function projectWorktreeBinding(session: DocumentSession): ProjectWorktreeBinding | null {
+  const state = session.versions?.getState();
+  const worktree = session.worktree;
+  if (!state || !session.documentId || !worktree || worktree.documentId !== session.documentId) return null;
+  if (state.documentId !== session.documentId || !state.enabled) return null;
+  const current = state.worktrees.find((entry) => entry.isCurrent && entry.id === worktree.id);
+  if (!current) return null;
+  return {
+    documentId: session.documentId,
+    repositoryId: worktree.repositoryId,
+    current: { id: current.id, branch: current.branch, primary: current.primary },
+    worktrees: state.worktrees.map(({ id, branch, primary, documentId }) => ({ id, branch, primary, documentId })),
+  };
+}
+
+function syncProjectWorktrees(session: DocumentSession): void {
+  const binding = projectWorktreeBinding(session);
+  for (const chat of session.chats) chat.bridge.setProjectWorktrees(binding);
 }
 
 async function ensureWorktreeOwnership(session: DocumentSession, worktree: VersionWorktree): Promise<boolean> {
@@ -1912,6 +1955,10 @@ function installChatAgent(
     editor: docAttached ? editor : session.editorHost,
     view: docAttached ? view : null,
     isReadOnly: () => sessionReadOnly(session),
+    getDocumentWorktree: () => {
+      const identity = worktreeIdentity(session.versions?.getState(), session.documentId);
+      return identity ? { branch: identity.branch, primary: identity.primary } : null;
+    },
     commitVersion: async (message) => {
       await versions.checkpoint(message, { agentTurn: true });
     },
@@ -1990,6 +2037,7 @@ function installChatAgent(
       { commit: true, threadId: thread.id },
     ),
     openChat: (request) => (chat ? openChatFromChat(chat, request) : Promise.resolve('handled' as const)),
+    canRenameDocument: () => canRenameSessionDocument(session),
     renameDocument: async (name) => {
       const result = await renameDocumentInSession(session, name);
       if (result.ok) return result.fileName;
@@ -2007,6 +2055,7 @@ function installChatAgent(
     },
     createDocument: () => { dispatcher.dispatch('file:new-doc'); },
     openDocumentFile: () => { dispatcher.dispatch('file:open'); },
+    openDocumentHome,
     listRecentDocuments: async () => (await listRecentDocs())
       .slice(0, 20)
       .map(({ documentId, fileName, sourceFormat, openedAt }) => (
@@ -2024,6 +2073,7 @@ function installChatAgent(
   };
   chat = created;
   session.chats.push(created);
+  bridge.setProjectWorktrees(projectWorktreeBinding(session));
   if (active || !session.activeChat) session.activeChat = created;
   const taps = tapsFor(session);
   created.disposers.push(
@@ -2221,13 +2271,26 @@ function installWindowAgentAttention(): void {
 }
 
 let inlinePrompt: { dispose(): void } | null = null;
+let documentRegionCapture: ReturnType<typeof createDocumentRegionCapture> | null = null;
 
 /** 문서 위 인라인 프롬프트는 화면에 붙은 세션의 에이전트에 보낸다. */
 function reinstallInlinePrompt(): void {
   inlinePrompt?.dispose();
   inlinePrompt = null;
+  documentRegionCapture?.dispose();
+  documentRegionCapture = null;
   const session = attachedSession;
   if (!session.bridge || !session.sidebar || !inputHandler || !canvasView) return;
+  const sidebar = session.sidebar;
+  const bridge = session.bridge;
+  documentRegionCapture = createDocumentRegionCapture({
+    wasm: session.wasm,
+    canvasView,
+    eventBus: session.bus,
+    getIdentity: () => bridge.getDocumentSelectionIdentity(),
+    getDocumentName: () => session.wasm.fileName,
+    onCapture: (draft) => { void sidebar.queueCaptureDraft(draft); },
+  });
   inlinePrompt = initInlinePrompt({
     wasm: session.wasm,
     eventBus: session.bus,
@@ -2235,6 +2298,7 @@ function reinstallInlinePrompt(): void {
     canvasView,
     bridge: session.bridge,
     submit: session.sidebar.sendInlinePrompt,
+    startScreenshot: () => documentRegionCapture?.startCapture(),
   });
 }
 
@@ -2269,6 +2333,41 @@ async function liveSessionForFile(
  * 문서 이름을 바꾼다. 파일이 있는 문서는 같은 폴더 안에서 디스크의 파일 이름을 바꾸고, 파일이
  * 없는 문서는 저장할 때 쓸 이름만 바꾼다. 확장자는 그대로 둔다. 바뀐 파일 이름을 돌려준다.
  */
+/**
+ * 이 문서의 이름을 바꿀 수 있는가. 파일이 없는 새 문서는 이름만, 데스크톱 파일은 디스크 이름까지
+ * 바꾼다. 브라우저 파일 핸들은 이름을 바꿀 수 없어 이름 바꾸기를 내놓지 않는다.
+ */
+function canRenameSessionDocument(session: DocumentSession): boolean {
+  if (!session.wasm.hasLoadedDocument()) return false;
+  const handle = session.wasm.currentFileHandle;
+  return !handle || canRenameNativeFile(handle);
+}
+
+/** 확장자는 그대로 두고 파일 이름에 쓸 수 없는 글자를 뺀다. 쓸 수 있는 이름이 없으면 null. */
+function requestedFileName(current: string, requested: string): string | null {
+  const extension = current.match(/\.[^./\\]+$/)?.[0] ?? '';
+  // eslint-disable-next-line no-control-regex
+  let base = requested.trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').trim();
+  if (extension && base.toLowerCase().endsWith(extension.toLowerCase())) {
+    base = base.slice(0, -extension.length).trim();
+  }
+  if (!base || base.startsWith('.')) return null;
+  return `${base}${extension}`;
+}
+
+function renameFailureMessage(error: unknown): string {
+  const reason = error instanceof NativeRenameRefusedError ? error.reason : null;
+  if (!reason) console.warn('[rename] 파일 이름을 바꾸지 못했습니다:', error);
+  const messages: Record<string, string> = {
+    exists: '같은 이름의 파일이 이미 있습니다.',
+    open: '같은 이름의 파일이 이미 열려 있습니다.',
+    saving: '저장이 끝난 뒤 다시 바꾸세요.',
+    invalid: '쓸 수 있는 이름을 입력하세요.',
+    extension: '확장자는 바꿀 수 없습니다.',
+  };
+  return (reason && messages[reason]) || '파일 이름을 바꾸지 못했습니다.';
+}
+
 async function renameDocumentInSession(
   session: DocumentSession,
   requested: string,
@@ -2276,14 +2375,8 @@ async function renameDocumentInSession(
   const doc = session.wasm;
   if (!doc.hasLoadedDocument()) return { ok: false, message: '열린 문서가 없습니다.' };
   const current = doc.fileName;
-  const extension = current.match(/\.[^./\\]+$/)?.[0] ?? '';
-  // eslint-disable-next-line no-control-regex
-  let base = requested.trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').trim();
-  if (extension && base.toLowerCase().endsWith(extension.toLowerCase())) {
-    base = base.slice(0, -extension.length).trim();
-  }
-  if (!base || base.startsWith('.')) return { ok: false, message: '쓸 수 있는 이름을 입력하세요.' };
-  const nextName = `${base}${extension}`;
+  const nextName = requestedFileName(current, requested);
+  if (!nextName) return { ok: false, message: '쓸 수 있는 이름을 입력하세요.' };
   if (nextName === current) return { ok: true, fileName: current };
   const handle = doc.currentFileHandle;
   try {
@@ -2293,16 +2386,7 @@ async function renameDocumentInSession(
       return { ok: false, message: '이 문서의 파일 이름은 여기서 바꿀 수 없습니다.' };
     }
   } catch (error) {
-    const reason = error instanceof NativeRenameRefusedError ? error.reason : null;
-    if (!reason) console.warn('[rename] 파일 이름을 바꾸지 못했습니다:', error);
-    const messages: Record<string, string> = {
-      exists: '같은 이름의 파일이 이미 있습니다.',
-      open: '같은 이름의 파일이 이미 열려 있습니다.',
-      saving: '저장이 끝난 뒤 다시 바꾸세요.',
-      invalid: '쓸 수 있는 이름을 입력하세요.',
-      extension: '확장자는 바꿀 수 없습니다.',
-    };
-    return { ok: false, message: (reason && messages[reason]) || '파일 이름을 바꾸지 못했습니다.' };
+    return { ok: false, message: renameFailureMessage(error) };
   }
   doc.fileName = nextName;
   const documentId = session.documentId;
@@ -2321,6 +2405,184 @@ async function renameDocumentInSession(
   }
   session.bus.emit('document-context-changed');
   return { ok: true, fileName: nextName };
+}
+
+/**
+ * 문서 홈에서 이름을 바꾼다. 열린 문서는 제목 막대와 같은 경로를 쓰고, 닫힌 데스크톱 문서는
+ * 기억한 위치의 파일을 잠깐 잡아 이름만 바꾼 뒤 놓는다.
+ */
+async function renameRecentDocument(row: RecentDoc, name: string): Promise<string | null> {
+  const fail = (message: string) => {
+    showToast({ message, durationMs: 3200 });
+    return null;
+  };
+  const session = liveSessionForDocument(row.documentId);
+  if (session) {
+    const result = await renameDocumentInSession(session, name);
+    if (!result.ok) return fail(result.message);
+    await updateRecentDoc(row.id, { fileName: result.fileName }).catch(() => null);
+    return result.fileName;
+  }
+  const nextName = requestedFileName(row.fileName, name);
+  if (!nextName) return fail('쓸 수 있는 이름을 입력하세요.');
+  if (nextName === row.fileName) return row.fileName;
+  const handle = await restoreNativeDocument(row.documentId);
+  if (handle === 'owned') return fail('다른 창에서 열려 있는 문서입니다.');
+  if (!handle || !canRenameNativeFile(handle)) {
+    await handle?.releaseUnusedSaveTarget?.().catch(() => {});
+    return fail('파일을 찾을 수 없어 이름을 바꾸지 못했습니다.');
+  }
+  try {
+    const renamed = await renameNativeDocumentFile(handle, nextName);
+    await updateRecentDoc(row.id, { fileName: renamed.name }).catch(() => null);
+    renameThreadsDocument(row.documentId, renamed.name);
+    return renamed.name;
+  } catch (error) {
+    return fail(renameFailureMessage(error));
+  } finally {
+    await handle.releaseUnusedSaveTarget?.().catch(() => {});
+  }
+}
+
+let documentHome: DocumentHome | null = null;
+
+/** 템플릿은 허브에 있다. 지금 보이는 채팅의 브리지로 묻는다. */
+function templateBridge() {
+  return attachedSession.activeChat?.bridge ?? null;
+}
+
+function installDocumentHome(): void {
+  const fileManager = desktopFileManagerName();
+  documentHome = createDocumentHome({
+    listRecent: () => listRecentDocs(),
+    loadWorktrees: () => loadWorktreeData(worktreeStore),
+    listTemplates: async () => {
+      const bridge = templateBridge();
+      if (!bridge) return null;
+      try {
+        return (await bridge.listTemplates()).templates;
+      } catch {
+        return null;
+      }
+    },
+    templateBytes: (template) => {
+      const bridge = templateBridge();
+      if (!bridge) return Promise.reject(new Error('에이전트 허브에 연결되어 있지 않습니다.'));
+      return bridge.fetchTemplateContent(template);
+    },
+    addTemplate: async (file) => {
+      const bridge = templateBridge();
+      if (!bridge) throw new Error('에이전트 허브에 연결되어 있지 않습니다.');
+      await bridge.addTemplate(file);
+    },
+    liveDocumentIds: () => new Set(liveSessions
+      .filter((session) => session.documentId && session.wasm.hasLoadedDocument())
+      .map((session) => session.documentId!)),
+    liveThumbnail: (documentId) => {
+      const session = liveSessionForDocument(documentId);
+      if (!session) return null;
+      return renderFirstPage(session.wasm).catch(() => null);
+    },
+    createBlank: () => { dispatcher.dispatch('file:new-doc'); },
+    createFromTemplate: async (template) => {
+      eventBus.emit('document-open-intent');
+      const bridge = templateBridge();
+      if (!bridge) throw new Error('에이전트 허브에 연결되어 있지 않습니다.');
+      eventBus.emit('create-new-document', { template: await bridge.fetchTemplateContent(template) });
+    },
+    openFile: () => { dispatcher.dispatch('file:open'); },
+    openDocument: async (row) => {
+      eventBus.emit('document-open-intent');
+      const live = liveSessionForDocument(row.documentId);
+      if (live) {
+        await runNavigation(() => attachSession(live));
+        documentHome?.hide();
+        showOpenedDocumentInSidebar();
+        return 'opened';
+      }
+      return openRecentDocument(commandServices, row);
+    },
+    openWorktree: (tree) => runNavigation(async () => {
+      const worktree = await worktreeStore.getWorktree(tree.id);
+      if (!worktree) throw new Error('워크트리가 삭제되었습니다.');
+      eventBus.emit('document-open-intent');
+      await openWorktreeSession(worktree);
+      documentHome?.hide();
+      showOpenedDocumentInSidebar();
+    }),
+    // 열린 문서는 그 세션의 규칙을, 닫힌 문서는 데스크톱에서만 디스크 이름을 바꾼다.
+    canRename: (row) => {
+      const live = liveSessionForDocument(row.documentId);
+      return live ? canRenameSessionDocument(live) : isDesktopApp();
+    },
+    renameDocument: renameRecentDocument,
+    openInNewWindow: canOpenNativeDocumentWindow()
+      ? (row) => openNativeDocumentWindow(row.documentId)
+      : undefined,
+    reveal: canRevealNativeDocument()
+      ? { label: `${fileManager}에서 보기`, run: (row) => revealNativeDocument(row.documentId) }
+      : undefined,
+    // 에이전트 전체 화면에서 열었으면 그 채팅으로, 아니면 열린 문서로 돌아간다.
+    returnTarget: () => {
+      // 집중 화면 설정에서 홈으로 왔으면 설정으로 돌아간다.
+      if (document.querySelector('#agent-sidebar.ag-fullscreen.ag-settings-open')) {
+        return { kind: 'settings', label: '설정' };
+      }
+      if (document.body.classList.contains('ag-fullscreen-open')) {
+        const title = document.querySelector('#agent-sidebar .ag-workspace-chat-title')?.textContent?.trim();
+        return { kind: 'chat', label: title || '채팅' };
+      }
+      return wasm.hasLoadedDocument() ? { kind: 'document', label: wasm.fileName } : null;
+    },
+    whenIdle: () => whenDocumentIoIdle(),
+    restoreFocus: () => {
+      if (document.body.classList.contains('ag-fullscreen-open')) {
+        document.querySelector<HTMLElement>('#agent-sidebar .ag-input')?.focus();
+      } else if (inputHandler?.isActive()) {
+        inputHandler.focus();
+      }
+    },
+    onDrop: (event) => { void handleDocumentDrop(event, { fromHome: true }); },
+    openBrowser: () => { documentHome?.hide(); attachedSession.activeChat?.sidebar.openWorkbench('browser'); },
+    openDownloads: () => { documentHome?.hide(); attachedSession.activeChat?.sidebar.openWorkbench('documents'); },
+    // 문서 없이도 집중 화면 설정으로 가고, 설정을 닫으면 홈으로 돌아온다.
+    openSettings: () => {
+      documentHome?.hide();
+      eventBus.emit('settings:open', { fullscreen: true, from: 'home' });
+    },
+    toast: (message) => showToast({ message, durationMs: 3200 }),
+  });
+  // 앱을 켤 때는 카드에 초점 고리를 띄우지 않는다. 키보드는 홈 안에 둔다.
+  documentHome.show({ focus: false });
+}
+
+/** macOS 셸의 신호등 옆 문서 홈 단추. 어느 화면에서든 같은 자리에 떠 있다. */
+function installAppHomeButton(): void {
+  const home = document.createElement('button');
+  home.type = 'button';
+  home.className = 'app-home-button';
+  home.setAttribute('aria-label', '문서 홈');
+  home.title = '문서 홈';
+  home.setAttribute('aria-pressed', 'false');
+  home.append(createIcon('home'));
+  home.addEventListener('click', () => openDocumentHome());
+  document.body.append(home);
+  // 홈이 떠 있는 동안은 눌린 모양으로 둔다.
+  const homeElement = documentHome?.element;
+  if (homeElement) {
+    const sync = () => {
+      home.setAttribute('aria-pressed', homeElement.hidden ? 'false' : 'true');
+      // Electron 은 창 끌기 영역을 문서 순서로 덮는다. 홈이 몸통 끝으로 옮겨 가면 단추를 그 뒤에 둔다.
+      if (home.nextElementSibling) document.body.append(home);
+    };
+    new MutationObserver(sync).observe(homeElement, { attributes: true, attributeFilter: ['hidden'] });
+    sync();
+  }
+}
+
+/** 문서 홈을 창 전체에 연다. 편집기·사이드바(에이전트 전체 화면 포함)는 닫힐 때 그대로 돌아온다. */
+function openDocumentHome(): void {
+  documentHome?.show();
 }
 
 /** 화면에 붙은 문서의 이름을 바꾼다 (제목 막대). 못 바꾸면 알리고 null. */
@@ -2417,10 +2679,13 @@ async function attachSessionNow(next: DocumentSession): Promise<void> {
   previous.sidebar?.deactivate();
   inlinePrompt?.dispose();
   inlinePrompt = null;
+  documentRegionCapture?.dispose();
+  documentRegionCapture = null;
 
   // 2. 페이지 퍼사드를 다음 세션으로 돌린다.
   attachedSession = next;
   wasmFacade.retarget(next.wasm);
+  refreshDocumentTitle();
   eventBus.retarget(next.bus);
   documentStateFacade.retarget(next.documentState);
   autosaveFacade.retarget(next.autosave);
@@ -2457,11 +2722,7 @@ async function attachSessionNow(next: DocumentSession): Promise<void> {
       prepareCanvasKitLocalFonts(fontsUsed);
       toolbar?.initFontDropdown(fontsUsed);
       toolbar?.initStyleDropdown();
-      const emptyState = document.getElementById('document-empty-state');
-      if (emptyState) {
-        emptyState.hidden = true;
-        emptyState.setAttribute('aria-hidden', 'true');
-      }
+      documentHome?.hide();
     } catch (error) {
       console.error('[sessions] 편집 상태를 이어 붙이지 못했습니다:', error);
     }
@@ -2708,7 +2969,16 @@ function setupGlobalShortcuts(): void {
   }, true);
   document.addEventListener('keydown', (e) => {
     const target = e.target instanceof Element ? e.target : null;
-    if (e.defaultPrevented || e.isComposing || !allowsDocumentShortcut(target)) return;
+    if (e.defaultPrevented || e.isComposing) return;
+    // 문서 홈이 떠 있으면 새 문서·열기만 받는다. 가린 문서를 고치거나 그쪽으로 초점을 옮기지 않는다.
+    if (documentHome?.visible) {
+      const commandId = matchShortcut(e, defaultShortcuts);
+      if (commandId !== 'file:new-doc' && commandId !== 'file:open') return;
+      e.preventDefault();
+      dispatcher.dispatch(commandId);
+      return;
+    }
+    if (!allowsDocumentShortcut(target)) return;
     // 문서 입력은 모드별 처리가 있으므로 같은 키를 두 번 실행하지 않는다.
     if (isEditorInput(target) && inputHandler?.isActive()) return;
     const commandId = matchShortcut(e, defaultShortcuts);
@@ -2722,12 +2992,8 @@ function setupGlobalShortcuts(): void {
 
 function setupFileInput(): void {
   const fileInput = document.getElementById('file-input') as HTMLInputElement;
-  const openAction = document.getElementById('document-open-action') as HTMLButtonElement | null;
-  const newAction = document.getElementById('document-new-action') as HTMLButtonElement | null;
-
-  openAction?.addEventListener('click', () => dispatcher.dispatch('file:open'));
-  newAction?.addEventListener('click', () => dispatcher.dispatch('file:new-doc'));
-  void renderEmptyStateRecents();
+  installDocumentHome();
+  installAppHomeButton();
 
   fileInput.addEventListener('change', async (e) => {
     const input = e.target as HTMLInputElement;
@@ -2765,97 +3031,110 @@ function setupFileInput(): void {
   container.addEventListener('dragleave', () => {
     container.classList.remove('drag-over');
   });
-  container.addEventListener('drop', async (e) => {
-    e.preventDefault();
+  container.addEventListener('drop', (e) => {
     container.classList.remove('drag-over');
-    const file = e.dataTransfer?.files[0];
-    if (!file) return;
-    const dropName = file.name.toLowerCase();
-    const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'];
-    const isImage = imageExts.some(ext => dropName.endsWith(ext));
-    const isDoc = isSupportedDocumentFileName(dropName);
-    // 문서는 지금 문서를 뒤에 두고 따로 열 수 있다. 그림은 지금 문서에 넣으므로 기다린다.
-    if (agentEditingLease.active && !(isDoc && shouldOpenInNewSession())) {
-      showToast({ message: '에이전트가 편집을 마친 뒤 파일을 놓을 수 있습니다.', durationMs: 2600 });
-      return;
-    }
-    if (!isImage && !isDoc) {
-      alert('HWP/HWPX/HML/RHWPX 파일 또는 이미지 파일만 지원합니다.');
-      return;
-    }
+    void handleDocumentDrop(e);
+  });
+}
 
-    // #3259: Chromium은 getAsFileSystemHandle을 drop event와 같은 tick에 호출해야 한다.
-    // 아직 bytes를 읽거나 handle을 저장하지 않으며, 아래 사용자 확인이 승인된 뒤에만 사용한다.
-    const browserDroppedFileHandle = isDoc
-      ? captureDroppedFileHandle(e.dataTransfer?.items, file)
-      : Promise.resolve<FileSystemFileHandleLike | null>(null);
-    const desktopDroppedFileHandle = isDoc
-      ? captureDesktopNativeDroppedFile(file)
-      : Promise.resolve<FileSystemFileHandleLike | null | undefined>(undefined);
-    const droppedFileHandle = desktopDroppedFileHandle.then(async (nativeHandle) => (
-      nativeHandle === undefined ? browserDroppedFileHandle : nativeHandle
-    ));
+/**
+ * 편집 영역·문서 홈에 놓은 파일. 문서는 열고, 그림은 지금 문서에 넣는다. 문서 홈에 놓은 그림은
+ * 가린 문서에 넣지 않는다.
+ */
+async function handleDocumentDrop(e: DragEvent, options: { fromHome?: boolean } = {}): Promise<void> {
+  eventBus.emit('document-open-intent');
+  e.preventDefault();
+  const file = e.dataTransfer?.files[0];
+  if (!file) return;
+  const dropName = file.name.toLowerCase();
+  const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'];
+  const isImage = imageExts.some(ext => dropName.endsWith(ext));
+  const isDoc = isSupportedDocumentFileName(dropName);
+  if (options.fromHome && !isDoc) {
+    showToast({ message: 'HWP/HWPX/HML/RHWPX 파일을 놓으면 열립니다.', durationMs: 2600 });
+    return;
+  }
+  // 문서는 지금 문서를 뒤에 두고 따로 열 수 있다. 그림은 지금 문서에 넣으므로 기다린다.
+  if (agentEditingLease.active && !(isDoc && shouldOpenInNewSession())) {
+    showToast({ message: '에이전트가 편집을 마친 뒤 파일을 놓을 수 있습니다.', durationMs: 2600 });
+    return;
+  }
+  if (!isImage && !isDoc) {
+    alert('HWP/HWPX/HML/RHWPX 파일 또는 이미지 파일만 지원합니다.');
+    return;
+  }
 
-    // [#1439] 보안: 드롭으로 로컬 파일을 읽는 동작은 기본에서 제외하고, 사용자가
-    // 명시적으로 [열기]를 눌러 동의한 경우에만 진행한다 (확장/웹 공통).
-    const confirmed = await showDropConfirmDialog(file.name);
-    if (!confirmed) {
-      const unusedHandle = await droppedFileHandle.catch(() => null);
-      await unusedHandle?.releaseUnusedSaveTarget?.().catch(() => {});
-      return;
-    }
+  // #3259: Chromium은 getAsFileSystemHandle을 drop event와 같은 tick에 호출해야 한다.
+  // 아직 bytes를 읽거나 handle을 저장하지 않으며, 아래 사용자 확인이 승인된 뒤에만 사용한다.
+  const browserDroppedFileHandle = isDoc
+    ? captureDroppedFileHandle(e.dataTransfer?.items, file)
+    : Promise.resolve<FileSystemFileHandleLike | null>(null);
+  const desktopDroppedFileHandle = isDoc
+    ? captureDesktopNativeDroppedFile(file)
+    : Promise.resolve<FileSystemFileHandleLike | null | undefined>(undefined);
+  const droppedFileHandle = desktopDroppedFileHandle.then(async (nativeHandle) => (
+    nativeHandle === undefined ? browserDroppedFileHandle : nativeHandle
+  ));
 
-    if (isImage) {
-      if (!inputHandler || wasm.pageCount === 0) return;
-      let objectUrl = '';
-      try {
-        const data = await readBlobBytesWithLimit(file, INSERTED_IMAGE_MAX_BYTES, '그림');
-        const ext = file.name.split('.').pop()?.toLowerCase() || 'png';
-        assertEncodedImageDecodeDimensions(data, '그림');
-        const img = new Image();
-        objectUrl = URL.createObjectURL(file);
-        img.src = objectUrl;
-        await img.decode();
-        assertImageDecodeDimensions(img.naturalWidth, img.naturalHeight, '그림');
-        const result = inputHandler.insertDroppedImageAtClientPoint(
-          data,
-          ext,
-          img.naturalWidth,
-          img.naturalHeight,
-          file.name,
-          e.clientX,
-          e.clientY,
-        );
-        if (!result.ok) {
-          showToast({
-            message: `그림 삽입에 실패했습니다.\n${result.error ?? '삽입 위치 또는 이미지 정보를 확인할 수 없습니다.'}`,
-            durationMs: 6000,
-          });
-        }
-      } catch (error) {
-        const message = error instanceof Error && error.message
-          ? error.message
-          : '브라우저가 이 이미지 파일을 읽지 못했습니다.';
-        console.warn('[drop] 이미지 준비 실패:', error);
+  // [#1439] 보안: 드롭으로 로컬 파일을 읽는 동작은 기본에서 제외하고, 사용자가
+  // 명시적으로 [열기]를 눌러 동의한 경우에만 진행한다 (확장/웹 공통).
+  const confirmed = await showDropConfirmDialog(file.name);
+  if (!confirmed) {
+    const unusedHandle = await droppedFileHandle.catch(() => null);
+    await unusedHandle?.releaseUnusedSaveTarget?.().catch(() => {});
+    return;
+  }
+
+  if (isImage) {
+    if (!inputHandler || wasm.pageCount === 0) return;
+    let objectUrl = '';
+    try {
+      const data = await readBlobBytesWithLimit(file, INSERTED_IMAGE_MAX_BYTES, '그림');
+      const ext = file.name.split('.').pop()?.toLowerCase() || 'png';
+      assertEncodedImageDecodeDimensions(data, '그림');
+      const img = new Image();
+      objectUrl = URL.createObjectURL(file);
+      img.src = objectUrl;
+      await img.decode();
+      assertImageDecodeDimensions(img.naturalWidth, img.naturalHeight, '그림');
+      const result = inputHandler.insertDroppedImageAtClientPoint(
+        data,
+        ext,
+        img.naturalWidth,
+        img.naturalHeight,
+        file.name,
+        e.clientX,
+        e.clientY,
+      );
+      if (!result.ok) {
         showToast({
-          message: `그림을 삽입할 수 없습니다.\n${message}`,
+          message: `그림 삽입에 실패했습니다.\n${result.error ?? '삽입 위치 또는 이미지 정보를 확인할 수 없습니다.'}`,
           durationMs: 6000,
         });
-      } finally {
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
       }
-      return;
+    } catch (error) {
+      const message = error instanceof Error && error.message
+        ? error.message
+        : '브라우저가 이 이미지 파일을 읽지 못했습니다.';
+      console.warn('[drop] 이미지 준비 실패:', error);
+      showToast({
+        message: `그림을 삽입할 수 없습니다.\n${message}`,
+        durationMs: 6000,
+      });
+    } finally {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     }
+    return;
+  }
 
-    // HWP/HWPX/HML/RHWPX — loadFile 내부 unsaved 가드는 드롭 확인 이후에 동작한다.
-    let fileHandle: FileSystemFileHandleLike | null;
-    try {
-      fileHandle = await droppedFileHandle;
-    } catch {
-      return;
-    }
-    await loadFile(file, { fileHandle, untrustedSource: true });
-  });
+  // HWP/HWPX/HML/RHWPX — loadFile 내부 unsaved 가드는 드롭 확인 이후에 동작한다.
+  let fileHandle: FileSystemFileHandleLike | null;
+  try {
+    fileHandle = await droppedFileHandle;
+  } catch {
+    return;
+  }
+  await loadFile(file, { fileHandle, untrustedSource: true });
 }
 
 function setupZoomControls(): void {
@@ -3207,6 +3486,18 @@ function applySavedTextMarkSettings(): void {
   applyEditorSettingsPreview(userSettings.getEditorScalarSettings());
 }
 
+// 사용자가 직접 문서를 열면 집중 화면을 접고 사이드바 보기로 연다. 채팅 목록에서 다른
+// 문서의 채팅으로 옮겨 가며 문서가 열릴 때는 집중 화면을 그대로 둔다. 파일 선택 창을
+// 닫고 끝난 의도가 나중의 채팅 이동에 남지 않게 잠깐만 유효하다.
+const DOCUMENT_OPEN_INTENT_MS = 60_000;
+let documentOpenIntentAt = 0;
+eventBus.on('document-open-intent', () => { documentOpenIntentAt = performance.now(); });
+
+function showOpenedDocumentInSidebar(): void {
+  documentOpenIntentAt = 0;
+  for (const chat of allChats()) chat.sidebar.exitFullscreen();
+}
+
 async function initializeDocument(
   docInfo: DocumentInfo,
   options: {
@@ -3270,10 +3561,9 @@ async function initializeDocument(
     toolbar?.initFontDropdown(docInfo.fontsUsed);
     toolbar?.initStyleDropdown();
     await updateLoadProgress(94, '문서 검증 및 글꼴 확인 중...');
-    const emptyState = document.getElementById('document-empty-state');
-    if (emptyState) {
-      emptyState.hidden = true;
-      emptyState.setAttribute('aria-hidden', 'true');
+    documentHome?.hide();
+    if (documentOpenIntentAt && performance.now() - documentOpenIntentAt < DOCUMENT_OPEN_INTENT_MS) {
+      showOpenedDocumentInSidebar();
     }
 
     // #177: HWPX 비표준 lineseg 감지 (진단 로그).
@@ -3763,40 +4053,6 @@ async function loadBytesNow(
   });
 }
 
-/** 시작 화면(empty state)의 최근 문서 목록 — 파일 메뉴 서브패널과 같은 목록/명령을 쓴다. */
-async function renderEmptyStateRecents(): Promise<void> {
-  const host = document.getElementById('document-recent-list');
-  if (!host) return;
-  let recents;
-  try {
-    recents = await listRecentDocs();
-  } catch {
-    return;
-  }
-  if (!recents.length) return;
-  const title = document.createElement('h3');
-  title.className = 'empty-recent-title';
-  title.textContent = '최근 문서';
-  const list = document.createElement('div');
-  list.className = 'empty-recent-list';
-  for (const doc of recents.slice(0, 8)) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'empty-recent-item';
-    item.title = doc.fileName;
-    const name = document.createElement('span');
-    name.className = 'empty-recent-name';
-    name.textContent = doc.fileName;
-    const format = document.createElement('span');
-    format.className = 'empty-recent-format';
-    format.textContent = doc.sourceFormat.toUpperCase();
-    item.append(name, format);
-    item.addEventListener('click', () => dispatcher.dispatch('file:open-recent', { id: doc.id }));
-    list.appendChild(item);
-  }
-  host.replaceChildren(title, list);
-}
-
 /** 파일 메뉴 "최근 문서" 서브패널을 최신 목록으로 다시 렌더한다(메뉴 open 시 호출). */
 async function renderRecentSubmenu(): Promise<void> {
   const panel = document.getElementById('recent-docs-panel');
@@ -3842,7 +4098,7 @@ async function renderRecentSubmenu(): Promise<void> {
   if (recents.length === 0) {
     frag.append(makeItem({ label: '(최근 문서 없음)', disabled: true }));
   } else {
-    for (const doc of recents) {
+    for (const doc of recents.slice(0, RECENT_MENU_LIMIT)) {
       frag.append(
         makeItem({
           label: doc.fileName,
@@ -4260,14 +4516,25 @@ async function openTrapEntryOnDemand(entry: TrapManifestEntry): Promise<string> 
   }, false).text;
 }
 
-function createNewDocument(): Promise<boolean> {
-  // 멈춘 엔진에서는 만들기가 실패하면서 지금 문서의 자동 저장본까지 지운다.
+/** template 이 있으면 그 문서를 내용으로 하는 이름 없는 새 문서를 만든다(문서 홈의 템플릿). */
+function createNewDocument(template?: Uint8Array): Promise<boolean> {
   if (engineTrap()) return Promise.resolve(false);
-  return trackDocumentIo(createNewDocumentNow);
+  return trackDocumentIo(() => createNewDocumentNow(template));
 }
 
-async function createNewDocumentNow(): Promise<boolean> {
+async function createNewDocumentNow(template?: Uint8Array): Promise<boolean> {
   const msg = sbMessage();
+  // 템플릿은 세션 상태를 건드리기 전에 읽는다. 읽지 못하면 지금 문서·작업 트리·점유가 그대로다.
+  let prepared: PreparedWasmDocument | null = null;
+  if (template) {
+    try {
+      prepared = wasm.prepareNewDocument(template);
+    } catch (error) {
+      console.warn('[main] 템플릿을 읽지 못했습니다:', error);
+      showToast({ message: '이 템플릿을 문서로 읽지 못했습니다.', durationMs: 3200 });
+      return false;
+    }
+  }
   const target = attachedSession;
   if (target.worktree) {
     if (target.worktreeWritable) await target.versions?.persistWorktree();
@@ -4279,12 +4546,16 @@ async function createNewDocumentNow(): Promise<boolean> {
   const identity = { documentId: createActiveDocumentId(), sourceDigest: null };
   const slotId = attachedSession.slotId;
   const reservationId = await reserveDesktopDocument(identity, null, undefined, slotId);
-  if (reservationId === null) throw new DocumentOwnedElsewhereError();
+  if (reservationId === null) {
+    prepared?.dispose();
+    throw new DocumentOwnedElsewhereError();
+  }
   try {
     msg.textContent = '새 문서 생성 중...';
     assertStillAttached(target);
     inputHandler?.deactivate();
-    const docInfo = wasm.createNewDocument();
+    const docInfo = wasm.createNewDocument(prepared ?? undefined);
+    prepared = null;
     await commitDesktopDocument(reservationId, undefined, slotId);
     attachedSession.documentId = identity.documentId;
     hostSave.reset();
@@ -4298,6 +4569,7 @@ async function createNewDocumentNow(): Promise<boolean> {
     await initializeDocument(docInfo);
     return true;
   } catch (error) {
+    prepared?.dispose();
     await cancelDesktopDocument(reservationId, undefined, slotId).catch(() => {});
     attachedSession.documentId = null;
     eventBus.emit('document-context-changed');
@@ -4468,7 +4740,8 @@ async function openDocumentBytesInAttachedSessionNow(data: OpenDocumentBytesEven
 // 커맨드에서 새 문서 생성 호출
 eventBus.on('create-new-document', (payload) => {
   void (async () => {
-    const options = payload as { skipUnsavedGuard?: boolean; requestId?: string } | undefined;
+    const options = payload as { skipUnsavedGuard?: boolean; requestId?: string; template?: Uint8Array } | undefined;
+    const template = options?.template instanceof Uint8Array ? options.template : undefined;
     const notify = (ok: boolean, error?: string) => {
       if (options?.requestId) eventBus.emit('create-new-document:done', { requestId: options.requestId, ok, error });
     };
@@ -4479,11 +4752,11 @@ eventBus.on('create-new-document', (payload) => {
     try {
       const ok = await runNavigation(async () => {
         if (shouldOpenInNewSession()) {
-          const outcome = await openInNewSession(() => {}, () => createNewDocument());
+          const outcome = await openInNewSession(() => {}, () => createNewDocument(template));
           return Boolean(outcome?.loaded && outcome.result);
         }
         if (!await canReplaceCurrentDocument(options?.skipUnsavedGuard)) return null;
-        return createNewDocument();
+        return createNewDocument(template);
       });
       if (ok === null) {
         notify(false, '문서 생성이 취소되었습니다.');
@@ -4498,21 +4771,22 @@ eventBus.on('create-new-document', (payload) => {
 });
 eventBus.on('open-document-bytes', async (payload) => {
   const data = payload as OpenDocumentBytesEvent;
-  const notifyDone = (ok: boolean, error?: string) => {
+  const notifyDone = (ok: boolean, error?: string, cancelled = false) => {
     if (!data.requestId) return;
-    eventBus.emit('open-document-bytes:done', { requestId: data.requestId, ok, error });
+    eventBus.emit('open-document-bytes:done', { requestId: data.requestId, ok, error, cancelled });
   };
   try {
     if (!await openDocumentBytes(data)) {
-      notifyDone(false, '문서 열기가 취소되었습니다.');
+      notifyDone(false, '문서 열기가 취소되었습니다.', true);
       return;
     }
     notifyDone(true);
   } catch (error) {
     // #265: WASM 파서 에러 (예: HWP 3.0 미지원) 를 사용자에게 전파
-    if (!(error instanceof DocumentOwnedElsewhereError)) showLoadError(error);
+    const ownedElsewhere = error instanceof DocumentOwnedElsewhereError;
+    if (!ownedElsewhere) showLoadError(error);
     const msg = error instanceof Error ? error.message : String(error);
-    notifyDone(false, msg);
+    notifyDone(false, msg, ownedElsewhere);
   }
 });
 

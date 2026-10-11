@@ -18,11 +18,15 @@ const RULES = [
   // Publish docs, website and the tool list the docs must not hardcode.
   [/(?:^|\/)(?:README[^/]*|CONTRIBUTING|AGENTS|CLAUDE|DESIGN|PRODUCT|PRIVACY|DEVELOPER_GUIDE)\.md$/, ['docs']],
   [/^website\/|^scripts\/check-publish-docs/, ['docs']],
-  [/^rhwp\/rhwp-agent\/tools\.mjs$/, ['docs', 'hub', 'studio', 'sessions']],
+  [/^rhwp\/rhwp-agent\/tools\.mjs$/, ['docs', 'hub', 'studio', 'browser', 'sessions']],
   // Engine: WASM inputs rebuild rhwp/pkg for the browser job; fixtures are also read by Studio tests.
   [/^rhwp\/(?:src\/|Cargo\.(?:toml|lock)$|rust-toolchain\.toml$|build\.rs$|\.cargo\/)/, ['engine', 'browser']],
   [/^rhwp\/(?:samples|saved|ttfs|assets)\//, ['engine', 'browser', 'studio']],
   [/^rhwp\/(?:tests|fuzz|\.config|tools\/rhwp-subsecond)\/|^rhwp\/rustfmt\.toml$/, ['engine']],
+  // Owned browser behavior needs the real Chromium + Studio research flow.
+  [/^rhwp\/rhwp-agent\/server\.mjs$/, ['hub', 'studio', 'browser', 'sessions']],
+  [/^desktop\/browser-[^/]+$/, ['desktop', 'hub', 'studio', 'browser', 'sessions']],
+  [/^rhwp\/rhwp-agent\/(?:owned-browser[^/]*\.mjs|browser-[^/]*\.mjs|download-manager\.mjs|project-ingest\.mjs|tests\/(?:owned-browser|browser-|download-manager|project-ingest)[^/]*\.test\.mjs)$/, ['hub', 'studio', 'browser', 'sessions']],
   // Hub tests read Studio's tool executor; Studio tests import hub modules.
   [/^rhwp\/rhwp-studio\/src\/agent\//, ['studio', 'hub', 'browser']],
   [/^rhwp\/rhwp-studio\/tests\/desktop-/, ['studio', 'sessions']],

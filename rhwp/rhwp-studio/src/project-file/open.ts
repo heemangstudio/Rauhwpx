@@ -127,8 +127,8 @@ async function tryLiveHandle(
     };
     return await bindIfConfirmed(claim, facts, bytes, name, async () => handle, deps);
   } catch (error) {
-    if (handle.identityKind !== 'native-path' && claim.recentId) {
-      await deps.forgetRecent?.(claim.recentId);
+    if (handle.identityKind !== 'native-path' && claim.recentId && deps.forgetRecent) {
+      await deps.forgetRecent(claim.recentId);
       deps.toast?.(`"${claim.displayName}" 파일을 찾을 수 없어 목록에서 제거했습니다.`, 3500);
     } else if (!(error instanceof DOMException && error.name === 'NotFoundError')) {
       // 닫은 문서·지난 실행의 네이티브 핸들은 NotFoundError 로 온다. 기억해 둔 위치로 다시 여는

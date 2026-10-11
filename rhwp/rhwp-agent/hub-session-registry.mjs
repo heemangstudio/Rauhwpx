@@ -349,7 +349,6 @@ export function createHubSessionRecord(sessionId) {
     sessionGeneration: 0,
     missedTurnEnd: null,
     styleCalibration: null,
-    browserbase: null,
   };
 }
 

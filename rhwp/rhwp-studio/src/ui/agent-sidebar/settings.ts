@@ -18,15 +18,12 @@ import {
   trySaveAgentPrefs,
   type AgentPrefs,
 } from '../../agent/agent-prefs.ts';
-import {
-  buildBrowserbaseOverride,
-  clearBrowserbaseOverride,
-  loadBrowserbaseOverride,
-  saveBrowserbaseOverride,
-} from '../../agent/browserbase-override.ts';
+import { createBrowserSettingsPane } from './browser-settings.ts';
 import { createIcon } from './icons.ts';
 import { createProviderQuota } from './provider-quota.ts';
 import { createEditingSettings } from './settings-editing.ts';
+import { createProjectSettingsPane } from './settings-project.ts';
+import { projectClientOf, type ProjectService } from '../../agent/project-service.ts';
 import { userSettings } from '../../core/user-settings.ts';
 import { loadAttentionPrefs, saveAttentionPrefs, subscribeAttentionPrefs } from '../../agent/attention-prefs.ts';
 import { isDesktopApp } from '../../desktop-integration.ts';
@@ -45,6 +42,8 @@ import {
   formatUsageAge,
 } from './usage-format.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
+import type { ChatThread } from '../../agent/threads.ts';
+import { createArchiveSettingsPane } from './settings-archive.ts';
 import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
 import type { EventBus } from '../../core/event-bus.ts';
 import type {
@@ -53,8 +52,6 @@ import type {
   AgentInstructionsStatus,
   AgentAuthMethod,
   AgentSetupStatusMap,
-  BrowserbaseCredentialSource,
-  BrowserbaseStatus,
   PermissionProfile,
   PiCatalogModel,
   PiStatus,
@@ -321,6 +318,10 @@ export interface SettingsPanelDeps {
   skillsSettings?: HTMLElement;
   /** 스킬 탭에 들어갈 때 최신 목록을 요청한다. */
   refreshSkills?: () => void;
+  /** 설정 → 프로젝트가 쓰는 허브 서비스. 없으면 bridge.projects 를 찾는다. */
+  projectSettings?: ProjectService | null;
+  /** 보관함에서 채팅을 영구히 지운다. 사이드바의 삭제 확인 경로를 쓴다. */
+  deleteArchivedThread?: (thread: ChatThread) => Promise<boolean>;
 }
 
 export interface SettingsPanel {
@@ -350,6 +351,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     reconnectSession,
     skillsSettings,
     refreshSkills,
+    projectSettings,
   } = deps;
 
   let disposed = false;
@@ -416,13 +418,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   /** 닫기마다 올라간다. 닫기 전에 보낸 시작 요청의 응답을 버리는 데 쓴다. */
   let authAttempt = 0;
 
-  // Browserbase — 앱에서 입력한 키는 이 탭이 사는 동안만 허브 환경 변수를 덮는다.
-  let browserbaseStatus: BrowserbaseStatus | null = null;
-  let browserbaseBusy = false;
-  let browserbaseMessage = '';
-  /** 서버/저장 상태에서 채운 프로젝트는 새 키를 입력할 때 오래된 값으로 간주한다. */
-  let browserbaseProjectAutoFilled = false;
-
   // pi 마법사 상태 — 한 장의 카드가 단계를 갈아 끼운다.
   let piStatus: PiStatus | null = null;
   let piCatalog: PiCatalogModel[] = [];
@@ -472,7 +467,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const destinations: ReadonlyArray<{ id: SettingsDestination; label: string }> = [
     { id: 'editing', label: '편집' },
     { id: 'ai', label: 'AI' },
+    { id: 'browser', label: '브라우저' },
     { id: 'skills', label: '스킬' },
+    { id: 'project', label: '프로젝트' },
+    { id: 'archive', label: '보관함' },
   ];
   for (const destination of destinations) {
     const button = el('button', 'ag-settings-nav-button', destination.label);
@@ -494,6 +492,12 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   body.append(...panes.values());
   element.append(header, layout);
 
+  const browserPane = createBrowserSettingsPane({
+    request: (action, args) => bridge.requestBrowser(action, args),
+    submit: (args) => bridge.submitBrowserAccount(args),
+    isConnected: () => connectionState === 'connected',
+  });
+  panes.get('browser')?.append(browserPane.element);
   let shellReady = false;
   const editingSettings = createEditingSettings({
     eventBus,
@@ -503,6 +507,18 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
   });
   panes.get('editing')?.appendChild(editingSettings.element);
+  const projectPane = createProjectSettingsPane({
+    service: () => projectSettings ?? projectClientOf(bridge)?.service ?? null,
+    isConnected: () => connectionState === 'connected',
+    onDirtyChange: () => {
+      if (shellReady) renderDestinationState();
+    },
+  });
+  panes.get('project')?.appendChild(projectPane.element);
+  const archivePane = createArchiveSettingsPane({
+    deleteThread: (thread) => deps.deleteArchivedThread?.(thread) ?? Promise.resolve(false),
+  });
+  panes.get('archive')?.appendChild(archivePane.element);
 
   // ── 1. 연결 ────────────────────────────────────────────
   const connection = createSection('연결');
@@ -570,62 +586,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   refreshBtn.classList.add('ag-settings-section-action');
   connection.head.append(refreshBtn);
   connection.body.append(providerList, hubRow);
-
-  // ── 1-1. 원격 브라우저 (Browserbase) ──────────────────
-  // 여기 넣은 키는 허브 메모리에만 머물고, 이 탭을 쓰는 동안만 환경 변수를 덮는다.
-  const browserbaseSection = createSection('원격 브라우저');
-  browserbaseSection.root.classList.add('ag-settings-browserbase-section');
-  const browserbaseStatusLine = el('p', 'ag-settings-status', '허브 연결 대기');
-  const browserbaseKey = createTextField('Browserbase 키', {
-    type: 'password',
-    placeholder: 'bb_live_…',
-    autocomplete: 'new-password',
-  });
-  const browserbaseProject = createTextField('프로젝트 ID', { placeholder: '비우면 자동 선택' });
-  const browserbaseGemini = createTextField('Gemini 키', {
-    type: 'password',
-    placeholder: 'AIza…',
-    autocomplete: 'new-password',
-  });
-  const browserbaseError = el('p', 'ag-settings-cliproxy-error');
-  browserbaseError.hidden = true;
-  const browserbaseActions = el('div', 'ag-settings-actions');
-  const browserbaseApply = el('button', 'ag-settings-primary', '적용');
-  browserbaseApply.type = 'button';
-  const browserbaseReset = el('button', 'ag-settings-btn', '환경 변수로 되돌리기');
-  browserbaseReset.type = 'button';
-  browserbaseReset.hidden = true;
-  browserbaseActions.append(browserbaseApply, browserbaseReset);
-  browserbaseSection.body.append(
-    browserbaseStatusLine,
-    browserbaseKey.field,
-    browserbaseProject.field,
-    browserbaseGemini.field,
-    browserbaseError,
-    browserbaseActions,
-  );
-  const browserbaseInputs = [browserbaseKey.input, browserbaseProject.input, browserbaseGemini.input];
-  browserbaseApply.addEventListener('click', () => void submitBrowserbase());
-  browserbaseReset.addEventListener('click', () => void resetBrowserbase());
-  browserbaseKey.input.addEventListener('input', () => {
-    if (browserbaseProjectAutoFilled) {
-      browserbaseProject.input.value = '';
-      browserbaseProjectAutoFilled = false;
-    }
-    renderBrowserbase();
-  });
-  browserbaseProject.input.addEventListener('input', () => {
-    browserbaseProjectAutoFilled = false;
-    renderBrowserbase();
-  });
-  browserbaseGemini.input.addEventListener('input', renderBrowserbase);
-  for (const input of browserbaseInputs) {
-    input.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter') return;
-      event.preventDefault();
-      void submitBrowserbase();
-    });
-  }
 
   // ── Pi 모달 흐름 ──────────────────────────────────────
   // 설치 → 로그인 → 모델 → 요약으로 모습을 바꾸며, 설정 페이지에는 직접 붙지 않는다.
@@ -1316,6 +1276,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   // ── 7. 사용량 ─────────────────────────────────────────
   let settingsOpen = false;
+  const unsubscribeBrowserSettings = bridge.onBrowserEvent((event) => {
+    if (settingsOpen && currentDestination === 'browser'
+      && ['browser-account-changed', 'browser-policy-changed', 'browser-runtime-state', 'owned_browser_runtime'].includes(event.type)) browserPane.open();
+  });
   let usageBusy = false;
   let usagePoll: ReturnType<typeof setInterval> | null = null;
   const quotaSection = createSection('사용량');
@@ -1393,7 +1357,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   // 드물게 쓰는 원격 브라우저 키와 Git 전환은 접힌 고급 묶음에 둔다.
   const advanced = el('details', 'ag-settings-advanced');
   const advancedSummary = el('summary', 'ag-settings-advanced-summary', '고급');
-  advanced.append(advancedSummary, browserbaseSection.root, gitSection.root);
+  advanced.append(advancedSummary, gitSection.root);
   const aiContent = el('div', 'ag-settings-destination-content');
   aiContent.append(
     defaults.root,
@@ -1432,20 +1396,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   setupKey.input.addEventListener('input', renderAgentSetup);
 
-  // 새로고침 전에 넣어 둔 Browserbase 키가 있으면 허브에 다시 심는다 — 허브가 다시 떴어도
-  // 브리지가 연결마다 재전송하므로 여기서는 한 번만 건네면 된다.
-  const storedBrowserbase = loadBrowserbaseOverride();
-  if (storedBrowserbase) {
-    browserbaseProject.input.value = storedBrowserbase.projectId ?? '';
-    browserbaseProjectAutoFilled = browserbaseProject.input.value !== '';
-    void bridge.setBrowserbaseCredentials(storedBrowserbase).then((status) => {
-      if (disposed || !status) return;
-      browserbaseStatus = status;
-      renderBrowserbase();
-    });
-  }
-  renderBrowserbase();
-
   // ── 상태 → DOM ────────────────────────────────────────
 
   function samePrefs(left: AgentPrefs, right: AgentPrefs): boolean {
@@ -1476,8 +1426,12 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return editingSettings.isDirty();
       case 'ai':
         return isAiDirty();
+      case 'browser':
       case 'skills':
+      case 'archive':
         return false;
+      case 'project':
+        return projectPane.isDirty();
       default: {
         const _exhaustive: never = currentDestination;
         return _exhaustive;
@@ -1522,7 +1476,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     }
     renderDestinationState();
     syncUsagePolling();
+    if (destination === 'browser') browserPane.open();
     if (destination === 'skills') refreshSkills?.();
+    if (destination === 'project') projectPane.open();
+    if (destination === 'archive') archivePane.open();
     panes.get(destination)?.scrollTo({ top: 0 });
   }
 
@@ -1679,7 +1636,12 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'ai':
           cancelAiDraft();
           return true;
-        case 'skills':
+        case 'browser':
+      case 'skills':
+        case 'archive':
+          return true;
+        case 'project':
+          projectPane.cancel();
           return true;
         default: {
           const _exhaustive: never = currentDestination;
@@ -1692,8 +1654,12 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return editingSettings.apply();
       case 'ai':
         return applyAiDraft();
+      case 'browser':
       case 'skills':
+      case 'archive':
         return true;
+      case 'project':
+        return projectPane.apply();
       default: {
         const _exhaustive: never = currentDestination;
         return _exhaustive;
@@ -1967,102 +1933,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     refreshBtn.disabled = !online || connectionRefreshing;
     refreshBtn.setAttribute('aria-busy', String(connectionRefreshing));
     renderProviders();
-  }
-
-  function browserbaseSourceLabel(source: BrowserbaseCredentialSource): string {
-    return source === 'studio' ? '앱 입력' : '환경 변수';
-  }
-
-  function browserbaseErrorLabel(code: string, message: string): string {
-    switch (code) {
-      case 'BROWSERBASE_KEY_INVALID': return 'Browserbase 키 거부됨';
-      case 'BROWSERBASE_UNREACHABLE': return 'Browserbase API 연결 실패';
-      case 'BROWSERBASE_PROJECT_NOT_FOUND': return '프로젝트를 찾을 수 없습니다 · 프로젝트 ID 확인';
-      case 'BROWSERBASE_PROJECT_REQUIRED': return '프로젝트 ID 입력 필요';
-      case 'BROWSERBASE_NO_PROJECT': return 'Browserbase 프로젝트 없음';
-      default: return message;
-    }
-  }
-
-  function renderBrowserbase(): void {
-    const online = connectionState === 'connected';
-    const status = browserbaseStatus;
-    if (!online) {
-      browserbaseStatusLine.textContent = '허브 연결 대기';
-    } else if (!status) {
-      browserbaseStatusLine.textContent = '확인 중…';
-    } else if (status.keySource === null) {
-      browserbaseStatusLine.textContent = '키 없음 · 아래에 입력하거나 BROWSERBASE_API_KEY 설정';
-    } else {
-      const parts = [`${browserbaseSourceLabel(status.keySource)} 키 ····${status.keyTail ?? ''}`];
-      parts.push(status.projectId ? `프로젝트 ${status.projectId}` : '프로젝트 없음');
-      parts.push(status.geminiSource ? `Gemini ${browserbaseSourceLabel(status.geminiSource)}` : 'Gemini 키 없음');
-      if (status.browsers.length > 0) parts.push(`브라우저 ${status.browsers.length}개 열림`);
-      browserbaseStatusLine.textContent = parts.join(' · ');
-    }
-    browserbaseStatusLine.classList.toggle('ag-settings-status-warn', online && status !== null && !status.configured);
-    const hasKey = browserbaseKey.input.value.trim().length > 0;
-    browserbaseApply.disabled = !online || browserbaseBusy || !hasKey;
-    browserbaseApply.textContent = browserbaseBusy ? '확인 중…' : '적용';
-    const overriding = status?.keySource === 'studio' || status?.projectSource === 'studio' || status?.geminiSource === 'studio';
-    browserbaseReset.hidden = !overriding;
-    browserbaseReset.disabled = !online || browserbaseBusy;
-    for (const input of browserbaseInputs) input.disabled = !online || browserbaseBusy;
-    browserbaseError.hidden = browserbaseMessage === '';
-    browserbaseError.textContent = browserbaseMessage;
-  }
-
-  async function refreshBrowserbase(): Promise<void> {
-    const status = await bridge.requestBrowserbaseStatus();
-    if (disposed || !status) return;
-    browserbaseStatus = status;
-    renderBrowserbase();
-  }
-
-  async function submitBrowserbase(): Promise<void> {
-    const override = buildBrowserbaseOverride({
-      apiKey: browserbaseKey.input.value,
-      projectId: browserbaseProject.input.value,
-      geminiApiKey: browserbaseGemini.input.value,
-    });
-    if (!override || browserbaseBusy) return;
-    browserbaseBusy = true;
-    browserbaseMessage = '';
-    renderBrowserbase();
-    const status = await bridge.setBrowserbaseCredentials(override);
-    if (disposed) return;
-    browserbaseBusy = false;
-    if (status) {
-      browserbaseStatus = status;
-      // 허브가 고른 프로젝트 id 를 같이 기억해 다음 재전송이 같은 프로젝트로 간다.
-      saveBrowserbaseOverride({ ...override, ...(status.projectId ? { projectId: status.projectId } : {}) });
-      browserbaseKey.input.value = '';
-      browserbaseGemini.input.value = '';
-      browserbaseProject.input.value = status.projectId ?? '';
-      browserbaseProjectAutoFilled = browserbaseProject.input.value !== '';
-    } else if (!browserbaseMessage) {
-      browserbaseMessage = '키 확인 실패';
-    }
-    renderBrowserbase();
-  }
-
-  async function resetBrowserbase(): Promise<void> {
-    if (browserbaseBusy) return;
-    browserbaseBusy = true;
-    browserbaseMessage = '';
-    renderBrowserbase();
-    const status = await bridge.clearBrowserbaseCredentials();
-    if (disposed) return;
-    browserbaseBusy = false;
-    if (status) {
-      clearBrowserbaseOverride();
-      browserbaseStatus = status;
-      browserbaseProject.input.value = '';
-      browserbaseProjectAutoFilled = false;
-    } else if (!browserbaseMessage) {
-      browserbaseMessage = 'Browserbase 설정 되돌리기 실패';
-    }
-    renderBrowserbase();
   }
 
   function renderProviders(): void {
@@ -3327,6 +3197,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         prefsDraft = clonePrefs(prefs);
       }
       connectionState = bridge.getConnectionState();
+      projectPane.setConnected(connectionState === 'connected');
       // 웹의 알림 허락은 Studio 밖(사이트 설정)에서 바뀐다 — 열 때마다 다시 본다.
       syncNotificationsSection();
       editingSettings.open();
@@ -3335,8 +3206,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       syncPrefsInputs();
       renderModelCatalog();
       renderConnection();
-      renderBrowserbase();
-      if (connectionState === 'connected') void refreshBrowserbase();
+      if (currentDestination === 'browser') browserPane.open();
       renderProviders();
       renderAgentInstructions();
       renderWritingStyle();
@@ -3354,15 +3224,17 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
     close(): void {
       settingsOpen = false;
+      browserPane.close();
       syncUsagePolling();
       if (editingSettings.isDirty()) editingSettings.cancel();
       if (isAiDirty()) cancelAiDraft();
+      if (projectPane.isDirty()) projectPane.cancel();
       closeAgentSetup();
       finishTemplateName(null);
     },
     requestClose: resolveDirtyExit,
     isDirty(): boolean {
-      return editingSettings.isDirty() || isAiDirty();
+      return editingSettings.isDirty() || isAiDirty() || projectPane.isDirty();
     },
     openAgentSetup,
     beginAgentConnect,
@@ -3371,14 +3243,15 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'connection':
           connectionState = ev.state;
           setupTerminal.setOnline(ev.state === 'connected');
+          projectPane.setConnected(ev.state === 'connected');
           renderConnection();
           renderProviders();
           renderPi();
           renderTemplates();
           renderAgentInstructions();
-          renderBrowserbase();
+          browserPane.setConnected();
           if (ev.state === 'connected' && !agentInstructions) void refreshAgentInstructions(false);
-          if (ev.state === 'connected') void refreshBrowserbase();
+          if (ev.state === 'connected' && currentDestination === 'browser') browserPane.open();
           if (ev.state === 'connected' && settingsOpen) {
             for (const agent of PLAN_AGENTS) void loadModelCatalog(agent);
           }
@@ -3415,15 +3288,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           instructionsProposalBusy = false;
           instructionsMessage = ev.message;
           renderAgentInstructions();
-          break;
-        case 'browserbase-status':
-          browserbaseStatus = ev.status;
-          renderBrowserbase();
-          break;
-        case 'browserbase-error':
-          browserbaseMessage = browserbaseErrorLabel(ev.code, ev.message);
-          browserbaseBusy = false;
-          renderBrowserbase();
           break;
         case 'provider-status':
           providers = ev.providers;
@@ -3597,8 +3461,13 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       if (supportsTerminalSetup(setupAgent) && setupAuthRunId) bridge.cancelAgentSetup(setupAgent, setupAuthRunId);
       if (setupCloseTimer) clearTimeout(setupCloseTimer);
       setupTerminal.dispose();
+      projectPane.dispose();
+      archivePane.dispose();
+      browserPane.dispose();
+      unsubscribeBrowserSettings();
       disposed = true;
       settingsOpen = false;
+      browserPane.close();
       syncUsagePolling();
       document.removeEventListener('visibilitychange', syncUsagePolling);
       quotaCards.dispose();

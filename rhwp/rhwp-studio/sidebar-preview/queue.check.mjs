@@ -436,8 +436,14 @@ export async function checkComposerSendPath(page, origin) {
     await page.type('.ag-input', text);
     await page.keyboard.press('Enter');
   };
-  const settle = () => page.waitForFunction(() => !window.sidebarPreview.snapshot().running
-    && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
+  const settle = () => page.waitForFunction(() => {
+    const preview = window.sidebarPreview;
+    const thread = preview.threadStore.getThread(preview.sidebar.currentThreadId());
+    const request = thread?.messages.findLastIndex((message) => message.role === 'user') ?? -1;
+    const turn = thread?.messages.slice(request + 1).find((message) => message.kind === 'turn');
+    return turn?.endedAt != null && !preview.snapshot().running
+      && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true';
+  });
 
   await openPreview(page, origin, 'reset=1&scenario=chat');
   // 로컬 명령은 사용자 메시지를 보내지 않는다.

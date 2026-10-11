@@ -48,7 +48,7 @@ test('production hub keeps owner endpoints bearer-only and healthz quiet without
       RHWP_AGENT_PORT: '0',
       RHWP_AGENT_TOKEN: TOKEN,
       RHWP_LAUNCH_ID: LAUNCH_ID,
-      RHWP_WORK_DIR: workRoot,
+      RHWP_WORK_DIR: workRoot, RHWP_REFERENCES_DIR: path.join(workRoot, 'references'), RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],

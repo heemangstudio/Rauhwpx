@@ -98,7 +98,7 @@ export function writesApplyDirectly(
   phase: AgentPhase,
   permissionProfile: PermissionProfile,
 ): boolean {
-  return permissionProfile === 'unrestricted' && (workflow === 'direct' || phase === 'implementing');
+  return permissionProfile === 'unrestricted' && (workflow === 'direct' || (workflow === 'plan' && phase === 'implementing'));
 }
 
 export type UserQuestionMode = 'single' | 'multiple';
@@ -138,6 +138,29 @@ export interface UserQuestionInteraction {
   createdAt: string;
   updatedAt: string;
   questions: UserQuestion[];
+}
+
+/** 사용자가 지금 채팅에만 허용할 수 있는 추가 권한. */
+export type ChatPermissionCapability = 'project-edit' | 'downloads' | 'browser' | 'local-execution';
+export type ChatPermissionDecision = 'grant' | 'deny';
+export type ChatPermissionOutcome =
+  | { status: 'granted' }
+  | { status: 'denied' | 'expired'; reason?: string };
+
+export interface ChatPermissionRequest {
+  requestId: string;
+  threadId: string;
+  documentId: string | null;
+  turnId: string;
+  agent: AgentName;
+  capability: ChatPermissionCapability;
+  kind?: 'browser-save-account' | 'browser-use-account';
+  origin?: string;
+  origins?: string[];
+  accountId?: string;
+  accountLabel?: string;
+  reason: string;
+  createdAt: string;
 }
 
 /** 에이전트 참고자료의 수명 범위. 파일 본문은 허브가 보관하며 브라우저에는 메타데이터만 둔다. */
@@ -630,28 +653,85 @@ export interface PiStatus {
   error: string | null;
 }
 
-/** 자격 증명 한 필드의 출처 — 앱에서 입력했는지, 허브 환경 변수에서 왔는지. */
-export type BrowserbaseCredentialSource = 'studio' | 'env' | null;
-
-/** 허브가 보는 Browserbase 설정 상태. 키 본문은 오지 않고 끝 네 글자만 온다. */
-export interface BrowserbaseStatus {
-  configured: boolean;
-  /** 아직 비어 있는 환경 변수 이름들. */
-  missing: string[];
-  keySource: BrowserbaseCredentialSource;
-  keyTail: string | null;
-  projectId: string | null;
-  projectSource: BrowserbaseCredentialSource;
-  geminiSource: BrowserbaseCredentialSource;
-  /** 지금 떠 있는 원격 브라우저 — main 과 서브에이전트 id. */
-  browsers: Array<{ id: string; connected: boolean }>;
+/** 앱이 소유하는 연구 브라우저의 연결 상태와 세대. */
+export interface BrowserRuntime {
+  runtimeId: string;
+  generation: number;
+  state: string;
+  kind: string;
+  profile?: string;
+  readiness?: Record<string, unknown>;
 }
-
-/** 설정 탭에서 입력해 허브로 보내는 Browserbase 덮어쓰기 — 앱을 쓰는 동안만 산다. */
-export interface BrowserbaseOverride {
-  apiKey: string;
-  projectId?: string;
-  geminiApiKey?: string;
+export interface BrowserTab {
+  tabId: string;
+  threadId: string | null;
+  documentId: string | null;
+  projectId: string | null;
+  agentId?: string;
+  url: string;
+  title: string;
+  navigationEpoch: number;
+  controllerEpoch: number;
+  controller: { owner: 'human' | 'agent'; clientId?: string };
+  status: string;
+  presentation?: 'native' | 'stream';
+  runtime?: 'native' | 'chromium';
+  nativeTargetId?: string;
+  runtimeGeneration?: number;
+  lastAction?: string;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+}
+export interface BrowserFrame {
+  frameId: string;
+  tabId: string;
+  navigationEpoch: number;
+  controllerEpoch: number;
+  mimeType: string;
+  data: string;
+  width: number;
+  height: number;
+  deviceScaleFactor: number;
+  scrollX: number;
+  scrollY: number;
+}
+export interface BrowserDownload {
+  downloadId: string;
+  state: 'downloading' | 'downloaded' | 'importing' | 'imported' | 'cancelled' | 'interrupted' | 'import-failed';
+  filename: string;
+  mimeType?: string;
+  size: number;
+  sha256?: string;
+  target: { ownerId?: string; projectId?: string | null; threadId?: string | null; documentId?: string | null; tabId?: string; agentId?: string; taskId?: string };
+  source?: { url?: string; pageUrl?: string };
+  fileId?: string;
+  projectItemId?: string;
+  importProjectId?: string;
+  inboxMovedAt?: string;
+  extractionStatus?: 'pending' | 'running' | 'ready' | 'failed';
+  extractionError?: string | { code?: string; message?: string };
+  error?: string | { code?: string; message?: string };
+}
+export interface BrowserEvent {
+  type: string;
+  runtime?: BrowserRuntime;
+  tabs?: BrowserTab[];
+  tab?: BrowserTab;
+  tabId?: string;
+  frame?: BrowserFrame;
+  job?: BrowserDownload;
+  [key: string]: unknown;
+}
+export interface BrowserResult {
+  ok?: boolean;
+  action?: string;
+  runtime?: BrowserRuntime;
+  tabs?: BrowserTab[];
+  tab?: BrowserTab;
+  frame?: BrowserFrame;
+  downloads?: BrowserDownload[];
+  jobs?: BrowserDownload[];
+  [key: string]: unknown;
 }
 
 /** OpenRouter 잔액 — pi 사용량 카드에 표시. */
@@ -739,6 +819,12 @@ export interface SkillCatalog {
 }
 
 export interface SkillEditorDocument { name: string; body: string; digest: string; }
+
+/** 허브가 지금 세션 기준으로 새로 만든 생성 문서 주소, 또는 더 이상 없다는 답. */
+export type GeneratedArtifactLookup =
+  | { status: 'ready'; artifactId: string; fileName: string; downloadUrl: string }
+  | { status: 'gone' }
+  | { status: 'unavailable'; message: string };
 
 export interface HarnessSkillRow {
   harness: SkillHarnessId;
@@ -943,6 +1029,9 @@ export type SidebarEvent =
   | { type: 'user-question-requested'; interaction: UserQuestionInteraction; replayed?: boolean }
   | { type: 'user-question-resolved'; interactionId: string; outcome: UserQuestionOutcome }
   | { type: 'user-question-answer-result'; interactionId: string; responseId: string; ok: boolean; code?: string; message?: string }
+  | { type: 'chat-permission-requested'; request: ChatPermissionRequest; replayed?: boolean }
+  | { type: 'chat-permission-resolved'; requestId: string; threadId: string; documentId: string | null; outcome: ChatPermissionOutcome; grants: ChatPermissionCapability[] }
+  | { type: 'chat-permission-response-result'; responseId: string; requestId: string; ok: boolean; code?: string; message?: string }
   | { type: 'reference-status'; messageId: string; attachments: MessageReferenceStatus[] }
   | { type: 'templates-catalog'; catalog: TemplateCatalog; change?: { type: 'added' | 'renamed' | 'replaced' | 'deleted'; template: DocumentTemplate } }
   | { type: 'agent-instructions'; status: AgentInstructionsStatus; changedBy: string }
@@ -1022,8 +1111,7 @@ export type SidebarEvent =
     }
   | { type: 'pi-catalog'; requestId: string; models: PiCatalogModel[] }
   | { type: 'pi-error'; requestId: string; code: string; message: string }
-  | { type: 'browserbase-status'; status: BrowserbaseStatus }
-  | { type: 'browserbase-error'; requestId: string; code: string; message: string }
+  | { type: 'browser-event'; event: BrowserEvent }
   | {
       type: 'title-result';
       requestId: string;
@@ -1091,6 +1179,8 @@ export interface AgentBridgeDeps {
   eventBus: EventBus;
   documentState: DocumentDirtyState;
   isReadOnly?: () => boolean;
+  /** 같은 이름의 작업 트리 사본이 있을 때 이 문서의 가지. 하나뿐이면 null. */
+  getDocumentWorktree?: () => { branch: string; primary: boolean } | null;
   /** 전체 모드 에이전트의 버전 커밋 — 사이드바 커밋 버튼과 같은 기록에 남긴다. */
   commitVersion?: (message: string) => Promise<void>;
   /**
@@ -1650,4 +1740,299 @@ export type PendingEditsChangeEvent =
       drops?: PendingDrop[];
       /** 거절/무효화로 되돌리지 못해 문서에 남은 op 인가 (승인은 false — 전부 반영됨) */
       leftInDocument?: boolean;
+    };
+
+// ── 연구 프로젝트 ──────────────────────────────────────────
+// 허브 project-store 의 스냅샷·편집 연산·설정과 같은 모양이다 (/tmp/rp/CONTRACT.md).
+
+export type ProjectActorKind = 'user' | 'agent' | 'librarian';
+
+export interface ProjectActor {
+  kind: ProjectActorKind;
+  threadId?: string;
+  agent?: string;
+}
+
+export interface ProjectColumn {
+  id: string;
+  name: string;
+}
+
+export interface ProjectTag {
+  name: string;
+  /** CSS hex 색. */
+  color: string;
+}
+
+export interface ProjectMember {
+  documentId: string;
+  /** 그래프에서 이 문서를 가리키는 `d…` 노드 id. */
+  nodeId: string;
+  name: string;
+}
+
+/**
+ * 항목을 모은 작업 공간(워크트리) 표시. 없거나 null 이면 모든 작업 공간의 공통 자료다.
+ * branch 는 표시를 붙일 때의 이름이라, 화면은 지금 작업 공간 목록에서 이름을 다시 찾는다.
+ */
+export interface ProjectOrigin {
+  worktreeId: string;
+  branch: string;
+}
+
+/** 버전 기록이 켜진 문서의 작업 공간 하나. */
+export interface ProjectWorktree {
+  id: string;
+  branch: string;
+  primary: boolean;
+}
+
+/** 이 채팅 문서가 속한 저장소와 작업 공간들. 버전 기록이 꺼진 문서에는 없다. */
+export interface ProjectWorktreeContext {
+  repositoryId: string;
+  current: ProjectWorktree;
+  /** 지금 있는 작업 공간 전부 (current 포함). */
+  worktrees: ProjectWorktree[];
+}
+
+/** 브리지가 허브에 보내는 작업 공간 묶음 — 어느 문서의 것인지와 작업 공간마다의 문서 id. */
+export interface ProjectWorktreeBinding extends ProjectWorktreeContext {
+  documentId: string;
+  worktrees: Array<ProjectWorktree & { documentId: string }>;
+}
+
+export type ProjectLibrarianState = 'idle' | 'running' | 'paused';
+export type ProjectItemLibrarianStatus = 'queued' | 'running' | 'done' | 'failed' | 'skipped';
+
+export interface ProjectItemBase {
+  id: string;
+  kind: 'file' | 'note' | 'clip';
+  title: string;
+  column: string | null;
+  order: number;
+  tags: string[];
+  pinned: boolean;
+  summary: string;
+  createdAt: number;
+  updatedAt: number;
+  addedBy: ProjectActor;
+  trashedAt?: number;
+  /** 다른 작업 공간에서 모은 항목. 정리 도우미는 바꾸지 않는다. */
+  origin?: ProjectOrigin | null;
+}
+
+export type ProjectFileKind = 'text' | 'pdf' | 'docx' | 'hwp' | 'pptx' | 'xlsx' | 'html' | 'image' | 'other';
+export type ProjectFileSourceKind = 'upload' | 'chat-attachment' | 'web' | 'home' | 'text' | 'workspace' | 'migrated' | 'browser';
+
+export interface ProjectFileItem extends ProjectItemBase {
+  kind: 'file';
+  /** ReferenceStore 파일 id. */
+  fileId: string;
+  scope: 'project' | 'global';
+  originalName: string;
+  mimeType: string;
+  size: number;
+  fileKind: ProjectFileKind;
+  status: 'processing' | 'ready' | 'failed';
+  extractionStatus?: 'pending' | 'running' | 'ready' | 'failed';
+  extractionError?: string | { code?: string; message?: string };
+  chunkCount: number;
+  pageCount?: number;
+  source: {
+    kind: ProjectFileSourceKind;
+    url?: string;
+    finalUrl?: string;
+    homePath?: string;
+    threadId?: string;
+    downloadId?: string;
+    tabId?: string;
+  };
+  librarian: { status: ProjectItemLibrarianStatus; error?: string };
+  locked: { title?: true; column?: true; tags?: true };
+  captures?: Array<{ downloadId: string; threadId?: string; tabId?: string; taskId?: string; capturedAt?: string; url?: string; pageUrl?: string }>;
+}
+
+export interface ProjectNoteItem extends ProjectItemBase {
+  kind: 'note';
+  bytes: number;
+}
+
+/** 영역 [x, y, w, h] — 쪽(이미지)에 대한 0..1 비율, 소수 넷째 자리. */
+export type ProjectClipRect = [number, number, number, number];
+
+/** PDF 쪽이나 이미지의 네모난 영역 (`r…`). 스캔본·그림을 글자 대신 인용한다. */
+export interface ProjectClipItem extends ProjectItemBase {
+  kind: 'clip';
+  /** 원본 파일 항목 id. */
+  sourceId: string;
+  /** 1부터 센다. 이미지는 1. */
+  page: number;
+  rect: ProjectClipRect;
+}
+
+export type ProjectItem = ProjectFileItem | ProjectNoteItem | ProjectClipItem;
+
+export interface ProjectLink {
+  id: string;
+  /** 항목 id 또는 문서 노드 id. */
+  from: string;
+  to: string;
+  /** `c12`(조각) 또는 `p4`(쪽). */
+  fromAnchor?: string;
+  toAnchor?: string;
+  label?: string;
+  /** clip = 영역 조각 → 원본 파일 (허브가 스냅샷에서 만든다). */
+  origin: 'explicit' | 'note' | 'clip';
+  noteId?: string;
+  /** 연결을 만든 작업 공간 (항목의 origin 과 같은 뜻 — origin 이름은 연결 종류가 쓴다). */
+  worktreeOrigin?: ProjectOrigin | null;
+}
+
+export interface ProjectSnapshot {
+  id: string;
+  name: string;
+  goal: string;
+  implicit: boolean;
+  /** 변경이 반영될 때마다 오른다. */
+  revision: number;
+  /** 보드 순서대로. */
+  columns: ProjectColumn[];
+  tags: ProjectTag[];
+  members: ProjectMember[];
+  /** 휴지통 항목은 ?trash=1 일 때만 들어 있다. */
+  items: ProjectItem[];
+  links: ProjectLink[];
+  graph: { pinned: Record<string, [number, number]> };
+  librarian: { state: ProjectLibrarianState; queued: number; running: number };
+  usage: { files: number; bytes: number };
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  implicit: boolean;
+  members: ProjectMember[];
+  usage: { files: number; bytes: number };
+  updatedAt: number;
+}
+
+/** project_edit 도구와 POST /projects/:pid/ops 가 함께 쓰는 평평한 연산. */
+export type ProjectOp =
+  | { op: 'rename'; id: string; name: string }
+  | { op: 'tag'; id: string; tags: string[]; mode?: 'set' | 'add' | 'remove' }
+  | { op: 'move'; id: string; column: string; index?: number }
+  | { op: 'pin'; id: string; pinned: boolean }
+  | { op: 'link'; from: string; to: string; label?: string; fromAnchor?: string; toAnchor?: string }
+  | { op: 'unlink'; id: string }
+  | { op: 'note'; id?: string; name?: string; body: string; mode?: 'replace' | 'append'; column?: string; tags?: string[] }
+  | { op: 'clip'; id?: string; source?: string; page?: number; rect?: ProjectClipRect; name?: string; column?: string; tags?: string[] }
+  | { op: 'columns'; columns: Array<{ id?: string; name: string }> }
+  | { op: 'goal'; body: string }
+  | { op: 'trash'; id: string }
+  | { op: 'restore'; id: string }
+  | { op: 'graph-pin'; id: string; x: number; y: number }
+  | { op: 'graph-unpin'; id: string }
+  /** shared = 공통으로, current = 이 작업 공간 표시. 항목·노트·영역·연결에 쓴다. */
+  | { op: 'label'; id: string; origin: 'shared' | 'current' };
+
+export interface ProjectOpsResult {
+  revision: number;
+  applied: number;
+  /** 연산 순번 → 새로 만든 id. */
+  created: Record<number, string>;
+  unresolvedLinks: string[];
+}
+
+export interface ProjectActivityEntry {
+  id: string;
+  at: number;
+  actor: ProjectActor;
+  /** 짧은 한국어 요약. */
+  summary: string;
+  ops: ProjectOp[];
+  inverse: ProjectOp[];
+}
+
+export interface ProjectUndoResult {
+  revision: number;
+  applied: number;
+  /** 그 뒤에 값이 바뀌어 되돌리지 않은 연산 수. */
+  skipped: number;
+}
+
+export interface ProjectChunk {
+  chunkId: string;
+  page: number | null;
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface ProjectFileText {
+  page: number | null;
+  text: string;
+  chunks: Array<{ id: string; start: number; end: number }>;
+}
+
+export interface ProjectNote {
+  id: string;
+  title: string;
+  body: string;
+}
+
+export type ProjectLibrarianAction = 'pause' | 'resume' | 'retry';
+export type ProjectLibrarianProvider = 'auto' | 'chat' | 'claude' | 'codex' | 'pi';
+export type ProjectSummarySize = 'small' | 'medium' | 'large';
+export type ProjectTrashDays = 7 | 30 | 90;
+
+export interface ProjectSettings {
+  version: 1;
+  librarian: {
+    enabled: boolean;
+    provider: ProjectLibrarianProvider;
+    model: string | null;
+    effort: string | null;
+    actions: { rename: boolean; classify: boolean; link: boolean };
+    concurrency: 1 | 2 | 3 | 4;
+  };
+  ingest: {
+    homeSearch: boolean;
+    /** 점 없는 확장자. */
+    fileTypes: string[];
+    /** `~/…` 형태. */
+    excludedFolders: string[];
+    /** 1..100 */
+    maxFileMb: number;
+  };
+  agent: { chatMayEdit: boolean; summarySize: ProjectSummarySize };
+  board: { defaultColumns: string[]; trashDays: ProjectTrashDays };
+}
+
+export interface ProjectCapabilities {
+  homeAccess: boolean;
+  platform: string;
+}
+
+export interface ProjectSettingsPayload {
+  settings: ProjectSettings;
+  capabilities: ProjectCapabilities;
+}
+
+export interface ProjectLibrarianItemStatus {
+  id: string;
+  status: ProjectItemLibrarianStatus;
+  error?: string;
+}
+
+/** 허브 → 스튜디오 프로젝트 이벤트. 통합 단계에서 SidebarEvent 에 합친다. */
+export type ProjectSidebarEvent =
+  | { type: 'project-bound'; projectId: string; project: ProjectSnapshot }
+  | { type: 'project-changed'; projectId: string; revision: number; project: ProjectSnapshot }
+  | {
+      type: 'project-librarian-status';
+      projectId: string;
+      state: ProjectLibrarianState;
+      queued: number;
+      running: number;
+      items: ProjectLibrarianItemStatus[];
     };

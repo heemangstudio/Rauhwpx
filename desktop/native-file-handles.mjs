@@ -20,6 +20,16 @@ const MAX_PORTABLE_HISTORY_OBJECTS = 50_000;
 const NEARBY_DIRECTORY_CAP = 12;
 const NEARBY_FILE_CAP = 8;
 const NEARBY_DIR_ENTRY_CAP = 256;
+/** 문서 홈: 옮겨진 파일을 찾을 때 내용을 해시해 볼 후보의 크기 상한. */
+const RELOCATE_CANDIDATE_MAX_BYTES = 64 * 1024 * 1024;
+/** 문서 홈: 미리보기용으로 읽는 파일의 크기 상한. */
+export const HOME_THUMBNAIL_SOURCE_MAX_BYTES = 24 * 1024 * 1024;
+/** 문서 홈: 닿지 않는 네트워크 위치에서 상태 확인이 멈추지 않게 한다. */
+const HOME_STAT_TIMEOUT_MS = 1500;
+/** 저장 중 남는 임시·복구 파일은 다른 문서의 새 위치 후보가 아니다. */
+const TRANSIENT_DOCUMENT_NAME = /\.rauhwpx-(recovery|dacl)|\.target\.rauhwpx-/i;
+/** 심볼릭 링크를 따라가지 않고 읽기로 연다. 북마크 경로는 이미 실제 경로다. */
+const OPEN_READ_NO_FOLLOW = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
 const CFB_SIGNATURE = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
 // Windows refuses fsync on a directory handle with EPERM — same "not
 // implemented" class as EINVAL/ENOSYS, not a storage failure.
@@ -102,6 +112,30 @@ function nativeFileChangeTime(info) {
 
 function contentDigest(bytes) {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+/** 문서 홈이 옮겨진 파일을 알아보는 내용 표시. 크기와 sha256 은 디스크 지문에서 가져온다. */
+function bookmarkContentOf(fingerprint) {
+  if (fingerprint?.state !== 'file' || !/^sha256:[0-9a-f]{64}$/.test(fingerprint.digest ?? '')) return null;
+  let size = null;
+  try {
+    const value = JSON.parse(fingerprint.generation)[6];
+    size = Number.isSafeInteger(Number(value)) ? Number(value) : null;
+  } catch {
+    size = null;
+  }
+  // 크기를 모르면 후보를 좁힐 수 없다. 내용 표시를 남기지 않고 옮겨진 파일도 찾지 않는다.
+  return size === null ? null : { contentDigest: fingerprint.digest, size };
+}
+
+function withTimeout(promise, timeoutMs) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })), timeoutMs);
+    }),
+  ]);
 }
 
 function nativeFileFingerprint(info, digest) {
@@ -1048,6 +1082,7 @@ export class NativeFileHandleRegistry {
   #stat;
   #digest;
   #fingerprint;
+  #openFile;
 
   constructor({
     canonicalize = canonicalNativePath,
@@ -1059,6 +1094,7 @@ export class NativeFileHandleRegistry {
     statImpl = stat,
     digestImpl = null,
     fingerprintImpl = fingerprintNativeFile,
+    openFileImpl = open,
   } = {}) {
     this.#canonicalize = canonicalize;
     this.#ownershipKey = ownershipKey;
@@ -1069,6 +1105,7 @@ export class NativeFileHandleRegistry {
     this.#stat = statImpl;
     this.#digest = digestImpl;
     this.#fingerprint = fingerprintImpl;
+    this.#openFile = openFileImpl;
   }
 
   async create(sessionId, filePath, { allowMissing = false } = {}) {
@@ -1330,6 +1367,7 @@ export class NativeFileHandleRegistry {
           throw new Error('Native file write did not produce a durable fingerprint');
         }
         this.#refreshBookmarkDigest(identity, entry, bytes);
+        this.#refreshBookmarkContent(entry);
       });
       // A failed write must not poison later saves to the same handle.
       entry.writeChain = write.catch(() => {});
@@ -1382,7 +1420,11 @@ export class NativeFileHandleRegistry {
       }
     }
     if (this.#bookmarks.has(documentId)) this.#bookmarks.delete(documentId);
-    this.#bookmarks.set(documentId, { path: entry.canonicalPath, digest: nextDigest });
+    this.#bookmarks.set(documentId, {
+      path: entry.canonicalPath,
+      digest: nextDigest,
+      ...bookmarkContentOf(entry.diskFingerprint),
+    });
     while (this.#bookmarks.size > 200) {
       const oldest = this.#bookmarks.keys().next().value;
       this.#bookmarks.delete(oldest);
@@ -1398,6 +1440,115 @@ export class NativeFileHandleRegistry {
 
   bookmarkPathFor(documentId) {
     return this.#bookmarks.get(documentId)?.path ?? null;
+  }
+
+  /**
+   * 기억한 위치의 파일이 아직 있는지 본다. 핸들을 만들거나 경로를 점유하지 않는다.
+   * 파일만 없고 폴더가 남아 있으면 missing(지워졌거나 옮겨짐), 폴더째 없거나 확인이 멈추면
+   * 꺼낸 디스크·닿지 않는 네트워크일 수 있으므로 unavailable 로 구분한다. 지금 저장 중인
+   * 경로는 원자적 교체 사이에 잠깐 비므로 있는 것으로 친다.
+   */
+  async inspectDocument(documentId) {
+    const bookmark = this.#bookmarks.get(documentId);
+    if (!bookmark) return { state: 'unknown' };
+    const holder = this.#byPath.get(this.#ownershipKey(bookmark.path));
+    if (holder && holder.activeWrites > 0) {
+      return { state: 'present', fileName: basename(bookmark.path), size: 0, modifiedAt: 0 };
+    }
+    try {
+      const info = await withTimeout(this.#stat(bookmark.path), HOME_STAT_TIMEOUT_MS);
+      if (!info.isFile() && !info.isDirectory()) return { state: 'unavailable' };
+      return {
+        state: 'present',
+        fileName: basename(bookmark.path),
+        size: info.isFile() ? info.size : 0,
+        modifiedAt: Math.round(info.mtimeMs ?? 0),
+      };
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') return { state: 'unavailable' };
+    }
+    try {
+      const parent = await withTimeout(this.#stat(dirname(bookmark.path)), HOME_STAT_TIMEOUT_MS);
+      return parent.isDirectory() ? { state: 'missing' } : { state: 'unavailable' };
+    } catch {
+      return { state: 'unavailable' };
+    }
+  }
+
+  /**
+   * 옮겨진 문서를 근처 폴더에서 찾아 새 위치로 기억한다. 메인이 직접 크기와 sha256 내용을
+   * 마지막으로 기억한 것과 맞춘다. 다른 창이 쥔 파일, 다른 문서가 기억하는 파일, 임시·복구
+   * 파일은 후보가 아니다. 내용 표시가 없는 옛 북마크는 찾지 않는다(null).
+   */
+  async relocateDocument(sessionId, documentId) {
+    const bookmark = this.#bookmarks.get(documentId);
+    if (!bookmark?.contentDigest) return null;
+    const claimed = new Set();
+    for (const [otherDocumentId, other] of this.#bookmarks) {
+      if (otherDocumentId !== documentId) claimed.add(this.#ownershipKey(other.path));
+    }
+    for (const candidate of await this.#collectNearbyFiles(sessionId, documentId, basename(bookmark.path))) {
+      const key = this.#ownershipKey(candidate);
+      if (claimed.has(key)) continue;
+      const owner = this.#byPath.get(key);
+      if (owner && owner.sessionId !== sessionId) continue;
+      let info;
+      try {
+        info = await withTimeout(this.#stat(candidate), HOME_STAT_TIMEOUT_MS);
+      } catch {
+        continue;
+      }
+      if (!info.isFile() || info.size > RELOCATE_CANDIDATE_MAX_BYTES) continue;
+      if (info.size !== bookmark.size) continue;
+      let fingerprint;
+      try {
+        fingerprint = await this.#fingerprint(candidate);
+      } catch {
+        continue;
+      }
+      if (fingerprint?.state !== 'file' || fingerprint.digest !== bookmark.contentDigest) continue;
+      bookmark.path = candidate;
+      return { fileName: basename(candidate) };
+    }
+    return null;
+  }
+
+  /**
+   * 미리보기용으로 기억한 위치의 문서 바이트를 읽는다. 한 번 연 파일로 크기를 보고 그만큼만
+   * 읽는다. 다른 창이 쥔 파일, 폴더 묶음, 큰 파일, 아직 내려받지 않은 클라우드 자리표시
+   * 파일(크기는 있는데 디스크 블록이 없음)은 읽지 않는다.
+   */
+  async readRememberedDocument(sessionId, documentId, { maxBytes = HOME_THUMBNAIL_SOURCE_MAX_BYTES } = {}) {
+    const bookmark = this.#bookmarks.get(documentId);
+    if (!bookmark) return null;
+    const owner = this.#byPath.get(this.#ownershipKey(bookmark.path));
+    if (owner && owner.sessionId !== sessionId) return null;
+    let handle;
+    try {
+      handle = await this.#openFile(bookmark.path, OPEN_READ_NO_FOLLOW);
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > maxBytes) return null;
+      if (info.size > 0 && typeof info.blocks === 'number' && info.blocks === 0) return null;
+      const bytes = Buffer.allocUnsafe(info.size);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+      }
+      return { name: basename(bookmark.path), bytes: bytes.subarray(0, offset) };
+    } catch {
+      return null;
+    } finally {
+      await handle?.close().catch(() => {});
+    }
+  }
+
+  /** 이 창이 쥔 경로인가. 새 창 열기는 이미 이 창에 열린 문서를 다시 열지 않는다. */
+  ownsDocumentPath(sessionId, documentId) {
+    const bookmark = this.#bookmarks.get(documentId);
+    if (!bookmark) return false;
+    return this.#byPath.get(this.#ownershipKey(bookmark.path))?.sessionId === sessionId;
   }
 
   async searchNearby(sessionId, documentId, { basenameHint = '' } = {}) {
@@ -1453,7 +1604,11 @@ export class NativeFileHandleRegistry {
       if (strict && next.has(parsed.documentId)) {
         throw new Error('Native bookmark store contains a duplicate document id');
       }
-      next.set(parsed.documentId, { path: parsed.path, digest: parsed.digest });
+      next.set(parsed.documentId, {
+        path: parsed.path,
+        digest: parsed.digest,
+        ...(parsed.contentDigest && parsed.size !== null ? { contentDigest: parsed.contentDigest, size: parsed.size } : {}),
+      });
     }
     if (strict && next.size > 200) throw new Error('Native bookmark store contains too many entries');
     this.#bookmarks = next;
@@ -1462,7 +1617,11 @@ export class NativeFileHandleRegistry {
   dumpBookmarks() {
     return [...this.#bookmarks.entries()].map(([documentId, bookmark]) => [
       documentId,
-      { path: bookmark.path, digest: bookmark.digest },
+      {
+        path: bookmark.path,
+        digest: bookmark.digest,
+        ...(bookmark.contentDigest ? { contentDigest: bookmark.contentDigest, size: bookmark.size } : {}),
+      },
     ]);
   }
 
@@ -1498,6 +1657,15 @@ export class NativeFileHandleRegistry {
   #forgetSessionProbes(sessionId) {
     for (const [probeId, probe] of this.#probes) {
       if (probe.sessionId === sessionId) this.#probes.delete(probeId);
+    }
+  }
+
+  /** 저장으로 바뀐 내용 표시를 그 경로를 기억한 북마크에 옮긴다. */
+  #refreshBookmarkContent(entry) {
+    const content = bookmarkContentOf(entry.diskFingerprint);
+    if (!content) return;
+    for (const bookmark of this.#bookmarks.values()) {
+      if (this.#ownershipKey(bookmark.path) === entry.ownershipPath) Object.assign(bookmark, content);
     }
   }
 
@@ -1579,7 +1747,7 @@ export class NativeFileHandleRegistry {
           && typeof entry.isDirectory === 'function'
           && entry.isDirectory();
         const supported = SUPPORTED_EXTENSIONS.has(extname(name).toLowerCase());
-        if (!supported) continue;
+        if (!supported || TRANSIENT_DOCUMENT_NAME.test(name)) continue;
         if (isDirectory && extname(name).toLowerCase() !== '.rhwpx') continue;
         files.push(join(dir, name));
       }
@@ -1645,7 +1813,11 @@ function parseBookmarkEntry(item) {
     return { documentId, path: value, digest: null };
   }
   if (value && typeof value === 'object' && typeof value.path === 'string' && value.path) {
-    return { documentId, path: value.path, digest: parseStoredDigest(value.digest) };
+    const contentDigest = typeof value.contentDigest === 'string' && /^sha256:[0-9a-f]{64}$/.test(value.contentDigest)
+      ? value.contentDigest
+      : null;
+    const size = Number.isSafeInteger(value.size) && value.size >= 0 ? value.size : null;
+    return { documentId, path: value.path, digest: parseStoredDigest(value.digest), contentDigest, size };
   }
   return null;
 }

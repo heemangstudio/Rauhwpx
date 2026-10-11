@@ -76,6 +76,19 @@ const RESULT = {
   type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', result: 'done',
 };
 
+test('a child permission request retains provenance before task_started arrives', async () => {
+  const events = [];
+  const { session, child } = startSession(events);
+  await new Promise((resolve) => setImmediate(resolve));
+  child().emitJson({
+    type: 'assistant', parent_tool_use_id: 'unregistered-child',
+    message: { content: [{ type: 'tool_use', id: 'child-permission', name: 'mcp__rhwp__request_permission', input: { capability: 'local-execution', reason: 'Run a command' } }] },
+  });
+  const request = events.find((event) => event.type === 'tool-call' && event.callId === 'child-permission');
+  assert.equal(request.parentTaskId, 'unregistered-child');
+  await session.dispose();
+});
+
 test('task lifecycle events are normalized with parentTaskId attribution', async () => {
   const events = [];
   const { session, child } = startSession(events);

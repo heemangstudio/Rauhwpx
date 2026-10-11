@@ -23,7 +23,7 @@ Electron, agent hub, or credentials.
 Open **http://127.0.0.1:7715/?audit=1** for a searchable checklist of sidebar
 scenarios and production dialog/menu launchers. The **Scenes** tab covers
 responses, rich Markdown, plan approval, questions, edit review, active subagents,
-connection failures, each provider's setup, Browserbase, preferences, and history.
+connection failures, each provider's setup, browser settings, preferences, and history.
 **Editor dialogs** opens production file, table, field, font, grid, and
 merge-preparation dialogs with sample values.
 
@@ -343,8 +343,11 @@ follow-ups and reloads to check they are released and sent one per normal turn e
 `reload-running.png`, `reload-question.png` and `reload-queued.png`.
 
 The browser check starts its own Vite server on an ephemeral port and launches a
-fresh headless Chrome profile. It exercises the primary panels and mutations,
-checks request isolation, and writes **sidebar-only PNGs** to
+fresh headless Chrome profile. By default it is a short smoke: the preview boots,
+one chat turn finishes, the Agent Focus panel opens a view, and no request leaves
+the preview or reaches the document engine. Feature checks run only by name, for
+example `node rhwp/rhwp-studio/sidebar-preview/check.mjs workbench changes`; an
+unknown name prints the available list. Named checks write **sidebar-only PNGs** to
 `sidebar-preview/artifacts/` (Git-ignored). Set `CHROME_PATH` if Chrome/Chromium is
 not installed in a standard macOS/Linux location; this also supports Windows paths.
 It does not connect to or control your normal browser.

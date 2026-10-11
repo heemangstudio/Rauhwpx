@@ -19,7 +19,9 @@ import { TOOL_TRACE_ENABLED, traceNow, writeToolTrace } from '../tool-trace.mjs'
 import { recordingClaudeSdkSpawner, tapProviderProcess, withSdkStderrTail } from '../provider-transcript.mjs';
 import {
   createLineReader,
+  chatPermissionGrantsFor,
   findSessionFile,
+  hasLocalExecutionGrant,
   isPlanningRestricted,
   isSafeSessionId,
   mcpCapabilityEnv,
@@ -28,6 +30,7 @@ import {
   normalizeTaskUsage,
   normalizeUsageTokens,
   providerReadOnlyRoots,
+  applyPreparedProviderLaunch,
   providerInteractionMode,
   redactDiagnosticText,
   RHWP_SUBAGENTS,
@@ -57,6 +60,7 @@ import {
 // (CLI 확인: 2.1.235) planning 의 read-only 경계가 서브에이전트에서도 유지된다.
 const DIRECT_TOOLS = 'Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch,Agent,Workflow';
 const PLANNING_TOOLS = 'Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent,Workflow';
+const LOCAL_EXECUTION_TOOLS = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash']);
 const STDERR_TAIL_LIMIT = 16_000;
 /**
  * 백그라운드 서브에이전트/워크플로 턴의 정착 유예. task_notification 이 큐에 남긴
@@ -210,10 +214,23 @@ export function writeClaudeAgentsFile(isolatedHome) {
   }
 }
 
+/**
+ * Claude 네이티브 Plan 모드를 쓸지. 채팅(question)은 쓰지 않는다 — Plan 알림이 "읽기 전용이 아닌 도구는
+ * 실행하지 말 것, 다른 지시보다 우선"이라서 모든 모드에 열린 연구 프로젝트 도구(project_edit,
+ * project_import)를 모델이 거절한다. 채팅의 읽기 전용 경계는 PLANNING_TOOLS, 샌드박스, MCP 워크플로
+ * 게이트가 그대로 지킨다.
+ */
+function usesNativePlanMode(opts) {
+  return !hasLocalExecutionGrant(opts)
+    && providerInteractionMode(opts) === 'plan'
+    && normalizeExecutionMode(opts).workflow !== 'question';
+}
+
 export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, slashCommands = false } = {}) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
-  const planningRestricted = isPlanningRestricted(opts);
-  const interactionMode = providerInteractionMode(opts);
+  const localExecution = hasLocalExecutionGrant(opts);
+  const planningRestricted = isPlanningRestricted(opts) && !localExecution;
+  const nativePlan = usesNativePlanMode(opts);
   const copyLayoutWorker = opts.toolProfile === 'copy-layout-worker';
   const activeTools = copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
   const capabilityEnv = mcpCapabilityEnv(opts);
@@ -235,6 +252,7 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
     },
   };
   const allow = [
+    ...(localExecution ? [...LOCAL_EXECUTION_TOOLS] : []),
     permissionPathRule('Read', opts.rootDir),
     ...readOnlyRoots.map((root) => permissionPathRule('Read', root)),
     ...(!planningRestricted && !copyLayoutWorker ? [
@@ -246,7 +264,9 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
     ...(copyLayoutWorker ? [] : ['Bash', 'WebSearch', 'WebFetch', 'Agent', 'Workflow']),
     'mcp__rhwp__*',
   ];
-  const settings = unrestricted && !planningRestricted ? {} : {
+  const settings = localExecution
+    ? { permissions: { allow }, sandbox: { enabled: false } }
+    : unrestricted && !planningRestricted ? {} : {
     permissions: { allow },
     sandbox: {
       enabled: true,
@@ -276,9 +296,9 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
     ...(slashCommands ? [] : ['--disable-slash-commands']),
     '--tools', activeTools,
     '--settings', JSON.stringify(settings),
-    ...(interactionMode === 'plan'
+    ...(nativePlan
       ? ['--permission-mode', 'plan']
-      : unrestricted
+      : unrestricted && !planningRestricted
         ? ['--permission-mode', 'bypassPermissions', '--dangerously-skip-permissions']
         : ['--permission-mode', 'dontAsk']),
     '--append-system-prompt', systemBriefFor(opts),
@@ -295,14 +315,16 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
  */
 export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, { slashCommands = false } = {}) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
-  const planningRestricted = isPlanningRestricted(opts);
-  const interactionMode = providerInteractionMode(opts);
+  const localExecution = hasLocalExecutionGrant(opts);
+  const planningRestricted = isPlanningRestricted(opts) && !localExecution;
+  const nativePlan = usesNativePlanMode(opts);
   const copyLayoutWorker = opts.toolProfile === 'copy-layout-worker';
   const activeTools = copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
   const capabilityEnv = mcpCapabilityEnv(opts);
   const readOnlyRoots = providerReadOnlyRoots(opts);
   const runtime = mcpRuntimeFor(opts);
   const allow = [
+    ...(localExecution ? [...LOCAL_EXECUTION_TOOLS] : []),
     permissionPathRule('Read', opts.rootDir),
     ...readOnlyRoots.map((root) => permissionPathRule('Read', root)),
     ...(!planningRestricted && !copyLayoutWorker ? [
@@ -314,7 +336,9 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, 
     ...(copyLayoutWorker ? [] : ['Bash', 'WebSearch', 'WebFetch', 'Agent', 'Workflow']),
     'mcp__rhwp__*',
   ];
-  const settings = unrestricted && !planningRestricted ? {} : {
+  const settings = localExecution
+    ? { permissions: { allow }, sandbox: { enabled: false } }
+    : unrestricted && !planningRestricted ? {} : {
     permissions: { allow },
     sandbox: {
       enabled: true,
@@ -326,8 +350,11 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, 
       },
     },
   };
-  const canUseTool = createClaudeAskUserQuestionPermissionHandler(opts);
-  if (!canUseTool) throw new Error('Claude native user input requires a root requestUserInput capability');
+  const requestPermission = createClaudeAskUserQuestionPermissionHandler(opts);
+  if (!requestPermission) throw new Error('Claude native user input requires a root requestUserInput capability');
+  const canUseTool = (toolName, input, context) => localExecution && LOCAL_EXECUTION_TOOLS.has(toolName)
+    ? Promise.resolve({ behavior: 'allow', updatedInput: input })
+    : requestPermission(toolName, input, context);
   return {
     abortController,
     agents: RHWP_SUBAGENTS,
@@ -356,10 +383,10 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, 
     ...(opts.claudeBin && path.isAbsolute(opts.claudeBin)
       ? { pathToClaudeCodeExecutable: opts.claudeBin }
       : {}),
-    permissionMode: interactionMode === 'plan'
+    permissionMode: nativePlan
       ? 'plan'
-      : unrestricted ? 'bypassPermissions' : 'default',
-    ...(interactionMode !== 'plan' && unrestricted ? { allowDangerouslySkipPermissions: true } : {}),
+      : unrestricted && !planningRestricted ? 'bypassPermissions' : 'default',
+    ...(!nativePlan && unrestricted && !planningRestricted ? { allowDangerouslySkipPermissions: true } : {}),
     ...(resume ? { resume: sessionId } : { sessionId }),
     settingSources: [],
     settings,
@@ -453,6 +480,7 @@ export function createClaudeSession(opts, {
   /** @type {{ compactionId: string, trigger: 'auto'|'manual', beforeTokens?: number } | null} */
   let activeCompaction = null;
   let turnOpen = false;
+  let userTurnGeneration = 0;
   let sawRootTextDelta = false;
   const streamedSubagents = new Set();
   let disposed = false;
@@ -765,7 +793,8 @@ export function createClaudeSession(opts, {
   function parentTaskIdOf(e) {
     const parent = e?.parent_tool_use_id;
     if (!parent) return undefined;
-    return taskIdByToolUse.get(String(parent));
+    // task_started 전이나 매핑 제거 후의 이벤트도 루트 권한으로 승격하지 않는다.
+    return taskIdByToolUse.get(String(parent)) ?? String(parent);
   }
 
   // ── usage: result 의 modelUsage 는 프로세스 수명 누적치다 ──────────
@@ -895,8 +924,7 @@ export function createClaudeSession(opts, {
       if (!taskId) return;
       if (e.tool_use_id) {
         taskIdByToolUse.set(String(e.tool_use_id), taskId);
-        // 긴 세션 대비 상한 — 가장 오래된 매핑부터 버린다 (늦은 child 이벤트는
-        // 귀속만 잃고 루트 스트림으로 떨어질 뿐, 유실되지 않는다).
+        // 긴 세션 대비 상한 — 늦은 child 이벤트는 원래 tool_use id로 귀속한다.
         if (taskIdByToolUse.size > 512) {
           taskIdByToolUse.delete(taskIdByToolUse.keys().next().value);
         }
@@ -1251,6 +1279,7 @@ export function createClaudeSession(opts, {
     usageBaseline = new Map();
     const owner = {
       generation: ++sdkGeneration,
+      turnGeneration: userTurnGeneration,
       query: null,
       queue: createClaudeInputQueue(),
       run: null,
@@ -1324,8 +1353,9 @@ export function createClaudeSession(opts, {
           // give two providers ownership of the same turn and workspace.
           nativeUserInput = false;
           const cleanupReady = closeSdkQuery(owner);
-          void cleanupReady.then((cleaned) => {
-            if (disposed || !turnOpen) return;
+          void cleanupReady.then(async (cleaned) => {
+            const stale = () => disposed || !turnOpen || userTurnGeneration !== owner.turnGeneration;
+            if (stale()) return;
             if (!cleaned) {
               onEvent({
                 type: 'error',
@@ -1336,15 +1366,25 @@ export function createClaudeSession(opts, {
               return;
             }
             process.stderr.write(`[claude] native user-input transport unavailable; using MCP fallback: ${redactDiagnosticText(sdkErrorText(owner, error), [opts.token])}\n`);
+            let launch;
             try {
+              if (opts.prepareLaunch) {
+                launch = await opts.prepareLaunch();
+                if (stale()) return;
+                applyPreparedProviderLaunch(opts, 'claude', launch);
+              }
+              if (stale()) return;
               dispatchLegacy(pendingPrompt);
             } catch (fallbackError) {
+              if (stale()) return;
               const { failure, message } = unsettledTurnFailure(
                 'process_exit',
                 `failed to dispatch message: ${redactDiagnosticText(fallbackError?.message ?? fallbackError, [opts.token])}`,
               );
               onEvent({ type: 'error', agent: 'claude', message, failure });
               endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'exited', failure });
+            } finally {
+              launch?.release?.();
             }
           });
           return;
@@ -1663,6 +1703,7 @@ export function createClaudeSession(opts, {
 
   function beginQueuedTurn(entry) {
     if (disposed) return;
+    userTurnGeneration += 1;
     turnOpen = true;
     turnKind = entry.kind;
     turnRetryText = entry.retryText;
@@ -1709,8 +1750,21 @@ export function createClaudeSession(opts, {
           return;
         }
       }
-      queuedTurn = null;
-      beginQueuedTurn(entry);
+      let launch;
+      try {
+        if (opts.prepareLaunch) {
+          launch = await opts.prepareLaunch();
+          if (queuedTurn !== entry || disposed) return;
+          applyPreparedProviderLaunch(opts, 'claude', launch);
+        }
+        if (queuedTurn !== entry || disposed) return;
+        queuedTurn = null;
+        beginQueuedTurn(entry);
+      } catch (error) {
+        failQueuedTurn(entry, error);
+      } finally {
+        launch?.release?.();
+      }
     }, (error) => failQueuedTurn(entry, error));
   }
 
@@ -1721,7 +1775,7 @@ export function createClaudeSession(opts, {
     onEvent({
       type: 'error',
       agent: 'claude',
-      message: error?.message ?? 'Claude process-tree cleanup could not be confirmed before the next turn',
+      message: redactDiagnosticText(error?.message ?? 'Claude process-tree cleanup could not be confirmed before the next turn', [opts.token]),
     });
     // The hub allocated this user turn before dispatch. Close that allocation
     // without advertising provider authority through a matching turn-start.
@@ -1777,25 +1831,30 @@ export function createClaudeSession(opts, {
       const current = normalizeExecutionMode(opts);
       if (current.workflow === mode.workflow
         && current.phase === mode.phase
-        && String(current.capabilityEpoch) === String(mode.capabilityEpoch)) {
+        && String(current.capabilityEpoch) === String(mode.capabilityEpoch)
+        && JSON.stringify(chatPermissionGrantsFor(opts)) === JSON.stringify(chatPermissionGrantsFor(mode, opts))) {
         const [, sdkCleaned] = await Promise.all([restartReady, sdkShutdownReady]);
         if (!sdkCleaned) throw new Error('Claude SDK cleanup remains unconfirmed');
         return;
       }
+      const previousGrants = chatPermissionGrantsFor(opts);
       opts.workflow = mode.workflow;
       opts.phase = mode.phase;
       opts.capabilityEpoch = mode.capabilityEpoch;
+      opts.chatPermissionGrants = chatPermissionGrantsFor(mode, opts);
       try {
         await restartForConfigChange();
       } catch (error) {
         opts.workflow = current.workflow;
         opts.phase = current.phase;
         opts.capabilityEpoch = current.capabilityEpoch;
+        opts.chatPermissionGrants = previousGrants;
         restartReady = Promise.resolve();
         throw error;
       }
     },
     interrupt() {
+      const hadQueuedTurn = queuedTurn !== null;
       queuedTurn = null;
       if (sdkOwner) {
         // Closing the SDK query aborts the exact signal handed to canUseTool,
@@ -1805,7 +1864,11 @@ export function createClaudeSession(opts, {
       suppressChildOutput();
       killChild();
       childAlive = false;
-      endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'interrupted' });
+      if (hadQueuedTurn && !turnOpen) {
+        onEvent({ type: 'turn-end', agent: 'claude', stopReason: 'interrupted' });
+      } else {
+        endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'interrupted' });
+      }
     },
     dispose() {
       disposed = true;

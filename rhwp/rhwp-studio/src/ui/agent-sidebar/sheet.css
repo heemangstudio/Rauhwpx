@@ -145,6 +145,30 @@
   white-space: pre-line;
 }
 
+.ag-sheet-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 14px;
+}
+
+.ag-sheet-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  font-size: var(--ag-fs-secondary);
+  color: var(--n-ink-secondary);
+  cursor: default;
+}
+
+.ag-sheet-choice input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--n-ink, currentColor);
+}
+
 .ag-sheet-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;

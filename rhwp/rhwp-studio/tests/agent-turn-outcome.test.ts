@@ -54,6 +54,9 @@ function bridgeFixture(permissionProfile: 'safe' | 'unrestricted') {
   const endTurnCalls: EndTurnCall[] = [];
   Object.assign(bridge, {
     permissionProfile,
+    messageReceipts: new Map(),
+    projectWorktreeBinding: null,
+    permissionListeners: new Set(),
     pendingTurnOpen: false,
     turnRunning: false,
     turnHadError: false,
@@ -63,7 +66,7 @@ function bridgeFixture(permissionProfile: 'safe' | 'unrestricted') {
     editingAgent: null,
     editingLease: { active: false, agent: null, waitingForUser: false },
     editingLeaseListeners: new Set(),
-    pendingUserQuestionId: null,
+    pendingUserQuestionId: null, pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
     workflow: 'direct',
     phase: 'direct',
     latestPlan: null,

@@ -12,6 +12,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const AGENT_DIR = join(HERE, '..');
 const REPO_ROOT = join(AGENT_DIR, '..', '..');
 const SCRIPT = join(AGENT_DIR, 'server.mjs');
+
+// 테스트 허브가 실제 앱 데이터(참고 자료·프로젝트)를 읽거나 옮기지 않게 한다.
+function isolatedDataDirs(runDir) {
+  return { RHWP_REFERENCES_DIR: join(runDir, 'references'), RHWP_PROJECTS_DIR: join(runDir, 'projects') };
+}
 const WINDOWS_LOCK_CODES = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES']);
 const CLEANUP_RETRY_DELAYS_MS = [80, 160, 320, 640, 1_000, 1_500];
 
@@ -120,7 +125,7 @@ test('ctl replaces an authenticated detached hub from an older protocol', { time
       agentDir: AGENT_DIR,
       json: true,
       stdout,
-      env: { ...process.env, RHWP_AGENT_PORT: String(port) },
+      env: { ...process.env, RHWP_AGENT_PORT: String(port), ...isolatedDataDirs(runDir) },
     });
     assert.equal(started.code, 0, stdout.chunks.join(''));
     assert.equal(started.result.ready, true);
@@ -148,7 +153,7 @@ test('ctl start/stop roundtrip without holding the terminal', { timeout: 30_000 
       agentDir: AGENT_DIR,
       json: true,
       stdout,
-      env: { ...process.env, RHWP_AGENT_PORT: String(port) },
+      env: { ...process.env, RHWP_AGENT_PORT: String(port), ...isolatedDataDirs(runDir) },
     });
     assert.equal(started.code, 0, stdout.chunks.join(''));
     assert.equal(started.result.ready, true);
@@ -162,7 +167,7 @@ test('ctl start/stop roundtrip without holding the terminal', { timeout: 30_000 
       agentDir: AGENT_DIR,
       json: true,
       stdout,
-      env: { ...process.env, RHWP_AGENT_PORT: String(port) },
+      env: { ...process.env, RHWP_AGENT_PORT: String(port), ...isolatedDataDirs(runDir) },
     });
     assert.equal(again.result.alreadyRunning, true);
 

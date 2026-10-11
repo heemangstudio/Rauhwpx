@@ -32,6 +32,10 @@ test('researcher capabilities are read-only and never expose root control tools'
   assert.equal(registration.profile, 'doc-researcher');
   assert.equal(registration.allowedTools.has('get_structure'), true);
   assert.equal(registration.allowedTools.has('search_reference_files'), true);
+  assert.equal(registration.allowedTools.has('browser_open'), true);
+  assert.equal(registration.allowedTools.has('download_file'), true);
+  assert.equal(registration.allowedTools.has('browser_request_account'), false);
+  assert.equal(registration.allowedTools.has('project_edit'), false);
   assert.equal(registration.allowedTools.has('apply_edits'), false);
   assert.equal(registration.allowedTools.has('update_agent_instructions'), false);
   assert.equal(registration.allowedTools.has('ask_user_question'), false);
@@ -62,8 +66,10 @@ test('editor capabilities inherit the current parent phase without root-only con
   assert.equal(direct.allowedTools.has('delegate_copy_layout'), false);
   assert.equal(planning.allowedTools.has('apply_edits'), false);
   assert.equal(planning.allowedTools.has('present_implementation_plan'), false);
-  assert.equal(planning.allowedTools.has('download_file'), false);
-  assert.equal(planning.allowedTools.has('browserbase_start'), false);
+  assert.equal(planning.allowedTools.has('download_file'), true);
+  assert.equal(planning.allowedTools.has('browser_open'), true);
+  assert.equal(planning.allowedTools.has('browser_request_account'), false);
+  assert.equal(direct.allowedTools.has('browser_request_account'), false);
 });
 
 test('registrations are bound to one Pi provider turn and revoke synchronously', () => {

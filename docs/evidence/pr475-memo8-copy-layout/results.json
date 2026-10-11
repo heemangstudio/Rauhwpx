@@ -1,0 +1,45 @@
+{
+  "runtime": "http://127.0.0.1:7921",
+  "cli": "Codex 0.162.1",
+  "modelResponses": "local offline fixture",
+  "sourceFixture": "blank_hwpx.hwpx",
+  "success": {
+    "outcome": "succeeded",
+    "quality": "verified",
+    "counts": {
+      "keptText": 0,
+      "removedText": 0,
+      "replacedText": 0,
+      "resetControls": 0,
+      "clearedMarks": 0,
+      "keptMedia": 0,
+      "removedMedia": 0,
+      "iterations": 1
+    },
+    "preview": {
+      "representativePages": [
+        0
+      ],
+      "sourcePageCount": 1,
+      "outputPageCount": 1,
+      "outputSectionCount": 1,
+      "renderCompared": true,
+      "geometryMatch": true,
+      "safetyVerified": true,
+      "readabilityVerified": true,
+      "stoppedReason": "verified-convergence"
+    }
+  },
+  "artifact": {
+    "fileName": "candidate-1.hwpx",
+    "mime": "application/vnd.hancom.hwpx+zip",
+    "size": 6602,
+    "checksum": "sha256:5321a0b2d3e5ccfbf43e8da6bf6ebc88599705de43cc69e48eb35f3cb1807c8c"
+  },
+  "failure": {
+    "outcome": "failed",
+    "summary": "Offline fixture explicitly failed after real helper inspection."
+  },
+  "sourceUnchanged": true,
+  "nativePatchDenied": true
+}

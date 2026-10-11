@@ -34,6 +34,24 @@ function state() {
   });
 }
 
+test('chat grants authorize only their app category and preserve plan approval and epochs', () => {
+  const question = { workflow: 'question', phase: 'questioning', expectedEpoch: 7, receivedEpoch: 7, chatMayEdit: false };
+  const edit = { ...question, category: 'document-write', tool: 'insert_text' };
+  assert.throws(() => authorizeToolCall(edit), { code: 'QUESTION_WRITE_BLOCKED' });
+  assert.throws(() => authorizeToolCall({ ...edit, chatPermissionGrants: ['document-edit'] }), { code: 'QUESTION_WRITE_BLOCKED' });
+  assert.throws(() => authorizeToolCall({ ...edit, chatPermissionGrants: ['local-execution'] }), { code: 'QUESTION_WRITE_BLOCKED' });
+  assert.throws(() => authorizeToolCall({ ...edit, chatPermissionGrants: ['document-edit'], receivedEpoch: 6 }), { code: 'STALE_CAPABILITY_EPOCH' });
+  assert.throws(() => authorizeToolCall({ ...edit, workflow: 'plan', phase: 'planning', chatPermissionGrants: ['document-edit'] }), { code: 'PLAN_WRITE_BLOCKED' });
+  assert.throws(() => authorizeToolCall({ ...question, tool: 'update_agent_instructions', category: 'instruction-write', chatPermissionGrants: ['document-edit'] }), { code: 'QUESTION_WRITE_BLOCKED' });
+  const project = { ...question, tool: 'project_edit', category: 'project-write' };
+  assert.throws(() => authorizeToolCall(project), { code: 'PROJECT_CHAT_EDIT_DISABLED' });
+  assert.equal(authorizeToolCall({ ...project, chatPermissionGrants: ['project-edit'] }), true);
+  const download = { ...question, workflow: 'direct', phase: null, tool: 'download_file', category: 'download-write' };
+  assert.equal(authorizeToolCall(download), true);
+  assert.equal(authorizeToolCall({ ...download, chatPermissionGrants: ['browser'] }), true);
+  assert.throws(() => authorizeToolCall({ ...download, researchPermissions: { browse: true, downloads: false, import: true }, chatPermissionGrants: ['downloads'] }), { code: 'RESEARCH_PERMISSION_REVOKED' });
+});
+
 test('plan transition: planning -> awaiting -> switching -> implementing', () => {
   const workflow = state();
   const ready = workflow.present(plan());
@@ -237,13 +255,19 @@ test('plan calls fail closed on missing/stale epochs; direct calls keep legacy c
   }), true);
 });
 
-test('browser/download/control are rejected for direct-origin chats', () => {
-  for (const category of ['browser', 'download-write', 'planning-control']) {
-    assert.throws(() => authorizeToolCall({
-      category, tool: 'special_tool', workflow: 'direct', phase: null,
-      expectedEpoch: 7, receivedEpoch: undefined,
-    }), (error) => error.code === 'PLAN_WORKFLOW_REQUIRED');
+test('default research runs in every mode while revocation and document boundaries remain', () => {
+  for (const [workflow, phase] of [['direct', null], ['question', 'questioning'], ['plan', 'planning'], ['plan', 'implementing']]) {
+    const mode = { workflow, phase, expectedEpoch: 7, receivedEpoch: 7, chatPermissionGrants: [] };
+    for (const [category, tool] of [['browser', 'browser_snapshot'], ['download-write', 'download_file']]) {
+      assert.equal(authorizeToolCall({ ...mode, category, tool }), true);
+      assert.throws(() => authorizeToolCall({ ...mode, category, tool, researchPermissions: { browse: false, downloads: false, import: false }, chatPermissionGrants: ['browser', 'downloads'] }), { code: 'RESEARCH_PERMISSION_REVOKED' });
+    }
+    if (workflow === 'question' || phase === 'planning') {
+      assert.throws(() => authorizeToolCall({ ...mode, category: 'document-write', tool: 'insert_text' }), { code: workflow === 'question' ? 'QUESTION_WRITE_BLOCKED' : 'PLAN_WRITE_BLOCKED' });
+    }
   }
+  assert.throws(() => authorizeToolCall({ category: 'planning-control', tool: 'present_implementation_plan', workflow: 'direct', phase: null, expectedEpoch: 7 }), { code: 'PLAN_WORKFLOW_REQUIRED' });
+  assert.throws(() => authorizeToolCall({ category: 'project-write', tool: 'project_edit', workflow: 'question', phase: 'questioning', expectedEpoch: 7, receivedEpoch: 7, chatMayEdit: false }), { code: 'PROJECT_CHAT_EDIT_DISABLED' });
 });
 
 test('question mode can research but never write or present a plan', () => {
@@ -252,7 +276,7 @@ test('question mode can research but never write or present a plan', () => {
     expectedEpoch: 7, receivedEpoch: 7,
   }), true);
   assert.equal(authorizeToolCall({
-    category: 'browser', tool: 'browserbase_act', workflow: 'question', phase: 'questioning',
+    category: 'browser', tool: 'browser_click', workflow: 'question', phase: 'questioning',
     expectedEpoch: 7, receivedEpoch: 7,
   }), true);
   assert.throws(() => authorizeToolCall({
@@ -273,6 +297,23 @@ test('question mode can research but never write or present a plan', () => {
       expectedEpoch: 7, receivedEpoch: 7,
     }), (error) => error.code === 'QUESTION_WRITE_BLOCKED');
   }
+});
+
+test('project changes stay open in read-only modes unless chat edits are turned off', () => {
+  const call = (overrides) => authorizeToolCall({
+    category: 'project-write', tool: 'project_edit', workflow: 'question', phase: 'questioning',
+    expectedEpoch: 7, receivedEpoch: 7, ...overrides,
+  });
+  assert.equal(call({}), true);
+  assert.equal(call({ workflow: 'plan', phase: 'planning' }), true);
+  assert.equal(call({ category: 'project-ingest', tool: 'project_import' }), true);
+  assert.throws(() => call({ chatMayEdit: false }), (error) => error.code === 'PROJECT_CHAT_EDIT_DISABLED');
+  assert.throws(() => call({ chatMayEdit: false, category: 'project-ingest', tool: 'project_import' }), (error) => error.code === 'PROJECT_CHAT_EDIT_DISABLED');
+  // 끈 설정은 채팅 모드에만 걸린다.
+  assert.equal(call({ chatMayEdit: false, workflow: 'direct', phase: null, receivedEpoch: undefined }), true);
+  assert.equal(call({ chatMayEdit: false, category: 'project-read', tool: 'project_read' }), true);
+  assert.throws(() => call({ category: 'project-ingest', tool: 'find_home_files' }), (error) => error.code === 'HOME_SEARCH_DISABLED');
+  assert.equal(call({ category: 'project-ingest', tool: 'find_home_files', homeSearch: true }), true);
 });
 
 test('approved execution prompt contains only the authoritative plan record', () => {

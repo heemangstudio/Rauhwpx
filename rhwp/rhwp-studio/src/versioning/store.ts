@@ -1634,6 +1634,11 @@ export class VersionGraphStore {
       .sort((left, right) => Number(right.primary) - Number(left.primary) || left.createdAt - right.createdAt || left.id.localeCompare(right.id)));
   }
 
+  /** 모든 문서의 작업 트리. 문서 홈이 사본을 원본 문서 아래로 묶을 때 쓴다. */
+  async listAllWorktrees(): Promise<VersionWorktree[]> {
+    return this.#transaction('readonly', async (tx) => tx.getAll('worktrees'));
+  }
+
   async ensurePrimaryWorktree(input: EnsurePrimaryWorktreeInput): Promise<VersionWorktree> {
     return this.#serialize(input.repositoryId, () => this.#transaction('readwrite', async (tx) => {
       const repository = await tx.get('repositories', input.repositoryId);

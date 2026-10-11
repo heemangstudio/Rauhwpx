@@ -1,5 +1,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+  ErrorCode,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
+  McpError,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { performance } from 'node:perf_hooks';
 import WebSocket from 'ws';
 import {
@@ -7,7 +14,13 @@ import {
   resolveHubIdentity,
   sessionIdFromScopedHubToken,
 } from './hub-session-registry.mjs';
-import { RHWP_TOOL_RULES, filterToolDefinitions, toToolContent, toolAnnotations } from './tools.mjs';
+import {
+  RHWP_TOOL_RULES,
+  filterToolDefinitions,
+  projectToolGatesFromEnv,
+  toToolContent,
+  toolAnnotations,
+} from './tools.mjs';
 import { imageRootsFromEnv } from './image-path-policy.mjs';
 import { prepareInsertImageArgs } from './insert-image-source.mjs';
 
@@ -247,7 +260,8 @@ function registerTool(def) {
 }
 
 // 도구 정의는 tools.mjs 가 단일 소스 — 테스트가 같은 정의를 임포트해 계약을 검증한다.
-const visibleTools = filterToolDefinitions(TOOL_PROFILE);
+// 프로젝트 쓰기(채팅 설정)와 홈 폴더 검색(데스크톱)은 허브가 넣은 환경으로 등록을 가른다. 허브도 호출마다 다시 검사한다.
+const visibleTools = filterToolDefinitions(TOOL_PROFILE, projectToolGatesFromEnv(process.env));
 for (const def of visibleTools) {
   // insert_image 만 파일 읽기가 필요해 아래 커스텀 핸들러로 등록한다.
   if (def.name === 'insert_image') registerInsertImageTool(def);
@@ -295,6 +309,15 @@ function shutdown(reason) {
   try { ws?.terminate(); } catch {}
   process.exit(0);
 }
+
+// rhwp 는 리소스를 내보내지 않는다. Codex 같은 CLI 가 list_mcp_resources 로 먼저 살펴볼 때
+// "Method not found" 실패 대신 빈 목록을 받도록 리소스 메서드에 빈 응답을 둔다.
+server.server.registerCapabilities({ resources: {} });
+server.server.setRequestHandler(ListResourcesRequestSchema, () => ({ resources: [] }));
+server.server.setRequestHandler(ListResourceTemplatesRequestSchema, () => ({ resourceTemplates: [] }));
+server.server.setRequestHandler(ReadResourceRequestSchema, (request) => {
+  throw new McpError(ErrorCode.InvalidParams, `rhwp exposes no MCP resources: ${request.params.uri}`);
+});
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

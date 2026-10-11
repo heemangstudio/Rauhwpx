@@ -6,6 +6,7 @@
  * 모르는 도구나 rhwp 밖의 도구는 원래 이름과 대표 인자 하나로 떨어진다.
  */
 import { batchItemArgs } from '../../agent/batch-item.ts';
+import { CHAT_PERMISSION_LABELS, isChatPermissionCapability } from '../../agent/chat-permissions.ts';
 
 export type ToolCategory = 'edit' | 'read' | 'check' | 'other';
 
@@ -540,12 +541,25 @@ const SPECS: Record<string, ToolSpec> = {
   read_product_skill: { category: 'read', label: '스킬 읽기', summary: (a) => join([str(a['name']), str(a['resourcePath']) !== 'SKILL.md' ? str(a['resourcePath']) : '']) },
   commit_product_skill: { category: 'other', label: '스킬 변경', summary: (a) => join([str(a['name']), str(a['action'])]) },
   list_harness_skills: { category: 'read', label: '하네스 스킬 목록' },
-  list_reference_files: { category: 'read', label: '참고 자료 목록' },
   search_reference_files: { category: 'read', label: '참고 자료 검색', summary: (a) => quote(str(a['query'])) },
   read_reference_chunk: { category: 'read', label: '참고 자료 읽기' },
   read_reference_image: { category: 'read', label: '참고 그림 보기' },
+  project_read: { category: 'read', label: '프로젝트 읽기' },
+  project_edit: {
+    category: 'other', label: '프로젝트 정리',
+    summary: (a) => Array.isArray(a['ops']) ? `${a['ops'].length}건` : '',
+  },
+  project_import: {
+    category: 'other', label: '자료 가져오기',
+    summary: (a) => str(a['name']) || host(str(a['url'])),
+  },
+  find_home_files: { category: 'read', label: '홈 폴더 검색', summary: (a) => quote(str(a['query'])) },
 
   // 대화·계획·파일
+  request_permission: {
+    category: 'other', label: '권한 요청',
+    summary: (a) => join([isChatPermissionCapability(a['capability']) ? CHAT_PERMISSION_LABELS[a['capability']] : '', clip(str(a['reason']), 64)]),
+  },
   ask_user_question: {
     category: 'other', label: '질문하기',
     summary: (a) => {
@@ -564,13 +578,21 @@ const SPECS: Record<string, ToolSpec> = {
   complete_copy_layout_job: { category: 'other', label: '복제 작업 마치기', summary: (a) => str(a['outcome']) },
   register_copy_layout_template: { category: 'other', label: '서식 틀 등록', summary: (a) => quote(str(a['name'])) },
 
-  // 원격 브라우저
-  browserbase_start: { category: 'other', label: '브라우저 시작' },
-  browserbase_end: { category: 'other', label: '브라우저 종료' },
-  browserbase_navigate: { category: 'other', label: '웹 페이지 열기', summary: (a) => host(str(a['url'])) },
-  browserbase_act: { category: 'other', label: '브라우저 조작', summary: (a) => quote(str(a['action']), 32) },
-  browserbase_observe: { category: 'other', label: '페이지 살펴보기', summary: (a) => quote(str(a['instruction']), 32) },
-  browserbase_extract: { category: 'other', label: '페이지 내용 추출', summary: (a) => quote(str(a['instruction']), 32) },
+  // 앱 브라우저
+  browser_status: { category: 'other', label: '브라우저 상태' },
+  browser_open: { category: 'other', label: '브라우저 열기', summary: (a) => host(str(a['url'])) },
+  browser_close: { category: 'other', label: '브라우저 닫기' },
+  browser_navigate: { category: 'other', label: '웹 페이지 열기', summary: (a) => host(str(a['url'])) },
+  browser_snapshot: { category: 'other', label: '페이지 살펴보기' },
+  browser_click: { category: 'other', label: '페이지 요소 누르기' },
+  browser_type: { category: 'other', label: '페이지에 입력하기' },
+  browser_press: { category: 'other', label: '키 누르기', summary: (a) => str(a['key']) },
+  browser_scroll: { category: 'other', label: '페이지 스크롤' },
+  browser_wait: { category: 'other', label: '페이지 기다리기' },
+  browser_capture: { category: 'other', label: '페이지 캡처' },
+  browser_downloads: { category: 'other', label: '브라우저 다운로드' },
+  browser_fill_account: { category: 'other', label: '저장한 계정 입력' },
+  browser_request_account: { category: 'other', label: '계정 사용 요청' },
 };
 
 /** rhwp 밖의 흔한 CLI 도구 — 이름만 우리말로 바꾸고 대표 인자를 보인다. */
@@ -866,6 +888,8 @@ function successText(name: string, args: Args, result: Args, category: ToolCateg
   const facts = afterFacts(result);
   const tail = join([facts.pages, facts.pageDelta, facts.warnings.length ? `경고 ${facts.warnings.length}` : '']);
   switch (name) {
+    case 'request_permission': return result['status'] === 'granted' ? '이 채팅에 허용됨'
+      : result['status'] === 'pending' ? '허용 대기' : '';
     case 'apply_edits': {
       const applied = num(result['applied']) ?? count(result['results']) ?? count(args['edits']);
       return join([applied !== null ? `${applied}개 편집 적용` : '편집 적용', tail]);

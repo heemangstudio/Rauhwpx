@@ -671,6 +671,7 @@ function contextBridge(overrides: Record<string, unknown> = {}) {
   const frames: any[] = [];
   const events: any[] = [];
   Object.assign(bridge, {
+    messageReceipts: new Map(),
     state: 'connected', requestSeq: 0, pendingChatStart: null, chatStartSent: false,
     activeAgent: 'claude', selectedAgent: 'claude', selectedModel: null, selectedEffort: null,
     editingAgent: 'claude', permissionProfile: 'safe', serviceTier: 'standard',

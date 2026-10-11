@@ -109,6 +109,7 @@ test('AgentBridge carries the renderer session on WebSocket and HTTP hub request
 test('stopping a chat drops full access so the next chat starts in the safe profile', () => {
   const bridge = Object.create(AgentBridgeImpl.prototype) as any;
   Object.assign(bridge, {
+    messageReceipts: new Map(),
     state: 'disconnected',
     turnRunning: false,
     queuedMessages: [],
