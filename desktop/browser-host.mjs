@@ -90,13 +90,17 @@ export class OwnedBrowserHost {
       this.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
       this.session.setPermissionCheckHandler(() => false);
       this.webAuthn?.attachSession(this.session);
+      await this.adblock?.attach(this.session);
       this.session.webRequest.onBeforeRequest((details, callback) => {
         try {
           const protocol = new URL(details.url).protocol;
           const protectedSession = [...this.tabs.values()].some((tab) => tab.passwordShield);
           // WSS stays TLS-encrypted through the guarded pinned CONNECT tunnel;
           // native guests never install Playwright's plaintext WebSocket route.
-          callback({ cancel: !this.proxy || !['http:', 'https:', 'ws:', 'wss:', 'blob:'].includes(protocol) || protectedSession && protocol === 'ws:' });
+          const cancel = !this.proxy || !['http:', 'https:', 'ws:', 'wss:', 'blob:'].includes(protocol) || protectedSession && protocol === 'ws:';
+          if (cancel) callback({ cancel: true });
+          else if (this.adblock) this.adblock.beforeRequest(details, callback);
+          else callback({ cancel: false });
         } catch { callback({ cancel: true }); }
       });
       this.session.on('will-download', (event, item, contents) => this.willDownload(event, item, contents));
@@ -926,6 +930,7 @@ export class OwnedBrowserHost {
     this.disposing = true;
     await Promise.all([...this.tabs.values()].map((tab) => this.clearActivity(tab)));
     this.webAuthn?.dispose();
+    this.adblock?.dispose();
     await this.cdp.close();
     if (this.session) { this.session.flushStorageData(); await this.session.cookies.flushStore(); }
     for (const tab of new Set([...this.tabs.values(), ...this.pendingTabs])) this.closeGuest(tab);

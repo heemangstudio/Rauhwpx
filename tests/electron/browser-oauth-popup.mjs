@@ -3,8 +3,9 @@ import { createServer } from 'node:http';
 import { createServer as createSecureServer } from 'node:https';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { app, BrowserWindow, WebContentsView, session } from 'electron';
+import { app, BrowserWindow, WebContentsView, session, ipcMain } from 'electron';
 import { OwnedBrowserHost } from '../../desktop/browser-host.mjs';
+import { BrowserAdblock } from '../../desktop/browser-adblock.mjs';
 import { NativeBrowserPasswords } from '../../desktop/browser-passwords.mjs';
 import { createOwnedBrowserService } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
 import { key, cert } from '../../rhwp/rhwp-agent/tests/fixtures/owned-browser-tls.mjs';
@@ -48,6 +49,7 @@ try {
   const dataDir = path.join(root, 'browser-data'); await mkdir(dataDir, { recursive: true });
   const owner = {};
   host = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session, dataDir, getWindowForSession: id => id === 'fixture-editor' ? editor : null });
+  new BrowserAdblock({ host, ipcMain });
   // Render fixture guests offscreen so Chromium has a surface without showing an OS window.
   const guestPreferences = host.guestPreferences.bind(host);
   host.guestPreferences = () => ({ ...guestPreferences(), offscreen: true });
@@ -67,7 +69,7 @@ try {
   const popup = await popupEvent; const guest = host.tab(popup.tab.tabId);
   assert.equal(popup.openerTabId, opened.tab.tabId);
   assert.equal(guest.sessionId, actor.sessionId);
-  assert.equal(guest.chatId, actor.threadId);
+  assert.equal(guest.chatId, parent.chatId);
   assert.equal(guest.view.webContents.session, contents.session);
   const preferences = guest.view.webContents.getLastWebPreferences();
   assert.equal(preferences.sandbox, true); assert.equal(preferences.nodeIntegration, false); assert.equal(preferences.contextIsolation, true);

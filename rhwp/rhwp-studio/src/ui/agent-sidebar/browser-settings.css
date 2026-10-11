@@ -18,6 +18,8 @@
 .ag-browser-settings-body .ag-settings-field .ag-settings-input, .ag-browser-settings-body .ag-settings-field .ag-settings-select { width: 100%; box-sizing: border-box; }
 .ag-browser-check { display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 1.5; padding: 5px 0; }
 .ag-browser-check input { margin: 0; flex-shrink: 0; }
+.ag-browser-adblock-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ag-browser-adblock-actions .ag-settings-input { flex: 1 1 120px; min-width: 100px; width: 0; }
 .ag-browser-section { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding-top: 18px; border-top: 1px solid var(--n-hairline); }
 .ag-browser-section:first-child { padding-top: 0; border-top: 0; }
 .ag-browser-section > .ag-settings-section-title, .ag-browser-account-detail .ag-settings-section-title { margin: 0; font-size: 13px; font-weight: 600; }

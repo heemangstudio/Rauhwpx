@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { app, BrowserWindow, WebContentsView, session } from 'electron';
+import { app, BrowserWindow, WebContentsView, session, ipcMain } from 'electron';
 import { createRequire } from 'node:module';
 import { TOOL_DEFINITIONS } from '../../rhwp/rhwp-agent/tools.mjs';
 import { createServer } from 'node:http';
@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { NativeBrowserPasswords } from '../../desktop/browser-passwords.mjs';
 import { OwnedBrowserHost } from '../../desktop/browser-host.mjs';
+import { BrowserAdblock } from '../../desktop/browser-adblock.mjs';
 import { createOwnedBrowserService } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
 
 const root = await realpath(process.env.RHWP_BROWSER_TEST_DATA_DIR || await mkdtemp(path.join(os.tmpdir(), 'hama-browser-activity-')));
@@ -32,6 +33,7 @@ app.whenReady().then(async () => {
     const owner = { id: 'activity-fixture' };
     let sharedWindow;
     host = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session, dataDir: root, getWindowForSession: id => id === 'shared-other' ? sharedWindow : window });
+    new BrowserAdblock({ host, ipcMain });
     const passwords = new NativeBrowserPasswords({ host, vault: {} });
     const adapter = {
       passwordSnapshot: args => passwords.snapshot(args), passwordAction: args => passwords.action(args), passwordStorageState: () => passwords.storageState(),
