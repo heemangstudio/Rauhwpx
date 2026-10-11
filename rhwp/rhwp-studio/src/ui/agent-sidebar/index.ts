@@ -5733,6 +5733,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     skillNameForMessage?: string;
     skillIconForMessage?: ProductSkillIcon;
   }): Promise<void> {
+    prepareComposedMessage('composer');
     const threadId = currentThread.id;
     const documentId = currentDocumentId;
     const inputText = input.value;
@@ -5743,13 +5744,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     let captures: CaptureStaging | null = null;
     let ordinary: ReturnType<typeof referenceLibrary.takeReadyDrafts> = [];
     let accepted = false;
+    const assertDestination = () => {
+      if (threadId !== currentThread.id || documentId !== currentDocumentId || readOnlyDocLabel !== null
+        || root.dataset.disposed === 'true') throw new Error('채팅이 바뀌었습니다. 자료를 다시 확인해 주세요.');
+    };
     captureSendPending = true;
     attachmentsSending = true;
     updateComposer();
     try {
-      captures = await captureInbox.stage(ordinaryFiles.length, request.requestText.length);
-      if (threadId !== currentThread.id || documentId !== currentDocumentId || readOnlyDocLabel !== null
-        || root.dataset.disposed === 'true') throw new Error('채팅이 바뀌었습니다. 자료를 다시 확인해 주세요.');
+      captures = await captureInbox.stage(ordinaryFiles.length, decorateRequestText(request.requestText, threadId, false).length);
+      assertDestination();
       const ordinaryDigests = await Promise.all(ordinaryFiles.map(async (file) => {
         const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer()));
         return [file.name, file.type, [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('')];
@@ -5761,17 +5765,21 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       ]));
       const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', batch));
       const captureMessageId = `capture-${[...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+      assertDestination();
       ordinary = referenceLibrary.takeReadyDrafts();
       const staged = [...ordinary, ...captures.files];
-      const messageId = await bridge.sendUserMessage(
-        `${captures.context}\n\n${request.requestText}`,
-        request.skillNameForMessage,
-        staged.map((file) => file.id),
-        true,
-        captures.controller?.signal,
-        mentions.map((mention) => mention.id),
-        { requireAcceptance: true, messageId: captureMessageId },
-      );
+      const messageId = await dispatchComposedRequest({
+        requestText: `${captures.context}\n\n${request.requestText}`,
+        skillName: request.skillNameForMessage,
+        staged,
+        origin: 'composer',
+        requireReceipt: true,
+        signal: captures.controller?.signal,
+        mentions,
+        // 캡처 스테이징은 한 전송에 묶인다 — 첨부 없이 다시 시도하거나 앞 요청을 재사용하지 않는다.
+        retryPayload: null,
+        acceptance: { requireAcceptance: true, messageId: captureMessageId },
+      });
       if (!messageId) throw new Error('선택 자료를 보내지 못했습니다. 다시 시도해 주세요.');
       accepted = true;
       const attachments: ThreadAttachment[] = staged.map((file) => ({
@@ -5803,7 +5811,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           scrollConversationToMessage(bubble, { smooth: true });
         }
         composerMentions?.take();
-        if (input.value === inputText) input.value = '';
+        if (input.value === inputText) {
+          input.value = '';
+          typing.noteSend();
+        }
         revisionPlanId = null;
         setComposerSkill(null);
         setSlashMenuOpen(false);
@@ -5929,18 +5940,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return appendContinuationBlock(base, pending.reason, continuationContextFor(pending.marker));
   }
 
-  /**
-   * 사용자 메시지 한 건을 보낸다 — 입력기, 대기열, 끊긴 작업 이어 가기(S3·U5), 인라인 프롬프트가
-   * 함께 쓰는 한 길. 보내는 순간의 채팅 모드 잠금을 다시 읽어 잠겼으면 채팅 모드로 옮기고, 템플릿
-   * 머리말과 스킬 요청문을 붙여(wire 가 있으면 그대로) 기록·말풍선을 남긴 뒤 브리지에 넘긴다.
-   * 입력기를 비우는 일은 입력기 쪽이 한다. 입력기 밖에서 나가는 메시지는 사용자가 보던 패널을
-   * 닫지 않고, 자동으로 나가는 메시지(queue·resume)는 대화를 끌어내리지 않는다.
-   */
-  function sendComposedMessage(
-    spec: ComposedMessageSpec<StagedReference, NonNullable<ThreadMessage['selection']>>,
-  ): ComposedMessageResult<ThreadMessage, HTMLElement> {
-    const userAction = spec.origin === 'composer' || spec.origin === 'inline' || spec.origin === 'retry';
-    if (spec.origin === 'composer') {
+  /** 모든 보내기가 지금 채팅의 모드와 최신 대화 기록으로 세션을 연다. */
+  function prepareComposedMessage(origin: ComposedMessageOrigin): void {
+    if (origin === 'composer') {
       if (threadsPanelOpen) setThreadsPanelOpen(false);
       if (skillsPanelOpen) setSkillsPanelOpen(false);
       if (settingsPanelOpen) setSettingsPanelOpen(false);
@@ -5953,6 +5955,56 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!draftChat && bridge.getActiveAgent() === null && chatStartPendingThreadId === null) {
       startCurrentBridgeChat(true);
     }
+  }
+
+  /** 캡처도 일반 메시지와 같은 이어 가기·실패·전송 알림을 거치되 기록은 수락 뒤에 남긴다. */
+  function dispatchComposedRequest(request: {
+    requestText: string;
+    skillName?: string;
+    staged: readonly StagedReference[];
+    origin: ComposedMessageOrigin;
+    requireReceipt?: boolean;
+    signal?: AbortSignal;
+    mentions: readonly ThreadMention[];
+    retryPayload: Omit<ThreadRetryPayload, 'afterPartialEdits'> | null;
+    source?: ThreadMessage;
+    carriesContinuation?: boolean;
+    acceptance?: { requireAcceptance: true; messageId: string };
+  }): Promise<string | null> {
+    const continuedTurn = draftChat ? null : unresolvedInterruption(currentThread);
+    const requestText = decorateRequestText(request.requestText, currentThread.id, request.carriesContinuation === true);
+    failureNotices.noteSend(currentThread.id, request.retryPayload, request.source ?? null);
+    const sent = bridge.sendUserMessage(
+      requestText,
+      request.skillName,
+      request.staged.map((file) => file.id),
+      request.requireReceipt === true || continuedTurn !== null,
+      request.signal,
+      request.mentions.map((mention) => mention.id),
+      request.acceptance,
+    );
+    if (continuedTurn) {
+      markInterruptionResolved(continuedTurn.marker.messageId, request.origin, sent);
+      if ((request.origin === 'composer' || request.origin === 'inline') && followUps.snapshot().hold?.reason === 'interrupted') {
+        followUps.release();
+      }
+    }
+    notifyUserMessageDispatched(request.origin);
+    return sent;
+  }
+
+  /**
+   * 사용자 메시지 한 건을 보낸다 — 입력기, 대기열, 끊긴 작업 이어 가기(S3·U5), 인라인 프롬프트가
+   * 함께 쓰는 한 길. 보내는 순간의 채팅 모드 잠금을 다시 읽어 잠겼으면 채팅 모드로 옮기고, 템플릿
+   * 머리말과 스킬 요청문을 붙여(wire 가 있으면 그대로) 기록·말풍선을 남긴 뒤 브리지에 넘긴다.
+   * 입력기를 비우는 일은 입력기 쪽이 한다. 입력기 밖에서 나가는 메시지는 사용자가 보던 패널을
+   * 닫지 않고, 자동으로 나가는 메시지(queue·resume)는 대화를 끌어내리지 않는다.
+   */
+  function sendComposedMessage(
+    spec: ComposedMessageSpec<StagedReference, NonNullable<ThreadMessage['selection']>>,
+  ): ComposedMessageResult<ThreadMessage, HTMLElement> {
+    const userAction = spec.origin === 'composer' || spec.origin === 'inline' || spec.origin === 'retry';
+    prepareComposedMessage(spec.origin);
     const { skillName } = spec;
     let messageText: string;
     let requestText: string;
@@ -5984,11 +6036,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       ...(carriesContinuation ? { continuation: true } : {}),
     };
     // 끊긴 턴이 아직 이어지지 않았으면 이 메시지가 이어 간다(아래에서 resolution 을 남긴다).
-    const continuedTurn = draftChat ? null : unresolvedInterruption(currentThread);
-    requestText = decorateRequestText(requestText, currentThread.id, carriesContinuation);
     // 이어 가는 메시지는 언제나 receipt 를 받는다 — 브리지가 버리거나 허브가 받지 않으면 끊김을 다시 열어
     // 다음 보내기(다시 시도 포함)가 블록을 다시 싣게 한다.
-    const requireReceipt = spec.requireReceipt === true || continuedTurn !== null;
+    const requireReceipt = spec.requireReceipt === true || (!draftChat && unresolvedInterruption(currentThread) !== null);
     const staged = spec.staged ?? [];
     const messageAttachments: ThreadAttachment[] = staged.map((file) => ({
       stageId: file.id,
@@ -6005,7 +6055,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       undefined,
       spec.origin === 'composer' ? composerMentions?.take() ?? [] : [],
     );
-    failureNotices.noteSend(currentThread.id, spec.origin === 'inline' ? null : retryPayload, userMessage);
     const userBubble = renderUserMessage(userMessage);
     userBubble.classList.add('ag-msg-enter');
     replyPending = true;
@@ -6018,14 +6067,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateTurnPending(selectedAgent);
     if (userAction) scrollConversationToMessage(userBubble, { smooth: true });
     undeliveredMessages.add(userMessage);
-    const messageSent = bridge.sendUserMessage(
-      requestText,
-      skillName,
-      staged.map((file) => file.id),
-      requireReceipt,
-      spec.signal,
-      userMessage.mentions?.map((mention) => mention.id) ?? [],
-    );
+    const messageSent = dispatchComposedRequest({
+      requestText, skillName, staged, origin: spec.origin, requireReceipt, signal: spec.signal,
+      mentions: userMessage.mentions ?? [],
+      retryPayload: spec.origin === 'inline' ? null : retryPayload,
+      source: userMessage, carriesContinuation,
+    });
     void messageSent.finally(() => undeliveredMessages.delete(userMessage));
     if (staged.length > 0) attachmentsSending = true;
     if (staged.length > 0 || requireReceipt) {
@@ -6042,16 +6089,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         persistCurrentThread();
       });
     }
-    if (continuedTurn) {
-      markInterruptionResolved(continuedTurn.marker.messageId, spec.origin, messageSent);
-      // 사용자가 직접 보낸 메시지가 끊김을 이어 간다 — 끊김으로 붙잡은 대기열을 풀어 그 턴이 정상으로 끝나면
-      // 보내게 한다(이어서 진행·다시 시도는 스스로 풀고, 대기열의 보내기는 보내며 푼다).
-      if ((spec.origin === 'composer' || spec.origin === 'inline') && followUps.snapshot().hold?.reason === 'interrupted') {
-        followUps.release();
-      }
-    }
     updateComposer();
-    notifyUserMessageDispatched(spec.origin);
     return { message: userMessage, bubble: userBubble, sent: messageSent };
   }
 
@@ -6247,7 +6285,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       const visibleRequestText = revisionPlanId && !skillNameForMessage
         ? `현재 계획(${revisionPlanId})을 다음 피드백에 맞게 수정해 주세요.\n\n${skillRequestText}` : skillRequestText;
       const requestText = hiddenInstruction ? `${visibleRequestText}\n\n${hiddenInstruction}` : visibleRequestText;
-      prepareChatForSend();
       void sendComposerCaptures({ messageText, requestText, skillNameForMessage, skillIconForMessage });
       return;
     }
@@ -9541,19 +9578,23 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         reopenInterruption(threadId, markerId);
         return;
       }
-      continuationMessage = { threadId, markerId, messageId };
+      if (!draftChat && currentThread.id === threadId) continuationMessage = { threadId, markerId, messageId };
     });
   }
 
   /** 이어 가기 메시지가 닿지 못했다 — 끊김의 resolution 을 걷어 줄과 단추를 되살린다. */
   function reopenInterruption(threadId: string, markerId: string): void {
     if (continuationMessage?.markerId === markerId) continuationMessage = null;
-    if (draftChat || currentThread.id !== threadId) return;
-    const marker = findTurnMarker(currentThread.messages, markerId);
+    const selected = !draftChat && currentThread.id === threadId;
+    const thread = selected ? currentThread : getThread(threadId);
+    if (!thread) return;
+    const marker = findTurnMarker(thread.messages, markerId);
     if (!marker?.interruption?.resolution) return;
     delete marker.interruption.resolution;
-    persistCurrentThread();
-    syncInterruptionRows();
+    if (selected) {
+      persistCurrentThread();
+      syncInterruptionRows();
+    } else upsertThread(thread);
   }
 
   /** 끊긴 표식들을 한 채팅 사본에서 정착한다. 정착한 표식 수. */

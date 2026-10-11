@@ -229,6 +229,35 @@ try {
   await record('Real page screenshot and comment attach to the pinned destination composer', { captureId: capture.id, sourceTabId: tab.tabId });
   await page.click('.ag-browser [aria-label="에이전트에게 넘기기"]');
   await eventually('agent controller lease', () => human('status'), value => value.tabs.find(row => row.tabId === tab.tabId)?.controller.owner === 'agent');
+  if (chromeOnly) {
+    fs.writeFileSync(finishTurnPath, '');
+    await waitForState(page, 'initial fixture turn ended before capture send', () => !window.__agentBridge.isTurnRunning());
+    fs.rmSync(finishTurnPath, { force: true });
+    const captureThreadId = await page.evaluate(() => window.__agentBridge.getHubChat().threadId);
+    await page.$eval('.ag-input', input => input.select());
+    await page.type('.ag-input', 'Review the attached browser capture.');
+    await page.keyboard.press('Enter');
+    await waitForState(page, 'capture accepted and draft consumed', () => window.__agentBridge.isTurnRunning()
+      && document.querySelector('.ag-capture-inbox')?.hidden === true);
+    const captureMessage = await page.evaluate(async (threadId) => {
+      const { getThread } = await import('/src/agent/threads.ts');
+      return getThread(threadId)?.messages.filter(message => message.role === 'user'
+        && message.text === 'Review the attached browser capture.');
+    }, captureThreadId);
+    assert.equal(captureMessage.length, 1, 'accepted capture records its original thread exactly once');
+    assert.match(captureMessage[0].messageId, /^capture-/);
+    assert.equal(captureMessage[0].attachments.length, 2, 'screenshot and evidence references are retained');
+    assert.equal(new Set(captureMessage[0].attachments.map(file => file.stageId)).size, 2);
+    const remaining = await page.evaluate(async (threadId) => {
+      const { listBrowserCaptureDrafts } = await import('/src/ui/agent-sidebar/browser-capture-store.ts');
+      return (await listBrowserCaptureDrafts(threadId)).length;
+    }, captureThreadId);
+    assert.equal(remaining, 0, 'accepted capture consumes the durable source drafts');
+    await record('Real screenshot and evidence accepted once in the original destination chat', {
+      threadId: captureThreadId, messageId: captureMessage[0].messageId,
+      referenceIds: captureMessage[0].attachments.map(file => file.stageId),
+    });
+  }
   if (!chromeOnly) {
   for (const [name, intent] of [['Download authenticated GET PDF', 'export'], ['Export POST PDF', 'export'], ['Download blob PDF', 'export']]) {
     await clickRef(provider, tab.tabId, name, intent);

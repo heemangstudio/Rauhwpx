@@ -23,6 +23,7 @@ import { checkChatPermissions } from './permissions.check.mjs';
 import { checkWorkbench } from './workbench.check.mjs';
 import { checkBrowserSettings } from './browser-settings.check.mjs';
 import { checkBrowserWorkbench } from './browser-workbench.check.mjs';
+import { checkCaptureSend } from './capture-send.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 import { checkComposerSendPath, checkFollowUpGap, checkFollowUpQueue } from './queue.check.mjs';
@@ -37,6 +38,7 @@ import { checkInterruptionPreview } from './interruption.check.mjs';
 import { checkAdoptionPreview } from './adoption.check.mjs';
 
 const focusedChecks = {
+  'capture-send': (h) => checkCaptureSend(h),
   'focus-composer': async ({ page, open }) => {
     await open('reset=1&fullscreen=1');
     const startNewChat = async () => {
