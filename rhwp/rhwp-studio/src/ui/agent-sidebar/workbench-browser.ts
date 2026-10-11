@@ -157,6 +157,7 @@ export function createWorkbenchBrowser(options: {
       if (nativePending) await nativePending;
       if (disposed || controller.tab()?.tabId !== tab.tabId) return;
       const result = await api.armSave({ tabId: tab.tabId, enabled });
+      icon(savePassword, 'shield'); delete savePassword.dataset.passwordSave;
       passwordSaveTab = result.enabled ? tab.tabId : '';
       passwordSaveEpoch = result.navigationEpoch;
       savePassword.setAttribute('aria-pressed', String(result.enabled));
@@ -540,10 +541,21 @@ export function createWorkbenchBrowser(options: {
     uploadFiles.multiple = data.multiple === true; uploadLabel.textContent = '페이지에서 파일을 요청했습니다.'; upload.hidden = false;
   });
   const unsubscribeNative = nativeBrowserApi()?.onEvent?.((event) => {
+    if (event.type === 'password-save-mode' && event.tabId === controller.tab()?.tabId) {
+      icon(savePassword, 'shield'); delete savePassword.dataset.passwordSave;
+      passwordSaveTab = event.enabled === true ? String(event.tabId) : '';
+      passwordSaveEpoch = typeof event.navigationEpoch === 'number' ? event.navigationEpoch : undefined;
+      savePassword.setAttribute('aria-pressed', String(event.enabled === true));
+      savePassword.title = event.enabled === true ? '아이디와 비밀번호를 입력하면 이 기기에 저장합니다' : '이 페이지에서 입력하는 로그인 저장';
+      savePassword.setAttribute('aria-label', savePassword.title);
+      return;
+    }
     if (event.tabId === passwordSaveTab && typeof event.navigationEpoch === 'number' && event.navigationEpoch !== passwordSaveEpoch) {
       passwordSaveTab = ''; savePassword.setAttribute('aria-pressed', 'false'); savePassword.title = '이 페이지에서 입력하는 로그인 저장';
     }
     if (event.type === 'password-save' && event.tabId === passwordSaveTab) {
+      icon(savePassword, event.state === 'saved' ? 'check' : 'shield');
+      savePassword.dataset.passwordSave = String(event.state);
       savePassword.title = event.state === 'saved' ? '로그인을 이 기기에 저장했습니다' : '로그인을 저장하지 못했습니다. 다시 시도해 주세요.';
       savePassword.setAttribute('aria-label', savePassword.title);
       savePassword.animate([{ opacity: 0.4 }, { opacity: 1 }], { duration: 250 });

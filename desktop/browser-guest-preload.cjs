@@ -12,7 +12,7 @@ window.addEventListener('focusout', () => {
   ipcRenderer.send('desktop:browser-guest-focus', { sensitive: false });
 }, true);
 
-// Explicit opt-in lasts only for this document. Secrets travel to Electron main,
+// Electron main renews explicit opt-in only on the same HTTPS origin. Secrets travel to main,
 // never through the renderer bridge or the agent hub.
 let saveToken = null;
 function loginFields(target) {

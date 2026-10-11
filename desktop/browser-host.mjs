@@ -203,8 +203,9 @@ export class OwnedBrowserHost {
       this.emit(tab, 'debugger-conflict', { message: 'Close browser automation before opening developer tools.' });
     });
     for (const event of ['did-start-loading', 'did-stop-loading', 'page-title-updated']) contents.on(event, () => this.emit(tab, 'state'));
+    contents.on('dom-ready', () => this.passwords?.restoreManualSave?.(tab));
     contents.on('did-navigate', () => { this.clearActivity(tab); tab.navigationEpoch += 1; tab.lastError = null; this.emit(tab, 'navigation'); });
-    contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => { if (isMainFrame) { this.clearActivity(tab); tab.navigationEpoch += 1; this.emit(tab, 'navigation'); } });
+    contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => { if (isMainFrame) { this.clearActivity(tab); tab.navigationEpoch += 1; this.emit(tab, 'navigation'); this.passwords?.restoreManualSave?.(tab); } });
     contents.on('did-fail-load', (_event, code, description, _url, mainFrame) => {
       if (mainFrame && code !== -3) { tab.lastError = description; this.emit(tab, 'load-failed'); }
     });

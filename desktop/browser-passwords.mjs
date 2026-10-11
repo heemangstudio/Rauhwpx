@@ -268,6 +268,15 @@ export class NativeBrowserPasswords {
     tab.view.webContents.send('desktop:browser-guest-arm-save', token);
     return { enabled: !!token, navigationEpoch: epoch };
   }
+  restoreManualSave(tab) {
+    const armed = tab.manualPasswordSave;
+    if (!armed || tab.closing || tab.view.webContents.isDestroyed()) return;
+    let sameOrigin = false;
+    try { sameOrigin = passwordOrigin(tab.view.webContents.getURL()) === armed.origin; } catch {}
+    tab.manualPasswordSave = sameOrigin ? { ...armed, token: randomUUID(), epoch: tab.navigationEpoch } : null;
+    tab.view.webContents.send('desktop:browser-guest-arm-save', tab.manualPasswordSave?.token ?? null);
+    this.host.emit(tab, 'password-save-mode', { enabled: sameOrigin });
+  }
   async saveLogin(event, payload) {
     const tab = [...this.host.tabs.values()].find(entry => entry.view.webContents === event.sender);
     const armed = tab?.manualPasswordSave;

@@ -390,3 +390,19 @@ test('manual login saving is document-scoped and stores only encrypted local cre
   await f.passwords.saveLogin(event, { token, username: 'different', password: secret });
   assert.equal((await vault.list()).accounts.length, 1);
 });
+
+
+test('manual save opt-in renews on the same website and stops on another origin', async (t) => {
+  const { vault } = await vaultFixture(t); const f = nativeFixture(vault);
+  f.tab.interactive = true; f.host.ownedTab = () => f.tab; f.host.emit = () => {};
+  const tokens = []; f.contents.send = (_channel, token) => tokens.push(token);
+  await f.passwords.armSave({}, { tabId: 'tab', enabled: true });
+  f.tab.navigationEpoch++;
+  f.passwords.restoreManualSave(f.tab);
+  assert.notEqual(tokens[0], tokens[1]);
+  assert.equal(f.tab.manualPasswordSave.epoch, f.tab.navigationEpoch);
+  f.contents.getURL = () => 'https://different.invalid';
+  f.passwords.restoreManualSave(f.tab);
+  assert.equal(f.tab.manualPasswordSave, null);
+  assert.equal(tokens.at(-1), null);
+});

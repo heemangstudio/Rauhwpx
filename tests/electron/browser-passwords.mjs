@@ -150,6 +150,8 @@ try {
   host.control({ tabId, human: true });
   host.attach(editor, { tabId, mode: 'dock', bounds: { x: 0, y: 0, width: 800, height: 600 }, interactive: true });
   await passwords.armSave(editor, { tabId, enabled: true });
+  await tab.view.webContents.loadURL(`${origin}/school-login`);
+  await tab.view.webContents.executeJavaScript(`for (const field of document.querySelectorAll('input')) { field.removeAttribute('name'); field.removeAttribute('autocomplete'); }`);
   await tab.view.webContents.executeJavaScript('document.querySelector("#identity").focus()');
   tab.view.webContents.insertText('manual-fixture-user');
   await tab.view.webContents.executeJavaScript('document.querySelector("#secret").focus()');
@@ -169,11 +171,15 @@ try {
   await passwords.humanFill(editor, { tabId, accountId: manual.id });
   assert.equal(await tab.view.webContents.executeJavaScript('document.querySelector("#identity").value'), 'manual-fixture-user');
   report.schoolFormFill = true;
+  await host.activity({ ...focusActivity, token: randomUUID(), active: true });
   let schoolIdMenu = false; autocompleteShown = () => { schoolIdMenu = true; };
-  await tab.view.webContents.executeJavaScript('document.querySelector("#identity").focus()');
+  await tab.view.webContents.executeJavaScript('document.querySelector("#submit").focus()');
+  const schoolPoint = await tab.view.webContents.executeJavaScript('(()=>{const r=document.querySelector("#identity").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()');
+  tab.view.webContents.sendInputEvent({ type: 'mouseDown', ...schoolPoint, button: 'left', clickCount: 1 });
+  tab.view.webContents.sendInputEvent({ type: 'mouseUp', ...schoolPoint, button: 'left', clickCount: 1 });
   const menuDeadline = Date.now() + 3000;
   while (!schoolIdMenu) {
-    if (Date.now() > menuDeadline) throw new Error('Saved-account menu did not open on an unhinted school ID field');
+    if (Date.now() > menuDeadline) throw new Error('Saved-account menu did not open; focused=' + await tab.view.webContents.executeJavaScript('document.activeElement.id'));
     await new Promise(resolve => setTimeout(resolve, 20));
   }
   assert.ok(autocompleteChoices.some(choice => choice.label === 'manual-fixture-user'));
