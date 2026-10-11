@@ -127,3 +127,5 @@ html.document-home-open .ag-browser-floating[data-agent-controlled="true"] { vis
 
 /* 네이티브 자식 창이 실제 미리보기를 그린다. DOM은 위치와 레이아웃만 유지한다. */
 .ag-browser-floating[data-native-floating="true"] { opacity: 0; pointer-events: none; }
+
+.ag-browser[data-presentation="dock"][data-agent-controlled="true"] { box-shadow: inset 0 0 0 1px #f59a453d; }

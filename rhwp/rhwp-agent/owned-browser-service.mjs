@@ -32,6 +32,7 @@ const challengeFor = (tab) => {
   } catch { return null; }
 };
 const sameScope = (actor, tab) => tab.scope !== 'global' && actor.threadId === tab.threadId && actor.agentId === tab.agentId && (actor.projectId ?? null) === tab.projectId;
+const canAccessTab = (actor, tab) => tab.scope === 'global' || sameScope(actor, tab);
 const PARAMETER_RULES = { verbs: ['delete', 'remove', 'destroy', 'send', 'publish', 'purchase', 'checkout', 'share', 'save', 'edit', 'upload', 'invite', 'logout'], operations: ['action', 'command', 'operation', 'method'], negative: ['0', 'false', 'no', 'none', 'off'] };
 const mutatingParameter = (name, value) => { const key = name.toLowerCase(), setting = String(value).trim().toLowerCase(); return PARAMETER_RULES.verbs.includes(key) && !PARAMETER_RULES.negative.includes(setting) || PARAMETER_RULES.operations.includes(key) && PARAMETER_RULES.verbs.includes(setting); };
 const changesWebsiteURL = (value) => {
@@ -182,7 +183,7 @@ export function createOwnedBrowserService(options = {}) {
   const descriptor = (tab) => ({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: publicURL(tab.page?.url?.() ?? tab.url), title: tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null });
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   const publish = (tab) => emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo() });
-  const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman) emit('owned_browser_activity', { active, sessionId: tab.sessionId, tab: descriptor(tab), runtime: runtimeInfo() }); };
+  const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman) emit('owned_browser_activity', { active, sessionId: actor.sessionId ?? tab.sessionId, tab: descriptor(tab), runtime: runtimeInfo() }); };
   const persist = () => {
     if (resetting || resetFailed) return Promise.resolve();
     const records = [...tabs.values()].map((tab) => ({ ...descriptor(tab), sessionId: tab.sessionId, taskId: tab.taskId, searchQuery: googleResearchURL(tab.page?.url?.() ?? tab.url) && typeof tab.searchQuery === 'string' ? text(tab.searchQuery, 4000) : undefined }));
@@ -205,13 +206,13 @@ export function createOwnedBrowserService(options = {}) {
   };
   const ownedTab = (actor, tabId) => {
     const tab = tabs.get(tabId);
-    if (!tab || (!actor.isHuman && !sameScope(actor, tab))) throw error('BROWSER_TAB_NOT_FOUND', 'This browser tab is unavailable to the current agent.');
+    if (!tab || (!actor.isHuman && !canAccessTab(actor, tab))) throw error('BROWSER_TAB_NOT_FOUND', 'This browser tab is unavailable to the current agent.');
     return tab;
   };
   const assertPolicy = async (actor, action, url, tab, args = {}) => {
     // 앱에서 연 페이지는 소유 에이전트의 작업 영역이다. 계정 비밀을 꺼내는 별도 경로는 이 예외를 사용하지 않는다.
     const owned = tab && tabs.get(tab.tabId);
-    if (action === 'open' || owned && (actor.isHuman || sameScope(actor, owned))) return;
+    if (action === 'open' || owned && (actor.isHuman || canAccessTab(actor, owned))) return;
     const mapped = args.intent === 'website-change' || !actor.isHuman && changesWebsiteURL(url) ? 'website-change' : action === 'download' ? 'download' : READS.has(action) || MUTATIONS.has(action) ? 'read' : 'browse';
     if (policy?.assertAllowed && url !== 'about:blank') await policy.assertAllowed({ actor, action: mapped, url, profileId: profileId() });
     else if (policy?.assertBrowserAction) await policy.assertBrowserAction({ actor, action, url, tab: tab && descriptor(tab), intent: args.intent ?? 'research' });
@@ -971,7 +972,7 @@ export function createOwnedBrowserService(options = {}) {
     }
     const visible = [];
     for (const tab of tabs.values()) {
-      if (!actor.isHuman && !sameScope(actor, tab)) continue;
+      if (!actor.isHuman && !canAccessTab(actor, tab)) continue;
       let current = descriptor(tab);
       if (!actor.isHuman) try { await assertPolicy(actor, 'snapshot', tab.page?.url?.() ?? tab.url, tab); }
       catch { current = { ...current, url: 'about:blank', title: '', status: 'approval-required', challenge: null, snapshotId: null }; }
@@ -979,7 +980,8 @@ export function createOwnedBrowserService(options = {}) {
     }
     let accounts = [];
     if (selectedAdapter()?.passwordAccounts) accounts = (await selectedAdapter().passwordAccounts()).accounts ?? [];
-    return { ok: true, action: 'status', runtime: runtimeInfo(), tabs: visible, limits, accounts };
+    const activeTabId = visible.find(tab => tab.tabId === actor.activeBrowserTabId)?.tabId ?? null;
+    return { ok: true, action: 'status', runtime: runtimeInfo(), tabs: visible, activeTabId, limits, accounts };
   };
   const performRequest = async (actor, action, args = {}) => {
     validateActor(actor);
@@ -1084,7 +1086,7 @@ export function createOwnedBrowserService(options = {}) {
       const url = args.url && args.url !== 'about:blank' ? guard.parse(args.url).href : 'about:blank';
       await assertPolicy(actor, action, url, null, args);
       if (!actor.isHuman && googleResearchURL(url)) {
-        const blocked = [...tabs.values()].find((tab) => sameScope(actor, tab) && challengeFor(tab));
+        const blocked = [...tabs.values()].find((tab) => canAccessTab(actor, tab) && challengeFor(tab));
         if (blocked) {
           await assertPolicy(actor, 'snapshot', requirePage(blocked).url(), blocked);
           blocked.searchQuery ||= new URL(url).searchParams.get('q') || undefined;
@@ -1261,12 +1263,12 @@ export function createOwnedBrowserService(options = {}) {
     },
     ownsTarget(actor, target) {
       const tab = target?.tabId && tabs.get(target.tabId);
-      return !!tab && (actor?.isHuman ? tab.scope === 'global' || !actor.sessionId || !tab.sessionId || actor.sessionId === tab.sessionId : sameScope(actor, tab));
+      return !!actor && !!tab && (actor.isHuman ? tab.scope === 'global' || !actor.sessionId || !tab.sessionId || actor.sessionId === tab.sessionId : canAccessTab(actor, tab));
     },
     downloadTarget(actor, url) {
       let origin; try { origin = new URL(url).origin; } catch { return null; }
       for (const tab of tabs.values()) {
-        if (!tab.page || tab.page.isClosed() || !(actor.isHuman ? tab.scope === 'global' || !actor.sessionId || !tab.sessionId || actor.sessionId === tab.sessionId : sameScope(actor, tab))) continue;
+        if (!tab.page || tab.page.isClosed() || !(actor.isHuman ? tab.scope === 'global' || !actor.sessionId || !tab.sessionId || actor.sessionId === tab.sessionId : canAccessTab(actor, tab))) continue;
         try { if (new URL(tab.page.url()).origin === origin) return descriptor(tab); } catch {}
       }
       return null;

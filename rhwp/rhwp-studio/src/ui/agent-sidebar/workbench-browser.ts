@@ -241,7 +241,8 @@ export function createWorkbenchBrowser(options: {
   function endAgentPreview(): void {
     if (disposed || !agentPreviewTab) return;
     // 턴이 끝날 때 보기만 접고 탭과 로그인 상태는 유지한다.
-    presentation.hide(); agentPreviewTab = null; paint();
+    if (presentation.current() !== 'dock') presentation.hide();
+    agentPreviewTab = null; paint(); layout();
   }
   let visible = false; let nativeTab: string | null = null; let nativePopout = false;
   let frameTimer: ReturnType<typeof setTimeout> | null = null; let composing = false; let committedComposition: string | null = null; let disposed = false; let selectedFrameId = ''; let nativeSequence = 0;
@@ -599,6 +600,20 @@ export function createWorkbenchBrowser(options: {
       handle(controller.readFrame().finally(scheduleFrame));
     }, delay);
   }
+  let reportedSidebarTab: string | null = null;
+  let reportedSidebarKey = '';
+  let sidebarViewQueue: Promise<unknown> = Promise.resolve();
+  function reportSidebarView(): void {
+    const next = !disposed && visible && presentation.current() === 'dock' ? controller.tab()?.tabId ?? null : null;
+    const key = `${controller.state.runtime?.runtimeId ?? ''}:${next ?? ''}`;
+    if (key === reportedSidebarKey) return;
+    const previous = reportedSidebarTab; reportedSidebarTab = next; reportedSidebarKey = key;
+    // 실제 선택이 바뀔 때만 알리고, 늦게 도착한 이전 보기 종료가 새 선택을 지우지 않게 한다.
+    sidebarViewQueue = sidebarViewQueue.catch(() => {}).then(async () => {
+      if (previous) await options.bridge.requestBrowser('view', { tabId: previous, visible: false }).catch(() => {});
+      if (next) await options.bridge.requestBrowser('view', { tabId: next, visible: true });
+    }).catch(() => { if (reportedSidebarKey === key) reportedSidebarKey = ''; });
+  }
   function paint(): void {
     if (disposed) return;
     const tab = controller.tab(); const connected = controller.state.connected;
@@ -606,6 +621,8 @@ export function createWorkbenchBrowser(options: {
     const frame = manuallySleeping ? null : controller.frame();
     const agentControlled = agentPreviewTab !== null && tab !== null;
     presentation.setAgentControlled(agentControlled);
+    element.dataset.agentControlled = String(agentControlled);
+    reportSidebarView();
     element.inert = agentControlled;
     challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
     fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
@@ -731,7 +748,7 @@ export function createWorkbenchBrowser(options: {
       if (disposed) return;
       manualSleepingTab = null; agentPreviewTab = tab.tabId;
       controller.accept({ tab }); controller.select(tab.tabId);
-      nativePopout = false; presentation.present('float');
+      nativePopout = false; presentation.present(visible && presentation.current() === 'dock' ? 'dock' : 'float');
       handle(controller.readFrame());
     },
     endAgentPreview,
@@ -761,7 +778,7 @@ export function createWorkbenchBrowser(options: {
     dock() { nativePopout = false; presentation.present('dock'); address.focus({ preventScroll: true }); },
     float(point?: { x: number; y: number }) { floatCurrentTab(point); handle(controller.refresh().then(() => controller.readFrame())); },
     async releaseTab(tabId: string): Promise<void> { await nativePending?.catch(() => undefined); if (nativeTab === tabId) { nativeTab = null; nativeProjection = ''; await nativeBrowserApi()?.detach({ tabId }); } layout(); },
-    dispose() { captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
+    dispose() { captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; reportSidebarView(); cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
   };
 }
 export type WorkbenchBrowser = ReturnType<typeof createWorkbenchBrowser>;

@@ -736,6 +736,8 @@ export interface BrowserEvent {
   [key: string]: unknown;
 }
 export interface BrowserResult {
+  /** 현재 Studio의 사이드바에서 보고 있는 탭. 에이전트는 기존 탭을 그대로 사용한다. */
+  activeTabId?: string | null;
   ok?: boolean;
   action?: string;
   runtime?: BrowserRuntime;

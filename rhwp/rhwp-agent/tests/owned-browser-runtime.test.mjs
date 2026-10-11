@@ -206,6 +206,23 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   assert.ok(capture.capture.screenshot.data);
   const returned = await browser.request(human, 'control', { tabId: a.tabId, owner: 'agent' });
   await assert.rejects(browser.request(alice, 'navigate', { tabId: a.tabId, url: `${origin}/redirect-private`, navigationEpoch: returned.tab.navigationEpoch, controllerEpoch: returned.tab.controllerEpoch }), { code: 'BROWSER_ACTION_FAILED' });
+  const shared = (await browser.request({ ...human, sessionId: 'window-a' }, 'open', { url: `${origin}/research` })).tab;
+  const sidebarAgent = { ...bob, sessionId: 'window-b', activeBrowserTabId: shared.tabId };
+  const status = await browser.inventory(sidebarAgent);
+  assert.equal(status.activeTabId, shared.tabId);
+  assert.deepEqual(status.tabs.map(tab => tab.tabId).sort(), [b.tabId, shared.tabId].sort());
+  const current = await browser.request(sidebarAgent, 'snapshot', { tabId: status.activeTabId });
+  assert.equal(JSON.stringify(current).includes('vault-secret'), false, 'shared page observations still mask passwords');
+  const field = current.snapshot.elements.find(element => element.tag === 'input' && !element.sensitive);
+  await browser.request(sidebarAgent, 'type', { tabId: shared.tabId, snapshotId: current.snapshot.snapshotId, ref: field.ref,
+    navigationEpoch: current.tab.navigationEpoch, controllerEpoch: current.tab.controllerEpoch, text: 'Shared sidebar research' });
+  const filled = await browser.request(sidebarAgent, 'snapshot', { tabId: shared.tabId });
+  const search = filled.snapshot.elements.find(element => element.tag === 'button');
+  await browser.request(sidebarAgent, 'click', { tabId: shared.tabId, snapshotId: filled.snapshot.snapshotId, ref: search.ref,
+    navigationEpoch: filled.tab.navigationEpoch, controllerEpoch: filled.tab.controllerEpoch });
+  assert.ok((await browser.request(human, 'snapshot', { tabId: shared.tabId })).snapshot.text.includes('Shared sidebar research'));
+  assert.ok(events.some(event => event.type === 'owned_browser_activity' && event.tab.tabId === shared.tabId && event.sessionId === 'window-b'), 'activity follows the controlling chat instead of the tab creator');
+
 });
 
 test('encrypted profile checkpoint hooks run on shutdown and restore before observation', async (t) => {
@@ -404,7 +421,7 @@ test('same-document navigation settles browser readiness while a real unfinished
   assert.equal((await waitFor((tab) => tab.status === 'ready')).status, 'ready');
 });
 
-test('human browser tabs survive document and project switches without granting agent access', async (t) => {
+test('shared browser tabs survive document switches and expose the current sidebar tab to agents', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-global-browser-'));
   let closedPages = 0;
   const runtimeFactory = async () => ({ kind: 'chromium', browser: new EventEmitter(), async close() {}, context: Object.assign(new EventEmitter(), {
@@ -422,16 +439,23 @@ test('human browser tabs survive document and project switches without granting 
   const identity = { tabId: opened.tab.tabId, navigationEpoch: opened.tab.navigationEpoch, controllerEpoch: opened.tab.controllerEpoch };
   assert.equal((await browser.inventory(second)).tabs[0].tabId, opened.tab.tabId);
   await browser.request(second, 'input', { ...identity, type: 'release' });
-  const agent = { ...first, isHuman: false };
-  assert.equal((await browser.inventory(agent)).tabs.length, 0);
-  await assert.rejects(browser.request(agent, 'close', identity), { code: 'BROWSER_TAB_NOT_FOUND' });
+  const agent = { ...second, isHuman: false, activeBrowserTabId: opened.tab.tabId };
+  const inventory = await browser.inventory(agent);
+  assert.equal(inventory.tabs[0].tabId, opened.tab.tabId);
+  assert.equal(inventory.activeTabId, opened.tab.tabId);
+  assert.equal(browser.ownsTarget(agent, opened.tab), true);
+  const privateTab = (await browser.request({ ...first, isHuman: false }, 'open', { url: 'about:blank' })).tab;
+  assert.equal((await browser.inventory(agent)).tabs.length, 1, 'other agents retain their private tab scope');
+  assert.equal((await browser.inventory({ ...agent, activeBrowserTabId: privateTab.tabId })).activeTabId, null);
+  await assert.rejects(browser.request(agent, 'close', { ...identity, tabId: privateTab.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
+  await browser.request({ ...first, isHuman: false }, 'close', { tabId: privateTab.tabId, navigationEpoch: privateTab.navigationEpoch, controllerEpoch: privateTab.controllerEpoch });
   await browser.close();
   restored = createOwnedBrowserService({ dataDir, runtimeFactory });
   await restored.restore();
   assert.equal((await restored.inventory(second)).tabs[0].tabId, opened.tab.tabId, 'global tabs restore without a chat owner');
   await restored.request(second, 'close', { ...identity, controllerEpoch: identity.controllerEpoch + 1 });
   assert.equal((await restored.inventory(first)).tabs.length, 0);
-  assert.equal(closedPages, 0, 'closing a restored descriptor does not create or reload its page');
+  assert.equal(closedPages, 1, 'closing a restored descriptor does not create or reload its page');
 });
 
 

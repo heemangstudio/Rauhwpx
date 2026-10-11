@@ -4,7 +4,7 @@ HamaEditor's browser runs on your own agent hub. Desktop and paired web clients 
 
 ## Open and control a browser
 
-Open **Browser** from the sidebar workbench, the chat toolbar, or Home. A document or project is optional. Agents receive their own tabs; approved saved logins are shared across projects on that hub.
+Open **Browser** from the sidebar workbench, the chat toolbar, or Home. A document or project is optional. Agents can directly use user-opened tabs and receive their own tabs for separate research; approved saved logins are shared across projects on that hub.
 
 The compact icon toolbar offers navigation, reload, control, capture, downloads, and presentation. **Float** opens a draggable PiP panel inside the editor window. It keeps the document and chat available underneath. The separate-window option lives in **More**.
 
@@ -50,3 +50,7 @@ node --test tests/desktop-owned-browser.test.mjs tests/desktop-browser-vault.tes
 ```
 
 The live research check uses isolated temporary hub/profile/project storage and a deterministic website. Its provider is a fixture, so it spends no model quota. Sidebar preview checks are frontend fixtures and are labelled separately from these real browser and Electron checks.
+
+## Agent access to the sidebar
+
+`browser_status` lists shared user-opened tabs alongside the current agent’s assigned tabs. Its `activeTabId` identifies the page currently selected in this chat’s sidebar. Agents can snapshot and control that tab directly; the sidebar stays docked and shows a faint orange outline while the agent works. The existing page stays visible when the turn finishes. Other agents’ private research tabs retain their task scope.

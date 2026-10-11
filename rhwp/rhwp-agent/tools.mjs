@@ -1815,7 +1815,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_status',
-    description: 'Inspect the app-owned browser runtime, assigned tabs and saved login metadata. accounts includes imported passwords and logins previously typed and saved by the user. Match the exact website origin; an account with agentReuseApproved=true can be autofilled directly with browser_fill_account for the user\'s task. Password values stay in the local vault. Tabs survive hidden chats and provider turn endings.',
+    description: 'Inspect the app-owned browser runtime, shared user-opened tabs, your assigned tabs and saved login metadata. activeTabId identifies the tab the user is viewing in the current chat sidebar. Reuse that tab when the request concerns the current page; actions remain visible in the sidebar. accounts includes imported passwords and logins previously typed and saved by the user. Match the exact website origin; an account with agentReuseApproved=true can be autofilled directly with browser_fill_account for the user\'s task. Password values stay in the local vault. Tabs survive hidden chats and provider turn endings.',
     shape: {},
   },
   {
@@ -1825,12 +1825,12 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_navigate',
-    description: 'Navigate an assigned research tab. Use public HTTPS destinations or an explicitly approved workspace preview. Private services and website changes need their own permissions.',
+    description: 'Navigate a shared sidebar tab or your assigned research tab. Use public HTTPS destinations or an explicitly approved workspace preview. Private services and website changes need their own permissions.',
     shape: { tabId: browserTab(), url: z.string().url().max(8_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative(), intent: browserIntent() },
   },
   {
     name: 'browser_snapshot',
-    description: 'Read a semantic snapshot of an assigned tab. Use the returned snapshotId, element refs and navigationEpoch in the next action; stale refs are rejected.',
+    description: 'Read a semantic snapshot of a shared sidebar tab or your assigned tab. Use the returned snapshotId, element refs and navigationEpoch in the next action; stale refs are rejected.',
     shape: { tabId: browserTab() },
   },
   {

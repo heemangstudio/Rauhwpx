@@ -25,7 +25,7 @@ Agent ownership comes from the hub, not tool arguments. A tab ID from another ag
 
 | Tool | Arguments | Result and practical use |
 | --- | --- | --- |
-| `browser_status` | `{}` | `runtime`, scoped `tabs`, `limits`, and available `accounts`. Includes imported and manually saved logins. Match `origin`/`origins` to the website; `agentReuseApproved: true` permits direct local autofill for the task. Reuse assigned tabs and inspect readiness metadata. |
+| `browser_status` | `{}` | `runtime`, scoped `tabs`, `limits`, and available `accounts`. Includes imported and manually saved logins. Match `origin`/`origins` to the website; `agentReuseApproved: true` permits direct local autofill for the task. Reuse shared user-opened tabs and your assigned tabs and inspect readiness metadata. |
 | `browser_open` | Optional `url`, `intent` | Creates your tab and returns its descriptor. Omitted URL opens `about:blank`. Runtime starts lazily. |
 | `browser_navigate` | `tabId`, `url`, `epochs`; optional `intent` | Navigates the same tab. Snapshot afterward. The public schema has no back/forward/reload direction field. |
 | `browser_snapshot` | `tabId` | Returns `snapshot` and current tab state. Replaces refs, so choose actions from this result. |
@@ -106,3 +106,5 @@ After one unsuccessful recovery, report the blocker and next step. `retryable: t
 Browser Settings owns installation, runtime modes, accounts, sign-in, cleanup, and policy management. Raw pointer input and file uploads are human UI capabilities, absent from the agent tool list. User viewport screenshots are chat attachments; agent `browser_capture` is evidence capture.
 
 The service treats opening and assigned-tab browsing as the agent's browser territory. Secure account fill still uses broker approval and origin checks. Keep actions within the user's requested task. The [source comparison](design-sources.md) records the architecture and research sources.
+
+`browser_status.activeTabId` is the selected tab in the current Studio sidebar, or `null` when no browser is docked. It never names another agent’s private tab. For tasks about the current page, use that ID with `browser_snapshot` and the existing navigation and input tools.

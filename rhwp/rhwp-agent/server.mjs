@@ -641,6 +641,7 @@ function browserActorForRecord(record, { isHuman = false, taskId = null } = {}) 
     agentId: taskId ? `${threadId}:task:${taskId}` : `${threadId ?? record.sessionId}:root`,
     taskId,
     clientId: record.studioInstanceId ?? record.sessionId,
+    activeBrowserTabId: record.browserViewTabId ?? null,
     isHuman,
   });
 }
@@ -759,6 +760,13 @@ async function handleBrowserRequest(record, sock, msg) {
     if (containsBrowserSecret(args)) throw workflowError('BROWSER_SECURE_CHANNEL_REQUIRED', 'Enter website credentials in the secure account form');
     let result;
     switch (msg.action) {
+      case 'view': {
+        if (typeof args.tabId !== 'string' || !ownedBrowser.ownsTarget(actor, { tabId: args.tabId })) throw workflowError('BROWSER_TAB_NOT_FOUND', 'The viewed browser tab is unavailable.');
+        if (args.visible === true) record.browserViewTabId = args.tabId;
+        else if (args.visible === false && record.browserViewTabId === args.tabId) record.browserViewTabId = null;
+        result = { ok: true, action: 'view', activeTabId: record.browserViewTabId ?? null };
+        break;
+      }
       case 'policy.list': result = await browserPolicy.list(); break;
       case 'policy.update': result = await browserPolicy.update({ ...args, actor }); break;
       case 'accounts.list': result = await credentialBroker.listAccounts(); break;

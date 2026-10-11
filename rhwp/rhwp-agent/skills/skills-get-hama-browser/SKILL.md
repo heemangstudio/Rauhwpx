@@ -12,12 +12,12 @@ Use the app-owned `browser_*` tools. The user's hub runs the browser and retains
 
 ## Start and reuse
 
-1. Call `browser_status` once to find your assigned tabs, runtime state, and available account IDs. Reuse a relevant tab; otherwise call `browser_open` with the destination URL.
+1. Call `browser_status` once to find shared user-opened tabs, your assigned tabs, runtime state, and available account IDs. `activeTabId` is the page the user is viewing in the current sidebar. For a request about that page, snapshot and control that exact tab so the user sees your work there. Reuse a relevant tab; otherwise call `browser_open` with the destination URL.
 2. Call `browser_snapshot` to read the page and choose a current element ref. Keep its `snapshotId`, `navigationEpoch`, and `controllerEpoch` together.
 3. Perform the next supported action, then take the cheapest observation that answers whether it worked. Use a fresh snapshot after navigation, submission, scrolling, page changes, or user input. Use status to find a new popup tab or inspect runtime changes.
 4. Finish when the requested fact, page state, capture, or completed download is established. Return the source link and outcome.
 
-Navigate an existing tab for the next destination. Open another tab only when the task needs both pages retained. A popup child has its own `tabId` and `openerTabId`; find it through status rather than assuming the opener navigated. Each agent uses its own assigned tabs.
+Navigate an existing tab for the next destination. Open another tab only when the task needs both pages retained. A popup child has its own `tabId` and `openerTabId`; find it through status rather than assuming the opener navigated. User-opened tabs are shared across documents and available to agents. Other agents’ assigned tabs remain scoped to their own tasks. When a sidebar is already showing your target, it stays docked during your work.
 
 ## Keep calls useful
 

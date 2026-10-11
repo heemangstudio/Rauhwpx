@@ -36,7 +36,7 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       } } });
       const { createWorkbenchBrowser } = await import('../src/ui/agent-sidebar/workbench-browser.ts');
       const tab = { tabId: 'same-tab', scope: 'global', nativeTargetId: 'same-target', runtime: 'native', url: 'https://example.com/retained', title: '자료', navigationEpoch: 3, controllerEpoch: 2, controller: { owner: 'human' }, status: 'ready' };
-      const bridge = { getConnectionState: () => 'connected', onBrowserEvent: () => () => {}, onEvent: () => () => {}, async requestBrowser(action: string) { calls.push({ action }); if (action === 'sleep') { attached = null; return { sleeping: true, tab: { ...tab, status: 'sleeping', nativeTargetId: undefined } }; } return action === 'status' ? { tabs: [tab] } : {}; } };
+      const bridge = { getConnectionState: () => 'connected', onBrowserEvent: () => () => {}, onEvent: () => () => {}, async requestBrowser(action: string, args: Record<string, unknown> = {}) { calls.push({ action, ...args }); if (action === 'sleep') { attached = null; return { sleeping: true, tab: { ...tab, status: 'sleeping', nativeTargetId: undefined } }; } return action === 'status' ? { tabs: [tab] } : {}; } };
       const createView = () => createWorkbenchBrowser({ bridge: bridge as any, getDestination: () => ({ threadId: 'chat', projectId: null, documentId: null, label: '채팅' }), onCapture() {}, onOpenDownload() {}, onDock() {}, onChat() {} });
       const view = createView();
       view.mount(document.querySelector<HTMLElement>('#host')!); view.setVisible(true);
@@ -129,6 +129,16 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     await page.click('.ag-browser-placeholder button[aria-label="탭 깨우기"]');
     await attached('same-tab');
 
+
+    await page.evaluate(() => { const view = (window as any).projectionTest.view; view.previewAgent(view.controller.tab()); });
+    await page.waitForFunction(() => (window as any).projectionTest.calls.some((call: any) => call.action === 'attach' && call.mode === 'dock' && call.interactive === false));
+    assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'dock', 'agent control preserves the visible sidebar');
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true, 'docked agent control does not spawn a duplicate float');
+    assert.ok(await page.evaluate(() => (window as any).projectionTest.calls.some((call: any) => call.action === 'view' && call.visible === true && call.tabId === 'same-tab')), 'selected sidebar tab is reported to the hub');
+    await page.evaluate(() => (window as any).projectionTest.view.endAgentPreview());
+    await attached('same-tab');
+    assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).inert), false, 'ending the agent turn restores sidebar input');
+    assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'dock', 'ending the agent turn keeps the page docked');
 
     await page.evaluate(() => {
       const view = (window as any).projectionTest.view;
