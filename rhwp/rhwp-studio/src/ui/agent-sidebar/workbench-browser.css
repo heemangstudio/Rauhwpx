@@ -36,6 +36,16 @@
 .ag-browser-frame[hidden] { display: none; }
 .ag-browser-placeholder { text-align: center; padding: 25px; max-width: 380px; color: #576253; line-height: 1.6; }
 .ag-browser-placeholder[hidden] { display: none; }
+/* 기존 하마의 눈 감은 자세. 페이지를 기다리는 동안만 숨을 쉬고 코를 곤다. */
+.ag-browser-sleeping-hama { position: relative; display: block; width: 96px; height: 76px; margin: 0 auto 12px; }
+.ag-browser-sleeping-sprite { position: absolute; left: 9px; bottom: 0; width: 78px; height: 60px; background: url('/images/boot/hama-sprites.png') -234px 0 / 468px 60px no-repeat; image-rendering: pixelated; animation: ag-browser-hama-breathe 3200ms steps(2, end) infinite; }
+.ag-browser-snore { position: absolute; left: 16px; top: 26px; color: #62a6cd; font: 700 14px/1 ui-monospace, monospace; opacity: 0; animation: ag-browser-hama-snore 3200ms var(--snore-delay) ease-out infinite; }
+@keyframes ag-browser-hama-breathe { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes ag-browser-hama-snore { 0%, 12% { opacity: 0; transform: translate(0, 0); } 24% { opacity: .7; } 76%, 100% { opacity: 0; transform: translate(-12px, -24px); } }
+@media (prefers-reduced-motion: reduce) {
+  .ag-browser-sleeping-sprite, .ag-browser-snore { animation: none; }
+  .ag-browser-snore:nth-of-type(2) { opacity: .5; transform: translate(-6px, -12px); }
+}
 .ag-browser-placeholder strong { font-size: 17px; }
 .ag-browser-placeholder p { margin: 8px 0 16px; overflow-wrap: anywhere; }
 .ag-browser-ime { position: absolute; width: 1px; height: 1px; left: 8px; bottom: 8px; opacity: .01; resize: none; border: 0; padding: 0; overflow: hidden; }

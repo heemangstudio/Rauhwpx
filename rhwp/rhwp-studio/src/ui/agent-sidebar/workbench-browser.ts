@@ -137,10 +137,13 @@ export function createWorkbenchBrowser(options: {
   const surface = document.createElement('div'); surface.className = 'ag-browser-surface'; surface.tabIndex = 0; surface.setAttribute('role', 'application'); surface.setAttribute('aria-label', '브라우저 페이지');
   const image = document.createElement('img'); image.className = 'ag-browser-frame'; image.alt = '브라우저 페이지'; image.draggable = false;
   const placeholder = document.createElement('div'); placeholder.className = 'ag-browser-placeholder';
+  const sleepingHama = document.createElement('span'); sleepingHama.className = 'ag-browser-sleeping-hama'; sleepingHama.hidden = true; sleepingHama.setAttribute('aria-hidden', 'true');
+  const sleepingSprite = document.createElement('span'); sleepingSprite.className = 'ag-browser-sleeping-sprite'; sleepingHama.append(sleepingSprite);
+  for (let index = 0; index < 3; index++) { const snore = document.createElement('span'); snore.className = 'ag-browser-snore'; snore.textContent = 'z'; snore.style.setProperty('--snore-delay', `${index * 800}ms`); sleepingHama.append(snore); }
   const placeholderTitle = document.createElement('strong'); placeholderTitle.textContent = '자료를 찾아보세요';
   const placeholderText = document.createElement('p'); placeholderText.textContent = '웹사이트를 읽고 받은 PDF를 문서와 보드에서 확인할 수 있습니다.';
   const emptyOpen = button('연구 브라우저 열기', '브라우저 열기', () => handle(controller.open()), placeholder);
-  placeholder.prepend(placeholderTitle, placeholderText);
+  placeholder.prepend(sleepingHama, placeholderTitle, placeholderText);
   const textInput = document.createElement('textarea'); textInput.className = 'ag-browser-ime'; textInput.setAttribute('aria-label', '브라우저 페이지에 입력'); textInput.autocomplete = 'off'; textInput.spellcheck = false;
   surface.append(image, placeholder, textInput); element.append(surface);
   const downloads = document.createElement('section'); downloads.className = 'ag-browser-downloads'; downloads.setAttribute('aria-label', '브라우저 다운로드'); downloads.setAttribute('role', 'dialog'); downloadsButton.setAttribute('aria-haspopup', 'dialog'); downloads.hidden = true; element.append(downloads);
@@ -531,6 +534,7 @@ export function createWorkbenchBrowser(options: {
     back.disabled ||= tab?.canGoBack === false; forward.disabled ||= tab?.canGoForward === false;
     reconnectButton.disabled = nativeRecovering || reconnecting || !!nativePending; reconnectButton.textContent = reconnecting ? '연결 중…' : '다시 연결';
     errorMessage.textContent = controller.state.error ?? nativeError ?? ''; error.hidden = !controller.state.error && !nativeError;
+    sleepingHama.hidden = !tab || !!frame || tab.status === 'crashed' || !!nativeProjection && !nativePending && !nativeError && tab.status === 'ready';
     placeholder.hidden = Boolean(tab); image.hidden = !frame;
     if (frame && frame.frameId !== selectedFrameId) { selectedFrameId = frame.frameId; image.src = `data:${frame.mimeType};base64,${frame.data}`; image.style.aspectRatio = `${frame.width} / ${frame.height}`; }
     if (!frame && selectedFrameId) { selectedFrameId = ''; image.removeAttribute('src'); }
