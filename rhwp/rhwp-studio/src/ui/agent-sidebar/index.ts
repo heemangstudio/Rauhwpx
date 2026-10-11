@@ -3866,8 +3866,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   routeChatBrowserLinks(messages, async (url) => {
     const browser = ensureWorkbenchBrowser();
-    await browser.controller.open(url);
-    browser.float();
+    await browser.controller.refresh();
+    const existing = browser.controller.state.tabs.find(tab => tab.url === url);
+    if (existing) browser.controller.select(existing.tabId);
+    else await browser.controller.open(url);
+    if (fullscreen) {
+      workbench?.select('browser');
+      browser.dock();
+    } else browser.float();
   }, (error) => showToast({ message: `브라우저를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 }));
 
   const unsubscribeAgentBrowserPreview = bridge.onBrowserEvent((event) => {

@@ -80,6 +80,10 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     assert.equal(calls.filter((call: any) => call.action === 'attach').length, 8, 'each restore attaches once and a cancelled attach is replaced');
     assert.ok(calls.filter((call: any) => call.action === 'attach' || call.action === 'detach').every((call: any) => call.tabId === 'same-tab'));
     assert.ok(!calls.some((call: any) => ['open', 'close', 'reconnect'].includes(call.action)), 'visibility preserves the runtime page');
+    await page.evaluate(() => (window as any).projectionTest.view.dock());
+    assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'dock', 'fullscreen link focus can return a floating page to the workbench');
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true);
+    assert.equal(await page.$eval('.ag-browser-address', node => document.activeElement === node), true, 'docked browser receives keyboard focus');
     await page.evaluate(() => {
       const view = (window as any).projectionTest.view;
       view.setVisible(false);
