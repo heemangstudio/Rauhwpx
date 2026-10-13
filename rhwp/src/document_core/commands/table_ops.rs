@@ -11,7 +11,7 @@ use crate::model::path::{path_from_flat, PathSegment};
 use crate::model::shape::{
     common_obj_offsets, Caption, HorzAlign, HorzRelTo, TextWrap, VertAlign, VertRelTo,
 };
-use crate::model::table::{Table, TablePageBreak};
+use crate::model::table::{LocalRowBoundaryPlan, Table, TablePageBreak};
 
 struct CellResizeUpdate {
     cell_idx: usize,
@@ -1940,6 +1940,136 @@ impl DocumentCore {
         }
     }
 
+    fn plan_local_row_resize(
+        &self,
+        table: &Table,
+        updates: &[CellResizeUpdate],
+    ) -> Result<Option<LocalRowBoundaryPlan>, HwpError> {
+        if !updates
+            .iter()
+            .any(|update| update.local_resize && update.render_height.is_some())
+        {
+            return Ok(None);
+        }
+        if updates.iter().any(|update| {
+            update.height_delta != 0 || update.width_delta != 0 || update.render_width.is_some()
+        }) {
+            return Err(HwpError::RenderError(
+                "로컬 행 경계 이동에 다른 크기 변경을 섞을 수 없습니다".to_string(),
+            ));
+        }
+
+        let row_heights = self.layout_engine.resolve_row_heights(
+            table,
+            table.col_count as usize,
+            table.row_count as usize,
+            None,
+            &self.styles,
+            true,
+        );
+        let row_heights = row_heights
+            .iter()
+            .map(|&height| {
+                u32::try_from(crate::renderer::px_to_hwpunit_round(height, self.dpi))
+                    .map_err(|_| HwpError::RenderError("행 높이 범위 초과".to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut column_hints =
+            std::collections::BTreeMap::<u16, std::collections::BTreeMap<usize, u32>>::new();
+        let mut has_movement = false;
+        for update in updates {
+            let Some(height) = update.render_height else {
+                continue;
+            };
+            let cell = table
+                .cells
+                .get(update.cell_idx)
+                .ok_or_else(|| HwpError::RenderError("셀 인덱스 범위 초과".to_string()))?;
+            if cell.col_span != 1 || cell.row_span == 0 {
+                return Err(HwpError::RenderError(
+                    "병합 셀의 로컬 행 경계는 지원되지 않습니다".to_string(),
+                ));
+            }
+            let start = cell.row as usize;
+            let end = start + cell.row_span as usize;
+            let original: i64 = row_heights
+                .get(start..end)
+                .ok_or_else(|| HwpError::RenderError("셀 행 범위 초과".to_string()))?
+                .iter()
+                .map(|&height| i64::from(height))
+                .sum();
+            has_movement |= (i64::from(height) - original).abs() > 7;
+            column_hints
+                .entry(cell.col)
+                .or_default()
+                .insert(update.cell_idx, height);
+        }
+        if !has_movement {
+            return Ok(None);
+        }
+
+        let mut shifts = Vec::new();
+        for (col, hints) in column_hints {
+            let mut cells: Vec<_> = table
+                .cells
+                .iter()
+                .enumerate()
+                .filter(|(_, cell)| cell.col <= col && col < cell.col + cell.col_span)
+                .collect();
+            cells.sort_by_key(|(_, cell)| cell.row);
+            let mut moved = 0i64;
+            let mut next_row = 0usize;
+            for (cell_idx, cell) in cells {
+                let end = cell.row as usize + cell.row_span as usize;
+                if cell.row as usize != next_row
+                    || cell.col_span != 1
+                    || cell.row_span == 0
+                    || end > row_heights.len()
+                {
+                    return Err(HwpError::RenderError(
+                        "병합 셀의 로컬 행 경계는 지원되지 않습니다".to_string(),
+                    ));
+                }
+                let original: i64 = row_heights[next_row..end]
+                    .iter()
+                    .map(|&height| i64::from(height))
+                    .sum();
+                if let Some(&height) = hints.get(&cell_idx) {
+                    let delta = i64::from(height) - original;
+                    if delta.abs() > 7 {
+                        moved += delta;
+                    }
+                }
+                next_row = end;
+                if end == row_heights.len() {
+                    if moved.abs() > 15 {
+                        return Err(HwpError::RenderError(
+                            "로컬 행 높이 합이 표 높이와 다릅니다".to_string(),
+                        ));
+                    }
+                } else if moved.abs() > 7 {
+                    let shift = i32::try_from(moved)
+                        .map_err(|_| HwpError::RenderError("경계 이동량 범위 초과".to_string()))?;
+                    shifts.push((col, end as u16, shift));
+                }
+            }
+            if next_row != row_heights.len() {
+                return Err(HwpError::RenderError(
+                    "셀 격자가 끝까지 덮이지 않습니다".to_string(),
+                ));
+            }
+        }
+        if shifts.is_empty() {
+            return Err(HwpError::RenderError(
+                "보상할 로컬 행 경계가 없습니다".to_string(),
+            ));
+        }
+        table
+            .plan_local_row_boundaries(&row_heights, &shifts)
+            .map(Some)
+            .map_err(HwpError::RenderError)
+    }
+
     /// 셀 크기 갱신을 표에 반영하고, 폭이 바뀐 셀의 `(셀 번호, 문단 수)` 를 돌려준다.
     ///
     /// Hangul 3모드 local_resize / renderWidth / renderHeight 도 여기서 반영한다.
@@ -2221,8 +2351,17 @@ impl DocumentCore {
             return Ok("{\"ok\":true}".to_string());
         }
 
+        let plan = {
+            let table = self.resolve_table_by_path(section_idx, parent_para_idx, path)?;
+            self.plan_local_row_resize(table, &updates)?
+        };
         let table = self.resolve_table_mut_by_cell_path(section_idx, parent_para_idx, path)?;
         let reflow_cells = Self::apply_cell_resize_updates(table, &updates, force_local_resize);
+        if let Some(plan) = plan {
+            table.local_resize_cell_heights.clear();
+            table.local_resize_cols.clear();
+            table.apply_local_row_boundary_plan(plan);
+        }
 
         self.reflow_table_cells_by_cell_path(section_idx, parent_para_idx, path, &reflow_cells);
 
@@ -2249,8 +2388,18 @@ impl DocumentCore {
             return Ok("{\"ok\":true}".to_string());
         }
 
+        let plan = {
+            let table =
+                self.resolve_table_by_path(section_idx, parent_para_idx, &[(control_idx, 0, 0)])?;
+            self.plan_local_row_resize(table, &updates)?
+        };
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
         let reflow_cells = Self::apply_cell_resize_updates(table, &updates, force_local_resize);
+        if let Some(plan) = plan {
+            table.local_resize_cell_heights.clear();
+            table.local_resize_cols.clear();
+            table.apply_local_row_boundary_plan(plan);
+        }
         self.reflow_table_cells_by_cell_path(
             section_idx,
             parent_para_idx,

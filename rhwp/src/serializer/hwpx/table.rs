@@ -485,10 +485,10 @@ fn write_cell_sz<W: Write>(w: &mut Writer<W>, cell: &Cell) -> Result<(), Seriali
 }
 
 fn write_cell_margin<W: Write>(w: &mut Writer<W>, cell: &Cell) -> Result<(), SerializeError> {
-    let l = cell.padding.left.to_string();
-    let r = cell.padding.right.to_string();
-    let t = cell.padding.top.to_string();
-    let b = cell.padding.bottom.to_string();
+    let l = (i32::from(cell.padding.left) as u32).to_string();
+    let r = (i32::from(cell.padding.right) as u32).to_string();
+    let t = (i32::from(cell.padding.top) as u32).to_string();
+    let b = (i32::from(cell.padding.bottom) as u32).to_string();
     empty_tag(
         w,
         "hp:cellMargin",
@@ -715,6 +715,25 @@ mod tests {
             );
         }
         assert_eq!(xml.matches("<hp:p ").count(), count);
+    }
+
+    #[test]
+    fn cell_margin_sign_extends_negative_padding_as_uint32() {
+        let cell = Cell {
+            padding: crate::model::Padding {
+                left: -1,
+                right: -2,
+                top: i16::MIN,
+                bottom: i16::MAX,
+            },
+            ..Default::default()
+        };
+        let mut w = Writer::new(Vec::new());
+        write_cell_margin(&mut w, &cell).unwrap();
+        assert_eq!(
+            String::from_utf8(w.into_inner()).unwrap(),
+            r#"<hp:cellMargin left="4294967295" right="4294967294" top="4294934528" bottom="32767"/>"#,
+        );
     }
 
     #[test]
