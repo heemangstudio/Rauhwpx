@@ -124,6 +124,22 @@ fn moving_the_same_boundary_in_all_columns_does_not_add_a_logical_row() {
     assert_eq!(table.cell_at(1, 1).unwrap().height, 800);
 }
 
+#[test]
+fn local_row_boundary_rejects_overlapping_spans_before_applying_any_moves() {
+    let mut table = make_table(32, 32);
+    for cell in &mut table.cells {
+        cell.row = 0;
+        cell.col = 0;
+        cell.row_span = 32;
+        cell.col_span = 32;
+    }
+    assert!(table
+        .shift_local_row_boundaries(&[1000; 32], &[(0, 1, 200)])
+        .is_err());
+    assert_eq!(table.row_count, 32);
+    assert!(table.cells.iter().all(|cell| cell.height == 1000));
+}
+
 fn set_cell_text(table: &mut Table, row: u16, col: u16, text: &str) {
     let idx = table.cell_index_at(row, col).expect("cell index");
     let mut para = Paragraph::new_empty();

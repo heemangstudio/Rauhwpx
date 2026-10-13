@@ -1032,7 +1032,7 @@ impl Table {
             return Err("논리 행 분할을 적용할 수 없는 표 상태입니다".to_string());
         }
 
-        let mut coverage = vec![0u8; rows * cols];
+        let mut coverage = vec![false; rows * cols];
         for cell in &self.cells {
             let row_end = cell.row as usize + cell.row_span as usize;
             let col_end = cell.col as usize + cell.col_span as usize;
@@ -1042,11 +1042,14 @@ impl Table {
             for r in cell.row as usize..row_end {
                 for c in cell.col as usize..col_end {
                     let slot = &mut coverage[r * cols + c];
-                    *slot = slot.saturating_add(1);
+                    if *slot {
+                        return Err("셀 격자가 겹칩니다".to_string());
+                    }
+                    *slot = true;
                 }
             }
         }
-        if coverage.iter().any(|&count| count != 1) {
+        if coverage.iter().any(|&covered| !covered) {
             return Err("셀 격자가 정확히 한 번씩 덮이지 않습니다".to_string());
         }
 
