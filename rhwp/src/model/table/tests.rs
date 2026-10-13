@@ -40,6 +40,86 @@ fn make_table(rows: u16, cols: u16) -> Table {
     table
 }
 
+#[test]
+fn local_row_boundary_matches_native_staggered_grid() {
+    let mut table = make_table(3, 2);
+    for cell in &mut table.cells {
+        cell.height = 3401;
+    }
+    table.common.height = 10203;
+    let widths: Vec<_> = table.cells.iter().map(|cell| cell.width).collect();
+    table
+        .shift_local_row_boundaries(&[3401; 3], &[(0, 1, 566)])
+        .unwrap();
+
+    assert_eq!(table.row_count, 4);
+    assert_eq!(table.row_sizes, [2, 1, 1, 2]);
+    assert_eq!(table.cells.len(), 6);
+    assert_eq!(
+        table
+            .cells
+            .iter()
+            .map(|cell| (cell.col, cell.row, cell.row_span, cell.height))
+            .collect::<Vec<_>>(),
+        [
+            (0, 0, 2, 3967),
+            (1, 0, 1, 3401),
+            (0, 2, 1, 2835),
+            (1, 1, 2, 3401),
+            (0, 3, 1, 3401),
+            (1, 3, 1, 3401),
+        ]
+    );
+    assert!(table.cells.iter().map(|cell| cell.width).eq(widths));
+    for row in 0..4 {
+        for col in 0..2 {
+            assert!(table.cell_index_at(row, col).is_some());
+        }
+    }
+    assert_eq!(table.cell_at(1, 0).unwrap().row_span, 2);
+    assert_eq!(table.cell_at(2, 1).unwrap().row_span, 2);
+}
+
+#[test]
+fn local_row_boundary_reuses_saved_span_grid_for_next_move() {
+    let mut table = make_table(3, 2);
+    table
+        .shift_local_row_boundaries(&[1000; 3], &[(0, 1, 200)])
+        .unwrap();
+    table
+        .shift_local_row_boundaries(&[1000, 200, 800, 1000], &[(0, 3, 200)])
+        .unwrap();
+    assert_eq!(table.row_count, 5);
+    assert_eq!(table.cell_at(3, 0).unwrap().row_span, 2);
+    assert_eq!(table.cell_at(3, 1).unwrap().row_span, 2);
+    assert_eq!(table.cell_at(4, 0).unwrap().height, 800);
+    assert_eq!(table.cell_at(4, 1).unwrap().height, 1000);
+}
+
+#[test]
+fn local_row_boundary_rejects_invalid_moves_without_mutating_grid() {
+    let mut table = make_table(3, 2);
+    for moves in [&[(0, 1, -801)][..], &[(0, 0, 200)], &[(2, 1, 200)]] {
+        assert!(table.shift_local_row_boundaries(&[1000; 3], moves).is_err());
+        assert_eq!(table.row_count, 3);
+        assert_eq!(table.row_sizes, [2, 2, 2]);
+        assert!(table.cells.iter().all(|cell| cell.height == 1000));
+    }
+}
+
+#[test]
+fn moving_the_same_boundary_in_all_columns_does_not_add_a_logical_row() {
+    let mut table = make_table(3, 2);
+    table
+        .shift_local_row_boundaries(&[1000; 3], &[(0, 1, 200), (1, 1, 200)])
+        .unwrap();
+    assert_eq!(table.row_count, 3);
+    assert!(table.cells.iter().all(|cell| cell.row_span == 1));
+    assert_eq!(table.row_sizes, [2, 2, 2]);
+    assert_eq!(table.cell_at(0, 0).unwrap().height, 1200);
+    assert_eq!(table.cell_at(1, 1).unwrap().height, 800);
+}
+
 fn set_cell_text(table: &mut Table, row: u16, col: u16, text: &str) {
     let idx = table.cell_index_at(row, col).expect("cell index");
     let mut para = Paragraph::new_empty();

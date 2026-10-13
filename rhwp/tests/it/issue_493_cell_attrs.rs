@@ -17,6 +17,44 @@ struct TablePos {
     control: usize,
 }
 
+#[test]
+fn hwpx_roundtrip_preserves_signed_cell_margin_sentinels_and_switch() {
+    let bytes = sample_bytes("samples/셀보호2.hwpx");
+    for apply_inner_margin in [false, true] {
+        let mut doc = parse_hwpx(&bytes).expect("parse hwpx");
+        let pos = find_first_table(&doc);
+        let Control::Table(table) =
+            &mut doc.sections[pos.section].paragraphs[pos.para].controls[pos.control]
+        else {
+            panic!("expected table control");
+        };
+        let expected = rhwp::model::Padding {
+            left: -1,
+            right: -2,
+            top: i16::MIN,
+            bottom: i16::MAX,
+        };
+        table.cells[0].padding = expected;
+        table.cells[0].set_apply_inner_margin(apply_inner_margin);
+
+        let serialized = serialize_hwpx(&doc).expect("serialize hwpx");
+        let reopened = parse_hwpx(&serialized).expect("reopen hwpx");
+        let reopened_pos = find_first_table(&reopened);
+        let Control::Table(table) = &reopened.sections[reopened_pos.section].paragraphs
+            [reopened_pos.para]
+            .controls[reopened_pos.control]
+        else {
+            panic!("expected reopened table control");
+        };
+        let padding = table.cells[0].padding;
+        assert_eq!(
+            (padding.left, padding.right, padding.top, padding.bottom),
+            (expected.left, expected.right, expected.top, expected.bottom),
+        );
+        assert_eq!(table.cells[0].apply_inner_margin, apply_inner_margin);
+    }
+}
+
 fn find_first_table(doc: &Document) -> TablePos {
     for (section, section_model) in doc.sections.iter().enumerate() {
         for (para, paragraph) in section_model.paragraphs.iter().enumerate() {
@@ -215,6 +253,111 @@ fn resize_cells_to_render_heights(doc: &mut HwpDocument, pos: TablePos, heights:
         &format!("[{updates}]"),
     )
     .expect("resize cells to render heights");
+}
+
+fn physical_cell_geometry(doc: &HwpDocument, pos: TablePos) -> Vec<(u64, f64, f64)> {
+    let json = doc
+        .get_table_cell_bboxes(
+            pos.section as u32,
+            pos.para as u32,
+            pos.control as u32,
+            Some(0),
+        )
+        .expect("table cell boxes");
+    let cells: Value = serde_json::from_str(&json).unwrap();
+    let mut geometry: Vec<_> = cells
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|cell| {
+            (
+                cell["col"].as_u64().unwrap(),
+                cell["y"].as_f64().unwrap(),
+                cell["h"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    geometry.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    geometry
+}
+
+#[test]
+fn local_row_boundary_survives_hwpx_save_reopen_and_snapshot_restore() {
+    let bytes = sample_bytes("samples/hwpx/ref/ref_empty.hwpx");
+    let mut doc = HwpDocument::from_bytes(&bytes).unwrap();
+    doc.create_table(0, 0, 0, 3, 2).unwrap();
+    let pos = find_first_table(doc.document());
+    for idx in 0..6 {
+        doc.set_cell_properties(
+            pos.section as u32,
+            pos.para as u32,
+            pos.control as u32,
+            idx,
+            r#"{"height":3401}"#,
+        )
+        .unwrap();
+    }
+    let before = physical_cell_geometry(&doc, pos);
+    let before_snapshot = doc.save_snapshot();
+    let heights = [(0, 3967), (2, 2835), (4, 3401)];
+    resize_cells_to_render_heights(&mut doc, pos, &heights);
+    let after = physical_cell_geometry(&doc, pos);
+    let after_snapshot = doc.save_snapshot();
+    assert!(after[0].2 > before[0].2 + 5.0);
+    assert!(after[1].2 < before[1].2 - 5.0);
+    assert_eq!(&before[3..], &after[3..], "다른 열은 움직이지 않아야 함");
+
+    let saved = doc.export_hwpx().unwrap();
+    let reopened = HwpDocument::from_bytes(&saved).unwrap();
+    let reopened_pos = find_first_table(reopened.document());
+    let reopened_geometry = physical_cell_geometry(&reopened, reopened_pos);
+    for (edited, loaded) in after.iter().zip(&reopened_geometry) {
+        assert_eq!(edited.0, loaded.0);
+        assert!(
+            (edited.1 - loaded.1).abs() <= 0.2,
+            "{after:?} -> {reopened_geometry:?}"
+        );
+        assert!(
+            (edited.2 - loaded.2).abs() <= 0.2,
+            "{after:?} -> {reopened_geometry:?}"
+        );
+    }
+    let Control::Table(table) = &reopened.document().sections[reopened_pos.section].paragraphs
+        [reopened_pos.para]
+        .controls[reopened_pos.control]
+    else {
+        panic!("table");
+    };
+    assert_eq!(table.row_count, 4);
+    assert_eq!(table.cells.len(), 6);
+    assert!(table.cells.iter().any(|cell| cell.row_span == 2));
+
+    let hwp_bytes = doc.export_hwp().unwrap();
+    let hwp_reopened = HwpDocument::from_bytes(&hwp_bytes).unwrap();
+    let hwp_pos = find_first_table(hwp_reopened.document());
+    let Control::Table(hwp_table) = &hwp_reopened.document().sections[hwp_pos.section].paragraphs
+        [hwp_pos.para]
+        .controls[hwp_pos.control]
+    else {
+        panic!("HWP table");
+    };
+    assert_eq!(hwp_table.row_count, 4);
+    assert_eq!(hwp_table.cells.len(), 6);
+    let cell_sizes = |table: &rhwp::model::table::Table| {
+        let mut cells: Vec<_> = table
+            .cells
+            .iter()
+            .map(|cell| (cell.col, cell.row, cell.row_span, cell.width, cell.height))
+            .collect();
+        cells.sort_unstable();
+        cells
+    };
+    assert_eq!(cell_sizes(table), cell_sizes(hwp_table));
+
+    doc.restore_snapshot(before_snapshot).unwrap();
+    assert_eq!(physical_cell_geometry(&doc, pos), before);
+    doc.restore_snapshot(after_snapshot).unwrap();
+    assert_eq!(physical_cell_geometry(&doc, pos), after);
 }
 
 fn hwpx_section0_xml(bytes: &[u8]) -> String {
@@ -966,16 +1109,13 @@ fn vertical_shift_local_height_keeps_unrelated_cells_stable() {
     else {
         panic!("expected table control");
     };
-    let local_height_cells = table
-        .local_resize_cell_heights
-        .iter()
-        .map(|(idx, _)| *idx as u32)
-        .collect::<std::collections::BTreeSet<_>>();
     assert!(
-        local_height_cells.contains(&target_idx)
-            && local_height_cells.contains(&neighbor_idx)
-            && local_height_cells.contains(&same_col_above_idx),
-        "세로 Shift local height 힌트는 대상/이웃 변경과 같은 열 보존 힌트를 함께 남겨야 함: {local_height_cells:?}"
+        table.local_resize_cell_heights.is_empty() && table.local_resize_cols.is_empty(),
+        "영속 논리 행 격자는 임시 높이 힌트에 의존하지 않아야 함"
+    );
+    assert!(
+        table.cells[target_idx as usize].row_span > 1,
+        "한컴처럼 이동한 경계를 논리 행 병합으로 표현해야 함"
     );
 
     let after_target_h = table_cell_bbox_value(&doc, pos, target_idx as u64, "h");
