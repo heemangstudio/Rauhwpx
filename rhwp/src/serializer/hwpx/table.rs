@@ -36,7 +36,7 @@ use crate::model::table::{Cell, CellLineWrap, Table, TablePageBreak, VerticalAli
 use super::context::SerializeContext;
 use super::section::{render_hp_p_open, render_paragraph_parts};
 use super::shape::{drop_cap_style_str, numbering_type_str};
-use super::utils::{empty_tag, end_tag, start_tag, start_tag_attrs};
+use super::utils::{empty_tag, end_tag, start_tag, start_tag_attrs, BoundedXmlBuffer};
 use super::SerializeError;
 
 /// `<hp:tbl>` 직렬화.
@@ -281,6 +281,21 @@ fn write_cell<W: Write>(
     ctx: &mut SerializeContext,
 ) -> Result<(), SerializeError> {
     let name = cell.field_name.as_deref().unwrap_or("");
+    write_cell_open(w, cell, name)?;
+
+    // 자식 순서: subList, cellAddr, cellSpan, cellSz, cellMargin
+    write_sub_list(w, cell, ctx)?;
+    write_cell_properties(w, cell)?;
+
+    end_tag(w, "hp:tc")?;
+    Ok(())
+}
+
+fn write_cell_open<W: Write>(
+    w: &mut Writer<W>,
+    cell: &Cell,
+    name: &str,
+) -> Result<(), SerializeError> {
     let header = bool01(cell.is_header);
     let has_margin = bool01(cell.apply_inner_margin);
     let protect = bool01(cell.cell_protect());
@@ -300,17 +315,25 @@ fn write_cell<W: Write>(
             ("dirty", dirty),
             ("borderFillIDRef", &border_ref),
         ],
-    )?;
+    )
+}
 
-    // 자식 순서: subList, cellAddr, cellSpan, cellSz, cellMargin
-    write_sub_list(w, cell, ctx)?;
+fn write_cell_properties<W: Write>(w: &mut Writer<W>, cell: &Cell) -> Result<(), SerializeError> {
     write_cell_addr(w, cell)?;
     write_cell_span(w, cell)?;
     write_cell_sz(w, cell)?;
-    write_cell_margin(w, cell)?;
+    write_cell_margin(w, cell)
+}
 
-    end_tag(w, "hp:tc")?;
-    Ok(())
+pub(super) fn cell_markup_len(cell: &Cell) -> Result<usize, SerializeError> {
+    // 고정 메타데이터만 작은 버퍼로 측정한다. 필드명·문단은 별도 예산으로 계산한다.
+    let mut w = Writer::new(BoundedXmlBuffer::new(1024));
+    write_cell_open(&mut w, cell, "")?;
+    write_sub_list_open(&mut w, cell)?;
+    end_tag(&mut w, "hp:subList")?;
+    write_cell_properties(&mut w, cell)?;
+    end_tag(&mut w, "hp:tc")?;
+    Ok(w.into_inner().into_inner().len())
 }
 
 fn write_sub_list<W: Write>(
@@ -318,6 +341,13 @@ fn write_sub_list<W: Write>(
     cell: &Cell,
     ctx: &mut SerializeContext,
 ) -> Result<(), SerializeError> {
+    write_sub_list_open(w, cell)?;
+    write_sub_list_paragraphs(w, &cell.paragraphs, ctx)?;
+    end_tag(w, "hp:subList")?;
+    Ok(())
+}
+
+fn write_sub_list_open<W: Write>(w: &mut Writer<W>, cell: &Cell) -> Result<(), SerializeError> {
     start_tag_attrs(
         w,
         "hp:subList",
@@ -336,12 +366,7 @@ fn write_sub_list<W: Write>(
             ("hasTextRef", "0"),
             ("hasNumRef", "0"),
         ],
-    )?;
-
-    write_sub_list_paragraphs(w, &cell.paragraphs, ctx)?;
-
-    end_tag(w, "hp:subList")?;
-    Ok(())
+    )
 }
 
 /// subList 내부 문단 시퀀스 방출 — 셀(#1379)과 표 캡션(#1387)이 공유.
@@ -690,6 +715,60 @@ mod tests {
             );
         }
         assert_eq!(xml.matches("<hp:p ").count(), count);
+    }
+
+    #[test]
+    fn cell_markup_budget_matches_fixed_metadata_at_numeric_boundaries() {
+        use crate::model::Padding;
+
+        for text_direction in 0..=3 {
+            for vertical_align in [
+                VerticalAlign::Top,
+                VerticalAlign::Center,
+                VerticalAlign::Bottom,
+            ] {
+                for line_wrap in [CellLineWrap::Break, CellLineWrap::Squeeze] {
+                    let cell = Cell {
+                        row: u16::MAX,
+                        col: u16::MAX,
+                        row_span: u16::MAX,
+                        col_span: 0,
+                        width: u32::MAX,
+                        height: u32::MAX,
+                        border_fill_id: u16::MAX,
+                        padding: Padding {
+                            left: i16::MIN,
+                            right: i16::MAX,
+                            top: i16::MIN,
+                            bottom: i16::MAX,
+                        },
+                        text_direction,
+                        vertical_align,
+                        line_wrap,
+                        apply_inner_margin: true,
+                        is_header: true,
+                        dirty_flag: true,
+                        ..Default::default()
+                    };
+                    let mut ctx = SerializeContext::collect_from_document(&Document::default());
+                    let mut w = Writer::new(Vec::new());
+                    write_cell(&mut w, &cell, &mut ctx).unwrap();
+                    assert_eq!(cell_markup_len(&cell).unwrap(), w.into_inner().len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cell_markup_budget_excludes_dynamic_name_and_nested_paragraphs() {
+        let mut cell = Cell::default();
+        let fixed_bytes = cell_markup_len(&cell).unwrap();
+        cell.field_name = Some("&\"<한글>".repeat(20_000));
+        cell.paragraphs.push(Paragraph {
+            text: "&".repeat(20_000),
+            ..Default::default()
+        });
+        assert_eq!(cell_markup_len(&cell).unwrap(), fixed_bytes);
     }
 
     #[test]
