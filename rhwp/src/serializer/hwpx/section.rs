@@ -313,7 +313,7 @@ impl ParagraphGraphBudget {
             self.caption(caption, depth + 1)?;
         }
         for cell in &table.cells {
-            self.charge(2048)?;
+            self.charge(table::cell_markup_len(cell)?)?;
             self.charge_opt_escaped(cell.field_name.as_deref())?;
             self.paragraphs(&cell.paragraphs, depth + 1)?;
         }
@@ -3433,6 +3433,82 @@ mod tests {
             .expect_err("section XML must honor its prospective ZIP member budget");
 
         assert!(error.to_string().contains("generation limit"), "{error}");
+    }
+
+    #[test]
+    fn table_heavy_section_fits_its_existing_xml_budget() {
+        use crate::model::table::{Cell, Table};
+
+        const LIMIT: usize = 512 * 1024;
+        let mut table = Table {
+            row_count: 60,
+            col_count: 5,
+            ..Default::default()
+        };
+        for row in 0..table.row_count {
+            for col in 0..table.col_count {
+                table.cells.push(Cell {
+                    row,
+                    col,
+                    row_span: 1,
+                    col_span: 1,
+                    width: 1000,
+                    height: 300,
+                    paragraphs: vec![Paragraph::default()],
+                    ..Default::default()
+                });
+            }
+        }
+        table.rebuild_grid();
+        let section = Section {
+            paragraphs: vec![Paragraph {
+                controls: vec![Control::Table(Box::new(table))],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let doc = Document::default();
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+
+        let xml = write_section_limited(&section, &doc, 0, &mut ctx, LIMIT)
+            .expect("cell metadata must not be charged as a blanket 2 KiB per cell");
+        assert!(xml.len() < LIMIT);
+        assert_eq!(
+            String::from_utf8(xml).unwrap().matches("<hp:tc ").count(),
+            300
+        );
+    }
+
+    #[test]
+    fn table_cell_dynamic_payloads_still_fail_preflight() {
+        use crate::model::table::{Cell, Table};
+
+        const LIMIT: usize = 64 * 1024;
+        for cell in [
+            Cell {
+                field_name: Some("&".repeat(20_000)),
+                ..Default::default()
+            },
+            Cell {
+                paragraphs: vec![Paragraph {
+                    text: "&".repeat(20_000),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ] {
+            let table = Table {
+                row_count: 1,
+                col_count: 1,
+                cells: vec![cell],
+                ..Default::default()
+            };
+            let mut budget = ParagraphGraphBudget::new(LIMIT);
+            let error = budget
+                .table(&table, 0)
+                .expect_err("dynamic cell payload exceeds budget");
+            assert!(error.to_string().contains("generation limit"), "{error}");
+        }
     }
 
     #[test]
