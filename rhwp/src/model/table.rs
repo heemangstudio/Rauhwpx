@@ -994,6 +994,102 @@ impl Table {
         heights
     }
 
+    pub(crate) fn logical_row_heights_for_spaced_resize(&self) -> Result<Vec<HwpUnit>, String> {
+        let rows = usize::from(self.row_count);
+        let cols = usize::from(self.col_count);
+        let grid_cells = rows.saturating_mul(cols);
+        let spacing = u64::try_from(self.cell_spacing).unwrap_or(0);
+        if spacing == 0
+            || rows == 0
+            || cols == 0
+            || grid_cells > MAX_TABLE_GRID_CELLS
+            || self.cells.len() > grid_cells
+            || self.common.width > i32::MAX as u32
+            || self.common.height > i32::MAX as u32
+        {
+            return Err("셀 간격이 있는 표의 격자를 확인할 수 없습니다".to_string());
+        }
+
+        let mut columns = vec![Vec::<&Cell>::new(); cols];
+        let mut widths = vec![None::<u32>; cols];
+        let mut row_links = vec![Vec::<(usize, HwpUnit)>::new(); rows];
+        for cell in &self.cells {
+            let row = usize::from(cell.row);
+            let col = usize::from(cell.col);
+            let end = row.saturating_add(usize::from(cell.row_span));
+            if row >= rows
+                || col >= cols
+                || end > rows
+                || cell.col_span != 1
+                || cell.row_span == 0
+                || cell.width == 0
+                || cell.width > i32::MAX as u32
+                || cell.height == 0
+                || cell.height > i32::MAX as u32
+                || widths[col].is_some_and(|width| width != cell.width)
+            {
+                return Err("셀 간격이 있는 표의 물리적 셀 크기가 맞지 않습니다".to_string());
+            }
+            widths[col] = Some(cell.width);
+            columns[col].push(cell);
+            row_links[row].push((end, cell.height));
+        }
+
+        let mut width = spacing;
+        for (col, cells) in columns.iter_mut().enumerate() {
+            let col_width = widths[col].ok_or("셀 열이 비어 있습니다")?;
+            cells.sort_by_key(|cell| cell.row);
+            let mut row = 0;
+            let mut height = spacing;
+            for cell in cells.iter() {
+                if usize::from(cell.row) != row {
+                    return Err("셀 열이 겹치거나 비어 있습니다".to_string());
+                }
+                row += usize::from(cell.row_span);
+                height = height
+                    .checked_add(u64::from(cell.height))
+                    .and_then(|sum| sum.checked_add(spacing))
+                    .ok_or("셀 높이가 너무 큽니다")?;
+            }
+            if row != rows || height != u64::from(self.common.height) {
+                return Err("셀 높이와 표 높이가 다릅니다".to_string());
+            }
+            width = width
+                .checked_add(u64::from(col_width))
+                .and_then(|sum| sum.checked_add(spacing))
+                .ok_or("셀 너비가 너무 큽니다")?;
+        }
+        if width != u64::from(self.common.width) {
+            return Err("셀 너비와 표 너비가 다릅니다".to_string());
+        }
+
+        // 셀 간격을 제외한 저장 높이의 합으로 논리 행 경계를 복원한다.
+        let mut boundaries = vec![None::<u64>; rows + 1];
+        boundaries[0] = Some(0);
+        for (row, links) in row_links.iter().enumerate() {
+            let start = boundaries[row].ok_or("논리 행 경계를 확인할 수 없습니다")?;
+            for &(end, cell_height) in links {
+                let end_pos = start
+                    .checked_add(u64::from(cell_height))
+                    .ok_or("논리 행 높이가 너무 큽니다")?;
+                if boundaries[end].is_some_and(|known| known != end_pos) {
+                    return Err("논리 행의 물리적 높이가 일치하지 않습니다".to_string());
+                }
+                boundaries[end] = Some(end_pos);
+            }
+        }
+        boundaries
+            .windows(2)
+            .map(|pair| {
+                let height = pair[1]?
+                    .checked_sub(pair[0]?)
+                    .filter(|&height| height > 0)?;
+                u32::try_from(height).ok()
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or("논리 행 높이가 유효하지 않습니다".to_string())
+    }
+
     /// 열별 가로 경계 이동을 한컴처럼 논리 행 분할 + 행 병합으로 영속화한다.
     ///
     /// `shifts` 항목 `(col, boundary_row, delta)` 는 `col` 열에서 `boundary_row` 행 위쪽
@@ -1011,7 +1107,7 @@ impl Table {
         const MIN_CELL_HEIGHT: i64 = 200;
         let rows = self.row_count as usize;
         let cols = self.col_count as usize;
-        if shifts.is_empty() {
+        if shifts.is_empty() && self.cell_spacing <= 0 {
             return Err("이동할 경계가 없습니다".to_string());
         }
         if rows == 0
@@ -1022,7 +1118,7 @@ impl Table {
         {
             return Err("표 격자 크기가 올바르지 않습니다".to_string());
         }
-        if self.cell_spacing != 0
+        if self.cell_spacing < 0
             || !self.zones.is_empty()
             || !self.local_resize_rows.is_empty()
             || !self.local_resize_cols.is_empty()
@@ -1030,6 +1126,12 @@ impl Table {
             || !self.local_resize_cell_heights.is_empty()
         {
             return Err("논리 행 분할을 적용할 수 없는 표 상태입니다".to_string());
+        }
+
+        if self.cell_spacing > 0
+            && self.logical_row_heights_for_spaced_resize()?.as_slice() != row_heights
+        {
+            return Err("저장된 셀 높이와 논리 행 높이가 다릅니다".to_string());
         }
 
         let mut coverage = vec![false; rows * cols];

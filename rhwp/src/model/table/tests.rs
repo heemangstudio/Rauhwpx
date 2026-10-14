@@ -140,6 +140,78 @@ fn local_row_boundary_rejects_overlapping_spans_before_applying_any_moves() {
     assert!(table.cells.iter().all(|cell| cell.height == 1000));
 }
 
+#[test]
+fn spaced_local_row_boundary_uses_physical_heights_not_outer_gaps() {
+    let mut table = make_table(3, 2);
+    table.cell_spacing = 566;
+    table.common.width = 43652;
+    table.common.height = 12467;
+    for cell in &mut table.cells {
+        cell.width = 20977;
+        cell.height = 3401;
+    }
+    assert_eq!(
+        table.logical_row_heights_for_spaced_resize().unwrap(),
+        [3401, 3401, 3401]
+    );
+    table
+        .shift_local_row_boundaries(&[3401; 3], &[(0, 1, 566)])
+        .unwrap();
+    assert_eq!(table.row_count, 4);
+    assert_eq!(table.cells.len(), 6);
+    assert_eq!(table.common.height, 12467);
+    assert_eq!(table.common.width, 43652);
+    assert_eq!(table.cell_spacing, 566);
+    assert_eq!(
+        table.logical_row_heights_for_spaced_resize().unwrap(),
+        [3401, 566, 2835, 3401]
+    );
+    assert!(table
+        .cells
+        .iter()
+        .any(|cell| cell.col == 0 && cell.row == 0 && cell.row_span == 2 && cell.height == 3967));
+    assert!(table
+        .cells
+        .iter()
+        .any(|cell| cell.col == 1 && cell.row == 1 && cell.row_span == 2 && cell.height == 3401));
+
+    table
+        .shift_local_row_boundaries(&[3401, 566, 2835, 3401], &[(0, 3, 100)])
+        .unwrap();
+    assert_eq!(table.row_count, 5);
+    assert_eq!(
+        table.logical_row_heights_for_spaced_resize().unwrap(),
+        [3401, 566, 2835, 100, 3301]
+    );
+}
+
+#[test]
+fn spaced_local_row_boundary_rejects_malformed_geometry_without_editing() {
+    let mut table = make_table(3, 2);
+    table.cell_spacing = 566;
+    table.common.width = 43652;
+    table.common.height = 12467;
+    for cell in &mut table.cells {
+        cell.width = 20977;
+        cell.height = 3401;
+    }
+    for kind in 0..5 {
+        let mut malformed = table.clone();
+        match kind {
+            0 => malformed.common.height += 1,
+            1 => malformed.common.width += 1,
+            2 => malformed.cells[0].row_span = 2,
+            3 => malformed.cells[1].col_span = 2,
+            _ => malformed.cells[3].row = 0,
+        }
+        assert!(malformed
+            .shift_local_row_boundaries(&[3401; 3], &[(0, 1, 566)])
+            .is_err());
+        assert_eq!(malformed.row_count, 3);
+        assert_eq!(malformed.cells[0].height, 3401);
+    }
+}
+
 fn set_cell_text(table: &mut Table, row: u16, col: u16, text: &str) {
     let idx = table.cell_index_at(row, col).expect("cell index");
     let mut para = Paragraph::new_empty();
