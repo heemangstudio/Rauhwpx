@@ -1959,21 +1959,27 @@ impl DocumentCore {
             ));
         }
 
-        let row_heights = self.layout_engine.resolve_row_heights(
-            table,
-            table.col_count as usize,
-            table.row_count as usize,
-            None,
-            &self.styles,
-            true,
-        );
-        let row_heights = row_heights
-            .iter()
-            .map(|&height| {
-                u32::try_from(crate::renderer::px_to_hwpunit_round(height, self.dpi))
-                    .map_err(|_| HwpError::RenderError("행 높이 범위 초과".to_string()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let row_heights = if table.cell_spacing > 0 {
+            table
+                .logical_row_heights_for_spaced_resize()
+                .map_err(HwpError::RenderError)?
+        } else {
+            let row_heights = self.layout_engine.resolve_row_heights(
+                table,
+                table.col_count as usize,
+                table.row_count as usize,
+                None,
+                &self.styles,
+                true,
+            );
+            row_heights
+                .iter()
+                .map(|&height| {
+                    u32::try_from(crate::renderer::px_to_hwpunit_round(height, self.dpi))
+                        .map_err(|_| HwpError::RenderError("행 높이 범위 초과".to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
         let mut column_hints =
             std::collections::BTreeMap::<u16, std::collections::BTreeMap<usize, u32>>::new();
         let mut has_movement = false;
@@ -2005,7 +2011,14 @@ impl DocumentCore {
                 .insert(update.cell_idx, height);
         }
         if !has_movement {
-            return Ok(None);
+            return if table.cell_spacing > 0 {
+                table
+                    .plan_local_row_boundaries(&row_heights, &[])
+                    .map(Some)
+                    .map_err(HwpError::RenderError)
+            } else {
+                Ok(None)
+            };
         }
 
         let mut shifts = Vec::new();
