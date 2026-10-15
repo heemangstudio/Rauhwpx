@@ -3,8 +3,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', system-ui, sans-serif; }
 main { padding: 28px 30px 22px; }
-.eyebrow { margin: 0; font: 500 11px/1.4 ui-monospace, Menlo, monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-h1 { margin: 6px 0 4px; font-size: 22px; letter-spacing: -.02em; }
+h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -.02em; }
 h2 { margin: 22px 0 8px; font-size: 14px; }
 .summary { margin: 0; color: var(--fg); }
 .summary.bad { color: var(--bad); font-weight: 600; }
