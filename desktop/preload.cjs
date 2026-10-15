@@ -48,6 +48,19 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     agentSessionId,
   ),
   getUniqueInstalls: () => ipcRenderer.invoke('desktop:get-unique-installs'),
+  // 체험·라이선스. 활성화와 비활성화는 메인이 키 서버와 주고받고, 렌더러는 상태만 받는다.
+  license: {
+    getStatus: () => ipcRenderer.invoke('license:status'),
+    checkNow: () => ipcRenderer.invoke('license:check'),
+    deactivate: () => ipcRenderer.invoke('license:deactivate'),
+    openActivation: () => ipcRenderer.invoke('license:open-window'),
+    openPricing: () => ipcRenderer.invoke('license:open-pricing'),
+    onChange: (callback) => {
+      const listener = (_event, status) => callback(status);
+      ipcRenderer.on('license:changed', listener);
+      return () => ipcRenderer.removeListener('license:changed', listener);
+    },
+  },
   takeRebrandImport: () => ipcRenderer.invoke('desktop:take-rebrand-import'),
   takeRebrandImportChunk: (token, index) => ipcRenderer.invoke('desktop:take-rebrand-import-chunk', token, index),
   finishRebrandImport: (token, outcome) => ipcRenderer.invoke('desktop:finish-rebrand-import', token, outcome),

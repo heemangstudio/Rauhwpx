@@ -1,0 +1,25 @@
+:root { color-scheme: light dark; --bg: #f5f5f7; --fg: #1b1b1a; --muted: #62625f; --line: #cdcdca; --card: #fff; --bad: #9b2c1f; }
+@media (prefers-color-scheme: dark) { :root { --bg: #141416; --fg: #ececea; --muted: #a3a3a0; --line: #3a3a38; --card: #1f1f22; --bad: #f08a7a; } }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', system-ui, sans-serif; }
+main { padding: 28px 30px 22px; }
+.eyebrow { margin: 0; font: 500 11px/1.4 ui-monospace, Menlo, monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { margin: 6px 0 4px; font-size: 22px; letter-spacing: -.02em; }
+h2 { margin: 22px 0 8px; font-size: 14px; }
+.summary { margin: 0; color: var(--fg); }
+.summary.bad { color: var(--bad); font-weight: 600; }
+form, .row { display: flex; gap: 8px; flex-wrap: wrap; }
+input { flex: 1 1 260px; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); font: 500 14px ui-monospace, Menlo, monospace; letter-spacing: .03em; }
+button { min-height: 36px; padding: 0 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: inherit; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); font-weight: 600; }
+button.danger { color: var(--bad); }
+button.link { min-height: 0; padding: 0; border: 0; background: none; color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.note { min-height: 20px; margin: 8px 0 0; color: var(--bad); }
+.note.ok { color: var(--muted); }
+.buy { margin: 10px 0 0; color: var(--muted); }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 0 0 12px; }
+dt { color: var(--muted); }
+dd { margin: 0; font-variant-numeric: tabular-nums; }
+footer { display: flex; justify-content: flex-end; margin-top: 22px; }
+[hidden] { display: none !important; }

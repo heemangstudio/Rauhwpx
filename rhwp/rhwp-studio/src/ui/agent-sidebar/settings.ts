@@ -44,6 +44,7 @@ import {
 import type { SidebarBridge } from '../../agent/bridge.ts';
 import type { ChatThread } from '../../agent/threads.ts';
 import { createArchiveSettingsPane } from './settings-archive.ts';
+import { createLicenseSettingsSection } from './settings-license.ts';
 import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
 import type { EventBus } from '../../core/event-bus.ts';
 import type {
@@ -507,6 +508,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
   });
   panes.get('editing')?.appendChild(editingSettings.element);
+  // 데스크톱 앱의 체험·라이선스 상태와 '이 기기 비활성화'.
+  const desktopLicense = (globalThis as { rhwpDesktop?: { license?: Parameters<typeof createLicenseSettingsSection>[0] } })
+    .rhwpDesktop?.license;
+  const licenseSection = desktopLicense ? createLicenseSettingsSection(desktopLicense) : null;
+  if (licenseSection) panes.get('editing')?.appendChild(licenseSection.root);
   const projectPane = createProjectSettingsPane({
     service: () => projectSettings ?? projectClientOf(bridge)?.service ?? null,
     isConnected: () => connectionState === 'connected',
@@ -3487,6 +3493,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       if (piProgressCreepTimer) clearInterval(piProgressCreepTimer);
       unsubscribeHancomGit();
       unsubscribeAttentionPrefs();
+      licenseSection?.dispose();
       editingSettings.dispose();
       element.remove();
       setupOverlay.remove();
