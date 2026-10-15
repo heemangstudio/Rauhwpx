@@ -97,6 +97,7 @@ PR checks run only for the paths a change touches (`scripts/ci-changes.mjs`). Ni
 
 - `npm run test:desktop` runs the root desktop tests.
 - Site API: `npm --prefix site-api test`.
+- Agents launching an unpackaged Electron build (dev or bench) set `RHWP_BACKGROUND_WINDOW=1`: no Dock icon, windows open without taking focus, and hidden windows keep painting so DevTools-driven checks stay accurate. Packaged builds ignore it.
 - Testing a packaged app from an agent shell: unset `ELECTRON_RUN_AS_NODE` (`env -u ELECTRON_RUN_AS_NODE`). The first launch of a signed build asks for Keychain access, which a person must approve. Signing and release steps are in [docs/releasing.md](docs/releasing.md).
 
 # Architecture

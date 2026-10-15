@@ -121,6 +121,11 @@ const devUrl = resolveDevelopmentUrl({
 const launchId = randomUUID();
 const hubToken = createHubToken();
 const devOrigin = devUrl ? new URL(devUrl).origin : null;
+// 에이전트가 띄우는 개발 빌드용: Dock 아이콘 없이, 포커스를 뺏지 않고 창을 연다.
+// 가려진 창도 그리기를 멈추지 않으므로 DevTools 포트로 측정·조작할 수 있다. 패키지에서는 무시한다.
+const backgroundWindows = !app.isPackaged && process.env.RHWP_BACKGROUND_WINDOW === '1';
+// 실행 직후 macOS 가 앱을 앞으로 가져오기 전에 정해야 포커스를 뺏지 않는다.
+if (backgroundWindows && process.platform === 'darwin') app.setActivationPolicy('accessory');
 
 // A hub that dies at every boot stops respawning here; the next window or
 // sidebar request tries again.
@@ -852,6 +857,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
       nodeIntegration: false,
       // 프리로드는 contextBridge/ipcRenderer/webUtils 만 쓰므로 샌드박스 렌더러에서도 동작한다.
       sandbox: true,
+      ...(backgroundWindows ? { backgroundThrottling: false } : {}),
     },
   });
   const windowId = window.id;
@@ -1008,11 +1014,18 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   });
   window.once('ready-to-show', () => {
     if (window.isDestroyed()) return;
+    if (backgroundWindows) {
+      window.showInactive();
+      return;
+    }
     if (restoredFrame?.zoomed) window.maximize();
     window.show();
   });
   await window.loadURL(devUrl || STUDIO_URL);
-  if (!window.isDestroyed() && !window.isVisible()) window.show();
+  if (!window.isDestroyed() && !window.isVisible()) {
+    if (backgroundWindows) window.showInactive();
+    else window.show();
+  }
   return window;
 }
 
