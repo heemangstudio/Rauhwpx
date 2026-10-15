@@ -5361,14 +5361,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!await settingsPanel.requestClose()) return false;
     const returnHome = settingsReturnsHome;
     const exitFullscreen = returnHome && settingsExitsFullscreenOnHome && fullscreen;
-    closeSettingsPage();
-    chatPage.setAttribute('aria-hidden', 'false');
-    root.classList.remove('ag-settings-open');
-    returnFocus?.focus();
-    afterClose?.();
+    const finish = (): void => {
+      closeSettingsPage();
+      chatPage.setAttribute('aria-hidden', 'false');
+      root.classList.remove('ag-settings-open');
+      returnFocus?.focus();
+      afterClose?.();
+      if (returnHome) openDocumentHome?.();
+    };
     // 홈의 돌아가기 단추는 집중 화면이 남아 있으면 '새 채팅'을 가리키므로 화면을 접은 뒤에 홈을 연다.
-    if (exitFullscreen) setFullscreen(false, { then: () => openDocumentHome?.() });
-    else if (returnHome) openDocumentHome?.();
+    // 교차 페이드는 다음 프레임에 이전 화면을 찍으므로, 설정을 닫는 일도 같은 갱신 안에서 해
+    // 설정과 홈 사이에 대화 화면이 한 프레임 끼지 않게 한다.
+    if (exitFullscreen) setFullscreen(false, { then: finish });
+    else finish();
     return true;
   }
 
@@ -12051,7 +12056,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           openConfiguredVersionControl();
         }),
         eventBus.on('settings:open', (payload) => {
-          const request = payload as { destination?: unknown; fullscreen?: boolean; from?: string } | undefined;
+          const request = payload as {
+            destination?: unknown; fullscreen?: boolean; from?: string; onOpened?: () => void;
+          } | undefined;
           const destination = normalizeSettingsDestination(request?.destination);
           setCollapsed(false);
           const wasFullscreen = fullscreen;
@@ -12060,6 +12067,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
             if (request?.from === 'home') {
               settingsReturnsHome = true;
               settingsExitsFullscreenOnHome = !wasFullscreen;
+            }
+            // 홈은 설정이 그려진 뒤에야 걷는다. 먼저 걷으면 교차 페이드가 그 뒤의 편집기를 찍는다.
+            if (request?.onOpened) {
+              request.onOpened();
+              // 홈이 덮여 있는 동안에는 초점이 닿지 않았으므로 걷은 뒤에 다시 맞춘다.
+              settingsPage.querySelector<HTMLElement>('.ag-settings-nav-button.ag-active')?.focus();
             }
           };
           if (request?.fullscreen) setFullscreen(true, { then: open });
