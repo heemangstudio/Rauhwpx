@@ -276,6 +276,110 @@ fn test_roundtrip_table() {
     }
 }
 
+#[test]
+fn table_cell_records_follow_logical_rows_without_reordering_live_cells() {
+    let mut table = Table {
+        row_count: 4,
+        col_count: 3,
+        row_sizes: vec![3, 1, 1, 1],
+        cells: [
+            (0, 0, 2, 1),
+            (0, 1, 3, 1),
+            (0, 2, 1, 1),
+            (2, 0, 1, 1),
+            (1, 2, 2, 1),
+            (3, 0, 1, 3),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (row, col, row_span, col_span))| Cell {
+            row,
+            col,
+            row_span,
+            col_span,
+            paragraphs: vec![Paragraph {
+                text: format!("physical-cell-{index}"),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .collect(),
+        ..Default::default()
+    };
+    table.rebuild_grid();
+    let original_order: Vec<_> = table
+        .cells
+        .iter()
+        .map(|cell| (cell.row, cell.col))
+        .collect();
+    let mut records = Vec::new();
+    serialize_table(&table, 1, &mut records);
+
+    let addresses: Vec<_> = records
+        .iter()
+        .filter(|record| record.tag_id == tags::HWPTAG_LIST_HEADER)
+        .map(|record| {
+            (
+                u16::from_le_bytes(record.data[10..12].try_into().unwrap()),
+                u16::from_le_bytes(record.data[8..10].try_into().unwrap()),
+            )
+        })
+        .collect();
+    assert_eq!(addresses, [(0, 0), (0, 1), (0, 2), (1, 2), (2, 0), (3, 0)]);
+
+    let mut expected_cells = Vec::new();
+    for index in [0, 1, 2, 4, 3, 5] {
+        serialize_cell(&table.cells[index], 2, &mut expected_cells);
+    }
+    let actual_cells = &records[2..];
+    assert_eq!(actual_cells.len(), expected_cells.len());
+    for (actual, expected) in actual_cells.iter().zip(&expected_cells) {
+        assert_eq!(actual.tag_id, expected.tag_id);
+        assert_eq!(actual.level, expected.level);
+        assert_eq!(actual.data, expected.data);
+    }
+    assert_eq!(
+        table
+            .cells
+            .iter()
+            .map(|cell| (cell.row, cell.col))
+            .collect::<Vec<_>>(),
+        original_order
+    );
+}
+
+#[test]
+fn tall_table_zone_words_match_independent_hancom_hwp_save() {
+    use crate::model::table::TableZone;
+
+    let table = Table {
+        row_count: 4,
+        col_count: 3,
+        row_sizes: vec![3, 1, 1, 1],
+        zones: [(3, 0, 212), (2, 0, 211), (1, 2, 213)]
+            .into_iter()
+            .map(|(row, col, border_fill_id)| TableZone {
+                start_row: row,
+                start_col: col,
+                end_row: row,
+                end_col: col,
+                border_fill_id,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let bytes = serialize_table_record(&table);
+    assert_eq!(u16::from_le_bytes(bytes[28..30].try_into().unwrap()), 3);
+    let zone_words: Vec<_> = bytes[30..60]
+        .chunks_exact(2)
+        .map(|word| u16::from_le_bytes(word.try_into().unwrap()))
+        .collect();
+    assert_eq!(
+        zone_words,
+        [3, 0, 3, 0, 212, 2, 0, 2, 0, 211, 1, 2, 1, 2, 213]
+    );
+}
+
 /// AutoNumber 라운드트립
 #[test]
 fn test_roundtrip_auto_number() {

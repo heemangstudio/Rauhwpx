@@ -515,8 +515,9 @@ fn serialize_table(table: &Table, level: u16, records: &mut Vec<Record>) {
         data: serialize_table_record(table),
     });
 
-    // 셀 목록
-    for cell in &table.cells {
+    let mut cells_in_row_order: Vec<_> = table.cells.iter().collect();
+    cells_in_row_order.sort_by_key(|cell| (cell.row, cell.col));
+    for cell in cells_in_row_order {
         serialize_cell(cell, level + 1, records);
     }
 }
