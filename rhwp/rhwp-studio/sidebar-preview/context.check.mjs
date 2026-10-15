@@ -17,12 +17,12 @@ export async function checkContextPreview(page, origin, artifacts) {
 
   // 수동 압축: 진행 표시가 바뀌고, 끝나면 구분선 하나와 줄어든 사용량이 남는다.
   await page.click('.ag-context-compact');
-  await page.waitForFunction(() => document.querySelector('.ag-turn-pending-label')?.textContent === '맥락 압축 중…');
+  await page.waitForFunction(() => document.querySelector('.ag-turn-pending-label')?.textContent === '콘텍스트 압축 중…');
   assert.equal(await page.$eval('.ag-context-compact', (el) => el.getAttribute('aria-disabled')), 'true');
   await page.waitForSelector('.ag-marker-compaction');
   await page.waitForFunction(() => !window.sidebarPreview.snapshot().running);
   const marker = await page.$eval('.ag-marker-compaction', (el) => ({ id: el.dataset.compactionId, label: el.getAttribute('aria-label') }));
-  assert.match(marker.label, /^맥락 압축됨 · 184K → 42K$/);
+  assert.match(marker.label, /^콘텍스트 압축됨 · 184K → 42K$/);
   assert.equal(await page.$eval('.ag-context', (el) => el.dataset.level), 'normal');
   await page.screenshot({ path: resolve(artifacts, 'context-compacted.png') });
 

@@ -260,7 +260,7 @@ export function createTurnFailureCollector(): TurnFailureCollector {
     },
     observeCompactionFailure(event, holding) {
       if (!holding || event.phase !== 'failed') return;
-      compaction = legacyProviderFailure(event.agent, event.message || '맥락 압축에 실패했습니다.');
+      compaction = legacyProviderFailure(event.agent, event.message || '콘텍스트 압축에 실패했습니다.');
     },
     flush() {
       const failure = firstHeld();
