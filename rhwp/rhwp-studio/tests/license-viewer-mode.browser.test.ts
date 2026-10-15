@@ -89,3 +89,37 @@ test('a license read-only app cannot open the agent and gets it back after activ
   assert.equal(restored.messages, before.messages, 'the conversation is kept');
   assert.deepEqual(errors, []);
 });
+
+test('the sidebar comes back after activation even when the document changed while locked', { timeout: 120_000 }, async (t) => {
+  const context = await browser.createBrowserContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (error: Error) => errors.push(error.message));
+  await page.goto(`${origin}/?reset=1&controls=0&theme=light&sessions=2`, { waitUntil: 'networkidle0' });
+  await page.waitForFunction(() => document.querySelector<HTMLElement>('#agent-sidebar')?.dataset.composerReady === 'true'
+    && (window as any).sidebarPreview?.sessions.length === 2, { timeout: 60_000 });
+  await page.evaluate(async () => {
+    const url = performance.getEntriesByType('resource').map((entry) => entry.name)
+      .find((name) => name.includes('/ui/license-viewer-mode.ts'))!;
+    (window as any).__viewer = await import(/* @vite-ignore */ url);
+  });
+  const shown = () => page.evaluate(() => {
+    const { sessions } = (window as any).sidebarPreview;
+    const index = sessions.findIndex((session: any) => session.sidebar.isActive());
+    const root = sessions[index].sidebar.root as HTMLElement;
+    const tab = document.querySelector<HTMLButtonElement>('#icon-toolbar .ag-collapse-tab')!;
+    return { index, open: !root.classList.contains('ag-collapsed'), tabDisabled: tab.disabled };
+  });
+  assert.deepEqual(await shown(), { index: 0, open: true, tabDisabled: false });
+
+  await page.evaluate(() => (window as any).__viewer.setLicenseViewerMode(true));
+  await page.evaluate(() => (window as any).sidebarPreview.attachSession(1));
+  await new Promise((done) => setTimeout(done, 250));
+  assert.deepEqual(await shown(), { index: 1, open: false, tabDisabled: true });
+
+  await page.evaluate(() => (window as any).__viewer.setLicenseViewerMode(false));
+  await new Promise((done) => setTimeout(done, 250));
+  assert.deepEqual(await shown(), { index: 1, open: true, tabDisabled: false });
+  assert.deepEqual(errors, []);
+});

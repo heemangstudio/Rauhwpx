@@ -315,7 +315,12 @@ import { createModeMenu, parseModeCommand } from './mode-menu.ts';
 import { createTurnRestoreActions } from './turn-restore-action.ts';
 import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
 import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
-import { isLicenseViewerMode, onLicenseViewerModeChange } from '../license-viewer-mode.ts';
+import {
+  isLicenseViewerMode,
+  noteAgentOpenBeforeLock,
+  onLicenseViewerModeChange,
+  takeAgentOpenBeforeLock,
+} from '../license-viewer-mode.ts';
 import './sidebar-button-modern.css';
 
 export interface AgentSidebarDeps {
@@ -6473,22 +6478,24 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   setCollapsed(false, { recenter: false });
 
   /* 라이선스 읽기 전용: 에이전트 단추를 끄고, 펼쳐 있던 사이드바·집중 화면을 접는다.
-     대화는 그대로 두고, 다시 편집할 수 있게 되면 펼쳐 있던 사이드바를 되살린다. */
-  let reopenAfterLicenseLock = false;
-  function applyLicenseViewerMode(locked: boolean): void {
+     대화는 그대로 둔다. 펼쳐 있었는지는 창 단위로 적어 두어, 잠긴 동안 문서를 바꿨어도
+     다시 편집할 수 있게 되면 그때 화면에 붙은 사이드바가 펼친다. */
+  function syncLicenseLockedTab(locked: boolean): void {
     collapseTab.disabled = locked;
     collapseTab.setAttribute('aria-disabled', locked ? 'true' : 'false');
+  }
+  function applyLicenseViewerMode(locked: boolean): void {
+    syncLicenseLockedTab(locked);
+    if (!active) return;
     if (locked) {
-      if (!active) return;
-      reopenAfterLicenseLock = fullscreen || !root.classList.contains('ag-collapsed');
+      noteAgentOpenBeforeLock(fullscreen || !root.classList.contains('ag-collapsed'));
       if (fullscreen) setFullscreen(false, { then: () => setCollapsed(true) });
       else setCollapsed(true);
       return;
     }
-    if (active && reopenAfterLicenseLock) setCollapsed(false);
-    reopenAfterLicenseLock = false;
+    if (takeAgentOpenBeforeLock()) setCollapsed(false);
   }
-  applyLicenseViewerMode(isLicenseViewerMode());
+  syncLicenseLockedTab(isLicenseViewerMode());
   const unsubLicenseViewerMode = onLicenseViewerModeChange(applyLicenseViewerMode);
 
   // ── 배치: #editor-area ↔ #status-bar 사이에 맞춘다 ────

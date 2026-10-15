@@ -802,7 +802,8 @@ async function checkForAppUpdates({ manual = true } = {}) {
 }
 
 function installMenu() {
-  installAppMenu({
+  appMenu = installAppMenu({
+    agentEnabled: () => licenseAllowsAgent,
     checkForUpdates: () => {
       if (!app.isPackaged) {
         void shell.openExternal(RELEASES_URL);
@@ -1096,6 +1097,13 @@ function licensePublicKeys() {
   if (split <= 0) return PRODUCTION_LICENSE_PUBLIC_KEYS;
   return { ...PRODUCTION_LICENSE_PUBLIC_KEYS, [dev.slice(0, split)]: dev.slice(split + 1) };
 }
+// 라이선스가 읽기 전용이면 앱은 문서 보기 전용이다. 메뉴의 에이전트 항목도 끈다.
+let licenseAllowsAgent = true;
+let appMenu = null;
+function noteLicenseStatus(status) {
+  licenseAllowsAgent = status?.canEdit !== false;
+  appMenu?.refresh();
+}
 const licenseManager = createLicenseManager({
   statePath: licenseStatePath(app.getPath('userData')),
   client: createLicenseClient({
@@ -1110,7 +1118,10 @@ const licenseManager = createLicenseManager({
   appVersion: app.getVersion(),
   platform: process.platform,
   enforce: app.isPackaged || process.env.HAMA_LICENSE_GATE === 'on',
-  onChange: (status) => licenseHost.broadcast(status),
+  onChange: (status) => {
+    noteLicenseStatus(status);
+    licenseHost.broadcast(status);
+  },
 });
 const licenseHost = installLicenseHost({
   ipcMain,
@@ -1706,6 +1717,7 @@ if (!hasSingleInstanceLock) {
     await licenseManager.load().catch((error) => {
       console.warn('[hamaeditor] license state failed to load:', error);
     });
+    await licenseManager.status().then(noteLicenseStatus, () => {});
     licenseManager.start();
     desktopReady = true;
     const launches = pendingLaunches.splice(0);

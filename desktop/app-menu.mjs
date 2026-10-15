@@ -117,8 +117,11 @@ function hasEnabledEntry(items) {
  * macOS: 렌더러의 HTML 메뉴 모델(창마다 최신 값)을 받아 네이티브 메뉴로 다시 짓는다.
  * 렌더러 명령은 단축키를 표시만 하고(registerAccelerator: false) 키 처리는 렌더러가 맡는다.
  * 새 윈도우·닫기·최근 문서·전체 화면·가리기·종료만 네이티브 단축키를 등록한다.
+ *
+ * agentEnabled: 에이전트 항목(사이드바·집중 모드)을 켤지. 라이선스가 읽기 전용이면 끈다.
+ * 돌려주는 refresh() 로 그 값이 바뀐 뒤 메뉴를 다시 짓는다.
  */
-export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender }) {
+export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender, agentEnabled = () => true }) {
   const pasteWithoutFormatting = (label) => ({
     id: 'edit-paste-without-formatting',
     label,
@@ -200,12 +203,13 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
         }],
       },
     ]));
-    return;
+    // 이 메뉴에는 에이전트 항목이 없다.
+    return { refresh() {} };
   }
 
   const appName = PRODUCT_NAME;
   const models = new Map();
-  let built = { ownerId: -1, model: undefined };
+  let built = { ownerId: -1, model: undefined, agent: undefined, owner: null };
 
   const rendererEntry = (entry, owner) => {
     // 최근 문서 자리 표시는 파일 메뉴에서만 네이티브 항목으로 바뀐다.
@@ -229,6 +233,7 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
   };
   const agentItem = (label, accelerator, command) => ({
     label,
+    enabled: agentEnabled(),
     accelerator,
     registerAccelerator: false,
     click: (_menuItem, browserWindow) => {
@@ -359,8 +364,9 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
     const owner = window && !window.isDestroyed() ? window : null;
     const ownerId = owner ? owner.webContents.id : -1;
     const model = owner ? models.get(ownerId) ?? null : null;
-    if (built.ownerId === ownerId && built.model === model) return;
-    built = { ownerId, model };
+    const agent = agentEnabled();
+    if (built.ownerId === ownerId && built.model === model && built.agent === agent) return;
+    built = { ownerId, model, agent, owner };
     Menu.setApplicationMenu(build(owner, model));
   };
 
@@ -380,5 +386,8 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
   });
   app.on('browser-window-focus', (_event, window) => rebuild(window));
   rebuild(BrowserWindow.getFocusedWindow());
+  return {
+    refresh: () => rebuild(BrowserWindow.getFocusedWindow() ?? built.owner),
+  };
 }
 
