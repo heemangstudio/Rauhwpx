@@ -104,7 +104,7 @@ import {
 import { reportUniqueInstall, uniqueInstallsPublicUrl, uniqueInstallStatePath } from './unique-install.mjs';
 import { createLicenseClient, DEFAULT_LICENSE_API_BASE } from './license-client.mjs';
 import { PRODUCTION_LICENSE_PUBLIC_KEYS } from './license-lease.mjs';
-import { createLicenseManager, licenseStatePath } from './license-manager.mjs';
+import { createLicenseManager, licenseStatePath, TRIAL_DURATION_MS } from './license-manager.mjs';
 import { installLicenseHost } from './license-host.mjs';
 import { createSystemFontService } from './system-fonts.mjs';
 import {
@@ -1104,8 +1104,15 @@ function noteLicenseStatus(status) {
   licenseAllowsAgent = status?.canEdit !== false;
   appMenu?.refresh();
 }
+/** 소스 실행에서만 HAMA_LICENSE_DEV_TRIAL_MS 로 체험 길이를 줄여 시험한다. 출시 빌드는 늘 3일이다. */
+function licenseTrialDurationMs() {
+  if (app.isPackaged) return TRIAL_DURATION_MS;
+  const value = Number(process.env.HAMA_LICENSE_DEV_TRIAL_MS);
+  return Number.isSafeInteger(value) && value > 0 ? value : TRIAL_DURATION_MS;
+}
 const licenseManager = createLicenseManager({
   statePath: licenseStatePath(app.getPath('userData')),
+  trialDurationMs: licenseTrialDurationMs(),
   client: createLicenseClient({
     baseUrl: (!app.isPackaged && process.env.HAMA_LICENSE_API_BASE) || DEFAULT_LICENSE_API_BASE,
   }),
