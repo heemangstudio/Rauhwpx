@@ -1,3 +1,4 @@
+import { installLicenseGate } from './ui/license-gate';
 import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
 import { installDocumentTitle } from '@/ui/document-title';
 import { worktreeIdentity } from '@/ui/worktree-chip';
@@ -50,6 +51,7 @@ import {
   runSaveBeforeLeaving,
   whenSavesIdle,
   saveCurrentDocument,
+  saveToCurrentFileQuietly,
 } from '@/command/commands/file';
 import { editCommands, openClassicDocumentHistory } from '@/command/commands/edit';
 import {
@@ -360,7 +362,7 @@ function isManagedWorktree(session = attachedSession): boolean {
 }
 
 function sessionReadOnly(session = attachedSession): boolean {
-  return documentReadOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
+  return documentReadOnly || licenseReadOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
 }
 
 async function withWorktreeMutation<T>(session: DocumentSession, run: () => Promise<T>): Promise<T> {
@@ -425,7 +427,7 @@ const trapRecoveryPage = new TrapRecoveryPage({
   attached: () => attachedSession,
   saveCopy: saveTrappedDocumentCopy,
   run: () => trapRecoveryRun,
-  readOnly: () => documentReadOnly,
+  readOnly: () => licenseReadOnly || documentReadOnly,
   deliveredLaunchHandleIds,
   deliveredGeneratedDocumentIds,
   storage: sessionStorageOrNull,
@@ -557,6 +559,7 @@ let editorStyleOverflow: EditorStyleOverflow | null = null;
 let ruler: Ruler | null = null;
 let rendererSession: RendererSession | null = null;
 let editMode: EditorEditMode = 'normal';
+let licenseReadOnly = false;
 let documentReadOnly = new URLSearchParams(window.location.search).get('templatePreview') === '1';
 let agentEditingLease: AgentEditingLease = { active: false, agent: 'codex' };
 let rendererRuntimeRequest: EmbedRendererRuntimeRequestV1 | null = null;
@@ -614,6 +617,8 @@ function getContext(): EditorContext {
     inField: inputHandler?.isInField() ?? false,
     isEditable: !sessionReadOnly() && !agentEditingLease.active && (!isFormMode || canEditFormField),
     readOnly: sessionReadOnly(),
+    // 라이선스 읽기 전용은 문서 보기 전용이다. 템플릿 미리보기 창은 다른 문서를 열지 않는다.
+    readOnlyCanOpen: !documentReadOnly,
     userEditingLocked: agentEditingLease.active,
     editMode,
     isFormMode,
@@ -762,7 +767,25 @@ const commandServices: CommandServices = {
   },
 };
 
+/**
+ * 라이선스 읽기 전용에서는 저장할 수 없으니 닫을 때 저장을 묻지 않는다. 바뀐 문서를 복구본으로 남긴 뒤 닫고,
+ * 다음 실행에서 복구로 연다. 복구본을 남기지 못한 문서가 있을 때만 닫을지 묻는다.
+ */
+async function closeLicenseViewer(): Promise<boolean> {
+  const dirty = liveSessions.filter((session) => session.wasm.hasLoadedDocument() && session.documentState.isDirty());
+  const kept = await Promise.all(dirty.map((session) => session.autosave.flushAndWait('license-read-only-close')
+    .catch(() => false)));
+  const lost = dirty.filter((_session, index) => !kept[index]);
+  if (lost.length > 0) {
+    const names = lost.map((session) => `"${session.wasm.fileName}"`).join(', ');
+    if (!await showConfirm('복구본을 남기지 못했어요', `${names}\n닫으면 저장하지 않은 변경이 사라져요.`)) return false;
+  }
+  for (const session of liveSessions) session.documentState.permitNextUnload();
+  return true;
+}
+
 installDesktopCloseHandling(async () => {
+  if (licenseReadOnly) return closeLicenseViewer();
   if (!await confirmCloseWithBackgroundSessions()) return false;
   const allowClose = await canReplaceCurrentDocument();
   if (allowClose) {
@@ -1184,9 +1207,54 @@ function prepareCanvasKitLocalFonts(fontNames: readonly string[] | undefined): v
   });
 }
 
+/**
+ * 체험이 끝나 편집을 잠그기 전에 바뀐 문서를 모두 남긴다. 대화상자는 띄우지 않는다.
+ * 먼저 복구본으로 남기고, 파일이 있는 문서는 그 파일에 덮어 저장한다. 새 문서처럼 파일이 없거나,
+ * 검토를 기다리는 에이전트 편집이 있거나, 작업 사본인 문서는 복구본까지만 남긴다.
+ */
+async function saveOpenDocumentsBeforeLicenseLock(prepareWrite: () => Promise<void>): Promise<{ failed: number }> {
+  await whenSavesIdle().catch(() => {});
+  let failed = 0;
+  for (const session of [...liveSessions]) {
+    if (!session.documentState.isDirty()) continue;
+    if (session === attachedSession) {
+      try { inputHandler?.flushDeferredPaginationIfNeeded('license-lock'); } catch { /* 복구본과 파일 저장은 그대로 시도한다 */ }
+    }
+    const kept = await session.autosave.flushAndWait('license-lock');
+    if (session.writer || isManagedWorktree(session)) {
+      if (!kept) failed += 1;
+      continue;
+    }
+    if (session.wasm.currentFileHandle && !session.wasm.isNewDocument) await prepareWrite();
+    const result = await saveToCurrentFileQuietly(
+      { wasm: session.wasm, documentState: session.documentState, eventBus: session.bus },
+      async (handle) => {
+        if (session.documentId) {
+          bindNativeFileHandleIdentity(handle, {
+            documentId: session.documentId,
+            sourceDigest: session.wasm.documentDigest,
+            useSourceDigest: false,
+          });
+        }
+      },
+    );
+    if (result === 'failed' || (result === 'skipped' && !kept)) failed += 1;
+    // 저장 뒤 버전 작업 공간이 저장 기준을 다 맞출 때까지 기다린다. 그래야 다시 열 때 바뀐 문서로 보이지 않는다.
+    if (result === 'saved') await session.versions?.whenIdle().catch(() => {});
+  }
+  return { failed };
+}
+
 async function initialize(): Promise<void> {
   installWebAppShell();
   installDesktopWindowChrome();
+  await installLicenseGate(value => {
+    licenseReadOnly = value;
+    setDocumentReadOnly(documentReadOnly);
+  }, {
+    hasUnsavedWork: () => liveSessions.some((session) => session.documentState.isDirty()),
+    saveBeforeLock: saveOpenDocumentsBeforeLicenseLock,
+  });
   installDesktopDocumentState({
     subscribe: (update) => {
       desktopDocumentStateUpdate = update;
@@ -1561,7 +1629,10 @@ function installDocumentVersions(session: DocumentSession): DocumentVersionContr
     autoEnable: () => userSettings.getUseHancomGit(),
     worktreeHost: {
       ensureOwnership: (worktree) => ensureWorktreeOwnership(session, worktree),
-      canMutate: () => !documentReadOnly && !loadingWorktreeSessions.has(session)
+      canMutate: () => !licenseReadOnly && !documentReadOnly && !loadingWorktreeSessions.has(session)
+        && (!session.worktree || session.worktreeWritable),
+      // 라이선스 읽기 전용은 편집만 막는다. 파일에 저장된 내용을 기준으로 적는 일은 문서를 바꾸지 않는다.
+      canRecordSaved: () => !documentReadOnly && !loadingWorktreeSessions.has(session)
         && (!session.worktree || session.worktreeWritable),
       getStatus: (worktree) => {
         const live = liveSessionForDocument(worktree.documentId);
@@ -3348,6 +3419,9 @@ function setupEventListeners(): void {
     ).forEach((button) => {
       button.disabled = !dispatcher.isEnabled(button.dataset.cmd ?? '');
     });
+    // 글머리표는 명령 대신 고르기 팝업을 여는 단추라 data-cmd 가 없다. 같은 명령의 상태를 따른다.
+    const bulletButton = document.getElementById('tb-bullet') as HTMLButtonElement | null;
+    if (bulletButton) bulletButton.disabled = !dispatcher.isEnabled('format:bullet-shape');
     modeGroups.forEach((group) => {
       group.style.display = group.dataset.toolbarMode === mode ? '' : 'none';
       if (group.dataset.toolbarMode === mode) {
@@ -4598,7 +4672,9 @@ async function canReplaceCurrentDocument(skipUnsavedGuard?: boolean): Promise<bo
 /** 에이전트가 일하는 중이면 지금 문서를 뒤에 두고 새 세션에서 연다. */
 function shouldOpenInNewSession(): boolean {
   return attachedSession.wasm.hasLoadedDocument()
-    && (isDocumentSessionBusy(attachedSession) || isManagedWorktree());
+    && (isDocumentSessionBusy(attachedSession) || isManagedWorktree()
+      // 라이선스 읽기 전용에서는 바뀐 문서를 저장할 수 없다. 묻거나 버리지 않고 뒤에 두어 복구본을 지킨다.
+      || (licenseReadOnly && attachedSession.documentState.isDirty()));
 }
 
 function openDocumentBytes(data: OpenDocumentBytesEvent): Promise<boolean> {

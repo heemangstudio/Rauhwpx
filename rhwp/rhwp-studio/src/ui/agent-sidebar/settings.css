@@ -3329,3 +3329,11 @@
   outline: var(--ag-focus-ring);
   outline-offset: -2px;
 }
+
+/* 라이선스: 상태 한 줄 오른쪽에 버튼들. */
+.ag-settings-page .ag-settings-license-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}

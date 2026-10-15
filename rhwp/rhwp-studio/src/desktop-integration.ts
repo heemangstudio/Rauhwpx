@@ -67,6 +67,7 @@ interface NativeFileReadResult {
 }
 
 export interface RhwpDesktopApi {
+  license?: import('./ui/agent-sidebar/settings-license.ts').DesktopLicenseApi;
   ensureAgentHub?: () => Promise<{ started?: boolean; ready?: boolean } | boolean>;
   getSessionContext?: () => Promise<RendererSessionContext>;
   createAgentSession?: () => Promise<{ sessionId: string }>;

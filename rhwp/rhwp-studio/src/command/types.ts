@@ -43,6 +43,11 @@ export interface EditorContext {
   isEditable: boolean;
   /** 게시된 템플릿 후보처럼 창 전체가 영구 읽기 전용인가. */
   readOnly?: boolean;
+  /**
+   * 읽기 전용이어도 다른 문서를 열거나 비교할 수 있는가. 라이선스 읽기 전용(문서 보기 전용)은
+   * 편집·저장만 막는다. 템플릿 미리보기처럼 창 자체가 고정된 읽기 전용에서는 false.
+   */
+  readOnlyCanOpen?: boolean;
   /** 에이전트 활성 턴 동안 사용자 문서 편집만 잠겨 있는가. */
   userEditingLocked?: boolean;
   /** 현재 편집 모드 */

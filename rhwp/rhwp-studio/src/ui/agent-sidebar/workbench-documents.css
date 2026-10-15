@@ -76,17 +76,17 @@
 .ag-wdocs-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 0; border: 0; border-radius: 8px; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; transition: opacity 150ms ease, transform 150ms ease; }
 .ag-wdocs-card:hover .ag-wdocs-cover { background: var(--ag-hover); }
 .ag-wdocs-cover { display: flex; align-items: center; justify-content: center; width: 100%; height: 170px; box-sizing: border-box; overflow: hidden; padding: 18px; border-radius: 8px; background: var(--ag-bg-2); }
-.ag-wdocs-cover > img { max-width: 100%; max-height: 100%; object-fit: contain; box-shadow: 0 3px 12px rgb(0 0 0 / 9%); }
-.ag-wdocs-paper { display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; width: 84px; height: 112px; box-sizing: border-box; padding: 14px 12px; border: 1px solid var(--ag-border); border-radius: 2px 10px 2px 2px; background: var(--ag-bg); color: var(--ag-text-tertiary); box-shadow: 0 3px 12px rgb(0 0 0 / 5%); }
+.ag-wdocs-cover > img { max-width: 100%; max-height: 100%; object-fit: contain; box-shadow: 0 3px 12px var(--ag-shadow-9); }
+.ag-wdocs-paper { display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; width: 84px; height: 112px; box-sizing: border-box; padding: 14px 12px; border: 1px solid var(--ag-border); border-radius: 2px 10px 2px 2px; background: var(--ag-bg); color: var(--ag-text-tertiary); box-shadow: 0 3px 12px var(--ag-shadow-5); }
 .ag-wdocs-paper > span { font-size: 9px; font-weight: 650; letter-spacing: 0.06em; }
 /* 글자 자료의 표지: 첫 줄들을 실제 크기로 짠 종이를 줄여서 PDF 표지처럼 보인다. */
-.ag-wdocs-sheet { position: relative; flex: none; height: 100%; max-width: 100%; aspect-ratio: 210 / 297; overflow: hidden; background: #fff; box-shadow: 0 3px 12px rgb(0 0 0 / 9%); }
-.ag-wdocs-sheet-page { position: absolute; top: 0; left: 0; display: flex; flex-direction: column; width: 200%; height: 200%; box-sizing: border-box; overflow: hidden; padding: 18px 16px; transform: scale(0.5); transform-origin: 0 0; color: #3a3a3a; font-size: 10px; line-height: 1.55; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; word-break: keep-all; }
+.ag-wdocs-sheet { position: relative; flex: none; height: 100%; max-width: 100%; aspect-ratio: 210 / 297; overflow: hidden; background: var(--ag-paper-white); box-shadow: 0 3px 12px var(--ag-shadow-9); }
+.ag-wdocs-sheet-page { position: absolute; top: 0; left: 0; display: flex; flex-direction: column; width: 200%; height: 200%; box-sizing: border-box; overflow: hidden; padding: 18px 16px; transform: scale(0.5); transform-origin: 0 0; color: var(--ag-document-ink); font-size: 10px; line-height: 1.55; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; word-break: keep-all; }
 .ag-wdocs-sheet-line { display: block; flex: none; }
 .ag-wdocs-sheet-gap { height: 0.6em; }
-.ag-wdocs-sheet-h1 { margin-bottom: 4px; color: #111; font-size: 15px; font-weight: 700; line-height: 1.35; }
-.ag-wdocs-sheet-h2 { margin: 2px 0 2px; color: #111; font-size: 12.5px; font-weight: 700; line-height: 1.4; }
-.ag-wdocs-sheet-h3 { color: #111; font-size: 11px; font-weight: 650; }
+.ag-wdocs-sheet-h1 { margin-bottom: 4px; color: var(--ag-document-heading); font-size: 15px; font-weight: 700; line-height: 1.35; }
+.ag-wdocs-sheet-h2 { margin: 2px 0 2px; color: var(--ag-document-heading); font-size: 12.5px; font-weight: 700; line-height: 1.4; }
+.ag-wdocs-sheet-h3 { color: var(--ag-document-heading); font-size: 11px; font-weight: 650; }
 .ag-wdocs-sheet-code .ag-wdocs-sheet-page { font-family: var(--ag-mono); font-size: 9px; line-height: 1.5; word-break: normal; }
 .ag-wdocs-card-text { display: flex; flex-direction: column; gap: 5px; min-width: 0; width: 100%; }
 .ag-wdocs-card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 550; }

@@ -87,6 +87,11 @@ type CheckpointReason = 'manual' | 'save' | 'export' | 'agent' | 'pre-restore' |
 export interface VersionWorktreeHost {
   ensureOwnership(worktree: VersionWorktree): Promise<boolean>;
   canMutate(): boolean;
+  /**
+   * 파일에 무엇이 저장돼 있는지(저장 기준)만 적어도 되는가. 편집을 막는 라이선스 읽기 전용에서도
+   * 문서 내용은 바꾸지 않으므로 허용한다. 없으면 canMutate 를 따른다.
+   */
+  canRecordSaved?(): boolean;
   getStatus(worktree: VersionWorktree): { isOpen: boolean; busy: boolean; readOnly?: boolean };
   open(worktree: VersionWorktree): Promise<void>;
   close(worktree: VersionWorktree): Promise<void>;
@@ -421,9 +426,9 @@ export class DocumentVersionController implements VersionManagerController {
         const content = this.#wasm.hasLoadedDocument() ? this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), this.#editorRevision) : null;
         if (id && content) this.#savedBaseline = { documentId: id, content };
         void this.#enqueue(async () => {
-          if (!content || id !== this.#getDocumentId() || this.#worktreeHost?.canMutate() === false) return;
+          if (!content || id !== this.#getDocumentId() || !this.#canRecordSaved()) return;
           await this.#refreshData(false);
-          if (!this.#repository || id !== this.#getDocumentId() || this.#worktreeHost?.canMutate() === false) return;
+          if (!this.#repository || id !== this.#getDocumentId() || !this.#canRecordSaved()) return;
           if (this.#worktree) {
             this.#worktree = await this.#store.saveWorktree({
               id: this.#worktree.id, expectedRevision: this.#worktree.revision,
@@ -463,10 +468,10 @@ export class DocumentVersionController implements VersionManagerController {
       this.#savedBaseline = null;
     }
     await this.refresh();
-    if (options.fromDisk && this.#worktree?.primary && this.#worktreeHost?.canMutate() !== false
+    if (options.fromDisk && this.#worktree?.primary && this.#canRecordSaved()
       && (!existingWorktree || String(this.#worktree.blobId) === String(this.#worktree.savedFingerprint))) {
       await this.#enqueue(async () => {
-        if (!this.#worktree?.primary || this.#getDocumentId() !== id || this.#worktreeHost?.canMutate() === false) return;
+        if (!this.#worktree?.primary || this.#getDocumentId() !== id || !this.#canRecordSaved()) return;
         const workspace = this.#captureWorkspaceToken();
         const content = this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), this.#editorRevision);
         const current = await this.#store.getWorktree(this.#worktree.id);
@@ -685,6 +690,12 @@ export class DocumentVersionController implements VersionManagerController {
       if (revision === this.#editorRevision) this.#documentState.markClean('worktree-saved');
       await this.#refreshData(false);
     });
+  }
+
+  #canRecordSaved(): boolean {
+    const host = this.#worktreeHost;
+    if (!host) return true;
+    return host.canRecordSaved ? host.canRecordSaved() : host.canMutate();
   }
 
   #requireWorktreeHost(): VersionWorktreeHost {

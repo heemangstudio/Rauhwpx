@@ -315,6 +315,12 @@ import { createModeMenu, parseModeCommand } from './mode-menu.ts';
 import { createTurnRestoreActions } from './turn-restore-action.ts';
 import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
 import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
+import {
+  isLicenseViewerMode,
+  noteAgentOpenBeforeLock,
+  onLicenseViewerModeChange,
+  takeAgentOpenBeforeLock,
+} from '../license-viewer-mode.ts';
 import './sidebar-button-modern.css';
 
 export interface AgentSidebarDeps {
@@ -414,6 +420,8 @@ export interface AgentSidebarDeps {
    */
   ownsWindowSession?: boolean;
 }
+
+const LICENSE_VIEWER_REASON = '라이선스를 활성화하면 에이전트를 쓸 수 있어요.';
 
 export interface AgentSidebarHandle {
   root: HTMLElement;
@@ -1513,6 +1521,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function setCollapsed(collapsed: boolean, opts?: { recenter?: boolean }): void {
+    // 라이선스가 읽기 전용이면 문서 보기 전용이다. 어느 길로 와도 펼치지 않는다.
+    if (isLicenseViewerMode()) collapsed = true;
     // 접힌 사이드바 안의 시트는 보이지 않으므로 취소로 닫고, 포커스·키가 닿지 않게 한다.
     if (collapsed && active) dismissOpenSheets();
     root.inert = collapsed;
@@ -5104,6 +5114,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** `then` 은 새 배치가 DOM 에 반영된 뒤에 부른다 — 교차 페이드는
       다음 프레임에 배치를 바꾸므로, 바뀐 배치에 기대는 후속 동작은 여기로 넘긴다. */
   function setFullscreen(on: boolean, opts?: { then?: () => void }): void {
+    if (on && isLicenseViewerMode()) return;
     if (fullscreen === on) {
       opts?.then?.();
       return;
@@ -6465,6 +6476,27 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     document.getElementById('icon-toolbar')?.appendChild(collapseTab);
   }
   setCollapsed(false, { recenter: false });
+
+  /* 라이선스 읽기 전용: 에이전트 단추를 끄고, 펼쳐 있던 사이드바·집중 화면을 접는다.
+     대화는 그대로 둔다. 펼쳐 있었는지는 창 단위로 적어 두어, 잠긴 동안 문서를 바꿨어도
+     다시 편집할 수 있게 되면 그때 화면에 붙은 사이드바가 펼친다. */
+  function syncLicenseLockedTab(locked: boolean): void {
+    collapseTab.disabled = locked;
+    collapseTab.setAttribute('aria-disabled', locked ? 'true' : 'false');
+  }
+  function applyLicenseViewerMode(locked: boolean): void {
+    syncLicenseLockedTab(locked);
+    if (!active) return;
+    if (locked) {
+      noteAgentOpenBeforeLock(fullscreen || !root.classList.contains('ag-collapsed'));
+      if (fullscreen) setFullscreen(false, { then: () => setCollapsed(true) });
+      else setCollapsed(true);
+      return;
+    }
+    if (takeAgentOpenBeforeLock()) setCollapsed(false);
+  }
+  syncLicenseLockedTab(isLicenseViewerMode());
+  const unsubLicenseViewerMode = onLicenseViewerModeChange(applyLicenseViewerMode);
 
   // ── 배치: #editor-area ↔ #status-bar 사이에 맞춘다 ────
   function updateComposerCompactLayout(): void {
@@ -12156,6 +12188,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 선택 의견은 로컬에 남기고 입력기에 첨부한다. 실제 전송은 일반 보내기에서만 한다. */
   async function sendInlinePrompt(submission: InlinePromptSubmission): Promise<Awaited<InlinePromptSendResponse>> {
+    if (isLicenseViewerMode()) return { ok: false, reason: LICENSE_VIEWER_REASON };
     const prompt = submission.prompt.trim();
     if (!prompt) return { ok: false, reason: '의견 입력 필요' };
     if (submission.signal?.aborted) return { ok: false, reason: '선택 자료 저장이 취소되었습니다.' };
@@ -12177,6 +12210,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function queueCaptureDraft(draft: DocumentCaptureDraft): Awaited<InlinePromptSendResponse> {
+    if (isLicenseViewerMode()) return { ok: false, reason: LICENSE_VIEWER_REASON };
     if (!captureInbox.queue(draft)) return { ok: false, reason: '저장한 자료는 해당 문서의 입력기에서 확인할 수 있습니다.' };
     setCollapsed(false);
     if (threadsPanelOpen) setThreadsPanelOpen(false);
@@ -12217,7 +12251,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       environmentPanelOpen = layout.environmentPanelOpen;
       desktopEnvironmentPanelOpen = layout.desktopEnvironmentPanelOpen;
     }
-    const nextFullscreen = layout?.fullscreen ?? fullscreen;
+    const nextFullscreen = !isLicenseViewerMode() && (layout?.fullscreen ?? fullscreen);
     const fullscreenChanged = nextFullscreen !== fullscreen || fullscreenLayoutOn !== nextFullscreen;
     if (fullscreenChanged) {
       fullscreen = nextFullscreen;
@@ -12457,6 +12491,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       window.removeEventListener('focus', scheduleSeenCheck);
       document.removeEventListener('visibilitychange', scheduleSeenCheck);
       unsubChatModeLock();
+      unsubLicenseViewerMode();
       unsubTurnRestore();
       unsubBridge();
       unsubThreads();

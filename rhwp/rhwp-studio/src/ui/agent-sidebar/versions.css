@@ -20,7 +20,7 @@
   background: transparent;
 }
 .ag-version-prompt-overlay:not([open]) { display: none; }
-.ag-version-prompt-overlay::backdrop { background: rgb(0 0 0 / 0.32); }
+.ag-version-prompt-overlay::backdrop { background: var(--ag-dialog-scrim); }
 
 .ag-version-prompt {
   width: min(380px, 100%);

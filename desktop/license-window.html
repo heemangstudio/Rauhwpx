@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'">
+  <title>HamaEditor 라이선스</title>
+  <link rel="stylesheet" href="license-window.css">
+</head>
+<body>
+  <main>
+    <h1 id="title">라이선스</h1>
+    <p id="summary" class="summary" role="status" aria-live="polite">상태를 확인하고 있어요…</p>
+
+    <section id="activate-section" aria-labelledby="activate-title">
+      <h2 id="activate-title">라이선스 키 넣기</h2>
+      <form id="activate-form">
+        <input id="key" name="key" autocomplete="off" spellcheck="false" autocapitalize="characters"
+          placeholder="HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" aria-label="라이선스 키" required>
+        <button id="activate" type="submit" class="primary">활성화</button>
+      </form>
+      <p id="activate-note" class="note" role="alert"></p>
+      <p class="buy">아직 키가 없나요? <button type="button" id="pricing" class="link">9,900원에 구매하기 (한 번 결제, Mac 2대)</button></p>
+    </section>
+
+    <section id="licensed-section" aria-labelledby="licensed-title" hidden>
+      <h2 id="licensed-title">이 Mac</h2>
+      <dl>
+        <dt>키</dt><dd id="masked-key"></dd>
+        <dt>마지막 확인</dt><dd id="last-check"></dd>
+        <dt>오프라인 사용 기한</dt><dd id="lease-expires"></dd>
+      </dl>
+      <div class="row">
+        <button type="button" id="check" class="secondary">지금 확인</button>
+        <button type="button" id="deactivate" class="danger">이 기기 비활성화</button>
+      </div>
+      <p id="licensed-note" class="note" role="alert"></p>
+    </section>
+
+    <footer>
+      <button type="button" id="close" class="secondary">닫기</button>
+    </footer>
+  </main>
+  <script src="license-window.js"></script>
+</body>
+</html>

@@ -762,7 +762,7 @@
   margin-top: -5px;
   border: 0;
   border-radius: var(--ag-r-pill);
-  background: #ffffff;
+  background: var(--ag-paper-white);
   box-shadow: 0 0 0 1px var(--ag-border-strong), var(--n-elev-1);
   -webkit-appearance: none;
   transition: transform var(--ag-dur-fast) var(--ag-ease-out);
@@ -773,7 +773,7 @@
   height: var(--ag-pgraph-thumb);
   border: 0;
   border-radius: var(--ag-r-pill);
-  background: #ffffff;
+  background: var(--ag-paper-white);
   box-shadow: 0 0 0 1px var(--ag-border-strong), var(--n-elev-1);
 }
 

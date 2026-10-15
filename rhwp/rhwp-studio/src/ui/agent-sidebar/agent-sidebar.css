@@ -56,6 +56,24 @@ body.ag-sidebar-resizing {
    --radius-* 는 조밀함을 지키려고 건드리지 않는다. */
 :root,
 .ag-root {
+  /* 문서 미리보기와 브라우저의 고정 색상. */
+  --ag-mode-chat-blue: #4f8fea;
+  --ag-paper-white: #fff;
+  --ag-dialog-scrim: rgb(0 0 0 / 0.32);
+  --ag-shadow-7: rgb(0 0 0 / 7%);
+  --ag-shadow-soft: #0002;
+  --ag-shadow-faint: #0001;
+  --ag-shadow-medium: #0003;
+  --ag-browser-drag-border: #8883;
+  --ag-browser-agent-inset: #f59a453d;
+  --ag-browser-error: #9a3e27;
+  --ag-browser-blue: #62a6cd;
+  --ag-browser-agent-border: #f59a4573;
+  --ag-shadow-9: rgb(0 0 0 / 9%);
+  --ag-shadow-5: rgb(0 0 0 / 5%);
+  --ag-document-ink: #3a3a3a;
+  --ag-document-heading: #111;
+
   /* 활자: 크기로 위계를 만들고 굵기는 세 단계만 쓴다. 10–11px 은
      모노 수치·좌표 전용이다. */
   --ag-fs-mono: 11px;
@@ -409,6 +427,17 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 .ag-collapse-tab:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: var(--ag-focus-offset);
+}
+
+/* 라이선스 읽기 전용(문서 보기 전용)에서는 에이전트를 열 수 없다. */
+.ag-collapse-tab:disabled,
+.ag-collapse-tab:disabled:is(:hover, :active) {
+  background: transparent;
+  box-shadow: none;
+  color: var(--ui-text-muted);
+  opacity: 0.38;
+  cursor: default;
+  transform: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1024,7 +1053,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
    에이전트 잉크 · 전체 빨강. 누름은 즉시 줄어들고, 메뉴는 칩에서 자라난다. */
 .ag-mode {
   /* 채팅은 강조색(빨강)과 상관없이 늘 파랑이다. */
-  --ag-mode-chat: color-mix(in oklab, #4f8fea 82%, var(--ag-text));
+  --ag-mode-chat: color-mix(in oklab, var(--ag-mode-chat-blue) 82%, var(--ag-text));
   --ag-mode-plan: color-mix(in oklab, var(--ag-text) 78%, var(--ag-bg));
   --ag-mode-agent: var(--ag-ok);
   --ag-mode-full: var(--ag-err);
