@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { licenseEmail, maskEmail } from './license-email.mjs';
-import { LEASE_TTL_MS, signLease } from './license-lease.mjs';
+import { DEFAULT_LEASE_KID, LEASE_TTL_MS, signLease } from './license-lease.mjs';
 import { createMemoryStore } from './store.mjs';
 import { uniqueInstallDigest } from './unique-installs.mjs';
 
@@ -37,7 +37,7 @@ export function generateLicenseKey(random = randomBytes) {
 export function normalizeLicenseKey(value) {
   if (typeof value !== 'string' || value.length > 64) return '';
   let raw = value.toUpperCase().replace(/[\s-]/g, '');
-  if (raw.startsWith('HAMA')) raw = raw.slice(4);
+  if (raw.length === 29 && raw.startsWith('HAMA')) raw = raw.slice(4);
   raw = raw.replace(/O/g, '0').replace(/[IL]/g, '1');
   if (raw.length !== 25) return '';
   const key = `HAMA-${raw.match(/.{5}/g).join('-')}`;
@@ -110,6 +110,7 @@ export function createLicensesService({
   now = Date.now,
   random = randomBytes,
   signingKey = null,
+  leaseKid = DEFAULT_LEASE_KID,
   emailProvider,
   grobleContentId = 'uRshdR',
   expectedPrice = 9900,
@@ -184,6 +185,11 @@ export function createLicensesService({
     return undefined;
   }
 
+  /** A ref belongs to the first order that claimed it, so a later order can never take over a buyer's success page. */
+  function linkRef(state, ref, merchantUid) {
+    if (ref && !state.refs[ref]) state.refs[ref] = merchantUid;
+  }
+
   function pruneWebhookEvents(state) {
     const cutoff = now() - WEBHOOK_EVENT_RETENTION_MS;
     for (const [id, entry] of Object.entries(state.webhookEvents)) {
@@ -225,7 +231,7 @@ export function createLicensesService({
       completedEventId: str(event.id, 128),
     });
     for (const k of Object.keys(order)) if (order[k] === undefined) delete order[k];
-    if (order.ref) state.refs[order.ref] = merchantUid;
+    linkRef(state, order.ref, merchantUid);
 
     if (order.keyId) {
       // Already issued (webhook retry with a new delivery key, or a manual backfill). Attach data only.
@@ -235,7 +241,6 @@ export function createLicensesService({
         license.email = license.email ?? email;
         license.amount = license.amount ?? order.amount;
         license.occurredAt = license.occurredAt ?? event.occurredAt;
-        if (order.ref) state.refs[order.ref] = merchantUid;
       }
       return { action: 'already_issued', keyId: order.keyId };
     }
@@ -355,9 +360,30 @@ export function createLicensesService({
 
   // --------------------------------------------------------------- email
 
+  // One delivery pass at a time: webhooks that land during a pass schedule exactly one more,
+  // so the same pending email is never sent by two overlapping passes.
+  let delivering = null;
+  let deliverAgain = false;
+
   /** Send every queued key email. Safe to call repeatedly; never throws. */
   async function deliverPendingEmails() {
     if (!emailProvider) return [];
+    if (delivering) {
+      deliverAgain = true;
+      return delivering;
+    }
+    delivering = (async () => {
+      let results = [];
+      do {
+        deliverAgain = false;
+        results = results.concat(await deliverPendingPass());
+      } while (deliverAgain);
+      return results;
+    })().finally(() => { delivering = null; });
+    return delivering;
+  }
+
+  async function deliverPendingPass() {
     const state = await read();
     const pending = Object.values(state.licenses).filter((l) => l.emailDelivery?.status === 'pending' && l.email);
     const results = [];
@@ -423,8 +449,16 @@ export function createLicensesService({
     return license;
   }
 
-  function leaseResponse(license, deviceId) {
-    const { lease, payload } = signLease({ keyId: license.keyId, deviceId, now: now(), ttlMs: LEASE_TTL_MS }, signingKey);
+  /** `submittedKey` is what the app sent; the lease's keyHash is over the app's normalization of it. */
+  function leaseResponse(license, deviceId, submittedKey) {
+    const { lease, payload } = signLease({
+      kid: leaseKid,
+      keyId: license.keyId,
+      key: submittedKey,
+      deviceId,
+      now: now(),
+      ttlMs: LEASE_TTL_MS,
+    }, signingKey);
     return {
       ok: true,
       lease,
@@ -452,7 +486,7 @@ export function createLicensesService({
         appVersion: str(body?.appVersion, 32),
         platform: str(body?.platform, 32),
       };
-      return { value: leaseResponse(license, deviceId) };
+      return { value: leaseResponse(license, deviceId, body.key) };
     });
   }
 
@@ -464,7 +498,7 @@ export function createLicensesService({
       const device = license.devices?.[deviceId];
       if (!device) throw licenseError('not_activated', 404);
       device.lastSeenAt = new Date(now()).toISOString();
-      return { value: leaseResponse(license, deviceId) };
+      return { value: leaseResponse(license, deviceId, body.key) };
     });
   }
 
@@ -534,6 +568,7 @@ export function createLicensesService({
         if (merchantUid && state.orders[merchantUid]?.status === 'refunded') {
           throw licenseError('order_refunded', 409);
         }
+        if (ref && state.refs[ref] && state.refs[ref] !== merchantUid) throw licenseError('ref_taken', 409);
         const license = createLicense(state, {
           source: 'manual',
           merchantUid,

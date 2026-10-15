@@ -61,6 +61,7 @@ export function resolveLicenseConfig(env = process.env) {
     expectedPrice: price,
     minAmount,
     signingPrivateKey: trimmed(env.LICENSE_SIGNING_PRIVATE_KEY),
+    signingKeyId: trimmed(env.LICENSE_SIGNING_KEY_ID) || 'hama-prod-1',
     adminToken: trimmed(env.ADMIN_TOKEN),
     grandfatherCutoff,
     grandfatherPlatforms: (trimmed(env.GRANDFATHER_PLATFORMS) || 'darwin').split(',').map((s) => s.trim()).filter(Boolean),

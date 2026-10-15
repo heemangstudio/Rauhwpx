@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { grobleSignature, verifyGrobleWebhook } from '../groble-webhook.mjs';
-import { generateLeaseKeyPair, parseSigningPrivateKey, signLease, verifyLease } from '../license-lease.mjs';
+import { generateLeaseKeyPair, licenseKeyHash, parseSigningPrivateKey, signLease, verifyLease } from '../license-lease.mjs';
 import { createLicensesService, emptyLicensesState, normalizeLicenseKey, KEY_RE } from '../licenses.mjs';
 import { createSiteServer } from '../server.mjs';
 import { createFileStore, createMemoryStore } from '../store.mjs';
@@ -15,6 +15,7 @@ const SECRET = 'whsec_test_current';
 const PREVIOUS = 'whsec_test_previous';
 const ADMIN = 'admin-token-for-license-tests';
 const PAIR = generateLeaseKeyPair();
+const KEYS = { 'hama-prod-1': PAIR.publicKeyRawBase64 };
 const T0 = Date.parse('2026-10-16T01:00:00+09:00');
 
 function completed({ merchantUid = 'm_1', ref = 'hama-ref-1', amount = 9900, contentId = 'uRshdR', occurredAt = '2026-10-16T01:00:00+09:00', id = `evt_c_${merchantUid}` } = {}) {
@@ -213,7 +214,7 @@ test('activation: 2 devices per key, re-activation is free, deactivate frees a s
   await assert.rejects(svc.activate({ key, deviceId: 'device-cccc' }), { code: 'device_limit', status: 409 });
 
   const v = await svc.validate({ key, deviceId: 'device-aaaa' });
-  assert.equal(verifyLease(v.lease, PAIR.publicKeyDerBase64, { deviceId: 'device-aaaa', now: now() }).ok, true);
+  assert.equal(verifyLease(v.lease, KEYS, { deviceId: 'device-aaaa', key, now: now() }).ok, true);
   await assert.rejects(svc.validate({ key, deviceId: 'device-cccc' }), { code: 'not_activated' });
 
   assert.equal((await svc.deactivate({ key, deviceId: 'device-bbbb' })).removed, true);
@@ -243,17 +244,23 @@ test('concurrent activations never exceed the device limit', async () => {
 
 test('lease: signed Ed25519, 7-day expiry, device-bound, tamper-evident', async () => {
   const key = parseSigningPrivateKey(PAIR.privateKeyDerBase64);
-  const { lease, payload } = signLease({ keyId: 'lic_1', deviceId: 'device-aaaa', now: T0 }, key);
-  assert.equal(Date.parse(payload.expiresAt) - Date.parse(payload.issuedAt), 7 * 24 * 3600 * 1000);
-  assert.equal(verifyLease(lease, PAIR.publicKeyPem, { deviceId: 'device-aaaa', now: T0 + 1000 }).ok, true);
-  assert.equal(verifyLease(lease, PAIR.publicKeyDerBase64, { deviceId: 'device-bbbb', now: T0 }).reason, 'wrong_device');
-  assert.equal(verifyLease(lease, PAIR.publicKeyDerBase64, { now: T0 + 7 * 24 * 3600 * 1000 }).reason, 'expired');
+  const licenseKey = 'HAMA-ABCDE-FGHJK-MNPQR-STVWX-YZ012';
+  const { lease, payload } = signLease({ keyId: 'lic_1', key: licenseKey, deviceId: 'device-aaaa', now: T0 }, key);
+  assert.equal(payload.kid, 'hama-prod-1');
+  assert.equal(payload.expiresAt - payload.issuedAt, 7 * 24 * 3600 * 1000);
+  assert.equal(payload.keyHash, licenseKeyHash(licenseKey));
+  assert.equal(verifyLease(lease, { 'hama-prod-1': PAIR.publicKeyPem }, { deviceId: 'device-aaaa', key: licenseKey, now: T0 + 1000 }).ok, true);
+  assert.equal(verifyLease(lease, KEYS, { key: ` ${licenseKey.toLowerCase()} `, now: T0 }).ok, true, 'the app normalizes case and whitespace');
+  assert.equal(verifyLease(lease, KEYS, { deviceId: 'device-bbbb', now: T0 }).reason, 'wrong_device');
+  assert.equal(verifyLease(lease, KEYS, { key: 'HAMA-00000-00000-00000-00000-00000', now: T0 }).reason, 'wrong_key');
+  assert.equal(verifyLease(lease, KEYS, { now: T0 + 7 * 24 * 3600 * 1000 }).reason, 'expired');
+  assert.equal(verifyLease(lease, { 'hama-prod-2': PAIR.publicKeyRawBase64 }, { now: T0 }).reason, 'unknown_kid');
   const other = generateLeaseKeyPair();
-  assert.equal(verifyLease(lease, other.publicKeyDerBase64, { now: T0 }).reason, 'bad_signature');
+  assert.equal(verifyLease(lease, { 'hama-prod-1': other.publicKeyRawBase64 }, { now: T0 }).reason, 'bad_signature');
   const [body, sig] = lease.split('.');
-  const forged = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(body, 'base64url')), expiresAt: '2099-01-01T00:00:00.000Z' })).toString('base64url');
-  assert.equal(verifyLease(`${forged}.${sig}`, PAIR.publicKeyDerBase64, { now: T0 }).reason, 'bad_signature');
-  assert.equal(verifyLease('garbage', PAIR.publicKeyDerBase64).reason, 'malformed');
+  const forged = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(body, 'base64url')), expiresAt: payload.issuedAt + 1000 })).toString('base64url');
+  assert.equal(verifyLease(`${forged}.${sig}`, KEYS, { now: T0 }).reason, 'bad_signature');
+  assert.equal(verifyLease('garbage', KEYS).reason, 'malformed');
 });
 
 // -------------------------------------------------------------- grandfather
@@ -320,6 +327,41 @@ test('normalizeLicenseKey tolerates case, spaces and O/I look-alikes', () => {
   assert.equal(normalizeLicenseKey('HAMA-OOOOO-IIIII-LLLLL-00000-11111'), 'HAMA-00000-11111-11111-00000-11111');
   assert.equal(normalizeLicenseKey('HAMA-UUUUU-00000-00000-00000-00000'), '');
   assert.equal(normalizeLicenseKey(42), '');
+  assert.equal(normalizeLicenseKey('HAMAB-CDEFG-HJKMN-PQRST-VWXYZ'), 'HAMA-HAMAB-CDEFG-HJKMN-PQRST-VWXYZ', 'a key body that starts with HAMA keeps it');
+});
+
+test('a lease issued for a key typed loosely still verifies against what the app sent', async () => {
+  const { svc, now } = service();
+  await svc.handleGrobleEvent(completed(), { idempotencyKey: 'c' });
+  const { key } = await svc.statusByRef('hama-ref-1');
+  const typed = ` ${key.toLowerCase()} `;
+  const a = await svc.activate({ key: typed, deviceId: 'device-aaaa' });
+  assert.equal(verifyLease(a.lease, KEYS, { deviceId: 'device-aaaa', key: typed, now: now() }).ok, true);
+  assert.equal(verifyLease(a.lease, KEYS, { deviceId: 'device-aaaa', key, now: now() }).ok, true);
+});
+
+test('a later order cannot take over another buyer\'s ref', async () => {
+  const { svc } = service();
+  await svc.handleGrobleEvent(completed({ merchantUid: 'm_victim', ref: 'shared-ref' }), { idempotencyKey: 'a' });
+  const victimKey = (await svc.statusByRef('shared-ref')).key;
+  await svc.handleGrobleEvent(completed({ merchantUid: 'm_other', ref: 'shared-ref' }), { idempotencyKey: 'b' });
+  assert.equal((await svc.statusByRef('shared-ref')).key, victimKey);
+  await assert.rejects(svc.admin.issue(ADMIN, { ref: 'shared-ref' }), { code: 'ref_taken' });
+});
+
+test('overlapping email deliveries send each key once', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const sent = [];
+  const { svc } = service({
+    emailProvider: { name: 'test', async send(m) { sent.push(m.to); await gate; return { status: 'sent' }; } },
+  });
+  await svc.handleGrobleEvent(completed(), { idempotencyKey: 'c' });
+  const first = svc.deliverPendingEmails();
+  const second = svc.deliverPendingEmails();
+  release();
+  await Promise.all([first, second]);
+  assert.equal(sent.length, 1);
 });
 
 test('email: no RESEND_API_KEY logs and skips without failing', async () => {
@@ -402,7 +444,9 @@ test('HTTP: webhook → by-ref → activate → validate, with CORS, persistence
   assert.equal(act.status, 200);
   const pub = await (await fetch(`${origin}/v1/license/public-key`)).json();
   assert.equal(pub.spkiDerBase64, PAIR.publicKeyDerBase64);
-  assert.equal(verifyLease(actBody.lease, pub.spkiDerBase64, { deviceId: 'mac-0001' }).ok, true);
+  assert.equal(pub.kid, 'hama-prod-1');
+  assert.equal(pub.rawBase64, PAIR.publicKeyRawBase64);
+  assert.equal(verifyLease(actBody.lease, { [pub.kid]: pub.rawBase64 }, { deviceId: 'mac-0001', key: body.key }).ok, true);
 
   await fetch(`${origin}/v1/license/activate`, { method: 'POST', body: JSON.stringify({ key: body.key, deviceId: 'mac-0002' }) });
   const third = await fetch(`${origin}/v1/license/activate`, { method: 'POST', body: JSON.stringify({ key: body.key, deviceId: 'mac-0003' }) });

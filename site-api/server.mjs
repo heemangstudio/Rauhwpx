@@ -13,7 +13,7 @@ import {
 } from './config.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
 import { createEmailProvider } from './license-email.mjs';
-import { parseSigningPrivateKey, publicKeyFromPrivate } from './license-lease.mjs';
+import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
 import { createLicensesService, emptyLicensesState } from './licenses.mjs';
 import { renderUniqueInstallsPage } from './pages.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
@@ -213,7 +213,12 @@ export function siteRequestListener({ uniqueInstalls, waitlist, licenses, licens
         case 'GET /v1/license/public-key':
           cors = { 'Access-Control-Allow-Origin': '*' };
           if (!licenseConfig.publicKeyDerBase64) throw Object.assign(siteError('server_not_configured', 'no signing key'), { licenseError: true, status: 503 });
-          send(200, { alg: 'Ed25519', spkiDerBase64: licenseConfig.publicKeyDerBase64 });
+          send(200, {
+            alg: 'Ed25519',
+            kid: licenseConfig.signingKeyId,
+            rawBase64: licenseConfig.publicKeyRawBase64,
+            spkiDerBase64: licenseConfig.publicKeyDerBase64,
+          });
           return;
         case 'GET /v1/admin/licenses':
           allow('admin', 120, TEN_MINUTES);
@@ -321,14 +326,16 @@ export function createSiteServer(env = process.env, options = {}) {
   const licenseConfig = resolveLicenseConfig(env);
   const signingKey = parseSigningPrivateKey(licenseConfig.signingPrivateKey);
   if (signingKey) {
-    licenseConfig.publicKeyDerBase64 = publicKeyFromPrivate(signingKey)
-      .export({ format: 'der', type: 'spki' }).toString('base64');
+    const publicKey = publicKeyFromPrivate(signingKey);
+    licenseConfig.publicKeyDerBase64 = publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+    licenseConfig.publicKeyRawBase64 = rawPublicKeyBase64(publicKey);
   }
   const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
   const licenses = createLicensesService({
     store: createFileStore(resolveLicensesDbPath(env), { emptyState: emptyLicensesState }),
     uniqueInstallsStore: uniqueInstallsStore,
     signingKey,
+    leaseKid: licenseConfig.signingKeyId,
     emailProvider: options.emailProvider ?? createEmailProvider(env),
     grobleContentId: licenseConfig.grobleContentId,
     expectedPrice: licenseConfig.expectedPrice,
