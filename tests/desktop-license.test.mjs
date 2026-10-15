@@ -7,14 +7,13 @@ import test from 'node:test';
 import { createLicenseClient, LicenseServerError } from '../desktop/license-client.mjs';
 import {
   licenseKeyHash, maskLicenseKey, normalizeLicenseKey,
-  productionPublicKeysProvisioned, verifyLease,
+  PRODUCTION_LICENSE_PUBLIC_KEYS, verifyLease,
 } from '../desktop/license-lease.mjs';
 import {
   createLicenseManager, EXPIRY_SAVE_GRACE_MS, LicenseReadOnlyError, PRICING_URL, TRIAL_DURATION_MS,
 } from '../desktop/license-manager.mjs';
 import { createMockLicenseServer, DEV_PUBLIC_KEYS, signLease } from './fixtures/license-mock-server.mjs';
 
-const UNCONFIGURED_PUBLIC_KEYS = { 'hama-prod-1': 'REPLACE_TEST_PUBLIC_KEY' };
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 const T0 = Date.UTC(2026, 9, 16, 0, 0, 0);
@@ -40,9 +39,13 @@ async function setup(t, { enforce = true, publicKeys = DEV_PUBLIC_KEYS } = {}) {
   return { dir, clock, server, changes, manager: make(), make };
 }
 
-test('placeholder public keys disable activation until provisioned', () => {
-  assert.equal(productionPublicKeysProvisioned(UNCONFIGURED_PUBLIC_KEYS), false);
-  assert.equal(productionPublicKeysProvisioned(DEV_PUBLIC_KEYS), true);
+test('production builds trust only the pinned server key, never the test key', () => {
+  assert.equal(Buffer.from(PRODUCTION_LICENSE_PUBLIC_KEYS['hama-prod-1'], 'base64').length, 32);
+  const key = 'HAMA-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE';
+  const lease = signLease({ v: 1, kid: 'hama-prod-1', keyHash: licenseKeyHash(key), keyId: 'lic_1', deviceId: 'dev-a', issuedAt: T0, expiresAt: T0 + DAY });
+  const opts = { deviceId: 'dev-a', key, keyId: 'lic_1', now: T0 + HOUR };
+  assert.equal(verifyLease(lease, opts).reason, 'bad_signature');
+  assert.equal(verifyLease(lease, { ...opts, publicKeys: DEV_PUBLIC_KEYS }).ok, true);
 });
 
 test('license keys normalize, hash and mask', () => {
@@ -62,7 +65,7 @@ test('lease verification checks signature, device, key and expiry offline', () =
   assert.equal(verifyLease(lease, { ...opts, key: 'HAMA-00000-00000-00000-00000-00000' }).reason, 'wrong_key');
   assert.equal(verifyLease(lease, { ...opts, keyId: 'lic_other' }).reason, 'wrong_key');
   assert.equal(verifyLease(lease, { ...opts, now: T0 + 7 * DAY }).reason, 'expired');
-  assert.equal(verifyLease(lease, { ...opts, publicKeys: UNCONFIGURED_PUBLIC_KEYS }).reason, 'unknown_kid');
+  assert.equal(verifyLease(lease, { ...opts, publicKeys: {} }).reason, 'unknown_kid');
   const [body, sig] = lease.split('.');
   const forged = Buffer.from(JSON.stringify({ ...payload, deviceId: 'dev-b' })).toString('base64url');
   assert.equal(verifyLease(`${forged}.${sig}`, { ...opts, deviceId: 'dev-b' }).reason, 'bad_signature');
@@ -177,14 +180,6 @@ test('activation errors come back as user-facing messages', async (t) => {
   server.setOffline(true);
   assert.equal((await make().activate(key2)).code, 'network');
   void clock;
-});
-
-test('activation is refused while the production public key is a placeholder', async (t) => {
-  const { manager, server } = await setup(t, { publicKeys: UNCONFIGURED_PUBLIC_KEYS });
-  const result = await manager.activate(server.issueKey());
-  assert.equal(result.code, 'not_configured');
-  assert.equal(result.status.activationAvailable, false);
-  assert.equal(server.calls.length, 0);
 });
 
 test('checks every 24 hours renew the lease; offline grace lasts 7 days', async (t) => {

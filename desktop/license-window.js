@@ -61,10 +61,6 @@
       $('lease-expires').textContent = when(status.license.leaseExpiresAt);
       if (status.license.lastError && !showLicensed) activateNote.textContent = status.license.lastError;
     }
-    if (!status.activationAvailable && status.state !== 'unenforced') {
-      activateNote.textContent = '이 빌드에는 라이선스 확인 키가 들어 있지 않아 활성화할 수 없어요.';
-      activateButton.disabled = true;
-    }
   }
 
   async function busy(button, task) {

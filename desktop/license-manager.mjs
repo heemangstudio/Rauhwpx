@@ -19,7 +19,6 @@ import {
   PRODUCTION_LICENSE_PUBLIC_KEYS,
   maskLicenseKey,
   normalizeLicenseKey,
-  productionPublicKeysProvisioned,
   verifyLease,
 } from './license-lease.mjs';
 import { LicenseServerError } from './license-client.mjs';
@@ -55,7 +54,6 @@ const ERROR_MESSAGES = {
   server: '라이선스 서버가 잠시 응답하지 않아요. 조금 뒤 다시 시도해 주세요.',
   bad_lease: '라이선스 서버의 응답을 확인하지 못했어요. 앱을 최신 버전으로 업데이트해 주세요.',
   invalid_format: '라이선스 키 형식이 아니에요. 결제 완료 페이지의 키를 그대로 붙여 넣어 주세요.',
-  not_configured: '이 빌드에는 라이선스 확인 키가 들어 있지 않아요.',
 };
 
 export function licenseErrorMessage(code) {
@@ -117,7 +115,6 @@ export function createLicenseManager({
   let timer = null;
   let lastNetworkError = null;
   let lastGrandfatherAttempt = 0;
-  const keysProvisioned = productionPublicKeysProvisioned(publicKeys);
 
   function serialize(task) {
     const next = queue.then(task);
@@ -201,7 +198,6 @@ export function createLicenseManager({
         lastError: license.lastErrorCode ? licenseErrorMessage(license.lastErrorCode) : null,
       } : null,
       offline: lastNetworkError !== null,
-      activationAvailable: keysProvisioned,
       pricingUrl: PRICING_URL,
     };
   }
@@ -226,7 +222,7 @@ export function createLicenseManager({
       const license = state.license;
       if (!enforce) return computeStatus();
       if (!license) {
-        if (keysProvisioned && (force || !lastGrandfatherAttempt || clock() - lastGrandfatherAttempt >= checkIntervalMs)) {
+        if ((force || !lastGrandfatherAttempt || clock() - lastGrandfatherAttempt >= checkIntervalMs)) {
           lastGrandfatherAttempt = clock();
           try {
             const installId = await existingInstallId();
@@ -289,7 +285,6 @@ export function createLicenseManager({
       await load();
       const key = normalizeLicenseKey(rawKey);
       if (!key) return { ok: false, code: 'invalid_format', message: licenseErrorMessage('invalid_format'), status: computeStatus() };
-      if (!keysProvisioned) return { ok: false, code: 'not_configured', message: licenseErrorMessage('not_configured'), status: computeStatus() };
       try {
         await checkServerPublicKey();
         const lease = await client.activate({ key, deviceId: state.deviceId, appVersion, platform });

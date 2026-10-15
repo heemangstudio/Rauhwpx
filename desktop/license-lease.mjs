@@ -16,20 +16,11 @@ const MAX_LEASE_CHARS = 4096;
 
 /**
  * 출시 빌드가 믿는 공개키. kid → raw 32바이트 Ed25519 공개키(base64).
- * REPLACE_ 로 시작하는 값은 아직 키를 받지 않았다는 뜻이다. 키 서버의 서명 키를 만든 뒤
- * 그 공개키로 바꿔야 출시 빌드에서 활성화가 된다 (그 전에는 체험만 된다).
+ * 키 서버(GET /v1/license/public-key 의 rawBase64)와 같은 값이다. 개인키는 서버에만 있다.
  */
 export const PRODUCTION_LICENSE_PUBLIC_KEYS = Object.freeze({
-  'hama-prod-1': 'REPLACE_WITH_PRODUCTION_ED25519_PUBLIC_KEY_BASE64',
+  'hama-prod-1': 'UH46oBHmV639T/ubZNdW+S3q6EywftOp3zZVfuzEVtM=',
 });
-
-export function isPlaceholderPublicKey(value) {
-  return typeof value !== 'string' || !value || value.startsWith('REPLACE_');
-}
-
-export function productionPublicKeysProvisioned(keys = PRODUCTION_LICENSE_PUBLIC_KEYS) {
-  return Object.values(keys).some((value) => !isPlaceholderPublicKey(value));
-}
 
 export function normalizeLicenseKey(raw) {
   if (typeof raw !== 'string' || raw.length > 64) return '';
@@ -107,7 +98,7 @@ export function verifyLease(lease, {
     return { ok: false, reason: 'malformed' };
   }
   const rawKey = Object.hasOwn(publicKeys, kid) ? publicKeys[kid] : null;
-  if (isPlaceholderPublicKey(rawKey)) return { ok: false, reason: 'unknown_kid' };
+  if (typeof rawKey !== 'string' || !rawKey) return { ok: false, reason: 'unknown_kid' };
   const [encodedPayload, encodedSignature] = lease.split('.');
   let valid = false;
   try {
