@@ -30,26 +30,45 @@ export interface DesktopLicenseApi {
   deactivate: () => Promise<{ ok: boolean; message?: string; status: LicenseStatus }>;
   openActivation: () => Promise<boolean>;
   openPricing: () => Promise<void>;
+  /** 체험이 끝난 뒤 자동 저장용 유예를 한 번 받는다. */
+  beginExpirySave?: () => Promise<{ ok: boolean; until: number | null }>;
   onChange: (callback: (status: LicenseStatus) => void) => () => void;
 }
 
-const MINUTE_MS = 60 * 1000;
+const SECOND_MS = 1000;
+const MINUTE_MS = 60 * SECOND_MS;
+const HOUR_SECONDS = 3600;
 
-/** 체험 남은 시간. '2일 13시간' → '13시간 42분' → '42분'. 0 이 된 단위는 뺀다. */
+/**
+ * 체험 남은 시간. '2일 13시간' → '13시간 42분' → 마지막 한 시간은 '42분 15초' → '9초'.
+ * 0 이 된 단위는 뺀다.
+ */
 export function trialTimeLeft(endsAt: number, now = Date.now()): string {
-  const minutes = Math.max(0, Math.ceil((endsAt - now) / MINUTE_MS));
+  const remaining = Math.max(0, endsAt - now);
+  const seconds = Math.ceil(remaining / SECOND_MS);
+  if (seconds < HOUR_SECONDS) {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    if (mins > 0) return secs > 0 ? `${mins}분 ${secs}초` : `${mins}분`;
+    return `${secs}초`;
+  }
+  const minutes = Math.ceil(remaining / MINUTE_MS);
   const days = Math.floor(minutes / 1440);
   const hours = Math.floor((minutes % 1440) / 60);
   const mins = minutes % 60;
   if (days > 0) return hours > 0 ? `${days}일 ${hours}시간` : `${days}일`;
-  if (hours > 0) return mins > 0 ? `${hours}시간 ${mins}분` : `${hours}시간`;
-  return `${mins}분`;
+  return mins > 0 ? `${hours}시간 ${mins}분` : `${hours}시간`;
 }
 
-/** 다음에 남은 시간의 분이 바뀔 때까지의 ms. 카운트다운을 그 경계에 맞춰 다시 그린다. */
-export function msUntilNextTrialMinute(endsAt: number, now = Date.now()): number {
-  const rest = (endsAt - now) % MINUTE_MS;
-  return rest > 0 ? rest : MINUTE_MS;
+/**
+ * 표시가 다음에 바뀔 때까지의 ms. 마지막 한 시간은 초마다, 그 전에는 분마다 그 경계에 맞춘다.
+ */
+export function msUntilNextTrialTick(endsAt: number, now = Date.now()): number {
+  const remaining = endsAt - now;
+  if (remaining <= 0) return SECOND_MS;
+  if (Math.ceil(remaining / SECOND_MS) < HOUR_SECONDS) return remaining % SECOND_MS || SECOND_MS;
+  const toSecondsMode = remaining - (HOUR_SECONDS - 1) * SECOND_MS;
+  return Math.min(remaining % MINUTE_MS || MINUTE_MS, toSecondsMode);
 }
 
 function formatTime(ms: number | null): string {

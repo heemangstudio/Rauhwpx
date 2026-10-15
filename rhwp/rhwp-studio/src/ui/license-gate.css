@@ -1,26 +1,34 @@
-.license-banner {
-  flex-shrink: 0;
-  z-index: 20;
-  display: flex;
+/* 체험·읽기 전용 알약. 메뉴 막대의 명령 검색 바로 왼쪽에 같은 높이·테두리로 선다.
+   막대 안의 컨트롤이라 문서 영역을 밀지 않는다. 라이선스가 있으면 DOM 에서 빠진다. */
+#menu-bar .license-pill {
+  order: 2;
+  display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 20px;
-  background: var(--n-surface);
-  color: var(--n-text);
-  border-bottom: 1px solid var(--n-border);
-  font-size: 13px;
-}
-.license-banner[hidden] { display: none; }
-.license-banner button {
-  flex-shrink: 0;
-  padding: 7px 12px;
-  border: 1px solid currentColor;
+  gap: 8px;
+  min-height: 28px;
+  margin-left: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--ui-border);
   border-radius: 6px;
-  color: inherit;
-  background: transparent;
-  cursor: pointer;
+  background: var(--ui-surface);
+  color: var(--ui-text-secondary);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
+  -webkit-app-region: no-drag;
 }
-@media (min-width: 768px) {
-  body.ag-sidebar-inset .license-banner { margin-right: var(--ag-sidebar-width); }
+#menu-bar .license-pill:hover { background: var(--ui-hover); border-color: var(--ui-border-strong); }
+#menu-bar .license-pill:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+#menu-bar .license-pill-read-only { color: var(--ui-text); }
+.license-pill-action { color: var(--ui-link); font-weight: 600; }
+.license-pill-action[hidden] { display: none; }
+
+/* 파일 이름이 없거나 가운데로 빠지면 알약이 오른쪽 끝 묶음의 맨 앞이 된다. */
+#editor-document-title[hidden] + .license-pill,
+html.desktop-native-menu #menu-bar .license-pill { margin-left: auto; }
+#menu-bar .license-pill + #editor-command-search { margin-left: 8px; }
+@media (max-width: 767px) {
+  #menu-bar .license-pill { margin-left: auto; padding-inline: 6px; font-size: 11px; }
 }

@@ -13,13 +13,19 @@
 
   /** 체험 남은 시간. Studio 의 trialTimeLeft 와 같은 규칙이다. */
   function timeLeft(endsAt) {
-    const minutes = Math.max(0, Math.ceil((endsAt - Date.now()) / 60000));
+    const remaining = Math.max(0, endsAt - Date.now());
+    const seconds = Math.ceil(remaining / 1000);
+    if (seconds < 3600) {
+      const m = Math.floor(seconds / 60);
+      const sec = seconds % 60;
+      return m > 0 ? (sec > 0 ? `${m}분 ${sec}초` : `${m}분`) : `${sec}초`;
+    }
+    const minutes = Math.ceil(remaining / 60000);
     const days = Math.floor(minutes / 1440);
     const hours = Math.floor((minutes % 1440) / 60);
     const mins = minutes % 60;
     if (days > 0) return hours > 0 ? `${days}일 ${hours}시간` : `${days}일`;
-    if (hours > 0) return mins > 0 ? `${hours}시간 ${mins}분` : `${hours}시간`;
-    return `${mins}분`;
+    return mins > 0 ? `${hours}시간 ${mins}분` : `${hours}시간`;
   }
 
   function summaryFor(status) {
