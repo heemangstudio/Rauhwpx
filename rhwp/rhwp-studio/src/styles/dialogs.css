@@ -770,6 +770,29 @@
   color: var(--color-text-hint);
 }
 
+.about-license-full {
+  margin-bottom: 16px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  text-align: left;
+}
+
+.about-license-full summary {
+  cursor: pointer;
+}
+
+.about-license-full pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 8px;
+  border: 1px solid var(--ui-border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 .about-copyright {
   font-size: var(--font-size-sm);
   color: var(--color-text-placeholder);

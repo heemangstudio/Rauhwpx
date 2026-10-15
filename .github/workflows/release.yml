@@ -176,3 +176,24 @@ jobs:
             --verify-tag \
             --generate-notes \
             --title "HamaEditor ${GITHUB_REF_NAME}"
+
+      # The source repository can be private. Installed apps update from, and the website
+      # downloads from, this public repository. HamaEditor-mac-arm64.dmg keeps one stable
+      # download link across versions.
+      - name: Publish to the public download repository
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::RELEASES_TOKEN is not set. Add a fine-grained token with Contents read/write on heemangstudio/hamaeditor-releases as a repository secret." >&2
+            exit 1
+          fi
+          shopt -s nullglob
+          dmgs=(release/*-arm64.dmg)
+          cp "${dmgs[0]}" release/HamaEditor-mac-arm64.dmg
+          gh release create "${GITHUB_REF_NAME}" \
+            release/*.dmg release/*.zip release/*.blockmap release/latest*.yml release/SHA256SUMS.txt \
+            --repo heemangstudio/hamaeditor-releases \
+            --title "HamaEditor ${GITHUB_REF_NAME}" \
+            --notes "HamaEditor ${GITHUB_REF_NAME} for Mac (Apple Silicon). https://heemangstudios.com"
