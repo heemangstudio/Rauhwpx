@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { startReplaySession } from './provider-replay/adapters.mjs';
+import { withoutModeBlock } from './mode-block.mjs';
 import {
   REPLAY_FIXTURE_DIR,
   ReplayBundleError,
@@ -360,7 +361,7 @@ test('claude/resume-lost: a resumed session missing from the store is retried on
   assert.equal(fresh.argv.includes('--resume'), false);
   const freshId = fresh.argv[fresh.argv.indexOf('--session-id') + 1];
   assert.ok(freshId && freshId !== lostId, 'the retry starts a new session id');
-  const prompts = (spawn) => spawn.process.run.stdinFrames.map((frame) => frame.message.content[0].text);
+  const prompts = (spawn) => spawn.process.run.stdinFrames.map((frame) => withoutModeBlock(frame.message.content[0].text));
   assert.deepEqual(prompts(resumed), ['delta prompt']);
   assert.deepEqual(prompts(fresh), ['full history prompt'], 'the fresh session gets the full history');
 
@@ -397,7 +398,7 @@ test('codex/app-server-resume-lost: a gone thread starts a new one and receives 
   const inject = frames.find((frame) => frame.method === 'thread/inject_items');
   assert.equal(inject.params.items.length, 1 + full.entries.length, 'the full history, not the delta');
   const turn = frames.find((frame) => frame.method === 'turn/start');
-  assert.deepEqual(turn.params.input, [{ type: 'text', text: full.plainText }]);
+  assert.deepEqual(turn.params.input.map((item) => ({ ...item, text: withoutModeBlock(item.text) })), [{ type: 'text', text: full.plainText }]);
   assert.equal(end.stopReason, 'completed');
   assert.equal(end.resumeLost, true);
   assert.equal(end.handoffUncertain, undefined);

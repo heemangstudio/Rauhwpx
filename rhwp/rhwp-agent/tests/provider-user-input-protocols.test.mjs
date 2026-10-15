@@ -13,6 +13,7 @@ import {
   encodeCodexRequestUserInputFrame,
   selectCodexUserInputTransport,
 } from '../agents/codex.mjs';
+import { withoutModeBlock } from './mode-block.mjs';
 
 const baseOpts = {
   rootDir: '/tmp/rhwp',
@@ -198,8 +199,8 @@ test('Claude closes each SDK query before turn-end and resumes in a fresh query'
   session.sendUserMessage('Continue the same session');
   await waitUntil(() => events.filter((event) => event.type === 'turn-end').length === 2);
 
-  assert.equal(prompts[0].message.content[0].text, 'Choose a runtime');
-  assert.equal(prompts[1].message.content[0].text, 'Continue the same session');
+  assert.equal(withoutModeBlock(prompts[0].message.content[0].text), 'Choose a runtime');
+  assert.equal(withoutModeBlock(prompts[1].message.content[0].text), 'Continue the same session');
   assert.equal(optionsByQuery.length, 2);
   assert.ok(optionsByQuery[0].tools.includes('AskUserQuestion'));
   assert.equal(typeof optionsByQuery[0].sessionId, 'string');
@@ -528,7 +529,7 @@ test('Claude waits for async SDK startup cleanup before dispatching the legacy f
   releaseClose();
   await legacyWritten;
   assert.equal(spawnCalls, 1);
-  assert.equal(JSON.parse(stdin[0]).message.content[0].text, 'Fallback only after shutdown');
+  assert.equal(withoutModeBlock(JSON.parse(stdin[0]).message.content[0].text), 'Fallback only after shutdown');
   await session.dispose();
 });
 
@@ -580,7 +581,7 @@ test('Claude reacquires its launch reservation for SDK fallback and discards a c
   assert.equal(preparations, 3);
   assert.equal(releases, 3, 'successful and cancelled launch reservations must all release');
   assert.equal(spawns, 1);
-  assert.deepEqual(stdin.map((value) => JSON.parse(value).message.content[0].text), ['current prompt']);
+  assert.deepEqual(stdin.map((value) => withoutModeBlock(JSON.parse(value).message.content[0].text)), ['current prompt']);
 });
 
 test('Claude quarantines an async SDK startup failure when cleanup proof times out', async () => {
@@ -647,7 +648,7 @@ test('Claude retries through the legacy MCP transport when SDK startup fails bef
   });
   session.sendUserMessage('Fallback prompt');
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(JSON.parse(stdin[0]).message.content[0].text, 'Fallback prompt');
+  assert.equal(withoutModeBlock(JSON.parse(stdin[0]).message.content[0].text), 'Fallback prompt');
   await session.dispose();
 });
 

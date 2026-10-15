@@ -37,6 +37,7 @@ import {
   systemBriefFor,
   truncate,
   validateExecutionMode,
+  withModeTurnBlock,
 } from './backend.mjs';
 import {
   createClaudeAskUserQuestionPermissionHandler,
@@ -1792,10 +1793,12 @@ export function createClaudeSession(opts, {
       return canResumeClaudeSession(opts, id);
     },
     sendUserMessage(text, { resumeFallbackText, replaceSession } = {}) {
+      // 시스템 프롬프트는 모드와 무관하다 — 현재 모드는 사용자 메시지 앞 블록으로 싣는다.
+      // 모드는 턴 사이에서만 바뀌므로 대기 중인 턴의 블록이 낡지 않는다.
       queueTurn({
         kind: 'message',
-        text,
-        retryText: typeof resumeFallbackText === 'string' && resumeFallbackText ? resumeFallbackText : text,
+        text: withModeTurnBlock(opts, text),
+        retryText: withModeTurnBlock(opts, typeof resumeFallbackText === 'string' && resumeFallbackText ? resumeFallbackText : text),
         replaceSession: replaceSession === true,
       });
     },

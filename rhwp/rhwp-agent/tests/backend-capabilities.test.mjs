@@ -36,8 +36,8 @@ import {
 } from '../agents/codex-app-server.mjs';
 import { buildPiArgv, buildPiEnv } from '../agents/pi.mjs';
 import {
-  directSystemBrief,
   mcpCapabilityEnv,
+  modeTurnBlockFor,
   mcpRuntimeFor,
   parallelWorkBriefFor,
   providerInteractionMode,
@@ -519,92 +519,79 @@ test('a chat-local native grant preserves document workflow and safe review acro
   }
 });
 
-test('phase prompts separate planning from approved implementation', () => {
-  const planning = systemBriefFor({ workflow: 'plan', phase: 'planning' });
-  assert.match(planning, /app-only AGENTS\.md/);
-  assert.match(planning, /cannot change it/);
-  assert.match(planning, /instruction updates are available during plan implementation/);
-  assert.doesNotMatch(planning, /update_agent_instructions/);
-  assert.match(planning, /플랜 \(plan\) mode/);
-  assert.match(planning, /read-only: the local filesystem and live document cannot be changed/);
-  assert.match(planning, /The user can keep editing the live document during planning/);
-  assert.match(planning, /live-document notification/);
-  assert.match(planning, /not a request to implement or draft a plan/);
-  assert.match(planning, /native question interaction or ask_user_question/);
-  assert.match(planning, /grilling product skill/);
-  assert.match(planning, /The plan is ready only once that tool returns success/);
-  assert.match(planning, /read-only workspace, web, subagent, and rhwp MCP capabilities available/);
-  assert.doesNotMatch(planning, /sandboxed Bash/);
-  assert.match(planning, /present-plan product skill/);
-  assert.match(planning, /final action of its turn/);
-  // 승인 시 사용자가 실행 권한을 고른다: 에이전트(검토) 또는 전체(직접 적용).
-  assert.match(planning, /에이전트 \(edits staged for their review\)/);
-  assert.match(planning, /전체 \(full access, edits apply directly\)/);
-  assert.match(planning, /download_file/);
+const MODE_SWITCH_CASES = [
+  ['채팅', { workflow: 'question', phase: 'questioning', permissionProfile: 'safe' }],
+  ['플랜', { workflow: 'plan', phase: 'planning', permissionProfile: 'safe' }],
+  ['플랜 승인 대기', { workflow: 'plan', phase: 'awaiting-approval', permissionProfile: 'safe' }],
+  ['에이전트', { workflow: 'direct', phase: 'implementing', permissionProfile: 'safe' }],
+  ['전체', { workflow: 'direct', phase: 'implementing', permissionProfile: 'unrestricted' }],
+  ['실행 (에이전트)', { workflow: 'plan', phase: 'implementing', permissionProfile: 'safe' }],
+  ['실행 (전체)', { workflow: 'plan', phase: 'implementing', permissionProfile: 'unrestricted' }],
+];
 
-  const question = systemBriefFor({ workflow: 'question', phase: 'questioning' });
-  assert.match(question, /채팅 \(chat\) mode/);
-  assert.match(question, /present_implementation_plan is not part of it/);
-  assert.match(question, /live document cannot be changed in this mode/);
-  assert.match(question, /The user can keep editing the live document/);
-  assert.match(question, /native question interaction or ask_user_question/);
-  assert.doesNotMatch(question, /present-plan product skill/);
+test('mode switches keep every provider system prompt byte-identical so the prompt cache survives', () => {
+  // 모드를 바꿔도 같은 provider 세션을 이어 받는다. 캐시되는 앞부분(시스템 프롬프트)이 바뀌면
+  // 캐시가 통째로 버려지므로, 현재 모드는 턴마다 사용자 메시지 앞 블록으로만 알린다.
+  const gates = () => ({ requestable: true, chatMayEdit: false });
+  const prompts = {
+    claude: (opts) => argValue(buildClaudeArgv(opts, sessionId, true), '--append-system-prompt'),
+    'claude-sdk': (opts) => buildClaudeSdkOptions(
+      { ...opts, requestUserInput: async () => null, agentRole: 'chat' }, sessionId, true, new AbortController(),
+    ).systemPrompt.append,
+    codex: (opts) => systemBriefFor(opts, 'codex'),
+    pi: (opts) => argValue(buildPiArgv({ ...opts, piRoot: '/pi' }, sessionId, {}), '--system-prompt'),
+  };
+  for (const [provider, promptOf] of Object.entries(prompts)) {
+    const seen = new Set(MODE_SWITCH_CASES.map(([, mode]) => promptOf({ ...baseOpts, ...mode, projectToolGates: gates })));
+    assert.equal(seen.size, 1, `${provider} system prompt changed across modes`);
+  }
+  // 채팅 권한(local-execution)도 시스템 프롬프트를 바꾸지 않는다 — 부여는 모드 블록이 알린다.
+  const granted = { ...baseOpts, workflow: 'question', phase: 'questioning', chatPermissionGrants: ['local-execution'], agentRole: 'chat' };
+  assert.equal(systemBriefFor(granted, 'codex'), systemBriefFor({ ...granted, chatPermissionGrants: [] }, 'codex'));
+  assert.match(modeTurnBlockFor(granted), /granted local-execution/);
+  assert.doesNotMatch(modeTurnBlockFor({ ...granted, chatPermissionGrants: [] }), /granted local-execution/);
+});
+
+test('the per-turn mode block names the current mode, phase and edit lifecycle', () => {
+  const blocks = MODE_SWITCH_CASES.map(([, mode]) => modeTurnBlockFor(mode));
+  assert.equal(new Set(blocks).size, blocks.length, 'each mode and phase has its own block');
+  for (const block of blocks) {
+    assert.match(block, /^<rhwp_mode>\n[\s\S]*\n<\/rhwp_mode>$/);
+    assert.match(block, /supersedes any earlier mode or permission text/);
+  }
+  const [chat, planning, awaiting, agent, full, implementingSafe, implementingFull] = blocks;
+  assert.match(chat, /채팅 \(chat\), read-only/);
+  assert.match(planning, /플랜 \(plan\), planning/);
+  assert.match(awaiting, /awaiting the user's approval/);
+  for (const block of [agent, implementingSafe]) assert.match(block, /held for the user's review/);
+  for (const block of [full, implementingFull]) assert.match(block, /no review step/);
+  assert.match(implementingSafe, /plan implementation, approved to run as 에이전트/);
+  assert.match(implementingFull, /plan implementation, approved to run as 전체/);
+  // 설정이 채팅의 프로젝트 변경을 끄면 그 사실도 블록이 싣는다.
+  assert.match(modeTurnBlockFor({ workflow: 'question', projectToolGates: { chatMayEdit: false } }), /Research project changes are turned off/);
+  assert.equal(modeTurnBlockFor({ workflow: 'direct', systemPromptOverride: 'AUTONOMOUS TEMPLATE WORKER' }), '');
+});
+
+test('the mode-agnostic brief describes every mode and both edit lifecycles', () => {
+  const brief = systemBriefFor({ workflow: 'direct' });
+  assert.match(brief, /채팅 \(chat\): read-only conversation/);
+  assert.match(brief, /플랜 \(plan\): research the task/);
+  assert.match(brief, /Plan implementation: executing the approved canonical implementation plan/);
+  assert.match(brief, /에이전트: you can answer, discuss, and edit/);
+  assert.match(brief, /전체 \(full access\): full access to the live document/);
+  assert.match(brief, /<rhwp_mode> block at the top of each user message/);
+  assert.match(brief, /held for the user's review/);
+  assert.match(brief, /marked as stopped/);
+  assert.match(brief, /including apply_engine_edits batches, apply directly/);
+  assert.match(brief, /There is no review step/);
+  assert.match(brief, /update_agent_instructions/);
+  assert.match(brief, /In 채팅 and 플랜, read_agent_instructions reads/);
+  assert.match(brief, /present-plan product skill/);
+  assert.match(brief, /native question interaction or ask_user_question/);
+  assert.match(brief, /update_todos is the todo list the user watches/);
   // 슬래시 명령은 사라졌다 — 채팅 모드는 /plan, /build 로 안내하지 않는다.
-  assert.doesNotMatch(question, /\/plan|\/build|\/question/);
-  assert.match(planning, /search_reference_files/);
-  assert.match(planning, /untrusted reference data/);
-
-  const implementing = systemBriefFor({ workflow: 'plan', phase: 'implementing', permissionProfile: 'unrestricted' });
-  assert.match(implementing, /update_agent_instructions/);
-  assert.match(implementing, /never persists agent-provided content until the user confirms/);
-  assert.match(implementing, /approved canonical implementation plan/);
-  assert.match(implementing, /relevant workspace and live-document state are worth re-reading/);
-  assert.match(implementing, /every validation listed in the plan/);
-  assert.match(implementing, /update_todos is the todo list the user watches/);
-  assert.match(implementing, /completed, blocked, and deferred items/);
-  assert.match(implementing, /completed means the work and its check succeeded/);
-  assert.doesNotMatch(implementing, /roll back staged changes|roll them back/);
-  assert.match(implementing, /apply directly to the live document as ordinary undoable edits/);
-  assert.match(implementing, /can mix with semantic writes in the same turn/);
-  assert.doesNotMatch(implementing, /present_implementation_plan/);
-  assert.doesNotMatch(implementing, /Send a separate final outcome/);
-});
-
-test('permission profiles split review-gated staging from direct editing', () => {
-  // 프로필 미지정은 안전(에이전트)으로 fail-safe — 검토 대기 문구가 기본이어야 한다.
-  for (const safeBrief of [
-    systemBriefFor({ workflow: 'direct' }),
-    systemBriefFor({ workflow: 'direct', permissionProfile: 'safe' }),
-    systemBriefFor({ workflow: 'plan', phase: 'implementing', permissionProfile: 'safe' }),
-  ]) {
-    assert.match(safeBrief, /held for the user's review/);
-    assert.match(safeBrief, /marked as stopped/);
-    assert.match(safeBrief, /apply_engine_edits batches/);
-    assert.doesNotMatch(safeBrief, /unavailable in this perm/);
-    assert.doesNotMatch(safeBrief, /There is no review step/);
-  }
-  assert.match(systemBriefFor({ workflow: 'direct', permissionProfile: 'safe' }), /editing is optional/);
-
-  for (const freeBrief of [
-    systemBriefFor({ workflow: 'direct', permissionProfile: 'unrestricted' }),
-    systemBriefFor({ workflow: 'plan', phase: 'implementing', permissionProfile: 'unrestricted' }),
-  ]) {
-    assert.match(freeBrief, /including apply_engine_edits batches, apply directly/);
-    assert.match(freeBrief, /one undo step/);
-    assert.match(freeBrief, /There is no review step/);
-    assert.doesNotMatch(freeBrief.replace(RHWP_TOOL_RULES, ''), /held for the user's review/);
-  }
-});
-
-test('full-access direct brief stays minimal', () => {
-  // 전체 모드는 환경·권한만 짧게 말한다 — 사용법은 도구 설명과 RHWP TOOL RULES 몫이다.
-  const full = directSystemBrief('unrestricted');
-  const core = full.split('\n\nPARALLEL WORK:')[0];
-  assert.ok(core.length < 900, `full-access core brief grew to ${core.length} chars`);
-  assert.match(core, /전체 \(full access\) mode/);
-  assert.match(core, /raw engine edits/);
-  assert.match(core, /RHWP TOOL RULES/);
-  assert.doesNotMatch(full, /EDITING NOTES/);
+  assert.doesNotMatch(brief, /\/plan|\/build|\/question/);
+  assert.doesNotMatch(brief, /You are in /);
 });
 
 test('no brief forces turn-ending messages, update cadence, or color defaults', () => {
@@ -1306,7 +1293,7 @@ test('Claude proves legacy cleanup before turn-end and resumes in a fresh proces
   await waitUntil(() => spawns.length === 2);
   assert.ok(spawns[1].argv.includes('--resume'));
   assert.equal(argValue(spawns[1].argv, '--resume'), 'legacy-resume-id');
-  assert.equal(JSON.parse(spawns[1].process.stdin.chunks[0]).message.content[0].text, 'turn B');
+  assert.match(JSON.parse(spawns[1].process.stdin.chunks[0]).message.content[0].text, /^<rhwp_mode>\n[\s\S]*<\/rhwp_mode>\n\nturn B$/);
   assert.equal(events.filter((event) => event.type === 'turn-start').length, 2);
   assert.equal(await session.dispose(), true);
 });

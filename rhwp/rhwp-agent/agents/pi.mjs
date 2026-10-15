@@ -16,6 +16,7 @@ import {
   redactDiagnosticText,
   truncate,
   validateExecutionMode,
+  withModeTurnBlock,
   isSafeSessionId,
 } from './backend.mjs';
 import {
@@ -929,7 +930,8 @@ export function createPiSession(opts, {
       proc.stdin.on('error', (err) => {
         process.stderr.write(`[pi] stdin write error: ${redactDiagnosticText(err?.message ?? err, [opts.token])}\n`);
       });
-      proc.stdin.end(text);
+      // 시스템 프롬프트는 모드와 무관하다 — 현재 모드는 사용자 메시지 앞 블록으로 싣는다.
+      proc.stdin.end(withModeTurnBlock(opts, text));
       proc.stdout.on('data', (chunk) => {
         if (proc !== child || disposed || !acceptOutput) return;
         readStdout(chunk);
