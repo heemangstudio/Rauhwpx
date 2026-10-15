@@ -57,7 +57,6 @@ body.ag-sidebar-resizing {
 :root,
 .ag-root {
   /* 문서 미리보기와 브라우저의 고정 색상. */
-  --ag-mode-chat-blue: #4f8fea;
   --ag-paper-white: #fff;
   --ag-dialog-scrim: rgb(0 0 0 / 0.32);
   --ag-shadow-7: rgb(0 0 0 / 7%);
@@ -1049,14 +1048,13 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 /* ─── 에이전트 모드 칩 ──────────────────────────────────
-   macOS 팝업 버튼: 모드 아이콘 + 이름 + 위아래 갈매기. 채팅 파랑 · 플랜 차콜 ·
-   에이전트 잉크 · 전체 빨강. 누름은 즉시 줄어들고, 메뉴는 칩에서 자라난다. */
+   macOS 팝업 버튼: 모드 아이콘 + 이름 + 위아래 갈매기. 권한이 넓을수록 잉크가
+   진해진다: 채팅 · 플랜 · 에이전트 · 전체. 누름은 즉시 줄어들고, 메뉴는 칩에서 자라난다. */
 .ag-mode {
-  /* 채팅은 강조색(빨강)과 상관없이 늘 파랑이다. */
-  --ag-mode-chat: color-mix(in oklab, var(--ag-mode-chat-blue) 82%, var(--ag-text));
-  --ag-mode-plan: color-mix(in oklab, var(--ag-text) 78%, var(--ag-bg));
-  --ag-mode-agent: var(--ag-ok);
-  --ag-mode-full: var(--ag-err);
+  --ag-mode-chat: color-mix(in oklab, var(--ag-text) 52%, var(--ag-bg));
+  --ag-mode-plan: color-mix(in oklab, var(--ag-text) 68%, var(--ag-bg));
+  --ag-mode-agent: color-mix(in oklab, var(--ag-text) 84%, var(--ag-bg));
+  --ag-mode-full: var(--ag-text);
   --ag-mode-color: var(--ag-mode-agent);
   position: relative;
   display: inline-flex;
