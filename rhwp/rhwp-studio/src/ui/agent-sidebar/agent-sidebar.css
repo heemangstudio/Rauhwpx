@@ -429,6 +429,17 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   outline-offset: var(--ag-focus-offset);
 }
 
+/* 라이선스 읽기 전용(문서 보기 전용)에서는 에이전트를 열 수 없다. */
+.ag-collapse-tab:disabled,
+.ag-collapse-tab:disabled:is(:hover, :active) {
+  background: transparent;
+  box-shadow: none;
+  color: var(--ui-text-muted);
+  opacity: 0.38;
+  cursor: default;
+  transform: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ag-collapse-tab {
     transition: none;

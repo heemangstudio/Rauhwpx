@@ -1,6 +1,7 @@
 import type { DesktopHost } from '../desktop-integration';
 import { licenseSummary, msUntilNextTrialTick, trialTimeLeft, type LicenseStatus } from './agent-sidebar/settings-license';
 import { showToast } from './toast';
+import { setLicenseViewerMode } from './license-viewer-mode';
 import './license-gate.css';
 
 /** 체험이 끝나기 이만큼 전에 자동 저장을 시작한다. 이 저장은 메인이 기한 전에 받는다. */
@@ -20,6 +21,8 @@ export interface LicenseGateOptions {
  * 메인의 상태를 입력·명령·에이전트에 함께 적용한다. 상태를 읽기 전에는 편집을 잠근다.
  * 체험 중이거나 읽기 전용이면 메뉴 막대의 명령 검색 왼쪽에 상태 알약을 둔다. 누르면 활성화 창을 연다.
  * 체험이 끝나는 순간에는 바뀐 문서를 먼저 저장한 뒤 잠근다.
+ * 라이선스가 읽기 전용이면 문서 보기 전용(license-viewer-mode)으로 두어 에이전트도 닫는다.
+ * 상태를 확인하는 동안에는 편집만 잠그고 에이전트는 그대로 둔다.
  */
 export async function installLicenseGate(
   setReadOnly: (value: boolean) => void,
@@ -109,6 +112,7 @@ export async function installLicenseGate(
     if (trialFinished) return;
     trialFinished = true;
     setReadOnly(true);
+    setLicenseViewerMode(true);
     const endsAt = current?.trial.endsAt ?? 0;
     let failed = 0;
     if (options.saveBeforeLock && options.hasUnsavedWork?.()) {
@@ -142,7 +146,9 @@ export async function installLicenseGate(
     }
     // 활성화하면 다시 편집할 수 있다.
     if (status.canEdit && status.state !== 'trial') trialFinished = false;
-    setReadOnly(locked(status));
+    const readOnly = locked(status);
+    setReadOnly(readOnly);
+    setLicenseViewerMode(readOnly);
     paint();
   }
 
@@ -162,6 +168,7 @@ export async function installLicenseGate(
     const initial = await api.getStatus();
     if (!receivedChange) render(initial);
   } catch {
+    setLicenseViewerMode(true);
     show('라이선스 확인 실패 · 읽기 전용', '활성화', true);
   }
 }
