@@ -30,7 +30,7 @@ export const EXPIRY_SAVE_GRACE_MS = 60 * 1000;
 export const LICENSE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** 잠자기에서 깬 뒤 등 24시간이 지났는지 이 간격으로 본다. */
 const SCHEDULE_TICK_MS = 60 * 1000;
-export const PRICING_URL = 'https://heemangstudios.com/pricing';
+export const PRICING_URL = 'https://heemangstudios.com/pricing.html';
 const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export class LicenseReadOnlyError extends Error {
