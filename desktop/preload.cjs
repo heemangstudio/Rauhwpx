@@ -55,6 +55,8 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     deactivate: () => ipcRenderer.invoke('license:deactivate'),
     openActivation: () => ipcRenderer.invoke('license:open-window'),
     openPricing: () => ipcRenderer.invoke('license:open-pricing'),
+    // 체험이 끝날 때 열린 문서를 자동 저장하려고 한 번 유예를 받는다.
+    beginExpirySave: () => ipcRenderer.invoke('license:begin-expiry-save'),
     onChange: (callback) => {
       const listener = (_event, status) => callback(status);
       ipcRenderer.on('license:changed', listener);

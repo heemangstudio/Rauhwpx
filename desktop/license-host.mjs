@@ -17,6 +17,8 @@ export function installLicenseHost({
 }) {
   let licenseWindow = null;
   let saveQueue = Promise.resolve();
+  // 체험이 끝날 때 자동 저장 유예를 받은 창. 이 창의 쓰기만 유예 안에서 받는다.
+  const expirySavers = new WeakSet();
 
   function isLicenseWindowEvent(event) {
     return Boolean(licenseWindow && !licenseWindow.isDestroyed() && event.sender === licenseWindow.webContents);
@@ -78,6 +80,11 @@ export function installLicenseHost({
     'license:open-pricing': () => shell.openExternal(PRICING_URL),
     'license:open-window': () => { openWindow(); return true; },
     'license:close-window': () => { licenseWindow?.close(); return true; },
+    'license:begin-expiry-save': async (event) => {
+      const result = await manager.beginExpirySave();
+      if (result.ok && event?.sender) expirySavers.add(event.sender);
+      return result;
+    },
   };
   for (const [channel, handler] of Object.entries(handlers)) {
     ipcMain.handle(channel, (event, ...args) => {
@@ -87,9 +94,9 @@ export function installLicenseHost({
   }
 
   /** 저장 전에 부른다. 읽기 전용이면 활성화 창을 띄우고 LicenseReadOnlyError 를 던진다. */
-  async function guardSave() {
+  async function guardSave(options) {
     try {
-      return await manager.assertCanSave();
+      return await manager.assertCanSave(options);
     } catch (error) {
       if (error?.code === 'LICENSE_READ_ONLY') openWindow();
       throw error;
@@ -103,10 +110,15 @@ export function installLicenseHost({
     return status;
   }
 
-  /** 여러 창의 저장을 한 줄로 세워, 저장마다 확인한 뒤 쓴다. */
-  function save(write) {
+  /**
+   * 여러 창의 저장을 한 줄로 세워, 저장마다 확인한 뒤 쓴다. 받은 시각을 줄 서기 전에 남겨,
+   * 체험 중에 들어온 저장이 앞선 저장을 기다리다 기한을 넘겨도 거절하지 않는다.
+   */
+  function save(write, { sender = null } = {}) {
+    const requestedAt = manager.time();
+    const expirySave = Boolean(sender && expirySavers.has(sender));
     const result = saveQueue.then(async () => {
-      await guardSave();
+      await guardSave({ requestedAt, expirySave });
       return write();
     });
     saveQueue = result.catch(() => {});

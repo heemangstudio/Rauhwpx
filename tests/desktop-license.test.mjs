@@ -10,7 +10,7 @@ import {
   productionPublicKeysProvisioned, verifyLease,
 } from '../desktop/license-lease.mjs';
 import {
-  createLicenseManager, LicenseReadOnlyError, PRICING_URL, TRIAL_DURATION_MS,
+  createLicenseManager, EXPIRY_SAVE_GRACE_MS, LicenseReadOnlyError, PRICING_URL, TRIAL_DURATION_MS,
 } from '../desktop/license-manager.mjs';
 import { createMockLicenseServer, DEV_PUBLIC_KEYS, signLease } from './fixtures/license-mock-server.mjs';
 
@@ -344,33 +344,79 @@ test('trial deadline broadcasts read-only even without a license or network chec
   manager.stop();
 });
 
-test('native saves never use up the trial; only the 72-hour deadline ends it', async (t) => {
+class FakeLicenseWindow {
+  static opened = 0;
+  constructor() { FakeLicenseWindow.opened += 1; }
+  webContents = { setWindowOpenHandler() {}, on() {} };
+  isDestroyed() { return false; }
+  once() {}
+  on() {}
+  show() {}
+  focus() {}
+  loadURL() { return Promise.resolve(); }
+}
+
+async function hostFor(manager) {
   const { installLicenseHost } = await import('../desktop/license-host.mjs');
-  const { manager, clock } = await setup(t);
-  let opened = 0;
-  class Window {
-    constructor() { opened += 1; }
-    webContents = { setWindowOpenHandler() {}, on() {} };
-    isDestroyed() { return false; }
-    once() {}
-    on() {}
-    show() {}
-    focus() {}
-    loadURL() { return Promise.resolve(); }
-  }
+  const handlers = new Map();
+  FakeLicenseWindow.opened = 0;
   const host = installLicenseHost({
-    ipcMain: { handle() {} }, BrowserWindow: Window, shell: {}, manager,
+    ipcMain: { handle(channel, fn) { handlers.set(channel, fn); } },
+    BrowserWindow: FakeLicenseWindow, shell: {}, manager,
     isTrustedStudioEvent: () => true, log: quiet,
   });
+  return { host, invoke: (channel, sender) => handlers.get(channel)({ sender }) };
+}
+
+test('native saves never use up the trial; only the 72-hour deadline ends it', async (t) => {
+  const { manager, clock } = await setup(t);
+  const { host } = await hostFor(manager);
   await assert.rejects(host.save(async () => { throw new Error('disk full'); }), /disk full/);
   const written = [];
   const saves = await Promise.allSettled(Array.from({ length: 20 }, (_, n) => host.save(async () => { written.push(n); })));
   assert.equal(written.length, 20);
   assert.ok(saves.every((save) => save.status === 'fulfilled'));
   assert.equal((await manager.status()).state, 'trial');
-  assert.equal(opened, 0);
+  assert.equal(FakeLicenseWindow.opened, 0);
   clock.t = T0 + TRIAL_DURATION_MS;
   await assert.rejects(host.save(async () => { written.push('late'); }), (error) => error.code === 'LICENSE_READ_ONLY');
   assert.equal(written.includes('late'), false);
-  assert.equal(opened, 1, 'a refused save opens activation');
+  assert.equal(FakeLicenseWindow.opened, 1, 'a refused save opens activation');
+});
+
+test('a save received before the deadline is written even if it runs after it', async (t) => {
+  const { manager, clock } = await setup(t);
+  const { host } = await hostFor(manager);
+  await manager.status();
+  clock.t = T0 + TRIAL_DURATION_MS - 1000;
+  const written = [];
+  let finishFirst;
+  const first = host.save(() => new Promise((resolve) => { finishFirst = () => { written.push('first'); resolve(); }; }));
+  const second = host.save(async () => { written.push('second'); });
+  await new Promise((resolve) => setImmediate(resolve));
+  clock.t = T0 + TRIAL_DURATION_MS + 1000;
+  finishFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(written, ['first', 'second']);
+  await assert.rejects(host.save(async () => { written.push('after'); }), LicenseReadOnlyError);
+  assert.deepEqual(written, ['first', 'second']);
+});
+
+test('the expiry auto-save gets one short grace window for the window that asked', async (t) => {
+  const { manager, make, clock } = await setup(t);
+  const { host, invoke } = await hostFor(manager);
+  const studio = { id: 'studio' };
+  const other = { id: 'other' };
+  assert.equal((await invoke('license:begin-expiry-save', studio)).ok, false, 'no grace while the trial runs');
+  // 잠자기에서 깨어 기한을 한참 넘긴 뒤
+  clock.t = T0 + TRIAL_DURATION_MS + 5 * HOUR;
+  assert.equal((await invoke('license:begin-expiry-save', studio)).ok, true);
+  await host.save(async () => {}, { sender: studio });
+  await assert.rejects(host.save(async () => {}, { sender: other }), LicenseReadOnlyError);
+  await assert.rejects(host.save(async () => {}), LicenseReadOnlyError);
+  clock.t += EXPIRY_SAVE_GRACE_MS;
+  await assert.rejects(host.save(async () => {}, { sender: studio }), LicenseReadOnlyError);
+  const relaunched = await hostFor(make());
+  assert.equal((await relaunched.invoke('license:begin-expiry-save', studio)).ok, false, 'a restart does not reopen it');
+  await assert.rejects(relaunched.host.save(async () => {}, { sender: studio }), LicenseReadOnlyError);
 });

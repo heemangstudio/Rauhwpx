@@ -51,6 +51,7 @@ import {
   runSaveBeforeLeaving,
   whenSavesIdle,
   saveCurrentDocument,
+  saveToCurrentFileQuietly,
 } from '@/command/commands/file';
 import { editCommands, openClassicDocumentHistory } from '@/command/commands/edit';
 import {
@@ -1186,12 +1187,51 @@ function prepareCanvasKitLocalFonts(fontNames: readonly string[] | undefined): v
   });
 }
 
+/**
+ * 체험이 끝나 편집을 잠그기 전에 바뀐 문서를 모두 남긴다. 대화상자는 띄우지 않는다.
+ * 먼저 복구본으로 남기고, 파일이 있는 문서는 그 파일에 덮어 저장한다. 새 문서처럼 파일이 없거나,
+ * 검토를 기다리는 에이전트 편집이 있거나, 작업 사본인 문서는 복구본까지만 남긴다.
+ */
+async function saveOpenDocumentsBeforeLicenseLock(prepareWrite: () => Promise<void>): Promise<{ failed: number }> {
+  await whenSavesIdle().catch(() => {});
+  let failed = 0;
+  for (const session of [...liveSessions]) {
+    if (!session.documentState.isDirty()) continue;
+    if (session === attachedSession) {
+      try { inputHandler?.flushDeferredPaginationIfNeeded('license-expiry'); } catch { /* 복구본과 파일 저장은 그대로 시도한다 */ }
+    }
+    const kept = await session.autosave.flushAndWait('license-expiry');
+    if (session.writer || isManagedWorktree(session)) {
+      if (!kept) failed += 1;
+      continue;
+    }
+    if (session.wasm.currentFileHandle && !session.wasm.isNewDocument) await prepareWrite();
+    const result = await saveToCurrentFileQuietly(
+      { wasm: session.wasm, documentState: session.documentState, eventBus: session.bus },
+      async (handle) => {
+        if (session.documentId) {
+          bindNativeFileHandleIdentity(handle, {
+            documentId: session.documentId,
+            sourceDigest: session.wasm.documentDigest,
+            useSourceDigest: false,
+          });
+        }
+      },
+    );
+    if (result === 'failed' || (result === 'skipped' && !kept)) failed += 1;
+  }
+  return { failed };
+}
+
 async function initialize(): Promise<void> {
   installWebAppShell();
   installDesktopWindowChrome();
   await installLicenseGate(value => {
     licenseReadOnly = value;
     setDocumentReadOnly(documentReadOnly);
+  }, {
+    hasUnsavedWork: () => liveSessions.some((session) => session.documentState.isDirty()),
+    saveBeforeLock: saveOpenDocumentsBeforeLicenseLock,
   });
   installDesktopDocumentState({
     subscribe: (update) => {

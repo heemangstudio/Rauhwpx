@@ -290,14 +290,14 @@ async function chooseSaveAsFormat(services: CommandServices): Promise<SaveFormat
   ).format;
 }
 
-function createSaveBlob(services: CommandServices, format: SaveFormat): Blob {
+function createSaveBlob(services: Pick<CommandServices, 'wasm'>, format: SaveFormat): Blob {
   const bytes = exportDocumentForFormat(services.wasm, format);
   return new Blob([bytes as unknown as BlobPart], {
     type: SAVE_FORMAT_DETAILS[format].mimeType,
   });
 }
 
-function isHmlSaveEnabled(services: CommandServices): boolean {
+function isHmlSaveEnabled(services: Pick<CommandServices, 'wasm'>): boolean {
   const context = getHmlSaveContext(services);
   return resolveHmlSaveCapability(
     context.metadata,
@@ -305,7 +305,7 @@ function isHmlSaveEnabled(services: CommandServices): boolean {
   ).hmlEnabled;
 }
 
-function getHmlSaveContext(services: CommandServices) {
+function getHmlSaveContext(services: Pick<CommandServices, 'wasm'>) {
   return readHmlSaveContext(
     () => services.wasm.getHmlOpenMetadata(),
     () => services.wasm.hasHmlExportCapability(),
@@ -340,7 +340,7 @@ async function tryFileSystemSave(
 }
 
 function completeHandleSave(
-  services: CommandServices,
+  services: Pick<CommandServices, 'wasm' | 'documentState' | 'eventBus'>,
   sourceFormat: string,
   savedFormat: SaveFormat,
   result: SaveDocumentResult,
@@ -599,6 +599,41 @@ function assertCanSaveDocument(services: CommandServices): void {
 }
 
 export type SaveCurrentDocumentResult = SaveOutcome;
+
+/**
+ * 묻지 않고 지금 파일에 덮어 저장한다(체험이 끝나는 순간의 자동 저장).
+ * 새 문서·버전 기록 파일·형식을 골라야 하는 문서처럼 대화상자가 필요하면 'skipped'.
+ */
+export async function saveToCurrentFileQuietly(
+  services: Pick<CommandServices, 'wasm' | 'documentState' | 'eventBus'>,
+  validateTarget?: CommandServices['validateSaveHandle'],
+): Promise<'saved' | 'skipped' | 'failed'> {
+  const handle = services.wasm.currentFileHandle;
+  if (!handle || services.wasm.isNewDocument) return 'skipped';
+  if (isPortableHistoryFileName(services.wasm.fileName) || isPortableHistoryFileName(handle.name ?? '')) return 'skipped';
+  const sourceFormat = services.wasm.getSourceFormat();
+  const target = resolveSaveTarget(sourceFormat, services.wasm.fileName, handle);
+  const hmlEnabled = target.format !== 'hml' || isHmlSaveEnabled(services);
+  if (target.forceSaveAs || requiresSaveFormatChoice(target, hmlEnabled)) return 'skipped';
+  try {
+    const revision = services.documentState.captureRevision();
+    const blob = createSaveBlob(services, target.format);
+    const result = await saveDocumentToFileSystem({
+      blob,
+      suggestedName: target.suggestedName,
+      currentHandle: handle,
+      windowLike: window as FileSystemWindowLike,
+      forceSaveAs: false,
+      saveFormat: target.format,
+      validateTarget,
+    });
+    completeHandleSave(services, sourceFormat, target.format, result, 'save', revision, await savedBlobContent(blob));
+    return 'saved';
+  } catch (error) {
+    console.warn('[file:save] 자동 저장 실패:', error);
+    return 'failed';
+  }
+}
 
 /** 저장은 한 번에 하나만 실행한다 (겹친 쓰기가 오래된 바이트로 최신 저장을 덮지 않도록). */
 const saveSession = new SaveSession();

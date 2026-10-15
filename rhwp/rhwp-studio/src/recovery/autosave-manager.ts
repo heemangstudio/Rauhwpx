@@ -327,6 +327,18 @@ export class AutosaveManager {
   }
 
   /**
+   * 지금 내용을 복구본으로 남기고 결과를 기다린다. 진행 중인 저장이 있으면 끝난 뒤 한 번 더 쓴다.
+   * saveForRecovery 와 달리 이후의 예약 저장은 그대로 둔다.
+   */
+  async flushAndWait(reason = 'manual'): Promise<boolean> {
+    if (this.sealedForRecovery) return false;
+    while (this.saving && this.saveSettled) await this.saveSettled;
+    const current = this.current;
+    if (!current) return false;
+    return (await this.saveOnce(current, reason, { retryOnFailure: true })).ok;
+  }
+
+  /**
    * 엔진이 멈춘 직후의 복구본. 진행 중인 저장이 있으면 끝나기를 기다린 뒤(그 저장은 멈추기 전이나
    * 멈춘 순간의 내용이다) 지금 내용으로 한 번 더 내보내 기록한다. 실패해도 다시 시도하지 않고,
    * 이후의 예약 저장도 멈춘다. 실패하면 앞서 남긴 자동 저장본이 있는지 함께 알린다.

@@ -1365,7 +1365,10 @@ ipcMain.handle('desktop:native-file-validate-save', (event, handleId, identity) 
 ipcMain.handle('desktop:native-file-write', async (event, handleId, bytes, identity) => {
   const session = sessionForEvent(event);
   // 읽기 전용(체험 끝·해지·오프라인 7일 초과)이면 쓰지 않는다. 문서 열기와 보기는 막지 않는다.
-  const written = await licenseHost.save(() => nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases));
+  const written = await licenseHost.save(
+    () => nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases),
+    { sender: event.sender },
+  );
   noteRecentDocument(session.sessionId, handleId);
   // 저장한 내용 표시(크기·sha256)를 북마크에 남겨 옮겨진 파일을 다음 실행에도 알아본다.
   void persistNativeBookmarks().catch(() => {});

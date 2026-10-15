@@ -6,6 +6,8 @@
 // - 인터넷이 없으면 가진 lease 가 끝날 때까지(최대 7일) 그대로 쓴다.
 // - 환불 등으로 키가 해지되면(revoked) 읽기 전용이 된다. 체험 시간이 남아 있어도 마찬가지다.
 // - 읽기 전용: 문서는 열고 볼 수 있지만 저장(native 파일 쓰기)은 거절한다.
+// - 체험이 끝나는 순간: 끝나기 전에 시작한 저장은 마저 쓴다. 끝난 뒤에는 자동 저장을 위해
+//   한 번만 짧은 유예(1분)를 연다. 유예는 상태 파일에 남아 다시 실행해도 다시 열리지 않는다.
 //
 // 상태 파일은 userData/license.json. 라이선스 키는 비밀 저장소(secret-vault)에 두지 않는다.
 // 비밀 저장소의 "AI 제공자 초기화"가 키까지 지우고, 실행할 때마다 키체인 확인을 부르기 때문이다.
@@ -24,6 +26,7 @@ import { LicenseServerError } from './license-client.mjs';
 
 export const LICENSE_STATE_FILE = 'license.json';
 export const TRIAL_DURATION_MS = 72 * 60 * 60 * 1000;
+export const EXPIRY_SAVE_GRACE_MS = 60 * 1000;
 export const LICENSE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** 잠자기에서 깬 뒤 등 24시간이 지났는지 이 간격으로 본다. */
 const SCHEDULE_TICK_MS = 60 * 1000;
@@ -73,6 +76,7 @@ function sanitizeState(raw) {
   if (raw.trial && Number.isSafeInteger(raw.trial.startedAt) && raw.trial.startedAt > 0) {
     state.trial = { startedAt: raw.trial.startedAt };
     if (Number.isSafeInteger(raw.trial.endedAt) && raw.trial.endedAt > 0) state.trial.endedAt = raw.trial.endedAt;
+    if (Number.isSafeInteger(raw.trial.expirySaveAt) && raw.trial.expirySaveAt > 0) state.trial.expirySaveAt = raw.trial.expirySaveAt;
   }
   const key = normalizeLicenseKey(raw.license?.key);
   if (key) {
@@ -102,6 +106,7 @@ export function createLicenseManager({
   enforce = true,
   now = Date.now,
   trialDurationMs = TRIAL_DURATION_MS,
+  expirySaveGraceMs = EXPIRY_SAVE_GRACE_MS,
   checkIntervalMs = LICENSE_CHECK_INTERVAL_MS,
   fs = { mkdir, readFile, rename, rm, writeFile },
   onChange = () => {},
@@ -323,11 +328,43 @@ export function createLicenseManager({
     });
   }
 
-  async function assertCanSave() {
+  /** 체험 시간이 다 되어 끝났는지. 비활성화로 끝낸 체험은 아니다. */
+  function trialRanOut(status) {
+    return status.state === 'trial_expired' && !state.trial.endedAt;
+  }
+
+  /**
+   * 체험이 끝난 뒤 열린 문서를 자동 저장하려고 부른다. 처음 부른 때부터 유예를 한 번만 연다.
+   * 잠자기에서 깨어 기한을 넘긴 경우도 여기서 받는다.
+   */
+  async function beginExpirySave() {
+    return serialize(async () => {
+      await load();
+      const status = computeStatus();
+      if (!trialRanOut(status)) return { ok: false, until: null };
+      const t = clock();
+      if (!state.trial.expirySaveAt) {
+        state.trial.expirySaveAt = t;
+        await persist();
+      }
+      const until = state.trial.expirySaveAt + expirySaveGraceMs;
+      return { ok: t < until, until };
+    });
+  }
+
+  /**
+   * requestedAt: 저장 요청을 받은 시각(메인의 시계). 체험 중에 받은 저장은 기한이 지나도 마저 쓴다.
+   * expirySave: beginExpirySave 로 유예를 받은 창의 자동 저장.
+   */
+  async function assertCanSave({ requestedAt = null, expirySave = false } = {}) {
     await load();
     const status = computeStatus();
-    if (!status.canEdit) throw new LicenseReadOnlyError(status.state);
-    return status;
+    if (status.canEdit) return status;
+    if (trialRanOut(status)) {
+      if (requestedAt !== null && requestedAt < status.trial.endsAt) return status;
+      if (expirySave && state.trial.expirySaveAt && clock() < state.trial.expirySaveAt + expirySaveGraceMs) return status;
+    }
+    throw new LicenseReadOnlyError(status.state);
   }
 
   function start({ setIntervalImpl = setInterval, clearIntervalImpl = clearInterval } = {}) {
@@ -354,6 +391,9 @@ export function createLicenseManager({
     activate,
     deactivate,
     assertCanSave,
+    beginExpirySave,
+    /** 메인이 보는 지금 시각. 시계를 되돌려도 줄지 않는다. */
+    time: () => (state ? clock() : now()),
     start,
     stop,
   };
