@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { rm, readFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -101,7 +101,7 @@ import {
   removeStaleLaunchDirectories,
   writeLaunchOwnerMetadata,
 } from './runtime-cleanup.mjs';
-import { reportUniqueInstall, uniqueInstallsPublicUrl } from './unique-install.mjs';
+import { reportUniqueInstall, uniqueInstallsPublicUrl, uniqueInstallStatePath } from './unique-install.mjs';
 import { createLicenseClient, DEFAULT_LICENSE_API_BASE } from './license-client.mjs';
 import { PRODUCTION_LICENSE_PUBLIC_KEYS } from './license-lease.mjs';
 import { createLicenseManager, licenseStatePath } from './license-manager.mjs';
@@ -1102,6 +1102,11 @@ const licenseManager = createLicenseManager({
     baseUrl: (!app.isPackaged && process.env.HAMA_LICENSE_API_BASE) || DEFAULT_LICENSE_API_BASE,
   }),
   publicKeys: licensePublicKeys(),
+  existingInstallId: async () => {
+    try {
+      return JSON.parse(await readFile(uniqueInstallStatePath(app.getPath('userData')), 'utf8')).installId ?? null;
+    } catch { return null; }
+  },
   appVersion: app.getVersion(),
   platform: process.platform,
   enforce: app.isPackaged || process.env.HAMA_LICENSE_GATE === 'on',
@@ -1360,9 +1365,7 @@ ipcMain.handle('desktop:native-file-validate-save', (event, handleId, identity) 
 ipcMain.handle('desktop:native-file-write', async (event, handleId, bytes, identity) => {
   const session = sessionForEvent(event);
   // 읽기 전용(체험 끝·해지·오프라인 7일 초과)이면 쓰지 않는다. 문서 열기와 보기는 막지 않는다.
-  await licenseHost.guardSave();
-  const written = await nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases);
-  void licenseHost.noteSave();
+  const written = await licenseHost.save(() => nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases));
   noteRecentDocument(session.sessionId, handleId);
   // 저장한 내용 표시(크기·sha256)를 북마크에 남겨 옮겨진 파일을 다음 실행에도 알아본다.
   void persistNativeBookmarks().catch(() => {});

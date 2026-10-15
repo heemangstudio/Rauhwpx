@@ -1,3 +1,4 @@
+import { installLicenseGate } from './ui/license-gate';
 import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
 import { installDocumentTitle } from '@/ui/document-title';
 import { worktreeIdentity } from '@/ui/worktree-chip';
@@ -360,7 +361,7 @@ function isManagedWorktree(session = attachedSession): boolean {
 }
 
 function sessionReadOnly(session = attachedSession): boolean {
-  return documentReadOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
+  return documentReadOnly || licenseReadOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
 }
 
 async function withWorktreeMutation<T>(session: DocumentSession, run: () => Promise<T>): Promise<T> {
@@ -425,7 +426,7 @@ const trapRecoveryPage = new TrapRecoveryPage({
   attached: () => attachedSession,
   saveCopy: saveTrappedDocumentCopy,
   run: () => trapRecoveryRun,
-  readOnly: () => documentReadOnly,
+  readOnly: () => licenseReadOnly || documentReadOnly,
   deliveredLaunchHandleIds,
   deliveredGeneratedDocumentIds,
   storage: sessionStorageOrNull,
@@ -557,6 +558,7 @@ let editorStyleOverflow: EditorStyleOverflow | null = null;
 let ruler: Ruler | null = null;
 let rendererSession: RendererSession | null = null;
 let editMode: EditorEditMode = 'normal';
+let licenseReadOnly = false;
 let documentReadOnly = new URLSearchParams(window.location.search).get('templatePreview') === '1';
 let agentEditingLease: AgentEditingLease = { active: false, agent: 'codex' };
 let rendererRuntimeRequest: EmbedRendererRuntimeRequestV1 | null = null;
@@ -1187,6 +1189,10 @@ function prepareCanvasKitLocalFonts(fontNames: readonly string[] | undefined): v
 async function initialize(): Promise<void> {
   installWebAppShell();
   installDesktopWindowChrome();
+  await installLicenseGate(value => {
+    licenseReadOnly = value;
+    setDocumentReadOnly(documentReadOnly);
+  });
   installDesktopDocumentState({
     subscribe: (update) => {
       desktopDocumentStateUpdate = update;
@@ -1561,7 +1567,7 @@ function installDocumentVersions(session: DocumentSession): DocumentVersionContr
     autoEnable: () => userSettings.getUseHancomGit(),
     worktreeHost: {
       ensureOwnership: (worktree) => ensureWorktreeOwnership(session, worktree),
-      canMutate: () => !documentReadOnly && !loadingWorktreeSessions.has(session)
+      canMutate: () => !licenseReadOnly && !documentReadOnly && !loadingWorktreeSessions.has(session)
         && (!session.worktree || session.worktreeWritable),
       getStatus: (worktree) => {
         const live = liveSessionForDocument(worktree.documentId);

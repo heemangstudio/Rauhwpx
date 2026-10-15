@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { createLicenseClient, LicenseServerError } from '../desktop/license-client.mjs';
 import {
-  licenseKeyHash, maskLicenseKey, normalizeLicenseKey, PRODUCTION_LICENSE_PUBLIC_KEYS,
+  licenseKeyHash, maskLicenseKey, normalizeLicenseKey,
   productionPublicKeysProvisioned, verifyLease,
 } from '../desktop/license-lease.mjs';
 import {
@@ -14,6 +14,7 @@ import {
 } from '../desktop/license-manager.mjs';
 import { createMockLicenseServer, DEV_PUBLIC_KEYS, signLease } from './fixtures/license-mock-server.mjs';
 
+const UNCONFIGURED_PUBLIC_KEYS = { 'hama-prod-1': 'REPLACE_TEST_PUBLIC_KEY' };
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 const T0 = Date.UTC(2026, 9, 16, 0, 0, 0);
@@ -39,29 +40,29 @@ async function setup(t, { enforce = true, publicKeys = DEV_PUBLIC_KEYS } = {}) {
   return { dir, clock, server, changes, manager: make(), make };
 }
 
-test('production public key is still a placeholder, so release builds only trial until it is provisioned', () => {
-  assert.equal(productionPublicKeysProvisioned(PRODUCTION_LICENSE_PUBLIC_KEYS), false);
+test('placeholder public keys disable activation until provisioned', () => {
+  assert.equal(productionPublicKeysProvisioned(UNCONFIGURED_PUBLIC_KEYS), false);
   assert.equal(productionPublicKeysProvisioned(DEV_PUBLIC_KEYS), true);
 });
 
 test('license keys normalize, hash and mask', () => {
-  assert.equal(normalizeLicenseKey(' hama-abcde-12345 '), 'HAMA-ABCDE-12345');
-  assert.equal(normalizeLicenseKey('short'), null);
-  assert.equal(normalizeLicenseKey('bad key!*'), null);
-  assert.equal(licenseKeyHash('hama-abcde-12345'), licenseKeyHash('HAMA-ABCDE-12345'));
-  assert.equal(maskLicenseKey('HAMA-ABCDE-12345-XYZ9'), 'HAMA-…XYZ9');
+  assert.equal(normalizeLicenseKey(' hama-abcde-12345-abcde-12345-ooooo '), 'HAMA-ABCDE-12345-ABCDE-12345-00000');
+  assert.equal(normalizeLicenseKey('short'), '');
+  assert.equal(normalizeLicenseKey('bad key!*'), '');
+  assert.equal(maskLicenseKey('HAMA-ABCDE-12345-ABCDE-12345-0XYZ9'), 'HAMA-…XYZ9');
 });
 
 test('lease verification checks signature, device, key and expiry offline', () => {
-  const key = 'HAMA-AAAAA-BBBBB';
-  const payload = { v: 1, kid: 'hama-dev-1', keyId: 'lic_1', keyHash: licenseKeyHash(key), deviceId: 'dev-a', issuedAt: T0, expiresAt: T0 + 7 * DAY };
+  const key = 'HAMA-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE';
+  const payload = { v: 1, kid: 'hama-prod-1', keyHash: licenseKeyHash(key), keyId: 'lic_1', deviceId: 'dev-a', issuedAt: T0, expiresAt: T0 + 7 * DAY };
   const lease = signLease(payload);
-  const opts = { publicKeys: DEV_PUBLIC_KEYS, deviceId: 'dev-a', key, now: T0 + DAY };
+  const opts = { publicKeys: DEV_PUBLIC_KEYS, deviceId: 'dev-a', key, keyId: 'lic_1', now: T0 + DAY };
   assert.deepEqual(verifyLease(lease, opts).ok, true);
   assert.equal(verifyLease(lease, { ...opts, deviceId: 'dev-b' }).reason, 'wrong_device');
-  assert.equal(verifyLease(lease, { ...opts, key: 'HAMA-OTHER-KEY00' }).reason, 'wrong_key');
+  assert.equal(verifyLease(lease, { ...opts, key: 'HAMA-00000-00000-00000-00000-00000' }).reason, 'wrong_key');
+  assert.equal(verifyLease(lease, { ...opts, keyId: 'lic_other' }).reason, 'wrong_key');
   assert.equal(verifyLease(lease, { ...opts, now: T0 + 7 * DAY }).reason, 'expired');
-  assert.equal(verifyLease(lease, { ...opts, publicKeys: PRODUCTION_LICENSE_PUBLIC_KEYS }).reason, 'unknown_kid');
+  assert.equal(verifyLease(lease, { ...opts, publicKeys: UNCONFIGURED_PUBLIC_KEYS }).reason, 'unknown_kid');
   const [body, sig] = lease.split('.');
   const forged = Buffer.from(JSON.stringify({ ...payload, deviceId: 'dev-b' })).toString('base64url');
   assert.equal(verifyLease(`${forged}.${sig}`, { ...opts, deviceId: 'dev-b' }).reason, 'bad_signature');
@@ -73,15 +74,15 @@ test('lease verification checks signature, device, key and expiry offline', () =
 test('client maps contract errors and network failures', async () => {
   const server = createMockLicenseServer({ now: () => T0 });
   const client = createLicenseClient({ baseUrl: 'https://keys.test/', fetchImpl: server.fetch });
-  await assert.rejects(client.activate({ key: 'HAMA-NOPE0-NOPE0', deviceId: 'd', appVersion: '1', platform: 'darwin' }),
+  await assert.rejects(client.activate({ key: 'HAMA-NOPE0-NOPE0', deviceId: 'device-0', appVersion: '1', platform: 'darwin' }),
     (error) => error instanceof LicenseServerError && error.code === 'invalid_key');
   const key = server.issueKey();
-  assert.match(await client.activate({ key, deviceId: 'd1', appVersion: '1', platform: 'darwin' }), /^[\w-]+\.[\w-]+$/);
-  assert.deepEqual(server.calls[1], { path: '/v1/license/activate', body: { key, deviceId: 'd1', appVersion: '1', platform: 'darwin' } });
+  assert.match((await client.activate({ key, deviceId: 'device-1', appVersion: '1', platform: 'darwin' })).lease, /^[\w-]+\.[\w-]+$/);
+  assert.deepEqual(server.calls[1], { path: '/v1/license/activate', body: { key, deviceId: 'device-1', appVersion: '1', platform: 'darwin' } });
   server.setOffline(true);
-  await assert.rejects(client.validate({ key, deviceId: 'd1' }), (error) => error.code === 'network');
+  await assert.rejects(client.validate({ key, deviceId: 'device-1' }), (error) => error.code === 'network');
   const broken = createLicenseClient({ fetchImpl: async () => ({ ok: false, status: 502, json: async () => ({}) }) });
-  await assert.rejects(broken.validate({ key, deviceId: 'd1' }), (error) => error.code === 'server');
+  await assert.rejects(broken.validate({ key, deviceId: 'device-1' }), (error) => error.code === 'server');
 });
 
 test('trial lasts 48 hours from first launch', async (t) => {
@@ -145,7 +146,7 @@ test('activation unlocks saving after the trial, and settings show a masked key'
 test('activation errors come back as user-facing messages', async (t) => {
   const { manager, server, make, clock } = await setup(t);
   assert.equal((await manager.activate('???')).code, 'invalid_format');
-  assert.equal((await manager.activate('HAMA-NOTRE-ALKEY')).code, 'invalid_key');
+  assert.equal((await manager.activate('HAMA-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE')).code, 'invalid_key');
   const key = server.issueKey();
   server.revoke(key);
   const revoked = await manager.activate(key);
@@ -153,8 +154,8 @@ test('activation errors come back as user-facing messages', async (t) => {
   assert.match(revoked.message, /해지/);
   const key2 = server.issueKey();
   // Two other Macs already hold the key.
-  server.handle('/v1/license/activate', { key: key2, deviceId: 'mac-1' });
-  server.handle('/v1/license/activate', { key: key2, deviceId: 'mac-2' });
+  server.handle('/v1/license/activate', { key: key2, deviceId: 'mac-0001' });
+  server.handle('/v1/license/activate', { key: key2, deviceId: 'mac-0002' });
   const limited = await manager.activate(key2);
   assert.equal(limited.code, 'device_limit');
   assert.match(limited.message, /2대/);
@@ -164,7 +165,7 @@ test('activation errors come back as user-facing messages', async (t) => {
 });
 
 test('activation is refused while the production public key is a placeholder', async (t) => {
-  const { manager, server } = await setup(t, { publicKeys: PRODUCTION_LICENSE_PUBLIC_KEYS });
+  const { manager, server } = await setup(t, { publicKeys: UNCONFIGURED_PUBLIC_KEYS });
   const result = await manager.activate(server.issueKey());
   assert.equal(result.code, 'not_configured');
   assert.equal(result.status.activationAvailable, false);
@@ -249,7 +250,7 @@ test('a tampered state file cannot fake a license', async (t) => {
   await manager.status();
   const path = join(dir, 'license.json');
   const saved = JSON.parse(await readFile(path, 'utf8'));
-  saved.license = { key: 'HAMA-FAKEK-EY000', lease: 'eyJ2IjoxfQ.AAAA', lastCheckAt: T0 };
+  saved.license = { key: 'HAMA-AAAAA-BBBBB-CCCCC-DDDDD-00000', lease: 'eyJ2IjoxfQ.AAAA', lastCheckAt: T0 };
   await writeFile(path, JSON.stringify(saved));
   clock.t = T0 + 3 * DAY;
   const status = await make().status();
@@ -271,7 +272,7 @@ test('unenforced builds (development runs) never block saving', async (t) => {
   await manager.assertCanSave();
 });
 
-test('the schedule runs a launch check and re-checks hourly for the 24-hour window', async (t) => {
+test('the schedule runs a launch check and re-checks time boundaries for the 24-hour window', async (t) => {
   const { manager, server, clock } = await setup(t);
   const key = server.issueKey();
   await manager.activate(key);
@@ -285,4 +286,70 @@ test('the schedule runs a launch check and re-checks hourly for the 24-hour wind
   await manager.status();
   assert.equal(server.calls.length, before + 1);
   manager.stop();
+});
+
+test('eligible installs receive and activate a grandfather key, then renew normally', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'hama-grandfather-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const installId = 'bc9e318c-adb1-4a32-92cc-dbd1bf353b00';
+  const server = createMockLicenseServer({ now: () => T0, eligibleInstallId: installId });
+  const manager = createLicenseManager({
+    statePath: join(dir, 'license.json'),
+    client: createLicenseClient({ fetchImpl: server.fetch }),
+    publicKeys: DEV_PUBLIC_KEYS, now: () => T0, log: quiet,
+    existingInstallId: async () => installId,
+  });
+  assert.equal((await manager.check()).state, 'licensed');
+  assert.equal(server.calls[0].path, '/v1/license/grandfather');
+  assert.equal(server.calls[1].path, '/v1/license/public-key');
+  assert.equal(server.calls[2].path, '/v1/license/activate');
+  await manager.check({ force: true });
+  assert.equal(server.calls.at(-1).path, '/v1/license/validate');
+});
+
+test('a downloaded public key cannot replace the pinned key', async (t) => {
+  const { manager, server } = await setup(t, { publicKeys: { 'hama-prod-1': 'untrusted' } });
+  const result = await manager.activate(server.issueKey());
+  assert.equal(result.code, 'bad_lease');
+  assert.equal(server.calls.length, 1);
+  assert.equal((await manager.status()).state, 'trial');
+});
+
+test('trial deadline broadcasts read-only even without a license or network check', async (t) => {
+  const { manager, clock, changes } = await setup(t);
+  await manager.load();
+  let tick;
+  manager.start({ setIntervalImpl: fn => { tick = fn; return 1; }, clearIntervalImpl() {} });
+  await manager.status();
+  clock.t += 48 * HOUR;
+  tick();
+  await manager.status();
+  assert.equal(changes.at(-1), 'trial_expired');
+  manager.stop();
+});
+
+test('concurrent native saves consume exactly three trial saves; failed writes consume none', async (t) => {
+  const { installLicenseHost } = await import('../desktop/license-host.mjs');
+  const { manager } = await setup(t);
+  class Window {
+    webContents = { setWindowOpenHandler() {}, on() {} };
+    isDestroyed() { return false; }
+    once() {}
+    on() {}
+    show() {}
+    focus() {}
+    loadURL() { return Promise.resolve(); }
+  }
+  const host = installLicenseHost({
+    ipcMain: { handle() {} }, BrowserWindow: Window, shell: {}, manager,
+    isTrustedStudioEvent: () => true, log: quiet,
+  });
+  await assert.rejects(host.save(async () => { throw new Error('disk full'); }), /disk full/);
+  assert.equal((await manager.status()).trial.savesUsed, 0);
+  const written = [];
+  const saves = await Promise.allSettled([1, 2, 3, 4].map(n => host.save(async () => { written.push(n); })));
+  assert.deepEqual(written, [1, 2, 3]);
+  assert.equal(saves[3].status, 'rejected');
+  assert.equal(saves[3].reason.code, 'LICENSE_READ_ONLY');
+  assert.equal((await manager.status()).trial.savesUsed, 3);
 });

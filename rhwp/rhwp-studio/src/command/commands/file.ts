@@ -584,6 +584,10 @@ function completePortableHistorySave(
 
 function reportSaveError(scope: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('LICENSE_READ_ONLY')) {
+    showToast({ message: '읽기 전용이에요. 라이선스를 활성화한 뒤 다시 저장해 주세요.', durationMs: 5000 });
+    return;
+  }
   console.error(`[${scope}] 저장 실패:`, message);
   alert(`파일 저장에 실패했습니다:\n${message}`);
 }

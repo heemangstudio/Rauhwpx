@@ -14,7 +14,6 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
-  LEASE_TTL_MS,
   PRODUCTION_LICENSE_PUBLIC_KEYS,
   maskLicenseKey,
   normalizeLicenseKey,
@@ -28,17 +27,17 @@ export const TRIAL_DURATION_MS = 48 * 60 * 60 * 1000;
 export const TRIAL_SAVE_LIMIT = 3;
 export const LICENSE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** 잠자기에서 깬 뒤 등 24시간이 지났는지 이 간격으로 본다. */
-const SCHEDULE_TICK_MS = 60 * 60 * 1000;
+const SCHEDULE_TICK_MS = 60 * 1000;
 export const PRICING_URL = 'https://heemangstudios.com/pricing';
 const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export class LicenseReadOnlyError extends Error {
   constructor(state) {
     super(state === 'revoked'
-      ? '라이선스가 해지되어 읽기 전용이에요. 새 라이선스 키를 넣으면 다시 저장할 수 있어요.'
+      ? 'LICENSE_READ_ONLY: 라이선스가 해지되어 읽기 전용이에요. 새 라이선스 키를 넣으면 다시 저장할 수 있어요.'
       : state === 'lease_expired' || state === 'needs_activation'
-        ? '라이선스를 확인하지 못해 읽기 전용이에요. 인터넷에 연결하거나 키를 다시 활성화해 주세요.'
-        : '체험이 끝나 읽기 전용이에요. 라이선스 키를 넣으면 다시 저장할 수 있어요.');
+        ? 'LICENSE_READ_ONLY: 라이선스를 확인하지 못해 읽기 전용이에요. 인터넷에 연결하거나 키를 다시 활성화해 주세요.'
+        : 'LICENSE_READ_ONLY: 체험이 끝나 읽기 전용이에요. 라이선스 키를 넣으면 다시 저장할 수 있어요.');
     this.name = 'LicenseReadOnlyError';
     this.code = 'LICENSE_READ_ONLY';
     this.licenseState = state;
@@ -81,6 +80,7 @@ function sanitizeState(raw) {
   if (key) {
     state.license = {
       key,
+      keyId: typeof raw.license.keyId === 'string' ? raw.license.keyId : undefined,
       lease: typeof raw.license.lease === 'string' ? raw.license.lease : null,
       lastCheckAt: Number.isSafeInteger(raw.license.lastCheckAt) ? raw.license.lastCheckAt : 0,
       revokedAt: Number.isSafeInteger(raw.license.revokedAt) ? raw.license.revokedAt : null,
@@ -100,6 +100,7 @@ export function createLicenseManager({
   publicKeys = PRODUCTION_LICENSE_PUBLIC_KEYS,
   appVersion = '0.0.0',
   platform = process.platform,
+  existingInstallId = async () => null,
   enforce = true,
   now = Date.now,
   trialDurationMs = TRIAL_DURATION_MS,
@@ -113,6 +114,7 @@ export function createLicenseManager({
   let queue = Promise.resolve();
   let timer = null;
   let lastNetworkError = null;
+  let lastGrandfatherAttempt = 0;
   const keysProvisioned = productionPublicKeysProvisioned(publicKeys);
 
   function serialize(task) {
@@ -158,7 +160,7 @@ export function createLicenseManager({
   function leaseCheck(t) {
     const license = state.license;
     if (!license?.lease) return { ok: false, reason: 'missing' };
-    return verifyLease(license.lease, { publicKeys, deviceId: state.deviceId, key: license.key, now: t });
+    return verifyLease(license.lease, { publicKeys, deviceId: state.deviceId, key: license.key, keyId: license.keyId, now: t });
   }
 
   function trialInfo(t) {
@@ -178,9 +180,9 @@ export function createLicenseManager({
     if (!enforce) value = 'unenforced';
     else if (license?.revokedAt) value = 'revoked';
     else if (lease.ok) value = 'licensed';
-    else if (trial.active) value = 'trial';
     else if (license && lease.reason === 'expired') value = 'lease_expired';
     else if (license) value = 'needs_activation';
+    else if (trial.active) value = 'trial';
     else value = 'trial_expired';
     const canEdit = value === 'unenforced' || value === 'licensed' || value === 'trial';
     return {
@@ -208,22 +210,40 @@ export function createLicenseManager({
   }
 
   /** 서버 응답 lease 를 검증하고 저장한다. 실패하면 bad_lease. */
-  function acceptLease(key, lease, t) {
-    const result = verifyLease(lease, { publicKeys, deviceId: state.deviceId, key, now: t });
+  function acceptLease(key, { lease, keyId }, t) {
+    const result = verifyLease(lease, { publicKeys, deviceId: state.deviceId, key, keyId, now: t });
     if (!result.ok) {
       log.warn?.('[license] server lease rejected:', result.reason);
       throw new LicenseServerError('bad_lease');
     }
-    // 서버가 7일보다 긴 lease 를 줘도 앱은 7일만 믿는다 (verifyLease 가 이미 막는다).
-    void LEASE_TTL_MS;
-    state.license = { key, lease, lastCheckAt: t, revokedAt: null, lastErrorCode: null };
+    state.license = { key, keyId, lease, lastCheckAt: t, revokedAt: null, lastErrorCode: null };
   }
 
   async function check({ force = false } = {}) {
     return serialize(async () => {
       await load();
       const license = state.license;
-      if (!license || !enforce) return computeStatus();
+      if (!enforce) return computeStatus();
+      if (!license) {
+        if (keysProvisioned && (force || !lastGrandfatherAttempt || clock() - lastGrandfatherAttempt >= checkIntervalMs)) {
+          lastGrandfatherAttempt = clock();
+          try {
+            const installId = await existingInstallId();
+            if (installId) {
+              const result = await client.grandfather(installId);
+              const key = normalizeLicenseKey(result.key);
+              if (key) {
+                await checkServerPublicKey();
+                acceptLease(key, await client.activate({ key, deviceId: state.deviceId, appVersion, platform }), clock());
+                await persist();
+              }
+            }
+          } catch (error) { lastNetworkError = error.code ?? 'network'; }
+        }
+        await persist();
+        changed();
+        return computeStatus();
+      }
       const t = clock();
       if (!force && license.lastCheckAt && t - license.lastCheckAt < checkIntervalMs && leaseCheck(t).ok) {
         return computeStatus();
@@ -255,6 +275,14 @@ export function createLicenseManager({
     });
   }
 
+  async function checkServerPublicKey() {
+    const info = await client.publicKey();
+    // 공개 endpoint는 비교에만 쓴다. 내려받은 키를 신뢰 목록에 추가하지 않는다.
+    if (info.alg !== 'Ed25519' || !Object.hasOwn(publicKeys, info.kid) || publicKeys[info.kid] !== info.rawBase64) {
+      throw new LicenseServerError('bad_lease');
+    }
+  }
+
   async function activate(rawKey) {
     return serialize(async () => {
       await load();
@@ -262,6 +290,7 @@ export function createLicenseManager({
       if (!key) return { ok: false, code: 'invalid_format', message: licenseErrorMessage('invalid_format'), status: computeStatus() };
       if (!keysProvisioned) return { ok: false, code: 'not_configured', message: licenseErrorMessage('not_configured'), status: computeStatus() };
       try {
+        await checkServerPublicKey();
         const lease = await client.activate({ key, deviceId: state.deviceId, appVersion, platform });
         acceptLease(key, lease, clock());
         lastNetworkError = null;
@@ -290,6 +319,7 @@ export function createLicenseManager({
         }
       }
       state.license = null;
+      state.trial.saves = trialSaveLimit;
       await persist();
       changed();
       return { ok: true, status: computeStatus() };
@@ -312,19 +342,18 @@ export function createLicenseManager({
       state.trial.saves += 1;
       await persist();
       const after = computeStatus();
-      if (after.state !== before.state) changed();
+      changed();
       return after;
     });
   }
 
   function start({ setIntervalImpl = setInterval, clearIntervalImpl = clearInterval } = {}) {
     stop.clear = clearIntervalImpl;
-    void check().catch((error) => log.warn?.('[license] launch check failed:', error));
+    void check({ force: true }).catch((error) => log.warn?.('[license] launch check failed:', error));
     timer = setIntervalImpl(() => {
-      const before = state ? computeStatus().state : null;
-      void check().then((after) => {
+      void check().then(() => {
         // 체험 48시간이 지나면 서버 확인 없이도 상태가 바뀐다.
-        if (before && after.state !== before) changed();
+        changed();
       }).catch((error) => log.warn?.('[license] scheduled check failed:', error));
     }, SCHEDULE_TICK_MS);
     timer?.unref?.();

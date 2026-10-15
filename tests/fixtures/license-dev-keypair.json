@@ -1,6 +1,0 @@
-{
-  "_comment": "DEV ONLY. Test keypair for the license lease. Never ship this private key or trust this kid in a release build.",
-  "kid": "hama-dev-1",
-  "publicKeyBase64": "ZUowXF0IcSN3Nt3RJ3rbdFW/Zxs5aKLTt4n8f45Mezg=",
-  "privateKeyPkcs8Pem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIKaNDqHUMG5cUR97s0pO9JlhzFifvd9tZYoPFbSnOQQa\n-----END PRIVATE KEY-----\n"
-}

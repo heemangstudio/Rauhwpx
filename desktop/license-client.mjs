@@ -4,7 +4,7 @@
 //   POST /v1/license/deactivate {key, deviceId}                       → 200 {ok:true}
 //   실패: 4xx {error: 'invalid_key' | 'revoked' | 'device_limit' | 'not_activated'}
 export const DEFAULT_LICENSE_API_BASE = 'https://rau-credits-production.up.railway.app';
-export const LICENSE_ERRORS = Object.freeze(['invalid_key', 'revoked', 'device_limit', 'not_activated']);
+export const LICENSE_ERRORS = Object.freeze(['invalid_key', 'revoked', 'device_limit', 'not_activated', 'device_id_invalid', 'server_not_configured', 'grandfather_disabled', 'not_eligible', 'install_id_invalid']);
 const REQUEST_TIMEOUT_MS = 10_000;
 
 export class LicenseServerError extends Error {
@@ -28,7 +28,7 @@ export function createLicenseClient({
     let response;
     try {
       response = await fetchImpl(`${base}${path}`, {
-        method: 'POST',
+        method: body === undefined ? 'GET' : 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
@@ -47,7 +47,7 @@ export function createLicenseClient({
       return parsed;
     }
     const code = typeof parsed?.error === 'string' && LICENSE_ERRORS.includes(parsed.error) ? parsed.error : null;
-    if (code && response.status >= 400 && response.status < 500) {
+    if (code && response.status >= 400 && response.status < 600) {
       throw new LicenseServerError(code, code, { status: response.status });
     }
     throw new LicenseServerError('server', `HTTP ${response.status}`, { status: response.status });
@@ -55,11 +55,14 @@ export function createLicenseClient({
 
   function leaseFrom(body) {
     if (typeof body.lease !== 'string' || !body.lease) throw new LicenseServerError('server', 'response has no lease');
-    return body.lease;
+    if (typeof body.keyId !== 'string') throw new LicenseServerError('server', 'response has no keyId');
+    return { lease: body.lease, keyId: body.keyId };
   }
 
   return {
     baseUrl: base,
+    publicKey: () => post('/v1/license/public-key'),
+    grandfather: (installId) => post('/v1/license/grandfather', { installId }),
     async activate({ key, deviceId, appVersion, platform }) {
       return leaseFrom(await post('/v1/license/activate', { key, deviceId, appVersion, platform }));
     },

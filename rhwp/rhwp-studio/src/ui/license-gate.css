@@ -1,0 +1,26 @@
+.license-banner {
+  flex-shrink: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 20px;
+  background: var(--n-surface);
+  color: var(--n-text);
+  border-bottom: 1px solid var(--n-border);
+  font-size: 13px;
+}
+.license-banner[hidden] { display: none; }
+.license-banner button {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+@media (min-width: 768px) {
+  body.ag-sidebar-inset .license-banner { margin-right: var(--ag-sidebar-width); }
+}

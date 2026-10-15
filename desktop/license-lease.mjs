@@ -32,8 +32,13 @@ export function productionPublicKeysProvisioned(keys = PRODUCTION_LICENSE_PUBLIC
 }
 
 export function normalizeLicenseKey(raw) {
-  const key = String(raw ?? '').trim().toUpperCase().replace(/\s+/g, '');
-  return /^[A-Z0-9][A-Z0-9-]{7,127}$/.test(key) ? key : null;
+  if (typeof raw !== 'string' || raw.length > 64) return '';
+  let value = raw.toUpperCase().replace(/[\s-]/g, '');
+  if (value.startsWith('HAMA')) value = value.slice(4);
+  value = value.replace(/O/g, '0').replace(/[IL]/g, '1');
+  if (value.length !== 25) return '';
+  const key = `HAMA-${value.match(/.{5}/g).join('-')}`;
+  return /^HAMA(?:-[0-9A-HJKMNP-TV-Z]{5}){5}$/.test(key) ? key : '';
 }
 
 export function licenseKeyHash(key) {
@@ -89,6 +94,7 @@ export function verifyLease(lease, {
   publicKeys = PRODUCTION_LICENSE_PUBLIC_KEYS,
   deviceId,
   key,
+  keyId,
   now = Date.now(),
 } = {}) {
   const payload = decodeLeaseUnverified(lease);
@@ -97,7 +103,7 @@ export function verifyLease(lease, {
   if (v !== LEASE_VERSION || typeof kid !== 'string' || typeof keyHash !== 'string'
     || typeof payload.deviceId !== 'string' || !Number.isSafeInteger(issuedAt)
     || !Number.isSafeInteger(expiresAt) || expiresAt <= issuedAt
-    || expiresAt - issuedAt > LEASE_TTL_MS + ISSUED_AT_SKEW_MS) {
+    || expiresAt - issuedAt > LEASE_TTL_MS) {
     return { ok: false, reason: 'malformed' };
   }
   const rawKey = Object.hasOwn(publicKeys, kid) ? publicKeys[kid] : null;
@@ -121,6 +127,7 @@ export function verifyLease(lease, {
     try { expected = licenseKeyHash(key); } catch { expected = null; }
     if (keyHash !== expected) return { ok: false, reason: 'wrong_key' };
   }
+  if (keyId !== undefined && payload.keyId !== keyId) return { ok: false, reason: 'wrong_key' };
   if (issuedAt - ISSUED_AT_SKEW_MS > now) return { ok: false, reason: 'not_yet_valid' };
   if (now >= expiresAt) return { ok: false, reason: 'expired', payload };
   return { ok: true, payload };

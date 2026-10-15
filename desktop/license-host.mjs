@@ -16,6 +16,7 @@ export function installLicenseHost({
   log = console,
 }) {
   let licenseWindow = null;
+  let saveQueue = Promise.resolve();
 
   function isLicenseWindowEvent(event) {
     return Boolean(licenseWindow && !licenseWindow.isDestroyed() && event.sender === licenseWindow.webContents);
@@ -114,5 +115,16 @@ export function installLicenseHost({
     return status;
   }
 
-  return { openWindow, guardSave, noteSave, showIfReadOnly, broadcast, channels: Object.keys(handlers) };
+  function save(write) {
+    const result = saveQueue.then(async () => {
+      await guardSave();
+      const written = await write();
+      await noteSave();
+      return written;
+    });
+    saveQueue = result.catch(() => {});
+    return result;
+  }
+
+  return { openWindow, guardSave, noteSave, save, showIfReadOnly, broadcast, channels: Object.keys(handlers) };
 }
