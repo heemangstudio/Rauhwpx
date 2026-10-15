@@ -4715,7 +4715,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function setCompactThreadsRailOpen(open: boolean, opts?: { focus?: boolean }): void {
     clearCompactRailHoverOpen();
     clearCompactRailHoverClose();
-    compactThreadsRailOpen = isCompactWorkspace() && open;
+    // 설정 화면은 채팅 목록을 걷어낸 전용 면이므로 호버·단축키 어느 경로로도 레일을 열지 않는다.
+    compactThreadsRailOpen = isCompactWorkspace() && open && !settingsPanelOpen;
     if (!compactThreadsRailOpen) compactRailHoverOpen = false;
     if (compactThreadsRailOpen) {
       detailColumn = null;
@@ -4750,7 +4751,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     clearCompactRailHoverOpen();
   };
   const onCompactRailEdgeEnter = (event: PointerEvent) => {
-    if (!isCompactWorkspace()) return;
+    if (!isCompactWorkspace() || settingsPanelOpen) return;
     if (!(event.relatedTarget instanceof Node) || !root.contains(event.relatedTarget)) return;
     if (compactRailLastPointerX === null || event.clientX >= compactRailLastPointerX) return;
     clearCompactRailHoverOpen();
@@ -5424,6 +5425,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (open && referenceLibrary.isOpen()) referenceLibrary.setOpen(false);
     settingsPanelOpen = open;
     if (open) {
+      if (compactThreadsRailOpen) setCompactThreadsRailOpen(false);
       setConfigPanelOpen(false);
       threadsPanelOpen = false;
       skillsPanelOpen = false;

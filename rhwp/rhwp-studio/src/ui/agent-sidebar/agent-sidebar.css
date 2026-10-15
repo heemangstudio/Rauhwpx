@@ -7965,6 +7965,10 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   }
 }
 
+.ag-fullscreen.ag-settings-open .ag-compact-rail-hover-target {
+  display: none;
+}
+
 .ag-fullscreen.ag-workspace-compact .ag-workspace-drawer-scrim {
   position: absolute;
   inset: var(--ag-workspace-bar-h, 48px) 0 0;
