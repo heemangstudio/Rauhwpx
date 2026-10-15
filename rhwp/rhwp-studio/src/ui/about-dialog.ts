@@ -10,6 +10,9 @@ import {
   loadUniqueInstallSnapshot,
   uniqueInstallPublicUrl,
 } from '../unique-installs';
+// MIT 등 오픈소스 라이선스는 고지문 전문을 함께 배포해야 하므로 앱에 그대로 싣는다.
+import rhwpLicense from '../../../LICENSE?raw';
+import thirdPartyLicenses from '../../../THIRD_PARTY_LICENSES.md?raw';
 
 /**
  * 외부 크레이트 라이선스 정보.
@@ -106,12 +109,15 @@ export class AboutDialog extends ModalDialog {
     }
     body.appendChild(licenseTable);
 
-    // 전체 라이선스 목록 안내
-    const licenseNote = document.createElement('div');
-    licenseNote.className = 'about-license-note';
-    licenseNote.textContent =
-      'WASM 번들에 포함되는 핵심 크레이트만 표시합니다. 전체 목록은 THIRD_PARTY_LICENSES.md를 참조하세요.';
-    body.appendChild(licenseNote);
+    // 전체 목록과 라이선스 전문
+    const licenseFull = document.createElement('details');
+    licenseFull.className = 'about-license-full';
+    const licenseSummary = document.createElement('summary');
+    licenseSummary.textContent = '전체 목록과 라이선스 전문';
+    const licenseText = document.createElement('pre');
+    licenseText.textContent = `rhwp\n\n${rhwpLicense.trim()}\n\n\n${thirdPartyLicenses.trim()}`;
+    licenseFull.append(licenseSummary, licenseText);
+    body.appendChild(licenseFull);
 
     // 저작권
     const copyright = document.createElement('div');

@@ -114,8 +114,8 @@ import {
 
 const { autoUpdater } = electronUpdater;
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const RELEASES_URL = 'https://github.com/heemangstudio/Rauhwpx/releases/latest';
-const RELEASES_API_URL = 'https://api.github.com/repos/heemangstudio/Rauhwpx/releases/latest';
+const RELEASES_URL = 'https://github.com/heemangstudio/hamaeditor-releases/releases/latest';
+const RELEASES_API_URL = 'https://api.github.com/repos/heemangstudio/hamaeditor-releases/releases/latest';
 const PRELOAD_PATH = join(__dirname, 'preload.cjs');
 const REBRAND_EXPORT_PRELOAD_PATH = join(__dirname, 'rebrand-export-preload.cjs');
 const devUrl = resolveDevelopmentUrl({

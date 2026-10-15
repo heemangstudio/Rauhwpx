@@ -8,9 +8,9 @@
     GROBLE_CHECKOUT_URL: 'https://groble.im/payment/uRshdR',
     // 라이선스 서버. success.html 이 GET {API_BASE}/v1/license/by-ref?ref= 를 물어봐요.
     API_BASE: 'https://rau-credits-production.up.railway.app',
-    // 맥 설치 파일. 유료 빌드를 낼 때마다 버전을 바꿔 주세요. index/pricing/success 의 data-dmg 링크가 모두 이 값을 써요.
-    MAC_DMG_URL: 'https://github.com/heemangstudio/Rauhwpx/releases/download/v3.0.0/HamaEditor-3.0.0-arm64.dmg',
-    RELEASES_URL: 'https://github.com/heemangstudio/Rauhwpx/releases/latest',
+    // 맥 설치 파일. 공개 배포 저장소의 최신 릴리스를 가리키므로 버전마다 바꿀 필요가 없어요.
+    MAC_DMG_URL: 'https://github.com/heemangstudio/hamaeditor-releases/releases/latest/download/HamaEditor-mac-arm64.dmg',
+    RELEASES_URL: 'https://github.com/heemangstudio/hamaeditor-releases/releases/latest',
     POLL_INTERVAL_MS: 3000,
     POLL_TIMEOUT_MS: 180000,
     MAX_CONSECUTIVE_ERRORS: 5
