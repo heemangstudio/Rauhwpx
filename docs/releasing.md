@@ -1,6 +1,6 @@
 # Desktop releases
 
-Tagged releases publish signed and notarized macOS arm64 DMG/ZIP files, an unsigned Windows x64 NSIS installer, and Linux x64/arm64 AppImage and Debian packages. Windows users can see SmartScreen warnings.
+Tagged releases publish signed and notarized macOS arm64 DMG/ZIP files. HamaEditor is sold for macOS only, so tagged releases no longer build Windows or Linux installers; `npm run dist:win` and `npm run dist:linux:*` still package them locally.
 
 ## Tagged release
 
@@ -31,7 +31,7 @@ Users on 2.0.1 or earlier should download and install 2.0.2 manually once. The 2
 
 ## Signing and package checks
 
-Tagged desktop releases use [.github/actions/package-desktop](../.github/actions/package-desktop/action.yml) for macOS and Windows setup, builds and verification. Tagged Linux releases build on native x64 and arm64 runners. macOS jobs use the `macos-release` environment and require these secrets:
+Tagged desktop releases use [.github/actions/package-desktop](../.github/actions/package-desktop/action.yml) for macOS setup, builds and verification. macOS jobs use the `macos-release` environment and require these secrets:
 
 - `MACOS_CERTIFICATE`
 - `MACOS_CERTIFICATE_PASSWORD`
