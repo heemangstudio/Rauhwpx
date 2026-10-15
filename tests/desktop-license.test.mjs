@@ -85,9 +85,10 @@ test('client maps contract errors and network failures', async () => {
   await assert.rejects(broken.validate({ key, deviceId: 'device-1' }), (error) => error.code === 'server');
 });
 
-test('trial lasts 48 hours from first launch', async (t) => {
+test('trial lasts 72 hours from first launch', async (t) => {
   const { manager, clock } = await setup(t);
   let status = await manager.status();
+  assert.equal(TRIAL_DURATION_MS, 72 * HOUR);
   assert.equal(status.state, 'trial');
   assert.equal(status.trial.endsAt, T0 + TRIAL_DURATION_MS);
   assert.equal(status.pricingUrl, PRICING_URL);
@@ -101,27 +102,43 @@ test('trial lasts 48 hours from first launch', async (t) => {
   await assert.rejects(manager.assertCanSave(), LicenseReadOnlyError);
 });
 
-test('trial ends after 3 saved edits and survives a restart', async (t) => {
+test('the trial start survives a restart', async (t) => {
   const { manager, make, clock } = await setup(t);
-  await manager.recordSave();
-  await manager.recordSave();
-  assert.equal((await manager.status()).trial.savesLeft, 1);
+  await manager.status();
+  clock.t = T0 + TRIAL_DURATION_MS - HOUR;
   const restarted = make();
-  clock.t += HOUR;
-  assert.equal((await restarted.status()).trial.savesUsed, 2);
-  await restarted.recordSave();
   const status = await restarted.status();
-  assert.equal(status.state, 'trial_expired');
-  await assert.rejects(restarted.assertCanSave(), (error) => error.code === 'LICENSE_READ_ONLY');
+  assert.equal(status.state, 'trial');
+  assert.equal(status.trial.startedAt, T0);
+  clock.t = T0 + TRIAL_DURATION_MS;
+  assert.equal((await make().status()).state, 'trial_expired');
+});
+
+test('a save count left by the old trial rule is ignored', async (t) => {
+  const { dir, make, clock } = await setup(t);
+  const deviceId = '7f2c4c1e-3b7a-4d2e-9a1b-0c5d6e7f8a9b';
+  await writeFile(join(dir, 'license.json'), JSON.stringify({
+    v: 1, deviceId, maxSeenAt: T0, trial: { startedAt: T0, saves: 3 }, license: null,
+  }));
+  clock.t = T0 + DAY;
+  const manager = make();
+  const status = await manager.status();
+  assert.equal(status.state, 'trial');
+  assert.equal(status.deviceId, deviceId);
+  await manager.assertCanSave();
+  const saved = JSON.parse(await readFile(join(dir, 'license.json'), 'utf8'));
+  assert.equal('saves' in saved.trial, false);
 });
 
 test('winding the clock back does not extend the trial', async (t) => {
-  const { manager, clock } = await setup(t);
+  const { manager, make, clock } = await setup(t);
   await manager.status();
   clock.t = T0 + TRIAL_DURATION_MS + HOUR;
-  assert.equal((await manager.status()).state, 'trial_expired');
+  // 1분 주기 확인이 본 가장 늦은 시각을 저장한다.
+  assert.equal((await manager.check()).state, 'trial_expired');
   clock.t = T0 + HOUR;
   assert.equal((await manager.status()).state, 'trial_expired');
+  assert.equal((await make().status()).state, 'trial_expired', 'a restart keeps the latest time seen');
 });
 
 test('activation unlocks saving after the trial, and settings show a masked key', async (t) => {
@@ -139,8 +156,6 @@ test('activation unlocks saving after the trial, and settings show a masked key'
   assert.equal(server.calls.at(-1).body.appVersion, '3.1.0');
   assert.deepEqual(changes.at(-1), 'licensed');
   await manager.assertCanSave();
-  await manager.recordSave();
-  assert.equal((await manager.status()).state, 'licensed');
 });
 
 test('activation errors come back as user-facing messages', async (t) => {
@@ -215,7 +230,7 @@ test('a refunded (revoked) key turns the app read-only at the next check', async
 });
 
 test('deactivate frees the device slot; offline deactivate keeps the license', async (t) => {
-  const { manager, server, clock } = await setup(t);
+  const { manager, server, clock, make } = await setup(t);
   const key = server.issueKey();
   await manager.activate(key);
   const { deviceId } = await manager.status();
@@ -229,8 +244,9 @@ test('deactivate frees the device slot; offline deactivate keeps the license', a
   assert.equal(done.ok, true);
   assert.deepEqual(server.devices(key), []);
   assert.equal(done.status.license, null);
-  clock.t += 3 * DAY;
-  assert.equal((await manager.status()).state, 'trial_expired');
+  assert.equal(done.status.state, 'trial_expired', 'deactivating does not return to the trial');
+  clock.t += HOUR;
+  assert.equal((await make().status()).state, 'trial_expired');
 });
 
 test('a server that forgot this device drops the lease and asks to re-activate', async (t) => {
@@ -321,17 +337,19 @@ test('trial deadline broadcasts read-only even without a license or network chec
   let tick;
   manager.start({ setIntervalImpl: fn => { tick = fn; return 1; }, clearIntervalImpl() {} });
   await manager.status();
-  clock.t += 48 * HOUR;
+  clock.t += TRIAL_DURATION_MS;
   tick();
   await manager.status();
   assert.equal(changes.at(-1), 'trial_expired');
   manager.stop();
 });
 
-test('concurrent native saves consume exactly three trial saves; failed writes consume none', async (t) => {
+test('native saves never use up the trial; only the 72-hour deadline ends it', async (t) => {
   const { installLicenseHost } = await import('../desktop/license-host.mjs');
-  const { manager } = await setup(t);
+  const { manager, clock } = await setup(t);
+  let opened = 0;
   class Window {
+    constructor() { opened += 1; }
     webContents = { setWindowOpenHandler() {}, on() {} };
     isDestroyed() { return false; }
     once() {}
@@ -345,11 +363,14 @@ test('concurrent native saves consume exactly three trial saves; failed writes c
     isTrustedStudioEvent: () => true, log: quiet,
   });
   await assert.rejects(host.save(async () => { throw new Error('disk full'); }), /disk full/);
-  assert.equal((await manager.status()).trial.savesUsed, 0);
   const written = [];
-  const saves = await Promise.allSettled([1, 2, 3, 4].map(n => host.save(async () => { written.push(n); })));
-  assert.deepEqual(written, [1, 2, 3]);
-  assert.equal(saves[3].status, 'rejected');
-  assert.equal(saves[3].reason.code, 'LICENSE_READ_ONLY');
-  assert.equal((await manager.status()).trial.savesUsed, 3);
+  const saves = await Promise.allSettled(Array.from({ length: 20 }, (_, n) => host.save(async () => { written.push(n); })));
+  assert.equal(written.length, 20);
+  assert.ok(saves.every((save) => save.status === 'fulfilled'));
+  assert.equal((await manager.status()).state, 'trial');
+  assert.equal(opened, 0);
+  clock.t = T0 + TRIAL_DURATION_MS;
+  await assert.rejects(host.save(async () => { written.push('late'); }), (error) => error.code === 'LICENSE_READ_ONLY');
+  assert.equal(written.includes('late'), false);
+  assert.equal(opened, 1, 'a refused save opens activation');
 });

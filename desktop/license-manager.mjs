@@ -1,7 +1,7 @@
 // 체험·라이선스 상태. 메인 프로세스가 하나 만들어 저장 IPC 를 막고 설정 화면에 상태를 준다.
 //
 // 규칙
-// - 체험: 처음 실행한 때부터 48시간 또는 문서 저장 3번 가운데 먼저 끝나는 때까지 편집·저장할 수 있다.
+// - 체험: 이 기기에서 처음 실행한 때부터 3일(72시간) 동안 모든 기능을 쓸 수 있다. 저장 횟수는 세지 않는다.
 // - 키를 활성화하면 서버가 이 기기용 lease(7일)를 준다. 실행할 때와 24시간마다 다시 확인해 lease 를 늘린다.
 // - 인터넷이 없으면 가진 lease 가 끝날 때까지(최대 7일) 그대로 쓴다.
 // - 환불 등으로 키가 해지되면(revoked) 읽기 전용이 된다. 체험 시간이 남아 있어도 마찬가지다.
@@ -23,8 +23,7 @@ import {
 import { LicenseServerError } from './license-client.mjs';
 
 export const LICENSE_STATE_FILE = 'license.json';
-export const TRIAL_DURATION_MS = 48 * 60 * 60 * 1000;
-export const TRIAL_SAVE_LIMIT = 3;
+export const TRIAL_DURATION_MS = 72 * 60 * 60 * 1000;
 export const LICENSE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** 잠자기에서 깬 뒤 등 24시간이 지났는지 이 간격으로 본다. */
 const SCHEDULE_TICK_MS = 60 * 1000;
@@ -70,11 +69,10 @@ function sanitizeState(raw) {
   const state = { ...base };
   if (typeof raw.deviceId === 'string' && DEVICE_ID_RE.test(raw.deviceId)) state.deviceId = raw.deviceId;
   if (Number.isSafeInteger(raw.maxSeenAt) && raw.maxSeenAt > 0) state.maxSeenAt = raw.maxSeenAt;
+  // 예전 상태 파일의 저장 횟수(saves)는 읽지 않는다.
   if (raw.trial && Number.isSafeInteger(raw.trial.startedAt) && raw.trial.startedAt > 0) {
-    state.trial = {
-      startedAt: raw.trial.startedAt,
-      saves: Number.isSafeInteger(raw.trial.saves) && raw.trial.saves >= 0 ? raw.trial.saves : 0,
-    };
+    state.trial = { startedAt: raw.trial.startedAt };
+    if (Number.isSafeInteger(raw.trial.endedAt) && raw.trial.endedAt > 0) state.trial.endedAt = raw.trial.endedAt;
   }
   const key = normalizeLicenseKey(raw.license?.key);
   if (key) {
@@ -104,7 +102,6 @@ export function createLicenseManager({
   enforce = true,
   now = Date.now,
   trialDurationMs = TRIAL_DURATION_MS,
-  trialSaveLimit = TRIAL_SAVE_LIMIT,
   checkIntervalMs = LICENSE_CHECK_INTERVAL_MS,
   fs = { mkdir, readFile, rename, rm, writeFile },
   onChange = () => {},
@@ -153,7 +150,7 @@ export function createLicenseManager({
     }
     state = sanitizeState(raw);
     const t = clock();
-    if (!state.trial) state.trial = { startedAt: t, saves: 0 };
+    if (!state.trial) state.trial = { startedAt: t };
     await persist();
   }
 
@@ -166,9 +163,8 @@ export function createLicenseManager({
   function trialInfo(t) {
     const startedAt = state.trial.startedAt;
     const endsAt = startedAt + trialDurationMs;
-    const savesUsed = Math.min(state.trial.saves, trialSaveLimit);
-    const active = t < endsAt && state.trial.saves < trialSaveLimit;
-    return { startedAt, endsAt, savesUsed, savesLeft: trialSaveLimit - savesUsed, saveLimit: trialSaveLimit, active };
+    const active = !state.trial.endedAt && t < endsAt;
+    return { startedAt, endsAt, active };
   }
 
   function computeStatus() {
@@ -319,7 +315,8 @@ export function createLicenseManager({
         }
       }
       state.license = null;
-      state.trial.saves = trialSaveLimit;
+      // 비활성화한 기기는 남은 체험으로 돌아가지 않는다.
+      state.trial.endedAt = clock();
       await persist();
       changed();
       return { ok: true, status: computeStatus() };
@@ -333,26 +330,12 @@ export function createLicenseManager({
     return status;
   }
 
-  /** 문서를 저장(native 파일 쓰기)한 뒤 부른다. 체험 중일 때만 횟수를 센다. */
-  async function recordSave() {
-    return serialize(async () => {
-      await load();
-      const before = computeStatus();
-      if (before.state !== 'trial') return before;
-      state.trial.saves += 1;
-      await persist();
-      const after = computeStatus();
-      changed();
-      return after;
-    });
-  }
-
   function start({ setIntervalImpl = setInterval, clearIntervalImpl = clearInterval } = {}) {
     stop.clear = clearIntervalImpl;
     void check({ force: true }).catch((error) => log.warn?.('[license] launch check failed:', error));
     timer = setIntervalImpl(() => {
       void check().then(() => {
-        // 체험 48시간이 지나면 서버 확인 없이도 상태가 바뀐다.
+        // 체험 72시간이 지나면 서버 확인 없이도 상태가 바뀐다.
         changed();
       }).catch((error) => log.warn?.('[license] scheduled check failed:', error));
     }, SCHEDULE_TICK_MS);
@@ -371,7 +354,6 @@ export function createLicenseManager({
     activate,
     deactivate,
     assertCanSave,
-    recordSave,
     start,
     stop,
   };

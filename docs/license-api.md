@@ -31,7 +31,7 @@ Grandfathering uses the existing `unique-install.json` install ID. Eligibility a
 
 ## Trial and read-only behavior
 
-`userData/license.json` holds the device UUID, trial start, successful-save count, monotonic last-seen time and signed lease. The trial ends after 48 hours or three successful user saves. The ordinary HWP/HWPX/HML save and the portable `.rhwpx` archive save each close one native writable stream and invoke one native write. Recovery snapshots and version storage do not call that IPC. Cancelled and failed writes do not consume a save. The main process serializes the guard, native write and count update across windows.
+`userData/license.json` holds the device UUID, trial start, monotonic last-seen time and signed lease. The trial gives full access for 72 hours (3 days) from the first launch on a device. Saves are not counted, and a `saves` field left by older builds is ignored. Deactivating a license ends the remaining trial on that device. The ordinary HWP/HWPX/HML save and the portable `.rhwpx` archive save each check the gate before one native write, and the main process serializes the check and write across windows. Recovery snapshots and version storage do not call that IPC.
 
 Studio starts locked until it receives desktop status. Expiry disables typing, editing commands, history mutations and agent document writes, and shows a banner with an activation button. Document-specific read-only restrictions remain after activation. Native writes also check the gate, and a `LICENSE_READ_ONLY` rejection opens activation and produces a readable toast instead of a generic save-error alert.
 
@@ -43,4 +43,4 @@ Use Node 22. Run `npm run setup`, `npm run build:wasm`, `npm run test:desktop`, 
 
 For a local Electron run, start `node tests/fixtures/license-mock-server.mjs`. It generates an ephemeral Ed25519 keypair in memory and prints a test license and `HAMA_LICENSE_DEV_PUBLIC_KEY=hama-prod-1:<raw base64>`. Start Studio, then run Electron with `HAMA_LICENSE_GATE=on`, `HAMA_LICENSE_API_BASE=http://127.0.0.1:8787` and that public-key override. Packaged builds ignore the API and public-key overrides. No fixture private key is stored in the source tree.
 
-Before launch, verify on a Mac: initial trial, three edited saves including a history archive, reopen output, 48-hour expiry, activation, offline grace, refund revocation, device limit, offline deactivation failure and successful deactivation. Verify the signed/notarized build separately. This draft does not build a release, notarize, upload or deploy anything.
+Before launch, verify on a Mac: initial trial, repeated edited saves including a history archive, reopen output, 72-hour expiry, activation, offline grace, refund revocation, device limit, offline deactivation failure and successful deactivation. Verify the signed/notarized build separately. This draft does not build a release, notarize, upload or deploy anything.

@@ -14,7 +14,7 @@ export interface LicenseStatus {
   state: LicenseState;
   canEdit: boolean;
   readOnly: boolean;
-  trial: { endsAt: number; savesLeft: number; saveLimit: number; active: boolean };
+  trial: { startedAt: number; endsAt: number; active: boolean };
   license: {
     maskedKey: string;
     leaseExpiresAt: number | null;
@@ -33,7 +33,24 @@ export interface DesktopLicenseApi {
   onChange: (callback: (status: LicenseStatus) => void) => () => void;
 }
 
-const HOUR_MS = 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+
+/** 체험 남은 시간. '2일 13시간' → '13시간 42분' → '42분'. 0 이 된 단위는 뺀다. */
+export function trialTimeLeft(endsAt: number, now = Date.now()): string {
+  const minutes = Math.max(0, Math.ceil((endsAt - now) / MINUTE_MS));
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days > 0) return hours > 0 ? `${days}일 ${hours}시간` : `${days}일`;
+  if (hours > 0) return mins > 0 ? `${hours}시간 ${mins}분` : `${hours}시간`;
+  return `${mins}분`;
+}
+
+/** 다음에 남은 시간의 분이 바뀔 때까지의 ms. 카운트다운을 그 경계에 맞춰 다시 그린다. */
+export function msUntilNextTrialMinute(endsAt: number, now = Date.now()): number {
+  const rest = (endsAt - now) % MINUTE_MS;
+  return rest > 0 ? rest : MINUTE_MS;
+}
 
 function formatTime(ms: number | null): string {
   if (!ms) return '—';
@@ -58,16 +75,14 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
         canDeactivate: true,
         showActivate: false,
       };
-    case 'trial': {
-      const hours = Math.max(0, Math.ceil((status.trial.endsAt - now) / HOUR_MS));
+    case 'trial':
       return {
         title: '체험 중',
-        detail: `${hours}시간 또는 저장 ${status.trial.savesLeft}번 남았어요. 끝나면 읽기 전용이 돼요.`,
+        detail: `${trialTimeLeft(status.trial.endsAt, now)} 남았어요. 끝나면 읽기 전용이 돼요.`,
         readOnly: false,
         canDeactivate: false,
         showActivate: true,
       };
-    }
     case 'trial_expired':
       return { title: '체험 끝 · 읽기 전용', detail: '라이선스 키를 넣으면 다시 저장할 수 있어요.', readOnly: true, canDeactivate: false, showActivate: true };
     case 'revoked':

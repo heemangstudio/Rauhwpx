@@ -11,14 +11,23 @@
   const dateTime = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' });
   const when = (ms) => (ms ? dateTime.format(new Date(ms)) : '—');
 
+  /** 체험 남은 시간. Studio 의 trialTimeLeft 와 같은 규칙이다. */
+  function timeLeft(endsAt) {
+    const minutes = Math.max(0, Math.ceil((endsAt - Date.now()) / 60000));
+    const days = Math.floor(minutes / 1440);
+    const hours = Math.floor((minutes % 1440) / 60);
+    const mins = minutes % 60;
+    if (days > 0) return hours > 0 ? `${days}일 ${hours}시간` : `${days}일`;
+    if (hours > 0) return mins > 0 ? `${hours}시간 ${mins}분` : `${hours}시간`;
+    return `${mins}분`;
+  }
+
   function summaryFor(status) {
     switch (status.state) {
       case 'licensed':
         return [status.offline ? '라이선스가 활성화되어 있어요. 지금은 오프라인이라 마지막 확인으로 쓰고 있어요.' : '라이선스가 활성화되어 있어요.', false];
-      case 'trial': {
-        const hours = Math.max(0, Math.ceil((status.trial.endsAt - Date.now()) / 3600000));
-        return [`체험 중이에요. ${hours}시간 또는 저장 ${status.trial.savesLeft}번 남았어요.`, false];
-      }
+      case 'trial':
+        return [`체험 중이에요. ${timeLeft(status.trial.endsAt)} 남았어요.`, false];
       case 'trial_expired':
         return ['체험이 끝나 읽기 전용이에요. 문서는 열어 볼 수 있지만 저장하려면 라이선스 키가 필요해요.', true];
       case 'revoked':

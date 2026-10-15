@@ -96,18 +96,6 @@ export function installLicenseHost({
     }
   }
 
-  /** 저장에 성공한 뒤 부른다. 체험 횟수를 세고, 마지막 체험 저장이면 활성화 창을 띄운다. */
-  async function noteSave() {
-    try {
-      const status = await manager.recordSave();
-      if (status.readOnly) openWindow();
-      return status;
-    } catch (error) {
-      log.warn?.('[license] could not record a trial save:', error);
-      return null;
-    }
-  }
-
   /** 실행할 때: 읽기 전용이면 첫 창 위에 활성화 창을 띄운다. */
   async function showIfReadOnly() {
     const status = await manager.status();
@@ -115,16 +103,15 @@ export function installLicenseHost({
     return status;
   }
 
+  /** 여러 창의 저장을 한 줄로 세워, 저장마다 확인한 뒤 쓴다. */
   function save(write) {
     const result = saveQueue.then(async () => {
       await guardSave();
-      const written = await write();
-      await noteSave();
-      return written;
+      return write();
     });
     saveQueue = result.catch(() => {});
     return result;
   }
 
-  return { openWindow, guardSave, noteSave, save, showIfReadOnly, broadcast, channels: Object.keys(handlers) };
+  return { openWindow, guardSave, save, showIfReadOnly, broadcast, channels: Object.keys(handlers) };
 }
