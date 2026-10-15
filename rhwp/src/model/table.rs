@@ -81,6 +81,7 @@ pub struct Table {
 pub(crate) struct LocalRowBoundaryPlan {
     row_count: u16,
     cells: Vec<(u16, u16, Option<HwpUnit>)>,
+    zones: Vec<TableZone>,
 }
 
 /// 표 쪽 나눔 종류
@@ -1119,7 +1120,7 @@ impl Table {
             return Err("표 격자 크기가 올바르지 않습니다".to_string());
         }
         if self.cell_spacing < 0
-            || !self.zones.is_empty()
+            || (self.cell_spacing > 0 && !self.zones.is_empty())
             || !self.local_resize_rows.is_empty()
             || !self.local_resize_cols.is_empty()
             || !self.local_resize_cell_widths.is_empty()
@@ -1134,8 +1135,8 @@ impl Table {
             return Err("저장된 셀 높이와 논리 행 높이가 다릅니다".to_string());
         }
 
-        let mut coverage = vec![false; rows * cols];
-        for cell in &self.cells {
+        let mut coverage = vec![None; rows * cols];
+        for (index, cell) in self.cells.iter().enumerate() {
             let row_end = cell.row as usize + cell.row_span as usize;
             let col_end = cell.col as usize + cell.col_span as usize;
             if cell.row_span == 0 || cell.col_span == 0 || row_end > rows || col_end > cols {
@@ -1144,14 +1145,14 @@ impl Table {
             for r in cell.row as usize..row_end {
                 for c in cell.col as usize..col_end {
                     let slot = &mut coverage[r * cols + c];
-                    if *slot {
+                    if slot.is_some() {
                         return Err("셀 격자가 겹칩니다".to_string());
                     }
-                    *slot = true;
+                    *slot = Some(index);
                 }
             }
         }
-        if coverage.iter().any(|&covered| !covered) {
+        if coverage.iter().any(Option::is_none) {
             return Err("셀 격자가 정확히 한 번씩 덮이지 않습니다".to_string());
         }
 
@@ -1244,10 +1245,59 @@ impl Table {
             let row = row_of(top);
             cells.push((row, row_of(bottom) - row, height));
         }
+        let zones = self.remap_single_row_zones(&cells, &coverage)?;
         Ok(LocalRowBoundaryPlan {
             row_count: new_rows as u16,
             cells,
+            zones,
         })
+    }
+
+    /// Hancom keeps a one-row cell zone on the moved row of the cell that starts there.
+    fn remap_single_row_zones(
+        &self,
+        planned: &[(u16, u16, Option<HwpUnit>)],
+        coverage: &[Option<usize>],
+    ) -> Result<Vec<TableZone>, String> {
+        if self.zones.len() > MAX_TABLE_GRID_CELLS {
+            return Err("셀 영역 수가 상한을 넘습니다".to_string());
+        }
+        let mut zones = Vec::with_capacity(self.zones.len());
+        let mut covered_columns = 0usize;
+        for zone in &self.zones {
+            if zone.start_row != zone.end_row
+                || zone.start_col > zone.end_col
+                || zone.end_row >= self.row_count
+                || zone.end_col >= self.col_count
+            {
+                return Err("행 분할로 옮길 수 없는 셀 영역입니다".to_string());
+            }
+            covered_columns += usize::from(zone.end_col - zone.start_col) + 1;
+            if covered_columns > MAX_TABLE_GRID_CELLS {
+                return Err("셀 영역 범위 합이 상한을 넘습니다".to_string());
+            }
+            let mut new_row = None;
+            for col in zone.start_col..=zone.end_col {
+                let index = coverage
+                    [usize::from(zone.start_row) * usize::from(self.col_count) + usize::from(col)]
+                .expect("validated coverage");
+                if self.cells[index].row != zone.start_row {
+                    return Err("셀 영역이 셀 시작 행과 맞지 않습니다".to_string());
+                }
+                let row = planned[index].0;
+                if new_row.is_some_and(|previous| previous != row) {
+                    return Err("셀 영역이 서로 다른 행으로 나뉩니다".to_string());
+                }
+                new_row = Some(row);
+            }
+            let row = new_row.expect("zone covers at least one column");
+            zones.push(TableZone {
+                start_row: row,
+                end_row: row,
+                ..zone.clone()
+            });
+        }
+        Ok(zones)
     }
 
     pub(crate) fn apply_local_row_boundary_plan(&mut self, plan: LocalRowBoundaryPlan) {
@@ -1259,6 +1309,7 @@ impl Table {
             }
         }
         self.row_count = plan.row_count;
+        self.zones = plan.zones;
         self.rebuild_row_sizes();
         self.rebuild_grid();
         self.dirty = true;

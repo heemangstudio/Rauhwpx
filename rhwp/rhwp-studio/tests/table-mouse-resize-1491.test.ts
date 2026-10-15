@@ -1,11 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import type { CellBbox } from '../src/core/types.ts';
+import { createTestModuleServer } from './support/module-server.ts';
 import {
   buildCellSelectionColumnDragUpdates,
   cellOverlapsSelectionRange,
   findResizeCompensationNeighbors,
 } from '../src/engine/table-resize-updates.ts';
+
+const vite = await createTestModuleServer(fileURLToPath(new URL('../', import.meta.url)));
+const { finishResizeDrag } = await vite.ssrLoadModule('/src/engine/input-handler-table.ts') as typeof import('../src/engine/input-handler-table.ts');
+test.after(() => vite.close());
 
 // 병합 셀이 섞인 표에서 마우스 드래그 리사이즈가 셀 선택 범위 내 병합 셀을
 // 누락시키지 않는다. finishResizeDrag 가 실제로 쓰는 cellOverlapsSelectionRange 를
@@ -13,6 +19,58 @@ import {
 
 function mergedGridBbox(row: number, col: number, rowSpan: number, colSpan: number): CellBbox {
   return { cellIdx: row * 100 + col, row, col, rowSpan, colSpan, pageIndex: 0, x: 0, y: 0, w: 40, h: 20 };
+}
+
+for (const bodyHeight of [65469 / 75, 180]) {
+  test(`Shift row drag excludes an unchanged full-width body (${bodyHeight}px) from height updates`, () => {
+    const upper = { ...mergedGridBbox(0, 0, 1, 1), cellIdx: 0, h: 5669 / 75 };
+    const lower = { ...mergedGridBbox(1, 0, 1, 1), cellIdx: 3, y: upper.h, h: 5669 / 75 };
+    const body = { ...mergedGridBbox(2, 0, 1, 3), cellIdx: 5, y: lower.y + lower.h, h: bodyHeight };
+    const bboxes = [upper, lower, body];
+    const resized: unknown[][] = [];
+    const position = { sectionIndex: 0, paragraphIndex: 0, charOffset: 0 };
+    let cleaned = false;
+    const wasm = {
+      getCellProperties: (_s: number, _p: number, _c: number, cellIdx: number) => ({
+        width: cellIdx === 5 ? 47907 : 16535,
+        height: cellIdx === 5 ? 65469 : 5669,
+      }),
+      resizeTableCells: (...args: unknown[]) => resized.push(args),
+    };
+    const handler = {
+      wasm,
+      tableResizeRenderer: {},
+      resizeDragState: {
+        edge: { type: 'row', index: 1, pageIndex: 0 },
+        tableRef: { sec: 0, ppi: 2, ci: 0 },
+        bboxes,
+        pageBboxes: bboxes,
+        borderOriginalPos: upper.h,
+        minResizePos: 200 / 75,
+        maxResizePos: lower.y + lower.h - 200 / 75,
+        singleCellTarget: { cellIdx: 0, side: 'end' },
+        shiftResize: true,
+      },
+      viewportManager: { getZoom: () => 1 },
+      virtualScroll: { getPageOffset: () => 0, getPageWidth: () => 800, getPageLeftResolved: () => 0 },
+      container: { querySelector: () => ({ clientWidth: 800, getBoundingClientRect: () => ({ left: 0, top: 0 }) }) },
+      cursor: { isInCellSelectionMode: () => false, getPosition: () => position },
+      executeOperation(desc: { kind: string; operationType: string; operation(w: unknown): unknown }) {
+        assert.equal(desc.kind, 'snapshot');
+        assert.equal(desc.operationType, 'resizeTableCells');
+        assert.equal(desc.operation(wasm), position);
+      },
+      cleanupResizeDrag: () => { cleaned = true; },
+    };
+
+    finishResizeDrag.call(handler, { clientX: 20, clientY: upper.h + 1132 / 75, shiftKey: true } as MouseEvent);
+
+    assert.equal(cleaned, true);
+    assert.deepEqual(resized, [[0, 2, 0, [
+      { cellIdx: 0, heightDelta: 0, localResize: true, renderHeight: 6801 },
+      { cellIdx: 3, heightDelta: 0, localResize: true, renderHeight: 4537 },
+    ]]]);
+  });
 }
 
 test('세로 병합 셀은 시작 행이 선택 범위 밖이어도 하위 행 선택과 겹친다', () => {

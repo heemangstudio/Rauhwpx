@@ -200,6 +200,121 @@ fn spaced_local_row_noop_does_not_leave_transient_heights() {
     assert_native_spaced_render(&saved, &[3401, 3401, 3401], 3);
 }
 
+fn find_tall_zoned_table(doc: &Document) -> TablePos {
+    for (section, section_model) in doc.sections.iter().enumerate() {
+        for (para, paragraph) in section_model.paragraphs.iter().enumerate() {
+            for (control, ctrl) in paragraph.controls.iter().enumerate() {
+                if matches!(ctrl, Control::Table(table)
+                    if table.cells.len() == 6 && table.common.width == 47907
+                        && table.common.height == 76968 && table.zones.len() == 3)
+                {
+                    return TablePos {
+                        section,
+                        para,
+                        control,
+                    };
+                }
+            }
+        }
+    }
+    panic!("native tall zoned table");
+}
+
+fn tall_zoned_table(doc: &Document) -> &rhwp::model::table::Table {
+    let pos = find_tall_zoned_table(doc);
+    let Control::Table(table) =
+        &doc.sections[pos.section].paragraphs[pos.para].controls[pos.control]
+    else {
+        unreachable!()
+    };
+    table
+}
+
+fn tall_zone_signature(table: &rhwp::model::table::Table) -> Vec<(u16, u16, u16, u16, u16)> {
+    table
+        .zones
+        .iter()
+        .map(|z| {
+            (
+                z.border_fill_id,
+                z.start_row,
+                z.start_col,
+                z.end_row,
+                z.end_col,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn zoned_local_row_resize_matches_native_and_persists_without_expanding_zones() {
+    let bytes = sample_bytes("samples/pr486-tall-zone-before.hwpx");
+    let mut doc = HwpDocument::from_local_file_bytes(&bytes).unwrap();
+    let pos = find_tall_zoned_table(doc.document());
+    let table = tall_zoned_table(doc.document());
+    let upper = table
+        .cells
+        .iter()
+        .position(|c| c.col == 0 && c.row == 0)
+        .unwrap();
+    let lower = table
+        .cells
+        .iter()
+        .position(|c| c.col == 0 && c.row == 1)
+        .unwrap();
+    let before_zones = tall_zone_signature(table);
+    let before_snapshot = doc.save_snapshot();
+    resize_cells_to_render_heights(&mut doc, pos, &[(upper as u32, 6801), (lower as u32, 4537)]);
+    let after_snapshot = doc.save_snapshot();
+    let native_doc = parse_hwpx(&sample_bytes("samples/pr486-tall-zone-after.hwpx")).unwrap();
+    let native = tall_zoned_table(&native_doc);
+    let cells = |table: &rhwp::model::table::Table| {
+        let mut cells: Vec<_> = table
+            .cells
+            .iter()
+            .map(|c| (c.col, c.row, c.col_span, c.row_span, c.width, c.height))
+            .collect();
+        cells.sort_unstable();
+        cells
+    };
+    assert_eq!(cells(tall_zoned_table(doc.document())), cells(native));
+    assert_eq!(
+        tall_zone_signature(tall_zoned_table(doc.document())),
+        tall_zone_signature(native)
+    );
+    let live_order = |table: &rhwp::model::table::Table| {
+        table
+            .cells
+            .iter()
+            .map(|cell| (cell.row, cell.col))
+            .collect::<Vec<_>>()
+    };
+    let original_order = live_order(tall_zoned_table(doc.document()));
+    for saved in [doc.export_hwpx().unwrap(), doc.export_hwp().unwrap()] {
+        let reopened = HwpDocument::from_local_file_bytes(&saved).unwrap();
+        let table = tall_zoned_table(reopened.document());
+        assert_eq!(table.row_count, native.row_count);
+        assert_eq!(cells(table), cells(native));
+        assert_eq!(tall_zone_signature(table), tall_zone_signature(native));
+        assert!(table.local_resize_cell_heights.is_empty());
+        assert_eq!(
+            live_order(table),
+            [(0, 0), (0, 1), (0, 2), (1, 2), (2, 0), (3, 0)]
+        );
+    }
+    assert_eq!(live_order(tall_zoned_table(doc.document())), original_order);
+    doc.restore_snapshot(before_snapshot).unwrap();
+    assert_eq!(
+        tall_zone_signature(tall_zoned_table(doc.document())),
+        before_zones
+    );
+    doc.restore_snapshot(after_snapshot).unwrap();
+    assert_eq!(
+        tall_zone_signature(tall_zoned_table(doc.document())),
+        tall_zone_signature(native)
+    );
+}
+
 #[test]
 fn hwpx_roundtrip_preserves_signed_cell_margin_sentinels_and_switch() {
     let bytes = sample_bytes("samples/셀보호2.hwpx");

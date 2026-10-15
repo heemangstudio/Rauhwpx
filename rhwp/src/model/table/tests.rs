@@ -44,6 +44,174 @@ fn make_table(rows: u16, cols: u16) -> Table {
     table
 }
 
+fn native_tall_zone_table() -> Table {
+    let spec = [
+        (0, 0, 1, 1, 16535, 5669),
+        (1, 0, 2, 1, 15686, 3881),
+        (2, 0, 1, 1, 15686, 1882),
+        (0, 1, 1, 1, 16535, 5669),
+        (2, 1, 1, 1, 15686, 2082),
+        (0, 2, 1, 3, 47907, 65469),
+    ];
+    let cells = spec
+        .iter()
+        .map(|&(col, row, row_span, col_span, width, height)| {
+            let mut cell = Cell::new_empty(col, row, width, height, 1);
+            cell.row_span = row_span;
+            cell.col_span = col_span;
+            cell
+        })
+        .collect();
+    let zone = |row, col, border_fill_id| TableZone {
+        start_row: row,
+        start_col: col,
+        end_row: row,
+        end_col: col,
+        border_fill_id,
+    };
+    let mut table = Table {
+        row_count: 3,
+        col_count: 3,
+        row_sizes: vec![3, 2, 1],
+        border_fill_id: 1,
+        cells,
+        zones: vec![zone(2, 0, 212), zone(1, 0, 211), zone(1, 2, 213)],
+        ..Default::default()
+    };
+    table.common.width = 47907;
+    table.common.height = 76968;
+    table.rebuild_grid();
+    table
+}
+
+fn zone_rows(table: &Table) -> Vec<(u16, u16, u16, u16, u16)> {
+    table
+        .zones
+        .iter()
+        .map(|z| {
+            (
+                z.border_fill_id,
+                z.start_row,
+                z.start_col,
+                z.end_row,
+                z.end_col,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn local_row_boundary_remaps_zones_like_native_tall_zone_edit() {
+    let mut table = native_tall_zone_table();
+    table
+        .shift_local_row_boundaries(&[5669, 5669, 65469], &[(0, 1, 1132)])
+        .unwrap();
+
+    assert_eq!(table.row_count, 4);
+    assert_eq!(
+        table
+            .cells
+            .iter()
+            .map(|cell| (cell.col, cell.row, cell.row_span, cell.height, cell.width))
+            .collect::<Vec<_>>(),
+        [
+            (0, 0, 2, 6801, 16535),
+            (1, 0, 3, 3881, 15686),
+            (2, 0, 1, 1882, 15686),
+            (0, 2, 1, 4537, 16535),
+            (2, 1, 2, 2082, 15686),
+            (0, 3, 1, 65469, 47907),
+        ]
+    );
+    assert_eq!(
+        zone_rows(&table),
+        [(212, 3, 0, 3, 0), (211, 2, 0, 2, 0), (213, 1, 2, 1, 2)]
+    );
+    assert_eq!((table.common.width, table.common.height), (47907, 76968));
+}
+
+#[test]
+fn local_row_boundary_rejects_unverified_zone_shapes_without_editing() {
+    for zone in [
+        TableZone {
+            start_row: 0,
+            start_col: 0,
+            end_row: 1,
+            end_col: 0,
+            border_fill_id: 9,
+        },
+        TableZone {
+            start_row: 1,
+            start_col: 1,
+            end_row: 1,
+            end_col: 1,
+            border_fill_id: 9,
+        },
+        TableZone {
+            start_row: 1,
+            start_col: 0,
+            end_row: 1,
+            end_col: 2,
+            border_fill_id: 9,
+        },
+        TableZone {
+            start_row: 3,
+            start_col: 0,
+            end_row: 3,
+            end_col: 0,
+            border_fill_id: 9,
+        },
+    ] {
+        let mut table = native_tall_zone_table();
+        table.zones.push(zone);
+        let before = zone_rows(&table);
+        assert!(table
+            .shift_local_row_boundaries(&[5669, 5669, 65469], &[(0, 1, 1132)])
+            .is_err());
+        assert_eq!(table.row_count, 3);
+        assert_eq!(zone_rows(&table), before);
+        assert_eq!(table.cells[0].height, 5669);
+    }
+}
+
+#[test]
+fn local_row_boundary_rejects_zone_that_would_split_between_rows() {
+    let mut table = make_table(2, 2);
+    table.zones.push(TableZone {
+        start_row: 1,
+        end_row: 1,
+        start_col: 0,
+        end_col: 1,
+        border_fill_id: 9,
+    });
+    assert!(table
+        .shift_local_row_boundaries(&[1000, 1000], &[(0, 1, 200)])
+        .is_err());
+    assert_eq!(table.row_count, 2);
+    assert_eq!(zone_rows(&table), [(9, 1, 0, 1, 1)]);
+    assert!(table.cells.iter().all(|cell| cell.height == 1000));
+}
+
+#[test]
+fn local_row_boundary_bounds_total_zone_coverage() {
+    let mut table = make_table(2, 32);
+    table.zones = vec![
+        TableZone {
+            start_row: 0,
+            end_row: 0,
+            start_col: 0,
+            end_col: 31,
+            border_fill_id: 9,
+        };
+        MAX_TABLE_GRID_CELLS / 32 + 1
+    ];
+    assert!(table
+        .shift_local_row_boundaries(&[1000, 1000], &[(0, 1, 200)])
+        .is_err());
+    assert_eq!(table.row_count, 2);
+    assert!(table.cells.iter().all(|cell| cell.height == 1000));
+}
+
 #[test]
 fn local_row_boundary_matches_native_staggered_grid() {
     let mut table = make_table(3, 2);

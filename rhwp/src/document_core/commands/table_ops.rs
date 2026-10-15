@@ -2034,13 +2034,14 @@ impl DocumentCore {
             let mut next_row = 0usize;
             for (cell_idx, cell) in cells {
                 let end = cell.row as usize + cell.row_span as usize;
-                if cell.row as usize != next_row
-                    || cell.col_span != 1
-                    || cell.row_span == 0
-                    || end > row_heights.len()
-                {
+                if cell.row as usize != next_row || cell.row_span == 0 || end > row_heights.len() {
                     return Err(HwpError::RenderError(
                         "병합 셀의 로컬 행 경계는 지원되지 않습니다".to_string(),
+                    ));
+                }
+                if cell.col_span != 1 && (hints.contains_key(&cell_idx) || moved.abs() > 7) {
+                    return Err(HwpError::RenderError(
+                        "여러 열에 걸친 셀 경계는 이동할 수 없습니다".to_string(),
                     ));
                 }
                 let original: i64 = row_heights[next_row..end]
