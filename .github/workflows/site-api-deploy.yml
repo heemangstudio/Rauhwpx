@@ -1,0 +1,86 @@
+name: Deploy site-api to Railway
+
+# A merge to main that touches site-api/ tests it, uploads it to the Railway
+# service `rau-credits` (project token in the RAILWAY_TOKEN repo secret), then
+# checks the live license endpoints are configured.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - site-api/**
+      - .github/workflows/site-api-deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-api-deploy
+  cancel-in-progress: false
+
+env:
+  SITE_API_URL: https://rau-credits-production.up.railway.app
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+
+      - name: Test site-api
+        run: |
+          npm --prefix site-api ci
+          npm --prefix site-api test
+
+      - name: Require the Railway project token
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::RAILWAY_TOKEN is not set. Create a project token in Railway (project rau-credits > Settings > Tokens, environment production) and add it as a repository secret."
+            exit 1
+          fi
+
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          npm install -g @railway/cli@5.68.0
+          railway up site-api --path-as-root --service rau-credits --environment production --ci \
+            --message "main ${GITHUB_SHA::12}"
+
+      - name: Verify the live license server
+        run: |
+          set -eu
+          # `railway up --ci` returns once the build finishes; the old deployment keeps serving
+          # until the new one passes /healthz. Wait for the license routes to answer 200
+          # (404 = old code still live, 503 = LICENSE_SIGNING_PRIVATE_KEY missing).
+          code=000
+          for i in $(seq 1 40); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$SITE_API_URL/v1/license/public-key" || true)
+            if [ "$code" = "200" ]; then break; fi
+            echo "public-key -> $code, waiting"
+            sleep 15
+          done
+          if [ "$code" != "200" ]; then
+            echo "::error::/v1/license/public-key answered $code after 10 minutes. 503 means LICENSE_SIGNING_PRIVATE_KEY is not set on Railway; 404 means the new deployment never went live."
+            exit 1
+          fi
+          curl -fsS "$SITE_API_URL/healthz"
+          echo
+          curl -fsS "$SITE_API_URL/v1/license/public-key"
+          echo
+          # An unsigned webhook must be refused with 401 (secret set), not 503 (secret missing).
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "$SITE_API_URL/v1/groble/webhook")
+          echo "unsigned webhook -> $code"
+          test "$code" = "401"
+          curl -fsS "$SITE_API_URL/v1/license/by-ref?ref=deploy-check" | grep -q '"pending"'

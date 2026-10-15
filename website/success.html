@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>라이선스 키 | HamaEditor</title>
+<meta name="description" content="HamaEditor 결제를 마친 뒤 라이선스 키를 받는 페이지예요.">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#ececea">
+<link rel="icon" type="image/png" href="assets/hamaeditor-logo.png">
+<link rel="apple-touch-icon" href="assets/hamaeditor-logo.png">
+<link rel="canonical" href="https://heemangstudios.com/success">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hahmlet:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500&family=Nanum+Pen+Script&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" rel="stylesheet">
+<style>
+/* tos.html 과 같은 종이·목탄 토큰을 써요. */
+*,*::before,*::after{box-sizing:border-box}
+
+:root{
+  --ground:#ececea;
+  --sheet:#fcfcfb;
+  --ink:#1b1b1a;
+  --ink-2:#3a3a38;
+  --ink-3:#62625f;
+  --ink-4:#8d8d8a;
+  --rule:#cdcdca;
+  --sans:'Pretendard Variable',Pretendard,system-ui,-apple-system,'Apple SD Gothic Neo',sans-serif;
+  --serif:'Hahmlet','Apple SD Gothic Neo',serif;
+  --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+  --hand:'Nanum Pen Script',cursive;
+  --gut:clamp(16px,4vw,48px);
+  --frame:83.333ms;
+  --margin:clamp(64px,8vw,104px);
+  --tooth:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='t' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.78' numOctaves='3' seed='3' stitchTiles='stitch'/%3E%3CfeDiffuseLighting lighting-color='%23fff' surfaceScale='1.1' diffuseConstant='1'%3E%3CfeDistantLight azimuth='225' elevation='60'/%3E%3C/feDiffuseLighting%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='.07' intercept='.868'/%3E%3CfeFuncG type='linear' slope='.07' intercept='.868'/%3E%3CfeFuncB type='linear' slope='.07' intercept='.863'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23t)'/%3E%3C/svg%3E");
+  --dust:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='720' height='720'%3E%3Cfilter id='d' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.62' numOctaves='2' seed='11' stitchTiles='stitch' result='a'/%3E%3CfeColorMatrix in='a' values='0 0 0 0 .1 0 0 0 0 .1 0 0 0 0 .1 -64 0 0 0 16.4' result='f'/%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.2' numOctaves='2' seed='5' stitchTiles='stitch' result='b'/%3E%3CfeColorMatrix in='b' values='0 0 0 0 .1 0 0 0 0 .1 0 0 0 0 .1 -48 0 0 0 11.3' result='c'/%3E%3CfeMerge result='s'%3E%3CfeMergeNode in='f'/%3E%3CfeMergeNode in='c'/%3E%3C/feMerge%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.0045' numOctaves='2' seed='8' stitchTiles='stitch' result='m'/%3E%3CfeColorMatrix in='m' values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5 0 0 0 -2.35' result='k'/%3E%3CfeComposite in='s' in2='k' operator='in'/%3E%3C/filter%3E%3Crect width='720' height='720' filter='url(%23d)' opacity='.42'/%3E%3C/svg%3E");
+}
+
+html{-webkit-text-size-adjust:100%;overflow-x:clip;scroll-padding-top:84px}
+html,body{margin:0;padding:0}
+body{
+  background-color:var(--ground);
+  background-image:var(--dust),var(--tooth);
+  background-size:720px 720px,300px 300px;
+  color:var(--ink);
+  font:400 16.5px/1.8 var(--sans);
+  letter-spacing:-.006em;
+  -webkit-font-smoothing:antialiased;
+}
+::selection{background:var(--ink);color:var(--sheet)}
+a{color:inherit}
+p,li,h1,h2,dt,dd,td,th{word-break:keep-all;overflow-wrap:break-word}
+h1,h2,p{margin:0}
+ol,ul{margin:0;padding:0;list-style:none}
+:focus-visible{outline:2px solid var(--ink);outline-offset:4px;border-radius:2px}
+.wrap{max-width:1180px;margin:0 auto;padding:0 var(--gut)}
+.charcoal{filter:url(#cct)}
+.mono{font:500 12px/1.4 var(--mono);letter-spacing:.06em;text-transform:uppercase;font-variant-numeric:tabular-nums}
+
+/* 머리글 */
+.mast{position:sticky;top:0;z-index:40;height:60px;background:rgba(236,236,234,.9);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.mast .wrap{display:flex;align-items:center;justify-content:space-between;gap:18px;height:100%;max-width:none}
+.mast__rule{position:absolute;left:0;right:0;bottom:-3px;width:100%;height:6px;overflow:visible;color:var(--ink);pointer-events:none;filter:url(#cc0)}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none;font:700 18px/1 var(--serif);letter-spacing:-.03em;min-height:44px}
+.tile{position:relative;width:30px;height:30px;border-radius:8px;overflow:hidden;flex:0 0 auto;background:#1c1c1b;box-shadow:0 1px 0 rgba(0,0,0,.35)}
+.tile img{position:absolute;left:-6%;top:-6%;width:112%;height:112%;max-width:none;filter:url(#logo)}
+.back{min-height:44px;display:inline-flex;align-items:center;gap:8px;color:var(--ink-2);font-size:15px;text-decoration:none}
+.back:hover{color:var(--ink);text-decoration:underline;text-underline-offset:5px;text-decoration-thickness:1px}
+.back svg{width:18px;height:18px}
+/* 약관 한 장 */
+.sheet{
+  position:relative;background:var(--sheet);
+  padding:clamp(40px,5vw,64px) clamp(24px,5vw,64px) clamp(40px,5vw,60px) calc(var(--margin) + clamp(20px,3vw,36px));
+  box-shadow:0 .5px 1px rgba(10,10,10,.2),0 4px 14px -4px rgba(10,10,10,.16);
+  transform:rotate(-.2deg);
+}
+.sheet::after{content:'';position:absolute;inset:0;pointer-events:none;background:linear-gradient(165deg,rgba(255,255,255,.2),rgba(0,0,0,.02) 75%,rgba(0,0,0,.045))}
+/* 여백 두 줄 */
+.sheet::before{content:'';position:absolute;top:0;bottom:0;left:var(--margin);width:4px;border-left:1px solid rgba(0,0,0,.18);border-right:1px solid rgba(0,0,0,.1);pointer-events:none}
+.tack{position:absolute;z-index:3;left:50%;top:-7px;width:17px;height:17px;margin-left:-8px;border-radius:50%;
+  background:radial-gradient(circle at 36% 30%,#9a9a97 0 1.6px,#3a3a38 3.4px,#141413 8.5px);
+  box-shadow:3px 5px 3px -1px rgba(0,0,0,.28),inset 0 -1px 1px rgba(0,0,0,.5)}
+/* 바인더 구멍 */
+.punch{position:absolute;left:calc(var(--margin)/2 - 7px);width:14px;height:14px;border-radius:50%;background:var(--ground);box-shadow:inset 0 1px 2px rgba(0,0,0,.4)}
+.punch.a{top:90px}.punch.b{top:50%}.punch.c{bottom:90px}
+
+.doc-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px 40px;align-items:end;padding-bottom:26px;border-bottom:1.5px solid var(--ink)}
+.doc-head .mono{color:var(--ink-3);margin-bottom:12px}
+.doc-head h1{font:800 clamp(34px,4vw,52px)/1.12 var(--serif);letter-spacing:-.04em}
+.doc-head dl{margin:0;display:grid;grid-template-columns:auto auto;gap:6px 18px;font-size:14px}
+.doc-head dt{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-4)}
+.doc-head dd{margin:0;font-weight:600;font-variant-numeric:tabular-nums}
+.foot{padding:40px 0 36px}
+.colophon{border-top:1px solid var(--rule);padding-top:18px;margin:0;font:400 12px/1.8 var(--mono);color:var(--ink-3);display:flex;flex-wrap:wrap;gap:4px 22px}
+.colophon a{color:var(--ink-2);text-underline-offset:3px;text-decoration-color:var(--ink-4)}
+
+.main{padding:clamp(36px,5vw,72px) 0 clamp(48px,6vw,88px)}
+.main .wrap{max-width:860px}
+.sheet h2{font:700 20px/1.35 var(--serif);letter-spacing:-.025em;margin-top:34px}
+.sheet p,.sheet li{color:var(--ink-2)}
+.sheet .lead{margin-top:18px;font-size:17px}
+.sheet ul.dots{margin-top:10px;padding-left:1.1em;list-style:disc}
+.sheet ul.dots li+li{margin-top:4px}
+.price{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin-top:28px}
+.price b{font:800 clamp(40px,5vw,56px)/1 var(--serif);letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.price span{font-size:15px;font-weight:500;color:var(--ink-2)}
+.note{margin-top:22px;padding:14px 18px;border:1.5px solid var(--ink);border-radius:3px;background:#fff}
+.note b{color:var(--ink)}
+.note--soft{border:1px dashed var(--ink-4);background:transparent}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:52px;padding:0 24px;border:0;border-radius:3px;background:var(--ink);color:var(--sheet);font:600 16px/1 var(--sans);text-decoration:none;cursor:pointer}
+.btn:hover{background:#000}
+.btn[aria-disabled="true"],.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn--line{background:transparent;color:var(--ink);border:2px solid var(--ink)}
+.btn--line:hover{background:var(--ink);color:var(--sheet)}
+.actions{display:flex;flex-wrap:wrap;gap:12px 14px;align-items:center;margin-top:22px}
+.consent{display:flex;gap:10px;align-items:flex-start;margin-top:26px;font-size:15px;color:var(--ink-2)}
+.consent input{width:20px;height:20px;margin:3px 0 0;flex:0 0 auto;accent-color:var(--ink)}
+.small{font-size:14px;color:var(--ink-3)}
+.status{margin-top:26px;min-height:28px;font-weight:600}
+.status.is-bad{color:#9b2c1f}
+.keybox{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:16px}
+.keybox code{flex:1 1 320px;padding:14px 16px;border:1.5px solid var(--ink);border-radius:3px;background:#fff;font:500 17px/1.4 var(--mono);letter-spacing:.04em;word-break:break-all;user-select:all}
+.ref{font:400 13px/1.6 var(--mono);color:var(--ink-3);word-break:break-all}
+.spin{display:inline-block;width:14px;height:14px;margin-right:8px;border:2px solid var(--ink-4);border-top-color:var(--ink);border-radius:50%;vertical-align:-2px}
+@media (prefers-reduced-motion:no-preference){.spin{animation:spin 1s linear infinite}}
+@keyframes spin{to{transform:rotate(360deg)}}
+[hidden]{display:none!important}
+@media (max-width:640px){
+  :root{--margin:0px}
+  .sheet{padding:40px 22px 34px;transform:none}
+  .sheet::before,.punch{display:none}
+  .doc-head{grid-template-columns:minmax(0,1fr)}
+}
+
+@media (prefers-reduced-motion:no-preference){
+  .sheet{animation:drop calc(var(--frame)*8) steps(1,end) both}
+}
+@keyframes drop{
+  0%   {opacity:0;transform:translate(-10px,-90px) rotate(-2.6deg) scale(1.02)}
+  12.5%{opacity:1;transform:translate(-6px,-54px) rotate(.7deg) scale(1.016)}
+  25%  {transform:translate(4px,-22px) rotate(-1deg) scale(1.008)}
+  37.5%{transform:translate(1px,-5px) rotate(-.05deg) scale(1.003)}
+  50%  {transform:translate(0,2px) rotate(-.2deg) scale(1.004,.994)}
+  62.5%{transform:translate(0,-1px) rotate(-.15deg)}
+  75%,100%{opacity:1;transform:rotate(-.2deg)}
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <filter id="cc0" x="-8%" y="-8%" width="116%" height="116%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.03" numOctaves="2" seed="2" result="w"/>
+      <feDisplacementMap in="SourceGraphic" in2="w" scale="3.4" xChannelSelector="R" yChannelSelector="G" result="d"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" seed="5" result="g"/>
+      <feColorMatrix in="g" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 3.4 0 0 0 -0.8" result="m"/>
+      <feComposite in="d" in2="m" operator="in"/>
+    </filter>
+    <filter id="cct" x="-4%" y="-10%" width="108%" height="120%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.06" numOctaves="2" seed="4" result="w"/>
+      <feDisplacementMap in="SourceGraphic" in2="w" scale="1.8" xChannelSelector="R" yChannelSelector="G" result="d"/>
+      <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="1" seed="8" result="g"/>
+      <feColorMatrix in="g" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2.6 0 0 0 -0.12" result="m"/>
+      <feComposite in="d" in2="m" operator="in"/>
+    </filter>
+    <filter id="logo" color-interpolation-filters="sRGB">
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer><feFuncR type="linear" slope="1.56" intercept="-.6"/><feFuncG type="linear" slope="1.56" intercept="-.6"/><feFuncB type="linear" slope="1.56" intercept="-.6"/></feComponentTransfer>
+    </filter>
+  </defs>
+</svg>
+
+<header class="mast">
+  <div class="wrap">
+    <a class="brand" href="index.html"><span class="tile"><img src="assets/hamaeditor-logo.png" width="1024" height="1024" alt=""></span>HamaEditor</a>
+    <a class="back" href="index.html">
+      <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M15 9H3m0 0 4.2-4.2M3 9l4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      홈
+    </a>
+  </div>
+  <svg class="mast__rule" viewBox="0 0 1000 6" preserveAspectRatio="none" aria-hidden="true"><path d="M-4 3.2C180 2.1 330 4.4 520 3.1S850 2.2 1004 3.6" fill="none" stroke="currentColor" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>
+</header>
+
+<main class="main">
+  <div class="wrap">
+    <article class="sheet" aria-labelledby="ok-title">
+      <i class="tack" aria-hidden="true"></i>
+      <i class="punch a" aria-hidden="true"></i><i class="punch b" aria-hidden="true"></i><i class="punch c" aria-hidden="true"></i>
+      <header class="doc-head">
+        <div>
+          <p class="mono">HamaEditor · 라이선스 키</p>
+          <h1 id="ok-title" class="charcoal">결제해 주셔서 고마워요</h1>
+        </div>
+      </header>
+
+      <p class="status" data-status role="status" aria-live="polite"><span class="spin" aria-hidden="true"></span>결제를 확인하고 있어요…</p>
+
+      <div data-issued hidden>
+        <div class="keybox">
+          <code data-key></code>
+          <button class="btn" type="button" data-copy>키 복사</button>
+        </div>
+        <p class="small" style="margin-top:10px">이 키는 다시 보여 드리기 어려울 수 있어요. 복사해서 안전한 곳에 보관해 주세요.</p>
+      </div>
+
+      <div class="actions" data-retry-wrap hidden>
+        <button class="btn btn--line" type="button" data-retry>다시 확인하기</button>
+      </div>
+
+      <div class="note note--soft" data-help hidden>
+        <p>결제는 끝났는데 키가 보이지 않으면 아래 참조값과 Groble 주문번호를 <a href="mailto:management@heemangstudios.com?subject=HamaEditor%20%EB%9D%BC%EC%9D%B4%EC%84%A0%EC%8A%A4%20%ED%82%A4%20%EB%AC%B8%EC%9D%98">management@heemangstudios.com</a>으로 보내 주세요. 확인하고 키를 보내 드릴게요.</p>
+        <p class="ref" data-ref-line></p>
+      </div>
+
+      <h2 id="activate">키 넣는 법</h2>
+      <ol class="dots" style="list-style:decimal;padding-left:1.3em">
+        <li>HamaEditor를 열어요. 아직 없다면 아래에서 내려받아요.</li>
+        <li>체험 중이면 설정 → 라이선스에서, 체험이 끝났다면 바로 뜨는 활성화 화면에서 키를 붙여 넣어요.</li>
+        <li>키 하나로 Mac 두 대까지 쓸 수 있어요. 다른 Mac으로 옮기려면 설정 → 라이선스 → ‘이 기기 비활성화’를 눌러요.</li>
+      </ol>
+      <div class="actions">
+        <a class="btn btn--line" data-dmg href="https://github.com/heemangstudio/Rauhwpx/releases/latest">Mac용 내려받기 (.dmg, Apple Silicon)</a>
+      </div>
+      <p class="small" style="margin-top:12px">macOS 전용이에요. Windows 버전은 아직 없어요. 환불과 청약철회는 <a href="tos.html#a9">이용약관 제9조</a>를 따라요.</p>
+    </article>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <p class="colophon">
+      <span><a href="index.html">HamaEditor</a></span>
+      <span><a href="pricing.html">가격</a></span>
+      <span><a href="tos.html">이용약관</a></span>
+      <span>문의 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a></span>
+    </p>
+  </div>
+</footer>
+
+<script src="assets/purchase.js"></script>
+<script>
+(function(){
+  var P=window.HamaPurchase;
+  var status=document.querySelector('[data-status]');
+  var issued=document.querySelector('[data-issued]');
+  var keyEl=document.querySelector('[data-key]');
+  var copy=document.querySelector('[data-copy]');
+  var retryWrap=document.querySelector('[data-retry-wrap]');
+  var retry=document.querySelector('[data-retry]');
+  var help=document.querySelector('[data-help]');
+  var refLine=document.querySelector('[data-ref-line]');
+  var dmg=document.querySelector('[data-dmg]');
+  if(!P)return;
+  if(dmg)dmg.href=P.CONFIG.MAC_DMG_URL;
+  var storage=null;try{storage=window.localStorage;}catch(_){}
+  var ref=P.resolveRef(window.location.search,storage);
+  function say(html,bad,busy){
+    status.textContent='';
+    if(busy){var s=document.createElement('span');s.className='spin';s.setAttribute('aria-hidden','true');status.appendChild(s);}
+    status.appendChild(document.createTextNode(html));
+    status.classList.toggle('is-bad',!!bad);
+  }
+  if(!ref){
+    say('이 브라우저에서 시작한 결제를 찾지 못했어요. 결제한 브라우저에서 이 페이지를 열거나 문의해 주세요.',true,false);
+    help.hidden=false;refLine.textContent='참조값: 없음';
+    return;
+  }
+  refLine.textContent='참조값: '+ref;
+  var stop=null;
+  function start(){
+    retryWrap.hidden=true;help.hidden=true;
+    say('결제를 확인하고 있어요…',false,true);
+    stop=P.pollLicense({
+      ref:ref,
+      fetch:window.fetch.bind(window),
+      onUpdate:function(u){
+        if(u.state==='pending'){
+          say(u.attempts>3?'결제 확인을 기다리는 중이에요. 보통 1분 안에 끝나요…':'결제를 확인하고 있어요…',false,true);
+        }else if(u.state==='issued'){
+          keyEl.textContent=u.key;issued.hidden=false;
+          say('라이선스 키가 나왔어요.',false,false);
+        }else if(u.state==='timeout'){
+          say('아직 결제 확인이 오지 않았어요. 잠시 뒤 다시 확인해 주세요.',true,false);
+          retryWrap.hidden=false;help.hidden=false;
+        }else{
+          say('키 서버에 연결하지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.',true,false);
+          retryWrap.hidden=false;help.hidden=false;
+        }
+      }
+    });
+  }
+  retry.addEventListener('click',function(){if(stop)stop();start();});
+  copy.addEventListener('click',function(){
+    var key=keyEl.textContent;
+    function ok(){copy.textContent='복사했어요';setTimeout(function(){copy.textContent='키 복사';},2000);}
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(key).then(ok,fallback);
+    }else fallback();
+    function fallback(){
+      var r=document.createRange();r.selectNodeContents(keyEl);
+      var sel=window.getSelection();sel.removeAllRanges();sel.addRange(r);
+      try{document.execCommand('copy');ok();}catch(_){copy.textContent='키를 직접 복사해 주세요';}
+    }
+  });
+  start();
+})();
+</script>
+</body>
+</html>

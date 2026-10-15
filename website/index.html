@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HamaEditor</title>
-<meta name="description" content="HamaEditor는 한글 문서 편집과 AI 에이전트 작업을 한 화면에서 하는 macOS·Windows 데스크톱 앱이에요.">
+<meta name="description" content="HamaEditor는 한글 문서 편집과 AI 에이전트 작업을 한 화면에서 하는 macOS 데스크톱 앱이에요. 9,900원 한 번 결제.">
 <meta name="theme-color" content="#ececea">
 <meta property="og:title" content="HamaEditor">
 <meta property="og:description" content="한글 문서 편집과 AI 에이전트 작업을 한 화면에서.">
@@ -401,8 +401,12 @@ html.js.motion .drop.in{visibility:visible;animation:drop calc(var(--frame)*8) s
   -webkit-mask:radial-gradient(circle 13px at calc(100% - var(--stub)) 0,#0000 97%,#000) top/100% 51% no-repeat,radial-gradient(circle 13px at calc(100% - var(--stub)) 100%,#0000 97%,#000) bottom/100% 51% no-repeat;
   mask:radial-gradient(circle 13px at calc(100% - var(--stub)) 0,#0000 97%,#000) top/100% 51% no-repeat,radial-gradient(circle 13px at calc(100% - var(--stub)) 100%,#0000 97%,#000) bottom/100% 51% no-repeat;}
 .ticket .main{padding:clamp(40px,5vw,64px) clamp(24px,5vw,64px) clamp(36px,4vw,52px)}
-.ticket .h2{font-size:clamp(32px,4.4vw,58px)}
-.apply-lead{margin:18px 0 0;font-size:17px;line-height:1.6;color:var(--ink-2)}
+/* 표의 주인공은 가격 */
+.price{display:flex;flex-wrap:wrap;align-items:baseline;gap:14px 18px;margin:0}
+.price b{display:inline-block;font:800 clamp(76px,9.4vw,124px)/1 var(--serif);letter-spacing:-.045em;font-variant-numeric:tabular-nums}
+.price span{font-size:16px;font-weight:500;color:var(--ink-2)}
+.price__go{display:inline-flex;align-items:center;min-height:44px;margin-top:14px;font:600 15px/1 var(--sans);color:var(--ink);text-underline-offset:5px}
+.apply-lead{margin:22px 0 0;font-size:17px;line-height:1.6;color:var(--ink-2)}
 .apply{display:flex;flex-wrap:wrap;gap:12px 14px;margin-top:30px;max-width:560px}
 .apply__field{flex:1 1 240px;display:flex}
 .apply input{width:100%;min-height:50px;padding:0 16px;border:2px solid var(--ink);border-radius:3px;background:var(--sheet);font:500 16px/1 var(--sans);color:var(--ink);outline:none}
@@ -412,17 +416,11 @@ html.js.motion .drop.in{visibility:visible;animation:drop calc(var(--frame)*8) s
 .apply .btn:disabled{opacity:.6;cursor:default}
 .apply-note{margin:12px 0 0;min-height:22px;font-size:15px;color:var(--ink-2)}
 .apply-note.is-bad{color:#9b2c1f}
-/* 정식 출시 가격: 표 아래 점선 한 줄 */
-.offer{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin-top:26px;padding-top:20px;border-top:1px dashed var(--ink-4);max-width:560px}
-.offer b{font:800 30px/1 var(--serif);letter-spacing:-.03em;font-variant-numeric:tabular-nums}
-.offer span{font-size:15px;font-weight:500;color:var(--ink-2)}
-.offer p{flex:1 1 100%;font-size:14.5px;line-height:1.6;color:var(--ink-3)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .stub{position:relative;padding:clamp(40px,5vw,64px) 30px;background:repeating-linear-gradient(to bottom,var(--ink-3) 0 6px,transparent 6px 12px) left/1.5px 100% no-repeat}
-.stub dl{margin:0;display:grid;gap:18px}
+.stub dl{margin:0}
 .stub dt{font:500 11px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-4)}
 .stub dd{margin:7px 0 0;font:600 17px/1.3 var(--sans);font-variant-numeric:tabular-nums}
-.stub .no{position:absolute;right:30px;bottom:26px;color:var(--ink-4)}
 
 /* ── 바닥글 ───────────────────────────── */
 .foot{padding:72px 0 40px}
@@ -484,8 +482,6 @@ html.js.motion .drop.in{visibility:visible;animation:drop calc(var(--frame)*8) s
     -webkit-mask:radial-gradient(circle 12px at 0 calc(100% - var(--stub-h)),#0000 97%,#000) left/51% 100% no-repeat,radial-gradient(circle 12px at 100% calc(100% - var(--stub-h)),#0000 97%,#000) right/51% 100% no-repeat;
     mask:radial-gradient(circle 12px at 0 calc(100% - var(--stub-h)),#0000 97%,#000) left/51% 100% no-repeat,radial-gradient(circle 12px at 100% calc(100% - var(--stub-h)),#0000 97%,#000) right/51% 100% no-repeat}
   .stub{height:var(--stub-h);padding:24px 24px 0;background:repeating-linear-gradient(to right,var(--ink-3) 0 6px,transparent 6px 12px) top/100% 1.5px no-repeat}
-  .stub dl{grid-template-columns:repeat(3,auto);justify-content:space-between;gap:12px}
-  .stub .no{display:none}
   .foot .wrap{grid-template-columns:minmax(0,1fr)}
   .foot nav{justify-content:flex-start}
 }
@@ -595,7 +591,8 @@ if(!window.matchMedia||!matchMedia('(prefers-reduced-motion: reduce)').matches)d
       <a href="#features">기능</a>
       <a href="#flow">예시</a>
       <a href="#connect">연결</a>
-      <a class="btn btn--ink btn--sm" href="#apply">체험 신청</a>
+      <a href="#apply">가격</a>
+      <a class="btn btn--ink btn--sm" href="pricing.html">구매하기</a>
     </nav>
   </div>
   <svg class="mast__rule cc" viewBox="0 0 1000 6" preserveAspectRatio="none" aria-hidden="true"><path d="M-4 3.2C180 2.1 330 4.4 520 3.1S850 2.2 1004 3.6" fill="none" stroke="currentColor" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>
@@ -610,9 +607,10 @@ if(!window.matchMedia||!matchMedia('(prefers-reduced-motion: reduce)').matches)d
         <h1 id="hero-title" class="charcoal"><span class="l1">귀찮은 이를 위한</span> <span class="l2">한글, <span class="ul">HamaEditor<svg viewBox="0 0 200 12" preserveAspectRatio="none" aria-hidden="true"><path pathLength="1" d="M3 8.6C38 5.2 70 3.6 104 4.5c30 .8 58 2.6 93 .2M150 7.4c16-.9 30-.8 44-2.1" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/></svg></span></span></h1>
         <p class="lead">한글 파일을 열어 두고, 에이전트에게 말로 시키세요. 문서는 에이전트가 직접 써요.</p>
         <div class="cta">
-          <a class="btn btn--ink" href="#apply">체험 신청하기</a>
+          <a class="btn btn--ink" href="pricing.html">9,900원에 구매하기</a>
+          <a class="btn btn--line" href="trial.html">Mac용 체험판 내려받기</a>
         </div>
-        <p class="mono ver">Beta · macOS · Windows</p>
+        <p class="mono ver">macOS · Apple Silicon</p>
       </div>
 
       <div class="smudge" aria-hidden="true"><svg viewBox="0 0 300 120"><ellipse cx="150" cy="60" rx="118" ry="30" fill="#1b1b1a" opacity=".3" filter="url(#smear)"/></svg></div>
@@ -891,36 +889,24 @@ if(!window.matchMedia||!matchMedia('(prefers-reduced-motion: reduce)').matches)d
     </div>
   </section>
 
-  <!-- ─────────── 체험 신청 ─────────── -->
-  <section class="sec" id="apply" aria-labelledby="d-title" style="padding-top:0">
+  <!-- ─────────── 구매 ─────────── -->
+  <section class="sec" id="apply" aria-label="구매" style="padding-top:0">
     <div class="wrap">
       <div class="ticket-wrap drop" style="--r:-.5deg">
         <div class="ticket">
           <div class="main">
-            <p class="idx mono">04 · 베타 체험</p>
-            <h2 id="d-title" class="h2 charcoal" style="margin-top:18px">지금은 베타 버전이에요</h2>
-            <p class="apply-lead">이메일을 남겨 주시면 1–3일 안에 연락드릴게요.</p>
-            <form class="apply" data-apply novalidate>
-              <label class="apply__field">
-                <span class="sr">이메일</span>
-                <input type="email" name="email" autocomplete="email" inputmode="email" required placeholder="you@example.com">
-              </label>
-              <button class="btn btn--ink" type="submit">체험 신청하기</button>
-            </form>
-            <p class="apply-note" data-apply-note role="status" aria-live="polite"></p>
-            <div class="offer">
-              <b>9,900원</b>
-              <span>부가세 포함 · 한 번 결제 · 자동 갱신 없음</span>
-              <p>정식 출시 때 Paddle로 판매할 예정이에요. 지금은 결제를 받지 않아요. AI 제공자 이용료는 따로예요.</p>
+            <p class="price"><b class="charcoal">9,900원</b><span>부가세 포함 · 일회성 구매</span></p>
+            <p class="apply-lead">라이선스 키는 최대 두 번 적용 가능합니다.</p>
+            <div class="apply">
+              <a class="btn btn--ink" href="pricing.html">구매하기</a>
+              <a class="btn btn--line" href="trial.html">체험판 내려받기</a>
             </div>
+            <a class="price__go" href="pricing.html">가격과 환불 안내 보고 구매하기 →</a>
           </div>
           <div class="stub">
             <dl>
-              <div><dt>Stage</dt><dd>Beta</dd></div>
-              <div><dt>Platform</dt><dd>macOS · Windows</dd></div>
-              <div><dt>License</dt><dd>MIT</dd></div>
+              <div><dt>Devices</dt><dd>Mac 2대</dd></div>
             </dl>
-            <p class="no mono">No. 06</p>
           </div>
         </div>
       </div>
@@ -937,13 +923,13 @@ if(!window.matchMedia||!matchMedia('(prefers-reduced-motion: reduce)').matches)d
       <a href="#gongmun">문서 편집</a>
       <a href="#flow">예시</a>
       <a href="#connect">연결</a>
-      <a href="#apply">체험 신청</a>
+      <a href="pricing.html">가격</a>
+      <a href="pricing.html#download">내려받기</a>
       <a href="tos.html">이용약관</a>
     </nav>
     <p class="colophon">
-      <span>Beta</span>
-      <span>edwardkim/rhwp 포크 · MIT</span>
-      <span>문의 <a href="mailto:heemang12bo@gmail.com">heemang12bo@gmail.com</a></span>
+      <span><a href="https://github.com/edwardkim/rhwp">edwardkim/rhwp</a> 기반</span>
+      <span>문의 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a></span>
     </p>
   </div>
 </footer>
@@ -1544,31 +1530,12 @@ var APP={
 })();
 </script>
 
+<script src="assets/purchase.js"></script>
 <script>
+/* 내려받기 링크는 assets/purchase.js 의 MAC_DMG_URL 한 곳에서 와요 */
 (function(){
-  var form=document.querySelector('[data-apply]');
-  var note=document.querySelector('[data-apply-note]');
-  if(!form)return;
-  var input=form.querySelector('input');
-  var button=form.querySelector('button');
-  function say(text,bad){note.textContent=text;note.classList.toggle('is-bad',!!bad);}
-  form.addEventListener('submit',function(e){
-    e.preventDefault();
-    var email=input.value.trim();
-    if(!input.checkValidity()||!email){say('이메일 주소를 다시 확인해 주세요',true);input.focus();return;}
-    button.disabled=true;say('보내는 중…');
-    // text/plain 이라 preflight 없이 바로 보내요
-    fetch('https://rau-credits-production.up.railway.app/v1/waitlist',{
-      method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({email:email})
-    })
-      .then(function(r){return r.json().catch(function(){return {};}).then(function(b){return {ok:r.ok,body:b};});})
-      .then(function(res){
-        if(!res.ok)throw new Error(res.body.message||'');
-        form.reset();say('신청됐어요. 1–3일 안에 메일 드릴게요.');
-      })
-      .catch(function(err){say(err.message||'보내지 못했어요. 잠시 후 다시 시도해 주세요',true);})
-      .then(function(){button.disabled=false;});
-  });
+  var P=window.HamaPurchase;if(!P)return;
+  Array.prototype.forEach.call(document.querySelectorAll('[data-dmg]'),function(a){a.href=P.CONFIG.MAC_DMG_URL;});
 })();
 </script>
 </body>
