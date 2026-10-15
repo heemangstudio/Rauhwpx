@@ -58,7 +58,7 @@ export function createEmailProvider(env = process.env) {
   return createResendProvider({
     apiKey,
     from: env.LICENSE_EMAIL_FROM?.trim() || 'HamaEditor <license@heemangstudios.com>',
-    replyTo: env.LICENSE_EMAIL_REPLY_TO?.trim() || undefined,
+    replyTo: env.LICENSE_EMAIL_REPLY_TO?.trim() || 'management@heemangstudios.com',
   });
 }
 
@@ -84,12 +84,13 @@ export function licenseEmail({ key, downloadUrl = 'https://heemangstudios.com/' 
     '키 하나로 Mac 2대까지 쓸 수 있어요. 다른 Mac으로 옮기려면 앱에서 기존 Mac의 등록을 해제해 주세요.',
     `다운로드: ${downloadUrl}`,
     '',
-    '이 메일은 발신 전용이에요. 문의는 그로블 주문 페이지나 heemangstudios.com 으로 해 주세요.',
+    '문의는 이 메일에 답장하거나 management@heemangstudios.com 으로 보내 주세요.',
   ].join('\n');
   const html = `<p>HamaEditor를 구매해 주셔서 고마워요.</p>
 <p>라이선스 키:<br><strong style="font-size:18px;font-family:ui-monospace,Menlo,monospace">${escapeHtml(key)}</strong></p>
 <p>HamaEditor for Mac을 실행한 뒤 라이선스 화면에 위 키를 붙여 넣어 주세요.<br>
 키 하나로 Mac 2대까지 쓸 수 있어요. 다른 Mac으로 옮기려면 앱에서 기존 Mac의 등록을 해제해 주세요.</p>
-<p><a href="${escapeHtml(downloadUrl)}">다운로드</a></p>`;
+<p><a href="${escapeHtml(downloadUrl)}">다운로드</a></p>
+<p>문의는 이 메일에 답장하거나 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a> 으로 보내 주세요.</p>`;
   return { subject, text, html };
 }
