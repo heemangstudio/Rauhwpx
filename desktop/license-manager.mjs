@@ -8,6 +8,8 @@
 // - 읽기 전용: 문서는 열고 볼 수 있지만 저장(native 파일 쓰기)은 거절한다.
 // - 체험이 끝나는 순간: 끝나기 전에 시작한 저장은 마저 쓴다. 끝난 뒤에는 자동 저장을 위해
 //   한 번만 짧은 유예(1분)를 연다. 유예는 상태 파일에 남아 다시 실행해도 다시 열리지 않는다.
+// - 해지·lease 만료·재활성화 필요로 이 실행 중에 편집할 수 있다가 잠기면, 그 전환에 한해 같은 유예를
+//   한 번 연다. 메모리에만 두므로 다시 실행하거나 같은 잠금에서 다시 받을 수 없다.
 //
 // 상태 파일은 userData/license.json. 라이선스 키는 비밀 저장소(secret-vault)에 두지 않는다.
 // 비밀 저장소의 "AI 제공자 초기화"가 키까지 지우고, 실행할 때마다 키체인 확인을 부르기 때문이다.
@@ -115,6 +117,10 @@ export function createLicenseManager({
   let timer = null;
   let lastNetworkError = null;
   let lastGrandfatherAttempt = 0;
+  /** 이 실행에서 마지막으로 본 상태가 편집 가능했는지. */
+  let wasEditable = false;
+  /** 라이선스 쪽 잠금: 편집 가능 → 읽기 전용이 된 때와 그 전환의 유예 시작 시각. 체험 끝은 따로 다룬다. */
+  let lockTransition = null;
 
   function serialize(task) {
     const next = queue.then(task);
@@ -183,6 +189,9 @@ export function createLicenseManager({
     else if (trial.active) value = 'trial';
     else value = 'trial_expired';
     const canEdit = value === 'unenforced' || value === 'licensed' || value === 'trial';
+    if (canEdit) lockTransition = null;
+    else if (wasEditable && value !== 'trial_expired' && !lockTransition) lockTransition = { at: t, graceAt: null };
+    wasEditable = canEdit;
     return {
       state: value,
       canEdit,
@@ -329,14 +338,20 @@ export function createLicenseManager({
   }
 
   /**
-   * 체험이 끝난 뒤 열린 문서를 자동 저장하려고 부른다. 처음 부른 때부터 유예를 한 번만 연다.
-   * 잠자기에서 깨어 기한을 넘긴 경우도 여기서 받는다.
+   * 잠긴 뒤 열린 문서를 자동 저장하려고 부른다. 처음 부른 때부터 유예를 한 번만 연다.
+   * 체험 끝(잠자기에서 깨어 기한을 넘긴 경우 포함)과, 이 실행 중의 해지·lease 만료·재활성화 필요를 받는다.
    */
   async function beginExpirySave() {
     return serialize(async () => {
       await load();
       const status = computeStatus();
-      if (!trialRanOut(status)) return { ok: false, until: null };
+      if (!trialRanOut(status)) {
+        if (status.canEdit || !lockTransition) return { ok: false, until: null };
+        const t = clock();
+        lockTransition.graceAt ??= t;
+        const until = lockTransition.graceAt + expirySaveGraceMs;
+        return { ok: t < until, until };
+      }
       const t = clock();
       if (!state.trial.expirySaveAt) {
         state.trial.expirySaveAt = t;
@@ -348,7 +363,7 @@ export function createLicenseManager({
   }
 
   /**
-   * requestedAt: 저장 요청을 받은 시각(메인의 시계). 체험 중에 받은 저장은 기한이 지나도 마저 쓴다.
+   * requestedAt: 저장 요청을 받은 시각(메인의 시계). 잠기기 전에 받은 저장은 잠긴 뒤에도 마저 쓴다.
    * expirySave: beginExpirySave 로 유예를 받은 창의 자동 저장.
    */
   async function assertCanSave({ requestedAt = null, expirySave = false } = {}) {
@@ -358,6 +373,9 @@ export function createLicenseManager({
     if (trialRanOut(status)) {
       if (requestedAt !== null && requestedAt < status.trial.endsAt) return status;
       if (expirySave && state.trial.expirySaveAt && clock() < state.trial.expirySaveAt + expirySaveGraceMs) return status;
+    } else if (lockTransition) {
+      if (requestedAt !== null && requestedAt < lockTransition.at) return status;
+      if (expirySave && lockTransition.graceAt !== null && clock() < lockTransition.graceAt + expirySaveGraceMs) return status;
     }
     throw new LicenseReadOnlyError(status.state);
   }

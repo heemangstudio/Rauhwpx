@@ -415,3 +415,47 @@ test('the expiry auto-save gets one short grace window for the window that asked
   assert.equal((await relaunched.invoke('license:begin-expiry-save', studio)).ok, false, 'a restart does not reopen it');
   await assert.rejects(relaunched.host.save(async () => {}, { sender: studio }), LicenseReadOnlyError);
 });
+
+test('a key revoked while the app runs gets one grace save for that lock, and only once', async (t) => {
+  const { manager, server, clock, make } = await setup(t);
+  const { host, invoke } = await hostFor(manager);
+  const studio = { id: 'studio' };
+  const key = server.issueKey();
+  await manager.activate(key);
+  assert.equal((await invoke('license:begin-expiry-save', studio)).ok, false, 'no grace while licensed');
+  server.revoke(key);
+  clock.t += 25 * HOUR;
+  assert.equal((await manager.check()).state, 'revoked');
+  await assert.rejects(host.save(async () => {}), LicenseReadOnlyError, 'ordinary saves are refused');
+  assert.equal((await invoke('license:begin-expiry-save', studio)).ok, true);
+  const written = [];
+  await host.save(async () => { written.push('dirty file'); }, { sender: studio });
+  assert.deepEqual(written, ['dirty file']);
+  await assert.rejects(host.save(async () => {}, { sender: { id: 'other' } }), LicenseReadOnlyError);
+  clock.t += EXPIRY_SAVE_GRACE_MS;
+  await assert.rejects(host.save(async () => {}, { sender: studio }), LicenseReadOnlyError);
+  assert.equal((await invoke('license:begin-expiry-save', studio)).ok, false, 'the same lock cannot reopen it');
+  const relaunched = await hostFor(make());
+  assert.equal((await relaunched.invoke('license:begin-expiry-save', studio)).ok, false, 'a restart has no lock transition');
+  await assert.rejects(relaunched.host.save(async () => {}, { sender: studio }), LicenseReadOnlyError);
+});
+
+test('a save received before a revocation lands is still written', async (t) => {
+  const { manager, server, clock } = await setup(t);
+  const { host } = await hostFor(manager);
+  const key = server.issueKey();
+  await manager.activate(key);
+  server.revoke(key);
+  clock.t += 25 * HOUR;
+  let finish;
+  const written = [];
+  const first = host.save(() => new Promise((resolve) => { finish = () => { written.push('first'); resolve(); }; }));
+  const second = host.save(async () => { written.push('second'); });
+  await new Promise((resolve) => setImmediate(resolve));
+  clock.t += 1000;
+  await manager.check();
+  finish();
+  await Promise.all([first, second]);
+  assert.deepEqual(written, ['first', 'second']);
+  await assert.rejects(host.save(async () => {}), LicenseReadOnlyError);
+});

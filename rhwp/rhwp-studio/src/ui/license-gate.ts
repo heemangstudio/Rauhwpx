@@ -48,7 +48,7 @@ export async function installLicenseGate(
   let tick: number | undefined;
   /** 이 페이지가 체험 끝 처리를 시작했는지. 메인이 아직 'trial' 이라고 해도 잠근 채로 둔다. */
   let trialFinished = false;
-  let savingAtExpiry = false;
+  let savingAtLock: 'trial' | 'license' | null = null;
 
   function mount(): void {
     if (pill.isConnected) return;
@@ -76,14 +76,14 @@ export async function installLicenseGate(
     tick = undefined;
     const status = current;
     if (!status) return;
-    if (savingAtExpiry) {
-      show('체험 끝 · 저장 중', '', true);
+    if (savingAtLock) {
+      show(savingAtLock === 'trial' ? '체험 끝 · 저장 중' : '읽기 전용 · 저장 중', '', true);
       return;
     }
     if (status.state === 'trial' && !trialFinished) {
       const now = Date.now();
       if (status.trial.endsAt - now <= EXPIRY_SAVE_LEAD_MS) {
-        void finishTrial();
+        void saveAndLock('trial');
         return;
       }
       show(`체험 ${trialTimeLeft(status.trial.endsAt, now)} 남음`, '활성화', false, licenseSummary(status, now).detail);
@@ -105,34 +105,39 @@ export async function installLicenseGate(
   }
 
   /**
-   * 체험이 끝나는 순간(또는 잠자기에서 깨어 이미 끝난 것을 안 순간) 한 번 돈다.
-   * 새 편집을 먼저 막고, 바뀐 문서를 저장한 뒤 읽기 전용으로 둔다.
+   * 편집할 수 있다가 잠기는 순간 한 번 돈다. 새 편집을 먼저 막고, 바뀐 문서를 저장한 뒤 읽기 전용으로 둔다.
+   * - trial: 체험이 끝나는 순간(또는 잠자기에서 깨어 이미 끝난 것을 안 순간).
+   * - license: 이 창이 켜져 있는 동안 해지·lease 만료·재활성화 필요로 잠긴 순간.
    */
-  async function finishTrial(): Promise<void> {
-    if (trialFinished) return;
-    trialFinished = true;
+  async function saveAndLock(kind: 'trial' | 'license'): Promise<void> {
+    if (savingAtLock) return;
+    if (kind === 'trial') {
+      if (trialFinished) return;
+      trialFinished = true;
+    }
     setReadOnly(true);
     setLicenseViewerMode(true);
     const endsAt = current?.trial.endsAt ?? 0;
     let failed = 0;
     if (options.saveBeforeLock && options.hasUnsavedWork?.()) {
-      savingAtExpiry = true;
+      savingAtLock = kind;
       paint();
-      // 기한이 지난 뒤에 쓰는 저장은 메인에서 한 번만 받는 유예가 있어야 한다.
+      // 잠긴 뒤에 쓰는 저장은 메인에서 한 번만 받는 유예가 있어야 한다. 체험은 기한 전에 시작하면 필요 없다.
       const prepareWrite = async () => {
-        if (Date.now() >= endsAt - 500) await api.beginExpirySave?.().catch(() => null);
+        if (kind === 'license' || Date.now() >= endsAt - 500) await api.beginExpirySave?.().catch(() => null);
       };
       try {
         failed = (await options.saveBeforeLock(prepareWrite)).failed;
       } catch (error) {
-        console.warn('[license] 체험 종료 자동 저장 실패:', error);
+        console.warn('[license] 잠기기 전 자동 저장 실패:', error);
         failed = 1;
       }
-      savingAtExpiry = false;
+      savingAtLock = null;
     }
     paint();
     if (failed > 0) {
-      showToast({ message: `체험이 끝나 저장하지 못한 문서가 ${failed}개 있어요.`, durationMs: 6000 });
+      const reason = kind === 'trial' ? '체험이 끝나' : '읽기 전용이 되어';
+      showToast({ message: `${reason} 저장하지 못한 문서가 ${failed}개 있어요.`, durationMs: 6000 });
     }
   }
 
@@ -141,7 +146,12 @@ export async function installLicenseGate(
     current = status;
     // 잠자기에서 깨어 메인이 먼저 기한을 알려 온 경우에도 저장부터 한다.
     if (status.state === 'trial_expired' && previous?.state === 'trial' && !trialFinished) {
-      void finishTrial();
+      void saveAndLock('trial');
+      return;
+    }
+    // 해지 등으로 편집하던 창이 잠기면 같은 방법으로 먼저 남긴다.
+    if (!status.canEdit && previous?.canEdit && status.state !== 'trial_expired') {
+      void saveAndLock('license');
       return;
     }
     // 활성화하면 다시 편집할 수 있다.
