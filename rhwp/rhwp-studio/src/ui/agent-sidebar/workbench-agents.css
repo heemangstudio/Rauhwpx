@@ -61,7 +61,7 @@
 .ag-workbench-agents-filter[aria-pressed='true'] {
   color: var(--ag-text);
   background: var(--ag-raised);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 7%);
+  box-shadow: 0 1px 3px var(--ag-shadow-7);
 }
 
 .ag-workbench-agents-list {

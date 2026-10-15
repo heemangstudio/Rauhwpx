@@ -6,7 +6,7 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  background: var(--ag-paper, #ffffff);
+  background: var(--ag-paper);
   color: var(--ag-text-muted);
   outline: 1px solid var(--ag-border);
   outline-offset: -1px;
