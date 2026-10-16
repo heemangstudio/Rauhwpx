@@ -4,7 +4,18 @@ import type { BrowserEvent, BrowserFrame, BrowserTab } from '../agent/types.ts';
 export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThread: () => string, getProject: () => string | null) {
   let tabs: BrowserTab[] = []; let frameSequence = 0; let generation = 1;
   const inputs: Array<Record<string, unknown>> = []; const captures: Array<Record<string, unknown>> = [];
-  let accounts = [{ profileId: 'default', origins: ['https://accounts.google.com'], id: 'google', origin: 'https://accounts.google.com', label: 'Google 연구', hasPassword: true, agentReuseApproved: true, sessionStatus: 'authenticated' }];
+  type PreviewAccount = { profileId: string; origins: string[]; id: string; origin: string; label: string; stableIdentity?: string; hasPassword: boolean; agentReuseApproved: boolean; sessionStatus: string };
+  const browserParams = new URLSearchParams(location.search);
+  /** `browserAccounts=empty|many`: 계정 없이, 또는 상태가 고루 섞인 계정으로 시작한다. `secureStorage=0`: 보안 저장소 없음. */
+  const accountFixture = browserParams.get('browserAccounts');
+  const secureStorageAvailable = browserParams.get('secureStorage') !== '0';
+  const google: PreviewAccount = { profileId: 'default', origins: ['https://accounts.google.com'], id: 'google', origin: 'https://accounts.google.com', label: 'Google 연구', hasPassword: true, agentReuseApproved: true, sessionStatus: 'authenticated' };
+  let accounts: PreviewAccount[] = accountFixture === 'empty' ? [] : accountFixture === 'many' ? [
+    google,
+    { profileId: 'default', origins: ['https://github.com'], id: 'github', origin: 'https://github.com', label: 'GitHub', stableIdentity: 'hama-lab', hasPassword: false, agentReuseApproved: true, sessionStatus: 'session-retained' },
+    { profileId: 'default', origins: ['https://nid.naver.com', 'https://www.naver.com'], id: 'naver', origin: 'https://nid.naver.com', label: '네이버', stableIdentity: 'hama_editor', hasPassword: true, agentReuseApproved: false, sessionStatus: 'signed-out' },
+    { profileId: 'default', origins: ['https://www.data.go.kr'], id: 'data-go', origin: 'https://www.data.go.kr', label: '공공데이터포털', stableIdentity: 'research-team', hasPassword: true, agentReuseApproved: true, sessionStatus: 'saved' },
+  ] : [google];
   let resetCount = 0;
   let signInAccountId: string | null = null;
   const signIns: Array<{ accountId: string; url: string }> = [];
@@ -25,7 +36,7 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     const marks: Record<string, [string, string, string]> = {
       'accounts.example.com': ['#2f6fdf', '#fff', 'E'], 'accounts.google.com': ['#fff', '#4285f4', 'G'], 'www.google.com': ['#fff', '#4285f4', 'G'],
       'www.notion.so': ['#fff', '#111', 'N'], 'api.notion.com': ['#fff', '#111', 'N'], 'www.data.go.kr': ['#0b5fa5', '#fff', '공'],
-      'apis.data.go.kr': ['#0b5fa5', '#fff', '공'], 'kosis.kr': ['#e5463b', '#fff', 'K'], 'wikipedia.org': ['#fff', '#222', 'W'], 'arxiv.org': ['#b31b1b', '#fff', 'a'],
+      'apis.data.go.kr': ['#0b5fa5', '#fff', '공'], 'kosis.kr': ['#e5463b', '#fff', 'K'], 'github.com': ['#24292f', '#fff', 'G'], 'nid.naver.com': ['#03c75a', '#fff', 'N'], 'www.naver.com': ['#03c75a', '#fff', 'N'], 'naver.com': ['#03c75a', '#fff', 'N'], 'google.com': ['#fff', '#4285f4', 'G'], 'notion.so': ['#fff', '#111', 'N'], 'data.go.kr': ['#0b5fa5', '#fff', '공'], 'wikipedia.org': ['#fff', '#222', 'W'], 'arxiv.org': ['#b31b1b', '#fff', 'a'],
     };
     const mark = marks[host];
     let icon: string | null = null;
@@ -84,7 +95,7 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
       const origins = Array.isArray(args.origins) ? (args.origins as unknown[]).filter((value): value is string => typeof value === 'string').slice(0, 50) : [];
       return { icons: Object.fromEntries(origins.map((origin) => [origin, favicon(origin)])) };
     }
-    if (action === 'accounts.list') return { accounts: structuredClone(accounts), secureStorageAvailable: true };
+    if (action === 'accounts.list') return { accounts: structuredClone(accounts), secureStorageAvailable };
     if (action === 'policy.list') return { defaults: { ...defaults }, sites: structuredClone(sites) };
     if (action === 'policy.update') {
       if (args.operation === 'set-default' && typeof args.key === 'string' && args.key in defaults) (defaults as Record<string, boolean>)[args.key] = args.enabled === true;
@@ -103,7 +114,7 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     if (action === 'accounts.request') return { requestId: crypto.randomUUID() };
     if (action.startsWith('accounts.')) {
       if (action === 'accounts.approve' && args.account && typeof args.account === 'object') {
-        const account = args.account as Record<string, unknown>; const row = { profileId: 'default', origins: (account.origins as string[]) ?? [String(account.origin)], id: crypto.randomUUID(), origin: String(account.origin), label: String(account.label), hasPassword: false, agentReuseApproved: true, sessionStatus: 'session-retained' }; accounts.push(row);
+        const account = args.account as Record<string, unknown>; const row: PreviewAccount = { profileId: 'default', origins: (account.origins as string[]) ?? [String(account.origin)], id: crypto.randomUUID(), origin: String(account.origin), label: String(account.label), hasPassword: false, agentReuseApproved: true, sessionStatus: 'session-retained' }; accounts.push(row);
         return { account: structuredClone(row) };
       }
       const id = String(args.accountId ?? args.id ?? '');
@@ -113,8 +124,9 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
         if (action === 'accounts.revoke') account.agentReuseApproved = false;
         if (action === 'accounts.signout') account.sessionStatus = 'signed-out';
       }
-      return { accounts: structuredClone(accounts), secureStorageAvailable: true };
+      return { accounts: structuredClone(accounts), secureStorageAvailable };
     }
+    if (action === 'sessions.imported') return { ok: true };
     if (action === 'status' || action === 'install') return { ok: true, runtime: runtime(), tabs: structuredClone(tabs) };
     if (action === 'list-downloads' || action === 'downloads') return { downloads: [] };
     if (action === 'sign-in') {
@@ -160,7 +172,7 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     submit: async (args: Record<string, unknown>) => {
       const account = (args.account && typeof args.account === 'object' ? args.account : args) as Record<string, unknown>;
       const id = String(account.accountId ?? account.id ?? crypto.randomUUID());
-      const row = { profileId: 'default', origins: (account.origins as string[]) ?? [String(account.origin)], id, origin: String(account.origin ?? ''), label: String(account.label ?? args.username ?? '새 계정'), hasPassword: Boolean(args.password), agentReuseApproved: args.remember !== false, sessionStatus: 'saved' };
+      const row: PreviewAccount = { profileId: 'default', origins: (account.origins as string[]) ?? [String(account.origin)], id, origin: String(account.origin ?? ''), label: String(account.label ?? args.username ?? '새 계정'), hasPassword: Boolean(args.password), agentReuseApproved: args.remember !== false, sessionStatus: 'saved' };
       accounts = [...accounts.filter((entry) => entry.id !== id), row]; return { account: structuredClone(row), accounts: structuredClone(accounts) };
     },
     snapshot: () => ({ faviconRequests, runtime: runtime(), tabs: structuredClone(tabs), inputs: structuredClone(inputs), captures: structuredClone(captures), accounts: structuredClone(accounts), defaults: { ...defaults }, sites: structuredClone(sites), resetCount, signIns: structuredClone(signIns), configuration: structuredClone(configuration) }),

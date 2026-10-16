@@ -75,7 +75,10 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=secret-use` | The agent asks to type a saved secret (Notion API 키) into its sites: 허용 / 거절 with the scope choice |
 | `?scenario=requests` | Three requests in one turn (download permission, secret use, code handoff); each card resolves on its own |
 | `&requestFail=1` (any request scenario) | The first answer fails: the card shows the error row with 다시 시도 (a failed secret save clears the value instead) |
-| `?page=settings&destination=browser&always=downloads,browser` | Browser settings with saved secrets under 계정 → 비밀 값 and the always-allowed list under 승인된 권한 |
+| `?page=settings&destination=browser&always=downloads,browser` | Browser settings: accounts, saved passwords and secrets in one logo list with the icon kind filter (전체 · 계정 · 비밀번호 · 비밀 값), and the always-allowed list under 승인된 권한 |
+| `&browserAccounts=many` / `&browserAccounts=empty` | Accounts in every state (signed in, needs a check, signed out, password only) / no accounts or secrets (empty state) |
+| `&secureStorage=0` | The hub reports no secure storage: 비밀번호 추가 and 비밀번호 변경 are disabled with a one-line notice |
+| `&vault=1` (`empty`, `unsupported`, `fail`) | The desktop app's local password vault: imported Chrome passwords with the agent-use switch, and **+ → Chrome에서 가져오기** with profile choice, password import and sign-in (cookie) import with per-site checkboxes. `empty` has no Chrome profile, `unsupported` is a non-Mac machine, `fail` denies the first import (retry). `sidebarPreview.localPasswords.snapshot()` lists imports, approvals and removals |
 | `?scenario=review` | Streaming reply followed by accept/reject changes |
 | `?scenario=fleet` | Tool activity and a subagent task |
 | `?scenario=fleet&background=1` | A subagent that keeps running after its turn: its card stays in the dock, outside the turn fold, and lands below the fold when it finishes |

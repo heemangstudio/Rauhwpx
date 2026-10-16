@@ -1283,8 +1283,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   // ── 7. 사용량 ─────────────────────────────────────────
   let settingsOpen = false;
   const unsubscribeBrowserSettings = bridge.onBrowserEvent((event) => {
-    if (settingsOpen && currentDestination === 'browser'
-      && ['browser-account-changed', 'browser-policy-changed', 'browser-runtime-state', 'owned_browser_runtime'].includes(event.type)) browserPane.open();
+    if (!settingsOpen || currentDestination !== 'browser') return;
+    if (event.type === 'user-secrets-changed') browserPane.secretsChanged();
+    else if (['browser-account-changed', 'browser-policy-changed', 'browser-runtime-state', 'owned_browser_runtime'].includes(event.type)) browserPane.open();
   });
   let usageBusy = false;
   let usagePoll: ReturnType<typeof setInterval> | null = null;

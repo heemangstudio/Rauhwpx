@@ -14,6 +14,9 @@ export interface LocalPasswordsApi {
   importCookies(args: { profileId: string; domains: string[] }): Promise<{ imported: number; skipped: number; unsupported: number; domains: string[] }>;
   fill(args: { tabId: string; accountId: string }): Promise<{ completed: true; accountId: string }>;
 }
+let provided: LocalPasswordsApi | undefined;
+/** 사이드바 미리보기의 대역 보관함. 데스크톱 앱은 preload 가 연 API 를 쓴다. */
+export function provideLocalPasswordsApi(api: LocalPasswordsApi | undefined): void { provided = api; }
 export function localPasswordsApi(): LocalPasswordsApi | undefined {
-  return (window as unknown as { rhwpDesktop?: { browser?: { passwords?: LocalPasswordsApi } } }).rhwpDesktop?.browser?.passwords;
+  return provided ?? (window as unknown as { rhwpDesktop?: { browser?: { passwords?: LocalPasswordsApi } } }).rhwpDesktop?.browser?.passwords;
 }

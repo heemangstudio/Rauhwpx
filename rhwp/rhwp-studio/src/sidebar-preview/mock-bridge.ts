@@ -350,12 +350,14 @@ export function createMockBridge(
   const secretSubmissions: Array<{ requestId: string; label: string; scope: T.ChatPermissionScope; valueLength: number }> = [];
   /** `requestFail=N`: 요청에 답하는 다음 N 번의 동작이 실패한다(오류와 다시 시도). */
   let requestFailures = Number(projectParams.get('requestFail')) || 0;
-  const secrets: T.SecretMeta[] = [
+  const secrets: T.SecretMeta[] = projectParams.get('browserAccounts') === 'empty' ? [] : [
     { id: 'secret-notion', label: 'Notion API 키', kind: 'api-key', origins: ['https://www.notion.so', 'https://api.notion.com'],
       scope: 'always', approved: false, createdAt: '2026-10-02T09:00:00Z', lastUsedAt: null },
     { id: 'secret-kosis', label: 'KOSIS 인증키', kind: 'token', origins: ['https://kosis.kr'],
       scope: 'always', approved: true, createdAt: '2026-09-12T09:00:00Z', lastUsedAt: '2026-10-14T05:20:00Z' },
   ];
+  /** 허브처럼 비밀 값 목록이 바뀌면 열린 설정에 알린다. */
+  const secretsChanged = () => emit({ type: 'browser-event', event: { type: 'user-secrets-changed' } });
   /* 맥락 창 흉내 — ?context=92 로 시작 사용률을 고른다. */
   const CONTEXT_MAX = 200_000;
   const contextParam = Number(new URLSearchParams(location.search).get('context'));
@@ -780,6 +782,7 @@ export function createMockBridge(
         origins: [...pending.origins ?? []], scope: args.scope, approved: true, createdAt: new Date().toISOString(), lastUsedAt: null };
       const index = secrets.findIndex((entry) => entry.id === secret.id);
       if (index >= 0) secrets.splice(index, 1, secret); else secrets.push(secret);
+      secretsChanged();
       resolvePermission(args.requestId, { status: 'granted' });
       continueAfterRequest('저장한 값으로 이어서 진행합니다.');
       return { ok: true, secret: structuredClone(secret) };
@@ -834,9 +837,17 @@ export function createMockBridge(
         continueAfterRequest('로그인을 확인했습니다. 이어서 진행합니다.');
         return { completed: true, origin: pending.origin } as R;
       }
+      if (action === 'secrets.approve' && !pending) {
+        // 설정의 스위치: 허브처럼 요청 없이 저장된 값을 다시 허용한다.
+        const secret = secrets.find((entry) => entry.id === args?.['secretId']);
+        if (!secret) throw Object.assign(new Error('저장된 값을 찾을 수 없습니다.'), { code: 'SECRET_NOT_FOUND' });
+        secret.approved = true; secretsChanged();
+        return { secret: structuredClone(secret) } as R;
+      }
       if (action === 'secrets.approve' && pending) {
         const secret = secrets.find((entry) => entry.id === args?.['secretId']);
         if (secret) secret.approved = true;
+        secretsChanged();
         resolvePermission(pending.requestId, { status: 'granted' });
         continueAfterRequest('저장된 값을 입력해 이어서 진행합니다.');
         return { approved: true } as R;
@@ -846,6 +857,7 @@ export function createMockBridge(
         const index = secrets.findIndex((entry) => entry.id === args?.['secretId']);
         if (index >= 0 && action === 'secrets.delete') secrets.splice(index, 1);
         else if (index >= 0) secrets[index]!.approved = false;
+        secretsChanged();
         return { secrets: structuredClone(secrets) } as R;
       }
       if (action === 'permissions.list') return { always: [...alwaysGrants] } as R;
