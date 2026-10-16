@@ -153,6 +153,9 @@ const ICONS = {
   grid: 'M3 3h4v4H3zM9 3h4v4H9zM3 9h4v4H3zM9 9h4v4H9z',
   list: 'M5.5 4h8M5.5 8h8M5.5 12h8M2.5 4h.01M2.5 8h.01M2.5 12h.01',
   chevron: 'M4.5 6.5 8 10l3.5-3.5',
+  window: 'M9.5 2.5h4v4M13.5 2.5l-5 5M11.5 9.5v4h-9v-9h4',
+  pencil: 'M10.5 2.5l3 3L6 13H3v-3z',
+  remove: 'M4.5 4.5l7 7M11.5 4.5l-7 7',
 };
 
 const reducedMotion = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -708,10 +711,23 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   }
 
   // ── 펼친 작업 ───────────────────────────────────────────
-  function action(label: string, run: () => void, className = 'dh-action'): HTMLButtonElement {
-    const node = button(className, label);
+  /** iconPath 가 있는 단추는 줄이 좁으면 아이콘만 남고, 이름은 올려 두면 뜬다. */
+  function action(label: string, run: () => void, className = 'dh-action', iconPath?: string): HTMLButtonElement {
+    const node = button(className, '');
+    if (iconPath) {
+      node.append(icon(iconPath, 14));
+      node.dataset.tip = label;
+      node.setAttribute('aria-label', label);
+    }
+    node.append(el('span', 'dh-action-label', label));
     node.addEventListener('click', run);
     return node;
+  }
+
+  /** 단추 줄은 늘 한 줄이다. 넘치면 열기 밖의 단추를 아이콘으로 줄인다. */
+  function fitActions(row: HTMLElement): void {
+    row.classList.remove('is-compact');
+    row.classList.toggle('is-compact', row.scrollWidth > row.clientWidth + 0.5);
   }
 
   /** 판의 단추 줄에서 마지막으로 머문 자리. 작업 트리에서 ↑ 로 돌아오면 그 단추로 간다. */
@@ -730,14 +746,14 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     if (deps.openInNewWindow && !live) {
       actions.append(action('새 창에서 열기', () => {
         void deps.openInNewWindow!(row).then((ok) => { if (!ok) deps.toast('파일을 찾을 수 없어 새 창에서 열지 못했습니다.'); });
-      }));
+      }, 'dh-action', ICONS.window));
     }
     if (deps.reveal) {
       actions.append(action(deps.reveal.label, () => {
         void deps.reveal!.run(row).then((ok) => { if (!ok) deps.toast('파일 위치를 찾을 수 없습니다.'); });
-      }));
+      }, 'dh-action', ICONS.open));
     }
-    if (deps.canRename(row)) actions.append(action('이름 바꾸기', () => beginRename(doc, row, actions)));
+    if (deps.canRename(row)) actions.append(action('이름 바꾸기', () => beginRename(doc, row, actions), 'dh-action', ICONS.pencil));
     actions.append(action('목록에서 제거', () => {
       void defaultHealIo.forget(row).then(() => {
         const index = documents.findIndex((entry) => entry.recentId === row.id);
@@ -745,7 +761,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
         drop(new Set([row.id]));
         window.setTimeout(() => cardFor(focusedId)?.focus(), 200);
       });
-    }, 'dh-action dh-action-quiet'));
+    }, 'dh-action dh-action-quiet', ICONS.remove));
     panel.append(actions);
     const note = flagged.get(doc.recentId);
     if (note) panel.append(el('p', 'dh-detail-note', note === '열 수 없음' ? '이 파일을 열지 못했습니다.' : '파일을 찾을 수 없습니다.'));
@@ -836,6 +852,8 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     const anchor = grid.children[rowEnd] as HTMLElement | undefined;
     const detail = detailFor(doc, row);
     anchor?.after(detail);
+    const actionRow = detail.querySelector<HTMLElement>('.dh-actions');
+    if (actionRow) fitActions(actionRow);
     const panel = detail.querySelector<HTMLElement>('.dh-detail-panel')!;
     const cardBox = card.getBoundingClientRect();
     const gridBox = grid.getBoundingClientRect();
@@ -1169,6 +1187,24 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     fitTemplates();
     if (expanded) placeDetail();
   }).observe(root);
+
+  // 카드가 모두 한 화면에 들면 스크롤을 잠근다. 아래 여백만 넘치는 화면이 끌려 움직이지 않는다.
+  // 접은 묶음이 붙잡아 둔 격자 높이도 함께 재므로 그때는 잠그지 않는다.
+  let fitFrame: number | null = null;
+  const fitObserver = new ResizeObserver(() => {
+    if (fitFrame !== null) return;
+    fitFrame = requestAnimationFrame(() => {
+      fitFrame = null;
+      if (!visible) return;
+      const bottom = recentInner.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top + scroller.scrollTop;
+      const fits = bottom <= scroller.clientHeight;
+      scroller.classList.toggle('is-fit', fits);
+      if (fits) scroller.scrollTop = 0;
+    });
+  });
+  fitObserver.observe(scroller);
+  fitObserver.observe(start);
+  fitObserver.observe(recentInner);
 
   // ── 보이기·숨기기 ───────────────────────────────────────
   function paintReturn(): void {

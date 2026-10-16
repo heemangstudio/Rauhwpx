@@ -123,9 +123,15 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  overscroll-behavior: contain;
+  /* 끝에서 튕기지 않는다. 스크롤바 자리를 늘 두어, 넘침이 바뀌어도 카드 폭이 그대로다. */
+  overflow-x: hidden;
+  overscroll-behavior: none;
+  scrollbar-gutter: stable;
   outline: none;
 }
+
+/* 모든 카드가 한 화면에 들면 움직일 것이 없다. */
+.dh-scroll.is-fit { overflow-y: hidden; }
 
 .document-home.is-instant { transition: none; }
 .document-home.is-drag-over .dh-scroll {
@@ -145,7 +151,7 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
   background: var(--dh-strip);
 }
 
-.dh-recent { padding: 28px 0 64px; }
+.dh-recent { padding: 28px 0 32px; }
 
 .dh-bar {
   display: flex;
@@ -763,7 +769,7 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
 .dh-detail-panel {
   position: relative;
   width: fit-content;
-  max-width: min(560px, 100%);
+  max-width: 100%;
   margin-left: var(--dh-panel-left, 0px);
   padding: 8px;
   border-radius: 10px;
@@ -799,9 +805,53 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
 .dh-actions,
 .dh-rename {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 2px;
+}
+
+/* 넓을 때는 글자만, 좁을 때는 아이콘만 보인다. */
+.dh-action .dh-icon { display: none; }
+
+.dh-actions.is-compact .dh-action[data-tip] {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  padding: 0;
+}
+
+.dh-actions.is-compact .dh-action[data-tip] .dh-icon { display: block; }
+.dh-actions.is-compact .dh-action[data-tip] .dh-action-label { display: none; }
+
+/* 아이콘만 남은 단추의 이름. 잠깐 머물면 단추 위에 뜬다. */
+.dh-actions.is-compact .dh-action[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  z-index: 1;
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: var(--dh-ink);
+  color: var(--dh-ink-inverse);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+  visibility: hidden;
+}
+
+.dh-actions.is-compact .dh-action[data-tip]:last-child::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.dh-actions.is-compact .dh-action[data-tip]:is(:hover, :focus-visible)::after {
+  visibility: visible;
+  transition: visibility 0s 300ms;
 }
 
 .dh-rename {
