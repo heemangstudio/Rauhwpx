@@ -1,42 +1,29 @@
 import { randomUUID } from 'node:crypto';
 import { LocalBrowserPasswordVault, passwordFailure, passwordOrigin } from './browser-local-password-vault.mjs';
 import { ChromePasswordImporter } from './browser-chrome-password-import.mjs';
-import { BROWSER_CONTROL_SELECTOR, browserRole } from '../rhwp/rhwp-agent/browser-roles.mjs';
 
 const WORLD = 1007;
 const SENSITIVE = 'input[type="password"],input[type="email"],input[autocomplete="username"],input[name="username"],input[name="email"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
 const SECRET = 'input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
 
 // These functions run only in Electron's isolated world. Page scripts never see the ref map.
-function pageSnapshot(token, selector, maxElements, elementSelector) {
-  const secrets = [...document.querySelectorAll(selector)].map(el => el.value).filter(Boolean);
-  const maskedValues = secrets.flatMap(secret => [secret, encodeURIComponent(secret), new URLSearchParams({ value: secret }).toString().slice(6)]);
-  const scrub = value => { for (const secret of maskedValues) value = value.split(secret).join('[masked]'); return value; };
+function pageSnapshot(token, selector, maxElements) {
+  const secrets = [...document.querySelectorAll('input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]')].map(el => el.value).filter(Boolean);
+  const scrub = value => { for (const secret of secrets) value = value.split(secret).join('[masked]'); return value; };
   const refs = new Map(); const elements = [];
-  const candidates = document.querySelectorAll(elementSelector);
+  const candidates = document.querySelectorAll('a[href],button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="menuitem"],[role="option"],[role="tab"],[contenteditable="true"],summary');
   for (const el of candidates) {
     if (elements.length >= maxElements) break;
     const rect = el.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0 || getComputedStyle(el).visibility === 'hidden') continue;
     const sensitive = el.matches(selector);
     const ref = `e${elements.length + 1}`; refs.set(ref, el);
-    const form = el.form instanceof HTMLFormElement ? el.form : null;
-    const submitter = (el instanceof HTMLButtonElement || el instanceof HTMLInputElement) && ['submit', 'image'].includes(el.type) ? el : null;
-    const formSensitive = form ? [...Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements').get.call(form)].some(control => control.matches(selector) || control.type === 'file') : undefined;
-    const inputType = el instanceof HTMLInputElement ? el.type : undefined;
-    const row = { ref, tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || undefined,
-      inputType, autocomplete: ['username', 'current-password', 'new-password', 'one-time-code', 'email'].includes(el.autocomplete) ? el.autocomplete : undefined,
-      formMethod: form ? String(submitter?.getAttribute('formmethod') || form.method).toLowerCase() : undefined, formAction: form ? new URL(submitter?.getAttribute('formaction') || form.action, document.baseURI).href : undefined, formSensitive,
+    elements.push({ ref, tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', SUMMARY: 'button' })[el.tagName] || 'textbox',
+      inputType: el instanceof HTMLInputElement ? el.type : undefined, autocomplete: ['username', 'current-password', 'new-password', 'one-time-code', 'email'].includes(el.autocomplete) ? el.autocomplete : undefined,
+      formMethod: el.closest('form')?.method, formAction: el.closest('form')?.action,
       name: scrub(String(el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.getAttribute('placeholder') || el.textContent || '').trim().slice(0, 500)),
       text: sensitive ? '[masked]' : scrub(String(el.textContent ?? '').trim().slice(0, 1000)), value: sensitive ? '[masked]' : scrub(String(el.value ?? '').slice(0, 1000)), sensitive, disabled: !!el.disabled,
-      inViewport: rect.x < innerWidth && rect.y < innerHeight && rect.x + rect.width > 0 && rect.y + rect.height > 0,
-      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
-    if (inputType === 'checkbox' || inputType === 'radio') row.checked = !!el.checked;
-    else if (el.hasAttribute('aria-checked')) row.checked = el.getAttribute('aria-checked') === 'true';
-    if (el.tagName === 'A') {
-      try { const href = new URL(el.href); if (/^https?:$/.test(href.protocol)) { href.username = ''; href.password = ''; row.href = scrub(href.href.slice(0, 2000)); } } catch {}
-    }
-    elements.push(row);
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });
   }
   globalThis.__rhwpNativePasswordRefs = { token, refs };
   // Form values and selected text are excluded entirely from this native document observation.
@@ -60,7 +47,7 @@ function pageAction(payload) {
   if (payload.action === 'stop') { window.stop(); return { completed: true }; }
   const current = globalThis.__rhwpNativePasswordRefs;
   if (!current || current.token !== payload.snapshotId || location.origin !== payload.origin) return { error: 'stale' };
-  const el = payload.action === 'focus' && !payload.ref ? document.activeElement : current.refs.get(payload.ref);
+  const el = current.refs.get(payload.ref);
   const ready = (field) => {
     if (!field?.isConnected || field.disabled || field.readOnly) return false;
     const rect = field.getBoundingClientRect();
@@ -68,33 +55,7 @@ function pageAction(payload) {
   };
   if (payload.action === 'wait') return { completed: payload.state === 'hidden' ? !ready(el) : ready(el) };
   if (payload.action === 'scroll') { window.scrollBy(payload.deltaX, payload.deltaY); return { completed: true }; }
-  if (payload.action === 'focus' && !payload.ref) {
-    if ((payload.key === 'Space' || /^[A-Za-z0-9]$/.test(payload.key)) && el?.matches(payload.sensitive)) return { error: 'secret' };
-    return { completed: true };
-  }
   if (!ready(el)) return { error: 'target' };
-  if (payload.action === 'submission') {
-    const form = el.form instanceof HTMLFormElement ? el.form : null;
-    const type = String(el.type ?? '').toLowerCase();
-    const submitter = (el instanceof HTMLButtonElement || el instanceof HTMLInputElement) && ['submit', 'image'].includes(type) ? el : null;
-    if (!form || (payload.submissionAction === 'click' ? !submitter : !(el instanceof HTMLInputElement && payload.textTypes.includes(type)))) return { completed: true, submission: null };
-    const controls = [...Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements').get.call(form)];
-    const sensitive = controls.some(control => control.matches(payload.sensitiveSelector) || control.type === 'file');
-    // Never return protected form values, even to the hub's policy evaluator.
-    if (sensitive) return { completed: true, submission: { sensitive: true } };
-    const method = String(submitter?.getAttribute('formmethod') || form.getAttribute('method') || 'get').toLowerCase();
-    const destination = new URL(submitter?.getAttribute('formaction') || form.getAttribute('action') || location.href, document.baseURI);
-    const params = new URLSearchParams();
-    for (const control of controls) {
-      const kind = String(control.type ?? '').toLowerCase();
-      if (!control.name || control.disabled || ['submit', 'image', 'button', 'reset'].includes(kind) && control !== submitter) continue;
-      if (['checkbox', 'radio'].includes(kind) && !control.checked) continue;
-      if (control instanceof HTMLSelectElement) { for (const option of control.selectedOptions) params.append(control.name, option.value); continue; }
-      if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLButtonElement) params.append(control.name, control === el && payload.typed !== null ? payload.typed : control.value);
-    }
-    destination.search = params.toString(); destination.hash = '';
-    return { completed: true, submission: { method, url: destination.href, sensitive: false } };
-  }
   if (payload.action === 'fill' || payload.action === 'validate-fill') {
     const password = current.refs.get(payload.passwordRef);
     const username = payload.usernameRef ? current.refs.get(payload.usernameRef) : null;
@@ -118,12 +79,7 @@ function pageAction(payload) {
     el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
     const rect = el.getBoundingClientRect(); const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
     const hit = document.elementFromPoint(point.x, point.y);
-    if (point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight || !hit) return { error: 'target' };
-    if (!(hit === el || el.contains(hit)) && hit.closest?.('label')?.control !== el) {
-      let name = hit.matches(payload.sensitiveSelector) ? '[masked]' : String(hit.getAttribute('aria-label') || hit.getAttribute('title') || hit.textContent || hit.id || '');
-      for (const field of document.querySelectorAll(payload.sensitiveSelector)) if (field.value) name = name.split(field.value).join('[masked]');
-      return { error: 'covered', covering: { tag: hit.tagName.toLowerCase(), name: name.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) } };
-    }
+    if (point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight || !hit || !(hit === el || el.contains(hit))) return { error: 'target' };
     return { completed: true, point };
   }
   if (payload.action === 'type') {
@@ -206,9 +162,8 @@ export class NativeBrowserPasswords {
   assertSnapshot(tab, params) {
     if (tab.closing || !tab.view.webContents || tab.view.webContents.isDestroyed()) throw passwordFailure('BROWSER_PASSWORD_TARGET_CHANGED', 'The browser tab was closed.');
     const snapshot = tab.passwordSnapshot;
-    if (!snapshot) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Take a new browser snapshot.');
-    if (snapshot.zoomFactor !== tab.view.webContents.getZoomFactor()) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Page zoom changed. Take a new browser snapshot.');
-    if (params.snapshotId !== snapshot.snapshotId || snapshot.generation !== this.host.generation || snapshot.owner !== this.host.owner || snapshot.navigationEpoch !== tab.navigationEpoch || snapshot.targetId !== tab.targetId || snapshot.sessionId !== tab.sessionId || snapshot.chatId !== tab.chatId || snapshot.controlEpoch !== (tab.passwordControlEpoch ?? 0) || snapshot.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Take a new browser snapshot before using this saved account.');
+    if (snapshot?.zoomFactor !== tab.view.webContents.getZoomFactor()) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Page zoom changed. Take a new browser snapshot.');
+    if (!snapshot || params.snapshotId !== snapshot.snapshotId || snapshot.generation !== this.host.generation || snapshot.owner !== this.host.owner || snapshot.navigationEpoch !== tab.navigationEpoch || snapshot.targetId !== tab.targetId || snapshot.sessionId !== tab.sessionId || snapshot.chatId !== tab.chatId || snapshot.controlEpoch !== (tab.passwordControlEpoch ?? 0) || snapshot.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Take a new browser snapshot before using this saved account.');
     return snapshot;
   }
   async snapshot(params, { viewportOnly = false } = {}) {
@@ -217,11 +172,10 @@ export class NativeBrowserPasswords {
     const lifetime = { generation: this.host.generation, owner: this.host.owner, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: tab.view.webContents.getZoomFactor(), origin: new URL(tab.view.webContents.getURL()).origin };
     const observed = viewportOnly
       ? await this.run(tab, captureViewport, [SECRET]).then(({ hasSecret, width, height, deviceScaleFactor, scrollX, scrollY }) => ({ hasSecret, viewport: { width, height, deviceScaleFactor, scrollX, scrollY } }))
-      : await this.run(tab, pageSnapshot, [snapshotId, SENSITIVE, 400, BROWSER_CONTROL_SELECTOR]);
+      : await this.run(tab, pageSnapshot, [snapshotId, SENSITIVE, 400]);
     if (lifetime.zoomFactor !== tab.view.webContents.getZoomFactor()) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Page zoom changed during the browser snapshot.');
     if (tab.closing || tab.view.webContents.isDestroyed() || epoch !== tab.navigationEpoch || lifetime.generation !== this.host.generation || lifetime.owner !== this.host.owner || lifetime.targetId !== tab.targetId || lifetime.sessionId !== tab.sessionId || lifetime.chatId !== tab.chatId || lifetime.controlEpoch !== (tab.passwordControlEpoch ?? 0) || lifetime.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'The page changed during the browser snapshot.');
     const url = new URL(tab.view.webContents.getURL());
-    if (!viewportOnly) observed.elements = observed.elements.map(element => ({ ...element, role: browserRole(element.role, element.tag, element.inputType) }));
     if (!viewportOnly) tab.passwordSnapshot = { snapshotId, generation: this.host.generation, owner: this.host.owner, navigationEpoch: epoch, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: lifetime.zoomFactor, origin: url.origin, elements: observed.elements };
     return this.redact(tab, { ...observed, snapshotId, nativeNavigationEpoch: epoch, nativeControlEpoch: lifetime.controlEpoch, zoomFactor: lifetime.zoomFactor, url: tab.passwordShield || observed.hasSecret ? `${url.origin}/` : `${url.origin}${url.pathname}`, title: tab.passwordShield || observed.hasSecret ? '' : tab.view.webContents.getTitle(), passwordProtected: !!tab.passwordShield || observed.hasSecret });
   }
@@ -304,7 +258,7 @@ export class NativeBrowserPasswords {
     const tab = this.tab(params);
     if (params.action === 'stop') { tab.view.webContents.stop(); return { completed: true }; }
     const snapshot = this.assertSnapshot(tab, params);
-    const allowed = ['click', 'type', 'press', 'scroll', 'wait', 'submission'];
+    const allowed = ['click', 'type', 'press', 'scroll', 'wait'];
     if (!allowed.includes(params.action)) throw passwordFailure('BROWSER_PASSWORD_ACTION_INVALID', 'This native browser action is unsupported.');
     let keyCode; let modifiers = [];
     if (params.action === 'press') {
@@ -318,16 +272,11 @@ export class NativeBrowserPasswords {
     const expiresAt = Date.now() + Math.min(15000, Math.max(1, params.timeoutMs ?? 3000));
     do {
       this.assertSnapshot(tab, params);
-      result = await this.run(tab, pageAction, [{ ...params, action: params.action === 'press' ? 'focus' : params.action, origin: snapshot.origin, sensitive: SECRET, sensitiveSelector: SENSITIVE }]);
+      result = await this.run(tab, pageAction, [{ ...params, action: params.action === 'press' ? 'focus' : params.action, origin: snapshot.origin, sensitive: SECRET }]);
       if (params.action !== 'wait' || result?.completed || Date.now() >= expiresAt) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     } while (true);
-    if (result?.error === 'covered') {
-      const covering = this.redact(tab, result.covering);
-      throw Object.assign(passwordFailure('BROWSER_TARGET_COVERED', `Another element covers this target: <${covering.tag}> "${covering.name}". Nothing was clicked.`), { retryable: true, hint: 'Dismiss or close the covering element, then take a new snapshot before clicking again.' });
-    }
     if (!result?.completed) throw passwordFailure(result?.error === 'secret' ? 'BROWSER_SECRET_CHANNEL_REQUIRED' : 'BROWSER_PASSWORD_TARGET_INVALID', result?.error === 'secret' ? 'Use a saved account to fill this field.' : 'The selected browser field is no longer available.');
-    if (params.action === 'submission') return this.redact(tab, result);
     if (params.action === 'press' || params.action === 'click') {
       this.assertSnapshot(tab, params);
       tab.automationInputDepth = (tab.automationInputDepth ?? 0) + 1;

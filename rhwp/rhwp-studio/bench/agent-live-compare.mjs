@@ -13,40 +13,6 @@ if (files.length < 1) {
   process.exit(2);
 }
 
-// 브라우저 과제는 성공한 3회·같은 날짜·같은 과제 정의로만 속도를 비교한다.
-const browserInputs = files.map((file) => ({ file, data: JSON.parse(fs.readFileSync(file, 'utf8')) }));
-if (browserInputs.some(({ data }) => data.meta?.taskDefinitionHash)) {
-  if (!browserInputs.every(({ data }) => data.meta?.taskDefinitionHash)) {
-    console.error('Browser and document benchmark files must be compared separately.');
-    process.exit(2);
-  }
-  const { summarizeBrowserRuns, compareBrowserRuns } = await import('./browser-agent-suite.mjs');
-  const scorecard = {
-    sources: browserInputs.map(({ file, data }) => ({
-      file: path.resolve(file), label: data.meta.round ?? data.meta.label,
-      summaries: summarizeBrowserRuns(data.runs ?? []),
-    })),
-    comparisons: browserInputs.slice(1).map(({ file, data }) => ({
-      baseline: path.resolve(browserInputs[0].file), candidate: path.resolve(file),
-      ...compareBrowserRuns(browserInputs[0].data, data),
-    })),
-  };
-  if (process.argv.includes('--json')) console.log(JSON.stringify(scorecard, null, 2));
-  else {
-    console.table(scorecard.sources.flatMap((source) => source.summaries.map((row) => ({
-      source: source.label, task: row.task, arm: row.arm, passed: row.passed + '/' + row.runs,
-      blocked: row.blocked, failed: row.failed, medianMs: row.medianWallMs,
-      invalid: row.invalidCalls, clickFailures: row.clickFailures, navigationFailures: row.navigationFailures,
-      actualCostUsd: row.costUsd, pendingUsd: row.pendingReservationUsd,
-    }))));
-    for (const comparison of scorecard.comparisons) {
-      console.log(path.basename(comparison.candidate));
-      console.table(comparison.arms);
-    }
-  }
-  process.exit(0);
-}
-
 const mean = (xs) => {
   const v = xs.filter((x) => Number.isFinite(x));
   return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;

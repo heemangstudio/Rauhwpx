@@ -445,14 +445,14 @@ test('hostile page prototypes and mirrored credentials cannot leak through brows
   if (!await needsBrowser(t)) return;
   const f = await fixture(t, (_request, response) => {
     response.setHeader('Content-Type', 'text/html');
-    response.end(`<title>fixture secret 97531</title><input type="password" aria-label="Password" value="fixture secret 97531"><div>echo:fixture secret 97531</div><a href="/copy?value=fixture+secret+97531">Encoded mirror</a><form action="/search?value=fixture+secret+97531"><input aria-label="Query"></form><script>Element.prototype.matches=()=>false;</script>`);
+    response.end(`<title>fixture-secret-97531</title><input type="password" aria-label="Password" value="fixture-secret-97531"><div>echo:fixture-secret-97531</div><script>Element.prototype.matches=()=>false;</script>`);
   });
   const browser = createOwnedBrowserService({ dataDir: f.dataDir, workspaceTargets: [f.origin], autoInstall: false });
   f.cleanup(() => browser.close());
   const opened = await browser.request(agent, 'open', { url: f.origin });
   const observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
   assert.equal(observation.snapshot.elements.find(el => el.name === 'Password').sensitive, true);
-  for (const secret of ['fixture secret 97531', 'fixture%20secret%2097531', 'fixture+secret+97531']) assert.equal(JSON.stringify(observation).includes(secret), false);
+  assert.equal(JSON.stringify(observation).includes('fixture-secret-97531'), false);
   await assert.rejects(browser.request(agent, 'frame', { tabId: opened.tab.tabId }), { code: 'BROWSER_PASSWORD_CAPTURE_PROTECTED' });
 });
 

@@ -30,7 +30,6 @@ import {
   terminateAndWaitForProcessTreeExit,
   terminateProcessTree,
 } from '../process-tree.mjs';
-import { acquireCodexHomeInitialization } from '../codex-home-initialization.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
 import { tapProviderProcess } from '../provider-transcript.mjs';
 import { codexResetAtFromSnapshot, readCodexErrorInfo } from '../provider-failure.mjs';
@@ -444,7 +443,6 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   let rpc = null;
   /** @type {Promise<CodexJsonRpcConnection> | null} */
   let readyPromise = null;
-  let initializationController = null;
   /** @type {Promise<void>} */
   let restartPromise = Promise.resolve();
   let expectedShutdown = false;
@@ -887,7 +885,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     return features;
   }
 
-  async function negotiate(connection, { featureForced = false, onInitialized } = {}) {
+  async function negotiate(connection, { featureForced = false } = {}) {
     await connection.request('initialize', {
       clientInfo: { name: 'rhwp-studio', title: 'HamaEditor', version: '4' },
       capabilities: {
@@ -899,7 +897,6 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       timeoutMs: NEGOTIATION_TIMEOUT_MS,
       label: 'Codex app-server initialize',
     });
-    onInitialized?.();
     connection.notify('initialized');
 
     const planNative = nativeProviderInteractionMode(opts) === 'plan';
@@ -972,109 +969,81 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     const attempt = turnAttempt;
     let child;
     let launch;
-    let releaseInitialization;
-    let initializationCleanup;
-    const controller = new AbortController();
-    initializationController = controller;
     try {
-      try {
-        launch = opts.prepareLaunch ? await opts.prepareLaunch() : null;
-        if (disposed || attempt !== turnAttempt) throw new Error('Codex launch was cancelled');
-        applyPreparedProviderLaunch(opts, 'codex', launch);
-        const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
-        releaseInitialization = await acquireCodexHomeInitialization(codexHome, { signal: controller.signal });
-        if (disposed || attempt !== turnAttempt || controller.signal.aborted) throw new Error('Codex launch was cancelled');
-        prepareHome(codexHome, opts.codexAuthPath);
-        stderrTail = '';
-        expectedShutdown = false;
-        const spawnEnv = {
-          ...isolatedProcessEnv(opts, opts.providerEnv ?? process.env),
-          CODEX_HOME: codexHome,
-        };
-        const launched = applyManagedCliLaunch(opts.codexBin ?? 'codex', buildCodexAppServerArgv(opts, {
-          enableDefaultModeUserInput: featureForced,
-        }), { platform, nodeCommand, env: spawnEnv });
-        child = spawnProcess(launched.command, launched.argv, {
-          ...processTreeSpawnOptions(),
-          cwd: opts.rootDir,
-          env: launched.env,
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-        proc = child;
-        child = tapProviderProcess(child, {
-          agent: 'codex', transport: 'app-server', stdin: 'ndjson', argv: launched.argv, env: launched.env,
-          secrets: [opts.token], cli: opts.providerCliVersion, platform,
-        });
-      } catch (error) {
-        throw new CodexAppServerUnavailableError('Failed to start Codex app-server', error);
-      } finally {
-        launch?.release?.();
-      }
-      proc = child;
-      const connectionGeneration = ++generation;
-      let connection;
-      connection = new CodexJsonRpcConnection(child, {
-        onFrame: (frame) => handleFrame(frame, connection, connectionGeneration),
-        onClosed: (error, cleaned) => handleConnectionClosed(
-          child, connection, error, cleaned,
-        ),
-        terminateProcess,
+      launch = opts.prepareLaunch ? await opts.prepareLaunch() : null;
+      if (disposed || attempt !== turnAttempt) throw new Error('Codex launch was cancelled');
+      applyPreparedProviderLaunch(opts, 'codex', launch);
+      const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+      prepareHome(codexHome, opts.codexAuthPath);
+      stderrTail = '';
+      expectedShutdown = false;
+      const spawnEnv = {
+        ...isolatedProcessEnv(opts, opts.providerEnv ?? process.env),
+        CODEX_HOME: codexHome,
+      };
+      const launched = applyManagedCliLaunch(opts.codexBin ?? 'codex', buildCodexAppServerArgv(opts, {
+        enableDefaultModeUserInput: featureForced,
+      }), { platform, nodeCommand, env: spawnEnv });
+      child = tapProviderProcess(spawnProcess(launched.command, launched.argv, {
+        ...processTreeSpawnOptions(),
+        cwd: opts.rootDir,
+        env: launched.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }), {
+        agent: 'codex', transport: 'app-server', stdin: 'ndjson', argv: launched.argv, env: launched.env,
+        secrets: [opts.token], cli: opts.providerCliVersion, platform,
       });
-      rpc = connection;
-      child.stdin.on('error', (error) => {
-        process.stderr.write(`[codex-app-server] stdin error: ${error?.message ?? error}\n`);
-      });
-      child.stderr.on('data', (chunk) => {
-        stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT);
-      });
-      try {
-        const result = await negotiate(connection, { featureForced, onInitialized() {
-          releaseInitialization?.(); releaseInitialization = null;
-          if (initializationController === controller) initializationController = null;
-        } });
-        if (result.restartWithFeature) {
-          defaultModeFlagRequired = true;
-          await stopNegotiationProcess(child, connection);
-          return startConnection({ featureForced: true, startupRetried });
-        }
-      } catch (error) {
-        const diagnostic = truncate(redactDiagnosticText(stderrTail, [opts.token]).trim(), 1200);
-        process.stderr.write(`[codex-app-server] native negotiation failed: ${safeMessage(error)}${diagnostic ? `; stderr: ${diagnostic}` : ''}\n`);
-        // 초기화만 재시도한다. 사용자 턴을 보낸 뒤에는 중복 실행을 피한다.
-        const startupFailure = !(error instanceof CodexAppServerUnavailableError)
-          || error.message === 'Codex app-server initialize timed out';
-        if (startupFailure && !startupRetried && !disposed && attempt === turnAttempt) {
-          process.stderr.write(`[codex-app-server] retrying native startup: ${safeMessage(error)}\n`);
-          const cleaned = await (initializationCleanup ??= stopConnection());
-          if (cleaned && !disposed && attempt === turnAttempt) {
-            releaseInitialization?.(); releaseInitialization = null;
-            if (initializationController === controller) initializationController = null;
-            return startConnection({ featureForced, startupRetried: true });
-          }
-          if (!cleaned) {
-            throw new CodexAppServerUnavailableError('Codex app-server process tree cleanup could not be confirmed', error);
-          }
-        }
-        if (!(error instanceof CodexAppServerUnavailableError)) {
-          throw new CodexAppServerUnavailableError('Codex app-server negotiation failed', error);
-        }
-        throw error;
-      }
-      return connection;
+    } catch (error) {
+      throw new CodexAppServerUnavailableError('Failed to start Codex app-server', error);
     } finally {
-      try {
-        if (releaseInitialization && child && proc === child) {
-          const cleaned = await (initializationCleanup ??= stopConnection());
-          if (!cleaned) throw new CodexAppServerUnavailableError('Codex app-server process tree cleanup could not be confirmed');
-        }
-      } catch (error) {
-        releaseInitialization?.poison(error);
-        throw error;
-      } finally {
-        releaseInitialization?.();
-        if (initializationController === controller) initializationController = null;
-      }
+      launch?.release?.();
     }
+    proc = child;
+    const connectionGeneration = ++generation;
+    let connection;
+    connection = new CodexJsonRpcConnection(child, {
+      onFrame: (frame) => handleFrame(frame, connection, connectionGeneration),
+      onClosed: (error, cleaned) => handleConnectionClosed(
+        child, connection, error, cleaned,
+      ),
+      terminateProcess,
+    });
+    rpc = connection;
+    child.stdin.on('error', (error) => {
+      process.stderr.write(`[codex-app-server] stdin error: ${error?.message ?? error}\n`);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT);
+    });
+    try {
+      const result = await negotiate(connection, { featureForced });
+      if (result.restartWithFeature) {
+        defaultModeFlagRequired = true;
+        await stopNegotiationProcess(child, connection);
+        return startConnection({ featureForced: true, startupRetried });
+      }
+    } catch (error) {
+      const diagnostic = truncate(redactDiagnosticText(stderrTail, [opts.token]).trim(), 1200);
+      process.stderr.write(`[codex-app-server] native negotiation failed: ${safeMessage(error)}${diagnostic ? `; stderr: ${diagnostic}` : ''}\n`);
+      // 초기화만 재시도한다. 사용자 턴을 보낸 뒤에는 중복 실행을 피한다.
+      const startupFailure = !(error instanceof CodexAppServerUnavailableError)
+        || error.message === 'Codex app-server initialize timed out';
+      if (startupFailure && !startupRetried && !disposed && attempt === turnAttempt) {
+        process.stderr.write(`[codex-app-server] retrying native startup: ${safeMessage(error)}\n`);
+        const cleaned = await stopConnection();
+        if (cleaned && !disposed && attempt === turnAttempt) {
+          return startConnection({ featureForced, startupRetried: true });
+        }
+        if (!cleaned) {
+          throw new CodexAppServerUnavailableError('Codex app-server process tree cleanup could not be confirmed', error);
+        }
+      }
+      if (!(error instanceof CodexAppServerUnavailableError)) {
+        throw new CodexAppServerUnavailableError('Codex app-server negotiation failed', error);
+      }
+      throw error;
+    }
+    return connection;
   }
 
   function ensureConnection() {
@@ -1172,10 +1141,9 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   }
 
   async function stopConnection() {
-    initializationController?.abort(new Error('Codex initialization cancelled'));
     if (cleanupUncertain) return false;
     const child = proc;
-    if (!child) { readyPromise = null; return true; }
+    if (!child) return true;
     const connection = rpc?.proc === child ? rpc : null;
     expectedShutdown = true;
     let cleaned;

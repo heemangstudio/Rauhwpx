@@ -56,9 +56,6 @@ app.whenReady().then(async () => {
     const evaluate = script => tab.view.webContents.executeJavaScript(script);
     const paused = async () => {
       await tab.activityQueue;
-      // Detach and window.hide return before the renderer sees visibilitychange; wait for it, bounded.
-      const deadline = Date.now() + 1000;
-      while (await evaluate('document.visibilityState') !== 'hidden' && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
       assert.equal(await evaluate('document.visibilityState'), 'hidden');
       const before = await evaluate('framesRun');
       await new Promise(resolve => setTimeout(resolve, 250));
@@ -90,13 +87,13 @@ app.whenReady().then(async () => {
     await paused();
     assert.equal(await evaluate('submissions'), 2);
     observed = await observe();
-    observed = await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'ControlOrMeta+a' });
+    await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'ControlOrMeta+a' });
     await eventually('document.querySelector("#draft").selectionEnd-document.querySelector("#draft").selectionStart', 'preserved draft'.length);
-    observed = await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'q' });
+    await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'q' });
     await eventually('document.querySelector("#draft").value', 'q');
-    observed = await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'Shift+Tab' });
+    await service.request(actor, 'press', { ...ref(observed, 'Draft'), key: 'Shift+Tab' });
     await eventually('document.activeElement.id', 'previous');
-    observed = await service.request(actor, 'type', { ...ref(observed, 'Draft'), text: 'preserved draft' });
+    await service.request(actor, 'type', { ...ref(observed, 'Draft'), text: 'preserved draft' });
     await assert.rejects(service.request(actor, 'press', { ...ref(observed, 'Password'), key: 'q' }), { code: 'BROWSER_SECRET_CHANNEL_REQUIRED' });
     await assert.rejects(service.request(actor, 'press', { ...ref(observed, 'Password'), key: 'Space' }), { code: 'BROWSER_SECRET_CHANNEL_REQUIRED' });
     await paused();

@@ -13,8 +13,6 @@ const files = readdirSync(new URL('../tests/', import.meta.url))
   .sort()
   .map((name) => `tests/${name}`);
 if (!browser) {
-  files.push(...readdirSync(new URL('../bench/', import.meta.url))
-    .filter((name) => name.endsWith('.test.mjs')).sort().map((name) => 'bench/' + name));
   files.push(...readdirSync(new URL('../../npm/editor/tests/', import.meta.url))
     .filter((name) => name.endsWith('.test.mjs')).sort().map((name) => `../npm/editor/tests/${name}`));
 }

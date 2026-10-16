@@ -1,12 +1,10 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import spawn from 'cross-spawn';
-import { acquireCodexHomeInitialization } from './codex-home-initialization.mjs';
 import { CodexJsonRpcConnection } from './agents/codex-app-server.mjs';
 import { applyManagedCliLaunch } from './npm-cli-launch.mjs';
-import { isolatedProcessEnv, processTreeSpawnOptions, terminateAndWaitForProcessTreeExit } from './process-tree.mjs';
+import { isolatedProcessEnv, processTreeSpawnOptions } from './process-tree.mjs';
 
 const LINEUPS = new Set(['astra', 'sol', 'luna', 'terra']);
 const FALLBACK_MODELS = {
@@ -74,37 +72,25 @@ export async function discoverCodexModels({
     'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'OPENROUTER_API_KEY',
     'RHWP_CLIPROXY_KEY',
   ]) delete probeEnv[key];
-  let child;
-  let connection;
-  let releaseInitialization;
+  const launched = applyManagedCliLaunch(bin, ['-s', 'read-only', '-a', 'never', 'app-server', '--stdio'], {
+    platform, nodeCommand, env: probeEnv,
+  });
+  const child = spawnProcess(launched.command, launched.argv, {
+    ...processTreeSpawnOptions(platform),
+    cwd, env: launched.env, stdio: ['pipe', 'pipe', 'ignore'],
+  });
+  const connection = new CodexJsonRpcConnection(child, { onFrame: () => {}, onClosed: () => {} });
+  child.stdin.on('error', () => {});
   let timeout;
-  const controller = new AbortController();
   try {
     const deadline = new Promise((_, reject) => {
-      timeout = setTimeout(() => {
-        const error = new Error('Codex model discovery timed out');
-        controller.abort(error);
-        reject(error);
-      }, timeoutMs);
+      timeout = setTimeout(() => reject(new Error('Codex model discovery timed out')), timeoutMs);
     });
     return await Promise.race([deadline, (async () => {
-      const home = probeEnv.CODEX_HOME || path.join(probeEnv.HOME || os.homedir(), '.codex');
-      releaseInitialization = await acquireCodexHomeInitialization(home, { signal: controller.signal });
-      const launched = applyManagedCliLaunch(bin, ['-s', 'read-only', '-a', 'never', 'app-server', '--stdio'], {
-        platform, nodeCommand, env: probeEnv,
-      });
-      child = spawnProcess(launched.command, launched.argv, {
-        ...processTreeSpawnOptions(platform),
-        cwd, env: launched.env, stdio: ['pipe', 'pipe', 'ignore'],
-      });
-      connection = new CodexJsonRpcConnection(child, { onFrame: () => {}, onClosed: () => {} });
-      child.stdin.on('error', () => {});
       await connection.request('initialize', {
         clientInfo: { name: 'rhwp_model_catalog', version: '1.0.0' },
         capabilities: { experimentalApi: true },
       }, { timeoutMs: REQUEST_TIMEOUT_MS });
-      releaseInitialization();
-      releaseInitialization = null;
       connection.notify('initialized');
       const models = [];
       const cursors = new Set();
@@ -126,20 +112,10 @@ export async function discoverCodexModels({
     })()]);
   } finally {
     clearTimeout(timeout);
-    controller.abort(new Error('Codex model discovery finished'));
-    try {
-      if (connection) {
-        const cleaned = await connection.close(new Error('Codex model discovery finished'), {
-          terminate: true, graceMs: 500,
-        });
-        if (!cleaned) throw new Error('Codex model discovery process cleanup failed');
-      } else if (child && !await terminateAndWaitForProcessTreeExit(child, { platform })) {
-        throw new Error('Codex model discovery process cleanup failed');
-      }
-    } catch (error) {
-      releaseInitialization?.poison(error);
-      throw error;
-    } finally { releaseInitialization?.(); }
+    const cleaned = await connection.close(new Error('Codex model discovery finished'), {
+      terminate: true, graceMs: 500,
+    });
+    if (!cleaned) throw new Error('Codex model discovery process cleanup failed');
   }
 }
 
