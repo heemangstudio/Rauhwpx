@@ -154,8 +154,9 @@ export interface ChatPermissionRequest {
   turnId: string;
   agent: AgentName;
   capability: ChatPermissionCapability;
-  kind?: 'browser-save-account' | 'browser-use-account';
+  kind?: 'browser-save-account' | 'browser-use-account' | 'browser-sign-in' | 'browser-code';
   origin?: string;
+  tabId?: string;
   origins?: string[];
   accountId?: string;
   accountLabel?: string;

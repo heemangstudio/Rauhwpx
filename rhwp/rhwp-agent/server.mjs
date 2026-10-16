@@ -553,6 +553,8 @@ const sessions = new HubSessionRegistry({
       pendingChatPermissionScopes: [],
       pendingBrowserScopes: [],
       pendingBrowserAccountRequests: new Map(),
+      // 사용자가 끝낸 브라우저 요청 — 턴이 비면 에이전트를 이어서 실행한다.
+      pendingBrowserContinuations: [],
       suppressedChatPermissionCallIds: new Set(),
       chatPermissionResponseReceipts: new Map(),
       nextHubId: 1,
@@ -725,14 +727,49 @@ function publishBrowserAccountRequest(record, request) {
   sendJson(record.studioSocket, { v: 1, type: 'chat-permission-requested', request: wrapped });
 }
 
-function settleBrowserAccountRequest(requestId, status = 'granted') {
+function settleBrowserAccountRequest(requestId, status = 'granted', continuation = null) {
   for (const record of sessions.values()) {
     const request = record.pendingBrowserAccountRequests.get(requestId);
     if (!request) continue;
     record.pendingBrowserAccountRequests.delete(requestId);
     sendJson(record.studioSocket, { v: 1, type: 'chat-permission-resolved', requestId,
       threadId: request.threadId, documentId: request.documentId,
-      outcome: { status, ...(status === 'denied' ? { reason: 'user-denied' } : {}) } });
+      outcome: { status, ...(status === 'denied' ? { reason: 'user-denied' } : {}) },
+      grants: normalizeChatPermissionGrants(record.agentSession?.chatPermissionGrants) });
+    // 에이전트가 요청하고 사용자가 마친 요청만 턴을 이어 간다. 거절은 다른 권한 거절처럼 멈춘다.
+    if (status === 'granted' && continuation && request.actor && !request.actor.isHuman) {
+      record.pendingBrowserContinuations = record.pendingBrowserContinuations
+        .filter((entry) => entry.requestId !== requestId).concat({ requestId, threadId: request.threadId, text: continuation }).slice(-8);
+      drainBrowserContinuation(record);
+    }
+  }
+}
+
+function browserContinuationText(request) {
+  const origin = request?.origin ?? 'the website';
+  if (request?.kind === 'browser-code') return `The user entered the verification code on ${origin}; continue.`;
+  if (request?.kind === 'browser-sign-in') return `The user finished signing in on ${origin}; continue.`;
+  if (request?.kind === 'browser-save-account') return `The user saved an account for ${origin}; continue.`;
+  return `The user approved the saved account for ${origin}; continue.`;
+}
+
+function drainBrowserContinuation(record) {
+  const activeSession = record.agentSession;
+  if (!activeSession || activeSession.status !== 'idle'
+    || activeSession.pendingTransitions > 0 || record.pendingReferenceMessage) return;
+  record.pendingBrowserContinuations = record.pendingBrowserContinuations.filter((entry) => entry.threadId === activeSession.threadId);
+  const entry = record.pendingBrowserContinuations.shift();
+  if (!entry) return;
+  // 사용자 메시지가 아니므로 사용자가 잡고 있는 다른 탭은 그대로 둔다.
+  beginAgentTurn(record, activeSession, { userTurn: false });
+  try {
+    activeSession.backend.sendUserMessage(addAgentInstructionsContext(entry.text));
+  } catch (error) {
+    failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
+    activeSession.status = 'idle';
+    activeSession.turnId = null;
+    record.userQuestionResponseReceipts.clear();
+    log(`browser continuation dispatch failed: ${error?.message ?? error}`);
   }
 }
 
@@ -790,16 +827,33 @@ async function handleBrowserRequest(record, sock, msg) {
       case 'accounts.list': result = await credentialBroker.listAccounts(); break;
       case 'accounts.request': result = await credentialBroker.requestAccount({ ...args, actor }); break;
       case 'accounts.approve': {
-        let approval;
+        let approval; let pending;
         if (args.requestId) {
-          const pending = await credentialBroker.getAccountRequest(args.requestId);
+          pending = await credentialBroker.getAccountRequest(args.requestId);
           assertBrowserAccountScope(pending, actor);
           approval = Object.freeze({ approved: true, requestId: args.requestId, use: true });
         }
-        result = await credentialBroker.approveAccount({ ...args, actor, approval });
-        if (args.requestId) settleBrowserAccountRequest(args.requestId);
+        if (pending?.native) {
+          // 데스크톱 보관함 계정의 동의는 그 계정 기록에 저장한다.
+          const account = await ownedBrowser.approveNativeAccount(pending.accountId, true);
+          await credentialBroker.settleExternalRequest({ actor, requestId: args.requestId });
+          result = { account };
+        } else result = await credentialBroker.approveAccount({ ...args, actor, approval });
+        if (args.requestId) settleBrowserAccountRequest(args.requestId, 'granted', browserContinuationText(pending));
         break;
       }
+      case 'accounts.complete': {
+        // 로그인·인증 코드 입력을 마쳤다 — 탭을 에이전트에게 돌려주고 턴을 이어 간다.
+        const pending = await credentialBroker.getAccountRequest(String(args.requestId ?? ''));
+        assertBrowserAccountScope(pending, actor);
+        await ownedBrowser.observeHumanSessions().catch(() => {});
+        result = await credentialBroker.completeHandoff({ actor, requestId: pending.requestId, profileId: ownedBrowser.profileId() });
+        if (pending.tabId) await ownedBrowser.releaseHolds(actor, { tabId: pending.tabId }).catch(() => {});
+        settleBrowserAccountRequest(pending.requestId, 'granted', browserContinuationText(pending));
+        result = { completed: true, origin: result.origin };
+        break;
+      }
+      case 'sessions.imported': result = await ownedBrowser.acceptImportedSessions(Array.isArray(args.domains) ? args.domains.slice(0, 500) : []); break;
       case 'accounts.revoke': result = await credentialBroker.revokeAccount({ ...args, actor }); break;
       case 'accounts.signout': result = await credentialBroker.signOut({ ...args, actor }); break;
       case 'accounts.forget': result = await credentialBroker.forgetAccount({ ...args, actor }); break;
@@ -830,7 +884,7 @@ async function handleBrowserAccountSubmit(record, sock, msg) {
       username: msg.username, password: msg.password, remember: msg.remember === true,
       approval: Object.freeze({ approved: true, requestId: accountRequestId, save: true, use: msg.consent.use }),
     });
-    settleBrowserAccountRequest(accountRequestId);
+    settleBrowserAccountRequest(accountRequestId, 'granted', browserContinuationText(pending));
     replyToStudio(record, sock, { v: 1, type: 'browser-response', requestId, result });
   } catch (error) {
     // 금고 오류에는 비밀 입력을 되비추지 않는다. 일반 도구 로그/채팅에 이 payload 를 넣지 않는다.
@@ -3115,6 +3169,7 @@ function makeBackendEventHandler(record, generation) {
     }
     if (evt.type === 'turn-end') drainTemplateCompletion(record);
     if (evt.type === 'turn-end') drainPlanningDocumentSaved(record);
+    if (evt.type === 'turn-end') drainBrowserContinuation(record);
   };
 }
 
@@ -4134,6 +4189,7 @@ async function startSession(
   }
   queueMicrotask(() => drainTemplateCompletion(record));
   queueMicrotask(() => drainPlanningDocumentSaved(record));
+  queueMicrotask(() => drainBrowserContinuation(record));
   return record.agentSession;
 }
 
@@ -4215,6 +4271,7 @@ function enqueueWorkflowTransition(record, transitionOwner, transitionFn) {
       queueMicrotask(() => {
         drainTemplateCompletion(record);
         drainPlanningDocumentSaved(record);
+        drainBrowserContinuation(record);
       });
     }
   });
@@ -6543,9 +6600,13 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             if (actor.agentId !== `${actor.threadId}:root`) {
               throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request website account access');
             }
-            const request = await credentialBroker.requestAccount({ actor, ...args });
+            const kind = args.kind ?? 'account';
+            if (kind !== 'account' && !ownedBrowser.ownsTarget(actor, { tabId: args.tabId })) throw workflowError('BROWSER_TAB_NOT_FOUND', 'The browser tab is unavailable to this chat.');
+            const nativeAccount = kind === 'account' && args.accountId ? await ownedBrowser.nativeAccount(args.accountId) : null;
+            const request = await credentialBroker.requestAccount({ actor, ...args, kind,
+              ...(kind !== 'account' ? { profileId: ownedBrowser.profileId() } : {}), ...(nativeAccount ? { nativeAccount } : {}) });
             publishBrowserAccountRequest(record, request);
-            return { pending: true, requestId: request.requestId, origin: request.origin };
+            return { pending: true, requestId: request.requestId, origin: request.origin, kind };
           }
           const result = browserMcpResult(await ownedBrowser.request(actor, tool.slice('browser_'.length).replaceAll('_', '-'), args));
           if (tool === 'browser_status') {

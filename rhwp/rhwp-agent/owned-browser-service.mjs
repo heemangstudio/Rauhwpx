@@ -124,6 +124,7 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     passwordCapture: (params) => call('password-capture', params),
     passwordFill: (params) => call('password-fill', params), passwordAction: (params) => call('password-action', params),
     passwordStorageState: () => call('password-storage-state'),
+    passwordApprove: (params) => call('password-approve', params),
     async dispose() { events.off('message', receive); listeners.clear(); nativeGeneration = undefined; for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(error('BROWSER_CLOSED', 'The browser service closed.')); } pending.clear(); },
   };
 }
@@ -967,6 +968,7 @@ export function createOwnedBrowserService(options = {}) {
     if (action === 'type') {
       const handle = requireRef(tab, args);
       if ((await handle.getAttribute('type'))?.toLowerCase() === 'password' || ['current-password', 'new-password'].includes(await handle.getAttribute('autocomplete'))) throw error('BROWSER_SECRET_CHANNEL_REQUIRED', 'Use the saved-account broker to fill password fields.');
+      if ((await handle.getAttribute('autocomplete'))?.trim().toLowerCase() === 'one-time-code') throw error('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code'.");
       await handle.fill(text(args.text, 16_000), { timeout: 10_000 });
       if (args.submit === true) {
         epochs(tab, args, true); assertController(actor, tab);
@@ -1375,15 +1377,37 @@ export function createOwnedBrowserService(options = {}) {
   const request = performRequest;
   return {
     request, inventory, sweepSleepingTabs,
-    /** 새 사용자 턴은 같은 창이 잡았던 탭을 에이전트와 공유 상태로 되돌린다. */
-    async releaseHolds(actor) {
+    /** 새 사용자 턴은 같은 창이 잡았던 탭을 에이전트와 공유 상태로 되돌린다. tabId 를 주면 그 탭만 돌려준다. */
+    async releaseHolds(actor, { tabId } = {}) {
       for (const tab of tabs.values()) {
-        if (!tab.hold || tab.hold.clientId !== actor?.clientId) continue;
+        if (!tab.hold || tab.hold.clientId !== actor?.clientId || (tabId && tab.tabId !== tabId)) continue;
         tab.hold = null; tab.controllerEpoch++;
         if (tab.page && !tab.page.isClosed()) await selectedAdapter()?.control?.(nativeControl(tab)).catch(() => {});
         publish(tab);
       }
     },
+    profileId,
+    /** 사용자가 넘겨받은 탭에서 바뀐 세션을 확인 전에 기록한다. */
+    observeHumanSessions: () => observeHumanSessions(),
+    async nativeAccount(accountId) {
+      if (!nativeAdapter?.passwordAccounts || typeof accountId !== 'string') return null;
+      return ((await nativeAdapter.passwordAccounts()).accounts ?? []).find((account) => account.id === accountId) ?? null;
+    },
+    async approveNativeAccount(accountId, approved) {
+      if (!nativeAdapter?.passwordApprove) throw error('BROWSER_NATIVE_UNAVAILABLE', 'The desktop password vault is unavailable.', true);
+      return nativeAdapter.passwordApprove({ accountId, approved: approved === true });
+    },
+    /** 사용자가 Chrome에서 가져온 사이트 쿠키는 사용자 세션 변경으로 격리하지 않고 기준선으로 받아들인다. */
+    acceptImportedSessions: (domains) => serializeSession(async () => {
+      if (!runtime || state !== 'ready' || !Array.isArray(domains)) return { accepted: 0 };
+      const roots = domains.filter((domain) => typeof domain === 'string' && /^[a-z0-9.-]{1,253}$/.test(domain)).map((domain) => domain.replace(/^\./, ''));
+      const covered = (domain) => roots.some((root) => domain === root || domain.endsWith(`.${root}`));
+      const storage = await browserStorageState();
+      let accepted = 0;
+      for (const [key, fingerprint] of sessionFingerprint(storage)) if (key.startsWith('domain:') && covered(key.slice(7))) { sessionBaseline.set(key, fingerprint); accepted++; }
+      for (const cookie of storage.cookies ?? []) if (covered(cookie.domain.replace(/^\./, '').toLowerCase())) cookieBaseline.set(cookieIdentity(cookie), cookie);
+      return { accepted };
+    }),
     configureSleep({ idleMinutes = 15 } = {}) {
       if (!Number.isInteger(idleMinutes) || idleMinutes < 0 || idleMinutes > 1440) throw error('BROWSER_CONFIGURATION_INVALID', 'Choose an idle timeout between 0 and 1440 minutes.');
       idleSleepMs = idleMinutes * 60_000;

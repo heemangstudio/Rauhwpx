@@ -38,15 +38,22 @@ test('native vault exposes metadata and writes OS-encrypted records with private
   const account = await vault.importCredential({ origin: 'https://fixture.invalid/login', username: 'andy@example.invalid', password, sourceProfile: 'Fixture profile' });
   const metadata = await vault.list();
   assert.equal(metadata.accounts[0].id, account.id);
-  assert.equal(metadata.accounts[0].agentReuseApproved, true);
+  // 가져온 계정은 사용자가 허용하기 전까지 에이전트가 쓸 수 없다.
+  assert.equal(metadata.accounts[0].agentReuseApproved, false);
   assert.equal(JSON.stringify(metadata).includes(password), false);
   const file = join(root, 'vault', 'local-passwords.json');
   assert.equal((await readFile(file, 'utf8')).includes(password), false);
   assert.equal((await stat(file)).mode & 0o777, 0o600);
+  await assert.rejects(vault.withCredential(account.id, () => assert.fail('decrypted before consent'), { agent: true }), { code: 'BROWSER_ACCOUNT_NOT_APPROVED' });
+  assert.equal((await vault.setAgentReuse(account.id, true)).agentReuseApproved, true);
   const reopened = new LocalBrowserPasswordVault({ dataDir: join(root, 'vault'), safeStorage });
-  await reopened.withCredential(account.id, async (credential) => assert.equal(credential.password, password));
+  await reopened.withCredential(account.id, async (credential) => assert.equal(credential.password, password), { agent: true });
+  assert.equal((await reopened.list()).accounts[0].agentReuseApproved, true);
   const updated = await vault.importCredential({ origin: account.origin, username: account.username, password: 'replacement', sourceProfile: 'Fixture' });
   assert.equal(updated.id, account.id);
+  assert.equal(updated.agentReuseApproved, true, 'a re-import keeps the account decision');
+  await vault.setAgentReuse(account.id, false);
+  await assert.rejects(vault.withCredential(account.id, () => {}, { agent: true }), { code: 'BROWSER_ACCOUNT_NOT_APPROVED' });
   await vault.remove(account.id);
   await assert.rejects(vault.withCredential(account.id, () => {}), { code: 'BROWSER_PASSWORD_NOT_FOUND' });
 });
@@ -183,6 +190,8 @@ test('native account filling fences chat, origin, snapshot, navigation, control 
   const f = nativeFixture(vault);
   const observation = await f.passwords.snapshot(f.binding);
   const request = { ...f.binding, snapshotId: observation.snapshotId, accountId: account.id, passwordRef: 'e1' };
+  await assert.rejects(f.passwords.fill(request), { code: 'BROWSER_ACCOUNT_NOT_APPROVED' });
+  await vault.setAgentReuse(account.id, true);
   await assert.rejects(f.passwords.fill({ ...request, chatId: 'other-chat' }), { code: 'BROWSER_PASSWORD_SCOPE_MISMATCH' });
   f.tab.navigationEpoch++;
   await assert.rejects(f.passwords.fill(request), { code: 'BROWSER_PASSWORD_STALE_REFERENCE' });
@@ -193,6 +202,7 @@ test('native account filling fences chat, origin, snapshot, navigation, control 
   await assert.rejects(f.passwords.fill(request), { code: 'BROWSER_PASSWORD_STALE_REFERENCE' });
   f.tab.passwordControlEpoch--;
   const other = await vault.importCredential({ origin: 'https://other.invalid', username: 'andy', password: 'other-secret' });
+  await vault.setAgentReuse(other.id, true);
   await assert.rejects(f.passwords.fill({ ...request, accountId: other.id }), { code: 'BROWSER_PASSWORD_ORIGIN_MISMATCH' });
   const run = f.passwords.run.bind(f.passwords);
   f.passwords.run = async () => ({ error: 'target' });
@@ -213,6 +223,7 @@ test('account removal cancels paused native fills and waits for an already dispa
   for (const stage of ['validate-fill', 'connections', 'fill']) await t.test(stage, async (subtest) => {
     const { vault } = await vaultFixture(subtest); const f = nativeFixture(vault);
     const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'andy', password: 'fixture-password' });
+    await vault.setAgentReuse(account.id, true);
     const observed = await f.passwords.snapshot(f.binding);
     let entered; let resume; let writes = 0; let removed = false;
     const paused = new Promise((resolve) => { entered = resolve; });
@@ -257,6 +268,7 @@ test('native fills shield the existing opener family including pending descendan
   for (const tab of [ancestor, sibling, child, unrelated]) f.host.tabs.set(tab.targetId, tab);
   f.host.pendingTabs = new Set([pending]);
   const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'andy', password: 'fixture-password' });
+  await vault.setAgentReuse(account.id, true);
   const observed = await f.passwords.snapshot(f.binding);
   await f.passwords.fill({ ...f.binding, snapshotId: observed.snapshotId, accountId: account.id, passwordRef: 'e1' });
   for (const tab of [f.tab, ancestor, sibling, child, pending]) {
@@ -272,6 +284,7 @@ test('native fills protect sibling popups whose opener has already closed', asyn
   const sibling = { targetId: 'sibling', openerTargetId: 'closed-opener', view: { webContents: f.contents } };
   f.host.tabs.set(sibling.targetId, sibling);
   const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'andy', password: 'fixture-password' });
+  await vault.setAgentReuse(account.id, true);
   const observed = await f.passwords.snapshot(f.binding);
   await f.passwords.fill({ ...f.binding, snapshotId: observed.snapshotId, accountId: account.id, passwordRef: 'e1' });
   assert.equal(sibling.passwordShield, true);

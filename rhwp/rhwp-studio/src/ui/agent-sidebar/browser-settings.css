@@ -71,3 +71,5 @@
 .ag-browser-local-import > :is(h3, p) { flex-basis: 100%; margin: 0; }
 .ag-browser-import-picker { display: flex; flex-direction: column; gap: 4px; flex: 1 1 160px; min-width: 0; }
 .ag-browser-import-picker select { width: 100%; }
+.ag-browser-cookie-import { display: grid; gap: 8px; margin-top: 12px; }
+.ag-browser-cookie-sites { display: grid; gap: 4px; max-height: 220px; overflow: auto; }

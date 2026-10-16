@@ -212,6 +212,23 @@ test('unknown retained human sessions block agent reads across cookie subdomains
   await restarted.assertBrowserAccess({ actor: agent, url: 'https://docs.example.test/private', tab: {} });
 });
 
+test('a finished sign-in handoff lets the agent use only that site session and cannot be replayed', async (t) => {
+  const { broker } = await fixture(t);
+  const origin = 'https://login.example.test';
+  const request = await broker.requestAccount({ actor: agent, tabId: 'tab-a', origin, label: 'Login', reason: 'Sign in', kind: 'sign-in' });
+  assert.equal(request.kind, 'browser-sign-in');
+  // 사용자가 넘겨받은 탭에서 로그인하며 남긴 세션은 완료 전까지 에이전트에게 막혀 있다.
+  await broker.registerSessionOrigins({ profileId: 'default', origins: [origin], domains: ['login.example.test'], source: 'human' });
+  await assert.rejects(broker.assertBrowserAccess({ actor: agent, url: `${origin}/inbox`, tab: {} }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  await assert.rejects(broker.approveAccount({ actor: owner, requestId: request.requestId, approval: { approved: true, requestId: request.requestId, use: true } }), { code: 'BROWSER_ACCOUNT_REQUEST_INVALID' });
+  await assert.rejects(broker.completeHandoff({ actor: { ...owner, threadId: 'other' }, requestId: request.requestId }), { code: 'BROWSER_ACCOUNT_CONSENT_REQUIRED' });
+  await broker.completeHandoff({ actor: owner, requestId: request.requestId });
+  await broker.assertBrowserAccess({ actor: agent, url: `${origin}/inbox`, tab: {} });
+  await assert.rejects(broker.completeHandoff({ actor: owner, requestId: request.requestId }), { code: 'BROWSER_ACCOUNT_REQUEST_EXPIRED' });
+  await broker.registerSessionOrigins({ profileId: 'default', origins: ['https://other.example.test'], source: 'human' });
+  await assert.rejects(broker.assertBrowserAccess({ actor: agent, url: 'https://other.example.test/', tab: {} }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+});
+
 test('account denial consumes the exact pending request without saving a credential', async (t) => {
   const { broker } = await fixture(t);
   const request = await broker.requestAccount({ actor: agent, ...accountInput });

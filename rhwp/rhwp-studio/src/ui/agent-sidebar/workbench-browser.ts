@@ -822,6 +822,14 @@ export function createWorkbenchBrowser(options: {
       controller.select(tabId); return true;
     },
     selectTab(id: string) { wakeCurrentTab(); controller.select(id.slice('browser:'.length)); },
+    /** 에이전트가 넘긴 로그인·코드 입력 — 그 탭을 보여 주고 사용자가 제어권을 잡는다. */
+    async takeControl(tabId: string): Promise<void> {
+      await controller.refresh();
+      const tab = controller.state.tabs.find(row => row.tabId === tabId);
+      if (disposed || !tab) throw new Error('Browser tab unavailable');
+      controller.select(tabId); agentPreviewTab = null;
+      await setControl('human', tab);
+    },
     closeTab(id: string) { handle(controller.close(id.slice('browser:'.length))); },
     mount(host: HTMLElement) { presentation.mount(host); watchNativeVisibility(); layout(); },
     setVisible(next: boolean) {

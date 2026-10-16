@@ -3571,6 +3571,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     respond: (requestId, decision) => bridge.respondChatPermission(requestId, decision),
     requestBrowser: (action, args) => bridge.requestBrowser(action, args),
     submitBrowserAccount: (args) => bridge.submitBrowserAccount(args),
+    takeBrowserControl: async (tabId) => {
+      const view = floatingBrowserTab === tabId && floatingBrowser ? floatingBrowser : ensureWorkbenchBrowser();
+      await view.takeControl(tabId);
+      if (view === floatingBrowser) { view.float(); return; }
+      const dock = () => workbench?.select('browser'); if (!fullscreen) setFullscreen(true, { then: dock }); else dock();
+    },
   });
   questionTimelineAnchor.hidden = true;
   questionTimelineAnchor.setAttribute('aria-hidden', 'true');

@@ -2,13 +2,16 @@
 export interface LocalPasswordAccount {
   id: string; origin: string; origins: string[]; username: string; label: string;
   source: 'chrome'; sourceProfile: string; profileId: 'native'; hasPassword: true;
-  agentReuseApproved: true; sessionStatus: 'saved'; updatedAt: string;
+  agentReuseApproved: boolean; sessionStatus: 'saved'; updatedAt: string;
 }
 export interface LocalPasswordsApi {
   listProfiles(): Promise<{ supported: boolean; profiles: { id: string; name: string }[] }>;
   importProfile(args: { profileId: string }): Promise<{ imported: number; skipped: number; unsupported: number }>;
   list(): Promise<{ accounts: LocalPasswordAccount[]; secureStorageAvailable: boolean }>;
   remove(args: { id: string }): Promise<{ removed: true }>;
+  approve(args: { id: string; approved: boolean }): Promise<LocalPasswordAccount>;
+  cookieSites(args: { profileId: string }): Promise<{ supported: boolean; sites: { domain: string; count: number }[] }>;
+  importCookies(args: { profileId: string; domains: string[] }): Promise<{ imported: number; skipped: number; unsupported: number; domains: string[] }>;
   fill(args: { tabId: string; accountId: string }): Promise<{ completed: true; accountId: string }>;
 }
 export function localPasswordsApi(): LocalPasswordsApi | undefined {

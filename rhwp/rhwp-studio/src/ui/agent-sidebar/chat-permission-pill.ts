@@ -12,18 +12,26 @@ interface PermissionPill {
   form?: ReturnType<typeof createBrowserAccountForm>;
 }
 
+function siteHost(origin: string | undefined): string {
+  try { return origin ? new URL(origin).hostname : ''; } catch { return origin ?? ''; }
+}
+
 export function createChatPermissionController(options: {
   context(): { threadId: string; documentId: string | null };
   respond(requestId: string, decision: ChatPermissionDecision): string;
   requestBrowser?: BrowserSettingsRequest;
   submitBrowserAccount?: (args: Record<string, unknown>) => Promise<unknown>;
+  /** 요청한 탭을 보여 주고 사용자가 제어권을 넘겨받는다. */
+  takeBrowserControl?: (tabId: string) => Promise<unknown>;
 }) {
   const pills = new Map<string, PermissionPill>();
   let connected = true;
 
   function render(pill: PermissionPill): void {
     const { request, root, outcome } = pill;
-    const accountRequest = request as ChatPermissionRequest & { kind?: string; origin?: string; accountId?: string; accountLabel?: string; origins?: string[] };
+    const accountRequest = request;
+    const handoff = request.kind === 'browser-sign-in' || request.kind === 'browser-code';
+    const host = siteHost(request.origin);
     pill.form?.dispose();
     pill.form = undefined;
     root.replaceChildren();
@@ -31,15 +39,37 @@ export function createChatPermissionController(options: {
     root.setAttribute('aria-label', `${labels[request.capability]} 권한 요청`);
     const label = document.createElement('span');
     label.className = 'ag-permission-label';
-    label.textContent = accountRequest.kind ? `${accountRequest.kind === 'browser-save-account' ? '계정 저장' : '계정 사용'} · ${accountRequest.accountLabel || accountRequest.origin || ''}` : labels[request.capability];
+    label.textContent = handoff ? `${request.kind === 'browser-code' ? '인증 코드 필요' : '로그인 필요'} · ${host}`
+      : accountRequest.kind === 'browser-use-account' ? `계정 사용 · ${[accountRequest.accountLabel, host].filter((value, index, all) => value && all.indexOf(value) === index).join(' · ')}`
+        : accountRequest.kind ? `계정 저장 · ${accountRequest.accountLabel || accountRequest.origin || ''}` : labels[request.capability];
     const status = document.createElement('span');
     status.className = 'ag-permission-status';
-    status.textContent = outcome?.status === 'granted' ? accountRequest.kind === 'browser-save-account' ? '계정 저장됨' : accountRequest.kind === 'browser-use-account' ? '계정 사용 허용됨' : '이 채팅에 허용됨'
-      : outcome?.status === 'denied' ? '거절됨'
+    status.textContent = outcome?.status === 'granted' ? handoff ? '완료' : accountRequest.kind === 'browser-save-account' ? '계정 저장됨' : accountRequest.kind === 'browser-use-account' ? '허용됨' : '이 채팅에 허용됨'
+      : outcome?.status === 'denied' ? handoff ? '닫힘' : '거절됨'
         : outcome?.status === 'expired' ? '취소됨'
-          : pill.responseId ? '확인 중…' : '이 채팅에서 허용';
+          : pill.responseId ? '확인 중…' : accountRequest.kind === 'browser-use-account' ? '에이전트 사용 허용' : '이 채팅에서 허용';
     if (outcome) {
       root.append(label, status);
+      return;
+    }
+    if (handoff) {
+      root.dataset.kind = 'handoff';
+      const live = () => connected && !pill.outcome && !pill.responseId && root.isConnected && chatPermissionMatchesContext(request, options.context());
+      const takeover = actionButton('직접 하기', `${host} 탭을 직접 조작`, !request.tabId || !options.takeBrowserControl, () => {
+        if (!live() || !request.tabId) return;
+        pill.error = '';
+        void options.takeBrowserControl!(request.tabId).catch(() => { pill.error = '탭을 열지 못했습니다.'; render(pill); });
+      });
+      const done = actionButton('완료', `${host} ${request.kind === 'browser-code' ? '인증 코드 입력' : '로그인'} 완료`, !options.requestBrowser, () => {
+        if (!live() || !options.requestBrowser) return;
+        pill.responseId = 'browser-handoff-complete'; pill.error = ''; render(pill);
+        void options.requestBrowser('accounts.complete', { requestId: request.requestId }).then(() => {
+          pill.outcome = { status: 'granted' }; pill.responseId = null; render(pill);
+        }).catch(() => { pill.responseId = null; pill.error = '완료하지 못했습니다. 다시 시도하세요.'; render(pill); });
+      });
+      done.classList.add('ag-permission-done');
+      root.append(label, takeover, done, denyButton(pill, `${label.textContent} 닫기`));
+      appendError(pill);
       return;
     }
     if (accountRequest.kind === 'browser-save-account' && accountRequest.origin && options.submitBrowserAccount && options.requestBrowser) {
@@ -74,23 +104,41 @@ export function createChatPermissionController(options: {
         }).catch(() => { pill.responseId = null; pill.error = '계정 사용을 승인하지 못했습니다. 다시 시도하세요.'; render(pill); });
       } else respond(pill, 'grant');
     });
+    root.append(grant, denyButton(pill, `${labels[request.capability]} 권한 요청 거절`));
+    if (accountRequest.kind && (!options.requestBrowser || (accountRequest.kind === 'browser-save-account' && !options.submitBrowserAccount))) pill.error = '보안 계정 연결을 사용할 수 없습니다. 설정에서 다시 시도하세요.';
+    appendError(pill);
+  }
+
+  function actionButton(text: string, aria: string, disabled: boolean, click: () => void): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'ag-permission-action';
+    button.textContent = text;
+    button.setAttribute('aria-label', aria);
+    button.disabled = disabled || !connected;
+    button.addEventListener('click', click);
+    return button;
+  }
+
+  function denyButton(pill: PermissionPill, aria: string): HTMLButtonElement {
     const deny = document.createElement('button');
     deny.type = 'button';
     deny.className = 'ag-permission-deny';
     deny.textContent = '×';
-    deny.title = '권한 요청 거절';
-    deny.setAttribute('aria-label', `${labels[request.capability]} 권한 요청 거절`);
+    deny.title = '요청 닫기';
+    deny.setAttribute('aria-label', aria);
     deny.disabled = !connected || pill.responseId !== null;
     deny.addEventListener('click', () => respond(pill, 'deny'));
-    root.append(grant, deny);
-    if (accountRequest.kind && (!options.requestBrowser || (accountRequest.kind === 'browser-save-account' && !options.submitBrowserAccount))) pill.error = '보안 계정 연결을 사용할 수 없습니다. 설정에서 다시 시도하세요.';
-    if (pill.error) {
-      const error = document.createElement('span');
-      error.className = 'ag-permission-error';
-      error.setAttribute('role', 'alert');
-      error.textContent = pill.error;
-      root.append(error);
-    }
+    return deny;
+  }
+
+  function appendError(pill: PermissionPill): void {
+    if (!pill.error) return;
+    const error = document.createElement('span');
+    error.className = 'ag-permission-error';
+    error.setAttribute('role', 'alert');
+    error.textContent = pill.error;
+    pill.root.append(error);
   }
 
   function respond(pill: PermissionPill, decision: ChatPermissionDecision): void {

@@ -67,6 +67,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | --- | --- |
 | `?scenario=plan` | Next submitted message produces an approval plan |
 | `?scenario=question` | A question with selectable and free-text answers |
+| `?scenario=sign-in` (`&handoff=code`) | The agent hands a sign-in (or verification code) to the user: 직접 하기 takes control of the browser tab, 완료 returns it and resumes the chat |
 | `?scenario=review` | Streaming reply followed by accept/reject changes |
 | `?scenario=fleet` | Tool activity and a subagent task |
 | `?scenario=fleet&background=1` | A subagent that keeps running after its turn: its card stays in the dock, outside the turn fold, and lands below the fold when it finishes |

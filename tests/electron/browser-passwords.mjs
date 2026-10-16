@@ -115,6 +115,7 @@ try {
     assert.equal(tab.passwordCapturePending, false);
   } finally { tab.view.webContents.capturePage = originalCapture; tab.protectedPasswords.clear(); }
   tab.passwordShield = false;
+  await tab.view.webContents.executeJavaScript(`document.querySelector('form').insertAdjacentHTML('beforeend', '<input id="otp" name="otp" autocomplete="one-time-code">')`);
   const observed = await service.request(actor, 'snapshot', { tabId });
   report.stage = 'observed';
   const username = observed.snapshot.elements.find((element) => element.autocomplete === 'username');
@@ -123,9 +124,16 @@ try {
   assert.ok(username && password && submit);
   const args = { tabId, snapshotId: observed.snapshot.snapshotId, navigationEpoch: observed.tab.navigationEpoch, controllerEpoch: observed.tab.controllerEpoch };
   await service.request(actor, 'type', { ...args, ref: username.ref, text: 'public-identifier' });
+  const code = observed.snapshot.elements.find((element) => element.autocomplete === 'one-time-code');
+  await assert.rejects(service.request(actor, 'type', { ...args, ref: code.ref, text: '123456' }), { code: 'BROWSER_USER_CODE_REQUIRED' });
+  assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("otp").value'), '');
+  // 가져온 계정은 사용자가 허용하기 전까지 에이전트가 채울 수 없다.
+  await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref }), { code: 'BROWSER_ACCOUNT_NOT_APPROVED' });
+  await vault.setAgentReuse(account.id, true);
   assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("identity").value'), 'public-identifier');
   await assert.rejects(service.request({ ...actor, threadId: 'chat-two' }, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref }), /belongs|assigned|own|scope/i);
   const other = await vault.importCredential({ origin: 'https://other.invalid', username: 'other', password: 'other-fixture-secret' });
+  await vault.setAgentReuse(other.id, true);
   await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: other.id, passwordRef: password.ref }), /different website/);
   await tab.view.webContents.executeJavaScript(`document.querySelector('form').action='https://other.invalid/'`);
   await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, passwordRef: password.ref }), /same-origin/);
@@ -213,7 +221,9 @@ try {
   // School login forms often omit both autocomplete and name attributes.
   await tab.view.webContents.executeJavaScript(`for (const field of document.querySelectorAll('input')) { field.removeAttribute('autocomplete'); field.removeAttribute('name'); field.value=''; } document.querySelector('#secret').focus()`);
   const inventory = await service.request(actor, 'status', {});
-  assert.ok(inventory.accounts.some(account => account.id === manual.id && account.agentReuseApproved === true));
+  // 직접 저장한 로그인도 에이전트 사용은 따로 허용해야 한다.
+  assert.ok(inventory.accounts.some(account => account.id === manual.id && account.agentReuseApproved === false));
+  await vault.setAgentReuse(manual.id, true);
   assert.equal(JSON.stringify(inventory).includes(secret), false);
   const manualObservation = await service.request(actor, 'snapshot', { tabId });
   const loginId = manualObservation.snapshot.elements.find(element => element.inputType === 'text');
