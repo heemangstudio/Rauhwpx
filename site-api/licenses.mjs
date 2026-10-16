@@ -4,6 +4,7 @@ import { licenseEmail, licenseEmailKind, maskEmail } from './license-email.mjs';
 import { DEFAULT_LEASE_KID, LEASE_TTL_MS, signLease } from './license-lease.mjs';
 import { createMemoryStore } from './store.mjs';
 import { uniqueInstallDigest } from './unique-installs.mjs';
+import { createWebhookLog } from './webhook-log.mjs';
 
 export const DEVICE_LIMIT = 2;
 const WEBHOOK_EVENT_RETENTION_MS = 8 * 24 * 60 * 60 * 1000; // Groble retries for ~44h
@@ -119,6 +120,7 @@ export function createLicensesService({
   grandfatherPlatforms = ['darwin'],
   adminToken = '',
   downloadUrl = 'https://heemangstudios.com/',
+  webhookLog = createWebhookLog({ now }),
   log = (line) => process.stderr.write(`${line}\n`),
 } = {}) {
   let mutation = Promise.resolve();
@@ -622,6 +624,12 @@ export function createLicensesService({
         .sort((a, b) => String(b.lastEventAt ?? b.createdAt).localeCompare(String(a.lastEventAt ?? a.createdAt)))
         .slice(0, 200);
       return { ok: true, count: list.length, orders: list };
+    },
+    /** Rejected and held Groble webhooks, newest first. */
+    async webhooks(token, { kind, limit } = {}) {
+      requireAdmin(token);
+      if (kind && kind !== 'rejected' && kind !== 'held') throw licenseError('kind_invalid', 400);
+      return webhookLog.list({ kind, limit });
     },
     async release(token, body) {
       requireAdmin(token);

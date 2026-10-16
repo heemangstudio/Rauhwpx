@@ -38,8 +38,11 @@ function frameRow(inset, edge) {
   return `<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>${cell(inset, SHEET, 'sheet')}${mid}${cell(inset, SHEET, 'sheet')}</tr></table></td></tr>`;
 }
 
-/** Pixel-stepped frame with a starfield fill, holding one value (a license key or the email's main fact). */
-export function emailCard({ value, iconUrl = EMAIL_KEY_ICON_URL, bgUrl = EMAIL_CARD_BG_URL }) {
+/**
+ * Pixel-stepped frame with a starfield fill, holding one value (a license key or the email's main fact)
+ * and an optional caption line. Pass `iconUrl: ''` to drop the key icon.
+ */
+export function emailCard({ value, caption = '', iconUrl = EMAIL_KEY_ICON_URL, bgUrl = EMAIL_CARD_BG_URL }) {
   const bg = escapeHtml(bgUrl);
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
           ${frameRow(2 * U, false)}
@@ -47,8 +50,9 @@ export function emailCard({ value, iconUrl = EMAIL_KEY_ICON_URL, bgUrl = EMAIL_C
           <tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
             <td width="${U}" bgcolor="${CARD_EDGE}" style="width:${U}px;background:${CARD_EDGE};font-size:0;line-height:0;">&nbsp;</td>
             <td align="center" bgcolor="${CARD_FILL}" background="${bg}" style="background:${CARD_FILL} url('${bg}') repeat;padding:30px 20px 32px 20px;">
-              <img src="${escapeHtml(iconUrl)}" width="72" height="32" alt="" style="display:block;margin:0 auto 18px auto;width:72px;height:32px;border:0;image-rendering:pixelated;">
-              <p class="key" style="margin:0;font:700 19px/1.5 ${MONO};letter-spacing:2px;color:#e6f5ff;text-shadow:0 0 14px rgba(98,179,226,.55);-webkit-user-select:all;user-select:all;">${escapeHtml(value)}</p>
+              ${iconUrl ? `<img src="${escapeHtml(iconUrl)}" width="72" height="32" alt="" style="display:block;margin:0 auto 18px auto;width:72px;height:32px;border:0;image-rendering:pixelated;">` : ''}
+              <p class="key" style="margin:0;font:700 19px/1.5 ${MONO};letter-spacing:2px;color:#e6f5ff;text-shadow:0 0 14px rgba(98,179,226,.55);-webkit-user-select:all;user-select:all;">${escapeHtml(value)}</p>${caption ? `
+              <p style="margin:10px 0 0 0;font:13px/1.5 ${MONO};color:#9fc4dc;">${escapeHtml(caption)}</p>` : ''}
             </td>
             <td width="${U}" bgcolor="${CARD_EDGE}" style="width:${U}px;background:${CARD_EDGE};font-size:0;line-height:0;">&nbsp;</td>
           </tr></table></td></tr>

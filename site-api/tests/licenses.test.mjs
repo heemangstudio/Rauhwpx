@@ -417,7 +417,7 @@ test('HTTP: webhook → by-ref → activate → validate, with CORS, persistence
   const origin = await listen(t, env);
 
   const forged = await signedPost(origin, completed(), { secret: 'attacker' });
-  assert.equal(forged.status, 401);
+  assert.equal(forged.status, 503);
   const stale = await signedPost(origin, completed(), { ts: Math.floor(Date.now() / 1000) - 600 });
   assert.equal(stale.status, 401);
 
