@@ -66,10 +66,12 @@ async function exerciseResearchProjectChat(t, workflow) {
         clearInterval(timer);
         fs.unlinkSync(${JSON.stringify(release)});
         console.log(JSON.stringify({ type: 'agent_settled' }));
+        setInterval(() => {}, 1000);
       }, 20);
     } else {
       emit(JSON.stringify({ prompt }));
       console.log(JSON.stringify({ type: 'agent_settled' }));
+      setInterval(() => {}, 1000);
     }
   `);
   const child = spawn(process.execPath, ['server.mjs'], {

@@ -35,6 +35,8 @@ const { maxDepth: MAX_DEPTH, maxFiles: MAX_FILES, maxDirs: MAX_DIRS } = FONT_SCA
 const PARSE_CONCURRENCY = 8;
 const HANCOM_FONT_DIR = /^(fonts|ttf|hft)$/i;
 const HANCOM_APP = /hancom|한컴|hwp/i;
+const APPLICATION_FONT_DIR = /^(fonts?|dfonts|ttf|hft)$/i;
+const APPLICATION_SCAN_SKIP = /^(node_modules|\.git|cache|caches|installer|installers)$/i;
 
 // ---------------------------------------------------------------------------
 // 파일 원본
@@ -223,6 +225,38 @@ async function discoverHancomFontDirs(base, pathApi) {
   return found.sort();
 }
 
+export async function discoverApplicationFontDirs(bases, {
+  pathApi = path,
+  maxDepth = MAX_DEPTH,
+  maxDirs = MAX_DIRS,
+} = {}) {
+  const queue = bases.slice(0, maxDirs).map((dir) => ({ dir, depth: 0 }));
+  const seen = new Set();
+  const directories = new Set();
+  let capped = bases.length > maxDirs;
+  for (let index = 0; index < queue.length; index += 1) {
+    const { dir, depth } = queue[index];
+    if (depth >= maxDepth) continue;
+    let real;
+    try { real = await fs.realpath(dir); } catch { continue; }
+    if (seen.has(real)) continue;
+    if (seen.size >= maxDirs) { capped = true; break; }
+    seen.add(real);
+    for (const entry of await listDir(dir)) {
+      // Do not follow app junctions into unrelated folders or dependency trees.
+      if (!entry.isDirectory() || entry.isSymbolicLink() || APPLICATION_SCAN_SKIP.test(entry.name)) continue;
+      const child = pathApi.join(dir, entry.name);
+      if (APPLICATION_FONT_DIR.test(entry.name)) {
+        if (directories.size < maxDirs) directories.add(child);
+        else capped = true;
+      }
+      else if (queue.length < maxDirs) queue.push({ dir: child, depth: depth + 1 });
+      else capped = true;
+    }
+  }
+  return { directories: [...directories].sort(), capped };
+}
+
 /**
  * 플랫폼별 폰트 루트를 나열한다. 한컴 설치본은 installs 로 따로 돌려주고
  * 실제 폰트 폴더 탐색은 호출부가 한다.
@@ -235,6 +269,7 @@ export async function defaultFontRoots({
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const roots = [];
   const hancomInstalls = [];
+  const discoveryErrors = [];
   const add = (target, kind) => {
     if (target) roots.push({ path: pathApi.resolve(target), kind });
   };
@@ -271,6 +306,14 @@ export async function defaultFontRoots({
     for (const programFiles of [env.ProgramFiles, env['ProgramFiles(x86)'], env.ProgramW6432]) {
       if (programFiles) hancomInstalls.push(pathApi.join(programFiles, 'Hnc'));
     }
+    const applicationBases = dedupeRoots([
+      env.ProgramFiles, env['ProgramFiles(x86)'], env.ProgramW6432,
+      env.CommonProgramFiles, env['CommonProgramFiles(x86)'], env.CommonProgramW6432,
+      env.LOCALAPPDATA && pathApi.join(env.LOCALAPPDATA, 'Programs'),
+    ].filter(Boolean).map((target) => ({ path: pathApi.resolve(target), kind: 'user' })), platform);
+    const discovered = await discoverApplicationFontDirs(applicationBases.map((root) => root.path), { pathApi });
+    for (const dir of discovered.directories) add(dir, 'user');
+    if (discovered.capped) discoveryErrors.push({ path: '*', message: `application font directory cap reached (${MAX_DIRS}); use RHWP_FONT_PATH for additional locations` });
   } else {
     add('/usr/share/fonts', 'system');
     add('/usr/local/share/fonts', 'system');
@@ -279,7 +322,7 @@ export async function defaultFontRoots({
     hancomInstalls.push('/opt/hnc');
   }
   for (const extra of splitEnvPaths(env.RHWP_FONT_PATH, platform)) add(extra, 'user');
-  return { roots: dedupeRoots(roots, platform), hancomInstalls: [...new Set(hancomInstalls)] };
+  return { roots: dedupeRoots(roots, platform), hancomInstalls: [...new Set(hancomInstalls)], discoveryErrors };
 }
 
 function dedupeRoots(roots, platform) {
@@ -507,7 +550,7 @@ export function createSystemFontService(options = {}) {
 
   async function scan() {
     const started = performance.now();
-    const { roots: baseRoots, hancomInstalls } = await resolveRoots();
+    const { roots: baseRoots, hancomInstalls, discoveryErrors = [] } = await resolveRoots();
     const roots = [];
     const installReports = [];
     for (const install of hancomInstalls) {
@@ -520,7 +563,7 @@ export function createSystemFontService(options = {}) {
     }
     roots.push(...baseRoots);
     const collected = await collectFiles(dedupeRoots(roots, platform), { platform, pathApi });
-    const errors = [...collected.errors];
+    const errors = [...discoveryErrors, ...collected.errors];
     const cache = (await loadPersisted())?.files ?? {};
     const nextCache = {};
     let reused = 0;

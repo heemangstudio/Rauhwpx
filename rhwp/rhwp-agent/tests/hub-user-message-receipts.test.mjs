@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import WebSocket from 'ws';
 
 import { registerHubSession } from '../../../desktop/agent-hub.mjs';
@@ -106,7 +107,7 @@ async function fixture(t, { synchronousProvider = false } = {}) {
     `);
     const preloadPath = path.join(workRoot, 'receipt-preload.mjs');
     writeFileSync(preloadPath, "import { register } from 'node:module'; register(new URL('./receipt-loader.mjs', import.meta.url));\n");
-    serverArgs.unshift('--import', preloadPath);
+    serverArgs.unshift('--import', pathToFileURL(preloadPath).href);
   }
   const child = spawn(process.execPath, serverArgs, {
     cwd: new URL('..', import.meta.url),

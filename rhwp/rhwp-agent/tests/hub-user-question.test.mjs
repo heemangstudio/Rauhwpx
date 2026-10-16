@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { ALIVE_PI_FIXTURE_SOURCE, writeFakeCliBin } from './fake-cli-bin.mjs';
 import WebSocket from 'ws';
 
@@ -70,6 +71,7 @@ async function startHub(t, { fakePi = false, controlledCompletion = false, backe
             clearInterval(timer);
             require('node:fs').unlinkSync(${JSON.stringify(completePi)});
             console.log(JSON.stringify({ type: 'agent_settled' }));
+            setInterval(() => {}, 1000);
           }, 20);
         `;
       } : fakePi,
@@ -86,6 +88,7 @@ async function startHub(t, { fakePi = false, controlledCompletion = false, backe
       clearInterval(timer);
       require('node:fs').unlinkSync(${JSON.stringify(completePi)});
       console.log(JSON.stringify({ type: 'agent_settled' }));
+      setInterval(() => {}, 1000);
     }, 20);
   ` : ALIVE_PI_FIXTURE_SOURCE);
   const testPath = process.env.PATH;
@@ -127,7 +130,7 @@ async function startHub(t, { fakePi = false, controlledCompletion = false, backe
     `);
     const preload = path.join(workRoot, 'permission-preload.mjs');
     writeFileSync(preload, "import { register } from 'node:module'; register(new URL('./permission-loader.mjs', import.meta.url));\n");
-    serverArgs.unshift('--import', preload);
+    serverArgs.unshift('--import', pathToFileURL(preload).href);
   }
   const child = spawn(process.execPath, serverArgs, {
     cwd: new URL('..', import.meta.url),

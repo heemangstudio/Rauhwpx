@@ -383,7 +383,8 @@ test('managed launch without env still injects ELECTRON_RUN_AS_NODE onto process
   assert.equal(launched.command, electron);
   assert.deepEqual(launched.argv, [scriptPath, '--version']);
   assert.equal(launched.env.ELECTRON_RUN_AS_NODE, '1');
-  assert.equal(launched.env.PATH, process.env.PATH);
+  const pathKey = Object.keys(launched.env).find((key) => key.toLowerCase() === 'path');
+  assert.equal(launched.env[pathKey], process.env.PATH);
 });
 
 test('managed launch prepends the Node-host PATH and unwraps a .cmd', async (t) => {

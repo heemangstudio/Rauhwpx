@@ -446,12 +446,12 @@ test('every mode adds the read-only search built-ins without replacing the defau
 
 test('grep and find are declared only when pi can run rg and fd', () => {
   const files = new Set([
-    path.join('/pi', 'agent', 'bin', 'rg'),
-    path.join('/usr', 'bin', 'fdfind'),
+    path.posix.join('/pi', 'agent', 'bin', 'rg'),
+    path.posix.join('/usr', 'bin', 'fdfind'),
   ]);
   const exists = (file) => files.has(file);
   assert.deepEqual(
-    availableReadOnlyBuiltins({ pathEnv: '/usr/bin', binDir: path.join('/pi', 'agent', 'bin'), exists, platform: 'darwin' }),
+    availableReadOnlyBuiltins({ pathEnv: '/usr/bin', binDir: path.posix.join('/pi', 'agent', 'bin'), exists, platform: 'darwin' }),
     ['grep', 'find', 'ls'],
   );
   assert.deepEqual(availableReadOnlyBuiltins({ pathEnv: '/usr/bin', exists, platform: 'darwin' }), ['find', 'ls']);
