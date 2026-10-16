@@ -1816,7 +1816,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_status',
-    description: 'List shared user tabs, your assigned tabs and saved account metadata. activeTabId is the current sidebar tab; reuse it for the current-page task. Tabs survive hidden chats and turn endings. Accounts include imported and previously saved logins. For an exact origin match with agentReuseApproved=true, use browser_fill_account. Passwords stay local.',
+    description: 'List shared user tabs, your assigned tabs and saved account metadata. activeTabId is the current sidebar tab; reuse it for the current-page task. For an exact origin match with agentReuseApproved=true, use browser_fill_account. Passwords stay local.',
     shape: {},
   },
   {
@@ -1841,7 +1841,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_click',
-    description: 'Click an element from the current semantic snapshot. Declare search, login or export intent for those research flows. Website-changing submissions require a separate site operation approval.',
+    description: 'Click a ref from the current snapshot. Declare search, login or export intent for those research flows. Website-changing submissions require a separate site operation approval.',
     shape: browserRefShape(),
   },
   {
@@ -1861,12 +1861,12 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_scroll',
-    description: 'Scroll an assigned tab and then request a fresh snapshot before choosing an element.',
+    description: 'Scroll an assigned tab, then take a fresh snapshot before choosing a ref.',
     shape: { tabId: browserTab(), deltaX: z.number().min(-10_000).max(10_000).default(0), deltaY: z.number().min(-10_000).max(10_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
   },
   {
     name: 'browser_wait',
-    description: 'Wait up to timeoutMs and return a fresh snapshot. ready checks document readiness; idle requires 500 ms without loading/navigation, ignoring streaming connections. visible matches a visible control and optional text; text matches nonempty sanitized visible text. Preserves ownership/control.',
+    description: 'Wait up to timeoutMs and return a fresh snapshot. ready checks document readiness; idle requires 500 ms without loading/navigation, ignoring streaming connections. visible matches a visible control and optional text; text matches nonempty sanitized visible text.',
     shape: { tabId: browserTab(), condition: z.enum(['ready', 'idle', 'visible', 'text']).default('ready'), text: z.string().trim().min(1).max(2_000).optional(), find: z.string().trim().min(1).max(200).optional().describe('Narrow the returned outline'), timeoutMs: z.number().int().min(1).max(30_000).default(10_000) },
   },
   {
