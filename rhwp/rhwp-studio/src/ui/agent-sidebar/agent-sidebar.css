@@ -6721,22 +6721,19 @@ body.ag-fullscreen-open .ag-collapse-tab,
   display: grid;
   gap: 0;
   overflow: clip;
-  transition: grid-template-columns var(--ag-dur-base) var(--ag-motion-out);
 }
 
 /* 접은 칸은 폭만 0 이 아니라 visibility 까지 감춘다 — 잘려 보이지 않을
    뿐인 버튼이 Tab 차례에 남아 승인·거절이 눌리는 일을 막는다.
-   내용은 폭이 다 닫히기 전에 먼저 옅어져 줄바꿈 뭉개짐이 보이지 않는다. */
+   칸 폭·여백은 보간하지 않는다. 폭을 프레임마다 바꾸면 대화 전체가 매 프레임
+   다시 줄바꿈되어 느린 컴퓨터에서 끊긴다. 열 때의 움직임은 index.ts 가
+   transform·opacity 로만 건다. */
 .ag-fullscreen.ag-rail-collapsed .ag-threads-page {
   padding-inline: 0;
   border-right: none;
   overflow: hidden;
   visibility: hidden;
   opacity: 0;
-  transition:
-    padding-inline var(--ag-dur-base) var(--ag-motion-out),
-    opacity var(--ag-dur-fast) var(--ag-ease-out),
-    visibility 0s linear 130ms;
 }
 
 /* ── 칸 경계 드래그 ───────────────────────────────────
@@ -6835,12 +6832,6 @@ body.ag-col-resizing {
   grid-column: 1;
   grid-row: 1;
   overflow-y: auto;
-  /* padding-inline 을 명시해야 접힘 여백이 실제로 보간된다 —
-     transition-property: padding 은 논리 longhand 를 덮지 못한다. */
-  transition:
-    padding-inline var(--ag-dur-base) var(--ag-motion-out),
-    opacity var(--ag-dur-base) var(--ag-motion-out),
-    visibility 0s linear 0s;
 }
 
 .ag-fullscreen .ag-chat-page {
@@ -7177,7 +7168,6 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   background: var(--ag-bg);
   color: var(--ag-text);
   user-select: none;
-  transition: grid-template-columns var(--ag-dur-base) var(--ag-motion-out);
 }
 
 /* 레일이 접히면 첫 칸은 토글까지만 남아 제목이 토글 바로 뒤로 온다. */
@@ -7203,8 +7193,7 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   grid-row: 1;
 }
 
-/* 레일 면은 막대까지 한 장으로 이어지고, 대화 면과는 헤어라인 하나로 나뉜다.
-   폭은 격자 칸과 같은 시간축으로 접힌다. */
+/* 레일 면은 막대까지 한 장으로 이어지고, 대화 면과는 헤어라인 하나로 나뉜다. */
 .ag-fullscreen .ag-workspace-bar::before {
   content: '';
   position: absolute;
@@ -7213,7 +7202,6 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   width: var(--ag-rail-w, 264px);
   background: var(--ag-rail-bg);
   box-shadow: inset -1px 0 0 var(--ag-border);
-  transition: width var(--ag-dur-base) var(--ag-motion-out);
   pointer-events: none;
 }
 
@@ -7332,8 +7320,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 /* 레일이 접히면 마크와 짧은 이름 Hama 만 토글 옆에 남는다. */
 .ag-workspace-brand-short,
 .ag-workspace-brand.ag-short .ag-workspace-brand-name:not(.ag-workspace-brand-short),
-.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-name:not(.ag-workspace-brand-short),
-.ag-fullscreen.ag-rail-brand-transition .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
   display: none;
 }
 
@@ -7343,8 +7330,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 }
 
 .ag-workspace-brand.ag-short .ag-workspace-brand-short,
-.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-short,
-.ag-fullscreen.ag-rail-brand-transition .ag-workspace-brand-short {
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-short {
   display: inline;
 }
 
@@ -7728,7 +7714,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   box-sizing: border-box;
   padding-inline-end: 0;
   background: var(--ag-bg);
-  transition: padding-inline-end var(--ag-dur-slow) var(--ag-motion-out);
 }
 
 /* 스크롤은 대화면 전체 폭이 맡고(휠·스크롤바가 창 가장자리에서 동작),

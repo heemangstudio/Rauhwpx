@@ -2350,28 +2350,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
      이 bar는 viewport 전체를 가로지르며 pane 토글, 문서 맥락,
      대화 제목, 실행 맥락과 종료 동작을 한 축에 고정한다. */
   const workspaceBar = el('header', 'ag-workspace-bar');
-  workspaceBar.addEventListener('transitionend', (event) => {
-    if (event.target === workspaceBar && event.propertyName === 'grid-template-columns') {
-      clearRailBrandTransition();
-    }
-  });
-  workspaceBar.addEventListener('transitioncancel', (event) => {
-    if (event.target !== workspaceBar || event.propertyName !== 'grid-template-columns') return;
-    window.requestAnimationFrame(() => {
-      const railStillMoving = workspaceBar.getAnimations().some((animation) =>
-        animation instanceof CSSTransition && animation.transitionProperty === 'grid-template-columns');
-      if (!railStillMoving) clearRailBrandTransition();
-    });
-  });
-  const railReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-  let railReducedMotionListener: ((event: MediaQueryListEvent) => void) | null = null;
-  function clearRailBrandTransition(): void {
-    root.classList.remove('ag-rail-brand-transition');
-    if (railReducedMotionListener) {
-      railReducedMotion.removeEventListener('change', railReducedMotionListener);
-      railReducedMotionListener = null;
-    }
-  }
   const workspaceDrawerScrim = el('button', 'ag-workspace-drawer-scrim');
   workspaceDrawerScrim.type = 'button';
   workspaceDrawerScrim.tabIndex = -1;
@@ -4648,19 +4626,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function applyThreadsRailState(): void {
     const compact = isCompactWorkspace();
     const expanded = fullscreen && (compact ? compactThreadsRailOpen : !threadsRailCollapsed);
-    if (fullscreen && !compact && previousThreadsRailExpanded !== null && previousThreadsRailExpanded !== expanded
-      && !railReducedMotion.matches) {
-      root.classList.add('ag-rail-brand-transition');
-      if (!railReducedMotionListener) {
-        railReducedMotionListener = (event) => {
-          if (event.matches) clearRailBrandTransition();
-        };
-        railReducedMotion.addEventListener('change', railReducedMotionListener);
-      }
-    } else if (!fullscreen || compact) {
-      clearRailBrandTransition();
-    }
+    // 칸 폭은 한 번에 바꾸고(대화는 한 번만 다시 줄바꿈된다), 움직임을 켰으면 레일만
+    // transform·opacity 로 들여온다. 합성기에서만 도는 움직임이라 느린 컴퓨터에서도 끊기지 않는다.
+    const opening = fullscreen && !compact && expanded && previousThreadsRailExpanded === false;
     previousThreadsRailExpanded = expanded;
+    if (opening && sidebarMotionEnabled()) {
+      threadsPage.animate(
+        [{ opacity: 0, transform: 'translateX(-12px)' }, { opacity: 1, transform: 'none' }],
+        { duration: 160, easing: 'cubic-bezier(0.2, 0, 0, 1)' },
+      );
+    }
     root.classList.toggle('ag-compact-rail-open', compact && compactThreadsRailOpen);
     root.classList.toggle('ag-compact-rail-hover-open', compact && compactRailHoverOpen);
     root.classList.toggle('ag-rail-collapsed', fullscreen && !expanded);

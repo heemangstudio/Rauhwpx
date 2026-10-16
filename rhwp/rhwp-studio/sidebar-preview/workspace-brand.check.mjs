@@ -44,27 +44,4 @@ export async function checkWorkspaceBrand(page, origin, screenshot) {
     await page.waitForFunction((expected) => document.querySelector('.ag-root').classList.contains('ag-rail-collapsed') === expected, {}, collapsed);
     await captureTransition(label);
   }
-
-  await page.evaluate(async () => {
-    const button = document.querySelector('.ag-workspace-threads-btn');
-    button.click();
-    await new Promise((resolve) => setTimeout(resolve, 35));
-    button.click();
-  });
-  await new Promise((resolve) => setTimeout(resolve, 350));
-  assert.equal(await page.$eval('.ag-root', (root) => root.classList.contains('ag-rail-brand-transition')), false,
-    'rapidly reversed rail movement clears its temporary brand state');
-
-  await page.evaluate(async () => {
-    document.querySelector('.ag-workspace-threads-btn').click();
-    await new Promise(requestAnimationFrame);
-    document.querySelector('.ag-workspace-bar').style.transition = 'none';
-  });
-  await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-rail-brand-transition'));
-  await page.$eval('.ag-workspace-bar', (bar) => bar.style.removeProperty('transition'));
-
-  await page.evaluate(() => document.querySelector('.ag-workspace-threads-btn').click());
-  await page.waitForFunction(() => document.querySelector('.ag-root').classList.contains('ag-rail-brand-transition'));
-  await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
-  await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-rail-brand-transition'));
 }
