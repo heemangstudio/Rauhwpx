@@ -1115,6 +1115,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let settingsPanelOpen = false;
   // 문서 홈의 톱니로 연 설정은 닫을 때 문서 홈으로 돌아간다.
   let settingsReturnsHome = false;
+  /** 홈에서 설정을 열며 집중 화면으로 들어왔으면, 홈으로 돌아갈 때 그 화면을 접는다. */
+  let settingsExitsFullscreenOnHome = false;
   let versionsPanelOpen = false;
   let deferredVersionsOpenTimer: number | null = null;
   /** 에이전트 집중 모드 — 스레드 레일과 대화 무대로 문서를 덮는다. */
@@ -4725,7 +4727,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function setCompactThreadsRailOpen(open: boolean, opts?: { focus?: boolean }): void {
     clearCompactRailHoverOpen();
     clearCompactRailHoverClose();
-    compactThreadsRailOpen = isCompactWorkspace() && open;
+    // 설정 화면은 채팅 목록을 걷어낸 전용 면이므로 호버·단축키 어느 경로로도 레일을 열지 않는다.
+    compactThreadsRailOpen = isCompactWorkspace() && open && !settingsPanelOpen;
     if (!compactThreadsRailOpen) compactRailHoverOpen = false;
     if (compactThreadsRailOpen) {
       detailColumn = null;
@@ -4760,7 +4763,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     clearCompactRailHoverOpen();
   };
   const onCompactRailEdgeEnter = (event: PointerEvent) => {
-    if (!isCompactWorkspace()) return;
+    if (!isCompactWorkspace() || settingsPanelOpen) return;
     if (!(event.relatedTarget instanceof Node) || !root.contains(event.relatedTarget)) return;
     if (compactRailLastPointerX === null || event.clientX >= compactRailLastPointerX) return;
     clearCompactRailHoverOpen();
@@ -5348,6 +5351,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function closeSettingsPage(): void {
     settingsPanelOpen = false;
     settingsReturnsHome = false;
+    settingsExitsFullscreenOnHome = false;
     root.classList.remove('ag-settings-open');
     workspaceSettingsBtn.setAttribute('aria-expanded', 'false');
     workspaceSettingsBtn.classList.remove('ag-active');
@@ -5367,12 +5371,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     if (!await settingsPanel.requestClose()) return false;
     const returnHome = settingsReturnsHome;
-    closeSettingsPage();
-    chatPage.setAttribute('aria-hidden', 'false');
-    root.classList.remove('ag-settings-open');
-    returnFocus?.focus();
-    afterClose?.();
-    if (returnHome) openDocumentHome?.();
+    const exitFullscreen = returnHome && settingsExitsFullscreenOnHome && fullscreen;
+    const finish = (): void => {
+      closeSettingsPage();
+      chatPage.setAttribute('aria-hidden', 'false');
+      root.classList.remove('ag-settings-open');
+      returnFocus?.focus();
+      afterClose?.();
+      if (returnHome) openDocumentHome?.();
+    };
+    // 홈의 돌아가기 단추는 집중 화면이 남아 있으면 '새 채팅'을 가리키므로 화면을 접은 뒤에 홈을 연다.
+    // 교차 페이드는 다음 프레임에 이전 화면을 찍으므로, 설정을 닫는 일도 같은 갱신 안에서 해
+    // 설정과 홈 사이에 대화 화면이 한 프레임 끼지 않게 한다.
+    if (exitFullscreen) setFullscreen(false, { then: finish });
+    else finish();
     return true;
   }
 
@@ -5435,6 +5447,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (open && referenceLibrary.isOpen()) referenceLibrary.setOpen(false);
     settingsPanelOpen = open;
     if (open) {
+      if (compactThreadsRailOpen) setCompactThreadsRailOpen(false);
       setConfigPanelOpen(false);
       threadsPanelOpen = false;
       skillsPanelOpen = false;
@@ -12075,12 +12088,24 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           openConfiguredVersionControl();
         }),
         eventBus.on('settings:open', (payload) => {
-          const request = payload as { destination?: unknown; fullscreen?: boolean; from?: string } | undefined;
+          const request = payload as {
+            destination?: unknown; fullscreen?: boolean; from?: string; onOpened?: () => void;
+          } | undefined;
           const destination = normalizeSettingsDestination(request?.destination);
           setCollapsed(false);
+          const wasFullscreen = fullscreen;
           const open = (): void => {
             setSettingsPanelOpen(true, destination);
-            if (request?.from === 'home') settingsReturnsHome = true;
+            if (request?.from === 'home') {
+              settingsReturnsHome = true;
+              settingsExitsFullscreenOnHome = !wasFullscreen;
+            }
+            // 홈은 설정이 그려진 뒤에야 걷는다. 먼저 걷으면 교차 페이드가 그 뒤의 편집기를 찍는다.
+            if (request?.onOpened) {
+              request.onOpened();
+              // 홈이 덮여 있는 동안에는 초점이 닿지 않았으므로 걷은 뒤에 다시 맞춘다.
+              settingsPage.querySelector<HTMLElement>('.ag-settings-nav-button.ag-active')?.focus();
+            }
           };
           if (request?.fullscreen) setFullscreen(true, { then: open });
           else open();

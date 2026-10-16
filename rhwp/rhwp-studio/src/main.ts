@@ -2616,8 +2616,13 @@ function installDocumentHome(): void {
     onDrop: (event) => { void handleDocumentDrop(event, { fromHome: true }); },
     // 문서 없이도 집중 화면 설정으로 가고, 설정을 닫으면 홈으로 돌아온다.
     openSettings: () => {
-      documentHome?.hide();
-      eventBus.emit('settings:open', { fullscreen: true, from: 'home' });
+      // 사이드바가 있으면 설정이 그려진 뒤에 홈을 걷는다. 먼저 걷으면 편집기가 한 프레임 비친다.
+      if (!agentSidebarReady) documentHome?.hide();
+      eventBus.emit('settings:open', {
+        fullscreen: true,
+        from: 'home',
+        onOpened: () => documentHome?.hide(),
+      });
     },
     toast: (message) => showToast({ message, durationMs: 3200 }),
   });
