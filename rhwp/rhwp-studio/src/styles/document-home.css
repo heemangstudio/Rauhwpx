@@ -127,6 +127,7 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
   outline: none;
 }
 
+.document-home.is-instant { transition: none; }
 .document-home.is-drag-over .dh-scroll {
   outline: 2px dashed var(--dh-focus);
   outline-offset: -12px;
@@ -243,6 +244,13 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
 }
 
 .dh-back[hidden] { display: none; }
+
+.dh-topbar-trailing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
 .dh-back-label { overflow: hidden; text-overflow: ellipsis; }
 
 .dh-gallery .dh-icon { transition: transform 160ms ease; }

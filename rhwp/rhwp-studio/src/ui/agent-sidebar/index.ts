@@ -351,7 +351,7 @@ export interface AgentSidebarDeps {
   /** 문서 열기의 "새 문서"·"파일 열기…" — 편집기의 같은 명령을 부른다. */
   createDocument?: () => void;
   /** 문서 홈(창 전체의 시작 화면)을 연다. */
-  openDocumentHome?: () => void;
+  openDocumentHome?: (options?: { instant?: boolean }) => void;
   openDocumentFile?: () => void;
   /** 문서 열기가 보여 줄 최근 문서. */
   listRecentDocuments?: () => Promise<Array<{
@@ -1113,6 +1113,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let settingsPanelOpen = false;
   // 문서 홈의 톱니로 연 설정은 닫을 때 문서 홈으로 돌아간다.
   let settingsReturnsHome = false;
+  /**
+   * 라이선스가 잠긴 채 홈에서 설정을 누르면, 설정 화면을 잠긴 카드 뒤에 흐리게 깔아 둔다.
+   * 이 동안만 접기·집중 화면 잠금을 비켜 가고, 사이드바는 inert 로 두어 조작은 닿지 않는다.
+   */
+  let lockedSettingsBackdrop = false;
   let versionsPanelOpen = false;
   let deferredVersionsOpenTimer: number | null = null;
   /** 에이전트 집중 모드 — 스레드 레일과 대화 무대로 문서를 덮는다. */
@@ -1522,10 +1527,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function setCollapsed(collapsed: boolean, opts?: { recenter?: boolean }): void {
     // 라이선스가 읽기 전용이면 문서 보기 전용이다. 어느 길로 와도 펼치지 않는다.
-    if (isLicenseViewerMode()) collapsed = true;
+    if (isLicenseViewerMode() && !lockedSettingsBackdrop) collapsed = true;
     // 접힌 사이드바 안의 시트는 보이지 않으므로 취소로 닫고, 포커스·키가 닿지 않게 한다.
     if (collapsed && active) dismissOpenSheets();
-    root.inert = collapsed;
+    root.inert = collapsed || lockedSettingsBackdrop;
     root.classList.toggle('ag-collapsed', collapsed);
     syncWorkbenchVisibility();
     setPageClass('ag-sidebar-open', !collapsed);
@@ -5104,8 +5109,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** `then` 은 새 배치가 DOM 에 반영된 뒤에 부른다 — 교차 페이드는
       다음 프레임에 배치를 바꾸므로, 바뀐 배치에 기대는 후속 동작은 여기로 넘긴다. */
-  function setFullscreen(on: boolean, opts?: { then?: () => void }): void {
-    if (on && isLicenseViewerMode()) return;
+  function setFullscreen(on: boolean, opts?: { then?: () => void; instant?: boolean }): void {
+    if (on && isLicenseViewerMode() && !lockedSettingsBackdrop) return;
     if (fullscreen === on) {
       opts?.then?.();
       return;
@@ -5130,6 +5135,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }).startViewTransition;
     // 교차 페이드는 페이지 전체를 잡으므로 화면에 붙은 사이드바만 건다.
     const animate = active
+      && !opts?.instant
       && typeof startViewTransition === 'function'
       && sidebarMotionEnabled();
     if (!animate) {
@@ -5363,7 +5369,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     root.classList.remove('ag-settings-open');
     returnFocus?.focus();
     afterClose?.();
-    if (returnHome) openDocumentHome?.();
+    // 설정에서 홈으로 돌아갈 때는 페이드 없이 덮는다. 페이드 동안 뒤의 채팅 화면이 비친다.
+    if (returnHome) openDocumentHome?.({ instant: true });
     return true;
   }
 
@@ -6474,6 +6481,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
   function applyLicenseViewerMode(locked: boolean): void {
     syncLicenseLockedTab(locked);
+    // 잠긴 카드 뒤에 깔아 둔 설정은 활성화되면 그대로 쓸 수 있는 설정이 된다.
+    if (!locked && lockedSettingsBackdrop) {
+      lockedSettingsBackdrop = false;
+      root.inert = false;
+      return;
+    }
     if (!active) return;
     if (locked) {
       noteAgentOpenBeforeLock(fullscreen || !root.classList.contains('ag-collapsed'));
@@ -12066,15 +12079,40 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           setCollapsed(false);
           openConfiguredVersionControl();
         }),
+        eventBus.on('settings:close-locked-backdrop', () => {
+          if (!lockedSettingsBackdrop) return;
+          closeSettingsPage();
+          chatPage.setAttribute('aria-hidden', 'false');
+          setFullscreen(false, {
+            instant: true,
+            then: () => {
+              lockedSettingsBackdrop = false;
+              setCollapsed(true);
+            },
+          });
+        }),
         eventBus.on('settings:open', (payload) => {
-          const request = payload as { destination?: unknown; fullscreen?: boolean; from?: string } | undefined;
+          const request = payload as {
+            destination?: unknown;
+            fullscreen?: boolean;
+            from?: string;
+            onOpen?: () => void;
+          } | undefined;
           const destination = normalizeSettingsDestination(request?.destination);
+          // 잠긴 동안에는 홈에서 연 설정만 잠긴 카드의 배경으로 띄운다.
+          if (isLicenseViewerMode()) {
+            if (request?.from !== 'home') return;
+            lockedSettingsBackdrop = true;
+          }
           setCollapsed(false);
           const open = (): void => {
+            // 부른 쪽(홈)은 새 배치가 선 뒤에 내린다. 교차 페이드가 홈에서 설정으로 바로 넘어간다.
+            request?.onOpen?.();
             setSettingsPanelOpen(true, destination);
             if (request?.from === 'home') settingsReturnsHome = true;
           };
-          if (request?.fullscreen) setFullscreen(true, { then: open });
+          // 홈에서 여는 설정은 교차 페이드 없이 바로 바꾼다.
+          if (request?.fullscreen) setFullscreen(true, { then: open, instant: request.from === 'home' });
           else open();
         }),
       ]

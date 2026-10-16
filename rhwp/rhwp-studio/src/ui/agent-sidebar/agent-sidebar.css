@@ -7178,7 +7178,8 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 /* 레일이 접히면 마크와 짧은 이름 Hama 만 토글 옆에 남는다. */
 .ag-workspace-brand-short,
 .ag-workspace-brand.ag-short .ag-workspace-brand-name:not(.ag-workspace-brand-short),
-.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-name:not(.ag-workspace-brand-short),
+.ag-fullscreen.ag-settings-open .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
   display: none;
 }
 
@@ -7188,7 +7189,8 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 }
 
 .ag-workspace-brand.ag-short .ag-workspace-brand-short,
-.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-short {
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-short,
+.ag-fullscreen.ag-settings-open .ag-workspace-brand-short {
   display: inline;
 }
 
@@ -8022,6 +8024,11 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 
 .ag-fullscreen.ag-settings-open .ag-workspace-bar::before {
   display: none;
+}
+
+/* 설정 목록 머리에는 마크와 Hama 만 서고, 목록을 넓혀 경계와 띄운다. */
+.ag-fullscreen {
+  --ag-settings-nav-w: 196px;
 }
 
 .ag-fullscreen .ag-settings-nav {

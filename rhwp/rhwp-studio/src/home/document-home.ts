@@ -54,6 +54,8 @@ export interface DocumentHomeDeps {
   /** 문서를 여는 중이면 끝날 때까지 기다린다. 미리보기는 그 뒤에 그린다. */
   whenIdle(): Promise<void>;
   createBlank(): void;
+  /** 템플릿 추가 파일 창을 열기 전에 묻는다. false 면 열지 않는다(라이선스 잠김 등). */
+  canAddTemplate?(): boolean;
   createFromTemplate(template: DocumentTemplate): Promise<void>;
   openFile(): void;
   openDocument(row: RecentDoc): Promise<HomeOpenResult>;
@@ -67,6 +69,8 @@ export interface DocumentHomeDeps {
   restoreFocus(): void;
   /** 왼쪽 아래 톱니 단추. 홈을 닫고 설정을 연다. */
   openSettings?(): void;
+  /** 위 막대 오른쪽 끝 자리를 채운다(라이선스 구매 단추 등). */
+  mountTopbarTrailing?(slot: HTMLElement): void;
   onDrop?(event: DragEvent): void;
   toast(message: string): void;
 }
@@ -74,8 +78,11 @@ export interface DocumentHomeDeps {
 export interface DocumentHome {
   readonly element: HTMLElement;
   readonly visible: boolean;
-  /** focus: false 면 카드에 초점을 두지 않는다(앱 시작). 키보드는 홈 안에 머문다. */
-  show(options?: { focus?: boolean }): void;
+  /**
+   * focus: false 면 카드에 초점을 두지 않는다(앱 시작). 키보드는 홈 안에 머문다.
+   * instant 면 페이드 없이 바로 덮는다. 뒤 화면을 정리하는 동안 그 화면이 비치지 않는다.
+   */
+  show(options?: { focus?: boolean; instant?: boolean }): void;
   hide(): void;
   refresh(): void;
 }
@@ -157,7 +164,9 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   brand.append(brandMark, el('span', 'dh-brand-name', 'HamaEditor'));
   const back = button('dh-back', '');
   back.append(icon(ICONS.back, 14), el('span', 'dh-back-label'));
-  topbar.append(brand, back);
+  const trailing = el('div', 'dh-topbar-trailing');
+  topbar.append(brand, back, trailing);
+  deps.mountTopbarTrailing?.(trailing);
 
   const scroller = el('div', 'dh-scroll');
   // 앱을 켰을 때 키보드가 머무는 자리. 카드에 초점 고리를 띄우지 않는다.
@@ -435,7 +444,10 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       const add = el('span', 'dh-paper dh-paper-add');
       add.setAttribute('aria-hidden', 'true');
       add.append(icon(ICONS.upload, 18));
-      items.push(templateCard('템플릿 추가', 'HWP · HWPX', add, () => templateInput.click()));
+      items.push(templateCard('템플릿 추가', 'HWP · HWPX', add, () => {
+        if (deps.canAddTemplate?.() === false) return;
+        templateInput.click();
+      }));
     }
     templates.replaceChildren(...items);
     fitTemplates();
@@ -1076,7 +1088,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     }
   }
 
-  function show(options: { focus?: boolean } = {}): void {
+  function show(options: { focus?: boolean; instant?: boolean } = {}): void {
     paintReturn();
     const wasVisible = visible;
     if (!wasVisible) {
@@ -1091,8 +1103,13 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     visible = true;
     root.hidden = false;
     if (!wasVisible) {
-      root.classList.remove('is-shown');
-      requestAnimationFrame(() => root.classList.add('is-shown'));
+      root.classList.toggle('is-instant', options.instant === true);
+      if (options.instant) {
+        root.classList.add('is-shown');
+      } else {
+        root.classList.remove('is-shown');
+        requestAnimationFrame(() => root.classList.add('is-shown'));
+      }
       scroller.scrollTop = 0;
       // 새로 만들기 줄은 목록을 기다리지 않고 바로 그린다.
       renderTemplates();

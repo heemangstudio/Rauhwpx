@@ -1,4 +1,10 @@
-import { installLicenseGate } from './ui/license-gate';
+import {
+  installLicenseGate,
+  mountLicenseBuyButton,
+  showLicenseLockedPrompt,
+  showLicenseRequiredPrompt,
+} from './ui/license-gate';
+import { isLicenseViewerMode, onLicenseViewerModeChange } from './ui/license-viewer-mode';
 import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
 import { installDocumentTitle } from '@/ui/document-title';
 import { worktreeIdentity } from '@/ui/worktree-chip';
@@ -711,8 +717,10 @@ let agentSidebarReady = false;
 
 eventBus.on('settings:open', (payload) => {
   if (agentSidebarReady) return;
-  const destination = (payload as { destination?: unknown } | undefined)?.destination;
+  const request = payload as { destination?: unknown; onOpen?: () => void } | undefined;
+  const destination = request?.destination;
   if (destination !== undefined && destination !== 'editing') return;
+  request?.onOpen?.();
   showEditingSettingsFallback({
     eventBus,
     runtime: {
@@ -2541,6 +2549,11 @@ function installDocumentHome(): void {
       if (!bridge) return Promise.reject(new Error('에이전트 허브에 연결되어 있지 않습니다.'));
       return bridge.fetchTemplateContent(template);
     },
+    canAddTemplate: () => {
+      if (!isLicenseViewerMode()) return true;
+      showLicenseRequiredPrompt('템플릿은 라이선스를 활성화한 뒤에 추가할 수 있어요.');
+      return false;
+    },
     addTemplate: async (file) => {
       const bridge = templateBridge();
       if (!bridge) throw new Error('에이전트 허브에 연결되어 있지 않습니다.');
@@ -2554,7 +2567,15 @@ function installDocumentHome(): void {
       if (!session) return null;
       return renderFirstPage(session.wasm).catch(() => null);
     },
-    createBlank: () => { dispatcher.dispatch('file:new-doc'); },
+    mountTopbarTrailing: (slot) => mountLicenseBuyButton(slot),
+    createBlank: () => {
+      // 잠긴 동안 새 문서는 편집할 수 없으므로 만들지 않고 체험 끝 카드를 띄운다.
+      if (isLicenseViewerMode()) {
+        showLicenseRequiredPrompt('새 문서는 라이선스를 활성화한 뒤에 만들 수 있어요.');
+        return;
+      }
+      dispatcher.dispatch('file:new-doc');
+    },
     createFromTemplate: async (template) => {
       eventBus.emit('document-open-intent');
       const bridge = templateBridge();
@@ -2615,9 +2636,16 @@ function installDocumentHome(): void {
     },
     onDrop: (event) => { void handleDocumentDrop(event, { fromHome: true }); },
     // 문서 없이도 집중 화면 설정으로 가고, 설정을 닫으면 홈으로 돌아온다.
+    // 홈은 설정 화면이 자리 잡은 뒤에 내린다. 먼저 내리면 교차 페이드가 문서 화면에서 시작해 한 번 비친다.
     openSettings: () => {
-      documentHome?.hide();
-      eventBus.emit('settings:open', { fullscreen: true, from: 'home' });
+      eventBus.emit('settings:open', {
+        fullscreen: true,
+        from: 'home',
+        onOpen: () => {
+          documentHome?.hide();
+          if (isLicenseViewerMode()) showLockedSettings();
+        },
+      });
     },
     toast: (message) => showToast({ message, durationMs: 3200 }),
   });
@@ -2649,9 +2677,39 @@ function installAppHomeButton(): void {
   }
 }
 
+/** 잠긴 설정 카드가 떠 있는지. 그때 홈은 페이드 없이 덮어, 뒤에서 설정을 거두는 모습이 비치지 않는다. */
+let lockedSettingsShown = false;
+
 /** 문서 홈을 창 전체에 연다. 편집기·사이드바(에이전트 전체 화면 포함)는 닫힐 때 그대로 돌아온다. */
-function openDocumentHome(): void {
-  documentHome?.show();
+function openDocumentHome(options: { instant?: boolean } = {}): void {
+  documentHome?.show({ instant: options.instant === true || lockedSettingsShown });
+}
+
+/**
+ * 라이선스가 잠긴 채 홈에서 설정을 열었다. 설정 화면은 흐리게 뒤에 깔리고, 그 위에 닫을 수 없는
+ * 카드가 선다. 카드의 '홈으로'나 제목 막대의 홈 단추로 홈에 돌아가면 카드와 설정을 함께 내린다.
+ * 활성화되면 게이트가 카드를 내리고 설정은 그대로 쓸 수 있다.
+ */
+function showLockedSettings(): void {
+  const home = documentHome?.element;
+  const prompt = showLicenseLockedPrompt(() => openDocumentHome());
+  if (!prompt) return;
+  lockedSettingsShown = true;
+  const stop = (): void => {
+    lockedSettingsShown = false;
+    observer.disconnect();
+    unsubscribe();
+  };
+  const observer = new MutationObserver(() => {
+    if (!home || home.hidden) return;
+    stop();
+    prompt.dismiss();
+    eventBus.emit('settings:close-locked-backdrop');
+    // 홈은 설정을 거두기 전에 떴으므로, 거둔 뒤 돌아가기 대상을 다시 그린다.
+    documentHome?.show();
+  });
+  if (home) observer.observe(home, { attributes: true, attributeFilter: ['hidden'] });
+  const unsubscribe = onLicenseViewerModeChange((locked) => { if (!locked) stop(); });
 }
 
 /** 화면에 붙은 문서의 이름을 바꾼다 (제목 막대). 못 바꾸면 알리고 null. */
