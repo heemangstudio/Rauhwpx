@@ -162,7 +162,7 @@ import {
 import { createChevron, createColumnIcon } from '../chevron.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { releaseMiddleTruncatedWithin, setMiddleTruncatedText } from '../middle-truncate.ts';
-import { createInkRing, createIcon, createStopIcon } from './icons.ts';
+import { createIcon, createStopIcon } from './icons.ts';
 import {
   attachThreadDrag,
   closeThreadRailSurfaces,
@@ -351,7 +351,7 @@ export interface AgentSidebarDeps {
   /** 문서 열기의 "새 문서"·"파일 열기…" — 편집기의 같은 명령을 부른다. */
   createDocument?: () => void;
   /** 문서 홈(창 전체의 시작 화면)을 연다. */
-  openDocumentHome?: () => void;
+  openDocumentHome?: (options?: { instant?: boolean }) => void;
   openDocumentFile?: () => void;
   /** 문서 열기가 보여 줄 최근 문서. */
   listRecentDocuments?: () => Promise<Array<{
@@ -1048,9 +1048,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let insetMotion: InsetMotion | null = null;
   /** 멈춰 있을 때 사이드바가 드러나 있는지. 되돌리기 없이 새로 출발할 때의 시작 위치다. */
   let sidebarShownAtRest = false;
-  /** 스프링이 멈춘 뒤 한 번 부를 일 (끌기 도중 다시 펼친 뒤 폭 추종 재개 등) */
-  let afterInsetSettle: (() => void) | null = null;
-  /** 손잡이를 끄는 중 (접힘·다시 펼침 구간 포함) */
+  /** 손잡이를 끄는 중 */
   let widthDragging = false;
   /** 지금 레이아웃에 반영된 편집 영역 오른쪽 inset(px). 전이 폭 계산의 기준이다. */
   let committedEditorInsetPx = 0;
@@ -1115,6 +1113,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let settingsPanelOpen = false;
   // 문서 홈의 톱니로 연 설정은 닫을 때 문서 홈으로 돌아간다.
   let settingsReturnsHome = false;
+  /**
+   * 라이선스가 잠긴 채 홈에서 설정을 누르면, 설정 화면을 잠긴 카드 뒤에 흐리게 깔아 둔다.
+   * 이 동안만 접기·집중 화면 잠금을 비켜 가고, 사이드바는 inert 로 두어 조작은 닿지 않는다.
+   */
+  let lockedSettingsBackdrop = false;
   let versionsPanelOpen = false;
   let deferredVersionsOpenTimer: number | null = null;
   /** 에이전트 집중 모드 — 스레드 레일과 대화 무대로 문서를 덮는다. */
@@ -1374,8 +1377,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return Number.isFinite(timeline) ? Math.max(timeline, wall - 1000 / 60) : wall;
   }
 
+  /**
+   * 사이드바 펼침과 집중 화면 전환을 움직일지. 기본은 꺼져 바로 바뀐다(설정 '사이드바 움직임').
+   * 켜 두어도 시스템의 동작 줄이기가 켜져 있으면 움직이지 않는다.
+   */
+  function sidebarMotionEnabled(): boolean {
+    return userSettings.getViewSettings().sidebarMotion
+      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
   function slowMotionConfig(): ReturnType<typeof springForDuration> {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+    if (!sidebarMotionEnabled()) return null;
     const token = getComputedStyle(document.documentElement).getPropertyValue('--ag-dur-slow');
     return springForDuration(parseCssTimeMs(token, SIDEBAR_MOTION_DURATION_MS), {
       dpr: window.devicePixelRatio,
@@ -1394,7 +1406,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function clearInsetRecenterLoop(): void {
     cancelInsetAnimations();
-    afterInsetSettle = null;
     setPageClass('ag-sidebar-animating', false);
   }
 
@@ -1421,9 +1432,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     notifyInsetChanged();
     cancelInsetAnimations();
-    const after = afterInsetSettle;
-    afterInsetSettle = null;
-    after?.();
   }
 
   /**
@@ -1468,9 +1476,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       sidebarShownAtRest = wantOpen;
       commitEditorInset(wantOpen);
       notifyInsetChanged();
-      const after = afterInsetSettle;
-      afterInsetSettle = null;
-      after?.();
       return;
     }
 
@@ -1522,10 +1527,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function setCollapsed(collapsed: boolean, opts?: { recenter?: boolean }): void {
     // 라이선스가 읽기 전용이면 문서 보기 전용이다. 어느 길로 와도 펼치지 않는다.
-    if (isLicenseViewerMode()) collapsed = true;
+    if (isLicenseViewerMode() && !lockedSettingsBackdrop) collapsed = true;
     // 접힌 사이드바 안의 시트는 보이지 않으므로 취소로 닫고, 포커스·키가 닿지 않게 한다.
     if (collapsed && active) dismissOpenSheets();
-    root.inert = collapsed;
+    root.inert = collapsed || lockedSettingsBackdrop;
     root.classList.toggle('ag-collapsed', collapsed);
     syncWorkbenchVisibility();
     setPageClass('ag-sidebar-open', !collapsed);
@@ -1540,18 +1545,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   applySidebarWidth(sidebarWidth, { persist: false, recenter: false });
 
   const RESIZE_DRAG_THRESHOLD_PX = 4;
-  /* Mail 의 분할선처럼 최솟값을 이만큼 넘겨 끌면 사이드바를 접는다. */
-  const RESIZE_COLLAPSE_OVERSHOOT_PX = 72;
   let resizing = false;
   let resizeArmed = false;
   let resizeStartX = 0;
   let resizeStartWidth = sidebarWidth;
-  /** 드래그 도중 접힌 상태 — 놓기 전에 돌아오면 다시 펼친다. */
-  let resizeDragCollapsed = false;
-
-  function clearResizeResumeTimer(): void {
-    afterInsetSettle = null;
-  }
 
   function detachResizeWindowListeners(): void {
     window.removeEventListener('pointermove', onResizePointerMove, true);
@@ -1565,7 +1562,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     resizeArmed = false;
     resizeStartX = startX;
     resizeStartWidth = sidebarWidth;
-    resizeDragCollapsed = false;
     setConfigPanelOpen(false);
     setPageClass('ag-sidebar-resizing', true);
     setPageClass('ag-sidebar-animating', true);
@@ -1577,28 +1573,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function applyResizeMove(): void {
     resizeMoveRaf = null;
     if (!resizing || !resizeArmed) return;
+    // 끌어서 접지는 않는다. 최솟값 아래로 끌면 최소 폭에 멈춘다(applySidebarWidth 가 묶는다).
     const target = resizeStartWidth + (resizeStartX - resizeMoveX);
-    const overshoot = !fullscreen && target < sidebarWidthMin - RESIZE_COLLAPSE_OVERSHOOT_PX;
-    if (overshoot !== resizeDragCollapsed) {
-      resizeDragCollapsed = overshoot;
-      clearResizeResumeTimer();
-      // 접고 펴는 동안은 편집 영역 여백도 전이로 따라가야 한다 — 리사이즈 클래스를
-      // 잠시 내리고, 다시 펼친 뒤 전이가 끝나면 즉시 추종으로 돌아간다.
-      setPageClass('ag-sidebar-resizing', false);
-      setCollapsed(overshoot);
-      if (!overshoot) {
-        // 다시 펼침 스프링이 멈추면 곧바로 폭 추종으로 돌아간다(시간 추측 타이머 없이).
-        const resume = () => {
-          if (resizing && !resizeDragCollapsed) {
-            setPageClass('ag-sidebar-resizing', true);
-            setPageClass('ag-sidebar-animating', true);
-          }
-        };
-        if (insetMotion) afterInsetSettle = resume;
-        else resume();
-      }
-    }
-    if (resizeDragCollapsed) return;
     applySidebarWidth(target, { persist: false, recenter: false });
   }
 
@@ -1624,17 +1600,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     resizing = false;
     widthDragging = false;
     resizeArmed = false;
-    clearResizeResumeTimer();
     setPageClass('ag-sidebar-resizing', false);
-    // 접힘 전이가 도는 중이면 ag-sidebar-animating 은 그 루프가 거둔다.
     if (insetMotion === null) setPageClass('ag-sidebar-animating', false);
     detachResizeWindowListeners();
-    if (resizeDragCollapsed) {
-      // 다시 펼칠 때는 끌기 전 폭으로 돌아온다.
-      resizeDragCollapsed = false;
-      applySidebarWidth(resizeStartWidth, { persist: true, recenter: false });
-      return;
-    }
     applySidebarWidth(sidebarWidth, { persist: true, recenter: true });
   }
 
@@ -2100,7 +2068,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     e.stopPropagation();
     openDocumentHome?.();
   });
-  // pane 액션은 문서 맥락 주변의 고정된 헤더 위치를 유지한다.
+  // pane 액션은 문서 콘텍스트 주변의 고정된 헤더 위치를 유지한다.
   // 설정은 집중 모드의 채팅 목록 아래와 환경 설정(Cmd+/)에서 연다.
   headerActions.append(connDot, takeoverBtn, agentUndoBtn, homeBtn, versionsBtn, threadsBtn, fullscreenBtn);
 
@@ -2384,31 +2352,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const stage = el('div', 'ag-stage');
 
   /* 집중 모드는 사이드바를 늘린 화면이 아니라 독립된 작업 공간이다.
-     이 bar는 viewport 전체를 가로지르며 pane 토글, 문서 맥락,
-     대화 제목, 실행 맥락과 종료 동작을 한 축에 고정한다. */
+     이 bar는 viewport 전체를 가로지르며 pane 토글, 문서 콘텍스트,
+     대화 제목, 실행 콘텍스트와 종료 동작을 한 축에 고정한다. */
   const workspaceBar = el('header', 'ag-workspace-bar');
-  workspaceBar.addEventListener('transitionend', (event) => {
-    if (event.target === workspaceBar && event.propertyName === 'grid-template-columns') {
-      clearRailBrandTransition();
-    }
-  });
-  workspaceBar.addEventListener('transitioncancel', (event) => {
-    if (event.target !== workspaceBar || event.propertyName !== 'grid-template-columns') return;
-    window.requestAnimationFrame(() => {
-      const railStillMoving = workspaceBar.getAnimations().some((animation) =>
-        animation instanceof CSSTransition && animation.transitionProperty === 'grid-template-columns');
-      if (!railStillMoving) clearRailBrandTransition();
-    });
-  });
-  const railReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-  let railReducedMotionListener: ((event: MediaQueryListEvent) => void) | null = null;
-  function clearRailBrandTransition(): void {
-    root.classList.remove('ag-rail-brand-transition');
-    if (railReducedMotionListener) {
-      railReducedMotion.removeEventListener('change', railReducedMotionListener);
-      railReducedMotionListener = null;
-    }
-  }
   const workspaceDrawerScrim = el('button', 'ag-workspace-drawer-scrim');
   workspaceDrawerScrim.type = 'button';
   workspaceDrawerScrim.tabIndex = -1;
@@ -2875,13 +2821,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   turnPending.hidden = true;
   turnPending.setAttribute('role', 'status');
   turnPending.setAttribute('aria-live', 'polite');
+  // 일하는 중은 "편집 중…" 글자만으로 보인다.
   const turnPendingLabel = el('span', 'ag-turn-pending-label');
-  turnPending.append(createInkRing(), turnPendingLabel);
+  turnPending.append(turnPendingLabel);
   messages.append(turnPending, messagesEnd);
-  /* "편집 중…" 고리는 에이전트가 400ms 넘게 조용할 때 나타나고, 나타나면 400ms 는
+  /* "편집 중…" 줄은 에이전트가 400ms 넘게 조용할 때 나타나고, 나타나면 400ms 는
      머문다 — 짧은 글과 빠른 도구가 번갈아 와도 대화 끝이 깜빡이지 않는다. 숨어
-     있는 동안 새 내용은 고리 뒤(messagesEnd 앞)에 붙고, 나타날 때 끝으로 옮긴다. */
-  /** 압축 중에 물려 둔 대화 줄과 맥락 고리 (setConversationReceding). */
+     있는 동안 새 내용은 그 줄 뒤(messagesEnd 앞)에 붙고, 나타날 때 끝으로 옮긴다. */
+  /** 압축 중에 물려 둔 대화 줄과 콘텍스트 고리 (setConversationReceding). */
   let recededNodes: { node: Element; animation: Animation }[] = [];
   const turnPendingStatus = createDelayedStatus<AgentName | 'compacting'>((who) => {
     turnPending.hidden = who === null;
@@ -2892,7 +2839,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     setConversationReceding(who === 'compacting');
   });
   /**
-   * 압축이 도는 동안 화면에 보이는 앞 대화를 한 단계 물리고 맥락 고리가 천천히 숨 쉰다 — 그
+   * 압축이 도는 동안 화면에 보이는 앞 대화를 한 단계 물리고 콘텍스트 고리가 천천히 숨 쉰다 — 그
    * 대화가 줄어드는 중이라는 표시. 끝나면 지금 명암에서 이어 되돌아온다. 긴 대화에서도 보이는 줄만 만진다.
    */
   function setConversationReceding(on: boolean): void {
@@ -2924,8 +2871,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
   /**
-   * 도는 턴의 접힘 자리표시(숨은 줄)와 숨어 있는 "편집 중…" 고리는 내용이 아니다 —
-   * 스크롤 기준을 고를 때 건너뛴다. 숨은 고리는 지연 동안 대화 중간에 남아 있을 수 있다.
+   * 도는 턴의 접힘 자리표시(숨은 줄)와 숨어 있는 "편집 중…" 줄은 내용이 아니다 —
+   * 스크롤 기준을 고를 때 건너뛴다. 숨은 줄은 지연 동안 대화 중간에 남아 있을 수 있다.
    */
   function skipTurnFoldPlaceholders(node: Element | null): Element | null {
     let current = node;
@@ -3363,7 +3310,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   composerUtilityActions.append(phaseBadge, modeMenu.root);
   composerUtilities.append(composerUtilityActions);
 
-  /* 맥락 창 사용량 — 사용량을 안 뒤에만 보이는 작은 고리. 올리거나 누르면 압축 팝오버가 열린다. */
+  /* 콘텍스트 창 사용량 — 사용량을 안 뒤에만 보이는 작은 고리. 올리거나 누르면 압축 팝오버가 열린다. */
   const contextMeter = el('div', 'ag-context');
   contextMeter.hidden = true;
   const contextTrigger = el('button', 'ag-context-btn');
@@ -3452,7 +3399,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   };
   document.addEventListener('pointerdown', onContextPopoverOutside);
 
-  /** 맥락 표시는 지금 고른 프로바이더의 사용량만 보인다. 다른 프로바이더 것은 숨긴다. */
+  /** 콘텍스트 표시는 지금 고른 프로바이더의 사용량만 보인다. 다른 프로바이더 것은 숨긴다. */
   function renderContextMeter(): void {
     const usage = currentThread.contextUsage;
     const visible = Boolean(usage && usage.agent === selectedAgent && readOnlyDocLabel === null);
@@ -4685,19 +4632,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function applyThreadsRailState(): void {
     const compact = isCompactWorkspace();
     const expanded = fullscreen && (compact ? compactThreadsRailOpen : !threadsRailCollapsed);
-    if (fullscreen && !compact && previousThreadsRailExpanded !== null && previousThreadsRailExpanded !== expanded
-      && !railReducedMotion.matches) {
-      root.classList.add('ag-rail-brand-transition');
-      if (!railReducedMotionListener) {
-        railReducedMotionListener = (event) => {
-          if (event.matches) clearRailBrandTransition();
-        };
-        railReducedMotion.addEventListener('change', railReducedMotionListener);
-      }
-    } else if (!fullscreen || compact) {
-      clearRailBrandTransition();
-    }
+    // 칸 폭은 한 번에 바꾸고(대화는 한 번만 다시 줄바꿈된다), 움직임을 켰으면 레일만
+    // transform·opacity 로 들여온다. 합성기에서만 도는 움직임이라 느린 컴퓨터에서도 끊기지 않는다.
+    const opening = fullscreen && !compact && expanded && previousThreadsRailExpanded === false;
     previousThreadsRailExpanded = expanded;
+    if (opening && sidebarMotionEnabled()) {
+      threadsPage.animate(
+        [{ opacity: 0, transform: 'translateX(-12px)' }, { opacity: 1, transform: 'none' }],
+        { duration: 160, easing: 'cubic-bezier(0.2, 0, 0, 1)' },
+      );
+    }
     root.classList.toggle('ag-compact-rail-open', compact && compactThreadsRailOpen);
     root.classList.toggle('ag-compact-rail-hover-open', compact && compactRailHoverOpen);
     root.classList.toggle('ag-rail-collapsed', fullscreen && !expanded);
@@ -5165,8 +5109,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** `then` 은 새 배치가 DOM 에 반영된 뒤에 부른다 — 교차 페이드는
       다음 프레임에 배치를 바꾸므로, 바뀐 배치에 기대는 후속 동작은 여기로 넘긴다. */
-  function setFullscreen(on: boolean, opts?: { then?: () => void }): void {
-    if (on && isLicenseViewerMode()) return;
+  function setFullscreen(on: boolean, opts?: { then?: () => void; instant?: boolean }): void {
+    if (on && isLicenseViewerMode() && !lockedSettingsBackdrop) return;
     if (fullscreen === on) {
       opts?.then?.();
       return;
@@ -5191,8 +5135,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }).startViewTransition;
     // 교차 페이드는 페이지 전체를 잡으므로 화면에 붙은 사이드바만 건다.
     const animate = active
+      && !opts?.instant
       && typeof startViewTransition === 'function'
-      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      && sidebarMotionEnabled();
     if (!animate) {
       cancelFsMotionTimers();
       // 즉시 바꿀 때도 패널 슬라이드·칸 전환이 새 배치 위에서 돌지 않게 한다.
@@ -5424,7 +5369,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     root.classList.remove('ag-settings-open');
     returnFocus?.focus();
     afterClose?.();
-    if (returnHome) openDocumentHome?.();
+    // 설정에서 홈으로 돌아갈 때는 페이드 없이 덮는다. 페이드 동안 뒤의 채팅 화면이 비친다.
+    if (returnHome) openDocumentHome?.({ instant: true });
     return true;
   }
 
@@ -6015,7 +5961,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           const userMessage = recordUserMessage(request.messageText, attachments, undefined,
             request.skillNameForMessage, request.skillIconForMessage, messageId, mentions);
           const bubble = renderUserMessage(userMessage);
-          bubble.classList.add('ag-msg-enter');
           followConversation = true;
           replyPending = true;
           appendConversation(bubble);
@@ -6237,7 +6182,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         : skillRequestText;
     }
     // 실패하면 '다시 시도' 가 다시 보낼 요청 — 꾸밈 전 본문이다(꾸밈은 보낼 때마다 새로 붙는다).
-    // 인라인 프롬프트는 다시 보낼 요청을 두지 않는다: 선택 맥락이 그 시점 문서에 묶여 있어, 맥락 없이
+    // 인라인 프롬프트는 다시 보낼 요청을 두지 않는다: 선택 콘텍스트가 그 시점 문서에 묶여 있어, 콘텍스트 없이
     // 지시만 다시 보내면 ("이 부분을 표로") 에이전트가 엉뚱한 곳을 고칠 수 있다.
     const carriesContinuation = spec.wire?.continuation === true;
     const retryPayload = {
@@ -6268,7 +6213,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       spec.origin === 'composer' ? composerMentions?.take() ?? [] : [],
     );
     const userBubble = renderUserMessage(userMessage);
-    userBubble.classList.add('ag-msg-enter');
     replyPending = true;
     if (userAction) {
       followConversation = true;
@@ -6377,7 +6321,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
       const userMessage = recordUserMessage(text, []);
       const userBubble = renderUserMessage(userMessage);
-      userBubble.classList.add('ag-msg-enter');
       followConversation = true;
       replyPending = true;
       appendConversation(userBubble);
@@ -6538,6 +6481,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
   function applyLicenseViewerMode(locked: boolean): void {
     syncLicenseLockedTab(locked);
+    // 잠긴 카드 뒤에 깔아 둔 설정은 활성화되면 그대로 쓸 수 있는 설정이 된다.
+    if (!locked && lockedSettingsBackdrop) {
+      lockedSettingsBackdrop = false;
+      root.inert = false;
+      return;
+    }
     if (!active) return;
     if (locked) {
       noteAgentOpenBeforeLock(fullscreen || !root.classList.contains('ag-collapsed'));
@@ -8905,29 +8854,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   /**
-   * 끝 여백은 마지막 질문이 초점선까지 올라갈 만큼만 둔다. 답변이 화면을 채우면
-   * 여백이 사라져, 맨 아래로 내렸을 때 마지막 내용이 입력기 바로 위에 멈춘다.
+   * 대화는 마지막 내용에서 끝난다. 답변이 내려오는 중에도 그 아래 빈 자리로는 내려가지 않고,
+   * 맨 아래로 내리면 마지막 내용이 입력기 바로 위에 멈춘다. 끝 표지는 마지막 줄 간격만큼 겹친다.
    */
   function syncConversationSpacer(): void {
-    const style = getComputedStyle(messages);
-    const gap = Number.parseFloat(style.rowGap) || 0;
-    const padding = Number.parseFloat(style.paddingBottom) || 0;
-    setConversationEndStyle('marginTop', `${-gap}px`);
-    let question = messagesEnd.previousElementSibling;
-    while (question && !question.classList.contains('ag-msg-user')) question = question.previousElementSibling;
-    if (!(question instanceof HTMLElement)) {
-      setConversationEndStyle('minHeight', '0px');
-      return;
-    }
-    const room = conversationAnchorTop(question) - conversationFocusOffset() + messages.clientHeight;
-    const spacer = room - conversationAnchorTop(messagesEnd) - padding;
-    setConversationEndStyle('minHeight', `${Math.max(0, Math.round(spacer))}px`);
-  }
-
-  /** 값이 같으면 쓰지 않는다 — 쓰기마다 레이아웃이 더러워져 다음 읽기가 다시 배치를 강제한다. */
-  function setConversationEndStyle(property: 'marginTop' | 'minHeight', value: string): void {
-    if (messagesEnd.style[property] === value) return;
-    messagesEnd.style[property] = value;
+    const gap = Number.parseFloat(getComputedStyle(messages).rowGap) || 0;
+    const marginTop = `${-gap}px`;
+    // 값이 같으면 쓰지 않는다 — 쓰기마다 레이아웃이 더러워져 다음 읽기가 다시 배치를 강제한다.
+    if (messagesEnd.style.marginTop === marginTop) return;
+    messagesEnd.style.marginTop = marginTop;
     conversationScrollTargetValue = null;
   }
 
@@ -9092,7 +9027,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       || ((replyPending || turnRunning) && !(streamBubble && hasRenderedBlocks(streamBubble)));
     const show = waiting || editAgent !== null;
     turnPendingStatus.set(show ? (compacting ? 'compacting' : agent ?? editAgent ?? selectedAgent) : null);
-    // 보이는 고리는 언제나 대화 끝에 선다.
+    // 보이는 "편집 중…" 줄은 언제나 대화 끝에 선다.
     if (turnPendingStatus.shown !== null && turnPending.nextSibling !== messagesEnd) {
       messages.insertBefore(turnPending, messagesEnd);
     }
@@ -9146,7 +9081,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function systemMessage(text: string, severity?: 'error'): void {
     currentThread.messages.push({ role: 'system', text, agent: selectedAgent, ...(severity ? { severity } : {}) });
     persistCurrentThread();
-    withAutoScroll(() => appendConversation(el('div', 'ag-msg ag-msg-system ag-msg-enter', text)));
+    withAutoScroll(() => appendConversation(el('div', 'ag-msg ag-msg-system', text)));
   }
 
   /** 현재 대화의 CLI 세션을 강제로 다시 띄운다 (설정 탭·스폰 실패 재시도 공용). */
@@ -9556,7 +9491,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const text = TURN_CHECK_DOCUMENT_TEXT;
     const message = openAssistantBubble(agent);
     renderAssistantMessage(message, text);
-    message.classList.add('ag-msg-enter');
     assistantBuffer = text;
     flushAssistantBuffer();
     streamBubble = null;
@@ -10006,7 +9940,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function foldSettledTurn(marker: ThreadTurnMessage): void {
     const row = turnFoldRows.get(marker.messageId);
     if (!row || row.root.parentElement !== messages) return;
-    // 이 턴의 작업은 줄 뒤에서 대화 끝(다음 턴의 줄) 사이에 있다. "편집 중…" 고리는 지연 동안
+    // 이 턴의 작업은 줄 뒤에서 대화 끝(다음 턴의 줄) 사이에 있다. "편집 중…" 줄은 지연 동안
     // 숨은 채 그 사이에 남아 있을 수 있어 건너뛰기만 하고, 작업 노드가 아니라 접힘에 들지 않는다.
     let nodes: HTMLElement[] = [];
     for (
@@ -10519,7 +10453,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           withAutoScroll(() => {
             // 가려진 채팅에는 보이지 않는 등장 애니메이션을 걸지 않는다.
             renderAssistantMessage(bubble, assistantBuffer, active ? STREAMING_RENDER : { streaming: true });
-            bubble.classList.add('ag-msg-enter');
           });
         } else {
           scheduleAssistantRender(streamBubble, assistantBuffer);
@@ -10673,7 +10606,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
 
-  // ── 맥락: 세션 커서 · 사용량 · 압축 ───────────────────
+  // ── 콘텍스트: 세션 커서 · 사용량 · 압축 ───────────────────
 
   /** 이벤트가 속한 채팅. 다른 채팅을 연 뒤 늦게 온 턴 이벤트는 그 턴의 채팅에 남긴다. */
   function eventThreadId(): string {
@@ -12146,15 +12079,40 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           setCollapsed(false);
           openConfiguredVersionControl();
         }),
+        eventBus.on('settings:close-locked-backdrop', () => {
+          if (!lockedSettingsBackdrop) return;
+          closeSettingsPage();
+          chatPage.setAttribute('aria-hidden', 'false');
+          setFullscreen(false, {
+            instant: true,
+            then: () => {
+              lockedSettingsBackdrop = false;
+              setCollapsed(true);
+            },
+          });
+        }),
         eventBus.on('settings:open', (payload) => {
-          const request = payload as { destination?: unknown; fullscreen?: boolean; from?: string } | undefined;
+          const request = payload as {
+            destination?: unknown;
+            fullscreen?: boolean;
+            from?: string;
+            onOpen?: () => void;
+          } | undefined;
           const destination = normalizeSettingsDestination(request?.destination);
+          // 잠긴 동안에는 홈에서 연 설정만 잠긴 카드의 배경으로 띄운다.
+          if (isLicenseViewerMode()) {
+            if (request?.from !== 'home') return;
+            lockedSettingsBackdrop = true;
+          }
           setCollapsed(false);
           const open = (): void => {
+            // 부른 쪽(홈)은 새 배치가 선 뒤에 내린다. 교차 페이드가 홈에서 설정으로 바로 넘어간다.
+            request?.onOpen?.();
             setSettingsPanelOpen(true, destination);
             if (request?.from === 'home') settingsReturnsHome = true;
           };
-          if (request?.fullscreen) setFullscreen(true, { then: open });
+          // 홈에서 여는 설정은 교차 페이드 없이 바로 바꾼다.
+          if (request?.fullscreen) setFullscreen(true, { then: open, instant: request.from === 'home' });
           else open();
         }),
       ]

@@ -54,6 +54,8 @@ export interface ViewSettings {
   showControlCodes: boolean;
   /** 짤림보기(잘림 보기) 켜짐 여부. true = 편집용지 경계 밖 오버플로 내용을 보임(잘림 미적용). */
   clipView: boolean;
+  /** 사이드바 펼침·집중 화면 전환을 움직임으로 보일지. 기본은 꺼짐(바로 바뀜). */
+  sidebarMotion: boolean;
 }
 
 /** 버전 관리 설정 */
@@ -164,6 +166,7 @@ function defaultSettings(): AppSettings {
       showParagraphMarks: false,
       showControlCodes: false,
       clipView: true,
+      sidebarMotion: false,
     },
     versionControl: {
       useHancomGit: true,
@@ -247,6 +250,7 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
       showParagraphMarks,
       showControlCodes,
       clipView: normalizeBoolean(view.clipView, defaults.view.clipView),
+      sidebarMotion: normalizeBoolean(view.sidebarMotion, defaults.view.sidebarMotion),
     },
     versionControl: {
       useHancomGit: normalizeBoolean(versionControl.useHancomGit, defaults.versionControl.useHancomGit),
@@ -356,6 +360,7 @@ class UserSettingsService {
         showParagraphMarks: normalizeBoolean(next.view.showParagraphMarks, false),
         showControlCodes: normalizeBoolean(next.view.showControlCodes, false),
         clipView: normalizeBoolean(next.view.clipView, true),
+        sidebarMotion: normalizeBoolean(next.view.sidebarMotion, false),
       },
       versionControl: {
         useHancomGit: normalizeBoolean(next.versionControl.useHancomGit, true),

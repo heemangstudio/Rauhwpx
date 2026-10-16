@@ -376,7 +376,7 @@ export async function canResumeCodexThread(opts, threadId) {
   return Boolean(found);
 }
 
-/** Codex 가 맥락 창 크기로 세는 값 — 마지막 모델 호출의 totalTokens (입력 + 출력). */
+/** Codex 가 콘텍스트 창 크기로 세는 값 — 마지막 모델 호출의 totalTokens (입력 + 출력). */
 function contextTokensOf(last) {
   if (!last || typeof last !== 'object') return null;
   const total = Number(last.totalTokens ?? last.total_tokens);
@@ -750,7 +750,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       const contextTokens = contextTokensOf(params.tokenUsage?.last);
       if (contextTokens !== null) {
         lastContextTokens = contextTokens;
-        // 압축 중의 갱신은 압축 뒤 맥락 크기다 (0.162: 17780 → 11504 확인).
+        // 압축 중의 갱신은 압축 뒤 콘텍스트 크기다 (0.162: 17780 → 11504 확인).
         if (turnCompaction && !turnCompaction.done) turnCompaction.afterTokens = contextTokens;
         emitContextUsage();
       }

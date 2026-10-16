@@ -265,11 +265,11 @@ export function createMockBridge(
     threadId: string;
     workflow: T.AgentWorkflow;
     permissionProfile: T.PermissionProfile;
-    /** 그 시작이 실은 대화 기록의 본문(프로바이더가 이어 받는 맥락). */
+    /** 그 시작이 실은 대화 기록의 본문(프로바이더가 이어 받는 콘텍스트). */
     history: string[];
   }> = [];
   /**
-   * 마지막 chat-start 가 실은 대화 기록. 실제 브리지처럼 보내는 순간 사이드바의 맥락 제공자로 다시
+   * 마지막 chat-start 가 실은 대화 기록. 실제 브리지처럼 보내는 순간 사이드바의 콘텍스트 제공자로 다시
    * 만든다(제공자가 없으면 startChat 이 건넨 기록) — 세션을 잃은 뒤 메시지가 스스로 여는 시작도 같다.
    */
   let startHistory: string[] = [];
@@ -336,17 +336,17 @@ export function createMockBridge(
   let permissionRequest: T.ChatPermissionRequest | null = null;
   let chatPermissionGrants: T.ChatPermissionCapability[] = [];
   const permissionResponses: Array<{ requestId: string; decision: T.ChatPermissionDecision }> = [];
-  /* 맥락 창 흉내 — ?context=92 로 시작 사용률을 고른다. */
+  /* 콘텍스트 창 흉내 — ?context=92 로 시작 사용률을 고른다. */
   const CONTEXT_MAX = 200_000;
   const contextParam = Number(new URLSearchParams(location.search).get('context'));
   let contextShare = contextParam > 0 && contextParam <= 100 ? contextParam / 100 : 0.31;
   let compacting: string | null = null;
   let contextProvider: ChatStartContextProvider | null = null;
-  /** 마지막 chat-start 가 실은 맥락 — 넘겨받기 흐름을 브라우저 검사에서 확인한다. */
+  /** 마지막 chat-start 가 실은 콘텍스트 — 넘겨받기 흐름을 브라우저 검사에서 확인한다. */
   let lastChatStart: { agent: T.AgentName; providerSessionId: string | null; handoff: number; history: number } | null = null;
   const sessionCompaction = (provider: T.AgentName): T.CompactionSupport =>
     provider === 'pi' ? 'auto-only' : 'manual';
-  /** chat-start 를 보낸 것으로 친다: 그 순간의 맥락(대화·커서·넘겨받기)을 읽어 남긴다. */
+  /** chat-start 를 보낸 것으로 친다: 그 순간의 콘텍스트(대화·커서·넘겨받기)을 읽어 남긴다. */
   const recordChatStart = () => {
     const context = contextProvider?.({ agent, threadId }) ?? null;
     if (context) startHistory = context.history.map((entry) => entry.text);

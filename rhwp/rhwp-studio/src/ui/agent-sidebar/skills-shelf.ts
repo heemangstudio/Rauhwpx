@@ -89,7 +89,6 @@ export function createSkillsShelf(options: {
     mode = 'harness';
     modeButton.setAttribute('aria-expanded', 'true');
     importPanel.hidden = false;
-    importPanel.classList.add('ag-skills-import-open');
     render(before);
     options.onListHarness();
   });
@@ -116,7 +115,6 @@ export function createSkillsShelf(options: {
     mode = 'catalog';
     modeButton.setAttribute('aria-expanded', 'false');
     importPanel.hidden = true;
-    importPanel.classList.remove('ag-skills-import-open');
     render(before);
   }
 

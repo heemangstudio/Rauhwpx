@@ -5,7 +5,7 @@
 
    ── 방향 계약 (2026-08, document workspace) ──────────────
    문서가 주인공이고 에이전트는 그 옆의 조용한 협업자다. 사이드바와
-   포커스 모드는 같은 정보 구조를 공유한다: 위에는 문서 맥락, 가운데는
+   포커스 모드는 같은 정보 구조를 공유한다: 위에는 문서 콘텍스트, 가운데는
    읽기 편한 대화, 아래에는 입력과 실행 설정이 한 면에 모인다. 기술
    좌표와 원시 도구 출력은 필요할 때 펼쳐 보고, 검토는 변경이 있을 때만
    여는 문맥 패널이다. 중성 면은 편집기와 같은 램프를 쓰고 모서리, 여백,
@@ -450,7 +450,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   }
 }
 
-/* ─── 헤더: 문서 맥락 + 작업 공간 액션 ──────────────── */
+/* ─── 헤더: 문서 콘텍스트 + 작업 공간 액션 ──────────────── */
 
 .ag-header {
   position: relative;
@@ -694,21 +694,12 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   outline-offset: var(--ag-focus-offset);
 }
 
-.ag-conn-dot[data-state='connecting']::before {
-  animation: ag-conn-pulse 1.6s ease-in-out infinite;
-}
-
 .ag-conn-dot[data-state='disconnected']::before {
   background: var(--ag-err);
 }
 
 .ag-conn-dot[data-state='replaced']::before {
   background: var(--ag-run);
-}
-
-@keyframes ag-conn-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.35; transform: scale(0.8); }
 }
 
 /* 상태 문구는 스크린리더용으로만 남긴다. */
@@ -735,17 +726,10 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   border-radius: var(--ag-r-sheet);
   background: var(--ag-raised);
   box-shadow: var(--ag-elev-popover);
-  transform-origin: top right;
-  animation: ag-popover-in var(--ag-dur-base) var(--ag-spring) both;
 }
 
 .ag-conn-popover[hidden] {
   display: none;
-}
-
-@keyframes ag-popover-in {
-  from { opacity: 0; transform: translateY(-4px) scale(0.96); }
-  to { opacity: 1; transform: none; }
 }
 
 .ag-conn-popover-text {
@@ -1111,7 +1095,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   cursor: default;
 }
 
-/* 메뉴는 머티리얼 층이다: 반투명 + 흐림, 칩의 오른쪽 아래 모서리에서 자라난다. */
+/* 메뉴는 머티리얼 층이다: 반투명 + 흐림. 누르면 바로 서고 바로 사라진다. */
 .ag-mode .ag-mode-menu {
   top: auto;
   right: 0;
@@ -1125,20 +1109,13 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   -webkit-backdrop-filter: blur(20px) saturate(150%);
   backdrop-filter: blur(20px) saturate(150%);
   box-shadow: var(--ag-elev-popover), inset 0 0 0 0.5px color-mix(in oklab, var(--ag-text) 18%, transparent);
-  transform-origin: bottom right;
-  transform: scale(0.9);
-  transition:
-    opacity var(--ag-dur-fast) var(--ag-ease-out),
-    transform var(--ag-dur-exit) var(--ag-ease-out),
-    visibility 0s linear var(--ag-dur-exit);
+  transform: none;
+  transition: none;
 }
 
 .ag-mode.ag-model-open .ag-mode-menu {
-  transform: scale(1);
-  transition:
-    opacity var(--ag-dur-fast) var(--ag-ease-out),
-    transform var(--ag-dur-slow) var(--ag-spring),
-    visibility 0s linear 0s;
+  transform: none;
+  transition: none;
 }
 
 @media (prefers-reduced-transparency: reduce) {
@@ -1150,11 +1127,6 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ag-mode .ag-mode-menu,
-  .ag-mode.ag-model-open .ag-mode-menu {
-    transform: none;
-  }
-
   .ag-root .ag-mode-btn:active:not(:disabled) {
     transform: none;
   }
@@ -1466,12 +1438,6 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   border-radius: 12px;
   background: color-mix(in srgb, var(--ag-raised) 96%, var(--ag-bg));
   box-shadow: 0 12px 28px color-mix(in srgb, var(--ag-text) 18%, transparent);
-  animation: ag-skill-icon-picker-in var(--ag-dur-base) var(--ag-skills-motion) both;
-}
-
-@keyframes ag-skill-icon-picker-in {
-  from { opacity: 0; transform: translateY(-4px) scale(0.98); transform-origin: top left; }
-  to { opacity: 1; transform: translateY(0) scale(1); transform-origin: top left; }
 }
 
 .ag-skill-icon-picker-grid {
@@ -1723,15 +1689,6 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   border-radius: var(--ag-r-field);
   background: color-mix(in srgb, var(--ag-raised) 82%, transparent);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--ag-text) 4%, transparent);
-}
-
-.ag-skills-import-panel.ag-skills-import-open {
-  animation: ag-skills-import-open var(--ag-dur-base) var(--ag-skills-motion) both;
-}
-
-@keyframes ag-skills-import-open {
-  from { opacity: 0; transform: translateY(-6px) scaleY(0.96); transform-origin: top; }
-  to { opacity: 1; transform: translateY(0) scaleY(1); transform-origin: top; }
 }
 
 .ag-skills-import-panel[hidden] {
@@ -2048,7 +2005,6 @@ button.ag-skill-copy {
     transform: none !important;
   }
 
-  .ag-skills-import-panel.ag-skills-import-open { animation: none; }
   .ag-skill-toggle[aria-pressed='true']::after { left: 16px; }
 }
 
@@ -2464,7 +2420,7 @@ button.ag-skill-copy {
   flex-direction: column;
   gap: 24px;
   padding: 20px 16px 24px;
-  overscroll-behavior: contain;
+  overscroll-behavior: none;
   overflow-anchor: none;
   background: var(--ag-bg);
   contain: layout paint;
@@ -2472,7 +2428,7 @@ button.ag-skill-copy {
   mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
 }
 
-/* 새 턴을 위쪽에 두기 위한 아래 여백. 높이는 JS 가 뷰포트에 맞춰 넣는다. */
+/* 대화의 끝 표지. 높이가 없어 마지막 내용 아래로 스크롤할 자리가 생기지 않는다. */
 .ag-messages-end {
   flex: 0 0 auto;
   pointer-events: none;
@@ -2735,37 +2691,6 @@ button.ag-skill-copy {
   transform: translateX(2px) rotate(-90deg);
 }
 
-.ag-msg.ag-msg-enter {
-  animation: ag-message-arrive var(--ag-dur-base) var(--ag-ease-out) both;
-}
-
-/* 첫 답변은 읽을 수 있는 상태로 짧게 자리 잡는다. */
-.ag-msg-assistant.ag-msg-enter {
-  animation: ag-assistant-arrive var(--ag-dur-fast) var(--ag-motion-out) both;
-}
-
-@keyframes ag-assistant-arrive {
-  from {
-    opacity: 0.72;
-    transform: translateY(2px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes ag-message-arrive {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 /* turn-start 직후 아직 텍스트가 없는 답변은 감춘다 */
 .ag-msg-assistant:empty {
   display: none;
@@ -2996,7 +2921,7 @@ button.ag-skill-copy {
   line-height: var(--ag-lh-secondary);
 }
 
-/* 대화 흐름의 구분선 — 프로바이더 전환·맥락 압축. 선 · 아이콘 · 이름 · 선. */
+/* 대화 흐름의 구분선 — 프로바이더 전환·콘텍스트 압축. 선 · 아이콘 · 이름 · 선. */
 .ag-marker {
   display: flex;
   align-self: stretch;
@@ -3110,9 +3035,6 @@ button.ag-skill-copy {
   flex-direction: column;
   gap: 4px;
   padding-left: 18px;
-  /* 끝 상태가 쉬는 모양과 같아 붙잡지 않는다(backwards) — 단계마다 끝난 애니메이션이
-     문서에 쌓여 getAnimations·스타일 계산이 대화 길이만큼 느려지지 않게 한다. */
-  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) backwards;
 }
 
 .ag-progress-step::before {
@@ -3165,17 +3087,6 @@ button.ag-skill-copy {
   margin: 0;
   border: 0;
   background: transparent;
-}
-
-@keyframes ag-activity-arrive {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 .ag-activity-toggle {
@@ -3903,8 +3814,6 @@ button.ag-skill-copy {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ag-msg.ag-msg-enter,
-  .ag-progress-step,
   .ag-activity,
   .ag-tool-row,
   .ag-tool-status.ag-ok,
@@ -4313,7 +4222,7 @@ button.ag-skill-copy {
   min-width: 0;
 }
 
-/* 맥락 창 사용량. 사용량을 알기 전에는 자리를 차지하지 않는다. */
+/* 콘텍스트 창 사용량. 사용량을 알기 전에는 자리를 차지하지 않는다. */
 .ag-context {
   position: relative;
   display: inline-flex;
@@ -4667,15 +4576,10 @@ button.ag-skill-copy {
 
 .ag-plan-restore-tick[data-status='in-progress'] {
   background: var(--ag-text);
-  animation: ag-todo-pulse 1.4s ease-in-out infinite;
 }
 
 .ag-plan-restore-tick[data-status='blocked'] {
   background: var(--ag-err);
-}
-
-@keyframes ag-todo-pulse {
-  50% { opacity: 0.35; }
 }
 
 .ag-plan-restore-count {
@@ -4791,12 +4695,6 @@ button.ag-skill-copy {
 .ag-todo[data-status='blocked'] .ag-todo-note,
 .ag-todo[data-status='blocked'] .ag-todo-suffix {
   color: var(--ag-err);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ag-plan-restore-tick[data-status='in-progress'] {
-    animation: none;
-  }
 }
 
 /* 진행 표시는 앱 공용 .ui-spinner 이다. 여기서는 크기만 정한다. */
@@ -6102,52 +6000,12 @@ button.ag-skill-copy {
   }
 }
 
-.ag-ink-ring {
-  display: block;
-  flex: 0 0 auto;
-  overflow: visible;
-}
-
-.ag-ink-ring-trails {
-  transform-origin: 50px 50px;
-  animation: ag-ink-rotate 12s linear infinite;
-}
-
-.ag-ink-ring-trails path {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.4;
-  stroke-linecap: round;
-  stroke-dasharray: 125 230;
-  animation: ag-ink-flow 5.4s cubic-bezier(.45, 0, .55, 1) infinite;
-}
-
-.ag-ink-ring-trails path:nth-child(2) { opacity: .7; animation-delay: -.6s; }
-.ag-ink-ring-trails path:nth-child(3) { opacity: .42; animation-delay: -1.2s; }
-.ag-ink-ring-trails path:nth-child(4) { opacity: .24; animation-delay: -1.8s; }
-
-.ag-ink-ring-center {
-  fill: currentColor;
-  transform-origin: 50px 50px;
-  animation: ag-ink-breathe 2.7s cubic-bezier(.45, 0, .55, 1) infinite;
-}
-
 @keyframes ag-loading-shimmer {
   0%, 12% { background-position: 100% 0; }
   78%, 100% { background-position: 0% 0; }
 }
 
-@keyframes ag-ink-rotate { to { transform: rotate(360deg); } }
-@keyframes ag-ink-flow { to { stroke-dashoffset: -355; } }
-@keyframes ag-ink-breathe {
-  0%, 100% { transform: scale(.6); opacity: .3; }
-  50% { transform: scale(1); opacity: .8; }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .ag-ink-ring-trails,
-  .ag-ink-ring-trails path,
-  .ag-ink-ring-center,
   .ag-turn-pending-label {
     animation: none;
   }
@@ -6721,22 +6579,19 @@ body.ag-fullscreen-open .ag-collapse-tab,
   display: grid;
   gap: 0;
   overflow: clip;
-  transition: grid-template-columns var(--ag-dur-base) var(--ag-motion-out);
 }
 
 /* 접은 칸은 폭만 0 이 아니라 visibility 까지 감춘다 — 잘려 보이지 않을
    뿐인 버튼이 Tab 차례에 남아 승인·거절이 눌리는 일을 막는다.
-   내용은 폭이 다 닫히기 전에 먼저 옅어져 줄바꿈 뭉개짐이 보이지 않는다. */
+   칸 폭·여백은 보간하지 않는다. 폭을 프레임마다 바꾸면 대화 전체가 매 프레임
+   다시 줄바꿈되어 느린 컴퓨터에서 끊긴다. 열 때의 움직임은 index.ts 가
+   transform·opacity 로만 건다. */
 .ag-fullscreen.ag-rail-collapsed .ag-threads-page {
   padding-inline: 0;
   border-right: none;
   overflow: hidden;
   visibility: hidden;
   opacity: 0;
-  transition:
-    padding-inline var(--ag-dur-base) var(--ag-motion-out),
-    opacity var(--ag-dur-fast) var(--ag-ease-out),
-    visibility 0s linear 130ms;
 }
 
 /* ── 칸 경계 드래그 ───────────────────────────────────
@@ -6835,12 +6690,6 @@ body.ag-col-resizing {
   grid-column: 1;
   grid-row: 1;
   overflow-y: auto;
-  /* padding-inline 을 명시해야 접힘 여백이 실제로 보간된다 —
-     transition-property: padding 은 논리 longhand 를 덮지 못한다. */
-  transition:
-    padding-inline var(--ag-dur-base) var(--ag-motion-out),
-    opacity var(--ag-dur-base) var(--ag-motion-out),
-    visibility 0s linear 0s;
 }
 
 .ag-fullscreen .ag-chat-page {
@@ -7177,7 +7026,6 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   background: var(--ag-bg);
   color: var(--ag-text);
   user-select: none;
-  transition: grid-template-columns var(--ag-dur-base) var(--ag-motion-out);
 }
 
 /* 레일이 접히면 첫 칸은 토글까지만 남아 제목이 토글 바로 뒤로 온다. */
@@ -7203,8 +7051,7 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   grid-row: 1;
 }
 
-/* 레일 면은 막대까지 한 장으로 이어지고, 대화 면과는 헤어라인 하나로 나뉜다.
-   폭은 격자 칸과 같은 시간축으로 접힌다. */
+/* 레일 면은 막대까지 한 장으로 이어지고, 대화 면과는 헤어라인 하나로 나뉜다. */
 .ag-fullscreen .ag-workspace-bar::before {
   content: '';
   position: absolute;
@@ -7213,7 +7060,6 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   width: var(--ag-rail-w, 264px);
   background: var(--ag-rail-bg);
   box-shadow: inset -1px 0 0 var(--ag-border);
-  transition: width var(--ag-dur-base) var(--ag-motion-out);
   pointer-events: none;
 }
 
@@ -7333,7 +7179,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-workspace-brand-short,
 .ag-workspace-brand.ag-short .ag-workspace-brand-name:not(.ag-workspace-brand-short),
 .ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-name:not(.ag-workspace-brand-short),
-.ag-fullscreen.ag-rail-brand-transition .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
+.ag-fullscreen.ag-settings-open .ag-workspace-brand-name:not(.ag-workspace-brand-short) {
   display: none;
 }
 
@@ -7344,7 +7190,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 
 .ag-workspace-brand.ag-short .ag-workspace-brand-short,
 .ag-fullscreen.ag-rail-collapsed .ag-workspace-brand-short,
-.ag-fullscreen.ag-rail-brand-transition .ag-workspace-brand-short {
+.ag-fullscreen.ag-settings-open .ag-workspace-brand-short {
   display: inline;
 }
 
@@ -7728,7 +7574,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   box-sizing: border-box;
   padding-inline-end: 0;
   background: var(--ag-bg);
-  transition: padding-inline-end var(--ag-dur-slow) var(--ag-motion-out);
 }
 
 /* 스크롤은 대화면 전체 폭이 맡고(휠·스크롤바가 창 가장자리에서 동작),
@@ -8181,6 +8026,11 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   display: none;
 }
 
+/* 설정 목록 머리에는 마크와 Hama 만 서고, 목록을 넓혀 경계와 띄운다. */
+.ag-fullscreen {
+  --ag-settings-nav-w: 196px;
+}
+
 .ag-fullscreen .ag-settings-nav {
   padding-top: calc(var(--ag-workspace-bar-h, 48px) + 8px);
 }
@@ -8243,7 +8093,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   border-radius: var(--ag-r-card);
   background: var(--ag-hover);
   overflow: hidden;
-  animation: ag-activity-arrive var(--ag-dur-base) var(--ag-motion-out) both;
 }
 
 .ag-fleet-toggle {
@@ -8521,8 +8370,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-fleet-row {
   container: fleet-row / inline-size;
   min-width: 0;
-  /* 진행 단계와 같다 — 끝 상태를 붙잡지 않아 끝난 등장이 문서에 쌓이지 않는다. */
-  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) backwards;
 }
 
 .ag-fleet-row + .ag-fleet-row {
@@ -9168,18 +9015,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   color: var(--ag-question-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .ag-question-arrival-dot {
-    animation: ag-question-arrival-breathe 1.8s ease-in-out infinite;
-  }
-}
-
-@keyframes ag-question-arrival-breathe {
-  50% {
-    opacity: 0.35;
-  }
 }
 
 /* 질문은 한눈에 훑는 목록이다. 선택지는 한 줄짜리 행으로 두고, 설명은 같은

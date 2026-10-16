@@ -2,10 +2,49 @@ import type { DesktopHost } from '../desktop-integration';
 import { licenseSummary, msUntilNextTrialTick, trialTimeLeft, type LicenseStatus } from './agent-sidebar/settings-license';
 import { showToast } from './toast';
 import { setLicenseViewerMode } from './license-viewer-mode';
+import { showTrialEndedBanner, type TrialEndedBanner } from './trial-ended-banner';
 import './license-gate.css';
 
 /** 체험이 끝나기 이만큼 전에 자동 저장을 시작한다. 이 저장은 메인이 기한 전에 받는다. */
 const EXPIRY_SAVE_LEAD_MS = 5_000;
+
+/** 설치한 게이트가 채운다. 잠긴 동안 막힌 동작 위에 체험 끝 카드를 띄운다. */
+let licensePrompt: ((detail: string, leave?: { label: string; onClick: () => void }) => TrialEndedBanner) | null = null;
+
+/**
+ * 라이선스가 잠긴 화면(설정) 위에 닫을 수 없는 카드를 띄운다. 활성화되면 게이트가 스스로 내린다.
+ * onLeave 는 카드의 '홈으로' 단추다. 게이트가 없으면(브라우저) null.
+ */
+export function showLicenseLockedPrompt(onLeave: () => void): TrialEndedBanner | null {
+  return licensePrompt?.('설정은 라이선스를 활성화한 뒤에 바꿀 수 있어요.', { label: '홈으로', onClick: onLeave }) ?? null;
+}
+
+/** 잠긴 동안 막힌 동작(새 문서 등)을 누르면 닫을 수 있는 체험 끝 카드를 띄운다. */
+export function showLicenseRequiredPrompt(detail: string): TrialEndedBanner | null {
+  return licensePrompt?.(detail) ?? null;
+}
+
+/** 구매를 권하는 단추들. 게이트가 상태를 받을 때마다 보이기를 맞춘다. 상태를 알기 전에는 숨긴다. */
+const buyButtons = new Set<HTMLButtonElement>();
+let openPricing: (() => void) | null = null;
+let lastStatus: LicenseStatus | null = null;
+
+/** 체험 중·체험 끝·해지된 키일 때만 보인다. 라이선스가 있으면 숨는다. */
+function showsBuyButton(status: LicenseStatus): boolean {
+  return status.state === 'trial' || status.state === 'trial_expired' || status.state === 'revoked';
+}
+
+/** 라이선스 구매 단추를 slot 에 둔다. 누르면 구매 페이지를 연다. */
+export function mountLicenseBuyButton(slot: HTMLElement): void {
+  const buy = document.createElement('button');
+  buy.type = 'button';
+  buy.className = 'license-buy';
+  buy.textContent = '라이선스 구매';
+  buy.hidden = !lastStatus || !showsBuyButton(lastStatus);
+  buy.addEventListener('click', () => { openPricing?.(); });
+  buyButtons.add(buy);
+  slot.append(buy);
+}
 
 export interface LicenseGateOptions {
   /** 저장하지 않은 문서가 있는지 */
@@ -32,6 +71,7 @@ export async function installLicenseGate(
   if (!found) return;
   const api = found;
   setReadOnly(true);
+  openPricing = () => { void api.openPricing(); };
 
   const pill = document.createElement('button');
   pill.type = 'button';
@@ -49,6 +89,21 @@ export async function installLicenseGate(
   /** 이 페이지가 체험 끝 처리를 시작했는지. 메인이 아직 'trial' 이라고 해도 잠근 채로 둔다. */
   let trialFinished = false;
   let savingAtLock: 'trial' | 'license' | null = null;
+  let trialEndedBanner: TrialEndedBanner | null = null;
+
+  licensePrompt = (detail, leave) => {
+    trialEndedBanner?.dismiss();
+    const expired = current?.state === 'trial_expired' || (trialFinished && current?.state === 'trial');
+    const prompt = showTrialEndedBanner({
+      title: expired ? '체험이 끝났어요' : '라이선스를 확인해 주세요',
+      detail,
+      onActivate: () => { void api.openActivation(); },
+      onPurchase: () => { void api.openPricing(); },
+      leave,
+    });
+    trialEndedBanner = prompt;
+    return prompt;
+  };
 
   function mount(): void {
     if (pill.isConnected) return;
@@ -135,6 +190,13 @@ export async function installLicenseGate(
       savingAtLock = null;
     }
     paint();
+    // 체험이 끝나는 순간에만 배너를 띄운다. 이미 끝난 채로 켜면 메인이 활성화 창을 연다.
+    if (kind === 'trial') {
+      trialEndedBanner = showTrialEndedBanner({
+        onActivate: () => { void api.openActivation(); },
+        onPurchase: () => { void api.openPricing(); },
+      });
+    }
     if (failed > 0) {
       const reason = kind === 'trial' ? '체험이 끝나' : '읽기 전용이 되어';
       showToast({ message: `${reason} 저장하지 못한 문서가 ${failed}개 있어요.`, durationMs: 6000 });
@@ -144,6 +206,8 @@ export async function installLicenseGate(
   function render(status: LicenseStatus): void {
     const previous = current;
     current = status;
+    lastStatus = status;
+    for (const buy of buyButtons) buy.hidden = !showsBuyButton(status);
     // 잠자기에서 깨어 메인이 먼저 기한을 알려 온 경우에도 저장부터 한다.
     if (status.state === 'trial_expired' && previous?.state === 'trial' && !trialFinished) {
       void saveAndLock('trial');
@@ -155,7 +219,11 @@ export async function installLicenseGate(
       return;
     }
     // 활성화하면 다시 편집할 수 있다.
-    if (status.canEdit && status.state !== 'trial') trialFinished = false;
+    if (status.canEdit && status.state !== 'trial') {
+      trialFinished = false;
+      trialEndedBanner?.dismiss();
+      trialEndedBanner = null;
+    }
     const readOnly = locked(status);
     setReadOnly(readOnly);
     setLicenseViewerMode(readOnly);

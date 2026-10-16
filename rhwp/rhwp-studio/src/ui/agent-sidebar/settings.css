@@ -1450,7 +1450,7 @@
   display: grid;
   flex: 1 1 auto;
   min-height: 0;
-  grid-template-columns: 176px minmax(0, 1fr);
+  grid-template-columns: var(--ag-settings-nav-w, 176px) minmax(0, 1fr);
 }
 
 .ag-settings-nav {

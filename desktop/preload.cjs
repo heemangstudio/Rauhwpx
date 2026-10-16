@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   finishRebrandImport: (token, outcome) => ipcRenderer.invoke('desktop:finish-rebrand-import', token, outcome),
   getLaunchFiles: () => ipcRenderer.invoke('desktop:get-launch-files'),
   getLaunchGeneratedDocument: () => ipcRenderer.invoke('desktop:get-launch-generated-document'),
+  offersAutosaveRecovery: () => ipcRenderer.invoke('desktop:offers-autosave-recovery'),
   openGeneratedDocumentWindow: (payload) => ipcRenderer.invoke(
     'desktop:open-generated-document-window',
     payload,
@@ -146,6 +147,30 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     'desktop:open-native-document-window',
     documentId,
   ),
+  // 저장하지 않은 새 문서: 창마다 자기 목록을 알리고, 모든 창의 목록을 받는다.
+  setUnsavedDocuments: (documents) => {
+    ipcRenderer.send('desktop:set-unsaved-documents', Array.isArray(documents) ? documents : []);
+  },
+  listUnsavedDocuments: () => ipcRenderer.invoke('desktop:list-unsaved-documents'),
+  onUnsavedDocumentsChanged: (callback) => {
+    const listener = (_event, documents) => callback(Array.isArray(documents) ? documents : []);
+    ipcRenderer.on('desktop:unsaved-documents-changed', listener);
+    return () => ipcRenderer.removeListener('desktop:unsaved-documents-changed', listener);
+  },
+  runUnsavedDocumentAction: (documentId, action) => ipcRenderer.invoke(
+    'desktop:unsaved-document-action',
+    String(documentId),
+    String(action),
+  ),
+  onUnsavedDocumentAction: (callback) => {
+    const listener = (_event, payload) => {
+      if (typeof payload?.documentId === 'string' && (payload.action === 'open' || payload.action === 'save')) {
+        callback(payload.documentId, payload.action);
+      }
+    };
+    ipcRenderer.on('desktop:run-unsaved-document-action', listener);
+    return () => ipcRenderer.removeListener('desktop:run-unsaved-document-action', listener);
+  },
   reserveDocument: (identity, nativeHandleId, slotId) => ipcRenderer.invoke(
     'desktop:document-reserve',
     identity,

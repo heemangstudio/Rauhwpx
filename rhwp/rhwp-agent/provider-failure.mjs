@@ -233,7 +233,7 @@ const CLAUDE_EPOCH_SUFFIX = /\|(\d{10})(?!\d)/;
 
 // 프로세스 종료 문구(가공하지 않은 stderr 꼬리) 전용 — 위 패턴은 프로바이더가 돌려준 오류
 // 문구를 위한 것이라, 스택의 줄 번호(file.js:401:12)나 경로(/login/, /authentication/)를
-// 로그인·한도로 읽는다. 여기서는 상태 코드에 HTTP 맥락을 요구하고 경로는 지운 뒤 본다.
+// 로그인·한도로 읽는다. 여기서는 상태 코드에 HTTP 콘텍스트를 요구하고 경로는 지운 뒤 본다.
 const HTTP_STATUS_CONTEXT = String.raw`(?:\bstatus(?:[ _]code)?|\bHTTP(?:\/\d(?:\.\d)?)?|\bcode)["']?[\s:=]+["']?`;
 const EXIT_AUTH_TEXT = new RegExp(
   `not logged in|log ?in again|oauth token (?:has )?(?:expired|been revoked|is invalid)|token (?:has )?expired|invalid api key|invalid x-api-key|no auth credentials|incorrect api key|authentication(?:_error| (?:failed|error|required))|\\bunauthori[sz]ed\\b|${HTTP_STATUS_CONTEXT}401\\b|\\b401 unauthori[sz]ed`,

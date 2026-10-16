@@ -169,7 +169,7 @@ test('a process exit is not read as a login or usage failure from stack line num
     const failure = classifyProviderFailure({ agent: 'pi', hint: exit, message });
     assert.deepEqual([failure.class, failure.retryable], ['process_exited', true], message);
   }
-  // HTTP 맥락이 있는 상태 코드와 명령으로서의 /login 은 여전히 로그인·한도다.
+  // HTTP 콘텍스트가 있는 상태 코드와 명령으로서의 /login 은 여전히 로그인·한도다.
   const auth = (message) => classifyProviderFailure({ agent: 'codex', hint: { source: 'codex', code: 'process_exit' }, message }).class;
   assert.equal(auth('Codex app-server disconnected.\nERROR codex_core: unexpected status 401 Unauthorized'), 'auth_required');
   assert.equal(auth('request failed: HTTP 401 from https://api.example.com/v1/responses'), 'auth_required');
