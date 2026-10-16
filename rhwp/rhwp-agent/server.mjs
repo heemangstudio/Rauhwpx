@@ -1629,8 +1629,10 @@ function settleUserQuestion(record, outcome) {
   return true;
 }
 
-function beginAgentTurn(record, activeSession) {
+function beginAgentTurn(record, activeSession, { userTurn = true } = {}) {
   settleChatPermissionRequest(record, { status: 'expired', reason: 'request-invalidated' });
+  // 사용자가 새 턴을 보내면 이 창이 잡아 둔 브라우저 탭을 에이전트와 다시 공유한다.
+  if (userTurn) void ownedBrowser.releaseHolds(browserActorForRecord(record, { isHuman: true })).catch(() => {});
   if (record.pendingUserQuestion) {
     settleUserQuestion(record, { status: 'expired', reason: 'request-invalidated' });
   }
@@ -2463,7 +2465,7 @@ function drainTemplateCompletion(record) {
   );
   if (index < 0) return;
   const [entry] = record.pendingTemplateCompletions.splice(index, 1);
-  beginAgentTurn(record, activeSession);
+  beginAgentTurn(record, activeSession, { userTurn: false });
   try {
     activeSession.backend.sendUserMessage(addAgentInstructionsContext(
       buildCopyLayoutCompletionPrompt(entry.result),

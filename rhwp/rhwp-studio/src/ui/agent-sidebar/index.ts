@@ -4379,8 +4379,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       void ensureWorkbenchBrowser().controller.refresh();
       return;
     }
-    if (data.type !== 'owned_browser_activity' || data.active === false) return;
-    if (data.tab) ensureWorkbenchBrowser().previewAgent(data.tab);
+    if (data.type !== 'owned_browser_activity' || !data.tab) return;
+    if (data.active === false) { workbenchBrowser?.agentActivity(data.tab, false); return; }
+    const view = ensureWorkbenchBrowser(); view.previewAgent(data.tab); view.agentActivity(data.tab, true);
   });
 
   workbench = createSidebarWorkbench({

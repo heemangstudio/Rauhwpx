@@ -119,7 +119,8 @@ try {
     await clickRef(provider, tab.tabId, 'Search references', 'search');
     assert.ok((await observe(provider, tab.tabId)).text.includes('Result: Shared sidebar query'));
     assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.dataset.presentation), 'dock');
-    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.inert), true, 'sidebar indicates and protects ongoing agent control');
+    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.dataset.agentControlled), 'true', 'sidebar indicates the agent turn');
+    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.inert), false, 'between agent actions the user can take the tab');
     assert.equal(await page.$$eval('.ag-browser-floating', rows => rows.some(row => !row.hidden)), false, 'agent reuses sidebar without an extra floating preview');
     await waitForState(page, 'sidebar frame recovers after agent navigation', () => document.querySelector('.ag-workbench-page .ag-browser-error')?.hidden === true && Boolean(document.querySelector('.ag-workbench-page .ag-browser-frame')?.src));
     await shot('shared-sidebar-agent-control');
@@ -147,6 +148,17 @@ try {
   const stale = await provider.call('browser_click', refArgs(snapshot, 'Search references', 'search'));
   assert.equal(stale.ok, false); assert.equal(stale.error.code, 'BROWSER_STALE_REFERENCE');
   await record('Stale semantic reference rejected without replay');
+  // 에이전트 턴의 미리보기를 사용자가 만지면 제어권을 넘겨받고, 에이전트 쓰기는 반환 전까지 즉시 거절된다.
+  const previewSurface = await page.waitForSelector('.ag-browser-floating:not([hidden]) .ag-browser-surface', { visible: true });
+  const surfaceBox = await previewSurface.boundingBox();
+  await page.mouse.move(surfaceBox.x + surfaceBox.width / 2, surfaceBox.y + surfaceBox.height / 2); await page.mouse.wheel({ deltaY: 40 });
+  await eventually('touching the agent preview takes control', () => human('status'), status => status.tabs.find(row => row.tabId === tab.tabId)?.controller.held === true);
+  const refused = await provider.call('browser_click', refArgs(await observe(provider, tab.tabId), 'Search references', 'search'));
+  assert.equal(refused.ok, false); assert.equal(refused.error.code, 'BROWSER_USER_IN_CONTROL');
+  await page.click('.ag-browser-floating:not([hidden]) [aria-label="에이전트에게 제어권 반환"]');
+  await eventually('returning control releases the hold', () => human('status'), status => !status.tabs.find(row => row.tabId === tab.tabId)?.controller.held);
+  await clickRef(provider, tab.tabId, 'Search references', 'search');
+  await record('Touching the agent preview takes control; agent writes are refused until the user returns it');
   let broken;
   if (!chromeOnly) {
   for (const [name, intent] of [['Download authenticated GET PDF', 'export'], ['Export POST PDF', 'export'], ['Download blob PDF', 'export']]) {

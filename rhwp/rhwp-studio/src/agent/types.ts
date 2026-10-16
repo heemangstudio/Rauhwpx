@@ -681,7 +681,7 @@ export interface BrowserTab {
   title: string;
   navigationEpoch: number;
   controllerEpoch: number;
-  controller: { owner: 'human' | 'agent'; clientId?: string };
+  controller: { owner: 'human' | 'agent'; clientId?: string; held?: boolean };
   status: string;
   challenge?: BrowserChallenge | null;
   presentation?: 'native' | 'stream';

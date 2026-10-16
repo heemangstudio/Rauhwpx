@@ -290,7 +290,12 @@ export class PrivateBrowserCdp {
     if (!method.startsWith('Input.')) {
       let result;
       try { result = await entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId); }
-      catch (error) { if (entry.tab.passwordShield || entry.tab.closing || entry.tab.view.webContents.isDestroyed?.()) throw new Error('Native browser command failed'); throw error; }
+      catch (error) {
+        if (entry.tab.closing || entry.tab.view.webContents.isDestroyed?.()) throw new Error('Browser debugger target was closed');
+        // 보호된 페이지의 오류 문구는 내보내지 않고 명령 이름만 남긴다.
+        if (entry.tab.passwordShield) throw new Error(`Native browser command ${method} failed`);
+        throw error;
+      }
       if (entry.tab.closing || entry.tab.view.webContents.isDestroyed?.()) throw new Error('Browser debugger target was closed');
       // A read that started before the vault fill must not return after protection began.
       if (entry.tab.passwordShield && !PASSWORD_SAFE_COMMANDS.has(method) && !safeSetup) throw new Error('Native saved passwords protect this page. Use the native semantic snapshot and input tools.');
@@ -303,6 +308,8 @@ export class PrivateBrowserCdp {
       if (method === 'Emulation.clearDeviceMetricsOverride') entry.tab.viewport = null;
       return this.host.passwords ? this.host.passwords.redact(entry.tab, result) : result;
     }
+    // 사용자가 잡은 탭에는 자동화 입력을 보내지 않는다.
+    if (entry.tab.held) throw new Error('The user controls this browser tab');
     entry.tab.automationInputDepth = (entry.tab.automationInputDepth ?? 0) + 1;
     try { return await entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId); }
     finally { entry.tab.automationInputDepth -= 1; }
