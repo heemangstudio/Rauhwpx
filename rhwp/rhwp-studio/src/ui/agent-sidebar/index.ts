@@ -1048,9 +1048,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let insetMotion: InsetMotion | null = null;
   /** 멈춰 있을 때 사이드바가 드러나 있는지. 되돌리기 없이 새로 출발할 때의 시작 위치다. */
   let sidebarShownAtRest = false;
-  /** 스프링이 멈춘 뒤 한 번 부를 일 (끌기 도중 다시 펼친 뒤 폭 추종 재개 등) */
-  let afterInsetSettle: (() => void) | null = null;
-  /** 손잡이를 끄는 중 (접힘·다시 펼침 구간 포함) */
+  /** 손잡이를 끄는 중 */
   let widthDragging = false;
   /** 지금 레이아웃에 반영된 편집 영역 오른쪽 inset(px). 전이 폭 계산의 기준이다. */
   let committedEditorInsetPx = 0;
@@ -1374,8 +1372,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return Number.isFinite(timeline) ? Math.max(timeline, wall - 1000 / 60) : wall;
   }
 
+  /**
+   * 사이드바 펼침과 집중 화면 전환을 움직일지. 기본은 꺼져 바로 바뀐다(설정 '사이드바 움직임').
+   * 켜 두어도 시스템의 동작 줄이기가 켜져 있으면 움직이지 않는다.
+   */
+  function sidebarMotionEnabled(): boolean {
+    return userSettings.getViewSettings().sidebarMotion
+      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
   function slowMotionConfig(): ReturnType<typeof springForDuration> {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+    if (!sidebarMotionEnabled()) return null;
     const token = getComputedStyle(document.documentElement).getPropertyValue('--ag-dur-slow');
     return springForDuration(parseCssTimeMs(token, SIDEBAR_MOTION_DURATION_MS), {
       dpr: window.devicePixelRatio,
@@ -1394,7 +1401,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function clearInsetRecenterLoop(): void {
     cancelInsetAnimations();
-    afterInsetSettle = null;
     setPageClass('ag-sidebar-animating', false);
   }
 
@@ -1421,9 +1427,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     notifyInsetChanged();
     cancelInsetAnimations();
-    const after = afterInsetSettle;
-    afterInsetSettle = null;
-    after?.();
   }
 
   /**
@@ -1468,9 +1471,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       sidebarShownAtRest = wantOpen;
       commitEditorInset(wantOpen);
       notifyInsetChanged();
-      const after = afterInsetSettle;
-      afterInsetSettle = null;
-      after?.();
       return;
     }
 
@@ -1540,18 +1540,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   applySidebarWidth(sidebarWidth, { persist: false, recenter: false });
 
   const RESIZE_DRAG_THRESHOLD_PX = 4;
-  /* Mail 의 분할선처럼 최솟값을 이만큼 넘겨 끌면 사이드바를 접는다. */
-  const RESIZE_COLLAPSE_OVERSHOOT_PX = 72;
   let resizing = false;
   let resizeArmed = false;
   let resizeStartX = 0;
   let resizeStartWidth = sidebarWidth;
-  /** 드래그 도중 접힌 상태 — 놓기 전에 돌아오면 다시 펼친다. */
-  let resizeDragCollapsed = false;
-
-  function clearResizeResumeTimer(): void {
-    afterInsetSettle = null;
-  }
 
   function detachResizeWindowListeners(): void {
     window.removeEventListener('pointermove', onResizePointerMove, true);
@@ -1565,7 +1557,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     resizeArmed = false;
     resizeStartX = startX;
     resizeStartWidth = sidebarWidth;
-    resizeDragCollapsed = false;
     setConfigPanelOpen(false);
     setPageClass('ag-sidebar-resizing', true);
     setPageClass('ag-sidebar-animating', true);
@@ -1577,28 +1568,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function applyResizeMove(): void {
     resizeMoveRaf = null;
     if (!resizing || !resizeArmed) return;
+    // 끌어서 접지는 않는다. 최솟값 아래로 끌면 최소 폭에 멈춘다(applySidebarWidth 가 묶는다).
     const target = resizeStartWidth + (resizeStartX - resizeMoveX);
-    const overshoot = !fullscreen && target < sidebarWidthMin - RESIZE_COLLAPSE_OVERSHOOT_PX;
-    if (overshoot !== resizeDragCollapsed) {
-      resizeDragCollapsed = overshoot;
-      clearResizeResumeTimer();
-      // 접고 펴는 동안은 편집 영역 여백도 전이로 따라가야 한다 — 리사이즈 클래스를
-      // 잠시 내리고, 다시 펼친 뒤 전이가 끝나면 즉시 추종으로 돌아간다.
-      setPageClass('ag-sidebar-resizing', false);
-      setCollapsed(overshoot);
-      if (!overshoot) {
-        // 다시 펼침 스프링이 멈추면 곧바로 폭 추종으로 돌아간다(시간 추측 타이머 없이).
-        const resume = () => {
-          if (resizing && !resizeDragCollapsed) {
-            setPageClass('ag-sidebar-resizing', true);
-            setPageClass('ag-sidebar-animating', true);
-          }
-        };
-        if (insetMotion) afterInsetSettle = resume;
-        else resume();
-      }
-    }
-    if (resizeDragCollapsed) return;
     applySidebarWidth(target, { persist: false, recenter: false });
   }
 
@@ -1624,17 +1595,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     resizing = false;
     widthDragging = false;
     resizeArmed = false;
-    clearResizeResumeTimer();
     setPageClass('ag-sidebar-resizing', false);
-    // 접힘 전이가 도는 중이면 ag-sidebar-animating 은 그 루프가 거둔다.
     if (insetMotion === null) setPageClass('ag-sidebar-animating', false);
     detachResizeWindowListeners();
-    if (resizeDragCollapsed) {
-      // 다시 펼칠 때는 끌기 전 폭으로 돌아온다.
-      resizeDragCollapsed = false;
-      applySidebarWidth(resizeStartWidth, { persist: true, recenter: false });
-      return;
-    }
     applySidebarWidth(sidebarWidth, { persist: true, recenter: true });
   }
 
@@ -5192,7 +5155,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 교차 페이드는 페이지 전체를 잡으므로 화면에 붙은 사이드바만 건다.
     const animate = active
       && typeof startViewTransition === 'function'
-      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      && sidebarMotionEnabled();
     if (!animate) {
       cancelFsMotionTimers();
       // 즉시 바꿀 때도 패널 슬라이드·칸 전환이 새 배치 위에서 돌지 않게 한다.
