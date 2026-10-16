@@ -45,7 +45,7 @@ try {
   const first = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
   const second = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
   windows.set('window-one', first); windows.set('window-two', second);
-  first.show();
+  first.show(); await first.loadURL("data:text/html,editor");
   const owner = { id: 'fixture-hub-1' };
   const events = [];
   host = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session, dataDir: path.join(root, 'browser-data'), getWindowForSession: (id) => windows.get(id), onEvent: (event) => events.push(event) });
@@ -262,7 +262,7 @@ try {
   serviceHost.attach(first, { tabId: 'restored-tab', bounds: { x: 0, y: 80, width: 500, height: 360 }, interactive: true });
   assert.equal(serviceHost.tab('restored-tab').interactive, true);
   const recoveredContents = serviceHost.tab('restored-tab').view.webContents;
-  first.show();
+  first.show(); await first.loadURL("data:text/html,editor");
   first.focus();
   // 배치한 게스트의 첫 프레임을 기다린 뒤 실제 backing surface를 확인한다.
   await recoveredContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
@@ -314,7 +314,14 @@ try {
   await recoveredContents.executeJavaScript('localStorage.setItem("native-marker", "native-profile"); document.cookie="nativeAuth=native-profile; Max-Age=86400; Path=/"');
   await serviceHost.session.cookies.flushStore();
   report.nativeDefaultRecovery = { native: true, currentEditorBinding: true, humanInput: true };
-  await service.request({ isHuman: true, clientId: 'window-one', sessionId: 'window-one' }, 'control', { tabId: 'restored-tab', owner: 'agent' });
+  // Both popout control flips change only the native input flag; the agent keeps its tested ownership.
+  const controlEditor = { isHuman: true, clientId: 'window-one', sessionId: 'window-one' };
+  const takenBack = await service.request(controlEditor, 'control', { tabId: 'restored-tab', owner: 'human' });
+  assert.equal(serviceHost.state(serviceHost.tab('restored-tab')).controller, 'human');
+  const returnedToAgent = await service.request(controlEditor, 'control', { tabId: 'restored-tab', owner: 'agent' });
+  assert.equal(serviceHost.state(serviceHost.tab('restored-tab')).controller, 'agent', 'Returning control revokes native human input');
+  assert.equal(serviceHost.tab('restored-tab').interactive, false);
+  assert.equal(returnedToAgent.tab.controller.owner, takenBack.tab.controller.owner);
   const retainedTarget = serviceHost.tab('restored-tab').targetId;
   await service.close();
   const savedTabsPath = path.join(serviceDir, 'browser', 'tabs.json');

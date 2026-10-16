@@ -73,6 +73,8 @@ import {
   sanitizeTraceFields,
   traceNow,
   writeToolTrace,
+  writeBrowserEvidence,
+  browserEvidenceArgsHash,
 } from './tool-trace.mjs';
 import { createProviderLimitsClient } from './provider-limits.mjs';
 import {
@@ -267,7 +269,7 @@ function toolArgSchema(tool, definition) {
 const HOST_PROFILE_HOME = process.platform === 'win32' && process.env.USERPROFILE
   ? path.resolve(process.env.USERPROFILE)
   : os.homedir();
-const SOURCE_CLAUDE_CONFIG = path.join(HOST_PROFILE_HOME, '.claude.json');
+const SOURCE_CLAUDE_CONFIG = process.env.RHWP_BENCH_CLAUDE_CONFIG_FILE || path.join(HOST_PROFILE_HOME, '.claude.json');
 // 설정 상태·사용량과 같은 프로필만 본다. 선택한 CODEX_HOME 이 비어 있어도 다른 프로필로 넘어가지 않는다.
 const sourceCodexHome = process.env.CODEX_HOME?.trim()
   ? path.resolve(process.env.CODEX_HOME)
@@ -673,7 +675,7 @@ function browserArgsFingerprint(tool, value) {
   return JSON.stringify(canonical(parsed));
 }
 
-async function browserActorForMcp(record, sock, tool, args) {
+async function browserActorForMcp(record, sock, tool, args, onScope = null) {
   if (sock.piSubagentId) return browserActorForRecord(record, { taskId: sock.parentTaskId });
   // Claude/Codex의 공유 MCP 소켓은 provider 이벤트로 발급된 호출 표를 소비한다.
   // msg.parentTaskId/agentId/tab 소유권은 호출자가 고를 수 없다.
@@ -693,10 +695,17 @@ async function browserActorForMcp(record, sock, tool, args) {
       matches = find();
     }
   }
+  const uniqueScope = matches.length === 1;
+  // Identical parallel calls from one caller resolve to the same actor, so the oldest ticket is
+  // safe to consume. Tickets from different callers stay ambiguous and are never guessed.
+  if (matches.length > 1 && new Set(matches.map(({ scope }) => scope.parentTaskId ?? null)).size === 1) matches = matches.slice(0, 1);
   if (matches.length > 1 || (sock.agentLabel !== 'pi' && matches.length !== 1)) {
-    throw workflowError('CALLER_SCOPE_UNKNOWN', 'The provider did not establish a unique browser call identity');
+    throw Object.assign(workflowError('CALLER_SCOPE_UNKNOWN', 'The provider did not establish a unique browser call identity'), {
+      retryable: true, hint: 'The hub could not tell which agent sent this browser call, so nothing ran. Retry this call once on its own.',
+    });
   }
   const scope = matches.length ? record.pendingBrowserScopes.splice(matches[0].index, 1)[0] : null;
+  if (scope && uniqueScope) onScope?.(scope);
   return browserActorForRecord(record, { taskId: scope?.parentTaskId ?? null });
 }
 
@@ -760,7 +769,7 @@ function browserMcpResult(result) {
 }
 
 function browserError(error, fallback = 'BROWSER_REQUEST_FAILED') {
-  return { code: error?.code ?? fallback, message: error?.message ?? 'The browser request failed.', ...(typeof error?.retryable === 'boolean' ? { retryable: error.retryable } : {}) };
+  return { code: error?.code ?? fallback, message: error?.message ?? 'The browser request failed.', ...(typeof error?.retryable === 'boolean' ? { retryable: error.retryable } : {}), ...(typeof error?.hint === 'string' ? { hint: error.hint.slice(0, 500) } : {}), ...(error?.actionCompleted === true ? { actionCompleted: true } : {}) };
 }
 
 function containsBrowserSecret(value) {
@@ -2967,6 +2976,7 @@ function makeBackendEventHandler(record, generation) {
           agent: evt.agent ?? activeSession.agent, callId: evt.callId, tool,
           parentTaskId: evt.parentTaskId ?? null, generation, turnId: activeSession.turnId,
           fingerprint: browserArgsFingerprint(tool, JSON.parse(evt.argsJson ?? '{}')),
+          ...(process.env.RHWP_BROWSER_BENCH_EVIDENCE_FILE ? { evidenceArgsHash: browserEvidenceArgsHash(JSON.parse(evt.argsJson ?? '{}')) } : {}),
         });
         if (record.pendingBrowserScopes.length > 64) record.pendingBrowserScopes.splice(0, record.pendingBrowserScopes.length - 64);
       } catch {}
@@ -5878,6 +5888,9 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           error: {
             code: reported?.code ?? fallback,
             message: String(reported?.message ?? reported),
+            ...(typeof reported?.retryable === 'boolean' ? { retryable: reported.retryable } : {}),
+            ...(typeof reported?.hint === 'string' ? { hint: reported.hint.slice(0, 500) } : {}),
+            ...(reported?.actionCompleted === true ? { actionCompleted: true } : {}),
           },
         });
       };
@@ -6536,7 +6549,9 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         return;
       }
       if (definition.category === 'browser' || tool === 'browser_request_account') {
-        void browserActorForMcp(record, sock, tool, args).then(async (actor) => {
+        let evidenceScope = null, evidenceActor = null;
+        void browserActorForMcp(record, sock, tool, args, scope => { evidenceScope = scope; }).then(async (actor) => {
+          evidenceActor = actor;
           if (tool === 'browser_request_account') {
             if (actor.agentId !== `${actor.threadId}:root`) {
               throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request website account access');
@@ -6553,7 +6568,18 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
               : accounts.accounts.filter((account) => account.agentReuseApproved));
           }
           return result;
-        }).then(sendResult).catch((error) => sendError(error, 'BROWSER_TOOL_FAILED'));
+        }).then(result => {
+          const delivered = sendResult(result);
+          const capture = writeBrowserEvidence({ delivered, result, actor: evidenceActor, callId: evidenceScope?.callId ?? null,
+            argsHash: evidenceScope?.evidenceArgsHash ?? null, args, tool,
+            hub: { seq: trace?.seq ?? null, clientId, turnId: providerTurn?.turnId ?? null, agent: sock.agentLabel ?? null } });
+          if (capture.status === 'error') {
+            const { sessionId, threadId, documentId, agentId, taskId, isHuman } = evidenceActor ?? {};
+            writeToolTrace({ kind: 'browser-evidence-capture-error', t: traceNow(), code: capture.code,
+              callId: evidenceScope?.callId ?? null, actor: { sessionId, threadId, documentId, agentId, taskId, isHuman },
+              hub: { seq: trace?.seq ?? null, clientId, turnId: providerTurn?.turnId ?? null, agent: sock.agentLabel ?? null } });
+          }
+        }).catch((error) => sendError(error, 'BROWSER_TOOL_FAILED'));
         return;
       }
       if (workerJob && tool === 'materialize_document_snapshot') {

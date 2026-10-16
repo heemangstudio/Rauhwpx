@@ -116,6 +116,15 @@ test('MCP client refuses hub frames over 8 MiB instead of buffering them', { tim
   assert.notEqual(result.isError, true, JSON.stringify(result));
 });
 
+test('MCP tool errors keep the hub hint and action-completed state in model-visible text', { timeout: 20_000 }, async (t) => {
+  const hub = await fakeHub(t);
+  const { client } = await startClient(t, hub);
+  const pending = client.callTool({ name: 'browser_status', arguments: {} });
+  await hub.waitFor(() => hub.calls.length === 1, 'browser call');
+  hub.reply({ v: 5, type: 'tool-result', id: hub.calls[0].id, ok: false, error: { code: 'BROWSER_ACTION_TIMEOUT', message: 'Timed out.', retryable: false, actionCompleted: true, hint: 'Take a new snapshot.' } });
+  assert.equal(errorText(await pending), 'BROWSER_ACTION_TIMEOUT: Timed out.\nAction completed: yes (do not repeat it)\nHint: Take a new snapshot.');
+});
+
 test('MCP client rejects the 65th concurrent tool call', { timeout: 20_000 }, async (t) => {
   const hub = await fakeHub(t);
   const { client } = await startClient(t, hub);

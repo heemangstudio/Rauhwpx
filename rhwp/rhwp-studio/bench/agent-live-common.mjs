@@ -11,6 +11,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { readClaudeOAuthCredential } from '../../rhwp-agent/claude-credentials.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { ensureChromePath, findAvailablePort, removeTempDir, startHub, startVite, stats, stopServer } from '../e2e/agent-bench-harness.mjs';
@@ -30,12 +32,22 @@ export function defaultUserPiRoot() {
   return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'rhwp', 'pi');
 }
 
-/** OPENROUTER_API_KEY 환경 변수, 없으면 ~/.env 의 OPENROUTER_API_KEY="…" 줄. 값은 절대 출력하지 않는다. */
-export function loadOpenRouterKey() {
-  const fromEnv = process.env.OPENROUTER_API_KEY?.trim();
+/** 벤치 전용 키 파일을 우선하고, 없으면 환경 변수와 ~/.env 순서로 읽는다. 값은 출력하지 않는다. */
+export function loadOpenRouterKey({ env = process.env, home = os.homedir() } = {}) {
+  const keyFile = env.RHWP_BENCH_OPENROUTER_KEY_FILE?.trim();
+  if (keyFile) {
+    const stat = fs.lstatSync(keyFile);
+    if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== 'win32' && ((stat.mode & 0o077) !== 0 || stat.uid !== process.getuid()))) {
+      throw new Error('The benchmark OpenRouter key file must be a private, owned regular file.');
+    }
+    const key = fs.readFileSync(keyFile, 'utf8').trim();
+    if (!key) throw new Error('The benchmark OpenRouter key file is empty.');
+    return key;
+  }
+  const fromEnv = env.OPENROUTER_API_KEY?.trim();
   if (fromEnv) return fromEnv;
   try {
-    const text = fs.readFileSync(path.join(os.homedir(), '.env'), 'utf8');
+    const text = fs.readFileSync(path.join(home, '.env'), 'utf8');
     for (const line of text.split('\n')) {
       const match = /^\s*(?:export\s+)?OPENROUTER_API_KEY\s*=\s*(.*)\s*$/.exec(line);
       if (!match) continue;
@@ -73,13 +85,20 @@ export async function fetchOpenRouterModel(id, key) {
   };
 }
 
+export function piFixtureModel(meta) {
+  const positive = value => Number.isSafeInteger(value) && value > 0 ? value : null;
+  const ceiling = positive(meta.maxCompletionTokens), context = positive(meta.contextLength);
+  return { ...meta, maxOutputTokens: ceiling !== null && context !== null ? Math.min(ceiling, context) : ceiling,
+    pricing: { ...meta.pricing, cacheRead: Number.isFinite(meta.pricing?.cacheRead) && meta.pricing.cacheRead >= 0 ? meta.pricing.cacheRead : 0 } };
+}
+
 /**
  * 픽스처 Pi 루트를 pi-manager 가 읽는 모양으로 채운다 (config.json + agent/models.json).
  * 허브는 기동 시 syncAssets 로 settings.json 을 쓰고 models.json 을 다시 만든다(키는 보존).
  * 확장·스킬은 스폰마다 앱 번들 경로로 넘어가므로 픽스처에 둘 필요가 없다.
  * 사용자 Pi 루트는 읽기만 한다 — prefix 는 심볼릭 링크라 허브의 자동 갱신도 링크 자체만 바꾼다.
  */
-export async function seedPiFixture({ piRoot, modelId, userPiRoot = process.env.RHWP_BENCH_PI_SOURCE || defaultUserPiRoot() }) {
+export async function seedPiFixture({ piRoot, modelId, modelIds = [modelId], transport = null, userPiRoot = process.env.RHWP_BENCH_PI_SOURCE || defaultUserPiRoot() }) {
   const userPrefix = path.join(userPiRoot, 'prefix');
   const userBin = path.join(userPrefix, 'node_modules', '.bin', process.platform === 'win32' ? 'pi.cmd' : 'pi');
   const manifest = path.join(userPrefix, 'node_modules', '@earendil-works', 'pi-coding-agent', 'package.json');
@@ -87,36 +106,40 @@ export async function seedPiFixture({ piRoot, modelId, userPiRoot = process.env.
     throw new Error(`Pi 가 설치돼 있지 않습니다: ${userBin} 가 없습니다. 앱 설정에서 Pi 를 설치하거나 RHWP_BENCH_PI_SOURCE=<Pi 루트> 를 지정하세요.`);
   }
   const version = JSON.parse(fs.readFileSync(manifest, 'utf8')).version;
-  const key = loadOpenRouterKey();
+  const key = transport?.token ?? loadOpenRouterKey();
   if (!key) throw new Error('OpenRouter 키가 없습니다: OPENROUTER_API_KEY 를 설정하거나 ~/.env 에 OPENROUTER_API_KEY="…" 줄을 넣으세요.');
-  const meta = await fetchOpenRouterModel(modelId, key);
+  const metas = await Promise.all(modelIds.map(async id => piFixtureModel(await fetchOpenRouterModel(id))));
+  const meta = metas.find((entry) => entry.id === modelId) ?? metas[0];
 
   fs.mkdirSync(path.join(piRoot, 'agent'), { recursive: true });
   fs.mkdirSync(path.join(piRoot, 'sessions'), { recursive: true });
   fs.symlinkSync(userPrefix, path.join(piRoot, 'prefix'), 'dir');
-  const efforts = meta.reasoning ? ['low', 'medium', 'high'] : [];
   fs.writeFileSync(path.join(piRoot, 'config.json'), `${JSON.stringify({
     version: 1,
     installedVersion: version,
     keyTail: key.slice(-4),
-    models: [{
-      id: meta.id,
-      name: meta.name,
-      reasoning: meta.reasoning,
-      supportsImages: meta.supportsImages,
-      efforts,
-      defaultEffort: efforts.length ? 'medium' : null,
-      contextLength: meta.contextLength,
-      pricing: { prompt: meta.pricing.prompt, completion: meta.pricing.completion },
-    }],
+    models: metas.map((meta) => {
+      const efforts = meta.reasoning ? ['low', 'medium', 'high'] : [];
+      return {
+        id: meta.id,
+        name: meta.name,
+        reasoning: meta.reasoning,
+        supportsImages: meta.supportsImages,
+        efforts,
+        defaultEffort: efforts.length ? 'medium' : null,
+        contextLength: meta.contextLength,
+        maxOutputTokens: meta.maxOutputTokens,
+        pricing: { prompt: meta.pricing.prompt, completion: meta.pricing.completion, cacheRead: meta.pricing.cacheRead },
+      };
+    }),
     defaultModelId: meta.id,
     setupComplete: true,
   }, null, 2)}\n`, { mode: 0o600 });
   // 데스크톱 금고가 없는 독립 허브는 legacy 경로(models.json 의 apiKey)로 키를 읽는다.
   fs.writeFileSync(path.join(piRoot, 'agent', 'models.json'), `${JSON.stringify({
-    providers: { openrouter: { apiKey: key } },
+    providers: { openrouter: { apiKey: key, ...(transport ? { baseUrl: transport.url } : {}) } },
   }, null, 2)}\n`, { mode: 0o600 });
-  return { piRoot, sessionsDir: path.join(piRoot, 'sessions'), version, model: meta };
+  return { piRoot, sessionsDir: path.join(piRoot, 'sessions'), version, model: meta, models: metas };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,43 +147,104 @@ export async function seedPiFixture({ piRoot, modelId, userPiRoot = process.env.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** 이 세션을 띄운 Claude Code 의 환경 변수가 허브 → claude 자식에 새지 않게 뺀다. */
-const dropEnv = (key) => key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_') || key === 'CLAUDE_PID'
+const dropEnv = (key) => key === 'OPENROUTER_API_KEY' || key === 'RHWP_BENCH_OPENROUTER_KEY_FILE' || key === 'RHWP_BROWSER_HOST' || key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_') || key === 'CLAUDE_PID'
   || key === 'CLAUDE_EFFORT' || key === 'CLAUDE_AGENT_SDK_VERSION';
 
+
+/** 구독 실측에는 외부 API 키와 사용자 endpoint/config override 를 넘기지 않는다. */
+export function dropLiveBenchEnv(key) {
+  return dropEnv(key) || /^(?:ANTHROPIC_|OPENAI_|AZURE_OPENAI_|CODEX_)/.test(key)
+    || ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CODEX_CONFIG', 'OPENAI_ORG_ID', 'OPENAI_PROJECT_ID'].includes(key);
+}
+
+/** 호스트 설정·라우팅은 복사하지 않고 비대화형 시작 플래그만 쓴다. */
+export function seedSubscriptionClaudeConfig(fixtureRoot) {
+  const file = path.join(fixtureRoot, 'claude-portable.json');
+  fs.writeFileSync(file, JSON.stringify({ hasCompletedOnboarding: true }) + '\n', { mode: 0o600 });
+  return file;
+}
+
+/** 비밀은 반환하지 않는다. 실제 런타임 authMethod 도 턴 전 별도로 확인한다. */
+export async function inspectSubscriptionFunding(agent, { home = os.homedir(), now = Date.now(), minimumRemainingMs = 600000, readClaude = readClaudeOAuthCredential } = {}) {
+  try {
+    if (agent === 'claude') {
+      const credential = await readClaude({ homeDir: home, env: {} });
+      const oauth = JSON.parse(credential?.text ?? '{}').claudeAiOauth;
+      if (!oauth?.accessToken || !['max', 'pro', 'team', 'enterprise'].includes(oauth.subscriptionType)
+        || !oauth.scopes?.includes('user:inference') || !Number.isFinite(oauth.expiresAt) || oauth.expiresAt - now < minimumRemainingMs) throw new Error();
+      return { kind: 'subscription', provider: 'claude', authMethod: 'oauth', plan: oauth.subscriptionType, expiresAt: new Date(oauth.expiresAt).toISOString() };
+    }
+    if (agent === 'codex') {
+      const file = path.join(home, '.codex', 'auth.json'), stat = fs.lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== 'win32' && ((stat.mode & 0o077) || stat.uid !== process.getuid())) || stat.size > 1024 * 1024) throw new Error();
+      const auth = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (auth.auth_mode !== 'chatgpt' || auth.OPENAI_API_KEY || typeof auth.tokens?.access_token !== 'string') throw new Error();
+      const parts = auth.tokens.access_token.split('.');
+      if (parts.length !== 3) throw new Error();
+      const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')), expiresAt = claims.exp * 1000;
+      if (!Number.isFinite(expiresAt) || expiresAt - now < minimumRemainingMs) throw new Error();
+      const plan = claims['https://api.openai.com/auth']?.chatgpt_plan_type;
+      if (!['plus', 'pro', 'team', 'business', 'enterprise', 'edu', 'go'].includes(plan)) throw new Error();
+      return { kind: 'subscription', provider: 'codex', authMethod: 'oauth', plan, expiresAt: new Date(expiresAt).toISOString() };
+    }
+  } catch { /* Never include credential content in diagnostics. */ }
+  throw new Error('Verified current subscription OAuth is required for ' + agent + '; API-key billing is refused.');
+}
 /**
  * 격리된 허브와 vite 를 띄운다. 반환한 stop() 은 서버를 내리고 픽스처를 지운다.
  * helpers.mjs 는 로드 시점에 VITE_URL 을 고정하므로 이 함수 뒤에 import 해야 한다.
  */
-export async function startLiveStack({ agent, model, tag = 'live' }) {
+export async function startLiveStack({ agent, model, tag = 'live', repoRoot = null, env = {}, piModels = [model], piTransport = null, subscriptionOnly = false }) {
+  const runtime = repoRoot
+    ? await import(pathToFileURL(path.join(repoRoot, 'rhwp/rhwp-studio/e2e/agent-bench-harness.mjs')).href)
+    : { startHub, startVite };
   ensureChromePath();
   const token = `${tag}-${process.pid}`;
   const hubPort = await findAvailablePort(Number(process.env.RHWP_AGENT_PORT || '5781'));
   const vitePort = await findAvailablePort(Number(process.env.VITE_PORT || '7781'));
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), `rhwp-${tag}-`));
   const traceFile = path.join(fixtureRoot, 'tool-trace.jsonl');
+  const childDropEnv = subscriptionOnly ? dropLiveBenchEnv : dropEnv;
+  let claudePortableConfig = null;
+  if (subscriptionOnly && agent === 'claude') {
+    claudePortableConfig = seedSubscriptionClaudeConfig(fixtureRoot);
+  }
+
   const piRoot = path.join(fixtureRoot, 'pi');
   let pi = null;
   try {
-    if (agent === 'pi') pi = await seedPiFixture({ piRoot, modelId: model });
+    if (agent === 'pi') pi = await seedPiFixture({ piRoot, modelId: model, modelIds: piModels, transport: piTransport });
   } catch (error) {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
     throw error;
   }
-  const hub = await startHub({
-    hubPort, token, fixtureRoot, dropEnv,
+  const hub = await runtime.startHub({
+    hubPort, token, fixtureRoot, dropEnv: childDropEnv,
     env: {
       RHWP_TOOL_TRACE: '1',
       RHWP_TOOL_TRACE_FILE: traceFile,
       // 사용자 앱 상태(관리형 CLI·Pi 설정)를 건드리지 않는다. claude 자격 증명은 호스트 ~/.claude 또는 Keychain 에서 읽는다.
       RHWP_CLI_DIR: path.join(fixtureRoot, 'cli'),
       RHWP_PI_DIR: piRoot,
+      ...Object.fromEntries(Object.entries(env).filter(([key]) => !childDropEnv(key))),
+      ...(claudePortableConfig ? { RHWP_BENCH_CLAUDE_CONFIG_FILE: claudePortableConfig } : {}),
     },
     logName: `rhwp-agent-${tag}-hub.log`,
   });
-  const vite = await startVite({ vitePort, hubPort, token, logName: `rhwp-studio-${tag}-vite.log` });
+  // 허브가 모델 파일을 동기화한 뒤, 격리된 벤치 전송만 로컬 예산 프록시로 연결한다.
+  const enforcePiTransport = () => {
+    if (!piTransport || !pi) return;
+    const file = path.join(piRoot, 'agent', 'models.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    data.providers.openrouter.baseUrl = piTransport.url;
+    data.providers.openrouter.apiKey = piTransport.token;
+    fs.writeFileSync(file, JSON.stringify(data), { mode: 0o600 });
+  };
+  enforcePiTransport();
+  const vite = await runtime.startVite({ vitePort, hubPort, token, logName: `rhwp-studio-${tag}-vite.log` });
   process.env.VITE_URL = `http://127.0.0.1:${vitePort}`;
   return {
-    hubPort, vitePort, fixtureRoot, traceFile, pi,
+    hubPort, vitePort, fixtureRoot, traceFile, pi, enforcePiTransport,
     async stop() {
       await stopServer(vite);
       await stopServer(hub);
@@ -190,6 +274,7 @@ export async function installEventCapture(page) {
           window.__liveEvents.push({
             t: now(), type: inner.type, stopReason: inner.stopReason ?? null,
             message: inner.message ?? inner.errorMessage ?? null,
+            errorMessage: inner.errorMessage ?? null, status: inner.status ?? null, failure: inner.failure ?? null,
           });
         } else if (inner.type === 'text-delta' && typeof inner.text === 'string') {
           window.__liveText += inner.text;

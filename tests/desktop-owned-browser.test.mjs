@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { browserNavigationUrl, browserViewBounds } from '../desktop/browser-host.mjs';
+import { OwnedBrowserHost, browserNavigationUrl, browserViewBounds } from '../desktop/browser-host.mjs';
 
 const require = createRequire(import.meta.url);
 let electron;
@@ -18,6 +18,23 @@ test('native browser rejects privileged URLs and clamps a projection to its owni
   for (const url of ['file:///etc/passwd', 'hamaeditor://app/', 'https://user:pass@example.com/', 'javascript:alert(1)']) assert.throws(() => browserNavigationUrl(url));
   assert.equal(browserNavigationUrl('https://example.com'), 'https://example.com/');
   assert.deepEqual(browserViewBounds({ x: -10, y: 20, width: 1000, height: 1000 }, { getContentBounds: () => ({ width: 800, height: 600 }) }), { x: 0, y: 20, width: 800, height: 580 });
+});
+
+test('native browser errors retain recovery and action completion across IPC', async () => {
+  const owner = {};
+  const failure = Object.assign(new Error('Target is covered'), {
+    code: 'BROWSER_TARGET_COVERED', hint: 'Observe the covering dialog first.',
+    retryable: false, actionCompleted: false,
+  });
+  const host = { owner, passwords: { action: async () => { throw failure; } } };
+  const response = await OwnedBrowserHost.prototype.handleRequest.call(host, {
+    type: 'rhwp-browser-request', id: 'covered-input', operation: 'password-action',
+  }, owner);
+  assert.equal(response.ok, false);
+  assert.deepEqual(response.error, {
+    message: failure.message, code: failure.code, hint: failure.hint,
+    retryable: false, actionCompleted: false,
+  });
 });
 
 test('native hidden guests wake only during scoped actions and preserve forms and downloads', { skip: unavailable ? 'Electron needs an installed binary and display' : false, timeout: 30_000 }, async () => {
