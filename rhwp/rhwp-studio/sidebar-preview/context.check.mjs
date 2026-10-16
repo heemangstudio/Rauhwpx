@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 
-/** 맥락 표시 · 수동 압축 · 중복 이벤트 · 다시 열기 · 프로바이더 전환과 커서 재개. */
+/** 콘텍스트 표시 · 수동 압축 · 중복 이벤트 · 다시 열기 · 프로바이더 전환과 커서 재개. */
 export async function checkContextPreview(page, origin, artifacts) {
   const scene = async (query) => {
     await page.goto(`${origin}/?audit=1&controls=0&width=480&theme=light&${query}`, { waitUntil: 'networkidle0' });
@@ -32,7 +32,7 @@ export async function checkContextPreview(page, origin, artifacts) {
   }), marker.id);
   assert.equal(await markerCount('compaction'), 1);
 
-  // 다시 열면 구분선과 맥락 표시가 저장된 채팅에서 돌아온다.
+  // 다시 열면 구분선과 콘텍스트 표시가 저장된 채팅에서 돌아온다.
   await page.click('.ag-header .ag-threads-btn');
   const threadId = await page.$eval('.ag-threads-item.ag-active', (node) => node.dataset.threadId);
   await new Promise((done) => setTimeout(done, 300));

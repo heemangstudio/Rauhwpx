@@ -559,7 +559,7 @@ export class SkillRegistry {
     });
   }
 
-  // requestContext: 사용자 요청 바로 앞에 붙일 턴 맥락 블록 (live_document).
+  // requestContext: 사용자 요청 바로 앞에 붙일 턴 콘텍스트 블록 (live_document).
   async promptContext(text, explicitName, { phase = 'direct', agent = null, requestContext = '' } = {}) {
     const catalog = await this.catalog();
     const enabled = catalog.rows.filter((row) => row.enabled && row.kind !== 'broken');

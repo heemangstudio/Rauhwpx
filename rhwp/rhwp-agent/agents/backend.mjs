@@ -190,7 +190,7 @@ export function redactableTail(value, limit) {
  * @property {string} [model]
  * @property {string} [effort]
  * @property {string} [resumeSessionId] 이어 받을 네이티브 세션 커서. 허브가 canResume 으로 확인한 값만 넘긴다.
- * @property {number} [contextWindow] 공급자가 알려 주지 않을 때 쓰는 모델 맥락 창 크기 (pi).
+ * @property {number} [contextWindow] 공급자가 알려 주지 않을 때 쓰는 모델 콘텍스트 창 크기 (pi).
  * @property {'standard'|'fast'} [serviceTier]
  * @property {string} [toolProfile]
  * @property {string} [agentRole]
@@ -221,7 +221,7 @@ export function redactableTail(value, limit) {
  *   text 는 기록을 인라인으로 붙인 전체 프롬프트다.
  * @property {'manual'|'auto-only'|'none'} compactionSupport
  * @property {(sessionId: string) => Promise<boolean>} canResume 네이티브 저장소에 세션이 남아 있는지 디스크로 확인한다.
- * @property {() => void} [compact] 수동 맥락 압축을 한 턴으로 돌린다 (compactionSupport === 'manual' 일 때만).
+ * @property {() => void} [compact] 수동 콘텍스트 압축을 한 턴으로 돌린다 (compactionSupport === 'manual' 일 때만).
  * @property {(profile: 'safe'|'unrestricted') => void|Promise<void>} setPermissionProfile
  * @property {(mode: {workflow: 'direct'|'plan'|'question'; phase: 'planning'|'questioning'|'awaiting-approval'|'switching'|'implementing'; capabilityEpoch: string|number; chatPermissionGrants?: string[]}) => Promise<void>} setExecutionMode
  * @property {() => void} interrupt

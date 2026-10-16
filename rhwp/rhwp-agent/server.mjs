@@ -3251,7 +3251,7 @@ function handoffPayload(delivery, plainText) {
   return delivery ? { header: delivery.header, entries: delivery.entries, plainText } : undefined;
 }
 
-/** Studio 가 알려 준 맥락 창 크기·사용량으로 기록 예산의 기준을 정한다. */
+/** Studio 가 알려 준 콘텍스트 창 크기·사용량으로 기록 예산의 기준을 정한다. */
 function applyHandoffContext(session, { model, providerContextUsage, resumed }) {
   const usage = providerContextUsage && typeof providerContextUsage === 'object' ? providerContextUsage : {};
   session.contextWindow = resolveContextWindow(session.agent, {
@@ -3490,7 +3490,7 @@ function addAgentInstructionsContext(prompt) {
 
 /**
  * Studio 가 알린, 버려지거나 되돌리지 못한 대기 편집. 턴 밖에서 생긴 일이라 다음 사용자
- * 메시지 맥락에 한 번 붙인다 (턴 안의 일은 Studio 가 다음 도구 결과에 직접 싣는다).
+ * 메시지 콘텍스트에 한 번 붙인다 (턴 안의 일은 Studio 가 다음 도구 결과에 직접 싣는다).
  */
 function queueEditReport(record, msg) {
   const activeSession = record.agentSession;
@@ -3831,7 +3831,7 @@ async function dispatchStagedUserMessage(record, sock, msg, activeSession) {
 }
 
 /**
- * 수동 맥락 압축을 공급자 턴으로 연다. 보통 턴과 같은 turnId/status 잠금을 쓰므로
+ * 수동 콘텍스트 압축을 공급자 턴으로 연다. 보통 턴과 같은 turnId/status 잠금을 쓰므로
  * turn-start … turn-end 사이의 다른 요청은 기존 AGENT_BUSY 경로가 막는다.
  */
 function startManualCompaction(record, sock, msg) {
@@ -3855,7 +3855,7 @@ function startManualCompaction(record, sock, msg) {
     reject('COMPACTION_UNSUPPORTED', 'This provider does not support manual compaction.');
     return;
   }
-  // 교체가 예정된 세션은 버려질 세션이라 압축할 맥락이 없다.
+  // 교체가 예정된 세션은 버려질 세션이라 압축할 콘텍스트가 없다.
   if ((!activeSession.resumed && !activeSession.nativeTurnSucceeded) || activeSession.replaceSessionPending) {
     reject('NOTHING_TO_COMPACT', 'This conversation has no provider context to compact yet.');
     return;
@@ -4089,7 +4089,7 @@ async function startSession(
     documentId,
     documentName,
     projectId,
-    // 프롬프트 맥락이 세션의 작업 공간을 찾을 때 쓴다.
+    // 프롬프트 콘텍스트가 세션의 작업 공간을 찾을 때 쓴다.
     hubSessionId: record.sessionId,
     // Legacy download/browser code uses chatId. It is now the stable Studio
     // thread identity rather than an unrelated hub-generated UUID.

@@ -179,7 +179,7 @@ export type ThreadTurnOutcome = 'interrupted' | 'failed';
 
 /**
  * 대화 흐름의 구분선. 프로바이더에게는 보내지 않는다.
- * handoff = 다른 프로바이더로 넘어간 자리, compaction = 맥락을 압축한 자리.
+ * handoff = 다른 프로바이더로 넘어간 자리, compaction = 콘텍스트를 압축한 자리.
  */
 export type ThreadMarkerMessage =
   | (ThreadMessageBase & {
@@ -351,7 +351,7 @@ export interface ChatThread {
   followUps?: ThreadFollowUps;
   /** 프로바이더별 네이티브 세션 재개 커서. 성공한 턴이 끝날 때만 갱신한다. */
   providerSessions?: Partial<Record<AgentName, ProviderSessionCursor>>;
-  /** 마지막으로 보고된 맥락 창 사용량 — 다시 열었을 때 맥락 표시를 복원한다. */
+  /** 마지막으로 보고된 콘텍스트 창 사용량 — 다시 열었을 때 콘텍스트 표시를 복원한다. */
   contextUsage?: ThreadContextUsage;
   messages: ThreadMessage[];
 }
@@ -361,7 +361,7 @@ export interface ProviderSessionCursor {
   updatedAt: number;
   /** 이 세션이 성공한 턴에서 마지막으로 받은 사용자 메시지. 그 뒤만 넘겨준다. */
   seenThroughMessageId?: string;
-  /** 그 턴이 끝났을 때 이 세션이 차지한 맥락 토큰. */
+  /** 그 턴이 끝났을 때 이 세션이 차지한 콘텍스트 토큰. */
   usedTokens?: number;
   maxTokens?: number;
 }
@@ -1938,7 +1938,7 @@ export interface ProviderStartContext {
   providerSessionId?: string;
   /** 재개에 성공했을 때만 쓰는, 이 프로바이더가 아직 못 본 메시지. */
   handoffHistory?: ThreadProviderHistoryEntry[];
-  /** 허브가 대화 예산을 정할 때 쓰는 맥락 창 정보. */
+  /** 허브가 대화 예산을 정할 때 쓰는 콘텍스트 창 정보. */
   providerContextUsage?: ProviderContextUsage;
 }
 
@@ -1979,7 +1979,7 @@ function handoffStartIndex(
 }
 
 /**
- * chat-start 에 실을 맥락. 커서가 있는 프로바이더는 워터마크 뒤에서 아직 못 본 메시지만
+ * chat-start 에 실을 콘텍스트. 커서가 있는 프로바이더는 워터마크 뒤에서 아직 못 본 메시지만
  * 받는다. 커서를 쓸 수 없으면(처음, 잘림, 삭제) 커서 없이 전체 대화로 시작한다.
  * exclude 는 아직 프로바이더에 전달되지 않은 메시지(대기열에 있는 사용자 메시지)다.
  */

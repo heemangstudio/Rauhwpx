@@ -2063,7 +2063,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     e.stopPropagation();
     openDocumentHome?.();
   });
-  // pane 액션은 문서 맥락 주변의 고정된 헤더 위치를 유지한다.
+  // pane 액션은 문서 콘텍스트 주변의 고정된 헤더 위치를 유지한다.
   // 설정은 집중 모드의 채팅 목록 아래와 환경 설정(Cmd+/)에서 연다.
   headerActions.append(connDot, takeoverBtn, agentUndoBtn, homeBtn, versionsBtn, threadsBtn, fullscreenBtn);
 
@@ -2347,8 +2347,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const stage = el('div', 'ag-stage');
 
   /* 집중 모드는 사이드바를 늘린 화면이 아니라 독립된 작업 공간이다.
-     이 bar는 viewport 전체를 가로지르며 pane 토글, 문서 맥락,
-     대화 제목, 실행 맥락과 종료 동작을 한 축에 고정한다. */
+     이 bar는 viewport 전체를 가로지르며 pane 토글, 문서 콘텍스트,
+     대화 제목, 실행 콘텍스트와 종료 동작을 한 축에 고정한다. */
   const workspaceBar = el('header', 'ag-workspace-bar');
   const workspaceDrawerScrim = el('button', 'ag-workspace-drawer-scrim');
   workspaceDrawerScrim.type = 'button';
@@ -2823,7 +2823,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /* "편집 중…" 줄은 에이전트가 400ms 넘게 조용할 때 나타나고, 나타나면 400ms 는
      머문다 — 짧은 글과 빠른 도구가 번갈아 와도 대화 끝이 깜빡이지 않는다. 숨어
      있는 동안 새 내용은 그 줄 뒤(messagesEnd 앞)에 붙고, 나타날 때 끝으로 옮긴다. */
-  /** 압축 중에 물려 둔 대화 줄과 맥락 고리 (setConversationReceding). */
+  /** 압축 중에 물려 둔 대화 줄과 콘텍스트 고리 (setConversationReceding). */
   let recededNodes: { node: Element; animation: Animation }[] = [];
   const turnPendingStatus = createDelayedStatus<AgentName | 'compacting'>((who) => {
     turnPending.hidden = who === null;
@@ -2834,7 +2834,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     setConversationReceding(who === 'compacting');
   });
   /**
-   * 압축이 도는 동안 화면에 보이는 앞 대화를 한 단계 물리고 맥락 고리가 천천히 숨 쉰다 — 그
+   * 압축이 도는 동안 화면에 보이는 앞 대화를 한 단계 물리고 콘텍스트 고리가 천천히 숨 쉰다 — 그
    * 대화가 줄어드는 중이라는 표시. 끝나면 지금 명암에서 이어 되돌아온다. 긴 대화에서도 보이는 줄만 만진다.
    */
   function setConversationReceding(on: boolean): void {
@@ -3305,7 +3305,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   composerUtilityActions.append(phaseBadge, modeMenu.root);
   composerUtilities.append(composerUtilityActions);
 
-  /* 맥락 창 사용량 — 사용량을 안 뒤에만 보이는 작은 고리. 올리거나 누르면 압축 팝오버가 열린다. */
+  /* 콘텍스트 창 사용량 — 사용량을 안 뒤에만 보이는 작은 고리. 올리거나 누르면 압축 팝오버가 열린다. */
   const contextMeter = el('div', 'ag-context');
   contextMeter.hidden = true;
   const contextTrigger = el('button', 'ag-context-btn');
@@ -3394,7 +3394,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   };
   document.addEventListener('pointerdown', onContextPopoverOutside);
 
-  /** 맥락 표시는 지금 고른 프로바이더의 사용량만 보인다. 다른 프로바이더 것은 숨긴다. */
+  /** 콘텍스트 표시는 지금 고른 프로바이더의 사용량만 보인다. 다른 프로바이더 것은 숨긴다. */
   function renderContextMeter(): void {
     const usage = currentThread.contextUsage;
     const visible = Boolean(usage && usage.agent === selectedAgent && readOnlyDocLabel === null);
@@ -6175,7 +6175,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         : skillRequestText;
     }
     // 실패하면 '다시 시도' 가 다시 보낼 요청 — 꾸밈 전 본문이다(꾸밈은 보낼 때마다 새로 붙는다).
-    // 인라인 프롬프트는 다시 보낼 요청을 두지 않는다: 선택 맥락이 그 시점 문서에 묶여 있어, 맥락 없이
+    // 인라인 프롬프트는 다시 보낼 요청을 두지 않는다: 선택 콘텍스트가 그 시점 문서에 묶여 있어, 콘텍스트 없이
     // 지시만 다시 보내면 ("이 부분을 표로") 에이전트가 엉뚱한 곳을 고칠 수 있다.
     const carriesContinuation = spec.wire?.continuation === true;
     const retryPayload = {
@@ -10593,7 +10593,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
 
-  // ── 맥락: 세션 커서 · 사용량 · 압축 ───────────────────
+  // ── 콘텍스트: 세션 커서 · 사용량 · 압축 ───────────────────
 
   /** 이벤트가 속한 채팅. 다른 채팅을 연 뒤 늦게 온 턴 이벤트는 그 턴의 채팅에 남긴다. */
   function eventThreadId(): string {

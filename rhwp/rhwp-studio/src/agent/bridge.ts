@@ -255,7 +255,7 @@ export type { ChatHistoryEntry };
 const RECEIPT_SUFFIX = globalThis.crypto?.randomUUID?.().slice(0, 8)
   ?? Math.random().toString(36).slice(2, 10);
 
-/** chat-start 에 싣는 대화 맥락. 보내는 순간의 스레드에서 새로 만든다. */
+/** chat-start 에 싣는 대화 콘텍스트. 보내는 순간의 스레드에서 새로 만든다. */
 export interface ChatStartContext {
   /** 커서가 없거나 재개에 실패했을 때 허브가 쓰는 전체 대화. */
   history: ChatHistoryEntry[];
@@ -263,7 +263,7 @@ export interface ChatStartContext {
   providerSessionId?: string;
   /** 재개에 성공했을 때만 쓰는, 이 프로바이더가 아직 못 본 메시지. */
   handoffHistory?: ChatHistoryEntry[];
-  /** 허브가 넘겨줄 대화 예산을 정할 때 쓰는 맥락 창 정보. */
+  /** 허브가 넘겨줄 대화 예산을 정할 때 쓰는 콘텍스트 창 정보. */
   providerContextUsage?: ProviderContextUsage;
 }
 
@@ -412,7 +412,7 @@ export interface AgentBridge {
    * 모두 chat-start 를 보내는 순간 이 함수로 대화와 커서를 새로 만든다.
    */
   setChatStartContextProvider(provider: ChatStartContextProvider | null): void;
-  /** 현재 세션의 맥락을 압축한다. 허브가 받으면 일반 턴처럼 turn-start … turn-end 로 감싼다. */
+  /** 현재 세션의 콘텍스트를 압축한다. 허브가 받으면 일반 턴처럼 turn-start … turn-end 로 감싼다. */
   compactChat(): Promise<ChatCompactResult>;
   /** gpt-5.6-luna 로 스레드 제목 생성 요청. */
   requestTitle(threadId: string, preview: string): string;
@@ -564,7 +564,7 @@ function tokenCount(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
 }
 
-/** 맥락 이벤트는 그대로 저장되므로 모양을 확인한다. 다른 이벤트는 그대로 둔다. */
+/** 콘텍스트 이벤트는 그대로 저장되므로 모양을 확인한다. 다른 이벤트는 그대로 둔다. */
 export function readContextEvent(event: AgentStreamEvent): AgentStreamEvent | null {
   if (event.type === 'context-usage') {
     const usedTokens = tokenCount(event.usedTokens);
@@ -1495,7 +1495,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private failureCollector?: TurnFailureCollector;
   /** 이번 턴에 문서 쓰기 도구가 끝났다 — 실패한 턴을 다시 시도할 때 먼저 다시 읽게 한다. */
   private turnWroteDocument = false;
-  /** 에이전트에게 알릴 대기 편집 보고 — 턴 중이면 다음 도구 결과에, 아니면 다음 턴 맥락으로 보낸다 */
+  /** 에이전트에게 알릴 대기 편집 보고 — 턴 중이면 다음 도구 결과에, 아니면 다음 턴 콘텍스트로 보낸다 */
   private editReport: string[] = [];
   private pendingTurnOpen = false;
   /**
@@ -1565,7 +1565,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private projectWorktreeBinding: ProjectWorktreeBinding | null = null;
   /** 보낸 chat-start 의 응답 전에 작업 공간이 바뀌었다 — 응답 뒤 다시 묶는다. */
   private projectBindPending = false;
-  /** 맥락 제공자가 없는 소비자(스크립트·테스트)용 마지막 startChat 대화. 사이드바는 제공자를 쓴다. */
+  /** 콘텍스트 제공자가 없는 소비자(스크립트·테스트)용 마지막 startChat 대화. 사이드바는 제공자를 쓴다. */
   private chatHistory: ChatHistoryEntry[] = [];
   private titleRequestSeq = 0;
   private requestSeq = 0;
@@ -3599,7 +3599,7 @@ export class AgentBridgeImpl implements AgentBridge {
         const disposition = turnEndDisposition(event, this.workflow === 'question' ? 'safe' : this.permissionProfile, this.turnHadError);
         let succeeded = disposition.succeeded;
         this.turnHadError = false;
-        // 끝까지 가지 못한 턴은 프로바이더가 맥락을 이어 가지 않을 수 있다 (첫 턴 중단 뒤 새 세션).
+        // 끝까지 가지 못한 턴은 프로바이더가 콘텍스트를 이어 가지 않을 수 있다 (첫 턴 중단 뒤 새 세션).
         if (!succeeded) {
           this.turnSnapshots?.reset();
           this.clearChatPermissionRequest({ status: 'expired', reason: 'turn-interrupted' });
@@ -3614,7 +3614,7 @@ export class AgentBridgeImpl implements AgentBridge {
         }
         // 검토 단계가 없는 턴(채팅·구상)도 열어 둔 체크포인트 기록을 닫는다.
         this.endTurnCheckpoint();
-        // 안내를 실은 턴이 끝까지 가지 못했다(실패·중단) — 프로바이더가 그 맥락을 잇지 않을 수 있으므로
+        // 안내를 실은 턴이 끝까지 가지 못했다(실패·중단) — 프로바이더가 그 콘텍스트를 잇지 않을 수 있으므로
         // 안내를 다시 건다. 다시 시도(U5)나 다음 요청이 한 번 더 싣고 간다.
         if (noticeTurn?.sawTurnStart && (!succeeded || turnFailure)) this.restoredNotice ??= noticeTurn.notice;
         this.flushEditReport();
@@ -3801,7 +3801,7 @@ export class AgentBridgeImpl implements AgentBridge {
 
   /**
    * 버려지거나 되돌리지 못한 대기 편집을 에이전트에게 알린다. 턴 중에는 다음 도구 결과에
-   * 싣고, 턴 밖(승인/거절/턴 종료)에서는 허브가 다음 사용자 메시지 맥락에 붙이도록 보낸다.
+   * 싣고, 턴 밖(승인/거절/턴 종료)에서는 허브가 다음 사용자 메시지 콘텍스트에 붙이도록 보낸다.
    */
   private queueEditReport(note: string): void {
     (this.editReport ??= []).push(note);

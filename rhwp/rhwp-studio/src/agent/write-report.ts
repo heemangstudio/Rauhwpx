@@ -33,7 +33,7 @@ export interface CropRegion { pageIndex: number; x: number; y: number; width: nu
 
 /**
  * 변경 사각형 → 쪽별 자르기 영역. 같은 쪽에서 가까운 사각형은 묶고, 가로는 본문 폭
- * 전체(줄 맥락)로 넓힌 뒤 여백을 더한다. 결과는 쪽 → 위에서 아래 순서다.
+ * 전체(줄 콘텍스트)로 넓힌 뒤 여백을 더한다. 결과는 쪽 → 위에서 아래 순서다.
  */
 export function planCropRegions(
   rects: readonly SelectionRect[],
