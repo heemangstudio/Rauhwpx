@@ -3008,7 +3008,6 @@ button.ag-skill-copy {
   line-height: var(--ag-lh-tight);
   font-variant-numeric: var(--ag-numeric);
   white-space: nowrap;
-  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) both;
 }
 
 .ag-marker-line {
@@ -3028,6 +3027,77 @@ button.ag-skill-copy {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 지금 막 생긴 구분선만 움직인다. 다시 연 대화의 구분선은 그대로 놓인다.
+   압축: 양 끝에서 선이 가운데로 모이고 아이콘이 오므라든다 — 앞 대화가 이 자리로 접힌다.
+   전환: 가운데서 선이 벌어지고 앞 프로바이더 아이콘이 새 아이콘에 자리를 넘긴다. */
+.ag-marker-live .ag-marker-line {
+  animation: ag-marker-line-draw var(--ag-dur-slow) var(--ag-ease-out) both;
+}
+
+.ag-marker-compaction.ag-marker-live .ag-marker-line:first-child,
+.ag-marker-handoff.ag-marker-live .ag-marker-line:last-child {
+  transform-origin: left center;
+}
+
+.ag-marker-compaction.ag-marker-live .ag-marker-line:last-child,
+.ag-marker-handoff.ag-marker-live .ag-marker-line:first-child {
+  transform-origin: right center;
+}
+
+.ag-marker-live .ag-marker-label {
+  animation: ag-marker-fade var(--ag-dur-slow) var(--ag-ease-out) both;
+}
+
+.ag-marker-compaction.ag-marker-live .ag-marker-icon {
+  animation: ag-marker-contract var(--ag-dur-slow) var(--ag-spring) both;
+}
+
+.ag-marker-swap {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  overflow: hidden;
+}
+
+.ag-marker-swap .ag-marker-icon {
+  flex: 0 0 auto;
+}
+
+.ag-marker-swap .ag-marker-icon-from {
+  position: absolute;
+  inset: 0;
+}
+
+.ag-marker-live .ag-marker-swap .ag-marker-icon {
+  animation: ag-marker-icon-arrive var(--ag-dur-slow) var(--ag-ease-out) both;
+}
+
+.ag-marker-live .ag-marker-swap .ag-marker-icon-from {
+  animation-name: ag-marker-icon-leave;
+}
+
+@keyframes ag-marker-line-draw {
+  from { transform: scaleX(0); }
+}
+
+@keyframes ag-marker-fade {
+  from { opacity: 0; }
+}
+
+@keyframes ag-marker-contract {
+  from { opacity: 0; transform: scale(1.5); }
+}
+
+@keyframes ag-marker-icon-arrive {
+  from { opacity: 0; transform: translateX(100%); }
+}
+
+@keyframes ag-marker-icon-leave {
+  to { opacity: 0; transform: translateX(-100%); }
 }
 
 /* ─── 진행 타임라인 + 접힌 도구 호출 ────────────────── */
@@ -4308,6 +4378,13 @@ button.ag-skill-copy {
   transition: stroke-dasharray var(--ag-dur-slow) var(--ag-ease-out);
 }
 
+/* 압축으로 줄어든 사용량은 천천히 빠진다. 붉은색도 같은 길이로 풀린다. */
+.ag-context[data-trend='down'] .ag-context-ring-value,
+.ag-context[data-trend='down'] .ag-context-bar-fill,
+.ag-context[data-trend='down'] .ag-context-btn {
+  transition-duration: calc(var(--ag-dur-slow) * 2);
+}
+
 .ag-context[data-level='high'] .ag-context-btn,
 .ag-context[data-level='high'] .ag-context-percent {
   color: var(--ag-err);
@@ -4423,6 +4500,15 @@ button.ag-skill-copy {
   .ag-context-popover,
   .ag-context-open .ag-context-popover {
     transform: none;
+  }
+
+  .ag-marker-live .ag-marker-line,
+  .ag-marker-live .ag-marker-icon {
+    animation: none;
+  }
+
+  .ag-marker-swap .ag-marker-icon-from {
+    display: none;
   }
 }
 

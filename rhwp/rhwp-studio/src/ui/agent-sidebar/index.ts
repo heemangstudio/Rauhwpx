@@ -2881,12 +2881,48 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /* "편집 중…" 고리는 에이전트가 400ms 넘게 조용할 때 나타나고, 나타나면 400ms 는
      머문다 — 짧은 글과 빠른 도구가 번갈아 와도 대화 끝이 깜빡이지 않는다. 숨어
      있는 동안 새 내용은 고리 뒤(messagesEnd 앞)에 붙고, 나타날 때 끝으로 옮긴다. */
+  /** 압축 중에 물려 둔 대화 줄과 맥락 고리 (setConversationReceding). */
+  let recededNodes: { node: Element; animation: Animation }[] = [];
   const turnPendingStatus = createDelayedStatus<AgentName | 'compacting'>((who) => {
     turnPending.hidden = who === null;
-    if (!who) return;
-    turnPendingLabel.textContent = who === 'compacting' ? '맥락 압축 중…' : `${AGENT_LABEL[who]} 편집 중…`;
-    messages.insertBefore(turnPending, messagesEnd);
+    if (who) {
+      turnPendingLabel.textContent = who === 'compacting' ? '콘텍스트 압축 중…' : `${AGENT_LABEL[who]} 편집 중…`;
+      messages.insertBefore(turnPending, messagesEnd);
+    }
+    setConversationReceding(who === 'compacting');
   });
+  /**
+   * 압축이 도는 동안 화면에 보이는 앞 대화를 한 단계 물리고 맥락 고리가 천천히 숨 쉰다 — 그
+   * 대화가 줄어드는 중이라는 표시. 끝나면 지금 명암에서 이어 되돌아온다. 긴 대화에서도 보이는 줄만 만진다.
+   */
+  function setConversationReceding(on: boolean): void {
+    if (on === (recededNodes.length > 0)) return;
+    const tokens = getComputedStyle(root);
+    const duration = parseCssTimeMs(tokens.getPropertyValue('--ag-dur-slow'), 320);
+    const easing = tokens.getPropertyValue('--ag-ease-out').trim() || 'ease-out';
+    if (!on) {
+      for (const { node, animation } of recededNodes) {
+        const opacity = Number(getComputedStyle(node).opacity);
+        animation.cancel();
+        if (node.isConnected) node.animate([{ opacity }, { opacity: 1 }], { duration, easing });
+      }
+      recededNodes = [];
+      return;
+    }
+    if (duration > 20) {
+      const animation = contextRingValue.animate([{ opacity: 1 }, { opacity: 0.35 }], {
+        duration: 1200, easing: 'cubic-bezier(.45, 0, .55, 1)', iterations: Infinity, direction: 'alternate',
+      });
+      recededNodes.push({ node: contextRingValue, animation });
+    }
+    const top = messages.getBoundingClientRect().top;
+    for (let node = turnPending.previousElementSibling; node && recededNodes.length < 25; node = node.previousElementSibling) {
+      if (!(node instanceof HTMLElement) || node.hidden) continue;
+      if (node.getBoundingClientRect().bottom < top) break;
+      const animation = node.animate([{ opacity: 1 }, { opacity: 0.5 }], { duration, easing, fill: 'forwards' });
+      recededNodes.push({ node, animation });
+    }
+  }
   /**
    * 도는 턴의 접힘 자리표시(숨은 줄)와 숨어 있는 "편집 중…" 고리는 내용이 아니다 —
    * 스크롤 기준을 고를 때 건너뛴다. 숨은 고리는 지연 동안 대화 중간에 남아 있을 수 있다.
@@ -3354,7 +3390,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const contextPopover = el('div', 'ag-context-popover');
   contextPopover.id = 'ag-context-popover';
   contextPopover.setAttribute('role', 'dialog');
-  contextPopover.setAttribute('aria-label', '맥락 사용량');
+  contextPopover.setAttribute('aria-label', '콘텍스트 사용량');
   const contextPercent = el('span', 'ag-context-percent');
   const contextCount = el('span', 'ag-context-count');
   const contextHead = el('div', 'ag-context-head');
@@ -3368,6 +3404,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   contextMeter.append(contextTrigger, contextPopover);
   let contextPopoverPinned = false;
   let contextHoverTimer: number | null = null;
+  /** 마지막으로 그린 고리 값. 압축 뒤 숨었다 돌아온 고리는 이 값에서 내려온다. */
+  let lastContextRing: { threadId: string; agent: AgentName; percent: number } | null = null;
 
   function setContextPopoverOpen(open: boolean, pinned = false): void {
     if (contextHoverTimer !== null) window.clearTimeout(contextHoverTimer);
@@ -3418,6 +3456,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function renderContextMeter(): void {
     const usage = currentThread.contextUsage;
     const visible = Boolean(usage && usage.agent === selectedAgent && readOnlyDocLabel === null);
+    const wasHidden = contextMeter.hidden;
     contextMeter.hidden = !visible;
     if (!visible || !usage) {
       setContextPopoverOpen(false);
@@ -3426,6 +3465,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const percent = usage.maxTokens
       ? Math.max(0, Math.min(100, Math.round((usage.usedTokens / usage.maxTokens) * 100)))
       : null;
+    const last = lastContextRing?.threadId === currentThread.id && lastContextRing.agent === usage.agent
+      ? lastContextRing.percent
+      : null;
+    if (percent !== null && last !== null && last !== percent) {
+      contextMeter.dataset.trend = percent < last ? 'down' : 'up';
+      if (wasHidden) {
+        // 숨어 있던 고리는 전환 없이 나타난다 — 예전 값에 먼저 세워 두고 거기서 움직인다.
+        contextRingValue.style.strokeDasharray = `${last} 100`;
+        contextBarFill.style.width = `${last}%`;
+        void getComputedStyle(contextRingValue).strokeDasharray;
+      }
+    }
+    lastContextRing = percent !== null ? { threadId: currentThread.id, agent: usage.agent, percent } : null;
     contextMeter.dataset.level = percent !== null && percent >= 90 ? 'high' : 'normal';
     contextRingValue.style.strokeDasharray = `${percent ?? 0} 100`;
     contextPercent.textContent = percent !== null ? `${percent}%` : '';
@@ -3435,7 +3487,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       : formatTokens(usage.usedTokens);
     contextBar.hidden = percent === null;
     contextBarFill.style.width = `${percent ?? 0}%`;
-    const label = percent !== null ? `맥락 ${percent}% 사용` : `맥락 ${formatTokens(usage.usedTokens)} 사용`;
+    const label = percent !== null ? `콘텍스트 ${percent}% 사용` : `콘텍스트 ${formatTokens(usage.usedTokens)} 사용`;
     contextTrigger.setAttribute('aria-label', label);
     contextTrigger.title = label;
     const reason = compactUnavailableReason();
@@ -5727,7 +5779,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
             local: 'fast' as const,
           }]
         : []),
-      { value: '/compact', label: '/compact', detail: '맥락 압축', local: 'compact' },
+      { value: '/compact', label: '/compact', detail: '콘텍스트 압축', local: 'compact' },
       { value: '/calibration', label: '/calibration', detail: '말투 맞추기', local: 'calibration' },
       { value: '/settings', label: '/settings', detail: '설정 열기 (연결·기본값·사용량)', local: 'settings' },
       { value: '/templates', label: '/templates', detail: '문서 템플릿 선택', local: 'templates' },
@@ -6636,7 +6688,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   ): ThreadMessage {
     // 다른 프로바이더로 가는 첫 메시지 앞에 전환 구분선을 남긴다.
     const handoff = addHandoffMarker(currentThread, selectedAgent);
-    if (handoff) appendConversation(renderThreadMarker(handoff));
+    if (handoff) appendConversation(renderThreadMarker(handoff, { live: true }));
     const message: ThreadMessage = {
       role: 'user',
       text,
@@ -10713,12 +10765,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     if (matchesActive) activeCompaction = null;
-    // 수동 압축 턴은 끝날 때까지 "맥락 압축 중…"으로 둔다 — 완료 뒤 turn-end 전에 편집 중으로 깜빡이지 않는다.
+    // 수동 압축 턴은 끝날 때까지 "콘텍스트 압축 중…"으로 둔다 — 완료 뒤 turn-end 전에 편집 중으로 깜빡이지 않는다.
     if (matchesActive && event.trigger === 'manual' && event.phase === 'completed' && turnRunning) {
       activeCompaction = { compactionId: event.compactionId, trigger: event.trigger };
     }
     if (event.phase === 'failed') {
-      const failureText = event.message ? `맥락 압축 실패 · ${event.message}` : '맥락 압축 실패';
+      const failureText = event.message ? `콘텍스트 압축 실패 · ${event.message}` : '콘텍스트 압축 실패';
       if (turnRunning) pendingCompactionFailure = failureText;
       else systemMessage(failureText);
       updateTurnPending(event.agent);
@@ -10736,7 +10788,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateEventThread((thread) => {
       const marker = addCompactionMarker(thread, event);
       if (!marker) return false;
-      if (thread === currentThread) withAutoScroll(() => appendConversation(renderThreadMarker(marker)));
+      if (thread === currentThread) withAutoScroll(() => appendConversation(renderThreadMarker(marker, { live: true })));
       if (thread.contextUsage?.agent === event.agent) {
         // Claude 의 post_tokens 는 시스템 프롬프트·도구 정의(약 60K)를 빼고 센다 — 다음 호출이
         // 실제 값을 보고할 때까지 계기를 숨긴다. Codex/Pi 의 afterTokens 는 창 전체 기준이다.
@@ -10786,7 +10838,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     if (activeCompaction?.compactionId === null) activeCompaction = null;
-    systemMessage(COMPACT_REJECTION[result.code] ?? (result.message || '맥락 압축 실패'));
+    systemMessage(COMPACT_REJECTION[result.code] ?? (result.message || '콘텍스트 압축 실패'));
     updateTurnPending();
     updateComposer();
   }
@@ -10797,20 +10849,40 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function threadMarkerLabel(message: ThreadMarkerMessage): string {
     if (message.marker === 'handoff') return `${AGENT_LABEL[message.to]}${TO_PARTICLE[message.to] ?? '로'} 전환`;
     return message.beforeTokens !== undefined && message.afterTokens !== undefined
-      ? `맥락 압축됨 · ${formatTokens(message.beforeTokens)} → ${formatTokens(message.afterTokens)}`
-      : '맥락 압축됨';
+      ? `콘텍스트 압축됨 · ${formatTokens(message.beforeTokens)} → ${formatTokens(message.afterTokens)}`
+      : '콘텍스트 압축됨';
   }
 
-  function renderThreadMarker(message: ThreadMarkerMessage): HTMLElement {
+  /**
+   * 구분선. live 는 지금 막 생긴 자리라 움직임으로 뜻을 보인다: 압축은 양 끝의 선이 가운데로
+   * 모이고, 전환은 가운데서 선이 벌어지며 앞 프로바이더 아이콘이 새 아이콘에 자리를 넘긴다.
+   */
+  function renderThreadMarker(message: ThreadMarkerMessage, opts: { live?: boolean } = {}): HTMLElement {
     const label = threadMarkerLabel(message);
     const row = el('div', `ag-marker ag-marker-${message.marker}`);
+    row.classList.toggle('ag-marker-live', opts.live === true);
     row.setAttribute('role', 'separator');
     row.setAttribute('aria-label', label);
     if (message.marker === 'compaction') row.dataset.compactionId = message.compactionId;
-    const icon = message.marker === 'handoff' ? createProviderIcon(message.to) : createIcon('contract');
+    let icon: Element = message.marker === 'handoff' ? createProviderIcon(message.to) : createIcon('contract');
     icon.classList.add('ag-marker-icon');
     const text = el('span', 'ag-marker-label', label);
     text.setAttribute('aria-hidden', 'true');
+    if (opts.live) {
+      let from: HTMLElement | null = null;
+      if (message.marker === 'handoff') {
+        from = createProviderIcon(message.from);
+        from.classList.add('ag-marker-icon', 'ag-marker-icon-from');
+        const swap = el('span', 'ag-marker-swap');
+        swap.append(from, icon);
+        icon = swap;
+      }
+      // 한 번만 움직인다 — 접힘 등으로 줄이 옮겨 붙어도 다시 그리지 않는다.
+      text.addEventListener('animationend', () => {
+        row.classList.remove('ag-marker-live');
+        from?.remove();
+      }, { once: true });
+    }
     row.append(el('span', 'ag-marker-line'), icon, text, el('span', 'ag-marker-line'));
     return row;
   }

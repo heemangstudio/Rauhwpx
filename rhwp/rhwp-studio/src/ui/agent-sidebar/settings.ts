@@ -2669,7 +2669,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     row.classList.toggle('ag-active', picked);
     row.setAttribute('aria-pressed', String(picked));
     row.setAttribute('aria-label', `${model.name}, ${picked ? '선택됨' : '선택 안 됨'}`);
-    row.title = `${model.id} · ${model.provider}\n${formatTokens(model.contextLength)} 컨텍스트 · 입력 ${formatUsd(pricePerMillion(model.pricing.prompt))} · 출력 ${formatUsd(pricePerMillion(model.pricing.completion))}${model.reasoning ? ' · 추론' : ''}`;
+    row.title = `${model.id} · ${model.provider}\n${formatTokens(model.contextLength)} 콘텍스트 · 입력 ${formatUsd(pricePerMillion(model.pricing.prompt))} · 출력 ${formatUsd(pricePerMillion(model.pricing.completion))}${model.reasoning ? ' · 추론' : ''}`;
     const text = el('span', 'ag-settings-model-row-text');
     text.append(el('span', 'ag-settings-model-row-name', model.name));
     const trailing = el('span', 'ag-settings-model-row-trailing');

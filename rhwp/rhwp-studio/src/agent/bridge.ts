@@ -2675,7 +2675,7 @@ export class AgentBridgeImpl implements AgentBridge {
             this.syncEditingLease();
             this.emit({ type: 'user-question-requested', interaction: pendingQuestion, replayed: true });
           }
-          // 다시 붙었을 때 진행 중이던 압축은 started 를 다시 보내 "맥락 압축 중…" 표시를 되살린다.
+          // 다시 붙었을 때 진행 중이던 압축은 started 를 다시 보내 "콘텍스트 압축 중…" 표시를 되살린다.
           const inFlight = session.compactionInFlight as Record<string, unknown> | null | undefined;
           const replayedCompaction = inFlight && typeof inFlight === 'object'
             ? readContextEvent({ ...inFlight, type: 'compaction', phase: 'started', agent: session.agent } as AgentStreamEvent)

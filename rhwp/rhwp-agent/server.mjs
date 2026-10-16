@@ -2267,7 +2267,7 @@ function sessionInfo(record) {
       chatPermissionGrants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants),
       resumed: activeSession.resumed === true,
       compaction: compactionSupportOf(activeSession),
-      // 다시 붙은 Studio 가 "맥락 압축 중…" 을 이어 보이거나 지운다.
+      // 다시 붙은 Studio 가 "콘텍스트 압축 중…" 을 이어 보이거나 지운다.
       compactionInFlight: compactionInFlightOf(activeSession),
       contextUsage: activeSession.contextUsage ? { ...activeSession.contextUsage } : null,
       ...activeSession.planning.snapshot(),
@@ -2905,7 +2905,7 @@ function settleCompactionAtTurnEnd(activeSession, succeeded, evt) {
   const out = [];
   const message = typeof evt?.errorMessage === 'string' && evt.errorMessage
     ? evt.errorMessage.slice(0, 500)
-    : evt?.stopReason === 'interrupted' ? '맥락 압축이 중단되었습니다.' : '맥락 압축에 실패했습니다.';
+    : evt?.stopReason === 'interrupted' ? '콘텍스트 압축이 중단되었습니다.' : '콘텍스트 압축에 실패했습니다.';
   const terminal = succeeded ? { phase: 'completed' } : { phase: 'failed', message };
   const manual = activeSession.manualCompaction;
   activeSession.manualCompaction = null;
@@ -3884,7 +3884,7 @@ function startManualCompaction(record, sock, msg) {
       type: 'turn-end',
       agent: activeSession.agent,
       stopReason: 'failed',
-      errorMessage: describeHubError(error, '맥락 압축을 시작하지 못했습니다.'),
+      errorMessage: describeHubError(error, '콘텍스트 압축을 시작하지 못했습니다.'),
     });
   }
 }
