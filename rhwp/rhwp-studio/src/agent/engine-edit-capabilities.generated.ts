@@ -836,9 +836,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "charOffset",
       "script",
       "fontSizeHwpunit",
-      "color"
+      "color",
+      "logical"
     ],
-    "signature": "insertEquation(sec: number, para: number, charOffset: number, script: string, fontSizeHwpunit: number, color: number)"
+    "signature": "insertEquation(sec: number, para: number, charOffset: number, script: string, fontSizeHwpunit: number, color: number, logical = false)"
   },
   {
     "method": "insertEquationInCell",
@@ -852,9 +853,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "charOffset",
       "script",
       "fontSizeHwpunit",
-      "color"
+      "color",
+      "logical"
     ],
-    "signature": "insertEquationInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, script: string, fontSizeHwpunit: number, color: number)"
+    "signature": "insertEquationInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, script: string, fontSizeHwpunit: number, color: number, logical = false)"
   },
   {
     "method": "insertEquationInCellByPath",
@@ -866,9 +868,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "charOffset",
       "script",
       "fontSizeHwpunit",
-      "color"
+      "color",
+      "logical"
     ],
-    "signature": "insertEquationInCellByPath(sec: number, parentPara: number, cellPath: CellPathLike, charOffset: number, script: string, fontSizeHwpunit: number, color: number)"
+    "signature": "insertEquationInCellByPath(sec: number, parentPara: number, cellPath: CellPathLike, charOffset: number, script: string, fontSizeHwpunit: number, color: number, logical = false)"
   },
   {
     "method": "insertFieldInHf",

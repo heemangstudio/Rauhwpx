@@ -696,6 +696,60 @@ impl DocumentCore {
         }
     }
 
+    /// 인라인 수식 컨트롤 삽입의 모델 변이 부분 (`remove_equation_control_and_shift` 의 짝).
+    /// 반환: 문단 controls 안 수식 인덱스.
+    ///
+    /// `logical` 이 아니면 `char_offset` 은 개체를 세지 않는 텍스트 오프셋이고, 같은 텍스트
+    /// 위치의 컨트롤들 뒤에 넣는다 (에이전트 도구 계약). `logical` 이면 편집 캐럿 좌표
+    /// (인라인 개체 1칸)이고, 같은 텍스트 위치의 개체 중 캐럿 앞 개체 뒤, 캐럿 뒤 개체 앞에 넣는다.
+    fn insert_equation_control_and_shift(
+        para: &mut Paragraph,
+        equation: crate::model::control::Equation,
+        char_offset: usize,
+        logical: bool,
+    ) -> usize {
+        use crate::document_core::helpers::{
+            find_control_text_positions, find_logical_control_positions, is_logical_inline_control,
+            logical_to_text_offset,
+        };
+
+        let (text_offset, insert_idx) = if logical {
+            let positions = find_logical_control_positions(para);
+            let insert_idx = para
+                .controls
+                .iter()
+                .zip(&positions)
+                .position(|(ctrl, &pos)| {
+                    pos > char_offset || (pos == char_offset && is_logical_inline_control(ctrl))
+                })
+                .unwrap_or(para.controls.len());
+            (logical_to_text_offset(para, char_offset).0, insert_idx)
+        } else {
+            let insert_idx = find_control_text_positions(para)
+                .iter()
+                .position(|&pos| pos > char_offset)
+                .unwrap_or(para.controls.len());
+            (char_offset, insert_idx)
+        };
+
+        // HWPX 로드 문서는 ctrl_data_records 가 controls 보다 짧을 수 있다(비동기 상태).
+        // 그대로 insert 하면 out-of-bounds panic 이므로 먼저 길이를 맞춘다
+        // (converters/hwpx_to_hwp.rs 의 패딩과 동형).
+        if para.ctrl_data_records.len() < para.controls.len() {
+            para.ctrl_data_records
+                .resize_with(para.controls.len(), || None);
+        }
+        para.controls
+            .insert(insert_idx, Control::Equation(Box::new(equation)));
+        para.ctrl_data_records.insert(insert_idx, None);
+
+        para.shift_for_inline_control_insert(text_offset);
+        para.char_count += 8;
+        para.control_mask |= 1u32 << 11;
+        para.has_para_text = true;
+        insert_idx
+    }
+
     /// 인라인 수식 컨트롤 제거의 모델 변이 부분: 컨트롤 뒤 문자 오프셋을 8칸 되돌리고
     /// 컨트롤·ctrl_data 레코드를 제거하며 char_count 를 8 감소시킨다.
     /// 본문(`delete_equation_control_native`)과 셀 경로가 공유한다.
@@ -832,6 +886,29 @@ impl DocumentCore {
         font_size: u32,
         color: u32,
     ) -> Result<String, HwpError> {
+        self.insert_equation_at_native(
+            section_idx,
+            para_idx,
+            char_offset,
+            false,
+            script,
+            font_size,
+            color,
+        )
+    }
+
+    /// `insert_equation_native` 와 같되, `logical` 이면 `char_offset` 을 편집 캐럿의
+    /// 논리 오프셋으로 받는다 (`insert_equation_control_and_shift` 참고).
+    pub fn insert_equation_at_native(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        char_offset: usize,
+        logical: bool,
+        script: &str,
+        font_size: u32,
+        color: u32,
+    ) -> Result<String, HwpError> {
         use crate::model::control::Equation;
         use crate::model::shape::CommonObjAttr;
         use crate::parser::tags::CTRL_EQUATION;
@@ -880,36 +957,8 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         let paragraph = &mut self.document.sections[section_idx].paragraphs[para_idx];
-
-        let insert_idx = {
-            let positions = crate::document_core::helpers::find_control_text_positions(paragraph);
-            let mut idx = paragraph.controls.len();
-            for (i, &pos) in positions.iter().enumerate() {
-                if pos > char_offset {
-                    idx = i;
-                    break;
-                }
-            }
-            idx
-        };
-
-        // HWPX 로드 문서는 ctrl_data_records 가 controls 보다 짧을 수 있다(비동기 상태).
-        // 그대로 insert 하면 out-of-bounds panic 이므로 먼저 길이를 맞춘다
-        // (converters/hwpx_to_hwp.rs 의 패딩과 동형).
-        if paragraph.ctrl_data_records.len() < paragraph.controls.len() {
-            paragraph
-                .ctrl_data_records
-                .resize_with(paragraph.controls.len(), || None);
-        }
-        paragraph
-            .controls
-            .insert(insert_idx, Control::Equation(Box::new(equation)));
-        paragraph.ctrl_data_records.insert(insert_idx, None);
-
-        paragraph.shift_for_inline_control_insert(char_offset);
-        paragraph.char_count += 8;
-        paragraph.control_mask |= 1u32 << 11;
-        paragraph.has_para_text = true;
+        let insert_idx =
+            Self::insert_equation_control_and_shift(paragraph, equation, char_offset, logical);
 
         // 본문 문단 리플로우
         {
@@ -1050,6 +1099,35 @@ impl DocumentCore {
         font_size: u32,
         color: u32,
     ) -> Result<String, HwpError> {
+        self.insert_equation_in_cell_at_native(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+            char_offset,
+            false,
+            script,
+            font_size,
+            color,
+        )
+    }
+
+    /// `insert_equation_in_cell_native` 와 같되, `logical` 이면 `char_offset` 을 편집
+    /// 캐럿의 논리 오프셋으로 받는다.
+    pub fn insert_equation_in_cell_at_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        cell_para_idx: usize,
+        char_offset: usize,
+        logical: bool,
+        script: &str,
+        font_size: u32,
+        color: u32,
+    ) -> Result<String, HwpError> {
         use crate::model::control::Equation;
         use crate::model::shape::CommonObjAttr;
         use crate::parser::tags::CTRL_EQUATION;
@@ -1096,35 +1174,8 @@ impl DocumentCore {
                 cell_para,
             );
 
-        let insert_idx = {
-            let positions = crate::document_core::helpers::find_control_text_positions(cell_para);
-            let mut idx = cell_para.controls.len();
-            for (i, &pos) in positions.iter().enumerate() {
-                if pos > char_offset {
-                    idx = i;
-                    break;
-                }
-            }
-            idx
-        };
-
-        // HWPX 로드 문서는 ctrl_data_records 가 controls 보다 짧을 수 있다(비동기 상태).
-        // 그대로 insert 하면 out-of-bounds panic 이므로 먼저 길이를 맞춘다
-        // (converters/hwpx_to_hwp.rs 의 패딩과 동형).
-        if cell_para.ctrl_data_records.len() < cell_para.controls.len() {
-            cell_para
-                .ctrl_data_records
-                .resize_with(cell_para.controls.len(), || None);
-        }
-        cell_para
-            .controls
-            .insert(insert_idx, Control::Equation(Box::new(equation)));
-        cell_para.ctrl_data_records.insert(insert_idx, None);
-
-        cell_para.shift_for_inline_control_insert(char_offset);
-        cell_para.char_count += 8;
-        cell_para.control_mask |= 1u32 << 11;
-        cell_para.has_para_text = true;
+        let insert_idx =
+            Self::insert_equation_control_and_shift(cell_para, equation, char_offset, logical);
 
         self.reflow_cell_after_equation_edit(
             section_idx,
@@ -1153,6 +1204,31 @@ impl DocumentCore {
         font_size: u32,
         color: u32,
     ) -> Result<String, HwpError> {
+        self.insert_equation_in_cell_by_path_at_native(
+            section_idx,
+            parent_para_idx,
+            cell_path_json,
+            char_offset,
+            false,
+            script,
+            font_size,
+            color,
+        )
+    }
+
+    /// `insert_equation_in_cell_by_path_native` 와 같되, `logical` 이면 `char_offset` 을
+    /// 편집 캐럿의 논리 오프셋으로 받는다.
+    pub fn insert_equation_in_cell_by_path_at_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        cell_path_json: &str,
+        char_offset: usize,
+        logical: bool,
+        script: &str,
+        font_size: u32,
+        color: u32,
+    ) -> Result<String, HwpError> {
         use crate::model::control::Equation;
         use crate::model::shape::CommonObjAttr;
         use crate::parser::tags::CTRL_EQUATION;
@@ -1160,13 +1236,14 @@ impl DocumentCore {
         let path = Self::parse_cell_path_json(cell_path_json)?;
         if path.len() == 1 {
             let (control_idx, cell_idx, cell_para_idx) = path[0];
-            return self.insert_equation_in_cell_native(
+            return self.insert_equation_in_cell_at_native(
                 section_idx,
                 parent_para_idx,
                 control_idx,
                 cell_idx,
                 cell_para_idx,
                 char_offset,
+                logical,
                 script,
                 font_size,
                 color,
@@ -1204,25 +1281,7 @@ impl DocumentCore {
                 HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
             })?;
             let paragraph = Self::resolve_cell_paragraph_mut(section, parent_para_idx, &path)?;
-            let positions = crate::document_core::helpers::find_control_text_positions(paragraph);
-            let insert_idx = positions
-                .iter()
-                .position(|&position| position > char_offset)
-                .unwrap_or(paragraph.controls.len());
-            if paragraph.ctrl_data_records.len() < paragraph.controls.len() {
-                paragraph
-                    .ctrl_data_records
-                    .resize_with(paragraph.controls.len(), || None);
-            }
-            paragraph
-                .controls
-                .insert(insert_idx, Control::Equation(Box::new(equation)));
-            paragraph.ctrl_data_records.insert(insert_idx, None);
-            paragraph.shift_for_inline_control_insert(char_offset);
-            paragraph.char_count += 8;
-            paragraph.control_mask |= 1u32 << 11;
-            paragraph.has_para_text = true;
-            insert_idx
+            Self::insert_equation_control_and_shift(paragraph, equation, char_offset, logical)
         };
         self.finish_equation_edit_by_path(section_idx, parent_para_idx, &path);
         Ok(format!(

@@ -5643,7 +5643,7 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
-    /// 수식을 삽입한다.
+    /// 수식을 삽입한다. `logical` 이면 `char_offset` 은 편집 캐럿의 논리 오프셋이다.
     #[wasm_bindgen(js_name = insertEquation)]
     pub fn insert_equation(
         &mut self,
@@ -5653,11 +5653,13 @@ impl HwpDocument {
         script: &str,
         font_size: u32,
         color: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.insert_equation_native(
+        self.insert_equation_at_native(
             section_idx as usize,
             para_idx as usize,
             char_offset as usize,
+            logical == Some(true),
             script,
             font_size,
             color,
@@ -5695,14 +5697,16 @@ impl HwpDocument {
         script: &str,
         font_size: u32,
         color: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.insert_equation_in_cell_native(
+        self.insert_equation_in_cell_at_native(
             section_idx as usize,
             parent_para_idx as usize,
             control_idx as usize,
             cell_idx as usize,
             cell_para_idx as usize,
             char_offset as usize,
+            logical == Some(true),
             script,
             font_size,
             color,
@@ -5721,12 +5725,14 @@ impl HwpDocument {
         script: &str,
         font_size: u32,
         color: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.insert_equation_in_cell_by_path_native(
+        self.insert_equation_in_cell_by_path_at_native(
             section_idx as usize,
             parent_para_idx as usize,
             cell_path_json,
             char_offset as usize,
+            logical == Some(true),
             script,
             font_size,
             color,
