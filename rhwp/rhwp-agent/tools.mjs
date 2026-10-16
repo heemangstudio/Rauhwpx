@@ -1836,7 +1836,7 @@ const BASE_TOOL_DEFINITIONS = [
       tabId: browserTab(),
       scope: z.string().min(1).max(160).optional().describe('Only this ref\'s subtree'),
       find: z.string().trim().min(1).max(200).optional().describe('Only lines containing this text, with ancestors'),
-      text: z.boolean().optional().describe('Add long visible page text'),
+      text: z.boolean().optional().describe('Large raw page text; try find first'),
     },
   },
   {
