@@ -14,12 +14,16 @@ const EDITABLE = '[contenteditable=""],[contenteditable="true"],[contenteditable
 const SENSITIVE = 'input[type="password"],input[type="email"],input[autocomplete="username"],input[name="username"],input[name="email"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
 const SEARCH_ORIGINS = new Set(['https://www.google.com', 'https://www.google.co.kr', 'https://duckduckgo.com', 'https://www.bing.com', 'https://search.naver.com', 'https://en.wikipedia.org', 'https://ko.wikipedia.org', 'https://www.wikipedia.org', 'https://pubmed.ncbi.nlm.nih.gov', 'https://arxiv.org']);
 const redactValues = (value, secrets) => {
-  if (typeof value === 'string') { for (const secret of secrets ?? []) if (secret) for (const variant of [secret, encodeURIComponent(secret), Buffer.from(secret).toString('base64')]) value = value.split(variant).join('[masked]'); return value; }
+  if (typeof value === 'string') { for (const secret of secrets ?? []) if (secret) for (const variant of [secret, encodeURIComponent(secret), new URLSearchParams({ v: secret }).toString().slice(2), Buffer.from(secret).toString('base64')]) value = value.split(variant).join('[masked]'); return value; }
   if (Array.isArray(value)) return value.map(entry => redactValues(entry, secrets));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactValues(entry, secrets)]));
   return value;
 };
-const MUTATIONS = new Set(['navigate', 'click', 'type', 'press', 'select', 'scroll', 'close', 'input', 'fill-account', 'viewport', 'upload']);
+const MUTATIONS = new Set(['navigate', 'click', 'type', 'press', 'select', 'scroll', 'close', 'input', 'fill-account', 'fill-secret', 'viewport', 'upload']);
+// 허브가 입력 직전에 비밀 값을 꺼내는 함수. 인자 객체의 기호 키라 직렬화·로그에 실리지 않는다.
+const SECRET_FILL = Symbol('rhwp.secretFill');
+// 비밀을 입력할 수 있는 칸: 한 줄 글자 입력과 textarea 만.
+const SECRET_INPUT_TYPES = new Set(['text', 'password', 'email', 'tel', 'url']);
 // 이 조작들은 결과가 자리 잡을 때까지 기다린 뒤 짧은 변화만 돌려준다.
 const SETTLING = new Set(['click', 'type', 'press', 'select']);
 const READS = new Set(['snapshot', 'frame', 'capture', 'wait']);
@@ -128,6 +132,8 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     passwordViewport: (params) => call('password-viewport', params),
     passwordCapture: (params) => call('password-capture', params),
     passwordFill: (params) => call('password-fill', params), passwordAction: (params) => call('password-action', params),
+    // 데스크톱의 격리된 세계가 비밀 값을 한 칸에 입력한다. 같은 IPC 동작을 mode 로 나눈다.
+    secretFill: (params) => call('password-fill', { ...params, mode: 'secret' }),
     passwordStorageState: () => call('password-storage-state'),
     passwordApprove: (params) => call('password-approve', params),
     async dispose() { events.off('message', receive); listeners.clear(); nativeGeneration = undefined; for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(error('BROWSER_CLOSED', 'The browser service closed.')); } pending.clear(); },
@@ -141,6 +147,18 @@ export function createOwnedBrowserService(options = {}) {
   const guard = createBrowserNetworkGuard({ workspaceTargets: options.workspaceTargets ?? policy?.workspaceTargets ?? [], lookup: options.lookup });
   const tabs = new Map();
   const pageTabs = new WeakMap();
+  // 이 허브가 페이지에 입력한 사용자 비밀. 사이트가 값을 저장해 다른 탭에 다시 보여도 모든 관찰에서 가린다.
+  const filledSecrets = new Set();
+  const protectedFor = (tab) => filledSecrets.size ? new Set([...(tab?.protectedValues ?? []), ...filledSecrets]) : tab?.protectedValues;
+  // 그림은 가릴 수 없다. 입력한 비밀이 페이지 글이나 입력 칸에 보이면 캡처하지 않는다.
+  const pageShowsFilledSecret = async (page) => {
+    if (!filledSecrets.size || !page) return false;
+    for (const frame of page.frames()) {
+      const texts = await frame.evaluate(() => [document.documentElement?.innerText ?? '', ...[...document.querySelectorAll('input,textarea')].map((el) => el.value)]).catch(() => []);
+      if (texts.some((value) => [...filledSecrets].some((secret) => String(value).includes(secret)))) return true;
+    }
+    return false;
+  };
   const runtimeId = id('runtime');
   const descriptorFile = path.join(dataDir, 'browser', 'tabs.json');
   let generation = 0;
@@ -232,7 +250,7 @@ export function createOwnedBrowserService(options = {}) {
   const userHolds = (tab) => tab.hold?.human === true;
   const nativeControl = (tab) => ({ targetId: tab.nativeTargetId, human: tab.hold?.human !== false, held: userHolds(tab) });
   const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
-  const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: userHolds(tab) ? { ...tab.controller, held: true } : { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null }, tab.protectedValues);
+  const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: userHolds(tab) ? { ...tab.controller, held: true } : { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null }, protectedFor(tab));
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   const publish = (tab) => emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo() });
   const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman) emit('owned_browser_activity', { active, sessionId: actor.sessionId ?? tab.sessionId, tab: descriptor(tab), runtime: runtimeInfo() }); };
@@ -267,7 +285,7 @@ export function createOwnedBrowserService(options = {}) {
     if (policy?.assertAllowed && url !== 'about:blank') await policy.assertAllowed({ actor, action: mapped, url, profileId: profileId() });
     else if (policy?.assertBrowserAction) await policy.assertBrowserAction({ actor, action, url, tab: tab && descriptor(tab), intent: args.intent ?? 'research' });
     else if (mapped === 'website-change') throw error('BROWSER_WEBSITE_CHANGE_REQUIRED', 'Approve website changes for this site before continuing.');
-    if (credentialBroker?.assertBrowserAccess && tab?.scope !== 'global' && (!tab || ['open', 'browse', 'navigate', 'fill-account'].includes(action) || args.intent === 'website-change') && url !== 'about:blank') await credentialBroker.assertBrowserAccess({ actor, url, tab: { ...descriptor(tab ?? { page: null, url, controller: {} }), profileId: profileId() } });
+    if (credentialBroker?.assertBrowserAccess && tab?.scope !== 'global' && (!tab || ['open', 'browse', 'navigate', 'fill-account', 'fill-secret'].includes(action) || args.intent === 'website-change') && url !== 'about:blank') await credentialBroker.assertBrowserAccess({ actor, url, tab: { ...descriptor(tab ?? { page: null, url, controller: {} }), profileId: profileId() } });
   };
   const invalidate = (tab) => {
     for (const handle of tab.snapshot?.handles?.values?.() ?? []) void handle.dispose?.().catch(() => {});
@@ -732,7 +750,8 @@ export function createOwnedBrowserService(options = {}) {
     const navigationEpoch = tab.navigationEpoch;
     const geometryEpoch = tab.geometryEpoch;
     if (selectedAdapter()?.passwordSnapshot && tab.nativeTargetId) {
-      const observed = await selectedAdapter().passwordSnapshot({ ...nativePasswordBinding(tab), ...(view.text ? { text: true } : {}) });
+      const raw = await selectedAdapter().passwordSnapshot({ ...nativePasswordBinding(tab), ...(view.text ? { text: true } : {}) });
+      const observed = raw?.available === false || !filledSecrets.size ? raw : redactValues(raw, protectedFor(tab));
       if (observed?.available !== false) {
         if (navigationEpoch !== tab.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true);
         if (geometryEpoch !== tab.geometryEpoch) throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed while it was observed. Take a new snapshot.', true);
@@ -770,7 +789,7 @@ export function createOwnedBrowserService(options = {}) {
       throw failure;
     });
     const content = view.text ? await page.locator('body').innerText({ timeout: 3000 }).catch(() => '') : undefined;
-    const selectedText = tab.protectedValues.size ? '' : await page.evaluate((selector) => {
+    const selectedText = protectedFor(tab).size ? '' : await page.evaluate((selector) => {
       if (document.activeElement?.matches(selector)) return '';
       const selection = window.getSelection();
       if (!selection) return '';
@@ -785,8 +804,8 @@ export function createOwnedBrowserService(options = {}) {
     if (!accept()) throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out before its observation completed.', true);
     const snapshotId = id('snapshot');
     // find 일치 수로 비밀 값을 떠볼 수 없도록 그리기 전에 가린다.
-    const { result, rendered } = observation(tab, { snapshotId, navigationEpoch, url: publicURL(page.url()), title: tab.title }, outlineFromAria(redactValues(tree, tab.protectedValues), { masked, extra, maskAll }), view);
-    const redacted = redactValues({ ...result, ...(content !== undefined ? { text: text(content, 24_000) } : {}), ...(selectedText ? { selectedText } : {}) }, tab.protectedValues);
+    const { result, rendered } = observation(tab, { snapshotId, navigationEpoch, url: publicURL(page.url()), title: tab.title }, outlineFromAria(redactValues(tree, protectedFor(tab)), { masked, extra, maskAll }), view);
+    const redacted = redactValues({ ...result, ...(content !== undefined ? { text: text(content, 24_000) } : {}), ...(selectedText ? { selectedText } : {}) }, protectedFor(tab));
     tab.snapshot = { snapshotId, url: redacted.url, title: redacted.title, handles: new Map(), masked, refs: rendered.refs, lines: rendered.all };
     if (view.scope && !rendered.scoped) throw scopeMissing();
     return redacted;
@@ -840,11 +859,11 @@ export function createOwnedBrowserService(options = {}) {
         try { for (const field of fields) { const value = await field.inputValue().catch(() => ''); if (value) tab.protectedValues.add(value); } }
         finally { for (const field of fields) await field.dispose(); }
       }
-      if (tab.protectedValues.size) throw error('BROWSER_PASSWORD_CAPTURE_PROTECTED', 'The page contains private sign-in data. Use a semantic snapshot for page evidence.');
+      if (tab.protectedValues.size || await pageShowsFilledSecret(tab.page)) throw error('BROWSER_PASSWORD_CAPTURE_PROTECTED', 'The page contains private sign-in data. Use a semantic snapshot for page evidence.');
       return;
     }
     const adapter = selectedAdapter();
-    const observed = await (adapter.passwordViewport ?? adapter.passwordSnapshot)(nativePasswordBinding(tab));
+    const observed = await (adapter.passwordViewport ?? adapter.passwordSnapshot)({ ...nativePasswordBinding(tab), ...(filledSecrets.size ? { protectedValues: [...filledSecrets] } : {}) });
     if (observed?.passwordProtected) throw error('BROWSER_PASSWORD_CAPTURE_PROTECTED', 'The page contains a saved password. Use a semantic snapshot for page evidence.');
     return observed?.available === false ? undefined : { navigationEpoch: observed.nativeNavigationEpoch, controlEpoch: observed.nativeControlEpoch, zoomFactor: observed.zoomFactor };
   };
@@ -996,7 +1015,7 @@ export function createOwnedBrowserService(options = {}) {
         while (popup && !(opened = [...tabs.values()].find((entry) => entry.page === popup)) && live() && !popup.isClosed()) await pause(50);
         const navigated = tab.navigationEpoch !== startEpoch;
         if (navigated && tab.page === page && !page.isClosed() && !(selectedAdapter() && tab.nativeTargetId)) { const title = await page.title().catch(() => null); if (typeof title === 'string' && tab.page === page) tab.title = text(title, 500); }
-        const dialog = (tab.dialogCount ?? 0) !== dialogs && tab.lastDialog ? redactValues(tab.lastDialog, tab.protectedValues) : undefined;
+        const dialog = (tab.dialogCount ?? 0) !== dialogs && tab.lastDialog ? redactValues(tab.lastDialog, protectedFor(tab)) : undefined;
         const newTab = opened ? (({ tabId, url, title }) => ({ tabId, url, ...(title ? { title } : {}) }))(descriptor(opened)) : undefined;
         return { navigated, ...(newTab ? { newTab } : {}), ...(dialog ? { dialog } : {}) };
       } finally { stop(); }
@@ -1088,7 +1107,9 @@ export function createOwnedBrowserService(options = {}) {
       if (tab.snapshot?.native && selectedAdapter()?.passwordFill) {
         requireRef(tab, { ...args, ref: args.passwordRef });
         if (args.usernameRef) requireRef(tab, { ...args, ref: args.usernameRef });
-        const result = await selectedAdapter().passwordFill({ ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef });
+        // "이 채팅" 계정 승인은 허브만 안다. 데스크톱 보관함은 영구 승인이나 이 표시가 있을 때만 입력한다.
+        const chatApprovedAt = actor.isHuman ? null : policy?.chatAccountGrantedAt?.(actor, args.accountId) ?? null;
+        const result = await selectedAdapter().passwordFill({ ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef, ...(chatApprovedAt ? { chatApprovedAt } : {}) });
         tab.snapshot.passwordProtected = true;
         return result;
       }
@@ -1122,7 +1143,90 @@ export function createOwnedBrowserService(options = {}) {
       } });
       return { completed: true, accountId: args.accountId };
     }
+    if (action === 'fill-secret') return fillSecret(actor, tab, page, args);
     throw error('BROWSER_ACTION_INVALID', 'Unsupported browser action.');
+  };
+
+  // 사용자가 승인한 비밀을 한 칸에 입력한다. 값은 모든 확인을 마친 뒤에야 꺼내고, 탭의 보호 값으로 등록해 관찰·대화상자·오류·캡처에서 가린다.
+  const fillSecret = async (actor, tab, page, args) => {
+    const secret = args[SECRET_FILL];
+    if (actor.isHuman || !secret || typeof secret.resolve !== 'function' || !Array.isArray(secret.origins)) throw error('BROWSER_ACTION_INVALID', 'Fill secrets with browser_fill_secret.');
+    const allowed = new Set(secret.origins);
+    const outside = () => error('BROWSER_SECRET_ORIGIN_MISMATCH', 'This page is outside the websites the user approved for this secret.');
+    const topOrigin = () => { try { return new URL(page.url()).origin; } catch { return 'null'; } };
+    const origin = topOrigin();
+    if (!allowed.has(origin)) throw outside();
+    const protect = (value) => {
+      tab.protectedValues ??= new Set(); tab.protectedValues.add(value);
+      filledSecrets.add(value);
+      if (filledSecrets.size > 256) filledSecrets.delete(filledSecrets.values().next().value);
+    };
+    const submit = async (press) => {
+      if (args.submit !== true) return;
+      epochs(tab, args, true); assertController(actor, tab);
+      // 제출은 browser_type 의 제출과 같은 사이트 변경 승인을 따른다.
+      await assertPolicy(actor, 'press', page.url(), tab, { intent: 'website-change' });
+      await press();
+    };
+    const invalidTarget = () => error('BROWSER_SECRET_TARGET_INVALID', 'Choose a text or password field for this secret.');
+    const userCode = () => error('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code'.");
+    if (tab.snapshot?.native && selectedAdapter()?.secretFill) {
+      // 금고를 열기 전에 관찰한 요소 정보로 먼저 거른다. 데스크톱이 입력 직전에 다시 확인한다.
+      const element = requireRef(tab, args);
+      if (!(element.tag === 'textarea' || element.tag === 'input' && SECRET_INPUT_TYPES.has(element.inputType)) || element.disabled) throw invalidTarget();
+      if (element.autocomplete === 'one-time-code') throw userCode();
+      let formOrigin = null;
+      try { formOrigin = element.formAction ? new URL(element.formAction).origin : null; } catch { formOrigin = 'null'; }
+      if (formOrigin && formOrigin !== origin) throw error('BROWSER_SECRET_FORM_ORIGIN', 'This form sends its data to another website.');
+      const value = await secret.resolve();
+      protect(value);
+      const watch = watchConsequences(tab);
+      try {
+        await selectedAdapter().secretFill({ ...nativePasswordBinding(tab), snapshotId: args.snapshotId, ref: args.ref, origins: [...allowed], value });
+        tab.snapshot.passwordProtected = true;
+        await submit(() => selectedAdapter().passwordAction({ ...nativePasswordBinding(tab), action: 'press', key: 'Enter', ref: args.ref, snapshotId: args.snapshotId }));
+        return { completed: true, consequences: await watch.settle() };
+      } finally { watch.stop(); }
+    }
+    if (tab.snapshot?.native) throw error('BROWSER_NATIVE_UNAVAILABLE', 'This desktop browser cannot enter secrets yet. Update the app.', true);
+    const handle = await elementFor(tab, args);
+    const frame = await handle.ownerFrame();
+    let frameOrigin = 'null';
+    try { frameOrigin = new URL(frame?.url() ?? '').origin; } catch {}
+    if (!frame || !allowed.has(frameOrigin)) throw outside();
+    const matches = async (selector) => { const node = await handle.$(selector); await node?.dispose(); return !!node; };
+    const isInput = await matches('xpath=self::input');
+    const type = ((await handle.getAttribute('type')) || 'text').trim().toLowerCase();
+    const autocomplete = ((await handle.getAttribute('autocomplete')) ?? '').trim().toLowerCase();
+    if (!(isInput ? SECRET_INPUT_TYPES.has(type) : await matches('xpath=self::textarea'))) throw invalidTarget();
+    if (autocomplete === 'one-time-code') throw userCode();
+    if (autocomplete.startsWith('cc-')) throw invalidTarget();
+    // form= 속성으로 묶인 칸과 제출 단추의 formaction 까지 본다. 이름이 action 인 칸이 가리지 않게 속성을 읽는다.
+    const destinations = await handle.evaluate((el) => {
+      const form = el.form;
+      if (!form) return [];
+      return [form.getAttribute('action'), ...[...form.elements].filter((item) => ['submit', 'image'].includes(item.type)).map((item) => item.getAttribute('formaction'))]
+        .filter(Boolean).map((value) => { try { return new URL(value, document.baseURI).origin; } catch { return 'null'; } });
+    }).catch(() => ['null']);
+    if (destinations.some((destination) => destination !== frameOrigin)) throw error('BROWSER_SECRET_FORM_ORIGIN', 'This form sends its data to another website.');
+    try {
+      await handle.waitForElementState('visible', { timeout: 5_000 });
+      await handle.waitForElementState('editable', { timeout: 5_000 });
+    } catch { throw error('BROWSER_NOT_EDITABLE', 'The field is not visible and editable. Take a new snapshot and choose another field.'); }
+    epochs(tab, args, true); assertController(actor, tab);
+    if (topOrigin() !== origin || await handle.ownerFrame() !== frame) throw error('BROWSER_CREDENTIAL_TARGET_CHANGED', 'The page changed before the secret was entered. Take a new snapshot.');
+    const value = await secret.resolve();
+    protect(value);
+    // 이후 관찰은 이 칸을 비공개 칸으로 다룬다.
+    await handle.evaluate((el) => el.setAttribute('data-rhwp-private-field', 'true'));
+    if (topOrigin() !== origin) throw error('BROWSER_CREDENTIAL_TARGET_CHANGED', 'The page changed before the secret was entered. Take a new snapshot.');
+    const watch = watchConsequences(tab);
+    try {
+      // Playwright 의 격리된 선택 엔진으로 입력한다. 사이트가 바꾼 setter 를 거치지 않는다.
+      await handle.fill(value, { timeout: 10_000 });
+      await submit(async () => (await elementFor(tab, args)).press('Enter', { timeout: 10_000 }));
+      return { completed: true, consequences: await watch.settle() };
+    } finally { watch.stop(); }
   };
 
   const inventory = async (actor) => {
@@ -1461,7 +1565,7 @@ export function createOwnedBrowserService(options = {}) {
       } catch (failure) {
         if (failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_')) throw failure;
         const mapped = browserActionFailure(failure);
-        mapped.message = redactValues(mapped.message, tab.protectedValues);
+        mapped.message = redactValues(mapped.message, protectedFor(tab));
         throw mapped;
       } finally { if (!observeOnly) tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
     };
@@ -1475,6 +1579,8 @@ export function createOwnedBrowserService(options = {}) {
   const request = performRequest;
   return {
     request, inventory, sweepSleepingTabs,
+    /** 허브만 부른다. resolve 는 입력 직전에 값을 돌려주고, origins 는 사용자가 승인한 사이트다. */
+    fillSecret: (actor, args, { origins, resolve }) => performRequest(actor, 'fill-secret', { ...args, [SECRET_FILL]: { origins: [...origins], resolve } }),
     /** 새 사용자 턴은 같은 창이 잡았던 탭을 에이전트와 공유 상태로 되돌린다. tabId 를 주면 그 탭만 돌려준다. */
     async releaseHolds(actor, { tabId } = {}) {
       for (const tab of tabs.values()) {

@@ -171,6 +171,8 @@ export function prepareFakePi(root, fixtureSource = ALIVE_PI_FIXTURE_SOURCE, {
  *   keeps whatever launcher the function installed itself (for example
  *   `installReplayCli`).
  * `piApiKey: null` leaves the fake Pi's setup incomplete.
+ * `prepare({ workRoot, piRoot })` runs (and is awaited) before the hub starts,
+ * for fixtures the hub reads at boot. `nodeArgs` go before `server.mjs`.
  */
 export async function startHub(t, {
   fakePi = false,
@@ -180,6 +182,8 @@ export async function startHub(t, {
   launchId = HUB_TEST_LAUNCH_ID,
   prefix = 'rhwp-hub-test-',
   readyTimeoutMs = 20_000,
+  prepare,
+  nodeArgs = [],
 } = {}) {
   const workRoot = mkdtempSync(path.join(os.tmpdir(), prefix));
   const piRoot = path.join(workRoot, 'pi');
@@ -193,7 +197,8 @@ export async function startHub(t, {
       prepareFakePi(piRoot, typeof fakePi === 'string' ? fakePi : ALIVE_PI_FIXTURE_SOURCE, piOptions);
     }
   }
-  const child = spawn(process.execPath, ['server.mjs'], {
+  if (prepare) await prepare({ workRoot, piRoot });
+  const child = spawn(process.execPath, [...nodeArgs, 'server.mjs'], {
     cwd: new URL('..', import.meta.url),
     env: {
       ...process.env,

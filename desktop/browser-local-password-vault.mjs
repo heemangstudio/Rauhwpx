@@ -21,6 +21,8 @@ export class LocalBrowserPasswordVault {
     this.records = null;
     this.queue = Promise.resolve();
     this.writes = new Map();
+    /** 사용자가 설정에서 에이전트 사용을 끈 시각. 그 전에 준 "이 채팅" 승인은 더 쓰지 않는다. */
+    this.reuseRevokedAt = new Map();
   }
   async ready() {
     if (this.readyPromise) return this.readyPromise;
@@ -119,15 +121,18 @@ export class LocalBrowserPasswordVault {
       if (typeof approved !== 'boolean') throw passwordFailure('BROWSER_PASSWORD_INVALID', 'The account consent choice is invalid.');
       const next = [...this.records]; next[index] = { ...next[index], agentReuseApproved: approved };
       await this.persist(next);
+      if (!approved) this.reuseRevokedAt.set(id, Date.now());
       return this.metadata(next[index]);
     });
   }
-  async withCredential(id, operation, { agent = false } = {}) {
+  async withCredential(id, operation, { agent = false, chatApprovedAt = null } = {}) {
     await this.ready();
     const record = this.records.find((entry) => entry.id === id);
     if (!record) throw passwordFailure('BROWSER_PASSWORD_NOT_FOUND', 'The saved website account no longer exists.');
     // Checked before decryption so an unapproved agent request never prompts the OS vault.
-    if (agent && record.agentReuseApproved !== true) throw passwordFailure('BROWSER_ACCOUNT_NOT_APPROVED', 'The user has not approved agent use of this saved account. Call browser_request_account with this accountId and end the turn.');
+    // chatApprovedAt: 사용자가 이 채팅에만 허용한 시각 — 허브가 채팅 범위를 확인하고 보낸다. 그 뒤에 사용을 끄면 받지 않는다.
+    const chatApproved = Number.isFinite(chatApprovedAt) && chatApprovedAt > (this.reuseRevokedAt.get(id) ?? 0);
+    if (agent && record.agentReuseApproved !== true && !chatApproved) throw passwordFailure('BROWSER_ACCOUNT_NOT_APPROVED', 'The user has not approved agent use of this saved account. Call browser_request_account with this accountId and end the turn.');
     if (!await this.available()) throw passwordFailure('BROWSER_PASSWORD_STORAGE_UNAVAILABLE', 'OS password storage is unavailable.');
     let credential;
     try {

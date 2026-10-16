@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const BROWSER_KEY = /^(?:browser\.password\.[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|browser\.wrapping-key\.v1)$/i;
+const BROWSER_KEY = /^(?:(?:browser\.password|usersecret)\.[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|browser\.wrapping-key\.v1)$/i;
 function failure(code, message) { return Object.assign(new Error(message), { code }); }
 function validateKey(key) {
   if (typeof key !== 'string' || !BROWSER_KEY.test(key)) throw failure('BROWSER_SECRET_NAMESPACE_INVALID', 'Only app-owned browser credential keys are supported.');
@@ -80,10 +80,10 @@ export async function createBrowserOsSecretStore({
   return {
     available, backend: ipcStore?.available ? 'owner-ipc' : available ? platform === 'linux' ? 'secret-service' : platform === 'darwin' ? 'keychain' : 'windows-credential-manager' : 'unavailable',
     get: (key) => request('get', key), set: (key, value) => request('set', key, value), delete: (key) => request('delete', key),
-    async resetBrowser({ accountIds = [] } = {}) {
+    async resetBrowser({ accountIds = [], userSecretIds = [] } = {}) {
       if (ipcStore?.available && typeof ipcStore.resetBrowser === 'function') return ipcStore.resetBrowser();
-      if (!Array.isArray(accountIds) || accountIds.length > 1024) throw failure('BROWSER_SECRET_NAMESPACE_INVALID', 'Browser cleanup needs its owned account identities.');
-      const keys = accountIds.map((id) => `browser.password.${id}`);
+      if (!Array.isArray(accountIds) || accountIds.length > 1024 || !Array.isArray(userSecretIds) || userSecretIds.length > 1024) throw failure('BROWSER_SECRET_NAMESPACE_INVALID', 'Browser cleanup needs its owned account identities.');
+      const keys = accountIds.map((id) => `browser.password.${id}`).concat(userSecretIds.map((id) => `usersecret.${id}`));
       keys.forEach(validateKey);
       for (const key of keys) await request('delete', key);
       await request('delete', 'browser.wrapping-key.v1');

@@ -1062,7 +1062,7 @@ test('a finished browser sign-in handoff settles the card and resumes the chat b
   const threadId = 'browser-handoff-thread';
   const documentId = 'browser-handoff-doc';
   const handoffArgs = { tabId: 'handoff-tab', origin: 'https://login.example.com', label: 'Example', reason: 'The site sent a verification code.', kind: 'code' };
-  const { port } = await startHub(t, {
+  const { port, workRoot } = await startHub(t, {
     backendFixture: {
       agent: 'claude',
       source: async ({ workRoot }) => {
@@ -1077,6 +1077,7 @@ test('a finished browser sign-in handoff settles the card and resumes the chat b
           { tabId: 'handoff-tab', agentId: `${threadId}:root`, threadId, projectId, documentId, url: 'about:blank' },
         ] }));
         return `
+          import { existsSync } from 'node:fs';
           export function prepareClaudeHome() { return []; }
           export function flushClaudeCredentialMirrors() { return true; }
           export function canResumeClaudeSession() { return false; }
@@ -1088,6 +1089,12 @@ test('a finished browser sign-in handoff settles the card and resumes the chat b
                 opts.onEvent({ type: 'turn-start', agent: 'claude' });
                 if (prompt.includes('handoff-ticket')) {
                   opts.onEvent({ type: 'tool-call', agent: 'claude', callId: 'handoff', tool: 'mcp__rhwp__browser_request_account', argsJson: ${JSON.stringify(JSON.stringify(handoffArgs))} });
+                  // 에이전트는 요청을 보낸 뒤 스스로 턴을 끝낸다. 끝낼 때는 테스트가 정한다.
+                  const timer = setInterval(() => {
+                    if (!existsSync(${JSON.stringify(path.join(workRoot, 'end-handoff-turn'))})) return;
+                    clearInterval(timer);
+                    opts.onEvent({ type: 'turn-end', agent: 'claude', stopReason: 'end_turn' });
+                  }, 20);
                   return;
                 }
                 // 이어진 턴은 받은 지시의 끝을 그대로 들려준다.
@@ -1123,7 +1130,7 @@ test('a finished browser sign-in handoff settles the card and resumes the chat b
   assert.equal(completed.result?.completed, true, JSON.stringify(completed.error));
   const resolved = await studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === requested.request.requestId);
   assert.equal(resolved.outcome.status, 'granted');
-  sendFrame(studio, { type: 'chat-interrupt' });
+  writeFileSync(path.join(workRoot, 'end-handoff-turn'), '');
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
   const note = await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'text-delta');

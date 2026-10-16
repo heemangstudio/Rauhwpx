@@ -58,6 +58,7 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
   let checkpointEpoch = 0;
   let checkpointMutations = 0;
   const requests = new Map();
+  const resetParticipants = new Set();
   const handles = new Map();
   const activeUses = new Map();
   const readyPromise = (async () => {
@@ -178,6 +179,11 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     const publicRequest = clone(request);
     emit({ type: 'browser-account-request', request: publicRequest });
     return publicRequest;
+  }
+  /** 허브가 만료·중지·거절로 닫은 요청을 버린다. 이미 없으면 false. */
+  function discardAccountRequest(id) {
+    sweep();
+    return requests.delete(id);
   }
   async function getAccountRequest(id) {
     await readyPromise; sweep();
@@ -301,8 +307,10 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
       return { account: safeAccount };
     });
   }
-  async function approveAccount({ actor, requestId, accountId, approval, account: submitted = {} } = {}) {
+  async function approveAccount({ actor, requestId, accountId, approval, account: submitted = {}, scope = 'always' } = {}) {
     human(actor);
+    if (!['chat', 'always'].includes(scope)) throw failure('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'Choose chat or always for this account approval.');
+    if (scope === 'chat' && !actor.threadId) throw failure('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'A chat approval needs the chat that asked for it.');
     return serialized(async () => {
       let account;
       if (requestId) {
@@ -329,10 +337,12 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
       const next = { ...state, accounts: state.accounts.map((entry) => entry.id === account.id ? acknowledgedAccount : entry) };
       await writeBrowserJson(filePath, next); state = next;
       account = acknowledgedAccount;
-      await policy.update({ actor, operation: 'approve-account', accountId: account.id, origins: account.origins, profileId: account.profileId });
+      // "이 채팅" 승인은 허브 메모리에만 둔다. 영구 승인 기록은 바꾸지 않는다.
+      if (scope === 'chat') await policy.grantChatAccount({ actor, threadId: actor.threadId, accountId: account.id, origins: account.origins, profileId: account.profileId });
+      else await policy.update({ actor, operation: 'approve-account', accountId: account.id, origins: account.origins, profileId: account.profileId });
       const safeAccount = await metadata(account);
       emit({ type: 'browser-account-changed', account: safeAccount });
-      return { account: safeAccount };
+      return { account: { ...safeAccount, ...(scope === 'chat' ? { chatApproved: true } : {}) } };
     });
   }
   async function assertBrowserAccess({ actor, url, tab = {} } = {}) {
@@ -616,6 +626,7 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
           }
         }
         await authStore.clearEncryptedData();
+        for (const participant of resetParticipants) await participant();
         for (const accountId of accountIds) await policy.update({ actor, operation: 'forget-account', accountId });
         const next = { ...state, accounts: [], sessions: [] };
         await writeBrowserJson(filePath, next); state = next;
@@ -671,12 +682,14 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     });
   }
   return {
-    ready: () => readyPromise, requestAccount, getAccountRequest, cancelAccountRequest, settleExternalRequest, completeHandoff, listAccounts, submit, approveAccount,
+    ready: () => readyPromise, requestAccount, getAccountRequest, discardAccountRequest, cancelAccountRequest, settleExternalRequest, completeHandoff, listAccounts, submit, approveAccount,
     assertBrowserAccess, registerSessionOrigins, confirmAccountSession, issueHandle, fill, revokeAccount, signOut, forgetAccount,
     getConfiguration, updateConfiguration, resetBrowserData, saveCheckpoint, restoreCheckpoint,
     deleteCheckpoint: ({ profileId = 'default' } = {}) => authStore.deleteCheckpoint(profileId),
     setSessionClearer: (callback) => { sessionClearer = callback; },
     setDataResetter: (callback) => { dataResetter = callback; },
+    /** 브라우저 데이터 초기화 안에서 함께 지울 저장소(사용자 비밀 등). */
+    addResetParticipant: (callback) => { resetParticipants.add(callback); return () => resetParticipants.delete(callback); },
     invalidateTab: (tabId) => {
       for (const [id, handle] of handles) if (handle.binding.tabId === tabId) handles.delete(id);
       for (const use of activeUses.values()) if (use.binding.tabId === tabId) use.invalidated = true;

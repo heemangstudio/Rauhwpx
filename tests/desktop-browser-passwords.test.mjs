@@ -58,6 +58,19 @@ test('native vault exposes metadata and writes OS-encrypted records with private
   await assert.rejects(vault.withCredential(account.id, () => {}), { code: 'BROWSER_PASSWORD_NOT_FOUND' });
 });
 
+test('a chat-only approval fills a saved password until the user turns agent use off', async (t) => {
+  const { vault } = await vaultFixture(t);
+  const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'chat-user', password: 'chat-fixture-secret' });
+  const approvedAt = Date.now();
+  await vault.withCredential(account.id, async (credential) => assert.equal(credential.username, 'chat-user'), { agent: true, chatApprovedAt: approvedAt });
+  assert.equal((await vault.list()).accounts[0].agentReuseApproved, false, 'a chat approval is not remembered');
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  await vault.setAgentReuse(account.id, false);
+  await assert.rejects(vault.withCredential(account.id, () => assert.fail('decrypted after revoke'), { agent: true, chatApprovedAt: approvedAt }), { code: 'BROWSER_ACCOUNT_NOT_APPROVED' });
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  await vault.withCredential(account.id, async () => {}, { agent: true, chatApprovedAt: Date.now() });
+});
+
 test('native vault refuses unavailable/plaintext OS storage and altered metadata', async (t) => {
   const { root, vault, safeStorage } = await vaultFixture(t);
   const plaintext = new LocalBrowserPasswordVault({ dataDir: join(root, 'plaintext'), platform: 'linux', safeStorage: { ...safeStorage, getSelectedStorageBackend: () => 'basic_text' } });
