@@ -578,36 +578,6 @@ export class OwnedBrowserHost {
     tab.parkingWindow = this.parkingWindow;
   }
 
-  // Linux never composites a view inside the unmapped parking window, so CDP
-  // capture of a hidden guest waits forever and the stuck request freezes later
-  // viewport sizing. Lend it a visible editor window, clipped outside its content.
-  async withCaptureSurface(tab, capture) {
-    if (process.platform !== 'linux' || tab.placement || tab.dialogParking || tab.closing || tab.parkingWindow !== this.parkingWindow) return capture();
-    const owner = tab.sessionId && this.getWindowForSession(tab.sessionId);
-    const surface = [owner, ...(this.BrowserWindow.getAllWindows?.() ?? [])]
-      .find(window => window && !window.isDestroyed() && window.isVisible() && !window.isMinimized());
-    if (!surface) throw new Error('Native browser capture needs a visible HamaEditor window');
-    const bounds = tab.view.getBounds();
-    this.parkingWindow.contentView.removeChildView(tab.view);
-    surface.contentView.addChildView(tab.view);
-    tab.view.setBounds({ ...bounds, x: surface.getContentBounds().width + 64, y: 0 });
-    tab.parkingWindow = surface;
-    let timer;
-    try {
-      return await Promise.race([capture(), new Promise((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('Native browser capture timed out')), 10_000);
-      })]);
-    } finally {
-      clearTimeout(timer);
-      // 캡처 중 배치나 닫힘이 일어났으면 그 경로가 뷰를 옮겼다.
-      if (tab.parkingWindow === surface && !tab.placement && !tab.dialogParking) {
-        if (!surface.isDestroyed()) surface.contentView.removeChildView(tab.view);
-        tab.parkingWindow = null;
-        if (!tab.closing && !tab.view.webContents.isDestroyed()) { tab.view.setBounds(bounds); this.parkGuest(tab); }
-      }
-    }
-  }
-
   onJavaScriptDialog(tab, method) {
     if (tab.closing || tab.view.webContents.isDestroyed() || this.tabs.get(tab.targetId) !== tab) return;
     if (method === 'Page.javascriptDialogOpening') {
@@ -1078,15 +1048,7 @@ export class OwnedBrowserHost {
         else throw new Error('Unsupported native browser operation');
       }
       response.ok = true;
-    } catch (error) {
-      response.ok = false;
-      response.error = {
-        message: error.message, code: error.code ?? 'NATIVE_BROWSER_FAILED',
-        ...(typeof error.hint === 'string' ? { hint: error.hint } : {}),
-        ...(typeof error.retryable === 'boolean' ? { retryable: error.retryable } : {}),
-        ...(typeof error.actionCompleted === 'boolean' ? { actionCompleted: error.actionCompleted } : {}),
-      };
-    }
+    } catch (error) { response.ok = false; response.error = { message: error.message, code: error.code ?? 'NATIVE_BROWSER_FAILED' }; }
     return response;
   }
 

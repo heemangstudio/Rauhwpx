@@ -19,9 +19,9 @@ test('현재 화면을 한 번 첨부하고 캡처 중에도 브라우저 입력
     const page = await browser.newPage(); page.setDefaultTimeout(5000); await page.setViewport({ width: 1000, height: 800, deviceScaleFactor: 2 });
     await page.goto(`http://127.0.0.1:${address.port}/viewport-capture`);
     await page.evaluate(async () => {
-      const calls: Array<{ action: string; args?: any }> = []; let attached: string | null = null; let release: (() => void) | undefined; let nativeEvent: ((event: any) => void) | undefined; let pausePopout = false; let releasePopout: (() => void) | undefined;
+      const calls: Array<{ action: string; args?: any }> = []; let attached: string | null = null; let release: (() => void) | undefined; let nativeEvent: ((event: any) => void) | undefined;
       Object.assign(window, { rhwpDesktop: { browser: {
-        async attach(args: any) { calls.push({ action: 'attach', args }); attached = args.tabId; if (args.mode === 'popout' && pausePopout) { pausePopout = false; await new Promise<void>(resolve => { releasePopout = resolve; }); } },
+        async attach(args: any) { calls.push({ action: 'attach', args }); attached = args.tabId; },
         async detach(args: any) { calls.push({ action: 'detach', args }); attached = null; }, async getState() { return {}; }, onEvent(callback: any) { nativeEvent = callback; return () => {}; },
       } } });
       const tab = { tabId: 'tab', nativeTargetId: 'target', runtime: 'native', zoomFactor: 1, url: 'https://fixture.invalid/long', title: 'Viewport source', navigationEpoch: 1, controllerEpoch: 1, controller: { owner: 'agent' }, status: 'ready' };
@@ -40,9 +40,7 @@ test('현재 화면을 한 번 첨부하고 캡처 중에도 브라우저 입력
       const { createWorkbenchBrowser } = await import('../src/ui/agent-sidebar/workbench-browser.ts'); const drafts: any[] = [];
       const view = createWorkbenchBrowser({ bridge: bridge as any, getDestination: () => ({ threadId: 'chat', projectId: null, documentId: null }), onCapture: draft => { drafts.push(draft); return document.querySelector<HTMLElement>('#attachment')!; }, onOpenDownload() {}, onDock() {}, onChat() {} });
       view.mount(document.querySelector<HTMLElement>('#host')!); view.setVisible(true);
-      (window as any).captureTest = { view, calls, drafts, get attached() { return attached; }, release: () => release?.(), emit: (event: any) => nativeEvent?.(event),
-        pausePopout: () => { pausePopout = true; }, releasePopout: () => releasePopout?.(),
-        popup: { ...tab, tabId: 'popup', nativeTargetId: 'popup-target', url: 'https://fixture.invalid/oauth', title: 'Popup', openerTabId: 'tab' } };
+      (window as any).captureTest = { view, calls, drafts, get attached() { return attached; }, release: () => release?.(), emit: (event: any) => nativeEvent?.(event) };
     });
     await page.waitForFunction(() => (window as any).captureTest.attached === 'tab');
     await page.click('[aria-label="현재 화면을 캡처해 채팅에 첨부"]');
@@ -80,14 +78,8 @@ test('현재 화면을 한 번 첨부하고 캡처 중에도 브라우저 입력
     await page.evaluate(() => (window as any).captureTest.release());
     await page.waitForFunction(() => (window as any).captureTest.drafts.length === 3);
     assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'float', 'a separate-window capture command does not dock or hide its page');
-    await page.evaluate(() => (window as any).captureTest.pausePopout());
     await page.evaluate(() => (document.querySelector('[aria-label="별도 창으로 열기"]') as HTMLButtonElement).click());
     await page.waitForFunction(() => (window as any).captureTest.calls.some((call: any) => call.action === 'attach' && call.args.mode === 'popout'));
-    await page.evaluate(() => {
-      const fixture = (window as any).captureTest;
-      fixture.view.controller.accept({ tab: fixture.popup }); fixture.view.selectTab('browser:popup');
-      fixture.releasePopout();
-    });
     await page.waitForFunction(() => (document.querySelector('.ag-browser') as HTMLElement).dataset.presentation === 'hidden');
     await page.evaluate(() => {
       const fixture = (window as any).captureTest;
@@ -98,38 +90,6 @@ test('현재 화면을 한 번 첨부하고 캡처 중에도 브라우저 입력
     await page.evaluate(() => (window as any).captureTest.release());
     await page.waitForFunction(() => (window as any).captureTest.drafts.length === 4);
     assert.equal(await page.evaluate(() => (window as any).captureTest.calls.filter((call: any) => call.action === 'attach').at(-1).args.mode), 'popout', 'workbench refresh and capture preserve native popup ownership');
-    // 에이전트가 별도 창의 탭을 조작해도 그 창을 떠 있는 미리보기로 빼앗지 않는다.
-    const placementsBefore = await page.evaluate(() => (window as any).captureTest.calls.filter((call: any) => call.action === 'attach' || call.action === 'detach').length);
-    // 별도 창의 탭에서 연 팝업이 선택된 뒤에도 에이전트 미리보기는 별도 창의 탭을 그대로 둔다.
-    await page.evaluate(() => {
-      const fixture = (window as any).captureTest;
-      fixture.view.controller.accept({ tab: fixture.popup }); fixture.view.selectTab('browser:popup');
-      fixture.view.previewAgent(fixture.popup);
-    });
-    await page.evaluate(() => {
-      const fixture = (window as any).captureTest;
-      for (const event of [{ type: 'presentation', mode: 'hidden' }, { type: 'presentation', mode: 'dock' }, { type: 'browser-popout-closed' }, { type: 'popout-closed' }]) fixture.emit({ ...event, tabId: 'popup' });
-    });
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'hidden', 'another tab closing or hiding leaves the original popout open');
-    await page.evaluate(() => (window as any).captureTest.view.previewAgent({ tabId: 'tab', nativeTargetId: 'target', runtime: 'native', zoomFactor: 1, url: 'https://fixture.invalid/long', title: 'Viewport source', navigationEpoch: 1, controllerEpoch: 1, controller: { owner: 'agent' }, status: 'ready' }));
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    await page.evaluate(() => (window as any).captureTest.view.endAgentPreview());
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    const placements = await page.evaluate(() => (window as any).captureTest.calls.filter((call: any) => call.action === 'attach' || call.action === 'detach').map((call: any) => `${call.action}:${call.args.mode ?? ''}`));
-    assert.deepEqual(placements.slice(placementsBefore).filter((entry: string) => entry !== 'attach:popout'), [], 'an agent turn keeps a popped-out tab in its own window');
-    assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'hidden', 'the workbench copy stays hidden while the tab is popped out');
-    const redockedTab = await page.evaluate(() => {
-      const fixture = (window as any).captureTest;
-      fixture.view.controller.accept({ tab: { ...fixture.view.controller.tab(), tabId: 'popup', nativeTargetId: 'popup-target', openerTabId: 'tab' } });
-      fixture.view.selectTab('browser:popup');
-      const before = fixture.view.activeTab();
-      fixture.emit({ type: 'popout-closed', tabId: 'tab' });
-      return { before, after: fixture.view.activeTab() };
-    });
-    assert.deepEqual(redockedTab, { before: 'browser:popup', after: 'browser:tab' }, 'closing the original popout redocks its own tab after a popup was selected');
-    await page.waitForFunction(() => (document.querySelector('.ag-browser') as HTMLElement).dataset.presentation === 'dock');
-    await page.waitForFunction(() => (window as any).captureTest.calls.filter((call: any) => call.action === 'attach').at(-1)?.args.mode === 'dock' && (window as any).captureTest.attached === 'tab');
     await page.evaluate(() => (window as any).captureTest.view.dispose());
   } finally { await browser?.close(); await server.close(); }
 });

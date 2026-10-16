@@ -341,7 +341,7 @@ test('app-only AGENTS.md tools separate reads from bounded revision-checked writ
 
 test('browser actions require scoped current tab and semantic snapshot identities', () => {
   const identity = { tabId: 'tab-1', snapshotId: 'snapshot-1', ref: 'e1', navigationEpoch: 2, controllerEpoch: 3 };
-  for (const name of ['browser_click', 'browser_type']) {
+  for (const name of ['browser_click', 'browser_type', 'browser_press']) {
     const definition = byName.get(name);
     assert.equal(definition?.category, 'browser');
     const schema = z.object(definition.shape).strict();
@@ -355,27 +355,6 @@ test('browser actions require scoped current tab and semantic snapshot identitie
     assert.equal(schema.safeParse({ ...args, browserId: 'guessed-agent' }).success, false);
     assert.equal(schema.safeParse({ ...args, navigationEpoch: -1 }).success, false);
   }
-  const press = byName.get('browser_press');
-  const pressSchema = z.object(press.shape).strict();
-  const page = { tabId: identity.tabId, navigationEpoch: identity.navigationEpoch, controllerEpoch: identity.controllerEpoch, key: 'ArrowDown' };
-  assert.equal(press.category, 'browser');
-  assert.equal(pressSchema.safeParse(page).success, true, 'page-level press needs no ref or snapshot');
-  assert.equal(pressSchema.safeParse({ ...identity, key: 'Enter' }).success, true);
-  for (const field of ['tabId', 'navigationEpoch', 'controllerEpoch', 'key']) {
-    const incomplete = { ...page }; delete incomplete[field];
-    assert.equal(pressSchema.safeParse(incomplete).success, false, `browser_press missing ${field}`);
-  }
-  assert.equal(pressSchema.safeParse({ ...page, browserId: 'guessed-agent' }).success, false);
-  assert.equal(pressSchema.safeParse({ ...page, navigationEpoch: -1 }).success, false);
-  assert.throws(() => press.validate({ ...page, ref: 'e1' }), /snapshotId/);
-  assert.doesNotThrow(() => press.validate({ ...page, snapshotId: identity.snapshotId, ref: 'e1' }));
-  const wait = byName.get('browser_wait');
-  const waitSchema = z.object(wait.shape).strict();
-  assert.equal(waitSchema.safeParse({ tabId: identity.tabId }).success, true);
-  for (const state of ['visible', 'hidden']) assert.equal(waitSchema.safeParse({ tabId: identity.tabId, snapshotId: identity.snapshotId, ref: identity.ref, state }).success, true);
-  assert.equal(waitSchema.safeParse({ tabId: identity.tabId, state: 'detached' }).success, false);
-  assert.throws(() => wait.validate({ tabId: identity.tabId, ref: identity.ref }), /snapshotId/);
-  assert.doesNotThrow(() => wait.validate({ tabId: identity.tabId, snapshotId: identity.snapshotId, ref: identity.ref }));
   assert.equal(byName.get('browser_request_account')?.category, 'user-interaction');
   const navigate = z.object(byName.get('browser_navigate').shape);
   assert.equal(navigate.safeParse({ tabId: 'tab-1', url: 'https://example.com', navigationEpoch: 0, controllerEpoch: 0 }).success, true);

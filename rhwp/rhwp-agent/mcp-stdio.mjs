@@ -72,18 +72,10 @@ function safeHubEndpoint(raw) {
 
 const LOG_WS_ENDPOINT = safeHubEndpoint(WS_URL);
 
-function hubError(code, message, detail = {}) {
+function hubError(code, message) {
   const err = new Error(message);
   err.code = code;
-  if (typeof detail.hint === 'string') err.hint = detail.hint;
-  if (typeof detail.retryable === 'boolean') err.retryable = detail.retryable;
-  if (detail.actionCompleted === true) err.actionCompleted = true;
   return err;
-}
-
-// 허브 오류의 재시도 여부와 안내 문구도 모델이 읽는 텍스트에 그대로 남긴다.
-function errorText(e, fallback = 'RPC_ERROR') {
-  return [`${e.code ?? fallback}: ${e.message}`, e.actionCompleted ? 'Action completed: yes (do not repeat it)' : e.retryable === true ? 'Retryable: yes' : '', e.hint ? `Hint: ${e.hint}` : ''].filter(Boolean).join('\n');
 }
 
 /** @type {WebSocket | null} */
@@ -160,7 +152,7 @@ function ensureConnected() {
           entry.timing.resultBytes = data.length ?? 0;
         }
         if (msg.ok) entry.resolve(msg.result);
-        else entry.reject(hubError(msg.error?.code ?? 'RPC_ERROR', msg.error?.message ?? 'unknown hub error', msg.error ?? {}));
+        else entry.reject(hubError(msg.error?.code ?? 'RPC_ERROR', msg.error?.message ?? 'unknown hub error'));
       } else if (msg?.type === 'protocol-error') {
         log(`hub protocol error: ${msg.message}`);
       }
@@ -262,7 +254,7 @@ function registerTool(def) {
       return { content };
     } catch (e) {
       reportTiming(timing, extra);
-      return { content: [{ type: 'text', text: errorText(e) }], isError: true };
+      return { content: [{ type: 'text', text: `${e.code ?? 'RPC_ERROR'}: ${e.message}` }], isError: true };
     }
   });
 }
