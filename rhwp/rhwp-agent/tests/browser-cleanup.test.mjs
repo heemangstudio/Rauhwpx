@@ -9,9 +9,10 @@ test('owner cleanup removes its profile while retaining research bytes and unrel
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'browser-cleanup-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, 'browser-policy.json'), JSON.stringify({ schema: 1, ownerId: 'local-owner', accounts: [] }));
-  for (const directory of ['browser/profile', 'browser/native-profile', 'browser/transfers', 'browser/binaries', 'downloads/job', 'projects/project']) await fs.mkdir(path.join(root, directory), { recursive: true });
+  for (const directory of ['browser/profile', 'browser/native-profile', 'browser/transfers', 'browser/favicons', 'browser/binaries', 'downloads/job', 'projects/project']) await fs.mkdir(path.join(root, directory), { recursive: true });
   await fs.writeFile(path.join(root, 'browser/profile/Cookies'), 'temporary fixture auth');
   await fs.writeFile(path.join(root, 'browser/binaries/chromium'), 'installed fixture browser');
+  await fs.writeFile(path.join(root, 'browser/favicons/0123456789abcdef0123456789abcdef01234567.json'), '{"v":1}');
   await fs.writeFile(path.join(root, 'browser/runtime.json'), '{"version":1,"mode":"native","headless":true}');
   await fs.writeFile(path.join(root, 'browser/tabs.json'), 'retained URLs');
   await fs.writeFile(path.join(root, 'browser/tabs.json.0123456789abcdef.part'), 'interrupted fixture URLs');
@@ -19,7 +20,7 @@ test('owner cleanup removes its profile while retaining research bytes and unrel
   await fs.writeFile(path.join(root, 'provider-credentials.json'), 'unrelated fixture credential');
   const first = await removeOwnedBrowserState({ dataDir: root });
   assert.equal(first.cleared, true);
-  for (const name of ['profile', 'native-profile', 'transfers', 'tabs.json', 'tabs.json.0123456789abcdef.part']) await assert.rejects(fs.stat(path.join(root, 'browser', name)), { code: 'ENOENT' });
+  for (const name of ['profile', 'native-profile', 'transfers', 'favicons', 'tabs.json', 'tabs.json.0123456789abcdef.part']) await assert.rejects(fs.stat(path.join(root, 'browser', name)), { code: 'ENOENT' });
   assert.equal(await fs.readFile(path.join(root, 'browser/binaries/chromium'), 'utf8'), 'installed fixture browser');
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(root, 'browser/runtime.json'), 'utf8')), { version: 1, mode: 'native', headless: true });
   assert.equal(await fs.readFile(path.join(root, 'downloads/job/bytes.bin'), 'utf8'), 'retained PDF');

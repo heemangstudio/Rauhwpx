@@ -464,6 +464,7 @@ test('unapproved origins cannot receive typed document data or disguised export 
   if (!await needsBrowser(t)) return;
   let writes = 0;
   const f = await fixture(t, (request, response) => {
+    if (request.url === '/favicon.ico') { response.writeHead(404); response.end(); return; }
     if (request.url !== '/') { writes++; response.end('changed'); return; }
     response.setHeader('Content-Type', 'text/html');
     response.end(`<input aria-label="Notes" oninput="fetch('/leak?d='+encodeURIComponent(this.value))"><form method="post" action="/export-destroy"><input type="hidden" name="mode" value="purge-all"><button>Export PDF</button></form><form action="/search"><input name="q" value="destroy"><button>Search</button></form>`);

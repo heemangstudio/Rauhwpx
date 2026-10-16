@@ -5,6 +5,7 @@ import { promises as fs } from 'node:fs';
 import { createBrowserNetworkGuard } from './owned-browser-network.mjs';
 import { OwnedBrowserError, inspectOwnedBrowserRuntime, inspectMacPasskeyCapability, installOwnedBrowserRuntime, startOwnedBrowserRuntime, startOwnedBrowserSignIn } from './owned-browser-runtime.mjs';
 import { removeOwnedBrowserState } from './browser-cleanup.mjs';
+import { createFaviconCache, faviconCandidates, faviconOrigin } from './owned-browser-favicons.mjs';
 import { OUTLINE_HINT, outlineFromAria, renderOutline } from './owned-browser-outline.mjs';
 
 export { OwnedBrowserError } from './owned-browser-runtime.mjs';
@@ -96,9 +97,9 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
   const receive = (message) => {
     if (message?.type === 'rhwp-browser-event') {
       const event = message.event;
-      if (nativeGeneration && event?.generation === nativeGeneration && event.reason === 'zoom'
-        && typeof event.tabId === 'string' && typeof event.targetId === 'string'
-        && Number.isFinite(event.zoomFactor) && event.zoomFactor >= 0.25 && event.zoomFactor <= 3.000001) {
+      if (nativeGeneration && event?.generation === nativeGeneration && typeof event.tabId === 'string' && typeof event.targetId === 'string'
+        && (event.reason === 'zoom' && Number.isFinite(event.zoomFactor) && event.zoomFactor >= 0.25 && event.zoomFactor <= 3.000001
+          || event.reason === 'favicon' && typeof event.pageUrl === 'string' && Array.isArray(event.favicons))) {
         for (const listener of listeners) listener(event);
       }
       return;
@@ -139,6 +140,8 @@ export function createOwnedBrowserService(options = {}) {
   const { dataDir, credentialBroker, policy, downloads, onEvent = () => {}, nativeAdapter, runtimeFactory = startOwnedBrowserRuntime } = options;
   if (!dataDir) throw new TypeError('Owned browser dataDir is required');
   const guard = createBrowserNetworkGuard({ workspaceTargets: options.workspaceTargets ?? policy?.workspaceTargets ?? [], lookup: options.lookup });
+  const isWorkspace = (origin) => { try { return guard.isWorkspace(origin); } catch { return false; } };
+  const favicons = createFaviconCache({ dir: path.join(dataDir, 'browser', 'favicons'), resolve: guard.resolve, isWorkspace });
   const tabs = new Map();
   const pageTabs = new WeakMap();
   const runtimeId = id('runtime');
@@ -234,7 +237,10 @@ export function createOwnedBrowserService(options = {}) {
   const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
   const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: userHolds(tab) ? { ...tab.controller, held: true } : { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null }, tab.protectedValues);
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
-  const publish = (tab) => emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo() });
+  // 사이트 아이콘은 사용자 화면용 이벤트와 목록에만 붙인다. 에이전트 결과·browser_status·tabs.json은 descriptor만 쓴다.
+  const faviconFor = (tab) => tab.snapshot?.passwordProtected || tab.passwordShielded ? undefined : favicons.peek(faviconOrigin(tab.page?.url?.() ?? tab.url, isWorkspace)) ?? undefined;
+  const humanTab = (tab) => { const current = descriptor(tab), faviconUrl = faviconFor(tab); return faviconUrl ? { ...current, faviconUrl } : current; };
+  const publish = (tab) => emit('owned_browser_tab', { tab: humanTab(tab), runtime: runtimeInfo() });
   const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman) emit('owned_browser_activity', { active, sessionId: actor.sessionId ?? tab.sessionId, tab: descriptor(tab), runtime: runtimeInfo() }); };
   const persist = () => {
     if (resetting || resetFailed) return Promise.resolve();
@@ -275,9 +281,29 @@ export function createOwnedBrowserService(options = {}) {
     tab.frame = null;
     credentialBroker?.invalidateTab?.(tab.tabId);
   };
+  // 브라우저가 읽은 페이지가 선언한 아이콘만 받는다. 네이티브 탭은 Electron이 알려 주고, 관리형 탭은 격리된 선택 엔진으로 link만 읽는다.
+  const readIconLinks = async (page) => {
+    const links = page.locator('link[rel~="icon" i], link[rel~="apple-touch-icon" i], link[rel~="apple-touch-icon-precomposed" i]');
+    const found = [];
+    for (let index = 0; index < Math.min(8, await links.count()); index++) {
+      const link = links.nth(index), read = (name) => link.getAttribute(name, { timeout: 500 }).catch(() => null);
+      found.push({ href: await read('href'), rel: await read('rel'), sizes: await read('sizes'), type: await read('type') });
+    }
+    return found;
+  };
+  const discoverFavicon = async (tab, pageUrl, links) => {
+    const origin = faviconOrigin(pageUrl, isWorkspace);
+    if (!origin || closed || resetting || resetFailed || tab.snapshot?.passwordProtected || tab.passwordShielded) return;
+    const before = favicons.peek(origin);
+    // 허브의 아이콘 요청도 탭 자신의 하위 요청과 같은 사이트 정책을 거친다. 승인되지 않은 출처로 새는 길을 만들지 않는다.
+    const authorize = (url) => assertPolicy(tab.activeActor ?? (tab.controller.owner === 'human' ? { ...actorForTab(tab), isHuman: true, clientId: tab.controller.clientId } : actorForTab(tab)), 'browse', url, tab).then(() => true, () => false);
+    const icon = await favicons.discover(origin, faviconCandidates(pageUrl, links, { isWorkspace }), { authorize }).catch(() => null);
+    if (icon && icon !== before && tabs.get(tab.tabId) === tab && !closed && !resetting) publish(tab);
+  };
   const unsubscribeNativeEvents = nativeAdapter?.onEvent?.((event) => {
     const tab = tabs.get(event.tabId);
     if (!closed && runtimeMode === 'native' && tab && event.reason === 'download-progress' && event.targetId === tab?.nativeTargetId && event.generation === tab?.nativeGeneration) { downloads?.reportProgress?.({ tabId: tab.tabId, ...event }); return; }
+    if (event.reason === 'favicon') { if (!closed && runtimeMode === 'native' && tab?.page && event.targetId === tab.nativeTargetId && event.generation === tab.nativeGeneration) void discoverFavicon(tab, event.pageUrl, event.favicons.slice(0, 16)); return; }
     if (closed || runtimeMode !== 'native' || state !== 'ready' || !tab?.page
       || !tab.nativeGeneration || event.reason !== 'zoom' || event.targetId !== tab.nativeTargetId
       || event.generation !== tab.nativeGeneration || !Number.isFinite(event.zoomFactor)) return;
@@ -467,6 +493,7 @@ export function createOwnedBrowserService(options = {}) {
         if (tab.page !== page || tab.navigationEpoch !== epoch) return;
         tab.title = text(title, 500); publish(tab); void persist();
       }).catch(() => {});
+      if (!selectedAdapter()) void readIconLinks(page).catch(() => []).then((links) => tab.page === page && tab.navigationEpoch === epoch ? discoverFavicon(tab, page.url(), links) : undefined);
     });
     page.on('crash', () => { if (tab.page !== page) return; tab.status = 'crashed'; tab.controllerEpoch++; invalidate(tab); publish(tab); });
     page.on('close', () => {
@@ -664,6 +691,7 @@ export function createOwnedBrowserService(options = {}) {
       await runtime?.close(); runtime = null;
       await nativeAdapter?.reset?.();
       tabs.clear(); sessionBaseline.clear(); cookieBaseline.clear(); humanOrigins.clear(); unconfirmedHumanOrigins.clear(); humanRequestsPending.clear(); handoffProfile = false; state = 'resetting';
+      await favicons.clear();
       await removeOwnedBrowserState({ dataDir });
     } else if (phase === 'after') { resetting = false; resetFailed = false; state = 'idle'; emit('owned_browser_runtime', { runtime: runtimeInfo() }); }
     else { resetting = false; resetFailed = true; state = 'failed'; emit('owned_browser_runtime', { runtime: runtimeInfo() }); }
@@ -1135,12 +1163,13 @@ export function createOwnedBrowserService(options = {}) {
       for (const tab of tabs.values()) {
         const current = tab.nativeTargetId && native.find((entry) => entry.nativeTargetId === tab.nativeTargetId);
         if (tab.page && !tab.page.isClosed() && tab.status === 'loading' && current?.loading === false && !current.crashed && !current.error) tab.status = 'ready';
+        if (current) tab.passwordShielded = current.passwordProtected === true;
       }
     }
     const visible = [];
     for (const tab of tabs.values()) {
       if (!actor.isHuman && !canAccessTab(actor, tab)) continue;
-      let current = descriptor(tab);
+      let current = actor.isHuman ? humanTab(tab) : descriptor(tab);
       if (!actor.isHuman) try { await assertPolicy(actor, 'snapshot', tab.page?.url?.() ?? tab.url, tab); }
       catch { current = { ...current, url: 'about:blank', title: '', status: 'approval-required', challenge: null, snapshotId: null }; }
       visible.push(current);
@@ -1472,7 +1501,40 @@ export function createOwnedBrowserService(options = {}) {
       waitTimer = setTimeout(() => { const timeout = error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out.', true); abort.abort(timeout); reject(timeout); }, Math.max(1, waitDeadline - Date.now()));
     })]).finally(() => clearTimeout(waitTimer));
   };
-  const request = performRequest;
+  // 사용자 화면이 요청한 출처 중 이미 관계가 있는 출처(열린 탭, 저장된 계정, 대기 중인 요청 등)만 처음 받아 온다.
+  const relatedOrigins = async () => {
+    const related = new Set();
+    const add = (value) => { const origin = faviconOrigin(value, isWorkspace); if (origin) related.add(origin); };
+    for (const tab of tabs.values()) add(tab.page?.url?.() ?? tab.url);
+    const accounts = [...((await credentialBroker?.listAccounts?.().catch(() => null))?.accounts ?? []), ...((await selectedAdapter()?.passwordAccounts?.().catch(() => null))?.accounts ?? [])];
+    for (const account of accounts) for (const origin of [account.origin, ...(account.origins ?? [])]) add(origin);
+    for (const origin of (await Promise.resolve(options.faviconOrigins?.()).catch(() => null)) ?? []) add(origin);
+    return related;
+  };
+  const faviconsGet = async (actor, args = {}) => {
+    validateActor(actor);
+    if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Site icons are shown only in the editor.');
+    if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Complete browser cleanup in Settings before using the browser.', true);
+    if (!Array.isArray(args.origins) || args.origins.length > 50) throw error('BROWSER_FAVICONS_INVALID', 'Request between 0 and 50 site origins.');
+    const requested = [...new Set(args.origins.filter((origin) => typeof origin === 'string' && origin.length <= 2048))];
+    const related = await relatedOrigins();
+    const icons = {}, pending = [];
+    for (const value of requested) {
+      const origin = faviconOrigin(value, isWorkspace);
+      icons[value] = null;
+      if (origin !== value) continue;
+      pending.push(async () => { const cached = await favicons.get(origin); icons[value] = cached !== undefined ? cached : related.has(origin) ? await favicons.discoverOrigin(origin) : null; });
+    }
+    // 처음 받는 출처가 많아도 네트워크 요청은 네 개씩만 동시에 보낸다.
+    await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => { while (pending.length) await pending.shift()(); }));
+    return { ok: true, action: 'favicons.get', icons };
+  };
+  const request = async (actor, action, args) => {
+    if (action === 'favicons.get') return faviconsGet(actor, args);
+    const result = await performRequest(actor, action, args);
+    const tab = actor?.isHuman && result?.tab?.tabId && tabs.get(result.tab.tabId), faviconUrl = tab && faviconFor(tab);
+    return faviconUrl ? { ...result, tab: { ...result.tab, faviconUrl } } : result;
+  };
   return {
     request, inventory, sweepSleepingTabs,
     /** 새 사용자 턴은 같은 창이 잡았던 탭을 에이전트와 공유 상태로 되돌린다. tabId 를 주면 그 탭만 돌려준다. */
@@ -1529,9 +1591,10 @@ export function createOwnedBrowserService(options = {}) {
       for (const origin of Array.isArray(stored.humanStorageOrigins) ? stored.humanStorageOrigins.slice(0, 2048) : []) { try { const url = new URL(origin); if (['https:', 'http:'].includes(url.protocol) && url.origin === origin) { unconfirmedHumanOrigins.add(origin); humanOrigins.add(origin); } } catch {} }
       for (const record of stored.tabs.slice(0, limits.maxTabs)) {
         if (typeof record.tabId !== 'string' || record.scope !== 'global' && (!record.threadId || !record.agentId)) continue;
+        void favicons.get(faviconOrigin(record.url, isWorkspace)).catch(() => {});
         const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), openerTabId: typeof record.openerTabId === 'string' ? text(record.openerTabId, 160) : undefined, searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, restorePending: true, sleeping: record.status === 'sleeping', status: record.status === 'sleeping' ? 'sleeping' : 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
       }
     },
-    async close() { if (closed) return; closed = true; clearInterval(sleepTimer); unsubscribeNativeEvents?.(); if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) { await releaseInput(tab); } await persist().catch(() => {}); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); state = 'closed'; },
+    async close() { if (closed) return; closed = true; clearInterval(sleepTimer); unsubscribeNativeEvents?.(); if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) { await releaseInput(tab); } await persist().catch(() => {}); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); await favicons.clear(); state = 'closed'; },
   };
 }
