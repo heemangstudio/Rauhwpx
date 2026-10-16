@@ -116,14 +116,15 @@ try {
     assert.equal(tab.passwordCapturePending, false);
   } finally { tab.view.webContents.capturePage = originalCapture; tab.protectedPasswords.clear(); }
   tab.passwordShield = false;
-  await tab.view.webContents.executeJavaScript(`document.querySelector('form').insertAdjacentHTML('beforeend', '<input id="otp" name="otp" autocomplete="one-time-code">')`);
+  await tab.view.webContents.executeJavaScript(`document.querySelector('form').insertAdjacentHTML('beforeend', '<input id="otp" name="otp" aria-label="Code" autocomplete="one-time-code">')`);
   const observed = await service.request(actor, 'snapshot', { tabId });
   report.stage = 'observed';
   const [username, password, submit] = ['Username', 'Password', 'Sign in'].map((name) => ({ ref: outlineRef(observed.snapshot, name) }));
   assert.ok(username.ref && password.ref && submit.ref);
   const args = { tabId, snapshotId: observed.snapshot.snapshotId, navigationEpoch: observed.tab.navigationEpoch, controllerEpoch: observed.tab.controllerEpoch };
   await service.request(actor, 'type', { ...args, ref: username.ref, text: 'public-identifier' });
-  const code = observed.snapshot.elements.find((element) => element.autocomplete === 'one-time-code');
+  const code = { ref: outlineRef(observed.snapshot, 'Code') };
+  assert.ok(code.ref);
   await assert.rejects(service.request(actor, 'type', { ...args, ref: code.ref, text: '123456' }), { code: 'BROWSER_USER_CODE_REQUIRED' });
   assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("otp").value'), '');
   // 가져온 계정은 사용자가 허용하기 전까지 에이전트가 채울 수 없다.
