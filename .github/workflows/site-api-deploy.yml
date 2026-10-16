@@ -2,7 +2,8 @@ name: Deploy site-api to Railway
 
 # A merge to main that touches site-api/ tests it, uploads it to the Railway
 # service `rau-credits` (project token in the RAILWAY_TOKEN repo secret), then
-# checks the live license endpoints are configured.
+# checks the live license endpoints are configured. It first waits for the email images
+# that the same merge deploys to GitHub Pages.
 on:
   push:
     branches:
@@ -26,7 +27,7 @@ jobs:
   deploy:
     if: github.ref == 'refs/heads/main'
     runs-on: blacksmith-2vcpu-ubuntu-2404
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
         with:
@@ -49,6 +50,30 @@ jobs:
             echo "::error::RAILWAY_TOKEN is not set. Create a project token in Railway (project rau-credits > Settings > Tokens, environment production) and add it as a repository secret."
             exit 1
           fi
+
+      # Emails link images on GitHub Pages (website/assets/email/), which pages.yml deploys from
+      # the same merge in parallel. Hold the server deploy until every image is live with this
+      # commit's bytes, so no email goes out pointing at a missing or stale image. The query
+      # string skips the Pages CDN cache (max-age=600).
+      - name: Wait for the email images on GitHub Pages
+        run: |
+          set -eu
+          for file in website/assets/email/*.png; do
+            url="https://heemangstudios.com/assets/email/$(basename "$file")"
+            want=$(sha256sum "$file" | cut -d' ' -f1)
+            got=missing
+            for i in $(seq 1 60); do
+              got=$(curl -fsS "$url?v=${GITHUB_SHA::12}" | sha256sum | cut -d' ' -f1 || true)
+              if [ "$got" = "$want" ]; then break; fi
+              echo "$url not live with this commit's bytes yet, waiting"
+              sleep 15
+            done
+            if [ "$got" != "$want" ]; then
+              echo "::error::$url did not match website/assets/email/$(basename "$file") after 15 minutes. Check the 'Deploy website to GitHub Pages' run, then re-run this workflow."
+              exit 1
+            fi
+            echo "$url is live"
+          done
 
       - name: Deploy to Railway
         env:

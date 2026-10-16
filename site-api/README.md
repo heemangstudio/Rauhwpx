@@ -30,7 +30,7 @@ node scripts/license-admin.mjs revoke --key HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX -
 ```
 
   A manual key with a `merchantUid` is reused if the Groble webhook for that order arrives later, and a later refund webhook still revokes it.
-- Key email goes out after the webhook reply through Resend (`RESEND_API_KEY`, `LICENSE_EMAIL_FROM`). Without the API key the attempt is logged and marked `skipped`; the webhook still succeeds and the success page still shows the key. Failed sends retry up to 3 times, including after a restart.
+- Key email goes out after the webhook reply through Resend (`RESEND_API_KEY`, `LICENSE_EMAIL_FROM`). Without the API key the attempt is logged and marked `skipped`; the webhook still succeeds and the success page still shows the key. Failed sends retry up to 3 times, including after a restart. Every email is built on `email-layout.mjs` (banner, key card, download button, footer); its images live in `website/assets/email/` on GitHub Pages, and the deploy workflow waits for them to go live before it deploys the server. The key email's copy follows why it went out: a purchase or released hold, an admin `resend-email`, or an admin `issue --send-email` with no payment behind it.
 
 Keys look like `HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 random bits, Crockford base32). The server assumes **one replica**: all license writes go through one in-process lock and an atomic temp-file rename.
 
@@ -63,7 +63,7 @@ All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume;
 | `GRANDFATHER_CUTOFF` | ISO-8601 time; Mac installs first seen before it get a free key. Unset disables grandfathering |
 | `GRANDFATHER_PLATFORMS` | Comma list of `os` values, default `darwin` |
 | `LICENSE_ALLOWED_ORIGINS` | CORS origins for by-ref, default `https://heemangstudios.com,https://www.heemangstudios.com,https://heemangstudio.github.io` |
-| `LICENSE_DOWNLOAD_URL` | Download link in the key email, default `https://heemangstudios.com/` |
+| `LICENSE_DOWNLOAD_URL` | Download button in the key email. Unset or the homepage means the latest Mac dmg |
 
 ## Run and deploy
 

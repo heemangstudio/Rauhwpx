@@ -4,6 +4,8 @@
  * attempt and reports `skipped`, so a missing email setup never fails the Groble webhook.
  */
 
+import { EMAIL_BANNER_URL, EMAIL_CARD_BG_URL, EMAIL_KEY_ICON_URL, renderEmail, SITE_URL } from './email-layout.mjs';
+
 export function createResendProvider({ apiKey, from, replyTo, fetchImpl = globalThis.fetch, timeoutMs = 8000 }) {
   return {
     name: 'resend',
@@ -69,28 +71,53 @@ export function maskEmail(email) {
   return `${text[0]}***${text.slice(at)}`;
 }
 
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+export const MAC_DMG_URL = 'https://github.com/heemangstudio/hamaeditor-releases/releases/latest/download/HamaEditor-mac-arm64.dmg';
+
+/** Copy per reason the key goes out. Every kind shares the layout, the key card and the download button. */
+const LICENSE_EMAIL_COPY = {
+  // Groble purchase, a held order released by an admin, or a manual backfill of a paid order.
+  purchase: { subject: '[HamaEditor] Mac 라이선스 키를 보내드려요', heading: '구매해 주셔서 고마워요.' },
+  // Admin `resend-email`.
+  resend: { subject: '[HamaEditor] Mac 라이선스 키를 다시 보내드려요', heading: '라이선스 키를 다시 보내드려요.' },
+  // Admin `issue --send-email` with no order or payment behind it (free or beta keys).
+  free: { subject: '[HamaEditor] Mac 라이선스 키를 보내드려요', heading: 'HamaEditor 라이선스 키를 보내드려요.' },
+};
+export const LICENSE_EMAIL_KINDS = Object.keys(LICENSE_EMAIL_COPY);
+export const LICENSE_EMAIL_SUBJECT = LICENSE_EMAIL_COPY.purchase.subject;
+
+/** Which copy a stored license gets: a resend wins, then any sign of payment, else a free key. */
+export function licenseEmailKind(license) {
+  if (license?.emailDelivery?.resend) return 'resend';
+  if (license?.source === 'groble' || license?.merchantUid || license?.amount > 0) return 'purchase';
+  return 'free';
 }
 
-export function licenseEmail({ key, downloadUrl = 'https://heemangstudios.com/' }) {
-  const subject = '[HamaEditor] Mac 라이선스 키를 보내드려요';
-  const text = [
-    'HamaEditor를 구매해 주셔서 고마워요.',
-    '',
-    `라이선스 키: ${key}`,
-    '',
-    'HamaEditor for Mac을 실행한 뒤 라이선스 화면에 위 키를 붙여 넣어 주세요.',
-    '키 하나로 Mac 2대까지 쓸 수 있어요. 다른 Mac으로 옮기려면 앱에서 기존 Mac의 등록을 해제해 주세요.',
-    `다운로드: ${downloadUrl}`,
-    '',
-    '문의는 이 메일에 답장하거나 management@heemangstudios.com 으로 보내 주세요.',
-  ].join('\n');
-  const html = `<p>HamaEditor를 구매해 주셔서 고마워요.</p>
-<p>라이선스 키:<br><strong style="font-size:18px;font-family:ui-monospace,Menlo,monospace">${escapeHtml(key)}</strong></p>
-<p>HamaEditor for Mac을 실행한 뒤 라이선스 화면에 위 키를 붙여 넣어 주세요.<br>
-키 하나로 Mac 2대까지 쓸 수 있어요. 다른 Mac으로 옮기려면 앱에서 기존 Mac의 등록을 해제해 주세요.</p>
-<p><a href="${escapeHtml(downloadUrl)}">다운로드</a></p>
-<p>문의는 이 메일에 답장하거나 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a> 으로 보내 주세요.</p>`;
-  return { subject, text, html };
+/**
+ * License key email on the shared layout.
+ * `downloadUrl` is the CTA target: a direct .dmg link works best; the homepage falls back to the dmg.
+ */
+export function licenseEmail({
+  key,
+  kind = 'purchase',
+  downloadUrl = MAC_DMG_URL,
+  bannerUrl = EMAIL_BANNER_URL,
+  keyIconUrl = EMAIL_KEY_ICON_URL,
+  cardBgUrl = EMAIL_CARD_BG_URL,
+  preheader = '라이선스 키와 Mac용 내려받기 링크를 담았어요.',
+  subjectPrefix = '',
+} = {}) {
+  const copy = LICENSE_EMAIL_COPY[kind] ?? LICENSE_EMAIL_COPY.purchase;
+  // The server default used to be the homepage; send buyers straight to the dmg instead.
+  const href = !downloadUrl || downloadUrl === SITE_URL ? MAC_DMG_URL : downloadUrl;
+  const subject = `${subjectPrefix}${copy.subject}`;
+  const html = renderEmail({
+    subject,
+    preheader,
+    banner: { url: bannerUrl, alt: 'HamaEditor · Mac 라이선스 키' },
+    heading: copy.heading,
+    noteHtml: '아래 키를 HamaEditor에 붙여 넣으면 바로 모든 기능을 쓸 수 있어요. 키 하나로 <strong>Mac 2대</strong>까지 쓸 수 있어요.',
+    card: { value: key, iconUrl: keyIconUrl, bgUrl: cardBgUrl },
+    cta: { href, label: 'Mac용 내려받기', icon: '&#8595;', caption: 'Apple Silicon (M1 이후) · .dmg' },
+  });
+  return { subject, text: String(key), html };
 }
