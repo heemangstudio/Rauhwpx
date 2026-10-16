@@ -107,6 +107,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   let accounts: Account[] = []; let secureStorage = false; let policy: Policy | null = null; let configuration: Record<string, unknown> = {}; let status: Record<string, unknown> = {};
   let localAccounts: LocalPasswordAccount[] = []; let profiles: { id: string; name: string }[] = [];
   let profileId = ''; let localSupported = false; let localBusy = false; let localFailed = false; let localMessage = '';
+  let cookieSites: { domain: string; count: number }[] | null = null; const cookieChoice = new Set<string>();
   const localApi = localPasswordsApi();
   function managedAccounts(): Account[] {
     const ids = new Set(accounts.map(account => account.id));
@@ -223,6 +224,10 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
           row('가져온 프로필', local?.sourceProfile || 'Chrome', details);
           const actions = node('div', 'ag-browser-detail-actions'); details.append(actions);
           details.append(node('p', 'ag-browser-empty', '로그인 페이지의 입력란을 선택하면 저장된 계정을 고를 수 있습니다.'));
+          const approved = local?.agentReuseApproved === true;
+          const consent = row('에이전트 사용', approved ? '허용됨' : '허용 안 함', details);
+          const toggle = button(approved ? '허용 철회' : '허용', () => void localAction(async () => { await localApi.approve({ id: account.id, approved: !approved }); await loadLocal(); return ''; }));
+          toggle.disabled = localBusy; consent.append(toggle);
           const remove = button('비밀번호 삭제', () => void localAction(async () => { await localApi.remove({ id: account.id }); await loadLocal(); return '가져온 비밀번호를 삭제했습니다.'; }));
           remove.disabled = localBusy; remove.classList.add('ag-browser-reset'); actions.append(remove);
           return;
@@ -325,15 +330,40 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const label = node('label', 'ag-browser-import-picker'); label.append(node('span', 'ag-settings-field-label', 'Chrome 프로필'));
       const select = node('select', 'ag-settings-select');
       for (const profile of profiles) { const option = node('option', '', profile.name); option.value = profile.id; select.append(option); }
-      select.value = profileId; select.disabled = localBusy; select.addEventListener('change', () => { profileId = select.value; }); label.append(select); root.append(label);
+      select.value = profileId; select.disabled = localBusy; select.addEventListener('change', () => { profileId = select.value; cookieSites = null; cookieChoice.clear(); render(); }); label.append(select); root.append(label);
       const importButton = button(localBusy ? '가져오는 중…' : '비밀번호 가져오기', () => void localAction(async () => {
         const result = await localApi.importProfile({ profileId }); await loadLocal();
         return `${result.imported}개 가져옴 · ${result.skipped}개 건너뜀${result.unsupported ? ` · ${result.unsupported}개 암호화 방식 지원 안 됨` : ''}`;
       })); importButton.disabled = localBusy; root.append(importButton);
       root.append(node('p', 'ag-browser-empty', 'Mac 키체인 접근을 허용하면 이 앱에 암호화해 저장합니다.'));
+      renderCookieImport(root);
     } else if (!localBusy && !localFailed) root.append(node('p', 'ag-browser-empty', localSupported ? '가져올 Chrome 프로필이 없습니다.' : 'Chrome 비밀번호 가져오기는 Mac에서 사용할 수 있습니다.'));
     const feedback = node('p', 'ag-browser-message', localMessage); feedback.setAttribute('role', localFailed ? 'alert' : 'status'); root.append(feedback);
     if (localFailed || (localSupported && !profiles.length)) { const retry = button('다시 확인', () => void localAction(async () => { await loadLocal(); return ''; })); retry.disabled = localBusy; root.append(retry); }
+  }
+  function renderCookieImport(parent: HTMLElement) {
+    if (!localApi) return;
+    const root = node('section', 'ag-browser-cookie-import'); parent.append(root);
+    root.append(node('h3', 'ag-settings-section-title', 'Chrome 로그인 가져오기'));
+    if (!cookieSites) {
+      const load = button('사이트 불러오기', () => void localAction(async () => { cookieSites = (await localApi.cookieSites({ profileId })).sites; cookieChoice.clear(); return cookieSites.length ? '' : '가져올 로그인이 없습니다.'; }));
+      load.disabled = localBusy || !profileId; root.append(load); return;
+    }
+    const list = node('div', 'ag-browser-cookie-sites'); list.setAttribute('role', 'group'); list.setAttribute('aria-label', 'Chrome 로그인 사이트');
+    for (const site of cookieSites) {
+      const choice = node('label', 'ag-browser-check'); const input = node('input', ''); input.type = 'checkbox'; input.checked = cookieChoice.has(site.domain); input.disabled = localBusy;
+      input.addEventListener('change', () => { if (input.checked) cookieChoice.add(site.domain); else cookieChoice.delete(site.domain); importButton.disabled = localBusy || !cookieChoice.size; });
+      choice.append(input, document.createTextNode(`${site.domain} · ${site.count}`)); list.append(choice);
+    }
+    const importButton = button('가져오기', () => void localAction(async () => {
+      const result = await localApi.importCookies({ profileId, domains: [...cookieChoice] });
+      // 가져온 사이트 세션은 사용자가 고른 것이므로 허브가 사용자 변경으로 격리하지 않게 알린다.
+      if (result.domains.length && options.isConnected()) await options.request('sessions.imported', { domains: result.domains }).catch(() => undefined);
+      cookieSites = null; cookieChoice.clear();
+      return `${result.domains.length}개 사이트 가져옴${result.skipped ? ` · ${result.skipped}개 건너뜀` : ''}`;
+    }));
+    importButton.classList.add('ag-settings-primary'); importButton.disabled = localBusy || !cookieChoice.size;
+    root.append(list, importButton);
   }
   async function loadLocal() {
     if (!localApi) return;

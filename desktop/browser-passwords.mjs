@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { LocalBrowserPasswordVault, passwordFailure, passwordOrigin } from './browser-local-password-vault.mjs';
 import { ChromePasswordImporter } from './browser-chrome-password-import.mjs';
+import { ChromeCookieImporter } from './browser-chrome-cookie-import.mjs';
 
 const WORLD = 1007;
 const SENSITIVE = 'input[type="password"],input[type="email"],input[autocomplete="username"],input[name="username"],input[name="email"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
@@ -82,8 +83,10 @@ function pageAction(payload) {
     if (point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight || !hit || !(hit === el || el.contains(hit))) return { error: 'target' };
     return { completed: true, point };
   }
+  // 일회용 코드는 사용자가 직접 입력한다. 비밀번호·카드 칸과 다른 안내를 준다.
+  const secretError = () => el.autocomplete === 'one-time-code' ? 'code' : 'secret';
   if (payload.action === 'type') {
-    if (el.matches(payload.sensitive)) return { error: 'secret' };
+    if (el.matches(payload.sensitive)) return { error: secretError() };
     if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return { error: 'target' };
     const prototype = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
     Object.getOwnPropertyDescriptor(prototype, 'value').set.call(el, payload.text);
@@ -91,7 +94,7 @@ function pageAction(payload) {
     return { completed: true };
   }
   if (payload.action === 'focus') {
-    if ((payload.key === 'Space' || /^[A-Za-z0-9]$/.test(payload.key)) && el.matches(payload.sensitive)) return { error: 'secret' };
+    if ((payload.key === 'Space' || /^[A-Za-z0-9]$/.test(payload.key)) && el.matches(payload.sensitive)) return { error: secretError() };
     el.focus();
     if (['Control+a', 'Meta+a', 'ControlOrMeta+a'].includes(payload.key) && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) el.select();
     return { completed: true };
@@ -118,6 +121,7 @@ export class NativeBrowserPasswords {
   constructor({ host, dataDir, safeStorage, vault, importer, Menu }) {
     this.host = host; this.vault = vault ?? new LocalBrowserPasswordVault({ dataDir, safeStorage });
     this.importer = importer ?? new ChromePasswordImporter({ vault: this.vault });
+    this.cookies = new ChromeCookieImporter({ host, profiles: this.importer });
     this.Menu = Menu;
     host.passwords = this;
   }
@@ -252,7 +256,7 @@ export class NativeBrowserPasswords {
       const result = await lease.write(() => this.run(tab, pageAction, [{ ...target, action: 'fill', username: credential.username, password: credential.password }]));
       if (!result?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
       return { completed: true, accountId: params.accountId };
-    });
+    }, { agent: !human });
   }
   async action(params) {
     const tab = this.tab(params);
@@ -276,6 +280,7 @@ export class NativeBrowserPasswords {
       if (params.action !== 'wait' || result?.completed || Date.now() >= expiresAt) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     } while (true);
+    if (result?.error === 'code') throw passwordFailure('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code'.");
     if (!result?.completed) throw passwordFailure(result?.error === 'secret' ? 'BROWSER_SECRET_CHANNEL_REQUIRED' : 'BROWSER_PASSWORD_TARGET_INVALID', result?.error === 'secret' ? 'Use a saved account to fill this field.' : 'The selected browser field is no longer available.');
     if (params.action === 'press' || params.action === 'click') {
       this.assertSnapshot(tab, params);
@@ -393,6 +398,8 @@ export function registerBrowserPasswordIpc({ ipcMain, browserHost, passwords = b
   const handlers = {
     profiles: () => passwords.importer.listProfiles(), import: (_window, payload) => passwords.importer.importProfile(payload),
     list: () => passwords.vault.list(), remove: (_window, payload) => passwords.vault.remove(payload?.id),
+    approve: (_window, payload) => passwords.vault.setAgentReuse(payload?.id, payload?.approved),
+    cookieSites: (_window, payload) => passwords.cookies.listSites(payload), importCookies: (_window, payload) => passwords.cookies.importSites(payload),
     fill: (window, payload) => passwords.humanFill(window, payload),
     armSave: (window, payload) => passwords.armSave(window, payload),
   };

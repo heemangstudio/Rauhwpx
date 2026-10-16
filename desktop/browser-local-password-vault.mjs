@@ -35,7 +35,7 @@ export class LocalBrowserPasswordVault {
         const state = JSON.parse(await readFile(this.file, 'utf8'));
         if (state.schema !== 1 || !Array.isArray(state.records) || state.records.length > 4096) throw new Error();
         for (const record of state.records) {
-          if (!UUID.test(record.id) || passwordOrigin(record.origin) !== record.origin || typeof record.username !== 'string' || typeof record.ciphertext !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(record.ciphertext)) throw new Error();
+          if (!UUID.test(record.id) || passwordOrigin(record.origin) !== record.origin || typeof record.username !== 'string' || typeof record.ciphertext !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(record.ciphertext) || (record.agentReuseApproved !== undefined && typeof record.agentReuseApproved !== 'boolean')) throw new Error();
         }
         this.records = state.records;
       } catch (error) {
@@ -52,7 +52,7 @@ export class LocalBrowserPasswordVault {
   metadata(record) {
     return { id: record.id, origin: record.origin, origins: [record.origin], username: record.username,
       label: record.username || new URL(record.origin).hostname, source: 'chrome', sourceProfile: record.sourceProfile,
-      profileId: 'native', hasPassword: true, agentReuseApproved: true, sessionStatus: 'saved', updatedAt: record.updatedAt };
+      profileId: 'native', hasPassword: true, agentReuseApproved: record.agentReuseApproved === true, sessionStatus: 'saved', updatedAt: record.updatedAt };
   }
   async list() {
     await this.ready();
@@ -99,7 +99,8 @@ export class LocalBrowserPasswordVault {
           const plaintext = JSON.stringify({ id, origin, username, password });
           ciphertext = (this.safeStorage.encryptStringAsync ? await this.safeStorage.encryptStringAsync(plaintext) : this.safeStorage.encryptString(plaintext)).toString('base64');
         } catch { throw passwordFailure('BROWSER_PASSWORD_STORAGE_UNAVAILABLE', 'OS password storage could not save this account.'); }
-        const record = { id, origin, username, ciphertext, sourceProfile: String(sourceProfile ?? '').slice(0, 160), updatedAt: new Date().toISOString() };
+        // Agent reuse needs explicit owner consent. Re-imports keep the account's prior decision.
+        const record = { id, origin, username, ciphertext, sourceProfile: String(sourceProfile ?? '').slice(0, 160), agentReuseApproved: previous?.agentReuseApproved === true, updatedAt: new Date().toISOString() };
         const index = next.findIndex((entry) => entry.id === id);
         if (index >= 0) next[index] = record; else next.push(record);
         imported.set(id, this.metadata(record));
@@ -110,10 +111,23 @@ export class LocalBrowserPasswordVault {
       return [...imported.values()];
     });
   }
-  async withCredential(id, operation) {
+  /** Only the owner's settings or an approved account request reach this. */
+  setAgentReuse(id, approved) {
+    return this.mutate(async () => {
+      const index = this.records.findIndex((record) => record.id === id);
+      if (index < 0) throw passwordFailure('BROWSER_PASSWORD_NOT_FOUND', 'The saved website account no longer exists.');
+      if (typeof approved !== 'boolean') throw passwordFailure('BROWSER_PASSWORD_INVALID', 'The account consent choice is invalid.');
+      const next = [...this.records]; next[index] = { ...next[index], agentReuseApproved: approved };
+      await this.persist(next);
+      return this.metadata(next[index]);
+    });
+  }
+  async withCredential(id, operation, { agent = false } = {}) {
     await this.ready();
     const record = this.records.find((entry) => entry.id === id);
     if (!record) throw passwordFailure('BROWSER_PASSWORD_NOT_FOUND', 'The saved website account no longer exists.');
+    // Checked before decryption so an unapproved agent request never prompts the OS vault.
+    if (agent && record.agentReuseApproved !== true) throw passwordFailure('BROWSER_ACCOUNT_NOT_APPROVED', 'The user has not approved agent use of this saved account. Call browser_request_account with this accountId and end the turn.');
     if (!await this.available()) throw passwordFailure('BROWSER_PASSWORD_STORAGE_UNAVAILABLE', 'OS password storage is unavailable.');
     let credential;
     try {

@@ -66,4 +66,25 @@ export async function checkChatPermissions(page, origin, screenshot) {
   await page.waitForSelector('.ag-permission-pill[data-status="expired"]');
   assert.equal(await page.evaluate(() => window.sidebarPreview.bridge.getPendingChatPermissionRequest()), null);
   assert.equal(await page.$('.ag-permission-grant'), null, 'cancelled request cannot grant');
+
+  // 로그인·인증 코드 넘김: 직접 하기는 탭 제어권을 잡고, 완료는 요청을 닫고 턴을 잇는다.
+  await page.goto(`${origin}/?reset=1&theme=light&width=480&scenario=sign-in&handoff=code`, { waitUntil: 'networkidle0' });
+  await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
+  await page.type('.ag-input', '인증 코드를 입력해야 해');
+  await page.click('.ag-send');
+  await page.waitForSelector('.ag-permission-pill[data-kind="handoff"]', { visible: true });
+  await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning());
+  if (screenshot) await screenshot('permission-handoff-code');
+  const tabId = await page.evaluate(() => window.sidebarPreview.bridge.getPendingChatPermissionRequest()?.tabId);
+  assert.ok(tabId, 'handoff names the browser tab');
+  const [takeover, done] = await page.$$('.ag-permission-pill[data-kind="handoff"] .ag-permission-action');
+  await takeover.click();
+  await page.waitForFunction(async (id) => (await window.sidebarPreview.bridge.requestBrowser('status')).tabs.some((tab) => tab.tabId === id && tab.controller.held), {}, tabId);
+  const sent = await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent);
+  await done.click();
+  await page.waitForSelector('.ag-permission-pill[data-status="granted"]');
+  await page.waitForFunction(() => [...document.querySelectorAll('.ag-msg, .ag-assistant, [class*="assistant"]')].some((node) => node.textContent.includes('이어서 진행합니다')));
+  assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent), sent, 'resuming never sends a user message');
+  assert.equal(await page.evaluate(async (id) => (await window.sidebarPreview.bridge.requestBrowser('status')).tabs.some((tab) => tab.tabId === id && tab.controller.held), tabId), false, 'done returns the tab to the agent');
+  assert.equal(await page.evaluate(() => window.sidebarPreview.bridge.getPendingChatPermissionRequest()), null);
 }

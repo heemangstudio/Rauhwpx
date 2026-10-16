@@ -42,3 +42,15 @@
 .ag-permission-pill[data-status='denied'] .ag-permission-status,
 .ag-permission-pill[data-status='expired'] .ag-permission-status { color: var(--ag-text-muted); }
 .ag-permission-error { flex-basis: 100%; padding: 2px; color: var(--ag-text-muted); font-size: 11px; }
+.ag-permission-action {
+  padding: 3px 9px;
+  border: 1px solid var(--ag-border-strong);
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.ag-permission-action.ag-permission-done { border-color: transparent; background: var(--ag-accent); color: var(--ag-on-accent); }
+.ag-permission-action:disabled { cursor: default; opacity: .6; }
+.ag-permission-action:focus-visible { outline: var(--ag-focus-ring); outline-offset: 2px; }

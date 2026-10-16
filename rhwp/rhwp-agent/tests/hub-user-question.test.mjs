@@ -1057,3 +1057,78 @@ test('hub shutdown expires an active question before closing transports', { time
   assert.deepEqual(resolved.outcome, { status: 'expired', reason: 'hub-restarted' });
   await Promise.allSettled([closeClient(studio), closeClient(mcp)]);
 });
+
+test('a finished browser sign-in handoff settles the card and resumes the chat by itself', { timeout: 40_000 }, async (t) => {
+  const threadId = 'browser-handoff-thread';
+  const documentId = 'browser-handoff-doc';
+  const handoffArgs = { tabId: 'handoff-tab', origin: 'https://login.example.com', label: 'Example', reason: 'The site sent a verification code.', kind: 'code' };
+  const { port } = await startHub(t, {
+    backendFixture: {
+      agent: 'claude',
+      source: async ({ workRoot }) => {
+        const { ProjectStore } = await import('../project-store.mjs');
+        const { createReferenceCatalog } = await import('../reference-catalog.mjs');
+        const referenceStore = await createReferenceCatalog({ referencesRoot: path.join(workRoot, 'references'), projectsRoot: path.join(workRoot, 'projects') }).init();
+        const store = await new ProjectStore({ root: path.join(workRoot, 'projects'), referenceStore }).init();
+        const projectId = await store.projectForDocument(documentId);
+        const browserDir = path.join(workRoot, 'browser', 'browser');
+        mkdirSync(browserDir, { recursive: true });
+        writeFileSync(path.join(browserDir, 'tabs.json'), JSON.stringify({ version: 1, tabs: [
+          { tabId: 'handoff-tab', agentId: `${threadId}:root`, threadId, projectId, documentId, url: 'about:blank' },
+        ] }));
+        return `
+          export function prepareClaudeHome() { return []; }
+          export function flushClaudeCredentialMirrors() { return true; }
+          export function canResumeClaudeSession() { return false; }
+          export function createClaudeSession(opts) {
+            return {
+              getSessionId() { return 'browser-handoff-fixture'; }, dispose() { return true; }, setExecutionMode() {},
+              interrupt() { opts.onEvent({ type: 'turn-end', agent: 'claude', stopReason: 'interrupted' }); },
+              sendUserMessage(prompt) {
+                opts.onEvent({ type: 'turn-start', agent: 'claude' });
+                if (prompt.includes('handoff-ticket')) {
+                  opts.onEvent({ type: 'tool-call', agent: 'claude', callId: 'handoff', tool: 'mcp__rhwp__browser_request_account', argsJson: ${JSON.stringify(JSON.stringify(handoffArgs))} });
+                  return;
+                }
+                // 이어진 턴은 받은 지시의 끝을 그대로 들려준다.
+                opts.onEvent({ type: 'text-delta', agent: 'claude', text: prompt.slice(-160) });
+                opts.onEvent({ type: 'turn-end', agent: 'claude', stopReason: 'end_turn' });
+              },
+            };
+          }
+        `;
+      },
+    },
+  });
+  const sessionId = 'browser-handoff';
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=browser-handoff-page`);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  await studio.next((frame) => frame.type === 'agent-setup-status' && frame.statuses?.claude?.authenticated === true);
+  sendFrame(studio, { type: 'chat-start', agent: 'claude', threadId, documentId });
+  await studio.next((frame) => frame.type === 'chat-started');
+  sendFrame(studio, { type: 'chat-user-message', text: 'handoff-ticket', threadId, documentId });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=claude&role=chat`);
+  t.after(() => closeClient(mcp));
+  sendFrame(mcp, { type: 'tool-call', id: 701, tool: 'browser_request_account', args: handoffArgs });
+  const pending = await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 701);
+  assert.equal(pending.result.pending, true);
+  const requested = await studio.next((frame) => frame.type === 'chat-permission-requested');
+  assert.equal(requested.request.kind, 'browser-code');
+  assert.equal(requested.request.tabId, 'handoff-tab');
+  // 사용자가 에이전트 턴이 끝나기 전에 완료를 눌러도 이어지는 턴은 그 턴이 끝난 뒤 열린다.
+  sendFrame(studio, { type: 'browser-request', requestId: 'complete-handoff', action: 'accounts.complete', args: { requestId: requested.request.requestId } });
+  const completed = await studio.next((frame) => frame.type === 'browser-response' && frame.requestId === 'complete-handoff');
+  assert.equal(completed.result?.completed, true, JSON.stringify(completed.error));
+  const resolved = await studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === requested.request.requestId);
+  assert.equal(resolved.outcome.status, 'granted');
+  sendFrame(studio, { type: 'chat-interrupt' });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  const note = await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'text-delta');
+  assert.match(note.event.text, /entered the verification code on https:\/\/login\.example\.com; continue\./);
+  // 같은 요청은 다시 완료할 수 없다.
+  sendFrame(studio, { type: 'browser-request', requestId: 'complete-again', action: 'accounts.complete', args: { requestId: requested.request.requestId } });
+  assert.ok((await studio.next((frame) => frame.type === 'browser-response' && frame.requestId === 'complete-again')).error);
+});
