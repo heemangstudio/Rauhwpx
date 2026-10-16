@@ -2420,7 +2420,7 @@ button.ag-skill-copy {
   flex-direction: column;
   gap: 24px;
   padding: 20px 16px 24px;
-  overscroll-behavior: contain;
+  overscroll-behavior: none;
   overflow-anchor: none;
   background: var(--ag-bg);
   contain: layout paint;
@@ -2428,7 +2428,7 @@ button.ag-skill-copy {
   mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
 }
 
-/* 새 턴을 위쪽에 두기 위한 아래 여백. 높이는 JS 가 뷰포트에 맞춰 넣는다. */
+/* 대화의 끝 표지. 높이가 없어 마지막 내용 아래로 스크롤할 자리가 생기지 않는다. */
 .ag-messages-end {
   flex: 0 0 auto;
   pointer-events: none;

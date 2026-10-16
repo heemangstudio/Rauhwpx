@@ -8841,29 +8841,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   /**
-   * 끝 여백은 마지막 질문이 초점선까지 올라갈 만큼만 둔다. 답변이 화면을 채우면
-   * 여백이 사라져, 맨 아래로 내렸을 때 마지막 내용이 입력기 바로 위에 멈춘다.
+   * 대화는 마지막 내용에서 끝난다. 답변이 내려오는 중에도 그 아래 빈 자리로는 내려가지 않고,
+   * 맨 아래로 내리면 마지막 내용이 입력기 바로 위에 멈춘다. 끝 표지는 마지막 줄 간격만큼 겹친다.
    */
   function syncConversationSpacer(): void {
-    const style = getComputedStyle(messages);
-    const gap = Number.parseFloat(style.rowGap) || 0;
-    const padding = Number.parseFloat(style.paddingBottom) || 0;
-    setConversationEndStyle('marginTop', `${-gap}px`);
-    let question = messagesEnd.previousElementSibling;
-    while (question && !question.classList.contains('ag-msg-user')) question = question.previousElementSibling;
-    if (!(question instanceof HTMLElement)) {
-      setConversationEndStyle('minHeight', '0px');
-      return;
-    }
-    const room = conversationAnchorTop(question) - conversationFocusOffset() + messages.clientHeight;
-    const spacer = room - conversationAnchorTop(messagesEnd) - padding;
-    setConversationEndStyle('minHeight', `${Math.max(0, Math.round(spacer))}px`);
-  }
-
-  /** 값이 같으면 쓰지 않는다 — 쓰기마다 레이아웃이 더러워져 다음 읽기가 다시 배치를 강제한다. */
-  function setConversationEndStyle(property: 'marginTop' | 'minHeight', value: string): void {
-    if (messagesEnd.style[property] === value) return;
-    messagesEnd.style[property] = value;
+    const gap = Number.parseFloat(getComputedStyle(messages).rowGap) || 0;
+    const marginTop = `${-gap}px`;
+    // 값이 같으면 쓰지 않는다 — 쓰기마다 레이아웃이 더러워져 다음 읽기가 다시 배치를 강제한다.
+    if (messagesEnd.style.marginTop === marginTop) return;
+    messagesEnd.style.marginTop = marginTop;
     conversationScrollTargetValue = null;
   }
 
