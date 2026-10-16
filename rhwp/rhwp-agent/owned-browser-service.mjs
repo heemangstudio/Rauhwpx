@@ -965,9 +965,10 @@ export function createOwnedBrowserService(options = {}) {
   // 조작 결과를 짧게 지켜본다. 탐색이 시작되면 로드까지, 아니면 조작이 시작한 요청의 응답까지 각각 최대 5초 기다린다.
   const watchConsequences = (tab) => {
     const page = tab.page; const startEpoch = tab.navigationEpoch; const dialogs = tab.dialogCount ?? 0;
-    const pending = new Set(); let navigation; let popup; let watching = true;
+    const pending = new Set(); let navigation; let popup; let watching = true; let activeAt = Date.now();
     const onRequest = (request) => {
       if (!watching) return;
+      activeAt = Date.now();
       let frame; try { frame = request.frame(); } catch { return; }
       if (request.isNavigationRequest() && frame === page.mainFrame()) navigation = request;
       // 스트림·웹소켓처럼 오래 열린 연결은 기다리지 않는다. 응답 헤더가 오면 끝난 것으로 본다.
@@ -976,12 +977,15 @@ export function createOwnedBrowserService(options = {}) {
     const onResponse = (response) => { pending.delete(response.request()); };
     // 커밋 없이 끝난 문서 요청(다운로드·204)은 탐색이 아니다.
     const onDone = (request) => { pending.delete(request); if (request === navigation) navigation = 'done'; };
-    const onPopup = (opened) => { popup ??= opened; };
+    const onPopup = (opened) => { popup ??= opened; activeAt = Date.now(); };
     page.on('request', onRequest); page.on('response', onResponse); page.on('requestfailed', onDone); page.on('requestfinished', onDone); page.on('popup', onPopup);
     const stop = () => { watching = false; page.off('request', onRequest); page.off('response', onResponse); page.off('requestfailed', onDone); page.off('requestfinished', onDone); page.off('popup', onPopup); };
     const settle = async () => {
       try {
-        await pause(500); watching = false;
+        // 아무 일도 없으면 200ms 조용한 뒤 끝낸다. 요청·탐색이 시작되면 0.5초까지 더 지켜본다.
+        const watchStart = Date.now(); activeAt = Math.max(activeAt, watchStart);
+        while (Date.now() - watchStart < 500 && (navigation || pending.size || popup || tab.navigationEpoch !== startEpoch || Date.now() - activeAt < 200)) await pause(50);
+        watching = false;
         const deadline = Date.now() + 5000;
         const live = () => Date.now() < deadline && tab.page === page && !page.isClosed();
         if (navigation || tab.navigationEpoch !== startEpoch) {
