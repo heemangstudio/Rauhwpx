@@ -67,7 +67,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | --- | --- |
 | `?scenario=plan` | Next submitted message produces an approval plan |
 | `?scenario=question` | A question with selectable and free-text answers |
-| `?scenario=permission` (`&permissionCapability=downloads`) | A permission card with the 이 채팅 / 항상 scope choice, 거절 and 허용 |
+| `?scenario=permission` (`&permissionCapability=downloads`) | A permission card with the small 항상 switch next to ×, 거절 and 허용 |
 | `?scenario=sign-in` (`&handoff=code`) | The agent hands a sign-in (or verification code) to the user: the card shows the workbench's frame of the tab with 에이전트 대기 중; 직접 하기 (직접 입력) takes control of the tab (직접 제어 중, 탭 보기), 완료 returns it and resumes the chat |
 | `?scenario=use-account` | A saved-account card (Google 연구) with the scope choice |
 | `?scenario=save-account` | The account form inside a card: name, login, password, 저장 안 함 / 저장 |

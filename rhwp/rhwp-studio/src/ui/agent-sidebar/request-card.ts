@@ -112,11 +112,6 @@ function title(request: ChatPermissionRequest): string {
   }
 }
 
-/** 모든 카드가 같은 두 이름을 쓴다. 비밀 값의 '항상'은 금고에 보관, '이 채팅'은 이 채팅 동안만 기억한다. */
-function scopeLabel(scope: ChatPermissionScope): string {
-  return scope === 'always' ? '항상' : '이 채팅';
-}
-
 export function createRequestCardController(options: RequestCardOptions) {
   const cards = new Map<string, RequestCard>();
   let connected = true;
@@ -267,47 +262,33 @@ export function createRequestCardController(options: RequestCardOptions) {
     close.disabled = !connected || card.responseId !== null;
     close.dataset.focusKey = 'close';
     close.addEventListener('click', () => respond(card, 'deny'));
+    const scope = scopeToggle(card);
+    if (scope) head.append(scope);
     head.append(close);
     return head;
   }
 
-  function scopeControl(card: RequestCard): HTMLElement | null {
+  /** 허용 범위 — 머리줄 오른쪽의 작은 '항상' 스위치. 끄면 이 채팅에만 적용된다. */
+  function scopeToggle(card: RequestCard): HTMLElement | null {
     const scopes = card.request.scopes;
-    if (!scopes || scopes.length < 2) return null;
-    const group = el('div', 'ag-request-scope');
-    group.setAttribute('role', 'radiogroup');
-    group.setAttribute('aria-label', '허용 범위');
-    const buttons: HTMLButtonElement[] = [];
-    for (const scope of scopes) {
-      const option = el('button', 'ag-request-scope-option', scopeLabel(scope));
-      option.type = 'button';
-      option.setAttribute('role', 'radio');
-      option.dataset.scope = scope;
-      const checked = card.scope === scope;
-      option.setAttribute('aria-checked', String(checked));
-      option.tabIndex = checked ? 0 : -1;
-      option.disabled = !connected || card.responseId !== null;
-      option.addEventListener('click', () => {
-        card.scope = scope;
-        for (const other of buttons) {
-          const on = other.dataset.scope === scope;
-          other.setAttribute('aria-checked', String(on));
-          other.tabIndex = on ? 0 : -1;
-        }
-      });
-      buttons.push(option);
-      group.append(option);
-    }
-    group.addEventListener('keydown', (event) => {
-      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
-      event.preventDefault();
-      const index = buttons.findIndex((button) => button.dataset.scope === card.scope);
-      const step = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
-      const next = buttons[(index + step + buttons.length) % buttons.length]!;
-      next.click();
-      next.focus();
-    });
-    return group;
+    if (!scopes?.includes('always') || scopes.length < 2) return null;
+    const other = scopes.find((scope) => scope !== 'always')!;
+    const toggle = el('button', 'ag-request-scope');
+    toggle.type = 'button';
+    toggle.setAttribute('role', 'switch');
+    toggle.setAttribute('aria-label', '항상 허용');
+    toggle.dataset.focusKey = 'scope';
+    toggle.disabled = !connected || card.responseId !== null;
+    const sync = () => {
+      const on = card.scope === 'always';
+      toggle.setAttribute('aria-checked', String(on));
+      toggle.dataset.scope = card.scope ?? other;
+      toggle.title = on ? '모든 채팅에 적용' : '이 채팅에만 적용';
+    };
+    toggle.append(el('span', 'ag-request-scope-label', '항상'), el('span', 'ag-request-switch'));
+    toggle.addEventListener('click', () => { card.scope = card.scope === 'always' ? other : 'always'; sync(); });
+    sync();
+    return toggle;
   }
 
   function button(text: string, className: string, aria: string, disabled: boolean, click: () => void, icon?: SidebarIconName): HTMLButtonElement {
@@ -481,7 +462,6 @@ export function createRequestCardController(options: RequestCardOptions) {
       case 'browser-use-account': {
         const avatar = el('span', 'ag-request-avatar', (request.accountLabel || host || '?').slice(0, 1).toLocaleUpperCase());
         nodes.push(identityRow(avatar, request.accountLabel || host, host));
-        nodes.push(scopeControl(card));
         actions.append(deny(), primary(card, '허용', `${request.accountLabel || host} 계정 사용 허용`, !options.requestBrowser));
         break;
       }
@@ -514,19 +494,18 @@ export function createRequestCardController(options: RequestCardOptions) {
         }
         const fields = secretFields(card);
         fields.form.inert = !connected || card.responseId !== null;
-        nodes.push(originList(card), fields.form, scopeControl(card));
+        nodes.push(originList(card), fields.form);
         actions.append(deny(), primary(card, '저장', `${secretName(request)} 저장`));
         break;
       }
       case 'secret-use': {
         const mark = el('span', 'ag-request-mark');
         mark.append(createIcon('key'));
-        nodes.push(identityRow(mark, secretName(request), SECRET_KIND_LABELS[request.secretKind ?? 'other']), originList(card), scopeControl(card));
+        nodes.push(identityRow(mark, secretName(request), SECRET_KIND_LABELS[request.secretKind ?? 'other']), originList(card));
         actions.append(deny(), primary(card, '허용', `${secretName(request)} 사용 허용`, !options.requestBrowser));
         break;
       }
       default:
-        nodes.push(scopeControl(card));
         actions.append(deny(), primary(card, '허용', `${labels[request.capability]} 권한 허용. ${request.reason}`));
     }
     nodes.push(errorRow(card), actions);

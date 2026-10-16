@@ -172,6 +172,13 @@ async function hubSession() {
   const sessionId = await page.evaluate(() => window.__agentBridge.getHubFontAccess().sessionId);
   return health.sessions.find((row) => row.sessionId === sessionId)?.session ?? {};
 }
+/** 머리줄의 '항상' 스위치를 원하는 범위로 맞춘다. */
+async function setScope(page, scope, root = '') {
+  const selector = `${root} .ag-request-scope`.trim();
+  if (await page.$eval(selector, (node) => node.dataset.scope) !== scope) await page.click(selector);
+  assert.equal(await page.$eval(selector, (node) => node.dataset.scope), scope);
+}
+
 function must(frame, label) { assert.equal(frame.ok, true, `${label}: ${frame.error?.code} ${frame.error?.message}`); return frame.result; }
 const outlineLine = (snapshot, name) => snapshot.outline.split('\n').find((line) => line.includes(`"${name}"`));
 function refArgs(snapshot, name) {
@@ -319,12 +326,12 @@ try {
   await endTurn('agent ends its turn after request_secret');
   const pendingSave = await waitCard(save.requestId, (state) => state.status === 'pending' && state.logo?.img, 'secret card with site logo');
   assert.match(pendingSave.logo.img, /^data:image\/png;base64,/, 'card header shows the site favicon as a data URI');
-  const scopes = await page.$$eval(`${card(save.requestId)} .ag-request-scope-option`, (nodes) => nodes.map((node) => [node.dataset.scope, node.getAttribute('aria-checked')]));
-  assert.deepEqual(scopes, [['always', 'true'], ['chat', 'false']], 'secret save offers 항상 first and selected');
+  const scope = await page.$eval(`${card(save.requestId)} .ag-request-scope`, (node) => [node.dataset.scope, node.getAttribute('aria-checked')]);
+  assert.deepEqual(scope, ['always', 'true'], 'secret save defaults the 항상 switch on');
   await shot('secret-save-pending-light', card(save.requestId));
   await setTheme('dark'); await shot('secret-save-pending-dark', card(save.requestId)); await setTheme('light');
   await page.type(`${card(save.requestId)} .ag-request-secret input`, secretValue);
-  await page.click(`${card(save.requestId)} .ag-request-scope-option[data-scope="always"]`);
+  await setScope(page, 'always', card(save.requestId));
   await shot('secret-save-typed-light', card(save.requestId));
   await page.click(`${card(save.requestId)} .ag-request-primary`);
   const savedCard = await waitCard(save.requestId, (state) => state.status === 'granted', 'secret card settles');
@@ -415,7 +422,7 @@ try {
   const reloaded = await waitCard(third.requestId, (state) => state.status === 'pending', 'card is pending again after reload');
   await shot('secret-save-after-reload-light', card(third.requestId));
   await page.type(`${card(third.requestId)} .ag-request-secret input`, reconnectValue);
-  await page.click(`${card(third.requestId)} .ag-request-scope-option[data-scope="chat"]`);
+  await setScope(page, 'chat', card(third.requestId));
   await page.click(`${card(third.requestId)} .ag-request-primary`);
   await waitCard(third.requestId, (state) => state.status === 'granted', 'reloaded card completes');
   const reconnectMeta = (await human('secrets.list')).secrets.find((secret) => secret.label === 'Reconnect password');
@@ -482,7 +489,7 @@ try {
   const permission = must(await provider.call('request_permission', { capability: 'local-execution', reason: 'Run the converter script.' }), 'request_permission');
   await endTurn('agent ends its turn after request_permission');
   await waitCard(permission.requestId, (state) => state.status === 'pending', 'permission card');
-  await page.click(`${card(permission.requestId)} .ag-request-scope-option[data-scope="always"]`);
+  await setScope(page, 'always', card(permission.requestId));
   await shot('permission-pending-always-light', card(permission.requestId));
   await page.click(`${card(permission.requestId)} .ag-request-primary`);
   await waitCard(permission.requestId, (state) => state.status === 'granted', 'permission granted');

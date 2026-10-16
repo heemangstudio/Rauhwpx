@@ -106,10 +106,17 @@ async function start(page, origin, query) {
   await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning());
 }
 
+/** 머리줄의 '항상' 스위치를 원하는 범위로 맞춘다. */
+async function setScope(page, scope, root = '') {
+  const selector = `${root} .ag-request-scope`.trim();
+  if (await page.$eval(selector, (node) => node.dataset.scope) !== scope) await page.click(selector);
+  assert.equal(await page.$eval(selector, (node) => node.dataset.scope), scope);
+}
+
 /** 고른 범위가 응답에 실리고, 항상 허용은 설정의 목록에 남는다. */
 async function checkRequestScopes(page, origin) {
   await start(page, origin, 'scenario=permission');
-  await page.click('.ag-request-scope-option[data-scope="always"]');
+  await setScope(page, 'always');
   await page.click('.ag-request-card .ag-request-primary');
   await page.waitForSelector('.ag-request-card[data-status="granted"]');
   const snapshot = await page.evaluate(() => window.sidebarPreview.snapshot());
@@ -166,7 +173,7 @@ async function checkSecretCards(page, origin, screenshot) {
   assert.equal(await page.$eval('.ag-request-secret input', (input) => input.type), 'password', 'the value is masked');
   await page.click('.ag-request-reveal');
   assert.equal(await page.$eval('.ag-request-secret input', (input) => input.type), 'text');
-  await page.click('.ag-request-scope-option[data-scope="chat"]');
+  await setScope(page, 'chat');
   await page.focus('.ag-request-secret input');
   await page.keyboard.press('Enter');
   await page.waitForSelector('.ag-request-card[data-status="granted"]');
