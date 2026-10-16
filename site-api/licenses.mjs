@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
-import { licenseEmail, maskEmail } from './license-email.mjs';
+import { licenseEmail, licenseEmailKind, maskEmail } from './license-email.mjs';
 import { DEFAULT_LEASE_KID, LEASE_TTL_MS, signLease } from './license-lease.mjs';
 import { createMemoryStore } from './store.mjs';
 import { uniqueInstallDigest } from './unique-installs.mjs';
@@ -388,7 +388,7 @@ export function createLicensesService({
     const pending = Object.values(state.licenses).filter((l) => l.emailDelivery?.status === 'pending' && l.email);
     const results = [];
     for (const license of pending) {
-      const message = licenseEmail({ key: license.key, downloadUrl });
+      const message = licenseEmail({ key: license.key, kind: licenseEmailKind(license), downloadUrl });
       let outcome;
       try {
         outcome = await emailProvider.send({ to: license.email, ...message, idempotencyKey: `license-${license.keyId}-${license.emailDelivery?.queuedAt ?? ''}` });

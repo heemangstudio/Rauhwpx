@@ -29,6 +29,7 @@ for (const [description, files, expected] of [
   ['desktop browser host', ['desktop/browser-host.mjs', 'desktop/browser-guest-preload.cjs'], ['app:desktop', 'app:hub', 'app:studio', 'browser', 'sessions']],
   ['desktop shell', ['desktop/main.mjs', 'tests/desktop-file-replace.test.mjs'], ['app:desktop', 'app:hub', 'app:studio', 'sessions']],
   ['site service', ['site-api/server.mjs'], ['app:site']],
+  ['email images', ['website/assets/email/banner.png'], ['app:site', 'docs']],
   ['extension', ['rhwp/rhwp-chrome/sw/fetch-security.mjs'], ['app:extensions']],
   ['shared fonts', ['rhwp/rhwp-shared/fonts/font-index-core.mjs'], ['app:desktop', 'app:extensions', 'app:hub', 'browser', 'sessions']],
 ]) {
