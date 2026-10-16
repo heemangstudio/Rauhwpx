@@ -16,6 +16,7 @@ import {
   systemBriefFor,
   truncate,
   validateExecutionMode,
+  withModeTurnBlock,
   findSessionFile,
   isSafeSessionId,
 } from './backend.mjs';
@@ -284,8 +285,8 @@ function collaborationMode(opts) {
       model: opts.model ?? DEFAULT_CODEX_MODEL,
       reasoning_effort: opts.effort ?? null,
       // 주변 app-server v2 프로토콜은 camelCase지만 Collaboration-mode Settings는
-      // 의도적으로 snake_case를 쓴다. resume은 기존 스레드 지시를 유지할 수
-      // 있으므로 현재 모드 브리프를 매 턴 개발자 지시로 갱신한다.
+      // 의도적으로 snake_case를 쓴다. 브리프는 모드와 무관해 매 턴 같은 바이트이고,
+      // 현재 모드는 turn/start 입력 앞의 모드 블록이 알린다.
       developer_instructions: systemBriefFor(opts, 'codex'),
     },
   };
@@ -448,8 +449,6 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   let expectedShutdown = false;
   let cleanupUncertain = false;
   let attachedGeneration = 0;
-  let permissionBriefDirty = false;
-  let injectedPermissionBrief = null;
   let generation = 0;
   /** @type {string | null} */
   let threadId = isSafeSessionId(opts.resumeSessionId) ? opts.resumeSessionId : null;
@@ -1110,24 +1109,9 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     const id = String(result?.thread?.id ?? threadId ?? '');
     if (!id) throw new Error('Codex app-server did not return a thread id');
     emitSessionInfo(id);
-    if (permissionBriefDirty) {
-      // Default 모드는 settings.developer_instructions를 모델 이력에 넣지 않는다.
-      // 현재 채팅 권한은 같은 스레드의 개발자 메시지로 갱신해야 실제로 적용된다.
-      try {
-        const brief = systemBriefFor(opts, 'codex');
-        await connection.request('thread/inject_items', {
-          threadId: id,
-          items: [{
-            type: 'message', role: 'developer',
-            content: [{ type: 'input_text', text: `The following is the current Rauhwpx chat capability state and replaces earlier Rauhwpx mode and permission instructions for this conversation.\n\n${brief}` }],
-          }],
-        }, { timeoutMs: NEGOTIATION_TIMEOUT_MS, label: 'Codex chat permission instructions' });
-        injectedPermissionBrief = brief;
-      } catch (error) {
-        throw new CodexAppServerUnavailableError('Codex could not update this chat permission. A CLI with thread/inject_items support is required; update Codex and retry.', error);
-      }
-      permissionBriefDirty = false;
-    }
+    // 모드·채팅 권한이 바뀌어도 개발자 지시는 그대로다. 현재 모드와 권한은 매 턴 입력 앞의
+    // 모드 블록이 알리므로 스레드 이력에 브리프를 다시 넣지 않는다 (이전 버전이 넣은 개발자
+    // 메시지는 그 블록이 대체한다고 밝힌다).
     resumeUnverified = false;
     attachedGeneration = generation;
   }
@@ -1306,7 +1290,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     try {
       const response = await connection.request('turn/start', {
         threadId,
-        input: [{ type: 'text', text }],
+        input: [{ type: 'text', text: withModeTurnBlock(opts, text) }],
         cwd: opts.rootDir,
         approvalPolicy: 'never',
         sandboxPolicy: sandboxPolicy(opts),
@@ -1460,11 +1444,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       if (profile !== 'safe' && profile !== 'unrestricted') throw new Error(`Unknown permission profile: ${profile}`);
       cancelIdleRelease();
       const previous = opts.permissionProfile;
-      const previousBriefDirty = permissionBriefDirty;
-      const previousInjectedBrief = injectedPermissionBrief;
       opts.permissionProfile = profile;
-      permissionBriefDirty ||= injectedPermissionBrief !== null
-        && injectedPermissionBrief !== systemBriefFor(opts, 'codex');
       try {
         const priorRestart = restartPromise;
         restartPromise = priorRestart.then(() => stopConnection());
@@ -1472,15 +1452,13 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         if (!cleaned) {
           throw new CodexAppServerUnavailableError('Codex app-server process tree cleanup could not be confirmed');
         }
-        if (nativeProviderInteractionMode(opts) === 'plan' || (permissionBriefDirty && threadId)) {
+        if (nativeProviderInteractionMode(opts) === 'plan') {
           const connection = await ensureConnection();
           await attachThread(connection);
           scheduleIdleRelease();
         }
       } catch (error) {
         opts.permissionProfile = previous;
-        permissionBriefDirty = previousBriefDirty;
-        injectedPermissionBrief = previousInjectedBrief;
         try { await stopConnection(); } catch {}
         restartPromise = Promise.resolve();
         throw error;
@@ -1509,16 +1487,11 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         phase: opts.phase,
         capabilityEpoch: opts.capabilityEpoch,
         chatPermissionGrants: chatPermissionGrantsFor(opts),
-        permissionBriefDirty,
-        injectedPermissionBrief,
       };
       opts.workflow = mode.workflow;
       opts.phase = mode.phase;
       opts.capabilityEpoch = mode.capabilityEpoch;
       opts.chatPermissionGrants = chatPermissionGrantsFor(mode, opts);
-      permissionBriefDirty ||= JSON.stringify(previous.chatPermissionGrants) !== JSON.stringify(opts.chatPermissionGrants);
-      permissionBriefDirty ||= injectedPermissionBrief !== null
-        && injectedPermissionBrief !== systemBriefFor(opts, 'codex');
       // Preserve an earlier permission-change shutdown barrier. Replacing the
       // promise here lets two stopConnection calls race over the same child.
       const priorRestart = restartPromise;
@@ -1528,7 +1501,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         if (!cleaned) {
           throw new CodexAppServerUnavailableError('Codex app-server process tree cleanup could not be confirmed');
         }
-        if (nativeProviderInteractionMode(opts) === 'plan' || (permissionBriefDirty && threadId)) {
+        if (nativeProviderInteractionMode(opts) === 'plan') {
           const connection = await ensureConnection();
           await attachThread(connection);
           scheduleIdleRelease();
@@ -1545,8 +1518,6 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         opts.phase = previous.phase;
         opts.capabilityEpoch = previous.capabilityEpoch;
         opts.chatPermissionGrants = previous.chatPermissionGrants;
-        permissionBriefDirty = previous.permissionBriefDirty;
-        injectedPermissionBrief = previous.injectedPermissionBrief;
         try { await stopConnection(); } catch {}
         restartPromise = Promise.resolve();
         throw error;

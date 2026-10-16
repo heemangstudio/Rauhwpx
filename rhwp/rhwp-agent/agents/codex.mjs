@@ -23,6 +23,7 @@ import {
   systemBriefFor,
   truncate,
   validateExecutionMode,
+  withModeTurnBlock,
 } from './backend.mjs';
 import { createCodexRolloutWatcher } from './codex-rollout-watcher.mjs';
 import { canResumeCodexThread, createCodexAppServerSession } from './codex-app-server.mjs';
@@ -556,8 +557,8 @@ export function createLegacyCodexSession(opts, {
 
       // 프롬프트는 positional 인자가 아니라 stdin('-')으로 전달한다: '-' 로 시작하는
       // 메시지가 CLI 플래그로 파싱되는 것과 초장문 메시지의 ARG_MAX 초과를 막는다.
-      // 이어지는 직접 실행에도 최신 모드를 알려 이전 채팅 지시를 덮어쓴다.
-      const prompt = systemBriefFor(opts, 'codex') + '\n\n' + text;
+      // 모드 공통 브리프 뒤에 현재 모드 블록을 붙여 이전 채팅의 모드 지시를 덮어쓴다.
+      const prompt = systemBriefFor(opts, 'codex') + '\n\n' + withModeTurnBlock(opts, text);
       const argv = buildCodexArgv(opts, threadId);
       stderrTail = '';
 

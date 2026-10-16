@@ -481,6 +481,13 @@ test('a resumed session that may have half-received its handoff is replaced and 
   assert.notEqual(replaced.reply.session, cursor);
   assert.equal(replaced.reply.existed, false);
   assert.match(replaced.reply.prompt, /orchard[\s\S]*PLUM-314[\s\S]*FAIL[\s\S]*Turn failed before completion/);
+  // 다시 보내는 기록은 허브가 가진 사용자 원문이다 — 공급자에게 붙인 모드 블록은 턴 맨 앞에 한 번만 있고
+  // 기록 안의 사용자 글에는 섞이지 않는다.
+  assert.match(replaced.reply.prompt, /^<rhwp_mode>\nCurrent mode: 에이전트\./);
+  assert.equal(replaced.reply.prompt.split('<rhwp_mode>').length - 1, 1);
+  const replayedHistory = replaced.reply.prompt.split('<chat_history')[1].split('</chat_history>')[0];
+  assert.match(replayedHistory, /FAIL/);
+  assert.doesNotMatch(replayedHistory, /rhwp_mode/);
   assert.equal(replaced.end.resumeLost, true);
   assert.equal(replaced.end.providerSessionId, replaced.reply.session);
 

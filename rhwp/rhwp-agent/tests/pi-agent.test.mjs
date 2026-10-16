@@ -17,6 +17,7 @@ import {
 } from '../agents/pi.mjs';
 import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
 import { availableReadOnlyBuiltins } from '../agents/pi-prompt.mjs';
+import { withoutModeBlock } from './mode-block.mjs';
 
 // rg/fd 가 있는 가짜 PATH — grep/find 선언은 실행 파일을 찾을 수 있을 때만 붙는다.
 const SEARCH_BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'rhwp-pi-search-bin-'));
@@ -478,7 +479,8 @@ test('a spawn reads its system prompt from a session file instead of the command
   }
 });
 
-test('the system prompt follows the mode and an explicit override replaces it', () => {
+test('the system prompt stays identical across modes and each turn names the current mode', async () => {
+  // 모드를 바꿔도 같은 세션 파일을 이어 쓴다. 시스템 프롬프트가 같아야 모델 제공자의 프롬프트 캐시가 남는다.
   const promptOf = (opts) => {
     const argv = buildPiArgv({ ...baseOpts, ...opts }, 'sess-1', {});
     return argv[argv.indexOf('--system-prompt') + 1];
@@ -486,17 +488,36 @@ test('the system prompt follows the mode and an explicit override replaces it', 
   const prompts = [
     promptOf({ workflow: 'question', phase: 'questioning' }),
     promptOf({ workflow: 'plan', phase: 'planning' }),
+    promptOf({ workflow: 'plan', phase: 'awaiting-approval' }),
     promptOf({ workflow: 'direct', permissionProfile: 'safe' }),
     promptOf({ workflow: 'direct', permissionProfile: 'unrestricted' }),
     promptOf({ workflow: 'plan', phase: 'implementing', permissionProfile: 'safe' }),
     promptOf({ workflow: 'plan', phase: 'implementing', permissionProfile: 'unrestricted' }),
   ];
-  assert.equal(new Set(prompts).size, prompts.length);
-  for (const prompt of prompts) {
-    assert.doesNotMatch(prompt, /expert coding assistant/);
-    assert.ok(prompt.includes(RHWP_TOOL_RULES));
-  }
+  assert.equal(new Set(prompts).size, 1);
+  assert.doesNotMatch(prompts[0], /expert coding assistant/);
+  assert.ok(prompts[0].includes(RHWP_TOOL_RULES));
   assert.equal(promptOf({ systemPromptOverride: 'AUTONOMOUS TEMPLATE WORKER' }), 'AUTONOMOUS TEMPLATE WORKER');
+
+  const { session, spawns, events } = startSession({ workflow: 'direct', permissionProfile: 'safe' }, {
+    terminateProcess: async () => true,
+    waitForExit: async () => true,
+  });
+  session.sendUserMessage('first');
+  assert.match(spawns[0].proc.stdin.chunks[0], /^<rhwp_mode>\nCurrent mode: 에이전트\.[\s\S]*<\/rhwp_mode>\n\nfirst$/);
+  spawns[0].proc.emitJson({ type: 'agent_settled' });
+  spawns[0].proc.exit(0);
+  for (let i = 0; i < 5 && events.filter((event) => event.type === 'turn-end').length === 0; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  session.setPermissionProfile('unrestricted');
+  session.sendUserMessage('second');
+  for (let i = 0; i < 5 && spawns.length < 2; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(spawns.length, 2, 'the second turn spawns again');
+  const systemPrompt = ({ argv }) => argv[argv.indexOf('--system-prompt') + 1];
+  assert.equal(systemPrompt(spawns[1]), systemPrompt(spawns[0]));
+  assert.match(spawns[1].proc.stdin.chunks[0], /^<rhwp_mode>\nCurrent mode: 전체 \(full access\)[\s\S]*<\/rhwp_mode>\n\nsecond$/);
+  await session.dispose();
 });
 
 test('argv omits thinking for non-reasoning models and never doubles the provider prefix', () => {
@@ -596,7 +617,7 @@ test('the prompt goes through stdin, which is closed right after, never through 
 
   assert.equal(command, baseOpts.piBin);
   assert.equal(argv.includes('문서를 정리해 줘'), false);
-  assert.deepEqual(proc.stdin.chunks, ['문서를 정리해 줘']);
+  assert.deepEqual(proc.stdin.chunks.map(withoutModeBlock), ['문서를 정리해 줘']);
   assert.equal(proc.stdin.ended, true);
   assert.deepEqual(options.stdio, ['pipe', 'pipe', 'pipe']);
   assert.equal(options.cwd, baseOpts.rootDir);
@@ -613,7 +634,7 @@ test('prompts starting with a dash or @ reach Pi verbatim', () => {
     const { session, spawns } = startSession();
     session.sendUserMessage(prompt);
     assert.equal(spawns[0].argv.includes(prompt), false);
-    assert.deepEqual(spawns[0].proc.stdin.chunks, [prompt]);
+    assert.deepEqual(spawns[0].proc.stdin.chunks.map(withoutModeBlock), [prompt]);
     session.dispose();
   }
 });
@@ -732,7 +753,7 @@ test('a follow-up waits for prior tree cleanup before spawning', async () => {
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(spawns.length, 2);
-  assert.deepEqual(spawns[1].proc.stdin.chunks, ['follow-up']);
+  assert.deepEqual(spawns[1].proc.stdin.chunks.map(withoutModeBlock), ['follow-up']);
   assert.equal(events.filter((event) => event.type === 'turn-start').length, 2);
 
   spawns[1].proc.emitJson({ type: 'agent_settled' });
@@ -941,7 +962,7 @@ test('a Pi resume cursor reuses the session file and falls back to the full tran
   kept.session.sendUserMessage('delta only', { resumeFallbackText: 'full transcript' });
   const keptArgv = kept.spawns[0].argv;
   assert.equal(keptArgv[keptArgv.indexOf('--session-id') + 1], 'kept-1');
-  assert.deepEqual(kept.spawns[0].proc.stdin.chunks, ['delta only']);
+  assert.deepEqual(kept.spawns[0].proc.stdin.chunks.map(withoutModeBlock), ['delta only']);
   kept.spawns[0].proc.emitJson({ type: 'agent_settled' });
   kept.spawns[0].proc.exit(0);
   assert.equal(kept.events.at(-1).resumeLost, undefined);
@@ -951,7 +972,7 @@ test('a Pi resume cursor reuses the session file and falls back to the full tran
   lost.session.sendUserMessage('delta only', { resumeFallbackText: 'full transcript' });
   const lostArgv = lost.spawns[0].argv;
   assert.notEqual(lostArgv[lostArgv.indexOf('--session-id') + 1], 'kept-1');
-  assert.deepEqual(lost.spawns[0].proc.stdin.chunks, ['full transcript']);
+  assert.deepEqual(lost.spawns[0].proc.stdin.chunks.map(withoutModeBlock), ['full transcript']);
   lost.spawns[0].proc.emitJson({ type: 'agent_settled' });
   lost.spawns[0].proc.exit(0);
   assert.deepEqual(lost.events.at(-1), { type: 'turn-end', agent: 'pi', stopReason: 'completed', resumeLost: true });
@@ -972,7 +993,7 @@ test('replaceSession opens a fresh Pi session for the full transcript and report
   const fresh = argv[argv.indexOf('--session-id') + 1];
   assert.notEqual(fresh, 'kept-2');
   assert.equal(session.getSessionId(), fresh);
-  assert.deepEqual(spawns[0].proc.stdin.chunks, ['full transcript']);
+  assert.deepEqual(spawns[0].proc.stdin.chunks.map(withoutModeBlock), ['full transcript']);
   spawns[0].proc.emitJson({ type: 'agent_settled' });
   spawns[0].proc.exit(0);
   assert.deepEqual(events.at(-1), { type: 'turn-end', agent: 'pi', stopReason: 'completed', resumeLost: true });

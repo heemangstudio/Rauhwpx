@@ -8,6 +8,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { canResumeClaudeSession, createClaudeSession } from '../agents/claude.mjs';
+import { withoutModeBlock } from './mode-block.mjs';
 
 class FakeStream extends EventEmitter {
   chunks = [];
@@ -46,7 +47,7 @@ class FakeProcess extends EventEmitter {
   }
 
   prompt() {
-    return this.stdin.chunks.map((line) => JSON.parse(line).message.content[0].text);
+    return this.stdin.chunks.map((line) => withoutModeBlock(JSON.parse(line).message.content[0].text));
   }
 }
 
@@ -125,7 +126,8 @@ test('a resumed session compacts on request and maps the CLI compaction frames',
   const compact = children[1];
   assert.equal(compact.argv.includes('--disable-slash-commands'), false);
   assert.equal(compact.argv[compact.argv.indexOf('--resume') + 1], SID);
-  assert.deepEqual(compact.prompt(), ['/compact']);
+  // 슬래시 명령 턴에는 모드 블록을 붙이지 않는다 — 글 전체가 "/compact" 여야 명령으로 읽힌다.
+  assert.deepEqual(compact.stdin.chunks.map((line) => JSON.parse(line).message.content[0].text), ['/compact']);
   compact.emitJson(
     { type: 'system', subtype: 'status', status: 'compacting', session_id: SID, uuid: 'd3072a36' },
     { type: 'system', subtype: 'status', status: null, compact_result: 'success', session_id: SID, uuid: '011b5760' },
