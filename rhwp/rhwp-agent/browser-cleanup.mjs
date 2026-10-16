@@ -27,10 +27,10 @@ export async function removeOwnedBrowserState({ dataDir } = {}) {
     if (!info.isDirectory() || info.isSymbolicLink()
       || (process.platform !== 'win32' && info.uid !== process.getuid())) throw failure('Browser profile storage is not owned by this app.');
     // Keep installed Chromium and runtime configuration. Only these fixed paths
-    // hold profile, history, unfinished transfer, or tab restoration data.
+    // hold profile, history, unfinished transfer, site icon, or tab restoration data.
     const entries = [];
     const tabPartials = (await fs.readdir(browserRoot)).filter((name) => /^tabs\.json\.[a-f0-9]{16}\.part$/.test(name));
-    for (const name of ['profile', 'native-profile', 'transfers', 'tabs.json', ...tabPartials]) {
+    for (const name of ['profile', 'native-profile', 'transfers', 'favicons', 'tabs.json', ...tabPartials]) {
       const location = path.join(browserRoot, name);
       let entry;
       try { entry = await fs.lstat(location); }
