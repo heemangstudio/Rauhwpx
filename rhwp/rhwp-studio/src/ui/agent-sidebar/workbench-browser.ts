@@ -100,10 +100,10 @@ export function createWorkbenchBrowser(options: {
     const tab = controller.tab(); const native = nativeBrowserApi();
     if (native && tab && (tab.runtime === 'native' || controller.state.runtime?.kind === 'native')) {
       const rect = surface.getBoundingClientRect();
-      nativePopout = true;
+      nativePopout = true; nativePopoutTabId = tab.tabId;
       handle((nativePending ?? Promise.resolve()).then(() => attachNative({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, mode: 'popout', interactive: true })).then((attached) => {
-        if (!attached || disposed || !visible || controller.tab()?.tabId !== tab.tabId) { nativePopout = false; return; }
-        nativePopout = true; nativeTab = null; nativeProjection = ''; presentation.hide();
+        if (!attached || disposed) { nativePopout = false; return; }
+        nativePopout = true; nativePopoutTabId = tab.tabId; nativeTab = null; nativeProjection = ''; presentation.hide();
       }).catch(() => { nativePopout = false; nativeError = '브라우저 화면을 연결하지 못했습니다. 다시 연결해 주세요.'; paint(); }));
     } else presentation.present('popout');
   });
@@ -245,6 +245,8 @@ export function createWorkbenchBrowser(options: {
     agentPreviewTab = null; paint(); layout();
   }
   let visible = false; let nativeTab: string | null = null; let nativePopout = false;
+  // 별도 창에 띄운 탭. 팝업 채택 등으로 선택 탭이 바뀌어도 별도 창의 주인은 이 탭이다.
+  let nativePopoutTabId: string | null = null;
   let frameTimer: ReturnType<typeof setTimeout> | null = null; let composing = false; let committedComposition: string | null = null; let disposed = false; let selectedFrameId = ''; let nativeSequence = 0;
   let reconnecting = false;
   let tabsSignature = ''; let downloadsSignature = ''; let nativeProjection = ''; let nativeFailedProjection = ''; let nativeError: string | null = null; let nativePending: Promise<boolean> | null = null; let inputChain: Promise<unknown> = Promise.resolve();
@@ -735,7 +737,10 @@ export function createWorkbenchBrowser(options: {
       if (event.command === 'downloads') showDownloads(true);
       return;
     }
-    if (event.type === 'browser-popout-closed' || event.type === 'popout-closed' || nativePopout && event.type === 'presentation' && (event.mode === 'hidden' || event.mode === 'dock')) { nativePopout = false; presentation.present('dock'); options.onDock(); }
+    if (nativePopout && nativePopoutTabId && event.tabId === nativePopoutTabId && (event.type === 'browser-popout-closed' || event.type === 'popout-closed' || event.type === 'presentation' && (event.mode === 'hidden' || event.mode === 'dock'))) {
+      controller.select(nativePopoutTabId); nativePopout = false; nativePopoutTabId = null;
+      presentation.present('dock'); options.onDock();
+    }
     // 배치/이동은 페이지 상태를 바꾸지 않는다. 크기 조절마다 허브를 다시 읽지 않는다.
     if (event.type !== 'presentation' && event.type !== 'bound') handle(controller.refresh());
   });
@@ -746,9 +751,12 @@ export function createWorkbenchBrowser(options: {
     activeTab(): string | null { return controller.tab() ? `browser:${controller.tab()!.tabId}` : null; },
     previewAgent(tab: BrowserTab) {
       if (disposed) return;
+      controller.accept({ tab });
+      // 다른 탭의 작업이 사용자가 연 별도 창의 배치를 바꾸지 않는다.
+      if (nativePopout && nativePopoutTabId !== tab.tabId) return;
       manualSleepingTab = null; agentPreviewTab = tab.tabId;
-      controller.accept({ tab }); controller.select(tab.tabId);
-      nativePopout = false; presentation.present(visible && presentation.current() === 'dock' ? 'dock' : 'float');
+      controller.select(tab.tabId);
+      if (!nativePopout) presentation.present(visible && presentation.current() === 'dock' ? 'dock' : 'float');
       handle(controller.readFrame());
     },
     endAgentPreview,

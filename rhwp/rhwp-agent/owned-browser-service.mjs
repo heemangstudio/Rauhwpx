@@ -5,14 +5,13 @@ import { promises as fs } from 'node:fs';
 import { createBrowserNetworkGuard } from './owned-browser-network.mjs';
 import { OwnedBrowserError, inspectOwnedBrowserRuntime, inspectMacPasskeyCapability, installOwnedBrowserRuntime, startOwnedBrowserRuntime, startOwnedBrowserSignIn } from './owned-browser-runtime.mjs';
 import { removeOwnedBrowserState } from './browser-cleanup.mjs';
+import { BROWSER_CONTROL_SELECTOR as ELEMENTS, browserRole } from './browser-roles.mjs';
 
 export { OwnedBrowserError } from './owned-browser-runtime.mjs';
 
-const ELEMENTS = 'a[href],button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="menuitem"],[role="option"],[role="tab"],[contenteditable="true"],summary';
 const SENSITIVE = 'input[type="password"],input[type="email"],input[autocomplete="username"],input[name="username"],input[name="email"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
-const SEARCH_ORIGINS = new Set(['https://www.google.com', 'https://www.google.co.kr', 'https://duckduckgo.com', 'https://www.bing.com', 'https://search.naver.com', 'https://en.wikipedia.org', 'https://ko.wikipedia.org', 'https://www.wikipedia.org', 'https://pubmed.ncbi.nlm.nih.gov', 'https://arxiv.org']);
 const redactValues = (value, secrets) => {
-  if (typeof value === 'string') { for (const secret of secrets ?? []) if (secret) for (const variant of [secret, encodeURIComponent(secret), Buffer.from(secret).toString('base64')]) value = value.split(variant).join('[masked]'); return value; }
+  if (typeof value === 'string') { for (const secret of secrets ?? []) if (secret) for (const variant of [secret, encodeURIComponent(secret), new URLSearchParams({ value: secret }).toString().slice(6), Buffer.from(secret).toString('base64')]) value = value.split(variant).join('[masked]'); return value; }
   if (Array.isArray(value)) return value.map(entry => redactValues(entry, secrets));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactValues(entry, secrets)]));
   return value;
@@ -20,7 +19,139 @@ const redactValues = (value, secrets) => {
 const MUTATIONS = new Set(['navigate', 'click', 'type', 'press', 'scroll', 'close', 'input', 'fill-account', 'viewport', 'upload']);
 const READS = new Set(['snapshot', 'frame', 'capture', 'wait']);
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
-const error = (code, message, retryable = false) => new OwnedBrowserError(code, message, retryable);
+const error = (code, message, retryable = false, hint) => Object.assign(new OwnedBrowserError(code, message, retryable), hint ? { hint } : {});
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Actions whose result carries a fresh compact snapshot unless the agent passes snapshot:false.
+const SNAPSHOT_AFTER = new Set(['open', 'navigate', 'click', 'type', 'press', 'scroll']);
+const SEARCH_INPUT_TYPES = new Set(['text', 'search', 'url', 'number']);
+const CHALLENGE_MESSAGE = 'The site requires a human verification check (CAPTCHA). Do not retry, reload or try to bypass it. The user can take control of this tab to complete the check, or continue research on another site.';
+const sanitizeLabel = (value, max = 80) => String(value ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+const siteOf = (host) => {
+  if (isIP(host.replace(/^\[|\]$/g, '')) || !host.includes('.')) return host;
+  const parts = host.split('.');
+  return parts.slice(parts.length > 2 && parts.at(-1).length === 2 && parts.at(-2).length <= 3 ? -3 : -2).join('.');
+};
+
+/**
+ * Runs in one page document. Builds the visible element table in a single pass and
+ * returns the element objects so one array handle supplies every ref.
+ * Sensitivity comes from the isolated selector engine (identity), never page prototypes.
+ */
+function pageTable({ selector, max, sensitive, main }) {
+  const secret = new Set(sensitive);
+  let offsetX = 0, offsetY = 0, frameVisible = true;
+  let viewportLeft = 0, viewportTop = 0, viewportRight = innerWidth, viewportBottom = innerHeight;
+  try {
+    for (let current = window; current.frameElement; current = current.parent) {
+      const owner = current.frameElement, rect = owner.getBoundingClientRect(), style = current.parent.getComputedStyle(owner);
+      if (rect.width <= 0 || rect.height <= 0 || style.visibility === 'hidden' || style.display === 'none') frameVisible = false;
+      const frameX = rect.x + owner.clientLeft, frameY = rect.y + owner.clientTop;
+      // Clip each document's viewport through the frame content box and its parent.
+      viewportLeft = Math.max(0, frameX + viewportLeft);
+      viewportTop = Math.max(0, frameY + viewportTop);
+      viewportRight = Math.min(current.parent.innerWidth, frameX + Math.min(viewportRight, owner.clientWidth));
+      viewportBottom = Math.min(current.parent.innerHeight, frameY + Math.min(viewportBottom, owner.clientHeight));
+      offsetX += frameX; offsetY += frameY;
+    }
+  } catch { frameVisible = false; }
+  const roots = [document], candidates = [];
+  for (let index = 0; index < roots.length; index++) {
+    for (const el of roots[index].querySelectorAll('*')) {
+      if (el.shadowRoot) roots.push(el.shadowRoot);
+    }
+    candidates.push(...roots[index].querySelectorAll(selector));
+  }
+  const inputRoles = { checkbox: 'checkbox', radio: 'radio', button: 'button', submit: 'button', reset: 'button', image: 'button', range: 'slider', number: 'spinbutton', search: 'searchbox' };
+  const rows = [], elements = [];
+  let truncated = false;
+  for (const el of frameVisible ? candidates : []) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || getComputedStyle(el).visibility === 'hidden') continue;
+    // The cap applies after visibility so hidden templates cannot crowd out visible controls.
+    if (rows.length >= max) { truncated = true; break; }
+    const isSecret = secret.has(el);
+    const tag = el.tagName.toLowerCase();
+    const inputType = el instanceof HTMLInputElement ? String(el.type || 'text').toLowerCase() : undefined;
+    const role = el.getAttribute('role') || (inputType ? inputRoles[inputType] ?? 'textbox' : ({ A: 'link', BUTTON: 'button', TEXTAREA: 'textbox', SELECT: 'combobox', SUMMARY: 'button' })[el.tagName] || 'textbox');
+    const label = el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.getAttribute('placeholder') || el.textContent || '';
+    const form = el.form instanceof HTMLFormElement ? el.form : el.closest('form');
+    const submitter = (el instanceof HTMLButtonElement || el instanceof HTMLInputElement) && ['submit', 'image'].includes(String(el.type).toLowerCase()) ? el : null;
+    let formMethod, formAction;
+    if (form) {
+      formMethod = String(submitter?.getAttribute('formmethod') || form.getAttribute('method') || 'get').toLowerCase();
+      if (!['get', 'post', 'dialog'].includes(formMethod)) formMethod = 'get';
+      try { formAction = new URL(submitter?.getAttribute('formaction') ?? form.getAttribute('action') ?? '', document.baseURI).href; } catch {}
+    }
+    const x = rect.x + offsetX, y = rect.y + offsetY;
+    const row = { tag, role, inputType, name: String(label).trim().slice(0, 500), text: isSecret ? '[masked]' : String(el.textContent ?? '').trim().slice(0, 1000),
+      value: isSecret ? '[masked]' : ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) ? String(el.value ?? '').slice(0, 1000) : '',
+      sensitive: isSecret, disabled: !!el.disabled, inViewport: viewportRight > viewportLeft && viewportBottom > viewportTop && x < viewportRight && y < viewportBottom && x + rect.width > viewportLeft && y + rect.height > viewportTop,
+      rect: { x, y, width: rect.width, height: rect.height } };
+    if (inputType === 'checkbox' || inputType === 'radio') row.checked = !!el.checked;
+    else if (el.hasAttribute('aria-checked')) row.checked = el.getAttribute('aria-checked') === 'true';
+    if (tag === 'a') { try { const href = new URL(el.href); if (/^https?:$/.test(href.protocol)) { href.username = ''; href.password = ''; row.href = href.href.slice(0, 2000); } } catch {} }
+    if (form) Object.assign(row, { formMethod, formAction });
+    rows.push(row); elements.push(el);
+  }
+  const result = { rows, elements, truncated, text: String(document.body?.innerText ?? '') };
+  if (main) {
+    const active = document.activeElement;
+    const selection = window.getSelection();
+    let selected = selection && !secret.has(active) ? String(selection).slice(0, 16_000) : '';
+    for (let index = 0; selected && index < selection.rangeCount; index++) for (const el of secret) if (selection.getRangeAt(index).intersectsNode(el)) selected = '';
+    result.selectedText = selected;
+    // Interstitial human checks only. A page that merely loads a CAPTCHA script is not blocked.
+    const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 30 && r.height > 30 && getComputedStyle(el).visibility !== 'hidden'; };
+    const frames = [...document.querySelectorAll('iframe')].filter(visible).map((frame) => String(frame.src || ''));
+    const words = String(document.body?.innerText ?? '').trim().length;
+    const fields = [...document.querySelectorAll('input,textarea,select')].filter((el) => visible(el) && !['hidden', 'submit', 'button', 'checkbox'].includes(String(el.type).toLowerCase())).length;
+    if (window._cf_chl_opt || document.querySelector('#challenge-form,#challenge-stage,#cf-challenge-running')
+      || /^(just a moment|attention required|잠시만 기다리십시오)/i.test(document.title) && frames.some((src) => /^https:\/\/challenges\.cloudflare\.com\//.test(src))) result.challenge = 'cloudflare';
+    else if (words < 600 && fields === 0 && (document.querySelector('#px-captcha') || frames.some((src) => /^https:\/\/(?:www\.)?(?:google\.com|recaptcha\.net)\/recaptcha\/(?:api2|enterprise)\/(?:anchor|bframe)(?![^#]*size=invisible)|^https:\/\/[a-z0-9.-]*hcaptcha\.com\/captcha|^https:\/\/geo\.captcha-delivery\.com\//.test(src)))) result.challenge = 'captcha';
+  }
+  return result;
+}
+
+/** Runs in the isolated selector world so page prototypes cannot forge form ownership or protected controls. */
+function pageFormSubmission(el, { action, typed, textTypes, sensitiveSelector }) {
+  const form = el.form instanceof HTMLFormElement ? el.form : null;
+  if (!form) return null;
+  const type = String(el.type ?? '').toLowerCase();
+  const submitter = (el instanceof HTMLButtonElement || el instanceof HTMLInputElement) && ['submit', 'image'].includes(type) ? el : null;
+  // Clicks submit only through a real submit control. Typing submits only from a single-line text field.
+  if (action === 'click' ? !submitter : !(el instanceof HTMLInputElement && textTypes.includes(type))) return null;
+  const method = String(submitter?.getAttribute('formmethod') || form.getAttribute('method') || 'get').toLowerCase();
+  const destination = new URL(submitter?.getAttribute('formaction') || form.getAttribute('action') || location.href, document.baseURI);
+  const controls = [...Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements').get.call(form)];
+  const sensitive = controls.some((control) => control.matches(sensitiveSelector) || String(control.type ?? '').toLowerCase() === 'file');
+  if (sensitive) return { method, sensitive: true };
+  const params = new URLSearchParams();
+  for (const control of controls) {
+    const kind = String(control.type ?? '').toLowerCase();
+    if (!control.name || control.disabled || ['submit', 'image', 'button', 'reset'].includes(kind) && control !== submitter) continue;
+    if (['checkbox', 'radio'].includes(kind) && !control.checked) continue;
+    if (control instanceof HTMLSelectElement) { for (const option of control.selectedOptions) params.append(control.name, option.value); continue; }
+    if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLButtonElement) params.append(control.name, control === el && typed !== null ? typed : control.value);
+  }
+  destination.search = params.toString(); destination.hash = '';
+  return { method, url: destination.href, sensitive };
+}
+// Selector engines can read a scoped element in Playwright's isolated world. A detached
+// carrier returns the facts without inserting a node that page scripts could observe or alter.
+let formSelectorReady;
+const prepareFormSelector = () => formSelectorReady ??= import('playwright').then(({ selectors }) => selectors.register('rhwpSubmissionFacts', `{
+  queryAll(root, encoded) {
+    const facts = (${pageFormSubmission.toString()})(root, JSON.parse(decodeURIComponent(encoded)));
+    const carrier = document.createElement('span');
+    carrier.setAttribute('data-rhwp-submission', JSON.stringify(facts));
+    return [carrier];
+  }
+}`, { contentScript: true }));
+const isolatedFormSubmission = async (handle, facts) => {
+  const carriers = await handle.$$('rhwpSubmissionFacts=' + encodeURIComponent(JSON.stringify(facts)));
+  try { return carriers.length === 1 ? JSON.parse(await carriers[0].getAttribute('data-rhwp-submission')) : null; }
+  finally { await Promise.all(carriers.map(carrier => carrier.dispose())); }
+};
 const bounded = (value, min, max, fallback) => Number.isFinite(Number(value)) ? Math.max(min, Math.min(max, Number(value))) : fallback;
 const text = (value, max = 4000) => String(value ?? '').slice(0, max);
 const publicURL = (value) => { try { const url = new URL(value); if (!['http:', 'https:'].includes(url.protocol)) return 'about:blank'; return `${url.origin}${url.pathname}`; } catch { return 'about:blank'; } };
@@ -31,6 +162,9 @@ const challengeFor = (tab) => {
   if (!tab.page || tab.page.isClosed() || ['crashed', 'disconnected', 'closed'].includes(tab.status)) return null;
   try {
     const url = new URL(tab.page?.url?.() ?? tab.url);
+    if (tab.detectedChallenge?.navigationEpoch === tab.navigationEpoch && !googleHost(url.hostname)) {
+      return { code: 'BROWSER_CHALLENGE_REQUIRED', provider: tab.detectedChallenge.provider, retryable: false, message: CHALLENGE_MESSAGE };
+    }
     if (!googleHost(url.hostname) || !/^\/sorry(?:\/|$)/.test(url.pathname)) return null;
     const query = tab.searchQuery;
     return { code: 'BROWSER_CHALLENGE_REQUIRED', provider: 'google', retryable: false,
@@ -66,7 +200,13 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     const waiter = pending.get(message.id);
     if (!waiter) return;
     pending.delete(message.id); clearTimeout(waiter.timer);
-    message.ok ? waiter.resolve(message.value) : waiter.reject(error(message.error?.code ?? 'BROWSER_NATIVE_FAILED', message.error?.message ?? 'The desktop browser request failed.', true));
+    if (message.ok) waiter.resolve(message.value);
+    else {
+      const detail = message.error ?? {};
+      const failure = error(detail.code ?? 'BROWSER_NATIVE_FAILED', detail.message ?? 'The desktop browser request failed.', typeof detail.retryable === 'boolean' ? detail.retryable : true, typeof detail.hint === 'string' ? detail.hint : undefined);
+      if (typeof detail.actionCompleted === 'boolean') failure.actionCompleted = detail.actionCompleted;
+      waiter.reject(failure);
+    }
   };
   events.on('message', receive);
   const call = (operation, params = {}) => new Promise((resolve, reject) => {
@@ -179,6 +319,12 @@ export function createOwnedBrowserService(options = {}) {
   const humanRequestsPending = new Set();
   const humanOrigins = new Set();
   const unconfirmedHumanOrigins = new Set();
+  // Full storage reads (cookies, localStorage, IndexedDB) run only while a human could be writing
+  // storage. Agent-only changes made meanwhile are absorbed before the next human activity starts.
+  let observedHumanEpoch = -1;
+  let humanPageClosed = false;
+  let storageStale = false;
+  const popupWork = new Set();
   const profileId = () => runtimeMode === 'native' ? 'native' : 'default';
   const selectedAdapter = () => runtimeMode === 'native' ? nativeAdapter : undefined;
   const browserStorageState = async () => (await selectedAdapter()?.passwordStorageState?.()) ?? runtime.context.storageState({ indexedDB: true });
@@ -258,7 +404,10 @@ export function createOwnedBrowserService(options = {}) {
   const dismissPendingDialog = async (tab) => {
     const dialog = tab.pendingDialog;
     tab.pendingDialog = null;
-    await dialog?.dismiss().catch(() => {});
+    if (!dialog) return;
+    // Agents never accept page dialogs. The next agent result reports what was dismissed.
+    tab.dismissedDialogs = [...(tab.dismissedDialogs ?? []), { type: dialog.type(), message: sanitizeLabel(dialog.message(), 300) }].slice(-5);
+    await dialog.dismiss().catch(() => {});
   };
   const releaseInput = async (tab) => {
     await dismissPendingDialog(tab);
@@ -280,7 +429,27 @@ export function createOwnedBrowserService(options = {}) {
     const domain = key.slice(7), host = new URL(origin).hostname;
     return host === domain || host.endsWith(`.${domain}`);
   };
-  const recordAgentSessions = (url, epoch, headers = []) => serializeSession(async () => {
+  const humanish = (tab) => tab.scope === 'global' || tab.controller.owner === 'human' || tab.humanTouched === true;
+  const humanStorageActive = () => {
+    if (!runtime || state !== 'ready' || humanActionsPending || humanRequestsPending.size || humanPageClosed || observedHumanEpoch !== humanSessionEpoch) return true;
+    const humanSites = new Set([...humanOrigins].map((origin) => { try { return siteOf(new URL(origin).hostname); } catch { return origin; } }));
+    for (const page of runtime.context.pages()) {
+      const tab = pageTabs.get(page);
+      // Unbound pages count once they show a web document; an idle about:blank page holds no site storage.
+      if (!tab || tab.page !== page) { if (page.frames().some((frame) => /^https?:/.test(frame.url()))) return true; continue; }
+      if (humanish(tab)) return true;
+      // Any page showing a site the human used can still write that site's storage.
+      if (humanSites.size) for (const frame of page.frames()) { try { const url = new URL(frame.url()); if (/^https?:$/.test(url.protocol) && humanSites.has(siteOf(url.hostname))) return true; } catch {} }
+    }
+    return false;
+  };
+  const quietStorage = () => {
+    if (!credentialBroker?.registerSessionOrigins) return true;
+    if (humanStorageActive()) return false;
+    storageStale = true; return true;
+  };
+  const absorbAgentStorage = () => storageStale ? observeHumanSessions({ force: true }) : Promise.resolve();
+  const recordAgentSessions = (url, epoch, headers = []) => quietStorage() ? Promise.resolve() : serializeSession(async () => {
     if (!runtime || state !== 'ready' || epoch !== humanSessionEpoch || humanActionsPending || humanRequestsPending.size || !/^https?:/.test(url)) return;
     const storage = await browserStorageState();
     const current = sessionFingerprint(storage);
@@ -309,8 +478,9 @@ export function createOwnedBrowserService(options = {}) {
     const approved = sessionFingerprint({ cookies: [...cookieBaseline.values()], origins: [] });
     for (const domain of touchedDomains) { const key = `domain:${domain}`; if (approved.has(key)) sessionBaseline.set(key, approved.get(key)); else sessionBaseline.delete(key); }
   });
-  const observeHumanSessions = () => serializeSession(async () => {
+  const observeHumanSessions = ({ force = false } = {}) => !force && quietStorage() ? Promise.resolve() : serializeSession(async () => {
     if (!runtime || state !== 'ready' || !credentialBroker?.registerSessionOrigins) return;
+    const epoch = humanSessionEpoch, closedBefore = humanPageClosed;
     for (const page of runtime.context.pages()) if (!pageTabs.has(page) && /^https?:/.test(page.url())) markHumanOrigin(new URL(page.url()).origin);
     const storage = await browserStorageState();
     const current = sessionFingerprint(storage);
@@ -325,6 +495,8 @@ export function createOwnedBrowserService(options = {}) {
     if (domains.length || origins.length) await credentialBroker.registerSessionOrigins({ profileId: profileId(), origins, domains, source: 'human' });
     sessionBaseline = current;
     cookieBaseline = new Map(storage.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
+    observedHumanEpoch = epoch; storageStale = false;
+    if (closedBefore) humanPageClosed = false;
   });
 
   const onDownload = async (tab, download) => {
@@ -389,6 +561,7 @@ export function createOwnedBrowserService(options = {}) {
         });
       } catch { await socket.close({ code: 4003, reason: 'Browser destination blocked' }); }
     });
+    page.on('request', (request) => { if (tab.page === page && request.isNavigationRequest() && request.frame() === page.mainFrame()) tab.lastNavigationRequest = request; });
     page.on('download', (download) => { void onDownload(tab, download); });
     page.on('dialog', (dialog) => {
       if (tab.page !== page) { void dialog.dismiss().catch(() => {}); return; }
@@ -425,6 +598,7 @@ export function createOwnedBrowserService(options = {}) {
     page.on('crash', () => { if (tab.page !== page) return; tab.status = 'crashed'; tab.controllerEpoch++; invalidate(tab); publish(tab); });
     page.on('close', () => {
       if (tab.page !== page) return;
+      if (humanish(tab)) humanPageClosed = true;
       if (tab.sleepPending) { tab.page = null; tab.status = 'sleeping'; tab.controllerEpoch++; invalidate(tab); return; }
       tab.status = closed ? 'closed' : 'disconnected'; tab.page = null; tab.controllerEpoch++; invalidate(tab);
       if (!tab.openerTabId || closed) { publish(tab); return; }
@@ -457,6 +631,7 @@ export function createOwnedBrowserService(options = {}) {
     starting = (async () => {
       try {
         if (runtime) { await runtime.close().catch(() => {}); runtime = null; }
+        await prepareFormSelector();
         runtime = await runtimeFactory({ dataDir, guard, nativeAdapter: selectedAdapter(), headless, autoInstall: options.autoInstall !== false, onEvent: (progress) => emit('owned_browser_runtime', { runtime: { ...runtimeInfo(), ...progress } }) });
         generation++;
         let checkpoint;
@@ -487,6 +662,7 @@ export function createOwnedBrowserService(options = {}) {
             if (tab) {
               const actor = tab.activeActor ?? (tab.controller.owner === 'human' ? { ...actorForTab(tab), isHuman: true, clientId: tab.controller.clientId } : actorForTab(tab));
               if (actor.isHuman) {
+                await absorbAgentStorage();
                 humanSessionEpoch++; humanOrigins.add(new URL(url).origin); humanRequestsPending.add(request);
                 // Cookies are applied with response headers. Streaming bodies must not hold
                 // the shared profile indefinitely; the human action retains its own fence.
@@ -506,10 +682,17 @@ export function createOwnedBrowserService(options = {}) {
         });
         runtime.context.on('page', (page) => {
           // Pages created by popup scripts never gain another agent's binding.
-          void page.opener().then(async (opener) => {
+          const work = page.opener().then(async (opener) => {
             const parent = opener && pageTabs.get(opener);
             if (!parent) return;
-            if (tabs.size >= limits.maxTabs) { await page.close(); return; }
+            // Nested popups report to the tab whose agent action opened the chain.
+            let reporter = parent;
+            while (reporter && !reporter.actionReport) reporter = reporter.openerTabId && tabs.get(reporter.openerTabId);
+            // The count and reservation stay synchronous, so concurrent popups cannot both pass the limit.
+            if (tabs.size >= limits.maxTabs || parent.scope !== 'global' && [...tabs.values()].filter((entry) => sameScope(actorForTab(parent), entry)).length >= limits.maxTabsPerAgent) {
+              if (reporter) reporter.actionReport.popupsBlocked++;
+              await page.close(); return;
+            }
             const tab = makeTab({ ...actorForTab(parent), scope: parent.scope }); tab.controller = { ...parent.controller }; tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab);
             try { await attach(tab, page); }
             catch (failure) {
@@ -522,8 +705,11 @@ export function createOwnedBrowserService(options = {}) {
             const native = tab.nativeTargetId && (await selectedAdapter()?.inventory?.())?.find((entry) => entry.nativeTargetId === tab.nativeTargetId);
             if (page.isClosed() || tabs.get(tab.tabId) !== tab) return;
             emit('owned_browser_popup', { tab: descriptor(tab), openerTabId: parent.tabId, foreground: native?.disposition !== 'background-tab', runtime: runtimeInfo() });
+            if (reporter?.actionReport) reporter.actionReport.popups.push(tab);
             void persist();
           }).catch(() => {});
+          popupWork.add(work); void work.finally(() => popupWork.delete(work));
+          page.once('close', () => { const tab = pageTabs.get(page); if (!tab || humanish(tab)) humanPageClosed = true; });
         });
         const nativeInventory = await selectedAdapter()?.inventory?.() ?? [];
         if (selectedAdapter()) for (const page of runtime.context.pages()) {
@@ -602,7 +788,7 @@ export function createOwnedBrowserService(options = {}) {
   const requirePage = (tab) => { if (!tab.page || tab.page.isClosed()) throw error('BROWSER_RECONNECT_REQUIRED', 'The browser page disconnected. Recover it before sending input.', true); return tab.page; };
   const saveCheckpoint = () => {
     if (resetting || resetFailed) return Promise.resolve();
-    const result = checkpointQueue.catch(() => {}).then(async () => { if (!resetting && !resetFailed && runtime && state === 'ready' && credentialBroker?.saveCheckpoint) { await observeHumanSessions(); if (!resetting && !resetFailed) await credentialBroker.saveCheckpoint({ profileId: profileId(), state: await browserStorageState() }); } });
+    const result = checkpointQueue.catch(() => {}).then(async () => { if (!resetting && !resetFailed && runtime && state === 'ready' && credentialBroker?.saveCheckpoint) { await observeHumanSessions({ force: true }); if (!resetting && !resetFailed) await credentialBroker.saveCheckpoint({ profileId: profileId(), state: await browserStorageState() }); } });
     checkpointQueue = result.catch(() => {}); return result;
   };
   credentialBroker?.setDataResetter?.(async ({ phase }) => {
@@ -661,64 +847,76 @@ export function createOwnedBrowserService(options = {}) {
     return entry;
   };
 
-  const snapshot = async (tab, accept = () => true) => {
+  const snapshot = async (tab, accept = () => true, { compact = false } = {}) => {
     invalidate(tab);
     const navigationEpoch = tab.navigationEpoch;
+    // A control transfer during observation retires these refs; never stamp them with the new epoch.
+    const controllerEpoch = tab.controllerEpoch;
     const geometryEpoch = tab.geometryEpoch;
     if (selectedAdapter()?.passwordSnapshot && tab.nativeTargetId) {
       const observed = await selectedAdapter().passwordSnapshot(nativePasswordBinding(tab));
       if (observed?.available !== false) {
         if (navigationEpoch !== tab.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true);
         if (geometryEpoch !== tab.geometryEpoch) throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed while it was observed. Take a new snapshot.', true);
+        if (controllerEpoch !== tab.controllerEpoch) throw error('BROWSER_STALE_CONTROL', 'Browser control changed. Refresh the tab before continuing.', true);
         if (!accept()) throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out before its observation completed.', true);
-        const result = { ...observed, tabId: tab.tabId, navigationEpoch, controllerEpoch: tab.controllerEpoch };
+        const result = { ...observed, tabId: tab.tabId, navigationEpoch, controllerEpoch };
+        tab.detectedChallenge = typeof observed.challenge === 'string' ? { provider: observed.challenge, navigationEpoch } : null;
         tab.snapshot = { ...result, native: true, handles: new Map(result.elements.map((element) => [element.ref, { ...element, native: true }])) };
         return result;
       }
     }
-    const sensitiveHandles = await tab.page.locator(SENSITIVE).elementHandles();
     tab.protectedValues ??= new Set();
-    for (const field of sensitiveHandles) {
-      // 페이지가 바꾼 프로토타입을 읽지 않도록 격리된 선택 엔진을 사용한다.
-      const value = await field.inputValue().catch(() => '');
-      if (value) tab.protectedValues.add(value);
-    }
-    const handles = await tab.page.locator(ELEMENTS).elementHandles();
+    const mainFrame = tab.page.mainFrame();
+    let topOrigin; try { topOrigin = new URL(mainFrame.url()).origin; } catch {}
+    // Same-origin documents only. A cross-origin frame and everything inside it stay out of the snapshot.
+    const sameOrigin = (frame) => {
+      for (let current = frame; current && current !== mainFrame; current = current.parentFrame()) {
+        if (current.url().startsWith('about:')) continue;
+        try { if (new URL(current.url()).origin !== topOrigin) return false; } catch { return false; }
+      }
+      return true;
+    };
     const refs = new Map();
     const elements = [];
-    for (const handle of handles.slice(0, limits.maxSnapshotElements)) {
-      const sensitive = await handle.evaluate((el, fields) => {
-        for (let index = 0; index < fields.length; index++) if (el === fields[index]) return true;
-        return false;
-      }, sensitiveHandles);
-      const value = sensitive ? '[masked]' : await handle.inputValue().catch(() => '');
-      const element = await handle.evaluate((el, observed) => {
-        const rect = el.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0 || getComputedStyle(el).visibility === 'hidden') return null;
-        const { sensitive, value } = observed;
-        const label = el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.getAttribute('placeholder') || el.textContent || '';
-        return { tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', SUMMARY: 'button' })[el.tagName] || 'textbox', name: String(label).trim().slice(0, 500), text: sensitive ? '[masked]' : String(el.textContent ?? '').trim().slice(0, 1000), value: String(value).slice(0, 1000), sensitive, disabled: !!el.disabled, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
-      }, { sensitive, value }).catch(() => null);
-      if (!element) { await handle.dispose(); continue; }
-      const ref = `e${elements.length + 1}`; refs.set(ref, handle); elements.push({ ref, ...element });
+    const texts = [];
+    let truncated = false, selectedText = '', challenge;
+    const release = async () => { for (const handle of refs.values()) await handle.dispose().catch(() => {}); };
+    for (const frame of tab.page.frames().filter((entry) => !entry.isDetached() && sameOrigin(entry))) {
+      const main = frame === mainFrame;
+      const sensitiveHandles = await frame.locator(SENSITIVE).elementHandles().catch((failure) => { if (main) throw failure; return []; });
+      try {
+        for (const field of sensitiveHandles) {
+          // 페이지가 바꾼 프로토타입을 읽지 않도록 격리된 선택 엔진을 사용한다.
+          const value = await field.inputValue().catch(() => '');
+          if (value) tab.protectedValues.add(value);
+        }
+        // One in-page pass builds the table; one array handle supplies every ref.
+        let table;
+        try { table = await frame.evaluateHandle(pageTable, { selector: ELEMENTS, max: Math.max(0, limits.maxSnapshotElements - elements.length), sensitive: sensitiveHandles, main }); }
+        catch (failure) { if (main) { await release(); throw failure; } continue; }
+        const data = await table.evaluate((entry) => ({ rows: entry.rows, truncated: entry.truncated, text: entry.text, selectedText: entry.selectedText, challenge: entry.challenge }));
+        const list = await table.getProperty('elements');
+        const properties = await list.getProperties();
+        await list.dispose(); await table.dispose();
+        const used = new Set();
+        data.rows.forEach((row, index) => {
+          const handle = properties.get(String(index))?.asElement();
+          if (!handle) return;
+          const ref = `e${elements.length + 1}`; refs.set(ref, handle); elements.push({ ref, ...row, role: browserRole(row.role, row.tag, row.inputType) }); used.add(handle);
+        });
+        for (const handle of properties.values()) if (!used.has(handle?.asElement?.())) await handle.dispose().catch(() => {});
+        truncated ||= data.truncated;
+        if (data.text) texts.push(data.text);
+        if (main) { selectedText = data.selectedText ?? ''; challenge = data.challenge; }
+      } finally { for (const handle of sensitiveHandles) await handle.dispose().catch(() => {}); }
     }
-    for (const handle of handles.slice(limits.maxSnapshotElements)) await handle.dispose();
-    for (const handle of sensitiveHandles) await handle.dispose();
-    const content = await tab.page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
-    const selectedText = tab.protectedValues.size ? '' : await tab.page.evaluate((selector) => {
-      if (document.activeElement?.matches(selector)) return '';
-      const selection = window.getSelection();
-      if (!selection) return '';
-      for (let index = 0; index < selection.rangeCount; index++) {
-        const range = selection.getRangeAt(index);
-        for (const el of document.querySelectorAll(selector)) if (range.intersectsNode(el)) return '';
-      }
-      return String(selection).slice(0, 16_000);
-    }, SENSITIVE);
-    if (navigationEpoch !== tab.navigationEpoch) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true); }
-    if (geometryEpoch !== tab.geometryEpoch) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed while it was observed. Take a new snapshot.', true); }
-    if (!accept()) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out before its observation completed.', true); }
-    const result = redactValues({ snapshotId: id('snapshot'), tabId: tab.tabId, navigationEpoch, controllerEpoch: tab.controllerEpoch, url: publicURL(tab.page.url()), title: tab.title, text: text(content, 24_000), selectedText, elements, truncated: handles.length > limits.maxSnapshotElements }, tab.protectedValues);
+    if (navigationEpoch !== tab.navigationEpoch) { await release(); throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true); }
+    if (geometryEpoch !== tab.geometryEpoch) { await release(); throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed while it was observed. Take a new snapshot.', true); }
+    if (controllerEpoch !== tab.controllerEpoch) { await release(); throw error('BROWSER_STALE_CONTROL', 'Browser control changed. Refresh the tab before continuing.', true); }
+    if (!accept()) { await release(); throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out before its observation completed.', true); }
+    tab.detectedChallenge = challenge ? { provider: challenge, navigationEpoch } : null;
+    const result = redactValues({ snapshotId: id('snapshot'), tabId: tab.tabId, navigationEpoch, controllerEpoch, url: publicURL(tab.page.url()), title: tab.title, text: text(texts.join('\n\n'), compact ? 4000 : 24_000), selectedText: tab.protectedValues.size ? '' : selectedText, elements, truncated, ...(compact ? { compact: true } : {}) }, tab.protectedValues);
     tab.snapshot = { ...result, handles: refs };
     return result;
   };
@@ -889,22 +1087,70 @@ export function createOwnedBrowserService(options = {}) {
     throw error('BROWSER_ACTION_TIMEOUT', 'The browser condition did not appear before the wait timeout.', true);
   };
 
-  const operate = async (actor, action, tab, args) => {
-    if (action === 'close') { await releaseInput(tab); await tab.page?.close(); tab.status = 'closed'; tabs.delete(tab.tabId); await persist(); return { completed: true }; }
+  // Hit-test before any pointer event so a covered target fails fast instead of clicking an overlay.
+  // No step waits for animation frames: native parked guests may never paint one.
+  const assertClickTarget = async (tab, handle) => {
+    const probe = await handle.evaluate((el) => {
+      const visibleRect = () => [...el.getClientRects()].find((entry) => entry.width > 0 && entry.height > 0);
+      let rect = visibleRect();
+      if (rect && (rect.bottom <= 0 || rect.right <= 0 || rect.top >= innerHeight || rect.left >= innerWidth)) { el.scrollIntoView({ block: 'center', inline: 'center' }); rect = visibleRect(); }
+      if (!rect) return null;
+      const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1), y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
+      let offsetX = 0, offsetY = 0;
+      try { for (let current = window; current.frameElement; current = current.parent) { const owner = current.frameElement.getBoundingClientRect(); offsetX += owner.x + current.frameElement.clientLeft; offsetY += owner.y + current.frameElement.clientTop; } } catch {}
+      let hit = el.ownerDocument.elementFromPoint(x, y);
+      while (hit?.shadowRoot) { const inner = hit.shadowRoot.elementFromPoint(x, y); if (!inner || inner === hit) break; hit = inner; }
+      const point = { x: x + offsetX, y: y + offsetY };
+      if (!hit) return { point };
+      const inside = (node) => { for (let current = node; current; current = current.parentNode ?? current.host) if (current === el) return true; return false; };
+      if (inside(hit) || hit.closest?.('label')?.control === el) {
+        try {
+          let px = x, py = y;
+          for (let current = window; current.frameElement; current = current.parent) {
+            const frame = current.frameElement, rect = frame.getBoundingClientRect();
+            px += rect.x + frame.clientLeft; py += rect.y + frame.clientTop;
+            let parentHit = current.parent.document.elementFromPoint(px, py);
+            while (parentHit?.shadowRoot) { const inner = parentHit.shadowRoot.elementFromPoint(px, py); if (!inner || inner === parentHit) break; parentHit = inner; }
+            if (parentHit !== frame) { hit = parentHit; break; }
+            if (!current.parent.frameElement) return { point };
+          }
+          if (window === window.top) return { point };
+        } catch { return null; }
+        if (!hit) return null;
+      }
+      const secret = hit instanceof HTMLInputElement && ['password', 'email'].includes(String(hit.type).toLowerCase()) || /^(?:cc-|current-password|new-password|one-time-code)/.test(hit.getAttribute('autocomplete') ?? '');
+      return { covering: { tag: hit.tagName.toLowerCase(), secret, name: hit.getAttribute('aria-label') || hit.getAttribute('title') || hit.textContent || hit.id || '' } };
+    }).catch(() => null);
+    if (probe?.covering) {
+      const name = probe.covering.secret ? '[masked]' : redactValues(sanitizeLabel(probe.covering.name), tab.protectedValues);
+      throw error('BROWSER_TARGET_COVERED', `Another element covers this target: <${sanitizeLabel(probe.covering.tag, 40)}> "${name}". Nothing was clicked.`, true,
+        'Dismiss or close the covering element (for example a cookie banner or dialog), then take a new snapshot before clicking again.');
+    }
+    return probe?.point;
+  };
+  const assertTextSubmission = async (actor, tab, args, handle) => {
+    epochs(tab, args, true); assertController(actor, tab);
+    const page = requirePage(tab);
+    await assertPolicy(actor, 'press', page.url(), tab, args);
+    if (actor.isHuman) return;
+    const element = tab.snapshot?.elements.find(entry => entry.ref === args.ref);
+    if (!await searchSubmission(actor, tab, handle, element, 'press', args)) await assertPolicy(actor, 'press', page.url(), tab, { intent: 'website-change' });
+  };
+  const operate = async (actor, action, tab, args, dispatch) => {
+    if (action === 'close') { await releaseInput(tab); await dispatch(() => tab.page?.close()); tab.status = 'closed'; tabs.delete(tab.tabId); await persist(); return { completed: true }; }
     const page = requirePage(tab);
     if (action === 'snapshot') return { snapshot: await snapshot(tab) };
     if (action === 'frame') return { frame: await frame(tab, actor) };
     if (action === 'capture') return { capture: await capture(actor, tab, args) };
     if (tab.snapshot?.native && selectedAdapter()?.passwordAction && ['click', 'type', 'press', 'scroll'].includes(action)) {
       if (action === 'press') assertAgentKey(actor, args.key);
-      const ref = args.ref ?? (action === 'press' ? tab.snapshot.elements.find((element) => element.tag === 'input')?.ref : undefined);
-      if (action !== 'scroll') requireRef(tab, { ...args, ref });
+      const ref = args.ref;
+      if (action !== 'scroll' && !(action === 'press' && !ref)) requireRef(tab, { ...args, ref });
       const parameters = { ...nativePasswordBinding(tab), action, ref, snapshotId: args.snapshotId ?? tab.snapshot.snapshotId, text: text(args.text, 16_000), key: text(args.key, 80), deltaX: bounded(args.deltaX, -2000, 2000, 0), deltaY: bounded(args.deltaY, -2000, 2000, 600) };
-      const result = await selectedAdapter().passwordAction(parameters);
+      const result = await dispatch(() => selectedAdapter().passwordAction(parameters));
       if (action === 'type' && args.submit === true) {
-        epochs(tab, args, true); assertController(actor, tab);
-        await assertPolicy(actor, 'press', page.url(), tab, args);
-        await selectedAdapter().passwordAction({ ...parameters, action: 'press', key: 'Enter' });
+        await assertTextSubmission(actor, tab, args, null);
+        await dispatch(() => selectedAdapter().passwordAction({ ...parameters, action: 'press', key: 'Enter' }));
       }
       return result;
     }
@@ -915,27 +1161,35 @@ export function createOwnedBrowserService(options = {}) {
         if (selectedAdapter()?.passwordAction && tab.nativeTargetId) await selectedAdapter().passwordAction({ ...nativePasswordBinding(tab), action: 'stop' });
         else await page.evaluate(() => window.stop());
       }
-      else if (args.direction === 'back') await page.goBack({ waitUntil: 'domcontentloaded' });
-      else if (args.direction === 'forward') await page.goForward({ waitUntil: 'domcontentloaded' });
-      else if (args.direction === 'reload') await page.reload({ waitUntil: 'domcontentloaded' });
-      else { const url = guard.parse(args.url).href; await assertPolicy(actor, action, url, tab, args); await page.goto(url, { waitUntil: 'domcontentloaded' }); }
+      else if (args.direction === 'back') await dispatch(() => page.goBack({ waitUntil: 'domcontentloaded' }));
+      else if (args.direction === 'forward') await dispatch(() => page.goForward({ waitUntil: 'domcontentloaded' }));
+      else if (args.direction === 'reload') await dispatch(() => page.reload({ waitUntil: 'domcontentloaded' }));
+      else { const url = guard.parse(args.url).href; await assertPolicy(actor, action, url, tab, args); await dispatch(() => page.goto(url, { waitUntil: 'domcontentloaded' })); }
       return { completed: true };
     }
-    if (action === 'click') { await requireRef(tab, args).click({ timeout: 10_000, button: args.button === 'right' ? 'right' : 'left' }); return { completed: true }; }
+    if (action === 'click') {
+      const handle = requireRef(tab, args);
+      const point = await assertClickTarget(tab, handle);
+      const button = args.button === 'right' ? 'right' : 'left';
+      // Native guests can lack animation frames, so Playwright's stability wait never settles there.
+      // Trusted CDP input goes to the point that was just hit-tested instead.
+      if (selectedAdapter() && point) await dispatch(() => page.mouse.click(point.x, point.y, { button }));
+      else await dispatch(() => handle.click({ timeout: 10_000, button }));
+      return { completed: true };
+    }
     if (action === 'type') {
       const handle = requireRef(tab, args);
       if ((await handle.getAttribute('type'))?.toLowerCase() === 'password' || ['current-password', 'new-password'].includes(await handle.getAttribute('autocomplete'))) throw error('BROWSER_SECRET_CHANNEL_REQUIRED', 'Use the saved-account broker to fill password fields.');
-      await handle.fill(text(args.text, 16_000), { timeout: 10_000 });
+      await dispatch(() => handle.fill(text(args.text, 16_000), { timeout: 10_000 }));
       if (args.submit === true) {
-        epochs(tab, args, true); assertController(actor, tab);
-        await assertPolicy(actor, 'press', page.url(), tab, args);
-        await requireRef(tab, args).press('Enter', { timeout: 10_000 });
+        await assertTextSubmission(actor, tab, args, handle);
+        await dispatch(() => requireRef(tab, args).press('Enter', { timeout: 10_000 }));
       }
       return { completed: true };
     }
-    if (action === 'press') { assertAgentKey(actor, args.key); if (args.ref) await requireRef(tab, args).press(text(args.key, 80)); else await page.keyboard.press(text(args.key, 80)); return { completed: true }; }
-    if (action === 'scroll') { await page.mouse.wheel(bounded(args.deltaX, -2000, 2000, 0), bounded(args.deltaY, -2000, 2000, 600)); return { completed: true }; }
-    if (action === 'input') { if (!actor.isHuman) throw error('BROWSER_HUMAN_INPUT_REQUIRED', 'Raw browser input is reserved for human takeover.'); return input(tab, args); }
+    if (action === 'press') { assertAgentKey(actor, args.key); if (args.ref) { const handle = requireRef(tab, args); await dispatch(() => handle.press(text(args.key, 80))); } else await dispatch(() => page.keyboard.press(text(args.key, 80))); return { completed: true }; }
+    if (action === 'scroll') { await dispatch(() => page.mouse.wheel(bounded(args.deltaX, -2000, 2000, 0), bounded(args.deltaY, -2000, 2000, 600))); return { completed: true }; }
+    if (action === 'input') { if (!actor.isHuman) throw error('BROWSER_HUMAN_INPUT_REQUIRED', 'Raw browser input is reserved for human takeover.'); return dispatch(() => input(tab, args)); }
     if (action === 'upload') {
       if (!actor.isHuman || !tab.pendingChooser) throw error('BROWSER_UPLOAD_UNAVAILABLE', 'Choose Upload in a human-controlled page first.');
       const files = Array.isArray(args.files) ? args.files : [];
@@ -947,14 +1201,14 @@ export function createOwnedBrowserService(options = {}) {
         if (buffer.length > 20 * 1024 * 1024 || total > 40 * 1024 * 1024) throw error('BROWSER_UPLOAD_LIMIT', 'The selected files exceed the upload limit.');
         return { name: path.basename(text(file.name, 256).replaceAll('\\', '/')).replace(/[\u0000-\u001f\u007f]/g, '') || 'upload', mimeType: text(file.mimeType, 128) || 'application/octet-stream', buffer };
       });
-      const chooser = tab.pendingChooser; tab.pendingChooser = null; await chooser.setFiles(payloads); return { completed: true };
+      const chooser = tab.pendingChooser; tab.pendingChooser = null; await dispatch(() => chooser.setFiles(payloads)); return { completed: true };
     }
-    if (action === 'viewport') { await page.setViewportSize({ width: Math.floor(bounded(args.width, 320, 1920, 1280)), height: Math.floor(bounded(args.height, 240, 1080, 800)) }); tab.frame = null; return { completed: true }; }
+    if (action === 'viewport') { await dispatch(() => page.setViewportSize({ width: Math.floor(bounded(args.width, 320, 1920, 1280)), height: Math.floor(bounded(args.height, 240, 1080, 800)) })); tab.frame = null; return { completed: true }; }
     if (action === 'fill-account') {
       if (tab.snapshot?.native && selectedAdapter()?.passwordFill) {
         requireRef(tab, { ...args, ref: args.passwordRef });
         if (args.usernameRef) requireRef(tab, { ...args, ref: args.usernameRef });
-        const result = await selectedAdapter().passwordFill({ ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef });
+        const result = await dispatch(() => selectedAdapter().passwordFill({ ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef }));
         tab.snapshot.passwordProtected = true;
         return result;
       }
@@ -980,7 +1234,7 @@ export function createOwnedBrowserService(options = {}) {
             if (new URL(page.url()).origin !== origin || isPassword && await handle.getAttribute('type') !== 'password') throw error('BROWSER_CREDENTIAL_TARGET_CHANGED', 'The sign-in field changed before credential input. Refresh it before retrying.');
             tab.protectedValues ??= new Set(); tab.protectedValues.add(value);
             // Playwright fills through its isolated selector engine, never a site-patched setter.
-            await handle.fill(value, { timeout: 10_000 });
+            await dispatch(() => handle.fill(value, { timeout: 10_000 }));
           });
         };
         if (usernameHandle) await write(usernameHandle, username, false);
@@ -1015,6 +1269,66 @@ export function createOwnedBrowserService(options = {}) {
     if (selectedAdapter()?.passwordAccounts) accounts = (await selectedAdapter().passwordAccounts()).accounts ?? [];
     const activeTabId = visible.find(tab => tab.tabId === actor.activeBrowserTabId)?.tabId ?? null;
     return { ok: true, action: 'status', runtime: runtimeInfo(), tabs: visible, activeTabId, limits, accounts };
+  };
+  // Public GET search forms use isolated DOM facts; the network route still gates
+  // every non-GET request and mutating GET URL for agent tabs.
+  const searchSubmission = async (actor, tab, handle, element, action, args) => {
+    if (!element || element.sensitive) return false;
+    const currentURL = new URL(requirePage(tab).url());
+    if (currentURL.protocol !== 'https:' || guard.isWorkspace(currentURL.href)) return false;
+    const facts = { action, typed: action === 'type' ? text(args.text, 16_000) : null, textTypes: [...SEARCH_INPUT_TYPES], sensitiveSelector: SENSITIVE };
+    const submission = handle
+      ? await isolatedFormSubmission(handle, facts).catch(() => null)
+      : tab.snapshot?.native && selectedAdapter()?.passwordAction
+        ? (await selectedAdapter().passwordAction({ ...nativePasswordBinding(tab), ...facts, action: 'submission', submissionAction: action, ref: args.ref, snapshotId: args.snapshotId })).submission
+        : null;
+    if (!submission || submission.method !== 'get' || submission.sensitive) return false;
+    let destination; try { destination = guard.parse(submission.url); } catch { return false; }
+    if (destination.protocol !== 'https:' || guard.isWorkspace(destination.href) || changesWebsiteURL(destination.href)) return false;
+    try { await guard.resolve(destination.href); await assertPolicy(actor, 'browse', destination.href, tab); } catch { return false; }
+    return true;
+  };
+  // Wait for the action's effect: a started main-frame navigation commits and loads, otherwise
+  // two animation frames (at most ~200 ms). Popup bindings opened by the action also finish.
+  const settle = async (tab, page, start) => {
+    const started = Date.now();
+    if (selectedAdapter()) await delay(150);
+    else await Promise.race([Promise.resolve().then(() => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))).catch(() => {}), delay(200)]);
+    const navigation = tab.lastNavigationRequest;
+    if (navigation && navigation !== start.request) {
+      const deadline = Date.now() + 5000;
+      let done = false;
+      void navigation.response().then((response) => { if (!response || response.status() === 204 || /^attachment/i.test(response.headers()['content-disposition'] ?? '')) done = true; }, () => { done = true; });
+      while (!done && tab.navigationEpoch === start.epoch && !navigation.failure() && tab.page === page && Date.now() < deadline) await delay(25);
+    }
+    if (tab.page === page && (tab.navigationEpoch !== start.epoch || tab.status === 'loading')) await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+    while (popupWork.size && Date.now() - started < 1500) await delay(20);
+  };
+  const agentReport = async (actor, action, tab, args, start) => {
+    const report = {};
+    const page = tab.page;
+    if (SNAPSHOT_AFTER.has(action) && args.snapshot !== false && page && !page.isClosed()) {
+      await settle(tab, page, start);
+      try {
+        await assertPolicy(actor, 'snapshot', requirePage(tab).url(), tab);
+        try { report.snapshot = await snapshot(tab, undefined, { compact: true }); }
+        catch (failure) {
+          if (failure.code !== 'BROWSER_STALE_NAVIGATION') throw failure;
+          // Only the observation repeats. The action itself is never replayed.
+          await requirePage(tab).waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+          report.snapshot = await snapshot(tab, undefined, { compact: true });
+        }
+      } catch {
+        // The input already ran. Never surface a pre-input STALE_* code that invites a retry.
+        report.snapshotError = { code: 'BROWSER_OBSERVATION_REQUIRED', actionCompleted: true, message: 'The action completed, but its follow-up snapshot failed because the page kept changing.',
+          hint: 'Do not repeat the action. Call browser_snapshot to observe the current page first.' };
+      }
+    } else if (tab.actionReport) { const started = Date.now(); while (popupWork.size && Date.now() - started < 1500) await delay(20); }
+    const opened = tab.actionReport;
+    if (opened?.popups.length) report.popups = opened.popups.filter((popup) => tabs.get(popup.tabId) === popup).map(descriptor);
+    if (opened?.popupsBlocked) report.popupsBlocked = { count: opened.popupsBlocked, message: `The page tried to open more tabs than this agent may hold (${limits.maxTabsPerAgent}). Close an unused tab before opening another.` };
+    if (tab.dismissedDialogs?.length) { report.dialogs = redactValues(tab.dismissedDialogs.map((dialog) => ({ ...dialog, dismissed: true })), tab.protectedValues); tab.dismissedDialogs = []; }
+    return report;
   };
   const performRequest = async (actor, action, args = {}) => {
     validateActor(actor);
@@ -1084,7 +1398,7 @@ export function createOwnedBrowserService(options = {}) {
         await signIn.close(); signIn = null; signInAccountId = null; handoffProfile = true; state = 'idle';
         await ensureRuntime();
       }
-      await observeHumanSessions();
+      await observeHumanSessions({ force: true });
       const result = await credentialBroker.confirmAccountSession({ actor, accountId: args.accountId, ...(handoffPreviousMode === 'native' ? { additionalProfileId: 'native' } : {}) });
       const account = result.account ?? result;
       const confirmedStorage = await browserStorageState();
@@ -1135,10 +1449,14 @@ export function createOwnedBrowserService(options = {}) {
       const tab = makeTab(actor);
       if (googleResearchURL(url)) tab.searchQuery = new URL(url).searchParams.get('q') || undefined;
       tabs.set(tab.tabId, tab);
+      if (actor.isHuman) await absorbAgentStorage();
       const agentSessionEpoch = humanSessionEpoch;
       if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }
+      else tab.actionReport = { popups: [], popupsBlocked: 0 };
+      let navigationStart;
       try {
         await attach(tab, await runtime.context.newPage());
+        navigationStart = { epoch: tab.navigationEpoch, request: tab.lastNavigationRequest };
         // 새 탭을 만든 화면은 탐색과 계정 저장을 기다리지 않고 즉시 해당 탭을 표시한다.
         if (actor.isHuman && typeof args.openRequestId === 'string' && args.openRequestId.length <= 160) emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo(), openRequestId: args.openRequestId });
         previewActivity(actor, tab); tab.activeActor = actor; if (actor.isHuman && url !== 'about:blank') markHumanOrigin(new URL(url).origin); if (url !== 'about:blank') await tab.page.goto(url, { waitUntil: 'domcontentloaded' }); if (actor.isHuman) markHumanDocument(tab);
@@ -1148,7 +1466,12 @@ export function createOwnedBrowserService(options = {}) {
       if (actor.isHuman) await observeHumanSessions();
       else { await recordAgentSessions(url, agentSessionEpoch); await observeHumanSessions(); }
       await assertPolicy(actor, action, requirePage(tab).url(), tab, args);
-      publish(tab); await persist(); return !actor.isHuman && challengeFor(tab) ? challengeResult(action, tab) : { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab) };
+      let report = {};
+      if (!actor.isHuman) {
+        try { report = await enqueue(tab, () => agentReport(actor, action, tab, args, navigationStart)); }
+        finally { tab.actionReport = null; }
+      }
+      publish(tab); await persist(); return !actor.isHuman && challengeFor(tab) ? { ...challengeResult(action, tab), ...report } : { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab), ...report };
     }
     const tab = ownedTab(actor, args.tabId);
     if (!actor.isHuman) await dismissPendingDialog(tab);
@@ -1186,7 +1509,8 @@ export function createOwnedBrowserService(options = {}) {
             if (url !== 'about:blank') await guard.resolve(url);
             const page = await runtime.context.newPage();
             try {
-              tab.activeActor = actor; humanSessionEpoch++; humanActionsPending++;
+              await absorbAgentStorage();
+              tab.activeActor = actor; tab.humanTouched = true; humanSessionEpoch++; humanActionsPending++;
               if (url !== 'about:blank') markHumanOrigin(new URL(url).origin);
               await attach(tab, page);
               if (url !== 'about:blank') await page.goto(url, { waitUntil: 'domcontentloaded' });
@@ -1212,8 +1536,8 @@ export function createOwnedBrowserService(options = {}) {
     }
     if (action === 'recover') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Recover disconnected pages from Browser settings.');
-      await ensureRuntime();
-      tab.activeActor = actor;
+      await ensureRuntime(); await absorbAgentStorage();
+      tab.activeActor = actor; tab.humanTouched = true;
       try { if (!tab.page) { tab.sessionId = actor.sessionId ?? tab.sessionId; tab.controllerEpoch++; invalidate(tab); await attach(tab, await runtime.context.newPage()); if (tab.url !== 'about:blank') { markHumanOrigin(new URL(tab.url).origin); await guard.resolve(tab.url); await tab.page.goto(tab.url, { waitUntil: 'domcontentloaded' }); } } }
       finally { tab.activeActor = null; }
       tab.status = 'ready'; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' };
@@ -1223,13 +1547,18 @@ export function createOwnedBrowserService(options = {}) {
     if (action === 'control') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the user can transfer browser control.');
       epochs(tab, args);
+      await absorbAgentStorage();
+      tab.humanTouched = true;
       tab.controllerEpoch++; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' };
       if (tab.controller.owner === 'human') markHumanDocument(tab);
-      credentialBroker?.invalidateTab?.(tab.tabId);
+      // The host clears its native snapshot on transfer; drop the hub refs, frame and broker state with it.
+      invalidate(tab);
       // Invalidate queued agent input immediately, then drain before confirming the transfer.
       await dismissPendingDialog(tab);
       await tab.queue.catch(() => {}); await releaseInput(tab);
-      if (selectedAdapter()?.control) await selectedAdapter().control({ targetId: tab.nativeTargetId, human: true });
+      if (selectedAdapter()?.control) await selectedAdapter().control({ targetId: tab.nativeTargetId, human: tab.scope === 'global' || args.owner !== 'agent' });
+      // Observations that finished during the drain belong to the previous controller.
+      invalidate(tab);
       publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo() };
     }
     const mutating = MUTATIONS.has(action);
@@ -1256,26 +1585,25 @@ export function createOwnedBrowserService(options = {}) {
         const element = args.ref && tab.snapshot?.elements.find(entry => entry.ref === args.ref);
         const handle = args.ref && !tab.snapshot?.native ? requireRef(tab, args) : null;
         const selfButton = handle && action === 'click' ? await handle.$('xpath=self::button|self::summary|self::input[@type="submit" or @type="button" or @type="image"]') : null;
-        const role = handle ? await handle.getAttribute('role') : element?.role;
+        const role = handle ? browserRole(await handle.getAttribute('role')) : element?.role;
         const writesText = action === 'type' || action === 'press' && (['Enter', 'Space'].includes(args.key) || /^[\p{L}\p{N}]$/u.test(args.key));
         const submits = action === 'click' && element && (handle ? !!selfButton || ['button', 'menuitem'].includes(role) : ['button', 'summary'].includes(element.tag) || ['button', 'menuitem'].includes(role) || element.tag === 'input' && ['submit', 'button', 'image'].includes(element.inputType));
         await selfButton?.dispose();
-        // Search input is a deliberate exception on exact built-in search origins, not URL-shaped arbitrary sites.
-        let search = false;
-        const currentURL = new URL(requirePage(tab).url());
-        if (SEARCH_ORIGINS.has(currentURL.origin) && element && !element.sensitive) {
-          const form = handle ? await handle.$('xpath=ancestor-or-self::form[1]') : null;
-          const method = form ? await form.getAttribute('method') : element.formMethod;
-          const destination = new URL((form ? await form.getAttribute('action') : element.formAction) || currentURL.href, currentURL);
-          search = (form || element.formAction) && (method || 'get').toLowerCase() === 'get' && destination.origin === currentURL.origin && /^(?:\/|\/search\/?|\/w\/index\.php)$/.test(destination.pathname);
-          await form?.dispose();
-        }
+        const search = (writesText || submits) && await searchSubmission(actor, tab, handle, element, action, args);
         if ((writesText || submits) && !search) await assertPolicy(actor, action, requirePage(tab).url(), tab, { intent: 'website-change' });
       }
-      tab.activeActor = actor;
+      // Human reads (frame, snapshot, capture, wait) never become the page's network actor.
+      // Requests during a preview stay attributed to the tab controller and keep its gates.
+      const humanInput = actor.isHuman && mutating;
+      if (humanInput) await absorbAgentStorage();
+      if (!actor.isHuman || humanInput) tab.activeActor = actor;
       const agentSessionEpoch = humanSessionEpoch;
-      if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }
+      if (humanInput) { tab.humanTouched = true; humanSessionEpoch++; humanActionsPending++; }
       if (actor.isHuman && mutating && action !== 'close') markHumanDocument(tab);
+      const navigationStart = { epoch: tab.navigationEpoch, request: tab.lastNavigationRequest };
+      if (!actor.isHuman) tab.actionReport = { popups: [], popupsBlocked: 0 };
+      let inputStarted = false, inputDone = false;
+      const dispatch = async (operation) => { inputStarted = true; const value = await operation(); inputDone = true; return value; };
       try {
         if (action === 'navigate' && args.url && googleResearchURL(args.url)) tab.searchQuery = new URL(args.url).searchParams.get('q') || tab.searchQuery;
         const adapter = selectedAdapter();
@@ -1287,7 +1615,8 @@ export function createOwnedBrowserService(options = {}) {
         try {
           if (activity) await adapter.activity({ ...activity, active: true });
           if (action !== 'close') previewActivity(actor, tab);
-          value = await operate(actor, action, tab, waitDeadline === undefined ? args : { ...args, waitDeadline });
+          value = await operate(actor, action, tab, waitDeadline === undefined ? args : { ...args, waitDeadline }, dispatch);
+          inputDone = mutating;
         } finally {
           if (activity) await adapter.activity({ ...activity, active: false }).catch(() => {});
           if (action !== 'close') previewActivity(actor, tab, false);
@@ -1297,12 +1626,21 @@ export function createOwnedBrowserService(options = {}) {
         if (mutating && action !== 'close' && queuedControlEpoch !== tab.controllerEpoch) throw error('BROWSER_ACTION_UNCERTAIN', 'Control changed during the action. Observe the current page before deciding what to do next.', true);
         if (action !== 'close') await assertPolicy(actor, action, requirePage(tab).url(), tab, args);
         if (value.capture) { const eventCapture = { ...value.capture }; delete eventCapture.screenshot; emit('owned_browser_capture', { capture: eventCapture }); }
-        publish(tab); if (!actor.isHuman && action !== 'close' && challengeFor(tab)) return challengeResult(action, tab);
-        return { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab), ...value };
+        const report = !actor.isHuman && action !== 'close' ? await agentReport(actor, action, tab, args, navigationStart) : {};
+        publish(tab); if (!actor.isHuman && action !== 'close' && challengeFor(tab)) return { ...challengeResult(action, tab), ...report };
+        return { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab), ...value, ...report };
       } catch (failure) {
-        if (failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_')) throw failure;
-        throw error(failure.name === 'TimeoutError' ? 'BROWSER_ACTION_TIMEOUT' : 'BROWSER_ACTION_FAILED', 'The browser action did not complete. Observe the current page before retrying.', true);
-      } finally { tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
+        // Failures after input reached the page are marked so callers never replay the action.
+        const completed = (reported) => {
+          if (!inputStarted && !inputDone) return reported;
+          if (!inputDone && ['BROWSER_TARGET_COVERED', 'BROWSER_SECRET_CHANNEL_REQUIRED', 'BROWSER_PASSWORD_TARGET_INVALID', 'BROWSER_PASSWORD_STALE_REFERENCE'].includes(reported.code)) return reported;
+          if (/^BROWSER_STALE_/.test(reported.code)) reported.code = 'BROWSER_ACTION_UNCERTAIN';
+          return Object.assign(reported, { ...(inputDone ? { actionCompleted: true } : {}), retryable: false,
+            hint: inputDone ? 'The action already ran. Do not repeat it; take a new snapshot to observe its effect.' : 'Input may have reached the page. Do not repeat it; take a new snapshot to observe its effect first.' });
+        };
+        if (failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_')) throw completed(failure);
+        throw completed(error(failure.name === 'TimeoutError' ? 'BROWSER_ACTION_TIMEOUT' : 'BROWSER_ACTION_FAILED', 'The browser action did not complete. Observe the current page before retrying.', true));
+      } finally { if (tab.activeActor === actor) tab.activeActor = null; tab.actionReport = null; if (humanInput) humanActionsPending--; }
     });
     if (waitDeadline === undefined) return queued;
     return Promise.race([queued, new Promise((_, reject) => {

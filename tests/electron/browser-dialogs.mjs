@@ -28,6 +28,8 @@ app.whenReady().then(async () => {
     const origin = `http://127.0.0.1:${site.address().port}`;
     editor = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true } });
     await editor.loadURL('data:text/html,<h1>Editor remains responsive</h1>');
+    // Linux never composites an unmapped window; the product captures hidden guests through a visible editor.
+    editor.show();
     const owner = {};
     host = new OwnedBrowserHost({ BrowserWindow, BaseWindow, WebContentsView, electronSession: session,
       dataDir: root, getWindowForSession: () => editor });
@@ -53,7 +55,7 @@ app.whenReady().then(async () => {
     assert.equal(webContents.getAllWebContents().length, initialContents + 1, 'Parking adds no renderer');
     assert.equal(tab.view.webContents.getOwnerBrowserWindow(), host.parkingWindow);
     assert.equal(await tab.view.webContents.executeJavaScript('document.visibilityState'), 'hidden');
-    const capture = await tab.view.webContents.debugger.sendCommand('Page.captureScreenshot', { format: 'png' });
+    const capture = await host.withCaptureSurface(tab, () => tab.view.webContents.debugger.sendCommand('Page.captureScreenshot', { format: 'png' }));
     assert.ok(capture.data.length > 100, 'A hidden parked guest remains capturable through the shared debugger');
     const evaluate = script => tab.view.webContents.executeJavaScript(script, true);
     const waitDialog = () => new Promise((resolve, reject) => {

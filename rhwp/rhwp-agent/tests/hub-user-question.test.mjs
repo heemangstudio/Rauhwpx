@@ -480,6 +480,7 @@ test('browser tab visibility follows provider-stream identity and rejects caller
                 opts.onEvent({ type: 'turn-start', agent: 'claude' });
                 const event = { type: 'tool-call', agent: 'claude', tool: 'mcp__rhwp__browser_status', argsJson: '{}' };
                 if (prompt.includes('browser-root-ticket') || prompt.includes('browser-ambiguous-ticket')) opts.onEvent({ ...event, callId: 'browser-root' });
+                if (prompt.includes('browser-parallel-ticket')) { opts.onEvent({ ...event, callId: 'browser-root-a' }); opts.onEvent({ ...event, callId: 'browser-root-b' }); }
                 if (prompt.includes('browser-child-ticket') || prompt.includes('browser-ambiguous-ticket')) opts.onEvent({ ...event, callId: 'browser-child', parentTaskId: 'child-task' });
               },
             };
@@ -500,8 +501,10 @@ test('browser tab visibility follows provider-stream identity and rejects caller
     ['browser-ambiguous-ticket', 'CALLER_SCOPE_UNKNOWN', null],
     ['browser-child-ticket', null, 'child-tab'],
     ['browser-root-ticket', null, 'root-tab'],
+    ['browser-parallel-ticket', null, 'root-tab'],
   ];
   for (const [index, [trigger, expectedError, tabId]] of cases.entries()) {
+    if (trigger === 'browser-parallel-ticket') continue;
     sendFrame(studio, { type: 'chat-user-message', text: trigger, threadId, documentId: 'browser-provenance-doc' });
     await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
     const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=claude&role=chat`);
@@ -510,10 +513,22 @@ test('browser tab visibility follows provider-stream identity and rejects caller
       args: {}, actor: { isHuman: true, threadId: 'other-thread', agentId: 'other-thread:root' },
       parentTaskId: tabId === 'child-tab' ? 'other-task' : 'child-task' });
     const result = await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 601 + index);
-    if (expectedError) assert.equal(result.error.code, expectedError);
-    else assert.deepEqual(result.result.tabs.map((tab) => tab.tabId), [tabId]);
+    if (expectedError) {
+      assert.equal(result.error.code, expectedError);
+      if (trigger === 'browser-ambiguous-ticket') assert.match(result.error.hint, /Retry this call once/);
+    } else assert.deepEqual(result.result.tabs.map((tab) => tab.tabId), [tabId]);
     sendFrame(studio, { type: 'chat-interrupt' });
     await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  }
+  // Identical parallel calls from one caller each consume one ticket and keep that caller's scope.
+  sendFrame(studio, { type: 'chat-user-message', text: 'browser-parallel-ticket', threadId, documentId: 'browser-provenance-doc' });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=claude&role=chat`);
+  t.after(() => closeClient(mcp));
+  for (const id of [701, 702]) sendFrame(mcp, { type: 'tool-call', id, tool: 'browser_status', args: {} });
+  for (const id of [701, 702]) {
+    const result = await mcp.next((frame) => frame.type === 'tool-result' && frame.id === id);
+    assert.deepEqual(result.result.tabs.map((tab) => tab.tabId), ['root-tab']);
   }
 });
 

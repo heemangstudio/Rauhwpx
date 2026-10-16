@@ -603,6 +603,7 @@ export const IMPLEMENTATION_PLAN_SHAPE = Object.freeze({
 // 탭 식별자는 허브가 만든다. 호출자는 다른 채팅이나 에이전트의 소유권을 지정할 수 없다.
 const browserTab = () => z.string().min(1).max(160);
 const browserIntent = () => z.enum(['research', 'search', 'login', 'export', 'website-change']).default('research');
+const browserFollowUp = () => z.boolean().default(true).describe('Fresh settled snapshot; false skips.');
 const browserRefShape = () => ({
   tabId: browserTab(),
   snapshotId: z.string().min(1).max(160),
@@ -1815,72 +1816,79 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_status',
-    description: 'List shared user tabs, your assigned tabs and saved account metadata. activeTabId is the current sidebar tab; reuse it for the current-page task. Tabs survive hidden chats and turn endings. Accounts include imported and previously saved logins. For an exact origin match with agentReuseApproved=true, use browser_fill_account. Passwords stay local.',
+    description: 'List shared/assigned tabs and saved account metadata. Reuse activeTabId for current-page work; tabs persist across turns. For exact-origin accounts with agentReuseApproved=true, use browser_fill_account. Passwords stay local.',
     shape: {},
   },
   {
     name: 'browser_open',
-    description: 'Open a separate research tab. Public browsing/downloads are available; account reuse needs approval. On BROWSER_CHALLENGE_REQUIRED, use the returned tab and explicit fallback URL or ask the user to resolve the challenge. Do not retry or duplicate the tab.',
-    shape: { url: z.string().url().max(8_000).optional(), intent: browserIntent() },
+    description: 'Open a research tab with its first snapshot. Account reuse needs approval. On BROWSER_CHALLENGE_REQUIRED, reuse its tab and explicit fallback or ask the user to resolve it. Never retry, duplicate the tab or bypass the challenge.',
+    shape: { url: z.string().url().max(8_000).optional(), intent: browserIntent(), snapshot: browserFollowUp() },
   },
   {
     name: 'browser_navigate',
-    description: 'Navigate a shared sidebar tab or your assigned research tab. Use public HTTPS destinations or an explicitly approved workspace preview. Private services and website changes need their own permissions.',
-    shape: { tabId: browserTab(), url: z.string().url().max(8_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative(), intent: browserIntent() },
+    description: 'Navigate a shared/assigned tab to public HTTPS or an approved workspace preview. Private services and website changes need permission.',
+    shape: { tabId: browserTab(), url: z.string().url().max(8_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative(), intent: browserIntent(), snapshot: browserFollowUp() },
   },
   {
     name: 'browser_snapshot',
-    description: 'Read a semantic snapshot of a shared sidebar tab or your assigned tab. Use the returned snapshotId, element refs and navigationEpoch in the next action; stale refs are rejected.',
+    description: 'Read a shared/assigned tab. Use returned snapshotId, refs and epochs in the next action; stale refs fail.',
     shape: { tabId: browserTab() },
   },
   {
     name: 'browser_click',
-    description: 'Click an element from the current semantic snapshot. Declare search, login or export intent for those research flows. Website-changing submissions require a separate site operation approval.',
-    shape: browserRefShape(),
+    description: 'Click a current snapshot ref. Returns a fresh snapshot, opened tabs and dismissed dialogs. BROWSER_TARGET_COVERED means nothing was clicked. Public GET search forms work; other website changes need site approval.',
+    shape: { ...browserRefShape(), snapshot: browserFollowUp() },
   },
   {
     name: 'browser_type',
-    description: 'Fill a current snapshot element with ordinary research text. submit:true then presses trusted Enter on that element; declare the same search, login or website-change intent as a separate submission. Never pass passwords or account secrets here; request an account through browser_request_account.',
-    shape: { ...browserRefShape(), text: z.string().max(16_000), submit: z.boolean().default(false) },
+    description: 'Fill a current ref with research text. submit:true sends trusted Enter with the declared search/login/website-change intent. Never pass account secrets; use browser_request_account.',
+    shape: { ...browserRefShape(), text: z.string().max(16_000), submit: z.boolean().default(false), snapshot: browserFollowUp() },
   },
   {
     name: 'browser_press',
-    description: 'Press a key on a current snapshot element in a shared or assigned tab.',
-    shape: { ...browserRefShape(), key: z.string().min(1).max(80) },
+    description: 'Press a key on ref, or the focused page when omitted. Page-level Enter/text keys follow typing approval rules.',
+    shape: { ...browserRefShape(), snapshotId: z.string().min(1).max(160).optional(), ref: z.string().min(1).max(160).optional(), key: z.string().min(1).max(80), snapshot: browserFollowUp() },
+    validate(args) {
+      if (args.ref && !args.snapshotId) throw invalidArgs('browser_press with ref requires the snapshotId that issued it');
+    },
   },
   {
     name: 'browser_scroll',
-    description: 'Scroll an assigned tab and then request a fresh snapshot before choosing an element.',
-    shape: { tabId: browserTab(), deltaX: z.number().min(-10_000).max(10_000).default(0), deltaY: z.number().min(-10_000).max(10_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
+    description: 'Scroll a shared/assigned tab; use its returned snapshot for the next action.',
+    shape: { tabId: browserTab(), deltaX: z.number().min(-10_000).max(10_000).default(0), deltaY: z.number().min(-10_000).max(10_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative(), snapshot: browserFollowUp() },
   },
   {
     name: 'browser_wait',
-    description: 'Wait up to timeoutMs and return a fresh snapshot. ready checks document readiness; idle requires 500 ms without loading/navigation, ignoring streaming connections. visible matches a visible semantic element and optional text; text matches nonempty sanitized visible text. Preserves ownership/control.',
-    shape: { tabId: browserTab(), condition: z.enum(['ready', 'idle', 'visible', 'text']).default('ready'), text: z.string().trim().min(1).max(2_000).optional(), timeoutMs: z.number().int().min(1).max(30_000).default(10_000) },
+    description: 'Return a fresh snapshot when ready, idle (500 ms without loading/navigation, streams ignored), a visible element/optional text, or nonempty sanitized text matches. With ref+snapshotId, wait for state visible/hidden. timeoutMs bounds the wait.',
+    shape: { tabId: browserTab(), condition: z.enum(['ready', 'idle', 'visible', 'text']).default('ready'), text: z.string().trim().min(1).max(2_000).optional(), timeoutMs: z.number().int().min(1).max(30_000).default(10_000),
+      snapshotId: z.string().min(1).max(160).optional(), ref: z.string().min(1).max(160).optional(), state: z.enum(['visible', 'hidden']).default('visible') },
+    validate(args) {
+      if (args.ref && !args.snapshotId) throw invalidArgs('browser_wait with ref requires the snapshotId that issued it');
+    },
   },
   {
     name: 'browser_close',
-    description: 'Explicitly close an assigned browser tab. Completed managed downloads survive tab closure.',
+    description: 'Close an assigned tab. Completed downloads survive closure.',
     shape: { tabId: browserTab(), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
   },
   {
     name: 'browser_capture',
-    description: 'Capture page, element or region evidence into this tab\'s original research destination. URL provenance excludes credentials and signed query values.',
+    description: 'Capture page, element or region evidence into the original research destination. Provenance omits credentials and signed query values.',
     shape: { tabId: browserTab(), snapshotId: z.string().min(1).max(160).optional(), ref: z.string().min(1).max(160).optional(), navigationEpoch: z.number().int().nonnegative().optional(), region: z.object({ x: z.number().nonnegative(), y: z.number().nonnegative(), width: z.number().positive(), height: z.number().positive() }).strict().optional(), comment: z.string().max(4_000).optional() },
   },
   {
     name: 'browser_downloads',
-    description: 'List, cancel, retry or save browser downloads. Website download links start transfers. save returns savedPath in local Downloads, preserves the filename and never executes programs. Project downloads get reference cards; other downloads enter the local inbox. Grants no project-edit permission.',
+    description: 'List/cancel/retry/save downloads started by website links. save returns savedPath in Downloads, keeps the filename and never executes files. Projects get reference cards; others use the inbox. No project-edit grant.',
     shape: { action: z.enum(['list', 'cancel', 'retry', 'save']).default('list'), downloadId: z.string().min(1).max(160).optional() },
   },
   {
     name: 'browser_fill_account',
-    description: 'Autofill a sign-in form locally using an account ID from browser_status, including previously typed/saved logins. For an exact origin with agentReuseApproved=true, proceed without another approval. Supply current username/password snapshot refs. Credential values never enter tool arguments/results.',
+    description: 'Autofill locally using a browser_status account ID and current username/password refs. Exact-origin agentReuseApproved=true accounts need no further approval. Credentials never enter tool arguments/results.',
     shape: { tabId: browserTab(), accountId: z.string().uuid(), snapshotId: z.string().min(1).max(160), usernameRef: z.string().min(1).max(160).optional(), passwordRef: z.string().min(1).max(160), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
   },
   {
     name: 'browser_request_account',
-    description: 'Root conversation only. Request a saved website account or a secure save-and-use form for an exact approved origin. Returns pending; end the turn and wait for the secure form. Never ask for passwords in chat or tool arguments.',
+    description: 'Root conversation only. Request a saved account or secure save-and-use form for an exact approved origin. Returns pending; end the turn and wait. Never request passwords in chat/tool arguments.',
     shape: { tabId: browserTab(), origin: z.string().url().max(2_000), label: z.string().min(1).max(120), reason: z.string().min(1).max(1_000), accountId: z.string().min(1).max(160).optional() },
   },
 ];
