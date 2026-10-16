@@ -11,6 +11,36 @@ import { createOwnedBrowserService } from '../owned-browser-service.mjs';
 import { createBrowserNetworkGuard, createBrowserNetworkProxy } from '../owned-browser-network.mjs';
 import { inspectOwnedBrowserRuntime, startOwnedBrowserRuntime } from '../owned-browser-runtime.mjs';
 
+test('settings reset broadcasts an empty inventory before another window opens a fresh browser', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-browser-reset-inventory-'));
+  const events = []; let launches = 0; let nativeResets = 0;
+  const policy = createBrowserPolicy({ dataDir });
+  const credentialBroker = createBrowserCredentialBroker({ dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 6) });
+  const service = createOwnedBrowserService({ dataDir, policy, credentialBroker, onEvent: event => events.push(event),
+    nativeAdapter: { async reset() { nativeResets++; return { nativeStorageCleared: true }; } },
+    runtimeFactory: async () => {
+      launches++;
+      return { kind: 'native', browser: new EventEmitter(), async close() {}, context: Object.assign(new EventEmitter(), {
+        async storageState() { return { cookies: [], origins: [] }; }, async route() {}, pages: () => [],
+        async newPage() { return Object.assign(new EventEmitter(), { url: () => 'about:blank', isClosed: () => false, async close() {}, frames: () => [] }); },
+      }) };
+    },
+  });
+  t.after(async () => { await service.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const actor = { isHuman: true, clientId: 'window', sessionId: 'window' };
+  const opened = await service.request(actor, 'open', {});
+  const reset = await service.request(actor, 'reset-browser');
+  assert.equal(reset.cleared, true);
+  assert.equal(nativeResets, 1);
+  const completed = events.findLast(event => event.type === 'owned_browser_runtime' && event.runtime.state === 'idle');
+  assert.deepEqual(completed?.tabs, [], 'all connected browser controllers must retire the deleted native targets');
+  assert.deepEqual((await service.inventory(actor)).tabs, []);
+  const fresh = await service.request({ ...actor, clientId: 'other-window', sessionId: 'other-window' }, 'open', {});
+  assert.notEqual(fresh.tab.tabId, opened.tab.tabId);
+  assert.equal(fresh.runtime.generation, opened.runtime.generation + 1);
+  assert.equal(launches, 2);
+});
+
 test('human new tabs announce their request identity before navigation completes', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-new-tab-focus-'));
   const events = []; let finishNavigation; let navigationStarted;

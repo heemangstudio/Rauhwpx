@@ -619,7 +619,7 @@ export function createOwnedBrowserService(options = {}) {
       const nativeReset = await nativeAdapter?.reset?.();
       tabs.clear(); sessionBaseline.clear(); cookieBaseline.clear(); humanOrigins.clear(); unconfirmedHumanOrigins.clear(); humanRequestsPending.clear(); handoffProfile = false; state = 'resetting';
       await removeOwnedBrowserState({ dataDir, nativeStorageCleared: nativeReset?.nativeStorageCleared === true });
-    } else if (phase === 'after') { resetting = false; resetFailed = false; state = 'idle'; emit('owned_browser_runtime', { runtime: runtimeInfo() }); }
+    } else if (phase === 'after') { resetting = false; resetFailed = false; state = 'idle'; emit('owned_browser_runtime', { runtime: runtimeInfo(), tabs: [] }); }
     else { resetting = false; resetFailed = true; state = 'failed'; emit('owned_browser_runtime', { runtime: runtimeInfo() }); }
   });
   credentialBroker?.setSessionClearer?.(async ({ profileId: targetProfile, origins }) => {
