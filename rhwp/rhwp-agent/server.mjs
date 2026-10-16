@@ -677,14 +677,14 @@ const ownedBrowser = createOwnedBrowserService({
 await ownedBrowser.restore();
 await applyBrowserConfiguration(initialBrowserConfiguration);
 
-// 사이트 아이콘을 처음 받아 올 수 있는 출처: 사용자에게 보여 준 대기 중 요청의 출처.
-function browserRequestOrigins() {
+// 사이트 아이콘을 처음 받아 올 수 있는 출처: 사용자에게 보여 준 대기 중 요청과 저장한 비밀 값의 출처.
+async function browserRequestOrigins() {
   const origins = [];
   for (const record of sessions.values()) {
-    for (const request of record.pendingBrowserAccountRequests.values()) origins.push(request.origin, ...(request.origins ?? []));
-    origins.push(...(record.pendingChatPermissionRequest?.origins ?? []));
+    for (const request of record.chatRequests?.snapshot() ?? []) origins.push(request.origin, ...(request.origins ?? []));
   }
-  return origins;
+  for (const secret of await userSecrets.list().catch(() => [])) origins.push(...(secret.origins ?? []));
+  return origins.filter(Boolean);
 }
 
 function broadcastBrowserEvent(event) {
