@@ -37,7 +37,7 @@
     "test:ci": "node --test scripts/*.test.mjs",
     "audit:production": "node scripts/audit-production.mjs",
     "dev:studio": "npm --prefix rhwp/rhwp-studio run dev",
-    "test:desktop": "node --test tests/*.test.mjs",
+    "test:desktop": "node --test --test-concurrency=1 tests/*.test.mjs",
     "package:linux": "electron-builder --linux AppImage deb --publish never",
     "dist:linux": "npm run build:desktop && npm run package:linux --",
     "package:linux:x64": "electron-builder --linux AppImage deb --x64 --publish never",

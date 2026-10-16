@@ -9,6 +9,7 @@ const GUEST_PRELOAD = fileURLToPath(new URL('./browser-guest-preload.cjs', impor
 const POPOUT_PRELOAD = fileURLToPath(new URL('./browser-popout-preload.cjs', import.meta.url));
 const POPOUT_URL = new URL('./browser-popout.html', import.meta.url).href;
 const MAX_NATIVE_TABS = 64;
+const CAPTURE_SURFACE_TIMEOUT_MS = 15_000;
 const ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,159}$/;
 
 export function browserNavigationUrl(value) {
@@ -40,7 +41,8 @@ async function privateDirectory(dir) {
 }
 
 export class OwnedBrowserHost {
-  constructor({ BrowserWindow, BaseWindow = BrowserWindow, WebContentsView, electronSession, dataDir, getWindowForSession, onEvent = () => {} }) {
+  constructor({ BrowserWindow, BaseWindow = BrowserWindow, WebContentsView, electronSession, dataDir, getWindowForSession, onEvent = () => {}, platform = process.platform }) {
+    this.platform = platform;
     this.BrowserWindow = BrowserWindow;
     this.BaseWindow = BaseWindow;
     this.WebContentsView = WebContentsView;
@@ -52,6 +54,7 @@ export class OwnedBrowserHost {
     this.floatingWindows = new Map();
     this.pendingTabs = new Set();
     this.parkingWindow = null;
+    this.captureSurfaces = new WeakMap();
     this.aliases = new Map();
     this.popouts = new Map();
     this.downloads = new Map();
@@ -352,10 +355,10 @@ export class OwnedBrowserHost {
       await Promise.resolve();
       while (tab.pendingViewport && !tab.closing && !tab.view.webContents.isDestroyed()) {
         const next = tab.pendingViewport; tab.pendingViewport = null;
-        if (tab.placement) {
+        if (tab.placement && !(this.platform === 'win32' && tab.placement.mode === 'float')) {
           if (tab.viewport) { await tab.view.webContents.debugger.sendCommand('Emulation.clearDeviceMetricsOverride'); tab.viewport = null; }
         } else if (tab.viewport?.width !== next.width || tab.viewport?.height !== next.height) {
-          // 숨긴 게스트만 유효한 뷰포트를 유지한다. 보이는 페이지는 네이티브 크기 변경을 따른다.
+          // Windows floating guests also need explicit metrics after native resizes.
           await tab.view.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride', { ...next, deviceScaleFactor: 0, mobile: false });
           tab.viewport = next;
         }
@@ -570,12 +573,40 @@ export class OwnedBrowserHost {
     // A BaseWindow keeps native dialogs asynchronous without another renderer.
     if (!this.parkingWindow || this.parkingWindow.isDestroyed()) {
       this.parkingWindow = new this.BaseWindow({ show: false, skipTaskbar: true, title: 'Hama 브라우저' });
+      if (this.platform === 'win32') {
+        this.parkingWindow.setOpacity(0);
+        this.parkingWindow.setFocusable(false);
+        this.parkingWindow.setIgnoreMouseEvents(true);
+      }
     }
     this.parkingWindow.contentView.addChildView(tab.view);
-    // The hidden window keeps the page hidden. Its view must retain a display
-    // surface so Chromium can capture a hidden tab without opening a window.
+    // Keep the guest hidden at rest and retain its native parent for capture.
     tab.view.setVisible(true);
     tab.parkingWindow = this.parkingWindow;
+  }
+
+  async withCaptureSurface(tab, capture) {
+    const window = this.parkingWindow;
+    if (this.platform !== 'win32' || !window || window.isDestroyed() || tab.parkingWindow !== window) return capture();
+    const leases = this.captureSurfaces.get(window) ?? 0;
+    this.captureSurfaces.set(window, leases + 1);
+    let timer;
+    try {
+      // Windows requires a mapped surface; keep it transparent and non-activating.
+      if (!leases) window.showInactive();
+      return await Promise.race([
+        Promise.resolve().then(capture),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Native browser capture timed out')), CAPTURE_SURFACE_TIMEOUT_MS); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      const remaining = this.captureSurfaces.get(window) - 1;
+      if (remaining) this.captureSurfaces.set(window, remaining);
+      else {
+        this.captureSurfaces.delete(window);
+        if (!window.isDestroyed()) window.hide();
+      }
+    }
   }
 
   onJavaScriptDialog(tab, method) {
@@ -1008,7 +1039,7 @@ export class OwnedBrowserHost {
       this.downloadPath = null;
       this.downloadBehavior = 'deny';
       this.generation = randomUUID();
-      return { tabsClosed: guests.length, generation: this.generation };
+      return { tabsClosed: guests.length, generation: this.generation, nativeStorageCleared: !!this.session };
     })();
     try { return await this.resetPromise; } finally { this.resetPromise = null; this.passwords?.importer.endReset(); }
   }

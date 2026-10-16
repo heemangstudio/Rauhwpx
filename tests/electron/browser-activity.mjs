@@ -30,6 +30,7 @@ app.whenReady().then(async () => {
     await new Promise(resolve => site.listen(0, '127.0.0.1', resolve));
     const origin = `http://127.0.0.1:${site.address().port}`;
     window = new BrowserWindow({ show: false, title: 'Browser activity fixture', width: 420, height: 320, webPreferences: { sandbox: true, contextIsolation: true } });
+    await window.loadURL('data:text/html,<title>Browser activity fixture</title><body>Native browser owner</body>');
     const owner = { id: 'activity-fixture' };
     let sharedWindow;
     host = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session, dataDir: root, getWindowForSession: id => id === 'shared-other' ? sharedWindow : window });

@@ -26,7 +26,7 @@ test('native hidden guests wake only during scoped actions and preserve forms an
   delete env.ELECTRON_RUN_AS_NODE;
   try {
     const report = await new Promise((resolve, reject) => {
-      const child = spawn(electron, [fileURLToPath(new URL('./electron/browser-activity.mjs', import.meta.url)), '--use-mock-keychain', ...(process.platform === 'darwin' ? ['-ApplePersistenceIgnoreState', 'YES'] : [])], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(electron, [fileURLToPath(new URL('./electron/browser-activity.mjs', import.meta.url)), '--use-mock-keychain', ...(process.platform === 'darwin' ? ['-ApplePersistenceIgnoreState', 'YES'] : [])], { env, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';
       child.stdout.on('data', data => { output += data; });
       child.stderr.on('data', data => { output += data; });
@@ -60,7 +60,7 @@ test('real native guests retain form state across dock, float, popout and hub re
   const logPath = env.RHWP_BROWSER_LOG_PATH;
   if (logPath) writeFileSync(logPath, '', { mode: 0o600 });
   const report = await new Promise((resolve, reject) => {
-    const child = spawn(electron, [entry, '--use-mock-keychain', ...(process.platform === 'darwin' ? ['-ApplePersistenceIgnoreState', 'YES'] : [])], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(electron, [entry, '--use-mock-keychain', ...(process.platform === 'darwin' ? ['-ApplePersistenceIgnoreState', 'YES'] : [])], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
     child.stdout.on('data', (data) => { stdout += data; if (logPath) appendFileSync(logPath, data); });
     child.stderr.on('data', (data) => { stderr += data; if (logPath) appendFileSync(logPath, data); });

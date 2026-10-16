@@ -4,6 +4,84 @@ import test from 'node:test';
 import { OwnedBrowserHost } from '../desktop/browser-host.mjs';
 import { PrivateBrowserCdp } from '../desktop/browser-cdp.mjs';
 
+function captureHost(platform = 'win32') {
+  class Window {
+    constructor() { this.visible = false; this.shows = 0; this.contentView = { addChildView() {} }; }
+    isDestroyed() { return this.destroyed === true; }
+    setOpacity(value) { this.opacity = value; }
+    setFocusable(value) { this.focusable = value; }
+    setIgnoreMouseEvents(value) { this.ignoreMouse = value; }
+    showInactive() {
+      assert.equal(this.opacity, 0);
+      assert.equal(this.focusable, false);
+      assert.equal(this.ignoreMouse, true);
+      this.visible = true; this.shows++;
+    }
+    hide() { this.visible = false; }
+  }
+  const host = new OwnedBrowserHost({ BaseWindow: Window, dataDir: '/unused-native-profile', platform });
+  const tab = { view: { webContents: { isDestroyed: () => false }, setVisible() {} } };
+  host.parkGuest(tab);
+  return { host, tab, window: host.parkingWindow };
+}
+
+test('overlapping Windows captures keep a transparent surface only until the final lease settles', async () => {
+  const { host, tab, window } = captureHost();
+  let finishFirst, failSecond;
+  const first = host.withCaptureSurface(tab, () => new Promise(resolve => { finishFirst = resolve; }));
+  const second = host.withCaptureSurface(tab, () => new Promise((_, reject) => { failSecond = reject; }));
+  await Promise.resolve();
+  assert.equal(window.shows, 1);
+  finishFirst('first image');
+  assert.equal(await first, 'first image');
+  assert.equal(window.visible, true);
+  failSecond(new Error('fixture capture failed'));
+  await assert.rejects(second, /fixture capture failed/);
+  assert.equal(window.visible, false);
+  assert.equal(host.captureSurfaces.has(window), false);
+});
+
+test('a stalled Windows capture releases its native surface at the deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { host, tab, window } = captureHost();
+  const capture = host.withCaptureSurface(tab, () => new Promise(() => {}));
+  const rejected = assert.rejects(capture, /Native browser capture timed out/);
+  t.mock.timers.tick(15_000);
+  await rejected;
+  assert.equal(window.visible, false);
+});
+
+test('Windows floating guests synchronize viewport dimensions while docked and macOS guests remain native', async () => {
+  for (const [platform, mode] of [['win32', 'float'], ['win32', 'dock'], ['darwin', 'float']]) {
+    const commands = [];
+    const host = new OwnedBrowserHost({ dataDir: '/unused-native-profile', platform });
+    const tab = { placement: { mode }, viewport: { width: 1280, height: 800 }, view: { webContents: {
+      isDestroyed: () => false,
+      debugger: { async sendCommand(method, params) { commands.push({ method, params }); } },
+    } } };
+    await host.viewport(tab, { width: 420, height: 300 });
+    await host.viewport(tab, { width: 500, height: 360 });
+    await host.viewport(tab, { width: 500, height: 360 });
+    if (platform === 'win32' && mode === 'float') {
+      assert.deepEqual(commands.map(command => command.method), ['Emulation.setDeviceMetricsOverride', 'Emulation.setDeviceMetricsOverride']);
+      assert.deepEqual(commands.map(command => [command.params.width, command.params.height]), [[420, 300], [500, 360]]);
+    } else assert.deepEqual(commands, [{ method: 'Emulation.clearDeviceMetricsOverride', params: undefined }]);
+  }
+});
+
+test('capture surfaces do not map non-Windows or presented guests and tolerate native teardown', async () => {
+  const other = captureHost('darwin');
+  assert.equal(await other.host.withCaptureSurface(other.tab, () => 'mac image'), 'mac image');
+  assert.equal(other.window.shows, 0);
+  const { host, tab, window } = captureHost();
+  tab.parkingWindow = null;
+  assert.equal(await host.withCaptureSurface(tab, () => 'visible image'), 'visible image');
+  assert.equal(window.shows, 0);
+  tab.parkingWindow = window;
+  await host.withCaptureSurface(tab, () => { window.destroyed = true; return 'last image'; });
+  assert.equal(host.captureSurfaces.has(window), false);
+});
+
 test('in-flight CDP replies never reach a replacement hub connection', async () => {
   const relay = new PrivateBrowserCdp({ host: {} });
   const makeClient = () => Object.assign(new EventEmitter(), { readyState: 1, replies: [], send(value) { this.replies.push(JSON.parse(value)); } });
