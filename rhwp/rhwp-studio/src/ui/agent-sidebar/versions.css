@@ -837,14 +837,12 @@
   white-space: nowrap;
   pointer-events: auto;
   visibility: hidden;
-  opacity: 0;
-  transform: translateY(-3px);
 }
 
+/* 잠깐 머물러야 뜬다 — 지나가는 포인터에 깜빡이지 않는다. 뜨고 질 때 움직이지 않는다. */
 .ag-version-date-tooltip.ag-visible {
   visibility: visible;
-  opacity: 1;
-  transform: translateY(0);
+  transition: visibility 0s linear 180ms;
 }
 
 /* ── 움직임 ───────────────────────────────────────── */
@@ -860,14 +858,6 @@
   .ag-version-node-connector,
   .ag-version-connector-arrow {
     transition: opacity var(--ag-dur-fast) var(--ag-ease-out);
-  }
-
-  .ag-version-date-tooltip {
-    transition: opacity var(--ag-dur-fast) var(--ag-ease-out), transform var(--ag-dur-fast) var(--ag-ease-out), visibility var(--ag-dur-fast);
-  }
-
-  .ag-version-date-tooltip.ag-visible {
-    transition-delay: 180ms;
   }
 }
 

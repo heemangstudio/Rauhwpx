@@ -586,7 +586,6 @@
   margin-top: 5px;
   border-radius: var(--ag-r-pill);
   background: var(--ag-border);
-  animation: ag-changes-pulse 1.2s ease-in-out infinite;
 }
 
 .ag-changes-commit-detail {
@@ -618,10 +617,6 @@
   100% { transform: scale(1); }
 }
 
-@keyframes ag-changes-pulse {
-  50% { opacity: .45; }
-}
-
 /* ── 공통 상태 ── */
 
 .ag-changes-overlay button:disabled,
@@ -642,8 +637,7 @@
   .ag-changes-commit-detail.ag-enter,
   .ag-changes-confirm,
   .ag-changes-commit-new > .ag-changes-commit-toggle,
-  .ag-changes-commit-new .ag-changes-commit-dot,
-  .ag-changes-commit-stats.ag-pending::before { animation: none; }
+  .ag-changes-commit-new .ag-changes-commit-dot { animation: none; }
 }
 
 @media (max-width: 700px) {

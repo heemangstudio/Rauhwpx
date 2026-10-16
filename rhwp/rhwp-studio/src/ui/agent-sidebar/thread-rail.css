@@ -426,15 +426,9 @@
   filter: none;
 }
 
-/* 문서를 옮겨 가는 동안 — 고른 행이 천천히 숨 쉰다. */
+/* 문서를 옮겨 가는 동안 — 고른 행이 흐리게 머문다. */
 .ag-threads-row.ag-opening .ag-threads-item {
-  animation: ag-thread-opening 1.2s ease-in-out infinite;
-}
-
-@keyframes ag-thread-opening {
-  50% {
-    opacity: 0.5;
-  }
+  opacity: 0.6;
 }
 
 .ag-threads-empty {
@@ -457,7 +451,6 @@
 
 .ag-thread-status-working {
   background: var(--ag-run);
-  animation: ag-thread-breathe 1.8s ease-in-out infinite;
 }
 
 .ag-thread-status-finished {
@@ -476,12 +469,6 @@
   box-sizing: border-box;
   border: 1.5px solid var(--ag-err);
   background: transparent;
-}
-
-@keyframes ag-thread-breathe {
-  50% {
-    opacity: 0.35;
-  }
 }
 
 /* ── 고정 · 이름 바꾸기 ─────────────────────────────────
@@ -669,15 +656,6 @@
   border-radius: var(--ag-r-card);
   background: var(--ag-raised);
   box-shadow: var(--ag-elev-popover);
-  transform-origin: top left;
-  animation: ag-rail-popover-in var(--ag-dur-fast) var(--ag-ease-out);
-}
-
-@keyframes ag-rail-popover-in {
-  from {
-    opacity: 0;
-    transform: translateY(-3px);
-  }
 }
 
 .ag-rail-field {
@@ -793,12 +771,4 @@
   padding: 8px;
   color: var(--ag-text-tertiary);
   font-size: var(--ag-fs-meta);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ag-rail-popover,
-  .ag-thread-status-working,
-  .ag-threads-row.ag-opening .ag-threads-item {
-    animation: none;
-  }
 }

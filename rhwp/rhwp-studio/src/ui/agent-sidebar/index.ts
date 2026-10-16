@@ -162,7 +162,7 @@ import {
 import { createChevron, createColumnIcon } from '../chevron.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { releaseMiddleTruncatedWithin, setMiddleTruncatedText } from '../middle-truncate.ts';
-import { createInkRing, createIcon, createStopIcon } from './icons.ts';
+import { createIcon, createStopIcon } from './icons.ts';
 import {
   attachThreadDrag,
   closeThreadRailSurfaces,
@@ -2816,12 +2816,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   turnPending.hidden = true;
   turnPending.setAttribute('role', 'status');
   turnPending.setAttribute('aria-live', 'polite');
+  // 일하는 중은 "편집 중…" 글자만으로 보인다.
   const turnPendingLabel = el('span', 'ag-turn-pending-label');
-  turnPending.append(createInkRing(), turnPendingLabel);
+  turnPending.append(turnPendingLabel);
   messages.append(turnPending, messagesEnd);
-  /* "편집 중…" 고리는 에이전트가 400ms 넘게 조용할 때 나타나고, 나타나면 400ms 는
+  /* "편집 중…" 줄은 에이전트가 400ms 넘게 조용할 때 나타나고, 나타나면 400ms 는
      머문다 — 짧은 글과 빠른 도구가 번갈아 와도 대화 끝이 깜빡이지 않는다. 숨어
-     있는 동안 새 내용은 고리 뒤(messagesEnd 앞)에 붙고, 나타날 때 끝으로 옮긴다. */
+     있는 동안 새 내용은 그 줄 뒤(messagesEnd 앞)에 붙고, 나타날 때 끝으로 옮긴다. */
   /** 압축 중에 물려 둔 대화 줄과 맥락 고리 (setConversationReceding). */
   let recededNodes: { node: Element; animation: Animation }[] = [];
   const turnPendingStatus = createDelayedStatus<AgentName | 'compacting'>((who) => {
@@ -2865,8 +2866,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
   /**
-   * 도는 턴의 접힘 자리표시(숨은 줄)와 숨어 있는 "편집 중…" 고리는 내용이 아니다 —
-   * 스크롤 기준을 고를 때 건너뛴다. 숨은 고리는 지연 동안 대화 중간에 남아 있을 수 있다.
+   * 도는 턴의 접힘 자리표시(숨은 줄)와 숨어 있는 "편집 중…" 줄은 내용이 아니다 —
+   * 스크롤 기준을 고를 때 건너뛴다. 숨은 줄은 지연 동안 대화 중간에 남아 있을 수 있다.
    */
   function skipTurnFoldPlaceholders(node: Element | null): Element | null {
     let current = node;
@@ -5953,7 +5954,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           const userMessage = recordUserMessage(request.messageText, attachments, undefined,
             request.skillNameForMessage, request.skillIconForMessage, messageId, mentions);
           const bubble = renderUserMessage(userMessage);
-          bubble.classList.add('ag-msg-enter');
           followConversation = true;
           replyPending = true;
           appendConversation(bubble);
@@ -6206,7 +6206,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       spec.origin === 'composer' ? composerMentions?.take() ?? [] : [],
     );
     const userBubble = renderUserMessage(userMessage);
-    userBubble.classList.add('ag-msg-enter');
     replyPending = true;
     if (userAction) {
       followConversation = true;
@@ -6315,7 +6314,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
       const userMessage = recordUserMessage(text, []);
       const userBubble = renderUserMessage(userMessage);
-      userBubble.classList.add('ag-msg-enter');
       followConversation = true;
       replyPending = true;
       appendConversation(userBubble);
@@ -9030,7 +9028,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       || ((replyPending || turnRunning) && !(streamBubble && hasRenderedBlocks(streamBubble)));
     const show = waiting || editAgent !== null;
     turnPendingStatus.set(show ? (compacting ? 'compacting' : agent ?? editAgent ?? selectedAgent) : null);
-    // 보이는 고리는 언제나 대화 끝에 선다.
+    // 보이는 "편집 중…" 줄은 언제나 대화 끝에 선다.
     if (turnPendingStatus.shown !== null && turnPending.nextSibling !== messagesEnd) {
       messages.insertBefore(turnPending, messagesEnd);
     }
@@ -9084,7 +9082,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function systemMessage(text: string, severity?: 'error'): void {
     currentThread.messages.push({ role: 'system', text, agent: selectedAgent, ...(severity ? { severity } : {}) });
     persistCurrentThread();
-    withAutoScroll(() => appendConversation(el('div', 'ag-msg ag-msg-system ag-msg-enter', text)));
+    withAutoScroll(() => appendConversation(el('div', 'ag-msg ag-msg-system', text)));
   }
 
   /** 현재 대화의 CLI 세션을 강제로 다시 띄운다 (설정 탭·스폰 실패 재시도 공용). */
@@ -9494,7 +9492,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const text = TURN_CHECK_DOCUMENT_TEXT;
     const message = openAssistantBubble(agent);
     renderAssistantMessage(message, text);
-    message.classList.add('ag-msg-enter');
     assistantBuffer = text;
     flushAssistantBuffer();
     streamBubble = null;
@@ -9944,7 +9941,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function foldSettledTurn(marker: ThreadTurnMessage): void {
     const row = turnFoldRows.get(marker.messageId);
     if (!row || row.root.parentElement !== messages) return;
-    // 이 턴의 작업은 줄 뒤에서 대화 끝(다음 턴의 줄) 사이에 있다. "편집 중…" 고리는 지연 동안
+    // 이 턴의 작업은 줄 뒤에서 대화 끝(다음 턴의 줄) 사이에 있다. "편집 중…" 줄은 지연 동안
     // 숨은 채 그 사이에 남아 있을 수 있어 건너뛰기만 하고, 작업 노드가 아니라 접힘에 들지 않는다.
     let nodes: HTMLElement[] = [];
     for (
@@ -10457,7 +10454,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           withAutoScroll(() => {
             // 가려진 채팅에는 보이지 않는 등장 애니메이션을 걸지 않는다.
             renderAssistantMessage(bubble, assistantBuffer, active ? STREAMING_RENDER : { streaming: true });
-            bubble.classList.add('ag-msg-enter');
           });
         } else {
           scheduleAssistantRender(streamBubble, assistantBuffer);

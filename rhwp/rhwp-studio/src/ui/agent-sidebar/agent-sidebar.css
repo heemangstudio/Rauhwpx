@@ -694,21 +694,12 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   outline-offset: var(--ag-focus-offset);
 }
 
-.ag-conn-dot[data-state='connecting']::before {
-  animation: ag-conn-pulse 1.6s ease-in-out infinite;
-}
-
 .ag-conn-dot[data-state='disconnected']::before {
   background: var(--ag-err);
 }
 
 .ag-conn-dot[data-state='replaced']::before {
   background: var(--ag-run);
-}
-
-@keyframes ag-conn-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.35; transform: scale(0.8); }
 }
 
 /* 상태 문구는 스크린리더용으로만 남긴다. */
@@ -735,17 +726,10 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   border-radius: var(--ag-r-sheet);
   background: var(--ag-raised);
   box-shadow: var(--ag-elev-popover);
-  transform-origin: top right;
-  animation: ag-popover-in var(--ag-dur-base) var(--ag-spring) both;
 }
 
 .ag-conn-popover[hidden] {
   display: none;
-}
-
-@keyframes ag-popover-in {
-  from { opacity: 0; transform: translateY(-4px) scale(0.96); }
-  to { opacity: 1; transform: none; }
 }
 
 .ag-conn-popover-text {
@@ -1111,7 +1095,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   cursor: default;
 }
 
-/* 메뉴는 머티리얼 층이다: 반투명 + 흐림, 칩의 오른쪽 아래 모서리에서 자라난다. */
+/* 메뉴는 머티리얼 층이다: 반투명 + 흐림. 누르면 바로 서고 바로 사라진다. */
 .ag-mode .ag-mode-menu {
   top: auto;
   right: 0;
@@ -1125,20 +1109,13 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   -webkit-backdrop-filter: blur(20px) saturate(150%);
   backdrop-filter: blur(20px) saturate(150%);
   box-shadow: var(--ag-elev-popover), inset 0 0 0 0.5px color-mix(in oklab, var(--ag-text) 18%, transparent);
-  transform-origin: bottom right;
-  transform: scale(0.9);
-  transition:
-    opacity var(--ag-dur-fast) var(--ag-ease-out),
-    transform var(--ag-dur-exit) var(--ag-ease-out),
-    visibility 0s linear var(--ag-dur-exit);
+  transform: none;
+  transition: none;
 }
 
 .ag-mode.ag-model-open .ag-mode-menu {
-  transform: scale(1);
-  transition:
-    opacity var(--ag-dur-fast) var(--ag-ease-out),
-    transform var(--ag-dur-slow) var(--ag-spring),
-    visibility 0s linear 0s;
+  transform: none;
+  transition: none;
 }
 
 @media (prefers-reduced-transparency: reduce) {
@@ -1150,11 +1127,6 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ag-mode .ag-mode-menu,
-  .ag-mode.ag-model-open .ag-mode-menu {
-    transform: none;
-  }
-
   .ag-root .ag-mode-btn:active:not(:disabled) {
     transform: none;
   }
@@ -1466,12 +1438,6 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   border-radius: 12px;
   background: color-mix(in srgb, var(--ag-raised) 96%, var(--ag-bg));
   box-shadow: 0 12px 28px color-mix(in srgb, var(--ag-text) 18%, transparent);
-  animation: ag-skill-icon-picker-in var(--ag-dur-base) var(--ag-skills-motion) both;
-}
-
-@keyframes ag-skill-icon-picker-in {
-  from { opacity: 0; transform: translateY(-4px) scale(0.98); transform-origin: top left; }
-  to { opacity: 1; transform: translateY(0) scale(1); transform-origin: top left; }
 }
 
 .ag-skill-icon-picker-grid {
@@ -1723,15 +1689,6 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   border-radius: var(--ag-r-field);
   background: color-mix(in srgb, var(--ag-raised) 82%, transparent);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--ag-text) 4%, transparent);
-}
-
-.ag-skills-import-panel.ag-skills-import-open {
-  animation: ag-skills-import-open var(--ag-dur-base) var(--ag-skills-motion) both;
-}
-
-@keyframes ag-skills-import-open {
-  from { opacity: 0; transform: translateY(-6px) scaleY(0.96); transform-origin: top; }
-  to { opacity: 1; transform: translateY(0) scaleY(1); transform-origin: top; }
 }
 
 .ag-skills-import-panel[hidden] {
@@ -2048,7 +2005,6 @@ button.ag-skill-copy {
     transform: none !important;
   }
 
-  .ag-skills-import-panel.ag-skills-import-open { animation: none; }
   .ag-skill-toggle[aria-pressed='true']::after { left: 16px; }
 }
 
@@ -2735,37 +2691,6 @@ button.ag-skill-copy {
   transform: translateX(2px) rotate(-90deg);
 }
 
-.ag-msg.ag-msg-enter {
-  animation: ag-message-arrive var(--ag-dur-base) var(--ag-ease-out) both;
-}
-
-/* 첫 답변은 읽을 수 있는 상태로 짧게 자리 잡는다. */
-.ag-msg-assistant.ag-msg-enter {
-  animation: ag-assistant-arrive var(--ag-dur-fast) var(--ag-motion-out) both;
-}
-
-@keyframes ag-assistant-arrive {
-  from {
-    opacity: 0.72;
-    transform: translateY(2px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes ag-message-arrive {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 /* turn-start 직후 아직 텍스트가 없는 답변은 감춘다 */
 .ag-msg-assistant:empty {
   display: none;
@@ -3110,9 +3035,6 @@ button.ag-skill-copy {
   flex-direction: column;
   gap: 4px;
   padding-left: 18px;
-  /* 끝 상태가 쉬는 모양과 같아 붙잡지 않는다(backwards) — 단계마다 끝난 애니메이션이
-     문서에 쌓여 getAnimations·스타일 계산이 대화 길이만큼 느려지지 않게 한다. */
-  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) backwards;
 }
 
 .ag-progress-step::before {
@@ -3165,17 +3087,6 @@ button.ag-skill-copy {
   margin: 0;
   border: 0;
   background: transparent;
-}
-
-@keyframes ag-activity-arrive {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 .ag-activity-toggle {
@@ -3903,8 +3814,6 @@ button.ag-skill-copy {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ag-msg.ag-msg-enter,
-  .ag-progress-step,
   .ag-activity,
   .ag-tool-row,
   .ag-tool-status.ag-ok,
@@ -4667,15 +4576,10 @@ button.ag-skill-copy {
 
 .ag-plan-restore-tick[data-status='in-progress'] {
   background: var(--ag-text);
-  animation: ag-todo-pulse 1.4s ease-in-out infinite;
 }
 
 .ag-plan-restore-tick[data-status='blocked'] {
   background: var(--ag-err);
-}
-
-@keyframes ag-todo-pulse {
-  50% { opacity: 0.35; }
 }
 
 .ag-plan-restore-count {
@@ -4791,12 +4695,6 @@ button.ag-skill-copy {
 .ag-todo[data-status='blocked'] .ag-todo-note,
 .ag-todo[data-status='blocked'] .ag-todo-suffix {
   color: var(--ag-err);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ag-plan-restore-tick[data-status='in-progress'] {
-    animation: none;
-  }
 }
 
 /* 진행 표시는 앱 공용 .ui-spinner 이다. 여기서는 크기만 정한다. */
@@ -6102,52 +6000,12 @@ button.ag-skill-copy {
   }
 }
 
-.ag-ink-ring {
-  display: block;
-  flex: 0 0 auto;
-  overflow: visible;
-}
-
-.ag-ink-ring-trails {
-  transform-origin: 50px 50px;
-  animation: ag-ink-rotate 12s linear infinite;
-}
-
-.ag-ink-ring-trails path {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.4;
-  stroke-linecap: round;
-  stroke-dasharray: 125 230;
-  animation: ag-ink-flow 5.4s cubic-bezier(.45, 0, .55, 1) infinite;
-}
-
-.ag-ink-ring-trails path:nth-child(2) { opacity: .7; animation-delay: -.6s; }
-.ag-ink-ring-trails path:nth-child(3) { opacity: .42; animation-delay: -1.2s; }
-.ag-ink-ring-trails path:nth-child(4) { opacity: .24; animation-delay: -1.8s; }
-
-.ag-ink-ring-center {
-  fill: currentColor;
-  transform-origin: 50px 50px;
-  animation: ag-ink-breathe 2.7s cubic-bezier(.45, 0, .55, 1) infinite;
-}
-
 @keyframes ag-loading-shimmer {
   0%, 12% { background-position: 100% 0; }
   78%, 100% { background-position: 0% 0; }
 }
 
-@keyframes ag-ink-rotate { to { transform: rotate(360deg); } }
-@keyframes ag-ink-flow { to { stroke-dashoffset: -355; } }
-@keyframes ag-ink-breathe {
-  0%, 100% { transform: scale(.6); opacity: .3; }
-  50% { transform: scale(1); opacity: .8; }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .ag-ink-ring-trails,
-  .ag-ink-ring-trails path,
-  .ag-ink-ring-center,
   .ag-turn-pending-label {
     animation: none;
   }
@@ -8228,7 +8086,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   border-radius: var(--ag-r-card);
   background: var(--ag-hover);
   overflow: hidden;
-  animation: ag-activity-arrive var(--ag-dur-base) var(--ag-motion-out) both;
 }
 
 .ag-fleet-toggle {
@@ -8506,8 +8363,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-fleet-row {
   container: fleet-row / inline-size;
   min-width: 0;
-  /* 진행 단계와 같다 — 끝 상태를 붙잡지 않아 끝난 등장이 문서에 쌓이지 않는다. */
-  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) backwards;
 }
 
 .ag-fleet-row + .ag-fleet-row {
@@ -9153,18 +9008,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   color: var(--ag-question-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .ag-question-arrival-dot {
-    animation: ag-question-arrival-breathe 1.8s ease-in-out infinite;
-  }
-}
-
-@keyframes ag-question-arrival-breathe {
-  50% {
-    opacity: 0.35;
-  }
 }
 
 /* 질문은 한눈에 훑는 목록이다. 선택지는 한 줄짜리 행으로 두고, 설명은 같은
