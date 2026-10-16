@@ -94,6 +94,12 @@ import {
 } from '@/recent/document-preflight';
 import { addRecentDoc, listRecentDocs, RECENT_MENU_LIMIT, updateRecentDoc, type RecentDoc } from '@/recent/recent-store';
 import { createDocumentHome, type DocumentHome } from '@/home/document-home';
+import {
+  createUnsavedDocuments,
+  type UnsavedDocumentAction,
+  type UnsavedDocumentReport,
+  type UnsavedDocuments,
+} from '@/home/unsaved-documents';
 import { createIcon } from '@/ui/agent-sidebar/icons';
 import { loadWorktreeData } from '@/home/home-data';
 import { renderFirstPage } from '@/home/thumbnail-render';
@@ -344,12 +350,17 @@ function createSessionCore(slotId?: string): DocumentSession {
       },
       owner: rendererSessionContextPromise,
     },
-    onDirtyChanged: () => desktopDocumentStateUpdate?.(),
+    onDirtyChanged: () => {
+      desktopDocumentStateUpdate?.();
+      unsavedDocuments?.invalidate();
+    },
   });
   return session;
 }
 
 let desktopDocumentStateUpdate: (() => void) | null = null;
+/** 세션 콜백이 먼저 정의되므로 나중에 채운다. */
+let unsavedDocuments: UnsavedDocuments | null = null;
 const firstSession = createSessionCore();
 const liveSessions: DocumentSession[] = [firstSession];
 let attachedSession: DocumentSession = firstSession;
@@ -2525,6 +2536,47 @@ async function renameRecentDocument(row: RecentDoc, name: string): Promise<strin
 
 let documentHome: DocumentHome | null = null;
 
+/** 새 문서를 처음 본 시각. 홈의 저장하지 않은 문서는 새것부터 놓인다. */
+const newDocumentSeenAt = new Map<string, number>();
+
+/** 이 창에 열린, 아직 경로가 없는 새 문서. 작업 트리 문서는 작업 트리에 저장되어 있다. */
+function localUnsavedDocuments(): UnsavedDocumentReport[] {
+  return liveSessions
+    .filter((session) => session.documentId && !session.worktree
+      && session.wasm.hasLoadedDocument() && session.wasm.isNewDocument)
+    .map((session) => {
+      const documentId = session.documentId!;
+      let createdAt = newDocumentSeenAt.get(documentId);
+      if (createdAt === undefined) {
+        createdAt = Date.now();
+        newDocumentSeenAt.set(documentId, createdAt);
+      }
+      return { documentId, fileName: session.wasm.fileName, edited: session.documentState.isDirty(), createdAt };
+    });
+}
+
+/** 홈의 저장하지 않은 문서 카드: 그 문서로 가거나, 그 문서를 붙인 채 저장 창을 띄운다. */
+async function runUnsavedDocumentAction(documentId: string, action: UnsavedDocumentAction): Promise<void> {
+  const session = liveSessionForDocument(documentId);
+  if (!session) return;
+  if (session !== attachedSession) await runNavigation(() => attachSession(session));
+  if (action === 'open') {
+    documentHome?.hide();
+    showOpenedDocumentInSidebar();
+    return;
+  }
+  await saveCurrentDocument(commandServices);
+}
+
+const unsavedDocumentStore = createUnsavedDocuments({
+  local: localUnsavedDocuments,
+  run: runUnsavedDocumentAction,
+});
+unsavedDocuments = unsavedDocumentStore;
+for (const name of ['document-context-changed', 'document-saved']) {
+  eventBus.on(name, () => unsavedDocumentStore.invalidate());
+}
+
 /** 템플릿은 허브에 있다. 지금 보이는 채팅의 브리지로 묻는다. */
 function templateBridge() {
   return attachedSession.activeChat?.bridge ?? null;
@@ -2568,6 +2620,12 @@ function installDocumentHome(): void {
       return renderFirstPage(session.wasm).catch(() => null);
     },
     mountTopbarTrailing: (slot) => mountLicenseBuyButton(slot),
+    unsaved: {
+      list: () => unsavedDocumentStore.list(),
+      subscribe: (listener) => unsavedDocumentStore.subscribe(listener),
+      open: (document) => { void unsavedDocumentStore.run(document, 'open'); },
+      save: (document) => { void unsavedDocumentStore.run(document, 'save'); },
+    },
     createBlank: () => {
       // 잠긴 동안 새 문서는 편집할 수 없으므로 만들지 않고 체험 끝 카드를 띄운다.
       if (isLicenseViewerMode()) {
@@ -2890,6 +2948,7 @@ async function createLiveSession(): Promise<DocumentSession | null> {
   }
   const session = createSessionCore(createDocumentSessionSlotId());
   liveSessions.push(session);
+  unsavedDocuments?.invalidate();
   try {
     installDocumentVersions(session);
   } catch (error) {
@@ -2914,6 +2973,7 @@ async function disposeSession(session: DocumentSession, options: { persistWorktr
     await session.versions?.persistWorktree();
   }
   liveSessions.splice(index, 1);
+  unsavedDocuments?.invalidate();
   for (const dispose of session.disposers.splice(0)) {
     try { dispose(); } catch (error) { console.warn('[sessions] 세션 정리 실패:', error); }
   }

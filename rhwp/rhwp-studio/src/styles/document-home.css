@@ -585,6 +585,104 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
 }
 
 
+/* 저장하지 않은 새 문서: 점선 종이. 카드는 문서를 열고, 아래 줄의 단추가 저장 창을 띄운다. */
+.dh-unsaved {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dh-unsaved-paper,
+.dh-card:hover .dh-unsaved-paper,
+.dh-card[aria-expanded='true'] .dh-unsaved-paper {
+  background: var(--dh-page);
+  box-shadow: none;
+  color: color-mix(in srgb, var(--dh-text-muted) 80%, transparent);
+}
+
+.dh-card:hover .dh-unsaved-paper { color: var(--dh-text-secondary); }
+
+/* 긴 점·짧은 점이 섞여 손으로 그은 듯 고르지 않다. 획 4px 의 안쪽 절반만 보인다. */
+.dh-dash {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.dh-dash rect {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 16 11 7 12 12 10;
+}
+
+/* 그린 첫 쪽은 점선 안쪽에 조금 작게 놓인다. */
+.dh-unsaved-paper.has-thumb { background: var(--dh-page); }
+
+.dh-unsaved-paper .dh-thumb {
+  inset: 6px;
+  width: calc(100% - 12px);
+  height: calc(100% - 12px);
+  border-radius: 2px;
+}
+
+.dh-unsaved-meta { justify-content: space-between; }
+
+.dh-unsaved-state {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dh-unsaved-save {
+  flex: none;
+  height: 22px;
+  margin-block: -3px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: var(--dh-chip);
+  color: var(--dh-text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.dh-unsaved-save:hover { background: var(--dh-pressed); }
+
+/* 둘 이상이면 점선 종이 세 장이 오른쪽 아래로 겹친다. 뒷장은 칸 밖으로 비어져 나와 글줄과 같은 높이를 지킨다. */
+.dh-unsaved-stack {
+  position: relative;
+  display: block;
+}
+
+.dh-unsaved-sheet {
+  position: absolute;
+  inset: 0;
+  color: color-mix(in srgb, var(--dh-text-muted) 45%, transparent);
+}
+
+.dh-unsaved-sheet:nth-child(1) .dh-dash rect { stroke-dashoffset: 9; }
+.dh-unsaved-sheet:nth-child(2) .dh-dash rect { stroke-dashoffset: 21; }
+
+.dh-unsaved-sheet:nth-child(1) { transform: translate(8px, 8px); }
+.dh-unsaved-sheet:nth-child(2) { transform: translate(4px, 4px); }
+.dh-unsaved-group .dh-card:hover .dh-paper { transform: none; }
+
+.dh-unsaved-count {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--dh-text-secondary);
+  font-size: 24px;
+  font-weight: 500;
+}
+
+.dh-unsaved-group .dh-card-meta .dh-icon { transition: transform 120ms ease; }
+.dh-unsaved-group .dh-card[aria-expanded='true'] .dh-card-meta .dh-icon { transform: rotate(180deg); }
+
 /* 목록 보기 */
 .dh-grid.is-list {
   grid-template-columns: minmax(0, 1fr);
@@ -637,6 +735,21 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
 }
 
 .dh-grid.is-list .dh-card-title { flex: 1; }
+
+.dh-grid.is-list .dh-unsaved {
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+}
+
+.dh-grid.is-list .dh-unsaved .dh-card { flex: 1; min-width: 0; }
+.dh-grid.is-list .dh-unsaved-meta { flex: none; padding-right: 12px; }
+.dh-grid.is-list .dh-unsaved-stack { flex: none; width: 32px; }
+.dh-grid.is-list .dh-unsaved-sheet:nth-child(1) { transform: translate(5px, 5px); }
+.dh-grid.is-list .dh-unsaved-sheet:nth-child(2) { transform: translate(2.5px, 2.5px); }
+.dh-grid.is-list .dh-unsaved-count { font-size: 12px; }
+.dh-grid.is-list .dh-dash rect { stroke-width: 3; stroke-dasharray: 6 4 3 5; }
+.dh-grid.is-list .dh-unsaved-paper .dh-thumb { inset: 2px; width: calc(100% - 4px); height: calc(100% - 4px); }
 .dh-grid.is-list .dh-card-meta { flex: none; min-width: 180px; justify-content: flex-end; }
 .dh-grid.is-list .dh-tree-token { order: -1; margin-left: 0; margin-right: auto; }
 

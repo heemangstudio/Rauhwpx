@@ -30,6 +30,7 @@ import {
   type WorktreeData,
 } from './home-data.ts';
 import { releaseThumbnailWorker } from './thumbnail-render.ts';
+import type { UnsavedDocument } from './unsaved-documents.ts';
 import { createIcon } from '../ui/agent-sidebar/icons.ts';
 
 export type HomeOpenResult = 'opened' | 'cancelled' | 'missing' | 'failed';
@@ -71,6 +72,13 @@ export interface DocumentHomeDeps {
   openSettings?(): void;
   /** 위 막대 오른쪽 끝 자리를 채운다(라이선스 구매 단추 등). */
   mountTopbarTrailing?(slot: HTMLElement): void;
+  /** 저장하지 않은 새 문서(다른 창 포함). 최근 문서 맨 앞에 점선 종이로 놓인다. */
+  unsaved?: {
+    list(): readonly UnsavedDocument[];
+    subscribe(listener: () => void): () => void;
+    open(document: UnsavedDocument): void;
+    save(document: UnsavedDocument): void;
+  };
   onDrop?(event: DragEvent): void;
   toast(message: string): void;
 }
@@ -506,7 +514,10 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   }
 
   function renderRecent(): void {
-    const keepFocus = root.contains(document.activeElement) && document.activeElement?.closest('.dh-grid');
+    grid.style.minHeight = '';
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && grid.contains(active) && active.dataset.unsavedKey) unsavedFocus ??= active.dataset.unsavedKey;
+    const keepFocus = root.contains(active) && active?.closest('.dh-grid');
     resetScope(gridScope, grid);
 
     grid.classList.toggle('is-list', prefs.view === 'list');
@@ -520,14 +531,16 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     for (const key of [...blobs.keys()]) {
       if (key.startsWith('document:') && !keys.has(key.slice('document:'.length))) forgetBlob(key);
     }
+    const unsaved = unsavedItems();
     if (!documents.length) {
-      grid.replaceChildren();
+      grid.replaceChildren(...unsaved);
       expanded = null;
-      if (loaded) {
+      if (loaded && !unsaved.length) {
         const empty = el('li', 'dh-empty');
         empty.append(el('span', 'dh-empty-title', '최근 문서가 없습니다'));
         grid.append(empty);
       }
+      restoreUnsavedFocus();
       return;
     }
     if (expanded && !documents.some((doc) => doc.recentId === expanded)) expanded = null;
@@ -564,9 +577,118 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       const row = rowFor(doc);
       if (row) lazyThumbnail(gridScope, paper, `document:${doc.documentId}`, () => loadDocumentThumbnail(row));
     }
-    grid.replaceChildren(...items);
+    grid.replaceChildren(...unsaved, ...items);
     placeDetail();
-    if (keepFocus) cardFor(focusedId)?.focus({ preventScroll: true });
+    if (!restoreUnsavedFocus() && keepFocus) cardFor(focusedId)?.focus({ preventScroll: true });
+  }
+
+  // ── 저장하지 않은 새 문서 ───────────────────────────────
+  /** 둘 이상이면 한 묶음으로 쌓아 두고, 누르면 그 뒤로 한 장씩 펼친다. */
+  let unsavedOpen = false;
+  /** 다시 그린 뒤 초점을 돌려줄 저장하지 않은 카드. */
+  let unsavedFocus: string | null = null;
+
+  function unsavedItems(): HTMLLIElement[] {
+    const list = deps.unsaved?.list() ?? [];
+    if (list.length < 2) unsavedOpen = false;
+    if (list.length === 0) return [];
+    if (list.length === 1) return [unsavedCard(list[0]!)];
+    return [unsavedStack(list), ...(unsavedOpen ? list.map(unsavedCard) : [])];
+  }
+
+  function restoreUnsavedFocus(): boolean {
+    const key = unsavedFocus;
+    unsavedFocus = null;
+    if (!key) return false;
+    const target = grid.querySelector<HTMLElement>(`[data-unsaved-key="${CSS.escape(key)}"]`);
+    target?.focus({ preventScroll: true });
+    return Boolean(target);
+  }
+
+  /**
+   * 점선 테두리. CSS dashed 는 점이 촘촘하고 고르다. 획 절반이 종이 밖으로 잘려 안쪽만 보이고,
+   * 긴 점과 짧은 점이 섞인 간격은 CSS 가 정한다.
+   */
+  function dashedOutline(): SVGSVGElement {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.classList.add('dh-dash');
+    svg.setAttribute('aria-hidden', 'true');
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('width', '100%');
+    rect.setAttribute('height', '100%');
+    rect.setAttribute('rx', '3');
+    svg.append(rect);
+    return svg;
+  }
+
+  function unsavedFormat(fileName: string): string {
+    const dot = fileName.lastIndexOf('.');
+    return dot > 0 ? fileName.slice(dot + 1) : 'hwpx';
+  }
+
+  function unsavedCard(doc: UnsavedDocument): HTMLLIElement {
+    const item = el('li', 'dh-item dh-unsaved');
+    const name = displayName(doc.fileName) || '새 문서';
+    const card = button('dh-card dh-unsaved-card', '');
+    card.dataset.unsavedKey = `open:${doc.documentId}`;
+    card.setAttribute('aria-label', `${name}, 저장 안 됨${doc.local ? '' : ', 다른 창'}, 열기`);
+    const paper = paperFor(unsavedFormat(doc.fileName), 'dh-doc-paper dh-unsaved-paper');
+    paper.prepend(dashedOutline());
+    const text = el('span', 'dh-card-text');
+    const title = el('span', 'dh-card-title');
+    title.append(el('span', 'dh-card-name', name));
+    text.append(title);
+    card.append(paper, text);
+    card.addEventListener('click', () => deps.unsaved?.open(doc));
+
+    const meta = el('span', 'dh-card-meta dh-unsaved-meta');
+    const state = el('span', 'dh-unsaved-state', doc.local ? '저장 안 됨' : '다른 창');
+    if (doc.createdAt > 0) state.title = `${openedLabel(doc.createdAt)} 만듦`;
+    const save = button('dh-unsaved-save', '저장', `${name} 저장`);
+    save.dataset.unsavedKey = `save:${doc.documentId}`;
+    save.addEventListener('click', () => deps.unsaved?.save(doc));
+    meta.append(state, save);
+    item.append(card, meta);
+    // 이 창에서 고친 문서만 첫 쪽을 그린다. 빈 새 문서는 점선 종이로 둔다.
+    if (doc.local && doc.edited) {
+      lazyThumbnail(gridScope, paper, `unsaved:${doc.documentId}`, () => deps.liveThumbnail(doc.documentId) ?? Promise.resolve(null));
+    }
+    return item;
+  }
+
+  function unsavedStack(list: readonly UnsavedDocument[]): HTMLLIElement {
+    const item = el('li', 'dh-item dh-unsaved dh-unsaved-group');
+    const card = button('dh-card dh-unsaved-card', '');
+    card.dataset.unsavedKey = 'group';
+    card.setAttribute('aria-expanded', String(unsavedOpen));
+    card.setAttribute('aria-label', `저장 안 된 문서 ${list.length}개, ${unsavedOpen ? '접기' : '펼치기'}`);
+    const stack = el('span', 'dh-unsaved-stack');
+    stack.setAttribute('aria-hidden', 'true');
+    const front = el('span', 'dh-paper dh-doc-paper dh-unsaved-paper');
+    front.append(dashedOutline(), el('span', 'dh-unsaved-count', String(list.length)));
+    const sheets = [el('span', 'dh-unsaved-sheet'), el('span', 'dh-unsaved-sheet')];
+    for (const sheet of sheets) sheet.append(dashedOutline());
+    stack.append(...sheets, front);
+    const text = el('span', 'dh-card-text');
+    const title = el('span', 'dh-card-title');
+    title.append(el('span', 'dh-card-name', '저장 안 된 문서'));
+    const meta = el('span', 'dh-card-meta');
+    meta.append(el('span', '', `${list.length}개`), icon(ICONS.chevron, 12));
+    text.append(title, meta);
+    card.append(stack, text);
+    // 펼치고 접어도 화면은 그대로다. 묶음 카드는 맨 앞이라 위치가 변하지 않고, 접어서 줄이 줄면
+    // 격자 높이를 다음에 다시 그릴 때까지 붙잡아 스크롤이 끝에 걸려 당겨지지 않게 한다.
+    card.addEventListener('click', () => {
+      const top = scroller.scrollTop;
+      const height = grid.offsetHeight;
+      unsavedOpen = !unsavedOpen;
+      unsavedFocus = 'group';
+      renderRecent();
+      if (grid.offsetHeight < height) grid.style.minHeight = `${height}px`;
+      scroller.scrollTop = top;
+    });
+    item.append(card);
+    return item;
   }
 
   async function loadDocumentThumbnail(row: RecentDoc): Promise<Blob | null> {
@@ -697,7 +819,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
    */
   function placeDetail(): void {
     grid.querySelector('.dh-detail')?.remove();
-    for (const card of grid.querySelectorAll<HTMLElement>('.dh-card')) {
+    for (const card of grid.querySelectorAll<HTMLElement>('.dh-card[data-id]')) {
       card.setAttribute('aria-expanded', String(card.dataset.id === expanded));
       card.removeAttribute('aria-controls');
     }
@@ -706,9 +828,11 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     const row = doc ? rowFor(doc) : null;
     if (!doc || !card || !row) return;
     card.setAttribute('aria-controls', 'dh-detail');
-    const index = documents.indexOf(doc);
+    // 저장하지 않은 문서 카드가 격자 앞자리를 차지한다.
+    const offset = grid.querySelectorAll(':scope > .dh-unsaved').length;
+    const index = offset + documents.indexOf(doc);
     const perRow = columns();
-    const rowEnd = Math.min(documents.length - 1, Math.floor(index / perRow) * perRow + perRow - 1);
+    const rowEnd = Math.min(offset + documents.length - 1, Math.floor(index / perRow) * perRow + perRow - 1);
     const anchor = grid.children[rowEnd] as HTMLElement | undefined;
     const detail = detailFor(doc, row);
     anchor?.after(detail);
@@ -892,7 +1016,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   grid.addEventListener('click', (event) => {
     const card = (event.target as HTMLElement).closest<HTMLButtonElement>('.dh-card');
     if (!card?.dataset.id) return;
-    for (const other of grid.querySelectorAll<HTMLElement>('.dh-card')) other.tabIndex = -1;
+    for (const other of grid.querySelectorAll<HTMLElement>('.dh-card[data-id]')) other.tabIndex = -1;
     card.tabIndex = 0;
     // 두 번 누르기의 두 번째 누름은 펼침을 되돌리지 않는다. 열기는 dblclick 이 한다.
     if (event.detail > 1) return;
@@ -951,7 +1075,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     const target = documents[next];
     if (!target) return;
     focusedId = target.recentId;
-    for (const other of grid.querySelectorAll<HTMLElement>('.dh-card')) other.tabIndex = -1;
+    for (const other of grid.querySelectorAll<HTMLElement>('.dh-card[data-id]')) other.tabIndex = -1;
     const nextCard = cardFor(focusedId);
     if (nextCard) {
       nextCard.tabIndex = 0;
@@ -1098,7 +1222,9 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       if (root.nextElementSibling) document.body.append(root);
       coverApp(true);
       // 문서 그림은 열 때마다 저장소에서 다시 읽는다. 그사이 고친 문서가 옛 그림으로 남지 않는다.
-      for (const key of [...blobs.keys()]) if (key.startsWith('document:')) forgetBlob(key);
+      for (const key of [...blobs.keys()]) {
+        if (key.startsWith('document:') || key.startsWith('unsaved:')) forgetBlob(key);
+      }
     }
     visible = true;
     root.hidden = false;
@@ -1128,6 +1254,8 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   }
 
   renderTemplates();
+
+  deps.unsaved?.subscribe(() => { if (visible) renderRecent(); });
 
   // 다른 창에서 빠진 문서는 이 창의 홈에서도 바로 빠지고, 새로 연 문서는 다시 읽어 보인다.
   let syncReload: number | null = null;

@@ -40,6 +40,7 @@ import {
   waitForHubReadyLine,
 } from './agent-hub.mjs';
 import { DocumentLeaseManager, releaseRendererDocuments } from './document-leases.mjs';
+import { UnsavedDocumentRegistry } from './unsaved-documents.mjs';
 import { captureDocumentRegion, installAgentContextStore } from './agent-context-store.mjs';
 import { quarantineBookmarkState, readBookmarkState } from './bookmark-state.mjs';
 import {
@@ -632,6 +633,23 @@ const windowFrames = new WindowFrameStore({
   writeAtomically: writeNativeFileAtomically,
 });
 const agentAttention = new AgentAttention({ app, Notification: ElectronNotification, nativeImage });
+const unsavedDocuments = new UnsavedDocumentRegistry();
+
+/** 저장하지 않은 새 문서 목록을 모든 창에 보낸다. 창마다 자기 문서는 local 로 받는다. */
+function broadcastUnsavedDocuments() {
+  for (const window of sessions.windows()) {
+    try {
+      const session = sessions.sessionForSender(window.webContents);
+      window.webContents.send('desktop:unsaved-documents-changed', unsavedDocuments.listFor(session.sessionId));
+    } catch {
+      // 닫히는 중인 창은 건너뛴다.
+    }
+  }
+}
+
+function forgetUnsavedDocuments(sessionId) {
+  if (unsavedDocuments.forget(sessionId)) broadcastUnsavedDocuments();
+}
 
 /** 열거나 저장한 네이티브 파일을 Dock·최근 사용 메뉴에 올린다. */
 function noteRecentDocument(sessionId, handleId) {
@@ -902,6 +920,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
     // 창의 추가 에이전트 세션도 함께 허브에서 닫힌다.
     sessions.removeWindow(window);
+    forgetUnsavedDocuments(session.sessionId);
     if (quitRequested) setImmediate(() => {
       if (quitRequested && !quitting) app.quit();
     });
@@ -945,12 +964,15 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     launchFiles.length = 0;
     // Agents of the dead page's background documents cannot be reached again.
     sessions.releaseAgentSessions(window);
+    forgetUnsavedDocuments(session.sessionId);
   });
   // A reloaded page knows only its window session and reopens the default
   // document itself. Background documents and their agents died with the old page.
   window.webContents.on('did-navigate', () => {
     sessions.releaseAgentSessions(window);
     documentLeases.releaseSession(session.sessionId, { keepDefaultSlot: true });
+    // 다시 불러온 페이지가 자기 새 문서를 다시 알린다.
+    forgetUnsavedDocuments(session.sessionId);
   });
   window.webContents.setWindowOpenHandler(({ url, frameName }) => {
     // 인쇄 미리보기 같은 앱 내부 surface는 외부 브라우저가 아니라 네이티브
@@ -1489,6 +1511,28 @@ ipcMain.handle('desktop:reveal-native-document', async (event, documentId) => {
   if (typeof documentId !== 'string' || !documentId) return false;
   if ((await nativeFiles.inspectDocument(documentId)).state !== 'present') return false;
   shell.showItemInFolder(nativeFiles.bookmarkPathFor(documentId));
+  return true;
+});
+ipcMain.on('desktop:set-unsaved-documents', (event, documents) => {
+  try {
+    if (unsavedDocuments.set(sessionForEvent(event).sessionId, documents)) broadcastUnsavedDocuments();
+  } catch (error) {
+    console.warn('[hamaeditor] unsaved document update failed:', error);
+  }
+});
+ipcMain.handle('desktop:list-unsaved-documents', (event) => (
+  unsavedDocuments.listFor(sessionForEvent(event).sessionId)
+));
+// 다른 창의 새 문서를 열거나 저장한다. 그 창을 앞으로 가져오고 그 창이 직접 연다·저장한다.
+ipcMain.handle('desktop:unsaved-document-action', (event, documentId, action) => {
+  const session = sessionForEvent(event);
+  if (action !== 'open' && action !== 'save') return false;
+  const owner = unsavedDocuments.ownerOf(documentId);
+  if (!owner || owner === session.sessionId) return false;
+  const target = sessions.sessionById(owner);
+  if (!target || target.sender.isDestroyed()) return false;
+  sessions.focusSession(owner);
+  target.sender.send('desktop:run-unsaved-document-action', { documentId, action });
   return true;
 });
 const recentWindowOpens = new Map();
