@@ -3,6 +3,7 @@ import { createSetupTerminal } from './setup-terminal.ts';
 import './settings.css';
 import { confirmSheet } from './sheet.ts';
 import { showToast } from '../toast.ts';
+import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/active.ts';
 
 import {
   availableModelsForAgent,
@@ -414,6 +415,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   let setupProgressResetTimer: ReturnType<typeof setTimeout> | null = null;
   const openedAuthUrls = new Set<string>();
   const announcedUpdates = new Set<string>();
+  const unsubscribeInitialSetup = onInitialSetupInactive(() => {
+    if (!disposed && setupStatuses) announceProviderUpdates(setupStatuses);
+  });
   /** 사용자가 닫거나 취소한 로그인. 늦게 도착한 상태로 다시 붙지 않게 한다. */
   const abandonedAuthRunIds = new Set<string>();
   /** 닫기마다 올라간다. 닫기 전에 보낸 시작 요청의 응답을 버리는 데 쓴다. */
@@ -1994,6 +1998,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   /** 새 Claude/Codex 버전을 세션마다 한 번 조용히 알린다. 놓쳐도 연결 목록에 업데이트 버튼이 남는다. */
   function announceProviderUpdates(statuses: AgentSetupStatusMap): void {
+    // 처음 설정 중에는 띄우지 않는다. 설정이 닫히면 그때의 상태로 다시 알린다.
+    if (isInitialSetupActive()) return;
     for (const agent of ['claude', 'codex'] as const) {
       const status = statuses[agent];
       // 설치 전에는 번들 런타임의 오래된 버전이 updateRequired 를 켠다.
@@ -3493,6 +3499,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       if (piProgressCreepTimer) clearInterval(piProgressCreepTimer);
       unsubscribeHancomGit();
       unsubscribeAttentionPrefs();
+      unsubscribeInitialSetup();
       licenseSection?.dispose();
       editingSettings.dispose();
       element.remove();

@@ -27,6 +27,7 @@ import {
   SUGGESTED_AGENT,
 } from './catalog.ts';
 import { createHippo } from './hippo.ts';
+import { holdInitialSetup, releaseInitialSetup } from './active.ts';
 import {
   completeInitialSetup,
   loadInitialSetup,
@@ -429,6 +430,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
 
   function open(): void {
     if (disposed || overlay.isConnected) return;
+    holdInitialSetup(overlay);
     lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.appendChild(overlay);
     overlay.setAttribute('aria-hidden', 'false');
@@ -448,6 +450,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
 
   function close(): void {
+    releaseInitialSetup(overlay);
     if (!overlay.isConnected) return;
     overlay.classList.remove('rhwp-setup-open');
     overlay.setAttribute('aria-hidden', 'true');
@@ -479,6 +482,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       document.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('focus', onWindowFocus);
       overlay.remove();
+      releaseInitialSetup(overlay);
     },
   };
 }
@@ -492,9 +496,12 @@ export function maybeStartInitialSetup(
 ): InitialSetupUi | null {
   if (!shouldShowInitialSetup(deps.storage)) return null;
   const ui = createInitialSetup(deps);
+  // 부트 화면이 걷히기를 기다리는 동안에도 처음 설정이 뜰 차례로 본다.
+  holdInitialSetup(ui.element);
   void (async () => {
     if (!shouldForceInitialSetup() && await bootLaunchedWithFile()) {
       saveInitialSetup({ deferred: true }, deps.storage);
+      releaseInitialSetup(ui.element);
       deps.onDeferred?.();
       return;
     }

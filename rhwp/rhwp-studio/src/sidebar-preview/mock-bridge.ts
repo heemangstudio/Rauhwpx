@@ -1839,10 +1839,16 @@ export function createMockBridge(
     emit({ type: 'provider-status', providers: data.providers });
     setupChanged();
   }
+  /** 설치된 프로바이더에 새 버전이 나온 것처럼 상태를 알린다. */
+  function setUpdateAvailable(provider: T.AgentName, latestVersion: string) {
+    Object.assign(data.setups[provider], { latestVersion, updateRequired: true });
+    setupChanged();
+  }
   return {
     bridge,
     setConnection,
     setServices,
+    setUpdateAvailable,
     setScenario: (value: Scenario) => {
       scenario = value;
       interruptNextTurn = true;
