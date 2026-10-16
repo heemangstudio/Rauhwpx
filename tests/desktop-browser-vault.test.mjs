@@ -46,3 +46,19 @@ test('website namespace rejects unrelated keys and fails closed when OS encrypti
   await assert.rejects(() => vault.set(accountKey, 'secret'), /system keyring/);
   await assert.rejects(() => vault.resetBrowser(), /system keyring/);
 });
+
+test('user secrets live in their own namespace, leave with browser data and survive a provider reset', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hama-browser-vault-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const vault = createSecretVault({ filePath: path.join(root, 'secrets.json'), safeStorage: protectedStorage(), platform: 'darwin' });
+  const userSecret = 'usersecret.9d3c1f7e-2b4a-4c8d-9e1f-0a2b3c4d5e6f';
+  await assert.rejects(() => vault.set('usersecret.not-a-uuid', 'value'), /Invalid user secret identifier/);
+  await vault.set(userSecret, 'sk-user-fixture');
+  await vault.set('provider.api-key', 'provider-value');
+  await vault.resetProviders();
+  assert.equal(await vault.get(userSecret), 'sk-user-fixture');
+  await vault.set('provider.api-key', 'provider-value');
+  await vault.resetBrowser();
+  assert.equal(await vault.get(userSecret), null);
+  assert.equal(await vault.get('provider.api-key'), 'provider-value');
+});

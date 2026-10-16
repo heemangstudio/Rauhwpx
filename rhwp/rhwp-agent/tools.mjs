@@ -1654,7 +1654,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'request_permission',
-    description: 'Request a missing project or local execution permission for this chat, explaining why. Ordinary public research browsing and managed downloads are enabled by default. Returns pending: end the turn and wait. It authorizes nothing. Document edits need 에이전트/전체 mode or an approved plan.',
+    description: 'Request a missing project or local execution permission, explaining why. Public research browsing and managed downloads are on by default. Returns pending: end the turn; the chat resumes when the user answers. Document edits need 에이전트/전체 mode or an approved plan.',
     shape: {
       capability: z.enum(CHAT_PERMISSION_CAPABILITIES),
       reason: z.string().trim().min(1).max(1_000),
@@ -1816,7 +1816,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_status',
-    description: 'List shared user tabs, your assigned tabs and saved account metadata. activeTabId is the current sidebar tab; reuse it for the current-page task. For an exact origin match with agentReuseApproved=true, use browser_fill_account. Passwords stay local.',
+    description: 'List shared user tabs, your assigned tabs, saved accounts and secrets (no values). activeTabId is the current sidebar tab; reuse it for the current-page task. Accounts with agentReuseApproved=true fill via browser_fill_account.',
     shape: {},
   },
   {
@@ -1886,12 +1886,28 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_fill_account',
-    description: 'Autofill a sign-in form locally using an account ID from browser_status, including previously typed/saved logins. For an exact origin with agentReuseApproved=true, proceed without another approval; otherwise request it with browser_request_account. Supply current username/password snapshot refs. Credential values never enter tool arguments/results.',
+    description: 'Autofill a sign-in form with an account ID from browser_status, including logins the user saved. With agentReuseApproved=true on its exact origin, proceed without approval; otherwise call browser_request_account. Pass current username/password refs. Credentials never enter arguments or results.',
     shape: { tabId: browserTab(), accountId: z.string().uuid(), snapshotId: z.string().min(1).max(160), usernameRef: z.string().min(1).max(160).optional(), passwordRef: z.string().min(1).max(160), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
   },
   {
+    name: 'browser_fill_secret',
+    description: 'Type an approved secret (browser_status secrets) into one text or password field on its origin. Returns the settled change, never the value.',
+    shape: { tabId: browserTab(), snapshotId: z.string().min(1).max(160), ref: z.string().min(1).max(160), secretId: z.string().uuid(), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative(), submit: z.boolean().default(false) },
+  },
+  {
+    name: 'request_secret',
+    description: 'Root conversation only. Ask the user for an API key, token or password used on exact HTTPS origins; secretId reuses a saved one. Returns pending: end the turn. You never see the value.',
+    shape: {
+      label: z.string().trim().min(1).max(80),
+      origins: z.array(z.string().max(2_000)).min(1).max(20),
+      kind: z.enum(['api-key', 'token', 'password', 'other']),
+      reason: z.string().trim().min(1).max(1_000),
+      secretId: z.string().uuid().optional(),
+    },
+  },
+  {
     name: 'browser_request_account',
-    description: 'Root conversation only. Ask the user for website access for an exact origin. kind account (default): approve accountId, or open a secure save form. kind sign-in or code: the user signs in or enters a verification code in tabId. Returns pending; end the turn. The chat resumes when the user finishes. Never ask for passwords or codes in chat.',
+    description: 'Root conversation only. Ask the user for website access on an exact origin. kind account (default): approve accountId or save a new account. kind sign-in or code: the user signs in or enters a code in tabId. Returns pending: end the turn; the chat resumes when the user answers. Never ask for credentials in chat.',
     shape: { tabId: browserTab(), origin: z.string().url().max(2_000), label: z.string().min(1).max(120), reason: z.string().min(1).max(1_000), accountId: z.string().min(1).max(160).optional(), kind: z.enum(['account', 'sign-in', 'code']).optional() },
   },
 ];
@@ -1998,7 +2014,9 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   browser_capture: 'browser',
   browser_downloads: 'browser',
   browser_fill_account: 'browser',
+  browser_fill_secret: 'browser',
   browser_request_account: 'user-interaction',
+  request_secret: 'user-interaction',
 });
 
 export const TOOL_DEFINITIONS = Object.freeze(BASE_TOOL_DEFINITIONS.map((definition) => {
@@ -2069,7 +2087,7 @@ export function filterToolDefinitions(profile, { projectWrites = true, homeSearc
     if (!entries.has(definition.category) && !entries.has(definition.name) && !canRequest) return false;
     if (definition.category === 'browser' && researchPermissions.browse !== true) return false;
     if (definition.category === 'download-write' && researchPermissions.downloads !== true) return false;
-    if (definition.name === 'browser_request_account' && !requestableProfile) return false;
+    if ((definition.name === 'browser_request_account' || definition.name === 'request_secret') && !requestableProfile) return false;
     // 홈 폴더 검색은 데스크톱에서 켜졌을 때만 보인다(기본은 숨김).
     if (definition.name === 'find_home_files' && !homeSearch) return false;
     if (!projectWrites && !canRequest && (definition.category === 'project-write' || definition.category === 'project-ingest')) return false;

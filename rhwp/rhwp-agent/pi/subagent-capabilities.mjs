@@ -16,6 +16,7 @@ const ROOT_ONLY_TOOLS = new Set([
   'update_agent_instructions',
   'commit_product_skill',
   'browser_request_account',
+  'request_secret',
 ]);
 const CHILD_DOCUMENT_CATEGORIES = new Set([
   'instruction-read',

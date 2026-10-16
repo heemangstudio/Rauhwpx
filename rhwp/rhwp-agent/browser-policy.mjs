@@ -80,6 +80,10 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
   let initialized = false;
   let queue = Promise.resolve();
   const changeGuards = new Set();
+  /** threadId\naccountId → { origins, profileId, version } */
+  const chatAccounts = new Map();
+  let chatAccountVersion = 0;
+  const chatAccountKey = (threadId, accountId) => `${threadId ?? ''}\n${accountId ?? ''}`;
   const readyPromise = (async () => {
     state = await readBrowserJson(filePath);
     if (state) {
@@ -148,6 +152,10 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
       } else if (input.operation === 'forget-account') {
         next.accounts = next.accounts.filter((entry) => entry.accountId !== input.accountId);
       } else throw failure('BROWSER_INVALID_POLICY', 'The browser policy operation is unknown.');
+      // 계정 사용을 거두거나 지우면 채팅 승인도 함께 거둔다.
+      if (input.operation === 'revoke-account' || input.operation === 'forget-account') {
+        for (const key of [...chatAccounts.keys()]) if (key.endsWith(`\n${input.accountId}`)) chatAccounts.delete(key);
+      }
       next.revision += 1;
       for (const guard of changeGuards) await guard({ operation: input.operation, accountId: input.accountId, origin: input.origin, key: input.key, enabled: input.enabled });
       await writeBrowserJson(filePath, next);
@@ -169,10 +177,14 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
     if (site?.blockedActions.includes(action)) return { allowed: false, origin, code: 'BROWSER_SITE_BLOCKED', reason: 'This website action has been revoked.', revision: state.revision };
     if (action === 'account-use' || accountId) {
       const account = state.accounts.find((entry) => entry.accountId === accountId);
-      if (!account?.approved || !origin || !account.origins.includes(origin) || (profileId && account.profileId !== profileId)) {
+      const matches = (grant) => !!grant && !!origin && grant.origins.includes(origin) && (!profileId || grant.profileId === profileId);
+      const remembered = account?.approved && matches(account);
+      // "이 채팅" 승인은 허브 메모리에만 있고 그 채팅의 행위자에게만 적용된다.
+      const chat = remembered ? null : chatAccounts.get(chatAccountKey(actor?.threadId, accountId));
+      if (!remembered && !matches(chat)) {
         return { allowed: false, origin, code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED', reason: 'Approve this website account before agent access.', revision: state.revision };
       }
-      if (action === 'account-use') return { allowed: true, origin, source: 'remembered-account', accountVersion: account.version, revision: state.revision };
+      if (action === 'account-use') return { allowed: true, origin, source: remembered ? 'remembered-account' : 'chat-account', accountVersion: remembered ? account.version : chat.version, revision: state.revision };
     }
     const enabled = action === 'browse' || action === 'read' ? state.defaults.browse
       : action === 'download' ? state.defaults.download
@@ -188,7 +200,30 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
     return result;
   }
 
+  /** 사용자가 "이 채팅"으로 승인한 계정 — 영구 정책에는 남기지 않는다. */
+  async function grantChatAccount({ actor, threadId, accountId, origins: values, profileId = 'default' } = {}) {
+    requireHuman(actor);
+    await readyPromise;
+    if (!threadId || typeof accountId !== 'string' || !accountId) throw failure('BROWSER_INVALID_POLICY', 'The chat account approval needs its chat and account.');
+    const grant = { origins: origins(values), profileId: boundedText(profileId, 100), version: ++chatAccountVersion, grantedAt: Date.now() };
+    for (const guard of changeGuards) await guard({ operation: 'approve-chat-account', accountId });
+    chatAccounts.set(chatAccountKey(threadId, accountId), grant);
+    try { onChange({ type: 'browser-policy-changed', revision: state.revision }); } catch {}
+    return clone(grant);
+  }
+  function chatAccountApproved(actor, accountId) {
+    return !!actor?.threadId && chatAccounts.has(chatAccountKey(actor.threadId, accountId));
+  }
+  /** 데스크톱 보관함은 이 시각 뒤에 사용자가 사용을 끈 계정이면 채팅 승인도 받지 않는다. */
+  function chatAccountGrantedAt(actor, accountId) {
+    return actor?.threadId ? chatAccounts.get(chatAccountKey(actor.threadId, accountId))?.grantedAt ?? null : null;
+  }
+  function clearChatAccounts(threadId) {
+    for (const key of [...chatAccounts.keys()]) if (key.startsWith(`${threadId ?? ''}\n`)) chatAccounts.delete(key);
+  }
+
   return { ready: () => readyPromise, list, update, check, assertAllowed, effectiveResearch, categoryAvailability,
+    grantChatAccount, chatAccountApproved, chatAccountGrantedAt, clearChatAccounts,
     addChangeGuard: (guard) => { changeGuards.add(guard); return () => changeGuards.delete(guard); },
   };
 }

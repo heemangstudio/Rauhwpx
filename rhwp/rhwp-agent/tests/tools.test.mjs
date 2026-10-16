@@ -1119,7 +1119,8 @@ test('표·셀 속성은 타입이 있는 객체이고 모르는 키는 올바�
 // 채팅별 권한 요청 도구의 정의를 포함한다.
 // 소유 브라우저의 구조화된 ref/epoch 도구를 모든 모드에 제공하는 비용도 제한한다.
 // browser_select와 개요의 범위·찾기·조작 후 관찰 인자 추가분만큼 올렸다. 관찰마다 줄어드는 양이 훨씬 크다.
-const DIRECT_DEFINITION_TOTAL_LIMIT = 75_200;
+// 사용자 비밀 도구(request_secret·browser_fill_secret) 추가분만큼 올렸다. 기존 브라우저 설명을 줄여 일부를 메웠다.
+const DIRECT_DEFINITION_TOTAL_LIMIT = 76_500;
 const TOOL_DEFINITION_LIMIT = 3_000;
 
 test('direct 프로필 도구 정의 크기가 한도를 넘지 않는다', () => {
