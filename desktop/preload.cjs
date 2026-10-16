@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   finishRebrandImport: (token, outcome) => ipcRenderer.invoke('desktop:finish-rebrand-import', token, outcome),
   getLaunchFiles: () => ipcRenderer.invoke('desktop:get-launch-files'),
   getLaunchGeneratedDocument: () => ipcRenderer.invoke('desktop:get-launch-generated-document'),
+  offersAutosaveRecovery: () => ipcRenderer.invoke('desktop:offers-autosave-recovery'),
   openGeneratedDocumentWindow: (payload) => ipcRenderer.invoke(
     'desktop:open-generated-document-window',
     payload,

@@ -880,7 +880,10 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   const windowId = window.id;
   windowFrames.track(window);
   installTextContextMenu({ Menu, webContents: window.webContents, window, isMac });
+  // 자동 저장본 복구는 앱의 첫 창만 묻는다. 다른 창에서 띄운 창(새 창에서 열기·새 윈도우)은 바로 문서를 연다.
+  const offersAutosaveRecovery = sessions.windows().length === 0;
   const session = sessions.addWindow(window, { source: launch.source, openFiles: [] });
+  session.offersAutosaveRecovery = offersAutosaveRecovery;
   session.generatedDocument = generatedDocument
     ? { launchDocumentId: randomUUID(), ...generatedDocument }
     : null;
@@ -1204,6 +1207,7 @@ ipcMain.handle('desktop:get-launch-generated-document', (event) => {
   const session = sessionForEvent(event);
   return session.generatedDocument;
 });
+ipcMain.handle('desktop:offers-autosave-recovery', (event) => sessionForEvent(event).offersAutosaveRecovery === true);
 installPdfExport({
   ipcMain,
   dialog,

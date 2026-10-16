@@ -265,6 +265,7 @@ import {
   restoreNativeDocument,
   reserveDesktopDocument,
   canOpenNativeDocumentWindow,
+  offersAutosaveRecovery,
   canRevealNativeDocument,
   desktopFileManagerName,
   openNativeDocumentWindow,
@@ -4342,6 +4343,8 @@ async function offerAutosaveRecoveryAtStartup(): Promise<void> {
   if (shouldSkipInitialAutosaveRecovery()) return;
 
   try {
+    // 다른 창에서 띄운 창은 묻지 않는다. 복구본은 남아 앱의 첫 창이 다음에 묻는다.
+    if (!await offersAutosaveRecovery()) return;
     await rendererSessionContextPromise;
     await offerAutosaveRecovery({
       listRecoverable: () => listRecoverableAutosaveDrafts(),

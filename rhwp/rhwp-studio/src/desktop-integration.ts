@@ -144,6 +144,8 @@ export interface RhwpDesktopApi {
   readRememberedNativeDocument?: (documentId: string) => Promise<NativeFileReadResult | null>;
   revealNativeDocument?: (documentId: string) => Promise<boolean>;
   openNativeDocumentWindow?: (documentId: string) => Promise<boolean>;
+  /** 이 창이 앱의 첫 창이라 자동 저장본 복구를 물어도 되는지. */
+  offersAutosaveRecovery?: () => Promise<boolean>;
   /** 저장하지 않은 새 문서. 창마다 자기 목록을 알리고 모든 창의 목록을 받는다. */
   setUnsavedDocuments?: (documents: UnsavedDocumentReport[]) => void;
   listUnsavedDocuments?: () => Promise<DesktopUnsavedDocument[]>;
@@ -1178,6 +1180,20 @@ export async function revealNativeDocument(documentId: string, win?: DesktopHost
   const api = desktopHost(win)?.rhwpDesktop;
   if (!api?.revealNativeDocument) return false;
   return await api.revealNativeDocument(documentId) === true;
+}
+
+/**
+ * 자동 저장본 복구는 앱의 첫 창만 묻는다. 다른 창에서 띄운 창은 묻지 않고 바로 문서를 연다.
+ * 데스크톱이 아니면(웹·확장) 늘 묻는다.
+ */
+export async function offersAutosaveRecovery(win?: DesktopHost): Promise<boolean> {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.offersAutosaveRecovery) return true;
+  try {
+    return await api.offersAutosaveRecovery() === true;
+  } catch {
+    return true;
+  }
 }
 
 export function canOpenNativeDocumentWindow(win?: DesktopHost): boolean {
