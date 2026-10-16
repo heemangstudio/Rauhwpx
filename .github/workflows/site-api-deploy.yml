@@ -87,25 +87,23 @@ jobs:
         run: |
           set -eu
           # `railway up --ci` returns once the build finishes; the old deployment keeps serving
-          # until the new one passes /healthz. Wait for the license routes to answer 200
-          # (404 = old code still live, 503 = LICENSE_SIGNING_PRIVATE_KEY missing).
+          # until the new one passes /healthz. Wait for the webhook readiness probe to answer 200
+          # (404 = old code still live, 503 = GROBLE_WEBHOOK_SECRET missing). A GET never counts
+          # as a rejected webhook, so the check sends no alert email.
           code=000
           for i in $(seq 1 40); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$SITE_API_URL/v1/license/public-key" || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$SITE_API_URL/v1/groble/webhook" || true)
             if [ "$code" = "200" ]; then break; fi
-            echo "public-key -> $code, waiting"
+            echo "groble webhook probe -> $code, waiting"
             sleep 15
           done
           if [ "$code" != "200" ]; then
-            echo "::error::/v1/license/public-key answered $code after 10 minutes. 503 means LICENSE_SIGNING_PRIVATE_KEY is not set on Railway; 404 means the new deployment never went live."
+            echo "::error::GET /v1/groble/webhook answered $code after 10 minutes. 503 means GROBLE_WEBHOOK_SECRET is not set on Railway; 404 means the new deployment never went live."
             exit 1
           fi
           curl -fsS "$SITE_API_URL/healthz"
           echo
+          # 503 here means LICENSE_SIGNING_PRIVATE_KEY is not set.
           curl -fsS "$SITE_API_URL/v1/license/public-key"
           echo
-          # An unsigned webhook must be refused with 401 (secret set), not 503 (secret missing).
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "$SITE_API_URL/v1/groble/webhook")
-          echo "unsigned webhook -> $code"
-          test "$code" = "401"
           curl -fsS "$SITE_API_URL/v1/license/by-ref?ref=deploy-check" | grep -q '"pending"'

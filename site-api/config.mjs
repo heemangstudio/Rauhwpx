@@ -28,6 +28,10 @@ export function resolveLicensesDbPath(env = process.env) {
   return path.join(resolveDataDir(env), 'licenses.json');
 }
 
+export function resolveWebhookLogDbPath(env = process.env) {
+  return path.join(resolveDataDir(env), 'webhook-log.json');
+}
+
 export const DEFAULT_LICENSE_ALLOWED_ORIGINS = [
   'https://heemangstudios.com',
   'https://www.heemangstudios.com',

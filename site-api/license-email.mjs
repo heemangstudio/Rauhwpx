@@ -54,14 +54,19 @@ export function createLogProvider({ log = (line) => process.stderr.write(`${line
   };
 }
 
-export function createEmailProvider(env = process.env) {
+/** The Resend provider from env, or null when RESEND_API_KEY is not set. */
+export function resendProviderFromEnv(env = process.env) {
   const apiKey = typeof env.RESEND_API_KEY === 'string' ? env.RESEND_API_KEY.trim() : '';
-  if (!apiKey) return createLogProvider();
+  if (!apiKey) return null;
   return createResendProvider({
     apiKey,
     from: env.LICENSE_EMAIL_FROM?.trim() || 'HamaEditor <license@heemangstudios.com>',
     replyTo: env.LICENSE_EMAIL_REPLY_TO?.trim() || 'management@heemangstudios.com',
   });
+}
+
+export function createEmailProvider(env = process.env) {
+  return resendProviderFromEnv(env) ?? createLogProvider();
 }
 
 export function maskEmail(email) {

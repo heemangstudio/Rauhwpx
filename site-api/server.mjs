@@ -10,9 +10,10 @@ import {
   resolveUniqueInstallPingKey,
   resolveUniqueInstallsDbPath,
   resolveWaitlistDbPath,
+  resolveWebhookLogDbPath,
 } from './config.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
-import { createEmailProvider } from './license-email.mjs';
+import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
 import { createLicensesService, emptyLicensesState } from './licenses.mjs';
 import { renderUniqueInstallsPage } from './pages.mjs';
@@ -24,11 +25,32 @@ import {
   emptyUniqueInstallsState,
 } from './unique-installs.mjs';
 import { createWaitlistService, emptyWaitlistState } from './waitlist.mjs';
+import { createWebhookAlerter } from './webhook-alert.mjs';
+import { createWebhookLog, emptyWebhookLogState, webhookLogEntry } from './webhook-log.mjs';
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 const MAX_WEBHOOK_BODY_BYTES = 256 * 1024;
 const MINUTE = 60 * 1000;
 const TEN_MINUTES = 10 * MINUTE;
+// Groble retries 408/429/5xx for about 44 hours and treats any other 4xx as final.
+// Anything that fails before the signature matches answers 503: a stranger loses nothing,
+// and a real sale we failed to verify (secret mismatch, missing secret, stripped headers)
+// keeps arriving until we fix it. Once the signature matches, the request is Groble's, so
+// a stale timestamp (replay) and an unreadable body are final.
+const WEBHOOK_REJECT_STATUS = {
+  not_configured: 503,
+  missing_headers: 503,
+  bad_timestamp: 503,
+  bad_signature: 503,
+  body_too_large: 503,
+  timestamp_out_of_window: 401,
+  json_invalid: 400,
+  payload_invalid: 400,
+  store_error: 500,
+};
+// Rejections that get recorded and alerted. Past this a forger gets 429 and costs no disk write.
+const WEBHOOK_REJECTS_PER_IP = 30;
+const WEBHOOK_REJECTS_TOTAL = 300;
 const RAU_ICON_PATH = fileURLToPath(new URL('./public/rau.png', import.meta.url));
 
 function siteError(code, message) {
@@ -108,9 +130,21 @@ function securityHeaders(isHtml) {
   };
 }
 
-export function siteRequestListener({ uniqueInstalls, waitlist, licenses, licenseConfig = {}, log = () => {} }) {
+export function siteRequestListener({
+  uniqueInstalls,
+  waitlist,
+  licenses,
+  licenseConfig = {},
+  webhookLog = createWebhookLog(),
+  webhookAlerts = createWebhookAlerter({ log: () => {} }),
+  log = () => {},
+}) {
   const limiter = createRateLimiter();
   const allowedOrigins = new Set(licenseConfig.allowedOrigins ?? []);
+  // Work that must never delay or fail a response: runs after it is sent.
+  const later = (fn) => setImmediate(() => {
+    void Promise.resolve().then(fn).catch((error) => log(`[site-api] background task failed: ${error?.stack ?? error}`));
+  });
   return async (req, res) => {
     const ip = clientIp(req);
     // 웹사이트는 text/plain 으로 보내 preflight 없이 다른 origin 에서 호출한다.
@@ -130,6 +164,25 @@ export function siteRequestListener({ uniqueInstalls, waitlist, licenses, licens
       req.resume?.();
       throw rateLimitedError();
     };
+    const rejectWebhook = (reason, { verified = false, rawBody } = {}) => {
+      const status = WEBHOOK_REJECT_STATUS[reason] ?? 503;
+      log(`[site-api] groble webhook rejected: ${reason} (${status})`);
+      if (!limiter.check(`groble-reject:${ip}`, WEBHOOK_REJECTS_PER_IP, TEN_MINUTES)
+        || !limiter.check('groble-reject:all', WEBHOOK_REJECTS_TOTAL, TEN_MINUTES)) {
+        req.resume?.();
+        send(429, { ok: false, error: 'rate_limited' });
+        return;
+      }
+      send(status, { ok: false, error: reason });
+      const entry = webhookLogEntry({ kind: 'rejected', reason, status, verified, headers: req.headers, rawBody });
+      later(async () => {
+        const saved = await webhookLog.record(entry).catch((error) => {
+          log(`[site-api] webhook log write failed: ${error?.message ?? error}`);
+          return { ...entry, at: new Date().toISOString() };
+        });
+        await webhookAlerts.notify(saved);
+      });
+    };
     try {
       const host = req.headers.host;
       if (typeof host === 'string' && host) {
@@ -147,10 +200,22 @@ export function siteRequestListener({ uniqueInstalls, waitlist, licenses, licens
         if (!licenses) throw siteError('NOT_FOUND', 'not found');
       }
       switch (route) {
+        case 'GET /v1/groble/webhook':
+          // Deploy check: 404 until this build is live, 503 while the secret is missing.
+          if (!licenseConfig.webhookSecret) send(503, { ok: false, error: 'not_configured' });
+          else send(200, { ok: true });
+          return;
         case 'POST /v1/groble/webhook': {
-          // Groble: 2xx fast, never 3xx/410. Bad signatures get 401 (final failure, no retry);
-          // store/config problems get 500/503 so Groble retries for ~44h.
-          const rawBody = await readRaw(req, MAX_WEBHOOK_BODY_BYTES);
+          // Groble: 2xx fast, never 3xx/410. Rejections follow WEBHOOK_REJECT_STATUS and are
+          // recorded and alerted after the response.
+          let rawBody;
+          try {
+            rawBody = await readRaw(req, MAX_WEBHOOK_BODY_BYTES);
+          } catch (error) {
+            if (error?.code !== 'BODY_TOO_LARGE') throw error;
+            rejectWebhook('body_too_large');
+            return;
+          }
           const check = verifyGrobleWebhook({
             headers: req.headers,
             rawBody,
@@ -158,20 +223,30 @@ export function siteRequestListener({ uniqueInstalls, waitlist, licenses, licens
             previousSecret: licenseConfig.webhookSecretPrevious,
           });
           if (!check.ok) {
-            log(`[site-api] groble webhook rejected: ${check.reason}`);
-            send(check.reason === 'not_configured' ? 503 : 401, { ok: false, error: check.reason });
+            rejectWebhook(check.reason, { verified: check.reason === 'timestamp_out_of_window', rawBody });
             return;
           }
           let event;
           try {
             event = JSON.parse(rawBody.toString('utf8'));
           } catch {
-            send(400, { ok: false, error: 'json_invalid' });
+            rejectWebhook('json_invalid', { verified: true, rawBody });
             return;
           }
-          const result = await licenses.handleGrobleEvent(event, { idempotencyKey: check.idempotencyKey });
+          let result;
+          try {
+            result = await licenses.handleGrobleEvent(event, { idempotencyKey: check.idempotencyKey });
+          } catch (error) {
+            if (!error?.licenseError) log(`[site-api] groble webhook failed: ${error?.stack ?? error}`);
+            rejectWebhook(error?.licenseError ? 'payload_invalid' : 'store_error', { verified: true, rawBody });
+            return;
+          }
           log(`[site-api] groble ${event?.type} ${result.duplicate ? 'duplicate' : result.action}`);
           send(200, { ok: true, duplicate: result.duplicate, action: result.action });
+          if (result.action === 'held' && !result.duplicate) {
+            const entry = webhookLogEntry({ kind: 'held', reason: result.reason, status: 200, verified: true, headers: req.headers, rawBody });
+            later(() => webhookLog.record(entry));
+          }
           setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
           return;
         }
@@ -227,6 +302,10 @@ export function siteRequestListener({ uniqueInstalls, waitlist, licenses, licens
         case 'GET /v1/admin/orders':
           allow('admin', 120, TEN_MINUTES);
           send(200, await licenses.admin.orders(bearerToken(req), Object.fromEntries(searchParams)));
+          return;
+        case 'GET /v1/admin/webhooks':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.webhooks(bearerToken(req), Object.fromEntries(searchParams)));
           return;
         case 'POST /v1/admin/licenses/issue':
         case 'POST /v1/admin/licenses/revoke':
@@ -331,6 +410,15 @@ export function createSiteServer(env = process.env, options = {}) {
     licenseConfig.publicKeyRawBase64 = rawPublicKeyBase64(publicKey);
   }
   const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
+  const webhookLog = createWebhookLog({
+    store: createFileStore(resolveWebhookLogDbPath(env), { emptyState: emptyWebhookLogState }),
+    now: options.now,
+  });
+  const webhookAlerts = createWebhookAlerter({
+    provider: options.alertProvider !== undefined ? options.alertProvider : resendProviderFromEnv(env),
+    now: options.now,
+    log,
+  });
   const licenses = createLicensesService({
     store: createFileStore(resolveLicensesDbPath(env), { emptyState: emptyLicensesState }),
     uniqueInstallsStore: uniqueInstallsStore,
@@ -344,10 +432,11 @@ export function createSiteServer(env = process.env, options = {}) {
     grandfatherPlatforms: licenseConfig.grandfatherPlatforms,
     adminToken: licenseConfig.adminToken,
     downloadUrl: licenseConfig.downloadUrl,
+    webhookLog,
     now: options.now,
     log,
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, licenses, licenseConfig, log });
+  const listener = siteRequestListener({ uniqueInstalls, waitlist, licenses, licenseConfig, webhookLog, webhookAlerts, log });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
   const server = http.createServer((req, res) => {
