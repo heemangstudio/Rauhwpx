@@ -156,7 +156,7 @@ async function fixture(t, { holdStartupDelayMs = 0, fakeCodex = false } = {}) {
         console.log(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: JSON.stringify(selected) } }));
       }
       console.log(JSON.stringify({ type: 'agent_settled' }));
-      setInterval(() => {}, 1000);
+      if (process.platform === 'win32') setInterval(() => {}, 1000);
     }
   `);
   const codexEnv = {};

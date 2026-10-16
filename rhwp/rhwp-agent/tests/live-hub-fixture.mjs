@@ -25,7 +25,7 @@ export const ECHO_PI_SCRIPT = `
   } else {
     emit(JSON.stringify({ prompt }));
     console.log(JSON.stringify({ type: 'agent_settled' }));
-    setInterval(() => {}, 1000);
+    if (process.platform === 'win32') setInterval(() => {}, 1000);
   }
 `;
 
@@ -108,7 +108,7 @@ export async function startLiveHub(t, {
         assert.equal(await terminateAndWaitForProcessTreeExit(child), true);
         await exited;
       } else {
-      // 정상 종료가 막히면(예: 멈춘 파일 읽기) 강제로 끝내 테스트가 매달리지 않게 한다.
+        // 정상 종료가 막히면(예: 멈춘 파일 읽기) 강제로 끝내 테스트가 매달리지 않게 한다.
         child.kill('SIGTERM');
         const timer = setTimeout(() => child.kill('SIGKILL'), 5_000);
         await exited;

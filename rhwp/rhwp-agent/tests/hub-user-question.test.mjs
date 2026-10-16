@@ -71,7 +71,7 @@ async function startHub(t, { fakePi = false, controlledCompletion = false, backe
             clearInterval(timer);
             require('node:fs').unlinkSync(${JSON.stringify(completePi)});
             console.log(JSON.stringify({ type: 'agent_settled' }));
-            setInterval(() => {}, 1000);
+            if (process.platform === 'win32') setInterval(() => {}, 1000);
           }, 20);
         `;
       } : fakePi,
@@ -88,7 +88,7 @@ async function startHub(t, { fakePi = false, controlledCompletion = false, backe
       clearInterval(timer);
       require('node:fs').unlinkSync(${JSON.stringify(completePi)});
       console.log(JSON.stringify({ type: 'agent_settled' }));
-      setInterval(() => {}, 1000);
+      if (process.platform === 'win32') setInterval(() => {}, 1000);
     }, 20);
   ` : ALIVE_PI_FIXTURE_SOURCE);
   const testPath = process.env.PATH;

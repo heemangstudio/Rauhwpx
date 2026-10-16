@@ -67,7 +67,7 @@ function writeFakePi(piRoot) {
     const prompt = require('node:fs').readFileSync(0, 'utf8').trim();
     console.log(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: JSON.stringify({ prompt }) } }));
     console.log(JSON.stringify({ type: 'agent_settled' }));
-    setInterval(() => {}, 1000);
+    if (process.platform === 'win32') setInterval(() => {}, 1000);
   `);
 }
 

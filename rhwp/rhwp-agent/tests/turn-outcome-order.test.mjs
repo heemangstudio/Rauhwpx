@@ -17,7 +17,7 @@ const heldPi = (root) => `
     clearInterval(timer);
     fs.rmSync(release);
     console.log(JSON.stringify({ type: 'agent_settled' }));
-    setInterval(() => {}, 1000);
+    if (process.platform === 'win32') setInterval(() => {}, 1000);
   }, 20);
 `;
 
