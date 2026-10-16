@@ -1,0 +1,34 @@
+/* 사이트 로고 — 아이콘은 밝은 타일 위에 두어 어두운 테마에서도 검은 아이콘이 보인다. */
+.ag-site-mark {
+  --ag-site-mark-size: 20px;
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: var(--ag-site-mark-size);
+  height: var(--ag-site-mark-size);
+  overflow: hidden;
+  border-radius: var(--ag-r-chip);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  font-size: calc(var(--ag-site-mark-size) * 0.55);
+  font-weight: var(--ag-fw-strong);
+  line-height: 1;
+  user-select: none;
+}
+
+.ag-site-mark[data-icon='true'] {
+  background: var(--ag-paper-white);
+  box-shadow: inset 0 0 0 1px var(--ag-border);
+}
+
+.ag-site-mark img {
+  display: block;
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+}
+
+.ag-site-mark.ag-site-mark-small {
+  --ag-site-mark-size: 16px;
+  border-radius: var(--ag-r-code);
+}

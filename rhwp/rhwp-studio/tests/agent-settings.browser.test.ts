@@ -30,7 +30,7 @@ test('bridge matches rapid settings replies, reconnects, failures and queued fol
         revision: { revision: 42 },
         chatHistory: [], queuedMessages: [], workflowSwitchPending: false,
         messageReceipts: new Map(), awaitingAcceptanceId: null,
-        pendingUserQuestion: null, pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [], pendingTurnOpen: false,
+        pendingUserQuestion: null, pendingChatPermissionRequests: new Map(), pendingPermissionCancellations: new Map(), chatPermissionGrants: [], pendingTurnOpen: false,
         sendJson: (frame: any) => { frames.push(structuredClone(frame)); return true; },
         emit: (event: any) => events.push(event),
         // Document rendering and plan transitions are independent of settings delivery.

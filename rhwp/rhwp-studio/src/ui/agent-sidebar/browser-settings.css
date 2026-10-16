@@ -33,7 +33,10 @@
 .ag-browser-account-list { display: flex; flex-direction: column; max-height: 480px; overflow-y: auto; min-width: 0; overscroll-behavior: contain; border-right: 1px solid var(--n-hairline); }
 .ag-browser-account-list > .ag-browser-empty { padding: 18px 12px; }
 .ag-root .ag-settings-page .ag-browser-account-option { display: flex; flex-shrink: 0; align-items: center; gap: 10px; width: 100%; text-align: left; height: auto; min-height: 58px; padding: 9px 12px; background: transparent; border-radius: 0; border-bottom: 1px solid var(--n-hairline); white-space: normal; }
-.ag-browser-provider-mark { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 7px; background: var(--n-surface-raised); color: var(--n-text-secondary); font-weight: 600; }
+.ag-site-mark.ag-browser-provider-mark { --ag-site-mark-size: 28px; border-radius: var(--ag-r-row); }
+.ag-site-mark.ag-browser-provider-mark:not([data-icon='true']) { background: var(--n-surface-raised); color: var(--n-text-secondary); }
+.ag-browser-secret-sites { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--n-text-secondary); font-size: 12px; }
+.ag-browser-secret-site { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .ag-browser-account-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
 .ag-browser-account-copy strong { font-size: 13px; font-weight: 500; color: var(--n-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ag-browser-account-copy > span { color: var(--n-text-secondary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

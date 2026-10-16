@@ -23,6 +23,11 @@ export const scenarios = [
   'question',
   'permission',
   'sign-in',
+  'use-account',
+  'save-account',
+  'secret',
+  'secret-use',
+  'requests',
   'review',
   'fleet',
   'error',
@@ -334,9 +339,23 @@ export function createMockBridge(
     latestPlan: null,
   };
   let question: T.UserQuestionInteraction | null = null;
-  let permissionRequest: T.ChatPermissionRequest | null = null;
+  /** 허브처럼 한 채팅에 여러 요청이 동시에 열려 있다. 온 순서대로. */
+  const permissionRequests = new Map<string, T.ChatPermissionRequest>();
   let chatPermissionGrants: T.ChatPermissionCapability[] = [];
-  const permissionResponses: Array<{ requestId: string; decision: T.ChatPermissionDecision }> = [];
+  /** `always=downloads,browser`: 항상 허용한 권한으로 시작한다(설정의 목록 확인용). */
+  let alwaysGrants: T.ChatPermissionCapability[] = (projectParams.get('always') ?? '').split(',').filter(isChatPermissionCapability);
+  const permissionResponses: Array<{ requestId: string; decision: T.ChatPermissionDecision; scope?: T.ChatPermissionScope }> = [];
+  /** 요청에 답한 브라우저 동작(완료·승인)과 비밀 값 제출 — 값은 기록하지 않는다. */
+  const requestActions: Array<{ action: string; requestId?: string; scope?: string }> = [];
+  const secretSubmissions: Array<{ requestId: string; label: string; scope: T.ChatPermissionScope; valueLength: number }> = [];
+  /** `requestFail=N`: 요청에 답하는 다음 N 번의 동작이 실패한다(오류와 다시 시도). */
+  let requestFailures = Number(projectParams.get('requestFail')) || 0;
+  const secrets: T.SecretMeta[] = [
+    { id: 'secret-notion', label: 'Notion API 키', kind: 'api-key', origins: ['https://www.notion.so', 'https://api.notion.com'],
+      scope: 'always', approved: false, createdAt: '2026-10-02T09:00:00Z', lastUsedAt: null },
+    { id: 'secret-kosis', label: 'KOSIS 인증키', kind: 'token', origins: ['https://kosis.kr'],
+      scope: 'always', approved: true, createdAt: '2026-09-12T09:00:00Z', lastUsedAt: '2026-10-14T05:20:00Z' },
+  ];
   /* 맥락 창 흉내 — ?context=92 로 시작 사용률을 고른다. */
   const CONTEXT_MAX = 200_000;
   const contextParam = Number(new URLSearchParams(location.search).get('context'));
@@ -592,14 +611,95 @@ export function createMockBridge(
       outcome,
     });
   };
-  const completePermission = (outcome: T.ChatPermissionOutcome) => {
-    if (!permissionRequest) return;
-    const pending = permissionRequest;
-    permissionRequest = null;
+  /** 요청 하나를 정착한다. 실제 허브처럼 요청마다 해소 이벤트가 정확히 한 번 간다. */
+  const resolvePermission = (requestId: string, outcome: T.ChatPermissionOutcome) => {
+    const pending = permissionRequests.get(requestId);
+    if (!pending) return;
+    permissionRequests.delete(requestId);
     emit({ type: 'chat-permission-resolved', requestId: pending.requestId, threadId: pending.threadId,
-      documentId: pending.documentId, outcome, grants: [...chatPermissionGrants] });
+      documentId: pending.documentId, outcome, grants: [...chatPermissionGrants],
+      ...(alwaysGrants.length ? { alwaysGrants: [...alwaysGrants] } : {}) });
+  };
+  const completePermission = (outcome: T.ChatPermissionOutcome) => {
+    for (const requestId of [...permissionRequests.keys()]) resolvePermission(requestId, outcome);
+  };
+  const openPermission = (request: Omit<T.ChatPermissionRequest, 'requestId' | 'threadId' | 'documentId' | 'agent' | 'createdAt'>) => {
+    const opened: T.ChatPermissionRequest = { requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId, agent,
+      createdAt: new Date(Date.now() + permissionRequests.size).toISOString(), ...request };
+    permissionRequests.set(opened.requestId, opened);
+    emit({ type: 'chat-permission-requested', request: opened });
+    return opened;
+  };
+  /** `requestFail` 이 남아 있으면 이번 동작을 실패시킨다. */
+  const failRequestAction = () => {
+    if (requestFailures <= 0) return false;
+    requestFailures--;
+    return true;
+  };
+  /** 허브처럼 요청이 풀린 뒤 에이전트 턴을 잇는다(사용자 메시지 없이). */
+  const continueAfterRequest = (text: string) => {
+    const turnGeneration = ++generation;
+    later(() => {
+      if (generation !== turnGeneration) return;
+      setRunning(true);
+      stream({ type: 'turn-start', agent, turnId: `turn-${turnGeneration}` });
+      stream({ type: 'text-delta', agent, text });
+      if (!holdReply) later(() => finish(), 100);
+    });
   };
   const previewBrowser = createPreviewBrowser((event) => emit({ type: 'browser-event', event }), () => threadId, () => projects.store.get()?.id ?? null);
+  const toolPair = (callId: string, tool: string, callArgs: Record<string, unknown>, result: Record<string, unknown>) => {
+    stream({ type: 'tool-call', agent, callId, tool: `mcp__rhwp__${tool}`, argsJson: JSON.stringify(callArgs) });
+    stream({ type: 'tool-result', agent, callId, ok: true, resultPreview: JSON.stringify(result) });
+  };
+  const openGenericPermission = (turn: number, capability: T.ChatPermissionCapability) => {
+    const opened = openPermission({ turnId: `turn-${turn}`, capability, scopes: ['chat', 'always'],
+      reason: '요청한 작업을 이어가려면 이 권한이 필요합니다.' });
+    toolPair(`permission-${turn}-${capability}`, 'request_permission', { capability, reason: opened.reason },
+      { status: 'pending', capability, scope: 'chat', requestId: opened.requestId });
+  };
+  /** ?scenario=sign-in(&handoff=code) — 에이전트가 페이지를 열어 보인 뒤 로그인·인증 코드 입력을 넘긴다. */
+  const openHandoff = async (turn: number, code: boolean) => {
+    const opened = await previewBrowser.request('open', { url: 'https://accounts.example.com/verify' }) as { tab?: T.BrowserTab };
+    if (generation !== turn || !opened.tab) return;
+    // 실제 허브처럼 에이전트가 쓴 탭을 작업 공간이 미리 본다 — 카드는 그 화면을 쓴다.
+    emit({ type: 'browser-event', event: { type: 'owned_browser_activity', tab: opened.tab, active: true } });
+    emit({ type: 'browser-event', event: { type: 'owned_browser_activity', tab: opened.tab, active: false } });
+    const request = openPermission({ turnId: `turn-${turn}`, capability: 'browser', kind: code ? 'browser-code' : 'browser-sign-in',
+      origin: 'https://accounts.example.com', tabId: opened.tab.tabId, accountLabel: 'Example',
+      reason: code ? 'The site sent a verification code.' : 'The site needs the user to sign in.' });
+    toolPair(`handoff-${turn}`, 'browser_request_account', { tabId: opened.tab.tabId, origin: request.origin, label: 'Example', reason: request.reason, kind: code ? 'code' : 'sign-in' },
+      { pending: true, requestId: request.requestId, origin: request.origin, kind: code ? 'code' : 'sign-in' });
+  };
+  const openAccountUse = (turn: number) => {
+    const request = openPermission({ turnId: `turn-${turn}`, capability: 'browser', kind: 'browser-use-account',
+      origin: 'https://accounts.google.com', origins: ['https://accounts.google.com'], accountId: 'google', accountLabel: 'Google 연구',
+      scopes: ['chat', 'always'], reason: 'Sign in to Google Scholar with the saved research account.' });
+    toolPair(`account-${turn}`, 'browser_request_account', { origin: request.origin, label: 'Google 연구', reason: request.reason, kind: 'use' },
+      { pending: true, requestId: request.requestId, origin: request.origin, kind: 'use' });
+  };
+  const openAccountSave = (turn: number) => {
+    const request = openPermission({ turnId: `turn-${turn}`, capability: 'browser', kind: 'browser-save-account',
+      origin: 'https://www.notion.so', origins: ['https://www.notion.so'], accountLabel: 'Notion',
+      reason: 'Save the Notion account the user is about to type.' });
+    toolPair(`account-${turn}`, 'browser_request_account', { origin: request.origin, label: 'Notion', reason: request.reason, kind: 'save' },
+      { pending: true, requestId: request.requestId, origin: request.origin, kind: 'save' });
+  };
+  const openSecretSave = (turn: number) => {
+    const request = openPermission({ turnId: `turn-${turn}`, capability: 'browser', kind: 'secret-save',
+      secretLabel: '공공데이터포털 API 키', secretKind: 'api-key', origins: ['https://www.data.go.kr', 'https://apis.data.go.kr'],
+      scopes: ['always', 'chat'], reason: 'The open data portal needs an API key to download the statistics.' });
+    toolPair(`secret-${turn}`, 'request_secret', { label: request.secretLabel, origins: request.origins, kind: 'api-key', reason: request.reason },
+      { pending: true, requestId: request.requestId });
+  };
+  const openSecretUse = (turn: number) => {
+    const secret = secrets[0]!;
+    const request = openPermission({ turnId: `turn-${turn}`, capability: 'browser', kind: 'secret-use',
+      secretId: secret.id, secretLabel: secret.label, secretKind: secret.kind, origins: [...secret.origins],
+      scopes: ['chat', 'always'], reason: 'Type the saved Notion API key into the integration page.' });
+    toolPair(`secret-${turn}`, 'request_secret', { label: secret.label, origins: secret.origins, kind: secret.kind, reason: request.reason, secretId: secret.id },
+      { pending: true, requestId: request.requestId });
+  };
   const bridge: SidebarBridge = {
     projects,
     setProjectWorktrees: (binding) => {
@@ -646,21 +746,44 @@ export function createMockBridge(
     getActiveAgent: () => (sessionLost ? null : agent),
     isTurnRunning: () => running,
     getPendingUserQuestion: () => question,
-    getPendingChatPermissionRequest: () => permissionRequest,
+    getPendingChatPermissionRequest: () => permissionRequests.values().next().value ?? null,
+    getPendingChatPermissionRequests: () => [...permissionRequests.values()],
     getChatPermissionGrants: () => [...chatPermissionGrants],
-    respondChatPermission: (requestId, decision) => request((responseId) => {
-      const pending = permissionRequest;
-      permissionResponses.push({ requestId, decision });
-      if (!pending || pending.requestId !== requestId) {
+    respondChatPermission: (requestId, decision, scope) => request((responseId) => {
+      const pending = permissionRequests.get(requestId);
+      permissionResponses.push({ requestId, decision, ...(scope ? { scope } : {}) });
+      if (!pending) {
         emit({ type: 'chat-permission-response-result', responseId, requestId, ok: false, code: 'REQUEST_INVALIDATED' });
       } else if (decision === 'grant' && running) {
         emit({ type: 'chat-permission-response-result', responseId, requestId, ok: false, code: 'AGENT_BUSY' });
+      } else if (decision === 'grant' && failRequestAction()) {
+        emit({ type: 'chat-permission-response-result', responseId, requestId, ok: false, code: 'PERMISSION_FAILED', message: '허용을 전달하지 못했습니다.' });
       } else {
         emit({ type: 'chat-permission-response-result', responseId, requestId, ok: true });
-        if (decision === 'grant' && !chatPermissionGrants.includes(pending.capability)) chatPermissionGrants.push(pending.capability);
-        completePermission(decision === 'grant' ? { status: 'granted' } : { status: 'denied', reason: 'user-denied' });
+        // 허브처럼 거절은 모든 종류의 요청을 닫는다. 채팅 권한은 일반 권한 요청의 승인만 늘린다.
+        if (decision === 'grant' && !pending.kind) {
+          if (!chatPermissionGrants.includes(pending.capability)) chatPermissionGrants.push(pending.capability);
+          if (scope === 'always' && !alwaysGrants.includes(pending.capability)) alwaysGrants.push(pending.capability);
+        }
+        resolvePermission(requestId, decision === 'grant' ? { status: 'granted' } : { status: 'denied', reason: 'user-denied' });
       }
     }),
+    submitSecret: async (args) => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const pending = permissionRequests.get(args.requestId);
+      if (!pending || pending.kind !== 'secret-save') return { ok: false, code: 'REQUEST_INVALIDATED' };
+      if (connection !== 'connected') return { ok: false, code: 'DISCONNECTED' };
+      if (failRequestAction()) return { ok: false, code: 'SECRET_SAVE_FAILED', message: '저장하지 못했습니다.' };
+      // 허브처럼 값은 금고로만 간다. 미리보기는 길이만 남긴다.
+      secretSubmissions.push({ requestId: args.requestId, label: args.label, scope: args.scope, valueLength: args.value.length });
+      const secret: T.SecretMeta = { id: pending.secretId ?? crypto.randomUUID(), label: args.label, kind: pending.secretKind ?? 'other',
+        origins: [...pending.origins ?? []], scope: args.scope, approved: true, createdAt: new Date().toISOString(), lastUsedAt: null };
+      const index = secrets.findIndex((entry) => entry.id === secret.id);
+      if (index >= 0) secrets.splice(index, 1, secret); else secrets.push(secret);
+      resolvePermission(args.requestId, { status: 'granted' });
+      continueAfterRequest('저장한 값으로 이어서 진행합니다.');
+      return { ok: true, secret: structuredClone(secret) };
+    },
     hubSessionKnown: () => welcome,
     getHubIdentity: () => ({ hubInstanceId: hubInstance, hubSessionId: 'preview-session' }),
     getHubChat: () => (hubChatThreadId
@@ -677,7 +800,7 @@ export function createMockBridge(
         activeToolRequests: 0,
         agent,
         ...workflow,
-        waitingForUser: question !== null || permissionRequest !== null,
+        waitingForUser: question !== null || permissionRequests.size > 0,
       }),
     onEditingLeaseChange: (listener) => {
       leaseListeners.add(listener);
@@ -697,22 +820,45 @@ export function createMockBridge(
     },
     requestAgentSetupStatus: async () => data.setups,
     requestBrowser: async <R = T.BrowserResult>(action: string, args?: Record<string, unknown>): Promise<R> => {
-      const pending = permissionRequest;
-      if (action === 'accounts.complete' && pending && args?.['requestId'] === pending.requestId) {
+      const pending = typeof args?.['requestId'] === 'string' ? permissionRequests.get(args['requestId']) : undefined;
+      const answering = pending && ['accounts.complete', 'accounts.approve', 'secrets.approve'].includes(action);
+      if (answering) {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        if (failRequestAction()) throw Object.assign(new Error('요청을 전달하지 못했습니다.'), { code: 'BROWSER_REQUEST_FAILED' });
+        requestActions.push({ action, requestId: pending.requestId, ...(typeof args?.['scope'] === 'string' ? { scope: args['scope'] } : {}) });
+      }
+      if (action === 'accounts.complete' && pending) {
         // 허브처럼 탭을 에이전트에게 돌려주고 요청을 닫은 뒤 이어지는 턴을 연다.
         if (pending.tabId) await previewBrowser.request('control', { tabId: pending.tabId, owner: 'agent' });
-        completePermission({ status: 'granted' });
-        const turnGeneration = ++generation;
-        later(() => {
-          if (generation !== turnGeneration) return;
-          setRunning(true);
-          stream({ type: 'turn-start', agent, turnId: `turn-${turnGeneration}` });
-          stream({ type: 'text-delta', agent, text: '로그인을 확인했습니다. 이어서 진행합니다.' });
-          if (!holdReply) later(() => finish(), 100);
-        });
+        resolvePermission(pending.requestId, { status: 'granted' });
+        continueAfterRequest('로그인을 확인했습니다. 이어서 진행합니다.');
         return { completed: true, origin: pending.origin } as R;
       }
-      return previewBrowser.request(action, args) as Promise<R>;
+      if (action === 'secrets.approve' && pending) {
+        const secret = secrets.find((entry) => entry.id === args?.['secretId']);
+        if (secret) secret.approved = true;
+        resolvePermission(pending.requestId, { status: 'granted' });
+        continueAfterRequest('저장된 값을 입력해 이어서 진행합니다.');
+        return { approved: true } as R;
+      }
+      if (action === 'secrets.list') return { secrets: structuredClone(secrets) } as R;
+      if (action === 'secrets.revoke' || action === 'secrets.delete') {
+        const index = secrets.findIndex((entry) => entry.id === args?.['secretId']);
+        if (index >= 0 && action === 'secrets.delete') secrets.splice(index, 1);
+        else if (index >= 0) secrets[index]!.approved = false;
+        return { secrets: structuredClone(secrets) } as R;
+      }
+      if (action === 'permissions.list') return { always: [...alwaysGrants] } as R;
+      if (action === 'permissions.revoke') {
+        alwaysGrants = alwaysGrants.filter((capability) => capability !== args?.['capability']);
+        return { always: [...alwaysGrants] } as R;
+      }
+      const result = await previewBrowser.request(action, args);
+      if (action === 'accounts.approve' && pending) {
+        resolvePermission(pending.requestId, { status: 'granted' });
+        continueAfterRequest('계정으로 로그인해 이어서 진행합니다.');
+      }
+      return result as R;
     },
     onBrowserEvent: (callback) => { const listener = (event: T.SidebarEvent) => { if (event.type === 'browser-event') callback(event.event); }; listeners.add(listener); return () => { listeners.delete(listener); }; },
     submitBrowserAccount: (args) => previewBrowser.submit(args),
@@ -1052,20 +1198,22 @@ export function createMockBridge(
         if (reply === 'sign-in') {
           // ?scenario=sign-in&handoff=code — 에이전트가 로그인·인증 코드 입력을 사용자에게 넘긴다.
           const code = projectParams.get('handoff') === 'code';
-          void previewBrowser.request('open', { url: 'https://accounts.example.com/verify' }).then((opened) => {
-            if (generation !== turnGeneration) return;
-            const tabId = (opened as { tab?: { tabId?: string } }).tab?.tabId;
-            permissionRequest = { requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId,
-              turnId: `turn-${turnGeneration}`, agent, capability: 'browser', kind: code ? 'browser-code' : 'browser-sign-in',
-              origin: 'https://accounts.example.com', ...(tabId ? { tabId } : {}), accountLabel: 'Example',
-              reason: code ? 'The site sent a verification code.' : 'The site needs the user to sign in.', createdAt: new Date().toISOString() };
-            const callArgs = { tabId, origin: permissionRequest.origin, label: 'Example', reason: permissionRequest.reason, kind: code ? 'code' : 'sign-in' };
-            stream({ type: 'tool-call', agent, callId: `handoff-${turnGeneration}`, tool: 'mcp__rhwp__browser_request_account', argsJson: JSON.stringify(callArgs) });
-            stream({ type: 'tool-result', agent, callId: `handoff-${turnGeneration}`, ok: true,
-              resultPreview: JSON.stringify({ pending: true, requestId: permissionRequest.requestId, origin: permissionRequest.origin, kind: callArgs.kind }) });
-            emit({ type: 'chat-permission-requested', request: permissionRequest });
-            if (!holdReply) later(() => finish(), 100);
-          });
+          void openHandoff(turnGeneration, code).then(() => { if (!holdReply && generation === turnGeneration) later(() => finish(), 100); });
+          return;
+        }
+        if (reply === 'use-account' || reply === 'save-account' || reply === 'secret' || reply === 'secret-use' || reply === 'requests') {
+          if (reply === 'requests') {
+            // 한 턴이 요청 셋을 연다 — 카드마다 따로 답하고 따로 정착한다.
+            openGenericPermission(turnGeneration, 'downloads');
+            openSecretUse(turnGeneration);
+            void openHandoff(turnGeneration, true).then(() => { if (!holdReply && generation === turnGeneration) later(() => finish(), 100); });
+            return;
+          }
+          if (reply === 'use-account') openAccountUse(turnGeneration);
+          if (reply === 'save-account') openAccountSave(turnGeneration);
+          if (reply === 'secret') openSecretSave(turnGeneration);
+          if (reply === 'secret-use') openSecretUse(turnGeneration);
+          if (!holdReply) later(() => finish(), 100);
           return;
         }
         if (reply === 'permission') {
@@ -1081,15 +1229,8 @@ export function createMockBridge(
           }
           const capability = isChatPermissionCapability(selected) ? selected : 'project-edit';
           if (!chatPermissionGrants.includes(capability)) {
-            permissionRequest = { requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId,
-              turnId: `turn-${turnGeneration}`, agent, capability,
-              reason: '요청한 작업을 이어가려면 이 권한이 필요합니다.', createdAt: new Date().toISOString() };
-            stream({ type: 'tool-call', agent, callId: `permission-${turnGeneration}`, tool: 'mcp__rhwp__request_permission',
-              argsJson: JSON.stringify({ capability, reason: permissionRequest.reason }) });
-            stream({ type: 'tool-result', agent, callId: `permission-${turnGeneration}`, ok: true,
-              resultPreview: JSON.stringify({ status: 'pending', capability, scope: 'chat', requestId: permissionRequest.requestId }) });
+            openGenericPermission(turnGeneration, capability);
             stream({ type: 'text-delta', agent, text: '작업을 이어가기 위한 권한을 요청했습니다.' });
-            emit({ type: 'chat-permission-requested', request: permissionRequest });
             if (!holdReply) later(() => finish(), 100);
             return;
           }
@@ -1903,6 +2044,19 @@ export function createMockBridge(
     },
     setHold: (value: boolean) => { holdReply = value; },
     finishPermissionTurn: () => { if (running) finish(); },
+    /** 허브가 열어 둔 요청을 모두 만료시킨다(시간 초과·턴 정리). */
+    expireRequests: (reason = 'request-timeout') => completePermission({ status: 'expired', reason }),
+    /** 다음 N 번의 요청 응답(완료·승인·비밀 값 저장)을 실패시킨다. */
+    failNextRequestActions: (count = 1) => { requestFailures = count; },
+    /**
+     * 연결이 끊겼다 다시 붙는다. 실제 허브의 welcome 처럼 열린 요청을 다시 보낸다 — 카드는 그대로 열려 있어야 한다.
+     */
+    reconnect: async () => {
+      setConnection('disconnected');
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      setConnection('connected');
+      for (const request of permissionRequests.values()) emit({ type: 'chat-permission-requested', request, replayed: true });
+    },
     projects,
     setChatStartDelay: (ms: number) => { chatStartDelayMs = ms; },
     setTurnStartDelay: (ms: number) => { turnStartDelayMs = ms; },
@@ -1958,6 +2112,11 @@ export function createMockBridge(
       interrupts,
       permissionResponses: permissionResponses.map((response) => ({ ...response })),
       chatPermissionGrants: [...chatPermissionGrants],
+      alwaysGrants: [...alwaysGrants],
+      pendingRequests: [...permissionRequests.values()].map((request) => ({ requestId: request.requestId, kind: request.kind ?? 'permission' })),
+      requestActions: requestActions.map((entry) => ({ ...entry })),
+      secretSubmissions: secretSubmissions.map((entry) => ({ ...entry })),
+      secrets: structuredClone(secrets),
       messageTexts: sentMessages.map((message) => message.text),
       sentMessages: sentMessages.map((message) => ({ ...message, referenceIds: [...message.referenceIds] })),
       failureKind,

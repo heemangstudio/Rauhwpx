@@ -16,10 +16,50 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     { id: 'arxiv', origin: 'https://arxiv.org', label: 'arXiv', source: 'default', allowedActions: ['browse', 'download'], blockedActions: [] as string[] },
   ];
   const configuration: Record<string, unknown> = { profileId: 'shared', downloads: { maxFileBytes: 64 * 1024 * 1024, autoImport: true }, preview: { mode: 'docked', reducedMotion: false }, security: { privateNetworkAccess: false }, googleSignIn: { supported: null, status: 'not-verified' } };
+  let faviconRequests = 0;
+  const icons = new Map<string, string | null>();
+  /** 미리보기 사이트의 아이콘 — 허브가 보내는 것과 같은 작은 data: PNG. 모르는 사이트는 null. */
+  function favicon(origin: string): string | null {
+    if (icons.has(origin)) return icons.get(origin)!;
+    const host = (() => { try { return new URL(origin).hostname; } catch { return ''; } })();
+    const marks: Record<string, [string, string, string]> = {
+      'accounts.example.com': ['#2f6fdf', '#fff', 'E'], 'accounts.google.com': ['#fff', '#4285f4', 'G'], 'www.google.com': ['#fff', '#4285f4', 'G'],
+      'www.notion.so': ['#fff', '#111', 'N'], 'api.notion.com': ['#fff', '#111', 'N'], 'www.data.go.kr': ['#0b5fa5', '#fff', '공'],
+      'apis.data.go.kr': ['#0b5fa5', '#fff', '공'], 'kosis.kr': ['#e5463b', '#fff', 'K'], 'wikipedia.org': ['#fff', '#222', 'W'], 'arxiv.org': ['#b31b1b', '#fff', 'a'],
+    };
+    const mark = marks[host];
+    let icon: string | null = null;
+    if (mark) {
+      const canvas = document.createElement('canvas'); canvas.width = 32; canvas.height = 32;
+      const context = canvas.getContext('2d')!;
+      context.fillStyle = mark[0]; context.beginPath(); context.roundRect(0, 0, 32, 32, 7); context.fill();
+      context.fillStyle = mark[1]; context.font = '700 20px -apple-system, sans-serif'; context.textAlign = 'center'; context.textBaseline = 'middle';
+      context.fillText(mark[2], 16, 17);
+      icon = canvas.toDataURL('image/png');
+    }
+    icons.set(origin, icon);
+    return icon;
+  }
+  const originOf = (url: string) => { try { return new URL(url).origin; } catch { return ''; } };
   const runtime = () => ({ runtimeId: 'preview-owned-browser', generation, state: signInAccountId ? 'sign-in' : 'ready', kind: 'chromium', profile: 'shared', signIn: signInAccountId ? { mode: 'standalone-no-debug', accountId: signInAccountId } : null, readiness: { installed: true } });
   function frame(tab: BrowserTab): BrowserFrame {
     const canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 800;
     const context = canvas.getContext('2d')!;
+    if (tab.url.startsWith('https://accounts.example.com/')) {
+      // 로그인·인증 코드 넘김 미리보기 — 입력란 하나와 버튼이 있는 확인 페이지.
+      const typed = inputs.filter((entry) => entry.tabId === tab.tabId && entry.type === 'text').map((entry) => entry.text).join('');
+      context.fillStyle = '#f6f7f9'; context.fillRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = '#fff'; context.fillRect(90, 70, 760, 560);
+      context.fillStyle = '#2f6fdf'; context.fillRect(130, 120, 56, 56);
+      context.fillStyle = '#171b22'; context.font = '600 44px sans-serif'; context.fillText('인증 코드 입력', 130, 250);
+      context.fillStyle = '#6b7280'; context.font = '26px sans-serif'; context.fillText('휴대폰으로 받은 6자리 코드를 입력하세요.', 130, 300);
+      context.strokeStyle = typed ? '#171b22' : '#c9ced6'; context.lineWidth = 3; context.strokeRect(130, 350, 420, 76);
+      context.fillStyle = '#171b22'; context.font = '34px monospace'; context.fillText(typed.split('').join(' '), 154, 400);
+      context.fillStyle = '#2f6fdf'; context.fillRect(130, 470, 200, 70);
+      context.fillStyle = '#fff'; context.font = '600 28px sans-serif'; context.fillText('확인', 200, 515);
+      return { frameId: `preview-frame-${++frameSequence}`, tabId: tab.tabId, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch,
+        mimeType: 'image/jpeg', data: canvas.toDataURL('image/jpeg').split(',')[1]!, width: 1280, height: 800, deviceScaleFactor: 1, scrollX: 0, scrollY: 0 };
+    }
     context.fillStyle = '#fafaf7'; context.fillRect(0, 0, canvas.width, canvas.height);
     context.fillStyle = '#161b19'; context.font = '600 42px sans-serif'; context.fillText('연구 자료', 90, 120);
     context.font = '24px sans-serif'; context.fillText(tab.url, 90, 176, 1080);
@@ -37,6 +77,12 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
       if (!actor.isHuman) throw Object.assign(new Error('사용자 설정에서 삭제하세요.'), { code: 'BROWSER_HUMAN_REQUIRED' });
       resetCount++; accounts = []; signInAccountId = null; tabs = []; generation++; inputs.length = 0; captures.length = 0; signIns.length = 0; changed();
       return { ok: true, action, runtime: runtime(), removed: ['accounts', 'browser-profile', 'auth-archive'] };
+    }
+    if (action === 'favicons.get') {
+      if (!actor.isHuman) throw Object.assign(new Error('사용자 화면만 아이콘을 읽습니다.'), { code: 'BROWSER_HUMAN_REQUIRED' });
+      faviconRequests++;
+      const origins = Array.isArray(args.origins) ? (args.origins as unknown[]).filter((value): value is string => typeof value === 'string').slice(0, 50) : [];
+      return { icons: Object.fromEntries(origins.map((origin) => [origin, favicon(origin)])) };
     }
     if (action === 'accounts.list') return { accounts: structuredClone(accounts), secureStorageAvailable: true };
     if (action === 'policy.list') return { defaults: { ...defaults }, sites: structuredClone(sites) };
@@ -85,7 +131,8 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
       signInAccountId = null; account.sessionStatus = 'authenticated'; return { ok: true, account: structuredClone(account), runtime: runtime() };
     }
     if (action === 'open') {
-      const tab: BrowserTab = { tabId: crypto.randomUUID(), threadId: getThread(), projectId: getProject(), documentId: null, agentId: 'preview-agent', url: String(args.url ?? 'https://www.google.com/'), title: '연구 자료', navigationEpoch: 1, controllerEpoch: 1, controller: { owner: 'agent' }, status: 'ready', canGoBack: false, canGoForward: false };
+      const url = String(args.url ?? 'https://www.google.com/'); const icon = favicon(originOf(url));
+      const tab: BrowserTab = { tabId: crypto.randomUUID(), threadId: getThread(), projectId: getProject(), documentId: null, agentId: 'preview-agent', url, title: url.startsWith('https://accounts.example.com/') ? 'Example 인증' : '연구 자료', navigationEpoch: 1, controllerEpoch: 1, controller: { owner: 'agent' }, status: 'ready', canGoBack: false, canGoForward: false, ...(icon ? { faviconUrl: icon } : {}) };
       tabs.push(tab); changed(tab); return { ok: true, tab: structuredClone(tab) };
     }
     const tab = tabs.find((row) => row.tabId === args.tabId);
@@ -93,7 +140,7 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     if (args.navigationEpoch !== undefined && args.navigationEpoch !== tab.navigationEpoch) throw Object.assign(new Error('페이지가 바뀌었습니다. 다시 캡처해 주세요.'), { code: 'STALE_NAVIGATION' });
     if (action === 'close') { tabs = tabs.filter((row) => row !== tab); changed(); return { ok: true }; }
     if (action === 'control') { tab.controller = { owner: tab.controller.owner, ...(args.owner === 'agent' ? {} : { held: true }) }; tab.controllerEpoch++; changed(tab); }
-    if (action === 'navigate') { if (args.url) tab.url = String(args.url); tab.navigationEpoch++; tab.canGoBack = true; changed(tab); }
+    if (action === 'navigate') { if (args.url) tab.url = String(args.url); const icon = favicon(originOf(tab.url)); if (icon) tab.faviconUrl = icon; else delete tab.faviconUrl; tab.navigationEpoch++; tab.canGoBack = true; changed(tab); }
     if (action === 'recover') { generation++; tab.status = 'ready'; changed(tab); }
     if (action === 'input') {
       if (args.controllerEpoch !== tab.controllerEpoch) throw new Error('페이지 상태를 다시 읽어 주세요.');
@@ -116,6 +163,6 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
       const row = { profileId: 'default', origins: (account.origins as string[]) ?? [String(account.origin)], id, origin: String(account.origin ?? ''), label: String(account.label ?? args.username ?? '새 계정'), hasPassword: Boolean(args.password), agentReuseApproved: args.remember !== false, sessionStatus: 'saved' };
       accounts = [...accounts.filter((entry) => entry.id !== id), row]; return { account: structuredClone(row), accounts: structuredClone(accounts) };
     },
-    snapshot: () => ({ runtime: runtime(), tabs: structuredClone(tabs), inputs: structuredClone(inputs), captures: structuredClone(captures), accounts: structuredClone(accounts), defaults: { ...defaults }, sites: structuredClone(sites), resetCount, signIns: structuredClone(signIns), configuration: structuredClone(configuration) }),
+    snapshot: () => ({ faviconRequests, runtime: runtime(), tabs: structuredClone(tabs), inputs: structuredClone(inputs), captures: structuredClone(captures), accounts: structuredClone(accounts), defaults: { ...defaults }, sites: structuredClone(sites), resetCount, signIns: structuredClone(signIns), configuration: structuredClone(configuration) }),
   };
 }

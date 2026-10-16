@@ -679,6 +679,7 @@ function contextBridge(overrides: Record<string, unknown> = {}) {
     activeTemplateId: null, revision: { revision: 7 }, chatHistory: [], queuedMessages: [],
     workflowSwitchPending: false, turnRunning: false, pendingTurnOpen: false, pendingUserQuestion: null,
     requests: new PendingRequestRegistry(),
+    pendingChatPermissionRequests: new Map(), pendingPermissionCancellations: new Map(),
     sendJson: (frame: unknown) => { frames.push(structuredClone(frame)); return true; },
     emit: (event: unknown) => events.push(event),
     syncEditingLease() {}, finishWorkflowSwitch() {}, syncWorkflowState() {}, clearPendingQuestionCancellation() {},

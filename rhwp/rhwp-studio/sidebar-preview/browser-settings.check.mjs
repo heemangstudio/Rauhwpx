@@ -123,12 +123,12 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   assert.equal(await page.$eval('.ag-browser-settings-body input[type=number]', input => input.value), '32');
   if (screenshot) await screenshot('browser-settings-configuration');
   const pillChecks = await page.evaluate(async () => {
-    const { createChatPermissionController } = await import('/src/ui/agent-sidebar/chat-permission-pill.ts');
+    const { createRequestCardController } = await import('/src/ui/agent-sidebar/request-card.ts');
     let context = { threadId: 'secret-chat', documentId: null }; let ordinary = 0; let secure = 0;
-    const controller = createChatPermissionController({ context: () => context, respond: () => { ordinary++; return 'ordinary'; }, requestBrowser: async () => ({ requestId: 'pending' }), submitBrowserAccount: async () => { secure++; return {}; } });
+    const controller = createRequestCardController({ context: () => context, respond: () => { ordinary++; return 'ordinary'; }, requestBrowser: async () => ({ requestId: 'pending' }), submitBrowserAccount: async () => { secure++; return {}; } });
     const root = controller.request({ requestId: 'save-pending', threadId: 'secret-chat', documentId: null, turnId: 'turn', agent: 'codex', capability: 'browser', kind: 'browser-save-account', origin: 'https://example.org', accountLabel: 'Private', reason: 'Save requested account', createdAt: new Date().toISOString() });
     document.body.append(root);
-    const form = root.querySelector('form'); const inputs = [...form.querySelectorAll('input')]; inputs[3].value = 'user'; inputs[4].value = 'pill-private-value';
+    const form = root.querySelector('form'); form.querySelector('input[aria-label="로그인 아이디"]').value = 'user'; form.querySelector('input[type=password]').value = 'pill-private-value';
     context = { threadId: 'other-chat', documentId: null }; form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     await new Promise(resolve => setTimeout(resolve, 0)); const blockedOtherChat = secure === 0 && ordinary === 0;
     context = { threadId: 'secret-chat', documentId: null }; form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -137,7 +137,7 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
     return { blockedOtherChat, dedicated };
   });
   assert.equal(pillChecks.blockedOtherChat, true, 'a hidden account request cannot submit from another chat');
-  assert.equal(pillChecks.dedicated, true, 'account pill uses secure submission and removes secret fields after success');
+  assert.equal(pillChecks.dedicated, true, 'account card uses secure submission and removes secret fields after success');
   const policyBeforeReset = await page.evaluate(() => window.sidebarPreview.snapshot().browser.defaults);
   const messagesBeforeReset = await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent);
   await click('브라우저 계정과 기록 삭제');
@@ -313,5 +313,30 @@ export async function checkBrowserSettings({ page, origin, screenshot }) {
   });
   assert.deepEqual(linkedSessionChecks, { confirmed: 1, oneSource: true, sessionCount: '연결된 계정 1', signInAvailable: true, noSecretForm: true, orphanVisible: true, orphanManagement: true, importedVisible: true }, 'confirmed native sessions share the source card while orphan sessions and imported passwords remain manageable');
 
-
+  // 저장한 비밀 값과 항상 허용한 권한: 메타데이터만 보이고, 철회·삭제·해제가 허브에 닿는다.
+  await page.goto(`${origin}/?reset=1&controls=0&fullscreen=1&theme=light&page=settings&destination=browser&always=downloads`, { waitUntil: 'networkidle0' });
+  await page.waitForSelector('#ag-settings-pane-browser .ag-browser-account-option', { visible: true });
+  await page.waitForSelector('#ag-settings-pane-browser .ag-browser-account-option .ag-site-mark[data-icon="true"]');
+  await page.evaluate(() => [...document.querySelectorAll('#ag-settings-pane-browser .ag-browser-account-kinds button')].find((button) => button.textContent.startsWith('비밀 값')).click());
+  await page.waitForSelector('.ag-browser-account-option[data-secret-id="secret-kosis"]');
+  await page.click('.ag-browser-account-option[data-secret-id="secret-kosis"]');
+  await click('허용 철회');
+  await page.waitForFunction(() => window.sidebarPreview.snapshot().secrets.find((secret) => secret.id === 'secret-kosis')?.approved === false);
+  await page.click('.ag-browser-account-option[data-secret-id="secret-notion"]');
+  await click('삭제');
+  await page.waitForSelector('.ag-sheet-open .ag-sheet', { visible: true });
+  await page.click('.ag-sheet-cancel');
+  await page.waitForFunction(() => !document.querySelector('.ag-sheet-layer'));
+  assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().secrets.length), 2, 'cancel keeps the secret');
+  await click('삭제');
+  await page.waitForSelector('.ag-sheet-open .ag-sheet', { visible: true });
+  await page.click('.ag-sheet-confirm');
+  await page.waitForFunction(() => window.sidebarPreview.snapshot().secrets.every((secret) => secret.id !== 'secret-notion'));
+  await page.waitForFunction(() => !document.querySelector('.ag-browser-account-option[data-secret-id="secret-notion"]'));
+  if (screenshot) await screenshot('browser-settings-secrets');
+  await click('승인된 권한');
+  await page.waitForFunction(() => [...document.querySelectorAll('#ag-settings-pane-browser h3')].some((title) => title.textContent === '항상 허용한 권한'));
+  await click('해제');
+  await page.waitForFunction(() => window.sidebarPreview.snapshot().alwaysGrants.length === 0);
+  await page.waitForFunction(() => ![...document.querySelectorAll('#ag-settings-pane-browser h3')].some((title) => title.textContent === '항상 허용한 권한'));
 }

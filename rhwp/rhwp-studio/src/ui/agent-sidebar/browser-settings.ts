@@ -2,6 +2,9 @@ import './browser-settings.css';
 import { confirmSheet } from './sheet.ts';
 import { localPasswordsApi, type LocalPasswordAccount } from './browser-local-passwords.ts';
 import { createAdblockSettings } from './browser-adblock-settings.ts';
+import { createSiteMark } from './site-mark.ts';
+import { CHAT_PERMISSION_LABELS, SECRET_KIND_LABELS, isChatPermissionCapability, readSecretMeta } from '../../agent/chat-permissions.ts';
+import type { SecretMeta } from '../../agent/types.ts';
 
 export type BrowserSettingsRequest = (action: string, args?: Record<string, unknown>) => Promise<unknown>;
 interface Account { sourceAccountId?: string; profileId?: string; id: string; origin: string; origins?: string[]; label: string; stableIdentity?: string; hasPassword: boolean; agentReuseApproved: boolean; sessionStatus: string; }
@@ -32,10 +35,13 @@ export function createBrowserAccountForm(options: {
   sessionOnly?: boolean;
   openSignIn?: boolean;
   canSubmit?(): boolean;
+  /** 채팅 요청 카드 안의 짧은 양식: 사이트는 카드 머리에 보이고, 칸은 자리표시 글자로 이름을 단다. */
+  variant?: 'card';
   complete(account?: Account): void;
   cancel(): void;
 }) {
-  const root = node('form', 'ag-browser-account-form');
+  const card = options.variant === 'card';
+  const root = node('form', card ? 'ag-browser-account-form ag-request-form' : 'ag-browser-account-form');
   const origin = field('사이트 주소', 'url', options.account?.origin ?? ''); origin.input.required = true;
   const origins = field('함께 사용할 사이트 · 쉼표로 구분', 'text', options.account?.origins?.filter(value => value !== options.account?.origin).join(', ') ?? '');
   if (options.requestId || options.account?.id) origins.input.readOnly = true;
@@ -44,13 +50,22 @@ export function createBrowserAccountForm(options: {
   const password = field('비밀번호', 'password'); password.input.required = true;
   if (options.requestId || options.account?.id) origin.input.readOnly = true;
   const remember = node('label', 'ag-browser-check'); const rememberInput = node('input', ''); rememberInput.type = 'checkbox'; rememberInput.checked = true;
-  remember.append(rememberInput, document.createTextNode('앞으로 다른 채팅에서도 이 계정 사용 허용'));
-  const message = node('p', 'ag-browser-message'); message.setAttribute('role', 'alert');
-  const actions = node('div', 'ag-settings-actions');
-  const save = node('button', 'ag-settings-primary', options.openSignIn ? '등록 후 로그인 열기' : options.sessionOnly ? '계정 등록' : options.account?.id ? '비밀번호 변경' : '저장'); save.type = 'submit';
+  remember.append(rememberInput, document.createTextNode(card ? '다른 채팅에서도 사용 허용' : '앞으로 다른 채팅에서도 이 계정 사용 허용'));
+  const message = node('p', card ? 'ag-browser-message ag-request-form-message' : 'ag-browser-message'); message.setAttribute('role', 'alert');
+  const actions = node('div', card ? 'ag-request-actions' : 'ag-settings-actions');
+  const save = node('button', card ? 'ag-request-primary' : 'ag-settings-primary', options.openSignIn ? '등록 후 로그인 열기' : options.sessionOnly ? '계정 등록' : options.account?.id ? '비밀번호 변경' : '저장'); save.type = 'submit';
   const clear = () => { password.input.value = ''; username.input.value = ''; };
-  actions.append(button('취소', () => { clear(); options.cancel(); }), save);
-  root.append(origin.root, origins.root, label.root, username.root); if (!options.sessionOnly) root.append(password.root); else rememberInput.disabled = true; root.append(remember, message, actions);
+  const cancel = button(card ? '저장 안 함' : '취소', () => { clear(); options.cancel(); });
+  if (card) cancel.className = 'ag-request-secondary';
+  actions.append(cancel, save);
+  if (card) {
+    for (const [entry, text] of [[label, '계정 이름'], [username, '로그인 아이디'], [password, '비밀번호']] as const) {
+      entry.root.classList.add('ag-request-field'); entry.root.querySelector('.ag-settings-field-label')?.remove();
+      entry.input.placeholder = text; entry.input.setAttribute('aria-label', text);
+    }
+    root.append(label.root, username.root);
+  } else root.append(origin.root, origins.root, label.root, username.root);
+  if (!options.sessionOnly) root.append(password.root); else rememberInput.disabled = true; root.append(remember, message, actions);
   let disposed = false;
   root.addEventListener('submit', async (event) => {
     event.preventDefault(); if (save.disabled || disposed || options.canSubmit?.() === false) return;
@@ -72,10 +87,10 @@ export function createBrowserAccountForm(options: {
         username: username.input.value, password: password.input.value, remember: rememberInput.checked, consent: { save: true, use: rememberInput.checked },
       });
       clear(); if (!disposed) options.complete((result as { account?: Account }).account);
-    } catch { if (!disposed) message.textContent = '계정을 저장하지 못했습니다. 연결과 사이트 주소를 확인하세요.'; }
+    } catch { if (!disposed) message.textContent = card ? '저장하지 못했습니다. 다시 시도하세요.' : '계정을 저장하지 못했습니다. 연결과 사이트 주소를 확인하세요.'; }
     finally { password.input.value = ''; if (!disposed) save.disabled = false; }
   });
-  return { element: root, dispose() { disposed = true; clear(); root.remove(); } };
+  return { element: root, clear() { clear(); password.input.value = ''; }, dispose() { disposed = true; clear(); root.remove(); } };
 }
 
 function siteHost(origin: string): string { try { return new URL(origin).hostname; } catch { return origin; } }
@@ -104,11 +119,14 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   let selectedAccountId: string | null = null; let formTitle = '';
   let accountKind = 'sessions'; let accountSearch = ''; let providerFilter = '';
   let active = 'accounts'; let disposed = false; let generation = 0; let busy = false; let resetFailed = false; let resetConfirming = false;
+  let secrets: SecretMeta[] | null = null; let alwaysGrants: string[] = [];
   let accounts: Account[] = []; let secureStorage = false; let policy: Policy | null = null; let configuration: Record<string, unknown> = {}; let status: Record<string, unknown> = {};
   let localAccounts: LocalPasswordAccount[] = []; let profiles: { id: string; name: string }[] = [];
   let profileId = ''; let localSupported = false; let localBusy = false; let localFailed = false; let localMessage = '';
   let cookieSites: { domain: string; count: number }[] | null = null; const cookieChoice = new Set<string>();
   const localApi = localPasswordsApi();
+  /** 끊긴 동안에는 허브에 아이콘을 묻지 않는다. */
+  const iconRequest = () => options.isConnected() ? options.request : undefined;
   function managedAccounts(): Account[] {
     const ids = new Set(accounts.map(account => account.id));
     return accounts.filter(account => !(account.profileId === 'native' && !account.hasPassword && account.sourceAccountId && ids.has(account.sourceAccountId)));
@@ -182,13 +200,15 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const all = node('option', '', '모든 제공자'); all.value = ''; filter.append(all);
       for (const provider of [...new Set(allAccounts().map(accountProvider))].sort()) { const option = node('option', '', provider); option.value = provider; filter.append(option); }
       filter.value = providerFilter; filter.addEventListener('change', () => { clearForm(); providerFilter = filter.value; renderAccounts(); });
+      filter.hidden = accountKind === 'secrets';
       const connect = button('계정 연결', () => accountForm(undefined, true, true)); connect.disabled = busy || !options.isConnected();
       const add = button('비밀번호 추가', () => accountForm()); add.title = '비밀번호 저장'; add.disabled = busy || !secureStorage || !options.isConnected();
       toolbar.append(search, filter, connect); if (!localApi) toolbar.append(add);
       if (!localApi && !secureStorage && options.isConnected()) body.append(node('p', 'ag-browser-empty', '보안 저장소를 사용할 수 없어 비밀번호를 저장할 수 없습니다.'));
       const kindBar = node('div', 'ag-browser-account-kinds'); kindBar.setAttribute('role', 'group'); kindBar.setAttribute('aria-label', '계정 종류');
-      for (const [kind, label] of [['sessions', '연결된 계정'], ['passwords', '저장된 비밀번호']]) {
-        const count = allAccounts().filter(account => kind === 'sessions' ? account.sessionStatus !== 'saved' : account.hasPassword).length;
+      if (accountKind === 'secrets' && !secrets) accountKind = 'sessions';
+      for (const [kind, label] of [['sessions', '연결된 계정'], ['passwords', '저장된 비밀번호'], ...(secrets ? [['secrets', '비밀 값']] : [])]) {
+        const count = kind === 'secrets' ? secrets!.length : allAccounts().filter(account => kind === 'sessions' ? account.sessionStatus !== 'saved' : account.hasPassword).length;
         const choose = button(`${label} ${count}`, () => { clearForm(); accountKind = kind!; selectedAccountId = null; render(); }); choose.setAttribute('aria-pressed', String(accountKind === kind)); kindBar.append(choose);
       }
       body.append(kindBar);
@@ -196,6 +216,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const workspace = node('div', 'ag-browser-account-workspace'); body.append(workspace);
       function renderAccounts() {
         workspace.replaceChildren();
+        if (accountKind === 'secrets') { renderSecrets(workspace); return; }
         const visible = allAccounts().filter(account => (accountKind === 'sessions' ? account.sessionStatus !== 'saved' : account.hasPassword)
           && (!providerFilter || accountProvider(account) === providerFilter)
           && [account.label, account.origin, visibleIdentity(account), accountProvider(account)].join(' ').toLocaleLowerCase().includes(accountSearch.toLocaleLowerCase()));
@@ -206,7 +227,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
           const choose = button('', () => { clearForm(); selectedAccountId = account.id; renderAccounts(); workspace.querySelector<HTMLButtonElement>('.ag-browser-account-option[aria-pressed="true"]')?.focus(); });
           choose.classList.add('ag-browser-account-option'); choose.dataset.accountId = account.id; choose.setAttribute('aria-pressed', String(account.id === selectedAccountId));
           const copy = node('span', 'ag-browser-account-copy'); copy.append(node('strong', '', account.label || account.origin), node('span', '', `${accountProvider(account)} · ${visibleIdentity(account)}`));
-          const mark = node('span', 'ag-browser-provider-mark', accountProvider(account).slice(0, 1).toUpperCase()); mark.setAttribute('aria-hidden', 'true');
+          const mark = createSiteMark({ origin: account.origin, request: iconRequest(), fallback: accountProvider(account), className: 'ag-browser-provider-mark' });
           choose.append(mark, copy, node('span', 'ag-browser-account-status', accountKind === 'passwords' ? '비밀번호' : sessionLabel(account))); list.append(choose);
         }
         const details = node('section', 'ag-browser-account-detail'); workspace.append(details);
@@ -259,6 +280,11 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       for (const [key, label] of [['browse', '공개 연구 페이지 읽기'], ['download', '연구 자료 다운로드'], ['researchImport', '다운로드한 자료를 프로젝트에 추가']]) {
         const root = node('label', 'ag-browser-check'); const input = node('input', ''); input.type = 'checkbox'; input.checked = policy.defaults[key as keyof Policy['defaults']]; input.disabled = busy;
         input.addEventListener('change', () => void mutate('policy.update', { operation: 'set-default', key, enabled: input.checked })); root.append(input, document.createTextNode(label!)); defaults.append(root);
+      }
+      const always = alwaysGrants.filter(isChatPermissionCapability);
+      if (always.length) {
+        const alwaysSection = section('항상 허용한 권한');
+        for (const capability of always) action(row(CHAT_PERMISSION_LABELS[capability], '모든 채팅', alwaysSection), '해제', 'permissions.revoke', { capability });
       }
       const accountPermissions = section('계정 사용 승인', '각 계정에 등록된 사이트에서 적용됩니다.');
       if (!managedAccounts().length) accountPermissions.append(node('p', 'ag-browser-empty', '등록된 계정이 없습니다.'));
@@ -320,6 +346,37 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const reset = button(resetFailed ? '계정과 기록 삭제 다시 시도' : '브라우저 계정과 기록 삭제', () => void resetBrowser()); reset.disabled = busy || !options.isConnected(); reset.classList.add('ag-browser-reset'); cleanup.append(reset); body.append(cleanup);
 
     }
+  }
+  function renderSecrets(workspace: HTMLElement) {
+    const visible = (secrets ?? []).filter(secret => [secret.label, SECRET_KIND_LABELS[secret.kind], ...secret.origins].join(' ').toLocaleLowerCase().includes(accountSearch.toLocaleLowerCase()));
+    if (!visible.some(secret => secret.id === selectedAccountId)) selectedAccountId = visible[0]?.id ?? null;
+    const list = node('div', 'ag-browser-account-list'); list.setAttribute('aria-label', '비밀 값'); workspace.append(list);
+    if (!visible.length) list.append(node('p', 'ag-browser-empty', accountSearch ? '검색 결과가 없습니다.' : '저장된 비밀 값이 없습니다.'));
+    for (const secret of visible) {
+      const choose = button('', () => { selectedAccountId = secret.id; render(); workspace.ownerDocument.querySelector<HTMLButtonElement>(`.ag-browser-account-option[data-secret-id="${CSS.escape(secret.id)}"]`)?.focus(); });
+      choose.classList.add('ag-browser-account-option'); choose.dataset.secretId = secret.id; choose.setAttribute('aria-pressed', String(secret.id === selectedAccountId));
+      const copy = node('span', 'ag-browser-account-copy');
+      copy.append(node('strong', '', secret.label), node('span', '', [SECRET_KIND_LABELS[secret.kind], siteHost(secret.origins[0] ?? ''), secret.origins.length > 1 ? `외 ${secret.origins.length - 1}곳` : ''].filter(Boolean).join(' · ')));
+      choose.append(createSiteMark({ origin: secret.origins[0], request: iconRequest(), className: 'ag-browser-provider-mark' }), copy, node('span', 'ag-browser-account-status', secret.approved ? '허용됨' : '허용 안 함'));
+      list.append(choose);
+    }
+    const details = node('section', 'ag-browser-account-detail'); workspace.append(details);
+    const secret = visible.find(entry => entry.id === selectedAccountId); if (!secret) return;
+    details.dataset.secretId = secret.id;
+    details.append(node('h3', 'ag-settings-section-title', secret.label));
+    row('종류', `${SECRET_KIND_LABELS[secret.kind]} · ${secret.scope === 'chat' ? '이 채팅만' : '저장됨'}`, details);
+    const sites = node('div', 'ag-browser-secret-sites'); sites.setAttribute('aria-label', '입력할 수 있는 사이트');
+    for (const origin of secret.origins) { const item = node('span', 'ag-browser-secret-site'); item.append(createSiteMark({ origin, request: iconRequest(), className: 'ag-site-mark-small' }), node('span', '', siteHost(origin))); sites.append(item); }
+    const sitesRow = node('div', 'ag-browser-row'); const sitesCopy = node('div', 'ag-browser-row-copy'); sitesCopy.append(node('strong', '', '사이트'), sites); sitesRow.append(sitesCopy); details.append(sitesRow);
+    row('마지막 사용', secret.lastUsedAt ? new Date(secret.lastUsedAt).toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }) : '없음', details);
+    const consent = row('에이전트 사용', secret.approved ? '허용됨' : '허용 안 함', details);
+    if (secret.approved) action(consent, '허용 철회', 'secrets.revoke', { secretId: secret.id });
+    const management = node('div', 'ag-browser-account-management'); details.append(management);
+    const remove = button('삭제', () => void (async () => {
+      if (!await confirmSheet(element, `${secret.label} 삭제`, '저장한 값을 지웁니다.', { confirmLabel: '삭제', destructive: true })) return;
+      await mutate('secrets.delete', { secretId: secret.id });
+    })());
+    remove.disabled = busy || !options.isConnected(); remove.classList.add('ag-browser-reset'); management.append(remove);
   }
   function renderLocalImport() {
     const root = node('section', 'ag-browser-local-import'); body.append(root);
@@ -383,7 +440,13 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     if (localApi) await localAction(async () => { await loadLocal(); return ''; });
     if (!options.isConnected()) { render(); return; } const current = ++generation; message.textContent = '불러오는 중…';
     const results = await Promise.allSettled([options.request('accounts.list'), options.request('policy.list'), options.request('configuration.get'), options.request('status')]);
+    // 비밀 값과 항상 허용 목록은 옛 허브에 없다 — 못 읽으면 그 칸만 감춘다.
+    const [secretList, permissionList] = await Promise.allSettled([options.request('secrets.list'), options.request('permissions.list')]);
     if (disposed || generation !== current) return;
+    secrets = secretList.status === 'fulfilled' && Array.isArray((secretList.value as { secrets?: unknown })?.secrets)
+      ? ((secretList.value as { secrets: unknown[] }).secrets.map(readSecretMeta).filter((entry): entry is SecretMeta => entry !== null)) : null;
+    alwaysGrants = permissionList.status === 'fulfilled' && Array.isArray((permissionList.value as { always?: unknown })?.always)
+      ? ((permissionList.value as { always: unknown[] }).always.filter((entry): entry is string => typeof entry === 'string')) : [];
     const [a, p, c, s] = results;
     if (a?.status === 'fulfilled') { const value = a.value as { accounts: Account[]; secureStorageAvailable: boolean }; accounts = value.accounts ?? []; secureStorage = value.secureStorageAvailable === true; }
     if (p?.status === 'fulfilled') policy = p.value as Policy;

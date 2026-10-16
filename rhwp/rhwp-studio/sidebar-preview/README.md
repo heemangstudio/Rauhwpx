@@ -67,7 +67,15 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | --- | --- |
 | `?scenario=plan` | Next submitted message produces an approval plan |
 | `?scenario=question` | A question with selectable and free-text answers |
-| `?scenario=sign-in` (`&handoff=code`) | The agent hands a sign-in (or verification code) to the user: 직접 하기 takes control of the browser tab, 완료 returns it and resumes the chat |
+| `?scenario=permission` (`&permissionCapability=downloads`) | A permission card with the 이 채팅 / 항상 scope choice, 거절 and 허용 |
+| `?scenario=sign-in` (`&handoff=code`) | The agent hands a sign-in (or verification code) to the user: the card shows the workbench's frame of the tab with 에이전트 대기 중; 직접 하기 (직접 입력) takes control of the tab (직접 제어 중, 탭 보기), 완료 returns it and resumes the chat |
+| `?scenario=use-account` | A saved-account card (Google 연구) with the scope choice |
+| `?scenario=save-account` | The account form inside a card: name, login, password, 저장 안 함 / 저장 |
+| `?scenario=secret` | The agent asks for an API key: editable name, read-only sites, masked value with show/hide, 항상 / 이 채팅, 거절 / 저장. The value goes only to `bridge.submitSecret`; the mock keeps its length |
+| `?scenario=secret-use` | The agent asks to type a saved secret (Notion API 키) into its sites: 허용 / 거절 with the scope choice |
+| `?scenario=requests` | Three requests in one turn (download permission, secret use, code handoff); each card resolves on its own |
+| `&requestFail=1` (any request scenario) | The first answer fails: the card shows the error row with 다시 시도 (a failed secret save clears the value instead) |
+| `?page=settings&destination=browser&always=downloads,browser` | Browser settings with saved secrets under 계정 → 비밀 값 and the always-allowed list under 승인된 권한 |
 | `?scenario=review` | Streaming reply followed by accept/reject changes |
 | `?scenario=fleet` | Tool activity and a subagent task |
 | `?scenario=fleet&background=1` | A subagent that keeps running after its turn: its card stays in the dock, outside the turn fold, and lands below the fold when it finishes |
@@ -168,6 +176,19 @@ there. Only real (trusted) keystrokes count, so page scripts cannot hold it;
 From the console, `sidebarPreview.askQuestion()` asks the sample question on the running
 turn (use `hold=1`), and `sidebarPreview.setChatStartDelay(ms)` and
 `sidebarPreview.setStageDelay(ms)` slow a chat start or an attachment upload.
+
+## Request cards
+
+Agent requests (permissions, accounts, sign-in handoffs, secrets) render as cards in the chat
+from `src/ui/agent-sidebar/request-card.ts`. A chat can hold several at once; a settled card folds
+into one row (완료 / 닫음 / 만료됨). Site logos come from the tab's favicon or `favicons.get`, with
+the initial letter as fallback. From the console, `sidebarPreview.reconnect()` drops and restores
+the connection and replays the open requests as the hub's welcome does (cards must stay open),
+`sidebarPreview.expireRequests()` expires them all, and `sidebarPreview.failNextRequestActions(n)`
+fails the next answers. `snapshot()` lists `pendingRequests`, `permissionResponses` (with scope),
+`requestActions`, `secretSubmissions` (label, scope and value length only) and `alwaysGrants`.
+`node rhwp/rhwp-studio/sidebar-preview/check.mjs permissions` covers scopes, the secret value
+never leaving the dedicated call, cards across a reconnect and concurrent requests.
 
 ## Interrupted turns
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 import { chatPermissionMatchesContext, readChatPermissionGrants, readChatPermissionRequest } from '../src/agent/chat-permissions.ts';
+import { PendingRequestRegistry } from '../src/agent/pending-requests.ts';
 import type { ChatPermissionRequest, SidebarEvent } from '../src/agent/types.ts';
 
 registerHooks({ load(url, context, next) {
@@ -17,16 +18,19 @@ const request: ChatPermissionRequest = {
 
 function fixture() {
   const frames: Record<string, unknown>[] = [];
+  /** 보낸 순간의 직렬화 — 보낸 뒤 프레임 객체에서 지운 필드도 남는다. */
+  const wire: string[] = [];
   const events: SidebarEvent[] = [];
   const bridge = Object.assign(Object.create(AgentBridgeImpl.prototype), {
     threadId: request.threadId, documentId: request.documentId, state: 'connected',
-    pendingChatPermissionRequest: null, chatPermissionGrants: [], requestSeq: 0, turnRunning: false,
+    pendingChatPermissionRequests: new Map(), pendingPermissionCancellations: new Map(), requests: new PendingRequestRegistry(),
+    chatPermissionGrants: [], requestSeq: 0, turnRunning: false,
     workflow: 'question', phase: 'questioning', permissionProfile: 'safe', capabilityEpoch: 2,
     referenceContext() { return { threadId: this.threadId, documentId: this.documentId }; },
-    sendJson(frame: Record<string, unknown>) { frames.push(frame); return true; },
+    sendJson(frame: Record<string, unknown>) { frames.push(frame); wire.push(JSON.stringify(frame)); return true; },
     syncEditingLease() {}, emit(event: SidebarEvent) { events.push(event); },
   });
-  return { bridge, frames, events };
+  return { bridge, frames, events, wire };
 }
 
 test('permission requests validate known capabilities and exact chat/document identity', () => {
@@ -113,7 +117,7 @@ test('explicit cancellation stays hidden across a stale reconnect snapshot and o
   assert.equal(frames.at(-1)?.threadId, request.threadId);
   assert.equal(frames.at(-1)?.documentId, request.documentId);
   bridge.syncChatPermissions({ chatPermissionGrants: [], pendingChatPermissionRequest: null });
-  assert.equal(bridge.pendingPermissionCancellation, null);
+  assert.equal(bridge.pendingPermissionCancellations.size, 0);
   const next = { ...request, requestId: 'permission-2' };
   bridge.handleMessage({ type: 'chat-permission-requested', request: next });
   assert.equal(bridge.getPendingChatPermissionRequest()?.requestId, next.requestId);
@@ -132,4 +136,83 @@ test('chat rejects document writes even with stale grants or an implementing pha
   assert.equal(bridge.getPendingChatPermissionRequest(), null);
   bridge.phase = 'implementing';
   assert.equal(bridge.canStagePendingEdits(), false);
+});
+
+const secretSave: ChatPermissionRequest = {
+  ...request, requestId: 'secret-1', capability: 'browser', kind: 'secret-save', secretLabel: 'API 키', secretKind: 'api-key',
+  origins: ['https://api.example.com'], scopes: ['always', 'chat'],
+};
+const handoff: ChatPermissionRequest = {
+  ...request, requestId: 'handoff-1', capability: 'browser', kind: 'browser-code', origin: 'https://accounts.example.com', tabId: 'tab-1',
+};
+
+test('several requests of one chat stay open and resolve one by one', () => {
+  const { bridge, events } = fixture();
+  bridge.handleMessage({ type: 'chat-permission-requested', request });
+  bridge.handleMessage({ type: 'chat-permission-requested', request: handoff });
+  bridge.handleMessage({ type: 'chat-permission-requested', request: secretSave });
+  assert.deepEqual(bridge.getPendingChatPermissionRequests().map((entry: ChatPermissionRequest) => entry.requestId), ['permission-1', 'handoff-1', 'secret-1']);
+  assert.equal(events.filter((event) => event.type === 'chat-permission-resolved').length, 0, 'a new request never expires an earlier one');
+  bridge.handleMessage({ type: 'chat-permission-resolved', requestId: handoff.requestId, threadId: handoff.threadId,
+    documentId: handoff.documentId, outcome: { status: 'denied' }, grants: [] });
+  assert.deepEqual(bridge.getPendingChatPermissionRequests().map((entry: ChatPermissionRequest) => entry.requestId), ['permission-1', 'secret-1']);
+  bridge.handleMessage({ type: 'chat-permission-resolved', requestId: request.requestId, threadId: request.threadId,
+    documentId: request.documentId, outcome: { status: 'granted' }, grants: [], alwaysGrants: ['project-edit'] });
+  assert.deepEqual(bridge.getChatPermissionGrants(), ['project-edit'], 'an always grant counts for this chat');
+  assert.deepEqual(bridge.getPendingChatPermissionRequests().map((entry: ChatPermissionRequest) => entry.requestId), ['secret-1']);
+});
+
+test('snapshots list every pending request; only requests the hub dropped expire', () => {
+  const { bridge, events } = fixture();
+  bridge.handleMessage({ type: 'chat-permission-requested', request });
+  bridge.handleMessage({ type: 'chat-permission-requested', request: handoff });
+  bridge.syncChatPermissions({ chatPermissionGrants: [], pendingChatPermissionRequests: [handoff, secretSave], pendingChatPermissionRequest: request });
+  assert.deepEqual(bridge.getPendingChatPermissionRequests().map((entry: ChatPermissionRequest) => entry.requestId).sort(), ['handoff-1', 'secret-1']);
+  const resolved = events.filter((event) => event.type === 'chat-permission-resolved');
+  assert.deepEqual(resolved.map((event) => event.type === 'chat-permission-resolved' && event.requestId), ['permission-1']);
+  assert.equal(events.filter((event) => event.type === 'chat-permission-requested' && event.replayed).length, 2, 'listed requests replay to the cards');
+  // 목록이 없는 옛 허브: 브라우저 요청은 허브의 해소를 기다린다.
+  bridge.syncChatPermissions({ chatPermissionGrants: [], pendingChatPermissionRequest: null });
+  assert.deepEqual(bridge.getPendingChatPermissionRequests().map((entry: ChatPermissionRequest) => entry.requestId).sort(), ['handoff-1', 'secret-1']);
+});
+
+test('grants carry only an offered scope', () => {
+  const { bridge, frames } = fixture();
+  bridge.handleMessage({ type: 'chat-permission-requested', request: { ...request, scopes: ['chat', 'always'] } });
+  bridge.respondChatPermission(request.requestId, 'grant', 'always');
+  assert.equal(frames.at(-1)?.scope, 'always');
+  bridge.handleMessage({ type: 'chat-permission-requested', request: { ...request, requestId: 'permission-2' } });
+  bridge.respondChatPermission('permission-2', 'grant', 'always');
+  assert.equal(frames.at(-1)?.scope, undefined, 'a request without scope choices never grants always');
+  bridge.respondChatPermission(request.requestId, 'deny', 'always');
+  assert.equal(frames.at(-1)?.scope, undefined);
+});
+
+test('a secret travels only on its own frame and never in events or the retained frame', async () => {
+  const { bridge, frames, wire, events } = fixture();
+  const value = 'sk-test-secret-value';
+  assert.equal((await bridge.submitSecret({ requestId: secretSave.requestId, label: 'API 키', value, scope: 'always' })).code, 'REQUEST_INVALIDATED');
+  bridge.handleMessage({ type: 'chat-permission-requested', request: secretSave });
+  const pending = bridge.submitSecret({ requestId: secretSave.requestId, label: ' API 키 ', value, scope: 'chat' });
+  const sent = JSON.parse(wire.at(-1)!);
+  assert.equal(sent.type, 'secret-submit');
+  assert.deepEqual({ ...sent, responseId: 'x' }, { v: sent.v, type: 'secret-submit', responseId: 'x', requestId: 'secret-1',
+    threadId: request.threadId, documentId: request.documentId, label: 'API 키', value, scope: 'chat' });
+  assert.equal('value' in frames.at(-1)!, false, 'the frame object drops the value after sending');
+  bridge.handleMessage({ type: 'secret-submit-result', responseId: sent.responseId, ok: true,
+    secret: { id: 's1', label: 'API 키', kind: 'api-key', origins: ['https://api.example.com'], scope: 'chat', approved: true,
+      createdAt: '2026-10-16T00:00:00Z', lastUsedAt: null, value } });
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.equal(JSON.stringify(result).includes(value), false, 'result metadata never echoes a value');
+  assert.equal(JSON.stringify(events).includes(value), false);
+  bridge.state = 'disconnected';
+  assert.equal((await bridge.submitSecret({ requestId: secretSave.requestId, label: 'API 키', value, scope: 'always' })).code, 'DISCONNECTED');
+  assert.equal(wire.length, 1);
+});
+
+test('secret requests read their metadata; a secret-use without a secret id is rejected', () => {
+  assert.deepEqual(readChatPermissionRequest({ ...secretSave, capability: undefined }), secretSave);
+  assert.equal(readChatPermissionRequest({ ...secretSave, kind: 'secret-use' }), null);
+  assert.equal(readChatPermissionRequest({ ...secretSave, scopes: ['forever'] })?.scopes, undefined);
 });
