@@ -577,10 +577,18 @@ export function createRequestCardController(options: RequestCardOptions) {
       for (const card of cards.values()) {
         if (card.outcome || !isHandoff(card.request) || !card.root.isConnected || !card.request.tabId) continue;
         const state = options.browserTab?.(card.request.tabId);
-        const frame = state?.frame && state.tab && !state.tab.passwordProtected ? state.frame.frameId : '';
+        const frame = state?.frame && state.tab && !state.tab.passwordProtected ? state.frame : null;
         const held = state?.tab?.controller.held === true;
         const chip = card.root.querySelector<HTMLElement>('.ag-request-chip');
-        if (frame === card.frameId && chip?.dataset.holding === String(card.holding || held)) continue;
+        const sameHold = chip?.dataset.holding === String(card.holding || held);
+        if ((frame?.frameId ?? '') === card.frameId && sameHold) continue;
+        // 새 화면만 왔으면 그림만 바꾼다. 카드를 다시 만들면 누르는 중인 버튼이 사라져 클릭이 빠진다.
+        const image = card.root.querySelector<HTMLImageElement>('.ag-request-thumb-image');
+        if (frame && image && card.frameId && sameHold) {
+          image.src = `data:${frame.mimeType};base64,${frame.data}`;
+          card.frameId = frame.frameId;
+          continue;
+        }
         render(card);
       }
     },
