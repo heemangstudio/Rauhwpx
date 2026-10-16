@@ -5,10 +5,12 @@ import { promises as fs } from 'node:fs';
 import { createBrowserNetworkGuard } from './owned-browser-network.mjs';
 import { OwnedBrowserError, inspectOwnedBrowserRuntime, inspectMacPasskeyCapability, installOwnedBrowserRuntime, startOwnedBrowserRuntime, startOwnedBrowserSignIn } from './owned-browser-runtime.mjs';
 import { removeOwnedBrowserState } from './browser-cleanup.mjs';
+import { OUTLINE_HINT, outlineFromAria, renderOutline } from './owned-browser-outline.mjs';
 
 export { OwnedBrowserError } from './owned-browser-runtime.mjs';
 
-const ELEMENTS = 'a[href],button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="menuitem"],[role="option"],[role="tab"],[contenteditable="true"],summary';
+// aria 관찰에서 이름 없는 generic으로 보이는 편집 영역. 이 요소들의 ref는 textbox로 개요에 남긴다.
+const EDITABLE = '[contenteditable=""],[contenteditable="true"],[contenteditable="plaintext-only"]';
 const SENSITIVE = 'input[type="password"],input[type="email"],input[autocomplete="username"],input[name="username"],input[name="email"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
 const SEARCH_ORIGINS = new Set(['https://www.google.com', 'https://www.google.co.kr', 'https://duckduckgo.com', 'https://www.bing.com', 'https://search.naver.com', 'https://en.wikipedia.org', 'https://ko.wikipedia.org', 'https://www.wikipedia.org', 'https://pubmed.ncbi.nlm.nih.gov', 'https://arxiv.org']);
 const redactValues = (value, secrets) => {
@@ -17,7 +19,9 @@ const redactValues = (value, secrets) => {
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactValues(entry, secrets)]));
   return value;
 };
-const MUTATIONS = new Set(['navigate', 'click', 'type', 'press', 'scroll', 'close', 'input', 'fill-account', 'viewport', 'upload']);
+const MUTATIONS = new Set(['navigate', 'click', 'type', 'press', 'select', 'scroll', 'close', 'input', 'fill-account', 'viewport', 'upload']);
+// 이 조작들은 결과가 자리 잡을 때까지 기다린 뒤 짧은 변화만 돌려준다.
+const SETTLING = new Set(['click', 'type', 'press', 'select']);
 const READS = new Set(['snapshot', 'frame', 'capture', 'wait']);
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
 const error = (code, message, retryable = false) => new OwnedBrowserError(code, message, retryable);
@@ -62,6 +66,7 @@ const browserActionFailure = (failure) => {
   if (/strict mode violation/i.test(message)) return error('BROWSER_TARGET_AMBIGUOUS', 'The target matches several elements. Take a new snapshot and choose one ref.', true);
   if (/not attached to the DOM|Node is detached|No node with given id|JSHandle is disposed|Execution context was destroyed|Cannot find context with specified id|frame (?:was|got) detached|Target (?:page, context or browser )?(?:has been |was )?closed/i.test(message)) return error('BROWSER_TARGET_DETACHED', 'The target element is gone. Take a new snapshot before retrying.', true);
   if (/not an <input>, <textarea>|not editable|Cannot type text into input/i.test(message)) return error('BROWSER_NOT_EDITABLE', 'The target is not an editable field. Choose a text field from a new snapshot.');
+  if (/not a <select> element/i.test(message)) return error('BROWSER_NOT_SELECTABLE', 'The target is not a native list box. Click custom menus instead.');
   const reason = reasonLine(message);
   if (failure?.name === 'TimeoutError' || /Timeout \d+ms exceeded/.test(message)) return error('BROWSER_ACTION_TIMEOUT', `${reason || 'The browser action timed out.'} Take a new snapshot before retrying.`, true);
   return error('BROWSER_ACTION_FAILED', `${reason || 'The browser action did not complete.'} Observe the current page before retrying.`, true);
@@ -220,7 +225,7 @@ export function createOwnedBrowserService(options = {}) {
   const selectedAdapter = () => runtimeMode === 'native' ? nativeAdapter : undefined;
   const browserStorageState = async () => (await selectedAdapter()?.passwordStorageState?.()) ?? runtime.context.storageState({ indexedDB: true });
   const nativePasswordBinding = (tab) => ({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId });
-  const limits = { maxTabs: options.maxTabs ?? 12, maxTabsPerAgent: options.maxTabsPerAgent ?? 3, maxSnapshotElements: options.maxSnapshotElements ?? 400, maxDownloadBytes: options.maxDownloadBytes ?? 100 * 1024 * 1024, maxFrameBytes: options.maxFrameBytes ?? 5 * 1024 * 1024 };
+  const limits = { maxTabs: options.maxTabs ?? 12, maxTabsPerAgent: options.maxTabsPerAgent ?? 3, maxDownloadBytes: options.maxDownloadBytes ?? 100 * 1024 * 1024, maxFrameBytes: options.maxFrameBytes ?? 5 * 1024 * 1024 };
 
   const emit = (type, payload) => { try { onEvent({ type, ...payload }); } catch {} };
   // 사용자 보류(hold)는 범위에서 나온 정책 소유자(controller.owner)와 별개다. 에이전트 쓰기만 막는다.
@@ -433,6 +438,7 @@ export function createOwnedBrowserService(options = {}) {
     page.on('dialog', (dialog) => {
       if (tab.page !== page) { void dialog.dismiss().catch(() => {}); return; }
       tab.pendingDialog = dialog;
+      tab.dialogCount = (tab.dialogCount ?? 0) + 1; tab.lastDialog = { type: dialog.type(), message: text(dialog.message(), 300) };
       // 네이티브 사용자 확인은 창의 비동기 대화상자로 처리한다. 에이전트는 승인하지 않는다.
       const human = tab.activeActor ? tab.activeActor.isHuman === true : tab.controller.owner === 'human';
       if (selectedAdapter() && human && !closed) return;
@@ -694,58 +700,77 @@ export function createOwnedBrowserService(options = {}) {
     return { clearedDomains: domains.map((domain) => domain.replace(/^\./, '')), clearedOrigins };
     } finally { if (clearing !== runtime) await clearing.close(); }
   });
+  // 네이티브 ref는 요소 정보를, 관리형 ref는 개요의 역할·이름을 돌려준다. 요소 자체는 elementFor로 찾는다.
   const requireRef = (tab, args) => {
     if (!args.snapshotId || args.snapshotId !== tab.snapshot?.snapshotId || !args.ref) throw error('BROWSER_STALE_REFERENCE', 'Take a new snapshot and use one of its element references.', true);
-    const entry = tab.snapshot.handles.get(String(args.ref));
+    const entry = (tab.snapshot.native ? tab.snapshot.handles : tab.snapshot.refs).get(String(args.ref));
     if (!entry) throw error('BROWSER_REFERENCE_NOT_FOUND', 'The element reference is not in the current snapshot.');
     return entry;
   };
-
-  const snapshot = async (tab, accept = () => true) => {
+  // 관리형 ref는 마지막 aria 관찰에서 요소를 찾는다. 사라진 요소는 시간 제한까지 기다리지 않고 바로 알린다.
+  const elementFor = async (tab, args) => {
+    const entry = requireRef(tab, args);
+    if (tab.snapshot.native) return entry;
+    const snapshotId = tab.snapshot.snapshotId;
+    const cached = tab.snapshot.handles.get(String(args.ref));
+    if (cached) return cached;
+    const handle = await requirePage(tab).getByRef(String(args.ref)).elementHandle({ timeout: 1000 }).catch(() => null);
+    if (!handle) throw error('BROWSER_TARGET_DETACHED', 'The target element is gone. Take a new snapshot before retrying.', true);
+    if (tab.snapshot?.snapshotId !== snapshotId) { void handle.dispose().catch(() => {}); throw error('BROWSER_STALE_REFERENCE', 'Take a new snapshot and use one of its element references.', true); }
+    tab.snapshot.handles.set(String(args.ref), handle);
+    return handle;
+  };
+  // 모델에는 개요만 보낸다. 정책·계정 입력에 필요한 요소 정보는 tab.snapshot 안에만 둔다.
+  const observation = (tab, base, tree, view, partial = false) => {
+    const rendered = renderOutline(tree, { scope: view.scope, find: view.find });
+    const result = { ...base, tabId: tab.tabId, controllerEpoch: tab.controllerEpoch, outline: rendered.outline, ...(rendered.truncated || partial ? { truncated: true, hint: OUTLINE_HINT } : {}), ...(view.find ? { matches: rendered.matches } : {}) };
+    return { result, rendered };
+  };
+  const scopeMissing = () => error('BROWSER_REFERENCE_NOT_FOUND', 'The scope reference is not on the current page. Take a new snapshot.');
+  const snapshot = async (tab, accept = () => true, view = {}) => {
     invalidate(tab);
     const navigationEpoch = tab.navigationEpoch;
     const geometryEpoch = tab.geometryEpoch;
     if (selectedAdapter()?.passwordSnapshot && tab.nativeTargetId) {
-      const observed = await selectedAdapter().passwordSnapshot(nativePasswordBinding(tab));
+      const observed = await selectedAdapter().passwordSnapshot({ ...nativePasswordBinding(tab), ...(view.text ? { text: true } : {}) });
       if (observed?.available !== false) {
         if (navigationEpoch !== tab.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true);
         if (geometryEpoch !== tab.geometryEpoch) throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed while it was observed. Take a new snapshot.', true);
         if (!accept()) throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out before its observation completed.', true);
-        const result = { ...observed, tabId: tab.tabId, navigationEpoch, controllerEpoch: tab.controllerEpoch };
-        tab.snapshot = { ...result, native: true, handles: new Map(result.elements.map((element) => [element.ref, { ...element, native: true }])) };
-        return result;
+        const { result, rendered } = observation(tab, { snapshotId: observed.snapshotId, navigationEpoch, url: observed.url, title: observed.title }, observed.tree, view, observed.truncated === true);
+        tab.snapshot = { snapshotId: observed.snapshotId, url: observed.url, title: observed.title, passwordProtected: observed.passwordProtected, viewport: observed.viewport, native: true, elements: observed.elements, handles: new Map(observed.elements.map((element) => [element.ref, { ...element, native: true }])), refs: rendered.refs, lines: rendered.all };
+        if (view.scope && !rendered.scoped) throw scopeMissing();
+        return { ...result, ...(observed.passwordProtected ? { passwordProtected: true } : {}), ...(view.text ? { text: observed.text ?? '' } : {}) };
       }
     }
-    const sensitiveHandles = await tab.page.locator(SENSITIVE).elementHandles();
+    const page = tab.page;
+    const sensitive = page.locator(SENSITIVE);
+    const fields = await sensitive.elementHandles();
     tab.protectedValues ??= new Set();
-    for (const field of sensitiveHandles) {
+    for (const field of fields) {
       // 페이지가 바꾼 프로토타입을 읽지 않도록 격리된 선택 엔진을 사용한다.
       const value = await field.inputValue().catch(() => '');
       if (value) tab.protectedValues.add(value);
     }
-    const handles = await tab.page.locator(ELEMENTS).elementHandles();
-    const refs = new Map();
-    const elements = [];
-    for (const handle of handles.slice(0, limits.maxSnapshotElements)) {
-      const sensitive = await handle.evaluate((el, fields) => {
-        for (let index = 0; index < fields.length; index++) if (el === fields[index]) return true;
-        return false;
-      }, sensitiveHandles);
-      const value = sensitive ? '[masked]' : await handle.inputValue().catch(() => '');
-      const element = await handle.evaluate((el, observed) => {
-        const rect = el.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0 || getComputedStyle(el).visibility === 'hidden') return null;
-        const { sensitive, value } = observed;
-        const label = el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.getAttribute('placeholder') || el.textContent || '';
-        return { tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', SUMMARY: 'button' })[el.tagName] || 'textbox', name: String(label).trim().slice(0, 500), text: sensitive ? '[masked]' : String(el.textContent ?? '').trim().slice(0, 1000), value: String(value).slice(0, 1000), sensitive, disabled: !!el.disabled, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
-      }, { sensitive, value }).catch(() => null);
-      if (!element) { await handle.dispose(); continue; }
-      const ref = `e${elements.length + 1}`; refs.set(ref, handle); elements.push({ ref, ...element });
-    }
-    for (const handle of handles.slice(limits.maxSnapshotElements)) await handle.dispose();
-    for (const handle of sensitiveHandles) await handle.dispose();
-    const content = await tab.page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
-    const selectedText = tab.protectedValues.size ? '' : await tab.page.evaluate((selector) => {
+    for (const field of fields) void field.dispose().catch(() => {});
+    // 같은 요소는 다음 aria 관찰에서도 같은 ref를 받는다. 비공개 칸의 ref를 먼저 모아 값이 바뀌어도 가린다.
+    const masked = new Set(); const extra = new Map();
+    const refsOf = async (locator, nested, found = (ref) => masked.add(ref)) => {
+      const visit = (node) => { if (!node || typeof node !== 'object') return; if (node.ref) found(node.ref); if (nested) for (const child of node.children ?? []) visit(child); };
+      for (const node of await locator.ariaSnapshotJSON({ mode: 'ai', timeout: 1000 }).catch(() => [])) visit(node);
+    };
+    const maskAll = fields.length > 24;
+    if (!maskAll) for (let index = 0; index < fields.length; index++) await refsOf(sensitive.nth(index), true);
+    const editable = page.locator(EDITABLE);
+    const editableCount = Math.min(24, await editable.count().catch(() => 0));
+    for (let index = 0; index < editableCount; index++) await refsOf(editable.nth(index), false, (ref) => extra.set(ref, 'textbox'));
+    // 마지막 관찰이 getByRef 기준이 되므로 페이지 전체 관찰은 맨 뒤에 한다.
+    const tree = await page.ariaSnapshotJSON({ mode: 'ai', timeout: 10_000 }).catch((failure) => {
+      if (navigationEpoch !== tab.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true);
+      throw failure;
+    });
+    const content = view.text ? await page.locator('body').innerText({ timeout: 3000 }).catch(() => '') : undefined;
+    const selectedText = tab.protectedValues.size ? '' : await page.evaluate((selector) => {
       if (document.activeElement?.matches(selector)) return '';
       const selection = window.getSelection();
       if (!selection) return '';
@@ -755,12 +780,16 @@ export function createOwnedBrowserService(options = {}) {
       }
       return String(selection).slice(0, 16_000);
     }, SENSITIVE);
-    if (navigationEpoch !== tab.navigationEpoch) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true); }
-    if (geometryEpoch !== tab.geometryEpoch) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed while it was observed. Take a new snapshot.', true); }
-    if (!accept()) { for (const handle of refs.values()) await handle.dispose().catch(() => {}); throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out before its observation completed.', true); }
-    const result = redactValues({ snapshotId: id('snapshot'), tabId: tab.tabId, navigationEpoch, controllerEpoch: tab.controllerEpoch, url: publicURL(tab.page.url()), title: tab.title, text: text(content, 24_000), selectedText, elements, truncated: handles.length > limits.maxSnapshotElements }, tab.protectedValues);
-    tab.snapshot = { ...result, handles: refs };
-    return result;
+    if (navigationEpoch !== tab.navigationEpoch) throw error('BROWSER_STALE_NAVIGATION', 'The page changed while it was observed. Take a new snapshot.', true);
+    if (geometryEpoch !== tab.geometryEpoch) throw error('BROWSER_STALE_GEOMETRY', 'Page zoom changed while it was observed. Take a new snapshot.', true);
+    if (!accept()) throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out before its observation completed.', true);
+    const snapshotId = id('snapshot');
+    // find 일치 수로 비밀 값을 떠볼 수 없도록 그리기 전에 가린다.
+    const { result, rendered } = observation(tab, { snapshotId, navigationEpoch, url: publicURL(page.url()), title: tab.title }, outlineFromAria(redactValues(tree, tab.protectedValues), { masked, extra, maskAll }), view);
+    const redacted = redactValues({ ...result, ...(content !== undefined ? { text: text(content, 24_000) } : {}), ...(selectedText ? { selectedText } : {}) }, tab.protectedValues);
+    tab.snapshot = { snapshotId, url: redacted.url, title: redacted.title, handles: new Map(), masked, refs: rendered.refs, lines: rendered.all };
+    if (view.scope && !rendered.scoped) throw scopeMissing();
+    return redacted;
   };
   const viewportInfo = async (tab) => {
     // 비밀번호 보호 탭에서는 일반 CDP 평가가 금지된다. 네이티브 관찰을 사용한다.
@@ -848,7 +877,7 @@ export function createOwnedBrowserService(options = {}) {
     const result = { captureId: id('capture'), tabId: tab.tabId, threadId: actor.isHuman ? args.destinationThreadId ?? tab.threadId : tab.threadId, projectId: tab.projectId, documentId: tab.documentId, navigationEpoch: epoch, source: { url: publicURL(tab.page.url()), title: tab.title, timestamp: new Date().toISOString() }, viewport, mode: args.mode ?? (args.ref ? 'element' : args.rect || args.region ? 'region' : 'page'), comment: text(args.comment) };
     let rect = args.rect ?? args.region;
     if (result.mode === 'element') {
-      const handle = args.ref ? requireRef(tab, args) : await tab.page.evaluateHandle(({ x, y }) => document.elementFromPoint(x, y), { x: Number(args.point?.x) || 0, y: Number(args.point?.y) || 0 });
+      const handle = args.ref ? await elementFor(tab, args) : await tab.page.evaluateHandle(({ x, y }) => document.elementFromPoint(x, y), { x: Number(args.point?.x) || 0, y: Number(args.point?.y) || 0 });
       result.element = handle.native ? { tag: handle.tag, role: handle.role, name: handle.name, text: handle.text, rect: handle.rect } : await handle.evaluate((el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { tag: el.tagName.toLowerCase(), role: el.getAttribute('role') ?? '', name: (el.getAttribute('aria-label') ?? '').slice(0, 500), text: el.matches('input') ? '[masked]' : String(el.textContent ?? '').slice(0, 2000), rect: { x: r.x, y: r.y, width: r.width, height: r.height } }; });
       if (!args.ref) await handle.dispose();
       if (!result.element) throw error('BROWSER_ELEMENT_NOT_FOUND', 'No page element was found at this point.');
@@ -893,7 +922,7 @@ export function createOwnedBrowserService(options = {}) {
         })]), signal);
       } finally { clearTimeout(timer); }
     };
-    const observe = () => read(() => snapshot(tab, () => Date.now() <= deadline && generation === runtimeGeneration && !signal?.aborted));
+    const observe = () => read(() => snapshot(tab, () => Date.now() <= deadline && generation === runtimeGeneration && !signal?.aborted, { find: args.find }));
     let settledSince;
     let observedEpoch;
     do {
@@ -906,7 +935,7 @@ export function createOwnedBrowserService(options = {}) {
         requireRef(tab, args);
         const remaining = Math.max(1, deadline - Date.now());
         if (tab.snapshot?.native) await read(() => selectedAdapter().passwordAction({ ...nativePasswordBinding(tab), action: 'wait', ref: args.ref, snapshotId: args.snapshotId, state: args.state === 'hidden' ? 'hidden' : 'visible', timeoutMs: remaining }));
-        else await read(() => requireRef(tab, args).waitForElementState(args.state === 'hidden' ? 'hidden' : 'visible', { timeout: remaining }));
+        else await read(() => page.getByRef(String(args.ref)).waitFor({ state: args.state === 'hidden' ? 'hidden' : 'visible', timeout: remaining }));
         satisfied = true;
       } else if (condition === 'ready' || condition === 'idle') {
         const native = selectedAdapter()?.inventory && tab.nativeTargetId ? (await read(() => selectedAdapter().inventory())).find(entry => entry.nativeTargetId === tab.nativeTargetId) : null;
@@ -919,9 +948,10 @@ export function createOwnedBrowserService(options = {}) {
         satisfied = ready && (condition === 'ready' || Date.now() - settledSince >= 500);
       } else {
         observation = await observe();
-        // Native observations already redact protected data in the main process.
-        satisfied = condition === 'text' ? observation.text.includes(needle) : observation.elements.some(element =>
-          element.rect?.width > 0 && element.rect?.height > 0 && (!needle || !element.sensitive && [element.name, element.text].some(value => typeof value === 'string' && value.includes(needle))));
+        // 조건은 제한 전 전체 개요로 판단한다. 가린 값은 일치 대상이 아니다.
+        const current = tab.snapshot;
+        satisfied = condition === 'text' ? current.lines.some(line => line.includes(needle)) : [...current.refs.values()].some(entry =>
+          !needle || [entry.name, entry.value === '[masked]' ? '' : entry.value].some(value => value.includes(needle)));
       }
       if (satisfied) return { completed: true, snapshot: observation ?? await observe() };
       const remaining = deadline - Date.now();
@@ -932,24 +962,65 @@ export function createOwnedBrowserService(options = {}) {
     throw error('BROWSER_ACTION_TIMEOUT', 'The browser condition did not appear before the wait timeout.', true);
   };
 
+  // 조작 결과를 짧게 지켜본다. 탐색이 시작되면 로드까지, 아니면 조작이 시작한 요청의 응답까지 각각 최대 5초 기다린다.
+  const watchConsequences = (tab) => {
+    const page = tab.page; const startEpoch = tab.navigationEpoch; const dialogs = tab.dialogCount ?? 0;
+    const pending = new Set(); let navigation; let popup; let watching = true;
+    const onRequest = (request) => {
+      if (!watching) return;
+      let frame; try { frame = request.frame(); } catch { return; }
+      if (request.isNavigationRequest() && frame === page.mainFrame()) navigation = request;
+      // 스트림·웹소켓처럼 오래 열린 연결은 기다리지 않는다. 응답 헤더가 오면 끝난 것으로 본다.
+      else if (!['websocket', 'eventsource', 'media', 'ping'].includes(request.resourceType())) pending.add(request);
+    };
+    const onResponse = (response) => { pending.delete(response.request()); };
+    // 커밋 없이 끝난 문서 요청(다운로드·204)은 탐색이 아니다.
+    const onDone = (request) => { pending.delete(request); if (request === navigation) navigation = 'done'; };
+    const onPopup = (opened) => { popup ??= opened; };
+    page.on('request', onRequest); page.on('response', onResponse); page.on('requestfailed', onDone); page.on('requestfinished', onDone); page.on('popup', onPopup);
+    const stop = () => { watching = false; page.off('request', onRequest); page.off('response', onResponse); page.off('requestfailed', onDone); page.off('requestfinished', onDone); page.off('popup', onPopup); };
+    const settle = async () => {
+      try {
+        await pause(500); watching = false;
+        const deadline = Date.now() + 5000;
+        const live = () => Date.now() < deadline && tab.page === page && !page.isClosed();
+        if (navigation || tab.navigationEpoch !== startEpoch) {
+          while (live() && tab.navigationEpoch === startEpoch && navigation !== 'done') await pause(50);
+          if (live() && tab.navigationEpoch !== startEpoch) await page.waitForLoadState('load', { timeout: Math.max(1, deadline - Date.now()) }).catch(() => {});
+        } else while (live() && pending.size) await pause(50);
+        let opened;
+        while (popup && !(opened = [...tabs.values()].find((entry) => entry.page === popup)) && live() && !popup.isClosed()) await pause(50);
+        const navigated = tab.navigationEpoch !== startEpoch;
+        if (navigated && tab.page === page && !page.isClosed() && !(selectedAdapter() && tab.nativeTargetId)) { const title = await page.title().catch(() => null); if (typeof title === 'string' && tab.page === page) tab.title = text(title, 500); }
+        const dialog = (tab.dialogCount ?? 0) !== dialogs && tab.lastDialog ? redactValues(tab.lastDialog, tab.protectedValues) : undefined;
+        const newTab = opened ? (({ tabId, url, title }) => ({ tabId, url, ...(title ? { title } : {}) }))(descriptor(opened)) : undefined;
+        return { navigated, ...(newTab ? { newTab } : {}), ...(dialog ? { dialog } : {}) };
+      } finally { stop(); }
+    };
+    return { stop, settle };
+  };
+
   const operate = async (actor, action, tab, args, signal) => {
     if (action === 'close') { await releaseInput(tab); await tab.page?.close(); tab.status = 'closed'; tabs.delete(tab.tabId); await persist(); return { completed: true }; }
     const page = requirePage(tab);
-    if (action === 'snapshot') return { snapshot: await snapshot(tab) };
+    if (action === 'snapshot') return { snapshot: await snapshot(tab, undefined, { scope: args.scope, find: args.find, text: args.text === true }) };
     if (action === 'frame') return { frame: await frame(tab, actor) };
     if (action === 'capture') return { capture: await capture(actor, tab, args) };
-    if (tab.snapshot?.native && selectedAdapter()?.passwordAction && ['click', 'type', 'press', 'scroll'].includes(action)) {
+    if (tab.snapshot?.native && selectedAdapter()?.passwordAction && ['click', 'type', 'press', 'select', 'scroll'].includes(action)) {
       if (action === 'press') assertAgentKey(actor, args.key);
       const ref = args.ref ?? (action === 'press' ? tab.snapshot.elements.find((element) => element.tag === 'input')?.ref : undefined);
       if (action !== 'scroll') requireRef(tab, { ...args, ref });
-      const parameters = { ...nativePasswordBinding(tab), action, ref, snapshotId: args.snapshotId ?? tab.snapshot.snapshotId, text: text(args.text, 16_000), key: text(args.key, 80), deltaX: bounded(args.deltaX, -2000, 2000, 0), deltaY: bounded(args.deltaY, -2000, 2000, 600) };
-      const result = await selectedAdapter().passwordAction(parameters);
-      if (action === 'type' && args.submit === true) {
-        epochs(tab, args, true); assertController(actor, tab);
-        await assertPolicy(actor, 'press', page.url(), tab, args);
-        await selectedAdapter().passwordAction({ ...parameters, action: 'press', key: 'Enter' });
-      }
-      return result;
+      const parameters = { ...nativePasswordBinding(tab), action, ref, snapshotId: args.snapshotId ?? tab.snapshot.snapshotId, text: text(args.text, 16_000), key: text(args.key, 80), option: text(args.option, 500), deltaX: bounded(args.deltaX, -2000, 2000, 0), deltaY: bounded(args.deltaY, -2000, 2000, 600) };
+      const watch = SETTLING.has(action) ? watchConsequences(tab) : null;
+      try {
+        const result = await selectedAdapter().passwordAction(parameters);
+        if (action === 'type' && args.submit === true) {
+          epochs(tab, args, true); assertController(actor, tab);
+          await assertPolicy(actor, 'press', page.url(), tab, args);
+          await selectedAdapter().passwordAction({ ...parameters, action: 'press', key: 'Enter' });
+        }
+        return watch ? { ...result, consequences: await watch.settle() } : result;
+      } finally { watch?.stop(); }
     }
     if (action === 'wait') return waitForCondition(actor, tab, args, signal);
     if (action === 'navigate') {
@@ -964,20 +1035,35 @@ export function createOwnedBrowserService(options = {}) {
       else { const url = guard.parse(args.url).href; await assertPolicy(actor, action, url, tab, args); await page.goto(url, { waitUntil: 'domcontentloaded' }); }
       return { completed: true };
     }
-    if (action === 'click') { await requireRef(tab, args).click({ timeout: 10_000, button: args.button === 'right' ? 'right' : 'left' }); return { completed: true }; }
-    if (action === 'type') {
-      const handle = requireRef(tab, args);
-      if ((await handle.getAttribute('type'))?.toLowerCase() === 'password' || ['current-password', 'new-password'].includes(await handle.getAttribute('autocomplete'))) throw error('BROWSER_SECRET_CHANNEL_REQUIRED', 'Use the saved-account broker to fill password fields.');
-      if ((await handle.getAttribute('autocomplete'))?.trim().toLowerCase() === 'one-time-code') throw error('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code'.");
-      await handle.fill(text(args.text, 16_000), { timeout: 10_000 });
-      if (args.submit === true) {
-        epochs(tab, args, true); assertController(actor, tab);
-        await assertPolicy(actor, 'press', page.url(), tab, args);
-        await requireRef(tab, args).press('Enter', { timeout: 10_000 });
+    if (SETTLING.has(action)) {
+      if (action === 'press') assertAgentKey(actor, args.key);
+      const handle = args.ref || action !== 'press' ? await elementFor(tab, args) : null;
+      if (action === 'type' && ((await handle.getAttribute('type'))?.toLowerCase() === 'password' || ['current-password', 'new-password'].includes(await handle.getAttribute('autocomplete')))) throw error('BROWSER_SECRET_CHANNEL_REQUIRED', 'Use the saved-account broker to fill password fields.');
+      if (action === 'type' && (await handle.getAttribute('autocomplete'))?.trim().toLowerCase() === 'one-time-code') throw error('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code'.");
+      let choice;
+      if (action === 'select') {
+        const options = await handle.evaluate((el) => el instanceof HTMLSelectElement ? [...el.options].map((option) => [option.label.trim(), option.value, option.disabled]) : null);
+        if (!options) throw error('BROWSER_NOT_SELECTABLE', 'The target is not a native list box. Click custom menus instead.');
+        const wanted = String(args.option ?? '').trim();
+        choice = [([label]) => label === wanted, ([, value]) => value === wanted, ([label]) => label.toLowerCase() === wanted.toLowerCase()].map((match) => options.findIndex((option) => !option[2] && match(option))).find((index) => index >= 0);
+        if (choice === undefined) throw error('BROWSER_OPTION_NOT_FOUND', 'No enabled option has this label or value. Snapshot the list box with scope to see its options.');
       }
-      return { completed: true };
+      const watch = watchConsequences(tab);
+      try {
+        if (action === 'click') await handle.click({ timeout: 10_000, button: args.button === 'right' ? 'right' : 'left' });
+        else if (action === 'select') await handle.selectOption({ index: choice }, { timeout: 10_000 });
+        else if (action === 'press') { if (handle) await handle.press(text(args.key, 80)); else await page.keyboard.press(text(args.key, 80)); }
+        else {
+          await handle.fill(text(args.text, 16_000), { timeout: 10_000 });
+          if (args.submit === true) {
+            epochs(tab, args, true); assertController(actor, tab);
+            await assertPolicy(actor, 'press', page.url(), tab, args);
+            await (await elementFor(tab, args)).press('Enter', { timeout: 10_000 });
+          }
+        }
+        return { completed: true, consequences: await watch.settle() };
+      } finally { watch.stop(); }
     }
-    if (action === 'press') { assertAgentKey(actor, args.key); if (args.ref) await requireRef(tab, args).press(text(args.key, 80)); else await page.keyboard.press(text(args.key, 80)); return { completed: true }; }
     if (action === 'scroll') { await page.mouse.wheel(bounded(args.deltaX, -2000, 2000, 0), bounded(args.deltaY, -2000, 2000, 600)); return { completed: true }; }
     if (action === 'input') { if (!actor.isHuman) throw error('BROWSER_HUMAN_INPUT_REQUIRED', 'Raw browser input is reserved for human takeover.'); return input(tab, args); }
     if (action === 'upload') {
@@ -1003,8 +1089,8 @@ export function createOwnedBrowserService(options = {}) {
         return result;
       }
       if (!credentialBroker?.issueHandle || !credentialBroker?.fill) throw error('BROWSER_VAULT_UNAVAILABLE', 'The secure account broker is unavailable.', true);
-      const passwordHandle = requireRef(tab, { ...args, ref: args.passwordRef ?? args.ref });
-      const usernameHandle = args.usernameRef ? requireRef(tab, { ...args, ref: args.usernameRef }) : null;
+      const passwordHandle = await elementFor(tab, { ...args, ref: args.passwordRef ?? args.ref });
+      const usernameHandle = args.usernameRef ? await elementFor(tab, { ...args, ref: args.usernameRef }) : null;
       const origin = new URL(page.url()).origin;
       const binding = { tabId: tab.tabId, runtimeGeneration: generation, navigationEpoch: tab.navigationEpoch, controlEpoch: tab.controllerEpoch, frameId: 'main', origin, accountId: args.accountId };
       const issued = await credentialBroker.issueHandle({ actor, accountId: args.accountId, binding });
@@ -1307,18 +1393,19 @@ export function createOwnedBrowserService(options = {}) {
       if (blockedByUser()) throw userInControl();
       epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
-      if (!actor.isHuman && ['type', 'click', 'press'].includes(action)) {
-        const element = args.ref && tab.snapshot?.elements.find(entry => entry.ref === args.ref);
-        const handle = args.ref && !tab.snapshot?.native ? requireRef(tab, args) : null;
+      if (!actor.isHuman && SETTLING.has(action)) {
+        // 네이티브 ref는 격리 세계가 기록한 요소 정보로, 관리형 ref는 실제 요소로 판단한다.
+        const element = args.ref ? requireRef(tab, args) : null;
+        const handle = element && !tab.snapshot.native ? await elementFor(tab, args) : null;
         const selfButton = handle && action === 'click' ? await handle.$('xpath=self::button|self::summary|self::input[@type="submit" or @type="button" or @type="image"]') : null;
         const role = handle ? await handle.getAttribute('role') : element?.role;
-        const writesText = action === 'type' || action === 'press' && (['Enter', 'Space'].includes(args.key) || /^[\p{L}\p{N}]$/u.test(args.key));
+        const writesText = action === 'type' || action === 'select' || action === 'press' && (['Enter', 'Space'].includes(args.key) || /^[\p{L}\p{N}]$/u.test(args.key));
         const submits = action === 'click' && element && (handle ? !!selfButton || ['button', 'menuitem'].includes(role) : ['button', 'summary'].includes(element.tag) || ['button', 'menuitem'].includes(role) || element.tag === 'input' && ['submit', 'button', 'image'].includes(element.inputType));
         await selfButton?.dispose();
         // Search input is a deliberate exception on exact built-in search origins, not URL-shaped arbitrary sites.
         let search = false;
         const currentURL = new URL(requirePage(tab).url());
-        if (SEARCH_ORIGINS.has(currentURL.origin) && element && !element.sensitive) {
+        if (SEARCH_ORIGINS.has(currentURL.origin) && element && !(handle ? tab.snapshot.masked?.has(String(args.ref)) : element.sensitive)) {
           const form = handle ? await handle.$('xpath=ancestor-or-self::form[1]') : null;
           const method = form ? await form.getAttribute('method') : element.formMethod;
           const destination = new URL((form ? await form.getAttribute('action') : element.formAction) || currentURL.href, currentURL);
@@ -1359,6 +1446,13 @@ export function createOwnedBrowserService(options = {}) {
         if (action !== 'close') await assertPolicy(actor, action, requirePage(tab).url(), tab, args);
         if (value.capture) { const eventCapture = { ...value.capture }; delete eventCapture.screenshot; emit('owned_browser_capture', { capture: eventCapture }); }
         publish(tab); if (!actor.isHuman && action !== 'close' && challengeFor(tab)) return challengeResult(action, tab);
+        if (value.consequences) {
+          // 조작 결과는 바뀐 점만 돌려준다. 개요는 요청했을 때만 새로 읽고, 실패해도 이미 끝난 조작은 성공으로 남긴다.
+          const { navigated, ...changes } = value.consequences; const current = descriptor(tab);
+          const delta = { ok: true, action, navigated, url: current.url, title: current.title, ...(navigated ? { navigationEpoch: tab.navigationEpoch } : {}), ...changes };
+          if (args.snapshot === true) try { delta.snapshot = await snapshot(tab); } catch (failure) { delta.snapshotError = { code: failure.code?.startsWith('BROWSER_') ? failure.code : 'BROWSER_ACTION_FAILED', message: 'The page changed before it could be observed. Take a new snapshot.' }; }
+          return delta;
+        }
         return { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab), ...value };
       } catch (failure) {
         if (failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_')) throw failure;

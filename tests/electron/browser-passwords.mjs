@@ -34,6 +34,7 @@ let autocompleteListener; let saveListener;
 const sockets = new Set();
 const report = {};
 const timer = setTimeout(() => { console.error('NATIVE_PASSWORD_TIMEOUT', report.stage); process.exit(1); }, 45_000);
+const outlineRef = (snapshot, name) => snapshot.outline.split('\n').find((line) => line.includes(`"${name}"`))?.match(/\[ref=([^\]]+)\]/)?.[1];
 async function main() {
 try {
   report.stage = 'ready';
@@ -104,7 +105,7 @@ try {
   report.armedCapture = true;
   const beforeCapture = await service.request(actor, 'snapshot', { tabId });
   await service.request(actor, 'capture', { tabId, mode: 'page' });
-  const publicUsername = beforeCapture.snapshot.elements.find(el => el.autocomplete === 'username');
+  const publicUsername = { ref: outlineRef(beforeCapture.snapshot, 'Username') };
   await service.request(actor, 'type', { tabId, snapshotId: beforeCapture.snapshot.snapshotId, navigationEpoch: beforeCapture.tab.navigationEpoch, controllerEpoch: beforeCapture.tab.controllerEpoch, ref: publicUsername.ref, text: 'still usable' });
   const originalCapture = tab.view.webContents.capturePage.bind(tab.view.webContents);
   tab.view.webContents.capturePage = async (...args) => { const image = await originalCapture(...args); tab.protectedPasswords = new Set([secret]); return image; };
@@ -118,10 +119,8 @@ try {
   await tab.view.webContents.executeJavaScript(`document.querySelector('form').insertAdjacentHTML('beforeend', '<input id="otp" name="otp" autocomplete="one-time-code">')`);
   const observed = await service.request(actor, 'snapshot', { tabId });
   report.stage = 'observed';
-  const username = observed.snapshot.elements.find((element) => element.autocomplete === 'username');
-  const password = observed.snapshot.elements.find((element) => element.inputType === 'password');
-  const submit = observed.snapshot.elements.find((element) => element.tag === 'button');
-  assert.ok(username && password && submit);
+  const [username, password, submit] = ['Username', 'Password', 'Sign in'].map((name) => ({ ref: outlineRef(observed.snapshot, name) }));
+  assert.ok(username.ref && password.ref && submit.ref);
   const args = { tabId, snapshotId: observed.snapshot.snapshotId, navigationEpoch: observed.tab.navigationEpoch, controllerEpoch: observed.tab.controllerEpoch };
   await service.request(actor, 'type', { ...args, ref: username.ref, text: 'public-identifier' });
   const code = observed.snapshot.elements.find((element) => element.autocomplete === 'one-time-code');
@@ -172,7 +171,7 @@ try {
   await assert.rejects(host.cdp.command({ method: 'Page.captureScreenshot', sessionId: cdpSession }), /protect this page/);
   await assert.rejects(host.cdp.command({ method: 'Network.getRequestPostData', sessionId: cdpSession, params: { requestId: 'fixture' } }), /protect this page/);
   const masked = await service.request(actor, 'snapshot', { tabId });
-  assert.equal(masked.snapshot.elements.find((element) => element.inputType === 'password').value, '[masked]');
+  assert.match(masked.snapshot.outline, /textbox "Password" \[ref=[^\]]+\]: \[masked\]/);
   const currentArgs = { tabId, snapshotId: masked.snapshot.snapshotId, navigationEpoch: masked.tab.navigationEpoch, controllerEpoch: masked.tab.controllerEpoch };
   const navigation = new Promise((resolve) => tab.view.webContents.once('did-navigate', resolve));
   await service.request(actor, 'click', { ...currentArgs, ref: submit.ref });
@@ -192,8 +191,8 @@ try {
     try { signedIn = await service.request(actor, 'snapshot', { tabId }); }
     catch (error) { if (!error.code?.includes('STALE') || Date.now() >= deadline) throw error; await new Promise((resolve) => setTimeout(resolve, 20)); }
   }
-  assert.match(signedIn.snapshot.text, /Account research fixture/);
-  const input = signedIn.snapshot.elements.find((element) => element.tag === 'input');
+  assert.match(signedIn.snapshot.outline, /Account research fixture/);
+  const input = { ref: signedIn.snapshot.outline.match(/- textbox \[ref=([^\]]+)\]/)[1] };
   await service.request(actor, 'type', { tabId, snapshotId: signedIn.snapshot.snapshotId, ref: input.ref, text: 'Signed-in research', navigationEpoch: signedIn.tab.navigationEpoch, controllerEpoch: signedIn.tab.controllerEpoch });
   assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("research").value'), 'Signed-in research');
   await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, passwordRef: password.ref }), /changed|snapshot|stale/i);
@@ -226,8 +225,7 @@ try {
   await vault.setAgentReuse(manual.id, true);
   assert.equal(JSON.stringify(inventory).includes(secret), false);
   const manualObservation = await service.request(actor, 'snapshot', { tabId });
-  const loginId = manualObservation.snapshot.elements.find(element => element.inputType === 'text');
-  const loginPassword = manualObservation.snapshot.elements.find(element => element.inputType === 'password');
+  const [loginId, loginPassword] = manualObservation.snapshot.outline.split('\n').filter((line) => line.includes('- textbox')).map((line) => ({ ref: line.match(/\[ref=([^\]]+)\]/)[1] }));
   assert.ok(loginId && loginPassword);
   const filledManual = await service.request(actor, 'fill-account', { tabId, accountId: manual.id,
     snapshotId: manualObservation.snapshot.snapshotId, usernameRef: loginId.ref, passwordRef: loginPassword.ref,

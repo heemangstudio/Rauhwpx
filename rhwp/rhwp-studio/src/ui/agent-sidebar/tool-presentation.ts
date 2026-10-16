@@ -587,6 +587,7 @@ const SPECS: Record<string, ToolSpec> = {
   browser_click: { category: 'other', label: '페이지 요소 누르기' },
   browser_type: { category: 'other', label: '페이지에 입력하기' },
   browser_press: { category: 'other', label: '키 누르기', summary: (a) => str(a['key']) },
+  browser_select: { category: 'other', label: '목록에서 고르기', summary: (a) => str(a['option']) },
   browser_scroll: { category: 'other', label: '페이지 스크롤' },
   browser_wait: { category: 'other', label: '페이지 기다리기' },
   browser_capture: { category: 'other', label: '페이지 캡처' },

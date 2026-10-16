@@ -187,11 +187,12 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   assert.equal(events.some(event => event.type === 'owned_browser_activity'), false, 'human observation does not spawn an agent preview');
   observation = await browser.request(alice, 'snapshot', { tabId: a.tabId });
   assert.equal(JSON.stringify(observation).includes('vault-secret'), false);
-  const query = observation.snapshot.elements.find((element) => element.tag === 'input' && !element.sensitive);
-  const inputArgs = { tabId: a.tabId, snapshotId: observation.snapshot.snapshotId, ref: query.ref, navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch, text: '한국어 research' };
+  const refOf = (snapshot, name) => snapshot.outline.split('\n').find(line => line.includes(`"${name}"`)).match(/\[ref=([^\]]+)\]/)[1];
+  assert.match(observation.snapshot.outline, /textbox "Password" \[ref=[^\]]+\]: \[masked\]/);
+  const inputArgs = { tabId: a.tabId, snapshotId: observation.snapshot.snapshotId, ref: refOf(observation.snapshot, 'Query'), navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch, text: '한국어 research' };
   await browser.request(alice, 'type', inputArgs);
   observation = await browser.request(alice, 'snapshot', { tabId: a.tabId });
-  assert.ok(observation.snapshot.elements.some((element) => element.value === '한국어 research'));
+  assert.match(observation.snapshot.outline, /textbox "Query" \[ref=[^\]]+\]: 한국어 research/);
   await assert.rejects(browser.request(alice, 'type', inputArgs), { code: 'BROWSER_STALE_REFERENCE' });
   const taken = await browser.request(human, 'control', { tabId: a.tabId, owner: 'human' });
   assert.equal(taken.tab.controller.held, true);
@@ -199,7 +200,7 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   await assert.rejects(browser.request(alice, 'press', press), { code: 'BROWSER_USER_IN_CONTROL' });
   events.length = 0;
   const stillReadable = await browser.request(alice, 'snapshot', { tabId: a.tabId });
-  assert.ok(stillReadable.snapshot.text.includes('Research'), 'agent reads continue while the user holds the tab');
+  assert.ok(stillReadable.snapshot.outline.includes('Research'), 'agent reads continue while the user holds the tab');
   assert.equal(events.some(event => event.type === 'owned_browser_activity'), false, 'observe-only reads do not lock the user out');
   const frame = await browser.request(human, 'frame', { tabId: a.tabId });
   assert.equal(frame.frame.mimeType, 'image/jpeg');
@@ -220,14 +221,12 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   assert.deepEqual(status.tabs.map(tab => tab.tabId).sort(), [b.tabId, shared.tabId].sort());
   const current = await browser.request(sidebarAgent, 'snapshot', { tabId: status.activeTabId });
   assert.equal(JSON.stringify(current).includes('vault-secret'), false, 'shared page observations still mask passwords');
-  const field = current.snapshot.elements.find(element => element.tag === 'input' && !element.sensitive);
-  await browser.request(sidebarAgent, 'type', { tabId: shared.tabId, snapshotId: current.snapshot.snapshotId, ref: field.ref,
+  await browser.request(sidebarAgent, 'type', { tabId: shared.tabId, snapshotId: current.snapshot.snapshotId, ref: refOf(current.snapshot, 'Query'),
     navigationEpoch: current.tab.navigationEpoch, controllerEpoch: current.tab.controllerEpoch, text: 'Shared sidebar research' });
   const filled = await browser.request(sidebarAgent, 'snapshot', { tabId: shared.tabId });
-  const search = filled.snapshot.elements.find(element => element.tag === 'button');
-  await browser.request(sidebarAgent, 'click', { tabId: shared.tabId, snapshotId: filled.snapshot.snapshotId, ref: search.ref,
+  await browser.request(sidebarAgent, 'click', { tabId: shared.tabId, snapshotId: filled.snapshot.snapshotId, ref: refOf(filled.snapshot, 'Search'),
     navigationEpoch: filled.tab.navigationEpoch, controllerEpoch: filled.tab.controllerEpoch });
-  assert.ok((await browser.request(human, 'snapshot', { tabId: shared.tabId })).snapshot.text.includes('Shared sidebar research'));
+  assert.ok((await browser.request(human, 'snapshot', { tabId: shared.tabId })).snapshot.outline.includes('Shared sidebar research'));
   assert.ok(events.some(event => event.type === 'owned_browser_activity' && event.tab.tabId === shared.tabId && event.sessionId === 'window-b'), 'activity follows the controlling chat instead of the tab creator');
 
 });
