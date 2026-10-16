@@ -15,7 +15,8 @@ const ids = tab => ({ tabId: tab.tabId, navigationEpoch: tab.navigationEpoch, co
 function fakeRuntime({ wheel = async () => {}, nativeTargetId } = {}) {
   const page = Object.assign(new EventEmitter(), {
     url: () => 'https://example.com/', isClosed: () => false, frames: () => [], async routeWebSocket() {}, async close() {}, async goto() {},
-    async evaluate() { return ''; }, locator: () => ({ async elementHandles() { return []; }, async innerText() { return 'Fixture page'; } }),
+    async evaluate() { return ''; }, locator: () => ({ async elementHandles() { return []; }, async count() { return 0; }, async innerText() { return 'Fixture page'; } }),
+    async ariaSnapshotJSON() { return [{ role: 'paragraph', text: 'Fixture page' }]; },
     mouse: { wheel, async up() {} }, keyboard: { async up() {} },
   });
   const context = Object.assign(new EventEmitter(), {
@@ -55,7 +56,7 @@ test('a user takeover fails queued agent input fast, marks the in-flight action 
   const userInput = browser.request(human, 'input', { ...ids(taken), type: 'wheel', deltaY: 50 });
   await running;
   const observed = await browser.request(agent, 'snapshot', { tabId: opened.tabId });
-  assert.equal(observed.snapshot.text, 'Fixture page');
+  assert.equal(observed.snapshot.outline, '- paragraph: Fixture page');
   await assert.rejects(browser.request(agent, 'scroll', { ...ids(taken), deltaY: 10 }), { code: 'BROWSER_USER_IN_CONTROL' });
   release(); await userInput;
 
@@ -111,7 +112,7 @@ test('real Playwright failures keep a typed reason for covered, detached and non
   const browser = await service(t, { policy: { assertAllowed: async () => {} }, workspaceTargets: [origin], autoInstall: false });
   const opened = (await browser.request(agent, 'open', { url: `${origin}/` })).tab;
   const observed = await browser.request(agent, 'snapshot', { tabId: opened.tabId });
-  const target = name => ({ ...ids(observed.tab), snapshotId: observed.snapshot.snapshotId, ref: observed.snapshot.elements.find(element => element.name === name).ref });
+  const target = name => ({ ...ids(observed.tab), snapshotId: observed.snapshot.snapshotId, ref: observed.snapshot.outline.split('\n').find(line => line.includes(`"${name}"`)).match(/\[ref=([^\]]+)\]/)[1] });
   await assert.rejects(browser.request(agent, 'type', { ...target('Target'), text: 'research' }), { code: 'BROWSER_NOT_EDITABLE' });
   await browser.request(agent, 'click', target('Remove'));
   await assert.rejects(browser.request(agent, 'click', target('Target')), { code: 'BROWSER_TARGET_DETACHED' });

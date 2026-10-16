@@ -109,7 +109,7 @@ app.whenReady().then(async () => {
     const snapshot = await service.request(actor, 'snapshot', { tabId: tab.tabId });
     await service.request(actor, 'click', { tabId: tab.tabId, snapshotId: snapshot.snapshot.snapshotId,
       navigationEpoch: snapshot.tab.navigationEpoch, controllerEpoch: snapshot.tab.controllerEpoch,
-      ref: snapshot.snapshot.elements.find(element => element.name === 'Submit').ref });
+      ref: snapshot.snapshot.outline.split('\n').find(line => line.includes('"Submit"')).match(/\[ref=([^\]]+)\]/)[1] });
     assert.equal(await evaluate('submissions'), 1);
     assert.equal(await evaluate('finished'), 2);
 

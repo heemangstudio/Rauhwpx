@@ -149,7 +149,7 @@ try {
   assert.ok(Math.abs(refreshed.zoomFactor - 1.5) < 0.001);
   assert.ok(invalidated.length > beforeInvalidation);
   await assert.rejects(service.request(actor, 'capture', { tabId: serviceTab.tabId, frameId: captured.frame.frameId }), { code: 'BROWSER_STALE_FRAME' });
-  await assert.rejects(service.request(actor, 'capture', { tabId: serviceTab.tabId, mode: 'element', snapshotId: observation.snapshot.snapshotId, ref: observation.snapshot.elements[0].ref }), { code: 'BROWSER_STALE_REFERENCE' });
+  await assert.rejects(service.request(actor, 'capture', { tabId: serviceTab.tabId, mode: 'element', snapshotId: observation.snapshot.snapshotId, ref: observation.snapshot.outline.match(/\[ref=([^\]]+)\]/)[1] }), { code: 'BROWSER_STALE_REFERENCE' });
   const originalScreenshot = servicePage.screenshot.bind(servicePage);
   let beginCapture, finishCapture;
   const captureStarted = new Promise((resolve) => { beginCapture = resolve; });
