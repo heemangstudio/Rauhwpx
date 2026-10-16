@@ -26,7 +26,7 @@ pub(crate) fn has_block_table(para: &Paragraph) -> bool {
     para.controls.iter().any(is_block_table_control)
 }
 
-fn is_logical_inline_control(ctrl: &Control) -> bool {
+pub(crate) fn is_logical_inline_control(ctrl: &Control) -> bool {
     is_treat_as_char_object_control(ctrl)
         || matches!(ctrl, Control::Footnote(_) | Control::Endnote(_))
 }

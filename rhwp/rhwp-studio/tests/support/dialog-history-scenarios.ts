@@ -792,6 +792,115 @@ async function equationInsert(): Promise<StepResult & { equations: number }> {
   return { ...result, equations: layout.filter((c) => c.type === 'equation').length };
 }
 
+/** 문단을 캐럿 칸 순서로 적는다. 인라인 개체 칸은 [수식] 이다. cellPath 가 있으면 그 셀 문단이다. */
+function caretLayout(para: number, cellPath?: unknown[]): string {
+  const json = JSON.stringify(cellPath);
+  const read = cellPath
+    ? {
+      text: () => wasm.getTextInCellByPath(0, para, json, 0, wasm.getCellParagraphLengthByPath(0, para, json)),
+      length: () => wasm.getCellLogicalLengthByPath(0, para, json),
+      toText: (logical: number) => wasm.logicalToTextOffsetInCellByPath(0, para, json, logical),
+    }
+    : {
+      text: () => wasm.getTextRange(0, para, 0, wasm.getParagraphLength(0, para)),
+      length: () => wasm.getLogicalLength(0, para),
+      toText: (logical: number) => wasm.logicalToTextOffset(0, para, logical),
+    };
+  const text = [...read.text()];
+  let out = '';
+  for (let logical = 0; logical < read.length(); logical++) {
+    const at = read.toText(logical);
+    out += at === read.toText(logical + 1) ? '[수식]' : text[at];
+  }
+  return out;
+}
+
+/** 본문 문단의 수식 스크립트를 컨트롤 순서대로. */
+function equationScripts(para: number): string[] {
+  const scripts: string[] = [];
+  for (let ci = 0; ci < wasm.getControlTextPositions(0, para).length; ci++) {
+    try {
+      scripts.push(wasm.getEquationProperties(0, para, ci).script);
+    } catch {
+      // 수식이 아닌 컨트롤
+    }
+  }
+  return scripts;
+}
+
+/** 열린 수식 편집기에 스크립트를 넣고, 확인 전에 백그라운드 편집처럼 첫 문단 앞에 문단을 넣는다. */
+function confirmEquationAfterEdit(script: string): boolean {
+  run('insert:equation');
+  const root = dialog('.eq-dialog');
+  setValue(root.querySelector<HTMLTextAreaElement>('.eq-script')!, script);
+  eventBus.emit('document-changed', 'deferred-pagination-complete');
+  quietly(() => {
+    wasm.splitParagraph(0, 0, 0);
+    wasm.insertText(0, 0, 0, '새 문단');
+  });
+  eventBus.emit('document-mutated', 'agent-stage');
+  eventBus.emit('document-changed');
+  confirmDialog(root);
+  return root.isConnected;
+}
+
+/**
+ * 수식 편집기가 열린 동안 조판이 끝나고 백그라운드 편집이 위에 문단을 넣어도, 확인하면
+ * 막히지 않고 처음 캐럿 자리에 들어간다. 캐럿 바로 앞 수식의 뒤에 서고, 글상자가 다음 문단으로
+ * 옮겨 가며 컨트롤 순서가 바뀌어도 같은 글상자를 찾는다.
+ */
+async function equationInsertAfterDocumentChange(): Promise<{
+  body: { dialogOpen: boolean; paragraphs: string[]; scripts: string[]; caret: number };
+  textBox: { dialogOpen: boolean; text: string };
+}> {
+  freshDocument(() => {
+    wasm.insertText(0, 0, 0, '수식 자리');
+    wasm.insertEquation(0, 0, 1, 'a', 1000, 0);
+  });
+  host.moveCursorTo({ sectionIndex: 0, paragraphIndex: 0, charOffset: 2 });
+  const body = {
+    dialogOpen: confirmEquationAfterEdit('b over c'),
+    paragraphs: [0, 1].map((para) => caretLayout(para)),
+    scripts: equationScripts(1),
+    caret: host.getCursorPosition().charOffset,
+  };
+
+  let box = { paraIdx: 0, controlIdx: 0 };
+  freshDocument(() => {
+    wasm.insertText(0, 0, 0, '본문');
+    box = wasm.createShapeControl({
+      sectionIdx: 0, paraIdx: 0, charOffset: 2, width: 20000, height: 8000, horzOffset: 0, vertOffset: 0,
+      shapeType: 'textbox', treatAsChar: false, textWrap: 'InFrontOfText',
+    });
+    const path = JSON.stringify([{ controlIndex: box.controlIdx, cellIndex: 0, cellParaIndex: 0 }]);
+    wasm.insertTextInCellByPath(0, box.paraIdx, path, 0, '글상자 안쪽', true);
+  });
+  host.moveCursorTo({
+    sectionIndex: 0, paragraphIndex: 0, charOffset: 3,
+    parentParaIndex: box.paraIdx, controlIndex: box.controlIdx, cellIndex: 0, cellParaIndex: 0, isTextBox: true,
+  });
+  const dialogOpen = confirmEquationAfterEdit('d');
+  const moved = host.getCursorPosition();
+  const text = caretLayout(moved.parentParaIndex, [{ controlIndex: moved.controlIndex, cellIndex: 0, cellParaIndex: 0 }]);
+  return { body, textBox: { dialogOpen, text } };
+}
+
+/** 에이전트가 편집 중이면 확인해도 넣지 않고 쓴 수식을 남겨 두며, 편집이 끝난 뒤 확인하면 넣는다. */
+async function equationInsertWhileLocked(): Promise<{ lockedOpen: boolean; kept: string; inserted: string[] }> {
+  freshDocument(() => wasm.insertText(0, 0, 0, '수식 자리'));
+  host.moveCursorTo({ sectionIndex: 0, paragraphIndex: 0, charOffset: 2 });
+  run('insert:equation');
+  const root = dialog('.eq-dialog');
+  const script = root.querySelector<HTMLTextAreaElement>('.eq-script')!;
+  setValue(script, 'x^2');
+  host.userEditingLocked = true;
+  confirmDialog(root);
+  const lockedOpen = root.isConnected;
+  host.userEditingLocked = false;
+  confirmDialog(root);
+  return { lockedOpen, kept: script.value, inserted: equationScripts(0) };
+}
+
 type SaveChoice = 'cancel' | 'discard' | 'approve' | 'approve-fails';
 
 /**
@@ -864,4 +973,6 @@ export const scenarios = {
   layoutDialog,
   formModePageSetup,
   equationInsert,
+  equationInsertAfterDocumentChange,
+  equationInsertWhileLocked,
 };
