@@ -186,6 +186,9 @@ import {
   boundTextFields,
   textFitsByteLimit,
 } from './input-bounds.mjs';
+import { installStaleFrameGuard } from './stale-frame-guard.mjs';
+
+installStaleFrameGuard();
 
 const REQUESTED_PORT = Number(process.env.RHWP_AGENT_PORT ?? 5175);
 const PRODUCTION = process.env.NODE_ENV === 'production' || process.env.RHWP_AGENT_MODE === 'production';
