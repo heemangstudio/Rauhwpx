@@ -104,6 +104,9 @@ const MODE_OPTIONS: ReadonlyArray<{ id: AgentMode; label: string; title: string 
 
 
 
+/** OpenRouter 키 발급과 연결 순서를 설명하는 문서. */
+const OPENROUTER_GUIDE_URL = 'https://heemangstudios.com/tutorial-openrouter.html';
+
 /** OpenRouter 가 받는 reasoning_effort 세 단계. */
 const PI_EFFORT_OPTIONS: ReadonlyArray<{ id: string; label: string }> = [
   { id: 'low', label: 'Low' },
@@ -642,7 +645,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   piKeySubmit.type = 'button';
   const piKeyCancel = el('button', 'ag-settings-btn', '취소');
   piKeyCancel.type = 'button';
-  piKeyActions.append(piKeySubmit, piKeyCancel);
+  const piKeyGuide = el('a', 'ag-pi-key-guide', '가이드');
+  piKeyGuide.href = OPENROUTER_GUIDE_URL;
+  piKeyGuide.target = '_blank';
+  piKeyGuide.rel = 'noopener noreferrer';
+  piKeyActions.append(piKeySubmit, piKeyCancel, piKeyGuide);
   piKeyStep.append(piKeyNote, piOauth, piAuthDivider, piKeyInput.field, piKeyActions);
 
   // 3단계 — 카탈로그에서 모델 고르기

@@ -1144,6 +1144,19 @@
   display: none;
 }
 
+.ag-pi-key-guide {
+  align-self: center;
+  margin-left: auto;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+  text-decoration: none;
+}
+
+.ag-pi-key-guide:hover {
+  color: var(--accent-primary);
+  text-decoration: underline;
+}
+
 /* 채움 버튼 위의 π 는 버튼 글자색을 그대로 탄다. */
 .ag-pi-logo-btn {
   display: inline-flex;
