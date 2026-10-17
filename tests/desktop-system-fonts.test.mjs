@@ -521,11 +521,10 @@ test('app-bundled WOFF2 fonts are indexed unlisted and served as SFNT', async (t
   const bundle = path.join(dir, 'Tool.app', 'Contents', 'Resources', 'fonts');
   await mkdir(bundle, { recursive: true });
   await writeFile(path.join(bundle, 'Web.woff2'), await readFile(path.join(WEB_FIXTURES, 'NotoSansKRWebFixture.woff2')));
-  const { roots } = await expandFontRootCatalog({
-    platform: 'darwin',
-    catalog: [{ os: 'darwin', kind: 'app', label: 'app bundles', bundles: dir }],
+  // 번들 탐색이 붙이는 루트 모양 그대로 준다. 카탈로그 탐색은 아래 macOS 테스트가 본다.
+  const service = createSystemFontService({
+    roots: [{ path: bundle, kind: 'app', label: 'app bundles: Tool', maxDepth: 1, unlisted: true }],
   });
-  const service = createSystemFontService({ roots });
   const index = await service.list();
   assert.deepEqual(index.faces.map((face) => [face.format, face.source, face.unlisted, face.families[0]]), [
     ['woff2', 'app', true, 'Noto Sans KR'],
@@ -538,7 +537,8 @@ test('app-bundled WOFF2 fonts are indexed unlisted and served as SFNT', async (t
   assert.deepEqual(readTables(bytes).get('hmtx'), readTables(await readFile(WEB_TTF)).get('hmtx'));
 });
 
-test('catalog probes app bundles, Homebrew casks, TeX trees and Windows program folders at fixed depths', async (t) => {
+// 실제 폴더를 macOS 경로 규칙으로 읽는다. 이 항목들은 macOS 에서만 쓰인다.
+test('catalog probes app bundles, Homebrew casks and TeX trees at fixed depths', { skip: process.platform === 'win32' }, async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-font-probe-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const folders = [
@@ -573,8 +573,10 @@ test('catalog probes app bundles, Homebrew casks, TeX trees and Windows program 
     ['texlive/2024/texmf-dist/fonts/opentype', 'app', 'TeX Live', 4, true],
     ['texlive/2025/texmf-dist/fonts/opentype', 'app', 'TeX Live', 4, true],
   ]);
+});
 
-  // Windows 는 프로그램 폴더 바로 아래 Fonts 만 본다. 폴더 목록은 주입한다.
+test('catalog probes only the Fonts folder directly under each Windows program folder', async () => {
+  // 폴더 목록은 주입하므로 어느 플랫폼에서나 돈다.
   const tree = {
     'C:\\PF': ['Microsoft Office', 'Hnc', 'Vendor', 'Plain'],
     'C:\\PF\\Vendor': ['Fonts', 'bin'],
