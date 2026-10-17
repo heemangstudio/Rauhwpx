@@ -104,6 +104,9 @@ const MODE_OPTIONS: ReadonlyArray<{ id: AgentMode; label: string; title: string 
 
 
 
+/** OpenRouter 키 발급과 연결 순서를 설명하는 문서. */
+const OPENROUTER_GUIDE_URL = 'https://heemangstudios.com/tutorial-openrouter.html';
+
 /** OpenRouter 가 받는 reasoning_effort 세 단계. */
 const PI_EFFORT_OPTIONS: ReadonlyArray<{ id: string; label: string }> = [
   { id: 'low', label: 'Low' },
@@ -628,10 +631,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   // 2단계 — OpenRouter 키
   const piKeyStep = el('div', 'ag-pi-step');
   const piKeyNote = el('p', 'ag-settings-note', 'OpenRouter 로그인 또는 API 키');
-  const piOauth = el('button', 'ag-settings-primary ag-agent-auth-choice');
+  const piOauth = el('button', 'ag-settings-btn ag-pi-oauth', '브라우저로 로그인');
   piOauth.type = 'button';
-  piOauth.append(el('strong', '', '브라우저로 로그인'), el('span', '', 'OpenRouter OAuth'));
-  const piAuthDivider = el('div', 'ag-agent-auth-divider', '또는 API 키');
   const piKeyInput = createTextField('OpenRouter 키', {
     type: 'password',
     placeholder: 'sk-or-v1-…',
@@ -642,8 +643,15 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   piKeySubmit.type = 'button';
   const piKeyCancel = el('button', 'ag-settings-btn', '취소');
   piKeyCancel.type = 'button';
-  piKeyActions.append(piKeySubmit, piKeyCancel);
-  piKeyStep.append(piKeyNote, piOauth, piAuthDivider, piKeyInput.field, piKeyActions);
+  const piKeyGuide = el('a', 'ag-pi-key-guide', '가이드');
+  piKeyGuide.href = OPENROUTER_GUIDE_URL;
+  piKeyGuide.target = '_blank';
+  piKeyGuide.rel = 'noopener noreferrer';
+  piKeyActions.append(piKeySubmit, piKeyCancel, piKeyGuide);
+  // 브라우저 로그인과 키 입력은 한 줄에 나란히 둔다.
+  const piAuthRow = el('div', 'ag-pi-auth-row');
+  piAuthRow.append(piOauth, el('span', 'ag-pi-auth-or', '또는'), piKeyInput.field);
+  piKeyStep.append(piKeyNote, piAuthRow, piKeyActions);
 
   // 3단계 — 카탈로그에서 모델 고르기
   const piCatalogStep = el('div', 'ag-pi-step');
