@@ -4379,7 +4379,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     if (data.type !== 'owned_browser_activity' || data.active === false) return;
-    if (data.tab) ensureWorkbenchBrowser().previewAgent(data.tab);
+    // 따로 띄운 탭은 그 창에서 잠근다. 사이드바 브라우저는 이 탭을 걸러 내 빈 창만 하나 더 띄운다.
+    if (data.tab) (floatingBrowser && data.tab.tabId === floatingBrowserTab ? floatingBrowser : ensureWorkbenchBrowser()).previewAgent(data.tab);
   });
 
   workbench = createSidebarWorkbench({
@@ -8524,7 +8525,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function setTurnRunning(running: boolean): void {
     turnRunning = running;
-    if (!running) { replyPending = false; workbenchBrowser?.endAgentPreview(); }
+    if (!running) { replyPending = false; workbenchBrowser?.endAgentPreview(); floatingBrowser?.endAgentPreview(); }
     updateTurnPending();
     updateComposer();
     rebuildReview();

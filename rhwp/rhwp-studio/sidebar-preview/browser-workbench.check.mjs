@@ -194,6 +194,13 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   await page.click('.ag-browser-trigger');
   await page.waitForSelector('.ag-browser-floating:not([hidden]) .ag-browser', { visible: true });
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[0].tabId), floatingTab, 'reopening an editor float reuses the same browser tab');
+  // 다시 띄운 탭은 따로 뜬 창이 맡는다. 에이전트 작업은 그 창을 잠그고 빈 창을 하나 더 띄우지 않는다.
+  await page.evaluate(tabId => window.sidebarPreview.browserAsAgent('click', { tabId, x: 120, y: 160 }), floatingTab);
+  await page.waitForFunction(() => document.querySelector('.ag-browser-floating:not([hidden])')?.dataset.agentControlled === 'true', { timeout: 3000 });
+  assert.equal(await page.$$eval('.ag-browser-floating:not([hidden])', nodes => nodes.length), 1, 'agent activity on a re-floated tab reuses the visible float');
+  assert.equal(await page.$eval('.ag-browser-floating:not([hidden]) .ag-browser-control', node => node.hidden), false, 'the locked float offers 직접 조작');
+  await page.click('.ag-browser-floating:not([hidden]) .ag-browser-control');
+  await page.waitForFunction(() => document.querySelector('.ag-browser-floating:not([hidden])')?.dataset.agentControlled === 'false');
   await page.click('.ag-browser-floating:not([hidden]) .ag-browser-floating-dock');
   await page.waitForFunction(() => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && document.querySelector('.ag-workbench-panel[data-view="browser"] .ag-browser')?.getBoundingClientRect().width > 0 && !document.body.classList.contains('ag-fs-vt'));
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[0].tabId), floatingTab, 'docking from the normal editor preserves the same tab after fullscreen transition');

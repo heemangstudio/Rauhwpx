@@ -242,7 +242,7 @@ export function createWorkbenchBrowser(options: {
   details.addEventListener('focusout', event => {
     if (event.relatedTarget instanceof Node && !details.contains(event.relatedTarget)) details.open = false;
   });
-  let agentPreviewTab: string | null = null;
+  let agentPreviewTab: string | null = null; let agentOpenedView = false;
   // 조작권 전환은 허브 응답 전에 화면부터 바꾼다. 거절되면 허브의 상태로 되돌아간다.
   let controlPending: { tabId: string; held: boolean } | null = null; let focusPage = false;
   function holds(tab: BrowserTab | null): boolean {
@@ -262,9 +262,9 @@ export function createWorkbenchBrowser(options: {
   }
   function endAgentPreview(): void {
     if (disposed || !agentPreviewTab) return;
-    // 턴이 끝날 때 보기만 접고 탭과 로그인 상태는 유지한다. 사용자가 쥔 탭은 쓰던 그대로 둔다.
-    if (presentation.current() !== 'dock' && !holds(controller.tab())) presentation.hide();
-    agentPreviewTab = null; paint(); layout();
+    // 턴이 끝날 때 에이전트가 띄운 보기만 접고 탭과 로그인 상태는 유지한다. 사용자가 띄웠거나 쥔 탭은 쓰던 그대로 둔다.
+    if (agentOpenedView && presentation.current() !== 'dock' && !holds(controller.tab())) presentation.hide();
+    agentPreviewTab = null; agentOpenedView = false; paint(); layout();
   }
   let visible = false; let nativeTab: string | null = null; let nativePopout = false;
   let frameTimer: ReturnType<typeof setTimeout> | null = null; let composing = false; let committedComposition: string | null = null; let disposed = false; let selectedFrameId = ''; let nativeSequence = 0;
@@ -775,6 +775,7 @@ export function createWorkbenchBrowser(options: {
       if (visible && current && current.tabId !== tab.tabId && holds(current)) { paint(); return; }
       controller.select(tab.tabId);
       const next = visible && presentation.current() === 'dock' ? 'dock' : 'float';
+      if (!visible) agentOpenedView = true;
       nativePopout = false; if (presentation.current() !== next) presentation.present(next);
       handle(controller.readFrame());
     },
