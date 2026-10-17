@@ -522,6 +522,7 @@ export function createRequestCardController(options: RequestCardOptions) {
             account: { origin: request.origin, label: request.accountLabel ?? '', origins: request.origins },
             requestId: request.requestId,
             scope: () => card.scope ?? 'always',
+            federated: () => browserAction(card, 'browser-federated', 'accounts.federated', { requestId: request.requestId, scope: card.scope ?? 'chat' }, '로그인 상태를 전달하지 못했습니다.'),
             complete: () => settle(card, { status: 'granted' }),
             cancel: () => respond(card, 'deny'),
           });

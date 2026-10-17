@@ -845,7 +845,7 @@ export function createMockBridge(
     requestAgentSetupStatus: async () => data.setups,
     requestBrowser: async <R = T.BrowserResult>(action: string, args?: Record<string, unknown>): Promise<R> => {
       const pending = typeof args?.['requestId'] === 'string' ? permissionRequests.get(args['requestId']) : undefined;
-      const answering = pending && ['accounts.complete', 'sites.approve'].includes(action);
+      const answering = pending && ['accounts.complete', 'accounts.federated', 'sites.approve'].includes(action);
       if (answering) {
         await new Promise((resolve) => setTimeout(resolve, 60));
         if (failRequestAction()) throw Object.assign(new Error('요청을 전달하지 못했습니다.'), { code: 'BROWSER_REQUEST_FAILED' });
@@ -857,6 +857,14 @@ export function createMockBridge(
         resolvePermission(pending.requestId, { status: 'granted' });
         continueAfterRequest('로그인을 확인했습니다. 이어서 진행합니다.');
         return { completed: true, origin: pending.origin } as R;
+      }
+      if (action === 'accounts.federated' && pending) {
+        // 허브처럼 비밀번호 없이 로그인 표시와 사이트 사용만 남기고 이어지는 턴을 연다.
+        const scope = args?.['scope'] === 'always' ? 'always' : 'chat';
+        previewBrowser.grantSite(pending.origin ?? '', scope, []);
+        resolvePermission(pending.requestId, { status: 'granted' });
+        continueAfterRequest('로그인된 세션으로 이어서 진행합니다.');
+        return { signedIn: true, origin: pending.origin, scope } as R;
       }
       if (action === 'sites.approve' && pending) {
         // 허브처럼 차단을 푸는 카드는 항상으로만 허용하고, 카드에 보인 차단과 꺼 둔 항목만 다시 켠다.

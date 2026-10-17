@@ -287,6 +287,34 @@ test('one site card covers the whole site: duplicates share it, approval resumes
   assert.ok((await browserRequest(studio, 'sites.approve', { requestId: saveCard.requestId })).error, 'a denied card cannot be approved later');
 });
 
+test('a Google sign-in answers the save card without a password: the site is allowed and the agent reuses the session', { timeout: 60_000 }, async (t) => {
+  const hub = await startRequestHub(t);
+  const { studio: studioUrl, mcp: mcpUrl } = urls(hub.port, 'request-federated', 'federated-page');
+  const studio = await openClient(studioUrl);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  await startChat(studio);
+  await userTurn(studio, 'Post on x.com for me.');
+  let mcp = await openClient(mcpUrl);
+  assert.equal((await call(mcp, 'browser_request_account', { origin: 'https://x.com' })).result.kind, 'account');
+  const card = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
+  assert.equal(card.kind, 'browser-save-account');
+  hub.completeTurn();
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  await closeClient(mcp);
+
+  const answered = await browserRequest(studio, 'accounts.federated', { requestId: card.requestId, scope: 'chat' });
+  assert.deepEqual(answered.result, { signedIn: true, origin: 'https://x.com', scope: 'chat' }, JSON.stringify(answered));
+  assert.equal((await studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === card.requestId)).outcome.status, 'granted');
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  const prompt = await hub.waitForPrompt((entry) => /signed in to x\.com.* with another account such as Google/.test(entry));
+  assert.doesNotMatch(prompt, /browser_fill_account/);
+  mcp = await openClient(mcpUrl);
+  t.after(() => closeClient(mcp));
+  assert.deepEqual((await call(mcp, 'browser_request_account', { origin: 'https://x.com', kind: 'site' })).result, { granted: true, site: 'x.com', origin: 'https://x.com' });
+  assert.ok((await browserRequest(studio, 'accounts.federated', { requestId: card.requestId })).error, 'an answered card cannot be answered again');
+});
+
 test('a saved secret is used through site access: turning it off asks for the site card, and deletion ends its use', { timeout: 60_000 }, async (t) => {
   const hub = await startRequestHub(t);
   const { studio: studioUrl, mcp: mcpUrl } = urls(hub.port, 'request-secret-use', 'secret-use-page');

@@ -13,7 +13,7 @@ const CHAT_GRANT_LIMIT = 2048;
 const CHAT_GRANT_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 const CHAT_GRANT_TOUCH_MS = 24 * 60 * 60 * 1000;
 const SIGNED_IN_LIMIT = 4096;
-const SIGNED_IN_SOURCES = new Set(['owner-form', 'handoff', 'chrome-import', 'passkey', 'legacy']);
+const SIGNED_IN_SOURCES = new Set(['owner-form', 'handoff', 'chrome-import', 'passkey', 'federated', 'legacy']);
 export const DEFAULT_RESEARCH_SITES = Object.freeze([
   { origin: 'https://www.google.com', label: 'Google Search' },
   { origin: 'https://docs.google.com', label: 'Google Slides / Docs reading' },

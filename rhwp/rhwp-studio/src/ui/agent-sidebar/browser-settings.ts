@@ -107,6 +107,8 @@ export function createBrowserAccountForm(options: {
   variant?: 'card';
   /** 카드의 '항상' 스위치. 저장과 함께 그 범위로 사이트 사용을 허용한다. 설정에서 저장하면 허용은 바뀌지 않는다. */
   scope?(): ChatPermissionScope;
+  /** 카드 양식만: Google 등 다른 계정으로 이미 로그인해 저장할 비밀번호가 없다. */
+  federated?(): void;
   complete(account?: Account): void;
   cancel(): void;
 }) {
@@ -133,7 +135,13 @@ export function createBrowserAccountForm(options: {
     }
     root.append(label.root, username.root);
   } else root.append(origin.root, origins.root, label.root, username.root);
-  root.append(password.root, message, actions);
+  root.append(password.root);
+  if (card && options.federated) {
+    const federated = node('button', 'ag-request-link', 'Google 등으로 로그인함'); federated.type = 'button';
+    federated.addEventListener('click', () => { if (disposed || options.canSubmit?.() === false) return; clear(); options.federated!(); });
+    root.append(federated);
+  }
+  root.append(message, actions);
   let disposed = false;
   root.addEventListener('submit', async (event) => {
     event.preventDefault(); if (save.disabled || disposed || options.canSubmit?.() === false) return;

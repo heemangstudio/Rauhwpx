@@ -322,6 +322,19 @@
   font-size: var(--ag-fs-meta);
 }
 
+.ag-request-form .ag-request-link {
+  align-self: flex-start;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  cursor: default;
+}
+.ag-request-form .ag-request-link:hover { color: var(--ag-text); text-decoration: underline; }
+.ag-request-form .ag-request-link:focus-visible { outline: var(--ag-focus-ring); outline-offset: 2px; }
+
 .ag-request-form .ag-request-form-message:empty { display: none; }
 .ag-request-form .ag-request-form-message { margin: 0; color: var(--ag-err); font-size: var(--ag-fs-meta); }
 

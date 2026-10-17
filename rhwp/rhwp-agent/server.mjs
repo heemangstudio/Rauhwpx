@@ -1050,6 +1050,7 @@ async function handleBrowserRequest(record, sock, msg) {
       }
       case 'accounts.revoke': result = await setLoginBlocked(actor, String(args.accountId ?? ''), true); break;
       case 'accounts.complete': result = await browserRequestsFor(record).completeHandoff(actor, { requestId: args.requestId }); break;
+      case 'accounts.federated': result = await browserRequestsFor(record).confirmFederatedSignIn(actor, { requestId: args.requestId, scope: args.scope === undefined ? undefined : normalizeChatPermissionScope(args.scope) }); break;
       case 'secrets.list': result = { secrets: await userSecrets.list({ threadId: actor.threadId }) }; break;
       case 'secrets.block': {
         if (typeof args.blocked !== 'boolean') throw workflowError('INVALID_ARGS', 'Choose whether the agent may use this secret');

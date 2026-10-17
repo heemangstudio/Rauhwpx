@@ -30,6 +30,9 @@ export function browserContinuationText(request, outcome, detail = {}) {
   if (request.kind === 'browser-sign-in') return `The user finished signing in on ${request.origin}; continue.`;
   const where = request.siteDomain ? `${request.siteDomain} and its subdomains` : site;
   const scope = detail.scope === 'always' ? 'in every chat' : 'for this chat';
+  if (request.kind === 'browser-save-account' && detail.federated) {
+    return `The user signed in to ${where} with another account such as Google, so there is no password to save. The browser session is signed in and the site is allowed ${scope}. Reload the tab if it still shows the sign-in page, and do not ask to save a login for this site again. Continue.`;
+  }
   if (request.kind === 'browser-save-account') {
     const login = detail.account ? ` Fill it with browser_fill_account (accountId ${detail.account.id}), then submit the form.` : '';
     return `The user saved a login for ${where} and allowed the site ${scope}.${login} Continue.`;
@@ -171,6 +174,20 @@ export function createBrowserRequests({ policy, broker, ownedBrowser, userSecret
     return { account: safe, scope: chosen };
   }
 
+  /** 저장 카드의 'Google 등으로 로그인함': 비밀번호 없이 이 브라우저 세션이 로그인됐다. 로그인 표시와 사이트 사용만 남긴다. */
+  async function confirmFederatedSignIn(actor, { requestId, scope } = {}) {
+    const pending = await broker.getAccountRequest(String(requestId ?? ''));
+    if (!pending || pending.kind !== 'browser-save-account') throw failure('BROWSER_ACCOUNT_REQUEST_EXPIRED', 'The website account request expired. Request it again.');
+    if (!sameChat(pending.actor, actor)) throw failure('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'This website request belongs to a different chat.');
+    const chosen = SCOPES.has(scope) ? scope : 'chat';
+    await policy.markSignedIn({ profileId: ownedBrowser.profileId(), origin: pending.origin, source: 'federated' });
+    await policy.grantSiteAccess({ actor, threadId: pending.actor?.threadId ?? actor.threadId, origin: pending.origin, scope: chosen });
+    await broker.settleRequest({ actor, requestId: pending.requestId, kinds: ['browser-save-account'] });
+    await ownedBrowser.refreshSites?.().catch(() => {});
+    settle(pending.requestId, { status: 'granted' }, browserContinuationText(pending, { status: 'granted' }, { scope: chosen, federated: true }));
+    return { signedIn: true, origin: pending.origin, scope: chosen };
+  }
+
   /**
    * request_secret. 쓸 수 있는 값이 있고 그 사이트를 이미 쓸 수 있으면 granted, 값이 있지만 사이트 사용이 없거나 꺼져 있으면
    * 비밀 줄이 있는 사이트 카드, 값이 없으면 null 을 돌려준다(서버가 저장 카드를 연다).
@@ -206,5 +223,5 @@ export function createBrowserRequests({ policy, broker, ownedBrowser, userSecret
       usable: !secret.blocked && (await Promise.all(secret.origins.map((origin) => policy.check({ actor, action: 'account-use', url: origin })))).some((decision) => decision.allowed) })));
   }
 
-  return { siteItems, requestSiteAccess, approveSite, completeHandoff, saveLogin, secretRequest, secretSaved, statusSecrets };
+  return { siteItems, requestSiteAccess, approveSite, completeHandoff, confirmFederatedSignIn, saveLogin, secretRequest, secretSaved, statusSecrets };
 }
