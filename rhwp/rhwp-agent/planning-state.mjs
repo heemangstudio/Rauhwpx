@@ -277,6 +277,7 @@ export class PlanningState {
  * 연구 프로젝트 쓰기는 문서 쓰기가 아니라 모든 모드에서 열려 있다. 설정에서 채팅의 프로젝트 변경을
  * 끄면(chatMayEdit=false) 질문 워크플로에서만 project-write·project-ingest 를 막는다.
  * find_home_files 는 데스크톱에서 홈 폴더 검색이 켜졌을 때만 허용한다(homeSearch).
+ * create_document 는 direct 워크플로나 계획 실행 단계에서만 허용한다(MODE_FORBIDS_CREATE).
  * @param {{category: string, tool: string, workflow: 'direct'|'plan'|'question', phase: string|null, expectedEpoch: number, receivedEpoch: unknown, chatMayEdit?: boolean, homeSearch?: boolean, chatPermissionGrants?: string[], researchPermissions?: {browse: boolean, downloads: boolean, import: boolean}}} input
  */
 export function authorizeToolCall(input) {
@@ -299,6 +300,11 @@ export function authorizeToolCall(input) {
   }
   if (received !== null && (!Number.isSafeInteger(received) || received !== input.expectedEpoch)) {
     throw workflowError('STALE_CAPABILITY_EPOCH', `Stale MCP capability epoch for ${input.tool}; restart the provider with epoch ${input.expectedEpoch}`);
+  }
+  // 새 문서는 문서를 쓸 수 있는 단계(에이전트·전체, 승인된 계획의 실행)에서만 만든다. 기존 문서 연결은 모든 단계에 열려 있다.
+  if (input.tool === 'create_document'
+    && !(input.workflow === 'direct' || (input.workflow === 'plan' && input.phase === 'implementing'))) {
+    throw workflowError('MODE_FORBIDS_CREATE', 'create_document needs 에이전트 or 전체 mode, or an approved plan; open_document links an existing document in any mode');
   }
   if ((input.category === 'planning-control' || input.category === 'plan-progress') && input.workflow !== 'plan') {
     throw workflowError('PLAN_WORKFLOW_REQUIRED', `${input.tool} is available only to chats that originated in the plan workflow`);

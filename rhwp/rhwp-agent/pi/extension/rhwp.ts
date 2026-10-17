@@ -85,6 +85,7 @@ export type HubFrame =
 
 const CONNECT_TIMEOUT_MS = 5_000;
 const CALL_TIMEOUT_MS = 180_000;
+const HUMAN_WAIT_TOOLS = new Set(['ask_user_question', 'open_document', 'create_document']);
 const DEFINITIONS_TIMEOUT_MS = 8_000;
 export const TOOL_DEFINITIONS_MAX_BYTES = 8 * 1024 * 1024;
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
@@ -851,7 +852,8 @@ function createHubClient(config: PiExtensionConfig) {
       }
       // A user-question call is intentionally unbounded. The hub resolves it on
       // answer/cancel and provider or hub disconnects still reject the socket.
-      const timer = tool === 'ask_user_question'
+      // Document links wait for the user's confirmation; the hub bounds them.
+      const timer = HUMAN_WAIT_TOOLS.has(tool)
         ? null
         : setTimeout(() => {
           inflight.delete(id);

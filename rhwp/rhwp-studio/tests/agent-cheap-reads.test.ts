@@ -70,7 +70,7 @@ test('read_batch: 쓰기 도구·배치 도구·바이너리 읽기는 항목 �
       { tool: 'read_batch', args: { reads: [] } },
       { tool: 'render_page', args: { pageIndex: 0 } },
       { tool: 'materialize_document_snapshot' },
-      { tool: 'template_get_structure' },
+      { tool: 'get_structure', args: { documentId: 'template' } },
     ],
   });
   for (const item of resultsOf(r)) {

@@ -1,5 +1,5 @@
 import type { ChatPermissionDecision, ChatPermissionOutcome, ChatPermissionRequest } from '../../agent/types.ts';
-import { CHAT_PERMISSION_LABELS as labels, chatPermissionMatchesContext } from '../../agent/chat-permissions.ts';
+import { CHAT_PERMISSION_LABELS as labels, chatPermissionMatchesContext, chatPermissionShownInContext } from '../../agent/chat-permissions.ts';
 import './chat-permission-pill.css';
 import { createBrowserAccountForm, type BrowserSettingsRequest } from './browser-settings.ts';
 
@@ -12,32 +12,70 @@ interface PermissionPill {
   form?: ReturnType<typeof createBrowserAccountForm>;
 }
 
+type BrowserAccountKind = 'browser-save-account' | 'browser-use-account';
+
+/** 브라우저 계정 요청의 종류. 문서 연결의 open·create 는 계정 요청이 아니다. */
+function browserAccountKind(request: ChatPermissionRequest): BrowserAccountKind | null {
+  return request.kind === 'browser-save-account' || request.kind === 'browser-use-account' ? request.kind : null;
+}
+
+function pillLabel(request: ChatPermissionRequest): string {
+  const account = browserAccountKind(request);
+  if (account) return `${account === 'browser-save-account' ? '계정 저장' : '계정 사용'} · ${request.accountLabel || request.origin || ''}`;
+  if (request.capability === 'document-link') {
+    // 문서 연결은 문서 이름만 보인다. 동작은 옆의 상태 문구가 말한다.
+    return request.documentName || labels['document-link'];
+  }
+  return labels[request.capability];
+}
+
+/** 화면 읽기용 이름. 문서 연결은 보이는 이름에 없는 요청 종류를 앞에 붙인다. */
+function pillName(request: ChatPermissionRequest): string {
+  return request.capability === 'document-link' && request.documentName
+    ? `${labels['document-link']} ${request.documentName}` : pillLabel(request);
+}
+
+function pillStatus(request: ChatPermissionRequest, outcome: ChatPermissionOutcome | null, submitting: boolean): string {
+  const account = browserAccountKind(request);
+  const documentLink = request.capability === 'document-link';
+  if (outcome?.status === 'granted') {
+    return account === 'browser-save-account' ? '계정 저장됨'
+      : account === 'browser-use-account' ? '계정 사용 허용됨'
+        : documentLink ? '연결됨' : '이 채팅에 허용됨';
+  }
+  if (outcome?.status === 'denied') return '거절됨';
+  if (outcome?.status === 'expired') return '취소됨';
+  if (submitting) return '확인 중…';
+  return documentLink ? '이 채팅에 연결' : '이 채팅에서 허용';
+}
+
 export function createChatPermissionController(options: {
   context(): { threadId: string; documentId: string | null };
   respond(requestId: string, decision: ChatPermissionDecision): string;
   requestBrowser?: BrowserSettingsRequest;
   submitBrowserAccount?: (args: Record<string, unknown>) => Promise<unknown>;
+  /** 최근 문서를 id 로 잇는 요청에 이름이 없으면 그 문서의 이름을 찾는다. */
+  documentName?: (documentId: string) => Promise<string | null>;
 }) {
   const pills = new Map<string, PermissionPill>();
   let connected = true;
 
   function render(pill: PermissionPill): void {
     const { request, root, outcome } = pill;
-    const accountRequest = request as ChatPermissionRequest & { kind?: string; origin?: string; accountId?: string; accountLabel?: string; origins?: string[] };
+    const accountKind = browserAccountKind(request);
+    const accountRequest = { ...request, kind: accountKind ?? undefined };
     pill.form?.dispose();
     pill.form = undefined;
     root.replaceChildren();
     root.dataset.status = outcome?.status ?? (pill.responseId ? 'submitting' : 'pending');
-    root.setAttribute('aria-label', `${labels[request.capability]} 권한 요청`);
+    root.dataset.capability = request.capability;
+    root.setAttribute('aria-label', `${pillName(request)} 권한 요청`);
     const label = document.createElement('span');
     label.className = 'ag-permission-label';
-    label.textContent = accountRequest.kind ? `${accountRequest.kind === 'browser-save-account' ? '계정 저장' : '계정 사용'} · ${accountRequest.accountLabel || accountRequest.origin || ''}` : labels[request.capability];
+    label.textContent = pillLabel(request);
     const status = document.createElement('span');
     status.className = 'ag-permission-status';
-    status.textContent = outcome?.status === 'granted' ? accountRequest.kind === 'browser-save-account' ? '계정 저장됨' : accountRequest.kind === 'browser-use-account' ? '계정 사용 허용됨' : '이 채팅에 허용됨'
-      : outcome?.status === 'denied' ? '거절됨'
-        : outcome?.status === 'expired' ? '취소됨'
-          : pill.responseId ? '확인 중…' : '이 채팅에서 허용';
+    status.textContent = pillStatus(request, outcome, pill.responseId !== null);
     if (outcome) {
       root.append(label, status);
       return;
@@ -61,8 +99,11 @@ export function createChatPermissionController(options: {
     const grant = document.createElement('button');
     grant.type = 'button';
     grant.className = 'ag-permission-grant';
-    grant.title = request.reason;
-    grant.setAttribute('aria-label', `${labels[request.capability]} 권한을 이 채팅에서 허용. ${request.reason}`);
+    // 문서 연결의 전체 경로는 화면에 두지 않고 툴팁과 접근성 이름으로만 알린다.
+    grant.title = request.capability === 'document-link' ? request.path ?? request.reason : request.reason;
+    grant.setAttribute('aria-label', request.capability === 'document-link'
+      ? `${pillName(request)}: 이 채팅에 연결. ${request.path ?? request.reason}`
+      : `${labels[request.capability]} 권한을 이 채팅에서 허용. ${request.reason}`);
     grant.disabled = !connected || pill.responseId !== null || (accountRequest.kind === 'browser-save-account') || (accountRequest.kind === 'browser-use-account' && !options.requestBrowser);
     grant.append(label, status);
     grant.addEventListener('click', () => {
@@ -79,7 +120,7 @@ export function createChatPermissionController(options: {
     deny.className = 'ag-permission-deny';
     deny.textContent = '×';
     deny.title = '권한 요청 거절';
-    deny.setAttribute('aria-label', `${labels[request.capability]} 권한 요청 거절`);
+    deny.setAttribute('aria-label', `${pillName(request)} 요청 거절`);
     deny.disabled = !connected || pill.responseId !== null;
     deny.addEventListener('click', () => respond(pill, 'deny'));
     root.append(grant, deny);
@@ -113,6 +154,15 @@ export function createChatPermissionController(options: {
         pill = { request, root, outcome: null, responseId: null, error: '' };
         pills.set(request.requestId, pill);
         render(pill);
+        const linkDocumentId = request.capability === 'document-link' && !request.documentName ? request.linkDocumentId : undefined;
+        if (linkDocumentId && options.documentName) {
+          const named = pill;
+          void options.documentName(linkDocumentId).then((name) => {
+            if (!name || pills.get(request.requestId) !== named) return;
+            named.request = { ...named.request, documentName: name };
+            render(named);
+          }).catch(() => {});
+        }
       }
       return pill.root;
     },
@@ -133,7 +183,7 @@ export function createChatPermissionController(options: {
       render(pill);
     },
     rootsForContext(context: { threadId: string; documentId: string | null }): HTMLElement[] {
-      return [...pills.values()].filter((pill) => chatPermissionMatchesContext(pill.request, context)).map((pill) => pill.root);
+      return [...pills.values()].filter((pill) => chatPermissionShownInContext(pill.request, context)).map((pill) => pill.root);
     },
     setConnection(next: boolean): void {
       if (connected === next) return;

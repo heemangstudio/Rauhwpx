@@ -119,6 +119,7 @@ import {
   waitForThreadsPersistence,
   threadMatchesDocument,
   upsertThread,
+  linkThreadDocument,
   type ChatThread,
   type ThreadMessage,
   type ThreadRetryPayload,
@@ -191,6 +192,7 @@ import { createArrivalGuard, typingActivity as windowTypingActivity, type Typing
 import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
 import { ownsTextInput } from '../../command/shortcut-target.ts';
 import { createFocusGreeting } from './focus-greeting.ts';
+import { createDocumentChip } from './document-chip.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
 import { createSidebarWorkbench, type SidebarWorkbench, type WorkbenchView } from './workbench.ts';
 import { createWorkbenchBoard, type WorkbenchBoard } from './workbench-board.ts';
@@ -237,9 +239,11 @@ import {
   createComposerMentions,
   createProjectHost,
   renderMessageMentions,
+  splitThreadMentions,
   type ComposerMentions,
   type ProjectHost,
 } from './project/project-host.ts';
+import type { MentionDocument } from './mention-picker.ts';
 import type { ProjectPreviewTarget, ProjectTab } from './project/project-column.ts';
 import { readProjectItemDrag, transferHasProjectItem } from './project/project-drag.ts';
 import { createFollowUpStrip } from './follow-up-strip.ts';
@@ -261,6 +265,8 @@ import {
   type PublishedDocumentLink,
 } from '../../desktop-integration.ts';
 import { showToast } from '../toast.ts';
+import type { ChatDocumentLinkReply, ChatDocumentLinked, ChatDocumentLinkTarget } from '../../agent/document-link.ts';
+import { linkError } from '../../agent/document-link.ts';
 
 const GENERATED_ARTIFACT_GONE_MESSAGE = '이 문서는 더 이상 열 수 없습니다. 다시 만들어 달라고 요청하세요.';
 
@@ -350,6 +356,11 @@ export interface AgentSidebarDeps {
   ) => Promise<LibraryMoveResult>;
   /** 문서 열기의 "새 문서"·"파일 열기…" — 편집기의 같은 명령을 부른다. */
   createDocument?: () => void;
+  /**
+   * 문서 없는 채팅에 문서를 잇는다 — 이 채팅의 진입점(문서 선택·저장 안내 줄·빈 문서 화면)만 부른다.
+   * 편집기가 이 채팅의 문서 세션에 문서를 열고 채팅을 잇는다. 잇지 못하면 편집기가 이유를 알리고 null.
+   */
+  linkDocument?: (target: ChatDocumentLinkTarget) => Promise<ChatDocumentLinked | null>;
   /** 문서 홈(창 전체의 시작 화면)을 연다. */
   openDocumentHome?: (options?: { instant?: boolean }) => void;
   openDocumentFile?: () => void;
@@ -360,6 +371,8 @@ export interface AgentSidebarDeps {
     sourceFormat: string;
     openedAt: number;
   }>>;
+  /** @ 멘션의 '문서' 묶음 — 이 창에 열린 문서와 최근 문서 (이 채팅의 문서는 뺀다). */
+  listMentionDocuments?: () => Promise<MentionDocument[]>;
   /** 현재 문서의 로컬 커밋과 브랜치를 관리한다. */
   versionController?: VersionManagerController;
   getAgentUndoEntry?: () => object | null;
@@ -449,6 +462,41 @@ export interface AgentSidebarHandle {
   startDraftChat(): void;
   /** 이 사이드바가 보이는 채팅. 초안이거나 비어 있으면 null. */
   currentThreadId(): string | null;
+  /** 보이는 채팅에 아직 문서가 없다 (초안 포함). 문서를 이을 수 있다. */
+  isUnlinkedChat(): boolean;
+  /**
+   * 문서 없는 채팅을 지금 쓰고 있다 — 이 페이지에서 메시지를 보냈거나 턴이 돈다. 시작할 때 복원만 한
+   * 지난 채팅은 아니다. 이런 채팅이 있는 동안 홈·파일 메뉴의 열기는 새 문서 세션에 연다.
+   */
+  hasActiveUnlinkedChat(): boolean;
+  /**
+   * 집중 화면으로 들어간다 (문서 없는 채팅을 열 때). then 은 새 배치가 선 뒤에 부른다 — 홈은 그때 내린다.
+   * instant 면 교차 페이드 없이 바꾼다.
+   */
+  enterFullscreen(options?: { instant?: boolean; then?: () => void }): void;
+  /** 집중 화면인지. 화면 전환이 한 프레임 늦어도 상태를 따른다. */
+  isFullscreen(): boolean;
+  /**
+   * 사용자 진입점의 문서 연결 — 빈 문서 화면의 새 문서·파일 열기, 머리 칩처럼 이 채팅에 문서를 잇는
+   * 단추가 부른다. 문서가 이미 있는 채팅이면 아무것도 하지 않고 null.
+   */
+  linkCurrentChat(target: ChatDocumentLinkTarget): Promise<ChatDocumentLinked | null>;
+  /**
+   * 편집기 전용: 이 채팅의 문서 세션에 문서를 열기 직전에 부른다. 그 사이의 문서 전환은 새 채팅을 열지
+   * 않고 기다린다. threadId 가 있으면 그 채팅이 보일 때만 잇는다. 이을 채팅이 아니면 null.
+   */
+  beginDocumentLink(threadId?: string | null): string | null;
+  /**
+   * 편집기 전용: 문서를 열었다 — 그 채팅에 문서를 잇고(저장, 다른 창의 레일도 따라간다) 허브에
+   * 알린다(chat-link-document). 도는 턴은 멈추지 않는다. 허브에 알릴 세션이 없으면(초안) null.
+   */
+  completeDocumentLink(link: {
+    documentId: string;
+    docKey: string | null;
+    createdByThread?: string | null;
+  }): Promise<ChatDocumentLinkReply | null>;
+  /** 편집기 전용: 문서를 열지 못했다 — 기다리던 연결을 거둔다. */
+  cancelDocumentLink(): void;
   /**
    * 시작 채팅 고르기가 끝나면 풀린다 — 스레드 저장소와 허브의 첫 답을 기다린 뒤 살아 있는 채팅을
    * 잇거나 마지막 채팅을 복원한 다음이다. 그 뒤에 채팅을 다루는 스크립트·검사가 기다린다.
@@ -867,9 +915,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     getDocumentContext,
     moveToLibraryDocument,
     createDocument,
+    linkDocument,
     openDocumentFile,
     openDocumentHome,
     listRecentDocuments,
+    listMentionDocuments,
     versionController,
     openClassicVersionControl,
     openThreadDocument,
@@ -1063,6 +1113,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let readOnlyDocLabel: string | null = null;
   /** 다른 문서의 채팅을 열려고 문서를 바꾸는 중 — 그 문서가 열리면 이 채팅을 잇는다. */
   let pendingThreadSwitch: { threadId: string } | null = null;
+  /** 이 채팅(문서 없음)에 이을 문서를 편집기가 여는 중이다 — 그 채팅 id. 아니면 null. */
+  let documentLinkThreadId: string | null = null;
+  /** 이 페이지에서 사용자가 메시지를 보낸 채팅 — 문서 없는 채팅이 지금 쓰이는지 가른다. */
+  let engagedThreadId: string | null = null;
+  /** 허브가 문서가 없어 저장을 막았을 때 띄운 줄 (새 문서·문서 연결). */
+  let documentRequiredRow: HTMLElement | null = null;
   /** 채팅 목록 검색어와 문서 필터(키: documentGroupKey). */
   let threadQuery = '';
   let threadDocFilter: { key: string; label: string; missing: boolean } | null = null;
@@ -1113,6 +1169,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let settingsPanelOpen = false;
   // 문서 홈의 톱니로 연 설정은 닫을 때 문서 홈으로 돌아간다.
   let settingsReturnsHome = false;
+  /** 홈에서 설정을 열며 집중 화면으로 들어왔으면, 홈으로 돌아갈 때 그 화면을 접는다. */
+  let settingsExitsFullscreenOnHome = false;
   /**
    * 라이선스가 잠긴 채 홈에서 설정을 누르면, 설정 화면을 잠긴 카드 뒤에 흐리게 깔아 둔다.
    * 이 동안만 접기·집중 화면 잠금을 비켜 가고, 사이드바는 inert 로 두어 조작은 닿지 않는다.
@@ -2113,6 +2171,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     workspaceDocumentName.title = context?.documentName || '';
     focusGreeting.setDocumentName(context?.documentName || null);
     updateDocumentWorktreeChips();
+    syncDocumentChips();
     updateEnvironmentFilename(currentDocumentName);
     const nextKey = context?.documentName ?? null;
     const nextDocumentId = context?.documentId ?? null;
@@ -2133,6 +2192,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 있는 채팅은 원래 문서에 남고, 빈 채팅은 저장되지 않은 채 사라진다.
    */
   function handleDocumentSwitch(nextKey: string | null, nextDocumentId: string | null): void {
+    if (documentLinkThreadId !== null) {
+      // 이 채팅에 이을 문서를 여는 중이다 — 새 채팅을 열거나 지금 턴을 멈추지 않는다. 열기가 끝나면
+      // completeDocumentLink 가 이 채팅에 잇고, 실패하면 cancelDocumentLink 가 거둔다.
+      currentDocKey = nextKey;
+      currentDocumentId = nextDocumentId;
+      return;
+    }
     const sameIdentity = Boolean(
       nextDocumentId && currentDocumentId && nextDocumentId === currentDocumentId,
     );
@@ -2182,6 +2248,136 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!liveThread || !threadMatchesDocument(liveThread, documentId, docKey)) return false;
     openThread(liveThread.id, { routed: true });
     return currentThread.id === liveThread.id;
+  }
+
+  /** 보이는 채팅에 아직 문서가 없다 — 다른 문서의 채팅을 열람 중이면 아니다. */
+  function chatIsUnlinked(): boolean {
+    return readOnlyDocLabel === null && currentThread.documentId === null && currentThread.docKey === null;
+  }
+
+  function beginDocumentLink(threadId?: string | null): string | null {
+    if (root.dataset.disposed === 'true' || documentLinkThreadId !== null || !chatIsUnlinked()) return null;
+    if (threadId && threadId !== currentThread.id) return null;
+    // 다른 창이 이 채팅을 이미 이었으면 그 연결을 따른다 (chatIsUnlinked 가 거짓이 된다).
+    if (adoptStoredThreadLink()) return null;
+    documentLinkThreadId = currentThread.id;
+    return documentLinkThreadId;
+  }
+
+  /** 저장소의 이 채팅이 지금 사본과 다른 문서에 이어져 있다 — 다른 창이 먼저 이었다. */
+  function storedLinkDiffers(): boolean {
+    const stored = getThread(currentThread.id);
+    if (!stored || (stored.documentId === null && stored.docKey === null)) return false;
+    if (currentThread.documentId === null && currentThread.docKey === null) return true;
+    return stored.documentId !== null && currentThread.documentId !== null && stored.documentId !== currentThread.documentId;
+  }
+
+  /**
+   * 다른 창이 이 채팅을 먼저 다른 문서에 이었다 — 연결은 하나뿐이라 저장소의 연결을 따르고, 지금 문서와
+   * 맞지 않으면 다른 문서의 채팅처럼 읽기 전용으로 둔다. 따랐으면 true.
+   */
+  function adoptStoredThreadLink(): boolean {
+    if (draftChat || !storedLinkDiffers()) return false;
+    const stored = getThread(currentThread.id)!;
+    currentThread.documentId = stored.documentId;
+    currentThread.docKey = stored.docKey;
+    if (stored.documentLinkedAt !== undefined) currentThread.documentLinkedAt = stored.documentLinkedAt;
+    if (readOnlyDocLabel === null && !threadMatchesDocument(currentThread, currentDocumentId, currentDocKey)) {
+      enterReadOnlyMode(docGroupLabel(stored.docKey));
+    }
+    syncDocumentChips();
+    hideDocumentRequired();
+    enforceChatModeLock();
+    updateWorkspaceChatTitle();
+    updateComposer();
+    rebuildThreadsList();
+    return true;
+  }
+
+  /**
+   * 열린 문서를 연결을 시작한 채팅에 잇는다. 채팅을 멈추거나 새로 열지 않는다 — 도는 턴은 그대로
+   * 이 문서에 쓴다. 연결은 한 방향이라 저장소의 채팅이 이미 문서를 가졌으면 저장소는 그대로다.
+   */
+  async function completeDocumentLink(link: {
+    documentId: string;
+    docKey: string | null;
+    createdByThread?: string | null;
+  }): Promise<ChatDocumentLinkReply | null> {
+    const threadId = documentLinkThreadId;
+    documentLinkThreadId = null;
+    if (!threadId) return null;
+    // 문서를 여는 사이 다른 창이 이 채팅을 다른 문서에 이었다 — 그 연결이 남고 이 문서는 잇지 않는다.
+    const linkedBefore = getThread(threadId);
+    if (linkedBefore && (linkedBefore.documentId !== null || linkedBefore.docKey !== null)
+      && linkedBefore.documentId !== link.documentId) {
+      if (currentThread.id === threadId) adoptStoredThreadLink();
+      throw linkError('THREAD_ALREADY_LINKED');
+    }
+    const stored = linkThreadDocument(threadId, { documentId: link.documentId, docKey: link.docKey });
+    if (currentThread.id !== threadId) return null;
+    currentThread.documentId = link.documentId;
+    currentThread.docKey = link.docKey;
+    currentThread.documentLinkedAt = stored?.documentLinkedAt ?? Date.now();
+    currentDocumentId = link.documentId;
+    currentDocKey = link.docKey;
+    // 보이는 채팅에 이었으면 하마가 칩을 짓는다. 뒤의 제목 갱신은 같은 이름이라 다시 짓지 않는다.
+    syncDocumentChips({ build: true });
+    hideDocumentRequired();
+    referenceLibrary.contextChanged();
+    void captureInbox.contextChanged();
+    enforceChatModeLock();
+    updateWorkspaceChatTitle();
+    updateComposer();
+    rebuildThreadsList();
+    // 초안은 허브에 세션이 없다 — 첫 메시지의 chat-start 가 이 문서를 싣는다.
+    if (draftChat || bridgeThreadId !== threadId) return null;
+    return bridge.linkChatDocument({
+      threadId,
+      documentId: link.documentId,
+      documentName: link.docKey,
+      createdByThread: link.createdByThread ?? null,
+    });
+  }
+
+  function cancelDocumentLink(): void {
+    if (documentLinkThreadId === null) return;
+    documentLinkThreadId = null;
+    // 기다리는 동안 따라 둔 문서 상태와 실제 상태가 다르면 보통의 전환 규칙으로 맞춘다.
+    updateDocumentContext();
+  }
+
+  /** 사용자 진입점의 연결 — 이 채팅에 문서가 없을 때만 편집기에 맡긴다. */
+  async function linkCurrentChat(target: ChatDocumentLinkTarget): Promise<ChatDocumentLinked | null> {
+    if (!linkDocument || root.dataset.disposed === 'true' || !chatIsUnlinked()) return null;
+    try {
+      return await linkDocument(target);
+    } catch (error) {
+      console.warn('[agent-sidebar] 문서 연결 실패:', error);
+      return null;
+    }
+  }
+
+  /** 문서 없는 채팅에서 프로젝트 저장이 막혔다 — 문서를 만들거나 이을 두 단추를 대화 끝에 하나만 둔다. */
+  function showDocumentRequired(): void {
+    if (!chatIsUnlinked()) return;
+    hideDocumentRequired();
+    const row = el('div', 'ag-doc-required');
+    row.setAttribute('role', 'status');
+    row.dataset.threadId = currentThread.id;
+    const create = el('button', 'ag-doc-required-action ag-doc-required-create', '새 문서');
+    create.type = 'button';
+    create.addEventListener('click', () => { void linkCurrentChat({ kind: 'new' }); });
+    const link = el('button', 'ag-doc-required-action ag-doc-required-link', '문서 연결');
+    link.type = 'button';
+    link.addEventListener('click', () => openDocumentPalette(link, { link: true }));
+    row.append(el('span', 'ag-doc-required-label', '저장하려면 문서가 필요해요'), create, link);
+    documentRequiredRow = row;
+    withAutoScroll(() => appendConversation(row));
+  }
+
+  function hideDocumentRequired(): void {
+    documentRequiredRow?.remove();
+    documentRequiredRow = null;
   }
 
   /** 아직 저장되지 않은 시작 초안을 새로 열린 문서에 맞춘다. */
@@ -2402,6 +2598,33 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const workspaceDocumentName = el('span', 'ag-workspace-document-name', '문서 없음');
   const workspaceDocumentWorktree = createWorktreeChip();
   workspaceDocumentContext.append(workspaceChatTitle, workspaceTitleSeparator, workspaceDocumentName, workspaceDocumentWorktree);
+  // 문서 없이 시작해 문서를 이은 채팅은 '/ 문서 이름' 대신 문서 칩을 둔다. 집중 화면의 칩은 문서 화면으로 간다.
+  const focusDocumentChip = createDocumentChip({ onActivate: () => setFullscreen(false), actionLabel: '문서 보기' });
+  const dockDocumentChip = createDocumentChip();
+  workspaceChatTitle.after(focusDocumentChip.root);
+  chatTitle.after(dockDocumentChip.root);
+
+  /**
+   * 이은 채팅이면 두 머리에 문서 칩을 둔다. build 면 지금 보이는 머리의 칩을 하마가 짓는다 — 다른 머리는
+   * 바로 선다. 나중에 다시 연 이은 채팅은 짓지 않고 바로 보인다.
+   */
+  function syncDocumentChips(options: { build?: boolean } = {}): void {
+    const name = getDocumentContext?.()?.documentName || currentThread.docKey;
+    const linked = readOnlyDocLabel === null && currentThread.documentLinkedAt !== undefined
+      && currentThread.documentId !== null && Boolean(name);
+    documentContext.classList.toggle('ag-doc-chip-on', linked);
+    workspaceDocumentContext.classList.toggle('ag-doc-chip-on', linked);
+    if (!linked || !name) {
+      focusDocumentChip.hide();
+      dockDocumentChip.hide();
+      return;
+    }
+    const visible = fullscreen ? focusDocumentChip : dockDocumentChip;
+    for (const chip of [focusDocumentChip, dockDocumentChip]) {
+      void chip.show(name, { build: options.build === true && active && chip === visible })
+        .catch((error) => console.warn('[agent-sidebar] 문서 칩을 그리지 못했습니다:', error));
+    }
+  }
   const workspaceHomeBtn = el('button', 'ag-workspace-icon-btn ag-workspace-home-btn');
   workspaceHomeBtn.type = 'button';
   workspaceHomeBtn.setAttribute('aria-label', '문서 홈');
@@ -2437,6 +2660,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       target.textContent = title;
       target.title = title;
     }
+    syncDocumentChips();
   }
   updateWorkspaceChatTitle();
 
@@ -3570,6 +3794,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     respond: (requestId, decision) => bridge.respondChatPermission(requestId, decision),
     requestBrowser: (action, args) => bridge.requestBrowser(action, args),
     submitBrowserAccount: (args) => bridge.submitBrowserAccount(args),
+    documentName: async (documentId) => (await listRecentDocuments?.())
+      ?.find((doc) => doc.documentId === documentId)?.fileName ?? null,
   });
   questionTimelineAnchor.hidden = true;
   questionTimelineAnchor.setAttribute('aria-hidden', 'true');
@@ -3714,7 +3940,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
      오갈 때는 즉시 바뀌고, 새 빈 채팅마다 새 문장을 고른다. */
   const focusGreeting = createFocusGreeting({ page: chatPage, composer, conversation: messages });
   focusGreeting.documentButton.addEventListener('click', () => {
-    openDocumentPalette(focusGreeting.documentButton);
+    openDocumentPalette(focusGreeting.documentButton, { link: true });
   });
   let focusGreetingThreadId: string | null = null;
   function syncFocusGreeting(): void {
@@ -3912,6 +4138,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   void captureInbox.contextChanged();
   composerMentions = createComposerMentions({
     client: bridge.projects ?? null,
+    ...(listMentionDocuments ? { listDocuments: listMentionDocuments } : {}),
     textarea: input,
     row: referenceLibrary.quickUploads,
     onChange: () => updateComposer(),
@@ -5046,11 +5273,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 지금 DOM 에 반영된 집중 모드 배치. 교차 페이드는 다음 프레임에 배치를 바꾼다. */
   let fullscreenLayoutOn = false;
 
+  /**
+   * body.ag-fullscreen-open 은 집중 모드 상태(fullscreen) 하나만 따른다 — 배치가 한 프레임 늦어도
+   * 편집기(홈의 돌아가기·초점 되돌리기)가 읽는 값은 상태와 어긋나지 않는다.
+   */
+  function syncFullscreenPageClass(): void {
+    setPageClass('ag-fullscreen-open', fullscreen);
+  }
+
+  /** 보내지 않은 초안에 쓴 것이 없다 — 글, 올려 둔 파일, @ 멘션 모두. */
+  function draftIsBlank(): boolean {
+    return input.value.trim() === ''
+      && referenceLibrary.snapshotDraftFiles().length === 0
+      && (composerMentions?.list().length ?? 0) === 0;
+  }
+
   function applyFullscreenLayout(on: boolean): void {
     workbench?.select(null);
     fullscreenLayoutOn = on;
     root.classList.toggle('ag-fullscreen', on);
-    setPageClass('ag-fullscreen-open', on);
+    syncFullscreenPageClass();
     syncFocusGreeting();
     applyEnvironmentPanelState();
     fullscreenBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
@@ -5061,8 +5303,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     fullscreenIcon = nextIcon;
 
     if (!on) {
-      // 집중 모드를 닫으면 보내지 않은 초안은 버리고 앞 채팅으로 돌아간다.
-      discardDraft();
+      // 집중 모드를 닫아도 보내지 않은 초안은 남는다. 문서 옆에서 빈 초안만 앞 채팅으로 돌아간다 —
+      // 문서 없는 초안은 빈 문서 화면의 새 문서·파일 열기가 이을 채팅이라 그대로 둔다.
+      if (draftIsBlank() && currentDocumentId !== null) discardDraft();
       restoreSidebarLayout();
       setConfigPanelOpen(false);
       measure();
@@ -5120,6 +5363,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     fullscreen = on;
+    // 교차 페이드가 배치를 다음 프레임에 바꿔도 페이지 표시는 상태와 함께 바로 바뀐다.
+    syncFullscreenPageClass();
     // 집중 화면은 늘 환경 패널을 닫은 채로 연다. 열고 싶으면 머리말의 토글로 연다.
     if (on) {
       environmentPanelOpen = false;
@@ -5345,6 +5590,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function closeSettingsPage(): void {
     settingsPanelOpen = false;
     settingsReturnsHome = false;
+    settingsExitsFullscreenOnHome = false;
     root.classList.remove('ag-settings-open');
     workspaceSettingsBtn.setAttribute('aria-expanded', 'false');
     workspaceSettingsBtn.classList.remove('ag-active');
@@ -5364,13 +5610,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     if (!await settingsPanel.requestClose()) return false;
     const returnHome = settingsReturnsHome;
+    const exitFullscreen = returnHome && settingsExitsFullscreenOnHome && fullscreen;
     closeSettingsPage();
     chatPage.setAttribute('aria-hidden', 'false');
     root.classList.remove('ag-settings-open');
     returnFocus?.focus();
     afterClose?.();
     // 설정에서 홈으로 돌아갈 때는 페이드 없이 덮는다. 페이드 동안 뒤의 채팅 화면이 비친다.
-    if (returnHome) openDocumentHome?.({ instant: true });
+    // 집중 화면이 남아 있으면 홈의 돌아가기 단추가 '새 채팅'을 가리키므로 화면을 접은 뒤에 홈을 연다.
+    if (exitFullscreen) setFullscreen(false, { instant: true, then: () => openDocumentHome?.({ instant: true }) });
+    else if (returnHome) openDocumentHome?.({ instant: true });
     return true;
   }
 
@@ -6131,14 +6380,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const continuedTurn = draftChat ? null : unresolvedInterruption(currentThread);
     const requestText = decorateRequestText(request.requestText, currentThread.id, request.carriesContinuation === true);
     failureNotices.noteSend(currentThread.id, request.retryPayload, request.source ?? null);
+    const mentions = splitThreadMentions(request.mentions);
     const sent = bridge.sendUserMessage(
       requestText,
       request.skillName,
       request.staged.map((file) => file.id),
       request.requireReceipt === true || continuedTurn !== null,
       request.signal,
-      request.mentions.map((mention) => mention.id),
+      mentions.itemIds,
       request.acceptance,
+      mentions.documents,
     );
     if (continuedTurn) {
       markInterruptionResolved(continuedTurn.marker.messageId, request.origin, sent);
@@ -6737,8 +6988,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
       bubble.appendChild(row);
     }
-    if (message.mentions?.length && projectHost) {
-      bubble.appendChild(renderMessageMentions(message.mentions, projectHost.citations));
+    if (message.mentions?.length) {
+      bubble.appendChild(renderMessageMentions(message.mentions, projectHost?.citations ?? null));
     }
     if (message.turnKey) {
       bubble.dataset.turnKey = message.turnKey;
@@ -7198,6 +7449,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     for (const pill of permissionController.rootsForContext({ threadId: thread.id, documentId: currentDocumentId })) {
       appendConversation(pill);
     }
+    if (documentRequiredRow?.dataset.threadId === thread.id && chatIsUnlinked()) appendConversation(documentRequiredRow);
     scrollConversationToEnd();
   }
 
@@ -7815,9 +8067,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
 
-  function openDocumentPalette(trigger: HTMLElement = threadsToolbar.openButton): void {
+  function openDocumentPalette(
+    trigger: HTMLElement = threadsToolbar.openButton,
+    options: { link?: boolean } = {},
+  ): void {
     if (trigger.getAttribute('aria-expanded') === 'true') {
       closeThreadRailSurfaces(root);
+      return;
+    }
+    // 문서 없는 채팅의 진입점에서 고른 문서는 이 채팅에 잇는다. 레일·홈·파일 메뉴의 열기는 잇지 않는다.
+    if (options.link && linkDocument && chatIsUnlinked()) {
+      showDocumentPalette({
+        host: root,
+        trigger,
+        alignTo: trigger,
+        centered: true,
+        recents: listRecentDocuments?.() ?? Promise.resolve([]),
+        onCreate: () => { void linkCurrentChat({ kind: 'new' }); },
+        onOpenFile: () => { void linkCurrentChat({ kind: 'pick' }); },
+        onOpenRecent: (doc) => { void linkCurrentChat({ kind: 'recent', documentId: doc.documentId }); },
+      });
       return;
     }
     showDocumentPalette({
@@ -8039,6 +8308,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     appendConversation(note);
     scrollConversationToEnd();
     updateComposer();
+    syncDocumentChips();
   }
 
   function exitReadOnlyMode(): void {
@@ -8047,6 +8317,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     composer.classList.remove('ag-readonly');
     messages.querySelectorAll('.ag-readonly-note').forEach((n) => n.remove());
     updateComposer();
+    syncDocumentChips();
   }
 
   /**
@@ -8146,6 +8417,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 선택으로 연다. 브리지는 시작·전환이 끝날 때까지 메시지를 붙잡아 한 번만 보낸다.
    */
   function prepareChatForSend(): void {
+    engagedThreadId = currentThread.id;
     if (chatModeLockReason !== null && currentMode() !== 'chat') {
       if (draftChat) setDraftMode('chat');
       else if (!workflowTransitionPending) forceChatWorkflow();
@@ -10855,6 +11127,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       case 'chat-permission-response-result':
         permissionController.answerResult(e);
         break;
+      case 'document-required':
+        if (bridgeThreadId === currentThread.id && !draftChat) showDocumentRequired();
+        break;
+      case 'chat-document-linked':
+        if (e.threadId === currentThread.id) {
+          hideDocumentRequired();
+          // 편집기를 거치지 않고 이어진 채팅(다른 창의 연결 등)도 칩을 세운다.
+          if (currentThread.documentLinkedAt === undefined && currentThread.documentId === e.documentId) {
+            currentThread.documentLinkedAt = Date.now();
+            syncDocumentChips({ build: true });
+          }
+        }
+        break;
       case 'chat-permission-resolved':
         permissionController.resolve(e.requestId, e.outcome);
         runStatus.sync();
@@ -11993,6 +12278,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 저장소 준비가 허브의 welcome 보다 늦어도 시작 채팅 고르기(settleStartupChat)가 둘 다 기다린
   // 뒤에 살아 있는 채팅을 잇는다 — 여기서 질문을 따로 되살리지 않는다.
   const unsubThreads = subscribeThreadChanges(() => {
+    // 다른 창과 같은 채팅을 서로 다른 문서에 이었으면 저장소에 남은 연결을 따른다. 이 창이 잇는 중이거나
+    // 아직 잇지 않은 채팅은 completeDocumentLink·beginDocumentLink 가 맡는다.
+    if (documentLinkThreadId === null && currentThread.documentId !== null) adoptStoredThreadLink();
     if (threadsListVisible()) rebuildThreadsList();
     if (restoringLiveQuestion) return;
     const livePermission = bridge.getPendingChatPermissionRequest();
@@ -12105,11 +12393,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
             lockedSettingsBackdrop = true;
           }
           setCollapsed(false);
+          const wasFullscreen = fullscreen;
           const open = (): void => {
             // 부른 쪽(홈)은 새 배치가 선 뒤에 내린다. 교차 페이드가 홈에서 설정으로 바로 넘어간다.
             request?.onOpen?.();
             setSettingsPanelOpen(true, destination);
-            if (request?.from === 'home') settingsReturnsHome = true;
+            if (request?.from === 'home') {
+              settingsReturnsHome = true;
+              settingsExitsFullscreenOnHome = !wasFullscreen;
+            }
           };
           // 홈에서 여는 설정은 교차 페이드 없이 바로 바꾼다.
           if (request?.fullscreen) setFullscreen(true, { then: open, instant: request.from === 'home' });
@@ -12289,7 +12581,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       composerRest.setResting(false);
       applyFullscreenLayout(fullscreen);
     } else {
-      setPageClass('ag-fullscreen-open', fullscreen);
+      syncFullscreenPageClass();
       applyEnvironmentPanelState();
       applyThreadsRailState();
     }
@@ -12447,6 +12739,25 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     currentThreadId(): string | null {
       return draftChat || currentThread.messages.length === 0 ? null : currentThread.id;
     },
+    isUnlinkedChat: () => root.dataset.disposed !== 'true' && chatIsUnlinked(),
+    hasActiveUnlinkedChat: () => root.dataset.disposed !== 'true' && chatIsUnlinked()
+      && !draftChat && currentThread.messages.length > 0
+      && (engagedThreadId === currentThread.id || bridge.isTurnRunning()),
+    enterFullscreen(options: { instant?: boolean; then?: () => void } = {}): void {
+      if (root.dataset.disposed === 'true') return;
+      setFullscreen(true, {
+        ...(options.instant ? { instant: true } : {}),
+        then: () => {
+          options.then?.();
+          input.focus({ preventScroll: true });
+        },
+      });
+    },
+    isFullscreen: () => fullscreen,
+    linkCurrentChat,
+    beginDocumentLink,
+    completeDocumentLink,
+    cancelDocumentLink,
     /** 사용자가 문서를 열면 집중 화면을 접고 문서 옆 사이드바로 돌아온다. */
     exitFullscreen(): void {
       if (root.dataset.disposed === 'true' || !fullscreen) return;

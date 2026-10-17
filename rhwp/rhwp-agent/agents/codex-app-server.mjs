@@ -67,6 +67,9 @@ function capabilityConfig(opts) {
     '-c', `mcp_servers.rhwp.args=${JSON.stringify(runtime.args)}`,
     '-c', `mcp_servers.rhwp.env={${mcpEnv}}`,
     '-c', 'mcp_servers.rhwp.startup_timeout_sec=20',
+    // 기본 60초는 사용자 확인을 기다리는 문서 연결(open_document·create_document)을 끊는다.
+    // 허브가 확인(5분)과 Studio 실행(2분)의 끝을 정하고, 다른 도구는 mcp-stdio 의 180초가 먼저 끝낸다.
+    '-c', 'mcp_servers.rhwp.tool_timeout_sec=600',
     '-c', 'mcp_servers.rhwp.default_tools_approval_mode="auto"',
     // 자료 저장은 허브가 모드·설정·세션 경계를 검사하므로 승인 UI 없이 실행한다.
     ...codexManagedToolApprovalConfig(),

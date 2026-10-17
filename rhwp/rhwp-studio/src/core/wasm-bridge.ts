@@ -764,20 +764,26 @@ export class WasmBridge {
    * 열린 문서·세션 상태가 그대로다. 호출 쪽은 adoptPreparedDocument 로 들이거나 dispose 한다.
    */
   prepareNewDocument(source?: Uint8Array): PreparedWasmDocument {
+    return this.prepareDocument(this.newDocumentBytes(source), NEW_DOCUMENT_FILE_NAME);
+  }
+
+  /**
+   * 새 문서(template 이 있으면 그 내용)의 HWPX 바이트. 지금 문서는 건드리지 않는다 — 데스크톱이
+   * 파일을 먼저 쓴 뒤 그 파일로 여는 새 문서(에이전트 create_document)가 쓴다.
+   */
+  newDocumentBytes(source?: Uint8Array): Uint8Array {
     // Studio saves new documents as HWPX. Convert the bundled HWP template
     // before editing so table margins cannot change on the first HWPX reopen.
     // Keep the core's native HWP constructor unchanged for HWP consumers.
     const template = source
       ? HwpDocument.fromBytesWithFontMetrics(source, DEFAULT_FONT_METRICS_POLICY)
       : HwpDocument.createEmpty();
-    let bytes: Uint8Array;
     try {
       if (!source) template.createBlankDocument();
-      bytes = template.exportHwpx();
+      return template.exportHwpx();
     } finally {
       template.free();
     }
-    return this.prepareDocument(bytes, NEW_DOCUMENT_FILE_NAME);
   }
 
   /** 이름 없는 새 문서를 만든다. prepared 를 주면 미리 읽어 둔 문서(템플릿)를 들인다. */

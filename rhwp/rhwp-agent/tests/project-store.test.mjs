@@ -102,7 +102,7 @@ test('agent edits lock fields, the librarian skips them, and a bad op rejects th
 
 test('undo restores a batch and skips ops whose field changed since', async (t) => {
   const { referenceStore, store } = await fixture(t);
-  const projectId = await store.projectForThread('chat-undo');
+  const projectId = await store.projectForDocument('doc-undo');
   const a = await addText(referenceStore, store, projectId, 'a.txt', 'alpha source');
   const b = await addText(referenceStore, store, projectId, 'b.txt', 'beta source');
   const batch = await store.applyOps(projectId, {
@@ -167,7 +167,7 @@ test('trash hides items, restores them, and purging removes unshared reference r
   const settings = structuredClone(DEFAULT_PROJECT_SETTINGS);
   settings.board.trashDays = 7;
   const { referenceStore, store } = await fixture(t, { settings, now: () => clock });
-  const projectId = await store.projectForThread('chat-trash');
+  const projectId = await store.projectForDocument('doc-trash');
   const keep = await addText(referenceStore, store, projectId, 'keep.txt', 'keep me');
   const drop = await addText(referenceStore, store, projectId, 'drop.txt', 'drop me');
   const linked = await store.applyOps(projectId, {
@@ -233,7 +233,7 @@ test('a corrupt index is rebuilt from project folders and never sweeps live proj
 
 test('clips need a live PDF or image source, a page in range, and a rect inside it', async (t) => {
   const { referenceStore, store } = await fixture(t);
-  const projectId = await store.projectForThread('chat-clips');
+  const projectId = await store.projectForDocument('doc-clips');
   const pdf = await addBytes(referenceStore, store, projectId, 'report.pdf', pagedPdf([null, 'Budget overview for the year 2026', null]));
   const image = await addBytes(referenceStore, store, projectId, 'photo.png', PNG);
   const text = await addText(referenceStore, store, projectId, 'notes.txt', '본문');
@@ -291,7 +291,7 @@ test('clips need a live PDF or image source, a page in range, and a rect inside 
 
 test('trashing a file trashes its clips, restoring brings back only those, and undo follows both ways', async (t) => {
   const { referenceStore, store } = await fixture(t);
-  const projectId = await store.projectForThread('chat-clip-trash');
+  const projectId = await store.projectForDocument('doc-clip-trash');
   const pdf = await addBytes(referenceStore, store, projectId, 'scan.pdf', pagedPdf([null, null]));
   const { created } = await store.applyOps(projectId, {
     actor: user,
@@ -326,7 +326,7 @@ test('trashing a file trashes its clips, restoring brings back only those, and u
 
 test('clip links come from the snapshot, cannot be unlinked, and purging the source drops its clips', async (t) => {
   const { referenceStore, store } = await fixture(t);
-  const projectId = await store.projectForThread('chat-clip-links');
+  const projectId = await store.projectForDocument('doc-clip-links');
   const pdf = await addBytes(referenceStore, store, projectId, 'figure.pdf', pagedPdf(['Figure one caption text']));
   const other = await addText(referenceStore, store, projectId, 'other.txt', '다른 자료');
   const { created } = await store.applyOps(projectId, {
@@ -386,7 +386,7 @@ test('project_read shows clips and text-less pages on a PDF and the source on a 
   t.after(() => fs.rm(parent, { recursive: true, force: true }));
   const referenceStore = await new ReferenceStore({ format: 'project', root: path.join(parent, 'files') }).init();
   const store = await new ProjectStore({ root: path.join(parent, 'projects'), referenceStore }).init();
-  const projectId = await store.projectForThread('chat-read-clips');
+  const projectId = await store.projectForDocument('doc-read-clips');
   const pdf = await addBytes(referenceStore, store, projectId, 'mixed.pdf', pagedPdf([null, 'Budget overview for the year 2026', null]));
   const { created } = await store.applyOps(projectId, {
     actor: user,

@@ -81,11 +81,25 @@ export function activeDocumentIdentity(activeSession) {
   };
 }
 
+/**
+ * A chat with no document: neither a stable documentId nor a legacy document name (threads from
+ * before document ids carry only the name and still have their document).
+ */
+export function sessionHasNoDocument(activeSession) {
+  return !activeSession?.documentId && !activeSession?.documentName;
+}
+
 /** Add stable identity to the live document-info result returned by Studio. */
 export function attachActiveDocumentIdentity(result, identity) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
   return { ...result, ...activeDocumentIdentity(identity) };
 }
+
+/** A chat that started without a document until open_document/create_document links one. */
+const NO_DOCUMENT_LINES = Object.freeze([
+  'No document is linked to this chat. Read tools still read other documents by documentId; list_documents finds them.',
+  'When the task needs a document to work in, open_document links an existing one and create_document (에이전트, 전체 or an approved plan) makes a new one. The user confirms the link, and the chat keeps that one document for good. Saving to the project (project_edit, project_import, project downloads) needs a linked document.',
+]);
 
 /** Give every agent turn exact open-document identity without filename search. */
 export function addActiveDocumentContext(activeSession, prompt) {
@@ -93,8 +107,10 @@ export function addActiveDocumentContext(activeSession, prompt) {
   const block = [
     '<active_document_identity trust="application-state">',
     JSON.stringify(identity),
-    'This is the exact Studio document bound to this chat. All rhwp document tools target this documentId.',
-    'Use documentId—not documentName, title matching, recent-file lists, or filesystem search—to decide which open document the user means. Call get_document_info for its digest, source format, dirty state, and exact sourcePath when the desktop app has one.',
+    ...(sessionHasNoDocument(activeSession) ? NO_DOCUMENT_LINES : [
+      'This is the exact Studio document bound to this chat. Writes and default reads target this documentId; read tools accept another documentId (read-only).',
+      'Use documentId—not documentName, title matching, recent-file lists, or filesystem search—to decide which open document the user means. Call get_document_info for its digest, source format, dirty state, and exact sourcePath when the desktop app has one.',
+    ]),
     '</active_document_identity>',
   ].join('\n');
   return `${block}\n\n${prompt}`;

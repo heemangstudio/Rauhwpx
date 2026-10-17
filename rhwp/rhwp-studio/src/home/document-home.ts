@@ -70,6 +70,8 @@ export interface DocumentHomeDeps {
   restoreFocus(): void;
   /** 왼쪽 아래 톱니 단추. 홈을 닫고 설정을 연다. */
   openSettings?(): void;
+  /** 위 막대 오른쪽 끝의 새 채팅 단추. 홈을 닫고 문서 없는 새 채팅을 집중 화면에 연다. */
+  newChat?(): void;
   /** 위 막대 오른쪽 끝 자리를 채운다(라이선스 구매 단추 등). */
   mountTopbarTrailing?(slot: HTMLElement): void;
   /** 저장하지 않은 새 문서(다른 창 포함). 최근 문서 맨 앞에 점선 종이로 놓인다. */
@@ -178,6 +180,15 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   const trailing = el('div', 'dh-topbar-trailing');
   topbar.append(brand, back, trailing);
   deps.mountTopbarTrailing?.(trailing);
+  // 위 막대 오른쪽 끝에 글자 없이 새 채팅 단추를 둔다.
+  if (deps.newChat) {
+    const newChat = button('dh-new-chat', '');
+    newChat.setAttribute('aria-label', '새 채팅');
+    newChat.title = '새 채팅';
+    newChat.append(createIcon('compose'));
+    newChat.addEventListener('click', () => deps.newChat?.());
+    trailing.append(newChat);
+  }
 
   const scroller = el('div', 'dh-scroll');
   // 앱을 켰을 때 키보드가 머무는 자리. 카드에 초점 고리를 띄우지 않는다.

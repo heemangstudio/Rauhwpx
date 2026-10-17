@@ -10,6 +10,11 @@ export const INSERTED_IMAGE_MAX_BYTES = 64 * MIB;
 export const STRUCTURED_RESPONSE_MAX_BYTES = 8 * MIB;
 export const ERROR_RESPONSE_MAX_BYTES = 64 * 1024;
 
+/** 크기 한도를 넘어 읽기를 멈췄다 — 다른 읽기 실패(끊긴 스트림 등)와 가른다. */
+export class ByteLimitError extends Error {
+  override name = 'ByteLimitError';
+}
+
 function byteLimitMessage(label: string, maxBytes: number): string {
   return `${label} 크기는 ${Math.floor(maxBytes / MIB)} MiB를 초과할 수 없습니다.`;
 }
@@ -28,7 +33,7 @@ export async function readBlobBytesWithLimit(
   label = '파일',
 ): Promise<Uint8Array> {
   if (!Number.isSafeInteger(blob.size) || blob.size < 0 || blob.size > maxBytes) {
-    throw new Error(byteLimitMessage(label, maxBytes));
+    throw new ByteLimitError(byteLimitMessage(label, maxBytes));
   }
   const bytes = new Uint8Array(await blob.arrayBuffer());
   if (bytes.byteLength !== blob.size || bytes.byteLength > maxBytes) {
@@ -47,7 +52,7 @@ export async function readResponseBytesWithLimit(
     const declared = Number(declaredText);
     if (!Number.isSafeInteger(declared) || declared < 0 || declared > maxBytes) {
       await cancelResponseBody(response, byteLimitMessage(label, maxBytes));
-      throw new Error(byteLimitMessage(label, maxBytes));
+      throw new ByteLimitError(byteLimitMessage(label, maxBytes));
     }
   }
   if (!response.body) throw new Error(`${label}을 제한된 스트림으로 읽을 수 없습니다.`);
@@ -67,7 +72,7 @@ export async function readResponseBytesWithLimit(
       total += value.byteLength;
       if (!Number.isSafeInteger(total) || total > maxBytes) {
         await reader.cancel(byteLimitMessage(label, maxBytes)).catch(() => undefined);
-        throw new Error(byteLimitMessage(label, maxBytes));
+        throw new ByteLimitError(byteLimitMessage(label, maxBytes));
       }
       chunks.push(value);
     }
