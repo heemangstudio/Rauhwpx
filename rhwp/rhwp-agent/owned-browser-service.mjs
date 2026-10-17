@@ -1337,7 +1337,10 @@ export function createOwnedBrowserService(options = {}) {
     }
     if (!actor.isHuman && action !== 'status' && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in. Wait for account confirmation.', true);
     if (runtime && !actor.isHuman) await observeHumanSessions();
-    if (action === 'status') { passkeys = await inspectMacPasskeyCapability(); return { ...(await inventory(actor)), readiness: state === 'ready' ? { state: 'ready', installed: true, passkeys } : await inspectOwnedBrowserRuntime({ dataDir }) }; }
+    if (action === 'status') { passkeys = await inspectMacPasskeyCapability(); return { ...(await inventory(actor)), readiness: state === 'ready' ? { state: 'ready', installed: true, passkeys }
+      // 데스크톱 내장 브라우저는 관리형 Chromium 설치와 무관하다. 첫 탭을 열 때 시작된다.
+      : selectedAdapter() ? { state: 'ready', installed: true, message: 'The desktop browser starts with the first tab.', passkeys }
+      : await inspectOwnedBrowserRuntime({ dataDir }) }; }
     if (action === 'install') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Browser installation is managed from Browser settings.');
       installPromise ??= installOwnedBrowserRuntime({ dataDir, onProgress: (progress) => emit('owned_browser_runtime', { runtime: { ...runtimeInfo(), ...progress } }) }).finally(() => { installPromise = null; });
