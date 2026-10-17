@@ -15,13 +15,14 @@ export interface DesktopFontSourceSummary {
   paths: string[];
 }
 
+// macOS 가 함께 싣는 폴더는 사용자에게 하나의 출처라 한 줄로 묶는다.
 const SOURCE_NAMES: Readonly<Record<string, string>> = {
-  'macOS supplemental': 'macOS 추가 글꼴',
-  'Library fonts': '라이브러리 글꼴',
-  'Apple app fonts': 'Apple 앱 글꼴',
-  'macOS downloadable fonts': 'macOS 내려받은 글꼴',
-  'macOS preinstalled fonts': 'macOS 기본 글꼴',
-  'macOS font services': 'macOS 글꼴 서비스',
+  'macOS supplemental': 'macOS',
+  'Apple app fonts': 'macOS',
+  'macOS downloadable fonts': 'macOS',
+  'macOS preinstalled fonts': 'macOS',
+  'macOS font services': 'macOS',
+  'Library fonts': '모든 사용자 글꼴',
   'user fonts': '사용자 글꼴',
   'system fonts': '시스템 글꼴',
   'local fonts': '로컬 글꼴',
