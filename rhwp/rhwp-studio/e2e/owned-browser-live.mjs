@@ -382,10 +382,10 @@ try {
   await page.click(`[role="tab"][data-resource-id="browser:${tab.tabId}"]`);
   await page.evaluate(() => window.__eventBus.emit('settings:open', { destination: 'browser', fullscreen: true }));
   await page.waitForSelector('.ag-browser-settings', { visible: true });
-  await page.locator('.ag-browser-settings button::-p-text(승인된 권한)').click();
-  await page.waitForFunction(() => document.querySelector('.ag-browser-settings-body')?.textContent?.includes('Google Search'));
-  await shot('real-stream-browser-approved-permissions');
-  await record('Production Browser Settings exposes durable research permissions');
+  await page.locator('.ag-browser-settings button::-p-text(권한)').click();
+  await page.waitForSelector('.ag-browser-settings-body .ag-browser-site-add');
+  await shot('real-stream-browser-site-permissions');
+  await record('Production Browser Settings shows the site list');
   assert.ok(site.requests.some(row => row.path === '/pdf/post' && row.method === 'POST' && row.authenticated));
   assert.equal(site.requests.filter(row => row.path === '/pdf/get').length, 1, 'authenticated PDF is never refetched');
   const publicResults = JSON.stringify(results.scenarios);

@@ -93,6 +93,7 @@ export async function checkChatPermissions(page, origin, screenshot) {
   assert.equal(await page.evaluate(() => window.sidebarPreview.bridge.getPendingChatPermissionRequest()), null);
 
   await checkRequestScopes(page, origin);
+  await checkSiteCards(page, origin, screenshot);
   await checkSecretCards(page, origin, screenshot);
   await checkConcurrentRequests(page, origin, screenshot);
 }
@@ -127,8 +128,40 @@ async function checkRequestScopes(page, origin) {
   await page.click('.ag-request-card .ag-request-primary');
   await page.waitForSelector('.ag-request-card[data-status="granted"]');
   const approval = (await page.evaluate(() => window.sidebarPreview.snapshot())).requestActions.at(-1);
-  assert.equal(approval.action, 'secrets.approve');
+  assert.equal(approval.action, 'sites.approve', 'a saved secret is used through its site card');
   assert.equal(approval.scope, 'chat', 'the first offered scope is the default');
+}
+
+/** 사이트 사용 카드: 로그인·비밀 값 줄, 차단을 푸는 카드는 '항상'으로만, 옛 계정 사용 요청도 같은 카드. */
+async function checkSiteCards(page, origin, screenshot) {
+  const site = '.ag-request-card[data-kind="browser-site-access"]';
+  await start(page, origin, 'scenario=site-access');
+  assert.deepEqual(await page.$$eval(`${site} .ag-request-item-label`, (items) => items.map((item) => item.textContent)), ['andy@hama.kr']);
+  await setScope(page, 'always', site);
+  await page.click(`${site} .ag-request-primary`);
+  await page.waitForSelector(`${site}[data-status="granted"]`);
+  let snapshot = await page.evaluate(() => window.sidebarPreview.snapshot());
+  assert.deepEqual(snapshot.requestActions.at(-1), { action: 'sites.approve', requestId: snapshot.requestActions.at(-1).requestId, scope: 'always' });
+  assert.equal(snapshot.browser.siteStatus.find((row) => row.key === 'https://coupang.com')?.always, true);
+
+  await start(page, origin, 'scenario=site-access-blocked');
+  assert.equal(await page.$eval(`${site} .ag-request-blocked`, (node) => node.textContent), '다운로드 차단됨');
+  assert.deepEqual(await page.$eval(`${site} .ag-request-scope`, (node) => ({ checked: node.getAttribute('aria-checked'), disabled: node.disabled })),
+    { checked: 'true', disabled: true }, 'lifting a block is fixed to 항상');
+  assert.equal(await page.$eval(`${site} .ag-request-item[data-blocked="true"] .ag-request-item-off`, (node) => node.textContent), '꺼짐');
+  if (screenshot) await screenshot('permission-site-blocked');
+  await page.click(`${site} .ag-request-primary`);
+  await page.waitForSelector(`${site}[data-status="granted"]`);
+  snapshot = await page.evaluate(() => window.sidebarPreview.snapshot());
+  assert.equal(snapshot.requestActions.at(-1).scope, 'always');
+  assert.deepEqual(snapshot.browser.siteStatus.find((row) => row.key === 'https://coupang.com')?.blocked, [], 'approval lifts the listed block');
+
+  // 옛 허브가 다시 보낸 계정 사용 요청은 그 계정 줄이 있는 사이트 카드로 보인다.
+  await start(page, origin, 'scenario=use-account');
+  assert.deepEqual(await page.$$eval(`${site} .ag-request-item-label`, (items) => items.map((item) => item.textContent)), ['Google 연구']);
+  await page.click(`${site} .ag-request-primary`);
+  await page.waitForSelector(`${site}[data-status="granted"]`);
+  assert.equal((await page.evaluate(() => window.sidebarPreview.snapshot())).requestActions.at(-1).action, 'sites.approve');
 }
 
 /** 비밀 값은 submitSecret 의 인자로만 나가고 화면·저장소·메시지·스냅샷 어디에도 남지 않는다. */
@@ -198,10 +231,10 @@ async function checkConcurrentRequests(page, origin, screenshot) {
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(await page.$$eval('.ag-request-card[data-status="pending"]', (cards) => cards.length), 3, 'cards survive a reconnect while the hub still lists them');
   assert.equal(await page.$$eval('.ag-request-card', (cards) => cards.length), 3, 'replayed requests reuse their cards');
-  await page.click('.ag-request-card[data-kind="secret-use"] .ag-request-primary');
-  await page.waitForSelector('.ag-request-card[data-kind="secret-use"][data-status="granted"]');
+  await page.click('.ag-request-card[data-kind="browser-site-access"] .ag-request-primary');
+  await page.waitForSelector('.ag-request-card[data-kind="browser-site-access"][data-status="granted"]');
   assert.deepEqual(await page.$$eval('.ag-request-card', (cards) => cards.map((card) => `${card.dataset.kind}:${card.dataset.status}`)),
-    ['permission:pending', 'secret-use:granted', 'browser-code:pending']);
+    ['permission:pending', 'browser-site-access:granted', 'browser-code:pending']);
   await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning());
   await page.click('.ag-request-card[data-kind="permission"] .ag-request-close');
   await page.waitForSelector('.ag-request-card[data-kind="permission"][data-status="denied"]');

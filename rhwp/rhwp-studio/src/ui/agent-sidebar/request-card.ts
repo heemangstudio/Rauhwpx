@@ -86,17 +86,35 @@ function secretName(request: ChatPermissionRequest): string {
   return request.secretLabel || SECRET_KIND_LABELS[request.secretKind ?? 'other'];
 }
 
+/** 사이트 사용 카드가 덮는 사이트 이름 — 등록 도메인, 없으면 호스트. */
+function siteName(request: ChatPermissionRequest): string {
+  return request.siteDomain || siteHost(requestOrigin(request));
+}
+
+/** 사용자가 막거나 꺼 둔 것을 다시 켜는 사이트 카드. 모든 채팅에 적용되므로 '항상'으로만 허용한다. */
+function liftsBlock(request: ChatPermissionRequest): boolean {
+  return request.kind === 'browser-site-access' && (Boolean(request.blocked?.length) || Boolean(request.item));
+}
+
+/** 카드가 고르게 하는 범위. 첫 값이 기본이다. 계정 저장 카드는 옛 허브가 범위를 빼도 고르게 한다. */
+function offeredScopes(request: ChatPermissionRequest): ChatPermissionScope[] | undefined {
+  if (liftsBlock(request)) return ['always'];
+  return request.scopes ?? (request.kind === 'browser-save-account' ? ['always', 'chat'] : undefined);
+}
+
+const blockedActionLabels: Record<string, string> = {
+  browse: '읽기', read: '읽기', 'website-change': '사이트 변경', download: '다운로드', 'research-import': '다운로드', 'account-use': '계정 사용',
+};
+
 /** 정착한 카드 한 줄의 이름. */
 function settledLabel(request: ChatPermissionRequest): string {
   const host = request.siteDomain || siteHost(requestOrigin(request));
   switch (request.kind) {
     case 'browser-sign-in': return `${host} 로그인`;
     case 'browser-code': return `${host} 인증 코드`;
-    case 'browser-use-account': return `${request.accountLabel || host} 계정 사용`;
     case 'browser-site-access': return `${host} 사용`;
     case 'browser-save-account': return `${host} 계정 저장`;
-    case 'secret-save':
-    case 'secret-use': return secretName(request);
+    case 'secret-save': return secretName(request);
     default: return labels[request.capability];
   }
 }
@@ -105,11 +123,9 @@ function title(request: ChatPermissionRequest): string {
   switch (request.kind) {
     case 'browser-sign-in': return '로그인이 필요합니다';
     case 'browser-code': return '인증 코드가 필요합니다';
-    case 'browser-use-account': return '저장된 계정으로 로그인할까요?';
-    case 'browser-site-access': return '이 사이트 사용을 허용할까요?';
+    case 'browser-site-access': return liftsBlock(request) ? '차단을 풀고 허용할까요?' : '이 사이트 사용을 허용할까요?';
     case 'browser-save-account': return '이 계정을 저장할까요?';
     case 'secret-save': return secretTitles[request.secretKind ?? 'other']!;
-    case 'secret-use': return `저장된 ${SECRET_KIND_LABELS[request.secretKind ?? 'other']}를 사용할까요?`;
     default: return capabilityTitles[request.capability];
   }
 }
@@ -182,22 +198,11 @@ export function createRequestCardController(options: RequestCardOptions) {
   function grant(card: RequestCard): void {
     const { request } = card;
     switch (request.kind) {
-      case 'browser-use-account':
-        browserAction(card, 'browser-account-use', 'accounts.approve', {
-          accountId: request.accountId, requestId: request.requestId,
-          ...(card.scope ? { scope: card.scope } : {}),
-          ...(!request.accountId && request.origin ? { account: { origin: request.origin, label: request.accountLabel ?? request.origin, origins: request.origins } } : {}),
-        }, '계정 사용을 승인하지 못했습니다.');
-        return;
       case 'browser-site-access':
+        // 차단을 푸는 카드는 모든 채팅에 적용된다. 허브는 카드에 보인 차단만 푼다.
         browserAction(card, 'browser-site-access', 'sites.approve', {
-          requestId: request.requestId, ...(card.scope ? { scope: card.scope } : {}),
-        }, '사이트 사용을 허용하지 못했습니다.');
-        return;
-      case 'secret-use':
-        browserAction(card, 'secret-use', 'secrets.approve', {
-          requestId: request.requestId, secretId: request.secretId, ...(card.scope ? { scope: card.scope } : {}),
-        }, '사용을 승인하지 못했습니다.');
+          requestId: request.requestId, scope: liftsBlock(request) ? 'always' : card.scope ?? 'chat',
+        }, liftsBlock(request) ? '차단을 풀지 못했습니다.' : '사이트 사용을 허용하지 못했습니다.');
         return;
       case 'browser-sign-in':
       case 'browser-code':
@@ -259,7 +264,7 @@ export function createRequestCardController(options: RequestCardOptions) {
       mark.append(createIcon(request.kind?.startsWith('secret') ? 'key' : capabilityIcons[request.capability]));
       head.append(mark, el('span', 'ag-request-host', request.kind ? siteHost(origin) || '요청' : '권한 요청'));
     } else {
-      head.append(createSiteMark({ origin, request: options.requestBrowser }), el('span', 'ag-request-host', request.siteDomain || siteHost(origin)));
+      head.append(createSiteMark({ origin, request: options.requestBrowser }), el('span', 'ag-request-host', siteName(request)));
     }
     const close = el('button', 'ag-request-close');
     close.type = 'button';
@@ -275,17 +280,27 @@ export function createRequestCardController(options: RequestCardOptions) {
     return head;
   }
 
-  /** 허용 범위 — 머리줄 오른쪽의 작은 '항상' 스위치. 끄면 이 채팅에만 적용된다. */
+  /** 허용 범위 — 머리줄 오른쪽의 작은 '항상' 스위치. 끄면 이 채팅에만 적용된다. 차단을 푸는 카드는 켠 채로 잠근다. */
   function scopeToggle(card: RequestCard): HTMLElement | null {
-    const scopes = card.request.scopes;
-    if (!scopes?.includes('always') || scopes.length < 2) return null;
-    const other = scopes.find((scope) => scope !== 'always')!;
+    const scopes = offeredScopes(card.request);
+    if (!scopes?.includes('always')) return null;
+    const locked = scopes.length < 2;
+    if (locked && !liftsBlock(card.request)) return null;
+    const other = scopes.find((scope) => scope !== 'always') ?? 'always';
     const toggle = el('button', 'ag-request-scope');
     toggle.type = 'button';
     toggle.setAttribute('role', 'switch');
     toggle.setAttribute('aria-label', '항상 허용');
     toggle.dataset.focusKey = 'scope';
-    toggle.disabled = !connected || card.responseId !== null;
+    toggle.disabled = !connected || card.responseId !== null || locked;
+    if (locked) {
+      toggle.dataset.locked = 'true';
+      toggle.dataset.scope = 'always';
+      toggle.setAttribute('aria-checked', 'true');
+      toggle.title = '차단 해제는 모든 채팅에 적용';
+      toggle.append(el('span', 'ag-request-scope-label', '항상'), el('span', 'ag-request-switch'));
+      return toggle;
+    }
     const sync = () => {
       const on = card.scope === 'always';
       toggle.setAttribute('aria-checked', String(on));
@@ -419,12 +434,34 @@ export function createRequestCardController(options: RequestCardOptions) {
     return list;
   }
 
-  function identityRow(lead: HTMLElement, name: string, detail: string): HTMLElement {
-    const row = el('div', 'ag-request-identity');
-    const copy = el('div', 'ag-request-identity-copy');
-    copy.append(el('strong', '', name), el('span', '', detail));
-    row.append(lead, copy);
+  /** 사이트 사용 카드의 차단 줄 — 승인하면 풀릴 동작. */
+  function blockedBanner(request: ChatPermissionRequest): HTMLElement | null {
+    const actions = [...new Set((request.blocked ?? []).map((action) => blockedActionLabels[action] ?? action))];
+    if (!actions.length) return null;
+    const row = el('div', 'ag-request-blocked');
+    row.append(createIcon('shield'), el('span', '', `${actions.join(' · ')} 차단됨`));
     return row;
+  }
+
+  /** 이 사이트에서 함께 쓸 저장된 로그인과 비밀 값. 꺼 둔 항목은 '꺼짐'으로 보이고, 카드가 가리킨 항목만 승인하면 다시 켜진다. */
+  function siteItems(request: ChatPermissionRequest): HTMLElement | null {
+    const items = [
+      ...(request.logins ?? []).map((item) => ({ item, icon: 'person' as const })),
+      ...(request.secrets ?? []).map((item) => ({ item, icon: 'key' as const })),
+    ];
+    if (!items.length) return null;
+    const list = el('ul', 'ag-request-items');
+    list.setAttribute('aria-label', '함께 쓸 항목');
+    const shown = items.length > 3 ? items.slice(0, 2) : items;
+    for (const { item, icon } of shown) {
+      const row = el('li', 'ag-request-item');
+      row.append(createIcon(icon), el('span', 'ag-request-item-label', item.label));
+      if (item.detail) row.append(el('span', 'ag-request-item-detail', item.detail));
+      if (item.blocked) { row.dataset.blocked = 'true'; row.append(el('span', 'ag-request-item-off', '꺼짐')); }
+      list.append(row);
+    }
+    if (shown.length < items.length) list.append(el('li', 'ag-request-item ag-request-item-more', `외 ${items.length - shown.length}개`));
+    return list;
   }
 
   function render(card: RequestCard): void {
@@ -466,20 +503,11 @@ export function createRequestCardController(options: RequestCardOptions) {
         actions.append(control, primary(card, '완료', `${host} ${request.kind === 'browser-code' ? '인증 코드 입력' : '로그인'} 완료`, !options.requestBrowser));
         break;
       }
-      case 'browser-use-account': {
-        const avatar = el('span', 'ag-request-avatar', (request.accountLabel || host || '?').slice(0, 1).toLocaleUpperCase());
-        nodes.push(identityRow(avatar, request.accountLabel || host, host));
-        actions.append(deny(), primary(card, '허용', `${request.accountLabel || host} 계정 사용 허용`, !options.requestBrowser));
-        break;
-      }
       case 'browser-site-access': {
-        // 쓸 계정이 있으면 한 줄로만 보인다. 값은 카드에 오지 않는다.
-        if (request.accountLabel) {
-          const account = el('div', 'ag-request-account');
-          account.append(createIcon('person'), el('span', '', request.accountLabel));
-          nodes.push(account);
-        }
-        actions.append(deny(), primary(card, '허용', `${request.siteDomain || host} 사용 허용`, !options.requestBrowser));
+        // 쓸 로그인·비밀 값은 이름만 한 줄씩 보인다. 값은 카드에 오지 않는다.
+        const lifting = liftsBlock(request);
+        nodes.push(blockedBanner(request), siteItems(request));
+        actions.append(deny(), primary(card, lifting ? '차단 해제' : '허용', `${siteName(request)} ${lifting ? '차단 해제' : '사용 허용'}`, !options.requestBrowser));
         break;
       }
       case 'browser-save-account': {
@@ -491,6 +519,7 @@ export function createRequestCardController(options: RequestCardOptions) {
             canSubmit: () => live(card),
             account: { origin: request.origin, label: request.accountLabel ?? '', origins: request.origins },
             requestId: request.requestId,
+            scope: () => card.scope ?? 'always',
             complete: () => settle(card, { status: 'granted' }),
             cancel: () => respond(card, 'deny'),
           });
@@ -515,13 +544,6 @@ export function createRequestCardController(options: RequestCardOptions) {
         actions.append(deny(), primary(card, '저장', `${secretName(request)} 저장`));
         break;
       }
-      case 'secret-use': {
-        const mark = el('span', 'ag-request-mark');
-        mark.append(createIcon('key'));
-        nodes.push(identityRow(mark, secretName(request), SECRET_KIND_LABELS[request.secretKind ?? 'other']), originList(card));
-        actions.append(deny(), primary(card, '허용', `${secretName(request)} 사용 허용`, !options.requestBrowser));
-        break;
-      }
       default:
         actions.append(deny(), primary(card, '허용', `${labels[request.capability]} 권한 허용. ${request.reason}`));
     }
@@ -539,16 +561,18 @@ export function createRequestCardController(options: RequestCardOptions) {
         const root = el('section', 'ag-request-card');
         root.dataset.requestId = request.requestId;
         card = { request, root, outcome: null, responseId: null, error: '', retry: null,
-          scope: request.scopes?.[0] ?? null, holding: false, frameId: '', decision: 'grant' };
+          scope: offeredScopes(request)?.[0] ?? null, holding: false, frameId: '', decision: 'grant' };
         cards.set(request.requestId, card);
         render(card);
       } else if (card.outcome) {
-        Object.assign(card, { request, outcome: null, responseId: null, error: '', retry: null, scope: card.scope ?? request.scopes?.[0] ?? null });
+        Object.assign(card, { request, outcome: null, responseId: null, error: '', retry: null, scope: card.scope ?? offeredScopes(request)?.[0] ?? null });
         render(card);
       } else {
-        const tabChanged = card.request.tabId !== request.tabId;
+        // 허브가 같은 사이트 요청을 다시 보내며 항목이나 차단을 바꿨을 수 있다.
+        const siteState = (entry: ChatPermissionRequest) => JSON.stringify([entry.logins, entry.secrets, entry.blocked, entry.item]);
+        const changed = card.request.tabId !== request.tabId || siteState(card.request) !== siteState(request);
         card.request = request;
-        if (tabChanged) render(card);
+        if (changed) render(card);
       }
       return card.root;
     },

@@ -4,14 +4,73 @@ import { localPasswordsApi, type LocalPasswordAccount } from './browser-local-pa
 import { createAdblockSettings } from './browser-adblock-settings.ts';
 import { createSiteMark } from './site-mark.ts';
 import { createIcon, type SidebarIconName } from './icons.ts';
+import { createChevron } from '../chevron.ts';
 import { CHAT_PERMISSION_LABELS, SECRET_KIND_LABELS, isChatPermissionCapability, readSecretMeta } from '../../agent/chat-permissions.ts';
-import type { SecretMeta } from '../../agent/types.ts';
+import type { ChatPermissionScope, SecretMeta } from '../../agent/types.ts';
 
 export type BrowserSettingsRequest = (action: string, args?: Record<string, unknown>) => Promise<unknown>;
-interface Account { sourceAccountId?: string; profileId?: string; id: string; origin: string; origins?: string[]; label: string; stableIdentity?: string; hasPassword: boolean; agentReuseApproved: boolean; sessionStatus: string; }
-interface Site { id: string; origin: string; domain?: string; label?: string; source: string; allowedActions: string[]; blockedActions: string[]; }
-const permissionLabels: Record<string, string> = { browse: '읽기', read: '읽기', download: '다운로드', 'research-import': '자료 추가', 'website-change': '웹사이트 변경', 'account-use': '계정 사용' };
-interface Policy { defaults: { browse: boolean; download: boolean; researchImport: boolean }; sites: Site[]; }
+/** 저장된 로그인. 실행 중인 브라우저의 저장소(허브 또는 데스크톱 보관함)에서 온다. */
+interface Account { profileId?: string; id: string; origin: string; origins?: string[]; label: string; stableIdentity?: string; hasPassword: boolean; agentBlocked?: boolean; sessionStatus?: string; site?: string; }
+/**
+ * 사이트 목록의 한 줄. 키는 사이트(등록 도메인 출처, 예: https://coupang.com)이고, 하위 호스트만 막은 차단은 그 호스트가 키다.
+ * always 는 모든 채팅의 사이트 사용, chat 은 지금 채팅의 사이트 사용, signedIn 은 사용자가 로그인한 흔적이 남은 사이트다.
+ */
+export interface SiteRow { key: string; label: string; source: string; always: boolean; chat: boolean; signedIn: boolean; allowedActions: string[]; blockedActions: string[]; }
+const ALL_ACTIONS = ['browse', 'read', 'download', 'research-import', 'website-change', 'account-use'];
+/** 차단 편집의 묶음 — 사용자가 고르는 단위. */
+const BLOCK_GROUPS: ReadonlyArray<{ label: string; actions: string[] }> = [
+  { label: '읽기', actions: ['browse', 'read'] },
+  { label: '사이트 변경', actions: ['website-change'] },
+  { label: '다운로드', actions: ['download', 'research-import'] },
+  { label: '계정 사용', actions: ['account-use'] },
+];
+
+function strings(value: unknown): string[] { return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []; }
+function siteKey(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try { return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value.replace(/^\./, '')}`).origin; } catch { return null; }
+}
+
+/**
+ * policy.list 결과를 사이트 줄로 모은다. sites(항상 허용·차단)에 허브가 계산한 siteStatus(지금 채팅·로그인됨)를 겹친다.
+ * siteStatus 가 없으면 chatSites·signedIn 목록을 읽는다. 아무 상태도 없는 연구 기본값은 목록에 넣지 않는다.
+ */
+export function readSiteRows(value: unknown): SiteRow[] {
+  const policy = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  const rows = new Map<string, SiteRow>();
+  const row = (key: string, label?: unknown) => {
+    let entry = rows.get(key);
+    if (!entry) { entry = { key, label: '', source: 'user', always: false, chat: false, signedIn: false, allowedActions: [], blockedActions: [] }; rows.set(key, entry); }
+    if (typeof label === 'string' && label.trim() && !entry.label) entry.label = label.trim();
+    return entry;
+  };
+  for (const site of Array.isArray(policy.sites) ? policy.sites as Record<string, unknown>[] : []) {
+    const key = siteKey(site?.origin ?? site?.key); if (!key) continue;
+    const entry = row(key, site.domain);
+    entry.source = typeof site.source === 'string' ? site.source : 'user';
+    entry.allowedActions = [...new Set([...entry.allowedActions, ...strings(site.allowedActions)])];
+    entry.blockedActions = [...new Set([...entry.blockedActions, ...strings(site.blockedActions)])];
+    entry.always ||= entry.source === 'user' && entry.allowedActions.some(action => action === 'website-change' || action === 'account-use');
+  }
+  for (const status of Array.isArray(policy.siteStatus) ? policy.siteStatus as Record<string, unknown>[] : []) {
+    const key = siteKey(status?.key ?? status?.site ?? status?.origin); if (!key) continue;
+    const entry = row(key, status.domain);
+    if (typeof status.always === 'boolean') entry.always = status.always;
+    entry.chat ||= status.chat === true; entry.signedIn ||= status.signedIn === true;
+    // 허브의 blocked 는 [{ origin, actions }] 이다. 하위 호스트만 막은 항목은 sites 에서 따로 줄이 된다.
+    if (Array.isArray(status.blocked)) entry.blockedActions = [...new Set((status.blocked as Record<string, unknown>[]).filter(block => siteKey(block?.origin) === key).flatMap(block => strings(block.actions)))];
+    else if (Array.isArray(status.blockedActions)) entry.blockedActions = [...new Set(strings(status.blockedActions))];
+    if (Array.isArray(status.allowedActions)) entry.allowedActions = [...new Set(strings(status.allowedActions))];
+  }
+  for (const marker of Array.isArray(policy.signedIn) ? policy.signedIn : []) {
+    const key = siteKey(typeof marker === 'string' ? marker : (marker as Record<string, unknown>)?.key ?? (marker as Record<string, unknown>)?.site); if (key) row(key).signedIn = true;
+  }
+  for (const site of strings(policy.chatSites)) { const key = siteKey(site); if (key) row(key).chat = true; }
+  return [...rows.values()]
+    .map(entry => ({ ...entry, label: entry.label || siteHost(entry.key) }))
+    .filter(entry => entry.always || entry.chat || entry.signedIn || entry.blockedActions.length > 0 || (entry.source === 'user' && entry.allowedActions.length > 0))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
 
 function node<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string): HTMLElementTagNameMap[K] {
   const element = document.createElement(tag); element.className = cls;
@@ -43,11 +102,11 @@ export function createBrowserAccountForm(options: {
   request: BrowserSettingsRequest;
   account?: Partial<Account>;
   requestId?: string;
-  sessionOnly?: boolean;
-  openSignIn?: boolean;
   canSubmit?(): boolean;
   /** 채팅 요청 카드 안의 짧은 양식: 사이트는 카드 머리에 보이고, 칸은 자리표시 글자로 이름을 단다. */
   variant?: 'card';
+  /** 카드의 '항상' 스위치. 저장과 함께 그 범위로 사이트 사용을 허용한다. 설정에서 저장하면 허용은 바뀌지 않는다. */
+  scope?(): ChatPermissionScope;
   complete(account?: Account): void;
   cancel(): void;
 }) {
@@ -57,14 +116,12 @@ export function createBrowserAccountForm(options: {
   const origins = field('함께 사용할 사이트 · 쉼표로 구분', 'text', options.account?.origins?.filter(value => value !== options.account?.origin).join(', ') ?? '');
   if (options.requestId || options.account?.id) origins.input.readOnly = true;
   const label = field('계정 이름', 'text', options.account?.label ?? ''); label.input.required = true;
-  const username = field(options.sessionOnly ? '계정 식별자 · 선택' : '로그인 아이디', 'text', options.account?.stableIdentity && options.account.stableIdentity !== options.account.id ? options.account.stableIdentity : ''); username.input.required = !options.sessionOnly;
+  const username = field('로그인 아이디', 'text', options.account?.stableIdentity && options.account.stableIdentity !== options.account.id ? options.account.stableIdentity : ''); username.input.required = true;
   const password = field('비밀번호', 'password'); password.input.required = true;
   if (options.requestId || options.account?.id) origin.input.readOnly = true;
-  const remember = node('label', 'ag-browser-check'); const rememberInput = node('input', ''); rememberInput.type = 'checkbox'; rememberInput.checked = true;
-  remember.append(rememberInput, document.createTextNode(card ? '다른 채팅에서도 사용 허용' : '앞으로 다른 채팅에서도 이 계정 사용 허용'));
   const message = node('p', card ? 'ag-browser-message ag-request-form-message' : 'ag-browser-message'); message.setAttribute('role', 'alert');
   const actions = node('div', card ? 'ag-request-actions' : 'ag-settings-actions');
-  const save = node('button', card ? 'ag-request-primary' : 'ag-settings-primary', options.openSignIn ? '등록 후 로그인 열기' : options.sessionOnly ? '계정 등록' : options.account?.id ? '비밀번호 변경' : '저장'); save.type = 'submit';
+  const save = node('button', card ? 'ag-request-primary' : 'ag-settings-primary', options.account?.id ? '비밀번호 변경' : '저장'); save.type = 'submit';
   const clear = () => { password.input.value = ''; username.input.value = ''; };
   const cancel = button(card ? '저장 안 함' : '취소', () => { clear(); options.cancel(); });
   if (card) cancel.className = 'ag-request-secondary';
@@ -76,7 +133,7 @@ export function createBrowserAccountForm(options: {
     }
     root.append(label.root, username.root);
   } else root.append(origin.root, origins.root, label.root, username.root);
-  if (!options.sessionOnly) root.append(password.root); else rememberInput.disabled = true; root.append(remember, message, actions);
+  root.append(password.root, message, actions);
   let disposed = false;
   root.addEventListener('submit', async (event) => {
     event.preventDefault(); if (save.disabled || disposed || options.canSubmit?.() === false) return;
@@ -86,16 +143,13 @@ export function createBrowserAccountForm(options: {
       if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw new Error('HTTPS 사이트 주소만 입력하세요.');
       const accountOrigins = [...new Set([parsed.origin, ...origins.input.value.split(',').map(value => value.trim()).filter(Boolean)])];
       for (const value of accountOrigins) { const allowed = new URL(value); if (allowed.protocol !== 'https:' || allowed.origin !== value) throw new Error('사이트 주소 확인 필요'); }
-      const approval = options.requestId ? { requestId: options.requestId } : await options.request('accounts.request', { origin: parsed.origin, label: label.input.value.trim(), accountId: options.account?.id, origins: accountOrigins, intent: options.sessionOnly ? 'use' : 'save' }) as { requestId: string };
+      const approval = options.requestId ? { requestId: options.requestId } : await options.request('accounts.request', { origin: parsed.origin, label: label.input.value.trim(), accountId: options.account?.id, origins: accountOrigins, intent: 'save' }) as { requestId: string };
       if (disposed || options.canSubmit?.() === false) return;
-      if (options.sessionOnly) {
-        const result = await options.request('accounts.approve', { requestId: approval.requestId, account: { origin: parsed.origin, label: label.input.value.trim(), origins: accountOrigins, ...(username.input.value ? { stableIdentity: username.input.value } : {}) } });
-        clear(); if (!disposed) options.complete((result as { account?: Account }).account); return;
-      }
+      const scope = options.scope?.();
       const result = await options.submit({
         accountRequestId: approval.requestId,
         account: { id: options.account?.id, origin: parsed.origin, label: label.input.value.trim(), stableIdentity: username.input.value, origins: accountOrigins },
-        username: username.input.value, password: password.input.value, remember: rememberInput.checked, consent: { save: true, use: rememberInput.checked },
+        username: username.input.value, password: password.input.value, ...(scope ? { scope } : {}), remember: true, consent: { save: true, use: true },
       });
       clear(); if (!disposed) options.complete((result as { account?: Account }).account);
     } catch { if (!disposed) message.textContent = card ? '저장하지 못했습니다. 다시 시도하세요.' : '계정을 저장하지 못했습니다. 연결과 사이트 주소를 확인하세요.'; }
@@ -114,19 +168,17 @@ function accountProvider(account: Account): string {
   }
   return host;
 }
-function sessionLabel(account: Account): string { return ({ authenticated: '로그인됨', saved: '비밀번호 저장됨', 'session-retained': '확인 필요', 'signed-out': '로그아웃됨' } as Record<string, string>)[account.sessionStatus] ?? '확인 필요'; }
-/** 로고 귀퉁이의 점: 로그인됨 · 확인 필요 · 로그아웃됨. 비밀번호만 저장한 항목에는 점이 없다. */
-function presence(account: Account): 'on' | 'check' | 'off' | null {
-  if (account.sessionStatus === 'saved') return null;
-  return account.sessionStatus === 'authenticated' ? 'on' : account.sessionStatus === 'signed-out' ? 'off' : 'check';
+function sessionLabel(account: Account): string { return account.sessionStatus === 'authenticated' ? '로그인됨' : account.sessionStatus === 'signed-out' ? '로그아웃됨' : ''; }
+/** 로고 귀퉁이의 점: 로그인됨 · 로그아웃됨. 비밀번호만 저장한 항목에는 점이 없다. */
+function presence(account: Account): 'on' | 'off' | null {
+  return account.sessionStatus === 'authenticated' ? 'on' : account.sessionStatus === 'signed-out' ? 'off' : null;
 }
 /** Chrome 쿠키 도메인(.example.com)을 로고용 origin 으로 바꾼다. */
 function cookieOrigin(domain: string): string { return `https://${domain.replace(/^\./, '')}`; }
 
-type AccountKind = 'all' | 'sessions' | 'passwords' | 'secrets';
+type AccountKind = 'all' | 'passwords' | 'secrets';
 const KIND_FILTERS: ReadonlyArray<{ id: AccountKind; label: string; icon: SidebarIconName }> = [
   { id: 'all', label: '전체', icon: 'apps' },
-  { id: 'sessions', label: '연결된 계정', icon: 'person' },
   { id: 'passwords', label: '저장된 비밀번호', icon: 'key' },
   { id: 'secrets', label: '비밀 값', icon: 'lock' },
 ];
@@ -138,10 +190,10 @@ function iconButton(icon: SidebarIconName, label: string, run: () => void, focus
   const result = node('button', 'ag-browser-icon-btn'); result.type = 'button'; result.title = label; result.setAttribute('aria-label', label);
   result.append(createIcon(icon)); result.addEventListener('click', run); if (focusKey) result.dataset.focusKey = focusKey; return result;
 }
-/** 에이전트 사용 스위치 — 켜면 에이전트가 이 항목을 쓸 수 있다. */
+/** 에이전트 사용 스위치 — 켜 두면 에이전트가 사이트 사용을 받은 곳에서 이 항목을 쓴다. 끄면 그 사이트에서도 쓰지 않는다. */
 function agentSwitch(on: boolean, disabled: boolean, toggle: () => void, focusKey: string): HTMLButtonElement {
   const result = node('button', 'ag-browser-switch'); result.type = 'button'; result.setAttribute('role', 'switch');
-  result.setAttribute('aria-checked', String(on)); result.setAttribute('aria-label', '에이전트 사용'); result.title = on ? '에이전트 사용 허용됨' : '에이전트 사용 안 함';
+  result.setAttribute('aria-checked', String(on)); result.setAttribute('aria-label', '에이전트 사용'); result.title = on ? '에이전트 사용' : '에이전트 사용 안 함';
   result.dataset.focusKey = focusKey; result.disabled = disabled; result.append(createIcon('sparkles'), node('span', 'ag-browser-switch-track'));
   result.addEventListener('click', toggle); return result;
 }
@@ -176,7 +228,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   let accountKind: AccountKind = 'all'; let accountSearch = ''; let view: 'list' | 'form' | 'import' = 'list';
   let active = 'accounts'; let disposed = false; let generation = 0; let busy = false; let resetFailed = false; let resetConfirming = false;
   let secrets: SecretMeta[] | null = null; let alwaysGrants: string[] = [];
-  let accounts: Account[] = []; let secureStorage = false; let policy: Policy | null = null; let configuration: Record<string, unknown> = {}; let status: Record<string, unknown> = {};
+  let accounts: Account[] = []; let secureStorage = false; let sites: SiteRow[] | null = null; let expandedSite: string | null = null; let configuration: Record<string, unknown> = {}; let status: Record<string, unknown> = {};
   let localAccounts: LocalPasswordAccount[] = []; let profiles: { id: string; name: string }[] = [];
   let profileId = ''; let localSupported = false; let localBusy = false; let localFailed = false; let localMessage = ''; let retryLocal: (() => void) | null = null;
   let importStep: 'choose' | 'cookies' = 'choose';
@@ -186,14 +238,10 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   const localApi = localPasswordsApi();
   /** 끊긴 동안에는 허브에 아이콘을 묻지 않는다. */
   const iconRequest = () => options.isConnected() ? options.request : undefined;
-  function managedAccounts(): Account[] {
-    const ids = new Set(accounts.map(account => account.id));
-    return accounts.filter(account => !(account.profileId === 'native' && !account.hasPassword && account.sourceAccountId && ids.has(account.sourceAccountId)));
-  }
-  function allAccounts(): Account[] { return [...managedAccounts(), ...localAccounts.map(account => ({ ...account, stableIdentity: account.username }))]; }
+  function allAccounts(): Account[] { return [...accounts, ...localAccounts.map(account => ({ ...account, stableIdentity: account.username }))]; }
   let form: ReturnType<typeof createBrowserAccountForm> | null = null;
   const tabs = new Map<string, HTMLButtonElement>();
-  for (const [id, label] of [['accounts', '계정'], ['permissions', '승인된 권한'], ['configuration', '구성']]) {
+  for (const [id, label] of [['accounts', '계정'], ['permissions', '권한'], ['configuration', '구성']]) {
     const tab = button(label!, () => { clearForm(); view = 'list'; active = id!; render(); }); tab.setAttribute('role', 'tab'); tab.id = `${instanceId}-tab-${id}`; tab.setAttribute('aria-controls', `${instanceId}-tabpanel`); tabs.set(id!, tab); navigation.append(tab);
   }
   body.id = `${instanceId}-tabpanel`;
@@ -208,13 +256,13 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   async function mutate(action: string, args: Record<string, unknown> = {}) {
     if (busy || !options.isConnected()) return; busy = true; message.textContent = ''; render();
     try { await options.request(action, args); await load(); }
-    catch (error) { const code = (error as { code?: string })?.code; message.textContent = code === 'BROWSER_RESET_REQUIRED' ? '브라우저 계정과 기록 삭제를 다시 실행해 정리를 마치세요.' : code === 'BROWSER_RESET_ACTIVE' ? '다른 창에서 브라우저 데이터를 정리하는 중입니다. 잠시 뒤 다시 시도하세요.' : code === 'BROWSER_SIGN_IN_ACTIVE' ? '별도 Chromium 창에서 로그인을 마치고 해당 계정의 로그인 확인을 누르세요.' : code === 'BROWSER_ACCOUNT_IDENTITY_MISMATCH' ? '별도 로그인 창에서 선택한 계정의 로그인 확인을 누르세요.' : code === 'BROWSER_ACCOUNT_REGISTRATION_REQUIRED' ? '기본 프로필에 이 사이트의 계정을 등록하고 사용을 허용한 뒤 로그인하세요.' : code === 'BROWSER_TABS_OPEN' ? '열려 있는 브라우저 탭을 닫은 뒤 실행 방식을 바꾸세요.' : code === 'BROWSER_SECURE_STORAGE_UNAVAILABLE' ? '운영체제 보안 저장소를 사용할 수 없습니다. 브라우저 구성에서 상태를 확인하세요.' : '요청을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.'; }
+    catch (error) { const code = (error as { code?: string })?.code; message.textContent = code === 'BROWSER_RESET_REQUIRED' ? '브라우저 계정과 기록 삭제를 다시 실행해 정리를 마치세요.' : code === 'BROWSER_RESET_ACTIVE' ? '다른 창에서 브라우저 데이터를 정리하는 중입니다. 잠시 뒤 다시 시도하세요.' : code === 'BROWSER_SIGN_IN_ACTIVE' ? '별도 Chromium 창에서 로그인을 마치고 해당 계정의 로그인 확인을 누르세요.' : code === 'BROWSER_ACCOUNT_IDENTITY_MISMATCH' ? '별도 로그인 창에서 선택한 계정의 로그인 확인을 누르세요.' : code === 'BROWSER_ACCOUNT_REGISTRATION_REQUIRED' ? '이 사이트의 계정을 먼저 저장하세요.' : code === 'BROWSER_TABS_OPEN' ? '열려 있는 브라우저 탭을 닫은 뒤 실행 방식을 바꾸세요.' : code === 'BROWSER_SECURE_STORAGE_UNAVAILABLE' ? '운영체제 보안 저장소를 사용할 수 없습니다. 브라우저 구성에서 상태를 확인하세요.' : '요청을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.'; }
     finally { busy = false; if (!disposed) render(); }
   }
   async function resetBrowser() {
     if (busy || resetConfirming || disposed || !options.isConnected()) return;
     resetConfirming = true;
-    const confirmed = await confirmSheet(element, '브라우저 계정과 기록 삭제', '저장된 웹사이트 계정과 비밀번호, 로그인 상태, 쿠키, 방문 기록을 삭제합니다. 다운로드한 PDF, 프로젝트, AI 제공자 인증 정보와 연구 권한 설정은 유지됩니다.', { confirmLabel: '계정과 기록 삭제', destructive: true });
+    const confirmed = await confirmSheet(element, '브라우저 계정과 기록 삭제', '저장된 웹사이트 계정과 비밀번호, 로그인 상태, 쿠키, 방문 기록을 삭제합니다. 다운로드한 PDF, 프로젝트, AI 제공자 인증 정보와 사이트 권한은 유지됩니다.', { confirmLabel: '계정과 기록 삭제', destructive: true });
     resetConfirming = false;
     if (!confirmed || disposed || !options.isConnected()) return;
     busy = true; resetFailed = false; message.textContent = '브라우저 계정과 기록을 삭제하는 중…'; render();
@@ -237,11 +285,11 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     if (!await confirmSheet(element, `${label} 삭제`, detail, { confirmLabel: '삭제', destructive: true }) || disposed) return;
     await run();
   }
-  function accountForm(account?: Partial<Account>, sessionOnly = false, openSignIn = false) {
-    if (localApi && !sessionOnly) return;
+  function accountForm(account?: Partial<Account>) {
+    if (localApi) return;
     clearForm(); view = 'form'; formOrigin = account?.id ? account.origin : undefined;
-    formTitle = account?.id ? '비밀번호 변경' : sessionOnly ? '계정 연결' : '비밀번호 추가';
-    form = createBrowserAccountForm({ request: options.request, submit: options.submit, canSubmit: options.isConnected, account, sessionOnly, openSignIn, complete: (saved) => { if (saved?.id) { accountKind = saved.sessionStatus === 'saved' ? 'passwords' : 'sessions'; accountSearch = ''; selected = `a:${saved.id}`; accounts = [...accounts.filter(account => account.id !== saved.id), saved]; } clearForm(); view = 'list'; if (openSignIn && saved?.id) void signIn(saved); else void load(); }, cancel: closeFlow });
+    formTitle = account?.id ? '비밀번호 변경' : '비밀번호 추가';
+    form = createBrowserAccountForm({ request: options.request, submit: options.submit, canSubmit: options.isConnected, account, complete: (saved) => { if (saved?.id) { accountKind = 'passwords'; accountSearch = ''; selected = `a:${saved.id}`; accounts = [...accounts.filter(account => account.id !== saved.id), saved]; } clearForm(); view = 'list'; void load(); }, cancel: closeFlow });
     render();
     form?.element.querySelector<HTMLInputElement>('input:not([readonly])')?.focus();
   }
@@ -281,7 +329,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   }
   function items(kind: AccountKind): Item[] {
     const accountItems: Item[] = allAccounts()
-      .filter(account => kind === 'all' || (kind === 'sessions' ? account.sessionStatus !== 'saved' : kind === 'passwords' && account.hasPassword))
+      .filter(account => kind === 'all' || (kind === 'passwords' && account.hasPassword))
       .map(account => ({ key: `a:${account.id}`, account, local: localAccounts.find(value => value.id === account.id) }));
     const secretItems: Item[] = kind === 'all' || kind === 'secrets' ? (secrets ?? []).map(secret => ({ key: `s:${secret.id}`, secret })) : [];
     return [...accountItems, ...secretItems];
@@ -306,38 +354,30 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   }
   function renderOtherTabs() {
     if (active === 'permissions') {
-      if (!policy) { body.append(node('p', 'ag-browser-empty', '권한을 불러오는 중…')); return; }
-      const always = alwaysGrants.filter(isChatPermissionCapability);
-      if (always.length) {
-        const alwaysSection = section('항상 허용한 권한');
-        for (const capability of always) action(row(CHAT_PERMISSION_LABELS[capability], '모든 채팅', alwaysSection), '해제', 'permissions.revoke', { capability });
-      }
-      const accountPermissions = section('계정 사용 승인', '각 계정에 등록된 사이트에서 적용됩니다.');
-      if (!managedAccounts().length) accountPermissions.append(node('p', 'ag-browser-empty', '등록된 계정이 없습니다.'));
-      for (const account of managedAccounts()) {
-        const actions = row(account.label || account.origin, `${accountProvider(account)} · ${visibleIdentity(account)} · ${account.agentReuseApproved ? '허용됨' : '승인 철회됨'}`, accountPermissions);
-        action(actions, account.agentReuseApproved ? '사용 승인 철회' : '사용 허용', account.agentReuseApproved ? 'accounts.revoke' : 'accounts.approve', { accountId: account.id });
-      }
-      const sitePermissions = section('사이트 권한');
-      if (!policy.sites.length) sitePermissions.append(node('p', 'ag-browser-empty', '등록된 사이트 권한이 없습니다.'));
-      for (const site of policy.sites) {
-        const blocked = site.blockedActions.includes('browse'); const actions = row(site.label || site.origin, `${site.domain ? `${site.domain} (하위 도메인 포함)` : site.origin} · ${blocked ? '차단됨' : [...new Set(site.allowedActions.map(value => permissionLabels[value] ?? value))].join(' · ') || '기본 정책'}`, sitePermissions);
-        action(actions, blocked ? '읽기·다운로드 허용' : '사이트 차단', 'policy.update', { operation: 'set-site', origin: site.origin, label: site.label, allowedActions: [...site.allowedActions.filter(value => !['browse', 'read', 'download', 'research-import'].includes(value)), ...(blocked ? ['browse', 'read', 'download', 'research-import'] : [])], blockedActions: [...site.blockedActions.filter(value => !['browse', 'read', 'download', 'research-import'].includes(value)), ...(blocked ? [] : ['browse', 'read', 'download', 'research-import'])] });
-        for (const operation of site.allowedActions.filter(value => !['browse', 'read', 'download', 'research-import'].includes(value))) {
-          action(actions, `${operation === 'website-change' ? '웹사이트 변경' : operation === 'account-use' ? '계정 사용' : operation} 승인 철회`, 'policy.update', { operation: 'set-site', origin: site.origin, label: site.label, allowedActions: site.allowedActions.filter(value => value !== operation), blockedActions: [...new Set([...site.blockedActions, operation])] });
-        }
-      }
-      const newSite = section('사이트 권한 추가');
-      const origin = field('사이트 주소', 'url'); origin.input.placeholder = 'https://example.com'; newSite.append(origin.root);
+      if (!sites) { body.append(node('p', 'ag-browser-empty', '권한을 불러오는 중…')); return; }
+      const siteSection = section('사이트');
+      const list = node('div', 'ag-browser-sites'); list.setAttribute('role', 'list'); list.setAttribute('aria-label', '사이트');
+      if (!sites.length) siteSection.append(node('p', 'ag-browser-empty', '허용하거나 차단한 사이트가 없습니다.'));
+      else siteSection.append(list);
+      for (const site of sites) list.append(siteRow(site));
+      const origin = field('사이트 주소', 'url'); origin.input.placeholder = 'example.com'; origin.input.setAttribute('aria-label', '사이트 주소');
+      origin.root.querySelector('.ag-settings-field-label')?.remove(); origin.root.classList.add('ag-browser-site-add-field');
       const siteError = node('p', 'ag-browser-message'); siteError.setAttribute('role', 'alert');
       const addSite = (allow: boolean) => {
         const site = httpsSiteOrigin(origin.input.value);
         if (!site) { siteError.textContent = 'HTTPS 사이트 주소를 입력하세요.'; origin.input.focus(); return; }
         siteError.textContent = '';
-        void mutate('policy.update', { operation: 'set-site', origin: site, allowedActions: allow ? ['browse', 'read', 'download', 'research-import'] : [], blockedActions: allow ? [] : ['browse', 'read', 'download', 'research-import'] });
+        void mutate(allow ? 'sites.allow' : 'policy.update', allow ? { origin: site } : { operation: 'set-site', origin: site, allowedActions: [], blockedActions: ALL_ACTIONS });
       };
       origin.input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addSite(true); } });
-      const actions = node('div', 'ag-settings-actions'); actions.append(button('사이트 허용', () => addSite(true)), button('사이트 차단', () => addSite(false))); newSite.append(siteError, actions);
+      const add = node('div', 'ag-browser-site-add'); const allow = button('허용', () => addSite(true)); const block = button('차단', () => addSite(false));
+      for (const control of [allow, block]) control.disabled = busy || !options.isConnected();
+      add.append(origin.root, allow, block); siteSection.append(add, siteError);
+      const always = alwaysGrants.filter(isChatPermissionCapability);
+      if (always.length) {
+        const alwaysSection = section('항상 허용한 권한');
+        for (const capability of always) action(row(CHAT_PERMISSION_LABELS[capability], '모든 채팅', alwaysSection), '해제', 'permissions.revoke', { capability });
+      }
     } else {
       const runtime = (status.runtime ?? {}) as Record<string, unknown>; const readiness = (runtime.readiness ?? {}) as Record<string, unknown>;
       const adblock = createAdblockSettings(); if (adblock) body.append(adblock);
@@ -379,6 +419,47 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const reset = button(resetFailed ? '계정과 기록 삭제 다시 시도' : '브라우저 계정과 기록 삭제', () => void resetBrowser()); reset.disabled = busy || !options.isConnected(); reset.classList.add('ag-browser-reset'); cleanup.append(reset); body.append(cleanup);
 
     }
+  }
+  /** 사이트 한 줄: 로고 · 이름 · 상태. 누르면 차단 편집과 허용·해제가 그 아래에 펼쳐진다. */
+  function siteRow(site: SiteRow): HTMLElement {
+    const item = node('div', 'ag-browser-site'); item.setAttribute('role', 'listitem'); item.dataset.site = site.key;
+    const open = expandedSite === site.key;
+    const head = node('button', 'ag-browser-site-row'); head.type = 'button'; head.dataset.focusKey = `site:${site.key}`;
+    head.setAttribute('aria-expanded', String(open));
+    head.addEventListener('click', () => { expandedSite = open ? null : site.key; focusKey = `site:${site.key}`; render(); });
+    const states = node('span', 'ag-browser-site-states');
+    const blocked = BLOCK_GROUPS.filter(group => group.actions.some(value => site.blockedActions.includes(value))).map(group => group.label);
+    for (const [state, on, text, title] of [
+      ['always', site.always, '항상 허용', ''], ['chat', site.chat && !site.always, '이 채팅', ''],
+      ['signed-in', site.signedIn, '로그인됨', ''], ['blocked', blocked.length > 0, '차단', blocked.join(' · ')],
+    ] as const) {
+      if (!on) continue;
+      const chip = node('span', 'ag-browser-site-state', text); chip.dataset.state = state; if (title) chip.title = title; states.append(chip);
+    }
+    const name = node('span', 'ag-browser-site-name', site.label); name.title = site.key;
+    head.append(siteMark(site.key, site.label, 'row'), name, states, createChevron('ag-browser-site-caret'));
+    item.append(head);
+    if (!open) return item;
+    const detail = node('div', 'ag-browser-site-detail');
+    const blocks = node('div', 'ag-browser-site-blocks'); blocks.setAttribute('role', 'group'); blocks.setAttribute('aria-label', '차단');
+    blocks.append(node('span', 'ag-browser-site-blocks-label', '차단'));
+    for (const group of BLOCK_GROUPS) {
+      const pressed = group.actions.some(value => site.blockedActions.includes(value));
+      const toggle = node('button', 'ag-browser-site-block', group.label); toggle.type = 'button';
+      toggle.setAttribute('aria-pressed', String(pressed)); toggle.dataset.focusKey = `block:${site.key}:${group.label}`;
+      toggle.disabled = busy || !options.isConnected();
+      toggle.addEventListener('click', () => {
+        const blockedActions = pressed ? site.blockedActions.filter(value => !group.actions.includes(value)) : [...new Set([...site.blockedActions, ...group.actions])];
+        void mutate('policy.update', { operation: 'set-site', origin: site.key, label: site.label, allowedActions: site.allowedActions.filter(value => !blockedActions.includes(value)), blockedActions });
+      });
+      blocks.append(toggle);
+    }
+    const actions = node('div', 'ag-browser-site-actions');
+    if (!site.always) action(actions, '허용', 'sites.allow', { origin: site.key });
+    if (site.always || site.chat) action(actions, '해제', 'sites.revoke', { origin: site.key });
+    if (site.signedIn) action(actions, '로그인 표시 지우기', 'sites.clearSignedIn', { origin: site.key });
+    detail.append(blocks, actions); item.append(detail);
+    return item;
   }
   function restoreFocus(searchCaret: number | null) {
     if (!focusKey) return;
@@ -430,11 +511,11 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const kind = KIND_FILTERS.find(entry => entry.id === accountKind)!;
       const actions: HTMLElement[] = [];
       if (!accountSearch.trim() && kind.id !== 'secrets') {
-        const add = kind.id === 'passwords' ? (localApi ? ['Chrome에서 가져오기', 'browserDownload', openImport] as const : ['비밀번호 추가', 'key', () => accountForm()] as const) : ['계정 연결', 'person', () => accountForm(undefined, true, true)] as const;
+        const add = localApi ? ['Chrome에서 가져오기', 'browserDownload', openImport] as const : ['비밀번호 추가', 'key', () => accountForm()] as const;
         const start = node('button', 'ag-settings-btn'); start.type = 'button'; start.append(createIcon('insert'), node('span', '', add[0])); start.addEventListener('click', add[2]);
         start.disabled = busy || (add[1] === 'browserDownload' ? localBusy : !options.isConnected() || (add[1] === 'key' && !secureStorage)); actions.push(start);
       }
-      workspace.append(emptyState(accountSearch.trim() ? 'search' : kind.icon, accountSearch.trim() ? '검색 결과가 없습니다.' : kind.id === 'sessions' ? '연결된 계정이 없습니다.' : kind.id === 'passwords' ? '저장된 비밀번호가 없습니다.' : kind.id === 'secrets' ? '저장된 비밀 값이 없습니다.' : '저장된 항목이 없습니다.', ...actions));
+      workspace.append(emptyState(accountSearch.trim() ? 'search' : kind.icon, accountSearch.trim() ? '검색 결과가 없습니다.' : kind.id === 'passwords' ? '저장된 비밀번호가 없습니다.' : kind.id === 'secrets' ? '저장된 비밀 값이 없습니다.' : '저장된 항목이 없습니다.', ...actions));
       return;
     }
     const list = node('div', 'ag-browser-account-list'); list.setAttribute('role', 'group'); list.setAttribute('aria-label', KIND_FILTERS.find(entry => entry.id === accountKind)!.label); workspace.append(list);
@@ -449,16 +530,14 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
         copy.append(node('strong', '', item.secret.label), node('span', '', [siteHost(item.secret.origins[0] ?? ''), item.secret.origins.length > 1 ? `+${item.secret.origins.length - 1}` : ''].filter(Boolean).join(' ')));
         choose.append(siteMark(item.secret.origins[0], item.secret.label, 'row'), copy);
         glyphs.append(createIcon('lock')); glyphs.title = SECRET_KIND_LABELS[item.secret.kind];
-        if (item.secret.approved) glyphs.append(createIcon('sparkles'));
-        choose.append(glyphs, node('span', 'ag-sr-only', [SECRET_KIND_LABELS[item.secret.kind], item.secret.approved ? '에이전트 사용 허용됨' : ''].filter(Boolean).join(', ')));
+        choose.append(glyphs, node('span', 'ag-sr-only', [SECRET_KIND_LABELS[item.secret.kind], item.secret.blocked ? '에이전트 사용 안 함' : ''].filter(Boolean).join(', ')));
       } else {
         const account = item.account; choose.dataset.accountId = account.id;
         copy.append(node('strong', '', account.label || siteHost(account.origin)), node('span', '', visibleIdentity(account)));
         const state = presence(account);
         choose.append(siteMark(account.origin, accountProvider(account), 'row', state), copy);
         if (account.hasPassword) glyphs.append(createIcon('key'));
-        if (account.agentReuseApproved) glyphs.append(createIcon('sparkles'));
-        glyphs.title = [state ? sessionLabel(account) : '', account.hasPassword ? '비밀번호 저장됨' : '', account.agentReuseApproved ? '에이전트 사용 허용됨' : ''].filter(Boolean).join(' · ');
+        glyphs.title = [sessionLabel(account), account.hasPassword ? '비밀번호 저장됨' : '', account.agentBlocked ? '에이전트 사용 안 함' : ''].filter(Boolean).join(' · ');
         choose.append(glyphs, node('span', 'ag-sr-only', glyphs.title));
       }
       glyphs.setAttribute('aria-hidden', 'true');
@@ -477,13 +556,13 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     const details = node('section', 'ag-browser-account-detail'); details.dataset.accountId = account.id; details.setAttribute('aria-label', account.label || siteHost(account.origin));
     const connected = options.isConnected(); const state = presence(account);
     const mark = siteMark(account.origin, accountProvider(account), 'head', state); if (state) mark.title = sessionLabel(account);
-    detailHead(details, mark, account.label || siteHost(account.origin), [visibleIdentity(account), state ? sessionLabel(account) : ''],
-      agentSwitch(account.agentReuseApproved, busy || !connected, () => void mutate(account.agentReuseApproved ? 'accounts.revoke' : 'accounts.approve', { accountId: account.id }), `switch:${account.id}`));
+    detailHead(details, mark, account.label || siteHost(account.origin), [visibleIdentity(account), sessionLabel(account)],
+      agentSwitch(!account.agentBlocked, busy || !connected, () => void mutate('accounts.block', { accountId: account.id, blocked: !account.agentBlocked }), `switch:${account.id}`));
     details.append(siteChips(account.origins?.length ? account.origins : [account.origin]));
     const runtime = (status.runtime ?? {}) as Record<string, unknown>; const signInState = runtime.signIn as { accountId?: string } | null | undefined;
     const actions = node('div', 'ag-browser-detail-actions'); details.append(actions);
     const login = iconButton('signIn', '로그인 열기', () => void signIn(account), 'sign-in');
-    login.disabled = busy || !connected || Boolean(signInState) || !account.agentReuseApproved || (account.profileId !== undefined && account.profileId !== 'default'); actions.append(login);
+    login.disabled = busy || !connected || Boolean(signInState) || (account.profileId !== undefined && account.profileId !== 'default'); actions.append(login);
     const passkeys = runtime.passkeys as { supported?: boolean; reason?: string } | undefined;
     if (passkeys) {
       const passkey = iconButton('fingerprint', 'Chrome에서 Mac 패스키 사용', () => void signIn(account, 'mac-passkey'), 'passkey');
@@ -505,12 +584,13 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   }
   function localDetail(account: Account, local: LocalPasswordAccount): HTMLElement {
     const details = node('section', 'ag-browser-account-detail'); details.dataset.accountId = account.id; details.setAttribute('aria-label', account.label || siteHost(account.origin));
-    const approved = local.agentReuseApproved === true;
+    const blocked = local.agentBlocked === true;
     detailHead(details, siteMark(account.origin, accountProvider(account), 'head'), account.label || siteHost(account.origin), [local.username || siteHost(account.origin)],
-      agentSwitch(approved, localBusy, () => void localAction(async () => { await localApi!.approve({ id: account.id, approved: !approved }); await loadLocal(); return ''; }), `switch:${account.id}`));
+      agentSwitch(!blocked, localBusy, () => void localAction(async () => { await localApi!.block({ id: account.id, blocked: !blocked }); await loadLocal(); return ''; }), `switch:${account.id}`));
     details.append(siteChips(local.origins?.length ? local.origins : [local.origin]));
     const actions = node('div', 'ag-browser-detail-actions'); details.append(actions);
-    const source = node('span', 'ag-browser-source'); source.title = '가져온 Chrome 프로필'; source.append(createIcon('browserDownload'), node('span', '', local.sourceProfile || 'Chrome'));
+    const source = node('span', 'ag-browser-source');
+    if (local.source === 'chrome') { source.title = '가져온 Chrome 프로필'; source.append(createIcon('browserDownload'), node('span', '', local.sourceProfile || 'Chrome')); }
     const remove = iconButton('trash', '비밀번호 삭제', () => void confirmDelete(account.label || siteHost(account.origin), undefined, () => localAction(async () => { await localApi!.remove({ id: account.id }); await loadLocal(); return '삭제했습니다.'; })), 'delete');
     remove.classList.add('ag-browser-danger'); remove.disabled = localBusy; actions.append(source, remove);
     return details;
@@ -519,7 +599,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     const details = node('section', 'ag-browser-account-detail'); details.dataset.secretId = secret.id; details.setAttribute('aria-label', secret.label);
     const connected = options.isConnected();
     detailHead(details, siteMark(secret.origins[0], secret.label, 'head'), secret.label, [SECRET_KIND_LABELS[secret.kind], secret.scope === 'chat' ? '이 채팅만' : ''],
-      agentSwitch(secret.approved, busy || !connected, () => void mutate(secret.approved ? 'secrets.revoke' : 'secrets.approve', secret.approved ? { secretId: secret.id } : { secretId: secret.id, scope: secret.scope }), `switch:${secret.id}`));
+      agentSwitch(!secret.blocked, busy || !connected, () => void mutate('secrets.block', { secretId: secret.id, blocked: !secret.blocked }), `switch:${secret.id}`));
     details.append(siteChips(secret.origins));
     const actions = node('div', 'ag-browser-detail-actions'); details.append(actions);
     const used = node('span', 'ag-browser-source'); used.title = '마지막 사용';
@@ -528,15 +608,13 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     remove.classList.add('ag-browser-danger'); remove.disabled = busy || !connected; actions.append(used, remove);
     return details;
   }
-  /** '+' 하나에서 계정 연결·비밀번호 추가·Chrome 가져오기를 고른다. */
+  /** '+' 하나에서 비밀번호 추가 또는 Chrome 가져오기를 고른다. */
   function addMenu(): HTMLElement {
     const root = node('div', 'ag-browser-add');
     const trigger = iconButton('insert', '추가', () => { if (menu.hidden) open(); else close(); }, 'add');
     trigger.classList.add('ag-browser-add-btn'); trigger.setAttribute('aria-haspopup', 'menu'); trigger.setAttribute('aria-expanded', 'false');
     const menu = node('div', 'ag-browser-add-menu'); menu.setAttribute('role', 'menu'); menu.id = `${instanceId}-add-menu`; menu.hidden = true; trigger.setAttribute('aria-controls', menu.id);
-    const entries: Array<{ label: string; icon: SidebarIconName; disabled: boolean; title?: string; run(): void }> = [
-      { label: '계정 연결', icon: 'person', disabled: busy || !options.isConnected(), run: () => accountForm(undefined, true, true) },
-    ];
+    const entries: Array<{ label: string; icon: SidebarIconName; disabled: boolean; title?: string; run(): void }> = [];
     if (!localApi) entries.push({ label: '비밀번호 추가', icon: 'key', disabled: busy || !secureStorage || !options.isConnected(), title: secureStorage ? undefined : '보안 저장소를 사용할 수 없습니다.', run: () => accountForm() });
     else entries.push({ label: 'Chrome에서 가져오기', icon: 'browserDownload', disabled: localBusy, run: openImport });
     const menuItems = entries.map((entry) => {
@@ -650,7 +728,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     retryLocal = importCookies;
     void localAction(async () => {
       const result = await localApi!.importCookies({ profileId, domains: [...cookieChoice] });
-      // 가져온 사이트 세션은 사용자가 고른 것이므로 허브가 사용자 변경으로 격리하지 않게 알린다.
+      // 가져온 사이트는 사용자가 로그인한 사이트다. 허브가 로그인됨으로 표시한다.
       if (result.domains.length && options.isConnected()) await options.request('sessions.imported', { domains: result.domains }).catch(() => undefined);
       cookieSites = null; cookieChoice.clear(); importStep = 'choose'; view = 'list'; focusKey = 'add';
       return `${result.domains.length}개 사이트 가져옴${result.skipped ? ` · ${result.skipped}개 건너뜀` : ''}`;
@@ -686,7 +764,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       ? ((permissionList.value as { always: unknown[] }).always.filter((entry): entry is string => typeof entry === 'string')) : [];
     const [a, p, c, s] = results;
     if (a?.status === 'fulfilled') { const value = a.value as { accounts: Account[]; secureStorageAvailable: boolean }; accounts = value.accounts ?? []; secureStorage = value.secureStorageAvailable === true; }
-    if (p?.status === 'fulfilled') policy = p.value as Policy;
+    if (p?.status === 'fulfilled') sites = readSiteRows(p.value);
     if (c?.status === 'fulfilled') configuration = c.value as Record<string, unknown>;
     if (s?.status === 'fulfilled') status = s.value as Record<string, unknown>;
     message.textContent = results.some(result => result.status === 'rejected') ? '일부 설정을 불러오지 못했습니다. 새로고침으로 다시 확인하세요.' : '';

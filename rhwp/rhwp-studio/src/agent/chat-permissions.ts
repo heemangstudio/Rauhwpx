@@ -1,6 +1,6 @@
 import type {
   ChatPermissionCapability, ChatPermissionOutcome, ChatPermissionRequest, ChatPermissionRequestKind, ChatPermissionScope,
-  SecretKind, SecretMeta,
+  SecretKind, SecretMeta, SiteRequestItem,
 } from './types.ts';
 
 const capabilities: readonly ChatPermissionCapability[] = ['project-edit', 'downloads', 'browser', 'local-execution'];
@@ -13,8 +13,10 @@ export const CHAT_PERMISSION_LABELS: Readonly<Record<ChatPermissionCapability, s
 };
 
 const requestKinds: readonly ChatPermissionRequestKind[] = [
-  'browser-save-account', 'browser-use-account', 'browser-site-access', 'browser-sign-in', 'browser-code', 'secret-save', 'secret-use',
+  'browser-save-account', 'browser-site-access', 'browser-sign-in', 'browser-code', 'secret-save',
 ];
+/** 옛 허브가 다시 보내는 계정·비밀 값 사용 요청. 사이트 사용 카드로 읽는다. */
+const legacySiteKinds = ['browser-use-account', 'secret-use'];
 const secretKinds: readonly SecretKind[] = ['api-key', 'token', 'password', 'other'];
 
 export const SECRET_KIND_LABELS: Readonly<Record<SecretKind, string>> = {
@@ -42,11 +44,34 @@ function text(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= max;
 }
 
+/** 카드에 보일 로그인·비밀 값 한 줄. 값처럼 보이는 필드는 읽지 않는다. */
+function readSiteItems(value: unknown, secret: boolean): SiteRequestItem[] | null {
+  if (!Array.isArray(value)) return null;
+  const items: SiteRequestItem[] = [];
+  for (const entry of value.slice(0, 20)) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const item = entry as Record<string, unknown>;
+    const name = [item['label'], item['username']].find((candidate) => text(candidate, 256)) as string | undefined;
+    if (!text(item['id'], 256) || !name) continue;
+    const detail = text(item['username'], 256) && item['username'] !== name ? item['username'] : undefined;
+    const secretKind = item['kind'] ?? item['secretKind'];
+    items.push({
+      id: item['id'], label: name, ...(detail ? { detail } : {}),
+      ...(secret && secretKinds.includes(secretKind as SecretKind) ? { secretKind: secretKind as SecretKind } : {}),
+      ...(item['blocked'] === true || item['agentBlocked'] === true ? { blocked: true } : {}),
+    });
+  }
+  return items;
+}
+
 export function readChatPermissionRequest(value: unknown): ChatPermissionRequest | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const request = value as Record<string, unknown>;
-  const kind = requestKinds.includes(request['kind'] as ChatPermissionRequestKind) ? request['kind'] as ChatPermissionRequestKind : undefined;
-  const secret = kind === 'secret-save' || kind === 'secret-use';
+  const rawKind = request['kind'];
+  const legacy = typeof rawKind === 'string' && legacySiteKinds.includes(rawKind) ? rawKind : null;
+  const kind = legacy ? 'browser-site-access'
+    : requestKinds.includes(rawKind as ChatPermissionRequestKind) ? rawKind as ChatPermissionRequestKind : undefined;
+  const secret = kind === 'secret-save' || legacy === 'secret-use';
   // 비밀 값 요청은 브라우저 도구로만 쓰인다. 허브가 권한 이름을 빼도 브라우저 요청으로 읽는다.
   const capability = isChatPermissionCapability(request['capability']) ? request['capability']
     : secret && request['capability'] === undefined ? 'browser' : null;
@@ -57,23 +82,47 @@ export function readChatPermissionRequest(value: unknown): ChatPermissionRequest
     || !['claude', 'codex', 'pi'].includes(request['agent'])
     || !capability
     || !text(request['reason'], 1000) || !text(request['createdAt'], 128)) return null;
-  if (kind === 'secret-use' && !text(request['secretId'], 256)) return null;
+  if (legacy === 'secret-use' && !text(request['secretId'], 256)) return null;
   const scopes = Array.isArray(request['scopes']) && request['scopes'].length > 0 && request['scopes'].length <= 2
     && request['scopes'].every(isChatPermissionScope) ? [...new Set(request['scopes'] as ChatPermissionScope[])] : null;
+  const origins = Array.isArray(request['origins']) && request['origins'].length <= 20 && request['origins'].every((entry) => text(entry, 2048))
+    ? request['origins'] as string[] : null;
+  const origin = text(request['origin'], 2048) ? request['origin'] : legacy && origins?.[0] ? origins[0] : null;
+  const siteDomain = [request['siteDomain'], request['site']].find((entry): entry is string => text(entry, 253) && !entry.includes('/'));
+  const site: Partial<ChatPermissionRequest> = {};
+  if (kind === 'browser-site-access') {
+    // 옛 사이트 카드는 계정 하나를 accountId·accountLabel 로, 옛 비밀 값 사용 요청은 비밀 값 하나를 실었다.
+    const logins = readSiteItems(request['logins'], false)
+      ?? (legacy !== 'secret-use' && text(request['accountLabel'], 256)
+        ? [{ id: text(request['accountId'], 256) ? request['accountId'] : 'account', label: request['accountLabel'] }] : []);
+    const legacyKind = secretKinds.includes(request['secretKind'] as SecretKind) ? request['secretKind'] as SecretKind : 'other';
+    const secrets = readSiteItems(request['secrets'], true)
+      ?? (legacy === 'secret-use' ? [{ id: request['secretId'] as string,
+        label: text(request['secretLabel'], 80) ? request['secretLabel'] : SECRET_KIND_LABELS[legacyKind], secretKind: legacyKind }] : []);
+    const blocked = Array.isArray(request['blocked']) ? [...new Set(request['blocked'].filter((entry): entry is string => text(entry, 64)))].slice(0, 12) : [];
+    const rawItem = request['item'] && typeof request['item'] === 'object' ? request['item'] as Record<string, unknown> : {};
+    const item = text(rawItem['accountId'], 256) ? { accountId: rawItem['accountId'] } : text(rawItem['secretId'], 256) ? { secretId: rawItem['secretId'] } : null;
+    if (logins.length) site.logins = logins;
+    if (secrets.length) site.secrets = secrets;
+    if (blocked.length) site.blocked = blocked;
+    if (item) site.item = item;
+  }
   return {
     requestId: request['requestId'], threadId: request['threadId'], documentId: request['documentId'],
     turnId: request['turnId'], agent: request['agent'] as ChatPermissionRequest['agent'],
     capability, reason: request['reason'], createdAt: request['createdAt'],
     ...(kind ? { kind } : {}),
-    ...(text(request['secretId'], 256) ? { secretId: request['secretId'] } : {}),
-    ...(text(request['secretLabel'], 80) ? { secretLabel: request['secretLabel'] } : {}),
-    ...(secretKinds.includes(request['secretKind'] as SecretKind) ? { secretKind: request['secretKind'] as SecretKind } : {}),
-    ...(scopes ? { scopes } : {}),
+    ...(kind === 'secret-save' && text(request['secretId'], 256) ? { secretId: request['secretId'] } : {}),
+    ...(kind === 'secret-save' && text(request['secretLabel'], 80) ? { secretLabel: request['secretLabel'] } : {}),
+    ...(kind === 'secret-save' && secretKinds.includes(request['secretKind'] as SecretKind) ? { secretKind: request['secretKind'] as SecretKind } : {}),
+    ...(scopes ? { scopes } : legacy ? { scopes: ['chat', 'always'] as ChatPermissionScope[] } : {}),
     ...(text(request['tabId'], 160) ? { tabId: request['tabId'] } : {}),
-    ...(text(request['origin'], 2048) ? { origin: request['origin'] } : {}),
-    ...(text(request['accountId'], 256) ? { accountId: request['accountId'] } : {}),
-    ...(text(request['accountLabel'], 256) ? { accountLabel: request['accountLabel'] } : {}),
-    ...(Array.isArray(request['origins']) && request['origins'].length <= 20 && request['origins'].every((value) => text(value, 2048)) ? { origins: request['origins'] as string[] } : {}),
+    ...(origin ? { origin } : {}),
+    ...(origins ? { origins } : {}),
+    ...(kind === 'browser-site-access' && siteDomain ? { siteDomain } : {}),
+    ...(kind !== 'browser-site-access' && text(request['accountId'], 256) ? { accountId: request['accountId'] } : {}),
+    ...(kind !== 'browser-site-access' && text(request['accountLabel'], 256) ? { accountLabel: request['accountLabel'] } : {}),
+    ...site,
   };
 }
 
@@ -116,7 +165,7 @@ export function readSecretMeta(value: unknown): SecretMeta | null {
     || !isChatPermissionScope(secret['scope']) || !text(secret['createdAt'], 128)) return null;
   return {
     id: secret['id'], label: secret['label'], kind: secret['kind'] as SecretKind,
-    origins: [...secret['origins'] as string[]], scope: secret['scope'], approved: secret['approved'] === true,
+    origins: [...secret['origins'] as string[]], scope: secret['scope'], blocked: secret['blocked'] === true,
     createdAt: secret['createdAt'], lastUsedAt: text(secret['lastUsedAt'], 128) ? secret['lastUsedAt'] : null,
   };
 }

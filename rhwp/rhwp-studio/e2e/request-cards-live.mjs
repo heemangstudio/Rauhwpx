@@ -343,7 +343,7 @@ try {
   provider = await attachProvider();
   const status = must(await provider.call('browser_status'), 'status after save');
   const listed = status.secrets?.find((secret) => secret.label === 'Key console API key');
-  assert.ok(listed && listed.approved === true && listed.origins[0] === siteA.origin, `browser_status lists the secret: ${JSON.stringify(status.secrets)}`);
+  assert.ok(listed && listed.blocked !== true && listed.origins[0] === siteA.origin, `browser_status lists the secret: ${JSON.stringify(status.secrets)}`);
   assert.equal(JSON.stringify(status).includes(secretValue), false);
   assert.equal(JSON.stringify(status).includes('faviconUrl'), false, 'agent status carries no favicon');
   const meta = (await human('secrets.list')).secrets.find((secret) => secret.id === listed.id);
@@ -496,7 +496,7 @@ try {
   assert.deepEqual((await human('permissions.list')).always, ['local-execution']);
   await waitContinuation('agent resumes after the grant', 'granted local-execution');
   fs.writeFileSync(finishTurnPath, ''); await waitIdle('continuation ends'); fs.rmSync(finishTurnPath, { force: true });
-  await openBrowserSettings('승인된 권한');
+  await openBrowserSettings('권한');
   await page.waitForFunction(() => document.querySelector('.ag-browser-settings-body')?.textContent?.includes('항상 허용한 권한'), { timeout: 10_000 });
   await shot('settings-always-permissions-light', '.ag-browser-settings');
   await closeSettings();
@@ -508,7 +508,7 @@ try {
   const fresh = await eventually('new chat starts with the always grant', hubSession, (value) => value.threadId && value.threadId !== oldThread && value.chatPermissionGrants?.includes('local-execution'));
   const freshStudioGrants = await page.evaluate(() => window.__agentBridge.getChatPermissionGrants());
   await endTurn('fresh chat turn ends');
-  await openBrowserSettings('승인된 권한');
+  await openBrowserSettings('권한');
   await page.waitForFunction(() => document.querySelector('.ag-browser-settings-body')?.textContent?.includes('항상 허용한 권한'));
   await page.locator('.ag-browser-settings-body button::-p-text(해제)').click();
   await eventually('해제 removes the always grant', () => human('permissions.list'), (value) => value.always.length === 0);
