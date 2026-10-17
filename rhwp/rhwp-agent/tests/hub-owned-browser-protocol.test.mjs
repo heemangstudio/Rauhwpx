@@ -28,7 +28,7 @@ async function request(socket, requestId, action, args = {}) {
   return response;
 }
 
-test('authenticated owner browser channels work without a document and keep secret submission out of ordinary messages', { timeout: 35_000 }, async (t) => {
+for (const native of [false, true]) test(`owner browser channels bind approvals to ${native ? 'native' : 'managed'} runtime without exposing secrets`, { timeout: 35_000 }, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'owned-browser-hub-'));
   const child = spawn(process.execPath, ['server.mjs'], {
     cwd: new URL('..', import.meta.url),
@@ -36,8 +36,14 @@ test('authenticated owner browser channels work without a document and keep secr
       RHWP_WORK_DIR: path.join(root, 'work'), RHWP_REFERENCES_DIR: path.join(root, 'references'),
       RHWP_PROJECTS_DIR: path.join(root, 'projects'), RHWP_TEMPLATES_DIR: path.join(root, 'templates'),
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(root, 'instructions'), RHWP_PI_DIR: path.join(root, 'pi'),
-      RHWP_BROWSER_DATA_DIR: path.join(root, 'browser'), RHWP_BROWSER_OS_KEYRING: '0', RHWP_BROWSER_HOST: '', RHWP_SECRET_BROKER: '' },
-    stdio: ['ignore', 'pipe', 'pipe'],
+      RHWP_BROWSER_DATA_DIR: path.join(root, 'browser'), RHWP_BROWSER_OS_KEYRING: '0', RHWP_BROWSER_HOST: native ? 'ipc' : '', RHWP_SECRET_BROKER: '' },
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  child.on('message', message => {
+    if (message?.type === 'rhwp-browser-request') {
+      assert.equal(message.operation, 'password-accounts');
+      child.send({ type: 'rhwp-browser-response', id: message.id, ok: true, value: { accounts: [] } });
+    }
   });
   let stderr = '';
   child.stderr.on('data', (bytes) => { stderr += bytes.toString(); });
@@ -79,6 +85,7 @@ test('authenticated owner browser channels work without a document and keep secr
   assert.equal((await request(socket, 'policy-after', 'policy.list')).result.defaults.download, false);
   const persistedResponse = await request(socket, 'secure-wrong-request', 'accounts.request', { origin: 'https://example.com', label: 'Research account', tabId: 'settings-tab', reason: 'Read saved references' });
   assert.equal(typeof persistedResponse.result.requestId, 'string');
+  assert.equal(persistedResponse.result.profileId, native ? 'native' : 'default');
   const submit = receive(socket, (message) => message.type === 'browser-response' && message.requestId === 'secure');
   socket.send(JSON.stringify({ v: 5, type: 'browser-account-submit', requestId: 'secure', accountRequestId: persistedResponse.result.requestId,
     username: 'private-user', password: secret, remember: true, consent: { save: true, use: true } }));
@@ -92,4 +99,20 @@ test('authenticated owner browser channels work without a document and keep secr
   const inbox = await fetch(`http://127.0.0.1:${ready.port}/browser-downloads?sessionId=browser-owner`, { headers: { Authorization: `Bearer ${capabilities.reference}` } });
   assert.equal(inbox.status, 200);
   assert.deepEqual((await inbox.json()).downloads, []);
+  const retained = await request(socket, 'retained-request', 'accounts.request', { origin: 'https://example.com', profileId: 'default', intent: 'use' });
+  const accepted = await request(socket, 'retained-approve', 'accounts.approve', { requestId: retained.result.requestId });
+  assert.equal(accepted.result.account.profileId, 'default');
+  const listed = (await request(socket, 'retained-list', 'accounts.list')).result.accounts.find(row => row.id === accepted.result.account.id);
+  assert.equal(listed.agentReuseApproved, !native);
+  assert.equal(listed.sessionApprovalRequired, native);
+  const active = await request(socket, 'active-approve', 'accounts.approve', { accountId: listed.id });
+  assert.equal(active.result.account.id, listed.id);
+  assert.equal(active.result.account.profileId, native ? 'native' : 'default');
+  assert.equal(active.result.account.agentReuseApproved, true);
+  if (native) {
+    const status = await request(socket, 'native-status', 'status');
+    assert.equal(status.result.readiness.installed, true);
+    assert.equal(status.result.readiness.state, 'ready');
+  }
+
 });

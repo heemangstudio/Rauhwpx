@@ -80,6 +80,10 @@ try {
   service = createOwnedBrowserService({ dataDir, credentialBroker, policy: { assertAllowed: async () => {} }, nativeAdapter: adapter, workspaceTargets: [origin], autoInstall: false, runtimeFactory: startOwnedBrowserRuntime });
   report.stage = 'opening';
   const actor = { threadId: 'chat-one', agentId: 'agent-one', sessionId: 'editor', projectId: 'project-one' };
+  const idle = await service.request(actor, 'status');
+  assert.equal(idle.runtime.state, 'idle');
+  assert.equal(idle.readiness.installed, true);
+  assert.equal(idle.readiness.state, 'ready');
   const opened = await service.request(actor, 'open', { url: origin });
   report.stage = 'opened';
   const tabId = opened.tab.tabId;
@@ -259,11 +263,20 @@ try {
   report.protectedReload = true;
   // The secure account form stores this account in the owner vault, never the Chrome-import vault.
   const ownerActor = { ...actor, isHuman: true };
-  const registration = await credentialBroker.requestAccount({ actor: ownerActor, origin, origins: [origin], profileId: 'native', label: 'Owner-vault fixture' });
+  const registration = await credentialBroker.requestAccount({ actor: ownerActor, origin, origins: [origin], profileId: 'default', label: 'Owner-vault fixture' });
   const { account: brokerAccount } = await credentialBroker.submit({ actor: ownerActor, requestId: registration.requestId,
     approval: { approved: true, requestId: registration.requestId, save: true, use: true },
-    account: { origin, origins: [origin], label: 'Owner-vault fixture', profileId: 'native' }, username: 'owner-vault-user', password: secret, remember: true });
+    account: { origin, origins: [origin], label: 'Owner-vault fixture', profileId: 'default' }, username: 'owner-vault-user', password: secret, remember: true });
   assert.equal((await vault.list()).accounts.some(row => row.id === brokerAccount.id), false);
+  await credentialBroker.registerSessionOrigins({ profileId: 'native', origins: [origin], source: 'human' });
+  await assert.rejects(credentialBroker.assertBrowserAccess({ actor, url: origin, tab: { profileId: 'native' } }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  const nativeApproval = await credentialBroker.requestAccount({ actor, accountId: brokerAccount.id, profileId: 'native' });
+  const migrated = await credentialBroker.approveAccount({ actor: ownerActor, requestId: nativeApproval.requestId,
+    approval: { approved: true, requestId: nativeApproval.requestId, use: true } });
+  assert.equal(migrated.account.id, brokerAccount.id);
+  assert.equal(migrated.account.profileId, 'native');
+  assert.equal(migrated.account.sessionApprovalRequired, false);
+
   const nativeObservation = await service.request(actor, 'snapshot', { tabId });
   const userField = nativeObservation.snapshot.elements.find(row => row.tag === 'input' && row.inputType !== 'password');
   const secretField = nativeObservation.snapshot.elements.find(row => row.inputType === 'password');

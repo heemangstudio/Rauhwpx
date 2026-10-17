@@ -491,3 +491,25 @@ test('tab sleep preferences persist and reject invalid or agent configuration ch
   await broker.updateConfiguration({ actor: owner, performance: { idleMinutes: 0 } });
   assert.equal((await broker.getConfiguration()).performance.idleMinutes, 0);
 });
+
+
+test('owner approval moves a legacy saved account to the requested native session without losing its password', async t => {
+  const { broker, secretStore } = await fixture(t);
+  const account = await savedAccount(broker);
+  await broker.registerSessionOrigins({ profileId: 'native', origins: account.origins, source: 'human' });
+  const access = { actor: agent, url: account.origin, tab: { profileId: 'native' } };
+  await assert.rejects(broker.assertBrowserAccess(access), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  const request = await broker.requestAccount({ actor: agent, accountId: account.id, profileId: 'native' });
+  await assert.rejects(broker.assertBrowserAccess(access), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  const approved = await broker.approveAccount({ actor: owner, requestId: request.requestId,
+    approval: { approved: true, requestId: request.requestId, use: true } });
+  assert.equal(approved.account.id, account.id);
+  assert.equal(approved.account.profileId, 'native');
+  assert.equal(approved.account.agentReuseApproved, true);
+  assert.equal(approved.account.sessionApprovalRequired, false);
+  assert.ok(await secretStore.get(`browser.password.${account.id}`));
+  await broker.assertBrowserAccess(access);
+  await assert.rejects(broker.requestAccount({ actor: agent, accountId: account.id, profileId: 'native', origins: [account.origin, 'https://unapproved.example'] }), { code: 'BROWSER_ACCOUNT_ORIGIN_MISMATCH' });
+  await broker.revokeAccount({ actor: owner, accountId: account.id });
+  await assert.rejects(broker.assertBrowserAccess(access), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+});

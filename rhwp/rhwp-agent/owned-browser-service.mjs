@@ -1043,7 +1043,7 @@ export function createOwnedBrowserService(options = {}) {
     }
     if (!actor.isHuman && action !== 'status' && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in. Wait for account confirmation.', true);
     if (runtime && !actor.isHuman) await observeHumanSessions();
-    if (action === 'status') { passkeys = await inspectMacPasskeyCapability(); return { ...(await inventory(actor)), readiness: state === 'ready' ? { state: 'ready', installed: true, passkeys } : await inspectOwnedBrowserRuntime({ dataDir }) }; }
+    if (action === 'status') { passkeys = await inspectMacPasskeyCapability(); return { ...(await inventory(actor)), readiness: runtimeMode === 'native' || state === 'ready' ? { state: 'ready', installed: true, passkeys } : await inspectOwnedBrowserRuntime({ dataDir }) }; }
     if (action === 'install') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Browser installation is managed from Browser settings.');
       installPromise ??= installOwnedBrowserRuntime({ dataDir, onProgress: (progress) => emit('owned_browser_runtime', { runtime: { ...runtimeInfo(), ...progress } }) }).finally(() => { installPromise = null; });
@@ -1330,7 +1330,7 @@ export function createOwnedBrowserService(options = {}) {
   };
   const request = performRequest;
   return {
-    request, inventory, sweepSleepingTabs,
+    request, inventory, sweepSleepingTabs, profileId,
     configureSleep({ idleMinutes = 15 } = {}) {
       if (!Number.isInteger(idleMinutes) || idleMinutes < 0 || idleMinutes > 1440) throw error('BROWSER_CONFIGURATION_INVALID', 'Choose an idle timeout between 0 and 1440 minutes.');
       idleSleepMs = idleMinutes * 60_000;

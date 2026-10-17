@@ -768,6 +768,12 @@ function containsBrowserSecret(value) {
   return Object.entries(value).some(([key, child]) => /^(?:password|passphrase|secret|cookie|cookies|authorization|token|credentials)$/i.test(key) || containsBrowserSecret(child));
 }
 
+async function browserAccountsForCurrentProfile() {
+  const result = await credentialBroker.listAccounts();
+  return { ...result, accounts: result.accounts.map(account => account.profileId === ownedBrowser.profileId() ? account
+    : { ...account, agentReuseApproved: false, sessionApprovalRequired: true }) };
+}
+
 async function handleBrowserRequest(record, sock, msg) {
   const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
   try {
@@ -787,8 +793,8 @@ async function handleBrowserRequest(record, sock, msg) {
       }
       case 'policy.list': result = await browserPolicy.list(); break;
       case 'policy.update': result = await browserPolicy.update({ ...args, actor }); break;
-      case 'accounts.list': result = await credentialBroker.listAccounts(); break;
-      case 'accounts.request': result = await credentialBroker.requestAccount({ ...args, actor }); break;
+      case 'accounts.list': result = await browserAccountsForCurrentProfile(); break;
+      case 'accounts.request': result = await credentialBroker.requestAccount({ profileId: ownedBrowser.profileId(), ...args, actor }); break;
       case 'accounts.approve': {
         let approval;
         if (args.requestId) {
@@ -796,7 +802,7 @@ async function handleBrowserRequest(record, sock, msg) {
           assertBrowserAccountScope(pending, actor);
           approval = Object.freeze({ approved: true, requestId: args.requestId, use: true });
         }
-        result = await credentialBroker.approveAccount({ ...args, actor, approval });
+        result = await credentialBroker.approveAccount({ profileId: ownedBrowser.profileId(), ...args, actor, approval });
         if (args.requestId) settleBrowserAccountRequest(args.requestId);
         break;
       }
@@ -6541,13 +6547,13 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             if (actor.agentId !== `${actor.threadId}:root`) {
               throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request website account access');
             }
-            const request = await credentialBroker.requestAccount({ actor, ...args });
+            const request = await credentialBroker.requestAccount({ profileId: ownedBrowser.profileId(), actor, ...args });
             publishBrowserAccountRequest(record, request);
             return { pending: true, requestId: request.requestId, origin: request.origin };
           }
           const result = browserMcpResult(await ownedBrowser.request(actor, tool.slice('browser_'.length).replaceAll('_', '-'), args));
           if (tool === 'browser_status') {
-            const accounts = await credentialBroker.listAccounts();
+            const accounts = await browserAccountsForCurrentProfile();
             const nativeAccounts = result.accounts ?? [];
             result.accounts = nativeAccounts.concat(actor.agentId === `${actor.threadId}:root` ? accounts.accounts
               : accounts.accounts.filter((account) => account.agentReuseApproved));

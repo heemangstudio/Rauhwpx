@@ -145,7 +145,7 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     const normalizedOrigin = browserOrigin(origin ?? account?.origin);
     const allowedOrigins = validOrigins(origins ?? account?.origins ?? [normalizedOrigin]);
     if (!allowedOrigins.includes(normalizedOrigin)) throw failure('BROWSER_ACCOUNT_INVALID', 'The sign-in origin must be included in the account origins.');
-    if (account && !actor.isHuman && (account.profileId !== profileId || allowedOrigins.some((value) => !account.origins.includes(value)))) {
+    if (account && !actor.isHuman && allowedOrigins.some((value) => !account.origins.includes(value))) {
       throw failure('BROWSER_ACCOUNT_ORIGIN_MISMATCH', 'An existing account approval cannot be extended by an agent.');
     }
     if (requests.size >= MAX_PENDING) throw failure('BROWSER_ACCOUNT_REQUEST_LIMIT', 'Too many website account requests are pending.');
@@ -239,12 +239,13 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
       return { account: safeAccount };
     });
   }
-  async function approveAccount({ actor, requestId, accountId, approval, account: submitted = {} } = {}) {
+  async function approveAccount({ actor, requestId, accountId, approval, account: submitted = {}, profileId } = {}) {
     human(actor);
     return serialized(async () => {
       let account;
       if (requestId) {
         const request = consumeRequest(requestId);
+        profileId = request.profileId;
         approvalProof(approval, request, actor, false);
         if (approval.use !== true || (accountId && request.accountId !== accountId)) throw failure('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'Approve this exact saved account before agent use.');
         if (request.accountId) account = findAccount(request.accountId);
@@ -263,7 +264,10 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
         requests.delete(requestId);
       } else account = findAccount(accountId);
       invalidateAccount(account.id);
-      const acknowledgedAccount = { ...account, sessionVersion: sessionVersion(account) };
+      // Human approval acknowledges the session in the profile named by this request.
+      // Preserve the account ID so an old default-profile registration keeps its password.
+      const target = { ...account, profileId: profileId ?? account.profileId };
+      const acknowledgedAccount = { ...target, sessionVersion: sessionVersion(target) };
       const next = { ...state, accounts: state.accounts.map((entry) => entry.id === account.id ? acknowledgedAccount : entry) };
       await writeBrowserJson(filePath, next); state = next;
       account = acknowledgedAccount;
