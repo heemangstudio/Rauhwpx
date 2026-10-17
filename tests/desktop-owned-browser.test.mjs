@@ -47,7 +47,7 @@ test('native hidden guests wake only during scoped actions and preserve forms an
     assert.equal(report.globalBrowser.pageRetained, true);
     assert.equal(report.globalBrowser.agentAccessible, true);
     assert.deepEqual(report.sleep, { rendererReleased: true, formProtected: true, disabledRespected: true, sameTabWoke: true });
-    assert.deepEqual(report.control, { busyBlocked: true, idleShared: true, heldHuman: true, heldAutomationRejected: true, returnedBlocked: true });
+    assert.deepEqual(report.control, { sharedInput: true, previewLocked: true, heldHuman: true, heldAutomationRejected: true, returnedLocked: true });
     assert.ok(report.idleTrials.every(trial => trial.nativeHidden.frames === 0));
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
@@ -80,11 +80,8 @@ test('real native guests retain form state across dock, float, popout and hub re
   assert.equal(report.presentation.navigations, 0);
   assert.equal(report.popoutClosePreservesPage, true);
   assert.equal(report.floatingAboveSidebar, true);
-  assert.equal(report.floatingPresentation.humanInput, true);
-  assert.equal(report.floatingPresentation.moveResizeMatchesViewport, true);
-  assert.equal(report.floatingPresentation.hiddenCapture, true);
-  assert.equal(report.floatingPresentation.hidePreservesPage, true);
-  assert.equal(report.floatingPresentation.dockRestoresPage, true);
+  assert.deepEqual(report.floatingPresentation, { inOwnerWindow: true, moveResizeMatchesViewport: true, focusSurvivesGeometry: true, humanInput: true,
+    modeSwitchKeepsView: true, hidePreservesPage: true, hiddenCapture: true, dockRestoresPage: true });
   assert.equal(report.hubRestart.retainedForm, true);
   assert.equal(report.sharedAuthentication, true);
   assert.equal(report.routeInterception, true);

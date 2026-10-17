@@ -89,7 +89,6 @@ const browserActionFailure = (failure) => {
   if (failure?.name === 'TimeoutError' || /Timeout \d+ms exceeded/.test(message)) return error('BROWSER_ACTION_TIMEOUT', `${reason || 'The browser action timed out.'} Take a new snapshot before retrying.`, true);
   return error('BROWSER_ACTION_FAILED', `${reason || 'The browser action did not complete.'} Observe the current page before retrying.`, true);
 };
-const userInControl = () => error('BROWSER_USER_IN_CONTROL', 'The user is controlling this tab; wait or ask the user to return control.');
 const abortable = (promise, signal) => !signal ? promise : new Promise((resolve, reject) => {
   if (signal.aborted) { promise.catch(() => {}); reject(signal.reason); return; }
   const stop = () => reject(signal.reason);
@@ -274,11 +273,11 @@ export function createOwnedBrowserService(options = {}) {
   const limits = { maxTabs: options.maxTabs ?? 12, maxTabsPerAgent: options.maxTabsPerAgent ?? 3, maxDownloadBytes: options.maxDownloadBytes ?? 100 * 1024 * 1024, maxFrameBytes: options.maxFrameBytes ?? 5 * 1024 * 1024 };
 
   const emit = (type, payload) => { try { onEvent({ type, ...payload }); } catch {} };
-  // 사용자 보류(hold)는 범위에서 나온 정책 소유자(controller.owner)와 별개다. 에이전트 쓰기를 막고, 보류 중 페이지 요청은 사용자의 것으로 본다(pageActor).
-  const userHolds = (tab) => tab.hold?.human === true;
-  const nativeControl = (tab) => ({ targetId: tab.nativeTargetId, human: tab.hold?.human !== false, held: userHolds(tab) });
+  // 사용자가 직접 조작을 가져간 탭(controller.held). 에이전트 쓰기를 막고, 그동안의 페이지 요청은 사용자의 것으로 본다(pageActor).
+  const userHolds = (tab) => tab.controller.held === true;
+  const nativeControl = (tab) => ({ targetId: tab.nativeTargetId, human: true, held: userHolds(tab) });
   const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
-  const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: userHolds(tab) ? { ...tab.controller, held: true } : { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null }, protectedFor(tab));
+  const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null }, protectedFor(tab));
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   // 사이트 아이콘은 사용자 화면용 이벤트와 목록에만 붙인다. 에이전트 결과·browser_status·tabs.json은 descriptor만 쓴다.
   const faviconFor = (tab) => tab.snapshot?.passwordProtected || tab.passwordShielded ? undefined : favicons.peek(faviconOrigin(tab.page?.url?.() ?? tab.url, isWorkspace)) ?? undefined;
@@ -434,6 +433,8 @@ export function createOwnedBrowserService(options = {}) {
   };
   const assertController = (actor, tab) => {
     if (actor.isHuman && tab.scope !== 'global' && actor.sessionId && tab.sessionId && actor.sessionId !== tab.sessionId) throw error('BROWSER_CONTROL_REQUIRED', 'This browser tab belongs to another editor window.');
+    // 사용자가 직접 조작을 가져간 탭은 돌려받을 때까지 에이전트의 페이지 변경을 기다리게 하지 않고 바로 거절한다.
+    if (!actor.isHuman && tab.controller.held) throw error('BROWSER_USER_CONTROL', 'The user is controlling this tab. Wait for them to return control, or continue without it.');
   };
   const enqueue = (tab, operation) => {
     const result = tab.queue.catch(() => {}).then(operation);
@@ -455,7 +456,7 @@ export function createOwnedBrowserService(options = {}) {
   // 페이지가 스스로 보내는 요청의 주체. 사용자가 잡았거나 화면에서 직접 누른 탭의 요청은 사용자의 것이다.
   // 에이전트가 다음 조작을 시작하면 humanDriven 이 풀려 다시 에이전트 정책을 따른다.
   const pageActor = (tab, { ignoreActive = false } = {}) => (!ignoreActive && tab.activeActor) || (tab.controller.owner === 'human' || userHolds(tab) || tab.humanDriven
-    ? { ...actorForTab(tab), isHuman: true, clientId: tab.controller.clientId ?? tab.hold?.clientId ?? tab.sessionId } : actorForTab(tab));
+    ? { ...actorForTab(tab), isHuman: true, clientId: tab.controller.clientId ?? tab.sessionId } : actorForTab(tab));
   const onDownload = async (tab, download) => {
     const actor = Object.freeze(pageActor(tab));
     const target = Object.freeze({ ...descriptor(tab), taskId: tab.taskId });
@@ -691,7 +692,7 @@ export function createOwnedBrowserService(options = {}) {
           if (pageTabs.has(page) || page.isClosed()) return;
           if (!parent || tabs.size >= limits.maxTabs) { await page.close(); return; }
           // Pages created by popup scripts never gain another agent's binding.
-          const tab = makeTab({ ...actorForTab(parent), scope: parent.scope }); tab.controller = { ...parent.controller }; tab.hold = parent.hold; tab.humanDriven = parent.humanDriven; tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab);
+          const tab = makeTab({ ...actorForTab(parent), scope: parent.scope }); tab.controller = { ...parent.controller }; tab.humanDriven = parent.humanDriven; tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab);
           try { await attach(tab, page); }
           catch (failure) {
             // 인증 보조 창은 CDP 바인딩이 끝나기 전에 스스로 닫힐 수 있다.
@@ -720,7 +721,7 @@ export function createOwnedBrowserService(options = {}) {
             finally { await session.detach().catch(() => {}); }
             const native = nativeInventory.find((tab) => tab.nativeTargetId === targetId);
             const retained = tabs.get(native?.tabId) ?? [...tabs.values()].find((tab) => tab.nativeTargetId === targetId);
-            if (retained) { retained.controller = { owner: retained.scope === 'global' ? 'human' : 'agent' }; retained.hold = null; retained.humanDriven = false; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); retained.restorePending = false; publish(retained); }
+            if (retained) { retained.controller = { owner: retained.scope === 'global' ? 'human' : 'agent' }; retained.humanDriven = false; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); retained.restorePending = false; publish(retained); }
             else unclaimed.push({ page, native });
           }
           // 허브 연결이 끊긴 동안 열린 팝업은 'page' 이벤트 없이 기존 페이지로 나타난다.
@@ -1515,7 +1516,7 @@ export function createOwnedBrowserService(options = {}) {
         clearInterval(checkpointTimer);
         if (runtime) { await saveCheckpoint().catch(() => {}); await runtime.close(); runtime = null; }
         await credentialBroker.deleteCheckpoint?.({ profileId: 'default' });
-        for (const tab of tabs.values()) { tab.page = null; tab.status = 'disconnected'; tab.controllerEpoch++; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' }; tab.hold = null; invalidate(tab); }
+        for (const tab of tabs.values()) { tab.page = null; tab.status = 'disconnected'; tab.controllerEpoch++; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' }; invalidate(tab); }
         runtimeMode = 'managed'; state = 'sign-in'; signInAccountId = account.id;
         const start = options.signInFactory ?? startOwnedBrowserSignIn;
         signIn = await start({ dataDir, url, authenticationMethod: args.authenticationMethod, autoInstall: options.autoInstall !== false, onExit: () => emit('owned_browser_runtime', { runtime: runtimeInfo() }) });
@@ -1603,7 +1604,7 @@ export function createOwnedBrowserService(options = {}) {
       publish(tab); await persist(); return !actor.isHuman && challengeFor(tab) ? challengeResult(action, tab) : { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab) };
     }
     const tab = ownedTab(actor, args.tabId);
-    // 사용자가 잡은 탭의 대화상자는 사용자의 것이다.
+    // 사용자가 조작 중인 탭의 대화상자는 에이전트 읽기로 닫지 않는다.
     if (!actor.isHuman && !userHolds(tab)) await dismissPendingDialog(tab);
     tab.lastActivityAt = Date.now();
     if (tab.sleeping && !['close', 'reconnect', 'sleep'].includes(action)) await wakeTab(actor, tab);
@@ -1672,11 +1673,15 @@ export function createOwnedBrowserService(options = {}) {
     }
     if (action === 'control') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the user can transfer browser control.');
+      if (args.owner !== undefined && args.owner !== 'human' && args.owner !== 'agent') throw error('BROWSER_CONTROL_INVALID', 'Choose human or agent control.');
+      assertController(actor, tab);
       epochs(tab, args);
-      // 보류는 즉시 걸어 대기 중인 에이전트 쓰기를 막고, 실행 중인 작업은 끝난 뒤 넘겨받는다.
+      // 조작권은 사용자만 옮긴다. 가져가면 held로 에이전트의 페이지 변경을 바로 막고, 돌려주면 탭 범위의 기본 소유로 돌아간다.
+      // 실행 중인 에이전트 작업은 끝난 뒤 넘겨받는다.
+      const held = args.owner === undefined ? userHolds(tab) : args.owner === 'human';
       const epoch = ++tab.controllerEpoch;
-      tab.hold = { human: args.owner !== 'agent', clientId: actor.clientId };
-      if (args.owner === 'agent') tab.humanDriven = false;
+      tab.controller = held ? { owner: 'human', held: true } : { owner: tab.scope === 'global' ? 'human' : 'agent' };
+      if (!held) tab.humanDriven = false;
       credentialBroker?.invalidateTab?.(tab.tabId);
       publish(tab);
       // Invalidate queued agent input immediately, then drain before confirming the transfer.
@@ -1688,10 +1693,9 @@ export function createOwnedBrowserService(options = {}) {
     const mutating = MUTATIONS.has(action);
     // 편집기의 탭 닫기는 페이지 입력 조작권을 넘겨받지 않아도 실행한다.
     const requiresControl = mutating && !(action === 'close' && actor.isHuman);
-    const blockedByUser = () => requiresControl && !actor.isHuman && userHolds(tab);
-    if (blockedByUser()) throw userInControl();
-    epochs(tab, args, mutating);
+    // 사용자가 잡은 탭은 에포크보다 먼저 확인해 에이전트 변경을 바로 거절한다(assertController).
     if (requiresControl) assertController(actor, tab);
+    epochs(tab, args, mutating);
     // 사용자가 잡은 탭의 에이전트 읽기는 대기열 밖에서 관찰만 한다. 사용자 입력을 기다리게 하지 않는다.
     const observeOnly = !actor.isHuman && !mutating && userHolds(tab);
     const queuedControlEpoch = tab.controllerEpoch;
@@ -1701,9 +1705,8 @@ export function createOwnedBrowserService(options = {}) {
     let waitTimer;
     const run = async () => {
       signal?.throwIfAborted();
-      if (blockedByUser()) throw userInControl();
-      epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
+      epochs(tab, args, mutating);
       if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Browser cleanup invalidated the pending action.');
       // 비밀번호 칸과 일회용 코드 칸은 사이트 사용보다 먼저 알린다. 둘 다 권한이 아니라 입력 경로의 문제다.
       if (!actor.isHuman && action === 'type') await assertTypingTarget(tab, args);
@@ -1712,9 +1715,8 @@ export function createOwnedBrowserService(options = {}) {
       if (!actor.isHuman && challengeFor(tab) && (mutating && action !== 'close' && !(action === 'navigate' && args.url && !googleResearchURL(args.url)))) return challengeResult(action, tab);
       if (action === 'press') assertAgentKey(actor, args.key);
       if (!actor.isHuman && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in.', true);
-      if (blockedByUser()) throw userInControl();
-      epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
+      epochs(tab, args, mutating);
       if (!actor.isHuman && SETTLING.has(action)) {
         if (await raisesChange(tab, action, args)) await assertPolicy(actor, action, requirePage(tab).url(), tab, { intent: 'website-change' });
       }
@@ -1734,7 +1736,7 @@ export function createOwnedBrowserService(options = {}) {
         const adapter = selectedAdapter();
         const activity = adapter?.activity && action !== 'close' && !observeOnly ? {
           targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId,
-          chatId: tab.threadId, generation: runtime.nativeGeneration, token: id('activity'), agent: !actor.isHuman,
+          chatId: tab.threadId, generation: runtime.nativeGeneration, token: id('activity'),
         } : null;
         let value; let renewal;
         try {
@@ -1824,14 +1826,13 @@ export function createOwnedBrowserService(options = {}) {
     request, inventory, sweepSleepingTabs,
     /** 허브만 부른다. resolve 는 입력 직전에 값을 돌려주고, origins 는 비밀의 사이트, item 은 정책이 볼 비밀(끔 여부 포함)이다. */
     fillSecret: (actor, args, { origins, resolve, item }) => performRequest(actor, 'fill-secret', { ...args, [SECRET_FILL]: { origins: [...origins], resolve, item } }),
-    /** 새 사용자 턴은 같은 창이 잡았던 탭을 에이전트와 공유 상태로 되돌린다. tabId 를 주면 그 탭만 돌려준다. */
-    async releaseHolds(actor, { tabId } = {}) {
-      for (const tab of tabs.values()) {
-        if (!tab.hold || tab.hold.clientId !== actor?.clientId || (tabId && tab.tabId !== tabId)) continue;
-        tab.hold = null; tab.controllerEpoch++;
-        if (tab.page && !tab.page.isClosed()) await selectedAdapter()?.control?.(nativeControl(tab)).catch(() => {});
-        publish(tab);
-      }
+    /** 사용자에게 넘긴 로그인·코드 입력이 끝났다. 사용자가 잡고 있던 그 탭을 에이전트에게 돌려준다. */
+    async returnControl({ tabId } = {}) {
+      const tab = tabs.get(tabId);
+      if (!tab || !userHolds(tab)) return;
+      tab.controllerEpoch++; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' }; tab.humanDriven = false;
+      if (tab.page && !tab.page.isClosed()) await selectedAdapter()?.control?.(nativeControl(tab)).catch(() => {});
+      publish(tab);
     },
     profileId,
     /** 쿠키가 있는 사이트와 저장된 로그인 사이트를 다시 읽는다(로그인 표시의 수명). */

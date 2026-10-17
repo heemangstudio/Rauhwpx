@@ -189,10 +189,8 @@ app.whenReady().then(async () => {
     await evaluate('new Promise(resolve => requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     assert.equal(await evaluate('clicks'), beforePreviewClick, 'read-only projection rejects human mouse input');
     report.preview = { humanMouseBlocked: true };
-    // 에이전트 작업이 실행 중일 때만 사람 입력을 막고, 막힌 입력은 편집기에 제어권 요청으로 알린다.
+    // 물리 입력은 렌더러의 미리보기 잠금과 사용자 점유(held)를 따른다. 에이전트 작업 중이라는 사실만으로는 막지 않는다.
     const nativeEvents = []; host.onEvent = event => nativeEvents.push(event);
-    host.control({ targetId: tab.targetId, human: true });
-    host.attach(window, { tabId: tab.tabId, bounds: { x: 0, y: 0, width: 420, height: 320 }, interactive: true });
     const humanClick = async () => {
       const before = await evaluate('clicks');
       tab.view.webContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
@@ -200,23 +198,27 @@ app.whenReady().then(async () => {
       await evaluate('new Promise(resolve => requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
       return await evaluate('clicks') - before;
     };
-    await host.activity({ ...scope, token: 'agent-action', active: true, agent: true });
-    assert.equal(await humanClick(), 0, 'human input waits while an agent action runs');
-    assert.ok(nativeEvents.some(event => event.type === 'human-input' && event.tabId === tab.tabId && event.agentActive === true), 'the blocked gesture asks the editor to take control');
-    await host.activity({ ...scope, token: 'agent-action', active: true, agent: true, renew: true });
+    const place = interactive => host.attach(window, { tabId: tab.tabId, bounds: { x: 0, y: 0, width: 420, height: 320 }, interactive });
+    host.control({ targetId: tab.targetId, human: true, held: false });
+    place(true);
+    await host.activity({ ...scope, token: 'agent-action', active: true });
+    await host.activity({ ...scope, token: 'agent-action', active: true, renew: true });
+    assert.equal(await humanClick(), 1, 'an unlocked shared page accepts human input');
+    assert.ok(nativeEvents.some(event => event.type === 'human-input' && event.tabId === tab.tabId), 'delivered input is reported for request attribution');
     await host.activity({ ...scope, token: 'agent-action', active: false });
-    assert.equal(await humanClick(), 1, 'the shared page accepts human input between agent actions');
+    place(false);
+    assert.equal(await humanClick(), 0, 'the agent preview lock rejects human input');
     host.control({ targetId: tab.targetId, human: true, held: true });
-    await host.activity({ ...scope, token: 'late-agent', active: true, agent: true });
-    nativeEvents.length = 0;
+    place(true);
     assert.equal(await humanClick(), 1, 'the user keeps input while holding the tab');
-    assert.equal(nativeEvents.some(event => event.type === 'human-input'), false);
     const relaySession = [...host.cdp.sessions].find(([, entry]) => entry.tab === tab)?.[0];
     await assert.rejects(host.cdp.command({ method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x: 1, y: 1 }, sessionId: relaySession }), /user controls/);
-    await host.activity({ ...scope, token: 'late-agent', active: false });
+    host.control({ targetId: tab.targetId, human: true, held: false });
+    place(false);
+    assert.equal(await humanClick(), 0, 'a tab returned to the agent preview is locked again');
+    await host.cdp.command({ method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x: 1, y: 1 }, sessionId: relaySession });
     host.control({ targetId: tab.targetId, human: false });
-    assert.equal(await humanClick(), 0, 'a tab returned to the agent rejects human input');
-    report.control = { busyBlocked: true, idleShared: true, heldHuman: true, heldAutomationRejected: true, returnedBlocked: true };
+    report.control = { sharedInput: true, previewLocked: true, heldHuman: true, heldAutomationRejected: true, returnedLocked: true };
     host.detach(window, { tabId: tab.tabId }); window.hide();
     await paused();
     const shared = await service.request({ isHuman: true, clientId: 'window-fixture', sessionId: 'window-fixture', threadId: 'chat-fixture', projectId: 'old-project' }, 'open', { url: origin });

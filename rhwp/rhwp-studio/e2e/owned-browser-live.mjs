@@ -127,7 +127,7 @@ try {
     assert.ok((await observe(provider, tab.tabId)).outline.includes('Result: Shared sidebar query'));
     assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.dataset.presentation), 'dock');
     assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.dataset.agentControlled), 'true', 'sidebar indicates the agent turn');
-    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.inert), false, 'between agent actions the user can take the tab');
+    assert.equal(await page.$eval('.ag-workbench-page .ag-browser-surface', node => node.inert), true, 'the agent preview locks the page until the user takes control');
     assert.equal(await page.$$eval('.ag-browser-floating', rows => rows.some(row => !row.hidden)), false, 'agent reuses sidebar without an extra floating preview');
     await waitForState(page, 'sidebar frame recovers after agent navigation', () => document.querySelector('.ag-workbench-page .ag-browser-error')?.hidden === true && Boolean(document.querySelector('.ag-workbench-page .ag-browser-frame')?.src));
     await shot('shared-sidebar-agent-control');
@@ -155,17 +155,15 @@ try {
   const stale = await provider.call('browser_click', refArgs(snapshot, 'Search references', 'search'));
   assert.equal(stale.ok, false); assert.equal(stale.error.code, 'BROWSER_STALE_REFERENCE');
   await record('Stale semantic reference rejected without replay');
-  // 에이전트 턴의 미리보기를 사용자가 만지면 제어권을 넘겨받고, 에이전트 쓰기는 반환 전까지 즉시 거절된다.
-  const previewSurface = await page.waitForSelector('.ag-browser-floating:not([hidden]) .ag-browser-surface', { visible: true });
-  const surfaceBox = await previewSurface.boundingBox();
-  await page.mouse.move(surfaceBox.x + surfaceBox.width / 2, surfaceBox.y + surfaceBox.height / 2); await page.mouse.wheel({ deltaY: 40 });
-  await eventually('touching the agent preview takes control', () => human('status'), status => status.tabs.find(row => row.tabId === tab.tabId)?.controller.held === true);
+  // 미리보기의 직접 조작 단추로 탭을 잡으면 에이전트 쓰기는 돌려줄 때까지 바로 거절된다.
+  await page.click('.ag-browser-floating:not([hidden]) .ag-browser-control');
+  await eventually('the control button takes the tab', () => human('status'), status => status.tabs.find(row => row.tabId === tab.tabId)?.controller.held === true);
   const refused = await provider.call('browser_click', refArgs(await observe(provider, tab.tabId), 'Search references', 'search'));
-  assert.equal(refused.ok, false); assert.equal(refused.error.code, 'BROWSER_USER_IN_CONTROL');
-  await page.click('.ag-browser-floating:not([hidden]) [aria-label="에이전트에게 제어권 반환"]');
+  assert.equal(refused.ok, false); assert.equal(refused.error.code, 'BROWSER_USER_CONTROL');
+  await page.click('.ag-browser-floating:not([hidden]) [aria-label="에이전트에게 돌려주기"]');
   await eventually('returning control releases the hold', () => human('status'), status => !status.tabs.find(row => row.tabId === tab.tabId)?.controller.held);
   await clickRef(provider, tab.tabId, 'Search references', 'search');
-  await record('Touching the agent preview takes control; agent writes are refused until the user returns it');
+  await record('The preview control takes the tab; agent writes are refused until the user returns it');
   let broken;
   if (!chromeOnly) {
   for (const [name, intent] of [['Download authenticated GET PDF', 'export'], ['Export POST PDF', 'export'], ['Download blob PDF', 'export']]) {
@@ -207,6 +205,8 @@ try {
     await page.click('.ag-workspace-panel-btn');
   }
   await page.waitForSelector('.ag-workbench-page:not([hidden])', { visible: true });
+  // 사용자가 잡았다 돌려준 띄운 창은 사용자의 것이라 턴이 끝나도 남는다. 작업 칸으로 다시 붙인다.
+  if (await page.$('.ag-browser-floating:not([hidden])')) await page.click('.ag-browser-floating:not([hidden]) .ag-browser-floating-dock');
   await page.locator(`.ag-workbench-page:not([hidden]) [role="tab"][data-resource-id="browser:${tab.tabId}"]`).click();
   await eventually('original research tab is selected for human input', human.bind(null, 'status'), status => status.activeTabId === tab.tabId);
   await page.waitForSelector('.ag-browser-frame[src^="data:image"]', { visible: true });
@@ -248,9 +248,9 @@ try {
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } })));
     await waitForState(page, 'normal editor with floating browser', () => !document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt') && !document.body.classList.contains('ag-fs-vt'));
     const floatRect = await page.$eval('.ag-browser-floating:not([hidden])', element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
-    const resizePoint = await page.$eval('.ag-browser-floating:not([hidden]) [aria-label="브라우저 크기 조절"]', element => { const rect = element.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
+    const resizePoint = await page.$eval('.ag-browser-floating:not([hidden]) .ag-browser-float-edge[data-edge="se"]', element => { const rect = element.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
     await page.mouse.move(resizePoint.x, resizePoint.y); await page.mouse.down();
-    await page.mouse.move(resizePoint.x + 560 - floatRect.width, resizePoint.y + 430 - floatRect.height, { steps: 6 }); await page.mouse.up();
+    await page.mouse.move(resizePoint.x - 80, resizePoint.y - 40, { steps: 6 }); await page.mouse.up();
     const movePoint = await page.$eval('.ag-browser-floating:not([hidden]) [aria-label="브라우저 이동"]', element => { const rect = element.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
     await page.mouse.move(movePoint.x, movePoint.y); await page.mouse.down();
     await page.mouse.move(movePoint.x + 50 - floatRect.x, movePoint.y + 430 - floatRect.y, { steps: 6 }); await page.mouse.up();
