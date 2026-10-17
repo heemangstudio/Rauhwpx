@@ -17,8 +17,12 @@
  *   6. 같은 글꼴의 한/영 이름 별칭표 (근사 대체는 넣지 않는다)
  * 다른 family로의 근사 매칭은 하지 않는다.
  *
- * 같은 이름이 여러 파일에 있으면 한컴 번들 > 사용자 설치 > 시스템 순으로 고른다. 한컴 번들
- * 사본이 한컴 오피스가 실제로 그리고 재는 판본이라 조판 동등성에 가장 가깝다.
+ * 같은 이름이 여러 파일에 있으면 한컴 번들 > 사용자 설치 > 시스템 > 다른 앱 전용 순으로 고른다.
+ * 한컴 번들 사본이 한컴 오피스가 실제로 그리고 재는 판본이라 조판 동등성에 가장 가깝고, 다른 앱이
+ * 자기용으로 둔 사본(Office 클라우드 글꼴, Adobe Fonts 등)은 같은 글꼴이 설치돼 있으면 쓰지 않는다.
+ *
+ * 가변 글꼴의 이름 붙은 인스턴스는 색인에서 face 하나씩으로 온다 (`instance` 좌표). FontFace는
+ * 인스턴스 굵기·너비로 고정한 descriptor로 올리고, 엔진 메트릭은 같은 좌표에서 잰 advance로 등록한다.
  */
 import {
   LOCAL_FONT_MAX_FACES_PER_DOCUMENT,
@@ -45,13 +49,17 @@ import { sfntMetricsSubset } from './sfnt-subset.ts';
 
 // ─── preload 계약 ─────────────────────────────────────────────
 
-export type SystemFontSource = 'system' | 'user' | 'hancom';
+export type SystemFontSource = 'system' | 'user' | 'hancom' | 'app';
 export type SystemFontFormat = 'ttf' | 'otf' | 'ttc' | 'otc' | 'hft';
 
 export interface SystemFontFace {
   id: string;
   path: string;
   faceIndex: number;
+  /** 가변 글꼴의 fvar 인스턴스 번호. 기본 좌표 face 에는 없다. */
+  instanceIndex?: number;
+  /** 가변 글꼴 인스턴스 좌표 (축 태그 → 값) */
+  instance?: Record<string, number>;
   format: SystemFontFormat;
   source: SystemFontSource;
   size: number;
@@ -75,7 +83,7 @@ export interface SystemFontIndex {
   scannedAt: string;
   durationMs: number;
   fromCache: boolean;
-  roots: Array<{ path: string; kind: SystemFontSource; exists: boolean; fileCount: number; error?: string }>;
+  roots: Array<{ path: string; kind: SystemFontSource; label?: string; exists: boolean; fileCount: number; error?: string }>;
   faces: SystemFontFace[];
   hancomFaceMap: Array<{ name: string; file: string; script: string; faceId: string | null }>;
   errors: Array<{ path: string; message: string }>;
@@ -102,7 +110,8 @@ export interface SystemFontHost {
 
 /** wasm 런타임 메트릭 등록 API. 오래된 wasm 빌드에는 없을 수 있다. */
 export interface RuntimeFontMetricsApi {
-  register(bytes: Uint8Array, aliasesJson: string, bold: boolean, italic: boolean): string;
+  /** variationsJson: 가변 글꼴 좌표 `{"wght":600}`. 이 인자를 모르는 오래된 wasm은 기본 좌표로 잰다. */
+  register(bytes: Uint8Array, aliasesJson: string, bold: boolean, italic: boolean, variationsJson?: string): string;
   clear?(): void;
   report?(): string;
   /** 엔진 내장 메트릭 보유 여부. 노출되면 layoutMetrics 판정에 쓴다. */
@@ -189,7 +198,7 @@ export interface DesktopFontReport {
 
 const GENERIC_FONTS = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui']);
 const HANGUL_RE = /[ᄀ-ᇿ㄰-㆏가-힣]/;
-const SOURCE_RANK: Record<SystemFontSource, number> = { hancom: 0, user: 1, system: 2 };
+const SOURCE_RANK: Record<SystemFontSource, number> = { hancom: 0, user: 1, system: 2, app: 3 };
 const SLOT_ORDER: DesktopFontSlot[] = ['regular', 'bold', 'italic', 'bold-italic'];
 const SLOT_STYLE: Record<DesktopFontSlot, string> = {
   regular: 'Regular',
@@ -408,18 +417,19 @@ function compareKeys(left: ReadonlyArray<number | string>, right: ReadonlyArray<
 
 /**
  * 같은 이름의 후보 중 하나를 고른다. anchor가 있으면 anchor 자신과 같은 출처를 먼저,
- * 그다음 한컴 > 사용자 > 시스템, TTF/OTF > HFT, 목표 굵기에 가까운 순이다.
+ * 그다음 한컴 > 사용자 > 시스템 > 다른 앱 전용, TTF/OTF > HFT, 목표 굵기에 가까운 순이다.
  */
 function faceRank(face: SystemFontFace, targetWeight: number | null, anchor?: SystemFontFace): Array<number | string> {
   return [
     anchor ? (face === anchor ? 0 : 1) : 0,
     anchor ? (face.source === anchor.source ? 0 : 1) : 0,
-    SOURCE_RANK[face.source] ?? 3,
+    SOURCE_RANK[face.source] ?? 4,
     formatRank(face),
     targetWeight === null ? 0 : (face.italic ? 1 : 0),
     targetWeight === null ? 0 : Math.abs(face.weight - targetWeight),
     face.path,
     face.faceIndex,
+    face.instanceIndex ?? -1,
   ];
 }
 
@@ -912,13 +922,18 @@ function registerFaceMetrics(
   aliases: readonly string[],
   bold: boolean,
   italic: boolean,
+  variations?: Readonly<Record<string, number>>,
 ): MetricsRegistration {
   const api = metricsApi();
   if (!api) return { status: 'unavailable' };
   const merged = pendingMetricAliases(faceKey, aliases);
   if (!merged) return { status: 'unchanged' };
   try {
-    const raw = api.register(sfntMetricsSubset(bytes), JSON.stringify(Array.from(merged)), bold, italic);
+    const aliasesJson = JSON.stringify(Array.from(merged));
+    const subset = sfntMetricsSubset(bytes);
+    const raw = variations && Object.keys(variations).length
+      ? api.register(subset, aliasesJson, bold, italic, JSON.stringify(variations))
+      : api.register(subset, aliasesJson, bold, italic);
     const detail = safeJson(raw);
     const registered = !!(detail && typeof detail === 'object' && (detail as { registered?: unknown }).registered === true);
     if (registered) metricAliasesByFace.set(faceKey, merged);
@@ -1024,6 +1039,27 @@ function faceNamesFor(plan: GroupPlan, slot: DesktopFontSlot, face: SystemFontFa
     displayName,
     aliases: [...aliases, ...plan.requested],
   };
+}
+
+/**
+ * 가변 인스턴스 FontFace의 descriptor. CSS는 wght·wdth 축을 descriptor 범위로 고정하므로
+ * 굵기·너비를 인스턴스 값 하나로 둔다. 나머지 축은 variationSettings로 넘긴다
+ * (이 descriptor를 모르는 브라우저는 그 축을 기본값으로 그린다).
+ */
+export function instanceDescriptors(face: Pick<SystemFontFace, 'instance' | 'weight'>): FontFaceDescriptors {
+  const instance = face.instance ?? {};
+  const wght = instance.wght;
+  const descriptors: FontFaceDescriptors = {
+    weight: String(Number.isFinite(wght) && wght! >= 1 && wght! <= 1000 ? wght : face.weight),
+  };
+  if (Number.isFinite(instance.wdth)) descriptors.stretch = `${instance.wdth}%`;
+  const others = Object.entries(instance).filter(([tag]) => tag !== 'wght' && tag !== 'wdth' && tag.length === 4);
+  if (others.length) {
+    (descriptors as FontFaceDescriptors & { variationSettings?: string }).variationSettings = others
+      .map(([tag, value]) => `"${tag}" ${value}`)
+      .join(', ');
+  }
+  return descriptors;
 }
 
 function toArrayBuffer(bytes: Uint8Array | ArrayBuffer): ArrayBuffer {
@@ -1269,7 +1305,7 @@ export async function prepareDesktopFontsForDocument(
       entry.report.metricsDetail = 'reread-failed';
       return;
     }
-    const metrics = registerFaceMetrics(entry.faceKey, bytes, aliases, bold, italic);
+    const metrics = registerFaceMetrics(entry.faceKey, bytes, aliases, bold, italic, entry.face.instance);
     if (metrics.status === 'registered') metricsRegistered += 1;
     entry.report.metrics = metrics.status === 'unchanged' ? 'registered' : metrics.status;
     if (metrics.detail !== undefined) entry.report.metricsDetail = metrics.detail;
@@ -1310,6 +1346,7 @@ export async function prepareDesktopFontsForDocument(
         names: entry.names,
         extraAliases: plan.requested,
         runtimeFamilyKey: `desktop:${plan.match.groupKey}`,
+        ...(entry.face.instance ? { descriptors: instanceDescriptors(entry.face) } : {}),
       }));
       if (!result.ok) {
         entry.report.status = result.reason === 'unsupported-hft' ? 'unsupported-hft' : 'failed';
@@ -1332,6 +1369,7 @@ export async function prepareDesktopFontsForDocument(
         metricAliasesFor(plan, entry),
         bold,
         italic,
+        entry.face.instance,
       );
       if (metrics.status === 'registered') metricsRegistered += 1;
       entry.report.metrics = metrics.status === 'unchanged' ? 'registered' : metrics.status;

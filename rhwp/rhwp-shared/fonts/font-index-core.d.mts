@@ -1,4 +1,4 @@
-export type FontIndexSourceKind = 'system' | 'user' | 'hancom';
+export type FontIndexSourceKind = 'system' | 'user' | 'hancom' | 'app';
 export type FontIndexFormat = 'ttf' | 'otf' | 'ttc' | 'otc' | 'hft';
 
 /** 임의 위치를 읽을 수 있는 글꼴 원본 */
@@ -9,6 +9,10 @@ export interface FontByteSource {
 
 export interface RawFontFace {
   faceIndex: number;
+  /** 가변 글꼴의 fvar 인스턴스 번호. 기본 좌표 face 에는 없다. */
+  instanceIndex?: number;
+  /** 인스턴스 좌표 (축 태그 → 값) */
+  instance?: Record<string, number>;
   format: Exclude<FontIndexFormat, 'hft'>;
   families: string[];
   fullNames: string[];
@@ -71,6 +75,8 @@ export const HEAD_CHUNK: number;
 export const HANCOM_MAP_FILE: RegExp;
 export const HANGUL: RegExp;
 export const KIND_ORDER: Readonly<Record<FontIndexSourceKind, number>>;
+export const MAX_NAMED_INSTANCES: number;
+export function isFontSignature(bytes: Uint8Array): boolean;
 export const posixPath: PathApi;
 
 export class BytesSource implements FontByteSource {
@@ -87,7 +93,7 @@ export function createReadSource(
 export function blobSource(blob: Blob): FontByteSource;
 
 export function decodeNameRecord(platformId: number, encodingId: number, bytes: Uint8Array): string | null;
-export function parseNameTable(bytes: Uint8Array): {
+export function parseNameTable(bytes: Uint8Array, extraIds?: ReadonlySet<number>): {
   records: Array<{ platformId: number; encodingId: number; languageId: number; nameId: number; text: string }>;
   undecodable: number;
 };
@@ -116,12 +122,12 @@ export function decodeHancomText(input: Uint8Array | ArrayBuffer): string;
 export function parseHancomFontList(text: string): Array<{ name: string; file: string; script: string }>;
 export function pathKey(target: string, platform: string): string;
 export function commonPrefixLength(a: string, b: string): number;
-export function sortFaces<T extends { source: FontIndexSourceKind; path: string; faceIndex: number }>(faces: T[]): T[];
+export function sortFaces<T extends { source: FontIndexSourceKind; path: string; faceIndex: number; instanceIndex?: number }>(faces: T[]): T[];
 export function assembleFontIndex<F extends FontIndexFile>(input: {
   parsedFiles: Array<{ file: F; result: Pick<ParsedFontFileResult, 'type' | 'faces' | 'error'> }>;
   mapFiles: string[];
   readMapFile(path: string): Promise<Uint8Array>;
-  faceId(file: F, faceIndex: number): string;
+  faceId(file: F, faceIndex: number, instanceIndex?: number): string;
   pathApi: PathApi;
   platform: string;
   errors: Array<{ path: string; message: string }>;
