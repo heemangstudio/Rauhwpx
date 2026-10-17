@@ -23,9 +23,16 @@ function pillLabel(request: ChatPermissionRequest): string {
   const account = browserAccountKind(request);
   if (account) return `${account === 'browser-save-account' ? '계정 저장' : '계정 사용'} · ${request.accountLabel || request.origin || ''}`;
   if (request.capability === 'document-link') {
-    return request.documentName ? `${labels['document-link']} · ${request.documentName}` : labels['document-link'];
+    // 문서 연결은 문서 이름만 보인다. 동작은 옆의 상태 문구가 말한다.
+    return request.documentName || labels['document-link'];
   }
   return labels[request.capability];
+}
+
+/** 화면 읽기용 이름. 문서 연결은 보이는 이름에 없는 요청 종류를 앞에 붙인다. */
+function pillName(request: ChatPermissionRequest): string {
+  return request.capability === 'document-link' && request.documentName
+    ? `${labels['document-link']} ${request.documentName}` : pillLabel(request);
 }
 
 function pillStatus(request: ChatPermissionRequest, outcome: ChatPermissionOutcome | null, submitting: boolean): string {
@@ -62,23 +69,15 @@ export function createChatPermissionController(options: {
     root.replaceChildren();
     root.dataset.status = outcome?.status ?? (pill.responseId ? 'submitting' : 'pending');
     root.dataset.capability = request.capability;
-    root.setAttribute('aria-label', `${pillLabel(request)} 권한 요청`);
+    root.setAttribute('aria-label', `${pillName(request)} 권한 요청`);
     const label = document.createElement('span');
     label.className = 'ag-permission-label';
     label.textContent = pillLabel(request);
     const status = document.createElement('span');
     status.className = 'ag-permission-status';
     status.textContent = pillStatus(request, outcome, pill.responseId !== null);
-    // 문서 연결은 연결할 파일의 전체 경로를 이름 아래에 보인다 (데스크톱 경로 열기·만들기).
-    const path = request.capability === 'document-link' && request.path ? document.createElement('span') : null;
-    if (path) {
-      path.className = 'ag-permission-path';
-      path.textContent = request.path!;
-      path.title = request.path!;
-    }
     if (outcome) {
       root.append(label, status);
-      if (path) root.append(path);
       return;
     }
     if (accountRequest.kind === 'browser-save-account' && accountRequest.origin && options.submitBrowserAccount && options.requestBrowser) {
@@ -100,9 +99,10 @@ export function createChatPermissionController(options: {
     const grant = document.createElement('button');
     grant.type = 'button';
     grant.className = 'ag-permission-grant';
-    grant.title = request.reason;
+    // 문서 연결의 전체 경로는 화면에 두지 않고 툴팁과 접근성 이름으로만 알린다.
+    grant.title = request.capability === 'document-link' ? request.path ?? request.reason : request.reason;
     grant.setAttribute('aria-label', request.capability === 'document-link'
-      ? `${pillLabel(request)}: 이 채팅에 연결. ${request.path ?? request.reason}`
+      ? `${pillName(request)}: 이 채팅에 연결. ${request.path ?? request.reason}`
       : `${labels[request.capability]} 권한을 이 채팅에서 허용. ${request.reason}`);
     grant.disabled = !connected || pill.responseId !== null || (accountRequest.kind === 'browser-save-account') || (accountRequest.kind === 'browser-use-account' && !options.requestBrowser);
     grant.append(label, status);
@@ -120,11 +120,10 @@ export function createChatPermissionController(options: {
     deny.className = 'ag-permission-deny';
     deny.textContent = '×';
     deny.title = '권한 요청 거절';
-    deny.setAttribute('aria-label', `${pillLabel(request)} 요청 거절`);
+    deny.setAttribute('aria-label', `${pillName(request)} 요청 거절`);
     deny.disabled = !connected || pill.responseId !== null;
     deny.addEventListener('click', () => respond(pill, 'deny'));
     root.append(grant, deny);
-    if (path) root.append(path);
     if (accountRequest.kind && (!options.requestBrowser || (accountRequest.kind === 'browser-save-account' && !options.submitBrowserAccount))) pill.error = '보안 계정 연결을 사용할 수 없습니다. 설정에서 다시 시도하세요.';
     if (pill.error) {
       const error = document.createElement('span');

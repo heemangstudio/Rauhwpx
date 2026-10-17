@@ -22,7 +22,7 @@ const snapshot = (page) => page.evaluate(() => {
 });
 
 export async function checkDocumentLink({ page, open, screenshot }) {
-  // 1. 문서 연결 동의: 이름·상태·경로를 보이고, 허락해도 채팅 권한으로 남지 않는다.
+  // 1. 문서 연결 동의: 문서 이름과 상태만 보이고 경로는 툴팁에 둔다. 허락해도 채팅 권한으로 남지 않는다.
   const threadId = await startUnlinkedChat(page, open);
   await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning());
   await page.evaluate(() => window.sidebarPreview.requestDocumentLink());
@@ -31,11 +31,13 @@ export async function checkDocumentLink({ page, open, screenshot }) {
   assert.deepEqual(await page.$eval(pill, (node) => ({
     label: node.querySelector('.ag-permission-label')?.textContent,
     status: node.querySelector('.ag-permission-status')?.textContent,
-    path: node.querySelector('.ag-permission-path')?.textContent,
+    title: node.querySelector('.ag-permission-grant')?.title,
+    shown: node.textContent,
   })), {
-    label: '문서 연결 · 2026 사업계획서.hwpx',
+    label: '2026 사업계획서.hwpx',
     status: '이 채팅에 연결',
-    path: '/Users/hama/Documents/HamaEditor/2026 사업계획서.hwpx',
+    title: '/Users/hama/Documents/HamaEditor/2026 사업계획서.hwpx',
+    shown: '2026 사업계획서.hwpx이 채팅에 연결×',
   });
   if (screenshot) await screenshot('document-link-pill');
   await page.click(`${pill} .ag-permission-grant`);
