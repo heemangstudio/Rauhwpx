@@ -440,11 +440,17 @@ fn attach_hwpx_master_page(
     section: &mut Section,
     master_page_href: &str,
     bin_data_ids: &HashMap<String, u16>,
+    raw_fields: Option<&crate::model::document::hwpx_raw_fields::Metadata>,
 ) -> Result<bool, HwpxError> {
     match reader.read_file(master_page_href) {
         Ok(master_page_xml) => {
-            let rewritten = rewrite_binary_item_id_refs(&master_page_xml, bin_data_ids)?;
-            match section::parse_hwpx_master_page(&rewritten) {
+            let clean = crate::model::document::hwpx_raw_fields::strip_carriers(&master_page_xml);
+            let projected = raw_fields.map_or_else(
+                || Cow::Borrowed(clean.as_ref()),
+                |metadata| metadata.project_part(master_page_href, &clean),
+            );
+            let rewritten = rewrite_binary_item_id_refs(&projected, bin_data_ids)?;
+            match section::parse_hwpx_master_page_with_raw_fields(&rewritten) {
                 Ok(master_page) => {
                     section.section_def.master_pages.push(master_page);
                     Ok(true)
@@ -544,6 +550,7 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
         "META-INF/container.xml",
         "META-INF/manifest.xml",
         crate::model::document::OWN_LINE_LAYOUT_HWPX_MARKER_PATH,
+        crate::model::document::RAW_FIELDS_HWPX_PATH,
     ]
     .into_iter()
     .map(str::to_string)
@@ -579,6 +586,14 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
 
     // 3. header.xml → DocInfo, DocProperties
     let header_xml = reader.read_file("Contents/header.xml")?;
+    let header_xml = crate::model::document::hwpx_raw_fields::strip_carriers(&header_xml);
+    let raw_fields = reader
+        .read_file_bytes_limited(
+            crate::model::document::RAW_FIELDS_HWPX_PATH,
+            crate::model::document::hwpx_raw_fields::MAX_BYTES,
+        )
+        .ok()
+        .and_then(|bytes| crate::model::document::hwpx_raw_fields::Metadata::decode(&bytes));
     let hwp5_origin_hwpx = hwpx_aux_entries
         .iter()
         .any(|(path, _)| path == crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH);
@@ -609,6 +624,9 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
         remapped_doc_info
     };
     resolve_embedded_font_references(&mut doc_info, &bin_data_ids.by_manifest_id);
+    if let Some(metadata) = &raw_fields {
+        metadata.restore_strokes(&mut doc_info, &header_xml);
+    }
 
     // [Task #1608] head version("1.4")은 HWPML **스키마 버전**일 뿐 HWP3→HWPX 변환 지표가
     // 아니다. 네이티브 한글2022 HWPX(version.xml: major=5 minor=1 "Hancom Office Hangul")도
@@ -651,6 +669,11 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
     let mut sections = Vec::new();
     for (section_idx, section_href) in package_info.section_files.iter().enumerate() {
         let section_xml = reader.read_file(section_href)?;
+        let clean = crate::model::document::hwpx_raw_fields::strip_carriers(&section_xml);
+        let section_xml = raw_fields.as_ref().map_or_else(
+            || Cow::Borrowed(clean.as_ref()),
+            |metadata| metadata.project_part(section_href, &clean),
+        );
         let master_page_refs = match section::collect_hwpx_section_master_page_refs(&section_xml) {
             Ok(refs) => refs,
             Err(e) => {
@@ -660,7 +683,7 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
         };
         let remapped_section_xml =
             rewrite_binary_item_id_refs(&section_xml, &bin_data_ids.by_manifest_id)?;
-        match section::parse_hwpx_section(&remapped_section_xml) {
+        match section::parse_hwpx_section_with_raw_fields(&remapped_section_xml) {
             Ok(mut section) => {
                 let (master_page_hrefs, missing_master_page_refs) =
                     resolve_master_page_hrefs(&master_page_refs, &package_info.master_page_items);
@@ -678,6 +701,7 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
                         &mut section,
                         master_page_href,
                         &bin_data_ids.by_manifest_id,
+                        raw_fields.as_ref(),
                     )? {
                         attached_master_page_count += 1;
                     }
@@ -695,6 +719,7 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
                                     &mut section,
                                     master_page_href,
                                     &bin_data_ids.by_manifest_id,
+                                    raw_fields.as_ref(),
                                 )?;
                             }
                         }

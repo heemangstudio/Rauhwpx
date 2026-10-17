@@ -612,6 +612,86 @@ mod tests {
         t
     }
 
+    fn stored_paragraph(text: &str, id: u32) -> Paragraph {
+        let mut para = Paragraph::new_empty();
+        para.text = text.to_owned();
+        para.char_count = text.encode_utf16().count() as u32 + 1;
+        para.has_para_text = !text.is_empty();
+        para.raw_header_extra = vec![0; 10];
+        para.raw_header_extra[6..10].copy_from_slice(&id.to_le_bytes());
+        para
+    }
+
+    fn assert_table_paragraphs(xml: &str, expected: &[&Table]) {
+        use crate::model::control::Control;
+        fn snapshot(table: &Table) -> Vec<(Vec<usize>, u16, u16, u32, String)> {
+            fn walk(
+                table: &Table,
+                route: &[usize],
+                out: &mut Vec<(Vec<usize>, u16, u16, u32, String)>,
+            ) {
+                for (cell_index, cell) in table.cells.iter().enumerate() {
+                    for (para_index, para) in cell.paragraphs.iter().enumerate() {
+                        let mut path = route.to_vec();
+                        path.extend([cell_index, para_index]);
+                        let id = para
+                            .raw_header_extra
+                            .get(6..10)
+                            .map_or(0, |bytes| u32::from_le_bytes(bytes.try_into().unwrap()));
+                        out.push((path.clone(), cell.row, cell.col, id, para.text.clone()));
+                        for (control_index, control) in para.controls.iter().enumerate() {
+                            if let Control::Table(inner) = control {
+                                let mut nested = path.clone();
+                                nested.push(control_index);
+                                walk(inner, &nested, out);
+                            }
+                        }
+                    }
+                }
+            }
+            let mut out = Vec::new();
+            walk(table, &[], &mut out);
+            out
+        }
+        let section = crate::parser::hwpx::section::parse_hwpx_section(&format!(
+            "<hs:sec xmlns:hs=\"urn:hs\" xmlns:hp=\"urn:hp\"><hp:p><hp:run>{xml}</hp:run></hp:p></hs:sec>"
+        )).unwrap();
+        let actual: Vec<_> = section.paragraphs[0]
+            .controls
+            .iter()
+            .filter_map(|control| {
+                if let Control::Table(table) = control {
+                    Some(table.as_ref())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(actual.len(), expected.len());
+        let mut count = 0;
+        let mut ids = std::collections::HashSet::new();
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert_eq!(
+                (actual.row_count, actual.col_count),
+                (expected.row_count, expected.col_count)
+            );
+            let expected = snapshot(expected);
+            count += expected.len();
+            assert!(
+                snapshot(actual)
+                    .iter()
+                    .all(|(_, _, _, id, _)| ids.insert(*id)),
+                "explicitly unique inputs must remain unique across tables and nesting"
+            );
+            assert_eq!(
+                snapshot(actual),
+                expected,
+                "cell/nested route, stored ID, text and order"
+            );
+        }
+        assert_eq!(xml.matches("<hp:p ").count(), count);
+    }
+
     #[test]
     fn cell_text_direction_survives_hwpx_roundtrip() {
         use crate::model::control::Control;
@@ -1087,100 +1167,74 @@ mod tests {
     }
 
     #[test]
-    fn cell_paragraph_ids_are_globally_unique() {
-        // 2×2 표 = 셀 4개, 각 셀에 문단 1개 → id="0", id="1", id="2", id="3"
-        let t = empty_table(2, 2);
-        let xml = serialize(&t);
-        assert_eq!(
-            xml.matches(r#"<hp:p id="0""#).count(),
-            1,
-            "셀 문단 id=0 이 중복됨: {}",
-            &xml[..xml.len().min(400)]
-        );
-        for expected_id in 0..4u32 {
-            assert!(
-                xml.contains(&format!(r#"<hp:p id="{}""#, expected_id)),
-                "id={} 가 없음",
-                expected_id
-            );
+    fn cell_paragraphs_preserve_explicit_unique_and_default_ids() {
+        let mut table = empty_table(2, 2);
+        for (index, (cell, id)) in table.cells.iter_mut().zip([7, 8, u32::MAX, 0]).enumerate() {
+            cell.paragraphs[0] = stored_paragraph(&format!("cell {index}"), id);
         }
+        table.cells[3].paragraphs[0].raw_header_extra.clear(); // 새 문단의 기본 ID 0
+        assert_table_paragraphs(&serialize(&table), &[&table]);
     }
 
     #[test]
-    fn cell_para_ids_continue_from_context_counter() {
-        // 컨텍스트 카운터를 5 앞당긴 뒤 직렬화하면 셀 문단 id가 5부터 시작해야 함.
-        // 본문 문단이 먼저 id 0~4를 소비한 상황을 모사한다.
+    fn cell_paragraph_ids_are_independent_of_context_counter() {
         let doc = Document::default();
         let mut ctx = SerializeContext::collect_from_document(&doc);
         for _ in 0..5 {
             ctx.next_para_id();
         }
-        let t = empty_table(1, 2); // 셀 2개 × 문단 1개 → id=5, id=6 이어야 함
-        let mut w: Writer<Vec<u8>> = Writer::new(Vec::new());
-        write_table(&mut w, &t, &mut ctx).unwrap();
-        let xml = String::from_utf8(w.into_inner()).unwrap();
-        assert!(
-            xml.contains(r#"<hp:p id="5""#),
-            "첫 셀 문단은 id=5 여야 함 (카운터 오프셋 5): {}",
-            &xml[..xml.len().min(600)]
-        );
-        assert!(
-            xml.contains(r#"<hp:p id="6""#),
-            "두 번째 셀 문단은 id=6 여야 함"
-        );
+        let mut table = empty_table(1, 2);
+        table.cells[0].paragraphs[0] = stored_paragraph("first", 0x8000_0000);
+        table.cells[1].paragraphs[0] = stored_paragraph("second", 7);
+        let mut writer = Writer::new(Vec::new());
+        write_table(&mut writer, &table, &mut ctx).unwrap();
+        let xml = String::from_utf8(writer.into_inner()).unwrap();
+        assert_table_paragraphs(&xml, &[&table]);
     }
 
     #[test]
-    fn two_sequential_tables_have_no_para_id_collision() {
-        // 같은 ctx로 표 두 개를 연달아 직렬화 — 두 번째 표가 카운터를 초기화하면
-        // id=0 이 2번 나타나므로 회귀를 탐지할 수 있다.
+    fn sequential_tables_keep_each_cells_ids_content_and_order() {
         let doc = Document::default();
         let mut ctx = SerializeContext::collect_from_document(&doc);
-        let mut w: Writer<Vec<u8>> = Writer::new(Vec::new());
-        write_table(&mut w, &empty_table(2, 2), &mut ctx).unwrap(); // id 0-3
-        write_table(&mut w, &empty_table(2, 2), &mut ctx).unwrap(); // id 4-7
-        let xml = String::from_utf8(w.into_inner()).unwrap();
-
-        assert_eq!(
-            xml.matches(r#"<hp:p id="0""#).count(),
-            1,
-            "id=0 이 중복 — 두 번째 표가 카운터를 재사용했을 가능성"
-        );
-        for expected_id in 0..8u32 {
-            assert!(
-                xml.contains(&format!(r#"<hp:p id="{}""#, expected_id)),
-                "id={} 가 없음 (총 8개 문단이어야 함)",
-                expected_id
-            );
+        let mut first = empty_table(2, 2);
+        let mut second = empty_table(2, 2);
+        for (table_index, table) in [&mut first, &mut second].into_iter().enumerate() {
+            for (index, (cell, id)) in table
+                .cells
+                .iter_mut()
+                .zip([11, 12, 13, 14].map(|id| id + 10 * table_index as u32))
+                .enumerate()
+            {
+                cell.paragraphs[0] =
+                    stored_paragraph(&format!("table {table_index} cell {index}"), id);
+            }
         }
+        let mut writer = Writer::new(Vec::new());
+        write_table(&mut writer, &first, &mut ctx).unwrap();
+        write_table(&mut writer, &second, &mut ctx).unwrap();
+        let xml = String::from_utf8(writer.into_inner()).unwrap();
+        assert_eq!(xml.matches("<hp:p ").count(), 8);
+        assert_table_paragraphs(&xml, &[&first, &second]);
     }
 
     #[test]
-    fn multi_para_cells_all_get_unique_ids() {
-        // 셀당 문단 3개, 2×2 표 → 총 12개 문단, id=0..11 전부 1회씩
-        let doc = Document::default();
-        let mut ctx = SerializeContext::collect_from_document(&doc);
-        let mut t = empty_table(2, 2);
-        for cell in &mut t.cells {
-            cell.paragraphs.push(Paragraph::default());
-            cell.paragraphs.push(Paragraph::default());
+    fn multi_paragraph_cells_keep_unique_stored_ids_and_paragraph_order() {
+        let mut table = empty_table(2, 2);
+        for (cell_index, cell) in table.cells.iter_mut().enumerate() {
+            cell.paragraphs = [100, 101, 102]
+                .into_iter()
+                .enumerate()
+                .map(|(index, id)| {
+                    stored_paragraph(
+                        &format!("cell {cell_index} paragraph {index}"),
+                        id + 3 * cell_index as u32,
+                    )
+                })
+                .collect();
         }
-        let mut w: Writer<Vec<u8>> = Writer::new(Vec::new());
-        write_table(&mut w, &t, &mut ctx).unwrap();
-        let xml = String::from_utf8(w.into_inner()).unwrap();
-
-        let p_count = xml.matches("<hp:p ").count();
-        assert_eq!(p_count, 12, "문단 수가 12여야 함: {}", p_count);
-
-        for expected_id in 0..12u32 {
-            assert_eq!(
-                xml.matches(&format!(r#"<hp:p id="{}""#, expected_id))
-                    .count(),
-                1,
-                "id={} 가 없거나 중복됨",
-                expected_id
-            );
-        }
+        let xml = serialize(&table);
+        assert_eq!(xml.matches("<hp:p ").count(), 12);
+        assert_table_paragraphs(&xml, &[&table]);
     }
 
     #[test]
@@ -1190,11 +1244,12 @@ mod tests {
         para.text = "A\tB\nC".to_string();
         para.tab_extended = vec![[2000, 0, 0x0100, 0, 0, 0, 0]];
 
+        // 내부 carrier는 package capture_part가 수집한 뒤 공개 XML에서 제거한다.
         let xml = serialize(&t);
 
         assert!(
             xml.contains(
-                r#"<hp:t>A<hp:tab width="2000" leader="0" type="1"/>B<hp:lineBreak/>C</hp:t>"#
+                r#"<hp:t>A<hp:tab width="2000" leader="0" type="1" rhwpRawTabFlags="0"/>B<hp:lineBreak/>C</hp:t>"#
             ),
             "cell text must emit hp:tab/hp:lineBreak instead of raw control chars: {}",
             xml
@@ -1284,33 +1339,20 @@ mod tests {
     }
 
     #[test]
-    fn task1379_nested_table_in_cell_recurses_with_unique_para_ids() {
-        // 셀 안 표 재귀 — 중첩 hp:tbl 방출 + next_para_id 채번 무충돌.
+    fn task1379_nested_table_preserves_routes_and_distinct_instance_ids() {
         let mut outer = empty_table(1, 1);
-        {
-            let para = &mut outer.cells[0].paragraphs[0];
-            para.char_count = 9;
-            para.controls
-                .push(crate::model::control::Control::Table(Box::new(
-                    empty_table(1, 1),
-                )));
-        }
+        let mut inner = empty_table(1, 1);
+        inner.cells[0].paragraphs[0] = stored_paragraph("inner", 0x8000_0001);
+        let para = &mut outer.cells[0].paragraphs[0];
+        *para = stored_paragraph("outer", 0x8000_0000);
+        para.char_offsets = vec![8, 9, 10, 11, 12];
+        para.char_count = 14;
+        para.controls
+            .push(crate::model::control::Control::Table(Box::new(inner)));
         let xml = serialize(&outer);
-        assert_eq!(
-            xml.matches("<hp:tbl ").count(),
-            2,
-            "중첩 hp:tbl 이 방출되어야 함: {}",
-            xml
-        );
-        assert_eq!(xml.matches("<hp:p ").count(), 2, "문단 2개여야 함");
-        for id in 0..2u32 {
-            assert_eq!(
-                xml.matches(&format!(r#"<hp:p id="{}""#, id)).count(),
-                1,
-                "id={} 가 없거나 중복 — 재귀 채번 충돌",
-                id
-            );
-        }
+        assert_eq!(xml.matches("<hp:tbl ").count(), 2);
+        assert_eq!(xml.matches("<hp:p ").count(), 2);
+        assert_table_paragraphs(&xml, &[&outer]);
     }
 
     #[test]
@@ -1823,10 +1865,11 @@ mod tests {
             para.char_shapes = vec![cs(0, 1), cs(2, 2)];
             para.tab_extended = vec![[2000, 0, 0x0100, 0, 0, 0, 0]];
         }
+        // 내부 carrier는 package capture_part가 수집한 뒤 공개 XML에서 제거한다.
         let xml = serialize(&t);
         assert!(
             xml.contains(
-                r#"<hp:run charPrIDRef="1"><hp:t>a<hp:tab width="2000" leader="0" type="1"/></hp:t></hp:run><hp:run charPrIDRef="2"><hp:t>b</hp:t></hp:run>"#
+                r#"<hp:run charPrIDRef="1"><hp:t>a<hp:tab width="2000" leader="0" type="1" rhwpRawTabFlags="0"/></hp:t></hp:run><hp:run charPrIDRef="2"><hp:t>b</hp:t></hp:run>"#
             ),
             "탭 포함 분할: run1=a+tab, run2=b 여야 함: {}",
             xml

@@ -843,6 +843,8 @@ export interface SearchResult {
   para?: number;
   charOffset?: number;
   length?: number;
+  /** 표 커서 API가 사용하는 전체 경로. 찾기 전용이며 글상자 주소와 구분한다. */
+  cellPath?: CellPathEntry[];
   cellContext?: {
     parentPara: number;
     ctrlIdx: number;
@@ -858,7 +860,9 @@ export interface SearchHit {
   para: number;
   charOffset: number;
   length: number;
-  /** 표 셀/글상자 내부 매치 시 컨텍스트. cellPara가 실제 매치 문단 인덱스 */
+  /** 표 커서 API가 사용하는 전체 경로. 찾기 전용이며 글상자 주소와 구분한다. */
+  cellPath?: CellPathEntry[];
+  /** 기존 표 셀/글상자 컨텍스트. cellPara가 실제 매치 문단 인덱스 */
   cellContext?: {
     parentPara: number;
     ctrlIdx: number;
@@ -1135,6 +1139,8 @@ export interface LayerTextStyle {
   hftFamily?: string;
   /** 글자 위치 (글자 크기 비율, 양수 = 아래로). 글리프만 옮긴다. */
   charOffset?: number;
+  /** 원본 descriptor의 절대 logical-y 위치(px). 0도 유효하며 charOffset보다 우선한다. */
+  charOffsetDy?: number;
 }
 
 export interface LayerTextLegacyVisuals {

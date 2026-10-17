@@ -412,6 +412,50 @@ impl DocumentCore {
         char_offset: usize,
         text: &str,
     ) -> Result<String, HwpError> {
+        self.insert_text_in_header_footer_with_content_impl(
+            section_idx,
+            is_header,
+            apply_to,
+            hf_para_idx,
+            char_offset,
+            text,
+            None,
+        )
+    }
+
+    pub fn insert_text_content_in_header_footer_native(
+        &mut self,
+        section_idx: usize,
+        is_header: bool,
+        apply_to: u8,
+        hf_para_idx: usize,
+        char_offset: usize,
+        content: &crate::model::paragraph::TextContent,
+    ) -> Result<String, HwpError> {
+        content
+            .validate()
+            .map_err(|error| HwpError::RenderError(error.to_string()))?;
+        self.insert_text_in_header_footer_with_content_impl(
+            section_idx,
+            is_header,
+            apply_to,
+            hf_para_idx,
+            char_offset,
+            &content.text,
+            Some(content),
+        )
+    }
+
+    fn insert_text_in_header_footer_with_content_impl(
+        &mut self,
+        section_idx: usize,
+        is_header: bool,
+        apply_to: u8,
+        hf_para_idx: usize,
+        char_offset: usize,
+        text: &str,
+        content: Option<&crate::model::paragraph::TextContent>,
+    ) -> Result<String, HwpError> {
         if section_idx >= self.document.sections.len() {
             return Err(HwpError::RenderError(format!(
                 "구역 인덱스 {} 범위 초과 (총 {}개)",
@@ -423,6 +467,9 @@ impl DocumentCore {
         let hf_para = self.get_hf_paragraph_mut(section_idx, is_header, apply_to, hf_para_idx)?;
         let new_chars_count = text.chars().count();
         let inserted_at = hf_para.insert_text_at(char_offset, text);
+        if let Some(content) = content {
+            hf_para.restore_inserted_origins(inserted_at, content);
+        }
 
         // 리플로우 (머리말/꼬리말 영역 폭 기반)
         self.reflow_hf_paragraph(section_idx, is_header, apply_to, hf_para_idx);
@@ -475,6 +522,7 @@ impl DocumentCore {
         // delete_text_at 의 클램핑(text_len - char_offset)과 동일 범위이며, Rust char 경계로
         // 잘라 studio(UTF-16) 측 조인 모호성을 피한다. 역연산 삭제 커맨드가 재삽입에 쓴다.
         let actual_offset = char_offset.min(hf_para.text.chars().count());
+        let removed_content = hf_para.capture_text_content(actual_offset, count);
         let deleted_text: String = hf_para
             .text
             .chars()
@@ -506,9 +554,10 @@ impl DocumentCore {
                 inserted_end_offset: actual_offset,
             });
         Ok(super::super::helpers::json_ok_with(&format!(
-            "\"charOffset\":{},\"deletedText\":\"{}\"",
+            "\"charOffset\":{},\"deletedText\":\"{}\",{}",
             actual_offset,
-            super::super::helpers::json_escape(&deleted_text)
+            super::super::helpers::json_escape(&deleted_text),
+            super::super::helpers::removed_content_fields(actual_offset, &removed_content)
         )))
     }
 
@@ -1483,6 +1532,8 @@ impl DocumentCore {
         {
             let hf_para = self.get_hf_paragraph_mut(section_idx, is_header, apply_to, 0)?;
             hf_para.text = text;
+            hf_para.special_space_origins =
+                crate::model::paragraph::TextContent::literal(&hf_para.text).special_space_origins;
             // char_offsets 재계산
             hf_para.char_offsets = hf_para
                 .text
@@ -1554,6 +1605,7 @@ impl DocumentCore {
             for cs in &mut hf_para.char_shapes {
                 cs.char_shape_id = new_char_id;
             }
+            hf_para.invalidate_authored_run_styles();
         }
 
         // 10) 리플로우 + 스타일 재해소 + 재페이지네이션

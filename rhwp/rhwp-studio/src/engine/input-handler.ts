@@ -558,6 +558,8 @@ export class InputHandler {
   private textareaConsumed = 0;
   /** HF 선택 위 IME는 선택 삭제와 최종 조합 문자열을 하나의 snapshot으로 기록한다. */
   private headerFooterSelectionComposition = false;
+  /** 선택 위 IME는 조합 확정 때만 삭제·삽입을 한 이력으로 기록한다. */
+  private selectionComposition: { beforeId: number; cursorBefore: DocumentPosition } | null = null;
   private _pendingNavAfterIME: NavigationKeyInput | null = null;
   // iOS 폴백: composition 이벤트 없이 input만으로 한글 조합 처리
   private _iosComposing = false;
@@ -3147,6 +3149,7 @@ export class InputHandler {
         const boundaryHandled = this.prepareTextMutationBeforeCursor(
           this.history.consumeLastExecutionEffects(),
         );
+        if (desc.command.type === 'replaceSelection') this.cursor.clearSelection();
         // 글자/문단 서식 변경은 문서 구조 불변 → 선택 영역 유지
         if (desc.command.type !== 'applyCharFormat' && desc.command.type !== 'applyParaFormat') {
           this.cursor.moveTo(newPos);
@@ -5044,6 +5047,8 @@ export class InputHandler {
         return this.canDeleteTextInFormMode(command.position ?? this.cursor.getPosition(), command.count ?? 1);
       case 'deleteSelection':
         return this.canDeleteSelectionInFormMode();
+      case 'replaceSelection':
+        return this.canDeleteSelectionInFormMode() && this.canInsertTextInFormMode(command.start);
       default:
         return false;
     }
@@ -5109,8 +5114,27 @@ export class InputHandler {
   }
 
   /** 글상자 내부 텍스트 편집 모드 진입 */
-  private enterTextboxEditing(sec: number, ppi: number, ci: number): void {
-    this.enterInlineEditing(sec, ppi, ci, 0);
+  private enterTextboxEditing(ref: ObjectRef): void {
+    const position = _mouse.textboxEntryPosition(ref);
+    if (!position) return;
+    if (position.cellPath) {
+      // hit의 isTextBox와 같이 최상위 실제 컨트롤 종류를 보존한다.
+      try {
+        this.wasm.getShapeProperties(ref.sec, ref.ppi, position.controlIndex!);
+        position.isTextBox = true;
+      } catch {
+        try {
+          this.wasm.getTableProperties(ref.sec, ref.ppi, position.controlIndex!);
+        } catch {
+          return;
+        }
+      }
+    }
+    this.cursor.clearSelection();
+    this.cursor.moveTo(position);
+    this.cursor.resetPreferredX();
+    this.updateCaret();
+    this.focusTextarea();
   }
 
   /** 캡션/글상자 내부 텍스트 편집 모드 진입 (charOffset 지정 가능) */

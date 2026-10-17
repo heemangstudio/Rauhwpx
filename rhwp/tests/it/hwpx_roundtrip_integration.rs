@@ -463,8 +463,44 @@ fn task177_hwpx_02_regression() {
 //
 // 이 테스트는 cargo test --nocapture 로 돌려 수치를 관찰한다.
 
+fn body_table_instance_records(
+    doc: &rhwp::model::document::Document,
+) -> Vec<(Vec<usize>, u32, String)> {
+    use rhwp::model::{control::Control, paragraph::Paragraph};
+    fn walk(paras: &[Paragraph], route: &[usize], out: &mut Vec<(Vec<usize>, u32, String)>) {
+        for (index, para) in paras.iter().enumerate() {
+            let mut path = route.to_vec();
+            path.push(index);
+            let id = para
+                .raw_header_extra
+                .get(6..10)
+                .map_or(0, |bytes| u32::from_le_bytes(bytes.try_into().unwrap()));
+            out.push((path.clone(), id, para.text.clone()));
+            for (control_index, control) in para.controls.iter().enumerate() {
+                if let Control::Table(table) = control {
+                    for (cell_index, cell) in table.cells.iter().enumerate() {
+                        let mut cell_path = path.clone();
+                        cell_path.extend([
+                            control_index,
+                            cell_index,
+                            cell.row as usize,
+                            cell.col as usize,
+                        ]);
+                        walk(&cell.paragraphs, &cell_path, out);
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (index, section) in doc.sections.iter().enumerate() {
+        walk(&section.paragraphs, &[index], &mut out);
+    }
+    out
+}
+
 #[test]
-fn para_ids_unique_across_body_and_table() {
+fn explicitly_unique_body_and_table_ids_survive_by_structural_route() {
     use rhwp::parser::hwpx::parse_hwpx;
     use rhwp::serializer::hwpx::serialize_hwpx;
     use std::collections::HashSet;
@@ -474,8 +510,41 @@ fn para_ids_unique_across_body_and_table() {
         env!("CARGO_MANIFEST_DIR"),
         "/samples/hwpx/basic-table-01.hwpx"
     ));
-    let doc = parse_hwpx(bytes).expect("parse");
+    let mut doc = parse_hwpx(bytes).expect("parse");
+    // The imported fixture intentionally repeats instance ID 0. Give this
+    // uniqueness scenario distinct stored IDs; imported IDs are preserved.
+    fn assign_ids(paras: &mut [rhwp::model::paragraph::Paragraph], next: &mut u32) {
+        for para in paras {
+            para.raw_header_extra.resize(10, 0);
+            para.raw_header_extra[6..10].copy_from_slice(&next.to_le_bytes());
+            *next += 1;
+            for control in &mut para.controls {
+                if let rhwp::model::control::Control::Table(table) = control {
+                    for cell in &mut table.cells {
+                        assign_ids(&mut cell.paragraphs, next);
+                    }
+                }
+            }
+        }
+    }
+    let mut next = 0;
+    for section in &mut doc.sections {
+        assign_ids(&mut section.paragraphs, &mut next);
+    }
+    let expected = body_table_instance_records(&doc);
+    assert_eq!(expected.len(), 14);
+    assert_eq!(next, 14);
+    assert_eq!(
+        expected
+            .iter()
+            .map(|(_, id, _)| *id)
+            .collect::<HashSet<_>>()
+            .len(),
+        14
+    );
     let zip_bytes = serialize_hwpx(&doc).expect("serialize");
+    let reopened = parse_hwpx(&zip_bytes).expect("reopen");
+    assert_eq!(body_table_instance_records(&reopened), expected);
 
     let cursor = std::io::Cursor::new(zip_bytes);
     let mut zip = zip::ZipArchive::new(cursor).expect("zip open");
@@ -501,7 +570,13 @@ fn para_ids_unique_across_body_and_table() {
         .map(|s| s.split('"').next().unwrap_or(""))
         .collect();
 
-    assert!(!ids.is_empty(), "직렬화 결과에 <hp:p> 요소가 없음");
+    assert_eq!(ids.len(), 14, "직렬화 문단 수");
+    assert_eq!(
+        ids.iter()
+            .map(|id| id.parse::<u32>().unwrap())
+            .collect::<Vec<_>>(),
+        expected.iter().map(|(_, id, _)| *id).collect::<Vec<_>>()
+    );
 
     let unique: HashSet<&str> = ids.iter().copied().collect();
     assert_eq!(
@@ -510,6 +585,76 @@ fn para_ids_unique_across_body_and_table() {
         "본문+셀 문단 id 중복 발견: {:?}",
         ids
     );
+}
+
+#[test]
+fn imported_body_and_table_instance_ids_keep_original_duplicates() {
+    use rhwp::model::control::Control;
+    use std::io::Read;
+    fn paragraph_ids(bytes: &[u8]) -> Vec<String> {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        zip.by_name("Contents/section0.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        xml.split("<hp:p id=\"")
+            .skip(1)
+            .map(|part| part.split('"').next().unwrap().to_owned())
+            .collect()
+    }
+    let source = include_bytes!("../../samples/hwpx/basic-table-01.hwpx");
+    let expected_ids = paragraph_ids(source);
+    assert_eq!(expected_ids.len(), 14);
+    assert_eq!(expected_ids[0], "3121190098");
+    assert_eq!(
+        expected_ids.iter().filter(|id| id.as_str() == "0").count(),
+        13
+    );
+    let mut doc = rhwp::parser::hwpx::parse_hwpx(source).unwrap();
+    let expected = body_table_instance_records(&doc);
+    assert_eq!(expected.len(), 14);
+    assert_eq!(doc.sections[0].paragraphs.len(), 2);
+    let body = &doc.sections[0].paragraphs;
+    let Control::Table(table) = body[0]
+        .controls
+        .iter()
+        .find(|control| matches!(control, Control::Table(_)))
+        .unwrap()
+    else {
+        panic!("table");
+    };
+    assert_eq!(
+        (table.row_count, table.col_count, table.cells.len()),
+        (3, 4, 12)
+    );
+    for (index, cell) in table.cells.iter().enumerate() {
+        assert_eq!(
+            (cell.row as usize, cell.col as usize),
+            (index / 4, index % 4)
+        );
+        assert_eq!(cell.paragraphs.len(), 1);
+        assert_eq!(cell.paragraphs[0].text, (index + 1).to_string());
+    }
+    assert!(
+        body[1].text.is_empty() && body[1].controls.is_empty(),
+        "trailing empty body paragraph"
+    );
+    assert!(
+        expected.iter().any(|(route, _, _)| route.len() > 2),
+        "fixture includes cell paragraphs"
+    );
+    assert!(expected.iter().any(|(_, _, text)| !text.is_empty()));
+    for _ in 0..2 {
+        let saved = rhwp::serializer::hwpx::serialize_hwpx(&doc).unwrap();
+        assert_eq!(paragraph_ids(&saved), expected_ids);
+        doc = rhwp::parser::hwpx::parse_hwpx(&saved).unwrap();
+        assert_eq!(
+            body_table_instance_records(&doc),
+            expected,
+            "body/cell route, source ID, text and order"
+        );
+    }
 }
 
 // ---------- 쪽/번호 인라인 컨트롤 직렬화 (pageHiding/pageNum/newNum) ----------

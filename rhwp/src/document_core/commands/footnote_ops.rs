@@ -281,6 +281,8 @@ impl DocumentCore {
             let section = &mut self.document.sections[section_idx];
             let para = &mut section.paragraphs[para_idx];
 
+            para.authored_text_runs = None;
+            para.para_text_terminal = None;
             let marker_utf16_pos = para.char_offsets.get(marker_pos).copied().unwrap_or(0);
             for offset in para.char_offsets.iter_mut().skip(marker_pos) {
                 if *offset >= 8 {
@@ -657,10 +659,57 @@ impl DocumentCore {
         char_offset: usize,
         text: &str,
     ) -> Result<String, HwpError> {
+        self.insert_text_in_footnote_with_content_impl(
+            section_idx,
+            para_idx,
+            control_idx,
+            fn_para_idx,
+            char_offset,
+            text,
+            None,
+        )
+    }
+
+    pub fn insert_text_content_in_footnote_native(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+        fn_para_idx: usize,
+        char_offset: usize,
+        content: &crate::model::paragraph::TextContent,
+    ) -> Result<String, HwpError> {
+        content
+            .validate()
+            .map_err(|error| HwpError::RenderError(error.to_string()))?;
+        self.insert_text_in_footnote_with_content_impl(
+            section_idx,
+            para_idx,
+            control_idx,
+            fn_para_idx,
+            char_offset,
+            &content.text,
+            Some(content),
+        )
+    }
+
+    fn insert_text_in_footnote_with_content_impl(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+        fn_para_idx: usize,
+        char_offset: usize,
+        text: &str,
+        content: Option<&crate::model::paragraph::TextContent>,
+    ) -> Result<String, HwpError> {
         let new_chars_count = text.chars().count();
         let fn_para =
             self.get_footnote_paragraph_mut(section_idx, para_idx, control_idx, fn_para_idx)?;
-        fn_para.insert_text_at(char_offset, text);
+        let inserted_at = fn_para.insert_text_at(char_offset, text);
+        if let Some(content) = content {
+            fn_para.restore_inserted_origins(inserted_at, content);
+        }
 
         self.reflow_footnote_paragraph(section_idx, para_idx, control_idx, fn_para_idx);
 
@@ -668,11 +717,11 @@ impl DocumentCore {
         self.mark_section_dirty(section_idx);
         self.paginate_if_needed();
 
-        let new_offset = char_offset + new_chars_count;
+        let new_offset = inserted_at + new_chars_count;
         self.event_log.push(DocumentEvent::TextInserted {
             section: section_idx,
             para: para_idx,
-            offset: char_offset,
+            offset: inserted_at,
             len: new_chars_count,
         });
         Ok(super::super::helpers::json_ok_with(&format!(
@@ -695,8 +744,10 @@ impl DocumentCore {
             self.get_footnote_paragraph_mut(section_idx, para_idx, control_idx, fn_para_idx)?;
         // [Task #2337] undo 재삽입용 삭제 텍스트 확보 (HF 와 동일 방식 — char 슬라이스로
         // delete_text_at 클램핑과 동일 범위). 역연산 삭제 커맨드가 사용한다.
-        let deleted_text: String = fn_para.text.chars().skip(char_offset).take(count).collect();
-        fn_para.delete_text_at(char_offset, count);
+        let actual_offset = char_offset.min(fn_para.text.chars().count());
+        let removed_content = fn_para.capture_text_content(actual_offset, count);
+        let deleted_text = removed_content.text.clone();
+        fn_para.delete_text_at(actual_offset, count);
 
         self.reflow_footnote_paragraph(section_idx, para_idx, control_idx, fn_para_idx);
 
@@ -707,13 +758,14 @@ impl DocumentCore {
         self.event_log.push(DocumentEvent::TextDeleted {
             section: section_idx,
             para: para_idx,
-            offset: char_offset,
-            count,
+            offset: actual_offset,
+            count: deleted_text.chars().count(),
         });
         Ok(super::super::helpers::json_ok_with(&format!(
-            "\"charOffset\":{},\"deletedText\":\"{}\"",
-            char_offset,
-            super::super::helpers::json_escape(&deleted_text)
+            "\"charOffset\":{},\"deletedText\":\"{}\",{}",
+            actual_offset,
+            super::super::helpers::json_escape(&deleted_text),
+            super::super::helpers::removed_content_fields(actual_offset, &removed_content)
         )))
     }
 

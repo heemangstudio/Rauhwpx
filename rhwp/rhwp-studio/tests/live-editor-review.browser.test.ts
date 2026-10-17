@@ -14,17 +14,48 @@ test(
   { timeout: 90000 },
   async (t) => {
     const cache = await mkdtemp(resolve(tmpdir(), 'rau-live-review-'));
-    const server = await createServer({
-      cacheDir: cache,
+    const overrides: Record<string, string | undefined> = {
+      RHWP_SKIP_AGENT_HUB: undefined,
+      VITE_RHWP_AGENT_URL: undefined,
+      RHWP_AGENT_TOKEN: undefined,
+      RHWP_AGENT_PORT: '0',
+      RHWP_PI_DIR: resolve(cache, 'pi'),
+      RHWP_WRITING_STYLE_DIR: resolve(cache, 'writing-style'),
+      RHWP_AGENT_INSTRUCTIONS_DIR: resolve(cache, 'instructions'),
+      RHWP_TEMPLATES_DIR: resolve(cache, 'templates'),
+      RHWP_REFERENCES_DIR: resolve(cache, 'references'),
+      RHWP_PROJECTS_DIR: resolve(cache, 'projects'),
+      RHWP_BROWSER_DATA_DIR: resolve(cache, 'browser'),
+      RHWP_BROWSER_HOST: undefined,
+      RHWP_BROWSER_OS_KEYRING: '0',
+    };
+    const previous = Object.fromEntries(Object.keys(overrides).map(key => [key, process.env[key]]));
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    let browser: any;
+    t.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          for (const [key, value] of Object.entries(previous)) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+          }
+          await rm(cache, { recursive: true, force: true });
+        }
+      }
+    });
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    server = await createServer({
+      cacheDir: resolve(cache, 'vite'),
       configFile: resolve(import.meta.dirname, '../vite.config.ts'),
       server: { port: 0, open: false, hmr: false },
       logLevel: 'error',
-    });
-    let browser: any;
-    t.after(async () => {
-      await browser?.close();
-      await server.close();
-      await rm(cache, { recursive: true, force: true });
     });
     await server.listen();
     browser = await puppeteer.launch({

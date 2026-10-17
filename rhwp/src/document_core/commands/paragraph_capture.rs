@@ -32,6 +32,7 @@ fn hash_paragraphs(paragraphs: &[Paragraph], h: &mut DefaultHasher) {
 
 fn hash_paragraph(p: &Paragraph, h: &mut DefaultHasher) {
     p.text.hash(h);
+    p.special_space_origins.hash(h);
     p.char_offsets.hash(h);
     p.para_shape_id.hash(h);
     p.style_id.hash(h);

@@ -182,14 +182,17 @@ pub fn parse_paragraph(records: &[Record]) -> Result<Paragraph, BodyTextError> {
 
         match record.tag_id {
             tags::HWPTAG_PARA_TEXT => {
-                let (text, offsets, field_ranges, tab_ext, orphan_field_ends) =
+                let (text, offsets, field_ranges, tab_ext, orphan_field_ends, origins) =
                     parse_para_text(&record.data);
                 para.text = text;
+                para.special_space_origins = origins;
                 para.char_offsets = offsets;
                 para.field_ranges = field_ranges;
                 para.tab_extended = tab_ext;
                 para.orphan_field_ends = orphan_field_ends;
                 para.has_para_text = true;
+                para.para_text_terminal = para_text_terminal(&record.data)
+                    .filter(|pos| pos.checked_add(1) == Some(para.char_count));
             }
             tags::HWPTAG_PARA_CHAR_SHAPE => {
                 para.char_shapes = parse_para_char_shape(&record.data);
@@ -293,6 +296,18 @@ fn parse_para_header(data: &[u8]) -> Paragraph {
     para
 }
 
+fn para_text_terminal(data: &[u8]) -> Option<u32> {
+    let mut pos = 0usize;
+    while pos + 2 <= data.len() {
+        let code = u16::from_le_bytes([data[pos], data[pos + 1]]);
+        if code == 0x0d {
+            return (pos + 2 == data.len()).then_some((pos / 2) as u32);
+        }
+        pos += if is_extended_ctrl_char(code) { 16 } else { 2 };
+    }
+    None
+}
+
 /// PARA_TEXT 바이너리 데이터에서 텍스트 추출
 ///
 /// HWP의 텍스트는 UTF-16LE로 저장되며, 0x0000~0x001F 범위는 컨트롤 문자.
@@ -306,8 +321,10 @@ fn parse_para_text(
     Vec<FieldRange>,
     Vec<[u16; 7]>,
     Vec<OrphanFieldEnd>,
+    Vec<crate::model::paragraph::SpecialSpaceOrigin>,
 ) {
     let mut text = String::new();
+    let mut origins = Vec::new();
     let mut char_offsets: Vec<u32> = Vec::new();
     let mut field_ranges: Vec<FieldRange> = Vec::new();
     let mut tab_extended: Vec<[u16; 7]> = Vec::new();
@@ -415,11 +432,19 @@ fn parse_para_text(
                 }
                 0x001E => {
                     char_offsets.push(code_unit_pos);
+                    origins.push(crate::model::paragraph::SpecialSpaceOrigin {
+                        char_idx: char_count,
+                        origin: crate::model::paragraph::SpecialSpaceOriginKind::NbSpace,
+                    });
                     text.push('\u{00A0}'); // 묶음 빈칸 (HWP 5.0 표 7: 코드 30, NO-BREAK SPACE)
                     char_count += 1;
                 }
                 0x001F => {
                     char_offsets.push(code_unit_pos);
+                    origins.push(crate::model::paragraph::SpecialSpaceOrigin {
+                        char_idx: char_count,
+                        origin: crate::model::paragraph::SpecialSpaceOriginKind::FwSpace,
+                    });
                     text.push('\u{2007}'); // 고정폭 빈칸 (HWP 5.0 표 7: 코드 31, FIGURE SPACE)
                     char_count += 1;
                 }
@@ -443,6 +468,12 @@ fn parse_para_text(
             }
             if let Some(c) = char::from_u32(ch as u32) {
                 char_offsets.push(code_unit_pos);
+                if matches!(c, '\u{00a0}' | '\u{2007}') {
+                    origins.push(crate::model::paragraph::SpecialSpaceOrigin {
+                        char_idx: char_count,
+                        origin: crate::model::paragraph::SpecialSpaceOriginKind::Literal,
+                    });
+                }
                 text.push(c);
                 char_count += 1;
             }
@@ -456,6 +487,7 @@ fn parse_para_text(
         field_ranges,
         tab_extended,
         orphan_field_ends,
+        origins,
     )
 }
 
@@ -1050,3 +1082,20 @@ fn parse_ctrl_data_field_name(data: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod empty_text_terminal_tests {
+    use super::para_text_terminal;
+
+    #[test]
+    fn empty_text_fragment_terminal_requires_complete_raw_stream() {
+        assert_eq!(para_text_terminal(&[13, 0]), Some(0));
+        assert_eq!(para_text_terminal(&[13, 0, 0, 0]), None);
+        assert_eq!(para_text_terminal(&[2, 0, 13, 0]), None);
+        let mut control = vec![0u8; 16];
+        control[0] = 2;
+        control[2] = 13; // control payload, not a terminal marker
+        control.extend_from_slice(&[13, 0]);
+        assert_eq!(para_text_terminal(&control), Some(8));
+    }
+}

@@ -6812,10 +6812,9 @@ export class AgentToolExecutor {
       }
       props['koreanBreakUnit'] = v;
     }
-    // 저장 스케일 주의: spacing 은 1x(pt*100), 여백/들여쓰기는 2x(pt*200)
-    // — para-shape-dialog.ts ptToRaw/ptToRaw2x 와 동일 규칙 (리뷰 확정 결함 수정).
+    // 문단 위·아래 간격과 여백/들여쓰기는 2x 저장값(pt*200).
     for (const [ptKey, huKey, scale] of [
-      ['spaceBeforePt', 'spacingBefore', 1], ['spaceAfterPt', 'spacingAfter', 1],
+      ['spaceBeforePt', 'spacingBefore', 2], ['spaceAfterPt', 'spacingAfter', 2],
       ['indentPt', 'indent', 2], ['marginLeftPt', 'marginLeft', 2], ['marginRightPt', 'marginRight', 2],
     ] as const) {
       const v = args[ptKey];

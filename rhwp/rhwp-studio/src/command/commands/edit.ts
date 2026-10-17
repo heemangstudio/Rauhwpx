@@ -1,3 +1,4 @@
+import { findSearchStart, navigateToFindHit, type FindNavigationHandler } from '@/core/find-navigation';
 import type { CommandDef, CommandServices } from '../types';
 import { FieldEditDialog } from '@/ui/field-edit-dialog';
 import { FindDialog } from '@/ui/find-dialog';
@@ -158,26 +159,13 @@ export const editCommands: CommandDef[] = [
         const ih = services.getInputHandler();
         if (!ih) return;
         const pos = ih.getCursorPosition();
+        const start = findSearchStart(pos, services.wasm);
         const result = services.wasm.searchText(
-          FindDialog.lastQuery, pos.sectionIndex, pos.paragraphIndex,
-          pos.charOffset, true, FindDialog.lastCaseSensitive,
+          FindDialog.lastQuery, start.section, start.paragraph,
+          start.offset, true, FindDialog.lastCaseSensitive, start.path,
         );
         if (result.found) {
-          ih.moveCursorTo({
-            sectionIndex: result.sec!,
-            paragraphIndex: result.para!,
-            charOffset: result.charOffset!,
-          });
-          const cursor = (ih as any).cursor;
-          if (cursor) {
-            cursor.setAnchor();
-            cursor.moveTo({
-              sectionIndex: result.sec!,
-              paragraphIndex: result.para!,
-              charOffset: result.charOffset! + result.length!,
-            });
-          }
-          (ih as any).updateCaret?.();
+          navigateToFindHit(ih as unknown as FindNavigationHandler, result, services.wasm);
         }
       }
     },

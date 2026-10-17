@@ -13,9 +13,13 @@ fn native_hwpx_cell_margin_switch_respects_explicit_zero_table_margin() {
 
     assert_eq!(cell.effective_hwpx_padding(&table_margin).top, 0);
     assert_eq!(cell.effective_hwpx_padding(&table_margin).left, 0);
+    assert_eq!(cell.effective_padding(&table_margin).top, 0);
+    assert_eq!(cell.effective_padding(&table_margin).left, 0);
     cell.apply_inner_margin = true;
     assert_eq!(cell.effective_hwpx_padding(&table_margin).top, 141);
     assert_eq!(cell.effective_hwpx_padding(&table_margin).left, 200);
+    assert_eq!(cell.effective_padding(&table_margin).top, 141);
+    assert_eq!(cell.effective_padding(&table_margin).left, 200);
 }
 
 /// 테스트용 N×M 표 생성 헬퍼

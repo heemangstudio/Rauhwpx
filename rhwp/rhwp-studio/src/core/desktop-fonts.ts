@@ -31,8 +31,7 @@ import {
   getLocalFontState,
   getSessionLocalFontFace,
   getSessionLocalFontRecords,
-  importedFontSlant,
-  importedFontWeight,
+  importedFontPhysicalStyle,
   localFontFaceKey,
   queryLocalFontAccessPermission,
   readLocalFontAccessBytes,
@@ -993,8 +992,8 @@ function errorText(error: unknown): string {
 
 function recordStyleFlags(record: LocalFontRecord): { bold: boolean; italic: boolean } {
   return {
-    bold: Number(importedFontWeight(record.style)) >= 600,
-    italic: importedFontSlant(record.style) === 'italic',
+    bold: importedFontPhysicalStyle(record).bold,
+    italic: importedFontPhysicalStyle(record).italic,
   };
 }
 
@@ -1504,7 +1503,7 @@ function recordSlots(anchor: LocalFontRecord, records: readonly LocalFontRecord[
     const record = group
       .filter(candidate => recordSlot(candidate) === slot)
       .sort((a, b) => (a === anchor ? -1 : b === anchor ? 1 : 0)
-        || Math.abs(Number(importedFontWeight(a.style)) - target) - Math.abs(Number(importedFontWeight(b.style)) - target))[0];
+        || Math.abs(importedFontPhysicalStyle(a).weight - target) - Math.abs(importedFontPhysicalStyle(b).weight - target))[0];
     if (record) slots.push({ slot, record });
   }
   if (!slots.some(entry => entry.slot === 'regular')) {
@@ -1531,7 +1530,7 @@ function resolveDetectedRecord(
   const named = matches.find(record => exactFontKey(record.postscriptName) === key || exactFontKey(record.fullName) === key);
   if (named) return named;
   return [...matches].sort((a, b) => (recordSlot(a) === 'regular' ? 0 : 1) - (recordSlot(b) === 'regular' ? 0 : 1)
-    || Math.abs(Number(importedFontWeight(a.style)) - 400) - Math.abs(Number(importedFontWeight(b.style)) - 400))[0] ?? null;
+    || Math.abs(importedFontPhysicalStyle(a).weight - 400) - Math.abs(importedFontPhysicalStyle(b).weight - 400))[0] ?? null;
 }
 
 function localAccessAliases(plan: LocalAccessPlan, record: LocalFontRecord): string[] {

@@ -31,6 +31,116 @@ fn a4_page_def() -> PageDef {
 }
 
 #[test]
+fn hidden_empty_paragraph_keeps_zero_flow_and_the_following_cursor_origin() {
+    use crate::document_core::DocumentCore;
+    use crate::model::provenance::FontMetricsPolicy;
+
+    fn line_y(node: &RenderNode, paragraph: usize) -> Option<f64> {
+        if matches!(&node.node_type, RenderNodeType::TextLine(line)
+            if line.para_index == Some(paragraph))
+        {
+            return Some(node.bbox.y);
+        }
+        node.children
+            .iter()
+            .find_map(|child| line_y(child, paragraph))
+    }
+
+    let core = DocumentCore::from_local_file_bytes_with_font_metrics(
+        include_bytes!("../../../samples/exam_science.hwp"),
+        FontMetricsPolicy::HcrDeclared,
+    )
+    .expect("science fixture");
+    core.build_page_render_tree(1).expect("load column context");
+    let page = core.pagination[0]
+        .pages
+        .iter()
+        .find(|page| {
+            page.column_contents.iter().any(|column| {
+                column
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, PageItem::FullParagraph { para_index: 64 }))
+            })
+        })
+        .expect("column with consecutive hidden paragraphs");
+    let mut column = page
+        .column_contents
+        .iter()
+        .find(|column| {
+            column
+                .items
+                .iter()
+                .any(|item| matches!(item, PageItem::FullParagraph { para_index: 64 }))
+        })
+        .expect("hidden paragraph column")
+        .clone();
+    let mut paragraphs = core.section_render_paragraphs(0).to_vec();
+    let mut composed = core.section_render_composed(0).to_vec();
+    let mut following = paragraphs[64].clone();
+    following.text = "After hidden paragraph".into();
+    following.char_offsets = (0..following.text.chars().count() as u32).collect();
+    following.char_count = following.text.chars().count() as u32 + 1;
+    following.line_segs[0].vertical_pos +=
+        following.line_segs[0].line_height + following.line_segs[0].line_spacing;
+    let following_index = paragraphs.len();
+    composed.push(crate::renderer::composer::compose_paragraph_with_policy(
+        &following,
+        core.styles.font_metrics_policy,
+    ));
+    paragraphs.push(following);
+    column.items.push(PageItem::FullParagraph {
+        para_index: following_index,
+    });
+    let hidden = core.layout_engine.hidden_empty_paras.borrow().clone();
+    assert!(hidden.contains(&63) && hidden.contains(&64));
+    let render = |hide_second: bool| {
+        let mut selection = hidden.clone();
+        if !hide_second {
+            selection.remove(&64);
+        }
+        core.layout_engine.set_hidden_empty_paras(&selection);
+        let mut tree = PageRenderTree::new(
+            page.page_index,
+            page.layout.page_width,
+            page.layout.page_height,
+        );
+        let zone = column.zone_layout.as_ref().unwrap_or(&page.layout);
+        let (node, _) = core.layout_engine.build_single_column(
+            &mut tree,
+            &mut Vec::new(),
+            &column,
+            page,
+            &paragraphs,
+            &composed,
+            &core.styles,
+            &core.document.bin_data_content,
+            &core.measured_tables[0],
+            &page.layout,
+            zone,
+            &zone.column_areas[usize::from(column.column_index)],
+            0,
+            &column.wrap_around_paras,
+            &[],
+        );
+        [63, 64, following_index]
+            .map(|paragraph| line_y(&node, paragraph).expect("paragraph line remains selectable"))
+    };
+    let normal_ladder = render(false);
+    let zero_flow = render(true);
+    assert!(
+        normal_ladder[1] > normal_ladder[0] + 1.0,
+        "a nonhidden empty paragraph still follows its saved ladder"
+    );
+    assert!(
+        (zero_flow[1] - zero_flow[0]).abs() < 1e-6,
+        "consecutive hidden paragraphs consume no flow height: {zero_flow:?}"
+    );
+    assert!((zero_flow[2] - normal_ladder[2]).abs() < 1e-6,
+        "the eligible saved-vpos call must retain the following paragraph's origin: hidden={zero_flow:?}, normal={normal_ladder:?}");
+}
+
+#[test]
 fn following_table_moves_after_pending_cell_equation_grows_previous_table() {
     use crate::document_core::DocumentCore;
 
@@ -160,6 +270,66 @@ fn following_table_moves_after_pending_cell_equation_grows_previous_table() {
 }
 
 #[test]
+fn nested_inline_growth_keeps_root_paper_allocation_and_publishes_the_child() {
+    use crate::document_core::DocumentCore;
+
+    let mut core = DocumentCore::from_bytes(include_bytes!("../../../samples/exam_science.hwp"))
+        .expect("load nested inline tables");
+    let Control::Table(outer) = &mut core.document_mut().sections[0].paragraphs[0].controls[6]
+    else {
+        panic!("outer table")
+    };
+    outer.common.treat_as_char = false;
+    outer.common.vert_rel_to = VertRelTo::Paper;
+    outer.common.horz_rel_to = HorzRelTo::Paper;
+    outer.common.vert_align = VertAlign::Top;
+    outer.common.text_wrap = TextWrap::InFrontOfText;
+    outer.caption = None;
+    let allocation = outer.common.height;
+    let parent_floor = outer.cells[0].height;
+    let host_height = outer.cells[0].paragraphs[3].line_segs[0].line_height;
+    let Control::Table(child) = &outer.cells[0].paragraphs[3].controls[0] else {
+        panic!("nested table")
+    };
+    let original_child_height = child.common.height;
+    let child_floor = child.cells[1].height;
+
+    core.insert_text_in_cell_by_path(
+        0,
+        0,
+        &[(6, 0, 3), (0, 1, 0)],
+        0,
+        &"nested inline text ".repeat(12),
+    )
+    .expect("grow nested table inside a paper allocation");
+
+    let assert_geometry = |core: &DocumentCore| {
+        let Control::Table(outer) = &core.document().sections[0].paragraphs[0].controls[6] else {
+            panic!("outer table")
+        };
+        assert_eq!(outer.common.height, allocation);
+        assert_eq!(outer.cells[0].height, parent_floor);
+        let host = &outer.cells[0].paragraphs[3];
+        let Control::Table(child) = &host.controls[0] else {
+            panic!("nested table")
+        };
+        assert!(child.common.height > original_child_height);
+        assert!(host.line_segs[0].line_height > host_height);
+        assert_eq!(child.cells[1].height, child_floor);
+        child.common.height
+    };
+    let child_height = assert_geometry(&core);
+    let hwpx = core.export_hwpx_native().expect("save nested growth");
+    let reopened = DocumentCore::from_bytes(&hwpx).expect("reopen nested growth");
+    assert_eq!(assert_geometry(&reopened), child_height);
+    let hwp = core
+        .export_hwp_with_adapter()
+        .expect("save binary nested growth");
+    let binary = DocumentCore::from_bytes(&hwp).expect("reopen binary nested growth");
+    assert_eq!(assert_geometry(&binary), child_height);
+}
+
+#[test]
 fn grown_paper_overlay_table_splits_before_page_number() {
     use crate::document_core::DocumentCore;
 
@@ -283,6 +453,153 @@ fn anchored_table_growth_keeps_authored_overlaps_and_unrelated_floats() {
         shift(0, VertRelTo::Paper, TextWrap::BehindText, 10.0, 120.0),
         0.0
     );
+}
+
+#[test]
+fn grown_inline_row_tail_remains_visible_after_hwpx_and_binary_reopen() {
+    use crate::document_core::DocumentCore;
+
+    fn intersect_clip(parent: BoundingBox, own: BoundingBox) -> BoundingBox {
+        let x = parent.x.max(own.x);
+        let y = parent.y.max(own.y);
+        let right = (parent.x + parent.width).min(own.x + own.width);
+        let bottom = (parent.y + parent.height).min(own.y + own.height);
+        BoundingBox::new(x, y, (right - x).max(0.0), (bottom - y).max(0.0))
+    }
+    fn visible_tail(node: &RenderNode, active_clip: BoundingBox, out: &mut String) {
+        if !node.visible {
+            return;
+        }
+        let own_clip = match &node.node_type {
+            RenderNodeType::Body {
+                clip_rect: Some(rect),
+            } => Some(*rect),
+            RenderNodeType::TableCell(cell) if cell.clip => Some(node.bbox),
+            _ => None,
+        };
+        let active_clip = own_clip
+            .map(|clip| intersect_clip(active_clip, clip))
+            .unwrap_or(active_clip);
+        if let RenderNodeType::TextRun(run) = &node.node_type {
+            let selected = run.cell_context.as_ref().is_some_and(|context| {
+                context.parent_para_index == 0
+                    && context.path.len() == 1
+                    && context.path[0].control_index == 2
+                    && context.path[0].cell_index == 48
+                    && context.path[0].cell_para_index == 5
+            });
+            if selected && run.text.chars().any(|ch| !ch.is_whitespace()) {
+                assert!(
+                    active_clip.contains(&node.bbox),
+                    "tail text logical bounds {:?} exceed its actual paint clip {:?}",
+                    node.bbox,
+                    active_clip,
+                );
+                out.push_str(&run.text);
+            }
+        }
+        for child in &node.children {
+            visible_tail(child, active_clip, out);
+        }
+    }
+    fn assert_fragment_budget(
+        node: &RenderNode,
+        body_budget: Option<BoundingBox>,
+        page_bounds: BoundingBox,
+    ) {
+        // Body bbox is the layout allocation, independent of its expanded paint clip.
+        let body_budget = if matches!(node.node_type, RenderNodeType::Body { .. }) {
+            Some(node.bbox)
+        } else {
+            body_budget
+        };
+        if matches!(&node.node_type, RenderNodeType::Table(table)
+            if table.para_index == Some(0) && table.control_index == Some(2))
+        {
+            let body = body_budget.expect("inline fragment belongs to a body allocation");
+            assert!(
+                page_bounds.contains(&node.bbox),
+                "inline fragment exceeds the page"
+            );
+            assert!(node.bbox.y >= body.y - 0.5);
+            assert!(
+                node.bbox.y + node.bbox.height <= body.y + body.height + 0.5,
+                "grown inline fragment exceeds the body budget",
+            );
+        }
+        for child in &node.children {
+            assert_fragment_budget(child, body_budget, page_bounds);
+        }
+    }
+    fn assert_tail(core: &DocumentCore, expected: &str, allocation: u32, floors: &[u32]) {
+        let Control::Table(table) = &core.document().sections[0].paragraphs[0].controls[2] else {
+            panic!("inline form table")
+        };
+        assert_eq!(table.common.height, allocation);
+        assert_eq!(
+            table
+                .cells
+                .iter()
+                .map(|cell| cell.height)
+                .collect::<Vec<_>>(),
+            floors
+        );
+        let mut visible = String::new();
+        for page in 0..core.page_count() {
+            let tree = core
+                .build_page_render_tree(page)
+                .expect("render saved table fragments");
+            assert_fragment_budget(&tree.root, None, tree.root.bbox);
+            visible_tail(&tree.root, tree.root.bbox, &mut visible);
+        }
+        let compact = |text: &str| {
+            text.chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        };
+        assert!(
+            compact(&visible).contains(&compact(expected)),
+            "saved table clipped its unchanged tail paragraph"
+        );
+    }
+
+    let mut core = DocumentCore::from_bytes(include_bytes!(
+        "../../../samples/task2319/20544835_jinan_apt_form.hwp"
+    ))
+    .expect("load splittable inline form");
+    core.build_page_render_tree(0).expect("load original rows");
+    let Control::Table(table) = &core.document().sections[0].paragraphs[0].controls[2] else {
+        panic!("inline form table")
+    };
+    let allocation = table.common.height;
+    let floors = table
+        .cells
+        .iter()
+        .map(|cell| cell.height)
+        .collect::<Vec<_>>();
+    let tail = table.cells[48].paragraphs[5].text.clone();
+    let offset = table.cells[0].paragraphs[0].text.chars().count();
+    core.insert_text_in_cell_native(
+        0,
+        0,
+        2,
+        0,
+        0,
+        offset,
+        &format!(" {}", "추가 내용 ".repeat(12)),
+    )
+    .expect("grow title without altering the tail");
+    assert_tail(&core, &tail, allocation, &floors);
+    let hwpx = core.export_hwpx_native().expect("save grown form as HWPX");
+    let reopened = DocumentCore::from_bytes(&hwpx).expect("reopen HWPX form");
+    assert_tail(&reopened, &tail, allocation, &floors);
+    for source in [&core, &reopened] {
+        let hwp = source
+            .export_hwp_with_adapter()
+            .expect("save grown form as binary HWP");
+        let binary = DocumentCore::from_bytes(&hwp).expect("reopen binary form");
+        assert_tail(&binary, &tail, allocation, &floors);
+    }
 }
 
 #[test]
@@ -1373,6 +1690,320 @@ fn issue2439_fragment_margin_evidence_is_narrow_and_structural() {
         0,
         0,
     ));
+}
+
+// 임의의 서로 다른 위·아래 여백으로 저장 배타 상자와 실제 표 배치를 함께 검사한다.
+fn render_native_multicell_margin_box(
+    next_vpos: i32,
+    pushed_hu: i32,
+    stale_height: bool,
+    synthetic_next: bool,
+    edit: u8,
+) -> (BoundingBox, f64, LayoutRect) {
+    let mut table = Table {
+        row_count: 2,
+        col_count: 1,
+        page_break: TablePageBreak::RowBreak,
+        outer_margin_top: 180,
+        outer_margin_bottom: 270,
+        cells: (0..2)
+            .map(|row| Cell {
+                row,
+                col: 0,
+                row_span: 1,
+                col_span: 1,
+                width: 15_000,
+                height: 3_000,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    table.common.width = 15_000;
+    table.common.height = if stale_height { 5_999 } else { 6_000 };
+    table.common.treat_as_char = false;
+    table.common.text_wrap = TextWrap::TopAndBottom;
+    table.common.vert_rel_to = VertRelTo::Para;
+    table.common.vert_align = VertAlign::Top;
+    table.common.horz_rel_to = HorzRelTo::Column;
+    table.common.horz_align = HorzAlign::Left;
+    table.common.allow_overlap = false;
+    if edit == 3 {
+        table.outer_margin_top = -180;
+    }
+    let line = |vpos, synthetic| LineSeg {
+        vertical_pos: vpos,
+        line_height: 1_000,
+        text_height: 1_000,
+        baseline_distance: 850,
+        line_spacing: 600,
+        segment_width: 30_000,
+        tag: if synthetic {
+            LineSeg::TAG_IMPLEMENTATION_PROPERTY
+        } else {
+            0
+        },
+        ..Default::default()
+    };
+    let mut paragraphs = [
+        Paragraph {
+            char_count: 9,
+            controls: vec![Control::Table(Box::new(table))],
+            line_segs: vec![line(1_000, false)],
+            ..Default::default()
+        },
+        Paragraph {
+            char_count: 1,
+            line_segs: vec![line(next_vpos, synthetic_next)],
+            ..Default::default()
+        },
+    ];
+    let styles = ResolvedStyleSet {
+        para_styles: vec![crate::renderer::style_resolver::ResolvedParaStyle::default()],
+        ..ResolvedStyleSet::default()
+    };
+    let measurer = crate::renderer::height_measurer::HeightMeasurer::with_default_dpi();
+    let composed: Vec<_> = paragraphs.iter().map(compose_paragraph).collect();
+    let loaded = measurer.measure_section(&paragraphs, &composed, &styles, None);
+    assert!(loaded.tables[0].baseline_row_heights.is_none());
+    let mut measured = loaded.tables.clone();
+    if edit > 0 {
+        let Control::Table(table) = &mut paragraphs[0].controls[0] else {
+            unreachable!()
+        };
+        table.dirty = true; // 같은 높이 교체도 기존 편집 경로가 설정한다.
+        table.cells[1].dirty_flag = true;
+        if edit == 1 || edit == 4 {
+            let composed: Vec<_> = paragraphs.iter().map(compose_paragraph).collect();
+            let incremental = crate::renderer::height_measurer::HeightMeasurer::with_default_dpi()
+                .with_session_edited(true);
+            measured = if edit == 1 {
+                incremental.measure_section_incremental(
+                    &paragraphs,
+                    &composed,
+                    &styles,
+                    &loaded,
+                    None,
+                )
+            } else {
+                incremental.measure_section_selective(
+                    &paragraphs,
+                    &composed,
+                    &styles,
+                    &loaded,
+                    Some(&[false, false]),
+                    None,
+                )
+            }
+            .tables;
+            assert!(measured[0].baseline_row_heights.is_some());
+        }
+        if edit == 2 {
+            let Control::Table(table) = &mut paragraphs[0].controls[0] else {
+                unreachable!()
+            };
+            // 실제 셀 재측정으로 3000HU 선언 하한을 보존한 채 콘텐츠가 5000HU로 자란다.
+            table.cells[1].dirty_flag = true;
+            table.cells[1].paragraphs = vec![Paragraph {
+                char_count: 1,
+                line_segs: vec![LineSeg {
+                    line_height: 5_000,
+                    text_height: 5_000,
+                    segment_width: 15_000,
+                    tag: LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }];
+            let grown =
+                measurer.measure_table_after_edit(table, 0, 0, &styles, 0, 1, measured.first());
+            let height = crate::renderer::px_to_hwpunit_round(grown.total_height, DEFAULT_DPI);
+            table.sync_ctrl_height(height as u32);
+            assert_eq!(
+                table.cells[1].height, 3_000,
+                "authored row floor is preserved"
+            );
+            assert_eq!(
+                grown.baseline_row_heights.as_ref().map(|rows| rows.len()),
+                Some(2)
+            );
+            assert!((grown.row_heights[1] - hwpunit_to_px(5_000, DEFAULT_DPI)).abs() < 0.001);
+            measured = vec![grown];
+            // 이 저수준 배치 검사는 현재 높이와 일치하는 편집 후 원본을 입력한다.
+            // 실제 명령의 LS 발행은 public DocumentCore 통합 검사에서 검증한다.
+            paragraphs[1].line_segs[0].vertical_pos = 1_000 + height + 180 + 270;
+        }
+    }
+    let composed: Vec<_> = paragraphs.iter().map(compose_paragraph).collect();
+    let layout = PageLayoutInfo::from_page_def_default(&a4_page_def(), &ColumnDef::default());
+    let area = layout.column_areas[0].clone();
+    let page = PageContent {
+        page_index: 0,
+        page_number: 1,
+        section_index: 0,
+        layout,
+        column_contents: vec![ColumnContent {
+            column_index: 0,
+            start_height: 0.0,
+            endnote_flow: false,
+            items: vec![PageItem::Table {
+                para_index: 0,
+                control_index: 0,
+            }],
+            zone_layout: None,
+            zone_y_offset: 0.0,
+            wrap_around_paras: Vec::new(),
+            used_height: 0.0,
+            wrap_anchors: std::collections::HashMap::new(),
+        }],
+        active_header: None,
+        active_footer: None,
+        page_number_pos: None,
+        page_hide: None,
+        footnotes: Vec::new(),
+        active_master_page: None,
+        extra_master_pages: Vec::new(),
+    };
+    let ctx = ColumnItemCtx {
+        page_content: &page,
+        endnote_flow: false,
+        paragraphs: &paragraphs,
+        composed: &composed,
+        styles: &styles,
+        bin_data_content: &[],
+        measured_tables: &measured,
+        layout: &page.layout,
+        col_area: &area,
+        outline_numbering_id: 0,
+        multi_col_width: None,
+        prev_tac_seg_applied: false,
+        wrap_around_paras: &[],
+        wrap_anchors: &page.column_contents[0].wrap_anchors,
+    };
+    let engine = LayoutEngine::with_default_dpi();
+    engine
+        .profile
+        .set(crate::model::provenance::LayoutCompatibilityProfile::new(
+            false, false, false, false, true,
+        ));
+    let mut tree = PageRenderTree::new(0, page.layout.page_width, page.layout.page_height);
+    let mut parent = RenderNode::new(
+        tree.next_id(),
+        RenderNodeType::Column(0),
+        BoundingBox::new(area.x, area.y, area.width, area.height),
+    );
+    let host_y = area.y + hwpunit_to_px(1_000, DEFAULT_DPI);
+    let mut lanes = ParaFloatLanes::new();
+    if pushed_hu > 0 {
+        lanes.entry(0).or_default().place(
+            area.x,
+            area.x + area.width,
+            host_y,
+            hwpunit_to_px(pushed_hu, DEFAULT_DPI),
+        );
+    }
+    let (flow, _) = engine.layout_table_item(
+        &mut tree,
+        &mut parent,
+        &mut Vec::new(),
+        &mut std::collections::HashMap::new(),
+        &mut lanes,
+        &mut Vec::new(),
+        0,
+        0,
+        &ctx,
+        host_y,
+    );
+    if edit == 3 {
+        let lane = lanes
+            .get(&0)
+            .and_then(|lanes| lanes.lanes().last())
+            .expect("recorded lane");
+        assert!(
+            lane.top >= host_y,
+            "unsupported negative top margin moved the raw native lane above its host"
+        );
+    }
+    fn table_box(node: &RenderNode) -> Option<BoundingBox> {
+        if matches!(node.node_type, RenderNodeType::Table(_)) {
+            return Some(node.bbox);
+        }
+        node.children.iter().find_map(table_box)
+    }
+    (
+        table_box(&parent).expect("painted multicell table"),
+        flow,
+        area,
+    )
+}
+
+#[test]
+fn native_multicell_exact_margin_box_moves_paint_and_flow_without_resizing() {
+    for pushed in [0, 900] {
+        let (paint, flow, area) =
+            render_native_multicell_margin_box(7_450, pushed, false, false, 0);
+        let top = area.y + hwpunit_to_px(1_000 + pushed.max(180), DEFAULT_DPI);
+        assert!((paint.y - top).abs() < 0.001);
+        assert!((paint.height - hwpunit_to_px(6_000, DEFAULT_DPI)).abs() < 0.001);
+        assert!((paint.x - area.x).abs() < 0.001);
+        assert!((flow - top - hwpunit_to_px(6_000 + 270, DEFAULT_DPI)).abs() < 0.001);
+    }
+}
+
+#[test]
+fn native_multicell_margin_box_keeps_anchor_for_dirty_noop_and_live_growth() {
+    for (edit, height) in [(1, 6_000), (2, 8_000)] {
+        for pushed in [0, 900] {
+            let (paint, flow, area) =
+                render_native_multicell_margin_box(7_450, pushed, false, false, edit);
+            let top = area.y + hwpunit_to_px(1_000 + pushed.max(180), DEFAULT_DPI);
+            assert!((paint.y - top).abs() < 0.001);
+            assert!((paint.height - hwpunit_to_px(height, DEFAULT_DPI)).abs() < 0.001);
+            assert!((paint.x - area.x).abs() < 0.001);
+            assert!((flow - top - hwpunit_to_px(height + 270, DEFAULT_DPI)).abs() < 0.001);
+        }
+    }
+}
+
+#[test]
+fn native_margin_box_real_incremental_noop_keeps_source_interpretation() {
+    // 원본 common5999와 저장 델타6450은 맞지 않는다. 본문과 행이 같은
+    // 실제 dirty 증분 재측정이 그 원본 해석을 바꾸면 안 된다.
+    let (before, before_flow, _) = render_native_multicell_margin_box(7_450, 0, true, false, 0);
+    for route in [1, 4] {
+        let (after, after_flow, _) =
+            render_native_multicell_margin_box(7_450, 0, true, false, route);
+        assert!(
+            (after.y - before.y).abs() < 0.001,
+            "baseline None→Some changed native anchor eligibility"
+        );
+        assert!(
+            (after_flow - before_flow).abs() < 0.001,
+            "no-op remeasurement changed native flow"
+        );
+    }
+}
+
+#[test]
+fn native_margin_box_negative_top_does_not_move_recorded_lane_above_host() {
+    render_native_multicell_margin_box(7_090, 0, false, false, 3);
+}
+
+#[test]
+fn native_multicell_margin_box_rejects_reset_stale_and_mismatched_ladders() {
+    for (next, stale_height, synthetic_next) in [
+        (0, false, false),
+        (7_449, false, false),
+        (7_451, false, false),
+        (7_450, true, false),
+        (7_450, false, true),
+        (2_600, false, false),
+    ] {
+        let (paint, _, area) =
+            render_native_multicell_margin_box(next, 0, stale_height, synthetic_next, 0);
+        assert!((paint.y - area.y - hwpunit_to_px(1_000, DEFAULT_DPI)).abs() < 0.001);
+        assert!((paint.height - hwpunit_to_px(6_000, DEFAULT_DPI)).abs() < 0.001);
+    }
 }
 
 #[test]
@@ -3641,6 +4272,7 @@ fn test_tac_leading_width_block_table_full_line() {
         inline_controls: Vec::new(),
         numbering_text: None,
         numbering_head: None,
+        numbering_known_horizontal: false,
         tac_controls: Vec::new(), // block 취급이라 비어있음
         footnote_positions: Vec::new(),
         tab_extended: Vec::new(),
@@ -3737,6 +4369,7 @@ fn test_tac_leading_width_inline_table_partial() {
         inline_controls: Vec::new(),
         numbering_text: None,
         numbering_head: None,
+        numbering_known_horizontal: false,
         tac_controls: vec![(2, 1000, 0)], // pos=2 (ab 뒤), control_index=0
         footnote_positions: Vec::new(),
         tab_extended: Vec::new(),
@@ -5077,6 +5710,7 @@ fn footnote_justifies_wrapped_body_and_keeps_generated_marker_untracked() {
 
     let make_line = |text: &str, char_start| ComposedLine {
         runs: vec![ComposedTextRun {
+            special_space_origins: Vec::new(),
             text: text.into(),
             char_style_id: 0,
             lang_index: 0,
@@ -5098,6 +5732,7 @@ fn footnote_justifies_wrapped_body_and_keeps_generated_marker_untracked() {
         inline_controls: vec![],
         numbering_text: None,
         numbering_head: None,
+        numbering_known_horizontal: false,
         tac_controls: vec![],
         footnote_positions: vec![],
         tab_extended: vec![],

@@ -1,14 +1,13 @@
 //! Issue #1785: 셀 안 여백 선택 규칙은 레이아웃과 높이 측정이 단일 출처를 공유해야 한다.
 //!
-//! height_measurer 가 단순 `aim ? cell : table` 규칙을 쓰는 동안 레이아웃
-//! (resolve_cell_padding)은 레거시 보존값 규칙(aim=false 여도 cell > table 이면 셀 값)을
-//! 써서, aim=false + table.padding=0 + cell.padding=140 인 micro-grid 결재란 표에서
-//! 예약 높이(측정)와 실제 렌더가 어긋났다. HWPX→HWP 어댑터의 width_ref bit0 계약이
-//! aim 을 true 로 물질화하면 재파스본만 측정이 달라져 라운드트립 렌더가 9.3px 틀어진다
-//! (36381023 발신명의 표: HWPX 244.9px vs 재파스 254.2px).
+//! 셀의 hasMargin=false 는 0을 포함한 표 안 여백을 상속한다. hasMargin=true 는
+//! 셀 값을 사용하고, 음수 결측 센티널만 표 값으로 폴백한다. 측정과 그리기는 같은
+//! 선택 규칙을 사용해야 하며 HWPX→HWP 어댑터가 micro-grid width_ref bit0를 켤 때도
+//! 바뀐 플래그에 맞춰 유효 여백을 물질화해야 한다.
 //!
-//! 수정: 규칙 본체를 `Cell::use_cell_padding_axis`/`effective_padding` 으로 추출하고
-//! 두 소비자가 공유. 이후 원본/라운드트립 렌더가 일치한다 (render-diff PASS).
+//! 종전 cell>table/2500HU 휴리스틱은 hasMargin=false/table=0 에서 저장 셀 값을
+//! 채택했다. Polaris mode3의 getBorderMargin(true)는 이때 표의 0을 상속한다.
+//! 아래 원본/재파스 기하 검사는 여백 선택과 별개인 왕복 일관성 계약을 유지한다.
 
 use std::fs;
 use std::path::Path;
@@ -29,19 +28,19 @@ fn pad(v: i16) -> Padding {
 
 #[test]
 fn issue_1785_effective_padding_rule() {
-    // aim=false + 레거시 보존값(cell > table, < 2500) → 셀 값 사용
+    // hasMargin=false → 저장 셀 값과 무관하게 표의 명시적 0을 상속한다
     let mut cell = Cell {
         padding: pad(140),
         ..Default::default()
     };
     cell.apply_inner_margin = false;
-    assert_eq!(cell.effective_padding(&pad(0)).top, 140);
+    assert_eq!(cell.effective_padding(&pad(0)).top, 0);
 
-    // aim=false + cell <= table → 표 기본값
+    // hasMargin=false → 0이 아닌 표 기본값도 그대로 상속한다
     assert_eq!(cell.effective_padding(&pad(140)).top, 140);
     assert_eq!(cell.effective_padding(&pad(200)).top, 200);
 
-    // aim=false + 10mm급(>=2500) 보존값 → 한컴은 렌더에 쓰지 않음 → 표 기본값
+    // 큰 저장 셀 값에도 같은 플래그 규칙을 적용한다
     cell.padding = pad(2834);
     assert_eq!(cell.effective_padding(&pad(0)).top, 0);
 

@@ -162,6 +162,14 @@ pub(crate) fn legacy_equation_glyph(character: char, italic: bool, modern: bool)
     (char::from_u32(code).unwrap(), false)
 }
 
+/// 현대 HY의 단일 적분만 원본 PUA 자형을 사용한다. 실제 face/cmap 확인은 painter가 한다.
+/// 원본 PDF는 baseUnit 900 수식에서 e05b를 18pt로 칠한다. 진행폭은 바꾸지 않는다.
+pub(crate) fn modern_hy_integral_glyph(symbol: &str, modern_hy: bool) -> Option<char> {
+    (modern_hy && symbol == "∫").then_some('\u{e05b}')
+}
+
+pub(crate) const MODERN_HY_INTEGRAL_GLYPH_SCALE: f64 = 2.0;
+
 pub(crate) fn is_greek_variable(text: &str) -> bool {
     text.chars().any(|c| matches!(c, '\u{0391}'..='\u{03c9}'))
 }

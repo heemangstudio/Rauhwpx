@@ -138,6 +138,16 @@ class FakeWasm {
     return JSON.stringify({ ok: true, charOffset: args[5] + String(args[6]).length });
   }
 
+  insertTextContentInCell(...args) {
+    this.calls.push({ name: 'cell-content-immediate', args });
+    return JSON.stringify({ ok: true, charOffset: args[5] + [...args[6].text].length });
+  }
+
+  textToLogicalOffsetInCellByPath(...args) {
+    this.calls.push({ name: 'cell-text-to-logical', args });
+    return args[3];
+  }
+
   insertTextInCellByPath(...args) {
     this.calls.push({ name: 'path-immediate', args });
     return JSON.stringify({ ok: true, charOffset: args[3] + String(args[4]).length });
@@ -211,8 +221,11 @@ test('TextMutationEffectAccumulator는 묶음 effect를 OR 누적하고 한 번�
   assert.deepEqual(accumulator.consume(), NO_TEXT_MUTATION_EFFECTS);
 });
 
-test('flat 셀 삭제는 deferred effect를 반환하고 undo는 즉시 pagination을 사용한다', () => {
-  const wasm = new FakeWasm(mutationResult(true));
+test('flat 셀 삭제는 deferred effect를 반환하고 undo는 즉시 pagination으로 콘텐츠를 복원한다', () => {
+  const content = { text: '\u00a0', specialSpaceOrigins: [{ charIndex: 0, origin: 'NbSpace' }] };
+  const wasm = new FakeWasm({
+    ...mutationResult(true), removedStart: 0, removedCount: 1, removedContent: content,
+  });
   const history = new CommandHistory();
 
   history.execute(new DeleteTextCommand(depth1Position(), 1, 'forward'), wasm);
@@ -220,11 +233,17 @@ test('flat 셀 삭제는 deferred effect를 반환하고 undo는 즉시 paginati
     documentPaginationPending: true,
     flowChanged: true,
     paginationCompleted: false,
+    removedStart: 0,
+    removedCount: 1,
+    removedContent: content,
   });
   assert.equal(wasm.calls.at(-1).name, 'delete-deferred');
   assert.deepEqual(history.consumeLastExecutionEffects(), NO_TEXT_MUTATION_EFFECTS);
-  history.undo(wasm);
-  assert.equal(wasm.calls.at(-1).name, 'cell-immediate');
+  assert.deepEqual(history.undo(wasm), depth1Position(1));
+  assert.deepEqual(wasm.calls.slice(-2), [
+    { name: 'cell-content-immediate', args: [0, 5, 2, 3, 0, 0, content, true] },
+    { name: 'cell-text-to-logical', args: [0, 5, JSON.stringify(depth1Position().cellPath), 1] },
+  ]);
   assert.deepEqual(history.consumeLastExecutionEffects(), NO_TEXT_MUTATION_EFFECTS);
 });
 

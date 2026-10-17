@@ -1,17 +1,11 @@
-import { importedFontSlant, importedFontWeight, type LocalFontRecord } from '../core/local-fonts.ts';
+import { importedFontPhysicalStyle, type LocalFontRecord } from '../core/local-fonts.ts';
 
 function normalizedName(value: string): string {
   return value.replace(/\u0000/g, '').normalize('NFC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-US');
 }
 
 export function physicalFontStyle(record: LocalFontRecord): { weight: number; bold: boolean; italic: boolean } {
-  const style = record.style.trim();
-  const weight = Number(importedFontWeight(style));
-  return {
-    weight,
-    bold: weight >= 600,
-    italic: importedFontSlant(style) === 'italic',
-  };
+  return importedFontPhysicalStyle(record);
 }
 
 /** Keep the nearest regular and bold weight for each physical slant. */

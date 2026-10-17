@@ -102,6 +102,10 @@ export const AGENT_EDIT_SESSION_METHODS: readonly string[] = [
 /** Undo를 직접 소유하는 편집기 경계에서만 호출하며 에이전트 RPC에는 노출하지 않는 변이. */
 export const EDITOR_ROUTED_MUTATING_METHODS: readonly string[] = [
   'replaceContentFromBytes',
+  // 삭제 명령이 보존한 콘텐츠·특수 공백 출처를 되살리는 편집기 전용 경로.
+  'insertTextContent', 'insertTextContentInCell', 'insertTextContentInCellByPath',
+  'insertTextContentInCellDeferredPagination',
+  'insertTextContentInFootnote', 'insertTextContentInHeaderFooter',
 ];
 
 /**

@@ -15,7 +15,7 @@ use crate::paint::{
     LayerBuilder, LayerOutputOptions, PageLayerTree, RenderProfile,
 };
 use crate::renderer::canvas::CanvasRenderer;
-use crate::renderer::composer::{compose_paragraph, compose_section, ComposedParagraph};
+use crate::renderer::composer::ComposedParagraph;
 use crate::renderer::height_measurer::{HeightMeasurer, MeasuredSection, MeasuredTable};
 use crate::renderer::html::HtmlRenderer;
 use crate::renderer::layer_renderer::LayerRenderer;
@@ -30,6 +30,67 @@ use crate::renderer::svg_layer::SvgLayerRenderer;
 use crate::renderer::typeset::TypesetEngine;
 use std::cell::RefCell;
 use std::fmt::Write as _;
+
+/// 구역 페이지네이션에 실제로 전달된 상속 상태. 문서 IR과 측정 캐시에는 저장하지 않는다.
+#[derive(Clone, Default)]
+pub(crate) struct SectionCarryInputs {
+    page_number_pos: Option<crate::model::control::PageNumberPos>,
+    last_page_number: u32,
+    headers: [Option<HeaderFooterRef>; 2],
+    footers: [Option<HeaderFooterRef>; 2],
+    masters: [Option<MasterPageRef>; 2],
+}
+
+impl PartialEq for SectionCarryInputs {
+    fn eq(&self, other: &Self) -> bool {
+        let position = |value: &Option<crate::model::control::PageNumberPos>| {
+            value.as_ref().map(|v| {
+                (
+                    v.format,
+                    v.position,
+                    v.user_symbol,
+                    v.prefix_char,
+                    v.suffix_char,
+                    v.dash_char,
+                )
+            })
+        };
+        fn header(
+            value: &Option<HeaderFooterRef>,
+        ) -> Option<(usize, usize, usize, &[(usize, usize, usize)])> {
+            value.as_ref().map(|v| {
+                (
+                    v.source_section_index,
+                    v.para_index,
+                    v.control_index,
+                    v.cell_path.as_slice(),
+                )
+            })
+        }
+        let master = |value: &Option<MasterPageRef>| {
+            value
+                .as_ref()
+                .map(|v| (v.section_index, v.master_page_index))
+        };
+        self.last_page_number == other.last_page_number
+            && position(&self.page_number_pos) == position(&other.page_number_pos)
+            && self
+                .headers
+                .iter()
+                .zip(&other.headers)
+                .all(|(a, b)| header(a) == header(b))
+            && self
+                .footers
+                .iter()
+                .zip(&other.footers)
+                .all(|(a, b)| header(a) == header(b))
+            && self
+                .masters
+                .iter()
+                .zip(&other.masters)
+                .all(|(a, b)| master(a) == master(b))
+    }
+}
 
 const MAX_EMBEDDED_FONT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_EMBEDDED_FONT_BYTES_PER_PAGE: usize = 64 * 1024 * 1024;
@@ -2191,12 +2252,8 @@ impl DocumentCore {
 
     /// 재조판 + 재페이지네이션 수행
     fn recompose_and_paginate(&mut self) -> u32 {
-        self.composed = self
-            .document
-            .sections
-            .iter()
-            .map(|s| compose_section(s))
-            .collect();
+        self.normalize_leading_hosts_for_layout();
+        self.recompose_body_sections();
         self.mark_all_sections_dirty();
         self.paginate();
         self.page_count()
@@ -2652,12 +2709,8 @@ impl DocumentCore {
         section.raw_stream = None;
 
         // 재조판 + 재페이지네이션
-        self.composed = self
-            .document
-            .sections
-            .iter()
-            .map(|s| compose_section(s))
-            .collect();
+        self.normalize_leading_hosts_for_layout();
+        self.recompose_body_sections();
         self.mark_all_sections_dirty();
         self.paginate();
 
@@ -3437,10 +3490,84 @@ impl DocumentCore {
         last_cd
     }
 
+    /// 개체/셀/스타일 편집이 인증 범위를 벗어나면 저장 글줄을 기존 anchor 축으로
+    /// 역투영한다. pagination-only 명령도 조판/측정 cache를 함께 무효화한다.
+    fn normalize_leading_hosts_for_layout(&mut self) {
+        let mut changed = Vec::new();
+        for (section_index, section) in self.document.sections.iter_mut().enumerate() {
+            let context = crate::renderer::float_placement::leading_section_inputs(section);
+            for (para_index, para) in section.paragraphs.iter_mut().enumerate() {
+                let changed_origin = if para
+                    .leading_block_host_layout
+                    .as_ref()
+                    .is_some_and(|layout| context.as_ref() != Some(&layout.section))
+                {
+                    para.rollback_leading_block_host_layout()
+                } else {
+                    crate::renderer::float_placement::normalize_leading_host_layout(
+                        para,
+                        &self.styles,
+                    )
+                };
+                if changed_origin.is_some() {
+                    changed.push((section_index, para_index));
+                }
+                // 이 gate 앞의 text command 재계산은 이미 receipt를 소비했다.
+                para.leading_host_rollback_bound = None;
+            }
+        }
+        for (section_index, para_index) in changed {
+            let composed = crate::renderer::composer::compose_paragraph_with_policy(
+                &self.document.sections[section_index].paragraphs[para_index],
+                self.styles.font_metrics_policy,
+            );
+            if let Some(slot) = self
+                .composed
+                .get_mut(section_index)
+                .and_then(|s| s.get_mut(para_index))
+            {
+                let mut composed = composed;
+                composed.copy_numbering_from(slot);
+                *slot = composed;
+            }
+            self.invalidate_page_tree_cache_from_section(section_index);
+            self.mark_section_dirty(section_index);
+            self.mark_paragraph_dirty(section_index, para_index);
+        }
+    }
+
+    pub(crate) fn recompose_body_sections(&mut self) {
+        let previous = std::mem::take(&mut self.composed);
+        self.composed = self
+            .document
+            .sections
+            .iter()
+            .map(|section| {
+                crate::renderer::composer::compose_section_with_policy(
+                    section,
+                    self.styles.font_metrics_policy,
+                )
+            })
+            .collect();
+        for (section, old) in self.composed.iter_mut().zip(&previous) {
+            for (composed, previous) in section.iter_mut().zip(old) {
+                composed.copy_numbering_from(previous);
+            }
+        }
+    }
+
     /// 구역을 재조판하고 dirty로 표시한다.
     pub(crate) fn recompose_section(&mut self, section_idx: usize) {
+        self.normalize_leading_hosts_for_layout();
         self.invalidate_page_tree_cache_from_section(section_idx);
-        self.composed[section_idx] = compose_section(&self.document.sections[section_idx]);
+        let previous = std::mem::take(&mut self.composed[section_idx]);
+        self.composed[section_idx] = crate::renderer::composer::compose_section_with_policy(
+            &self.document.sections[section_idx],
+            self.styles.font_metrics_policy,
+        );
+        for (composed, old) in self.composed[section_idx].iter_mut().zip(&previous) {
+            composed.copy_numbering_from(old);
+        }
         self.mark_section_dirty(section_idx);
         // 전체 문단 dirty (모두 재측정 필요)
         if section_idx < self.dirty_paragraphs.len() {
@@ -3468,6 +3595,30 @@ impl DocumentCore {
             self.dirty_sections[section_idx] = true;
         }
         // 문단 dirty는 건드리지 않음 (셀 편집 시 문단 재측정 불필요)
+    }
+
+    fn publish_committed_line_origins(&mut self, section_index: usize) {
+        let Some(result) = self.pagination.get_mut(section_index) else {
+            return;
+        };
+        // 수락 결과는 한 번만 소비한다. 이후 무관한 구역의 paginate가 오래된 원점을 재발행하지 않는다.
+        let origins = std::mem::take(&mut result.committed_line_origins);
+        if origins.is_empty() {
+            return;
+        }
+        if let Some(section) = self.document.sections.get_mut(section_index) {
+            crate::renderer::pagination::publish_committed_line_origins(
+                &mut section.paragraphs,
+                &origins,
+            );
+        }
+        if let Some(Some(normalized)) = self.render_normalization.sections.get_mut(section_index) {
+            crate::renderer::pagination::publish_committed_line_origins(
+                std::sync::Arc::make_mut(&mut normalized.paragraphs).as_mut_slice(),
+                &origins,
+            );
+        }
+        // ComposedLine/MeasuredParagraph는 원점을 저장하지 않는다. 줄 metric과 run은 보존한다.
     }
 
     /// section 구조·페이지 기하 변경으로 해당 normalization projection을 무효화한다.
@@ -3504,18 +3655,34 @@ impl DocumentCore {
 
     /// 단일 문단만 재조판한다.
     pub(crate) fn recompose_paragraph(&mut self, section_idx: usize, para_idx: usize) {
+        self.normalize_leading_hosts_for_layout();
         self.invalidate_page_tree_cache_from_section(section_idx);
         let para = &self.document.sections[section_idx].paragraphs[para_idx];
-        self.composed[section_idx][para_idx] = compose_paragraph(para);
+        let previous = self.composed[section_idx][para_idx].clone();
+        self.composed[section_idx][para_idx] =
+            crate::renderer::composer::compose_paragraph_with_policy(
+                para,
+                self.styles.font_metrics_policy,
+            );
+        self.composed[section_idx][para_idx].copy_numbering_from(&previous);
         self.mark_section_dirty(section_idx);
         self.mark_paragraph_dirty(section_idx, para_idx);
     }
 
     /// composed 벡터에 새 문단 항목을 삽입한다 (문단 분할/붙여넣기 후).
     pub(crate) fn insert_composed_paragraph(&mut self, section_idx: usize, para_idx: usize) {
+        self.normalize_leading_hosts_for_layout();
         self.invalidate_page_tree_cache_from_section(section_idx);
         let para = &self.document.sections[section_idx].paragraphs[para_idx];
-        let composed = compose_paragraph(para);
+        let mut composed = crate::renderer::composer::compose_paragraph_with_policy(
+            para,
+            self.styles.font_metrics_policy,
+        );
+        let heads =
+            crate::renderer::layout::resolve_body_paragraph_heads(&self.document, &self.styles);
+        if let Some(head) = &heads[section_idx][para_idx] {
+            head.attach(&mut composed);
+        }
         self.composed[section_idx].insert(para_idx, composed);
         self.mark_section_dirty(section_idx);
         // measured_sections: 인덱스 조정으로 기존 측정값 재사용 (전체 재측정 회피)
@@ -3598,6 +3765,126 @@ impl DocumentCore {
         self.render_normalization.path_revisions.clear();
     }
 
+    fn body_head_width_changes(
+        &self,
+        heads: &[Vec<Option<crate::renderer::layout::ResolvedParagraphHead>>],
+    ) -> Vec<(usize, usize)> {
+        let mut changes = Vec::new();
+        for (si, section) in self.document.sections.iter().enumerate() {
+            for (pi, para) in section.paragraphs.iter().enumerate() {
+                let Some(previous) = self.composed.get(si).and_then(|paras| paras.get(pi)) else {
+                    continue;
+                };
+                let before = crate::renderer::layout::numbering_marker_reserve(
+                    &self.styles,
+                    para,
+                    previous,
+                    self.dpi,
+                );
+                let after = crate::renderer::layout::resolved_head_reserve_px(
+                    &self.styles,
+                    para,
+                    heads[si][pi].as_ref(),
+                    self.dpi,
+                );
+                if (before.0 - after.0).abs() > 0.001 || (before.1 - after.1).abs() > 0.001 {
+                    changes.push((si, pi));
+                }
+            }
+        }
+        changes
+    }
+
+    fn refresh_body_paragraph_heads(
+        &mut self,
+        heads: Vec<Vec<Option<crate::renderer::layout::ResolvedParagraphHead>>>,
+    ) {
+        let width_changes = self.body_head_width_changes(&heads);
+        for (si, section_heads) in heads.iter().enumerate() {
+            for (pi, head) in section_heads.iter().enumerate() {
+                let Some(slot) = self
+                    .composed
+                    .get_mut(si)
+                    .and_then(|paras| paras.get_mut(pi))
+                else {
+                    continue;
+                };
+                let text = head.as_ref().map(|head| head.text.as_str());
+                // 번호 글자 수가 같아도 내용이 달라지면 그리기 캐시를 갱신한다.
+                let changed = slot.numbering_text.as_deref() != text
+                    || slot.numbering_head.map(|head| {
+                        (
+                            head.attr,
+                            head.width_adjust,
+                            head.text_distance,
+                            head.char_shape_id,
+                            head.number_format,
+                        )
+                    }) != head.as_ref().and_then(|head| head.head).map(|head| {
+                        (
+                            head.attr,
+                            head.width_adjust,
+                            head.text_distance,
+                            head.char_shape_id,
+                            head.number_format,
+                        )
+                    });
+                slot.numbering_text = None;
+                slot.numbering_head = None;
+                if let Some(head) = head {
+                    head.attach(slot);
+                }
+                if changed {
+                    self.invalidate_page_tree_cache_from_section(si);
+                    self.mark_section_dirty(si);
+                    self.mark_paragraph_dirty(si, pi);
+                }
+            }
+        }
+        let mut changed_sections = std::collections::HashSet::new();
+        for (si, pi) in width_changes {
+            changed_sections.insert(si);
+            let width = self.body_reflow_width(si, pi);
+            let para = &mut self.document.sections[si].paragraphs[pi];
+            let old_end = crate::renderer::composer::paragraph_flow_end(para);
+            let reserve = crate::renderer::layout::resolved_head_reserve_px(
+                &self.styles,
+                para,
+                heads[si][pi].as_ref(),
+                self.dpi,
+            );
+            crate::renderer::composer::reflow_line_segs_with_head(
+                para,
+                width,
+                &self.styles,
+                self.dpi,
+                reserve,
+            );
+            self.recalculate_body_section_vpos(
+                si,
+                pi,
+                None,
+                old_end,
+                self.document.layout_profile().hwp3_layout(),
+            );
+            let mut fresh = crate::renderer::composer::compose_paragraph_with_policy(
+                &self.document.sections[si].paragraphs[pi],
+                self.styles.font_metrics_policy,
+            );
+            if let Some(head) = &heads[si][pi] {
+                head.attach(&mut fresh);
+            }
+            self.composed[si][pi] = fresh;
+            self.invalidate_page_tree_cache_from_section(si);
+            self.mark_section_dirty(si);
+            self.mark_paragraph_dirty(si, pi);
+        }
+        // vpos 이후 문단의 selective 측정/정규화 캐시도 함께 갱신한다.
+        for si in changed_sections {
+            self.recompose_section(si);
+        }
+    }
+
     /// Batch 모드가 아닐 때만 paginate를 실행한다.
     /// Command 메서드에서 self.paginate() 대신 호출한다.
     /// [#2424] 최신 deferred descriptor를 shadow pagination job으로 승격한다.
@@ -3606,6 +3893,7 @@ impl DocumentCore {
         &mut self,
         fragment_budget: usize,
     ) -> DeferredPaginationStepResult {
+        self.normalize_leading_hosts_for_layout();
         let fonts = self.layout_engine.resolved_shaping_fonts();
         crate::renderer::layout::with_resolved_shaping_fonts(fonts, || {
             self.begin_deferred_pagination_with_active_fonts(fragment_budget)
@@ -3638,6 +3926,18 @@ impl DocumentCore {
             };
         }
 
+        let heads =
+            crate::renderer::layout::resolve_body_paragraph_heads(&self.document, &self.styles);
+        if !self.body_head_width_changes(&heads).is_empty() {
+            // 표 전용 shadow job은 뒤 본문 번호 폭의 재조판까지 발행하지 않는다.
+            return DeferredPaginationStepResult {
+                state: DeferredPaginationJobState::Fallback,
+                revision: descriptor.revision,
+                fragments_processed: 0,
+                page_count: self.page_count(),
+            };
+        }
+        self.refresh_body_paragraph_heads(heads);
         self.compute_render_normalized();
         let section_index = descriptor.section_index;
         let Some(section) = self.document.sections.get(section_index) else {
@@ -3678,7 +3978,7 @@ impl DocumentCore {
         let measurer = HeightMeasurer::new(self.dpi)
             .with_own_line_layout(profile.own_line_layout())
             .with_hwp3_variant(profile.hwp3_layout())
-            .with_hwpx_cell_spacing(profile.hwpx_stored_layout() || profile.hwp5_origin_hwpx())
+            .with_hwpx_cell_spacing(profile.hwpx_stored_layout() && !profile.hwp5_origin_hwpx())
             .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before)
             .with_session_edited(profile.session_edited())
@@ -3871,6 +4171,7 @@ impl DocumentCore {
         if self.pagination.len() <= section_index {
             self.pagination
                 .resize_with(section_index + 1, || PaginationResult {
+                    committed_line_origins: Vec::new(),
                     pages: Vec::new(),
                     wrap_around_paras: Vec::new(),
                     hidden_empty_paras: std::collections::HashSet::new(),
@@ -3886,6 +4187,11 @@ impl DocumentCore {
                 });
         }
         self.pagination[section_index] = result;
+        self.publish_committed_line_origins(section_index);
+        // deferred commit은 구역 간 후처리 경로를 거치지 않았다. 다음 barrier에서 입력을 검증한다.
+        self.section_carry
+            .resize_with(self.document.sections.len(), || None);
+        self.section_carry[section_index] = None;
         if self.measured_tables.len() <= section_index {
             self.measured_tables
                 .resize_with(section_index + 1, Vec::new);
@@ -3964,6 +4270,7 @@ impl DocumentCore {
     }
 
     pub(crate) fn paginate_if_needed(&mut self) {
+        self.normalize_leading_hosts_for_layout();
         if !self.batch_mode {
             self.paginate();
         }
@@ -3983,6 +4290,7 @@ impl DocumentCore {
         &mut self,
         root_refresh_tables: &std::collections::HashSet<u32>,
     ) {
+        self.normalize_leading_hosts_for_layout();
         let fonts = self.collect_resolved_shaping_fonts();
         let has_embedded_hft = self
             .document
@@ -4010,10 +4318,156 @@ impl DocumentCore {
         });
     }
 
+    /// 수식 점유 폭이 줄어도 줄 수와 나머지 8개 필드가 같으면 시작만 갱신한다.
+    /// 원본 줄을 보관해 서체 등록/교체/해제 후에도 같은 원본에서 다시 판정한다.
+    fn refresh_native_equation_line_boundaries(
+        &mut self,
+        heads: &[Vec<Option<crate::renderer::layout::ResolvedParagraphHead>>],
+    ) {
+        use crate::model::paragraph::{CachedEquationLineOrigin, LineSeg};
+        use crate::renderer::float_placement::tac_line_fields;
+
+        let native = self.document.layout_profile().native_hwp5_layout();
+        for si in 0..self.document.sections.len() {
+            for pi in 0..self.document.sections[si].paragraphs.len() {
+                let para = &self.document.sections[si].paragraphs[pi];
+                if para.cached_equation_line_origin.is_none()
+                    && (!native
+                        || para.line_segs.len() < 2
+                        || para.controls.is_empty()
+                        || !para
+                            .controls
+                            .iter()
+                            .all(|ctrl| matches!(ctrl, Control::Equation(_))))
+                {
+                    continue;
+                }
+                let mut source = para.clone();
+                let origin = source.cached_equation_line_origin.take();
+                if let Some(origin) = origin {
+                    // 편집/교체된 내용이나 줄에는 원본 시작을 덮어쓰지 않는다.
+                    let unchanged = cached_equation_source_bytes(&source) == origin.source_bytes
+                        && source.line_segs.len() == origin.source_lines.len()
+                        && source.line_segs.len() == origin.installed_starts.len()
+                        && source
+                            .line_segs
+                            .iter()
+                            .zip(&origin.source_lines)
+                            .zip(&origin.installed_starts)
+                            .all(|((line, saved), start)| {
+                                line.text_start == *start
+                                    && tac_line_fields(line)[1..] == tac_line_fields(saved)[1..]
+                            });
+                    if !unchanged {
+                        self.document.sections[si].paragraphs[pi].cached_equation_line_origin =
+                            None;
+                        continue;
+                    }
+                    source.line_segs = origin.source_lines;
+                }
+                let generation = crate::renderer::equation::measurement_generation();
+                let width = self.body_reflow_width(si, pi);
+                let width_hu = crate::renderer::px_to_hwpunit_round(width, self.dpi);
+                let style = self.styles.para_styles.get(source.para_shape_id as usize);
+                let eligible = native
+                    && source.line_segs.len() > 1
+                    && source.line_segs[0].text_start == 0
+                    && source.text.chars().any(|ch| !ch.is_whitespace())
+                    && !source.text.contains(['\n', '\r', '\t'])
+                    && style.is_some_and(|style| !style.line_wrap_squeeze)
+                    && source.line_segs.iter().all(|line| {
+                        line.line_height > 0
+                            && line.text_height > 0
+                            && line.baseline_distance > 0
+                            && line.segment_width == width_hu
+                            && line.tag
+                                & (LineSeg::TAG_IMPLEMENTATION_PROPERTY
+                                    | LineSeg::TAG_AUTO_HYPHENATION)
+                                == 0
+                    })
+                    && source.line_segs.windows(2).all(|pair| {
+                        pair[1].text_start > pair[0].text_start
+                            && pair[1].vertical_pos > pair[0].vertical_pos
+                    })
+                    && !source.controls.is_empty()
+                    && source.controls.iter().all(|ctrl| {
+                        matches!(ctrl, Control::Equation(eq)
+                        if eq.common.treat_as_char
+                            && crate::renderer::equation::natural_width_hwp(eq).is_some())
+                    })
+                    && source.controls.iter().any(|ctrl| {
+                        matches!(ctrl, Control::Equation(eq)
+                        if crate::renderer::equation::natural_width_hwp(eq)
+                            .is_some_and(|width| width < eq.common.width as i32))
+                    });
+                let mut candidate = source.clone();
+                if eligible {
+                    let reserve = crate::renderer::layout::resolved_head_reserve_px(
+                        &self.styles,
+                        &source,
+                        heads[si][pi].as_ref(),
+                        self.dpi,
+                    );
+                    crate::renderer::composer::reflow_line_segs_with_head(
+                        &mut candidate,
+                        width,
+                        &self.styles,
+                        self.dpi,
+                        reserve,
+                    );
+                }
+                let accepted =
+                    eligible
+                        && crate::renderer::equation::measurement_generation() == generation
+                        && candidate.line_segs.len() == source.line_segs.len()
+                        && candidate.line_segs.iter().zip(&source.line_segs).all(
+                            |(fresh, saved)| {
+                                fresh.text_start >= saved.text_start
+                                    && tac_line_fields(fresh)[1..] == tac_line_fields(saved)[1..]
+                            },
+                        );
+                // 지오메트리나 줄 수가 바뀌면 원본으로 돌아간다. 다른 문단은 밀지 않는다.
+                let mut lines = source.line_segs.clone();
+                if accepted {
+                    for (line, fresh) in lines.iter_mut().zip(&candidate.line_segs) {
+                        line.text_start = fresh.text_start;
+                    }
+                }
+                let changed_from_source = lines
+                    .iter()
+                    .zip(&source.line_segs)
+                    .any(|(line, saved)| line.text_start != saved.text_start);
+                let next_origin = changed_from_source.then(|| {
+                    Box::new(CachedEquationLineOrigin {
+                        source_bytes: cached_equation_source_bytes(&source),
+                        source_lines: source.line_segs,
+                        installed_starts: lines.iter().map(|line| line.text_start).collect(),
+                    })
+                });
+                let para = &mut self.document.sections[si].paragraphs[pi];
+                let changed = para
+                    .line_segs
+                    .iter()
+                    .map(tac_line_fields)
+                    .ne(lines.iter().map(tac_line_fields));
+                para.line_segs = lines;
+                para.cached_equation_line_origin = next_origin;
+                if changed {
+                    // 파생 캐시만 바뀐다. native raw_stream과 편집 출처는 보존한다.
+                    self.recompose_paragraph(si, pi);
+                }
+            }
+        }
+    }
+
     fn paginate_with_resolved_shaping_fonts(
         &mut self,
         root_refresh_tables: &std::collections::HashSet<u32>,
     ) {
+        let heads =
+            crate::renderer::layout::resolve_body_paragraph_heads(&self.document, &self.styles);
+        self.refresh_native_equation_line_boundaries(&heads);
+        self.refresh_body_paragraph_heads(heads);
         self.header_footer_preview_tree_cache.borrow_mut().take();
         self.pending_pagination_job = None;
         let sec_count = self.document.sections.len().max(1);
@@ -4076,7 +4530,7 @@ impl DocumentCore {
         let measurer = HeightMeasurer::new(self.dpi)
             .with_own_line_layout(profile.own_line_layout())
             .with_hwp3_variant(profile.hwp3_layout())
-            .with_hwpx_cell_spacing(profile.hwpx_stored_layout() || profile.hwp5_origin_hwpx())
+            .with_hwpx_cell_spacing(profile.hwpx_stored_layout() && !profile.hwp5_origin_hwpx())
             .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
             .with_root_refresh_tables(root_refresh_tables)
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before)
@@ -4085,6 +4539,7 @@ impl DocumentCore {
 
         if self.document.sections.is_empty() {
             self.pagination.clear();
+            self.section_carry.clear();
             self.measured_tables.clear();
             self.measured_sections.clear();
             let default_section = Section::default();
@@ -4113,6 +4568,7 @@ impl DocumentCore {
         let sec_count = self.document.sections.len();
         while self.pagination.len() < sec_count {
             self.pagination.push(PaginationResult {
+                committed_line_origins: Vec::new(),
                 pages: Vec::new(),
                 wrap_around_paras: Vec::new(),
                 hidden_empty_paras: std::collections::HashSet::new(),
@@ -4128,6 +4584,8 @@ impl DocumentCore {
             });
         }
         self.pagination.truncate(sec_count);
+        self.section_carry.resize_with(sec_count, || None);
+        self.section_carry.truncate(sec_count);
         while self.para_column_map.len() < sec_count {
             self.para_column_map.push(Vec::new());
         }
@@ -4172,41 +4630,26 @@ impl DocumentCore {
         let mut issue2424_typeset_elapsed = std::time::Duration::ZERO;
         let mut issue2424_postprocess_elapsed = std::time::Duration::ZERO;
         for (idx, section) in self.document.sections.iter().enumerate() {
+            let carry_input = SectionCarryInputs {
+                page_number_pos: carry_page_number_pos.clone(),
+                last_page_number: carry_last_page_number,
+                headers: [carry_header_odd.clone(), carry_header_even.clone()],
+                footers: [carry_footer_odd.clone(), carry_footer_even.clone()],
+                masters: [carry_master_odd.clone(), carry_master_even.clone()],
+            };
             if !self.dirty_sections[idx] {
-                // dirty가 아닌 구역에서도 carry를 업데이트
-                if let Some(pages) = self.pagination.get(idx) {
-                    if let Some(last) = pages.pages.last() {
-                        if last.page_number_pos.is_some() {
-                            carry_page_number_pos = last.page_number_pos.clone();
-                        }
-                        carry_last_page_number = last.page_number;
-                    }
-                    // 머리말/꼬리말 carry 업데이트 (not-dirty 구역)
-                    for page in &pages.pages {
-                        let is_odd = page.page_number % 2 == 1;
-                        if page.active_header.is_some() {
-                            if is_odd {
-                                carry_header_odd = page.active_header.clone();
-                            } else {
-                                carry_header_even = page.active_header.clone();
-                            }
-                        }
-                        if page.active_footer.is_some() {
-                            if is_odd {
-                                carry_footer_odd = page.active_footer.clone();
-                            } else {
-                                carry_footer_even = page.active_footer.clone();
-                            }
-                        }
+                if let Some((previous_input, previous_output)) = &self.section_carry[idx] {
+                    if *previous_input == carry_input {
+                        carry_page_number_pos = previous_output.page_number_pos.clone();
+                        carry_last_page_number = previous_output.last_page_number;
+                        [carry_header_odd, carry_header_even] = previous_output.headers.clone();
+                        [carry_footer_odd, carry_footer_even] = previous_output.footers.clone();
+                        [carry_master_odd, carry_master_even] = previous_output.masters.clone();
+                        continue;
                     }
                 }
-                update_master_page_carry_from_section(
-                    idx,
-                    section,
-                    &mut carry_master_odd,
-                    &mut carry_master_even,
-                );
-                continue;
+                // 상속 입력만 달라졌으므로 문단 측정은 재사용하고 쪽 배치를 다시 선택한다.
+                self.dirty_sections[idx] = true;
             }
 
             // [#2004] render-전용 정규화본(부동 이미지 스택 인라인 재분류) 우선. 원본 무손상.
@@ -4363,9 +4806,18 @@ impl DocumentCore {
                 } else {
                     EndnoteDeferral::None
                 };
-                let typesetter = TypesetEngine::new(self.dpi).with_render_normalization(
-                    std::sync::Arc::clone(&self.render_normalization.overlay),
-                );
+                let source_words = self
+                    .natural_flow_source_words()
+                    .filter(|_| !self.document.doc_info.apply_next_spacing_of_last_para);
+                let typesetter = TypesetEngine::new(self.dpi)
+                    .with_native_natural_flow_source(
+                        source_words,
+                        &section.section_def,
+                        self.natural_flow_capacity_flags(idx),
+                    )
+                    .with_render_normalization(std::sync::Arc::clone(
+                        &self.render_normalization.overlay,
+                    ));
                 typesetter.typeset_section_with_variant(
                     para_src,
                     composed,
@@ -4651,6 +5103,16 @@ impl DocumentCore {
                     first_page.active_footer = None;
                 }
             }
+            self.section_carry[idx] = Some((
+                carry_input,
+                SectionCarryInputs {
+                    page_number_pos: carry_page_number_pos.clone(),
+                    last_page_number: carry_last_page_number,
+                    headers: [carry_header_odd.clone(), carry_header_even.clone()],
+                    footers: [carry_footer_odd.clone(), carry_footer_even.clone()],
+                    masters: [carry_master_odd.clone(), carry_master_even.clone()],
+                },
+            ));
             self.pagination[idx] = result;
             self.dirty_sections[idx] = false;
             // 문단 dirty 비트맵 초기화 (모든 문단 clean)
@@ -4686,6 +5148,9 @@ impl DocumentCore {
             }
         }
 
+        for section_index in 0..self.pagination.len() {
+            self.publish_committed_line_origins(section_index);
+        }
         let issue2424_cleanup_started = issue2424_profile_enabled.then(std::time::Instant::now);
         // para_offset 리셋 (수렴 감지 완료)
         for off in &mut self.para_offset {
@@ -4937,6 +5402,7 @@ impl DocumentCore {
                     column_width_px,
                     single_column_body_height_hu,
                     self.dpi,
+                    self.composed.get(idx).map(Vec::as_slice),
                 )
             } else {
                 Vec::new()
@@ -5018,23 +5484,32 @@ impl DocumentCore {
                 .iter()
                 .enumerate()
                 .map(|(i, p)| {
-                    if equation_cache_contracted
+                    let mut composed = if equation_cache_contracted
                         && (p.line_segs.len() != section.paragraphs[i].line_segs.len()
                             || p.line_segs
                                 .iter()
                                 .zip(&section.paragraphs[i].line_segs)
                                 .any(|(fresh, saved)| fresh.text_start != saved.text_start))
                     {
-                        let mut c = compose_paragraph(p);
+                        let mut c = crate::renderer::composer::compose_paragraph_with_policy(
+                            p,
+                            self.styles.font_metrics_policy,
+                        );
                         if let Some(saved) = base.and_then(|paras| paras.get(i)) {
                             c.numbering_text = saved.numbering_text.clone();
                             c.numbering_head = saved.numbering_head.clone();
                         }
                         c
                     } else if wrap_reflowed.binary_search(&i).is_ok() {
-                        compose_paragraph(p)
+                        crate::renderer::composer::compose_paragraph_with_policy(
+                            p,
+                            self.styles.font_metrics_policy,
+                        )
                     } else if matches.binary_search(&i).is_ok() || synthetic_spacing_projected {
-                        let mut c = compose_paragraph(p);
+                        let mut c = crate::renderer::composer::compose_paragraph_with_policy(
+                            p,
+                            self.styles.font_metrics_policy,
+                        );
                         // [#2004] composer 가 line_seg 부족(HWP5 빈-문단)으로 1줄로 붕괴하면
                         // 그림 수만큼 줄을 합성(모두 char_start 동일)해 Stage2 stacked 게이트
                         // (comp.lines.len()==tac_controls) 가 발동하게 한다.
@@ -5062,10 +5537,17 @@ impl DocumentCore {
                         }
                         c
                     } else {
-                        base.and_then(|c| c.get(i))
-                            .cloned()
-                            .unwrap_or_else(|| compose_paragraph(p))
+                        base.and_then(|c| c.get(i)).cloned().unwrap_or_else(|| {
+                            crate::renderer::composer::compose_paragraph_with_policy(
+                                p,
+                                self.styles.font_metrics_policy,
+                            )
+                        })
+                    };
+                    if let Some(previous) = base.and_then(|paras| paras.get(i)) {
+                        composed.copy_numbering_from(previous);
                     }
+                    composed
                 })
                 .collect();
             out.push(Some(super::super::RenderNormalizedSection {
@@ -5123,11 +5605,15 @@ impl DocumentCore {
             } else {
                 false
             };
-        let source_composed = if synthetic_spacing_projected {
-            compose_paragraph(&source_para)
+        let mut source_composed = if synthetic_spacing_projected {
+            crate::renderer::composer::compose_paragraph_with_policy(
+                &source_para,
+                self.styles.font_metrics_policy,
+            )
         } else {
             self.composed[section_idx][para_idx].clone()
         };
+        source_composed.copy_numbering_from(&self.composed[section_idx][para_idx]);
         let Some(Some(section)) = self.render_normalization.sections.get_mut(section_idx) else {
             return;
         };
@@ -6321,7 +6807,12 @@ impl DocumentCore {
             combined_paragraphs = paragraphs.iter().chain(en_paras.iter()).cloned().collect();
             let en_composed: Vec<_> = en_paras
                 .iter()
-                .map(|p| crate::renderer::composer::compose_paragraph(p))
+                .map(|p| {
+                    crate::renderer::composer::compose_paragraph_with_policy(
+                        p,
+                        self.styles.font_metrics_policy,
+                    )
+                })
                 .collect();
             combined_composed = composed
                 .iter()
@@ -6402,7 +6893,11 @@ impl DocumentCore {
                                     outline_num_id,
                                 );
                                 if nid > 0 {
-                                    self.layout_engine.advance_numbering(nid, ps.para_level);
+                                    self.layout_engine.advance_numbering_with_restart(
+                                        nid,
+                                        ps.para_level,
+                                        para.numbering_restart,
+                                    );
                                 }
                             }
                         }
@@ -6990,6 +7485,24 @@ fn format_vpos_range(
     s_out
 }
 
+/// 기존 HWP 레코드 직렬화로 문단 입력을 비교한다. 줄과 런타임 출처는 제외한다.
+fn cached_equation_source_bytes(para: &Paragraph) -> Vec<u8> {
+    let mut source = para.clone();
+    source.line_segs.clear();
+    source.cached_equation_line_origin = None;
+    for control in &mut source.controls {
+        if let Control::Equation(equation) = control {
+            // 출처 비교는 저장 passthrough 대신 현재 공통 속성을 직렬화한다.
+            // 실제 문단의 raw 버퍼/attr과 저장 stream은 그대로 둔다.
+            equation.raw_ctrl_data.clear();
+            equation.common.attr = 0;
+        }
+    }
+    let mut records = Vec::new();
+    crate::serializer::body_text::serialize_paragraph_list(&[source], 0, &mut records);
+    crate::serializer::record_writer::write_records(&records)
+}
+
 /// dump-pages에서 line_seg 계약을 빠르게 대조하기 위한 한 줄 요약.
 fn format_line_seg_brief(para: Option<&Paragraph>) -> String {
     let Some(p) = para else {
@@ -7040,7 +7553,1086 @@ mod tests {
     use crate::model::table::{Cell, Table};
     use crate::renderer::render_tree::RenderNodeType;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_inline_equation_saved_boundaries_follow_source_font_lifecycle() {
+        const TARGET: usize = 1;
+        const CHILD: &str = "RHWP_NATIVE_EQUATION_BOUNDARY_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("document_core::queries::rendering::tests::native_inline_equation_saved_boundaries_follow_source_font_lifecycle")
+                .args(["--exact", "--nocapture"])
+                .env(CHILD, "1")
+                .env_remove(crate::renderer::font_paths::FONT_PATH_ENV)
+                .output()
+                .expect("run isolated equation boundary lifecycle test");
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use crate::model::{
+            control::Equation,
+            paragraph::{CharShapeRef, LineSeg},
+        };
+        use crate::renderer::float_placement::tac_line_fields;
+        // Native equation runs resolve full SFNT tables from the file registry.
+        // Use a disposable copy so readiness loss never changes the checked-in fixture.
+        struct FixtureFolder(std::path::PathBuf);
+        impl Drop for FixtureFolder {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let folder = FixtureFolder(std::env::temp_dir().join(format!(
+            "rhwp-native-equation-boundary-{}",
+            std::process::id(),
+        )));
+        std::fs::create_dir_all(&folder.0).unwrap();
+        let source_font = folder.0.join("source.ttf");
+        let source_ready = || {
+            crate::renderer::equation::layout::EqLayout::with_font(12.0, "HYhwpEQ")
+                .with_version("Equation Version 60")
+                .has_source_face_metrics()
+        };
+        let install = || {
+            std::fs::write(
+                &source_font,
+                include_bytes!("../../../tests/fixtures/fonts/HYhwpEQSourceFixture.ttf"),
+            )
+            .unwrap();
+            crate::renderer::font_paths::register_font_face_availability(std::slice::from_ref(
+                &source_font,
+            ));
+            crate::renderer::layout::clear_measure_caches();
+            assert!(
+                source_ready(),
+                "native source face must resolve from the fixture file"
+            );
+        };
+        let remove = || {
+            std::fs::remove_file(&source_font).unwrap();
+            crate::renderer::runtime_font_metrics::clear();
+            assert!(
+                !source_ready(),
+                "source-loss control needs no system HY fallback"
+            );
+        };
+        let rows = |para: &Paragraph| {
+            para.line_segs
+                .iter()
+                .map(tac_line_fields)
+                .collect::<Vec<_>>()
+        };
+        let starts = |para: &Paragraph| {
+            para.line_segs
+                .iter()
+                .map(|line| line.text_start)
+                .collect::<Vec<_>>()
+        };
+        install();
+        let mut seed = DocumentCore::new_empty();
+        seed.create_blank_document_native().unwrap();
+        let mut document = seed.document().clone();
+        // The fixture authors new source bytes rather than reusing the blank template's seals.
+        document.sections[0].raw_stream = None;
+        document.sections[0].raw_provenance = None;
+        document.doc_info.raw_stream_dirty = true;
+        document.doc_info.char_shapes[0].raw_data = None;
+        document.doc_info.para_shapes[0].raw_data = None;
+        document.doc_info.char_shapes[0].base_size = 900;
+        document.doc_info.para_shapes[0].margin_left = 800;
+        document.doc_info.para_shapes[0].margin_right = 400;
+        let page = &mut document.sections[0].section_def.page_def;
+        page.width = 14000;
+        page.height = 60000;
+        page.margin_left = 0;
+        page.margin_right = 0;
+        page.margin_top = 0;
+        page.margin_bottom = 0;
+        page.margin_header = 0;
+        page.margin_footer = 0;
+        let mut equation = Equation::default();
+        equation.script = "11".into();
+        equation.font_name = "HYhwpEQ".into();
+        equation.version_info = "Equation Version 60".into();
+        equation.font_size = 900;
+        equation.common.treat_as_char = true;
+        equation.common.width = 6000;
+        equation.common.height = 900;
+        equation.baseline = 85;
+        assert!(crate::renderer::equation::natural_width_hwp(&equation).unwrap() < 6000);
+        let text = "a ".repeat(60);
+        // Keep SectionDef on a separate anchor so parsed target controls remain equations only.
+        let anchor = Paragraph {
+            char_count: 9,
+            controls: vec![Control::SectionDef(Box::new(
+                document.sections[0].section_def.clone(),
+            ))],
+            line_segs: vec![LineSeg {
+                line_height: 100,
+                text_height: 100,
+                baseline_distance: 85,
+                segment_width: 14000,
+                tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        document.sections[0].paragraphs = vec![
+            anchor,
+            Paragraph {
+                char_count: text.len() as u32 + 9,
+                char_offsets: (8..8 + text.len() as u32).collect(),
+                text,
+                char_shapes: vec![CharShapeRef::default()],
+                controls: vec![Control::Equation(Box::new(equation))],
+                line_segs: vec![LineSeg {
+                    vertical_pos: 600,
+                    line_height: 900,
+                    text_height: 900,
+                    baseline_distance: 765,
+                    line_spacing: 540,
+                    segment_width: 14000,
+                    tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ];
+        seed.set_document(document);
+        seed.reflow_paragraph(0, TARGET);
+        let mut source = seed.document().clone();
+        let canonical = source.sections[0].paragraphs[TARGET].clone();
+        assert!(canonical.line_segs.len() > 1);
+        assert!(canonical.line_segs[0].column_start > 0);
+        assert!(canonical.line_segs[1].text_start > 10);
+        source.sections[0].paragraphs[TARGET].line_segs[1].text_start -= 2;
+        let saved = source.sections[0].paragraphs[TARGET].clone();
+        let saved_rows = rows(&saved);
+        let canonical_rows = rows(&canonical);
+        assert_ne!(saved_rows, canonical_rows);
+        let bytes = crate::serializer::serialize_document(&source).unwrap();
+        let parsed = crate::parser::parse_document(&bytes).unwrap();
+        assert_eq!(parsed.doc_info.char_shapes[0].base_size, 900);
+        assert_eq!(parsed.doc_info.para_shapes[0].margin_left, 800);
+        assert_eq!(parsed.sections[0].section_def.page_def.width, 14000);
+        assert_eq!(rows(&parsed.sections[0].paragraphs[TARGET]), saved_rows);
+        assert!(parsed.sections[0].paragraphs[TARGET]
+            .controls
+            .iter()
+            .all(|control| matches!(control, Control::Equation(_))));
+        let original_stream = parsed.sections[0].raw_stream.clone();
+
+        // Pre-registered import publishes the same rows to raw IR, composed text and caret queries.
+        let mut core = DocumentCore::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            canonical_rows
+        );
+        assert_eq!(core.document().sections[0].raw_stream, original_stream);
+        let probe = DocumentCore::build_line_char_starts(&saved)[1];
+        let expected_line = DocumentCore::compute_line_info_struct(&canonical, probe).unwrap();
+        assert_eq!(expected_line.line_index, 0);
+        assert_eq!(
+            DocumentCore::compute_line_info_struct(
+                &core.document().sections[0].paragraphs[TARGET],
+                probe
+            )
+            .unwrap()
+            .line_index,
+            0
+        );
+        assert_eq!(
+            core.composed[0][TARGET].lines.len(),
+            canonical.line_segs.len()
+        );
+        for (line, segment) in core.composed[0][TARGET]
+            .lines
+            .iter()
+            .zip(&canonical.line_segs)
+        {
+            assert_eq!(
+                line.char_start,
+                canonical.utf16_pos_to_char_idx(segment.text_start)
+            );
+        }
+        let cursor_before = core.get_cursor_rect_native(0, TARGET, probe).unwrap();
+        core.refresh_layout_native();
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            canonical_rows
+        );
+        assert_eq!(
+            core.get_cursor_rect_native(0, TARGET, probe).unwrap(),
+            cursor_before
+        );
+        let snapshot = core.save_snapshot_native();
+
+        // Losing a source face restores the authored starts, and a later provider rebuilds from them.
+        remove();
+        core.refresh_layout_native();
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            saved_rows
+        );
+        install();
+        core.refresh_layout_native();
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            canonical_rows
+        );
+        remove();
+        let mut late = DocumentCore::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            rows(&late.document().sections[0].paragraphs[TARGET]),
+            saved_rows
+        );
+        install();
+        late.refresh_layout_native();
+        assert_eq!(
+            rows(&late.document().sections[0].paragraphs[TARGET]),
+            canonical_rows
+        );
+
+        // Width/geometry eligibility can disappear and return without accumulating start changes.
+        let original_width = core.document().sections[0].section_def.page_def.width;
+        core.document_mut().sections[0].section_def.page_def.width += 4000;
+        core.refresh_layout_native();
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            saved_rows
+        );
+        core.document_mut().sections[0].section_def.page_def.width = original_width;
+        core.refresh_layout_native();
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            canonical_rows
+        );
+
+        // Edits own their new rows; a later font refresh cannot resurrect the old paragraph's starts.
+        core.insert_text_native(0, TARGET, 1, "z").unwrap();
+        let edited = rows(&core.document().sections[0].paragraphs[TARGET]);
+        remove();
+        core.refresh_layout_native();
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            edited
+        );
+        install();
+        core.restore_snapshot_native(snapshot).unwrap();
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            canonical_rows
+        );
+        remove();
+        core.refresh_layout_native();
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            saved_rows
+        );
+        install();
+        core.refresh_layout_native();
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            canonical_rows
+        );
+
+        // Clone/set_document retains reversible origin, while replacement uses its own source rows.
+        let cloned = core.document().clone();
+        core.set_document(cloned);
+        remove();
+        core.refresh_layout_native();
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            saved_rows
+        );
+        install();
+        core.set_document(source.clone());
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            canonical_rows
+        );
+        let mut replacement = core.document().clone();
+        replacement.sections[0].paragraphs[TARGET]
+            .text
+            .replace_range(0..1, "z");
+        core.set_document(replacement);
+        let replaced = rows(&core.document().sections[0].paragraphs[TARGET]);
+        remove();
+        core.refresh_layout_native();
+        assert_eq!(
+            rows(&core.document().sections[0].paragraphs[TARGET]),
+            replaced
+        );
+        install();
+
+        // Parsed retained-origin clones compare live common values even with both raw layers present.
+        for change in [
+            "width",
+            "height",
+            "margins",
+            "treat_as_char",
+            "affect_line_spacing",
+        ] {
+            let mut replacement_core = DocumentCore::from_bytes(&bytes).unwrap();
+            assert_eq!(
+                rows(&replacement_core.document().sections[0].paragraphs[TARGET]),
+                canonical_rows
+            );
+            let mut replacement = replacement_core.document().clone();
+            let expected = rows(&replacement.sections[0].paragraphs[TARGET]);
+            let Control::Equation(equation) =
+                &mut replacement.sections[0].paragraphs[TARGET].controls[0]
+            else {
+                unreachable!()
+            };
+            assert!(!equation.raw_ctrl_data.is_empty());
+            assert_ne!(equation.common.attr, 0);
+            let raw = equation.raw_ctrl_data.clone();
+            let attr = equation.common.attr;
+            match change {
+                "width" => equation.common.width = 1,
+                "height" => equation.common.height += 75,
+                "margins" => {
+                    equation.common.margin.left += 75;
+                    equation.common.margin.right += 150;
+                    equation.common.margin.top += 225;
+                    equation.common.margin.bottom += 300;
+                }
+                "treat_as_char" => equation.common.treat_as_char = !equation.common.treat_as_char,
+                "affect_line_spacing" => {
+                    equation.common.affect_line_spacing = !equation.common.affect_line_spacing
+                }
+                _ => unreachable!(),
+            }
+            replacement_core.set_document(replacement);
+            assert_eq!(
+                rows(&replacement_core.document().sections[0].paragraphs[TARGET]),
+                expected,
+                "{change}"
+            );
+            let Control::Equation(equation) =
+                &replacement_core.document().sections[0].paragraphs[TARGET].controls[0]
+            else {
+                unreachable!()
+            };
+            assert_eq!(
+                equation.raw_ctrl_data, raw,
+                "fingerprint clone only: {change}"
+            );
+            assert_eq!(
+                equation.common.attr, attr,
+                "fingerprint clone only: {change}"
+            );
+            remove();
+            replacement_core.refresh_layout_native();
+            assert_eq!(
+                rows(&replacement_core.document().sections[0].paragraphs[TARGET]),
+                expected,
+                "no obsolete origin after {change}"
+            );
+            install();
+        }
+
+        // Actual flow formatting invalidates the installed origin before publishing new authored rows.
+        let mut formatted = DocumentCore::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            rows(&formatted.document().sections[0].paragraphs[TARGET]),
+            canonical_rows
+        );
+        formatted
+            .apply_char_format_native(
+                0,
+                TARGET,
+                0,
+                canonical.text.chars().count(),
+                r#"{"fontSize":1800}"#,
+            )
+            .unwrap();
+        let formatted_rows = rows(&formatted.document().sections[0].paragraphs[TARGET]);
+        assert_ne!(formatted_rows, canonical_rows);
+        assert!(formatted.document().sections[0].raw_stream.is_none());
+        remove();
+        formatted.refresh_layout_native();
+        assert_eq!(
+            rows(&formatted.document().sections[0].paragraphs[TARGET]),
+            formatted_rows
+        );
+        install();
+
+        // Existing origin is restored when unchanged paragraph inputs acquire incompatible fresh rows.
+        for change in ["count", "geometry"] {
+            let mut changed = DocumentCore::from_bytes(&bytes).unwrap();
+            assert_eq!(
+                rows(&changed.document().sections[0].paragraphs[TARGET]),
+                canonical_rows
+            );
+            if change == "count" {
+                changed.document_mut().doc_info.char_shapes[0].base_size *= 2;
+            } else {
+                changed.document_mut().doc_info.para_shapes[0].line_spacing += 10;
+            }
+            changed.refresh_layout_native();
+            assert_eq!(
+                rows(&changed.document().sections[0].paragraphs[TARGET]),
+                saved_rows,
+                "installed origin {change} loss"
+            );
+            // Existing edit reflow is the independent current-context row oracle.
+            let mut oracle = DocumentCore::new_empty();
+            oracle.set_document(changed.document().clone());
+            oracle.reflow_paragraph(0, TARGET);
+            let fresh_rows = rows(&oracle.document().sections[0].paragraphs[TARGET]);
+            if change == "count" {
+                assert_ne!(fresh_rows.len(), canonical_rows.len());
+            } else {
+                assert_eq!(fresh_rows.len(), canonical_rows.len());
+                assert!(fresh_rows
+                    .iter()
+                    .zip(&canonical_rows)
+                    .any(|(a, b)| a[1..] != b[1..]));
+            }
+            // Restoring the original style reacquires the same starts, with no accumulated drift.
+            changed.document_mut().doc_info = parsed.doc_info.clone();
+            changed.refresh_layout_native();
+            assert_eq!(
+                rows(&changed.document().sections[0].paragraphs[TARGET]),
+                canonical_rows
+            );
+        }
+
+        // Unedited HWP keeps its original stream. Reopening reapplies the current derived cache.
+        let core = DocumentCore::from_bytes(&bytes).unwrap();
+        let exported = core.export_hwp_native().unwrap();
+        assert_eq!(
+            rows(&crate::parser::parse_document(&exported).unwrap().sections[0].paragraphs[TARGET]),
+            saved_rows
+        );
+        assert_eq!(
+            rows(
+                &DocumentCore::from_bytes(&exported)
+                    .unwrap()
+                    .document()
+                    .sections[0]
+                    .paragraphs[TARGET]
+            ),
+            canonical_rows
+        );
+        let hwpx = core.export_hwpx_native().unwrap();
+        let exported_hwpx = crate::parser::parse_document(&hwpx).unwrap();
+        assert_eq!(
+            starts(&exported_hwpx.sections[0].paragraphs[TARGET]),
+            starts(&canonical)
+        );
+
+        // Native-only, source-ready, same-count, exactly unchanged geometry controls.
+        for control in [
+            "hwpx",
+            "hwp3",
+            "geometry",
+            "reset",
+            "explicit",
+            "tab",
+            "squeeze",
+            "generated",
+            "width",
+            "noninline",
+            "unresolved",
+            "noequation",
+        ] {
+            let mut document = source.clone();
+            let para = &mut document.sections[0].paragraphs[TARGET];
+            match control {
+                "geometry" => para.line_segs[1].baseline_distance += 1,
+                "reset" => para.line_segs[1].vertical_pos = 0,
+                "explicit" => para.text.replace_range(0..1, "\n"),
+                "tab" => para.text.replace_range(0..1, "\t"),
+                "generated" => para.line_segs[0].tag |= LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+                "width" => para.line_segs[0].segment_width -= 4,
+                "noninline" | "unresolved" => {
+                    let Control::Equation(eq) = &mut para.controls[0] else {
+                        unreachable!()
+                    };
+                    if control == "noninline" {
+                        eq.common.treat_as_char = false;
+                    } else {
+                        eq.version_info.clear();
+                    }
+                }
+                "noequation" => para.controls.clear(),
+                _ => {}
+            }
+            if control == "hwpx" {
+                document.provenance.format = crate::model::provenance::SourceFormat::Hwpx;
+            }
+            if control == "hwp3" {
+                document.provenance.hwp3_lineage = true;
+            }
+            if control == "squeeze" {
+                document.doc_info.para_shapes[0].attr2 = 1;
+            }
+            let expected = rows(&document.sections[0].paragraphs[TARGET]);
+            let mut control_core = DocumentCore::new_empty();
+            control_core.set_document(document);
+            assert_eq!(
+                rows(&control_core.document().sections[0].paragraphs[TARGET]),
+                expected,
+                "{control}"
+            );
+        }
+        // Table-cell paragraphs use their own width/flow contract and stay outside this repair.
+        let mut cell_document = source.clone();
+        let mut table = Table {
+            row_count: 1,
+            col_count: 1,
+            cells: vec![Cell {
+                row_span: 1,
+                col_span: 1,
+                width: 14000,
+                height: 7000,
+                paragraphs: vec![saved.clone()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        table.common.treat_as_char = true;
+        table.common.width = 14000;
+        table.common.height = 7000;
+        cell_document.sections[0].paragraphs = vec![
+            source.sections[0].paragraphs[0].clone(),
+            Paragraph {
+                controls: vec![Control::Table(Box::new(table))],
+                ..Default::default()
+            },
+        ];
+        let mut cell_core = DocumentCore::new_empty();
+        cell_core.set_document(cell_document);
+        let Control::Table(table) =
+            &cell_core.document().sections[0].paragraphs[TARGET].controls[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(rows(&table.cells[0].paragraphs[0]), saved_rows);
+
+        // A saved extra row is outside the same-count contract.
+        let mut different_count = source;
+        let para = &mut different_count.sections[0].paragraphs[TARGET];
+        let mut extra = para.line_segs.last().unwrap().clone();
+        extra.text_start += 2;
+        extra.vertical_pos += extra.line_height + extra.line_spacing;
+        para.line_segs.push(extra);
+        let expected = rows(para);
+        let mut control_core = DocumentCore::new_empty();
+        control_core.set_document(different_count);
+        assert_eq!(
+            rows(&control_core.document().sections[0].paragraphs[TARGET]),
+            expected
+        );
+    }
+
     fn assert_send<T: Send>() {}
+
+    fn numbering_context_fixture() -> DocumentCore {
+        numbering_context_fixture_with_count(9)
+    }
+
+    fn numbering_context_fixture_with_count(count: usize) -> DocumentCore {
+        use crate::model::document::{Document, Section};
+        use crate::model::paragraph::{CharShapeRef, LineSeg, Paragraph};
+        use crate::model::style::{CharShape, HeadType, Numbering, ParaShape};
+        let mut document = Document::default();
+        document.doc_info.font_metrics_policy =
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared;
+        document.doc_info.char_shapes = vec![CharShape {
+            base_size: 1_200,
+            ..Default::default()
+        }];
+        document.doc_info.para_shapes = vec![
+            ParaShape {
+                head_type: HeadType::Number,
+                numbering_id: 1,
+                line_spacing: 160,
+                ..Default::default()
+            },
+            ParaShape {
+                line_spacing: 160,
+                ..Default::default()
+            },
+        ];
+        let mut numbering = Numbering {
+            level_start_numbers: [1; 7],
+            ..Default::default()
+        };
+        numbering.level_formats[0] = "^1.".into();
+        document.doc_info.numberings = vec![numbering];
+        document.sections = vec![Section {
+            paragraphs: (0..count)
+                .map(|index| Paragraph {
+                    text: if index + 1 == count {
+                        "가나다라".into()
+                    } else {
+                        "앞".into()
+                    },
+                    char_shapes: vec![CharShapeRef::default()],
+                    line_segs: vec![LineSeg {
+                        text_start: 0,
+                        vertical_pos: index as i32 * 1_920,
+                        line_height: 1_200,
+                        text_height: 1_200,
+                        baseline_distance: 1_020,
+                        line_spacing: 720,
+                        segment_width: 20_000,
+                        tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }];
+        let mut tail = document.sections[0].paragraphs[0].clone();
+        tail.para_shape_id = 1;
+        tail.text = "tail".into();
+        tail.line_segs[0].vertical_pos = count as i32 * 1_920;
+        document.sections[0].paragraphs.push(tail);
+        for paragraph in &mut document.sections[0].paragraphs {
+            paragraph.char_count = paragraph.text.chars().count() as u32 + 1;
+            paragraph.char_offsets = (0..paragraph.text.chars().count() as u32).collect();
+        }
+        let styles = crate::renderer::style_resolver::resolve_styles(&document.doc_info, 96.0);
+        let heads = crate::renderer::layout::resolve_body_paragraph_heads(&document, &styles);
+        let reserve = crate::renderer::layout::resolved_head_reserve_px(
+            &styles,
+            &document.sections[0].paragraphs[count - 1],
+            heads[0][count - 1].as_ref(),
+            96.0,
+        );
+        let style = crate::renderer::layout::resolved_to_text_style(&styles, 0, 0);
+        let body = crate::renderer::layout::estimate_text_width_unrounded("가나다라", &style);
+        let width = crate::renderer::px_to_hwpunit_round(body + reserve.0, 96.0) + 4;
+        document.sections[0].section_def.page_def = crate::model::page::PageDef {
+            width: width as u32,
+            height: 6_000,
+            ..Default::default()
+        };
+        for paragraph in &mut document.sections[0].paragraphs {
+            paragraph.line_segs[0].segment_width = width;
+        }
+        let mut core = DocumentCore::new_empty();
+        core.set_document(document);
+        core
+    }
+
+    #[test]
+    fn numbering_initialization_preserves_saved_lines_and_fits_missing_lines() {
+        let core = numbering_context_fixture();
+        let saved = core.document.sections[0].paragraphs[8].line_segs.clone();
+        assert_eq!(core.composed[0][8].numbering_text.as_deref(), Some("9."));
+        let bytes = crate::serializer::hwpx::serialize_hwpx(&core.document).unwrap();
+        let reopened = DocumentCore::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            format!(
+                "{:?}",
+                reopened.document.sections[0].paragraphs[8].line_segs
+            ),
+            format!("{saved:?}")
+        );
+        let mut document = core.document.clone();
+        let inserted = document.sections[0].paragraphs[0].clone();
+        document.sections[0].paragraphs.insert(0, inserted);
+        for para in &mut document.sections[0].paragraphs {
+            para.line_segs.clear();
+        }
+        let bytes = crate::serializer::hwpx::serialize_hwpx(&document).unwrap();
+        let fresh = DocumentCore::from_bytes(&bytes).unwrap();
+        assert_eq!(fresh.composed[0][9].numbering_text.as_deref(), Some("10."));
+        assert_eq!(fresh.document.sections[0].paragraphs[9].line_segs.len(), 2);
+    }
+
+    #[test]
+    fn numbering_public_split_merge_refreshes_downstream_wrap_and_render_order() {
+        let mut core = numbering_context_fixture();
+        core.reflow_paragraph(0, 8);
+        core.recompose_paragraph(0, 8);
+        core.paginate();
+        assert_eq!(core.document.sections[0].paragraphs[8].line_segs.len(), 1);
+        let tail_before = core.document.sections[0].paragraphs[9].line_segs[0].vertical_pos;
+        core.split_paragraph_logical_native(0, 0, 1).unwrap();
+        assert_eq!(core.composed[0][9].numbering_text.as_deref(), Some("10."));
+        assert_eq!(core.document.sections[0].paragraphs[9].line_segs.len(), 2);
+        assert!(core.document.sections[0].paragraphs[10].line_segs[0].vertical_pos > tail_before);
+        let mut fresh = DocumentCore::new_empty();
+        fresh.set_document(core.document.clone());
+        assert_eq!(
+            core.get_cursor_rect_native(0, 10, 0).unwrap(),
+            fresh.get_cursor_rect_native(0, 10, 0).unwrap()
+        );
+        fn markers(
+            node: &crate::renderer::render_tree::RenderNode,
+            out: &mut Vec<(String, f64, f64)>,
+        ) {
+            if let RenderNodeType::TextRun(run) = &node.node_type {
+                if run.char_start.is_none()
+                    && run.text.ends_with('.')
+                    && run
+                        .text
+                        .trim_end_matches('.')
+                        .chars()
+                        .all(|ch| ch.is_ascii_digit())
+                {
+                    out.push((run.text.clone(), node.bbox.x, node.bbox.y));
+                }
+            }
+            for child in &node.children {
+                markers(child, out);
+            }
+        }
+        let forward: Vec<_> = (0..core.page_count())
+            .map(|page| {
+                let mut heads = Vec::new();
+                markers(&core.build_page_render_tree(page).unwrap().root, &mut heads);
+                heads
+            })
+            .collect();
+        assert_eq!(
+            forward
+                .iter()
+                .flatten()
+                .map(|entry| entry.0.clone())
+                .collect::<Vec<_>>(),
+            (1..=10)
+                .map(|value| format!("{value}."))
+                .collect::<Vec<_>>()
+        );
+        for page in (0..core.page_count()).rev().chain(0..core.page_count()) {
+            let mut heads = Vec::new();
+            markers(&core.build_page_render_tree(page).unwrap().root, &mut heads);
+            assert_eq!(heads, forward[page as usize]);
+        }
+        core.merge_paragraph_native(0, 1).unwrap();
+        assert_eq!(core.composed[0][8].numbering_text.as_deref(), Some("9."));
+        assert_eq!(core.document.sections[0].paragraphs[8].line_segs.len(), 1);
+        assert_eq!(
+            core.document.sections[0].paragraphs[9].line_segs[0].vertical_pos,
+            tail_before
+        );
+        let mut fresh = DocumentCore::new_empty();
+        fresh.set_document(core.document.clone());
+        assert_eq!(
+            core.get_cursor_rect_native(0, 9, 0).unwrap(),
+            fresh.get_cursor_rect_native(0, 9, 0).unwrap()
+        );
+        let bytes = core.export_hwpx_native().unwrap();
+        let reopened = DocumentCore::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            reopened.composed[0][8].numbering_text.as_deref(),
+            Some("9.")
+        );
+        assert_eq!(
+            reopened.document.sections[0].paragraphs[8].line_segs.len(),
+            1
+        );
+        core.delete_paragraph_native(0, 0).unwrap();
+        assert_eq!(core.composed[0][7].numbering_text.as_deref(), Some("8."));
+    }
+
+    #[test]
+    fn numbering_page_and_column_splits_keep_downstream_context_aligned() {
+        for page_break in [true, false] {
+            let mut core = numbering_context_fixture();
+            // 9번 뒤에 기존 10번이 있어야 인덱스가 밀릴 때 이웃 번호를 잘못 복사한 경우를 잡는다.
+            let mut document = core.document.clone();
+            let mut continuation = document.sections[0].paragraphs[0].clone();
+            continuation.line_segs[0].vertical_pos = 9 * 1_920;
+            document.sections[0].paragraphs[9].line_segs[0].vertical_pos = 10 * 1_920;
+            document.sections[0].paragraphs.insert(9, continuation);
+            core.set_document(document);
+            assert_eq!(core.composed[0][9].numbering_text.as_deref(), Some("10."));
+            assert_eq!(core.document.sections[0].paragraphs[8].line_segs.len(), 1);
+            if page_break {
+                core.insert_page_break_native(0, 0, 1).unwrap();
+            } else {
+                core.insert_column_break_native(0, 0, 1).unwrap();
+            }
+            assert_eq!(core.composed[0][9].numbering_text.as_deref(), Some("10."));
+            assert_eq!(core.document.sections[0].paragraphs[9].line_segs.len(), 2);
+            assert_eq!(core.composed[0][10].numbering_text.as_deref(), Some("11."));
+            let mut fresh = DocumentCore::new_empty();
+            fresh.set_document(core.document.clone());
+            assert_eq!(
+                core.get_cursor_rect_native(0, 11, 0).unwrap(),
+                fresh.get_cursor_rect_native(0, 11, 0).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn numbering_control_paste_keeps_downstream_context_aligned() {
+        let mut core = numbering_context_fixture();
+        core.clipboard = Some(crate::document_core::ClipboardData {
+            paragraphs: vec![Paragraph {
+                para_shape_id: 1,
+                controls: vec![Control::Picture(Box::new(
+                    crate::model::image::Picture::default(),
+                ))],
+                ..Default::default()
+            }],
+            plain_text: String::new(),
+        });
+        core.paste_control_native(0, 0, 0).unwrap();
+        assert_eq!(core.composed[0][10].numbering_text.as_deref(), Some("10."));
+        assert_eq!(core.document.sections[0].paragraphs[10].line_segs.len(), 2);
+        let mut fresh = DocumentCore::new_empty();
+        fresh.set_document(core.document.clone());
+        assert_eq!(
+            core.get_cursor_rect_native(0, 11, 0).unwrap(),
+            fresh.get_cursor_rect_native(0, 11, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn numbering_document_replacement_and_snapshot_restore_preserve_saved_lines() {
+        let source = numbering_context_fixture_with_count(10);
+        let expected = format!("{:?}", source.document.sections[0].paragraphs[9].line_segs);
+        let bytes = crate::serializer::hwpx::serialize_hwpx(&source.document).unwrap();
+        let mut core = numbering_context_fixture();
+        core.replace_content_from_bytes_native(&bytes).unwrap();
+        assert_eq!(core.composed[0][9].numbering_text.as_deref(), Some("10."));
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs[9].line_segs),
+            expected
+        );
+        let snapshot = core.save_snapshot_native();
+        core.delete_paragraph_native(0, 0).unwrap();
+        core.restore_snapshot_native(snapshot).unwrap();
+        assert_eq!(core.composed[0][9].numbering_text.as_deref(), Some("10."));
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs[9].line_segs),
+            expected
+        );
+    }
+
+    #[test]
+    fn numbering_on_demand_reflow_uses_the_actual_body_marker() {
+        let mut core = numbering_context_fixture();
+        let mut document = core.document.clone();
+        let inserted = document.sections[0].paragraphs[0].clone();
+        document.sections[0].paragraphs.insert(0, inserted);
+        core.set_document(document);
+        core.document.sections[0].paragraphs[9].line_segs.clear();
+        core.validation_report = DocumentCore::validate_linesegs(&core.document, false);
+        assert_eq!(core.reflow_linesegs_on_demand(), 1);
+        assert_eq!(core.composed[0][9].numbering_text.as_deref(), Some("10."));
+        assert_eq!(core.document.sections[0].paragraphs[9].line_segs.len(), 2);
+    }
+
+    #[test]
+    fn numbering_three_digit_crossing_reflows_downstream_text() {
+        let mut core = numbering_context_fixture_with_count(99);
+        core.reflow_paragraph(0, 98);
+        core.recompose_paragraph(0, 98);
+        core.paginate();
+        assert_eq!(core.document.sections[0].paragraphs[98].line_segs.len(), 1);
+        core.split_paragraph_logical_native(0, 0, 1).unwrap();
+        assert_eq!(core.composed[0][99].numbering_text.as_deref(), Some("100."));
+        assert_eq!(core.document.sections[0].paragraphs[99].line_segs.len(), 2);
+        core.merge_paragraph_native(0, 1).unwrap();
+        assert_eq!(core.composed[0][98].numbering_text.as_deref(), Some("99."));
+        assert_eq!(core.document.sections[0].paragraphs[98].line_segs.len(), 1);
+    }
+
+    #[test]
+    fn numbering_context_restores_id_history_and_section_outline() {
+        use crate::model::paragraph::NumberingRestart;
+        use crate::model::style::HeadType;
+        let mut core = numbering_context_fixture();
+        core.document.sections[0].paragraphs.truncate(3);
+        let mut styles = core.styles.clone();
+        styles.numberings.push(styles.numberings[0].clone());
+        let mut second = styles.para_styles[0].clone();
+        second.numbering_id = 2;
+        styles.para_styles.push(second);
+        let mut outline = styles.para_styles[0].clone();
+        outline.head_type = HeadType::Outline;
+        outline.numbering_id = 0;
+        styles.para_styles.push(outline);
+        core.document.sections[0].section_def.outline_numbering_id = 1;
+        core.document.sections[0].paragraphs[0].numbering_restart =
+            Some(NumberingRestart::NewStart(9));
+        core.document.sections[0].paragraphs[1].para_shape_id = 2;
+        core.document.sections[0].paragraphs[2].para_shape_id = 3;
+        core.document.sections[0].paragraphs[2].numbering_restart =
+            Some(NumberingRestart::ContinuePrevious);
+        let mut next = core.document.sections[0].clone();
+        next.paragraphs = vec![next.paragraphs[2].clone()];
+        core.document.sections.push(next);
+        let heads = crate::renderer::layout::resolve_body_paragraph_heads(&core.document, &styles);
+        assert_eq!(heads[0][0].as_ref().unwrap().text, "9.");
+        assert_eq!(heads[0][1].as_ref().unwrap().text, "1.");
+        assert_eq!(heads[0][2].as_ref().unwrap().text, "10.");
+        assert_eq!(heads[1][0].as_ref().unwrap().text, "11.");
+    }
+
+    #[test]
+    fn numbering_deferred_table_edit_falls_back_for_downstream_body_budget() {
+        use crate::model::control::Control;
+        use crate::model::table::{Cell, Table};
+        let mut core = numbering_context_fixture();
+        let child = core.document.sections[0].paragraphs.remove(0);
+        let width = core.document.sections[0].section_def.page_def.width;
+        let mut table = Table {
+            cells: vec![Cell {
+                width,
+                height: 2_400,
+                paragraphs: vec![child],
+                ..Default::default()
+            }],
+            row_count: 1,
+            col_count: 1,
+            ..Default::default()
+        };
+        table.common.width = width;
+        table.common.height = 2_400;
+        core.document.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Table(Box::new(table)));
+        let document = core.document.clone();
+        core.set_document(document);
+        assert_eq!(core.composed[0][7].numbering_text.as_deref(), Some("9."));
+        let pages = core.page_count();
+        core.begin_batch_native().unwrap();
+        core.split_paragraph_in_cell_logical_native(0, 0, 0, 0, 0, 1)
+            .unwrap();
+        core.insert_text_in_cell_native_deferred_pagination(0, 0, 0, 0, 1, 0, &"가".repeat(40))
+            .unwrap();
+        let heads =
+            crate::renderer::layout::resolve_body_paragraph_heads(&core.document, &core.styles);
+        assert_eq!(heads[0][7].as_ref().unwrap().text, "10.");
+        assert!(core.body_head_width_changes(&heads).contains(&(0, 7)));
+        assert_eq!(
+            core.begin_deferred_pagination(1).state,
+            DeferredPaginationJobState::Fallback
+        );
+        assert_eq!(core.page_count(), pages);
+        core.end_batch_native().unwrap();
+        assert_eq!(core.composed[0][7].numbering_text.as_deref(), Some("10."));
+        assert_eq!(core.document.sections[0].paragraphs[7].line_segs.len(), 2);
+    }
+
+    #[test]
+    fn numbering_import_order_shares_table_counter_and_preserves_restarts() {
+        use crate::model::control::Control;
+        use crate::model::paragraph::NumberingRestart;
+        use crate::model::table::{Cell, Table};
+        let mut core = numbering_context_fixture();
+        let child = core.document.sections[0].paragraphs[0].clone();
+        core.document.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Table(Box::new(Table {
+                cells: vec![Cell {
+                    paragraphs: vec![child.clone(), child],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })));
+        let heads =
+            crate::renderer::layout::resolve_body_paragraph_heads(&core.document, &core.styles);
+        assert_eq!(heads[0][0].as_ref().unwrap().text, "1.");
+        assert_eq!(heads[0][1].as_ref().unwrap().text, "4.");
+        assert_eq!(heads[0][8].as_ref().unwrap().text, "11.");
+        core.document.sections[0].paragraphs[1].numbering_restart =
+            Some(NumberingRestart::NewStart(9));
+        let heads =
+            crate::renderer::layout::resolve_body_paragraph_heads(&core.document, &core.styles);
+        assert_eq!(heads[0][1].as_ref().unwrap().text, "9.");
+        assert_eq!(heads[0][2].as_ref().unwrap().text, "10.");
+        core.document.sections[0].paragraphs[2].numbering_restart =
+            Some(NumberingRestart::ContinuePrevious);
+        let heads =
+            crate::renderer::layout::resolve_body_paragraph_heads(&core.document, &core.styles);
+        assert_eq!(heads[0][2].as_ref().unwrap().text, "10.");
+    }
+
+    #[test]
+    fn committed_line_publication_updates_model_and_normalized_snapshot_once() {
+        use crate::model::paragraph::LineSeg;
+        use crate::renderer::pagination::CommittedLineOrigin;
+        let document = Document {
+            sections: vec![Section {
+                section_def: crate::model::document::SectionDef {
+                    page_def: crate::model::page::PageDef {
+                        width: 59_528,
+                        height: 84_188,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                paragraphs: vec![Paragraph {
+                    text: "body".into(),
+                    line_segs: vec![LineSeg {
+                        vertical_pos: 9_500,
+                        line_height: 1_150,
+                        text_height: 1_150,
+                        baseline_distance: 900,
+                        line_spacing: -40,
+                        segment_width: 30_000,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut core = DocumentCore::new_empty();
+        core.set_document(document);
+        assert!(!core.composed[0][0].lines[0].runs.is_empty());
+        assert!(!core.measured_sections[0].paragraphs.is_empty());
+        let cache_before = format!("{:?}{:?}", core.composed, core.measured_sections);
+        core.render_normalization.sections.resize_with(1, || None);
+        core.render_normalization.sections[0] =
+            Some(crate::document_core::RenderNormalizedSection {
+                source_revision: 0,
+                body_spacing_projected: false,
+                paragraphs: std::sync::Arc::new(core.document.sections[0].paragraphs.clone()),
+                composed: std::sync::Arc::new(core.composed[0].clone()),
+            });
+        core.pagination[0].committed_line_origins = vec![CommittedLineOrigin {
+            para_index: 0,
+            line_index: 0,
+            vertical_pos: 0,
+        }];
+        core.publish_committed_line_origins(0);
+        assert_eq!(
+            core.document.sections[0].paragraphs[0].line_segs[0].vertical_pos,
+            0
+        );
+        assert_eq!(
+            core.render_normalization.sections[0]
+                .as_ref()
+                .unwrap()
+                .paragraphs[0]
+                .line_segs[0]
+                .vertical_pos,
+            0
+        );
+        assert_eq!(
+            cache_before,
+            format!("{:?}{:?}", core.composed, core.measured_sections)
+        );
+        assert!(core.pagination[0].committed_line_origins.is_empty());
+        core.document.sections[0].paragraphs[0].line_segs[0].vertical_pos = 77;
+        core.publish_committed_line_origins(0);
+        assert_eq!(
+            core.document.sections[0].paragraphs[0].line_segs[0].vertical_pos,
+            77
+        );
+    }
 
     #[test]
     fn issue_2004_cell_stack_projection_marks_paragraphs_and_preserves_offsets() {

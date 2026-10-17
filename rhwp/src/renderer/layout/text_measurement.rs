@@ -13,6 +13,1059 @@ use unicode_segmentation::UnicodeSegmentation;
 /// macOS 맑은 고딕 22pt 줄끝 칸 ≈ 5.6pt, 함초롬바탕 15pt 글머리 앞 칸 ≈ 3.5pt
 /// (장평 97%·자간 -3% 적용). 글꼴과 무관하게 글자 크기의 1/4 이다.
 const FIXED_WIDTH_SPACE_EM: f64 = 0.25;
+
+#[cfg(test)]
+mod control_space_base_transport_tests {
+    use super::*;
+    use crate::model::paragraph::{SpecialSpaceOrigin, SpecialSpaceOriginKind};
+    use crate::renderer::ControlSpaceBase;
+
+    #[test]
+    fn native_char_position_survives_measurement_fallback_and_script_reduction() {
+        let source = crate::renderer::NativeCharPosition {
+            base_height_hu: 1150,
+            percent: -12,
+            dpi: 144.0,
+        };
+        let style = TextStyle {
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            font_family: "absent-native-position-test-face".into(),
+            font_subst: "함초롬바탕".into(),
+            font_size: 23.0,
+            superscript: true,
+            native_char_position: Some(source),
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1150,
+                korean_relative_size: 100,
+                korean_ratio: 100,
+                raw31_eng_tracking_percent: Some(0),
+            }),
+            ..Default::default()
+        };
+        let fallback = measure_style(&style);
+        assert_ne!(fallback.font_family, style.font_family);
+        assert_eq!(fallback.native_char_position, Some(source));
+        let mut measured = script_measure_style(&fallback).unwrap();
+        assert_eq!(
+            measured.font_size,
+            style.font_size * crate::renderer::SCRIPT_GLYPH_SCALE
+        );
+        assert_eq!(measured.native_char_position, Some(source));
+        measured.control_space_base.as_mut().unwrap().height_hu = 0;
+        measured.font_size = 1.0;
+        assert_eq!(
+            crate::renderer::char_offset_dy(&measured),
+            hwpunit_to_px(-138, 144.0)
+        );
+        assert_eq!(measured.native_char_position, Some(source));
+    }
+
+    #[test]
+    fn ordinary_space_eng_tracking_scalar_keeps_glyphs_controls_and_policy() {
+        let style = TextStyle {
+            font_family: "RHWP unknown tracking face".into(),
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            font_size: 20.0,
+            ratio: 0.95,
+            letter_spacing: -1.0,
+            extra_word_spacing: 0.3,
+            extra_char_spacing: 0.2,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1148,
+                korean_relative_size: 100,
+                korean_ratio: 95,
+                raw31_eng_tracking_percent: None,
+            }),
+            ..Default::default()
+        };
+        let original = compute_char_positions("A A", &style);
+        for percent in [None, Some(-17), Some(0), Some(17)] {
+            let mut tracked = style.clone();
+            tracked
+                .control_space_base
+                .as_mut()
+                .unwrap()
+                .raw31_eng_tracking_percent = percent;
+            let mut reference = style.clone();
+            if let Some(percent) = percent {
+                reference.letter_spacing = reference.font_size * f64::from(percent) / 100.0;
+            }
+            let expected_space = compute_char_positions(" ", &reference)[1];
+            let positions = compute_char_positions("A A", &tracked);
+            assert!((positions[2] - positions[1] - expected_space).abs() < 1e-9);
+            assert_eq!(positions[1], original[1]);
+            assert!((positions[3] - positions[2] - original[1]).abs() < 1e-9);
+            assert!((estimate_text_width("A A", &tracked) - positions[3]).abs() < 1e-9);
+            assert!((estimate_text_width_unrounded("A A", &tracked) - positions[3]).abs() < 1e-9);
+            assert_eq!(
+                compute_glyph_positions("A A", &tracked),
+                compute_glyph_positions("A A", &style)
+            );
+            let mut zero = tracked.clone();
+            zero.zero_tracking();
+            assert_eq!(
+                zero.ordinary_space_tracking_percent(' '),
+                percent.map(|_| 0)
+            );
+            // 기존 raw/literal/unknown 빈칸은 일반 U0020 선택을 받지 않는다.
+            for (ch, origin) in [
+                ('\u{00a0}', SpecialSpaceOriginKind::NbSpace),
+                ('\u{00a0}', SpecialSpaceOriginKind::Literal),
+                ('\u{2007}', SpecialSpaceOriginKind::Literal),
+            ] {
+                let mut other = tracked.clone();
+                other.special_space_origins = vec![SpecialSpaceOrigin {
+                    char_idx: 0,
+                    origin,
+                }];
+                let mut old = other.clone();
+                old.control_space_base
+                    .as_mut()
+                    .unwrap()
+                    .raw31_eng_tracking_percent = None;
+                assert_eq!(
+                    compute_char_positions(&ch.to_string(), &other),
+                    compute_char_positions(&ch.to_string(), &old)
+                );
+            }
+            assert_eq!(
+                compute_char_positions("\u{2007}", &tracked),
+                compute_char_positions("\u{2007}", &style)
+            );
+            tracked.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+            let mut old = tracked.clone();
+            old.control_space_base = None;
+            assert_eq!(
+                compute_char_positions("A A", &tracked),
+                compute_char_positions("A A", &old)
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_space_eng_tracking_shapes_without_changing_neighbor_clusters() {
+        let font = figure_space_fixture();
+        let style = TextStyle {
+            font_family: font.family.clone(),
+            font_size: 20.3,
+            ratio: 0.95,
+            letter_spacing: -1.0,
+            kerning: true,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1148,
+                korean_relative_size: 100,
+                korean_ratio: 95,
+                raw31_eng_tracking_percent: None,
+            }),
+            ..Default::default()
+        };
+        let _scope = enter_resolved_shaping_fonts(vec![font]);
+        let ordinary = shaped_char_positions("AV", &style).unwrap();
+        for percent in [None, Some(-17), Some(0), Some(17)] {
+            let mut tracked = style.clone();
+            tracked
+                .control_space_base
+                .as_mut()
+                .unwrap()
+                .raw31_eng_tracking_percent = percent;
+            let mut reference = style.clone();
+            if let Some(percent) = percent {
+                reference.letter_spacing = reference.font_size * f64::from(percent) / 100.0;
+            }
+            let expected_space = shaped_char_positions(" ", &reference).unwrap()[1];
+            let positions = compute_char_positions("AV AV", &tracked);
+            assert_eq!(&positions[..3], &ordinary);
+            assert!((positions[3] - positions[2] - expected_space).abs() < 1e-9);
+            for i in 0..=2 {
+                assert!((positions[i + 3] - positions[3] - ordinary[i]).abs() < 1e-9);
+            }
+            assert_eq!(estimate_text_width("AV AV", &tracked), positions[5].round());
+            assert!((estimate_text_width_unrounded("AV AV", &tracked) - positions[5]).abs() < 1e-9);
+            assert_eq!(
+                compute_glyph_positions("AV AV", &tracked),
+                compute_glyph_positions("AV AV", &style)
+            );
+        }
+    }
+
+    // 기존 ffi GSUB를 그대로 두고 빈칸의 cmap만 f/i glyph로 바꾼다.
+    // 빈칸이 앞/중간/뒤에 있는 실제 혼합 cluster를 만들며 AV kerning/hmtx는 건드리지 않는다.
+    fn mixed_space_fixture(space_as: char) -> ResolvedShapingFont {
+        let font = figure_space_fixture();
+        let glyph = rustybuzz::Face::from_slice(&font.bytes, 0)
+            .unwrap()
+            .glyph_index(space_as)
+            .unwrap()
+            .0;
+        let mut bytes = font.bytes.to_vec();
+        let read = |b: &[u8], offset: usize| {
+            u16::from_be_bytes(b[offset..offset + 2].try_into().unwrap()) as usize
+        };
+        let record = (0..read(&bytes, 4))
+            .map(|i| 12 + i * 16)
+            .find(|offset| &bytes[*offset..*offset + 4] == b"cmap")
+            .unwrap();
+        let cmap = u32::from_be_bytes(bytes[record + 8..record + 12].try_into().unwrap()) as usize;
+        let mut patched = std::collections::BTreeSet::new();
+        for index in 0..read(&bytes, cmap + 2) {
+            let record_offset = cmap + 4 + index * 8 + 4;
+            let table = cmap
+                + u32::from_be_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap())
+                    as usize;
+            if !patched.insert(table) || read(&bytes, table) != 4 {
+                continue;
+            }
+            let segments = read(&bytes, table + 6) / 2;
+            let ends = table + 14;
+            let starts = ends + segments * 2 + 2;
+            let deltas = starts + segments * 2;
+            let segment = (0..segments)
+                .find(|i| read(&bytes, starts + i * 2) == 32 && read(&bytes, ends + i * 2) == 32)
+                .unwrap();
+            assert_eq!(read(&bytes, deltas + segments * 2 + segment * 2), 0);
+            let delta = deltas + segment * 2;
+            bytes[delta..delta + 2].copy_from_slice(&glyph.wrapping_sub(32).to_be_bytes());
+        }
+        ResolvedShapingFont {
+            family: format!("RHWP mixed-space-{space_as} fixture"),
+            bytes: std::sync::Arc::from(bytes),
+            face_index: 0,
+        }
+    }
+
+    #[test]
+    fn ordinary_space_mixed_clusters_use_scalar_metrics_and_keep_neighbor_shaping() {
+        for (space_as, mixed) in [('f', " fi"), ('f', "f i"), ('i', "ff ")] {
+            let font = mixed_space_fixture(space_as);
+            let text = format!("AV{mixed}AV");
+            let mixed_len = mixed.chars().count();
+            let mixed_end = 2 + mixed_len;
+            let text_end = mixed_end + 2;
+            // 검증할 GSUB cluster가 실제로 빈칸과 다른 scalar를 함께 포함해야 한다.
+            let face = rustybuzz::Face::from_slice(&font.bytes, 0).unwrap();
+            let mut buffer = rustybuzz::UnicodeBuffer::new();
+            buffer.push_str(&text);
+            buffer.guess_segment_properties();
+            let glyphs = rustybuzz::shape(&face, &[], buffer);
+            assert_eq!(
+                glyphs
+                    .glyph_infos()
+                    .iter()
+                    .filter(|g| g.cluster == 2)
+                    .map(|g| g.glyph_id)
+                    .collect::<Vec<_>>(),
+                vec![12] // 원본 fixture의 ffi ligature glyph
+            );
+            assert!(glyphs
+                .glyph_infos()
+                .iter()
+                .all(|g| !(3..mixed_end as u32).contains(&g.cluster)));
+            let style = TextStyle {
+                font_family: font.family.clone(),
+                font_size: 20.3,
+                letter_spacing: -1.0,
+                ratio: 0.95,
+                kerning: true,
+                font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+                control_space_base: Some(ControlSpaceBase {
+                    height_hu: 1148,
+                    korean_relative_size: 100,
+                    korean_ratio: 95,
+                    raw31_eng_tracking_percent: None,
+                }),
+                ..Default::default()
+            };
+            let _scope = enter_resolved_shaping_fonts(vec![font]);
+            let legacy = shaped_char_positions(&text, &style).unwrap();
+            let ordinary = compute_char_positions("AV", &style);
+            for percent in [None, Some(-17), Some(0), Some(17)] {
+                let mut tracked = style.clone();
+                tracked
+                    .control_space_base
+                    .as_mut()
+                    .unwrap()
+                    .raw31_eng_tracking_percent = percent;
+                let positions = compute_char_positions(&text, &tracked);
+                if percent.is_none() {
+                    assert_eq!(positions, legacy);
+                    continue;
+                }
+                let scalar = default_measurer()
+                    .compute_char_positions(mixed, &tracked.slice_origins(2, mixed_end));
+                assert_eq!(&positions[..3], &ordinary);
+                for i in 1..=mixed_len {
+                    assert!((positions[i + 2] - positions[2] - scalar[i]).abs() < 1e-9);
+                }
+                for i in 0..=2 {
+                    assert!(
+                        (positions[i + mixed_end] - positions[mixed_end] - ordinary[i]).abs()
+                            < 1e-9
+                    );
+                }
+                let mut zero = tracked.clone();
+                zero.zero_tracking();
+                let ink = compute_glyph_positions(&text, &tracked);
+                let ordinary_ink = compute_glyph_positions("AV", &tracked);
+                let scalar_ink = default_measurer().compute_char_positions(mixed, &zero);
+                assert_eq!(&ink[..3], &ordinary_ink);
+                assert!((ink[mixed_end] - ink[2] - scalar_ink[mixed_len]).abs() < 1e-9);
+                for i in 0..=2 {
+                    assert!((ink[i + mixed_end] - ink[mixed_end] - ordinary_ink[i]).abs() < 1e-9);
+                }
+                assert!(
+                    (estimate_text_width_unrounded(&text, &tracked) - positions[text_end]).abs()
+                        < 1e-9
+                );
+                assert_eq!(
+                    estimate_text_width(&text, &tracked),
+                    positions[text_end].round()
+                );
+            }
+            let mut other_policy = style.clone();
+            other_policy.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+            let original = shaped_char_positions(&text, &other_policy).unwrap();
+            other_policy
+                .control_space_base
+                .as_mut()
+                .unwrap()
+                .raw31_eng_tracking_percent = Some(17);
+            assert_eq!(
+                shaped_char_positions(&text, &other_policy).unwrap(),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_space_script_measurement_keeps_selected_tracking_percent() {
+        let style = TextStyle {
+            font_family: "RHWP unknown tracking face".into(),
+            font_size: 20.0,
+            letter_spacing: -1.0,
+            superscript: true,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1148,
+                korean_relative_size: 100,
+                korean_ratio: 95,
+                raw31_eng_tracking_percent: Some(17),
+            }),
+            ..Default::default()
+        };
+        let script = script_measure_style(&style).unwrap();
+        assert!(script.font_size < style.font_size);
+        assert_eq!(script.ordinary_space_tracking_percent(' '), Some(17));
+        let mut reference = script.clone();
+        reference
+            .control_space_base
+            .as_mut()
+            .unwrap()
+            .raw31_eng_tracking_percent = None;
+        reference.letter_spacing = reference.font_size * 17.0 / 100.0;
+        assert_eq!(
+            compute_char_positions(" ", &style),
+            compute_char_positions(" ", &reference)
+        );
+    }
+
+    #[test]
+    fn control_space_base_survives_actual_script_measure_style() {
+        let style = TextStyle {
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            font_size: 20.0,
+            letter_spacing: 2.0,
+            superscript: true,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1001,
+                korean_relative_size: 100,
+                korean_ratio: 99,
+                raw31_eng_tracking_percent: Some(-17),
+            }),
+            special_space_origins: vec![SpecialSpaceOrigin {
+                char_idx: 0,
+                origin: SpecialSpaceOriginKind::FwSpace,
+            }],
+            ..Default::default()
+        };
+        let script = script_measure_style(&style).unwrap();
+        assert!(script.font_size < style.font_size);
+        assert_eq!(script.control_space_base, style.control_space_base);
+        assert_eq!(script.special_space_origins, style.special_space_origins);
+        assert_eq!(script.control_space_base_width_hu(0, '\u{2007}'), Some(244));
+        assert_eq!(script.raw31_tracking_percent(0, '\u{2007}'), Some(-17));
+        let mut reference = script.clone();
+        reference
+            .control_space_base
+            .as_mut()
+            .unwrap()
+            .raw31_eng_tracking_percent = None;
+        reference.letter_spacing = script.font_size * -17.0 / 100.0;
+        assert!(
+            (compute_char_positions("\u{2007}", &style)[1]
+                - control_space_advance_px(0, '\u{2007}', &reference).unwrap())
+            .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn raw31_eng_percent_changes_only_admitted_control_tracking() {
+        let style = TextStyle {
+            font_family: "RHWP unknown tracking face".into(),
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            font_size: 20.0,
+            ratio: 0.95,
+            letter_spacing: -1.0,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1148,
+                korean_relative_size: 100,
+                korean_ratio: 95,
+                raw31_eng_tracking_percent: None,
+            }),
+            special_space_origins: vec![SpecialSpaceOrigin {
+                char_idx: 0,
+                origin: SpecialSpaceOriginKind::FwSpace,
+            }],
+            ..Default::default()
+        };
+        for percent in [None, Some(-17), Some(0), Some(17)] {
+            let mut tracked = style.clone();
+            tracked
+                .control_space_base
+                .as_mut()
+                .unwrap()
+                .raw31_eng_tracking_percent = percent;
+            let mut reference = style.clone();
+            if let Some(percent) = percent {
+                reference.letter_spacing = reference.font_size * f64::from(percent) / 100.0;
+            }
+            let expected = control_space_advance_px(0, '\u{2007}', &reference).unwrap();
+            let positions = compute_char_positions("\u{2007}", &tracked);
+            assert!((positions[1] - expected).abs() < 1e-9);
+            assert!((estimate_text_width("\u{2007}", &tracked) - expected).abs() < 1e-9);
+            assert!((estimate_text_width_unrounded("\u{2007}", &tracked) - expected).abs() < 1e-9);
+            assert_eq!(tracked.font_family, style.font_family);
+            assert_eq!(tracked.ratio, style.ratio);
+            assert_eq!(tracked.font_size, style.font_size);
+            assert_eq!(
+                compute_char_positions("AV", &tracked),
+                compute_char_positions("AV", &style)
+            );
+            let mut zero = tracked.clone();
+            zero.zero_tracking();
+            assert_eq!(
+                compute_glyph_positions("\u{2007}", &tracked),
+                compute_char_positions("\u{2007}", &zero)
+            );
+            for origin in [
+                SpecialSpaceOriginKind::NbSpace,
+                SpecialSpaceOriginKind::Literal,
+            ] {
+                let ch = if origin == SpecialSpaceOriginKind::NbSpace {
+                    '\u{00a0}'
+                } else {
+                    '\u{2007}'
+                };
+                let mut other = tracked.clone();
+                other.special_space_origins[0].origin = origin;
+                let mut old = other.clone();
+                old.control_space_base
+                    .as_mut()
+                    .unwrap()
+                    .raw31_eng_tracking_percent = None;
+                assert_eq!(
+                    compute_char_positions(&ch.to_string(), &other),
+                    compute_char_positions(&ch.to_string(), &old)
+                );
+            }
+            for policy in [
+                FontMetricsPolicy::HcrDeclared,
+                FontMetricsPolicy::HancomWindows,
+            ] {
+                let mut other = tracked.clone();
+                other.font_metrics_policy = policy;
+                if policy == FontMetricsPolicy::HcrDeclared {
+                    other.special_space_origins.clear();
+                }
+                let mut old = other.clone();
+                old.control_space_base
+                    .as_mut()
+                    .unwrap()
+                    .raw31_eng_tracking_percent = None;
+                assert_eq!(
+                    compute_char_positions("\u{2007}", &other),
+                    compute_char_positions("\u{2007}", &old)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_control_widths_agree_with_carets_at_resolved_dpi() {
+        let style = TextStyle {
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            font_size: 20.0,
+            ratio: 0.6,
+            superscript: true,
+            control_space_dpi: 144.0,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1001,
+                korean_relative_size: 100,
+                korean_ratio: 99,
+                raw31_eng_tracking_percent: None,
+            }),
+            special_space_origins: vec![
+                SpecialSpaceOrigin {
+                    char_idx: 0,
+                    origin: SpecialSpaceOriginKind::NbSpace,
+                },
+                SpecialSpaceOrigin {
+                    char_idx: 1,
+                    origin: SpecialSpaceOriginKind::FwSpace,
+                },
+            ],
+            ..Default::default()
+        };
+        let text = "\u{00a0}\u{2007}";
+        let positions = compute_char_positions(text, &style);
+        assert!((positions[1] - 9.92).abs() < 1e-9);
+        assert!((positions[2] - 14.8).abs() < 1e-9);
+        assert!((estimate_text_width_unrounded(text, &style) - positions[2]).abs() < 1e-9);
+        assert!((estimate_text_width(text, &style) - positions[2]).abs() < 1e-9);
+
+        let mut tracked = style.clone();
+        tracked.letter_spacing = -2.0;
+        tracked.extra_char_spacing = -0.5;
+        let tracked_positions = compute_char_positions(text, &tracked);
+        assert!((tracked_positions[1] - 9.42).abs() < 1e-9);
+        assert!(
+            (estimate_text_width_unrounded(text, &tracked) - tracked_positions[2]).abs() < 1e-9
+        );
+        let fixed = tracked.slice_origins(1, 2);
+        let mut fixed_untracked = fixed.clone();
+        fixed_untracked.letter_spacing = 0.0;
+        let tracking_delta = estimate_text_width_unrounded("\u{2007}", &fixed)
+            - estimate_text_width_unrounded("\u{2007}", &fixed_untracked);
+        let mut legacy = fixed.clone();
+        legacy.special_space_origins.clear();
+        let mut legacy_untracked = legacy.clone();
+        legacy_untracked.letter_spacing = 0.0;
+        let legacy_delta = estimate_text_width_unrounded("\u{2007}", &legacy)
+            - estimate_text_width_unrounded("\u{2007}", &legacy_untracked);
+        assert!((tracking_delta - legacy_delta).abs() < 1e-9);
+
+        let mut zero = style.clone();
+        zero.control_space_base
+            .as_mut()
+            .unwrap()
+            .korean_relative_size = 0;
+        assert_eq!(compute_char_positions(text, &zero), vec![0.0, 0.0, 0.0]);
+
+        let mut literal = style.clone();
+        literal.special_space_origins.clear();
+        let literal_positions = compute_char_positions(text, &literal);
+        assert_ne!(literal_positions, positions);
+        assert_eq!(control_space_advance_px(0, '\u{00a0}', &literal), None);
+        literal.special_space_origins = style.special_space_origins.clone();
+        literal.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+        assert_eq!(control_space_advance_px(1, '\u{2007}', &literal), None);
+    }
+
+    #[test]
+    fn explicit_controls_preserve_shaping_of_neighboring_spans() {
+        let bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/fonts/RHWPShapingFixture.ttf"
+        ));
+        let font = ResolvedShapingFont {
+            family: "RHWP Shaping Fixture".to_string(),
+            bytes: std::sync::Arc::from(bytes.as_slice()),
+            face_index: 0,
+        };
+        let style = TextStyle {
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            font_family: font.family.clone(),
+            font_size: 20.0,
+            kerning: true,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1000,
+                korean_relative_size: 100,
+                korean_ratio: 100,
+                raw31_eng_tracking_percent: None,
+            }),
+            special_space_origins: vec![
+                SpecialSpaceOrigin {
+                    char_idx: 2,
+                    origin: SpecialSpaceOriginKind::NbSpace,
+                },
+                SpecialSpaceOrigin {
+                    char_idx: 5,
+                    origin: SpecialSpaceOriginKind::FwSpace,
+                },
+            ],
+            ..Default::default()
+        };
+        let _scope = enter_resolved_shaping_fonts(vec![font]);
+        let span = shaped_char_positions("AV", &style.slice_origins(0, 2)).unwrap();
+        let text = "AV\u{00a0}AV\u{2007}AV";
+        let positions = compute_char_positions(text, &style);
+        assert_eq!(&positions[..3], span.as_slice());
+        assert!((positions[3] - positions[2] - 500.0 / 75.0).abs() < 1e-9);
+        assert!((positions[5] - positions[3] - span[2]).abs() < 1e-9);
+        assert!((positions[6] - positions[5] - 248.0 / 75.0).abs() < 1e-9);
+        assert!((positions[8] - positions[6] - span[2]).abs() < 1e-9);
+        assert!((estimate_text_width_unrounded(text, &style) - positions[8]).abs() < 1e-9);
+    }
+
+    #[test]
+    fn controls_without_a_selected_face_keep_fractional_widths() {
+        let style = TextStyle {
+            font_family: "RHWP unavailable control face".into(),
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1148,
+                korean_relative_size: 100,
+                korean_ratio: 95,
+                raw31_eng_tracking_percent: None,
+            }),
+            special_space_origins: vec![SpecialSpaceOrigin {
+                char_idx: 0,
+                origin: SpecialSpaceOriginKind::NbSpace,
+            }],
+            ..Default::default()
+        };
+        assert!(shaped_char_positions("\u{00a0}", &style).is_none());
+        let caret = compute_char_positions("\u{00a0}", &style)[1];
+        assert!((caret - 544.0 / 75.0).abs() < 1e-9);
+        assert!((estimate_text_width("\u{00a0}", &style) - caret).abs() < 1e-9);
+    }
+
+    // 기존 synthetic fixture의 전각 글리프를 U+2007에 매핑한다.
+    // advance가 quarter-em과 다른 실제 shaping 경로를 검증한다.
+    fn figure_space_fixture() -> ResolvedShapingFont {
+        let mut bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/fonts/RHWPShapingFixture.ttf"
+        ))
+        .to_vec();
+        let read = |bytes: &[u8], offset: usize| {
+            u16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize
+        };
+        let count = read(&bytes, 4);
+        let record = (0..count)
+            .map(|i| 12 + i * 16)
+            .find(|offset| &bytes[*offset..*offset + 4] == b"cmap")
+            .unwrap();
+        let cmap = u32::from_be_bytes(bytes[record + 8..record + 12].try_into().unwrap()) as usize;
+        let subtables = read(&bytes, cmap + 2);
+        let mut patched = std::collections::BTreeSet::new();
+        for index in 0..subtables {
+            let offset = cmap + 4 + index * 8 + 4;
+            let table =
+                cmap + u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+            if !patched.insert(table) || read(&bytes, table) != 4 {
+                continue;
+            }
+            let segments = read(&bytes, table + 6) / 2;
+            let ends = table + 14;
+            let starts = ends + segments * 2 + 2;
+            let deltas = starts + segments * 2;
+            for segment in 0..segments {
+                let end = ends + segment * 2;
+                let start = starts + segment * 2;
+                if read(&bytes, start) == 0xd55c && read(&bytes, end) == 0xd55c {
+                    let delta = deltas + segment * 2;
+                    assert_eq!(read(&bytes, deltas + segments * 2 + segment * 2), 0);
+                    let adjusted = (read(&bytes, delta) as u16).wrapping_add(0xd55c - 0x2007);
+                    bytes[start..start + 2].copy_from_slice(&0x2007u16.to_be_bytes());
+                    bytes[end..end + 2].copy_from_slice(&0x2007u16.to_be_bytes());
+                    bytes[delta..delta + 2].copy_from_slice(&adjusted.to_be_bytes());
+                }
+            }
+        }
+        ResolvedShapingFont {
+            family: "RHWP figure-space fixture".into(),
+            bytes: std::sync::Arc::from(bytes),
+            face_index: 0,
+        }
+    }
+
+    fn literal_nbsp_cluster_fixture(space_as: char) -> ResolvedShapingFont {
+        let font = figure_space_fixture();
+        let glyph = rustybuzz::Face::from_slice(&font.bytes, 0)
+            .unwrap()
+            .glyph_index(space_as)
+            .unwrap()
+            .0;
+        let mut bytes = font.bytes.to_vec();
+        let read = |b: &[u8], offset: usize| {
+            u16::from_be_bytes(b[offset..offset + 2].try_into().unwrap()) as usize
+        };
+        let record = (0..read(&bytes, 4))
+            .map(|i| 12 + i * 16)
+            .find(|offset| &bytes[*offset..*offset + 4] == b"cmap")
+            .unwrap();
+        let cmap = u32::from_be_bytes(bytes[record + 8..record + 12].try_into().unwrap()) as usize;
+        let mut patched = std::collections::BTreeSet::new();
+        for index in 0..read(&bytes, cmap + 2) {
+            let record_offset = cmap + 4 + index * 8 + 4;
+            let table = cmap
+                + u32::from_be_bytes(bytes[record_offset..record_offset + 4].try_into().unwrap())
+                    as usize;
+            if !patched.insert(table) || read(&bytes, table) != 4 {
+                continue;
+            }
+            let segments = read(&bytes, table + 6) / 2;
+            let ends = table + 14;
+            let starts = ends + segments * 2 + 2;
+            let deltas = starts + segments * 2;
+            let segment = (0..segments)
+                .find(|i| {
+                    read(&bytes, starts + i * 2) == 0x2007 && read(&bytes, ends + i * 2) == 0x2007
+                })
+                .unwrap();
+            assert_eq!(read(&bytes, deltas + segments * 2 + segment * 2), 0);
+            bytes[starts + segment * 2..starts + segment * 2 + 2]
+                .copy_from_slice(&0x00a0u16.to_be_bytes());
+            bytes[ends + segment * 2..ends + segment * 2 + 2]
+                .copy_from_slice(&0x00a0u16.to_be_bytes());
+            let delta = deltas + segment * 2;
+            bytes[delta..delta + 2].copy_from_slice(&glyph.wrapping_sub(0x00a0).to_be_bytes());
+            // A0는 U0301보다 앞선다. format4의 이진 탐색 순서와 glyph 배열 주소를 보존한다.
+            let ranges = deltas + segments * 2;
+            let mut records = (0..segments)
+                .map(|old_index| {
+                    (
+                        read(&bytes, ends + old_index * 2) as u16,
+                        read(&bytes, starts + old_index * 2) as u16,
+                        read(&bytes, deltas + old_index * 2) as u16,
+                        read(&bytes, ranges + old_index * 2) as u16,
+                        old_index,
+                    )
+                })
+                .collect::<Vec<_>>();
+            records.sort_by_key(|record| record.0);
+            for (index, (end, start, delta, range, old_index)) in records.into_iter().enumerate() {
+                let relocated_range = if range == 0 {
+                    0
+                } else {
+                    u16::try_from(i32::from(range) + 2 * (old_index as i32 - index as i32)).unwrap()
+                };
+                for (base, value) in [
+                    (ends, end),
+                    (starts, start),
+                    (deltas, delta),
+                    (ranges, relocated_range),
+                ] {
+                    bytes[base + index * 2..base + index * 2 + 2]
+                        .copy_from_slice(&value.to_be_bytes());
+                }
+            }
+        }
+        ResolvedShapingFont {
+            family: format!("RHWP literal-nbsp-{space_as} fixture"),
+            bytes: std::sync::Arc::from(bytes),
+            face_index: 0,
+        }
+    }
+
+    #[test]
+    fn literal_nbsp_shaped_clusters_keep_scalar_advance_and_neighbor_shaping() {
+        for (glyph, mixed) in [
+            ('f', "\u{00a0}fi"),
+            ('f', "f\u{00a0}i"),
+            ('i', "ff\u{00a0}"),
+        ] {
+            let font = literal_nbsp_cluster_fixture(glyph);
+            let text = format!("AV{mixed}AV");
+            let face = rustybuzz::Face::from_slice(&font.bytes, 0).unwrap();
+            // 실제 cmap 선택과 같은 폰트의 정상 ffi cluster를 먼저 관측한다.
+            assert_eq!(face.glyph_index('\u{00a0}'), face.glyph_index(glyph));
+            assert_ne!(face.glyph_index('\u{00a0}'), face.glyph_index(' '));
+            let mut reference_buffer = rustybuzz::UnicodeBuffer::new();
+            reference_buffer.push_str("AVffiAV");
+            reference_buffer.guess_segment_properties();
+            let reference = rustybuzz::shape(&face, &[], reference_buffer);
+            let ligature = reference
+                .glyph_infos()
+                .iter()
+                .filter(|info| info.cluster == 2)
+                .map(|info| info.glyph_id)
+                .collect::<Vec<_>>();
+            assert_eq!(ligature.len(), 1);
+            assert_ne!(ligature[0], u32::from(face.glyph_index('f').unwrap().0));
+            assert!(reference
+                .glyph_infos()
+                .iter()
+                .all(|info| !(3..5).contains(&info.cluster)));
+            let mut buffer = rustybuzz::UnicodeBuffer::new();
+            buffer.push_str(&text);
+            buffer.guess_segment_properties();
+            let shaped = rustybuzz::shape(&face, &[], buffer);
+            assert_eq!(
+                shaped
+                    .glyph_infos()
+                    .iter()
+                    .filter(|g| g.cluster == 2)
+                    .map(|g| g.glyph_id)
+                    .collect::<Vec<_>>(),
+                ligature
+            );
+            assert!(shaped
+                .glyph_infos()
+                .iter()
+                .all(|g| !(3..(2 + mixed.len()) as u32).contains(&g.cluster)));
+            let scalar = text.chars().position(|ch| ch == '\u{00a0}').unwrap();
+            let style = TextStyle {
+                font_family: font.family.clone(),
+                font_size: 20.0,
+                ratio: 0.95,
+                kerning: true,
+                font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+                special_space_origins: vec![SpecialSpaceOrigin {
+                    char_idx: scalar,
+                    origin: SpecialSpaceOriginKind::Literal,
+                }],
+                ..Default::default()
+            };
+            let _scope = enter_resolved_shaping_fonts(vec![font]);
+            for tracking in [-1.0, 0.0, 1.0] {
+                let mut tracked = style.clone();
+                tracked.letter_spacing = tracking;
+                let ordinary = shaped_char_positions("AV", &tracked).unwrap();
+                let positions = compute_char_positions(&text, &tracked);
+                assert_eq!(&positions[..3], &ordinary);
+                let cluster_style = tracked.slice_origins(2, 5);
+                let scalar_positions =
+                    EmbeddedTextMeasurer.compute_char_positions(mixed, &cluster_style);
+                for index in 0..=3 {
+                    assert!(
+                        (positions[index + 2] - positions[2] - scalar_positions[index]).abs()
+                            < 1e-9
+                    );
+                }
+                for index in 0..=2 {
+                    assert!((positions[index + 5] - positions[5] - ordinary[index]).abs() < 1e-9);
+                }
+                assert!(
+                    (estimate_text_width_unrounded(&text, &tracked) - positions[7]).abs() < 1e-9
+                );
+                assert_eq!(estimate_text_width(&text, &tracked), positions[7]);
+                let mut zero = tracked.clone();
+                zero.zero_tracking();
+                assert_eq!(
+                    compute_glyph_positions(&text, &tracked),
+                    compute_glyph_positions(&text, &zero)
+                );
+                let mut unknown = tracked.clone();
+                unknown.special_space_origins.clear();
+                assert!((compute_char_positions(&text, &unknown)[7] - positions[7]).abs() > 0.1);
+                let mut raw = tracked.clone();
+                raw.special_space_origins[0].origin = SpecialSpaceOriginKind::NbSpace;
+                assert_eq!(
+                    compute_char_positions(&text, &raw),
+                    compute_char_positions(&text, &unknown)
+                );
+                let mut other = tracked.clone();
+                other.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+                let mut other_unknown = other.clone();
+                other_unknown.special_space_origins.clear();
+                assert_eq!(
+                    compute_char_positions(&text, &other),
+                    compute_char_positions(&text, &other_unknown)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tracked_control_keeps_selected_shaped_glyph_contribution() {
+        let font = figure_space_fixture();
+        let style = TextStyle {
+            font_family: font.family.clone(),
+            font_size: 20.0,
+            letter_spacing: -2.0,
+            extra_char_spacing: -0.5,
+            kerning: true,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1000,
+                korean_relative_size: 100,
+                korean_ratio: 100,
+                raw31_eng_tracking_percent: None,
+            }),
+            special_space_origins: vec![SpecialSpaceOrigin {
+                char_idx: 2,
+                origin: SpecialSpaceOriginKind::FwSpace,
+            }],
+            ..Default::default()
+        };
+        let _scope = enter_resolved_shaping_fonts(vec![font]);
+        let text = "AV\u{2007}AV";
+        let mut legacy = style.clone();
+        legacy.special_space_origins.clear();
+        let old = shaped_char_positions(text, &legacy).unwrap();
+        legacy.letter_spacing = 0.0;
+        let untracked = shaped_char_positions(text, &legacy).unwrap();
+        let tracking = (old[3] - old[2]) - (untracked[3] - untracked[2]);
+        let positions = compute_char_positions(text, &style);
+        let expected = 248.0 / 75.0 + tracking + style.extra_char_spacing;
+        assert!((positions[3] - positions[2] - expected).abs() < 1e-9);
+        assert!((expected - control_space_advance_px(2, '\u{2007}', &style).unwrap()).abs() > 1.0);
+        assert!((estimate_text_width(text, &style) - positions[5]).abs() < 1e-9);
+        assert!((estimate_text_width_unrounded(text, &style) - positions[5]).abs() < 1e-9);
+    }
+
+    #[test]
+    fn raw31_eng_tracking_uses_shaped_cluster_and_preserves_ordinary_spans() {
+        let font = figure_space_fixture();
+        let style = TextStyle {
+            font_family: font.family.clone(),
+            font_size: 20.0,
+            letter_spacing: -1.0,
+            kerning: true,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1000,
+                korean_relative_size: 100,
+                korean_ratio: 100,
+                raw31_eng_tracking_percent: None,
+            }),
+            special_space_origins: vec![SpecialSpaceOrigin {
+                char_idx: 2,
+                origin: SpecialSpaceOriginKind::FwSpace,
+            }],
+            ..Default::default()
+        };
+        let _scope = enter_resolved_shaping_fonts(vec![font]);
+        let text = "AV\u{2007}AV";
+        let ordinary = compute_char_positions("AV", &style.slice_origins(0, 2));
+        for percent in [-17, 0, 17] {
+            let mut tracked = style.clone();
+            tracked
+                .control_space_base
+                .as_mut()
+                .unwrap()
+                .raw31_eng_tracking_percent = Some(percent);
+            let mut legacy = tracked.clone();
+            legacy.special_space_origins.clear();
+            legacy.letter_spacing = legacy.font_size * f64::from(percent) / 100.0;
+            let old = shaped_glyph_char_positions(text, &legacy).unwrap();
+            legacy.zero_tracking();
+            let untracked = shaped_glyph_char_positions(text, &legacy).unwrap();
+            let delta = (old[3] - old[2]) - (untracked[3] - untracked[2]);
+            let positions = compute_char_positions(text, &tracked);
+            assert!((positions[3] - positions[2] - 248.0 / 75.0 - delta).abs() < 1e-9);
+            assert_eq!(&positions[..3], &ordinary);
+            for index in 0..=2 {
+                assert!((positions[index + 3] - positions[3] - ordinary[index]).abs() < 1e-9);
+            }
+            assert!((estimate_text_width(text, &tracked) - positions[5]).abs() < 1e-9);
+            if percent != 0 {
+                assert!(
+                    (positions[3]
+                        - positions[2]
+                        - control_space_advance_px(2, '\u{2007}', &tracked).unwrap())
+                    .abs()
+                        > 0.1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_shaped_width_keeps_rounding_without_a_measured_space() {
+        let font = figure_space_fixture();
+        let mut style = TextStyle {
+            font_family: font.family.clone(),
+            font_size: 20.3,
+            kerning: true,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1000,
+                korean_relative_size: 100,
+                korean_ratio: 100,
+                raw31_eng_tracking_percent: None,
+            }),
+            ..Default::default()
+        };
+        let _scope = enter_resolved_shaping_fonts(vec![font]);
+        let ordinary = shaped_char_positions("AV", &style).unwrap()[2];
+        assert!((ordinary - ordinary.round()).abs() > 0.1);
+        assert_eq!(estimate_text_width("AV", &style), ordinary.round());
+        assert_eq!(estimate_text_width_unrounded("AV", &style), ordinary);
+        // 원점만 있고 해당 문자가 아닐 때도 일반 run의 계약을 유지한다.
+        style.special_space_origins.push(SpecialSpaceOrigin {
+            char_idx: 0,
+            origin: SpecialSpaceOriginKind::Literal,
+        });
+        assert_eq!(estimate_text_width("AV", &style), ordinary.round());
+        style.special_space_origins.clear();
+        let unknown = shaped_char_positions("\u{2007}", &style).unwrap()[1];
+        assert_eq!(estimate_text_width("\u{2007}", &style), unknown.round());
+        style.special_space_origins.push(SpecialSpaceOrigin {
+            char_idx: 0,
+            origin: SpecialSpaceOriginKind::Literal,
+        });
+        assert!(literal_space_advance_px(0, '\u{2007}', &style).is_some());
+        assert_eq!(estimate_text_width("\u{2007}", &style), unknown);
+        style.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+        assert_eq!(estimate_text_width("\u{2007}", &style), unknown.round());
+    }
+
+    #[test]
+    fn explicit_literals_use_glyph_metrics_and_keep_controls_distinct() {
+        let mut style = TextStyle {
+            font_family: "Times New Roman".into(),
+            font_size: 20.0,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1000,
+                korean_relative_size: 100,
+                korean_ratio: 100,
+                raw31_eng_tracking_percent: None,
+            }),
+            special_space_origins: vec![SpecialSpaceOrigin {
+                char_idx: 0,
+                origin: SpecialSpaceOriginKind::Literal,
+            }],
+            ..Default::default()
+        };
+        let literal = compute_char_positions("\u{00a0}", &style)[1];
+        assert!((literal - 5.013333333333334).abs() < 1e-9);
+        assert!(
+            (EmbeddedTextMeasurer.estimate_text_width("\u{00a0}", &style) - literal).abs() < 1e-9
+        );
+        assert!((estimate_text_width_unrounded("\u{00a0}", &style) - literal).abs() < 1e-9);
+        style.special_space_origins[0].origin = SpecialSpaceOriginKind::NbSpace;
+        assert!((compute_char_positions("\u{00a0}", &style)[1] - 500.0 / 75.0).abs() < 1e-9);
+        style.special_space_origins.clear();
+        assert_eq!(literal_space_advance_px(0, '\u{00a0}', &style), None);
+        assert!(compute_char_positions("\u{00a0}", &style)[1] > literal);
+        style.special_space_origins.push(SpecialSpaceOrigin {
+            char_idx: 0,
+            origin: SpecialSpaceOriginKind::Literal,
+        });
+        style.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+        assert_eq!(literal_space_advance_px(0, '\u{00a0}', &style), None);
+
+        let font = figure_space_fixture();
+        style.font_family = font.family.clone();
+        style.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        let _scope = enter_resolved_shaping_fonts(vec![font]);
+        let actual = literal_space_advance_px(0, '\u{2007}', &style).unwrap();
+        assert_eq!(actual, 20.0);
+        assert_eq!(
+            EmbeddedTextMeasurer.compute_char_positions("\u{2007}", &style)[1],
+            actual
+        );
+        assert_eq!(estimate_text_width("\u{2007}", &style), actual);
+        assert_eq!(estimate_text_width_unrounded("\u{2007}", &style), actual);
+        style.special_space_origins[0].origin = SpecialSpaceOriginKind::FwSpace;
+        assert!((compute_char_positions("\u{2007}", &style)[1] - 248.0 / 75.0).abs() < 1e-9);
+    }
+}
 // 고정폭 빈칸에는 지정 자간을 적용하지만, 줄 넘침을 줄이는 자동 압축은 적용하지 않는다.
 
 #[derive(Clone)]
@@ -254,6 +1307,82 @@ fn measure_style(style: &TextStyle) -> std::borrow::Cow<'_, TextStyle> {
     std::borrow::Cow::Owned(patched)
 }
 
+/// 기존 대체·shaping 문맥은 유지하고 일반 글자 폭에만 원본 HFT 를 선택한다.
+fn source_hft_measure_style<'a>(
+    source: &'a TextStyle,
+    legacy: &TextStyle,
+) -> Option<&'a TextStyle> {
+    let hft = source.hft_family.trim();
+    (source.font_metrics_policy == FontMetricsPolicy::HcrDeclared
+        && !source.italic
+        && !hft.is_empty()
+        && source.font_family.trim() == hft
+        && source.font_family != legacy.font_family
+        && font_metrics_data::hanyang_hft_ascii(hft).is_none()
+        && resolved_measure_metric_name(
+            hft,
+            source.bold,
+            source.italic,
+            source.font_metrics_policy,
+            custom_font_face_available(hft),
+        ) == hft
+        && font_family_has_metrics(&legacy.font_family, legacy.bold, legacy.italic))
+    .then_some(source)
+}
+
+/// 지원하지 않는 글자·특수 문자·클러스터는 정확히 기존 측정 스타일을 따른다.
+fn ordinary_glyph_measure_style<'a>(
+    legacy: &'a TextStyle,
+    source: Option<&'a TextStyle>,
+    c: char,
+    cluster_len: usize,
+) -> &'a TextStyle {
+    let c = if c == '\u{00AD}' { '-' } else { c };
+    if cluster_len != 1
+        || c.is_whitespace()
+        || c.is_control()
+        || matches!(c, '\u{200B}' | '\u{FFFC}')
+        || matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
+    {
+        return legacy;
+    }
+    let Some(source) = source else { return legacy };
+    let family = source.hft_family.trim();
+    let bold = source.bold
+        && crate::renderer::macos_synthetic_bold_em(family, source.font_metrics_policy).is_none();
+    if font_metrics_data::find_metric(family, bold, source.italic)
+        .is_some_and(|m| m.metric.get_width(c).is_some())
+        && crate::renderer::hft_glyphs::source_glyph_available_styled(
+            family,
+            c,
+            source.bold,
+            source.italic,
+        )
+    {
+        source
+    } else {
+        legacy
+    }
+}
+
+fn ordinary_glyph_base_px(
+    legacy: &TextStyle,
+    source: Option<&TextStyle>,
+    c: char,
+    font_size: f64,
+    cluster_len: usize,
+) -> Option<f64> {
+    let selected = ordinary_glyph_measure_style(legacy, source, c, cluster_len);
+    measure_glyph_base_px(
+        &selected.font_family,
+        selected.bold,
+        selected.italic,
+        c,
+        font_size,
+        selected.font_metrics_policy,
+    )
+}
+
 /// `measure_style` 이 HFT 폭 테이블을 체인 앞에 두는 run 인가.
 fn hft_width_swap(style: &TextStyle) -> bool {
     let hft = style.hft_family.trim();
@@ -275,6 +1404,83 @@ fn shaped_char_positions(text: &str, style: &TextStyle) -> Option<Vec<f64>> {
     {
         return None;
     }
+    // 제어자만 있는 문자열도 실제 선택된 shaping face가 있어야 한다.
+    let selected_face = ACTIVE_SHAPING_FONTS.with(|active| {
+        let active = active.borrow();
+        active
+            .iter()
+            .find(|font| font.family.eq_ignore_ascii_case(&style.font_family))
+            .and_then(|font| rustybuzz::Face::from_slice(&font.bytes, font.face_index))
+            .is_some_and(|face| face.units_per_em() > 0)
+    });
+    if !selected_face {
+        return None;
+    }
+    // 기존 전체 문자열 shaping이 선택한 cluster의 자간 증감분을 보존한다.
+    // 원점만 지운 참조 측정은 intrinsic 교체를 거치지 않는다.
+    let controls = text
+        .char_indices()
+        .enumerate()
+        .filter_map(|(scalar, (byte, ch))| {
+            control_space_advance_px(scalar, ch, style).map(|advance| (scalar, byte, ch, advance))
+        })
+        .collect::<Vec<_>>();
+    if controls.is_empty() {
+        return shaped_glyph_char_positions(text, style);
+    }
+    let mut legacy = style.clone();
+    if let Some(percent) = controls
+        .iter()
+        .find_map(|(scalar, _, ch, _)| style.raw31_tracking_percent(*scalar, *ch))
+    {
+        legacy.letter_spacing = style_params(style).0 * f64::from(percent) / 100.0;
+    }
+    legacy.special_space_origins.clear();
+    let old_positions = shaped_glyph_char_positions(text, &legacy);
+    legacy.zero_tracking();
+    let untracked_positions = shaped_glyph_char_positions(text, &legacy);
+    let mut positions = vec![0.0];
+    let mut x = 0.0;
+    let mut byte_start = 0;
+    let mut scalar_start = 0;
+    for (scalar, byte, ch, scalar_advance) in controls {
+        if byte_start < byte {
+            let span_style = style.slice_origins(scalar_start, scalar);
+            let span = shaped_char_positions(&text[byte_start..byte], &span_style)?;
+            positions.extend(span.iter().skip(1).map(|position| x + position));
+            x += span.last().copied().unwrap_or(0.0);
+        }
+        let advance = if ch == '\u{2007}' {
+            match (&old_positions, &untracked_positions) {
+                (Some(old), Some(untracked)) => {
+                    let tracking = (old[scalar + 1] - old[scalar])
+                        - (untracked[scalar + 1] - untracked[scalar]);
+                    hwpunit_to_px(
+                        style.control_space_base_width_hu(scalar, ch)?,
+                        style.control_space_dpi,
+                    ) + tracking
+                        + style.extra_char_spacing
+                }
+                _ => scalar_advance,
+            }
+        } else {
+            scalar_advance
+        };
+        x += advance;
+        positions.push(x);
+        byte_start = byte + ch.len_utf8();
+        scalar_start = scalar + 1;
+    }
+    if byte_start < text.len() {
+        let span_style = style.slice_origins(scalar_start, text.chars().count());
+        let span = shaped_char_positions(&text[byte_start..], &span_style)?;
+        positions.extend(span.iter().skip(1).map(|position| x + position));
+    }
+    Some(positions)
+}
+
+// 실제 glyph shaping만 수행한다. control의 기준 자간과 일반 span을 함께 사용한다.
+fn shaped_glyph_char_positions(text: &str, style: &TextStyle) -> Option<Vec<f64>> {
     ACTIVE_SHAPING_FONTS.with(|active| {
         let active = active.borrow();
         let font = active
@@ -328,9 +1534,57 @@ fn shaped_char_positions(text: &str, style: &TextStyle) -> Option<Vec<f64>> {
                 continue;
             }
             let cluster_text = &text[byte_start..byte_end];
+            let scalar_start = char_boundaries.partition_point(|byte| *byte < byte_start);
+            let scalar_end = scalar_start + cluster_text.chars().count();
+            let cluster_style = style.slice_origins(scalar_start, scalar_end);
+            if cluster_text.chars().enumerate().any(|(scalar, ch)| {
+                crate::renderer::composer::literal_space_lang_category(
+                    ch,
+                    scalar,
+                    &cluster_style.special_space_origins,
+                    style.font_metrics_policy,
+                ) == Some(1)
+            }) {
+                // 초기 ENG literal A0는 scalar cache와 같은 base/자간을 쓴다.
+                // 혼합 HB cluster의 advance를 A0에 나누어 맞추지 않는다. 그 cluster만
+                // scalar 경로로 내려가며, 나머지 cluster의 shaping/kerning은 유지한다.
+                let scalar_positions =
+                    EmbeddedTextMeasurer.compute_char_positions(cluster_text, &cluster_style);
+                for boundary_index in boundary_indices {
+                    positions[boundary_index] = x + scalar_positions[boundary_index - scalar_start];
+                }
+                x += scalar_positions.last().copied().unwrap_or(0.0);
+                continue;
+            }
+            if cluster_text != " "
+                && cluster_text.contains(' ')
+                && style.ordinary_space_tracking_percent(' ').is_some()
+            {
+                // 혼합 cluster에는 빈칸의 별도 metric이 없다. 몫을 추정하지 않고
+                // 이 cluster만 기존 scalar cache 측정으로 되돌린다. 혼합 ligature는
+                // 보존하지 못하지만 나머지 cluster의 실제 shaping/kerning은 유지한다.
+                let scalar_start = boundary_indices[0] - 1;
+                let scalar_end = *boundary_indices.last()?;
+                let scalar_style = style.slice_origins(scalar_start, scalar_end);
+                let scalar_positions =
+                    default_measurer().compute_char_positions(cluster_text, &scalar_style);
+                for boundary_index in boundary_indices {
+                    positions[boundary_index] = x + scalar_positions[boundary_index - scalar_start];
+                }
+                x += scalar_positions.last().copied().unwrap_or(0.0);
+                continue;
+            }
             let mut advance = cluster_advances[&byte_start];
+            let letter_spacing = if cluster_text == " " {
+                style
+                    .ordinary_space_tracking_percent(' ')
+                    .map(|percent| style.font_size * f64::from(percent) / 100.0)
+                    .unwrap_or(style.letter_spacing)
+            } else {
+                style.letter_spacing
+            };
             advance += glyph_letter_spacing(
-                style.letter_spacing,
+                letter_spacing,
                 advance,
                 style.font_size,
                 style.font_metrics_policy,
@@ -480,6 +1734,17 @@ fn mac_glyph_advance_px(
     font_size: f64,
     ratio: f64,
 ) -> f64 {
+    mac_glyph_advance_px_inner(base_px, c, style, font_size, ratio, true)
+}
+
+fn mac_glyph_advance_px_inner(
+    base_px: f64,
+    c: char,
+    style: &TextStyle,
+    font_size: f64,
+    ratio: f64,
+    allow_half_space: bool,
+) -> f64 {
     if font_size <= 0.0 {
         return base_px * ratio;
     }
@@ -490,7 +1755,7 @@ fn mac_glyph_advance_px(
     let space_size = [font_size, style.script_base_size]
         .into_iter()
         .find(|size| *size > 0.0 && (base_px - size / 2.0).abs() < 0.5 / 75.0)
-        .filter(|_| matches!(c, ' ' | '\u{00A0}'));
+        .filter(|_| allow_half_space && matches!(c, ' ' | '\u{00A0}'));
     let glyph = if !document_ratio {
         round_half_up(base_px * 75.0 / 4.0 * ratio)
     } else if let Some(space_size) = space_size {
@@ -508,7 +1773,11 @@ fn mac_glyph_advance_px(
             round_half_up(scaled)
         }
     };
-    let spacing = letter_spacing_percent(style.letter_spacing, font_size);
+    // 기존 비격자/양자화 모델에서 operand만 고른다. native full advance는 아니다.
+    let spacing = style
+        .ordinary_space_tracking_percent(c)
+        .map(f64::from)
+        .unwrap_or_else(|| letter_spacing_percent(style.letter_spacing, font_size));
     mac_letter_spaced_units(glyph, spacing) * MAC_LAYOUT_UNIT_PX
 }
 
@@ -880,6 +2149,58 @@ fn character_advance(base: f64, c: char, style: &TextStyle, font_size: f64, rati
     }
 }
 
+/// 원점을 가진 30/31의 intrinsic 폭과 기존 배치 여분을 합친다.
+/// 30은 scan/ordinary 경로의 direct tracking이 0이다.
+/// 31은 원본 ENG 자간(%)만 선택하고 기존 scalar/shaped 자간 모델은 유지한다.
+/// 실제 Q/profile/grid 결합과 native full advance는 아직 확정되지 않았다.
+fn control_space_advance_px(scalar: usize, ch: char, style: &TextStyle) -> Option<f64> {
+    let width_hu = style.control_space_base_width_hu(scalar, ch)?;
+    let intrinsic = hwpunit_to_px(width_hu, style.control_space_dpi);
+    if ch == '\u{00A0}' {
+        return Some(intrinsic + style.extra_char_spacing);
+    }
+    let (font_size, ratio, _) = style_params(style);
+    let old_base = font_size * FIXED_WIDTH_SPACE_EM;
+    let mut tracked = style.clone();
+    if let Some(percent) = style.raw31_tracking_percent(scalar, ch) {
+        tracked.letter_spacing = font_size * f64::from(percent) / 100.0;
+    }
+    let tracking = if tracked.letter_spacing == 0.0 {
+        0.0
+    } else {
+        let mut untracked = tracked.clone();
+        untracked.zero_tracking();
+        scaled_glyph_advance(old_base, ch, &tracked, font_size, ratio)
+            - scaled_glyph_advance(old_base, ch, &untracked, font_size, ratio)
+    };
+    Some(intrinsic + tracking + style.extra_char_spacing.max(0.0))
+}
+
+/// >=32 리터럴은 원래 codepoint의 glyph advance를 조회한다.
+/// 실제 metric이 없으면 None: 기존 경로를 유지하며 대체 폭을 만들지 않는다.
+fn literal_space_advance_px(scalar: usize, ch: char, style: &TextStyle) -> Option<f64> {
+    use crate::model::paragraph::SpecialSpaceOriginKind;
+    if style.font_metrics_policy != FontMetricsPolicy::HcrDeclared
+        || !matches!(ch, '\u{00A0}' | '\u{2007}')
+        || !style.special_space_origins.iter().any(|origin| {
+            origin.char_idx == scalar && origin.origin == SpecialSpaceOriginKind::Literal
+        })
+    {
+        return None;
+    }
+    let family = style.font_family.split(',').next()?.trim();
+    let em = custom_face_char_em_advance(family, style.bold, style.italic, ch).or_else(|| {
+        let metric = font_metrics_data::find_metric(family, style.bold, style.italic)?.metric;
+        let advance = metric.get_width(ch)?;
+        (metric.em_size > 0).then(|| f64::from(advance) / f64::from(metric.em_size))
+    })?;
+    let (font_size, ratio, _) = style_params(style);
+    Some(
+        mac_glyph_advance_px_inner(em * font_size, ch, style, font_size, ratio, false)
+            + style.extra_char_spacing,
+    )
+}
+
 fn compute_char_positions_walk(
     text: &str,
     style: &TextStyle,
@@ -898,6 +2219,11 @@ fn compute_char_positions_walk(
 
     let char_width = |i: usize| -> f64 {
         let c = chars[i];
+        if let Some(advance) =
+            control_space_advance_px(i, c, style).or_else(|| literal_space_advance_px(i, c, style))
+        {
+            return advance;
+        }
         if c == '\u{2007}' {
             return scaled_glyph_advance(
                 font_size * FIXED_WIDTH_SPACE_EM,
@@ -1035,8 +2361,13 @@ fn compute_char_positions_walk(
 
 pub struct EmbeddedTextMeasurer;
 
-impl TextMeasurer for EmbeddedTextMeasurer {
-    fn estimate_text_width(&self, text: &str, style: &TextStyle) -> f64 {
+impl EmbeddedTextMeasurer {
+    fn estimate_text_width_with_source(
+        &self,
+        text: &str,
+        style: &TextStyle,
+        source: Option<&TextStyle>,
+    ) -> f64 {
         let (font_size, ratio, tab_w) = style_params(style);
         let chars: Vec<char> = text.chars().collect();
         let cluster_len = build_cluster_len(&chars);
@@ -1045,6 +2376,11 @@ impl TextMeasurer for EmbeddedTextMeasurer {
 
         let char_width = |i: usize| -> f64 {
             let c = chars[i];
+            if let Some(advance) = control_space_advance_px(i, c, style)
+                .or_else(|| literal_space_advance_px(i, c, style))
+            {
+                return advance;
+            }
             if c == '\u{2007}' {
                 return scaled_glyph_advance(
                     font_size * FIXED_WIDTH_SPACE_EM,
@@ -1101,14 +2437,9 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                 hft_missing_pua_em(style, c).or_else(|| hft_ks_punct_em(style, c))
             {
                 em * font_size
-            } else if let Some(w) = measure_glyph_base_px(
-                &style.font_family,
-                style.bold,
-                style.italic,
-                c,
-                font_size,
-                style.font_metrics_policy,
-            ) {
+            } else if let Some(w) =
+                ordinary_glyph_base_px(style, source, c, font_size, cluster_len[i])
+            {
                 w
             } else if cluster_len[i] > 1 || is_cjk_char(c) || is_fullwidth_symbol(c) {
                 font_size
@@ -1286,7 +2617,12 @@ impl TextMeasurer for EmbeddedTextMeasurer {
         }
     }
 
-    fn compute_char_positions(&self, text: &str, style: &TextStyle) -> Vec<f64> {
+    fn compute_char_positions_with_source(
+        &self,
+        text: &str,
+        style: &TextStyle,
+        source: Option<&TextStyle>,
+    ) -> Vec<f64> {
         let (font_size, _ratio, _tab_w) = style_params(style);
         // [#2132] 폭 산출원 훅 — embedded 메트릭 lookup + 폴백 사다리 (Task #257 포함).
         let char_px_raw = |_i: usize, c: char, _chars: &[char], cluster_len: &[usize]| -> f64 {
@@ -1312,14 +2648,9 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                 hft_missing_pua_em(style, c).or_else(|| hft_ks_punct_em(style, c))
             {
                 em * font_size
-            } else if let Some(w) = measure_glyph_base_px(
-                &style.font_family,
-                style.bold,
-                style.italic,
-                c,
-                font_size,
-                style.font_metrics_policy,
-            ) {
+            } else if let Some(w) =
+                ordinary_glyph_base_px(style, source, c, font_size, cluster_len[i])
+            {
                 w
             } else if cluster_len[i] > 1 || is_cjk_char(c) || is_fullwidth_symbol(c) {
                 font_size
@@ -1487,6 +2818,15 @@ impl TextMeasurer for EmbeddedTextMeasurer {
             x
         };
         compute_char_positions_walk(text, style, &char_px_raw, &inline_tab_x)
+    }
+}
+
+impl TextMeasurer for EmbeddedTextMeasurer {
+    fn estimate_text_width(&self, text: &str, style: &TextStyle) -> f64 {
+        self.estimate_text_width_with_source(text, style, None)
+    }
+    fn compute_char_positions(&self, text: &str, style: &TextStyle) -> Vec<f64> {
+        self.compute_char_positions_with_source(text, style, None)
     }
 }
 
@@ -1668,7 +3008,7 @@ pub(crate) fn clear_measure_caches() {
         wasm_internals::clear_js_measure_cache();
         BROWSER_FONT_AVAIL.with(|cache| cache.borrow_mut().clear());
     }
-    crate::renderer::equation::measure::clear_css_run_cache();
+    crate::renderer::equation::invalidate_measurement_caches();
 }
 
 // ── WasmTextMeasurer ────────────────────────────────────────────────
@@ -1681,8 +3021,13 @@ pub(crate) fn clear_measure_caches() {
 pub struct WasmTextMeasurer;
 
 #[cfg(target_arch = "wasm32")]
-impl TextMeasurer for WasmTextMeasurer {
-    fn estimate_text_width(&self, text: &str, style: &TextStyle) -> f64 {
+impl WasmTextMeasurer {
+    fn estimate_text_width_with_source(
+        &self,
+        text: &str,
+        style: &TextStyle,
+        source: Option<&TextStyle>,
+    ) -> f64 {
         let (font_size, ratio, tab_w) = style_params(style);
         let hangul_hwp = wasm_internals::measure_hangul_width_hwp(
             &style.font_family,
@@ -1698,6 +3043,11 @@ impl TextMeasurer for WasmTextMeasurer {
 
         let char_width = |i: usize| -> f64 {
             let c = chars[i];
+            if let Some(advance) = control_space_advance_px(i, c, style)
+                .or_else(|| literal_space_advance_px(i, c, style))
+            {
+                return advance;
+            }
             if c == '\u{2007}' {
                 return scaled_glyph_advance(
                     font_size * FIXED_WIDTH_SPACE_EM,
@@ -1745,14 +3095,15 @@ impl TextMeasurer for WasmTextMeasurer {
                 {
                     em * font_size
                 } else {
+                    let selected = ordinary_glyph_measure_style(style, source, c, cluster_len[i]);
                     wasm_internals::measure_char_width_hwp(
-                        &style.font_family,
-                        style.bold,
-                        style.italic,
+                        &selected.font_family,
+                        selected.bold,
+                        selected.italic,
                         c,
                         hangul_hwp,
                         font_size,
-                        style.font_metrics_policy,
+                        selected.font_metrics_policy,
                     )
                 };
             let char_px = char_px_raw;
@@ -1893,7 +3244,12 @@ impl TextMeasurer for WasmTextMeasurer {
         total
     }
 
-    fn compute_char_positions(&self, text: &str, style: &TextStyle) -> Vec<f64> {
+    fn compute_char_positions_with_source(
+        &self,
+        text: &str,
+        style: &TextStyle,
+        source: Option<&TextStyle>,
+    ) -> Vec<f64> {
         let (font_size, _ratio, _tab_w) = style_params(style);
         let hangul_hwp = wasm_internals::measure_hangul_width_hwp(
             &style.font_family,
@@ -1916,14 +3272,15 @@ impl TextMeasurer for WasmTextMeasurer {
             {
                 em * font_size
             } else {
+                let selected = ordinary_glyph_measure_style(style, source, c, cluster_len[i]);
                 wasm_internals::measure_char_width_hwp(
-                    &style.font_family,
-                    style.bold,
-                    style.italic,
+                    &selected.font_family,
+                    selected.bold,
+                    selected.italic,
                     c,
                     hangul_hwp,
                     font_size,
-                    style.font_metrics_policy,
+                    selected.font_metrics_policy,
                 )
             }
         };
@@ -2049,6 +3406,16 @@ impl TextMeasurer for WasmTextMeasurer {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+impl TextMeasurer for WasmTextMeasurer {
+    fn estimate_text_width(&self, text: &str, style: &TextStyle) -> f64 {
+        self.estimate_text_width_with_source(text, style, None)
+    }
+    fn compute_char_positions(&self, text: &str, style: &TextStyle) -> Vec<f64> {
+        self.compute_char_positions_with_source(text, style, None)
+    }
+}
+
 // ── 플랫폼별 기본 측정기 선택 ───────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
@@ -2071,6 +3438,20 @@ pub(crate) fn resolved_to_text_style(
     if let Some(cs) = styles.char_styles.get(char_style_id as usize) {
         let mut style = TextStyle {
             font_metrics_policy: cs.font_metrics_policy,
+            control_space_base: cs.control_space_base,
+            native_char_position: cs
+                .native_char_positions
+                .and_then(|(base_height_hu, offsets)| {
+                    offsets.get(lang_index).copied().map(|percent| {
+                        crate::renderer::NativeCharPosition {
+                            base_height_hu,
+                            percent,
+                            dpi: cs.control_space_dpi,
+                        }
+                    })
+                }),
+            control_space_dpi: cs.control_space_dpi,
+            special_space_origins: Vec::new(),
             latin_space: (cs.latin_font_space && lang_index == 1) || cs.use_font_space,
             script_base_size: 0.0,
             font_family: cs.font_family_for_lang(lang_index).to_string(),
@@ -3047,6 +4428,35 @@ fn synthetic_bold_tracking_px(
     0.0
 }
 
+fn resolved_measure_metric_name<'a>(
+    primary_name: &'a str,
+    bold: bool,
+    italic: bool,
+    policy: FontMetricsPolicy,
+    face_available: bool,
+) -> &'a str {
+    if policy == FontMetricsPolicy::HcrDeclared
+        && !face_available
+        && !crate::renderer::runtime_font_metrics::has_face(primary_name, bold, italic)
+    {
+        crate::renderer::hancom_substitute_faces(primary_name)
+            .iter()
+            .copied()
+            .find(|s| {
+                custom_font_face_available(s)
+                    || crate::renderer::runtime_font_metrics::has_face(s, bold, italic)
+            })
+            .or_else(|| {
+                (crate::renderer::hancom_substitute_faces(primary_name)
+                    == crate::renderer::HANCOM_DEFAULT_FACES)
+                    .then_some(crate::renderer::HANCOM_DEFAULT_FACES[0])
+            })
+            .unwrap_or(primary_name)
+    } else {
+        primary_name
+    }
+}
+
 fn measure_char_width_inner(
     font_family: &str,
     bold: bool,
@@ -3126,26 +4536,8 @@ fn measure_char_width_inner(
     // 치환 메트릭은 치환 서체가 실제로 설치돼 있을 때만(그 서체로 그려질 때) 쓴다.
     // 치환 서체도 없으면 페인트는 제네릭 폴백으로 내려가므로 요청 face의 베이크드
     // 정본 폭(돋움체 전각 구두점 등)이 더 가깝다.
-    let metric_name = if policy == FontMetricsPolicy::HcrDeclared
-        && !face_available
-        && !crate::renderer::runtime_font_metrics::has_face(primary_name, bold, italic)
-    {
-        crate::renderer::hancom_substitute_faces(primary_name)
-            .iter()
-            .copied()
-            .find(|s| {
-                custom_font_face_available(s)
-                    || crate::renderer::runtime_font_metrics::has_face(s, bold, italic)
-            })
-            .or_else(|| {
-                (crate::renderer::hancom_substitute_faces(primary_name)
-                    == crate::renderer::HANCOM_DEFAULT_FACES)
-                    .then_some(crate::renderer::HANCOM_DEFAULT_FACES[0])
-            })
-            .unwrap_or(primary_name)
-    } else {
-        primary_name
-    };
+    let metric_name =
+        resolved_measure_metric_name(primary_name, bold, italic, policy, face_available);
     // face 파일이 주어지면 한컴도 실제 hmtx 로 조판한다 — 베이크드 테이블은
     // 구버전 TTF 기준이라 실폰트와 엇갈린다 (HY헤드라인M '.' 0.208→0.242em 등).
     // 공백은 HWP em/2 문서 규약이 우선이고, cmap 에 없는 글자는 베이크드
@@ -3605,15 +4997,33 @@ fn script_measure_style(style: &TextStyle) -> Option<TextStyle> {
 /// WASM: WasmTextMeasurer (JS Canvas + HWP 양자화)
 /// 네이티브: EmbeddedTextMeasurer (내장 메트릭 + 휴리스틱)
 pub(crate) fn estimate_text_width(text: &str, style: &TextStyle) -> f64 {
+    estimate_text_width_with_source_style(text, style, style)
+}
+
+fn estimate_text_width_with_source_style(
+    text: &str,
+    style: &TextStyle,
+    original: &TextStyle,
+) -> f64 {
     let patched = measure_style(style);
     let style = patched.as_ref();
     if let Some(script) = script_measure_style(style) {
-        return estimate_text_width(text, &script);
+        let source_script = script_measure_style(original).expect("same script attributes");
+        return estimate_text_width_with_source_style(text, &script, &source_script);
     }
+    let source = source_hft_measure_style(original, style);
     if let Some(positions) = shaped_char_positions(text, style) {
-        return positions.last().copied().unwrap_or(0.0).round();
+        let width = positions.last().copied().unwrap_or(0.0);
+        // 기존 일반 shaping run은 반올림한다. 이번 빈칸 경로가 실제로
+        // 적용된 run만 intrinsic/glyph advance의 소수 정밀도를 유지한다.
+        let measured_space = text.chars().enumerate().any(|(scalar, ch)| {
+            control_space_advance_px(scalar, ch, style)
+                .or_else(|| literal_space_advance_px(scalar, ch, style))
+                .is_some()
+        });
+        return if measured_space { width } else { width.round() };
     }
-    default_measurer().estimate_text_width(text, style)
+    default_measurer().estimate_text_width_with_source(text, style, source)
 }
 
 /// 텍스트 폭 추정 (round 없이 raw px 반환)
@@ -3622,11 +5032,21 @@ pub(crate) fn estimate_text_width(text: &str, style: &TextStyle) -> f64 {
 /// 한컴은 HWPUNIT 정수로 폭을 누적하므로, round 없이 px를 합산한 뒤
 /// 줄바꿈 비교 시점에서 available_width와 비교하는 것이 더 정확하다.
 pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f64 {
+    estimate_text_width_unrounded_with_source_style(text, style, style)
+}
+
+fn estimate_text_width_unrounded_with_source_style(
+    text: &str,
+    style: &TextStyle,
+    original: &TextStyle,
+) -> f64 {
     let patched = measure_style(style);
     let style = patched.as_ref();
     if let Some(script) = script_measure_style(style) {
-        return estimate_text_width_unrounded(text, &script);
+        let source_script = script_measure_style(original).expect("same script attributes");
+        return estimate_text_width_unrounded_with_source_style(text, &script, &source_script);
     }
+    let source = source_hft_measure_style(original, style);
     if let Some(positions) = shaped_char_positions(text, style) {
         return positions.last().copied().unwrap_or(0.0);
     }
@@ -3637,6 +5057,11 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
 
     let char_width = |i: usize| -> f64 {
         let c = chars[i];
+        if let Some(advance) =
+            control_space_advance_px(i, c, style).or_else(|| literal_space_advance_px(i, c, style))
+        {
+            return advance;
+        }
         if c == '\u{2007}' {
             return scaled_glyph_advance(
                 font_size * FIXED_WIDTH_SPACE_EM,
@@ -3679,14 +5104,8 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
             .flatten()
         {
             w
-        } else if let Some(w) = measure_glyph_base_px(
-            &style.font_family,
-            style.bold,
-            style.italic,
-            c,
-            font_size,
-            style.font_metrics_policy,
-        ) {
+        } else if let Some(w) = ordinary_glyph_base_px(style, source, c, font_size, cluster_len[i])
+        {
             w
         } else if cluster_len[i] > 1 || is_cjk_char(c) || is_fullwidth_symbol(c) {
             font_size
@@ -3722,15 +5141,25 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
 /// N글자 → N+1개 경계값을 반환한다 (0번째는 0.0, N번째는 전체 폭).
 /// run 내부 상대 좌표이며, 절대 좌표는 run.bbox.x + charX[i]로 계산한다.
 pub(crate) fn compute_char_positions(text: &str, style: &TextStyle) -> Vec<f64> {
+    compute_char_positions_with_source_style(text, style, style)
+}
+
+fn compute_char_positions_with_source_style(
+    text: &str,
+    style: &TextStyle,
+    original: &TextStyle,
+) -> Vec<f64> {
     let patched = measure_style(style);
     let style = patched.as_ref();
     if let Some(script) = script_measure_style(style) {
-        return compute_char_positions(text, &script);
+        let source_script = script_measure_style(original).expect("same script attributes");
+        return compute_char_positions_with_source_style(text, &script, &source_script);
     }
+    let source = source_hft_measure_style(original, style);
     if let Some(positions) = shaped_char_positions(text, style) {
         return positions;
     }
-    default_measurer().compute_char_positions(text, style)
+    default_measurer().compute_char_positions_with_source(text, style, source)
 }
 
 /// Glyph ink fitting advances, excluding placement-only spacing.
@@ -3739,13 +5168,15 @@ pub(crate) fn compute_char_positions(text: &str, style: &TextStyle) -> Vec<f64> 
 /// current glyph when Canvas/SVG fit browser text to the calibrated advance.
 pub(crate) fn compute_glyph_positions(text: &str, style: &TextStyle) -> Vec<f64> {
     let patched = measure_style(style);
-    let style = patched.as_ref();
-    let mut glyph_style = style.clone();
-    glyph_style.letter_spacing = 0.0;
-    glyph_style.extra_char_spacing = 0.0;
-    glyph_style.extra_word_spacing = 0.0;
-    glyph_style.extra_dash_advance = 0.0;
-    compute_char_positions(text, &glyph_style)
+    let mut glyph_style = patched.into_owned();
+    let mut source_style = style.clone();
+    for style in [&mut glyph_style, &mut source_style] {
+        style.zero_tracking();
+        style.extra_char_spacing = 0.0;
+        style.extra_word_spacing = 0.0;
+        style.extra_dash_advance = 0.0;
+    }
+    compute_char_positions_with_source_style(text, &glyph_style, &source_style)
 }
 
 // ── 문자 분류 함수 ──────────────────────────────────────────────────
@@ -3830,11 +5261,28 @@ pub(crate) fn is_halfwidth_forced_punct(c: char) -> bool {
 /// 레이아웃이 반각으로 줄인 전각 구두점을 렌더러가 찌그러뜨리지 않고 배치할 때 쓴다
 /// (`renderer::halfwidth_punct_glyph_offset`). 글꼴이 DB 에 없으면 `None`.
 pub(crate) fn registered_glyph_advance(c: char, style: &TextStyle) -> Option<f64> {
+    registered_glyph_advance_with_source_style(c, style, style)
+}
+
+fn registered_glyph_advance_with_source_style(
+    c: char,
+    style: &TextStyle,
+    original: &TextStyle,
+) -> Option<f64> {
     let patched = measure_style(style);
     let style = patched.as_ref();
     if let Some(script) = script_measure_style(style) {
-        return registered_glyph_advance(c, &script);
+        let source_script = script_measure_style(original).expect("same script attributes");
+        return registered_glyph_advance_with_source_style(c, &script, &source_script);
     }
+    let source = source_hft_measure_style(original, style);
+    let selected = ordinary_glyph_measure_style(style, source, c, 1);
+    let c = if c == '\u{00AD}' && selected.font_family != style.font_family {
+        '-'
+    } else {
+        c
+    };
+    let style = selected;
     let (font_size, _, _) = style_params(style);
     let primary = super::super::style_resolver::primary_font_name(&style.font_family);
     let bold = style.bold
@@ -6138,6 +7586,366 @@ mod tests {
         assert_eq!(
             estimate_text_width("32", &twin),
             estimate_text_width("32", &plain)
+        );
+    }
+}
+
+#[cfg(test)]
+mod source_hft_measurement_tests {
+    use super::*;
+
+    // ASCII 은행은 독립적인 사각 윤곽만 담고, 실제 폭은 기존 HCI 메트릭을 쓴다.
+    fn bank(family: &str) -> Vec<u8> {
+        let table = 548;
+        let empty = table + 95 * 4;
+        let ink = empty + 10;
+        let body = [3u8, 10, 20, 5, 30, 6, 40, 4, 0];
+        let mut data = vec![0u8; ink + 10 + body.len()];
+        let magic = b"Han Unified Font File 1.0\x1a";
+        data[..magic.len()].copy_from_slice(magic);
+        let mut encoded = Vec::new();
+        const JUNG: [u16; 21] = [
+            3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 18, 19, 20, 21, 22, 23, 26, 27, 28, 29,
+        ];
+        for ch in family.chars() {
+            if ch.is_ascii() {
+                encoded.push(ch as u8);
+            } else {
+                let code = ch as u32 - 0xAC00;
+                let jong = code % 28;
+                let jong = if jong == 0 {
+                    1
+                } else if jong <= 16 {
+                    jong + 1
+                } else {
+                    jong + 2
+                };
+                let johab = 0x8000
+                    | (((code / 588) as u16 + 2) << 10)
+                    | (JUNG[((code % 588) / 28) as usize] << 5)
+                    | jong as u16;
+                encoded.extend_from_slice(&johab.to_be_bytes());
+            }
+        }
+        data[0x6c..0x6c + encoded.len()].copy_from_slice(&encoded);
+        data[0x1ae..0x1b2].copy_from_slice(&512u32.to_le_bytes());
+        for (at, value) in [
+            (516, 512u16),
+            (520, 1),
+            (530, 0x20),
+            (532, 32),
+            (534, 126),
+            (536, 95),
+        ] {
+            data[at..at + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        for code in 32..=126u8 {
+            let glyph = if "AIP(-".contains(code as char) {
+                ink
+            } else {
+                empty
+            };
+            let slot = table + usize::from(code - 32) * 4;
+            data[slot..slot + 4].copy_from_slice(&((glyph - table) as u32).to_le_bytes());
+        }
+        data[ink + 8..ink + 10].copy_from_slice(&(body.len() as u16).to_le_bytes());
+        data[ink + 10..].copy_from_slice(&body);
+        data
+    }
+
+    #[track_caller]
+    fn close(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < 1e-8, "{actual} != {expected}");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn source_hft_scalar_providers_preserve_fallbacks_and_measurement_contracts() {
+        const CHILD: &str = "RHWP_HFT_MEASURE_PROVIDERS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "renderer::layout::text_measurement::source_hft_measurement_tests::source_hft_scalar_providers_preserve_fallbacks_and_measurement_contracts", "--nocapture"])
+                .env(CHILD, "1").output().expect("run isolated HFT measurement test");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use crate::renderer::hft_glyphs::{register_hft_bytes, source_glyph_available};
+        let style = TextStyle {
+            font_family: "HCI Poppy".into(),
+            hft_family: "HCI Poppy".into(),
+            font_subst: "바탕".into(),
+            font_size: 20.0,
+            letter_spacing: -1.2,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        MEASURE_FONT_AVAIL.with(|cache| cache.borrow_mut().insert("HCI Poppy".into(), false));
+        #[cfg(target_arch = "wasm32")]
+        BROWSER_FONT_AVAIL.with(|cache| cache.borrow_mut().insert("HCI Poppy".into(), false));
+        let legacy = measure_style(&style).into_owned();
+        assert_ne!(legacy.font_family, style.font_family);
+        assert!(!source_glyph_available("HCI Poppy", 'I'));
+        let old_i = estimate_text_width_unrounded("I", &style);
+        close(old_i, estimate_text_width_unrounded("I", &legacy));
+        close(
+            registered_glyph_advance('I', &style).unwrap(),
+            registered_glyph_advance('I', &legacy).unwrap(),
+        );
+        let mut broken = bank("HCI Poppy");
+        broken.truncate(600);
+        assert!(!register_hft_bytes(broken));
+        close(estimate_text_width_unrounded("I", &style), old_i);
+        let mut advances_only = bank("HCI Poppy");
+        advances_only.truncate(524);
+        advances_only[0x1aa..0x1ae].copy_from_slice(&512u32.to_le_bytes());
+        advances_only[0x1ae..0x1b2].fill(0);
+        advances_only[512..516].copy_from_slice(&12u32.to_le_bytes());
+        for (at, value) in [(516, 73u16), (518, 73), (520, 1), (522, 336)] {
+            advances_only[at..at + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        assert!(register_hft_bytes(advances_only));
+        close(estimate_text_width_unrounded("I", &style), old_i);
+        assert!(!source_glyph_available("HCI Poppy", 'I'));
+        assert!(register_hft_bytes(bank("HCI Poppy")));
+        assert!(source_glyph_available("HCI Poppy", 'I'));
+        assert!(!source_glyph_available("HCI Poppy", 'R'));
+        close(estimate_text_width_unrounded("I", &style) * 75.0, 472.0);
+        close(
+            estimate_text_width("IP(", &style),
+            estimate_text_width_unrounded("IP(", &style),
+        );
+        close(
+            registered_glyph_advance('I', &style).unwrap(),
+            172.0 / 512.0 * 20.0,
+        );
+        close(compute_glyph_positions("I", &style)[1] * 75.0, 504.0);
+        for text in ["I😀", "I한", "IR", "I P", "I\u{00a0}P", "I\u{00AD}P"] {
+            let sum = text
+                .chars()
+                .map(|c| estimate_text_width_unrounded(&c.to_string(), &style))
+                .sum();
+            close(estimate_text_width_unrounded(text, &style), sum);
+            close(*compute_char_positions(text, &style).last().unwrap(), sum);
+        }
+        for text in [
+            "R",
+            "😀",
+            "한",
+            "A\u{301}",
+            " ",
+            "\u{00a0}",
+            "\u{2007}",
+            "\t",
+            "\u{FFFC}",
+            "\u{F081C}",
+            "\u{E000}",
+        ] {
+            close(
+                estimate_text_width_unrounded(text, &style),
+                estimate_text_width_unrounded(text, &legacy),
+            );
+            assert_eq!(
+                compute_char_positions(text, &style),
+                compute_char_positions(text, &legacy),
+                "{text:?}"
+            );
+            assert_eq!(
+                compute_glyph_positions(text, &style),
+                compute_glyph_positions(text, &legacy),
+                "{text:?}"
+            );
+            assert_eq!(
+                extract_tab_leaders(text, &compute_char_positions(text, &style), &style).len(),
+                extract_tab_leaders(text, &compute_char_positions(text, &legacy), &legacy).len()
+            );
+        }
+        close(
+            estimate_text_width_unrounded("\u{00AD}", &style),
+            estimate_text_width_unrounded("-", &style),
+        );
+        close(
+            registered_glyph_advance('\u{00AD}', &style).unwrap(),
+            registered_glyph_advance('-', &style).unwrap(),
+        );
+        let mut tabbed = style.clone();
+        tabbed.tab_stops = vec![TabStop {
+            position: 100.0,
+            tab_type: 1,
+            fill_type: 3,
+        }];
+        let text = "I\tPR";
+        let positions = compute_char_positions(text, &tabbed);
+        let leaders = extract_tab_leaders(text, &positions, &tabbed);
+        assert_eq!(leaders.len(), 1);
+        close(*positions.last().unwrap(), 100.0);
+        close(
+            leaders[0].start_x,
+            estimate_text_width_unrounded("I", &style),
+        );
+        close(
+            leaders[0].end_x,
+            100.0 - estimate_text_width_unrounded("PR", &style) - 5.0,
+        );
+        assert_eq!(leaders[0].fill_type, 3);
+        let old_tabbed = measure_style(&tabbed);
+        let old_positions = default_measurer().compute_char_positions(text, &old_tabbed);
+        let old_leaders = extract_tab_leaders(text, &old_positions, &old_tabbed);
+        assert_ne!(leaders[0].start_x, old_leaders[0].start_x);
+        assert_ne!(leaders[0].end_x, old_leaders[0].end_x);
+        let mut script = style.clone();
+        script.superscript = true;
+        let scaled = script_measure_style(&script).unwrap();
+        close(
+            estimate_text_width_unrounded("I", &script),
+            estimate_text_width_unrounded("I", &scaled),
+        );
+        for (italic, policy) in [
+            (true, FontMetricsPolicy::HcrDeclared),
+            (false, FontMetricsPolicy::HancomWindows),
+        ] {
+            let mut guarded = style.clone();
+            guarded.italic = italic;
+            guarded.font_metrics_policy = policy;
+            let old = measure_style(&guarded).into_owned();
+            close(
+                estimate_text_width_unrounded("IP(", &guarded),
+                estimate_text_width_unrounded("IP(", &old),
+            );
+            assert_eq!(
+                compute_char_positions("IP(", &guarded),
+                compute_char_positions("IP(", &old)
+            );
+        }
+        let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(
+            include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf").as_slice(),
+        );
+        {
+            let _scope = enter_resolved_shaping_fonts(vec![ResolvedShapingFont {
+                family: "HCI Poppy".into(),
+                bytes: bytes.clone(),
+                face_index: 0,
+            }]);
+            let resolved = measure_style(&style);
+            assert!(source_hft_measure_style(&style, &resolved).is_none());
+            let face = ttf_parser::Face::parse(&bytes, 0).unwrap();
+            let advance = f64::from(
+                face.glyph_hor_advance(face.glyph_index('A').unwrap())
+                    .unwrap(),
+            ) / f64::from(face.units_per_em())
+                * 20.0;
+            close(
+                estimate_text_width_unrounded("A", &style),
+                character_advance(advance, 'A', &style, 20.0, 1.0),
+            );
+        }
+        {
+            let family = "신명 견명조";
+            assert!(register_hft_bytes(bank(family)));
+            assert!(source_glyph_available(family, 'I'));
+            let _scope = enter_resolved_shaping_fonts(vec![ResolvedShapingFont {
+                family: "한컴바탕".into(),
+                bytes: bytes.clone(),
+                face_index: 0,
+            }]);
+            let mut mapped = style.clone();
+            mapped.font_family = family.into();
+            mapped.hft_family = family.into();
+            let old = measure_style(&mapped);
+            assert_ne!(
+                resolved_measure_metric_name(
+                    family,
+                    false,
+                    false,
+                    mapped.font_metrics_policy,
+                    custom_font_face_available(family)
+                ),
+                family
+            );
+            assert!(source_hft_measure_style(&mapped, &old).is_none());
+            close(
+                estimate_text_width("IP(", &mapped),
+                default_measurer().estimate_text_width("IP(", &old),
+            );
+            let metric = font_metrics_data::find_metric(&old.font_family, false, false)
+                .unwrap()
+                .metric;
+            close(
+                registered_glyph_advance('I', &mapped).unwrap(),
+                f64::from(metric.get_width('I').unwrap()) / f64::from(metric.em_size) * 20.0,
+            );
+        }
+        crate::renderer::runtime_font_metrics::register(
+            &bytes,
+            &["HCI Poppy".into()],
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(source_hft_measure_style(&style, &measure_style(&style)).is_none());
+        crate::renderer::runtime_font_metrics::clear();
+        let mut alias = style.clone();
+        alias.font_family = "HY신명조".into();
+        alias.hft_family = "신명 중명조".into();
+        let old = measure_style(&alias).into_owned();
+        assert!(source_hft_measure_style(&alias, &old).is_none());
+        close(
+            estimate_text_width_unrounded("IP(", &alias),
+            default_measurer().estimate_text_width("IP(", &old),
+        );
+        for family in ["HY신명조", "굴림"] {
+            let mut script_alias = style.clone();
+            script_alias.font_family = family.into();
+            script_alias.hft_family = "신명 중명조".into();
+            script_alias.superscript = true;
+            // 이전 공개 경로: measure_style → script → 재귀 measure_style.
+            let first = measure_style(&script_alias);
+            let reduced = script_measure_style(&first).unwrap();
+            let final_style = measure_style(&reduced);
+            let expected = default_measurer().estimate_text_width("IP(", &final_style);
+            close(estimate_text_width("IP(", &script_alias), expected);
+            close(
+                estimate_text_width_unrounded("IP(", &script_alias),
+                expected,
+            );
+            assert_eq!(
+                compute_char_positions("IP(", &script_alias),
+                default_measurer().compute_char_positions("IP(", &final_style)
+            );
+            let primary = final_style.font_family.split(',').next().unwrap().trim();
+            let metric = font_metrics_data::find_metric(primary, false, false)
+                .unwrap()
+                .metric;
+            close(
+                registered_glyph_advance('I', &script_alias).unwrap(),
+                f64::from(metric.get_width('I').unwrap()) / f64::from(metric.em_size)
+                    * final_style.font_size,
+            );
+            let mut ink = first.into_owned();
+            ink.zero_tracking();
+            ink.extra_char_spacing = 0.0;
+            ink.extra_word_spacing = 0.0;
+            ink.extra_dash_advance = 0.0;
+            let ink_resolved = measure_style(&ink);
+            let ink_reduced = script_measure_style(&ink_resolved).unwrap();
+            let ink_final = measure_style(&ink_reduced);
+            assert_eq!(
+                compute_glyph_positions("IP(", &script_alias),
+                default_measurer().compute_char_positions("IP(", &ink_final)
+            );
+        }
+        assert!(register_hft_bytes(bank("HFT No Metric")));
+        let mut absent = style.clone();
+        absent.font_family = "HFT No Metric".into();
+        absent.hft_family = absent.font_family.clone();
+        close(
+            estimate_text_width_unrounded("I", &absent),
+            estimate_text_width_unrounded("I", &measure_style(&absent)),
         );
     }
 }

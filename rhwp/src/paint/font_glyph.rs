@@ -557,7 +557,7 @@ impl FontGlyphLowerer<'_, '_> {
             glyph_range,
             bbox,
         );
-        bitmap_options.baseline_y = run.baseline;
+        bitmap_options.baseline_y = run.baseline + crate::renderer::char_offset_dy(&run.style);
         let glyph_id_u16 = ttf_parser::GlyphId(glyph_id as u16);
         let Some(raster) = face.glyph_raster_image(glyph_id_u16, bitmap_options.pixels_per_em)
         else {
@@ -581,12 +581,24 @@ impl FontGlyphLowerer<'_, '_> {
             &bitmap_options,
             self.resources,
         )
-        .ok();
+        .ok()
+        .map(|mut bitmap| {
+            // 배치 거절 여부와 무관하게 성공한 decode의 자원 비용을 기록한다.
+            self.encoded_resource_bytes += encoded_bytes;
+            self.decoded_resource_pixels += decoded_pixels;
+            // 정수 ppem은 strike 선택에만 쓰고 실제 글자 크기로 배치한다.
+            let scale = run.style.font_size / f64::from(bitmap_options.pixels_per_em);
+            let baseline = bbox.y + bitmap_options.baseline_y;
+            bitmap.placement.x = bbox.x + (bitmap.placement.x - bbox.x) * scale;
+            bitmap.placement.y = baseline + (bitmap.placement.y - baseline) * scale;
+            bitmap.placement.width *= scale;
+            bitmap.placement.height *= scale;
+            bitmap
+        })
+        .filter(BitmapGlyphPayload::has_strict_visual_contract);
         let payload_kind = if bitmap.is_some() {
             self.report.emitted_bitmap_glyphs += 1;
             self.emitted_sidecars += 1;
-            self.encoded_resource_bytes += encoded_bytes;
-            self.decoded_resource_pixels += decoded_pixels;
             GlyphOutlinePayloadKind::BitmapGlyph
         } else {
             self.report.rejected_runs += 1;
@@ -912,16 +924,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn lowering_matches_char_shape_and_language_instead_of_css_family() {
-        let bbox = BoundingBox::new(10.0, 20.0, 16.0, 16.0);
-        let run = crate::renderer::render_tree::TextRunNode {
+    fn bitmap_text_run(
+        style: crate::renderer::TextStyle,
+    ) -> crate::renderer::render_tree::TextRunNode {
+        crate::renderer::render_tree::TextRunNode {
             text: "\u{E100}".to_string(),
-            style: crate::renderer::TextStyle {
-                font_family: "substituted browser family".to_string(),
-                font_size: 16.0,
-                ..Default::default()
-            },
+            style,
             char_shape_id: Some(7),
             para_shape_id: None,
             section_index: None,
@@ -937,7 +945,14 @@ mod tests {
             baseline: 12.0,
             field_marker: Default::default(),
             display_text: None,
-        };
+        }
+    }
+
+    fn lower_bitmap_text(
+        style: crate::renderer::TextStyle,
+    ) -> (LayerNode, ResourceArena, FontGlyphLoweringReport) {
+        let bbox = BoundingBox::new(10.0, 20.0, 16.0, 16.0);
+        let run = bitmap_text_run(style);
         let mut root = LayerNode::leaf(bbox, None, vec![PaintOp::text_run(bbox, run)]);
         let mut resources = ResourceArena::default();
         let report = lower_font_native_glyph_sidecars(
@@ -953,6 +968,17 @@ mod tests {
             }],
         );
 
+        (root, resources, report)
+    }
+
+    #[test]
+    fn lowering_matches_char_shape_and_language_instead_of_css_family() {
+        let (root, resources, report) = lower_bitmap_text(crate::renderer::TextStyle {
+            font_family: "substituted browser family".to_string(),
+            font_size: 16.0,
+            ..Default::default()
+        });
+
         assert_eq!(report.emitted_bitmap_glyphs, 1);
         let LayerNodeKind::Leaf { ops } = root.kind else {
             panic!("expected leaf");
@@ -963,6 +989,213 @@ mod tests {
         ));
         assert!(resources.font_resources().blobs.is_empty());
         assert!(resources.font_resources().faces.is_empty());
+    }
+
+    #[test]
+    fn bitmap_text_preserves_signed_character_baseline_offset() {
+        for (percent, char_offset, expected_y) in [
+            (Some(-10), 0.25, 17.4),
+            (Some(0), 0.25, 19.0),
+            (Some(10), 0.25, 20.6),
+            (None, -0.1, 17.4),
+        ] {
+            let (root, _, report) = lower_bitmap_text(crate::renderer::TextStyle {
+                font_size: 16.0,
+                font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+                char_offset,
+                native_char_position: percent.map(|percent| crate::renderer::NativeCharPosition {
+                    base_height_hu: 1200,
+                    percent,
+                    dpi: 96.0,
+                }),
+                ..Default::default()
+            });
+            assert_eq!(report.emitted_bitmap_glyphs, 1);
+            let LayerNodeKind::Leaf { ops } = root.kind else {
+                panic!("expected leaf");
+            };
+            let PaintOp::GlyphOutline { outline, .. } = &ops[1] else {
+                panic!("expected bitmap sidecar");
+            };
+            let bitmap = outline.bitmap_glyph.as_ref().expect("bitmap payload");
+            assert!((bitmap.placement.y - expected_y).abs() < 1e-9);
+            assert_eq!(bitmap.placement.x, 8.0);
+            assert_eq!(bitmap.placement.width, 16.0);
+            assert_eq!(bitmap.placement.height, 16.0);
+            assert!(bitmap.has_strict_visual_contract());
+        }
+    }
+
+    #[test]
+    fn bitmap_text_preserves_fractional_display_size_and_bearings() {
+        for (font_size, expected_x, expected_y, percent) in [
+            (16.0, 8.0, 19.0, None),
+            (16.4, 7.95, 18.675, None),
+            (16.8, 7.9, 18.35, None),
+            (16.4, 7.95, 17.075, Some(-10)),
+        ] {
+            let (root, resources, report) = lower_bitmap_text(crate::renderer::TextStyle {
+                font_size,
+                font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+                native_char_position: percent.map(|percent| crate::renderer::NativeCharPosition {
+                    base_height_hu: 1200,
+                    percent,
+                    dpi: 96.0,
+                }),
+                ..Default::default()
+            });
+            assert_eq!(report.emitted_bitmap_glyphs, 1);
+            assert_eq!(resources.image_count(), 1);
+            let LayerNodeKind::Leaf { ops } = root.kind else {
+                panic!("expected leaf");
+            };
+            let PaintOp::GlyphOutline { outline, .. } = &ops[1] else {
+                panic!("expected bitmap sidecar");
+            };
+            let bitmap = outline.bitmap_glyph.as_ref().expect("bitmap payload");
+            assert!((bitmap.placement.x - expected_x).abs() < 1e-9);
+            assert!((bitmap.placement.y - expected_y).abs() < 1e-9);
+            assert!((bitmap.placement.width - font_size).abs() < 1e-9);
+            assert!((bitmap.placement.height - font_size).abs() < 1e-9);
+            assert!(bitmap.has_strict_visual_contract());
+        }
+    }
+
+    fn bitmap_font_with_png(width: u32, color: [u8; 4]) -> Vec<u8> {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(width, 16, |x, y| {
+            let value = (x + width * y).wrapping_mul(0x9E37_79B9) ^ u32::from_be_bytes(color);
+            image::Rgba(value.to_be_bytes())
+        }))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .expect("encode test bitmap");
+        let png = png.into_inner();
+        let face = ttf_parser::Face::parse(fixture_font(), 0).unwrap();
+        let glyph_count = usize::from(face.number_of_glyphs());
+        let glyph_id = fixture_glyph_id('\u{E100}') as usize;
+        let data_start = 4 + (glyph_count + 1) * 4;
+        let data_end = data_start + 8 + png.len();
+        let mut sbix = vec![0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 12, 0, 16, 0, 72];
+        for glyph in 0..=glyph_count {
+            let offset = if glyph <= glyph_id {
+                data_start
+            } else {
+                data_end
+            };
+            sbix.extend_from_slice(&(offset as u32).to_be_bytes());
+        }
+        sbix.extend_from_slice(&[0, 2, 0, 3, b'p', b'n', b'g', b' ']);
+        sbix.extend_from_slice(&png);
+        let mut font = fixture_font().to_vec();
+        let table_count = u16::from_be_bytes(font[4..6].try_into().unwrap()) as usize;
+        let record = (0..table_count)
+            .map(|index| 12 + index * 16)
+            .find(|offset| &font[*offset..*offset + 4] == b"sbix")
+            .expect("fixture sbix table");
+        while font.len() % 4 != 0 {
+            font.push(0);
+        }
+        let offset = font.len() as u32;
+        font[record + 8..record + 12].copy_from_slice(&offset.to_be_bytes());
+        font[record + 12..record + 16].copy_from_slice(&(sbix.len() as u32).to_be_bytes());
+        font.extend_from_slice(&sbix);
+        font
+    }
+
+    #[test]
+    fn rejected_bitmap_geometry_still_limits_later_distinct_resources() {
+        let overflow_font = bitmap_font_with_png(32, [255, 0, 0, 255]);
+        let later_font = bitmap_font_with_png(16, [0, 0, 255, 255]);
+        let fonts = [
+            overflow_font.as_slice(),
+            fixture_font(),
+            later_font.as_slice(),
+        ];
+        let faces = fonts
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| EmbeddedFontFace {
+                char_shape_id: 7 + index as u32,
+                language_index: 0,
+                family: "fixture family",
+                alternate_family: None,
+                bytes: *bytes,
+                face_index: 0,
+            })
+            .collect::<Vec<_>>();
+        let face = ttf_parser::Face::parse(&overflow_font, 0).unwrap();
+        let raster = face
+            .glyph_raster_image(
+                ttf_parser::GlyphId(fixture_glyph_id('\u{E100}') as u16),
+                u16::MAX,
+            )
+            .expect("overflow bitmap strike");
+        let encoded = raster.data.len();
+        let pixels = u64::from(raster.width) * u64::from(raster.height);
+        for bytes in &fonts[1..] {
+            let later_face = ttf_parser::Face::parse(bytes, 0).unwrap();
+            let later_raster = later_face
+                .glyph_raster_image(ttf_parser::GlyphId(fixture_glyph_id('\u{E100}') as u16), 16)
+                .expect("later bitmap strike");
+            assert!(encoded >= later_raster.data.len());
+        }
+        // 대형 PNG 없이 두 한도의 마지막 남은 자원을 실제 decode로 소진한다.
+        for budget in [None, Some(true), Some(false)] {
+            let bbox = BoundingBox::new(10.0, 20.0, 16.0, 16.0);
+            let ops = [f64::MAX, 16.0, 16.0]
+                .into_iter()
+                .enumerate()
+                .map(|(index, font_size)| {
+                    let mut run = bitmap_text_run(crate::renderer::TextStyle {
+                        font_size,
+                        ..Default::default()
+                    });
+                    run.char_shape_id = Some(7 + index as u32);
+                    PaintOp::text_run(bbox, run)
+                })
+                .collect();
+            let mut root = LayerNode::leaf(bbox, None, ops);
+            let mut resources = ResourceArena::default();
+            let mut lowerer = FontGlyphLowerer {
+                resources: &mut resources,
+                fonts: &faces,
+                report: FontGlyphLoweringReport::default(),
+                next_text_source_id: 0,
+                emitted_sidecars: 0,
+                encoded_resource_bytes: if budget == Some(true) {
+                    MAX_FONT_NATIVE_ENCODED_BYTES_PER_PAGE - encoded
+                } else {
+                    0
+                },
+                decoded_resource_pixels: if budget == Some(false) {
+                    MAX_FONT_NATIVE_DECODED_PIXELS_PER_PAGE - pixels
+                } else {
+                    0
+                },
+            };
+            lowerer.lower_node(&mut root);
+            let report = lowerer.report;
+            let expected_emitted = if budget.is_some() { 0 } else { 2 };
+            assert_eq!(report.attempted_runs, 3);
+            assert_eq!(report.rejected_runs, 3 - expected_emitted);
+            assert_eq!(report.emitted_bitmap_glyphs, expected_emitted);
+            assert_eq!(resources.image_count(), 1 + expected_emitted);
+            let LayerNodeKind::Leaf { ops } = root.kind else {
+                panic!("expected leaf");
+            };
+            assert_eq!(
+                ops.iter()
+                    .filter(|op| matches!(op, PaintOp::TextRun { .. }))
+                    .count(),
+                3
+            );
+            assert_eq!(
+                ops.iter()
+                    .filter(|op| matches!(op, PaintOp::GlyphOutline { .. }))
+                    .count(),
+                expected_emitted
+            );
+        }
     }
 
     #[test]

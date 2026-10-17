@@ -9,7 +9,7 @@ use super::style_resolver::{detect_lang_category, ResolvedStyleSet};
 use super::{px_to_hwpunit, TextStyle};
 use crate::model::control::Control;
 use crate::model::document::Section;
-use crate::model::paragraph::{CharShapeRef, LineSeg, Paragraph};
+use crate::model::paragraph::{CharShapeRef, LineSeg, Paragraph, SpecialSpaceOrigin};
 use unicode_segmentation::UnicodeSegmentation;
 
 mod stale_metrics;
@@ -31,6 +31,8 @@ pub struct CharOverlapInfo {
 pub struct ComposedTextRun {
     /// 텍스트 조각
     pub text: String,
+    /// `text`의 scalar 위치. UTF-16/control stream 위치와 분리해 보존한다.
+    pub special_space_origins: Vec<SpecialSpaceOrigin>,
     /// 글자 스타일 ID (ResolvedStyleSet.char_styles 인덱스)
     pub char_style_id: u32,
     /// 언어 카테고리 (0=한국어, 1=영어, 2=한자, 3=일본어, 4=기타, 5=기호, 6=사용자)
@@ -43,6 +45,90 @@ pub struct ComposedTextRun {
     /// `text` 는 IR 와 동일하게 PUA char 1글자로 보존하여 char_offsets /
     /// char_start / line_chars 등 인덱싱 불변성을 유지한다 (Task #528).
     pub display_text: Option<String>,
+}
+
+impl ComposedTextRun {
+    pub(crate) fn slice_scalars(&self, start: usize, end: usize) -> Self {
+        Self {
+            text: self
+                .text
+                .chars()
+                .skip(start)
+                .take(end.saturating_sub(start))
+                .collect(),
+            special_space_origins: super::localize_special_space_origins(
+                &self.special_space_origins,
+                start,
+                end,
+            ),
+            display_text: None,
+            ..self.clone()
+        }
+    }
+
+    /// 모델 문자열과 측정 문자열이 같은 경우에만 scalar 원점을 전달한다.
+    /// display 확장의 별도 좌표 계약은 full advance 활성화 전에 결합해야 한다.
+    pub(crate) fn text_style(&self, styles: &ResolvedStyleSet) -> TextStyle {
+        let mut style =
+            super::layout::resolved_to_text_style(styles, self.char_style_id, self.lang_index);
+        if effective_text_for_metrics(self) == self.text.as_str() {
+            style.special_space_origins = self.special_space_origins.clone();
+        }
+        style
+    }
+}
+
+/// 실제 원본 scalar 범위와 일치하는 composed 조각에만 발생 원점을 부여한다.
+fn bind_line_origins(lines: &mut [ComposedLine], para: &Paragraph) {
+    let source: Vec<char> = para.text.chars().collect();
+    for line in lines {
+        let mut start = line.char_start;
+        for run in &mut line.runs {
+            let len = run.text.chars().count();
+            let end = start.saturating_add(len);
+            run.special_space_origins =
+                if end <= source.len() && run.text.chars().eq(source[start..end].iter().copied()) {
+                    super::localize_special_space_origins(&para.special_space_origins, start, end)
+                } else {
+                    Vec::new()
+                };
+            start = end;
+        }
+    }
+}
+
+/// 줄 분할은 문자열 순서를 보존하는 경우에만 원본 발생 위치를 다시 나눈다.
+fn bind_wrapped_origins(source: &ComposedLine, lines: &mut [ComposedLine]) {
+    let original: String = source.runs.iter().map(|run| run.text.as_str()).collect();
+    let wrapped: String = lines
+        .iter()
+        .flat_map(|line| &line.runs)
+        .map(|run| run.text.as_str())
+        .collect();
+    let unchanged_text = original == wrapped;
+    let mut origins = Vec::new();
+    let mut source_start = 0;
+    for run in &source.runs {
+        origins.extend(
+            run.special_space_origins
+                .iter()
+                .map(|origin| SpecialSpaceOrigin {
+                    char_idx: source_start + origin.char_idx,
+                    origin: origin.origin,
+                }),
+        );
+        source_start += run.text.chars().count();
+    }
+    let mut start = 0;
+    for run in lines.iter_mut().flat_map(|line| &mut line.runs) {
+        let end = start + run.text.chars().count();
+        run.special_space_origins = if unchanged_text {
+            super::localize_special_space_origins(&origins, start, end)
+        } else {
+            Vec::new()
+        };
+        start = end;
+    }
 }
 
 /// 구성된 줄 (LineSeg 기반)
@@ -102,6 +188,8 @@ pub struct ComposedParagraph {
     pub numbering_text: Option<String>,
     /// 개요 번호의 글자 모양·간격·자동 내어쓰기. 원본 문단은 변경하지 않는다.
     pub numbering_head: Option<crate::model::style::NumberingHead>,
+    /// 방향을 아는 구역/셀 호출자가 확인한 가로쓰기. 미상·세로쓰기는 false.
+    pub numbering_known_horizontal: bool,
     /// treat_as_char 컨트롤의 텍스트 위치와 점유 폭(HWPUNIT) 목록.
     /// 그림의 점유 폭에는 좌우 외곽 여백이 포함되며, 그림 자체의 폭은
     /// `Picture.common.width` 로 유지한다.
@@ -114,9 +202,48 @@ pub struct ComposedParagraph {
     pub tab_extended: Vec<[u16; 7]>,
 }
 
+impl ComposedParagraph {
+    pub(crate) fn copy_numbering_from(&mut self, previous: &Self) {
+        self.numbering_text = previous.numbering_text.clone();
+        self.numbering_head = previous.numbering_head;
+        self.numbering_known_horizontal = previous.numbering_known_horizontal;
+    }
+}
+
+pub(crate) fn initialize_body_paragraph_heads(
+    document: &crate::model::document::Document,
+    styles: &ResolvedStyleSet,
+    composed: &mut [Vec<ComposedParagraph>],
+) {
+    for (paras, heads) in
+        composed
+            .iter_mut()
+            .zip(crate::renderer::layout::resolve_body_paragraph_heads(
+                document, styles,
+            ))
+    {
+        for (para, head) in paras.iter_mut().zip(heads) {
+            para.numbering_text = None;
+            para.numbering_head = None;
+            para.numbering_known_horizontal = false;
+            if let Some(head) = head {
+                head.attach(para);
+            }
+        }
+    }
+}
+
 /// 구역의 문단 목록을 구성한다.
 pub fn compose_section(section: &Section) -> Vec<ComposedParagraph> {
-    section.paragraphs.iter().map(compose_paragraph).collect()
+    section
+        .paragraphs
+        .iter()
+        .map(|para| {
+            let mut composed = compose_paragraph(para);
+            composed.numbering_known_horizontal = section.section_def.text_direction == 0;
+            composed
+        })
+        .collect()
 }
 
 /// The inline slot includes the picture's outer left and right margins. The
@@ -224,6 +351,7 @@ fn synthesize_marker_paragraph(para: &Paragraph) -> Option<Paragraph> {
         String::with_capacity(para.text.len() + (inline_ctrl_count - existing_markers) * 3);
     let mut new_offsets: Vec<u32> =
         Vec::with_capacity(para.char_offsets.len() + (inline_ctrl_count - existing_markers));
+    let mut new_origins = Vec::with_capacity(para.special_space_origins.len());
 
     // 첫 visible char 전 leading gap (좁힘 가드에서 계산한 n_leading 재사용)
     for i in 0..n_leading {
@@ -234,6 +362,15 @@ fn synthesize_marker_paragraph(para: &Paragraph) -> Option<Paragraph> {
     // visible chars 사이 / 후행
     for (i, &off) in offsets.iter().enumerate() {
         let ch = chars.get(i).copied().unwrap_or(' ');
+        if let Ok(index) = para
+            .special_space_origins
+            .binary_search_by_key(&i, |origin| origin.char_idx)
+        {
+            new_origins.push(SpecialSpaceOrigin {
+                char_idx: new_offsets.len(),
+                origin: para.special_space_origins[index].origin,
+            });
+        }
         new_offsets.push(off);
         new_text.push(ch);
 
@@ -275,6 +412,7 @@ fn synthesize_marker_paragraph(para: &Paragraph) -> Option<Paragraph> {
     let mut synth = para.clone();
     synth.text = new_text;
     synth.char_offsets = new_offsets;
+    synth.special_space_origins = new_origins;
     Some(synth)
 }
 
@@ -332,6 +470,181 @@ pub(crate) fn fresh_page_number_tail_line(para: &Paragraph) -> bool {
         && occupied_width > i64::from(para.line_segs[0].segment_width)
 }
 
+/// Unicode 일반 glyph 경로의 기호 슬롯. 원점/정책이 없는 경로는 그대로 둔다.
+/// 원본 occurrence의 초기 선언 슬롯. 물리 서체 대체 결과와는 별도다.
+pub(crate) fn literal_space_lang_category(
+    ch: char,
+    scalar: usize,
+    origins: &[SpecialSpaceOrigin],
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> Option<usize> {
+    use crate::model::paragraph::SpecialSpaceOriginKind;
+    let lang = match ch {
+        '\u{00a0}' => 1,
+        '\u{2007}' => 5,
+        _ => return None,
+    };
+    (policy == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+        && origins.iter().any(|origin| {
+            origin.char_idx == scalar && origin.origin == SpecialSpaceOriginKind::Literal
+        }))
+    .then_some(lang)
+}
+
+pub(crate) fn occurrence_lang_category(
+    ch: char,
+    scalar: usize,
+    origins: &[SpecialSpaceOrigin],
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> usize {
+    literal_space_lang_category(ch, scalar, origins, policy)
+        .unwrap_or_else(|| detect_lang_category(ch))
+}
+
+pub(crate) fn is_occurrence_lang_neutral(
+    ch: char,
+    scalar: usize,
+    origins: &[SpecialSpaceOrigin],
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> bool {
+    is_lang_neutral(ch) && literal_space_lang_category(ch, scalar, origins, policy).is_none()
+}
+
+/// 기존 중립 문자 carry는 유지하고, 초기 ENG A0만 이후 carry를 바꾼다.
+pub(crate) fn carried_lang_category(
+    ch: char,
+    scalar: usize,
+    origins: &[SpecialSpaceOrigin],
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> usize {
+    if ch == '\u{00a0}' {
+        if let Some(lang) = literal_space_lang_category(ch, scalar, origins, policy) {
+            return lang;
+        }
+    }
+    detect_lang_category(ch)
+}
+
+/// 저장 줄의 geometry와 기존 초기 언어를 유지한 채 literal glyph 슬롯만 나눈다.
+fn select_literal_space_runs(
+    runs: Vec<ComposedTextRun>,
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> Vec<ComposedTextRun> {
+    if policy != crate::model::provenance::FontMetricsPolicy::HcrDeclared {
+        return runs;
+    }
+    let mut selected = Vec::with_capacity(runs.len());
+    for run in runs {
+        if !run.special_space_origins.iter().any(|origin| {
+            literal_space_lang_category(
+                run.text.chars().nth(origin.char_idx).unwrap_or('\0'),
+                origin.char_idx,
+                &run.special_space_origins,
+                policy,
+            )
+            .is_some()
+        }) {
+            selected.push(run);
+            continue;
+        }
+        // 표시 문자열/겹침/각주 마커는 별도 글리프 좌표 계약이다. 그대로 보존한다.
+        if run
+            .display_text
+            .as_deref()
+            .is_some_and(|display| display != run.text)
+            || run.char_overlap.is_some()
+            || run.footnote_marker.is_some()
+        {
+            selected.push(run);
+            continue;
+        }
+        let chars: Vec<char> = run.text.chars().collect();
+        let mut carry = run.lang_index;
+        let langs: Vec<usize> = chars
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, ch)| {
+                if let Some(lang) =
+                    literal_space_lang_category(ch, index, &run.special_space_origins, policy)
+                {
+                    if ch == '\u{00a0}' {
+                        carry = lang;
+                    } else {
+                        carry = run.lang_index;
+                    }
+                    lang
+                } else if is_lang_neutral(ch) {
+                    carry
+                } else {
+                    carry = run.lang_index;
+                    carry
+                }
+            })
+            .collect();
+        let lang_at = |index: usize| langs[index];
+        if chars.is_empty() || (0..chars.len()).all(|index| lang_at(index) == run.lang_index) {
+            selected.push(run);
+            continue;
+        }
+        let mut start = 0;
+        let mut lang = lang_at(0);
+        for end in 1..=chars.len() {
+            let next = (end < chars.len()).then(|| lang_at(end));
+            if next != Some(lang) {
+                let mut piece = run.slice_scalars(start, end);
+                piece.lang_index = lang;
+                if run.display_text.is_some() {
+                    piece.display_text = Some(piece.text.clone());
+                }
+                selected.push(piece);
+                start = end;
+                if let Some(next) = next {
+                    lang = next;
+                }
+            }
+        }
+    }
+    selected
+}
+
+/// 정책을 가진 실제 로드/편집/렌더 경로. 원점 결합 뒤 선택해야 한다.
+pub fn compose_paragraph_with_policy(
+    para: &Paragraph,
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> ComposedParagraph {
+    let mut composed = compose_paragraph(para);
+    select_literal_space_slots(&mut composed, policy);
+    composed
+}
+
+pub fn compose_section_with_policy(
+    section: &Section,
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> Vec<ComposedParagraph> {
+    section
+        .paragraphs
+        .iter()
+        .map(|para| {
+            let mut composed = compose_paragraph_with_policy(para, policy);
+            composed.numbering_known_horizontal = section.section_def.text_direction == 0;
+            composed
+        })
+        .collect()
+}
+
+fn select_literal_space_slots(
+    composed: &mut ComposedParagraph,
+    policy: crate::model::provenance::FontMetricsPolicy,
+) {
+    if policy != crate::model::provenance::FontMetricsPolicy::HcrDeclared {
+        return;
+    }
+    for line in &mut composed.lines {
+        line.runs = select_literal_space_runs(std::mem::take(&mut line.runs), policy);
+    }
+}
+
 /// 문단을 줄별 텍스트 런으로 분할한다.
 pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
     // [Task #991] HWP5 parser 의 inline marker 누락 보정 (rendering 전용)
@@ -339,10 +652,12 @@ pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
     let para = synth_para.as_ref().unwrap_or(para);
 
     let mut lines = compose_lines(para);
+    bind_line_origins(&mut lines, para);
     if fresh_page_number_tail_line(para) {
         if let Some(line) = lines.get_mut(1) {
             // 가시 문자 축은 빈 줄이지만 글자 모양은 원래 제어 레코드에서 선택한다.
             line.runs = vec![ComposedTextRun {
+                special_space_origins: Vec::new(),
                 text: String::new(),
                 char_style_id: find_active_char_shape(
                     &para.char_shapes,
@@ -426,6 +741,7 @@ pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
         inline_controls,
         numbering_text: None,
         numbering_head: None,
+        numbering_known_horizontal: false,
         tac_controls,
         footnote_positions,
         tab_extended: para.tab_extended.clone(),
@@ -618,6 +934,7 @@ fn inject_footnote_markers(lines: &mut [ComposedLine], positions: &[(usize, u16)
                 let after: String = orig_text[offset_in_run..].iter().collect();
 
                 let marker_run = ComposedTextRun {
+                    special_space_origins: Vec::new(),
                     text: marker_text.clone(),
                     char_style_id: cs_id,
                     lang_index: lang,
@@ -632,6 +949,11 @@ fn inject_footnote_markers(lines: &mut [ComposedLine], positions: &[(usize, u16)
                     if i == ri {
                         if !before.is_empty() {
                             new_runs.push(ComposedTextRun {
+                                special_space_origins: super::localize_special_space_origins(
+                                    &run.special_space_origins,
+                                    0,
+                                    offset_in_run,
+                                ),
                                 text: before.clone(),
                                 char_style_id: cs_id,
                                 lang_index: lang,
@@ -643,6 +965,11 @@ fn inject_footnote_markers(lines: &mut [ComposedLine], positions: &[(usize, u16)
                         new_runs.push(marker_run.clone());
                         if !after.is_empty() {
                             new_runs.push(ComposedTextRun {
+                                special_space_origins: super::localize_special_space_origins(
+                                    &run.special_space_origins,
+                                    offset_in_run,
+                                    orig_text.len(),
+                                ),
                                 text: after.clone(),
                                 char_style_id: cs_id,
                                 lang_index: lang,
@@ -682,6 +1009,7 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
         if para.text.graphemes(true).any(|g| g.chars().count() > 1) {
             return vec![ComposedLine {
                 runs: split_runs_by_lang(vec![ComposedTextRun {
+                    special_space_origins: Vec::new(),
                     text: para.text.clone(),
                     char_style_id: default_style_id,
                     lang_index: 0,
@@ -738,6 +1066,7 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
             // 전면 교체 시 80168 pi=1056/1245 급 회귀(#2279 실측).
             lines.push(ComposedLine {
                 runs: split_runs_by_lang(vec![ComposedTextRun {
+                    special_space_origins: Vec::new(),
                     text: line_text,
                     char_style_id: default_style_id,
                     lang_index: 0,
@@ -1024,6 +1353,7 @@ fn split_by_char_shapes(
 
     if char_shapes.is_empty() {
         return split_runs_by_lang(vec![ComposedTextRun {
+            special_space_origins: Vec::new(),
             text: line_text.to_string(),
             char_style_id: 0,
             lang_index: 0,
@@ -1079,6 +1409,7 @@ fn split_by_char_shapes(
         // 줄 시작 위치 이전의 마지막 CharShapeRef 찾기
         let style_id = find_active_char_shape(char_shapes, line_stream_start);
         return split_runs_by_lang(vec![ComposedTextRun {
+            special_space_origins: Vec::new(),
             text: line_text.to_string(),
             char_style_id: style_id,
             lang_index: 0,
@@ -1105,6 +1436,7 @@ fn split_by_char_shapes(
             let run_text: String = chars[start_idx..actual_end].iter().collect();
             if !run_text.is_empty() {
                 runs.push(ComposedTextRun {
+                    special_space_origins: Vec::new(),
                     text: run_text,
                     char_style_id: style_id,
                     lang_index: 0,
@@ -1125,6 +1457,7 @@ fn split_by_char_shapes(
             runs.insert(
                 0,
                 ComposedTextRun {
+                    special_space_origins: Vec::new(),
                     text: prefix_text,
                     char_style_id: style_id,
                     lang_index: 0,
@@ -1139,6 +1472,7 @@ fn split_by_char_shapes(
     if runs.is_empty() {
         let style_id = find_active_char_shape(char_shapes, line_stream_start);
         runs.push(ComposedTextRun {
+            special_space_origins: Vec::new(),
             text: line_text.to_string(),
             char_style_id: style_id,
             lang_index: 0,
@@ -1269,6 +1603,11 @@ pub(crate) fn split_runs_by_lang(runs: Vec<ComposedTextRun>) -> Vec<ComposedText
             if ch == '\t' && tab_segment_spans_langs(&chars[i + 1..]) {
                 let text: String = chars[current_start..=i].iter().collect();
                 result.push(ComposedTextRun {
+                    special_space_origins: super::localize_special_space_origins(
+                        &run.special_space_origins,
+                        current_start,
+                        i + 1,
+                    ),
                     text,
                     char_style_id: run.char_style_id,
                     lang_index: current_lang,
@@ -1293,6 +1632,11 @@ pub(crate) fn split_runs_by_lang(runs: Vec<ComposedTextRun>) -> Vec<ComposedText
                 if i > current_start {
                     let text: String = chars[current_start..i].iter().collect();
                     result.push(ComposedTextRun {
+                        special_space_origins: super::localize_special_space_origins(
+                            &run.special_space_origins,
+                            current_start,
+                            i,
+                        ),
                         text,
                         char_style_id: run.char_style_id,
                         lang_index: current_lang,
@@ -1311,6 +1655,11 @@ pub(crate) fn split_runs_by_lang(runs: Vec<ComposedTextRun>) -> Vec<ComposedText
         let text: String = chars[current_start..].iter().collect();
         if !text.is_empty() {
             result.push(ComposedTextRun {
+                special_space_origins: super::localize_special_space_origins(
+                    &run.special_space_origins,
+                    current_start,
+                    chars.len(),
+                ),
                 text,
                 char_style_id: run.char_style_id,
                 lang_index: current_lang,
@@ -1515,6 +1864,7 @@ fn inject_char_overlap_text(composed: &mut ComposedParagraph, para: &Paragraph) 
             text_pos,
             ComposedTextRun {
                 text,
+                special_space_origins: Vec::new(),
                 char_style_id,
                 lang_index: 0,
                 char_overlap: Some(CharOverlapInfo {
@@ -1604,10 +1954,22 @@ fn insert_overlap_run(
                     let lang_idx = line.runs[run_idx].lang_index;
 
                     // 기존 런을 before로 교체
+                    let after_origins = super::localize_special_space_origins(
+                        &line.runs[run_idx].special_space_origins,
+                        split_at,
+                        run_chars,
+                    );
+                    line.runs[run_idx].special_space_origins =
+                        super::localize_special_space_origins(
+                            &line.runs[run_idx].special_space_origins,
+                            0,
+                            split_at,
+                        );
                     line.runs[run_idx].text = before;
 
                     // after 런 생성
                     let after_run = ComposedTextRun {
+                        special_space_origins: after_origins,
                         text: after,
                         char_style_id: style_id,
                         lang_index: lang_idx,
@@ -1647,7 +2009,7 @@ pub fn estimate_composed_line_width(line: &ComposedLine, styles: &ResolvedStyleS
     line.runs
         .iter()
         .map(|run| {
-            let ts = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
+            let ts = run.text_style(styles);
             estimate_text_width(effective_text_for_metrics(run), &ts)
         })
         .sum()
@@ -1679,6 +2041,7 @@ pub(crate) fn no_ls_short_label_cell(
     cell_inner_width: f64,
     cell_inner_height: f64,
     styles: &ResolvedStyleSet,
+    dpi: f64,
 ) -> bool {
     if cell.paragraphs.is_empty() || cell_inner_width <= 0.0 || cell_inner_height <= 0.0 {
         return false;
@@ -1729,8 +2092,29 @@ pub(crate) fn no_ls_short_label_cell(
     }
     let mut em_sum = 0.0f64;
     for p in &cell.paragraphs {
-        let mut comp = compose_paragraph(p);
-        recompose_for_cell_width(&mut comp, p, cell_inner_width, styles);
+        let mut comp = compose_paragraph_with_policy(p, styles.font_metrics_policy);
+        if crate::renderer::layout::fixed_bullet_head_reserve_px(
+            styles,
+            p,
+            dpi,
+            cell.text_direction == 0,
+        )
+        .is_some()
+        {
+            recompose_for_cell_width_for_source(
+                &mut comp,
+                p,
+                cell_inner_width,
+                styles,
+                false,
+                cell.line_wrap,
+                cell.text_direction,
+                false,
+                dpi,
+            );
+        } else {
+            recompose_for_cell_width(&mut comp, p, cell_inner_width, styles);
+        }
         if comp.lines.len() > 1 {
             return false;
         }
@@ -1785,6 +2169,7 @@ pub(crate) fn restyle_fallback_runs_by_char_shapes(
         run.display_text.is_some() || run.footnote_marker.is_some() || run.char_overlap.is_some()
     };
     for line in composed.lines.iter_mut() {
+        let origin_source = line.clone();
         let text: String = line.runs.iter().map(|r| r.text.as_str()).collect();
         if text.is_empty() {
             continue;
@@ -1802,6 +2187,7 @@ pub(crate) fn restyle_fallback_runs_by_char_shapes(
             );
             if !restyled.is_empty() {
                 line.runs = restyled;
+                bind_wrapped_origins(&origin_source, std::slice::from_mut(line));
             }
             continue;
         }
@@ -1832,6 +2218,7 @@ pub(crate) fn restyle_fallback_runs_by_char_shapes(
             pos += len;
         }
         line.runs = runs;
+        bind_wrapped_origins(&origin_source, std::slice::from_mut(line));
     }
 }
 
@@ -1847,7 +2234,23 @@ pub fn recompose_for_body_width(
 ) {
     resolve_ruby_widths(composed, para, styles, column_inner_width_px, true);
     restyle_fallback_runs_by_char_shapes(composed, para);
-    recompose_for_cell_width(composed, para, column_inner_width_px, styles);
+    if composed.numbering_text.is_some() {
+        let reserve =
+            crate::renderer::layout::numbering_marker_reserve(styles, para, composed, 96.0);
+        recompose_for_cell_width_impl_with_generated(
+            composed,
+            para,
+            column_inner_width_px,
+            styles,
+            0.0,
+            false,
+            true,
+            Some(reserve),
+            0.0,
+        );
+    } else {
+        recompose_for_cell_width(composed, para, column_inner_width_px, styles);
+    }
 }
 
 /// [#2291/#2287] 부실 저장 예외 — 기계생성 문서는 다줄 문단에도 저장 lineseg 를
@@ -1863,6 +2266,8 @@ pub fn recompose_stored_single_line_if_overflowing(
     para: &Paragraph,
     cell_inner_width_px: f64,
     styles: &ResolvedStyleSet,
+    cell_text_direction: u8,
+    dpi: f64,
 ) {
     // SQUEEZE 는 저장된 한 줄을 자간 압축으로 맞추므로 재줄바꿈하지 않는다.
     if styles
@@ -1894,7 +2299,7 @@ pub fn recompose_stored_single_line_if_overflowing(
     if std::env::var("RHWP_DIAG_CELLREWRAP").is_ok() && over {
         if let Some(l) = composed.lines.first() {
             for run in &l.runs {
-                let ts = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
+                let ts = run.text_style(styles);
                 eprintln!(
                     "DIAG_CELLREWRAP inner={:.1} fs={:.1} lsp={:.2} font={:?} w={:.1} text={:?}",
                     cell_inner_width_px,
@@ -1916,7 +2321,17 @@ pub fn recompose_stored_single_line_if_overflowing(
     // 저장 seg 를 일시적으로 무시하고 NO_LS 폴백과 동일 경로로 재분할한다.
     let mut para_no_ls = para.clone();
     para_no_ls.line_segs.clear();
-    recompose_for_cell_width(composed, &para_no_ls, cell_inner_width_px, styles);
+    recompose_for_cell_width_for_source(
+        composed,
+        &para_no_ls,
+        cell_inner_width_px,
+        styles,
+        false,
+        crate::model::table::CellLineWrap::Break,
+        cell_text_direction,
+        false,
+        dpi,
+    );
 }
 
 /// [#2279] 저장 lineseg 분할의 실폭-과잉 판정 (본문 판, 줄수 무관).
@@ -2325,6 +2740,7 @@ pub(crate) fn reflow_substituted_wrap_hosts(
     column_width_px: f64,
     single_column_body_height_hu: Option<i32>,
     dpi: f64,
+    body_composed: Option<&[ComposedParagraph]>,
 ) -> Vec<usize> {
     let mut changed = Vec::new();
     let mut grown_ranges: Vec<std::ops::Range<usize>> = Vec::new();
@@ -2339,7 +2755,10 @@ pub(crate) fn reflow_substituted_wrap_hosts(
         if !hosts_side_wrap
             || !authoritative
             || para.text.is_empty()
-            || !composed_uses_substituted_face(&compose_paragraph(para), styles)
+            || !composed_uses_substituted_face(
+                &compose_paragraph_with_policy(para, styles.font_metrics_policy),
+                styles,
+            )
         {
             continue;
         }
@@ -2356,7 +2775,14 @@ pub(crate) fn reflow_substituted_wrap_hosts(
             .line_segs
             .last()
             .map(|ls| ls.vertical_pos + ls.line_height + ls.line_spacing);
-        line_breaking::reflow_line_segs(para, width, styles, dpi);
+        if let Some(composed) = body_composed.and_then(|paras| paras.get(idx)) {
+            let head = crate::renderer::layout::ResolvedParagraphHead::from_composed(composed);
+            let reserve =
+                crate::renderer::layout::resolved_head_reserve_px(styles, para, head.as_ref(), dpi);
+            line_breaking::reflow_line_segs_with_head(para, width, styles, dpi, reserve);
+        } else {
+            line_breaking::reflow_line_segs(para, width, styles, dpi);
+        }
         // 실제로 좁힌 줄이 있는 어울림 계획만 문단 안쪽 좌표를 반환한다.
         // 개체가 줄 대역 밖에 있으면 일반 줄 생성이 이미 왼쪽 여백을 넣었다.
         let full_width_hu = crate::renderer::px_to_hwpunit_round(width, dpi);
@@ -2535,6 +2961,7 @@ pub fn recompose_stale_stored_lines_for_body(
         false,
         true,
         body_inner,
+        0.0,
     );
 }
 
@@ -2566,6 +2993,7 @@ pub fn recompose_for_native_hwpx_cell_width(
             .all(|control| matches!(control, Control::ColumnDef(_) | Control::SectionDef(_))),
         true,
         None,
+        0.0,
     );
 }
 
@@ -2576,8 +3004,9 @@ pub(crate) fn fresh_adjacent_tac_tables_fit(
     inner_width_px: f64,
     styles: &ResolvedStyleSet,
     dpi: f64,
+    known_horizontal: bool,
 ) -> bool {
-    fresh_tac_table_line_fit(para, inner_width_px, styles, 2, dpi)
+    fresh_tac_table_line_fit(para, inner_width_px, styles, 2, dpi, known_horizontal)
 }
 
 /// 합성 한 줄의 점유 높이에 이미 들어간 TAC 표는 다시 가산하지 않는다.
@@ -2586,8 +3015,10 @@ pub(crate) fn generated_tac_table_line_covers_object(
     inner_width_px: f64,
     styles: &ResolvedStyleSet,
     dpi: f64,
+    known_horizontal: bool,
 ) -> bool {
-    if para.line_segs.len() != 1 || !fresh_tac_table_line_fit(para, inner_width_px, styles, 1, dpi)
+    if para.line_segs.len() != 1
+        || !fresh_tac_table_line_fit(para, inner_width_px, styles, 1, dpi, known_horizontal)
     {
         return false;
     }
@@ -2613,6 +3044,7 @@ fn fresh_tac_table_line_fit(
     styles: &ResolvedStyleSet,
     minimum_tables: usize,
     dpi: f64,
+    known_horizontal: bool,
 ) -> bool {
     if !crate::renderer::para_has_no_stored_line_segs(para)
         || para.controls.len() < minimum_tables
@@ -2661,6 +3093,15 @@ fn fresh_tac_table_line_fit(
             estimate_text_width(" ", &resolved_to_text_style(styles, u32::from(style_id), 0))
         })
         .sum();
+    // 고정 글머리표만 새 슬롯을 차감한다. 그 외 머리와 Squeeze의 기존 판정은 유지한다.
+    let fixed_reserve =
+        crate::renderer::layout::fixed_bullet_head_reserve_px(styles, para, dpi, known_horizontal)
+            .filter(|_| {
+                !styles
+                    .para_styles
+                    .get(para.para_shape_id as usize)
+                    .is_some_and(|style| style.line_wrap_squeeze)
+            });
     let available = styles
         .para_styles
         .get(para.para_shape_id as usize)
@@ -2670,7 +3111,8 @@ fn fresh_tac_table_line_fit(
                 - style.margin_right.max(0.0)
                 - style.indent.max(0.0)
         })
-        .unwrap_or(inner_width_px);
+        .unwrap_or(inner_width_px)
+        - fixed_reserve.map_or(0.0, |reserve| reserve.0);
     if crate::renderer::hwpunit_to_px(occupied_hu.min(i64::from(i32::MAX)) as i32, dpi) + spacing_px
         > available
     {
@@ -2678,7 +3120,14 @@ fn fresh_tac_table_line_fit(
     }
     let mut fresh = para.clone();
     fresh.line_segs.clear();
-    reflow_line_segs(&mut fresh, inner_width_px, styles, dpi);
+    reflow_line_segs_with_squeeze(
+        &mut fresh,
+        inner_width_px,
+        styles,
+        dpi,
+        false,
+        known_horizontal,
+    );
     fresh.line_segs.len() == 1
 }
 
@@ -2687,11 +3136,19 @@ fn recompose_fresh_adjacent_tac_tables(
     inner_width_px: f64,
     styles: &ResolvedStyleSet,
     dpi: f64,
+    known_horizontal: bool,
 ) -> ComposedParagraph {
     let mut fresh = para.clone();
     fresh.line_segs.clear();
-    reflow_line_segs(&mut fresh, inner_width_px, styles, dpi);
-    let mut composed = compose_paragraph(&fresh);
+    reflow_line_segs_with_squeeze(
+        &mut fresh,
+        inner_width_px,
+        styles,
+        dpi,
+        false,
+        known_horizontal,
+    );
+    let mut composed = compose_paragraph_with_policy(&fresh, styles.font_metrics_policy);
     // 최초 compose의 폭 0/90% 분류 대신 실제 셀 폭에서 검증한 표들을 등록한다.
     let positions = find_render_inline_control_positions(&fresh);
     composed.tac_controls = fresh
@@ -2723,16 +3180,68 @@ pub fn recompose_for_cell_width_for_source(
     verified_tac_width: bool,
     dpi: f64,
 ) {
+    composed.numbering_known_horizontal = cell_text_direction == 0;
+    let fixed_reserve = crate::renderer::layout::fixed_bullet_head_reserve_px(
+        styles,
+        para,
+        dpi,
+        composed.numbering_known_horizontal,
+    )
+    .filter(|_| {
+        line_wrap != crate::model::table::CellLineWrap::Squeeze
+            && !styles
+                .para_styles
+                .get(para.para_shape_id as usize)
+                .is_some_and(|style| style.line_wrap_squeeze)
+    });
     if native_hwpx
         && verified_tac_width
         && cell_text_direction == 0
         && line_wrap == crate::model::table::CellLineWrap::Break
-        && fresh_adjacent_tac_tables_fit(para, cell_inner_width_px, styles, dpi)
+        && fresh_adjacent_tac_tables_fit(
+            para,
+            cell_inner_width_px,
+            styles,
+            dpi,
+            cell_text_direction == 0,
+        )
     {
-        *composed = recompose_fresh_adjacent_tac_tables(para, cell_inner_width_px, styles, dpi);
+        let mut fresh = recompose_fresh_adjacent_tac_tables(
+            para,
+            cell_inner_width_px,
+            styles,
+            dpi,
+            cell_text_direction == 0,
+        );
+        fresh.copy_numbering_from(composed);
+        *composed = fresh;
         return;
     }
-    if line_wrap == crate::model::table::CellLineWrap::Squeeze {
+    if let Some(reserve) = fixed_reserve {
+        if cell_inner_width_px <= 0.0 {
+            return;
+        }
+        let inner_width = styles
+            .para_styles
+            .get(para.para_shape_id as usize)
+            .map_or(cell_inner_width_px, |style| {
+                (cell_inner_width_px - style.margin_left - style.margin_right).max(1.0)
+            });
+        recompose_for_cell_width_impl_with_generated(
+            composed,
+            para,
+            inner_width,
+            styles,
+            0.0,
+            native_hwpx
+                && para.controls.iter().all(|control| {
+                    matches!(control, Control::ColumnDef(_) | Control::SectionDef(_))
+                }),
+            true,
+            Some(reserve),
+            1.0,
+        );
+    } else if line_wrap == crate::model::table::CellLineWrap::Squeeze {
         // 줄을 폭으로 나누지 않고 음수 자간 압축에 넘긴다. 명시 개행과 저장 줄은 보존한다.
         recompose_for_cell_width_impl_with_generated(
             composed,
@@ -2743,6 +3252,7 @@ pub fn recompose_for_cell_width_for_source(
             true,
             false,
             None,
+            0.0,
         );
     } else if native_hwpx {
         recompose_for_native_hwpx_cell_width(composed, para, cell_inner_width_px, styles);
@@ -2767,6 +3277,7 @@ fn recompose_for_cell_width_impl(
         false,
         true,
         None,
+        0.0,
     );
 }
 
@@ -2782,7 +3293,9 @@ fn recompose_for_cell_width_impl_with_generated(
     allow_generated_multiline: bool,
     wrap_at_width: bool,
     body_inner_width: Option<(f64, f64)>,
+    minimum_text_width_px: f64,
 ) {
+    select_literal_space_slots(composed, styles.font_metrics_policy);
     let wrap_at_width = wrap_at_width
         && !styles
             .para_styles
@@ -2844,8 +3357,11 @@ fn recompose_for_cell_width_impl_with_generated(
         .map(|ps| {
             if let Some((first_marker, cont_marker)) = body_inner_width {
                 (
-                    (cell_inner_width_px - ps.indent.max(0.0) - first_marker).max(0.0),
-                    (cell_inner_width_px - (-ps.indent).max(0.0) - cont_marker).max(0.0),
+                    // 셀의 고정 머리 경로만 편집 fill_lines와 같은 최소 전진 폭을 준다.
+                    (cell_inner_width_px - ps.indent.max(0.0) - first_marker)
+                        .max(minimum_text_width_px),
+                    (cell_inner_width_px - (-ps.indent).max(0.0) - cont_marker)
+                        .max(minimum_text_width_px),
                 )
             } else if ps.indent < 0.0 && !hwp3_legacy_bullet {
                 let continuation_left = ps.margin_left + ps.indent.abs();
@@ -2990,7 +3506,10 @@ fn recompose_for_cell_width_impl_with_generated(
                 .iter()
                 .all(|run| run.footnote_marker.is_none() && run.display_text.is_none())
         {
-            combined_line.runs = split_runs_by_lang(combined_line.runs);
+            combined_line.runs = select_literal_space_runs(
+                split_runs_by_lang(combined_line.runs),
+                styles.font_metrics_policy,
+            );
         }
         // 내어쓰기 첫 줄 폭은 문단의 첫 줄에만 적용 — \n 이후 그룹은 전부 연속 폭.
         let g_first = if gi == 0 { eff_first_px } else { eff_cont_px };
@@ -3003,7 +3522,7 @@ fn recompose_for_cell_width_impl_with_generated(
         let trailing_space_w: f64 = {
             let mut w = 0.0;
             'outer: for run in combined_line.runs.iter().rev() {
-                let ts = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
+                let ts = run.text_style(styles);
                 for ch in run.text.chars().rev() {
                     if ch == ' ' {
                         w += estimate_text_width(" ", &ts);
@@ -3168,7 +3687,7 @@ pub(crate) fn shrunk_cell_horizontal_padding(
         for line in &comp.lines {
             let mut w = 0.0;
             for run in &line.runs {
-                let mut ts = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
+                let mut ts = run.text_style(styles);
                 if run.char_overlap.is_some() {
                     let fs = if ts.font_size > 0.0 {
                         ts.font_size
@@ -3180,8 +3699,8 @@ pub(crate) fn shrunk_cell_horizontal_padding(
                     continue;
                 }
                 // 자연 폭 측정: 음수 자간을 제거하여 글리프가 서로 겹치지 않는 최소 폭을 얻음
-                if ts.letter_spacing < 0.0 && !stored_layout {
-                    ts.letter_spacing = 0.0;
+                if !stored_layout {
+                    ts.clamp_negative_tracking();
                 }
                 // [Task #555] PUA 옛한글 변환 후 자모 시퀀스 폭 사용.
                 // (estimate_text_width 는 ts.ratio 를 자체 반영함.)
@@ -3256,6 +3775,79 @@ fn is_hwp3_hwp5_missing_lineseg_legacy_bullet(
             })
 }
 
+/// 줄 분할 중인 원문 조각과 그 조각의 scalar 원점을 함께 보관한다.
+#[derive(Default)]
+struct WrapRunBuffer {
+    text: String,
+    origins: Vec<SpecialSpaceOrigin>,
+}
+
+impl WrapRunBuffer {
+    fn push(&mut self, text: &str, origins: &[SpecialSpaceOrigin]) {
+        if !origins.is_empty() {
+            let start = self.text.chars().count();
+            self.origins
+                .extend(origins.iter().map(|origin| SpecialSpaceOrigin {
+                    char_idx: start + origin.char_idx,
+                    origin: origin.origin,
+                }));
+        }
+        self.text.push_str(text);
+    }
+
+    fn pop_tail(&mut self, style: &TextStyle) -> Option<(char, TextStyle)> {
+        let ch = self.text.pop()?;
+        let start = self.text.chars().count();
+        let tail_style = style
+            .clone()
+            .with_origin_range(&self.origins, start, start + 1);
+        self.origins.retain(|origin| origin.char_idx < start);
+        Some((ch, tail_style))
+    }
+
+    fn flush(&mut self, runs: &mut Vec<ComposedTextRun>, template: &Option<ComposedTextRun>) {
+        if !self.text.is_empty() {
+            if let Some(t) = template {
+                runs.push(ComposedTextRun {
+                    special_space_origins: std::mem::take(&mut self.origins),
+                    text: std::mem::take(&mut self.text),
+                    char_style_id: t.char_style_id,
+                    lang_index: t.lang_index,
+                    char_overlap: t.char_overlap.clone(),
+                    footnote_marker: t.footnote_marker,
+                    display_text: None,
+                });
+            } else {
+                self.text.clear();
+                self.origins.clear();
+            }
+        }
+    }
+}
+
+/// 실제 원문 run의 마지막 scalar만 이월하며, 남은 원점도 함께 자른다.
+fn take_wrap_run_tail(run: &mut ComposedTextRun) -> Option<ComposedTextRun> {
+    if run.display_text.is_some() || run.footnote_marker.is_some() {
+        return None;
+    }
+    let end = run.text.chars().count();
+    let start = end.checked_sub(1)?;
+    let tail = run.slice_scalars(start, end);
+    let prefix_origins =
+        super::localize_special_space_origins(&run.special_space_origins, 0, start);
+    run.text.pop();
+    run.special_space_origins = prefix_origins;
+    Some(tail)
+}
+
+fn wrap_source_style(run: &ComposedTextRun, styles: &ResolvedStyleSet) -> TextStyle {
+    let mut style = run.text_style(styles);
+    if run.footnote_marker.is_some() {
+        style.special_space_origins.clear();
+    }
+    style
+}
+
 /// 단일 ComposedLine 을 셀 가용 너비에 맞춰 다중 ComposedLine 으로 분할.
 ///
 /// 분할 단위: 공백 단어 경계 우선, 단일 단어가 너비 초과 시 글자 단위 break.
@@ -3288,28 +3880,10 @@ fn split_composed_line_by_width(
     let mut hung = false;
     let mut current_char_start = src.char_start;
     let mut chars_in_line = 0usize;
-    let mut current_run_text = String::new();
+    let mut current_run = WrapRunBuffer::default();
     let mut current_run_template: Option<ComposedTextRun> = None;
     // 긴 어절의 글자 채움 상태는 합성 줄/언어/서식 run 경계를 지나서도 유지한다.
     let mut oversized_word_continuation = false;
-
-    let flush_run =
-        |runs: &mut Vec<ComposedTextRun>, text: &mut String, template: &Option<ComposedTextRun>| {
-            if !text.is_empty() {
-                if let Some(t) = template {
-                    runs.push(ComposedTextRun {
-                        text: std::mem::take(text),
-                        char_style_id: t.char_style_id,
-                        lang_index: t.lang_index,
-                        char_overlap: t.char_overlap.clone(),
-                        footnote_marker: t.footnote_marker,
-                        display_text: None,
-                    });
-                } else {
-                    text.clear();
-                }
-            }
-        };
 
     let push_line = |result: &mut Vec<ComposedLine>,
                      runs: &mut Vec<ComposedTextRun>,
@@ -3334,27 +3908,25 @@ fn split_composed_line_by_width(
     };
 
     for (run_index, run) in src.runs.iter().enumerate() {
-        let ts = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
+        let ts = wrap_source_style(run, styles);
         // 현재 run 의 template 변경 (char_style 다른 run 들 처리)
         if current_run_template
             .as_ref()
             .map(|t| t.char_style_id != run.char_style_id || t.lang_index != run.lang_index)
             .unwrap_or(true)
         {
-            flush_run(
-                &mut current_runs,
-                &mut current_run_text,
-                &current_run_template,
-            );
+            current_run.flush(&mut current_runs, &current_run_template);
             current_run_template = Some(run.clone());
         }
         // [#2169] 줄나눔 기준 '글자'(korean_break_unit==0) — 글자 단위 채움.
         // 한글은 이 모드에서 어절 경계 무시하고 줄을 채운다 (80168 r10:
         // "또/는", "필요/한" 글자 분리, 한글 5줄 vs 어절 래핑 6줄).
         if char_break {
-            for ch in run.text.chars() {
+            for (scalar_index, ch) in run.text.chars().enumerate() {
                 let ch_str: String = std::iter::once(ch).collect();
-                let ch_width = crate::renderer::layout::estimate_text_width_unrounded(&ch_str, &ts);
+                let ch_style = ts.slice_origins(scalar_index, scalar_index + 1);
+                let ch_width =
+                    crate::renderer::layout::estimate_text_width_unrounded(&ch_str, &ch_style);
                 if std::env::var("RHWP_RAZOR").is_ok()
                     && src.runs.iter().any(|r| r.text.contains("도조례로 정하는"))
                 {
@@ -3378,33 +3950,36 @@ fn split_composed_line_by_width(
                     // [#2244] 행두 금칙: 새 줄이 금칙 문자(마침표 등)로 시작하지
                     // 않도록 직전 글자를 함께 다음 줄로 이월한다 — 한컴 2024 저장
                     // 오라클 정합 ("적용한 | 다.111…", LINE_SEG [...,128]).
-                    // 직전 글자가 같은 run 안에 있고(스타일 경계 아님) 공백이
+                    // 직전 글자가 아직 flush하지 않은 같은 스타일 버퍼에 있고 공백이
                     // 아니며 줄에 2자 이상 남을 때만 1자 retraction.
-                    let carried: Option<(char, f64)> = if is_line_start_forbidden(ch)
-                        && chars_in_line > 1
-                        && current_run_text
-                            .chars()
-                            .last()
-                            .is_some_and(|p| p != ' ' && !is_line_start_forbidden(p))
-                    {
-                        current_run_text.pop().map(|prev| {
-                            let prev_str: String = std::iter::once(prev).collect();
-                            let prev_w = crate::renderer::layout::estimate_text_width_unrounded(
-                                &prev_str, &ts,
-                            );
-                            current_width -= prev_w;
-                            chars_in_line -= 1;
-                            (prev, prev_w)
-                        })
-                    } else {
-                        None
-                    };
+                    let carried: Option<(char, f64, Vec<SpecialSpaceOrigin>)> =
+                        if is_line_start_forbidden(ch)
+                            && chars_in_line > 1
+                            && current_run
+                                .text
+                                .chars()
+                                .last()
+                                .is_some_and(|p| p != ' ' && !is_line_start_forbidden(p))
+                        {
+                            current_run.pop_tail(&ts).map(|(prev, prev_style)| {
+                                let prev_str: String = std::iter::once(prev).collect();
+                                let prev_w = crate::renderer::layout::estimate_text_width_unrounded(
+                                    &prev_str,
+                                    &prev_style,
+                                );
+                                current_width -= prev_w;
+                                chars_in_line -= 1;
+                                (prev, prev_w, prev_style.special_space_origins)
+                            })
+                        } else {
+                            None
+                        };
                     // 직전 글자가 앞 run(언어/글자 모양 경계 — `것은` 뒤 라틴 `?`)에
                     // 있어도 행두 금칙은 같다. 그 글자를 제 run 그대로 이월한다.
                     let carried_run: Option<(ComposedTextRun, f64)> = if carried.is_none()
                         && is_line_start_forbidden(ch)
                         && chars_in_line > 1
-                        && current_run_text.is_empty()
+                        && current_run.text.is_empty()
                     {
                         current_runs.last_mut().and_then(|prev_run| {
                             let prev = prev_run.text.chars().last()?;
@@ -3415,18 +3990,21 @@ fn split_composed_line_by_width(
                             {
                                 return None;
                             }
-                            prev_run.text.pop();
+                            let moved = take_wrap_run_tail(prev_run)?;
                             let prev_ts = resolved_to_text_style(
                                 styles,
                                 prev_run.char_style_id,
                                 prev_run.lang_index,
+                            )
+                            .with_origin_range(
+                                &moved.special_space_origins,
+                                0,
+                                1,
                             );
                             let prev_w = crate::renderer::layout::estimate_text_width_unrounded(
                                 &prev.to_string(),
                                 &prev_ts,
                             );
-                            let mut moved = prev_run.clone();
-                            moved.text = prev.to_string();
                             Some((moved, prev_w))
                         })
                     } else {
@@ -3439,11 +4017,7 @@ fn split_composed_line_by_width(
                             current_runs.pop();
                         }
                     }
-                    flush_run(
-                        &mut current_runs,
-                        &mut current_run_text,
-                        &current_run_template,
-                    );
+                    current_run.flush(&mut current_runs, &current_run_template);
                     push_line(
                         &mut result,
                         &mut current_runs,
@@ -3453,8 +4027,8 @@ fn split_composed_line_by_width(
                     );
                     space_w = 0.0;
                     hung = false;
-                    if let Some((pch, pw)) = carried {
-                        current_run_text.push(pch);
+                    if let Some((pch, pw, origins)) = carried {
+                        current_run.push(&pch.to_string(), &origins);
                         current_width += pw;
                         chars_in_line += 1;
                     }
@@ -3464,7 +4038,7 @@ fn split_composed_line_by_width(
                         chars_in_line += 1;
                     }
                 }
-                current_run_text.push(ch);
+                current_run.push(&ch_str, &ch_style.special_space_origins);
                 current_width += ch_width;
                 if ch == ' ' {
                     space_w += ch_width;
@@ -3475,11 +4049,17 @@ fn split_composed_line_by_width(
         }
         // run 텍스트를 단어 단위로 분할 (공백 포함)
         let mut word = String::new();
-        for ch in run.text.chars() {
+        let mut word_start = 0;
+        for (scalar_index, ch) in run.text.chars().enumerate() {
+            if word.is_empty() {
+                word_start = scalar_index;
+            }
             word.push(ch);
             // 공백 또는 마지막 글자 직전이 단어 경계
             if ch == ' ' || ch == '\t' {
-                let word_width = crate::renderer::layout::estimate_text_width_unrounded(&word, &ts);
+                let word_style = ts.slice_origins(word_start, scalar_index + 1);
+                let word_width =
+                    crate::renderer::layout::estimate_text_width_unrounded(&word, &word_style);
                 // 줄 끝 빈칸은 다음 어절 앞까지 진행폭에 남기되 줄 채움에서는 제외한다.
                 let terminal_space = if native_word_flow && ch == ' ' {
                     crate::renderer::layout::estimate_text_width_unrounded(" ", &ts)
@@ -3490,14 +4070,10 @@ fn split_composed_line_by_width(
                 // 현재 단어가 추가되면 max_width 초과하는지 검사
                 if !oversized_word_continuation
                     && current_width - space_w * space_condense + fitting_width > limit(&result)
-                    && (chars_in_line > 0 || !current_run_text.is_empty())
+                    && (chars_in_line > 0 || !current_run.text.is_empty())
                 {
                     // 현재 줄을 flush 후 새 줄 시작
-                    flush_run(
-                        &mut current_runs,
-                        &mut current_run_text,
-                        &current_run_template,
-                    );
+                    current_run.flush(&mut current_runs, &current_run_template);
                     push_line(
                         &mut result,
                         &mut current_runs,
@@ -3512,20 +4088,18 @@ fn split_composed_line_by_width(
                 if oversized_word_continuation
                     || (fitting_width > limit(&result) && current_width == 0.0)
                 {
-                    for wch in word.chars() {
+                    for (word_index, wch) in word.chars().enumerate() {
                         let wch_str: String = std::iter::once(wch).collect();
-                        let wch_width =
-                            crate::renderer::layout::estimate_text_width_unrounded(&wch_str, &ts);
+                        let wch_style = word_style.slice_origins(word_index, word_index + 1);
+                        let wch_width = crate::renderer::layout::estimate_text_width_unrounded(
+                            &wch_str, &wch_style,
+                        );
                         if current_width - space_w * space_condense + wch_width > limit(&result)
                             && chars_in_line > 0
                             // 어절 맞춤에서 뺀 마지막 공백은 글자 채움에서도 직전 줄에 둔다.
                             && !(native_word_flow && wch == ' ')
                         {
-                            flush_run(
-                                &mut current_runs,
-                                &mut current_run_text,
-                                &current_run_template,
-                            );
+                            current_run.flush(&mut current_runs, &current_run_template);
                             push_line(
                                 &mut result,
                                 &mut current_runs,
@@ -3536,7 +4110,7 @@ fn split_composed_line_by_width(
                             space_w = 0.0;
                             hung = false;
                         }
-                        current_run_text.push(wch);
+                        current_run.push(&wch_str, &wch_style.special_space_origins);
                         current_width += wch_width;
                         if native_word_flow && wch == ' ' {
                             space_w += wch_width;
@@ -3544,7 +4118,7 @@ fn split_composed_line_by_width(
                         chars_in_line += 1;
                     }
                 } else {
-                    current_run_text.push_str(&word);
+                    current_run.push(&word, &word_style.special_space_origins);
                     current_width += word_width;
                     space_w += crate::renderer::layout::estimate_text_width_unrounded(" ", &ts)
                         * word.matches(' ').count() as f64;
@@ -3556,7 +4130,9 @@ fn split_composed_line_by_width(
         }
         // run 끝에 남은 단어 처리
         if !word.is_empty() {
-            let word_width = crate::renderer::layout::estimate_text_width_unrounded(&word, &ts);
+            let word_style = ts.slice_origins(word_start, run.text.chars().count());
+            let word_width =
+                crate::renderer::layout::estimate_text_width_unrounded(&word, &word_style);
             // 글자모양/언어 run 경계는 어절 경계가 아니다. 다음 run의 같은 어절까지
             // 함께 들어갈 때만 현재 줄에 둔다. run 자체와 문자 위치는 그대로 보존한다.
             let mut continuation_width = 0.0;
@@ -3568,7 +4144,7 @@ fn split_composed_line_by_width(
                         .take_while(|c| *c != ' ' && *c != '\t')
                         .collect();
                     let next_style =
-                        resolved_to_text_style(styles, next.char_style_id, next.lang_index);
+                        wrap_source_style(next, styles).slice_origins(0, prefix.chars().count());
                     continuation_width += crate::renderer::layout::estimate_text_width_unrounded(
                         &prefix,
                         &next_style,
@@ -3581,13 +4157,9 @@ fn split_composed_line_by_width(
             if !oversized_word_continuation
                 && current_width - space_w * space_condense + word_width + continuation_width
                     > limit(&result)
-                && (chars_in_line > 0 || !current_run_text.is_empty())
+                && (chars_in_line > 0 || !current_run.text.is_empty())
             {
-                flush_run(
-                    &mut current_runs,
-                    &mut current_run_text,
-                    &current_run_template,
-                );
+                current_run.flush(&mut current_runs, &current_run_template);
                 push_line(
                     &mut result,
                     &mut current_runs,
@@ -3602,18 +4174,27 @@ fn split_composed_line_by_width(
             let fill_oversized_word = oversized_word_continuation
                 || (native_word_flow && word_width + continuation_width > limit(&result));
             if fill_oversized_word || (word_width > limit(&result) && current_width == 0.0) {
-                for wch in word.chars() {
+                for (word_index, wch) in word.chars().enumerate() {
                     let wch_str: String = std::iter::once(wch).collect();
-                    let wch_width =
-                        crate::renderer::layout::estimate_text_width_unrounded(&wch_str, &ts);
-                    if current_width - space_w * space_condense + wch_width > limit(&result)
+                    let wch_style = word_style.slice_origins(word_index, word_index + 1);
+                    let wch_width = crate::renderer::layout::estimate_text_width_unrounded(
+                        &wch_str, &wch_style,
+                    );
+                    // 합성 어절의 행미 판정만 음수 자간을 복원하고 누적 진행폭은 유지한다.
+                    let wch_fit_width = if native_word_flow {
+                        let mut line_end_style = wch_style.clone();
+                        line_end_style.clamp_negative_tracking();
+                        crate::renderer::layout::estimate_text_width_unrounded(
+                            &wch_str,
+                            &line_end_style,
+                        )
+                    } else {
+                        wch_width
+                    };
+                    if current_width - space_w * space_condense + wch_fit_width > limit(&result)
                         && chars_in_line > 0
                     {
-                        flush_run(
-                            &mut current_runs,
-                            &mut current_run_text,
-                            &current_run_template,
-                        );
+                        current_run.flush(&mut current_runs, &current_run_template);
                         push_line(
                             &mut result,
                             &mut current_runs,
@@ -3624,12 +4205,12 @@ fn split_composed_line_by_width(
                         space_w = 0.0;
                         hung = false;
                     }
-                    current_run_text.push(wch);
+                    current_run.push(&wch_str, &wch_style.special_space_origins);
                     current_width += wch_width;
                     chars_in_line += 1;
                 }
             } else {
-                current_run_text.push_str(&word);
+                current_run.push(&word, &word_style.special_space_origins);
                 current_width += word_width;
                 chars_in_line += word.chars().count();
             }
@@ -3637,11 +4218,7 @@ fn split_composed_line_by_width(
         }
     }
     // 마지막 줄 flush
-    flush_run(
-        &mut current_runs,
-        &mut current_run_text,
-        &current_run_template,
-    );
+    current_run.flush(&mut current_runs, &current_run_template);
     push_line(
         &mut result,
         &mut current_runs,
@@ -3656,7 +4233,579 @@ fn split_composed_line_by_width(
         // 안전장치: 절대 빈 결과 반환하지 않음
         result.push(src.clone());
     }
+    bind_wrapped_origins(src, &mut result);
     result
+}
+
+#[cfg(test)]
+mod wrap_transient_special_space_origin_tests {
+    #[cfg(test)]
+    mod trailing_word_tracking_tests {
+        use super::super::*;
+        use crate::model::paragraph::SpecialSpaceOriginKind;
+        use crate::model::provenance::FontMetricsPolicy;
+        use crate::renderer::style_resolver::ResolvedCharStyle;
+        use crate::renderer::ControlSpaceBase;
+
+        fn styles(
+            policy: FontMetricsPolicy,
+            size: f64,
+            ratio: f64,
+            spacing: f64,
+        ) -> ResolvedStyleSet {
+            ResolvedStyleSet {
+                font_metrics_policy: policy,
+                char_styles: vec![
+                    ResolvedCharStyle {
+                        font_metrics_policy: policy,
+                        font_family: "RHWP unregistered wrap test face".into(),
+                        font_families: vec!["RHWP unregistered wrap test face".into(); 7],
+                        font_size: size,
+                        kerning: false,
+                        ratio,
+                        ratios: vec![ratio; 7],
+                        letter_spacing: spacing,
+                        letter_spacings: vec![spacing; 7],
+                        ..Default::default()
+                    };
+                    2
+                ],
+                ..Default::default()
+            }
+        }
+
+        fn run(text: &str, style: u32, lang: usize) -> ComposedTextRun {
+            ComposedTextRun {
+                text: text.into(),
+                char_style_id: style,
+                lang_index: lang,
+                ..Default::default()
+            }
+        }
+
+        fn line(runs: Vec<ComposedTextRun>) -> ComposedLine {
+            ComposedLine {
+                runs,
+                char_start: 17,
+                line_height: 1400,
+                baseline_distance: 1100,
+                segment_width: 30_000,
+                column_start: 25,
+                line_spacing: 240,
+                has_line_break: false,
+            }
+        }
+
+        fn scalar_widths(run: &ComposedTextRun, styles: &ResolvedStyleSet) -> (f64, f64) {
+            let text: String = run.text.chars().take(1).collect();
+            let style = wrap_source_style(run, styles).slice_origins(0, 1);
+            let tracked = crate::renderer::layout::estimate_text_width_unrounded(&text, &style);
+            let mut untracked_style = style;
+            untracked_style.zero_tracking();
+            let untracked =
+                crate::renderer::layout::estimate_text_width_unrounded(&text, &untracked_style);
+            assert!(tracked.is_finite() && tracked > 0.0 && untracked.is_finite());
+            (tracked, untracked)
+        }
+
+        fn assert_lines(source: &ComposedLine, output: &[ComposedLine], expected: &[String]) {
+            assert_eq!(output.len(), expected.len());
+            let mut start = source.char_start;
+            for (line, text) in output.iter().zip(expected) {
+                assert_eq!(line.char_start, start);
+                assert_eq!(
+                    line.runs
+                        .iter()
+                        .map(|r| r.text.as_str())
+                        .collect::<String>(),
+                    *text
+                );
+                assert_eq!(
+                    (
+                        line.line_height,
+                        line.baseline_distance,
+                        line.segment_width,
+                        line.column_start,
+                        line.line_spacing
+                    ),
+                    (
+                        source.line_height,
+                        source.baseline_distance,
+                        source.segment_width,
+                        source.column_start,
+                        source.line_spacing
+                    )
+                );
+                start += text.chars().count();
+            }
+            let slots = |runs: &[ComposedTextRun]| {
+                runs.iter()
+                    .flat_map(|run| {
+                        run.text.chars().enumerate().map(move |(index, ch)| {
+                            (
+                                ch,
+                                run.char_style_id,
+                                run.lang_index,
+                                run.special_space_origins
+                                    .iter()
+                                    .find(|origin| origin.char_idx == index)
+                                    .map(|origin| origin.origin),
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let flattened: Vec<_> = output.iter().flat_map(|line| line.runs.clone()).collect();
+            assert_eq!(slots(&flattened), slots(&source.runs));
+        }
+
+        #[test]
+        fn trailing_word_terminal_fit_uses_candidate_metric() {
+            for policy in [
+                FontMetricsPolicy::HcrDeclared,
+                FontMetricsPolicy::HancomWindows,
+            ] {
+                for glyph in ["i", "W"] {
+                    for size in [12.0, 24.0] {
+                        for ratio in [0.8, 1.2] {
+                            let styles = styles(policy, size, ratio, -size * 0.1);
+                            let source = line(vec![run(&glyph.repeat(5), 0, 1)]);
+                            let (tracked, untracked) = scalar_widths(&source.runs[0], &styles);
+                            let delta = untracked - tracked;
+                            assert!(delta > 0.0 && tracked > 2.0 * delta);
+                            // 실제 metric으로 셋째 글자의 행미 경계 양쪽과 정확한 경계를 만든다.
+                            let boundary = (tracked + tracked) + untracked;
+                            for (width, counts) in [
+                                (boundary - delta / 2.0, vec![2, 2, 1]),
+                                (boundary, vec![3, 2]),
+                                (boundary + delta / 2.0, vec![3, 2]),
+                            ] {
+                                let output = split_composed_line_by_width(
+                                    &source, width, width, &styles, false, 0.0, true,
+                                );
+                                let expected: Vec<_> =
+                                    counts.into_iter().map(|n| glyph.repeat(n)).collect();
+                                assert_lines(&source, &output, &expected);
+                            }
+                            // 첫 줄/연속 줄 폭 선택과 빈 줄의 단일 초과 글자 허용은 그대로다.
+                            let first = boundary - delta / 2.0;
+                            let continuation = tracked + untracked - delta / 2.0;
+                            let output = split_composed_line_by_width(
+                                &source,
+                                first,
+                                continuation,
+                                &styles,
+                                false,
+                                0.0,
+                                true,
+                            );
+                            assert_lines(
+                                &source,
+                                &output,
+                                &[glyph.repeat(2), glyph.into(), glyph.into(), glyph.into()],
+                            );
+                            let single = line(vec![run(glyph, 0, 1)]);
+                            let output = split_composed_line_by_width(
+                                &single,
+                                tracked / 2.0,
+                                tracked / 2.0,
+                                &styles,
+                                false,
+                                0.0,
+                                true,
+                            );
+                            assert_lines(&single, &output, &[glyph.into()]);
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn trailing_word_tracking_survives_run_boundaries() {
+            let mut styles = styles(FontMetricsPolicy::HcrDeclared, 16.0, 1.0, -1.6);
+            for split in [1, 2, 3] {
+                let source = line(vec![
+                    run(&"W".repeat(split), 0, 1),
+                    run(&"W".repeat(5 - split), 1, 5),
+                ]);
+                let (tracked, untracked) = scalar_widths(&source.runs[0], &styles);
+                let width = (tracked + tracked) + untracked - (untracked - tracked) / 2.0;
+                let output =
+                    split_composed_line_by_width(&source, width, width, &styles, false, 0.0, true);
+                assert_lines(&source, &output, &["WW".into(), "WW".into(), "W".into()]);
+            }
+            // 현재 후보 run의 다른 크기·장평·자간을 써야 앞 run의 경계에 맞는다.
+            styles.char_styles[1].font_size = 24.0;
+            styles.char_styles[1].ratio = 0.8;
+            styles.char_styles[1].ratios = vec![0.8; 7];
+            styles.char_styles[1].letter_spacing = -2.4;
+            styles.char_styles[1].letter_spacings = vec![-2.4; 7];
+            let source = line(vec![run("WW", 0, 1), run("WWW", 1, 5)]);
+            let (first, _) = scalar_widths(&source.runs[0], &styles);
+            let (tracked, untracked) = scalar_widths(&source.runs[1], &styles);
+            let delta = untracked - tracked;
+            assert!(delta > 0.0 && tracked > 2.0 * delta);
+            let width = first + first + tracked + delta / 2.0;
+            let cont = (tracked + tracked) + untracked - delta / 2.0;
+            let output =
+                split_composed_line_by_width(&source, width, cont, &styles, false, 0.0, true);
+            assert_lines(&source, &output, &["WW".into(), "WW".into(), "W".into()]);
+        }
+
+        #[test]
+        fn trailing_word_raw31_tracking_preserves_origins() {
+            for dpi in [96.0, 144.0] {
+                for percent in [-20, 0, 20] {
+                    let mut styles = styles(FontMetricsPolicy::HcrDeclared, 16.0, 1.0, -0.8);
+                    styles.char_styles[0].control_space_dpi = dpi;
+                    styles.char_styles[0].control_space_base = Some(ControlSpaceBase {
+                        height_hu: 1200,
+                        korean_relative_size: 100,
+                        korean_ratio: 100,
+                        raw31_eng_tracking_percent: Some(percent),
+                    });
+                    let mut source_run = run(&"\u{2007}".repeat(5), 0, 1);
+                    source_run.special_space_origins = (0..5)
+                        .map(|char_idx| SpecialSpaceOrigin {
+                            char_idx,
+                            origin: SpecialSpaceOriginKind::FwSpace,
+                        })
+                        .collect();
+                    let source = line(vec![source_run]);
+                    let (tracked, untracked) = scalar_widths(&source.runs[0], &styles);
+                    let (width, counts) = if percent < 0 {
+                        assert!(untracked > tracked);
+                        (
+                            (tracked + tracked) + untracked - (untracked - tracked) / 2.0,
+                            vec![2, 2, 1],
+                        )
+                    } else {
+                        (tracked * 3.25, vec![3, 2])
+                    };
+                    let output = split_composed_line_by_width(
+                        &source, width, width, &styles, false, 0.0, true,
+                    );
+                    let expected: Vec<_> =
+                        counts.into_iter().map(|n| "\u{2007}".repeat(n)).collect();
+                    assert_lines(&source, &output, &expected);
+                }
+            }
+        }
+
+        #[test]
+        fn trailing_word_legacy_routes_and_signed_tracking_stay_bounded() {
+            for policy in [
+                FontMetricsPolicy::HcrDeclared,
+                FontMetricsPolicy::HancomWindows,
+            ] {
+                for spacing in [0.0, 1.6] {
+                    let styles = styles(policy, 16.0, 1.0, spacing);
+                    let source = line(vec![run("WWWWW", 0, 1)]);
+                    let (tracked, _) = scalar_widths(&source.runs[0], &styles);
+                    let output = split_composed_line_by_width(
+                        &source,
+                        tracked * 3.25,
+                        tracked * 3.25,
+                        &styles,
+                        false,
+                        0.0,
+                        true,
+                    );
+                    assert_lines(&source, &output, &["WWW".into(), "WW".into()]);
+                }
+                let styles = styles(policy, 16.0, 1.0, -1.6);
+                let source = line(vec![run("WWWWW", 0, 1)]);
+                let (tracked, untracked) = scalar_widths(&source.runs[0], &styles);
+                let width = (tracked + tracked) + untracked - (untracked - tracked) / 2.0;
+                for (char_break, native_word_flow) in [(false, false), (true, true)] {
+                    let output = split_composed_line_by_width(
+                        &source,
+                        width,
+                        width,
+                        &styles,
+                        char_break,
+                        0.0,
+                        native_word_flow,
+                    );
+                    assert_lines(&source, &output, &["WWW".into(), "WW".into()]);
+                }
+                let source = line(vec![run("WWWWW ", 0, 1)]);
+                for condense in [0.0, 0.2] {
+                    let output = split_composed_line_by_width(
+                        &source, width, width, &styles, false, condense, true,
+                    );
+                    assert_lines(&source, &output, &["WWW".into(), "WW ".into()]);
+                }
+            }
+        }
+    }
+
+    use super::*;
+    use crate::model::paragraph::SpecialSpaceOriginKind;
+    use crate::renderer::style_resolver::ResolvedCharStyle;
+
+    fn origins(entries: &[(usize, SpecialSpaceOriginKind)]) -> Vec<SpecialSpaceOrigin> {
+        entries
+            .iter()
+            .map(|&(char_idx, origin)| SpecialSpaceOrigin { char_idx, origin })
+            .collect()
+    }
+
+    fn run(text: &str, entries: &[(usize, SpecialSpaceOriginKind)]) -> ComposedTextRun {
+        ComposedTextRun {
+            text: text.into(),
+            special_space_origins: origins(entries),
+            ..Default::default()
+        }
+    }
+
+    fn styles() -> ResolvedStyleSet {
+        ResolvedStyleSet {
+            char_styles: vec![
+                ResolvedCharStyle {
+                    font_size: 12.0,
+                    ..Default::default()
+                };
+                2
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn wrap_buffer_flush_preserves_origins_across_same_style_inputs() {
+        use SpecialSpaceOriginKind::{FwSpace, Literal, NbSpace};
+
+        let styles = styles();
+        let first = run("😀\u{00a0}", &[(1, NbSpace)]);
+        let second = run("\u{2007}\u{2007}\u{00a0}", &[(0, FwSpace), (1, Literal)]);
+        let mut buffer = WrapRunBuffer::default();
+        for source in [&first, &second] {
+            let style = wrap_source_style(source, &styles);
+            buffer.push(&source.text, &style.special_space_origins);
+        }
+        let mut flushed = Vec::new();
+        buffer.flush(&mut flushed, &Some(first));
+        assert_eq!(flushed.len(), 1);
+        assert_eq!(flushed[0].text, "😀\u{00a0}\u{2007}\u{2007}\u{00a0}");
+        assert_eq!(
+            flushed[0].special_space_origins,
+            origins(&[(1, NbSpace), (2, FwSpace), (3, Literal)]),
+        );
+        assert!(buffer.text.is_empty());
+        assert!(buffer.origins.is_empty());
+    }
+
+    #[test]
+    fn wrap_buffer_tail_uses_buffered_origin_at_new_input_scalar_zero() {
+        use SpecialSpaceOriginKind::{FwSpace, Literal, NbSpace};
+
+        let styles = styles();
+        let next_style = wrap_source_style(&run("?", &[]), &styles);
+        assert!(next_style.special_space_origins.is_empty());
+        for (ch, origin) in [
+            ('\u{00a0}', Some(NbSpace)),
+            ('\u{00a0}', Some(Literal)),
+            ('\u{2007}', Some(FwSpace)),
+            ('\u{2007}', None),
+        ] {
+            let entries: Vec<_> = origin.into_iter().map(|kind| (1, kind)).collect();
+            let source = run(&format!("😀{ch}"), &entries);
+            let source_style = wrap_source_style(&source, &styles);
+            let mut buffer = WrapRunBuffer::default();
+            buffer.push(&source.text, &source_style.special_space_origins);
+            let (removed, tail_style) = buffer.pop_tail(&next_style).unwrap();
+            assert_eq!(removed, ch);
+            assert_eq!(buffer.text, "😀");
+            assert!(buffer.origins.is_empty());
+            let expected: Vec<_> = origin.into_iter().map(|kind| (0, kind)).collect();
+            assert_eq!(tail_style.special_space_origins, origins(&expected));
+            let base = |style: &TextStyle| {
+                style
+                    .control_space_base
+                    .map(|raw| (raw.height_hu, raw.korean_relative_size, raw.korean_ratio))
+            };
+            assert_eq!(base(&tail_style), base(&next_style));
+            assert_eq!(
+                serde_json::to_value(&tail_style).unwrap(),
+                serde_json::to_value(&next_style).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_flushed_tail_localizes_prefix_and_moved_fragment_before_rebinding() {
+        use SpecialSpaceOriginKind::{FwSpace, NbSpace};
+
+        let styles = styles();
+        let mut source = run("😀\u{00a0}\u{2007}", &[(1, NbSpace), (2, FwSpace)]);
+        source.char_style_id = 1;
+        source.lang_index = 1;
+        let style = wrap_source_style(&source, &styles);
+        let mut buffer = WrapRunBuffer::default();
+        buffer.push(&source.text, &style.special_space_origins);
+        let mut flushed = Vec::new();
+        buffer.flush(&mut flushed, &Some(source));
+        let prefix = flushed.last_mut().unwrap();
+        let moved = take_wrap_run_tail(prefix).unwrap();
+        assert_eq!(prefix.text, "😀\u{00a0}");
+        assert_eq!(prefix.special_space_origins, origins(&[(1, NbSpace)]));
+        assert_eq!(moved.text, "\u{2007}");
+        assert_eq!(moved.special_space_origins, origins(&[(0, FwSpace)]));
+        assert_eq!(moved.char_style_id, prefix.char_style_id);
+        assert_eq!(moved.lang_index, prefix.lang_index);
+        let original_style =
+            resolved_to_text_style(&styles, prefix.char_style_id, prefix.lang_index);
+        let tail_style =
+            original_style
+                .clone()
+                .with_origin_range(&moved.special_space_origins, 0, 1);
+        assert_eq!(tail_style.special_space_origins, origins(&[(0, FwSpace)]));
+        assert_eq!(
+            serde_json::to_value(&tail_style).unwrap(),
+            serde_json::to_value(&original_style).unwrap(),
+        );
+    }
+
+    #[test]
+    fn wrap_transient_origins_exclude_changed_display_and_synthetic_inputs() {
+        use SpecialSpaceOriginKind::{FwSpace, Literal, NbSpace};
+
+        let styles = styles();
+        let first = run("\u{00a0}", &[(0, NbSpace)]);
+        let mut changed = run("\u{2007}", &[(0, FwSpace)]);
+        changed.display_text = Some("wide".into());
+        let mut synthetic = run("\u{00a0}", &[(0, NbSpace)]);
+        synthetic.footnote_marker = Some(1);
+        let last = run("\u{2007}", &[(0, Literal)]);
+        let mut buffer = WrapRunBuffer::default();
+        for source in [&first, &changed, &synthetic, &last] {
+            let style = wrap_source_style(source, &styles);
+            buffer.push(&source.text, &style.special_space_origins);
+        }
+        let mut flushed = Vec::new();
+        buffer.flush(&mut flushed, &Some(first));
+        assert_eq!(flushed[0].text, "\u{00a0}\u{2007}\u{00a0}\u{2007}");
+        assert_eq!(
+            flushed[0].special_space_origins,
+            origins(&[(0, NbSpace), (3, Literal)]),
+        );
+        for source in [&mut changed, &mut synthetic] {
+            let original = source.clone();
+            assert!(take_wrap_run_tail(source).is_none());
+            assert_eq!(source.text, original.text);
+            assert_eq!(source.special_space_origins, original.special_space_origins);
+        }
+        let mut identical = run("\u{2007}", &[(0, FwSpace)]);
+        identical.display_text = Some(identical.text.clone());
+        assert_eq!(
+            wrap_source_style(&identical, &styles).special_space_origins,
+            identical.special_space_origins,
+        );
+    }
+
+    #[test]
+    fn cross_run_wrap_keeps_existing_text_offsets_and_widths_with_provider_inactive() {
+        use SpecialSpaceOriginKind::NbSpace;
+
+        let styles = styles();
+        for next_shape in [0, 1] {
+            let first = run("AA\u{00a0}", &[(2, NbSpace)]);
+            let mut next = run("?", &[]);
+            next.char_style_id = next_shape;
+            let first_style = wrap_source_style(&first, &styles);
+            let first_width: f64 = first
+                .text
+                .chars()
+                .enumerate()
+                .map(|(index, ch)| {
+                    crate::renderer::layout::estimate_text_width_unrounded(
+                        &ch.to_string(),
+                        &first_style.slice_origins(index, index + 1),
+                    )
+                })
+                .sum();
+            let next_width = crate::renderer::layout::estimate_text_width_unrounded(
+                &next.text,
+                &wrap_source_style(&next, &styles),
+            );
+            assert!(next_width.is_finite() && next_width > 0.0);
+            let first_limit = first_width + next_width / 2.0;
+            let cont_limit = first_width + next_width;
+            let source = ComposedLine {
+                runs: vec![first, next],
+                line_height: 1_200,
+                baseline_distance: 1_000,
+                segment_width: 40_000,
+                column_start: 0,
+                line_spacing: 200,
+                has_line_break: false,
+                char_start: 11,
+            };
+            let snapshot = |line: &ComposedLine, char_break| {
+                split_composed_line_by_width(
+                    line,
+                    first_limit,
+                    cont_limit,
+                    &styles,
+                    char_break,
+                    0.0,
+                    false,
+                )
+            };
+            let wrapped = snapshot(&source, true);
+            assert_eq!(wrapped.len(), 2);
+            assert_eq!(
+                wrapped[0]
+                    .runs
+                    .iter()
+                    .map(|run| run.text.as_str())
+                    .collect::<String>(),
+                "AA",
+            );
+            assert_eq!(
+                wrapped[1]
+                    .runs
+                    .iter()
+                    .map(|run| run.text.as_str())
+                    .collect::<String>(),
+                "\u{00a0}?",
+            );
+            assert_eq!(wrapped[0].char_start, 11);
+            assert_eq!(wrapped[1].char_start, 13);
+            let mut unknown = source.clone();
+            for run in &mut unknown.runs {
+                run.special_space_origins.clear();
+            }
+            let geometry = |lines: Vec<ComposedLine>| {
+                lines
+                    .iter()
+                    .map(|line| {
+                        (
+                            line.char_start,
+                            line.line_height,
+                            line.baseline_distance,
+                            line.line_spacing,
+                            line.segment_width,
+                            line.column_start,
+                            line.runs
+                                .iter()
+                                .map(|run| run.text.as_str())
+                                .collect::<String>(),
+                            estimate_composed_line_width(line, &styles).to_bits(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for char_break in [true, false] {
+                assert_eq!(
+                    geometry(snapshot(&source, char_break)),
+                    geometry(snapshot(&unknown, char_break)),
+                );
+            }
+        }
+    }
 }
 
 /// [Task #555] 폰트 매트릭스 (글자폭/줄간격) 계산용 effective text 반환.
@@ -3931,6 +5080,7 @@ pub fn pua_to_display_text(ch: char) -> Option<String> {
 ///   실제 표시 문자열(PUA → "1", "10" 등) 변환은 draw_char_overlap()에서 수행한다.
 fn convert_pua_enclosed_numbers(composed: &mut ComposedParagraph) {
     for line in composed.lines.iter_mut() {
+        let origin_source = line.clone();
         let mut new_runs: Vec<ComposedTextRun> = Vec::new();
         let mut changed = false;
 
@@ -3959,6 +5109,7 @@ fn convert_pua_enclosed_numbers(composed: &mut ComposedParagraph) {
                     // buf에 쌓인 일반 텍스트를 먼저 런으로 추가
                     if !buf.is_empty() {
                         new_runs.push(ComposedTextRun {
+                            special_space_origins: Vec::new(),
                             text: buf.clone(),
                             char_style_id: run.char_style_id,
                             lang_index: run.lang_index,
@@ -3970,6 +5121,7 @@ fn convert_pua_enclosed_numbers(composed: &mut ComposedParagraph) {
                     }
                     // PUA 문자 그대로 유지 + CharOverlapInfo 부착
                     new_runs.push(ComposedTextRun {
+                        special_space_origins: Vec::new(),
                         text: ch.to_string(),
                         char_style_id: run.char_style_id,
                         lang_index: run.lang_index,
@@ -3988,6 +5140,7 @@ fn convert_pua_enclosed_numbers(composed: &mut ComposedParagraph) {
             // 남은 일반 텍스트
             if !buf.is_empty() {
                 new_runs.push(ComposedTextRun {
+                    special_space_origins: Vec::new(),
                     text: buf,
                     char_style_id: run.char_style_id,
                     lang_index: run.lang_index,
@@ -4000,7 +5153,488 @@ fn convert_pua_enclosed_numbers(composed: &mut ComposedParagraph) {
 
         if changed {
             line.runs = new_runs;
+            bind_wrapped_origins(&origin_source, std::slice::from_mut(line));
         }
+    }
+}
+
+#[cfg(test)]
+mod control_space_origin_tests {
+    use super::*;
+    use crate::model::paragraph::SpecialSpaceOriginKind as Kind;
+    use crate::model::provenance::FontMetricsPolicy;
+    use crate::renderer::style_resolver::ResolvedCharStyle;
+    use crate::renderer::ControlSpaceBase;
+
+    #[test]
+    fn literal_figure_space_slot_preserves_controls_policy_and_saved_geometry() {
+        let mut para = Paragraph {
+            text: "가\u{2007}나".into(),
+            char_count: 4,
+            char_offsets: vec![0, 1, 2],
+            char_shapes: vec![CharShapeRef::default()],
+            line_segs: vec![LineSeg {
+                text_start: 0,
+                vertical_pos: 123,
+                line_height: 1400,
+                text_height: 1148,
+                baseline_distance: 900,
+                segment_width: 40000,
+                tag: 17,
+                ..Default::default()
+            }],
+            special_space_origins: vec![SpecialSpaceOrigin {
+                char_idx: 1,
+                origin: Kind::Literal,
+            }],
+            ..Default::default()
+        };
+        let legacy = compose_paragraph(&para);
+        let selected = compose_paragraph_with_policy(&para, FontMetricsPolicy::HcrDeclared);
+        let slots = |composed: &ComposedParagraph| {
+            composed
+                .lines
+                .iter()
+                .flat_map(|line| &line.runs)
+                .flat_map(|run| run.text.chars().map(move |_| run.lang_index))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(slots(&selected), vec![0, 5, 0]);
+        assert_eq!(selected.lines[0].line_height, legacy.lines[0].line_height);
+        assert_eq!(
+            selected.lines[0].baseline_distance,
+            legacy.lines[0].baseline_distance
+        );
+        assert_eq!(
+            selected.lines[0].segment_width,
+            legacy.lines[0].segment_width
+        );
+        assert_eq!(selected.lines[0].char_start, legacy.lines[0].char_start);
+        assert_eq!(
+            selected.lines[0].runs[1].special_space_origins,
+            vec![SpecialSpaceOrigin {
+                char_idx: 0,
+                origin: Kind::Literal
+            }]
+        );
+        assert_eq!(
+            slots(&compose_paragraph_with_policy(
+                &para,
+                FontMetricsPolicy::HancomWindows
+            )),
+            slots(&legacy)
+        );
+        para.special_space_origins[0].origin = Kind::FwSpace;
+        assert_eq!(
+            slots(&compose_paragraph_with_policy(
+                &para,
+                FontMetricsPolicy::HcrDeclared
+            )),
+            slots(&legacy)
+        );
+        para.special_space_origins.clear();
+        assert_eq!(
+            slots(&compose_paragraph_with_policy(
+                &para,
+                FontMetricsPolicy::HcrDeclared
+            )),
+            slots(&legacy)
+        );
+        let nb = [SpecialSpaceOrigin {
+            char_idx: 0,
+            origin: Kind::NbSpace,
+        }];
+        assert_eq!(
+            occurrence_lang_category('\u{00a0}', 0, &nb, FontMetricsPolicy::HcrDeclared),
+            0
+        );
+    }
+
+    #[test]
+    fn literal_nbsp_initial_eng_selection_preserves_origins_and_saved_lines() {
+        let mut para = Paragraph {
+            text: "①\u{00a0} X".into(),
+            char_offsets: vec![0, 1, 2, 3],
+            char_count: 5,
+            char_shapes: vec![CharShapeRef::default()],
+            line_segs: vec![LineSeg {
+                text_start: 0,
+                line_height: 1150,
+                baseline_distance: 900,
+                segment_width: 12345,
+                ..Default::default()
+            }],
+            special_space_origins: vec![SpecialSpaceOrigin {
+                char_idx: 1,
+                origin: Kind::Literal,
+            }],
+            ..Default::default()
+        };
+        let legacy = compose_paragraph(&para);
+        let selected = compose_paragraph_with_policy(&para, FontMetricsPolicy::HcrDeclared);
+        let slots = |cp: &ComposedParagraph| {
+            cp.lines
+                .iter()
+                .flat_map(|line| &line.runs)
+                .flat_map(|run| run.text.chars().map(move |_| run.lang_index))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(slots(&selected), vec![5, 1, 1, 1]);
+        assert_eq!(selected.lines[0].line_height, legacy.lines[0].line_height);
+        assert_eq!(
+            selected.lines[0].baseline_distance,
+            legacy.lines[0].baseline_distance
+        );
+        assert_eq!(
+            selected.lines[0].segment_width,
+            legacy.lines[0].segment_width
+        );
+        assert_eq!(
+            selected
+                .lines
+                .iter()
+                .flat_map(|line| &line.runs)
+                .map(|run| run.text.as_str())
+                .collect::<String>(),
+            para.text
+        );
+        let nb = selected.lines[0]
+            .runs
+            .iter()
+            .find(|run| run.text.contains('\u{00a0}'))
+            .unwrap();
+        assert_eq!(
+            nb.special_space_origins,
+            vec![SpecialSpaceOrigin {
+                char_idx: 0,
+                origin: Kind::Literal
+            }]
+        );
+        for kind in [Some(Kind::NbSpace), None] {
+            para.special_space_origins = kind
+                .into_iter()
+                .map(|origin| SpecialSpaceOrigin {
+                    char_idx: 1,
+                    origin,
+                })
+                .collect();
+            assert_eq!(
+                slots(&compose_paragraph_with_policy(
+                    &para,
+                    FontMetricsPolicy::HcrDeclared
+                )),
+                slots(&compose_paragraph(&para))
+            );
+        }
+        para.special_space_origins = vec![SpecialSpaceOrigin {
+            char_idx: 1,
+            origin: Kind::Literal,
+        }];
+        assert_eq!(
+            slots(&compose_paragraph_with_policy(
+                &para,
+                FontMetricsPolicy::HancomWindows
+            )),
+            slots(&legacy)
+        );
+    }
+
+    #[test]
+    fn literal_nbsp_initial_eng_activates_on_load_edit_fresh_and_reopen() {
+        use crate::document_core::DocumentCore;
+        use crate::model::paragraph::TextContent;
+        use crate::model::style::Font;
+        let mut seed = DocumentCore::new_empty();
+        seed.create_blank_document_native().unwrap();
+        let mut doc = seed.document().clone();
+        doc.doc_info.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        doc.doc_info.font_faces.resize_with(7, Vec::new);
+        for (slot, name) in [(0, "HY신명조"), (1, "Times New Roman"), (5, "함초롬바탕")] {
+            doc.doc_info.font_faces[slot] = vec![Font {
+                name: name.into(),
+                ..Default::default()
+            }];
+        }
+        doc.doc_info.char_shapes[0].font_ids = [0; 7];
+        doc.doc_info.char_shapes[0].base_size = 1150;
+        doc.doc_info.char_shapes[0].relative_sizes[1] = 106;
+        doc.doc_info.char_shapes[0].ratios[1] = 100;
+        doc.doc_info.char_shapes[0].spacings[1] = -5;
+        let content = TextContent::literal("①\u{00a0}X");
+        doc.sections[0].paragraphs = vec![Paragraph {
+            text: content.text,
+            special_space_origins: content.special_space_origins,
+            char_count: 4,
+            char_offsets: vec![0, 1, 2],
+            char_shapes: vec![CharShapeRef::default()],
+            line_segs: vec![LineSeg {
+                text_start: 0,
+                line_height: 1600,
+                baseline_distance: 900,
+                segment_width: 40000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        seed.set_document(doc);
+        let slots = |core: &DocumentCore| {
+            core.composed[0][0]
+                .lines
+                .iter()
+                .flat_map(|line| &line.runs)
+                .filter(|run| run.text.contains('\u{00a0}'))
+                .map(|run| {
+                    let style = run.text_style(&core.styles);
+                    (
+                        run.lang_index,
+                        style.font_family,
+                        style.font_size,
+                        style.ratio,
+                        style.letter_spacing,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let source = seed.export_hwpx_native().unwrap();
+        let mut loaded =
+            DocumentCore::from_bytes_with_font_metrics(&source, FontMetricsPolicy::HcrDeclared)
+                .unwrap();
+        let selected = slots(&loaded);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].0, 1);
+        assert_eq!(selected[0].1, "Times New Roman");
+        assert!((selected[0].2 - (1150.0 / 75.0 * 1.06)).abs() < 1e-9);
+        assert_eq!(selected[0].3, 1.0);
+        assert!((selected[0].4 - selected[0].2 * -0.05).abs() < 1e-9);
+        loaded
+            .insert_text_content_native(0, 0, 1, &TextContent::literal("\u{00a0}"))
+            .unwrap();
+        assert!(slots(&loaded).iter().all(|slot| slot == &selected[0]));
+        let mut fresh = DocumentCore::new_empty();
+        fresh.set_document(loaded.document().clone());
+        assert_eq!(slots(&fresh), slots(&loaded));
+        let saved = loaded.export_hwpx_native().unwrap();
+        let reopened =
+            DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared)
+                .unwrap();
+        assert_eq!(slots(&reopened), slots(&loaded));
+        assert_eq!(
+            reopened.document().sections[0].paragraphs[0].special_space_origins,
+            loaded.document().sections[0].paragraphs[0].special_space_origins
+        );
+        let other =
+            DocumentCore::from_bytes_with_font_metrics(&source, FontMetricsPolicy::HancomWindows)
+                .unwrap();
+        assert!(slots(&other).iter().all(|slot| slot.0 != 1));
+    }
+
+    #[test]
+    fn literal_resplit_keeps_existing_run_metadata_and_line_carry() {
+        let marked = ComposedTextRun {
+            text: "1".into(),
+            footnote_marker: Some(7),
+            display_text: Some("¹".into()),
+            lang_index: 1,
+            ..Default::default()
+        };
+        let overlap = ComposedTextRun {
+            text: "겹".into(),
+            char_overlap: Some(CharOverlapInfo {
+                border_type: 3,
+                inner_char_size: 80,
+            }),
+            ..Default::default()
+        };
+        let literal = ComposedTextRun {
+            text: "\u{00a0}\u{2007}\u{00a0}".into(),
+            lang_index: 1,
+            special_space_origins: vec![SpecialSpaceOrigin {
+                char_idx: 1,
+                origin: Kind::Literal,
+            }],
+            ..Default::default()
+        };
+        let selected = select_literal_space_runs(
+            vec![marked, overlap, literal],
+            FontMetricsPolicy::HcrDeclared,
+        );
+        assert_eq!(selected[0].footnote_marker, Some(7));
+        assert_eq!(selected[0].display_text.as_deref(), Some("¹"));
+        assert_eq!(selected[1].char_overlap.as_ref().unwrap().border_type, 3);
+        assert_eq!(
+            selected[2..]
+                .iter()
+                .map(|run| run.lang_index)
+                .collect::<Vec<_>>(),
+            vec![1, 5, 1]
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|run| run.footnote_marker.is_some())
+                .count(),
+            1
+        );
+        for bold in [false, true] {
+            let metric = super::super::font_metrics_data::find_metric("HCR Batang", bold, false)
+                .unwrap()
+                .metric;
+            assert!(metric.get_width('\u{2007}').is_some());
+            assert_eq!(metric.em_size, 1000);
+        }
+    }
+
+    #[test]
+    fn control_space_origins_follow_scalar_runs_across_utf16_and_tab_gaps() {
+        let para = Paragraph {
+            text: "A😀\t\u{2007}가\u{00A0}".into(),
+            char_offsets: vec![0, 1, 3, 11, 12, 13],
+            char_count: 15,
+            char_shapes: vec![
+                CharShapeRef {
+                    start_pos: 0,
+                    char_shape_id: 0,
+                },
+                CharShapeRef {
+                    start_pos: 13,
+                    char_shape_id: 1,
+                },
+            ],
+            line_segs: vec![LineSeg {
+                text_start: 0,
+                ..Default::default()
+            }],
+            special_space_origins: vec![
+                SpecialSpaceOrigin {
+                    char_idx: 3,
+                    origin: Kind::FwSpace,
+                },
+                SpecialSpaceOrigin {
+                    char_idx: 5,
+                    origin: Kind::NbSpace,
+                },
+            ],
+            ..Default::default()
+        };
+        let styles = ResolvedStyleSet {
+            char_styles: [1000, 2000]
+                .into_iter()
+                .map(|height_hu| ResolvedCharStyle {
+                    font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+                    control_space_base: Some(ControlSpaceBase {
+                        height_hu,
+                        korean_relative_size: 100,
+                        korean_ratio: 100,
+                        raw31_eng_tracking_percent: Some(-17),
+                    }),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let composed = compose_paragraph(&para);
+        let mut observed = Vec::new();
+        for line in &composed.lines {
+            let mut start = line.char_start;
+            for run in &line.runs {
+                let style = run.text_style(&styles);
+                assert_eq!(
+                    style.control_space_base.unwrap().raw31_eng_tracking_percent,
+                    Some(-17)
+                );
+                for origin in &run.special_space_origins {
+                    let ch = run.text.chars().nth(origin.char_idx).unwrap();
+                    observed.push((
+                        start + origin.char_idx,
+                        run.char_style_id,
+                        style.control_space_base_width_hu(origin.char_idx, ch),
+                    ));
+                }
+                start += run.text.chars().count();
+            }
+        }
+        assert_eq!(observed, vec![(3, 0, Some(248)), (5, 1, Some(1000))]);
+        assert_eq!(
+            composed
+                .lines
+                .iter()
+                .flat_map(|line| &line.runs)
+                .map(|run| run.text.as_str())
+                .collect::<String>(),
+            para.text
+        );
+    }
+
+    #[test]
+    fn control_space_origins_survive_run_slices_and_wrap_redistribution() {
+        let source = ComposedLine {
+            runs: vec![ComposedTextRun {
+                text: "😀\t\u{2007}가\u{00A0}".into(),
+                special_space_origins: vec![
+                    SpecialSpaceOrigin {
+                        char_idx: 2,
+                        origin: Kind::FwSpace,
+                    },
+                    SpecialSpaceOrigin {
+                        char_idx: 4,
+                        origin: Kind::Literal,
+                    },
+                ],
+                ..Default::default()
+            }],
+            line_height: 0,
+            baseline_distance: 0,
+            segment_width: 0,
+            column_start: 0,
+            line_spacing: 0,
+            has_line_break: false,
+            char_start: 0,
+        };
+        let run = &source.runs[0];
+        let tail = run.slice_scalars(2, 5);
+        assert_eq!(tail.text, "\u{2007}가\u{00A0}");
+        assert_eq!(
+            tail.special_space_origins,
+            vec![
+                SpecialSpaceOrigin {
+                    char_idx: 0,
+                    origin: Kind::FwSpace
+                },
+                SpecialSpaceOrigin {
+                    char_idx: 2,
+                    origin: Kind::Literal
+                },
+            ]
+        );
+        let mut wrapped = vec![
+            ComposedLine {
+                runs: vec![run.slice_scalars(0, 2)],
+                ..source.clone()
+            },
+            ComposedLine {
+                runs: vec![tail],
+                char_start: 2,
+                ..source.clone()
+            },
+        ];
+        for line in &mut wrapped {
+            for run in &mut line.runs {
+                run.special_space_origins.clear();
+            }
+        }
+        bind_wrapped_origins(&source, &mut wrapped);
+        assert!(wrapped[0].runs[0].special_space_origins.is_empty());
+        assert_eq!(wrapped[1].runs[0].special_space_origins[0].char_idx, 0);
+        assert_eq!(
+            wrapped[1].runs[0].special_space_origins[1].origin,
+            Kind::Literal
+        );
+        // 표시 문자열의 좌표 계약이 없으면 모델 위치를 그 좌표에 추측하지 않는다.
+        wrapped[1].runs[0].display_text = Some("표시".into());
+        assert!(wrapped[1].runs[0]
+            .text_style(&ResolvedStyleSet::default())
+            .special_space_origins
+            .is_empty());
     }
 }
 
@@ -4008,9 +5642,12 @@ mod line_breaking;
 pub mod lineseg_compare;
 
 pub(crate) use line_breaking::{
-    auto_spacing_gap_between, is_line_end_forbidden, is_line_start_forbidden, paragraph_flow_end,
-    recalculate_section_vpos, reflow_line_segs, reflow_line_segs_with_exclusions,
-    reflow_line_segs_with_squeeze, tokenize_paragraph, BreakToken,
+    auto_spacing_gap_between, inline_table_host_line_index, is_line_end_forbidden,
+    is_line_start_forbidden, paragraph_flow_end, recalculate_section_vpos,
+    recalculate_section_vpos_for_body, reflow_line_segs, reflow_line_segs_with_exclusions,
+    reflow_line_segs_with_exclusions_and_head, reflow_line_segs_with_head,
+    reflow_line_segs_with_squeeze, refresh_inline_table_host_metrics, tokenize_paragraph,
+    BreakToken,
 };
 
 /// 글자처럼 취급한 자동 높이 글상자는 현재 수식 내용으로 줄 높이를 다시 잰다.
@@ -4361,7 +5998,8 @@ mod p1_text_reflow_tests {
                     &styles,
                     300.0,
                     None,
-                    96.0
+                    96.0,
+                    None,
                 ),
                 vec![0]
             );
@@ -4690,8 +6328,21 @@ fn resolve_ruby_widths(
     {
         let mut local = para.clone();
         local.line_segs.clear();
-        line_breaking::reflow_line_segs(&mut local, width_px, styles, 96.0);
-        *composed = compose_paragraph(&local);
+        if let Some(head) = crate::renderer::layout::ResolvedParagraphHead::from_composed(composed)
+        {
+            let reserve = crate::renderer::layout::resolved_head_reserve_px(
+                styles,
+                &local,
+                Some(&head),
+                96.0,
+            );
+            line_breaking::reflow_line_segs_with_head(&mut local, width_px, styles, 96.0, reserve);
+        } else {
+            line_breaking::reflow_line_segs(&mut local, width_px, styles, 96.0);
+        }
+        let mut fresh = compose_paragraph_with_policy(&local, styles.font_metrics_policy);
+        fresh.copy_numbering_from(composed);
+        *composed = fresh;
     }
     for (_, width, ci) in &mut composed.tac_controls {
         if let Some(ruby) = super::ruby::prepare(para, *ci, styles, 96.0) {

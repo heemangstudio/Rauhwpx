@@ -3,9 +3,12 @@
 //! 문단 텍스트를 토큰화하고 줄 나눔을 수행한다.
 //! 한글 어절/글자, 영어 단어/하이픈, CJK 개별 분할을 지원한다.
 
-use super::{find_active_char_shape, is_lang_neutral, is_word_break_neutral};
+use super::{
+    carried_lang_category, find_active_char_shape, is_lang_neutral, is_occurrence_lang_neutral,
+    is_word_break_neutral, literal_space_lang_category, occurrence_lang_category,
+};
 use crate::model::control::Control;
-use crate::model::paragraph::{CharShapeRef, LineSeg, Paragraph};
+use crate::model::paragraph::{CharShapeRef, LineSeg, Paragraph, SpecialSpaceOrigin};
 use crate::model::shape::{HorzRelTo, TextWrap, VertRelTo};
 use crate::model::style::LineSpacingType;
 use crate::renderer::float_placement::{
@@ -43,6 +46,8 @@ pub(crate) enum BreakToken {
     Space {
         idx: usize,
         width: f64,
+        /// 자간 적용 전 폭(px). 문단 공백 압축률은 이 폭을 기준으로 적용한다.
+        base_width: f64,
         max_font_size: f64,
         /// 고정폭 공백은 문단의 공백 압축에 참여하지 않는다.
         is_fixed_width: bool,
@@ -375,6 +380,7 @@ fn style_font_size(styles: &ResolvedStyleSet, style_id: u32) -> f64 {
 }
 
 fn measure_grapheme_metrics(
+    special_space_origins: &[SpecialSpaceOrigin],
     text_chars: &[char],
     start: usize,
     end: usize,
@@ -385,6 +391,7 @@ fn measure_grapheme_metrics(
 ) -> (f64, f64, usize) {
     let cluster: String = text_chars[start..end].iter().collect();
     let width = measure_token_width(
+        special_space_origins,
         &cluster,
         start,
         char_offsets,
@@ -393,25 +400,28 @@ fn measure_grapheme_metrics(
         default_lang,
     );
     let mut max_font_size = 0.0f64;
-    let mut current_lang = default_lang;
+    let mut legacy_lang = default_lang;
     for (offset, ch) in text_chars[start..end].iter().copied().enumerate() {
         let index = start + offset;
         let utf16_pos = char_offsets.get(index).copied().unwrap_or(index as u32);
         let style_id = find_active_char_shape(char_shapes, utf16_pos);
-        if !is_lang_neutral(ch) {
-            current_lang = detect_lang_category(ch);
+        if !is_occurrence_lang_neutral(ch, index, special_space_origins, styles.font_metrics_policy)
+        {
+            legacy_lang =
+                carried_lang_category(ch, index, special_space_origins, styles.font_metrics_policy);
         }
         // 한컴은 6~8.5pt 한글 줄도 글자 크기 그대로 줄 높이를 잡는다 (스윕 6pt@160% =
         // 9.60pt 피치). 종전 9pt(12px) 하한은 작은 글씨 줄을 14.40pt 로 부풀렸다.
         let fs = style_font_size(styles, style_id);
         max_font_size = max_font_size.max(if fs > 0.0 { fs } else { 12.0 });
     }
-    (width, max_font_size, current_lang)
+    (width, max_font_size, legacy_lang)
 }
 
 /// 글자(grapheme cluster)별 폭을 클러스터 단독 측정으로 구한다 (선형 시간).
 /// 한글 어절은 커닝이 없어 접두 차분(measure_grapheme_advances)과 같은 값을 준다.
 fn measure_grapheme_widths_linear(
+    special_space_origins: &[SpecialSpaceOrigin],
     text_chars: &[char],
     start: usize,
     end: usize,
@@ -425,12 +435,23 @@ fn measure_grapheme_widths_linear(
     // (글자 모양, 언어)가 같은 동안 해소한 TextStyle 을 재사용한다.
     let mut cached: Option<((u32, usize), crate::renderer::TextStyle)> = None;
     let mut current_lang = default_lang;
+    let mut legacy_lang = default_lang;
     let mut index = start;
     while index < end {
         let cluster_end = grapheme_ends[index].min(end).max(index + 1);
         let ch = text_chars[index];
-        if !is_lang_neutral(ch) {
-            current_lang = detect_lang_category(ch);
+        if !is_occurrence_lang_neutral(ch, index, special_space_origins, styles.font_metrics_policy)
+        {
+            legacy_lang =
+                carried_lang_category(ch, index, special_space_origins, styles.font_metrics_policy);
+            current_lang = occurrence_lang_category(
+                ch,
+                index,
+                special_space_origins,
+                styles.font_metrics_policy,
+            );
+        } else {
+            current_lang = legacy_lang;
         }
         let key = (
             char_style_id_at(char_offsets, char_shapes, index),
@@ -441,7 +462,10 @@ fn measure_grapheme_widths_linear(
         }
         let cluster: String = text_chars[index..cluster_end].iter().collect();
         if let Some((_, ts)) = &cached {
-            widths[index - start] = estimate_text_width_unrounded(&cluster, ts);
+            let cluster_style =
+                ts.clone()
+                    .with_origin_range(special_space_origins, index, cluster_end);
+            widths[index - start] = estimate_text_width_unrounded(&cluster, &cluster_style);
         }
         index = cluster_end;
     }
@@ -449,6 +473,7 @@ fn measure_grapheme_widths_linear(
 }
 
 fn measure_grapheme_advances(
+    special_space_origins: &[SpecialSpaceOrigin],
     text_chars: &[char],
     start: usize,
     end: usize,
@@ -465,6 +490,7 @@ fn measure_grapheme_advances(
         let cluster_end = grapheme_ends[index].min(end).max(index + 1);
         let prefix: String = text_chars[start..cluster_end].iter().collect();
         let prefix_width = measure_token_width(
+            special_space_origins,
             &prefix,
             start,
             char_offsets,
@@ -542,22 +568,60 @@ fn char_style_id_at(char_offsets: &[u32], char_shapes: &[CharShapeRef], idx: usi
     find_active_char_shape(char_shapes, utf16_pos)
 }
 
-/// 문자 위치의 언어 슬롯 — 언어 중립 문자는 앞쪽의 첫 비중립 문자를 따른다.
-fn lang_at(text_chars: &[char], idx: usize) -> usize {
-    text_chars[..=idx.min(text_chars.len().saturating_sub(1))]
+/// 줄 끝 자간 슬롯을 한 번 계산한다. A0의 활성 중립 구간 밖은 기존 64자 제한이다.
+fn trailing_lang_categories(
+    text_chars: &[char],
+    origins: &[SpecialSpaceOrigin],
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> Vec<usize> {
+    let mut literal_slots = vec![None; text_chars.len()];
+    if policy == crate::model::provenance::FontMetricsPolicy::HcrDeclared {
+        for origin in origins {
+            if origin.origin == crate::model::paragraph::SpecialSpaceOriginKind::Literal {
+                if let Some(ch) = text_chars.get(origin.char_idx) {
+                    literal_slots[origin.char_idx] = match ch {
+                        '\u{00a0}' => Some(1),
+                        '\u{2007}' => Some(5),
+                        _ => None,
+                    };
+                }
+            }
+        }
+    }
+    let mut nearest = None;
+    let mut active_a0 = false;
+    text_chars
         .iter()
-        .rev()
-        .take(64)
-        .find(|c| !is_lang_neutral(**c))
-        .map(|c| detect_lang_category(*c))
-        .unwrap_or(0)
+        .copied()
+        .enumerate()
+        .map(|(scalar, ch)| {
+            if ch == '\u{00a0}' && literal_slots[scalar] == Some(1) {
+                active_a0 = true;
+                1
+            } else if !is_lang_neutral(ch) {
+                active_a0 = false;
+                let legacy = detect_lang_category(ch);
+                nearest = Some((scalar, legacy));
+                literal_slots[scalar].unwrap_or(legacy)
+            } else if active_a0 {
+                1
+            } else {
+                nearest
+                    .filter(|(index, _)| scalar - index < 64)
+                    .map(|(_, lang)| lang)
+                    .unwrap_or(0)
+            }
+        })
+        .collect()
 }
 
 /// grapheme cluster [cs, ce) 가 자간으로 더하는 폭(px). 자간이 없으면 0.
 fn cluster_letter_spacing_px(
+    special_space_origins: &[SpecialSpaceOrigin],
     text_chars: &[char],
     cs: usize,
     ce: usize,
+    lang: usize,
     char_offsets: &[u32],
     char_shapes: &[CharShapeRef],
     styles: &ResolvedStyleSet,
@@ -566,17 +630,25 @@ fn cluster_letter_spacing_px(
     let Some(char_style) = styles.char_styles.get(style_id as usize) else {
         return 0.0;
     };
-    if char_style.letter_spacing == 0.0 && char_style.letter_spacings.iter().all(|v| *v == 0.0) {
-        return 0.0;
-    }
-    let lang = lang_at(text_chars, cs);
-    if char_style.letter_spacing_for_lang(lang) == 0.0 {
-        return 0.0;
-    }
     let cluster: String = text_chars[cs..ce].iter().collect();
-    let mut ts = resolved_to_text_style(styles, style_id, lang);
+    let mut ts = resolved_to_text_style(styles, style_id, lang).with_origin_range(
+        special_space_origins,
+        cs,
+        ce,
+    );
+    let has_raw31_tracking = cluster.chars().enumerate().any(|(scalar, ch)| {
+        ts.raw31_tracking_percent(scalar, ch)
+            .is_some_and(|v| v != 0)
+    });
+    if !has_raw31_tracking
+        && (char_style.letter_spacing == 0.0
+            && char_style.letter_spacings.iter().all(|v| *v == 0.0)
+            || char_style.letter_spacing_for_lang(lang) == 0.0)
+    {
+        return 0.0;
+    }
     let with_spacing = estimate_text_width_unrounded(&cluster, &ts);
-    ts.letter_spacing = 0.0;
+    ts.zero_tracking();
     with_spacing - estimate_text_width_unrounded(&cluster, &ts)
 }
 
@@ -584,6 +656,7 @@ fn cluster_letter_spacing_px(
 /// 켜진 문단은 한글↔영문/숫자 경계의 간격을 왼쪽 토큰 폭에 더한다. 경계 간격도
 /// 줄 끝에서는 맞춤 판정에서 빠지도록 trailing 에 함께 넣는다.
 fn annotate_trailing_spacing(
+    special_space_origins: &[SpecialSpaceOrigin],
     tokens: &mut [BreakToken],
     text_chars: &[char],
     grapheme_ends: &[usize],
@@ -592,6 +665,11 @@ fn annotate_trailing_spacing(
     styles: &ResolvedStyleSet,
     auto_spacing: AutoSpacing,
 ) {
+    let trailing_langs = trailing_lang_categories(
+        text_chars,
+        special_space_origins,
+        styles.font_metrics_policy,
+    );
     for k in 0..tokens.len() {
         let next_text_start = match tokens.get(k + 1) {
             Some(BreakToken::Text { start_idx, .. }) => Some(*start_idx),
@@ -619,8 +697,16 @@ fn annotate_trailing_spacing(
         let mut cs = start;
         while cs < end {
             let ce = grapheme_ends[cs].min(end).max(cs + 1);
-            spacings[cs - start] =
-                cluster_letter_spacing_px(text_chars, cs, ce, char_offsets, char_shapes, styles);
+            spacings[cs - start] = cluster_letter_spacing_px(
+                special_space_origins,
+                text_chars,
+                cs,
+                ce,
+                trailing_langs[cs],
+                char_offsets,
+                char_shapes,
+                styles,
+            );
             last_cluster = cs;
             cs = ce;
         }
@@ -630,7 +716,7 @@ fn annotate_trailing_spacing(
             && auto_spacing.applies(text_chars[end - 1], text_chars[end])
         {
             let style_id = char_style_id_at(char_offsets, char_shapes, end - 1);
-            let lang = lang_at(text_chars, end - 1);
+            let lang = trailing_langs[end - 1];
             let fs = styles
                 .char_styles
                 .get(style_id as usize)
@@ -662,6 +748,7 @@ pub(crate) fn tokenize_paragraph(
     korean_break_unit: u8,
 ) -> Vec<BreakToken> {
     tokenize_paragraph_with_controls(
+        &[],
         text_chars,
         char_offsets,
         char_shapes,
@@ -679,6 +766,7 @@ pub(crate) fn tokenize_paragraph(
 /// 개체 위치에서 텍스트 토큰(어절/단어)을 강제로 분할하고 InlineControl 토큰을
 /// 삽입해 fill_lines가 개체 폭만큼 가로 공간을 예약하게 한다.
 fn tokenize_paragraph_with_controls(
+    special_space_origins: &[SpecialSpaceOrigin],
     text_chars: &[char],
     char_offsets: &[u32],
     char_shapes: &[CharShapeRef],
@@ -773,16 +861,31 @@ fn tokenize_paragraph_with_controls(
                 i as u32
             };
             let style_id = find_active_char_shape(char_shapes, utf16_pos);
-            let ts = resolved_to_text_style(styles, style_id, current_lang);
+            let selected =
+                occurrence_lang_category(ch, i, special_space_origins, styles.font_metrics_policy);
+            let space_lang = if ch == '\u{2007}' && selected == 5 {
+                selected
+            } else {
+                current_lang
+            };
+            let ts = resolved_to_text_style(styles, style_id, space_lang).with_origin_range(
+                special_space_origins,
+                i,
+                i + 1,
+            );
             // 줄 높이는 글자 모양 기준 크기를 쓴다 — 언어별 상대 크기는 넣지 않는다
             // (글자 토큰과 같은 규칙, 오라클 H4: 상대 크기 106% 공백 줄 1217 → 저장 1148).
             let base_size = style_font_size(styles, style_id);
             let font_size = if base_size > 0.0 { base_size } else { 12.0 };
             let space = if ch == ' ' { " " } else { "\u{2007}" };
             let w = estimate_text_width_unrounded(space, &ts);
+            let mut untracked = ts;
+            untracked.zero_tracking();
+            let base_width = estimate_text_width_unrounded(space, &untracked);
             tokens.push(BreakToken::Space {
                 idx: i,
                 width: w,
+                base_width,
                 max_font_size: font_size,
                 is_fixed_width: ch == '\u{2007}',
             });
@@ -826,8 +929,18 @@ fn tokenize_paragraph_with_controls(
                         i as u32
                     };
                     let style_id = find_active_char_shape(char_shapes, utf16_pos);
-                    if !is_lang_neutral(c) {
-                        current_lang = detect_lang_category(c);
+                    if !is_occurrence_lang_neutral(
+                        c,
+                        i,
+                        special_space_origins,
+                        styles.font_metrics_policy,
+                    ) {
+                        current_lang = occurrence_lang_category(
+                            c,
+                            i,
+                            special_space_origins,
+                            styles.font_metrics_policy,
+                        );
                     }
                     let font_size = style_font_size(styles, style_id);
                     let fs = if font_size > 0.0 { font_size } else { 12.0 };
@@ -852,8 +965,18 @@ fn tokenize_paragraph_with_controls(
                         i as u32
                     };
                     let style_id = find_active_char_shape(char_shapes, utf16_pos);
-                    if !is_lang_neutral(c) {
-                        current_lang = detect_lang_category(c);
+                    if !is_occurrence_lang_neutral(
+                        c,
+                        i,
+                        special_space_origins,
+                        styles.font_metrics_policy,
+                    ) {
+                        current_lang = occurrence_lang_category(
+                            c,
+                            i,
+                            special_space_origins,
+                            styles.font_metrics_policy,
+                        );
                     }
                     let font_size = style_font_size(styles, style_id);
                     let fs = if font_size > 0.0 { font_size } else { 12.0 };
@@ -866,6 +989,7 @@ fn tokenize_paragraph_with_controls(
 
                 if !token_text.is_empty() {
                     let width = measure_token_width(
+                        special_space_origins,
                         &token_text,
                         start,
                         char_offsets,
@@ -877,6 +1001,7 @@ fn tokenize_paragraph_with_controls(
                     // 채운다. 종전 빈 폭 목록은 글자당 글꼴 크기 휴리스틱(1.0em)으로
                     // 떨어져 한글(0.97em)이 한컴보다 한 글자 적게 들어갔다 (스윕 16/16).
                     let cw = measure_grapheme_widths_linear(
+                        special_space_origins,
                         text_chars,
                         start,
                         i,
@@ -899,9 +1024,15 @@ fn tokenize_paragraph_with_controls(
                 continue;
             } else {
                 // 글자 모드에서도 Unicode grapheme cluster는 분할하지 않는다.
-                current_lang = detect_lang_category(ch);
+                current_lang = occurrence_lang_category(
+                    ch,
+                    i,
+                    special_space_origins,
+                    styles.font_metrics_policy,
+                );
                 let end = grapheme_ends[i];
                 let (w, fs, lang) = measure_grapheme_metrics(
+                    special_space_origins,
                     text_chars,
                     i,
                     end,
@@ -969,7 +1100,12 @@ fn tokenize_paragraph_with_controls(
                         i as u32
                     };
                     let style_id = find_active_char_shape(char_shapes, utf16_pos);
-                    if !is_lang_neutral(c) {
+                    if !is_occurrence_lang_neutral(
+                        c,
+                        i,
+                        special_space_origins,
+                        styles.font_metrics_policy,
+                    ) {
                         current_lang = 1; // English
                     }
                     let font_size = style_font_size(styles, style_id);
@@ -983,6 +1119,7 @@ fn tokenize_paragraph_with_controls(
 
                 if !token_text.is_empty() {
                     let width = measure_token_width(
+                        special_space_origins,
                         &token_text,
                         start,
                         char_offsets,
@@ -992,6 +1129,7 @@ fn tokenize_paragraph_with_controls(
                     );
                     // 개별 글자 폭 수집 (char_level_break용)
                     let cw = measure_grapheme_advances(
+                        special_space_origins,
                         text_chars,
                         start,
                         i,
@@ -1017,6 +1155,7 @@ fn tokenize_paragraph_with_controls(
                 current_lang = 1;
                 let end = grapheme_ends[i];
                 let (w, fs, lang) = measure_grapheme_metrics(
+                    special_space_origins,
                     text_chars,
                     i,
                     end,
@@ -1042,9 +1181,11 @@ fn tokenize_paragraph_with_controls(
 
         // CJK 한자/일본어: 항상 개별 토큰
         if is_cjk_ideograph(ch) {
-            current_lang = detect_lang_category(ch);
+            current_lang =
+                occurrence_lang_category(ch, i, special_space_origins, styles.font_metrics_policy);
             let end = grapheme_ends[i];
             let (w, fs, lang) = measure_grapheme_metrics(
+                special_space_origins,
                 text_chars,
                 i,
                 end,
@@ -1069,15 +1210,26 @@ fn tokenize_paragraph_with_controls(
 
         // 기타 문자 (기호, NonBreakingSpace 등): 개별 Text 토큰
         {
-            let lang = if is_lang_neutral(ch) {
+            let lang = if is_occurrence_lang_neutral(
+                ch,
+                i,
+                special_space_origins,
+                styles.font_metrics_policy,
+            ) {
                 current_lang
             } else {
-                let detected = detect_lang_category(ch);
+                let detected = occurrence_lang_category(
+                    ch,
+                    i,
+                    special_space_origins,
+                    styles.font_metrics_policy,
+                );
                 current_lang = detected;
                 detected
             };
             let end = grapheme_ends[i];
             let (w, fs, lang) = measure_grapheme_metrics(
+                special_space_origins,
                 text_chars,
                 i,
                 end,
@@ -1104,6 +1256,7 @@ fn tokenize_paragraph_with_controls(
     emit_inline_controls_at!(text_len);
 
     annotate_trailing_spacing(
+        special_space_origins,
         &mut tokens,
         text_chars,
         &grapheme_ends,
@@ -1117,6 +1270,7 @@ fn tokenize_paragraph_with_controls(
 
 /// 토큰 텍스트의 폭을 글자별 언어 인식 측정으로 합산한다.
 fn measure_token_width(
+    special_space_origins: &[SpecialSpaceOrigin],
     text: &str,
     start_char_idx: usize,
     char_offsets: &[u32],
@@ -1126,9 +1280,11 @@ fn measure_token_width(
 ) -> f64 {
     let mut total = 0.0;
     let mut current_lang = default_lang;
+    let mut legacy_lang = default_lang;
     let mut run_text = String::new();
     let mut run_style = None;
     let mut run_lang = current_lang;
+    let mut run_start = start_char_idx;
     for (offset, ch) in text.chars().enumerate() {
         let idx = start_char_idx + offset;
         let utf16_pos = if idx < char_offsets.len() {
@@ -1137,26 +1293,48 @@ fn measure_token_width(
             idx as u32
         };
         let style_id = find_active_char_shape(char_shapes, utf16_pos);
-        let lang = if is_lang_neutral(ch) {
+        let lang = if is_occurrence_lang_neutral(
+            ch,
+            idx,
+            special_space_origins,
+            styles.font_metrics_policy,
+        ) {
+            current_lang = legacy_lang;
             current_lang
         } else {
-            let detected = detect_lang_category(ch);
+            legacy_lang =
+                carried_lang_category(ch, idx, special_space_origins, styles.font_metrics_policy);
+            let detected = occurrence_lang_category(
+                ch,
+                idx,
+                special_space_origins,
+                styles.font_metrics_policy,
+            );
             current_lang = detected;
             detected
         };
         if run_style != Some(style_id) || run_lang != lang {
             if let Some(active_style) = run_style {
-                let ts = resolved_to_text_style(styles, active_style, run_lang);
+                let ts = resolved_to_text_style(styles, active_style, run_lang).with_origin_range(
+                    special_space_origins,
+                    run_start,
+                    idx,
+                );
                 total += estimate_text_width_unrounded(&run_text, &ts);
                 run_text.clear();
             }
             run_style = Some(style_id);
             run_lang = lang;
+            run_start = idx;
         }
         run_text.push(ch);
     }
     if let Some(active_style) = run_style {
-        let ts = resolved_to_text_style(styles, active_style, run_lang);
+        let ts = resolved_to_text_style(styles, active_style, run_lang).with_origin_range(
+            special_space_origins,
+            run_start,
+            start_char_idx + text.chars().count(),
+        );
         total += estimate_text_width_unrounded(&run_text, &ts);
     }
     total
@@ -1568,6 +1746,7 @@ fn fill_lines(
             BreakToken::Space {
                 idx,
                 width,
+                base_width,
                 max_font_size,
                 is_fixed_width,
             } => {
@@ -1605,8 +1784,9 @@ fn fill_lines(
                 fs_at_last_break = line_max_fs;
                 lw += space_hwp;
                 last_trailing_hwp = 0;
-                if !is_fixed_width {
-                    line_space_savings += condense_space_savings_hwp(space_hwp, condense_min_space);
+                if !is_fixed_width && space_content_end > line_start_idx {
+                    line_space_savings +=
+                        condense_space_savings_hwp(to_hwp(*base_width), condense_min_space);
                 }
             }
             BreakToken::InlineControl {
@@ -2172,15 +2352,20 @@ fn recalc_space_savings_hwp(
     condense_min_space: u8,
 ) -> i32 {
     let mut w = 0i32;
+    let mut content_end = 0;
     for t in &tokens[..current_token_idx] {
         match t {
+            BreakToken::Text { end_idx, .. } => content_end = *end_idx,
+            BreakToken::Tab { idx, .. } | BreakToken::InlineControl { idx, .. } => {
+                content_end = *idx + 1;
+            }
             BreakToken::Space {
                 idx,
-                width,
+                base_width,
                 is_fixed_width: false,
                 ..
-            } if *idx >= new_line_start => {
-                let space_hwp = to_hwp(*width);
+            } if *idx >= new_line_start && content_end > new_line_start => {
+                let space_hwp = to_hwp(*base_width);
                 w += condense_space_savings_hwp(space_hwp, condense_min_space);
             }
             _ => {}
@@ -2376,7 +2561,7 @@ mod grapheme_reflow_tests {
         };
         assert_eq!((*start_idx, *end_idx), (0, 2));
         assert_eq!(*max_font_size, 24.0);
-        let expected = measure_token_width("e\u{301}", 0, &offsets, &shapes, &styles(), 1);
+        let expected = measure_token_width(&[], "e\u{301}", 0, &offsets, &shapes, &styles(), 1);
         assert!((*width - expected).abs() < 1e-9);
     }
 
@@ -2389,6 +2574,7 @@ mod grapheme_reflow_tests {
             char_shape_id: 0,
         }];
         let tokens = tokenize_paragraph_with_controls(
+            &[],
             &chars,
             &offsets,
             &shapes,
@@ -2640,6 +2826,84 @@ fn line_index_for_text_position(line_breaks: &[LineBreakResult], position: usize
         .min(line_breaks.len().saturating_sub(1))
 }
 
+/// 가시 위치로 접힌 제어 슬롯의 시작을 실제 UTF-16 갭에서 복원한다.
+/// 탭·필드 끝 등 컨트롤 배열과 대응하지 않는 갭은 추측하지 않는다.
+fn control_stream_starts(para: &Paragraph, positions: &[usize]) -> Vec<Option<u32>> {
+    const EXTENDED_UNITS: u32 = 8;
+    let mut anchors = vec![None; para.controls.len()];
+    // FIELD_END와 미지원 inline 마커는 controls 배열에 없고, 번호·덧말은
+    // 가시 위치를 따로 투영한다. 갭 길이가 우연히 맞아도 슬롯 소유를 추정하지 않는다.
+    const UNMAPPED_INLINE_MASK: u32 = (0b1_1111 << 4) | (0b11 << 19);
+    if !para.field_ranges.is_empty()
+        || !para.orphan_field_ends.is_empty()
+        || para.control_mask & UNMAPPED_INLINE_MASK != 0
+        || para.controls.iter().any(|control| {
+            !matches!(
+                control,
+                Control::Equation(_)
+                    | Control::Picture(_)
+                    | Control::Table(_)
+                    | Control::Shape(_)
+                    | Control::SectionDef(_)
+                    | Control::ColumnDef(_)
+                    | Control::Header(_)
+                    | Control::Footer(_)
+                    | Control::PageNumberPos(_)
+                    | Control::PageHide(_)
+            )
+        })
+    {
+        return anchors;
+    }
+    let chars: Vec<_> = para.text.chars().collect();
+    let mut begin = 0;
+    while begin < positions.len() {
+        let position = positions[begin];
+        let mut end = begin + 1;
+        while positions.get(end) == Some(&position) {
+            end += 1;
+        }
+        let previous_end = position
+            .checked_sub(1)
+            .and_then(|i| para.char_offsets.get(i).zip(chars.get(i)))
+            .map_or(0, |(offset, ch)| offset + ch.len_utf16() as u32);
+        let following = para
+            .char_offsets
+            .get(position)
+            .copied()
+            .or_else(|| (position == chars.len()).then_some(para.char_count.saturating_sub(1)));
+        if let Some(following) = following.filter(|next| *next >= previous_end) {
+            let gap = following - previous_end;
+            let count = end - begin;
+            if gap == count as u32 * EXTENDED_UNITS {
+                for (ordinal, control) in (begin..end).enumerate() {
+                    anchors[control] = Some(previous_end + ordinal as u32 * EXTENDED_UNITS);
+                }
+            }
+            if gap < EXTENDED_UNITS && count == 1 && chars.get(position) == Some(&'\u{FFFC}') {
+                anchors[begin] = Some(following);
+            }
+        }
+        begin = end;
+    }
+    anchors
+}
+
+fn inline_control_line_index(
+    control: &Control,
+    line_breaks: &[LineBreakResult],
+    position: usize,
+) -> usize {
+    if matches!(control, Control::Equation(_)) {
+        line_index_for_text_position(line_breaks, position)
+    } else {
+        line_breaks
+            .iter()
+            .position(|line| line.start_idx == position && line.end_idx == position)
+            .unwrap_or_else(|| line_index_for_text_position(line_breaks, position))
+    }
+}
+
 fn apply_inline_control_metrics_to_text_lines(
     para: &Paragraph,
     line_breaks: &[LineBreakResult],
@@ -2668,18 +2932,164 @@ fn apply_inline_control_metrics_to_text_lines(
             .unwrap_or_else(|| para.text.chars().count());
         // Pictures can occupy a line with no text, immediately before a text
         // line with the same start index. That first line owns the object slot.
-        let line_index = if matches!(control, Control::Equation(_)) {
-            line_index_for_text_position(line_breaks, position)
-        } else {
-            line_breaks
-                .iter()
-                .position(|line| line.start_idx == position && line.end_idx == position)
-                .unwrap_or_else(|| line_index_for_text_position(line_breaks, position))
-        };
+        let line_index = inline_control_line_index(control, line_breaks, position);
         if let Some(line_seg) = line_segs.get_mut(line_index) {
             apply_inline_control_line_metrics(line_seg, metrics);
         }
     }
+}
+
+/// 저장 줄의 UTF-16 범위에 속한 개체를 찾는다. composed 줄은 강제 줄바꿈을
+/// 별도 줄로 풀 수 있으므로 저장 LINE_SEG 인덱스와 혼용하지 않는다.
+fn saved_control_line_index(
+    para: &Paragraph,
+    anchors: &[Option<u32>],
+    control_index: usize,
+) -> Option<usize> {
+    if para.line_segs.len() == 1 {
+        return Some(0);
+    }
+    let anchor = anchors.get(control_index).copied().flatten()?;
+    Some(
+        para.line_segs
+            .partition_point(|line| line.text_start <= anchor)
+            .saturating_sub(1),
+    )
+}
+
+pub(crate) fn inline_table_host_line_index(
+    para: &Paragraph,
+    control_index: usize,
+) -> Option<usize> {
+    let mut positions = para.control_text_positions();
+    crate::renderer::ruby::project_control_positions(para, &mut positions);
+    saved_control_line_index(
+        para,
+        &control_stream_starts(para, &positions),
+        control_index,
+    )
+}
+
+/// 리플로우와 개체 줄 갱신은 같은 글자·문단 머리·끝 표시·테두리 치수를 사용한다.
+fn apply_text_line_metrics(
+    segment: &mut LineSeg,
+    para: &Paragraph,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+    end_pos: u32,
+    mut font_size: f64,
+    first: bool,
+    last: bool,
+) {
+    let para_style = styles.para_styles.get(para.para_shape_id as usize);
+    if first {
+        font_size = font_size.max(paragraph_head_font_size(styles, para_style));
+    }
+    if last {
+        let end = para
+            .char_offsets
+            .last()
+            .zip(para.text.chars().last())
+            .map(|(offset, ch)| offset + ch.len_utf16() as u32)
+            .unwrap_or(0);
+        font_size = font_size.max(style_font_size(
+            styles,
+            find_active_char_shape(&para.char_shapes, end),
+        ));
+    }
+    let height = font_size_to_line_height(if font_size > 0.0 { font_size } else { 12.0 }, dpi);
+    let spacing_type = para_style
+        .map(|style| style.line_spacing_type)
+        .unwrap_or(LineSpacingType::Percent);
+    let spacing = para_style.map(|style| style.line_spacing).unwrap_or(160.0);
+    segment.line_height = height;
+    segment.text_height = height;
+    segment.baseline_distance = baseline_for_vertical_align(
+        height,
+        para_style.map(|style| style.vertical_align).unwrap_or(0),
+    );
+    segment.line_spacing = compute_line_spacing_hwp(spacing_type, spacing, height, dpi);
+    apply_char_border_line_metrics(segment, end_pos, para, styles, dpi, spacing_type, spacing);
+}
+
+/// 현재 표 높이를 저장된 소속 줄에 반영하고 폭·원점·플래그를 보존한다.
+pub(crate) fn refresh_inline_table_host_metrics(
+    para: &mut Paragraph,
+    control_index: usize,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+) -> bool {
+    if !matches!(para.controls.get(control_index), Some(Control::Table(table)) if table.common.treat_as_char)
+    {
+        return false;
+    }
+    let mut positions = para.control_text_positions();
+    crate::renderer::ruby::project_control_positions(para, &mut positions);
+    let anchors = control_stream_starts(para, &positions);
+    let Some(line_index) = saved_control_line_index(para, &anchors, control_index) else {
+        return false;
+    };
+    let Some(original) = para.line_segs.get(line_index).cloned() else {
+        return false;
+    };
+    let end = para
+        .line_segs
+        .get(line_index + 1)
+        .map(|line| line.text_start)
+        .unwrap_or(u32::MAX);
+    let font_size = para
+        .char_shapes
+        .iter()
+        .enumerate()
+        .filter(|(index, run)| {
+            let run_end = para
+                .char_shapes
+                .get(index + 1)
+                .map(|next| next.start_pos)
+                .unwrap_or(u32::MAX);
+            run.start_pos < end && run_end > original.text_start
+        })
+        .filter_map(|(_, run)| styles.char_styles.get(run.char_shape_id as usize))
+        .map(|style| style.font_size)
+        .fold(0.0, f64::max);
+    let mut segment = original.clone();
+    apply_text_line_metrics(
+        &mut segment,
+        para,
+        styles,
+        dpi,
+        end,
+        font_size,
+        line_index == 0,
+        line_index + 1 == para.line_segs.len(),
+    );
+    for (index, control) in para.controls.iter().enumerate() {
+        if saved_control_line_index(para, &anchors, index) != Some(line_index) {
+            continue;
+        }
+        if let Some(metrics) = ruby_control_metrics(para, index, styles, dpi)
+            .or_else(|| inline_control_metrics_hwp(control))
+        {
+            apply_inline_control_line_metrics(&mut segment, metrics);
+        }
+    }
+    let delta = saved_line_advance(&segment).saturating_sub(saved_line_advance(&original));
+    let changed = (
+        segment.line_height,
+        segment.text_height,
+        segment.baseline_distance,
+        segment.line_spacing,
+    ) != (
+        original.line_height,
+        original.text_height,
+        original.baseline_distance,
+        original.line_spacing,
+    );
+    para.line_segs[line_index] = segment;
+    for segment in para.line_segs.iter_mut().skip(line_index + 1) {
+        segment.vertical_pos = segment.vertical_pos.saturating_add(delta);
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -2853,6 +3263,442 @@ mod inline_equation_metric_tests {
             fixed.line_segs[0].line_height,
             fixed_unknown.line_segs[0].line_height
         );
+    }
+
+    #[test]
+    fn fresh_page_number_prefix_splits_only_when_table_hosts_are_resolvable() {
+        use crate::model::table::{Cell, Table};
+        use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+        let paragraph = |mut prefix: Vec<Control>, anchor, width, margin| {
+            prefix.push(Control::Table(Box::new(Table {
+                common: CommonObjAttr {
+                    treat_as_char: true,
+                    height: 4000,
+                    ..Default::default()
+                },
+                row_count: 1,
+                col_count: 1,
+                outer_margin_left: margin,
+                outer_margin_right: margin,
+                cells: vec![Cell {
+                    width,
+                    height: 4000,
+                    row_span: 1,
+                    col_span: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })));
+            Paragraph {
+                char_count: anchor + 9,
+                controls: prefix,
+                char_shapes: vec![
+                    CharShapeRef {
+                        start_pos: 0,
+                        char_shape_id: 0,
+                    },
+                    CharShapeRef {
+                        start_pos: anchor,
+                        char_shape_id: 1,
+                    },
+                ],
+                ..Default::default()
+            }
+        };
+        let wire = |p: &Paragraph| {
+            p.line_segs
+                .iter()
+                .map(|s| {
+                    (
+                        s.text_start,
+                        s.vertical_pos,
+                        s.line_height,
+                        s.text_height,
+                        s.baseline_distance,
+                        s.line_spacing,
+                        s.column_start,
+                        s.segment_width,
+                        s.tag,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for (font, object_font, percent, gap, object_gap, dpi) in [
+            (700, 1300, 175.0, 524, 976, 96.0),
+            (1100, 1700, 143.0, 472, 732, 144.0),
+        ] {
+            let styles = ResolvedStyleSet {
+                char_styles: [font, object_font]
+                    .into_iter()
+                    .map(|hu| ResolvedCharStyle {
+                        font_size: hwpunit_to_px(hu, dpi),
+                        ..Default::default()
+                    })
+                    .collect(),
+                para_styles: vec![ResolvedParaStyle {
+                    line_spacing_type: LineSpacingType::Percent,
+                    line_spacing: percent,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let available = hwpunit_to_px(6000, dpi);
+            // 앵커 기대값은 메타데이터의 0유닛을 포함한 실제 스트림 위치다.
+            for (prefix, anchor, owns_prefix) in [
+                (vec![], 0, false),
+                (vec![Control::PageNumberPos(Default::default())], 8, true),
+                (
+                    vec![
+                        Control::SectionDef(Default::default()),
+                        Control::ColumnDef(Default::default()),
+                    ],
+                    16,
+                    false,
+                ),
+                (
+                    vec![
+                        Control::Bookmark(Default::default()),
+                        Control::HiddenComment(Default::default()),
+                    ],
+                    0,
+                    false,
+                ),
+                (
+                    vec![
+                        Control::Header(Default::default()),
+                        Control::PageHide(Default::default()),
+                    ],
+                    16,
+                    false,
+                ),
+                (
+                    vec![
+                        Control::SectionDef(Default::default()),
+                        Control::Bookmark(Default::default()),
+                        Control::PageNumberPos(Default::default()),
+                        Control::HiddenComment(Default::default()),
+                        Control::ColumnDef(Default::default()),
+                    ],
+                    24,
+                    false,
+                ),
+                (
+                    vec![
+                        Control::PageNumberPos(Default::default()),
+                        Control::PageNumberPos(Default::default()),
+                    ],
+                    16,
+                    true,
+                ),
+                (
+                    vec![
+                        Control::SectionDef(Default::default()),
+                        Control::ColumnDef(Default::default()),
+                        Control::PageNumberPos(Default::default()),
+                    ],
+                    24,
+                    true,
+                ),
+                (
+                    vec![
+                        Control::Header(Default::default()),
+                        Control::Footer(Default::default()),
+                        Control::PageHide(Default::default()),
+                        Control::PageNumberPos(Default::default()),
+                    ],
+                    32,
+                    true,
+                ),
+                (
+                    vec![
+                        Control::PageNumberPos(Default::default()),
+                        Control::NewNumber(Default::default()),
+                    ],
+                    16,
+                    false,
+                ),
+            ] {
+                for (width, margin, overflow) in [
+                    (5999, 0, false),
+                    (6000, 0, false),
+                    (6001, 0, true),
+                    (5800, 100, false),
+                    (5801, 100, true),
+                ] {
+                    let split = owns_prefix && overflow;
+                    let mut p = paragraph(prefix.clone(), anchor, width, margin);
+                    assert!(reflow_line_segs_with_exclusions_and_head(
+                        &mut p,
+                        available,
+                        &styles,
+                        dpi,
+                        &[],
+                        Some((0.0, 0.0)),
+                    )
+                    .is_empty());
+                    assert_eq!(p.line_segs.len(), if split { 2 } else { 1 });
+                    let table_line = p.line_segs.last().unwrap();
+                    assert_eq!(
+                        (table_line.text_start, table_line.vertical_pos),
+                        if split { (anchor, font + gap) } else { (0, 0) }
+                    );
+                    assert_eq!(
+                        (
+                            table_line.line_height,
+                            table_line.text_height,
+                            table_line.baseline_distance,
+                            table_line.line_spacing,
+                            table_line.segment_width
+                        ),
+                        (4000, 4000, 3400, object_gap, 6000)
+                    );
+                    if split {
+                        let first = &p.line_segs[0];
+                        assert_eq!(
+                            (
+                                first.line_height,
+                                first.text_height,
+                                first.baseline_distance,
+                                first.line_spacing
+                            ),
+                            (4000, font, (f64::from(font) * 0.85).round() as i32, gap)
+                        );
+                    }
+                    let object_line = if split { 1 } else { 0 };
+                    assert_eq!(
+                        inline_table_host_line_index(&p, prefix.len()),
+                        Some(object_line)
+                    );
+                    assert_eq!(
+                        crate::renderer::pagination::inline_control_line_seg_index(
+                            &p,
+                            prefix.len()
+                        ),
+                        Some(object_line)
+                    );
+                    let first_pass = wire(&p);
+                    reflow_line_segs(&mut p, available, &styles, dpi);
+                    assert_eq!(wire(&p), first_pass);
+                    assert_eq!(
+                        inline_table_host_line_index(&p, prefix.len()),
+                        Some(object_line)
+                    );
+                }
+            }
+
+            let fresh = paragraph(vec![Control::PageNumberPos(Default::default())], 8, 6001, 0);
+            // 미지원 마커·갭·후행 메타데이터는 기존 한 줄의 치수와 소속을 보존한다.
+            for (mask, offsets, suffix) in [
+                (1 << 4, vec![], None),
+                (1 << 19, vec![], None),
+                (0, vec![8], None),
+                (0, vec![], Some(Control::Bookmark(Default::default()))),
+                (0, vec![], Some(Control::PageHide(Default::default()))),
+            ] {
+                let mut p = fresh.clone();
+                p.control_mask = mask;
+                p.char_offsets = offsets;
+                if let Some(control) = suffix {
+                    if matches!(control, Control::PageHide(_)) {
+                        p.char_count += 8;
+                    }
+                    p.controls.push(control);
+                }
+                reflow_line_segs(&mut p, available, &styles, dpi);
+                assert_eq!(p.line_segs.len(), 1);
+                let line = &p.line_segs[0];
+                assert_eq!(
+                    (
+                        line.text_start,
+                        line.vertical_pos,
+                        line.line_height,
+                        line.text_height,
+                        line.baseline_distance,
+                        line.line_spacing
+                    ),
+                    (0, 0, 4000, 4000, 3400, object_gap)
+                );
+                assert_eq!(inline_table_host_line_index(&p, 1), Some(0));
+                let first_pass = wire(&p);
+                reflow_line_segs(&mut p, available, &styles, dpi);
+                assert_eq!(wire(&p), first_pass);
+                assert_eq!(inline_table_host_line_index(&p, 1), Some(0));
+            }
+            // 빈 텍스트의 비정규 오프셋은 helper 평가 없이 기존 개체 줄을 보존한다.
+            for offsets in [
+                vec![0, 9],
+                vec![0, 1, 10],
+                vec![0],
+                vec![8],
+                vec![16],
+                vec![9, 0],
+                vec![0, 0],
+            ] {
+                for width in [5999, 6000, 6001] {
+                    let mut p = paragraph(
+                        vec![Control::PageNumberPos(Default::default())],
+                        8,
+                        width,
+                        0,
+                    );
+                    p.char_offsets = offsets.clone();
+                    assert!(p.text.is_empty());
+                    assert_eq!(p.char_count, 17);
+                    reflow_line_segs(&mut p, available, &styles, dpi);
+                    let expected = vec![(
+                        0,
+                        0,
+                        4000,
+                        4000,
+                        3400,
+                        object_gap,
+                        0,
+                        6000,
+                        LineSeg::TAG_SINGLE_SEGMENT_LINE | LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+                    )];
+                    assert_eq!(wire(&p), expected);
+                    reflow_line_segs(&mut p, available, &styles, dpi);
+                    assert_eq!(wire(&p), expected);
+                }
+            }
+            let mut stored = fresh.clone();
+            stored.line_segs = vec![LineSeg {
+                vertical_pos: 211,
+                line_height: 4000,
+                line_spacing: 317,
+                segment_width: 6000,
+                tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
+                ..Default::default()
+            }];
+            reflow_line_segs(&mut stored, available, &styles, dpi);
+            assert_eq!(
+                stored
+                    .line_segs
+                    .iter()
+                    .map(|s| (s.text_start, s.vertical_pos, s.line_spacing))
+                    .collect::<Vec<_>>(),
+                [(0, 211, 317), (8, 211 + font + 317, 317)]
+            );
+            let saved_pass = wire(&stored);
+            reflow_line_segs(&mut stored, available, &styles, dpi);
+            assert_eq!(wire(&stored), saved_pass);
+
+            let mut matched = paragraph(
+                vec![
+                    Control::Field(Default::default()),
+                    Control::PageNumberPos(Default::default()),
+                ],
+                16,
+                6001,
+                0,
+            );
+            matched.char_count = 33;
+            matched.field_ranges.push(Default::default());
+            let mut orphan = fresh.clone();
+            orphan.char_count = 25;
+            orphan.orphan_field_ends.push(Default::default());
+            let mut affects_spacing = fresh.clone();
+            if let Control::Table(t) = &mut affects_spacing.controls[1] {
+                t.common.affect_line_spacing = true;
+            }
+            for (mut p, anchor) in [(matched, 16), (orphan, 8), (affects_spacing, 8)] {
+                reflow_line_segs(&mut p, available, &styles, dpi);
+                assert_eq!(
+                    p.line_segs.iter().map(|s| s.text_start).collect::<Vec<_>>(),
+                    [0, anchor]
+                );
+                assert_eq!(p.line_segs[0].text_height, font);
+            }
+            let mut fixed_styles = styles.clone();
+            fixed_styles.para_styles[0].line_spacing_type = LineSpacingType::Fixed;
+            fixed_styles.para_styles[0].line_spacing = hwpunit_to_px(2200, dpi);
+            let mut fixed = fresh.clone();
+            reflow_line_segs(&mut fixed, available, &fixed_styles, dpi);
+            assert_eq!(fixed.line_segs[1].vertical_pos, 2200);
+
+            let mut ruby = fresh.clone();
+            ruby.controls
+                .push(Control::Ruby(crate::model::control::Ruby {
+                    main_text: "x".into(),
+                    ruby_text: "y".into(),
+                    ..Default::default()
+                }));
+            ruby.char_count = 25;
+            reflow_line_segs(&mut ruby, available, &styles, dpi);
+            assert_eq!(
+                ruby.line_segs
+                    .iter()
+                    .map(|s| s.text_start)
+                    .collect::<Vec<_>>(),
+                [0, 1]
+            );
+            assert_eq!(ruby.line_segs[0].text_height, 4000);
+
+            let mut text = fresh.clone();
+            text.text = "x".into();
+            text.char_offsets = vec![16];
+            text.char_count = 18;
+            reflow_line_segs(&mut text, available, &styles, dpi);
+            assert_eq!(text.line_segs[0].text_height, 4000);
+            let mut non_tac = fresh.clone();
+            if let Control::Table(t) = &mut non_tac.controls[1] {
+                t.common.treat_as_char = false;
+            }
+            reflow_line_segs(&mut non_tac, available, &styles, dpi);
+            assert_eq!(non_tac.line_segs.len(), 1);
+            assert_eq!(non_tac.line_segs[0].text_height, font);
+
+            let mut multiple = fresh;
+            let second_table = multiple.controls[1].clone();
+            multiple.controls.extend([
+                Control::Bookmark(Default::default()),
+                Control::HiddenComment(Default::default()),
+                second_table,
+                Control::Bookmark(Default::default()),
+            ]);
+            multiple.char_count = 25;
+            reflow_line_segs(&mut multiple, available, &styles, dpi);
+            // 0유닛 레코드가 섞인 다중 표는 기존 줄 배정과 미해결 host를 유지한다.
+            assert_eq!(
+                multiple
+                    .line_segs
+                    .iter()
+                    .map(|s| s.text_start)
+                    .collect::<Vec<_>>(),
+                [0, 16]
+            );
+            assert_eq!(
+                multiple
+                    .line_segs
+                    .iter()
+                    .map(|s| s.vertical_pos)
+                    .collect::<Vec<_>>(),
+                [0, 4000 + object_gap]
+            );
+            for table in [1, 4] {
+                assert_eq!(inline_table_host_line_index(&multiple, table), None);
+            }
+            let first_pass = wire(&multiple);
+            reflow_line_segs(&mut multiple, available, &styles, dpi);
+            assert_eq!(wire(&multiple), first_pass);
+            multiple
+                .controls
+                .push(Control::PageNumberPos(Default::default()));
+            multiple.char_count = 33;
+            reflow_line_segs(&mut multiple, available, &styles, dpi);
+            assert_eq!(
+                multiple
+                    .line_segs
+                    .iter()
+                    .map(|s| s.text_start)
+                    .collect::<Vec<_>>(),
+                [0, 16, 24]
+            );
+            for table in [1, 4] {
+                assert_eq!(inline_table_host_line_index(&multiple, table), None);
+            }
+        }
     }
 
     #[test]
@@ -3217,13 +4063,36 @@ mod inline_equation_15pt_wrap_tests {
                     .unwrap_or(text_chars.len());
                 let mut w = 0.0f64;
                 let mut lang = 0usize;
+                let mut legacy_lang = 0usize;
                 for ci in start_ci..end_ci.min(text_chars.len()) {
                     let c = text_chars[ci];
-                    if !is_lang_neutral(c) {
-                        lang = detect_lang_category(c);
+                    if !is_occurrence_lang_neutral(
+                        c,
+                        ci,
+                        &para.special_space_origins,
+                        styles.font_metrics_policy,
+                    ) {
+                        legacy_lang = carried_lang_category(
+                            c,
+                            ci,
+                            &para.special_space_origins,
+                            styles.font_metrics_policy,
+                        );
+                        lang = occurrence_lang_category(
+                            c,
+                            ci,
+                            &para.special_space_origins,
+                            styles.font_metrics_policy,
+                        );
+                    } else {
+                        lang = legacy_lang;
                     }
                     let sid = find_active_char_shape(&para.char_shapes, para.char_offsets[ci]);
-                    let ts = resolved_to_text_style(styles, sid, lang);
+                    let ts = resolved_to_text_style(styles, sid, lang).with_origin_range(
+                        &para.special_space_origins,
+                        ci,
+                        ci + 1,
+                    );
                     w += estimate_text_width(&c.to_string(), &ts);
                 }
                 for (k, &pos) in ctrl_positions.iter().enumerate() {
@@ -3236,6 +4105,35 @@ mod inline_equation_15pt_wrap_tests {
                 w
             })
             .collect()
+    }
+
+    #[test]
+    fn control_space_ink_oracle_restores_legacy_neutral_slot() {
+        use crate::model::paragraph::SpecialSpaceOriginKind;
+        use crate::model::provenance::FontMetricsPolicy;
+        let mut st = styles_10pt_default_15pt_body();
+        st.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        st.char_styles[0].font_metrics_policy = st.font_metrics_policy;
+        st.char_styles[0].font_families = vec![st.char_styles[0].font_family.clone(); 7];
+        st.char_styles[0].font_families[5] = "함초롬바탕".into();
+        st.char_styles[0].ratios = vec![0.75, 1.5, 1.0, 1.0, 1.0, 1.25, 1.0];
+        let para = Paragraph {
+            text: "\u{2007}\u{00a0}".into(),
+            char_offsets: vec![0, 1],
+            char_shapes: vec![CharShapeRef::default()],
+            special_space_origins: vec![SpecialSpaceOrigin {
+                char_idx: 0,
+                origin: SpecialSpaceOriginKind::Literal,
+            }],
+            line_segs: vec![LineSeg::default()],
+            ..Default::default()
+        };
+        let literal =
+            resolved_to_text_style(&st, 0, 5).with_origin_range(&para.special_space_origins, 0, 1);
+        let neutral = resolved_to_text_style(&st, 0, 0);
+        let expected =
+            estimate_text_width("\u{2007}", &literal) + estimate_text_width("\u{00a0}", &neutral);
+        assert!((line_ink_widths_px(&para, &st)[0] - expected).abs() < 1e-9);
     }
 
     /// 문자 위치(인라인 개체 anchor)를 포함하는 줄의 시작 문자 인덱스.
@@ -3659,6 +4557,7 @@ mod inline_control_wrap_tests {
                     BreakToken::Space {
                         idx: prefix_len,
                         width: 6.0,
+                        base_width: 6.0,
                         max_font_size: 24.0,
                         is_fixed_width: fixed_space,
                     },
@@ -3695,6 +4594,7 @@ mod inline_control_wrap_tests {
                 .map(|idx| BreakToken::Space {
                     idx,
                     width: 6.0,
+                    base_width: 6.0,
                     max_font_size: 24.0,
                     is_fixed_width: false,
                 })
@@ -3724,6 +4624,68 @@ mod inline_control_wrap_tests {
     }
 
     #[test]
+    fn rewound_space_savings_require_current_line_content() {
+        let prefixes = [
+            (
+                BreakToken::Text {
+                    start_idx: 0,
+                    end_idx: 3,
+                    width: 40.0,
+                    max_font_size: 12.0,
+                    char_widths: vec![],
+                    trailing_spacing: 0.0,
+                    char_spacings: vec![],
+                },
+                true,
+            ),
+            (
+                BreakToken::Tab {
+                    idx: 2,
+                    max_font_size: 12.0,
+                },
+                true,
+            ),
+            (
+                BreakToken::InlineControl {
+                    idx: 2,
+                    width_hwp: 3000,
+                    max_font_size: 12.0,
+                    own_line: false,
+                },
+                true,
+            ),
+            (
+                BreakToken::Space {
+                    idx: 2,
+                    width: 6.0,
+                    base_width: 6.0,
+                    max_font_size: 12.0,
+                    is_fixed_width: true,
+                },
+                false,
+            ),
+        ];
+        for (prefix, has_content) in prefixes {
+            let mut tokens = vec![prefix];
+            for idx in 3..6 {
+                tokens.push(BreakToken::Space {
+                    idx,
+                    width: 6.0,
+                    base_width: 6.0,
+                    max_font_size: 12.0,
+                    is_fixed_width: idx == 4,
+                });
+            }
+            let expected = if has_content { 180 } else { 0 };
+            assert_eq!(
+                recalc_space_savings_hwp(&tokens, tokens.len(), 1, 20),
+                expected
+            );
+            assert_eq!(recalc_space_savings_hwp(&tokens, tokens.len(), 3, 20), 0);
+        }
+    }
+
+    #[test]
     fn condensed_inline_object_keeps_its_attached_suffix() {
         let tokens = vec![
             BreakToken::Text {
@@ -3738,6 +4700,7 @@ mod inline_control_wrap_tests {
             BreakToken::Space {
                 idx: 1,
                 width: 6.0,
+                base_width: 6.0,
                 max_font_size: 12.0,
                 is_fixed_width: false,
             },
@@ -3788,6 +4751,7 @@ mod inline_control_wrap_tests {
             tokens.push(BreakToken::Space {
                 idx,
                 width: 6.0,
+                base_width: 6.0,
                 max_font_size: 12.0,
                 is_fixed_width: false,
             });
@@ -3847,6 +4811,7 @@ mod inline_control_wrap_tests {
             BreakToken::Space {
                 idx: 2,
                 width: 6.0,
+                base_width: 6.0,
                 max_font_size: 12.0,
                 is_fixed_width: false,
             },
@@ -4034,6 +4999,8 @@ mod inline_control_wrap_tests {
             para.line_segs[1].line_height >= 5000,
             "picture line must reserve its full height"
         );
+        assert_eq!(para.line_segs[1].text_start, 10);
+        assert!(para.line_segs[2].text_start >= 18);
         assert!(
             para.line_segs[2..]
                 .iter()
@@ -4108,14 +5075,72 @@ mod inline_control_wrap_tests {
 
         assert_eq!(para.line_segs.len(), 3);
         assert_eq!(para.line_segs[0].text_start, 0);
-        // 2번째 줄은 수식 anchor(문자 10 → UTF-16 18)에서 시작
-        assert_eq!(para.line_segs[1].text_start, 18);
+        // 2번째 줄은 수식 슬롯(UTF-16 10..18) 자체에서 시작한다.
+        assert_eq!(para.line_segs[1].text_start, 10);
         // 3번째 줄은 "dddd"(문자 15 → UTF-16 23)
         assert_eq!(para.line_segs[2].text_start, 23);
         // 수식이 놓인 2번째 줄만 수식 높이(5000 HWP)로 커진다
         assert!(para.line_segs[1].line_height >= 5000);
         assert_eq!(para.line_segs[0].line_height, 1200);
         assert_eq!(para.line_segs[2].line_height, 1200);
+    }
+
+    #[test]
+    fn reflow_preserves_placeholder_and_explicit_empty_line_starts() {
+        let mut marker = Paragraph {
+            text: "aaaa bbbb \u{FFFC}cccc dddd".into(),
+            char_offsets: (0..20).collect(),
+            char_count: 21,
+            char_shapes: vec![CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 0,
+            }],
+            controls: vec![tac_equation_script(4000, 5000, &"x".repeat(9))],
+            line_segs: vec![LineSeg::default()],
+            ..Default::default()
+        };
+        reflow_line_segs(&mut marker, 100.0, &styles_16px(), 96.0);
+        assert_eq!(marker.line_segs[1].text_start, 10);
+        assert!(marker.line_segs[1].line_height >= 5000);
+
+        let mut text = Paragraph {
+            text: "😀\n\nb".into(),
+            char_offsets: vec![0, 2, 3, 4],
+            char_count: 6,
+            line_segs: vec![LineSeg::default()],
+            ..Default::default()
+        };
+        reflow_line_segs(&mut text, 100.0, &styles_16px(), 96.0);
+        assert_eq!(
+            text.line_segs
+                .iter()
+                .map(|line| line.text_start)
+                .collect::<Vec<_>>(),
+            vec![0, 3, 4]
+        );
+    }
+
+    #[test]
+    fn compound_field_slots_do_not_claim_a_placeholder_equation_anchor() {
+        let mut para = Paragraph {
+            text: "aaaa bbbb \u{FFFC}cccc dddd".into(),
+            // 같은 위치의 FIELD_BEGIN/END 두 슬롯 뒤에 실제 개체 marker가 있다.
+            char_offsets: (0..20).map(|i| if i < 10 { i } else { i + 16 }).collect(),
+            char_count: 37,
+            char_shapes: vec![CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 0,
+            }],
+            controls: vec![
+                Control::Field(Default::default()),
+                tac_equation_script(4000, 5000, &"x".repeat(9)),
+            ],
+            line_segs: vec![LineSeg::default()],
+            ..Default::default()
+        };
+        reflow_line_segs(&mut para, 100.0, &styles_16px(), 96.0);
+        assert_eq!(para.line_segs[1].text_start, 26);
+        assert!(para.line_segs[1].line_height >= 5000);
     }
 
     /// 인라인 수식이 줄에 들어가면 불필요한 줄 나눔이 생기지 않는다.
@@ -4248,7 +5273,7 @@ pub(crate) fn reflow_line_segs(
     styles: &ResolvedStyleSet,
     dpi: f64,
 ) {
-    reflow_line_segs_with_squeeze(para, available_width_px, styles, dpi, false);
+    reflow_line_segs_with_squeeze(para, available_width_px, styles, dpi, false, false);
 }
 
 /// 각주 번호의 모델 공백은 실제 번호 문자열의 자리다. 렌더와 같은 자간 없는
@@ -4312,7 +5337,10 @@ pub(crate) fn reflow_line_segs_with_squeeze(
     styles: &ResolvedStyleSet,
     dpi: f64,
     squeeze: bool,
+    known_horizontal: bool,
 ) {
+    let head_reserve =
+        crate::renderer::layout::paragraph_head_reserve_px(styles, para, dpi, known_horizontal);
     reflow_line_segs_with_wrap_exclusions(
         para,
         available_width_px,
@@ -4321,17 +5349,48 @@ pub(crate) fn reflow_line_segs_with_squeeze(
         squeeze,
         &[],
         false,
+        Some(head_reserve),
     );
 }
 
 /// 앞 문단의 어울림 영역은 단 기준 x, 현재 문단 기준 y로 전달한다.
 /// 반환값도 같은 좌표계이며 현재 문단이 새로 소유하는 영역만 포함한다.
+pub(crate) fn reflow_line_segs_with_head(
+    para: &mut Paragraph,
+    width: f64,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+    head_reserve: (f64, f64),
+) {
+    reflow_line_segs_with_wrap_exclusions(
+        para,
+        width,
+        styles,
+        dpi,
+        false,
+        &[],
+        false,
+        Some(head_reserve),
+    );
+}
+
 pub(crate) fn reflow_line_segs_with_exclusions(
+    para: &mut Paragraph,
+    width: f64,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+    preceding: &[FloatExclusion],
+) -> Vec<FloatExclusion> {
+    reflow_line_segs_with_exclusions_and_head(para, width, styles, dpi, preceding, None)
+}
+
+pub(crate) fn reflow_line_segs_with_exclusions_and_head(
     para: &mut Paragraph,
     available_width_px: f64,
     styles: &ResolvedStyleSet,
     dpi: f64,
     preceding: &[FloatExclusion],
+    head_reserve: Option<(f64, f64)>,
 ) -> Vec<FloatExclusion> {
     reflow_line_segs_with_wrap_exclusions(
         para,
@@ -4341,6 +5400,7 @@ pub(crate) fn reflow_line_segs_with_exclusions(
         false,
         preceding,
         true,
+        head_reserve,
     );
     let style = styles.para_styles.get(para.para_shape_id as usize);
     let margins = style.map_or((0.0, 0.0), |s| (s.margin_left, s.margin_right));
@@ -4382,7 +5442,11 @@ fn reflow_line_segs_with_wrap_exclusions(
     squeeze: bool,
     preceding: &[FloatExclusion],
     generated_body: bool,
+    head_reserve: Option<(f64, f64)>,
 ) {
+    // 실제 편집 reflow는 새 줄의 권위다. 이전 저장 줄로 되돌리지 않는다.
+    para.cached_equation_line_origin = None;
+    crate::renderer::float_placement::normalize_leading_host_layout(para, styles);
     // HWPX 저장 탭 이동량은 원래 줄에서만 유효하다.
     for tab in &mut para.tab_extended {
         tab[5] &= !0x4000;
@@ -4482,6 +5546,13 @@ fn reflow_line_segs_with_wrap_exclusions(
                             find_active_char_shape(&para.char_shapes, control_anchors[ci]),
                         ) > 0.0
                 });
+        // 새 접두 줄은 저장 줄 소비자가 같은 실제 앵커를 복원할 때만 만든다.
+        let can_split_fresh_control_prefix = use_control_font_basis
+            && para.char_offsets.is_empty()
+            && control_stream_starts(para, &para.control_text_positions())
+                .iter()
+                .zip(&control_anchors)
+                .all(|(resolved, actual)| *resolved == Some(*actual));
         let has_ruby = para
             .controls
             .iter()
@@ -4514,12 +5585,17 @@ fn reflow_line_segs_with_wrap_exclusions(
                 // 쪽번호 컨트롤 줄 th 100 + 48263 HU 표 줄, 한컴 PDF 표 1.44pt 아래).
                 // 구역/단 정의뿐이면 한 줄로 둔다: 한컴은 저장 줄이 둘이어도 표를 문단
                 // 상단에 그리고 쪽에 담는다 (hcar-001 s1·gov-fire-report 표 위치, 6쪽).
-                let ctrl_line_before = !use_control_font_basis
-                    && !has_ruby
+                // 글꼴 측정과 논리적 줄 소유는 별개다. fresh 경로에서 실제로 방문하는
+                // 폭 0 쪽번호 컨트롤은 앵커가 확인된 스트림에서만 별도 줄로 보존한다.
+                let ctrl_line_before = !has_ruby
                     && ci > line_first_ctrl
-                    && para.controls[line_first_ctrl..ci]
-                        .iter()
-                        .any(|c| !matches!(c, Control::SectionDef(_) | Control::ColumnDef(_)));
+                    && para.controls[line_first_ctrl..ci].iter().any(|c| {
+                        if use_control_font_basis {
+                            can_split_fresh_control_prefix && matches!(c, Control::PageNumberPos(_))
+                        } else {
+                            !matches!(c, Control::SectionDef(_) | Control::ColumnDef(_))
+                        }
+                    });
                 let wraps = match metrics {
                     Some(m) => {
                         (line_width > 0 || ctrl_line_before)
@@ -4688,7 +5764,8 @@ fn reflow_line_segs_with_wrap_exclusions(
                 .first()
                 .and_then(|char_shape| styles.char_styles.get(char_shape.char_shape_id as usize))
                 .map(|style| style.font_size)
-                .unwrap_or(12.0);
+                .unwrap_or(12.0)
+                .max(paragraph_head_font_size(styles, para_style));
             let mut seg = make_line_seg(0, font_size);
             if let Some(template) = orig.as_ref() {
                 seg.vertical_pos = template.vertical_pos;
@@ -4724,6 +5801,7 @@ fn reflow_line_segs_with_wrap_exclusions(
     // (수식은 텍스트 흐름 개체). 블록형 개체 줄에서 넘치는 후행 토큰은 통째로
     // 다음 줄로 본내 한 글자 run 조각남을 피한다 (pr_2219).
     let mut control_positions = para.control_text_positions();
+    let control_stream_starts = control_stream_starts(para, &control_positions);
     crate::renderer::ruby::project_control_positions(para, &mut control_positions);
     let mut inline_controls: Vec<(usize, i32, bool)> = para
         .controls
@@ -4754,6 +5832,7 @@ fn reflow_line_segs_with_wrap_exclusions(
 
     // 토큰화 → 줄 채움 → LineSeg 생성
     let mut tokens = tokenize_paragraph_with_controls(
+        &para.special_space_origins,
         &text_chars,
         &para.char_offsets,
         &para.char_shapes,
@@ -4773,7 +5852,9 @@ fn reflow_line_segs_with_wrap_exclusions(
         hwpunit_to_px(lh + sp, dpi)
     };
     // 문단 머리(번호/글머리표) 폭 — macOS 한컴은 첫 줄을 그만큼 덜 채운다 (aift p37).
-    let mut head_reserve_px = crate::renderer::layout::paragraph_head_reserve_px(styles, para, dpi);
+    let mut head_reserve_px = head_reserve.unwrap_or_else(|| {
+        crate::renderer::layout::paragraph_head_reserve_px(styles, para, dpi, false)
+    });
     if generated_body {
         // 본문 참조 번호는 첫 줄 앞에 그려진다. 합성 단계부터 같은 폭을 예약해
         // 뒤늦은 캐시 재조판이 다른 줄의 개체 높이를 이어받지 않게 한다.
@@ -4851,24 +5932,31 @@ fn reflow_line_segs_with_wrap_exclusions(
         ),
         _ => line_breaks_full,
     };
-    // 문단 머리(번호/글머리표)는 자기 글자 모양으로 첫 줄에 놓인다 — 그 크기가 본문보다
-    // 크면 첫 줄 높이가 커진다 (오라클 H4: exam-social 11.5pt 본문 + 14pt 번호 → 1400).
-    let head_font_size = paragraph_head_font_size(styles, para_style);
-    // 문단 끝 표시(문단 부호)의 글자 모양도 마지막 줄 높이에 든다 — 끝에 빈 run 으로
-    // 남은 큰 글자 모양 (오라클 H4: aift 11pt 본문 + 끝 16pt run → 1600).
-    let end_mark_font_size = {
-        let end_pos = para
-            .char_offsets
-            .last()
-            .zip(text_chars.last())
-            .map(|(&off, ch)| off + ch.len_utf16() as u32)
-            .unwrap_or(0);
-        let style_id = find_active_char_shape(&para.char_shapes, end_pos);
-        style_font_size(styles, style_id)
-    };
+    let mut inline_line_starts = vec![None; line_breaks.len()];
+    for (ci, control) in para.controls.iter().enumerate() {
+        let Some(anchor) = control_stream_starts.get(ci).copied().flatten() else {
+            continue;
+        };
+        if matches!(control, Control::Form(_))
+            || ruby_control_metrics(para, ci, styles, dpi)
+                .or_else(|| inline_control_metrics_hwp(control))
+                .is_none()
+        {
+            continue;
+        }
+        let position = control_positions.get(ci).copied().unwrap_or(text_len);
+        let owner = inline_control_line_index(control, &line_breaks, position);
+        if line_breaks
+            .get(owner)
+            .is_some_and(|line| line.start_idx == position)
+        {
+            let start = &mut inline_line_starts[owner];
+            *start = Some(start.map_or(anchor, |previous: u32| previous.min(anchor)));
+        }
+    }
     let mut new_line_segs: Vec<LineSeg> = Vec::new();
-    for lb in &line_breaks {
-        let utf16_start = if new_line_segs.is_empty() {
+    for (line_index, lb) in line_breaks.iter().enumerate() {
+        let text_utf16_start = if new_line_segs.is_empty() {
             0 // 첫 번째 줄의 text_start는 항상 0 (문단 시작)
         } else if lb.start_idx < para.char_offsets.len() {
             para.char_offsets[lb.start_idx]
@@ -4885,17 +5973,18 @@ fn reflow_line_segs_with_wrap_exclusions(
         } else {
             lb.start_idx as u32
         };
+        let utf16_start = if line_index == 0 {
+            text_utf16_start
+        } else {
+            inline_line_starts[line_index]
+                .filter(|anchor| *anchor <= text_utf16_start)
+                .unwrap_or(text_utf16_start)
+        };
         let mut fs = if lb.max_font_size > 0.0 {
             lb.max_font_size
         } else {
             12.0
         };
-        if new_line_segs.is_empty() {
-            fs = fs.max(head_font_size);
-        }
-        if std::ptr::eq(lb, line_breaks.last().unwrap_or(lb)) {
-            fs = fs.max(end_mark_font_size);
-        }
         let mut seg = make_line_seg(utf16_start as u32, fs);
         let end_pos = para
             .char_offsets
@@ -4908,7 +5997,16 @@ fn reflow_line_segs_with_wrap_exclusions(
                     .map(|(&offset, ch)| offset + ch.len_utf16() as u32)
                     .unwrap_or(0)
             });
-        apply_char_border_line_metrics(&mut seg, end_pos, para, styles, dpi, ls_type, ls_value);
+        apply_text_line_metrics(
+            &mut seg,
+            para,
+            styles,
+            dpi,
+            end_pos,
+            fs,
+            line_index == 0,
+            line_index + 1 == line_breaks.len(),
+        );
         new_line_segs.push(seg);
     }
 
@@ -5012,7 +6110,8 @@ fn baseline_for_vertical_align(text_height_hwp: i32, vertical_align: u8) -> i32 
         3 => 1.0,
         _ => 0.85,
     };
-    round_half_away(text_height_hwp as f64 * ratio)
+    // Polaris HWP 줄 저장기는 binary32 곱셈 뒤 BrFRound를 적용한다.
+    round_half_away(f64::from(text_height_hwp as f32 * ratio as f32))
 }
 
 /// 한컴 저장 LINE_SEG 의 줄 시작 위치와 줄 플래그 (lineseg 오라클 C1/G1/G2).
@@ -5113,9 +6212,41 @@ pub(crate) fn recalculate_section_vpos(
     dpi: f64,
     is_hwp3_variant: bool,
 ) {
+    recalculate_section_vpos_for_body(
+        paragraphs,
+        start_para,
+        ignore_reset_range,
+        start_stored_end,
+        styles,
+        dpi,
+        is_hwp3_variant,
+        false,
+    );
+}
+
+/// 인증된 자연 흐름의 편집 범위에서는 fit으로 생긴 암시적 프레임 원점을 다시 잇는다.
+pub(crate) fn recalculate_section_vpos_for_body(
+    paragraphs: &mut [Paragraph],
+    start_para: usize,
+    ignore_reset_range: Option<std::ops::Range<usize>>,
+    start_stored_end: Option<i32>,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+    is_hwp3_variant: bool,
+    rejoin_implicit_frames: bool,
+) {
     if paragraphs.is_empty() || start_para >= paragraphs.len() {
         return;
     }
+
+    // 인증 해제 시 원본 capture와 실제 줄 좌표를 같은 축으로 한 번만 바꾼다.
+    for paragraph in paragraphs.iter_mut() {
+        crate::renderer::float_placement::normalize_leading_host_layout(paragraph, styles);
+    }
+    let start_stored_end = match paragraphs[start_para].leading_host_rollback_bound.take() {
+        Some((native_end, legacy_end)) if start_stored_end == Some(native_end) => Some(legacy_end),
+        _ => start_stored_end,
+    };
 
     // 문단 경계 gap (HWPUNIT) = 앞 문단 spacing_after + 뒤 문단 spacing_before.
     // recalculate_cell_paragraph_vpos 의 boundary_gaps 와 동일 산식.
@@ -5139,14 +6270,7 @@ pub(crate) fn recalculate_section_vpos(
     // 줄 전진량 — 로드 경로와 동일한 TAC th-관례. saturating: 조작 파일의 극단
     // spacing/좌표로 i32 가 넘치지 않게 한다 (release wasm 은 overflow-check 가
     // 없어 무음 랩 → 전 문단 오판으로 이어진다).
-    let seg_advance = |ls: &LineSeg| -> i32 {
-        let height = if ls.text_height > 0 {
-            ls.text_height
-        } else {
-            ls.line_height
-        };
-        height.saturating_add(ls.line_spacing)
-    };
+    let seg_advance = saved_line_advance;
     // 문단 흐름 끝. 문단에 앵커된 자리차지(TopAndBottom) 표가 줄들보다 아래로
     // 내려가면 다음 문단은 그 표 아래(세로 오프셋 + 높이 + 바깥 여백 위/아래)에서
     // 시작한다 (한컴 저장 vpos, 오라클 군집 15: aift s2/p57 0+6205+282=6487,
@@ -5157,6 +6281,9 @@ pub(crate) fn recalculate_section_vpos(
             .line_segs
             .last()
             .map(|ls| ls.vertical_pos.saturating_add(seg_advance(ls)))?;
+        if crate::renderer::float_placement::leading_host_reserve(p) > 0 {
+            return Some(lines_end);
+        }
         let block_end = p
             .controls
             .iter()
@@ -5193,21 +6320,18 @@ pub(crate) fn recalculate_section_vpos(
     let mut next_vpos = match prev_idx {
         Some(pp) => seg_end(&paragraphs[pp]).unwrap_or(0),
         // 첫 문단: 기존 vpos 유지
-        None => paragraphs[start_para]
-            .line_segs
-            .first()
-            .map(|ls| ls.vertical_pos)
+        None => crate::renderer::float_placement::paragraph_flow_anchor(&paragraphs[start_para])
             .unwrap_or(0),
     };
     // 리셋 감지 기준 — 직전 문단의 "이동 전(저장)" first/end.
     let mut orig_prev_first: Option<i32> = prev_idx
-        .and_then(|pp| paragraphs[pp].line_segs.first())
-        .map(|ls| ls.vertical_pos);
+        .and_then(|pp| crate::renderer::float_placement::paragraph_flow_anchor(&paragraphs[pp]));
     let mut orig_prev_end: Option<i32> = prev_idx.and_then(|pp| seg_end(&paragraphs[pp]));
     // 직전 문단이 이번 편집의 변조 대상이었는가 + 직전 문단에 적용된 delta.
     let mut prev_modified = false;
     let mut prev_delta: i32 = 0;
 
+    let mut rejoin_implicit_frames = rejoin_implicit_frames;
     for pi in start_para..paragraphs.len() {
         if paragraphs[pi].line_segs.is_empty() {
             continue;
@@ -5215,6 +6339,8 @@ pub(crate) fn recalculate_section_vpos(
 
         let para_modified = pi == start_para || is_ignored(pi);
         let current_start = paragraphs[pi].line_segs[0].vertical_pos;
+        let prefix = crate::renderer::float_placement::leading_host_reserve(&paragraphs[pi]);
+        let current_anchor = current_start.saturating_sub(prefix);
         let is_original_lineseg =
             paragraphs[pi].line_segs[0].tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0;
 
@@ -5234,24 +6360,53 @@ pub(crate) fn recalculate_section_vpos(
         };
         let is_reset = is_original_lineseg
             && !is_ignored(pi)
-            && prev_stored_bound.is_some_and(|bound| current_start < bound);
+            && prev_stored_bound.is_some_and(|bound| current_anchor < bound);
+        let para = &paragraphs[pi];
+        let explicit_boundary = !matches!(
+            para.column_type,
+            crate::model::paragraph::ColumnBreakType::None
+        ) || styles
+            .para_styles
+            .get(para.para_shape_id as usize)
+            .is_some_and(|style| style.page_break_before);
+        let selected_explicit_boundary = rejoin_implicit_frames && explicit_boundary;
+        // 원본 내부 줄 리셋과 개체/단 정의의 별도 배치 규칙은 기존 경로에 남긴다.
+        let intra_paragraph_frame = para
+            .line_segs
+            .iter()
+            .skip(1)
+            .any(|line| line.vertical_pos == 0)
+            || para
+                .line_segs
+                .windows(2)
+                .any(|pair| pair[1].vertical_pos < pair[0].vertical_pos);
+        if !para.controls.is_empty()
+            || intra_paragraph_frame
+            || (explicit_boundary && pi > start_para)
+        {
+            rejoin_implicit_frames = false;
+        }
+        let cached_frame_rewind = rejoin_implicit_frames && is_reset && !explicit_boundary;
 
-        let delta = if is_reset {
+        let delta = if selected_explicit_boundary || (is_reset && !cached_frame_rewind) {
             // 단/쪽 리셋 경계 — 저장 좌표 유지.
             0
-        } else if para_modified || prev_modified {
+        } else if para_modified || prev_modified || cached_frame_rewind {
             // 변조 인접 경계 — 이동 후 흐름에 스타일 여백 gap 으로 다시 잇는다.
             let gap = prev_idx
                 .map(|pp| boundary_gap(&paragraphs[pp], &paragraphs[pi]))
                 .unwrap_or(0);
-            next_vpos.saturating_add(gap) - current_start
+            next_vpos
+                .saturating_add(gap)
+                .saturating_add(prefix)
+                .saturating_sub(current_start)
         } else {
             // 미변조 연속 경계 — 직전 delta 캐리로 기존 간격을 정확히 보존.
             prev_delta
         };
 
         // 다음 문단의 리셋 감지 기준은 "이동 전(저장)" first/end 로 기록한다.
-        let orig_first = current_start;
+        let orig_first = current_anchor;
         let orig_end = seg_end(&paragraphs[pi]);
 
         if delta != 0 {
@@ -5278,15 +6433,17 @@ pub(crate) fn recalculate_section_vpos(
 /// `start_stored_end` 로 전달하기 위한 헬퍼 — reflow 가 end 를 덮은 뒤에는 저장
 /// 좌표를 복원할 수 없다.
 pub(crate) fn paragraph_flow_end(para: &Paragraph) -> Option<i32> {
-    para.line_segs.last().map(|ls| {
-        let height = if ls.text_height > 0 {
-            ls.text_height
-        } else {
-            ls.line_height
-        };
-        ls.vertical_pos
-            .saturating_add(height.saturating_add(ls.line_spacing))
-    })
+    // reset capture는 fallback block max와 다르다. 인증 무효라면 해제 후의 글줄 축을 읽는다.
+    crate::renderer::float_placement::effective_host_text_end(para)
+}
+
+fn saved_line_advance(line: &LineSeg) -> i32 {
+    let height = if line.text_height > 0 {
+        line.text_height
+    } else {
+        line.line_height
+    };
+    height.saturating_add(line.line_spacing)
 }
 
 /// font_size(px)를 LineSeg의 line_height(HWPUNIT)로 변환한다.
@@ -5403,6 +6560,411 @@ mod hancom_break_rule_tests {
         match tok {
             BreakToken::Text { width, .. } => *width,
             _ => 0.0,
+        }
+    }
+
+    #[test]
+    fn literal_nbsp_initial_eng_base_tracking_agree_in_fit_and_carets() {
+        use crate::model::paragraph::SpecialSpaceOriginKind as Kind;
+        use crate::model::provenance::FontMetricsPolicy;
+        let mut st = styles("HY신명조", 20.0, 0.0);
+        st.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        let cs = &mut st.char_styles[0];
+        cs.font_metrics_policy = st.font_metrics_policy;
+        cs.font_families[1] = "Times New Roman".into();
+        cs.font_families[5] = "함초롬바탕".into();
+        cs.relative_sizes = vec![1.0, 1.06, 1.0, 1.0, 1.0, 0.8, 1.0];
+        cs.ratios = vec![0.95, 1.2, 1.0, 1.0, 1.0, 0.75, 1.0];
+        cs.letter_spacings = vec![-1.0, -2.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let text = "①\u{00a0}X";
+        let chars: Vec<char> = text.chars().collect();
+        let offsets = vec![0, 1, 2];
+        let shapes = vec![CharShapeRef::default()];
+        let origins = vec![SpecialSpaceOrigin {
+            char_idx: 1,
+            origin: Kind::Literal,
+        }];
+        let para = Paragraph {
+            text: text.into(),
+            char_offsets: offsets.clone(),
+            char_count: 4,
+            char_shapes: shapes.clone(),
+            special_space_origins: origins.clone(),
+            line_segs: vec![LineSeg::default()],
+            ..Default::default()
+        };
+        let composed = super::super::compose_paragraph_with_policy(&para, st.font_metrics_policy);
+        let selected = composed.lines[0]
+            .runs
+            .iter()
+            .find(|run| run.text.contains('\u{00a0}'))
+            .unwrap()
+            .text_style(&st);
+        assert_eq!(selected.font_family, "Times New Roman");
+        assert!((selected.font_size - 21.2).abs() < 1e-9);
+        assert_eq!(selected.ratio, 1.2);
+        assert_eq!(selected.letter_spacing, -2.0);
+        let expected = super::super::estimate_composed_line_width(&composed.lines[0], &st);
+        let measured = measure_token_width(&origins, text, 0, &offsets, &shapes, &st, 0);
+        assert!((measured - expected).abs() < 1e-9);
+        let linear = measure_grapheme_widths_linear(
+            &origins,
+            &chars,
+            0,
+            chars.len(),
+            &grapheme_end_map(&chars),
+            &offsets,
+            &shapes,
+            &st,
+            0,
+        );
+        assert!((linear.iter().sum::<f64>() - expected).abs() < 1e-9);
+        let nb = resolved_to_text_style(&st, 0, 1).with_origin_range(&origins, 1, 2);
+        assert!(
+            (crate::renderer::layout::compute_char_positions("\u{00a0}", &nb)[1] - linear[1]).abs()
+                < 1e-9
+        );
+        let mut zero = nb.clone();
+        zero.zero_tracking();
+        let delta = estimate_text_width_unrounded("\u{00a0}", &nb)
+            - estimate_text_width_unrounded("\u{00a0}", &zero);
+        assert!(
+            (cluster_letter_spacing_px(&origins, &chars, 1, 2, 1, &offsets, &shapes, &st) - delta)
+                .abs()
+                < 1e-9
+        );
+        let distant = format!("①\u{00a0}{}", " ".repeat(70));
+        let distant_chars: Vec<char> = distant.chars().collect();
+        assert_eq!(
+            trailing_lang_categories(&distant_chars, &origins, st.font_metrics_policy)
+                [distant_chars.len() - 1],
+            1
+        );
+        let tokens = tokenize_paragraph_with_controls(
+            &origins,
+            &chars,
+            &offsets,
+            &shapes,
+            &st,
+            0,
+            0,
+            AutoSpacing::default(),
+            &[],
+        );
+        assert!(!tokens
+            .iter()
+            .any(|tok| matches!(tok, BreakToken::Space { .. })));
+    }
+
+    #[test]
+    fn literal_nbsp_trailing_preserves_legacy_limit_after_carry_reset() {
+        use crate::model::paragraph::SpecialSpaceOriginKind as Kind;
+        use crate::model::provenance::FontMetricsPolicy;
+        let mut st = styles("HY신명조", 20.0, 0.0);
+        st.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        st.char_styles[0].font_metrics_policy = st.font_metrics_policy;
+        st.char_styles[0].font_families[1] = "Times New Roman".into();
+        st.char_styles[0].letter_spacings = vec![0.0; 7];
+        st.char_styles[0].letter_spacings[1] = -2.0;
+        let origins = vec![SpecialSpaceOrigin {
+            char_idx: 1,
+            origin: Kind::Literal,
+        }];
+        for (text, marked, expected_lang) in [
+            (format!("①\u{00a0}{}", "\u{00a0}".repeat(70)), true, 1),
+            (format!("①\u{00a0}X{}", "\u{00a0}".repeat(70)), true, 0),
+            (format!("X{}", "\u{00a0}".repeat(70)), false, 0),
+            (format!("X{}", "\u{00a0}".repeat(63)), false, 1),
+            (format!("X{}", "\u{00a0}".repeat(64)), false, 0),
+            ("\u{00a0}".repeat(70), false, 0),
+        ] {
+            let chars: Vec<char> = text.chars().collect();
+            let offsets: Vec<u32> = (0..chars.len() as u32).collect();
+            let shapes = vec![CharShapeRef::default()];
+            let selected_origins = if marked { origins.as_slice() } else { &[] };
+            let mut tokens = vec![BreakToken::Text {
+                start_idx: 0,
+                end_idx: chars.len(),
+                width: 0.0,
+                max_font_size: 20.0,
+                char_widths: Vec::new(),
+                trailing_spacing: 0.0,
+                char_spacings: Vec::new(),
+            }];
+            annotate_trailing_spacing(
+                selected_origins,
+                &mut tokens,
+                &chars,
+                &grapheme_end_map(&chars),
+                &offsets,
+                &shapes,
+                &st,
+                AutoSpacing::default(),
+            );
+            let expected = resolved_to_text_style(&st, 0, expected_lang);
+            let mut zero = expected.clone();
+            zero.zero_tracking();
+            let delta = estimate_text_width_unrounded("\u{00a0}", &expected)
+                - estimate_text_width_unrounded("\u{00a0}", &zero);
+            let BreakToken::Text {
+                trailing_spacing, ..
+            } = &tokens[0]
+            else {
+                unreachable!()
+            };
+            assert!((trailing_spacing - delta).abs() < 1e-9, "{text:?}");
+            assert_eq!(*trailing_spacing == 0.0, expected_lang == 0);
+            if marked {
+                for (policy, raw) in [
+                    (FontMetricsPolicy::HcrDeclared, true),
+                    (FontMetricsPolicy::HancomWindows, false),
+                ] {
+                    let mut other_origins = origins.clone();
+                    if raw {
+                        other_origins[0].origin = Kind::NbSpace;
+                    }
+                    assert_eq!(
+                        trailing_lang_categories(&chars, &other_origins, policy)[chars.len() - 1],
+                        0
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn control_space_literal_selection_agrees_with_composition_and_tokens() {
+        use crate::model::paragraph::SpecialSpaceOriginKind as Kind;
+        use crate::model::provenance::FontMetricsPolicy;
+        let mut st = styles("HY신명조", 20.0, 0.0);
+        st.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        st.char_styles[0].font_metrics_policy = st.font_metrics_policy;
+        st.char_styles[0].font_families[5] = "함초롬바탕".into();
+        let text = "가\u{2007}나";
+        let chars: Vec<char> = text.chars().collect();
+        let offsets = vec![0, 1, 2];
+        let shapes = vec![CharShapeRef::default()];
+        let origins = vec![SpecialSpaceOrigin {
+            char_idx: 1,
+            origin: Kind::Literal,
+        }];
+        let para = Paragraph {
+            text: text.into(),
+            char_count: 4,
+            char_offsets: offsets.clone(),
+            char_shapes: shapes.clone(),
+            special_space_origins: origins.clone(),
+            line_segs: vec![LineSeg {
+                text_start: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let composed = super::super::compose_paragraph_with_policy(&para, st.font_metrics_policy);
+        let expected = super::super::estimate_composed_line_width(&composed.lines[0], &st);
+        let measured = measure_token_width(&origins, text, 0, &offsets, &shapes, &st, 0);
+        assert!((measured - expected).abs() < 1e-9);
+        let toks = tokenize_paragraph_with_controls(
+            &origins,
+            &chars,
+            &offsets,
+            &shapes,
+            &st,
+            0,
+            0,
+            AutoSpacing::default(),
+            &[],
+        );
+        let total = toks
+            .iter()
+            .map(|token| match token {
+                BreakToken::Text { width, .. } | BreakToken::Space { width, .. } => *width,
+                _ => 0.0,
+            })
+            .sum::<f64>();
+        assert!((total - measured).abs() < 1e-9);
+        assert_eq!(
+            trailing_lang_categories(&chars, &origins, st.font_metrics_policy)[1],
+            5
+        );
+        assert_eq!(
+            trailing_lang_categories(&chars, &[], st.font_metrics_policy)[1],
+            0
+        );
+        let raw = vec![SpecialSpaceOrigin {
+            char_idx: 1,
+            origin: Kind::FwSpace,
+        }];
+        assert_eq!(
+            trailing_lang_categories(&chars, &raw, st.font_metrics_policy)[1],
+            0
+        );
+        st.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+        assert_eq!(
+            trailing_lang_categories(&chars, &origins, st.font_metrics_policy)[1],
+            0
+        );
+    }
+
+    #[test]
+    fn raw31_eng_tracking_matches_token_grapheme_caret_and_trailing_widths() {
+        use crate::model::paragraph::SpecialSpaceOriginKind;
+        use crate::model::provenance::FontMetricsPolicy;
+        use crate::renderer::ControlSpaceBase;
+        let mut st = styles("RHWP unknown tracking face", 20.0, 0.0);
+        st.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        st.char_styles[0].font_metrics_policy = st.font_metrics_policy;
+        st.char_styles[0].control_space_base = Some(ControlSpaceBase {
+            height_hu: 1000,
+            korean_relative_size: 100,
+            korean_ratio: 100,
+            raw31_eng_tracking_percent: None,
+        });
+        let text = "\u{2007}";
+        let chars = vec!['\u{2007}'];
+        let offsets = vec![0];
+        let shapes = vec![CharShapeRef::default()];
+        let origins = vec![SpecialSpaceOrigin {
+            char_idx: 0,
+            origin: SpecialSpaceOriginKind::FwSpace,
+        }];
+        for percent in [None, Some(-17), Some(0), Some(17)] {
+            st.char_styles[0]
+                .control_space_base
+                .as_mut()
+                .unwrap()
+                .raw31_eng_tracking_percent = percent;
+            let ts = resolved_to_text_style(&st, 0, 0).with_origin_range(&origins, 0, 1);
+            let width = crate::renderer::layout::compute_char_positions(text, &ts)[1];
+            assert!(
+                (measure_token_width(&origins, text, 0, &offsets, &shapes, &st, 0) - width).abs()
+                    < 1e-9
+            );
+            assert!(
+                (measure_grapheme_metrics(&origins, &chars, 0, 1, &offsets, &shapes, &st, 0).0
+                    - width)
+                    .abs()
+                    < 1e-9
+            );
+            assert!(
+                (measure_grapheme_widths_linear(
+                    &origins,
+                    &chars,
+                    0,
+                    1,
+                    &[1],
+                    &offsets,
+                    &shapes,
+                    &st,
+                    0
+                )[0] - width)
+                    .abs()
+                    < 1e-9
+            );
+            let mut untracked = ts.clone();
+            untracked.zero_tracking();
+            let delta = width - estimate_text_width_unrounded(text, &untracked);
+            assert!(
+                (cluster_letter_spacing_px(&origins, &chars, 0, 1, 0, &offsets, &shapes, &st)
+                    - delta)
+                    .abs()
+                    < 1e-9
+            );
+            assert_eq!(delta == 0.0, percent.is_none_or(|v| v == 0));
+            let toks = tokenize_paragraph_with_controls(
+                &origins,
+                &chars,
+                &offsets,
+                &shapes,
+                &st,
+                0,
+                0,
+                AutoSpacing::default(),
+                &[],
+            );
+            assert!(
+                matches!(toks.as_slice(), [BreakToken::Space { width: w, .. }] if (*w - width).abs() < 1e-9)
+            );
+            let lines = fill_lines(
+                &toks,
+                &chars,
+                width + 0.1,
+                0.0,
+                (0.0, 0.0),
+                None,
+                1,
+                0,
+                0,
+                None,
+            );
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0].end_idx, 1);
+        }
+    }
+
+    #[test]
+    fn control_space_legacy_carry_survives_distant_literal_and_neutrals() {
+        use crate::model::paragraph::SpecialSpaceOriginKind;
+        use crate::model::provenance::FontMetricsPolicy;
+        let mut st = styles("HY신명조", 20.0, 0.0);
+        st.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        st.char_styles[0].font_metrics_policy = st.font_metrics_policy;
+        st.char_styles[0].font_families[1] = "Times New Roman".into();
+        st.char_styles[0].font_families[5] = "함초롬바탕".into();
+        st.char_styles[0].ratios = vec![0.75, 1.5, 1.0, 1.0, 1.0, 1.25, 1.0];
+        for prefix in ["\u{2007}A", "\u{2007}"] {
+            let text = format!("{prefix}{}", "\u{00a0}".repeat(70));
+            let chars: Vec<char> = text.chars().collect();
+            let offsets: Vec<u32> = (0..chars.len() as u32).collect();
+            let shapes = vec![CharShapeRef::default()];
+            let origins = vec![SpecialSpaceOrigin {
+                char_idx: 0,
+                origin: SpecialSpaceOriginKind::Literal,
+            }];
+            let expected_lang = if prefix.ends_with('A') { 1 } else { 0 };
+            let (width, _, carry) = measure_grapheme_metrics(
+                &origins,
+                &chars,
+                0,
+                chars.len(),
+                &offsets,
+                &shapes,
+                &st,
+                0,
+            );
+            assert_eq!(carry, expected_lang);
+            let linear = measure_grapheme_widths_linear(
+                &origins,
+                &chars,
+                0,
+                chars.len(),
+                &grapheme_end_map(&chars),
+                &offsets,
+                &shapes,
+                &st,
+                0,
+            );
+            assert!((linear.iter().sum::<f64>() - width).abs() < 1e-8);
+            let neutral = estimate_text_width_unrounded(
+                "\u{00a0}",
+                &resolved_to_text_style(&st, 0, expected_lang),
+            );
+            assert!((linear[chars.len() - 1] - neutral).abs() < 1e-9);
+            let mut carry = 0;
+            for index in 0..chars.len() {
+                let (_, _, next) = measure_grapheme_metrics(
+                    &origins,
+                    &chars,
+                    index,
+                    index + 1,
+                    &offsets,
+                    &shapes,
+                    &st,
+                    carry,
+                );
+                carry = next;
+            }
+            assert_eq!(carry, expected_lang);
         }
     }
 
@@ -5534,13 +7096,126 @@ mod hancom_break_rule_tests {
     }
 
     #[test]
+    fn space_condensation_uses_each_runs_untracked_base() {
+        let mut st = styles("", 16.0, 0.0);
+        for (font_size, letter_spacing) in [(20.0, 1.25), (24.0, 1.5)] {
+            let mut style = st.char_styles[0].clone();
+            style.font_size = font_size;
+            style.letter_spacing = letter_spacing;
+            st.char_styles.push(style);
+        }
+        let chars: Vec<_> = "가 나 다".chars().collect();
+        let offsets: Vec<_> = (0..chars.len() as u32).collect();
+        let shapes = [(0, 0), (1, 1), (2, 0), (3, 2), (4, 0)].map(|(start_pos, char_shape_id)| {
+            CharShapeRef {
+                start_pos,
+                char_shape_id,
+            }
+        });
+        let base_widths: Vec<_> = [1, 2]
+            .into_iter()
+            .map(|id| {
+                let mut ts = resolved_to_text_style(&st, id, 0);
+                ts.zero_tracking();
+                to_hwp(estimate_text_width_unrounded(" ", &ts))
+            })
+            .collect();
+        let savings: Vec<_> = base_widths.iter().map(|width| width * 20 / 100).collect();
+        for sign in [-1.0, 0.0, 1.0] {
+            st.char_styles[1].letter_spacing = sign * 1.25;
+            st.char_styles[2].letter_spacing = sign * 1.5;
+            let toks = tokenize_paragraph(&chars, &offsets, &shapes, &st, 0, 0);
+            assert_eq!(
+                recalc_space_savings_hwp(&toks, toks.len(), 0, 20),
+                savings.iter().sum::<i32>()
+            );
+            assert_eq!(
+                recalc_space_savings_hwp(&toks, toks.len(), 2, 20),
+                savings[1]
+            );
+            let natural: i32 = toks
+                .iter()
+                .map(|token| match token {
+                    BreakToken::Text { width, .. } | BreakToken::Space { width, .. } => {
+                        to_hwp(*width)
+                    }
+                    _ => 0,
+                })
+                .sum();
+            let width_hwp = natural - savings.iter().sum::<i32>() + 1;
+            let lines = fill_lines(
+                &toks,
+                &chars,
+                width_hwp as f64 / 75.0,
+                0.0,
+                (0.0, 0.0),
+                None,
+                0,
+                0,
+                20,
+                None,
+            );
+            assert_eq!(lines.len(), 1, "tracking sign={sign}");
+        }
+    }
+
+    #[test]
+    fn leading_spaces_never_gain_condensation_from_later_content() {
+        let st = styles("", 16.0, 0.0);
+        for leading in [1, 3] {
+            let text = format!("{}가나 다라", " ".repeat(leading));
+            let (chars, toks) = tokens(&text, &st, 0, 0);
+            let natural: i32 = toks
+                .iter()
+                .map(|token| match token {
+                    BreakToken::Text { width, .. } | BreakToken::Space { width, .. } => {
+                        to_hwp(*width)
+                    }
+                    _ => 0,
+                })
+                .sum();
+            let interior = toks
+                .iter()
+                .find_map(|token| match token {
+                    BreakToken::Space {
+                        idx, base_width, ..
+                    } if *idx > leading => Some(to_hwp(*base_width)),
+                    _ => None,
+                })
+                .unwrap();
+            for condense in [25, 50, 75] {
+                let saving = interior * i32::from(condense) / 100;
+                assert_eq!(
+                    recalc_space_savings_hwp(&toks, toks.len(), 0, condense),
+                    saving
+                );
+                let width = natural - saving * (leading as i32 + 1) + 1;
+                let lines = fill_lines(
+                    &toks,
+                    &chars,
+                    f64::from(width) / 75.0,
+                    0.0,
+                    (0.0, 0.0),
+                    None,
+                    0,
+                    0,
+                    condense,
+                    None,
+                );
+                assert_eq!(lines.len(), 2, "leading={leading}, condense={condense}");
+                assert_eq!(lines[0].start_idx, 0);
+                assert_eq!(lines[1].start_idx, leading + 3);
+            }
+        }
+    }
+
+    #[test]
     fn condensation_requires_a_space_after_content() {
         let st = styles("", 16.0, 0.0);
         for condense in [25, 50, 75] {
             for (text, blank_line, hard_break) in [
                 ("   가나다라", true, false),
                 ("가   나다라", false, false),
-                ("   가나 다라", false, false),
                 ("\n   가나다라", true, true),
             ] {
                 let (chars, toks) = tokens(text, &st, 0, 0);
@@ -6107,6 +7782,7 @@ mod hancom_break_rule_tests {
             char_shape_id: 0,
         }];
         let plain = tokenize_paragraph_with_controls(
+            &[],
             &chars,
             &offsets,
             &shapes,
@@ -6117,6 +7793,7 @@ mod hancom_break_rule_tests {
             &[],
         );
         let spaced = tokenize_paragraph_with_controls(
+            &[],
             &chars,
             &offsets,
             &shapes,
@@ -6454,5 +8131,211 @@ mod mac_flow_rule_tests {
         assert_eq!(plain[0].end_idx, 5);
         assert_eq!(headed[0].end_idx, 4);
         assert_eq!(headed[1].end_idx, 8);
+    }
+}
+
+#[cfg(test)]
+mod committed_line_publication_tests {
+    use crate::model::paragraph::{LineSeg, Paragraph};
+    use crate::renderer::pagination::{publish_committed_line_origins, CommittedLineOrigin};
+
+    #[test]
+    fn committed_line_publication_preserves_wire_fields_and_following_reset() {
+        let line = LineSeg {
+            text_start: 7,
+            vertical_pos: 90_000,
+            line_height: 1_150,
+            text_height: 1_100,
+            baseline_distance: 900,
+            line_spacing: -40,
+            column_start: 12,
+            segment_width: 2_000,
+            tag: 0x1234,
+        };
+        let mut paragraphs = vec![
+            Paragraph {
+                line_segs: vec![line.clone(), line.clone()],
+                ..Default::default()
+            },
+            Paragraph {
+                line_segs: vec![LineSeg {
+                    vertical_pos: 0,
+                    ..line.clone()
+                }],
+                ..Default::default()
+            },
+        ];
+        let untouched = paragraphs[1].line_segs.clone();
+        publish_committed_line_origins(
+            &mut paragraphs,
+            &[
+                CommittedLineOrigin {
+                    para_index: 0,
+                    line_index: 0,
+                    vertical_pos: 0,
+                },
+                CommittedLineOrigin {
+                    para_index: 0,
+                    line_index: 1,
+                    vertical_pos: 1_110,
+                },
+            ],
+        );
+        for (i, actual) in paragraphs[0].line_segs.iter().enumerate() {
+            assert_eq!(actual.vertical_pos, if i == 0 { 0 } else { 1_110 });
+            let mut restored = actual.clone();
+            restored.vertical_pos = line.vertical_pos;
+            assert_eq!(format!("{restored:?}"), format!("{line:?}"));
+        }
+        assert_eq!(
+            format!("{:?}", paragraphs[1].line_segs),
+            format!("{untouched:?}")
+        );
+    }
+}
+
+#[cfg(test)]
+mod committed_flow_rejoin_tests {
+    use super::*;
+    use crate::model::paragraph::ColumnBreakType;
+    use crate::renderer::style_resolver::ResolvedParaStyle;
+
+    fn fixture() -> Vec<Paragraph> {
+        [0, 1_000, 0, 1_100, 0, 1_000]
+            .into_iter()
+            .enumerate()
+            .map(|(i, origin)| Paragraph {
+                text: "body".into(),
+                column_type: if i == 4 {
+                    ColumnBreakType::Page
+                } else {
+                    ColumnBreakType::None
+                },
+                line_segs: vec![LineSeg {
+                    vertical_pos: origin,
+                    line_height: if i == 1 { 500 } else { 1_000 },
+                    text_height: if i == 1 { 500 } else { 1_000 },
+                    line_spacing: if i == 2 {
+                        100
+                    } else if i == 3 {
+                        -100
+                    } else {
+                        0
+                    },
+                    tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    fn styles() -> ResolvedStyleSet {
+        ResolvedStyleSet {
+            para_styles: vec![ResolvedParaStyle::default()],
+            ..Default::default()
+        }
+    }
+
+    fn update(paras: &mut [Paragraph], styles: &ResolvedStyleSet, enabled: bool, dpi: f64) {
+        recalculate_section_vpos_for_body(paras, 1, None, Some(2_000), styles, dpi, false, enabled);
+    }
+
+    #[test]
+    fn committed_flow_rejoins_shrink_then_growth_without_changing_wire_flags() {
+        for dpi in [96.0, 144.0] {
+            let mut paras = fixture();
+            let untouched = format!("{:?}{:?}{:?}", paras[0], paras[4], paras[5]);
+            let before: Vec<_> = paras.iter().map(|p| p.line_segs.clone()).collect();
+            update(&mut paras, &styles(), true, dpi);
+            assert_eq!(paras[2].line_segs[0].vertical_pos, 1_500);
+            assert_eq!(paras[3].line_segs[0].vertical_pos, 2_600);
+            assert_eq!(
+                untouched,
+                format!("{:?}{:?}{:?}", paras[0], paras[4], paras[5])
+            );
+            for (actual, original) in paras.iter().zip(&before) {
+                let mut restored = actual.line_segs.clone();
+                for (line, old) in restored.iter_mut().zip(original) {
+                    line.vertical_pos = old.vertical_pos;
+                }
+                assert_eq!(format!("{restored:?}"), format!("{original:?}"));
+            }
+            paras[1].line_segs[0].line_height = 2_000;
+            paras[1].line_segs[0].text_height = 2_000;
+            recalculate_section_vpos_for_body(
+                &mut paras,
+                1,
+                None,
+                Some(1_500),
+                &styles(),
+                dpi,
+                false,
+                true,
+            );
+            assert_eq!(paras[2].line_segs[0].vertical_pos, 3_000);
+            assert_eq!(paras[3].line_segs[0].vertical_pos, 4_100);
+            assert_eq!(paras[4].line_segs[0].vertical_pos, 0);
+        }
+    }
+
+    #[test]
+    fn committed_flow_rejoin_uses_signed_style_gap_and_preserves_legacy() {
+        for dpi in [96.0, 144.0] {
+            let mut signed = styles();
+            signed.para_styles[0].spacing_before = hwpunit_to_px(10, dpi);
+            signed.para_styles[0].spacing_after = hwpunit_to_px(-20, dpi);
+            let mut paras = fixture();
+            update(&mut paras, &signed, true, dpi);
+            assert_eq!(paras[1].line_segs[0].vertical_pos, 990);
+            assert_eq!(paras[2].line_segs[0].vertical_pos, 1_480);
+            assert_eq!(paras[3].line_segs[0].vertical_pos, 2_580);
+            let mut legacy = fixture();
+            update(&mut legacy, &styles(), false, dpi);
+            assert_eq!(legacy[2].line_segs[0].vertical_pos, 0);
+            assert_eq!(legacy[3].line_segs[0].vertical_pos, 1_100);
+        }
+    }
+
+    #[test]
+    fn committed_flow_rejoin_preserves_explicit_style_control_and_intrapara_boundaries() {
+        for break_type in [
+            ColumnBreakType::Page,
+            ColumnBreakType::Column,
+            ColumnBreakType::Section,
+            ColumnBreakType::MultiColumn,
+        ] {
+            let mut paras = fixture();
+            paras[2].column_type = break_type;
+            update(&mut paras, &styles(), true, 96.0);
+            assert_eq!(paras[2].line_segs[0].vertical_pos, 0);
+            assert_eq!(paras[3].line_segs[0].vertical_pos, 1_100);
+        }
+        let mut style_break = styles();
+        style_break.para_styles.push(ResolvedParaStyle {
+            page_break_before: true,
+            ..Default::default()
+        });
+        let mut paras = fixture();
+        paras[2].para_shape_id = 1;
+        update(&mut paras, &style_break, true, 96.0);
+        assert_eq!(paras[2].line_segs[0].vertical_pos, 0);
+        assert_eq!(paras[3].line_segs[0].vertical_pos, 1_100);
+        let mut controls = fixture();
+        controls[2]
+            .controls
+            .push(Control::ColumnDef(crate::model::page::ColumnDef::default()));
+        let controls_before = format!("{:?}", controls[2]);
+        update(&mut controls, &styles(), true, 96.0);
+        assert_eq!(controls_before, format!("{:?}", controls[2]));
+        let mut internal = fixture();
+        let first = internal[2].line_segs[0].clone();
+        internal[2].line_segs.push(LineSeg {
+            vertical_pos: 0,
+            ..first
+        });
+        let internal_before = format!("{:?}", internal[2]);
+        update(&mut internal, &styles(), true, 96.0);
+        assert_eq!(internal_before, format!("{:?}", internal[2]));
     }
 }

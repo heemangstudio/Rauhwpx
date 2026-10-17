@@ -819,10 +819,10 @@ export class ParaShapeDialog {
     }
 
     // 문단 간격
-    const newSB = changedRawValue(shown.spacingBefore, this.spacingBeforeInput.value, ptToRaw);
+    const newSB = changedRawValue(shown.spacingBefore, this.spacingBeforeInput.value, ptToRaw2x);
     if (newSB !== undefined) mods.spacingBefore = newSB;
 
-    const newSA = changedRawValue(shown.spacingAfter, this.spacingAfterInput.value, ptToRaw);
+    const newSA = changedRawValue(shown.spacingAfter, this.spacingAfterInput.value, ptToRaw2x);
     if (newSA !== undefined) mods.spacingAfter = newSA;
 
     // ── 확장 탭

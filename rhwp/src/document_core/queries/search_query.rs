@@ -160,15 +160,91 @@ fn search_all(doc: &DocumentCore, query: &str, case_sensitive: bool) -> Vec<Sear
     results
 }
 
+/// 표 커서 API와 같은 세 인덱스를 갖는 검색 주소. 글상자는 이 경로에 포함하지 않는다.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FindCellStep {
+    control_index: usize,
+    cell_index: usize,
+    cell_para_index: usize,
+}
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FindAddress {
+    section: usize,
+    paragraph: usize,
+    path: Vec<FindCellStep>,
+    offset: usize,
+}
+struct AddressedFindHit {
+    address: FindAddress,
+}
+
+fn find_addressed_table_hits(
+    core: &DocumentCore,
+    query: &str,
+    case_sensitive: bool,
+) -> Vec<AddressedFindHit> {
+    fn visit(
+        paragraph: &crate::model::paragraph::Paragraph,
+        section: usize,
+        root: usize,
+        path: &[FindCellStep],
+        query: &str,
+        case_sensitive: bool,
+        hits: &mut Vec<AddressedFindHit>,
+    ) {
+        for offset in find_in_text(&paragraph.text, query, case_sensitive) {
+            hits.push(AddressedFindHit {
+                address: FindAddress {
+                    section,
+                    paragraph: root,
+                    path: path.to_vec(),
+                    offset,
+                },
+            });
+        }
+        for (control_index, control) in paragraph.controls.iter().enumerate() {
+            let Control::Table(table) = control else {
+                continue;
+            };
+            for (cell_index, cell) in table.cells.iter().enumerate() {
+                for (cell_para_index, child) in cell.paragraphs.iter().enumerate() {
+                    let mut next = path.to_vec();
+                    next.push(FindCellStep {
+                        control_index,
+                        cell_index,
+                        cell_para_index,
+                    });
+                    visit(child, section, root, &next, query, case_sensitive, hits);
+                }
+            }
+        }
+    }
+    let mut hits = Vec::new();
+    for (section, data) in core.document.sections.iter().enumerate() {
+        for (root, paragraph) in data.paragraphs.iter().enumerate() {
+            visit(
+                paragraph,
+                section,
+                root,
+                &[],
+                query,
+                case_sensitive,
+                &mut hits,
+            );
+        }
+    }
+    hits
+}
+
 impl DocumentCore {
     /// 문서 텍스트 검색
     ///
     /// from_sec/from_para/from_char: 검색 시작 위치
     /// forward: true=정방향, false=역방향
     /// case_sensitive: 대소문자 구분
-    /// cell_context_json: 표 셀 내부에서 시작할 경우 JSON
     ///
-    /// 반환: JSON `{"found":true,"sec":0,"para":1,"charOffset":5,"length":3,"cellContext":...}`
+    /// 반환: JSON `{"found":true,"sec":0,"para":1,"charOffset":5,"length":3,"cellPath":[...]}`
     pub fn search_text_native(
         &self,
         query: &str,
@@ -178,45 +254,68 @@ impl DocumentCore {
         forward: bool,
         case_sensitive: bool,
     ) -> Result<String, HwpError> {
-        if query.is_empty() {
+        self.search_text_by_path_native(
+            query,
+            from_sec,
+            from_para,
+            from_char,
+            "[]",
+            forward,
+            case_sensitive,
+        )
+    }
+
+    /// 실제 표 경로를 포함한 찾기. 치환 경로와 분리하여 글상자 튜플을 표로 해석하지 않는다.
+    pub fn search_text_by_path_native(
+        &self,
+        query: &str,
+        from_sec: usize,
+        from_para: usize,
+        from_char: usize,
+        from_path_json: &str,
+        forward: bool,
+        case_sensitive: bool,
+    ) -> Result<String, HwpError> {
+        let path = Self::parse_cell_path(from_path_json)?;
+        let start = FindAddress {
+            section: from_sec,
+            paragraph: from_para,
+            path: path
+                .into_iter()
+                .map(
+                    |(control_index, cell_index, cell_para_index)| FindCellStep {
+                        control_index,
+                        cell_index,
+                        cell_para_index,
+                    },
+                )
+                .collect(),
+            offset: from_char,
+        };
+        let hits = find_addressed_table_hits(self, query, case_sensitive);
+        if hits.is_empty() {
             return Ok(r#"{"found":false}"#.to_string());
         }
-
-        let all_hits = search_all(self, query, case_sensitive);
-        if all_hits.is_empty() {
-            return Ok(r#"{"found":false}"#.to_string());
-        }
-
-        // 본문 결과만 필터 (셀/글상자 내부 제외 — 커서 이동 불가)
-        let body_hits: Vec<&SearchHit> = all_hits
-            .iter()
-            .filter(|h| h.cell_context.is_none())
-            .collect();
-        if body_hits.is_empty() {
-            return Ok(r#"{"found":false}"#.to_string());
-        }
-
-        if forward {
-            let after = body_hits.iter().find(|h| {
-                h.sec > from_sec
-                    || (h.sec == from_sec && h.para > from_para)
-                    || (h.sec == from_sec && h.para == from_para && h.char_offset > from_char)
-            });
-            match after {
-                Some(h) => Ok(format_search_hit(h, false)),
-                None => Ok(format_search_hit(body_hits[0], true)),
-            }
+        let selected = if forward {
+            hits.iter().find(|h| h.address >= start)
         } else {
-            let before = body_hits.iter().rev().find(|h| {
-                h.sec < from_sec
-                    || (h.sec == from_sec && h.para < from_para)
-                    || (h.sec == from_sec && h.para == from_para && h.char_offset < from_char)
-            });
-            match before {
-                Some(h) => Ok(format_search_hit(h, false)),
-                None => Ok(format_search_hit(body_hits[body_hits.len() - 1], true)),
+            hits.iter().rev().find(|h| h.address < start)
+        };
+        let wrapped = selected.is_none();
+        let hit = selected.unwrap_or_else(|| {
+            if forward {
+                &hits[0]
+            } else {
+                hits.last().unwrap()
             }
-        }
+        });
+        Ok(serde_json::json!({
+            "found": true, "wrapped": wrapped,
+            "sec": hit.address.section, "para": hit.address.paragraph,
+            "charOffset": hit.address.offset, "length": query.chars().count(),
+            "cellPath": hit.address.path,
+        })
+        .to_string())
     }
 
     /// 문서 전체 검색 (모든 매치 반환)
@@ -291,7 +390,7 @@ impl DocumentCore {
     /// 단일 치환 (검색어 기반)
     ///
     /// 문서 본문에서 query의 첫 번째 매치를 new_text로 교체한다.
-    /// 표/글상자 내부는 대상에서 제외 (search_text_native와 동일 범위).
+    /// 표/글상자 내부는 대상에서 제외 (주소를 받은 찾기와 달리 본문 치환만 수행).
     /// 반환: JSON `{"ok":true,"sec":N,"para":N,"charOffset":N,"newLength":N}` 또는 `{"ok":false}`
     pub fn replace_one_native(
         &mut self,
@@ -515,20 +614,6 @@ impl DocumentCore {
         let page = pages.first().copied().unwrap_or(0);
         Ok(format!("{{\"ok\":true,\"page\":{}}}", page))
     }
-}
-
-fn format_search_hit(hit: &SearchHit, wrapped: bool) -> String {
-    let cell_ctx = match &hit.cell_context {
-        Some((pp, ci, cell, cp)) => format!(
-            ",\"cellContext\":{{\"parentPara\":{},\"ctrlIdx\":{},\"cellIdx\":{},\"cellPara\":{}}}",
-            pp, ci, cell, cp
-        ),
-        None => String::new(),
-    };
-    format!(
-        "{{\"found\":true,\"wrapped\":{},\"sec\":{},\"para\":{},\"charOffset\":{},\"length\":{}{}}}",
-        wrapped, hit.sec, hit.para, hit.char_offset, hit.length, cell_ctx
-    )
 }
 
 #[cfg(test)]

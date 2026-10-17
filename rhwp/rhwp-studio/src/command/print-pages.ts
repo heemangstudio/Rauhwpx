@@ -116,6 +116,7 @@ export function buildPrintStyleText(pages: PrintPage[]): string {
     .join('\n');
 
   return `
+@page { margin: 0; }
 ${pageRules}
 * { margin: 0; padding: 0; }
 body { background: #fff; }

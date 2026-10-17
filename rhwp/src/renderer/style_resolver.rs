@@ -19,6 +19,10 @@ pub const LANG_COUNT: usize = 7;
 #[derive(Debug, Clone)]
 pub struct ResolvedCharStyle {
     pub font_metrics_policy: crate::model::provenance::FontMetricsPolicy,
+    /// 일반 글리프 해소 전에 보존한 signed HU/KOR byte 제어자 기본 폭 입력.
+    pub control_space_base: Option<super::ControlSpaceBase>,
+    /// 제어자 HU 기본 폭에 적용할 원본 해소 DPI.
+    pub control_space_dpi: f64,
     /// MS Word compatibility uses the Latin face's own space advance.
     pub latin_font_space: bool,
     /// 글자 위치/상대 크기 지정은 일반 기본 축 간격 계약에서 제외한다.
@@ -40,6 +44,8 @@ pub struct ResolvedCharStyle {
     pub hft_families: Vec<String>,
     /// 7개 언어 카테고리별 글자 위치 (글자 크기 비율, 양수 = 아래로).
     pub char_offsets: Vec<f64>,
+    /// 원본 base HU와 7개 signed 위치 byte. float 비율에서 역산하지 않는다.
+    pub native_char_positions: Option<(i32, [i8; 7])>,
     /// 7개 언어 카테고리별 상대 크기 (1.0 = 100%).
     pub relative_sizes: Vec<f64>,
     /// 글꼴 크기 (px)
@@ -102,6 +108,8 @@ impl Default for ResolvedCharStyle {
     fn default() -> Self {
         Self {
             font_metrics_policy: Default::default(),
+            control_space_base: None,
+            control_space_dpi: super::DEFAULT_DPI,
             latin_font_space: false,
             has_nondefault_glyph_geometry: false,
             use_font_space: false,
@@ -110,6 +118,7 @@ impl Default for ResolvedCharStyle {
             subst_families: Vec::new(),
             hft_families: Vec::new(),
             char_offsets: Vec::new(),
+            native_char_positions: None,
             relative_sizes: Vec::new(),
             font_size: 12.0,
             bold: false,
@@ -495,6 +504,13 @@ fn resolve_single_char_style(cs: &CharShape, doc_info: &DocInfo, dpi: f64) -> Re
 
     ResolvedCharStyle {
         font_metrics_policy: doc_info.font_metrics_policy,
+        control_space_base: Some(super::ControlSpaceBase {
+            height_hu: cs.base_size,
+            korean_relative_size: cs.relative_sizes[0],
+            korean_ratio: cs.ratios[0],
+            raw31_eng_tracking_percent: Some(cs.spacings[1]),
+        }),
+        control_space_dpi: dpi,
         has_nondefault_glyph_geometry: cs.char_offsets.iter().any(|value| *value != 0)
             || cs.relative_sizes.iter().any(|value| *value != 100),
         latin_font_space: doc_info
@@ -506,6 +522,7 @@ fn resolve_single_char_style(cs: &CharShape, doc_info: &DocInfo, dpi: f64) -> Re
         font_families,
         subst_families,
         hft_families,
+        native_char_positions: Some((cs.base_size, cs.char_offsets)),
         char_offsets: cs
             .char_offsets
             .iter()
@@ -1246,6 +1263,139 @@ mod tests {
     use crate::model::document::DocInfo;
     use crate::model::style::*;
     use crate::renderer::DEFAULT_DPI;
+
+    #[test]
+    fn native_char_position_selects_exact_script_and_updated_source_dpi() {
+        let mut shape = CharShape {
+            base_size: 1150,
+            char_offsets: [-5, -12, 0, 127, -128, 25, -25],
+            relative_sizes: [100, 106, 200, 100, 100, 100, 100],
+            ..Default::default()
+        };
+        let info = DocInfo {
+            font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        for dpi in [96.0, 144.0] {
+            let mut styles = ResolvedStyleSet::default();
+            styles
+                .char_styles
+                .push(resolve_single_char_style(&shape, &info, dpi));
+            for lang in 0..LANG_COUNT {
+                let style = crate::renderer::layout::resolved_to_text_style(&styles, 0, lang);
+                assert_eq!(
+                    style.native_char_position,
+                    Some(super::super::NativeCharPosition {
+                        base_height_hu: shape.base_size,
+                        percent: shape.char_offsets[lang],
+                        dpi,
+                    })
+                );
+                assert_eq!(
+                    style.font_size,
+                    styles.char_styles[0].font_size_for_lang(lang)
+                );
+            }
+            assert_eq!(
+                crate::renderer::layout::resolved_to_text_style(&styles, 0, LANG_COUNT)
+                    .native_char_position,
+                None
+            );
+            assert_eq!(
+                crate::renderer::layout::resolved_to_text_style(&styles, 1, 0).native_char_position,
+                None
+            );
+        }
+        shape.base_size = -1001;
+        shape.char_offsets[1] = 0;
+        let mut styles = ResolvedStyleSet::default();
+        styles
+            .char_styles
+            .push(resolve_single_char_style(&shape, &info, 120.0));
+        let edited = crate::renderer::layout::resolved_to_text_style(&styles, 0, 1);
+        assert_eq!(
+            edited.native_char_position,
+            Some(super::super::NativeCharPosition {
+                base_height_hu: -1001,
+                percent: 0,
+                dpi: 120.0,
+            })
+        );
+    }
+
+    #[test]
+    fn control_space_operands_keep_signed_hu_and_raw_korean_zero() {
+        let shape = CharShape {
+            base_size: -1001,
+            relative_sizes: [0, 200, 100, 100, 100, 100, 100],
+            spacings: [-5, -17, 0, 0, 0, 9, 0],
+            ratios: [99, 200, 100, 100, 100, 100, 100],
+            superscript: true,
+            ..Default::default()
+        };
+        let info = DocInfo {
+            font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        let resolved = resolve_single_char_style(&shape, &info, 144.0);
+        let expected = Some(crate::renderer::ControlSpaceBase {
+            height_hu: -1001,
+            korean_relative_size: 0,
+            korean_ratio: 99,
+            raw31_eng_tracking_percent: Some(-17),
+        });
+        assert_eq!(resolved.control_space_base, expected);
+        let mut styles = ResolvedStyleSet::default();
+        styles.char_styles.push(resolved);
+        for lang in 0..LANG_COUNT {
+            let text_style = crate::renderer::layout::resolved_to_text_style(&styles, 0, lang);
+            assert_eq!(text_style.control_space_base, expected);
+            assert_eq!(text_style.control_space_dpi, 144.0);
+            assert!(text_style.superscript);
+        }
+    }
+
+    #[test]
+    fn raw31_eng_tracking_resolves_signed_slot_without_eng_geometry() {
+        use crate::model::paragraph::{SpecialSpaceOrigin, SpecialSpaceOriginKind};
+        use crate::model::provenance::FontMetricsPolicy;
+        let info = DocInfo {
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        for percent in [i8::MIN, -17, 0, 17, i8::MAX] {
+            let shape = CharShape {
+                base_size: 1000,
+                relative_sizes: [50, 200, 100, 100, 100, 100, 100],
+                ratios: [95, 200, 100, 100, 100, 100, 100],
+                spacings: [-5, percent, 0, 0, 0, 9, 0],
+                ..Default::default()
+            };
+            let resolved = resolve_single_char_style(&shape, &info, 144.0);
+            let family = resolved.font_family_for_lang(0).to_owned();
+            let size = resolved.font_size_for_lang(0);
+            let ratio = resolved.ratio_for_lang(0);
+            let spacing = resolved.letter_spacing_for_lang(0);
+            let mut styles = ResolvedStyleSet::default();
+            styles.char_styles.push(resolved);
+            let style = crate::renderer::layout::resolved_to_text_style(&styles, 0, 0)
+                .with_origin_range(
+                    &[SpecialSpaceOrigin {
+                        char_idx: 0,
+                        origin: SpecialSpaceOriginKind::FwSpace,
+                    }],
+                    0,
+                    1,
+                );
+            assert_eq!(style.raw31_tracking_percent(0, '\u{2007}'), Some(percent));
+            assert_eq!(style.font_family, family);
+            assert_eq!(style.font_size, size);
+            assert_eq!(style.ratio, ratio);
+            assert_eq!(style.letter_spacing, spacing);
+            assert_eq!(style.control_space_base_width_hu(0, '\u{2007}'), Some(116));
+            assert_eq!(style.control_space_dpi, 144.0);
+        }
+    }
 
     #[test]
     fn resolved_width_ratios_preserve_document_values() {

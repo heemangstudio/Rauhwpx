@@ -5,7 +5,7 @@ use super::super::composer::{
 };
 use super::super::height_measurer::{
     grow_rows_for_span_requirements, hwpx_structural_cell_tail, include_table_cell_line_spacing,
-    include_table_cell_spacing_after, MeasuredTable,
+    include_table_cell_spacing_after, table_cell_stored_vpos_step_hu, MeasuredTable,
 };
 use super::super::page_layout::LayoutRect;
 use super::super::render_tree::*;
@@ -1069,7 +1069,7 @@ impl LayoutEngine {
 
     pub(super) fn preserve_first_cell_spacing_before(&self) -> bool {
         let profile = self.profile.get();
-        profile.hwpx_stored_layout() || profile.hwp5_origin_hwpx()
+        profile.hwpx_stored_layout() && !profile.hwp5_origin_hwpx()
     }
 
     // native 33d890..33d8a4: 음수 여유도 HWPUNIT 정수로 0 방향 절반 나눈다.
@@ -1654,6 +1654,7 @@ impl LayoutEngine {
                                     para_y,
                                     allow_para_top_bleed,
                                     column_is_empty_on_entry,
+                                    matches!(&col_node.node_type, RenderNodeType::Header),
                                     table_meta.map(|(pi, _)| pi),
                                 )
                             } else {
@@ -2126,6 +2127,7 @@ impl LayoutEngine {
                 para_y,
                 allow_para_top_bleed,
                 column_is_empty_on_entry,
+                matches!(&col_node.node_type, RenderNodeType::Header),
                 table_meta.map(|(pi, _)| pi),
             );
             if depth > 0 && render_caption {
@@ -3518,21 +3520,17 @@ impl LayoutEngine {
             // 높이(th)+줄 간격으로 다음 줄을 놓기도 한다 (hcar-001 p1 동의서 셀
             // `본인은…`: lh 1100·th 1000·ls 1000 → 다음 줄 +2000). 렌더러는 이 저장
             // 위치에 줄을 놓으므로 정렬용 높이도 같은 값을 써야 한다.
-            let stored_vpos_step = |i: usize| -> Option<f64> {
-                if !trust_stored_lh || para.line_segs.len() != line_count {
-                    return None;
-                }
-                let (cur, next) = (para.line_segs.get(i)?, para.line_segs.get(i + 1)?);
-                let step = next.vertical_pos - cur.vertical_pos;
-                (step > 0 && step < cur.line_height + cur.line_spacing.max(0))
-                    .then(|| hwpunit_to_px(step, self.dpi))
-            };
             let lines_total: f64 = lines
                 .iter()
                 .enumerate()
                 .map(|(i, line)| {
-                    if let Some(step) = stored_vpos_step(i) {
-                        return step;
+                    if let Some(step) = table_cell_stored_vpos_step_hu(
+                        &para.line_segs,
+                        line_count,
+                        i,
+                        trust_stored_lh,
+                    ) {
+                        return hwpunit_to_px(step, self.dpi);
                     }
                     self.cell_line_advance(
                         line,
@@ -3714,7 +3712,7 @@ impl LayoutEngine {
         &self,
         cell: &crate::model::table::Cell,
         table: &crate::model::table::Table,
-        allow_saved_small_cell_margin: bool,
+        _allow_saved_small_cell_margin: bool,
     ) -> (f64, f64, f64, f64) {
         if self.profile.get().native_hwpx_cell_margin() {
             let pad = cell.effective_hwpx_padding(&table.padding);
@@ -3725,62 +3723,12 @@ impl LayoutEngine {
                 hwpunit_to_px(pad.bottom as i32, self.dpi),
             );
         }
-        // HWP 스펙: aim(apply_inner_margin)=true → cell.padding,
-        //           aim=false → table.padding 우선.
-        // 한컴은 aim=false일 때 cell.padding 원값을 파일에 보존하더라도 렌더에는 쓰지 않는다.
-        // aim=true에서는 0mm도 사용자가 지정한 셀 고유 안 여백으로 존중한다.
-        // [#2195 stage50] 표 기본 전축 0 = 미지정 → 셀 pad (Cell::table_padding_unspecified).
-        let table_pad_unspec = !cell.apply_inner_margin
-            && crate::model::table::Cell::table_padding_unspecified(&table.padding);
-        let use_cell_left = (table_pad_unspec && cell.padding.left < 2500)
-            || Self::should_use_cell_padding_axis_for_context(
-                cell,
-                cell.padding.left,
-                table.padding.left,
-                allow_saved_small_cell_margin,
-            );
-        let use_cell_right = (table_pad_unspec && cell.padding.right < 2500)
-            || Self::should_use_cell_padding_axis_for_context(
-                cell,
-                cell.padding.right,
-                table.padding.right,
-                allow_saved_small_cell_margin,
-            );
-        let use_cell_top = (table_pad_unspec && cell.padding.top < 2500)
-            || Self::should_use_cell_padding_axis_for_context(
-                cell,
-                cell.padding.top,
-                table.padding.top,
-                allow_saved_small_cell_margin,
-            );
-        let use_cell_bottom = (table_pad_unspec && cell.padding.bottom < 2500)
-            || Self::should_use_cell_padding_axis_for_context(
-                cell,
-                cell.padding.bottom,
-                table.padding.bottom,
-                allow_saved_small_cell_margin,
-            );
-
-        let pad_left = if use_cell_left {
-            hwpunit_to_px(cell.padding.left as i32, self.dpi)
-        } else {
-            hwpunit_to_px(table.padding.left as i32, self.dpi)
-        };
-        let pad_right = if use_cell_right {
-            hwpunit_to_px(cell.padding.right as i32, self.dpi)
-        } else {
-            hwpunit_to_px(table.padding.right as i32, self.dpi)
-        };
-        let pad_top = if use_cell_top {
-            hwpunit_to_px(cell.padding.top as i32, self.dpi)
-        } else {
-            hwpunit_to_px(table.padding.top as i32, self.dpi)
-        };
-        let pad_bottom = if use_cell_bottom {
-            hwpunit_to_px(cell.padding.bottom as i32, self.dpi)
-        } else {
-            hwpunit_to_px(table.padding.bottom as i32, self.dpi)
-        };
+        // hasMargin=false는 0을 포함한 표 기본 여백을 그대로 상속한다.
+        let pad = cell.effective_padding(&table.padding);
+        let pad_left = hwpunit_to_px(i32::from(pad.left), self.dpi);
+        let pad_right = hwpunit_to_px(i32::from(pad.right), self.dpi);
+        let pad_top = hwpunit_to_px(i32::from(pad.top), self.dpi);
+        let pad_bottom = hwpunit_to_px(i32::from(pad.bottom), self.dpi);
         // A tiny declared cell cannot accommodate padding larger than its own height.
         // Keep the compatibility clamp for that case, unless a saved visible text line
         // already exceeds the declared height: the row must expand around that line,
@@ -4076,6 +4024,7 @@ impl LayoutEngine {
         para_y: Option<f64>,
         allow_para_top_bleed: bool,
         column_is_empty: bool,
+        is_header: bool,
         host_para_index: Option<usize>,
     ) -> f64 {
         let table_treat_as_char = table.common.treat_as_char;
@@ -4157,9 +4106,14 @@ impl LayoutEngine {
             // 가시 표 상단 = v_offset + outer_margin_top. 한컴 PDF (exam_math.hwp 바탕쪽 쪽번호 박스) 정합.
             // Mac Hancom also insets paragraph-relative HWPX tables when
             // flowWithText is off. It constrains page flow, not margin ownership.
+            // 실험 가설: 원본 HWP5 머리말의 Para/Top 표도 작성된 위 여백을
+            // 이 지점에서 한 번 적용한다. 한컴 내부 커서 동작을 확인한 규칙은 아니다.
             let uses_outer_margin_box = matches!(vert_rel_to, VertRelTo::Paper)
                 || ((self.profile.get().hwpx_stored_layout()
-                    || self.profile.get().hwp5_origin_hwpx())
+                    || self.profile.get().hwp5_origin_hwpx()
+                    || (is_header
+                        && self.profile.get().native_hwp5_layout()
+                        && matches!(vert_align, crate::model::shape::VertAlign::Top)))
                     && is_para_topbottom_float(&table.common));
             let om_top_px = if uses_outer_margin_box {
                 hwpunit_to_px(table.outer_margin_top as i32, self.dpi)
@@ -5615,7 +5569,7 @@ impl LayoutEngine {
                                     && super::super::height_measurer::HeightMeasurer::new(self.dpi)
                                         .fresh_tac_cell_width_is_verified(cell, table)
                                     && crate::renderer::composer::generated_tac_table_line_covers_object(
-                                        para, inner_width, styles, self.dpi);
+                                        para, inner_width, styles, self.dpi, true);
                                 // [#7150] 본문 경로와 같은 규칙: TAC 표가 차지하는 저장 줄의
                                 // lh 가 (표 높이 + outMargin 상/하)를 포함하면 한컴은 표를
                                 // 줄 top + outMargin.top 에 놓는다. 표 전용 줄에서만 성립하며,
@@ -6816,7 +6770,7 @@ impl LayoutEngine {
                     let comp = crate::renderer::composer::compose_paragraph(p);
                     let groups = if shared_inline_width.is_some_and(|width| {
                         crate::renderer::composer::fresh_adjacent_tac_tables_fit(
-                            p, width, styles, self.dpi,
+                            p, width, styles, self.dpi, true,
                         )
                     }) {
                         vec![(0..p.controls.len()).collect()]
@@ -7133,6 +7087,7 @@ impl LayoutEngine {
                         ),
                         styles,
                         self.dpi,
+                        true,
                     );
                 let nested_h = if shared_line {
                     nested_heights.fold(0.0f64, f64::max)
@@ -7352,6 +7307,7 @@ impl LayoutEngine {
                         inner_width,
                         styles,
                         self.dpi,
+                        true,
                     );
                 let nested_h = if shared_line {
                     nested_heights.fold(0.0f64, f64::max)
@@ -8108,6 +8064,8 @@ impl LayoutEngine {
                     p,
                     inner_width,
                     styles,
+                    cell.text_direction,
+                    self.dpi,
                 );
             }
             let para_style = styles.para_styles.get(p.para_shape_id as usize);
@@ -8846,6 +8804,7 @@ impl LayoutEngine {
                         inner_width,
                         styles,
                         self.dpi,
+                        true,
                     );
                 let nested_h = if shared_line {
                     nested_heights.fold(0.0f64, f64::max)
@@ -11331,6 +11290,7 @@ impl LayoutEngine {
                     (cell_w_px - pad_left - pad_right).max(0.0),
                     cell_h_px - pad_top - pad_bottom,
                     styles,
+                    self.dpi,
                 )
             };
             let mut h = if is_whole_row {
@@ -12831,6 +12791,7 @@ mod row_cut_tests {
             Some(col_area.y),
             false,
             false,
+            false,
             None,
         );
 
@@ -12896,6 +12857,7 @@ mod row_cut_tests {
             Some(area.y),
             false,
             false,
+            false,
             None,
         );
         assert!((x - area.x - margin).abs() < 0.001, "x={x}");
@@ -12928,10 +12890,118 @@ mod row_cut_tests {
             Some(area.y),
             false,
             false,
+            false,
             None,
         );
         assert!((x - area.x - margin).abs() < 0.001, "converted HWPX x={x}");
         assert!((y - area.y - margin).abs() < 0.001, "converted HWPX y={y}");
+    }
+
+    #[test]
+    fn experimental_native_header_top_inset_is_conditional_and_once_only() {
+        use crate::model::provenance::LayoutCompatibilityProfile;
+        use crate::model::shape::{Caption, CaptionDirection};
+
+        // 실험 계약 검증: 한컴 내부 머리말 커서의 관측값을 재현하는 테스트가 아니다.
+        let eng = LayoutEngine::new(DEFAULT_DPI);
+        let area = LayoutRect {
+            x: 100.0,
+            y: 120.0,
+            width: 500.0,
+            height: 800.0,
+        };
+        let resolve = |table: &Table, depth, is_header| {
+            eng.compute_table_y_position(
+                table,
+                50.0,
+                area.y,
+                &area,
+                depth,
+                8.0,
+                2.0,
+                Some(area.y),
+                false,
+                false,
+                is_header,
+                None,
+            )
+        };
+        let mut table = Table {
+            common: CommonObjAttr {
+                text_wrap: TextWrap::TopAndBottom,
+                vert_rel_to: VertRelTo::Para,
+                vert_align: VertAlign::Top,
+                vertical_offset: 72,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // 네이티브, 저장 HWPX, HWP5 출처 HWPX 및 플래그 중첩에서도 한 번만 가산한다.
+        for (stored, reopened, native) in [
+            (false, false, true),
+            (true, false, false),
+            (false, true, false),
+            (true, true, true),
+            (false, false, false),
+        ] {
+            eng.set_layout_profile(LayoutCompatibilityProfile::new(
+                false, false, stored, reopened, native,
+            ));
+            for margin in [140, 283] {
+                table.outer_margin_top = margin;
+                for is_header in [false, true] {
+                    let inset = if stored || reopened || (native && is_header) {
+                        hwpunit_to_px(margin as i32, DEFAULT_DPI)
+                    } else {
+                        0.0
+                    };
+                    let expected = area.y + hwpunit_to_px(72, DEFAULT_DPI) + inset;
+                    assert!((resolve(&table, 0, is_header) - expected).abs() < 0.001);
+                }
+            }
+        }
+        eng.set_layout_profile(LayoutCompatibilityProfile::new(
+            false, false, false, false, true,
+        ));
+        table.outer_margin_top = 140;
+        // 기존 TAC/Square/중첩/다른 기준 및 정렬 경로는 머리말 문맥으로 바뀌지 않는다.
+        let mut excluded = Vec::new();
+        let mut tac = table.clone();
+        tac.common.treat_as_char = true;
+        excluded.push((tac, 0));
+        let mut square = table.clone();
+        square.common.text_wrap = TextWrap::Square;
+        excluded.push((square, 0));
+        excluded.push((table.clone(), 1));
+        for reference in [VertRelTo::Page, VertRelTo::Paper] {
+            let mut other = table.clone();
+            other.common.vert_rel_to = reference;
+            excluded.push((other, 0));
+        }
+        for align in [
+            VertAlign::Inside,
+            VertAlign::Center,
+            VertAlign::Bottom,
+            VertAlign::Outside,
+        ] {
+            let mut other = table.clone();
+            other.common.vert_align = align;
+            excluded.push((other, 0));
+        }
+        for (other, depth) in excluded {
+            assert_eq!(resolve(&other, depth, true), resolve(&other, depth, false));
+        }
+        table.caption = Some(Caption {
+            direction: CaptionDirection::Top,
+            ..Default::default()
+        });
+        let inset_y = area.y + hwpunit_to_px(72 + 140, DEFAULT_DPI);
+        assert!((resolve(&table, 0, true) - inset_y - 10.0).abs() < 0.001);
+        table.caption = None;
+        table.common.vertical_offset = (-180_i32) as u32;
+        assert_eq!(resolve(&table, 0, true), area.y);
+        table.common.vertical_offset = 60_000;
+        assert_eq!(resolve(&table, 0, true), area.y + area.height - 50.0);
     }
 
     #[test]
@@ -12978,6 +13048,7 @@ mod row_cut_tests {
             0.0,
             0.0,
             Some(col_area.y),
+            false,
             false,
             false,
             None,
@@ -13127,6 +13198,7 @@ mod row_cut_tests {
             Some(col_area.y),
             false,
             false,
+            false,
             None,
         );
 
@@ -13154,6 +13226,7 @@ mod row_cut_tests {
             0.0,
             0.0,
             Some(col_area.y),
+            false,
             false,
             false,
             None,
@@ -13332,6 +13405,7 @@ mod row_cut_tests {
             inline_controls: Vec::new(),
             numbering_text: None,
             numbering_head: None,
+            numbering_known_horizontal: false,
             tac_controls: Vec::new(),
             footnote_positions: Vec::new(),
             tab_extended: Vec::new(),

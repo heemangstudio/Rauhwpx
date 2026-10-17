@@ -8,7 +8,7 @@ const MAGIC = 'Han Unified Font File 1.0\x1a';
 export interface HftWasmApi {
   register(bytes: Uint8Array): boolean;
   /** SVG path (1000 = 1em, y 아래쪽 양수, 원점 = 기준점). 없으면 빈 문자열. */
-  glyphPath(family: string, codePoint: number): string;
+  glyphPath(family: string, codePoint: number, bold?: boolean, italic?: boolean): string;
 }
 
 let api: HftWasmApi | null = null;
@@ -62,13 +62,15 @@ export function takeHftOutlineChange(): boolean {
 }
 
 /** `family` HFT 서체의 글리프 윤곽선. 없으면 null. */
-export function hftGlyphPath(family: string, codePoint: number): string | null {
+export function hftGlyphPath(
+  family: string, codePoint: number, bold = false, italic = false,
+): string | null {
   if (!api || !family) return null;
-  const key = `${family}\u0000${codePoint}`;
+  const key = `${family}\u0000${bold ? 1 : 0}${italic ? 1 : 0}\u0000${codePoint}`;
   if (pathCache.has(key)) return pathCache.get(key)!;
   let path: string | null = null;
   try {
-    path = api.glyphPath(family, codePoint) || null;
+    path = api.glyphPath(family, codePoint, bold, italic) || null;
   } catch {
     path = null;
   }

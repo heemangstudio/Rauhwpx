@@ -1557,6 +1557,8 @@ impl DocumentCore {
             Self::find_inline_control_gap_start(target, insert_idx - 1) + 8
         };
         let insert_pos = text_end.max(control_end);
+        target.authored_text_runs = None;
+        target.para_text_terminal = None;
         for offset in &mut target.char_offsets {
             if *offset >= insert_pos {
                 *offset += 8;
@@ -2085,8 +2087,11 @@ impl DocumentCore {
                     let target_para =
                         Self::resolve_cell_paragraph_mut(section, para_idx, cell_path)?;
                     let new_ctrl_idx = target_para.controls.len();
-                    target_para.controls.push(Control::Picture(Box::new(pic)));
-                    target_para.ctrl_data_records.push(None);
+                    Self::insert_control_with_data_slot(
+                        target_para,
+                        new_ctrl_idx,
+                        Control::Picture(Box::new(pic)),
+                    );
                     target_para.control_mask |= 0x00000800;
                     let logical_positions =
                         crate::document_core::helpers::find_logical_control_positions(target_para);
@@ -2159,8 +2164,11 @@ impl DocumentCore {
             self.document.sections[section_idx].raw_stream = None;
             let parent = &mut self.document.sections[section_idx].paragraphs[para_idx];
             let new_ctrl_idx = parent.controls.len();
-            parent.controls.push(Control::Picture(Box::new(pic)));
-            parent.ctrl_data_records.push(None);
+            Self::insert_control_with_data_slot(
+                parent,
+                new_ctrl_idx,
+                Control::Picture(Box::new(pic)),
+            );
             let logical_positions =
                 crate::document_core::helpers::find_logical_control_positions(parent);
             let logical_after = logical_positions
@@ -2243,8 +2251,7 @@ impl DocumentCore {
         self.document.sections[section_idx].raw_stream = None;
         let parent = &mut self.document.sections[section_idx].paragraphs[para_idx];
         let new_ctrl_idx = parent.controls.len();
-        parent.controls.push(Control::Picture(Box::new(pic)));
-        parent.ctrl_data_records.push(None);
+        Self::insert_control_with_data_slot(parent, new_ctrl_idx, Control::Picture(Box::new(pic)));
         let logical_positions =
             crate::document_core::helpers::find_logical_control_positions(parent);
         let logical_after = logical_positions
@@ -2317,6 +2324,240 @@ mod issue_1151_cell_picture_insert_tests {
             0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x00, 0x00, 0x00,
             0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
         ]
+    }
+
+    fn floating_picture_state(para: &Paragraph) -> Vec<(String, u32, u32, i16, bool)> {
+        para.controls
+            .iter()
+            .filter_map(|control| match control {
+                Control::Picture(pic) => {
+                    assert!(!pic.common.treat_as_char);
+                    Some((
+                        pic.common.description.clone(),
+                        pic.common.width,
+                        pic.common.height,
+                        pic.shape_attr.rotation_angle,
+                        pic.shape_attr.horz_flip,
+                    ))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn floating_pictures_in_reparsed_blank_survive_edit_history_and_hwpx() {
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        // Studio also converts the bundled HWP template before editing it.
+        core = DocumentCore::from_bytes(&core.export_hwpx_native().unwrap()).unwrap();
+        let original_runs = core.document.sections[0].paragraphs[0]
+            .authored_text_runs
+            .clone();
+        assert!(original_runs.is_some());
+        let original_text = core.document.sections[0].paragraphs[0].text.clone();
+        let blank = core.save_snapshot_native();
+        let mut indices = Vec::new();
+        for description in ["first", "second"] {
+            let result = core
+                .insert_picture_native(
+                    0,
+                    0,
+                    0,
+                    &[],
+                    &minimal_png(),
+                    4000,
+                    4000,
+                    1,
+                    1,
+                    "png",
+                    description,
+                    None,
+                    None,
+                )
+                .unwrap();
+            indices.push(parse_idx(&result, "controlIdx"));
+            let para = &core.document.sections[0].paragraphs[0];
+            assert!(para.authored_text_runs.is_none());
+            assert_eq!(para.ctrl_data_records.len(), para.controls.len());
+            // Catch export failure after either one or multiple floating inserts.
+            core.export_hwpx_native().unwrap();
+        }
+        let inserted_state = floating_picture_state(&core.document.sections[0].paragraphs[0]);
+        assert_eq!(
+            inserted_state
+                .iter()
+                .map(|state| state.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        let inserted = core.save_snapshot_native();
+        core.set_picture_properties_native(
+            0,
+            0,
+            indices[0],
+            r#"{"width":6000,"height":3000,"rotationAngle":90,"horzFlip":true}"#,
+        )
+        .unwrap();
+        let edited_state = floating_picture_state(&core.document.sections[0].paragraphs[0]);
+        assert_ne!(edited_state, inserted_state);
+        assert_eq!(edited_state[0].3, 90);
+        assert!(edited_state[0].4);
+        let edited = core.save_snapshot_native();
+        core.delete_picture_control_native(0, 0, indices[1])
+            .unwrap();
+        let deleted_state = floating_picture_state(&core.document.sections[0].paragraphs[0]);
+        assert_eq!(deleted_state.len(), 1);
+        let deleted = core.save_snapshot_native();
+        for (snapshot, expected) in [
+            (blank, Vec::new()),
+            (inserted, inserted_state),
+            (edited, edited_state),
+            (deleted, deleted_state),
+        ] {
+            core.restore_snapshot_native(snapshot).unwrap();
+            assert_eq!(
+                floating_picture_state(&core.document.sections[0].paragraphs[0]),
+                expected
+            );
+            assert_eq!(core.document.sections[0].paragraphs[0].text, original_text);
+            if snapshot == blank {
+                assert_eq!(
+                    core.document.sections[0].paragraphs[0].authored_text_runs,
+                    original_runs
+                );
+            }
+            let mut bytes = core.export_hwpx_native().unwrap();
+            for _ in 0..2 {
+                let reopened = DocumentCore::from_bytes(&bytes).unwrap();
+                assert_eq!(
+                    floating_picture_state(&reopened.document.sections[0].paragraphs[0]),
+                    expected
+                );
+                assert_eq!(
+                    reopened.document.sections[0].paragraphs[0].text,
+                    original_text
+                );
+                bytes = reopened.export_hwpx_native().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn floating_picture_insert_clears_only_cell_or_textbox_control_owner_provenance() {
+        fn paragraph_at<'a>(
+            core: &'a DocumentCore,
+            para_idx: usize,
+            path: &[(usize, usize, usize)],
+        ) -> &'a Paragraph {
+            if path.is_empty() {
+                &core.document.sections[0].paragraphs[para_idx]
+            } else {
+                core.resolve_paragraph_by_path(0, para_idx, path).unwrap()
+            }
+        }
+
+        for textbox in [false, true] {
+            let mut core = DocumentCore::new_empty();
+            core.create_blank_document_native().unwrap();
+            let result = if textbox {
+                core.create_shape_control_native(
+                    0,
+                    0,
+                    0,
+                    21600,
+                    7200,
+                    0,
+                    0,
+                    false,
+                    "TopAndBottom",
+                    "textbox",
+                    false,
+                    false,
+                    &[],
+                )
+                .unwrap()
+            } else {
+                core.create_table_native(0, 0, 0, 1, 1).unwrap()
+            };
+            let para_idx = parse_idx(&result, "paraIdx");
+            core = DocumentCore::from_bytes(&core.export_hwpx_native().unwrap()).unwrap();
+            let control_idx = core.document.sections[0].paragraphs[para_idx]
+                .controls
+                .iter()
+                .position(|control| {
+                    if textbox {
+                        matches!(control, Control::Shape(_))
+                    } else {
+                        matches!(control, Control::Table(_))
+                    }
+                })
+                .unwrap();
+            let path = [(control_idx, 0, 0)];
+            let owner_path = if textbox { &path[..] } else { &[] };
+            let untouched_path = if textbox { &[] } else { &path[..] };
+            let owner = paragraph_at(&core, para_idx, owner_path);
+            assert!(owner.authored_text_runs.is_some());
+            let original_text = owner.text.clone();
+            let untouched_runs = paragraph_at(&core, para_idx, untouched_path)
+                .authored_text_runs
+                .clone();
+            assert!(untouched_runs.is_some());
+            let untouched_text = paragraph_at(&core, para_idx, untouched_path).text.clone();
+            core.insert_picture_native(
+                0,
+                para_idx,
+                0,
+                &path,
+                &minimal_png(),
+                4000,
+                4000,
+                1,
+                1,
+                "png",
+                "owned picture",
+                Some(0),
+                Some(0),
+            )
+            .unwrap();
+            let owner = paragraph_at(&core, para_idx, owner_path);
+            assert!(owner.authored_text_runs.is_none());
+            assert_eq!(owner.ctrl_data_records.len(), owner.controls.len());
+            assert_eq!(owner.text, original_text);
+            let expected = floating_picture_state(owner);
+            assert_eq!(expected.len(), 1);
+            assert_eq!(expected[0].0, "owned picture");
+            assert_eq!(
+                paragraph_at(&core, para_idx, untouched_path).authored_text_runs,
+                untouched_runs
+            );
+            assert_eq!(
+                paragraph_at(&core, para_idx, untouched_path).text,
+                untouched_text
+            );
+            assert!(
+                floating_picture_state(paragraph_at(&core, para_idx, untouched_path)).is_empty()
+            );
+            for _ in 0..2 {
+                core = DocumentCore::from_bytes(&core.export_hwpx_native().unwrap()).unwrap();
+                assert_eq!(
+                    floating_picture_state(paragraph_at(&core, para_idx, owner_path)),
+                    expected
+                );
+                assert_eq!(
+                    paragraph_at(&core, para_idx, owner_path).text,
+                    original_text
+                );
+                assert_eq!(
+                    paragraph_at(&core, para_idx, untouched_path).text,
+                    untouched_text
+                );
+                assert!(
+                    floating_picture_state(paragraph_at(&core, para_idx, untouched_path))
+                        .is_empty()
+                );
+            }
+        }
     }
 
     fn collect_picture_transparencies(doc: &Document) -> Vec<u8> {

@@ -1323,6 +1323,10 @@ async function initialize(): Promise<void> {
       initRhwpDev(wasm);
     }
     initializeDesktopFonts();
+    if (import.meta.env.DEV && import.meta.env.VITE_RHWP_DEV_FONT_PACK === '1') {
+      // 가져온 개발 글꼴을 첫 문서 조판 전에 WASM 메트릭에도 등록한다.
+      syncImportedFontMetrics();
+    }
     const renderBackendRequest = resolveRenderBackendRequest(window.location.search);
     const canvaskitModeRequest = resolveCanvasKitRenderModeRequest(window.location.search);
     const canvaskitMode = canvaskitModeRequest.mode;

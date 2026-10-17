@@ -25,7 +25,7 @@ use crate::model::ColorRef;
 
 use super::canonical_defaults::FONTFACE_LANG_NAMES;
 use super::context::SerializeContext;
-use super::utils::{empty_tag, end_tag, start_tag_attrs, write_xml_decl, BoundedXmlBuffer};
+use super::utils::{empty_tag, end_tag, start_tag_attrs, text, write_xml_decl, BoundedXmlBuffer};
 use super::SerializeError;
 
 /// `header.xml` 바이트 생성. Stage 1 진입점.
@@ -667,7 +667,7 @@ fn write_char_pr<W: Write>(
         ],
     )?;
     // strikeout: 파서가 shape 값으로 strikethrough 여부를 결정하므로(is_real_strike_shape),
-    // 비활성일 때는 반드시 shape="NONE" 으로 출력해야 재파싱 시 켜지지 않는다.
+    // 비활성 raw 15의 3D는 한컴의 비활성 표기다. 정확한 원시 값은 보조 엔트리에 저장한다.
     empty_tag(
         w,
         "hh:strikeout",
@@ -676,6 +676,8 @@ fn write_char_pr<W: Write>(
                 "shape",
                 if cs.strikethrough {
                     line_shape_str(cs.strike_shape)
+                } else if cs.strike_shape == 15 {
+                    "3D"
                 } else {
                     "NONE"
                 },
@@ -854,7 +856,33 @@ fn write_tab_pr<W: Write>(w: &mut Writer<W>, id: u16, td: &TabDef) -> Result<(),
         empty_tag(w, "hh:tabPr", &attrs_ref)?;
     } else {
         start_tag_attrs(w, "hh:tabPr", &attrs_ref)?;
+        // IR 탭 위치는 2배 단위다. 홀수 위치의 네이티브 표기는 미확정이므로
+        // 그런 항목이 하나라도 있으면 정의 전체의 기존 직접 표기를 유지한다.
+        let hwpunitchar = td.tabs.iter().all(|tab| tab.position % 2 == 0);
         for tab in &td.tabs {
+            if hwpunitchar {
+                super::utils::start_tag(w, "hp:switch")?;
+                start_tag_attrs(
+                    w,
+                    "hp:case",
+                    &[(
+                        "hp:required-namespace",
+                        "http://www.hancom.co.kr/hwpml/2016/HwpUnitChar",
+                    )],
+                )?;
+                empty_tag(
+                    w,
+                    "hh:tabItem",
+                    &[
+                        ("pos", &(tab.position / 2).to_string()),
+                        ("type", tab_type_str(tab.tab_type)),
+                        ("leader", tab_leader_str(tab.fill_type)),
+                        ("unit", "HWPUNIT"),
+                    ],
+                )?;
+                end_tag(w, "hp:case")?;
+                super::utils::start_tag(w, "hp:default")?;
+            }
             empty_tag(
                 w,
                 "hh:tabItem",
@@ -864,6 +892,10 @@ fn write_tab_pr<W: Write>(w: &mut Writer<W>, id: u16, td: &TabDef) -> Result<(),
                     ("leader", tab_leader_str(tab.fill_type)),
                 ],
             )?;
+            if hwpunitchar {
+                end_tag(w, "hp:default")?;
+                end_tag(w, "hp:switch")?;
+            }
         }
         end_tag(w, "hh:tabPr")?;
     }
@@ -959,7 +991,7 @@ fn write_numbering<W: Write>(
         let num_format = numbering_format_str(h.number_format);
         let text_offset_s = h.text_distance.to_string();
         let char_pr_id_ref_s = h.char_shape_id.to_string();
-        empty_tag(
+        start_tag_attrs(
             w,
             "hh:paraHead",
             &[
@@ -976,6 +1008,11 @@ fn write_numbering<W: Write>(
                 ("checkable", "0"),
             ],
         )?;
+        // HWP의 실제 7수준 형식만 보존한다. 추가 XML 수준에 7수준 형식을 복제하지 않는다.
+        if let Some(format) = n.level_formats.get(level) {
+            text(w, format)?;
+        }
+        end_tag(w, "hh:paraHead")?;
     }
     end_tag(w, "hh:numbering")?;
     Ok(())

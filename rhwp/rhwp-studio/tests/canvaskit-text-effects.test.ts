@@ -549,3 +549,60 @@ test('tall HY square brackets keep the source em and avoid partial glyph fallbac
     surface.delete(); face.delete(); await vite.close();
   }
 });
+
+
+test('absolute character offset shares placement and legacy replay while preserving scripts and fallback selection', async () => {
+  const vite = await createTestModuleServer(fileURLToPath(new URL('../', import.meta.url)));
+  const kit = await CanvasKitInit({ locateFile: (file: string) => fileURLToPath(new URL(`../node_modules/canvaskit-wasm/bin/${file}`, import.meta.url)) });
+  const face = kit.Typeface.MakeFreeTypeFaceFromData(fs.readFileSync(new URL('../../assets/fonts/NotoSansKR-Regular.woff2', import.meta.url)));
+  const surface = kit.MakeSurface(100, 80);
+  assert.ok(face && surface);
+  try {
+    const { CanvasKitLayerRenderer } = await vite.ssrLoadModule('/src/view/canvaskit-renderer.ts');
+    const { createOutlineSkiaFont } = await vite.ssrLoadModule('/src/core/skia-font.ts');
+    const renderer = new CanvasKitLayerRenderer(kit, 'default', {}, face, null);
+    const canvas = surface.getCanvas();
+    const pixels = () => {
+      const result = canvas.readPixels(0, 0, { width: 100, height: 80,
+        colorType: kit.ColorType.RGBA_8888, alphaType: kit.AlphaType.Unpremul, colorSpace: kit.ColorSpace.SRGB });
+      assert.ok(result); return result;
+    };
+    const reference = (fontSize: number, y: number) => {
+      canvas.clear(kit.WHITE);
+      const font = createOutlineSkiaFont(kit, face, fontSize);
+      const paint = new kit.Paint();
+      try {
+        paint.setAntiAlias(true); paint.setColor(kit.BLACK);
+        canvas.drawGlyphs(font.getGlyphIDs('H', 1), new Float32Array([0, 0]), 10, y, font, paint);
+        return pixels();
+      } finally { font.delete(); paint.delete(); }
+    };
+    const offset = -1.84; // an explicit logical scalar, independent of the selected 24px glyph em
+    for (const script of ['ordinary', 'superscript', 'subscript'] as const) {
+      const scriptShift = script === 'superscript' ? -24 * 0.44 : script === 'subscript' ? 24 * 0.12 : 0;
+      const glyphSize = script === 'ordinary' ? 24 : 24 * 0.64;
+      for (const selectedOffset of [offset, 0, undefined, Number.NaN]) {
+        const effective = Number.isFinite(selectedOffset) ? selectedOffset! : 24 * -0.12;
+        const expected = reference(glyphSize, 40 + effective + scriptShift);
+        for (const placed of [false, true]) {
+          const op = { type: 'textRun', text: 'H', bbox: { x: 10, y: 10, width: 30, height: 32 },
+            baseline: 30 + effective, positions: [0, 20],
+            style: { fontSize: 24, color: '#000000', charOffset: -0.12, charOffsetDy: selectedOffset,
+              superscript: script === 'superscript', subscript: script === 'subscript' },
+            ...(placed ? { placement: { runToPage: { a: 1, b: 0, c: 0, d: 1, e: 10, f: 40 }, baselineY: 0 } } : {}),
+          };
+          canvas.clear(kit.WHITE); renderer.renderTextRun(canvas, op);
+          assert.deepEqual(pixels(), expected, `${script} offset ${selectedOffset}, placement ${placed}`);
+          // A group with no replayable outline must consume the same textRun scalar once.
+          const grouped = { ...op, variant: { equivalenceGroup: 'offset-fallback', isDefaultFallback: true } };
+          const rejectedOutline = { type: 'glyphOutline', bbox: op.bbox,
+            variant: { equivalenceGroup: 'offset-fallback' }, diagnostics: { strictVisualEligible: false } };
+          const leaf = { kind: 'leaf', bbox: op.bbox, ops: [rejectedOutline, grouped] };
+          canvas.clear(kit.WHITE); renderer.selectTextVariants(leaf);
+          renderer.renderLeaf(canvas, leaf, 'screen', 'flow', null);
+          assert.deepEqual(pixels(), expected, 'unreplayable outline selects the corrected default fallback');
+        }
+      }
+    }
+  } finally { surface.delete(); face.delete(); await vite.close(); }
+});

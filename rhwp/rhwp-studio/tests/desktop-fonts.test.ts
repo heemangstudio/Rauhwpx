@@ -12,6 +12,7 @@ import {
   matchDesktopFont,
   prepareDesktopFontsForDocument,
   resetDesktopFontsForTests,
+  syncImportedFontMetrics,
   type DesktopFontHostApi,
   type DesktopFontMatch,
   type SystemFontFace,
@@ -714,4 +715,24 @@ test('글꼴 폴더와 허브 색인을 합치고, 한쪽이 실패해도 나머
   const partial = await offline.list();
   assert.deepEqual(partial.faces.map(entry => entry.id), ['f:aaaaaaaaaaaaaaaa']);
   assert.match(partial.errors[0]?.message ?? '', /hub offline/);
+});
+
+
+test('SFNT localized physical style is shared with imported metric registration', async () => {
+  const g = globalThis as typeof globalThis & {document?: unknown; FontFace?: unknown};
+  const doc = g.document; const ff = g.FontFace;
+  g.FontFace = class {async load() {return this;}};
+  g.document = {fonts: {add() {}, delete() {return true;}}};
+  resetLocalFontsForTests(); resetDesktopFontsForTests();
+  const calls: Array<[boolean, boolean]> = [];
+  configureDesktopFonts({metrics: {register: (_bytes, _aliases, bold, italic) => {calls.push([bold, italic]); return JSON.stringify({registered: true});}}});
+  try {
+    const bytes = new ArrayBuffer(92); const v = new DataView(bytes);
+    v.setUint32(0, 0x00010000); v.setUint16(4, 1); v.setUint32(12, 0x4f532f32); v.setUint32(20, 28); v.setUint32(24, 64);
+    v.setUint16(28, 4); v.setUint16(32, 400); v.setUint16(90, 1);
+    const face = await registerLocalFontFace(bytes, {source: 'imported', fileName: 'italic.ttf', names: {family: 'Locale', fullName: 'Locale Corsivo', postscriptName: 'Locale-I', style: 'Corsivo', aliases: []}});
+    assert.equal(face.ok, true); assert.equal(syncImportedFontMetrics(), 1);
+    assert.deepEqual(calls, [[false, true]]);
+    assert.equal(syncImportedFontMetrics(), 0, 'unchanged face registration remains cached');
+  } finally {resetLocalFontsForTests(); resetDesktopFontsForTests(); g.document = doc; g.FontFace = ff;}
 });

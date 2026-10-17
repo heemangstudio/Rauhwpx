@@ -612,7 +612,8 @@ fn reflow_matrix_textbox_para(
     }
 
     const MATRIX_TEXT_FIT_TOLERANCE_PX: f64 = 3.0;
-    let composed = compose_paragraph(para);
+    let composed =
+        crate::renderer::composer::compose_paragraph_with_policy(para, styles.font_metrics_policy);
     let text_len = para.text.chars().count();
     let full_width = measure_composed_text_range_width(&composed, styles, 0, text_len, None);
 
@@ -812,7 +813,7 @@ impl LayoutEngine {
         alignment: Alignment,
         bin_data_content: &[BinDataContent],
         overflow_map: &std::collections::HashMap<(usize, usize), Vec<Paragraph>>,
-        clamp_negative_para_offset: bool,
+        is_header: bool,
         inline_pos_override: Option<(f64, f64)>,
     ) {
         let para = match paragraphs.get(para_index) {
@@ -980,8 +981,7 @@ impl LayoutEngine {
         // 본질 수정 전까지(paginator A 단계) fallback 그리기를 차단한다.
         // 머리말/꼬리말 HWP3 선 개체는 inline 좌표 등록 없이 들어오는 경우가 있다.
         // 본문 TAC 안전장치는 유지하되 Header/Footer 선만 기존 위치 계산으로 복원한다.
-        let allow_header_footer_line_fallback =
-            clamp_negative_para_offset && matches!(shape, ShapeObject::Line(_));
+        let allow_header_footer_line_fallback = is_header && matches!(shape, ShapeObject::Line(_));
         if common.treat_as_char && inline_pos.is_none() && !allow_header_footer_line_fallback {
             if std::env::var("RHWP_DEBUG_LAYOUT").is_ok() {
                 eprintln!(
@@ -1035,9 +1035,33 @@ impl LayoutEngine {
         // 어느 페이지에도 그려지지 않아 완전 소실됐다. 표/그림 동등 로직과 동일 시멘틱으로
         // 캡션 포함 프레임 하단이 단 영역을 넘으면 안으로 끌어들인다(상단 bleed 는 유지).
         // restrictInPage=off 는 현행 유지(한컴 정합: 쪽 영역 이탈 허용).
+        // 머리말의 선은 band 밖 본문까지 이어질 수 있다. 이미 용지 안에 있는
+        // 전체 프레임만 보존하고, 용지를 벗어난 입력은 기존 제한을 유지한다.
+        let page_contained_header_line = is_header
+            && shape_w >= 0.0
+            && shape_h >= 0.0
+            && caption.is_none()
+            && matches!(shape, ShapeObject::Line(line) if {
+                let attr = &line.drawing.shape_attr;
+                let width = attr.original_width as i32;
+                let height = attr.original_height as i32;
+                line.connector.is_none()
+                    && width > 0
+                    && height > 0
+                    && [line.start, line.end].iter().all(|point| {
+                        (0..=width).contains(&point.x) && (0..=height).contains(&point.y)
+                    })
+            })
+            // 회전/대칭의 current 크기 재배치는 보존하고, 일반 크기 정규화는 허용한다.
+            && !extract_shape_transform(shape.shape_attr()).has_transform()
+            && shape_x >= paper_area.x
+            && shape_x + total_width <= paper_area.x + paper_area.width
+            && shape_y >= paper_area.y
+            && shape_y + total_height <= paper_area.y + paper_area.height;
         let shape_y = if !common.treat_as_char
             && common.flow_with_text
             && matches!(common.vert_rel_to, crate::model::shape::VertRelTo::Para)
+            && !page_contained_header_line
         {
             let body_bottom = col_area.y + col_area.height - total_height;
             shape_y.min(body_bottom.max(col_area.y))
@@ -1153,6 +1177,9 @@ impl LayoutEngine {
         bin_data_content: &[BinDataContent],
         parent_cell_path: &[CellPathEntry],
     ) {
+        // 그룹 자식의 내부 표에도 본문 Paper 기준을 상속하지 않는다.
+        let previous_shape_paper = self.nested_shape_paper.replace(None);
+
         use crate::model::shape::ShapeObject;
 
         // 아핀 변환: (x', y') = (a*x + b*y + tx, c*x + d*y + ty)
@@ -1353,6 +1380,7 @@ impl LayoutEngine {
                 );
             }
         }
+        self.nested_shape_paper.set(previous_shape_paper);
     }
 
     /// 개별 ShapeObject를 렌더 노드로 변환한다.
@@ -1426,6 +1454,20 @@ impl LayoutEngine {
         matrix_positioned: bool,
         inherited_group_origin: Option<(f64, f64)>,
     ) {
+        let previous_shape_paper = self.nested_shape_paper.get();
+        let attr = shape.shape_attr();
+        if matrix_positioned
+            || inherited_group_origin.is_some()
+            || matches!(shape, crate::model::shape::ShapeObject::Group(_))
+            || attr.group_level > 0
+            || extract_shape_transform(attr).has_transform()
+            || attr.render_b != 0.0
+            || attr.render_c != 0.0
+        {
+            // 크기 정규화만 있는 일반 글상자는 용지 기준을 그대로 상속한다.
+            self.nested_shape_paper.set(None);
+        }
+
         use crate::model::shape::ShapeObject;
 
         // 공통: 회전/대칭 정보 추출
@@ -2494,6 +2536,7 @@ impl LayoutEngine {
                 }
             }
         }
+        self.nested_shape_paper.set(previous_shape_paper);
     }
 
     /// 도형의 이미지 채우기를 자식 이미지 노드로 추가한다.
@@ -2895,7 +2938,12 @@ impl LayoutEngine {
                 // 이 텍스트박스는 연결된 텍스트박스의 타겟: 오버플로우 문단 렌더링
                 let composed_paras: Vec<_> = overflow_paras
                     .iter()
-                    .map(|p| compose_paragraph(p))
+                    .map(|p| {
+                        crate::renderer::composer::compose_paragraph_with_policy(
+                            p,
+                            styles.font_metrics_policy,
+                        )
+                    })
                     .collect();
                 let mut para_y = inner_area.y;
                 for (tb_para_idx, composed) in composed_paras.iter().enumerate() {
@@ -3026,7 +3074,12 @@ impl LayoutEngine {
 
         let mut composed_paras: Vec<_> = textbox_paragraphs[..para_count]
             .iter()
-            .map(|p| compose_paragraph(p))
+            .map(|p| {
+                crate::renderer::composer::compose_paragraph_with_policy(
+                    p,
+                    styles.font_metrics_policy,
+                )
+            })
             .collect();
 
         // AutoNumber(Page) 치환: 글상자 안의 쪽번호 필드를 현재 페이지 번호로 변환
@@ -3809,7 +3862,15 @@ impl LayoutEngine {
             absorbed_spacing: f64, // 흡수된 line_spacing (px) — 마지막 칼럼 후처리용
         }
 
-        let composed_paras: Vec<_> = paragraphs.iter().map(|p| compose_paragraph(p)).collect();
+        let composed_paras: Vec<_> = paragraphs
+            .iter()
+            .map(|p| {
+                crate::renderer::composer::compose_paragraph_with_policy(
+                    p,
+                    styles.font_metrics_policy,
+                )
+            })
+            .collect();
 
         let get_alignment = |para_style_id: u16| -> Alignment {
             styles
@@ -4463,6 +4524,568 @@ mod tests {
     use super::*;
     use crate::model::paragraph::{CharShapeRef, LineSeg};
     use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    #[derive(Clone, Copy)]
+    enum AuthoredShapeOwner {
+        Header,
+        Footer,
+        Body,
+    }
+
+    fn authored_line_shape(height_hu: u32, offset_hu: i32) -> ShapeObject {
+        use crate::model::shape::{LineShape, ShapeComponentAttr, TextWrap};
+        ShapeObject::Line(LineShape {
+            common: CommonObjAttr {
+                width: 75,
+                height: height_hu,
+                vertical_offset: offset_hu as u32,
+                horz_rel_to: HorzRelTo::Column,
+                horz_align: HorzAlign::Center,
+                vert_rel_to: VertRelTo::Para,
+                vert_align: VertAlign::Top,
+                text_wrap: TextWrap::InFrontOfText,
+                flow_with_text: true,
+                ..Default::default()
+            },
+            drawing: DrawingObjAttr {
+                shape_attr: ShapeComponentAttr {
+                    original_width: 75,
+                    current_width: 75,
+                    original_height: height_hu,
+                    current_height: height_hu,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            start: crate::model::Point { x: 0, y: 0 },
+            end: crate::model::Point {
+                x: 75,
+                y: height_hu as i32,
+            },
+            ..Default::default()
+        })
+    }
+
+    fn render_authored_owned_shape(
+        shape: ShapeObject,
+        owner: AuthoredShapeOwner,
+    ) -> PageRenderTree {
+        use crate::model::footnote::FootnoteShape;
+        use crate::model::header_footer::{Footer, Header};
+        use crate::renderer::page_layout::PageLayoutInfo;
+        use crate::renderer::pagination::{ColumnContent, HeaderFooterRef, PageContent};
+
+        let engine = LayoutEngine::new(96.0);
+        engine.set_layout_profile(crate::model::provenance::LayoutCompatibilityProfile::new(
+            false, false, false, false, true,
+        ));
+        let body = LayoutRect {
+            x: 40.0,
+            y: 75.0,
+            width: 520.0,
+            height: 750.0,
+        };
+        let layout = PageLayoutInfo {
+            page_width: 600.0,
+            page_height: 900.0,
+            header_area: LayoutRect {
+                x: 40.0,
+                y: 30.0,
+                width: 520.0,
+                height: 45.0,
+            },
+            body_area: body,
+            column_areas: vec![body],
+            footnote_area: LayoutRect::default(),
+            footer_area: LayoutRect {
+                x: 40.0,
+                y: 825.0,
+                width: 520.0,
+                height: 45.0,
+            },
+            dpi: 96.0,
+            separator_type: 0,
+            separator_width: 0,
+            separator_color: 0,
+            pagination_tolerance_px: 0.0,
+        };
+        let tac = shape.common().treat_as_char;
+        let inner = Paragraph {
+            text: if tac {
+                "\u{FFFC}".into()
+            } else {
+                String::new()
+            },
+            char_count: if tac { 2 } else { 1 },
+            controls: vec![Control::Shape(Box::new(shape))],
+            line_segs: vec![LineSeg {
+                line_height: 1_500,
+                text_height: 1_500,
+                baseline_distance: 1_275,
+                segment_width: 39_000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let hf_ref = HeaderFooterRef {
+            para_index: 0,
+            control_index: 0,
+            source_section_index: 0,
+            cell_path: Vec::new(),
+        };
+        let (paragraphs, active_header, active_footer) = match owner {
+            AuthoredShapeOwner::Header => (
+                vec![Paragraph {
+                    controls: vec![Control::Header(Box::new(Header {
+                        paragraphs: vec![inner],
+                        ..Default::default()
+                    }))],
+                    ..Default::default()
+                }],
+                Some(hf_ref),
+                None,
+            ),
+            AuthoredShapeOwner::Footer => (
+                vec![Paragraph {
+                    controls: vec![Control::Footer(Box::new(Footer {
+                        paragraphs: vec![inner],
+                        ..Default::default()
+                    }))],
+                    ..Default::default()
+                }],
+                None,
+                Some(hf_ref),
+            ),
+            AuthoredShapeOwner::Body => (vec![inner], None, None),
+        };
+        let column_contents = if matches!(owner, AuthoredShapeOwner::Body) {
+            vec![ColumnContent {
+                column_index: 0,
+                start_height: 0.0,
+                endnote_flow: false,
+                items: vec![PageItem::Shape {
+                    para_index: 0,
+                    control_index: 0,
+                }],
+                zone_layout: None,
+                zone_y_offset: 0.0,
+                wrap_around_paras: Vec::new(),
+                used_height: 0.0,
+                wrap_anchors: Default::default(),
+            }]
+        } else {
+            Vec::new()
+        };
+        let page = PageContent {
+            page_index: 0,
+            page_number: 1,
+            section_index: 0,
+            layout,
+            column_contents,
+            active_header,
+            active_footer,
+            page_number_pos: None,
+            page_hide: None,
+            footnotes: Vec::new(),
+            active_master_page: None,
+            extra_master_pages: Vec::new(),
+        };
+        engine.build_render_tree(
+            &page,
+            &paragraphs,
+            &paragraphs,
+            &paragraphs,
+            &[],
+            &ResolvedStyleSet::default(),
+            &FootnoteShape::default(),
+            &[],
+            None,
+            &[],
+            None,
+            0,
+            &[],
+        )
+    }
+
+    fn one_authored_shape(tree: &PageRenderTree) -> &RenderNode {
+        fn collect<'a>(node: &'a RenderNode, out: &mut Vec<&'a RenderNode>) {
+            if matches!(
+                node.node_type,
+                RenderNodeType::Line(_) | RenderNodeType::Rectangle(_)
+            ) {
+                out.push(node);
+            }
+            for child in &node.children {
+                collect(child, out);
+            }
+        }
+        let mut shapes = Vec::new();
+        collect(&tree.root, &mut shapes);
+        assert_eq!(
+            shapes.len(),
+            1,
+            "the actual owner path must emit exactly one authored shape"
+        );
+        shapes[0]
+    }
+
+    fn authored_line_endpoints(tree: &PageRenderTree) -> [f64; 4] {
+        let RenderNodeType::Line(line) = &one_authored_shape(tree).node_type else {
+            panic!("actual shape layout must emit a Line node");
+        };
+        [line.x1, line.y1, line.x2, line.y2]
+    }
+
+    fn assert_line_endpoints(tree: &PageRenderTree, expected: [f64; 4]) {
+        let actual = authored_line_endpoints(tree);
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-9,
+                "actual={actual}, expected={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn header_line_keeps_page_contained_authored_endpoints_outside_header_band() {
+        for (height, offset, top, bottom) in [
+            (45_000, 4_500, 90.0, 690.0),
+            (9_000, 900, 42.0, 162.0),
+            (1_500, 3_750, 80.0, 100.0),
+        ] {
+            let tree = render_authored_owned_shape(
+                authored_line_shape(height, offset),
+                AuthoredShapeOwner::Header,
+            );
+            let node = one_authored_shape(&tree);
+            let source = node
+                .header_footer_source
+                .as_ref()
+                .expect("actual header source binding");
+            assert_eq!(source.1.kind, HeaderFooterKind::Header);
+            let actual = authored_line_endpoints(&tree);
+            assert!((actual[3] - actual[1] - height as f64 / 75.0).abs() < 1e-9);
+            assert_line_endpoints(&tree, [299.5, top, 300.5, bottom]);
+            let header = tree
+                .root
+                .children
+                .iter()
+                .find(|node| matches!(node.node_type, RenderNodeType::Header))
+                .unwrap();
+            assert!(header.bbox.y + header.bbox.height >= bottom);
+        }
+    }
+
+    #[test]
+    fn header_line_exemption_keeps_body_footer_and_non_line_restrictions() {
+        let body = render_authored_owned_shape(
+            authored_line_shape(45_000, 90_000),
+            AuthoredShapeOwner::Body,
+        );
+        assert!(one_authored_shape(&body).header_footer_source.is_none());
+        assert_line_endpoints(&body, [299.5, 225.0, 300.5, 825.0]);
+        let mut unrestricted = authored_line_shape(45_000, 90_000);
+        unrestricted.common_mut().flow_with_text = false;
+        assert_line_endpoints(
+            &render_authored_owned_shape(unrestricted, AuthoredShapeOwner::Body),
+            [299.5, 1275.0, 300.5, 1875.0],
+        );
+        let footer = render_authored_owned_shape(
+            authored_line_shape(1_500, 4_500),
+            AuthoredShapeOwner::Footer,
+        );
+        assert_eq!(
+            one_authored_shape(&footer)
+                .header_footer_source
+                .as_ref()
+                .unwrap()
+                .1
+                .kind,
+            HeaderFooterKind::Footer
+        );
+        assert_line_endpoints(&footer, [299.5, 850.0, 300.5, 870.0]);
+        let ShapeObject::Line(line) = authored_line_shape(1_500, 4_500) else {
+            unreachable!()
+        };
+        let rectangle = ShapeObject::Rectangle(crate::model::shape::RectangleShape {
+            common: line.common,
+            drawing: line.drawing,
+            ..Default::default()
+        });
+        let tree = render_authored_owned_shape(rectangle, AuthoredShapeOwner::Header);
+        let node = one_authored_shape(&tree);
+        assert!(matches!(node.node_type, RenderNodeType::Rectangle(_)));
+        assert!((node.bbox.y - 55.0).abs() < 1e-9);
+        assert!((node.bbox.height - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn header_line_exemption_preserves_paper_and_tac_placement() {
+        for owner in [
+            AuthoredShapeOwner::Header,
+            AuthoredShapeOwner::Footer,
+            AuthoredShapeOwner::Body,
+        ] {
+            let mut paper = authored_line_shape(45_000, 4_500);
+            paper.common_mut().vert_rel_to = VertRelTo::Paper;
+            assert_line_endpoints(
+                &render_authored_owned_shape(paper, owner),
+                [299.5, 60.0, 300.5, 660.0],
+            );
+        }
+        let mut tac = authored_line_shape(1_500, 4_500);
+        tac.common_mut().treat_as_char = true;
+        let restricted = render_authored_owned_shape(tac.clone(), AuthoredShapeOwner::Header);
+        tac.common_mut().flow_with_text = false;
+        let unrestricted = render_authored_owned_shape(tac, AuthoredShapeOwner::Header);
+        let actual = authored_line_endpoints(&restricted);
+        assert!((actual[3] - actual[1] - 20.0).abs() < 1e-9);
+        assert_eq!(actual, authored_line_endpoints(&unrestricted));
+    }
+
+    #[test]
+    fn header_line_exemption_stops_at_physical_paper_boundary() {
+        // 용지 밖 입력은 기존 band clamp를 유지한다. 독립 수치의 1HU 차이로 경계를 확인한다.
+        let outside = render_authored_owned_shape(
+            authored_line_shape(45_000, 20_251),
+            AuthoredShapeOwner::Header,
+        );
+        assert_line_endpoints(&outside, [299.5, 30.0, 300.5, 630.0]);
+        let mut right_outside = authored_line_shape(45_000, 4_500);
+        right_outside.common_mut().horz_rel_to = HorzRelTo::Paper;
+        right_outside.common_mut().horz_align = HorzAlign::Left;
+        right_outside.common_mut().horizontal_offset = 44_926;
+        let right = render_authored_owned_shape(right_outside, AuthoredShapeOwner::Header);
+        let actual = authored_line_endpoints(&right);
+        assert!(actual[2] > 600.0);
+        assert!((actual[1] - 30.0).abs() < 1e-9);
+        let mut left_outside = authored_line_shape(45_000, 4_500);
+        left_outside.common_mut().horz_rel_to = HorzRelTo::Paper;
+        left_outside.common_mut().horz_align = HorzAlign::Left;
+        left_outside.common_mut().horizontal_offset = (-1i32) as u32;
+        let left = render_authored_owned_shape(left_outside, AuthoredShapeOwner::Header);
+        let actual = authored_line_endpoints(&left);
+        assert!(actual[0] < 0.0);
+        assert!((actual[1] - 30.0).abs() < 1e-9);
+        for (offset, top) in [(-2_250, 0.0), (-2_251, -1.0 / 75.0)] {
+            let tree = render_authored_owned_shape(
+                authored_line_shape(45_000, offset),
+                AuthoredShapeOwner::Header,
+            );
+            assert_line_endpoints(&tree, [299.5, top, 300.5, top + 600.0]);
+        }
+        let exact_bottom = render_authored_owned_shape(
+            authored_line_shape(45_000, 20_250),
+            AuthoredShapeOwner::Header,
+        );
+        assert_line_endpoints(&exact_bottom, [299.5, 300.0, 300.5, 900.0]);
+        let mut exact_right = authored_line_shape(45_000, 4_500);
+        exact_right.common_mut().horz_rel_to = HorzRelTo::Paper;
+        exact_right.common_mut().horz_align = HorzAlign::Left;
+        exact_right.common_mut().horizontal_offset = 44_925;
+        assert_line_endpoints(
+            &render_authored_owned_shape(exact_right, AuthoredShapeOwner::Header),
+            [599.0, 90.0, 600.0, 690.0],
+        );
+    }
+
+    #[test]
+    fn header_line_transforms_keep_legacy_clamp_and_current_size_frame() {
+        // 500x600 프레임의 명목 좌표는 용지 안이어도 회전 후 끝점은 벗어날 수 있다.
+        for (angle, horz_flip, vert_flip, current_width, current_height, expected) in [
+            (45, false, false, 37_500, 45_000, [50.0, 30.0, 550.0, 630.0]),
+            (0, true, false, 30_000, 30_000, [100.0, 130.0, 500.0, 530.0]),
+            (0, false, true, 30_000, 30_000, [100.0, 130.0, 500.0, 530.0]),
+        ] {
+            let ShapeObject::Line(mut line) = authored_line_shape(45_000, 20_250) else {
+                unreachable!()
+            };
+            line.common.width = 37_500;
+            line.drawing.shape_attr.original_width = 37_500;
+            line.drawing.shape_attr.original_height = 45_000;
+            line.drawing.shape_attr.current_width = current_width;
+            line.drawing.shape_attr.current_height = current_height;
+            line.drawing.shape_attr.rotation_angle = angle;
+            line.drawing.shape_attr.horz_flip = horz_flip;
+            line.drawing.shape_attr.vert_flip = vert_flip;
+            line.end.x = 37_500;
+            let tree =
+                render_authored_owned_shape(ShapeObject::Line(line), AuthoredShapeOwner::Header);
+            let node = one_authored_shape(&tree);
+            assert_eq!(
+                node.header_footer_source.as_ref().unwrap().1.kind,
+                HeaderFooterKind::Header
+            );
+            let RenderNodeType::Line(line) = &node.node_type else {
+                unreachable!()
+            };
+            assert_eq!(line.transform.rotation, angle as f64);
+            assert_eq!(line.transform.horz_flip, horz_flip);
+            assert_eq!(line.transform.vert_flip, vert_flip);
+            assert!((node.bbox.x - expected[0]).abs() < 1e-9);
+            assert!((node.bbox.y - expected[1]).abs() < 1e-9);
+            assert!((node.bbox.width - (expected[2] - expected[0])).abs() < 1e-9);
+            assert!((node.bbox.height - (expected[3] - expected[1])).abs() < 1e-9);
+            assert_line_endpoints(&tree, expected);
+        }
+
+        // 원래 크기→현재 크기 정규화는 회전/대칭과 다르므로 제한하지 않는다.
+        let ShapeObject::Line(mut normalized) = authored_line_shape(45_000, 4_500) else {
+            unreachable!()
+        };
+        normalized.drawing.shape_attr.original_width = 100;
+        normalized.drawing.shape_attr.original_height = 100;
+        normalized.drawing.shape_attr.current_width = 75;
+        normalized.drawing.shape_attr.current_height = 45_000;
+        normalized.drawing.shape_attr.render_sx = 0.75;
+        normalized.drawing.shape_attr.render_sy = 450.0;
+        normalized.end = crate::model::Point { x: 100, y: 100 };
+        let tree =
+            render_authored_owned_shape(ShapeObject::Line(normalized), AuthoredShapeOwner::Header);
+        let RenderNodeType::Line(line) = &one_authored_shape(&tree).node_type else {
+            unreachable!()
+        };
+        assert_eq!(line.transform.rotation, 0.0);
+        assert!(!line.transform.horz_flip && !line.transform.vert_flip);
+        assert_line_endpoints(&tree, [299.5, 90.0, 300.5, 690.0]);
+    }
+
+    #[test]
+    fn header_line_exemption_keeps_unbounded_endpoints_and_connectors_on_legacy_path() {
+        for (end_x, end_y) in [(75, 90_000), (-1, 45_000), (76, 45_000), (75, -1)] {
+            let ShapeObject::Line(mut line) = authored_line_shape(45_000, 4_500) else {
+                unreachable!()
+            };
+            line.end = crate::model::Point { x: end_x, y: end_y };
+            let tree =
+                render_authored_owned_shape(ShapeObject::Line(line), AuthoredShapeOwner::Header);
+            let node = one_authored_shape(&tree);
+            assert_eq!(
+                node.header_footer_source.as_ref().unwrap().1.kind,
+                HeaderFooterKind::Header
+            );
+            assert!((node.bbox.y - 30.0).abs() < 1e-9);
+            assert!((authored_line_endpoints(&tree)[1] - 30.0).abs() < 1e-9);
+        }
+        let ShapeObject::Line(mut zero_original) = authored_line_shape(45_000, 4_500) else {
+            unreachable!()
+        };
+        zero_original.drawing.shape_attr.original_height = 0;
+        let tree = render_authored_owned_shape(
+            ShapeObject::Line(zero_original),
+            AuthoredShapeOwner::Header,
+        );
+        assert!((one_authored_shape(&tree).bbox.y - 30.0).abs() < 1e-9);
+
+        for control_points in [
+            Vec::new(),
+            vec![crate::model::shape::ConnectorControlPoint {
+                x: 0,
+                y: 90_000,
+                point_type: 0,
+            }],
+        ] {
+            let ShapeObject::Line(mut connector) = authored_line_shape(45_000, 4_500) else {
+                unreachable!()
+            };
+            let has_points = !control_points.is_empty();
+            connector.connector = Some(crate::model::shape::ConnectorData {
+                control_points,
+                ..Default::default()
+            });
+            let tree = render_authored_owned_shape(
+                ShapeObject::Line(connector),
+                AuthoredShapeOwner::Header,
+            );
+            if has_points {
+                fn find_path(node: &RenderNode) -> Option<&RenderNode> {
+                    if matches!(node.node_type, RenderNodeType::Path(_)) {
+                        return Some(node);
+                    }
+                    node.children.iter().find_map(find_path)
+                }
+                let node = find_path(&tree.root).expect("actual connector Path node");
+                assert_eq!(
+                    node.header_footer_source.as_ref().unwrap().1.kind,
+                    HeaderFooterKind::Header
+                );
+                assert!((node.bbox.y - 30.0).abs() < 1e-9);
+                let RenderNodeType::Path(path) = &node.node_type else {
+                    unreachable!()
+                };
+                assert!(path.commands.iter().any(|command| matches!(command,
+                        PathCommand::LineTo(_, y) if (*y - 1230.0).abs() < 1e-9)));
+            } else {
+                assert_line_endpoints(&tree, [299.5, 30.0, 300.5, 630.0]);
+            }
+        }
+    }
+
+    #[test]
+    fn header_line_exemption_rejects_negative_resolved_common_dimensions() {
+        let ShapeObject::Line(mut negative_width) = authored_line_shape(45_000, 4_500) else {
+            unreachable!()
+        };
+        negative_width.common.width = (-75_000i32) as u32;
+        let width_tree = render_authored_owned_shape(
+            ShapeObject::Line(negative_width),
+            AuthoredShapeOwner::Header,
+        );
+        assert_eq!(
+            one_authored_shape(&width_tree)
+                .header_footer_source
+                .as_ref()
+                .unwrap()
+                .1
+                .kind,
+            HeaderFooterKind::Header
+        );
+        assert_line_endpoints(&width_tree, [800.0, 30.0, -200.0, 630.0]);
+        let ShapeObject::Line(mut negative_height) = authored_line_shape(45_000, 75_000) else {
+            unreachable!()
+        };
+        negative_height.common.height = (-45_000i32) as u32;
+        let height_tree = render_authored_owned_shape(
+            ShapeObject::Line(negative_height),
+            AuthoredShapeOwner::Header,
+        );
+        assert_eq!(
+            one_authored_shape(&height_tree)
+                .header_footer_source
+                .as_ref()
+                .unwrap()
+                .1
+                .kind,
+            HeaderFooterKind::Header
+        );
+        assert_line_endpoints(&height_tree, [299.5, 675.0, 300.5, 75.0]);
+    }
+
+    #[test]
+    fn header_line_exemption_keeps_all_captions_on_legacy_path() {
+        for spacing in [-7_500, 0, 750] {
+            let ShapeObject::Line(mut line) = authored_line_shape(45_000, 24_000) else {
+                unreachable!()
+            };
+            line.drawing.caption = Some(Caption {
+                direction: CaptionDirection::Bottom,
+                spacing,
+                ..Default::default()
+            });
+            let tree =
+                render_authored_owned_shape(ShapeObject::Line(line), AuthoredShapeOwner::Header);
+            assert_eq!(
+                one_authored_shape(&tree)
+                    .header_footer_source
+                    .as_ref()
+                    .unwrap()
+                    .1
+                    .kind,
+                HeaderFooterKind::Header
+            );
+            assert_line_endpoints(&tree, [299.5, 30.0, 300.5, 630.0]);
+        }
+    }
 
     #[test]
     fn compound_rectangle_strokes_preserve_total_extent_and_orientation() {
