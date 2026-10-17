@@ -119,6 +119,23 @@ test('a signed-in site needs both evidence and live cookies, and a saved login c
   assert.equal((await policy.list()).signedIn.length, 0);
 });
 
+test('guest cookies the agent made on a saved-login site never gate, across restarts, until the login is used', async (t) => {
+  const { dataDir, policy } = await fixture(t);
+  const site = 'https://example.com';
+  policy.setSavedLoginSites(profileId, [SHOP]);
+  await policy.setCookieSites(profileId, [site], { guest: [site] });
+  assert.equal((await decide(policy, { actor: agent, action: 'read', url: SHOP })).allowed, true, 'the agent\'s own cookies are not the owner\'s sign-in');
+  const reopened = createBrowserPolicy({ dataDir });
+  reopened.setSavedLoginSites(profileId, [SHOP]);
+  await reopened.setCookieSites(profileId, [site]);
+  assert.equal((await decide(reopened, { actor: agent, action: 'read', url: SHOP })).allowed, true, 'a restart keeps them guest cookies');
+  await reopened.setCookieSites(profileId, [site], { owned: [site] });
+  assert.equal((await decide(reopened, { actor: other, action: 'read', url: SHOP })).reason, 'signed-in', 'filling the saved login makes them the owner\'s');
+  assert.deepEqual((await reopened.siteStatus(owner, { profileId })).map((row) => [row.key, row.signedIn]), [[site, true]], 'Settings lists the saved-login site');
+  await reopened.clearSignedIn({ origin: SHOP });
+  assert.equal((await decide(reopened, { actor: other, action: 'read', url: SHOP })).allowed, true, '로그인 표시 지우기 also clears a saved-login sign-in');
+});
+
 test('every denial names its site and carries the exact next call; a subagent reports to the root', async (t) => {
   const { policy } = await fixture(t);
   await signIn(policy);

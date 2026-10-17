@@ -214,7 +214,7 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
   const changeGuards = new Set();
   /** profileId → 쿠키가 있는 사이트 키(메모리). 저장소를 읽을 때마다 새로 맞춘다. */
   const cookieSites = new Map();
-  /** profileId → 저장된 로그인이 있는 사이트 키(메모리). 활성 런타임의 저장소만 본다. */
+  /** profileId → (로그인 표시 키 → 로그인 출처). 저장된 로그인이 있는 사이트(메모리). 활성 런타임의 저장소만 본다. */
   const savedLoginSites = new Map();
   /** threadId\n사이트 키 → { actions, at }. 이 채팅이 최근에 부딪힌 차단. 카드가 에이전트가 빠뜨린 차단도 풀 수 있게 한다. */
   const recentBlocks = new Map();
@@ -236,14 +236,16 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
           .map((account) => ({ accountId: String(account.accountId ?? ''), profileId: boundedText(account.profileId ?? 'default', 100), origins: account.origins.filter((origin) => webOrigin(origin)) }));
         state = { schema: 2, ownerId, revision: (Number(stored.revision) || 1) + 1, seeded: stored.seeded !== false,
           defaults: stored.defaults ?? { browse: true, download: true, researchImport: true },
-          sites: normalizeSites(sites), chatGrants: [], signedIn: [], ...(legacyAccounts.length ? { legacyAccounts } : {}) };
+          sites: normalizeSites(sites), chatGrants: [], signedIn: [], guestSites: [], ...(legacyAccounts.length ? { legacyAccounts } : {}) };
         await writeBrowserJson(filePath, state, POLICY_BYTES);
       } else {
         state = { ...stored, sites,
           chatGrants: (Array.isArray(stored.chatGrants) ? stored.chatGrants : []).filter((grant) => typeof grant?.threadId === 'string' && grant.threadId && webOrigin(grant.key) === grant.key)
             .map((grant) => ({ threadId: grant.threadId, key: grant.key, actions: actions((grant.actions ?? []).filter((action) => ACTIONS.has(action))), grantedAt: Number(grant.grantedAt) || 0, usedAt: Number(grant.usedAt) || 0, epoch: Number(grant.epoch) || 0 })),
           signedIn: (Array.isArray(stored.signedIn) ? stored.signedIn : []).filter((marker) => typeof marker?.profileId === 'string' && webOrigin(marker.key) === marker.key && SIGNED_IN_SOURCES.has(marker.source))
-            .map((marker) => ({ profileId: marker.profileId, key: marker.key, source: marker.source, at: Number(marker.at) || 0 })) };
+            .map((marker) => ({ profileId: marker.profileId, key: marker.key, source: marker.source, at: Number(marker.at) || 0 })),
+          guestSites: (Array.isArray(stored.guestSites) ? stored.guestSites : []).filter((entry) => typeof entry?.profileId === 'string' && webOrigin(entry.key) === entry.key)
+            .map((entry) => ({ profileId: entry.profileId, key: entry.key, at: Number(entry.at) || 0 })) };
         pruneChatGrants();
       }
       initialized = true;
@@ -253,7 +255,7 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
       schema: 2, ownerId, revision: 1, seeded: true,
       defaults: { browse: true, download: true, researchImport: true },
       sites: DEFAULT_RESEARCH_SITES.map((site) => ({ ...site, id: crypto.randomUUID(), source: 'research-default', allowedActions: [...RESEARCH_ACTIONS], blockedActions: [], epoch: 0 })),
-      chatGrants: [], signedIn: [],
+      chatGrants: [], signedIn: [], guestSites: [],
     };
     await writeBrowserJson(filePath, state, POLICY_BYTES);
     initialized = true;
@@ -325,9 +327,14 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
     const entry = state.sites.find((site) => site.source === 'research-default' && site.origin === origin && site.allowedActions.includes(action));
     return entry ? { source: 'research-default', epoch: `research:${entry.epoch}` } : null;
   }
+  /**
+   * 로그인한 사이트: 쿠키가 있고, 사용자 신원의 증거(로그인 표시)가 있거나 저장된 로그인이 있다.
+   * 저장된 로그인은 그 쿠키가 손님 쿠키(에이전트 방문으로만 생겼거나 사용자가 표시를 지운 쿠키)면 증거가 아니다.
+   */
   function isSignedInSync(profileId, key) {
     if (!profileId || !cookieSites.get(profileId)?.has(key)) return false;
-    return savedLoginSites.get(profileId)?.has(key) === true || state.signedIn.some((marker) => marker.profileId === profileId && marker.key === key);
+    if (state.signedIn.some((marker) => marker.profileId === profileId && marker.key === key)) return true;
+    return savedLoginSites.get(profileId)?.has(key) === true && !state.guestSites.some((entry) => entry.profileId === profileId && entry.key === key);
   }
 
   /**
@@ -401,6 +408,10 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
       for (const site of state.sites) if (site.source !== 'research-default') add(site.origin);
       for (const grant of state.chatGrants) if (!actor?.threadId || grant.threadId === actor.threadId) add(grant.key);
       for (const marker of state.signedIn) if ((!profileId || marker.profileId === profileId) && cookieSites.get(marker.profileId)?.has(marker.key) !== false) add(marker.key);
+      // 저장된 로그인과 사용자 쿠키로 로그인한 사이트도 한 줄을 받는다. 키는 로그인 출처의 사이트 키다.
+      for (const [profile, logins] of savedLoginSites) if (!profileId || profile === profileId) {
+        for (const [key, origin] of logins) if (isSignedInSync(profile, key)) add(origin);
+      }
     }
     return [...keys.values()].map((scope) => {
       const entries = state.sites.filter((entry) => entry.source !== 'research-default' && (entry.origin === scope.key || siteScope(entry.origin).key === scope.key));
@@ -551,31 +562,62 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
       return true;
     } catch { return false; }
   }
-  /** 로그인 표시를 지운다. profileId 를 빼면 모든 프로필에서. */
+  /** 손님 쿠키 목록도 프로필마다 4096 개까지. 넘치면 오래된 것부터 버린다. */
+  function capGuests(next, profileId) {
+    const mine = next.guestSites.filter((entry) => entry.profileId === profileId);
+    if (mine.length <= signedInLimit) return;
+    const drop = new Set([...mine].sort((a, b) => a.at - b.at).slice(0, mine.length - signedInLimit));
+    next.guestSites = next.guestSites.filter((entry) => !drop.has(entry));
+  }
+  /**
+   * 로그인 표시를 지운다. profileId 를 빼면 모든 프로필에서. 지금 남은 쿠키는 손님 쿠키로 보아
+   * 저장된 로그인만으로는 다시 로그인한 사이트가 되지 않는다(설정의 "로그인 표시 지우기").
+   */
   async function clearSignedIn({ profileId, origin, site } = {}) {
     const key = markerKey({ origin: origin ?? (site ? `https://${String(site).replace(/^https?:\/\//, '')}` : undefined) });
     if (!key) return false;
+    await readyPromise;
+    const profiles = [...cookieSites].filter(([profile, live]) => (!profileId || profile === profileId) && live.has(key) && savedLoginSites.get(profile)?.has(key)).map(([profile]) => profile);
     await mutate((next) => {
       const before = next.signedIn.length;
       next.signedIn = next.signedIn.filter((marker) => marker.key !== key || (profileId && marker.profileId !== profileId));
-      if (next.signedIn.length === before) return SKIP;
+      const guests = profiles.filter((profile) => !next.guestSites.some((entry) => entry.profileId === profile && entry.key === key));
+      for (const profile of guests) { next.guestSites.push({ profileId: profile, key, at: now() }); capGuests(next, profile); }
+      if (next.signedIn.length === before && !guests.length) return SKIP;
     });
     return true;
   }
-  /** 브라우저 데이터 초기화: 로그인 표시를 모두 지운다. 사이트와 차단은 남는다. */
+  /** 브라우저 데이터 초기화: 로그인 표시와 손님 쿠키 기록을 모두 지운다. 사이트와 차단은 남는다. */
   async function clearAllSignedIn() {
-    await mutate((next) => { if (!next.signedIn.length) return SKIP; next.signedIn = []; });
+    await mutate((next) => { if (!next.signedIn.length && !next.guestSites.length) return SKIP; next.signedIn = []; next.guestSites = []; });
   }
-  /** 저장소를 읽은 결과. 쿠키가 사라진 사이트의 로그인 표시는 함께 사라진다. */
-  async function setCookieSites(profileId, keys) {
-    await readyPromise;
+  /**
+   * 저장소를 읽은 결과. 쿠키가 사라진 사이트의 로그인 표시와 손님 쿠키 기록은 함께 사라진다.
+   * guest: 이번에 처음 생긴 쿠키 중 에이전트 방문으로만 생긴 사이트. 저장된 로그인이 있는 사이트만 기록한다.
+   * owned: 저장된 로그인을 막 입력한 사이트. 그 쿠키는 더는 손님 쿠키가 아니다.
+   */
+  async function setCookieSites(profileId, keys, { guest = [], owned = [] } = {}) {
     const live = new Set(keys);
+    // 새 쿠키와 손님 쿠키 기록은 함께 보여야 한다. 상태를 바꾸는 줄에 서서, 바뀐 상태가 저장된 뒤에 쿠키 목록을 바꾼다.
+    await mutate((next) => {
+      const added = [...new Set(guest)].filter((key) => live.has(key) && savedLoginSites.get(profileId)?.has(key) && !owned.includes(key)
+        && !next.guestSites.some((entry) => entry.profileId === profileId && entry.key === key));
+      const stale = next.signedIn.some((marker) => marker.profileId === profileId && !live.has(marker.key))
+        || next.guestSites.some((entry) => entry.profileId === profileId && (!live.has(entry.key) || owned.includes(entry.key)));
+      if (!stale && !added.length) return SKIP;
+      next.signedIn = next.signedIn.filter((marker) => marker.profileId !== profileId || live.has(marker.key));
+      next.guestSites = next.guestSites.filter((entry) => entry.profileId !== profileId || (live.has(entry.key) && !owned.includes(entry.key)))
+        .concat(added.map((key) => ({ profileId, key, at: now() })));
+      capGuests(next, profileId);
+    }).catch(() => {});
     cookieSites.set(profileId, live);
-    if (state.signedIn.some((marker) => marker.profileId === profileId && !live.has(marker.key))) {
-      await mutate((next) => { next.signedIn = next.signedIn.filter((marker) => marker.profileId !== profileId || live.has(marker.key)); }).catch(() => {});
-    }
   }
-  function setSavedLoginSites(profileId, keys) { savedLoginSites.set(profileId, new Set(keys)); }
+  /** 저장된 로그인의 출처. 사이트마다 처음 본 출처를 설정 목록의 키로 쓴다. */
+  function setSavedLoginSites(profileId, origins) {
+    const logins = new Map();
+    for (const origin of origins) { const key = signedInKey(origin); if (key && !logins.has(key)) logins.set(key, origin); }
+    savedLoginSites.set(profileId, logins);
+  }
   async function isSignedIn(profileId, origin) { await readyPromise; const key = markerKey({ origin }); return !!key && isSignedInSync(profileId, key); }
 
   /** 스키마 1 에서 승인돼 있던 세션 계정. 중개자가 읽기 허용으로 옮긴 뒤 dropLegacyAccounts 로 지운다. */

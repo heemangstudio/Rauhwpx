@@ -253,6 +253,19 @@ export function createOwnedBrowserService(options = {}) {
   const DROPPED_LIMIT = 10;
   let cookieRefresh = null;
   let cookieRefreshedAt = 0;
+  // 새 쿠키가 에이전트 방문으로만 생겼는지(손님 쿠키) 가리려고 사이트마다 마지막 요청 시각을 둔다.
+  // identity 는 저장된 로그인을 입력한 시각이다. 그 사이트의 쿠키는 사용자 신원이 된다.
+  const siteTouches = new Map();
+  const cookieSnapshots = new Map();
+  const TOUCH_MARGIN_MS = 10_000;
+  const IDENTITY_MS = 10 * 60 * 1000;
+  const touchSite = (url, kind) => {
+    let key; try { key = cookieSiteKey(new URL(url).hostname); } catch { return; }
+    if (!key) return;
+    const entry = siteTouches.get(key) ?? {}; entry[kind] = Date.now();
+    siteTouches.delete(key); siteTouches.set(key, entry);
+    if (siteTouches.size > 4096) siteTouches.delete(siteTouches.keys().next().value);
+  };
   let protectedLoad;
   const profileId = () => runtimeMode === 'native' ? 'native' : 'default';
   const selectedAdapter = () => runtimeMode === 'native' ? nativeAdapter : undefined;
@@ -320,22 +333,35 @@ export function createOwnedBrowserService(options = {}) {
     tab.dropped ??= [];
     if (tab.dropped.length < DROPPED_LIMIT) tab.dropped.push({ origin: decision.origin, method, code: decision.code });
   };
-  /** 쿠키가 있는 사이트와 저장된 로그인이 있는 사이트를 정책에 알린다. 로그인 표시는 이 둘이 함께 있어야 산다. */
+  /** 저장된 로그인이 있는 사이트와 쿠키가 있는 사이트(새로 생긴 손님 쿠키 포함)를 정책에 알린다. 로그인 표시는 쿠키가 있어야 산다. */
   const refreshCookieSites = ({ force = false } = {}) => {
     if (!policy?.setCookieSites || !runtime || state !== 'ready') return Promise.resolve();
     if (!force && (cookieRefresh || Date.now() - cookieRefreshedAt < 1000)) return cookieRefresh ?? Promise.resolve();
     const profile = profileId();
     const observed = runtime;
     cookieRefresh = (async () => {
+      if (policy.setSavedLoginSites) {
+        const logins = profile === 'native' ? await selectedAdapter()?.passwordAccounts?.().then((result) => result?.accounts ?? null, () => null)
+          : await credentialBroker?.listAccounts?.().then((result) => (result?.accounts ?? []).filter((account) => account.profileId === 'default'), () => null);
+        if (Array.isArray(logins)) policy.setSavedLoginSites(profile, logins.map((account) => account.origin).filter((origin) => signedInKey(origin)));
+      }
+      const readAt = Date.now();
       let cookies = null;
       try { cookies = (await selectedAdapter()?.passwordStorageState?.())?.cookies ?? null; } catch {}
       if (!cookies) try { cookies = await observed.context.cookies?.(); } catch {}
       if (!cookies) try { cookies = (await observed.context.storageState?.())?.cookies; } catch {}
-      if (Array.isArray(cookies) && runtime === observed) await policy.setCookieSites(profile, new Set(cookies.map((cookie) => cookieSiteKey(cookie.domain)).filter(Boolean)));
-      if (policy.setSavedLoginSites) {
-        const logins = profile === 'native' ? await selectedAdapter()?.passwordAccounts?.().then((result) => result?.accounts ?? null, () => null)
-          : await credentialBroker?.listAccounts?.().then((result) => (result?.accounts ?? []).filter((account) => account.profileId === 'default'), () => null);
-        if (Array.isArray(logins)) policy.setSavedLoginSites(profile, logins.map((account) => signedInKey(account.origin)).filter(Boolean));
+      if (Array.isArray(cookies) && runtime === observed) {
+        const live = new Set(cookies.map((cookie) => cookieSiteKey(cookie.domain)).filter(Boolean));
+        // 직전 읽기 이후 처음 생긴 쿠키 사이트 중 에이전트만 요청한 곳은 손님 쿠키다. 시작 때 이미 있던 쿠키는 사용자 것으로 본다.
+        const previous = cookieSnapshots.get(profile);
+        const since = (previous?.at ?? readAt) - TOUCH_MARGIN_MS;
+        const identity = (key) => (siteTouches.get(key)?.identity ?? 0) >= readAt - IDENTITY_MS;
+        const guest = previous ? [...live].filter((key) => {
+          const touched = siteTouches.get(key);
+          return !previous.keys.has(key) && (touched?.agent ?? 0) >= since && !((touched?.human ?? 0) >= since) && !identity(key);
+        }) : [];
+        cookieSnapshots.set(profile, { keys: live, at: readAt });
+        await policy.setCookieSites(profile, live, { guest, owned: [...live].filter(identity) });
       }
     })().catch(() => {}).finally(() => { cookieRefresh = null; cookieRefreshedAt = Date.now(); });
     return cookieRefresh;
@@ -603,6 +629,7 @@ export function createOwnedBrowserService(options = {}) {
       if (!tab && page) { const opener = await page.opener().catch(() => null); tab = opener && pageTabs.get(opener); }
       if (!tab || !policy?.check) { await route.continue(); return; }
       const actor = pageActor(tab);
+      touchSite(url, actor.isHuman ? 'human' : 'agent');
       const method = request.method();
       const document = request.isNavigationRequest();
       let mainFrame = false; try { mainFrame = document && request.frame() === page.mainFrame(); } catch {}
@@ -1233,6 +1260,8 @@ export function createOwnedBrowserService(options = {}) {
         }
         const result = await selectedAdapter().passwordFill({ ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef, ...(grant ? { grant } : {}) });
         tab.snapshot.passwordProtected = true;
+        // 사용자의 저장된 로그인으로 들어가는 사이트다. 이 사이트의 쿠키는 이제 손님 쿠키가 아니다.
+        touchSite(page.url(), 'identity');
         return result;
       }
       if (!credentialBroker?.issueHandle || !credentialBroker?.fill) throw error('BROWSER_VAULT_UNAVAILABLE', 'The secure account broker is unavailable.', true);
@@ -1267,6 +1296,7 @@ export function createOwnedBrowserService(options = {}) {
         if (usernameHandle) await write(usernameHandle, username, false);
         await write(passwordHandle, password, true);
       } });
+      touchSite(page.url(), 'identity');
       return { completed: true, accountId: args.accountId };
     }
     if (action === 'fill-secret') return fillSecret(actor, tab, page, args);
