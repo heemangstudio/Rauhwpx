@@ -13,16 +13,18 @@ import {
   SYSTEM_FONT_INDEX_VERSION,
   assembleFontIndex,
   blobSource,
-  extractCollectionFace,
   parseFontSource,
   posixPath,
+  standaloneFaceBytes,
+  streamWebFontDecoders,
   type FontIndexFile,
   type ParsedFontFileResult,
 } from '../../../rhwp-shared/fonts/font-index-core.mjs';
 import type { FontFolderCache } from './font-folder-store.ts';
 import type { SystemFontIndex } from './desktop-fonts.ts';
 
-const CACHE_FORMAT = 2;
+// 3: 가변 글꼴의 이름 붙은 인스턴스를 face 로 펼친다. 4: WOFF/WOFF2 를 색인한다.
+const CACHE_FORMAT = 4;
 const PARSE_CONCURRENCY = 8;
 
 // ─── 폴더 원본 ────────────────────────────────────────────────
@@ -161,9 +163,17 @@ const MASK_64 = 0xffffffffffffffffn;
 const encoder = new TextEncoder();
 
 /** 데스크톱과 같은 16자리 hex id. (상대 경로, face, 크기, 수정 시각)이 같으면 같은 id다. */
-export function folderFaceId(path: string, faceIndex: number, size: number, lastModified: number): string {
+export function folderFaceId(
+  path: string,
+  faceIndex: number,
+  size: number,
+  lastModified: number,
+  instanceIndex?: number,
+): string {
+  // 기본 face 의 id 는 그대로 두고, 가변 인스턴스만 인스턴스 번호를 더해 구분한다.
+  const instance = instanceIndex === undefined ? '' : `\u0000i${instanceIndex}`;
   let hash = FNV_OFFSET;
-  for (const byte of encoder.encode(`${path}\u0000${faceIndex}\u0000${size}\u0000${lastModified}`)) {
+  for (const byte of encoder.encode(`${path}\u0000${faceIndex}\u0000${size}\u0000${lastModified}${instance}`)) {
     hash = ((hash ^ BigInt(byte)) * FNV_PRIME) & MASK_64;
   }
   return hash.toString(16).padStart(16, '0');
@@ -197,6 +207,8 @@ async function mapLimit<T>(items: readonly T[], limit: number, work: (item: T, i
 
 export function createFontFolderIndexer(options: { cache?: FontFolderCache | null } = {}): FontFolderIndexer {
   const cache = options.cache ?? null;
+  // WOFF 는 DecompressionStream('deflate') 로 푼다. 'brotli' 를 모르는 브라우저는 WOFF2 를 오류로 남긴다.
+  const decompress = streamWebFontDecoders();
   let current: { input: FontFolderInput; index: SystemFontIndex; byId: Map<string, { face: SystemFontIndex['faces'][number]; file: FolderFile }> } | null = null;
   let pending: Promise<SystemFontIndex> | null = null;
 
@@ -209,7 +221,9 @@ export function createFontFolderIndexer(options: { cache?: FontFolderCache | nul
     for (const file of collected.files) file.kind = kind;
     const errors = [...collected.errors];
     const cacheKey = `folder:${collected.root}`;
-    const cached = (await cache?.load(cacheKey))?.files ?? {};
+    const stored = await cache?.load(cacheKey);
+    // 형식이 다른 캐시는 다시 파싱한다.
+    const cached = stored?.format === CACHE_FORMAT ? stored.files ?? {} : {};
     const nextCache: Record<string, ParsedFontFileResult> = {};
     let parsed = 0;
     let reused = 0;
@@ -223,7 +237,7 @@ export function createFontFolderIndexer(options: { cache?: FontFolderCache | nul
       } else {
         parsed += 1;
         try {
-          const outcome = await parseFontSource(blobSource(await file.open()), posixPath.basename(file.path));
+          const outcome = await parseFontSource(blobSource(await file.open()), posixPath.basename(file.path), { decompress });
           result = { size: file.size, mtimeMs: file.mtimeMs, type: outcome.type, faces: outcome.faces };
         } catch (error) {
           result = { size: file.size, mtimeMs: file.mtimeMs, type: 'invalid', faces: [], error: errorText(error) };
@@ -237,7 +251,7 @@ export function createFontFolderIndexer(options: { cache?: FontFolderCache | nul
       parsedFiles,
       mapFiles: Array.from(collected.mapFiles.keys()),
       readMapFile: async (path) => new Uint8Array(await (await collected.mapFiles.get(path)!()).arrayBuffer()),
-      faceId: (file, faceIndex) => folderFaceId(file.path, faceIndex, file.size, file.mtimeMs),
+      faceId: (file, faceIndex, instanceIndex) => folderFaceId(file.path, faceIndex, file.size, file.mtimeMs, instanceIndex),
       pathApi: posixPath,
       platform: 'browser',
       errors,
@@ -284,9 +298,9 @@ export function createFontFolderIndexer(options: { cache?: FontFolderCache | nul
       if (blob.size !== file.size || blob.lastModified !== file.lastModified) {
         throw staleError(id, 'font file changed since the index was built');
       }
-      if (face.format === 'ttc' || face.format === 'otc') {
-        return extractCollectionFace(blobSource(blob), face.faceIndex);
-      }
+      // TTC 는 면 하나만 떼어 내므로 파일 크기 상한을 보지 않는다. WOFF 는 풀린 크기로 막는다.
+      const standalone = await standaloneFaceBytes(blobSource(blob), face, { decompress });
+      if (standalone) return standalone;
       if (blob.size > MAX_FACE_BYTES) throw new Error(`too-large: ${blob.size} bytes (cap ${MAX_FACE_BYTES})`);
       return new Uint8Array(await blob.arrayBuffer());
     },

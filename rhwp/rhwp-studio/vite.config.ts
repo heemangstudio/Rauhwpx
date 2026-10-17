@@ -107,6 +107,9 @@ export default defineConfig({
       allow: [
         __dirname,
         resolve(__dirname, '..', 'pkg'),
+        // 제품 정보의 오픈소스 라이선스 전문
+        resolve(__dirname, '..', 'LICENSE'),
+        resolve(__dirname, '..', 'THIRD_PARTY_LICENSES.md'),
         subsecondWasmDir,
         resolve(__dirname, '..', 'samples'),
         resolve(__dirname, '..', 'npm', 'editor'),

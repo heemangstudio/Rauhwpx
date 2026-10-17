@@ -39,9 +39,9 @@ use crate::renderer::{
 // rendering.rs에서 paragraphs + endnote_paragraphs를 합쳐서 전달.
 use super::pagination::{
     estimate_footnote_note_height, footnote_between_notes_margin_px,
-    footnote_separator_overhead_px, is_inline_tac_control, ColumnContent, EndnoteDeferral,
-    EndnoteParaSource, EndnoteRef, FootnoteRef, FootnoteSource, HeaderFooterRef, PageContent,
-    PageItem, PaginationResult,
+    footnote_separator_overhead_px, is_inline_tac_control, ColumnContent, CommittedLineOrigin,
+    EndnoteDeferral, EndnoteParaSource, EndnoteRef, FootnoteRef, FootnoteSource, HeaderFooterRef,
+    PageContent, PageItem, PaginationResult,
 };
 
 /// [#2085] 표 행-스캔 분할점 캐리 (값 왕복). split_end_cut 은 move.
@@ -127,6 +127,7 @@ struct BlockTableContinuationPreparedState {
     host_spacing_total: f64,
     host_spacing_before: f64,
     host_spacing_after_only: f64,
+    native_empty_host_line_advance_hu: Option<i32>,
     strict_following_plain_text_fit: bool,
     native_cellbreak_fragment_spacing_hu: Option<(i32, i32)>,
     saved_residual_split_hu: Option<(i32, i32)>,
@@ -531,6 +532,8 @@ struct FormattedTable {
     table_footnote_height: f64,
     /// 표 셀 내 각주 수 (separator/between-notes 예약 계산용)
     table_footnote_count: usize,
+    /// 실제 저장 host 줄 advance. 종단 연속분에서 개체 offset 없이 한 번 소비한다.
+    native_empty_host_line_advance_hu: Option<i32>,
     /// #2439: 이 표 직후의 일반 문단은 trailing line advance까지 포함해 fit한다.
     /// native HWP의 단일 양수-offset 빈 호스트 RowBreak 표 증거가 있을 때만 true.
     strict_following_plain_text_fit: bool,
@@ -572,8 +575,14 @@ struct HostSpacing {
 }
 
 /// 단일 패스 조판 엔진
+#[derive(Clone, Copy)]
+struct NativeNaturalFlowInput {
+    capacity_hu: i32,
+}
+
 pub struct TypesetEngine {
     dpi: f64,
+    native_natural_input: Option<NativeNaturalFlowInput>,
     /// [#2403] 현재 조판 입력의 레이아웃 호환 프로파일 — typeset 진입 시 set.
     /// (HWPX 저장 시멘틱·HWP3 변환본 판단 등 소스분기의 단일 질의 표면.)
     profile: std::cell::Cell<crate::model::provenance::LayoutCompatibilityProfile>,
@@ -731,10 +740,13 @@ struct TypesetState {
     /// 섹션 절대값). 미주 vpos-delta 누적의 첫 항목 base 시드용. 단 advance 시 None.
     prev_body_bottom_vpos: Option<i32>,
     /// [#2279] 현재 단의 flow 과소 누계 (px) — 문단 place 시 flow_advance_height 가
-    /// spacing_after/trailing ls 를 트림한 차액(total_height − advance)의 합.
+    /// spacing_after/trailing ls 트림과 TAC cap 의 새 차액(total_height − advance)의 합.
     /// 렌더러(layout)와 한글은 이 성분을 가산하므로, footer(발신명의) fit 판정의
     /// 렌더-정합 좌표 복원용. 단 advance 시 0.
     flow_underrun: f64,
+    native_natural_capacity: Option<(i32, f64)>,
+    committed_line_origins: Vec<CommittedLineOrigin>,
+    publish_natural_origins: bool,
     /// [#2279 pi78] 이 문서에서 저장 ladder 의 host spacing 누락 서명(OMIT)이
     /// 검출됐는가 — 기계생성 압축 ladder 문서군 판별(문서 단위, 리셋 없음).
     /// 분할 진입 첫 줄 full-advance 요구는 이 문서군에만 적용한다.
@@ -2453,6 +2465,9 @@ impl TypesetState {
             current_endnote_flow: false,
             prev_body_bottom_vpos: None,
             flow_underrun: 0.0,
+            native_natural_capacity: None,
+            committed_line_origins: Vec::new(),
+            publish_natural_origins: false,
             stored_ladder_spacing_omitted: false,
             omit_fresh_recalc_doc: false,
             current_column: 0,
@@ -2581,7 +2596,55 @@ impl TypesetState {
 
     /// 기본 가용 높이 (각주/존 미차감)
     fn base_available_height(&self) -> f64 {
-        self.layout.available_body_height()
+        self.native_natural_capacity
+            .map(|(hu, dpi)| hwpunit_to_px(hu, dpi))
+            .unwrap_or_else(|| self.layout.available_body_height())
+    }
+
+    fn fits_natural_ink(&self, cursor: f64, ink: f64, available: f64) -> bool {
+        if let Some((_, dpi)) = self.native_natural_capacity {
+            let candidate = crate::renderer::px_to_hwpunit_round(cursor, dpi)
+                .wrapping_add(crate::renderer::px_to_hwpunit_round(ink, dpi));
+            // native 33E110: mode1 의 signed strict capacity > candidate.
+            candidate < crate::renderer::px_to_hwpunit_round(available, dpi)
+        } else {
+            cursor + ink <= available
+        }
+    }
+
+    fn record_natural_lines(
+        &mut self,
+        para_index: usize,
+        para: &Paragraph,
+        fmt: &FormattedParagraph,
+        lines: std::ops::Range<usize>,
+        spacing_before: f64,
+    ) {
+        let Some((_, dpi)) = self.native_natural_capacity else {
+            return;
+        };
+        if !self.publish_natural_origins || !para.controls.is_empty() {
+            return;
+        }
+        // 선택된 원본 zero-policy에서는3330FC+2C=0. 현재 프레임 cursor와
+        // format의 before/줄 advance를 그대로 사용하고, 관측 bbox는 읽지 않는다.
+        let mut origin = self.current_height + spacing_before;
+        for line_index in lines {
+            if line_index >= para.line_segs.len() {
+                break;
+            }
+            self.committed_line_origins.push(CommittedLineOrigin {
+                para_index,
+                line_index,
+                vertical_pos: crate::renderer::px_to_hwpunit_round(origin, dpi),
+            });
+            origin += fmt.line_advance(line_index);
+        }
+    }
+
+    fn commit_natural_advance(&mut self, advance: f64) {
+        // 실제 signed 증분을 누적한다. 측정된 소수 증분을 문단마다 HU 로 반올림하지 않는다.
+        self.current_height += advance;
     }
 
     /// 각주 높이 추가
@@ -2735,6 +2798,7 @@ impl TypesetState {
 
     /// 강제 새 페이지
     fn force_new_page(&mut self) {
+        self.publish_natural_origins = false;
         self.flush_column();
         self.push_new_page();
     }
@@ -2874,15 +2938,24 @@ impl FormattedParagraph {
             .sum()
     }
 
+    fn natural_ink_height(&self) -> f64 {
+        self.spacing_before + self.line_advances_sum(0..self.line_heights.len())
+            - self.line_spacings.last().copied().unwrap_or(0.0)
+    }
+
     fn flow_advance_height(
         &self,
         para: &Paragraph,
         col_count: u16,
         own_line_layout: bool,
+        native_natural_flow: bool,
         allow_spacing_before_only: bool,
         ladder_dirty: bool,
         lazy_base: bool,
     ) -> f64 {
+        if native_natural_flow {
+            return self.total_height;
+        }
         if col_count > 1 {
             // [lso-load5] 직접 조판 문서의 다단은 합성 사다리가 문단 전체 진행(줄 간격·
             // 문단 아래 간격 포함)으로 이어지고 다단에는 vpos 스냅이 없다 — 트림하면 단마다
@@ -3229,12 +3302,82 @@ impl TypesetEngine {
     pub fn new(dpi: f64) -> Self {
         Self {
             dpi,
+            native_natural_input: None,
             profile: std::cell::Cell::new(Default::default()),
             formatting_endnotes: std::cell::Cell::new(false),
             render_normalization: std::sync::Arc::new(
                 crate::renderer::render_normalization::RenderNormalizationOverlay::default(),
             ),
         }
+    }
+
+    pub(crate) fn with_native_natural_flow_source(
+        mut self,
+        words: Option<[u32; 6]>,
+        section: &crate::model::document::SectionDef,
+        capacity_flags: Option<u16>,
+    ) -> Self {
+        let page = &section.page_def;
+        // SectionDef.flags 는 기존 숨김/쪽번호 의미로 전달된다. capacity flags 는
+        // 별도 common58 WORD 이며, 빠진 값은 0 으로 대체하지 않는다.
+        self.native_natural_input = words
+            .filter(|w| *w == [0; 6])
+            .filter(|_| {
+                section.line_grid == 0
+                    && section.char_grid == 0
+                    && capacity_flags == Some(0)
+                    && section.text_direction == 0
+                    && page.attr == 0
+                    && !page.landscape
+                    && page.margin_gutter == 0
+                    && page.pagination_bottom_tolerance == 0
+            })
+            .map(|_| NativeNaturalFlowInput {
+                // native 258F98 의 선택된 보통 사각형: DWORD 가감 순서를 보존한다.
+                capacity_hu: page.height.wrapping_sub(
+                    page.margin_top
+                        .wrapping_add(page.margin_header)
+                        .wrapping_add(page.margin_bottom.wrapping_add(page.margin_footer)),
+                ) as i32,
+            });
+        self
+    }
+
+    /// 조판과 편집 reflow가 동일한 실제 출처/프로필 제외 조건을 사용한다.
+    pub(crate) fn native_natural_flow_capacity(
+        &self,
+        profile: crate::model::provenance::LayoutCompatibilityProfile,
+    ) -> Option<i32> {
+        self.native_natural_input
+            .filter(|_| {
+                (profile.native_hwp5_layout() || profile.hwp5_origin_hwpx())
+                    && !profile.hwp3_layout()
+                    && !profile.hwp3_native_layout()
+                    && !profile.own_line_layout()
+                    && !profile.ms_word_compatible_layout()
+                    && !profile.adjust_baseline_in_fixed_line_spacing()
+                    && !profile.do_not_align_last_forbidden()
+            })
+            .map(|input| input.capacity_hu)
+    }
+
+    /// 표 연속분과 각주 예약은 저장 커서로 배치하므로 자연 본문 커서와 섞지 않는다.
+    pub(crate) fn native_natural_flow_section_capacity(
+        &self,
+        profile: crate::model::provenance::LayoutCompatibilityProfile,
+        paragraphs: &[Paragraph],
+    ) -> Option<i32> {
+        self.native_natural_flow_capacity(profile).filter(|_| {
+            !paragraphs
+                .iter()
+                .flat_map(|para| &para.controls)
+                .any(|control| {
+                    matches!(
+                        control,
+                        Control::Table(_) | Control::Footnote(_) | Control::Endnote(_)
+                    )
+                })
+        })
     }
 
     pub fn with_render_normalization(
@@ -3313,7 +3456,10 @@ impl TypesetEngine {
             };
             y = hc.vpos_adjust(y, local, &local_paras, styles);
             let item_para = &local_paras[local];
-            let item_composed = crate::renderer::composer::compose_paragraph(item_para);
+            let item_composed = crate::renderer::composer::compose_paragraph_with_policy(
+                item_para,
+                styles.font_metrics_policy,
+            );
             let item_fmt =
                 self.format_paragraph(item_para, Some(&item_composed), styles, column_width);
             y += match item {
@@ -3617,6 +3763,7 @@ impl TypesetEngine {
             section_index,
         );
         Some(PaginationResult {
+            committed_line_origins: state.committed_line_origins,
             pages: state.pages,
             wrap_around_paras: Vec::new(),
             hidden_empty_paras: state.hidden_empty_paras,
@@ -4215,6 +4362,9 @@ impl TypesetEngine {
         );
         st.hide_empty_line = hide_empty_line;
         st.profile = profile;
+        st.native_natural_capacity = self
+            .native_natural_flow_section_capacity(profile, paragraphs)
+            .map(|capacity| (capacity, self.dpi));
         st.has_stored_line_segs = paragraphs
             .iter()
             .any(|p| p.line_segs.iter().any(|ls| !is_synthetic_line_seg(ls)));
@@ -4637,6 +4787,7 @@ impl TypesetEngine {
                         });
                     let trigger = trigger && !omit_pushed_empty_page;
                     if trigger {
+                        st.publish_natural_origins = false;
                         // [Task #724] wrap_around active 시 강제 종료 — anchor cs=0
                         // (HWP5 변환본 caption-style) 한정. 일반 wrap_around (anchor cs>0)
                         // 는 기존 동작 (Task #362 vpos-reset 무시) 유지.
@@ -5880,6 +6031,7 @@ impl TypesetEngine {
         );
 
         PaginationResult {
+            committed_line_origins: st.committed_line_origins,
             pages: st.pages,
             wrap_around_paras: Vec::new(),
             hidden_empty_paras: st.hidden_empty_paras,
@@ -6383,7 +6535,10 @@ impl TypesetEngine {
             && !large_between_small_equation_tail_bleeds_previous_column
             && line_is_equation_tac_text_run_only(en_para, &composed, 0)
             && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                    next_para,
+                    styles.font_metrics_policy,
+                );
                 let next_fmt =
                     self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
                 next_fmt.line_heights.len() == 1
@@ -6709,7 +6864,10 @@ impl TypesetEngine {
             && ep_idx + 1 < en_ctrl.paragraphs.len()
             && st.current_height > available * 0.90
             && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                    next_para,
+                    styles.font_metrics_policy,
+                );
                 let next_fmt =
                     self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
                 para_has_visible_text_or_equation(next_para)
@@ -6818,7 +6976,10 @@ impl TypesetEngine {
             });
             last_render_endnote_para_local_idx = Some(en_para_local_idx);
 
-            let composed = crate::renderer::composer::compose_paragraph(en_para);
+            let composed = crate::renderer::composer::compose_paragraph_with_policy(
+                en_para,
+                styles.font_metrics_policy,
+            );
             let en_col_w = st
                 .layout
                 .column_areas
@@ -7037,7 +7198,10 @@ impl TypesetEngine {
                             .skip(ep_idx)
                             .map(|tail_para| {
                                 let tail_comp =
-                                    crate::renderer::composer::compose_paragraph(tail_para);
+                                    crate::renderer::composer::compose_paragraph_with_policy(
+                                        tail_para,
+                                        styles.font_metrics_policy,
+                                    );
                                 self.format_paragraph(
                                     tail_para,
                                     Some(&tail_comp),
@@ -7079,7 +7243,10 @@ impl TypesetEngine {
                             .skip(ep_idx)
                             .map(|tail_para| {
                                 let tail_comp =
-                                    crate::renderer::composer::compose_paragraph(tail_para);
+                                    crate::renderer::composer::compose_paragraph_with_policy(
+                                        tail_para,
+                                        styles.font_metrics_policy,
+                                    );
                                 self.format_paragraph(
                                     tail_para,
                                     Some(&tail_comp),
@@ -7437,7 +7604,10 @@ impl TypesetEngine {
                 && no_separator_large_between_notes_gap
             {
                 en_ctrl.paragraphs.get(1).map(|body_para| {
-                    let body_comp = crate::renderer::composer::compose_paragraph(body_para);
+                    let body_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                        body_para,
+                        styles.font_metrics_policy,
+                    );
                     let body_fmt =
                         self.format_paragraph(body_para, Some(&body_comp), &styles, Some(en_col_w));
                     body_fmt.line_advance(0)
@@ -7672,7 +7842,10 @@ impl TypesetEngine {
                     let mut next_para = next_ctrl.paragraphs.first()?.clone();
                     prepend_endnote_marker_text(&mut next_para, next_ctrl);
 
-                    let next_comp = crate::renderer::composer::compose_paragraph(&next_para);
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                        &next_para,
+                        styles.font_metrics_policy,
+                    );
                     let next_fmt = self.format_paragraph(
                         &next_para,
                         Some(&next_comp),
@@ -7697,7 +7870,10 @@ impl TypesetEngine {
                     let mut next_para = next_ctrl.paragraphs.first()?.clone();
                     prepend_endnote_marker_text(&mut next_para, next_ctrl);
 
-                    let next_comp = crate::renderer::composer::compose_paragraph(&next_para);
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                        &next_para,
+                        styles.font_metrics_policy,
+                    );
                     let next_fmt = self.format_paragraph(
                         &next_para,
                         Some(&next_comp),
@@ -7721,7 +7897,10 @@ impl TypesetEngine {
                     let mut next_para = next_ctrl.paragraphs.first()?.clone();
                     prepend_endnote_marker_text(&mut next_para, next_ctrl);
 
-                    let next_comp = crate::renderer::composer::compose_paragraph(&next_para);
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                        &next_para,
+                        styles.font_metrics_policy,
+                    );
                     let next_fmt = self.format_paragraph(
                         &next_para,
                         Some(&next_comp),
@@ -7748,7 +7927,11 @@ impl TypesetEngine {
                             if !para_is_treat_as_char_picture_only(next_para) {
                                 return false;
                             }
-                            let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                            let next_comp =
+                                crate::renderer::composer::compose_paragraph_with_policy(
+                                    next_para,
+                                    styles.font_metrics_policy,
+                                );
                             let next_fmt = self.format_paragraph(
                                 next_para,
                                 Some(&next_comp),
@@ -7913,7 +8096,10 @@ impl TypesetEngine {
                 && st.current_height + en_fit
                     <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
                 && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                    let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                        next_para,
+                        styles.font_metrics_policy,
+                    );
                     let next_fmt =
                         self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
                     let next_first = next_fmt.line_advance(0);
@@ -8380,7 +8566,10 @@ impl TypesetEngine {
                         <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX + 80.0
                     && line_is_equation_tac_text_run_only(en_para, &composed, 0)
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                        let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                            next_para,
+                            styles.font_metrics_policy,
+                        );
                         let next_fmt = self.format_paragraph(
                             next_para,
                             Some(&next_comp),
@@ -8574,7 +8763,10 @@ impl TypesetEngine {
             }
             let next_endnote_first_line_advance = if ep_idx == 0 {
                 en_ctrl.paragraphs.get(1).map(|next_para| {
-                    let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                        next_para,
+                        styles.font_metrics_policy,
+                    );
                     self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w))
                         .line_advance(0)
                 })
@@ -8585,7 +8777,10 @@ impl TypesetEngine {
                 let mut total = 0.0;
                 let mut count = 0;
                 for next_para in en_ctrl.paragraphs.iter().skip(1).take(2) {
-                    let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                        next_para,
+                        styles.font_metrics_policy,
+                    );
                     let next_fmt =
                         self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
                     total += next_fmt.line_advance(0);
@@ -8946,7 +9141,10 @@ impl TypesetEngine {
                     && visible_large_between_notes_gap
                     && st.current_column + 1 >= st.col_count
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                        let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                            next_para,
+                            styles.font_metrics_policy,
+                        );
                         let next_fmt = self.format_paragraph(
                             next_para,
                             Some(&next_comp),
@@ -9195,7 +9393,10 @@ impl TypesetEngine {
                     && !para_has_treat_as_char_picture_or_shape(en_para)
                     && !para_has_non_tac_picture_or_shape(en_para)
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                        let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                            next_para,
+                            styles.font_metrics_policy,
+                        );
                         let next_fmt = self.format_paragraph(
                             next_para,
                             Some(&next_comp),
@@ -9226,7 +9427,10 @@ impl TypesetEngine {
                     && !para_has_treat_as_char_picture_or_shape(en_para)
                     && !para_has_non_tac_picture_or_shape(en_para)
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                        let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                            next_para,
+                            styles.font_metrics_policy,
+                        );
                         let next_fmt = self.format_paragraph(
                             next_para,
                             Some(&next_comp),
@@ -9254,7 +9458,10 @@ impl TypesetEngine {
                     && st.current_height + fmt.line_advance(0)
                         <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX + 2.0
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                        let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                            next_para,
+                            styles.font_metrics_policy,
+                        );
                         let next_fmt = self.format_paragraph(
                             next_para,
                             Some(&next_comp),
@@ -9317,7 +9524,10 @@ impl TypesetEngine {
                         line_has_tac_equation_control(en_para, &composed, last_line)
                     }
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                        let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                            next_para,
+                            styles.font_metrics_policy,
+                        );
                         let next_fmt = self.format_paragraph(
                             next_para,
                             Some(&next_comp),
@@ -9544,7 +9754,10 @@ impl TypesetEngine {
                     });
                     last_render_endnote_para_local_idx = Some(st.endnote_paragraphs.len() - 1);
 
-                    let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                        next_para,
+                        styles.font_metrics_policy,
+                    );
                     let next_fmt =
                         self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
                     st.current_items.push(PageItem::FullParagraph {
@@ -9794,7 +10007,10 @@ impl TypesetEngine {
                             .paragraphs
                             .iter()
                             .map(|p| {
-                                let comp = crate::renderer::composer::compose_paragraph(p);
+                                let comp = crate::renderer::composer::compose_paragraph_with_policy(
+                                    p,
+                                    styles.font_metrics_policy,
+                                );
                                 self.format_paragraph(p, Some(&comp), &styles, Some(en_col_w))
                                     .total_height
                             })
@@ -10466,7 +10682,10 @@ impl TypesetEngine {
         let mut carry = 0;
         let mut wrapped_terminal_line = false;
         for (index, para) in projected.paragraphs.iter_mut().enumerate() {
-            let composed = crate::renderer::composer::compose_paragraph(para);
+            let composed = crate::renderer::composer::compose_paragraph_with_policy(
+                para,
+                styles.font_metrics_policy,
+            );
             let line_metrics: Vec<_> = (0..para.line_segs.len())
                 .map(|line_index| {
                     crate::renderer::equation::stored_unaffected_upper_line_metrics_hu(
@@ -10508,7 +10727,7 @@ impl TypesetEngine {
                     .with_own_line_layout(true)
                     .with_hwp3_variant(profile.hwp3_layout())
                     .with_hwpx_cell_spacing(
-                        profile.hwpx_stored_layout() || profile.hwp5_origin_hwpx(),
+                        profile.hwpx_stored_layout() && !profile.hwp5_origin_hwpx(),
                     )
                     .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
                     .with_session_edited(profile.session_edited())
@@ -10693,7 +10912,10 @@ impl TypesetEngine {
                 &table.padding
             };
             let padding_height = i32::from(padding.top) + i32::from(padding.bottom);
-            let composed = crate::renderer::composer::compose_paragraph(paragraph);
+            let composed = crate::renderer::composer::compose_paragraph_with_policy(
+                paragraph,
+                styles.font_metrics_policy,
+            );
             let metrics = crate::renderer::equation::stored_unaffected_upper_line_metrics_hu(
                 paragraph, &composed, 0,
             );
@@ -11309,7 +11531,10 @@ impl TypesetEngine {
                         .get(st.current_column as usize)
                         .map(|a| a.width)
                         .unwrap_or(st.layout.body_area.width);
-                    let comp = crate::renderer::composer::compose_paragraph(p);
+                    let comp = crate::renderer::composer::compose_paragraph_with_policy(
+                        p,
+                        styles.font_metrics_policy,
+                    );
                     let fmt = self.format_paragraph(p, Some(&comp), &styles, Some(en_col_w));
                     fmt.line_heights.len() == 1
                         && line_has_visible_text_or_tac_equation(p, &comp, 0)
@@ -11442,7 +11667,10 @@ impl TypesetEngine {
                     .own_line_layout()
                     .then(|| {
                         let previous = st.endnote_paragraphs.get(prev_local_idx)?;
-                        let composed = crate::renderer::composer::compose_paragraph(previous);
+                        let composed = crate::renderer::composer::compose_paragraph_with_policy(
+                            previous,
+                            styles.font_metrics_policy,
+                        );
                         let width = st
                             .layout
                             .column_areas
@@ -11516,7 +11744,10 @@ impl TypesetEngine {
                         let current_head_has_large_tac_picture =
                             en_ctrl.paragraphs.iter().take(8).any(|head_para| {
                                 let head_comp =
-                                    crate::renderer::composer::compose_paragraph(head_para);
+                                    crate::renderer::composer::compose_paragraph_with_policy(
+                                        head_para,
+                                        styles.font_metrics_policy,
+                                    );
                                 (0..head_comp.lines.len()).any(|line_idx| {
                                     !line_has_visible_text(&head_comp, line_idx)
                                         && line_tac_picture_or_shape_height(
@@ -12136,7 +12367,10 @@ impl TypesetEngine {
             };
             y = hc.vpos_adjust(y, local, &local_paras, styles);
             let item_para = &local_paras[local];
-            let item_composed = crate::renderer::composer::compose_paragraph(item_para);
+            let item_composed = crate::renderer::composer::compose_paragraph_with_policy(
+                item_para,
+                styles.font_metrics_policy,
+            );
             // [Task #1363 v2 Stage 3] 휴리스틱 advance 추정. 렌더러는 미주 텍스트/수식 para 를
             // **저장 line_segs**(hancom 레이아웃)로 그린다 — format_paragraph reflow(total_height)가
             // 아님. 수식 다줄 para 는 reflow 가 저장 span 보다 큼(pi=1126: 237 vs 185.8) → 단 과대.
@@ -12318,7 +12552,10 @@ impl TypesetEngine {
                 };
                 y = hc.vpos_adjust(y, local, &local_paras, &styles);
                 let item_para = &local_paras[local];
-                let item_composed = crate::renderer::composer::compose_paragraph(item_para);
+                let item_composed = crate::renderer::composer::compose_paragraph_with_policy(
+                    item_para,
+                    styles.font_metrics_policy,
+                );
                 let item_fmt =
                     self.format_paragraph(item_para, Some(&item_composed), &styles, Some(en_col_w));
                 y += match item {
@@ -12700,7 +12937,10 @@ impl TypesetEngine {
                 .paragraphs
                 .get(1)
                 .map(|next_para| {
-                    let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                        next_para,
+                        styles.font_metrics_policy,
+                    );
                     let next_fmt =
                         self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
                     let next_h = next_fmt.height_for_fit;
@@ -12906,7 +13146,10 @@ impl TypesetEngine {
                             .take(3)
                             .map(|head_para| {
                                 let head_comp =
-                                    crate::renderer::composer::compose_paragraph(head_para);
+                                    crate::renderer::composer::compose_paragraph_with_policy(
+                                        head_para,
+                                        styles.font_metrics_policy,
+                                    );
                                 self.format_paragraph(
                                     head_para,
                                     Some(&head_comp),
@@ -12973,7 +13216,10 @@ impl TypesetEngine {
                     && line_has_visible_text_or_tac_equation(en_para, &composed, 0)
             } else if ep_idx == 1 {
                 en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                    let next_comp = crate::renderer::composer::compose_paragraph(next_para);
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                        next_para,
+                        styles.font_metrics_policy,
+                    );
                     let next_fmt =
                         self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
                     next_fmt.line_heights.len() == 1
@@ -13086,7 +13332,10 @@ impl TypesetEngine {
                     .iter()
                     .take(3)
                     .map(|head_para| {
-                        let head_comp = crate::renderer::composer::compose_paragraph(head_para);
+                        let head_comp = crate::renderer::composer::compose_paragraph_with_policy(
+                            head_para,
+                            styles.font_metrics_policy,
+                        );
                         self.format_paragraph(head_para, Some(&head_comp), &styles, Some(en_col_w))
                             .total_height
                     })
@@ -13476,6 +13725,9 @@ impl TypesetEngine {
         styles: &ResolvedStyleSet,
         spacing_before_px: f64,
     ) {
+        if st.native_natural_capacity.is_some() {
+            return; // 선택된 자연 커서는 저장 vpos 투영으로 덮어쓰지 않는다.
+        }
         // [lso-load5] 직접 조판 문서는 다단도 스냅한다 — 사다리를 우리가 한 규칙으로
         // 합성했으므로 단 안 vpos 가 렌더(다단은 vpos 로 쌓음)와 같은 좌표다.
         if st.col_count != 1 && !self.profile.get().own_line_layout() {
@@ -13503,7 +13755,8 @@ impl TypesetEngine {
                     } else {
                         0
                     };
-                    s.vertical_pos - restored_top
+                    super::float_placement::paragraph_flow_anchor(p).unwrap_or(s.vertical_pos)
+                        - restored_top
                 })
             });
             st.vpos_lazy_base = None;
@@ -13874,7 +14127,12 @@ impl TypesetEngine {
                     prev_line_reserved_tac_picture_height = None;
                     continue;
                 }
-                let recompute_lh = text_before_picture_line || (max_fs > 0.0 && raw_lh < max_fs);
+                let authored_pair = crate::renderer::line_metric_pair_is_authored(
+                    para.line_segs.get(line_idx),
+                    line,
+                );
+                let recompute_lh =
+                    text_before_picture_line || (!authored_pair && max_fs > 0.0 && raw_lh < max_fs);
                 let (mut lh, line_spacing_px) = if recompute_lh {
                     // [Task #1042 Stage 6c] HWP3/HWP5 line_segs 의 (line_height=base,
                     // line_spacing=extra) 의미와 정합되게 분해 — 종전 처럼 ls_val/100 전체를
@@ -13900,7 +14158,7 @@ impl TypesetEngine {
                         }
                     }
                 } else {
-                    crate::renderer::corrected_line_metrics_for_source(
+                    crate::renderer::corrected_line_metrics_for_authored_source(
                         raw_lh,
                         raw_text_height,
                         hwpunit_to_px(line.line_spacing, self.dpi),
@@ -13910,6 +14168,7 @@ impl TypesetEngine {
                         // 본문 줄 진행 = textheight + spacing (렌더러와 같은 규칙).
                         para.controls.is_empty() || !self.formatting_endnotes.get(),
                         crate::renderer::controls_mark_section_start(&para.controls),
+                        authored_pair,
                     )
                 };
                 if self.profile.get().hwpx_stored_layout() {
@@ -14137,6 +14396,9 @@ impl TypesetEngine {
         styles: &ResolvedStyleSet,
         is_last_in_section: bool,
     ) {
+        if !para.controls.is_empty() {
+            st.publish_natural_origins = false;
+        }
         // [#2243 진단] 문단 진입 시 누적 높이 — 항목별 실소비 델타 추적용. 동작 불변.
         if std::env::var("RHWP_DIAG_FLOW").is_ok() {
             eprintln!(
@@ -14209,7 +14471,8 @@ impl TypesetEngine {
         // issue1510 filler 30: 1.3px 넘침, 한컴 Mac 2쪽).
         const DEFAULT_LAYOUT_DRIFT_SAFETY_PX: f64 = 4.0;
         const ROWBREAK_LAYOUT_DRIFT_SAFETY_PX: f64 = 0.0;
-        let layout_drift_safety_px = if st.zero_high_attr_rowbreak_section
+        let layout_drift_safety_px = if st.native_natural_capacity.is_some()
+            || st.zero_high_attr_rowbreak_section
             || (st.profile.hwpx_stored_layout() && !para.line_segs.is_empty())
         {
             ROWBREAK_LAYOUT_DRIFT_SAFETY_PX
@@ -14254,23 +14517,25 @@ impl TypesetEngine {
         // 258 vs 242)을 만든다. 다음 문단이 새 페이지를 시작(vpos-reset)하므로 tail 을 현재
         // 페이지에 두는 것이 한글 정합. (실제 각주 높이는 유지 — 버퍼만 완화하여 겹침 위험 최소화;
         // 버퍼 초과분은 별도 원인이라 여기서 다루지 않는다.)
-        let footnote_margin_addback = if strict_after_empty_host_float {
-            st.skip_footnote_margin_once = false;
-            0.0
-        } else if st.skip_footnote_margin_once {
-            st.skip_footnote_margin_once = false;
-            if st.current_footnote_height > 0.0 {
-                st.footnote_safety_margin
+        let footnote_margin_addback =
+            if st.native_natural_capacity.is_some() || strict_after_empty_host_float {
+                st.skip_footnote_margin_once = false;
+                0.0
+            } else if st.skip_footnote_margin_once {
+                st.skip_footnote_margin_once = false;
+                if st.current_footnote_height > 0.0 {
+                    st.footnote_safety_margin
+                } else {
+                    0.0
+                }
             } else {
                 0.0
-            }
-        } else {
-            0.0
-        };
+            };
         // [Task #1725 v2] tail-before-vpos-reset 문단은 소량 오버플로를 1회 허용(각주 무관 page-full
         // over-fill 로 tail 이 밀리는 케이스). 다음 문단이 새 페이지를 시작하므로 tail 을 현재
         // 페이지 하단에 유지하는 것이 한글 정합.
-        let tail_overflow = if strict_after_empty_host_float {
+        let tail_overflow = if st.native_natural_capacity.is_some() || strict_after_empty_host_float
+        {
             st.tail_overflow_tolerance_once = 0.0;
             0.0
         } else if st.tail_overflow_tolerance_once > 0.0 {
@@ -14589,19 +14854,31 @@ impl TypesetEngine {
         // 위 omit_untrusted_empty(저장 리셋 직전 빈 문단)는 트림 혜택도 잃는다
         // — 전량(lh+ls) 부족 시 다음 쪽 상단으로 넘긴다(36392557 pi14 36px).
         // 텍스트 문단은 종전 h4f 트림 유지(36392757 pi19: 전량 요구 시 +1 실측).
-        let page_end_fit_height = paragraph_page_end_fit_height(
-            fmt.total_height,
-            fmt.height_for_fit,
-            omit_untrusted_empty || strict_after_empty_host_float,
-        );
+        let page_end_fit_height = if st.native_natural_capacity.is_some() {
+            fmt.natural_ink_height()
+        } else {
+            paragraph_page_end_fit_height(
+                fmt.total_height,
+                fmt.height_for_fit,
+                omit_untrusted_empty || strict_after_empty_host_float,
+            )
+        };
         if forced_page_break_line.is_none()
-            && (st.current_height + page_end_fit_height <= available
-                || saved_single_line_bottom_fits
-                || saved_multiline_tail_bottom_fits
-                || saved_native_page_tail_fits
-                || saved_list_tail_body_vpos_fits)
+            && (st.fits_natural_ink(st.current_height, page_end_fit_height, available)
+                || (st.native_natural_capacity.is_none()
+                    && (saved_single_line_bottom_fits
+                        || saved_multiline_tail_bottom_fits
+                        || saved_native_page_tail_fits
+                        || saved_list_tail_body_vpos_fits)))
         {
             // place: 전체 배치
+            st.record_natural_lines(
+                para_idx,
+                para,
+                fmt,
+                0..fmt.line_heights.len(),
+                fmt.spacing_before,
+            );
             st.current_items.push(PageItem::FullParagraph {
                 para_index: para_idx,
             });
@@ -14614,6 +14891,7 @@ impl TypesetEngine {
                 para,
                 st.col_count,
                 st.profile.own_line_layout(),
+                st.native_natural_capacity.is_some(),
                 trim_spacing_before_for_flow,
                 st.vpos_ladder_dirty || !spacing_trim_restorable(paragraphs, para_idx),
                 st.vpos_page_base.is_none() && st.vpos_lazy_base.is_some(),
@@ -14630,7 +14908,7 @@ impl TypesetEngine {
                     st.current_height,
                 );
             }
-            st.current_height += advance;
+            st.commit_natural_advance(advance);
             st.flow_underrun += (fmt.total_height - advance).max(0.0);
             if let Some(v) = body_bottom_vpos {
                 st.prev_body_bottom_vpos = Some(v);
@@ -14660,7 +14938,10 @@ impl TypesetEngine {
                 }
                 _ => false,
             });
-        if is_atomic_tac_singleton && st.current_height < available && !st.current_items.is_empty()
+        if st.native_natural_capacity.is_none()
+            && is_atomic_tac_singleton
+            && st.current_height < available
+            && !st.current_items.is_empty()
         {
             // 추가 가드: 본문 + 하단 여백 안에 들어가야 함 (footer 침범 금지)
             let bottom_margin_px = hwpunit_to_px(
@@ -14682,11 +14963,12 @@ impl TypesetEngine {
                     para,
                     st.col_count,
                     st.profile.own_line_layout(),
+                    st.native_natural_capacity.is_some(),
                     trim_spacing_before_for_flow,
                     st.vpos_ladder_dirty || !spacing_trim_restorable(paragraphs, para_idx),
                     false,
                 );
-                st.current_height += advance;
+                st.commit_natural_advance(advance);
                 st.flow_underrun += (fmt.total_height - advance).max(0.0);
                 if let Some(v) = body_bottom_vpos {
                     st.prev_body_bottom_vpos = Some(v);
@@ -14742,7 +15024,7 @@ impl TypesetEngine {
             .controls
             .iter()
             .all(|c| matches!(c, Control::Footnote(_) | Control::Endnote(_)));
-        if st.col_count == 1
+        if st.native_natural_capacity.is_none() && st.col_count == 1
             && forced_page_break_line.is_none()
             && next_para_forces_break
             // 재조판 뒤 저장 좌표 자체가 본문 아래로 밀린 줄은 실제 넘침이다.
@@ -14767,7 +15049,7 @@ impl TypesetEngine {
                 st.current_items.push(PageItem::FullParagraph {
                     para_index: para_idx,
                 });
-                st.current_height += fmt.total_height;
+                st.commit_natural_advance(fmt.total_height);
                 if let Some(v) = body_bottom_vpos {
                     st.prev_body_bottom_vpos = Some(v);
                 }
@@ -14801,11 +15083,12 @@ impl TypesetEngine {
                 para,
                 st.col_count,
                 st.profile.own_line_layout(),
+                st.native_natural_capacity.is_some(),
                 trim_spacing_before_for_flow,
                 st.vpos_ladder_dirty || !spacing_trim_restorable(paragraphs, para_idx),
                 false,
             );
-            st.current_height += advance;
+            st.commit_natural_advance(advance);
             st.flow_underrun += (fmt.total_height - advance).max(0.0);
             if let Some(v) = body_bottom_vpos {
                 st.prev_body_bottom_vpos = Some(v);
@@ -14823,7 +15106,10 @@ impl TypesetEngine {
         // 구간 1+1 분할, ≥ h4f 전체 수용 — 곡선 전체가 이 규칙과 일치.
         // 트레일링 ls 트림(#359 h4f)은 문단 마지막 줄에만 해당하므로 단일 줄
         // 문단은 종전 lh-만 유지.
-        let first_line_h = if line_count > 1 && st.stored_ladder_spacing_omitted {
+        let first_line_h = if st.native_natural_capacity.is_none()
+            && line_count > 1
+            && st.stored_ladder_spacing_omitted
+        {
             // 적용 대상은 spacing-누락 서명이 검출된 기계생성 문서군뿐이다 —
             // 전역/HWPX-전체 적용은 각각 2572521 별지6(HWP5, 한글 6쪽 +1)과
             // 1733 국제고속선기준(한글-저장 HWPX, 242쪽 +2) 회귀 실측.
@@ -14831,17 +15117,17 @@ impl TypesetEngine {
         } else {
             fmt.line_heights[0]
         };
-        let remaining = (available - st.current_height).max(0.0);
         // [Task #1086] 단일 단에서도 HWP가 paragraph 내부 page reset 을
         // LINE_SEG(vpos=0) 로 인코딩하는 케이스가 있다(k-water-rfp pi=66).
         // 첫 줄의 HWP 좌표가 본문 안에 있고 다음 줄이 reset 이면, 보수적
         // safety margin 으로 미리 페이지를 넘기지 말고 줄 단위 split 루프에서
         // 첫 줄만 현재 페이지에 배치하게 둔다.
-        let hwp_first_line_before_reset_fits = para
-            .line_segs
-            .get(1)
-            .map(|next| next.vertical_pos == 0)
-            .unwrap_or(false)
+        let hwp_first_line_before_reset_fits = st.native_natural_capacity.is_none()
+            && para
+                .line_segs
+                .get(1)
+                .map(|next| next.vertical_pos == 0)
+                .unwrap_or(false)
             && para
                 .line_segs
                 .first()
@@ -14890,10 +15176,19 @@ impl TypesetEngine {
                 .last()
                 .map(|s| s.vertical_pos + s.line_height > 60_000)
                 .unwrap_or(false);
-        if (st.current_height >= available || remaining < first_line_h || stored_whole_para_reset)
+        if (st.current_height >= available
+            || !st.fits_natural_ink(st.current_height, first_line_h, available)
+            || stored_whole_para_reset)
             && !st.current_items.is_empty()
             && !hwp_first_line_before_reset_fits
         {
+            if st.native_natural_capacity.is_some() && !stored_whole_para_reset {
+                st.publish_natural_origins = para.controls.is_empty()
+                    && para
+                        .line_segs
+                        .first()
+                        .is_some_and(|line| line.vertical_pos != 0);
+            }
             st.advance_column_or_new_page();
         }
 
@@ -14905,7 +15200,9 @@ impl TypesetEngine {
             } else {
                 0.0
             };
-            let page_avail = if cursor_line == 0 {
+            let page_avail = if st.native_natural_capacity.is_some() {
+                (st.available_height() - st.current_height).max(0.0)
+            } else if cursor_line == 0 {
                 (base_available
                     - st.current_footnote_height
                     - fn_margin
@@ -14950,7 +15247,8 @@ impl TypesetEngine {
                     break;
                 }
                 let content_h = fmt.line_heights[li];
-                if cumulative + content_h > avail_for_lines && li > cursor_line {
+                if !st.fits_natural_ink(cumulative, content_h, avail_for_lines) && li > cursor_line
+                {
                     // [Task #631] HWP 권위값 더블체크
                     // 누적 추정으로는 fit 실패하지만 HWP 파일 자체가 다음 줄(li+1)에
                     // vpos-reset(=0) 을 인코딩한 경우, 한컴 엔진이 직접 li 까지를 현재
@@ -14958,7 +15256,8 @@ impl TypesetEngine {
                     // 손실을 차단하기 위해 HWP 신호를 우선한다.
                     // 조건: (1) 다음 줄의 vpos==0 (페이지 경계 신호)
                     //       (2) 현재 줄의 hwp 좌표 vpos+lh 가 body_available 안
-                    let hwp_authoritative = !is_tac_picture_stack
+                    let hwp_authoritative = st.native_natural_capacity.is_none()
+                        && !is_tac_picture_stack
                         && para
                             .line_segs
                             .get(li + 1)
@@ -14981,7 +15280,8 @@ impl TypesetEngine {
                     // tail 줄들을 모두 현재 쪽 본문 하단 안에 두고 있고 중간 vpos reset 이
                     // 없으면 한컴 저장 flow 를 신뢰한다. 문단 전체/표/다단에는 적용하지 않고
                     // partial paragraph split 지점에서만 작동시켜 하단 겹침 회귀를 줄인다.
-                    let saved_tail_vpos_fit = forced_page_break_line.is_none()
+                    let saved_tail_vpos_fit = st.native_natural_capacity.is_none()
+                        && forced_page_break_line.is_none()
                         && st.col_count == 1
                         && para.controls.is_empty()
                         && !st.current_items.is_empty()
@@ -15053,7 +15353,7 @@ impl TypesetEngine {
                 let prev_is_table = st.current_items.last().map_or(false, |item| {
                     matches!(item, PageItem::Table { .. } | PageItem::PartialTable { .. })
                 });
-                let overflow_threshold = if prev_is_table {
+                let overflow_threshold = if st.native_natural_capacity.is_some() || prev_is_table {
                     let trailing_ls = fmt
                         .line_spacings
                         .get(end_line.saturating_sub(1))
@@ -15063,10 +15363,17 @@ impl TypesetEngine {
                 } else {
                     cumulative
                 };
-                if overflow_threshold > avail_for_lines
+                if !st.fits_natural_ink(0.0, overflow_threshold, avail_for_lines)
                     && !st.current_items.is_empty()
                     && !used_saved_tail_vpos_fit
                 {
+                    if st.native_natural_capacity.is_some() {
+                        st.publish_natural_origins = para.controls.is_empty()
+                            && para
+                                .line_segs
+                                .get(cursor_line)
+                                .is_some_and(|line| line.vertical_pos != 0);
+                    }
                     st.advance_column_or_new_page();
                     continue;
                 }
@@ -15080,13 +15387,22 @@ impl TypesetEngine {
                     end_line,
                 });
             }
-            st.current_height += part_height;
+            st.record_natural_lines(para_idx, para, fmt, cursor_line..end_line, sp_b);
+            st.commit_natural_advance(part_height);
 
             if end_line >= line_count {
                 break;
             }
 
             // move: 나머지 줄 → 다음 단/페이지
+            if st.native_natural_capacity.is_some() {
+                // 원본의 명시적 줄 리셋은 그대로 보존한다.
+                st.publish_natural_origins = para.controls.is_empty()
+                    && para
+                        .line_segs
+                        .get(end_line)
+                        .is_some_and(|line| line.vertical_pos != 0);
+            }
             st.advance_column_or_new_page();
             cursor_line = end_line;
         }
@@ -15210,20 +15526,21 @@ impl TypesetEngine {
         // (#1147/#1836). This narrower native signature proves that the full stored line
         // advance plus the positive visual offset is part of the flow boundary. Keep the gate
         // narrow: the broad `v_off + margin` experiment is disproven by #2097.
-        let positive_empty_host_rowbreak_tail = native_empty_host_rowbreak_line_advance_hu(
+        let native_empty_host_line_advance_hu = native_empty_host_rowbreak_line_advance_hu(
             self.profile.get().native_hwp5_layout(),
             para,
             table,
             next_para,
-        )
-        .map(|line_advance| {
-            hwpunit_to_px(line_advance, self.dpi)
-                + hwpunit_to_px(
-                    signed_hwpunit(table.common.vertical_offset).max(0),
-                    self.dpi,
-                )
-        })
-        .unwrap_or(0.0);
+        );
+        let positive_empty_host_rowbreak_tail = native_empty_host_line_advance_hu
+            .map(|line_advance| {
+                hwpunit_to_px(line_advance, self.dpi)
+                    + hwpunit_to_px(
+                        signed_hwpunit(table.common.vertical_offset).max(0),
+                        self.dpi,
+                    )
+            })
+            .unwrap_or(0.0);
         let strict_following_plain_text_fit = positive_empty_host_rowbreak_tail > 0.0;
         // [#2195 stage59] 빈 호스트 자리차지 표의 bottom margin fit 계상 판별:
         // 호스트가 **저장 lineseg 보유**(한컴 기계산 문서, hwpspec #1086 178쪽 핀)면
@@ -15414,6 +15731,7 @@ impl TypesetEngine {
             cells,
             table_footnote_height,
             table_footnote_count,
+            native_empty_host_line_advance_hu,
             strict_following_plain_text_fit,
         }
     }
@@ -16396,7 +16714,9 @@ impl TypesetEngine {
             && !para.line_segs.is_empty()
             && st.pages.len() == page_count_before
         {
-            // tac_seg_total 계산: 각 TAC 표의 max(seg.lh, 실측높이) + ls/2
+            // HWP5의 TAC 진행은 native 333B2C..333B40 → 333D04..333D08처럼
+            // 저장 줄 간격 전량을 소비한다. HWPX는 저장 여백 상자 계약을 구분한다.
+            let advance_before_cap = st.current_height - height_before;
             let mut tac_seg_total = 0.0;
             let mut tac_idx = 0;
             // 저장 줄 높이가 표 + 바깥 여백 상하를 담은 HWPX 표 줄(layout 의
@@ -16404,7 +16724,7 @@ impl TypesetEngine {
             // 재개한다. cap 도 같은 진행을 써야 한다 — om_top 재가산·ls/2 cap 은 표마다
             // om 상하합 ÷ 2 + ls/2 만큼 과소 계상해 쪽 하단 문단이 렌더에서 넘친다.
             let mut covered_outer_top = 0.0;
-            let mut last_tac_covered = false;
+            let mut last_tac_full_spacing = false;
             for (ci, c) in para.controls.iter().enumerate() {
                 if let Control::Table(t) = c {
                     if self.is_effective_tac_table(para, t, &fmt) {
@@ -16425,36 +16745,36 @@ impl TypesetEngine {
                                 && t.common.height < 0x8000_0000
                                 && i64::from(seg.line_height)
                                     >= i64::from(t.common.height) + om_tb - 10;
+                            last_tac_full_spacing = st.profile.native_hwp5_layout()
+                                || st.profile.hwp5_origin_hwpx()
+                                || stored_lh_covers_om;
+                            let spacing = hwpunit_to_px(seg.line_spacing, self.dpi);
+                            tac_seg_total += effective_h
+                                + if last_tac_full_spacing {
+                                    spacing
+                                } else {
+                                    spacing / 2.0
+                                };
                             if stored_lh_covers_om {
-                                last_tac_covered = true;
-                                tac_seg_total +=
-                                    effective_h + hwpunit_to_px(seg.line_spacing, self.dpi);
                                 covered_outer_top +=
                                     hwpunit_to_px(t.outer_margin_top as i32, self.dpi);
-                            } else {
-                                last_tac_covered = false;
-                                let ls_half = hwpunit_to_px(seg.line_spacing, self.dpi) / 2.0;
-                                tac_seg_total += effective_h + ls_half;
                             }
                         }
                         tac_idx += 1;
                     }
                 }
             }
-            // 표 줄 뒤 후행 줄(넘친 TAC 표 뒤 폭 0 컨트롤 줄, 표 다음 줄의 본문 텍스트)은
-            // 마지막 표 줄의 나머지 간격과 그 줄 advance 를 그대로 소비한다 (공사일보:
-            // 표 줄 뒤 '※우천시 작업순연.' 줄이 cap 에서 빠져 후속 문단이 1줄 당겨졌다).
+            // 후행 줄이 있으면 HWPX 반간격의 남은 몫을 한 번 소비한다.
+            // HWP5와 저장 여백 상자는 위에서 이미 전량을 소비했다.
             if tac_seg_total > 0.0 && tac_idx > 0 && para.line_segs.len() > tac_idx {
-                let last_tac_ls = if last_tac_covered {
-                    0
-                } else {
-                    para.line_segs[tac_idx - 1].line_spacing
-                };
-                tac_seg_total += hwpunit_to_px(last_tac_ls, self.dpi) / 2.0
-                    + para.line_segs[tac_idx..]
-                        .iter()
-                        .map(|seg| hwpunit_to_px(seg.line_height + seg.line_spacing, self.dpi))
-                        .sum::<f64>();
+                if !last_tac_full_spacing {
+                    tac_seg_total +=
+                        hwpunit_to_px(para.line_segs[tac_idx - 1].line_spacing, self.dpi) / 2.0;
+                }
+                tac_seg_total += para.line_segs[tac_idx..]
+                    .iter()
+                    .map(|seg| hwpunit_to_px(seg.line_height + seg.line_spacing, self.dpi))
+                    .sum::<f64>();
             }
             let cap = if tac_seg_total > 0.0 {
                 let is_col_top = height_before < 1.0;
@@ -16576,8 +16896,8 @@ impl TypesetEngine {
                 }
                 st.vpos_ladder_dirty = true;
             }
-            // 성장 전에 저장 anchor 로 전방 사전-스냅 — 직전 표들이 cap
-            // (lh+ls/2)으로 ladder 보다 짧게 전진한 잔차(36399374 pi3 −3.1px)를
+            // 성장 전에 저장 anchor 로 전방 사전-스냅 — 직전 표들의 cap 이
+            // ladder 보다 짧게 전진한 잔차를
             // 표→표 연쇄(스냅 부재 구간)에서 회수한다. 전방·소폭 한정.
             let snapped_base = if ladder_omits_spacing {
                 para.line_segs
@@ -16614,6 +16934,12 @@ impl TypesetEngine {
             if let Some(grown) = session_grown_tac_total {
                 st.current_height = st.current_height.max(snapped_base + grown);
             }
+            // cap 으로 새로 소실된 문단 진행만 기록한다. 표 배치가 중복 가산한
+            // fmt.total_height 초과분을 되감는 것은 렌더 진행의 손실이 아니다.
+            let advance_after_cap = st.current_height - height_before;
+            let prior_shortfall = (fmt.total_height - advance_before_cap).max(0.0);
+            let final_shortfall = (fmt.total_height - advance_after_cap).max(0.0);
+            st.flow_underrun += (final_shortfall - prior_shortfall).max(0.0);
         }
     }
 
@@ -17063,9 +17389,17 @@ impl TypesetEngine {
                 let restored_top = crate::renderer::layout::column_top_vpos_restore_hu(
                     para, para_idx, styles, self.dpi,
                 );
-                if stored && (covers || restored_top > 0) {
+                if stored
+                    && (covers
+                        || restored_top > 0
+                        || super::float_placement::leading_host_reserve(para) > 0)
+                {
                     st.vpos_col_anchor = st.current_height;
-                    st.vpos_page_base = Some(s0.vertical_pos - restored_top);
+                    st.vpos_page_base = Some(
+                        super::float_placement::paragraph_flow_anchor(para)
+                            .unwrap_or(s0.vertical_pos)
+                            - restored_top,
+                    );
                     st.vpos_lazy_base = None;
                     st.vpos_page_base_stored = true;
                     st.vpos_ladder_dirty = false;
@@ -17662,7 +17996,12 @@ impl TypesetEngine {
             }
             let fmt_n =
                 self.format_paragraph(next, composed_all.get(next_idx), styles, Some(col_w));
-            if st.current_height + fmt_n.height_for_fit > st.available_height() {
+            let ink = if st.native_natural_capacity.is_some() {
+                fmt_n.natural_ink_height()
+            } else {
+                fmt_n.height_for_fit
+            };
+            if !st.fits_natural_ink(st.current_height, ink, st.available_height()) {
                 break;
             }
             let trim_sb =
@@ -17670,14 +18009,23 @@ impl TypesetEngine {
             st.current_items.push(PageItem::FullParagraph {
                 para_index: next_idx,
             });
-            st.current_height += fmt_n.flow_advance_height(
+            let advance = fmt_n.flow_advance_height(
                 next,
                 st.col_count,
                 st.profile.own_line_layout(),
+                st.native_natural_capacity.is_some(),
                 trim_sb,
                 st.vpos_ladder_dirty || !spacing_trim_restorable(paragraphs_all, next_idx),
                 false,
             );
+            st.record_natural_lines(
+                next_idx,
+                next,
+                &fmt_n,
+                0..fmt_n.line_heights.len(),
+                fmt_n.spacing_before,
+            );
+            st.commit_natural_advance(advance);
             st.prefilled_paras.insert(next_idx);
         }
     }
@@ -18908,7 +19256,7 @@ impl TypesetEngine {
                 let uncertain_anchor_margin = if anchor_vpos <= 0 { 50.0 } else { 0.0 };
                 // [#2279 진단] footer 흡수/분할 판정 변수 분해 — 동작 불변.
                 // underrun = 이 단의 문단 place 가 트림한 (total_height − advance) 누계
-                // (렌더/한글 좌표와의 발산 중 문단-sa 성분; 표 place 성분은 미포함).
+                // (문단-sa 및 TAC cap 으로 새로 생긴 문단 진행 부족분).
                 if std::env::var("RHWP_DIAG_SCAN").is_ok() {
                     eprintln!(
                         "DIAG_SCAN FOOTER pi={} anchor_vpos={} cur_h={:.2} target_y={:.2} sync_h={:.2} \
@@ -19862,6 +20210,7 @@ impl TypesetEngine {
             host_spacing_total,
             host_spacing_before: ft.host_spacing.before,
             host_spacing_after_only: ft.host_spacing.spacing_after_only,
+            native_empty_host_line_advance_hu: ft.native_empty_host_line_advance_hu,
             strict_following_plain_text_fit: ft.strict_following_plain_text_fit,
             native_cellbreak_fragment_spacing_hu,
             saved_residual_split_hu,
@@ -20624,15 +20973,26 @@ impl TypesetEngine {
                         is_block_split: start_cut_is_block,
                         allocated_row_heights,
                     });
-                    // 마지막 fragment: spacing_after만 포함 (Paginator engine.rs:1051 동일)
-                    // host line advance/positive offset은 원 anchor 조각의 계약이며,
-                    // continuation 끝에서 다시 더하면 다음 본문을 이중으로 민다(#2439).
+                    // 저장 ladder로 증명된 host 줄은 실제 종단 연속분 뒤에 남는다.
+                    // 개체 offset과 일반 host line_spacing은 첫 조각 계약을 유지한다.
+                    let terminal_host_advance = if is_continuation
+                        && !start_cut.is_empty()
+                        && !start_cut_is_block
+                    {
+                        prepared
+                            .native_empty_host_line_advance_hu
+                            .map(|advance| hwpunit_to_px(advance, self.dpi))
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
                     st.current_height += host_before_overhead
                         + vert_offset_overhead
                         + partial_height
                         + bottom_caption_extra
                         + fragment_outer_bottom_overhead
-                        + host_spacing_after_only;
+                        + host_spacing_after_only
+                        + terminal_host_advance;
                 }
                 continuation.finish(row_count, true);
                 return TableContinuationIteration::Complete;
@@ -20771,6 +21131,9 @@ impl TypesetEngine {
     ) {
         let line_count = fmt.line_heights.len();
         for (bi, &break_start) in col_breaks.iter().enumerate() {
+            if bi > 0 {
+                st.publish_natural_origins = false;
+            }
             let break_end = if bi + 1 < col_breaks.len() {
                 col_breaks[bi + 1]
             } else {
@@ -20782,6 +21145,7 @@ impl TypesetEngine {
             }
 
             let part_height = fmt.line_advances_sum(break_start..break_end);
+            st.record_natural_lines(para_idx, para, fmt, break_start..break_end, 0.0);
 
             if break_start == 0 && break_end >= line_count {
                 st.current_items.push(PageItem::FullParagraph {
@@ -20794,7 +21158,7 @@ impl TypesetEngine {
                     end_line: break_end,
                 });
             }
-            st.current_height += part_height;
+            st.commit_natural_advance(part_height);
 
             // 마지막 조각이 아니면 다음 단으로 진행.
             // [Task #2320] 마지막 단에서의 분할은 새 페이지 단 0 으로 진행한다
@@ -21595,6 +21959,406 @@ mod tests {
     use crate::renderer::page_layout::PageLayoutInfo;
     use crate::renderer::pagination::Paginator;
     use crate::renderer::style_resolver::ResolvedStyleSet;
+
+    fn natural_flow_fixture(
+        heights: &[(i32, i32)],
+        capacity: i32,
+        columns: u16,
+        words: Option<[u32; 6]>,
+        grid: i16,
+        dpi: f64,
+        own_line: bool,
+    ) -> PaginationResult {
+        let mut vpos = 0;
+        let paragraphs: Vec<_> = heights
+            .iter()
+            .map(|&(height, spacing)| {
+                let p = Paragraph {
+                    text: "body".into(),
+                    line_segs: vec![LineSeg {
+                        vertical_pos: vpos,
+                        line_height: height,
+                        text_height: height,
+                        line_spacing: spacing,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                vpos += height + spacing;
+                p
+            })
+            .collect();
+        let section = crate::model::document::SectionDef {
+            line_grid: grid,
+            page_def: PageDef {
+                width: 40_000,
+                height: u32::try_from(capacity).expect("positive fixture capacity"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let profile = crate::model::provenance::LayoutCompatibilityProfile::new(
+            false, false, false, false, true,
+        )
+        .with_own_line_layout(own_line);
+        TypesetEngine::new(dpi)
+            .with_native_natural_flow_source(words, &section, Some(0))
+            .typeset_section_with_variant(
+                &paragraphs,
+                &[],
+                &ResolvedStyleSet::default(),
+                &section.page_def,
+                &ColumnDef {
+                    column_count: columns,
+                    same_width: true,
+                    ..Default::default()
+                },
+                0,
+                &[],
+                false,
+                profile,
+                false,
+                false,
+                None,
+                None,
+                &std::collections::HashSet::new(),
+                EndnoteDeferral::None,
+            )
+    }
+
+    #[test]
+    fn committed_flow_eligibility_reuses_source_section_and_profile_exclusions() {
+        let section = crate::model::document::SectionDef {
+            page_def: a4_page_def(),
+            ..Default::default()
+        };
+        let profile = crate::model::provenance::LayoutCompatibilityProfile::new(
+            false, false, false, false, true,
+        );
+        let engine = TypesetEngine::new(96.0).with_native_natural_flow_source(
+            Some([0; 6]),
+            &section,
+            Some(0),
+        );
+        assert!(engine.native_natural_flow_capacity(profile).is_some());
+        assert!(engine
+            .native_natural_flow_capacity(profile.with_own_line_layout(true))
+            .is_none());
+        for words in [None, Some([1, 0, 0, 0, 0, 0])] {
+            assert!(TypesetEngine::new(96.0)
+                .with_native_natural_flow_source(words, &section, Some(0))
+                .native_natural_flow_capacity(profile)
+                .is_none());
+        }
+        let mut grid = section.clone();
+        grid.char_grid = 1;
+        assert!(TypesetEngine::new(96.0)
+            .with_native_natural_flow_source(Some([0; 6]), &grid, Some(0))
+            .native_natural_flow_capacity(profile)
+            .is_none());
+        assert!(TypesetEngine::new(96.0)
+            .with_native_natural_flow_source(Some([0; 6]), &section, None)
+            .native_natural_flow_capacity(profile)
+            .is_none());
+    }
+
+    #[test]
+    fn committed_line_origins_follow_accepted_frame_and_signed_spacing() {
+        for dpi in [96.0, 144.0] {
+            for columns in [1, 2] {
+                let result = natural_flow_fixture(
+                    &[
+                        (1_000, 200),
+                        (1_000, -100),
+                        (1_000, 200),
+                        (1_000, -200),
+                        (1_000, 100),
+                    ],
+                    3_500,
+                    columns,
+                    Some([0; 6]),
+                    0,
+                    dpi,
+                    false,
+                );
+                assert_eq!(
+                    result.committed_line_origins,
+                    vec![
+                        CommittedLineOrigin {
+                            para_index: 3,
+                            line_index: 0,
+                            vertical_pos: 0
+                        },
+                        CommittedLineOrigin {
+                            para_index: 4,
+                            line_index: 0,
+                            vertical_pos: 800
+                        },
+                    ]
+                );
+                // 원래 프레임의 수락된 세 문단은 재발행하지 않는다.
+                assert!(result
+                    .committed_line_origins
+                    .iter()
+                    .all(|line| line.para_index >= 3));
+            }
+        }
+    }
+
+    #[test]
+    fn committed_line_origins_keep_multiline_before_and_reset_boundary() {
+        for dpi in [96.0, 144.0] {
+            let layout = PageLayoutInfo::from_page_def(&a4_page_def(), &ColumnDef::default(), dpi);
+            let mut state = TypesetState::new(layout, 1, 0, 0.0, 0.0, 0.0, ColumnType::default());
+            state.native_natural_capacity = Some((50_000, dpi));
+            state.publish_natural_origins = true;
+            state.current_height = hwpunit_to_px(300, dpi);
+            let para = Paragraph {
+                line_segs: vec![LineSeg::default(); 2],
+                ..Default::default()
+            };
+            let fmt = FormattedParagraph {
+                total_height: 0.0,
+                height_for_fit: 0.0,
+                spacing_trimmed_advance: 0.0,
+                fresh_recomposed: false,
+                spacing_before: hwpunit_to_px(-100, dpi),
+                spacing_after: 0.0,
+                line_heights: vec![hwpunit_to_px(1_150, dpi); 2],
+                line_spacings: vec![hwpunit_to_px(-40, dpi); 2],
+            };
+            state.record_natural_lines(0, &para, &fmt, 0..2, fmt.spacing_before);
+            assert_eq!(
+                state
+                    .committed_line_origins
+                    .iter()
+                    .map(|line| line.vertical_pos)
+                    .collect::<Vec<_>>(),
+                vec![200, 1_310]
+            );
+            assert_eq!(state.current_height, hwpunit_to_px(300, dpi));
+            state.force_new_page();
+            state.record_natural_lines(1, &para, &fmt, 0..2, fmt.spacing_before);
+            assert_eq!(state.committed_line_origins.len(), 2);
+        }
+    }
+
+    #[test]
+    fn committed_line_origins_preserve_unsupported_profile() {
+        for words in [None, Some([1, 0, 0, 0, 0, 0])] {
+            let result = natural_flow_fixture(&[(1_000, 200); 5], 3_500, 1, words, 0, 96.0, false);
+            assert!(result.committed_line_origins.is_empty());
+        }
+        let own_line =
+            natural_flow_fixture(&[(1_000, 200); 5], 3_500, 1, Some([0; 6]), 0, 96.0, true);
+        assert!(own_line.committed_line_origins.is_empty());
+    }
+
+    #[test]
+    fn natural_flow_signed_commits_preserve_single_and_multicolumn_advances() {
+        for columns in [1, 2] {
+            for spacing in [-200, 0, 344] {
+                let result = natural_flow_fixture(
+                    &[(1_000, spacing); 3],
+                    20_000,
+                    columns,
+                    Some([0; 6]),
+                    0,
+                    DEFAULT_DPI,
+                    false,
+                );
+                let actual = result.pages[0].column_contents[0].used_height;
+                assert!(
+                    (actual - hwpunit_to_px(3 * (1_000 + spacing), DEFAULT_DPI)).abs() < 1e-8,
+                    "columns={columns} spacing={spacing} actual={actual}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn natural_flow_strict_ink_boundary_is_separate_from_trailing_advance() {
+        for dpi in [96.0, 144.0] {
+            for columns in [1, 2] {
+                for (ink, kept) in [(2_499, true), (2_500, false), (2_501, false)] {
+                    let result = natural_flow_fixture(
+                        &[(1_000, 344), (1_000, -344), (ink, 344)],
+                        4_500,
+                        columns,
+                        Some([0; 6]),
+                        0,
+                        dpi,
+                        false,
+                    );
+                    let first = &result.pages[0].column_contents[0].items;
+                    assert_eq!(
+                        first
+                            .iter()
+                            .any(|item| matches!(item, PageItem::FullParagraph { para_index: 2 })),
+                        kept,
+                        "dpi={dpi} columns={columns} ink={ink}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn natural_flow_requires_source_policy_and_supported_section_state() {
+        let section = crate::model::document::SectionDef {
+            flags: 0xc0000004,
+            page_def: a4_page_def(),
+            ..Default::default()
+        };
+        assert!(TypesetEngine::with_default_dpi()
+            .with_native_natural_flow_source(Some([0; 6]), &section, Some(0))
+            .native_natural_input
+            .is_some());
+        for words in [None, Some([1, 0, 0, 0, 0, 0]), Some([0, 0, 1, 0, 0, 0])] {
+            assert!(TypesetEngine::with_default_dpi()
+                .with_native_natural_flow_source(words, &section, Some(0))
+                .native_natural_input
+                .is_none());
+        }
+        for (grid, char_grid, flags) in [
+            (1, 0, Some(0)),
+            (0, 1, Some(0)),
+            (0, 0, Some(1)),
+            (0, 0, None),
+        ] {
+            let mut unsupported = section.clone();
+            unsupported.line_grid = grid;
+            unsupported.char_grid = char_grid;
+            unsupported.flags = 0xc0000004; // 첫쪽 숨김 DWORD 는 capacity 선택자가 아니다.
+            assert!(TypesetEngine::with_default_dpi()
+                .with_native_natural_flow_source(Some([0; 6]), &unsupported, flags)
+                .native_natural_input
+                .is_none());
+        }
+        // 기존 저장 다단 모델은 출처가 없을 때 계속 후행 간격을 제외한다.
+        let result = natural_flow_fixture(&[(1_000, 344)], 20_000, 2, None, 0, DEFAULT_DPI, false);
+        assert!(
+            (result.pages[0].column_contents[0].used_height - hwpunit_to_px(1_000, DEFAULT_DPI))
+                .abs()
+                < 1e-8
+        );
+    }
+
+    #[test]
+    fn natural_flow_unsupported_profile_keeps_legacy_fit() {
+        for columns in [1, 2] {
+            let result = natural_flow_fixture(
+                &[(1_000, 344), (1_000, -344), (2_499, 344)],
+                4_500,
+                columns,
+                Some([0; 6]),
+                0,
+                DEFAULT_DPI,
+                true,
+            );
+            let legacy = natural_flow_fixture(
+                &[(1_000, 344), (1_000, -344), (2_499, 344)],
+                4_500,
+                columns,
+                None,
+                0,
+                DEFAULT_DPI,
+                true,
+            );
+            // 전체 페이지/항목/단 높이를 비교한다. 저장 vpos 경로의 배치를 가정하지 않는다.
+            assert_eq!(format!("{result:?}"), format!("{legacy:?}"));
+        }
+        let layout =
+            PageLayoutInfo::from_page_def(&a4_page_def(), &ColumnDef::default(), DEFAULT_DPI);
+        let mut state = TypesetState::new(layout, 1, 0, 0.0, 0.0, 0.0, ColumnType::default());
+        state.native_natural_capacity = Some((50_000, DEFAULT_DPI));
+        let fractional = hwpunit_to_px(1, DEFAULT_DPI) / 3.0;
+        for _ in 0..3 {
+            state.commit_natural_advance(fractional);
+        }
+        assert!((state.current_height - hwpunit_to_px(1, DEFAULT_DPI)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_source_line_metrics_authored_pair_typeset_matches_render_acceptance() {
+        use crate::model::paragraph::CharShapeRef;
+        use crate::renderer::composer::compose_paragraph;
+        use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+        for dpi in [96.0, 200.0] {
+            let selected = hwpunit_to_px(1100, dpi);
+            let styles = ResolvedStyleSet {
+                char_styles: vec![ResolvedCharStyle {
+                    font_size: selected,
+                    ..Default::default()
+                }],
+                para_styles: vec![ResolvedParaStyle {
+                    line_spacing: 150.0,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let engine = TypesetEngine::new(dpi);
+            let mut para = Paragraph {
+                text: "body".into(),
+                char_count: 4,
+                char_offsets: vec![0, 1, 2, 3],
+                char_shapes: vec![CharShapeRef::default()],
+                line_segs: vec![LineSeg {
+                    line_height: 1000,
+                    text_height: 1000,
+                    line_spacing: 400,
+                    baseline_distance: 850,
+                    segment_width: 30000,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let composed = compose_paragraph(&para);
+            let formatted = engine.format_paragraph(&para, Some(&composed), &styles, None);
+            let render_pair = crate::renderer::corrected_line_metrics_for_authored_source(
+                hwpunit_to_px(1000, dpi),
+                hwpunit_to_px(1000, dpi),
+                hwpunit_to_px(400, dpi),
+                selected,
+                crate::model::style::LineSpacingType::Percent,
+                150.0,
+                true,
+                false,
+                crate::renderer::line_metric_pair_is_authored(
+                    para.line_segs.first(),
+                    &composed.lines[0],
+                ),
+            );
+            assert_eq!(
+                render_pair,
+                (hwpunit_to_px(1000, dpi), hwpunit_to_px(400, dpi))
+            );
+            assert_eq!(formatted.line_heights, vec![render_pair.0]);
+            assert_eq!(formatted.line_spacings, vec![render_pair.1]);
+            let fallback_spacing = crate::renderer::corrected_line_metrics(
+                0.0,
+                0.0,
+                selected,
+                crate::model::style::LineSpacingType::Percent,
+                150.0,
+            )
+            .1;
+            // 생성 줄은 여전히 글꼴 기준 metrics를 재계산한다.
+            para.line_segs[0].tag |= LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+            let generated = compose_paragraph(&para);
+            let formatted = engine.format_paragraph(&para, Some(&generated), &styles, None);
+            assert_eq!(formatted.line_heights, vec![selected]);
+            assert_eq!(formatted.line_spacings, vec![fallback_spacing]);
+            // 원본 쌍이라도 기존 높이 수용 조건을 벗어나면 재계산한다.
+            para.line_segs[0].tag &= !LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+            para.line_segs[0].line_height = 500;
+            para.line_segs[0].text_height = 500;
+            let undersized = compose_paragraph(&para);
+            let formatted = engine.format_paragraph(&para, Some(&undersized), &styles, None);
+            assert_eq!(formatted.line_heights, vec![selected]);
+            assert_eq!(formatted.line_spacings, vec![fallback_spacing]);
+        }
+    }
 
     #[test]
     fn generated_body_line_breaks_survive_saved_mask_repair() {
@@ -23734,6 +24498,278 @@ mod tests {
     }
 
     #[test]
+    fn native_empty_host_rowbreak_existing_producer_carries_terminal_advance_once() {
+        let profile = crate::model::provenance::LayoutCompatibilityProfile::new(
+            false, false, false, false, true,
+        );
+        let engine = TypesetEngine::with_default_dpi();
+        engine.profile.set(profile);
+        let styles = ResolvedStyleSet {
+            para_styles: vec![
+                crate::renderer::style_resolver::ResolvedParaStyle {
+                    spacing_after: 3.0,
+                    ..Default::default()
+                },
+                crate::renderer::style_resolver::ResolvedParaStyle::default(),
+            ],
+            ..Default::default()
+        };
+        let cell_paragraph = Paragraph {
+            text: "abcd".into(),
+            char_count: 5,
+            para_shape_id: 1,
+            line_segs: (0..4)
+                .map(|line| LineSeg {
+                    text_start: line as u32,
+                    vertical_pos: line * 3_000,
+                    line_height: 3_000,
+                    text_height: 3_000,
+                    baseline_distance: 2_550,
+                    segment_width: 15_000,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let table = Table {
+            row_count: 1,
+            col_count: 1,
+            page_break: TablePageBreak::RowBreak,
+            outer_margin_top: 30,
+            outer_margin_bottom: 45,
+            common: CommonObjAttr {
+                width: 15_000,
+                height: 12_000,
+                text_wrap: TextWrap::TopAndBottom,
+                vert_rel_to: VertRelTo::Para,
+                vertical_offset: 350,
+                flow_with_text: true,
+                margin: Padding {
+                    top: 30,
+                    bottom: 45,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            cells: vec![Cell {
+                width: 15_000,
+                height: 12_000,
+                row_span: 1,
+                col_span: 1,
+                paragraphs: vec![cell_paragraph],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let host = Paragraph {
+            char_count: 9,
+            controls: vec![Control::Table(Box::new(table.clone()))],
+            line_segs: vec![LineSeg {
+                vertical_pos: 1_000,
+                line_height: 900,
+                text_height: 900,
+                baseline_distance: 765,
+                line_spacing: 180,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let authored_advance = host.line_segs[0].line_height + host.line_segs[0].line_spacing;
+        let next = Paragraph {
+            text: "following".into(),
+            char_count: 10,
+            para_shape_id: 1,
+            line_segs: vec![LineSeg {
+                vertical_pos: host.line_segs[0].vertical_pos + authored_advance,
+                line_height: 900,
+                text_height: 900,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(authored_advance, 1_080);
+        assert_eq!(
+            native_empty_host_rowbreak_line_advance_hu(true, &host, &table, Some(&next)),
+            Some(authored_advance)
+        );
+        let paragraphs = vec![host, next];
+        let composed: Vec<_> = paragraphs
+            .iter()
+            .map(crate::renderer::composer::compose_paragraph)
+            .collect();
+        let measured = HeightMeasurer::with_default_dpi().measure_section(
+            &paragraphs,
+            &composed,
+            &styles,
+            None,
+        );
+        let mt = &measured.tables[0];
+        let formatted = engine.format_table(
+            &paragraphs[0],
+            0,
+            0,
+            &table,
+            &measured.tables,
+            &styles,
+            Some(&composed[0]),
+            Some(&paragraphs[1]),
+            true,
+        );
+        let host_format =
+            engine.format_paragraph(&paragraphs[0], Some(&composed[0]), &styles, None);
+        assert!(formatted.strict_following_plain_text_fit);
+        let new_state = |capacity| {
+            let mut layout =
+                PageLayoutInfo::from_page_def(&a4_page_def(), &ColumnDef::default(), DEFAULT_DPI);
+            layout.body_area.height = capacity;
+            layout.column_areas[0].height = capacity;
+            layout.pagination_tolerance_px = 0.0;
+            let mut state = TypesetState::new(layout, 1, 0, 0.0, 0.0, 0.0, Default::default());
+            state.profile = profile;
+            state.has_stored_line_segs = paragraphs.iter().any(|p| !p.line_segs.is_empty());
+            state
+        };
+        let prepare = |state: &mut TypesetState| {
+            engine.typeset_block_table_inner(
+                state,
+                0,
+                0,
+                &paragraphs[0],
+                &table,
+                &formatted,
+                &host_format,
+                Some(mt),
+                &styles,
+                0.0,
+                0.0,
+                true,
+                true,
+                &paragraphs,
+                &composed,
+                true,
+            )
+        };
+        let geometry = LayoutEngine::with_default_dpi();
+        geometry.set_layout_profile(profile);
+        let whole_content = geometry.row_cut_content_height(&table, 0, &[], &[], &styles);
+        assert!((whole_content - hwpunit_to_px(12_000, DEFAULT_DPI)).abs() < 1e-9);
+        let outer = hwpunit_to_px(30 + 45, DEFAULT_DPI);
+        let offset = hwpunit_to_px(350, DEFAULT_DPI);
+        let advance = hwpunit_to_px(authored_advance, DEFAULT_DPI);
+
+        // 같은 실제 formatter/producer가 통째 배치되면 기존 host advance만 계상한다.
+        let mut whole = new_state(1_000.0);
+        assert!(prepare(&mut whole).is_none());
+        assert!(matches!(
+            whole.current_items.as_slice(),
+            [PageItem::Table { .. }]
+        ));
+        assert!(
+            (whole.current_height - whole_content - outer - offset - 3.0 - advance).abs() < 1e-9,
+            "whole-table flow must keep its existing single source advance"
+        );
+
+        // 작은 실제 본문 용량이 첫 컷을 만든다. cursor/prepared 값은 주입하지 않는다.
+        let mut initial = new_state(65.0);
+        let mut context = prepare(&mut initial).expect("producer must return split-table context");
+        assert_eq!(context.cursor, TableContinuationCursor::default());
+        assert!(context.flow_state.current_items.is_empty());
+        let source = BlockTableContinuationSource {
+            para_index: 0,
+            control_index: 0,
+            paragraph: &paragraphs[0],
+            table: &table,
+            measured_table: mt,
+            styles: &styles,
+        };
+        let mut calls = 0;
+        while !context.is_complete() {
+            assert!(
+                calls < 8,
+                "actual continuation must finish within its four-line fixture"
+            );
+            engine.step_block_table_continuation(&mut context, source);
+            calls += 1;
+        }
+        let fragments: Vec<_> = context
+            .flow_state
+            .pages
+            .iter()
+            .flat_map(|page| &page.column_contents)
+            .flat_map(|column| {
+                column
+                    .items
+                    .iter()
+                    .map(move |item| (item, column.used_height))
+            })
+            .chain(
+                context
+                    .flow_state
+                    .current_items
+                    .iter()
+                    .map(|item| (item, context.flow_state.current_height)),
+            )
+            .collect();
+        assert_eq!(
+            fragments.len(),
+            4,
+            "actual first/intermediate/terminal phases must be reached"
+        );
+        assert_eq!(context.cursor.fragments_emitted, fragments.len());
+        let mut previous_cut = Vec::new();
+        let mut terminal_expected = None;
+        for (index, (item, actual_flow)) in fragments.iter().enumerate() {
+            let PageItem::PartialTable {
+                start_row,
+                end_row,
+                is_continuation,
+                start_cut,
+                end_cut,
+                is_block_split,
+                ..
+            } = item
+            else {
+                panic!("small-capacity producer must emit actual partial-table fragments");
+            };
+            assert_eq!((*start_row, *end_row), (0, 1));
+            assert!(!*is_block_split, "fixture must use per-row intra-row cuts");
+            assert_eq!(
+                start_cut, &previous_cut,
+                "continuation must consume the actual prior emitted cut"
+            );
+            assert_eq!(*is_continuation, index > 0);
+            let content = geometry.row_cut_content_height(&table, 0, start_cut, end_cut, &styles);
+            assert!((content - hwpunit_to_px(3_000, DEFAULT_DPI)).abs() < 1e-9);
+            if index < 3 {
+                assert_eq!(end_cut.as_slice(), &[index + 1]);
+                let expected = content + outer + if index == 0 { offset } else { 0.0 };
+                assert!(
+                        (*actual_flow - expected).abs() < 1e-9,
+                        "first/intermediate fragment {index} must not consume terminal tail: actual={actual_flow}, expected={expected}"
+                    );
+            } else {
+                assert!(*is_continuation && !start_cut.is_empty() && end_cut.is_empty());
+                terminal_expected = Some(content + outer + 3.0 + advance);
+            }
+            previous_cut = end_cut.clone();
+        }
+        let expected = terminal_expected.expect("actual emitted terminal continuation");
+        drop(fragments);
+        let final_height = context.flow_state.current_height;
+        let final_fragments = context.cursor.fragments_emitted;
+        let final_steps = context.steps_completed;
+        engine.step_block_table_continuation(&mut context, source);
+        assert_eq!(context.flow_state.current_height, final_height);
+        assert_eq!(context.cursor.fragments_emitted, final_fragments);
+        assert_eq!(context.steps_completed, final_steps);
+        assert!(
+                (final_height - expected).abs() < 1e-9,
+                "real producer terminal flow must include source advance once: actual={final_height}, expected={expected}, missing_HU={}",
+                crate::renderer::px_to_hwpunit_round(expected - final_height, DEFAULT_DPI)
+            );
+    }
+
+    #[test]
     fn issue2439_native_empty_host_rowbreak_evidence_is_narrow() {
         let table = Table {
             page_break: TablePageBreak::RowBreak,
@@ -23803,6 +24839,44 @@ mod tests {
         )
         .is_none());
 
+        for offset in [0, -1] {
+            let mut unproven_table = table.clone();
+            unproven_table.common.vertical_offset = offset as u32;
+            assert!(native_empty_host_rowbreak_line_advance_hu(
+                true,
+                &anchor,
+                &unproven_table,
+                Some(&signature),
+            )
+            .is_none());
+        }
+
+        let mut generated_host = anchor.clone();
+        generated_host.line_segs[0].tag |= LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+        let mut generated_next = signature.clone();
+        generated_next.line_segs[0].tag |= LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+        let mut stale_host = anchor.clone();
+        stale_host.line_segs[0].line_height += 2;
+        let mut visible_host = anchor.clone();
+        visible_host.text = "visible host".into();
+        let mut controlled_next = signature.clone();
+        controlled_next.controls.push(anchor.controls[0].clone());
+        let mut zero_height_host = anchor.clone();
+        zero_height_host.line_segs[0].line_height = 0;
+        for (host, next) in [
+            (&generated_host, &signature),
+            (&anchor, &generated_next),
+            (&stale_host, &signature),
+            (&visible_host, &signature),
+            (&anchor, &controlled_next),
+            (&zero_height_host, &signature),
+        ] {
+            assert!(
+                native_empty_host_rowbreak_line_advance_hu(true, host, &table, Some(next),)
+                    .is_none()
+            );
+        }
+
         // [#2808] 물리 ladder(다음 문단 vpos 가 표 높이를 이미 포함) 문서는 tail 을
         // 더하면 이중 계상 — 증거 불일치로 억제되어야 한다 (10k r19 회귀 4건).
         let mut physical_ladder_signature = signature.clone();
@@ -23814,6 +24888,233 @@ mod tests {
             Some(&physical_ladder_signature),
         )
         .is_none());
+    }
+
+    #[test]
+    fn native_empty_host_rowbreak_keeps_its_authored_advance_for_continuation() {
+        let engine = TypesetEngine::with_default_dpi();
+        engine
+            .profile
+            .set(crate::model::provenance::LayoutCompatibilityProfile::new(
+                false, false, false, false, true,
+            ));
+        let styles = ResolvedStyleSet::default();
+        let table = Table {
+            page_break: TablePageBreak::RowBreak,
+            common: CommonObjAttr {
+                text_wrap: TextWrap::TopAndBottom,
+                vert_rel_to: VertRelTo::Para,
+                vertical_offset: 350,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let host = Paragraph {
+            controls: vec![Control::Table(Box::new(table.clone()))],
+            line_segs: vec![LineSeg {
+                line_height: 900,
+                line_spacing: 180,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut next = Paragraph {
+            text: "following".into(),
+            line_segs: vec![LineSeg {
+                vertical_pos: 1080,
+                line_height: 900,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let formatted =
+            engine.format_table(&host, 0, 0, &table, &[], &styles, None, Some(&next), false);
+        assert_eq!(formatted.native_empty_host_line_advance_hu, Some(1080));
+        next.line_segs[0].vertical_pos += 2;
+        let stale =
+            engine.format_table(&host, 0, 0, &table, &[], &styles, None, Some(&next), false);
+        assert_eq!(stale.native_empty_host_line_advance_hu, None);
+        assert!(
+            (formatted.host_spacing.after
+                - stale.host_spacing.after
+                - hwpunit_to_px(1080 + 350, DEFAULT_DPI))
+            .abs()
+                < 1e-9,
+            "whole-table spacing retains exactly one saved advance plus its existing offset"
+        );
+    }
+
+    #[test]
+    fn native_empty_host_rowbreak_terminal_step_consumes_the_tail_once() {
+        fn step(
+            tail: Option<i32>,
+            capacity: f64,
+            cursor: TableContinuationCursor,
+        ) -> BlockTableContinuationContext {
+            let styles = ResolvedStyleSet::default();
+            let cell_para = Paragraph {
+                text: "abc".into(),
+                char_count: 4,
+                line_segs: (0..3)
+                    .map(|line| LineSeg {
+                        text_start: line as u32,
+                        vertical_pos: line * 3000,
+                        line_height: 3000,
+                        text_height: 3000,
+                        baseline_distance: 2550,
+                        segment_width: 15_000,
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let table = Table {
+                row_count: 1,
+                col_count: 1,
+                page_break: TablePageBreak::RowBreak,
+                common: CommonObjAttr {
+                    width: 15_000,
+                    height: 9000,
+                    text_wrap: TextWrap::TopAndBottom,
+                    vert_rel_to: VertRelTo::Para,
+                    vertical_offset: 350,
+                    ..Default::default()
+                },
+                cells: vec![Cell {
+                    width: 15_000,
+                    height: 9000,
+                    row_span: 1,
+                    col_span: 1,
+                    paragraphs: vec![cell_para],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let host = Paragraph {
+                controls: vec![Control::Table(Box::new(table.clone()))],
+                ..Default::default()
+            };
+            let measured = HeightMeasurer::with_default_dpi().measure_section(
+                std::slice::from_ref(&host),
+                &[],
+                &styles,
+                None,
+            );
+            let mt = &measured.tables[0];
+            let profile = crate::model::provenance::LayoutCompatibilityProfile::new(
+                false, false, false, false, true,
+            );
+            let prepared = BlockTableContinuationPreparedState {
+                row_count: 1,
+                cell_spacing: 0.0,
+                can_intra_split: true,
+                base_available: capacity,
+                table_available: capacity,
+                layout_engine: LayoutEngine::with_default_dpi(),
+                rowspan_touched: vec![false],
+                cut_row_heights: mt.row_heights.clone(),
+                caption_is_top: false,
+                caption_overhead: 0.0,
+                total_rows_height: mt.row_heights.iter().sum(),
+                total_footnote_height: 0.0,
+                footnote_margin: 0.0,
+                host_spacing_total: 17.0,
+                host_spacing_before: 0.0,
+                host_spacing_after_only: 3.0,
+                native_empty_host_line_advance_hu: tail,
+                strict_following_plain_text_fit: true,
+                native_cellbreak_fragment_spacing_hu: None,
+                saved_residual_split_hu: None,
+                budget_para_start_height: 0.0,
+                host_has_local_saved_flow: false,
+            };
+            let layout =
+                PageLayoutInfo::from_page_def(&a4_page_def(), &ColumnDef::default(), DEFAULT_DPI);
+            let mut state = TypesetState::new(layout, 1, 0, 0.0, 0.0, 0.0, Default::default());
+            state.profile = profile;
+            state.has_stored_line_segs = true;
+            let mut context = BlockTableContinuationContext::new(1, prepared, state);
+            context.cursor = cursor;
+            TypesetEngine::with_default_dpi().step_block_table_continuation(
+                &mut context,
+                BlockTableContinuationSource {
+                    para_index: 0,
+                    control_index: 0,
+                    paragraph: &host,
+                    table: &table,
+                    measured_table: mt,
+                    styles: &styles,
+                },
+            );
+            context
+        }
+
+        let resumed = TableContinuationCursor {
+            is_continuation: true,
+            start_cut: vec![1],
+            ..Default::default()
+        };
+        let mut terminal = step(Some(1080), 1000.0, resumed.clone());
+        let without = step(None, 1000.0, resumed.clone());
+        assert!(terminal.is_complete());
+        assert!(matches!(terminal.flow_state.current_items.last(),
+            Some(PageItem::PartialTable { is_continuation: true, end_cut, .. }) if end_cut.is_empty()));
+        assert!(
+            (terminal.flow_state.current_height
+                - without.flow_state.current_height
+                - hwpunit_to_px(1080, DEFAULT_DPI))
+            .abs()
+                < 1e-9
+        );
+        let final_height = terminal.flow_state.current_height;
+        terminal.step(|_, _, _| panic!("a completed continuation must not consume its tail again"));
+        assert_eq!(terminal.flow_state.current_height, final_height);
+
+        for (capacity, cursor) in [
+            (1000.0, TableContinuationCursor::default()), // full table
+            (65.0, TableContinuationCursor::default()),   // first fragment
+            (50.0, resumed),                              // intermediate fragment
+        ] {
+            let with = step(Some(1080), capacity, cursor.clone());
+            let without = step(None, capacity, cursor.clone());
+            assert_eq!(with.is_complete(), capacity == 1000.0);
+            if with.is_complete() {
+                assert!(matches!(
+                    with.flow_state.current_items.last(),
+                    Some(PageItem::Table { .. })
+                ));
+            } else {
+                assert!(with
+                    .flow_state
+                    .pages
+                    .iter()
+                    .flat_map(|page| &page.column_contents)
+                    .flat_map(|column| &column.items)
+                    .any(
+                        |item| matches!(item, PageItem::PartialTable { is_continuation, end_cut, .. }
+                        if *is_continuation == cursor.is_continuation && !end_cut.is_empty())
+                    ));
+            }
+            assert_eq!(
+                with.flow_state.current_height,
+                without.flow_state.current_height
+            );
+            assert_eq!(with.cursor, without.cursor);
+            let used = |context: &BlockTableContinuationContext| {
+                context
+                    .flow_state
+                    .pages
+                    .iter()
+                    .flat_map(|page| &page.column_contents)
+                    .map(|column| column.used_height)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                used(&with),
+                used(&without),
+                "nonterminal fragments retain their existing flow"
+            );
+        }
     }
 
     fn issue2814_half_page_picture(height_hu: u32) -> Control {
@@ -24425,6 +25726,7 @@ mod tests {
             host_spacing_total: 0.0,
             host_spacing_before: 0.0,
             host_spacing_after_only: 0.0,
+            native_empty_host_line_advance_hu: None,
             strict_following_plain_text_fit: false,
             native_cellbreak_fragment_spacing_hu: None,
             saved_residual_split_hu: None,
@@ -25317,6 +26619,62 @@ mod tests {
     }
 
     #[test]
+    fn tac_cap_preserves_full_saved_spacing_and_tail_advance() {
+        for (spacing, with_tail) in [(344, false), (0, false), (344, true)] {
+            let engine = TypesetEngine::with_default_dpi();
+            let height = 22_207;
+            let mut lines = vec![LineSeg {
+                line_height: height,
+                text_height: height,
+                line_spacing: spacing,
+                ..Default::default()
+            }];
+            if with_tail {
+                lines.push(LineSeg {
+                    line_height: 1_000,
+                    text_height: 1_000,
+                    line_spacing: 200,
+                    ..Default::default()
+                });
+            }
+            let para = Paragraph {
+                controls: vec![Control::Table(Box::new(crate::model::table::Table {
+                    attr: 1,
+                    row_count: 1,
+                    col_count: 1,
+                    common: crate::model::shape::CommonObjAttr {
+                        treat_as_char: true,
+                        text_wrap: crate::model::shape::TextWrap::TopAndBottom,
+                        height: height as u32,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }))],
+                line_segs: lines,
+                ..Default::default()
+            };
+            let result = engine.typeset_section(
+                &[para],
+                &[],
+                &ResolvedStyleSet::default(),
+                &a4_page_def(),
+                &ColumnDef::default(),
+                0,
+                &[],
+                false,
+                &std::collections::HashSet::new(),
+            );
+            assert_eq!(result.pages.len(), 1);
+            let expected_hu = height + spacing + if with_tail { 1_200 } else { 0 };
+            let actual = result.pages[0].column_contents[0].used_height;
+            assert!(
+                (actual - hwpunit_to_px(expected_hu, DEFAULT_DPI)).abs() < 1e-8,
+                "spacing={spacing} tail={with_tail}: used_height={actual} expected_hu={expected_hu}"
+            );
+        }
+    }
+
+    #[test]
     fn saved_tac_table_line_at_body_bottom_stays_on_current_page() {
         let engine = TypesetEngine::with_default_dpi();
         let styles = ResolvedStyleSet::default();
@@ -25905,6 +27263,7 @@ mod tests {
             inline_controls: Vec::new(),
             numbering_text: None,
             numbering_head: None,
+            numbering_known_horizontal: false,
             tac_controls: vec![(0, 49070, 0)],
             footnote_positions: Vec::new(),
             tab_extended: Vec::new(),

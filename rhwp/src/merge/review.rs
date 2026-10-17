@@ -863,6 +863,9 @@ fn apply_review(
                 .ok_or("unsafe both text")?;
                 output.sections[s].paragraphs[p] = c.sections[s].paragraphs[p].clone();
                 let para = &mut output.sections[s].paragraphs[p];
+                if para.text != combined {
+                    para.authored_text_runs = None;
+                }
                 para.text = combined;
                 para.line_segs.clear();
                 crate::document_core::queries::field_query::rebuild_char_offsets(para);
@@ -879,6 +882,9 @@ fn apply_review(
                     return Err("manual paragraph contains control characters".into());
                 }
                 let para = &mut output.sections[s].paragraphs[p];
+                if para.text != text {
+                    para.authored_text_runs = None;
+                }
                 para.text = text.into();
                 para.line_segs.clear();
                 crate::document_core::queries::field_query::rebuild_char_offsets(para);
@@ -1546,6 +1552,102 @@ mod tests {
     }
 
     #[test]
+    fn authored_empty_runs_survive_review_noop_but_not_combined_or_manual_text() {
+        fn document(text: &str) -> Document {
+            let mut document =
+                parse_regenerated_document(include_bytes!("../../samples/hwpx/ref/ref_empty.hwpx"))
+                    .unwrap();
+            let paragraph = crate::parser::hwpx::section::parse_hwpx_section(&format!(
+                "<hs:sec xmlns:hs=\"urn:hs\" xmlns:hp=\"urn:hp\"><hp:p><hp:run charPrIDRef=\"0\"><hp:t>{text}</hp:t><hp:t/></hp:run></hp:p></hs:sec>"
+            )).unwrap().paragraphs.remove(0);
+            let shape = document.doc_info.para_shapes[0].clone();
+            if document.doc_info.para_shapes.len() < 2 {
+                document.doc_info.para_shapes.push(shape);
+            }
+            document.sections[0].paragraphs.truncate(1);
+            document.sections[0].paragraphs.push(paragraph);
+            document
+        }
+        for formatting_only in [false, true] {
+            let base = document("local");
+            let current = base.clone();
+            let mut incoming = document(if formatting_only { "local" } else { "remote" });
+            if formatting_only {
+                incoming.sections[0].paragraphs[1].para_shape_id = 1;
+            }
+            let (candidate, analysis, _) = review_documents(&base, &current, &incoming).unwrap();
+            assert_eq!(analysis.conflicts.len(), 1);
+            let unit = &analysis.conflicts[0];
+            assert!(unit
+                .position
+                .as_ref()
+                .is_some_and(|position| position.section == 0 && position.paragraph == 1));
+            assert!(unit.value.supports_manual);
+            assert_eq!(unit.value.supports_both, !formatting_only);
+            let selected = &candidate.sections[0].paragraphs[1];
+            assert_eq!(selected.text, incoming.sections[0].paragraphs[1].text);
+            assert_eq!(
+                selected.authored_text_runs,
+                incoming.sections[0].paragraphs[1].authored_text_runs
+            );
+            assert!(selected.authored_text_runs.is_some());
+            let mut cases = vec![
+                (
+                    "manual change",
+                    MergeResolution::Manual {
+                        payload: json!("manual"),
+                    },
+                    "manual".to_owned(),
+                    None,
+                ),
+                (
+                    "manual selected-side no-op",
+                    MergeResolution::Manual {
+                        payload: json!(selected.text),
+                    },
+                    selected.text.clone(),
+                    selected.authored_text_runs.clone(),
+                ),
+            ];
+            if !formatting_only {
+                cases.insert(
+                    0,
+                    (
+                        "both text change",
+                        MergeResolution::Both {
+                            order: "current-first".into(),
+                        },
+                        "remote".to_owned(),
+                        None,
+                    ),
+                );
+            }
+            for (label, choice, expected_text, expected_authored) in cases {
+                let case = format!("formatting_only={formatting_only}, {label}");
+                let choices = BTreeMap::from([(unit.value.id.clone(), choice)]);
+                let mut output = apply_review(&base, &current, &incoming, &choices).unwrap();
+                for round in 0..=2 {
+                    let paragraph = &output.sections[0].paragraphs[1];
+                    assert_eq!(paragraph.text, expected_text, "{case}, round={round}");
+                    assert_eq!(
+                        paragraph.para_shape_id,
+                        u16::from(formatting_only),
+                        "{case}, round={round}"
+                    );
+                    assert_eq!(
+                        paragraph.authored_text_runs, expected_authored,
+                        "{case}, round={round}"
+                    );
+                    if round < 2 {
+                        output =
+                            parse_regenerated_document(&serialize_hwpx(&output).unwrap()).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn form002_disjoint_paragraph_edits_keep_local_and_cloud_text() {
         let (base_bytes, current_bytes, incoming_bytes) = form002_cloud_workspace_bytes();
         let base = parse(&base_bytes, "base").expect("parse base");
@@ -1623,11 +1725,16 @@ mod tests {
             !cloud_unit.value.supports_both && !cloud_unit.value.supports_manual,
             "table-bearing paragraphs require an atomic current/incoming choice"
         );
-        for selected in [&current, &output] {
-            let loaded = parse_regenerated_document(&serialize_hwpx(selected).unwrap()).unwrap();
+        for (label, selected) in [("current", &current), ("output", &output)] {
+            let bytes = serialize_hwpx(selected)
+                .unwrap_or_else(|error| panic!("serialize {label}: {error}"));
+            let loaded = parse_regenerated_document(&bytes).unwrap();
             validate_resource_dependencies(&loaded).unwrap();
             assert_eq!(counts(&loaded), counts(selected));
             assert_eq!(paragraph_texts(&loaded), paragraph_texts(selected));
+            let reopened = parse_regenerated_document(&serialize_hwpx(&loaded).unwrap()).unwrap();
+            assert_eq!(counts(&reopened), counts(selected));
+            assert_eq!(paragraph_texts(&reopened), paragraph_texts(selected));
         }
         let all_both = analysis
             .conflicts

@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { rm, readFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -40,6 +40,7 @@ import {
   waitForHubReadyLine,
 } from './agent-hub.mjs';
 import { DocumentLeaseManager, releaseRendererDocuments } from './document-leases.mjs';
+import { UnsavedDocumentRegistry } from './unsaved-documents.mjs';
 import { captureDocumentRegion, installAgentContextStore } from './agent-context-store.mjs';
 import { quarantineBookmarkState, readBookmarkState } from './bookmark-state.mjs';
 import {
@@ -101,8 +102,13 @@ import {
   removeStaleLaunchDirectories,
   writeLaunchOwnerMetadata,
 } from './runtime-cleanup.mjs';
-import { reportUniqueInstall, uniqueInstallsPublicUrl } from './unique-install.mjs';
+import { reportUniqueInstall, uniqueInstallsPublicUrl, uniqueInstallStatePath } from './unique-install.mjs';
+import { createLicenseClient, DEFAULT_LICENSE_API_BASE } from './license-client.mjs';
+import { PRODUCTION_LICENSE_PUBLIC_KEYS } from './license-lease.mjs';
+import { createLicenseManager, licenseStatePath, TRIAL_DURATION_MS } from './license-manager.mjs';
+import { installLicenseHost } from './license-host.mjs';
 import { createSystemFontService } from './system-fonts.mjs';
+import { createFontFolderStore } from './font-folders.mjs';
 import {
   nativeExtractorFileName,
   sourceStagedNativeExtractorPath,
@@ -110,8 +116,8 @@ import {
 
 const { autoUpdater } = electronUpdater;
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const RELEASES_URL = 'https://github.com/heemangstudio/Rauhwpx/releases/latest';
-const RELEASES_API_URL = 'https://api.github.com/repos/heemangstudio/Rauhwpx/releases/latest';
+const RELEASES_URL = 'https://github.com/heemangstudio/hamaeditor-releases/releases/latest';
+const RELEASES_API_URL = 'https://api.github.com/repos/heemangstudio/hamaeditor-releases/releases/latest';
 const PRELOAD_PATH = join(__dirname, 'preload.cjs');
 const REBRAND_EXPORT_PRELOAD_PATH = join(__dirname, 'rebrand-export-preload.cjs');
 const devUrl = resolveDevelopmentUrl({
@@ -582,9 +588,16 @@ browserHost.webAuthn = browserWebAuthn;
 const documentLeases = new DocumentLeaseManager();
 const nativeFiles = new NativeFileHandleRegistry();
 const nativeBookmarkFile = join(app.getPath('userData'), 'native-document-bookmarks.json');
+const logFonts = (line) => console.log(`[hamaeditor] fonts: ${line}`);
+const fontFolders = createFontFolderStore({
+  filePath: join(app.getPath('userData'), 'font-folders.json'),
+  writeAtomically: writeNativeFileAtomically,
+  log: logFonts,
+});
 const systemFonts = createSystemFontService({
   cacheDir: join(app.getPath('userData'), 'fonts'),
-  log: (line) => console.log(`[hamaeditor] fonts: ${line}`),
+  log: logFonts,
+  addedFolders: () => fontFolders.list(),
 });
 const systemFontKey = randomBytes(32).toString('hex');
 let uniqueInstallSnapshot = {
@@ -628,6 +641,23 @@ const windowFrames = new WindowFrameStore({
   writeAtomically: writeNativeFileAtomically,
 });
 const agentAttention = new AgentAttention({ app, Notification: ElectronNotification, nativeImage });
+const unsavedDocuments = new UnsavedDocumentRegistry();
+
+/** 저장하지 않은 새 문서 목록을 모든 창에 보낸다. 창마다 자기 문서는 local 로 받는다. */
+function broadcastUnsavedDocuments() {
+  for (const window of sessions.windows()) {
+    try {
+      const session = sessions.sessionForSender(window.webContents);
+      window.webContents.send('desktop:unsaved-documents-changed', unsavedDocuments.listFor(session.sessionId));
+    } catch {
+      // 닫히는 중인 창은 건너뛴다.
+    }
+  }
+}
+
+function forgetUnsavedDocuments(sessionId) {
+  if (unsavedDocuments.forget(sessionId)) broadcastUnsavedDocuments();
+}
 
 /** 열거나 저장한 네이티브 파일을 Dock·최근 사용 메뉴에 올린다. */
 function noteRecentDocument(sessionId, handleId) {
@@ -798,7 +828,8 @@ async function checkForAppUpdates({ manual = true } = {}) {
 }
 
 function installMenu() {
-  installAppMenu({
+  appMenu = installAppMenu({
+    agentEnabled: () => licenseAllowsAgent,
     checkForUpdates: () => {
       if (!app.isPackaged) {
         void shell.openExternal(RELEASES_URL);
@@ -857,7 +888,10 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   const windowId = window.id;
   windowFrames.track(window);
   installTextContextMenu({ Menu, webContents: window.webContents, window, isMac });
+  // 자동 저장본 복구는 앱의 첫 창만 묻는다. 다른 창에서 띄운 창(새 창에서 열기·새 윈도우)은 바로 문서를 연다.
+  const offersAutosaveRecovery = sessions.windows().length === 0;
   const session = sessions.addWindow(window, { source: launch.source, openFiles: [] });
+  session.offersAutosaveRecovery = offersAutosaveRecovery;
   session.generatedDocument = generatedDocument
     ? { launchDocumentId: randomUUID(), ...generatedDocument }
     : null;
@@ -897,6 +931,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
     // 창의 추가 에이전트 세션도 함께 허브에서 닫힌다.
     sessions.removeWindow(window);
+    forgetUnsavedDocuments(session.sessionId);
     if (quitRequested) setImmediate(() => {
       if (quitRequested && !quitting) app.quit();
     });
@@ -940,12 +975,15 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     launchFiles.length = 0;
     // Agents of the dead page's background documents cannot be reached again.
     sessions.releaseAgentSessions(window);
+    forgetUnsavedDocuments(session.sessionId);
   });
   // A reloaded page knows only its window session and reopens the default
   // document itself. Background documents and their agents died with the old page.
   window.webContents.on('did-navigate', () => {
     sessions.releaseAgentSessions(window);
     documentLeases.releaseSession(session.sessionId, { keepDefaultSlot: true });
+    // 다시 불러온 페이지가 자기 새 문서를 다시 알린다.
+    forgetUnsavedDocuments(session.sessionId);
   });
   window.webContents.setWindowOpenHandler(({ url, frameName }) => {
     // 인쇄 미리보기 같은 앱 내부 surface는 외부 브라우저가 아니라 네이티브
@@ -1083,6 +1121,65 @@ ipcMain.handle('desktop:finish-rebrand-import', (event, token, outcome) => {
   return rebrandImport.finish(token, outcome);
 });
 
+// ── 체험·라이선스 ─────────────────────────────────────────────────────────
+// 출시 빌드만 막는다. 소스에서 실행하면 HAMA_LICENSE_GATE=on 일 때만 막고, 그때만
+// HAMA_LICENSE_API_BASE·HAMA_LICENSE_DEV_PUBLIC_KEY(kid:base64)로 시험용 키 서버를 쓸 수 있다.
+function licensePublicKeys() {
+  const dev = !app.isPackaged ? String(process.env.HAMA_LICENSE_DEV_PUBLIC_KEY ?? '') : '';
+  const split = dev.indexOf(':');
+  if (split <= 0) return PRODUCTION_LICENSE_PUBLIC_KEYS;
+  return { ...PRODUCTION_LICENSE_PUBLIC_KEYS, [dev.slice(0, split)]: dev.slice(split + 1) };
+}
+// 라이선스가 읽기 전용이면 앱은 문서 보기 전용이다. 메뉴의 에이전트 항목도 끈다.
+let licenseAllowsAgent = true;
+let appMenu = null;
+function noteLicenseStatus(status) {
+  licenseAllowsAgent = status?.canEdit !== false;
+  appMenu?.refresh();
+}
+/** 소스 실행에서만 HAMA_LICENSE_DEV_TRIAL_MS 로 체험 길이를 줄여 시험한다. 출시 빌드는 늘 3일이다. */
+function licenseTrialDurationMs() {
+  if (app.isPackaged) return TRIAL_DURATION_MS;
+  const value = Number(process.env.HAMA_LICENSE_DEV_TRIAL_MS);
+  return Number.isSafeInteger(value) && value > 0 ? value : TRIAL_DURATION_MS;
+}
+const licenseManager = createLicenseManager({
+  statePath: licenseStatePath(app.getPath('userData')),
+  trialDurationMs: licenseTrialDurationMs(),
+  client: createLicenseClient({
+    baseUrl: (!app.isPackaged && process.env.HAMA_LICENSE_API_BASE) || DEFAULT_LICENSE_API_BASE,
+  }),
+  publicKeys: licensePublicKeys(),
+  existingInstallId: async () => {
+    try {
+      return JSON.parse(await readFile(uniqueInstallStatePath(app.getPath('userData')), 'utf8')).installId ?? null;
+    } catch { return null; }
+  },
+  appVersion: app.getVersion(),
+  platform: process.platform,
+  enforce: app.isPackaged || process.env.HAMA_LICENSE_GATE === 'on',
+  onChange: (status) => {
+    noteLicenseStatus(status);
+    licenseHost.broadcast(status);
+  },
+});
+const licenseHost = installLicenseHost({
+  ipcMain,
+  BrowserWindow,
+  shell,
+  manager: licenseManager,
+  isTrustedStudioEvent: (event) => {
+    try {
+      sessionForEvent(event);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  studioWebContents: () => sessions.windows().map((window) => window.webContents),
+  parentWindow: () => BrowserWindow.getFocusedWindow() ?? sessions.windows().at(-1) ?? null,
+});
+
 ipcMain.handle('desktop:get-unique-installs', async (event) => {
   sessionForEvent(event);
   await uniqueInstallSync;
@@ -1103,8 +1200,43 @@ ipcMain.handle('desktop:agent-session-release', (event, agentSessionId) => {
 });
 ipcMain.handle('desktop:fonts-list', (event, options = {}) => {
   sessionForEvent(event);
-  if (process.env.RHWP_SYSTEM_FONTS === 'off') throw new Error('System font discovery is disabled');
+  assertSystemFontsEnabled();
   return systemFonts.list({ refresh: options?.refresh === true });
+});
+function assertSystemFontsEnabled() {
+  if (process.env.RHWP_SYSTEM_FONTS === 'off') throw new Error('System font discovery is disabled');
+}
+/** 글꼴 폴더 목록을 바꾼 뒤 색인을 다시 만들고, 모든 창에 새 색인을 받아 문서 글꼴을 다시 잇게 한다. */
+async function changeFontFolders(change) {
+  const folders = await change();
+  await systemFonts.list({ refresh: true });
+  for (const window of sessions.windows()) {
+    if (!window.isDestroyed()) window.webContents.send('desktop:fonts-changed');
+  }
+  return folders;
+}
+ipcMain.handle('desktop:font-folders-list', (event) => {
+  sessionForEvent(event);
+  assertSystemFontsEnabled();
+  return fontFolders.list();
+});
+ipcMain.handle('desktop:font-folders-add', async (event) => {
+  sessionForEvent(event);
+  assertSystemFontsEnabled();
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) throw new Error('Font folder sender window is unavailable');
+  const picked = await dialog.showOpenDialog(window, {
+    title: 'Add font folder',
+    properties: ['openDirectory'],
+  });
+  if (picked.canceled || !picked.filePaths[0]) return null;
+  return changeFontFolders(() => fontFolders.add(picked.filePaths[0]));
+});
+ipcMain.handle('desktop:font-folders-remove', (event, folder) => {
+  sessionForEvent(event);
+  assertSystemFontsEnabled();
+  if (typeof folder !== 'string' || !folder) throw new Error('Font folder path is required');
+  return changeFontFolders(() => fontFolders.remove(folder));
 });
 ipcMain.handle('desktop:fonts-base', (event) => {
   sessionForEvent(event);
@@ -1118,6 +1250,7 @@ ipcMain.handle('desktop:get-launch-generated-document', (event) => {
   const session = sessionForEvent(event);
   return session.generatedDocument;
 });
+ipcMain.handle('desktop:offers-autosave-recovery', (event) => sessionForEvent(event).offersAutosaveRecovery === true);
 installPdfExport({
   ipcMain,
   dialog,
@@ -1228,6 +1361,8 @@ ipcMain.handle('desktop:claim-native-dropped-file', async (event, filePath) => {
 });
 ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
   const session = sessionForEvent(event);
+  // 체험이 끝났으면 저장 위치를 고르기 전에 막고 활성화 창을 띄운다.
+  await licenseHost.guardSave();
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window) throw new Error('Save picker sender window is unavailable');
   const extension = String(options.extension ?? '').toLowerCase();
@@ -1316,7 +1451,11 @@ ipcMain.handle('desktop:native-file-validate-save', (event, handleId, identity) 
 });
 ipcMain.handle('desktop:native-file-write', async (event, handleId, bytes, identity) => {
   const session = sessionForEvent(event);
-  const written = await nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases);
+  // 읽기 전용(체험 끝·해지·오프라인 7일 초과)이면 쓰지 않는다. 문서 열기와 보기는 막지 않는다.
+  const written = await licenseHost.save(
+    () => nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases),
+    { sender: event.sender },
+  );
   noteRecentDocument(session.sessionId, handleId);
   // 저장한 내용 표시(크기·sha256)를 북마크에 남겨 옮겨진 파일을 다음 실행에도 알아본다.
   void persistNativeBookmarks().catch(() => {});
@@ -1419,6 +1558,28 @@ ipcMain.handle('desktop:reveal-native-document', async (event, documentId) => {
   if (typeof documentId !== 'string' || !documentId) return false;
   if ((await nativeFiles.inspectDocument(documentId)).state !== 'present') return false;
   shell.showItemInFolder(nativeFiles.bookmarkPathFor(documentId));
+  return true;
+});
+ipcMain.on('desktop:set-unsaved-documents', (event, documents) => {
+  try {
+    if (unsavedDocuments.set(sessionForEvent(event).sessionId, documents)) broadcastUnsavedDocuments();
+  } catch (error) {
+    console.warn('[hamaeditor] unsaved document update failed:', error);
+  }
+});
+ipcMain.handle('desktop:list-unsaved-documents', (event) => (
+  unsavedDocuments.listFor(sessionForEvent(event).sessionId)
+));
+// 다른 창의 새 문서를 열거나 저장한다. 그 창을 앞으로 가져오고 그 창이 직접 연다·저장한다.
+ipcMain.handle('desktop:unsaved-document-action', (event, documentId, action) => {
+  const session = sessionForEvent(event);
+  if (action !== 'open' && action !== 'save') return false;
+  const owner = unsavedDocuments.ownerOf(documentId);
+  if (!owner || owner === session.sessionId) return false;
+  const target = sessions.sessionById(owner);
+  if (!target || target.sender.isDestroyed()) return false;
+  sessions.focusSession(owner);
+  target.sender.send('desktop:run-unsaved-document-action', { documentId, action });
   return true;
 });
 const recentWindowOpens = new Map();
@@ -1650,6 +1811,12 @@ if (!hasSingleInstanceLock) {
       root: devUrl ? null : studioDist(),
       systemFonts: { fonts: systemFonts, key: systemFontKey, allowOrigin: devOrigin },
     });
+    // 첫 창보다 먼저 체험 시작 시각을 남긴다(로컬 파일만 읽으므로 빠르다). 서버 확인은 기다리지 않는다.
+    await licenseManager.load().catch((error) => {
+      console.warn('[hamaeditor] license state failed to load:', error);
+    });
+    await licenseManager.status().then(noteLicenseStatus, () => {});
+    licenseManager.start();
     desktopReady = true;
     const launches = pendingLaunches.splice(0);
     let failedLaunches = 0;
@@ -1661,6 +1828,9 @@ if (!hasSingleInstanceLock) {
       });
     }
     initialLaunchesOpened = true;
+    void licenseHost.showIfReadOnly().catch((error) => {
+      console.warn('[hamaeditor] license status failed:', error);
+    });
     if (failedLaunches > 0 && sessions.windows().length === 0) {
       resolveUniqueInstallSync();
       app.quit();

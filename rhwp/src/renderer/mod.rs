@@ -154,11 +154,97 @@ pub(crate) fn dot_tab_leader_layout(
     Some((last - count * pitch, last, diameter, pitch))
 }
 
+/// HWP 30/31 제어자의 기본 폭에 쓰는 원본 글자 모양 값.
+/// 일반 글리프의 언어 슬롯·첨자·기본값 보정과 별도로 보존한다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlSpaceBase {
+    pub height_hu: i32,
+    pub korean_relative_size: u8,
+    pub korean_ratio: u8,
+    /// 31/일반 U+0020의 별도 ENG placement 자간(%). None은 원본 슬롯이 없는 스타일이다.
+    /// 기본 폭 계산에는 쓰지 않는다. Some(0)은 유효한 ENG 슬롯의 0%이다.
+    pub raw31_eng_tracking_percent: Option<i8>,
+}
+
+impl ControlSpaceBase {
+    /// 기본 폭(HWPUNIT)만 반환한다. formatter의 tracking/grid 전진은 포함하지 않는다.
+    /// HwpApp 3a8910: relative MulDiv → SDIV 8/16 → ratio MulDiv → low32 LSL 2.
+    pub fn width_hu(self, origin: crate::model::paragraph::SpecialSpaceOriginKind) -> Option<i32> {
+        use crate::model::paragraph::SpecialSpaceOriginKind;
+        let divisor = match origin {
+            SpecialSpaceOriginKind::NbSpace => 8,
+            SpecialSpaceOriginKind::FwSpace => 16,
+            SpecialSpaceOriginKind::Literal => return None,
+        };
+        let effective_height = mul_div_percent(self.height_hu, self.korean_relative_size);
+        let divided = effective_height / divisor;
+        Some(mul_div_percent(divided, self.korean_ratio).wrapping_shl(2))
+    }
+}
+
+/// Foundation MulDiv의 signed DWORD 입력, ties-away 반올림 및 overflow sentinel.
+/// 이 계약에서 분모는 항상 100이며, 100% 경로는 native처럼 계산을 건너뛴다.
+fn mul_div_percent(value: i32, percent: u8) -> i32 {
+    if percent == 100 {
+        return value;
+    }
+    let product = i64::from(value) * i64::from(percent);
+    let magnitude = (product.abs() + 50) / 100;
+    let rounded = if product < 0 { -magnitude } else { magnitude };
+    i32::try_from(rounded).unwrap_or(-1)
+}
+
+/// 글자 위치 descriptor의 원본 입력. 제어자 폭/측정용 축소와 별도로 보존한다.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeCharPosition {
+    pub base_height_hu: i32,
+    pub percent: i8,
+    pub dpi: f64,
+}
+
+impl NativeCharPosition {
+    /// 233F60..233F70: signed MulDiv → STRH, draw consumer의 LDRSH.
+    fn descriptor_hu(self) -> i16 {
+        let product = i64::from(self.base_height_hu) * i64::from(self.percent);
+        let magnitude = (product.abs() + 50) / 100;
+        let rounded = if product < 0 { -magnitude } else { magnitude };
+        i32::try_from(rounded).unwrap_or(-1) as i16
+    }
+}
+
+/// scalar 범위의 발생 원점을 새 문자열의 0부터 다시 매긴다.
+pub(crate) fn localize_special_space_origins(
+    origins: &[crate::model::paragraph::SpecialSpaceOrigin],
+    start: usize,
+    end: usize,
+) -> Vec<crate::model::paragraph::SpecialSpaceOrigin> {
+    origins
+        .iter()
+        .filter(|origin| origin.char_idx >= start && origin.char_idx < end)
+        .map(|origin| crate::model::paragraph::SpecialSpaceOrigin {
+            char_idx: origin.char_idx - start,
+            origin: origin.origin,
+        })
+        .collect()
+}
+
 /// 텍스트 렌더링 스타일
 #[derive(Debug, Clone, Serialize)]
 pub struct TextStyle {
     /// Font substitution policy shared by wrapping and glyph positioning.
     pub font_metrics_policy: crate::model::provenance::FontMetricsPolicy,
+    /// 원본 signed HU/KOR byte 기본 폭. full advance와 혼동하지 않는다.
+    #[serde(skip)]
+    pub control_space_base: Option<ControlSpaceBase>,
+    /// 같은 언어 슬롯의 원본 signed 글자 위치 입력. 렌더 축은 기존 helper가 유지한다.
+    #[serde(skip)]
+    pub native_char_position: Option<NativeCharPosition>,
+    /// 원본 HU 기본 폭을 변환할 때 쓰는 스타일 해소 DPI.
+    #[serde(skip)]
+    pub control_space_dpi: f64,
+    /// 이 측정 문자열의 scalar 위치. char_offsets의 UTF-16/control stream 축이 아니다.
+    #[serde(skip)]
+    pub special_space_origins: Vec<crate::model::paragraph::SpecialSpaceOrigin>,
     /// 일반 공백을 글꼴 고유 advance 로 잰다 (MS Word 호환 라틴 run, 또는 글자 모양의
     /// "글꼴에 어울리는 빈칸"). 아니면 반각을 유지한다.
     pub latin_space: bool,
@@ -267,6 +353,48 @@ pub struct TextStyle {
 }
 
 impl TextStyle {
+    /// 글리프/줄 끝의 비자간 참조 폭: intrinsic 값과 원점은 유지한다.
+    pub(crate) fn zero_tracking(&mut self) {
+        self.letter_spacing = 0.0;
+        if let Some(base) = self.control_space_base.as_mut() {
+            if base.raw31_eng_tracking_percent.is_some() {
+                base.raw31_eng_tracking_percent = Some(0);
+            }
+        }
+    }
+
+    /// 자연 폭 참조에서 음수 placement 자간만 제거한다.
+    pub(crate) fn clamp_negative_tracking(&mut self) {
+        if self.letter_spacing < 0.0 {
+            self.letter_spacing = 0.0;
+        }
+        if let Some(base) = self.control_space_base.as_mut() {
+            base.raw31_eng_tracking_percent = base
+                .raw31_eng_tracking_percent
+                .map(|percent| percent.max(0));
+        }
+    }
+
+    /// 일반 빈칸의 비격자 자간은 ENG 슬롯이다. 글꼴/크기/장평은 기존 run을 쓴다.
+    /// 32d59c 캐시 metric → 32d6ac classifier(32,1) → 32d744 signed Q+1e.
+    pub(crate) fn ordinary_space_tracking_percent(&self, ch: char) -> Option<i8> {
+        if ch != ' '
+            || self.font_metrics_policy != crate::model::provenance::FontMetricsPolicy::HcrDeclared
+        {
+            return None;
+        }
+        self.control_space_base?.raw31_eng_tracking_percent
+    }
+
+    /// 원본 31만 ENG 자간 슬롯을 선택한다. 글꼴/상대 크기/장평 선택은 바꾸지 않는다.
+    pub(crate) fn raw31_tracking_percent(&self, scalar_index: usize, ch: char) -> Option<i8> {
+        if ch != '\u{2007}' {
+            return None;
+        }
+        self.control_space_base_width_hu(scalar_index, ch)?;
+        self.control_space_base?.raw31_eng_tracking_percent
+    }
+
     /// 문서 선언 대체를 보존하며 원본 HFT 별칭의 대체 서체를 해소한다.
     /// 미설치 HY신명조 TTF는 함초롬바탕, 신명 HFT 별칭은 한컴바탕을 쓴다.
     pub fn effective_font_subst(&self) -> &str {
@@ -340,6 +468,10 @@ impl Default for TextStyle {
     fn default() -> Self {
         Self {
             font_metrics_policy: Default::default(),
+            control_space_base: None,
+            native_char_position: None,
+            control_space_dpi: DEFAULT_DPI,
+            special_space_origins: Vec::new(),
             latin_space: false,
             script_base_size: 0.0,
             font_family: String::new(),
@@ -383,6 +515,44 @@ impl Default for TextStyle {
             underline_color: 0,
             strike_color: 0,
             shade_color: 0x00FFFFFF,
+        }
+    }
+}
+
+impl TextStyle {
+    pub(crate) fn with_origin_range(
+        mut self,
+        origins: &[crate::model::paragraph::SpecialSpaceOrigin],
+        start: usize,
+        end: usize,
+    ) -> Self {
+        self.special_space_origins = localize_special_space_origins(origins, start, end);
+        self
+    }
+
+    pub(crate) fn slice_origins(&self, start: usize, end: usize) -> Self {
+        self.clone()
+            .with_origin_range(&self.special_space_origins, start, end)
+    }
+
+    /// 발생 원점과 normalized scalar가 모두 맞는 native 기본 폭만 제공한다.
+    /// formatter의 grid/테두리 전진은 이 기본 폭과 별도로 처리한다.
+    pub(crate) fn control_space_base_width_hu(&self, scalar_index: usize, ch: char) -> Option<i32> {
+        use crate::model::paragraph::SpecialSpaceOriginKind;
+        if self.font_metrics_policy != crate::model::provenance::FontMetricsPolicy::HcrDeclared {
+            return None;
+        }
+        let index = self
+            .special_space_origins
+            .binary_search_by_key(&scalar_index, |origin| origin.char_idx)
+            .ok()?;
+        let origin = self.special_space_origins[index].origin;
+        match (origin, ch) {
+            (SpecialSpaceOriginKind::NbSpace, '\u{00A0}')
+            | (SpecialSpaceOriginKind::FwSpace, '\u{2007}') => {
+                self.control_space_base?.width_hu(origin)
+            }
+            _ => None,
         }
     }
 }
@@ -479,11 +649,17 @@ pub(crate) fn script_glyph_size_and_shift(style: &TextStyle, base_font_size: f64
 
 /// 글자 위치(%)에 따른 글리프 기준선 이동량(px, 양수 = 아래로).
 ///
-/// 한컴은 글리프를 글자 크기 비율만큼 내린다(음수는 올림) — onsaemiro 본문(-10%,
+/// 원본 HcrDeclared 위치는 base HU에 signed 비율을 적용한다. 원본이 없는 스타일은
+/// 기존 글리프 크기 비율을 쓴다(음수는 올림) — onsaemiro 본문(-10%,
 /// 9.8pt)이 한컴 PDF 에서 기준선보다 0.96pt 위에 놓인다. 밑줄·취소선은 옮기지 않는다
 /// (exam-kor 2쪽: -10% 본문의 밑줄이 원래 기준선 기준 위치에 그대로 있다). 렌더러는
 /// `script_glyph_size_and_shift` 로 옮긴 y 에서 이 값을 빼 장식선 y 를 얻는다.
 pub(crate) fn char_offset_dy(style: &TextStyle) -> f64 {
+    if style.font_metrics_policy == crate::model::provenance::FontMetricsPolicy::HcrDeclared {
+        if let Some(source) = style.native_char_position {
+            return hwpunit_to_px(i32::from(source.descriptor_hu()), source.dpi);
+        }
+    }
     let size = if style.font_size > 0.0 {
         style.font_size
     } else {
@@ -1454,6 +1630,64 @@ pub fn corrected_line_metrics_for_source(
     }
 }
 
+/// 원본 줄과 실제 구성된 줄의 metrics가 그대로 대응하는 경우만 저장 쌍으로 쓴다.
+pub(crate) fn line_metric_pair_is_authored(
+    source: Option<&crate::model::paragraph::LineSeg>,
+    line: &composer::ComposedLine,
+) -> bool {
+    source.is_some_and(|seg| {
+        seg.tag & crate::model::paragraph::LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0
+            && seg.line_height > 0
+            && seg.text_height > 0
+            && seg.segment_width > 0
+            && seg.line_height == line.line_height
+            && seg.line_spacing == line.line_spacing
+            && seg.baseline_distance == line.baseline_distance
+            && seg.column_start == line.column_start
+            && seg.segment_width == line.segment_width
+    })
+}
+
+/// 저장 글자 높이를 채택할 때 대응하는 원본 spacing도 함께 보존한다.
+pub(crate) fn corrected_line_metrics_for_authored_source(
+    raw_lh: f64,
+    raw_text_height: f64,
+    raw_ls: f64,
+    max_fs: f64,
+    ls_type: LineSpacingType,
+    ls_val: f64,
+    use_stored_text_height: bool,
+    source_metrics_reflow_eligible: bool,
+    authored_pair: bool,
+) -> (f64, f64) {
+    let (height, spacing) = corrected_line_metrics_for_source(
+        raw_lh,
+        raw_text_height,
+        raw_ls,
+        max_fs,
+        ls_type,
+        ls_val,
+        use_stored_text_height,
+        source_metrics_reflow_eligible,
+    );
+    if authored_pair
+        && use_stored_text_height
+        && height == raw_text_height
+        && !source_line_metrics_need_reflow(
+            raw_lh,
+            raw_text_height,
+            max_fs,
+            ls_type,
+            ls_val,
+            source_metrics_reflow_eligible,
+        )
+    {
+        (height, raw_ls)
+    } else {
+        (height, spacing)
+    }
+}
+
 /// HWP3-origin HWP5 conversions may omit PARA_LINE_SEG for body paragraphs.
 /// The composer then emits synthetic lines with a tiny raw line height. For
 /// those synthetic lines, applying ParaShape's percent line spacing again makes
@@ -1756,7 +1990,7 @@ pub fn canvas_font_family_chain(font_family: &str, font_subst: &str) -> String {
 
 /// run 의 원본 HFT 서체에서 `ch` 윤곽선을 찾는다 (설치된 HFT 를 등록한 경우만).
 ///
-/// 기울임은 한컴의 합성 기울기를 아직 재현하지 않으므로 기존 대체 서체로 그린다.
+/// 원본 Bold face를 우선하며, 기울임은 기존 대체 서체로 그린다.
 pub(crate) fn hft_glyph_for_style(
     style: &TextStyle,
     ch: char,
@@ -1764,7 +1998,7 @@ pub(crate) fn hft_glyph_for_style(
     if style.hft_family.is_empty() || style.italic {
         return None;
     }
-    hft_glyphs::hft_glyph(&style.hft_family, ch)
+    hft_glyphs::hft_glyph_styled(&style.hft_family, ch, style.bold, style.italic)
 }
 
 /// macOS 한컴은 굵은 세로쓰기 HFT 한글의 원래 윤곽선에 아래쪽 굵은 사본을 겹친다.
@@ -2466,6 +2700,278 @@ fn format_hanja_number(n: u16) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn native_char_position_descriptor_signed_edges() {
+        use super::NativeCharPosition;
+        for (height, percent, expected) in [
+            (1, 50, 1),
+            (1, -50, -1),
+            (-1, 50, -1),
+            (-1, -50, 1),
+            (49, 1, 0),
+            (1150, -12, -138),
+            (0, -128, 0),
+            (100000, 100, -31072),
+            (i32::MIN, -128, -1),
+            (i32::MAX, 127, -1),
+            (i32::MIN, 100, 0),
+        ] {
+            assert_eq!(
+                NativeCharPosition {
+                    base_height_hu: height,
+                    percent,
+                    dpi: 96.0,
+                }
+                .descriptor_hu(),
+                expected,
+                "{height} * {percent}%"
+            );
+        }
+    }
+
+    #[test]
+    fn native_char_position_policy_and_absence_keep_legacy_shift() {
+        use super::*;
+        use crate::model::provenance::FontMetricsPolicy;
+        let mut style = TextStyle {
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            font_size: 24.0,
+            char_offset: -0.12,
+            native_char_position: Some(NativeCharPosition {
+                base_height_hu: 1150,
+                percent: -12,
+                dpi: 144.0,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(char_offset_dy(&style), hwpunit_to_px(-138, 144.0));
+        style.font_size = 48.0;
+        assert_eq!(char_offset_dy(&style), hwpunit_to_px(-138, 144.0));
+        style.native_char_position.as_mut().unwrap().percent = 0;
+        assert_eq!(char_offset_dy(&style), 0.0);
+        style.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+        assert_eq!(char_offset_dy(&style), 48.0 * -0.12);
+        style.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        style.native_char_position = None;
+        style.font_size = 0.0;
+        assert_eq!(char_offset_dy(&style), 12.0 * -0.12);
+    }
+
+    #[test]
+    fn native_char_position_preserves_script_size_and_separate_raise() {
+        use super::*;
+        let style = TextStyle {
+            font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+            superscript: true,
+            font_size: 24.0,
+            native_char_position: Some(NativeCharPosition {
+                base_height_hu: 1150,
+                percent: -12,
+                dpi: 96.0,
+            }),
+            ..Default::default()
+        };
+        let (size, shift) = script_glyph_size_and_shift(&style, 24.0);
+        assert_eq!(size, 24.0 * SCRIPT_GLYPH_SCALE);
+        assert_eq!(
+            shift,
+            -24.0 * SUPERSCRIPT_RAISE_EM + hwpunit_to_px(-138, 96.0)
+        );
+        let sub = TextStyle {
+            superscript: false,
+            subscript: true,
+            ..style
+        };
+        assert_eq!(
+            script_glyph_size_and_shift(&sub, 24.0).1,
+            24.0 * SUBSCRIPT_DROP_EM + hwpunit_to_px(-138, 96.0)
+        );
+    }
+
+    #[test]
+    fn control_space_base_preserves_native_integer_stages() {
+        use crate::model::paragraph::SpecialSpaceOriginKind::{FwSpace, Literal, NbSpace};
+        // 3a8910 / 73c1c4 / Foundation MulDiv의 정적 계약 벡터.
+        // 실제 문단의 physical receiver나 formatter full advance 값은 아니다.
+        for (height_hu, relative, ratio, nb, fw) in [
+            (1000, 100, 100, 500, 248),
+            (1001, 100, 99, 496, 244),
+            (2400, 50, 50, 300, 152),
+            (-2400, 50, 50, -300, -152),
+            (-120, 85, 55, -28, -12),
+            (0, 100, 100, 0, 0),
+            (1000, 0, 100, 0, 0),
+            (1000, 100, 0, 0, 0),
+            (i32::MAX, 255, 100, 0, 0),
+            (i32::MAX, 100, 255, -1556925656, 1369020816),
+            (i32::MIN, 100, 100, -1073741824, -536870912),
+        ] {
+            let base = super::ControlSpaceBase {
+                height_hu,
+                korean_relative_size: relative,
+                korean_ratio: ratio,
+                raw31_eng_tracking_percent: None,
+            };
+            assert_eq!(base.width_hu(NbSpace), Some(nb));
+            assert_eq!(base.width_hu(FwSpace), Some(fw));
+            assert_eq!(base.width_hu(Literal), None);
+        }
+    }
+
+    #[test]
+    fn control_space_base_lookup_uses_local_scalar_origin_and_raw_style() {
+        use crate::model::paragraph::{SpecialSpaceOrigin, SpecialSpaceOriginKind as Kind};
+        use crate::model::provenance::FontMetricsPolicy;
+        let mut style = super::TextStyle {
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            control_space_base: Some(super::ControlSpaceBase {
+                height_hu: 1000,
+                korean_relative_size: 100,
+                korean_ratio: 100,
+                raw31_eng_tracking_percent: None,
+            }),
+            special_space_origins: vec![
+                SpecialSpaceOrigin {
+                    char_idx: 0,
+                    origin: Kind::Literal,
+                },
+                SpecialSpaceOrigin {
+                    char_idx: 1,
+                    origin: Kind::NbSpace,
+                },
+                SpecialSpaceOrigin {
+                    char_idx: 3,
+                    origin: Kind::FwSpace,
+                },
+            ],
+            font_size: 0.0,
+            ratio: 0.0,
+            superscript: true,
+            ..Default::default()
+        };
+        assert_eq!(style.control_space_base_width_hu(0, '\u{00A0}'), None);
+        assert_eq!(style.control_space_base_width_hu(1, '\u{00A0}'), Some(500));
+        assert_eq!(style.control_space_base_width_hu(2, '\u{2007}'), None);
+        assert_eq!(style.control_space_base_width_hu(3, '\u{2007}'), Some(248));
+        assert_eq!(style.control_space_base_width_hu(3, '\u{00A0}'), None);
+        let sliced = style.slice_origins(2, 4);
+        assert_eq!(sliced.control_space_base_width_hu(1, '\u{2007}'), Some(248));
+        assert_eq!(sliced.control_space_base, style.control_space_base);
+        style.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+        assert_eq!(style.control_space_base_width_hu(3, '\u{2007}'), None);
+    }
+
+    #[test]
+    fn ordinary_space_tracking_gate_preserves_signed_zero_missing_and_references() {
+        use super::{ControlSpaceBase, TextStyle};
+        use crate::model::provenance::FontMetricsPolicy;
+        let mut style = TextStyle {
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            letter_spacing: -2.0,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 0,
+                korean_relative_size: 0,
+                korean_ratio: 0,
+                raw31_eng_tracking_percent: Some(-17),
+            }),
+            ..Default::default()
+        };
+        // 일반 빈칸에는 special origin이나 control intrinsic 성공 조건이 필요 없다.
+        assert_eq!(style.ordinary_space_tracking_percent(' '), Some(-17));
+        for ch in ['A', '\u{00a0}', '\u{2007}'] {
+            assert_eq!(style.ordinary_space_tracking_percent(ch), None);
+        }
+        for percent in [None, Some(-17), Some(0), Some(17)] {
+            style
+                .control_space_base
+                .as_mut()
+                .unwrap()
+                .raw31_eng_tracking_percent = percent;
+            assert_eq!(style.ordinary_space_tracking_percent(' '), percent);
+            let mut reference = style.clone();
+            reference.clamp_negative_tracking();
+            assert_eq!(
+                reference.ordinary_space_tracking_percent(' '),
+                percent.map(|p| p.max(0))
+            );
+            reference.zero_tracking();
+            assert_eq!(
+                reference.ordinary_space_tracking_percent(' '),
+                percent.map(|_| 0)
+            );
+            assert_eq!(reference.control_space_base.unwrap().height_hu, 0);
+        }
+        style.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+        assert_eq!(style.ordinary_space_tracking_percent(' '), None);
+        style.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        style.control_space_base = None;
+        assert_eq!(style.ordinary_space_tracking_percent(' '), None);
+    }
+
+    #[test]
+    fn raw31_tracking_gate_and_reference_keep_intrinsic_operands() {
+        use crate::model::paragraph::{SpecialSpaceOrigin, SpecialSpaceOriginKind as Kind};
+        use crate::model::provenance::FontMetricsPolicy;
+        let mut style = super::TextStyle {
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            letter_spacing: -2.0,
+            control_space_base: Some(super::ControlSpaceBase {
+                height_hu: 1000,
+                korean_relative_size: 100,
+                korean_ratio: 95,
+                raw31_eng_tracking_percent: Some(-17),
+            }),
+            special_space_origins: vec![
+                SpecialSpaceOrigin {
+                    char_idx: 0,
+                    origin: Kind::Literal,
+                },
+                SpecialSpaceOrigin {
+                    char_idx: 1,
+                    origin: Kind::NbSpace,
+                },
+                SpecialSpaceOrigin {
+                    char_idx: 2,
+                    origin: Kind::FwSpace,
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(style.raw31_tracking_percent(0, '\u{2007}'), None);
+        assert_eq!(style.raw31_tracking_percent(1, '\u{00a0}'), None);
+        assert_eq!(style.raw31_tracking_percent(2, '\u{00a0}'), None);
+        assert_eq!(style.raw31_tracking_percent(3, '\u{2007}'), None);
+        assert_eq!(
+            style
+                .slice_origins(2, 3)
+                .raw31_tracking_percent(0, '\u{2007}'),
+            Some(-17)
+        );
+        let intrinsic = style.control_space_base_width_hu(2, '\u{2007}');
+        style.zero_tracking();
+        assert_eq!(style.raw31_tracking_percent(2, '\u{2007}'), Some(0));
+        assert_eq!(style.control_space_base_width_hu(2, '\u{2007}'), intrinsic);
+        for percent in [None, Some(-17), Some(0), Some(17)] {
+            style
+                .control_space_base
+                .as_mut()
+                .unwrap()
+                .raw31_eng_tracking_percent = percent;
+            style.clamp_negative_tracking();
+            assert_eq!(
+                style.raw31_tracking_percent(2, '\u{2007}'),
+                percent.map(|p| p.max(0))
+            );
+            style.zero_tracking();
+            assert_eq!(
+                style.raw31_tracking_percent(2, '\u{2007}'),
+                percent.map(|_| 0)
+            );
+        }
+        style.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+        assert_eq!(style.raw31_tracking_percent(2, '\u{2007}'), None);
+    }
+
+    #[test]
     fn mac_missing_serif_substitution_keeps_shared_render_policy() {
         // 미설치 HY TTF는 HCR, 원명 유지 HFT는 자체 폭과 Haansoft 그리기를 쓴다.
         for (family, preferred, later) in [
@@ -2591,6 +3097,138 @@ mod tests {
     fn test_px_to_hwpunit() {
         let hu = px_to_hwpunit(96.0, 96.0);
         assert_eq!(hu, 7200);
+    }
+
+    #[test]
+    fn test_source_line_metrics_authored_pair_keeps_height_and_signed_spacing() {
+        for dpi in [96.0, 200.0] {
+            for gap in [576, 0, -200] {
+                let height = hwpunit_to_px(1150, dpi);
+                let spacing = hwpunit_to_px(gap, dpi);
+                let selected = hwpunit_to_px(1219, dpi);
+                let pair = corrected_line_metrics_for_authored_source(
+                    height,
+                    height,
+                    spacing,
+                    selected,
+                    LineSpacingType::Percent,
+                    150.0,
+                    true,
+                    false,
+                    true,
+                );
+                assert_eq!(pair, (height, spacing));
+                assert_eq!(pair.0 + pair.1, height + spacing);
+                // 조판은 기본 글꼴 크기를, 렌더는 더 큰 선택 글꼴 크기를 받아도 같은 저장 쌍이다.
+                assert_eq!(
+                    pair,
+                    corrected_line_metrics_for_authored_source(
+                        height,
+                        height,
+                        spacing,
+                        height,
+                        LineSpacingType::Percent,
+                        150.0,
+                        true,
+                        false,
+                        true
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_source_line_metrics_authored_pair_requires_corresponding_source() {
+        use crate::model::paragraph::LineSeg;
+        let mut source = LineSeg {
+            line_height: 1150,
+            text_height: 1150,
+            line_spacing: 576,
+            baseline_distance: 575,
+            segment_width: 30000,
+            ..Default::default()
+        };
+        let mut line = composer::ComposedLine {
+            runs: Vec::new(),
+            line_height: 1150,
+            baseline_distance: 575,
+            segment_width: 30000,
+            column_start: 0,
+            line_spacing: 576,
+            has_line_break: false,
+            char_start: 0,
+        };
+        assert!(line_metric_pair_is_authored(Some(&source), &line));
+        assert!(!line_metric_pair_is_authored(None, &line));
+        source.tag |= LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+        assert!(!line_metric_pair_is_authored(Some(&source), &line));
+        source.tag &= !LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+        line.line_spacing = 600;
+        assert!(!line_metric_pair_is_authored(Some(&source), &line));
+        let raw = hwpunit_to_px(1150, 96.0);
+        let selected = hwpunit_to_px(1219, 96.0);
+        for accepted in [false, line_metric_pair_is_authored(Some(&source), &line)] {
+            assert_eq!(
+                corrected_line_metrics_for_authored_source(
+                    raw,
+                    raw,
+                    0.0,
+                    selected,
+                    LineSpacingType::Percent,
+                    150.0,
+                    true,
+                    false,
+                    accepted
+                ),
+                corrected_line_metrics_for_source(
+                    raw,
+                    raw,
+                    0.0,
+                    selected,
+                    LineSpacingType::Percent,
+                    150.0,
+                    true,
+                    false
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn test_source_line_metrics_authored_pair_keeps_explicit_reflow_and_height_exclusions() {
+        let selected = hwpunit_to_px(1000, 96.0);
+        let stale = hwpunit_to_px(68800, 96.0);
+        for (height, text_height, use_source, reflow) in [
+            (stale, stale, true, true),
+            (0.0, 0.0, true, false),
+            (selected * 0.5, selected * 0.5, true, false),
+            (selected, selected, false, false),
+        ] {
+            assert_eq!(
+                corrected_line_metrics_for_authored_source(
+                    height,
+                    text_height,
+                    1.0,
+                    selected,
+                    LineSpacingType::Percent,
+                    160.0,
+                    use_source,
+                    reflow,
+                    true
+                ),
+                corrected_line_metrics_for_source(
+                    height,
+                    text_height,
+                    1.0,
+                    selected,
+                    LineSpacingType::Percent,
+                    160.0,
+                    use_source,
+                    reflow
+                )
+            );
+        }
     }
 
     #[test]

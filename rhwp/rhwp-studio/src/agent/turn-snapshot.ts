@@ -50,7 +50,7 @@ export class TurnSnapshots {
     this.deps = deps;
   }
 
-  /** 프로바이더 맥락이 사라졌거나(새 채팅·세션 교체·재연결) 스냅샷이 닿았는지 알 수 없을 때 부른다. */
+  /** 프로바이더 콘텍스트가 사라졌거나(새 채팅·세션 교체·재연결) 스냅샷이 닿았는지 알 수 없을 때 부른다. */
   reset(): void {
     this.shown = null;
   }

@@ -23,7 +23,8 @@ use crate::model::page::{
     PageBorderUiBasis, PageDef,
 };
 use crate::model::paragraph::{
-    CharShapeRef, FieldRange, LineSeg, MarkpenMark, OrphanFieldEnd, Paragraph,
+    AuthoredTextRun, CharShapeRef, EmptyTextChild, FieldRange, LineSeg, MarkpenMark,
+    OrphanFieldEnd, Paragraph, SectionPrefixChild, SectionPrefixChildKind,
 };
 use crate::model::shape::{
     ArcShape, CommonObjAttr, ConnectorControlPoint, ConnectorData, CurveShape, DrawingObjAttr,
@@ -82,6 +83,12 @@ fn validate_hwpx_xml_depth(xml: &str) -> Result<(), HwpxError> {
 
 /// section*.xml을 파싱하여 Section 모델로 변환한다.
 pub fn parse_hwpx_section(xml: &str) -> Result<Section, HwpxError> {
+    let clean = crate::model::document::hwpx_raw_fields::strip_carriers(xml);
+    parse_hwpx_section_with_raw_fields(&clean)
+}
+
+/// 패키지 파서가 검증한 보조 엔트리에서 복원한 내부 속성만 받는다.
+pub(super) fn parse_hwpx_section_with_raw_fields(xml: &str) -> Result<Section, HwpxError> {
     validate_hwpx_xml_depth(xml)?;
     let mut section = Section::default();
     let mut reader = Reader::from_str(xml);
@@ -212,6 +219,12 @@ fn push_master_page_id_ref(e: &quick_xml::events::BytesStart, refs: &mut Vec<Str
 
 /// masterpage*.xml을 파싱하여 기존 HWP 바탕쪽 모델로 변환한다.
 pub fn parse_hwpx_master_page(xml: &str) -> Result<MasterPage, HwpxError> {
+    let clean = crate::model::document::hwpx_raw_fields::strip_carriers(xml);
+    parse_hwpx_master_page_with_raw_fields(&clean)
+}
+
+/// 패키지 파서가 검증한 보조 엔트리에서 복원한 내부 속성만 받는다.
+pub(super) fn parse_hwpx_master_page_with_raw_fields(xml: &str) -> Result<MasterPage, HwpxError> {
     validate_hwpx_xml_depth(xml)?;
     let mut master_page = MasterPage::default();
     let mut reader = Reader::from_str(xml);
@@ -501,17 +514,27 @@ fn parse_paragraph(
     // 문단 내용 파싱
     let mut buf = Vec::new();
     let mut text_parts: Vec<String> = Vec::new();
+    let mut raw_tab_flags: Vec<Option<u16>> = Vec::new();
     let mut current_char_shape_id: u32 = 0;
     let mut char_shape_changes: Vec<(u32, u32)> = Vec::new(); // (utf16_pos, char_shape_id)
                                                               // [Task #1556] fieldEnd 의 (beginIDRef, fieldid) 를 출현 순서대로 보관 — text_parts 의
                                                               // `\u{0004}` 와 1:1 대응. 고아 fieldEnd 복원에 사용.
     let mut field_end_attrs: Vec<(u32, u32)> = Vec::new();
+    let mut authored_runs: Vec<AuthoredTextRun> = Vec::new();
+    let mut authored_run: Option<usize> = None;
+    let mut template_column_pending = false;
+    let mut preceding_column: Option<(usize, usize)> = None;
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref ce)) => {
                 let cname = ce.name();
                 let local = local_name(cname.as_ref());
+                if local != b"run" {
+                    if let Some(index) = authored_run {
+                        authored_runs[index].child_count += 1;
+                    }
+                }
                 match local {
                     b"markpenBegin" | b"markpenEnd" => {
                         push_run_level_markpen(
@@ -531,11 +554,44 @@ fn parse_paragraph(
                         // 현재 UTF-16 위치에서 글자모양 변경 기록
                         let utf16_pos = calc_utf16_len_from_parts(&text_parts);
                         char_shape_changes.push((utf16_pos, current_char_shape_id));
+                        authored_runs.push(AuthoredTextRun {
+                            start_pos: utf16_pos,
+                            end_pos: utf16_pos,
+                            char_shape_id: current_char_shape_id,
+                            child_count: 0,
+                            text_starts: Vec::new(),
+                            empty_children: Vec::new(),
+                            prefix_children: Vec::new(),
+                            page_number_children: Vec::new(),
+                        });
+                        authored_run = Some(authored_runs.len() - 1);
                     }
                     b"t" => {
                         // 텍스트 읽기 (탭 확장 데이터 포함)
-                        let (text, tab_exts, marks) = read_text_content_with_tabs(reader)?;
+                        let (text, tab_exts, marks, origins, flags) =
+                            read_text_content_with_tabs(reader)?;
+                        if text.is_empty() && tab_exts.is_empty() && marks.is_empty() {
+                            if let Some(index) = authored_run {
+                                let child_index = authored_runs[index].child_count - 1;
+                                authored_runs[index].empty_children.push(EmptyTextChild {
+                                    utf16_pos: calc_utf16_len_from_parts(&text_parts),
+                                    child_index,
+                                });
+                            }
+                        }
+                        if !text.is_empty() {
+                            if let Some(index) = authored_run {
+                                authored_runs[index]
+                                    .text_starts
+                                    .push(calc_utf16_len_from_parts(&text_parts));
+                            }
+                        }
                         let char_base = visible_char_count_from_parts(&text_parts);
+                        para.special_space_origins
+                            .extend(origins.into_iter().map(|mut r| {
+                                r.char_idx += char_base;
+                                r
+                            }));
                         let utf16_base = calc_utf16_len_from_parts(&text_parts);
                         for (rel, color) in marks {
                             let prefix: u32 =
@@ -548,6 +604,7 @@ fn parse_paragraph(
                         }
                         text_parts.push(text);
                         para.tab_extended.extend(tab_exts);
+                        raw_tab_flags.extend(flags);
                     }
                     b"tbl" => {
                         // 표 파싱
@@ -594,7 +651,34 @@ fn parse_paragraph(
                         let mut sd = SectionDef::default();
                         parse_section_def_start(ce, &mut sd);
                         let col_def_opt = parse_sec_pr_children(reader, &mut sd)?;
+                        let first_section_prefix = sec_def.is_none();
                         sec_def = Some(sd.clone());
+                        if first_section_prefix {
+                            template_column_pending = col_def_opt.is_none();
+                            // colPr이 secPr보다 앞서도 원래 run/자식 순서를 그대로 보존한다.
+                            if template_column_pending {
+                                if let Some((index, child_index)) = preceding_column.take() {
+                                    authored_runs[index]
+                                        .prefix_children
+                                        .push(SectionPrefixChild {
+                                            child_index,
+                                            kind: SectionPrefixChildKind::Column,
+                                        });
+                                    template_column_pending = false;
+                                }
+                            }
+                        }
+                        if let Some(index) = authored_run.filter(|_| first_section_prefix) {
+                            let child_index = authored_runs[index].child_count - 1;
+                            authored_runs[index]
+                                .prefix_children
+                                .push(SectionPrefixChild {
+                                    child_index,
+                                    kind: SectionPrefixChildKind::Section {
+                                        nested_column: col_def_opt.is_some(),
+                                    },
+                                });
+                        }
                         // [Task #901] SectionDef 도 HWP 바이너리에서 8 utf16 inline marker —
                         // line_seg.text_start (file 값) 가 HWP 인코딩 가정. HWPX parser
                         // 가 utf16_pos 동기화하지 않으면 paragraph 0 의 compose_lines 가
@@ -625,6 +709,8 @@ fn parse_paragraph(
                         para.controls.push(group);
                     }
                     b"ctrl" => {
+                        let control_start = para.controls.len();
+                        let utf16_pos = calc_utf16_len_from_parts(&text_parts);
                         parse_ctrl(
                             ce,
                             reader,
@@ -632,6 +718,37 @@ fn parse_paragraph(
                             &mut text_parts,
                             &mut field_end_attrs,
                         )?;
+                        if matches!(&para.controls[control_start..], [Control::PageNumberPos(_)]) {
+                            if let Some(index) = authored_run {
+                                let child_index = authored_runs[index].child_count - 1;
+                                authored_runs[index]
+                                    .page_number_children
+                                    .push((utf16_pos, child_index));
+                            }
+                        }
+                        if sec_def.is_none()
+                            && matches!(&para.controls[control_start..], [Control::ColumnDef(_)])
+                            && !para.controls[..control_start]
+                                .iter()
+                                .any(|control| matches!(control, Control::ColumnDef(_)))
+                        {
+                            preceding_column = authored_run
+                                .map(|index| (index, authored_runs[index].child_count - 1));
+                        }
+                        if template_column_pending
+                            && matches!(&para.controls[control_start..], [Control::ColumnDef(_)])
+                        {
+                            template_column_pending = false;
+                            if let Some(index) = authored_run {
+                                let child_index = authored_runs[index].child_count - 1;
+                                authored_runs[index]
+                                    .prefix_children
+                                    .push(SectionPrefixChild {
+                                        child_index,
+                                        kind: SectionPrefixChildKind::Column,
+                                    });
+                            }
+                        }
                     }
                     b"compose" => {
                         // 글자겹침 (CharOverlap)
@@ -682,6 +799,11 @@ fn parse_paragraph(
             Ok(Event::Empty(ref ce)) => {
                 let cname = ce.name();
                 let local = local_name(cname.as_ref());
+                if local != b"run" {
+                    if let Some(index) = authored_run {
+                        authored_runs[index].child_count += 1;
+                    }
+                }
                 match local {
                     b"markpenBegin" | b"markpenEnd" => {
                         push_run_level_markpen(
@@ -701,6 +823,26 @@ fn parse_paragraph(
                         }
                         let utf16_pos = calc_utf16_len_from_parts(&text_parts);
                         char_shape_changes.push((utf16_pos, current_char_shape_id));
+                        authored_runs.push(AuthoredTextRun {
+                            start_pos: utf16_pos,
+                            end_pos: utf16_pos,
+                            char_shape_id: current_char_shape_id,
+                            child_count: 0,
+                            text_starts: Vec::new(),
+                            empty_children: Vec::new(),
+                            prefix_children: Vec::new(),
+                            page_number_children: Vec::new(),
+                        });
+                        authored_run = None;
+                    }
+                    b"t" => {
+                        if let Some(index) = authored_run {
+                            let child_index = authored_runs[index].child_count - 1;
+                            authored_runs[index].empty_children.push(EmptyTextChild {
+                                utf16_pos: calc_utf16_len_from_parts(&text_parts),
+                                child_index,
+                            });
+                        }
                     }
                     b"lineBreak" | b"softHyphen" => {
                         text_parts.push("\n".to_string());
@@ -710,7 +852,9 @@ fn parse_paragraph(
                     }
                     b"tab" => {
                         text_parts.push("\t".to_string());
-                        para.tab_extended.push(parse_tab_extension(ce));
+                        let (tab, flags) = parse_tab_extension(ce);
+                        para.tab_extended.push(tab);
+                        raw_tab_flags.push(flags);
                     }
                     b"lineseg" => {
                         // 단독 lineseg (linesegarray 밖에 나올 경우)
@@ -727,6 +871,11 @@ fn parse_paragraph(
             }
             Ok(Event::End(ref ee)) => {
                 let eename = ee.name();
+                if local_name(eename.as_ref()) == b"run" {
+                    if let Some(index) = authored_run.take() {
+                        authored_runs[index].end_pos = calc_utf16_len_from_parts(&text_parts);
+                    }
+                }
                 if local_name(eename.as_ref()) == b"p" {
                     break;
                 }
@@ -837,6 +986,12 @@ fn parse_paragraph(
     para.char_offsets = char_offsets;
     para.char_count = utf16_pos + 1; // +1 for 끝 마커
     para.has_para_text = !para.text.is_empty() || !para.controls.is_empty();
+    // XML 끝 마커는 추정하지 않는다. 명시적인 빈 자식/빈 run만 별도 보존한다.
+    if authored_runs.iter().any(|run| {
+        run.child_count == 0 || !run.empty_children.is_empty() || !run.prefix_children.is_empty()
+    }) {
+        para.authored_text_runs = Some(authored_runs);
+    }
 
     // char_shapes는 원본 문단 순서(text_parts)를 기준으로 계산한 위치를 그대로 사용한다.
     // [Task #1058 후속] 같은 char_shape_id 연속 dedup — HWPX 의 여러 run 이 같은
@@ -929,6 +1084,13 @@ fn parse_paragraph(
             // 저장된 텍스트 줄의 탭 이동량을 보존한다. 편집 후 재조판할 때
             // 이 마커를 지우고 탭 위치를 다시 계산한다.
             tab[5] = (tab[5] & !0x8000) | 0x4000;
+        }
+    }
+
+    // 검증한 보조 엔트리의 원시 값만 기본 native 줄/탭 해석보다 우선한다.
+    for (tab, flags) in para.tab_extended.iter_mut().zip(raw_tab_flags) {
+        if let Some(flags) = flags {
+            tab[5] = flags;
         }
     }
 
@@ -1713,7 +1875,7 @@ fn parse_lineseg_element(e: &quick_xml::events::BytesStart) -> LineSeg {
 /// <hp:t> 텍스트 컨텐츠를 읽는다.
 /// 탭 확장 데이터도 함께 반환 (HWPX 인라인 탭의 leader/type/width)
 fn read_text_content(reader: &mut Reader<&[u8]>) -> Result<String, HwpxError> {
-    let (text, _, _) = read_text_content_with_tabs(reader)?;
+    let (text, _, _, _, _) = read_text_content_with_tabs(reader)?;
     Ok(text)
 }
 
@@ -1735,19 +1897,52 @@ fn decode_xml_general_ref(r: &BytesRef<'_>) -> String {
 
 fn read_text_content_with_tabs(
     reader: &mut Reader<&[u8]>,
-) -> Result<(String, Vec<[u16; 7]>, Vec<(usize, Option<String>)>), HwpxError> {
+) -> Result<
+    (
+        String,
+        Vec<[u16; 7]>,
+        Vec<(usize, Option<String>)>,
+        Vec<crate::model::paragraph::SpecialSpaceOrigin>,
+        Vec<Option<u16>>,
+    ),
+    HwpxError,
+> {
     let mut text = String::new();
+    let mut origins = Vec::new();
     let mut tab_ext_buf: Vec<[u16; 7]> = Vec::new();
+    let mut raw_tab_flags = Vec::new();
     let mut marks: Vec<(usize, Option<String>)> = Vec::new();
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Text(ref t)) => {
-                text.push_str(&t.decode().unwrap_or_default());
+                let decoded = t.decode().unwrap_or_default();
+                let base = text.chars().count();
+                origins.extend(
+                    crate::model::paragraph::TextContent::literal(&decoded)
+                        .special_space_origins
+                        .into_iter()
+                        .map(|mut r| {
+                            r.char_idx += base;
+                            r
+                        }),
+                );
+                text.push_str(&decoded);
             }
             Ok(Event::GeneralRef(ref r)) => {
-                text.push_str(&decode_xml_general_ref(r));
+                let decoded = decode_xml_general_ref(r);
+                let base = text.chars().count();
+                origins.extend(
+                    crate::model::paragraph::TextContent::literal(&decoded)
+                        .special_space_origins
+                        .into_iter()
+                        .map(|mut r| {
+                            r.char_idx += base;
+                            r
+                        }),
+                );
+                text.push_str(&decoded);
             }
             Ok(Event::End(ref e)) => {
                 let tn = e.name();
@@ -1764,6 +1959,24 @@ fn read_text_content_with_tabs(
                         (local != b"markpenEnd").then(|| markpen_color_attr(ce)),
                     ));
                     skip_element(reader, local)?;
+                } else if local == b"nbSpace" || local == b"fwSpace" {
+                    let (ch, origin) = if local == b"nbSpace" {
+                        (
+                            '\u{00a0}',
+                            crate::model::paragraph::SpecialSpaceOriginKind::NbSpace,
+                        )
+                    } else {
+                        (
+                            '\u{2007}',
+                            crate::model::paragraph::SpecialSpaceOriginKind::FwSpace,
+                        )
+                    };
+                    origins.push(crate::model::paragraph::SpecialSpaceOrigin {
+                        char_idx: text.chars().count(),
+                        origin,
+                    });
+                    text.push(ch);
+                    skip_element(reader, local)?;
                 }
             }
             Ok(Event::Empty(ref ce)) => {
@@ -1773,10 +1986,24 @@ fn read_text_content_with_tabs(
                     b"lineBreak" | b"columnBreak" => text.push('\n'),
                     b"tab" => {
                         text.push('\t');
-                        tab_ext_buf.push(parse_tab_extension(ce));
+                        let (tab, flags) = parse_tab_extension(ce);
+                        tab_ext_buf.push(tab);
+                        raw_tab_flags.push(flags);
                     }
-                    b"nbSpace" => text.push('\u{00A0}'),
-                    b"fwSpace" => text.push('\u{2007}'),
+                    b"nbSpace" => {
+                        origins.push(crate::model::paragraph::SpecialSpaceOrigin {
+                            char_idx: text.chars().count(),
+                            origin: crate::model::paragraph::SpecialSpaceOriginKind::NbSpace,
+                        });
+                        text.push('\u{00A0}');
+                    }
+                    b"fwSpace" => {
+                        origins.push(crate::model::paragraph::SpecialSpaceOrigin {
+                            char_idx: text.chars().count(),
+                            origin: crate::model::paragraph::SpecialSpaceOriginKind::FwSpace,
+                        });
+                        text.push('\u{2007}');
+                    }
                     b"markpenBegin" | b"markpenEnd" => {
                         marks.push((
                             text.chars().count(),
@@ -1793,20 +2020,22 @@ fn read_text_content_with_tabs(
         buf.clear();
     }
 
-    Ok((text, tab_ext_buf, marks))
+    Ok((text, tab_ext_buf, marks, origins, raw_tab_flags))
 }
 
-fn parse_tab_extension(e: &quick_xml::events::BytesStart) -> [u16; 7] {
+fn parse_tab_extension(e: &quick_xml::events::BytesStart) -> ([u16; 7], Option<u16>) {
     let mut ext = [0u16; 7];
     ext[6] = 0x0009;
     let mut leader = 0u16;
     let mut tab_type = 0u16;
+    let mut raw_flags = None;
 
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
             b"width" => ext[0] = parse_u16(&attr),
             b"leader" => leader = parse_u16(&attr) & 0x00ff,
             b"type" => tab_type = parse_u16(&attr) & 0x00ff,
+            b"rhwpRawTabFlags" => raw_flags = attr_str(&attr).parse().ok(),
             _ => {}
         }
     }
@@ -1817,7 +2046,7 @@ fn parse_tab_extension(e: &quick_xml::events::BytesStart) -> [u16; 7] {
     // HWP5 직렬화 시 serializer/body_text.rs 에서 이 비트를 지운다.
     ext[5] |= 0x8000;
 
-    ext
+    (ext, raw_flags)
 }
 
 // ─── Table ───
@@ -6669,6 +6898,68 @@ mod tests {
     }
 
     #[test]
+    fn section_column_prefix_roundtrips_in_either_order_and_across_runs() {
+        use crate::model::document::Document;
+        use crate::serializer::hwpx::{context::SerializeContext, section::write_section};
+
+        let column = r#"<hp:ctrl><hp:colPr colCount="2" sameSz="1" sameGap="2692"/></hp:ctrl>"#;
+        let section_def = "<hp:secPr><hp:grid/></hp:secPr>";
+        for column_first in [false, true] {
+            for separate_runs in [false, true] {
+                let (first, second) = if column_first {
+                    (column, section_def)
+                } else {
+                    (section_def, column)
+                };
+                let boundary = if separate_runs {
+                    r#"</hp:run><hp:run charPrIDRef="0">"#
+                } else {
+                    ""
+                };
+                let xml = format!(
+                    r#"<hs:sec xmlns:hs="urn:hs" xmlns:hp="urn:hp"><hp:p><hp:run charPrIDRef="0">{first}{boundary}{second}</hp:run><hp:run charPrIDRef="0"><hp:t>😀AB</hp:t></hp:run><hp:run charPrIDRef="0">{column}<hp:t/></hp:run></hp:p></hs:sec>"#
+                );
+                let section = parse_hwpx_section(&xml).unwrap();
+                let original = &section.paragraphs[0];
+                let runs = original.authored_text_runs.as_ref().unwrap();
+                let prefixes: Vec<_> = runs.iter().flat_map(|run| &run.prefix_children).collect();
+                assert_eq!(prefixes.len(), 2, "{xml}");
+                assert_eq!(
+                    prefixes
+                        .iter()
+                        .filter(|child| matches!(child.kind, SectionPrefixChildKind::Column))
+                        .count(),
+                    1
+                );
+                let saved = String::from_utf8(
+                    write_section(
+                        &section,
+                        &Document::default(),
+                        0,
+                        &mut SerializeContext::default(),
+                    )
+                    .unwrap_or_else(|error| panic!("{xml}: {error}")),
+                )
+                .unwrap();
+                let reopened = parse_hwpx_section(&saved).unwrap();
+                let actual = &reopened.paragraphs[0];
+                assert_eq!(actual.text, "😀AB");
+                assert_eq!(actual.char_offsets, original.char_offsets);
+                assert_eq!(actual.char_count, original.char_count);
+                assert_eq!(actual.authored_text_runs, original.authored_text_runs);
+                assert_eq!(actual.controls.len(), original.controls.len());
+                for (actual, original) in actual.controls.iter().zip(&original.controls) {
+                    assert_eq!(
+                        std::mem::discriminant(actual),
+                        std::mem::discriminant(original)
+                    );
+                }
+                assert_eq!(saved.matches("<hp:colPr ").count(), 2);
+            }
+        }
+    }
+
+    #[test]
     fn cell_padding_rejects_values_outside_hwpunit16_without_truncating() {
         for ending in ["/>", "></hp:cellMargin>"] {
             let xml = format!(
@@ -6684,6 +6975,59 @@ mod tests {
             assert_eq!(cell.padding.top, 0);
             assert_eq!(cell.padding.bottom, 0);
         }
+    }
+
+    #[test]
+    fn section_column_prefix_does_not_claim_an_ordinary_column() {
+        let xml = r#"<hs:sec xmlns:hs="urn:hs" xmlns:hp="urn:hp"><hp:p><hp:run charPrIDRef="0"><hp:ctrl><hp:colPr colCount="2"/></hp:ctrl><hp:t>A</hp:t></hp:run></hp:p></hs:sec>"#;
+        let section = parse_hwpx_section(xml).unwrap();
+        let para = &section.paragraphs[0];
+        assert!(para.authored_text_runs.is_none());
+        assert!(matches!(para.controls.as_slice(), [Control::ColumnDef(_)]));
+        assert_eq!(para.char_offsets, [8]);
+        let ordinary_section = Section {
+            paragraphs: vec![Paragraph::default(), para.clone()],
+            ..Default::default()
+        };
+        let saved = crate::serializer::hwpx::section::write_section(
+            &ordinary_section,
+            &crate::model::document::Document::default(),
+            0,
+            &mut crate::serializer::hwpx::context::SerializeContext::default(),
+        )
+        .unwrap();
+        let reopened = parse_hwpx_section(std::str::from_utf8(&saved).unwrap()).unwrap();
+        let actual = &reopened.paragraphs[1];
+        assert!(actual.authored_text_runs.is_none());
+        assert!(matches!(
+            actual.controls.as_slice(),
+            [Control::ColumnDef(_)]
+        ));
+        assert_eq!(actual.char_offsets, para.char_offsets);
+        assert_eq!(actual.text, para.text);
+    }
+
+    #[test]
+    fn section_column_prefix_leaves_preceding_column_ordinary_when_section_has_one() {
+        let section = parse_hwpx_section(r#"<hs:sec xmlns:hs="urn:hs" xmlns:hp="urn:hp"><hp:p><hp:run charPrIDRef="0"><hp:ctrl><hp:colPr colCount="2"/></hp:ctrl></hp:run><hp:run charPrIDRef="0"><hp:secPr><hp:colPr colCount="3"/></hp:secPr></hp:run></hp:p></hs:sec>"#).unwrap();
+        let para = &section.paragraphs[0];
+        let runs = para.authored_text_runs.as_ref().unwrap();
+        assert!(runs[0].prefix_children.is_empty());
+        assert_eq!(runs[1].prefix_children.len(), 1);
+        assert!(matches!(
+            runs[1].prefix_children[0].kind,
+            SectionPrefixChildKind::Section {
+                nested_column: true
+            }
+        ));
+        assert_eq!(runs[1].start_pos, 8);
+        let [Control::ColumnDef(ordinary), Control::SectionDef(_), Control::ColumnDef(nested)] =
+            para.controls.as_slice()
+        else {
+            panic!("original control order must be preserved");
+        };
+        assert_eq!(ordinary.column_count, 2);
+        assert_eq!(nested.column_count, 3);
     }
 
     #[test]

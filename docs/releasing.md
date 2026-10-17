@@ -1,6 +1,6 @@
 # Desktop releases
 
-Tagged releases publish signed and notarized macOS arm64 DMG/ZIP files, an unsigned Windows x64 NSIS installer, and Linux x64/arm64 AppImage and Debian packages. Windows users can see SmartScreen warnings.
+Tagged releases publish signed and notarized macOS arm64 DMG/ZIP files. HamaEditor is sold for macOS only, so tagged releases no longer build Windows or Linux installers; `npm run dist:win` and `npm run dist:linux:*` still package them locally.
 
 ## Tagged release
 
@@ -12,6 +12,8 @@ git push origin "v$(node -p "require('./package.json').version")"
 ```
 
 [release.yml](../.github/workflows/release.yml) verifies the tagged source and publishes after all desktop builds succeed. The GitHub release contains installers, update metadata and SHA-256 checksums.
+
+Installed apps update from, and the website downloads from, the public [heemangstudio/hamaeditor-releases](https://github.com/heemangstudio/hamaeditor-releases) repository, so this source repository can be private. The publish job copies every release there with a fixed `HamaEditor-mac-arm64.dmg` name, which `website/assets/purchase.js` links to through `releases/latest/download`. It needs the `RELEASES_TOKEN` repository secret: a fine-grained token with Contents read and write on that repository only.
 
 Run the full engine, browser, and agent suites through pull-request CI before merging. Tagged releases run repository and release contract checks and installer verification. They do not repeat the full Rust workspace test build or the application integration suites.
 
@@ -31,7 +33,7 @@ Users on 2.0.1 or earlier should download and install 2.0.2 manually once. The 2
 
 ## Signing and package checks
 
-Tagged desktop releases use [.github/actions/package-desktop](../.github/actions/package-desktop/action.yml) for macOS and Windows setup, builds and verification. Tagged Linux releases build on native x64 and arm64 runners. macOS jobs use the `macos-release` environment and require these secrets:
+Tagged desktop releases use [.github/actions/package-desktop](../.github/actions/package-desktop/action.yml) for macOS setup, builds and verification. macOS jobs use the `macos-release` environment and require these secrets:
 
 - `MACOS_CERTIFICATE`
 - `MACOS_CERTIFICATE_PASSWORD`

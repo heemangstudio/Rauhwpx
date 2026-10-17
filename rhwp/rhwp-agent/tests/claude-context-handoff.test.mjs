@@ -1,4 +1,4 @@
-// Claude 네이티브 재개·맥락 압축·맥락 사용량. 프레임은 실제 CLI 2.1.295 stream-json 캡처
+// Claude 네이티브 재개·콘텍스트 압축·콘텍스트 사용량. 프레임은 실제 CLI 2.1.295 stream-json 캡처
 // (/compact 턴, 없는 세션 --resume) 를 다듬어 옮겼다.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -8,6 +8,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { canResumeClaudeSession, createClaudeSession } from '../agents/claude.mjs';
+import { withoutModeBlock } from './mode-block.mjs';
 
 class FakeStream extends EventEmitter {
   chunks = [];
@@ -46,7 +47,7 @@ class FakeProcess extends EventEmitter {
   }
 
   prompt() {
-    return this.stdin.chunks.map((line) => JSON.parse(line).message.content[0].text);
+    return this.stdin.chunks.map((line) => withoutModeBlock(JSON.parse(line).message.content[0].text));
   }
 }
 
@@ -94,7 +95,7 @@ test('a resumed session compacts on request and maps the CLI compaction frames',
   assert.equal(session.getSessionId(), SID);
   assert.equal(session.compactionSupport, 'manual');
 
-  // 보통 턴: 첫 스폰부터 --resume, 슬래시 명령은 꺼져 있다. 루트 호출의 사용량이 맥락 크기다.
+  // 보통 턴: 첫 스폰부터 --resume, 슬래시 명령은 꺼져 있다. 루트 호출의 사용량이 콘텍스트 크기다.
   session.sendUserMessage('hello');
   await waitUntil(() => children.length === 1);
   const first = children[0];
@@ -107,7 +108,7 @@ test('a resumed session compacts on request and maps the CLI compaction frames',
       message: { id: 'm1', content: [{ type: 'text', text: 'OK' }], usage: { input_tokens: 2, cache_creation_input_tokens: 3765, cache_read_input_tokens: 3148, output_tokens: 4 } },
     },
     {
-      // 서브에이전트 호출의 사용량은 루트 맥락이 아니다.
+      // 서브에이전트 호출의 사용량은 루트 콘텍스트가 아니다.
       type: 'assistant', parent_tool_use_id: 'toolu-sub',
       message: { id: 'm2', content: [], usage: { input_tokens: 90_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
     },
@@ -125,7 +126,8 @@ test('a resumed session compacts on request and maps the CLI compaction frames',
   const compact = children[1];
   assert.equal(compact.argv.includes('--disable-slash-commands'), false);
   assert.equal(compact.argv[compact.argv.indexOf('--resume') + 1], SID);
-  assert.deepEqual(compact.prompt(), ['/compact']);
+  // 슬래시 명령 턴에는 모드 블록을 붙이지 않는다 — 글 전체가 "/compact" 여야 명령으로 읽힌다.
+  assert.deepEqual(compact.stdin.chunks.map((line) => JSON.parse(line).message.content[0].text), ['/compact']);
   compact.emitJson(
     { type: 'system', subtype: 'status', status: 'compacting', session_id: SID, uuid: 'd3072a36' },
     { type: 'system', subtype: 'status', status: null, compact_result: 'success', session_id: SID, uuid: '011b5760' },
@@ -147,7 +149,7 @@ test('a resumed session compacts on request and maps the CLI compaction frames',
     },
   ]);
   // 압축 뒤에는 압축 전 사용량(6915)이 되살아나지 않는다. post_tokens 는 시스템 프롬프트를 빼고
-  // 세므로 맥락 크기로 내지 않는다 — 다음 루트 호출이 실제 값을 낸다.
+  // 세므로 콘텍스트 크기로 내지 않는다 — 다음 루트 호출이 실제 값을 낸다.
   assert.equal(events.some((event) => event.type === 'context-usage'), false);
   assert.equal(events.at(-1).type, 'turn-end');
   assert.equal(events.at(-1).stopReason, 'success');

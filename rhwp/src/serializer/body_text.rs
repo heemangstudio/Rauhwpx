@@ -1042,9 +1042,13 @@ fn compute_control_mask(para: &Paragraph) -> u32 {
     if para.text.contains('\n') {
         mask |= 1u32 << 0x000A;
     }
-    // 묶음 빈칸 (0x001E, NBSP): serialize_para_text 가 U+00A0 마다 코드 0x1E 를 방출하므로
-    // (#1793) control_mask 비트 30 도 세워 PARA_HEADER 를 PARA_TEXT 와 일치시킨다.
-    if para.text.contains('\u{00A0}') {
+    // 실제 방출할 묶음 빈칸(0x001E)만 비트 30을 세워 PARA_HEADER/PARA_TEXT를 맞춘다.
+    if para
+        .text
+        .chars()
+        .enumerate()
+        .any(|(i, c)| c == '\u{00A0}' && serialize_nbspace_control(para, i))
+    {
         mask |= 1u32 << 0x001E;
     }
     if should_serialize_soft_hyphen_as_hwp_hyphen(para) {
@@ -1052,7 +1056,12 @@ fn compute_control_mask(para: &Paragraph) -> u32 {
     }
     // FIXED_WIDTH_SPACE (0x001F): HWPX에서 들어온 일부 문맥은 U+2007을
     // literal code point가 아니라 HWP5 fixed blank control로 저장해야 한다.
-    if should_serialize_figure_space_as_hwp_fixed_blank(para) {
+    if para
+        .text
+        .chars()
+        .enumerate()
+        .any(|(i, c)| c == '\u{2007}' && serialize_fwspace_control(para, i))
+    {
         mask |= 1u32 << 0x001F;
     }
     mask
@@ -1129,6 +1138,7 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
 }
 
 fn serialize_para_text_limited(para: &Paragraph, max_bytes: usize) -> Result<Vec<u8>, String> {
+    para.validate_special_spaces().map_err(str::to_string)?;
     let utf16_units = para.text.encode_utf16().count();
     let tab_expansion_units = para
         .text
@@ -1384,7 +1394,14 @@ fn serialize_para_text_limited(para: &Paragraph, max_bytes: usize) -> Result<Vec
             }
             '\u{00A0}' => {
                 // 묶음 빈칸 (HWP 5.0 표 7: 코드 30).
-                push_code_unit(&mut bytes, 0x001E);
+                push_code_unit(
+                    &mut bytes,
+                    if serialize_nbspace_control(para, i) {
+                        0x001E
+                    } else {
+                        0x00A0
+                    },
+                );
                 prev_end = offset
                     .checked_add(1)
                     .ok_or_else(|| "HWP paragraph character offset overflow".to_string())?;
@@ -1402,7 +1419,7 @@ fn serialize_para_text_limited(para: &Paragraph, max_bytes: usize) -> Result<Vec
                     .ok_or_else(|| "HWP paragraph character offset overflow".to_string())?;
             }
             '\u{2007}' => {
-                if should_serialize_figure_space_as_hwp_fixed_blank(para) {
+                if serialize_fwspace_control(para, i) {
                     push_code_unit(&mut bytes, 0x001F);
                 } else {
                     push_code_unit(&mut bytes, 0x2007);
@@ -1633,6 +1650,22 @@ fn try_payload_buffer(size: usize, max_bytes: usize, label: &str) -> Result<Vec<
 /// 비트 24 를 출처 표지로 삼아 원래 코드 유닛과 마스크를 보존한다.
 fn should_serialize_soft_hyphen_as_hwp_hyphen(para: &Paragraph) -> bool {
     para.control_mask & (1u32 << tags::CHAR_HYPHEN) != 0 && para.text.contains('\u{00AD}')
+}
+
+fn serialize_nbspace_control(para: &Paragraph, index: usize) -> bool {
+    match para.space_origin_at(index) {
+        Some(crate::model::paragraph::SpecialSpaceOriginKind::NbSpace) => true,
+        Some(_) => false,
+        None => true, // 기존 미상 NBSP 경로
+    }
+}
+
+fn serialize_fwspace_control(para: &Paragraph, index: usize) -> bool {
+    match para.space_origin_at(index) {
+        Some(crate::model::paragraph::SpecialSpaceOriginKind::FwSpace) => true,
+        Some(_) => false,
+        None => should_serialize_figure_space_as_hwp_fixed_blank(para),
+    }
 }
 
 fn should_serialize_figure_space_as_hwp_fixed_blank(para: &Paragraph) -> bool {

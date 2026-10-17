@@ -83,7 +83,11 @@ const requiredArchiveFiles = [
   '/desktop/browser-popout.html',
   '/desktop/unique-install.mjs',
   '/desktop/system-fonts.mjs',
+  '/desktop/font-folders.mjs',
   '/rhwp/rhwp-shared/fonts/font-index-core.mjs',
+  '/rhwp/rhwp-shared/fonts/font-roots.mjs',
+  '/rhwp/rhwp-shared/fonts/font-enumerators.mjs',
+  '/rhwp/rhwp-shared/fonts/web-font.mjs',
   '/rhwp/rhwp-studio/dist/index.html',
 ];
 for (const path of requiredArchiveFiles) {

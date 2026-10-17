@@ -34,6 +34,14 @@ const READ_ONLY_ALLOWED_IDS = new Set([
   'file:print',
 ]);
 
+/** 문서 보기 전용(readOnlyCanOpen)에서 더 허용하는 명령. 문서를 열거나 읽기만 한다. */
+const VIEWER_ALLOWED_IDS = new Set([
+  'file:open',
+  'file:open-recent',
+  'file:about',
+  'edit:compare-documents',
+]);
+
 /**
  * 에이전트가 문서를 잡은 동안에는 새 선택도 만들 수 없다. 다른 문서를 열거나 만드는 일은
  * 지금 문서를 건드리지 않는다 — 에이전트가 일하는 문서는 뒤에 남고 새 문서는 따로 열린다.
@@ -49,6 +57,7 @@ const AGENT_LOCK_ALLOWED_IDS = new Set([
 function isBlockedByDocumentEditLock(commandId: string, ctx: EditorContext): boolean {
   if (ctx.readOnly !== true && ctx.userEditingLocked !== true) return false;
   const allowed = ctx.userEditingLocked === true ? AGENT_LOCK_ALLOWED_IDS : READ_ONLY_ALLOWED_IDS;
+  if (ctx.userEditingLocked !== true && ctx.readOnlyCanOpen === true && VIEWER_ALLOWED_IDS.has(commandId)) return false;
   return !allowed.has(commandId)
     && !commandId.startsWith('view:')
     && !commandId.startsWith('help:');

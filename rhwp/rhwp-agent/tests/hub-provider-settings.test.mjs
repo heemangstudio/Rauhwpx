@@ -118,7 +118,7 @@ async function fixture(t, { holdStartupDelayMs = 0, fakeCodex = false } = {}) {
     models: [
       { id: 'test/reasoning', name: 'Reasoning', reasoning: true, efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
       { id: 'test/plain', name: 'Plain', reasoning: false, efforts: [], defaultEffort: null },
-    // 기록 예산은 모델 맥락 창에서 나온다 — 작은 창(8k)이면 기록이 한 줄도 들어가지 못한다.
+    // 기록 예산은 모델 콘텍스트 창에서 나온다 — 작은 창(8k)이면 기록이 한 줄도 들어가지 못한다.
     ].map((model) => ({ ...model, contextLength: 200_000, supportsImages: false, pricing: { prompt: 0, completion: 0 } })),
   }));
   mkdirSync(path.join(piRoot, 'agent'), { recursive: true });
@@ -481,6 +481,13 @@ test('a resumed session that may have half-received its handoff is replaced and 
   assert.notEqual(replaced.reply.session, cursor);
   assert.equal(replaced.reply.existed, false);
   assert.match(replaced.reply.prompt, /orchard[\s\S]*PLUM-314[\s\S]*FAIL[\s\S]*Turn failed before completion/);
+  // 다시 보내는 기록은 허브가 가진 사용자 원문이다 — 공급자에게 붙인 모드 블록은 턴 맨 앞에 한 번만 있고
+  // 기록 안의 사용자 글에는 섞이지 않는다.
+  assert.match(replaced.reply.prompt, /^<rhwp_mode>\nCurrent mode: 에이전트\./);
+  assert.equal(replaced.reply.prompt.split('<rhwp_mode>').length - 1, 1);
+  const replayedHistory = replaced.reply.prompt.split('<chat_history')[1].split('</chat_history>')[0];
+  assert.match(replayedHistory, /FAIL/);
+  assert.doesNotMatch(replayedHistory, /rhwp_mode/);
   assert.equal(replaced.end.resumeLost, true);
   assert.equal(replaced.end.providerSessionId, replaced.reply.session);
 

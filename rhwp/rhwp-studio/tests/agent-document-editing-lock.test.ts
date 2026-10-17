@@ -278,6 +278,8 @@ test('taking the lease drops in-progress composition and placements without refo
     cellSelectionDragState: null,
     isDragging: false,
     imeSession,
+    selectionComposition: null,
+    history: untouchable('history'),
     compositionAnchor: { sectionIndex: 0, paragraphIndex: 0, charOffset: 1 },
     compositionAnchorRect: { pageIndex: 0, x: 0, y: 0, height: 12 },
     compositionLength: 1,
@@ -309,6 +311,8 @@ test('taking the lease drops in-progress composition and placements without refo
   assert.equal(doc.join(''), 'XY', '확정하지 않은 조합 글자를 문서에 남기지 않는다');
   assert.equal(imeSession.isComposing, false);
   assert.equal(handler.compositionAnchor, null);
+  assert.equal(handler.compositionAnchorRect, null);
+  assert.equal(handler.compositionLength, 0);
   assert.deepEqual(calls.filter((call) => call !== 'blur'), ['form', 'image', 'textbox', 'polygon']);
   assert.equal(calls.includes('focus'), false, '잠그면서 입력 포커스를 가져오지 않는다');
   assert.equal(handler.userEditingLocked, true);

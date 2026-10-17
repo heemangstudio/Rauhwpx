@@ -1384,6 +1384,8 @@ impl DocumentCore {
             // 소속 표 RenderNode id. 중첩 표에서 같은 cell_index가 반복되므로
             // TextRun과 TableCell bbox를 같은 표 단위로 묶는 데 사용한다.
             table_id: Option<u32>,
+            // 페인트 부모에서 분리된 글상자의 실제 가시 진입 영역.
+            textbox_bbox: Option<crate::renderer::render_tree::BoundingBox>,
         }
 
         /// 안내문(guide text) TextRun 정보 (char_start: None)
@@ -1519,7 +1521,13 @@ impl DocumentCore {
             current_table_meta: Option<(usize, usize, usize)>,
             current_table_ctx: Option<CellContext>,
             current_cell_ctx: Option<CellContext>,
+            current_textbox_bbox: Option<crate::renderer::render_tree::BoundingBox>,
         ) {
+            let textbox_bbox = if matches!(node.node_type, RenderNodeType::TextBox) {
+                Some(node.bbox.clone())
+            } else {
+                current_textbox_bbox
+            };
             // Column 노드 진입 시 칼럼 인덱스 전파
             let col = if let RenderNodeType::Column(col_idx) = node.node_type {
                 Some(col_idx)
@@ -1642,6 +1650,7 @@ impl DocumentCore {
                             is_textbox: false,
                             column_index: col,
                             table_id: current_table_id,
+                            textbox_bbox: textbox_bbox.clone(),
                         });
                     } else {
                         // char_start: None → 안내문 TextRun
@@ -1669,6 +1678,7 @@ impl DocumentCore {
                     table_meta,
                     table_ctx.clone(),
                     child_cell_ctx.clone(),
+                    textbox_bbox.clone(),
                 );
             }
         }
@@ -1877,6 +1887,7 @@ impl DocumentCore {
             &mut guide_runs,
             &mut cell_bboxes,
             &mut textbox_bboxes,
+            None,
             None,
             None,
             None,
@@ -2226,10 +2237,7 @@ impl DocumentCore {
         //
         // 글상자 안 표 셀 (textbox 안 cell) 매칭이 textbox 영역보다 specific 이므로
         // clicked_cell 을 textbox_hit 보다 먼저 처리한다.
-        if let Some((idx, offset)) = hit_cell {
-            return Ok(format_hit(&runs[idx], offset, page_num));
-        }
-
+        // 분리된 글상자의 소유 셀 조상만 정확한 셀 히트보다 먼저 확인한다.
         // 클릭 좌표가 속한 칼럼 결정 (다단 지원)
         let click_column = self.find_column_at_x(page_num, x);
 
@@ -2239,6 +2247,175 @@ impl DocumentCore {
             .filter(|cb| cb.has_meta)
             .filter(|cb| x >= cb.x && x <= cb.x + cb.w && y >= cb.y && y <= cb.y + cb.h)
             .min_by_key(|cb| ((cb.w.max(0.0) * cb.h.max(0.0)) * 1000.0) as i64);
+
+        fn nearest_container_run_hit(
+            container_runs: &[&RunInfo],
+            x: f64,
+            y: f64,
+            page_num: u32,
+        ) -> Option<String> {
+            if container_runs.is_empty() {
+                return None;
+            }
+            let line_y = container_runs
+                .iter()
+                .filter(|r| y >= r.bbox_y && y <= r.bbox_y + r.bbox_h)
+                .map(|r| r.bbox_y)
+                .next()
+                .or_else(|| {
+                    container_runs
+                        .iter()
+                        .min_by(|a, b| {
+                            let da = (y - (a.bbox_y + a.bbox_h / 2.0)).abs();
+                            let db = (y - (b.bbox_y + b.bbox_h / 2.0)).abs();
+                            da.total_cmp(&db)
+                        })
+                        .map(|r| r.bbox_y)
+                });
+            if let Some(ly) = line_y {
+                let mut line_runs: Vec<&RunInfo> = container_runs
+                    .iter()
+                    .copied()
+                    .filter(|r| (r.bbox_y - ly).abs() < 1.0)
+                    .collect();
+                line_runs.sort_by(|a, b| a.bbox_x.total_cmp(&b.bbox_x));
+                let (idx, offset) = resolve_x_on_line(&line_runs, x);
+                return Some(format_hit(line_runs[idx], offset, page_num));
+            }
+            Some(format_hit(
+                container_runs[0],
+                container_runs[0].char_start,
+                page_num,
+            ))
+        }
+
+        fn strict_logical_cell_owner(owner: &CellContext, context: &CellContext) -> bool {
+            let depth = owner.path.len();
+            owner.parent_para_index == context.parent_para_index
+                && depth > 0
+                && context.path.len() > depth
+                && owner
+                    .path
+                    .iter()
+                    .zip(&context.path)
+                    .enumerate()
+                    .all(|(index, (a, b))| {
+                        a.control_index == b.control_index && a.cell_index == b.cell_index
+                        // 마지막 항목은 현재 문단이 아니라 소유 셀을 식별한다.
+                        && (index + 1 == depth || a.cell_para_index == b.cell_para_index)
+                    })
+        }
+
+        // 렌더 표 부모가 없는 글상자도 원본 셀 소유자는 유지한다. 실제 글상자
+        // 안에서만 복구하며, 중첩 셀의 전체 경로와 조상 문단을 구분한다.
+        fn detached_textbox_run_in_cell(
+            run: &RunInfo,
+            cell: &CellBboxInfo,
+            x: f64,
+            y: f64,
+        ) -> bool {
+            if run.table_id.is_some() || run.section_index != cell.section_index {
+                return false;
+            }
+            let (Some(context), Some(owner), Some(bounds)) =
+                (&run.cell_context, &cell.cell_context, &run.textbox_bbox)
+            else {
+                return false;
+            };
+            context.parent_para_index == cell.parent_para_index
+                && owner.parent_para_index == cell.parent_para_index
+                && strict_logical_cell_owner(owner, context)
+                && x >= bounds.x
+                && x <= bounds.x + bounds.width
+                && y >= bounds.y
+                && y <= bounds.y + bounds.height
+        }
+
+        // 분리된 중첩 글상자의 실제 영역과 원본 경로로 진입한다. 부모 셀의
+        // 빈 영역보다 구체적이지만, 진짜 안쪽 셀과 단일 경로의 본문 글상자는 유지한다.
+        let detached_textbox = runs
+            .iter()
+            .filter(|run| {
+                run.table_id.is_none()
+                    && run
+                        .cell_context
+                        .as_ref()
+                        .is_some_and(|ctx| ctx.path.len() > 1)
+                    && hit_cell.is_none_or(|(index, _)| {
+                        let hit = &runs[index];
+                        hit.section_index == run.section_index
+                            && hit
+                                .cell_context
+                                .as_ref()
+                                .zip(run.cell_context.as_ref())
+                                .is_some_and(|(owner, context)| {
+                                    strict_logical_cell_owner(owner, context)
+                                })
+                    })
+                    && clicked_cell.is_none_or(|cell| detached_textbox_run_in_cell(run, cell, x, y))
+                    && run.textbox_bbox.as_ref().is_some_and(|bounds| {
+                        x >= bounds.x
+                            && x <= bounds.x + bounds.width
+                            && y >= bounds.y
+                            && y <= bounds.y + bounds.height
+                    })
+            })
+            .min_by_key(|run| {
+                let bounds = run.textbox_bbox.as_ref().unwrap();
+                ((bounds.width.max(0.0) * bounds.height.max(0.0)) * 1000.0) as i64
+            });
+        if let Some(owner_run) = detached_textbox {
+            let owner = owner_run.cell_context.as_ref().unwrap();
+            let bounds = owner_run.textbox_bbox.as_ref().unwrap();
+            let own_runs: Vec<&RunInfo> = runs
+                .iter()
+                .filter(|run| {
+                    run.section_index == owner_run.section_index
+                        && run.table_id.is_none()
+                        && run.textbox_bbox.as_ref().is_some_and(|b| {
+                            (b.x, b.y, b.width, b.height)
+                                == (bounds.x, bounds.y, bounds.width, bounds.height)
+                        })
+                        && run.cell_context.as_ref().is_some_and(|ctx| {
+                            ctx.parent_para_index == owner.parent_para_index
+                                && ctx.path.len() == owner.path.len()
+                                && ctx.path.iter().zip(&owner.path).enumerate().all(
+                                    |(index, (a, b))| {
+                                        a.control_index == b.control_index
+                                            && a.cell_index == b.cell_index
+                                            && (index + 1 == owner.path.len()
+                                                || a.cell_para_index == b.cell_para_index)
+                                    },
+                                )
+                        })
+                })
+                .collect();
+            if let Some(hit) = nearest_container_run_hit(&own_runs, x, y, page_num) {
+                return Ok(hit);
+            }
+        }
+
+        // 같은 글상자, 실제 안쪽 셀, 다른 소유자의 정확한 글리프 히트는 유지한다.
+        if let Some((idx, offset)) = hit_cell {
+            let run = &runs[idx];
+            // 조상 문단의 큰 bbox보다 실제 안쪽 표 셀을 우선한다.
+            let clicked_descendant = clicked_cell.is_some_and(|cell| {
+                cell.table_id.is_some()
+                    && cell.table_id != run.table_id
+                    && cell.section_index == run.section_index
+                    && run
+                        .cell_context
+                        .as_ref()
+                        .zip(cell.cell_context.as_ref())
+                        .is_some_and(|(owner, context)| {
+                            cell.parent_para_index == owner.parent_para_index
+                                && strict_logical_cell_owner(owner, context)
+                        })
+            });
+            if !clicked_descendant {
+                return Ok(format_hit(run, offset, page_num));
+            }
+        }
 
         // 셀 내부 클릭이면: 해당 셀의 run만 검색하여 가장 가까운 위치 반환
         if let Some(cb) = clicked_cell {
@@ -2256,38 +2433,8 @@ impl DocumentCore {
                 })
                 .collect();
 
-            if !cell_runs.is_empty() {
-                // 클릭이 속한 시각 줄(line)을 고른다.
-                //   1순위: 클릭 y 가 글리프 bbox 안에 드는 run 의 줄
-                //   2순위: (행간 여백 클릭) 클릭 y 에 세로로 가장 가까운 run 의 줄
-                // 줄 식별은 run 의 bbox_y(줄 윗변)로 한다. 같은 줄의 run 은 bbox_y 가 같다.
-                let line_y = cell_runs
-                    .iter()
-                    .filter(|r| y >= r.bbox_y && y <= r.bbox_y + r.bbox_h)
-                    .map(|r| r.bbox_y)
-                    .next()
-                    .or_else(|| {
-                        cell_runs
-                            .iter()
-                            .min_by(|a, b| {
-                                let da = (y - (a.bbox_y + a.bbox_h / 2.0)).abs();
-                                let db = (y - (b.bbox_y + b.bbox_h / 2.0)).abs();
-                                da.total_cmp(&db)
-                            })
-                            .map(|r| r.bbox_y)
-                    });
-
-                if let Some(ly) = line_y {
-                    let mut line_runs: Vec<&RunInfo> = cell_runs
-                        .iter()
-                        .copied()
-                        .filter(|r| (r.bbox_y - ly).abs() < 1.0)
-                        .collect();
-                    line_runs.sort_by(|a, b| a.bbox_x.total_cmp(&b.bbox_x));
-                    let (idx, offset) = resolve_x_on_line(&line_runs, x);
-                    return Ok(format_hit(line_runs[idx], offset, page_num));
-                }
-                return Ok(format_hit(cell_runs[0], cell_runs[0].char_start, page_num));
+            if let Some(hit) = nearest_container_run_hit(&cell_runs, x, y, page_num) {
+                return Ok(hit);
             }
 
             // 양식 컨트롤(FormObject)만 있는 셀: TextRun이 없어 cell_runs가 비어있음.

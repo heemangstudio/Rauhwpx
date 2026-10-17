@@ -17,8 +17,8 @@
 //!   글리프 순서는 KS X 1001 행열 순서다.
 //! - 명령열은 Type 1 과 비슷한 상대 좌표 윤곽선이다. y 는 em 상자 바닥에서 위로
 //!   잰다(첫 moveto 는 (왼쪽 여백, 200)). closepath 는 현재점을 그 윤곽 시작점으로
-//!   되돌린다. 한컴은 em 상자 바닥을 기준선 아래 0.15em 에 둔다 (HWP 기준선 85%).
-//!   `0x40..=0x43` 은 hint(무시), `0` 은 끝이다.
+//!   되돌린다. 요소 flags 의 0x20 이 없으면 y 에서 0.15em 을 뺀다.
+//!   `0x20..=0x23`, `0x40..=0x43` 은 hint(윤곽 좌표 불변), `0` 은 끝이다.
 //!
 //! 한양 계열은 명시된 flavor 의 순환 XOR 를 해제한 뒤 끝 명령까지 검증한다.
 //! 연결된 벡터 레코드에서 ASCII·KS 한글·KS 한자 은행만 읽으며, 비트맵과
@@ -104,6 +104,9 @@ enum BankKind {
 struct BankLayout {
     kind: BankKind,
     units: u16,
+    flags: u16,
+    /// 원본 라틴 face: Regular/Bold/Italic/Bold Italic. CJK 은행은 0.
+    variant: usize,
     /// 글리프 오프셋 표의 시작 주소이자 상대 오프셋의 기준 주소.
     table: usize,
     count: usize,
@@ -153,15 +156,15 @@ impl Slot {
 
 #[derive(Default)]
 struct Family {
-    latin: Option<Slot>,
+    latin: [Option<Slot>; 4],
     hangul: Option<Slot>,
     hanja: Option<Slot>,
 }
 
 impl Family {
-    fn slot_mut(&mut self, kind: BankKind) -> &mut Option<Slot> {
+    fn slot_mut(&mut self, kind: BankKind, variant: usize) -> &mut Option<Slot> {
         match kind {
-            BankKind::Latin { .. } => &mut self.latin,
+            BankKind::Latin { .. } => &mut self.latin[variant],
             BankKind::Hangul => &mut self.hangul,
             BankKind::Hanja => &mut self.hanja,
         }
@@ -171,7 +174,7 @@ impl Family {
 #[derive(Default)]
 struct Registry {
     families: HashMap<String, Family>,
-    glyphs: HashMap<(String, char), Option<Arc<HftGlyph>>>,
+    glyphs: HashMap<(String, usize, char), Option<Arc<HftGlyph>>>,
     rectangular_hyphens: HashMap<String, Arc<HftGlyph>>,
     latin_advances: HashMap<String, LatinAdvances>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -232,12 +235,42 @@ fn family_name(data: &[u8]) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-/// 명령열을 해석한다. 지원하지 않는 명령·범위 초과는 None.
-fn decode_outline(bytes: &[u8], units: f32) -> Option<Vec<HftPathCmd>> {
-    decode_outline_stream(bytes, units, false)
+/// 파일명이 아닌 원본 full face 이름의 style 접미사만 사용한다.
+/// 한글/한자 은행의 이름은 라틴 변형 선택에 쓰지 않는다.
+fn latin_variant(head: &[u8], kind: BankKind) -> usize {
+    if !matches!(kind, BankKind::Latin { .. }) {
+        return 0;
+    }
+    let cstr = |bytes: &[u8]| bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    let Some(face) = head.get(0x2c..0x6c) else {
+        return 0;
+    };
+    let Some(family) = head.get(0x6c..0x8c) else {
+        return 0;
+    };
+    let family = &family[..cstr(family)];
+    let Some(suffix) = face[..cstr(face)].strip_prefix(family) else {
+        return 0;
+    };
+    match suffix.trim_ascii() {
+        b"Bold" | b"Demi" => 1,
+        b"Italic" | b"Oblique" | b"Light Italic" => 2,
+        b"Bold Italic" | b"Bold Oblique" | b"Demi Italic" | b"Demi Oblique" => 3,
+        _ => 0,
+    }
 }
 
-fn decode_outline_stream(bytes: &[u8], units: f32, hanyang: bool) -> Option<Vec<HftPathCmd>> {
+/// 명령열을 해석한다. 지원하지 않는 명령·범위 초과는 None.
+fn decode_outline(bytes: &[u8], units: f32, flags: u16) -> Option<Vec<HftPathCmd>> {
+    decode_outline_stream(bytes, units, false, flags)
+}
+
+fn decode_outline_stream(
+    bytes: &[u8],
+    units: f32,
+    hanyang: bool,
+    flags: u16,
+) -> Option<Vec<HftPathCmd>> {
     let mut at = 0usize;
     let mut read = || -> Option<u8> {
         let v = *bytes.get(at)?;
@@ -250,6 +283,13 @@ fn decode_outline_stream(bytes: &[u8], units: f32, hanyang: bool) -> Option<Vec<
     let mut open = false;
     let mut terminated = false;
     let limit = (units as i32) * 8;
+    // BaseDraw 는 선택된 요소의 0x20 이 있을 때 기준선 보정을 생략한다.
+    let baseline = if flags & 0x20 != 0 {
+        0.0
+    } else {
+        units * HFT_BASELINE_EM
+    };
+    let convert = |x: i32, y: i32| (x as f32, y as f32 - baseline);
     loop {
         let Some(op) = read() else { break };
         // 숫자: -123..=123 은 1바이트, 0x7c..0x7f / 0x81..0x84 는 2바이트,
@@ -269,7 +309,7 @@ fn decode_outline_stream(bytes: &[u8], units: f32, hanyang: bool) -> Option<Vec<
             if x.abs() > limit || y.abs() > limit {
                 return None;
             }
-            Some((*x as f32, *y as f32 - units * HFT_BASELINE_EM))
+            Some(convert(*x, *y))
         };
         match op {
             0 => {
@@ -291,10 +331,8 @@ fn decode_outline_stream(bytes: &[u8], units: f32, hanyang: bool) -> Option<Vec<
                 if open {
                     if hanyang {
                         // 한양 인터프리터는 시작점으로 선을 긋고 같은 윤곽을 이어 그린다.
-                        out.push(HftPathCmd::LineTo(
-                            start.0 as f32,
-                            start.1 as f32 - units * HFT_BASELINE_EM,
-                        ));
+                        let (px, py) = convert(start.0, start.1);
+                        out.push(HftPathCmd::LineTo(px, py));
                     } else {
                         out.push(HftPathCmd::Close);
                         open = false;
@@ -331,7 +369,7 @@ fn decode_outline_stream(bytes: &[u8], units: f32, hanyang: bool) -> Option<Vec<
                     number(&mut read)?;
                 }
             }
-            0x20 if hanyang => {
+            0x20 => {
                 let first = usize::from(read()?);
                 for _ in 0..first * 2 + 1 {
                     read()?;
@@ -341,7 +379,7 @@ fn decode_outline_stream(bytes: &[u8], units: f32, hanyang: bool) -> Option<Vec<
                     read()?;
                 }
             }
-            0x21 if hanyang => {
+            0x21 => {
                 let count = read()?;
                 for _ in 0..count {
                     let length = read()?;
@@ -350,7 +388,7 @@ fn decode_outline_stream(bytes: &[u8], units: f32, hanyang: bool) -> Option<Vec<
                     }
                 }
             }
-            0x22 | 0x23 if hanyang => {
+            0x22 | 0x23 => {
                 read()?;
             }
             0x44 if hanyang => {}
@@ -428,7 +466,7 @@ fn bank_layout<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<(Stri
     let flavor = &head[0x134..0x154];
     let flavor = &flavor[..flavor.iter().position(|&b| b == 0).unwrap_or(flavor.len())];
     if flavor != HANYANG_FLAVOR {
-        // 기존 평문 은행의 선택과 좌표는 바꾸지 않는다.
+        // 기존 평문 은행의 선택을 유지하고 선택된 요소의 flags 를 보존한다.
         let outline = read_at::<40, _>(reader, at)?;
         let (_, kind, units, count) = classify(&head, &outline)?;
         let jamo = if kind == BankKind::Hangul {
@@ -460,6 +498,8 @@ fn bank_layout<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<(Stri
             BankLayout {
                 kind,
                 units,
+                flags: u16_at(&outline, 18)?,
+                variant: latin_variant(&head, kind),
                 table,
                 count,
                 end: file_end,
@@ -557,6 +597,8 @@ fn bank_layout<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<(Stri
                         BankLayout {
                             kind,
                             units,
+                            flags,
+                            variant: latin_variant(&head, kind),
                             table,
                             count,
                             end: element_end,
@@ -734,9 +776,14 @@ impl Bank {
         }
         let body = data.get(body_at..body_end)?;
         let commands = if layout.hanyang {
-            decode_outline_stream(&decrypt_hanyang(body), f32::from(layout.units), true)?
+            decode_outline_stream(
+                &decrypt_hanyang(body),
+                f32::from(layout.units),
+                true,
+                layout.flags,
+            )?
         } else {
-            decode_outline(body, f32::from(layout.units))?
+            decode_outline(body, f32::from(layout.units), layout.flags)?
         };
         let inked = commands
             .iter()
@@ -898,7 +945,9 @@ fn latin_advances<R: std::io::Read + std::io::Seek>(
     if widths.iter().any(|&width| width > 4000) {
         return None;
     }
-    Some((family, LatinAdvances { first, widths }))
+    // 기존 보조 폭 API는 Regular 폭이다. Bold-first 등록으로 오염하지 않는다.
+    (latin_variant(&head, BankKind::Latin { first }) == 0)
+        .then_some((family, LatinAdvances { first, widths }))
 }
 
 fn insert_latin_advances(advances: Option<(String, LatinAdvances)>) -> bool {
@@ -935,13 +984,17 @@ fn insert_rectangular_hyphen(glyph: Option<(String, HftGlyph)>) -> bool {
     true
 }
 
-fn insert_slot(family: String, kind: BankKind, slot: Slot) -> bool {
+fn insert_slot(family: String, kind: BankKind, variant: usize, slot: Slot) -> bool {
     let Ok(mut registry) = REGISTRY.write() else {
         return false;
     };
-    registry.glyphs.retain(|(name, _), _| name != &family);
-    let target = registry.families.entry(family).or_default().slot_mut(kind);
-    // 같은 family 의 기울임/굵게 라틴 변형보다 먼저 온 기본 은행을 유지한다.
+    registry.glyphs.retain(|(name, _, _), _| name != &family);
+    let target = registry
+        .families
+        .entry(family)
+        .or_default()
+        .slot_mut(kind, variant);
+    // 서로 다른 원본 style은 독립 보관하고, 같은 face의 중복만 기존 은행을 유지한다.
     if target.is_none() {
         *target = Some(slot);
     }
@@ -960,7 +1013,8 @@ pub fn register_hft_bytes(bytes: Vec<u8>) -> bool {
         return has_hyphen || has_advances;
     };
     let kind = bank.layout.kind;
-    let inserted = insert_slot(family, kind, Slot::Ready(bank));
+    let variant = bank.layout.variant;
+    let inserted = insert_slot(family, kind, variant, Slot::Ready(bank));
     if inserted || has_advances || has_hyphen {
         super::layout::clear_measure_width_cache();
     }
@@ -979,10 +1033,10 @@ pub fn is_hft_file(path: &std::path::Path) -> bool {
 
 /// 파일 머리만 읽어 family·은행 종류를 판별한다.
 #[cfg(not(target_arch = "wasm32"))]
-fn probe_hft_file(path: &std::path::Path) -> Option<(String, BankKind)> {
+fn probe_hft_file(path: &std::path::Path) -> Option<(String, BankKind, usize)> {
     let mut file = std::fs::File::open(path).ok()?;
     let (family, layout) = bank_layout(&mut file)?;
-    Some((family, layout.kind))
+    Some((family, layout.kind, layout.variant))
 }
 
 /// 글꼴 source(파일/디렉터리, 비재귀) 안의 HFT 파일을 한 번씩 등록한다.
@@ -1019,8 +1073,8 @@ pub fn register_hft_sources(sources: &[std::path::PathBuf]) {
                 changed |= insert_rectangular_hyphen(rectangular_hyphen(&mut reader));
                 changed |= insert_latin_advances(latin_advances(&mut reader));
             }
-            if let Some((family, kind)) = probe_hft_file(&file) {
-                changed |= insert_slot(family, kind, Slot::Pending(file));
+            if let Some((family, kind, variant)) = probe_hft_file(&file) {
+                changed |= insert_slot(family, kind, variant, Slot::Pending(file));
             }
             if changed {
                 super::layout::clear_measure_width_cache();
@@ -1073,29 +1127,88 @@ fn missing_hanyang_multiply(family: &str, ch: char) -> Option<Arc<HftGlyph>> {
 /// `family` HFT 서체의 `ch` 윤곽선. 원본 은행을 우선하고, 누락된 기호만 보완한다.
 pub fn hft_glyph(family: &str, ch: char) -> Option<Arc<HftGlyph>> {
     let family = family.trim();
+    if ch == '-' {
+        let registry = REGISTRY.read().ok()?;
+        if let Some(glyph) = registry.rectangular_hyphens.get(family) {
+            return Some(glyph.clone());
+        }
+    }
+    source_glyph(family, ch).or_else(|| missing_hanyang_multiply(family, ch))
+}
+
+/// 정확한 원본 style 은행을 우선한다. 없으면 기존 경로를 유지한다.
+/// 기울임은 합성하거나 새로 활성화하지 않고 기존 대체 서체를 유지한다.
+pub fn hft_glyph_styled(family: &str, ch: char, bold: bool, italic: bool) -> Option<Arc<HftGlyph>> {
+    if italic {
+        return None;
+    }
+    let variant = usize::from(bold);
+    if variant != 0 {
+        if let Some(glyph) = source_glyph_variant(family, ch, variant) {
+            return Some(glyph);
+        }
+    }
+    hft_glyph(family, ch)
+}
+
+/// 실제 원본 은행만 판정하며 기존 기울임 측정 분기는 확장하지 않는다.
+pub(crate) fn source_glyph_available_styled(
+    family: &str,
+    ch: char,
+    bold: bool,
+    italic: bool,
+) -> bool {
+    !italic
+        && ((bold && source_glyph_variant_available(family, ch, 1))
+            || source_glyph_available(family, ch))
+}
+
+/// 실제 은행에서 해석한 윤곽만 판정한다. 보완 기호·bbox 복원은 포함하지 않는다.
+/// 캐시 적중 때는 명령열이나 Arc 를 복사하지 않는다.
+pub(crate) fn source_glyph_available(family: &str, ch: char) -> bool {
+    source_glyph_variant_available(family, ch, 0)
+}
+
+fn source_glyph_variant_available(family: &str, ch: char, variant: usize) -> bool {
+    let family = family.trim();
+    let key = (family.to_string(), variant, ch);
+    if let Ok(registry) = REGISTRY.read() {
+        if let Some(hit) = registry.glyphs.get(&key) {
+            return hit.is_some();
+        }
+        if !registry.families.contains_key(family) {
+            return false;
+        }
+    }
+    source_glyph_variant(family, ch, variant).is_some()
+}
+
+fn source_glyph(family: &str, ch: char) -> Option<Arc<HftGlyph>> {
+    source_glyph_variant(family, ch, 0)
+}
+
+fn source_glyph_variant(family: &str, ch: char, variant: usize) -> Option<Arc<HftGlyph>> {
+    let family = family.trim();
     if family.is_empty() {
         return None;
     }
-    let key = (family.to_string(), ch);
+    let key = (family.to_string(), variant, ch);
     {
         let registry = REGISTRY.read().ok()?;
-        if ch == '-' {
-            if let Some(glyph) = registry.rectangular_hyphens.get(family) {
-                return Some(glyph.clone());
-            }
-        }
         if let Some(hit) = registry.glyphs.get(&key) {
-            return hit.clone().or_else(|| missing_hanyang_multiply(family, ch));
+            return hit.clone();
         }
         if !registry.families.contains_key(family) {
-            return missing_hanyang_multiply(family, ch);
+            return None;
         }
     }
     let mut registry = REGISTRY.write().ok()?;
     let glyph = registry.families.get_mut(family).and_then(|slot| {
-        [&mut slot.hangul, &mut slot.latin, &mut slot.hanja]
+        [&mut slot.hangul, &mut slot.latin[variant], &mut slot.hanja]
             .into_iter()
-            .flatten()
+            .enumerate()
+            .filter(|(index, _)| variant == 0 || *index == 1)
+            .filter_map(|(_, slot)| slot.as_mut())
             .find_map(|slot| {
                 let bank = slot.bank()?;
                 let commands = bank.commands(ch)?;
@@ -1106,7 +1219,7 @@ pub fn hft_glyph(family: &str, ch: char) -> Option<Arc<HftGlyph>> {
             })
     });
     registry.glyphs.insert(key, glyph.clone());
-    glyph.or_else(|| missing_hanyang_multiply(family, ch))
+    glyph
 }
 
 /// 텍스트의 모든 그릴 글자(공백·제어 제외)를 이 HFT 서체가 그릴 수 있는가.
@@ -1178,30 +1291,281 @@ mod tests {
         data
     }
 
+    // 상용 글꼴 바이트 대신 직접 만든 네 face로 등록/조회 경계를 검증한다.
+    fn style_fixture(family: &str, variant: usize) -> Vec<u8> {
+        let mut data = hanyang_fixture(false);
+        data[0x134..0x154].fill(0);
+        data[0x2c..0x8c].fill(0);
+        data[0x6c..0x6c + family.len()].copy_from_slice(family.as_bytes());
+        let suffix = ["", " Bold", " Italic", " Bold Italic"][variant];
+        let face = format!("{family}{suffix}");
+        data[0x2c..0x2c + face.len()].copy_from_slice(face.as_bytes());
+        let at = data.len() - PLAIN_RECTANGLE.len();
+        data[at..].copy_from_slice(PLAIN_RECTANGLE);
+        data[at + 1] = 10 + variant as u8 * 10;
+        let widths_at = data.len();
+        data[0x1aa..0x1ae].copy_from_slice(&(widths_at as u32).to_le_bytes());
+        data.extend_from_slice(&200u32.to_le_bytes());
+        data.extend_from_slice(&32u16.to_le_bytes());
+        data.extend_from_slice(&126u16.to_le_bytes());
+        data.extend_from_slice(&1u16.to_le_bytes());
+        for _ in 0..95 {
+            data.extend_from_slice(&(500u16 + variant as u16 * 10).to_le_bytes());
+        }
+        data
+    }
+
+    #[test]
+    fn source_face_style_is_independent_of_import_order_and_late_registration() {
+        for (case, order) in [[0, 1, 2, 3], [3, 2, 1, 0]].into_iter().enumerate() {
+            let family = format!("HFT Style Order {case}");
+            for variant in order {
+                assert!(register_hft_bytes(style_fixture(&family, variant)));
+                if variant != 0 && case == 1 {
+                    assert!(hft_advance_em(&family, 'A').is_none());
+                }
+            }
+            assert_eq!(hft_advance_em(&family, 'A'), Some(0.5));
+            for variant in 0..4 {
+                let glyph = source_glyph_variant(&family, 'A', variant).unwrap();
+                assert_eq!(
+                    glyph.commands[0],
+                    HftPathCmd::MoveTo(10.0 + variant as f32 * 10.0, -130.0)
+                );
+            }
+            assert_eq!(
+                hft_glyph(&family, 'A').unwrap().commands[0],
+                HftPathCmd::MoveTo(10.0, -130.0)
+            );
+            assert_eq!(
+                hft_glyph_styled(&family, 'A', true, false)
+                    .unwrap()
+                    .commands[0],
+                HftPathCmd::MoveTo(20.0, -130.0)
+            );
+            // 기울임 그리기 정책은 이 수정으로 확장하지 않는다.
+            assert!(hft_glyph_styled(&family, 'A', false, true).is_none());
+        }
+        let family = "HFT Style Late";
+        assert!(register_hft_bytes(style_fixture(family, 0)));
+        let legacy = hft_glyph(family, 'A').unwrap();
+        assert_eq!(
+            hft_glyph_styled(family, 'A', true, false).unwrap().commands,
+            legacy.commands
+        );
+        assert!(register_hft_bytes(style_fixture(family, 1)));
+        assert_eq!(
+            hft_glyph_styled(family, 'A', true, false).unwrap().commands[0],
+            HftPathCmd::MoveTo(20.0, -130.0)
+        );
+        assert_eq!(hft_glyph(family, 'A').unwrap().commands, legacy.commands);
+        assert_eq!(hft_advance_em(family, 'A'), Some(0.5));
+        // 측정 경계도 실제 원본 face의 scalar 지원 여부와 같은 캐시를 따른다.
+        let family = "HFT Avail Bold";
+        assert!(register_hft_bytes(style_fixture(family, 1)));
+        for _ in 0..4 {
+            assert!(source_glyph_available_styled(family, 'A', true, false));
+            assert!(!source_glyph_available_styled(family, 'A', false, false));
+            assert!(!source_glyph_available_styled(family, '😀', true, false));
+        }
+        let family = "HFT Avail Missing";
+        for _ in 0..4 {
+            assert!(!source_glyph_available_styled(family, 'A', true, false));
+            assert!(!source_glyph_available_styled(family, 'A', false, false));
+        }
+        assert!(register_hft_bytes(style_fixture(family, 1)));
+        for _ in 0..4 {
+            assert!(source_glyph_available_styled(family, 'A', true, false));
+            assert!(!source_glyph_available_styled(family, 'A', false, false));
+        }
+        let family = "HFT Avail Italic";
+        assert!(register_hft_bytes(style_fixture(family, 2)));
+        for _ in 0..4 {
+            assert!(!source_glyph_available_styled(family, 'A', true, false));
+            assert!(!source_glyph_available_styled(family, 'A', false, false));
+            assert!(!source_glyph_available_styled(family, 'A', false, true));
+        }
+        assert!(register_hft_bytes(style_fixture(family, 1)));
+        for _ in 0..4 {
+            assert!(source_glyph_available_styled(family, 'A', true, false));
+            assert!(!source_glyph_available_styled(family, 'A', false, false));
+            assert!(!source_glyph_available_styled(family, '😀', true, false));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let directory =
+                std::env::temp_dir().join(format!("rhwp-hft-styles-{}", std::process::id()));
+            std::fs::create_dir_all(&directory).unwrap();
+            for (case, order) in [[0, 1, 2, 3], [3, 2, 1, 0]].into_iter().enumerate() {
+                let family = format!("HFT Style File {case}");
+                let paths: Vec<_> = order
+                    .into_iter()
+                    .map(|variant| {
+                        let path = directory.join(format!("{case}-{variant}.hft"));
+                        std::fs::write(&path, style_fixture(&family, variant)).unwrap();
+                        path
+                    })
+                    .collect();
+                register_hft_sources(&paths);
+                for variant in 0..4 {
+                    let glyph = source_glyph_variant(&family, 'A', variant).unwrap();
+                    assert_eq!(
+                        glyph.commands[0],
+                        HftPathCmd::MoveTo(10.0 + variant as f32 * 10.0, -130.0)
+                    );
+                }
+                assert_eq!(
+                    hft_glyph(&family, 'A').unwrap().commands[0],
+                    HftPathCmd::MoveTo(10.0, -130.0)
+                );
+                assert_eq!(
+                    hft_glyph_styled(&family, 'A', true, false)
+                        .unwrap()
+                        .commands[0],
+                    HftPathCmd::MoveTo(20.0, -130.0)
+                );
+                assert_eq!(hft_advance_em(&family, 'A'), Some(0.5));
+            }
+            let family = "HFT Style File Late";
+            let regular = directory.join("late-regular.hft");
+            let bold = directory.join("late-bold.hft");
+            std::fs::write(&regular, style_fixture(family, 0)).unwrap();
+            std::fs::write(&bold, style_fixture(family, 1)).unwrap();
+            register_hft_sources(&[regular]);
+            let legacy = hft_glyph(family, 'A').unwrap();
+            assert_eq!(
+                hft_glyph_styled(family, 'A', true, false).unwrap().commands,
+                legacy.commands
+            );
+            register_hft_sources(&[bold]);
+            assert_eq!(
+                hft_glyph_styled(family, 'A', true, false).unwrap().commands[0],
+                HftPathCmd::MoveTo(20.0, -130.0)
+            );
+            assert_eq!(hft_advance_em(family, 'A'), Some(0.5));
+            let family = "HFT Avail File";
+            let italic = directory.join("availability-italic.hft");
+            let bold = directory.join("availability-bold.hft");
+            std::fs::write(&italic, style_fixture(family, 2)).unwrap();
+            std::fs::write(&bold, style_fixture(family, 1)).unwrap();
+            register_hft_sources(&[italic]);
+            for _ in 0..4 {
+                assert!(!source_glyph_available_styled(family, 'A', true, false));
+                assert!(!source_glyph_available_styled(family, 'A', false, false));
+            }
+            register_hft_sources(&[bold]);
+            for _ in 0..4 {
+                assert!(source_glyph_available_styled(family, 'A', true, false));
+                assert!(!source_glyph_available_styled(family, 'A', false, false));
+                assert!(!source_glyph_available_styled(family, '😀', true, false));
+            }
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
     #[test]
     fn hanyang_cipher_and_exact_termination_reject_incomplete_streams() {
         assert_eq!(decrypt_hanyang(HANYANG_RECTANGLE), PLAIN_RECTANGLE);
         let expected = hanyang_rectangle_commands();
         assert_eq!(
-            decode_outline_stream(&decrypt_hanyang(HANYANG_RECTANGLE), 1000.0, true),
+            decode_outline_stream(&decrypt_hanyang(HANYANG_RECTANGLE), 1000.0, true, 0),
             Some(expected)
         );
-        assert!(decode_outline_stream(HANYANG_RECTANGLE, 1000.0, true).is_none());
-        assert!(decode_outline_stream(&PLAIN_RECTANGLE[..8], 1000.0, true).is_none());
+        assert!(decode_outline_stream(HANYANG_RECTANGLE, 1000.0, true, 0).is_none());
+        assert!(decode_outline_stream(&PLAIN_RECTANGLE[..8], 1000.0, true, 0).is_none());
         let mut trailing = PLAIN_RECTANGLE.to_vec();
         trailing.push(0);
-        assert!(decode_outline_stream(&trailing, 1000.0, true).is_none());
+        assert!(decode_outline_stream(&trailing, 1000.0, true, 0).is_none());
         let mut properties = vec![
             0x20, 1, 0, 0, 0, 1, 0, 0, 0x21, 1, 2, 0, 0, 0x22, 0, 0x23, 0, 0x44,
         ];
         properties.extend_from_slice(PLAIN_RECTANGLE);
         assert_eq!(
-            decode_outline_stream(&properties, 1000.0, true),
+            decode_outline_stream(&properties, 1000.0, true, 0),
             Some(hanyang_rectangle_commands())
         );
         for malformed in [&[0x20, 255, 0][..], &[0x21, 1, 255, 0][..], &[0x22][..]] {
-            assert!(decode_outline_stream(malformed, 1000.0, true).is_none());
+            assert!(decode_outline_stream(malformed, 1000.0, true, 0).is_none());
         }
+    }
+
+    #[test]
+    fn outline_hints_preserve_coordinates_and_reject_truncated_operands() {
+        let hints: &[&[u8]] = &[
+            &[0x20, 1, 0xfa, 0x7f, 0, 1, 0x34, 0],
+            &[0x21, 2, 1, 0x44, 2, 0, 0xff],
+            &[0x22, 1],
+            &[0x23, 3],
+        ];
+        for hanyang in [false, true] {
+            let expected = decode_outline_stream(PLAIN_RECTANGLE, 512.0, hanyang, 0x20);
+            for hint in hints {
+                // 이동 뒤 hint 를 넣어도 현재점·윤곽 시작점은 변하지 않는다.
+                let mut bytes = PLAIN_RECTANGLE[..3].to_vec();
+                bytes.extend_from_slice(hint);
+                bytes.extend_from_slice(&PLAIN_RECTANGLE[3..]);
+                assert_eq!(
+                    decode_outline_stream(&bytes, 512.0, hanyang, 0x20),
+                    expected
+                );
+                for cut in 1..hint.len() {
+                    let mut truncated = PLAIN_RECTANGLE[..3].to_vec();
+                    truncated.extend_from_slice(&hint[..cut]);
+                    assert!(decode_outline_stream(&truncated, 512.0, hanyang, 0x20).is_none());
+                }
+            }
+            assert!(decode_outline_stream(&[0x24, 0], 512.0, hanyang, 0x20).is_none());
+        }
+        assert!(decode_outline(&[0x44, 0], 512.0, 0x20).is_none());
+    }
+
+    #[test]
+    fn element_flags_select_baseline_independently_of_units_and_flavor() {
+        for units in [512u16, 1000] {
+            for hanyang in [false, true] {
+                for flags in [0u16, 0x20] {
+                    let commands =
+                        decode_outline_stream(PLAIN_RECTANGLE, units as f32, hanyang, flags)
+                            .unwrap();
+                    let y = if flags & 0x20 != 0 {
+                        20.0
+                    } else {
+                        20.0 - units as f32 * HFT_BASELINE_EM
+                    };
+                    assert_eq!(commands[0], HftPathCmd::MoveTo(10.0, y));
+                    assert_eq!(commands[1], HftPathCmd::LineTo(40.0, y));
+                    if hanyang {
+                        assert_eq!(commands[3], HftPathCmd::LineTo(10.0, y));
+                    }
+                }
+            }
+            let mut plain = hanyang_fixture(false);
+            plain[0x134..0x154].fill(0);
+            plain[516..518].copy_from_slice(&units.to_le_bytes());
+            let stream_at = plain.len() - PLAIN_RECTANGLE.len();
+            plain[stream_at..].copy_from_slice(PLAIN_RECTANGLE);
+            for flags in [0u16, 0x20] {
+                plain[530..532].copy_from_slice(&flags.to_le_bytes());
+                let bank = Bank::parse(Arc::from(plain.clone())).unwrap().1;
+                assert_eq!(bank.layout.flags, flags);
+                assert_eq!(
+                    bank.record(33).unwrap().unwrap(),
+                    decode_outline(PLAIN_RECTANGLE, units as f32, flags).unwrap()
+                );
+            }
+        }
+        let mut chained = hanyang_fixture(true);
+        // 건너뛴 요소의 비트가 선택된 요소의 기준선으로 전파되면 안 된다.
+        chained[566..568].copy_from_slice(&0x20u16.to_le_bytes());
+        let bank = Bank::parse(Arc::from(chained.clone())).unwrap().1;
+        assert_eq!(bank.layout.flags, 0);
+        assert_eq!(
+            bank.record(33).unwrap().unwrap(),
+            hanyang_rectangle_commands()
+        );
+        // 0x20 이 있는 연결 라틴 은행의 분류 범위는 이 변경에서 넓히지 않는다.
+        chained[588..590].copy_from_slice(&0x20u16.to_le_bytes());
+        assert!(Bank::parse(Arc::from(chained)).is_none());
     }
 
     #[test]
@@ -1271,7 +1635,7 @@ mod tests {
     fn hanyang_return_to_start_allows_more_segments_in_the_same_contour() {
         let bytes = [3, 10, 20, 4, 5, 30, 6, 40, 5, 226, 0];
         assert_eq!(
-            decode_outline_stream(&bytes, 1000.0, true).unwrap(),
+            decode_outline_stream(&bytes, 1000.0, true, 0).unwrap(),
             vec![
                 HftPathCmd::MoveTo(10.0, -130.0),
                 HftPathCmd::LineTo(10.0, -130.0),
@@ -1281,7 +1645,7 @@ mod tests {
                 HftPathCmd::Close,
             ]
         );
-        assert!(decode_outline(&bytes, 1000.0).is_none());
+        assert!(decode_outline(&bytes, 1000.0, 0).is_none());
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1291,7 +1655,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("rhwp-hft-decoder-{}.HFT", std::process::id()));
         std::fs::write(&path, &data).unwrap();
-        let (family, kind) = probe_hft_file(&path).unwrap();
+        let (family, kind, _) = probe_hft_file(&path).unwrap();
         let mut pending = Slot::Pending(path.clone());
         let native = pending.bank().unwrap().record(33).unwrap().unwrap();
         assert_eq!(kind, BankKind::Latin { first: 32 });
@@ -1367,7 +1731,7 @@ mod tests {
             0x05, 0x84, 0x00, // L dx=-124
             0x00,
         ];
-        let commands = decode_outline(&bytes, 1000.0).unwrap();
+        let commands = decode_outline(&bytes, 1000.0, 0).unwrap();
         assert_eq!(
             commands,
             vec![
@@ -1468,5 +1832,71 @@ mod tests {
         assert!(glyph.commands.len() > 10);
         assert!(hft_glyph("신명 신그래픽", 'A').is_some());
         assert!(hft_glyph("신명 신그래픽", ' ').is_none());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn source_hft_coverage_excludes_supplements_and_invalidates_cached_misses() {
+        const CHILD: &str = "RHWP_HFT_SOURCE_COVERAGE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "renderer::hft_glyphs::tests::source_hft_coverage_excludes_supplements_and_invalidates_cached_misses", "--nocapture"])
+                .env(CHILD, "1").output().expect("run isolated HFT source test");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        assert!(hft_glyph("한양신명조", '×').is_some());
+        assert!(!source_glyph_available("한양신명조", '×'));
+        for (family, file_route) in [("HFT SourceOnly1", true), ("HFT SourceOnly2", false)] {
+            let mut data = hanyang_fixture(false);
+            data[0x6c..0x8c].fill(0);
+            data[0x6c..0x6c + family.len()].copy_from_slice(family.as_bytes());
+            assert!(!source_glyph_available(family, 'A'));
+            if file_route {
+                let path = std::env::temp_dir()
+                    .join(format!("rhwp-source-hft-{}.HFT", std::process::id()));
+                std::fs::write(&path, &data).unwrap();
+                register_hft_sources(&[path.clone()]);
+                assert!(source_glyph_available(family, 'A'));
+                std::fs::remove_file(path).unwrap();
+            } else {
+                assert!(register_hft_bytes(data));
+            }
+            assert!(source_glyph_available(family, 'A'));
+            let glyph = source_glyph(family, 'A').unwrap();
+            for _ in 0..3 {
+                assert!(source_glyph_available(family, 'A'));
+            }
+            assert!(Arc::ptr_eq(&glyph, &source_glyph(family, 'A').unwrap()));
+            assert!(!source_glyph_available(family, '가'));
+            let table = 552;
+            let glyph_at = table + 2350 * 4;
+            let mut hangul = vec![0u8; glyph_at + 2 + PLAIN_RECTANGLE.len()];
+            hangul[..MAGIC.len()].copy_from_slice(MAGIC);
+            hangul[0x6c..0x6c + family.len()].copy_from_slice(family.as_bytes());
+            hangul[0x1ae..0x1b2].copy_from_slice(&512u32.to_le_bytes());
+            for (at, value) in [
+                (516, 1000u16),
+                (520, 2),
+                (532, 0x8000),
+                (534, 0xffff),
+                (536, 2350),
+            ] {
+                hangul[at..at + 2].copy_from_slice(&value.to_le_bytes());
+            }
+            for slot in (table..glyph_at).step_by(4) {
+                hangul[slot..slot + 4].copy_from_slice(&9400u32.to_le_bytes());
+            }
+            hangul[glyph_at..glyph_at + 2]
+                .copy_from_slice(&(PLAIN_RECTANGLE.len() as u16).to_le_bytes());
+            hangul[glyph_at + 2..].copy_from_slice(PLAIN_RECTANGLE);
+            assert!(register_hft_bytes(hangul));
+            assert!(source_glyph_available(family, '가'));
+            assert!(source_glyph_available(family, 'A'));
+        }
     }
 }

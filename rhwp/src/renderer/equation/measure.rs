@@ -62,10 +62,33 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-/// 폰트 등록 변화 후 canvas 실측 캐시를 비운다.
-pub(crate) fn clear_css_run_cache() {
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    // 해석 성공분만 캐시 — 미해소(None)는 저장하지 않아 재시도한다.
+    static LEGACY_FACE: std::cell::RefCell<Option<std::rc::Rc<LegacyTables>>> =
+        const { std::cell::RefCell::new(None) };
+    static RUN_CACHE: std::cell::RefCell<std::collections::HashMap<
+        (String, u64, bool, bool, bool), Option<LegacyRunMetrics>
+    >> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+thread_local! {
+    static SYSTEM_FONT_SOURCE: std::cell::RefCell<Option<(skia_safe::FontMgr, bool)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 새 측정 세대에서 현재 스레드의 서체/실측 캐시를 비운다.
+pub(crate) fn clear_measurement_caches() {
     #[cfg(target_arch = "wasm32")]
     CSS_RUN_CACHE.with(|cache| cache.borrow_mut().clear());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        LEGACY_FACE.with(|slot| *slot.borrow_mut() = None);
+        RUN_CACHE.with(|cache| cache.borrow_mut().clear());
+        #[cfg(feature = "native-skia")]
+        SYSTEM_FONT_SOURCE.with(|slot| *slot.borrow_mut() = None);
+    }
 }
 
 /// painter fallback 체인으로 run을 측정한다. 브라우저 canvas가 없으면 None.
@@ -73,6 +96,7 @@ pub(crate) fn clear_css_run_cache() {
 pub(crate) fn measure_css_run(font: &str, text: &str) -> Option<RunMetrics> {
     use std::cell::RefCell;
     use wasm_bindgen::JsCast;
+    let generation = super::sync_measurement_caches();
 
     thread_local! {
         static CONTEXT: RefCell<Option<web_sys::CanvasRenderingContext2d>> = const { RefCell::new(None) };
@@ -102,6 +126,9 @@ pub(crate) fn measure_css_run(font: &str, text: &str) -> Option<RunMetrics> {
             ink_right: measured.actual_bounding_box_right(),
         };
         if !metrics.is_valid() {
+            return None;
+        }
+        if super::measurement_generation() != generation {
             return None;
         }
         CSS_RUN_CACHE.with(|cache| {
@@ -270,20 +297,18 @@ fn resolve_legacy_tables() -> Option<LegacyTables> {
     #[cfg(feature = "native-skia")]
     {
         use skia_safe::{FontMgr, FontStyle};
-        thread_local! {
-            // 미해소 run 마다 CoreText 시스템 family 목록을 다시 만들면 폰트 서비스 IPC가
-            // 반복된다. custom face 는 나중에 등록될 수 있으므로 그 조회만 매번 재시도한다.
-            static SYSTEM_FONT_SOURCE: (FontMgr, bool) = {
+        // skia::font_lookup 의 system_families 필터와 같은 이유 — 없는 family 를
+        // CoreText 에 넘기면 downloadable font 조회가 대기할 수 있어 선차단한다.
+        SYSTEM_FONT_SOURCE.with(|slot| {
+            // 미해소 run마다 CoreText IPC를 반복하지 않고 명시적 새로고침 때 재해석한다.
+            let mut slot = slot.borrow_mut();
+            let (font_mgr, has_legacy_face) = slot.get_or_insert_with(|| {
                 let font_mgr = FontMgr::default();
                 let has_legacy_face = font_mgr
                     .family_names()
                     .any(|name| name.eq_ignore_ascii_case("HYhwpEQ"));
                 (font_mgr, has_legacy_face)
-            };
-        }
-        // skia::font_lookup 의 system_families 필터와 같은 이유 — 없는 family 를
-        // CoreText 에 넘기면 downloadable font 조회가 대기할 수 있어 선차단한다.
-        SYSTEM_FONT_SOURCE.with(|(font_mgr, has_legacy_face)| {
+            });
             let face = has_legacy_face
                 .then(|| font_mgr.match_family_style("HYhwpEQ", FontStyle::normal()))
                 .flatten()?;
@@ -312,16 +337,7 @@ pub(crate) fn measure_legacy_run_native(
     bold: bool,
     modern: bool,
 ) -> Option<LegacyRunMetrics> {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-
-    thread_local! {
-        // 해석 성공분만 캐시 — 미해소(None)는 저장하지 않아 재시도한다.
-        static LEGACY_FACE: RefCell<Option<std::rc::Rc<LegacyTables>>> =
-            const { RefCell::new(None) };
-        static RUN_CACHE: RefCell<HashMap<(String, u64, bool, bool, bool), Option<LegacyRunMetrics>>> =
-            RefCell::new(HashMap::new());
-    }
+    let generation = super::sync_measurement_caches();
     let key = (text.to_string(), font_size.to_bits(), italic, bold, modern);
     // The Haansoft fallback may be registered after the HY face. Keep its
     // metrics live so an earlier generic fallback cannot stay cached.
@@ -428,6 +444,9 @@ pub(crate) fn measure_legacy_run_native(
         && metrics.advance.is_finite()
         && metrics.advance >= 0.0)
         .then_some(metrics);
+    if super::measurement_generation() != generation {
+        return None;
+    }
     if cacheable {
         RUN_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();

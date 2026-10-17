@@ -39,7 +39,20 @@ Document editing runs on your machine. AI requests send prompts and any document
 
 Claude, Codex, and Pi can each drive the open document. Semantic reads and writes cover common work. `apply_edits` applies up to 32 changes in one atomic call. Registry-generated engine batches cover classified mutations.
 
-Staged edits appear in the document. **안전** holds successful edits for review. **전체 접근** commits them as one undo step. A failed turn restores the prior snapshot. In plan mode the document stays read-only until you approve.
+Each open document keeps its own agent session, so agents keep working when you switch documents. Several chats can share one document; while one of them edits, the others stay in 채팅.
+
+### Modes
+
+The mode sets how far the agent may change the document. Pick it from the mode button in the composer, cycle with `Shift+Tab`, or start a message with `/chat`, `/plan`, `/agent` or `/full`.
+
+| Mode | What it does to the document | Use it for |
+| --- | --- | --- |
+| **채팅** chat | Reads only | Questions, summaries, research |
+| **플랜** plan | Proposes a plan and stays read-only until you approve it | Larger changes across the document |
+| **에이전트** agent | Stages edits as a live preview and holds them for review | Most editing |
+| **전체** full | Commits each write right away as its own undo step | Repetitive work you trust it with |
+
+Approve a plan with **에이전트로 실행** or **전체 접근으로 실행**, or send it back with **수정 요청**. Set the default mode for new chats under **Settings → AI**.
 
 Every read returns a `revision`. Every write requires it. Stale writes fail instead of corrupting the document.
 
@@ -55,7 +68,7 @@ Saving over an existing desktop file uses a crash-safe compare-and-swap and requ
 
 Testers on macOS and Windows can use the [nightly](https://github.com/heemangstudio/Rauhwpx/releases/tag/nightly) pre-release. Artifact names use `<version>-nightly.<date>.<sha>`, with a UTC `YYYYMMDD` date and the first seven SHA characters.
 
-Connect a provider from **Settings → Connection**. Claude, Codex, and Pi can be installed there, and the app offers each provider's supported sign-in method.
+Connect a provider from **Settings → AI**. Claude, Codex, and Pi can be installed there, and the app offers each provider's supported sign-in method.
 
 ## Development
 

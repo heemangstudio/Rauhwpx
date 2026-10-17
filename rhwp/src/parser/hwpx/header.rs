@@ -2244,6 +2244,20 @@ fn read_numbering_para_head_text(reader: &mut Reader<&[u8]>) -> Result<String, H
             Ok(Event::Text(ref t)) => {
                 text.push_str(&t.decode().unwrap_or_default());
             }
+            Ok(Event::GeneralRef(ref r)) => {
+                if let Ok(Some(ch)) = r.resolve_char_ref() {
+                    text.push(ch);
+                } else {
+                    let name = r.decode().unwrap_or_default();
+                    if let Some(value) = quick_xml::escape::resolve_predefined_entity(&name) {
+                        text.push_str(value);
+                    } else {
+                        text.push('&');
+                        text.push_str(&name);
+                        text.push(';');
+                    }
+                }
+            }
             Ok(Event::CData(ref t)) => {
                 text.push_str(&String::from_utf8_lossy(t.as_ref()));
             }

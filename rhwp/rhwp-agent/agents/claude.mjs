@@ -37,6 +37,7 @@ import {
   systemBriefFor,
   truncate,
   validateExecutionMode,
+  withModeTurnBlock,
 } from './backend.mjs';
 import {
   createClaudeAskUserQuestionPermissionHandler,
@@ -473,8 +474,8 @@ export function createClaudeSession(opts, {
   let turnResumeRetried = false;
   // 마지막 스폰이 --resume 이었는지 — stderr 의 "No conversation found" 를 해석할 때 쓴다.
   let lastSpawnResumed = false;
-  // ── 맥락 사용량 ─────────────────────────────────────────────
-  // 루트 모델 호출 하나가 맥락 창에 실은 토큰 (input + cache read + cache creation).
+  // ── 콘텍스트 사용량 ─────────────────────────────────────────────
+  // 루트 모델 호출 하나가 콘텍스트 창에 실은 토큰 (input + cache read + cache creation).
   let lastContextTokens = null;
   let contextWindow = null;
   /** @type {{ compactionId: string, trigger: 'auto'|'manual', beforeTokens?: number } | null} */
@@ -1013,7 +1014,7 @@ export function createClaudeSession(opts, {
       onEvent(compactionEvent({ ...compaction, beforeTokens }, 'completed', {
         ...(afterTokens !== undefined ? { afterTokens } : {}),
       }));
-      // post_tokens 는 대화만 센다 — 시스템 프롬프트·도구 정의(이 앱에서 약 60k)가 빠져 맥락 크기로는
+      // post_tokens 는 대화만 센다 — 시스템 프롬프트·도구 정의(이 앱에서 약 60k)가 빠져 콘텍스트 크기로는
       // 너무 작다. 압축 전 사용량도 되살아나지 않게 비워 두고, 다음 루트 호출이 실제 값을 채운다.
       lastContextTokens = null;
       return;
@@ -1089,7 +1090,7 @@ export function createClaudeSession(opts, {
         const contextTokens = (finiteTokens(usage?.input_tokens) ?? 0)
           + (finiteTokens(usage?.cache_read_input_tokens) ?? 0)
           + (finiteTokens(usage?.cache_creation_input_tokens) ?? 0);
-        // 로컬 명령의 합성 응답은 사용량이 0 이다 — 맥락 크기로 치지 않는다.
+        // 로컬 명령의 합성 응답은 사용량이 0 이다 — 콘텍스트 크기로 치지 않는다.
         if (contextTokens > 0) lastContextTokens = contextTokens;
       }
       for (const block of blocks) {
@@ -1792,10 +1793,12 @@ export function createClaudeSession(opts, {
       return canResumeClaudeSession(opts, id);
     },
     sendUserMessage(text, { resumeFallbackText, replaceSession } = {}) {
+      // 시스템 프롬프트는 모드와 무관하다 — 현재 모드는 사용자 메시지 앞 블록으로 싣는다.
+      // 모드는 턴 사이에서만 바뀌므로 대기 중인 턴의 블록이 낡지 않는다.
       queueTurn({
         kind: 'message',
-        text,
-        retryText: typeof resumeFallbackText === 'string' && resumeFallbackText ? resumeFallbackText : text,
+        text: withModeTurnBlock(opts, text),
+        retryText: withModeTurnBlock(opts, typeof resumeFallbackText === 'string' && resumeFallbackText ? resumeFallbackText : text),
         replaceSession: replaceSession === true,
       });
     },

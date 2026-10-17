@@ -2080,13 +2080,16 @@ export class CanvasKitLayerRenderer {
       baselineShift += baseFontSize * 0.12;
     }
     // 글자 위치(%) — 엔진 renderer::char_offset_dy 와 같은 규칙 (장식선은 옮기지 않는다).
-    if (Number.isFinite(style.charOffset)) baselineShift += baseFontSize * style.charOffset!;
+    const offsetDy = Number.isFinite(style.charOffsetDy)
+      ? style.charOffsetDy!
+      : (Number.isFinite(style.charOffset) ? baseFontSize * style.charOffset! : 0);
+    baselineShift += offsetDy;
     const placementMatrix = this.affineToCanvasKitMatrix(op.placement?.runToPage);
     const originX = placementMatrix ? 0 : op.bbox.x;
     const originY = placementMatrix
       ? (op.placement?.baselineY ?? 0)
       : op.bbox.y + (op.baseline ?? baseFontSize)
-        - (Number.isFinite(style.charOffset) ? baseFontSize * style.charOffset! : 0);
+        - offsetDy;
     const rotation = op.rotation ?? 0;
     const codePoints = Array.from(replayText);
     const needsPreservedAdvances = style.superscript || style.subscript;
@@ -2097,7 +2100,10 @@ export class CanvasKitLayerRenderer {
     const hasLayoutPositions = replayPositions?.length === codePoints.length + 1
       && replayPositions.every(Number.isFinite);
     const hftPaths = style.hftFamily && style.italic !== true
-      ? codePoints.map(codePoint => hftGlyphPath(style.hftFamily!, codePoint.codePointAt(0) ?? 0))
+      ? codePoints.map(codePoint => hftGlyphPath(
+        style.hftFamily!, codePoint.codePointAt(0) ?? 0,
+        style.bold === true, style.italic === true,
+      ))
       : null;
     const hasHftPaths = hftPaths?.some(Boolean) === true;
     const fauxBoldPaint = fauxBoldWidth ? paint.copy() : null;

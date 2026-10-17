@@ -721,8 +721,8 @@ export class Toolbar {
   /** 문서 로드 상태에 따라 활성화/비활성화 */
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
-    const opacity = enabled ? '1' : '0.5';
-    this.container.style.opacity = opacity;
+    // 흐리게 하는 모양은 위 도구 모음의 꺼진 단추와 같게 CSS(.sb-disabled)가 맡는다.
+    this.container.classList.toggle('sb-disabled', !enabled);
     this.container.style.pointerEvents = enabled ? 'auto' : 'none';
     this.container
       .querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>('button, input, select')

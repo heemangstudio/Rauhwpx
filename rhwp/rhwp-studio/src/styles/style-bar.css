@@ -664,3 +664,8 @@
 .sb-ls-arrows #btn-ls-down {
   border-radius: 0 0 2px 0;
 }
+
+/* 편집할 수 없을 때(문서 없음·읽기 전용·에이전트 편집 중). 위 도구 모음의 꺼진 단추와 같은 농도다. */
+#style-bar.sb-disabled > * {
+  opacity: .38;
+}

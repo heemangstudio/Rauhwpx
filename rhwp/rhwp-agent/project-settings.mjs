@@ -6,7 +6,7 @@ import { replaceFileAtomically } from './harness-update.mjs';
 
 /**
  * 설정 → 프로젝트. 모든 프로젝트에 공통으로 적용되는 전역 기본값이며, 허브의
- * `…/rhwp/projects/settings.json` 에 저장된다. 정리 도우미·가져오기·프롬프트 맥락이
+ * `…/rhwp/projects/settings.json` 에 저장된다. 정리 도우미·가져오기·프롬프트 콘텍스트가
  * 호출할 때마다 get() 으로 읽으므로 바꾼 값은 재시작 없이 적용된다.
  */
 

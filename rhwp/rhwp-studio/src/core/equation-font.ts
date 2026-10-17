@@ -1,4 +1,4 @@
-import type { LocalFontRecord } from './local-fonts';
+import { importedFontPhysicalStyle, type LocalFontRecord } from './local-fonts.ts';
 import { sfntCoversText, sfntEmToCellRatio, sfntTrueTypeRunMetrics } from './sfnt-cmap.ts';
 
 const DEFAULT_FAMILIES = ['Latin Modern Math', 'STIX Two Text', 'STIX Two Math', 'Times New Roman', 'Times', 'serif'];
@@ -20,8 +20,8 @@ export function equationLocalFontFace(
 ): LocalFontRecord | undefined {
   return records.find(record => (
     record.family.toLowerCase() === family.toLowerCase()
-    && /italic|oblique/i.test(record.style) === italic
-    && /bold|black|heavy/i.test(record.style) === bold
+    && importedFontPhysicalStyle(record).italic === italic
+    && importedFontPhysicalStyle(record).bold === bold
   ));
 }
 

@@ -10,9 +10,10 @@ use super::text_replay::{draw_text_run, draw_text_run_tracked};
 
 use crate::renderer::equation::ast::MatrixStyle;
 use crate::renderer::equation::layout::{
-    integral_fallback_top_y, integral_geom, is_integral_symbol, leaf_font_size, sqrt_pua_geometry,
-    LayoutBox, LayoutKind, BIG_OP_SCALE, INTEGRAL_SCALE, MODERN_HY_SUM_ADVANCE_EM,
-    MODERN_HY_SUM_BASELINE, MODERN_HY_SUM_SCALE, MODERN_HY_SUM_TRAIL_PAD, SCRIPT_SCALE,
+    estimate_text_width, integral_fallback_top_y, integral_geom, is_integral_symbol,
+    leaf_font_size, sqrt_pua_geometry, LayoutBox, LayoutKind, BIG_OP_SCALE, BIG_OP_TRAIL_PAD,
+    INTEGRAL_SCALE, MODERN_HY_SUM_ADVANCE_EM, MODERN_HY_SUM_BASELINE, MODERN_HY_SUM_SCALE,
+    MODERN_HY_SUM_TRAIL_PAD, SCRIPT_SCALE,
 };
 use crate::renderer::equation::symbols::{DecoKind, FontStyleKind};
 
@@ -176,7 +177,7 @@ fn render_box(
         LayoutKind::MathSymbol(text) => {
             // 적분은 현대 HY의 굽은 글리프를 우선하고, 나머지는 stroke path 를 쓴다.
             if is_integral_symbol(text) {
-                draw_integral(canvas, fonts, font_families, x, y, fs, color);
+                draw_integral(canvas, fonts, font_families, text, x, y, fs, color);
             } else {
                 draw_text(
                     canvas,
@@ -470,14 +471,17 @@ fn render_box(
                 };
             if is_integral {
                 // 현대 HY는 글리프를 우선하고, 나머지는 stroke path 를 쓴다.
-                draw_integral(canvas, fonts, font_families, x, y, fs, color);
+                draw_integral(canvas, fonts, font_families, symbol, x, y, fs, color);
             } else {
                 let sup_h = sup.as_ref().map(|b| b.height + fs * 0.05).unwrap_or(0.0);
                 let op_x = if modern_hy_sum {
                     x + (lb.width - fs * MODERN_HY_SUM_TRAIL_PAD - op_fs * MODERN_HY_SUM_ADVANCE_EM)
                         / 2.0
                 } else {
-                    x + (lb.width - estimate_op_width(symbol, op_fs)) / 2.0
+                    x + (lb.width
+                        - fs * BIG_OP_TRAIL_PAD
+                        - estimate_text_width(symbol, op_fs, false))
+                        / 2.0
                 };
                 let op_y = y
                     + sup_h
@@ -1600,10 +1604,6 @@ fn draw_decoration(
     }
 }
 
-fn estimate_op_width(text: &str, fs: f64) -> f64 {
-    text.chars().count() as f64 * fs * 0.6
-}
-
 /// 현대 HY 적분은 굽은 글리프를 칠하고, 다른 적분은 기존 stroke path 를 사용한다.
 ///
 /// 대체 stroke path 는 SVG/Canvas 와 같은 적분 잉크 범위를 사용한다.
@@ -1611,6 +1611,7 @@ fn draw_integral(
     canvas: &Canvas,
     fonts: &EqFonts<'_>,
     font_families: &[&str],
+    symbol: &str,
     x: f64,
     y: f64,
     fs: f64,
@@ -1620,6 +1621,24 @@ fn draw_integral(
         && font_families
             .first()
             .is_some_and(|name| crate::renderer::equation::font::is_legacy_equation_font(name));
+    if let Some(glyph) =
+        crate::renderer::equation::font::modern_hy_integral_glyph(symbol, modern_hy)
+    {
+        // 기존 paint 원점은 유지하고, 원본 자형의 em만 사용한다. layout/첨자는 그대로 둔다.
+        if draw_legacy_pua_glyph(
+            canvas,
+            fonts,
+            font_families,
+            glyph,
+            x + fs * 0.042,
+            y + fs * 1.94,
+            fs * crate::renderer::equation::font::MODERN_HY_INTEGRAL_GLYPH_SCALE,
+            None,
+            color,
+        ) {
+            return;
+        }
+    }
     if modern_hy {
         // STIXGeneral ∫의 잉크 높이(1.144em)를 현대 HY의 약 2em에 맞춘다.
         let mgr = FontMgr::default();

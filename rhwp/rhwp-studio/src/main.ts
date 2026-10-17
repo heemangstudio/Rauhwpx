@@ -1,3 +1,10 @@
+import {
+  installLicenseGate,
+  mountLicenseBuyButton,
+  showLicenseLockedPrompt,
+  showLicenseRequiredPrompt,
+} from './ui/license-gate';
+import { isLicenseViewerMode, onLicenseViewerModeChange } from './ui/license-viewer-mode';
 import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
 import { installDocumentTitle } from '@/ui/document-title';
 import { worktreeIdentity } from '@/ui/worktree-chip';
@@ -50,6 +57,7 @@ import {
   runSaveBeforeLeaving,
   whenSavesIdle,
   saveCurrentDocument,
+  saveToCurrentFileQuietly,
 } from '@/command/commands/file';
 import { editCommands, openClassicDocumentHistory } from '@/command/commands/edit';
 import {
@@ -86,6 +94,12 @@ import {
 } from '@/recent/document-preflight';
 import { addRecentDoc, listRecentDocs, RECENT_MENU_LIMIT, updateRecentDoc, type RecentDoc } from '@/recent/recent-store';
 import { createDocumentHome, type DocumentHome } from '@/home/document-home';
+import {
+  createUnsavedDocuments,
+  type UnsavedDocumentAction,
+  type UnsavedDocumentReport,
+  type UnsavedDocuments,
+} from '@/home/unsaved-documents';
 import { createIcon } from '@/ui/agent-sidebar/icons';
 import { loadWorktreeData } from '@/home/home-data';
 import { renderFirstPage } from '@/home/thumbnail-render';
@@ -111,6 +125,7 @@ import {
   configureDesktopFonts,
   finalizeDesktopFontReport,
   fontReportsChangedLayout,
+  getDesktopFontHostApi,
   hasSystemFontHost,
   setHubFontHost,
   isDesktopFontIndexReady,
@@ -119,6 +134,7 @@ import {
   prepareDesktopFontsForDocument,
   prepareLocalFontAccessMetrics,
   prepareSystemFontsForDocument,
+  reloadDesktopFonts,
   settleWithin,
   syncImportedFontMetrics,
   unattemptedDesktopFonts,
@@ -251,6 +267,7 @@ import {
   restoreNativeDocument,
   reserveDesktopDocument,
   canOpenNativeDocumentWindow,
+  offersAutosaveRecovery,
   canRevealNativeDocument,
   desktopFileManagerName,
   openNativeDocumentWindow,
@@ -336,12 +353,17 @@ function createSessionCore(slotId?: string): DocumentSession {
       },
       owner: rendererSessionContextPromise,
     },
-    onDirtyChanged: () => desktopDocumentStateUpdate?.(),
+    onDirtyChanged: () => {
+      desktopDocumentStateUpdate?.();
+      unsavedDocuments?.invalidate();
+    },
   });
   return session;
 }
 
 let desktopDocumentStateUpdate: (() => void) | null = null;
+/** 세션 콜백이 먼저 정의되므로 나중에 채운다. */
+let unsavedDocuments: UnsavedDocuments | null = null;
 const firstSession = createSessionCore();
 const liveSessions: DocumentSession[] = [firstSession];
 let attachedSession: DocumentSession = firstSession;
@@ -360,7 +382,7 @@ function isManagedWorktree(session = attachedSession): boolean {
 }
 
 function sessionReadOnly(session = attachedSession): boolean {
-  return documentReadOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
+  return documentReadOnly || licenseReadOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
 }
 
 async function withWorktreeMutation<T>(session: DocumentSession, run: () => Promise<T>): Promise<T> {
@@ -425,7 +447,7 @@ const trapRecoveryPage = new TrapRecoveryPage({
   attached: () => attachedSession,
   saveCopy: saveTrappedDocumentCopy,
   run: () => trapRecoveryRun,
-  readOnly: () => documentReadOnly,
+  readOnly: () => licenseReadOnly || documentReadOnly,
   deliveredLaunchHandleIds,
   deliveredGeneratedDocumentIds,
   storage: sessionStorageOrNull,
@@ -557,6 +579,7 @@ let editorStyleOverflow: EditorStyleOverflow | null = null;
 let ruler: Ruler | null = null;
 let rendererSession: RendererSession | null = null;
 let editMode: EditorEditMode = 'normal';
+let licenseReadOnly = false;
 let documentReadOnly = new URLSearchParams(window.location.search).get('templatePreview') === '1';
 let agentEditingLease: AgentEditingLease = { active: false, agent: 'codex' };
 let rendererRuntimeRequest: EmbedRendererRuntimeRequestV1 | null = null;
@@ -614,6 +637,8 @@ function getContext(): EditorContext {
     inField: inputHandler?.isInField() ?? false,
     isEditable: !sessionReadOnly() && !agentEditingLease.active && (!isFormMode || canEditFormField),
     readOnly: sessionReadOnly(),
+    // 라이선스 읽기 전용은 문서 보기 전용이다. 템플릿 미리보기 창은 다른 문서를 열지 않는다.
+    readOnlyCanOpen: !documentReadOnly,
     userEditingLocked: agentEditingLease.active,
     editMode,
     isFormMode,
@@ -706,8 +731,10 @@ let agentSidebarReady = false;
 
 eventBus.on('settings:open', (payload) => {
   if (agentSidebarReady) return;
-  const destination = (payload as { destination?: unknown } | undefined)?.destination;
+  const request = payload as { destination?: unknown; onOpen?: () => void } | undefined;
+  const destination = request?.destination;
   if (destination !== undefined && destination !== 'editing') return;
+  request?.onOpen?.();
   showEditingSettingsFallback({
     eventBus,
     runtime: {
@@ -762,7 +789,25 @@ const commandServices: CommandServices = {
   },
 };
 
+/**
+ * 라이선스 읽기 전용에서는 저장할 수 없으니 닫을 때 저장을 묻지 않는다. 바뀐 문서를 복구본으로 남긴 뒤 닫고,
+ * 다음 실행에서 복구로 연다. 복구본을 남기지 못한 문서가 있을 때만 닫을지 묻는다.
+ */
+async function closeLicenseViewer(): Promise<boolean> {
+  const dirty = liveSessions.filter((session) => session.wasm.hasLoadedDocument() && session.documentState.isDirty());
+  const kept = await Promise.all(dirty.map((session) => session.autosave.flushAndWait('license-read-only-close')
+    .catch(() => false)));
+  const lost = dirty.filter((_session, index) => !kept[index]);
+  if (lost.length > 0) {
+    const names = lost.map((session) => `"${session.wasm.fileName}"`).join(', ');
+    if (!await showConfirm('복구본을 남기지 못했어요', `${names}\n닫으면 저장하지 않은 변경이 사라져요.`)) return false;
+  }
+  for (const session of liveSessions) session.documentState.permitNextUnload();
+  return true;
+}
+
 installDesktopCloseHandling(async () => {
+  if (licenseReadOnly) return closeLicenseViewer();
   if (!await confirmCloseWithBackgroundSessions()) return false;
   const allowClose = await canReplaceCurrentDocument();
   if (allowClose) {
@@ -983,6 +1028,12 @@ function initializeDesktopFonts(): void {
     void loadDesktopFontIndex().catch((error) => {
       console.warn('[DesktopFonts] 글꼴 색인 준비 실패:', error);
     });
+    // 글꼴 폴더를 바꾸면 main 이 새로 만든 색인을 받아 열린 문서 글꼴을 다시 잇는다.
+    getDesktopFontHostApi()?.onFontsChanged?.(() => {
+      void reloadDesktopFonts({ rescan: false }).catch((error) => {
+        console.warn('[DesktopFonts] 글꼴 색인 갱신 실패:', error);
+      });
+    });
     return;
   }
   if (!isFontFolderSupported()) return;
@@ -1184,9 +1235,54 @@ function prepareCanvasKitLocalFonts(fontNames: readonly string[] | undefined): v
   });
 }
 
+/**
+ * 체험이 끝나 편집을 잠그기 전에 바뀐 문서를 모두 남긴다. 대화상자는 띄우지 않는다.
+ * 먼저 복구본으로 남기고, 파일이 있는 문서는 그 파일에 덮어 저장한다. 새 문서처럼 파일이 없거나,
+ * 검토를 기다리는 에이전트 편집이 있거나, 작업 사본인 문서는 복구본까지만 남긴다.
+ */
+async function saveOpenDocumentsBeforeLicenseLock(prepareWrite: () => Promise<void>): Promise<{ failed: number }> {
+  await whenSavesIdle().catch(() => {});
+  let failed = 0;
+  for (const session of [...liveSessions]) {
+    if (!session.documentState.isDirty()) continue;
+    if (session === attachedSession) {
+      try { inputHandler?.flushDeferredPaginationIfNeeded('license-lock'); } catch { /* 복구본과 파일 저장은 그대로 시도한다 */ }
+    }
+    const kept = await session.autosave.flushAndWait('license-lock');
+    if (session.writer || isManagedWorktree(session)) {
+      if (!kept) failed += 1;
+      continue;
+    }
+    if (session.wasm.currentFileHandle && !session.wasm.isNewDocument) await prepareWrite();
+    const result = await saveToCurrentFileQuietly(
+      { wasm: session.wasm, documentState: session.documentState, eventBus: session.bus },
+      async (handle) => {
+        if (session.documentId) {
+          bindNativeFileHandleIdentity(handle, {
+            documentId: session.documentId,
+            sourceDigest: session.wasm.documentDigest,
+            useSourceDigest: false,
+          });
+        }
+      },
+    );
+    if (result === 'failed' || (result === 'skipped' && !kept)) failed += 1;
+    // 저장 뒤 버전 작업 공간이 저장 기준을 다 맞출 때까지 기다린다. 그래야 다시 열 때 바뀐 문서로 보이지 않는다.
+    if (result === 'saved') await session.versions?.whenIdle().catch(() => {});
+  }
+  return { failed };
+}
+
 async function initialize(): Promise<void> {
   installWebAppShell();
   installDesktopWindowChrome();
+  await installLicenseGate(value => {
+    licenseReadOnly = value;
+    setDocumentReadOnly(documentReadOnly);
+  }, {
+    hasUnsavedWork: () => liveSessions.some((session) => session.documentState.isDirty()),
+    saveBeforeLock: saveOpenDocumentsBeforeLicenseLock,
+  });
   installDesktopDocumentState({
     subscribe: (update) => {
       desktopDocumentStateUpdate = update;
@@ -1227,6 +1323,10 @@ async function initialize(): Promise<void> {
       initRhwpDev(wasm);
     }
     initializeDesktopFonts();
+    if (import.meta.env.DEV && import.meta.env.VITE_RHWP_DEV_FONT_PACK === '1') {
+      // 가져온 개발 글꼴을 첫 문서 조판 전에 WASM 메트릭에도 등록한다.
+      syncImportedFontMetrics();
+    }
     const renderBackendRequest = resolveRenderBackendRequest(window.location.search);
     const canvaskitModeRequest = resolveCanvasKitRenderModeRequest(window.location.search);
     const canvaskitMode = canvaskitModeRequest.mode;
@@ -1561,7 +1661,10 @@ function installDocumentVersions(session: DocumentSession): DocumentVersionContr
     autoEnable: () => userSettings.getUseHancomGit(),
     worktreeHost: {
       ensureOwnership: (worktree) => ensureWorktreeOwnership(session, worktree),
-      canMutate: () => !documentReadOnly && !loadingWorktreeSessions.has(session)
+      canMutate: () => !licenseReadOnly && !documentReadOnly && !loadingWorktreeSessions.has(session)
+        && (!session.worktree || session.worktreeWritable),
+      // 라이선스 읽기 전용은 편집만 막는다. 파일에 저장된 내용을 기준으로 적는 일은 문서를 바꾸지 않는다.
+      canRecordSaved: () => !documentReadOnly && !loadingWorktreeSessions.has(session)
         && (!session.worktree || session.worktreeWritable),
       getStatus: (worktree) => {
         const live = liveSessionForDocument(worktree.documentId);
@@ -2446,6 +2549,47 @@ async function renameRecentDocument(row: RecentDoc, name: string): Promise<strin
 
 let documentHome: DocumentHome | null = null;
 
+/** 새 문서를 처음 본 시각. 홈의 저장하지 않은 문서는 새것부터 놓인다. */
+const newDocumentSeenAt = new Map<string, number>();
+
+/** 이 창에 열린, 아직 경로가 없는 새 문서. 작업 트리 문서는 작업 트리에 저장되어 있다. */
+function localUnsavedDocuments(): UnsavedDocumentReport[] {
+  return liveSessions
+    .filter((session) => session.documentId && !session.worktree
+      && session.wasm.hasLoadedDocument() && session.wasm.isNewDocument)
+    .map((session) => {
+      const documentId = session.documentId!;
+      let createdAt = newDocumentSeenAt.get(documentId);
+      if (createdAt === undefined) {
+        createdAt = Date.now();
+        newDocumentSeenAt.set(documentId, createdAt);
+      }
+      return { documentId, fileName: session.wasm.fileName, edited: session.documentState.isDirty(), createdAt };
+    });
+}
+
+/** 홈의 저장하지 않은 문서 카드: 그 문서로 가거나, 그 문서를 붙인 채 저장 창을 띄운다. */
+async function runUnsavedDocumentAction(documentId: string, action: UnsavedDocumentAction): Promise<void> {
+  const session = liveSessionForDocument(documentId);
+  if (!session) return;
+  if (session !== attachedSession) await runNavigation(() => attachSession(session));
+  if (action === 'open') {
+    documentHome?.hide();
+    showOpenedDocumentInSidebar();
+    return;
+  }
+  await saveCurrentDocument(commandServices);
+}
+
+const unsavedDocumentStore = createUnsavedDocuments({
+  local: localUnsavedDocuments,
+  run: runUnsavedDocumentAction,
+});
+unsavedDocuments = unsavedDocumentStore;
+for (const name of ['document-context-changed', 'document-saved']) {
+  eventBus.on(name, () => unsavedDocumentStore.invalidate());
+}
+
 /** 템플릿은 허브에 있다. 지금 보이는 채팅의 브리지로 묻는다. */
 function templateBridge() {
   return attachedSession.activeChat?.bridge ?? null;
@@ -2470,6 +2614,11 @@ function installDocumentHome(): void {
       if (!bridge) return Promise.reject(new Error('에이전트 허브에 연결되어 있지 않습니다.'));
       return bridge.fetchTemplateContent(template);
     },
+    canAddTemplate: () => {
+      if (!isLicenseViewerMode()) return true;
+      showLicenseRequiredPrompt('템플릿은 라이선스를 활성화한 뒤에 추가할 수 있어요.');
+      return false;
+    },
     addTemplate: async (file) => {
       const bridge = templateBridge();
       if (!bridge) throw new Error('에이전트 허브에 연결되어 있지 않습니다.');
@@ -2483,7 +2632,21 @@ function installDocumentHome(): void {
       if (!session) return null;
       return renderFirstPage(session.wasm).catch(() => null);
     },
-    createBlank: () => { dispatcher.dispatch('file:new-doc'); },
+    mountTopbarTrailing: (slot) => mountLicenseBuyButton(slot),
+    unsaved: {
+      list: () => unsavedDocumentStore.list(),
+      subscribe: (listener) => unsavedDocumentStore.subscribe(listener),
+      open: (document) => { void unsavedDocumentStore.run(document, 'open'); },
+      save: (document) => { void unsavedDocumentStore.run(document, 'save'); },
+    },
+    createBlank: () => {
+      // 잠긴 동안 새 문서는 편집할 수 없으므로 만들지 않고 체험 끝 카드를 띄운다.
+      if (isLicenseViewerMode()) {
+        showLicenseRequiredPrompt('새 문서는 라이선스를 활성화한 뒤에 만들 수 있어요.');
+        return;
+      }
+      dispatcher.dispatch('file:new-doc');
+    },
     createFromTemplate: async (template) => {
       eventBus.emit('document-open-intent');
       const bridge = templateBridge();
@@ -2544,9 +2707,16 @@ function installDocumentHome(): void {
     },
     onDrop: (event) => { void handleDocumentDrop(event, { fromHome: true }); },
     // 문서 없이도 집중 화면 설정으로 가고, 설정을 닫으면 홈으로 돌아온다.
+    // 홈은 설정 화면이 자리 잡은 뒤에 내린다. 먼저 내리면 교차 페이드가 문서 화면에서 시작해 한 번 비친다.
     openSettings: () => {
-      documentHome?.hide();
-      eventBus.emit('settings:open', { fullscreen: true, from: 'home' });
+      eventBus.emit('settings:open', {
+        fullscreen: true,
+        from: 'home',
+        onOpen: () => {
+          documentHome?.hide();
+          if (isLicenseViewerMode()) showLockedSettings();
+        },
+      });
     },
     toast: (message) => showToast({ message, durationMs: 3200 }),
   });
@@ -2578,9 +2748,39 @@ function installAppHomeButton(): void {
   }
 }
 
+/** 잠긴 설정 카드가 떠 있는지. 그때 홈은 페이드 없이 덮어, 뒤에서 설정을 거두는 모습이 비치지 않는다. */
+let lockedSettingsShown = false;
+
 /** 문서 홈을 창 전체에 연다. 편집기·사이드바(에이전트 전체 화면 포함)는 닫힐 때 그대로 돌아온다. */
-function openDocumentHome(): void {
-  documentHome?.show();
+function openDocumentHome(options: { instant?: boolean } = {}): void {
+  documentHome?.show({ instant: options.instant === true || lockedSettingsShown });
+}
+
+/**
+ * 라이선스가 잠긴 채 홈에서 설정을 열었다. 설정 화면은 흐리게 뒤에 깔리고, 그 위에 닫을 수 없는
+ * 카드가 선다. 카드의 '홈으로'나 제목 막대의 홈 단추로 홈에 돌아가면 카드와 설정을 함께 내린다.
+ * 활성화되면 게이트가 카드를 내리고 설정은 그대로 쓸 수 있다.
+ */
+function showLockedSettings(): void {
+  const home = documentHome?.element;
+  const prompt = showLicenseLockedPrompt(() => openDocumentHome());
+  if (!prompt) return;
+  lockedSettingsShown = true;
+  const stop = (): void => {
+    lockedSettingsShown = false;
+    observer.disconnect();
+    unsubscribe();
+  };
+  const observer = new MutationObserver(() => {
+    if (!home || home.hidden) return;
+    stop();
+    prompt.dismiss();
+    eventBus.emit('settings:close-locked-backdrop');
+    // 홈은 설정을 거두기 전에 떴으므로, 거둔 뒤 돌아가기 대상을 다시 그린다.
+    documentHome?.show();
+  });
+  if (home) observer.observe(home, { attributes: true, attributeFilter: ['hidden'] });
+  const unsubscribe = onLicenseViewerModeChange((locked) => { if (!locked) stop(); });
 }
 
 /** 화면에 붙은 문서의 이름을 바꾼다 (제목 막대). 못 바꾸면 알리고 null. */
@@ -2761,6 +2961,7 @@ async function createLiveSession(): Promise<DocumentSession | null> {
   }
   const session = createSessionCore(createDocumentSessionSlotId());
   liveSessions.push(session);
+  unsavedDocuments?.invalidate();
   try {
     installDocumentVersions(session);
   } catch (error) {
@@ -2785,6 +2986,7 @@ async function disposeSession(session: DocumentSession, options: { persistWorktr
     await session.versions?.persistWorktree();
   }
   liveSessions.splice(index, 1);
+  unsavedDocuments?.invalidate();
   for (const dispose of session.disposers.splice(0)) {
     try { dispose(); } catch (error) { console.warn('[sessions] 세션 정리 실패:', error); }
   }
@@ -3348,6 +3550,9 @@ function setupEventListeners(): void {
     ).forEach((button) => {
       button.disabled = !dispatcher.isEnabled(button.dataset.cmd ?? '');
     });
+    // 글머리표는 명령 대신 고르기 팝업을 여는 단추라 data-cmd 가 없다. 같은 명령의 상태를 따른다.
+    const bulletButton = document.getElementById('tb-bullet') as HTMLButtonElement | null;
+    if (bulletButton) bulletButton.disabled = !dispatcher.isEnabled('format:bullet-shape');
     modeGroups.forEach((group) => {
       group.style.display = group.dataset.toolbarMode === mode ? '' : 'none';
       if (group.dataset.toolbarMode === mode) {
@@ -4150,6 +4355,8 @@ async function offerAutosaveRecoveryAtStartup(): Promise<void> {
   if (shouldSkipInitialAutosaveRecovery()) return;
 
   try {
+    // 다른 창에서 띄운 창은 묻지 않는다. 복구본은 남아 앱의 첫 창이 다음에 묻는다.
+    if (!await offersAutosaveRecovery()) return;
     await rendererSessionContextPromise;
     await offerAutosaveRecovery({
       listRecoverable: () => listRecoverableAutosaveDrafts(),
@@ -4598,7 +4805,9 @@ async function canReplaceCurrentDocument(skipUnsavedGuard?: boolean): Promise<bo
 /** 에이전트가 일하는 중이면 지금 문서를 뒤에 두고 새 세션에서 연다. */
 function shouldOpenInNewSession(): boolean {
   return attachedSession.wasm.hasLoadedDocument()
-    && (isDocumentSessionBusy(attachedSession) || isManagedWorktree());
+    && (isDocumentSessionBusy(attachedSession) || isManagedWorktree()
+      // 라이선스 읽기 전용에서는 바뀐 문서를 저장할 수 없다. 묻거나 버리지 않고 뒤에 두어 복구본을 지킨다.
+      || (licenseReadOnly && attachedSession.documentState.isDirty()));
 }
 
 function openDocumentBytes(data: OpenDocumentBytesEvent): Promise<boolean> {

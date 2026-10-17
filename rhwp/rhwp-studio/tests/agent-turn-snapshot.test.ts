@@ -482,7 +482,7 @@ function turnHarness() {
   return h;
 }
 
-test('프로바이더 맥락이 끊길 수 있는 지점마다 기억을 버려 문서가 그대로여도 본문을 다시 싣는다', async () => {
+test('프로바이더 콘텍스트가 끊길 수 있는 지점마다 기억을 버려 문서가 그대로여도 본문을 다시 싣는다', async () => {
   const { bridge, userMessages, acknowledgeStart } = bridgeFixture();
   const sendsFresh = async (label: string) => {
     await bridge.sendUserMessage(label);

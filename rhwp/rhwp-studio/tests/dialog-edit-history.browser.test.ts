@@ -225,6 +225,17 @@ test('수식 편집기로 넣은 수식은 undo 한 번으로 빠진다', opts, 
   assertOneUndoStep(result, '수식 넣기');
 });
 
+test('수식 편집기가 열린 동안 문서가 바뀌어도 처음 캐럿 자리에 수식이 들어간다', opts, async () => {
+  assert.deepEqual(await scenario('equationInsertAfterDocumentChange'), {
+    body: { dialogOpen: false, paragraphs: ['새 문단', '수[수식][수식]식 자리'], scripts: ['a', 'b over c'], caret: 3 },
+    textBox: { dialogOpen: false, text: '글상자[수식] 안쪽' },
+  });
+});
+
+test('에이전트 편집 중에 확인한 수식은 버려지지 않고 편집이 끝난 뒤 들어간다', opts, async () => {
+  assert.deepEqual(await scenario('equationInsertWhileLocked'), { lockedOpen: true, kept: 'x^2', inserted: ['x^2'] });
+});
+
 test('검토 대기 에이전트 편집이 있으면 저장은 쓰기 전에 수락·거절·취소를 묻는다', opts, async (t) => {
   const cases = [
     ['cancel', ['dialog']],

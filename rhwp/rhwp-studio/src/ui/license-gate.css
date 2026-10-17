@@ -1,0 +1,64 @@
+/* 체험·읽기 전용 알약. 메뉴 막대의 명령 검색 바로 왼쪽에 선다. 회색 글자이고 테두리는 '활성화'에만 있다.
+   막대 안의 컨트롤이라 문서 영역을 밀지 않는다. 라이선스가 있으면 DOM 에서 빠진다. */
+#menu-bar .license-pill {
+  order: 2;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  margin-left: 8px;
+  padding: 0 2px 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ui-text-secondary);
+  font: inherit;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
+  -webkit-app-region: no-drag;
+}
+#menu-bar .license-pill:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+/* 테두리는 '활성화'에만 둔다. 알약 전체가 단추라 올리면 이 칸이 밝아진다. */
+.license-pill-action {
+  padding: 2px 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: 5px;
+  color: var(--ui-text);
+  font-weight: 500;
+}
+#menu-bar .license-pill:hover .license-pill-action { background: var(--ui-hover); border-color: var(--ui-border-strong); }
+.license-pill-action[hidden] { display: none; }
+
+/* 파일 이름이 없거나 가운데로 빠지면 알약이 오른쪽 끝 묶음의 맨 앞이 된다. */
+#editor-document-title[hidden] + .license-pill,
+html.desktop-native-menu #menu-bar .license-pill { margin-left: auto; }
+#menu-bar .license-pill + #editor-command-search { margin-left: 8px; }
+@media (max-width: 767px) {
+  #menu-bar .license-pill { margin-left: auto; padding-inline: 6px; font-size: 11px; }
+}
+
+/* 문서 홈 위 막대 오른쪽 끝의 구매 단추. 테두리 없는 회색 글자 단추이고, 올리면 면이 깔린다. */
+.license-buy {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ui-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: default;
+  -webkit-app-region: no-drag;
+}
+.license-buy:hover { background: var(--ui-hover); color: var(--ui-text); }
+.license-buy:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.license-buy[hidden] { display: none; }
+/* 홈의 `.document-home button { font: inherit }` 이 크기·굵기를 덮지 않게 한 단계 높인다. */
+.document-home .license-buy { font-size: 12px; font-weight: 500; }

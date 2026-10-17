@@ -10,8 +10,10 @@ import {
   getLocalFontState,
   getLocalFonts,
   importLocalFontFiles,
+  importedFontPhysicalStyle,
   getImportedFontGeneration,
   getImportedLocalFontBytes,
+  getSessionLocalFontFace,
   hasImportedLocalFontFace,
   localFontImportMessage,
   LOCAL_FONT_BYTE_READ_CONCURRENCY,
@@ -22,6 +24,7 @@ import {
   loadLocalFontBytesFor,
   loadStoredLocalFonts,
   registerLocalFontFace,
+  setDesktopFontByteReader,
   resetLocalFontsForTests,
   resolveLocalFont,
   type LocalFontSnapshot,
@@ -1263,4 +1266,179 @@ test('Local Font Access API가 없으면 문서 후보 글꼴만 probe snapshot�
     resetLocalFontsForTests();
     restoreGlobals(originals);
   }
+});
+
+function localizedStyleFont(style: string, weight: number, selection: number): ArrayBuffer {
+  const original = createSfntWithNameRecords([
+    { nameId: 1, value: 'Locale Family' }, { nameId: 2, value: style },
+    { nameId: 4, value: `Locale Family ${style}` }, { nameId: 6, value: `Locale-${weight}-${selection}` },
+  ]);
+  const old = new DataView(original.buffer, original.byteOffset, original.byteLength);
+  const nameOffset = old.getUint32(20); const nameLength = old.getUint32(24);
+  const bytes = new ArrayBuffer(60 + nameLength + 64 + 46);
+  const v = new DataView(bytes); v.setUint32(0, 0x00010000); v.setUint16(4, 3);
+  for (const [index, tag, offset, length] of [[0, 0x6e616d65, 60, nameLength], [1, 0x4f532f32, 60 + nameLength, 64], [2, 0x68656164, 124 + nameLength, 46]]) {
+    v.setUint32(12 + index * 16, tag); v.setUint32(20 + index * 16, offset); v.setUint32(24 + index * 16, length);
+  }
+  new Uint8Array(bytes, 60, nameLength).set(original.subarray(nameOffset, nameOffset + nameLength));
+  v.setUint16(60 + nameLength, 4); v.setUint16(64 + nameLength, weight); v.setUint16(122 + nameLength, selection);
+  return bytes;
+}
+
+test('SFNT localized style metadata drives browser descriptors and variant bytes', async () => {
+  const g = globalThis as TestGlobals & { FontFace?: unknown };
+  const originalDocument = g.document; const originalFace = g.FontFace;
+  const descriptors: Array<{style: string; weight: string}> = [];
+  g.FontFace = class { constructor(_family: string, _bytes: ArrayBuffer, value: {style: string; weight: string}) { descriptors.push(value); } async load() { return this; } };
+  g.document = { fonts: { add() {}, delete() { return true; } } };
+  resetLocalFontsForTests();
+  try {
+    const italic = localizedStyleFont('Corsivo', 400, 1);
+    const boldItalic = localizedStyleFont('Grassetto Corsivo', 700, 1);
+    await registerLocalFontFace(localizedStyleFont('Regular', 400, 0), {source: 'imported', fileName: 'regular.ttf'});
+    const a = await registerLocalFontFace(italic, {source: 'imported', fileName: 'italic.ttf'}); const b = await registerLocalFontFace(boldItalic, {source: 'imported', fileName: 'bolditalic.ttf'});
+    assert.equal(a.ok, true); assert.equal(b.ok, true);
+    assert.deepEqual(descriptors, [{style: 'normal', weight: '400'}, {style: 'italic', weight: '400'}, {style: 'italic', weight: '700'}]);
+    if (!a.ok || !b.ok) return;
+    assert.equal(a.record.style, 'Corsivo'); assert.ok(a.record.aliases.includes('Locale Family Corsivo'));
+    assert.deepEqual(getImportedLocalFontBytes('Locale Family', false, true), italic);
+    assert.deepEqual(getImportedLocalFontBytes('Locale Family', true, true), boldItalic);
+  } finally { resetLocalFontsForTests(); g.document = originalDocument; g.FontFace = originalFace; }
+});
+
+
+test('가변 인스턴스 굵기는 기본 SFNT 굵기보다 우선하고 바이트 선택에도 반영된다', async () => {
+  const g = globalThis as TestGlobals & { FontFace?: unknown };
+  const originalDocument = g.document; const originalFace = g.FontFace;
+  const descriptors: Array<{ style: string; weight: string }> = [];
+  g.FontFace = class {
+    constructor(_family: string, _bytes: ArrayBuffer, value: { style: string; weight: string }) { descriptors.push(value); }
+    async load() { return this; }
+  };
+  g.document = { fonts: { add() {}, delete() { return true; } } };
+  try {
+    for (const source of ['imported', 'desktop'] as const) {
+      resetLocalFontsForTests();
+      descriptors.length = 0;
+      const regular = localizedStyleFont('Regular', 400, 0);
+      const semibold = localizedStyleFont('Semibold', 600, 0);
+      const sfnt = new DataView(semibold);
+      sfnt.setUint16(sfnt.getUint32(36) + 4, 400); // 이름은 인스턴스, OS/2는 기본 face.
+      const a = await registerLocalFontFace(regular, {
+        source, fileName: 'variable.ttf', desktopFaceId: 'variable-regular',
+      });
+      const b = await registerLocalFontFace(semibold, {
+        source, fileName: 'variable.ttf', desktopFaceId: 'variable-semibold', descriptors: { weight: '600' },
+      });
+      assert.equal(a.ok, true); assert.equal(b.ok, true);
+      if (!a.ok || !b.ok) throw new Error('fixture registration failed');
+      assert.deepEqual(importedFontPhysicalStyle(a.record), { weight: 400, bold: false, italic: false });
+      assert.deepEqual(importedFontPhysicalStyle(b.record), { weight: 600, bold: true, italic: false });
+      assert.deepEqual(descriptors, [{ style: 'normal', weight: '400' }, { style: 'normal', weight: '600' }]);
+      if (source === 'imported') {
+        assert.deepEqual(getImportedLocalFontBytes('Locale Family', false, false), regular);
+        assert.deepEqual(getImportedLocalFontBytes('Locale Family', true, false), semibold);
+      } else {
+        // 데스크톱 face는 사본을 보관하지 않고 등록한 인스턴스 id로 다시 읽는다.
+        assert.equal(getSessionLocalFontFace(localFontFaceKey(a.record))?.bytes, null);
+        assert.equal(getSessionLocalFontFace(localFontFaceKey(b.record))?.bytes, null);
+        assert.equal(getImportedLocalFontBytes('Locale Family', false, false), null);
+        assert.equal(getImportedLocalFontBytes('Locale Family', true, false), null);
+        const reads: string[] = [];
+        setDesktopFontByteReader(async id => {
+          reads.push(id);
+          assert.ok(id === 'variable-regular' || id === 'variable-semibold');
+          return id === 'variable-regular' ? regular : semibold;
+        });
+        const bytes = await loadLocalFontBytesFor(['Locale Family', b.record.postscriptName]);
+        assert.deepEqual(bytes.get(localFontFaceKey(a.record)), regular);
+        assert.deepEqual(bytes.get(localFontFaceKey(b.record)), semibold);
+        assert.deepEqual(reads.sort(), ['variable-regular', 'variable-semibold']);
+      }
+    }
+  } finally { resetLocalFontsForTests(); g.document = originalDocument; g.FontFace = originalFace; }
+});
+
+test('SFNT metadata bounds, versioned oblique and collection offsets preserve fallback', async () => {
+  const g = globalThis as TestGlobals & { FontFace?: unknown };
+  const doc = g.document; const fontFace = g.FontFace;
+  g.FontFace = class { async load() { return this; } };
+  g.document = {fonts: {add() {}, delete() {return true;}}};
+  const register = async (bytes: ArrayBuffer) => {
+    resetLocalFontsForTests();
+    const result = await registerLocalFontFace(bytes, {source: 'imported', fileName: 'face.ttf', names: {family: 'Fixture', fullName: 'Fixture', postscriptName: 'Fixture', style: 'Italic', aliases: []}});
+    assert.equal(result.ok, true); if (!result.ok) throw new Error('fixture registration failed');
+    return result.record.sfntStyle;
+  };
+  try {
+    const modern = localizedStyleFont('Corsivo', 550, 0x200);
+    assert.deepEqual(await register(modern), {weight: 550, italic: true});
+    const old = modern.slice(0); const oldView = new DataView(old); const os2 = oldView.getUint32(36);
+    oldView.setUint16(os2, 3);
+    assert.deepEqual(await register(old), {weight: 550, italic: false}, 'oblique bit is not defined before OS/2 v4');
+    const invalidWeight = modern.slice(0); const iv = new DataView(invalidWeight);
+    iv.setUint16(os2 + 4, 1001); iv.setUint16(iv.getUint32(52) + 44, 1);
+    assert.deepEqual(await register(invalidWeight), {weight: 700, italic: true});
+    const short = modern.slice(0); const sv = new DataView(short);
+    sv.setUint32(40, 4); sv.setUint32(56, 44);
+    assert.equal(await register(short), undefined, 'truncated tables use existing style-name fallback');
+    const collection = new ArrayBuffer(modern.byteLength + 16); const cv = new DataView(collection);
+    cv.setUint32(0, 0x74746366); cv.setUint32(4, 0x00010000); cv.setUint32(8, 1); cv.setUint32(12, 16);
+    new Uint8Array(collection, 16).set(new Uint8Array(modern));
+    for (let i = 0; i < 3; i++) cv.setUint32(16 + 20 + i * 16, cv.getUint32(16 + 20 + i * 16) + 16);
+    assert.deepEqual(await register(collection), {weight: 550, italic: true});
+    cv.setUint32(12, collection.byteLength);
+    assert.equal(await register(collection), undefined, 'out-of-range TTC face does not invent metadata');
+  } finally {resetLocalFontsForTests(); g.document = doc; g.FontFace = fontFace;}
+});
+
+
+test('SFNT detection reads bounded metadata slices without whole font allocation', async () => {
+  const g = globalThis as TestGlobals;
+  const originals = {browser: g.browser, chrome: g.chrome, document: g.document, localStorage: g.localStorage, queryLocalFonts: g.queryLocalFonts};
+  const metadata = localizedStyleFont('Corsivo', 400, 1);
+  const blob = new Blob([metadata, new Uint8Array(1024 * 1024)]);
+  const slices: Array<[number, number]> = [];
+  const bounded = {size: blob.size, arrayBuffer: async () => {throw new Error('whole font read forbidden');}, slice(start: number, end: number) {slices.push([start, end]); return blob.slice(start, end);}};
+  resetLocalFontsForTests(); g.localStorage = createStorage();
+  g.queryLocalFonts = async () => [{family: 'Locale Family', fullName: 'Locale Family Corsivo', postscriptName: 'Locale-I', style: 'Corsivo', blob: async () => bounded}];
+  try {
+    await detectLocalFonts({force: true});
+    const record = getLocalFontRecords().find(face => face.family === 'Locale Family');
+    assert.deepEqual(record?.sfntStyle, {weight: 400, italic: true});
+    assert.ok(slices.length > 0);
+    assert.ok(slices.reduce((sum, [start, end]) => sum + end - start, 0) < 1024, 'glyph data is never read for metadata');
+  } finally {resetLocalFontsForTests(); restoreGlobals(originals);}
+});
+
+test('SFNT explicit names preserve supplied alias and display topology', async () => {
+  const g = globalThis as TestGlobals & {FontFace?: unknown}; const doc = g.document; const ff = g.FontFace;
+  g.FontFace = class {async load() {return this;}}; g.document = {fonts: {add() {}, delete() {return true;}}};
+  const names = {family: 'Explicit', fullName: 'Explicit Cursive', postscriptName: 'Explicit-I', style: 'Cursive', displayName: '표시', aliases: ['Explicit Alias']};
+  resetLocalFontsForTests();
+  try {
+    const plain = await registerLocalFontFace(new Uint8Array([1, 2, 3]).buffer, {source: 'desktop', fileName: 'plain.ttf', names});
+    resetLocalFontsForTests();
+    const metadata = await registerLocalFontFace(localizedStyleFont('Corsivo', 400, 1), {source: 'desktop', fileName: 'metadata.ttf', names});
+    assert.equal(plain.ok, true); assert.equal(metadata.ok, true); if (!plain.ok || !metadata.ok) return;
+    assert.deepEqual(metadata.record.aliases, plain.record.aliases);
+    assert.equal(metadata.record.displayName, plain.record.displayName); assert.equal(metadata.record.style, plain.record.style);
+    assert.deepEqual(metadata.record.sfntStyle, {weight: 400, italic: true});
+  } finally {resetLocalFontsForTests(); g.document = doc; g.FontFace = ff;}
+});
+
+test('SFNT regular family lookup selects unique nearest 400 and preserves ties', async () => {
+  const g = globalThis as TestGlobals & {FontFace?: unknown}; const doc = g.document; const ff = g.FontFace;
+  g.FontFace = class {async load() {return this;}}; g.document = {fonts: {add() {}, delete() {return true;}}};
+  resetLocalFontsForTests();
+  try {
+    const regular = await registerLocalFontFace(localizedStyleFont('Regular', 400, 0), {source: 'imported', fileName: 'regular.ttf'});
+    await registerLocalFontFace(localizedStyleFont('Light', 300, 0), {source: 'imported', fileName: 'light.ttf'});
+    assert.equal(regular.ok, true); if (!regular.ok) return;
+    assert.equal(resolveLocalFont('Locale Family')?.postscriptName, regular.record.postscriptName);
+    resetLocalFontsForTests();
+    await registerLocalFontFace(localizedStyleFont('Light', 300, 0), {source: 'imported', fileName: 'light.ttf'});
+    await registerLocalFontFace(localizedStyleFont('Medium', 500, 0), {source: 'imported', fileName: 'medium.ttf'});
+    assert.equal(resolveLocalFont('Locale Family'), null, 'equal physical distance remains ambiguous');
+  } finally {resetLocalFontsForTests(); g.document = doc; g.FontFace = ff;}
 });

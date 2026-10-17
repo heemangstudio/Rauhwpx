@@ -149,6 +149,7 @@ impl crate::document_core::DocumentCore {
                 target.para_shape_id = shape_id;
                 if !char_shapes.is_empty() {
                     target.char_shapes = char_shapes;
+                    target.invalidate_authored_run_styles();
                 }
             }
         }
@@ -665,6 +666,9 @@ impl RemapCtx<'_> {
             para.style_id = self.map.style(para.style_id);
             for char_shape in &mut para.char_shapes {
                 char_shape.char_shape_id = self.map.char_shape(char_shape.char_shape_id);
+            }
+            for run in para.authored_text_runs.iter_mut().flatten() {
+                run.char_shape_id = self.map.char_shape(run.char_shape_id);
             }
             for ctrl in &mut para.controls {
                 self.control(ctrl);

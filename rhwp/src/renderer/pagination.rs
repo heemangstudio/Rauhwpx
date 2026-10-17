@@ -96,9 +96,19 @@ pub struct EndnoteParaSource {
     pub note_para_index: usize,
 }
 
+/// 조판에서 실제 수락한 줄의 현재 프레임 기준 원점.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CommittedLineOrigin {
+    pub para_index: usize,
+    pub line_index: usize,
+    pub vertical_pos: i32,
+}
+
 /// 페이지 분할 결과: 페이지별 콘텐츠 참조
 #[derive(Debug)]
 pub struct PaginationResult {
+    /// 원본 리셋으로 닫히기 전, 실제 fit 이월로 새 프레임을 얻은 줄만 발행한다.
+    pub(crate) committed_line_origins: Vec<CommittedLineOrigin>,
     /// 페이지별 콘텐츠 목록
     pub pages: Vec<PageContent>,
     /// 어울림 배치 표와 나란히 배치되는 빈 리턴 문단 목록 (전체)
@@ -1079,3 +1089,18 @@ mod state;
 
 #[cfg(test)]
 mod tests;
+
+/// 수락된 원점만 반영한다. 줄의 나머지 wire 필드와 원본 리셋은 건드리지 않는다.
+pub(crate) fn publish_committed_line_origins(
+    paragraphs: &mut [crate::model::paragraph::Paragraph],
+    origins: &[crate::renderer::pagination::CommittedLineOrigin],
+) {
+    for origin in origins {
+        if let Some(line) = paragraphs
+            .get_mut(origin.para_index)
+            .and_then(|para| para.line_segs.get_mut(origin.line_index))
+        {
+            line.vertical_pos = origin.vertical_pos;
+        }
+    }
+}

@@ -193,7 +193,7 @@ export interface TurnFailureCollector {
    */
   endTurn(event: Extract<AgentStreamEvent, { type: 'turn-end' }>, messageAwaitingTurn?: boolean): TurnFailureResult | null;
   /**
-   * 맥락 압축이 실패했다(compaction failed). 허브는 끝까지 가지 못한 턴의 끝 바로 앞에서만 이것을 낸다.
+   * 콘텍스트 압축이 실패했다(compaction failed). 허브는 끝까지 가지 못한 턴의 끝 바로 앞에서만 이것을 낸다.
    * 턴 안이면 그 턴의 마지막 근거로 모아 둔다 — 턴 끝이 실패를 싣지 않았을 때(문구 없는 'failed')만 쓰고,
    * 턴 끝의 분류된 실패·오류 문구가 먼저다. 턴 밖이면 버린다(사이드바의 압축 안내가 맡는다).
    */
@@ -205,7 +205,7 @@ export interface TurnFailureCollector {
 /** 한 턴의 error 들과 turn-end 를 실패 알림 하나로 모은다. */
 export function createTurnFailureCollector(): TurnFailureCollector {
   let held: ProviderFailure[] = [];
-  /** 이 턴의 실패한 맥락 압축 — 다른 근거가 없을 때만 쓴다. */
+  /** 이 턴의 실패한 콘텍스트 압축 — 다른 근거가 없을 때만 쓴다. */
   let compaction: ProviderFailure | null = null;
   let turnId: string | null = null;
   let userInitiated = false;
@@ -260,7 +260,7 @@ export function createTurnFailureCollector(): TurnFailureCollector {
     },
     observeCompactionFailure(event, holding) {
       if (!holding || event.phase !== 'failed') return;
-      compaction = legacyProviderFailure(event.agent, event.message || '맥락 압축에 실패했습니다.');
+      compaction = legacyProviderFailure(event.agent, event.message || '콘텍스트 압축에 실패했습니다.');
     },
     flush() {
       const failure = firstHeld();

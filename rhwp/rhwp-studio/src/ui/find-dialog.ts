@@ -1,3 +1,4 @@
+import { findSearchStart, navigateToFindHit, type FindNavigationHandler, type FindOffsetApi } from '../core/find-navigation.ts';
 import type { CommandServices } from '@/command/types';
 import type {
   DocumentPosition,
@@ -27,12 +28,14 @@ export function isLiveFindHit(
   hits: readonly SearchHit[],
   hit: SearchResult,
   selection: FindSelection | null,
+  offsets: Pick<FindOffsetApi, 'textToLogicalOffset'>,
 ): boolean {
   if (!hit.found || hit.sec === undefined || hit.para === undefined
     || hit.charOffset === undefined || hit.length === undefined) {
     return false;
   }
-  const stillMatches = hits.some(h => !h.cellContext
+  if (hit.cellPath?.length || hit.cellContext) return false;
+  const stillMatches = hits.some(h => !h.cellContext && !h.cellPath?.length
     && h.sec === hit.sec
     && h.para === hit.para
     && h.charOffset === hit.charOffset
@@ -41,9 +44,9 @@ export function isLiveFindHit(
   const { start, end } = selection;
   return isBodyPosition(start) && isBodyPosition(end)
     && start.sectionIndex === hit.sec && start.paragraphIndex === hit.para
-    && start.charOffset === hit.charOffset
+    && start.charOffset === offsets.textToLogicalOffset(hit.sec, hit.para, hit.charOffset)
     && end.sectionIndex === hit.sec && end.paragraphIndex === hit.para
-    && end.charOffset === hit.charOffset + hit.length;
+    && end.charOffset === offsets.textToLogicalOffset(hit.sec, hit.para, hit.charOffset + hit.length);
 }
 
 /**
@@ -290,14 +293,17 @@ export class FindDialog {
 
     // 역방향 검색 시: 현재 선택 영역의 시작 위치를 기준으로 해야
     // 현재 매치를 건너뛰고 이전 매치를 찾을 수 있다.
-    let fromSec = pos.sectionIndex;
-    let fromPara = pos.paragraphIndex;
-    let fromChar = pos.charOffset;
+    const searchStart = findSearchStart(pos, this.services.wasm);
+    let fromSec = searchStart.section;
+    let fromPara = searchStart.paragraph;
+    let fromChar = searchStart.offset;
+    let fromPath = searchStart.path;
 
     if (!forward && this.currentHit?.found) {
       fromSec = this.currentHit.sec!;
       fromPara = this.currentHit.para!;
       fromChar = this.currentHit.charOffset!;
+      fromPath = this.currentHit.cellPath ?? [];
     }
 
     const result = this.services.wasm.searchText(
@@ -307,6 +313,7 @@ export class FindDialog {
       fromChar,
       forward,
       this.caseSensitiveCheck.checked,
+      fromPath,
     );
 
     if (result.found) {
@@ -329,28 +336,7 @@ export class FindDialog {
     const ih = this.services.getInputHandler();
     if (!ih || !hit.found) return;
 
-    // 검색 결과 위치로 커서 이동
-    const startPos = {
-      sectionIndex: hit.sec!,
-      paragraphIndex: hit.para!,
-      charOffset: hit.charOffset!,
-    };
-    const endPos = {
-      sectionIndex: hit.sec!,
-      paragraphIndex: hit.para!,
-      charOffset: hit.charOffset! + hit.length!,
-    };
-
-    // 선택 영역으로 하이라이트: anchor → start, cursor → end
-    ih.moveCursorTo(startPos);
-    // setAnchor + moveTo로 선택 범위 지정
-    const cursor = (ih as any).cursor;
-    if (cursor) {
-      cursor.setAnchor();
-      cursor.moveTo(endPos);
-    }
-    // 캐럿 갱신 + 스크롤
-    (ih as any).updateCaret?.();
+    navigateToFindHit(ih as unknown as FindNavigationHandler, hit, this.services.wasm);
   }
 
   private doReplace(): void {
@@ -367,7 +353,7 @@ export class FindDialog {
       this.queryInput.value, this.caseSensitiveCheck.checked, false,
     );
     const selection = this.services.getInputHandler()?.getSelection() ?? null;
-    if (!isLiveFindHit(liveHits, hit, selection)) {
+    if (!isLiveFindHit(liveHits, hit, selection, this.services.wasm)) {
       this.currentHit = null;
       this.doSearch(true);
       return;

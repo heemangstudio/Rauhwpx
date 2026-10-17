@@ -63,7 +63,7 @@
   overflow: hidden;
   border-radius: var(--ag-r-code);
   background: var(--ag-clip-color);
-  color: #ffffff;
+  color: var(--ag-paper-white);
   font-size: var(--ag-fs-mono);
   line-height: 18px;
   text-overflow: ellipsis;
@@ -98,7 +98,7 @@
   box-sizing: border-box;
   border: 1.5px solid var(--ag-clip-color);
   border-radius: 2px;
-  background: #ffffff;
+  background: var(--ag-paper-white);
 }
 
 .ag-clip-selected .ag-clip-handle {

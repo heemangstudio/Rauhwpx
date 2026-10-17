@@ -184,15 +184,21 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       document.body.append(host);
       const opened: string[] = [];
       routeChatBrowserLinks(host, async url => { opened.push(url); }, error => { throw error; });
-      const events = [...host.querySelectorAll('a')].map(link => {
-        const event = new MouseEvent('click', { bubbles: true, cancelable: true });
-        (link.firstElementChild ?? link).dispatchEvent(event);
-        return event.defaultPrevented;
-      });
-      const middle = new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true });
-      host.querySelector('a')!.dispatchEvent(middle);
+      // 라우팅이 끝난 뒤 결과만 기록하고 기본 동작은 막는다. mailto 등이 실제로 메일 앱을 열지 않게 한다.
+      const prevented: boolean[] = [];
+      const record = (event: Event) => { prevented.push(event.defaultPrevented); event.preventDefault(); };
+      document.addEventListener('click', record);
+      document.addEventListener('auxclick', record);
+      for (const link of host.querySelectorAll('a')) {
+        (link.firstElementChild ?? link).dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      }
+      const events = prevented.splice(0);
+      host.querySelector('a')!.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }));
+      const middle = prevented[0];
+      document.removeEventListener('click', record);
+      document.removeEventListener('auxclick', record);
       host.remove();
-      return { opened, events, middle: middle.defaultPrevented };
+      return { opened, events, middle };
     });
     assert.deepEqual(links.opened, ['https://example.com/chat', 'https://example.com/chat']);
     assert.deepEqual(links.events, [true, false, false, false], 'web links route internally while downloads, documents and mail preserve their actions');

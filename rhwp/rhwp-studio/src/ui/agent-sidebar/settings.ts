@@ -3,6 +3,7 @@ import { createSetupTerminal } from './setup-terminal.ts';
 import './settings.css';
 import { confirmSheet } from './sheet.ts';
 import { showToast } from '../toast.ts';
+import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/active.ts';
 
 import {
   availableModelsForAgent,
@@ -44,6 +45,7 @@ import {
 import type { SidebarBridge } from '../../agent/bridge.ts';
 import type { ChatThread } from '../../agent/threads.ts';
 import { createArchiveSettingsPane } from './settings-archive.ts';
+import { createLicenseSettingsSection } from './settings-license.ts';
 import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
 import type { EventBus } from '../../core/event-bus.ts';
 import type {
@@ -101,6 +103,9 @@ const MODE_OPTIONS: ReadonlyArray<{ id: AgentMode; label: string; title: string 
 }));
 
 
+
+/** OpenRouter 키 발급과 연결 순서를 설명하는 문서. */
+const OPENROUTER_GUIDE_URL = 'https://heemangstudios.com/tutorial-openrouter.html';
 
 /** OpenRouter 가 받는 reasoning_effort 세 단계. */
 const PI_EFFORT_OPTIONS: ReadonlyArray<{ id: string; label: string }> = [
@@ -413,6 +418,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   let setupProgressResetTimer: ReturnType<typeof setTimeout> | null = null;
   const openedAuthUrls = new Set<string>();
   const announcedUpdates = new Set<string>();
+  const unsubscribeInitialSetup = onInitialSetupInactive(() => {
+    if (!disposed && setupStatuses) announceProviderUpdates(setupStatuses);
+  });
   /** 사용자가 닫거나 취소한 로그인. 늦게 도착한 상태로 다시 붙지 않게 한다. */
   const abandonedAuthRunIds = new Set<string>();
   /** 닫기마다 올라간다. 닫기 전에 보낸 시작 요청의 응답을 버리는 데 쓴다. */
@@ -507,6 +515,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
   });
   panes.get('editing')?.appendChild(editingSettings.element);
+  // 데스크톱 앱의 체험·라이선스 상태와 '이 기기 비활성화'.
+  const desktopLicense = (globalThis as { rhwpDesktop?: { license?: Parameters<typeof createLicenseSettingsSection>[0] } })
+    .rhwpDesktop?.license;
+  const licenseSection = desktopLicense ? createLicenseSettingsSection(desktopLicense) : null;
+  if (licenseSection) panes.get('editing')?.appendChild(licenseSection.root);
   const projectPane = createProjectSettingsPane({
     service: () => projectSettings ?? projectClientOf(bridge)?.service ?? null,
     isConnected: () => connectionState === 'connected',
@@ -618,10 +631,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   // 2단계 — OpenRouter 키
   const piKeyStep = el('div', 'ag-pi-step');
   const piKeyNote = el('p', 'ag-settings-note', 'OpenRouter 로그인 또는 API 키');
-  const piOauth = el('button', 'ag-settings-primary ag-agent-auth-choice');
+  const piOauth = el('button', 'ag-settings-btn ag-pi-oauth', '브라우저로 로그인');
   piOauth.type = 'button';
-  piOauth.append(el('strong', '', '브라우저로 로그인'), el('span', '', 'OpenRouter OAuth'));
-  const piAuthDivider = el('div', 'ag-agent-auth-divider', '또는 API 키');
   const piKeyInput = createTextField('OpenRouter 키', {
     type: 'password',
     placeholder: 'sk-or-v1-…',
@@ -632,8 +643,15 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   piKeySubmit.type = 'button';
   const piKeyCancel = el('button', 'ag-settings-btn', '취소');
   piKeyCancel.type = 'button';
-  piKeyActions.append(piKeySubmit, piKeyCancel);
-  piKeyStep.append(piKeyNote, piOauth, piAuthDivider, piKeyInput.field, piKeyActions);
+  const piKeyGuide = el('a', 'ag-pi-key-guide', '가이드');
+  piKeyGuide.href = OPENROUTER_GUIDE_URL;
+  piKeyGuide.target = '_blank';
+  piKeyGuide.rel = 'noopener noreferrer';
+  piKeyActions.append(piKeySubmit, piKeyCancel, piKeyGuide);
+  // 브라우저 로그인과 키 입력은 한 줄에 나란히 둔다.
+  const piAuthRow = el('div', 'ag-pi-auth-row');
+  piAuthRow.append(piOauth, el('span', 'ag-pi-auth-or', '또는'), piKeyInput.field);
+  piKeyStep.append(piKeyNote, piAuthRow, piKeyActions);
 
   // 3단계 — 카탈로그에서 모델 고르기
   const piCatalogStep = el('div', 'ag-pi-step');
@@ -1988,6 +2006,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   /** 새 Claude/Codex 버전을 세션마다 한 번 조용히 알린다. 놓쳐도 연결 목록에 업데이트 버튼이 남는다. */
   function announceProviderUpdates(statuses: AgentSetupStatusMap): void {
+    // 처음 설정 중에는 띄우지 않는다. 설정이 닫히면 그때의 상태로 다시 알린다.
+    if (isInitialSetupActive()) return;
     for (const agent of ['claude', 'codex'] as const) {
       const status = statuses[agent];
       // 설치 전에는 번들 런타임의 오래된 버전이 updateRequired 를 켠다.
@@ -2663,7 +2683,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     row.classList.toggle('ag-active', picked);
     row.setAttribute('aria-pressed', String(picked));
     row.setAttribute('aria-label', `${model.name}, ${picked ? '선택됨' : '선택 안 됨'}`);
-    row.title = `${model.id} · ${model.provider}\n${formatTokens(model.contextLength)} 컨텍스트 · 입력 ${formatUsd(pricePerMillion(model.pricing.prompt))} · 출력 ${formatUsd(pricePerMillion(model.pricing.completion))}${model.reasoning ? ' · 추론' : ''}`;
+    row.title = `${model.id} · ${model.provider}\n${formatTokens(model.contextLength)} 콘텍스트 · 입력 ${formatUsd(pricePerMillion(model.pricing.prompt))} · 출력 ${formatUsd(pricePerMillion(model.pricing.completion))}${model.reasoning ? ' · 추론' : ''}`;
     const text = el('span', 'ag-settings-model-row-text');
     text.append(el('span', 'ag-settings-model-row-name', model.name));
     const trailing = el('span', 'ag-settings-model-row-trailing');
@@ -3487,6 +3507,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       if (piProgressCreepTimer) clearInterval(piProgressCreepTimer);
       unsubscribeHancomGit();
       unsubscribeAttentionPrefs();
+      unsubscribeInitialSetup();
+      licenseSection?.dispose();
       editingSettings.dispose();
       element.remove();
       setupOverlay.remove();

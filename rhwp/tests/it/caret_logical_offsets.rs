@@ -171,3 +171,80 @@ fn 논리_캐럿_편집은_인라인_수식_오른쪽의_텍스트를_보존한�
     assert_eq!(para.text, "abcd", "Y 와 수식을 함께 지운다");
     assert!(equation_text_positions(&para).is_empty());
 }
+
+/// 문단의 수식을 controls 순서대로 (스크립트, 텍스트 위치) 로 돌려준다.
+fn equations_in_order(para: &Paragraph) -> Vec<(String, usize)> {
+    let positions = para.control_text_positions();
+    para.controls
+        .iter()
+        .enumerate()
+        .filter_map(|(ci, ctrl)| match ctrl {
+            Control::Equation(eq) => Some((eq.script.clone(), positions[ci])),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn 논리_캐럿_수식_삽입은_캐럿_칸에_들어간다() {
+    let logical = Some(true);
+    let eqs = |doc: &HwpDocument| equations_in_order(&doc.document().sections[0].paragraphs[0]);
+    let at = |script: &str, pos: usize| (script.to_string(), pos);
+
+    // 본문 "a[A]bcdef": 논리 a0 [A]1 b2 c3 d4
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document_native().unwrap();
+    doc.insert_text_native(0, 0, 0, "abcdef").unwrap();
+    doc.insert_equation_native(0, 0, 1, "A", 1000, 0).unwrap();
+
+    doc.insert_equation(0, 0, 4, "B", 1000, 0, logical).unwrap();
+    assert_eq!(eqs(&doc), vec![at("A", 1), at("B", 3)], "c 와 d 사이");
+
+    doc.insert_equation(0, 0, 1, "C", 1000, 0, logical).unwrap();
+    assert_eq!(
+        eqs(&doc),
+        vec![at("C", 1), at("A", 1), at("B", 3)],
+        "수식 바로 앞 캐럿은 그 수식 앞에 넣는다"
+    );
+
+    // a0 [C]1 [A]2 b3 — 캐럿 3 은 A 뒤, b 앞
+    doc.insert_equation(0, 0, 3, "D", 1000, 0, logical).unwrap();
+    assert_eq!(
+        eqs(&doc),
+        vec![at("C", 1), at("A", 1), at("D", 1), at("B", 3)],
+        "수식 바로 뒤 캐럿은 그 수식 뒤에 넣는다"
+    );
+
+    // 글자 없는 문단: 이어서 넣은 수식이 넣은 순서대로 선다
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document_native().unwrap();
+    for (caret, script) in ["A", "B", "C"].iter().enumerate() {
+        doc.insert_equation(0, 0, caret as u32, script, 1000, 0, logical)
+            .unwrap();
+    }
+    let order: Vec<String> = eqs(&doc).into_iter().map(|(script, _)| script).collect();
+    assert_eq!(order, ["A", "B", "C"]);
+
+    // 표 셀 "ab[E]cd": 캐럿 2 는 E 앞
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document_native().unwrap();
+    let table: Value =
+        serde_json::from_str(&doc.create_table_native(0, 0, 0, 1, 1).unwrap()).unwrap();
+    let pp = table["paraIdx"].as_u64().unwrap() as u32;
+    let ci = table["controlIdx"].as_u64().unwrap() as u32;
+    doc.insert_text_in_cell(0, pp, ci, 0, 0, 0, "abcd", logical)
+        .unwrap();
+    doc.insert_equation_in_cell_native(0, pp as usize, ci as usize, 0, 0, 2, "E", 1000, 0)
+        .unwrap();
+    doc.insert_equation_in_cell(0, pp, ci, 0, 0, 2, "F", 1000, 0, logical)
+        .unwrap();
+    let Control::Table(t) =
+        &doc.document().sections[0].paragraphs[pp as usize].controls[ci as usize]
+    else {
+        panic!("표 컨트롤");
+    };
+    assert_eq!(
+        equations_in_order(&t.cells[0].paragraphs[0]),
+        vec![at("F", 2), at("E", 2)]
+    );
+}

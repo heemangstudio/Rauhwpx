@@ -462,6 +462,11 @@ export class CursorState {
     this.atLineEnd = false;
   }
 
+  /** 중첩 경로는 최상위가 글상자여도 실제 안쪽 컨테이너로 탐색한다. */
+  private usesCellPathNavigation(): boolean {
+    return this.isInCell() && (!this.isInTextBox() || (this.position.cellPath?.length ?? 0) > 1);
+  }
+
   // ─── 수평 이동 ──────────────────────────────────────────
 
   /** 커서를 좌/우로 이동한다 — 문서 트리 DFS 기반 통합 이동 */
@@ -470,7 +475,7 @@ export class CursorState {
     this.atLineEnd = false;
 
     // 표 셀 내부는 기존 로직 유지 (Tab 셀 이동과 연동)
-    if (this.isInCell() && !this.isInTextBox()) {
+    if (this.usesCellPathNavigation()) {
       this.moveHorizontalInCell(delta);
       return;
     }
@@ -862,7 +867,7 @@ export class CursorState {
     this.atLineEnd = false;
     const pos = this.position;
 
-    if (this.isInCell() && !this.isInTextBox()) {
+    if (this.usesCellPathNavigation()) {
       // [#2914] 본문 분기와 동일한 한컴 표준 — 문단 중간(Ctrl+↑)이면 먼저 현재 문단 시작에서 멈춘다.
       if (direction === -1 && pos.charOffset > 0) {
         this.position = { ...pos, charOffset: 0 };
@@ -955,7 +960,7 @@ export class CursorState {
     this.preferredX = null;
     const pos = this.position;
 
-    if (this.isInCell() && !this.isInTextBox()) {
+    if (this.usesCellPathNavigation()) {
       this.moveToWordBoundaryInCell(direction);
       return;
     }

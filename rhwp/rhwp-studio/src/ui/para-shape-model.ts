@@ -13,12 +13,12 @@ export function pxToPt(px: number): number {
   return px * 72 / 96;
 }
 
-/** pt → raw HWPUNIT (2x 저장값) — 여백/들여쓰기 */
+/** pt → raw HWPUNIT (2x 저장값) — 여백/들여쓰기/문단 위·아래 간격 */
 export function ptToRaw2x(pt: number): number {
   return Math.round(pt * 100 * 2);
 }
 
-/** pt → raw HWPUNIT (1x) — 문단 간격/줄 간격 */
+/** pt → raw HWPUNIT (1x) — 줄 간격 */
 export function ptToRaw(pt: number): number {
   return Math.round(pt * 100);
 }

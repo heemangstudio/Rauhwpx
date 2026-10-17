@@ -11,6 +11,7 @@ import {
   type EquationPreview,
 } from '@/core/equation-preview';
 import type { DocumentPosition } from '@/core/types';
+import { captureCaretAnchor, resolveCaretAnchor, type CaretAnchor } from '@/engine/caret-anchor';
 
 /**
  * 수식 편집 대화상자
@@ -263,10 +264,8 @@ export class EquationEditorDialog {
   private cellPath?: CellPathLike;
   private innerControlIdx?: number;
   private noteRef?: NoteControlRef;
-  private insertIntent: EquationInsertIntent | null = null;
+  private insertAnchor: CaretAnchor | null = null;
   private acceptedWarningScript: string | null = null;
-  private insertionInvalidated = false;
-  private insertionWatchers: Array<() => void> = [];
 
   // 원본 속성 (비교용)
   private origProps: EquationProperties | null = null;
@@ -294,9 +293,8 @@ export class EquationEditorDialog {
     this.cellPath = cellPath;
     this.innerControlIdx = innerControlIdx;
     this.noteRef = noteRef;
-    this.insertIntent = null;
+    this.insertAnchor = null;
     this.acceptedWarningScript = null;
-    this.clearInsertionWatchers();
 
     try {
       this.origProps = noteRef
@@ -333,18 +331,14 @@ export class EquationEditorDialog {
     }, 50);
   }
 
-  /** Open a draft without mutating the document. Confirmation inserts once. */
+  /**
+   * Open a draft without mutating the document. Confirmation inserts once, at the anchor
+   * re-resolved against the document at that moment, so edits made meanwhile never block it.
+   */
   openCreate(intent: EquationInsertIntent): void {
     this.build();
-    this.insertIntent = intent;
+    this.insertAnchor = captureCaretAnchor(this.wasm, intent.position);
     this.acceptedWarningScript = null;
-    this.insertionInvalidated = false;
-    this.clearInsertionWatchers();
-    const invalidate = () => { this.insertionInvalidated = true; };
-    this.insertionWatchers = [
-      this.eventBus.on('document-changed', invalidate),
-      this.eventBus.on('document-mutated', invalidate),
-    ];
     this.noteRef = undefined;
     this.cellPath = intent.position.cellPath;
     this.innerControlIdx = undefined;
@@ -373,12 +367,7 @@ export class EquationEditorDialog {
       this.previewTimer = null;
     }
     this.hideAutocomplete();
-    this.clearInsertionWatchers();
     this.overlay?.remove();
-  }
-
-  private clearInsertionWatchers(): void {
-    this.insertionWatchers.splice(0).forEach(dispose => dispose());
   }
 
   /** 한 번만 DOM 구성 */
@@ -873,15 +862,8 @@ export class EquationEditorDialog {
     const fontSizeHwpunit = fontSizePt * 100;
     const color = hexToColorRef(this.colorInput.value);
 
-    if (this.insertIntent) {
-      if (this.insertionInvalidated) {
-        this.scriptErrorLabel.textContent = '문서가 변경되었습니다. 수식 삽입을 다시 시작하세요.';
-        this.scriptErrorLabel.style.color = '#c00';
-        this.scriptErrorLabel.style.display = '';
-        return;
-      }
-      const intent = this.insertIntent;
-      const pos = intent.position;
+    if (this.insertAnchor) {
+      const pos = resolveCaretAnchor(this.wasm, this.insertAnchor);
       const inputHandler = this.services?.getInputHandler();
       if (!inputHandler) return;
       let insertedRef: ObjectRef | null = null;
@@ -892,7 +874,7 @@ export class EquationEditorDialog {
           if (pos.cellPath?.length && pos.parentParaIndex !== undefined) {
             const result = wasm.insertEquationInCellByPath(
               pos.sectionIndex, pos.parentParaIndex, pos.cellPath,
-              pos.charOffset, storedScript, fontSizeHwpunit, color,
+              pos.charOffset, storedScript, fontSizeHwpunit, color, true,
             );
             if (!result.ok) throw new Error('[insert:equation] 중첩 셀 삽입 실패');
             const finalPath = pos.cellPath[pos.cellPath.length - 1];
@@ -910,7 +892,7 @@ export class EquationEditorDialog {
             && pos.controlIndex !== undefined && pos.cellParaIndex !== undefined) {
             const result = wasm.insertEquationInCell(
               pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex,
-              pos.cellParaIndex, pos.charOffset, storedScript, fontSizeHwpunit, color,
+              pos.cellParaIndex, pos.charOffset, storedScript, fontSizeHwpunit, color, true,
             );
             if (!result.ok) throw new Error('[insert:equation] 셀 삽입 실패');
             insertedRef = {
@@ -925,7 +907,7 @@ export class EquationEditorDialog {
             };
           } else {
             const result = wasm.insertEquation(
-              pos.sectionIndex, pos.paragraphIndex, pos.charOffset, storedScript, fontSizeHwpunit, color,
+              pos.sectionIndex, pos.paragraphIndex, pos.charOffset, storedScript, fontSizeHwpunit, color, true,
             );
             if (!result.ok) throw new Error('[insert:equation] 삽입 실패');
             insertedRef = {
@@ -935,10 +917,19 @@ export class EquationEditorDialog {
               type: 'equation',
             };
           }
-          return { ...pos, charOffset: pos.charOffset + 8 };
+          return { ...pos, charOffset: pos.charOffset + 1 };
         },
       });
-      if (insertedRef) inputHandler.selectPictureObjectRef(insertedRef);
+      if (!insertedRef) {
+        // 에이전트 편집 중이거나 읽기 전용이면 편집기가 삽입을 받지 않는다. 쓴 수식은 남겨 둔다.
+        this.scriptErrorLabel.textContent = inputHandler.isUserEditingLocked()
+          ? '에이전트 편집이 끝나면 확인을 다시 누르세요.'
+          : '지금은 수식을 넣을 수 없습니다.';
+        this.scriptErrorLabel.style.color = '#c00';
+        this.scriptErrorLabel.style.display = '';
+        return;
+      }
+      inputHandler.selectPictureObjectRef(insertedRef);
       this.eventBus.emit('document-mutated', 'insert-equation');
       this.hide();
       return;

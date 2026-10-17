@@ -3770,6 +3770,9 @@ impl DocumentCore {
             if control_idx < para.ctrl_data_records.len() {
                 para.ctrl_data_records.remove(control_idx);
             }
+            // stream이 달라졌으므로 원본 run/종료 단어 위치를 더 이상 재사용하지 않는다.
+            para.authored_text_runs = None;
+            para.para_text_terminal = None;
 
             // char_count 갱신 (확장 컨트롤 = 8 code unit)
             if para.char_count >= 8 {

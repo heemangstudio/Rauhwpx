@@ -220,3 +220,9 @@ test('CJK pitch requires a loaded exact source with valid font data', () => {
   assert.equal(createEquationTextMeasurer(() => ({ ...modernHyRecord, family: 'Other' }), () => modernHyBytes)('HYhwpEQ', '한', 10, false, false, true), null);
   assert.equal(createEquationTextMeasurer(() => modernHyRecord, () => new ArrayBuffer(2))('HYhwpEQ', '한', 10, false, false, true), null);
 });
+
+test('SFNT metadata selects localized equation italic and retains name fallback', () => {
+  const italic: LocalFontRecord = { family: 'Times', fullName: 'Times Corsivo', postscriptName: 'Times-I', style: 'Corsivo', displayName: 'Times', aliases: ['Times'], sfntStyle: {weight: 400, italic: true} };
+  assert.equal(equationLocalFontFace([italic], 'Times', true, false), italic);
+  assert.equal(equationLocalFontFace([italic], 'Times', false, false), undefined);
+});

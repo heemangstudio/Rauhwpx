@@ -5,11 +5,14 @@ import {
   buildDesktopFontLookup,
   configureDesktopFonts,
   createCombinedFontHost,
+  getDesktopFontMenuNames,
   isDesktopFontMatch,
   isDesktopFontsSupported,
+  loadDesktopFontIndex,
   matchDesktopFont,
   prepareDesktopFontsForDocument,
   resetDesktopFontsForTests,
+  syncImportedFontMetrics,
   type DesktopFontHostApi,
   type DesktopFontMatch,
   type SystemFontFace,
@@ -196,6 +199,99 @@ test('같은 이름이 여러 곳에 있으면 한컴 번들 사본과 그 출�
     result.slots.map(slot => [slot.slot, slot.face.id]),
     [['regular', 'hc-hcr'], ['bold', 'hc-hcr-bold'], ['italic', 'sys-hcr-italic']],
   );
+});
+
+test('다른 앱 전용 사본은 같은 이름의 사용자·시스템 글꼴을 가리지 않는다', () => {
+  const appCopy = face('office-cloud-calibri', {
+    families: ['Calibri'], postscriptNames: ['Calibri'], source: 'app', path: '/a/Calibri.ttf',
+  });
+  const systemCopy = face('sys-calibri', { families: ['Calibri'], postscriptNames: ['Calibri'], path: '/z/Calibri.ttf' });
+  const appBold = face('office-cloud-calibri-bold', {
+    families: ['Calibri'], postscriptNames: ['Calibri-Bold'], source: 'app', weight: 700, bold: true,
+  });
+  const result = match('Calibri', makeIndex([appCopy, appBold, systemCopy]));
+  assert.equal(result.anchor.id, 'sys-calibri');
+  assert.equal(result.slots.find(slot => slot.slot === 'regular')?.face.id, 'sys-calibri');
+  // 설치된 사본이 없는 스타일과 이름은 앱 사본으로 채운다.
+  assert.equal(result.slots.find(slot => slot.slot === 'bold')?.face.id, 'office-cloud-calibri-bold');
+  assert.equal(match('Calibri', makeIndex([appCopy])).anchor.id, 'office-cloud-calibri');
+});
+
+test('다른 앱 번들 글꼴은 글꼴 메뉴에 없지만 문서가 이름으로 부르면 연결된다', async () => {
+  const bundled = face('blender-noto-cjk', {
+    families: ['Noto Sans CJK SC'], postscriptNames: ['NotoSansCJKsc-Regular'], source: 'app', format: 'woff2', unlisted: true,
+  });
+  resetDesktopFontsForTests();
+  configureDesktopFonts({ host: streamedFontHost(async () => makeIndex([malgun, bundled]), () => new Uint8Array(4)) });
+  try {
+    await loadDesktopFontIndex();
+    assert.deepEqual(getDesktopFontMenuNames(), ['맑은 고딕']);
+    assert.equal(match('Noto Sans CJK SC', makeIndex([malgun, bundled])).anchor.id, 'blender-noto-cjk');
+  } finally {
+    resetDesktopFontsForTests();
+  }
+});
+
+test('가변 글꼴 인스턴스는 고정 굵기 FontFace와 인스턴스 좌표 메트릭으로 등록된다', async () => {
+  const g = globalThis as typeof globalThis & { FontFace?: unknown; document?: unknown };
+  const originalDocument = g.document;
+  const originalFontFace = g.FontFace;
+  const added: Array<Record<string, string>> = [];
+  class TestFontFace {
+    descriptors: Record<string, string>;
+    constructor(_family: string, _source: ArrayBuffer, descriptors: Record<string, string>) {
+      this.descriptors = descriptors;
+    }
+    async load(): Promise<this> { return this; }
+  }
+  g.FontFace = TestFontFace;
+  g.document = { fonts: { add(fontFace: TestFontFace) { added.push(fontFace.descriptors); }, delete() { return true; } } };
+  const variable = face('pretendard-var', {
+    families: ['Pretendard Variable'], fullNames: ['Pretendard Variable Regular'], postscriptNames: ['PretendardVariable-Regular'],
+  });
+  const semibold = face('pretendard-var-i6', {
+    instanceIndex: 6,
+    instance: { wght: 600, wdth: 90 },
+    families: ['Pretendard Variable SemiBold'],
+    fullNames: ['Pretendard Variable SemiBold'],
+    postscriptNames: ['PretendardVariable-SemiBold'],
+    typographicFamilies: ['Pretendard Variable'],
+    typographicStyles: ['SemiBold'],
+    weight: 600,
+  });
+  const reads: string[] = [];
+  const metricCalls: Array<{ aliases: string[]; variations?: string }> = [];
+  resetDesktopFontsForTests();
+  resetLocalFontsForTests();
+  configureDesktopFonts({
+    host: streamedFontHost(async () => makeIndex([variable, semibold]), (id) => {
+      reads.push(id);
+      return new Uint8Array([1, 2, 3, 4]);
+    }),
+    metrics: {
+      register: (_bytes, aliasesJson, _bold, _italic, variations) => {
+        metricCalls.push({ aliases: JSON.parse(aliasesJson), variations });
+        return JSON.stringify({ registered: true });
+      },
+    },
+  });
+  try {
+    const report = await prepareDesktopFontsForDocument(['Pretendard Variable SemiBold', 'Pretendard Variable']);
+    assert.deepEqual(report.items.map(item => item.status), ['loaded', 'loaded']);
+    assert.deepEqual(reads.sort(), ['pretendard-var', 'pretendard-var-i6']);
+    const instanceFace = added.find(descriptors => descriptors.weight === '600');
+    assert.equal(instanceFace?.stretch, '90%');
+    assert.ok(added.some(descriptors => descriptors.weight === '400' && descriptors.stretch === undefined));
+    const instanceMetrics = metricCalls.find(call => call.aliases.includes('Pretendard Variable SemiBold'));
+    assert.deepEqual(JSON.parse(instanceMetrics?.variations ?? 'null'), { wght: 600, wdth: 90 });
+    const baseMetrics = metricCalls.find(call => call.aliases.includes('Pretendard Variable Regular'));
+    assert.equal(baseMetrics?.variations, undefined);
+  } finally {
+    resetDesktopFontsForTests();
+    resetLocalFontsForTests();
+    g.document = originalDocument;
+    g.FontFace = originalFontFace;
+  }
 });
 
 test('rhwpDesktop이 없으면 데스크톱 글꼴 경로는 아무것도 바꾸지 않는다', async () => {
@@ -619,4 +715,24 @@ test('글꼴 폴더와 허브 색인을 합치고, 한쪽이 실패해도 나머
   const partial = await offline.list();
   assert.deepEqual(partial.faces.map(entry => entry.id), ['f:aaaaaaaaaaaaaaaa']);
   assert.match(partial.errors[0]?.message ?? '', /hub offline/);
+});
+
+
+test('SFNT localized physical style is shared with imported metric registration', async () => {
+  const g = globalThis as typeof globalThis & {document?: unknown; FontFace?: unknown};
+  const doc = g.document; const ff = g.FontFace;
+  g.FontFace = class {async load() {return this;}};
+  g.document = {fonts: {add() {}, delete() {return true;}}};
+  resetLocalFontsForTests(); resetDesktopFontsForTests();
+  const calls: Array<[boolean, boolean]> = [];
+  configureDesktopFonts({metrics: {register: (_bytes, _aliases, bold, italic) => {calls.push([bold, italic]); return JSON.stringify({registered: true});}}});
+  try {
+    const bytes = new ArrayBuffer(92); const v = new DataView(bytes);
+    v.setUint32(0, 0x00010000); v.setUint16(4, 1); v.setUint32(12, 0x4f532f32); v.setUint32(20, 28); v.setUint32(24, 64);
+    v.setUint16(28, 4); v.setUint16(32, 400); v.setUint16(90, 1);
+    const face = await registerLocalFontFace(bytes, {source: 'imported', fileName: 'italic.ttf', names: {family: 'Locale', fullName: 'Locale Corsivo', postscriptName: 'Locale-I', style: 'Corsivo', aliases: []}});
+    assert.equal(face.ok, true); assert.equal(syncImportedFontMetrics(), 1);
+    assert.deepEqual(calls, [[false, true]]);
+    assert.equal(syncImportedFontMetrics(), 0, 'unchanged face registration remains cached');
+  } finally {resetLocalFontsForTests(); resetDesktopFontsForTests(); g.document = doc; g.FontFace = ff;}
 });

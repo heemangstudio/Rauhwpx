@@ -3112,6 +3112,7 @@ fn merge_para(
         p.push("char_shapes".into());
         out.char_shapes =
             merge_char_shapes(&p, &b.char_shapes, &c.char_shapes, &i.char_shapes, r, x)?;
+        out.invalidate_authored_run_styles();
     }
     pf!(line_segs, "line-layout");
     pf!(range_tags, "range-tags");
@@ -3138,6 +3139,9 @@ fn merge_para(
             && p.orphan_field_ends.is_empty()
     });
     out.text = merge_text_field(&text_path, &b.text, &c.text, &i.text, r, x, plain)?;
+    if out.text != c.text {
+        out.authored_text_runs = None;
+    }
     let mut pp = path.to_vec();
     pp.push("controls".into());
     let identities = |values: &[Control]| {
@@ -3274,6 +3278,9 @@ fn merge_para(
                     }
                 }
                 crate::document_core::queries::field_query::rebuild_char_offsets(&mut out);
+                if out.char_count != c.char_count || out.char_offsets != c.char_offsets {
+                    out.authored_text_runs = None;
+                }
                 return Ok(out);
             }
             Err(_) => {
@@ -3354,6 +3361,9 @@ fn merge_para(
         )?);
     }
     crate::document_core::queries::field_query::rebuild_char_offsets(&mut out);
+    if out.char_count != c.char_count || out.char_offsets != c.char_offsets {
+        out.authored_text_runs = None;
+    }
     Ok(out)
 }
 // The persistent manifest normally supplies IDs. For legacy or ambiguous
@@ -5549,6 +5559,15 @@ fn remap_paragraph_positional_refs(
             shifts.char_shape,
             "character-shape",
         )?;
+    }
+    if let Some(runs) = &mut paragraph.authored_text_runs {
+        for run in runs {
+            changed |= shift_zero_based_u32(
+                &mut run.char_shape_id,
+                shifts.char_shape,
+                "authored character-shape",
+            )?;
+        }
     }
     for control in &mut paragraph.controls {
         match control {
@@ -9489,6 +9508,81 @@ mod tests {
         )
     }
     #[test]
+    fn authored_run_merge_preserves_noops_and_saves_text_style_and_id_changes() {
+        fn paragraph(text: &str, id: u32) -> Paragraph {
+            crate::parser::hwpx::section::parse_hwpx_section(&format!(
+                "<hs:sec xmlns:hs=\"urn:hs\" xmlns:hp=\"urn:hp\"><hp:p><hp:run charPrIDRef=\"{id}\"><hp:t>{text}</hp:t><hp:t/></hp:run></hp:p></hs:sec>"
+            )).unwrap().paragraphs.remove(0)
+        }
+        fn check_save(paragraph: Paragraph, text: &str, id: u32) {
+            let mut document =
+                parse_document(include_bytes!("../../samples/hwpx/ref/ref_empty.hwpx")).unwrap();
+            let shape = document.doc_info.char_shapes[0].clone();
+            while document.doc_info.char_shapes.len() <= id as usize {
+                document.doc_info.char_shapes.push(shape.clone());
+            }
+            document.sections[0].paragraphs.truncate(1);
+            document.sections[0].paragraphs.push(paragraph);
+            for _ in 0..2 {
+                document = parse_document(&serialize_hwpx(&document).unwrap()).unwrap();
+                let paragraph = &document.sections[0].paragraphs[1];
+                assert_eq!(paragraph.text, text);
+                assert_eq!(paragraph.char_shape_id_at(0), Some(id));
+            }
+        }
+        let base = paragraph("AB", 0);
+        for operation in 0..3 {
+            let mut incoming = base.clone();
+            match operation {
+                0 => incoming.set_single_char_shape(0),
+                1 => {
+                    incoming.insert_text_at(0, "X");
+                }
+                2 => incoming.set_single_char_shape(1),
+                _ => unreachable!(),
+            }
+            let merged = merge_para(
+                &["paragraph".into()],
+                &base,
+                &base,
+                &incoming,
+                None,
+                &mut Ctx::new(MergeOptions::default()),
+            )
+            .unwrap();
+            if operation == 0 {
+                assert_eq!(merged.authored_text_runs, base.authored_text_runs);
+            } else {
+                assert!(merged.authored_text_runs.is_none());
+            }
+            check_save(
+                merged,
+                if operation == 1 { "XAB" } else { "AB" },
+                u32::from(operation == 2),
+            );
+        }
+        let mut remapped = paragraph("AB", 1);
+        let before = remapped.authored_text_runs.clone();
+        assert!(
+            !remap_paragraph_positional_refs(&mut remapped, &PositionalRefShifts::default())
+                .unwrap()
+        );
+        assert_eq!(remapped.authored_text_runs, before);
+        assert!(remap_paragraph_positional_refs(
+            &mut remapped,
+            &PositionalRefShifts {
+                char_shape: Some((1, 1)),
+                ..Default::default()
+            }
+        )
+        .unwrap());
+        let mut expected = before.unwrap();
+        expected[0].char_shape_id = 2;
+        assert_eq!(remapped.authored_text_runs, Some(expected));
+        check_save(remapped, "AB", 2);
+    }
+
+    #[test]
     fn byte_hwpx_disjoint_paragraph_roundtrip() {
         let mut b = parse_document(include_bytes!("../../saved/blank2010.hwp")).unwrap();
         let template = b.sections[0].paragraphs[0].clone();
@@ -10942,9 +11036,12 @@ mod tests {
                 .unwrap();
         let second = synthesize_virtual_base_document_bytes(&[b, a], FileFormat::Hwpx).unwrap();
         assert_eq!(first, second);
-        let out = parse_document(&first).unwrap();
-        assert_eq!(out.sections[0].paragraphs[0].text, "virtual text");
-        assert_eq!(out.sections[0].section_def.page_def.margin_left, 7777);
+        let mut out = parse_document(&first).unwrap();
+        for _ in 0..2 {
+            assert_eq!(out.sections[0].paragraphs[0].text, "virtual text");
+            assert_eq!(out.sections[0].section_def.page_def.margin_left, 7777);
+            out = parse_document(&serialize_hwpx(&out).unwrap()).unwrap();
+        }
     }
     #[test]
     fn manifest_paths_and_walkers_cover_shape_textboxes_and_captions() {

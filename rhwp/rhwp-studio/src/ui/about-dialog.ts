@@ -1,8 +1,8 @@
 /**
  * 제품 정보 / 라이센스 다이얼로그
  *
- * HWP 공개 스펙(hwp_spec_5.0) 저작권 조항에 따른 필수 고지 문구를 포함한다.
- * 사용된 외부 크레이트의 오픈소스 라이선스 목록도 표시한다.
+ * 제품명, 버전, 고유 설치 수만 보이고 나머지는 접힌 "정보" 안에 둔다.
+ * HWP 공개 스펙(hwp_spec_5.0) 저작권 조항에 따른 필수 고지 문구와 라이선스 전문을 포함한다.
  */
 import { ModalDialog } from './dialog';
 import {
@@ -10,35 +10,13 @@ import {
   loadUniqueInstallSnapshot,
   uniqueInstallPublicUrl,
 } from '../unique-installs';
-
-/**
- * 외부 크레이트 라이선스 정보.
- *
- * WASM 번들에 실제 포함되는 핵심 Rust 크레이트만 표시한다.
- * native-skia(skia-safe/resvg/usvg) 등 optional feature 전용 크레이트는 WASM 빌드에
- * 포함되지 않으므로 제외한다. 전체 목록은 저장소 루트 THIRD_PARTY_LICENSES.md 참조.
- */
-const THIRD_PARTY_LICENSES = [
-  { name: 'wasm-bindgen', license: 'MIT / Apache-2.0' },
-  { name: 'web-sys', license: 'MIT / Apache-2.0' },
-  { name: 'js-sys', license: 'MIT / Apache-2.0' },
-  { name: 'quick-xml', license: 'MIT' },
-  { name: 'cfb', license: 'MIT' },
-  { name: 'zip', license: 'MIT' },
-  { name: 'flate2', license: 'MIT / Apache-2.0' },
-  { name: 'encoding_rs', license: '(Apache-2.0 / MIT) AND BSD-3-Clause' },
-  { name: 'image', license: 'MIT / Apache-2.0' },
-  { name: 'serde / serde_json', license: 'MIT / Apache-2.0' },
-  { name: 'unicode-segmentation', license: 'MIT / Apache-2.0' },
-  { name: 'ttf-parser', license: 'MIT / Apache-2.0' },
-  { name: 'subsetter', license: 'MIT / Apache-2.0' },
-  { name: 'byteorder', license: 'MIT / Unlicense' },
-  { name: 'base64', license: 'MIT / Apache-2.0' },
-  { name: 'console_error_panic_hook', license: 'MIT / Apache-2.0' },
-];
+// MIT 등 오픈소스 라이선스는 고지문 전문을 함께 배포해야 하므로 앱에 그대로 싣는다.
+import rhwpLicense from '../../../LICENSE?raw';
+import thirdPartyLicenses from '../../../THIRD_PARTY_LICENSES.md?raw';
 
 export class AboutDialog extends ModalDialog {
   private uniqueInstallsEl: HTMLElement | null = null;
+  private uniqueInstallsNoteEl: HTMLElement | null = null;
 
   constructor() {
     super('제품 정보', 460);
@@ -72,52 +50,38 @@ export class AboutDialog extends ModalDialog {
     this.uniqueInstallsEl = uniqueInstalls;
     body.appendChild(uniqueInstalls);
 
-    // 기술 스택
-    const tech = document.createElement('div');
-    tech.className = 'about-tech';
-    tech.textContent = 'Rust + WebAssembly + TypeScript';
-    body.appendChild(tech);
+    // 고지, 라이선스, 저작권은 접어 둔다
+    const info = document.createElement('details');
+    info.className = 'about-info';
+    const infoSummary = document.createElement('summary');
+    infoSummary.textContent = '정보';
+    info.appendChild(infoSummary);
+
+    const installNote = document.createElement('div');
+    installNote.className = 'about-unique-installs-note';
+    installNote.hidden = true;
+    this.uniqueInstallsNoteEl = installNote;
+    info.appendChild(installNote);
 
     // HWP 스펙 고지 문구 (필수)
     const notice = document.createElement('div');
     notice.className = 'about-notice';
     notice.textContent =
       '본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다. '
-      + 'HamaEditor는 독립 프로젝트이며 한글과컴퓨터와 무관합니다. 새 문서와 내보내기 기본 형식은 HWPX입니다.';
-    body.appendChild(notice);
+      + 'HamaEditor는 독립 프로젝트이며 한글과컴퓨터와 무관합니다.';
+    info.appendChild(notice);
 
-    // 오픈소스 라이선스
-    const licenseTitle = document.createElement('div');
-    licenseTitle.className = 'about-license-title';
-    licenseTitle.textContent = '오픈소스 라이선스';
-    body.appendChild(licenseTitle);
+    const licenseText = document.createElement('pre');
+    licenseText.className = 'about-license-text';
+    licenseText.textContent = `rhwp\n\n${rhwpLicense.trim()}\n\n\n${thirdPartyLicenses.trim()}`;
+    info.appendChild(licenseText);
 
-    const licenseTable = document.createElement('table');
-    licenseTable.className = 'about-license-table';
-    for (const lib of THIRD_PARTY_LICENSES) {
-      const tr = document.createElement('tr');
-      const tdName = document.createElement('td');
-      tdName.textContent = lib.name;
-      const tdLicense = document.createElement('td');
-      tdLicense.textContent = lib.license;
-      tr.appendChild(tdName);
-      tr.appendChild(tdLicense);
-      licenseTable.appendChild(tr);
-    }
-    body.appendChild(licenseTable);
-
-    // 전체 라이선스 목록 안내
-    const licenseNote = document.createElement('div');
-    licenseNote.className = 'about-license-note';
-    licenseNote.textContent =
-      'WASM 번들에 포함되는 핵심 크레이트만 표시합니다. 전체 목록은 THIRD_PARTY_LICENSES.md를 참조하세요.';
-    body.appendChild(licenseNote);
-
-    // 저작권
     const copyright = document.createElement('div');
     copyright.className = 'about-copyright';
     copyright.textContent = '\u00A9 2026 rhwp: Edward Kim';
-    body.appendChild(copyright);
+    info.appendChild(copyright);
+
+    body.appendChild(info);
 
     return body;
   }
@@ -148,16 +112,15 @@ export class AboutDialog extends ModalDialog {
     const count = snapshot.uniqueInstalls;
     if (count == null) {
       target.hidden = true;
+      if (this.uniqueInstallsNoteEl) this.uniqueInstallsNoteEl.hidden = true;
       return;
     }
     target.hidden = false;
-    target.replaceChildren();
-    const value = document.createElement('div');
-    value.className = 'about-unique-installs-count';
-    value.textContent = `고유 설치 ${formatUniqueInstallCount(count)}`;
-    const note = document.createElement('div');
-    note.className = 'about-unique-installs-note';
-    note.textContent = `첫 실행 보고만 세며 업데이트와 기기 증명은 넣지 않습니다. ${uniqueInstallPublicUrl(snapshot)}`;
-    target.append(value, note);
+    target.textContent = `고유 설치 ${formatUniqueInstallCount(count)}`;
+    if (this.uniqueInstallsNoteEl) {
+      this.uniqueInstallsNoteEl.hidden = false;
+      this.uniqueInstallsNoteEl.textContent =
+        `첫 실행 보고만 셉니다. ${uniqueInstallPublicUrl(snapshot)}`;
+    }
   }
 }

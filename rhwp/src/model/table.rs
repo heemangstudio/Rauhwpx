@@ -232,11 +232,8 @@ impl Cell {
         false
     }
 
-    /// 축별 규칙(`use_cell_padding_axis`)을 네 축에 적용한 유효 안 여백 (HWPUNIT).
-    /// [#2195 stage50] 표 기본 여백이 **네 축 모두 0**(미지정)이면 셀 저장 pad —
-    /// 86712 구분선(한글 PDF 괘선 21.1px = 셀 141 상하 포함) + exam_social 머리말
-    /// 글상자(#1100 rect 오라클) 실측. pad 사다리의 '표 기본' 실측은 표 기본이
-    /// 일부 축만 0(0,0,141,141)인 케이스 — 전축 0 과 구분된다.
+    /// 표 기본 여백이 네 축 모두 0인지 확인한다. 0도 명시적인 여백값이며,
+    /// 이 검사는 hasMargin에 따른 셀/표 여백 선택을 바꾸지 않는다.
     pub fn table_padding_unspecified(table_padding: &crate::model::Padding) -> bool {
         table_padding.left == 0
             && table_padding.right == 0
@@ -244,15 +241,13 @@ impl Cell {
             && table_padding.bottom == 0
     }
 
+    /// hasMargin에 따른 유효 안 여백. 미설정이면 0을 포함한 표 기본값을 상속한다.
     pub fn effective_padding(
         &self,
         table_padding: &crate::model::Padding,
     ) -> crate::model::Padding {
-        let unspec = !self.apply_inner_margin && Self::table_padding_unspecified(table_padding);
         let pick = |c: i16, t: i16| -> i16 {
-            // [#1785 위생 한도 유지] 10mm급(>=2500HU) 보존 pad 는 한컴이 렌더에
-            // 쓰지 않는다(36381023 render-diff) — 전축0 미지정 규칙에서도 제외.
-            if (unspec && c < 2500) || self.use_cell_padding_axis(c, t, false) {
+            if self.use_cell_padding_axis(c, t, false) {
                 c
             } else {
                 t
@@ -885,7 +880,7 @@ impl Table {
         self.common.height = total_height;
     }
 
-    fn sync_ctrl_height(&mut self, height: HwpUnit) {
+    pub(crate) fn sync_ctrl_height(&mut self, height: HwpUnit) {
         self.common.height = height;
         if self.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
             self.raw_ctrl_data[common_obj_offsets::HEIGHT].copy_from_slice(&height.to_le_bytes());

@@ -354,6 +354,12 @@ pub struct DocumentCore {
     pub(crate) document: Document,
     /// 페이지 분할 결과
     pub(crate) pagination: Vec<PaginationResult>,
+    pub(crate) section_carry: Vec<
+        Option<(
+            queries::rendering::SectionCarryInputs,
+            queries::rendering::SectionCarryInputs,
+        )>,
+    >,
     /// 해소된 스타일 세트
     pub(crate) styles: ResolvedStyleSet,
     /// 구역별 구성된 문단 목록
@@ -654,6 +660,7 @@ impl DocumentCore {
         DocumentCore {
             document: Document::default(),
             pagination: Vec::new(),
+            section_carry: Vec::new(),
             styles: ResolvedStyleSet::default(),
             composed: Vec::new(),
             render_normalization: RenderNormalizationState::default(),

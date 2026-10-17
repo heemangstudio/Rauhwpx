@@ -26,7 +26,7 @@ pub(crate) fn has_block_table(para: &Paragraph) -> bool {
     para.controls.iter().any(is_block_table_control)
 }
 
-fn is_logical_inline_control(ctrl: &Control) -> bool {
+pub(crate) fn is_logical_inline_control(ctrl: &Control) -> bool {
     is_treat_as_char_object_control(ctrl)
         || matches!(ctrl, Control::Footnote(_) | Control::Endnote(_))
 }
@@ -908,6 +908,30 @@ pub(crate) fn json_ok() -> String {
 /// JSON 성공 응답 생성: {"ok":true,...fields}
 pub(crate) fn json_ok_with(fields: &str) -> String {
     format!("{{\"ok\":true,{}}}", fields)
+}
+
+/// 역연산 콘텐츠는 캐럿 준비 전에 전체 검증한다.
+pub(crate) fn parse_text_content(
+    json: &str,
+) -> Result<crate::model::paragraph::TextContent, HwpError> {
+    let content: crate::model::paragraph::TextContent = serde_json::from_str(json)
+        .map_err(|e| HwpError::RenderError(format!("텍스트 콘텐츠 파싱 실패: {e}")))?;
+    content
+        .validate()
+        .map_err(|e| HwpError::RenderError(e.to_string()))?;
+    Ok(content)
+}
+
+pub(crate) fn removed_content_fields(
+    start: usize,
+    content: &crate::model::paragraph::TextContent,
+) -> String {
+    format!(
+        "\"removedStart\":{},\"removedCount\":{},\"removedContent\":{}",
+        start,
+        content.text.chars().count(),
+        serde_json::to_string(content).expect("text content JSON")
+    )
 }
 
 /// 병합 결과 JSON 에 덧붙일 `,"removedParaMeta":{...}` 조각 (Task #2342).

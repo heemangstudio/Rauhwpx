@@ -1190,7 +1190,13 @@ fn materialize_fixed_width_space_control(
 ) {
     const HWP5_FIXED_WIDTH_SPACE_MASK: u32 = 1u32 << 0x001f;
 
-    if context != ParagraphContext::Body || !para.text.contains('\u{2007}') {
+    if context != ParagraphContext::Body
+        || !para
+            .text
+            .chars()
+            .enumerate()
+            .any(|(i, c)| c == '\u{2007}' && para.space_origin_at(i).is_none())
+    {
         return;
     }
 
@@ -1900,9 +1906,10 @@ pub fn convert_if_hwpx_source(doc: &mut Document, source_format: FileFormat) -> 
     if !matches!(source_format, FileFormat::Hwpx | FileFormat::Hwp3) {
         return AdapterReport::new().no_op("source_format != Hwpx/Hwp3");
     }
-    // [Issue #1770] HWPX 출처만 마커 부여 (HWP3 은 자체 variant 시멘틱 유지).
+    // HWP5→HWPX 재저장은 HWP5 계보를 유지한다. 원래 HWPX 출처만 마커 부여.
     // idempotent — 이미 있으면 추가하지 않는다.
     if matches!(source_format, FileFormat::Hwpx)
+        && !doc.layout_profile().hwp5_origin_hwpx()
         && !doc
             .extra_streams
             .iter()
@@ -2155,6 +2162,54 @@ mod tests {
             report.skipped_reason.as_deref(),
             Some("source_format != Hwpx/Hwp3")
         );
+    }
+
+    #[test]
+    fn hwp5_lineage_survives_hwpx_and_hwp_save_cycles() {
+        use crate::document_core::DocumentCore;
+
+        let mut core = DocumentCore::from_bytes(include_bytes!("../../../saved/blank2010.hwp"))
+            .expect("parse native HWP5");
+        for _ in 0..2 {
+            assert!(core.document().layout_profile().native_hwp5_layout());
+            let hwpx = core.export_hwpx_native().expect("save HWP5 as HWPX");
+            let hwpx_core = DocumentCore::from_bytes(&hwpx).expect("reopen HWPX");
+            let profile = hwpx_core.document().layout_profile();
+            assert!(profile.hwp5_origin_hwpx());
+            assert!(!profile.hwpx_stored_layout());
+
+            let hwp = hwpx_core.export_hwp_with_adapter().expect("save as HWP5");
+            core = DocumentCore::from_bytes(&hwp).expect("reopen HWP5");
+            assert!(!core.document().layout_profile().hwpx_stored_layout());
+            assert!(!core
+                .document()
+                .extra_streams
+                .iter()
+                .any(|(path, _)| path == HWPX_ORIGIN_STREAM_PATH));
+        }
+    }
+
+    #[test]
+    fn native_hwpx_lineage_survives_hwp_and_hwpx_save_cycles() {
+        use crate::document_core::DocumentCore;
+
+        let mut core =
+            DocumentCore::from_bytes(include_bytes!("../../../samples/hwpx/hwpx-h-03.hwpx"))
+                .expect("parse native HWPX");
+        for _ in 0..2 {
+            let profile = core.document().layout_profile();
+            assert!(profile.hwpx_stored_layout());
+            assert!(!profile.hwp5_origin_hwpx());
+            let hwp = core.export_hwp_with_adapter().expect("save HWPX as HWP5");
+            let hwp_core = DocumentCore::from_bytes(&hwp).expect("reopen HWP5");
+            assert!(hwp_core.document().provenance.hwpx_lineage);
+            assert!(hwp_core.document().layout_profile().hwpx_stored_layout());
+
+            let hwpx = hwp_core.export_hwpx_native().expect("save as HWPX");
+            core = DocumentCore::from_bytes(&hwpx).expect("reopen HWPX");
+            assert!(core.document().layout_profile().hwpx_stored_layout());
+            assert!(!core.document().layout_profile().hwp5_origin_hwpx());
+        }
     }
 
     #[test]

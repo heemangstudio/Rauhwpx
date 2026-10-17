@@ -1123,6 +1123,7 @@ impl Paginator {
         );
 
         PaginationResult {
+            committed_line_origins: Vec::new(),
             pages: st.pages,
             wrap_around_paras: all_wrap_around_paras,
             hidden_empty_paras,

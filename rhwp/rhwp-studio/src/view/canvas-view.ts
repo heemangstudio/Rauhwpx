@@ -93,6 +93,7 @@ export class CanvasView {
     error => console.error('[CanvasView] 문서 갱신 실패:', error),
   );
   private documentLoadPrepared = false;
+  private pendingViewRestore: CanvasViewState | null = null;
   private layoutViewportSize = { width: 0, height: 0 };
   /** 전체 refresh 마다 증가 — 머리말/꼬리말 대표 preview 재사용 키에 들어간다. */
   private documentRenderGeneration = 0;
@@ -203,6 +204,7 @@ export class CanvasView {
     if (this.disposed) return;
     if (!this.documentLoadPrepared) this.prepareDocumentLoad();
     const epoch = this.rendererSelectionEpoch;
+    this.pendingViewRestore = restore ?? null;
     this.documentLoadPrepared = false;
     if (this.disposed) return;
     const selection = await this.rendererSession.resolve(this.wasm);
@@ -213,6 +215,18 @@ export class CanvasView {
     ) return;
     this.applyRendererSelection(selection);
 
+    const pageCount = this.initializeDocumentPages();
+    if (pageCount === null) return;
+    // 초기 replay가 예약한 document fallback을 load 완료 전에 확정한다.
+    await Promise.resolve();
+
+    console.log(`[CanvasView] ${this.pages.length}/${pageCount}페이지 로드, 총 높이: ${this.virtualScroll.getTotalHeight()}px`);
+  }
+
+  /** 현재 문서의 첫 쪽 배치와 초기 viewport 를 함께 확정한다. */
+  private initializeDocumentPages(): number | null {
+    const restore = this.pendingViewRestore;
+    this.pendingViewRestore = null;
     // 쪽이 비어 있는 동안 배율을 바꾸면 onZoomChanged 가 옛 배치로 다시 그리지 않는다.
     const restoredZoom = restore && Number.isFinite(restore.zoom)
       && restore.zoom !== this.viewportManager.getZoom();
@@ -223,7 +237,7 @@ export class CanvasView {
 
     if (this.pages.length === 0) {
       console.error('[CanvasView] 로드된 페이지가 없습니다');
-      return;
+      return null;
     }
 
     // 모바일: 문서 로드 시 폭 맞춤 줌 자동 적용 (되살린 배율이 있으면 그대로 둔다)
@@ -251,10 +265,7 @@ export class CanvasView {
       this.viewportManager.setScrollTop(0);
     }
     this.updateVisiblePages();
-    // 초기 replay가 예약한 document fallback을 load 완료 전에 확정한다.
-    await Promise.resolve();
-
-    console.log(`[CanvasView] ${this.pages.length}/${pageCount}페이지 로드, 총 높이: ${this.virtualScroll.getTotalHeight()}px`);
+    return pageCount;
   }
 
   /** 엔진이 trap 했으면 null — 호출자는 지금 배치를 그대로 둔다. */
@@ -1194,11 +1205,15 @@ export class CanvasView {
 
   /** 편집 후 보이는 페이지를 재렌더링한다 */
   refreshPages(): void {
-    if (this.pages.length === 0 || engineTrap()) return;
+    if (this.disposed || engineTrap() || !this.wasm.hasLoadedDocument()) return;
 
     // 페이지 정보 재수집 (페이지 수/크기가 변경될 수 있음)
     let pages: PageInfo[] | null;
     try {
+      if (this.pages.length === 0) {
+        this.initializeDocumentPages();
+        return;
+      }
       pages = this.collectPageInfo(this.wasm.pageCount);
     } catch (error) {
       if (!reportEngineTrap(error)) throw error;
@@ -1324,6 +1339,7 @@ export class CanvasView {
 
   /** 리소스를 정리한다 */
   private reset(): void {
+    this.pendingViewRestore = null;
     const hadActivePage = this.activePageSnapshot !== null;
     const hadFocusedPage = this.editingPageIndex !== null;
     this.cancelScheduledMutationRefresh();

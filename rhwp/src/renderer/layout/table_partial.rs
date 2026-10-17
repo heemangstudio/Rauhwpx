@@ -232,6 +232,7 @@ mod inline_fallback_alignment_tests {
             inline_controls: vec![],
             numbering_text: None,
             numbering_head: None,
+            numbering_known_horizontal: false,
             tac_controls: vec![(2, 3600, 0)],
             footnote_positions: vec![],
             tab_extended: vec![],
@@ -586,6 +587,8 @@ impl LayoutEngine {
                             para,
                             inner_width,
                             styles,
+                            cell.text_direction,
+                            self.dpi,
                         );
                     }
                 }
@@ -1455,9 +1458,13 @@ impl LayoutEngine {
                                     ));
                                     let mut shape_for_layout = shape.clone();
                                     if cut_units.is_some() && visible_non_inline_controls {
-                                        shape_for_layout.common_mut().horizontal_offset = 0;
-                                        shape_for_layout.common_mut().horz_align =
-                                            crate::model::shape::HorzAlign::Center;
+                                        // Paper 배치는 원본 정렬/오프셋을 쓴다. 그 외 조각의
+                                        // 셀 안 가운데 정규화는 기존 계약을 유지한다.
+                                        if self.cell_shape_paper_reference(shape).is_none() {
+                                            shape_for_layout.common_mut().horizontal_offset = 0;
+                                            shape_for_layout.common_mut().horz_align =
+                                                crate::model::shape::HorzAlign::Center;
+                                        }
                                         if start_line >= end_line
                                             && matches!(
                                                 shape.common().text_wrap,
@@ -3066,5 +3073,218 @@ impl LayoutEngine {
             0.0
         };
         y_start + partial_table_height + caption_total
+    }
+}
+
+#[cfg(test)]
+mod nested_paper_partial_renderer_tests {
+    use super::*;
+    use crate::model::paragraph::LineSeg;
+    use crate::model::shape::{
+        HorzAlign, HorzRelTo, RectangleShape, ShapeObject, TextWrap, VertAlign, VertRelTo,
+    };
+    use crate::model::table::{Cell, Table, TablePageBreak};
+
+    fn paper() -> LayoutRect {
+        LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 700.0,
+        }
+    }
+
+    fn shape() -> ShapeObject {
+        let mut rect = RectangleShape::default();
+        rect.common.width = 40;
+        rect.common.height = 30;
+        rect.common.treat_as_char = false;
+        rect.common.text_wrap = TextWrap::Square;
+        rect.common.horz_rel_to = HorzRelTo::Paper;
+        rect.common.vert_rel_to = VertRelTo::Paper;
+        rect.common.horz_align = HorzAlign::Right;
+        rect.common.vert_align = VertAlign::Top;
+        rect.common.horizontal_offset = 7;
+        rect.common.vertical_offset = 11;
+        ShapeObject::Rectangle(rect)
+    }
+
+    fn fixture(shape: ShapeObject) -> Table {
+        let para = Paragraph {
+            char_count: 9,
+            controls: vec![Control::Shape(Box::new(shape))],
+            line_segs: vec![LineSeg {
+                line_height: 10,
+                text_height: 10,
+                baseline_distance: 8,
+                segment_width: 160,
+                tag: 0x0006_0000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut table = Table {
+            row_count: 1,
+            col_count: 1,
+            page_break: TablePageBreak::RowBreak,
+            cells: vec![Cell {
+                width: 160,
+                height: 90,
+                row_span: 1,
+                col_span: 1,
+                paragraphs: vec![para],
+                ..Default::default()
+            }],
+            cell_grid: vec![Some(0)],
+            ..Default::default()
+        };
+        table.common.width = 160;
+        table.common.height = 90;
+        table.common.treat_as_char = false;
+        table.common.horz_rel_to = HorzRelTo::Column;
+        table.common.horz_align = HorzAlign::Left;
+        table.common.vert_rel_to = VertRelTo::Para;
+        table.common.vert_align = VertAlign::Top;
+        table
+    }
+
+    fn find_rectangle(node: &RenderNode) -> Option<BoundingBox> {
+        if matches!(node.node_type, RenderNodeType::Rectangle(_))
+            && node.bbox.width == 40.0
+            && node.bbox.height == 30.0
+        {
+            return Some(node.bbox.clone());
+        }
+        node.children.iter().find_map(find_rectangle)
+    }
+
+    fn partial_frame(
+        shape: ShapeObject,
+        active_paper: Option<LayoutRect>,
+        clamp_header: bool,
+    ) -> (BoundingBox, BoundingBox) {
+        let engine = LayoutEngine::new(7200.0);
+        let area = LayoutRect {
+            x: 100.0,
+            y: 200.0,
+            width: 160.0,
+            height: 300.0,
+        };
+        engine.set_page_layout_context(400.0, area);
+        engine.nested_shape_paper.set(active_paper);
+        let table = fixture(shape);
+        let styles = ResolvedStyleSet::default();
+        let cell = &table.cells[0];
+        let unit_count = engine.cell_units(cell, &table, &styles).len();
+        let object_unit = (0..unit_count)
+            .find(|&index| {
+                engine.cell_cut_contains_non_inline_control_units(
+                    cell,
+                    &table,
+                    &styles,
+                    index,
+                    index + 1,
+                    0,
+                )
+            })
+            .expect("the real cell-unit producer emitted a non-inline flow unit");
+        assert!(engine.cell_cut_contains_non_inline_control_units(
+            cell,
+            &table,
+            &styles,
+            object_unit,
+            object_unit + 1,
+            0,
+        ));
+        let paragraphs = vec![Paragraph {
+            controls: vec![Control::Table(Box::new(table))],
+            char_count: 9,
+            ..Default::default()
+        }];
+        let mut tree = PageRenderTree::new(0, 400.0, 700.0);
+        let mut parent = RenderNode::new(
+            tree.next_id(),
+            RenderNodeType::Body { clip_rect: None },
+            BoundingBox::new(area.x, area.y, area.width, area.height),
+        );
+        engine.layout_partial_table(
+            &mut tree,
+            &mut parent,
+            &paragraphs,
+            0,
+            0,
+            0,
+            &styles,
+            0,
+            &area,
+            area.y,
+            &[],
+            0,
+            1,
+            true,
+            &[object_unit],
+            &[object_unit + 1],
+            false,
+            0.0,
+            0.0,
+            None,
+            clamp_header,
+            None,
+            &[],
+        );
+        fn clipped_cell(node: &RenderNode) -> Option<BoundingBox> {
+            if let RenderNodeType::TableCell(cell) = &node.node_type {
+                assert!(cell.clip, "the renderer actually used a split-cell cut");
+                return Some(node.bbox.clone());
+            }
+            node.children.iter().find_map(clipped_cell)
+        }
+        let cell_frame = clipped_cell(&parent).expect("partial table emitted its split cell");
+        let frame =
+            find_rectangle(&parent).expect("the visible cut emitted the actual source shape");
+        (frame, cell_frame)
+    }
+
+    #[test]
+    fn partial_visible_paper_shape_keeps_authored_right_offset() {
+        let mut normalized_size = shape();
+        normalized_size.drawing_mut().unwrap().shape_attr.render_sx = 0.7;
+        normalized_size.drawing_mut().unwrap().shape_attr.render_sy = 1.2;
+        for source_shape in [shape(), normalized_size] {
+            let (frame, _) = partial_frame(source_shape, Some(paper()), false);
+            assert_eq!(
+                frame.x, 353.0,
+                "right edge 400 minus width 40 minus authored offset 7"
+            );
+            assert_eq!(frame.y, 11.0);
+        }
+        // The input rewrite in v1 instead made this x180, centered on the physical paper.
+    }
+
+    #[test]
+    fn partial_visible_shape_keeps_legacy_centering_outside_shared_paper_contract() {
+        let mut cases = vec![(shape(), None, false), (shape(), None, true)];
+        let mut mixed = shape();
+        mixed.common_mut().vert_rel_to = VertRelTo::Para;
+        cases.push((mixed, Some(paper()), false));
+        let mut page = shape();
+        page.common_mut().horz_rel_to = HorzRelTo::Page;
+        cases.push((page, Some(paper()), false));
+        let mut grouped = shape();
+        grouped.drawing_mut().unwrap().shape_attr.group_level = 1;
+        cases.push((grouped, Some(paper()), false));
+        let mut rotated = shape();
+        rotated.drawing_mut().unwrap().shape_attr.rotation_angle = 30;
+        cases.push((rotated, Some(paper()), false));
+        let mut flipped = shape();
+        flipped.drawing_mut().unwrap().shape_attr.horz_flip = true;
+        cases.push((flipped, Some(paper()), false));
+        let mut sheared = shape();
+        sheared.drawing_mut().unwrap().shape_attr.render_b = 0.2;
+        cases.push((sheared, Some(paper()), false));
+        for (shape, context, clamp_header) in cases {
+            let (frame, cell) = partial_frame(shape, context, clamp_header);
+            assert_eq!(frame.x, cell.x + (cell.width - 40.0) / 2.0);
+        }
     }
 }

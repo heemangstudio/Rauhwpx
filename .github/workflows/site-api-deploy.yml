@@ -1,0 +1,109 @@
+name: Deploy site-api to Railway
+
+# A merge to main that touches site-api/ tests it, uploads it to the Railway
+# service `rau-credits` (project token in the RAILWAY_TOKEN repo secret), then
+# checks the live license endpoints are configured. It first waits for the email images
+# that the same merge deploys to GitHub Pages.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - site-api/**
+      - .github/workflows/site-api-deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-api-deploy
+  cancel-in-progress: false
+
+env:
+  SITE_API_URL: https://rau-credits-production.up.railway.app
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+
+      - name: Test site-api
+        run: |
+          npm --prefix site-api ci
+          npm --prefix site-api test
+
+      - name: Require the Railway project token
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::RAILWAY_TOKEN is not set. Create a project token in Railway (project rau-credits > Settings > Tokens, environment production) and add it as a repository secret."
+            exit 1
+          fi
+
+      # Emails link images on GitHub Pages (website/assets/email/), which pages.yml deploys from
+      # the same merge in parallel. Hold the server deploy until every image is live with this
+      # commit's bytes, so no email goes out pointing at a missing or stale image. The query
+      # string skips the Pages CDN cache (max-age=600).
+      - name: Wait for the email images on GitHub Pages
+        run: |
+          set -eu
+          for file in website/assets/email/*.png; do
+            url="https://heemangstudios.com/assets/email/$(basename "$file")"
+            want=$(sha256sum "$file" | cut -d' ' -f1)
+            got=missing
+            for i in $(seq 1 60); do
+              got=$(curl -fsS "$url?v=${GITHUB_SHA::12}" | sha256sum | cut -d' ' -f1 || true)
+              if [ "$got" = "$want" ]; then break; fi
+              echo "$url not live with this commit's bytes yet, waiting"
+              sleep 15
+            done
+            if [ "$got" != "$want" ]; then
+              echo "::error::$url did not match website/assets/email/$(basename "$file") after 15 minutes. Check the 'Deploy website to GitHub Pages' run, then re-run this workflow."
+              exit 1
+            fi
+            echo "$url is live"
+          done
+
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          npm install -g @railway/cli@5.68.0
+          railway up site-api --path-as-root --service rau-credits --environment production --ci \
+            --message "main ${GITHUB_SHA::12}"
+
+      - name: Verify the live license server
+        run: |
+          set -eu
+          # `railway up --ci` returns once the build finishes; the old deployment keeps serving
+          # until the new one passes /healthz. Wait for the webhook readiness probe to answer 200
+          # (404 = old code still live, 503 = GROBLE_WEBHOOK_SECRET missing). A GET never counts
+          # as a rejected webhook, so the check sends no alert email.
+          code=000
+          for i in $(seq 1 40); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$SITE_API_URL/v1/groble/webhook" || true)
+            if [ "$code" = "200" ]; then break; fi
+            echo "groble webhook probe -> $code, waiting"
+            sleep 15
+          done
+          if [ "$code" != "200" ]; then
+            echo "::error::GET /v1/groble/webhook answered $code after 10 minutes. 503 means GROBLE_WEBHOOK_SECRET is not set on Railway; 404 means the new deployment never went live."
+            exit 1
+          fi
+          curl -fsS "$SITE_API_URL/healthz"
+          echo
+          # 503 here means LICENSE_SIGNING_PRIVATE_KEY is not set.
+          curl -fsS "$SITE_API_URL/v1/license/public-key"
+          echo
+          curl -fsS "$SITE_API_URL/v1/license/by-ref?ref=deploy-check" | grep -q '"pending"'

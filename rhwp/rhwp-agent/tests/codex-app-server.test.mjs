@@ -16,6 +16,11 @@ import {
 } from '../agents/codex-app-server.mjs';
 import { systemBriefFor } from '../agents/backend.mjs';
 import { createCodexSession } from '../agents/codex.mjs';
+import { withoutModeBlock } from './mode-block.mjs';
+
+function turnInput(input) {
+  return input.map((item) => (item.type === 'text' ? { ...item, text: withoutModeBlock(item.text) } : item));
+}
 
 class FakeStream extends EventEmitter {
   constructor(onWrite = null) {
@@ -373,7 +378,7 @@ test('direct mode negotiates native input and answers the original app-server re
     reasoning_effort: 'high',
     developer_instructions: systemBriefFor(h.opts, 'codex'),
   });
-  assert.equal(turn.params.input[0].text, 'Build it');
+  assert.equal(withoutModeBlock(turn.params.input[0].text), 'Build it');
   assert.equal(h.session.getSessionId(), 'thread-native');
 
   h.spawns[0].process.send({
@@ -860,7 +865,7 @@ test('Stop during startup negotiation never re-sends the stopped prompt through 
   const next = h.spawns.at(-1);
   assert.equal(next.native, true);
   assert.ok(next.process.frames.some((frame) => (
-    frame.method === 'turn/start' && frame.params.input[0].text === 'Next prompt'
+    frame.method === 'turn/start' && withoutModeBlock(frame.params.input[0].text) === 'Next prompt'
   )));
   assert.equal(h.events.filter((event) => event.type === 'turn-start').length, 1);
   h.session.interrupt();
@@ -899,13 +904,14 @@ test('Stop while the thread is resuming settles the turn exactly once', async (t
   await h.session.dispose();
 });
 
-test('a resumed chat receives the current editing instructions after switching to full access', async (t) => {
+test('a mode switch resumes the thread with identical developer instructions and carries the mode in the turn', async (t) => {
   const h = harness(t, { workflow: 'question', phase: 'questioning' });
   h.session.sendUserMessage('Discuss an edit');
   await settle();
   const first = h.spawns[0].process;
+  const started = first.frames.find((frame) => frame.method === 'thread/start');
   const firstTurn = first.frames.find((frame) => frame.method === 'turn/start');
-  assert.match(firstTurn.params.collaborationMode.settings.developer_instructions, /You are in 채팅/);
+  assert.match(firstTurn.params.input[0].text, /^<rhwp_mode>\nCurrent mode: 채팅/);
   first.send({ method: 'turn/completed', params: {
     threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' },
   } });
@@ -915,12 +921,18 @@ test('a resumed chat receives the current editing instructions after switching t
   h.session.sendUserMessage('Apply the edit');
   await settle(24);
   const resumed = h.spawns.at(-1).process;
-  assert.ok(resumed.frames.some((frame) => frame.method === 'thread/resume'));
+  const resume = resumed.frames.find((frame) => frame.method === 'thread/resume');
   const turn = resumed.frames.find((frame) => frame.method === 'turn/start');
   assert.equal(turn.params.threadId, 'thread-native');
   assert.equal(turn.params.sandboxPolicy.type, 'dangerFullAccess');
-  assert.match(turn.params.collaborationMode.settings.developer_instructions, /You are in 전체/);
-  assert.doesNotMatch(turn.params.collaborationMode.settings.developer_instructions, /You are in 채팅/);
+  // 캐시되는 앞부분은 그대로다: 스레드·턴 개발자 지시가 채팅 때와 같은 바이트이고, 브리프를 이력에 다시 넣지 않는다.
+  assert.equal(resume.params.developerInstructions, started.params.developerInstructions);
+  assert.equal(
+    turn.params.collaborationMode.settings.developer_instructions,
+    firstTurn.params.collaborationMode.settings.developer_instructions,
+  );
+  assert.equal(h.spawns.some(({ process }) => process.frames.some((frame) => frame.method === 'thread/inject_items')), false);
+  assert.match(turn.params.input[0].text, /^<rhwp_mode>\nCurrent mode: 전체 \(full access\)[\s\S]*<\/rhwp_mode>\n\nApply the edit$/);
   h.session.interrupt();
   await settle();
   await h.session.dispose();
@@ -1007,6 +1019,7 @@ test('a native chat grant and explicit revocation change only that resumed conve
   mode.chatPermissionGrants.length = 0;
   const granted = await turn(h, 'Use the granted access');
   assert.equal(granted.sandboxPolicy.type, 'dangerFullAccess');
+  assert.match(granted.input[0].text, /granted local-execution/);
   assert.equal(granted.collaborationMode.mode, 'default');
   assert.equal(h.opts.permissionProfile, 'safe');
   assert.equal(h.opts.workflow, 'question');
@@ -1015,56 +1028,23 @@ test('a native chat grant and explicit revocation change only that resumed conve
   await h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 4, chatPermissionGrants: [] });
   const revoked = await turn(h, 'Access was cleared');
   assert.equal(revoked.sandboxPolicy.type, 'readOnly');
+  assert.doesNotMatch(revoked.input[0].text, /granted local-execution/);
   assert.equal(revoked.collaborationMode.mode, 'plan');
   assert.equal(revoked.threadId, initial.threadId);
   await h.session.setExecutionMode({ workflow: 'direct', phase: 'implementing', capabilityEpoch: 5, chatPermissionGrants: [] });
-  const directReady = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
-  assert.match(directReady.params.items[0].content[0].text, /You are in 에이전트 mode/);
-  assert.equal(h.spawns.at(-1).process.frames.some((frame) => frame.method === 'turn/start'), false);
   const direct = await turn(h, 'Apply a document edit in agent mode');
   assert.equal(direct.collaborationMode.mode, 'default');
   assert.equal(direct.sandboxPolicy.type, 'workspaceWrite');
+  assert.match(direct.input[0].text, /Current mode: 에이전트/);
   await h.session.setPermissionProfile('unrestricted');
-  const fullReady = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
-  assert.match(fullReady.params.items[0].content[0].text, /You are in 전체/);
   const full = await turn(h, 'Apply the full access profile');
   assert.equal(full.sandboxPolicy.type, 'dangerFullAccess');
+  assert.match(full.input[0].text, /Current mode: 전체/);
   await h.session.setPermissionProfile('safe');
-  const safeReady = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'thread/inject_items');
-  assert.match(safeReady.params.items[0].content[0].text, /staged as a live preview/);
-  assert.doesNotMatch(safeReady.params.items[0].content[0].text, /You are in 전체/);
-});
-
-test('a failed native permission instruction update rolls back before acknowledging the grant', async (t) => {
-  const standard = appServerResponder();
-  const h = harness(t, {
-    workflow: 'question', phase: 'questioning',
-    responder(frame, process) {
-      if (frame.method === 'thread/inject_items') {
-        process.send({ id: frame.id, error: { code: -32601, message: 'Unsupported method' } });
-        return;
-      }
-      standard(frame, process);
-    },
-  });
-  t.after(() => h.session.dispose());
-  h.session.sendUserMessage('Ask for permission');
-  await settle();
-  h.spawns[0].process.send({ method: 'turn/completed', params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } } });
-  await settle();
-  await assert.rejects(
-    h.session.setExecutionMode({ workflow: 'question', phase: 'questioning', capabilityEpoch: 2, chatPermissionGrants: ['local-execution'] }),
-    /thread\/inject_items support is required/,
-  );
-  assert.deepEqual(h.opts.chatPermissionGrants, []);
-  assert.equal(h.opts.permissionProfile, 'safe');
-  assert.equal(h.opts.capabilityEpoch, 1);
-  assert.equal(h.spawns[1].process.frames.some((frame) => frame.method === 'turn/start'), false);
-  h.session.sendUserMessage('Continue within the existing permission');
-  await settle(24);
-  const next = h.spawns.at(-1).process.frames.find((frame) => frame.method === 'turn/start');
-  assert.equal(next.params.sandboxPolicy.type, 'readOnly');
-  assert.equal(next.params.collaborationMode.mode, 'plan');
+  const safe = await turn(h, 'Back to the agent profile');
+  assert.match(safe.input[0].text, /staged as a live preview/);
+  // 권한과 모드는 매 턴 입력의 모드 블록으로만 바뀐다 — 스레드 이력에 브리프를 넣지 않는다.
+  assert.equal(h.spawns.some(({ process }) => process.frames.some((frame) => frame.method === 'thread/inject_items')), false);
 });
 
 test('approved Plan restarts advertise mutation tools and returning to planning removes them', async (t) => {
@@ -1253,7 +1233,7 @@ test('a message racing an idle release still starts its turn', async (t) => {
   assert.ok(methods.includes('thread/start'), 'a readiness thread without turns has no rollout to resume');
   assert.equal(methods.includes('thread/resume'), false);
   const turn = h.spawns[1].process.frames.find((frame) => frame.method === 'turn/start');
-  assert.equal(turn?.params.input[0].text, 'Arrives during release');
+  assert.equal(withoutModeBlock(turn?.params.input[0].text), 'Arrives during release');
   assert.equal(h.events.filter((event) => event.type === 'turn-start').length, 1);
   h.session.interrupt();
   await settle();
@@ -1280,7 +1260,7 @@ test('a legacy fallback recovers native Chat mode before accepting the next turn
   const turn = native.process.frames.find((frame) => frame.method === 'turn/start');
   assert.equal(turn.params.collaborationMode.mode, 'plan');
   assert.equal(turn.params.sandboxPolicy.type, 'readOnly');
-  assert.equal(turn.params.input[0].text, 'Continue in chat');
+  assert.equal(withoutModeBlock(turn.params.input[0].text), 'Continue in chat');
   h.session.interrupt();
   await settle();
   await h.session.dispose();
@@ -1534,7 +1514,7 @@ test('a resume cursor whose rollout is gone starts a new thread with the full-hi
   assert.deepEqual(frames.filter((frame) => frame.method?.startsWith('thread/')).map((frame) => frame.method), ['thread/resume', 'thread/start']);
   const turn = frames.find((frame) => frame.method === 'turn/start');
   assert.equal(turn.params.threadId, 'thread-native');
-  assert.deepEqual(turn.params.input, [{ type: 'text', text: 'full transcript' }]);
+  assert.deepEqual(turnInput(turn.params.input), [{ type: 'text', text: 'full transcript' }]);
   const turnEnd = h.events.find((event) => event.type === 'turn-end');
   assert.equal(turnEnd.stopReason, 'completed');
   assert.equal(turnEnd.resumeLost, true);
@@ -1586,7 +1566,7 @@ test('Codex receives handoff history as native items and the turn carries only t
     { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: HANDOFF.entries[1].text }] },
   ]);
   const [turn] = sentFrames(h, 'turn/start');
-  assert.deepEqual(turn.params.input, [{ type: 'text', text: 'What is the codename?' }]);
+  assert.deepEqual(turnInput(turn.params.input), [{ type: 'text', text: 'What is the codename?' }]);
   const frames = h.spawns[0].process.frames.map((frame) => frame.method);
   assert.ok(frames.indexOf('thread/inject_items') < frames.indexOf('turn/start'));
   const end = h.events.find((event) => event.type === 'turn-end');
@@ -1607,13 +1587,13 @@ for (const [name, error] of [
   });
   h.session.sendUserMessage(INLINE, { handoff: HANDOFF });
   await settle(32);
-  assert.deepEqual(sentFrames(h, 'turn/start')[0].params.input, [{ type: 'text', text: INLINE }]);
+  assert.deepEqual(turnInput(sentFrames(h, 'turn/start')[0].params.input), [{ type: 'text', text: INLINE }]);
   assert.equal(h.events.find((event) => event.type === 'turn-end').stopReason, 'completed');
 
   h.session.sendUserMessage(INLINE, { handoff: HANDOFF });
   await settle(32);
   assert.equal(sentFrames(h, 'thread/inject_items').length, 1);
-  assert.deepEqual(sentFrames(h, 'turn/start')[1].params.input, [{ type: 'text', text: INLINE }]);
+  assert.deepEqual(turnInput(sentFrames(h, 'turn/start')[1].params.input), [{ type: 'text', text: INLINE }]);
   assert.equal(await h.session.dispose(), true);
 });
 
@@ -1637,7 +1617,7 @@ test('an ambiguous inject failure fails the turn without sending it and marks th
   h.session.sendUserMessage(INLINE, { handoff: HANDOFF, replaceSession: true });
   await settle(32);
   assert.equal(sentFrames(h, 'thread/inject_items').length, 1);
-  assert.deepEqual(sentFrames(h, 'turn/start')[0].params.input, [{ type: 'text', text: INLINE }]);
+  assert.deepEqual(turnInput(sentFrames(h, 'turn/start')[0].params.input), [{ type: 'text', text: INLINE }]);
   const replaced = h.events.find((event) => event.type === 'turn-end');
   assert.equal(replaced.stopReason, 'completed');
   assert.equal(replaced.resumeLost, true);
@@ -1652,7 +1632,7 @@ test('replaceSession abandons the resumed thread and delivers the full history t
   const frames = h.spawns[0].process.frames.map((frame) => frame.method).filter((method) => method?.startsWith('thread/'));
   assert.deepEqual(frames, ['thread/start', 'thread/inject_items']);
   assert.equal(sentFrames(h, 'thread/inject_items')[0].params.threadId, 'thread-native');
-  assert.deepEqual(sentFrames(h, 'turn/start')[0].params.input, [{ type: 'text', text: HANDOFF.plainText }]);
+  assert.deepEqual(turnInput(sentFrames(h, 'turn/start')[0].params.input), [{ type: 'text', text: HANDOFF.plainText }]);
   const end = h.events.find((event) => event.type === 'turn-end');
   assert.equal(end.resumeLost, true);
   assert.equal(h.session.getSessionId(), 'thread-native');
@@ -1677,7 +1657,7 @@ test('a lost resume injects the full-history handoff instead of the delta', asyn
   });
   await settle(32);
   assert.deepEqual(sentFrames(h, 'thread/inject_items')[0].params.items.length, 3);
-  assert.deepEqual(sentFrames(h, 'turn/start')[0].params.input, [{ type: 'text', text: HANDOFF.plainText }]);
+  assert.deepEqual(turnInput(sentFrames(h, 'turn/start')[0].params.input), [{ type: 'text', text: HANDOFF.plainText }]);
   assert.equal(h.events.find((event) => event.type === 'turn-end').resumeLost, true);
   assert.equal(await h.session.dispose(), true);
 });

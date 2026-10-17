@@ -1380,6 +1380,33 @@ impl HwpDocument {
         result.map_err(|e| e.into())
     }
 
+    /// 명시적 빈칸 출처를 검증한 뒤 기존 삽입 경로로 복원한다.
+    #[wasm_bindgen(js_name = insertTextContent)]
+    pub fn insert_text_content(
+        &mut self,
+        section_idx: u32,
+        para_idx: u32,
+        char_offset: u32,
+        content_json: &str,
+        logical: Option<bool>,
+    ) -> Result<String, JsValue> {
+        let content = parse_text_content(content_json).map_err(JsValue::from)?;
+        let target = CaretParagraph::Body {
+            section: section_idx as usize,
+            para: para_idx as usize,
+        };
+        let range =
+            self.prepare_caret_insert(target, char_offset as usize, 0, logical == Some(true))?;
+        let result = self.insert_text_content_native(
+            section_idx as usize,
+            para_idx as usize,
+            range.start,
+            &content,
+        );
+        self.finish_caret_insert();
+        result.map_err(|e| e.into())
+    }
+
     /// 논리적 오프셋으로 텍스트를 삽입한다.
     ///
     /// logical_offset: 텍스트 문자 + 인라인 컨트롤을 각각 1로 세는 위치.
@@ -1572,6 +1599,42 @@ impl HwpDocument {
         result.map_err(|e| e.into())
     }
 
+    /// 명시적 빈칸 출처를 검증한 뒤 기존 삽입 경로로 복원한다.
+    #[wasm_bindgen(js_name = insertTextContentInCell)]
+    pub fn insert_text_content_in_cell(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+        cell_idx: u32,
+        cell_para_idx: u32,
+        char_offset: u32,
+        content_json: &str,
+        logical: Option<bool>,
+    ) -> Result<String, JsValue> {
+        let content = parse_text_content(content_json).map_err(JsValue::from)?;
+        let target = CaretParagraph::Cell {
+            section: section_idx as usize,
+            parent_para: parent_para_idx as usize,
+            control: control_idx as usize,
+            cell: cell_idx as usize,
+            cell_para: cell_para_idx as usize,
+        };
+        let range =
+            self.prepare_caret_insert(target, char_offset as usize, 0, logical == Some(true))?;
+        let result = self.insert_text_content_in_cell_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+            cell_idx as usize,
+            cell_para_idx as usize,
+            range.start,
+            &content,
+        );
+        self.finish_caret_insert();
+        result.map_err(|e| e.into())
+    }
+
     /// 표 셀 내부 문단에 텍스트를 삽입하되 전체 페이지네이션은 호출자가 지연한다.
     ///
     /// Studio의 page-local 단일 입력처럼 현재 페이지를 먼저 갱신하고 idle 시점에
@@ -1607,6 +1670,42 @@ impl HwpDocument {
             cell_para_idx as usize,
             range.start,
             text,
+        );
+        self.finish_caret_insert();
+        result.map_err(|e| e.into())
+    }
+
+    /// 명시적 빈칸 출처를 검증한 뒤 기존 삽입 경로로 복원한다.
+    #[wasm_bindgen(js_name = insertTextContentInCellDeferredPagination)]
+    pub fn insert_text_content_in_cell_deferred_pagination(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+        cell_idx: u32,
+        cell_para_idx: u32,
+        char_offset: u32,
+        content_json: &str,
+        logical: Option<bool>,
+    ) -> Result<String, JsValue> {
+        let content = parse_text_content(content_json).map_err(JsValue::from)?;
+        let target = CaretParagraph::Cell {
+            section: section_idx as usize,
+            parent_para: parent_para_idx as usize,
+            control: control_idx as usize,
+            cell: cell_idx as usize,
+            cell_para: cell_para_idx as usize,
+        };
+        let range =
+            self.prepare_caret_insert(target, char_offset as usize, 0, logical == Some(true))?;
+        let result = self.insert_text_content_in_cell_native_deferred_pagination(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+            cell_idx as usize,
+            cell_para_idx as usize,
+            range.start,
+            &content,
         );
         self.finish_caret_insert();
         result.map_err(|e| e.into())
@@ -1912,6 +2011,37 @@ impl HwpDocument {
         result.map_err(|e| e.into())
     }
 
+    /// 명시적 빈칸 출처를 검증한 뒤 기존 삽입 경로로 복원한다.
+    #[wasm_bindgen(js_name = insertTextContentInCellByPath)]
+    pub fn insert_text_content_in_cell_by_path_api(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        path_json: &str,
+        char_offset: u32,
+        content_json: &str,
+        logical: Option<bool>,
+    ) -> Result<String, JsValue> {
+        let content = parse_text_content(content_json).map_err(JsValue::from)?;
+        let path = DocumentCore::parse_cell_path(path_json)?;
+        let target = CaretParagraph::Path {
+            section: section_idx as usize,
+            parent_para: parent_para_idx as usize,
+            path: &path,
+        };
+        let range =
+            self.prepare_caret_insert(target, char_offset as usize, 0, logical == Some(true))?;
+        let result = self.insert_text_content_in_cell_by_path(
+            section_idx as usize,
+            parent_para_idx as usize,
+            &path,
+            range.start,
+            &content,
+        );
+        self.finish_caret_insert();
+        result.map_err(|e| e.into())
+    }
+
     /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = deleteTextInCellByPath)]
     pub fn delete_text_in_cell_by_path_api(
@@ -2127,6 +2257,29 @@ impl HwpDocument {
             hf_para_idx as usize,
             char_offset as usize,
             text,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 명시적 빈칸 출처를 검증한 뒤 기존 삽입 경로로 복원한다.
+    #[wasm_bindgen(js_name = insertTextContentInHeaderFooter)]
+    pub fn insert_text_content_in_header_footer(
+        &mut self,
+        section_idx: u32,
+        is_header: bool,
+        apply_to: u8,
+        hf_para_idx: u32,
+        char_offset: u32,
+        content_json: &str,
+    ) -> Result<String, JsValue> {
+        let content = parse_text_content(content_json).map_err(JsValue::from)?;
+        self.insert_text_content_in_header_footer_native(
+            section_idx as usize,
+            is_header,
+            apply_to,
+            hf_para_idx as usize,
+            char_offset as usize,
+            &content,
         )
         .map_err(|e| e.into())
     }
@@ -5643,7 +5796,7 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
-    /// 수식을 삽입한다.
+    /// 수식을 삽입한다. `logical` 이면 `char_offset` 은 편집 캐럿의 논리 오프셋이다.
     #[wasm_bindgen(js_name = insertEquation)]
     pub fn insert_equation(
         &mut self,
@@ -5653,11 +5806,13 @@ impl HwpDocument {
         script: &str,
         font_size: u32,
         color: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.insert_equation_native(
+        self.insert_equation_at_native(
             section_idx as usize,
             para_idx as usize,
             char_offset as usize,
+            logical == Some(true),
             script,
             font_size,
             color,
@@ -5695,14 +5850,16 @@ impl HwpDocument {
         script: &str,
         font_size: u32,
         color: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.insert_equation_in_cell_native(
+        self.insert_equation_in_cell_at_native(
             section_idx as usize,
             parent_para_idx as usize,
             control_idx as usize,
             cell_idx as usize,
             cell_para_idx as usize,
             char_offset as usize,
+            logical == Some(true),
             script,
             font_size,
             color,
@@ -5721,12 +5878,14 @@ impl HwpDocument {
         script: &str,
         font_size: u32,
         color: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.insert_equation_in_cell_by_path_native(
+        self.insert_equation_in_cell_by_path_at_native(
             section_idx as usize,
             parent_para_idx as usize,
             cell_path_json,
             char_offset as usize,
+            logical == Some(true),
             script,
             font_size,
             color,
@@ -5804,6 +5963,29 @@ impl HwpDocument {
             fn_para_idx as usize,
             char_offset as usize,
             text,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 명시적 빈칸 출처를 검증한 뒤 기존 삽입 경로로 복원한다.
+    #[wasm_bindgen(js_name = insertTextContentInFootnote)]
+    pub fn insert_text_content_in_footnote(
+        &mut self,
+        section_idx: u32,
+        para_idx: u32,
+        control_idx: u32,
+        fn_para_idx: u32,
+        char_offset: u32,
+        content_json: &str,
+    ) -> Result<String, JsValue> {
+        let content = parse_text_content(content_json).map_err(JsValue::from)?;
+        self.insert_text_content_in_footnote_native(
+            section_idx as usize,
+            para_idx as usize,
+            control_idx as usize,
+            fn_para_idx as usize,
+            char_offset as usize,
+            &content,
         )
         .map_err(|e| e.into())
     }
@@ -6491,6 +6673,31 @@ impl HwpDocument {
                 from_sec as usize,
                 from_para as usize,
                 from_char as usize,
+                forward,
+                case_sensitive,
+            )
+            .map_err(|e| e.into())
+    }
+
+    /// 표 경로를 포함한 찾기 시작 주소.
+    #[wasm_bindgen(js_name = searchTextByPath)]
+    pub fn search_text_by_path(
+        &self,
+        query: &str,
+        from_sec: u32,
+        from_para: u32,
+        from_char: u32,
+        from_path_json: &str,
+        forward: bool,
+        case_sensitive: bool,
+    ) -> Result<String, JsValue> {
+        self.core
+            .search_text_by_path_native(
+                query,
+                from_sec as usize,
+                from_para as usize,
+                from_char as usize,
+                from_path_json,
                 forward,
                 case_sensitive,
             )
@@ -9789,8 +9996,10 @@ pub fn font_fallback_families(font_family: &str, font_subst: Option<String>) -> 
 /// 사용자가 설치한 폰트 바이트에서 advance 폭을 추출해 레이아웃 메트릭으로 등록한다.
 ///
 /// `aliases_json`: 폰트명 별칭 JSON 배열. 같은 별칭 + bold + italic 은 교체한다.
+/// `variations_json`(선택): 가변 글꼴 좌표 JSON 객체 (`{"wght":600}`). 주면 그 인스턴스의
+/// advance 로 잰다. 생략하면(JS 에서 인자 4개로 부르면) 기본 인스턴스다.
 /// 반환: `{"registered":true,"key":..,"unitsPerEm":..,"mappedChars":..,
-/// "coversHangul":..,"coversLatin":..,"replaced":..}` 또는
+/// "coversHangul":..,"coversLatin":..,"replaced":..,"variationsApplied":..}` 또는
 /// `{"registered":false,"reason":".."}`. 반영하려면 이후 `refreshLayout` 호출.
 #[wasm_bindgen(js_name = registerRuntimeFontMetrics)]
 pub fn register_runtime_font_metrics(
@@ -9798,8 +10007,15 @@ pub fn register_runtime_font_metrics(
     aliases_json: &str,
     bold: bool,
     italic: bool,
+    variations_json: Option<String>,
 ) -> String {
-    crate::renderer::runtime_font_metrics::register_json(bytes, aliases_json, bold, italic)
+    crate::renderer::runtime_font_metrics::register_json(
+        bytes,
+        aliases_json,
+        bold,
+        italic,
+        variations_json.as_deref(),
+    )
 }
 
 /// 사용자 PC 의 한컴 HFT 파일 바이트를 그리기 전용 윤곽선 소스로 등록한다.
@@ -9817,6 +10033,15 @@ pub fn register_hft_font(bytes: &[u8]) -> bool {
 pub fn hft_glyph_path_em(family: &str, code_point: u32) -> String {
     char::from_u32(code_point)
         .and_then(|ch| crate::renderer::hft_glyphs::hft_glyph(family, ch))
+        .map(|glyph| glyph.svg_path_data(1000.0, 1.0, 0.0, 0.0))
+        .unwrap_or_default()
+}
+
+/// 원본 HFT style 윤곽선. 기존 2인자 API는 Regular 조회로 그대로 유지한다.
+#[wasm_bindgen(js_name = hftGlyphPathStyledEm)]
+pub fn hft_glyph_path_styled_em(family: &str, code_point: u32, bold: bool, italic: bool) -> String {
+    char::from_u32(code_point)
+        .and_then(|ch| crate::renderer::hft_glyphs::hft_glyph_styled(family, ch, bold, italic))
         .map(|glyph| glyph.svg_path_data(1000.0, 1.0, 0.0, 0.0))
         .unwrap_or_default()
 }

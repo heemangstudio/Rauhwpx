@@ -660,7 +660,7 @@ test('브리지: agent-setup-progress 의 userCode 를 그대로 사이드바로
   assert.equal('userCode' in events[1], false);
 });
 
-// ─── chat-start 맥락 · 압축 프레임 ───────────────────────
+// ─── chat-start 콘텍스트 · 압축 프레임 ───────────────────────
 
 const { AgentBridgeImpl } = await import('../src/agent/bridge.ts');
 const { PendingRequestRegistry } = await import('../src/agent/pending-requests.ts');

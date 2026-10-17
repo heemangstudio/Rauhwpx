@@ -976,10 +976,20 @@ fn hwp_square_ole_merge_undo_restores_removed_paragraph_meta() {
     core.split_paragraph_native(0, 0, 0, None)
         .expect("Enter creates the square-OLE wrap paragraph");
 
-    let expected: ParaMeta = {
+    let char_id = {
+        let doc = core.document_mut();
+        let mut shape = doc.doc_info.char_shapes[0].clone();
+        shape.italic = !shape.italic;
+        shape.raw_data = None;
+        let id = doc.doc_info.char_shapes.len() as u32;
+        doc.doc_info.char_shapes.push(shape);
+        id
+    };
+    let (expected, expected_shapes, expected_authored) = {
         let restored = &mut core.document_mut().sections[0].paragraphs[1];
-        // Deliberately differ from the OLE anchor. All seven ParaMeta fields must
-        // survive Backspace merge and its undo, not only the visible alignment.
+        // Deliberately differ from the OLE anchor. Paragraph metadata and the
+        // empty paragraph's character format must survive merge and undo.
+        restored.set_single_char_shape(char_id);
         restored.para_shape_id = 20;
         restored.style_id = 5;
         restored.column_type = ColumnBreakType::Page;
@@ -987,7 +997,16 @@ fn hwp_square_ole_merge_undo_restores_removed_paragraph_meta() {
         restored.numbering_restart = Some(NumberingRestart::NewStart(7));
         restored.raw_header_extra = vec![0, 0, 0, 0, 0, 0, 0xbb, 0xbb, 0xbb, 0xbb];
         restored.tab_extended = vec![[100, 0, 0x0200, 0, 0, 0, 9]];
-        restored.capture_meta()
+        let shapes = restored
+            .char_shapes
+            .iter()
+            .map(|shape| (shape.start_pos, shape.char_shape_id))
+            .collect::<Vec<_>>();
+        (
+            restored.capture_meta(),
+            shapes,
+            restored.authored_text_runs.clone(),
+        )
     };
 
     let merged = core
@@ -996,7 +1015,9 @@ fn hwp_square_ole_merge_undo_restores_removed_paragraph_meta() {
     let merged: Value = serde_json::from_str(&merged).expect("merge result JSON");
     let removed_meta: ParaMeta = serde_json::from_value(merged["removedParaMeta"].clone())
         .expect("merge exposes removed paragraph metadata");
-    assert_eq!(removed_meta, expected);
+    let mut expected_merge = expected.clone();
+    expected_merge.empty_char_shapes = Some(expected_shapes.clone());
+    assert_eq!(removed_meta, expected_merge);
 
     core.split_paragraph_native(0, 0, 0, Some(removed_meta))
         .expect("undo split restores the square-OLE wrap paragraph");
@@ -1005,6 +1026,20 @@ fn hwp_square_ole_merge_undo_restores_removed_paragraph_meta() {
         expected,
         "square-OLE wrap branch must apply restore_meta just like the table and ordinary branches"
     );
+    assert_eq!(
+        core.document().sections[0].paragraphs[1]
+            .char_shapes
+            .iter()
+            .map(|shape| (shape.start_pos, shape.char_shape_id))
+            .collect::<Vec<_>>(),
+        expected_shapes,
+        "undo must also restore the removed empty paragraph's character format"
+    );
+    assert_eq!(
+        core.document().sections[0].paragraphs[1].authored_text_runs,
+        expected_authored
+    );
+    assert_eq!(expected_shapes, vec![(0, char_id)]);
 }
 
 #[test]

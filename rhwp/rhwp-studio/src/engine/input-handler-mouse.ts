@@ -3,7 +3,7 @@
 
 import type { ContextMenuItem } from '@/ui/context-menu';
 import { hyperlinkAtPointer, hoverHyperlink, rememberHyperlinkClick, followHyperlinkClick } from './input-handler-hyperlink';
-import type { CellPathLike } from '@/core/types';
+import type { CellPathLike, DocumentPosition, ObjectRef } from '@/core/types';
 import * as _connector from './input-handler-connector';
 import { MoveLineEndpointCommand } from './command';
 import { computeLineEndpointRecord } from './object-drag-record';
@@ -15,6 +15,36 @@ import { startPictureMoveDrag } from './input-handler-picture';
 import { isTopLevelBodyObject } from '@/core/object-address';
 import { emitHeaderFooterModeChanged } from './header-footer-mode';
 import { cacheTableCellBboxes, ensureTableCellBboxCache, type TableRef } from './table-bbox-cache';
+
+/** 개체 참조의 소유 경로 뒤에 글상자 컨테이너를 붙인다. */
+export function textboxEntryPosition(ref: ObjectRef): DocumentPosition | null {
+  if (ref.type !== 'shape' || ref.headerFooter || ref.noteRef || ref.memoRef) return null;
+  if (isTopLevelBodyObject(ref)) {
+    return { sectionIndex: ref.sec, paragraphIndex: 0, charOffset: 0,
+      parentParaIndex: ref.ppi, controlIndex: ref.ci, cellIndex: 0, cellParaIndex: 0, isTextBox: true };
+  }
+  if (!ref.cellPath?.length) return null;
+  const cellPath = ref.cellPath.map(entry => 'controlIndex' in entry ? { ...entry }
+    : { controlIndex: entry.controlIdx, cellIndex: entry.cellIdx, cellParaIndex: entry.cellParaIdx });
+  cellPath.push({ controlIndex: ref.ci, cellIndex: 0, cellParaIndex: 0 });
+  const first = cellPath[0];
+  return { sectionIndex: ref.sec, paragraphIndex: 0, charOffset: 0,
+    parentParaIndex: ref.ppi, controlIndex: first.controlIndex,
+    cellIndex: first.cellIndex, cellParaIndex: first.cellParaIndex, cellPath };
+}
+
+/** 단말 글상자와 모든 상위 셀 소유자가 같은 hit만 텍스트 진입에 사용한다. */
+export function textboxHitMatchesRef(hit: DocumentPosition, ref: ObjectRef): boolean {
+  const entry = textboxEntryPosition(ref);
+  if (!entry || hit.sectionIndex !== entry.sectionIndex || hit.parentParaIndex !== entry.parentParaIndex) return false;
+  if (!entry.cellPath) return hit.isTextBox === true && hit.controlIndex === ref.ci && hit.cellIndex === 0;
+  const path = hit.cellPath;
+  return !!path && path.length === entry.cellPath.length && entry.cellPath.every((owner, index) => {
+    const actual = path[index];
+    return actual.controlIndex === owner.controlIndex && actual.cellIndex === owner.cellIndex
+      && (index === path.length - 1 || actual.cellParaIndex === owner.cellParaIndex);
+  });
+}
 
 function readCurrentParagraphText(self: any) {
   if (self.cursor.isInHeaderFooter()) {
@@ -885,7 +915,12 @@ export function onClick(this: any, e: MouseEvent): void {
             if (!e.shiftKey && pi === picBbox.pageIndex &&
                 px >= picBbox.x && px <= picBbox.x + picBbox.w &&
                 py >= picBbox.y && py <= picBbox.y + picBbox.h) {
-              if (startPictureMoveDrag.call(this, e, ref, picBbox, pi, px, py)) return;
+              const textHit = ref.type === 'shape' && !isObjectBorderHit(this, pi, px, py, ref)
+                ? this.wasm.hitTest(pi, px, py) : null;
+              const pointed = textHit ? this.findPictureAtClick(pi, px, py) : null;
+              const textInterior = textHit && pointed
+                && textboxHitMatchesRef(textHit, ref) && textboxHitMatchesRef(textHit, pointed);
+              if (!textInterior && startPictureMoveDrag.call(this, e, ref, picBbox, pi, px, py)) return;
             }
           }
         }
@@ -1245,16 +1280,17 @@ export function onClick(this: any, e: MouseEvent): void {
       return;
     }
 
+    const pointedPicture = this.findPictureAtClick(pageIdx, pageX, pageY);
+    const isTextBoxHit = hit.isTextBox || (pointedPicture && textboxHitMatchesRef(hit, pointedPicture));
+
     // [Task #919] 글상자 객체 선택 중 글상자 내부 클릭 → 텍스트 편집 진입.
     // 한컴 UX: 객체 선택 후 다시 클릭 시 텍스트 편집 모드로 전환.
     // 단, 외곽 경계선 (tolerance 5px) 클릭은 객체 선택 유지.
-    if (this.cursor.isInPictureObjectSelection() && hit.isTextBox
+    if (this.cursor.isInPictureObjectSelection() && isTextBoxHit
         && hit.parentParaIndex !== undefined && hit.controlIndex !== undefined) {
       const ref = this.cursor.getSelectedPictureRef();
       if (ref && ref.type === 'shape'
-          && ref.sec === hit.sectionIndex
-          && ref.ppi === hit.parentParaIndex
-          && ref.ci === hit.controlIndex
+          && textboxHitMatchesRef(hit, ref)
           && !isObjectBorderHit(this, pageIdx, pageX, pageY, ref)) {
         // 같은 글상자 내부 클릭 → 객체 선택 해제 + 텍스트 편집 진입
         this.cursor.exitPictureObjectSelection();
@@ -1276,8 +1312,8 @@ export function onClick(this: any, e: MouseEvent): void {
     // [Task #919] 글상자 외곽 경계선 클릭 (tolerance 5px) → 글상자 객체 선택.
     // hit.isTextBox && hit.parentParaIndex/controlIndex 가 있는 경우 (글상자 안 hit)
     // 만 경계선 검사 — 한컴 UX 정합 (글상자 BBox 테두리만 객체 선택).
-    if (hit.isTextBox && hit.parentParaIndex !== undefined && hit.controlIndex !== undefined) {
-      const textBoxHit = this.findPictureAtClick(pageIdx, pageX, pageY);
+    if (isTextBoxHit && hit.parentParaIndex !== undefined && hit.controlIndex !== undefined) {
+      const textBoxHit = pointedPicture;
       if (textBoxHit?.type === 'shape'
           && isObjectBorderHit(this, pageIdx, pageX, pageY, textBoxHit)) {
         this.cursor.clearSelection();
@@ -1295,7 +1331,7 @@ export function onClick(this: any, e: MouseEvent): void {
 
     // [Task #919] 글상자 외곽 클릭 감지 — 글상자 바깥에서 외곽 근처 클릭
     // hit 가 본문 paragraph 이고 인접 paragraph 에 글상자 컨트롤이 있는 경우.
-    if (!hit.isTextBox) {
+    if (!isTextBoxHit) {
       const shapeHit = this.findShapeByOuterClick(
         pageIdx, pageX, pageY, hit.sectionIndex, hit.paragraphIndex,
       );
@@ -1318,8 +1354,8 @@ export function onClick(this: any, e: MouseEvent): void {
     // 안 picture 위 클릭은 항상 picture 객체선택 (표 셀 안 picture 와 동작 일관).
     // cellPath 동반(글상자/셀 중첩) image/equation 만 가로채고, picture 없는 글상자 영역
     // 클릭은 아래 텍스트 편집으로 fall-through.
-    if (hit.isTextBox) {
-      const tbPic = this.findPictureAtClick(pageIdx, pageX, pageY);
+    if (isTextBoxHit) {
+      const tbPic = pointedPicture;
       if (tbPic && (tbPic.type === 'image' || tbPic.type === 'equation') && (tbPic as any).cellPath) {
         this.cursor.clearSelection();
         this.exitPictureObjectSelectionIfNeeded();
@@ -1336,7 +1372,7 @@ export function onClick(this: any, e: MouseEvent): void {
 
     // 글상자 내부 텍스트/빈 영역 직접 히트 → 바로 캐럿 진입 (한컴 UX).
     // [Task #919] hit_test_native 가 글상자 안 빈 영역에서도 isTextBox=true 반환.
-    if (hit.isTextBox) {
+    if (isTextBoxHit) {
       this.exitPictureObjectSelectionIfNeeded();
       this.cursor.clearSelection();
       this.cursor.moveToHit(hit);
@@ -1354,7 +1390,7 @@ export function onClick(this: any, e: MouseEvent): void {
 
     // 그림/글상자 클릭 감지
     {
-      const picHit = this.findPictureAtClick(pageIdx, pageX, pageY);
+      const picHit = pointedPicture;
       if (picHit) {
         // Shift+클릭: 다중 선택 + 맨 앞으로 이동
         if (e.shiftKey && this.cursor.isInPictureObjectSelection()) {
@@ -1523,6 +1559,8 @@ export function onDblClick(this: any, e: MouseEvent): void {
   const target = e.target as HTMLElement;
   if (target.closest('#menu-bar') || target.closest('#icon-toolbar') || target.closest('#style-bar')) return;
 
+  let pointerPageIndex: number | null = null;
+
   // 머리말/꼬리말 영역 더블클릭 → 편집 모드 진입
   if (!this.cursor.isInHeaderFooter()) {
     try {
@@ -1534,12 +1572,25 @@ export function onDblClick(this: any, e: MouseEvent): void {
         const contentY = e.clientY - cr.top;
         const pageIdx = this.virtualScroll.getPageAtPoint(contentX, contentY);
         if (pageIdx >= 0) {
+          pointerPageIndex = pageIdx;
           const pageOffset = this.virtualScroll.getPageOffset(pageIdx);
           const pageDisplayWidth = this.virtualScroll.getPageWidth(pageIdx);
           const pageLeft = this.virtualScroll.getPageLeftResolved(pageIdx, (sc as HTMLElement).clientWidth);
           const pageX = (contentX - pageLeft) / zoom;
           const pageY = (contentY - pageOffset) / zoom;
-          const hfHit = this.wasm.hitTestHeaderFooter(pageIdx, pageX, pageY);
+          // 선택한 본문 글상자가 포인터의 전체 경로와 같을 때만 머리말보다 우선한다.
+          let selectedTextboxHit = false;
+          const selected = this.cursor.isInPictureObjectSelection() ? this.cursor.getSelectedPictureRef() : null;
+          if (selected?.type === 'shape') {
+            try {
+              const pointed = this.findPictureAtClick(pageIdx, pageX, pageY);
+              const hit = this.wasm.hitTest(pageIdx, pageX, pageY);
+              selectedTextboxHit = [selected, pointed].every(ref => ref
+                && textboxHitMatchesRef(hit, ref)
+                && (hit.cellPath?.length ?? 1) === (ref.cellPath?.length ?? 0) + 1);
+            } catch { /* 개체 hit 실패 시 기존 머리말/꼬리말 판정을 유지한다. */ }
+          }
+          const hfHit = selectedTextboxHit ? { hit: false } : this.wasm.hitTestHeaderFooter(pageIdx, pageX, pageY);
           if (hfHit.hit) {
             e.preventDefault();
             const sectionIdx = hfHit.sectionIndex ?? 0;
@@ -1592,8 +1643,8 @@ export function onDblClick(this: any, e: MouseEvent): void {
       // #686: ppi=0 앵커 도형 (master page 글상자 등)은 모든 페이지에 반복 표시됨.
       // 텍스트 진입 시 cursor가 page 0으로 잡혀 뷰가 점프하므로, page 0이 아닐 때 차단.
       if (ref.ppi === 0) {
-        const cursorPage = this.cursor.getRect()?.pageIndex ?? -1;
-        if (cursorPage !== 0) {
+        const clickedPage = pointerPageIndex ?? this.cursor.getRect()?.pageIndex ?? -1;
+        if (clickedPage !== 0) {
           this.cursor.exitPictureObjectSelection();
           this.pictureObjectRenderer?.clear();
           this.eventBus.emit('picture-object-selection-changed', false);
@@ -1604,7 +1655,7 @@ export function onDblClick(this: any, e: MouseEvent): void {
       this.cursor.exitPictureObjectSelection();
       this.pictureObjectRenderer?.clear();
       this.eventBus.emit('picture-object-selection-changed', false);
-      this.enterTextboxEditing(ref.sec, ref.ppi, ref.ci);
+      this.enterTextboxEditing(ref);
       this.textarea.focus();
       return;
     }

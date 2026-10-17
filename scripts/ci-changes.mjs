@@ -17,6 +17,8 @@ const RULES = [
   [/(?:^|\/)(?:LICENSE[^/]*|THIRD_PARTY_LICENSES\.md|CHANGELOG\.md|SECURITY\.md)$/, []],
   // Publish docs, website and the tool list the docs must not hardcode.
   [/(?:^|\/)(?:README[^/]*|CONTRIBUTING|AGENTS|CLAUDE|DESIGN|PRODUCT|PRIVACY|DEVELOPER_GUIDE)\.md$/, ['docs']],
+  // site-api tests check every image the emails link ships here.
+  [/^website\/assets\/email\//, ['docs', 'site']],
   [/^website\/|^scripts\/check-publish-docs/, ['docs']],
   [/^rhwp\/rhwp-agent\/tools\.mjs$/, ['docs', 'hub', 'studio', 'browser', 'sessions']],
   // Engine: WASM inputs rebuild rhwp/pkg for the browser job; fixtures are also read by Studio tests.

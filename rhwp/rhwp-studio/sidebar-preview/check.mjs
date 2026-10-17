@@ -11,6 +11,7 @@ import puppeteer from 'puppeteer-core';
 import { checkChipAlignment } from './chip-alignment.check.mjs';
 import { checkPiModels } from './pi-models.check.mjs';
 import { checkSetupTerminal } from './setup-terminal.check.mjs';
+import { checkInitialSetupUpdateToast } from './initial-setup-update.check.mjs';
 import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
 import { checkWorktrees } from './worktrees.check.mjs';
@@ -106,6 +107,7 @@ const focusedChecks = {
   chip: (h) => checkChipAlignment(h.page, h.origin),
   'pi-models': (h) => checkPiModels(h.page, h.origin),
   'setup-terminal': (h) => checkSetupTerminal(h.page, h.origin),
+  'setup-update-toast': (h) => checkInitialSetupUpdateToast(h.page, h.origin),
   'parallel-chats': async (h) => {
     await checkNewChatViewMode(h.page, h.origin);
     await checkDraftChat(h.page, h.origin);

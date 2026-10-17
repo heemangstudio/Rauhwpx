@@ -1,20 +1,35 @@
 // 글꼴 색인의 플랫폼 중립 부분. 데스크톱(Node)과 브라우저 Worker가 함께 쓴다.
 // node: 모듈을 쓰지 않고 `{ size, read(offset, length) → Promise<Uint8Array> }` 원본만 다룬다.
 // 파일 시스템 탐색·캐시·파일 열기는 호출부가 맡는다.
+import { WEB_FONT_INDEX_TABLES, decodeWebFont, webFontKind } from './web-font.mjs';
+
+export { decodeWebFont, streamWebFontDecoders, webFontKind } from './web-font.mjs';
 
 export const SYSTEM_FONT_INDEX_VERSION = 1;
-export const FONT_EXTENSIONS = new Set(['.ttf', '.otf', '.ttc', '.otc', '.hft']);
+export const FONT_EXTENSIONS = new Set(['.ttf', '.otf', '.ttc', '.otc', '.hft', '.woff', '.woff2']);
 export const FONT_SCAN_LIMITS = Object.freeze({ maxDepth: 6, maxFiles: 20_000, maxDirs: 20_000 });
 export const MAX_FACE_BYTES = 48 * 1024 * 1024;
 export const MAX_TABLE_READ = 8 * 1024 * 1024;
 export const HEAD_CHUNK = 64 * 1024;
 export const HANCOM_MAP_FILE = /^(hftinfo\.dat|fontlist\.lst|privatefontlist[^\\/]*\.ini)$/i;
 export const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힣]/;
-export const KIND_ORDER = Object.freeze({ hancom: 0, user: 1, system: 2 });
+// app: 다른 앱이 자기용으로 둔 글꼴. 사용자·OS 가 설치한 같은 글꼴을 가리지 않도록 맨 뒤에 둔다.
+export const KIND_ORDER = Object.freeze({ hancom: 0, user: 1, system: 2, app: 3 });
+/** 글꼴 파일 하나(컬렉션이면 모든 face 합계)에서 펼칠 이름 붙은 인스턴스 상한 */
+export const MAX_NAMED_INSTANCES = 64;
 const HFT_MAGIC = Uint8Array.from('Han Unified Font File 1.0\x1a', (char) => char.charCodeAt(0));
 const SFNT_VERSIONS = new Set([0x00010000, 0x4f54544f /* OTTO */, 0x74727565 /* true */]);
 const TTCF = 0x74746366;
 const NAME_IDS = [1, 2, 4, 6, 16, 17];
+/** 가변 글꼴 PostScript 이름 접두어 (nameID 25) */
+const VARIATIONS_PS_PREFIX_ID = 25;
+
+/** 확장자 없이 받은 파일이 SFNT/TTC/WOFF/WOFF2 글꼴인지 첫 4바이트로 판별한다. */
+export function isFontSignature(bytes) {
+  if (!bytes || bytes.length < 4) return false;
+  const tag = u32(bytes, 0);
+  return SFNT_VERSIONS.has(tag) || tag === TTCF || webFontKind(bytes) !== null;
+}
 
 // ---------------------------------------------------------------------------
 // 바이트 판독기
@@ -201,7 +216,7 @@ function cleanName(text) {
   return typeof text === 'string' ? text.replace(/\u0000/g, '').trim() : '';
 }
 
-export function parseNameTable(bytes) {
+export function parseNameTable(bytes, extraIds) {
   const records = [];
   let undecodable = 0;
   if (bytes.length < 6) return { records, undecodable };
@@ -214,7 +229,7 @@ export function parseNameTable(bytes) {
     const encodingId = u16(bytes, base + 2);
     const languageId = u16(bytes, base + 4);
     const nameId = u16(bytes, base + 6);
-    if (!NAME_IDS.includes(nameId)) continue;
+    if (!NAME_IDS.includes(nameId) && !extraIds?.has(nameId)) continue;
     const length = u16(bytes, base + 8);
     const start = stringOffset + u16(bytes, base + 10);
     if (start + length > bytes.length) continue;
@@ -382,6 +397,7 @@ export async function parseSfntFaces(input) {
   const { collection, offsets } = await faceOffsets(source);
   const cmapCache = new Map();
   const nameCache = new Map();
+  const instanceBudget = { left: MAX_NAMED_INSTANCES };
   const faces = [];
   let undecodable = 0;
   for (let faceIndex = 0; faceIndex < offsets.length; faceIndex += 1) {
@@ -408,7 +424,7 @@ export async function parseSfntFaces(input) {
       // 깨진 cmap 은 커버리지 없음으로 둔다. 이름 정보는 그대로 쓴다.
     }
     const { records } = parsedNames;
-    faces.push({
+    const base = {
       faceIndex,
       format: collection
         ? (sfntVersion === 0x4f54544f ? 'otc' : 'ttc')
@@ -425,16 +441,176 @@ export async function parseSfntFaces(input) {
       bold: Boolean(fsSelection & 32) || Boolean(macStyle & 1),
       hangul: coverage.hangul,
       latin: coverage.latin,
-    });
+    };
+    faces.push(base);
+    try {
+      faces.push(...await namedInstanceFaces(source, tables, base, records, instanceBudget));
+    } catch {
+      // 깨진 fvar 는 기본 인스턴스만 남긴다.
+    }
   }
   return { collection, faces, undecodable };
 }
 
+// ---------------------------------------------------------------------------
+// 가변 글꼴 이름 붙은 인스턴스
+// ---------------------------------------------------------------------------
+
+const RIBBI_STYLES = new Map([
+  ['regular', { bold: false, italic: false }],
+  ['bold', { bold: true, italic: false }],
+  ['italic', { bold: false, italic: true }],
+  ['bold italic', { bold: true, italic: true }],
+]);
+
+function fixed(bytes, offset) {
+  return (u32(bytes, offset) | 0) / 65536;
+}
+
+function roundCoordinate(value) {
+  return Math.round(value * 1000) / 1000;
+}
+
+/** fvar 의 축과 이름 붙은 인스턴스. 표가 이상하면 null. */
+function parseFvar(bytes) {
+  if (bytes.length < 16 || u16(bytes, 0) !== 1) return null;
+  const axesOffset = u16(bytes, 4);
+  const axisCount = u16(bytes, 8);
+  const axisSize = u16(bytes, 10);
+  const instanceCount = u16(bytes, 12);
+  const instanceSize = u16(bytes, 14);
+  if (axisCount === 0 || axisSize < 20 || instanceSize < 4 + axisCount * 4) return null;
+  if (axesOffset + axisCount * axisSize + instanceCount * instanceSize > bytes.length) return null;
+  const axes = [];
+  for (let i = 0; i < axisCount; i += 1) {
+    const at = axesOffset + i * axisSize;
+    axes.push({
+      tag: tagString(u32(bytes, at)),
+      min: fixed(bytes, at + 4),
+      default: fixed(bytes, at + 8),
+      max: fixed(bytes, at + 12),
+    });
+  }
+  const hasPostscriptId = instanceSize >= 6 + axisCount * 4;
+  const instances = [];
+  const instancesAt = axesOffset + axisCount * axisSize;
+  for (let i = 0; i < instanceCount; i += 1) {
+    const at = instancesAt + i * instanceSize;
+    const coordinates = {};
+    for (let a = 0; a < axisCount; a += 1) {
+      const axis = axes[a];
+      const value = fixed(bytes, at + 4 + a * 4);
+      coordinates[axis.tag] = roundCoordinate(Math.min(axis.max, Math.max(axis.min, value)));
+    }
+    instances.push({
+      index: i,
+      subfamilyNameId: u16(bytes, at),
+      postscriptNameId: hasPostscriptId ? u16(bytes, at + 4 + axisCount * 4) : 0xffff,
+      coordinates,
+    });
+  }
+  return { axes, instances };
+}
+
+const WEIGHT_WORDS = [
+  [/(extra|ultra)[\s-]*light/i, 200],
+  [/(semi|demi)[\s-]*bold/i, 600],
+  [/(extra|ultra)[\s-]*bold/i, 800],
+  [/hairline|thin/i, 100],
+  [/light/i, 300],
+  [/medium/i, 500],
+  [/bold/i, 700],
+  [/black|heavy/i, 900],
+];
+
+/** wght 축이 CSS 굵기 범위(1~1000)를 따르지 않는 옛 글꼴(Skia 등)은 스타일 이름으로 굵기를 정한다. */
+function weightFromStyleName(subfamily, fallback) {
+  return WEIGHT_WORDS.find(([pattern]) => pattern.test(subfamily))?.[1] ?? fallback;
+}
+
+function postscriptSafe(text) {
+  return text.replace(/[^A-Za-z0-9]/g, '');
+}
+
+/**
+ * fvar 의 이름 붙은 인스턴스마다 face 를 하나씩 만든다. 파일은 기본 face 와 같고
+ * `instance` 좌표로 구분한다. 기본 좌표와 같은 인스턴스는 기본 face 가 이미 나타내므로 뺀다.
+ * 이름은 정적 글꼴 묶음과 맞춘다: RIBBI 스타일은 같은 family, 그 밖의 굵기는
+ * "Pretendard SemiBold" 처럼 family 이름 뒤에 스타일을 붙인 legacy family 로 둔다.
+ */
+async function namedInstanceFaces(source, tables, base, baseRecords, budget) {
+  const fvarTable = tables.get('fvar');
+  if (!fvarTable) return [];
+  const fvar = parseFvar(await readTable(source, fvarTable, 64 * 1024));
+  if (!fvar || fvar.instances.length === 0) return [];
+  const wanted = new Set([VARIATIONS_PS_PREFIX_ID]);
+  for (const instance of fvar.instances) {
+    wanted.add(instance.subfamilyNameId);
+    if (instance.postscriptNameId !== 0xffff) wanted.add(instance.postscriptNameId);
+  }
+  const nameTable = tables.get('name');
+  const { records } = nameTable
+    ? parseNameTable(await readTable(source, nameTable), wanted)
+    : { records: baseRecords };
+  const familyName = base.typographicFamilies[0] ?? base.families[0];
+  // '.' 으로 시작하는 Apple UI 전용 글꼴은 문서가 이름으로 부르지 않으므로 인스턴스를 펼치지 않는다.
+  if (!familyName || familyName.startsWith('.') || budget.left <= 0) return [];
+  const koreanFamilies = base.koreanNames.filter((name) => (
+    records.some((record) => (record.nameId === 1 || record.nameId === 16) && record.text === name)
+  ));
+  const psPrefix = namesFor(records, VARIATIONS_PS_PREFIX_ID)[0]
+    ?? base.postscriptNames[0]?.split('-')[0]
+    ?? postscriptSafe(familyName);
+  const wghtAxis = fvar.axes.find((axis) => axis.tag === 'wght');
+  const cssWeightAxis = wghtAxis && wghtAxis.min >= 1 && wghtAxis.max <= 1000;
+  const isDefault = (coordinates) => fvar.axes.every((axis) => coordinates[axis.tag] === roundCoordinate(axis.default));
+  const faces = [];
+  for (const instance of fvar.instances) {
+    if (budget.left <= 0) break;
+    if (isDefault(instance.coordinates)) continue;
+    const subfamily = namesFor(records, instance.subfamilyNameId)[0];
+    if (!subfamily) continue;
+    const ribbi = RIBBI_STYLES.get(subfamily.toLowerCase().replace(/\s+/g, ' '));
+    const { wght, ital, slnt } = instance.coordinates;
+    const weight = cssWeightAxis && Number.isFinite(wght)
+      ? Math.max(1, Math.min(1000, Math.round(wght)))
+      : weightFromStyleName(subfamily, base.weight);
+    const italic = ribbi ? ribbi.italic : (base.italic || (ital ?? 0) >= 0.5 || (slnt ?? 0) !== 0
+      || /italic|oblique/i.test(subfamily));
+    const fullName = `${familyName} ${subfamily}`;
+    const postscriptName = instance.postscriptNameId !== 0xffff
+      ? namesFor(records, instance.postscriptNameId)[0]
+      : undefined;
+    faces.push({
+      faceIndex: base.faceIndex,
+      instanceIndex: instance.index,
+      instance: { ...instance.coordinates },
+      format: base.format,
+      families: [ribbi ? familyName : fullName],
+      fullNames: [fullName],
+      postscriptNames: uniqueStrings([postscriptName, `${psPrefix}-${postscriptSafe(subfamily)}`]),
+      styles: [ribbi ? subfamily : (italic ? 'Italic' : 'Regular')],
+      typographicFamilies: [familyName],
+      typographicStyles: [subfamily],
+      koreanNames: ribbi ? [...koreanFamilies] : [],
+      weight,
+      italic,
+      bold: ribbi ? ribbi.bold : false,
+      hangul: base.hangul,
+      latin: base.latin,
+    });
+    budget.left -= 1;
+  }
+  return faces;
+}
+
 /**
  * 글꼴 파일 하나를 판별하고 면 정보를 읽는다. HFT 는 서명만 확인한다.
+ * WOFF/WOFF2 는 색인에 필요한 표만 풀어 읽는다. 압축 해제기가 없으면 오류를 던진다.
+ * @param {{ decompress?: { zlib?: Function, brotli?: Function } }} [options]
  * @returns {Promise<{ type: 'hft' | 'sfnt', faces: object[], undecodable?: number }>}
  */
-export async function parseFontSource(input, fileName) {
+export async function parseFontSource(input, fileName, { decompress } = {}) {
   const source = asSource(input);
   if (source.size < 12) throw new Error('file too small to be a font');
   const magic = await source.read(0, Math.min(source.size, HFT_MAGIC.length));
@@ -442,8 +618,26 @@ export async function parseFontSource(input, fileName) {
     return { type: 'hft', faces: [] };
   }
   if (/\.hft$/i.test(fileName ?? '')) throw new Error('missing HFT signature');
+  const web = webFontKind(magic);
+  if (web) {
+    const sfnt = await decodeWebFont(source, { decompress, tables: WEB_FONT_INDEX_TABLES, maxBytes: MAX_FACE_BYTES });
+    const parsed = await parseSfntFaces(sfnt);
+    for (const face of parsed.faces) face.format = web;
+    return { type: 'sfnt', faces: parsed.faces, undecodable: parsed.undecodable };
+  }
   const parsed = await parseSfntFaces(source);
   return { type: 'sfnt', faces: parsed.faces, undecodable: parsed.undecodable };
+}
+
+/**
+ * 색인 face 의 바이트를 FontFace·엔진 메트릭이 읽는 단독 SFNT 로 만든다. TTC/OTC 면은 떼어 내고,
+ * WOFF/WOFF2 는 풀어서 돌려준다. 그 밖의 형식은 null (원본 파일 그대로 쓴다).
+ * @param {{ format: string, faceIndex: number }} face
+ */
+export async function standaloneFaceBytes(input, face, { decompress, maxBytes = MAX_FACE_BYTES } = {}) {
+  if (face.format === 'ttc' || face.format === 'otc') return extractCollectionFace(input, face.faceIndex, { maxBytes });
+  if (face.format === 'woff' || face.format === 'woff2') return decodeWebFont(asSource(input), { decompress, maxBytes });
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -615,7 +809,8 @@ export function commonPrefixLength(a, b) {
 export function sortFaces(faces) {
   return faces.sort((a, b) => (KIND_ORDER[a.source] - KIND_ORDER[b.source])
     || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
-    || a.faceIndex - b.faceIndex);
+    || a.faceIndex - b.faceIndex
+    || (a.instanceIndex ?? -1) - (b.instanceIndex ?? -1));
 }
 
 function cloneFaceNames(raw) {
@@ -658,13 +853,16 @@ export async function assembleFontIndex({ parsedFiles, mapFiles, readMapFile, fa
       continue;
     }
     for (const raw of result.faces) {
+      const instanced = Number.isInteger(raw.instanceIndex) && raw.instance;
       const face = {
-        id: faceId(file, raw.faceIndex),
+        id: instanced ? faceId(file, raw.faceIndex, raw.instanceIndex) : faceId(file, raw.faceIndex),
         path: file.path,
         faceIndex: raw.faceIndex,
+        ...(instanced ? { instanceIndex: raw.instanceIndex, instance: { ...raw.instance } } : {}),
         format: raw.format,
         source: file.kind,
         size: file.size,
+        ...(file.unlisted ? { unlisted: true } : {}),
         ...cloneFaceNames(raw),
         weight: raw.weight,
         italic: raw.italic,
@@ -696,7 +894,7 @@ export async function assembleFontIndex({ parsedFiles, mapFiles, readMapFile, fa
 async function buildHancomMaps({ mapFiles, readMapFile, hftFiles, faces, byId, errors, faceId, pathApi, platform }) {
   const hancomFaces = new Map(); // 소문자 파일명 → face[]
   for (const face of faces) {
-    if (face.source !== 'hancom' || face.faceIndex !== 0) continue;
+    if (face.source !== 'hancom' || face.faceIndex !== 0 || face.instance) continue;
     const key = pathApi.basename(face.path).toLowerCase();
     if (!hancomFaces.has(key)) hancomFaces.set(key, []);
     hancomFaces.get(key).push(face);

@@ -847,7 +847,10 @@ impl LayoutEngine {
             let first_caption_node = parent_node.children.len();
             let para_y_before_layout = para_y;
             // 먼저 문단을 조합
-            let mut composed = compose_paragraph(para);
+            let mut composed = crate::renderer::composer::compose_paragraph_with_policy(
+                para,
+                styles.font_metrics_policy,
+            );
 
             // AutoNumber 컨트롤 처리: 조합된 텍스트에 번호 삽입
             self.apply_auto_numbers_to_composed(&mut composed, para, auto_counter);
@@ -1094,7 +1097,10 @@ impl LayoutEngine {
             );
 
             for (p_idx, para) in fn_paras.iter().enumerate() {
-                let composed = compose_paragraph(para);
+                let composed = crate::renderer::composer::compose_paragraph_with_policy(
+                    para,
+                    styles.font_metrics_policy,
+                );
                 let marker_section = i; // footnote_index
                 let marker_para = usize::MAX - 2000 - p_idx; // 각주 내 문단 인덱스
                                                              // 각주 번호 스타일용 기본 char_shape_id (빈/비빈 문단 모두 동일)

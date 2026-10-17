@@ -111,6 +111,8 @@ export async function startEditEngine(): Promise<EditEngine> {
         deferredPaginationRunner: { isActive: () => false, cancel() {}, start() {} },
         caretLayoutReveal: { requestFor() {} },
         textarea: { value: '', focus() {}, blur() {} },
+        caret: { show() {} },
+        viewportManager: { getZoom: () => 1 },
         // 화면 갱신(캐럿·스크롤)만 비운다.
         updateCaret() {},
         scheduleDeferredPaginationFlush() {},

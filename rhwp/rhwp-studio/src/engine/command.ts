@@ -1,3 +1,4 @@
+import { parseTextRemoval, concatTextContent, type TextContent, type TextRemoval } from '../core/local-text-replace-result';
 import type { RemovedParaMeta, WasmBridge } from '@/core/wasm-bridge';
 import type { DocumentPosition, CharProperties, ParaProperties, CellPathLike, CellPathEntry, CharShapeRun } from '@/core/types';
 import type { HeaderFooterTextPosition } from './cursor';
@@ -457,7 +458,7 @@ export function replaceBodyTextWithMutationEffects(
   pos: DocumentPosition,
   deleteCount: number,
   text: string,
-): TextMutationEffects {
+): TextMutationEffects & Partial<TextRemoval> {
   const result = wasm.replaceBodyTextLocal(
     pos.sectionIndex,
     pos.paragraphIndex,
@@ -467,6 +468,7 @@ export function replaceBodyTextWithMutationEffects(
     true,
   );
   return {
+    ...parseTextRemoval(result),
     documentPaginationPending: result.documentPaginationPending,
     flowChanged: result.flowChanged,
     paginationCompleted: !result.documentPaginationPending,
@@ -478,7 +480,7 @@ export function replaceCellTextWithMutationEffects(
   pos: DocumentPosition,
   deleteCount: number,
   text: string,
-): TextMutationEffects {
+): TextMutationEffects & Partial<TextRemoval> {
   const result = wasm.replaceTextInCellDeferredPagination(
     pos.sectionIndex,
     pos.parentParaIndex!,
@@ -491,6 +493,7 @@ export function replaceCellTextWithMutationEffects(
     true,
   );
   return {
+    ...parseTextRemoval(result),
     documentPaginationPending: result.paginationDeferred,
     flowChanged: result.paginationDeferred && result.cellFlowChanged,
     paginationCompleted: !result.paginationDeferred,
@@ -508,29 +511,48 @@ function doInsertTextImmediate(wasm: WasmBridge, pos: DocumentPosition, text: st
   }
 }
 
+function doInsertTextContentImmediate(wasm: WasmBridge, pos: DocumentPosition, content: TextContent): DocumentPosition {
+  let raw: string;
+  if (isNestedCell(pos)) {
+    raw = wasm.insertTextContentInCellByPath(pos.sectionIndex, pos.parentParaIndex!, cellPathJson(pos), pos.charOffset, content, true);
+  } else if (isCell(pos)) {
+    raw = wasm.insertTextContentInCell(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, content, true);
+  } else {
+    raw = wasm.insertTextContent(pos.sectionIndex, pos.paragraphIndex, pos.charOffset, content, true);
+  }
+  const result = JSON.parse(raw) as { ok: boolean; charOffset: number };
+  if (result.ok !== true || !Number.isSafeInteger(result.charOffset) || result.charOffset < 0) throw new Error('잘못된 콘텐츠 복원 결과');
+  const charOffset = isCell(pos)
+    ? wasm.textToLogicalOffsetInCellByPath(pos.sectionIndex, pos.parentParaIndex!, JSON.stringify(cellAxisPath(pos)), result.charOffset)
+    : wasm.textToLogicalOffset(pos.sectionIndex, pos.paragraphIndex, result.charOffset);
+  return { ...pos, charOffset };
+}
+
 export function deleteTextWithMutationEffects(
   wasm: WasmBridge,
   pos: DocumentPosition,
   count: number,
-): TextMutationEffects {
+): TextMutationEffects & Partial<TextRemoval> {
+  let raw: string;
   if (isNestedCell(pos)) {
-    wasm.deleteTextInCellByPath(pos.sectionIndex, pos.parentParaIndex!, cellPathJson(pos), pos.charOffset, count, true);
+    raw = wasm.deleteTextInCellByPath(pos.sectionIndex, pos.parentParaIndex!, cellPathJson(pos), pos.charOffset, count, true);
   } else if (isCell(pos)) {
     if (canUseDeferredCellTextDelete(pos, count)) {
       const result = wasm.deleteTextInCellDeferredPagination(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, count, true);
       return {
+        ...parseTextRemoval(result),
         documentPaginationPending: result.paginationDeferred,
         flowChanged: result.cellFlowChanged,
         paginationCompleted: !result.paginationDeferred,
       };
     }
-    wasm.deleteTextInCell(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, count, true);
+    raw = wasm.deleteTextInCell(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, count, true);
   } else if (canUseLocalBodyTextReplace(pos, count, '')) {
     return replaceBodyTextWithMutationEffects(wasm, pos, count, '');
   } else {
-    wasm.deleteText(pos.sectionIndex, pos.paragraphIndex, pos.charOffset, count, true);
+    raw = wasm.deleteText(pos.sectionIndex, pos.paragraphIndex, pos.charOffset, count, true);
   }
-  return IMMEDIATE_TEXT_MUTATION_EFFECTS;
+  return { ...IMMEDIATE_TEXT_MUTATION_EFFECTS, ...parseTextRemoval(JSON.parse(raw)) };
 }
 
 function doDeleteTextImmediate(wasm: WasmBridge, pos: DocumentPosition, count: number): void {
@@ -625,6 +647,8 @@ export class InsertTextCommand implements EditCommand {
     if (other.position.paragraphIndex !== this.position.paragraphIndex) return null;
     if (isCell(this.position) !== isCell(other.position)) return null;
     if (isCell(this.position)) {
+      if (isNestedCell(this.position) !== isNestedCell(other.position)) return null;
+      if (isNestedCell(this.position) && cellPathJson(this.position) !== cellPathJson(other.position)) return null;
       if (other.position.parentParaIndex !== this.position.parentParaIndex) return null;
       if (other.position.controlIndex !== this.position.controlIndex) return null;
       if (other.position.cellIndex !== this.position.cellIndex) return null;
@@ -651,6 +675,7 @@ export class DeleteTextCommand implements EditCommand {
 
   /** undo용 삭제된 텍스트 (execute 시 보존) */
   private deletedText: string;
+  private deletedContent: TextContent;
   private lastMutationEffects: TextMutationEffects = NO_TEXT_MUTATION_EFFECTS;
 
   constructor(
@@ -659,8 +684,10 @@ export class DeleteTextCommand implements EditCommand {
     private direction: 'forward' | 'backward',
     deletedText?: string,
     timestamp?: number,
+    deletedContent?: TextContent,
   ) {
     this.deletedText = deletedText ?? '';
+    this.deletedContent = deletedContent ?? { text: this.deletedText, specialSpaceOrigins: [] };
     this.timestamp = timestamp ?? Date.now();
   }
 
@@ -670,7 +697,11 @@ export class DeleteTextCommand implements EditCommand {
     if (!this.deletedText) {
       this.deletedText = doGetTextRange(wasm, this.position, this.count);
     }
-    this.lastMutationEffects = deleteTextWithMutationEffects(wasm, this.position, this.count);
+    const result = deleteTextWithMutationEffects(wasm, this.position, this.count);
+    this.lastMutationEffects = result;
+    this.deletedContent = result.removedContent ?? { text: this.deletedText, specialSpaceOrigins: [] };
+    this.deletedText = this.deletedContent.text;
+    this.count = charCount(this.deletedText);
     return { ...this.position };
   }
 
@@ -686,9 +717,7 @@ export class DeleteTextCommand implements EditCommand {
 
   undo(wasm: WasmBridge): DocumentPosition {
     this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
-    doInsertTextImmediate(wasm, this.position, this.deletedText);
-    const restoredLen = this.deletedText.length;
-    return { ...this.position, charOffset: this.position.charOffset + restoredLen };
+    return doInsertTextContentImmediate(wasm, this.position, this.deletedContent);
   }
 
   mergeWith(other: EditCommand): EditCommand | null {
@@ -699,6 +728,8 @@ export class DeleteTextCommand implements EditCommand {
     if (other.position.sectionIndex !== this.position.sectionIndex) return null;
     if (other.position.paragraphIndex !== this.position.paragraphIndex) return null;
     if (isCell(this.position) !== isCell(other.position)) return null;
+    if (isNestedCell(this.position) !== isNestedCell(other.position)) return null;
+    if (isNestedCell(this.position) && cellPathJson(this.position) !== cellPathJson(other.position)) return null;
     if (isCell(this.position)) {
       if (other.position.parentParaIndex !== this.position.parentParaIndex) return null;
       if (other.position.controlIndex !== this.position.controlIndex) return null;
@@ -711,7 +742,7 @@ export class DeleteTextCommand implements EditCommand {
       if (other.position.charOffset === this.position.charOffset - other.count) {
         return new DeleteTextCommand(
           other.position, this.count + other.count, 'backward',
-          other.deletedText + this.deletedText, this.timestamp,
+          other.deletedText + this.deletedText, this.timestamp, concatTextContent(other.deletedContent, this.deletedContent),
         );
       }
     } else {
@@ -719,7 +750,7 @@ export class DeleteTextCommand implements EditCommand {
       if (other.position.charOffset === this.position.charOffset) {
         return new DeleteTextCommand(
           this.position, this.count + other.count, 'forward',
-          this.deletedText + other.deletedText, this.timestamp,
+          this.deletedText + other.deletedText, this.timestamp, concatTextContent(this.deletedContent, other.deletedContent),
         );
       }
     }
@@ -1723,6 +1754,7 @@ export class DeleteTextInHeaderFooterCommand implements EditCommand {
   readonly type = 'deleteTextInHeaderFooter';
   readonly timestamp = Date.now();
   private lastContext: EditContext;
+  private deletedContent: TextContent;
 
   constructor(
     private target: HeaderFooterEditTarget,
@@ -1733,16 +1765,22 @@ export class DeleteTextInHeaderFooterCommand implements EditCommand {
     private cursorBeforeOffset: number,
   ) {
     this.lastContext = hfEditContext(target, paraIdx, charOffset);
+    this.deletedContent = { text: deletedText, specialSpaceOrigins: [] };
   }
 
   execute(wasm: WasmBridge): DocumentPosition {
-    wasm.deleteTextInHeaderFooter(this.target.sectionIdx, this.target.isHeader, this.target.applyTo, this.paraIdx, this.charOffset, charCount(this.deletedText));
+    const raw = wasm.deleteTextInHeaderFooter(this.target.sectionIdx, this.target.isHeader, this.target.applyTo, this.paraIdx, this.charOffset, charCount(this.deletedText));
+    const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const removal = parseTextRemoval(result);
+    this.deletedContent = removal.removedContent ?? { text: this.deletedText, specialSpaceOrigins: [] };
+    this.deletedText = this.deletedContent.text;
+    if (removal.removedStart !== undefined) this.charOffset = removal.removedStart;
     this.lastContext = hfEditContext(this.target, this.paraIdx, this.charOffset);
     return hfFnStubPosition(this.target.sectionIdx);
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
-    wasm.insertTextInHeaderFooter(this.target.sectionIdx, this.target.isHeader, this.target.applyTo, this.paraIdx, this.charOffset, this.deletedText);
+    wasm.insertTextContentInHeaderFooter(this.target.sectionIdx, this.target.isHeader, this.target.applyTo, this.paraIdx, this.charOffset, this.deletedContent);
     this.lastContext = hfEditContext(this.target, this.paraIdx, this.cursorBeforeOffset);
     return hfFnStubPosition(this.target.sectionIdx);
   }
@@ -1868,6 +1906,7 @@ export class DeleteTextInFootnoteCommand implements EditCommand {
   readonly type = 'deleteTextInFootnote';
   readonly timestamp = Date.now();
   private lastContext: EditContext;
+  private deletedContent: TextContent;
 
   constructor(
     private target: FootnoteEditTarget,
@@ -1877,16 +1916,22 @@ export class DeleteTextInFootnoteCommand implements EditCommand {
     private cursorBeforeOffset: number,
   ) {
     this.lastContext = fnEditContext(target, innerParaIdx, charOffset);
+    this.deletedContent = { text: deletedText, specialSpaceOrigins: [] };
   }
 
   execute(wasm: WasmBridge): DocumentPosition {
-    wasm.deleteTextInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, charCount(this.deletedText));
+    const raw = wasm.deleteTextInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, charCount(this.deletedText));
+    const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const removal = parseTextRemoval(result);
+    this.deletedContent = removal.removedContent ?? { text: this.deletedText, specialSpaceOrigins: [] };
+    this.deletedText = this.deletedContent.text;
+    if (removal.removedStart !== undefined) this.charOffset = removal.removedStart;
     this.lastContext = fnEditContext(this.target, this.innerParaIdx, this.charOffset);
     return hfFnStubPosition(this.target.sectionIdx);
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
-    wasm.insertTextInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, this.deletedText);
+    wasm.insertTextContentInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, this.deletedContent);
     this.lastContext = fnEditContext(this.target, this.innerParaIdx, this.cursorBeforeOffset);
     return hfFnStubPosition(this.target.sectionIdx);
   }
@@ -2640,7 +2685,7 @@ export class SnapshotCommand implements EditCommand {
     return { ...this.cursorBefore };
   }
 
-  mergeWith(): null { return null; }
+  mergeWith(_other: EditCommand): EditCommand | null { return null; }
 
   /** [Task #2328] 현재 살아있는 before/after 스냅샷 id 개수. */
   snapshotResourceCount(): number {
@@ -2668,6 +2713,54 @@ export class SnapshotCommand implements EditCommand {
       wasm.discardSnapshot(this.afterId);
       this.afterId = null;
     }
+  }
+}
+
+/** 선택 삭제와 입력을 같은 스냅샷으로 복원한다. */
+export class ReplaceSelectionCommand extends SnapshotCommand {
+  readonly type = 'replaceSelection';
+  private mergeCandidate: InsertTextCommand;
+  private continuations: InsertTextCommand[] = [];
+
+  constructor(
+    readonly start: DocumentPosition,
+    end: DocumentPosition,
+    text: string,
+    charFormat?: Partial<CharProperties>,
+  ) {
+    super('replaceSelection', end, start, (wasm) => {
+      const position = deleteSelectionImmediate(wasm, start, end);
+      doInsertTextImmediate(wasm, position, text);
+      applyCharFormatToInsertedText(wasm, position, text, charFormat);
+      return { ...position, charOffset: position.charOffset + charCount(text) };
+    });
+    this.mergeCandidate = new InsertTextCommand(start, text, this.timestamp, charFormat);
+  }
+
+  execute(wasm: WasmBridge): DocumentPosition {
+    let position = super.execute(wasm);
+    // 같은 타이핑 묶음의 후속 글자는 일반 InsertTextCommand와 같은 규칙으로 재생한다.
+    for (const command of this.continuations) position = command.execute(wasm);
+    return position;
+  }
+
+  mergeWith(other: EditCommand): EditCommand | null {
+    const merged = this.mergeCandidate.mergeWith(other);
+    if (!(merged instanceof InsertTextCommand) || !(other instanceof InsertTextCommand)) return null;
+    this.mergeCandidate = merged;
+    this.continuations.push(other);
+    return this;
+  }
+
+  currentSnapshotId(): number | null {
+    return this.continuations.length ? null : super.currentSnapshotId();
+  }
+
+  consumeTextMutationEffects(): TextMutationEffects {
+    const effects = new TextMutationEffectAccumulator();
+    effects.add(IMMEDIATE_TEXT_MUTATION_EFFECTS);
+    for (const command of this.continuations) effects.add(command.consumeTextMutationEffects());
+    return effects.consume();
   }
 }
 

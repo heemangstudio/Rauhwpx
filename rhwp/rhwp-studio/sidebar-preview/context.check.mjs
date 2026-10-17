@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 
-/** 맥락 표시 · 수동 압축 · 중복 이벤트 · 다시 열기 · 프로바이더 전환과 커서 재개. */
+/** 콘텍스트 표시 · 수동 압축 · 중복 이벤트 · 다시 열기 · 프로바이더 전환과 커서 재개. */
 export async function checkContextPreview(page, origin, artifacts) {
   const scene = async (query) => {
     await page.goto(`${origin}/?audit=1&controls=0&width=480&theme=light&${query}`, { waitUntil: 'networkidle0' });
@@ -17,12 +17,12 @@ export async function checkContextPreview(page, origin, artifacts) {
 
   // 수동 압축: 진행 표시가 바뀌고, 끝나면 구분선 하나와 줄어든 사용량이 남는다.
   await page.click('.ag-context-compact');
-  await page.waitForFunction(() => document.querySelector('.ag-turn-pending-label')?.textContent === '맥락 압축 중…');
+  await page.waitForFunction(() => document.querySelector('.ag-turn-pending-label')?.textContent === '콘텍스트 압축 중…');
   assert.equal(await page.$eval('.ag-context-compact', (el) => el.getAttribute('aria-disabled')), 'true');
   await page.waitForSelector('.ag-marker-compaction');
   await page.waitForFunction(() => !window.sidebarPreview.snapshot().running);
   const marker = await page.$eval('.ag-marker-compaction', (el) => ({ id: el.dataset.compactionId, label: el.getAttribute('aria-label') }));
-  assert.match(marker.label, /^맥락 압축됨 · 184K → 42K$/);
+  assert.match(marker.label, /^콘텍스트 압축됨 · 184K → 42K$/);
   assert.equal(await page.$eval('.ag-context', (el) => el.dataset.level), 'normal');
   await page.screenshot({ path: resolve(artifacts, 'context-compacted.png') });
 
@@ -32,7 +32,7 @@ export async function checkContextPreview(page, origin, artifacts) {
   }), marker.id);
   assert.equal(await markerCount('compaction'), 1);
 
-  // 다시 열면 구분선과 맥락 표시가 저장된 채팅에서 돌아온다.
+  // 다시 열면 구분선과 콘텍스트 표시가 저장된 채팅에서 돌아온다.
   await page.click('.ag-header .ag-threads-btn');
   const threadId = await page.$eval('.ag-threads-item.ag-active', (node) => node.dataset.threadId);
   await new Promise((done) => setTimeout(done, 300));

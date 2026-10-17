@@ -3,6 +3,7 @@
 
 import {
   InsertTextCommand,
+  ReplaceSelectionCommand,
   DeleteTextCommand,
   MergeParagraphCommand,
   MergeNextParagraphCommand,
@@ -25,7 +26,9 @@ import {
   IMMEDIATE_TEXT_MUTATION_EFFECTS,
   NO_TEXT_MUTATION_EFFECTS,
   TextMutationEffectAccumulator,
+  deleteSelectionImmediate,
 } from './command';
+import { CapturedSnapshotCommand } from './captured-snapshot-command';
 import type { TextMutationEffects } from './command';
 import type { DocumentPosition } from '@/core/types';
 import { showConfirm } from '@/ui/confirm-dialog';
@@ -411,6 +414,11 @@ function moveCompositionCaret(this: any, anchor: DocumentPosition, scalarOffset:
  * 문서 전환·취소처럼 확정하면 안 되는 경로에서 쓴다.
  */
 export function revertCompositionPreview(this: any): void {
+  if (this.selectionComposition) {
+    finishSelectionComposition.call(this, false);
+    this.compositionLength = 0;
+    return;
+  }
   const anchor = this.compositionAnchor;
   const length = this.compositionLength;
   if (!anchor || length <= 0) return;
@@ -421,6 +429,43 @@ export function revertCompositionPreview(this: any): void {
     this.consumeRawTextMutationBeforeCursor();
   } catch {
     this.compositionLength = 0;
+  }
+}
+
+/** 조합 취소는 선택 원본을 복원하고, 확정은 이미 적용된 최종 상태만 기록한다. */
+function finishSelectionComposition(this: any, committed: boolean): void {
+  const pending = this.selectionComposition;
+  if (!pending) return;
+  this.selectionComposition = null;
+  this.history.releaseExternalSnapshot();
+  let afterId: number | null = null;
+  let recorded = false;
+  try {
+    if (committed) {
+      const capturedAfterId: number = this.wasm.saveSnapshot();
+      afterId = capturedAfterId;
+      this.executeOperation({
+        kind: 'record',
+        command: new CapturedSnapshotCommand(
+          'replaceSelection', pending.cursorBefore, this.cursor.getPosition(), pending.beforeId, capturedAfterId,
+        ),
+      });
+      recorded = true;
+    } else {
+      this.wasm.restoreSnapshot(pending.beforeId);
+      this.history.invalidateCurrentSnapshot();
+      this.cursor.moveTo(pending.cursorBefore);
+    }
+  } catch (error) {
+    this.wasm.restoreSnapshot(pending.beforeId);
+    this.history.invalidateCurrentSnapshot();
+    this.cursor.moveTo(pending.cursorBefore);
+    throw error;
+  } finally {
+    if (!recorded) {
+      this.wasm.discardSnapshot(pending.beforeId);
+      if (afterId !== null) this.wasm.discardSnapshot(afterId);
+    }
   }
 }
 
@@ -470,6 +515,10 @@ export function onCompositionStart(this: any): void {
   }
   this.resetRawTextMutationEffects();
   this.headerFooterSelectionComposition = false;
+  if (this.readOnly || this.userEditingLocked || this.agentTemplateLocked) {
+    this.resetTextareaBuffer();
+    return;
+  }
   // 선택 영역이 있으면 삭제 후 조합 시작
   if (
     this.cursor.isInHeaderFooter()
@@ -479,11 +528,33 @@ export function onCompositionStart(this: any): void {
       this.resetTextareaBuffer();
       return;
     }
-  } else if (!this.cursor.isInHeaderFooter() && this.cursor.hasSelection()) {
+  } else if (!this.cursor.isInHeaderFooter() && !this.cursor.isInFootnote() && this.cursor.hasSelection()) {
     if (!this.canDeleteSelectionInFormMode?.()) {
       this.resetTextareaBuffer();
       return;
     }
+    const selection = this.cursor.getSelectionOrdered();
+    if (!selection || !this.canInsertTextInFormMode?.(selection.start)) return;
+    // 취소할 수 있는 조합 시작은 기존 undo/redo를 축출하지 않는다.
+    if (!this.history.hasSnapshotCapacity(2)) {
+      this.resetTextareaBuffer();
+      return;
+    }
+    this.selectionComposition = {
+      beforeId: this.wasm.saveSnapshot(), cursorBefore: this.cursor.getPosition(),
+    };
+    this.history.retainExternalSnapshot();
+    try {
+      const position = deleteSelectionImmediate(this.wasm, selection.start, selection.end);
+      this.cursor.clearSelection();
+      this.cursor.moveTo(position);
+      this.afterEdit();
+    } catch (error) {
+      finishSelectionComposition.call(this, false);
+      throw error;
+    }
+  } else if (this.cursor.isInFootnote() && this.cursor.hasSelection()) {
+    if (!this.canDeleteSelectionInFormMode?.()) return;
     this.deleteSelection();
   }
   let basePos = this.cursor.isInHeaderFooter()
@@ -495,6 +566,7 @@ export function onCompositionStart(this: any): void {
     basePos = this.prepareClickHereInputPosition?.() ?? basePos;
   }
   if (this.readOnly || this.userEditingLocked || this.agentTemplateLocked || !this.canInsertTextInFormMode?.(basePos)) {
+    finishSelectionComposition.call(this, false);
     this.resetTextareaBuffer();
     this.imeSession.reset();
     this.compositionAnchor = null;
@@ -521,6 +593,7 @@ export function onCompositionEnd(this: any, event?: CompositionEvent): void {
   const anchor = this.compositionAnchor;
   const previousPreedit = this.imeSession.preedit;
   const previousLength = this.compositionLength;
+  const selectionComposition = !!this.selectionComposition;
   const headerFooterSelectionComposition = this.headerFooterSelectionComposition === true;
   const textareaText = this.unconsumedTextareaValue().replace(/[\r\n]+/g, '');
   const commit = this.imeSession.finish(event?.data, textareaText);
@@ -586,13 +659,15 @@ export function onCompositionEnd(this: any, event?: CompositionEvent): void {
           ),
         });
         committed = true;
-      } else {
+      } else if (!this.selectionComposition) {
         const refreshClickHereGuide = this.isClickHereGuidePosition?.(anchor) === true;
         this.executeOperation({
           kind: 'record',
           command: new InsertTextCommand(anchor, composed, undefined, this.peekPendingCharFormat?.()),
         });
         if (refreshClickHereGuide) this.refreshClickHereAfterFirstInput?.();
+        committed = true;
+      } else {
         committed = true;
       }
     }
@@ -601,13 +676,17 @@ export function onCompositionEnd(this: any, event?: CompositionEvent): void {
   if (headerFooterSelectionComposition) {
     this.finishHeaderFooterSelectionComposition();
   }
+  finishSelectionComposition.call(this, committed);
 
   this.compositionAnchor = null;
   this.clearCompositionAnchorRect();
   this.compositionLength = 0;
   this.resetRawTextMutationEffects();
 
-  if (!committed) this.updateCaret();
+  if (!committed) {
+    if (selectionComposition) this.afterEdit();
+    else this.updateCaret();
+  }
 
   // 조합 종료 후 대기 중인 탐색 키 처리 (IME 조합 중 방향키 등)
   if (this._pendingNavAfterIME) {
@@ -616,6 +695,9 @@ export function onCompositionEnd(this: any, event?: CompositionEvent): void {
     processPendingNav.call(this, nav);
   }
   } finally {
+    const cancelledSelection = !!this.selectionComposition;
+    finishSelectionComposition.call(this, false);
+    if (cancelledSelection) this.afterEdit();
     // 어떤 경로(조기 반환·예외)로 끝나도 조합 추적 상태는 비운다. 남은 anchor가
     // 다음 세션의 기준점을 오염시켜 글자가 엉뚱한 위치에 박히는 것을 막는다.
     this.compositionAnchor = null;
@@ -796,17 +878,24 @@ export function onInput(this: any, e?: InputEvent): void {
     return;
   }
 
-  // 선택 영역이 있으면 먼저 삭제
-  let insertPos = this.prepareClickHereInputPosition?.() ?? this.cursor.getPosition();
-  let refreshClickHereGuide = this.isClickHereGuidePosition?.(insertPos) === true;
+  // 선택 치환은 삭제 전부터 삽입 후까지 하나의 스냅샷으로 기록한다.
+  const insertPos = this.prepareClickHereInputPosition?.() ?? this.cursor.getPosition();
+  const refreshClickHereGuide = this.isClickHereGuidePosition?.(insertPos) === true;
   if (this.cursor.hasSelection()) {
     if (!this.canDeleteSelectionInFormMode?.()) {
       this.consumeTextareaValue();
       return;
     }
-    this.deleteSelection();
-    insertPos = this.prepareClickHereInputPosition?.() ?? this.cursor.getPosition();
-    refreshClickHereGuide = this.isClickHereGuidePosition?.(insertPos) === true;
+    const selection = this.cursor.getSelectionOrdered();
+    if (!selection || !this.canInsertTextInFormMode?.(selection.start)) return;
+    this.executeOperation({
+      kind: 'command',
+      command: new ReplaceSelectionCommand(
+        selection.start, selection.end, text, this.peekPendingCharFormat?.(),
+      ),
+    });
+    if (this.isClickHereGuidePosition?.(selection.start)) this.refreshClickHereAfterFirstInput?.();
+    return;
   }
   if (!this.canInsertTextInFormMode?.(insertPos)) {
     this.consumeTextareaValue();

@@ -347,6 +347,13 @@
   background: var(--ui-active);
   transform: none;
 }
+#icon-toolbar > .ag-collapse-tab:disabled,
+#icon-toolbar > .ag-collapse-tab:disabled:is(:hover, :active) {
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  opacity: .38;
+  cursor: default;
+}
 
 @media (max-width: 1023px) {
   #icon-toolbar > .ag-collapse-tab {

@@ -153,11 +153,11 @@ test('a remembered find hit goes stale when text is typed before it', () => {
       start: { sectionIndex: 0, paragraphIndex: hit.para, charOffset: hit.charOffset },
       end: { sectionIndex: 0, paragraphIndex: hit.para, charOffset: hit.charOffset + hit.length },
     };
-    assert.equal(isLiveFindHit(JSON.parse(document.searchAllText('abc', false, false)), found, selection), true);
+    assert.equal(isLiveFindHit(JSON.parse(document.searchAllText('abc', false, false)), found, selection, document), true);
 
     document.insertText(0, 0, 0, '12');
     const liveHits = JSON.parse(document.searchAllText('abc', false, false)) as SearchHit[];
-    assert.equal(isLiveFindHit(liveHits, found, selection), false, 'replacing now would overwrite "x a"');
+    assert.equal(isLiveFindHit(liveHits, found, selection, document), false, 'replacing now would overwrite "x a"');
     assert.equal(document.getTextRange(0, 0, hit.charOffset, hit.length), 'x a');
   });
 });
