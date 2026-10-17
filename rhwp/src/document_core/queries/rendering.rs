@@ -491,6 +491,22 @@ fn insert_hwp3_title_filler_page(result: &mut PaginationResult, section_index: u
     result.pages.insert(0, blank);
 }
 
+/// HWP5 확장 selector 4부터는 구역 내 임의 쪽 1부터 가리킨다.
+/// HWPX는 OPTIONAL_PAGE의 쪽 번호를 별도 속성에 저장한다.
+fn original_optional_master(master: &crate::model::header_footer::MasterPage) -> bool {
+    master.hwpx_page_number.is_none() && master.optional_page_number().is_some()
+}
+
+fn master_page_extension_applies(
+    master: &crate::model::header_footer::MasterPage,
+    page_index: usize,
+    is_last: bool,
+) -> bool {
+    master
+        .optional_page_number()
+        .map_or(is_last, |number| number as usize == page_index + 1)
+}
+
 fn assign_master_pages_for_section(
     result: &mut PaginationResult,
     section_index: usize,
@@ -580,15 +596,24 @@ fn assign_master_pages_for_section(
         };
         page.active_master_page = selected;
 
-        if is_last && !ext_mp_indices.is_empty() {
-            let replace_exts: Vec<usize> = ext_mp_indices
+        let matching_extensions: Vec<usize> = ext_mp_indices
+            .iter()
+            .copied()
+            .filter(|&i| master_page_extension_applies(&mps[i], page_idx_in_section, is_last))
+            .collect();
+        if !matching_extensions.is_empty() {
+            let replace_exts: Vec<usize> = matching_extensions
                 .iter()
-                .filter(|&&i| !mps[i].overlap || mps[i].replace_base)
+                .filter(|&&i| {
+                    original_optional_master(&mps[i]) || !mps[i].overlap || mps[i].replace_base
+                })
                 .copied()
                 .collect();
-            let overlap_exts: Vec<usize> = ext_mp_indices
+            let overlap_exts: Vec<usize> = matching_extensions
                 .iter()
-                .filter(|&&i| mps[i].overlap && !mps[i].replace_base)
+                .filter(|&&i| {
+                    !original_optional_master(&mps[i]) && mps[i].overlap && !mps[i].replace_base
+                })
                 .copied()
                 .collect();
 
@@ -3493,6 +3518,9 @@ impl DocumentCore {
     /// 개체/셀/스타일 편집이 인증 범위를 벗어나면 저장 글줄을 기존 anchor 축으로
     /// 역투영한다. pagination-only 명령도 조판/측정 cache를 함께 무효화한다.
     fn normalize_leading_hosts_for_layout(&mut self) {
+        let _font_scope = crate::renderer::layout::enter_resolved_shaping_fonts(
+            self.collect_resolved_shaping_fonts(),
+        );
         let mut changed = Vec::new();
         for (section_index, section) in self.document.sections.iter_mut().enumerate() {
             let context = crate::renderer::float_placement::leading_section_inputs(section);
@@ -3517,9 +3545,9 @@ impl DocumentCore {
             }
         }
         for (section_index, para_index) in changed {
-            let composed = crate::renderer::composer::compose_paragraph_with_policy(
+            let composed = crate::renderer::composer::compose_paragraph_with_styles(
                 &self.document.sections[section_index].paragraphs[para_index],
-                self.styles.font_metrics_policy,
+                &self.styles,
             );
             if let Some(slot) = self
                 .composed
@@ -3537,16 +3565,16 @@ impl DocumentCore {
     }
 
     pub(crate) fn recompose_body_sections(&mut self) {
+        let _font_scope = crate::renderer::layout::enter_resolved_shaping_fonts(
+            self.collect_resolved_shaping_fonts(),
+        );
         let previous = std::mem::take(&mut self.composed);
         self.composed = self
             .document
             .sections
             .iter()
             .map(|section| {
-                crate::renderer::composer::compose_section_with_policy(
-                    section,
-                    self.styles.font_metrics_policy,
-                )
+                crate::renderer::composer::compose_section_with_styles(section, &self.styles)
             })
             .collect();
         for (section, old) in self.composed.iter_mut().zip(&previous) {
@@ -3558,12 +3586,15 @@ impl DocumentCore {
 
     /// 구역을 재조판하고 dirty로 표시한다.
     pub(crate) fn recompose_section(&mut self, section_idx: usize) {
+        let _font_scope = crate::renderer::layout::enter_resolved_shaping_fonts(
+            self.collect_resolved_shaping_fonts(),
+        );
         self.normalize_leading_hosts_for_layout();
         self.invalidate_page_tree_cache_from_section(section_idx);
         let previous = std::mem::take(&mut self.composed[section_idx]);
-        self.composed[section_idx] = crate::renderer::composer::compose_section_with_policy(
+        self.composed[section_idx] = crate::renderer::composer::compose_section_with_styles(
             &self.document.sections[section_idx],
-            self.styles.font_metrics_policy,
+            &self.styles,
         );
         for (composed, old) in self.composed[section_idx].iter_mut().zip(&previous) {
             composed.copy_numbering_from(old);
@@ -3655,15 +3686,15 @@ impl DocumentCore {
 
     /// 단일 문단만 재조판한다.
     pub(crate) fn recompose_paragraph(&mut self, section_idx: usize, para_idx: usize) {
+        let _font_scope = crate::renderer::layout::enter_resolved_shaping_fonts(
+            self.collect_resolved_shaping_fonts(),
+        );
         self.normalize_leading_hosts_for_layout();
         self.invalidate_page_tree_cache_from_section(section_idx);
         let para = &self.document.sections[section_idx].paragraphs[para_idx];
         let previous = self.composed[section_idx][para_idx].clone();
         self.composed[section_idx][para_idx] =
-            crate::renderer::composer::compose_paragraph_with_policy(
-                para,
-                self.styles.font_metrics_policy,
-            );
+            crate::renderer::composer::compose_paragraph_with_styles(para, &self.styles);
         self.composed[section_idx][para_idx].copy_numbering_from(&previous);
         self.mark_section_dirty(section_idx);
         self.mark_paragraph_dirty(section_idx, para_idx);
@@ -3671,13 +3702,14 @@ impl DocumentCore {
 
     /// composed 벡터에 새 문단 항목을 삽입한다 (문단 분할/붙여넣기 후).
     pub(crate) fn insert_composed_paragraph(&mut self, section_idx: usize, para_idx: usize) {
+        let _font_scope = crate::renderer::layout::enter_resolved_shaping_fonts(
+            self.collect_resolved_shaping_fonts(),
+        );
         self.normalize_leading_hosts_for_layout();
         self.invalidate_page_tree_cache_from_section(section_idx);
         let para = &self.document.sections[section_idx].paragraphs[para_idx];
-        let mut composed = crate::renderer::composer::compose_paragraph_with_policy(
-            para,
-            self.styles.font_metrics_policy,
-        );
+        let mut composed =
+            crate::renderer::composer::compose_paragraph_with_styles(para, &self.styles);
         let heads =
             crate::renderer::layout::resolve_body_paragraph_heads(&self.document, &self.styles);
         if let Some(head) = &heads[section_idx][para_idx] {
@@ -3867,9 +3899,9 @@ impl DocumentCore {
                 old_end,
                 self.document.layout_profile().hwp3_layout(),
             );
-            let mut fresh = crate::renderer::composer::compose_paragraph_with_policy(
+            let mut fresh = crate::renderer::composer::compose_paragraph_with_styles(
                 &self.document.sections[si].paragraphs[pi],
-                self.styles.font_metrics_policy,
+                &self.styles,
             );
             if let Some(head) = &heads[si][pi] {
                 head.attach(&mut fresh);
@@ -3980,6 +4012,9 @@ impl DocumentCore {
             .with_hwp3_variant(profile.hwp3_layout())
             .with_hwpx_cell_spacing(profile.hwpx_stored_layout() && !profile.hwp5_origin_hwpx())
             .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
+            .with_native_hwp5_cell_spacing(
+                profile.native_hwp5_layout() || profile.hwp5_origin_hwpx(),
+            )
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before)
             .with_session_edited(profile.session_edited())
             .with_render_normalization(std::sync::Arc::clone(&self.render_normalization.overlay));
@@ -4283,13 +4318,10 @@ impl DocumentCore {
     /// 측정 통일(B). `paginate_pass` 의 `force_break_before` 훅과 `LayoutOverflow` 의
     /// section_index/is_first_in_column 계측은 측정 통일 작업의 진단·후속용으로 유지한다.
     pub(crate) fn paginate(&mut self) {
-        self.paginate_with_root_refresh_tables(&std::collections::HashSet::new());
+        self.paginate_with_table_cache_refresh(false);
     }
 
-    pub(crate) fn paginate_with_root_refresh_tables(
-        &mut self,
-        root_refresh_tables: &std::collections::HashSet<u32>,
-    ) {
+    pub(crate) fn paginate_with_table_cache_refresh(&mut self, refresh_table_cache: bool) {
         self.normalize_leading_hosts_for_layout();
         let fonts = self.collect_resolved_shaping_fonts();
         let has_embedded_hft = self
@@ -4308,13 +4340,11 @@ impl DocumentCore {
         crate::renderer::layout::with_resolved_shaping_fonts(fonts, || {
             // 바이트 검증을 마친 내장 HFT만 원래 face 이름으로 다시 해소한다.
             if has_embedded_hft {
-                self.styles = crate::renderer::style_resolver::resolve_styles_with_variant(
-                    &self.document.doc_info,
-                    self.dpi,
-                    self.document.layout_profile().hwp3_layout(),
-                );
+                self.styles = self.resolve_document_styles();
+                // 내장 HFT의 실제 face로 descriptor가 바뀐 뒤 같은 scope에서 조판한다.
+                self.recompose_body_sections();
             }
-            self.paginate_with_resolved_shaping_fonts(root_refresh_tables)
+            self.paginate_with_resolved_shaping_fonts(refresh_table_cache)
         });
     }
 
@@ -4460,10 +4490,7 @@ impl DocumentCore {
         }
     }
 
-    fn paginate_with_resolved_shaping_fonts(
-        &mut self,
-        root_refresh_tables: &std::collections::HashSet<u32>,
-    ) {
+    fn paginate_with_resolved_shaping_fonts(&mut self, refresh_table_cache: bool) {
         let heads =
             crate::renderer::layout::resolve_body_paragraph_heads(&self.document, &self.styles);
         self.refresh_native_equation_line_boundaries(&heads);
@@ -4473,7 +4500,7 @@ impl DocumentCore {
         let sec_count = self.document.sections.len().max(1);
         let empty_breaks: Vec<std::collections::HashSet<usize>> =
             vec![std::collections::HashSet::new(); sec_count];
-        self.paginate_pass(&empty_breaks, root_refresh_tables);
+        self.paginate_pass(&empty_breaks, refresh_table_cache);
         // [#2424] full path가 최신 dirty state를 반영했으므로 deferred target을 소비한다.
         // 이후 resumable job도 shadow result commit 성공 시 같은 수명 규칙을 적용한다.
         self.deferred_pagination_descriptor = None;
@@ -4482,7 +4509,7 @@ impl DocumentCore {
     fn paginate_pass(
         &mut self,
         force_breaks: &[std::collections::HashSet<usize>],
-        root_refresh_tables: &std::collections::HashSet<u32>,
+        refresh_table_cache: bool,
     ) {
         #[cfg(not(target_arch = "wasm32"))]
         let issue2424_profile_enabled =
@@ -4532,7 +4559,10 @@ impl DocumentCore {
             .with_hwp3_variant(profile.hwp3_layout())
             .with_hwpx_cell_spacing(profile.hwpx_stored_layout() && !profile.hwp5_origin_hwpx())
             .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
-            .with_root_refresh_tables(root_refresh_tables)
+            .with_native_hwp5_cell_spacing(
+                profile.native_hwp5_layout() || profile.hwp5_origin_hwpx(),
+            )
+            .with_table_cache_refresh(refresh_table_cache)
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before)
             .with_session_edited(profile.session_edited())
             .with_render_normalization(std::sync::Arc::clone(&self.render_normalization.overlay));
@@ -5363,6 +5393,16 @@ impl DocumentCore {
                     (layout.column_areas.len() == 1).then_some(body_h_hu),
                 )
             };
+            let profile = self.document.layout_profile();
+            let can_project_native_equation_breaks = (profile.native_hwp5_layout()
+                || profile.hwp5_origin_hwpx())
+                && self.styles.font_metrics_policy
+                    == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+                && !profile.own_line_layout()
+                && section
+                    .paragraphs
+                    .iter()
+                    .any(TypesetEngine::has_native_equation_break_candidate);
             let can_contract_equation_cache = self.document.layout_profile().hwpx_stored_layout()
                 && section.paragraphs.iter().any(|para| {
                     (para.line_segs.len() > 1
@@ -5413,6 +5453,7 @@ impl DocumentCore {
                 && !body_spacing_projected
                 && !can_project_synthetic_spacing
                 && !can_contract_equation_cache
+                && !can_project_native_equation_breaks
                 && !can_project_live_inline_textbox
                 && wrap_reflowed.is_empty()
             {
@@ -5433,6 +5474,47 @@ impl DocumentCore {
                     }
                 }
             }
+            let mut native_tab_paragraphs = Vec::new();
+            if can_project_native_equation_breaks {
+                for (index, paragraph) in np.iter_mut().enumerate() {
+                    if let Some(tabs) =
+                        crate::renderer::layout::compensated_native_equation_tabs(paragraph)
+                    {
+                        paragraph.tab_extended = tabs;
+                        native_tab_paragraphs.push(index);
+                    }
+                }
+            }
+            let native_tabs_projected = !native_tab_paragraphs.is_empty();
+            let native_widths = can_project_native_equation_breaks.then(|| {
+                (0..np.len())
+                    .map(|i| self.body_reflow_width(idx, i))
+                    .collect::<Vec<_>>()
+            });
+            let native_equation_projection = native_widths.as_ref().and_then(|widths| {
+                TypesetEngine::new(self.dpi).project_native_equation_line_starts(
+                    &np,
+                    widths,
+                    &self.styles,
+                )
+            });
+            let native_equation_breaks_projected = native_equation_projection.is_some();
+            if let Some(projected) = native_equation_projection {
+                np = projected;
+            }
+            let mut native_table_paragraphs = Vec::new();
+            if let Some((projected, changed)) = native_widths.as_ref().and_then(|widths| {
+                TypesetEngine::new(self.dpi).project_native_equation_tables(
+                    &np,
+                    widths,
+                    &self.styles,
+                    profile,
+                )
+            }) {
+                np = projected;
+                native_table_paragraphs = changed;
+            }
+            let native_table_height_projected = !native_table_paragraphs.is_empty();
             let equation_projection = can_contract_equation_cache
                 .then(|| {
                     TypesetEngine::new(self.dpi).contract_cached_equation_paragraphs(
@@ -5443,7 +5525,8 @@ impl DocumentCore {
                     )
                 })
                 .flatten();
-            let equation_cache_contracted = equation_projection.is_some();
+            let equation_cache_contracted =
+                equation_projection.is_some() || native_equation_breaks_projected;
             if let Some(projected) = equation_projection {
                 np = projected;
             }
@@ -5466,6 +5549,8 @@ impl DocumentCore {
                 && !metric_projected
                 && !equation_cache_contracted
                 && !shape_height_projected
+                && !native_table_height_projected
+                && !native_tabs_projected
                 && wrap_reflowed.is_empty()
             {
                 out.push(None);
@@ -5484,16 +5569,18 @@ impl DocumentCore {
                 .iter()
                 .enumerate()
                 .map(|(i, p)| {
-                    let mut composed = if equation_cache_contracted
-                        && (p.line_segs.len() != section.paragraphs[i].line_segs.len()
-                            || p.line_segs
-                                .iter()
-                                .zip(&section.paragraphs[i].line_segs)
-                                .any(|(fresh, saved)| fresh.text_start != saved.text_start))
+                    let mut composed = if native_tab_paragraphs.binary_search(&i).is_ok()
+                        || native_table_paragraphs.binary_search(&i).is_ok()
+                        || (equation_cache_contracted
+                            && (p.line_segs.len() != section.paragraphs[i].line_segs.len()
+                                || p.line_segs
+                                    .iter()
+                                    .zip(&section.paragraphs[i].line_segs)
+                                    .any(|(fresh, saved)| fresh.text_start != saved.text_start)))
                     {
-                        let mut c = crate::renderer::composer::compose_paragraph_with_policy(
+                        let mut c = crate::renderer::composer::compose_paragraph_with_styles(
                             p,
-                            self.styles.font_metrics_policy,
+                            &self.styles,
                         );
                         if let Some(saved) = base.and_then(|paras| paras.get(i)) {
                             c.numbering_text = saved.numbering_text.clone();
@@ -5501,14 +5588,11 @@ impl DocumentCore {
                         }
                         c
                     } else if wrap_reflowed.binary_search(&i).is_ok() {
-                        crate::renderer::composer::compose_paragraph_with_policy(
-                            p,
-                            self.styles.font_metrics_policy,
-                        )
+                        crate::renderer::composer::compose_paragraph_with_styles(p, &self.styles)
                     } else if matches.binary_search(&i).is_ok() || synthetic_spacing_projected {
-                        let mut c = crate::renderer::composer::compose_paragraph_with_policy(
+                        let mut c = crate::renderer::composer::compose_paragraph_with_styles(
                             p,
-                            self.styles.font_metrics_policy,
+                            &self.styles,
                         );
                         // [#2004] composer 가 line_seg 부족(HWP5 빈-문단)으로 1줄로 붕괴하면
                         // 그림 수만큼 줄을 합성(모두 char_start 동일)해 Stage2 stacked 게이트
@@ -5538,14 +5622,20 @@ impl DocumentCore {
                         c
                     } else {
                         base.and_then(|c| c.get(i)).cloned().unwrap_or_else(|| {
-                            crate::renderer::composer::compose_paragraph_with_policy(
+                            crate::renderer::composer::compose_paragraph_with_styles(
                                 p,
-                                self.styles.font_metrics_policy,
+                                &self.styles,
                             )
                         })
                     };
                     if let Some(previous) = base.and_then(|paras| paras.get(i)) {
                         composed.copy_numbering_from(previous);
+                    }
+                    if native_table_paragraphs.binary_search(&i).is_ok() {
+                        crate::renderer::layout::LayoutEngine::certify_projected_tac_line_owners(
+                            p,
+                            &mut composed,
+                        );
                     }
                     composed
                 })
@@ -5554,7 +5644,9 @@ impl DocumentCore {
                 source_revision,
                 body_spacing_projected: body_spacing_projected
                     || equation_cache_contracted
-                    || shape_height_projected,
+                    || shape_height_projected
+                    || native_table_height_projected
+                    || native_tabs_projected,
                 paragraphs: std::sync::Arc::new(np),
                 composed: std::sync::Arc::new(nc),
             }));
@@ -5606,10 +5698,7 @@ impl DocumentCore {
                 false
             };
         let mut source_composed = if synthetic_spacing_projected {
-            crate::renderer::composer::compose_paragraph_with_policy(
-                &source_para,
-                self.styles.font_metrics_policy,
-            )
+            crate::renderer::composer::compose_paragraph_with_styles(&source_para, &self.styles)
         } else {
             self.composed[section_idx][para_idx].clone()
         };
@@ -6807,12 +6896,7 @@ impl DocumentCore {
             combined_paragraphs = paragraphs.iter().chain(en_paras.iter()).cloned().collect();
             let en_composed: Vec<_> = en_paras
                 .iter()
-                .map(|p| {
-                    crate::renderer::composer::compose_paragraph_with_policy(
-                        p,
-                        self.styles.font_metrics_policy,
-                    )
-                })
+                .map(|p| crate::renderer::composer::compose_paragraph_with_styles(p, &self.styles))
                 .collect();
             combined_composed = composed
                 .iter()
@@ -9651,6 +9735,138 @@ mod tests {
         assert_eq!(core.get_bin_data(0), Some(vec![0x01, 0x02, 0x03]));
         assert_eq!(core.get_bin_data(1), Some(vec![0xAA, 0xBB]));
         assert_eq!(core.get_bin_data(2), None);
+    }
+
+    #[test]
+    fn original_hwp_optional_masters_apply_to_their_section_pages() {
+        let data = include_bytes!("../../../samples/exam_science.hwp");
+        let core = DocumentCore::from_bytes(data).expect("science HWP loads");
+        let masters = &core.document().sections[0].section_def.master_pages;
+        assert_eq!(
+            masters
+                .iter()
+                .map(|master| master.ext_flags)
+                .collect::<Vec<_>>(),
+            vec![0, 4, 5, 6, 7]
+        );
+        let selected = |core: &DocumentCore| {
+            core.pagination[0]
+                .pages
+                .iter()
+                .map(|page| {
+                    assert!(page.extra_master_pages.is_empty());
+                    page.active_master_page
+                        .as_ref()
+                        .map(|master| master.master_page_index)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(selected(&core), vec![Some(1), Some(2), Some(3), Some(4)]);
+
+        let saved = core.export_hwpx_native().expect("optional masters export");
+        let reopened = DocumentCore::from_bytes(&saved).expect("optional masters reopen");
+        assert_eq!(
+            selected(&reopened),
+            vec![Some(1), Some(2), Some(3), Some(4)]
+        );
+        assert!(core.document().sections[0]
+            .section_def
+            .master_pages
+            .iter()
+            .all(|master| master.hwpx_page_number.is_none()));
+        fn footer_text(core: &DocumentCore, page: u32) -> String {
+            use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+            fn collect(node: &RenderNode, in_master: bool, text: &mut String) {
+                if !node.visible {
+                    return;
+                }
+                let in_master = in_master || matches!(node.node_type, RenderNodeType::MasterPage);
+                if in_master && node.bbox.y > 1380.0 {
+                    if let RenderNodeType::TextRun(run) = &node.node_type {
+                        text.push_str(&run.text);
+                    }
+                }
+                for child in &node.children {
+                    collect(child, in_master, text);
+                }
+            }
+            let tree = core
+                .build_page_render_tree(page)
+                .expect("public master render tree");
+            let mut text = String::new();
+            collect(&tree.root, false, &mut text);
+            text.retain(|ch| !ch.is_whitespace());
+            text
+        }
+        for (page, expected) in ["132", "232", "3132", "3232"].into_iter().enumerate() {
+            assert_eq!(footer_text(&core, page as u32), expected);
+            assert_eq!(footer_text(&reopened, page as u32), expected);
+        }
+
+        // 지정 바탕쪽이 없는 중간 쪽은 기본 바탕쪽을 사용한다.
+        let mut document = core.document().clone();
+        document.sections[0].section_def.master_pages.remove(2);
+        for master in &mut document.sections[0].section_def.master_pages {
+            if master.is_extension {
+                // 원본 HWP의 selector는 홀짝/겹침 비트가 아니다.
+                master.replace_base = false;
+            }
+        }
+        let mut sparse = DocumentCore::new_empty();
+        sparse.set_document(document);
+        sparse.paginate();
+        assert_eq!(selected(&sparse), vec![Some(1), Some(0), Some(2), Some(3)]);
+
+        // HWPX의 pageDuplicate=1은 기본 바탕쪽에 계속 겹친다.
+        let mut document = core.document().clone();
+        let master = &mut document.sections[0].section_def.master_pages[2];
+        master.hwpx_page_number = Some(2);
+        master.ext_flags = 7;
+        master.overlap = true;
+        master.replace_base = false;
+        let mut overlay = DocumentCore::new_empty();
+        overlay.set_document(document);
+        overlay.paginate();
+        let page = &overlay.pagination[0].pages[1];
+        assert_eq!(
+            page.active_master_page.as_ref().unwrap().master_page_index,
+            0
+        );
+        assert_eq!(page.extra_master_pages.len(), 1);
+        assert_eq!(page.extra_master_pages[0].master_page_index, 2);
+    }
+
+    #[test]
+    fn optional_master_targets_and_last_page_extension_stay_distinct() {
+        use crate::model::header_footer::MasterPage;
+        let raw_optional = MasterPage {
+            is_extension: true,
+            ext_flags: 5,
+            ..Default::default()
+        };
+        let xml_optional = MasterPage {
+            hwpx_page_number: Some(2),
+            ext_flags: 7,
+            ..raw_optional.clone()
+        };
+        for master in [raw_optional, xml_optional] {
+            assert!(!master_page_extension_applies(&master, 0, false));
+            assert!(master_page_extension_applies(&master, 1, false));
+            assert!(!master_page_extension_applies(&master, 2, true));
+        }
+        let last = MasterPage {
+            is_extension: true,
+            ext_flags: 3,
+            ..Default::default()
+        };
+        assert!(!master_page_extension_applies(&last, 0, false));
+        assert!(master_page_extension_applies(&last, 2, true));
+        let xml_last = MasterPage {
+            hwpx_page_number: Some(2),
+            ..last
+        };
+        assert!(!master_page_extension_applies(&xml_last, 1, false));
+        assert!(master_page_extension_applies(&xml_last, 2, true));
     }
 
     #[test]

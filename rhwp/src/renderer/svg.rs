@@ -357,8 +357,11 @@ impl SvgRenderer {
                     if run.style.italic {
                         attrs.push_str(" font-style=\"italic\"");
                     }
-                    for c in run.display_or_text().chars() {
-                        if c == ' ' {
+                    let blank = run
+                        .style
+                        .nonprinting_control_space_indices(&run.text, run.display_or_text());
+                    for (index, c) in run.display_or_text().chars().enumerate() {
+                        if c == ' ' || blank.binary_search(&index).is_ok() {
                             continue;
                         }
                         self.output.push_str(&format!(
@@ -379,6 +382,7 @@ impl SvgRenderer {
                         node.bbox.y + run.baseline,
                         &run.style,
                         run.display_text.is_some(),
+                        &run.text,
                     );
                 }
                 if let Some(copy) = super::hft_vertical_bold_copy(
@@ -401,7 +405,14 @@ impl SvgRenderer {
                         } else {
                             (dx, 0.0)
                         };
-                        self.draw_text(run.display_or_text(), x, y, &glyph_style);
+                        self.draw_projected_text(
+                            run.display_or_text(),
+                            x,
+                            y,
+                            &glyph_style,
+                            false,
+                            &run.text,
+                        );
                     }
                     if copy.rotation != 0.0 {
                         self.output.push_str("</g>");
@@ -2801,6 +2812,7 @@ impl SvgRenderer {
         y: f64,
         style: &TextStyle,
         preserve_projection: bool,
+        source_text: &str,
     ) {
         // [Task #1067] inline 컨트롤 placeholder (U+FFFC OBJECT REPLACEMENT CHARACTER) 를
         // 보이지 않게 처리. HWP/HWPX 의 inline 도형/표/그림 등 treat_as_char 컨트롤이
@@ -2876,6 +2888,7 @@ impl SvgRenderer {
         let char_positions = compute_char_positions(text, style);
         let glyph_positions = compute_glyph_positions(text, style);
         let clusters = split_into_clusters(text);
+        let nonprinting_spaces = style.nonprinting_control_space_indices(source_text, text);
 
         // 형광펜 배경 (CharShape.shade_color 기반 — web_canvas.rs와 동일 로직)
         let shade_rgb = style.shade_color & 0x00FFFFFF;
@@ -2934,7 +2947,10 @@ impl SvgRenderer {
             let dx = style.shadow_offset_x;
             let dy = style.shadow_offset_y;
             for (char_idx, cluster_str) in &clusters {
-                if cluster_str == " " || cluster_str == "\t" {
+                if cluster_str == " "
+                    || cluster_str == "\t"
+                    || nonprinting_spaces.binary_search(char_idx).is_ok()
+                {
                     continue;
                 }
                 if is_middle_dot(cluster_str) {
@@ -2992,7 +3008,10 @@ impl SvgRenderer {
 
         // 원본 텍스트 렌더링
         for (char_idx, cluster_str) in &clusters {
-            if cluster_str == " " || cluster_str == "\t" {
+            if cluster_str == " "
+                || cluster_str == "\t"
+                || nonprinting_spaces.binary_search(char_idx).is_ok()
+            {
                 continue;
             }
             if is_middle_dot(cluster_str) {
@@ -3304,7 +3323,7 @@ impl Renderer for SvgRenderer {
     }
 
     fn draw_text(&mut self, text: &str, x: f64, y: f64, style: &TextStyle) {
-        self.draw_projected_text(text, x, y, style, false);
+        self.draw_projected_text(text, x, y, style, false, text);
     }
 
     fn draw_rect(

@@ -1,0 +1,185 @@
+{
+  "status": "PASS_SCOPED_COHORTS_WITH_PREEXISTING_LIMITATION",
+  "version": "Current TypeScript v37; unchanged native v36 Rust/WASM.",
+  "capture_phases_pages": 96,
+  "original_pages": 32,
+  "original_fixed_bands": 320,
+  "all_original_bands_below_one": true,
+  "current_fixed_band_report": {
+    "campaign_artifact_label": "studio/v37-late/fixed-band-report.json",
+    "sha256": "5a8f1b69bd08cdd070c8c546bf912a1ba242db21dbecf814145ba445dc2e4907"
+  },
+  "current_lifecycle_verification": {
+    "campaign_artifact_label": "review/studio-v37-late-lifecycle/verification.json",
+    "sha256": "7295fca9777dd88b6a2f6f7b044a5b9ad142df4845222b5936c06a9890fd8a36"
+  },
+  "current_findings": {
+    "campaign_artifact_label": "review/studio-v37-late-lifecycle/findings.md",
+    "sha256": "30f95abdb42a2a5895adad5ebc81f4c210885d31139ccfb011719dedd18ec92c"
+  },
+  "normal_pixel_exact_originals": 29,
+  "v36_late_byte_exact_originals": 32,
+  "edited_reopened_pixel_exact_pages": 30,
+  "documents": [
+    {
+      "document": "exam-science",
+      "capture_receipt": {
+        "campaign_artifact_label": "studio/v37-late/exam-science/capture-result.json",
+        "sha256": "f5757207f54960b8e46a570fda1a7aa2bae7ba8e584523a8f41bff3734e098ba"
+      },
+      "source_sha256": "22d29786a80d68a9b2ad9294c2dab4915e0eced941e790e37390b14312b8b6a8",
+      "official_sha256": "465b0d1a04a1dc343573e3e0d87db52a4f4e5a90481384f8d6f5eb07ec6350c8",
+      "wasm_network_sha256": "6255361c0445bba031707ce2fcda4a7ca5148c520288a6044be3bf52e56dce5a",
+      "same_document_instance_generation_digest_pagecount": true,
+      "revision_before_after": [
+        5,
+        7
+      ],
+      "refresh": "production font-files-imported listener only",
+      "font_retention_passed": true,
+      "phase_font_floors": {
+        "original": 22,
+        "edited": 22,
+        "reopened": 22
+      },
+      "all_runtime_ready": true,
+      "errors": [],
+      "normal_pixel_exact_pages": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "normal_nonexact_pages": [],
+      "all_originals_byte_exact_to_v36_late": true,
+      "edited_reopened_exact_pages": 4,
+      "worst_original_band_pct": 0.7499409852735559
+    },
+    {
+      "document": "exam-english",
+      "capture_receipt": {
+        "campaign_artifact_label": "studio/v37-late/exam-english/capture-result.json",
+        "sha256": "824463e83236d998d67bd6345ff8d5fddae0e4c302eb169a7a78f4b472ebe6d9"
+      },
+      "source_sha256": "7a5755a2f773fce4d295cbfeb1c5d722edb02c7f920bb067fa56940e8cd6a05b",
+      "official_sha256": "1aa4a2eb1ae29c290934e9818d7cfecf91731bdd3889a8ebc642a586f285e629",
+      "wasm_network_sha256": "6255361c0445bba031707ce2fcda4a7ca5148c520288a6044be3bf52e56dce5a",
+      "same_document_instance_generation_digest_pagecount": true,
+      "revision_before_after": [
+        5,
+        7
+      ],
+      "refresh": "production font-files-imported listener only",
+      "font_retention_passed": true,
+      "phase_font_floors": {
+        "original": 15,
+        "edited": 15,
+        "reopened": 15
+      },
+      "all_runtime_ready": true,
+      "errors": [],
+      "normal_pixel_exact_pages": [
+        2,
+        3,
+        5,
+        7,
+        8
+      ],
+      "normal_nonexact_pages": [
+        {
+          "page": 1,
+          "byteExact": false,
+          "pixelExact": false,
+          "changedPixels": 3118,
+          "changedBBox": [
+            1581,
+            1805,
+            1801,
+            1832
+          ]
+        },
+        {
+          "page": 4,
+          "byteExact": false,
+          "pixelExact": false,
+          "changedPixels": 18356,
+          "changedBBox": [
+            1261,
+            765,
+            1572,
+            2430
+          ]
+        },
+        {
+          "page": 6,
+          "byteExact": false,
+          "pixelExact": false,
+          "changedPixels": 5933,
+          "changedBBox": [
+            276,
+            548,
+            1006,
+            1059
+          ]
+        }
+      ],
+      "all_originals_byte_exact_to_v36_late": true,
+      "edited_reopened_exact_pages": 8,
+      "worst_original_band_pct": 0.5568566224303929
+    },
+    {
+      "document": "math-exam",
+      "capture_receipt": {
+        "campaign_artifact_label": "studio/v37-late/math-exam/capture-result.json",
+        "sha256": "ca2e38e03a99dd22591df8599b0b27a719d14d76f479badd0e9d58909aae337c"
+      },
+      "source_sha256": "e40e3d675373c8efb3a844fc71f209600d3b0db987a04b3808b8e74a6b1671fe",
+      "official_sha256": "c0fe812cf46671be5c1c1354e280deb05a08bfc195e4643ba9fe4787ce934106",
+      "wasm_network_sha256": "6255361c0445bba031707ce2fcda4a7ca5148c520288a6044be3bf52e56dce5a",
+      "same_document_instance_generation_digest_pagecount": true,
+      "revision_before_after": [
+        5,
+        7
+      ],
+      "refresh": "production font-files-imported listener only",
+      "font_retention_passed": true,
+      "phase_font_floors": {
+        "original": 15,
+        "edited": 15,
+        "reopened": 15
+      },
+      "all_runtime_ready": true,
+      "errors": [],
+      "normal_pixel_exact_pages": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "normal_nonexact_pages": [],
+      "all_originals_byte_exact_to_v36_late": true,
+      "edited_reopened_exact_pages": 18,
+      "worst_original_band_pct": 0.7990645098421361
+    }
+  ],
+  "cohort_explanation": "Englishp1/p4/p6 retain verified additional physical TNR B/I/BI faces vs normal regular-only cohort. Same32lateoriginals exact to prior quantified late capture; all320 freshly scored below1%.",
+  "history": "Prior strict cross-cohort RGB identity script failed and remains failed; differing cohorts explained and current acceptance uses unchanged fixed-band and font/runtime contract. Raw v4 compare-dir status was closed posthoc by this pinned current verification.",
+  "known_limitation": "Mathp12#45 andp16#27 bottom notice tx1/runs differ after save/reopen; complete frames/content, no clipping, preexisting before the font-retention fix. Not32/32 edited/reopen exact.",
+  "provider_cohort_receipt": "reviews/late-font-cohorts.json"
+}

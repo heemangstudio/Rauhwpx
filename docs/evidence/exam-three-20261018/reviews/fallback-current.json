@@ -1,0 +1,138 @@
+{
+  "status": "PASS_WITH_PREEXISTING_LIMITATION",
+  "scope": "No explicit font import lifecycle/readiness check; automatic OS/desktop, web and embedded fonts remain available. No fontless or <1% fallback parity claim.",
+  "source_receipt": {
+    "campaign_artifact_label": "studio/v37-fallback/verification.json",
+    "sha256": "2590207be79b1c04c5ac12b8fd0d98a88d51343394830ad4c2cf3592d0573ad1"
+  },
+  "captures": 96,
+  "wasm_sha256": "6255361c0445bba031707ce2fcda4a7ca5148c520288a6044be3bf52e56dce5a",
+  "empty_explicit_font_manifest": {
+    "campaign_artifact_label": "candidates/studio-capture-v4/empty-fonts.json",
+    "sha256": "ccf174d1b70c0f9364f280a4c19ae40fb0fa808122b17d63242327567d1ff360"
+  },
+  "font_retention_and_runtime": "PASS: prepared fonts remain22/14/15, no pending/error/count/edit-persistence failures.",
+  "edited_reopened_equivalence": {
+    "byte_exact_pages": 30,
+    "total_pages": 32,
+    "remaining_pages": [
+      {
+        "document": "math-exam",
+        "page": 12,
+        "line": 45
+      },
+      {
+        "document": "math-exam",
+        "page": 16,
+        "line": 27
+      }
+    ],
+    "limitation": "Two Math bottom notice lines differ in tx1/runs after save/reopen; both original and reopened page PNGs and full line objects are exactly equal to v36. This is preexisting, not introduced by font retention. No missing content, clipping, line count or frame movement was observed in the focused crops."
+  },
+  "proof_scope": "All32 original +32 reopened PNGs exact to v36 fallback; all-stage line objects exact to v36. Edited/reopened image equality is30/32, not32/32.",
+  "documents": [
+    {
+      "document": "exam-science",
+      "capture_receipt": {
+        "campaign_artifact_label": "studio/v37-fallback/exam-science/capture-result.json",
+        "sha256": "cac103ec5540d801b219ba570278c0423dc147b05d5d10b42712a249df5a76f8"
+      },
+      "page_counts": {
+        "original": 4,
+        "edited": 4,
+        "reopened": 4
+      },
+      "prepared_font_floor": 22,
+      "all_phases_font_retention": true,
+      "pending_all_zero": true,
+      "all_phases_ready": true,
+      "no_errors": true,
+      "public_edit_persistence": true,
+      "original_and_reopened_pngs_exact_to_v36": true,
+      "all_stage_line_objects_exact_to_v36": true,
+      "edited_reopened_exact_pages": 4,
+      "edited_reopened_line_differences": []
+    },
+    {
+      "document": "exam-english",
+      "capture_receipt": {
+        "campaign_artifact_label": "studio/v37-fallback/exam-english/capture-result.json",
+        "sha256": "d80fd759684a6e64ee88ca374d93460e2011d0e97110209f3631ba0ea45e49b9"
+      },
+      "page_counts": {
+        "original": 8,
+        "edited": 8,
+        "reopened": 8
+      },
+      "prepared_font_floor": 14,
+      "all_phases_font_retention": true,
+      "pending_all_zero": true,
+      "all_phases_ready": true,
+      "no_errors": true,
+      "public_edit_persistence": true,
+      "original_and_reopened_pngs_exact_to_v36": true,
+      "all_stage_line_objects_exact_to_v36": true,
+      "edited_reopened_exact_pages": 8,
+      "edited_reopened_line_differences": []
+    },
+    {
+      "document": "math-exam",
+      "capture_receipt": {
+        "campaign_artifact_label": "studio/v37-fallback/math-exam/capture-result.json",
+        "sha256": "593d00d9e3c0c81bf36d73d9a319925d3be62104b1514199d042b79ca0651c17"
+      },
+      "page_counts": {
+        "original": 20,
+        "edited": 20,
+        "reopened": 20
+      },
+      "prepared_font_floor": 15,
+      "all_phases_font_retention": true,
+      "pending_all_zero": true,
+      "all_phases_ready": true,
+      "no_errors": true,
+      "public_edit_persistence": true,
+      "original_and_reopened_pngs_exact_to_v36": true,
+      "all_stage_line_objects_exact_to_v36": true,
+      "edited_reopened_exact_pages": 18,
+      "edited_reopened_line_differences": [
+        {
+          "page": 12,
+          "beforeSha256": "de143718180825c3923a1889558d6b542fcc1d52e824f7ad71bdf11c34df2390",
+          "afterSha256": "9fa2c5dbb8ef844a58b093b5ab93834086d1bac488fcd86c28f544486b54fb86",
+          "beforeLineCount": 47,
+          "afterLineCount": 47,
+          "exact": false,
+          "changedLines": [
+            {
+              "line": 45,
+              "fields": [
+                "tx1",
+                "runs"
+              ],
+              "presence": "both"
+            }
+          ]
+        },
+        {
+          "page": 16,
+          "beforeSha256": "573fb51c74b58311579fb7a749a245462fa9deeb54a22c15c2a350a31de9ee64",
+          "afterSha256": "8e1f5b37189eb72220cb8ab773272bffc555a3f0600c0133ec4ba760c495464c",
+          "beforeLineCount": 29,
+          "afterLineCount": 29,
+          "exact": false,
+          "changedLines": [
+            {
+              "line": 27,
+              "fields": [
+                "tx1",
+                "runs"
+              ],
+              "presence": "both"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

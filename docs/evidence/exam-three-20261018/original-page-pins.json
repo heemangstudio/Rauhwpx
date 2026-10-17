@@ -1,0 +1,258 @@
+[
+  {
+    "document": "exam-science",
+    "page": 1,
+    "baseline_png_sha256": "e2b4e291c963f94a6aa5e1d77481edbb689b3db5366c13c63e66afebd1ba3844",
+    "native_v36_png_sha256": "821cf00e635aff60304ceea3cbc6336d2d3bea34082e78ba3fd93fabbc93f85e",
+    "official_png_sha256": "cb3be261a8b42ed847d466e583bd7fcff3bde1cb9246e0676bafbf3e03020568",
+    "browser_normal_v37_png_sha256": "90c0bdbf6cbd4f6f1f574aa9c89d0b7673cd04bfa69bd3f1913f4154f2e7a59f"
+  },
+  {
+    "document": "exam-science",
+    "page": 2,
+    "baseline_png_sha256": "09c398892d5aebc05aa2fd2298ce900db8942c639bb6122ec71e675df12958ba",
+    "native_v36_png_sha256": "d751f5151d594ca3c4839872dcb38e4ee744bed36007fcab617fb594531630e4",
+    "official_png_sha256": "d53d7e23aad60d57064af940b9c2154b5e581439422735744220d3b76b08773c",
+    "browser_normal_v37_png_sha256": "81766f7874ea75d276d5b4f0b05bcfae1c0f9ddebfcc67b39583b71a8c3d9576"
+  },
+  {
+    "document": "exam-science",
+    "page": 3,
+    "baseline_png_sha256": "e3603bc02da93fbe24e3aff5dcad0d9ac78baabe0a0175f6276c329413d7096a",
+    "native_v36_png_sha256": "89bdbab66f9a339ef7b48eb0bef00c82f1863b95c9fc334631219383288f0418",
+    "official_png_sha256": "08f51d91d77fcb059d0b8c6ee366abe5fb29a1a6695a0b1fc173100758ae5918",
+    "browser_normal_v37_png_sha256": "673bb0f534df2648ca9e4c5d4f93ac66404728b32c428649e01c3e689e7d9606"
+  },
+  {
+    "document": "exam-science",
+    "page": 4,
+    "baseline_png_sha256": "8f27598d4eb3d00f6dcc2bc552755467ab6bc2250baf47e49f9e00934650bcb1",
+    "native_v36_png_sha256": "33bdc3056408fe8db53331d30fe626d8f8f47db42aa5177ac25081c1c398b9f9",
+    "official_png_sha256": "fce5d102224b4f7f7c3e91355e166abf6f123ba5df4f31ca6a9465786dbe2f34",
+    "browser_normal_v37_png_sha256": "c2b8d2330b89c3e71dcb175df7edb1f2162c679129c43da9eb7b39831322f072"
+  },
+  {
+    "document": "exam-english",
+    "page": 1,
+    "baseline_png_sha256": "319a4b2352b3ebaa5930d7764e60c36d009f8d05f021eccde0a2f9ea7bbc8e39",
+    "native_v36_png_sha256": "1f339e30bede356935276f50c7720837d812d6e42de4735478c1ed27e637f9c5",
+    "official_png_sha256": "23dc08e21f7e22d49f529cd1e6be6d29e6c1934d05994b60647c15723152fe86",
+    "browser_normal_v37_png_sha256": "b273443837522a5d61a4411e3ff47247f749c2172af0afa54f4e9931d682d740"
+  },
+  {
+    "document": "exam-english",
+    "page": 2,
+    "baseline_png_sha256": "91b3b2564b8b20a7320fba6a791669403528c75e5c333d7a150e8d80c6ad6ada",
+    "native_v36_png_sha256": "28c959e4cd0486e601475a34c3d3958492592c60bd8c7db55145eb239768fd02",
+    "official_png_sha256": "8c826238b248c3410147c7ab7cbd4ac252f69e137475e27ddb2605516ce6d0a8",
+    "browser_normal_v37_png_sha256": "aadbb35a227e8f963d483f38b0f66c78a91be867b03e46ca85664e3a95d87fd4"
+  },
+  {
+    "document": "exam-english",
+    "page": 3,
+    "baseline_png_sha256": "b76901d5ab4b00ed2e6009925e5969db5ac6c9f9e2513e33ac7e215cd24e1005",
+    "native_v36_png_sha256": "bdca1f6044563c588813f013d3014b1ef22d4ab7c81d7df3811b335ab31fc5b3",
+    "official_png_sha256": "5d3648caeb09d3cdaddeae91be29139f20127e35f67e02a4ed681cee6eceb150",
+    "browser_normal_v37_png_sha256": "0c458230a16c8638e73d2bad928afb5aebac116f22655b3de472fed92e372c99"
+  },
+  {
+    "document": "exam-english",
+    "page": 4,
+    "baseline_png_sha256": "80465a6e5e568ece104837acc013ec4c7a30669c11a086131d523ab43e7daf1b",
+    "native_v36_png_sha256": "cb88e328e5ad2540c823bb341031bd297ed46641f849986fc5f371c264999963",
+    "official_png_sha256": "5a45c1df2a857f211f2e311d203b8c6e7d0e5e06d6f118f6e0d088e6989221be",
+    "browser_normal_v37_png_sha256": "55348cde36d66ca871161bf493eaecbd1d8c5d37175c289caba840b925e19d2c"
+  },
+  {
+    "document": "exam-english",
+    "page": 5,
+    "baseline_png_sha256": "c5a8a6c9866968cc3c4dbf243427c975790845d87836f6c1bbad5e6f835adff6",
+    "native_v36_png_sha256": "0d046e0901d37bf7a41c301a7e0c95397086de47418281c48ecda4d43bb3dd83",
+    "official_png_sha256": "25f8d9234f4328b70a218934eba6b9e13f1cac78209e5010bad78b7c8d54ff0d",
+    "browser_normal_v37_png_sha256": "d85657f38143f537243f953800e539b99d998c90594e663f19e656784c7a7542"
+  },
+  {
+    "document": "exam-english",
+    "page": 6,
+    "baseline_png_sha256": "381fca4d6c9398eda057167d612ef20df46ae972859fd293bfd3cb2cc66c86ad",
+    "native_v36_png_sha256": "f04e824e08ba476f8a5a79fdd0a7e84159cdbd9ef6214a75466f8f1d4bb0a78c",
+    "official_png_sha256": "65b5c9e2fa8bfb5ebee716203661172c1dc8329b5da9120237d04ba92b2f23c8",
+    "browser_normal_v37_png_sha256": "aa5dbc84e2783ca8ebaee866e89be867ac9e1e3afa562ebacc6182dd3735c7c8"
+  },
+  {
+    "document": "exam-english",
+    "page": 7,
+    "baseline_png_sha256": "93878c306fd0cc32f1dc6f16e68c69ff4a174ea6e945a8cf8e0209159779d45a",
+    "native_v36_png_sha256": "99d9c8ac295e4a119523629470d8074daa4e44e24b4c4592b090f9af17b8a03e",
+    "official_png_sha256": "2cdfe15f7b39fcebd6a93244f2cc8ea1030c5191066ade751fe72032cbfc7f06",
+    "browser_normal_v37_png_sha256": "5296f84a650ab023465d7b31b9982d16c6352655e7bb08d4df6959c68749c06b"
+  },
+  {
+    "document": "exam-english",
+    "page": 8,
+    "baseline_png_sha256": "b917f6a17fd7aee4401c912663aa891b5c0a363282a355135cf295bb11e63a89",
+    "native_v36_png_sha256": "c76208f1735b19cba0944766d602c04b09d1a3aa8941423766ad2c2525fcf85f",
+    "official_png_sha256": "43c3b2de767571a6b9498e9435564134d97ea4613fe877ff316576b77a614734",
+    "browser_normal_v37_png_sha256": "c968c7e7b2a01ab7ad295b9daa5420b688f6bee5381071a5eaaa86dd9bf42f9f"
+  },
+  {
+    "document": "math-exam",
+    "page": 1,
+    "baseline_png_sha256": "36c60814f775313ca4a5ed80f4251cd749e4abad6f14d1cfd598dcbd98bae61e",
+    "native_v36_png_sha256": "8fb430f2fcc67a33619e0717b70a2b6bf9cdc3da576356a750638c6e520be314",
+    "official_png_sha256": "7154913c0b1b016b189c22d7b7afeb2b809e36196268749b7fce4bea99d34f7e",
+    "browser_normal_v37_png_sha256": "952c8ff1719130024333eb675dbbce635be0bf5041dd20dc9728609e4fadb087"
+  },
+  {
+    "document": "math-exam",
+    "page": 2,
+    "baseline_png_sha256": "fc5c6686eab018a1b004bd945411d78c22abeff4006fc4626e038f9e9bc2ab13",
+    "native_v36_png_sha256": "310785ac228017a33aa67d961e190ea53e0b1daf63f253994e502cf9886e24e7",
+    "official_png_sha256": "244aae66bfed04517acb2f8a4b7ce131f7ce406cf96085611aed098c052aee36",
+    "browser_normal_v37_png_sha256": "19ba19a166d1611d1bdb334a573afddd04e8212155e95c753a632150aeada427"
+  },
+  {
+    "document": "math-exam",
+    "page": 3,
+    "baseline_png_sha256": "93dbcab3906bdd6d2b3fd4f530ef6d42db7125b40088f197eee15539d436d5b0",
+    "native_v36_png_sha256": "304406cf025010950960e69cc49a7717e8f4bd518f59c39bc95a5d2e52746c8b",
+    "official_png_sha256": "18f8c3b60b8a417093c25bd5bb6c70dcfcb42a65a644eb411072389328798b1e",
+    "browser_normal_v37_png_sha256": "2aa02cee22a0ec8178c80a89f441f8fbeedd736071cfb2dc68c705928e2b22cb"
+  },
+  {
+    "document": "math-exam",
+    "page": 4,
+    "baseline_png_sha256": "4d76d066fdf28275f49faf703c8f3467a2e290cf60b51b5c9e794e4c8350da86",
+    "native_v36_png_sha256": "4a9a7df3655ac28c60dd5cfb7050ad2b595e1289403fe14be310f1561eed27bb",
+    "official_png_sha256": "1c6237be1afe530c72c8cd1d2bd41066515d1c77b377819a39201e29ec1ca8de",
+    "browser_normal_v37_png_sha256": "29f65d3a43627cd7bfbafb9df8f1819aac16b982b6c50aad14cd4d16b80fdb95"
+  },
+  {
+    "document": "math-exam",
+    "page": 5,
+    "baseline_png_sha256": "fcd12ca56f78cdc8e1b20d5107496d22cd791768f6497bda272802f3f8ef36c0",
+    "native_v36_png_sha256": "d551ae129d5e62d0d2e4a05407dc2bebccabccce4adfab27e60db7a58ba880ea",
+    "official_png_sha256": "7df2c510e6fddc059aaff9eaf734bdb5fc273cbfcfdd44409519dec22e7de83b",
+    "browser_normal_v37_png_sha256": "582986118f012f6eb6f3295587ea3fc6b58ffa90fa1d22481f36880c796067f6"
+  },
+  {
+    "document": "math-exam",
+    "page": 6,
+    "baseline_png_sha256": "9c5d5e1b043bd87eb41f649f86ee60f66a3cd26fe22e73cea466e1cd1ac53fe7",
+    "native_v36_png_sha256": "3d5cb10199ed72c0e4213470b6ef13a1b334ecb0ebafcab56ccd555087792181",
+    "official_png_sha256": "be34c74f9f3c348d283723d1310bee961c4e580cfd09c8fb7cd4a10bab9b41fa",
+    "browser_normal_v37_png_sha256": "ef5ff07ed5dd0b67910ef159ff4471ea92bae227227db84785a98b4cc816ba34"
+  },
+  {
+    "document": "math-exam",
+    "page": 7,
+    "baseline_png_sha256": "8babbcbee7eae1fb52765f9417ea1fe287bb065e2b854229b3a50fbfe6e1ce44",
+    "native_v36_png_sha256": "63fd8618d4be76223685278e217ab8743810bdfbd8fe8e885ed77dfd9bc514a7",
+    "official_png_sha256": "905a3fb9c85b345f62f877f9e9cb2d658c2426f8bd6df0a9fb90e353fc3741bc",
+    "browser_normal_v37_png_sha256": "f254ba065a2f1e99cbd5587c8f0bf59a50d5503e04fc778866e2b1184ad314b4"
+  },
+  {
+    "document": "math-exam",
+    "page": 8,
+    "baseline_png_sha256": "06a6562c14e7868e738b77bf9a0b79fb08b971a61981277babe74944e0683494",
+    "native_v36_png_sha256": "1d64168d373e3d7fc722c4d62532fc595012ee31d7dca47d4187ed59fd1eeff7",
+    "official_png_sha256": "1078eb1c9458d2307cbb45caabc4a9419439739f8c62c179a003bb6c5a839809",
+    "browser_normal_v37_png_sha256": "8f3cd5e6971aa1c64918ae8cb8c502b3e6a9f63a0d9ec86a3f2baded420dbadc"
+  },
+  {
+    "document": "math-exam",
+    "page": 9,
+    "baseline_png_sha256": "236f170f8cbbe2443370214d6f4cf462b7dee24b5aa53e75392175cc2ab786b5",
+    "native_v36_png_sha256": "036be7dcfc8ead685bc1895e69288b4e4b9924f0776646f6518b4857e650f619",
+    "official_png_sha256": "bfd125a849eb7cda10e15e66eb43b4d2332f12f66f0c2ade9eae54f47e4d5497",
+    "browser_normal_v37_png_sha256": "2cfeb1bc22860efe2b5210331c9ac2d37b53303eafa41b6ad1ccdad31c8b721a"
+  },
+  {
+    "document": "math-exam",
+    "page": 10,
+    "baseline_png_sha256": "d36b3da3a277fd8b5f9fcd98f05ea24351ec9763c475d6dd73a8e0b9bf6c0a5e",
+    "native_v36_png_sha256": "5b4990a73a7dc50648970490de3e566e2f9d494b93ca512f2b3af6a5e34dd9ef",
+    "official_png_sha256": "d561a5806d1f6375fa609f7285b8a22a6927c5fa84bd218464861b506708e531",
+    "browser_normal_v37_png_sha256": "c6870dbf190ddc2cac3c7589dca28cbf1014bf8b63b88126abeb5d8707eedd99"
+  },
+  {
+    "document": "math-exam",
+    "page": 11,
+    "baseline_png_sha256": "362dfa1f214c6c3c4da11fc43390831c801e320076277156c4570f64439d62d9",
+    "native_v36_png_sha256": "584832098ddd26b4be1c3504529c461b7243353430f2f4da33357d10fc98cab3",
+    "official_png_sha256": "1133cf693b2496bfabb8794dce6c64c3a0be14b4a208898bc563b9af247f78b4",
+    "browser_normal_v37_png_sha256": "b4e195ef72b11fc8e7f1de757701db22fe6757f176eb3804d72d68b256e1c6f7"
+  },
+  {
+    "document": "math-exam",
+    "page": 12,
+    "baseline_png_sha256": "33c2cacef77c586fc7418da23e393717f75e2c63479abdba847bff472884e57d",
+    "native_v36_png_sha256": "91b87e41b6d185f7e7a5abd004fabbc0afc938dc59de5ae8ac9b9abf687f0dc1",
+    "official_png_sha256": "a666acc6447ab38180c8b933eab90b96cf0b0c813af6b94ea60c52be644bcde6",
+    "browser_normal_v37_png_sha256": "4fffc5f0f21ee4cacc98ab8469a8572d93d9d85b0be57dc817da2dca65e7fe8e"
+  },
+  {
+    "document": "math-exam",
+    "page": 13,
+    "baseline_png_sha256": "e3ce6d18d7675d36a6ac1e2786c8b7ee298e455ab96121571bc7f2c193ffa15f",
+    "native_v36_png_sha256": "69d1461c44d10e34c8f0f0be2fa7b053abc8c0ee9d2b451e37fd69878b925c96",
+    "official_png_sha256": "f46e0bfc03428805e97e3645c3e6451cfd510345085360fa872191db5614b0f6",
+    "browser_normal_v37_png_sha256": "67f68a9dae7107191980f219694d95c25cac581406030c05023ca9578f7d0ee6"
+  },
+  {
+    "document": "math-exam",
+    "page": 14,
+    "baseline_png_sha256": "4253c2bc4ed1a17c59adaf9d435def49be49cf5d09219673d54641c1be73a995",
+    "native_v36_png_sha256": "0c981b6e087411b44b4dfdf0777aa958c1b67b31cf98c8ae5f7bb93509a6e72c",
+    "official_png_sha256": "100e412ba7b463ffd1407c562d05bd2f978afd9d659565b67d710facfc5b9bf0",
+    "browser_normal_v37_png_sha256": "48036748100396b21e4cdaf128c22fa7597db3d5886812cde0a88ed5ae125d60"
+  },
+  {
+    "document": "math-exam",
+    "page": 15,
+    "baseline_png_sha256": "f2ff0d13ad1f7580f0b1c04292072ae69c416d24daffe3ed423f9076fc84e32d",
+    "native_v36_png_sha256": "90657a78bab0d74a5abac9c54da981c7c931c4d0184a1c0aad62c4866c8528b6",
+    "official_png_sha256": "cda008bf7080c060840bc91954f52943818a38613207fb5cca50e607d8c5ab56",
+    "browser_normal_v37_png_sha256": "42f4bce448ae6bd74298e57b83b9547a0873aaa343de22bca1494d37c04c7597"
+  },
+  {
+    "document": "math-exam",
+    "page": 16,
+    "baseline_png_sha256": "298d9678ed69cb52e67beb38a111b92e5d1ee1b33e162bc135a4552e1e3d82dd",
+    "native_v36_png_sha256": "ab7cc690bc30bf54b6de4b440f11e8e5ed3682011d7fa4534b920b46705a5298",
+    "official_png_sha256": "fc1d2ae0cc27f82b4b3a3f9b295ffb44a0de51947fb49534bf32bac335844736",
+    "browser_normal_v37_png_sha256": "a6b56155b6df8337b77578d7e198b5519c8645bf031a52b51d684784c7f90b8b"
+  },
+  {
+    "document": "math-exam",
+    "page": 17,
+    "baseline_png_sha256": "89c7c76ae1403ce4dc3c505d2199a20b8749b133a57a011916e3dfae6cfe209f",
+    "native_v36_png_sha256": "b016d2b6df18495110a10cb3dcc39e82a3da49de2c803d7a72f299ac1cbf0b4b",
+    "official_png_sha256": "311f270173f12fcaa2e5aa24549e4c89a04e493f8243ebccf09de72c4bd17913",
+    "browser_normal_v37_png_sha256": "770b627ea29892df7a542097a7f54c38ca8fd7b3b3e9c43742eb0993fba7b1f1"
+  },
+  {
+    "document": "math-exam",
+    "page": 18,
+    "baseline_png_sha256": "739c167377eee0699059220287c795758f31c99541318432331357d797bad9b0",
+    "native_v36_png_sha256": "f7bfa5a5af6cd757cdaa102908a77b195a7eee50dddfe5607a397dbec8e7a669",
+    "official_png_sha256": "9be30448224363bc6533fdaab69399274aa5d3b8d7c9f6bdc7d992cc08578d1e",
+    "browser_normal_v37_png_sha256": "d9b3c156d6cd91165eb94bf2c98c3df345b888ba6563b8a859277d0902cce4fa"
+  },
+  {
+    "document": "math-exam",
+    "page": 19,
+    "baseline_png_sha256": "2fdd925b01c6fbbaf7bb830fd8f922ba8ea28f840463406db13ec6b429452b96",
+    "native_v36_png_sha256": "276e6edec1a71dbef40cd3c990f0b141cc12abd825a05c0e5df3c373b0094dfc",
+    "official_png_sha256": "185fae5ac1053aaf6f9164e8d2736daea3f7ec8f2292124817474ff27c75b3d8",
+    "browser_normal_v37_png_sha256": "53850c8c3dd4a4e866121a16376f399745283088ee5e8e1b5b5d9509d9f1e9ff"
+  },
+  {
+    "document": "math-exam",
+    "page": 20,
+    "baseline_png_sha256": "11b37796c0d2def9ca953766d70f9c4fc01a479f5582299a645d7215d303b3ec",
+    "native_v36_png_sha256": "9f0bab1d978c3c9c7b47c1abb98b6fe58e841b286ada4bcb46c10e5459d8c6a5",
+    "official_png_sha256": "7414706e93ce81986a0acb5b3e04635002495b29ee2316f978c552262a49fb2f",
+    "browser_normal_v37_png_sha256": "2768210353275d17d975061e2996546caa9da2840af1f6f5e5169203a09d5d4d"
+  }
+]

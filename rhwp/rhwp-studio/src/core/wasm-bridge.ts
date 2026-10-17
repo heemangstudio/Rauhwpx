@@ -1,6 +1,7 @@
 import init, { HwpDocument, version } from '@wasm/rhwp.js';
 import { guardEngineCalls } from './engine-trap';
 import { setHftWasmApi } from './hft-glyphs';
+import { setSfntGlyphPathApi } from './sfnt-glyphs';
 import { setImageDownsampleApi, setImageAffineSampleApi } from './image-sampling';
 import { withBodyTextPaginationBatch } from './pagination-batch';
 import { requireCharShapeRunsDocument, parseCharShapeRuns, validateCharShapeRuns } from './char-shape-runs';
@@ -448,6 +449,10 @@ export class WasmBridge {
     setImageDownsampleApi(typeof downsampleRgba === 'function' ? downsampleRgba : null);
     const affineSampleRgba = Reflect.get(wasmExports, 'gridfitAffineSampleRgba');
     setImageAffineSampleApi(typeof affineSampleRgba === 'function' ? affineSampleRgba : null);
+    const sfntGlyphPathEm = Reflect.get(wasmExports, 'sfntGlyphPathEm');
+    setSfntGlyphPathApi(typeof sfntGlyphPathEm === 'function'
+      ? (bytes, faceIndex, glyphId) => String(sfntGlyphPathEm(bytes, faceIndex, glyphId))
+      : null);
     const registerHft = Reflect.get(wasmExports, 'registerHftFont');
     const hftGlyphPathEm = Reflect.get(wasmExports, 'hftGlyphPathEm');
     const hftGlyphPathStyledEm = Reflect.get(wasmExports, 'hftGlyphPathStyledEm');

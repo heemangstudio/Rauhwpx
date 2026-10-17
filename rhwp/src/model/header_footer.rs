@@ -107,6 +107,20 @@ pub struct MasterPage {
     pub raw_list_header: Vec<u8>,
 }
 
+impl MasterPage {
+    /// 원본 HWP5 확장 selector 4부터 임의 쪽 1을 가리킨다.
+    /// HWPX OPTIONAL_PAGE는 별도의 pageNumber를 사용한다.
+    pub(crate) fn optional_page_number(&self) -> Option<u16> {
+        if !self.is_extension {
+            return None;
+        }
+        match self.hwpx_page_number {
+            Some(number) => (self.ext_flags & 0x04 != 0).then_some(number),
+            None => self.ext_flags.checked_sub(3).filter(|&number| number > 0),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

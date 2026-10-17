@@ -1,0 +1,8 @@
+{
+  "status": "PASS",
+  "scope": "All32 native v36 original PNGs are exact to v35 and its prior reviewed pages; all320 original bands pass.",
+  "source_receipt": {
+    "campaign_artifact_label": "review/native-v36-visual-reuse.json",
+    "sha256": "9f631f8e764346e7fc68a7fc12e36a788605fc6ca0816b90ccf04d9bb56c2110"
+  }
+}

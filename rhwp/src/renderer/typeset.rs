@@ -3456,10 +3456,8 @@ impl TypesetEngine {
             };
             y = hc.vpos_adjust(y, local, &local_paras, styles);
             let item_para = &local_paras[local];
-            let item_composed = crate::renderer::composer::compose_paragraph_with_policy(
-                item_para,
-                styles.font_metrics_policy,
-            );
+            let item_composed =
+                crate::renderer::composer::compose_paragraph_with_styles(item_para, &styles);
             let item_fmt =
                 self.format_paragraph(item_para, Some(&item_composed), styles, column_width);
             y += match item {
@@ -6535,10 +6533,8 @@ impl TypesetEngine {
             && !large_between_small_equation_tail_bleeds_previous_column
             && line_is_equation_tac_text_run_only(en_para, &composed, 0)
             && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                    next_para,
-                    styles.font_metrics_policy,
-                );
+                let next_comp =
+                    crate::renderer::composer::compose_paragraph_with_styles(next_para, &styles);
                 let next_fmt =
                     self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
                 next_fmt.line_heights.len() == 1
@@ -6864,10 +6860,8 @@ impl TypesetEngine {
             && ep_idx + 1 < en_ctrl.paragraphs.len()
             && st.current_height > available * 0.90
             && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                    next_para,
-                    styles.font_metrics_policy,
-                );
+                let next_comp =
+                    crate::renderer::composer::compose_paragraph_with_styles(next_para, &styles);
                 let next_fmt =
                     self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
                 para_has_visible_text_or_equation(next_para)
@@ -6976,10 +6970,8 @@ impl TypesetEngine {
             });
             last_render_endnote_para_local_idx = Some(en_para_local_idx);
 
-            let composed = crate::renderer::composer::compose_paragraph_with_policy(
-                en_para,
-                styles.font_metrics_policy,
-            );
+            let composed =
+                crate::renderer::composer::compose_paragraph_with_styles(en_para, &styles);
             let en_col_w = st
                 .layout
                 .column_areas
@@ -7198,9 +7190,8 @@ impl TypesetEngine {
                             .skip(ep_idx)
                             .map(|tail_para| {
                                 let tail_comp =
-                                    crate::renderer::composer::compose_paragraph_with_policy(
-                                        tail_para,
-                                        styles.font_metrics_policy,
+                                    crate::renderer::composer::compose_paragraph_with_styles(
+                                        tail_para, &styles,
                                     );
                                 self.format_paragraph(
                                     tail_para,
@@ -7243,9 +7234,8 @@ impl TypesetEngine {
                             .skip(ep_idx)
                             .map(|tail_para| {
                                 let tail_comp =
-                                    crate::renderer::composer::compose_paragraph_with_policy(
-                                        tail_para,
-                                        styles.font_metrics_policy,
+                                    crate::renderer::composer::compose_paragraph_with_styles(
+                                        tail_para, &styles,
                                     );
                                 self.format_paragraph(
                                     tail_para,
@@ -7604,9 +7594,8 @@ impl TypesetEngine {
                 && no_separator_large_between_notes_gap
             {
                 en_ctrl.paragraphs.get(1).map(|body_para| {
-                    let body_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                        body_para,
-                        styles.font_metrics_policy,
+                    let body_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        body_para, &styles,
                     );
                     let body_fmt =
                         self.format_paragraph(body_para, Some(&body_comp), &styles, Some(en_col_w));
@@ -7842,9 +7831,8 @@ impl TypesetEngine {
                     let mut next_para = next_ctrl.paragraphs.first()?.clone();
                     prepend_endnote_marker_text(&mut next_para, next_ctrl);
 
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                        &next_para,
-                        styles.font_metrics_policy,
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        &next_para, &styles,
                     );
                     let next_fmt = self.format_paragraph(
                         &next_para,
@@ -7870,9 +7858,8 @@ impl TypesetEngine {
                     let mut next_para = next_ctrl.paragraphs.first()?.clone();
                     prepend_endnote_marker_text(&mut next_para, next_ctrl);
 
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                        &next_para,
-                        styles.font_metrics_policy,
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        &next_para, &styles,
                     );
                     let next_fmt = self.format_paragraph(
                         &next_para,
@@ -7897,9 +7884,8 @@ impl TypesetEngine {
                     let mut next_para = next_ctrl.paragraphs.first()?.clone();
                     prepend_endnote_marker_text(&mut next_para, next_ctrl);
 
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                        &next_para,
-                        styles.font_metrics_policy,
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        &next_para, &styles,
                     );
                     let next_fmt = self.format_paragraph(
                         &next_para,
@@ -7928,9 +7914,8 @@ impl TypesetEngine {
                                 return false;
                             }
                             let next_comp =
-                                crate::renderer::composer::compose_paragraph_with_policy(
-                                    next_para,
-                                    styles.font_metrics_policy,
+                                crate::renderer::composer::compose_paragraph_with_styles(
+                                    next_para, &styles,
                                 );
                             let next_fmt = self.format_paragraph(
                                 next_para,
@@ -8096,9 +8081,8 @@ impl TypesetEngine {
                 && st.current_height + en_fit
                     <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
                 && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                        next_para,
-                        styles.font_metrics_policy,
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        next_para, &styles,
                     );
                     let next_fmt =
                         self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
@@ -8566,9 +8550,8 @@ impl TypesetEngine {
                         <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX + 80.0
                     && line_is_equation_tac_text_run_only(en_para, &composed, 0)
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                            next_para,
-                            styles.font_metrics_policy,
+                        let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                            next_para, &styles,
                         );
                         let next_fmt = self.format_paragraph(
                             next_para,
@@ -8763,9 +8746,8 @@ impl TypesetEngine {
             }
             let next_endnote_first_line_advance = if ep_idx == 0 {
                 en_ctrl.paragraphs.get(1).map(|next_para| {
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                        next_para,
-                        styles.font_metrics_policy,
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        next_para, &styles,
                     );
                     self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w))
                         .line_advance(0)
@@ -8777,9 +8759,8 @@ impl TypesetEngine {
                 let mut total = 0.0;
                 let mut count = 0;
                 for next_para in en_ctrl.paragraphs.iter().skip(1).take(2) {
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                        next_para,
-                        styles.font_metrics_policy,
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        next_para, &styles,
                     );
                     let next_fmt =
                         self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
@@ -9141,9 +9122,8 @@ impl TypesetEngine {
                     && visible_large_between_notes_gap
                     && st.current_column + 1 >= st.col_count
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                            next_para,
-                            styles.font_metrics_policy,
+                        let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                            next_para, &styles,
                         );
                         let next_fmt = self.format_paragraph(
                             next_para,
@@ -9393,9 +9373,8 @@ impl TypesetEngine {
                     && !para_has_treat_as_char_picture_or_shape(en_para)
                     && !para_has_non_tac_picture_or_shape(en_para)
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                            next_para,
-                            styles.font_metrics_policy,
+                        let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                            next_para, &styles,
                         );
                         let next_fmt = self.format_paragraph(
                             next_para,
@@ -9427,9 +9406,8 @@ impl TypesetEngine {
                     && !para_has_treat_as_char_picture_or_shape(en_para)
                     && !para_has_non_tac_picture_or_shape(en_para)
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                            next_para,
-                            styles.font_metrics_policy,
+                        let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                            next_para, &styles,
                         );
                         let next_fmt = self.format_paragraph(
                             next_para,
@@ -9458,9 +9436,8 @@ impl TypesetEngine {
                     && st.current_height + fmt.line_advance(0)
                         <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX + 2.0
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                            next_para,
-                            styles.font_metrics_policy,
+                        let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                            next_para, &styles,
                         );
                         let next_fmt = self.format_paragraph(
                             next_para,
@@ -9524,9 +9501,8 @@ impl TypesetEngine {
                         line_has_tac_equation_control(en_para, &composed, last_line)
                     }
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                            next_para,
-                            styles.font_metrics_policy,
+                        let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                            next_para, &styles,
                         );
                         let next_fmt = self.format_paragraph(
                             next_para,
@@ -9754,9 +9730,8 @@ impl TypesetEngine {
                     });
                     last_render_endnote_para_local_idx = Some(st.endnote_paragraphs.len() - 1);
 
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                        next_para,
-                        styles.font_metrics_policy,
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        next_para, &styles,
                     );
                     let next_fmt =
                         self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
@@ -10007,9 +9982,8 @@ impl TypesetEngine {
                             .paragraphs
                             .iter()
                             .map(|p| {
-                                let comp = crate::renderer::composer::compose_paragraph_with_policy(
-                                    p,
-                                    styles.font_metrics_policy,
+                                let comp = crate::renderer::composer::compose_paragraph_with_styles(
+                                    p, &styles,
                                 );
                                 self.format_paragraph(p, Some(&comp), &styles, Some(en_col_w))
                                     .total_height
@@ -10682,10 +10656,7 @@ impl TypesetEngine {
         let mut carry = 0;
         let mut wrapped_terminal_line = false;
         for (index, para) in projected.paragraphs.iter_mut().enumerate() {
-            let composed = crate::renderer::composer::compose_paragraph_with_policy(
-                para,
-                styles.font_metrics_policy,
-            );
+            let composed = crate::renderer::composer::compose_paragraph_with_styles(para, &styles);
             let line_metrics: Vec<_> = (0..para.line_segs.len())
                 .map(|line_index| {
                     crate::renderer::equation::stored_unaffected_upper_line_metrics_hu(
@@ -10730,6 +10701,9 @@ impl TypesetEngine {
                         profile.hwpx_stored_layout() && !profile.hwp5_origin_hwpx(),
                     )
                     .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
+                    .with_native_hwp5_cell_spacing(
+                        profile.native_hwp5_layout() || profile.hwp5_origin_hwpx(),
+                    )
                     .with_session_edited(profile.session_edited())
                     .with_render_normalization(std::sync::Arc::clone(&self.render_normalization))
                     .measure_section(
@@ -10912,10 +10886,8 @@ impl TypesetEngine {
                 &table.padding
             };
             let padding_height = i32::from(padding.top) + i32::from(padding.bottom);
-            let composed = crate::renderer::composer::compose_paragraph_with_policy(
-                paragraph,
-                styles.font_metrics_policy,
-            );
+            let composed =
+                crate::renderer::composer::compose_paragraph_with_styles(paragraph, &styles);
             let metrics = crate::renderer::equation::stored_unaffected_upper_line_metrics_hu(
                 paragraph, &composed, 0,
             );
@@ -11016,6 +10988,923 @@ impl TypesetEngine {
         line.text_height = height;
         line.baseline_distance = baseline;
         Some(result)
+    }
+
+    pub(crate) fn has_native_equation_break_candidate(para: &Paragraph) -> bool {
+        ((para.line_segs.len() > 1 || para.text.contains('\t'))
+            && para
+                .controls
+                .iter()
+                .any(|c| matches!(c, Control::Equation(_))))
+            || para.controls.iter().any(|control| {
+                matches!(control, Control::Table(table)
+                if !table.dirty && table.common.width_criterion == crate::model::shape::SizeCriterion::Absolute && table.cells.iter().any(|cell|
+                    !cell.dirty_flag && cell.text_direction == 0
+                        && cell.line_wrap == crate::model::table::CellLineWrap::Break
+                        && cell.paragraphs.iter().any(Self::has_native_equation_break_candidate)))
+            })
+    }
+
+    fn native_equation_square_frame(&self, para: &Paragraph, width: f64) -> Option<(i32, i32)> {
+        use crate::model::shape::{
+            HorzAlign, HorzRelTo, SizeCriterion, TextWrap, VertAlign, VertRelTo,
+        };
+        let pictures = para
+            .controls
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                if let Control::Picture(p) = c {
+                    Some((i, p))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let [(ci, picture)] = pictures.as_slice() else {
+            return None;
+        };
+        let cm = &picture.common;
+        let ps = para.line_segs.first()?;
+        let reserved = i32::try_from(cm.width)
+            .ok()?
+            .checked_add(i32::from(cm.margin.left))?
+            .checked_add(i32::from(cm.margin.right))?;
+        let height = i32::try_from(cm.height).ok()?;
+        let full = crate::renderer::px_to_hwpunit_round(width, self.dpi);
+        let remaining = full.checked_sub(reserved)?;
+        if cm.treat_as_char
+            || cm.text_wrap != TextWrap::Square
+            || cm.vert_rel_to != VertRelTo::Para
+            || cm.horz_rel_to != HorzRelTo::Column
+            || cm.vert_align != VertAlign::Top
+            || cm.horz_align != HorzAlign::Right
+            || !cm.flow_with_text
+            || cm.allow_overlap
+            || cm.vertical_offset != 0
+            || cm.horizontal_offset != 0
+            || cm.width_criterion != SizeCriterion::Absolute
+            || cm.height_criterion != SizeCriterion::Absolute
+            || cm.margin.top != 0
+            || cm.margin.bottom != 0
+            || picture.caption.is_some()
+            || cm.width == 0
+            || reserved <= 0
+            || height <= 0
+            || remaining <= 0
+            || ps.text_start != 0
+            || para.line_segs.iter().any(|line| {
+                let Some(top) = line.vertical_pos.checked_sub(ps.vertical_pos) else {
+                    return true;
+                };
+                // 저장 줄 top이 그림 아래로 내려간 뒤에는 원래 전폭으로 돌아온다.
+                let expected = if top >= height { full } else { remaining };
+                top < 0 || line.column_start != 0 || line.segment_width != expected
+            })
+            || crate::renderer::composer::inline_table_host_line_index(para, *ci) != Some(0)
+        {
+            return None;
+        }
+        Some((reserved, height))
+    }
+
+    /// 원본 수식 서체로 같은 수의 줄에 더 많은 글자가 들어갈 때 줄 시작만 갱신한다.
+    /// 저장 높이·기준선·단 좌표는 유지해 저자의 세로 배치를 바꾸지 않는다.
+    pub(crate) fn project_native_equation_line_starts(
+        &self,
+        paragraphs: &[Paragraph],
+        widths: &[f64],
+        styles: &ResolvedStyleSet,
+    ) -> Option<Vec<Paragraph>> {
+        self.project_native_equation_line_starts_in_context(paragraphs, widths, styles, true)
+    }
+
+    fn project_native_equation_line_starts_in_context(
+        &self,
+        paragraphs: &[Paragraph],
+        widths: &[f64],
+        styles: &ResolvedStyleSet,
+        allow_source_square: bool,
+    ) -> Option<Vec<Paragraph>> {
+        let mut output: Option<Vec<Paragraph>> = None;
+        for (index, para) in paragraphs.iter().enumerate() {
+            let Some(&width) = widths.get(index).filter(|&&width| width > 0.0) else {
+                continue;
+            };
+            for (ci, control) in para.controls.iter().enumerate() {
+                let Control::Table(table) = control else {
+                    continue;
+                };
+                let Some(container_style) = styles.para_styles.get(para.para_shape_id as usize)
+                else {
+                    continue;
+                };
+                if container_style.margin_left < 0.0 || container_style.margin_right < 0.0 {
+                    continue;
+                }
+                // 알려진 렌더 폭 overlay는 상대 중첩 표와 본문보다 넓은 TAC 표다.
+                // 모든 포함 단계에서 절대 폭이 안쪽에 들어오는 경우만 원래 셀 좌표를 쓴다.
+                if table.dirty
+                    || table.common.width_criterion != crate::model::shape::SizeCriterion::Absolute
+                    || table.common.width == 0
+                    || i64::from(table.common.width)
+                        > i64::from(crate::renderer::px_to_hwpunit_round(width, self.dpi))
+                {
+                    continue;
+                }
+                let metrics = crate::document_core::DocumentCore::table_cells_line_metrics(table);
+                for (cell_index, cell) in table.cells.iter().enumerate() {
+                    if cell.dirty_flag
+                        || cell.text_direction != 0
+                        || cell.line_wrap != crate::model::table::CellLineWrap::Break
+                    {
+                        continue;
+                    }
+                    let Some(cell_metrics) = metrics.get(cell_index).copied().flatten() else {
+                        continue;
+                    };
+                    let cell_widths = cell
+                        .paragraphs
+                        .iter()
+                        .map(|paragraph| {
+                            crate::document_core::DocumentCore::reflow_width_from_cell_metrics(
+                                cell_metrics,
+                                paragraph.para_shape_id,
+                                styles,
+                                self.dpi,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let Some(projected_cell) = self.project_native_equation_line_starts_in_context(
+                        &cell.paragraphs,
+                        &cell_widths,
+                        styles,
+                        false,
+                    ) else {
+                        continue;
+                    };
+                    let projected = output.get_or_insert_with(|| paragraphs.to_vec());
+                    let Control::Table(projected_table) = &mut projected[index].controls[ci] else {
+                        unreachable!()
+                    };
+                    projected_table.cells[cell_index].paragraphs = projected_cell;
+                }
+            }
+            let square = allow_source_square
+                .then(|| self.native_equation_square_frame(para, width))
+                .flatten()
+                .filter(|_| {
+                    styles
+                        .para_styles
+                        .get(para.para_shape_id as usize)
+                        .is_some_and(|s| s.margin_left == 0.0 && s.margin_right == 0.0)
+                });
+            if para.line_segs.len() < 2
+                || para.text.trim().is_empty()
+                || para.text.contains('\r')
+                || !para.field_ranges.is_empty()
+                || !para.orphan_field_ends.is_empty()
+                || para.line_segs[0].text_start != 0
+                || para.line_segs.iter().any(|line| {
+                    line.line_height <= 0
+                        || line.segment_width <= 0
+                        || line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
+                })
+                || para.line_segs.windows(2).any(|pair| {
+                    pair[1].vertical_pos <= pair[0].vertical_pos
+                        || pair[1].text_start <= pair[0].text_start
+                })
+                || styles
+                    .para_styles
+                    .get(para.para_shape_id as usize)
+                    .is_some_and(|style| {
+                        style.line_wrap_squeeze
+                            || style.head_type != crate::model::style::HeadType::None
+                    })
+                || para.controls.iter().any(|control| {
+                    !matches!(control,
+                        Control::Equation(eq) if eq.common.treat_as_char
+                    ) && !(square.is_some() && matches!(control,Control::Picture(_))) && !matches!(
+                        control,
+                        Control::Header(_)
+                            | Control::Footer(_)
+                            | Control::PageNumberPos(_)
+                            | Control::PageHide(_)
+                            | Control::NewNumber(_)
+                    )
+                })
+                || para.controls.iter().any(|control| {
+                    matches!(control, Control::Equation(eq) if crate::renderer::equation::natural_width_hwp(eq).is_none())
+                })
+                || !para.controls.iter().any(|control| {
+                    matches!(control,
+                        Control::Equation(eq) if crate::renderer::equation::natural_width_hwp(eq)
+                            .is_some_and(|width| width < eq.common.width as i32)
+                    )
+                })
+            {
+                continue;
+            }
+            let mut fresh = para.clone();
+            fresh.line_segs.clear();
+            if let Some((reserved, height)) = square {
+                // 입력은 저장된 좁은 줄 폭이 아니라 전체 문단 폭이다.
+                let exclusions = crate::renderer::composer::reflow_line_segs_with_exclusions(
+                    &mut fresh,
+                    width,
+                    styles,
+                    self.dpi,
+                    &[],
+                );
+                let hu = |px| crate::renderer::px_to_hwpunit_round(px, self.dpi);
+                if exclusions.len() != 1
+                    || hu(exclusions[0].rect.width) != reserved
+                    || hu(exclusions[0].rect.height) != height
+                    || hu(exclusions[0].rect.y) != 0
+                    || hu(exclusions[0].rect.x) != hu(width) - reserved
+                {
+                    continue;
+                }
+            } else {
+                crate::document_core::DocumentCore::reflow_cell_lines(
+                    &mut fresh, width, false, styles, self.dpi,
+                );
+            }
+            if fresh.line_segs.len() != para.line_segs.len()
+                || !fresh
+                    .line_segs
+                    .iter()
+                    .zip(&para.line_segs)
+                    .all(|(new, saved)| {
+                        new.text_start >= saved.text_start
+                            && new.segment_width == saved.segment_width
+                            && new.column_start == saved.column_start
+                    })
+                || !fresh
+                    .line_segs
+                    .iter()
+                    .zip(&para.line_segs)
+                    .any(|(new, saved)| new.text_start != saved.text_start)
+                || !para
+                    .text
+                    .chars()
+                    .enumerate()
+                    .filter(|(_, ch)| *ch == '\n')
+                    .all(|(index, _)| {
+                        fresh
+                            .line_segs
+                            .iter()
+                            .any(|line| para.utf16_pos_to_char_idx(line.text_start) == index + 1)
+                    })
+            {
+                continue;
+            }
+            let projected = output.get_or_insert_with(|| paragraphs.to_vec());
+            for (line, new) in projected[index].line_segs.iter_mut().zip(&fresh.line_segs) {
+                line.text_start = new.text_start;
+            }
+            if let Some(tabs) = crate::renderer::layout::reproject_native_wrapped_tab_pair(
+                para,
+                &projected[index],
+                styles,
+                self.dpi,
+            ) {
+                projected[index].tab_extended = tabs;
+            }
+        }
+        output
+    }
+
+    /// 저장 글자 크기와 인라인 개체의 선언 상자가 실제 textheight를 설명할 때만
+    /// 줄 소유권 변경의 높이 차이를 투영한다. 기준선·간격의 fresh 값은 쓰지 않는다.
+    fn native_equation_flow_for_breaks(
+        &self,
+        source: &Paragraph,
+        fresh: &Paragraph,
+        styles: &ResolvedStyleSet,
+        allow_narrowed_geometry: bool,
+    ) -> Option<(Paragraph, i32)> {
+        let style = styles.para_styles.get(source.para_shape_id as usize)?;
+        if source.line_segs.len() < 2
+            || fresh.line_segs.is_empty()
+            || fresh.line_segs.len() > source.line_segs.len()
+            || source.text.trim().is_empty()
+            || source.text.contains(['\r', '\t'])
+            || !source.field_ranges.is_empty()
+            || !source.orphan_field_ends.is_empty()
+            || style.vertical_align != 2
+            || style.line_wrap_squeeze
+            || style.head_type != crate::model::style::HeadType::None
+            || source.line_segs[0].text_start != 0
+            || source.line_segs.iter().any(|s| {
+                s.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
+                    || s.text_height <= 0
+                    || s.line_height < s.text_height
+                    || s.baseline_distance.checked_mul(2) != Some(s.text_height)
+            })
+            || source.line_segs.windows(2).any(|p| {
+                p[1].text_start <= p[0].text_start
+                    || p[0]
+                        .vertical_pos
+                        .checked_add(p[0].text_height)
+                        .and_then(|v| v.checked_add(p[0].line_spacing))
+                        != Some(p[1].vertical_pos)
+            })
+        {
+            return None;
+        }
+        let line_metrics = |para: &Paragraph| -> Option<Vec<(i32, i32)>> {
+            let mut metrics = Vec::new();
+            for (i, line) in para.line_segs.iter().enumerate() {
+                let end = para
+                    .line_segs
+                    .get(i + 1)
+                    .map(|s| s.text_start)
+                    .unwrap_or(u32::MAX);
+                let font = para
+                    .char_shapes
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, shape)| {
+                        shape.start_pos < end
+                            && para
+                                .char_shapes
+                                .get(i + 1)
+                                .map(|s| s.start_pos)
+                                .unwrap_or(u32::MAX)
+                                > line.text_start
+                    })
+                    .filter_map(|(_, shape)| styles.char_styles.get(shape.char_shape_id as usize))
+                    .map(|s| crate::renderer::px_to_hwpunit_round(s.font_size, self.dpi))
+                    .max()?;
+                if font <= 0 {
+                    return None;
+                }
+                let mut object = 0;
+                for (ci, control) in para.controls.iter().enumerate() {
+                    let height = match control {
+                        Control::Equation(eq)
+                            if eq.common.treat_as_char
+                                && eq.common.margin.top == 0
+                                && eq.common.margin.bottom == 0
+                                && crate::renderer::equation::natural_width_hwp(eq).is_some() =>
+                        {
+                            i32::try_from(eq.common.height).ok()?
+                        }
+                        Control::Table(table)
+                            if table.common.treat_as_char
+                                && table.caption.is_none()
+                                && !table.dirty
+                                && table.cells.iter().all(|c| !c.dirty_flag)
+                                && table.outer_margin_top == 0
+                                && table.outer_margin_bottom == 0
+                                && table.common.margin.top == 0
+                                && table.common.margin.bottom == 0 =>
+                        {
+                            i32::try_from(table.common.height).ok()?
+                        }
+                        Control::Picture(pic) if !pic.common.treat_as_char => continue,
+                        _ => return None,
+                    };
+                    if height <= 0 {
+                        return None;
+                    }
+                    if crate::renderer::composer::inline_table_host_line_index(para, ci)? == i {
+                        object = object.max(height);
+                    }
+                }
+                metrics.push((font, object));
+            }
+            Some(metrics)
+        };
+        let original = line_metrics(source)?;
+        if original.iter().zip(&source.line_segs).any(|((font,object),line)|line.text_height!=(*font).max(*object))
+            || (!allow_narrowed_geometry && !source.controls.iter().any(|c|matches!(c,Control::Equation(eq)
+                if crate::renderer::equation::natural_width_hwp(eq).is_some_and(|w|w<eq.common.width as i32))))
+        { return None; }
+        let next = line_metrics(fresh)?;
+        if next
+            .iter()
+            .zip(&original)
+            .any(|((font, _), (old_font, _))| font != old_font)
+            || fresh.line_segs.iter().zip(&source.line_segs).any(|(a, b)| {
+                if allow_narrowed_geometry {
+                    a.segment_width <= 0
+                        || a.segment_width > b.segment_width
+                        || a.column_start < b.column_start
+                        || i64::from(a.column_start) + i64::from(a.segment_width)
+                            > i64::from(b.column_start) + i64::from(b.segment_width)
+                } else {
+                    a.text_start < b.text_start
+                        || a.segment_width != b.segment_width
+                        || a.column_start != b.column_start
+                }
+            })
+            || !source
+                .text
+                .chars()
+                .enumerate()
+                .filter(|(_, c)| *c == '\n')
+                .all(|(i, _)| {
+                    fresh
+                        .line_segs
+                        .iter()
+                        .any(|s| source.utf16_pos_to_char_idx(s.text_start) == i + 1)
+                })
+        {
+            return None;
+        }
+        let mut projected = source.clone();
+        projected.line_segs.truncate(fresh.line_segs.len());
+        let mut carry = 0i32;
+        let mut changed = source.line_segs.len() != fresh.line_segs.len();
+        for (i, line) in projected.line_segs.iter_mut().enumerate() {
+            let saved = &source.line_segs[i];
+            let text_height = next[i].0.max(next[i].1);
+            // 원본 중심 기준선의 정수 쌍만 다룬다.
+            if text_height % 2 != 0 {
+                return None;
+            }
+            line.text_start = fresh.line_segs[i].text_start;
+            if allow_narrowed_geometry {
+                line.column_start = fresh.line_segs[i].column_start;
+                line.segment_width = fresh.line_segs[i].segment_width;
+            }
+            line.vertical_pos = saved.vertical_pos.checked_add(carry)?;
+            line.text_height = text_height;
+            line.baseline_distance = text_height / 2;
+            line.line_height =
+                if saved.line_height == saved.text_height && original[i].1 == saved.text_height {
+                    text_height
+                } else {
+                    saved.line_height.max(text_height)
+                };
+            changed |= line.text_start != saved.text_start
+                || line.text_height != saved.text_height
+                || line.line_height != saved.line_height
+                || line.column_start != saved.column_start
+                || line.segment_width != saved.segment_width;
+            carry = carry.checked_add(text_height.checked_sub(saved.text_height)?)?;
+        }
+        let end = |p: &Paragraph| {
+            p.line_segs.last().and_then(|s| {
+                s.vertical_pos
+                    .checked_add(s.text_height)?
+                    .checked_add(s.line_spacing)
+            })
+        };
+        let delta = end(&projected)?.checked_sub(end(source)?)?;
+        changed.then_some((projected, delta))
+    }
+
+    /// 수식 폭 축약으로 어울림 본문이 짧아지면 같은 그림이 다음 문단의 첫 줄을
+    /// 계속 가릴 수 있다. 두 문단의 배제 폭·저장 메트릭을 한 번에 증명한다.
+    fn project_native_equation_wrap_pair(
+        &self,
+        index: usize,
+        paragraphs: &[Paragraph],
+        widths: &[f64],
+        styles: &ResolvedStyleSet,
+    ) -> Option<((Paragraph, i32), (Paragraph, i32))> {
+        use crate::model::shape::{HorzAlign, HorzRelTo, SizeCriterion, TextWrap, VertRelTo};
+        let source = paragraphs.get(index)?;
+        let following = paragraphs.get(index + 1)?;
+        let width = *widths.get(index)?;
+        let next_width = *widths.get(index + 1)?;
+        let style = styles.para_styles.get(source.para_shape_id as usize)?;
+        let next_style = styles.para_styles.get(following.para_shape_id as usize)?;
+        let pictures: Vec<_> = source
+            .controls
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| match c {
+                Control::Picture(p) => Some((i, p)),
+                _ => None,
+            })
+            .collect();
+        let [(picture_index, picture)] = pictures.as_slice() else {
+            return None;
+        };
+        let common = &picture.common;
+        let hu = |px| crate::renderer::px_to_hwpunit_round(px, self.dpi);
+        let first = source.line_segs.first()?;
+        let next_first = following.line_segs.first()?;
+        let reserved = i32::try_from(common.width)
+            .ok()?
+            .checked_add(i32::from(common.margin.left))?
+            .checked_add(i32::from(common.margin.right))?;
+        if source.controls.iter().any(|c|!matches!(c,Control::Equation(_)|Control::Picture(_)))
+            || following.controls.iter().any(|c|!matches!(c,Control::Equation(_)))
+            || common.treat_as_char || common.text_wrap!=TextWrap::Square
+            || common.vert_rel_to!=VertRelTo::Para || common.horz_rel_to!=HorzRelTo::Column
+            || common.vert_align!=crate::model::shape::VertAlign::Top
+            || !common.flow_with_text || common.allow_overlap
+            || common.horz_align!=HorzAlign::Right
+            || common.vertical_offset!=0 || common.horizontal_offset!=0
+            || common.height_criterion!=SizeCriterion::Absolute || common.width_criterion!=SizeCriterion::Absolute
+            || common.margin.top!=0 || common.margin.bottom!=0 || picture.caption.is_some()
+            || common.width==0 || common.height==0 || reserved<=0
+            || style.margin_left!=0.0 || style.margin_right!=0.0
+            || following.column_type!=ColumnBreakType::None || next_style.page_break_before || next_style.spacing_before!=0.0
+            || source.line_segs.len()<2 || following.line_segs.len()<2
+            || source.line_segs.iter().any(|s|s.column_start!=0 || s.segment_width!=hu(width).checked_sub(reserved).unwrap_or(0))
+            || following.line_segs.iter().any(|s|s.segment_width!=hu(next_width))
+            || crate::renderer::composer::inline_table_host_line_index(source,*picture_index)!=Some(0)
+            || !source.controls.iter().any(|c|matches!(c,Control::Equation(eq)
+                if crate::renderer::equation::natural_width_hwp(eq).is_some_and(|w|w<eq.common.width as i32)))
+        { return None; }
+        let mut fresh = source.clone();
+        fresh.line_segs.clear();
+        // 전폭을 한 번만 전달하고 이미 좁힌 저장 폭은 다시 입력하지 않는다.
+        let mut exclusions = crate::renderer::composer::reflow_line_segs_with_exclusions(
+            &mut fresh,
+            width,
+            styles,
+            self.dpi,
+            &[],
+        );
+        if fresh.line_segs.len() >= source.line_segs.len()
+            || exclusions.len() != 1
+            || fresh.line_segs.iter().zip(&source.line_segs).any(|(a, b)| {
+                a.text_start < b.text_start
+                    || a.segment_width != b.segment_width
+                    || a.column_start != b.column_start
+            })
+            || hu(exclusions[0].rect.width) != reserved
+            || hu(exclusions[0].rect.height) != i32::try_from(common.height).ok()?
+            || hu(exclusions[0].rect.y) != 0
+        {
+            return None;
+        }
+        let host = self.native_equation_flow_for_breaks(source, &fresh, styles, true)?;
+        let source_end = source.line_segs.last().and_then(|s| {
+            s.vertical_pos
+                .checked_add(s.text_height)?
+                .checked_add(s.line_spacing)
+        })?;
+        let picture_bottom = first
+            .vertical_pos
+            .checked_add(i32::try_from(common.height).ok()?)?;
+        let new_next = next_first.vertical_pos.checked_add(host.1)?;
+        if next_first.vertical_pos != source_end.checked_add(hu(style.spacing_after))?
+            || next_first.vertical_pos < picture_bottom
+            || new_next >= picture_bottom
+            || new_next < first.vertical_pos
+        {
+            return None;
+        }
+        exclusions[0].rect.y += hwpunit_to_px(first.vertical_pos.checked_sub(new_next)?, self.dpi);
+        let mut fresh_next = following.clone();
+        fresh_next.line_segs.clear();
+        let owned = crate::renderer::composer::reflow_line_segs_with_exclusions(
+            &mut fresh_next,
+            next_width,
+            styles,
+            self.dpi,
+            &exclusions,
+        );
+        if !owned.is_empty()
+            || fresh_next.line_segs.len() != following.line_segs.len()
+            || fresh_next.line_segs[0].segment_width >= following.line_segs[0].segment_width
+        {
+            return None;
+        }
+        let next = self.native_equation_flow_for_breaks(following, &fresh_next, styles, true)?;
+        let second_offset = next
+            .0
+            .line_segs
+            .get(1)?
+            .vertical_pos
+            .checked_sub(next_first.vertical_pos)?;
+        if picture_bottom > new_next.checked_add(second_offset)? {
+            return None;
+        }
+        Some((host, next))
+    }
+
+    fn project_native_inline_table_equation_paragraph(
+        &self,
+        para: &Paragraph,
+        width: f64,
+        styles: &ResolvedStyleSet,
+    ) -> Option<(Paragraph, i32)> {
+        let tables: Vec<_> = para
+            .controls
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| match c {
+                Control::Table(t) if t.common.treat_as_char => Some((i, t)),
+                _ => None,
+            })
+            .collect();
+        let [(control_index, table)] = tables.as_slice() else {
+            return None;
+        };
+        if para
+            .controls
+            .iter()
+            .any(|c| !matches!(c, Control::Equation(_) | Control::Table(_)))
+            || table.common.height_criterion != crate::model::shape::SizeCriterion::Absolute
+        {
+            return None;
+        }
+        let owner = crate::renderer::composer::inline_table_host_line_index(para, *control_index)?;
+        let line = para.line_segs.get(owner)?;
+        if line.line_height != i32::try_from(table.common.height).ok()?
+            || line.text_height != line.line_height
+        {
+            return None;
+        }
+        let mut fresh = para.clone();
+        fresh.line_segs.clear();
+        crate::document_core::DocumentCore::reflow_cell_lines(
+            &mut fresh, width, false, styles, self.dpi,
+        );
+        if fresh.line_segs.len() != para.line_segs.len() {
+            return None;
+        }
+        let new_owner =
+            crate::renderer::composer::inline_table_host_line_index(&fresh, *control_index)?;
+        if new_owner != owner {
+            let receiving = para.line_segs.get(new_owner)?;
+            if new_owner.checked_add(1) != Some(owner)
+                || receiving.line_height != line.line_height
+                || receiving.text_height >= receiving.line_height
+            {
+                return None;
+            }
+        }
+        self.native_equation_flow_for_breaks(para, &fresh, styles, false)
+    }
+
+    /// 저장 셀 내용으로 정확히 유도되는 TAC 높이만 렌더 복사본에서 줄인다.
+    /// 명시한 추가 높이, 셀 최소 높이, 저장 기준선과 단 전환은 유지한다.
+    pub(crate) fn project_native_equation_tables(
+        &self,
+        paragraphs: &[Paragraph],
+        widths: &[f64],
+        styles: &ResolvedStyleSet,
+        profile: crate::model::provenance::LayoutCompatibilityProfile,
+    ) -> Option<(Vec<Paragraph>, Vec<usize>)> {
+        use crate::model::shape::{SizeCriterion, TextWrap};
+        use crate::model::table::{CellLineWrap, TablePageBreak, VerticalAlign};
+        if !(profile.native_hwp5_layout() || profile.hwp5_origin_hwpx())
+            || profile.own_line_layout()
+            || styles.font_metrics_policy
+                != crate::model::provenance::FontMetricsPolicy::HcrDeclared
+        {
+            return None;
+        }
+        let measure = |para: &Paragraph, width| {
+            let composed = crate::renderer::composer::compose_paragraph_with_styles(para, &styles);
+            crate::renderer::height_measurer::HeightMeasurer::new(self.dpi)
+                .with_own_line_layout(profile.own_line_layout())
+                .with_hwp3_variant(profile.hwp3_layout())
+                .with_hwpx_cell_spacing(profile.hwpx_stored_layout() && !profile.hwp5_origin_hwpx())
+                .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
+                .with_native_hwp5_cell_spacing(true)
+                .with_session_edited(profile.session_edited())
+                .measure_section(
+                    std::slice::from_ref(para),
+                    std::slice::from_ref(&composed),
+                    styles,
+                    Some(width),
+                )
+        };
+        let contract = |index: usize, para: &Paragraph| -> Option<(Paragraph, i32)> {
+            let [Control::Table(table)] = para.controls.as_slice() else {
+                return None;
+            };
+            let [line] = para.line_segs.as_slice() else {
+                return None;
+            };
+            let [cell] = table.cells.as_slice() else {
+                return None;
+            };
+            let style = styles.para_styles.get(para.para_shape_id as usize)?;
+            let source_height = i32::try_from(table.common.height).ok()?;
+            if para_has_non_whitespace_text(para)
+                || !table.common.treat_as_char
+                || table.common.text_wrap != TextWrap::TopAndBottom
+                || table.common.height_criterion != SizeCriterion::Absolute
+                || table.common.size_protect
+                || table.common.vertical_offset != 0
+                || table.common.margin.top != 0
+                || table.common.margin.bottom != 0
+                || table.outer_margin_top != 0
+                || table.outer_margin_bottom != 0
+                || table.caption.is_some()
+                || table.dirty
+                || table.row_count != 1
+                || table.col_count != 1
+                || table.page_break != TablePageBreak::None
+                || cell.row != 0
+                || cell.col != 0
+                || cell.row_span != 1
+                || cell.col_span != 1
+                || cell.dirty_flag
+                || cell.text_direction != 0
+                || cell.vertical_align != VerticalAlign::Top
+                || cell.line_wrap != CellLineWrap::Break
+                || cell.paragraphs.len() < 2
+                || cell
+                    .paragraphs
+                    .iter()
+                    .any(|p| !p.field_ranges.is_empty() || !p.orphan_field_ends.is_empty())
+                || line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
+                || line.text_start != 0
+                || line.line_height != source_height
+                || line.text_height != source_height
+                || style.vertical_align != 2
+                || line.baseline_distance != source_height / 2
+                || style.spacing_before != 0.0
+                || cell
+                    .paragraphs
+                    .iter()
+                    .flat_map(|p| &p.controls)
+                    .any(|control| match control {
+                        Control::Equation(eq) => {
+                            !eq.common.treat_as_char
+                                || crate::renderer::equation::natural_width_hwp(eq).is_none()
+                        }
+                        Control::Table(child) => !child.common.treat_as_char,
+                        // 단일 단 정의는 셀의 비페인트 컨테이너 메타데이터다.
+                        Control::ColumnDef(column) => column.column_count != 1,
+                        _ => true,
+                    })
+            {
+                return None;
+            }
+            let width = *widths.get(index)?;
+            let before = measure(para, width);
+            let source_table = before.tables.first()?;
+            let [raw] = source_table.raw_row_heights.as_slice() else {
+                return None;
+            };
+            let [row] = source_table.row_heights.as_slice() else {
+                return None;
+            };
+            let hu = |height| crate::renderer::px_to_hwpunit_round(height, self.dpi);
+            if hu(*raw) != source_height
+                || hu(*row) != source_height
+                || hu(source_table.total_height) != source_height
+            {
+                return None;
+            }
+            let next = paragraphs.get(index + 1)?;
+            if next.column_type != ColumnBreakType::None
+                || styles
+                    .para_styles
+                    .get(next.para_shape_id as usize)
+                    .is_some_and(|s| s.page_break_before || s.spacing_before != 0.0)
+                || next.line_segs.first()?.vertical_pos
+                    != line
+                        .vertical_pos
+                        .checked_add(hu(before.paragraphs.first()?.total_height))?
+            {
+                return None;
+            }
+            let cell_width = crate::renderer::layout::LayoutEngine::hancom_cell_wrap_width_px(
+                table, cell, self.dpi, 1.0,
+            )?;
+            let projected_cell = self.contract_cached_equation_paragraphs(
+                &cell.paragraphs,
+                cell_width,
+                styles,
+                false,
+            )?;
+            let mut removed_line = false;
+            for (saved, projected) in cell.paragraphs.iter().zip(&projected_cell) {
+                let changed = saved.line_segs.len() != projected.line_segs.len()
+                    || saved
+                        .line_segs
+                        .iter()
+                        .zip(&projected.line_segs)
+                        .any(|(a, b)| a.text_start != b.text_start);
+                let first = saved.line_segs.first()?;
+                if changed
+                    && (saved.line_segs.len() < 2
+                        || projected.line_segs.len() > saved.line_segs.len()
+                        || !saved
+                            .controls
+                            .iter()
+                            .any(|c| matches!(c, Control::Equation(_)))
+                        || saved.line_segs.iter().any(|s| {
+                            s.line_height != first.line_height
+                                || s.text_height != first.text_height
+                                || s.baseline_distance != first.baseline_distance
+                                || s.line_spacing != first.line_spacing
+                                || s.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
+                        }))
+                {
+                    return None;
+                }
+                // 기존 helper의 줄 시작·carry만 채택하고 저장 메트릭은 유지한다.
+                if projected
+                    .line_segs
+                    .iter()
+                    .zip(&saved.line_segs)
+                    .any(|(a, b)| {
+                        a.text_start < b.text_start
+                            || a.line_height != b.line_height
+                            || a.text_height != b.text_height
+                            || a.baseline_distance != b.baseline_distance
+                            || a.line_spacing != b.line_spacing
+                            || a.segment_width != b.segment_width
+                            || a.column_start != b.column_start
+                            || a.tag != b.tag
+                    })
+                {
+                    return None;
+                }
+                removed_line |= projected.line_segs.len() < saved.line_segs.len();
+            }
+            if !removed_line {
+                return None;
+            }
+            let mut result = para.clone();
+            let Control::Table(projected_table) = &mut result.controls[0] else {
+                unreachable!()
+            };
+            projected_table.cells[0].paragraphs = projected_cell;
+            let after = measure(&result, width);
+            let measured = after.tables.first()?;
+            let [raw] = measured.raw_row_heights.as_slice() else {
+                return None;
+            };
+            let [row] = measured.row_heights.as_slice() else {
+                return None;
+            };
+            let new_height = hu(measured.total_height);
+            if new_height <= 0
+                || new_height >= source_height
+                || hu(*raw) != new_height
+                || hu(*row) != new_height
+            {
+                return None;
+            }
+            let Control::Table(projected_table) = &mut result.controls[0] else {
+                unreachable!()
+            };
+            projected_table.common.height = u32::try_from(new_height).ok()?;
+            result.line_segs[0].line_height = new_height;
+            result.line_segs[0].text_height = new_height;
+            result.line_segs[0].baseline_distance = new_height / 2;
+            Some((result, new_height.checked_sub(source_height)?))
+        };
+        let mut result = paragraphs.to_vec();
+        let mut changed = Vec::new();
+        let mut carry = 0i32;
+        let mut previous = None;
+        let mut following_wrap: Option<(usize, Paragraph, i32)> = None;
+        for (index, para) in paragraphs.iter().enumerate() {
+            if para.column_type != ColumnBreakType::None
+                || styles
+                    .para_styles
+                    .get(para.para_shape_id as usize)
+                    .is_some_and(|s| s.page_break_before)
+                || matches!((previous, para.line_segs.first()), (Some(v), Some(line)) if line.vertical_pos < v)
+            {
+                carry = 0;
+            }
+            let local = if following_wrap
+                .as_ref()
+                .is_some_and(|(next, _, _)| *next == index)
+            {
+                following_wrap.take().map(|(_, para, delta)| (para, delta))
+            } else {
+                contract(index, para)
+                    .or_else(|| {
+                        self.project_native_inline_table_equation_paragraph(
+                            para,
+                            *widths.get(index)?,
+                            styles,
+                        )
+                    })
+                    .or_else(|| {
+                        let (host, next) = self
+                            .project_native_equation_wrap_pair(index, paragraphs, widths, styles)?;
+                        following_wrap = Some((index + 1, next.0, next.1));
+                        Some(host)
+                    })
+            };
+            let delta = local.as_ref().map(|(_, d)| *d).unwrap_or(0);
+            if let Some((projected, _)) = local {
+                result[index] = projected;
+                changed.push(index);
+            }
+            let mut last = None;
+            for line in &mut result[index].line_segs {
+                if last.is_some_and(|v| line.vertical_pos < v) {
+                    carry = 0;
+                }
+                last = Some(line.vertical_pos);
+                line.vertical_pos = line.vertical_pos.checked_add(carry)?;
+            }
+            previous = para.line_segs.last().map(|s| s.vertical_pos);
+            carry = carry.checked_add(delta)?;
+        }
+        (!changed.is_empty()).then_some((result, changed))
     }
 
     pub(crate) fn contract_cached_equation_paragraphs(
@@ -11531,10 +12420,7 @@ impl TypesetEngine {
                         .get(st.current_column as usize)
                         .map(|a| a.width)
                         .unwrap_or(st.layout.body_area.width);
-                    let comp = crate::renderer::composer::compose_paragraph_with_policy(
-                        p,
-                        styles.font_metrics_policy,
-                    );
+                    let comp = crate::renderer::composer::compose_paragraph_with_styles(p, &styles);
                     let fmt = self.format_paragraph(p, Some(&comp), &styles, Some(en_col_w));
                     fmt.line_heights.len() == 1
                         && line_has_visible_text_or_tac_equation(p, &comp, 0)
@@ -11667,9 +12553,8 @@ impl TypesetEngine {
                     .own_line_layout()
                     .then(|| {
                         let previous = st.endnote_paragraphs.get(prev_local_idx)?;
-                        let composed = crate::renderer::composer::compose_paragraph_with_policy(
-                            previous,
-                            styles.font_metrics_policy,
+                        let composed = crate::renderer::composer::compose_paragraph_with_styles(
+                            previous, &styles,
                         );
                         let width = st
                             .layout
@@ -11744,9 +12629,8 @@ impl TypesetEngine {
                         let current_head_has_large_tac_picture =
                             en_ctrl.paragraphs.iter().take(8).any(|head_para| {
                                 let head_comp =
-                                    crate::renderer::composer::compose_paragraph_with_policy(
-                                        head_para,
-                                        styles.font_metrics_policy,
+                                    crate::renderer::composer::compose_paragraph_with_styles(
+                                        head_para, &styles,
                                     );
                                 (0..head_comp.lines.len()).any(|line_idx| {
                                     !line_has_visible_text(&head_comp, line_idx)
@@ -12367,10 +13251,8 @@ impl TypesetEngine {
             };
             y = hc.vpos_adjust(y, local, &local_paras, styles);
             let item_para = &local_paras[local];
-            let item_composed = crate::renderer::composer::compose_paragraph_with_policy(
-                item_para,
-                styles.font_metrics_policy,
-            );
+            let item_composed =
+                crate::renderer::composer::compose_paragraph_with_styles(item_para, &styles);
             // [Task #1363 v2 Stage 3] 휴리스틱 advance 추정. 렌더러는 미주 텍스트/수식 para 를
             // **저장 line_segs**(hancom 레이아웃)로 그린다 — format_paragraph reflow(total_height)가
             // 아님. 수식 다줄 para 는 reflow 가 저장 span 보다 큼(pi=1126: 237 vs 185.8) → 단 과대.
@@ -12552,10 +13434,8 @@ impl TypesetEngine {
                 };
                 y = hc.vpos_adjust(y, local, &local_paras, &styles);
                 let item_para = &local_paras[local];
-                let item_composed = crate::renderer::composer::compose_paragraph_with_policy(
-                    item_para,
-                    styles.font_metrics_policy,
-                );
+                let item_composed =
+                    crate::renderer::composer::compose_paragraph_with_styles(item_para, &styles);
                 let item_fmt =
                     self.format_paragraph(item_para, Some(&item_composed), &styles, Some(en_col_w));
                 y += match item {
@@ -12937,9 +13817,8 @@ impl TypesetEngine {
                 .paragraphs
                 .get(1)
                 .map(|next_para| {
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                        next_para,
-                        styles.font_metrics_policy,
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        next_para, &styles,
                     );
                     let next_fmt =
                         self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
@@ -13146,9 +14025,8 @@ impl TypesetEngine {
                             .take(3)
                             .map(|head_para| {
                                 let head_comp =
-                                    crate::renderer::composer::compose_paragraph_with_policy(
-                                        head_para,
-                                        styles.font_metrics_policy,
+                                    crate::renderer::composer::compose_paragraph_with_styles(
+                                        head_para, &styles,
                                     );
                                 self.format_paragraph(
                                     head_para,
@@ -13216,9 +14094,8 @@ impl TypesetEngine {
                     && line_has_visible_text_or_tac_equation(en_para, &composed, 0)
             } else if ep_idx == 1 {
                 en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                        next_para,
-                        styles.font_metrics_policy,
+                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        next_para, &styles,
                     );
                     let next_fmt =
                         self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
@@ -13332,9 +14209,8 @@ impl TypesetEngine {
                     .iter()
                     .take(3)
                     .map(|head_para| {
-                        let head_comp = crate::renderer::composer::compose_paragraph_with_policy(
-                            head_para,
-                            styles.font_metrics_policy,
+                        let head_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                            head_para, &styles,
                         );
                         self.format_paragraph(head_para, Some(&head_comp), &styles, Some(en_col_w))
                             .total_height
@@ -22447,6 +23323,1675 @@ mod tests {
 
     #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
     #[test]
+    fn native_inline_table_contraction_preserves_authored_geometry_and_source() {
+        let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") else {
+            return;
+        };
+        let mut paths = crate::renderer::font_paths::env_font_paths();
+        paths.push(std::path::PathBuf::from(font));
+        crate::renderer::font_paths::register_font_face_availability(&paths);
+        let mut core = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../samples/exam_science.hwp"),
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("original science loads");
+        let _shaping = core.resolved_shaping_font_scope();
+        let _measure = crate::renderer::layout::enter_measure_font_paths(paths);
+        fn assert_cell_paint(
+            core: &crate::document_core::DocumentCore,
+        ) -> std::collections::BTreeMap<usize, (f64, f64)> {
+            use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+            fn collect(
+                node: &RenderNode,
+                line: Option<(f64, f64)>,
+                out: &mut std::collections::BTreeMap<usize, (f64, f64)>,
+                frame: &mut Vec<f64>,
+                body: &mut std::collections::BTreeMap<usize, (f64, f64)>,
+            ) {
+                if let RenderNodeType::TextLine(line) = &node.node_type {
+                    if line.section_index == Some(0) && matches!(line.para_index, Some(100 | 102)) {
+                        body.entry(line.para_index.unwrap())
+                            .or_insert((node.bbox.y, node.bbox.height));
+                    }
+                }
+                let line = if matches!(&node.node_type, RenderNodeType::TextLine(_)) {
+                    Some((node.bbox.y, node.bbox.height))
+                } else {
+                    line
+                };
+                if let RenderNodeType::Table(t) = &node.node_type {
+                    if t.para_index == Some(101) && t.control_index == Some(0) {
+                        frame.push(node.bbox.height);
+                    }
+                }
+                if let (RenderNodeType::TextRun(run), Some(line)) = (&node.node_type, line) {
+                    if let Some(ctx) = &run.cell_context {
+                        if ctx.parent_para_index == 101 && ctx.path.len() == 1 {
+                            let p = ctx.path[0];
+                            if p.control_index == 0
+                                && p.cell_index == 0
+                                && [0, 1, 2, 4].contains(&p.cell_para_index)
+                            {
+                                out.entry(p.cell_para_index).or_insert(line);
+                            }
+                        }
+                    }
+                }
+                for c in &node.children {
+                    collect(c, line, out, frame, body);
+                }
+            }
+            let tree = core.build_page_render_tree(3).unwrap();
+            let mut lines = std::collections::BTreeMap::new();
+            let mut frame = Vec::new();
+            let mut body = std::collections::BTreeMap::new();
+            collect(&tree.root, None, &mut lines, &mut frame, &mut body);
+            for pi in [1, 2] {
+                assert!((lines[&pi].1 - hwpunit_to_px(1350, 96.0)).abs() < 0.01);
+            }
+            assert!((lines[&4].0 - lines[&0].0 - hwpunit_to_px(6840, 96.0)).abs() < 0.01);
+            assert_eq!(frame.len(), 1);
+            assert!((frame[0] - hwpunit_to_px(32707, 96.0)).abs() < 0.01);
+            assert!((body[&102].0 - body[&100].0 - hwpunit_to_px(37867, 96.0)).abs() < 0.01);
+            body
+        }
+        let painted = assert_cell_paint(&core);
+        let raw_before_refresh = format!("{:?}", core.document.sections[0].paragraphs);
+        let rows = core.measured_sections[0]
+            .get_measured_table(101, 0)
+            .unwrap()
+            .row_heights
+            .clone();
+        // 실제 글꼴 등록 뒤의 공개 refresh도 깨끗한 원본을 편집 상태로 바꾸지 않는다.
+        crate::renderer::runtime_font_metrics::register(
+            include_bytes!("../../tests/fixtures/fonts/RHWPShapingFixture.ttf"),
+            &["RHWP Unrelated Refresh Fixture".into()],
+            false,
+            false,
+        )
+        .expect("late font registers");
+        for _ in 0..2 {
+            core.refresh_layout_native();
+            assert_eq!(assert_cell_paint(&core), painted);
+            assert_eq!(
+                core.measured_sections[0]
+                    .get_measured_table(101, 0)
+                    .unwrap()
+                    .row_heights,
+                rows
+            );
+            assert_eq!(
+                format!("{:?}", core.document.sections[0].paragraphs),
+                raw_before_refresh
+            );
+            let normalized = core.render_normalization.sections[0].as_ref().unwrap();
+            let Control::Table(table) = &normalized.paragraphs[101].controls[0] else {
+                unreachable!()
+            };
+            assert!(!table.dirty);
+            assert_eq!(
+                table.cells[0].paragraphs[7]
+                    .line_segs
+                    .iter()
+                    .map(|l| l.text_start)
+                    .collect::<Vec<_>>(),
+                vec![0, 43, 83]
+            );
+        }
+        let engine = TypesetEngine::with_default_dpi();
+        let source = &core.document.sections[0].paragraphs;
+        let source_before = format!("{source:?}");
+        let widths: Vec<_> = (0..source.len())
+            .map(|i| core.body_reflow_width(0, i))
+            .collect();
+        let profile = core.document.layout_profile();
+        let (projected, changed) = engine
+            .project_native_equation_tables(source, &widths, &core.styles, profile)
+            .expect("source-derived inline table contracts");
+        assert!(changed.contains(&101));
+
+        assert!(changed.contains(&118));
+        let body_starts = |para: &Paragraph| {
+            para.line_segs
+                .iter()
+                .map(|s| s.text_start)
+                .collect::<Vec<_>>()
+        };
+        let native_body = vec![0, 45, 93, 127, 170, 226];
+        assert_eq!(body_starts(&source[118]), vec![0, 44, 93, 127, 169, 218]);
+        assert_eq!(body_starts(&projected[118]), native_body);
+        assert_eq!(
+            (
+                projected[118].line_segs[4].text_height,
+                projected[118].line_segs[4].baseline_distance
+            ),
+            (2864, 1432)
+        );
+        assert_eq!(
+            (
+                projected[118].line_segs[5].vertical_pos,
+                projected[118].line_segs[5].line_height,
+                projected[118].line_segs[5].text_height,
+                projected[118].line_segs[5].baseline_distance
+            ),
+            (16000, 2580, 2580, 1290)
+        );
+        assert_eq!(projected[119].line_segs[0].vertical_pos, 19540);
+        let mut changed_frame = source[118].clone();
+        for c in &mut changed_frame.controls {
+            if let Control::Table(t) = c {
+                t.common.height += 4;
+            }
+        }
+        assert!(engine
+            .project_native_inline_table_equation_paragraph(
+                &changed_frame,
+                widths[118],
+                &core.styles
+            )
+            .is_none());
+        let mut vertical_margin = source[118].clone();
+        for c in &mut vertical_margin.controls {
+            if let Control::Table(t) = c {
+                t.common.margin.top = 1;
+            }
+        }
+        assert!(engine
+            .project_native_inline_table_equation_paragraph(
+                &vertical_margin,
+                widths[118],
+                &core.styles
+            )
+            .is_none());
+        let mut custom_baseline = source[118].clone();
+        custom_baseline.line_segs[0].baseline_distance += 1;
+        assert!(engine
+            .project_native_inline_table_equation_paragraph(
+                &custom_baseline,
+                widths[118],
+                &core.styles
+            )
+            .is_none());
+        let mut missing_face = source[118].clone();
+        if let Control::Equation(eq) = &mut missing_face.controls[0] {
+            eq.font_name = "Missing source face".into();
+        }
+        assert!(engine
+            .project_native_inline_table_equation_paragraph(
+                &missing_face,
+                widths[118],
+                &core.styles
+            )
+            .is_none());
+        let cell = |para: &Paragraph| match &para.controls[0] {
+            Control::Table(table) => table.cells[0].paragraphs[7]
+                .line_segs
+                .iter()
+                .map(|s| s.text_start)
+                .collect::<Vec<_>>(),
+            _ => panic!("inline table expected"),
+        };
+        assert_eq!(cell(&source[101]), vec![0, 43, 80, 121]);
+        assert_eq!(
+            cell(&projected[101]),
+            vec![0, 43, 83],
+            "genuine native saved break starts"
+        );
+        let line = &projected[101].line_segs[0];
+        assert_eq!(
+            (
+                line.vertical_pos,
+                line.line_height,
+                line.text_height,
+                line.baseline_distance,
+                line.line_spacing
+            ),
+            (4200, 32707, 32707, 16353, 460)
+        );
+        assert_eq!(projected[102].line_segs[0].vertical_pos, 37867);
+        // Q18 remains in the left column; Q19 at root116 starts the next one.
+        // Genuine native save carries the table delta through root115, then resets.
+        assert_eq!(source[110].line_segs[0].vertical_pos, 70041);
+        assert_eq!(projected[110].line_segs[0].vertical_pos, 68431);
+        assert_eq!(source[115].line_segs[0].vertical_pos, 85537);
+        assert_eq!(projected[115].line_segs[0].vertical_pos, 83927);
+        assert_eq!(source[116].column_type, ColumnBreakType::Column);
+        assert_eq!(source[116].line_segs[0].vertical_pos, 0);
+        assert_eq!(projected[116].line_segs[0].vertical_pos, 0);
+        assert!(
+            engine
+                .project_native_equation_tables(&projected, &widths, &core.styles, profile)
+                .is_none(),
+            "projection is idempotent"
+        );
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs),
+            source_before
+        );
+        // Extra authored frame height is independent of the saved content ladder.
+        let mut explicit = source.clone();
+        let Control::Table(table) = &mut explicit[101].controls[0] else {
+            unreachable!()
+        };
+        table.common.height += 1000;
+        explicit[101].line_segs[0].line_height += 1000;
+        explicit[101].line_segs[0].text_height += 1000;
+        explicit[101].line_segs[0].baseline_distance += 500;
+        explicit[102].line_segs[0].vertical_pos += 1000;
+        if let Some((_, changed)) =
+            engine.project_native_equation_tables(&explicit, &widths, &core.styles, profile)
+        {
+            assert!(!changed.contains(&101));
+        }
+        let mut dirty_source = source.clone();
+        let Control::Table(table) = &mut dirty_source[101].controls[0] else {
+            unreachable!()
+        };
+        table.dirty = true;
+        if let Some((_, changed)) =
+            engine.project_native_equation_tables(&dirty_source, &widths, &core.styles, profile)
+        {
+            assert!(
+                !changed.contains(&101),
+                "actual source edits remain ineligible"
+            );
+        }
+        let mut unavailable = source.clone();
+        let Control::Table(table) = &mut unavailable[101].controls[0] else {
+            unreachable!()
+        };
+        for control in &mut table.cells[0].paragraphs[7].controls {
+            if let Control::Equation(eq) = control {
+                eq.font_name = "Missing source face".into();
+                break;
+            }
+        }
+        if let Some((_, changed)) =
+            engine.project_native_equation_tables(&unavailable, &widths, &core.styles, profile)
+        {
+            assert!(!changed.contains(&101));
+        }
+        assert_eq!(
+            cell(
+                &core.render_normalization.sections[0]
+                    .as_ref()
+                    .expect("public load projects")
+                    .paragraphs[101]
+            ),
+            vec![0, 43, 83]
+        );
+        assert_eq!(
+            body_starts(
+                &core.render_normalization.sections[0]
+                    .as_ref()
+                    .unwrap()
+                    .paragraphs[118]
+            ),
+            native_body
+        );
+        core.render_page_svg_native(3)
+            .expect("public projected render succeeds");
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs),
+            source_before
+        );
+        core.insert_text_native(0, 0, 0, " ")
+            .expect("unrelated edit succeeds");
+        core.paginate();
+        core.refresh_layout_native();
+        assert_cell_paint(&core);
+        assert_eq!(
+            cell(
+                &core.render_normalization.sections[0]
+                    .as_ref()
+                    .expect("untouched table keeps projection")
+                    .paragraphs[101]
+            ),
+            vec![0, 43, 83]
+        );
+        assert_eq!(
+            cell(&core.document.sections[0].paragraphs[101]),
+            vec![0, 43, 80, 121]
+        );
+        assert_eq!(
+            body_starts(
+                &core.render_normalization.sections[0]
+                    .as_ref()
+                    .unwrap()
+                    .paragraphs[118]
+            ),
+            native_body
+        );
+        assert_eq!(
+            body_starts(&core.document.sections[0].paragraphs[118]),
+            vec![0, 44, 93, 127, 169, 218]
+        );
+        let source_after_edit = format!("{:?}", core.document.sections[0].paragraphs);
+        let saved = core.export_hwpx_native().expect("source saves");
+        assert_cell_paint(&core);
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs),
+            source_after_edit
+        );
+        let mut reopened = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            &saved,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("source reopens");
+        assert!(reopened.document.layout_profile().hwp5_origin_hwpx());
+        reopened.refresh_layout_native();
+        assert_cell_paint(&reopened);
+        assert_eq!(
+            cell(&reopened.document.sections[0].paragraphs[101]),
+            vec![0, 43, 80, 121]
+        );
+        assert_eq!(
+            cell(
+                &reopened.render_normalization.sections[0]
+                    .as_ref()
+                    .expect("projection persists")
+                    .paragraphs[101]
+            ),
+            vec![0, 43, 83]
+        );
+        assert_eq!(
+            body_starts(
+                &reopened.render_normalization.sections[0]
+                    .as_ref()
+                    .unwrap()
+                    .paragraphs[118]
+            ),
+            native_body
+        );
+        assert_eq!(
+            body_starts(&reopened.document.sections[0].paragraphs[118]),
+            vec![0, 44, 93, 127, 169, 218]
+        );
+        reopened
+            .render_page_svg_native(3)
+            .expect("reopened projected render succeeds");
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
+    fn native_equation_wrap_pair_preserves_source_and_following_exclusion() {
+        let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") else {
+            return;
+        };
+        let mut paths = crate::renderer::font_paths::env_font_paths();
+        paths.push(std::path::PathBuf::from(font));
+        crate::renderer::font_paths::register_font_face_availability(&paths);
+        let mut core = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../samples/exam_science.hwp"),
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("original science loads");
+        let _shaping = core.resolved_shaping_font_scope();
+        let _measure = crate::renderer::layout::enter_measure_font_paths(paths);
+        fn assert_painted_source_geometry(core: &crate::document_core::DocumentCore) {
+            use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+            fn visit(
+                node: &RenderNode,
+                lines: &mut Vec<(usize, usize, f64, f64, f64)>,
+                table: &mut Option<f64>,
+            ) {
+                match &node.node_type {
+                    RenderNodeType::TextLine(line)
+                        if line.section_index == Some(0)
+                            && line.para_index.is_some_and(|i| i == 21 || i == 22) =>
+                    {
+                        lines.push((
+                            line.para_index.unwrap(),
+                            line.line_index.unwrap() as usize,
+                            node.bbox.y,
+                            node.bbox.height,
+                            line.baseline,
+                        ));
+                    }
+                    RenderNodeType::Table(t)
+                        if t.section_index == Some(0)
+                            && t.para_index == Some(23)
+                            && t.control_index == Some(0) =>
+                    {
+                        *table = Some(node.bbox.y)
+                    }
+                    _ => {}
+                }
+                for child in &node.children {
+                    visit(child, lines, table);
+                }
+            }
+            let tree = core
+                .build_page_render_tree(0)
+                .expect("actual wrapped page paint");
+            let (mut lines, mut table) = (Vec::new(), None);
+            visit(&tree.root, &mut lines, &mut table);
+            lines.sort_by_key(|line| (line.0, line.1));
+            assert_eq!(lines.len(), 7);
+            let projected = core.render_normalization.sections[0].as_ref().unwrap();
+            let first_y = lines[0].2;
+            let first_vpos = projected.paragraphs[21].line_segs[0].vertical_pos;
+            for (pi, li, y, height, baseline) in lines {
+                let seg = &projected.paragraphs[pi].line_segs[li];
+                let expected_y = first_y + hwpunit_to_px(seg.vertical_pos - first_vpos, 96.0);
+                let expected_height = hwpunit_to_px(seg.text_height, 96.0);
+                let max_font = projected.composed[pi].lines[li]
+                    .runs
+                    .iter()
+                    .map(|run| run.text_style(&core.styles).font_size)
+                    .fold(0.0, f64::max);
+                assert!(
+                    (y - expected_y).abs() < 0.01,
+                    "painted line {pi}/{li}: {y} != {expected_y}"
+                );
+                assert!(
+                    (height - expected_height).abs() < 0.01,
+                    "authored CENTER height {pi}/{li}: {height} != {expected_height}"
+                );
+                assert!(
+                    (baseline - (expected_height / 2.0 + max_font * 0.35)).abs() < 0.01,
+                    "authored CENTER baseline {pi}/{li}: {baseline}"
+                );
+            }
+            let expected_table = first_y
+                + hwpunit_to_px(
+                    projected.paragraphs[23].line_segs[0].vertical_pos - first_vpos,
+                    96.0,
+                );
+            assert!(
+                (table.expect("following table paint") - expected_table).abs() < 0.01,
+                "paint and projected carry must place the following table together"
+            );
+        }
+        let engine = TypesetEngine::with_default_dpi();
+        let source = &core.document.sections[0].paragraphs;
+        let before = format!("{source:?}");
+        let widths: Vec<_> = (0..source.len())
+            .map(|i| core.body_reflow_width(0, i))
+            .collect();
+        let starts = |p: &Paragraph| p.line_segs.iter().map(|s| s.text_start).collect::<Vec<_>>();
+        let native_host = vec![0, 36, 81, 126, 162];
+        let native_next = vec![0, 20];
+        assert_eq!(starts(&source[21]), vec![0, 36, 81, 122, 152, 182]);
+        assert_eq!(starts(&source[22]), vec![0, 36]);
+        let ((host, delta), (next, next_delta)) = engine
+            .project_native_equation_wrap_pair(21, source, &widths, &core.styles)
+            .expect("one source picture proves both paragraphs");
+        assert_eq!(starts(&host), native_host);
+        assert_eq!(starts(&next), native_next);
+        assert_eq!((delta, next_delta), (-1410, 0));
+        assert_eq!(
+            host.line_segs
+                .iter()
+                .map(|s| (s.vertical_pos, s.segment_width))
+                .collect::<Vec<_>>(),
+            vec![
+                (31195, 19592),
+                (33085, 19592),
+                (34695, 19592),
+                (36505, 19592),
+                (38315, 19592)
+            ]
+        );
+        assert_eq!(
+            host.line_segs
+                .iter()
+                .map(|s| s.text_height)
+                .collect::<Vec<_>>(),
+            vec![1350, 1150, 1350, 1350, 1350]
+        );
+        assert_eq!(
+            next.line_segs
+                .iter()
+                .map(|s| (s.column_start, s.segment_width))
+                .collect::<Vec<_>>(),
+            vec![(1130, 18462), (1130, 30562)]
+        );
+        // Neither the cached narrowed width nor an unproved next frame is accepted.
+        let mut double_narrowed = widths.clone();
+        double_narrowed[21] = hwpunit_to_px(19592, engine.dpi);
+        assert!(engine
+            .project_native_equation_wrap_pair(21, source, &double_narrowed, &core.styles)
+            .is_none());
+        for change in 0..5 {
+            let mut unsupported = source.clone();
+            match change {
+                0 => unsupported[22].column_type = ColumnBreakType::Column,
+                1 => unsupported[21].line_segs[0].baseline_distance += 1,
+                2 => {
+                    for c in &mut unsupported[21].controls {
+                        if let Control::Picture(p) = c {
+                            p.common.width += 4;
+                        }
+                    }
+                }
+                3 => {
+                    for c in &mut unsupported[21].controls {
+                        if let Control::Picture(p) = c {
+                            p.common.vert_align = crate::model::shape::VertAlign::Center;
+                        }
+                    }
+                }
+                _ => {
+                    for c in &mut unsupported[21].controls {
+                        if let Control::Equation(eq) = c {
+                            eq.font_name = "Missing source face".into();
+                            break;
+                        }
+                    }
+                }
+            }
+            assert!(
+                engine
+                    .project_native_equation_wrap_pair(21, &unsupported, &widths, &core.styles)
+                    .is_none(),
+                "change={change}"
+            );
+        }
+        let (projected, changed) = engine
+            .project_native_equation_tables(
+                source,
+                &widths,
+                &core.styles,
+                core.document.layout_profile(),
+            )
+            .unwrap();
+        assert!(changed.contains(&21) && changed.contains(&22));
+        assert_eq!(projected[22].line_segs[0].vertical_pos, 40625);
+        assert_eq!(projected[23].line_segs[0].vertical_pos, 44345);
+        assert!(engine
+            .project_native_equation_tables(
+                &projected,
+                &widths,
+                &core.styles,
+                core.document.layout_profile()
+            )
+            .is_none());
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs),
+            before
+        );
+        for index in [21, 22] {
+            assert_eq!(
+                starts(
+                    &core.render_normalization.sections[0]
+                        .as_ref()
+                        .unwrap()
+                        .paragraphs[index]
+                ),
+                if index == 21 {
+                    native_host.clone()
+                } else {
+                    native_next.clone()
+                }
+            );
+        }
+        core.render_page_svg_native(0)
+            .expect("public wrapped page renders");
+        assert_painted_source_geometry(&core);
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs),
+            before
+        );
+        core.insert_text_native(0, 0, 0, " ")
+            .expect("unrelated edit");
+        core.paginate();
+        for (index, expected, raw) in [
+            (21, &native_host, vec![0, 36, 81, 122, 152, 182]),
+            (22, &native_next, vec![0, 36]),
+        ] {
+            assert_eq!(
+                starts(
+                    &core.render_normalization.sections[0]
+                        .as_ref()
+                        .unwrap()
+                        .paragraphs[index]
+                ),
+                *expected
+            );
+            assert_eq!(starts(&core.document.sections[0].paragraphs[index]), raw);
+        }
+        assert_painted_source_geometry(&core);
+        let after_edit = format!("{:?}", core.document.sections[0].paragraphs);
+        let saved = core.export_hwpx_native().expect("source saves");
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs),
+            after_edit
+        );
+        let mut reopened = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            &saved,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("source reopens");
+        assert!(reopened.document.layout_profile().hwp5_origin_hwpx());
+        for (index, expected, raw) in [
+            (21, &native_host, vec![0, 36, 81, 122, 152, 182]),
+            (22, &native_next, vec![0, 36]),
+        ] {
+            assert_eq!(
+                starts(
+                    &reopened.render_normalization.sections[0]
+                        .as_ref()
+                        .unwrap()
+                        .paragraphs[index]
+                ),
+                *expected
+            );
+            assert_eq!(
+                starts(&reopened.document.sections[0].paragraphs[index]),
+                raw
+            );
+        }
+        reopened
+            .render_page_svg_native(0)
+            .expect("reopened wrapped page renders");
+        assert_painted_source_geometry(&reopened);
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
+    fn native_inline_table_body_breaks_match_native_and_preserve_source() {
+        let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") else {
+            return;
+        };
+        let mut paths = crate::renderer::font_paths::env_font_paths();
+        paths.push(std::path::PathBuf::from(font));
+        crate::renderer::font_paths::register_font_face_availability(&paths);
+        let mut core = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../samples/exam_science.hwp"),
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("original science loads");
+        let _shaping = core.resolved_shaping_font_scope();
+        let _measure = crate::renderer::layout::enter_measure_font_paths(paths);
+        let starts = |p: &Paragraph| p.line_segs.iter().map(|s| s.text_start).collect::<Vec<_>>();
+        let source = &core.document.sections[0].paragraphs[110];
+        let before = format!("{source:?}");
+        assert_eq!(starts(source), vec![0, 39, 105]);
+        let projected = TypesetEngine::with_default_dpi()
+            .project_native_inline_table_equation_paragraph(
+                source,
+                core.body_reflow_width(0, 110),
+                &core.styles,
+            )
+            .expect("source-backed table body advances its native break");
+        assert_eq!(starts(&projected.0), vec![0, 39, 107]);
+        assert_eq!(projected.1, 0, "stable owner keeps every vertical metric");
+        let check = |core: &crate::document_core::DocumentCore| {
+            use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+            fn visit(
+                node: &RenderNode,
+                owner: Option<(usize, u32)>,
+                controls: &mut Vec<(usize, usize, u32)>,
+                particle: &mut String,
+                table_y: &mut Vec<f64>,
+                host_y: &mut Vec<f64>,
+            ) {
+                if matches!(&node.node_type, RenderNodeType::TextLine(line)
+                    if line.section_index==Some(0) && line.para_index==Some(118) && line.line_index==Some(4))
+                {
+                    host_y.push(node.bbox.y);
+                }
+                let owner = match &node.node_type {
+                    RenderNodeType::TextLine(line) if line.section_index == Some(0) => {
+                        line.para_index.zip(line.line_index)
+                    }
+                    _ => owner,
+                };
+                match &node.node_type {
+                    RenderNodeType::Equation(eq) if eq.cell_context.is_none() => {
+                        if let (Some((pi, li)), Some(ci)) = (owner, eq.control_index) {
+                            if (pi == 110 && ci == 2) || (pi == 118 && ci == 8) {
+                                controls.push((pi, ci, li));
+                            }
+                        }
+                    }
+                    RenderNodeType::Table(t)
+                        if t.section_index == Some(0)
+                            && t.para_index == Some(118)
+                            && t.control_index == Some(7) =>
+                    {
+                        table_y.push(node.bbox.y);
+                    }
+                    RenderNodeType::TextRun(run)
+                        if owner == Some((110, 1)) && run.cell_context.is_none() =>
+                    {
+                        particle.push_str(&run.text)
+                    }
+                    _ => {}
+                }
+                for child in &node.children {
+                    visit(child, owner, controls, particle, table_y, host_y);
+                }
+            }
+            let tree = core
+                .build_page_render_tree(3)
+                .expect("source raw owners paint");
+            let (mut controls, mut particle) = (Vec::new(), String::new());
+            let (mut table_y, mut host_y) = (Vec::new(), Vec::new());
+            visit(
+                &tree.root,
+                None,
+                &mut controls,
+                &mut particle,
+                &mut table_y,
+                &mut host_y,
+            );
+            controls.sort();
+            assert_eq!(controls, vec![(110, 2, 0), (118, 8, 5)]);
+            let normalized = core.render_normalization.sections[0].as_ref().unwrap();
+            for pi in [110, 118] {
+                assert!(normalized.composed[pi].projected_tac_line_owners.is_some());
+            }
+            for pi in 0..21 {
+                assert!(
+                    normalized.composed[pi].projected_tac_line_owners.is_none(),
+                    "unprojected body cache keeps legacy ownership: {pi}"
+                );
+            }
+            let projected = &normalized.paragraphs[118];
+            assert_eq!(
+                crate::renderer::composer::inline_table_host_line_index(projected, 7),
+                Some(4)
+            );
+            let Control::Table(table) = &projected.controls[7] else {
+                panic!("source inline table");
+            };
+            assert_eq!(table.outer_margin_top, 0);
+            assert_eq!(table.outer_margin_bottom, 0);
+            assert_eq!(
+                projected.line_segs[4].text_height,
+                table.common.height as i32
+            );
+            assert_eq!((table_y.len(), host_y.len()), (1, 1));
+            // layout_table attaches to the column; its inline owner records the same top.
+            let (_, registered_y) = tree
+                .get_inline_shape_position(0, 118, 7, None)
+                .expect("inline table anchor");
+            assert!(
+                (table_y[0] - host_y[0]).abs() < 0.01,
+                "source owner line top must place table"
+            );
+            assert!(
+                (table_y[0] - registered_y).abs() < 0.01,
+                "paint and inline anchor must agree"
+            );
+            assert!(
+                particle.trim_start().starts_with("는"),
+                "HA stays on prior line; particle starts the next: {particle}"
+            );
+            assert_eq!(
+                starts(&core.document.sections[0].paragraphs[110]),
+                vec![0, 39, 105]
+            );
+            assert_eq!(
+                starts(
+                    &core.render_normalization.sections[0]
+                        .as_ref()
+                        .unwrap()
+                        .paragraphs[110]
+                ),
+                vec![0, 39, 107]
+            );
+        };
+        check(&core);
+        core.render_page_svg_native(3).expect("native body renders");
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs[110]),
+            before
+        );
+        core.insert_text_native(0, 0, 0, " ")
+            .expect("unrelated edit");
+        core.paginate();
+        check(&core);
+        let saved = core.export_hwpx_native().expect("source saves");
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs[110]),
+            before
+        );
+        let reopened = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            &saved,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("source reopens");
+        check(&reopened);
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
+    fn native_circled_hangul_break_preserves_authored_source_and_reopen() {
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+        let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") else {
+            return;
+        };
+        let mut paths = crate::renderer::font_paths::env_font_paths();
+        paths.push(font.into());
+        if let Some(hft) = std::env::var_os("RHWP_HANCOM_HFT_TEST_DIR") {
+            paths.push(hft.into());
+        }
+        crate::renderer::font_paths::register_font_face_availability(&paths);
+        let bytes = include_bytes!("../../samples/exam_science.hwp");
+        let parsed = crate::parser::parse_hwp(bytes).expect("authored source parses");
+        let source = parsed.sections[0].paragraphs[34].clone();
+        let mut core = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            bytes,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("original source loads");
+        let _shaping = core.resolved_shaping_font_scope();
+        let _measure = crate::renderer::layout::enter_measure_font_paths(paths);
+        let before = format!("{:?}", core.document.sections[0].paragraphs[34]);
+        let starts = |p: &Paragraph| p.line_segs.iter().map(|s| s.text_start).collect::<Vec<_>>();
+        assert_eq!(
+            starts(&source),
+            [0, 43],
+            "raw parser retains the authored cache"
+        );
+        assert_eq!(
+            starts(&core.document.sections[0].paragraphs[34]),
+            [0, 44],
+            "existing load refresh installs the font-proved native starts"
+        );
+        let mut fresh = source.clone();
+        fresh.line_segs.clear();
+        crate::document_core::DocumentCore::reflow_cell_lines(
+            &mut fresh,
+            core.body_reflow_width(0, 34),
+            false,
+            &core.styles,
+            96.0,
+        );
+        assert_eq!(
+            starts(&fresh),
+            [0, 44],
+            "actual formatter matches genuine native break"
+        );
+        assert!(fresh
+            .line_segs
+            .iter()
+            .zip(&source.line_segs)
+            .all(|(a, b)| a.column_start == b.column_start && a.segment_width == b.segment_width));
+        let check = |core: &crate::document_core::DocumentCore| {
+            let loaded = &core.document.sections[0].paragraphs[34];
+            assert_eq!(starts(loaded), [0, 44]);
+            if core.document.layout_profile().native_hwp5_layout() {
+                let origin = loaded
+                    .cached_equation_line_origin
+                    .as_ref()
+                    .expect("existing source-cache refresh retains the original lines");
+                assert_eq!(origin.installed_starts, [0, 44]);
+                assert_eq!(
+                    origin
+                        .source_lines
+                        .iter()
+                        .map(crate::renderer::float_placement::tac_line_fields)
+                        .collect::<Vec<_>>(),
+                    source
+                        .line_segs
+                        .iter()
+                        .map(crate::renderer::float_placement::tac_line_fields)
+                        .collect::<Vec<_>>()
+                );
+            }
+            let normalized = core.render_normalization.sections[0]
+                .as_ref()
+                .map_or(loaded, |section| &section.paragraphs[34]);
+            assert_eq!(starts(normalized), [0, 44]);
+            for (line, saved) in normalized.line_segs.iter().zip(&source.line_segs) {
+                assert_eq!(
+                    crate::renderer::float_placement::tac_line_fields(line)[1..],
+                    crate::renderer::float_placement::tac_line_fields(saved)[1..]
+                );
+            }
+            fn collect(
+                node: &RenderNode,
+                owner: Option<u32>,
+                text: &mut std::collections::BTreeMap<u32, String>,
+                top: &mut std::collections::BTreeMap<u32, f64>,
+                circle_families: &mut Vec<String>,
+            ) {
+                let owner = match &node.node_type {
+                    RenderNodeType::TextLine(line)
+                        if line.section_index == Some(0) && line.para_index == Some(34) =>
+                    {
+                        if let Some(index) = line.line_index {
+                            top.insert(index, node.bbox.y);
+                        }
+                        line.line_index
+                    }
+                    RenderNodeType::TextLine(_) => None,
+                    _ => owner,
+                };
+                if let (Some(index), RenderNodeType::TextRun(run)) = (owner, &node.node_type) {
+                    if run.section_index == Some(0)
+                        && run.para_index == Some(34)
+                        && run.cell_context.is_none()
+                    {
+                        text.entry(index).or_default().push_str(&run.text);
+                        if run.text.contains(['㉠', '㉡']) {
+                            circle_families.push(run.style.font_family.clone());
+                        }
+                    }
+                }
+                for child in &node.children {
+                    collect(child, owner, text, top, circle_families);
+                }
+            }
+            let tree = core
+                .build_page_render_tree(1)
+                .expect("actual paragraph paints");
+            let mut text = std::collections::BTreeMap::new();
+            let mut tops = std::collections::BTreeMap::new();
+            let mut families = Vec::new();
+            collect(&tree.root, None, &mut text, &mut tops, &mut families);
+            let split = source.utf16_pos_to_char_idx(44);
+            let first = source.text.chars().take(split).collect::<String>();
+            let last = source.text.chars().skip(split).collect::<String>();
+            assert_eq!(text.get(&0).map(String::as_str), Some(first.as_str()));
+            assert_eq!(text.get(&1).map(String::as_str), Some(last.as_str()));
+            assert!(first.ends_with('㉠') && last.starts_with('과'));
+            assert!(!families.is_empty());
+            let symbol = core.styles.char_styles[10].font_family_for_lang(5);
+            assert!(families.iter().all(|family| family == symbol));
+            let source_step = source.line_segs[1].vertical_pos - source.line_segs[0].vertical_pos;
+            assert!((tops[&1] - tops[&0] - hwpunit_to_px(source_step, 96.0)).abs() < 0.01);
+            assert_eq!(starts(&core.document.sections[0].paragraphs[34]), [0, 44]);
+        };
+        check(&core);
+        check(&core);
+        assert!(
+            TypesetEngine::with_default_dpi()
+                .project_native_equation_line_starts(
+                    std::slice::from_ref(&core.document.sections[0].paragraphs[34]),
+                    &[core.body_reflow_width(0, 34)],
+                    &core.styles,
+                )
+                .is_none(),
+            "already-refreshed native starts need no second projection"
+        );
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs[34]),
+            before
+        );
+        core.insert_text_native(0, 0, 0, " ")
+            .expect("unrelated edit");
+        core.paginate();
+        check(&core);
+        let saved = core.export_hwpx_native().expect("public save");
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs[34]),
+            before
+        );
+        let reopened = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            &saved,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("certified source reopens");
+        assert!(reopened.document.layout_profile().hwp5_origin_hwpx());
+        check(&reopened);
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
+    fn native_square_equation_break_projection_preserves_source_and_paint() {
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+        let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") else {
+            return;
+        };
+        let mut paths = crate::renderer::font_paths::env_font_paths();
+        paths.push(font.into());
+        if let Some(hft) = std::env::var_os("RHWP_HANCOM_HFT_TEST_DIR") {
+            paths.push(hft.into());
+        }
+        crate::renderer::font_paths::register_font_face_availability(&paths);
+        let mut core = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../samples/exam_science.hwp"),
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
+        let _shaping = core.resolved_shaping_font_scope();
+        let _measure = crate::renderer::layout::enter_measure_font_paths(paths);
+        let source = core.document.sections[0].paragraphs[60].clone();
+        let raw = format!("{source:?}");
+        let mixed_source = core.document.sections[0].paragraphs[37].clone();
+        let mixed_raw = format!("{mixed_source:?}");
+        let starts = |p: &Paragraph| p.line_segs.iter().map(|s| s.text_start).collect::<Vec<_>>();
+        assert_eq!(starts(&source), vec![0, 43, 75, 109]);
+        let check = |core: &crate::document_core::DocumentCore| {
+            let projected = &core.render_normalization.sections[0]
+                .as_ref()
+                .unwrap()
+                .paragraphs[60];
+            assert_eq!(starts(projected), vec![0, 43, 75, 110]);
+            for (a, b) in projected.line_segs.iter().zip(&source.line_segs) {
+                assert_eq!(
+                    crate::renderer::float_placement::tac_line_fields(a)[1..],
+                    crate::renderer::float_placement::tac_line_fields(b)[1..]
+                );
+            }
+            fn collect(
+                node: &RenderNode,
+                line: Option<u32>,
+                out: &mut std::collections::BTreeMap<u32, String>,
+                para_index: usize,
+                tops: &mut std::collections::BTreeMap<u32, f64>,
+            ) {
+                let line = match &node.node_type {
+                    RenderNodeType::TextLine(t)
+                        if t.section_index == Some(0) && t.para_index == Some(para_index) =>
+                    {
+                        t.line_index
+                    }
+                    RenderNodeType::TextLine(_) => None,
+                    _ => line,
+                };
+                if let (RenderNodeType::TextLine(_), Some(line)) = (&node.node_type, line) {
+                    tops.insert(line, node.bbox.y);
+                }
+                if let (RenderNodeType::TextRun(run), Some(line)) = (&node.node_type, line) {
+                    if run.cell_context.is_none() {
+                        out.entry(line).or_default().push_str(&run.text);
+                    }
+                }
+                for child in &node.children {
+                    collect(child, line, out, para_index, tops);
+                }
+            }
+            let tree = core.build_page_render_tree(1).unwrap();
+            let mut paint = std::collections::BTreeMap::new();
+            let mut tops = std::collections::BTreeMap::new();
+            collect(&tree.root, None, &mut paint, 60, &mut tops);
+            let a = source.utf16_pos_to_char_idx(75);
+            let b = source.utf16_pos_to_char_idx(110);
+            let middle = source.text.chars().skip(a).take(b - a).collect::<String>();
+            let tail = source.text.chars().skip(b).collect::<String>();
+            assert_eq!(paint.get(&2).map(String::as_str), Some(middle.as_str()));
+            assert_eq!(paint.get(&3).map(String::as_str), Some(tail.as_str()));
+            assert_eq!(
+                starts(&core.document.sections[0].paragraphs[60]),
+                starts(&source)
+            );
+            let mixed = &core.render_normalization.sections[0]
+                .as_ref()
+                .unwrap()
+                .paragraphs[37];
+            let native = [0, 40, 66, 83, 99, 148, 180, 243];
+            assert_eq!(starts(mixed), native);
+            for (a, b) in mixed.line_segs.iter().zip(&mixed_source.line_segs) {
+                assert_eq!(
+                    crate::renderer::float_placement::tac_line_fields(a)[1..],
+                    crate::renderer::float_placement::tac_line_fields(b)[1..]
+                );
+            }
+            let mut painted = std::collections::BTreeMap::new();
+            let mut mixed_tops = std::collections::BTreeMap::new();
+            collect(&tree.root, None, &mut painted, 37, &mut mixed_tops);
+            for li in [6, 7] {
+                let start = mixed_source.utf16_pos_to_char_idx(native[li]);
+                let finish = if li + 1 < native.len() {
+                    mixed_source.utf16_pos_to_char_idx(native[li + 1])
+                } else {
+                    mixed_source.text.chars().count()
+                };
+                let expected = mixed_source
+                    .text
+                    .chars()
+                    .skip(start)
+                    .take(finish - start)
+                    .collect::<String>();
+                assert_eq!(
+                    painted.get(&(li as u32)).map(String::as_str),
+                    Some(expected.as_str())
+                );
+                let source_offset = mixed_source.line_segs[li].vertical_pos
+                    - mixed_source.line_segs[0].vertical_pos;
+                assert!(
+                    (mixed_tops[&(li as u32)]
+                        - mixed_tops[&0]
+                        - hwpunit_to_px(source_offset, 96.0))
+                    .abs()
+                        < 0.01
+                );
+            }
+            assert_eq!(
+                starts(&core.document.sections[0].paragraphs[37]),
+                starts(&mixed_source)
+            );
+        };
+        check(&core);
+        let engine = TypesetEngine::with_default_dpi();
+        let width = core.body_reflow_width(0, 60);
+        let projected = &core.render_normalization.sections[0]
+            .as_ref()
+            .unwrap()
+            .paragraphs[60];
+        assert!(engine
+            .project_native_equation_line_starts(
+                std::slice::from_ref(projected),
+                &[width],
+                &core.styles
+            )
+            .is_none());
+        assert!(
+            engine
+                .project_native_equation_line_starts_in_context(
+                    std::slice::from_ref(&source),
+                    &[width],
+                    &core.styles,
+                    false
+                )
+                .is_none(),
+            "cell scope excluded"
+        );
+        for case in [
+            "double-narrowed",
+            "offset",
+            "vertical-margin",
+            "width",
+            "missing-face",
+        ] {
+            let mut excluded = source.clone();
+            if case == "missing-face" {
+                if let Some(Control::Equation(eq)) = excluded
+                    .controls
+                    .iter_mut()
+                    .find(|c| matches!(c, Control::Equation(_)))
+                {
+                    eq.font_name = "Missing source face".into();
+                }
+            } else {
+                let Control::Picture(p) = &mut excluded.controls[0] else {
+                    unreachable!()
+                };
+                match case {
+                    "offset" => p.common.horizontal_offset += 1,
+                    "vertical-margin" => p.common.margin.top += 1,
+                    "width" => p.common.width += 4,
+                    _ => {}
+                }
+            }
+            let w = if case == "double-narrowed" {
+                crate::renderer::hwpunit_to_px(source.line_segs[0].segment_width, 96.0)
+            } else {
+                width
+            };
+            assert!(
+                engine
+                    .project_native_equation_line_starts(&[excluded], &[w], &core.styles)
+                    .is_none(),
+                "{case}"
+            );
+        }
+        let mut wrong_extent = mixed_source.clone();
+        wrong_extent.line_segs[6].segment_width = wrong_extent.line_segs[0].segment_width;
+        assert!(
+            engine
+                .project_native_equation_line_starts(
+                    &[wrong_extent],
+                    &[core.body_reflow_width(0, 37)],
+                    &core.styles
+                )
+                .is_none(),
+            "narrowing cannot persist after source picture bottom"
+        );
+        core.render_page_svg_native(1).unwrap();
+        check(&core);
+        core.insert_text_native(0, 0, 0, " ").unwrap();
+        core.paginate();
+        check(&core);
+        let saved = core.export_hwpx_native().unwrap();
+        check(&core);
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs[60]),
+            raw
+        );
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs[37]),
+            mixed_raw
+        );
+        let reopened = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            &saved,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
+        check(&reopened);
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
+    fn native_equation_cell_break_projection_preserves_source_and_paint() {
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+        let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") else {
+            return;
+        };
+        let mut paths = crate::renderer::font_paths::env_font_paths();
+        paths.push(font.into());
+        if let Some(hft) = std::env::var_os("RHWP_HANCOM_HFT_TEST_DIR") {
+            paths.push(hft.into());
+        }
+        crate::renderer::font_paths::register_font_face_availability(&paths);
+        let mut core = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../samples/exam_science.hwp"),
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
+        let _shaping = core.resolved_shaping_font_scope();
+        let _measure = crate::renderer::layout::enter_measure_font_paths(paths);
+        let table = |p: &Paragraph| match &p.controls[0] {
+            Control::Table(t) => t.as_ref().clone(),
+            _ => panic!("source table"),
+        };
+        let source = core.document.sections[0].paragraphs[48].clone();
+        let raw = format!("{source:?}");
+        let source_table = table(&source);
+        let starts = |p: &Paragraph| p.line_segs.iter().map(|s| s.text_start).collect::<Vec<_>>();
+        assert_eq!(starts(&source_table.cells[0].paragraphs[2]), vec![0, 56]);
+        assert_eq!(starts(&source_table.cells[0].paragraphs[4]), vec![0, 66]);
+        let check = |core: &crate::document_core::DocumentCore| {
+            let normalized = core.render_normalization.sections[0].as_ref().unwrap();
+            let projected = table(&normalized.paragraphs[48]);
+            assert_eq!(
+                (projected.common.width, projected.common.height),
+                (source_table.common.width, source_table.common.height)
+            );
+            assert_eq!(projected.get_row_heights(), source_table.get_row_heights());
+            assert_eq!(projected.row_sizes, source_table.row_sizes);
+            for (pi, saved) in source_table.cells[0].paragraphs.iter().enumerate() {
+                let after = &projected.cells[0].paragraphs[pi];
+                let expected = match pi {
+                    2 => vec![0, 57],
+                    4 => vec![0, 68],
+                    _ => starts(saved),
+                };
+                assert_eq!(starts(after), expected, "cell paragraph {pi}");
+                assert_eq!(after.line_segs.len(), saved.line_segs.len());
+                for (a, b) in after.line_segs.iter().zip(&saved.line_segs) {
+                    assert_eq!(
+                        crate::renderer::float_placement::tac_line_fields(a)[1..],
+                        crate::renderer::float_placement::tac_line_fields(b)[1..]
+                    );
+                }
+            }
+            fn collect(
+                node: &RenderNode,
+                line: Option<u32>,
+                output: &mut std::collections::BTreeMap<(usize, u32), String>,
+            ) {
+                let line = if let RenderNodeType::TextLine(t) = &node.node_type {
+                    t.line_index
+                } else {
+                    line
+                };
+                if let RenderNodeType::TextRun(run) = &node.node_type {
+                    if let (Some(ctx), Some(line)) = (&run.cell_context, line) {
+                        if ctx.parent_para_index == 48 && ctx.path.len() == 1 {
+                            let path = ctx.path[0];
+                            if path.control_index == 0
+                                && path.cell_index == 0
+                                && [2, 4].contains(&path.cell_para_index)
+                            {
+                                output
+                                    .entry((path.cell_para_index, line))
+                                    .or_default()
+                                    .push_str(&run.text);
+                            }
+                        }
+                    }
+                }
+                for child in &node.children {
+                    collect(child, line, output);
+                }
+            }
+            let tree = core.build_page_render_tree(1).unwrap();
+            let mut painted = std::collections::BTreeMap::new();
+            collect(&tree.root, None, &mut painted);
+            for (pi, boundary) in [(2, 57), (4, 68)] {
+                let p = &source_table.cells[0].paragraphs[pi];
+                let scalar = p.utf16_pos_to_char_idx(boundary);
+                let first = p.text.chars().take(scalar).collect::<String>();
+                let second = p.text.chars().skip(scalar).collect::<String>();
+                assert_eq!(
+                    painted.get(&(pi, 0)).map(String::as_str),
+                    Some(first.as_str())
+                );
+                assert_eq!(
+                    painted.get(&(pi, 1)).map(String::as_str),
+                    Some(second.as_str())
+                );
+            }
+            let retained = table(&core.document.sections[0].paragraphs[48]);
+            for pi in [2, 4] {
+                assert_eq!(
+                    starts(&retained.cells[0].paragraphs[pi]),
+                    starts(&source_table.cells[0].paragraphs[pi])
+                );
+            }
+        };
+        check(&core);
+        let engine = TypesetEngine::with_default_dpi();
+        let width = core.body_reflow_width(0, 48);
+        let normalized = core.render_normalization.sections[0].as_ref().unwrap();
+        assert!(
+            engine
+                .project_native_equation_line_starts(
+                    &[normalized.paragraphs[48].clone()],
+                    &[width],
+                    &core.styles
+                )
+                .is_none(),
+            "idempotent"
+        );
+        let unrelated = core.document.sections[0].paragraphs[101].clone();
+        assert!(
+            engine
+                .project_native_equation_line_starts(
+                    &[unrelated],
+                    &[core.body_reflow_width(0, 101)],
+                    &core.styles,
+                )
+                .is_none(),
+            "a cell needing fewer lines remains on the separate height-projection route"
+        );
+        let mut margin_styles = core.styles.clone();
+        let shape = source_table.cells[0].paragraphs[2].para_shape_id as usize;
+        margin_styles.para_styles[shape].margin_left += 1.0;
+        assert!(
+            engine
+                .project_native_equation_line_starts(
+                    std::slice::from_ref(&source),
+                    &[width],
+                    &margin_styles,
+                )
+                .is_none(),
+            "changed per-paragraph inner width cannot reuse saved geometry"
+        );
+        let mut negative_parent = core.styles.clone();
+        negative_parent.para_styles[source.para_shape_id as usize].margin_left = -1.0;
+        assert!(
+            engine
+                .project_native_equation_line_starts(
+                    std::slice::from_ref(&source),
+                    &[width + 1.0],
+                    &negative_parent,
+                )
+                .is_none(),
+            "negative container margins cannot certify an unscaled table"
+        );
+        for nested in [false, true] {
+            let mut doc = core.document.clone();
+            let mut excluded = source.clone();
+            let Control::Table(t) = &mut excluded.controls[0] else {
+                unreachable!()
+            };
+            if nested {
+                let mut relative = t.as_ref().clone();
+                relative.common.treat_as_char = false;
+                relative.common.width_criterion = crate::model::shape::SizeCriterion::Para;
+                relative.common.width = t.cells[0].width / 2;
+                relative.attr &= !0x08;
+                relative.raw_table_record_attr &= !0x08;
+                t.cells[0].paragraphs = vec![Paragraph {
+                    controls: vec![Control::Table(Box::new(relative))],
+                    ..Default::default()
+                }];
+            } else {
+                let pd = &doc.sections[0].section_def.page_def;
+                t.common.width = pd.width - pd.margin_left - pd.margin_right + 100;
+            }
+            doc.sections[0].paragraphs[48] = excluded;
+            let overlay =
+                crate::renderer::render_normalization::RenderNormalizationOverlay::from_document(
+                    &doc,
+                );
+            let p = &doc.sections[0].paragraphs[48];
+            let Control::Table(t) = &p.controls[0] else {
+                unreachable!()
+            };
+            let scaled = if nested {
+                let Control::Table(inner) = &t.cells[0].paragraphs[0].controls[0] else {
+                    unreachable!()
+                };
+                overlay.nested_table_width_scale(inner)
+            } else {
+                overlay.nested_table_width_scale(t)
+            };
+            assert!(
+                (scaled - 1.0).abs() > 0.001,
+                "actual render overlay changes width"
+            );
+            assert!(
+                engine
+                    .project_native_equation_line_starts(
+                        std::slice::from_ref(p),
+                        &[width],
+                        &core.styles,
+                    )
+                    .is_none(),
+                "scaled context must retain saved cell layout"
+            );
+        }
+        for case in ["dirty-cell", "vertical-cell", "squeeze-cell", "dirty-table"] {
+            let mut excluded = source.clone();
+            let Control::Table(t) = &mut excluded.controls[0] else {
+                unreachable!()
+            };
+            match case {
+                "dirty-cell" => t.cells[0].dirty_flag = true,
+                "vertical-cell" => t.cells[0].text_direction = 1,
+                "squeeze-cell" => t.cells[0].line_wrap = crate::model::table::CellLineWrap::Squeeze,
+                _ => t.dirty = true,
+            }
+            assert!(
+                engine
+                    .project_native_equation_line_starts(&[excluded], &[width], &core.styles)
+                    .is_none(),
+                "{case}"
+            );
+        }
+        core.render_page_svg_native(1).unwrap();
+        check(&core);
+        core.insert_text_native(0, 0, 0, " ").unwrap();
+        core.paginate();
+        check(&core);
+        let saved = core.export_hwpx_native().unwrap();
+        check(&core);
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs[48]),
+            raw
+        );
+        let reopened = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            &saved,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
+        check(&reopened);
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
+    fn native_equation_break_projection_preserves_saved_geometry() {
+        let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") else {
+            return;
+        };
+        let mut paths = crate::renderer::font_paths::env_font_paths();
+        paths.push(std::path::PathBuf::from(font));
+        crate::renderer::font_paths::register_font_face_availability(&paths);
+        let mut core = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../samples/exam_math.hwp"),
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("original math HWP loads");
+        let _shaping = core.resolved_shaping_font_scope();
+        let _measure = crate::renderer::layout::enter_measure_font_paths(paths);
+        let engine = TypesetEngine::with_default_dpi();
+        // Genuine native saves retain geometry and advance these text boundaries.
+        for (section_index, paragraph_index, expected_starts) in [
+            (0, 102, vec![0, 54, 102, 163, 217]),
+            (0, 171, vec![0, 49]),
+            (1, 6, vec![0, 78, 113, 162, 197]),
+            (1, 8, vec![0, 74, 114, 171, 219, 277]),
+            (1, 30, vec![0, 45, 92]),
+            (1, 48, vec![0, 40, 107]),
+        ] {
+            let paragraphs = &core.document.sections[section_index].paragraphs;
+            let widths: Vec<_> = (0..paragraphs.len())
+                .map(|index| core.body_reflow_width(section_index, index))
+                .collect();
+            let projected = engine
+                .project_native_equation_line_starts(paragraphs, &widths, &core.styles)
+                .expect("source-backed breaks advance");
+            assert_eq!(
+                projected[paragraph_index]
+                    .line_segs
+                    .iter()
+                    .map(|line| line.text_start)
+                    .collect::<Vec<_>>(),
+                expected_starts,
+                "section {section_index} paragraph {paragraph_index}, source starts {:?}",
+                paragraphs[paragraph_index]
+                    .line_segs
+                    .iter()
+                    .map(|line| line.text_start)
+                    .collect::<Vec<_>>()
+            );
+            for (before, after) in paragraphs.iter().zip(&projected) {
+                assert_eq!(before.line_segs.len(), after.line_segs.len());
+                for (saved, new) in before.line_segs.iter().zip(&after.line_segs) {
+                    let mut expected = saved.clone();
+                    expected.text_start = new.text_start;
+                    assert_eq!(format!("{expected:?}"), format!("{new:?}"));
+                }
+            }
+        }
+        let check_wrapped_tabs = |core: &crate::document_core::DocumentCore| {
+            let raw = &core.document.sections[1].paragraphs[48];
+            let visible = &core.render_normalization.sections[1]
+                .as_ref()
+                .unwrap()
+                .paragraphs[48];
+            let starts =
+                |p: &Paragraph| p.line_segs.iter().map(|s| s.text_start).collect::<Vec<_>>();
+            assert_eq!(starts(raw), vec![0, 40, 99]);
+            assert_eq!(starts(visible), vec![0, 40, 107]);
+            assert_eq!(
+                (
+                    (raw.tab_extended[0][2] >> 8) & 0xff,
+                    (raw.tab_extended[1][2] >> 8) & 0xff
+                ),
+                (1, 2)
+            );
+            assert_eq!(
+                (
+                    (visible.tab_extended[0][2] >> 8) & 0xff,
+                    (visible.tab_extended[1][2] >> 8) & 0xff
+                ),
+                (2, 1)
+            );
+            assert_eq!(visible.tab_extended[1][0], raw.tab_extended[0][0]);
+            for (before, after) in raw.tab_extended.iter().zip(&visible.tab_extended) {
+                assert_eq!(&before[3..], &after[3..]);
+            }
+        };
+        check_wrapped_tabs(&core);
+        let raw_wrapped_before = format!("{:?}", core.document.sections[1].paragraphs[48]);
+        let source = &core.document.sections[1].paragraphs[6];
+        assert_eq!(source.line_segs[1].text_start, 74);
+        assert_eq!(
+            core.render_normalization.sections[1]
+                .as_ref()
+                .unwrap()
+                .paragraphs[6]
+                .line_segs[1]
+                .text_start,
+            78
+        );
+        let width = core.body_reflow_width(1, 6);
+        let rejected = |paragraph: Paragraph| {
+            engine
+                .project_native_equation_line_starts(&[paragraph], &[width], &core.styles)
+                .is_none()
+        };
+        let mut unavailable = source.clone();
+        for control in &mut unavailable.controls {
+            if let Control::Equation(eq) = control {
+                eq.font_name = "Missing equation source face".into();
+                break;
+            }
+        }
+        assert!(rejected(unavailable));
+        let mut changed_geometry = source.clone();
+        changed_geometry.line_segs[1].segment_width += 4;
+        assert!(rejected(changed_geometry));
+        let mut backward = source.clone();
+        backward.line_segs[1].text_start = 79;
+        assert!(rejected(backward));
+        let mut reset = source.clone();
+        reset.line_segs[2].vertical_pos = reset.line_segs[1].vertical_pos;
+        assert!(rejected(reset));
+
+        let source_before = format!("{:?}", core.document.sections[1].paragraphs[6]);
+        core.insert_text_native(1, 0, 0, " ")
+            .expect("unrelated edit succeeds");
+        core.paginate();
+        assert!(core.document.layout_profile().session_edited());
+        check_wrapped_tabs(&core);
+        let projected = core.render_normalization.sections[1].as_ref().expect(
+            "untouched source paragraph keeps its projection after another paragraph changes",
+        );
+        assert_eq!(projected.paragraphs[6].line_segs[1].text_start, 78);
+        core.render_page_svg_native(9)
+            .expect("public read-only rendering succeeds");
+        let saved = core
+            .export_hwpx_native()
+            .expect("source-preserving save succeeds");
+        assert_eq!(
+            format!("{:?}", core.document.sections[1].paragraphs[6]),
+            source_before
+        );
+        assert_eq!(
+            format!("{:?}", core.document.sections[1].paragraphs[48]),
+            raw_wrapped_before
+        );
+        let reopened = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+            &saved,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("saved source reopens");
+        assert_eq!(
+            reopened.document.sections[1].paragraphs[6].line_segs[1].text_start,
+            74
+        );
+        assert!(reopened.document.layout_profile().hwp5_origin_hwpx());
+        check_wrapped_tabs(&reopened);
+        assert_eq!(
+            reopened.render_normalization.sections[1]
+                .as_ref()
+                .unwrap()
+                .paragraphs[6]
+                .line_segs[1]
+                .text_start,
+            78
+        );
+        for from_hwp3 in [true, false] {
+            let mut document = core.document().clone();
+            document.provenance.hwp3_lineage = from_hwp3;
+            document.is_hwp3_variant = from_hwp3;
+            document.provenance.hwpx_lineage = !from_hwp3;
+            document.is_hwpx_variant = !from_hwp3;
+            let mut converted = crate::document_core::DocumentCore::new_empty();
+            converted.set_document(document);
+            converted.paginate();
+            assert!(!converted.document.layout_profile().native_hwp5_layout());
+            let visible = converted.render_normalization.sections[1]
+                .as_ref()
+                .map(|section| &section.paragraphs[6])
+                .unwrap_or(&converted.document.sections[1].paragraphs[6]);
+            assert_eq!(visible.line_segs[1].text_start, 74);
+        }
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
     fn smaller_live_equation_advances_saved_break_without_changing_line_count() {
         let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") else {
             return;
@@ -27234,6 +29779,8 @@ mod tests {
 
     fn issue6972_cover_picture_composed() -> ComposedParagraph {
         ComposedParagraph {
+            projected_tac_line_owners: None,
+            authored_cell_frame: false,
             lines: vec![
                 ComposedLine {
                     runs: Vec::new(),

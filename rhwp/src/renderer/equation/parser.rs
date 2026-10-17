@@ -373,6 +373,18 @@ impl EqParser {
         }
     }
 
+    /// 렉서의 관계 연산자 축약도 명령어와 같은 원본 기호로 해석한다.
+    /// 일반 문장부호·팩토리얼과 인용 문자열은 그대로 둔다.
+    fn symbol_node(value: String) -> EqNode {
+        if value == "->" {
+            EqNode::MathSymbol("→".to_string())
+        } else if let Some(symbol) = lookup_symbol(&value) {
+            EqNode::MathSymbol(symbol.to_string())
+        } else {
+            EqNode::Symbol(value)
+        }
+    }
+
     /// 단일 요소 파싱
     fn parse_element_inner(&mut self) -> EqNode {
         if self.at_end() {
@@ -398,12 +410,7 @@ impl EqParser {
             }
             TokenType::Symbol => {
                 self.pos += 1;
-                // -> 는 →로 변환
-                if val == "->" {
-                    EqNode::MathSymbol("→".to_string())
-                } else {
-                    EqNode::Symbol(val)
-                }
+                Self::symbol_node(val)
             }
             TokenType::Text => {
                 self.pos += 1;
@@ -993,7 +1000,7 @@ impl EqParser {
             TokenType::Number => EqNode::Number(val),
             TokenType::Text => EqNode::Text(val),
             TokenType::Quoted => EqNode::Quoted(val),
-            TokenType::Symbol => EqNode::Symbol(val),
+            TokenType::Symbol => Self::symbol_node(val),
             _ => EqNode::Text(val),
         }
     }
@@ -1031,12 +1038,7 @@ impl EqParser {
         while self.is_tight_relational() {
             let sym = self.current_value().to_string();
             self.pos += 1;
-            // `->` 는 화살표 기호로 변환 (parse_element 와 동일)
-            if sym == "->" {
-                items.push(EqNode::MathSymbol("→".to_string()));
-            } else {
-                items.push(EqNode::Symbol(sym));
-            }
+            items.push(Self::symbol_node(sym));
             items.push(self.parse_single_or_group());
         }
         EqNode::Row(items).simplify()
@@ -2046,6 +2048,67 @@ pub fn parse(script: &str) -> EqNode {
 mod tests {
     use super::symbols::{DecoKind, FontStyleKind};
     use super::*;
+
+    #[test]
+    fn relational_shortcuts_parse_and_layout_as_the_existing_symbol_commands() {
+        use super::super::layout::{EqLayout, LayoutKind};
+        for (shortcut, command, glyph) in [
+            ("!=", "NEQ", "≠"),
+            ("<=", "LE", "≤"),
+            (">=", "GE", "≥"),
+            ("<<", "ll", "≪"),
+            (">>", "gg", "≫"),
+            ("<<<", "LLL", "⋘"),
+            (">>>", "GGG", "⋙"),
+            ("==", "EQUIV", "≡"),
+        ] {
+            let node = parse(shortcut);
+            assert_eq!(node, parse(command), "{shortcut} and {command}");
+            assert_eq!(
+                parse(&format!("a {shortcut} b")),
+                parse(&format!("a {command} b"))
+            );
+            assert_eq!(
+                parse(&format!("x_{shortcut}")),
+                parse(&format!("x_{{{command}}}")),
+                "bare script atom"
+            );
+            let engine = EqLayout::with_font(16.0, "HYhwpEQ").with_version("Equation Version 60");
+            let actual = engine.layout(&node);
+            let expected = engine.layout(&parse(command));
+            assert!(
+                matches!(&actual.kind, LayoutKind::Symbol(text) | LayoutKind::MathSymbol(text) if text == glyph),
+                "{shortcut} must paint one relation glyph, not its ASCII spelling"
+            );
+            assert_eq!(
+                (actual.width, actual.height, actual.baseline),
+                (expected.width, expected.height, expected.baseline)
+            );
+        }
+        for (shortcut, command) in [("!=", "NEQ"), ("<=", "LE"), (">=", "GE"), ("==", "EQUIV")] {
+            assert_eq!(
+                parse(&format!("sum_i{shortcut}0 ^n a_i")),
+                parse(&format!("sum_{{i {command} 0}} ^n a_i")),
+                "tight lower-limit relation"
+            );
+        }
+        let original = "a ~ LEFT ( a != 3 sqrt {5} RIGHT )`";
+        let canonical = "a ~ LEFT ( a NEQ 3 sqrt {5} RIGHT )`";
+        assert_eq!(parse(original), parse(canonical));
+        assert_eq!(parse("\"!=\""), EqNode::Quoted("!=".into()));
+        for punctuation in ["!", "-", "+", "=", "|", ".", ","] {
+            assert_eq!(
+                parse(punctuation),
+                EqNode::Symbol(punctuation.into()),
+                "ordinary symbol stays literal"
+            );
+        }
+        assert_eq!(
+            parse("n!"),
+            EqNode::Row(vec![EqNode::Text("n".into()), EqNode::Symbol("!".into())])
+        );
+        assert_eq!(parse("->"), EqNode::MathSymbol("→".into()));
+    }
 
     #[test]
     fn logical_words_keep_upright_function_semantics() {

@@ -1329,6 +1329,8 @@ mod metric_tests {
             char_start,
         };
         let composed = ComposedParagraph {
+            projected_tac_line_owners: None,
+            authored_cell_frame: false,
             lines: vec![line(0), line(2)],
             para_style_id: 0,
             inline_controls: vec![],

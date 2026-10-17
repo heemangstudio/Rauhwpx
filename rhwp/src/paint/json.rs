@@ -572,6 +572,12 @@ impl PaintOp {
                     display_text.as_deref().unwrap_or(&run.text),
                     &run.style,
                 );
+                write_nonprinting_spaces(
+                    buf,
+                    &run.text,
+                    display_text.as_deref().unwrap_or(&run.text),
+                    &run.style,
+                );
                 if !run.style.tab_leaders.is_empty() {
                     buf.push_str(",\"tabLeaders\":");
                     write_tab_leaders(buf, &run.style.tab_leaders);
@@ -985,7 +991,7 @@ impl PaintOp {
                 write_bbox(buf, *bbox);
                 let _ = write!(
                     buf,
-                    ",\"svgContent\":{},\"color\":{},\"fontSize\":{:.3},\"fontName\":{},\"versionInfo\":{},\"layoutBox\":",
+                    ",\"svgContent\":{},\"color\":{},\"fontSize\":{:.6},\"fontName\":{},\"versionInfo\":{},\"layoutBox\":",
                     json_escape(&equation.svg_content),
                     json_escape(&equation.color_str),
                     equation.font_size,
@@ -1583,6 +1589,22 @@ fn write_text_positions(buf: &mut String, run: &TextRunNode) {
 fn write_text_positions_for_text(buf: &mut String, text: &str, style: &TextStyle) {
     let positions = compute_char_positions(text, style);
     write_position_values(buf, &positions);
+}
+
+/// 원본은 그대로 내보내고, replay scalar의 비인쇄 제어자만 전달한다.
+fn write_nonprinting_spaces(buf: &mut String, source: &str, replay: &str, style: &TextStyle) {
+    let indices = style.nonprinting_control_space_indices(source, replay);
+    if indices.is_empty() {
+        return;
+    }
+    buf.push_str(",\"nonprintingSpaces\":[");
+    for (i, index) in indices.iter().enumerate() {
+        if i > 0 {
+            buf.push(',');
+        }
+        let _ = write!(buf, "{index}");
+    }
+    buf.push(']');
 }
 
 /// 반각 칸에 전각 glyph 를 그리는 구두점의 glyph x 오프셋 (`[[글자 index, dx], ...]`).
@@ -3272,6 +3294,112 @@ mod tests {
     use serde_json::Value;
 
     #[test]
+    fn display_text_expansion_keeps_raw_and_literal_space_sources_distinct() {
+        let source = "\u{e000}\u{00a0}\u{00a0}";
+        let display = "\u{1100}\u{1161}\u{00a0}\u{00a0}";
+        let run = crate::renderer::render_tree::TextRunNode {
+            text: source.into(),
+            display_text: Some(display.into()),
+            style: TextStyle {
+                font_size: 16.0,
+                special_space_origins: vec![
+                    crate::model::paragraph::SpecialSpaceOrigin {
+                        char_idx: 1,
+                        origin: crate::model::paragraph::SpecialSpaceOriginKind::Literal,
+                    },
+                    crate::model::paragraph::SpecialSpaceOrigin {
+                        char_idx: 2,
+                        origin: crate::model::paragraph::SpecialSpaceOriginKind::NbSpace,
+                    },
+                ],
+                ..Default::default()
+            },
+            char_shape_id: None,
+            para_shape_id: None,
+            section_index: None,
+            para_index: None,
+            char_start: None,
+            cell_context: None,
+            is_para_end: false,
+            is_line_break_end: false,
+            rotation: 0.0,
+            is_vertical: false,
+            char_overlap: None,
+            border_fill_id: 0,
+            baseline: 16.0,
+            field_marker: crate::renderer::render_tree::FieldMarkerType::None,
+        };
+        let bbox = BoundingBox::new(10.0, 20.0, 80.0, 18.0);
+        let json = PageLayerTree::new(
+            100.0,
+            100.0,
+            LayerNode::leaf(bbox, None, vec![PaintOp::text_run(bbox, run.clone())]),
+        )
+        .to_json();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        let op = &value["root"]["ops"][0];
+        assert_eq!(op["text"], source);
+        assert_eq!(op["displayText"], display);
+        assert_eq!(op["nonprintingSpaces"], serde_json::json!([3]));
+        assert_eq!(
+            op["positions"].as_array().unwrap().len(),
+            source.chars().count() + 1
+        );
+        assert_eq!(
+            op["displayPositions"].as_array().unwrap().len(),
+            display.chars().count() + 1
+        );
+        assert_eq!(
+            op["clusters"].as_array().unwrap().len(),
+            source.chars().count()
+        );
+        assert_eq!(run.text, source);
+    }
+
+    #[test]
+    fn raw_blank_replay_indices_follow_unicode_scalars_and_projection() {
+        use crate::model::paragraph::{SpecialSpaceOrigin, SpecialSpaceOriginKind::*};
+        let text = "😀\u{00a0}A\u{00a0}\u{2007}";
+        let style = TextStyle {
+            special_space_origins: vec![
+                SpecialSpaceOrigin {
+                    char_idx: 1,
+                    origin: NbSpace,
+                },
+                SpecialSpaceOrigin {
+                    char_idx: 3,
+                    origin: Literal,
+                },
+                SpecialSpaceOrigin {
+                    char_idx: 4,
+                    origin: FwSpace,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut raw = String::new();
+        write_nonprinting_spaces(&mut raw, text, text, &style);
+        assert_eq!(raw, ",\"nonprintingSpaces\":[1,4]");
+        raw.clear();
+        write_nonprinting_spaces(
+            &mut raw,
+            "😀\u{FFFC}\u{00a0}",
+            "😀\u{00a0}",
+            &TextStyle {
+                special_space_origins: vec![SpecialSpaceOrigin {
+                    char_idx: 2,
+                    origin: NbSpace,
+                }],
+                ..Default::default()
+            },
+        );
+        assert_eq!(raw, ",\"nonprintingSpaces\":[1]");
+        raw.clear();
+        write_nonprinting_spaces(&mut raw, "\u{00a0}", "\u{00a0}", &TextStyle::default());
+        assert!(raw.is_empty());
+    }
+
+    #[test]
     fn native_char_position_json_scalar_roundtrips_and_legacy_style_is_unchanged() {
         use crate::model::provenance::FontMetricsPolicy;
         use crate::renderer::{char_offset_dy, NativeCharPosition};
@@ -3400,6 +3528,82 @@ mod tests {
             ops[1], legacy["root"]["ops"][1],
             "external decoration remains on its existing origin"
         );
+    }
+
+    #[test]
+    fn equation_json_keeps_font_size_and_source_bar_slots_in_one_coordinate_precision() {
+        // CanvasKit의 half-em 분기와 동일한 serialized 좌표 계약이다.
+        // 일반적인 비종결 HU 크기도 유효한 원본 칸을 fallback으로 바꾸지 않는다.
+        for height_hu in [1000, 1100, 1150, 1234] {
+            let fs = crate::renderer::hwpunit_to_px(height_hu, 96.0);
+            for altered in [false, true] {
+                let mut body = LayoutBox {
+                    glyph_advances: None,
+                    x: fs * 0.5,
+                    y: 0.0,
+                    width: fs,
+                    height: fs,
+                    baseline: fs * 0.8,
+                    kind: LayoutKind::Number("1".into()),
+                };
+                if altered {
+                    body.x += fs * 0.125;
+                }
+                let layout = LayoutBox {
+                    glyph_advances: None,
+                    x: 0.0,
+                    y: 0.0,
+                    width: fs * 2.0,
+                    height: fs,
+                    baseline: fs * 0.8,
+                    kind: LayoutKind::Paren {
+                        left: "|".into(),
+                        right: "|".into(),
+                        body: Box::new(body),
+                        modern_extent: None,
+                    },
+                };
+                let bbox = BoundingBox::new(0.0, 0.0, layout.width, layout.height);
+                let tree = PageLayerTree::new(
+                    200.0,
+                    100.0,
+                    LayerNode::leaf(
+                        bbox,
+                        None,
+                        vec![PaintOp::equation(
+                            bbox,
+                            EquationNode {
+                                svg_content: String::new(),
+                                layout_box: layout,
+                                color_str: "#000000".into(),
+                                color: 0,
+                                font_size: fs,
+                                font_name: "HYhwpEQ".into(),
+                                version_info: "Equation Version 60".into(),
+                                section_index: None,
+                                para_index: None,
+                                control_index: None,
+                                inner_control_index: None,
+                                cell_index: None,
+                                cell_para_index: None,
+                                cell_context: None,
+                                note_ref: None,
+                            },
+                        )],
+                    ),
+                );
+                let parsed: Value = serde_json::from_str(&tree.to_json()).unwrap();
+                let op = &parsed["root"]["ops"][0];
+                let lb = &op["layoutBox"];
+                let body = &lb["kind"]["body"];
+                let slot = op["fontSize"].as_f64().unwrap() * 0.5;
+                let before = body["x"].as_f64().unwrap();
+                let after =
+                    lb["width"].as_f64().unwrap() - before - body["width"].as_f64().unwrap();
+                let source_bar_frame = (before - slot).abs() < 1e-6 && (after - slot).abs() < 1e-6;
+                assert_eq!(source_bar_frame, !altered, "height {height_hu}, {op}");
+            }
+        }
     }
 
     #[test]

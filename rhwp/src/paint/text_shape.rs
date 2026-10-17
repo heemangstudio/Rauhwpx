@@ -467,7 +467,13 @@ impl<'a> TextShapeLowerer<'a> {
         run: &TextRunNode,
         text_source_id: u32,
     ) -> (TextShapeDiagnostic, Option<LayerGlyphRunPaint>) {
-        if run.char_overlap.is_some() || run.text.is_empty() {
+        if run.char_overlap.is_some()
+            || run.text.is_empty()
+            || !run
+                .style
+                .nonprinting_control_space_indices(&run.text, &run.text)
+                .is_empty()
+        {
             return (
                 TextShapeDiagnostic {
                     text: run.text.clone(),
@@ -837,6 +843,52 @@ mod tests {
         assert!(!run.variant.is_default_fallback);
         assert_eq!(run.glyph_ids, vec![42]);
         assert!(run.diagnostics.strict_visual_eligible);
+    }
+
+    #[test]
+    fn raw_space_controls_keep_text_fallback_while_literal_nbsp_still_shapes() {
+        use crate::model::paragraph::{SpecialSpaceOrigin, SpecialSpaceOriginKind::*};
+        for (ch, origin, expected) in [
+            ('\u{00a0}', NbSpace, 0),
+            ('\u{2007}', FwSpace, 0),
+            ('\u{00a0}', Literal, 1),
+        ] {
+            let mut run = text_run(&ch.to_string());
+            run.style.special_space_origins = vec![SpecialSpaceOrigin {
+                char_idx: 0,
+                origin,
+            }];
+            let before = run.text.clone();
+            let expected_positions =
+                crate::renderer::layout::compute_char_positions(&run.text, &run.style);
+            let mut root = LayerNode::leaf(
+                BoundingBox::new(0.0, 0.0, 20.0, 20.0),
+                None,
+                vec![PaintOp::text_run(
+                    BoundingBox::new(0.0, 0.0, 20.0, 20.0),
+                    run,
+                )],
+            );
+            let report = TextShapeLowerer::new(&EmittingResolver).lower_root(&mut root);
+            assert_eq!(report.public_glyph_run_count(), expected);
+            let LayerNodeKind::Leaf { ops } = &root.kind else {
+                panic!("leaf")
+            };
+            let PaintOp::TextRun { run, .. } = &ops[0] else {
+                panic!("source fallback")
+            };
+            assert_eq!(run.text, before);
+            let json = crate::paint::PageLayerTree::new(20.0, 20.0, root).to_json();
+            assert_eq!(json.contains("nonprintingSpaces"), expected == 0);
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let fallback = &value["root"]["ops"][0];
+            assert_eq!(fallback["text"], before);
+            let exported = fallback["positions"].as_array().unwrap();
+            assert_eq!(exported.len(), expected_positions.len());
+            for (exported, expected) in exported.iter().zip(expected_positions) {
+                assert!((exported.as_f64().unwrap() - expected).abs() < 0.001);
+            }
+        }
     }
 
     #[test]

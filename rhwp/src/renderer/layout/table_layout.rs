@@ -1011,6 +1011,19 @@ struct HorizontalCellVars {
     native_saved_text_frame_outer_box: bool,
 }
 
+/// 셀 텍스트 범위에서 그림 전용 안내 줄은 높이·줄 간격을 차지하지 않는다.
+/// 그림의 흐름 높이와 문단 앞뒤 간격은 각 소비자가 별도로 유지한다.
+fn cell_text_line_metrics_px(para: &Paragraph, line: &ComposedLine, dpi: f64) -> (f64, f64) {
+    if crate::renderer::layout::is_empty_topbottom_picture_guide(para, false) {
+        (0.0, 0.0)
+    } else {
+        (
+            hwpunit_to_px(line.line_height, dpi),
+            hwpunit_to_px(line.line_spacing, dpi),
+        )
+    }
+}
+
 impl LayoutEngine {
     /// 직접 조판한 자리차지 중첩 표 뒤에는 실제 호스트 글줄이 남는다.
     /// 공백도 글줄이며, 개체 앵커만 있는 빈 문단과 구별해야 한다. 표와
@@ -1070,6 +1083,25 @@ impl LayoutEngine {
     pub(super) fn preserve_first_cell_spacing_before(&self) -> bool {
         let profile = self.profile.get();
         profile.hwpx_stored_layout() && !profile.hwp5_origin_hwpx()
+    }
+
+    /// 원본 HWP5 셀도 첫 줄 위치가 앞 간격을 그대로 기록한 경우에는
+    /// 그 간격을 콘텐츠 높이와 첫 줄 배치에 함께 포함한다.
+    pub(super) fn preserve_first_cell_spacing_before_for_source(
+        &self,
+        para: &Paragraph,
+        first_line: Option<&crate::renderer::composer::ComposedLine>,
+        para_style: Option<&crate::renderer::style_resolver::ResolvedParaStyle>,
+    ) -> bool {
+        if self.preserve_first_cell_spacing_before() {
+            return true;
+        }
+        let before = para_style.map_or(0.0, |style| style.spacing_before);
+        (self.profile.get().native_hwp5_layout() || self.profile.get().hwp5_origin_hwpx())
+            && !self.profile.get().own_line_layout()
+            && crate::renderer::height_measurer::authored_first_cell_spacing_before(
+                para, first_line, before, self.dpi,
+            )
     }
 
     // native 33d890..33d8a4: 음수 여유도 HWPUNIT 정수로 0 방향 절반 나눈다.
@@ -2136,6 +2168,15 @@ impl LayoutEngine {
                 computed_y
             }
         };
+        let (end_margin_x, end_margin_y) = self.native_master_page_end_margin_inset(
+            table,
+            matches!(&col_node.node_type, RenderNodeType::MasterPage),
+            depth,
+            inline_x_override,
+        );
+        table_x -= end_margin_x;
+        let table_y = table_y - end_margin_y;
+
         // 쪽 하단을 넘는 통째 배치 흐름 표: 한컴은 마지막 행을 쪽 하단(본문 하단 −
         // 바깥 아래 여백 − 1pt, 분할 조각과 같은 한계)에서 끊고, 다음 쪽에 남을 몫이
         // 빈 공간뿐이면 이어 그리지 않는다. 결과적으로 마지막 행이 내용 높이까지
@@ -3474,7 +3515,9 @@ impl LayoutEngine {
         styles: &ResolvedStyleSet,
     ) -> f64 {
         let is_last_para = pidx + 1 == total_para_count;
-        let spacing_before = if pidx > 0 || self.preserve_first_cell_spacing_before() {
+        let spacing_before = if pidx > 0
+            || self.preserve_first_cell_spacing_before_for_source(para, lines.first(), para_style)
+        {
             para_style.map(|s| s.spacing_before).unwrap_or(0.0)
         } else {
             0.0
@@ -3484,7 +3527,10 @@ impl LayoutEngine {
         } else {
             0.0
         };
-        if lines.is_empty() {
+        if crate::renderer::layout::is_empty_topbottom_picture_guide(para, false) {
+            // 안내 줄 자체의 폰트 높이는 같은 문단의 그림 흐름에 더하지 않는다.
+            spacing_before + spacing_after
+        } else if lines.is_empty() {
             // [#2169] NO_LS 순수 빈 문단 = em 줄박스 (한글 공식).
             let h = if crate::renderer::para_has_no_stored_line_segs(para)
                 && para.controls.is_empty()
@@ -3572,6 +3618,9 @@ impl LayoutEngine {
         para_style: Option<&crate::renderer::style_resolver::ResolvedParaStyle>,
         styles: &ResolvedStyleSet,
     ) -> f64 {
+        if crate::renderer::layout::is_empty_topbottom_picture_guide(para, false) {
+            return 0.0;
+        }
         let cell_ls_val = para_style.map(|s| s.line_spacing).unwrap_or(160.0);
         let cell_ls_type = para_style
             .map(|s| s.line_spacing_type)
@@ -3669,7 +3718,16 @@ impl LayoutEngine {
                 )
             })
             .sum();
-        if start == 0 && pidx > 0 {
+        if start == 0
+            && (pidx > 0
+                || ((self.profile.get().native_hwp5_layout()
+                    || self.profile.get().hwp5_origin_hwpx())
+                    && self.preserve_first_cell_spacing_before_for_source(
+                        para,
+                        comp.lines.first(),
+                        para_style,
+                    )))
+        {
             total += para_style.map(|s| s.spacing_before).unwrap_or(0.0);
         }
         if end == line_count && !is_last_para {
@@ -3863,6 +3921,50 @@ impl LayoutEngine {
                 cell_node.children.push(img_node);
             }
         }
+    }
+
+    /// 원본 바탕쪽 PAGE 끝 정렬 표의 기준은 바깥 여백 상자다.
+    /// 공통 배치 경로에서 가시 테두리를 한 번만 안쪽으로 옮긴다.
+    fn native_master_page_end_margin_inset(
+        &self,
+        table: &Table,
+        master_page: bool,
+        depth: usize,
+        inline_x_override: Option<f64>,
+    ) -> (f64, f64) {
+        let profile = self.profile.get();
+        if !master_page
+            || depth != 0
+            || inline_x_override.is_some()
+            || !(profile.native_hwp5_layout() || profile.hwp5_origin_hwpx())
+            || profile.own_line_layout()
+            || table.dirty
+            || table.common.treat_as_char
+            || !table.common.flow_with_text
+            || table.common.allow_overlap
+            || table.caption.is_some()
+            || !matches!(table.page_break, TablePageBreak::None)
+            || !matches!(table.common.text_wrap, TextWrap::TopAndBottom)
+            || !matches!(table.common.horz_rel_to, HorzRelTo::Page)
+            || !matches!(table.common.vert_rel_to, VertRelTo::Page)
+            || !matches!(table.common.horz_align, HorzAlign::Right)
+            || !matches!(table.common.vert_align, VertAlign::Bottom)
+            || !matches!(table.common.width_criterion, crate::model::shape::SizeCriterion::Absolute)
+            || !matches!(table.common.height_criterion, crate::model::shape::SizeCriterion::Absolute)
+            || table.common.width == 0
+            || table.common.height == 0
+            || [table.outer_margin_left, table.outer_margin_right,
+                table.outer_margin_top, table.outer_margin_bottom].iter().any(|&m| m < 0)
+            // 중첩 표 wrapper의 조기 배치 경로는 이 소유권 증명에 포함하지 않는다.
+            || table.cells.iter().flat_map(|cell| &cell.paragraphs)
+                .flat_map(|para| &para.controls).any(|control| matches!(control, Control::Table(_)))
+        {
+            return (0.0, 0.0);
+        }
+        (
+            hwpunit_to_px(i32::from(table.outer_margin_right), self.dpi),
+            hwpunit_to_px(i32::from(table.outer_margin_bottom), self.dpi),
+        )
     }
 
     /// 표 수평 위치 결정
@@ -4226,6 +4328,52 @@ impl LayoutEngine {
         }
     }
 
+    pub(super) fn composed_for_authored_cell_frame(
+        &self,
+        table: &crate::model::table::Table,
+        cell: &crate::model::table::Cell,
+        para: &Paragraph,
+        composed: &ComposedParagraph,
+        styles: &ResolvedStyleSet,
+    ) -> Option<ComposedParagraph> {
+        if !(self.profile.get().native_hwp5_layout() || self.profile.get().hwp5_origin_hwpx())
+            || self.profile.get().own_line_layout()
+            || styles.font_metrics_policy
+                != crate::model::provenance::FontMetricsPolicy::HcrDeclared
+            || !styles
+                .para_styles
+                .get(para.para_shape_id as usize)
+                .is_some_and(|s| s.vertical_align == 2)
+            || !para
+                .controls
+                .iter()
+                .any(|c| matches!(c, Control::Equation(_)))
+            || table.dirty
+            || cell.dirty_flag
+            || cell.text_direction != 0
+            || cell.line_wrap != crate::model::table::CellLineWrap::Break
+            || table.common.width_criterion != crate::model::shape::SizeCriterion::Absolute
+            || table.common.height_criterion != crate::model::shape::SizeCriterion::Absolute
+            || table.common.width == 0
+            || table.common.height == 0
+            || self.render_table_width_scale(table) != 1.0
+            || composed.lines.len() != para.line_segs.len()
+            || !composed
+                .lines
+                .iter()
+                .zip(&para.line_segs)
+                .all(|(line, seg)| {
+                    crate::renderer::line_metric_pair_is_authored(Some(seg), line)
+                        && line.char_start == para.utf16_pos_to_char_idx(seg.text_start)
+                })
+        {
+            return None;
+        }
+        let mut result = composed.clone();
+        result.authored_cell_frame = true;
+        Some(result)
+    }
+
     /// [Task #2089] 가로쓰기 셀 본문 배치 — 셀 문단/TAC/수식/중첩표 방출.
     /// 원본 무변경 통이동 (탈출은 전부 내부 루프 소속).
     #[allow(clippy::too_many_arguments)]
@@ -4288,6 +4436,14 @@ impl LayoutEngine {
             .zip(cell.paragraphs.iter())
             .enumerate()
         {
+            let certified_composed =
+                self.composed_for_authored_cell_frame(table, cell, para, composed, styles);
+            let composed = certified_composed.as_ref().unwrap_or(composed);
+            let preserve_first_before = self.preserve_first_cell_spacing_before_for_source(
+                para,
+                composed.lines.first(),
+                styles.para_styles.get(para.para_shape_id as usize),
+            );
             let visible_text_before_para = has_preceding_visible_text;
             let mut drew_block_host_para_text = false;
             let cell_context = if let Some(ref ctx) = enclosing_cell_ctx {
@@ -4359,10 +4515,7 @@ impl LayoutEngine {
                         let mut anchor_vpos = first_seg
                             .vertical_pos
                             .saturating_sub(caption_stack_vpos_origin);
-                        if cp_idx == 0
-                            && self.preserve_first_cell_spacing_before()
-                            && caption_stack_vpos_origin == 0
-                        {
+                        if cp_idx == 0 && preserve_first_before && caption_stack_vpos_origin == 0 {
                             anchor_vpos = anchor_vpos
                                 .max(crate::renderer::px_to_hwpunit(spacing_before, self.dpi));
                         }
@@ -4553,6 +4706,22 @@ impl LayoutEngine {
                     None, // 셀 컨텍스트 — wrap zone 무관
                 );
 
+                if end_line > 0
+                    && crate::renderer::layout::is_empty_topbottom_picture_guide(para, false)
+                {
+                    // 커서용 안내 줄 노드는 유지하고 실제 진행량은 측정과 맞춘다.
+                    para_y = para_y_before_compose
+                        + self.calc_para_lines_height(
+                            &composed.lines,
+                            para,
+                            false,
+                            true,
+                            cp_idx,
+                            composed_paras.len(),
+                            styles.para_styles.get(para.para_shape_id as usize),
+                            styles,
+                        );
+                }
                 let has_visible_text = composed
                     .lines
                     .iter()
@@ -4677,7 +4846,7 @@ impl LayoutEngine {
                     .map(|s| s.spacing_before)
                     .unwrap_or(0.0);
                 let column_top = (para_y_before_compose - inner_area.y).abs() < 1.0;
-                if sb > 0.0 && (!column_top || self.preserve_first_cell_spacing_before()) {
+                if sb > 0.0 && (!column_top || preserve_first_before) {
                     para_y_before_compose + sb
                 } else {
                     para_y_before_compose
@@ -5524,10 +5693,7 @@ impl LayoutEngine {
                                         .unwrap_or(0.0);
                                     let column_top =
                                         (para_y_before_compose - inner_area.y).abs() < 1.0;
-                                    if sb > 0.0
-                                        && (!column_top
-                                            || self.preserve_first_cell_spacing_before())
-                                    {
+                                    if sb > 0.0 && (!column_top || preserve_first_before) {
                                         sb
                                     } else {
                                         0.0
@@ -6672,6 +6838,10 @@ impl LayoutEngine {
         let measurer = super::super::height_measurer::HeightMeasurer::new(self.dpi)
             .with_hwp3_variant(self.profile.get().hwp3_layout())
             .with_hwpx_cell_spacing(self.preserve_first_cell_spacing_before())
+            .with_native_hwp5_cell_spacing(
+                self.profile.get().native_hwp5_layout() || self.profile.get().hwp5_origin_hwpx(),
+            )
+            .with_own_line_layout(self.profile.get().own_line_layout())
             .with_native_hwpx_cell_margin(self.profile.get().native_hwpx_cell_margin())
             .with_render_normalization(self.render_normalization_overlay());
         measurer.cell_controls_height(&cell.paragraphs, styles, 0, 0.0)
@@ -6720,12 +6890,24 @@ impl LayoutEngine {
                 // 시작이므로 spacing_before 만큼 올려 기준을 잡는다
                 // (height_measurer::cell_nested_controls_bottom 와 동일 공식).
                 let para_base = {
-                    let sb = if pidx > 0 || self.preserve_first_cell_spacing_before() {
-                        styles
-                            .para_styles
-                            .get(p.para_shape_id as usize)
-                            .map(|s| s.spacing_before)
-                            .unwrap_or(0.0)
+                    let para_style = styles.para_styles.get(p.para_shape_id as usize);
+                    let preserve_native_before = pidx == 0
+                        && (self.profile.get().native_hwp5_layout()
+                            || self.profile.get().hwp5_origin_hwpx())
+                        && !self.profile.get().own_line_layout()
+                        && {
+                            let composed = compose_paragraph(p);
+                            self.preserve_first_cell_spacing_before_for_source(
+                                p,
+                                composed.lines.first(),
+                                para_style,
+                            )
+                        };
+                    let sb = if pidx > 0
+                        || self.preserve_first_cell_spacing_before()
+                        || preserve_native_before
+                    {
+                        para_style.map_or(0.0, |style| style.spacing_before)
                     } else {
                         0.0
                     };
@@ -6833,7 +7015,12 @@ impl LayoutEngine {
             let comp = compose_paragraph(p);
             let para_style = styles.para_styles.get(p.para_shape_id as usize);
             let is_last_para = pidx + 1 == cell_para_count;
-            let spacing_before = if pidx > 0 || self.preserve_first_cell_spacing_before() {
+            let spacing_before = if pidx > 0
+                || self.preserve_first_cell_spacing_before_for_source(
+                    p,
+                    comp.lines.first(),
+                    para_style,
+                ) {
                 para_style.map(|s| s.spacing_before).unwrap_or(0.0)
             } else {
                 0.0
@@ -6871,10 +7058,10 @@ impl LayoutEngine {
                     .iter()
                     .enumerate()
                     .map(|(li, line)| {
-                        let h = hwpunit_to_px(line.line_height, self.dpi);
+                        let (h, line_spacing) = cell_text_line_metrics_px(p, line, self.dpi);
                         let is_cell_last_line = is_last_para && li + 1 == line_count;
                         let ls = if !is_cell_last_line {
-                            hwpunit_to_px(line.line_spacing, self.dpi)
+                            line_spacing
                         } else {
                             0.0
                         };
@@ -7034,7 +7221,12 @@ impl LayoutEngine {
             // HWPX retains first-paragraph leading space. Native stored layout
             // keeps its first-vpos clamp; final trailing space is omitted.
             let raw_spacing_before = para_style.map(|s| s.spacing_before).unwrap_or(0.0);
-            let spacing_before = if pi > 0 || self.preserve_first_cell_spacing_before() {
+            let preserve_first_before = self.preserve_first_cell_spacing_before_for_source(
+                para,
+                comp.lines.first(),
+                para_style,
+            );
+            let spacing_before = if pi > 0 || preserve_first_before {
                 raw_spacing_before
             } else if raw_spacing_before > 0.0 {
                 let first_vpos = para
@@ -7107,8 +7299,7 @@ impl LayoutEngine {
                         .iter()
                         .enumerate()
                         .map(|(li, line)| {
-                            let h = hwpunit_to_px(line.line_height, self.dpi);
-                            let ls = hwpunit_to_px(line.line_spacing, self.dpi);
+                            let (h, ls) = cell_text_line_metrics_px(para, line, self.dpi);
                             let is_cell_last_line = is_last_para && li + 1 == line_count;
                             let mut lh = if !is_cell_last_line { h + ls } else { h };
                             if li == 0 {
@@ -7162,8 +7353,7 @@ impl LayoutEngine {
             let mut started = false;
 
             for (li, line) in comp.lines.iter().enumerate() {
-                let h = hwpunit_to_px(line.line_height, self.dpi);
-                let ls = hwpunit_to_px(line.line_spacing, self.dpi);
+                let (h, ls) = cell_text_line_metrics_px(para, line, self.dpi);
                 let is_cell_last_line = is_last_para && li + 1 == line_count;
                 let mut line_h = if !is_cell_last_line { h + ls } else { h };
                 if li == 0 {
@@ -11411,7 +11601,12 @@ impl LayoutEngine {
             let para_style = styles.para_styles.get(para.para_shape_id as usize);
             let is_last_para = pi + 1 == para_count;
             let line_count = comp.lines.len();
-            let spacing_before = if pi > 0 || self.preserve_first_cell_spacing_before() {
+            let preserve_first_before = self.preserve_first_cell_spacing_before_for_source(
+                para,
+                comp.lines.first(),
+                para_style,
+            );
+            let spacing_before = if pi > 0 || preserve_first_before {
                 para_style.map(|s| s.spacing_before).unwrap_or(0.0)
             } else {
                 0.0
@@ -11450,8 +11645,7 @@ impl LayoutEngine {
                         .iter()
                         .enumerate()
                         .map(|(li, line)| {
-                            let h = hwpunit_to_px(line.line_height, self.dpi);
-                            let ls = hwpunit_to_px(line.line_spacing, self.dpi);
+                            let (h, ls) = cell_text_line_metrics_px(para, line, self.dpi);
                             let is_cell_last_line = is_last_para && li + 1 == line_count;
                             let mut lh = if !is_cell_last_line { h + ls } else { h };
                             if li == 0 {
@@ -11501,8 +11695,7 @@ impl LayoutEngine {
                         .iter()
                         .enumerate()
                         .map(|(li, line)| {
-                            let h = hwpunit_to_px(line.line_height, self.dpi);
-                            let ls = hwpunit_to_px(line.line_spacing, self.dpi);
+                            let (h, ls) = cell_text_line_metrics_px(para, line, self.dpi);
                             let is_cell_last_line = is_last_para && li + 1 == line_count;
                             let mut lh = if !is_cell_last_line { h + ls } else { h };
                             if li == 0 {
@@ -11523,19 +11716,17 @@ impl LayoutEngine {
             // Include the HWPX cell's leading space only in its first fragment.
             if start == 0
                 && (!is_visible_first
-                    || (pi == 0
-                        && self.preserve_first_cell_spacing_before()
-                        && content_offset == 0.0))
+                    || (pi == 0 && preserve_first_before && content_offset == 0.0))
             {
                 total += spacing_before;
             }
             for li in start..end {
                 if li < line_count {
                     let line = &comp.lines[li];
-                    let h = hwpunit_to_px(line.line_height, self.dpi);
+                    let (h, line_spacing) = cell_text_line_metrics_px(para, line, self.dpi);
                     let is_cell_last_line = is_last_para && li + 1 == line_count;
                     if !is_cell_last_line {
-                        total += h + hwpunit_to_px(line.line_spacing, self.dpi);
+                        total += h + line_spacing;
                     } else {
                         total += h;
                     }
@@ -11551,8 +11742,7 @@ impl LayoutEngine {
                 .iter()
                 .enumerate()
                 .map(|(li, line)| {
-                    let h = hwpunit_to_px(line.line_height, self.dpi);
-                    let ls = hwpunit_to_px(line.line_spacing, self.dpi);
+                    let (h, ls) = cell_text_line_metrics_px(para, line, self.dpi);
                     let is_cell_last_line = is_last_para && li + 1 == line_count;
                     let mut lh = if !is_cell_last_line { h + ls } else { h };
                     if li == 0 {
@@ -13388,6 +13578,8 @@ mod row_cut_tests {
 
     fn composed_text(text: &str) -> ComposedParagraph {
         ComposedParagraph {
+            projected_tac_line_owners: None,
+            authored_cell_frame: false,
             lines: vec![ComposedLine {
                 runs: vec![ComposedTextRun {
                     text: text.to_string(),
@@ -15608,4 +15800,405 @@ fn tac_shared_line_baseline_offset_px(
     let box_ascent = own_box * baseline / lh;
     hwpunit_to_px((baseline - box_ascent) as i32, dpi)
         + hwpunit_to_px(table.outer_margin_top as i32, dpi)
+}
+
+#[cfg(test)]
+mod picture_cell_guide_tests {
+    use super::*;
+    use crate::model::image::Picture;
+    use crate::model::paragraph::{CharShapeRef, LineSeg};
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    #[test]
+    fn picture_marker_has_zero_text_advance_across_cell_height_consumers() {
+        let dpi = 96.0;
+        let styles = ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_size: hwpunit_to_px(1000, dpi),
+                ..Default::default()
+            }],
+            para_styles: vec![
+                ResolvedParaStyle {
+                    spacing_before: hwpunit_to_px(200, dpi),
+                    spacing_after: hwpunit_to_px(300, dpi),
+                    ..Default::default()
+                },
+                ResolvedParaStyle::default(),
+            ],
+            ..Default::default()
+        };
+        let plain = Paragraph {
+            para_shape_id: 1,
+            char_shapes: vec![CharShapeRef::default()],
+            line_segs: vec![LineSeg {
+                line_height: 1000,
+                text_height: 1000,
+                baseline_distance: 850,
+                line_spacing: 600,
+                segment_width: 4000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let guide = Paragraph {
+            para_shape_id: 0,
+            controls: vec![Control::Picture(Box::new(Picture {
+                common: CommonObjAttr {
+                    height: 4320,
+                    width: 3000,
+                    flow_with_text: true,
+                    vert_rel_to: VertRelTo::Para,
+                    text_wrap: TextWrap::TopAndBottom,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }))],
+            line_segs: vec![LineSeg {
+                segment_width: 0,
+                ..plain.line_segs[0].clone()
+            }],
+            ..plain.clone()
+        };
+        let engine = LayoutEngine::new(dpi);
+        for case in ["guide", "width", "text", "inline", "caption", "wrap"] {
+            let mut marker = guide.clone();
+            match case {
+                "width" => marker.line_segs[0].segment_width = 4000,
+                "text" => marker.text = "x".into(),
+                "inline" => {
+                    if let Control::Picture(p) = &mut marker.controls[0] {
+                        p.common.treat_as_char = true;
+                    }
+                }
+                "caption" => {
+                    if let Control::Picture(p) = &mut marker.controls[0] {
+                        p.caption = Some(Default::default());
+                    }
+                }
+                "wrap" => {
+                    if let Control::Picture(p) = &mut marker.controls[0] {
+                        p.common.text_wrap = TextWrap::Square;
+                    }
+                }
+                _ => {}
+            }
+            assert_eq!(
+                crate::renderer::layout::is_empty_topbottom_picture_guide(&marker, false),
+                case == "guide"
+            );
+            assert!(!crate::renderer::layout::is_empty_topbottom_picture_guide(
+                &marker, true
+            ));
+            let paras = vec![plain.clone(), marker, plain.clone()];
+            let comps: Vec<_> = paras.iter().map(compose_paragraph).collect();
+            let marker_h = engine.calc_para_line_range_height(
+                &comps[1],
+                &paras[1],
+                0,
+                comps[1].lines.len(),
+                1,
+                3,
+                &styles,
+            );
+            if case == "guide" {
+                assert_eq!(
+                    crate::renderer::px_to_hwpunit_round(marker_h, dpi),
+                    500,
+                    "spacing stays authored"
+                );
+                let cell = crate::model::table::Cell {
+                    paragraphs: paras.clone(),
+                    ..Default::default()
+                };
+                let full = engine.calc_composed_paras_content_height(&comps, &paras, &styles);
+                let remain = engine.calc_cell_remaining_content_height(&cell, &styles, 0.0);
+                let visible = engine.calc_visible_content_height_from_ranges(
+                    &comps,
+                    &paras,
+                    &[(0, 1); 3],
+                    &styles,
+                );
+                for h in [full, remain, visible] {
+                    assert_eq!(crate::renderer::px_to_hwpunit_round(h, dpi), 3100);
+                }
+            } else {
+                assert!(
+                    marker_h > hwpunit_to_px(500, dpi),
+                    "{case} retains its real line"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn public_picture_guide_keeps_native_row_grid_and_source_after_reopen() {
+        use crate::document_core::DocumentCore;
+        use crate::model::provenance::FontMetricsPolicy;
+        fn rows(core: &DocumentCore) {
+            let mt = core.measured_tables[0]
+                .iter()
+                .find(|t| t.para_index == 109 && t.control_index == 0)
+                .expect("source table measured");
+            assert_eq!(
+                mt.row_heights
+                    .iter()
+                    .map(|&h| crate::renderer::px_to_hwpunit_round(h, 96.0))
+                    .collect::<Vec<_>>(),
+                vec![1617, 1858, 1858, 1858, 4602]
+            );
+            assert_eq!(
+                mt.raw_row_heights
+                    .iter()
+                    .map(|&h| crate::renderer::px_to_hwpunit_round(h, 96.0))
+                    .collect::<Vec<_>>(),
+                vec![1617, 1858, 1858, 1858, 4602]
+            );
+            fn table(n: &RenderNode) -> Option<&RenderNode> {
+                if matches!(&n.node_type,RenderNodeType::Table(t) if t.para_index==Some(109)&&t.control_index==Some(0))
+                {
+                    Some(n)
+                } else {
+                    n.children.iter().find_map(table)
+                }
+            }
+            let tree = core
+                .build_page_render_tree(3)
+                .expect("source table renders");
+            let t = table(&tree.root).expect("source table node");
+            for (row, height) in [1617, 1858, 1858, 1858, 4602].into_iter().enumerate() {
+                let cell=t.children.iter().find(|n|matches!(&n.node_type,RenderNodeType::TableCell(c) if c.row==row as u16&&c.col==2)).expect("row cell");
+                assert_eq!(
+                    crate::renderer::px_to_hwpunit_round(cell.bbox.height, 96.0),
+                    height
+                );
+            }
+        }
+        let mut core = DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../../samples/exam_science.hwp"),
+            FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("source loads");
+        let source = format!("{:?}", core.document.sections[0].paragraphs[109]);
+        rows(&core);
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs[109]),
+            source
+        );
+        core.insert_text_native(0, 0, 0, " ")
+            .expect("unrelated edit");
+        core.paginate();
+        rows(&core);
+        let saved = core.export_hwpx_native().expect("source saves");
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs[109]),
+            source
+        );
+        let reopened =
+            DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared)
+                .expect("certified source reopens");
+        assert!(reopened.document.layout_profile().hwp5_origin_hwpx());
+        rows(&reopened);
+    }
+}
+
+#[cfg(test)]
+mod master_page_end_margin_tests {
+    use super::*;
+    use crate::model::provenance::LayoutCompatibilityProfile;
+    use crate::model::shape::{CommonObjAttr, SizeCriterion};
+    use crate::renderer::DEFAULT_DPI;
+
+    fn source_table() -> Table {
+        Table {
+            common: CommonObjAttr {
+                width: 10_000,
+                height: 2_000,
+                width_criterion: SizeCriterion::Absolute,
+                height_criterion: SizeCriterion::Absolute,
+                text_wrap: TextWrap::TopAndBottom,
+                flow_with_text: true,
+                horz_rel_to: HorzRelTo::Page,
+                vert_rel_to: VertRelTo::Page,
+                horz_align: HorzAlign::Right,
+                vert_align: VertAlign::Bottom,
+                ..Default::default()
+            },
+            outer_margin_left: 50,
+            outer_margin_right: 150,
+            outer_margin_top: 75,
+            outer_margin_bottom: 200,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn native_master_page_end_margins_preserve_other_anchor_contracts() {
+        let eng = LayoutEngine::new(DEFAULT_DPI);
+        let native = LayoutCompatibilityProfile::new(false, false, false, false, true);
+        eng.set_layout_profile(native);
+        let table = source_table();
+        let inset = |table: &Table, master, depth, inline| {
+            eng.native_master_page_end_margin_inset(table, master, depth, inline)
+        };
+        let expected = (
+            hwpunit_to_px(150, DEFAULT_DPI),
+            hwpunit_to_px(200, DEFAULT_DPI),
+        );
+        assert_eq!(inset(&table, true, 0, None), expected);
+        assert_eq!(inset(&table, false, 0, None), (0.0, 0.0));
+        assert_eq!(inset(&table, true, 1, None), (0.0, 0.0));
+        assert_eq!(inset(&table, true, 0, Some(100.0)), (0.0, 0.0));
+        let mut zero = table.clone();
+        zero.outer_margin_right = 0;
+        zero.outer_margin_bottom = 0;
+        assert_eq!(inset(&zero, true, 0, None), (0.0, 0.0));
+        let mutations: [fn(&mut Table); 14] = [
+            |t: &mut Table| t.common.horz_align = HorzAlign::Left,
+            |t: &mut Table| t.common.vert_align = VertAlign::Top,
+            |t: &mut Table| t.common.horz_rel_to = HorzRelTo::Paper,
+            |t: &mut Table| t.common.vert_rel_to = VertRelTo::Paper,
+            |t: &mut Table| t.common.horz_rel_to = HorzRelTo::Para,
+            |t: &mut Table| t.common.vert_rel_to = VertRelTo::Para,
+            |t: &mut Table| t.common.treat_as_char = true,
+            |t: &mut Table| t.common.flow_with_text = false,
+            |t: &mut Table| t.common.allow_overlap = true,
+            |t: &mut Table| t.dirty = true,
+            |t: &mut Table| t.outer_margin_right = -1,
+            |t: &mut Table| t.outer_margin_bottom = -1,
+            |t: &mut Table| t.outer_margin_left = -1,
+            |t: &mut Table| t.outer_margin_top = -1,
+        ];
+        for mutate in mutations {
+            let mut other = table.clone();
+            mutate(&mut other);
+            assert_eq!(inset(&other, true, 0, None), (0.0, 0.0));
+        }
+        for profile in [
+            LayoutCompatibilityProfile::new(false, false, true, false, false),
+            native.with_own_line_layout(true),
+        ] {
+            eng.set_layout_profile(profile);
+            assert_eq!(inset(&table, true, 0, None), (0.0, 0.0));
+        }
+        eng.set_layout_profile(LayoutCompatibilityProfile::new(
+            false, false, false, true, false,
+        ));
+        assert_eq!(inset(&table, true, 0, None), expected);
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
+    fn native_master_page_end_frame_preserves_source_and_reopen() {
+        use crate::document_core::DocumentCore;
+        use crate::model::provenance::FontMetricsPolicy;
+        let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") else {
+            return;
+        };
+        let mut paths = crate::renderer::font_paths::env_font_paths();
+        paths.push(std::path::PathBuf::from(font));
+        if let Some(dir) = std::env::var_os("RHWP_HANCOM_HFT_TEST_DIR") {
+            paths.push(std::path::PathBuf::from(dir));
+        }
+        crate::renderer::font_paths::register_font_face_availability(&paths);
+        let _measure = crate::renderer::layout::enter_measure_font_paths(paths);
+        let mut core = DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../../samples/exam_science.hwp"),
+            FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("original source loads");
+        let _shaping = core.resolved_shaping_font_scope();
+        let original = format!("{:?}", core.document.sections[0].section_def.master_pages);
+        fn check(core: &DocumentCore) {
+            let mp = core.document.sections[0]
+                .section_def
+                .master_pages
+                .iter()
+                .find(|mp| mp.optional_page_number() == Some(4))
+                .expect("source fourth-page master");
+            let (pi, ci, table) = mp
+                .paragraphs
+                .iter()
+                .enumerate()
+                .find_map(|(pi, para)| {
+                    para.controls.iter().enumerate().find_map(|(ci, c)| {
+                        let Control::Table(t) = c else {
+                            return None;
+                        };
+                        (t.common.horz_rel_to == HorzRelTo::Page
+                            && t.common.vert_rel_to == VertRelTo::Page
+                            && t.common.horz_align == HorzAlign::Right
+                            && t.common.vert_align == VertAlign::Bottom)
+                            .then_some((pi, ci, t.as_ref()))
+                    })
+                })
+                .expect("source page-end frame");
+            assert!(table.outer_margin_right > 0 && table.outer_margin_bottom > 0);
+            let source = format!("{table:?}");
+            let tree = core.build_page_render_tree(3).expect("master page paints");
+            fn collect<'a>(
+                node: &'a RenderNode,
+                pi: usize,
+                ci: usize,
+                out: &mut Vec<&'a RenderNode>,
+            ) {
+                if matches!(&node.node_type, RenderNodeType::Table(t)
+                    if t.para_index == Some(pi) && t.control_index == Some(ci))
+                {
+                    out.push(node);
+                }
+                for child in &node.children {
+                    collect(child, pi, ci, out);
+                }
+            }
+            let mut frames = Vec::new();
+            for master in tree
+                .root
+                .children
+                .iter()
+                .filter(|n| matches!(&n.node_type, RenderNodeType::MasterPage))
+            {
+                collect(master, pi, ci, &mut frames);
+            }
+            assert_eq!(frames.len(), 1, "unique master frame");
+            let bbox = frames[0].bbox;
+            let body = core.layout_engine.current_body_area.get();
+            assert!(body.2 > 0.0 && body.3 > 0.0);
+            let px = |hu: i32| hwpunit_to_px(hu, core.dpi);
+            let expected_right = body.0 + body.2
+                - px(signed_hwpunit(table.common.horizontal_offset))
+                - px(i32::from(table.outer_margin_right));
+            let expected_bottom = body.1 + body.3
+                - px(signed_hwpunit(table.common.vertical_offset))
+                - px(i32::from(table.outer_margin_bottom));
+            assert!((bbox.x + bbox.width - expected_right).abs() < 0.01);
+            assert!((bbox.y + bbox.height - expected_bottom).abs() < 0.01);
+            assert!((bbox.width - px(table.common.width as i32)).abs() < 0.01);
+            assert!((bbox.height - px(table.common.height as i32)).abs() < 0.01);
+            assert_eq!(
+                format!("{table:?}"),
+                source,
+                "paint leaves source frame intact"
+            );
+        }
+        check(&core);
+        check(&core);
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].section_def.master_pages),
+            original
+        );
+        core.insert_text_native(0, 0, 0, " ")
+            .expect("unrelated edit");
+        core.paginate();
+        check(&core);
+        let saved = core.export_hwpx_native().expect("public source save");
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].section_def.master_pages),
+            original
+        );
+        let reopened =
+            DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared)
+                .expect("certified source reopens");
+        assert!(reopened.document.layout_profile().hwp5_origin_hwpx());
+        check(&reopened);
+    }
 }

@@ -10018,10 +10018,17 @@ pub fn register_runtime_font_metrics(
     )
 }
 
-/// 사용자 PC 의 한컴 HFT 파일 바이트를 그리기 전용 윤곽선 소스로 등록한다.
+/// 실제 준비된 SFNT face의 glyph ID를 기준점 원점의 SVG 윤곽선으로 읽는다.
+/// 1000=1em, y 아래쪽 양수. 잘못된 face/glyph나 윤곽선이 없으면 빈 문자열.
+#[wasm_bindgen(js_name = sfntGlyphPathEm)]
+pub fn sfnt_glyph_path_em(bytes: &[u8], face_index: u32, glyph_id: u32) -> String {
+    crate::renderer::sfnt_glyphs::glyph_path_em(bytes, face_index, glyph_id)
+}
+
+/// 사용자 PC 의 한컴 HFT 파일 바이트를 윤곽선·원본 전진폭 소스로 등록한다.
 ///
-/// 레이아웃 폭은 바뀌지 않는다. HFT 글꼴을 쓰는 run 은 다음 렌더부터 이
-/// 윤곽선으로 그려진다. 지원하지 않는 flavor·문자 범위의 은행이면 false.
+/// 등록한 원본 라틴 폭과 윤곽선은 다음 레이아웃·렌더의 서체 선택에 반영한다.
+/// 지원하지 않는 flavor·문자 범위의 은행이면 false.
 #[wasm_bindgen(js_name = registerHftFont)]
 pub fn register_hft_font(bytes: &[u8]) -> bool {
     crate::renderer::hft_glyphs::register_hft_bytes(bytes.to_vec())

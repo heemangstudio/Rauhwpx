@@ -460,3 +460,25 @@ test('RendererSession owns and disposes CanvasKit exactly once', async () => {
   assert.equal(rendererSession.isCurrent(selection), false);
   await assert.rejects(rendererSession.resolve({} as never), /disposed/);
 });
+
+test('same-document revisions preserve fonts while new documents reset their ownership', async () => {
+  for (const backend of ['canvaskit', 'auto'] as const) {
+    const resets: Array<{ preserveFonts?: boolean } | undefined> = [];
+    const renderer = fakeRenderer();
+    renderer.resetDocumentResources = options => { resets.push(options); };
+    const current = session(backend, async () => renderer);
+    const source = { getCanvasKitDocumentPreflight: () => preflight('eligible') };
+    current.beginDocument('first');
+    await current.resolve(source);
+    current.invalidateDocument();
+    assert.deepEqual(resets, [{ preserveFonts: true }]);
+    await current.resolve(source);
+    if (backend === 'auto') {
+      current.pinAutoMutationRevision();
+      assert.deepEqual(resets.at(-1), { preserveFonts: true });
+    }
+    current.beginDocument('second');
+    assert.equal(resets.at(-1), undefined, 'actual document replacement clears fonts');
+    current.dispose();
+  }
+});

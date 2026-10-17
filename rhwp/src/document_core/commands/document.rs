@@ -2602,11 +2602,8 @@ impl DocumentCore {
         }
 
         // [Task #1001] HWP3 변환본의 ParaShape 단위 1/2 추가 보정
-        let styles = crate::renderer::style_resolver::resolve_styles_with_variant(
-            &document.doc_info,
-            DEFAULT_DPI,
-            document.layout_profile().hwp3_layout(),
-        );
+        let styles =
+            crate::renderer::style_resolver::resolve_document_styles(&document, DEFAULT_DPI);
 
         let hwp5_origin_hwpx = matches!(source_format, crate::parser::FileFormat::Hwpx)
             && document
@@ -2727,12 +2724,7 @@ impl DocumentCore {
         let mut composed: Vec<Vec<ComposedParagraph>> = document
             .sections
             .iter()
-            .map(|s| {
-                crate::renderer::composer::compose_section_with_policy(
-                    s,
-                    styles.font_metrics_policy,
-                )
-            })
+            .map(|s| crate::renderer::composer::compose_section_with_styles(s, &styles))
             .collect();
 
         crate::renderer::composer::initialize_body_paragraph_heads(
@@ -2791,6 +2783,12 @@ impl DocumentCore {
             validation_report,
         };
 
+        // 내장 face 공급자를 가진 원본 글꼴 빈칸도 최초 측정 전에 같은 scope에서 선택한다.
+        if doc.styles.char_styles.iter().any(|cs| cs.use_font_space)
+            && !doc.collect_resolved_shaping_fonts().is_empty()
+        {
+            doc.recompose_body_sections();
+        }
         doc.paginate();
         Ok(doc)
     }
@@ -3212,10 +3210,8 @@ impl DocumentCore {
                         && para.controls.is_empty()
                         && !para.line_segs.is_empty()
                 }) {
-                    let composed = crate::renderer::composer::compose_paragraph_with_policy(
-                        para,
-                        styles.font_metrics_policy,
-                    );
+                    let composed =
+                        crate::renderer::composer::compose_paragraph_with_styles(para, &styles);
                     let mut metrics = Vec::with_capacity(composed.lines.len());
                     if composed.lines.len() == para.line_segs.len() {
                         for (line, seg) in composed.lines.iter().zip(&para.line_segs) {
@@ -5165,12 +5161,7 @@ impl DocumentCore {
         let composed = document
             .sections
             .iter()
-            .map(|s| {
-                crate::renderer::composer::compose_section_with_policy(
-                    s,
-                    styles.font_metrics_policy,
-                )
-            })
+            .map(|s| crate::renderer::composer::compose_section_with_styles(s, &styles))
             .collect();
         let sec_count = document.sections.len();
 
@@ -6273,90 +6264,12 @@ impl DocumentCore {
         }
     }
 
-    // 새로고침 전에 깨끗했던 유일한 루트 소유자만 기록한다. 중첩/캡션 등에서 같은
-    // ID가 재사용되면 캐시 무효화와 실제 편집을 구별할 수 없으므로 허용하지 않는다.
-    fn clean_root_refresh_tables(&self) -> HashSet<u32> {
-        fn caption(caption: &Option<Caption>, counts: &mut HashMap<u32, usize>) {
-            if let Some(caption) = caption {
-                paragraphs(&caption.paragraphs, counts);
-            }
-        }
-        fn shape(value: &ShapeObject, counts: &mut HashMap<u32, usize>) {
-            if let Some(drawing) = value.drawing() {
-                if let Some(text) = &drawing.text_box {
-                    paragraphs(&text.paragraphs, counts);
-                }
-                caption(&drawing.caption, counts);
-            }
-            match value {
-                ShapeObject::Group(group) => {
-                    caption(&group.caption, counts);
-                    for child in &group.children {
-                        shape(child, counts);
-                    }
-                }
-                ShapeObject::Picture(picture) => caption(&picture.caption, counts),
-                ShapeObject::Chart(chart) => caption(&chart.caption, counts),
-                ShapeObject::Ole(ole) => caption(&ole.caption, counts),
-                _ => {}
-            }
-        }
-        fn paragraphs(paras: &[Paragraph], counts: &mut HashMap<u32, usize>) {
-            for para in paras {
-                for control in &para.controls {
-                    match control {
-                        Control::Table(table) => {
-                            *counts.entry(table.common.instance_id).or_default() += 1;
-                            for cell in &table.cells {
-                                paragraphs(&cell.paragraphs, counts);
-                            }
-                            caption(&table.caption, counts);
-                        }
-                        Control::Shape(value) => shape(value, counts),
-                        Control::Picture(picture) => caption(&picture.caption, counts),
-                        Control::Header(header) => paragraphs(&header.paragraphs, counts),
-                        Control::Footer(footer) => paragraphs(&footer.paragraphs, counts),
-                        Control::Footnote(note) => paragraphs(&note.paragraphs, counts),
-                        Control::Endnote(note) => paragraphs(&note.paragraphs, counts),
-                        Control::HiddenComment(comment) => paragraphs(&comment.paragraphs, counts),
-                        Control::Field(field) => paragraphs(&field.memo_paragraphs, counts),
-                        _ => {}
-                    }
-                }
-            }
-        }
-        if !self.document.layout_profile().native_hwpx_cell_margin() {
-            return HashSet::new();
-        }
-        let mut counts = HashMap::new();
-        for section in &self.document.sections {
-            paragraphs(&section.paragraphs, &mut counts);
-            for master in &section.section_def.master_pages {
-                paragraphs(&master.paragraphs, &mut counts);
-            }
-        }
-        self.document
-            .sections
-            .iter()
-            .flat_map(|section| &section.paragraphs)
-            .flat_map(|para| &para.controls)
-            .filter_map(|control| {
-                let Control::Table(table) = control else {
-                    return None;
-                };
-                let id = table.common.instance_id;
-                (!table.dirty && id > 0 && counts.get(&id) == Some(&1)).then_some(id)
-            })
-            .collect()
-    }
-
     /// 현재 Document IR은 건드리지 않고, 그로부터 파생된 모든 조판 캐시를 다시 만든다.
     ///
     /// 여러 저수준 편집을 연달아 수행하는 호출자는 각 단계의 증분 캐시를 최종 결과로
     /// 노출하면 안 된다. 특히 에이전트 미리보기처럼 split/delete/format을 한 논리
     /// 연산으로 묶는 경로는 이 메서드로 연산 경계에서 단 한 번 권위 조판을 확정한다.
     pub fn refresh_layout_native(&mut self) {
-        let root_refresh_tables = self.clean_root_refresh_tables();
         // 폰트 등록 변화 후 새로고침이 캐시된 폭을 재사용하지 않도록 비운다.
         crate::renderer::layout::clear_measure_caches();
         self.render_normalization.sections.clear();
@@ -6377,21 +6290,14 @@ impl DocumentCore {
         if self.measured_sections.len() != section_count {
             self.measured_sections.clear();
         }
-        for section in &mut self.document.sections {
-            for paragraph in &mut section.paragraphs {
-                for control in &mut paragraph.controls {
-                    if let Control::Table(table) = control {
-                        table.dirty = true;
-                    }
-                }
-            }
-        }
+        // 캐시 새로고침은 원본 편집 상태를 바꾸지 않는다. 표 재측정은
+        // paginate의 별도 모드로 요청해 저장 기하의 렌더 증명을 유지한다.
         self.dirty_paragraphs.clear();
         self.para_column_map.clear();
         self.para_offset = vec![0; section_count];
         self.invalidate_page_tree_cache();
         self.overflow_links_cache.borrow_mut().clear();
-        self.paginate_with_root_refresh_tables(&root_refresh_tables);
+        self.paginate_with_table_cache_refresh(true);
     }
 
     /// 로드에서 합성한 줄만 비우고 같은 폭/간격 규칙으로 다시 계산한다.

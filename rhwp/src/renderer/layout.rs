@@ -69,7 +69,7 @@ fn inline_control_line_index(para: &Paragraph, control_index: usize) -> usize {
     super::pagination::inline_control_line_seg_index(para, control_index).unwrap_or(0)
 }
 
-/// 배경 그림은 TAC 표의 줄 소유자가 아니다. 단일 원본 표줄은 원본 UTF-16
+/// 배경 개체와 쪽 하단 고정 표는 TAC 표의 줄 소유자가 아니다. 단일 원본 표줄은 원본 UTF-16
 /// 범위·개체 높이·구성된 줄 메트릭이 모두 일치할 때만 별도로 연결한다.
 fn authored_tac_table_host_line<'a>(
     para: &'a Paragraph,
@@ -87,7 +87,7 @@ fn authored_tac_table_host_line<'a>(
     {
         return None;
     }
-    // 다른 flow 개체나 표가 있으면 단일 호스트라고 추정하지 않는다.
+    // 본문 줄을 소비하지 않는 부동 개체만 단일 TAC 호스트와 공존할 수 있다.
     if !para.controls.iter().enumerate().all(|(index, control)| {
         index == control_index
             || matches!(control, Control::SectionDef(_) | Control::ColumnDef(_))
@@ -95,6 +95,14 @@ fn authored_tac_table_host_line<'a>(
                 if !picture.common.treat_as_char
                     && picture.common.text_wrap == TextWrap::BehindText
                     && picture.caption.is_none())
+            || matches!(control, Control::Table(other)
+                if super::float_placement::is_page_bottom_fixed_float(&other.common)
+                    && other.caption.is_none())
+            || matches!(control, Control::Shape(shape)
+                if !shape.common().treat_as_char
+                    && matches!(shape.common().text_wrap,
+                        TextWrap::InFrontOfText | TextWrap::BehindText)
+                    && shape_layout::shape_caption_for_layout(shape).is_none())
     }) {
         return None;
     }
@@ -2791,11 +2799,12 @@ pub(crate) use table_layout::border_style_has_diagonal;
 pub(crate) use table_partial::NATIVE_HWPX_CONTINUED_BORDER_INSET_HU;
 pub(crate) use text_measurement::{
     active_shaping_face_available, clear_measure_caches, clear_measure_width_cache,
-    compute_char_positions, compute_glyph_positions, enter_resolved_shaping_fonts,
-    estimate_text_width, estimate_text_width_unrounded, extract_tab_leaders_with_extended,
-    find_next_tab_stop, hancom_pua_face_has_glyph, is_cjk_char, is_halfwidth_cjk_quote,
-    is_halfwidth_forced_punct, is_hancom_blank_pua_marker, is_hft_missing_pua,
-    registered_glyph_advance, resolved_to_text_style, split_into_clusters,
+    compensated_native_equation_tabs, compute_char_positions, compute_glyph_positions,
+    enter_resolved_shaping_fonts, estimate_text_width, estimate_text_width_unrounded,
+    extract_tab_leaders_with_extended, find_next_tab_stop, hancom_pua_face_has_glyph, is_cjk_char,
+    is_halfwidth_cjk_quote, is_halfwidth_forced_punct, is_hancom_blank_pua_marker,
+    is_hft_missing_pua, registered_glyph_advance, reproject_native_wrapped_tab_pair,
+    resolved_to_text_style, source_font_space_advance_px, split_into_clusters,
     with_resolved_shaping_fonts, ResolvedShapingFont, ResolvedShapingFontScope,
     HFT_MISSING_PUA_FAMILIES,
 };
@@ -4002,6 +4011,34 @@ impl LayoutEngine {
                         // Band alignment positions line content. A floating
                         // Para-relative shape uses the original band origin,
                         // whether or not a picture shares its paragraph.
+                        // 첫 머리말의 표 분기는 문단의 저장 vpos를 소비하지 않는다.
+                        // 같은 문단 기준의 부유 도형만 원본 줄 상단을 복원한다.
+                        let saved_header_host_offset = if is_header
+                            && i == 0
+                            && has_table
+                            && (self.profile.get().native_hwp5_layout()
+                                || self.profile.get().hwp5_origin_hwpx())
+                            && !self.profile.get().own_line_layout()
+                            && !shape.common().treat_as_char
+                            && shape.common().vert_rel_to == VertRelTo::Para
+                            && para.line_segs.len() == 1
+                        {
+                            para.line_segs
+                                .first()
+                                .filter(|line| {
+                                    line.text_start == 0
+                                        && line.vertical_pos > 0
+                                        && line.line_height > 0
+                                        && line.text_height > 0
+                                        && line.baseline_distance > 0
+                                        && line.baseline_distance <= line.line_height
+                                        && line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0
+                                })
+                                .map(|line| hwpunit_to_px(line.vertical_pos, self.dpi))
+                                .unwrap_or(0.0)
+                        } else {
+                            0.0
+                        };
                         let floating_anchor_y = if !is_header
                             && !shape.common().treat_as_char
                             && matches!(shape.common().vert_rel_to, VertRelTo::Para)
@@ -4013,7 +4050,7 @@ impl LayoutEngine {
                                     _ => 0.0,
                                 }
                         } else {
-                            shape_anchor_y
+                            shape_anchor_y + saved_header_host_offset
                         };
                         // A floating Shape sharing a footer paragraph with inline pictures
                         // is positioned from the last saved line's content bottom. The
@@ -4073,10 +4110,7 @@ impl LayoutEngine {
         page_number: u32,
         styles: &ResolvedStyleSet,
     ) -> ComposedParagraph {
-        let mut comp = crate::renderer::composer::compose_paragraph_with_policy(
-            para,
-            styles.font_metrics_policy,
-        );
+        let mut comp = crate::renderer::composer::compose_paragraph_with_styles(para, &styles);
         self.substitute_hf_field_markers(&mut comp, page_number);
         if para.controls.iter().any(|ctrl| {
             matches!(ctrl, Control::AutoNumber(an)
@@ -7026,7 +7060,7 @@ impl LayoutEngine {
                                 && delta != 0
                                 && crate::renderer::equation::stored_unaffected_upper_line_metrics_hu(
                                     previous,
-                                    &crate::renderer::composer::compose_paragraph_with_policy(previous, styles.font_metrics_policy),
+                                    &crate::renderer::composer::compose_paragraph_with_styles(previous, &styles),
                                     previous.line_segs.len() - 1,
                                 )
                                 .is_some();
@@ -10225,7 +10259,60 @@ impl LayoutEngine {
             } else {
                 None
             };
-            if !tac_seg_applied && !is_outside_body && !is_current_visible_para_float {
+            // 이미 끝까지 그린 본문보다 위에 놓인 용지 표는 그 본문의 tail을
+            // 다시 소비하지 않는다. 실제 표 하단(바깥 여백 포함)과 본문 상단으로
+            // 판정하므로 본문과 겹치거나 본문 아래로 내려온 표는 기존 경로를 쓴다.
+            let table_above_completed_host = (self.profile.get().native_hwp5_layout()
+                || self.profile.get().hwp5_origin_hwpx())
+                && !self.profile.get().own_line_layout()
+                && para_already_started
+                && text_already_laid_out
+                && para_has_non_whitespace_text(para)
+                && !para.line_segs.is_empty()
+                && para.line_segs.iter().all(|line| {
+                    line.line_height > 0 && line.segment_width > 0
+                        && line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0
+                })
+                && para.line_segs.windows(2).all(|pair| pair[1].vertical_pos > pair[0].vertical_pos)
+                && composed.get(para_index).is_some_and(|comp| comp.lines.len() == para.line_segs.len())
+                && matches!(para.controls.get(control_index), Some(Control::Table(table))
+                    if !table.common.treat_as_char
+                        && table.common.vert_rel_to == VertRelTo::Paper
+                        && table.common.text_wrap == TextWrap::TopAndBottom
+                        && table.caption.is_none()
+                        && table.outer_margin_bottom >= 0)
+                && page_content.column_contents.iter().any(|column| {
+                    if !std::ptr::eq(&column.wrap_anchors, *wrap_anchors) { return false; }
+                    let Some(table_pos) = column.items.iter().position(|item| {
+                        matches!(item, PageItem::Table { para_index: pi, control_index: ci }
+                            if *pi == para_index && *ci == control_index)
+                    }) else { return false; };
+                    column.items[..table_pos].iter().any(|item| {
+                        matches!(item, PageItem::PartialParagraph { para_index: pi, start_line: 0, end_line }
+                            if *pi == para_index && *end_line == para.line_segs.len())
+                    })
+                })
+                && col_node.children[..table_node_start].iter().filter_map(|node| {
+                    matches!(&node.node_type, RenderNodeType::TextLine(line)
+                        if line.para_index == Some(para_index)
+                            && line.section_index == Some(page_content.section_index))
+                        .then_some(node.bbox.y)
+                }).min_by(f64::total_cmp).is_some_and(|host_top| {
+                    let Control::Table(table) = &para.controls[control_index] else { return false; };
+                    col_node.children[table_node_start..].iter().any(|node| {
+                        matches!(&node.node_type, RenderNodeType::Table(rendered)
+                            if rendered.para_index == Some(para_index)
+                                && rendered.control_index == Some(control_index))
+                            && super::px_to_hwpunit_round(node.bbox.y + node.bbox.height
+                                + hwpunit_to_px(i32::from(table.outer_margin_bottom), self.dpi), self.dpi)
+                                <= super::px_to_hwpunit_round(host_top, self.dpi)
+                    })
+                });
+            if !tac_seg_applied
+                && !is_outside_body
+                && !is_current_visible_para_float
+                && !table_above_completed_host
+            {
                 if let Some(table_bottom) = consumed_host_tail_bottom {
                     y_offset = table_bottom;
                 }
@@ -13338,7 +13425,51 @@ mod authored_tac_host_tests {
     #[test]
     fn tac_authored_host_renderer_preserves_signed_spacing_after_backgrounds() {
         let (core, pi, ci) = loaded_background_table();
-        let page = core.pagination[0]
+        assert_authored_host_spacing(&core, 0, pi, ci);
+    }
+
+    #[test]
+    fn tac_authored_host_renderer_preserves_spacing_among_floating_controls() {
+        let core = crate::document_core::DocumentCore::from_bytes(include_bytes!(
+            "../../samples/exam_math.hwp"
+        ))
+        .expect("authored floating controls/table fixture");
+        core.build_page_render_tree(11).expect("fixture page");
+        let paragraphs = core.section_render_paragraphs(1);
+        let composed = core.section_render_composed(1);
+        let (pi, ci) = paragraphs
+            .iter()
+            .enumerate()
+            .find_map(|(pi, para)| {
+                para.controls.iter().enumerate().find_map(|(ci, _)| {
+                    let floating_predecessor = para.controls[..ci].iter().any(|control| {
+                        matches!(control, Control::Table(table)
+                        if super::super::float_placement::is_page_bottom_fixed_float(&table.common))
+                    });
+                    (floating_predecessor
+                        && authored_tac_table_host_line(para, composed.get(pi), ci, true).is_some())
+                    .then_some((pi, ci))
+                })
+            })
+            .expect("single authored TAC host after a page-bottom floating table");
+        assert_authored_host_spacing(&core, 1, pi, ci);
+        let mut flow_predecessor = paragraphs[pi].clone();
+        if let Control::Table(table) = &mut flow_predecessor.controls[0] {
+            table.common.vert_align = VertAlign::Top;
+        }
+        assert!(
+            authored_tac_table_host_line(&flow_predecessor, composed.get(pi), ci, true).is_none(),
+            "a body-flow predecessor makes the host ambiguous"
+        );
+    }
+
+    fn assert_authored_host_spacing(
+        core: &crate::document_core::DocumentCore,
+        section: usize,
+        pi: usize,
+        ci: usize,
+    ) {
+        let page = core.pagination[section]
             .pages
             .iter()
             .find(|page| {
@@ -13365,8 +13496,8 @@ mod authored_tac_host_tests {
         let column = &page.column_contents[column_index];
         let col_area = &page.layout.column_areas[column_index];
         for gap in [0, 300, -300] {
-            let mut paragraphs = core.section_render_paragraphs(0).to_vec();
-            let mut composed = core.section_render_composed(0).to_vec();
+            let mut paragraphs = core.section_render_paragraphs(section).to_vec();
+            let mut composed = core.section_render_composed(section).to_vec();
             paragraphs[pi].line_segs[0].line_spacing = gap;
             composed[pi].lines[0].line_spacing = gap;
             let para = &paragraphs[pi];
@@ -13378,7 +13509,7 @@ mod authored_tac_host_tests {
                 composed: &composed,
                 styles: &core.styles,
                 bin_data_content: &core.document.bin_data_content,
-                measured_tables: &core.measured_tables[0],
+                measured_tables: &core.measured_tables[section],
                 layout: &page.layout,
                 col_area,
                 outline_numbering_id: 0,
@@ -13596,7 +13727,7 @@ mod tac_table_margin_tests {
         };
         let paragraphs = [para.clone()];
         let composed = [composed_override.unwrap_or_else(|| {
-            super::super::composer::compose_paragraph_with_policy(para, styles.font_metrics_policy)
+            super::super::composer::compose_paragraph_with_styles(para, &styles)
         })];
         let ctx = ColumnItemCtx {
             page_content: &page,
@@ -13660,10 +13791,8 @@ mod tac_table_margin_tests {
                     let para = host(later_line, "  ", true);
                     let styles = styles(indent, alignment);
                     assert_eq!(inline_control_line_index(&para, 0), usize::from(later_line));
-                    let composed = super::super::composer::compose_paragraph_with_policy(
-                        &para,
-                        styles.font_metrics_policy,
-                    );
+                    let composed =
+                        super::super::composer::compose_paragraph_with_styles(&para, &styles);
                     let leading = if later_line {
                         0.0
                     } else {
@@ -13698,10 +13827,7 @@ mod tac_table_margin_tests {
     fn tac_fallback_preserves_filler_advance_and_recorded_inline_position() {
         let para = host(false, "\u{F081C}", true);
         let styles = styles(12.0, Alignment::Left);
-        let composed = super::super::composer::compose_paragraph_with_policy(
-            &para,
-            styles.font_metrics_policy,
-        );
+        let composed = super::super::composer::compose_paragraph_with_styles(&para, &styles);
         let leading = compute_tac_leading_width(&composed, 0, Some(1), &styles);
         assert!(leading > 0.0);
         assert!(tac_leading_has_non_space(&composed, 0, Some(1)));
@@ -13728,10 +13854,7 @@ mod tac_table_margin_tests {
         assert_eq!(inline_control_line_index(&para, 0), 1);
         for indent in [-12.0, 12.0] {
             let styles = styles(indent, Alignment::Left);
-            let composed = super::super::composer::compose_paragraph_with_policy(
-                &para,
-                styles.font_metrics_policy,
-            );
+            let composed = super::super::composer::compose_paragraph_with_styles(&para, &styles);
             let leading = compute_tac_leading_width(&composed, 0, Some(1), &styles);
             assert!(leading > 0.0);
             let (parent, _, area) = render(&para, &styles, None);
@@ -13804,10 +13927,7 @@ mod tac_table_margin_tests {
         let styles = styles(0.0, Alignment::Left);
         for count in [1, 2, 4] {
             let para = hard_break_host(&" ".repeat(count), 1);
-            let composed = super::super::composer::compose_paragraph_with_policy(
-                &para,
-                styles.font_metrics_policy,
-            );
+            let composed = super::super::composer::compose_paragraph_with_styles(&para, &styles);
             let start = "Earlier text\n".chars().count();
             assert!(composed.lines[0].has_line_break);
             assert!(
@@ -13886,10 +14006,7 @@ mod tac_table_margin_tests {
         soft.text_start = (start + 1) as u32;
         soft.vertical_pos += 1_500;
         para.line_segs.push(soft);
-        let composed = super::super::composer::compose_paragraph_with_policy(
-            &para,
-            styles.font_metrics_policy,
-        );
+        let composed = super::super::composer::compose_paragraph_with_styles(&para, &styles);
         assert!(composed.lines[0].has_line_break);
         assert_eq!(para.text.chars().nth(start), Some(' '));
         assert!(composed
@@ -13927,10 +14044,7 @@ mod tac_table_margin_tests {
                 crate::document_core::find_control_text_positions(&para),
                 vec![foreign_pos, anchor]
             );
-            let composed = super::super::composer::compose_paragraph_with_policy(
-                &para,
-                styles.font_metrics_policy,
-            );
+            let composed = super::super::composer::compose_paragraph_with_styles(&para, &styles);
             assert!(composed.lines.iter().any(|line| line.char_start == start
                 && line
                     .runs
@@ -13951,10 +14065,7 @@ mod tac_table_margin_tests {
         let styles = styles(0.0, Alignment::Left);
         let para = hard_break_host("  ", 1);
         let start = "Earlier text\n".chars().count();
-        let mut composed = super::super::composer::compose_paragraph_with_policy(
-            &para,
-            styles.font_metrics_policy,
-        );
+        let mut composed = super::super::composer::compose_paragraph_with_styles(&para, &styles);
         let mut conflicting = composed
             .lines
             .iter()
@@ -14019,6 +14130,17 @@ mod paper_visible_host_tail_tests {
         spacing: i32,
         after: i32,
     ) -> (PageRenderTree, Vec<PageItem>) {
+        render_lines(visible, table_top, spacing, after, 1, 0)
+    }
+
+    fn render_lines(
+        visible: bool,
+        table_top: u32,
+        spacing: i32,
+        after: i32,
+        lines: usize,
+        outer_bottom: i16,
+    ) -> (PageRenderTree, Vec<PageItem>) {
         let page_def = crate::model::page::PageDef {
             width: 45_000,
             height: 60_000,
@@ -14050,6 +14172,7 @@ mod paper_visible_host_tail_tests {
         let mut cell_text = paragraph("T", 600, 0);
         cell_text.para_shape_id = 1;
         let table = Table {
+            outer_margin_bottom: outer_bottom,
             row_count: 1,
             col_count: 1,
             row_sizes: vec![1],
@@ -14076,6 +14199,15 @@ mod paper_visible_host_tail_tests {
         };
         let mut host = paragraph(if visible { "Host" } else { "" }, HOST_HEIGHT, spacing);
         host.line_segs[0].vertical_pos = HOST_VPOS;
+        if lines == 2 {
+            host.text = "Host\nBody".into();
+            host.char_count = host.text.chars().count() as u32 + 1;
+            host.char_offsets = (0..host.text.chars().count() as u32).collect();
+            let mut second = host.line_segs[0].clone();
+            second.text_start = 5;
+            second.vertical_pos += HOST_HEIGHT + spacing;
+            host.line_segs.push(second);
+        }
         host.char_count += 16;
         // 실제 witness와 같이 overlay가 있어 후속 줄의 lazy-vpos 재보정을 우회한다.
         // 표와 host tail의 소유권만 검증하며 페이지/문단 좌표를 직접 주입하지 않는다.
@@ -14096,7 +14228,8 @@ mod paper_visible_host_tail_tests {
         ];
         let mut following = paragraph("Following", 900, 0);
         following.para_shape_id = 1;
-        following.line_segs[0].vertical_pos = HOST_VPOS + HOST_HEIGHT + spacing + after;
+        following.line_segs[0].vertical_pos =
+            HOST_VPOS + lines as i32 * (HOST_HEIGHT + spacing) + after;
         let paragraphs = vec![host, following];
         let composed: Vec<_> = paragraphs
             .iter()
@@ -14104,8 +14237,8 @@ mod paper_visible_host_tail_tests {
             .collect();
         assert_eq!(
             composed[0].lines.len(),
-            1,
-            "fixture must retain one authored host line"
+            lines,
+            "fixture must retain authored host lines"
         );
         assert_eq!(composed[0].lines[0].line_spacing, spacing);
         let (_, measured) = Paginator::with_default_dpi().paginate(
@@ -14156,8 +14289,8 @@ mod paper_visible_host_tail_tests {
                 PageItem::PartialParagraph {
                     para_index: 0,
                     start_line: 0,
-                    end_line: 1
-                }
+                    end_line
+                } if *end_line == lines
             )
         });
         if visible {
@@ -14274,6 +14407,27 @@ mod paper_visible_host_tail_tests {
     }
 
     #[test]
+    fn native_paper_table_above_completed_multiline_host_consumes_no_second_tail() {
+        for (spacing, after, outer_bottom) in [(300, 450, 0), (876, 1100, 450), (200, 0, 600)] {
+            let host_top = 6000 + HOST_VPOS;
+            // 표의 외곽 여백까지 본문 첫 줄 위에 끝난다 (경계 포함).
+            let top = host_top - TABLE_HEIGHT as i32 - i32::from(outer_bottom);
+            let (tree, _) = render_lines(true, top as u32, spacing, after, 2, outer_bottom);
+            let host = body_line(&tree.root, 0).unwrap();
+            let following = body_line(&tree.root, 1).unwrap();
+            let table = table_bbox(&tree.root).unwrap();
+            assert!((table.y - hwpunit_to_px(top, DEFAULT_DPI)).abs() < 1e-8);
+            let measured_advance = hwpunit_to_px(2 * (HOST_HEIGHT + spacing) + after, DEFAULT_DPI);
+            assert!(
+                (following.y - host.y - measured_advance).abs() < 1e-8,
+                "completed multiline host owns its spacing once: {} vs {}",
+                following.y,
+                host.y + measured_advance
+            );
+        }
+    }
+
+    #[test]
     fn native_paper_empty_host_retains_unconsumed_table_tail() {
         for (spacing, after) in [(300, 450), (876, 1_100)] {
             let (tree, _) = render(false, 24_000, spacing, after);
@@ -14286,5 +14440,162 @@ mod paper_visible_host_tail_tests {
                 following.y
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod header_saved_shape_anchor_tests {
+    use super::*;
+    use crate::model::shape::LineShape;
+    use crate::model::table::{Cell, Table};
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    fn line_y(saved_vpos: i32, generated: bool, relative: VertRelTo, header: bool) -> (f64, f64) {
+        let engine = LayoutEngine::with_default_dpi();
+        engine.set_layout_profile(crate::model::provenance::LayoutCompatibilityProfile::new(
+            false, false, false, false, true,
+        ));
+        let table = Table {
+            row_count: 1,
+            col_count: 1,
+            row_sizes: vec![1],
+            cell_grid: vec![Some(0)],
+            common: CommonObjAttr {
+                width: 4000,
+                height: 1500,
+                ..Default::default()
+            },
+            cells: vec![Cell {
+                width: 4000,
+                height: 1500,
+                row_span: 1,
+                col_span: 1,
+                paragraphs: vec![Paragraph::new_empty()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let para = Paragraph {
+            controls: vec![
+                Control::Table(Box::new(table)),
+                Control::Shape(Box::new(ShapeObject::Line(LineShape {
+                    common: CommonObjAttr {
+                        width: 7200,
+                        height: 18,
+                        vertical_offset: (-1800i32) as u32,
+                        vert_rel_to: relative,
+                        text_wrap: TextWrap::InFrontOfText,
+                        ..Default::default()
+                    },
+                    start: crate::model::Point { x: 0, y: 0 },
+                    end: crate::model::Point { x: 7200, y: 0 },
+                    ..Default::default()
+                }))),
+            ],
+            line_segs: vec![LineSeg {
+                text_start: 0,
+                vertical_pos: saved_vpos,
+                line_height: 900,
+                text_height: 900,
+                baseline_distance: 765,
+                tag: if generated {
+                    LineSeg::TAG_IMPLEMENTATION_PROPERTY
+                } else {
+                    0
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let styles = ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_size: 12.0,
+                ..Default::default()
+            }],
+            para_styles: vec![ResolvedParaStyle::default()],
+            ..Default::default()
+        };
+        let area = LayoutRect {
+            x: 80.0,
+            y: 100.0,
+            width: 440.0,
+            height: 100.0,
+        };
+        let paper = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 600.0,
+            height: 800.0,
+        };
+        let mut tree = PageRenderTree::new(0, 600.0, 800.0);
+        let mut node = RenderNode::new(
+            tree.next_id(),
+            if header {
+                RenderNodeType::Header
+            } else {
+                RenderNodeType::Footer
+            },
+            BoundingBox::new(area.x, area.y, area.width, area.height),
+        );
+        engine.layout_header_footer_paragraphs(
+            &mut tree,
+            &mut node,
+            &[para],
+            &[],
+            &styles,
+            &area,
+            &area,
+            &paper,
+            None,
+            0,
+            1,
+            &[],
+            None,
+            None,
+            header,
+            0,
+            0,
+        );
+        let shape = node
+            .children
+            .iter()
+            .find(|node| matches!(node.node_type, RenderNodeType::Line(_)))
+            .expect("sibling line paints");
+        let table = node
+            .children
+            .iter()
+            .find(|node| matches!(node.node_type, RenderNodeType::Table(_)))
+            .expect("sibling table paints");
+        (shape.bbox.y, table.bbox.y)
+    }
+
+    #[test]
+    fn native_header_table_sibling_uses_saved_para_origin_for_floating_shape_only() {
+        let (zero_shape, zero_table) = line_y(0, false, VertRelTo::Para, true);
+        let (saved_shape, saved_table) = line_y(1800, false, VertRelTo::Para, true);
+        assert!((saved_shape - zero_shape - hwpunit_to_px(1800, DEFAULT_DPI)).abs() < 1e-8);
+        assert!(
+            (saved_shape - 100.0).abs() < 1e-8,
+            "signed shape offset cancels its saved host origin"
+        );
+        assert_eq!(
+            saved_table, zero_table,
+            "table keeps its original band anchor"
+        );
+        assert_eq!(
+            line_y(1800, true, VertRelTo::Para, true).0,
+            zero_shape,
+            "generated line has no saved origin"
+        );
+        assert_eq!(
+            line_y(1800, false, VertRelTo::Paper, true).0,
+            line_y(0, false, VertRelTo::Paper, true).0,
+            "paper-relative sibling is independent of paragraph origin"
+        );
+        assert_eq!(
+            line_y(1800, false, VertRelTo::Para, false).0,
+            line_y(0, false, VertRelTo::Para, false).0,
+            "footer anchoring retains its separate saved-picture and band rules"
+        );
     }
 }
