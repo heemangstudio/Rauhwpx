@@ -8,7 +8,7 @@ import { createBrowserWrappingKeyProvider } from '../browser-auth-store.mjs';
 import { createMemorySecretStore } from '../secret-store.mjs';
 import { createUserSecretStore } from '../user-secrets.mjs';
 
-const origin = 'https://dashboard.example.test';
+const origin = 'https://dashboard.example.com';
 const value = 'sk-user-secret-fixture-31415';
 
 async function dataDir(t) {
@@ -25,27 +25,23 @@ async function readTree(root) {
   return text;
 }
 
-test('saved secrets keep values only in the vault namespace and approvals follow their scope', async (t) => {
+test('saved secrets keep values only in the vault namespace, match their whole site and carry one agent-use switch', async (t) => {
   const root = await dataDir(t);
   const vault = createMemorySecretStore();
   const store = createUserSecretStore({ dataDir: root, secretStore: vault });
   const saved = await store.save({ label: 'Dashboard key', kind: 'api-key', origins: [origin], value, scope: 'always', threadId: 'chat-a' });
   assert.equal(await vault.get(`usersecret.${saved.id}`), value);
   assert.equal((await readTree(root)).includes(value), false, 'metadata never holds the value');
-  assert.deepEqual(await store.agentList('chat-a'), [{ id: saved.id, label: 'Dashboard key', kind: 'api-key', origins: [origin], approved: true }]);
-  assert.equal((await store.agentList('chat-b'))[0].approved, false, 'another chat needs its own approval');
-  await assert.rejects(store.resolveValue(saved.id, 'chat-b'), { code: 'SECRET_APPROVAL_REQUIRED' });
-  assert.equal(await store.resolveValue(saved.id, 'chat-a'), value);
+  assert.deepEqual(await store.agentList('chat-b'), [{ id: saved.id, label: 'Dashboard key', kind: 'api-key', origins: [origin], blocked: false }], 'a saved secret is visible to every chat');
+  assert.deepEqual((await store.forSite('https://login.example.com', 'chat-b')).map((secret) => secret.id), [saved.id], 'the same registrable domain matches');
+  assert.deepEqual(await store.forSite('https://example.org', 'chat-b'), []);
+  assert.equal(await store.resolveValue(saved.id, 'chat-b'), value);
 
-  // 이 채팅 승인은 채팅이 끝나면 사라진다. 영구 승인은 다시 열어도 남는다.
-  store.endChat('chat-a');
-  assert.equal(await store.isApproved(saved.id, 'chat-a'), false);
-  await store.approve({ id: saved.id, scope: 'always', threadId: 'chat-b' });
+  await store.setBlocked(saved.id, true);
   const reopened = createUserSecretStore({ dataDir: root, secretStore: vault });
-  assert.equal(await reopened.isApproved(saved.id, 'chat-c'), true);
-  await reopened.revoke(saved.id);
-  assert.equal(await reopened.isApproved(saved.id, 'chat-b'), false);
-
+  assert.equal((await reopened.get(saved.id)).blocked, true, 'the switch persists');
+  await reopened.touch(saved.id);
+  assert.deepEqual(await reopened.filledValues({ since: 0 }), [value], 'filled values reload for redaction after a restart');
   await reopened.remove(saved.id);
   assert.equal(await vault.get(`usersecret.${saved.id}`), null);
   assert.deepEqual(await reopened.list(), []);
@@ -75,7 +71,7 @@ test('without a vault only chat secrets exist, kept in memory, and a vault key f
   await assert.rejects(encrypted.resolveValue(saved.id, 'chat-a'), { code: 'SECRET_NOT_FOUND' });
 });
 
-test('reset recovers unreadable metadata, and a chat that ends while its secret is saving gets no grant', async (t) => {
+test('reset recovers unreadable metadata, and a chat deleted while its secret is saving keeps no chat value', async (t) => {
   const root = await dataDir(t);
   await fs.writeFile(path.join(root, 'user-secrets.json'), JSON.stringify({ schema: 1, secrets: [{ id: 'not-a-secret-id' }] }));
   const vault = createMemorySecretStore();
@@ -86,11 +82,12 @@ test('reset recovers unreadable metadata, and a chat that ends while its secret 
 
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
-  const slowVault = { ...vault, set: async (key, stored) => { await gate; return vault.set(key, stored); } };
-  const store = createUserSecretStore({ dataDir: root, secretStore: slowVault });
-  const saving = store.save({ label: 'Dashboard key', kind: 'api-key', origins: [origin], value, scope: 'always', threadId: 'chat-a' });
-  store.endChat('chat-a');
+  const slow = createUserSecretStore({ dataDir: root, secretStore: { ...vault, set: async (key, stored) => { await gate; return vault.set(key, stored); } } });
+  const saving = slow.save({ label: 'Slow key', kind: 'api-key', origins: [origin], value, scope: 'always', threadId: 'chat-a' });
+  const chatSaving = slow.save({ label: 'Chat key', kind: 'api-key', origins: [origin], value, scope: 'chat', threadId: 'chat-a' });
+  slow.endChat('chat-a');
   release();
-  const saved = await saving;
-  assert.equal(await store.isApproved(saved.id, 'chat-a'), false, 'the ended chat cannot use it without asking again');
+  await saving;
+  await assert.rejects(chatSaving, { code: 'SECRET_CHAT_ENDED' });
+  assert.deepEqual((await slow.list({ threadId: 'chat-a' })).map((secret) => secret.label), ['Slow key'], 'a saved secret stays; the chat value is gone');
 });
