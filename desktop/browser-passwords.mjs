@@ -115,10 +115,11 @@ function focusedForm() {
 }
 
 export class NativeBrowserPasswords {
-  constructor({ host, dataDir, safeStorage, vault, importer, Menu }) {
+  constructor({ host, dataDir, safeStorage, vault, importer, Menu, readBrokerCredential }) {
     this.host = host; this.vault = vault ?? new LocalBrowserPasswordVault({ dataDir, safeStorage });
     this.importer = importer ?? new ChromePasswordImporter({ vault: this.vault });
     this.Menu = Menu;
+    this.readBrokerCredential = readBrokerCredential;
     host.passwords = this;
   }
   async run(tab, fn, args = []) {
@@ -236,23 +237,35 @@ export class NativeBrowserPasswords {
     const tab = this.tab(params, { human });
     const snapshot = this.assertSnapshot(tab, params);
     const origin = passwordOrigin(tab.view.webContents.getURL());
-    return this.vault.withCredential(params.accountId, async (credential, lease) => {
+    const fill = async (credential, lease) => {
       this.assertSnapshot(tab, params);
       if (credential.origin !== origin) throw passwordFailure('BROWSER_PASSWORD_ORIGIN_MISMATCH', 'This saved account belongs to a different website.');
       const target = { snapshotId: snapshot.snapshotId, ref: params.passwordRef, passwordRef: params.passwordRef, usernameRef: params.usernameRef, origin };
       const checked = await this.run(tab, pageAction, [{ ...target, action: 'validate-fill' }]);
       this.assertSnapshot(tab, params);
-      lease.assertCurrent();
+      lease?.assertCurrent();
       if (!checked?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
       // Stop outstanding raw reads before the first secret enters the guest DOM.
       const firstProtection = !tab.passwordShield;
       this.protectFamily(tab, origin, credential.password);
       if (firstProtection) await this.host.session?.closeAllConnections();
       this.assertSnapshot(tab, params);
-      const result = await lease.write(() => this.run(tab, pageAction, [{ ...target, action: 'fill', username: credential.username, password: credential.password }]));
+      const write = () => this.run(tab, pageAction, [{ ...target, action: 'fill', username: credential.username, password: credential.password }]);
+      const result = lease ? await lease.write(write) : await write();
       if (!result?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
       return { completed: true, accountId: params.accountId };
-    });
+    };
+    if (params.credentialSource === 'broker') {
+      if (!Array.isArray(params.accountOrigins) || !params.accountOrigins.includes(origin)) throw passwordFailure('BROWSER_PASSWORD_ORIGIN_MISMATCH', 'This saved account belongs to a different website.');
+      const credential = await this.readBrokerCredential?.(params.accountId);
+      if (!credential || typeof credential.username !== 'string' || typeof credential.password !== 'string' || !credential.password) throw passwordFailure('BROWSER_ACCOUNT_PASSWORD_MISSING', 'This saved account has no available password.');
+      // The credential broker holds its revocation fence until this entire native
+      // operation completes. The native adapter carries only account identity;
+      // Electron main reads the password directly from its owner vault.
+      try { return await fill({ ...credential, origin }); }
+      finally { credential.password = ''; }
+    }
+    return this.vault.withCredential(params.accountId, fill);
   }
   async action(params) {
     const tab = this.tab(params);

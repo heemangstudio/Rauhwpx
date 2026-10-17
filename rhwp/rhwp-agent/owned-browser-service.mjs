@@ -956,7 +956,19 @@ export function createOwnedBrowserService(options = {}) {
       if (tab.snapshot?.native && selectedAdapter()?.passwordFill) {
         requireRef(tab, { ...args, ref: args.passwordRef });
         if (args.usernameRef) requireRef(tab, { ...args, ref: args.usernameRef });
-        const result = await selectedAdapter().passwordFill({ ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef });
+        const params = { ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef };
+        const account = credentialBroker?.listAccounts && (await credentialBroker.listAccounts()).accounts.find(entry => entry.id === args.accountId);
+        let result;
+        if (account) {
+          const binding = { tabId: tab.tabId, runtimeGeneration: generation, navigationEpoch: tab.navigationEpoch, controlEpoch: tab.controllerEpoch, frameId: 'main', origin: new URL(page.url()).origin, accountId: account.id };
+          const issued = await credentialBroker.issueHandle({ actor, accountId: account.id, binding });
+          await credentialBroker.fill({ actor, handle: issued.handle, binding,
+            getBinding: async () => ({ ...binding, origin: new URL(page.url()).origin, navigationEpoch: tab.navigationEpoch, controlEpoch: tab.controllerEpoch, runtimeGeneration: generation }),
+            fill: async ({ assertAuthorized, perform }) => {
+              await assertAuthorized(); epochs(tab, args, true); assertController(actor, tab);
+              result = await perform(() => selectedAdapter().passwordFill({ ...params, credentialSource: 'broker', accountOrigins: account.origins }));
+            } });
+        } else result = await selectedAdapter().passwordFill(params);
         tab.snapshot.passwordProtected = true;
         return result;
       }
