@@ -1,7 +1,7 @@
 import type { ChatStartContextProvider, SidebarBridge } from '../agent/bridge.ts';
 import type * as T from '../agent/types.ts';
 import { deriveAgentEditingLease } from '../agent/editing-lease.ts';
-import { isChatPermissionCapability } from '../agent/chat-permissions.ts';
+import { isChatPermissionCapability, readChatPermissionRequest } from '../agent/chat-permissions.ts';
 import {
   defaultModelForAgent,
   setModelCatalog,
@@ -25,6 +25,7 @@ export const scenarios = [
   'sign-in',
   'use-account',
   'site-access',
+  'site-access-blocked',
   'save-account',
   'secret',
   'secret-use',
@@ -353,9 +354,9 @@ export function createMockBridge(
   let requestFailures = Number(projectParams.get('requestFail')) || 0;
   const secrets: T.SecretMeta[] = projectParams.get('browserAccounts') === 'empty' ? [] : [
     { id: 'secret-notion', label: 'Notion API 키', kind: 'api-key', origins: ['https://www.notion.so', 'https://api.notion.com'],
-      scope: 'always', approved: false, createdAt: '2026-10-02T09:00:00Z', lastUsedAt: null },
+      scope: 'always', blocked: false, createdAt: '2026-10-02T09:00:00Z', lastUsedAt: null },
     { id: 'secret-kosis', label: 'KOSIS 인증키', kind: 'token', origins: ['https://kosis.kr'],
-      scope: 'always', approved: true, createdAt: '2026-09-12T09:00:00Z', lastUsedAt: '2026-10-14T05:20:00Z' },
+      scope: 'always', blocked: false, createdAt: '2026-09-12T09:00:00Z', lastUsedAt: '2026-10-14T05:20:00Z' },
   ];
   /** 허브처럼 비밀 값 목록이 바뀌면 열린 설정에 알린다. */
   const secretsChanged = () => emit({ type: 'browser-event', event: { type: 'user-secrets-changed' } });
@@ -674,19 +675,28 @@ export function createMockBridge(
     toolPair(`handoff-${turn}`, 'browser_request_account', { tabId: opened.tab.tabId, origin: request.origin, label: 'Example', reason: request.reason, kind: code ? 'code' : 'sign-in' },
       { pending: true, requestId: request.requestId, origin: request.origin, kind: code ? 'code' : 'sign-in' });
   };
+  /** ?scenario=use-account — 옛 허브가 다시 보낸 계정 사용 요청. 실제 브리지처럼 읽으면 사이트 사용 카드가 된다. */
   const openAccountUse = (turn: number) => {
-    const request = openPermission({ turnId: `turn-${turn}`, capability: 'browser', kind: 'browser-use-account',
+    const legacy = readChatPermissionRequest({ requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId, agent, createdAt: new Date().toISOString(),
+      turnId: `turn-${turn}`, capability: 'browser', kind: 'browser-use-account',
       origin: 'https://accounts.google.com', origins: ['https://accounts.google.com'], accountId: 'google', accountLabel: 'Google 연구',
-      scopes: ['chat', 'always'], reason: 'Sign in to Google Scholar with the saved research account.' });
-    toolPair(`account-${turn}`, 'browser_request_account', { origin: request.origin, label: 'Google 연구', reason: request.reason, kind: 'use' },
-      { pending: true, requestId: request.requestId, origin: request.origin, kind: 'use' });
+      reason: 'Sign in to Google Scholar with the saved research account.' })!;
+    permissionRequests.set(legacy.requestId, legacy);
+    emit({ type: 'chat-permission-requested', request: legacy });
+    toolPair(`account-${turn}`, 'browser_request_account', { origin: legacy.origin, label: 'Google 연구', reason: legacy.reason, kind: 'use' },
+      { pending: true, requestId: legacy.requestId, origin: legacy.origin, kind: 'use' });
   };
-  /** ?scenario=site-access — 저장된 계정이 있는 사이트의 사용 승인(읽기·사이트 변경·그 계정). */
-  const openSiteAccess = (turn: number) => {
+  /**
+   * ?scenario=site-access — 사이트 사용 하나로 읽기·사이트 변경·그 사이트의 저장된 로그인을 허용한다.
+   * ?scenario=site-access-blocked — 사용자가 막아 둔 다운로드와 꺼 둔 로그인을 풀어 달라는 카드('항상'만).
+   */
+  const openSiteAccess = (turn: number, blocked = false) => {
     const request = openPermission({ turnId: `turn-${turn}`, capability: 'browser', kind: 'browser-site-access',
-      origin: 'https://www.coupang.com', origins: ['https://coupang.com'], siteDomain: 'coupang.com', accountId: 'coupang', accountLabel: 'andy@hama.kr',
-      scopes: ['chat', 'always'], reason: 'Check the order history on Coupang with the saved account.' });
-    toolPair(`site-${turn}`, 'browser_request_account', { origin: request.origin, label: 'Coupang', reason: request.reason, kind: 'site' },
+      origin: 'https://www.coupang.com', origins: ['https://coupang.com'], siteDomain: 'coupang.com',
+      logins: [{ id: 'coupang', label: 'andy@hama.kr', ...(blocked ? { blocked: true } : {}) }],
+      ...(blocked ? { blocked: ['download', 'research-import'], item: { accountId: 'coupang' } } : {}),
+      scopes: blocked ? ['always'] : ['chat', 'always'], reason: blocked ? 'Download the order receipt from Coupang.' : 'Check the order history on Coupang with the saved account.' });
+    toolPair(`site-${turn}`, 'browser_request_account', { origin: request.origin, reason: request.reason, kind: 'site' },
       { pending: true, requestId: request.requestId, origin: request.origin, kind: 'site' });
   };
   const openAccountSave = (turn: number) => {
@@ -703,10 +713,12 @@ export function createMockBridge(
     toolPair(`secret-${turn}`, 'request_secret', { label: request.secretLabel, origins: request.origins, kind: 'api-key', reason: request.reason },
       { pending: true, requestId: request.requestId });
   };
+  /** ?scenario=secret-use — 저장된 비밀 값을 쓰려는 요청은 그 값의 사이트 사용 카드로 온다. */
   const openSecretUse = (turn: number) => {
     const secret = secrets[0]!;
-    const request = openPermission({ turnId: `turn-${turn}`, capability: 'browser', kind: 'secret-use',
-      secretId: secret.id, secretLabel: secret.label, secretKind: secret.kind, origins: [...secret.origins],
+    const request = openPermission({ turnId: `turn-${turn}`, capability: 'browser', kind: 'browser-site-access',
+      origin: secret.origins[0], origins: [...secret.origins], siteDomain: 'notion.so',
+      secrets: [{ id: secret.id, label: secret.label, secretKind: secret.kind }],
       scopes: ['chat', 'always'], reason: 'Type the saved Notion API key into the integration page.' });
     toolPair(`secret-${turn}`, 'request_secret', { label: secret.label, origins: secret.origins, kind: secret.kind, reason: request.reason, secretId: secret.id },
       { pending: true, requestId: request.requestId });
@@ -788,7 +800,7 @@ export function createMockBridge(
       // 허브처럼 값은 금고로만 간다. 미리보기는 길이만 남긴다.
       secretSubmissions.push({ requestId: args.requestId, label: args.label, scope: args.scope, valueLength: args.value.length });
       const secret: T.SecretMeta = { id: pending.secretId ?? crypto.randomUUID(), label: args.label, kind: pending.secretKind ?? 'other',
-        origins: [...pending.origins ?? []], scope: args.scope, approved: true, createdAt: new Date().toISOString(), lastUsedAt: null };
+        origins: [...pending.origins ?? []], scope: args.scope, blocked: false, createdAt: new Date().toISOString(), lastUsedAt: null };
       const index = secrets.findIndex((entry) => entry.id === secret.id);
       if (index >= 0) secrets.splice(index, 1, secret); else secrets.push(secret);
       secretsChanged();
@@ -833,7 +845,7 @@ export function createMockBridge(
     requestAgentSetupStatus: async () => data.setups,
     requestBrowser: async <R = T.BrowserResult>(action: string, args?: Record<string, unknown>): Promise<R> => {
       const pending = typeof args?.['requestId'] === 'string' ? permissionRequests.get(args['requestId']) : undefined;
-      const answering = pending && ['accounts.complete', 'accounts.approve', 'secrets.approve', 'sites.approve'].includes(action);
+      const answering = pending && ['accounts.complete', 'accounts.federated', 'sites.approve'].includes(action);
       if (answering) {
         await new Promise((resolve) => setTimeout(resolve, 60));
         if (failRequestAction()) throw Object.assign(new Error('요청을 전달하지 못했습니다.'), { code: 'BROWSER_REQUEST_FAILED' });
@@ -846,31 +858,32 @@ export function createMockBridge(
         continueAfterRequest('로그인을 확인했습니다. 이어서 진행합니다.');
         return { completed: true, origin: pending.origin } as R;
       }
+      if (action === 'accounts.federated' && pending) {
+        // 허브처럼 비밀번호 없이 로그인 표시와 사이트 사용만 남기고 이어지는 턴을 연다.
+        const scope = args?.['scope'] === 'always' ? 'always' : 'chat';
+        previewBrowser.grantSite(pending.origin ?? '', scope, []);
+        resolvePermission(pending.requestId, { status: 'granted' });
+        continueAfterRequest('로그인된 세션으로 이어서 진행합니다.');
+        return { signedIn: true, origin: pending.origin, scope } as R;
+      }
       if (action === 'sites.approve' && pending) {
+        // 허브처럼 차단을 푸는 카드는 항상으로만 허용하고, 카드에 보인 차단과 꺼 둔 항목만 다시 켠다.
+        const scope = args?.['scope'] === 'always' ? 'always' : 'chat';
+        const lifting = Boolean(pending.blocked?.length) || Boolean(pending.item);
+        if (lifting && scope !== 'always') throw Object.assign(new Error('차단 해제는 항상으로만 허용합니다.'), { code: 'BROWSER_SCOPE_REQUIRED' });
+        previewBrowser.grantSite(pending.origin ?? pending.origins?.[0] ?? '', scope, pending.blocked ?? []);
+        const secret = secrets.find((entry) => entry.id === pending.item?.secretId);
+        if (secret) { secret.blocked = false; secretsChanged(); }
         resolvePermission(pending.requestId, { status: 'granted' });
-        continueAfterRequest('사이트 사용이 허용되어 저장된 계정으로 이어서 진행합니다.');
-        return { approved: true, scope: args?.['scope'] ?? 'chat', origins: pending.origins ?? [], accountId: pending.accountId ?? null } as R;
-      }
-      if (action === 'secrets.approve' && !pending) {
-        // 설정의 스위치: 허브처럼 요청 없이 저장된 값을 다시 허용한다.
-        const secret = secrets.find((entry) => entry.id === args?.['secretId']);
-        if (!secret) throw Object.assign(new Error('저장된 값을 찾을 수 없습니다.'), { code: 'SECRET_NOT_FOUND' });
-        secret.approved = true; secretsChanged();
-        return { secret: structuredClone(secret) } as R;
-      }
-      if (action === 'secrets.approve' && pending) {
-        const secret = secrets.find((entry) => entry.id === args?.['secretId']);
-        if (secret) secret.approved = true;
-        secretsChanged();
-        resolvePermission(pending.requestId, { status: 'granted' });
-        continueAfterRequest('저장된 값을 입력해 이어서 진행합니다.');
-        return { approved: true } as R;
+        continueAfterRequest('사이트 사용이 허용되어 이어서 진행합니다.');
+        return { approved: true, scope, site: pending.siteDomain ?? null } as R;
       }
       if (action === 'secrets.list') return { secrets: structuredClone(secrets) } as R;
-      if (action === 'secrets.revoke' || action === 'secrets.delete') {
+      if (action === 'secrets.block' || action === 'secrets.delete') {
         const index = secrets.findIndex((entry) => entry.id === args?.['secretId']);
-        if (index >= 0 && action === 'secrets.delete') secrets.splice(index, 1);
-        else if (index >= 0) secrets[index]!.approved = false;
+        if (index < 0) throw Object.assign(new Error('저장된 값을 찾을 수 없습니다.'), { code: 'SECRET_NOT_FOUND' });
+        if (action === 'secrets.delete') secrets.splice(index, 1);
+        else secrets[index]!.blocked = args?.['blocked'] === true;
         secretsChanged();
         return { secrets: structuredClone(secrets) } as R;
       }
@@ -879,12 +892,7 @@ export function createMockBridge(
         alwaysGrants = alwaysGrants.filter((capability) => capability !== args?.['capability']);
         return { always: [...alwaysGrants] } as R;
       }
-      const result = await previewBrowser.request(action, args);
-      if (action === 'accounts.approve' && pending) {
-        resolvePermission(pending.requestId, { status: 'granted' });
-        continueAfterRequest('계정으로 로그인해 이어서 진행합니다.');
-      }
-      return result as R;
+      return await previewBrowser.request(action, args) as R;
     },
     onBrowserEvent: (callback) => { const listener = (event: T.SidebarEvent) => { if (event.type === 'browser-event') callback(event.event); }; listeners.add(listener); return () => { listeners.delete(listener); }; },
     submitBrowserAccount: (args) => previewBrowser.submit(args),
@@ -1227,7 +1235,7 @@ export function createMockBridge(
           void openHandoff(turnGeneration, code).then(() => { if (!holdReply && generation === turnGeneration) later(() => finish(), 100); });
           return;
         }
-        if (reply === 'use-account' || reply === 'site-access' || reply === 'save-account' || reply === 'secret' || reply === 'secret-use' || reply === 'requests') {
+        if (reply === 'use-account' || reply === 'site-access' || reply === 'site-access-blocked' || reply === 'save-account' || reply === 'secret' || reply === 'secret-use' || reply === 'requests') {
           if (reply === 'requests') {
             // 한 턴이 요청 셋을 연다 — 카드마다 따로 답하고 따로 정착한다.
             openGenericPermission(turnGeneration, 'downloads');
@@ -1236,7 +1244,7 @@ export function createMockBridge(
             return;
           }
           if (reply === 'use-account') openAccountUse(turnGeneration);
-          if (reply === 'site-access') openSiteAccess(turnGeneration);
+          if (reply === 'site-access' || reply === 'site-access-blocked') openSiteAccess(turnGeneration, reply === 'site-access-blocked');
           if (reply === 'save-account') openAccountSave(turnGeneration);
           if (reply === 'secret') openSecretSave(turnGeneration);
           if (reply === 'secret-use') openSecretUse(turnGeneration);

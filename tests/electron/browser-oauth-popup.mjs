@@ -199,7 +199,6 @@ try {
     if (tab.openerTab === parent) {
       assert.equal(tab.passwordShield, true);
       assert.notEqual(tab.protectedPasswords, parent.protectedPasswords);
-      assert.notEqual(tab.passwordAllowedOrigins, parent.passwordAllowedOrigins);
       assert.equal(tab.passwordSnapshot, null);
       shieldBeforeAttach = true;
     }

@@ -1,10 +1,11 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { browserOrigin, readBrowserJson, writeBrowserJson } from './browser-policy.mjs';
+import { browserOrigin, readBrowserJson, sameSite, writeBrowserJson } from './browser-policy.mjs';
 import { createEncryptedBrowserAuthStore } from './browser-auth-store.mjs';
 
 // 사용자가 에이전트에게 맡기는 비밀(API 키·토큰·비밀번호). 값은 허브 소유 브라우저 도구만 페이지에 입력한다.
 // 메타데이터는 브라우저 데이터 폴더에, 값은 금고의 `usersecret.<uuid>` 에 둔다. 평문 대체 저장소는 없다.
+// 쓸 수 있는지는 사이트 사용(browser-policy)이 정한다. 비밀마다 남는 것은 "에이전트 사용 끔"(blocked) 하나다.
 export const USER_SECRET_KINDS = Object.freeze(['api-key', 'token', 'password', 'other']);
 export const USER_SECRET_SCOPES = Object.freeze(['chat', 'always']);
 export const MAX_USER_SECRET_BYTES = 4096;
@@ -21,7 +22,7 @@ export function isUserSecretId(value) { return typeof value === 'string' && SECR
 
 export function normalizeSecretOrigins(values) {
   if (!Array.isArray(values) || values.length === 0 || values.length > MAX_USER_SECRET_ORIGINS) {
-    throw failure('SECRET_ORIGIN_INVALID', `Give 1-${MAX_USER_SECRET_ORIGINS} exact HTTPS website origins for this secret.`);
+    throw failure('SECRET_ORIGIN_INVALID', `Give 1-${MAX_USER_SECRET_ORIGINS} HTTPS website origins for this secret.`);
   }
   return [...new Set(values.map((value) => {
     let origin;
@@ -64,31 +65,31 @@ export function createUserSecretStore({ dataDir, secretStore = null, wrappingKey
   const filePath = path.join(dataDir, 'user-secrets.json');
   // 금고가 없을 때만 소유자 전용 래핑 키(RHWP_BROWSER_WRAPPING_KEY_FILE)로 AES-GCM 보관한다.
   const authStore = createEncryptedBrowserAuthStore({ dataDir, secretStore: null, wrappingKeyProvider });
-  /** @type {{ schema: 1, secrets: Array<Record<string, any>> }} */
+  /** @type {{ schema: 2, secrets: Array<Record<string, any>> }} */
   let state;
   let queue = Promise.resolve();
-  /** 이 채팅에만 둔 비밀: id → { meta, value, threadId }. 허브 메모리에만 있다. */
+  /** 이 채팅에만 둔 비밀: id → { meta, value, threadId }. 허브 메모리에만 있고, 넘치면 오래된 것부터 버린다. */
   const chatSecrets = new Map();
-  /** 채팅별 사용 승인: threadId → Set<secretId>. */
-  const chatGrants = new Map();
   /** 금고에서 값이 사라진 영구 비밀 — 다음 request_secret 은 다시 입력받는다. */
   const missingValues = new Set();
-  /** 채팅이 끝날 때마다 오른다. 끝나기 전에 시작한 저장·승인이 끝난 채팅에 권한을 되살리지 못하게 한다. */
+  /** 채팅을 지울 때마다 오른다. 지우기 전에 시작한 "이 채팅" 저장이 지운 채팅에 값을 되살리지 못하게 한다. */
   const chatEpochs = new Map();
   const chatEpoch = (threadId) => chatEpochs.get(threadId) ?? 0;
-  const chatEnded = () => failure('SECRET_CHAT_ENDED', 'The chat ended before this secret was approved.');
+  const chatEnded = () => failure('SECRET_CHAT_ENDED', 'The chat ended before this secret was saved.');
   let readyPromise = (async () => {
     const stored = await readBrowserJson(filePath);
-    if (!stored) { state = { schema: 1, secrets: [] }; return; }
-    if (stored.schema !== 1 || !Array.isArray(stored.secrets) || stored.secrets.length > MAX_SECRETS) throw failure('SECRET_STORAGE_INVALID', 'Saved secret metadata cannot be read.');
+    if (!stored) { state = { schema: 2, secrets: [] }; return; }
+    if (![1, 2].includes(stored.schema) || !Array.isArray(stored.secrets) || stored.secrets.length > MAX_SECRETS) throw failure('SECRET_STORAGE_INVALID', 'Saved secret metadata cannot be read.');
     for (const entry of stored.secrets) {
       if (!isUserSecretId(entry.id)) throw failure('SECRET_STORAGE_INVALID', 'Saved secret metadata cannot be read.');
       entry.label = normalizeSecretLabel(entry.label);
       entry.kind = normalizeSecretKind(entry.kind);
       entry.origins = normalizeSecretOrigins(entry.origins);
-      entry.approved = entry.approved === true;
+      // 스키마 1 의 비밀별 승인은 버린다. 사용은 이제 사이트 사용을 따른다.
+      delete entry.approved;
+      entry.blocked = entry.blocked === true;
     }
-    state = stored;
+    state = { schema: 2, secrets: stored.secrets };
   })();
 
   function serialized(operation) {
@@ -130,17 +131,9 @@ export function createUserSecretStore({ dataDir, secretStore = null, wrappingKey
     state = next;
   }
   const persisted = (id) => state?.secrets.find((entry) => entry.id === id) ?? null;
-  const grantsFor = (threadId) => {
-    if (!threadId) return null;
-    let grants = chatGrants.get(threadId);
-    if (!grants) { grants = new Set(); chatGrants.set(threadId, grants); }
-    return grants;
-  };
-  /** approved: 영구 승인이거나, threadId 를 주면 그 채팅에서 쓸 수 있는지. */
-  function publicMeta(entry, scope, threadId) {
-    return { id: entry.id, label: entry.label, kind: entry.kind, origins: [...entry.origins], scope,
-      approved: (scope === 'always' && entry.approved === true) || chatGrants.get(threadId)?.has(entry.id) === true,
-      createdAt: entry.createdAt, lastUsedAt: entry.lastUsedAt ?? null };
+  function publicMeta(entry, scope) {
+    return { id: entry.id, label: entry.label, kind: entry.kind, origins: [...entry.origins], scope, blocked: entry.blocked === true,
+      createdAt: entry.createdAt, lastUsedAt: entry.lastUsedAt ?? null, filledAt: entry.filledAt ?? null };
   }
   /** 이 채팅에서 볼 수 있는 비밀의 원본 기록. 다른 채팅의 "이 채팅" 비밀은 없는 것으로 본다. */
   function lookup(id, threadId) {
@@ -150,10 +143,13 @@ export function createUserSecretStore({ dataDir, secretStore = null, wrappingKey
     if (chat && (!threadId || chat.threadId === threadId)) return { entry: chat.meta, scope: 'chat', threadId: chat.threadId };
     return null;
   }
-  function isApproved(id, threadId) {
-    const found = lookup(id, threadId);
-    if (!found) return false;
-    return (found.scope === 'always' && found.entry.approved === true) || chatGrants.get(threadId)?.has(id) === true;
+  const visible = (threadId) => [...state.secrets.map((entry) => ({ entry, scope: 'always' })),
+    ...[...chatSecrets.values()].filter((chat) => !threadId || chat.threadId === threadId).map((chat) => ({ entry: chat.meta, scope: 'chat' }))];
+  function updateEntry(id, patch) {
+    const chat = chatSecrets.get(id);
+    if (chat) { Object.assign(chat.meta, patch); return Promise.resolve(); }
+    if (!persisted(id)) return Promise.resolve();
+    return persist({ ...state, secrets: state.secrets.map((entry) => entry.id === id ? { ...entry, ...patch } : entry) });
   }
 
   return {
@@ -161,32 +157,32 @@ export function createUserSecretStore({ dataDir, secretStore = null, wrappingKey
     /** 사람용 목록: 영구 비밀과, threadId 를 주면 그 채팅의 비밀. 값은 없다. */
     async list({ threadId } = {}) {
       await readyPromise;
-      return [...state.secrets.map((entry) => publicMeta(entry, 'always', threadId)),
-        ...[...chatSecrets.values()].filter((chat) => !threadId || chat.threadId === threadId).map((chat) => publicMeta(chat.meta, 'chat', threadId))];
+      return visible(threadId).map(({ entry, scope }) => publicMeta(entry, scope));
     },
-    /** 에이전트용 목록(browser_status). 값과 생성 시각 없이 이 채팅의 사용 가능 여부만 준다. */
+    /** 에이전트용 목록(browser_status). 값과 시각 없이, 쓸 수 있는지는 서버가 사이트 사용으로 덧붙인다. */
     async agentList(threadId) {
       await readyPromise;
-      const visible = [...state.secrets, ...[...chatSecrets.values()].filter((chat) => chat.threadId === threadId).map((chat) => chat.meta)];
-      return visible.map((entry) => ({ id: entry.id, label: entry.label, kind: entry.kind, origins: [...entry.origins], approved: isApproved(entry.id, threadId) }));
+      return visible(threadId ?? '\u0000').map(({ entry }) => ({ id: entry.id, label: entry.label, kind: entry.kind, origins: [...entry.origins], blocked: entry.blocked === true }));
+    },
+    /** 이 사이트(같은 등록 도메인)에서 쓸 수 있는 비밀. 사이트 카드의 비밀 줄이 된다. */
+    async forSite(origin, threadId) {
+      await readyPromise;
+      return visible(threadId ?? '\u0000').filter(({ entry }) => entry.origins.some((value) => sameSite(value, origin))).map(({ entry, scope }) => publicMeta(entry, scope));
     },
     async get(id, threadId) {
       await readyPromise;
       const found = lookup(id, threadId);
-      return found ? { ...publicMeta(found.entry, found.scope, threadId), valueMissing: found.scope === 'always' && missingValues.has(id) } : null;
+      return found ? { ...publicMeta(found.entry, found.scope), valueMissing: found.scope === 'always' && missingValues.has(id) } : null;
     },
     async findMatch({ label, origins, threadId }) {
       await readyPromise;
       const wanted = normalizeSecretOrigins(origins);
       const name = normalizeSecretLabel(label);
-      const candidates = [...state.secrets.map((entry) => ({ entry, scope: 'always' })),
-        ...[...chatSecrets.values()].filter((chat) => chat.threadId === threadId).map((chat) => ({ entry: chat.meta, scope: 'chat' }))];
-      const match = candidates.find(({ entry }) => entry.label === name && sameOrigins(entry.origins, wanted));
-      return match ? { ...publicMeta(match.entry, match.scope, threadId), valueMissing: match.scope === 'always' && missingValues.has(match.entry.id) } : null;
+      const match = visible(threadId ?? '\u0000').find(({ entry }) => entry.label === name && sameOrigins(entry.origins, wanted));
+      return match ? { ...publicMeta(match.entry, match.scope), valueMissing: match.scope === 'always' && missingValues.has(match.entry.id) } : null;
     },
-    isApproved: async (id, threadId) => { await readyPromise; return isApproved(id, threadId); },
     vaultAvailable: () => vaultAvailable() || authStore.available,
-    /** 사용자가 카드에 입력한 값을 저장하고 이 채팅에 사용을 승인한다. */
+    /** 사용자가 카드에 입력한 값을 저장한다. always 는 금고에 남기고, chat 은 그 채팅의 허브 메모리에만 둔다. */
     save({ id, label, kind, origins, value, scope, threadId }) {
       const normalized = { label: normalizeSecretLabel(label), kind: normalizeSecretKind(kind), origins: normalizeSecretOrigins(origins), value: normalizeSecretValue(value), scope: normalizeSecretScope(scope, 'always') };
       if (id !== undefined && id !== null && !isUserSecretId(id)) return Promise.reject(failure('SECRET_NOT_FOUND', 'The secret to replace no longer exists.'));
@@ -200,52 +196,38 @@ export function createUserSecretStore({ dataDir, secretStore = null, wrappingKey
         const previousChat = chatSecrets.get(secretId);
         if (id && !previous && !previousChat) throw failure('SECRET_NOT_FOUND', 'The secret to replace no longer exists.');
         const createdAt = previous?.createdAt ?? previousChat?.meta.createdAt ?? new Date(now()).toISOString();
-        const meta = { id: secretId, label: normalized.label, kind: normalized.kind, origins: normalized.origins, createdAt, lastUsedAt: previous?.lastUsedAt ?? null };
+        const meta = { id: secretId, label: normalized.label, kind: normalized.kind, origins: normalized.origins, createdAt,
+          lastUsedAt: previous?.lastUsedAt ?? null, blocked: previous?.blocked ?? previousChat?.meta.blocked ?? false };
         if (normalized.scope === 'always') {
           if (!previous && state.secrets.length >= MAX_SECRETS) throw failure('SECRET_LIMIT', 'Too many saved secrets. Delete one in Browser settings.');
           await writeValue(secretId, normalized.value);
-          try { await persist({ ...state, secrets: state.secrets.filter((entry) => entry.id !== secretId).concat({ ...meta, approved: previous?.approved === true }) }); }
+          try { await persist({ ...state, secrets: state.secrets.filter((entry) => entry.id !== secretId).concat(meta) }); }
           catch (error) { if (!previous) await deleteValue(secretId).catch(() => {}); throw error; }
           chatSecrets.delete(secretId);
           missingValues.delete(secretId);
         } else {
-          if (!previousChat && chatSecrets.size >= MAX_CHAT_SECRETS) throw failure('SECRET_LIMIT', 'Too many secrets are kept for open chats.');
           if (previous) {
             await persist({ ...state, secrets: state.secrets.filter((entry) => entry.id !== secretId) });
             await deleteValue(secretId).catch(() => {});
             missingValues.delete(secretId);
           }
           if (!live()) throw chatEnded();
+          // 채팅 비밀은 32 개까지 둔다. 넘치면 가장 오래 전에 넣은 것부터 버린다.
+          chatSecrets.delete(secretId);
+          while (chatSecrets.size >= MAX_CHAT_SECRETS) chatSecrets.delete(chatSecrets.keys().next().value);
           chatSecrets.set(secretId, { meta, value: normalized.value, threadId });
         }
-        if (live()) grantsFor(threadId).add(secretId);
         changed();
-        return publicMeta(normalized.scope === 'always' ? persisted(secretId) : meta, normalized.scope, threadId);
+        return publicMeta(normalized.scope === 'always' ? persisted(secretId) : meta, normalized.scope);
       });
     },
-    /** always 는 영구 승인(영구 비밀만), chat 은 이 채팅에서만. */
-    approve({ id, scope, threadId }) {
-      const epoch = chatEpoch(threadId);
-      return serialized(async () => {
-        const found = lookup(id, threadId);
-        if (!found) throw failure('SECRET_NOT_FOUND', 'The secret no longer exists.');
-        const normalizedScope = normalizeSecretScope(scope, 'chat');
-        if (normalizedScope === 'chat' && chatEpoch(threadId) !== epoch) throw chatEnded();
-        if (normalizedScope === 'always' && found.scope === 'always' && found.entry.approved !== true) {
-          await persist({ ...state, secrets: state.secrets.map((entry) => entry.id === id ? { ...entry, approved: true } : entry) });
-        }
-        if (threadId && chatEpoch(threadId) === epoch) grantsFor(threadId).add(id);
-        changed();
-        const current = lookup(id, threadId);
-        return publicMeta(current.entry, current.scope, threadId);
-      });
-    },
-    revoke(id) {
+    /** 비밀 하나의 에이전트 사용을 끄거나 켠다. */
+    setBlocked(id, blocked) {
+      if (typeof blocked !== 'boolean') return Promise.reject(failure('SECRET_INVALID', 'Choose whether the agent may use this secret.'));
       return serialized(async () => {
         const found = lookup(id);
         if (!found) throw failure('SECRET_NOT_FOUND', 'The secret no longer exists.');
-        for (const grants of chatGrants.values()) grants.delete(id);
-        if (found.scope === 'always' && found.entry.approved) await persist({ ...state, secrets: state.secrets.map((entry) => entry.id === id ? { ...entry, approved: false } : entry) });
+        await updateEntry(id, { blocked });
         changed();
         const current = lookup(id);
         return publicMeta(current.entry, current.scope);
@@ -255,7 +237,6 @@ export function createUserSecretStore({ dataDir, secretStore = null, wrappingKey
       return serialized(async () => {
         const found = lookup(id);
         if (!found) throw failure('SECRET_NOT_FOUND', 'The secret no longer exists.');
-        for (const grants of chatGrants.values()) grants.delete(id);
         if (found.scope === 'chat') chatSecrets.delete(id);
         else {
           await deleteValue(id);
@@ -266,12 +247,11 @@ export function createUserSecretStore({ dataDir, secretStore = null, wrappingKey
         return { deleted: true, secretId: id };
       });
     },
-    /** 입력 직전에만 값을 꺼낸다. 승인과 범위를 다시 확인한다. */
+    /** 입력 직전에만 값을 꺼낸다. 사이트 사용과 끔 여부는 허브가 이미 확인했다. 채팅 비밀은 그 채팅에서만 보인다. */
     async resolveValue(id, threadId) {
       await readyPromise;
       const found = lookup(id, threadId);
       if (!found) throw failure('SECRET_NOT_FOUND', 'The secret no longer exists.');
-      if (!isApproved(id, threadId)) throw failure('SECRET_APPROVAL_REQUIRED', `Call request_secret with secretId ${id} and end your turn.`);
       if (found.scope === 'chat') return chatSecrets.get(id).value;
       const value = await readValue(id);
       if (typeof value !== 'string' || !value) {
@@ -281,19 +261,26 @@ export function createUserSecretStore({ dataDir, secretStore = null, wrappingKey
       missingValues.delete(id);
       return value;
     },
+    /** 페이지에 넣었다. 다음 허브 시작에도 관찰에서 가리도록 filledAt 을 남긴다. */
     touch(id) {
       return serialized(async () => {
         const at = new Date(now()).toISOString();
-        const chat = chatSecrets.get(id);
-        if (chat) { chat.meta.lastUsedAt = at; return; }
-        if (persisted(id)) await persist({ ...state, secrets: state.secrets.map((entry) => entry.id === id ? { ...entry, lastUsedAt: at } : entry) });
+        await updateEntry(id, { lastUsedAt: at, filledAt: now() });
       }).then(changed, () => {});
     },
-    /** 채팅이 끝나면 그 채팅의 승인과 "이 채팅" 비밀을 버린다. */
+    /** since 뒤에 페이지에 넣은 영구 비밀의 값. 허브가 다시 시작한 뒤 관찰을 가리는 데만 쓴다. */
+    async filledValues({ since = 0, limit = 64 } = {}) {
+      await readyPromise;
+      const values = [];
+      for (const entry of state.secrets.filter((item) => (item.filledAt ?? 0) >= since).slice(-limit)) {
+        try { const value = await readValue(entry.id); if (typeof value === 'string' && value) values.push(value); } catch {}
+      }
+      return values;
+    },
+    /** 채팅을 지우면 그 채팅의 "이 채팅" 비밀을 버린다. */
     endChat(threadId) {
       if (!threadId) return;
       chatEpochs.set(threadId, chatEpoch(threadId) + 1);
-      chatGrants.delete(threadId);
       let removed = false;
       for (const [id, chat] of chatSecrets) if (chat.threadId === threadId) { chatSecrets.delete(id); removed = true; }
       if (removed) changed();
@@ -304,10 +291,10 @@ export function createUserSecretStore({ dataDir, secretStore = null, wrappingKey
       const run = async () => {
         const known = await readyPromise.then(() => state.secrets.map((entry) => entry.id), () => []);
         for (const id of known) await deleteValue(id);
-        await persist({ schema: 1, secrets: [] });
+        await persist({ schema: 2, secrets: [] });
         readyPromise = Promise.resolve();
-        for (const threadId of chatGrants.keys()) chatEpochs.set(threadId, chatEpoch(threadId) + 1);
-        chatSecrets.clear(); chatGrants.clear(); missingValues.clear();
+        for (const chat of chatSecrets.values()) chatEpochs.set(chat.threadId, chatEpoch(chat.threadId) + 1);
+        chatSecrets.clear(); missingValues.clear();
         changed();
         return { cleared: true };
       };

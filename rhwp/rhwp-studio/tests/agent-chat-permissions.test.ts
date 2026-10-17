@@ -200,7 +200,7 @@ test('a secret travels only on its own frame and never in events or the retained
     threadId: request.threadId, documentId: request.documentId, label: 'API 키', value, scope: 'chat' });
   assert.equal('value' in frames.at(-1)!, false, 'the frame object drops the value after sending');
   bridge.handleMessage({ type: 'secret-submit-result', responseId: sent.responseId, ok: true,
-    secret: { id: 's1', label: 'API 키', kind: 'api-key', origins: ['https://api.example.com'], scope: 'chat', approved: true,
+    secret: { id: 's1', label: 'API 키', kind: 'api-key', origins: ['https://api.example.com'], scope: 'chat', blocked: false,
       createdAt: '2026-10-16T00:00:00Z', lastUsedAt: null, value } });
   const result = await pending;
   assert.equal(result.ok, true);
@@ -211,8 +211,43 @@ test('a secret travels only on its own frame and never in events or the retained
   assert.equal(wire.length, 1);
 });
 
-test('secret requests read their metadata; a secret-use without a secret id is rejected', () => {
+test('secret save requests read their metadata', () => {
   assert.deepEqual(readChatPermissionRequest({ ...secretSave, capability: undefined }), secretSave);
-  assert.equal(readChatPermissionRequest({ ...secretSave, kind: 'secret-use' }), null);
   assert.equal(readChatPermissionRequest({ ...secretSave, scopes: ['forever'] })?.scopes, undefined);
+});
+
+const site = {
+  ...request, requestId: 'site-1', capability: 'browser', kind: 'browser-site-access', origin: 'https://www.coupang.com',
+  origins: ['https://coupang.com'], siteDomain: 'coupang.com', scopes: ['chat', 'always'],
+};
+
+test('a site card lists the site logins and secrets by name and the blocks it lifts', () => {
+  const read = readChatPermissionRequest({ ...site,
+    logins: [{ id: 'l1', label: 'Coupang', username: 'andy@hama.kr', agentBlocked: true, password: 'never-read' }],
+    secrets: [{ id: 's1', label: 'API 키', kind: 'api-key', value: 'never-read' }], blocked: ['download', 'download'], item: { accountId: 'l1' } });
+  assert.deepEqual(read?.logins, [{ id: 'l1', label: 'Coupang', detail: 'andy@hama.kr', blocked: true }]);
+  assert.deepEqual(read?.secrets, [{ id: 's1', label: 'API 키', secretKind: 'api-key' }]);
+  assert.deepEqual(read?.blocked, ['download']);
+  assert.deepEqual(read?.item, { accountId: 'l1' });
+  assert.equal(read?.siteDomain, 'coupang.com');
+  assert.equal(JSON.stringify(read).includes('never-read'), false, 'value-looking fields never reach the card');
+  // 에이전트가 거절에 실린 호출을 그대로 하면 이유가 비어 있다. 사이트 카드는 그래도 보이고, 일반 권한은 이유가 있어야 한다.
+  assert.equal(readChatPermissionRequest({ ...site, reason: '' })?.requestId, 'site-1');
+  assert.equal(readChatPermissionRequest({ ...request, reason: '' }), null);
+});
+
+test('a replayed legacy account or secret use request becomes a site card', () => {
+  const account = readChatPermissionRequest({ ...request, requestId: 'old-account', capability: 'browser', kind: 'browser-use-account',
+    origin: 'https://accounts.google.com', origins: ['https://accounts.google.com'], accountId: 'google', accountLabel: 'Google 연구' });
+  assert.equal(account?.kind, 'browser-site-access');
+  assert.deepEqual(account?.logins, [{ id: 'google', label: 'Google 연구' }]);
+  assert.deepEqual(account?.scopes, ['chat', 'always']);
+  const secret = readChatPermissionRequest({ ...request, requestId: 'old-secret', capability: undefined, kind: 'secret-use',
+    secretId: 'secret-notion', secretLabel: 'Notion API 키', secretKind: 'api-key', origins: ['https://www.notion.so'] });
+  assert.equal(secret?.kind, 'browser-site-access');
+  assert.equal(secret?.origin, 'https://www.notion.so');
+  assert.deepEqual(secret?.secrets, [{ id: 'secret-notion', label: 'Notion API 키', secretKind: 'api-key' }]);
+  assert.equal(readChatPermissionRequest({ ...request, capability: 'browser', kind: 'secret-use' }), null, 'a legacy secret use without a secret id is rejected');
+  // 옛 허브의 사이트 카드는 계정 하나를 accountId·accountLabel 로 보냈다.
+  assert.deepEqual(readChatPermissionRequest({ ...site, accountId: 'coupang', accountLabel: 'andy@hama.kr' })?.logins, [{ id: 'coupang', label: 'andy@hama.kr' }]);
 });

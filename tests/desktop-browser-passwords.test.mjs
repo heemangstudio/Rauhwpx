@@ -32,43 +32,57 @@ function encryptChrome(password, passphrase) {
   return Buffer.concat([Buffer.from('v10'), cipher.update(password, 'utf8'), cipher.final()]);
 }
 
+const grant = (site = 'https://fixture.invalid') => ({ site, scope: 'chat', grantedAt: Date.now() });
+
 test('native vault exposes metadata and writes OS-encrypted records with private permissions', async (t) => {
   const { root, vault, safeStorage } = await vaultFixture(t);
   const password = `fixture-secret-${randomUUID()}`;
   const account = await vault.importCredential({ origin: 'https://fixture.invalid/login', username: 'andy@example.invalid', password, sourceProfile: 'Fixture profile' });
   const metadata = await vault.list();
   assert.equal(metadata.accounts[0].id, account.id);
-  // 가져온 계정은 사용자가 허용하기 전까지 에이전트가 쓸 수 없다.
-  assert.equal(metadata.accounts[0].agentReuseApproved, false);
+  assert.equal(metadata.accounts[0].agentBlocked, false);
+  assert.equal(metadata.accounts[0].site, 'https://fixture.invalid');
   assert.equal(JSON.stringify(metadata).includes(password), false);
   const file = join(root, 'vault', 'local-passwords.json');
   assert.equal((await readFile(file, 'utf8')).includes(password), false);
   assert.equal((await stat(file)).mode & 0o777, 0o600);
-  await assert.rejects(vault.withCredential(account.id, () => assert.fail('decrypted before consent'), { agent: true }), { code: 'BROWSER_ACCOUNT_NOT_APPROVED' });
-  assert.equal((await vault.setAgentReuse(account.id, true)).agentReuseApproved, true);
+  // 에이전트는 허브가 확인한 사이트 사용 승인이 있어야 하고, 승인 전에는 OS 보관함을 열지 않는다.
+  await assert.rejects(vault.withCredential(account.id, () => assert.fail('decrypted before site access'), { agent: true }), { code: 'BROWSER_PERMISSION_REQUIRED', reason: 'account-use' });
+  await assert.rejects(vault.withCredential(account.id, () => assert.fail('decrypted for another site'), { agent: true, grant: grant('https://other.invalid') }), { code: 'BROWSER_PASSWORD_ORIGIN_MISMATCH' });
+  await vault.withCredential(account.id, async (credential) => assert.equal(credential.password, password), { agent: true, grant: grant() });
+  const before = grant();
+  assert.equal((await vault.setAgentBlocked(account.id, true)).agentBlocked, true);
   const reopened = new LocalBrowserPasswordVault({ dataDir: join(root, 'vault'), safeStorage });
-  await reopened.withCredential(account.id, async (credential) => assert.equal(credential.password, password), { agent: true });
-  assert.equal((await reopened.list()).accounts[0].agentReuseApproved, true);
-  const updated = await vault.importCredential({ origin: account.origin, username: account.username, password: 'replacement', sourceProfile: 'Fixture' });
+  await assert.rejects(reopened.withCredential(account.id, () => assert.fail('decrypted while blocked'), { agent: true, grant: grant() }), { code: 'BROWSER_SITE_BLOCKED', item: { accountId: account.id } });
+  await reopened.withCredential(account.id, async (credential) => assert.equal(credential.password, password));
+  const updated = await reopened.importCredential({ origin: account.origin, username: account.username, password: 'replacement', sourceProfile: 'Fixture' });
   assert.equal(updated.id, account.id);
-  assert.equal(updated.agentReuseApproved, true, 'a re-import keeps the account decision');
-  await vault.setAgentReuse(account.id, false);
-  await assert.rejects(vault.withCredential(account.id, () => {}, { agent: true }), { code: 'BROWSER_ACCOUNT_NOT_APPROVED' });
-  await vault.remove(account.id);
-  await assert.rejects(vault.withCredential(account.id, () => {}), { code: 'BROWSER_PASSWORD_NOT_FOUND' });
+  assert.equal(updated.agentBlocked, true, 'a re-import keeps the owner block');
+  // 다시 켜면 이미 받은 사이트 사용 승인으로 바로 쓸 수 있다.
+  await reopened.setAgentBlocked(account.id, false);
+  await reopened.withCredential(account.id, async (credential) => assert.equal(credential.password, 'replacement'), { agent: true, grant: before });
+  await reopened.remove(account.id);
+  await assert.rejects(reopened.withCredential(account.id, () => {}), { code: 'BROWSER_PASSWORD_NOT_FOUND' });
 });
 
-test('a chat-only approval fills a saved password until the user turns agent use off', async (t) => {
-  const { vault } = await vaultFixture(t);
-  const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'chat-user', password: 'chat-fixture-secret' });
-  const approvedAt = Date.now();
-  await vault.withCredential(account.id, async (credential) => assert.equal(credential.username, 'chat-user'), { agent: true, chatApprovedAt: approvedAt });
-  assert.equal((await vault.list()).accounts[0].agentReuseApproved, false, 'a chat approval is not remembered');
-  await new Promise((resolve) => setTimeout(resolve, 2));
-  await vault.setAgentReuse(account.id, false);
-  await assert.rejects(vault.withCredential(account.id, () => assert.fail('decrypted after revoke'), { agent: true, chatApprovedAt: approvedAt }), { code: 'BROWSER_ACCOUNT_NOT_APPROVED' });
-  await new Promise((resolve) => setTimeout(resolve, 2));
-  await vault.withCredential(account.id, async () => {}, { agent: true, chatApprovedAt: Date.now() });
+test('older vault records with agentReuseApproved read as usable and cover their whole site', async (t) => {
+  const { root, vault, safeStorage } = await vaultFixture(t);
+  const www = await vault.importCredential({ origin: 'https://www.example.com', username: 'andy', password: 'www-secret' });
+  const exact = await vault.importCredential({ origin: 'https://127.0.0.1:8443', username: 'andy', password: 'local-secret' });
+  const file = join(root, 'vault', 'local-passwords.json');
+  const state = JSON.parse(await readFile(file, 'utf8'));
+  for (const [index, record] of state.records.entries()) { delete record.agentBlocked; record.agentReuseApproved = index === 0; }
+  await writeFile(file, JSON.stringify(state));
+  const legacy = new LocalBrowserPasswordVault({ dataDir: join(root, 'vault'), safeStorage });
+  const accounts = (await legacy.list()).accounts;
+  assert.deepEqual(accounts.map((account) => [account.site, account.agentBlocked]), [['https://example.com', false], ['https://127.0.0.1:8443', false]]);
+  await legacy.withCredential(www.id, async (credential) => assert.equal(credential.password, 'www-secret'), { agent: true, grant: grant('https://login.example.com') });
+  await legacy.withCredential(www.id, async () => {}, { agent: true, grant: grant('example.com') });
+  await assert.rejects(legacy.withCredential(exact.id, () => assert.fail('exact origins never widen'), { agent: true, grant: grant('https://127.0.0.1:9443') }), { code: 'BROWSER_PASSWORD_ORIGIN_MISMATCH' });
+  await legacy.markFilled(www.id);
+  const rewritten = JSON.parse(await readFile(file, 'utf8')).records;
+  assert.equal(rewritten.some((record) => 'agentReuseApproved' in record), false);
+  assert.ok(rewritten[0].filledAt);
 });
 
 test('native vault refuses unavailable/plaintext OS storage and altered metadata', async (t) => {
@@ -202,9 +216,8 @@ test('native account filling fences chat, origin, snapshot, navigation, control 
   const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'andy', password: 'fixture-password' });
   const f = nativeFixture(vault);
   const observation = await f.passwords.snapshot(f.binding);
-  const request = { ...f.binding, snapshotId: observation.snapshotId, accountId: account.id, passwordRef: 'e1' };
-  await assert.rejects(f.passwords.fill(request), { code: 'BROWSER_ACCOUNT_NOT_APPROVED' });
-  await vault.setAgentReuse(account.id, true);
+  const request = { ...f.binding, snapshotId: observation.snapshotId, accountId: account.id, passwordRef: 'e1', grant: grant() };
+  await assert.rejects(f.passwords.fill({ ...request, grant: undefined }), { code: 'BROWSER_PERMISSION_REQUIRED' });
   await assert.rejects(f.passwords.fill({ ...request, chatId: 'other-chat' }), { code: 'BROWSER_PASSWORD_SCOPE_MISMATCH' });
   f.tab.navigationEpoch++;
   await assert.rejects(f.passwords.fill(request), { code: 'BROWSER_PASSWORD_STALE_REFERENCE' });
@@ -215,8 +228,7 @@ test('native account filling fences chat, origin, snapshot, navigation, control 
   await assert.rejects(f.passwords.fill(request), { code: 'BROWSER_PASSWORD_STALE_REFERENCE' });
   f.tab.passwordControlEpoch--;
   const other = await vault.importCredential({ origin: 'https://other.invalid', username: 'andy', password: 'other-secret' });
-  await vault.setAgentReuse(other.id, true);
-  await assert.rejects(f.passwords.fill({ ...request, accountId: other.id }), { code: 'BROWSER_PASSWORD_ORIGIN_MISMATCH' });
+  await assert.rejects(f.passwords.fill({ ...request, accountId: other.id, grant: grant('https://other.invalid') }), { code: 'BROWSER_PASSWORD_ORIGIN_MISMATCH' });
   const run = f.passwords.run.bind(f.passwords);
   f.passwords.run = async () => ({ error: 'target' });
   await assert.rejects(f.passwords.fill(request), { code: 'BROWSER_PASSWORD_TARGET_INVALID' });
@@ -232,11 +244,25 @@ test('native account filling fences chat, origin, snapshot, navigation, control 
   assert.equal(f.calls.at(-1).type, 'mouseUp');
 });
 
+test('saved logins and secrets fill anywhere on their registrable domain and nowhere else', async (t) => {
+  const { vault } = await vaultFixture(t); const f = nativeFixture(vault);
+  f.contents.getURL = () => 'https://login.example.com/session';
+  const www = await vault.importCredential({ origin: 'https://www.example.com', username: 'andy', password: 'www-secret' });
+  const lookalike = await vault.importCredential({ origin: 'https://example.co', username: 'andy', password: 'lookalike-secret' });
+  const observed = await f.passwords.snapshot(f.binding);
+  const request = { ...f.binding, snapshotId: observed.snapshotId, passwordRef: 'e1' };
+  assert.deepEqual(await f.passwords.fill({ ...request, accountId: www.id, grant: grant('https://example.com') }), { completed: true, accountId: www.id });
+  // 페이지 안의 폼 확인도 같은 사이트 범위로 한다.
+  assert.deepEqual(f.calls.find((args) => args[0]?.action === 'validate-fill')[0].site, { key: 'https://example.com', domain: 'example.com' });
+  await assert.rejects(f.passwords.fill({ ...request, accountId: lookalike.id, grant: grant('https://example.co') }), { code: 'BROWSER_PASSWORD_ORIGIN_MISMATCH' });
+  assert.deepEqual(await f.passwords.fill({ ...request, mode: 'secret', ref: 'e1', origins: ['https://www.example.com'], value: 'api-secret' }), { completed: true });
+  await assert.rejects(f.passwords.fill({ ...request, mode: 'secret', ref: 'e1', origins: ['https://example.co'], value: 'api-secret' }), { code: 'BROWSER_SECRET_ORIGIN_MISMATCH' });
+});
+
 test('account removal cancels paused native fills and waits for an already dispatched secret write', async (t) => {
   for (const stage of ['validate-fill', 'connections', 'fill']) await t.test(stage, async (subtest) => {
     const { vault } = await vaultFixture(subtest); const f = nativeFixture(vault);
     const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'andy', password: 'fixture-password' });
-    await vault.setAgentReuse(account.id, true);
     const observed = await f.passwords.snapshot(f.binding);
     let entered; let resume; let writes = 0; let removed = false;
     const paused = new Promise((resolve) => { entered = resolve; });
@@ -247,7 +273,7 @@ test('account removal cancels paused native fills and waits for an already dispa
       return { completed: true };
     };
     f.host.session = { closeAllConnections: async () => { if (stage === 'connections') { entered(); await barrier; } } };
-    const filling = f.passwords.fill({ ...f.binding, snapshotId: observed.snapshotId, accountId: account.id, passwordRef: 'e1' });
+    const filling = f.passwords.fill({ ...f.binding, snapshotId: observed.snapshotId, accountId: account.id, passwordRef: 'e1', grant: grant() });
     const rejection = stage !== 'fill' ? assert.rejects(filling, { code: 'BROWSER_PASSWORD_NOT_FOUND' }) : null;
     await paused;
     const removal = vault.remove(account.id).then((result) => { removed = true; return result; });
@@ -281,9 +307,8 @@ test('native fills shield the existing opener family including pending descendan
   for (const tab of [ancestor, sibling, child, unrelated]) f.host.tabs.set(tab.targetId, tab);
   f.host.pendingTabs = new Set([pending]);
   const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'andy', password: 'fixture-password' });
-  await vault.setAgentReuse(account.id, true);
   const observed = await f.passwords.snapshot(f.binding);
-  await f.passwords.fill({ ...f.binding, snapshotId: observed.snapshotId, accountId: account.id, passwordRef: 'e1' });
+  await f.passwords.fill({ ...f.binding, snapshotId: observed.snapshotId, accountId: account.id, passwordRef: 'e1', grant: grant() });
   for (const tab of [f.tab, ancestor, sibling, child, pending]) {
     assert.equal(tab.passwordShield, true); assert.ok(tab.protectedPasswords.has('fixture-password'));
     if (tab !== f.tab) assert.notEqual(tab.protectedPasswords, f.tab.protectedPasswords);
@@ -297,12 +322,28 @@ test('native fills protect sibling popups whose opener has already closed', asyn
   const sibling = { targetId: 'sibling', openerTargetId: 'closed-opener', view: { webContents: f.contents } };
   f.host.tabs.set(sibling.targetId, sibling);
   const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'andy', password: 'fixture-password' });
-  await vault.setAgentReuse(account.id, true);
   const observed = await f.passwords.snapshot(f.binding);
-  await f.passwords.fill({ ...f.binding, snapshotId: observed.snapshotId, accountId: account.id, passwordRef: 'e1' });
+  await f.passwords.fill({ ...f.binding, snapshotId: observed.snapshotId, accountId: account.id, passwordRef: 'e1', grant: grant() });
   assert.equal(sibling.passwordShield, true);
   assert.ok(sibling.protectedPasswords.has('fixture-password'));
   assert.notEqual(sibling.protectedPasswords, f.tab.protectedPasswords);
+});
+
+test('filled passwords stay masked in every tab and again after a restart', async (t) => {
+  const { root, vault, safeStorage } = await vaultFixture(t); const f = nativeFixture(vault);
+  const decrypt = safeStorage.decryptStringAsync; let decrypts = 0;
+  safeStorage.decryptStringAsync = async (value) => { decrypts++; return decrypt(value); };
+  const account = await vault.importCredential({ origin: 'https://fixture.invalid', username: 'andy', password: 'fixture-password' });
+  const observed = await f.passwords.snapshot(f.binding);
+  assert.equal(decrypts, 0, 'nothing filled yet, so the OS vault stays closed');
+  await f.passwords.fill({ ...f.binding, snapshotId: observed.snapshotId, accountId: account.id, passwordRef: 'e1', grant: grant() });
+  const unrelated = { targetId: 'unrelated', view: { webContents: f.contents } };
+  assert.equal(f.passwords.redact(unrelated, { text: 'echo fixture-password' }).text, 'echo [masked]');
+  const restarted = nativeFixture(new LocalBrowserPasswordVault({ dataDir: join(root, 'vault'), safeStorage }));
+  restarted.passwords.run = async () => ({ tree: ['Welcome fixture-password'], elements: [], text: 'Welcome fixture-password', viewport: { width: 800, height: 600 } });
+  const shown = await restarted.passwords.snapshot(restarted.binding);
+  assert.equal(JSON.stringify(shown).includes('fixture-password'), false);
+  assert.equal(shown.text, 'Welcome [masked]');
 });
 
 test('protected CDP denies arbitrary/encoded reads, child sessions, nested commands and pre-fill pending reads', async () => {
@@ -366,9 +407,11 @@ test('website zoom synchronously fences shared-origin native snapshots and pendi
 });
 
 test('session clearing invalidates snapshots before asynchronous storage deletion', async (t) => {
-  const { vault } = await vaultFixture(t); const f = nativeFixture(vault); let finish;
-  f.passwords.run = () => new Promise((resolve) => { finish = resolve; });
+  const { vault } = await vaultFixture(t); const f = nativeFixture(vault); let finish; let started;
+  const running = new Promise((resolve) => { started = resolve; });
+  f.passwords.run = () => new Promise((resolve) => { finish = resolve; started(); });
   const pending = f.passwords.snapshot(f.binding);
+  await running;
   f.host.session = { clearData: async () => {} };
   await OwnedBrowserHost.prototype.clearSession.call(f.host, { origins: ['https://fixture.invalid'] });
   finish({ elements: [], text: '' });
@@ -380,10 +423,10 @@ test('protected relay projects website-controlled network, dialog and target str
   const secret = 'fixture password ! ~'; const transformed = Buffer.from(secret).toString('hex');
   const debuggerApi = new EventEmitter(); debuggerApi.isAttached = () => false; debuggerApi.attach = () => {};
   debuggerApi.sendCommand = async () => ({ targetInfo: { targetId: 'target' } });
-  const tab = { passwordShield: true, passwordAllowedOrigins: new Set(['https://fixture.invalid']), targetId: 'target', view: { webContents: { debugger: debuggerApi, getURL: () => `https://fixture.invalid/${transformed}`, getTitle: () => transformed } } };
+  const tab = { passwordShield: true, targetId: 'target', view: { webContents: { debugger: debuggerApi, getURL: () => `https://fixture.invalid/${transformed}`, getTitle: () => transformed } } };
   const cdp = new PrivateBrowserCdp({ host: {} }); const sent = []; cdp.send = (message) => sent.push(message);
   await cdp.add(tab); tab.cdpSessionId = 'main';
-  debuggerApi.emit('message', {}, 'Network.requestWillBeSent', { requestId: '1', documentURL: `https://fixture.invalid/?${transformed}`, request: { url: `https://fixture.invalid/${transformed}`, method: 'POST', headers: { value: transformed }, postData: secret, hasPostData: true }, initiator: { stack: transformed } });
+  debuggerApi.emit('message', {}, 'Network.requestWillBeSent', { requestId: '1', documentURL: `https://fixture.invalid/?${transformed}`, request: { url: `https://fixture.invalid/${transformed}`, method: 'POST', headers: { value: transformed }, postData: secret, hasPostData: true }, initiator: { type: 'preflight', url: `https://fixture.invalid/${transformed}`, stack: transformed }, redirectResponse: { url: `https://other.invalid/${transformed}`, status: 307, headers: { location: transformed } } });
   debuggerApi.emit('message', {}, 'Fetch.requestPaused', { requestId: '2', request: { url: `https://fixture.invalid/${transformed}`, method: 'POST', headers: { value: transformed }, postData: secret }, responseHeaders: [{ name: 'secret', value: transformed }] });
   debuggerApi.emit('message', {}, 'Page.javascriptDialogOpening', { type: 'prompt', message: transformed, defaultPrompt: secret, url: `https://fixture.invalid/${transformed}` });
   debuggerApi.emit('message', {}, 'Network.webSocketFrameReceived', { response: { payloadData: transformed } });
@@ -392,6 +435,9 @@ test('protected relay projects website-controlled network, dialog and target str
   assert.equal(metadata.url, 'https://fixture.invalid/'); assert.equal(metadata.title, '');
   for (const value of [secret, transformed]) assert.equal(JSON.stringify({ sent, metadata }).includes(value), false);
   assert.equal(sent[0].params.request.hasPostData, true);
+  // Playwright 는 가로챈 사전 요청을 initiator.type 으로, 리디렉션 체인을 redirectResponse 로 읽는다. 출처는 허브의 사이트 판정에 남는다.
+  assert.equal(sent[0].params.initiator.type, 'preflight');
+  assert.deepEqual([sent[0].params.request.url, sent[0].params.redirectResponse.url, sent[0].params.redirectResponse.status], ['https://fixture.invalid/', 'https://other.invalid/', 307]);
 });
 
 

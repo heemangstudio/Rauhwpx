@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { isIP } from 'node:net';
 import { promises as fs } from 'node:fs';
+import { denialError, sameSite, signedInKey, siteScope, webOrigin } from './browser-policy.mjs';
 import { createBrowserNetworkGuard } from './owned-browser-network.mjs';
 import { OwnedBrowserError, inspectOwnedBrowserRuntime, inspectMacPasskeyCapability, installOwnedBrowserRuntime, startOwnedBrowserRuntime, startOwnedBrowserSignIn } from './owned-browser-runtime.mjs';
 import { removeOwnedBrowserState } from './browser-cleanup.mjs';
@@ -13,7 +13,6 @@ export { OwnedBrowserError } from './owned-browser-runtime.mjs';
 // aria 관찰에서 이름 없는 generic으로 보이는 편집 영역. 이 요소들의 ref는 textbox로 개요에 남긴다.
 const EDITABLE = '[contenteditable=""],[contenteditable="true"],[contenteditable="plaintext-only"]';
 const SENSITIVE = 'input[type="password"],input[type="email"],input[autocomplete="username"],input[name="username"],input[name="email"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
-const SEARCH_ORIGINS = new Set(['https://www.google.com', 'https://www.google.co.kr', 'https://duckduckgo.com', 'https://www.bing.com', 'https://search.naver.com', 'https://en.wikipedia.org', 'https://ko.wikipedia.org', 'https://www.wikipedia.org', 'https://pubmed.ncbi.nlm.nih.gov', 'https://arxiv.org']);
 const redactValues = (value, secrets) => {
   if (typeof value === 'string') { for (const secret of secrets ?? []) if (secret) for (const variant of [secret, encodeURIComponent(secret), new URLSearchParams({ v: secret }).toString().slice(2), Buffer.from(secret).toString('base64')]) value = value.split(variant).join('[masked]'); return value; }
   if (Array.isArray(value)) return value.map(entry => redactValues(entry, secrets));
@@ -28,6 +27,20 @@ const SECRET_INPUT_TYPES = new Set(['text', 'password', 'email', 'tel', 'url']);
 // 이 조작들은 결과가 자리 잡을 때까지 기다린 뒤 짧은 변화만 돌려준다.
 const SETTLING = new Set(['click', 'type', 'press', 'select']);
 const READS = new Set(['snapshot', 'frame', 'capture', 'wait']);
+// 이 조작 동안 페이지가 보내는 같은 사이트 non-GET 은 에이전트의 사이트 변경이다(입력 창).
+const INPUT_WINDOW = new Set(['click', 'press', 'select', 'fill-account', 'fill-secret']);
+const nonGet = (method) => !['GET', 'HEAD', 'OPTIONS'].includes(method);
+// GraphQL 읽기: JSON 본문의 query 가 mutation 으로 시작하지 않는다.
+const graphQLRead = (request) => {
+  try {
+    const body = JSON.parse(request.postData() ?? '');
+    const queries = Array.isArray(body) ? body : [body];
+    return queries.length > 0 && queries.every((entry) => typeof entry?.query === 'string' && !/^\s*mutation\b/.test(entry.query));
+  } catch { return false; }
+};
+const chainHead = (request) => { let head = request; for (let hop = 0; hop < 32; hop++) { const previous = head.redirectedFrom?.(); if (!previous) break; head = previous; } return head; };
+// 쿠키 도메인 → 로그인 표시 키(https://등록도메인, 포트 없음).
+const cookieSiteKey = (domain) => signedInKey(`https://${String(domain).replace(/^\./, '').toLowerCase()}`);
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
 const error = (code, message, retryable = false) => new OwnedBrowserError(code, message, retryable);
 const bounded = (value, min, max, fallback) => Number.isFinite(Number(value)) ? Math.max(min, Math.min(max, Number(value))) : fallback;
@@ -137,7 +150,9 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     // 데스크톱의 격리된 세계가 비밀 값을 한 칸에 입력한다. 같은 IPC 동작을 mode 로 나눈다.
     secretFill: (params) => call('password-fill', { ...params, mode: 'secret' }),
     passwordStorageState: () => call('password-storage-state'),
-    passwordApprove: (params) => call('password-approve', params),
+    // 보관함 로그인 하나의 에이전트 사용을 끄거나 켠다({ accountId, blocked }), 저장 카드의 로그인을 보관함에 넣는다({ origin, username, password }).
+    passwordBlock: (params) => call('password-block', params),
+    passwordSave: (params) => call('password-save', params),
     async dispose() { events.off('message', receive); listeners.clear(); nativeGeneration = undefined; for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(error('BROWSER_CLOSED', 'The browser service closed.')); } pending.clear(); },
   };
 }
@@ -234,15 +249,24 @@ export function createOwnedBrowserService(options = {}) {
   let handoffProfile = false;
   let handoffPreviousMode;
   let passkeys;
-  const sessionKey = crypto.randomBytes(32);
-  let sessionBaseline = new Map();
-  let cookieBaseline = new Map();
-  let sessionQueue = Promise.resolve();
-  let humanSessionEpoch = 0;
-  let humanActionsPending = 0;
-  const humanRequestsPending = new Set();
-  const humanOrigins = new Set();
-  const unconfirmedHumanOrigins = new Set();
+  // 에이전트가 이 탭에서 거절된 요청. 조작 결과로 돌려준다(blocked 는 오류, dropped 는 목록).
+  const DROPPED_LIMIT = 10;
+  let cookieRefresh = null;
+  let cookieRefreshedAt = 0;
+  // 새 쿠키가 에이전트 방문으로만 생겼는지(손님 쿠키) 가리려고 사이트마다 마지막 요청 시각을 둔다.
+  // identity 는 저장된 로그인을 입력한 시각이다. 그 사이트의 쿠키는 사용자 신원이 된다.
+  const siteTouches = new Map();
+  const cookieSnapshots = new Map();
+  const TOUCH_MARGIN_MS = 10_000;
+  const IDENTITY_MS = 10 * 60 * 1000;
+  const touchSite = (url, kind) => {
+    let key; try { key = cookieSiteKey(new URL(url).hostname); } catch { return; }
+    if (!key) return;
+    const entry = siteTouches.get(key) ?? {}; entry[kind] = Date.now();
+    siteTouches.delete(key); siteTouches.set(key, entry);
+    if (siteTouches.size > 4096) siteTouches.delete(siteTouches.keys().next().value);
+  };
+  let protectedLoad;
   const profileId = () => runtimeMode === 'native' ? 'native' : 'default';
   const selectedAdapter = () => runtimeMode === 'native' ? nativeAdapter : undefined;
   const browserStorageState = async () => (await selectedAdapter()?.passwordStorageState?.()) ?? runtime.context.storageState({ indexedDB: true });
@@ -267,16 +291,11 @@ export function createOwnedBrowserService(options = {}) {
     persistQueue = persistQueue.catch(() => {}).then(async () => {
       await fs.mkdir(path.dirname(descriptorFile), { recursive: true, mode: 0o700 });
       const temp = `${descriptorFile}.${crypto.randomBytes(8).toString('hex')}.part`;
-      await fs.writeFile(temp, JSON.stringify({ version: 1, tabs: records, humanStorageOrigins: [...unconfirmedHumanOrigins] }), { mode: 0o600, flag: 'wx' });
+      await fs.writeFile(temp, JSON.stringify({ version: 1, tabs: records }), { mode: 0o600, flag: 'wx' });
       await fs.rename(temp, descriptorFile);
     });
     return persistQueue;
   };
-  const markHumanOrigin = (origin) => {
-    humanOrigins.add(origin);
-    if (!unconfirmedHumanOrigins.has(origin)) { unconfirmedHumanOrigins.add(origin); void persist(); }
-  };
-  const markHumanDocument = (tab) => { for (const frame of tab.page?.frames?.() ?? []) if (/^https?:/.test(frame.url())) markHumanOrigin(new URL(frame.url()).origin); };
   const validateActor = (actor) => {
     if (!actor || (actor.isHuman ? !actor.clientId : !actor.threadId || !actor.agentId)) throw error('BROWSER_SCOPE_REQUIRED', 'A server-authorized browser actor is required.');
     if (closed) throw error('BROWSER_CLOSED', 'The browser service has closed.');
@@ -286,28 +305,84 @@ export function createOwnedBrowserService(options = {}) {
     if (!tab || (!actor.isHuman && !canAccessTab(actor, tab))) throw error('BROWSER_TAB_NOT_FOUND', 'This browser tab is unavailable to the current agent.');
     return tab;
   };
-  // 승인된 계정을 이 탭에 채운 에이전트는 같은 문서에서 그 로그인을 제출할 수 있다. 다른 변경·다른 출처·다음 문서에는 미치지 않는다.
-  const submitsSignIn = (actor, action, url, tab, args) => {
-    const grant = tab?.signInGrant;
-    if (!grant || args.intent !== 'website-change' || !['click', 'press', 'browse'].includes(action) || changesWebsiteURL(url)) return false;
-    if (grant.threadId !== actor.threadId || grant.agentId !== actor.agentId || grant.navigationEpoch !== tab.navigationEpoch || Date.now() > grant.expiresAt) return false;
-    try { return new URL(url).origin === grant.origin; } catch { return false; }
+  // 정책 동작: 명시한 사이트 변경, 다운로드, 그 밖에 현재 페이지에서 하는 일은 읽기, 새 주소 열기는 열람이다.
+  // 위험한 주소(/delete, ?action=purchase 등)로 가는 탐색은 사이트 변경이다. 계정·비밀 사용은 입력하는 곳에서 따로 묻는다.
+  const policyAction = (actor, action, url, args) => {
+    if (args.intent === 'website-change') return 'website-change';
+    if (action === 'download') return 'download';
+    if (['open', 'navigate'].includes(action) && !actor.isHuman && changesWebsiteURL(url)) return 'website-change';
+    return READS.has(action) || MUTATIONS.has(action) ? 'read' : 'browse';
   };
-  const grantSignIn = (actor, tab, page) => {
-    if (actor.isHuman) return;
-    tab.signInGrant = { threadId: actor.threadId, agentId: actor.agentId, origin: new URL(page.url()).origin, navigationEpoch: tab.navigationEpoch, expiresAt: Date.now() + 5 * 60_000 };
-  };
+  /** 에이전트 행위를 정책에 묻는다. 사이트가 없는 주소(about:·data:·chrome-error:)는 묻지 않는다. 거절은 다음 호출을 담은 오류다. */
   const assertPolicy = async (actor, action, url, tab, args = {}) => {
-    if (actor.isHuman) return;
-    const mapped = submitsSignIn(actor, action, url, tab, args) ? 'browse' : args.intent === 'website-change' || !actor.isHuman && changesWebsiteURL(url) ? 'website-change' : action === 'download' ? 'download' : READS.has(action) || MUTATIONS.has(action) ? 'read' : 'browse';
-    if (policy?.assertAllowed && url !== 'about:blank') await policy.assertAllowed({ actor, action: mapped, url, profileId: profileId() }).catch((failure) => {
-      // 로그인 제출이면 에이전트가 다시 시도할 길을 알려 준다. 사용자를 대신 부르는 우회는 하지 않는다.
-      if (mapped === 'website-change' && failure?.code === 'BROWSER_PERMISSION_REQUIRED') failure.message = "Website changes on this site need owner approval. Call browser_request_account with kind 'site' for this origin and end the turn. A sign-in filled with an approved account through browser_fill_account can be submitted without it.";
-      throw failure;
-    });
-    else if (policy?.assertBrowserAction) await policy.assertBrowserAction({ actor, action, url, tab: tab && descriptor(tab), intent: args.intent ?? 'research' });
-    else if (mapped === 'website-change') throw error('BROWSER_WEBSITE_CHANGE_REQUIRED', "Website changes on this site need owner approval. Call browser_request_account with kind 'site' for this origin and end the turn.");
-    if (credentialBroker?.assertBrowserAccess && tab?.scope !== 'global' && (!tab || ['open', 'browse', 'navigate', 'fill-account', 'fill-secret'].includes(action) || args.intent === 'website-change') && url !== 'about:blank') await credentialBroker.assertBrowserAccess({ actor, url, tab: { ...descriptor(tab ?? { page: null, url, controller: {} }), profileId: profileId() } });
+    if (actor.isHuman || !webOrigin(url)) return null;
+    const mapped = args.policyAction ?? policyAction(actor, action, url, args);
+    if (!policy?.check) {
+      if (mapped === 'website-change') throw error('BROWSER_WEBSITE_CHANGE_REQUIRED', "Website changes need the owner's browser policy.");
+      return null;
+    }
+    // 사용자가 공유한 탭의 현재 페이지는 로그인한 사이트여도 읽을 수 있다. 새 주소로 가는 탐색은 그렇지 않다.
+    const shared = tab?.scope === 'global' && !['open', 'navigate'].includes(action);
+    const decision = await policy.check({ actor, action: mapped, url, profileId: profileId(), resource: args.resource ?? 'document', shared, item: args.item ?? null });
+    if (!decision.allowed) throw denialError(decision, actor);
+    return decision;
+  };
+  // 조작 하나 동안 거절된 요청을 모은다. 첫 거절은 조작의 오류가 되고(blocked), 사이트 밖 잡요청은 목록으로만 남는다(dropped).
+  const recordDenied = (tab, decision, actor, { performed = false, fatal = true, method = 'GET' } = {}) => {
+    if (fatal) { tab.blocked ??= denialError(decision, actor, { performed }); return; }
+    tab.dropped ??= [];
+    if (tab.dropped.length < DROPPED_LIMIT) tab.dropped.push({ origin: decision.origin, method, code: decision.code });
+  };
+  /** 저장된 로그인이 있는 사이트와 쿠키가 있는 사이트(새로 생긴 손님 쿠키 포함)를 정책에 알린다. 로그인 표시는 쿠키가 있어야 산다. */
+  const refreshCookieSites = ({ force = false } = {}) => {
+    if (!policy?.setCookieSites || !runtime || state !== 'ready') return Promise.resolve();
+    if (!force && (cookieRefresh || Date.now() - cookieRefreshedAt < 1000)) return cookieRefresh ?? Promise.resolve();
+    const profile = profileId();
+    const observed = runtime;
+    cookieRefresh = (async () => {
+      if (policy.setSavedLoginSites) {
+        const logins = profile === 'native' ? await selectedAdapter()?.passwordAccounts?.().then((result) => result?.accounts ?? null, () => null)
+          : await credentialBroker?.listAccounts?.().then((result) => (result?.accounts ?? []).filter((account) => account.profileId === 'default'), () => null);
+        if (Array.isArray(logins)) policy.setSavedLoginSites(profile, logins.map((account) => account.origin).filter((origin) => signedInKey(origin)));
+      }
+      const readAt = Date.now();
+      let cookies = null;
+      try { cookies = (await selectedAdapter()?.passwordStorageState?.())?.cookies ?? null; } catch {}
+      if (!cookies) try { cookies = await observed.context.cookies?.(); } catch {}
+      if (!cookies) try { cookies = (await observed.context.storageState?.())?.cookies; } catch {}
+      if (Array.isArray(cookies) && runtime === observed) {
+        const live = new Set(cookies.map((cookie) => cookieSiteKey(cookie.domain)).filter(Boolean));
+        // 직전 읽기 이후 처음 생긴 쿠키 사이트 중 에이전트만 요청한 곳은 손님 쿠키다. 시작 때 이미 있던 쿠키는 사용자 것으로 본다.
+        const previous = cookieSnapshots.get(profile);
+        const since = (previous?.at ?? readAt) - TOUCH_MARGIN_MS;
+        const identity = (key) => (siteTouches.get(key)?.identity ?? 0) >= readAt - IDENTITY_MS;
+        const guest = previous ? [...live].filter((key) => {
+          const touched = siteTouches.get(key);
+          return !previous.keys.has(key) && (touched?.agent ?? 0) >= since && !((touched?.human ?? 0) >= since) && !identity(key);
+        }) : [];
+        cookieSnapshots.set(profile, { keys: live, at: readAt });
+        await policy.setCookieSites(profile, live, { guest, owned: [...live].filter(identity) });
+      }
+    })().catch(() => {}).finally(() => { cookieRefresh = null; cookieRefreshedAt = Date.now(); });
+    return cookieRefresh;
+  };
+  /** 사용자의 폼 제출(로그인 등)이 끝난 사이트 중 쿠키가 생긴 곳에 로그인 표시를 남긴다. */
+  const markOwnerForm = async (sites) => {
+    await refreshCookieSites({ force: true });
+    let cookies = null;
+    try { cookies = (await selectedAdapter()?.passwordStorageState?.())?.cookies ?? await runtime?.context.cookies?.(); } catch {}
+    const withCookies = new Set((cookies ?? []).map((cookie) => cookieSiteKey(cookie.domain)));
+    const marked = [...sites].filter((key) => withCookies.has(key)).map((key) => new URL(key).hostname);
+    if (marked.length) await policy?.markSignedIn?.({ profileId: profileId(), domains: marked, source: 'owner-form' });
+  };
+  /** 다시 시작한 뒤 첫 에이전트 관찰 전에, 최근에 입력한 비밀번호·비밀을 가릴 값으로 다시 읽는다. */
+  const loadProtected = () => protectedLoad ??= Promise.resolve().then(() => options.loadProtectedValues?.()).then((values) => {
+    for (const value of values ?? []) rememberFilled(value);
+  }).catch(() => {});
+  const rememberFilled = (value) => {
+    if (typeof value !== 'string' || !value) return;
+    filledSecrets.add(value);
+    if (filledSecrets.size > 256) filledSecrets.delete(filledSecrets.values().next().value);
   };
   const invalidate = (tab) => {
     for (const handle of tab.snapshot?.handles?.values?.() ?? []) void handle.dispose?.().catch(() => {});
@@ -330,7 +405,7 @@ export function createOwnedBrowserService(options = {}) {
     if (!origin || closed || resetting || resetFailed || tab.snapshot?.passwordProtected || tab.passwordShielded) return;
     const before = favicons.peek(origin);
     // 허브의 아이콘 요청도 탭 자신의 하위 요청과 같은 사이트 정책을 거친다. 승인되지 않은 출처로 새는 길을 만들지 않는다.
-    const authorize = (url) => assertPolicy(pageActor(tab), 'browse', url, tab).then(() => true, () => false);
+    const authorize = (url) => assertPolicy(pageActor(tab), 'browse', url, tab, { resource: 'subresource' }).then(() => true, () => false);
     const icon = await favicons.discover(origin, faviconCandidates(pageUrl, links, { isWorkspace }), { authorize }).catch(() => null);
     if (icon && icon !== before && tabs.get(tab.tabId) === tab && !closed && !resetting) publish(tab);
   };
@@ -339,7 +414,7 @@ export function createOwnedBrowserService(options = {}) {
     if (!closed && runtimeMode === 'native' && tab && event.reason === 'download-progress' && event.targetId === tab?.nativeTargetId && event.generation === tab?.nativeGeneration) { downloads?.reportProgress?.({ tabId: tab.tabId, ...event }); return; }
     if (event.reason === 'human-input') {
       // 데스크톱이 실제 사용자 입력을 탭에 전달했다. 이어지는 로그인 제출 같은 요청은 사용자의 것이다.
-      if (!closed && runtimeMode === 'native' && tab?.page && event.targetId === tab.nativeTargetId && event.generation === tab.nativeGeneration && !tab.humanDriven) { tab.humanDriven = true; markHumanDocument(tab); }
+      if (!closed && runtimeMode === 'native' && tab?.page && event.targetId === tab.nativeTargetId && event.generation === tab.nativeGeneration && !tab.humanDriven) tab.humanDriven = true;
       return;
     }
     if (event.reason === 'favicon') { if (!closed && runtimeMode === 'native' && tab?.page && event.targetId === tab.nativeTargetId && event.generation === tab.nativeGeneration) void discoverFavicon(tab, event.pageUrl, event.favicons.slice(0, 16)); return; }
@@ -381,66 +456,6 @@ export function createOwnedBrowserService(options = {}) {
   // 에이전트가 다음 조작을 시작하면 humanDriven 이 풀려 다시 에이전트 정책을 따른다.
   const pageActor = (tab, { ignoreActive = false } = {}) => (!ignoreActive && tab.activeActor) || (tab.controller.owner === 'human' || userHolds(tab) || tab.humanDriven
     ? { ...actorForTab(tab), isHuman: true, clientId: tab.controller.clientId ?? tab.hold?.clientId ?? tab.sessionId } : actorForTab(tab));
-  const sessionFingerprint = (storage) => {
-    const grouped = new Map();
-    for (const cookie of storage.cookies ?? []) { const domain = cookie.domain.replace(/^\./, '').toLowerCase(); const key = `domain:${domain}`; if (!grouped.has(key)) grouped.set(key, []); grouped.get(key).push(cookie); }
-    for (const origin of storage.origins ?? []) grouped.set(`origin:${origin.origin}`, origin);
-    return new Map([...grouped].map(([key, values]) => [key, crypto.createHmac('sha256', sessionKey).update(JSON.stringify(Array.isArray(values) ? values.sort((a, b) => `${a.domain}:${a.name}:${a.path}`.localeCompare(`${b.domain}:${b.name}:${b.path}`)) : values)).digest('hex')]));
-  };
-  const cookieIdentity = (cookie) => `${cookie.domain.toLowerCase()}\n${cookie.path}\n${cookie.name}`;
-  const serializeSession = (operation) => { const result = sessionQueue.catch(() => {}).then(operation); sessionQueue = result.catch(() => {}); return result; };
-  const matchesOrigin = (key, origin) => {
-    if (key.startsWith('origin:')) return key.slice(7) === origin;
-    const domain = key.slice(7), host = new URL(origin).hostname;
-    return host === domain || host.endsWith(`.${domain}`);
-  };
-  const recordAgentSessions = (url, epoch, headers = []) => serializeSession(async () => {
-    if (!runtime || state !== 'ready' || epoch !== humanSessionEpoch || humanActionsPending || humanRequestsPending.size || !/^https?:/.test(url)) return;
-    const storage = await browserStorageState();
-    const current = sessionFingerprint(storage);
-    if (epoch !== humanSessionEpoch || humanActionsPending || humanRequestsPending.size) return;
-    const origin = new URL(url).origin;
-    const humanStorageOwner = unconfirmedHumanOrigins.has(origin) || runtime.context.pages().some((page) => !pageTabs.has(page) && page.frames().some((frame) => { try { return new URL(frame.url()).origin === origin; } catch { return false; } }));
-    // Origin storage has no per-write actor identity. Never credit an agent with
-    // an unproved localStorage/IndexedDB change while a human shares that origin.
-    if (!humanStorageOwner) for (const [key, fingerprint] of current) if (key.startsWith('origin:') && matchesOrigin(key, origin)) sessionBaseline.set(key, fingerprint);
-    const source = new URL(url), touchedDomains = new Set();
-    for (const header of headers.filter((entry) => entry.name.toLowerCase() === 'set-cookie')) {
-      const [pair, ...attributes] = header.value.split(';'), separator = pair.indexOf('=');
-      if (separator <= 0) continue;
-      const name = pair.slice(0, separator).trim(), value = pair.slice(separator + 1);
-      const attrs = new Map(attributes.map((entry) => { const split = entry.indexOf('='); return [entry.slice(0, split < 0 ? undefined : split).trim().toLowerCase(), split < 0 ? '' : entry.slice(split + 1).trim()]; }));
-      const domain = (attrs.get('domain') ?? source.hostname).replace(/^\./, '').toLowerCase();
-      if (source.hostname !== domain && !source.hostname.endsWith(`.${domain}`)) continue;
-      const cookiePath = attrs.get('path')?.startsWith('/') ? attrs.get('path') : source.pathname.slice(0, source.pathname.lastIndexOf('/')) || '/';
-      const cookieDomain = attrs.has('domain') && !isIP(domain) ? `.${domain}` : domain;
-      const identity = `${cookieDomain}\n${cookiePath}\n${name}`;
-      const cookie = storage.cookies.find((entry) => cookieIdentity(entry) === identity);
-      if (cookie?.value === value) { cookieBaseline.set(identity, cookie); touchedDomains.add(domain); }
-      else if (!cookie && (Number(attrs.get('max-age')) <= 0 && attrs.has('max-age') || Date.parse(attrs.get('expires')) < Date.now())) { cookieBaseline.delete(identity); touchedDomains.add(domain); }
-    }
-    // Only the exact keys written by this authorized response advance cookie provenance.
-    const approved = sessionFingerprint({ cookies: [...cookieBaseline.values()], origins: [] });
-    for (const domain of touchedDomains) { const key = `domain:${domain}`; if (approved.has(key)) sessionBaseline.set(key, approved.get(key)); else sessionBaseline.delete(key); }
-  });
-  const observeHumanSessions = () => serializeSession(async () => {
-    if (!runtime || state !== 'ready' || !credentialBroker?.registerSessionOrigins) return;
-    for (const page of runtime.context.pages()) if (!pageTabs.has(page) && /^https?:/.test(page.url())) markHumanOrigin(new URL(page.url()).origin);
-    const storage = await browserStorageState();
-    const current = sessionFingerprint(storage);
-    const domains = [], origins = [];
-    for (const [key, fingerprint] of current) {
-      if (fingerprint === sessionBaseline.get(key)) continue;
-      if (key.startsWith('domain:')) {
-        const domain = key.slice(7);
-        if ([...humanOrigins].some((origin) => { const host = new URL(origin).hostname; return host === domain || host.endsWith(`.${domain}`) || domain.endsWith(`.${host}`); })) domains.push(domain);
-      } else { const origin = key.slice(7); if (humanOrigins.has(origin)) origins.push(origin); }
-    }
-    if (domains.length || origins.length) await credentialBroker.registerSessionOrigins({ profileId: profileId(), origins, domains, source: 'human' });
-    sessionBaseline = current;
-    cookieBaseline = new Map(storage.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
-  });
-
   const onDownload = async (tab, download) => {
     const actor = Object.freeze(pageActor(tab));
     const target = Object.freeze({ ...descriptor(tab), taskId: tab.taskId });
@@ -476,7 +491,9 @@ export function createOwnedBrowserService(options = {}) {
       finally { clearInterval(monitor); }
     } catch (failure) {
       await download.cancel().catch(() => {});
-      emit('owned_browser_download_error', { tabId: tab.tabId, threadId: tab.threadId, projectId: tab.projectId, error: { code: failure.code ?? 'BROWSER_DOWNLOAD_FAILED', message: 'The browser download could not be stored.' } });
+      // 정책이 막은 다운로드는 에이전트도 알아야 한다. 일으킨 조작의 결과와 browser_downloads 에 같은 거절을 싣는다.
+      if (failure?.request) tab.lastDownloadDenial = { at: Date.now(), denial: { code: failure.code, message: failure.message, site: failure.site, origin: failure.origin, request: failure.request, ...(failure.blocked ? { blocked: failure.blocked } : {}) } };
+      emit('owned_browser_download_error', { tabId: tab.tabId, threadId: tab.threadId, projectId: tab.projectId, error: { code: failure.code ?? 'BROWSER_DOWNLOAD_FAILED', message: failure?.request ? failure.message : 'The browser download could not be stored.' } });
     }
   };
 
@@ -488,20 +505,34 @@ export function createOwnedBrowserService(options = {}) {
       const url = socket.url().replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
       try {
         await guard.resolve(url);
-        const handshakeActor = pageActor(tab);
-        await assertPolicy(handshakeActor, 'browse', url, tab);
+        // 웹소켓은 페이지의 하위 요청이다. 차단된 사이트만 끊는다.
+        const subresource = { resource: 'subresource' };
+        await assertPolicy(pageActor(tab), 'browse', url, tab, subresource);
         const server = socket.connectToServer();
         socket.onMessage(async (message) => {
           const actor = pageActor(tab);
-          try { await assertPolicy(actor, 'browse', url, tab); server.send(message); }
+          try { await assertPolicy(actor, 'browse', url, tab, subresource); server.send(message); }
           catch { await server.close({ code: 4003, reason: 'Website changes require owner approval' }); await socket.close({ code: 4003, reason: 'Website changes require owner approval' }); }
         });
         server.onMessage(async (message) => {
           const actor = pageActor(tab, { ignoreActive: true });
-          try { await assertPolicy(actor, 'snapshot', url, tab); socket.send(message); }
+          try { await assertPolicy(actor, 'browse', url, tab, subresource); socket.send(message); }
           catch { await server.close({ code: 4003, reason: 'Website access requires owner approval' }); await socket.close({ code: 4003, reason: 'Website access requires owner approval' }); }
         });
       } catch { await socket.close({ code: 4003, reason: 'Browser destination blocked' }); }
+    });
+    // 3xx 홉은 경로에 오지 않는다. 주 프레임 홉을 모아 조작 뒤에 판정하고, 사용자 폼 제출이 지나간 사이트를 모은다.
+    page.on('request', (request) => {
+      let main = false; try { main = request.isNavigationRequest() && request.frame() === page.mainFrame(); } catch {}
+      if (!main || tab.page !== page) return;
+      const head = chainHead(request);
+      if (head !== request && tab.navHops && tab.navHops.length < 20) tab.navHops.push(request.url());
+      if (!pageActor(tab).isHuman || !(nonGet(head.method()) || ownerForms.has(head))) return;
+      const sites = ownerForms.get(head) ?? new Set();
+      ownerForms.set(head, sites);
+      const key = request.url().startsWith('https://') ? cookieSiteKey(new URL(request.url()).hostname) : null;
+      if (key) sites.add(key);
+      void request.response().then(() => markOwnerForm(sites)).catch(() => {});
     });
     page.on('download', (download) => { void onDownload(tab, download); });
     page.on('dialog', (dialog) => {
@@ -564,6 +595,79 @@ export function createOwnedBrowserService(options = {}) {
     }
   };
 
+  /**
+   * 모든 요청의 정책 판정(DESIGN §4·§5). 하위 GET 은 차단만 본다. 문서 탐색은 열람 판정을 받는다.
+   * 에이전트 변경(POST 폼 탐색, 위험한 주소, 입력 창 안의 같은 사이트 non-GET)은 사이트 사용이 필요하다.
+   * 주 프레임 거절은 'aborted' 로 끊어 탭이 원래 페이지에 머문다. 3xx 홉은 Playwright 경로에 오지 않으므로
+   * 조작이 끝난 뒤 assertLanding 이 홉과 도착 주소를 판정한다.
+   */
+  const ownerForms = new WeakMap();
+  /**
+   * 조작이 끝난 뒤 도착한 주 프레임 주소와 거쳐 온 3xx 홉을 판정한다. 허용된 변경이 시작한 체인이면 차단만 본다.
+   * 요청은 이미 서버에 닿았으므로 거절은 performed 다. 에이전트는 이 페이지를 읽지 못한다(다음 관찰도 같은 판정을 받는다).
+   */
+  const assertLanding = async (actor, tab) => {
+    if (actor.isHuman || !policy?.check || !tab.page || tab.page.isClosed()) return;
+    const urls = [...(tab.navHops ?? []), tab.page.url()];
+    for (const url of urls) {
+      if (!webOrigin(url)) continue;
+      const decision = await policy.check({ actor, action: 'browse', url, profileId: profileId() });
+      if (decision.allowed || (tab.changePermitted && decision.code !== 'BROWSER_SITE_BLOCKED')) continue;
+      throw denialError(decision, actor, { performed: true });
+    }
+  };
+  const routeRequest = async (route) => {
+    const request = route.request();
+    const abort = (reason = 'blockedbyclient') => route.abort(reason).catch(() => {});
+    try {
+      const url = request.url();
+      if (url.startsWith('data:') || url === 'about:blank') { await route.continue(); return; }
+      try { await guard.resolve(url); } catch { await abort(); return; }
+      let page; try { page = request.frame().page(); } catch {}
+      let tab = page && pageTabs.get(page);
+      // 팝업의 첫 요청이 논리 탭 바인딩보다 먼저 도착해도 원래 탭의 정책을 적용한다.
+      if (!tab && page) { const opener = await page.opener().catch(() => null); tab = opener && pageTabs.get(opener); }
+      if (!tab || !policy?.check) { await route.continue(); return; }
+      const actor = pageActor(tab);
+      touchSite(url, actor.isHuman ? 'human' : 'agent');
+      const method = request.method();
+      const document = request.isNavigationRequest();
+      let mainFrame = false; try { mainFrame = document && request.frame() === page.mainFrame(); } catch {}
+      if (mainFrame) tab.documentEpoch = (tab.documentEpoch ?? 0) + 1;
+      if (actor.isHuman) { await route.continue(); return; }
+      const ask = (action, target = url, resource = 'document') => policy.check({ actor, action, url: target, profileId: profileId(), resource });
+      const performed = false;
+      const inWindow = !!tab.inputWindow && tab.inputWindow.documentEpoch === tab.documentEpoch && tab.inputWindow.agentId === actor.agentId;
+      const browse = await ask('browse', url, document ? 'document' : 'subresource');
+      if (!browse.allowed) {
+        recordDenied(tab, browse, actor, { performed, fatal: mainFrame, method });
+        await abort(mainFrame ? 'aborted' : undefined); return;
+      }
+      let change = false;
+      if (document) change = nonGet(method) || (mainFrame && changesWebsiteURL(url));
+      else if (nonGet(method)) {
+        const pageUrl = page.url();
+        const agentChange = inWindow && request.resourceType() !== 'ping' && !graphQLRead(request);
+        if (agentChange && sameSite(url, pageUrl)) change = true;
+        else {
+          // 페이지 스크립트의 요청과 사이트 밖 잡요청: 차단된 사이트만 막는다. 입력 창 안의 사이트 밖 쓰기는 페이지 사이트의 승인을 따른다.
+          const target = await ask('website-change');
+          const crossSiteWrite = agentChange && !(await ask('website-change', pageUrl)).allowed;
+          if (target.code === 'BROWSER_SITE_BLOCKED' || crossSiteWrite) { recordDenied(tab, target.allowed ? { ...target, code: 'BROWSER_PERMISSION_REQUIRED' } : target, actor, { fatal: false, method }); await abort(); return; }
+        }
+      }
+      if (change) {
+        const decision = await ask('website-change');
+        if (!decision.allowed) {
+          recordDenied(tab, decision, actor, { performed, fatal: mainFrame || inWindow, method });
+          await abort(mainFrame ? 'aborted' : undefined); return;
+        }
+        // 허용된 변경이 일으킨 3xx 홉은 이 승인을 이어받는다(홉 사이트의 차단만 본다).
+        if (document) tab.changePermitted = true;
+      }
+      await route.continue();
+    } catch { await abort(); }
+  };
   const ensureRuntime = async () => {
     if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Complete browser cleanup in Settings before starting another browser.', true);
     if (signIn || handoffPending) throw error('BROWSER_SIGN_IN_ACTIVE', 'Complete sign-in in the full browser, then confirm the account in Browser settings.', true);
@@ -580,46 +684,8 @@ export function createOwnedBrowserService(options = {}) {
           checkpoint = await credentialBroker.restoreCheckpoint({ profileId: profileId() });
           if (checkpoint && !handoffProfile && !(selectedAdapter() && runtime.context.pages().length)) await runtime.context.setStorageState(checkpoint);
         }
-        const initialStorage = await browserStorageState();
-        const initialFingerprint = sessionFingerprint(initialStorage);
-        if ((!checkpoint || handoffProfile) && credentialBroker?.registerSessionOrigins && (initialStorage.cookies.length || initialStorage.origins.length)) {
-          const origins = initialStorage.origins.map((entry) => entry.origin).filter((origin) => !handoffProfile || initialFingerprint.get(`origin:${origin}`) !== sessionBaseline.get(`origin:${origin}`));
-          const domains = initialStorage.cookies.map((cookie) => cookie.domain.replace(/^\./, '')).filter((domain) => !handoffProfile || initialFingerprint.get(`domain:${domain}`) !== sessionBaseline.get(`domain:${domain}`));
-          if (origins.length || domains.length) await credentialBroker.registerSessionOrigins({ profileId: profileId(), origins, domains, source: handoffProfile ? 'human' : 'unknown' });
-        }
-        sessionBaseline = initialFingerprint;
-        cookieBaseline = new Map(initialStorage.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
         handoffProfile = false;
-        await runtime.context.route('**/*', async (route) => {
-          const request = route.request();
-          try {
-            const url = request.url();
-            if (url.startsWith('data:') || url === 'about:blank') { await route.continue(); return; }
-            await guard.resolve(url);
-            let page; try { page = request.frame().page(); } catch {}
-            let tab = page && pageTabs.get(page);
-            // 팝업의 첫 요청이 논리 탭 바인딩보다 먼저 도착해도 원래 탭의 정책을 적용한다.
-            if (!tab && page) { const opener = await page.opener().catch(() => null); tab = opener && pageTabs.get(opener); }
-            if (tab) {
-              const actor = pageActor(tab);
-              if (actor.isHuman) {
-                humanSessionEpoch++; humanOrigins.add(new URL(url).origin); humanRequestsPending.add(request);
-                // Cookies are applied with response headers. Streaming bodies must not hold
-                // the shared profile indefinitely; the human action retains its own fence.
-                void request.response().then(async () => { await observeHumanSessions(); }).catch(() => {}).finally(() => { humanRequestsPending.delete(request); });
-              }
-              else {
-                const epoch = humanSessionEpoch;
-                void request.response().then(async (response) => { if (response) await recordAgentSessions(url, epoch, await response.headersArray()); }).catch(() => {});
-              }
-              await assertPolicy(actor, 'browse', url, tab);
-              if (!actor.isHuman && !['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
-                await assertPolicy(actor, 'browse', url, tab, { intent: 'website-change' });
-              }
-            }
-            await route.continue();
-          } catch { await route.abort('blockedbyclient').catch(() => {}); }
-        });
+        await runtime.context.route('**/*', (route) => routeRequest(route));
         // 팝업 게스트는 논리 탭 없이 남지 않는다. 숨은 고아 창은 같은 이름의 window.open을 계속 삼킨다.
         const adoptPopup = async (page, parent) => {
           if (pageTabs.has(page) || page.isClosed()) return;
@@ -675,6 +741,8 @@ export function createOwnedBrowserService(options = {}) {
         });
         if (credentialBroker?.saveCheckpoint) { clearInterval(checkpointTimer); checkpointTimer = setInterval(() => { void saveCheckpoint().catch(() => {}); }, 30_000); checkpointTimer.unref?.(); }
         state = 'ready';
+        // 시작할 때 쿠키가 있는 사이트를 읽는다. 체크포인트가 없거나 쿠키가 많아도 결정은 바뀌지 않는다.
+        await refreshCookieSites({ force: true });
         emit('owned_browser_runtime', { runtime: runtimeInfo() });
         return runtime;
       } catch (failure) {
@@ -717,8 +785,7 @@ export function createOwnedBrowserService(options = {}) {
         origins: [...retained.origins.filter((entry) => !origins.has(entry.origin)), ...approved.origins] };
       await runtime.context.setStorageState(merged);
     }
-    const restored = await browserStorageState();
-    sessionBaseline = sessionFingerprint(restored); cookieBaseline = new Map(restored.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
+    await refreshCookieSites({ force: true });
     for (const tab of tabs.values()) {
       if (!tab.page || tab.page.isClosed()) { tab.restorePending = true; continue; }
       if (!adapter?.importSession && origins.has(new URL(tab.page.url()).origin)) {
@@ -732,7 +799,11 @@ export function createOwnedBrowserService(options = {}) {
   const requirePage = (tab) => { if (!tab.page || tab.page.isClosed()) throw error('BROWSER_RECONNECT_REQUIRED', 'The browser page disconnected. Recover it before sending input.', true); return tab.page; };
   const saveCheckpoint = () => {
     if (resetting || resetFailed) return Promise.resolve();
-    const result = checkpointQueue.catch(() => {}).then(async () => { if (!resetting && !resetFailed && runtime && state === 'ready' && credentialBroker?.saveCheckpoint) { await observeHumanSessions(); if (!resetting && !resetFailed) await credentialBroker.saveCheckpoint({ profileId: profileId(), state: await browserStorageState() }); } });
+    const result = checkpointQueue.catch(() => {}).then(async () => {
+      if (resetting || resetFailed || !runtime || state !== 'ready') return;
+      await refreshCookieSites();
+      if (credentialBroker?.saveCheckpoint && !resetting && !resetFailed) await credentialBroker.saveCheckpoint({ profileId: profileId(), state: await browserStorageState() });
+    });
     checkpointQueue = result.catch(() => {}); return result;
   };
   credentialBroker?.setDataResetter?.(async ({ phase }) => {
@@ -742,12 +813,12 @@ export function createOwnedBrowserService(options = {}) {
       if (handoffPromise) await handoffPromise.catch(() => {});
       for (const tab of tabs.values()) { tab.controllerEpoch++; invalidate(tab); }
       await Promise.all([...tabs.values()].map((tab) => tab.queue.catch(() => {})));
-      await checkpointQueue; await sessionQueue; await persistQueue.catch(() => {});
+      await checkpointQueue; await cookieRefresh; await persistQueue.catch(() => {});
       await signIn?.close(); signIn = null; signInAccountId = null;
       for (const tab of tabs.values()) await releaseInput(tab);
       await runtime?.close(); runtime = null;
       await nativeAdapter?.reset?.();
-      tabs.clear(); sessionBaseline.clear(); cookieBaseline.clear(); humanOrigins.clear(); unconfirmedHumanOrigins.clear(); humanRequestsPending.clear(); handoffProfile = false; state = 'resetting';
+      tabs.clear(); handoffProfile = false; state = 'resetting';
       await favicons.clear();
       await removeOwnedBrowserState({ dataDir });
     } else if (phase === 'after') { resetting = false; resetFailed = false; state = 'idle'; emit('owned_browser_runtime', { runtime: runtimeInfo() }); }
@@ -761,10 +832,7 @@ export function createOwnedBrowserService(options = {}) {
     if (targetProfile === 'native' && nativeAdapter?.importSession) {
       await nativeAdapter.importSession({ origins, state: { cookies: [], origins: [] }, clear: true });
       for (const tab of tabs.values()) { invalidate(tab); tab.controllerEpoch++; publish(tab); }
-      if (clearing === runtime) {
-        const storage = await browserStorageState();
-        sessionBaseline = sessionFingerprint(storage); cookieBaseline = new Map(storage.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
-      }
+      if (clearing === runtime) await refreshCookieSites({ force: true });
       return { clearedOrigins: origins };
     }
     const hosts = origins.map((origin) => new URL(origin).hostname);
@@ -780,8 +848,7 @@ export function createOwnedBrowserService(options = {}) {
       finally { await session.detach().catch(() => {}); await page.close().catch(() => {}); }
     }
     for (const tab of tabs.values()) { invalidate(tab); tab.controllerEpoch++; publish(tab); }
-    const clearedStorage = await clearing.context.storageState({ indexedDB: true });
-    if (clearing === runtime) { sessionBaseline = sessionFingerprint(clearedStorage); cookieBaseline = new Map(clearedStorage.cookies.map((cookie) => [cookieIdentity(cookie), cookie])); }
+    if (clearing === runtime) await refreshCookieSites({ force: true });
     return { clearedDomains: domains.map((domain) => domain.replace(/^\./, '')), clearedOrigins };
     } finally { if (clearing !== runtime) await clearing.close(); }
   });
@@ -1090,6 +1157,14 @@ export function createOwnedBrowserService(options = {}) {
     return { stop, settle };
   };
 
+  // form= 속성으로 묶인 칸과 제출 단추의 formaction 까지 본다. 이름이 action 인 칸이 가리지 않게 속성을 읽는다.
+  const formDestinations = (handle) => handle.evaluate((el) => {
+    const form = el.form;
+    if (!form) return [];
+    return [form.getAttribute('action'), ...[...form.elements].filter((item) => ['submit', 'image'].includes(item.type)).map((item) => item.getAttribute('formaction'))]
+      .filter(Boolean).map((value) => { try { return new URL(value, document.baseURI).origin; } catch { return 'null'; } });
+  }).catch(() => ['null']);
+
   const operate = async (actor, action, tab, args, signal) => {
     if (action === 'close') { await releaseInput(tab); await tab.page?.close(); tab.status = 'closed'; tabs.delete(tab.tabId); await persist(); return { completed: true }; }
     const page = requirePage(tab);
@@ -1174,11 +1249,19 @@ export function createOwnedBrowserService(options = {}) {
       if (tab.snapshot?.native && selectedAdapter()?.passwordFill) {
         requireRef(tab, { ...args, ref: args.passwordRef });
         if (args.usernameRef) requireRef(tab, { ...args, ref: args.usernameRef });
-        // "이 채팅" 계정 승인은 허브만 안다. 데스크톱 보관함은 영구 승인이나 이 표시가 있을 때만 입력한다.
-        const chatApprovedAt = actor.isHuman ? null : policy?.chatAccountGrantedAt?.(actor, args.accountId) ?? null;
-        const result = await selectedAdapter().passwordFill({ ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef, ...(chatApprovedAt ? { chatApprovedAt } : {}) });
+        // 허브가 사이트 사용을 판정해 그 결과(grant)를 함께 보낸다. 보관함은 grant 와 로그인의 끔 여부를 다시 확인한다.
+        let grant;
+        if (!actor.isHuman) {
+          const login = ((await selectedAdapter().passwordAccounts?.())?.accounts ?? []).find((entry) => entry.id === args.accountId);
+          if (!login) throw error('BROWSER_ACCOUNT_NOT_FOUND', 'The saved website account no longer exists.');
+          if (!sameSite(login.origin, page.url())) throw error('BROWSER_ACCOUNT_ORIGIN_MISMATCH', 'This saved login belongs to a different website.');
+          const decision = await assertPolicy(actor, 'fill-account', page.url(), tab, { policyAction: 'account-use', item: { accountId: login.id, blocked: login.agentBlocked === true } });
+          grant = { site: decision?.key ?? decision?.site, scope: decision?.source === 'chat' ? 'chat' : 'always', grantedAt: Date.now() };
+        }
+        const result = await selectedAdapter().passwordFill({ ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef, ...(grant ? { grant } : {}) });
         tab.snapshot.passwordProtected = true;
-        grantSignIn(actor, tab, page);
+        // 사용자의 저장된 로그인으로 들어가는 사이트다. 이 사이트의 쿠키는 이제 손님 쿠키가 아니다.
+        touchSite(page.url(), 'identity');
         return result;
       }
       if (!credentialBroker?.issueHandle || !credentialBroker?.fill) throw error('BROWSER_VAULT_UNAVAILABLE', 'The secure account broker is unavailable.', true);
@@ -1191,6 +1274,8 @@ export function createOwnedBrowserService(options = {}) {
         epochs(tab, args, true); assertController(actor, tab);
         if (new URL(page.url()).origin !== origin || await passwordHandle.ownerFrame() !== page.mainFrame()) throw error('BROWSER_CREDENTIAL_TARGET_CHANGED', 'The sign-in page or frame changed.');
         if (await passwordHandle.getAttribute('type') !== 'password') throw error('BROWSER_CREDENTIAL_TARGET_INVALID', 'The selected field is not a current password field.');
+        // 로그인 폼은 같은 사이트로만 보낸다(하위 도메인끼리는 된다).
+        if ((await formDestinations(passwordHandle)).some((destination) => !sameSite(destination, origin))) throw error('BROWSER_PASSWORD_FORM_ORIGIN', 'This sign-in form sends its data to another website.');
         const write = async (handle, value, isPassword) => {
           if (!isPassword) await handle.evaluate((el) => el.setAttribute('data-rhwp-private-field', 'true'));
           // Readiness waits hold no credential data and never hold a revocation fence.
@@ -1202,6 +1287,8 @@ export function createOwnedBrowserService(options = {}) {
           await perform(async () => {
             if (new URL(page.url()).origin !== origin || isPassword && await handle.getAttribute('type') !== 'password') throw error('BROWSER_CREDENTIAL_TARGET_CHANGED', 'The sign-in field changed before credential input. Refresh it before retrying.');
             tab.protectedValues ??= new Set(); tab.protectedValues.add(value);
+            // 비밀번호는 모든 탭의 관찰에서 가리고, 허브도 도구 결과에서 지운다.
+            if (isPassword) { rememberFilled(value); try { options.onFilledValue?.(value); } catch {} }
             // Playwright fills through its isolated selector engine, never a site-patched setter.
             await handle.fill(value, { timeout: 10_000 });
           });
@@ -1209,7 +1296,7 @@ export function createOwnedBrowserService(options = {}) {
         if (usernameHandle) await write(usernameHandle, username, false);
         await write(passwordHandle, password, true);
       } });
-      grantSignIn(actor, tab, page);
+      touchSite(page.url(), 'identity');
       return { completed: true, accountId: args.accountId };
     }
     if (action === 'fill-secret') return fillSecret(actor, tab, page, args);
@@ -1220,15 +1307,16 @@ export function createOwnedBrowserService(options = {}) {
   const fillSecret = async (actor, tab, page, args) => {
     const secret = args[SECRET_FILL];
     if (actor.isHuman || !secret || typeof secret.resolve !== 'function' || !Array.isArray(secret.origins)) throw error('BROWSER_ACTION_INVALID', 'Fill secrets with browser_fill_secret.');
-    const allowed = new Set(secret.origins);
-    const outside = () => error('BROWSER_SECRET_ORIGIN_MISMATCH', 'This page is outside the websites the user approved for this secret.');
+    const allowed = [...secret.origins];
+    // 비밀은 자기 사이트(같은 등록 도메인)에서만 입력한다.
+    const onSecretSite = (value) => allowed.some((entry) => sameSite(entry, value));
+    const outside = () => error('BROWSER_SECRET_ORIGIN_MISMATCH', 'This page is outside the websites this secret belongs to.');
     const topOrigin = () => { try { return new URL(page.url()).origin; } catch { return 'null'; } };
     const origin = topOrigin();
-    if (!allowed.has(origin)) throw outside();
+    if (!onSecretSite(origin)) throw outside();
     const protect = (value) => {
       tab.protectedValues ??= new Set(); tab.protectedValues.add(value);
-      filledSecrets.add(value);
-      if (filledSecrets.size > 256) filledSecrets.delete(filledSecrets.values().next().value);
+      rememberFilled(value);
     };
     const submit = async (press) => {
       if (args.submit !== true) return;
@@ -1237,6 +1325,8 @@ export function createOwnedBrowserService(options = {}) {
       await assertPolicy(actor, 'press', page.url(), tab, { intent: 'website-change' });
       await press();
     };
+    // 코드 칸은 사이트 사용보다 먼저 사용자에게 넘긴다. 그다음 사이트 사용(계정 사용)과 비밀의 끔 여부를 본다.
+    const assertSecretUse = () => assertPolicy(actor, 'fill-secret', page.url(), tab, { policyAction: 'account-use', item: secret.item ?? null });
     const invalidTarget = () => error('BROWSER_SECRET_TARGET_INVALID', 'Choose a text or password field for this secret.');
     const userCode = () => error('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code'.");
     if (tab.snapshot?.native && selectedAdapter()?.secretFill) {
@@ -1246,12 +1336,13 @@ export function createOwnedBrowserService(options = {}) {
       if (element.autocomplete === 'one-time-code') throw userCode();
       let formOrigin = null;
       try { formOrigin = element.formAction ? new URL(element.formAction).origin : null; } catch { formOrigin = 'null'; }
-      if (formOrigin && formOrigin !== origin) throw error('BROWSER_SECRET_FORM_ORIGIN', 'This form sends its data to another website.');
+      if (formOrigin && !sameSite(formOrigin, origin)) throw error('BROWSER_SECRET_FORM_ORIGIN', 'This form sends its data to another website.');
+      await assertSecretUse();
       const value = await secret.resolve();
       protect(value);
       const watch = watchConsequences(tab);
       try {
-        await selectedAdapter().secretFill({ ...nativePasswordBinding(tab), snapshotId: args.snapshotId, ref: args.ref, origins: [...allowed], value });
+        await selectedAdapter().secretFill({ ...nativePasswordBinding(tab), snapshotId: args.snapshotId, ref: args.ref, origins: allowed, value });
         tab.snapshot.passwordProtected = true;
         await submit(() => selectedAdapter().passwordAction({ ...nativePasswordBinding(tab), action: 'press', key: 'Enter', ref: args.ref, snapshotId: args.snapshotId }));
         return { completed: true, consequences: await watch.settle() };
@@ -1262,7 +1353,7 @@ export function createOwnedBrowserService(options = {}) {
     const frame = await handle.ownerFrame();
     let frameOrigin = 'null';
     try { frameOrigin = new URL(frame?.url() ?? '').origin; } catch {}
-    if (!frame || !allowed.has(frameOrigin)) throw outside();
+    if (!frame || !onSecretSite(frameOrigin)) throw outside();
     const matches = async (selector) => { const node = await handle.$(selector); await node?.dispose(); return !!node; };
     const isInput = await matches('xpath=self::input');
     const type = ((await handle.getAttribute('type')) || 'text').trim().toLowerCase();
@@ -1270,14 +1361,8 @@ export function createOwnedBrowserService(options = {}) {
     if (!(isInput ? SECRET_INPUT_TYPES.has(type) : await matches('xpath=self::textarea'))) throw invalidTarget();
     if (autocomplete === 'one-time-code') throw userCode();
     if (autocomplete.startsWith('cc-')) throw invalidTarget();
-    // form= 속성으로 묶인 칸과 제출 단추의 formaction 까지 본다. 이름이 action 인 칸이 가리지 않게 속성을 읽는다.
-    const destinations = await handle.evaluate((el) => {
-      const form = el.form;
-      if (!form) return [];
-      return [form.getAttribute('action'), ...[...form.elements].filter((item) => ['submit', 'image'].includes(item.type)).map((item) => item.getAttribute('formaction'))]
-        .filter(Boolean).map((value) => { try { return new URL(value, document.baseURI).origin; } catch { return 'null'; } });
-    }).catch(() => ['null']);
-    if (destinations.some((destination) => destination !== frameOrigin)) throw error('BROWSER_SECRET_FORM_ORIGIN', 'This form sends its data to another website.');
+    if ((await formDestinations(handle)).some((destination) => !sameSite(destination, frameOrigin))) throw error('BROWSER_SECRET_FORM_ORIGIN', 'This form sends its data to another website.');
+    await assertSecretUse();
     try {
       await handle.waitForElementState('visible', { timeout: 5_000 });
       await handle.waitForElementState('editable', { timeout: 5_000 });
@@ -1301,7 +1386,6 @@ export function createOwnedBrowserService(options = {}) {
   const inventory = async (actor) => {
     validateActor(actor);
     passkeys = await inspectMacPasskeyCapability();
-    if (!actor.isHuman) await observeHumanSessions();
     // 네이티브 창의 중지·완료 이벤트로 새로 읽을 때 실제 로딩 종료도 반영한다.
     if (runtime && state === 'ready' && selectedAdapter()?.inventory) {
       const native = await selectedAdapter().inventory();
@@ -1316,13 +1400,70 @@ export function createOwnedBrowserService(options = {}) {
       if (!actor.isHuman && !canAccessTab(actor, tab)) continue;
       let current = actor.isHuman ? humanTab(tab) : descriptor(tab);
       if (!actor.isHuman) try { await assertPolicy(actor, 'snapshot', tab.page?.url?.() ?? tab.url, tab); }
-      catch { current = { ...current, url: 'about:blank', title: '', status: 'approval-required', challenge: null, snapshotId: null }; }
+      catch (failure) { current = { ...current, url: 'about:blank', title: '', status: 'approval-required', challenge: null, snapshotId: null, ...(failure.site ? { site: failure.site, request: failure.request } : {}) }; }
       visible.push(current);
     }
-    let accounts = [];
-    if (selectedAdapter()?.passwordAccounts) accounts = (await selectedAdapter().passwordAccounts()).accounts ?? [];
+    const accounts = await runtimeAccounts(actor);
     const activeTabId = visible.find(tab => tab.tabId === actor.activeBrowserTabId)?.tabId ?? null;
-    return { ok: true, action: 'status', runtime: runtimeInfo(), tabs: visible, activeTabId, limits, accounts };
+    const sites = policy?.siteStatus ? await policy.siteStatus(actor, { profileId: profileId() }).catch(() => []) : [];
+    return { ok: true, action: 'status', runtime: runtimeInfo(), tabs: visible, activeTabId, limits, accounts, sites };
+  };
+  /**
+   * 활성 런타임의 로그인만 보인다(네이티브면 데스크톱 보관함, 관리형이면 허브 로그인). 에이전트에게는 지금 채울 수 있는지(usable)를 함께 준다.
+   */
+  const runtimeAccounts = async (actor) => {
+    const listed = runtimeMode === 'native' ? (await selectedAdapter()?.passwordAccounts?.().catch(() => null))?.accounts
+      : (await credentialBroker?.listAccounts?.().catch(() => null))?.accounts?.filter((account) => account.profileId === 'default');
+    const accounts = [];
+    for (const account of listed ?? []) {
+      let site; try { site = siteScope(account.origin).domain ?? new URL(account.origin).host; } catch { continue; }
+      const agentBlocked = account.agentBlocked === true;
+      const row = { id: account.id, label: account.label, origin: account.origin, site, agentBlocked, source: runtimeMode === 'native' ? 'vault' : 'hub' };
+      if (actor.isHuman) { accounts.push({ ...account, ...row }); continue; }
+      const decision = policy?.check ? await policy.check({ actor, action: 'account-use', url: account.origin, profileId: profileId(), item: { accountId: account.id, blocked: agentBlocked } }).catch(() => null) : null;
+      accounts.push({ ...row, usable: decision?.allowed === true });
+    }
+    return accounts;
+  };
+  // 비밀번호 칸은 계정 도구로, 일회용 코드 칸은 사용자에게. 사이트 사용보다 먼저 판단한다.
+  const assertTypingTarget = async (tab, args) => {
+    if (!args.ref) return;
+    const element = requireRef(tab, args);
+    let type; let autocomplete;
+    if (tab.snapshot.native) { type = element.inputType; autocomplete = element.autocomplete; }
+    else { const handle = await elementFor(tab, args); type = (await handle.getAttribute('type'))?.toLowerCase(); autocomplete = (await handle.getAttribute('autocomplete'))?.trim().toLowerCase(); }
+    if (autocomplete === 'one-time-code') throw error('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code' and this tabId, then end the turn.");
+    if (type === 'password' || ['current-password', 'new-password'].includes(autocomplete)) throw error('BROWSER_SECRET_CHANNEL_REQUIRED', "Fill passwords with browser_fill_account (a saved login) or browser_fill_secret. If the site has no saved login, call browser_request_account with kind 'account'.");
+  };
+  /**
+   * 조작 전에 사이트 변경으로 보는 경우: 명시한 website-change, 그리고 non-GET 폼을 제출하는 클릭·Enter.
+   * 보통 버튼, 입력, 선택, GET 폼(검색)은 자유롭다. 실제로 나가는 요청은 경로에서 다시 판정한다.
+   */
+  const raisesChange = async (tab, action, args) => {
+    if (args.intent === 'website-change') return true;
+    const submitKey = (action === 'press' && args.key === 'Enter') || (action === 'type' && args.submit === true);
+    if ((action !== 'click' && !submitKey) || !args.ref) return false;
+    const element = requireRef(tab, args);
+    const changing = (method) => !!method && !['get', 'dialog'].includes(String(method).trim().toLowerCase());
+    if (tab.snapshot.native) {
+      // 네이티브 관찰은 button 의 type 을 모른다. 확실한 제출(submit·image 입력, 입력 칸의 Enter)만 미리 막고 나머지는 경로가 판정한다.
+      const submitter = action !== 'click' ? element.tag === 'input' : element.tag === 'input' && ['submit', 'image'].includes(element.inputType);
+      return submitter && changing(element.formMethod);
+    }
+    const handle = await elementFor(tab, args);
+    const form = await handle.$('xpath=ancestor-or-self::form[1]');
+    if (!form) return false;
+    try {
+      let formmethod = null;
+      if (action === 'click') {
+        const is = async (selector) => { const node = await handle.$(selector); await node?.dispose(); return !!node; };
+        const type = ((await handle.getAttribute('type')) ?? '').trim().toLowerCase();
+        const submits = await is('xpath=self::button') ? !type || type === 'submit' : await is('xpath=self::input') && ['submit', 'image'].includes(type);
+        if (!submits) return false;
+        formmethod = await handle.getAttribute('formmethod');
+      }
+      return changing(formmethod || await form.getAttribute('method') || 'get');
+    } finally { await form.dispose(); }
   };
   const performRequest = async (actor, action, args = {}) => {
     validateActor(actor);
@@ -1336,7 +1477,8 @@ export function createOwnedBrowserService(options = {}) {
       catch (failure) { resetting = false; resetFailed = true; throw failure; }
     }
     if (!actor.isHuman && action !== 'status' && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in. Wait for account confirmation.', true);
-    if (runtime && !actor.isHuman) await observeHumanSessions();
+    // 다시 시작한 뒤 첫 에이전트 관찰 전에 예전에 입력한 값을 가릴 목록에 다시 넣는다.
+    if (!actor.isHuman) await loadProtected();
     if (action === 'status') { passkeys = await inspectMacPasskeyCapability(); return { ...(await inventory(actor)), readiness: state === 'ready' ? { state: 'ready', installed: true, passkeys }
       // 데스크톱 내장 브라우저는 관리형 Chromium 설치와 무관하다. 첫 탭을 열 때 시작된다.
       : selectedAdapter() ? { state: 'ready', installed: true, message: 'The desktop browser starts with the first tab.', passkeys }
@@ -1395,16 +1537,10 @@ export function createOwnedBrowserService(options = {}) {
         await signIn.close(); signIn = null; signInAccountId = null; handoffProfile = true; state = 'idle';
         await ensureRuntime();
       }
-      await observeHumanSessions();
       const result = await credentialBroker.confirmAccountSession({ actor, accountId: args.accountId, ...(handoffPreviousMode === 'native' ? { additionalProfileId: 'native' } : {}) });
       const account = result.account ?? result;
       const confirmedStorage = await browserStorageState();
-      const confirmed = sessionFingerprint(confirmedStorage);
-      for (const origin of account.origins ?? []) {
-        unconfirmedHumanOrigins.delete(origin);
-        const key = `origin:${origin}`;
-        if (confirmed.has(key)) sessionBaseline.set(key, confirmed.get(key)); else sessionBaseline.delete(key);
-      }
+      await refreshCookieSites({ force: true });
       await persist();
       await saveCheckpoint();
       if (handoffPreviousMode === 'native') await returnFromSignIn(account, confirmedStorage);
@@ -1414,7 +1550,12 @@ export function createOwnedBrowserService(options = {}) {
     if (action === 'downloads') {
       if (!downloads) throw error('BROWSER_DOWNLOADS_UNAVAILABLE', 'Managed downloads are unavailable.');
       const operation = args.action ?? 'list';
-      if (operation === 'list') return { ok: true, action, downloads: await downloads.list(actor) };
+      if (operation === 'list') {
+        // 막힌 다운로드도 에이전트가 보게 한다. 같은 다운로드를 다시 누르지 않고 카드를 부를 수 있다.
+        const denied = [...tabs.values()].filter((tab) => (actor.isHuman || canAccessTab(actor, tab)) && tab.lastDownloadDenial && Date.now() - tab.lastDownloadDenial.at < 10 * 60_000)
+          .map((tab) => ({ tabId: tab.tabId, ...tab.lastDownloadDenial.denial }));
+        return { ok: true, action, downloads: await downloads.list(actor), ...(denied.length ? { denied } : {}) };
+      }
       if (operation === 'reveal') {
         if (!actor.isHuman || !selectedAdapter()?.revealDownload) throw error('BROWSER_HUMAN_REQUIRED', 'Show downloaded files from the desktop browser.');
         const job = await downloads.save({ ...args, actor });
@@ -1446,19 +1587,19 @@ export function createOwnedBrowserService(options = {}) {
       const tab = makeTab(actor);
       if (googleResearchURL(url)) tab.searchQuery = new URL(url).searchParams.get('q') || undefined;
       tabs.set(tab.tabId, tab);
-      const agentSessionEpoch = humanSessionEpoch;
-      if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }
+      tab.blocked = null; tab.dropped = null; tab.navHops = []; tab.changePermitted = false;
       try {
         await attach(tab, await runtime.context.newPage());
         // 새 탭을 만든 화면은 탐색과 계정 저장을 기다리지 않고 즉시 해당 탭을 표시한다.
         if (actor.isHuman && typeof args.openRequestId === 'string' && args.openRequestId.length <= 160) emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo(), openRequestId: args.openRequestId });
-        previewActivity(actor, tab); tab.activeActor = actor; if (actor.isHuman && url !== 'about:blank') markHumanOrigin(new URL(url).origin); if (url !== 'about:blank') await tab.page.goto(url, { waitUntil: 'domcontentloaded' }); if (actor.isHuman) markHumanDocument(tab);
+        previewActivity(actor, tab); tab.activeActor = actor; if (url !== 'about:blank') await tab.page.goto(url, { waitUntil: 'domcontentloaded' });
+        // 첫 요청이나 리디렉트가 도착한 곳(로그인한 하위 도메인 등)이 거절되면 그 거절을 돌려준다.
+        if (tab.blocked) throw tab.blocked;
+        if (!actor.isHuman) await assertLanding(actor, tab);
       }
-      catch (failure) { await tab.page?.close().catch(() => {}); tabs.delete(tab.tabId); throw failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_') ? failure : browserActionFailure(failure); }
-      finally { previewActivity(actor, tab, false); tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
-      if (actor.isHuman) await observeHumanSessions();
-      else { await recordAgentSessions(url, agentSessionEpoch); await observeHumanSessions(); }
-      await assertPolicy(actor, action, requirePage(tab).url(), tab, args);
+      catch (failure) { await tab.page?.close().catch(() => {}); tabs.delete(tab.tabId); throw tab.blocked ?? (failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_') ? failure : browserActionFailure(failure)); }
+      finally { previewActivity(actor, tab, false); tab.activeActor = null; }
+      void refreshCookieSites();
       publish(tab); await persist(); return !actor.isHuman && challengeFor(tab) ? challengeResult(action, tab) : { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab) };
     }
     const tab = ownedTab(actor, args.tabId);
@@ -1498,17 +1639,14 @@ export function createOwnedBrowserService(options = {}) {
             if (url !== 'about:blank') await guard.resolve(url);
             const page = await runtime.context.newPage();
             try {
-              tab.activeActor = actor; humanSessionEpoch++; humanActionsPending++;
-              if (url !== 'about:blank') markHumanOrigin(new URL(url).origin);
+              tab.activeActor = actor;
               await attach(tab, page);
               if (url !== 'about:blank') await page.goto(url, { waitUntil: 'domcontentloaded' });
-              markHumanDocument(tab);
             } catch (failure) {
               await page.close().catch(() => {});
               tab.page = null; tab.nativeTargetId = undefined;
               throw failure;
-            } finally { tab.activeActor = null; humanActionsPending--; }
-            await observeHumanSessions();
+            } finally { tab.activeActor = null; }
             tab.restorePending = false;
             tab.status = 'ready'; invalidate(tab); publish(tab); await persist();
           }
@@ -1526,11 +1664,11 @@ export function createOwnedBrowserService(options = {}) {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Recover disconnected pages from Browser settings.');
       await ensureRuntime();
       tab.activeActor = actor;
-      try { if (!tab.page) { tab.sessionId = actor.sessionId ?? tab.sessionId; tab.controllerEpoch++; invalidate(tab); await attach(tab, await runtime.context.newPage()); if (tab.url !== 'about:blank') { markHumanOrigin(new URL(tab.url).origin); await guard.resolve(tab.url); await tab.page.goto(tab.url, { waitUntil: 'domcontentloaded' }); } } }
+      try { if (!tab.page) { tab.sessionId = actor.sessionId ?? tab.sessionId; tab.controllerEpoch++; invalidate(tab); await attach(tab, await runtime.context.newPage()); if (tab.url !== 'about:blank') { await guard.resolve(tab.url); await tab.page.goto(tab.url, { waitUntil: 'domcontentloaded' }); } } }
       finally { tab.activeActor = null; }
       tab.status = 'ready'; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' };
       await selectedAdapter()?.control?.(nativeControl(tab));
-      markHumanDocument(tab); await observeHumanSessions(); publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo(), recovery: 'Page reloaded. Previous uncertain actions were not replayed.' };
+      publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo(), recovery: 'Page reloaded. Previous uncertain actions were not replayed.' };
     }
     if (action === 'control') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the user can transfer browser control.');
@@ -1539,7 +1677,6 @@ export function createOwnedBrowserService(options = {}) {
       const epoch = ++tab.controllerEpoch;
       tab.hold = { human: args.owner !== 'agent', clientId: actor.clientId };
       if (args.owner === 'agent') tab.humanDriven = false;
-      if (tab.controller.owner === 'human') markHumanDocument(tab);
       credentialBroker?.invalidateTab?.(tab.tabId);
       publish(tab);
       // Invalidate queued agent input immediately, then drain before confirming the transfer.
@@ -1568,7 +1705,10 @@ export function createOwnedBrowserService(options = {}) {
       epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
       if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Browser cleanup invalidated the pending action.');
-      await assertPolicy(actor, action, action === 'close' ? tab.page?.url?.() ?? tab.url : requirePage(tab).url(), tab, args);
+      // 비밀번호 칸과 일회용 코드 칸은 사이트 사용보다 먼저 알린다. 둘 다 권한이 아니라 입력 경로의 문제다.
+      if (!actor.isHuman && action === 'type') await assertTypingTarget(tab, args);
+      // 지금 페이지를 쓰는 조작은 그 페이지를 읽을 수 있어야 한다. 닫기와 탐색(목적지를 따로 판정한다)은 묻지 않는다.
+      if (!['close', 'navigate'].includes(action)) await assertPolicy(actor, action, requirePage(tab).url(), tab, { ...args, policyAction: args.intent === 'website-change' ? 'website-change' : 'read' });
       if (!actor.isHuman && challengeFor(tab) && (mutating && action !== 'close' && !(action === 'navigate' && args.url && !googleResearchURL(args.url)))) return challengeResult(action, tab);
       if (action === 'press') assertAgentKey(actor, args.key);
       if (!actor.isHuman && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in.', true);
@@ -1576,32 +1716,19 @@ export function createOwnedBrowserService(options = {}) {
       epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
       if (!actor.isHuman && SETTLING.has(action)) {
-        // 네이티브 ref는 격리 세계가 기록한 요소 정보로, 관리형 ref는 실제 요소로 판단한다.
-        const element = args.ref ? requireRef(tab, args) : null;
-        const handle = element && !tab.snapshot.native ? await elementFor(tab, args) : null;
-        const selfButton = handle && action === 'click' ? await handle.$('xpath=self::button|self::summary|self::input[@type="submit" or @type="button" or @type="image"]') : null;
-        const role = handle ? await handle.getAttribute('role') : element?.role;
-        const writesText = action === 'type' || action === 'select' || action === 'press' && (['Enter', 'Space'].includes(args.key) || /^[\p{L}\p{N}]$/u.test(args.key));
-        const submits = action === 'click' && element && (handle ? !!selfButton || ['button', 'menuitem'].includes(role) : ['button', 'summary'].includes(element.tag) || ['button', 'menuitem'].includes(role) || element.tag === 'input' && ['submit', 'button', 'image'].includes(element.inputType));
-        await selfButton?.dispose();
-        // Search input is a deliberate exception on exact built-in search origins, not URL-shaped arbitrary sites.
-        let search = false;
-        const currentURL = new URL(requirePage(tab).url());
-        if (SEARCH_ORIGINS.has(currentURL.origin) && element && !(handle ? tab.snapshot.masked?.has(String(args.ref)) : element.sensitive)) {
-          const form = handle ? await handle.$('xpath=ancestor-or-self::form[1]') : null;
-          const method = form ? await form.getAttribute('method') : element.formMethod;
-          const destination = new URL((form ? await form.getAttribute('action') : element.formAction) || currentURL.href, currentURL);
-          search = (form || element.formAction) && (method || 'get').toLowerCase() === 'get' && destination.origin === currentURL.origin && /^(?:\/|\/search\/?|\/w\/index\.php)$/.test(destination.pathname);
-          await form?.dispose();
-        }
-        if ((writesText || submits) && !search) await assertPolicy(actor, action, requirePage(tab).url(), tab, { intent: 'website-change' });
+        if (await raisesChange(tab, action, args)) await assertPolicy(actor, action, requirePage(tab).url(), tab, { intent: 'website-change' });
       }
       // 관찰만 하는 읽기는 동시에 진행되는 사용자 입력의 네트워크 귀속을 바꾸지 않는다.
       if (!observeOnly) tab.activeActor = actor;
       if (!actor.isHuman && mutating) tab.humanDriven = false;
-      const agentSessionEpoch = humanSessionEpoch;
-      if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }
-      if (actor.isHuman && mutating && action !== 'close') markHumanDocument(tab);
+      const tracksDenials = !actor.isHuman && !observeOnly && action !== 'close';
+      const startEpoch = tab.navigationEpoch;
+      if (tracksDenials) {
+        tab.blocked = null; tab.dropped = null; tab.navHops = []; tab.changePermitted = false;
+        // 입력 창: 이 조작이 일으킨 같은 사이트 non-GET 은 사이트 변경이다. 새 문서가 열리면 끝난다.
+        if (INPUT_WINDOW.has(action) || (action === 'type' && args.submit === true)) tab.inputWindow = { documentEpoch: tab.documentEpoch ?? 0, threadId: actor.threadId, agentId: actor.agentId };
+      }
+      const downloadMark = tab.lastDownloadDenial;
       try {
         if (action === 'navigate' && args.url && googleResearchURL(args.url)) tab.searchQuery = new URL(args.url).searchParams.get('q') || tab.searchQuery;
         const adapter = selectedAdapter();
@@ -1618,31 +1745,39 @@ export function createOwnedBrowserService(options = {}) {
           value = await operate(actor, action, tab, waitDeadline === undefined ? args : { ...args, waitDeadline }, signal);
         } finally {
           clearInterval(renewal);
+          if (tracksDenials) tab.inputWindow = null;
           const released = activity ? adapter.activity({ ...activity, active: false }).catch(() => {}) : null;
           if (released && !signal?.aborted) await released;
           if (action !== 'close' && !observeOnly) previewActivity(actor, tab, false);
         }
         signal?.throwIfAborted();
-        if (actor.isHuman) { if (mutating && action !== 'close') markHumanDocument(tab); await observeHumanSessions(); }
-        else if (action !== 'close' && !observeOnly) { await recordAgentSessions(requirePage(tab).url(), agentSessionEpoch); await observeHumanSessions(); }
+        if (action !== 'close' && !observeOnly) void refreshCookieSites();
         if (mutating && action !== 'close' && queuedControlEpoch !== tab.controllerEpoch) throw error('BROWSER_ACTION_UNCERTAIN', !actor.isHuman && userHolds(tab) ? 'The user took control during this action. Observe the page, then wait or ask the user before continuing.' : 'Control changed during the action. Observe the current page before deciding what to do next.', true);
-        if (action !== 'close') await assertPolicy(actor, action, requirePage(tab).url(), tab, args);
+        // 이 조작이 보낸 요청 중 정책이 막은 것이 있으면 그 거절을 돌려준다. 문서 요청은 이미 경로에서 판정했으므로 도착한 주소를 다시 묻지 않는다.
+        if (tracksDenials && tab.blocked) throw tab.blocked;
+        if (tracksDenials && (tab.navigationEpoch !== startEpoch || tab.navHops?.length)) await assertLanding(actor, tab);
         if (value.capture) { const eventCapture = { ...value.capture }; delete eventCapture.screenshot; emit('owned_browser_capture', { capture: eventCapture }); }
         publish(tab); if (!actor.isHuman && action !== 'close' && challengeFor(tab)) return challengeResult(action, tab);
+        const extras = {
+          ...(tracksDenials && tab.dropped?.length ? { dropped: tab.dropped } : {}),
+          ...(tracksDenials && tab.lastDownloadDenial && tab.lastDownloadDenial !== downloadMark ? { downloadDenied: tab.lastDownloadDenial.denial } : {}),
+        };
         if (value.consequences) {
           // 조작 결과는 바뀐 점만 돌려준다. 개요는 요청했을 때만 새로 읽고, 실패해도 이미 끝난 조작은 성공으로 남긴다.
           const { navigated, ...changes } = value.consequences; const current = descriptor(tab);
-          const delta = { ok: true, action, navigated, url: current.url, title: current.title, ...(navigated ? { navigationEpoch: tab.navigationEpoch } : {}), ...changes };
+          const delta = { ok: true, action, navigated, url: current.url, title: current.title, ...(navigated ? { navigationEpoch: tab.navigationEpoch } : {}), ...changes, ...extras };
           if (args.snapshot === true) try { delta.snapshot = await snapshot(tab); } catch (failure) { delta.snapshotError = { code: failure.code?.startsWith('BROWSER_') ? failure.code : 'BROWSER_ACTION_FAILED', message: 'The page changed before it could be observed. Take a new snapshot.' }; }
           return delta;
         }
-        return { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab), ...value };
+        return { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab), ...value, ...extras };
       } catch (failure) {
+        // 주 프레임 거절은 'aborted' 로 끊기므로 탐색 오류로 보인다. 기록한 거절을 대신 돌려준다.
+        if (tracksDenials && tab.blocked) throw tab.blocked;
         if (failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_')) throw failure;
         const mapped = browserActionFailure(failure);
         mapped.message = redactValues(mapped.message, protectedFor(tab));
         throw mapped;
-      } finally { if (!observeOnly) tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
+      } finally { if (!observeOnly) tab.activeActor = null; }
     };
     const queued = observeOnly ? run() : enqueue(tab, run);
     if (!abort) return queued;
@@ -1687,8 +1822,8 @@ export function createOwnedBrowserService(options = {}) {
   };
   return {
     request, inventory, sweepSleepingTabs,
-    /** 허브만 부른다. resolve 는 입력 직전에 값을 돌려주고, origins 는 사용자가 승인한 사이트다. */
-    fillSecret: (actor, args, { origins, resolve }) => performRequest(actor, 'fill-secret', { ...args, [SECRET_FILL]: { origins: [...origins], resolve } }),
+    /** 허브만 부른다. resolve 는 입력 직전에 값을 돌려주고, origins 는 비밀의 사이트, item 은 정책이 볼 비밀(끔 여부 포함)이다. */
+    fillSecret: (actor, args, { origins, resolve, item }) => performRequest(actor, 'fill-secret', { ...args, [SECRET_FILL]: { origins: [...origins], resolve, item } }),
     /** 새 사용자 턴은 같은 창이 잡았던 탭을 에이전트와 공유 상태로 되돌린다. tabId 를 주면 그 탭만 돌려준다. */
     async releaseHolds(actor, { tabId } = {}) {
       for (const tab of tabs.values()) {
@@ -1699,8 +1834,10 @@ export function createOwnedBrowserService(options = {}) {
       }
     },
     profileId,
-    /** 사용자가 넘겨받은 탭에서 바뀐 세션을 확인 전에 기록한다. */
-    observeHumanSessions: () => observeHumanSessions(),
+    /** 쿠키가 있는 사이트와 저장된 로그인 사이트를 다시 읽는다(로그인 표시의 수명). */
+    refreshSites: () => refreshCookieSites({ force: true }),
+    /** 활성 런타임이 데스크톱 보관함을 쓰는가. 저장 카드와 사이트 카드의 로그인 목록이 이를 따른다. */
+    usesNativeVault: () => runtimeMode === 'native' && !!nativeAdapter?.passwordAccounts,
     async nativeAccounts() {
       if (!nativeAdapter?.passwordAccounts) return [];
       return (await nativeAdapter.passwordAccounts()).accounts ?? [];
@@ -1709,21 +1846,28 @@ export function createOwnedBrowserService(options = {}) {
       if (!nativeAdapter?.passwordAccounts || typeof accountId !== 'string') return null;
       return ((await nativeAdapter.passwordAccounts()).accounts ?? []).find((account) => account.id === accountId) ?? null;
     },
-    async approveNativeAccount(accountId, approved) {
-      if (!nativeAdapter?.passwordApprove) throw error('BROWSER_NATIVE_UNAVAILABLE', 'The desktop password vault is unavailable.', true);
-      return nativeAdapter.passwordApprove({ accountId, approved: approved === true });
+    /** 보관함 로그인 하나의 에이전트 사용을 끄거나 켠다. */
+    async setNativeLoginBlocked(accountId, blocked) {
+      if (!nativeAdapter?.passwordBlock) throw error('BROWSER_NATIVE_UNAVAILABLE', 'The desktop password vault is unavailable.', true);
+      const account = await nativeAdapter.passwordBlock({ accountId, blocked: blocked === true });
+      void refreshCookieSites({ force: true });
+      return account;
     },
-    /** 사용자가 Chrome에서 가져온 사이트 쿠키는 사용자 세션 변경으로 격리하지 않고 기준선으로 받아들인다. */
-    acceptImportedSessions: (domains) => serializeSession(async () => {
-      if (!runtime || state !== 'ready' || !Array.isArray(domains)) return { accepted: 0 };
-      const roots = domains.filter((domain) => typeof domain === 'string' && /^[a-z0-9.-]{1,253}$/.test(domain)).map((domain) => domain.replace(/^\./, ''));
-      const covered = (domain) => roots.some((root) => domain === root || domain.endsWith(`.${root}`));
-      const storage = await browserStorageState();
-      let accepted = 0;
-      for (const [key, fingerprint] of sessionFingerprint(storage)) if (key.startsWith('domain:') && covered(key.slice(7))) { sessionBaseline.set(key, fingerprint); accepted++; }
-      for (const cookie of storage.cookies ?? []) if (covered(cookie.domain.replace(/^\./, '').toLowerCase())) cookieBaseline.set(cookieIdentity(cookie), cookie);
-      return { accepted };
-    }),
+    /** 저장 카드에서 받은 로그인을 데스크톱 보관함에 넣는다. 응답에는 비밀번호가 없다. */
+    async saveNativeLogin({ origin, username, password }) {
+      if (!nativeAdapter?.passwordSave) throw error('BROWSER_NATIVE_UNAVAILABLE', 'The desktop password vault is unavailable.', true);
+      const account = await nativeAdapter.passwordSave({ origin, username, password });
+      void refreshCookieSites({ force: true });
+      return account;
+    },
+    /** 사용자가 Chrome 에서 가져온 로그인 세션. 그 사이트들에 로그인 표시를 남긴다. */
+    async acceptImportedSessions(domains) {
+      if (!Array.isArray(domains)) return { accepted: 0 };
+      const roots = [...new Set(domains.filter((domain) => typeof domain === 'string' && /^[a-z0-9.-]{1,253}$/i.test(domain)).map((domain) => domain.replace(/^\./, '').toLowerCase()))];
+      if (roots.length) await policy?.markSignedIn?.({ profileId: profileId(), domains: roots, source: 'chrome-import' });
+      await refreshCookieSites({ force: true });
+      return { accepted: roots.length };
+    },
     configureSleep({ idleMinutes = 15 } = {}) {
       if (!Number.isInteger(idleMinutes) || idleMinutes < 0 || idleMinutes > 1440) throw error('BROWSER_CONFIGURATION_INVALID', 'Choose an idle timeout between 0 and 1440 minutes.');
       idleSleepMs = idleMinutes * 60_000;
@@ -1744,7 +1888,6 @@ export function createOwnedBrowserService(options = {}) {
       try { const config = JSON.parse(await fs.readFile(path.join(dataDir, 'browser', 'runtime.json'), 'utf8')); if (config.version === 1 && ['managed', 'native'].includes(config.mode) && (config.mode !== 'native' || nativeAdapter)) { runtimeMode = config.mode; headless = config.headless !== false; } } catch {}
       let stored; try { stored = JSON.parse(await fs.readFile(descriptorFile, 'utf8')); } catch { return; }
       if (stored?.version !== 1 || !Array.isArray(stored.tabs)) return;
-      for (const origin of Array.isArray(stored.humanStorageOrigins) ? stored.humanStorageOrigins.slice(0, 2048) : []) { try { const url = new URL(origin); if (['https:', 'http:'].includes(url.protocol) && url.origin === origin) { unconfirmedHumanOrigins.add(origin); humanOrigins.add(origin); } } catch {} }
       for (const record of stored.tabs.slice(0, limits.maxTabs)) {
         if (typeof record.tabId !== 'string' || record.scope !== 'global' && (!record.threadId || !record.agentId)) continue;
         void favicons.get(faviconOrigin(record.url, isWorkspace)).catch(() => {});

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PrivateBrowserCdp } from './browser-cdp.mjs';
+import { PrivateBrowserCdp, protectedUrl } from './browser-cdp.mjs';
 
 const GUEST_PRELOAD = fileURLToPath(new URL('./browser-guest-preload.cjs', import.meta.url));
 const POPOUT_PRELOAD = fileURLToPath(new URL('./browser-popout-preload.cjs', import.meta.url));
@@ -147,6 +147,8 @@ export class OwnedBrowserHost {
     const transfers = join(this.dataDir, 'browser', 'transfers');
     if (downloadsPath && resolve(downloadsPath) !== transfers) throw new Error('Native download directory is outside its owned directory');
     await this.setDownloadBehavior({ behavior: 'allowAndName', downloadPath: transfers });
+    // 다시 시작한 뒤 에이전트가 보기 전에 최근 입력한 비밀번호를 가릴 준비를 한다. 관찰은 이 작업을 기다린다.
+    void this.passwords?.loadProtectedValues?.();
     const endpointURL = await this.cdp.listen();
     return { endpointURL, native: true, generation: this.generation, signInSupport: 'full-browser-required', authentication: { passkeys: this.webAuthn?.metadata() } };
   }
@@ -179,8 +181,7 @@ export class OwnedBrowserHost {
       frameId: null, lastError: null, crashed: false, openerTab: parent, openerTargetId: parent?.targetId, disposition };
     // 실제 opener를 읽을 수 있는 자식도 부모와 같은 비밀 보호 범위를 갖는다.
     if (parent?.passwordShield) Object.assign(tab, { passwordShield: true,
-      protectedPasswords: new Set(parent.protectedPasswords ?? []),
-      passwordAllowedOrigins: new Set(parent.passwordAllowedOrigins ?? []), passwordSnapshot: null });
+      protectedPasswords: new Set(parent.protectedPasswords ?? []), passwordSnapshot: null });
     this.parkGuest(tab);
     this.pendingTabs.add(tab);
     contents.setWindowOpenHandler((details) => {
@@ -416,11 +417,7 @@ export class OwnedBrowserHost {
       state.nativeFloating = true;
       state.floatingBounds = { left: bounds.x - area.x, top: bounds.y - area.y, width: bounds.width, height: bounds.height };
     }
-    if (tab.passwordShield) {
-      try { const origin = new URL(state.url).origin; state.url = tab.passwordAllowedOrigins?.has(origin) ? `${origin}/` : 'about:blank'; }
-      catch { state.url = 'about:blank'; }
-      state.title = ''; state.error = null;
-    }
+    if (tab.passwordShield) { state.url = protectedUrl(state.url); state.title = ''; state.error = null; }
     return this.passwords ? this.passwords.redact(tab, state) : state;
   }
 
@@ -439,7 +436,7 @@ export class OwnedBrowserHost {
     if (!tab?.targetId) return;
     const payload = { type, ...this.state(tab), ...extra };
     this.onEvent(payload);
-    if ((['zoom', 'download-progress'].includes(type) || type === 'human-input' && extra.delivered) && tab.tabId && this.owner?.connected && typeof this.owner.send === 'function') {
+    if ((['zoom', 'download-progress', 'sign-in'].includes(type) || type === 'human-input' && extra.delivered) && tab.tabId && this.owner?.connected && typeof this.owner.send === 'function') {
       try {
         this.owner.send({ type: 'rhwp-browser-event', event: { tabId: tab.tabId, targetId: tab.targetId,
           generation: this.generation, reason: type, ...(type === 'zoom' ? { zoomFactor: payload.zoomFactor } : extra) } }, () => {});
@@ -1037,6 +1034,7 @@ export class OwnedBrowserHost {
       this.aliases.clear();
       this.popouts.clear();
       await this.passwords?.vault.clear();
+      this.passwords?.clearProtectedValues();
       // Electron caches sessions by path. Clear both memory and disk before the
       // hub removes this profile, so a later session cannot revive old login data.
       if (this.session) {
@@ -1085,10 +1083,15 @@ export class OwnedBrowserHost {
           if (!this.passwords) throw new Error('Native password input is unavailable');
           response.value = await this.passwords.action(params);
         }
-        else if (message.operation === 'password-approve') {
+        else if (message.operation === 'password-block') {
           if (!this.passwords) throw new Error('Native password storage is unavailable');
-          // 허브는 사용자가 사이드바에서 승인한 계정 요청에만 이 동작을 보낸다.
-          response.value = await this.passwords.vault.setAgentReuse(params.accountId, params.approved === true);
+          // 허브는 사용자의 설정 변경이나 차단 해제 카드에만 이 동작을 보낸다.
+          response.value = await this.passwords.vault.setAgentBlocked(params.accountId, params.blocked);
+        }
+        else if (message.operation === 'password-save') {
+          if (!this.passwords) throw new Error('Native password storage is unavailable');
+          // 사용자가 계정 저장 카드에 입력한 로그인이다. 응답에는 비밀번호 없이 계정 정보만 돌려준다.
+          response.value = await this.passwords.save(params);
         }
         else if (message.operation === 'password-storage-state') response.value = this.passwords ? await this.passwords.storageState() : null;
         else if (message.operation === 'import-session') response.value = await this.importSession(params);

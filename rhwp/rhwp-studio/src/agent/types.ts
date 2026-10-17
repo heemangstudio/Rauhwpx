@@ -149,10 +149,21 @@ export type ChatPermissionOutcome =
   | { status: 'granted' }
   | { status: 'denied' | 'expired'; reason?: string };
 
+/** 옛 허브의 browser-use-account·secret-use 는 읽을 때 사이트 사용 카드(browser-site-access)로 바뀐다. */
 export type ChatPermissionRequestKind =
-  | 'browser-save-account' | 'browser-use-account' | 'browser-site-access' | 'browser-sign-in' | 'browser-code'
-  | 'secret-save' | 'secret-use';
+  | 'browser-save-account' | 'browser-site-access' | 'browser-sign-in' | 'browser-code' | 'secret-save';
 export type SecretKind = 'api-key' | 'token' | 'password' | 'other';
+
+/** 사이트 사용 카드에 보이는 저장된 로그인·비밀 값 한 줄. 값은 Studio 에 오지 않는다. */
+export interface SiteRequestItem {
+  id: string;
+  label: string;
+  /** 로그인 아이디처럼 이름과 다른 보조 글자. */
+  detail?: string;
+  secretKind?: SecretKind;
+  /** 사용자가 에이전트 사용을 꺼 둔 항목. 카드의 item 이 가리키는 항목만 승인으로 다시 켜진다. */
+  blocked?: boolean;
+}
 
 export interface ChatPermissionRequest {
   requestId: string;
@@ -169,7 +180,14 @@ export interface ChatPermissionRequest {
   siteDomain?: string | null;
   accountId?: string;
   accountLabel?: string;
-  /** secret-use, 그리고 있는 값을 바꾸는 secret-save. */
+  /** browser-site-access: 이 사이트에서 함께 쓸 저장된 로그인과 비밀 값. */
+  logins?: SiteRequestItem[];
+  secrets?: SiteRequestItem[];
+  /** browser-site-access: 승인하면 풀리는 사용자 차단(동작 이름). 차단을 푸는 카드는 '항상'으로만 허용한다. */
+  blocked?: string[];
+  /** browser-site-access: 승인하면 다시 켜지는, 에이전트 사용을 꺼 둔 로그인 또는 비밀 값. */
+  item?: { accountId?: string; secretId?: string };
+  /** 있는 값을 바꾸는 secret-save. */
   secretId?: string;
   secretLabel?: string;
   secretKind?: SecretKind;
@@ -185,8 +203,10 @@ export interface SecretMeta {
   label: string;
   kind: SecretKind;
   origins: string[];
+  /** 값을 어디까지 남기는지(always 는 저장, chat 은 이 채팅 동안만). 사용 허락은 사이트 사용이 정한다. */
   scope: ChatPermissionScope;
-  approved: boolean;
+  /** 사용자가 에이전트 사용을 껐다. */
+  blocked: boolean;
   createdAt: string;
   lastUsedAt: string | null;
 }

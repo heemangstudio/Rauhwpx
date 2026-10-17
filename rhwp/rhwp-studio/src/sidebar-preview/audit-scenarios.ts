@@ -10,8 +10,8 @@ const scene = (id: string, group: string, title: string, hint: string, params: R
   ({ id, group, title, hint, params });
 
 export const auditScenarios: readonly AuditScenario[] = [
-  scene('browser-settings', 'Connection and setup', 'Browser settings', 'Inspect saved accounts, approved permissions, and local browser configuration.', { page: 'settings', destination: 'browser' }),
-  scene('browser-settings-many', 'Connection and setup', 'Browser accounts in every state', 'Inspect signed-in, needs-check, signed-out and password-only accounts, the kind filter, and the + menu.', { page: 'settings', destination: 'browser', browserAccounts: 'many' }),
+  scene('browser-settings', 'Connection and setup', 'Browser settings', 'Inspect saved logins, the site list with its states and block edit, and local browser configuration.', { page: 'settings', destination: 'browser' }),
+  scene('browser-settings-many', 'Connection and setup', 'Browser accounts in every state', 'Inspect signed-in, signed-out and agent-off logins, the kind filter, and the + menu.', { page: 'settings', destination: 'browser', browserAccounts: 'many' }),
   scene('browser-settings-vault', 'Connection and setup', 'Desktop password vault', 'Inspect imported Chrome passwords and the Chrome import flow from the + menu.', { page: 'settings', destination: 'browser', vault: '1' }),
   scene('chat-empty', 'Conversation', 'New conversation', 'Inspect the empty state, composer, provider controls, and keyboard focus.', {}),
   scene('chat-no-document', 'Conversation', 'No document open', 'Inspect document guidance and available composer actions.', { document: 'empty' }),

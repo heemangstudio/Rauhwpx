@@ -73,48 +73,17 @@
   line-height: var(--ag-lh-tight);
 }
 
-/* 계정·비밀 값 한 줄 */
-.ag-request-identity {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  padding: 8px 10px;
-  border-radius: var(--ag-r-row);
-  background: var(--ag-hover);
-}
-
-.ag-request-avatar {
-  display: inline-grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: var(--ag-primary-bg);
-  color: var(--ag-primary-fg);
-  font-size: var(--ag-fs-mono);
-  font-weight: var(--ag-fw-strong);
-}
-
-.ag-request-identity-copy {
+/* 사이트 사용 카드 — 함께 쓸 저장된 로그인·비밀 값, 한 줄씩 */
+.ag-request-items {
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.ag-request-identity-copy strong,
-.ag-request-identity-copy span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ag-request-identity-copy strong { font-weight: var(--ag-fw-medium); }
-.ag-request-identity-copy span { color: var(--ag-text-secondary); font-size: var(--ag-fs-mono); }
-
-/* 사이트 사용 카드 — 쓸 저장된 계정 한 줄 */
-.ag-request-account {
+.ag-request-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -122,13 +91,45 @@
   color: var(--ag-text-secondary);
 }
 
-.ag-request-account svg { flex: 0 0 auto; color: var(--ag-text-tertiary); }
+.ag-request-item .ag-icon { flex: 0 0 auto; width: 13px; height: 13px; color: var(--ag-text-tertiary); }
 
-.ag-request-account span {
+.ag-request-item-label,
+.ag-request-item-detail {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.ag-request-item-label { flex: 0 1 auto; color: var(--ag-text); }
+.ag-request-item-detail { flex: 1 1 0; color: var(--ag-text-tertiary); font-size: var(--ag-fs-meta); }
+
+.ag-request-item-off {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: var(--ag-r-code);
+  background: var(--ag-hover);
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-mono);
+}
+
+.ag-request-item[data-blocked='true'] .ag-request-item-label { color: var(--ag-text-secondary); }
+.ag-request-item-more { padding-left: 21px; color: var(--ag-text-tertiary); font-size: var(--ag-fs-meta); }
+
+/* 차단을 푸는 카드 — 풀릴 동작 한 줄 */
+.ag-request-blocked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--ag-r-row);
+  background: color-mix(in srgb, var(--ag-run) 10%, transparent);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-request-blocked .ag-icon { flex: 0 0 auto; width: 13px; height: 13px; color: var(--ag-run); }
 
 .ag-request-origins {
   display: flex;
@@ -220,6 +221,7 @@
 
 .ag-request-scope[aria-checked='true'] { color: var(--ag-text); }
 .ag-request-scope:disabled { opacity: .55; cursor: default; }
+.ag-request-scope[data-locked='true']:disabled { opacity: 1; }
 .ag-request-scope:focus-visible { outline: var(--ag-focus-ring); outline-offset: 1px; }
 
 .ag-request-switch {
@@ -319,6 +321,19 @@
   color: var(--ag-text-secondary);
   font-size: var(--ag-fs-meta);
 }
+
+.ag-request-form .ag-request-link {
+  align-self: flex-start;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  cursor: default;
+}
+.ag-request-form .ag-request-link:hover { color: var(--ag-text); text-decoration: underline; }
+.ag-request-form .ag-request-link:focus-visible { outline: var(--ag-focus-ring); outline-offset: 2px; }
 
 .ag-request-form .ag-request-form-message:empty { display: none; }
 .ag-request-form .ag-request-form-message { margin: 0; color: var(--ag-err); font-size: var(--ag-fs-meta); }

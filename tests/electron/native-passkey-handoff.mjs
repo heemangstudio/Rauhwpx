@@ -55,10 +55,7 @@ try {
     const options = { dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 8) };
     const secureBroker = createBrowserCredentialBroker(options);
     await secureBroker.ready();
-    const human = { isHuman: true };
-    const requested = await secureBroker.requestAccount({ actor: human, origin, origins: [origin], label: 'Synthetic restart archive' });
-    const { account } = await secureBroker.approveAccount({ actor: human, requestId: requested.requestId, approval: { approved: true, requestId: requested.requestId, use: true } });
-    await secureBroker.confirmAccountSession({ actor: human, accountId: account.id, additionalProfileId: 'native' });
+    // 체크포인트는 저장소만 담는다. 계정 승인 없이도 다시 시작한 뒤 그대로 돌아온다.
     await secureBroker.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: [{ origin, localStorage: [{ name: 'fresh-archive-token', value: 'encrypted-approved-origin' }] }] } });
     await secureBroker.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: [], originsComplete: false } });
     const restarted = createBrowserCredentialBroker(options);
@@ -66,7 +63,7 @@ try {
     checkpoints.set('native', await restarted.restoreCheckpoint({ profileId: 'native' }));
     assert.equal(host.tabs.size, 0, 'the checkpoint must restore before any native guest exists');
   }
-  const account = { id: 'local-native-fixture', profileId: 'default', origins: [origin], agentReuseApproved: true };
+  const account = { id: 'local-native-fixture', profileId: 'default', origins: [origin], agentBlocked: false };
   const broker = {
     async listAccounts() { return { accounts: [account] }; }, async registerSessionOrigins() {}, setSessionClearer() {},
     async assertBrowserAccess() {}, async saveCheckpoint({ profileId, state }) { checkpoints.set(profileId, state); },
@@ -87,7 +84,7 @@ try {
   if (host.passwords) {
     const binding = { targetId: nativeTab.targetId, tabId: nativeTab.tabId, sessionId: nativeTab.sessionId, chatId: nativeTab.chatId };
     const snapshot = await host.passwords.snapshot(binding);
-    await host.passwords.fill({ ...binding, accountId: 'fixture', snapshotId: snapshot.snapshotId, passwordRef: snapshot.elements.find((entry) => entry.inputType === 'password').ref, usernameRef: snapshot.elements.find((entry) => entry.autocomplete === 'username').ref });
+    await host.passwords.fill({ ...binding, accountId: 'fixture', grant: { site: origin, scope: 'chat', grantedAt: Date.now() }, snapshotId: snapshot.snapshotId, passwordRef: snapshot.elements.find((entry) => entry.inputType === 'password').ref, usernameRef: snapshot.elements.find((entry) => entry.autocomplete === 'username').ref });
     assert.equal(nativeTab.passwordShield, true);
   }
   await browser.request(actor, 'sign-in', { accountId: account.id, url: `${origin}/login`, authenticationMethod: 'mac-passkey' });
