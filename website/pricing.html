@@ -60,6 +60,90 @@
 .buy__note:empty { margin-top: 0; }
 .buy:has([data-consent]:checked) .buy__note { display: none; }
 
+/* ─── 구매 카드: 밤하늘 위의 한 장 ─── */
+.buy--main {
+  padding: 40px clamp(20px, 5vw, 44px) 30px;
+  background:
+    radial-gradient(120% 70% at 50% -10%, rgba(98, 179, 226, 0.075), transparent 62%),
+    #0d0f12;
+  box-shadow:
+    inset 0 0 0 1px rgba(178, 226, 251, 0.11),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 30px 60px -30px rgba(0, 0, 0, 0.85);
+}
+/* 윗변에 걸린 가는 빛 */
+.buy--main::before {
+  content: ""; position: absolute; top: 0; left: 18%; right: 18%; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(178, 226, 251, 0.45), transparent);
+  pointer-events: none;
+}
+.buy--main .eyebrow { color: var(--soft); font-size: 14px; font-weight: 500; letter-spacing: 0.01em; opacity: 0.86; }
+.buy--main .buy__num {
+  display: flex; justify-content: center; align-items: baseline; gap: 0.06em;
+  margin-top: 18px; line-height: 1;
+}
+.buy__amt {
+  font-size: clamp(54px, 3.4vw + 38px, 76px); font-weight: 700; letter-spacing: -0.055em;
+  font-variant-numeric: tabular-nums lining-nums; font-feature-settings: "tnum", "lnum";
+  color: #f4fbff;
+}
+.buy__cur { font-size: clamp(26px, 1vw + 20px, 34px); font-weight: 600; letter-spacing: -0.02em; color: var(--muted); }
+.buy--main .meta { margin-top: 14px; font-size: var(--fs-meta); letter-spacing: 0.01em; color: var(--meta); }
+
+.buy--main .buy__list { margin: 32px 0 30px; padding-top: 26px; border: 0; display: grid; gap: 14px; position: relative; }
+.buy--main .buy__list::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line-strong) 20%, var(--line-strong) 80%, transparent);
+  opacity: 0.6;
+}
+.buy--main .buy__list li { align-items: flex-start; gap: 14px; padding: 0; border: 0; font-size: var(--fs-small); color: var(--text); }
+/* 하마처럼 픽셀로 찍은 체크 */
+.buy--main .buy__list li::before {
+  width: 26px; height: 26px; margin: -1px 0 0; border-radius: 7px;
+  background:
+    var(--px-check) center / 14px 10px no-repeat,
+    rgba(98, 179, 226, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(98, 179, 226, 0.22);
+}
+
+.buy--main .check {
+  margin-top: auto; padding: 14px 16px; border-radius: 12px;
+  background: rgba(255, 255, 255, 0.018);
+  box-shadow: inset 0 0 0 1px var(--line);
+  align-items: center; color: var(--muted);
+  transition: box-shadow 0.24s var(--ease-std), background-color 0.24s var(--ease-std);
+}
+.buy--main .check:hover { box-shadow: inset 0 0 0 1px rgba(178, 226, 251, 0.22); }
+.buy--main .check:has(input:checked) { background: rgba(98, 179, 226, 0.05); box-shadow: inset 0 0 0 1px rgba(98, 179, 226, 0.32); }
+.buy--main .check input { margin: 0; }
+
+/* 결제 버튼: 잠긴 동안은 차분하게, 동의하면 하마 색으로 */
+.buy--main .buy__pay {
+  margin-top: 14px; height: 56px; border-radius: 12px; gap: 10px;
+  font-size: 16px; letter-spacing: -0.015em;
+  transition: background-color 0.28s var(--ease-std), color 0.28s var(--ease-std), box-shadow 0.28s var(--ease-std), transform 0.1s ease-out;
+}
+.buy--main .buy__pay::after {
+  content: "→"; font-weight: 600;
+  transition: transform 0.28s var(--ease-out), opacity 0.28s var(--ease-std);
+}
+.buy--main .buy__pay[aria-disabled="false"] {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    inset 0 -1px 0 rgba(12, 37, 54, 0.18),
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    0 12px 28px -12px rgba(98, 179, 226, 0.55);
+}
+.buy--main .buy__pay[aria-disabled="false"]:hover::after { transform: translateX(3px); }
+.buy--main .buy__pay[aria-disabled="true"] {
+  opacity: 1; background: #15181c; color: var(--meta);
+  box-shadow: inset 0 0 0 1px var(--line), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+.buy--main .buy__pay[aria-disabled="true"]::after { opacity: 0; transform: translateX(-4px); }
+.buy--main .buy__pay:focus-visible { outline: 2px solid var(--soft); outline-offset: 3px; }
+.buy--main .buy__note:not(:empty) { margin-top: 14px; }
+
 /* 동의하면 하마가 한 번 뛰어요 (픽셀 그림답게 끊어서) */
 @keyframes hama-hop {
   0% { translate: 0 0; }
@@ -102,7 +186,6 @@
     <a class="brand" href="index.html" aria-label="HamaEditor 홈"><img class="px" src="assets/hama.svg" width="44" height="40" alt="">HamaEditor</a>
     <nav class="nav__links" aria-label="주요 메뉴">
       <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html" aria-current="page">가격</a>
     </nav>
@@ -114,7 +197,6 @@
   <div class="menu" id="menu" hidden>
     <nav class="menu__links" aria-label="메뉴">
       <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html" aria-current="page">가격</a>
     </nav>
@@ -151,30 +233,30 @@
               <p class="meta">모든 기능</p>
             </div>
             <ul class="buy__list">
-              <li><span>처음 실행하고 3일 동안 모든 기능을 무료로 써 볼 수 있어요.</span></li>
-              <li><span>체험이 끝나도 문서는 열어 볼 수 있고, 키를 넣으면 바로 다시 편집할 수 있어요.</span></li>
+              <li><span>첫 실행부터 3일간 모든 기능 무료</span></li>
+              <li><span>체험 종료 후에도 문서 열람 가능, 키 입력 시 바로 편집</span></li>
             </ul>
             <a class="btn btn--secondary btn--block buy__cta" href="trial.html">체험판 안내</a>
           </article>
         <div class="buy-wrap">
           <div class="perch" data-reveal style="--i:5"><img class="px px--flip" src="assets/hama.svg" width="110" height="100" alt=""></div>
-          <article class="card card--navy buy" id="price" data-reveal="rise">
+          <article class="card card--navy buy buy--main" id="price" data-reveal="rise">
             <div class="buy__top">
               <p class="eyebrow">Mac용 HamaEditor 공식 라이선스</p>
-              <h1 id="price-title" class="buy__num">9,900원</h1>
+              <h1 id="price-title" class="buy__num"><span class="buy__amt">9,900</span><span class="buy__cur">원</span></h1>
               <p class="meta">부가세 포함 · 일회성 구매</p>
             </div>
 
             <ul class="buy__list">
-              <li id="mac-only"><span>앱의 모든 기능을 사용할수 있어요</span></li>
-              <li><span>키 하나로 Mac 두 대까지 동시에 쓸 수 있어요.</span></li>
+              <li id="mac-only"><span>앱의 모든 기능 사용</span></li>
+              <li><span>키 하나로 Mac 두 대까지 동시 사용</span></li>
             </ul>
 
             <label class="check">
               <input type="checkbox" data-consent>
               <span><a href="tos.html#a9">환불 규정</a>을 확인했으며, 이에 동의합니다.</span>
             </label>
-            <a class="btn btn--primary btn--block" href="#price" data-buy aria-disabled="true">Groble에서 9,900원 결제하기</a>
+            <a class="btn btn--primary btn--block buy__pay" href="#price" data-buy aria-disabled="true">Groble에서 9,900원 결제하기</a>
             <p class="buy__note" data-buy-note role="status" aria-live="polite"></p>
           </article>
         </div>
@@ -207,7 +289,6 @@
         <ul>
           <li><a href="index.html#features">기능</a></li>
           <li><a href="index.html#gongmun">문서 편집</a></li>
-          <li><a href="index.html#flow">예시</a></li>
           <li><a href="index.html#connect">연결</a></li>
         </ul>
       </nav>

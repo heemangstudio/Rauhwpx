@@ -5,8 +5,7 @@
    - [data-demo]       : 화면에 들어올 때마다 안의 [data-at] 조각을 시간 순서대로 켜요.
                          video[data-demo-video] 가 있으면 영상과 같이 가고, data-at="end" 는 영상이 끝날 때 켜져요.
                          data-loop="ms" 를 주면 끝나고 그만큼 쉬었다가 다시 해요.
-   - video[data-autoplay]: 보일 때만 재생하고, 안 보이면 멈춰요. data-calm-controls 를 주면 움직임 줄이기 설정에서 재생 버튼이 보여요.
-   - [data-steps-for]  : 영상 시간에 맞춰 단계에 aria-current 와 --p(진행률)를 줘요. 누르면 그 장면으로 가요.
+   - video[data-autoplay]: 보일 때만 재생하고, 안 보이면 멈춰요.
    - [data-footer]     : 넓은 화면에서 본문 아래로 바닥글이 드러나게 높이를 맞춰요.
    움직임 줄이기 설정이면 모든 장면을 마지막 상태로 바로 보여 주고 영상은 포스터로 둬요. */
 (function () {
@@ -175,8 +174,6 @@
 
   /* ── 보일 때만 재생하는 영상 ── */
   var autoVideos = all('video[data-autoplay]');
-  // 움직임 줄이기 설정이면 자동 재생 대신 재생 버튼을 보여 줘요 (data-calm-controls 가 붙은 영상만).
-  if (calm()) all('video[data-calm-controls]').forEach(function (v) { v.controls = true; });
   if (autoVideos.length && hasIO && !calm()) {
     var videoIO = new IntersectionObserver(function (entries) {
       entries.forEach(function (entry) {
@@ -191,53 +188,6 @@
     }, { threshold: 0.25 });
     autoVideos.forEach(function (v) { videoIO.observe(v); });
   }
-
-  /* ── 영상에 맞춰 움직이는 단계 ── */
-  all('[data-steps-for]').forEach(function (list) {
-    var video = document.getElementById(list.getAttribute('data-steps-for'));
-    if (!video) return;
-    var steps = all('[data-from]', list).map(function (el) {
-      return { el: el, from: parseFloat(el.getAttribute('data-from')), to: parseFloat(el.getAttribute('data-to')) };
-    });
-    var frame = 0;
-    var current = null;
-
-    function paint() {
-      var t = video.currentTime;
-      var end = isFinite(video.duration) ? video.duration : steps[steps.length - 1].to;
-      var active = steps[0];
-      steps.forEach(function (s) { if (t >= s.from) active = s; });
-      if (active !== current) {
-        steps.forEach(function (s) {
-          if (s === active) s.el.setAttribute('aria-current', 'step');
-          else s.el.removeAttribute('aria-current');
-        });
-        current = active;
-      }
-      var to = Math.min(active.to, end);
-      var p = to > active.from ? (t - active.from) / (to - active.from) : 1;
-      active.el.style.setProperty('--p', Math.max(0, Math.min(1, p)).toFixed(3));
-      steps.forEach(function (s) { if (s !== active) s.el.style.setProperty('--p', s.to <= active.from ? '1' : '0'); });
-    }
-    function loop() { paint(); frame = video.paused ? 0 : requestAnimationFrame(loop); }
-    video.addEventListener('play', function () { if (!frame) frame = requestAnimationFrame(loop); });
-    video.addEventListener('pause', function () { cancelAnimationFrame(frame); frame = 0; paint(); });
-    video.addEventListener('seeked', paint);
-    video.addEventListener('loadedmetadata', paint);
-
-    steps.forEach(function (s) {
-      var trigger = s.el.querySelector('button') || s.el;
-      trigger.addEventListener('click', function () {
-        try { video.currentTime = s.from + 0.01; } catch (_) { /* 아직 못 불러왔어요 */ }
-        if (!calm()) {
-          var p = video.play();
-          if (p && p.catch) p.catch(function () {});
-        }
-        paint();
-      });
-    });
-    paint();
-  });
 
   /* ── 내비게이션: 지금 보고 있는 섹션 ── */
   var navLinks = nav ? all('.nav__links a[href^="#"]', nav) : [];

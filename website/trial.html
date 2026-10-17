@@ -17,16 +17,8 @@
 /* 체험판 전용 배치. 공통 부품은 assets/site.css 에 있어요. */
 
 /* 머리 */
-.trial-head .lead b { color: var(--text); font-weight: 620; }
 .trial-head .btn-row { margin-top: 32px; }
 .trial-head .meta { margin-top: 16px; }
-
-/* 아래 두 칸 */
-.info .h3 + .text, .info .h3 + .terms { margin-top: 10px; }
-.info .link-arrow { margin-top: 18px; font-size: var(--fs-small); }
-.terms { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; color: var(--muted); }
-.terms li { position: relative; padding-left: 18px; }
-.terms li::before { content: ""; position: absolute; left: 2px; top: 0.76em; width: 4px; height: 4px; background: var(--meta); }
 
 @media (max-width: 760px) {
   .trial-head .btn-row .btn { flex: 1 1 100%; }
@@ -41,7 +33,6 @@
     <a class="brand" href="index.html" aria-label="HamaEditor 홈"><img class="px" src="assets/hama.svg" width="44" height="40" alt="">HamaEditor</a>
     <nav class="nav__links" aria-label="주요 메뉴">
       <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -53,7 +44,6 @@
   <div class="menu" id="menu" hidden>
     <nav class="menu__links" aria-label="메뉴">
       <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -83,7 +73,6 @@
       <div class="cell cell--open page-head trial-head">
         <p class="eyebrow">체험판</p>
         <h1 id="trial-title" class="h1">3일 동안 먼저 써 보세요</h1>
-        <p class="lead">구매판과 같은 앱이에요. 처음 실행한 때부터 모든 기능을 쓸 수 있어요.</p>
         <div class="btn-row">
           <a class="btn btn--primary btn--white" href="install.html"><svg class="btn__icon" viewBox="0 0 384 512" width="15" height="18" aria-hidden="true"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>체험판 내려받기 (.dmg)</a>
           <a class="btn btn--secondary" href="pricing.html">가격 보기</a>
@@ -93,24 +82,6 @@
     </div>
   </section>
 
-  <div class="frame">
-    <div class="cells">
-      <section class="cell info" id="install" aria-labelledby="install-title">
-        <h2 id="install-title" class="h3">설치</h2>
-        <p class="text">DMG를 열고 HamaEditor를 응용 프로그램 폴더로 옮기면 돼요.</p>
-        <a class="link-arrow" href="install.html">설치 순서 보기</a>
-      </section>
-      <section class="cell info" id="after" aria-labelledby="after-title">
-        <h2 id="after-title" class="h3">체험이 끝나면</h2>
-        <ul class="terms">
-          <li>문서는 읽기 전용으로 계속 열 수 있어요.</li>
-          <li>구매 후 받은 라이선스 키를 넣으면 바로 다시 편집할 수 있어요.</li>
-        </ul>
-        <a class="link-arrow" href="pricing.html">가격과 구매 안내</a>
-      </section>
-    </div>
-    <div class="rule"></div>
-  </div>
 </main>
 
 <footer class="footer" data-footer>
@@ -124,7 +95,6 @@
         <ul>
           <li><a href="index.html#features">기능</a></li>
           <li><a href="index.html#gongmun">문서 편집</a></li>
-          <li><a href="index.html#flow">예시</a></li>
           <li><a href="index.html#connect">연결</a></li>
         </ul>
       </nav>
