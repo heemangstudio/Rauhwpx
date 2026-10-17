@@ -97,6 +97,9 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       harness.view.controller.accept({ tab: { ...harness.view.controller.tab(), navigationEpoch: 4 } });
     });
     await page.waitForFunction(() => (window as any).projectionTest.healthStarted);
+    const healthBounds = await page.evaluate(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'attach').at(-1).bounds.width);
+    await page.evaluate(() => { document.querySelector<HTMLElement>('.ag-browser-floating')!.style.width = '640px'; });
+    await page.waitForFunction(width => (window as any).projectionTest.calls.filter((call: any) => call.action === 'attach').at(-1).bounds.width > width, { timeout: 2_000 }, healthBounds);
     await page.evaluate(() => { (document.querySelector('.ag-browser-details') as HTMLDetailsElement).open = true; });
     await page.evaluate(() => (window as any).projectionTest.failHealth());
     await page.waitForFunction(() => (window as any).projectionTest.attached === null);
@@ -299,8 +302,8 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       grip.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 4, clientX: 0, clientY: 0 }));
       for (let i = 1; i <= 60; i++) grip.dispatchEvent(new PointerEvent('pointermove', { pointerId: 4, clientX: -i, clientY: -i }));
       await new Promise(resolve => requestAnimationFrame(resolve));
-      grip.dispatchEvent(new PointerEvent('pointerup', { pointerId: 4 }));
-      const result = { reads, width: original().width, expected: before.width - 60 };
+      grip.dispatchEvent(new PointerEvent('pointerup', { pointerId: 4, clientX: -80, clientY: -80 }));
+      const result = { reads, width: original().width, expected: before.width - 80 };
       presentation.dispose(); host.remove(); return result;
     });
     assert.equal(resizeBurst.width, resizeBurst.expected, 'resize commits the latest pointer position');

@@ -65,5 +65,46 @@ test('떠 있는 브라우저는 던지기·크기 조절·창 축소 뒤에도 
     await page.mouse.move(titled.left + 200, 0, { steps: 4 }); await page.mouse.move(titled.left + 200, -200, { steps: 2 }); await page.mouse.up();
     await settled();
     assert.equal((await frame()).top, 50, 'a throw toward the title bar stops 12px below it');
+
+    // 입력 잠금 중에도 모든 테두리로 크기를 바꾸고 반대편은 고정한다.
+    for (const locked of [false, true]) for (const edge of ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se']) {
+      await page.evaluate(async ({ locked }) => {
+        (window as any).resizePresentation?.dispose();
+        document.querySelector('.ag-browser-floating')?.remove();
+        localStorage.removeItem('rhwp.browser.float');
+        const { createBrowserPresentation } = await import('../src/ui/agent-sidebar/browser-presentation.ts');
+        const panel = document.createElement('section'); panel.className = 'ag-browser';
+        const view = createBrowserPresentation(panel, () => {}); view.mount(document.querySelector<HTMLElement>('#host')!); view.present('float'); view.position(300, 220); view.setPreviewLock(locked);
+        (window as any).resizePresentation = view;
+      }, { locked });
+      const before = await frame();
+      const handle = await page.$eval(`.ag-browser-float-edge[data-edge=${edge}]`, el => { const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+      const dx = edge.includes('w') ? -35 : edge.includes('e') ? 35 : 0;
+      const dy = edge.includes('n') ? -25 : edge.includes('s') ? 25 : 0;
+      await page.mouse.move(handle.x, handle.y); await page.mouse.down(); await page.mouse.move(handle.x + dx, handle.y + dy, { steps: 5 }); await page.mouse.up();
+      const after = await frame();
+      assert.equal(after.width, before.width + Math.abs(dx), `${edge} resizes horizontally, locked=${locked}`);
+      assert.equal(after.height, before.height + Math.abs(dy), `${edge} resizes vertically, locked=${locked}`);
+      assert.equal(edge.includes('w') ? after.right : after.left, edge.includes('w') ? before.right : before.left, 'opposite horizontal edge stays anchored');
+      assert.equal(edge.includes('n') ? after.bottom : after.top, edge.includes('n') ? before.bottom : before.top, 'opposite vertical edge stays anchored');
+    }
+    const beforeLoss = await frame();
+    await page.evaluate(() => (window as any).resizePresentation.setPreviewLock(false));
+    await page.mouse.move(beforeLoss.right, beforeLoss.top + 100); await page.mouse.down(); await page.mouse.move(beforeLoss.right - 60, beforeLoss.top + 100, { steps: 4 });
+    await page.evaluate(() => { const edge = document.querySelector<HTMLElement>('.ag-browser-float-edge[data-edge=e]')!; for (let id = 1; id < 10; id++) if (edge.hasPointerCapture(id)) edge.releasePointerCapture(id); });
+    await page.mouse.up();
+    assert.equal((await frame()).width, beforeLoss.width - 60, 'losing pointer capture keeps the last resized frame');
+    await page.evaluate(() => dispatchEvent(new Event('resize')));
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+    assert.equal((await frame()).width, beforeLoss.width - 60, 'the interrupted size remains saved');
+    const beforeBlur = await frame();
+    await page.mouse.move(beforeBlur.right, beforeBlur.top + 100); await page.mouse.down(); await page.mouse.move(beforeBlur.right + 40, beforeBlur.top + 100);
+    await page.evaluate(() => dispatchEvent(new Event('blur'))); await page.mouse.up();
+    assert.equal((await frame()).width, beforeBlur.width + 40, 'window focus loss preserves the current size and ends the gesture');
+    const beforeEscape = await frame();
+    await page.mouse.move(beforeEscape.right, beforeEscape.top + 100); await page.mouse.down(); await page.mouse.move(beforeEscape.right + 30, beforeEscape.top + 100);
+    await page.keyboard.press('Escape'); await page.mouse.up();
+    assert.equal((await frame()).width, beforeEscape.width, 'Escape explicitly cancels resizing');
+
   } finally { await browser?.close(); await server.close(); }
 });

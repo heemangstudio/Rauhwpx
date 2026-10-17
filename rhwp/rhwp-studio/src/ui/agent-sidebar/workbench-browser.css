@@ -70,8 +70,8 @@ html.desktop-mac .ag-browser-popover-header::after { content: ''; width: 22px; f
 .ag-browser-menu { position: absolute; z-index: 10; right: 0; top: calc(100% + 7px); width: 270px; max-width: calc(100vw - 28px); max-height: min(330px, 65vh); overflow: auto; padding: 7px; border: 1px solid var(--browser-border); border-radius: 12px; background: var(--ag-bg, var(--n-surface)); box-shadow: 0 8px 30px var(--ag-shadow-soft); }
 .ag-browser-menu>button { display: flex; width: 100%; justify-content: flex-start; border-color: transparent; padding: 7px 9px; }
 @container (max-width: 500px) { .ag-browser-toolbar { flex-wrap: wrap; justify-content: flex-end; } .ag-browser-navigation { flex: 1 0 100%; margin-right: 0; margin-bottom: 2px; } .ag-browser-status { max-width: 120px; font-size: 9px; } }
-/* 앱 창 안에만 머무는 작은 창. 네이티브 페이지는 표면 사각형 위에 그려지므로 머리줄과 4px 테두리, 크기 조절 영역은 그 밖에 둔다. */
-.ag-browser-floating { position: fixed; z-index: 1300; box-sizing: border-box; container: browser-float / inline-size; left: 12px; bottom: 12px; width: 480px; height: 340px; padding: 0 4px 4px; border: 0; border-radius: 12px; box-shadow: 0 10px 32px var(--ag-shadow-medium), 0 0 0 1px var(--ag-shadow-faint); background: var(--ag-bg, var(--n-surface)); color: var(--ag-text-secondary, var(--n-text-secondary)); display: flex; flex-direction: column; contain: layout; transition: box-shadow 180ms ease; }
+/* 앱 창 안에만 머무는 작은 창. 네이티브 페이지는 표면 사각형 위에 그려지므로 머리줄과 8px 테두리, 크기 조절 영역은 그 밖에 둔다. */
+.ag-browser-floating { position: fixed; z-index: 1300; box-sizing: border-box; container: browser-float / inline-size; left: 12px; bottom: 12px; width: 480px; height: 340px; padding: 0 8px 8px; border: 0; border-radius: 12px; box-shadow: 0 10px 32px var(--ag-shadow-medium), 0 0 0 1px var(--ag-shadow-faint); background: var(--ag-bg, var(--n-surface)); color: var(--ag-text-secondary, var(--n-text-secondary)); display: flex; flex-direction: column; contain: layout; transition: box-shadow 180ms ease; }
 .ag-browser-floating[hidden] { display: none; }
 html.document-home-open .ag-browser-floating { visibility: hidden; pointer-events: none; }
 .ag-browser-floating .ag-browser { flex: 1; height: auto; min-height: 0; border-radius: 10px; }
@@ -105,13 +105,13 @@ html.document-home-open .ag-browser-floating { visibility: hidden; pointer-event
 /* 들어 올린 동안 그림자를 키운다. 위치는 매 프레임 JS가 쓰므로 left/top에는 전환을 두지 않는다. */
 .ag-browser-floating[data-gesture] { box-shadow: 0 22px 56px var(--ag-shadow-medium), 0 6px 18px var(--ag-shadow-soft), 0 0 0 1px var(--ag-shadow-faint); }
 .ag-browser-float-edge { position: absolute; z-index: 2; touch-action: none; }
-.ag-browser-float-edge[data-edge=n],.ag-browser-float-edge[data-edge=s] { left: 4px; right: 4px; height: 8px; cursor: ns-resize; }
-.ag-browser-float-edge[data-edge=e],.ag-browser-float-edge[data-edge=w] { top: 4px; bottom: 4px; width: 8px; cursor: ew-resize; }
-.ag-browser-float-edge[data-edge=n] { top: -4px; } .ag-browser-float-edge[data-edge=s] { bottom: -4px; }
-.ag-browser-float-edge[data-edge=w] { left: -4px; } .ag-browser-float-edge[data-edge=e] { right: -4px; }
-.ag-browser-float-edge[data-edge$=w]:not([data-edge=w]),.ag-browser-float-edge[data-edge$=e]:not([data-edge=e]) { width: 16px; height: 16px; }
-.ag-browser-float-edge[data-edge^=n]:not([data-edge=n]) { top: -12px; } .ag-browser-float-edge[data-edge^=s]:not([data-edge=s]) { bottom: -12px; }
-.ag-browser-float-edge[data-edge$=w]:not([data-edge=w]) { left: -12px; } .ag-browser-float-edge[data-edge$=e]:not([data-edge=e]) { right: -12px; }
+.ag-browser-float-edge[data-edge=n],.ag-browser-float-edge[data-edge=s] { left: 8px; right: 8px; height: 16px; cursor: ns-resize; }
+.ag-browser-float-edge[data-edge=e],.ag-browser-float-edge[data-edge=w] { top: 8px; bottom: 8px; width: 16px; cursor: ew-resize; }
+.ag-browser-float-edge[data-edge=n] { top: -8px; } .ag-browser-float-edge[data-edge=s] { bottom: -8px; }
+.ag-browser-float-edge[data-edge=w] { left: -8px; } .ag-browser-float-edge[data-edge=e] { right: -8px; }
+.ag-browser-float-edge[data-edge$=w]:not([data-edge=w]),.ag-browser-float-edge[data-edge$=e]:not([data-edge=e]) { width: 24px; height: 24px; }
+.ag-browser-float-edge[data-edge^=n]:not([data-edge=n]) { top: -16px; } .ag-browser-float-edge[data-edge^=s]:not([data-edge=s]) { bottom: -16px; }
+.ag-browser-float-edge[data-edge$=w]:not([data-edge=w]) { left: -16px; } .ag-browser-float-edge[data-edge$=e]:not([data-edge=e]) { right: -16px; }
 .ag-browser-float-edge[data-edge=nw],.ag-browser-float-edge[data-edge=se] { cursor: nwse-resize; }
 .ag-browser-float-edge[data-edge=ne],.ag-browser-float-edge[data-edge=sw] { cursor: nesw-resize; }
 @media (max-width: 639px) { .ag-browser-floating { left: 0 !important; top: 0 !important; width: 100vw !important; height: 100dvh !important; padding: 0; border-radius: 0; } .ag-browser-floating .ag-browser { border-radius: 0; } .ag-browser-move { cursor: default; } .ag-browser-float-edge { display: none; } }

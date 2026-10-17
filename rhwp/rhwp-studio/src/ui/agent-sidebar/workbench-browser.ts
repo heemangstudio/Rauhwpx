@@ -541,6 +541,15 @@ export function createWorkbenchBrowser(options: {
       nativeHealthTimer = setTimeout(() => { nativeHealthTimer = null; if (generationAfterReload === nativeHealthGeneration) handle(checkNativeHealth(placement, nativeSequence, true).catch(() => { if (generationAfterReload === nativeHealthGeneration && controller.tab()?.tabId === placement.tabId) { nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; paint(); } })); }, 15_000);
     } finally { nativeRecovering = false; paint(); layout(); }
   }
+  // 페인트 확인이 느려도 크기·위치 갱신은 막지 않는다.
+  function observeNativeHealth(placement: Parameters<NonNullable<ReturnType<typeof nativeBrowserApi>>['attach']>[0], sequence: number): void {
+    const generation = nativeHealthGeneration; const epoch = controller.tab()?.navigationEpoch;
+    handle(checkNativeHealth(placement, sequence).catch(() => {
+      if (!disposed && generation === nativeHealthGeneration && controller.tab()?.tabId === placement.tabId && controller.tab()?.navigationEpoch === epoch && nativeSurfaceVisible() && !nativeOverlayOpen()) {
+        nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; paint();
+      }
+    }));
+  }
   async function projectNative(): Promise<void> {
     const native = nativeBrowserApi(); if (!native) return;
     if (nativePending || reconnecting || nativePopout) return;
@@ -565,9 +574,7 @@ export function createWorkbenchBrowser(options: {
     if (nativeProjection === signature()) {
       if (nativeHealthIdentity !== healthIdentity()) {
         cancelNativeHealth(); nativeHealthIdentity = healthIdentity();
-        nativePending = checkNativeHealth(placement, sequence).then(() => true);
-        try { await nativePending; } catch { if (!disposed && !nativeOverlayOpen() && sequence === nativeSequence && nativeSurfaceVisible()) nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; }
-        finally { nativePending = null; paint(); layout(); }
+        observeNativeHealth(placement, sequence);
       }
       return;
     }
@@ -581,7 +588,7 @@ export function createWorkbenchBrowser(options: {
       const attached = await nativePending;
       if (attached && sequence === nativeSequence && nativeSurfaceVisible() && !nativeOverlayOpen() && controller.tab()?.tabId === target && !nativePopout && nativeHealthIdentity !== healthIdentity()) {
         nativeHealthIdentity = healthIdentity();
-        await checkNativeHealth({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId }, sequence);
+        observeNativeHealth({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId }, sequence);
       }
       if (!attached || disposed || sequence !== nativeSequence || !nativeSurfaceVisible() || nativeOverlayOpen() || controller.tab()?.tabId !== target || nativePopout) { await native.detach({ tabId: target }).catch(() => undefined); nativeTab = null; nativeProjection = ''; }
       else { nativeProjection = signature(); nativeFailedProjection = ''; nativeError = null; errorMessage.textContent = controller.state.error ?? ''; error.hidden = !controller.state.error; }
