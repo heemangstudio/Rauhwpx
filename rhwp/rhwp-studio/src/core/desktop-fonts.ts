@@ -83,7 +83,16 @@ export interface SystemFontIndex {
   scannedAt: string;
   durationMs: number;
   fromCache: boolean;
-  roots: Array<{ path: string; kind: SystemFontSource; label?: string; exists: boolean; fileCount: number; error?: string }>;
+  roots: Array<{
+    path: string;
+    kind: SystemFontSource;
+    label?: string;
+    exists: boolean;
+    fileCount: number;
+    /** 이 루트에서 색인한 face 수. 오래된 main 프로세스는 보내지 않는다. */
+    faceCount?: number;
+    error?: string;
+  }>;
   faces: SystemFontFace[];
   hancomFaceMap: Array<{ name: string; file: string; script: string; faceId: string | null }>;
   errors: Array<{ path: string; message: string }>;
@@ -93,6 +102,14 @@ export interface DesktopFontHostApi {
   listSystemFonts?: (options?: { refresh?: boolean }) => Promise<SystemFontIndex>;
   /** face 주소의 앞부분. face id를 붙여 fetch하면 main 프로세스가 파일을 조각으로 흘려보낸다. */
   systemFontBaseUrl?: () => Promise<string>;
+  /** 사용자가 더한 글꼴 폴더. add 는 main 의 폴더 선택 창을 열고, 취소하면 null 이다. */
+  fontFolders?: {
+    list(): Promise<string[]>;
+    add(): Promise<string[] | null>;
+    remove(folder: string): Promise<string[]>;
+  };
+  /** 다른 창이나 이 창이 글꼴 폴더를 바꿔 main 색인이 새로 만들어졌을 때. 해제 함수를 돌려준다. */
+  onFontsChanged?: (callback: () => void) => (() => void) | void;
 }
 
 export type SystemFontHostKind = 'desktop' | 'browser-folder' | 'hub' | 'combined';
@@ -613,6 +630,7 @@ const metricAliasesByFace = new Map<string, Set<string>>();
 let registrationTail: Promise<unknown> = Promise.resolve();
 /** face id → 진행 중인 파일 읽기. 동시에 도는 준비 호출이 같은 파일을 두 번 읽지 않게 한다. */
 const inflightReads = new Map<string, Promise<ArrayBuffer>>();
+const indexListeners = new Set<(index: SystemFontIndex) => void>();
 /** 파일이 바뀐 face를 읽었으면 다음 준비 때 색인을 다시 만든다. */
 let indexStale = false;
 
@@ -788,6 +806,16 @@ function readDesktopFace(host: SystemFontHost, faceId: string): Promise<ArrayBuf
   return read;
 }
 
+/** 새 색인을 받을 때마다 알린다. 해제 함수를 돌려준다. */
+export function onDesktopFontIndexChange(listener: (index: SystemFontIndex) => void): () => void {
+  indexListeners.add(listener);
+  return () => indexListeners.delete(listener);
+}
+
+export function getDesktopFontHostApi(): DesktopFontHostApi | null {
+  return desktopHost();
+}
+
 function desktopHost(): DesktopFontHostApi | null {
   if (config.host !== undefined) return config.host;
   return (globalThis as { rhwpDesktop?: DesktopFontHostApi }).rhwpDesktop ?? null;
@@ -822,11 +850,14 @@ export function getLastDesktopFontReport(): DesktopFontReport | null {
   return lastReport;
 }
 
-/** 세션당 한 번 색인을 받는다. 실패하면 다음 호출에서 다시 시도한다. */
-export function loadDesktopFontIndex(options: { refresh?: boolean } = {}): Promise<SystemFontIndex> {
+/**
+ * 세션당 한 번 색인을 받는다. 실패하면 다음 호출에서 다시 시도한다.
+ * refresh 는 host 가 글꼴 폴더를 다시 훑게 하고, refetch 는 host 가 이미 새로 만든 색인을 다시 받는다.
+ */
+export function loadDesktopFontIndex(options: { refresh?: boolean; refetch?: boolean } = {}): Promise<SystemFontIndex> {
   const host = getSystemFontHost();
   if (!host) return Promise.reject(new Error('system font index unavailable'));
-  if (indexPromise && !options.refresh && !indexStale) return indexPromise;
+  if (indexPromise && !options.refresh && !options.refetch && !indexStale) return indexPromise;
   const refresh = options.refresh === true || indexStale;
   indexStale = false;
   const pending = host.list(refresh ? { refresh: true } : undefined).then((index) => {
@@ -843,6 +874,7 @@ export function loadDesktopFontIndex(options: { refresh?: boolean } = {}): Promi
       + `${Math.round(index.durationMs)}ms${index.fromCache ? ' (캐시)' : ''} · ${byRoot}`
       + (index.errors?.length ? ` · 오류 ${index.errors.length}개` : ''),
     );
+    for (const listener of indexListeners) listener(index);
     return index;
   });
   indexPromise = pending;
@@ -1895,10 +1927,13 @@ function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
 
-/** 색인을 새로 받고 마지막 문서 글꼴을 다시 연결한다 (디버깅용). */
-export async function reloadDesktopFonts(): Promise<DesktopFontReport> {
+/**
+ * 색인을 새로 받고 마지막 문서 글꼴을 다시 연결한다. 기본은 host 가 다시 훑게 하고,
+ * rescan: false 면 host 가 이미 새로 만든 색인만 받는다 (글꼴 폴더를 바꾼 뒤).
+ */
+export async function reloadDesktopFonts(options: { rescan?: boolean } = {}): Promise<DesktopFontReport> {
   attemptedFonts.clear();
-  await loadDesktopFontIndex({ refresh: true });
+  await loadDesktopFontIndex(options.rescan === false ? { refetch: true } : { refresh: true });
   const report = await prepareDesktopFontsForDocument(lastRequested);
   if (report.totals.facesRegistered > 0 || report.totals.metricsRegistered > 0) {
     config.onLateRegistration?.(report);
@@ -1922,7 +1957,7 @@ function installDebugHandle(): void {
       get report() { return lastReport; },
       get localFontAccessReport() { return lastLocalFontAccessReport; },
       get index() { return currentIndex; },
-      reload: reloadDesktopFonts,
+      reload: () => reloadDesktopFonts(),
       match: (name: string) => (currentLookup ? matchDesktopFont(name, currentLookup) : null),
       runtimeMetrics: () => readRuntimeMetricReport(),
     };
@@ -1959,6 +1994,7 @@ export function resetDesktopFontsForTests(): void {
   metricAliasesByFace.clear();
   registrationTail = Promise.resolve();
   inflightReads.clear();
+  indexListeners.clear();
   hftOutlineFaceReads.clear();
   hftOutlineApiGeneration = -1;
   indexStale = false;

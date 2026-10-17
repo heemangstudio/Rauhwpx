@@ -6,7 +6,7 @@
  * 패키지된 PWA/브라우저는 Node 를 띄울 수 없어 no-op 이다.
  */
 
-import type { SystemFontIndex } from './core/desktop-fonts.ts';
+import type { DesktopFontHostApi, SystemFontIndex } from './core/desktop-fonts.ts';
 import type { ChatAttentionLedger } from './agent/chat-attention.ts';
 import type {
   FileSystemFileHandleLike,
@@ -191,6 +191,8 @@ export interface RhwpDesktopApi {
   listSystemFonts?: (options?: { refresh?: boolean }) => Promise<SystemFontIndex>;
   /** face 주소의 앞부분. TTC face는 단독 SFNT로 추출되고, 파일이 바뀌었으면 409로 응답한다. */
   systemFontBaseUrl?: () => Promise<string>;
+  fontFolders?: DesktopFontHostApi['fontFolders'];
+  onFontsChanged?: DesktopFontHostApi['onFontsChanged'];
   /** macOS 프록시 아이콘과 미저장 점. 경로는 메인이 핸들로 찾는다. */
   setDocumentState?: (state: { edited: boolean }) => void;
   /** 보지 않는 채팅의 알림 — 창에 초점이 없을 때만 메인이 OS 알림으로 띄운다. */
