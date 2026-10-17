@@ -248,7 +248,7 @@ export class NativeBrowserPasswords {
       // Stop outstanding raw reads before the first secret enters the guest DOM.
       const firstProtection = !tab.passwordShield;
       this.protectFamily(tab, origin, credential.password);
-      if (firstProtection) await this.host.session?.closeAllConnections();
+      if (firstProtection) await (this.host.sessionFor?.(tab.profile) ?? this.host.session)?.closeAllConnections();
       this.assertSnapshot(tab, params);
       const write = () => this.run(tab, pageAction, [{ ...target, action: 'fill', username: credential.username, password: credential.password }]);
       const result = lease ? await lease.write(write) : await write();

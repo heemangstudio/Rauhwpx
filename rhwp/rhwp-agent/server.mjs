@@ -718,7 +718,8 @@ function assertBrowserAccountScope(pending, actor) {
 
 function publishBrowserAccountRequest(record, request) {
   const actor = request.actor;
-  const wrapped = { ...request, threadId: actor.threadId, documentId: actor.documentId,
+  // 저장된 계정이 없는 사이트는 사용자 브라우저의 로그인을 에이전트 저장소로 공유할 수 있다.
+  const wrapped = { ...request, canShare: !request.accountId && ownedBrowser.canShareSession(request.origins), threadId: actor.threadId, documentId: actor.documentId,
     turnId: record.agentSession?.turnId ?? null, agent: record.agentSession?.agent ?? 'claude',
     capability: 'browser', createdAt: new Date().toISOString() };
   record.pendingBrowserAccountRequests.set(request.requestId, wrapped);
@@ -771,7 +772,7 @@ function containsBrowserSecret(value) {
 async function browserAccountsForCurrentProfile() {
   const result = await credentialBroker.listAccounts();
   return { ...result, accounts: result.accounts.map(account => account.profileId === ownedBrowser.profileId() ? account
-    : { ...account, agentReuseApproved: false, sessionApprovalRequired: true }) };
+    : { ...account, agentReuseApproved: false }) };
 }
 
 async function handleBrowserRequest(record, sock, msg) {
@@ -797,12 +798,19 @@ async function handleBrowserRequest(record, sock, msg) {
       case 'accounts.request': result = await credentialBroker.requestAccount({ profileId: ownedBrowser.profileId(), ...args, actor }); break;
       case 'accounts.approve': {
         let approval;
+        let shared = false;
+        const { share, shared: _ignored, ...approveArgs } = args;
         if (args.requestId) {
           const pending = await credentialBroker.getAccountRequest(args.requestId);
           assertBrowserAccountScope(pending, actor);
           approval = Object.freeze({ approved: true, requestId: args.requestId, use: true });
-        }
-        result = await ownedBrowser.approveAccount({ profileId: ownedBrowser.profileId(), ...args, actor, approval });
+          if (share === true) {
+            if (pending.accountId) throw workflowError('BROWSER_SHARE_UNAVAILABLE', 'Saved accounts sign in with their password.');
+            await ownedBrowser.shareSession(actor, pending.origins);
+            shared = true;
+          }
+        } else if (share === true) throw workflowError('BROWSER_SHARE_UNAVAILABLE', 'Share a login from the agent request.');
+        result = await ownedBrowser.approveAccount({ profileId: ownedBrowser.profileId(), ...approveArgs, actor, approval, shared });
         if (args.requestId) settleBrowserAccountRequest(args.requestId);
         break;
       }

@@ -48,8 +48,8 @@ test('failed native setup releases its owned connection before retry and concurr
     ownerOccupied = true; launches++;
     const firstLaunch = launches === 1;
     const context = Object.assign(new EventEmitter(), {
-      async storageState() { if (firstLaunch) { signalSetup(); return setup; } return { cookies: [], origins: [] }; },
-      async route() {}, pages: () => [],
+      async storageState() { return { cookies: [], origins: [] }; },
+      async route() { if (firstLaunch) { signalSetup(); return setup; } }, pages: () => [],
       async newPage() { pages++; return Object.assign(new EventEmitter(), { url: () => 'about:blank', isClosed: () => false, async close() {}, async routeWebSocket() {}, frames: () => [] }); },
     });
     return { kind: 'native', context, browser: new EventEmitter(), async close() { releases++; ownerOccupied = false; } };
@@ -305,9 +305,7 @@ test('restored native tabs materialize once on selection without transferring co
   await fs.writeFile(path.join(dataDir, 'browser', 'tabs.json'), JSON.stringify({ version: 1, humanStorageOrigins: [origin], tabs: [{ tabId: 'saved-research', nativeTargetId: 'retired-target', threadId: 'chat-a', agentId: 'researcher', projectId: 'project-a', sessionId: 'retired-window', url: `${origin}/research`, navigationEpoch: 3, controllerEpoch: 2 }] }));
   const policy = createBrowserPolicy({ dataDir });
   const credentialBroker = createBrowserCredentialBroker({ dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 7) });
-  await credentialBroker.registerSessionOrigins({ profileId: 'native', origins: [origin], source: 'human' });
   const retainedOwner = { threadId: 'chat-a', agentId: 'researcher', projectId: 'project-a' };
-  await assert.rejects(credentialBroker.assertBrowserAccess({ actor: retainedOwner, url: origin, tab: { profileId: 'native' } }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
   const bindings = [];
   let actual; let creations = 0;
   const browser = createOwnedBrowserService({ dataDir, policy, credentialBroker, workspaceTargets: [origin], autoInstall: false,
@@ -332,8 +330,8 @@ test('restored native tabs materialize once on selection without transferring co
   assert.equal(first.tab.threadId, 'chat-a'); assert.equal(first.tab.projectId, 'project-a');
   assert.deepEqual(first.tab.controller, { owner: 'agent' });
   assert.equal(first.tab.status, 'ready'); assert.equal(actual.context.pages().length, 1);
-  assert.equal(await actual.context.pages()[0].title(), 'Restored research', 'human restoration may display the quarantined retained origin');
-  assert.equal((await browser.request(retainedOwner, 'snapshot', args)).ok, true, 'owned-tab access includes the retained session');
+  assert.equal(await actual.context.pages()[0].title(), 'Restored research');
+  assert.equal((await browser.request(retainedOwner, 'snapshot', args)).ok, true, 'the owning agent can read its restored tab');
   assert.equal(browser.ownsTarget(retainedOwner, first.tab), true);
   assert.equal(browser.ownsTarget({ isHuman: true, sessionId: 'wrong-window' }, first.tab), false);
   assert.equal(browser.downloadTarget({ isHuman: true, sessionId: 'wrong-window' }, `${origin}/file.pdf`), null);
@@ -416,7 +414,8 @@ test('same-document navigation settles browser readiness while a real unfinished
   t.after(async () => { slowResponse?.end(); await browser.close(); await new Promise((resolve) => server.close(resolve)); await fs.rm(dataDir, { recursive: true, force: true }); });
   const actor = { threadId: 'research', agentId: 'owner' };
   const opened = (await browser.request(actor, 'open', { url: origin })).tab;
-  const page = runtime.context.pages().find((page) => page.url().startsWith(origin));
+  // 에이전트 탭은 관리형 Chromium의 에이전트 프로필에 열린다.
+  const page = (await runtime.openAgentContext()).pages().find((page) => page.url().startsWith(origin));
   const read = async () => (await browser.inventory(actor)).tabs.find((tab) => tab.tabId === opened.tabId);
   const waitFor = async (predicate) => { const deadline = Date.now() + 3000; while (Date.now() < deadline) { const tab = await read(); if (predicate(tab)) return tab; await new Promise((resolve) => setTimeout(resolve, 10)); } throw new Error('Navigation state did not settle'); };
   await page.evaluate(() => { location.hash = 'section'; });
@@ -506,8 +505,8 @@ test('idle desktop native browser is ready without installing or starting manage
   assert.equal(status.readiness.retryAction, undefined);
 });
 
-test('account approval settles owner changes and survives agent cookie rotation until the owner changes it again', async t => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-account-approval-'));
+test('agent tabs open in their own desktop profile, so human browsing never blocks agents or revokes approvals', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-agent-profile-'));
   const policy = createBrowserPolicy({ dataDir });
   const broker = createBrowserCredentialBroker({ dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 7) });
   const agent = { threadId: 'chat', agentId: 'researcher', sessionId: 'window' };
@@ -517,44 +516,41 @@ test('account approval settles owner changes and survives agent cookie rotation 
   const { account } = await broker.submit({ actor: owner, requestId: requested.requestId,
     approval: { approved: true, requestId: requested.requestId, save: true, use: true },
     username: 'fixture-user', password: 'fixture-password' });
-  const storage = { cookies: [], origins: [] };
-  let url = 'about:blank';
-  const page = Object.assign(new EventEmitter(), { url: () => url, isClosed: () => false,
-    frames: () => [{ url: () => url }, { url: () => 'https://www.example.test' }], async routeWebSocket() {}, async close() {}, async goto(next) { url = next; } });
-  const context = Object.assign(new EventEmitter(), { async storageState() { return structuredClone(storage); },
-    async route() {}, pages: () => url === 'about:blank' ? [] : [page], async newPage() { return page; },
-    async newCDPSession() { return { async send() { return { targetInfo: { targetId: 'native-fixture' } }; }, async detach() {} }; } });
-  const browser = createOwnedBrowserService({ dataDir, policy, credentialBroker: broker,
-    nativeAdapter: { async bind() {}, async control() {} }, lookup: async () => [{ address: '93.184.216.34', family: 4 }],
-    runtimeFactory: async () => ({ kind: 'native', context, browser: new EventEmitter(), async close() {} }) });
-  t.after(async () => { await browser.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
-  const opened = await browser.request(agent, 'open', { url: origin });
-  const rotate = value => { storage.cookies = [{ name: 'session', domain: '.example.test', path: '/', value, secure: true, httpOnly: true }]; };
-  const approve = args => browser.approveAccount(args);
+  const pages = []; const created = [];
+  const makePage = (target) => {
+    let url = 'about:blank';
+    const page = Object.assign(new EventEmitter(), { target, url: () => url, isClosed: () => false, frames: () => [{ url: () => url }],
+      async opener() { return null; }, async routeWebSocket() {}, async close() {}, async goto(next) { url = next; } });
+    pages.push(page); return page;
+  };
+  const context = Object.assign(new EventEmitter(), { async storageState() { return { cookies: [], origins: [] }; },
+    async route() {}, pages: () => [...pages], async newPage() { return makePage(`user-${pages.length}`); }, async waitForEvent() {},
+    async newCDPSession(page) { return { async send() { return { targetInfo: { targetId: page.target } }; }, async detach() {} }; } });
+  const browser = Object.assign(new EventEmitter(), { async newBrowserCDPSession() {
+    return { async send(method, params) {
+      assert.equal(method, 'Target.createTarget');
+      created.push(params);
+      const page = makePage(`agent-${created.length}`); context.emit('page', page);
+      return { targetId: page.target };
+    }, async detach() {} };
+  } });
+  const service = createOwnedBrowserService({ dataDir, policy, credentialBroker: broker,
+    nativeAdapter: { agentProfile: true, async bind() {}, async control() {} }, lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+    runtimeFactory: async () => ({ kind: 'native', context, browser, async close() {} }) });
+  t.after(async () => { await service.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
   const approved = () => broker.listAccounts().then(({ accounts }) => accounts.find(entry => entry.id === account.id).agentReuseApproved);
 
-  await browser.request(owner, 'control', { tabId: opened.tab.tabId, owner: 'human' });
-  rotate('owner-login');
-  await approve({ actor: owner, accountId: account.id });
-  await browser.request(owner, 'control', { tabId: opened.tab.tabId, owner: 'agent' });
-  await browser.inventory(agent);
-  assert.equal(await approved(), true, 'approval includes owner cookies that had not been observed yet');
-  rotate('agent-refresh');
-  await browser.inventory(agent);
-  assert.equal(await approved(), true, 'agent/background cookie refresh does not revoke the approved identity');
-  await assert.rejects(broker.assertBrowserAccess({ actor: agent, url: 'https://www.example.test', tab: { profileId: 'native' } }),
-    { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' }, 'acknowledging a shared cookie never grants a sibling origin');
+  const shared = await service.request(owner, 'open', { url: 'https://www.google.com/' });
+  assert.equal(shared.tab.profile, 'user');
+  assert.deepEqual(created, [], 'user tabs stay in the user profile');
+  const research = await service.request(agent, 'open', { url: 'https://www.google.com/search?q=GPT+6.1' });
+  assert.equal(research.tab.profile, 'agent');
+  assert.deepEqual(created, [{ url: 'about:blank', browserContextId: 'rhwp-agent-profile' }]);
+  assert.equal(research.tab.nativeTargetId, 'agent-1');
 
-  await browser.request(owner, 'control', { tabId: opened.tab.tabId, owner: 'human' });
-  rotate('different-owner-login');
-  await browser.inventory(agent);
-  assert.equal(await approved(), false, 'owner changes are fenced even while the owner still holds the tab');
-  await browser.request(owner, 'control', { tabId: opened.tab.tabId, owner: 'agent' });
-  await browser.inventory(agent);
-  assert.equal(await approved(), false, 'a later owner session change still needs approval');
-  await assert.rejects(broker.assertBrowserAccess({ actor: agent, url: origin, tab: { profileId: 'native' } }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
-  await approve({ actor: owner, accountId: account.id });
-  rotate('next-agent-refresh');
-  await browser.inventory(agent);
-  assert.equal(await approved(), true, 'reapproval does not leave an old owner marker armed');
+  await service.request(owner, 'control', { tabId: research.tab.tabId, owner: 'human' });
+  await service.request(owner, 'control', { tabId: research.tab.tabId, owner: 'agent' });
+  const login = await service.request(agent, 'open', { url: origin });
+  assert.equal(login.tab.profile, 'agent');
+  assert.equal(await approved(), true, 'taking and returning control keeps the approval');
 });

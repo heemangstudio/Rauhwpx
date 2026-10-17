@@ -226,6 +226,13 @@ export async function startOwnedBrowserRuntime({ dataDir, guard, onEvent = () =>
     }
   }
   const proxy = await createBrowserNetworkProxy(guard);
+  const launchManaged = (directory) => chromium.launchPersistentContext(directory, {
+    ...(chrome ? { executablePath: chrome.executablePath, ignoreDefaultArgs: ['--use-mock-keychain', '--password-store=basic'] } : {}),
+    headless, viewport, deviceScaleFactor: 1, acceptDownloads: true, downloadsPath,
+    serviceWorkers: 'block', proxy: proxy.settings, chromiumSandbox: true,
+    timeout: 30_000, env: browserProcessEnv(),
+    args: ['--disable-quic', '--disable-save-password-bubble', '--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--proxy-bypass-list=<-loopback>'],
+  });
   let native;
   let context;
   let browser;
@@ -238,18 +245,24 @@ export async function startOwnedBrowserRuntime({ dataDir, guard, onEvent = () =>
       context = browser.contexts()[0];
       if (!context) throw new OwnedBrowserError('BROWSER_NATIVE_UNAVAILABLE', 'The desktop browser did not provide a private session.', true);
     } else {
-      context = await chromium.launchPersistentContext(profileDir, {
-        ...(chrome ? { executablePath: chrome.executablePath, ignoreDefaultArgs: ['--use-mock-keychain', '--password-store=basic'] } : {}),
-        headless, viewport, deviceScaleFactor: 1, acceptDownloads: true, downloadsPath,
-        serviceWorkers: 'block', proxy: proxy.settings, chromiumSandbox: true,
-        timeout: 30_000, env: browserProcessEnv(),
-        args: ['--disable-quic', '--disable-save-password-bubble', '--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--proxy-bypass-list=<-loopback>'],
-      });
+      context = await launchManaged(profileDir);
       browser = context.browser();
     }
     context.setDefaultTimeout(10_000);
     context.setDefaultNavigationTimeout(20_000);
-    return { context, browser, profileDir, downloadsPath, nativeGeneration: native?.generation, kind: nativeAdapter ? 'native' : provider === 'chrome' ? 'chrome' : 'chromium', async close() { if (nativeAdapter) await browser.close().catch(() => {}); else await context.close().catch(() => {}); await native?.close?.(); await proxy.close(); } };
+    // 관리형 Chromium은 에이전트 탭을 사용자 로그인과 분리된 두 번째 프로필로 연다. 첫 에이전트 탭에서 시작한다.
+    let agentContext;
+    const openAgentContext = nativeAdapter ? undefined : () => agentContext ??= (async () => {
+      const agentProfileDir = path.join(browserDir, provider === 'chrome' ? 'chrome-agent-profile' : 'agent-profile');
+      await fs.mkdir(agentProfileDir, { recursive: true, mode: 0o700 }); await fs.chmod(agentProfileDir, 0o700);
+      await disableProfilePasswordSaving(agentProfileDir);
+      const opened = await launchManaged(agentProfileDir);
+      opened.setDefaultTimeout(10_000);
+      opened.setDefaultNavigationTimeout(20_000);
+      return opened;
+    })().catch((failure) => { agentContext = undefined; throw failure; });
+    return { context, browser, profileDir, downloadsPath, nativeGeneration: native?.generation, kind: nativeAdapter ? 'native' : provider === 'chrome' ? 'chrome' : 'chromium', openAgentContext,
+      async close() { if (nativeAdapter) await browser.close().catch(() => {}); else { await agentContext?.then((opened) => opened.close()).catch(() => {}); await context.close().catch(() => {}); } await native?.close?.(); await proxy.close(); } };
   } catch (error) {
     await context?.close().catch(() => {});
     await native?.close?.();

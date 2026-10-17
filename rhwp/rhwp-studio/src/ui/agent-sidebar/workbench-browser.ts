@@ -800,6 +800,19 @@ export function createWorkbenchBrowser(options: {
       handle(controller.readFrame());
     },
     endAgentPreview,
+    /** 로그인 요청에서 사용자가 에이전트 탭을 직접 조작하도록 보여 주고 조작권을 가져온다. */
+    async takeControl(tabId: string): Promise<boolean> {
+      await controller.refresh();
+      const tab = controller.state.tabs.find(row => row.tabId === tabId);
+      if (disposed || !tab) return false;
+      cancelPreviewClose(); manualSleepingTab = null;
+      controller.select(tabId);
+      const next = visible && presentation.current() === 'dock' ? 'dock' : 'float';
+      nativePopout = false; if (presentation.current() !== next) presentation.present(next);
+      setControl(tab, true);
+      handle(controller.readFrame());
+      return true;
+    },
     suspendShared() {
       const tab = controller.tab(); const mode = presentation.current();
       if (agentPreviewTab || tab?.scope !== 'global' || !mode || mode === 'popout') return null;

@@ -94,4 +94,5 @@ test('real native guests retain form state across dock, float, popout and hub re
   assert.deepEqual(report.nativePopupNavigation, { foreground: true, openerBinding: true, otherChatRejected: true });
   assert.deepEqual(report.nativePresentationReconnect, { retainedForm: true, agentOwnership: true, windowIsolation: true, closedGuestNotRecreated: true });
   assert.deepEqual(report.nativeCheckpointStartup, { freshGuestOpened: true, checkpointAuthentication: true, hostOnlyPrefix: true, securePrefix: true, invalidPrefixRejected: true });
+  assert.deepEqual(report.agentProfile, { separateSession: true, cookiesIsolated: true, storageIsolated: true, sharedOnlyApprovedSite: true, sensitiveRefused: true });
 });

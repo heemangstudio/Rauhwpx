@@ -343,7 +343,7 @@ test('session clearing invalidates snapshots before asynchronous storage deletio
   const { vault } = await vaultFixture(t); const f = nativeFixture(vault); let finish;
   f.passwords.run = () => new Promise((resolve) => { finish = resolve; });
   const pending = f.passwords.snapshot(f.binding);
-  f.host.session = { clearData: async () => {} };
+  Object.assign(f.host, { session: { clearData: async () => {} }, approvedOrigins: OwnedBrowserHost.prototype.approvedOrigins, sessionFor: OwnedBrowserHost.prototype.sessionFor });
   await OwnedBrowserHost.prototype.clearSession.call(f.host, { origins: ['https://fixture.invalid'] });
   finish({ elements: [], text: '' });
   await assert.rejects(pending, { code: 'BROWSER_PASSWORD_STALE_REFERENCE' });

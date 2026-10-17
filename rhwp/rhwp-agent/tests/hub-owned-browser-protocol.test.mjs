@@ -104,7 +104,6 @@ for (const native of [false, true]) test(`owner browser channels bind approvals 
   assert.equal(accepted.result.account.profileId, 'default');
   const listed = (await request(socket, 'retained-list', 'accounts.list')).result.accounts.find(row => row.id === accepted.result.account.id);
   assert.equal(listed.agentReuseApproved, !native);
-  assert.equal(listed.sessionApprovalRequired, native);
   const active = await request(socket, 'active-approve', 'accounts.approve', { accountId: listed.id });
   assert.equal(active.result.account.id, listed.id);
   assert.equal(active.result.account.profileId, native ? 'native' : 'default');

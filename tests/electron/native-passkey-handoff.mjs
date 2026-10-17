@@ -68,7 +68,7 @@ try {
   }
   const account = { id: 'local-native-fixture', profileId: 'default', origins: [origin], agentReuseApproved: true };
   const broker = {
-    async listAccounts() { return { accounts: [account] }; }, async registerSessionOrigins() {}, setSessionClearer() {},
+    async listAccounts() { return { accounts: [account] }; }, setSessionClearer() {},
     async assertBrowserAccess() {}, async saveCheckpoint({ profileId, state }) { checkpoints.set(profileId, state); },
     async restoreCheckpoint({ profileId }) { return checkpoints.get(profileId) ?? null; }, async deleteCheckpoint({ profileId }) { checkpoints.delete(profileId); },
     async confirmAccountSession({ additionalProfileId }) { assert.equal(additionalProfileId, 'native'); return { account }; },

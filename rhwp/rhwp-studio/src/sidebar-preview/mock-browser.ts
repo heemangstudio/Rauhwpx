@@ -57,7 +57,7 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     if (action === 'accounts.request') return { requestId: crypto.randomUUID() };
     if (action.startsWith('accounts.')) {
       if (action === 'accounts.approve' && args.account && typeof args.account === 'object') {
-        const account = args.account as Record<string, unknown>; const row = { profileId: 'default', origins: (account.origins as string[]) ?? [String(account.origin)], id: crypto.randomUUID(), origin: String(account.origin), label: String(account.label), hasPassword: false, agentReuseApproved: true, sessionStatus: 'session-retained' }; accounts.push(row);
+        const account = args.account as Record<string, unknown>; const row = { profileId: 'default', origins: (account.origins as string[]) ?? [String(account.origin)], id: crypto.randomUUID(), origin: String(account.origin), label: String(account.label), hasPassword: false, agentReuseApproved: true, sessionStatus: args.share === true ? 'shared' : 'session-retained' }; accounts.push(row);
         return { account: structuredClone(row) };
       }
       const id = String(args.accountId ?? args.id ?? '');
@@ -85,7 +85,7 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
       signInAccountId = null; account.sessionStatus = 'authenticated'; return { ok: true, account: structuredClone(account), runtime: runtime() };
     }
     if (action === 'open') {
-      const tab: BrowserTab = { tabId: crypto.randomUUID(), threadId: getThread(), projectId: getProject(), documentId: null, agentId: 'preview-agent', url: String(args.url ?? 'https://www.google.com/'), title: '연구 자료', navigationEpoch: 1, controllerEpoch: 1, controller: { owner: 'agent' }, status: 'ready', canGoBack: false, canGoForward: false };
+      const tab: BrowserTab = { tabId: crypto.randomUUID(), profile: actor.isHuman ? 'user' : 'agent', threadId: getThread(), projectId: getProject(), documentId: null, agentId: 'preview-agent', url: String(args.url ?? 'https://www.google.com/'), title: '연구 자료', navigationEpoch: 1, controllerEpoch: 1, controller: { owner: 'agent' }, status: 'ready', canGoBack: false, canGoForward: false };
       tabs.push(tab); changed(tab); return { ok: true, tab: structuredClone(tab) };
     }
     const tab = tabs.find((row) => row.tabId === args.tabId);

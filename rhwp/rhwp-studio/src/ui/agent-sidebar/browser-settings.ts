@@ -87,7 +87,7 @@ function accountProvider(account: Account): string {
   }
   return host;
 }
-function sessionLabel(account: Account): string { return ({ authenticated: '로그인됨', saved: '비밀번호 저장됨', 'session-retained': '확인 필요', 'signed-out': '로그아웃됨' } as Record<string, string>)[account.sessionStatus] ?? '확인 필요'; }
+function sessionLabel(account: Account): string { return ({ authenticated: '로그인됨', shared: '내 로그인 공유됨', saved: '비밀번호 저장됨', 'session-retained': '확인 필요', 'signed-out': '로그아웃됨' } as Record<string, string>)[account.sessionStatus] ?? '확인 필요'; }
 
 let browserSettingsSequence = 0;
 

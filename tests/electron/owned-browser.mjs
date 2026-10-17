@@ -407,6 +407,31 @@ try {
   await assert.rejects(serviceHost.setCookies([{ ...checkpoint.cookies[1], domain: '.secure-fixture.invalid' }]), /invalid __Host- or __Secure- prefix/);
   await assert.rejects(serviceHost.setCookies([{ ...checkpoint.cookies[2], secure: false }]), /invalid __Host- or __Secure- prefix/);
   report.nativeCheckpointStartup = { freshGuestOpened: true, checkpointAuthentication: true, hostOnlyPrefix: true, securePrefix: true, invalidPrefixRejected: true };
+  // 에이전트 탭은 사용자 로그인과 분리된 저장소에 열리고, 공유한 사이트의 쿠키만 복사된다.
+  await service.close();
+  const profileAdapter = { ...adapter, agentProfile: true, shareSession: (args) => serviceHost.shareSession(args) };
+  service = createOwnedBrowserService({ dataDir: serviceDir, nativeAdapter: profileAdapter, workspaceTargets: [serviceOrigin] });
+  const profileOwner = { isHuman: true, clientId: 'window-one', sessionId: 'window-one' };
+  const humanTab = await service.request(profileOwner, 'open', { url: serviceOrigin });
+  const agentTab = await service.request({ threadId: 'chat-one', agentId: 'owner', sessionId: 'window-one' }, 'open', { url: serviceOrigin });
+  assert.equal(humanTab.tab.profile, 'user');
+  assert.equal(agentTab.tab.profile, 'agent');
+  const humanContents = serviceHost.tab(humanTab.tab.tabId).view.webContents;
+  const agentContents = serviceHost.tab(agentTab.tab.tabId).view.webContents;
+  assert.equal(humanContents.session, serviceHost.session);
+  assert.equal(agentContents.session, serviceHost.agentSession);
+  await humanContents.executeJavaScript('document.cookie = "humanOnly=signed-in; Path=/"; localStorage.setItem("humanOnly", "signed-in")');
+  assert.doesNotMatch(await agentContents.executeJavaScript('document.cookie'), /humanOnly/);
+  assert.equal(await agentContents.executeJavaScript('localStorage.getItem("humanOnly")'), null);
+  const sharedSite = 'https://share.fixture.invalid';
+  await serviceHost.session.cookies.set({ url: `${sharedSite}/`, name: 'sharedLogin', value: 'approved', secure: true, httpOnly: true, expirationDate: Date.now() / 1000 + 3600 });
+  await serviceHost.session.cookies.set({ url: 'https://other.fixture.invalid/', name: 'otherLogin', value: 'private', secure: true, httpOnly: true, expirationDate: Date.now() / 1000 + 3600 });
+  await assert.rejects(service.shareSession(profileOwner, ['https://accounts.google.com']), { code: 'BROWSER_SITE_SENSITIVE' });
+  assert.equal((await service.shareSession(profileOwner, [sharedSite])).cookies, 1);
+  const agentCookies = await serviceHost.agentSession.cookies.get({});
+  assert.ok(agentCookies.some((cookie) => cookie.name === 'sharedLogin' && cookie.value === 'approved'));
+  assert.equal(agentCookies.some((cookie) => cookie.name === 'otherLogin' || cookie.name === 'humanOnly'), false);
+  report.agentProfile = { separateSession: true, cookiesIsolated: true, storageIsolated: true, sharedOnlyApprovedSite: true, sensitiveRefused: true };
   report.runtime = 'Electron WebContentsView + private CDP + Playwright';
   report.fixtureUrl = 'http://browser-fixture.invalid/';
 } catch (error) { report.error = error.stack ?? String(error); }

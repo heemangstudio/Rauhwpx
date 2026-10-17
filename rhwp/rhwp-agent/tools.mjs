@@ -1815,12 +1815,12 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_status',
-    description: 'List shared user tabs, your assigned tabs and saved account metadata. activeTabId is the current sidebar tab; reuse it for the current-page task. Tabs survive hidden chats and turn endings. Accounts include imported and previously saved logins. For an exact origin match with agentReuseApproved=true, use browser_fill_account. Passwords stay local.',
+    description: 'List shared user tabs, your assigned tabs and saved account metadata. activeTabId is the current sidebar tab; reuse it for the current-page task. Tab profile: agent = your own signed-out profile, user = the user\'s browser. Tabs survive hidden chats and turn endings. Accounts include imported and previously saved logins. For an exact origin match with agentReuseApproved=true, use browser_fill_account. Passwords stay local.',
     shape: {},
   },
   {
     name: 'browser_open',
-    description: 'Open a separate research tab. Public browsing/downloads are available; account reuse needs approval. On BROWSER_CHALLENGE_REQUIRED, use the returned tab and explicit fallback URL or ask the user to resolve the challenge. Do not retry or duplicate the tab.',
+    description: 'Open a research tab in your own signed-out profile. Public browsing/downloads are available; for a login use an approved account or browser_request_account. On BROWSER_CHALLENGE_REQUIRED, use the returned tab and explicit fallback URL or ask the user to resolve the challenge. Do not retry or duplicate the tab.',
     shape: { url: z.string().url().max(8_000).optional(), intent: browserIntent() },
   },
   {
@@ -1880,7 +1880,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_request_account',
-    description: 'Root conversation only. Request a saved website account or a secure save-and-use form for an exact approved origin. Returns pending; end the turn and wait for the secure form. Never ask for passwords in chat or tool arguments.',
+    description: 'Root conversation only. Ask for a login at a sign-in wall; the user can share theirs, save a password or sign in in your tab. Returns pending; end the turn. Never ask for passwords in chat or arguments. Sensitive sites (account, email, bank, payment, crypto, government) return BROWSER_SITE_SENSITIVE.',
     shape: { tabId: browserTab(), origin: z.string().url().max(2_000), label: z.string().min(1).max(120), reason: z.string().min(1).max(1_000), accountId: z.string().min(1).max(160).optional() },
   },
 ];

@@ -3570,6 +3570,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     respond: (requestId, decision) => bridge.respondChatPermission(requestId, decision),
     requestBrowser: (action, args) => bridge.requestBrowser(action, args),
     submitBrowserAccount: (args) => bridge.submitBrowserAccount(args),
+    signInInTab: (tabId) => (floatingBrowser && tabId === floatingBrowserTab ? floatingBrowser : ensureWorkbenchBrowser()).takeControl(tabId),
   });
   questionTimelineAnchor.hidden = true;
   questionTimelineAnchor.setAttribute('aria-hidden', 'true');

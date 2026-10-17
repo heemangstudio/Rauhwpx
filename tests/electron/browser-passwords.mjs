@@ -268,8 +268,6 @@ try {
     approval: { approved: true, requestId: registration.requestId, save: true, use: true },
     account: { origin, origins: [origin], label: 'Owner-vault fixture', profileId: 'default' }, username: 'owner-vault-user', password: secret, remember: true });
   assert.equal((await vault.list()).accounts.some(row => row.id === brokerAccount.id), false);
-  await credentialBroker.registerSessionOrigins({ profileId: 'native', origins: [origin], source: 'human' });
-  await assert.rejects(credentialBroker.assertBrowserAccess({ actor, url: origin, tab: { profileId: 'native' } }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
   const nativeApproval = await credentialBroker.requestAccount({ actor, accountId: brokerAccount.id, profileId: 'native' });
   await service.request(ownerActor, 'control', { tabId, owner: 'human' });
   await tab.view.webContents.executeJavaScript("document.cookie='approvalFixture=owner-login; path=/; Secure'; localStorage.setItem('approvalFixture','owner-login')");
@@ -294,7 +292,6 @@ try {
     'saving an account with reuse consent also settles the current session');
   report.brokerApprovalSurvivesSessionRefresh = true;
   assert.equal(migrated.account.profileId, 'native');
-  assert.equal(migrated.account.sessionApprovalRequired, false);
 
   const nativeObservation = await service.request(actor, 'snapshot', { tabId });
   const userField = nativeObservation.snapshot.elements.find(row => row.tag === 'input' && row.inputType !== 'password');
@@ -308,8 +305,10 @@ try {
   const shielded = await service.request(actor, 'snapshot', { tabId });
   assert.equal(JSON.stringify(shielded).includes(secret), false);
   await credentialBroker.revokeAccount({ actor: ownerActor, accountId: brokerAccount.id });
-  await assert.rejects(service.request(actor, 'fill-account', { ...nativeArgs, snapshotId: shielded.snapshot.snapshotId,
-    navigationEpoch: shielded.tab.navigationEpoch, controllerEpoch: shielded.tab.controllerEpoch }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  // 승인 철회는 에이전트 저장소의 로그인도 지우므로 새 관찰로 다시 시도해도 거절된다.
+  const revoked = await service.request(actor, 'snapshot', { tabId });
+  await assert.rejects(service.request(actor, 'fill-account', { ...nativeArgs, snapshotId: revoked.snapshot.snapshotId,
+    navigationEpoch: revoked.tab.navigationEpoch, controllerEpoch: revoked.tab.controllerEpoch }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
   report.brokerAccountAutofill = true;
   report.nativeSubmit = true; report.postNavigationInput = true; report.noSecretInHub = true; report.staleAndWrongOriginRejected = true; report.rawReadbackAndCaptureBlocked = true;
 } catch (error) { report.error = error.stack; process.exitCode = 1; }

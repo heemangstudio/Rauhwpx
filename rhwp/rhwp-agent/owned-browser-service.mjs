@@ -1,10 +1,10 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { isIP } from 'node:net';
 import { promises as fs } from 'node:fs';
 import { createBrowserNetworkGuard } from './owned-browser-network.mjs';
 import { OwnedBrowserError, inspectOwnedBrowserRuntime, inspectMacPasskeyCapability, installOwnedBrowserRuntime, startOwnedBrowserRuntime, startOwnedBrowserSignIn } from './owned-browser-runtime.mjs';
 import { removeOwnedBrowserState } from './browser-cleanup.mjs';
+import { SENSITIVE_SITE_MESSAGE, sensitiveSite } from './browser-sensitive-sites.mjs';
 
 export { OwnedBrowserError } from './owned-browser-runtime.mjs';
 
@@ -17,6 +17,8 @@ const redactValues = (value, secrets) => {
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactValues(entry, secrets)]));
   return value;
 };
+// 데스크톱 브라우저에서 에이전트 탭을 사용자 로그인과 분리된 저장소로 여는 CDP 컨텍스트 ID.
+const AGENT_BROWSER_CONTEXT = 'rhwp-agent-profile';
 const MUTATIONS = new Set(['navigate', 'click', 'type', 'press', 'scroll', 'close', 'input', 'fill-account', 'viewport', 'upload']);
 const READS = new Set(['snapshot', 'frame', 'capture', 'wait']);
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
@@ -78,8 +80,11 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     catch { clearTimeout(timer); pending.delete(requestId); reject(error('BROWSER_NATIVE_UNAVAILABLE', 'The desktop browser disconnected.', true)); }
   });
   return {
+    // 데스크톱 호스트는 에이전트 탭을 별도 저장소로 연다.
+    agentProfile: true,
     async start(params) { const result = await call('start', params); nativeGeneration = result.generation; return { ...result, close: () => call('release') }; },
     importSession: (params) => call('import-session', params),
+    shareSession: (params) => call('share-session', params),
     onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     revealDownload: (params) => call('reveal-download', params),
     sleep: (params) => call('sleep', params), activity: (params) => call('activity', params), bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'), inventory: () => call('inventory'),
@@ -145,7 +150,7 @@ export function createOwnedBrowserService(options = {}) {
       if (!tab.sleeping) return;
       await ensureRuntime(); await assertPolicy(actor, 'browse', tab.url, tab);
       const url = tab.url;
-      const page = await runtime.context.newPage();
+      const page = await newPage(tab);
       tab.activeActor = actor; tab.sleeping = false;
       try {
         if (actor.isHuman) tab.sessionId = actor.sessionId ?? tab.sessionId;
@@ -170,15 +175,6 @@ export function createOwnedBrowserService(options = {}) {
   let handoffProfile = false;
   let handoffPreviousMode;
   let passkeys;
-  const sessionKey = crypto.randomBytes(32);
-  let sessionBaseline = new Map();
-  let cookieBaseline = new Map();
-  let sessionQueue = Promise.resolve();
-  let humanSessionEpoch = 0;
-  let humanActionsPending = 0;
-  const humanRequestsPending = new Set();
-  const humanOrigins = new Set();
-  const unconfirmedHumanOrigins = new Set();
   const profileId = () => runtimeMode === 'native' ? 'native' : 'default';
   const selectedAdapter = () => runtimeMode === 'native' ? nativeAdapter : undefined;
   const browserStorageState = async () => (await selectedAdapter()?.passwordStorageState?.()) ?? runtime.context.storageState({ indexedDB: true });
@@ -187,7 +183,9 @@ export function createOwnedBrowserService(options = {}) {
 
   const emit = (type, payload) => { try { onEvent({ type, ...payload }); } catch {} };
   const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
-  const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null }, tab.protectedValues);
+  // agent: 에이전트 전용 저장소, user: 사용자 저장소.
+  const tabProfile = (tab) => tab.profile === 'agent' ? 'agent' : 'user';
+  const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), profile: tabProfile(tab), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null }, tab.protectedValues);
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   const publish = (tab) => emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo() });
   const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman) emit('owned_browser_activity', { active, sessionId: actor.sessionId ?? tab.sessionId, tab: descriptor(tab), runtime: runtimeInfo() }); };
@@ -197,16 +195,11 @@ export function createOwnedBrowserService(options = {}) {
     persistQueue = persistQueue.catch(() => {}).then(async () => {
       await fs.mkdir(path.dirname(descriptorFile), { recursive: true, mode: 0o700 });
       const temp = `${descriptorFile}.${crypto.randomBytes(8).toString('hex')}.part`;
-      await fs.writeFile(temp, JSON.stringify({ version: 1, tabs: records, humanStorageOrigins: [...unconfirmedHumanOrigins] }), { mode: 0o600, flag: 'wx' });
+      await fs.writeFile(temp, JSON.stringify({ version: 1, tabs: records }), { mode: 0o600, flag: 'wx' });
       await fs.rename(temp, descriptorFile);
     });
     return persistQueue;
   };
-  const markHumanOrigin = (origin) => {
-    humanOrigins.add(origin);
-    if (!unconfirmedHumanOrigins.has(origin)) { unconfirmedHumanOrigins.add(origin); void persist(); }
-  };
-  const markHumanDocument = (tab) => { for (const frame of tab.page?.frames?.() ?? []) if (/^https?:/.test(frame.url())) markHumanOrigin(new URL(frame.url()).origin); };
   const validateActor = (actor) => {
     if (!actor || (actor.isHuman ? !actor.clientId : !actor.threadId || !actor.agentId)) throw error('BROWSER_SCOPE_REQUIRED', 'A server-authorized browser actor is required.');
     if (closed) throw error('BROWSER_CLOSED', 'The browser service has closed.');
@@ -218,11 +211,13 @@ export function createOwnedBrowserService(options = {}) {
   };
   const assertPolicy = async (actor, action, url, tab, args = {}) => {
     if (actor.isHuman) return;
+    if (action === 'fill-account' && sensitiveSite(url)) throw error('BROWSER_SITE_SENSITIVE', SENSITIVE_SITE_MESSAGE);
     const mapped = args.intent === 'website-change' || !actor.isHuman && changesWebsiteURL(url) ? 'website-change' : action === 'download' ? 'download' : READS.has(action) || MUTATIONS.has(action) ? 'read' : 'browse';
     if (policy?.assertAllowed && url !== 'about:blank') await policy.assertAllowed({ actor, action: mapped, url, profileId: profileId() });
     else if (policy?.assertBrowserAction) await policy.assertBrowserAction({ actor, action, url, tab: tab && descriptor(tab), intent: args.intent ?? 'research' });
     else if (mapped === 'website-change') throw error('BROWSER_WEBSITE_CHANGE_REQUIRED', 'Approve website changes for this site before continuing.');
-    if (credentialBroker?.assertBrowserAccess && tab?.scope !== 'global' && (!tab || ['open', 'browse', 'navigate', 'fill-account'].includes(action) || args.intent === 'website-change') && url !== 'about:blank') await credentialBroker.assertBrowserAccess({ actor, url, tab: { ...descriptor(tab ?? { page: null, url, controller: {} }), profileId: profileId() } });
+    // 에이전트 전용 저장소에는 사용자 로그인이 없어 저장된 계정 승인 검사가 필요 없다.
+    if (tabProfile(tab ?? { profile: agentJarAvailable() ? 'agent' : 'user' }) !== 'agent' && credentialBroker?.assertBrowserAccess && tab?.scope !== 'global' && (!tab || ['open', 'browse', 'navigate', 'fill-account'].includes(action) || args.intent === 'website-change') && url !== 'about:blank') await credentialBroker.assertBrowserAccess({ actor, url, tab: { ...descriptor(tab ?? { page: null, url, controller: {} }), profileId: profileId() } });
   };
   const invalidate = (tab) => {
     for (const handle of tab.snapshot?.handles?.values?.() ?? []) void handle.dispose?.().catch(() => {});
@@ -269,89 +264,47 @@ export function createOwnedBrowserService(options = {}) {
     tab.heldKeys.clear(); tab.heldButtons.clear();
   };
   const actorForTab = (tab) => ({ threadId: tab.threadId, projectId: tab.projectId, documentId: tab.documentId, agentId: tab.agentId, ownerId: tab.ownerId, sessionId: tab.sessionId, isHuman: false });
-  const sessionFingerprint = (storage) => {
-    const grouped = new Map();
-    for (const cookie of storage.cookies ?? []) { const domain = cookie.domain.replace(/^\./, '').toLowerCase(); const key = `domain:${domain}`; if (!grouped.has(key)) grouped.set(key, []); grouped.get(key).push(cookie); }
-    for (const origin of storage.origins ?? []) grouped.set(`origin:${origin.origin}`, origin);
-    return new Map([...grouped].map(([key, values]) => [key, crypto.createHmac('sha256', sessionKey).update(JSON.stringify(Array.isArray(values) ? values.sort((a, b) => `${a.domain}:${a.name}:${a.path}`.localeCompare(`${b.domain}:${b.name}:${b.path}`)) : values)).digest('hex')]));
+  const pageTargetId = async (page) => {
+    const session = await runtime.context.newCDPSession(page);
+    try { return (await session.send('Target.getTargetInfo')).targetInfo.targetId; }
+    finally { await session.detach().catch(() => {}); }
   };
-  const cookieIdentity = (cookie) => `${cookie.domain.toLowerCase()}\n${cookie.path}\n${cookie.name}`;
-  const serializeSession = (operation) => { const result = sessionQueue.catch(() => {}).then(operation); sessionQueue = result.catch(() => {}); return result; };
-  const matchesOrigin = (key, origin) => {
-    if (key.startsWith('origin:')) return key.slice(7) === origin;
-    const domain = key.slice(7), host = new URL(origin).hostname;
-    return host === domain || host.endsWith(`.${domain}`);
-  };
-  const recordAgentSessions = (url, epoch, headers = []) => serializeSession(async () => {
-    if (!runtime || state !== 'ready' || epoch !== humanSessionEpoch || humanActionsPending || humanRequestsPending.size || !/^https?:/.test(url)) return;
-    const storage = await browserStorageState();
-    const current = sessionFingerprint(storage);
-    if (epoch !== humanSessionEpoch || humanActionsPending || humanRequestsPending.size) return;
-    const origin = new URL(url).origin;
-    const humanStorageOwner = unconfirmedHumanOrigins.has(origin) || runtime.context.pages().some((page) => !pageTabs.has(page) && page.frames().some((frame) => { try { return new URL(frame.url()).origin === origin; } catch { return false; } }));
-    // Origin storage has no per-write actor identity. Never credit an agent with
-    // an unproved localStorage/IndexedDB change while a human shares that origin.
-    if (!humanStorageOwner) for (const [key, fingerprint] of current) if (key.startsWith('origin:') && matchesOrigin(key, origin)) sessionBaseline.set(key, fingerprint);
-    const source = new URL(url), touchedDomains = new Set();
-    for (const header of headers.filter((entry) => entry.name.toLowerCase() === 'set-cookie')) {
-      const [pair, ...attributes] = header.value.split(';'), separator = pair.indexOf('=');
-      if (separator <= 0) continue;
-      const name = pair.slice(0, separator).trim(), value = pair.slice(separator + 1);
-      const attrs = new Map(attributes.map((entry) => { const split = entry.indexOf('='); return [entry.slice(0, split < 0 ? undefined : split).trim().toLowerCase(), split < 0 ? '' : entry.slice(split + 1).trim()]; }));
-      const domain = (attrs.get('domain') ?? source.hostname).replace(/^\./, '').toLowerCase();
-      if (source.hostname !== domain && !source.hostname.endsWith(`.${domain}`)) continue;
-      const cookiePath = attrs.get('path')?.startsWith('/') ? attrs.get('path') : source.pathname.slice(0, source.pathname.lastIndexOf('/')) || '/';
-      const cookieDomain = attrs.has('domain') && !isIP(domain) ? `.${domain}` : domain;
-      const identity = `${cookieDomain}\n${cookiePath}\n${name}`;
-      const cookie = storage.cookies.find((entry) => cookieIdentity(entry) === identity);
-      if (cookie?.value === value) { cookieBaseline.set(identity, cookie); touchedDomains.add(domain); }
-      else if (!cookie && (Number(attrs.get('max-age')) <= 0 && attrs.has('max-age') || Date.parse(attrs.get('expires')) < Date.now())) { cookieBaseline.delete(identity); touchedDomains.add(domain); }
-    }
-    // Only the exact keys written by this authorized response advance cookie provenance.
-    const approved = sessionFingerprint({ cookies: [...cookieBaseline.values()], origins: [] });
-    for (const domain of touchedDomains) { const key = `domain:${domain}`; if (approved.has(key)) sessionBaseline.set(key, approved.get(key)); else sessionBaseline.delete(key); }
-  });
-  const observeHumanSessionsNow = async () => {
-    if (!runtime || state !== 'ready' || !credentialBroker?.registerSessionOrigins) return;
-    for (const page of runtime.context.pages()) if (!pageTabs.has(page) && /^https?:/.test(page.url())) markHumanOrigin(new URL(page.url()).origin);
-    const storage = await browserStorageState();
-    const current = sessionFingerprint(storage);
-    const domains = [], origins = [];
-    for (const [key, fingerprint] of current) {
-      if (fingerprint === sessionBaseline.get(key)) continue;
-      if (key.startsWith('domain:')) {
-        const domain = key.slice(7);
-        if ([...humanOrigins].some((origin) => { const host = new URL(origin).hostname; return host === domain || host.endsWith(`.${domain}`) || domain.endsWith(`.${host}`); })) domains.push(domain);
-      } else { const origin = key.slice(7); if (humanOrigins.has(origin) || unconfirmedHumanOrigins.has(origin)) origins.push(origin); }
-    }
-    if (domains.length || origins.length) await credentialBroker.registerSessionOrigins({ profileId: profileId(), origins, domains, source: 'human' });
-    sessionBaseline = current;
-    cookieBaseline = new Map(storage.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
-  };
-  const observeHumanSessions = () => serializeSession(observeHumanSessionsNow);
-  const acknowledgeAccountOrigins = (account) => {
-    if (!account.agentReuseApproved || account.profileId !== profileId()) return;
-    // Consent acknowledges shared cookie state, while access remains limited to the exact approved origins.
-    const cookieKeys = [...sessionBaseline.keys()].filter(key => key.startsWith('domain:') && account.origins.some(origin => matchesOrigin(key, origin)));
-    for (const origin of humanOrigins) {
-      if (account.origins.includes(origin) || cookieKeys.some(key => matchesOrigin(key, origin))) humanOrigins.delete(origin);
-    }
-    for (const origin of account.origins) unconfirmedHumanOrigins.delete(origin);
-  };
-  const withAccountApproval = (actor, operation) => {
-    validateActor(actor);
-    if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the owner can approve website accounts.');
-    return serializeSession(async () => {
-      // Acknowledge the current browser state before granting reuse, including changes not yet polled.
-      await observeHumanSessionsNow();
-      const epoch = humanSessionEpoch;
-      const result = await operation();
-      if (result.account?.agentReuseApproved && result.account.profileId === profileId() && epoch === humanSessionEpoch) {
-        acknowledgeAccountOrigins(result.account);
-        await persist();
+  let agentContextPromise = null;
+  // 관리형 Chromium의 에이전트 프로필은 첫 에이전트 탭에서 열고 같은 정책 훅을 붙인다.
+  const ensureAgentContext = () => agentContextPromise ??= runtime.openAgentContext().then(async (context) => {
+    await installContextHooks(context);
+    context.once?.('close', () => { agentContextPromise = null; });
+    return context;
+  }).catch((failure) => { agentContextPromise = null; throw failure; });
+  const agentJarAvailable = () => runtimeMode === 'native' ? !!selectedAdapter()?.agentProfile : runtime ? !!runtime.openAgentContext : true;
+  // 에이전트 탭은 사용자 로그인과 분리된 저장소에 만든다. 지원하지 않는 런타임은 사용자 프로필을 쓰고 그대로 표시한다.
+  const newPage = async (tab) => {
+    if (tab.profile === 'agent' && !selectedAdapter() && runtime.openAgentContext) return (await ensureAgentContext()).newPage();
+    if (tab.profile !== 'agent' || !selectedAdapter()?.agentProfile) { tab.profile = 'user'; return runtime.context.newPage(); }
+    const pending = [];
+    const collect = (page) => pending.push(page);
+    runtime.context.on('page', collect);
+    let targetId;
+    try {
+      const cdp = await runtime.browser.newBrowserCDPSession();
+      try { ({ targetId } = await cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: AGENT_BROWSER_CONTEXT })); }
+      finally { await cdp.detach().catch(() => {}); }
+      const checked = new WeakSet();
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        for (const page of [...pending, ...runtime.context.pages()]) {
+          if (checked.has(page) || pageTabs.has(page) || page.isClosed()) continue;
+          checked.add(page);
+          if (await pageTargetId(page).catch(() => null) === targetId) return page;
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw error('BROWSER_NATIVE_UNAVAILABLE', 'The desktop browser did not open the agent tab. Retry.', true);
+        await runtime.context.waitForEvent('page', { timeout: remaining }).catch(() => {});
       }
-      return result;
-    });
+    } catch (failure) {
+      if (targetId) await runtime.browser.newBrowserCDPSession().then((cdp) => cdp.send('Target.closeTarget', { targetId }).finally(() => cdp.detach())).catch(() => {});
+      throw failure;
+    } finally { runtime.context.off('page', collect); }
   };
 
   const onDownload = async (tab, download) => {
@@ -465,9 +418,7 @@ export function createOwnedBrowserService(options = {}) {
       }).catch(() => publish(tab));
     });
     if (selectedAdapter()?.bind) {
-      const session = await runtime.context.newCDPSession(page);
-      try { tab.nativeTargetId = (await session.send('Target.getTargetInfo')).targetInfo.targetId; }
-      finally { await session.detach().catch(() => {}); }
+      tab.nativeTargetId = await pageTargetId(page);
       const nativeState = await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId, global: tab.scope === 'global' });
       tab.nativeGeneration = nativeState?.generation;
       tab.zoomFactor = nativeState?.zoomFactor;
@@ -475,6 +426,50 @@ export function createOwnedBrowserService(options = {}) {
     }
   };
 
+  // 요청 정책과 팝업 연결은 사용자 프로필과 에이전트 프로필에 똑같이 적용한다.
+  const installContextHooks = async (context) => {
+    await context.route('**/*', async (route) => {
+      const request = route.request();
+      try {
+        const url = request.url();
+        if (url.startsWith('data:') || url === 'about:blank') { await route.continue(); return; }
+        await guard.resolve(url);
+        let page; try { page = request.frame().page(); } catch {}
+        let tab = page && pageTabs.get(page);
+        // 팝업의 첫 요청이 논리 탭 바인딩보다 먼저 도착해도 원래 탭의 정책을 적용한다.
+        if (!tab && page) { const opener = await page.opener().catch(() => null); tab = opener && pageTabs.get(opener); }
+        if (tab) {
+          const actor = tab.activeActor ?? (tab.controller.owner === 'human' ? { ...actorForTab(tab), isHuman: true, clientId: tab.controller.clientId } : actorForTab(tab));
+          await assertPolicy(actor, 'browse', url, tab);
+          if (!actor.isHuman && !['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
+            await assertPolicy(actor, 'browse', url, tab, { intent: 'website-change' });
+          }
+        }
+        await route.continue();
+      } catch { await route.abort('blockedbyclient').catch(() => {}); }
+    });
+    context.on('page', (page) => {
+      // Pages created by popup scripts never gain another agent's binding.
+      void page.opener().then(async (opener) => {
+        const parent = opener && pageTabs.get(opener);
+        if (!parent) return;
+        if (tabs.size >= limits.maxTabs) { await page.close(); return; }
+        const tab = makeTab({ ...actorForTab(parent), scope: parent.scope }); tab.profile = parent.profile; tab.controller = { ...parent.controller }; tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab);
+        try { await attach(tab, page); }
+        catch (failure) {
+          // 인증 보조 창은 CDP 바인딩이 끝나기 전에 스스로 닫힐 수 있다.
+          tabs.delete(tab.tabId); pageTabs.delete(page);
+          await page.close().catch(() => {}); await persist();
+          throw failure;
+        }
+        if (page.isClosed() || tabs.get(tab.tabId) !== tab) return;
+        const native = tab.nativeTargetId && (await selectedAdapter()?.inventory?.())?.find((entry) => entry.nativeTargetId === tab.nativeTargetId);
+        if (page.isClosed() || tabs.get(tab.tabId) !== tab) return;
+        emit('owned_browser_popup', { tab: descriptor(tab), openerTabId: parent.tabId, foreground: native?.disposition !== 'background-tab', runtime: runtimeInfo() });
+        void persist();
+      }).catch(() => {});
+    });
+  };
   const ensureRuntime = async () => {
     if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Complete browser cleanup in Settings before starting another browser.', true);
     if (signIn || handoffPending) throw error('BROWSER_SIGN_IN_ACTIVE', 'Complete sign-in in the full browser, then confirm the account in Browser settings.', true);
@@ -484,6 +479,7 @@ export function createOwnedBrowserService(options = {}) {
     starting = (async () => {
       try {
         if (runtime) { await runtime.close().catch(() => {}); runtime = null; }
+        agentContextPromise = null;
         runtime = await runtimeFactory({ dataDir, guard, nativeAdapter: selectedAdapter(), headless, autoInstall: options.autoInstall !== false, onEvent: (progress) => emit('owned_browser_runtime', { runtime: { ...runtimeInfo(), ...progress } }) });
         generation++;
         let checkpoint;
@@ -491,76 +487,14 @@ export function createOwnedBrowserService(options = {}) {
           checkpoint = await credentialBroker.restoreCheckpoint({ profileId: profileId() });
           if (checkpoint && !handoffProfile && !(selectedAdapter() && runtime.context.pages().length)) await runtime.context.setStorageState(checkpoint);
         }
-        const initialStorage = await browserStorageState();
-        const initialFingerprint = sessionFingerprint(initialStorage);
-        if ((!checkpoint || handoffProfile) && credentialBroker?.registerSessionOrigins && (initialStorage.cookies.length || initialStorage.origins.length)) {
-          const origins = initialStorage.origins.map((entry) => entry.origin).filter((origin) => !handoffProfile || initialFingerprint.get(`origin:${origin}`) !== sessionBaseline.get(`origin:${origin}`));
-          const domains = initialStorage.cookies.map((cookie) => cookie.domain.replace(/^\./, '')).filter((domain) => !handoffProfile || initialFingerprint.get(`domain:${domain}`) !== sessionBaseline.get(`domain:${domain}`));
-          if (origins.length || domains.length) await credentialBroker.registerSessionOrigins({ profileId: profileId(), origins, domains, source: handoffProfile ? 'human' : 'unknown' });
-        }
-        sessionBaseline = initialFingerprint;
-        cookieBaseline = new Map(initialStorage.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
-        for (const account of (await credentialBroker?.listAccounts?.())?.accounts ?? []) acknowledgeAccountOrigins(account);
         handoffProfile = false;
-        await runtime.context.route('**/*', async (route) => {
-          const request = route.request();
-          try {
-            const url = request.url();
-            if (url.startsWith('data:') || url === 'about:blank') { await route.continue(); return; }
-            await guard.resolve(url);
-            let page; try { page = request.frame().page(); } catch {}
-            let tab = page && pageTabs.get(page);
-            // 팝업의 첫 요청이 논리 탭 바인딩보다 먼저 도착해도 원래 탭의 정책을 적용한다.
-            if (!tab && page) { const opener = await page.opener().catch(() => null); tab = opener && pageTabs.get(opener); }
-            if (tab) {
-              const actor = tab.activeActor ?? (tab.controller.owner === 'human' ? { ...actorForTab(tab), isHuman: true, clientId: tab.controller.clientId } : actorForTab(tab));
-              if (actor.isHuman) {
-                humanSessionEpoch++; humanOrigins.add(new URL(url).origin); humanRequestsPending.add(request);
-                // Cookies are applied with response headers. Streaming bodies must not hold
-                // the shared profile indefinitely; the human action retains its own fence.
-                void request.response().then(async () => { await observeHumanSessions(); }).catch(() => {}).finally(() => { humanRequestsPending.delete(request); });
-              }
-              else {
-                const epoch = humanSessionEpoch;
-                void request.response().then(async (response) => { if (response) await recordAgentSessions(url, epoch, await response.headersArray()); }).catch(() => {});
-              }
-              await assertPolicy(actor, 'browse', url, tab);
-              if (!actor.isHuman && !['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
-                await assertPolicy(actor, 'browse', url, tab, { intent: 'website-change' });
-              }
-            }
-            await route.continue();
-          } catch { await route.abort('blockedbyclient').catch(() => {}); }
-        });
-        runtime.context.on('page', (page) => {
-          // Pages created by popup scripts never gain another agent's binding.
-          void page.opener().then(async (opener) => {
-            const parent = opener && pageTabs.get(opener);
-            if (!parent) return;
-            if (tabs.size >= limits.maxTabs) { await page.close(); return; }
-            const tab = makeTab({ ...actorForTab(parent), scope: parent.scope }); tab.controller = { ...parent.controller }; tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab);
-            try { await attach(tab, page); }
-            catch (failure) {
-              // 인증 보조 창은 CDP 바인딩이 끝나기 전에 스스로 닫힐 수 있다.
-              tabs.delete(tab.tabId); pageTabs.delete(page);
-              await page.close().catch(() => {}); await persist();
-              throw failure;
-            }
-            if (page.isClosed() || tabs.get(tab.tabId) !== tab) return;
-            const native = tab.nativeTargetId && (await selectedAdapter()?.inventory?.())?.find((entry) => entry.nativeTargetId === tab.nativeTargetId);
-            if (page.isClosed() || tabs.get(tab.tabId) !== tab) return;
-            emit('owned_browser_popup', { tab: descriptor(tab), openerTabId: parent.tabId, foreground: native?.disposition !== 'background-tab', runtime: runtimeInfo() });
-            void persist();
-          }).catch(() => {});
-        });
+        await installContextHooks(runtime.context);
         const nativeInventory = await selectedAdapter()?.inventory?.() ?? [];
         if (selectedAdapter()) for (const page of runtime.context.pages()) {
-          const session = await runtime.context.newCDPSession(page);
-          let targetId;
-          try { targetId = (await session.send('Target.getTargetInfo')).targetInfo.targetId; }
-          finally { await session.detach().catch(() => {}); }
-          const logicalId = nativeInventory.find((tab) => tab.nativeTargetId === targetId)?.tabId;
-          const retained = tabs.get(logicalId) ?? [...tabs.values()].find((tab) => tab.nativeTargetId === targetId);
+          const targetId = await pageTargetId(page);
+          const nativeEntry = nativeInventory.find((tab) => tab.nativeTargetId === targetId);
+          const retained = tabs.get(nativeEntry?.tabId) ?? [...tabs.values()].find((tab) => tab.nativeTargetId === targetId);
+          if (retained && nativeEntry?.profile) retained.profile = nativeEntry.profile;
           if (retained) { retained.controller = { owner: retained.scope === 'global' ? 'human' : 'agent' }; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); retained.restorePending = false; publish(retained); }
         }
         const observedRuntime = runtime;
@@ -590,7 +524,7 @@ export function createOwnedBrowserService(options = {}) {
     })();
     return starting;
   };
-  const makeTab = (input) => { const global = input.isHuman || input.scope === 'global'; const actor = global ? { ...input, threadId: null, projectId: null, documentId: null, agentId: 'human', taskId: null } : input; return ({ lastActivityAt: Date.now(), scope: global ? 'global' : 'agent', tabId: id('tab'), threadId: actor.threadId ?? null, projectId: actor.projectId ?? null, documentId: actor.documentId ?? null, agentId: actor.agentId ?? 'human', ownerId: actor.ownerId, sessionId: actor.sessionId, taskId: actor.taskId, url: 'about:blank', title: '', status: 'ready', page: null, navigationEpoch: 0, controllerEpoch: 1, controller: { owner: global ? 'human' : 'agent' }, queue: Promise.resolve(), heldKeys: new Set(), heldButtons: new Set(), snapshot: null, frame: null }); };
+  const makeTab = (input) => { const global = input.isHuman || input.scope === 'global'; const actor = global ? { ...input, threadId: null, projectId: null, documentId: null, agentId: 'human', taskId: null } : input; return ({ lastActivityAt: Date.now(), scope: global ? 'global' : 'agent', tabId: id('tab'), threadId: actor.threadId ?? null, projectId: actor.projectId ?? null, documentId: actor.documentId ?? null, agentId: actor.agentId ?? 'human', ownerId: actor.ownerId, sessionId: actor.sessionId, taskId: actor.taskId, url: 'about:blank', title: '', status: 'ready', page: null, navigationEpoch: 0, controllerEpoch: 1, controller: { owner: global ? 'human' : 'agent' }, profile: global ? 'user' : 'agent', queue: Promise.resolve(), heldKeys: new Set(), heldButtons: new Set(), snapshot: null, frame: null }); };
   const returnFromSignIn = async (account, storage) => {
     const origins = new Set(account.origins);
     const hosts = account.origins.map((origin) => new URL(origin).hostname);
@@ -601,36 +535,39 @@ export function createOwnedBrowserService(options = {}) {
     const approved = { cookies: storage.cookies.filter(matchesApprovedHost), origins: storage.origins.filter((entry) => origins.has(entry.origin)) };
     clearInterval(checkpointTimer);
     await runtime.close(); runtime = null; state = 'idle'; runtimeMode = 'native';
-    await credentialBroker.saveCheckpoint?.({ profileId: 'native', state: approved });
     await ensureRuntime();
-    // 유지된 네이티브 게스트는 자동 체크포인트 복원을 건너뛰므로 승인된 세션을 직접 병합한다.
+    // 계정 연결은 에이전트가 쓰기 위한 로그인이다. 승인된 사이트 쿠키는 에이전트 저장소에만 넣는다.
     const adapter = selectedAdapter();
-    if (adapter?.importSession) {
-      // 메인 프로세스가 승인된 사이트만 갱신한다. 보호된 탭의 숨겨진 저장소는 읽거나 지우지 않는다.
-      await adapter.importSession({ origins: [...origins], state: approved, reload: true });
-    } else {
-      if (await adapter?.passwordStorageState?.()) throw error('BROWSER_NATIVE_SESSION_IMPORT_UNAVAILABLE', 'Reconnect the desktop browser before restoring this sign-in.', true);
-      const retained = await browserStorageState();
-      const merged = { cookies: [...retained.cookies.filter((entry) => !matchesApprovedHost(entry)), ...approved.cookies],
-        origins: [...retained.origins.filter((entry) => !origins.has(entry.origin)), ...approved.origins] };
-      await runtime.context.setStorageState(merged);
-    }
-    const restored = await browserStorageState();
-    sessionBaseline = sessionFingerprint(restored); cookieBaseline = new Map(restored.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
+    if (!adapter?.importSession) throw error('BROWSER_NATIVE_SESSION_IMPORT_UNAVAILABLE', 'Reconnect the desktop browser before restoring this sign-in.', true);
+    await adapter.importSession({ origins: [...origins], state: approved, reload: true, profile: 'agent' });
     for (const tab of tabs.values()) {
       if (!tab.page || tab.page.isClosed()) { tab.restorePending = true; continue; }
-      if (!adapter?.importSession && origins.has(new URL(tab.page.url()).origin)) {
-        await tab.page.reload({ waitUntil: 'domcontentloaded' }); tab.status = 'ready';
-      }
       publish(tab);
     }
     await persist(); await saveCheckpoint();
     emit('owned_browser_runtime', { runtime: runtimeInfo() });
   };
+  const hostMatches = (cookie, hosts) => {
+    const domain = String(cookie.domain ?? '').replace(/^\./, '').toLowerCase();
+    return !!domain && hosts.some((host) => host === domain || domain.includes('.') && host.endsWith(`.${domain}`));
+  };
+  const canCopyToAgent = () => runtimeMode === 'native' ? !!nativeAdapter?.agentProfile && !!nativeAdapter?.shareSession : agentJarAvailable();
+  // 승인된 사이트의 로그인 쿠키만 사용자 프로필에서 에이전트 프로필로 복사한다.
+  const copySessionToAgent = async (origins) => {
+    await ensureRuntime();
+    if (selectedAdapter()) return nativeAdapter.shareSession({ origins });
+    if (!runtime.openAgentContext) throw error('BROWSER_SHARE_UNAVAILABLE', 'This browser cannot keep a separate agent profile.');
+    const hosts = origins.map((origin) => new URL(origin).hostname);
+    const agentContext = await ensureAgentContext();
+    const shared = (await runtime.context.cookies()).filter((cookie) => hostMatches(cookie, hosts));
+    for (const cookie of (await agentContext.cookies()).filter((entry) => hostMatches(entry, hosts))) await agentContext.clearCookies({ name: cookie.name, domain: cookie.domain, path: cookie.path });
+    if (shared.length) await agentContext.addCookies(shared);
+    return { shared: true, cookies: shared.length };
+  };
   const requirePage = (tab) => { if (!tab.page || tab.page.isClosed()) throw error('BROWSER_RECONNECT_REQUIRED', 'The browser page disconnected. Recover it before sending input.', true); return tab.page; };
   const saveCheckpoint = () => {
     if (resetting || resetFailed) return Promise.resolve();
-    const result = checkpointQueue.catch(() => {}).then(async () => { if (!resetting && !resetFailed && runtime && state === 'ready' && credentialBroker?.saveCheckpoint) { await observeHumanSessions(); if (!resetting && !resetFailed) await credentialBroker.saveCheckpoint({ profileId: profileId(), state: await browserStorageState() }); } });
+    const result = checkpointQueue.catch(() => {}).then(async () => { if (!resetting && !resetFailed && runtime && state === 'ready' && credentialBroker?.saveCheckpoint) { await credentialBroker.saveCheckpoint({ profileId: profileId(), state: await browserStorageState() }); } });
     checkpointQueue = result.catch(() => {}); return result;
   };
   credentialBroker?.setDataResetter?.(async ({ phase }) => {
@@ -640,45 +577,43 @@ export function createOwnedBrowserService(options = {}) {
       if (handoffPromise) await handoffPromise.catch(() => {});
       for (const tab of tabs.values()) { tab.controllerEpoch++; invalidate(tab); }
       await Promise.all([...tabs.values()].map((tab) => tab.queue.catch(() => {})));
-      await checkpointQueue; await sessionQueue; await persistQueue.catch(() => {});
+      await checkpointQueue; await persistQueue.catch(() => {});
       await signIn?.close(); signIn = null; signInAccountId = null;
       for (const tab of tabs.values()) await releaseInput(tab);
       await runtime?.close(); runtime = null;
       await nativeAdapter?.reset?.();
-      tabs.clear(); sessionBaseline.clear(); cookieBaseline.clear(); humanOrigins.clear(); unconfirmedHumanOrigins.clear(); humanRequestsPending.clear(); handoffProfile = false; state = 'resetting';
+      tabs.clear(); handoffProfile = false; state = 'resetting';
       await removeOwnedBrowserState({ dataDir });
     } else if (phase === 'after') { resetting = false; resetFailed = false; state = 'idle'; emit('owned_browser_runtime', { runtime: runtimeInfo() }); }
     else { resetting = false; resetFailed = true; state = 'failed'; emit('owned_browser_runtime', { runtime: runtimeInfo() }); }
   });
-  credentialBroker?.setSessionClearer?.(async ({ profileId: targetProfile, origins }) => {
+  credentialBroker?.setSessionClearer?.(async ({ profileId: targetProfile, origins, reason }) => {
     if (!['default', 'native'].includes(targetProfile)) throw error('BROWSER_PROFILE_NOT_ACTIVE', 'This browser account profile is unavailable.');
     await ensureRuntime();
     const clearing = targetProfile === profileId() ? runtime : await runtimeFactory({ dataDir, guard, nativeAdapter: targetProfile === 'native' ? nativeAdapter : undefined, headless: true, autoInstall: false });
     try {
     if (targetProfile === 'native' && nativeAdapter?.importSession) {
-      await nativeAdapter.importSession({ origins, state: { cookies: [], origins: [] }, clear: true });
-      for (const tab of tabs.values()) { invalidate(tab); tab.controllerEpoch++; publish(tab); }
-      if (clearing === runtime) {
-        const storage = await browserStorageState();
-        sessionBaseline = sessionFingerprint(storage); cookieBaseline = new Map(storage.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
-      }
+      // 연결된 계정의 로그인은 에이전트 저장소에 있다.
+      await nativeAdapter.importSession({ origins, state: { cookies: [], origins: [] }, clear: true, profile: 'agent' });
+      for (const tab of tabs.values()) if (tab.profile === 'agent') { invalidate(tab); tab.controllerEpoch++; publish(tab); }
       return { clearedOrigins: origins };
     }
+    // 연결된 계정의 로그인은 에이전트 프로필에 있다. 분리 프로필이 없는 런타임만 공유 프로필을 지운다.
+    const target = clearing.openAgentContext ? clearing === runtime ? await ensureAgentContext() : await clearing.openAgentContext() : reason === 'revoke' ? null : clearing.context;
+    if (!target) return {};
     const hosts = origins.map((origin) => new URL(origin).hostname);
-    const cookies = await clearing.context.cookies();
+    const cookies = await target.cookies();
     const domains = [...new Set(cookies.map((cookie) => cookie.domain).filter((raw) => { const domain = raw.replace(/^\./, ''); return hosts.some((host) => host === domain || host.endsWith(`.${domain}`)); }))];
-    for (const domain of domains) await clearing.context.clearCookies({ domain });
-    const storage = await clearing.context.storageState({ indexedDB: true });
+    for (const domain of domains) await target.clearCookies({ domain });
+    const storage = await target.storageState({ indexedDB: true });
     const clearedOrigins = [...new Set([...origins, ...storage.origins.map((entry) => entry.origin).filter((origin) => domains.some((raw) => { const domain = raw.replace(/^\./, ''), host = new URL(origin).hostname; return host === domain || host.endsWith(`.${domain}`); }))])];
     for (const origin of clearedOrigins) {
-      const page = await clearing.context.newPage();
-      const session = await clearing.context.newCDPSession(page);
+      const page = await target.newPage();
+      const session = await target.newCDPSession(page);
       try { await session.send('Storage.clearDataForOrigin', { origin, storageTypes: 'all' }); }
       finally { await session.detach().catch(() => {}); await page.close().catch(() => {}); }
     }
-    for (const tab of tabs.values()) { invalidate(tab); tab.controllerEpoch++; publish(tab); }
-    const clearedStorage = await clearing.context.storageState({ indexedDB: true });
-    if (clearing === runtime) { sessionBaseline = sessionFingerprint(clearedStorage); cookieBaseline = new Map(clearedStorage.cookies.map((cookie) => [cookieIdentity(cookie), cookie])); }
+    for (const tab of tabs.values()) if (target === clearing.context || tab.profile === 'agent') { invalidate(tab); tab.controllerEpoch++; publish(tab); }
     return { clearedDomains: domains.map((domain) => domain.replace(/^\./, '')), clearedOrigins };
     } finally { if (clearing !== runtime) await clearing.close(); }
   });
@@ -1034,7 +969,6 @@ export function createOwnedBrowserService(options = {}) {
   const inventory = async (actor) => {
     validateActor(actor);
     passkeys = await inspectMacPasskeyCapability();
-    if (!actor.isHuman) await observeHumanSessions();
     // 네이티브 창의 중지·완료 이벤트로 새로 읽을 때 실제 로딩 종료도 반영한다.
     if (runtime && state === 'ready' && selectedAdapter()?.inventory) {
       const native = await selectedAdapter().inventory();
@@ -1068,7 +1002,6 @@ export function createOwnedBrowserService(options = {}) {
       catch (failure) { resetting = false; resetFailed = true; throw failure; }
     }
     if (!actor.isHuman && action !== 'status' && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in. Wait for account confirmation.', true);
-    if (runtime && !actor.isHuman) await observeHumanSessions();
     if (action === 'status') { passkeys = await inspectMacPasskeyCapability(); return { ...(await inventory(actor)), readiness: runtimeMode === 'native' || state === 'ready' ? { state: 'ready', installed: true, passkeys } : await inspectOwnedBrowserRuntime({ dataDir }) }; }
     if (action === 'install') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Browser installation is managed from Browser settings.');
@@ -1124,20 +1057,14 @@ export function createOwnedBrowserService(options = {}) {
         await signIn.close(); signIn = null; signInAccountId = null; handoffProfile = true; state = 'idle';
         await ensureRuntime();
       }
-      await observeHumanSessions();
       const result = await credentialBroker.confirmAccountSession({ actor, accountId: args.accountId, ...(handoffPreviousMode === 'native' ? { additionalProfileId: 'native' } : {}) });
       const account = result.account ?? result;
       const confirmedStorage = await browserStorageState();
-      const confirmed = sessionFingerprint(confirmedStorage);
-      for (const origin of account.origins ?? []) {
-        unconfirmedHumanOrigins.delete(origin);
-        const key = `origin:${origin}`;
-        if (confirmed.has(key)) sessionBaseline.set(key, confirmed.get(key)); else sessionBaseline.delete(key);
-      }
-      acknowledgeAccountOrigins(account);
       await persist();
       await saveCheckpoint();
       if (handoffPreviousMode === 'native') await returnFromSignIn(account, confirmedStorage);
+      // 확인한 계정의 로그인은 에이전트가 쓰도록 에이전트 프로필로 옮긴다.
+      else if (account.origins?.length && canCopyToAgent()) await copySessionToAgent(account.origins);
       handoffPreviousMode = null;
       return { ok: true, action, account, runtime: runtimeInfo() };
     }
@@ -1176,18 +1103,14 @@ export function createOwnedBrowserService(options = {}) {
       const tab = makeTab(actor);
       if (googleResearchURL(url)) tab.searchQuery = new URL(url).searchParams.get('q') || undefined;
       tabs.set(tab.tabId, tab);
-      const agentSessionEpoch = humanSessionEpoch;
-      if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }
       try {
-        await attach(tab, await runtime.context.newPage());
+        await attach(tab, await newPage(tab));
         // 새 탭을 만든 화면은 탐색과 계정 저장을 기다리지 않고 즉시 해당 탭을 표시한다.
         if (actor.isHuman && typeof args.openRequestId === 'string' && args.openRequestId.length <= 160) emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo(), openRequestId: args.openRequestId });
-        previewActivity(actor, tab); tab.activeActor = actor; if (actor.isHuman && url !== 'about:blank') markHumanOrigin(new URL(url).origin); if (url !== 'about:blank') await tab.page.goto(url, { waitUntil: 'domcontentloaded' }); if (actor.isHuman) markHumanDocument(tab);
+        previewActivity(actor, tab); tab.activeActor = actor; if (url !== 'about:blank') await tab.page.goto(url, { waitUntil: 'domcontentloaded' });
       }
       catch (failure) { await tab.page?.close().catch(() => {}); tabs.delete(tab.tabId); throw failure; }
-      finally { previewActivity(actor, tab, false); tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
-      if (actor.isHuman) await observeHumanSessions();
-      else { await recordAgentSessions(url, agentSessionEpoch); await observeHumanSessions(); }
+      finally { previewActivity(actor, tab, false); tab.activeActor = null; }
       await assertPolicy(actor, action, requirePage(tab).url(), tab, args);
       publish(tab); await persist(); return !actor.isHuman && challengeFor(tab) ? challengeResult(action, tab) : { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab) };
     }
@@ -1226,19 +1149,16 @@ export function createOwnedBrowserService(options = {}) {
             // 화면 복원은 사용자의 요청이다. 탭의 에이전트 조작권과 계정 승인은 유지한다.
             await assertPolicy(actor, 'browse', url, tab);
             if (url !== 'about:blank') await guard.resolve(url);
-            const page = await runtime.context.newPage();
+            const page = await newPage(tab);
             try {
-              tab.activeActor = actor; humanSessionEpoch++; humanActionsPending++;
-              if (url !== 'about:blank') markHumanOrigin(new URL(url).origin);
+              tab.activeActor = actor;
               await attach(tab, page);
               if (url !== 'about:blank') await page.goto(url, { waitUntil: 'domcontentloaded' });
-              markHumanDocument(tab);
             } catch (failure) {
               await page.close().catch(() => {});
               tab.page = null; tab.nativeTargetId = undefined;
               throw failure;
-            } finally { tab.activeActor = null; humanActionsPending--; }
-            await observeHumanSessions();
+            } finally { tab.activeActor = null; }
             tab.restorePending = false;
             tab.status = 'ready'; invalidate(tab); publish(tab); await persist();
           }
@@ -1256,11 +1176,11 @@ export function createOwnedBrowserService(options = {}) {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Recover disconnected pages from Browser settings.');
       await ensureRuntime();
       tab.activeActor = actor;
-      try { if (!tab.page) { tab.sessionId = actor.sessionId ?? tab.sessionId; tab.controllerEpoch++; invalidate(tab); await attach(tab, await runtime.context.newPage()); if (tab.url !== 'about:blank') { markHumanOrigin(new URL(tab.url).origin); await guard.resolve(tab.url); await tab.page.goto(tab.url, { waitUntil: 'domcontentloaded' }); } } }
+      try { if (!tab.page) { tab.sessionId = actor.sessionId ?? tab.sessionId; tab.controllerEpoch++; invalidate(tab); await attach(tab, await newPage(tab)); if (tab.url !== 'about:blank') { await guard.resolve(tab.url); await tab.page.goto(tab.url, { waitUntil: 'domcontentloaded' }); } } }
       finally { tab.activeActor = null; }
       tab.status = 'ready'; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' };
       await selectedAdapter()?.control?.({ targetId: tab.nativeTargetId, human: true });
-      markHumanDocument(tab); await observeHumanSessions(); publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo(), recovery: 'Page reloaded. Previous uncertain actions were not replayed.' };
+      publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo(), recovery: 'Page reloaded. Previous uncertain actions were not replayed.' };
     }
     if (action === 'control') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the user can transfer browser control.');
@@ -1269,14 +1189,7 @@ export function createOwnedBrowserService(options = {}) {
       epochs(tab, args);
       // 조작권은 사용자만 옮긴다. 가져가면 held로 에이전트의 페이지 변경을 막고, 돌려주면 탭 범위의 기본 소유로 돌아간다.
       const held = args.owner === undefined ? tab.controller.held === true : args.owner === 'human';
-      if (!held && tab.controller.owner === 'human') {
-        markHumanDocument(tab); await observeHumanSessions();
-        // Returning an unchanged, already-approved session must not arm another approval reset.
-        for (const account of (await credentialBroker?.listAccounts?.())?.accounts ?? []) acknowledgeAccountOrigins(account);
-        await persist();
-      }
       tab.controllerEpoch++; tab.controller = held ? { owner: 'human', held: true } : { owner: tab.scope === 'global' ? 'human' : 'agent' };
-      if (held) markHumanDocument(tab);
       credentialBroker?.invalidateTab?.(tab.tabId);
       // Invalidate queued agent input immediately, then drain before confirming the transfer.
       await dismissPendingDialog(tab);
@@ -1325,9 +1238,6 @@ export function createOwnedBrowserService(options = {}) {
         if ((writesText || submits) && !search) await assertPolicy(actor, action, requirePage(tab).url(), tab, { intent: 'website-change' });
       }
       tab.activeActor = actor;
-      const agentSessionEpoch = humanSessionEpoch;
-      if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }
-      if (actor.isHuman && mutating && action !== 'close') markHumanDocument(tab);
       try {
         if (action === 'navigate' && args.url && googleResearchURL(args.url)) tab.searchQuery = new URL(args.url).searchParams.get('q') || tab.searchQuery;
         const adapter = selectedAdapter();
@@ -1344,8 +1254,6 @@ export function createOwnedBrowserService(options = {}) {
           if (activity) await adapter.activity({ ...activity, active: false }).catch(() => {});
           if (action !== 'close') previewActivity(actor, tab, false);
         }
-        if (actor.isHuman) { if (mutating && action !== 'close') markHumanDocument(tab); await observeHumanSessions(); }
-        else if (action !== 'close') { await recordAgentSessions(requirePage(tab).url(), agentSessionEpoch); await observeHumanSessions(); }
         if (mutating && action !== 'close' && queuedControlEpoch !== tab.controllerEpoch) throw error('BROWSER_ACTION_UNCERTAIN', 'Control changed during the action. Observe the current page before deciding what to do next.', true);
         if (action !== 'close') await assertPolicy(actor, action, requirePage(tab).url(), tab, args);
         if (value.capture) { const eventCapture = { ...value.capture }; delete eventCapture.screenshot; emit('owned_browser_capture', { capture: eventCapture }); }
@@ -1354,7 +1262,7 @@ export function createOwnedBrowserService(options = {}) {
       } catch (failure) {
         if (failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_')) throw failure;
         throw error(failure.name === 'TimeoutError' ? 'BROWSER_ACTION_TIMEOUT' : 'BROWSER_ACTION_FAILED', 'The browser action did not complete. Observe the current page before retrying.', true);
-      } finally { tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
+      } finally { tab.activeActor = null; }
     });
     if (waitDeadline === undefined) return queued;
     return Promise.race([queued, new Promise((_, reject) => {
@@ -1364,8 +1272,19 @@ export function createOwnedBrowserService(options = {}) {
   const request = performRequest;
   return {
     request, inventory, sweepSleepingTabs, profileId,
-    approveAccount: (args) => withAccountApproval(args.actor, () => credentialBroker.approveAccount(args)),
-    submitAccount: (args) => withAccountApproval(args.actor, () => credentialBroker.submit(args)),
+    approveAccount: (args) => { validateActor(args.actor); return credentialBroker.approveAccount(args); },
+    submitAccount: (args) => { validateActor(args.actor); return credentialBroker.submit(args); },
+    // 사용자 프로필의 로그인을 사이트 단위로 에이전트 프로필에 복사한다. 민감한 사이트는 복사하지 않는다.
+    canShareSession: (origins = []) => origins.length > 0 && !origins.some(sensitiveSite) && canCopyToAgent(),
+    async shareSession(actor, origins) {
+      validateActor(actor);
+      if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the user can share a website login.');
+      if (!origins.length || origins.some(sensitiveSite)) throw error('BROWSER_SITE_SENSITIVE', 'Sign in to this site yourself in the agent tab.');
+      if (!canCopyToAgent()) throw error('BROWSER_SHARE_UNAVAILABLE', 'This browser cannot keep a separate agent profile.');
+      const result = await copySessionToAgent(origins);
+      for (const tab of tabs.values()) if (tab.profile === 'agent') { invalidate(tab); publish(tab); }
+      return result;
+    },
     configureSleep({ idleMinutes = 15 } = {}) {
       if (!Number.isInteger(idleMinutes) || idleMinutes < 0 || idleMinutes > 1440) throw error('BROWSER_CONFIGURATION_INVALID', 'Choose an idle timeout between 0 and 1440 minutes.');
       idleSleepMs = idleMinutes * 60_000;
@@ -1386,10 +1305,9 @@ export function createOwnedBrowserService(options = {}) {
       try { const config = JSON.parse(await fs.readFile(path.join(dataDir, 'browser', 'runtime.json'), 'utf8')); if (config.version === 1 && ['managed', 'native'].includes(config.mode) && (config.mode !== 'native' || nativeAdapter)) { runtimeMode = config.mode; headless = config.headless !== false; } } catch {}
       let stored; try { stored = JSON.parse(await fs.readFile(descriptorFile, 'utf8')); } catch { return; }
       if (stored?.version !== 1 || !Array.isArray(stored.tabs)) return;
-      for (const origin of Array.isArray(stored.humanStorageOrigins) ? stored.humanStorageOrigins.slice(0, 2048) : []) { try { const url = new URL(origin); if (['https:', 'http:'].includes(url.protocol) && url.origin === origin) { unconfirmedHumanOrigins.add(origin); humanOrigins.add(origin); } } catch {} }
       for (const record of stored.tabs.slice(0, limits.maxTabs)) {
         if (typeof record.tabId !== 'string' || record.scope !== 'global' && (!record.threadId || !record.agentId)) continue;
-        const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), openerTabId: typeof record.openerTabId === 'string' ? text(record.openerTabId, 160) : undefined, searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, restorePending: true, sleeping: record.status === 'sleeping', status: record.status === 'sleeping' ? 'sleeping' : 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
+        const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), openerTabId: typeof record.openerTabId === 'string' ? text(record.openerTabId, 160) : undefined, searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, profile: record.profile === 'user' || record.profile === 'agent' ? record.profile : record.scope === 'global' ? 'user' : 'agent', restorePending: true, sleeping: record.status === 'sleeping', status: record.status === 'sleeping' ? 'sleeping' : 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
       }
     },
     async close() { if (closed) return; closed = true; clearInterval(sleepTimer); unsubscribeNativeEvents?.(); if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) { await releaseInput(tab); } await persist().catch(() => {}); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); state = 'closed'; },

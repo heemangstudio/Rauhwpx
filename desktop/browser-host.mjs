@@ -10,6 +10,13 @@ const POPOUT_PRELOAD = fileURLToPath(new URL('./browser-popout-preload.cjs', imp
 const POPOUT_URL = new URL('./browser-popout.html', import.meta.url).href;
 const MAX_NATIVE_TABS = 64;
 const ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,159}$/;
+// 에이전트 탭은 사용자 로그인과 분리된 자체 쿠키 저장소를 쓴다.
+const PROFILE_DIRECTORIES = { user: 'native-profile', agent: 'agent-profile' };
+
+function cookieMatchesHosts(cookie, hosts) {
+  const domain = String(cookie.domain ?? '').replace(/^\./, '').toLowerCase();
+  return !!domain && hosts.some((host) => host === domain || domain.includes('.') && host.endsWith(`.${domain}`));
+}
 
 export function browserNavigationUrl(value) {
   if (value === 'about:blank') return value;
@@ -60,6 +67,7 @@ export class OwnedBrowserHost {
     this.lastOwner = null;
     this.proxy = null;
     this.session = null;
+    this.agentSession = null;
     this.startPromise = null;
     this.releasePromise = null;
     this.resetPromise = null;
@@ -87,26 +95,9 @@ export class OwnedBrowserHost {
     }
     await privateDirectory(this.dataDir);
     const canonicalProfile = await privateDirectory(expected);
-    if (!this.session) {
-      this.session = this.electronSession.fromPath(canonicalProfile);
-      this.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-      this.session.setPermissionCheckHandler(() => false);
-      this.webAuthn?.attachSession(this.session);
-      await this.adblock?.attach(this.session);
-      this.session.webRequest.onBeforeRequest((details, callback) => {
-        try {
-          const protocol = new URL(details.url).protocol;
-          const protectedSession = [...this.tabs.values()].some((tab) => tab.passwordShield);
-          // WSS stays TLS-encrypted through the guarded pinned CONNECT tunnel;
-          // native guests never install Playwright's plaintext WebSocket route.
-          const cancel = !this.proxy || !['http:', 'https:', 'ws:', 'wss:', 'blob:'].includes(protocol) || protectedSession && protocol === 'ws:';
-          if (cancel) callback({ cancel: true });
-          else if (this.adblock) this.adblock.beforeRequest(details, callback);
-          else callback({ cancel: false });
-        } catch { callback({ cancel: true }); }
-      });
-      this.session.on('will-download', (event, item, contents) => this.willDownload(event, item, contents));
-    }
+    const agentProfile = await privateDirectory(join(this.dataDir, 'browser', PROFILE_DIRECTORIES.agent));
+    if (!this.session) this.session = await this.configureSession(this.electronSession.fromPath(canonicalProfile));
+    if (!this.agentSession) this.agentSession = await this.configureSession(this.electronSession.fromPath(agentProfile));
     if (this.owner && this.owner !== owner) {
       await Promise.all([...this.tabs.values()].map((tab) => this.clearActivity(tab)));
       await this.cdp.close();
@@ -114,8 +105,10 @@ export class OwnedBrowserHost {
     this.owner = owner;
     this.lastOwner = owner;
     this.proxy = { ...proxy, host: proxyUrl.hostname, port: Number(proxyUrl.port) };
-    await this.session.setProxy({ proxyRules: proxy.server, proxyBypassRules: '<-loopback>' });
-    await this.session.closeAllConnections();
+    for (const session of this.sessions()) {
+      await session.setProxy({ proxyRules: proxy.server, proxyBypassRules: '<-loopback>' });
+      await session.closeAllConnections();
+    }
     for (const tab of this.tabs.values()) {
       if (!tab.closing && !this.cdp.tabs.has(tab.targetId) && tab.view.webContents && !tab.view.webContents.isDestroyed()) {
         await this.cdp.add(tab);
@@ -132,30 +125,56 @@ export class OwnedBrowserHost {
     return { endpointURL, native: true, generation: this.generation, signInSupport: 'full-browser-required', authentication: { passkeys: this.webAuthn?.metadata() } };
   }
 
-  async createTab({ url = 'about:blank', parent = null, disposition = null } = {}) {
+  async createTab({ url = 'about:blank', parent = null, disposition = null, profile = 'user' } = {}) {
     const destination = browserNavigationUrl(url);
-    const tab = this.createNativeTab({ parent, disposition });
+    const tab = this.createNativeTab({ parent, disposition, profile });
     await this.initializeTab(tab, { loadBlank: true });
     if (destination !== 'about:blank') void tab.view.webContents.loadURL(destination).catch(() => {});
     return tab;
   }
 
-  guestPreferences() {
-    return { session: this.session, preload: GUEST_PRELOAD, sandbox: true,
+  async configureSession(session) {
+    session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    session.setPermissionCheckHandler(() => false);
+    this.webAuthn?.attachSession(session);
+    await this.adblock?.attach(session);
+    session.webRequest.onBeforeRequest((details, callback) => {
+      try {
+        const protocol = new URL(details.url).protocol;
+        const protectedSession = [...this.tabs.values()].some((tab) => tab.passwordShield);
+        // WSS stays TLS-encrypted through the guarded pinned CONNECT tunnel;
+        // native guests never install Playwright's plaintext WebSocket route.
+        const cancel = !this.proxy || !['http:', 'https:', 'ws:', 'wss:', 'blob:'].includes(protocol) || protectedSession && protocol === 'ws:';
+        if (cancel) callback({ cancel: true });
+        else if (this.adblock) this.adblock.beforeRequest(details, callback);
+        else callback({ cancel: false });
+      } catch { callback({ cancel: true }); }
+    });
+    session.on('will-download', (event, item, contents) => this.willDownload(event, item, contents));
+    return session;
+  }
+
+  sessions() { return [this.session, this.agentSession].filter(Boolean); }
+  sessionFor(profile) { return profile === 'agent' ? this.agentSession : this.session; }
+
+  guestPreferences(profile = 'user') {
+    return { session: this.sessionFor(profile), preload: GUEST_PRELOAD, sandbox: true,
       contextIsolation: true, nodeIntegration: false, webSecurity: true,
       webviewTag: false, allowRunningInsecureContent: false, devTools: false };
   }
 
-  createNativeTab({ parent = null, disposition = null, options = {} } = {}) {
+  createNativeTab({ parent = null, disposition = null, options = {}, profile = 'user' } = {}) {
     if (!this.owner || !this.proxy) throw new Error('Native browser runtime is disconnected');
     if (this.tabs.size + this.pendingTabs.size >= MAX_NATIVE_TABS) throw new Error('Native browser tab limit reached');
+    // 팝업은 opener와 같은 저장소에 있어야 OAuth 창과 window.opener가 동작한다.
+    const tabProfile = parent?.profile ?? (profile === 'agent' ? 'agent' : 'user');
     const view = new this.WebContentsView({ ...(options.webContents ? { webContents: options.webContents } : {}),
-      webPreferences: { ...options.webPreferences, ...this.guestPreferences() } });
+      webPreferences: { ...options.webPreferences, ...this.guestPreferences(tabProfile) } });
     view.setBounds({ x: 0, y: 0, width: 1280, height: 800 });
     view.setVisible(false);
     const contents = view.webContents;
     contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
-    const tab = { view, targetId: null, tabId: null, sessionId: parent?.sessionId ?? null, chatId: parent?.chatId ?? null, windowId: parent?.windowId ?? null,
+    const tab = { view, profile: tabProfile, targetId: null, tabId: null, sessionId: parent?.sessionId ?? null, chatId: parent?.chatId ?? null, windowId: parent?.windowId ?? null,
       lastHiddenAt: Date.now(), placement: null, human: false, interactive: false, navigationEpoch: 0,
       frameId: null, lastError: null, crashed: false, openerTab: parent, openerTargetId: parent?.targetId, disposition };
     // 실제 opener를 읽을 수 있는 자식도 부모와 같은 비밀 보호 범위를 갖는다.
@@ -168,7 +187,7 @@ export class OwnedBrowserHost {
       try {
         const destination = browserNavigationUrl(details.url);
         if (!tab.tabId || tab.closing || !this.owner || !this.proxy || this.tabs.size + this.pendingTabs.size >= MAX_NATIVE_TABS) return { action: 'deny' };
-        return { action: 'allow', overrideBrowserWindowOptions: { webPreferences: this.guestPreferences() },
+        return { action: 'allow', overrideBrowserWindowOptions: { webPreferences: this.guestPreferences(tab.profile) },
           createWindow: (options) => {
             // Chromium's guest carries the actual WindowProxy, opener and POST navigation.
             // Adopting it preserves OAuth messaging without exposing a new BrowserWindow.
@@ -364,7 +383,7 @@ export class OwnedBrowserHost {
   state(tab) {
     const contents = tab.view.webContents;
     const alive = contents && !contents.isDestroyed();
-    const state = { tabId: tab.tabId, nativeTargetId: tab.targetId, native: true,
+    const state = { tabId: tab.tabId, nativeTargetId: tab.targetId, native: true, profile: tab.profile,
       generation: this.generation, navigationEpoch: tab.navigationEpoch, disposition: tab.disposition, passwordProtected: !!tab.passwordShield,
       url: alive ? contents.getURL() : '', title: alive ? contents.getTitle() : '',
       loading: !!alive && contents.isLoading(),
@@ -796,12 +815,12 @@ export class OwnedBrowserHost {
   }
 
   cancelDownload(guid) { this.downloads.get(guid)?.cancel(); return {}; }
-  async getCookies() {
-    const cookies = await this.session.cookies.get({});
+  async getCookies(session = this.session) {
+    const cookies = await session.cookies.get({});
     return cookies.map((cookie) => ({ ...cookie, expires: cookie.session ? -1 : cookie.expirationDate,
       sameSite: { unspecified: 'Lax', no_restriction: 'None', lax: 'Lax', strict: 'Strict' }[cookie.sameSite] ?? 'Lax' }));
   }
-  async setCookies(cookies) {
+  async setCookies(cookies, session = this.session) {
     for (const cookie of cookies) {
       const url = cookie.url ?? `${cookie.secure ? 'https' : 'http'}://${String(cookie.domain).replace(/^\./, '')}${cookie.path || '/'}`;
       const details = { ...cookie, url,
@@ -810,31 +829,46 @@ export class OwnedBrowserHost {
       // Chromium 체크포인트의 점 없는 domain은 host-only다. domain을 넘기면
       // Electron이 도메인 쿠키로 바꾸어 유효한 __Host- 인증 쿠키도 거부한다.
       if (cookie.hostOnly === true || cookie.domain && !cookie.domain.startsWith('.')) delete details.domain;
-      await this.session.cookies.set(details);
+      await session.cookies.set(details);
     }
-    await this.session.cookies.flushStore();
+    await session.cookies.flushStore();
     return {};
   }
   async clearCookies() { await this.session.clearStorageData({ storages: ['cookies'] }); return {}; }
 
-  async importSession({ origins, state, clear = false, reload = false }) {
-    if (!Array.isArray(origins) || !origins.length || origins.length > 32 || !state || !Array.isArray(state.cookies) || !Array.isArray(state.origins) || state.cookies.length > 2048) throw new Error('Native session import is invalid');
-    const approved = new Set(origins.map((value) => {
+  approvedOrigins(origins, action) {
+    if (!Array.isArray(origins) || !origins.length || origins.length > 32) throw new Error(`Native session ${action} requires approved exact HTTPS origins`);
+    return [...new Set(origins.map((value) => {
       const url = new URL(value);
-      if (url.protocol !== 'https:' || url.username || url.password || url.origin !== value) throw new Error('Native session import requires approved exact HTTPS origins');
+      if (url.protocol !== 'https:' || url.username || url.password || url.origin !== value) throw new Error(`Native session ${action} requires approved exact HTTPS origins`);
       return value;
-    }));
-    if (clear) return this.clearSession({ origins: [...approved] });
+    }))];
+  }
+
+  // 사용자가 승인한 사이트의 로그인 쿠키만 사용자 저장소에서 에이전트 저장소로 복사한다.
+  async shareSession({ origins }) {
+    if (!this.session || !this.agentSession) throw new Error('Native browser runtime is disconnected');
+    const hosts = this.approvedOrigins(origins, 'sharing').map((origin) => new URL(origin).hostname);
+    const shared = (await this.getCookies(this.session)).filter((cookie) => cookieMatchesHosts(cookie, hosts));
+    for (const cookie of (await this.getCookies(this.agentSession)).filter((entry) => cookieMatchesHosts(entry, hosts))) {
+      await this.agentSession.cookies.remove(`${cookie.secure ? 'https' : 'http'}://${cookie.domain.replace(/^\./, '')}${cookie.path || '/'}`, cookie.name);
+    }
+    await this.setCookies(shared, this.agentSession);
+    return { shared: true, cookies: shared.length };
+  }
+
+  async importSession({ origins, state, clear = false, reload = false, profile = 'user' }) {
+    if (clear) return this.clearSession({ origins, profile });
+    if (!Array.isArray(origins) || !state || !Array.isArray(state.cookies) || !Array.isArray(state.origins) || state.cookies.length > 2048) throw new Error('Native session import is invalid');
+    const approved = new Set(this.approvedOrigins(origins, 'import'));
+    const session = this.sessionFor(profile);
     const hosts = [...approved].map((origin) => new URL(origin).hostname);
-    const matches = (cookie) => {
-      const domain = String(cookie.domain ?? '').replace(/^\./, '').toLowerCase();
-      return !!domain && hosts.some((host) => host === domain || domain.includes('.') && host.endsWith(`.${domain}`));
-    };
+    const matches = (cookie) => cookieMatchesHosts(cookie, hosts);
     if (state.cookies.some((cookie) => !matches(cookie) || typeof cookie.name !== 'string' || typeof cookie.value !== 'string')) throw new Error('Native session cookies exceed the approved account origins');
     const storage = state.origins.map((entry) => {
       if (!approved.has(entry.origin) || !Array.isArray(entry.localStorage) || entry.localStorage.length > 2048 || entry.localStorage.some((item) => typeof item.name !== 'string' || typeof item.value !== 'string')) throw new Error('Native session storage exceeds the approved account origins');
       if (entry.indexedDB?.length) throw Object.assign(new Error('This sign-in session requires IndexedDB storage that native handoff cannot import.'), { code: 'BROWSER_NATIVE_SESSION_STORAGE_UNSUPPORTED' });
-      const tab = [...this.tabs.values()].find((candidate) => !candidate.closing && !candidate.view.webContents.isDestroyed() && new URL(candidate.view.webContents.getURL()).origin === entry.origin);
+      const tab = [...this.tabs.values()].find((candidate) => candidate.profile === profile && !candidate.closing && !candidate.view.webContents.isDestroyed() && new URL(candidate.view.webContents.getURL()).origin === entry.origin);
       if (!tab && entry.localStorage.length) throw Object.assign(new Error('Open the approved account website in a native tab before importing this session.'), { code: 'BROWSER_NATIVE_SESSION_STORAGE_UNSUPPORTED' });
       return { entry, tab };
     });
@@ -854,17 +888,17 @@ export class OwnedBrowserHost {
       if (previous === false) throw new Error('The native sign-in page changed before session import');
       previousStorage.push({ tab, origin: entry.origin, previous });
     }
-    const previousCookies = (await this.getCookies()).filter(matches);
+    const previousCookies = (await this.getCookies(session)).filter(matches);
     const removeScopedCookies = async () => {
-      for (const cookie of (await this.getCookies()).filter(matches)) await this.session.cookies.remove(`${cookie.secure ? 'https' : 'http'}://${cookie.domain.replace(/^\./, '')}${cookie.path || '/'}`, cookie.name);
+      for (const cookie of (await this.getCookies(session)).filter(matches)) await session.cookies.remove(`${cookie.secure ? 'https' : 'http'}://${cookie.domain.replace(/^\./, '')}${cookie.path || '/'}`, cookie.name);
     };
     try {
-      await removeScopedCookies(); await this.setCookies(state.cookies);
+      await removeScopedCookies(); await this.setCookies(state.cookies, session);
       for (const { entry, tab } of storage) if (tab && await applyStorage(tab, entry.origin, entry.localStorage) === false) throw new Error('The native sign-in page changed during session import');
       let reloaded = 0;
       if (reload) for (const tab of this.tabs.values()) {
         const contents = tab.view.webContents;
-        if (tab.closing || contents.isDestroyed()) continue;
+        if (tab.profile !== profile || tab.closing || contents.isDestroyed()) continue;
         let origin; try { origin = new URL(contents.getURL()).origin; } catch { continue; }
         if (!approved.has(origin)) continue;
         await new Promise((resolve, reject) => {
@@ -880,17 +914,17 @@ export class OwnedBrowserHost {
       }
       return { imported: true, cookies: state.cookies.length, origins: storage.filter((item) => item.tab).length, reloaded };
     } catch {
-      await removeScopedCookies(); await this.setCookies(previousCookies);
+      await removeScopedCookies(); await this.setCookies(previousCookies, session);
       for (const { tab, origin, previous } of previousStorage) if (!tab.view.webContents.isDestroyed()) await applyStorage(tab, origin, previous).catch(() => {});
       throw new Error('The native account session could not be imported. The prior session was restored.');
     }
   }
 
-  async clearSession({ origins }) {
-    if (!Array.isArray(origins) || !origins.length || origins.length > 32) throw new Error('Native session clearing requires approved exact HTTPS origins');
-    const normalized = origins.map((origin) => { const url = new URL(origin); if (url.protocol !== 'https:' || url.origin !== origin || url.username || url.password) throw new Error('Native session clearing requires approved exact HTTPS origins'); return url.origin; });
+  async clearSession({ origins, profile = 'user' }) {
+    const normalized = this.approvedOrigins(origins, 'clearing');
+    const session = this.sessionFor(profile);
     for (const tab of this.tabs.values()) { tab.passwordSnapshot = null; tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1; }
-    await this.session.clearData({ origins: normalized, dataTypes: ['cookies', 'localStorage', 'indexedDB', 'serviceWorkers', 'cache'] });
+    await session.clearData({ origins: normalized, dataTypes: ['cookies', 'localStorage', 'indexedDB', 'serviceWorkers', 'cache'] });
     return { clearedOrigins: normalized, clearedDomains: normalized.map((origin) => new URL(origin).hostname) };
   }
 
@@ -914,7 +948,7 @@ export class OwnedBrowserHost {
       await Promise.all([...this.tabs.values()].map((tab) => this.clearActivity(tab)));
       await this.cdp.close();
       this.onAutomationDisconnected();
-      await this.session?.closeAllConnections();
+      for (const session of this.sessions()) await session.closeAllConnections();
       return true;
     })();
     try { return await this.releasePromise; } finally { this.releasePromise = null; }
@@ -950,14 +984,14 @@ export class OwnedBrowserHost {
       await this.passwords?.vault.clear();
       // Electron caches sessions by path. Clear both memory and disk before the
       // hub removes this profile, so a later session cannot revive old login data.
-      if (this.session) {
-        await this.session.closeAllConnections();
-        await this.session.clearData();
-        await this.session.clearAuthCache();
-        await this.session.clearHostResolverCache();
-        this.session.flushStorageData();
-        await this.session.cookies.flushStore();
-        await this.session.closeAllConnections();
+      for (const session of this.sessions()) {
+        await session.closeAllConnections();
+        await session.clearData();
+        await session.clearAuthCache();
+        await session.clearHostResolverCache();
+        session.flushStorageData();
+        await session.cookies.flushStore();
+        await session.closeAllConnections();
       }
       this.downloadPath = null;
       this.downloadBehavior = 'deny';
@@ -998,6 +1032,7 @@ export class OwnedBrowserHost {
         }
         else if (message.operation === 'password-storage-state') response.value = this.passwords ? await this.passwords.storageState() : null;
         else if (message.operation === 'import-session') response.value = await this.importSession(params);
+        else if (message.operation === 'share-session') response.value = await this.shareSession(params);
         else if (message.operation === 'password-clear-session') response.value = await this.clearSession(params);
         else throw new Error('Unsupported native browser operation');
       }
@@ -1012,7 +1047,7 @@ export class OwnedBrowserHost {
     this.webAuthn?.dispose();
     this.adblock?.dispose();
     await this.cdp.close();
-    if (this.session) { this.session.flushStorageData(); await this.session.cookies.flushStore(); }
+    for (const session of this.sessions()) { session.flushStorageData(); await session.cookies.flushStore(); }
     for (const tab of new Set([...this.tabs.values(), ...this.pendingTabs])) this.closeGuest(tab);
     if (this.parkingWindow && !this.parkingWindow.isDestroyed()) this.parkingWindow.destroy();
     this.parkingWindow = null;

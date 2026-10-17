@@ -5,6 +5,8 @@ import { createRequire } from 'node:module';
 const require = createRequire(new URL('../rhwp/rhwp-agent/package.json', import.meta.url));
 const { WebSocketServer, WebSocket } = require('ws');
 const MAX_CDP_MESSAGE_BYTES = 8 * 1024 * 1024;
+// 허브가 에이전트 전용 저장소의 탭을 만들 때 쓰는 컨텍스트 ID. rhwp-agent의 같은 상수와 맞춘다.
+export const AGENT_BROWSER_CONTEXT = 'rhwp-agent-profile';
 const PASSWORD_SAFE_COMMANDS = new Set([
   'Log.enable', 'Log.disable',
   'Runtime.enable', 'Runtime.disable', 'Runtime.runIfWaitingForDebugger', 'Runtime.releaseObject', 'Runtime.releaseObjectGroup',
@@ -242,6 +244,7 @@ export class PrivateBrowserCdp {
         return {};
       }
       if (attached?.nativeSessionId) return attached.tab.view.webContents.debugger.sendCommand(method, params);
+      if (attached?.browser) this.sessions.delete(params.sessionId);
       return {};
     }
     if (browserCommand) {
@@ -263,8 +266,9 @@ export class PrivateBrowserCdp {
           return { sessionId: id };
         }
         case 'Target.createTarget': {
-          if (params.browserContextId) throw new Error('Native browser uses its owned shared profile');
-          const tab = await this.host.createTab({ url: params.url ?? 'about:blank' });
+          // 허브는 에이전트 탭을 별도 저장소로 요청한다. Playwright에는 모든 탭이 같은 컨텍스트로 보인다.
+          if (params.browserContextId && params.browserContextId !== AGENT_BROWSER_CONTEXT) throw new Error('Native browser profile is unavailable');
+          const tab = await this.host.createTab({ url: params.url ?? 'about:blank', profile: params.browserContextId === AGENT_BROWSER_CONTEXT ? 'agent' : 'user' });
           if (this.autoAttach) this.attach(tab);
           return { targetId: tab.targetId };
         }

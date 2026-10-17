@@ -17,6 +17,7 @@ export class BrowserAdblock {
     this.host = host; this.ipcMain = ipcMain; this.fetcher = fetcher;
     this.directory = join(host.dataDir, 'adblock');
     this.settings = { enabled: true, pausedSites: [] };
+    this.sessions = new Map();
     host.adblock = this;
     ipcMain.handle(INJECT, (event, url, message) => this.inject(event, url, message));
     ipcMain.handle(OBSERVE, event => !!this.guest(event) && this.active(event.sender.getURL()));
@@ -50,9 +51,8 @@ export class BrowserAdblock {
 
   async attach(session) {
     await this.load();
-    if (this.session === session) return;
-    this.session = session;
-    this.preloadId = session.registerPreloadScript({ type: 'frame', filePath: require.resolve('@ghostery/adblocker-electron-preload') });
+    if (this.sessions.has(session)) return;
+    this.sessions.set(session, session.registerPreloadScript({ type: 'frame', filePath: require.resolve('@ghostery/adblocker-electron-preload') }));
     session.webRequest.onHeadersReceived((details, callback) => {
       try {
         if (this.shouldFilter(details)) this.engine.onHeadersReceived(details, callback);
@@ -72,7 +72,7 @@ export class BrowserAdblock {
     this.engine.onBeforeRequest(details, callback);
   }
   guest(event) {
-    if (event.sender?.isDestroyed() || event.sender?.session !== this.session || event.senderFrame !== event.sender.mainFrame) return null;
+    if (event.sender?.isDestroyed() || !this.sessions.has(event.sender?.session) || event.senderFrame !== event.sender.mainFrame) return null;
     return [...this.host.tabs.values(), ...this.host.pendingTabs].find(tab => !tab.closing && tab.view.webContents === event.sender);
   }
   async inject(event, url, message) {
@@ -128,7 +128,8 @@ export class BrowserAdblock {
   }
   dispose() {
     this.ipcMain.removeHandler(INJECT); this.ipcMain.removeHandler(OBSERVE);
-    if (this.preloadId) { this.session.unregisterPreloadScript(this.preloadId); this.preloadId = null; }
+    for (const [session, preloadId] of this.sessions) session.unregisterPreloadScript(preloadId);
+    this.sessions.clear();
   }
 }
 

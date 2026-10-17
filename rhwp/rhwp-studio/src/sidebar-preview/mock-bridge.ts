@@ -1033,6 +1033,24 @@ export function createMockBridge(
         stream({ type: 'turn-start', agent, turnId: `turn-${turnGeneration}` });
         if (reply === 'permission') {
           const selected = projectParams.get('permissionCapability');
+          // `permissionCapability=browser-login` — 에이전트 탭이 로그인 벽에 닿았을 때의 로그인 요청 카드.
+          if (selected === 'browser-login') {
+            void previewBrowser.requestAsAgent('open', { url: 'https://login.coupang.com/login' }).then((opened) => {
+              const tab = (opened as { tab: T.BrowserTab }).tab;
+              permissionRequest = { requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId,
+                turnId: `turn-${turnGeneration}`, agent, capability: 'browser', kind: 'browser-use-account',
+                origin: 'https://login.coupang.com', origins: ['https://login.coupang.com'], accountLabel: '쿠팡', tabId: tab.tabId, canShare: true,
+                reason: '주문 내역을 확인하려면 쿠팡 로그인이 필요합니다.', createdAt: new Date().toISOString() };
+              stream({ type: 'tool-call', agent, callId: `permission-${turnGeneration}`, tool: 'mcp__rhwp__browser_request_account',
+                argsJson: JSON.stringify({ tabId: tab.tabId, origin: permissionRequest.origin, label: '쿠팡', reason: permissionRequest.reason }) });
+              stream({ type: 'tool-result', agent, callId: `permission-${turnGeneration}`, ok: true,
+                resultPreview: JSON.stringify({ pending: true, requestId: permissionRequest.requestId, origin: permissionRequest.origin }) });
+              stream({ type: 'text-delta', agent, text: '쿠팡 로그인이 필요해 요청했습니다.' });
+              emit({ type: 'chat-permission-requested', request: permissionRequest });
+              if (!holdReply) later(() => finish(), 100);
+            });
+            return;
+          }
           if (selected !== null && !isChatPermissionCapability(selected)) {
             stream({ type: 'tool-call', agent, callId: `permission-${turnGeneration}`, tool: 'mcp__rhwp__request_permission',
               argsJson: JSON.stringify({ capability: selected, reason: '요청한 작업을 진행합니다.' }) });
