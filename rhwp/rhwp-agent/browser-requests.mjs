@@ -98,7 +98,8 @@ export function createBrowserRequests({ policy, broker, ownedBrowser, userSecret
       return { pending: true, requestId: request.requestId, origin, kind, site };
     }
     const blockedHere = await policy.blockedActionsFor(origin);
-    const wanted = new Set([...SITE_ACCESS_ACTIONS, ...(Array.isArray(args.blocked) ? args.blocked : [])]);
+    // 사이트 사용에 필요한 차단, 에이전트가 넘긴 차단, 이 채팅이 최근에 부딪힌 차단만 카드에 올린다.
+    const wanted = new Set([...SITE_ACCESS_ACTIONS, ...(Array.isArray(args.blocked) ? args.blocked : []), ...(policy.recentBlockedActions?.(actor, origin) ?? [])]);
     const blocked = blockedHere.filter((action) => wanted.has(action));
     const offLogin = args.accountId ? items.logins.find((login) => login.id === args.accountId && login.agentBlocked) : null;
     const item = offLogin ? { accountId: offLogin.id } : null;

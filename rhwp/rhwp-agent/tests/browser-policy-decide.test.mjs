@@ -80,6 +80,8 @@ test('downloads and imports stay open on readable pages unless blocked', async (
   for (const action of ['download', 'research-import']) assert.equal((await decide(policy, { actor: agent, action, url: `${SHOP}/invoice.pdf` })).allowed, true);
   await policy.update({ actor: owner, operation: 'set-site', origin: SHOP, blockedActions: ['download'] });
   assert.deepEqual((await decide(policy, { actor: agent, action: 'download', url: `${SHOP}/invoice.pdf` })).blocked, ['download']);
+  assert.deepEqual(policy.recentBlockedActions(agent, 'https://login.example.com'), ['download'], 'the card can lift a block the agent hit even if its request omits it');
+  assert.deepEqual(policy.recentBlockedActions(other, SHOP), []);
 });
 
 test('a login or secret the owner turned off is blocked even with site access', async (t) => {

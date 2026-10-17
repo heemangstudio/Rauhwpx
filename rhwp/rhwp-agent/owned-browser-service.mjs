@@ -1675,6 +1675,8 @@ export function createOwnedBrowserService(options = {}) {
       epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
       if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Browser cleanup invalidated the pending action.');
+      // 비밀번호 칸과 일회용 코드 칸은 사이트 사용보다 먼저 알린다. 둘 다 권한이 아니라 입력 경로의 문제다.
+      if (!actor.isHuman && action === 'type') await assertTypingTarget(tab, args);
       // 지금 페이지를 쓰는 조작은 그 페이지를 읽을 수 있어야 한다. 닫기와 탐색(목적지를 따로 판정한다)은 묻지 않는다.
       if (!['close', 'navigate'].includes(action)) await assertPolicy(actor, action, requirePage(tab).url(), tab, { ...args, policyAction: args.intent === 'website-change' ? 'website-change' : 'read' });
       if (!actor.isHuman && challengeFor(tab) && (mutating && action !== 'close' && !(action === 'navigate' && args.url && !googleResearchURL(args.url)))) return challengeResult(action, tab);
@@ -1684,8 +1686,6 @@ export function createOwnedBrowserService(options = {}) {
       epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
       if (!actor.isHuman && SETTLING.has(action)) {
-        // 비밀번호 칸과 일회용 코드 칸은 사이트 사용보다 먼저 알린다. 둘 다 권한이 아니라 입력 경로의 문제다.
-        if (action === 'type') await assertTypingTarget(tab, args);
         if (await raisesChange(tab, action, args)) await assertPolicy(actor, action, requirePage(tab).url(), tab, { intent: 'website-change' });
       }
       // 관찰만 하는 읽기는 동시에 진행되는 사용자 입력의 네트워크 귀속을 바꾸지 않는다.

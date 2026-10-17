@@ -216,6 +216,9 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
   const cookieSites = new Map();
   /** profileId → 저장된 로그인이 있는 사이트 키(메모리). 활성 런타임의 저장소만 본다. */
   const savedLoginSites = new Map();
+  /** threadId\n사이트 키 → { actions, at }. 이 채팅이 최근에 부딪힌 차단. 카드가 에이전트가 빠뜨린 차단도 풀 수 있게 한다. */
+  const recentBlocks = new Map();
+  const RECENT_BLOCK_MS = 10 * 60 * 1000;
 
   const readyPromise = (async () => {
     const stored = await readBrowserJson(filePath, POLICY_BYTES);
@@ -343,6 +346,12 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
     const base = { origin, key: scope.key, site, revision: state.revision };
     const blocked = blocksFor(origin, action).length ? [action] : [];
     if (blocked.length || item?.blocked === true) {
+      if (blocked.length && actor?.threadId) {
+        const recentKey = `${actor.threadId}\n${scope.key}`;
+        const previous = recentBlocks.get(recentKey);
+        recentBlocks.set(recentKey, { actions: new Set([...(previous?.actions ?? []), ...blocked]), at: now() });
+        if (recentBlocks.size > 512) recentBlocks.delete(recentBlocks.keys().next().value);
+      }
       return { ...base, allowed: false, code: 'BROWSER_SITE_BLOCKED', reason: 'blocked', blocked, item: item?.blocked ? item : null };
     }
     if (resource === 'subresource' && action === 'browse') return { ...base, allowed: true, source: 'subresource' };
@@ -584,8 +593,16 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
     });
   }
 
+  /** 이 채팅이 10분 안에 이 사이트에서 부딪힌 차단 동작. */
+  function recentBlockedActions(actor, origin) {
+    try {
+      const entry = recentBlocks.get(`${actor?.threadId ?? ''}\n${siteScope(origin).key}`);
+      return entry && now() - entry.at < RECENT_BLOCK_MS ? [...entry.actions] : [];
+    } catch { return []; }
+  }
+
   return {
-    ready: () => readyPromise, list, update, check, assertAllowed, hasSiteAccess, blockedActionsFor: async (origin) => { await readyPromise; return blockedActionsFor(origin); },
+    ready: () => readyPromise, list, update, check, assertAllowed, hasSiteAccess, recentBlockedActions, blockedActionsFor: async (origin) => { await readyPromise; return blockedActionsFor(origin); },
     effectiveResearch, categoryAvailability, siteStatus,
     grantSiteAccess, revokeSiteAccess, endThread,
     markSignedIn, clearSignedIn, clearAllSignedIn, setCookieSites, setSavedLoginSites, isSignedIn,
