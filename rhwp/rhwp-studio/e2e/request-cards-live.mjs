@@ -349,7 +349,7 @@ try {
   const meta = (await human('secrets.list')).secrets.find((secret) => secret.id === listed.id);
   assert.equal(meta.scope, 'always');
   await openBrowserSettings();
-  await page.locator('.ag-browser-account-kinds button::-p-text(비밀 값)').click();
+  await page.locator('.ag-browser-kind[data-kind="secrets"]').click();
   const settingsRow = await page.waitForSelector(`.ag-browser-account-option[data-secret-id="${listed.id}"]`, { visible: true });
   await page.waitForFunction((id) => document.querySelector(`.ag-browser-account-option[data-secret-id="${id}"] .ag-site-mark img`)?.src.startsWith('data:image/png'), { timeout: 10_000 }, listed.id);
   assert.ok(settingsRow);
