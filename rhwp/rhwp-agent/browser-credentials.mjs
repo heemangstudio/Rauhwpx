@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { browserOrigin, readBrowserJson, writeBrowserJson } from './browser-policy.mjs';
+import { browserOrigin, readBrowserJson, siteAccessOrigins, writeBrowserJson } from './browser-policy.mjs';
 import { createEncryptedBrowserAuthStore } from './browser-auth-store.mjs';
 
 const REQUEST_TTL_MS = 10 * 60 * 1000;
@@ -38,7 +38,7 @@ function normalizedDomain(value) {
   return domain;
 }
 function approvalProof(approval, request, actor, needsSave) {
-  if (request.native || request.kind === 'browser-sign-in' || request.kind === 'browser-code') throw failure('BROWSER_ACCOUNT_REQUEST_INVALID', 'This request is settled by its own sidebar action.');
+  if (request.native || ['browser-sign-in', 'browser-code', 'browser-site-access'].includes(request.kind)) throw failure('BROWSER_ACCOUNT_REQUEST_INVALID', 'This request is settled by its own sidebar action.');
   if (!approval?.approved || approval.requestId !== request.requestId || (needsSave && approval.save !== true)
     || !sameScope(request.actor, actor) || (approval.actor && !sameScope(approval.actor, actor))) {
     throw failure('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'The website account request needs current owner approval.');
@@ -138,12 +138,31 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     await readyPromise;
     return { accounts: await Promise.all(state.accounts.map(metadata)), secureStorageAvailable: !!(secretStore?.available || authStore.available) };
   }
-  async function requestAccount({ actor, tabId, origin, label, reason, accountId, origins, profileId = 'default', intent, kind = 'account', nativeAccount } = {}) {
+  async function requestAccount({ actor, tabId, origin, label, reason, accountId, origins, profileId = 'default', intent, kind = 'account', nativeAccount, siteAccount } = {}) {
     await readyPromise;
     assertNotResetting();
     sweep();
     if (!actor || (!actor.isHuman && !actor.threadId)) throw failure('BROWSER_ACTOR_REQUIRED', 'A browser account request needs an owning chat or human client.');
     if (requests.size >= MAX_PENDING) throw failure('BROWSER_ACCOUNT_REQUEST_LIMIT', 'Too many website account requests are pending.');
+    if (kind === 'site') {
+      // 사이트 사용 하나로 읽기·사이트 변경·저장된 계정 사용을 묻는다. 계정 값이나 비밀번호 입력은 없다.
+      const normalizedOrigin = browserOrigin(origin);
+      const account = siteAccount?.source === 'hub' ? findAccount(siteAccount.id) : null;
+      const request = {
+        requestId: crypto.randomUUID(), kind: 'browser-site-access',
+        origin: normalizedOrigin, origins: siteAccessOrigins(normalizedOrigin),
+        accountId: siteAccount?.id ?? null, accountLabel: text(siteAccount?.label ?? account?.label ?? ''),
+        accountSource: siteAccount ? (siteAccount.source === 'native' ? 'native' : 'hub') : null,
+        accountOrigins: siteAccount ? clone(siteAccount.origins ?? account?.origins ?? [normalizedOrigin]) : [],
+        profileId: text(siteAccount?.source === 'native' ? 'native' : account?.profileId ?? profileId, 100),
+        tabId: tabId ?? null, reason: text(reason, 500), remember: true, expiresAt: now() + REQUEST_TTL_MS,
+        actor: clone(actor),
+      };
+      requests.set(request.requestId, request);
+      const publicRequest = clone(request);
+      emit({ type: 'browser-account-request', request: publicRequest });
+      return publicRequest;
+    }
     if (kind === 'sign-in' || kind === 'code' || nativeAccount) {
       // 사용자가 직접 로그인·코드 입력을 마치거나, 데스크톱 보관함 계정의 에이전트 사용을 허용하는 요청.
       const normalizedOrigin = browserOrigin(nativeAccount?.origin ?? origin);
@@ -204,7 +223,7 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     human(actor);
     await readyPromise;
     const request = consumeRequest(requestId);
-    if (!request.native || !sameScope(request.actor, actor)) throw failure('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'This website account request belongs to a different chat.');
+    if (!(request.native || request.kind === 'browser-site-access') || !sameScope(request.actor, actor)) throw failure('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'This website account request belongs to a different chat.');
     requests.delete(requestId);
     return clone(request);
   }

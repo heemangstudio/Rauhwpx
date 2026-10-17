@@ -302,11 +302,11 @@ export function createOwnedBrowserService(options = {}) {
     const mapped = submitsSignIn(actor, action, url, tab, args) ? 'browse' : args.intent === 'website-change' || !actor.isHuman && changesWebsiteURL(url) ? 'website-change' : action === 'download' ? 'download' : READS.has(action) || MUTATIONS.has(action) ? 'read' : 'browse';
     if (policy?.assertAllowed && url !== 'about:blank') await policy.assertAllowed({ actor, action: mapped, url, profileId: profileId() }).catch((failure) => {
       // 로그인 제출이면 에이전트가 다시 시도할 길을 알려 준다. 사용자를 대신 부르는 우회는 하지 않는다.
-      if (mapped === 'website-change' && failure?.code === 'BROWSER_PERMISSION_REQUIRED') failure.message = 'Website changes on this site need owner approval. To submit a sign-in, fill an approved account with browser_fill_account in this page first, then submit it.';
+      if (mapped === 'website-change' && failure?.code === 'BROWSER_PERMISSION_REQUIRED') failure.message = "Website changes on this site need owner approval. Call browser_request_account with kind 'site' for this origin and end the turn. A sign-in filled with an approved account through browser_fill_account can be submitted without it.";
       throw failure;
     });
     else if (policy?.assertBrowserAction) await policy.assertBrowserAction({ actor, action, url, tab: tab && descriptor(tab), intent: args.intent ?? 'research' });
-    else if (mapped === 'website-change') throw error('BROWSER_WEBSITE_CHANGE_REQUIRED', 'Approve website changes for this site before continuing.');
+    else if (mapped === 'website-change') throw error('BROWSER_WEBSITE_CHANGE_REQUIRED', "Website changes on this site need owner approval. Call browser_request_account with kind 'site' for this origin and end the turn.");
     if (credentialBroker?.assertBrowserAccess && tab?.scope !== 'global' && (!tab || ['open', 'browse', 'navigate', 'fill-account', 'fill-secret'].includes(action) || args.intent === 'website-change') && url !== 'about:blank') await credentialBroker.assertBrowserAccess({ actor, url, tab: { ...descriptor(tab ?? { page: null, url, controller: {} }), profileId: profileId() } });
   };
   const invalidate = (tab) => {
@@ -1701,6 +1701,10 @@ export function createOwnedBrowserService(options = {}) {
     profileId,
     /** 사용자가 넘겨받은 탭에서 바뀐 세션을 확인 전에 기록한다. */
     observeHumanSessions: () => observeHumanSessions(),
+    async nativeAccounts() {
+      if (!nativeAdapter?.passwordAccounts) return [];
+      return (await nativeAdapter.passwordAccounts()).accounts ?? [];
+    },
     async nativeAccount(accountId) {
       if (!nativeAdapter?.passwordAccounts || typeof accountId !== 'string') return null;
       return ((await nativeAdapter.passwordAccounts()).accounts ?? []).find((account) => account.id === accountId) ?? null;

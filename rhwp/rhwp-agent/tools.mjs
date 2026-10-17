@@ -1841,7 +1841,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_click',
-    description: 'Click a ref from the current snapshot. Declare search, login or export intent for those research flows. Website-changing submissions require a separate site operation approval.',
+    description: 'Click a ref from the current snapshot. Declare search, login or export intent for those research flows. Website-changing submissions need browser_request_account kind site.',
     shape: browserRefShape(),
   },
   {
@@ -1886,7 +1886,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_fill_account',
-    description: 'Autofill a sign-in form with an account ID from browser_status, including logins the user saved. With agentReuseApproved=true on its exact origin, proceed without approval; otherwise call browser_request_account. Pass current username/password refs. Credentials never enter arguments or results.',
+    description: 'Autofill a sign-in form with an account ID from browser_status, including logins the user saved. With agentReuseApproved=true on its exact origin, proceed without approval; otherwise browser_request_account kind site. Pass current username/password refs. Credentials never enter arguments or results.',
     shape: { tabId: browserTab(), accountId: z.string().uuid(), snapshotId: z.string().min(1).max(160), usernameRef: z.string().min(1).max(160).optional(), passwordRef: z.string().min(1).max(160), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
   },
   {
@@ -1907,8 +1907,8 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_request_account',
-    description: 'Root conversation only. Ask the user for website access on an exact origin. kind account (default): approve accountId or save a new account. kind sign-in or code: the user signs in or enters a code in tabId. Returns pending: end the turn; the chat resumes when the user answers. Never ask for credentials in chat.',
-    shape: { tabId: browserTab(), origin: z.string().url().max(2_000), label: z.string().min(1).max(120), reason: z.string().min(1).max(1_000), accountId: z.string().min(1).max(160).optional(), kind: z.enum(['account', 'sign-in', 'code']).optional() },
+    description: 'Root conversation only. Ask the user for access on an exact origin. kind site: one card allows browsing, website changes and its saved account. kind account (default): the same card when the site has a saved account, else a save form. kind sign-in or code: the user acts in tabId. Returns pending: end the turn; the chat resumes on answer. No credentials in chat.',
+    shape: { tabId: browserTab(), origin: z.string().url().max(2_000), label: z.string().min(1).max(120), reason: z.string().min(1).max(1_000), accountId: z.string().min(1).max(160).optional(), kind: z.enum(['account', 'site', 'sign-in', 'code']).optional() },
   },
 ];
 

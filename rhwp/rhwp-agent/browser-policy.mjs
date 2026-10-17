@@ -26,6 +26,20 @@ export function browserOrigin(value) {
   return url.origin;
 }
 
+/** 사이트 사용 승인이 함께 덮는 출처 — 정확한 출처와, 호스트가 www. 하나만 다른 짝. 다른 하위 도메인은 넣지 않는다. */
+export function siteAccessOrigins(value) {
+  const origin = browserOrigin(value);
+  const url = new URL(origin);
+  const host = url.hostname;
+  if (/^\d+(?:\.\d+){3}$/.test(host) || host.startsWith('[') || !host.includes('.')) return [origin];
+  const twin = host.startsWith('www.') ? host.slice(4) : `www.${host}`;
+  if (!twin.includes('.')) return [origin];
+  return [origin, `${url.protocol}//${twin}${url.port ? `:${url.port}` : ''}`];
+}
+
+/** 사이트 사용 승인이 허용하는 일 — 읽기와 사이트 변경. 계정 사용은 계정 승인으로 따로 기록한다. */
+export const SITE_ACCESS_ACTIONS = Object.freeze(['browse', 'read', 'website-change']);
+
 function failure(code, message) { return Object.assign(new Error(message), { code }); }
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function boundedText(value, limit = 200) { return String(value ?? '').trim().slice(0, limit); }
@@ -83,6 +97,9 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
   /** threadId\naccountId → { origins, profileId, version } */
   const chatAccounts = new Map();
   let chatAccountVersion = 0;
+  /** threadId\norigin → Set(action) — "이 채팅" 사이트 사용 승인. 허브 메모리에만 둔다. */
+  const chatSites = new Map();
+  const dropChatSites = (origin) => { for (const key of [...chatSites.keys()]) if (key.endsWith(`\n${origin}`)) chatSites.delete(key); };
   const chatAccountKey = (threadId, accountId) => `${threadId ?? ''}\n${accountId ?? ''}`;
   const readyPromise = (async () => {
     state = await readBrowserJson(filePath);
@@ -133,9 +150,12 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
         const site = { id: previous?.id ?? crypto.randomUUID(), origin, label: boundedText(input.label ?? previous?.label ?? origin), source: 'user', allowedActions, blockedActions };
         next.sites = next.sites.filter((entry) => entry.origin !== origin);
         next.sites.push(site);
+        // 설정에서 사이트 권한을 다시 정하면 그 사이트의 "이 채팅" 승인도 그 결정을 따른다.
+        dropChatSites(origin);
       } else if (input.operation === 'remove-site') {
         const origin = browserOrigin(input.origin);
         next.sites = next.sites.filter((site) => site.origin !== origin);
+        dropChatSites(origin);
       } else if (input.operation === 'approve-account' || input.operation === 'revoke-account') {
         if (typeof input.accountId !== 'string' || !input.accountId) throw failure('BROWSER_INVALID_POLICY', 'The account identity is missing.');
         const previous = next.accounts.find((account) => account.accountId === input.accountId);
@@ -174,6 +194,10 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
     const origin = url ? browserOrigin(url) : null;
     if (actor?.isHuman) return { allowed: true, origin, source: 'owner', revision: state.revision };
     const site = state.sites.find((entry) => entry.origin === origin);
+    // 카드에서 방금 받은 "이 채팅" 사이트 승인은 그 채팅의 행위자에게만 적용된다.
+    if (action !== 'account-use' && !accountId && actor?.threadId && chatSites.get(`${actor.threadId}\n${origin}`)?.has(action)) {
+      return { allowed: true, origin, source: 'chat-site', revision: state.revision };
+    }
     if (site?.blockedActions.includes(action)) return { allowed: false, origin, code: 'BROWSER_SITE_BLOCKED', reason: 'This website action has been revoked.', revision: state.revision };
     if (action === 'account-use' || accountId) {
       const account = state.accounts.find((entry) => entry.accountId === accountId);
@@ -220,10 +244,38 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
   }
   function clearChatAccounts(threadId) {
     for (const key of [...chatAccounts.keys()]) if (key.startsWith(`${threadId ?? ''}\n`)) chatAccounts.delete(key);
+    for (const key of [...chatSites.keys()]) if (key.startsWith(`${threadId ?? ''}\n`)) chatSites.delete(key);
+  }
+
+  /**
+   * 사이트 사용 카드의 승인. always 는 사이트 정책에 읽기·사이트 변경을 더하고(막아 둔 같은 동작은 푼다),
+   * chat 은 이 채팅에만 허브 메모리로 허용한다. 출처는 정확한 출처와 www 짝만이다.
+   */
+  async function grantSiteAccess({ actor, threadId, origin, scope = 'chat', label } = {}) {
+    requireHuman(actor);
+    await readyPromise;
+    if (!['chat', 'always'].includes(scope)) throw failure('BROWSER_INVALID_POLICY', 'Choose chat or always for this site approval.');
+    const covered = siteAccessOrigins(origin);
+    if (scope === 'chat') {
+      if (!threadId) throw failure('BROWSER_INVALID_POLICY', 'A chat site approval needs its chat.');
+      for (const entry of covered) {
+        const key = `${threadId}\n${entry}`;
+        chatSites.set(key, new Set([...(chatSites.get(key) ?? []), ...SITE_ACCESS_ACTIONS]));
+      }
+      try { onChange({ type: 'browser-policy-changed', revision: state.revision }); } catch {}
+      return { origins: covered, scope };
+    }
+    for (const entry of covered) {
+      const previous = state.sites.find((site) => site.origin === entry);
+      await update({ actor, operation: 'set-site', origin: entry, label: previous?.label ?? label ?? new URL(entry).hostname,
+        allowedActions: [...new Set([...(previous?.allowedActions ?? RESEARCH_ACTIONS), ...SITE_ACCESS_ACTIONS])],
+        blockedActions: (previous?.blockedActions ?? []).filter((action) => !SITE_ACCESS_ACTIONS.includes(action)) });
+    }
+    return { origins: covered, scope };
   }
 
   return { ready: () => readyPromise, list, update, check, assertAllowed, effectiveResearch, categoryAvailability,
-    grantChatAccount, chatAccountApproved, chatAccountGrantedAt, clearChatAccounts,
+    grantChatAccount, chatAccountApproved, chatAccountGrantedAt, clearChatAccounts, grantSiteAccess,
     addChangeGuard: (guard) => { changeGuards.add(guard); return () => changeGuards.delete(guard); },
   };
 }

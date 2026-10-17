@@ -74,3 +74,36 @@ test('corrupt or foreign-owner policy fails closed and preserves its bytes', asy
   assert.deepEqual(corrupt.effectiveResearch(), { browse: false, downloads: false, import: false });
   assert.equal(await fs.readFile(policyFile, 'utf8'), '{broken');
 });
+
+test('a site access approval covers its www twin, stays in its chat unless always, and later settings win', async (t) => {
+  const { policy, dataDir } = await fixture(t);
+  const other = { ...agent, threadId: 'thread-b' };
+  const allowed = async (actor, url, owner = policy) => (await owner.check({ actor, action: 'website-change', url })).allowed;
+  assert.equal(await allowed(agent, 'https://coupang.com/cart'), false);
+  await assert.rejects(policy.grantSiteAccess({ actor: agent, threadId: agent.threadId, origin: 'https://coupang.com' }), { code: 'BROWSER_OWNER_REQUIRED' });
+
+  await policy.grantSiteAccess({ actor: owner, threadId: agent.threadId, origin: 'https://coupang.com', scope: 'chat' });
+  assert.equal(await allowed(agent, 'https://coupang.com/cart'), true);
+  assert.equal(await allowed(agent, 'https://www.coupang.com/order'), true, 'the www twin is covered');
+  assert.equal(await allowed(agent, 'https://login.coupang.com/'), false, 'other subdomains are not');
+  assert.equal(await allowed(other, 'https://coupang.com/cart'), false, 'a chat approval stays in its chat');
+  assert.equal((await policy.list()).sites.some((site) => site.origin.includes('coupang')), false, 'a chat approval is not saved');
+  const restarted = createBrowserPolicy({ dataDir });
+  await restarted.ready();
+  assert.equal(await allowed(agent, 'https://coupang.com/cart', restarted), false);
+
+  // 설정에서 사이트 변경을 막으면 그 출처의 채팅 승인도 끝난다. 채팅이 끝나면 나머지도 끝난다.
+  await policy.update({ actor: owner, operation: 'set-site', origin: 'https://www.coupang.com', allowedActions: ['browse', 'read'], blockedActions: ['website-change'] });
+  assert.equal(await allowed(agent, 'https://www.coupang.com/order'), false);
+  assert.equal(await allowed(agent, 'https://coupang.com/cart'), true);
+  policy.clearChatAccounts(agent.threadId);
+  assert.equal(await allowed(agent, 'https://coupang.com/cart'), false);
+
+  await policy.grantSiteAccess({ actor: owner, threadId: agent.threadId, origin: 'https://www.coupang.com', scope: 'always' });
+  const afterAlways = createBrowserPolicy({ dataDir });
+  await afterAlways.ready();
+  for (const url of ['https://www.coupang.com/order', 'https://coupang.com/cart']) {
+    assert.equal(await allowed(other, url, afterAlways), true, `${url} is allowed in every chat after a restart`);
+  }
+  assert.deepEqual((await afterAlways.list()).sites.find((site) => site.origin === 'https://www.coupang.com').blockedActions, []);
+});

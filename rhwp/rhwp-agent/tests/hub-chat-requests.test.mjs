@@ -206,6 +206,91 @@ test('deny and grant both resume the agent, deny releases the handed-off tab, an
   assert.deepEqual(revokedChat.chatPermissionGrants, []);
 });
 
+const SAVED_ACCOUNT_ID = '0b0c3f6e-6f47-4c2a-9c1d-5d2f7a1e9b10';
+
+/** 이 사이트의 저장된 계정 하나(세션만 남은 계정)를 허브 계정 기록에 미리 둔다. */
+async function prepareSavedAccount({ workRoot }) {
+  await prepareHandoffTab({ workRoot });
+  const browserRoot = path.join(workRoot, 'browser');
+  mkdirSync(browserRoot, { recursive: true });
+  writeFileSync(path.join(browserRoot, 'browser-accounts.json'), JSON.stringify({
+    schema: 1, sessions: [],
+    configuration: { profileId: 'default', downloads: { directory: 'managed', maxFileBytes: 1024 * 1024, autoImport: true }, preview: { mode: 'docked', reducedMotion: false } },
+    accounts: [{ id: SAVED_ACCOUNT_ID, origin: 'https://www.shop.example', origins: ['https://www.shop.example'], label: 'andy@shop.example', stableIdentity: SAVED_ACCOUNT_ID, profileId: 'default', hasPassword: false, sessionStatus: 'session-retained', version: 1, updatedAt: new Date().toISOString() }],
+  }));
+}
+
+test('a site with a saved account gets the site access card instead of the save form, and its scope decides where the grant lives', { timeout: 60_000 }, async (t) => {
+  const hub = await startRequestHub(t, { prepare: prepareSavedAccount });
+  const { studio: studioUrl, mcp: mcpUrl } = urls(hub.port, 'request-site', 'site-page');
+  const studio = await openClient(studioUrl);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  await startChat(studio);
+  await userTurn(studio, 'Check my orders on the shop.');
+  let mcp = await openClient(mcpUrl);
+  const ask = (origin, extra = {}) => call(mcp, 'browser_request_account', { tabId: 'handoff-tab', origin, label: 'Shop', reason: 'Check the order history.', ...extra });
+
+  // 계정이 없는 사이트만 저장 양식을 받는다. 계정이 있으면 www 짝 출처라도 사이트 사용 카드가 된다.
+  assert.equal((await ask('https://news.example')).result.kind, 'account');
+  const saveCard = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
+  assert.equal(saveCard.kind, 'browser-save-account');
+  const routed = await ask('https://shop.example');
+  assert.equal(routed.result.kind, 'site', JSON.stringify(routed));
+  let card = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
+  assert.equal(card.kind, 'browser-site-access');
+  assert.equal(card.accountId, SAVED_ACCOUNT_ID);
+  assert.equal(card.accountLabel, 'andy@shop.example');
+  assert.deepEqual(card.origins, ['https://shop.example', 'https://www.shop.example']);
+  assert.deepEqual(card.scopes, ['chat', 'always']);
+  hub.completeTurn();
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  await closeClient(mcp);
+
+  sendFrame(studio, { type: 'chat-permission-response', requestId: saveCard.requestId, responseId: 'deny-save', threadId: THREAD, documentId: DOCUMENT, decision: 'deny' });
+  await studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === saveCard.requestId);
+  // 거절은 아무것도 허용하지 않는다.
+  sendFrame(studio, { type: 'chat-permission-response', requestId: card.requestId, responseId: 'deny-site', threadId: THREAD, documentId: DOCUMENT, decision: 'deny' });
+  assert.equal((await studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === card.requestId)).outcome.status, 'denied');
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  await hub.waitForPrompt((prompt) => prompt.includes('The user declined access to https://shop.example'));
+  assert.ok((await browserRequest(studio, 'sites.approve', { requestId: card.requestId })).error, 'a denied card cannot be approved later');
+  const sitesAfterDeny = (await browserRequest(studio, 'policy.list')).result.sites;
+  assert.equal(sitesAfterDeny.some((site) => site.origin.includes('shop.example')), false);
+  assert.equal((await browserRequest(studio, 'accounts.list')).result.accounts[0].agentReuseApproved, false);
+
+  // 이 채팅 승인: 이 채팅의 에이전트만 계정을 쓸 수 있고 저장되는 정책은 없다.
+  mcp = await openClient(mcpUrl);
+  await ask('https://shop.example');
+  card = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
+  hub.completeTurn();
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  await closeClient(mcp);
+  const chatGrant = await browserRequest(studio, 'sites.approve', { requestId: card.requestId, scope: 'chat' });
+  assert.deepEqual(chatGrant.result, { approved: true, scope: 'chat', origins: ['https://shop.example', 'https://www.shop.example'], accountId: SAVED_ACCOUNT_ID }, JSON.stringify(chatGrant));
+  assert.equal((await studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === card.requestId)).outcome.status, 'granted');
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  await hub.waitForPrompt((prompt) => prompt.includes('The user allowed https://shop.example for this chat') && prompt.includes(`accountId ${SAVED_ACCOUNT_ID}`) && prompt.includes('browser_fill_account'));
+  mcp = await openClient(mcpUrl);
+  const status = await call(mcp, 'browser_status', {});
+  assert.equal(status.result.accounts.find((account) => account.id === SAVED_ACCOUNT_ID).agentReuseApproved, true, 'this chat sees the account as approved');
+  assert.equal((await browserRequest(studio, 'accounts.list')).result.accounts[0].agentReuseApproved, false, 'the saved approval is unchanged');
+  assert.equal((await browserRequest(studio, 'policy.list')).result.sites.some((site) => site.origin.includes('shop.example')), false);
+
+  // 항상 승인: 사이트 정책과 계정 승인이 저장된다.
+  await ask('https://shop.example');
+  card = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
+  hub.completeTurn();
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  await closeClient(mcp);
+  assert.equal((await browserRequest(studio, 'sites.approve', { requestId: card.requestId, scope: 'always' })).result.scope, 'always');
+  const saved = (await browserRequest(studio, 'policy.list')).result.sites.filter((site) => site.origin.includes('shop.example'));
+  assert.deepEqual(saved.map((site) => site.origin).sort(), ['https://shop.example', 'https://www.shop.example']);
+  for (const site of saved) assert.ok(site.allowedActions.includes('website-change'), JSON.stringify(site));
+  assert.equal((await browserRequest(studio, 'accounts.list')).result.accounts[0].agentReuseApproved, true);
+  await hub.waitForPrompt((prompt) => prompt.includes('The user allowed https://shop.example in every chat'));
+});
+
 test('requests from one turn resume the agent once, after the last of them is answered', { timeout: 60_000 }, async (t) => {
   const hub = await startRequestHub(t);
   const { studio: studioUrl, mcp: mcpUrl } = urls(hub.port, 'request-batch', 'batch-page');

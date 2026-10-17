@@ -60,7 +60,7 @@ import { DownloadManager, fetchPublic } from './download-manager.mjs';
 import { DocumentSnapshotManager } from './document-snapshot-manager.mjs';
 import { ArtifactStore, defaultGeneratedArtifactRoot } from './artifact-store.mjs';
 import { createOwnedBrowserService, createIpcNativeBrowserAdapter } from './owned-browser-service.mjs';
-import { createBrowserPolicy } from './browser-policy.mjs';
+import { browserOrigin, createBrowserPolicy, siteAccessOrigins } from './browser-policy.mjs';
 import { createBrowserCredentialBroker } from './browser-credentials.mjs';
 import { createBrowserOsSecretStore } from './browser-os-secret-store.mjs';
 import { createBrowserDownloads } from './browser-downloads.mjs';
@@ -859,12 +859,17 @@ function chatRequestContinuationText(request, outcome, detail = {}) {
     const subject = !request.kind ? `the ${request.capability} permission`
       : secret ? `the secret ${quotedLabel(request.secretLabel)}`
         : request.kind === 'browser-sign-in' || request.kind === 'browser-code' ? `the browser handoff on ${origin}`
+          : request.kind === 'browser-site-access' ? `access to ${origin}`
           : `website account access for ${origin}`;
     return `The user declined ${subject}. Continue without it and do not ask for it again this turn.`;
   }
   if (!request.kind) return `The user granted ${request.capability} for this chat; continue.`;
   if (request.kind === 'browser-code') return `The user entered the verification code on ${origin}; continue.`;
   if (request.kind === 'browser-sign-in') return `The user finished signing in on ${origin}; continue.`;
+  if (request.kind === 'browser-site-access') {
+    const account = request.accountId ? ` Sign in with the saved account ${quotedLabel(request.accountLabel)} (accountId ${request.accountId}) through browser_fill_account, then submit the form.` : '';
+    return `The user allowed ${origin} ${detail.scope === 'always' ? 'in every chat' : 'for this chat'}: browsing and website changes there.${account} Continue.`;
+  }
   if (request.kind === 'browser-save-account') {
     return detail.reuseApproved
       ? `The user saved an account for ${origin} and approved its reuse; continue.`
@@ -874,6 +879,28 @@ function chatRequestContinuationText(request, outcome, detail = {}) {
     return `The user ${request.kind === 'secret-save' ? 'saved' : 'approved'} the secret ${quotedLabel(detail.label ?? request.secretLabel)} (secretId ${detail.secretId ?? request.secretId}). Type it with browser_fill_secret; you never see its value. Continue.`;
   }
   return `The user approved the saved account for ${origin}; continue.`;
+}
+
+/**
+ * 사이트에 쓸 저장된 계정 — 데스크톱 보관함과 허브 계정을 함께 본다. accountId 를 주면 그 계정이 이 사이트 것이어야 한다.
+ * 정확한 출처가 먼저이고, 없으면 www 짝 출처의 계정을 쓴다.
+ */
+async function savedSiteAccount(origin, accountId) {
+  const requested = browserOrigin(origin);
+  const covered = new Set(siteAccessOrigins(requested));
+  const native = (await ownedBrowser.nativeAccounts().catch(() => [])).map((account) => ({ ...account, source: 'native' }));
+  const hub = ((await credentialBroker.listAccounts().catch(() => null))?.accounts ?? []).map((account) => ({ ...account, source: 'hub' }));
+  const originsOf = (account) => account.origins?.length ? account.origins : [account.origin];
+  const pick = (account) => ({ id: account.id, label: account.label || account.username || new URL(requested).hostname, source: account.source, origins: originsOf(account), profileId: account.profileId });
+  if (accountId) {
+    const account = native.concat(hub).find((entry) => entry.id === accountId);
+    if (!account) return null;
+    if (!originsOf(account).some((value) => covered.has(value))) throw workflowError('BROWSER_ACCOUNT_ORIGIN_MISMATCH', 'The saved account belongs to a different website.');
+    return pick(account);
+  }
+  const all = native.concat(hub);
+  const account = all.find((entry) => originsOf(entry).includes(requested)) ?? all.find((entry) => originsOf(entry).some((value) => covered.has(value)));
+  return account ? pick(account) : null;
 }
 
 function assertBrowserAccountScope(pending, actor) {
@@ -887,7 +914,7 @@ function publishBrowserAccountRequest(record, request) {
   const wrapped = { ...request, threadId: actor.threadId, documentId: actor.documentId,
     turnId: record.agentSession?.turnId ?? null, agent: record.agentSession?.agent ?? 'claude',
     capability: 'browser', createdAt: new Date().toISOString(),
-    ...(request.kind === 'browser-use-account' ? { scopes: ['chat', 'always'] } : {}) };
+    ...(request.kind === 'browser-use-account' || request.kind === 'browser-site-access' ? { scopes: ['chat', 'always'] } : {}) };
   try {
     // 계정 요청은 예전처럼 Studio 가 다시 붙을 때까지 남겨 둔다.
     record.chatRequests.add({ kind: 'browser', request: wrapped, threadId: actor.threadId, documentId: actor.documentId ?? null, agentInitiated: !actor.isHuman },
@@ -998,6 +1025,23 @@ async function handleBrowserRequest(record, sock, msg) {
           }
         } else result = await credentialBroker.approveAccount({ ...args, scope, actor, approval });
         if (args.requestId) settleChatRequestAnywhere(args.requestId, { status: 'granted' }, { continuation: chatRequestContinuationText(pending, { status: 'granted' }) });
+        break;
+      }
+      case 'sites.approve': {
+        // 사이트 사용 카드: 읽기·사이트 변경을 그 출처(www 짝 포함)에, 저장된 계정 사용을 그 계정에 같은 범위로 허용한다.
+        const scope = normalizeChatPermissionScope(args.scope);
+        const pending = await credentialBroker.getAccountRequest(String(args.requestId ?? ''));
+        if (!pending) throw workflowError('BROWSER_ACCOUNT_REQUEST_EXPIRED', 'The site request expired. Ask the agent again.');
+        if (pending.kind !== 'browser-site-access') throw workflowError('BROWSER_ACCOUNT_REQUEST_INVALID', 'This request is not a site access request.');
+        assertBrowserAccountScope(pending, actor);
+        const site = await browserPolicy.grantSiteAccess({ actor, threadId: actor.threadId, origin: pending.origin, scope, label: new URL(pending.origin).hostname });
+        if (pending.accountId && pending.accountSource === 'native') {
+          if (scope === 'chat') await browserPolicy.grantChatAccount({ actor, threadId: actor.threadId, accountId: pending.accountId, origins: pending.accountOrigins.length ? pending.accountOrigins : [pending.origin], profileId: 'native' });
+          else await ownedBrowser.approveNativeAccount(pending.accountId, true);
+        } else if (pending.accountId) await credentialBroker.approveAccount({ actor, accountId: pending.accountId, scope });
+        await credentialBroker.settleExternalRequest({ actor, requestId: pending.requestId });
+        settleChatRequestAnywhere(pending.requestId, { status: 'granted' }, { continuation: chatRequestContinuationText(pending, { status: 'granted' }, { scope }) });
+        result = { approved: true, scope, origins: site.origins, accountId: pending.accountId ?? null };
         break;
       }
       case 'accounts.complete': {
@@ -6971,11 +7015,13 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             if (actor.agentId !== `${actor.threadId}:root`) {
               throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request website account access');
             }
-            const kind = args.kind ?? 'account';
-            if (kind !== 'account' && !ownedBrowser.ownsTarget(actor, { tabId: args.tabId })) throw workflowError('BROWSER_TAB_NOT_FOUND', 'The browser tab is unavailable to this chat.');
-            const nativeAccount = kind === 'account' && args.accountId ? await ownedBrowser.nativeAccount(args.accountId) : null;
+            let kind = args.kind ?? 'account';
+            if (['sign-in', 'code'].includes(kind) && !ownedBrowser.ownsTarget(actor, { tabId: args.tabId })) throw workflowError('BROWSER_TAB_NOT_FOUND', 'The browser tab is unavailable to this chat.');
+            // 저장된 계정이 있으면 계정 저장 카드 대신 사이트 사용 카드 하나로 묻는다.
+            const siteAccount = kind === 'account' || kind === 'site' ? await savedSiteAccount(args.origin, args.accountId) : null;
+            if (siteAccount) kind = 'site';
             const request = await credentialBroker.requestAccount({ actor, ...args, kind,
-              ...(kind !== 'account' ? { profileId: ownedBrowser.profileId() } : {}), ...(nativeAccount ? { nativeAccount } : {}) });
+              ...(['sign-in', 'code'].includes(kind) ? { profileId: ownedBrowser.profileId() } : {}), ...(siteAccount ? { siteAccount } : {}) });
             publishBrowserAccountRequest(record, request);
             return { pending: true, requestId: request.requestId, origin: request.origin, kind };
           }
