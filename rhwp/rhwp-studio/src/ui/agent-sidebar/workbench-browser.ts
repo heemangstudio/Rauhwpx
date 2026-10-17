@@ -813,6 +813,8 @@ export function createWorkbenchBrowser(options: {
     mount(host: HTMLElement) { presentation.mount(host); watchNativeVisibility(); layout(); },
     setVisible(next: boolean) {
       if (nativePopout) return;
+      // 턴이 끝난 뒤 남겨 둔 에이전트 미리보기는 사용자가 작업 칸에서 고르면 그 칸으로 옮긴다.
+      if (next && previewCloseTimer !== null) { cancelPreviewClose(); agentOpenedView = false; presentation.present('dock'); }
       if (next) { if (presentation.current() !== 'float' && presentation.current() !== 'popout') presentation.present('dock'); handle(controller.refresh().then(() => controller.readFrame())); }
       else if (presentation.current() === 'dock') presentation.hide();
     },
