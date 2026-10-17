@@ -22,7 +22,8 @@ import {
 import type { FontFolderCache } from './font-folder-store.ts';
 import type { SystemFontIndex } from './desktop-fonts.ts';
 
-const CACHE_FORMAT = 2;
+// 3: 가변 글꼴의 이름 붙은 인스턴스를 face 로 펼친다.
+const CACHE_FORMAT = 3;
 const PARSE_CONCURRENCY = 8;
 
 // ─── 폴더 원본 ────────────────────────────────────────────────
@@ -161,9 +162,17 @@ const MASK_64 = 0xffffffffffffffffn;
 const encoder = new TextEncoder();
 
 /** 데스크톱과 같은 16자리 hex id. (상대 경로, face, 크기, 수정 시각)이 같으면 같은 id다. */
-export function folderFaceId(path: string, faceIndex: number, size: number, lastModified: number): string {
+export function folderFaceId(
+  path: string,
+  faceIndex: number,
+  size: number,
+  lastModified: number,
+  instanceIndex?: number,
+): string {
+  // 기본 face 의 id 는 그대로 두고, 가변 인스턴스만 인스턴스 번호를 더해 구분한다.
+  const instance = instanceIndex === undefined ? '' : `\u0000i${instanceIndex}`;
   let hash = FNV_OFFSET;
-  for (const byte of encoder.encode(`${path}\u0000${faceIndex}\u0000${size}\u0000${lastModified}`)) {
+  for (const byte of encoder.encode(`${path}\u0000${faceIndex}\u0000${size}\u0000${lastModified}${instance}`)) {
     hash = ((hash ^ BigInt(byte)) * FNV_PRIME) & MASK_64;
   }
   return hash.toString(16).padStart(16, '0');
@@ -209,7 +218,9 @@ export function createFontFolderIndexer(options: { cache?: FontFolderCache | nul
     for (const file of collected.files) file.kind = kind;
     const errors = [...collected.errors];
     const cacheKey = `folder:${collected.root}`;
-    const cached = (await cache?.load(cacheKey))?.files ?? {};
+    const stored = await cache?.load(cacheKey);
+    // 형식이 다른 캐시는 다시 파싱한다.
+    const cached = stored?.format === CACHE_FORMAT ? stored.files ?? {} : {};
     const nextCache: Record<string, ParsedFontFileResult> = {};
     let parsed = 0;
     let reused = 0;
@@ -237,7 +248,7 @@ export function createFontFolderIndexer(options: { cache?: FontFolderCache | nul
       parsedFiles,
       mapFiles: Array.from(collected.mapFiles.keys()),
       readMapFile: async (path) => new Uint8Array(await (await collected.mapFiles.get(path)!()).arrayBuffer()),
-      faceId: (file, faceIndex) => folderFaceId(file.path, faceIndex, file.size, file.mtimeMs),
+      faceId: (file, faceIndex, instanceIndex) => folderFaceId(file.path, faceIndex, file.size, file.mtimeMs, instanceIndex),
       pathApi: posixPath,
       platform: 'browser',
       errors,

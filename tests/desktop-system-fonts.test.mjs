@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   createSystemFontService,
   decodeHancomText,
+  defaultFontRoots,
   extractCollectionFace,
   parseHancomFontList,
   parseSfntFaces,
@@ -16,10 +17,12 @@ import {
   extractCollectionFace as extractCollectionFaceCore,
   parseFontSource,
 } from '../rhwp/rhwp-shared/fonts/font-index-core.mjs';
+import { expandFontRootCatalog } from '../rhwp/rhwp-shared/fonts/font-roots.mjs';
 import { serveSystemFont, systemFontBaseUrl } from '../desktop/studio-protocol.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NOTO = path.join(repoRoot, 'rhwp/ttfs/opensource/NotoSansKR-Regular.ttf');
+const VARIABLE = path.join(repoRoot, 'rhwp/tests/fixtures/fonts/RHWPVariableWeightFixture.ttf');
 
 function readTables(font) {
   const numTables = font.readUInt16BE(4);
@@ -289,4 +292,125 @@ test('indexes roots, caches parses, maps Hancom names and guards reads', async (
   const refreshed = await service.list({ refresh: true });
   assert.equal(refreshed.stats.parsed, 1);
   assert.ok(!refreshed.faces.some((face) => face.id === korean.id));
+});
+
+test('expands catalog roots with home, Windows variables and wildcard folders', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-font-roots-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  for (const name of ['Font7', 'Font8', 'Other']) await mkdir(path.join(dir, 'assets', `com_apple_MobileAsset_${name}`), { recursive: true });
+  await writeFile(path.join(dir, 'assets', 'com_apple_MobileAsset_FontFile'), '');
+  const catalog = [
+    { os: 'darwin', kind: 'user', label: 'home', path: '~/Library/Fonts' },
+    { os: 'darwin', kind: 'app', label: 'cache', path: '~/cache', sniff: true, maxDepth: 2 },
+    { os: 'darwin', kind: 'hancom', label: 'Hancom', path: '/opt/hnc' },
+    { os: 'win32', kind: 'app', label: 'Office', path: '%ProgramFiles(x86)%\\Microsoft Office\\root\\vfs\\Fonts\\private' },
+    { os: 'win32', kind: 'app', label: 'missing', path: '%NOT_SET%\\Fonts' },
+    { os: 'linux', kind: 'app', label: 'LibreOffice', path: '/usr/lib/libreoffice/share/fonts' },
+  ];
+  const mac = await expandFontRootCatalog({ platform: 'darwin', home: '/Users/rau', catalog });
+  // 와일드카드는 실제 폴더를 읽으므로 이 테스트를 돌리는 플랫폼의 경로 규칙으로 확인한다.
+  const hostOs = process.platform === 'win32' || process.platform === 'darwin' ? process.platform : 'linux';
+  const host = await expandFontRootCatalog({
+    platform: process.platform,
+    catalog: [{ os: hostOs, kind: 'system', label: 'assets', glob: path.join(dir, 'assets', 'com_apple_MobileAsset_Font*') }],
+  });
+  assert.deepEqual(host.roots, [
+    { path: path.join(dir, 'assets', 'com_apple_MobileAsset_Font7'), kind: 'system', label: 'assets' },
+    { path: path.join(dir, 'assets', 'com_apple_MobileAsset_Font8'), kind: 'system', label: 'assets' },
+  ]);
+  assert.deepEqual(mac.roots, [
+    { path: '/Users/rau/Library/Fonts', kind: 'user', label: 'home' },
+    { path: '/Users/rau/cache', kind: 'app', label: 'cache', sniff: true, maxDepth: 2 },
+  ]);
+  assert.deepEqual(mac.installs, [{ path: '/opt/hnc', label: 'Hancom' }]);
+  // Windows 환경 변수는 대소문자를 가리지 않고, 없는 변수를 쓰는 항목은 건너뛴다.
+  const win = await expandFontRootCatalog({ platform: 'win32', env: { 'PROGRAMFILES(X86)': 'C:\\PF86' }, catalog });
+  assert.deepEqual(win.roots.map((root) => root.path), ['C:\\PF86\\Microsoft Office\\root\\vfs\\Fonts\\private']);
+  const linux = await expandFontRootCatalog({ platform: 'freebsd', home: '/home/rau', catalog });
+  assert.deepEqual(linux.roots.map((root) => root.path), ['/usr/lib/libreoffice/share/fonts']);
+});
+
+test('default roots walk Hancom, user, system, then other-app fonts', async () => {
+  const { roots, hancomInstalls } = await defaultFontRoots({
+    platform: 'win32',
+    env: { WINDIR: 'C:\\Windows', SystemRoot: 'c:\\windows', LOCALAPPDATA: 'C:\\Users\\rau\\AppData\\Local', ProgramFiles: 'C:\\PF' },
+  });
+  const ranks = roots.map((root) => ['user', 'system', 'app'].indexOf(root.kind));
+  assert.ok(!ranks.includes(-1));
+  assert.deepEqual(ranks, [...ranks].sort((a, b) => a - b));
+  assert.equal(roots.filter((root) => root.path.toLowerCase() === 'c:\\windows\\fonts').length, 1);
+  assert.ok(roots.some((root) => root.kind === 'app' && root.label === 'Microsoft Office cloud fonts' && root.sniff));
+  assert.ok(hancomInstalls.includes('C:\\PF\\Hnc'));
+});
+
+test('other-app fonts are indexed last and sniffed caches accept only real font signatures', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-app-fonts-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const noto = await readFile(NOTO);
+  const appCache = path.join(dir, 'livetype', '.r');
+  const plain = path.join(dir, 'plain');
+  const system = path.join(dir, 'system');
+  await mkdir(appCache, { recursive: true });
+  await mkdir(plain, { recursive: true });
+  await mkdir(system, { recursive: true });
+  await writeFile(path.join(appCache, '.31250'), noto);
+  await writeFile(path.join(appCache, '.31251'), Buffer.from('{"not":"a font"}'));
+  await writeFile(path.join(appCache, '.31252'), Buffer.alloc(2));
+  await writeFile(path.join(plain, 'noext'), noto);
+  await writeFile(path.join(system, 'NotoSansKR-Regular.ttf'), noto);
+  // 읽을 권한이 없는 보호 폴더는 오류 없이 건너뛴다.
+  const denied = path.join(dir, 'denied');
+  await mkdir(denied);
+  await chmod(denied, 0o000);
+  const index = await createSystemFontService({
+    roots: [
+      { path: path.join(dir, 'livetype'), kind: 'app', label: 'Adobe Fonts', sniff: true },
+      { path: plain, kind: 'user' },
+      { path: system, kind: 'system' },
+      { path: denied, kind: 'app' },
+    ],
+  }).list();
+  assert.deepEqual(index.roots.map(({ kind, label, exists, fileCount, error }) => [kind, label, exists, fileCount, error]), [
+    ['user', undefined, true, 0, undefined],
+    ['system', undefined, true, 1, undefined],
+    ['app', 'Adobe Fonts', true, 1, undefined],
+    ['app', undefined, true, 0, undefined],
+  ]);
+  assert.deepEqual(index.faces.map((face) => [face.source, path.basename(face.path)]), [
+    ['system', 'NotoSansKR-Regular.ttf'],
+    ['app', '.31250'],
+  ]);
+  assert.deepEqual(index.errors, []);
+});
+
+test('variable fonts expose named instances as separate faces with stable ids', async (t) => {
+  const { faces } = await parseSfntFaces(await readFile(VARIABLE));
+  assert.deepEqual(faces.map((face) => [face.families[0], face.weight, face.bold, face.instance ?? null]), [
+    ['RHWP Variable Fixture', 400, false, null],
+    ['RHWP Variable Fixture Thin', 100, false, { wght: 100 }],
+    ['RHWP Variable Fixture SemiBold', 600, false, { wght: 600 }],
+    ['RHWP Variable Fixture', 700, true, { wght: 700 }],
+    ['RHWP Variable Fixture Black', 900, false, { wght: 900 }],
+  ]);
+  const semibold = faces[2];
+  assert.deepEqual(semibold.postscriptNames, ['RHWPVariableFixture-SemiBold']);
+  assert.deepEqual(semibold.typographicFamilies, ['RHWP Variable Fixture']);
+  assert.deepEqual(semibold.typographicStyles, ['SemiBold']);
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-variable-fonts-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'Variable.ttf'), await readFile(VARIABLE));
+  const options = { cacheDir: path.join(dir, 'cache'), roots: [{ path: dir, kind: 'user' }] };
+  const service = createSystemFontService(options);
+  const index = await service.list();
+  const ids = index.faces.map((face) => face.id);
+  assert.equal(new Set(ids).size, 5);
+  const warm = await createSystemFontService(options).list();
+  assert.equal(warm.fromCache, true);
+  assert.deepEqual(warm.faces.map((face) => face.id), ids);
+  // 인스턴스 face 도 같은 파일 바이트를 내준다.
+  const instance = index.faces.find((face) => face.instance?.wght === 600);
+  const parts = [];
+  for await (const chunk of (await service.openFace(instance.id)).chunks()) parts.push(chunk);
+  assert.deepEqual(Buffer.concat(parts), await readFile(VARIABLE));
 });

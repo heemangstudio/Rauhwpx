@@ -118,7 +118,7 @@ async function fixture(t, { holdStartupDelayMs = 0, fakeCodex = false } = {}) {
     models: [
       { id: 'test/reasoning', name: 'Reasoning', reasoning: true, efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
       { id: 'test/plain', name: 'Plain', reasoning: false, efforts: [], defaultEffort: null },
-    // 기록 예산은 모델 맥락 창에서 나온다 — 작은 창(8k)이면 기록이 한 줄도 들어가지 못한다.
+    // 기록 예산은 모델 콘텍스트 창에서 나온다 — 작은 창(8k)이면 기록이 한 줄도 들어가지 못한다.
     ].map((model) => ({ ...model, contextLength: 200_000, supportsImages: false, pricing: { prompt: 0, completion: 0 } })),
   }));
   mkdirSync(path.join(piRoot, 'agent'), { recursive: true });

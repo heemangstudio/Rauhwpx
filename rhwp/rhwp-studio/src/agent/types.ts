@@ -960,7 +960,7 @@ export type AgentStreamEvent =
       resumeLost?: true;
     }
   | { type: 'error'; agent: AgentName; message: string; /** 허브가 분류한 실패 (새 허브만). */ failure?: ProviderFailure }
-  /** 마지막 모델 호출이 끝났을 때 맥락 창을 차지한 토큰 수. 누적 과금량이 아니다. */
+  /** 마지막 모델 호출이 끝났을 때 콘텍스트 창을 차지한 토큰 수. 누적 과금량이 아니다. */
   | { type: 'context-usage'; agent: AgentName; usedTokens: number; maxTokens?: number; autoCompact?: boolean }
   | {
       type: 'compaction';
@@ -1005,11 +1005,11 @@ export interface ChatHistoryEntry {
   id?: string;
 }
 
-/** chat-start 에 싣는 프로바이더 맥락 창 정보. 허브가 넘겨줄 대화 예산을 정한다. */
+/** chat-start 에 싣는 프로바이더 콘텍스트 창 정보. 허브가 넘겨줄 대화 예산을 정한다. */
 export interface ProviderContextUsage {
   /** 재개할 네이티브 세션이 마지막으로 차지한 토큰. 커서를 보낼 때만 싣는다. */
   usedTokens?: number;
-  /** 이 프로바이더의 마지막으로 알려진 맥락 창 크기. */
+  /** 이 프로바이더의 마지막으로 알려진 콘텍스트 창 크기. */
   maxTokens?: number;
 }
 

@@ -53,7 +53,7 @@ export interface ComposedMessageSpec<Staged = never, Selection = never> {
   revisionPlanId?: string | null;
   /**
    * 이미 만든 요청문을 그대로 보낸다 — 템플릿·스킬·계획 머리말을 다시 만들지 않는다. 기록에는
-   * displayText 가 남는다. 인라인 프롬프트(선택 맥락 블록)와 U5 의 다시 보내기가 쓴다. continuation 은
+   * displayText 가 남는다. 인라인 프롬프트(선택 콘텍스트 블록)와 U5 의 다시 보내기가 쓴다. continuation 은
    * 요청문이 이미 끊긴 턴 블록(S3)을 실었다는 표다 — 블록을 겹쳐 붙이지 않는다.
    */
   wire?: { displayText: string; requestText: string; continuation?: boolean };

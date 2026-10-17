@@ -162,40 +162,6 @@ export function createStopIcon(className = ''): SVGSVGElement {
   return svg;
 }
 
-/** 응답 대기·편집 상태에 쓰는 잉크 고리. 가운데 점은 회전하지 않는다. */
-export function createInkRing(className = ''): SVGSVGElement {
-  const svg = document.createElementNS(NS, 'svg');
-  svg.setAttribute('class', className ? `ag-ink-ring ${className}` : 'ag-ink-ring');
-  svg.setAttribute('viewBox', '-10 -10 120 120');
-  svg.setAttribute('width', '24');
-  svg.setAttribute('height', '24');
-  svg.setAttribute('aria-hidden', 'true');
-  svg.setAttribute('focusable', 'false');
-
-  const trails = document.createElementNS(NS, 'g');
-  trails.setAttribute('class', 'ag-ink-ring-trails');
-  const pathData = 'M50 13 C90 7 104 65 69 81 C33 108 2 61 24 31 C43 0 85 31 73 61 C60 91 16 75 23 44 C29 18 67 11 78 41 C89 71 50 98 29 73 C1 44 30 10 50 13Z';
-  for (const transform of [
-    '',
-    'rotate(20 50 50) scale(.9) translate(5.5 5.5)',
-    'rotate(40 50 50)',
-    'rotate(60 50 50) scale(.85) translate(9 9)',
-  ]) {
-    const path = document.createElementNS(NS, 'path');
-    path.setAttribute('d', pathData);
-    if (transform) path.setAttribute('transform', transform);
-    trails.appendChild(path);
-  }
-
-  const center = document.createElementNS(NS, 'circle');
-  center.setAttribute('class', 'ag-ink-ring-center');
-  center.setAttribute('cx', '50');
-  center.setAttribute('cy', '50');
-  center.setAttribute('r', '5');
-  svg.append(trails, center);
-  return svg;
-}
-
 /** 편집 종류 → 아이콘 이름. opGlyph 의 유니코드 대응을 대체한다. */
 export const OP_ICON: Record<string, SidebarIconName> = {
   insert: 'insert',

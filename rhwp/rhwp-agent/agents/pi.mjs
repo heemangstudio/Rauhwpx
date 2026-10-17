@@ -389,7 +389,7 @@ export async function canResumePiSession(opts, sessionId) {
   return findPiSessionFileSync(opts, sessionId) !== null;
 }
 
-/** Pi 가 맥락 크기로 세는 값 — 마지막 호출의 totalTokens, 없으면 네 칸의 합. */
+/** Pi 가 콘텍스트 크기로 세는 값 — 마지막 호출의 totalTokens, 없으면 네 칸의 합. */
 function piContextTokens(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const total = Number(raw.totalTokens);

@@ -6,7 +6,7 @@
  * 패키지된 PWA/브라우저는 Node 를 띄울 수 없어 no-op 이다.
  */
 
-import type { SystemFontIndex } from './core/desktop-fonts.ts';
+import type { DesktopFontHostApi, SystemFontIndex } from './core/desktop-fonts.ts';
 import type { ChatAttentionLedger } from './agent/chat-attention.ts';
 import type {
   FileSystemFileHandleLike,
@@ -144,6 +144,15 @@ export interface RhwpDesktopApi {
   readRememberedNativeDocument?: (documentId: string) => Promise<NativeFileReadResult | null>;
   revealNativeDocument?: (documentId: string) => Promise<boolean>;
   openNativeDocumentWindow?: (documentId: string) => Promise<boolean>;
+  /** 이 창이 앱의 첫 창이라 자동 저장본 복구를 물어도 되는지. */
+  offersAutosaveRecovery?: () => Promise<boolean>;
+  /** 저장하지 않은 새 문서. 창마다 자기 목록을 알리고 모든 창의 목록을 받는다. */
+  setUnsavedDocuments?: (documents: UnsavedDocumentReport[]) => void;
+  listUnsavedDocuments?: () => Promise<DesktopUnsavedDocument[]>;
+  onUnsavedDocumentsChanged?: (callback: (documents: DesktopUnsavedDocument[]) => void) => (() => void) | void;
+  /** 다른 창의 새 문서를 그 창에서 열거나 저장한다. 그 창이 없으면 false. */
+  runUnsavedDocumentAction?: (documentId: string, action: UnsavedDocumentAction) => Promise<boolean>;
+  onUnsavedDocumentAction?: (callback: (documentId: string, action: UnsavedDocumentAction) => void) => (() => void) | void;
   /** slotId 를 생략하면 창의 기본 문서 자리다. 한 창이 문서마다 다른 자리를 쓴다. */
   reserveDocument?: (
     identity: DocumentOwnershipIdentity,
@@ -182,6 +191,8 @@ export interface RhwpDesktopApi {
   listSystemFonts?: (options?: { refresh?: boolean }) => Promise<SystemFontIndex>;
   /** face 주소의 앞부분. TTC face는 단독 SFNT로 추출되고, 파일이 바뀌었으면 409로 응답한다. */
   systemFontBaseUrl?: () => Promise<string>;
+  fontFolders?: DesktopFontHostApi['fontFolders'];
+  onFontsChanged?: DesktopFontHostApi['onFontsChanged'];
   /** macOS 프록시 아이콘과 미저장 점. 경로는 메인이 핸들로 찾는다. */
   setDocumentState?: (state: { edited: boolean }) => void;
   /** 보지 않는 채팅의 알림 — 창에 초점이 없을 때만 메인이 OS 알림으로 띄운다. */
@@ -193,6 +204,35 @@ export interface RhwpDesktopApi {
   showContextMenu?: (items: NativeContextMenuItem[]) => Promise<string | null>;
   /** 저장 확인을 창에 붙은 네이티브 시트로 묻는다. */
   showUnsavedChangesSheet?: (payload: { fileName: string }) => Promise<'save' | 'discard' | 'cancel'>;
+}
+
+export interface UnsavedDocumentReport {
+  documentId: string;
+  fileName: string;
+  edited: boolean;
+  createdAt: number;
+}
+
+export interface DesktopUnsavedDocument extends UnsavedDocumentReport {
+  /** 이 창의 문서. */
+  local: boolean;
+}
+
+export type UnsavedDocumentAction = 'open' | 'save';
+
+export function desktopUnsavedDocumentsApi(win?: DesktopHost): Required<Pick<RhwpDesktopApi,
+  'setUnsavedDocuments' | 'listUnsavedDocuments' | 'onUnsavedDocumentsChanged'
+  | 'runUnsavedDocumentAction' | 'onUnsavedDocumentAction'>> | null {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.setUnsavedDocuments || !api.listUnsavedDocuments || !api.onUnsavedDocumentsChanged
+    || !api.runUnsavedDocumentAction || !api.onUnsavedDocumentAction) return null;
+  return {
+    setUnsavedDocuments: api.setUnsavedDocuments,
+    listUnsavedDocuments: api.listUnsavedDocuments,
+    onUnsavedDocumentsChanged: api.onUnsavedDocumentsChanged,
+    runUnsavedDocumentAction: api.runUnsavedDocumentAction,
+    onUnsavedDocumentAction: api.onUnsavedDocumentAction,
+  };
 }
 
 export type NativeContextMenuItem =
@@ -1142,6 +1182,20 @@ export async function revealNativeDocument(documentId: string, win?: DesktopHost
   const api = desktopHost(win)?.rhwpDesktop;
   if (!api?.revealNativeDocument) return false;
   return await api.revealNativeDocument(documentId) === true;
+}
+
+/**
+ * 자동 저장본 복구는 앱의 첫 창만 묻는다. 다른 창에서 띄운 창은 묻지 않고 바로 문서를 연다.
+ * 데스크톱이 아니면(웹·확장) 늘 묻는다.
+ */
+export async function offersAutosaveRecovery(win?: DesktopHost): Promise<boolean> {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.offersAutosaveRecovery) return true;
+  try {
+    return await api.offersAutosaveRecovery() === true;
+  } catch {
+    return true;
+  }
 }
 
 export function canOpenNativeDocumentWindow(win?: DesktopHost): boolean {

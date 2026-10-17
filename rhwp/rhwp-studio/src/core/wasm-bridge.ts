@@ -470,7 +470,12 @@ export class WasmBridge {
     const hasBaked = Reflect.get(wasmExports, 'hasBakedFontMetrics');
     const fallbackFamilies = Reflect.get(wasmExports, 'fontFallbackFamilies');
     return {
-      register: (bytes, aliasesJson, bold, italic) => String(register(bytes, aliasesJson, bold, italic)),
+      // 가변 좌표 인자를 모르는 이전 wasm 은 다섯 번째 인자를 무시하고 기본 좌표로 잰다.
+      register: (bytes, aliasesJson, bold, italic, variationsJson) => String(
+        variationsJson === undefined
+          ? register(bytes, aliasesJson, bold, italic)
+          : register(bytes, aliasesJson, bold, italic, variationsJson),
+      ),
       ...(typeof clear === 'function' ? { clear: () => { clear(); } } : {}),
       ...(typeof report === 'function' ? { report: () => String(report()) } : {}),
       ...(typeof hasBaked === 'function'
@@ -2611,9 +2616,10 @@ export class WasmBridge {
     return JSON.parse((this.doc as any).groupShapes(json));
   }
 
-  insertEquation(sec: number, para: number, charOffset: number, script: string, fontSizeHwpunit: number, color: number): { ok: boolean; paraIdx: number; controlIdx: number } {
+  /** logical 이면 charOffset 은 캐럿 논리 오프셋(인라인 개체 1칸)이다. */
+  insertEquation(sec: number, para: number, charOffset: number, script: string, fontSizeHwpunit: number, color: number, logical = false): { ok: boolean; paraIdx: number; controlIdx: number } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return JSON.parse((this.doc as any).insertEquation(sec, para, charOffset, script, fontSizeHwpunit, color));
+    return JSON.parse((this.doc as any).insertEquation(sec, para, charOffset, script, fontSizeHwpunit, color, logical));
   }
 
   promoteOleEquation(sec: number, para: number, ci: number): { ok: boolean; paraIdx: number; controlIdx: number; script: string } {
@@ -2622,15 +2628,15 @@ export class WasmBridge {
   }
 
   /** 표 셀 문단에 수식 삽입 — controlIdx 는 표 컨트롤 인덱스, 반환 controlIdx 는 셀 문단 내 수식 인덱스 */
-  insertEquationInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, script: string, fontSizeHwpunit: number, color: number): { ok: boolean; cellParaIdx: number; controlIdx: number } {
+  insertEquationInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, script: string, fontSizeHwpunit: number, color: number, logical = false): { ok: boolean; cellParaIdx: number; controlIdx: number } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return JSON.parse((this.doc as any).insertEquationInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, script, fontSizeHwpunit, color));
+    return JSON.parse((this.doc as any).insertEquationInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, script, fontSizeHwpunit, color, logical));
   }
 
-  insertEquationInCellByPath(sec: number, parentPara: number, cellPath: CellPathLike, charOffset: number, script: string, fontSizeHwpunit: number, color: number): { ok: boolean; cellParaIdx: number; controlIdx: number } {
+  insertEquationInCellByPath(sec: number, parentPara: number, cellPath: CellPathLike, charOffset: number, script: string, fontSizeHwpunit: number, color: number, logical = false): { ok: boolean; cellParaIdx: number; controlIdx: number } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse((this.doc as any).insertEquationInCellByPath(
-      sec, parentPara, JSON.stringify(cellPath), charOffset, script, fontSizeHwpunit, color,
+      sec, parentPara, JSON.stringify(cellPath), charOffset, script, fontSizeHwpunit, color, logical,
     ));
   }
 

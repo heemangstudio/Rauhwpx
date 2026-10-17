@@ -6,236 +6,239 @@
 <title>라이선스 키 | HamaEditor</title>
 <meta name="description" content="HamaEditor 결제를 마친 뒤 라이선스 키를 받는 페이지예요.">
 <meta name="robots" content="noindex">
-<meta name="theme-color" content="#ececea">
-<link rel="icon" type="image/png" href="assets/hamaeditor-logo.png">
-<link rel="apple-touch-icon" href="assets/hamaeditor-logo.png">
+<meta name="theme-color" content="#000000">
+<link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
+<link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="canonical" href="https://heemangstudios.com/success">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Hahmlet:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500&family=Nanum+Pen+Script&display=swap" rel="stylesheet">
-<link href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="stylesheet" href="assets/site.css">
+<script>document.documentElement.classList.add('js');</script>
 <style>
-/* tos.html 과 같은 종이·목탄 토큰을 써요. */
-*,*::before,*::after{box-sizing:border-box}
+/* 결제 완료 전용 배치. 공통 부품은 assets/site.css 에 있어요.
+   상태(확인 중, 키 받음, 오류, 시간 초과)는 아래 스크립트가 data-* 요소를 켜고 끄는 것만으로 바뀌어요. */
+[hidden] { display: none !important; }
 
-:root{
-  --ground:#ececea;
-  --sheet:#fcfcfb;
-  --ink:#1b1b1a;
-  --ink-2:#3a3a38;
-  --ink-3:#62625f;
-  --ink-4:#8d8d8a;
-  --rule:#cdcdca;
-  --sans:'Pretendard Variable',Pretendard,system-ui,-apple-system,'Apple SD Gothic Neo',sans-serif;
-  --serif:'Hahmlet','Apple SD Gothic Neo',serif;
-  --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
-  --hand:'Nanum Pen Script',cursive;
-  --gut:clamp(16px,4vw,48px);
-  --frame:83.333ms;
-  --margin:clamp(64px,8vw,104px);
-  --tooth:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='t' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.78' numOctaves='3' seed='3' stitchTiles='stitch'/%3E%3CfeDiffuseLighting lighting-color='%23fff' surfaceScale='1.1' diffuseConstant='1'%3E%3CfeDistantLight azimuth='225' elevation='60'/%3E%3C/feDiffuseLighting%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='.07' intercept='.868'/%3E%3CfeFuncG type='linear' slope='.07' intercept='.868'/%3E%3CfeFuncB type='linear' slope='.07' intercept='.863'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23t)'/%3E%3C/svg%3E");
-  --dust:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='720' height='720'%3E%3Cfilter id='d' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.62' numOctaves='2' seed='11' stitchTiles='stitch' result='a'/%3E%3CfeColorMatrix in='a' values='0 0 0 0 .1 0 0 0 0 .1 0 0 0 0 .1 -64 0 0 0 16.4' result='f'/%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.2' numOctaves='2' seed='5' stitchTiles='stitch' result='b'/%3E%3CfeColorMatrix in='b' values='0 0 0 0 .1 0 0 0 0 .1 0 0 0 0 .1 -48 0 0 0 11.3' result='c'/%3E%3CfeMerge result='s'%3E%3CfeMergeNode in='f'/%3E%3CfeMergeNode in='c'/%3E%3C/feMerge%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.0045' numOctaves='2' seed='8' stitchTiles='stitch' result='m'/%3E%3CfeColorMatrix in='m' values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5 0 0 0 -2.35' result='k'/%3E%3CfeComposite in='s' in2='k' operator='in'/%3E%3C/filter%3E%3Crect width='720' height='720' filter='url(%23d)' opacity='.42'/%3E%3C/svg%3E");
+.key-cell { padding-top: 0; padding-bottom: clamp(56px, 7vw, 96px); }
+.key-wrap { position: relative; width: min(100%, 560px); margin: 112px auto 0; }
+.key-wrap .perch { left: 50%; margin-left: -55px; }
+.key { padding: 30px clamp(20px, 4vw, 32px); }
+
+/* 상태 한 줄: 확인 중이면 도는 표시, 문제가 있으면 노란 네모 */
+.status {
+  display: flex; align-items: flex-start; gap: 12px;
+  font-size: var(--fs-lead); line-height: 1.6; font-weight: 600; color: var(--text);
 }
-
-html{-webkit-text-size-adjust:100%;overflow-x:clip;scroll-padding-top:84px}
-html,body{margin:0;padding:0}
-body{
-  background-color:var(--ground);
-  background-image:var(--dust),var(--tooth);
-  background-size:720px 720px,300px 300px;
-  color:var(--ink);
-  font:400 16.5px/1.8 var(--sans);
-  letter-spacing:-.006em;
-  -webkit-font-smoothing:antialiased;
+.spin {
+  flex: none; width: 16px; height: 16px; margin-top: 0.3em;
+  border: 2px solid rgba(178, 226, 251, 0.22); border-top-color: var(--accent); border-radius: 50%;
 }
-::selection{background:var(--ink);color:var(--sheet)}
-a{color:inherit}
-p,li,h1,h2,dt,dd,td,th{word-break:keep-all;overflow-wrap:break-word}
-h1,h2,p{margin:0}
-ol,ul{margin:0;padding:0;list-style:none}
-:focus-visible{outline:2px solid var(--ink);outline-offset:4px;border-radius:2px}
-.wrap{max-width:1180px;margin:0 auto;padding:0 var(--gut)}
-.charcoal{filter:url(#cct)}
-.mono{font:500 12px/1.4 var(--mono);letter-spacing:.06em;text-transform:uppercase;font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion: no-preference) { .spin { animation: spin 0.9s linear infinite; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+.status.is-bad::before { content: ""; flex: none; width: 8px; height: 8px; margin-top: 0.62em; background: #e9c08a; }
+.key:has(.status.is-bad) { box-shadow: inset 0 0 0 1px rgba(233, 192, 138, 0.26), 0 24px 48px -28px rgba(0, 0, 0, 0.6); }
 
-/* 머리글 */
-.mast{position:sticky;top:0;z-index:40;height:60px;background:rgba(236,236,234,.9);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
-.mast .wrap{display:flex;align-items:center;justify-content:space-between;gap:18px;height:100%;max-width:none}
-.mast__rule{position:absolute;left:0;right:0;bottom:-3px;width:100%;height:6px;overflow:visible;color:var(--ink);pointer-events:none;filter:url(#cc0)}
-.brand{display:flex;align-items:center;gap:10px;text-decoration:none;font:700 18px/1 var(--serif);letter-spacing:-.03em;min-height:44px}
-.tile{position:relative;width:30px;height:30px;border-radius:8px;overflow:hidden;flex:0 0 auto;background:#1c1c1b;box-shadow:0 1px 0 rgba(0,0,0,.35)}
-.tile img{position:absolute;left:-6%;top:-6%;width:112%;height:112%;max-width:none;filter:url(#logo)}
-.back{min-height:44px;display:inline-flex;align-items:center;gap:8px;color:var(--ink-2);font-size:15px;text-decoration:none}
-.back:hover{color:var(--ink);text-decoration:underline;text-underline-offset:5px;text-decoration-thickness:1px}
-.back svg{width:18px;height:18px}
-/* 약관 한 장 */
-.sheet{
-  position:relative;background:var(--sheet);
-  padding:clamp(40px,5vw,64px) clamp(24px,5vw,64px) clamp(40px,5vw,60px) calc(var(--margin) + clamp(20px,3vw,36px));
-  box-shadow:0 .5px 1px rgba(10,10,10,.2),0 4px 14px -4px rgba(10,10,10,.16);
-  transform:rotate(-.2deg);
+/* 키 받음 */
+.key__issued { margin-top: 18px; }
+.key__issued .code-box { flex-wrap: wrap; padding: 10px 10px 10px 18px; }
+.key__issued code { flex: 1 1 220px; font-family: var(--mono); font-size: 17px; letter-spacing: 0.04em; color: var(--mist); user-select: all; }
+.key__issued .code-box .btn { font-family: var(--font); letter-spacing: -0.01em; }
+.key__issued .meta { margin-top: 12px; }
+
+/* 오류와 시간 초과 */
+.key [data-retry-wrap] { margin-top: 20px; }
+.key__help {
+  margin-top: 20px; padding: 16px 18px;
+  border-radius: 12px; background: #0a0d12; box-shadow: inset 0 0 0 1px var(--line);
+  font-size: var(--fs-small); line-height: 1.7; color: var(--muted);
 }
-.sheet::after{content:'';position:absolute;inset:0;pointer-events:none;background:linear-gradient(165deg,rgba(255,255,255,.2),rgba(0,0,0,.02) 75%,rgba(0,0,0,.045))}
-/* 여백 두 줄 */
-.sheet::before{content:'';position:absolute;top:0;bottom:0;left:var(--margin);width:4px;border-left:1px solid rgba(0,0,0,.18);border-right:1px solid rgba(0,0,0,.1);pointer-events:none}
-.tack{position:absolute;z-index:3;left:50%;top:-7px;width:17px;height:17px;margin-left:-8px;border-radius:50%;
-  background:radial-gradient(circle at 36% 30%,#9a9a97 0 1.6px,#3a3a38 3.4px,#141413 8.5px);
-  box-shadow:3px 5px 3px -1px rgba(0,0,0,.28),inset 0 -1px 1px rgba(0,0,0,.5)}
-/* 바인더 구멍 */
-.punch{position:absolute;left:calc(var(--margin)/2 - 7px);width:14px;height:14px;border-radius:50%;background:var(--ground);box-shadow:inset 0 1px 2px rgba(0,0,0,.4)}
-.punch.a{top:90px}.punch.b{top:50%}.punch.c{bottom:90px}
+.ref { margin-top: 10px; font-family: var(--mono); font-size: 13px; color: var(--meta); overflow-wrap: anywhere; }
 
-.doc-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px 40px;align-items:end;padding-bottom:26px;border-bottom:1.5px solid var(--ink)}
-.doc-head .mono{color:var(--ink-3);margin-bottom:12px}
-.doc-head h1{font:800 clamp(34px,4vw,52px)/1.12 var(--serif);letter-spacing:-.04em}
-.doc-head dl{margin:0;display:grid;grid-template-columns:auto auto;gap:6px 18px;font-size:14px}
-.doc-head dt{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-4)}
-.doc-head dd{margin:0;font-weight:600;font-variant-numeric:tabular-nums}
-.foot{padding:40px 0 36px}
-.colophon{border-top:1px solid var(--rule);padding-top:18px;margin:0;font:400 12px/1.8 var(--mono);color:var(--ink-3);display:flex;flex-wrap:wrap;gap:4px 22px}
-.colophon a{color:var(--ink-2);text-underline-offset:3px;text-decoration-color:var(--ink-4)}
-
-.main{padding:clamp(36px,5vw,72px) 0 clamp(48px,6vw,88px)}
-.main .wrap{max-width:860px}
-.sheet h2{font:700 20px/1.35 var(--serif);letter-spacing:-.025em;margin-top:34px}
-.sheet p,.sheet li{color:var(--ink-2)}
-.sheet .lead{margin-top:18px;font-size:17px}
-.sheet ul.dots{margin-top:10px;padding-left:1.1em;list-style:disc}
-.sheet ul.dots li+li{margin-top:4px}
-.price{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin-top:28px}
-.price b{font:800 clamp(40px,5vw,56px)/1 var(--serif);letter-spacing:-.03em;font-variant-numeric:tabular-nums}
-.price span{font-size:15px;font-weight:500;color:var(--ink-2)}
-.note{margin-top:22px;padding:14px 18px;border:1.5px solid var(--ink);border-radius:3px;background:#fff}
-.note b{color:var(--ink)}
-.note--soft{border:1px dashed var(--ink-4);background:transparent}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:52px;padding:0 24px;border:0;border-radius:3px;background:var(--ink);color:var(--sheet);font:600 16px/1 var(--sans);text-decoration:none;cursor:pointer}
-.btn:hover{background:#000}
-.btn[aria-disabled="true"],.btn:disabled{opacity:.45;cursor:not-allowed}
-.btn--line{background:transparent;color:var(--ink);border:2px solid var(--ink)}
-.btn--line:hover{background:var(--ink);color:var(--sheet)}
-.actions{display:flex;flex-wrap:wrap;gap:12px 14px;align-items:center;margin-top:22px}
-.consent{display:flex;gap:10px;align-items:flex-start;margin-top:26px;font-size:15px;color:var(--ink-2)}
-.consent input{width:20px;height:20px;margin:3px 0 0;flex:0 0 auto;accent-color:var(--ink)}
-.small{font-size:14px;color:var(--ink-3)}
-.status{margin-top:26px;min-height:28px;font-weight:600}
-.status.is-bad{color:#9b2c1f}
-.keybox{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:16px}
-.keybox code{flex:1 1 320px;padding:14px 16px;border:1.5px solid var(--ink);border-radius:3px;background:#fff;font:500 17px/1.4 var(--mono);letter-spacing:.04em;word-break:break-all;user-select:all}
-.ref{font:400 13px/1.6 var(--mono);color:var(--ink-3);word-break:break-all}
-.spin{display:inline-block;width:14px;height:14px;margin-right:8px;border:2px solid var(--ink-4);border-top-color:var(--ink);border-radius:50%;vertical-align:-2px}
-@media (prefers-reduced-motion:no-preference){.spin{animation:spin 1s linear infinite}}
-@keyframes spin{to{transform:rotate(360deg)}}
-[hidden]{display:none!important}
-@media (max-width:640px){
-  :root{--margin:0px}
-  .sheet{padding:40px 22px 34px;transform:none}
-  .sheet::before,.punch{display:none}
-  .doc-head{grid-template-columns:minmax(0,1fr)}
+/* 하마: 기다리는 동안 살짝 들썩이고, 키가 나오면 뛰어오르며 별이 떠요 */
+.cheer { position: absolute; inset: 0; }
+.cheer .star { opacity: 0; transform: scale(0); }
+@keyframes hama-wait { 0%, 100% { translate: 0 0; } 50% { translate: 0 -2px; } }
+@keyframes hama-cheer {
+  0% { translate: 0 0; }
+  10% { translate: 0 -8px; }
+  20% { translate: 0 -14px; }
+  30% { translate: 0 -8px; }
+  40% { translate: 0 0; }
+  50% { translate: 0 -8px; }
+  60% { translate: 0 -12px; }
+  70% { translate: 0 -6px; }
+  80%, 100% { translate: 0 0; }
 }
+@keyframes cheer-pop { from { opacity: 0; transform: scale(0); } to { opacity: 1; transform: none; } }
+.key-wrap:has(.spin) .perch img { animation: hama-wait 1.2s steps(1, end) infinite; }
+.key-wrap:has([data-issued]:not([hidden])) .perch img { animation: hama-cheer 900ms steps(1, end); }
+.key-wrap:has([data-issued]:not([hidden])) .cheer .star { animation: cheer-pop 420ms var(--ease-spring) both; animation-delay: calc(200ms + var(--n) * 110ms); }
 
-@media (prefers-reduced-motion:no-preference){
-  .sheet{animation:drop calc(var(--frame)*8) steps(1,end) both}
+/* 키 넣는 법 */
+.activate { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: 40px; padding-bottom: clamp(36px, 5vw, 64px); }
+.activate > .h2 { font-size: clamp(24px, 0.8vw + 18px, 30px); }
+.activate .step .btn { margin-top: 14px; }
+.foot-note { padding-top: 20px; padding-bottom: 20px; }
+.foot-note a { color: var(--soft); text-decoration: underline; text-decoration-color: rgba(178, 226, 251, 0.35); text-underline-offset: 3px; }
+
+@media (max-width: 900px) {
+  .activate { grid-template-columns: minmax(0, 1fr); gap: 12px; }
 }
-@keyframes drop{
-  0%   {opacity:0;transform:translate(-10px,-90px) rotate(-2.6deg) scale(1.02)}
-  12.5%{opacity:1;transform:translate(-6px,-54px) rotate(.7deg) scale(1.016)}
-  25%  {transform:translate(4px,-22px) rotate(-1deg) scale(1.008)}
-  37.5%{transform:translate(1px,-5px) rotate(-.05deg) scale(1.003)}
-  50%  {transform:translate(0,2px) rotate(-.2deg) scale(1.004,.994)}
-  62.5%{transform:translate(0,-1px) rotate(-.15deg)}
-  75%,100%{opacity:1;transform:rotate(-.2deg)}
+@media (max-width: 760px) {
+  .key-wrap { margin-top: 72px; }
+  .key-wrap .perch { margin-left: -33px; }
+  .key__issued .code-box { padding: 14px 16px; }
+  .key__issued code { font-size: 15px; letter-spacing: 0.02em; }
+  .key__issued .btn, .key [data-retry-wrap] .btn { flex: 1 1 100%; }
 }
 </style>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
-  <defs>
-    <filter id="cc0" x="-8%" y="-8%" width="116%" height="116%" color-interpolation-filters="sRGB">
-      <feTurbulence type="fractalNoise" baseFrequency="0.03" numOctaves="2" seed="2" result="w"/>
-      <feDisplacementMap in="SourceGraphic" in2="w" scale="3.4" xChannelSelector="R" yChannelSelector="G" result="d"/>
-      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" seed="5" result="g"/>
-      <feColorMatrix in="g" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 3.4 0 0 0 -0.8" result="m"/>
-      <feComposite in="d" in2="m" operator="in"/>
-    </filter>
-    <filter id="cct" x="-4%" y="-10%" width="108%" height="120%" color-interpolation-filters="sRGB">
-      <feTurbulence type="fractalNoise" baseFrequency="0.06" numOctaves="2" seed="4" result="w"/>
-      <feDisplacementMap in="SourceGraphic" in2="w" scale="1.8" xChannelSelector="R" yChannelSelector="G" result="d"/>
-      <feTurbulence type="fractalNoise" baseFrequency="1.1" numOctaves="1" seed="8" result="g"/>
-      <feColorMatrix in="g" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2.6 0 0 0 -0.12" result="m"/>
-      <feComposite in="d" in2="m" operator="in"/>
-    </filter>
-    <filter id="logo" color-interpolation-filters="sRGB">
-      <feColorMatrix type="saturate" values="0"/>
-      <feComponentTransfer><feFuncR type="linear" slope="1.56" intercept="-.6"/><feFuncG type="linear" slope="1.56" intercept="-.6"/><feFuncB type="linear" slope="1.56" intercept="-.6"/></feComponentTransfer>
-    </filter>
-  </defs>
-</svg>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
 
-<header class="mast">
-  <div class="wrap">
-    <a class="brand" href="index.html"><span class="tile"><img src="assets/hamaeditor-logo.png" width="1024" height="1024" alt=""></span>HamaEditor</a>
-    <a class="back" href="index.html">
-      <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M15 9H3m0 0 4.2-4.2M3 9l4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      홈
-    </a>
+<header class="nav" data-nav>
+  <div class="nav__in">
+    <a class="brand" href="index.html" aria-label="HamaEditor 홈"><img class="px" src="assets/hama.svg" width="44" height="40" alt="">HamaEditor</a>
+    <nav class="nav__links" aria-label="주요 메뉴">
+      <a href="index.html#features">기능</a>
+      <a href="index.html#flow">예시</a>
+      <a href="index.html#connect">연결</a>
+      <a href="pricing.html">가격</a>
+    </nav>
+    <div class="nav__end">
+      <a class="btn btn--primary btn--white btn--sm" href="install.html"><svg class="btn__icon" viewBox="0 0 384 512" width="12" height="14" aria-hidden="true"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>MacOS 용 다운로드</a>
+      <button class="nav__toggle" type="button" data-menu-toggle aria-controls="menu" aria-expanded="false" aria-label="메뉴 열기"><span></span><span></span></button>
+    </div>
   </div>
-  <svg class="mast__rule" viewBox="0 0 1000 6" preserveAspectRatio="none" aria-hidden="true"><path d="M-4 3.2C180 2.1 330 4.4 520 3.1S850 2.2 1004 3.6" fill="none" stroke="currentColor" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>
+  <div class="menu" id="menu" hidden>
+    <nav class="menu__links" aria-label="메뉴">
+      <a href="index.html#features">기능</a>
+      <a href="index.html#flow">예시</a>
+      <a href="index.html#connect">연결</a>
+      <a href="pricing.html">가격</a>
+    </nav>
+    <div class="btn-row">
+      <a class="btn btn--secondary" href="mailto:management@heemangstudios.com">문의하기</a>
+    </div>
+  </div>
 </header>
 
-<main class="main">
-  <div class="wrap">
-    <article class="sheet" aria-labelledby="ok-title">
-      <i class="tack" aria-hidden="true"></i>
-      <i class="punch a" aria-hidden="true"></i><i class="punch b" aria-hidden="true"></i><i class="punch c" aria-hidden="true"></i>
-      <header class="doc-head">
-        <div>
-          <p class="mono">HamaEditor · 라이선스 키</p>
-          <h1 id="ok-title" class="charcoal">결제해 주셔서 고마워요</h1>
-        </div>
+<main id="main">
+  <section class="has-sky" aria-labelledby="ok-title">
+    <div class="sky" aria-hidden="true">
+      <i class="wide-only cloud cloud--l" style="left:5%;top:40%"></i>
+      <i class="wide-only cloud" style="left:84%;top:62%"></i>
+      <i class="star star--lg star--blink" style="left:12%;top:16%;--d:.8s"></i>
+      <i class="star star--lg" style="left:88%;top:22%"></i>
+      <i class="wide-only star star--dim" style="left:24%;top:60%"></i>
+      <i class="star star--blink" style="left:94%;top:44%;--d:2.6s;--blink:7.4s"></i>
+      <i class="star star--dim" style="left:3%;top:82%"></i>
+      <i class="dot dot--hi" style="left:30%;top:12%"></i>
+      <i class="wide-only dot" style="left:70%;top:14%"></i>
+      <i class="dot" style="left:97%;top:76%"></i>
+    </div>
+
+    <div class="frame frame--top">
+      <header class="cell cell--open page-head cell--center">
+        <p class="eyebrow">라이선스 키</p>
+        <h1 id="ok-title" class="h1">결제해 주셔서 고마워요</h1>
       </header>
 
-      <p class="status" data-status role="status" aria-live="polite"><span class="spin" aria-hidden="true"></span>결제를 확인하고 있어요…</p>
+      <div class="cell cell--open key-cell">
+        <div class="key-wrap">
+          <div class="perch" data-reveal style="--i:4">
+            <img class="px" src="assets/hama.svg" width="110" height="100" alt="">
+            <span class="cheer" aria-hidden="true">
+              <i class="star" style="left:-14%;top:22%;--n:0"></i>
+              <i class="star star--lg" style="left:104%;top:4%;--n:1"></i>
+              <i class="star" style="left:2%;top:-8%;--n:2"></i>
+            </span>
+          </div>
+          <div class="card card--navy key" data-reveal="rise">
+            <p class="status" data-status role="status" aria-live="polite"><span class="spin" aria-hidden="true"></span>결제를 확인하고 있어요…</p>
 
-      <div data-issued hidden>
-        <div class="keybox">
-          <code data-key></code>
-          <button class="btn" type="button" data-copy>키 복사</button>
+            <div class="key__issued" data-issued hidden>
+              <div class="code-box">
+                <code data-key></code>
+                <button class="btn btn--primary btn--sm" type="button" data-copy>키 복사</button>
+              </div>
+              <p class="meta">이 키는 다시 보여 드리기 어려울 수 있어요. 복사해서 안전한 곳에 보관해 주세요.</p>
+            </div>
+
+            <div class="btn-row" data-retry-wrap hidden>
+              <button class="btn btn--secondary" type="button" data-retry>다시 확인하기</button>
+            </div>
+
+            <div class="key__help" data-help hidden>
+              <p>결제는 끝났는데 키가 보이지 않으면 아래 참조값과 Groble 주문번호를 <a class="link" href="mailto:management@heemangstudios.com?subject=HamaEditor%20%EB%9D%BC%EC%9D%B4%EC%84%A0%EC%8A%A4%20%ED%82%A4%20%EB%AC%B8%EC%9D%98">management@heemangstudios.com</a>으로 보내 주세요. 확인하고 키를 보내 드릴게요.</p>
+              <p class="ref" data-ref-line></p>
+            </div>
+          </div>
         </div>
-        <p class="small" style="margin-top:10px">이 키는 다시 보여 드리기 어려울 수 있어요. 복사해서 안전한 곳에 보관해 주세요.</p>
       </div>
+    </div>
+  </section>
 
-      <div class="actions" data-retry-wrap hidden>
-        <button class="btn btn--line" type="button" data-retry>다시 확인하기</button>
-      </div>
-
-      <div class="note note--soft" data-help hidden>
-        <p>결제는 끝났는데 키가 보이지 않으면 아래 참조값과 Groble 주문번호를 <a href="mailto:management@heemangstudios.com?subject=HamaEditor%20%EB%9D%BC%EC%9D%B4%EC%84%A0%EC%8A%A4%20%ED%82%A4%20%EB%AC%B8%EC%9D%98">management@heemangstudios.com</a>으로 보내 주세요. 확인하고 키를 보내 드릴게요.</p>
-        <p class="ref" data-ref-line></p>
-      </div>
-
-      <h2 id="activate">키 넣는 법</h2>
-      <ol class="dots" style="list-style:decimal;padding-left:1.3em">
-        <li>HamaEditor를 열어요. 아직 없다면 아래에서 내려받아요.</li>
-        <li>체험 중이면 설정 → 라이선스에서, 체험이 끝났다면 바로 뜨는 활성화 화면에서 키를 붙여 넣어요.</li>
-        <li>키 하나로 Mac 두 대까지 쓸 수 있어요. 다른 Mac으로 옮기려면 설정 → 라이선스 → ‘이 기기 비활성화’를 눌러요.</li>
+  <div class="frame">
+    <section class="cell activate" id="activate" aria-labelledby="activate-title">
+      <h2 id="activate-title" class="h2">키 넣는 법</h2>
+      <ol class="steps">
+        <li class="step">
+          <h3 class="h3">HamaEditor를 열어요</h3>
+          <p class="text">아직 없다면 먼저 내려받아요.</p>
+          <a class="btn btn--secondary btn--sm" href="install.html">Mac용 내려받기 (.dmg, Apple Silicon)</a>
+        </li>
+        <li class="step">
+          <h3 class="h3">키를 붙여 넣어요</h3>
+          <p class="text">체험 중이면 설정 → 라이선스에서, 체험이 끝났다면 바로 뜨는 활성화 화면에서 넣어요.</p>
+        </li>
+        <li class="step">
+          <h3 class="h3">Mac 두 대까지 쓸 수 있어요</h3>
+          <p class="text">다른 Mac으로 옮기려면 설정 → 라이선스 → ‘이 기기 비활성화’를 눌러요.</p>
+        </li>
       </ol>
-      <div class="actions">
-        <a class="btn btn--line" data-dmg href="https://github.com/heemangstudio/hamaeditor-releases/releases/latest">Mac용 내려받기 (.dmg, Apple Silicon)</a>
-      </div>
-      <p class="small" style="margin-top:12px">macOS 전용이에요. Windows 버전은 아직 없어요. 환불과 청약철회는 <a href="tos.html#a9">이용약관 제9조</a>를 따라요.</p>
-    </article>
+    </section>
+    <p class="cell meta foot-note">macOS 전용이에요. Windows 버전은 아직 없어요. 환불과 청약철회는 <a href="tos.html#a9">이용약관 제9조</a>를 따라요.</p>
+    <div class="rule"></div>
   </div>
 </main>
 
-<footer class="foot">
-  <div class="wrap">
-    <p class="colophon">
-      <span><a href="index.html">HamaEditor</a></span>
-      <span><a href="pricing.html">가격</a></span>
-      <span><a href="tos.html">이용약관</a></span>
+<footer class="footer" data-footer>
+  <div class="footer__in">
+    <div class="footer__grid">
+      <div class="footer__brand">
+        <a class="brand" href="index.html"><img class="px" src="assets/hama.svg" width="44" height="40" alt="" loading="lazy">HamaEditor</a>
+      </div>
+      <nav class="footer__col" aria-labelledby="foot-tour">
+        <h2 id="foot-tour">둘러보기</h2>
+        <ul>
+          <li><a href="index.html#features">기능</a></li>
+          <li><a href="index.html#gongmun">문서 편집</a></li>
+          <li><a href="index.html#flow">예시</a></li>
+          <li><a href="index.html#connect">연결</a></li>
+        </ul>
+      </nav>
+      <nav class="footer__col" aria-labelledby="foot-buy">
+        <h2 id="foot-buy">구매</h2>
+        <ul>
+          <li><a href="pricing.html">가격</a></li>
+          <li><a href="install.html">내려받기</a></li>
+          <li><a href="trial.html">체험판</a></li>
+        </ul>
+      </nav>
+      <nav class="footer__col" aria-labelledby="foot-help">
+        <h2 id="foot-help">도움말</h2>
+        <ul>
+          <li><a href="tutorial-openrouter.html">OpenRouter 연결</a></li>
+          <li><a href="tos.html">이용약관</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="footer__base">
+      <span><a href="https://github.com/edwardkim/rhwp">edwardkim/rhwp</a> 기반</span>
       <span>문의 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a></span>
-    </p>
+    </div>
+    <p class="footer__mark" aria-hidden="true">HamaEditor</p>
   </div>
 </footer>
 
@@ -251,9 +254,7 @@ ol,ul{margin:0;padding:0;list-style:none}
   var retry=document.querySelector('[data-retry]');
   var help=document.querySelector('[data-help]');
   var refLine=document.querySelector('[data-ref-line]');
-  var dmg=document.querySelector('[data-dmg]');
   if(!P)return;
-  if(dmg)dmg.href=P.CONFIG.MAC_DMG_URL;
   var storage=null;try{storage=window.localStorage;}catch(_){}
   var ref=P.resolveRef(window.location.search,storage);
   function say(html,bad,busy){
@@ -307,5 +308,6 @@ ol,ul{margin:0;padding:0;list-style:none}
   start();
 })();
 </script>
+<script src="assets/site.js" defer></script>
 </body>
 </html>

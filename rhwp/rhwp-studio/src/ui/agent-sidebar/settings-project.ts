@@ -44,13 +44,13 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text?
   return node;
 }
 
-function group(title: string): { root: HTMLElement; body: HTMLElement } {
+function group(title: string): { root: HTMLElement; heading: HTMLElement; body: HTMLElement } {
   const root = el('section', 'ag-settings-group ag-pset-group');
   const heading = el('div', 'ag-settings-group-heading');
   heading.append(el('h2', 'ag-settings-group-title', title));
   const body = el('div', 'ag-settings-group-body');
   root.append(heading, body);
-  return { root, body };
+  return { root, heading, body };
 }
 
 /** 라벨(+선택 설명)과 오른쪽 컨트롤 한 줄. */
@@ -344,6 +344,23 @@ export function createProjectSettingsPane(deps: ProjectSettingsPaneDeps): Projec
   const storage = group('저장 공간');
   const storageList = el('div', 'ag-pset-storage');
   storage.body.append(storageList);
+  // 선택 모드: 줄 앞 체크 상자로 여러 프로젝트를 골라 한 번에 비우거나 삭제한다.
+  let selecting = false;
+  let bulkBusy = false;
+  const selected = new Set<string>();
+  const selectToggle = el('button', 'ag-settings-btn ag-pset-heading-btn', '선택');
+  selectToggle.type = 'button';
+  storage.heading.append(selectToggle);
+  const selectAll = el('input', 'ag-pset-check');
+  selectAll.type = 'checkbox';
+  selectAll.setAttribute('aria-label', '모든 프로젝트 선택');
+  const selectedCount = el('span', 'ag-pset-usage');
+  const bulkEmptyTrash = el('button', 'ag-settings-btn', '휴지통 비우기');
+  bulkEmptyTrash.type = 'button';
+  const bulkRemove = el('button', 'ag-settings-btn ag-settings-danger', '삭제');
+  bulkRemove.type = 'button';
+  const bulkActions = el('div', 'ag-settings-actions ag-pset-storage-actions');
+  bulkActions.append(selectedCount, bulkEmptyTrash, bulkRemove);
 
   const status = el('p', 'ag-settings-apply-status');
   status.hidden = true;
@@ -426,10 +443,21 @@ export function createProjectSettingsPane(deps: ProjectSettingsPaneDeps): Projec
   }
 
   function renderStorage(): void {
+    for (const id of [...selected]) if (!projects.some((project) => project.id === id)) selected.delete(id);
+    if (!projects.length) selecting = false;
+    selectToggle.hidden = !projects.length;
+    selectToggle.textContent = selecting ? '완료' : '선택';
+    storageList.classList.toggle('ag-pset-selecting', selecting);
     storageList.replaceChildren();
     const total = projects.reduce((sum, project) => sum + project.usage.bytes, 0);
-    const totalRow = row('전체', el('span', 'ag-pset-usage', `${formatBytes(total)} · 파일 ${projects.reduce((sum, project) => sum + project.usage.files, 0)}개`));
+    const usage = el('span', 'ag-pset-usage', `${formatBytes(total)} · 파일 ${projects.reduce((sum, project) => sum + project.usage.files, 0)}개`);
+    const totalRow = row('전체', selecting ? bulkActions : usage);
     totalRow.root.classList.add('ag-pset-total');
+    if (selecting) {
+      totalRow.root.prepend(selectAll);
+      totalRow.description.hidden = false;
+      totalRow.description.textContent = usage.textContent;
+    }
     storageList.append(totalRow.root);
     if (!projects.length) {
       if (loading) storageList.append(row('불러오는 중…').root);
@@ -442,9 +470,17 @@ export function createProjectSettingsPane(deps: ProjectSettingsPaneDeps): Projec
       const remove = el('button', 'ag-settings-btn ag-settings-danger', '삭제');
       remove.type = 'button';
       actions.append(emptyTrash, remove);
-      const line = row(projectLabel(project), actions);
+      const line = row(projectLabel(project), selecting ? undefined : actions);
+      line.root.dataset.project = project.id;
       line.description.hidden = false;
       line.description.textContent = `${formatBytes(project.usage.bytes)} · 파일 ${project.usage.files}개`;
+      if (selecting) {
+        const check = el('input', 'ag-pset-check');
+        check.type = 'checkbox';
+        check.setAttribute('aria-label', `${projectLabel(project)} 선택`);
+        check.addEventListener('change', () => setSelected([project.id], check.checked));
+        line.root.prepend(check);
+      }
       emptyTrash.disabled = !connected;
       remove.disabled = !connected;
       emptyTrash.addEventListener('click', async () => {
@@ -477,6 +513,105 @@ export function createProjectSettingsPane(deps: ProjectSettingsPaneDeps): Projec
       });
       storageList.append(line.root);
     }
+    syncSelection();
+  }
+
+  function storageRows(): HTMLElement[] {
+    return [...storageList.querySelectorAll<HTMLElement>('[data-project]')];
+  }
+
+  function setSelected(ids: readonly string[], value: boolean): void {
+    for (const id of ids) {
+      if (value) selected.add(id);
+      else selected.delete(id);
+    }
+    syncSelection();
+  }
+
+  function syncSelection(): void {
+    selectToggle.disabled = bulkBusy;
+    if (!selecting) return;
+    for (const line of storageRows()) {
+      const on = selected.has(line.dataset.project ?? '');
+      line.classList.toggle('ag-selected', on);
+      const check = line.querySelector<HTMLInputElement>('.ag-pset-check');
+      if (check) {
+        check.checked = on;
+        check.disabled = bulkBusy || !connected;
+      }
+    }
+    selectAll.checked = selected.size > 0 && selected.size === projects.length;
+    selectAll.indeterminate = selected.size > 0 && selected.size < projects.length;
+    selectAll.disabled = bulkBusy || !connected;
+    selectedCount.textContent = `${selected.size}개 선택`;
+    bulkEmptyTrash.disabled = bulkBusy || !connected || selected.size === 0;
+    bulkRemove.disabled = bulkBusy || !connected || selected.size === 0;
+  }
+
+  async function runBulk(kind: 'emptyTrash' | 'remove', anchor: HTMLElement): Promise<void> {
+    const service = deps.service();
+    const targets = projects.filter((project) => selected.has(project.id));
+    if (!service || !targets.length) return;
+    const only = targets.length === 1 ? projectLabel(targets[0]) : null;
+    const files = targets.reduce((sum, project) => sum + project.usage.files, 0);
+    const confirmed = kind === 'emptyTrash'
+      ? await confirmSheet(anchor, '휴지통 비우기', `${only ?? `프로젝트 ${targets.length}개`}의 휴지통 항목을 영구히 삭제합니다.`, { confirmLabel: '비우기', destructive: true })
+      : await confirmSheet(anchor, only ? `“${only}” 삭제` : `프로젝트 ${targets.length}개 삭제`, `파일 ${files}개와 노트, 보드를 삭제합니다. 문서는 그대로 둡니다.`, { confirmLabel: '삭제', destructive: true });
+    if (!confirmed) return;
+    bulkBusy = true;
+    syncSelection();
+    let failure = '';
+    for (const project of targets) {
+      try {
+        if (kind === 'emptyTrash') await service.emptyTrash(project.id);
+        else await service.remove(project.id);
+        selected.delete(project.id);
+      } catch (error) {
+        failure ||= `${projectLabel(project)} · ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    bulkBusy = false;
+    if (!failure) selecting = false;
+    showStatus(failure || (kind === 'emptyTrash' ? '휴지통을 비웠습니다.' : `프로젝트 ${targets.length}개를 삭제했습니다.`));
+    await loadProjects();
+  }
+
+  selectToggle.addEventListener('click', () => {
+    selecting = !selecting;
+    selected.clear();
+    renderStorage();
+  });
+  selectAll.addEventListener('change', () => {
+    setSelected(projects.map((project) => project.id), selectAll.checked);
+  });
+  bulkEmptyTrash.addEventListener('click', () => void runBulk('emptyTrash', bulkEmptyTrash));
+  bulkRemove.addEventListener('click', () => void runBulk('remove', bulkRemove));
+
+  // 끌어서 선택: 누른 줄의 반대 상태를 지나가는 줄 모두에 칠한다.
+  let drag: { value: boolean; last: number } | null = null;
+  storageList.addEventListener('pointerdown', (event) => {
+    if (!selecting || bulkBusy || !connected || event.button !== 0) return;
+    const rows = storageRows();
+    const index = rows.findIndex((line) => line.contains(event.target as Node));
+    if (index < 0) return;
+    event.preventDefault();
+    const id = rows[index].dataset.project ?? '';
+    drag = { value: !selected.has(id), last: index };
+    setSelected([id], drag.value);
+    storageList.setPointerCapture(event.pointerId);
+  });
+  storageList.addEventListener('pointermove', (event) => {
+    if (!drag) return;
+    const rows = storageRows();
+    const hit = document.elementFromPoint(event.clientX, event.clientY);
+    const index = rows.findIndex((line) => hit && line.contains(hit));
+    if (index < 0 || index === drag.last) return;
+    const [from, to] = index > drag.last ? [drag.last, index] : [index, drag.last];
+    setSelected(rows.slice(from, to + 1).map((line) => line.dataset.project ?? ''), drag.value);
+    drag.last = index;
+  });
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) {
+    storageList.addEventListener(type, () => { drag = null; });
   }
 
   function editable(): boolean {

@@ -180,7 +180,7 @@ test('a tool-call turn maps to the unified event sequence and settles', () => {
     'turn-start', 'session-info', 'text-delta', 'context-usage', 'usage',
     'tool-call', 'tool-result', 'text-delta', 'text-delta', 'context-usage', 'usage', 'turn-end',
   ]);
-  // 맥락 크기는 마지막 호출의 totalTokens 다 (누적이 아니다).
+  // 콘텍스트 크기는 마지막 호출의 totalTokens 다 (누적이 아니다).
   assert.deepEqual(events.filter((event) => event.type === 'context-usage').map((event) => event.usedTokens), [168, 168]);
 
   const sessionInfo = events[1];

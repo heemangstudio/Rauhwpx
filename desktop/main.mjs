@@ -40,6 +40,7 @@ import {
   waitForHubReadyLine,
 } from './agent-hub.mjs';
 import { DocumentLeaseManager, releaseRendererDocuments } from './document-leases.mjs';
+import { UnsavedDocumentRegistry } from './unsaved-documents.mjs';
 import { captureDocumentRegion, installAgentContextStore } from './agent-context-store.mjs';
 import { quarantineBookmarkState, readBookmarkState } from './bookmark-state.mjs';
 import {
@@ -107,6 +108,7 @@ import { PRODUCTION_LICENSE_PUBLIC_KEYS } from './license-lease.mjs';
 import { createLicenseManager, licenseStatePath, TRIAL_DURATION_MS } from './license-manager.mjs';
 import { installLicenseHost } from './license-host.mjs';
 import { createSystemFontService } from './system-fonts.mjs';
+import { createFontFolderStore } from './font-folders.mjs';
 import {
   nativeExtractorFileName,
   sourceStagedNativeExtractorPath,
@@ -586,9 +588,16 @@ browserHost.webAuthn = browserWebAuthn;
 const documentLeases = new DocumentLeaseManager();
 const nativeFiles = new NativeFileHandleRegistry();
 const nativeBookmarkFile = join(app.getPath('userData'), 'native-document-bookmarks.json');
+const logFonts = (line) => console.log(`[hamaeditor] fonts: ${line}`);
+const fontFolders = createFontFolderStore({
+  filePath: join(app.getPath('userData'), 'font-folders.json'),
+  writeAtomically: writeNativeFileAtomically,
+  log: logFonts,
+});
 const systemFonts = createSystemFontService({
   cacheDir: join(app.getPath('userData'), 'fonts'),
-  log: (line) => console.log(`[hamaeditor] fonts: ${line}`),
+  log: logFonts,
+  addedFolders: () => fontFolders.list(),
 });
 const systemFontKey = randomBytes(32).toString('hex');
 let uniqueInstallSnapshot = {
@@ -632,6 +641,23 @@ const windowFrames = new WindowFrameStore({
   writeAtomically: writeNativeFileAtomically,
 });
 const agentAttention = new AgentAttention({ app, Notification: ElectronNotification, nativeImage });
+const unsavedDocuments = new UnsavedDocumentRegistry();
+
+/** 저장하지 않은 새 문서 목록을 모든 창에 보낸다. 창마다 자기 문서는 local 로 받는다. */
+function broadcastUnsavedDocuments() {
+  for (const window of sessions.windows()) {
+    try {
+      const session = sessions.sessionForSender(window.webContents);
+      window.webContents.send('desktop:unsaved-documents-changed', unsavedDocuments.listFor(session.sessionId));
+    } catch {
+      // 닫히는 중인 창은 건너뛴다.
+    }
+  }
+}
+
+function forgetUnsavedDocuments(sessionId) {
+  if (unsavedDocuments.forget(sessionId)) broadcastUnsavedDocuments();
+}
 
 /** 열거나 저장한 네이티브 파일을 Dock·최근 사용 메뉴에 올린다. */
 function noteRecentDocument(sessionId, handleId) {
@@ -862,7 +888,10 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   const windowId = window.id;
   windowFrames.track(window);
   installTextContextMenu({ Menu, webContents: window.webContents, window, isMac });
+  // 자동 저장본 복구는 앱의 첫 창만 묻는다. 다른 창에서 띄운 창(새 창에서 열기·새 윈도우)은 바로 문서를 연다.
+  const offersAutosaveRecovery = sessions.windows().length === 0;
   const session = sessions.addWindow(window, { source: launch.source, openFiles: [] });
+  session.offersAutosaveRecovery = offersAutosaveRecovery;
   session.generatedDocument = generatedDocument
     ? { launchDocumentId: randomUUID(), ...generatedDocument }
     : null;
@@ -902,6 +931,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
     // 창의 추가 에이전트 세션도 함께 허브에서 닫힌다.
     sessions.removeWindow(window);
+    forgetUnsavedDocuments(session.sessionId);
     if (quitRequested) setImmediate(() => {
       if (quitRequested && !quitting) app.quit();
     });
@@ -945,12 +975,15 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     launchFiles.length = 0;
     // Agents of the dead page's background documents cannot be reached again.
     sessions.releaseAgentSessions(window);
+    forgetUnsavedDocuments(session.sessionId);
   });
   // A reloaded page knows only its window session and reopens the default
   // document itself. Background documents and their agents died with the old page.
   window.webContents.on('did-navigate', () => {
     sessions.releaseAgentSessions(window);
     documentLeases.releaseSession(session.sessionId, { keepDefaultSlot: true });
+    // 다시 불러온 페이지가 자기 새 문서를 다시 알린다.
+    forgetUnsavedDocuments(session.sessionId);
   });
   window.webContents.setWindowOpenHandler(({ url, frameName }) => {
     // 인쇄 미리보기 같은 앱 내부 surface는 외부 브라우저가 아니라 네이티브
@@ -1167,8 +1200,43 @@ ipcMain.handle('desktop:agent-session-release', (event, agentSessionId) => {
 });
 ipcMain.handle('desktop:fonts-list', (event, options = {}) => {
   sessionForEvent(event);
-  if (process.env.RHWP_SYSTEM_FONTS === 'off') throw new Error('System font discovery is disabled');
+  assertSystemFontsEnabled();
   return systemFonts.list({ refresh: options?.refresh === true });
+});
+function assertSystemFontsEnabled() {
+  if (process.env.RHWP_SYSTEM_FONTS === 'off') throw new Error('System font discovery is disabled');
+}
+/** 글꼴 폴더 목록을 바꾼 뒤 색인을 다시 만들고, 모든 창에 새 색인을 받아 문서 글꼴을 다시 잇게 한다. */
+async function changeFontFolders(change) {
+  const folders = await change();
+  await systemFonts.list({ refresh: true });
+  for (const window of sessions.windows()) {
+    if (!window.isDestroyed()) window.webContents.send('desktop:fonts-changed');
+  }
+  return folders;
+}
+ipcMain.handle('desktop:font-folders-list', (event) => {
+  sessionForEvent(event);
+  assertSystemFontsEnabled();
+  return fontFolders.list();
+});
+ipcMain.handle('desktop:font-folders-add', async (event) => {
+  sessionForEvent(event);
+  assertSystemFontsEnabled();
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) throw new Error('Font folder sender window is unavailable');
+  const picked = await dialog.showOpenDialog(window, {
+    title: 'Add font folder',
+    properties: ['openDirectory'],
+  });
+  if (picked.canceled || !picked.filePaths[0]) return null;
+  return changeFontFolders(() => fontFolders.add(picked.filePaths[0]));
+});
+ipcMain.handle('desktop:font-folders-remove', (event, folder) => {
+  sessionForEvent(event);
+  assertSystemFontsEnabled();
+  if (typeof folder !== 'string' || !folder) throw new Error('Font folder path is required');
+  return changeFontFolders(() => fontFolders.remove(folder));
 });
 ipcMain.handle('desktop:fonts-base', (event) => {
   sessionForEvent(event);
@@ -1182,6 +1250,7 @@ ipcMain.handle('desktop:get-launch-generated-document', (event) => {
   const session = sessionForEvent(event);
   return session.generatedDocument;
 });
+ipcMain.handle('desktop:offers-autosave-recovery', (event) => sessionForEvent(event).offersAutosaveRecovery === true);
 installPdfExport({
   ipcMain,
   dialog,
@@ -1489,6 +1558,28 @@ ipcMain.handle('desktop:reveal-native-document', async (event, documentId) => {
   if (typeof documentId !== 'string' || !documentId) return false;
   if ((await nativeFiles.inspectDocument(documentId)).state !== 'present') return false;
   shell.showItemInFolder(nativeFiles.bookmarkPathFor(documentId));
+  return true;
+});
+ipcMain.on('desktop:set-unsaved-documents', (event, documents) => {
+  try {
+    if (unsavedDocuments.set(sessionForEvent(event).sessionId, documents)) broadcastUnsavedDocuments();
+  } catch (error) {
+    console.warn('[hamaeditor] unsaved document update failed:', error);
+  }
+});
+ipcMain.handle('desktop:list-unsaved-documents', (event) => (
+  unsavedDocuments.listFor(sessionForEvent(event).sessionId)
+));
+// 다른 창의 새 문서를 열거나 저장한다. 그 창을 앞으로 가져오고 그 창이 직접 연다·저장한다.
+ipcMain.handle('desktop:unsaved-document-action', (event, documentId, action) => {
+  const session = sessionForEvent(event);
+  if (action !== 'open' && action !== 'save') return false;
+  const owner = unsavedDocuments.ownerOf(documentId);
+  if (!owner || owner === session.sessionId) return false;
+  const target = sessions.sessionById(owner);
+  if (!target || target.sender.isDestroyed()) return false;
+  sessions.focusSession(owner);
+  target.sender.send('desktop:run-unsaved-document-action', { documentId, action });
   return true;
 });
 const recentWindowOpens = new Map();

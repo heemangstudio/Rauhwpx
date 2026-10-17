@@ -30,6 +30,7 @@ import {
   type WorktreeData,
 } from './home-data.ts';
 import { releaseThumbnailWorker } from './thumbnail-render.ts';
+import type { UnsavedDocument } from './unsaved-documents.ts';
 import { createIcon } from '../ui/agent-sidebar/icons.ts';
 
 export type HomeOpenResult = 'opened' | 'cancelled' | 'missing' | 'failed';
@@ -54,6 +55,8 @@ export interface DocumentHomeDeps {
   /** 문서를 여는 중이면 끝날 때까지 기다린다. 미리보기는 그 뒤에 그린다. */
   whenIdle(): Promise<void>;
   createBlank(): void;
+  /** 템플릿 추가 파일 창을 열기 전에 묻는다. false 면 열지 않는다(라이선스 잠김 등). */
+  canAddTemplate?(): boolean;
   createFromTemplate(template: DocumentTemplate): Promise<void>;
   openFile(): void;
   openDocument(row: RecentDoc): Promise<HomeOpenResult>;
@@ -67,6 +70,15 @@ export interface DocumentHomeDeps {
   restoreFocus(): void;
   /** 왼쪽 아래 톱니 단추. 홈을 닫고 설정을 연다. */
   openSettings?(): void;
+  /** 위 막대 오른쪽 끝 자리를 채운다(라이선스 구매 단추 등). */
+  mountTopbarTrailing?(slot: HTMLElement): void;
+  /** 저장하지 않은 새 문서(다른 창 포함). 최근 문서 맨 앞에 점선 종이로 놓인다. */
+  unsaved?: {
+    list(): readonly UnsavedDocument[];
+    subscribe(listener: () => void): () => void;
+    open(document: UnsavedDocument): void;
+    save(document: UnsavedDocument): void;
+  };
   onDrop?(event: DragEvent): void;
   toast(message: string): void;
 }
@@ -74,8 +86,11 @@ export interface DocumentHomeDeps {
 export interface DocumentHome {
   readonly element: HTMLElement;
   readonly visible: boolean;
-  /** focus: false 면 카드에 초점을 두지 않는다(앱 시작). 키보드는 홈 안에 머문다. */
-  show(options?: { focus?: boolean }): void;
+  /**
+   * focus: false 면 카드에 초점을 두지 않는다(앱 시작). 키보드는 홈 안에 머문다.
+   * instant 면 페이드 없이 바로 덮는다. 뒤 화면을 정리하는 동안 그 화면이 비치지 않는다.
+   */
+  show(options?: { focus?: boolean; instant?: boolean }): void;
   hide(): void;
   refresh(): void;
 }
@@ -138,6 +153,9 @@ const ICONS = {
   grid: 'M3 3h4v4H3zM9 3h4v4H9zM3 9h4v4H3zM9 9h4v4H9z',
   list: 'M5.5 4h8M5.5 8h8M5.5 12h8M2.5 4h.01M2.5 8h.01M2.5 12h.01',
   chevron: 'M4.5 6.5 8 10l3.5-3.5',
+  window: 'M9.5 2.5h4v4M13.5 2.5l-5 5M11.5 9.5v4h-9v-9h4',
+  pencil: 'M10.5 2.5l3 3L6 13H3v-3z',
+  remove: 'M4.5 4.5l7 7M11.5 4.5l-7 7',
 };
 
 const reducedMotion = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -157,7 +175,9 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   brand.append(brandMark, el('span', 'dh-brand-name', 'HamaEditor'));
   const back = button('dh-back', '');
   back.append(icon(ICONS.back, 14), el('span', 'dh-back-label'));
-  topbar.append(brand, back);
+  const trailing = el('div', 'dh-topbar-trailing');
+  topbar.append(brand, back, trailing);
+  deps.mountTopbarTrailing?.(trailing);
 
   const scroller = el('div', 'dh-scroll');
   // 앱을 켰을 때 키보드가 머무는 자리. 카드에 초점 고리를 띄우지 않는다.
@@ -435,7 +455,10 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       const add = el('span', 'dh-paper dh-paper-add');
       add.setAttribute('aria-hidden', 'true');
       add.append(icon(ICONS.upload, 18));
-      items.push(templateCard('템플릿 추가', 'HWP · HWPX', add, () => templateInput.click()));
+      items.push(templateCard('템플릿 추가', 'HWP · HWPX', add, () => {
+        if (deps.canAddTemplate?.() === false) return;
+        templateInput.click();
+      }));
     }
     templates.replaceChildren(...items);
     fitTemplates();
@@ -494,7 +517,10 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   }
 
   function renderRecent(): void {
-    const keepFocus = root.contains(document.activeElement) && document.activeElement?.closest('.dh-grid');
+    grid.style.minHeight = '';
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && grid.contains(active) && active.dataset.unsavedKey) unsavedFocus ??= active.dataset.unsavedKey;
+    const keepFocus = root.contains(active) && active?.closest('.dh-grid');
     resetScope(gridScope, grid);
 
     grid.classList.toggle('is-list', prefs.view === 'list');
@@ -508,14 +534,16 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     for (const key of [...blobs.keys()]) {
       if (key.startsWith('document:') && !keys.has(key.slice('document:'.length))) forgetBlob(key);
     }
+    const unsaved = unsavedItems();
     if (!documents.length) {
-      grid.replaceChildren();
+      grid.replaceChildren(...unsaved);
       expanded = null;
-      if (loaded) {
+      if (loaded && !unsaved.length) {
         const empty = el('li', 'dh-empty');
         empty.append(el('span', 'dh-empty-title', '최근 문서가 없습니다'));
         grid.append(empty);
       }
+      restoreUnsavedFocus();
       return;
     }
     if (expanded && !documents.some((doc) => doc.recentId === expanded)) expanded = null;
@@ -552,9 +580,118 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       const row = rowFor(doc);
       if (row) lazyThumbnail(gridScope, paper, `document:${doc.documentId}`, () => loadDocumentThumbnail(row));
     }
-    grid.replaceChildren(...items);
+    grid.replaceChildren(...unsaved, ...items);
     placeDetail();
-    if (keepFocus) cardFor(focusedId)?.focus({ preventScroll: true });
+    if (!restoreUnsavedFocus() && keepFocus) cardFor(focusedId)?.focus({ preventScroll: true });
+  }
+
+  // ── 저장하지 않은 새 문서 ───────────────────────────────
+  /** 둘 이상이면 한 묶음으로 쌓아 두고, 누르면 그 뒤로 한 장씩 펼친다. */
+  let unsavedOpen = false;
+  /** 다시 그린 뒤 초점을 돌려줄 저장하지 않은 카드. */
+  let unsavedFocus: string | null = null;
+
+  function unsavedItems(): HTMLLIElement[] {
+    const list = deps.unsaved?.list() ?? [];
+    if (list.length < 2) unsavedOpen = false;
+    if (list.length === 0) return [];
+    if (list.length === 1) return [unsavedCard(list[0]!)];
+    return [unsavedStack(list), ...(unsavedOpen ? list.map(unsavedCard) : [])];
+  }
+
+  function restoreUnsavedFocus(): boolean {
+    const key = unsavedFocus;
+    unsavedFocus = null;
+    if (!key) return false;
+    const target = grid.querySelector<HTMLElement>(`[data-unsaved-key="${CSS.escape(key)}"]`);
+    target?.focus({ preventScroll: true });
+    return Boolean(target);
+  }
+
+  /**
+   * 점선 테두리. CSS dashed 는 점이 촘촘하고 고르다. 획 절반이 종이 밖으로 잘려 안쪽만 보이고,
+   * 긴 점과 짧은 점이 섞인 간격은 CSS 가 정한다.
+   */
+  function dashedOutline(): SVGSVGElement {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.classList.add('dh-dash');
+    svg.setAttribute('aria-hidden', 'true');
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('width', '100%');
+    rect.setAttribute('height', '100%');
+    rect.setAttribute('rx', '3');
+    svg.append(rect);
+    return svg;
+  }
+
+  function unsavedFormat(fileName: string): string {
+    const dot = fileName.lastIndexOf('.');
+    return dot > 0 ? fileName.slice(dot + 1) : 'hwpx';
+  }
+
+  function unsavedCard(doc: UnsavedDocument): HTMLLIElement {
+    const item = el('li', 'dh-item dh-unsaved');
+    const name = displayName(doc.fileName) || '새 문서';
+    const card = button('dh-card dh-unsaved-card', '');
+    card.dataset.unsavedKey = `open:${doc.documentId}`;
+    card.setAttribute('aria-label', `${name}, 저장 안 됨${doc.local ? '' : ', 다른 창'}, 열기`);
+    const paper = paperFor(unsavedFormat(doc.fileName), 'dh-doc-paper dh-unsaved-paper');
+    paper.prepend(dashedOutline());
+    const text = el('span', 'dh-card-text');
+    const title = el('span', 'dh-card-title');
+    title.append(el('span', 'dh-card-name', name));
+    text.append(title);
+    card.append(paper, text);
+    card.addEventListener('click', () => deps.unsaved?.open(doc));
+
+    const meta = el('span', 'dh-card-meta dh-unsaved-meta');
+    const state = el('span', 'dh-unsaved-state', doc.local ? '저장 안 됨' : '다른 창');
+    if (doc.createdAt > 0) state.title = `${openedLabel(doc.createdAt)} 만듦`;
+    const save = button('dh-unsaved-save', '저장', `${name} 저장`);
+    save.dataset.unsavedKey = `save:${doc.documentId}`;
+    save.addEventListener('click', () => deps.unsaved?.save(doc));
+    meta.append(state, save);
+    item.append(card, meta);
+    // 이 창에서 고친 문서만 첫 쪽을 그린다. 빈 새 문서는 점선 종이로 둔다.
+    if (doc.local && doc.edited) {
+      lazyThumbnail(gridScope, paper, `unsaved:${doc.documentId}`, () => deps.liveThumbnail(doc.documentId) ?? Promise.resolve(null));
+    }
+    return item;
+  }
+
+  function unsavedStack(list: readonly UnsavedDocument[]): HTMLLIElement {
+    const item = el('li', 'dh-item dh-unsaved dh-unsaved-group');
+    const card = button('dh-card dh-unsaved-card', '');
+    card.dataset.unsavedKey = 'group';
+    card.setAttribute('aria-expanded', String(unsavedOpen));
+    card.setAttribute('aria-label', `저장 안 된 문서 ${list.length}개, ${unsavedOpen ? '접기' : '펼치기'}`);
+    const stack = el('span', 'dh-unsaved-stack');
+    stack.setAttribute('aria-hidden', 'true');
+    const front = el('span', 'dh-paper dh-doc-paper dh-unsaved-paper');
+    front.append(dashedOutline(), el('span', 'dh-unsaved-count', String(list.length)));
+    const sheets = [el('span', 'dh-unsaved-sheet'), el('span', 'dh-unsaved-sheet')];
+    for (const sheet of sheets) sheet.append(dashedOutline());
+    stack.append(...sheets, front);
+    const text = el('span', 'dh-card-text');
+    const title = el('span', 'dh-card-title');
+    title.append(el('span', 'dh-card-name', '저장 안 된 문서'));
+    const meta = el('span', 'dh-card-meta');
+    meta.append(el('span', '', `${list.length}개`), icon(ICONS.chevron, 12));
+    text.append(title, meta);
+    card.append(stack, text);
+    // 펼치고 접어도 화면은 그대로다. 묶음 카드는 맨 앞이라 위치가 변하지 않고, 접어서 줄이 줄면
+    // 격자 높이를 다음에 다시 그릴 때까지 붙잡아 스크롤이 끝에 걸려 당겨지지 않게 한다.
+    card.addEventListener('click', () => {
+      const top = scroller.scrollTop;
+      const height = grid.offsetHeight;
+      unsavedOpen = !unsavedOpen;
+      unsavedFocus = 'group';
+      renderRecent();
+      if (grid.offsetHeight < height) grid.style.minHeight = `${height}px`;
+      scroller.scrollTop = top;
+    });
+    item.append(card);
+    return item;
   }
 
   async function loadDocumentThumbnail(row: RecentDoc): Promise<Blob | null> {
@@ -574,10 +711,23 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   }
 
   // ── 펼친 작업 ───────────────────────────────────────────
-  function action(label: string, run: () => void, className = 'dh-action'): HTMLButtonElement {
-    const node = button(className, label);
+  /** iconPath 가 있는 단추는 줄이 좁으면 아이콘만 남고, 이름은 올려 두면 뜬다. */
+  function action(label: string, run: () => void, className = 'dh-action', iconPath?: string): HTMLButtonElement {
+    const node = button(className, '');
+    if (iconPath) {
+      node.append(icon(iconPath, 14));
+      node.dataset.tip = label;
+      node.setAttribute('aria-label', label);
+    }
+    node.append(el('span', 'dh-action-label', label));
     node.addEventListener('click', run);
     return node;
+  }
+
+  /** 단추 줄은 늘 한 줄이다. 넘치면 열기 밖의 단추를 아이콘으로 줄인다. */
+  function fitActions(row: HTMLElement): void {
+    row.classList.remove('is-compact');
+    row.classList.toggle('is-compact', row.scrollWidth > row.clientWidth + 0.5);
   }
 
   /** 판의 단추 줄에서 마지막으로 머문 자리. 작업 트리에서 ↑ 로 돌아오면 그 단추로 간다. */
@@ -596,14 +746,14 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     if (deps.openInNewWindow && !live) {
       actions.append(action('새 창에서 열기', () => {
         void deps.openInNewWindow!(row).then((ok) => { if (!ok) deps.toast('파일을 찾을 수 없어 새 창에서 열지 못했습니다.'); });
-      }));
+      }, 'dh-action', ICONS.window));
     }
     if (deps.reveal) {
       actions.append(action(deps.reveal.label, () => {
         void deps.reveal!.run(row).then((ok) => { if (!ok) deps.toast('파일 위치를 찾을 수 없습니다.'); });
-      }));
+      }, 'dh-action', ICONS.open));
     }
-    if (deps.canRename(row)) actions.append(action('이름 바꾸기', () => beginRename(doc, row, actions)));
+    if (deps.canRename(row)) actions.append(action('이름 바꾸기', () => beginRename(doc, row, actions), 'dh-action', ICONS.pencil));
     actions.append(action('목록에서 제거', () => {
       void defaultHealIo.forget(row).then(() => {
         const index = documents.findIndex((entry) => entry.recentId === row.id);
@@ -611,7 +761,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
         drop(new Set([row.id]));
         window.setTimeout(() => cardFor(focusedId)?.focus(), 200);
       });
-    }, 'dh-action dh-action-quiet'));
+    }, 'dh-action dh-action-quiet', ICONS.remove));
     panel.append(actions);
     const note = flagged.get(doc.recentId);
     if (note) panel.append(el('p', 'dh-detail-note', note === '열 수 없음' ? '이 파일을 열지 못했습니다.' : '파일을 찾을 수 없습니다.'));
@@ -685,7 +835,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
    */
   function placeDetail(): void {
     grid.querySelector('.dh-detail')?.remove();
-    for (const card of grid.querySelectorAll<HTMLElement>('.dh-card')) {
+    for (const card of grid.querySelectorAll<HTMLElement>('.dh-card[data-id]')) {
       card.setAttribute('aria-expanded', String(card.dataset.id === expanded));
       card.removeAttribute('aria-controls');
     }
@@ -694,12 +844,16 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     const row = doc ? rowFor(doc) : null;
     if (!doc || !card || !row) return;
     card.setAttribute('aria-controls', 'dh-detail');
-    const index = documents.indexOf(doc);
+    // 저장하지 않은 문서 카드가 격자 앞자리를 차지한다.
+    const offset = grid.querySelectorAll(':scope > .dh-unsaved').length;
+    const index = offset + documents.indexOf(doc);
     const perRow = columns();
-    const rowEnd = Math.min(documents.length - 1, Math.floor(index / perRow) * perRow + perRow - 1);
+    const rowEnd = Math.min(offset + documents.length - 1, Math.floor(index / perRow) * perRow + perRow - 1);
     const anchor = grid.children[rowEnd] as HTMLElement | undefined;
     const detail = detailFor(doc, row);
     anchor?.after(detail);
+    const actionRow = detail.querySelector<HTMLElement>('.dh-actions');
+    if (actionRow) fitActions(actionRow);
     const panel = detail.querySelector<HTMLElement>('.dh-detail-panel')!;
     const cardBox = card.getBoundingClientRect();
     const gridBox = grid.getBoundingClientRect();
@@ -880,7 +1034,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   grid.addEventListener('click', (event) => {
     const card = (event.target as HTMLElement).closest<HTMLButtonElement>('.dh-card');
     if (!card?.dataset.id) return;
-    for (const other of grid.querySelectorAll<HTMLElement>('.dh-card')) other.tabIndex = -1;
+    for (const other of grid.querySelectorAll<HTMLElement>('.dh-card[data-id]')) other.tabIndex = -1;
     card.tabIndex = 0;
     // 두 번 누르기의 두 번째 누름은 펼침을 되돌리지 않는다. 열기는 dblclick 이 한다.
     if (event.detail > 1) return;
@@ -939,7 +1093,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     const target = documents[next];
     if (!target) return;
     focusedId = target.recentId;
-    for (const other of grid.querySelectorAll<HTMLElement>('.dh-card')) other.tabIndex = -1;
+    for (const other of grid.querySelectorAll<HTMLElement>('.dh-card[data-id]')) other.tabIndex = -1;
     const nextCard = cardFor(focusedId);
     if (nextCard) {
       nextCard.tabIndex = 0;
@@ -1034,6 +1188,24 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     if (expanded) placeDetail();
   }).observe(root);
 
+  // 카드가 모두 한 화면에 들면 스크롤을 잠근다. 아래 여백만 넘치는 화면이 끌려 움직이지 않는다.
+  // 접은 묶음이 붙잡아 둔 격자 높이도 함께 재므로 그때는 잠그지 않는다.
+  let fitFrame: number | null = null;
+  const fitObserver = new ResizeObserver(() => {
+    if (fitFrame !== null) return;
+    fitFrame = requestAnimationFrame(() => {
+      fitFrame = null;
+      if (!visible) return;
+      const bottom = recentInner.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top + scroller.scrollTop;
+      const fits = bottom <= scroller.clientHeight;
+      scroller.classList.toggle('is-fit', fits);
+      if (fits) scroller.scrollTop = 0;
+    });
+  });
+  fitObserver.observe(scroller);
+  fitObserver.observe(start);
+  fitObserver.observe(recentInner);
+
   // ── 보이기·숨기기 ───────────────────────────────────────
   function paintReturn(): void {
     const target = deps.returnTarget();
@@ -1076,7 +1248,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     }
   }
 
-  function show(options: { focus?: boolean } = {}): void {
+  function show(options: { focus?: boolean; instant?: boolean } = {}): void {
     paintReturn();
     const wasVisible = visible;
     if (!wasVisible) {
@@ -1086,13 +1258,20 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       if (root.nextElementSibling) document.body.append(root);
       coverApp(true);
       // 문서 그림은 열 때마다 저장소에서 다시 읽는다. 그사이 고친 문서가 옛 그림으로 남지 않는다.
-      for (const key of [...blobs.keys()]) if (key.startsWith('document:')) forgetBlob(key);
+      for (const key of [...blobs.keys()]) {
+        if (key.startsWith('document:') || key.startsWith('unsaved:')) forgetBlob(key);
+      }
     }
     visible = true;
     root.hidden = false;
     if (!wasVisible) {
-      root.classList.remove('is-shown');
-      requestAnimationFrame(() => root.classList.add('is-shown'));
+      root.classList.toggle('is-instant', options.instant === true);
+      if (options.instant) {
+        root.classList.add('is-shown');
+      } else {
+        root.classList.remove('is-shown');
+        requestAnimationFrame(() => root.classList.add('is-shown'));
+      }
       scroller.scrollTop = 0;
       // 새로 만들기 줄은 목록을 기다리지 않고 바로 그린다.
       renderTemplates();
@@ -1111,6 +1290,8 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   }
 
   renderTemplates();
+
+  deps.unsaved?.subscribe(() => { if (visible) renderRecent(); });
 
   // 다른 창에서 빠진 문서는 이 창의 홈에서도 바로 빠지고, 새로 연 문서는 다시 읽어 보인다.
   let syncReload: number | null = null;

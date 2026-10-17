@@ -781,6 +781,7 @@ mod tests {
                 fixture_dir.join("RHWPBitmapSvgGlyphSmoke.ttf"),
                 exact,
                 fixture_dir.join("RHWPShapingFixture.ttf"),
+                fixture_dir.join("RHWPVariableWeightFixture.ttf"),
             ],
             "디렉토리 source는 SFNT 하위 파일만 경로 순으로 내놓아야 한다"
         );

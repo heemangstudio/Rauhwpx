@@ -80,12 +80,44 @@ test('Windows defaults include application font directories without duplicate Pr
   const userFonts = path.join(local, 'Programs', 'App', 'Fonts');
   await mkdir(appFonts, { recursive: true });
   await mkdir(userFonts, { recursive: true });
-  const defaults = await defaultFontRoots({ platform: 'win32', env: {
+  const defaults = await defaultFontRoots({ platform: 'win32', runCommand: null, env: {
     WINDIR: path.join(root, 'Windows'), ProgramFiles: programs,
     ProgramW6432: programs.toUpperCase(), LOCALAPPDATA: local,
   } });
   assert.equal(defaults.roots.filter((entry) => entry.path === appFonts).length, 1);
-  assert.ok(defaults.roots.some((entry) => entry.path === userFonts && entry.kind === 'user'));
+  assert.ok(defaults.roots.some((entry) => entry.path === userFonts && entry.kind === 'app'));
   assert.ok(defaults.roots.some((entry) => entry.path === path.join(local, 'Microsoft', 'Windows', 'Fonts')));
+  assert.deepEqual(defaults.discoveryErrors, []);
+});
+
+test('Windows application discovery preserves catalog metadata, OS enumeration and source priority', { skip: process.platform !== 'win32' }, async (t) => {
+  const root = await fixture(t);
+  const programs = path.join(root, 'Programs');
+  const appFonts = path.join(programs, 'Vendor', 'Fonts');
+  const systemFonts = path.join(root, 'System Fonts');
+  const explicitFonts = path.join(root, 'Explicit Fonts');
+  const registeredFont = path.join(root, 'Registered', 'Brand.ttf');
+  const hancom = path.join(programs, 'Hnc');
+  await mkdir(appFonts, { recursive: true });
+  const defaults = await defaultFontRoots({
+    platform: 'win32',
+    env: { ProgramFiles: programs, RHWP_FONT_PATH: explicitFonts },
+    catalog: [
+      { os: 'win32', kind: 'app', path: appFonts, label: 'catalog app', sniff: true, maxDepth: 0 },
+      { os: 'win32', kind: 'system', path: systemFonts, label: 'system fonts' },
+      { os: 'win32', kind: 'hancom', path: hancom, label: 'Hancom Office' },
+    ],
+    runCommand: async (_command, args) => args[1].startsWith('HKLM')
+      ? `    Brand (TrueType)    REG_SZ    ${registeredFont}\r\n`
+      : null,
+  });
+  assert.deepEqual(defaults.hancomInstalls, [hancom]);
+  assert.deepEqual(defaults.roots.map((entry) => [entry.path, entry.kind]), [
+    [explicitFonts, 'user'], [systemFonts, 'system'], [registeredFont, 'system'], [appFonts, 'app'],
+  ]);
+  assert.deepEqual(defaults.roots.find((entry) => entry.path === appFonts), {
+    path: appFonts, kind: 'app', label: 'catalog app', sniff: true, maxDepth: 0,
+  });
+  assert.equal(defaults.roots.find((entry) => entry.path === registeredFont).label, 'Windows registry');
   assert.deepEqual(defaults.discoveryErrors, []);
 });

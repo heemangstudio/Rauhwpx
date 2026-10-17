@@ -116,7 +116,7 @@ test('an inline-prompt send leaves nothing to resend, not even the previous comp
   const shown = thread('t');
   const { controller, drawn, action } = sidebar(shown);
   controller.noteSend(shown.id, SEND);
-  // 인라인 프롬프트: 선택 맥락이 그 순간의 문서에 묶인 요청 — 다시 보낼 요청을 남기지 않는다.
+  // 인라인 프롬프트: 선택 콘텍스트가 그 순간의 문서에 묶인 요청 — 다시 보낼 요청을 남기지 않는다.
   controller.noteSend(shown.id, null);
   const notice = controller.add(failure(), { origin: 'turn', turnId: 't1', userInitiated: true });
   assert.equal(notice.retry, undefined);

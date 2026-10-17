@@ -5643,7 +5643,7 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
-    /// 수식을 삽입한다.
+    /// 수식을 삽입한다. `logical` 이면 `char_offset` 은 편집 캐럿의 논리 오프셋이다.
     #[wasm_bindgen(js_name = insertEquation)]
     pub fn insert_equation(
         &mut self,
@@ -5653,11 +5653,13 @@ impl HwpDocument {
         script: &str,
         font_size: u32,
         color: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.insert_equation_native(
+        self.insert_equation_at_native(
             section_idx as usize,
             para_idx as usize,
             char_offset as usize,
+            logical == Some(true),
             script,
             font_size,
             color,
@@ -5695,14 +5697,16 @@ impl HwpDocument {
         script: &str,
         font_size: u32,
         color: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.insert_equation_in_cell_native(
+        self.insert_equation_in_cell_at_native(
             section_idx as usize,
             parent_para_idx as usize,
             control_idx as usize,
             cell_idx as usize,
             cell_para_idx as usize,
             char_offset as usize,
+            logical == Some(true),
             script,
             font_size,
             color,
@@ -5721,12 +5725,14 @@ impl HwpDocument {
         script: &str,
         font_size: u32,
         color: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.insert_equation_in_cell_by_path_native(
+        self.insert_equation_in_cell_by_path_at_native(
             section_idx as usize,
             parent_para_idx as usize,
             cell_path_json,
             char_offset as usize,
+            logical == Some(true),
             script,
             font_size,
             color,
@@ -9789,8 +9795,10 @@ pub fn font_fallback_families(font_family: &str, font_subst: Option<String>) -> 
 /// 사용자가 설치한 폰트 바이트에서 advance 폭을 추출해 레이아웃 메트릭으로 등록한다.
 ///
 /// `aliases_json`: 폰트명 별칭 JSON 배열. 같은 별칭 + bold + italic 은 교체한다.
+/// `variations_json`(선택): 가변 글꼴 좌표 JSON 객체 (`{"wght":600}`). 주면 그 인스턴스의
+/// advance 로 잰다. 생략하면(JS 에서 인자 4개로 부르면) 기본 인스턴스다.
 /// 반환: `{"registered":true,"key":..,"unitsPerEm":..,"mappedChars":..,
-/// "coversHangul":..,"coversLatin":..,"replaced":..}` 또는
+/// "coversHangul":..,"coversLatin":..,"replaced":..,"variationsApplied":..}` 또는
 /// `{"registered":false,"reason":".."}`. 반영하려면 이후 `refreshLayout` 호출.
 #[wasm_bindgen(js_name = registerRuntimeFontMetrics)]
 pub fn register_runtime_font_metrics(
@@ -9798,8 +9806,15 @@ pub fn register_runtime_font_metrics(
     aliases_json: &str,
     bold: bool,
     italic: bool,
+    variations_json: Option<String>,
 ) -> String {
-    crate::renderer::runtime_font_metrics::register_json(bytes, aliases_json, bold, italic)
+    crate::renderer::runtime_font_metrics::register_json(
+        bytes,
+        aliases_json,
+        bold,
+        italic,
+        variations_json.as_deref(),
+    )
 }
 
 /// 사용자 PC 의 한컴 HFT 파일 바이트를 그리기 전용 윤곽선 소스로 등록한다.
