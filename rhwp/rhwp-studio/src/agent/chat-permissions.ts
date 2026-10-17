@@ -13,7 +13,7 @@ export const CHAT_PERMISSION_LABELS: Readonly<Record<ChatPermissionCapability, s
 };
 
 const requestKinds: readonly ChatPermissionRequestKind[] = [
-  'browser-save-account', 'browser-use-account', 'browser-sign-in', 'browser-code', 'secret-save', 'secret-use',
+  'browser-save-account', 'browser-use-account', 'browser-site-access', 'browser-sign-in', 'browser-code', 'secret-save', 'secret-use',
 ];
 const secretKinds: readonly SecretKind[] = ['api-key', 'token', 'password', 'other'];
 

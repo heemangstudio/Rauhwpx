@@ -113,6 +113,23 @@
 .ag-request-identity-copy strong { font-weight: var(--ag-fw-medium); }
 .ag-request-identity-copy span { color: var(--ag-text-secondary); font-size: var(--ag-fs-mono); }
 
+/* 사이트 사용 카드 — 쓸 저장된 계정 한 줄 */
+.ag-request-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ag-text-secondary);
+}
+
+.ag-request-account svg { flex: 0 0 auto; color: var(--ag-text-tertiary); }
+
+.ag-request-account span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ag-request-origins {
   display: flex;
   flex-wrap: wrap;

@@ -24,6 +24,7 @@ export const scenarios = [
   'permission',
   'sign-in',
   'use-account',
+  'site-access',
   'save-account',
   'secret',
   'secret-use',
@@ -680,6 +681,14 @@ export function createMockBridge(
     toolPair(`account-${turn}`, 'browser_request_account', { origin: request.origin, label: 'Google 연구', reason: request.reason, kind: 'use' },
       { pending: true, requestId: request.requestId, origin: request.origin, kind: 'use' });
   };
+  /** ?scenario=site-access — 저장된 계정이 있는 사이트의 사용 승인(읽기·사이트 변경·그 계정). */
+  const openSiteAccess = (turn: number) => {
+    const request = openPermission({ turnId: `turn-${turn}`, capability: 'browser', kind: 'browser-site-access',
+      origin: 'https://www.coupang.com', origins: ['https://www.coupang.com', 'https://coupang.com'], accountId: 'coupang', accountLabel: 'andy@hama.kr',
+      scopes: ['chat', 'always'], reason: 'Check the order history on Coupang with the saved account.' });
+    toolPair(`site-${turn}`, 'browser_request_account', { origin: request.origin, label: 'Coupang', reason: request.reason, kind: 'site' },
+      { pending: true, requestId: request.requestId, origin: request.origin, kind: 'site' });
+  };
   const openAccountSave = (turn: number) => {
     const request = openPermission({ turnId: `turn-${turn}`, capability: 'browser', kind: 'browser-save-account',
       origin: 'https://www.notion.so', origins: ['https://www.notion.so'], accountLabel: 'Notion',
@@ -824,7 +833,7 @@ export function createMockBridge(
     requestAgentSetupStatus: async () => data.setups,
     requestBrowser: async <R = T.BrowserResult>(action: string, args?: Record<string, unknown>): Promise<R> => {
       const pending = typeof args?.['requestId'] === 'string' ? permissionRequests.get(args['requestId']) : undefined;
-      const answering = pending && ['accounts.complete', 'accounts.approve', 'secrets.approve'].includes(action);
+      const answering = pending && ['accounts.complete', 'accounts.approve', 'secrets.approve', 'sites.approve'].includes(action);
       if (answering) {
         await new Promise((resolve) => setTimeout(resolve, 60));
         if (failRequestAction()) throw Object.assign(new Error('요청을 전달하지 못했습니다.'), { code: 'BROWSER_REQUEST_FAILED' });
@@ -836,6 +845,11 @@ export function createMockBridge(
         resolvePermission(pending.requestId, { status: 'granted' });
         continueAfterRequest('로그인을 확인했습니다. 이어서 진행합니다.');
         return { completed: true, origin: pending.origin } as R;
+      }
+      if (action === 'sites.approve' && pending) {
+        resolvePermission(pending.requestId, { status: 'granted' });
+        continueAfterRequest('사이트 사용이 허용되어 저장된 계정으로 이어서 진행합니다.');
+        return { approved: true, scope: args?.['scope'] ?? 'chat', origins: pending.origins ?? [], accountId: pending.accountId ?? null } as R;
       }
       if (action === 'secrets.approve' && !pending) {
         // 설정의 스위치: 허브처럼 요청 없이 저장된 값을 다시 허용한다.
@@ -1213,7 +1227,7 @@ export function createMockBridge(
           void openHandoff(turnGeneration, code).then(() => { if (!holdReply && generation === turnGeneration) later(() => finish(), 100); });
           return;
         }
-        if (reply === 'use-account' || reply === 'save-account' || reply === 'secret' || reply === 'secret-use' || reply === 'requests') {
+        if (reply === 'use-account' || reply === 'site-access' || reply === 'save-account' || reply === 'secret' || reply === 'secret-use' || reply === 'requests') {
           if (reply === 'requests') {
             // 한 턴이 요청 셋을 연다 — 카드마다 따로 답하고 따로 정착한다.
             openGenericPermission(turnGeneration, 'downloads');
@@ -1222,6 +1236,7 @@ export function createMockBridge(
             return;
           }
           if (reply === 'use-account') openAccountUse(turnGeneration);
+          if (reply === 'site-access') openSiteAccess(turnGeneration);
           if (reply === 'save-account') openAccountSave(turnGeneration);
           if (reply === 'secret') openSecretSave(turnGeneration);
           if (reply === 'secret-use') openSecretUse(turnGeneration);

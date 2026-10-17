@@ -93,6 +93,7 @@ function settledLabel(request: ChatPermissionRequest): string {
     case 'browser-sign-in': return `${host} 로그인`;
     case 'browser-code': return `${host} 인증 코드`;
     case 'browser-use-account': return `${request.accountLabel || host} 계정 사용`;
+    case 'browser-site-access': return `${host} 사용`;
     case 'browser-save-account': return `${host} 계정 저장`;
     case 'secret-save':
     case 'secret-use': return secretName(request);
@@ -105,6 +106,7 @@ function title(request: ChatPermissionRequest): string {
     case 'browser-sign-in': return '로그인이 필요합니다';
     case 'browser-code': return '인증 코드가 필요합니다';
     case 'browser-use-account': return '저장된 계정으로 로그인할까요?';
+    case 'browser-site-access': return '이 사이트 사용을 허용할까요?';
     case 'browser-save-account': return '이 계정을 저장할까요?';
     case 'secret-save': return secretTitles[request.secretKind ?? 'other']!;
     case 'secret-use': return `저장된 ${SECRET_KIND_LABELS[request.secretKind ?? 'other']}를 사용할까요?`;
@@ -186,6 +188,11 @@ export function createRequestCardController(options: RequestCardOptions) {
           ...(card.scope ? { scope: card.scope } : {}),
           ...(!request.accountId && request.origin ? { account: { origin: request.origin, label: request.accountLabel ?? request.origin, origins: request.origins } } : {}),
         }, '계정 사용을 승인하지 못했습니다.');
+        return;
+      case 'browser-site-access':
+        browserAction(card, 'browser-site-access', 'sites.approve', {
+          requestId: request.requestId, ...(card.scope ? { scope: card.scope } : {}),
+        }, '사이트 사용을 허용하지 못했습니다.');
         return;
       case 'secret-use':
         browserAction(card, 'secret-use', 'secrets.approve', {
@@ -463,6 +470,16 @@ export function createRequestCardController(options: RequestCardOptions) {
         const avatar = el('span', 'ag-request-avatar', (request.accountLabel || host || '?').slice(0, 1).toLocaleUpperCase());
         nodes.push(identityRow(avatar, request.accountLabel || host, host));
         actions.append(deny(), primary(card, '허용', `${request.accountLabel || host} 계정 사용 허용`, !options.requestBrowser));
+        break;
+      }
+      case 'browser-site-access': {
+        // 쓸 계정이 있으면 한 줄로만 보인다. 값은 카드에 오지 않는다.
+        if (request.accountLabel) {
+          const account = el('div', 'ag-request-account');
+          account.append(createIcon('person'), el('span', '', request.accountLabel));
+          nodes.push(account);
+        }
+        actions.append(deny(), primary(card, '허용', `${host} 사용 허용`, !options.requestBrowser));
         break;
       }
       case 'browser-save-account': {

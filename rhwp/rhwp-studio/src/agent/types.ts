@@ -150,7 +150,7 @@ export type ChatPermissionOutcome =
   | { status: 'denied' | 'expired'; reason?: string };
 
 export type ChatPermissionRequestKind =
-  | 'browser-save-account' | 'browser-use-account' | 'browser-sign-in' | 'browser-code'
+  | 'browser-save-account' | 'browser-use-account' | 'browser-site-access' | 'browser-sign-in' | 'browser-code'
   | 'secret-save' | 'secret-use';
 export type SecretKind = 'api-key' | 'token' | 'password' | 'other';
 
