@@ -123,9 +123,14 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   const moveBounds = await page.$eval('.ag-browser-floating:not([hidden]) .ag-browser-move', node => { const r = node.getBoundingClientRect(); return { x: r.x + 20, y: r.y + 10 }; });
   await page.mouse.move(moveBounds.x, moveBounds.y); await page.mouse.down(); await page.mouse.move(moveBounds.x + 70, moveBounds.y + 30);
   await page.keyboard.press('Escape'); await page.mouse.up(); assert.deepEqual(await floatRect(), beforeCancel, 'Escape cancels an active drag');
+  // 브라우저가 매기는 마우스 pointerId 는 버전마다 다르다. 실제 누름의 ID 로 취소를 보낸다.
+  await page.evaluate(() => addEventListener('pointerdown', event => { window.lastPointerId = event.pointerId; }, { capture: true, once: true }));
   await page.mouse.move(moveBounds.x, moveBounds.y); await page.mouse.down(); await page.mouse.move(moveBounds.x + 50, moveBounds.y + 20);
-  await page.$eval('.ag-browser-floating:not([hidden]) .ag-browser-move', node => node.dispatchEvent(new PointerEvent('pointercancel', { pointerId: 1, bubbles: true })));
-  await page.mouse.up(); assert.deepEqual(await floatRect(), beforeCancel, 'pointer cancellation restores geometry and ends tracking');
+  await page.$eval('.ag-browser-floating:not([hidden]) .ag-browser-move', node => node.dispatchEvent(new PointerEvent('pointercancel', { pointerId: window.lastPointerId, bubbles: true })));
+  // 포인터를 잃으면 마지막 위치를 유지하고 추적을 끝낸다. 되돌리기는 Escape 만 한다.
+  const interrupted = await floatRect(); assert.notDeepEqual(interrupted, beforeCancel, 'pointer cancellation keeps the dragged geometry');
+  await page.mouse.move(moveBounds.x + 120, moveBounds.y + 60); await page.mouse.up();
+  assert.deepEqual(await floatRect(), interrupted, 'pointer cancellation ends tracking');
   await page.evaluate(() => { const theme = document.querySelector('#theme'); theme.value = 'light'; theme.dispatchEvent(new Event('change', { bubbles: true })); });
   await page.waitForFunction(() => document.documentElement.dataset.themeEffective === 'light');
   if (screenshot) await screenshot('browser-workbench-float-light');

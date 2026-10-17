@@ -39,7 +39,6 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
   let mode: BrowserPresentationMode | null = null;
   let popup: Window | null = null;
   let returnFocus: HTMLElement | null = null;
-  let locked = false;
   // 머리줄로 옮긴 노드는 원래 자리로 돌려놓는다. 뒤 이웃부터 돌려놓아 이웃끼리 옮겨진 경우에도 순서를 지킨다.
   const borrowed = [navigation, controlButton, captureButton].filter((node): node is HTMLElement => !!node).map(node => ({ node, home: node.parentElement, next: node.nextSibling }));
   const restoreNavigation = () => {
@@ -127,7 +126,6 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
   /** 머리줄 이동과 가장자리 크기 조절. 포인터를 1:1로 따르고 프레임마다 한 번만 그린다. */
   function gesture(event: PointerEvent, owner: HTMLElement, edge: FloatResizeEdge | null): void {
     if (event.button !== 0 || innerWidth < 640 || floating.hidden) return;
-    if (edge && locked) return;
     stopMotion(); cancelGesture?.(); event.preventDefault(); moveHandle.focus({ preventScroll: true });
     const start = rendered ?? fitFloatFrame(stored, area(), inset); const x = event.clientX; const y = event.clientY; const id = event.pointerId;
     owner.setPointerCapture(id);
@@ -148,17 +146,23 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
       if (frame === null) frame = requestAnimationFrame(flush);
     };
     const stop = () => {
-      owner.removeEventListener('pointermove', move); owner.removeEventListener('pointerup', finish); owner.removeEventListener('pointercancel', cancel); owner.removeEventListener('lostpointercapture', cancel);
+      owner.removeEventListener('pointermove', move); owner.removeEventListener('pointerup', finish); owner.removeEventListener('pointercancel', interrupt); owner.removeEventListener('lostpointercapture', interrupt); window.removeEventListener('blur', interrupt);
       if (frame !== null) cancelAnimationFrame(frame); frame = null; delete floating.dataset.gesture;
       cancelGesture = null; if (owner.hasPointerCapture(id)) owner.releasePointerCapture(id);
     };
-    const cancel = (next?: PointerEvent) => { if (next && next.pointerId !== id) return; stop(); render(start); };
+    // 캡처나 창 초점을 잃어도 마지막 크기를 유지한다. Escape 만 명시적으로 되돌린다.
+    const interrupt = (next: Event) => {
+      if (next instanceof PointerEvent && next.pointerId !== id) return;
+      flush(); stop(); const current = fitFloatFrame(rendered ?? start, area(), inset); remember(current); render(current);
+    };
+    const cancel = () => { stop(); const original = fitFloatFrame(start, area(), inset); remember(original); render(original); };
     const finish = (next: PointerEvent) => {
       if (next.pointerId !== id) return;
+      latest = { x: next.clientX - x, y: next.clientY - y };
       flush(); stop();
       if (!latest.x && !latest.y) return;
       const current = rendered ?? start;
-      if (edge) { remember(current); return; }
+      if (edge) { const fitted = fitFloatFrame(current, area(), inset); remember(fitted); render(fitted); return; }
       const bounds = area(); const raw = { x: start.left + latest.x, y: start.top + latest.y };
       const first = samples[0]; const last = samples[samples.length - 1]; const span = last.t - first.t;
       // 멈췄다가 놓으면 던지지 않는다. 고무줄 구간의 축은 속도를 버리고 제자리로 돌아온다.
@@ -170,7 +174,7 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
       remember(target); settle(current, velocity, target);
     };
     cancelGesture = cancel;
-    owner.addEventListener('pointermove', move); owner.addEventListener('pointerup', finish); owner.addEventListener('pointercancel', cancel); owner.addEventListener('lostpointercapture', cancel);
+    owner.addEventListener('pointermove', move); owner.addEventListener('pointerup', finish); owner.addEventListener('pointercancel', interrupt); owner.addEventListener('lostpointercapture', interrupt); window.addEventListener('blur', interrupt);
   }
   chrome.addEventListener('pointerdown', event => {
     const control = (event.target as Element).closest('button, input, textarea, select, a, summary, label, [role="button"], [contenteditable]');
@@ -231,7 +235,6 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
     const frame = rendered ?? fitFloatFrame(stored, area(), inset); const amount = event.altKey ? 1 : 20;
     const dx = event.key === 'ArrowRight' ? amount : event.key === 'ArrowLeft' ? -amount : 0;
     const dy = event.key === 'ArrowDown' ? amount : event.key === 'ArrowUp' ? -amount : 0;
-    if (event.shiftKey && locked) return;
     const next = event.shiftKey ? resizeFloatFrame(frame, 'se', { x: dx, y: dy }, area(), inset) : fitFloatFrame({ ...frame, left: frame.left + dx, top: frame.top + dy }, area(), inset);
     remember(next); render(next);
   }
@@ -243,9 +246,8 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
     mount(host: HTMLElement) { dock = host; syncTheme(); if (mode !== 'float' && mode !== 'popout') host.append(element); }, present, hide, current: () => mode,
     /** locked: 에이전트가 조작 중이라 페이지와 머리줄 조작을 막는다. 이동 손잡이와 직접 조작 단추는 남긴다. live: 문서 홈에서도 보인다. */
     setPreviewLock(next: boolean, live = next) {
-      locked = next;
       floating.dataset.agentControlled = String(next); floating.dataset.agentSession = String(live);
-      for (const child of [...chrome.children, ...edges] as HTMLElement[]) child.inert = next && child !== moveHandle && child !== controlButton;
+      for (const child of [...chrome.children] as HTMLElement[]) child.inert = next && child !== moveHandle && child !== controlButton;
       floating.setAttribute('aria-label', next ? '에이전트가 사용 중인 브라우저 미리보기' : '떠 있는 브라우저');
     },
     dispose() { hide(); themeObserver.disconnect(); window.removeEventListener('resize', onResize); if (resizeFrame !== null) cancelAnimationFrame(resizeFrame); floating.remove(); element.remove(); },
