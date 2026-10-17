@@ -684,7 +684,7 @@ export function createMockBridge(
   /** ?scenario=site-access — 저장된 계정이 있는 사이트의 사용 승인(읽기·사이트 변경·그 계정). */
   const openSiteAccess = (turn: number) => {
     const request = openPermission({ turnId: `turn-${turn}`, capability: 'browser', kind: 'browser-site-access',
-      origin: 'https://www.coupang.com', origins: ['https://www.coupang.com', 'https://coupang.com'], accountId: 'coupang', accountLabel: 'andy@hama.kr',
+      origin: 'https://www.coupang.com', origins: ['https://coupang.com'], siteDomain: 'coupang.com', accountId: 'coupang', accountLabel: 'andy@hama.kr',
       scopes: ['chat', 'always'], reason: 'Check the order history on Coupang with the saved account.' });
     toolPair(`site-${turn}`, 'browser_request_account', { origin: request.origin, label: 'Coupang', reason: request.reason, kind: 'site' },
       { pending: true, requestId: request.requestId, origin: request.origin, kind: 'site' });

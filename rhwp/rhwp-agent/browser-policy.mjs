@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { parse as parseDomain } from 'tldts';
 
 const ACTIONS = new Set(['browse', 'read', 'download', 'research-import', 'website-change', 'account-use']);
 const RESEARCH_ACTIONS = ['browse', 'read', 'download', 'research-import'];
@@ -26,15 +27,39 @@ export function browserOrigin(value) {
   return url.origin;
 }
 
-/** 사이트 사용 승인이 함께 덮는 출처 — 정확한 출처와, 호스트가 www. 하나만 다른 짝. 다른 하위 도메인은 넣지 않는다. */
-export function siteAccessOrigins(value) {
+/**
+ * 사이트 승인 범위. HTTPS 이고 공개 접미사 목록(사설 접미사 포함)에 있는 등록 도메인이면 그 도메인 전체
+ * (key https://coupang.com, domain coupang.com)다. IP·localhost·알 수 없는 접미사·공개 접미사 자체·HTTP 는 정확한 출처만 덮는다.
+ */
+export function siteScope(value) {
   const origin = browserOrigin(value);
   const url = new URL(origin);
-  const host = url.hostname;
-  if (/^\d+(?:\.\d+){3}$/.test(host) || host.startsWith('[') || !host.includes('.')) return [origin];
-  const twin = host.startsWith('www.') ? host.slice(4) : `www.${host}`;
-  if (!twin.includes('.')) return [origin];
-  return [origin, `${url.protocol}//${twin}${url.port ? `:${url.port}` : ''}`];
+  if (url.protocol !== 'https:') return { origin, key: origin, domain: null };
+  const parsed = parseDomain(url.hostname, { allowPrivateDomains: true });
+  if (parsed.isIp || !parsed.domain || !(parsed.isIcann || parsed.isPrivate)) return { origin, key: origin, domain: null };
+  return { origin, key: `https://${parsed.domain}${url.port ? `:${url.port}` : ''}`, domain: parsed.domain };
+}
+
+/** 두 출처가 같은 사이트 승인 범위에 드는가 — 같은 출처이거나 같은 등록 도메인(HTTPS)이다. */
+export function sameSite(left, right) {
+  try {
+    const a = siteScope(left), b = siteScope(right);
+    return a.origin === b.origin || (!!a.domain && a.key === b.key);
+  } catch { return false; }
+}
+
+/** 사이트 사용 승인이 덮는 범위의 대표 출처 — 등록 도메인이면 https://도메인, 아니면 정확한 출처. */
+export function siteAccessOrigins(value) {
+  return [siteScope(value).key];
+}
+
+/** 설정의 사이트 항목이 도메인 전체를 덮는지 — 사용자 항목이고 호스트가 등록 도메인이나 www.등록 도메인일 때다. */
+function siteEntryKey(site) {
+  if (site.source === 'research-default') return null;
+  const scope = siteScope(site.origin);
+  if (!scope.domain) return null;
+  const host = new URL(scope.origin).hostname;
+  return host === scope.domain || host === `www.${scope.domain}` ? scope.key : null;
 }
 
 /** 사이트 사용 승인이 허용하는 일 — 읽기와 사이트 변경. 계정 사용은 계정 승인으로 따로 기록한다. */
@@ -97,9 +122,15 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
   /** threadId\naccountId → { origins, profileId, version } */
   const chatAccounts = new Map();
   let chatAccountVersion = 0;
-  /** threadId\norigin → Set(action) — "이 채팅" 사이트 사용 승인. 허브 메모리에만 둔다. */
+  /** threadId\nsiteScope key → Set(action) — "이 채팅" 사이트 사용 승인. 허브 메모리에만 둔다. */
   const chatSites = new Map();
-  const dropChatSites = (origin) => { for (const key of [...chatSites.keys()]) if (key.endsWith(`\n${origin}`)) chatSites.delete(key); };
+  const dropChatSites = (origin) => { const key = siteScope(origin).key; for (const entry of [...chatSites.keys()]) if (entry.endsWith(`\n${key}`)) chatSites.delete(entry); };
+  /** 이 출처에 적용되는 설정 항목 — 정확한 출처 항목과, 같은 등록 도메인을 덮는 사용자 항목. */
+  const sitesFor = (origin) => {
+    if (!origin) return [];
+    const key = siteScope(origin).key;
+    return state.sites.filter((entry) => entry.origin === origin || siteEntryKey(entry) === key);
+  };
   const chatAccountKey = (threadId, accountId) => `${threadId ?? ''}\n${accountId ?? ''}`;
   const readyPromise = (async () => {
     state = await readBrowserJson(filePath);
@@ -134,7 +165,13 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
     return { browse: defaults.browse || permitted(['browse', 'read']), downloads: defaults.downloads || permitted(['download']), import: defaults.import || permitted(['research-import']) };
   }
 
-  async function list() { await readyPromise; return clone(state); }
+  async function list() {
+    await readyPromise;
+    const result = clone(state);
+    // 도메인 전체를 덮는 항목에는 그 등록 도메인을 붙여 설정 화면이 그대로 보여 줄 수 있게 한다.
+    for (const site of result.sites) if (siteEntryKey(site)) site.domain = siteScope(site.origin).domain;
+    return result;
+  }
   async function update(input = {}) {
     requireHuman(input.actor);
     const operation = async () => {
@@ -194,15 +231,17 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
     if (!ACTIONS.has(action)) return { allowed: false, code: 'BROWSER_ACTION_UNKNOWN', reason: 'The browser action is unknown.' };
     const origin = url ? browserOrigin(url) : null;
     if (actor?.isHuman) return { allowed: true, origin, source: 'owner', revision: state.revision };
-    const site = state.sites.find((entry) => entry.origin === origin);
+    const sites = sitesFor(origin);
     // 카드에서 방금 받은 "이 채팅" 사이트 승인은 그 채팅의 행위자에게만 적용된다.
-    if (action !== 'account-use' && !accountId && actor?.threadId && chatSites.get(`${actor.threadId}\n${origin}`)?.has(action)) {
+    if (action !== 'account-use' && !accountId && actor?.threadId && origin && chatSites.get(`${actor.threadId}\n${siteScope(origin).key}`)?.has(action)) {
       return { allowed: true, origin, source: 'chat-site', revision: state.revision };
     }
-    if (site?.blockedActions.includes(action)) return { allowed: false, origin, code: 'BROWSER_SITE_BLOCKED', reason: 'This website action has been revoked.', revision: state.revision };
+    // 차단은 정확한 출처 항목이든 도메인 항목이든 하나만 있어도 이긴다.
+    if (sites.some((site) => site.blockedActions.includes(action))) return { allowed: false, origin, code: 'BROWSER_SITE_BLOCKED', reason: 'This website action has been revoked.', revision: state.revision };
     if (action === 'account-use' || accountId) {
       const account = state.accounts.find((entry) => entry.accountId === accountId);
-      const matches = (grant) => !!grant && !!origin && grant.origins.includes(origin) && (!profileId || grant.profileId === profileId);
+      // 계정은 승인된 출처와 같은 등록 도메인(HTTPS)에서도 쓸 수 있다.
+      const matches = (grant) => !!grant && !!origin && grant.origins.some((value) => sameSite(value, origin)) && (!profileId || grant.profileId === profileId);
       const remembered = account?.approved && matches(account);
       // "이 채팅" 승인은 허브 메모리에만 있고 그 채팅의 행위자에게만 적용된다.
       const chat = remembered ? null : chatAccounts.get(chatAccountKey(actor?.threadId, accountId));
@@ -213,7 +252,8 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
     }
     // 기본 연구 권한은 항상 켜져 있다. 예전에 저장된 끔 설정은 무시한다.
     const enabled = ['browse', 'read', 'download', 'research-import'].includes(action);
-    if (site?.allowedActions.includes(action) && (site.source !== 'research-default' || enabled)) return { allowed: true, origin, source: site.source, revision: state.revision };
+    const site = sites.find((entry) => entry.allowedActions.includes(action) && (entry.source !== 'research-default' || enabled));
+    if (site) return { allowed: true, origin, source: site.source, revision: state.revision };
     return enabled ? { allowed: true, origin, source: 'research-default', revision: state.revision }
       : { allowed: false, origin, code: 'BROWSER_PERMISSION_REQUIRED', reason: 'This browser action requires owner approval.', revision: state.revision };
   }
@@ -249,29 +289,33 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
 
   /**
    * 사이트 사용 카드의 승인. always 는 사이트 정책에 읽기·사이트 변경을 더하고(막아 둔 같은 동작은 푼다),
-   * chat 은 이 채팅에만 허브 메모리로 허용한다. 출처는 정확한 출처와 www 짝만이다.
+   * chat 은 이 채팅에만 허브 메모리로 허용한다. 범위는 등록 도메인 전체(하위 도메인 포함)이고,
+   * 등록 도메인이 없는 IP·localhost 같은 호스트는 정확한 출처만이다.
    */
   async function grantSiteAccess({ actor, threadId, origin, scope = 'chat', label } = {}) {
     requireHuman(actor);
     await readyPromise;
     if (!['chat', 'always'].includes(scope)) throw failure('BROWSER_INVALID_POLICY', 'Choose chat or always for this site approval.');
-    const covered = siteAccessOrigins(origin);
+    const site = siteScope(origin);
+    const result = { origins: [site.key], domain: site.domain, scope };
     if (scope === 'chat') {
       if (!threadId) throw failure('BROWSER_INVALID_POLICY', 'A chat site approval needs its chat.');
-      for (const entry of covered) {
-        const key = `${threadId}\n${entry}`;
-        chatSites.set(key, new Set([...(chatSites.get(key) ?? []), ...SITE_ACCESS_ACTIONS]));
-      }
+      const key = `${threadId}\n${site.key}`;
+      chatSites.set(key, new Set([...(chatSites.get(key) ?? []), ...SITE_ACCESS_ACTIONS]));
       try { onChange({ type: 'browser-policy-changed', revision: state.revision }); } catch {}
-      return { origins: covered, scope };
+      return result;
     }
-    for (const entry of covered) {
-      const previous = state.sites.find((site) => site.origin === entry);
-      await update({ actor, operation: 'set-site', origin: entry, label: previous?.label ?? label ?? new URL(entry).hostname,
-        allowedActions: [...new Set([...(previous?.allowedActions ?? RESEARCH_ACTIONS), ...SITE_ACCESS_ACTIONS])],
-        blockedActions: (previous?.blockedActions ?? []).filter((action) => !SITE_ACCESS_ACTIONS.includes(action)) });
-    }
-    return { origins: covered, scope };
+    // 같은 도메인을 덮던 예전 항목(www 짝 등)은 도메인 항목 하나로 합친다.
+    const merged = state.sites.filter((entry) => entry.origin === site.key || (site.domain && siteEntryKey(entry) === site.key));
+    const previous = merged.find((entry) => entry.origin === site.key);
+    for (const entry of merged) if (entry.origin !== site.key) await update({ actor, operation: 'remove-site', origin: entry.origin });
+    await update({ actor, operation: 'set-site', origin: site.key, label: previous?.label ?? label ?? site.domain ?? new URL(site.key).hostname,
+      allowedActions: [...new Set([...(merged.length ? merged.flatMap((entry) => entry.allowedActions) : RESEARCH_ACTIONS), ...SITE_ACCESS_ACTIONS])],
+      blockedActions: [...new Set(merged.flatMap((entry) => entry.blockedActions))].filter((action) => !SITE_ACCESS_ACTIONS.includes(action)) });
+    // 요청한 출처에만 따로 둔 차단이 있으면 그 동작도 푼다.
+    const exact = state.sites.find((entry) => entry.origin === site.origin && entry.origin !== site.key && entry.blockedActions.some((action) => SITE_ACCESS_ACTIONS.includes(action)));
+    if (exact) await update({ actor, operation: 'set-site', origin: exact.origin, blockedActions: exact.blockedActions.filter((action) => !SITE_ACCESS_ACTIONS.includes(action)) });
+    return result;
   }
 
   return { ready: () => readyPromise, list, update, check, assertAllowed, effectiveResearch, categoryAvailability,

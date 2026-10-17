@@ -60,7 +60,7 @@ import { DownloadManager, fetchPublic } from './download-manager.mjs';
 import { DocumentSnapshotManager } from './document-snapshot-manager.mjs';
 import { ArtifactStore, defaultGeneratedArtifactRoot } from './artifact-store.mjs';
 import { createOwnedBrowserService, createIpcNativeBrowserAdapter } from './owned-browser-service.mjs';
-import { browserOrigin, createBrowserPolicy, siteAccessOrigins } from './browser-policy.mjs';
+import { browserOrigin, createBrowserPolicy, sameSite } from './browser-policy.mjs';
 import { createBrowserCredentialBroker } from './browser-credentials.mjs';
 import { createBrowserOsSecretStore } from './browser-os-secret-store.mjs';
 import { createBrowserDownloads } from './browser-downloads.mjs';
@@ -868,7 +868,8 @@ function chatRequestContinuationText(request, outcome, detail = {}) {
   if (request.kind === 'browser-sign-in') return `The user finished signing in on ${origin}; continue.`;
   if (request.kind === 'browser-site-access') {
     const account = request.accountId ? ` Sign in with the saved account ${quotedLabel(request.accountLabel)} (accountId ${request.accountId}) through browser_fill_account, then submit the form.` : '';
-    return `The user allowed ${origin} ${detail.scope === 'always' ? 'in every chat' : 'for this chat'}: browsing and website changes there.${account} Continue.`;
+    const where = request.siteDomain ? `${request.siteDomain} and its subdomains` : origin;
+    return `The user allowed ${where} ${detail.scope === 'always' ? 'in every chat' : 'for this chat'}: browsing and website changes there.${account} Continue.`;
   }
   if (request.kind === 'browser-save-account') {
     return detail.reuseApproved
@@ -883,11 +884,10 @@ function chatRequestContinuationText(request, outcome, detail = {}) {
 
 /**
  * 사이트에 쓸 저장된 계정 — 데스크톱 보관함과 허브 계정을 함께 본다. accountId 를 주면 그 계정이 이 사이트 것이어야 한다.
- * 정확한 출처가 먼저이고, 없으면 www 짝 출처의 계정을 쓴다.
+ * 정확한 출처가 먼저이고, 없으면 같은 등록 도메인(HTTPS)의 계정을 쓴다.
  */
 async function savedSiteAccount(origin, accountId) {
   const requested = browserOrigin(origin);
-  const covered = new Set(siteAccessOrigins(requested));
   const native = (await ownedBrowser.nativeAccounts().catch(() => [])).map((account) => ({ ...account, source: 'native' }));
   const hub = ((await credentialBroker.listAccounts().catch(() => null))?.accounts ?? []).map((account) => ({ ...account, source: 'hub' }));
   const originsOf = (account) => account.origins?.length ? account.origins : [account.origin];
@@ -895,11 +895,11 @@ async function savedSiteAccount(origin, accountId) {
   if (accountId) {
     const account = native.concat(hub).find((entry) => entry.id === accountId);
     if (!account) return null;
-    if (!originsOf(account).some((value) => covered.has(value))) throw workflowError('BROWSER_ACCOUNT_ORIGIN_MISMATCH', 'The saved account belongs to a different website.');
+    if (!originsOf(account).some((value) => sameSite(value, requested))) throw workflowError('BROWSER_ACCOUNT_ORIGIN_MISMATCH', 'The saved account belongs to a different website.');
     return pick(account);
   }
   const all = native.concat(hub);
-  const account = all.find((entry) => originsOf(entry).includes(requested)) ?? all.find((entry) => originsOf(entry).some((value) => covered.has(value)));
+  const account = all.find((entry) => originsOf(entry).includes(requested)) ?? all.find((entry) => originsOf(entry).some((value) => sameSite(value, requested)));
   return account ? pick(account) : null;
 }
 
@@ -1028,7 +1028,7 @@ async function handleBrowserRequest(record, sock, msg) {
         break;
       }
       case 'sites.approve': {
-        // 사이트 사용 카드: 읽기·사이트 변경을 그 출처(www 짝 포함)에, 저장된 계정 사용을 그 계정에 같은 범위로 허용한다.
+        // 사이트 사용 카드: 읽기·사이트 변경을 그 등록 도메인 전체(하위 도메인 포함)에, 저장된 계정 사용을 그 계정에 같은 범위로 허용한다.
         const scope = normalizeChatPermissionScope(args.scope);
         const pending = await credentialBroker.getAccountRequest(String(args.requestId ?? ''));
         if (!pending) throw workflowError('BROWSER_ACCOUNT_REQUEST_EXPIRED', 'The site request expired. Ask the agent again.');
@@ -1041,7 +1041,7 @@ async function handleBrowserRequest(record, sock, msg) {
         } else if (pending.accountId) await credentialBroker.approveAccount({ actor, accountId: pending.accountId, scope });
         await credentialBroker.settleExternalRequest({ actor, requestId: pending.requestId });
         settleChatRequestAnywhere(pending.requestId, { status: 'granted' }, { continuation: chatRequestContinuationText(pending, { status: 'granted' }, { scope }) });
-        result = { approved: true, scope, origins: site.origins, accountId: pending.accountId ?? null };
+        result = { approved: true, scope, origins: site.origins, domain: site.domain, accountId: pending.accountId ?? null };
         break;
       }
       case 'accounts.complete': {

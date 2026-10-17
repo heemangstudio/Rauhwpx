@@ -165,6 +165,8 @@ export interface ChatPermissionRequest {
   origin?: string;
   tabId?: string;
   origins?: string[];
+  /** browser-site-access 가 덮는 등록 도메인(하위 도메인 포함). IP·localhost 는 없다. */
+  siteDomain?: string | null;
   accountId?: string;
   accountLabel?: string;
   /** secret-use, 그리고 있는 값을 바꾸는 secret-save. */

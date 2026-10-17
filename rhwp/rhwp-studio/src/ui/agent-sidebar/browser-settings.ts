@@ -9,7 +9,7 @@ import type { SecretMeta } from '../../agent/types.ts';
 
 export type BrowserSettingsRequest = (action: string, args?: Record<string, unknown>) => Promise<unknown>;
 interface Account { sourceAccountId?: string; profileId?: string; id: string; origin: string; origins?: string[]; label: string; stableIdentity?: string; hasPassword: boolean; agentReuseApproved: boolean; sessionStatus: string; }
-interface Site { id: string; origin: string; label?: string; source: string; allowedActions: string[]; blockedActions: string[]; }
+interface Site { id: string; origin: string; domain?: string; label?: string; source: string; allowedActions: string[]; blockedActions: string[]; }
 const permissionLabels: Record<string, string> = { browse: '읽기', read: '읽기', download: '다운로드', 'research-import': '자료 추가', 'website-change': '웹사이트 변경', 'account-use': '계정 사용' };
 interface Policy { defaults: { browse: boolean; download: boolean; researchImport: boolean }; sites: Site[]; }
 
@@ -321,7 +321,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const sitePermissions = section('사이트 권한');
       if (!policy.sites.length) sitePermissions.append(node('p', 'ag-browser-empty', '등록된 사이트 권한이 없습니다.'));
       for (const site of policy.sites) {
-        const blocked = site.blockedActions.includes('browse'); const actions = row(site.label || site.origin, `${site.origin} · ${blocked ? '차단됨' : [...new Set(site.allowedActions.map(value => permissionLabels[value] ?? value))].join(' · ') || '기본 정책'}`, sitePermissions);
+        const blocked = site.blockedActions.includes('browse'); const actions = row(site.label || site.origin, `${site.domain ? `${site.domain} (하위 도메인 포함)` : site.origin} · ${blocked ? '차단됨' : [...new Set(site.allowedActions.map(value => permissionLabels[value] ?? value))].join(' · ') || '기본 정책'}`, sitePermissions);
         action(actions, blocked ? '읽기·다운로드 허용' : '사이트 차단', 'policy.update', { operation: 'set-site', origin: site.origin, label: site.label, allowedActions: [...site.allowedActions.filter(value => !['browse', 'read', 'download', 'research-import'].includes(value)), ...(blocked ? ['browse', 'read', 'download', 'research-import'] : [])], blockedActions: [...site.blockedActions.filter(value => !['browse', 'read', 'download', 'research-import'].includes(value)), ...(blocked ? [] : ['browse', 'read', 'download', 'research-import'])] });
         for (const operation of site.allowedActions.filter(value => !['browse', 'read', 'download', 'research-import'].includes(value))) {
           action(actions, `${operation === 'website-change' ? '웹사이트 변경' : operation === 'account-use' ? '계정 사용' : operation} 승인 철회`, 'policy.update', { operation: 'set-site', origin: site.origin, label: site.label, allowedActions: site.allowedActions.filter(value => value !== operation), blockedActions: [...new Set([...site.blockedActions, operation])] });

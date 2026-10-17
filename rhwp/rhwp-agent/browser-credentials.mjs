@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { browserOrigin, readBrowserJson, siteAccessOrigins, writeBrowserJson } from './browser-policy.mjs';
+import { browserOrigin, readBrowserJson, sameSite, siteScope, writeBrowserJson } from './browser-policy.mjs';
 import { createEncryptedBrowserAuthStore } from './browser-auth-store.mjs';
 
 const REQUEST_TTL_MS = 10 * 60 * 1000;
@@ -150,7 +150,7 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
       const account = siteAccount?.source === 'hub' ? findAccount(siteAccount.id) : null;
       const request = {
         requestId: crypto.randomUUID(), kind: 'browser-site-access',
-        origin: normalizedOrigin, origins: siteAccessOrigins(normalizedOrigin),
+        origin: normalizedOrigin, origins: [siteScope(normalizedOrigin).key], siteDomain: siteScope(normalizedOrigin).domain,
         accountId: siteAccount?.id ?? null, accountLabel: text(siteAccount?.label ?? account?.label ?? ''),
         accountSource: siteAccount ? (siteAccount.source === 'native' ? 'native' : 'hub') : null,
         accountOrigins: siteAccount ? clone(siteAccount.origins ?? account?.origins ?? [normalizedOrigin]) : [],
@@ -440,7 +440,8 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     const account = findAccount(accountId);
     await assertBrowserAccess({ actor, url: binding?.origin, tab: { profileId: account.profileId } });
     const target = boundValue({ ...binding, accountId });
-    if (!account.origins.includes(target.origin)) throw failure('BROWSER_ACCOUNT_ORIGIN_MISMATCH', 'The credential target is outside the approved account origins.');
+    // 계정은 저장된 출처와 같은 등록 도메인(HTTPS)의 로그인 페이지에도 채울 수 있다.
+    if (!account.origins.some((value) => sameSite(value, target.origin))) throw failure('BROWSER_ACCOUNT_ORIGIN_MISMATCH', 'The credential target is outside the approved account origins.');
     const access = await policy.assertAllowed({ actor, action: 'account-use', url: target.origin, accountId, profileId: account.profileId });
     if (handles.size >= MAX_PENDING) throw failure('BROWSER_CREDENTIAL_HANDLE_LIMIT', 'Too many credential uses are pending.');
     const handle = crypto.randomBytes(32).toString('base64url');

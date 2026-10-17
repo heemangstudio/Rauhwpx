@@ -88,7 +88,7 @@ function secretName(request: ChatPermissionRequest): string {
 
 /** 정착한 카드 한 줄의 이름. */
 function settledLabel(request: ChatPermissionRequest): string {
-  const host = siteHost(requestOrigin(request));
+  const host = request.siteDomain || siteHost(requestOrigin(request));
   switch (request.kind) {
     case 'browser-sign-in': return `${host} 로그인`;
     case 'browser-code': return `${host} 인증 코드`;
@@ -259,7 +259,7 @@ export function createRequestCardController(options: RequestCardOptions) {
       mark.append(createIcon(request.kind?.startsWith('secret') ? 'key' : capabilityIcons[request.capability]));
       head.append(mark, el('span', 'ag-request-host', request.kind ? siteHost(origin) || '요청' : '권한 요청'));
     } else {
-      head.append(createSiteMark({ origin, request: options.requestBrowser }), el('span', 'ag-request-host', siteHost(origin)));
+      head.append(createSiteMark({ origin, request: options.requestBrowser }), el('span', 'ag-request-host', request.siteDomain || siteHost(origin)));
     }
     const close = el('button', 'ag-request-close');
     close.type = 'button';
@@ -479,7 +479,7 @@ export function createRequestCardController(options: RequestCardOptions) {
           account.append(createIcon('person'), el('span', '', request.accountLabel));
           nodes.push(account);
         }
-        actions.append(deny(), primary(card, '허용', `${host} 사용 허용`, !options.requestBrowser));
+        actions.append(deny(), primary(card, '허용', `${request.siteDomain || host} 사용 허용`, !options.requestBrowser));
         break;
       }
       case 'browser-save-account': {

@@ -71,7 +71,7 @@ test('corrupt or foreign-owner policy fails closed and preserves its bytes', asy
   assert.equal(await fs.readFile(policyFile, 'utf8'), '{broken');
 });
 
-test('a site access approval covers its www twin, stays in its chat unless always, and later settings win', async (t) => {
+test('a site access approval covers the registrable domain, stays in its chat unless always, and later settings win', async (t) => {
   const { policy, dataDir } = await fixture(t);
   const other = { ...agent, threadId: 'thread-b' };
   const allowed = async (actor, url, owner = policy) => (await owner.check({ actor, action: 'website-change', url })).allowed;
@@ -79,27 +79,78 @@ test('a site access approval covers its www twin, stays in its chat unless alway
   await assert.rejects(policy.grantSiteAccess({ actor: agent, threadId: agent.threadId, origin: 'https://coupang.com' }), { code: 'BROWSER_OWNER_REQUIRED' });
 
   await policy.grantSiteAccess({ actor: owner, threadId: agent.threadId, origin: 'https://coupang.com', scope: 'chat' });
-  assert.equal(await allowed(agent, 'https://coupang.com/cart'), true);
-  assert.equal(await allowed(agent, 'https://www.coupang.com/order'), true, 'the www twin is covered');
-  assert.equal(await allowed(agent, 'https://login.coupang.com/'), false, 'other subdomains are not');
+  for (const url of ['https://coupang.com/cart', 'https://www.coupang.com/order', 'https://login.coupang.com/', 'https://checkout.coupang.com/pay']) {
+    assert.equal(await allowed(agent, url), true, `${url} is covered`);
+  }
+  assert.equal(await allowed(agent, 'http://login.coupang.com/'), false, 'only HTTPS is covered');
+  assert.equal(await allowed(agent, 'https://coupang.co.kr/'), false, 'another registrable domain is not');
   assert.equal(await allowed(other, 'https://coupang.com/cart'), false, 'a chat approval stays in its chat');
   assert.equal((await policy.list()).sites.some((site) => site.origin.includes('coupang')), false, 'a chat approval is not saved');
   const restarted = createBrowserPolicy({ dataDir });
   await restarted.ready();
   assert.equal(await allowed(agent, 'https://coupang.com/cart', restarted), false);
 
-  // 설정에서 사이트 변경을 막으면 그 출처의 채팅 승인도 끝난다. 채팅이 끝나면 나머지도 끝난다.
+  // 설정에서 사이트 변경을 막으면 그 도메인의 채팅 승인도 끝나고, 차단은 하위 도메인까지 덮는다.
   await policy.update({ actor: owner, operation: 'set-site', origin: 'https://www.coupang.com', allowedActions: ['browse', 'read'], blockedActions: ['website-change'] });
-  assert.equal(await allowed(agent, 'https://www.coupang.com/order'), false);
-  assert.equal(await allowed(agent, 'https://coupang.com/cart'), true);
-  policy.clearChatAccounts(agent.threadId);
-  assert.equal(await allowed(agent, 'https://coupang.com/cart'), false);
+  for (const url of ['https://www.coupang.com/order', 'https://coupang.com/cart', 'https://login.coupang.com/']) {
+    assert.equal(await allowed(agent, url), false, `${url} is blocked`);
+  }
 
-  await policy.grantSiteAccess({ actor: owner, threadId: agent.threadId, origin: 'https://www.coupang.com', scope: 'always' });
+  await policy.grantSiteAccess({ actor: owner, threadId: agent.threadId, origin: 'https://login.coupang.com', scope: 'always' });
   const afterAlways = createBrowserPolicy({ dataDir });
   await afterAlways.ready();
-  for (const url of ['https://www.coupang.com/order', 'https://coupang.com/cart']) {
+  for (const url of ['https://www.coupang.com/order', 'https://coupang.com/cart', 'https://login.coupang.com/']) {
     assert.equal(await allowed(other, url, afterAlways), true, `${url} is allowed in every chat after a restart`);
   }
-  assert.deepEqual((await afterAlways.list()).sites.find((site) => site.origin === 'https://www.coupang.com').blockedActions, []);
+  const sites = (await afterAlways.list()).sites.filter((site) => site.origin.includes('coupang'));
+  assert.deepEqual(sites.map((site) => [site.origin, site.domain, site.blockedActions]), [['https://coupang.com', 'coupang.com', []]], 'the older www entry folds into one domain entry');
+});
+
+test('site approvals respect public suffixes and keep IPs and local hosts exact', async (t) => {
+  const { policy } = await fixture(t);
+  const allowed = async (url) => (await policy.check({ actor: agent, action: 'website-change', url })).allowed;
+  const grant = (origin) => policy.grantSiteAccess({ actor: owner, threadId: agent.threadId, origin, scope: 'chat' });
+
+  assert.deepEqual((await grant('https://www.foo.co.kr')).origins, ['https://foo.co.kr']);
+  assert.equal(await allowed('https://shop.foo.co.kr/'), true);
+  assert.equal(await allowed('https://bar.co.kr/'), false, 'co.kr is a public suffix, never the domain');
+
+  assert.deepEqual((await grant('https://x.github.io')).origins, ['https://x.github.io']);
+  assert.equal(await allowed('https://x.github.io/repo'), true);
+  assert.equal(await allowed('https://y.github.io/'), false, 'github.io is a public suffix');
+
+  await grant('https://shop.example.com.au');
+  assert.equal(await allowed('https://www.example.com.au/'), true);
+  assert.equal(await allowed('https://other.com.au/'), false);
+
+  for (const origin of ['https://127.0.0.1:8443', 'https://localhost:3000', 'https://app.localhost']) {
+    assert.deepEqual((await grant(origin)).origins, [origin], `${origin} stays exact`);
+  }
+  assert.equal(await allowed('https://127.0.0.1:8443/x'), true);
+  assert.equal(await allowed('https://127.0.0.2:8443/'), false);
+  assert.equal(await allowed('https://localhost:3001/'), false);
+  assert.equal(await allowed('https://other.app.localhost/'), false);
+});
+
+test('a domain block in settings blocks its subdomains while sub-host entries stay exact', async (t) => {
+  const { policy } = await fixture(t);
+  const browse = async (url) => (await policy.check({ actor: agent, action: 'browse', url })).allowed;
+  await policy.update({ actor: owner, operation: 'set-site', origin: 'https://coupang.com', allowedActions: [], blockedActions: ['browse', 'read', 'download', 'research-import'] });
+  assert.equal(await browse('https://login.coupang.com/'), false);
+  assert.equal(await browse('https://www.coupang.com/'), false);
+  assert.equal((await policy.list()).sites.find((site) => site.origin === 'https://coupang.com').domain, 'coupang.com');
+
+  await policy.update({ actor: owner, operation: 'set-site', origin: 'https://mail.example.com', allowedActions: [], blockedActions: ['browse'] });
+  assert.equal(await browse('https://mail.example.com/'), false);
+  assert.equal(await browse('https://docs.example.com/'), true, 'a block on one subdomain stays on it');
+});
+
+test('an approved account is usable on its registrable domain only', async (t) => {
+  const { policy } = await fixture(t);
+  const accountId = '11111111-1111-4111-8111-111111111111';
+  await policy.update({ actor: owner, operation: 'approve-account', accountId, origins: ['https://www.coupang.com'] });
+  const use = async (url) => (await policy.check({ actor: agent, action: 'account-use', url, accountId })).allowed;
+  assert.equal(await use('https://login.coupang.com'), true);
+  assert.equal(await use('https://coupang.co.kr'), false);
+  assert.equal(await use('http://login.coupang.com'), false);
 });
