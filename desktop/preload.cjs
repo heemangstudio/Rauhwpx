@@ -190,6 +190,17 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   releaseDocument: (slotId) => ipcRenderer.invoke('desktop:document-release', slotId),
   listSystemFonts: (options) => ipcRenderer.invoke('desktop:fonts-list', options),
   systemFontBaseUrl: () => ipcRenderer.invoke('desktop:fonts-base'),
+  // 사용자가 더한 글꼴 폴더. 고르기는 main 의 폴더 선택 창이 하고, 바뀌면 모든 창에 fonts-changed 가 온다.
+  fontFolders: {
+    list: () => ipcRenderer.invoke('desktop:font-folders-list'),
+    add: () => ipcRenderer.invoke('desktop:font-folders-add'),
+    remove: (folder) => ipcRenderer.invoke('desktop:font-folders-remove', String(folder ?? '')),
+  },
+  onFontsChanged: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('desktop:fonts-changed', listener);
+    return () => ipcRenderer.removeListener('desktop:fonts-changed', listener);
+  },
   ensureAgentHub: () => ipcRenderer.invoke('agent-hub:ensure'),
   respondToCloseRequest: (requestId, allowClose) => (
     ipcRenderer.invoke('desktop:close-response', requestId, allowClose)

@@ -29,6 +29,7 @@ import {
   readTableDirectory,
 } from '../rhwp/rhwp-shared/fonts/font-index-core.mjs';
 import { expandFontRootCatalog } from '../rhwp/rhwp-shared/fonts/font-roots.mjs';
+import { enumerateOsFontRoots, runFontCommand } from '../rhwp/rhwp-shared/fonts/font-enumerators.mjs';
 
 export { SYSTEM_FONT_INDEX_VERSION, decodeHancomText, decodeNameRecord, parseHancomFontList, parseNameTable, parseSfntFaces };
 
@@ -42,6 +43,7 @@ const HANCOM_FONT_DIR = /^(fonts|ttf|hft)$/i;
 const HANCOM_APP = /hancom|한컴|hwp/i;
 /** 권한이 막힌 보호 폴더는 오류로 남기지 않고 건너뛴다. */
 const QUIET_ERRORS = new Set(['ENOENT', 'ENOTDIR', 'EPERM', 'EACCES']);
+export const ADDED_FOLDER_LABEL = 'added folder';
 
 // ---------------------------------------------------------------------------
 // 파일 원본
@@ -233,12 +235,15 @@ async function discoverHancomFontDirs(base, pathApi) {
 /**
  * 플랫폼별 폰트 루트를 나열한다 (font-roots.mjs 카탈로그). 한컴 설치본은 installs 로 따로
  * 돌려주고 실제 폰트 폴더 탐색은 호출부가 한다. macOS 한컴 앱은 이름으로 찾는다.
+ * Windows 레지스트리·fontconfig 가 아는 카탈로그 밖 글꼴도 더한다 (font-enumerators.mjs).
+ * 그 명령은 이 프로세스가 도는 플랫폼에서만 부르고, runCommand 를 주면 그것으로 부른다.
  */
 export async function defaultFontRoots({
   platform = process.platform,
   env = process.env,
   home = os.homedir(),
   catalog,
+  runCommand = platform === process.platform ? runFontCommand : null,
 } = {}) {
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const expanded = await expandFontRootCatalog({ platform, env, home, ...(catalog ? { catalog } : {}) });
@@ -257,6 +262,10 @@ export async function defaultFontRoots({
   }
   for (const extra of splitEnvPaths(env.RHWP_FONT_PATH, platform)) {
     roots.push({ path: pathApi.resolve(extra), kind: 'user', label: 'RHWP_FONT_PATH' });
+  }
+  if (runCommand) {
+    const covered = [...roots.map((root) => root.path), ...hancomInstalls];
+    roots.push(...await enumerateOsFontRoots({ platform, covered, env, runCommand }));
   }
   return { roots: dedupeRoots(rankRoots(roots), platform), hancomInstalls: [...new Set(hancomInstalls)] };
 }
@@ -315,7 +324,7 @@ async function collectFiles(roots, { platform, pathApi }) {
   }
   const report = [];
   for (const root of roots) {
-    const entry = { path: root.path, kind: root.kind, ...(root.label ? { label: root.label } : {}), exists: false, fileCount: 0 };
+    const entry = { path: root.path, kind: root.kind, ...(root.label ? { label: root.label } : {}), exists: false, fileCount: 0, faceCount: 0 };
     report.push(entry);
     const maxDepth = Number.isInteger(root.maxDepth) ? Math.min(root.maxDepth, MAX_DEPTH) : MAX_DEPTH;
     let info;
@@ -343,7 +352,7 @@ async function collectFiles(roots, { platform, pathApi }) {
       const key = pathKey(real, platform);
       if (seenFiles.has(key)) return;
       seenFiles.add(key);
-      files.push({ path: filePath, realPath: real, size: stat.size, mtimeMs: stat.mtimeMs, kind: root.kind });
+      files.push({ path: filePath, realPath: real, size: stat.size, mtimeMs: stat.mtimeMs, kind: root.kind, report: entry });
       entry.fileCount += 1;
     };
     if (info.isFile()) {
@@ -460,10 +469,13 @@ async function parseFontFile(file) {
 
 /**
  * 시스템 폰트 색인 서비스를 만든다.
+ * addedFolders: 사용자가 앱에서 더한 글꼴 폴더. 검색할 때마다 다시 묻는다. 사용자 글꼴(user)로
+ * 고르지만 다른 루트를 다 본 뒤에 훑어, 큰 폴더를 골라도 파일 상한이 설치 글꼴을 밀어내지 않는다.
  * @param {{ cacheDir?: string, log?: (line: string) => void, platform?: string,
  *   env?: Record<string, string|undefined>, home?: string,
  *   roots?: Array<{path: string, kind: 'system'|'user'|'hancom'|'app', label?: string, sniff?: boolean,
- *     maxDepth?: number}>, hancomInstalls?: string[] }} options
+ *     maxDepth?: number}>, hancomInstalls?: string[],
+ *   addedFolders?: () => string[] | Promise<string[]> }} options
  */
 export function createSystemFontService(options = {}) {
   const platform = options.platform ?? process.platform;
@@ -473,6 +485,7 @@ export function createSystemFontService(options = {}) {
   let index = null;
   let facesById = new Map();
   let pending = null;
+  let queued = null;
   let persisted = undefined;
 
   async function loadPersisted() {
@@ -506,6 +519,17 @@ export function createSystemFontService(options = {}) {
     }
   }
 
+  async function resolveAddedFolders() {
+    if (typeof options.addedFolders !== 'function') return [];
+    try {
+      const folders = await options.addedFolders();
+      return Array.isArray(folders) ? folders.filter((folder) => typeof folder === 'string' && pathApi.isAbsolute(folder)) : [];
+    } catch (error) {
+      log(`added folders unavailable: ${error.message}`);
+      return [];
+    }
+  }
+
   async function resolveRoots() {
     if (options.roots) {
       return { roots: options.roots, hancomInstalls: options.hancomInstalls ?? [] };
@@ -522,12 +546,13 @@ export function createSystemFontService(options = {}) {
       if (!(await isDirectory(install))) continue;
       const dirs = await discoverHancomFontDirs(install, pathApi);
       if (dirs.length === 0) {
-        installReports.push({ path: install, kind: 'hancom', exists: true, fileCount: 0, error: 'no Fonts/TTF/HFT folder found' });
+        installReports.push({ path: install, kind: 'hancom', exists: true, fileCount: 0, faceCount: 0, error: 'no Fonts/TTF/HFT folder found' });
       }
       for (const dir of dirs) roots.push({ path: dir, kind: 'hancom', label: 'Hancom Office' });
     }
     roots.push(...baseRoots);
-    const collected = await collectFiles(dedupeRoots(rankRoots(roots), platform), { platform, pathApi });
+    const added = (await resolveAddedFolders()).map((folder) => ({ path: folder, kind: 'user', label: ADDED_FOLDER_LABEL }));
+    const collected = await collectFiles(dedupeRoots([...rankRoots(roots), ...added], platform), { platform, pathApi });
     const errors = [...collected.errors];
     const cache = (await loadPersisted())?.files ?? {};
     const nextCache = {};
@@ -535,6 +560,7 @@ export function createSystemFontService(options = {}) {
     let parsed = 0;
     let undecodable = 0;
     const parsedFiles = new Array(collected.files.length);
+    const fileReports = new Map(collected.files.map((file) => [file.path, file.report]));
     await mapLimit(collected.files, PARSE_CONCURRENCY, async (file, position) => {
       const cacheKey = pathKey(file.realPath, platform);
       const cached = cache[cacheKey];
@@ -565,6 +591,10 @@ export function createSystemFontService(options = {}) {
       platform,
       errors,
     });
+    for (const face of faces) {
+      const report = fileReports.get(face.path);
+      if (report) report.faceCount += 1;
+    }
     const durationMs = Math.round(performance.now() - started);
     const next = {
       version: SYSTEM_FONT_INDEX_VERSION,
@@ -621,7 +651,15 @@ export function createSystemFontService(options = {}) {
   async function list(listOptions = {}) {
     const refresh = listOptions?.refresh === true;
     if (index && !refresh) return index;
-    if (pending) return pending;
+    if (pending) {
+      if (!refresh) return pending;
+      // 이미 도는 검색은 바뀌기 전 루트를 보고 있을 수 있어 끝난 뒤 한 번 더 훑는다.
+      queued ??= pending.catch(() => {}).then(() => {
+        queued = null;
+        return list({ refresh: true });
+      });
+      return queued;
+    }
     pending = scan().finally(() => {
       pending = null;
     });
