@@ -49,7 +49,6 @@ export class OwnedBrowserHost {
     this.getWindowForSession = getWindowForSession;
     this.onEvent = onEvent;
     this.tabs = new Map();
-    this.floatingWindows = new Map();
     this.pendingTabs = new Set();
     this.parkingWindow = null;
     this.aliases = new Map();
@@ -263,8 +262,6 @@ export class OwnedBrowserHost {
     // 재연결은 같은 게스트를 유지한다. 대상 ID가 바뀌어도 논리 탭과 창 소유권은 유지한다.
     if (previousTargetId && previousTargetId !== tab.targetId) {
       this.tabs.delete(previousTargetId);
-      const floating = this.floatingWindows.get(previousTargetId);
-      if (floating) { this.floatingWindows.delete(previousTargetId); this.floatingWindows.set(tab.targetId, floating); }
       const popout = this.popouts.get(previousTargetId);
       if (popout) { this.popouts.delete(previousTargetId); this.popouts.set(tab.targetId, popout); }
     }
@@ -374,14 +371,9 @@ export class OwnedBrowserHost {
       zoomFactor: alive ? contents.getZoomFactor() : 1,
       canGoBack: !!alive && contents.navigationHistory.canGoBack(),
       canGoForward: !!alive && contents.navigationHistory.canGoForward(),
-      controller: tab.human ? 'human' : 'agent', interactive: tab.interactive === true, mode: tab.placement?.mode ?? 'hidden',
+      controller: tab.human ? 'human' : 'agent', held: tab.held === true, interactive: tab.interactive === true, mode: tab.placement?.mode ?? 'hidden',
       crashed: tab.crashed, error: tab.lastError,
     };
-    if (tab.placement?.mode === 'float' && this.floatingWindows.get(tab.targetId) === tab.placement.window) {
-      const area = tab.placement.ownerWindow.getContentBounds(); const bounds = tab.placement.window.getContentBounds();
-      state.nativeFloating = true;
-      state.floatingBounds = { left: bounds.x - area.x, top: bounds.y - area.y, width: bounds.width, height: bounds.height };
-    }
     if (tab.passwordShield) {
       try { const origin = new URL(state.url).origin; state.url = tab.passwordAllowedOrigins?.has(origin) ? `${origin}/` : 'about:blank'; }
       catch { state.url = 'about:blank'; }
@@ -402,89 +394,57 @@ export class OwnedBrowserHost {
     }
     const window = tab.sessionId && this.getWindowForSession(tab.sessionId);
     if (window && !window.isDestroyed()) window.webContents.send('desktop:browser-event', payload);
-    const popout = this.floatingWindows.get(tab.targetId) ?? this.popouts.get(tab.targetId);
+    const popout = this.popouts.get(tab.targetId);
     if (popout && !popout.isDestroyed()) popout.webContents.send('desktop:browser-popout-state', payload);
   }
 
-  attach(window, { tabId, bounds, mode = 'dock', interactive = false, navigationEpoch, expectedTargetId }) {
+  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, navigationEpoch, expectedTargetId }) {
     const tab = this.ownedTab(tabId, window);
     if (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) throw new Error('Native browser presentation target is stale');
     if (navigationEpoch !== undefined && navigationEpoch !== tab.navigationEpoch) throw new Error('Native browser presentation navigation is stale');
     if (!['dock', 'float', 'popout'].includes(mode)) throw new Error('Native browser presentation mode is invalid');
     if (mode === 'popout') return this.popout(window, tab);
     const rect = browserViewBounds(bounds, window);
-    if (mode === 'float') return this.float(window, tab, rect, interactive);
-    const placementChanged = tab.placement?.window !== window || tab.placement?.mode !== mode;
+    // 띄우기도 고정과 같이 편집기 창 안의 뷰다. 화면 틀은 렌더러가 그리고 호스트는 영역만 따른다.
+    const windowChanged = tab.placement?.window !== window;
+    const placementChanged = windowChanged || tab.placement?.mode !== mode;
+    // 렌더러가 원한 입력 허용을 기억한다. 조작권 전환이 미리보기 잠금을 풀지 않게 한다.
+    tab.requestedInteractive = interactive === true;
     const nextInteractive = interactive === true && tab.human;
     const inputChanged = tab.interactive !== nextInteractive;
-    if (placementChanged) {
+    if (windowChanged) {
       this.unplace(tab);
       this.placeGuest(tab, window);
     }
     tab.interactive = nextInteractive;
+    tab.placement = { window, mode };
+    // 같은 창 안의 모드 전환은 뷰를 떼지 않는다. 다시 붙이면 페이지의 키보드 포커스가 풀린다.
+    if (mode === 'float') this.raiseFloat(tab);
+    this.setViewRadius(tab, mode === 'float' ? 10 : 0);
     const previous = tab.view.getBounds();
     if (previous.x !== rect.x || previous.y !== rect.y || previous.width !== rect.width || previous.height !== rect.height) tab.view.setBounds(rect);
-    tab.placement = { window, mode };
     void this.viewport(tab, rect).catch(() => {});
-    tab.view.setVisible(rect.width > 0 && rect.height > 0);
-    tab.placement = { window, mode };
+    // 이미 보이는 뷰를 다시 표시하면 macOS가 페이지의 키보드 포커스를 해제한다.
+    const visible = rect.width > 0 && rect.height > 0;
+    if (tab.view.getVisible() !== visible) tab.view.setVisible(visible);
+    // 직접 조작을 가져온 순간 키 입력이 바로 페이지로 가도록 한다.
+    if (focus === true && tab.interactive && visible && !tab.view.webContents.isFocused()) tab.view.webContents.focus();
     if (placementChanged || inputChanged) this.emit(tab, 'presentation');
     return this.state(tab);
   }
 
-  float(ownerWindow, tab, rect, interactive) {
-    let floating = this.floatingWindows.get(tab.targetId);
-    let created = false;
-    if (tab.placement?.window !== floating || !floating || floating.isDestroyed()) {
-      this.unplace(tab);
-      created = true;
-      floating = new this.BrowserWindow({ parent: ownerWindow, frame: false, show: false, width: Math.max(320, rect.width), height: Math.max(280, rect.height + 48),
-        minWidth: 320, minHeight: 280, skipTaskbar: true, title: 'Hama 브라우저', backgroundColor: '#181818',
-        webPreferences: { preload: POPOUT_PRELOAD, sandbox: true, nodeIntegration: false, contextIsolation: true, webviewTag: false } });
-      this.floatingWindows.set(tab.targetId, floating);
-      const child = floating;
-      child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-      child.webContents.on('will-navigate', event => event.preventDefault());
-      child.webContents.once('did-finish-load', () => this.emit(tab, 'state'));
-      child.once('ready-to-show', () => { if (tab.placement?.window === child && !ownerWindow.isDestroyed() && ownerWindow.isVisible()) child.showInactive(); });
-      child.on('move', () => { if (tab.placement?.window === child) { this.rememberFloat(tab); this.emit(tab, 'floating-geometry'); } });
-      child.on('resize', () => { if (tab.placement?.window === child) { this.rememberFloat(tab); this.layoutFloat(tab); this.emit(tab, 'floating-geometry'); } });
-      child.on('close', event => { if (this.disposing || this.quitRequested) return; event.preventDefault(); this.unplace(tab); this.emit(tab, 'browser-float-closed'); });
-      child.on('closed', () => { if (this.floatingWindows.get(tab.targetId) === child) this.floatingWindows.delete(tab.targetId); });
-      const followOwner = () => { if (tab.placement?.window !== child || child.isDestroyed()) return; const area = ownerWindow.getContentBounds(); const offset = tab.floatingOffset; if (offset) child.setPosition(area.x + offset.x, area.y + offset.y); this.rememberFloat(tab); };
-      ownerWindow.on('move', followOwner); ownerWindow.on('resize', followOwner);
-      child.once('closed', () => { ownerWindow.removeListener('move', followOwner); ownerWindow.removeListener('resize', followOwner); });
-      this.placeGuest(tab, child);
-      tab.placement = { window: child, ownerWindow, mode: 'float' };
-      void child.loadURL(`${POPOUT_URL}?presentation=float`);
-    }
-    const area = ownerWindow.getContentBounds();
-    const bounds = { x: area.x + rect.x, y: area.y + Math.max(0, rect.y - 36), width: rect.width, height: rect.height + 48 };
-    const previous = floating.getBounds();
-    // 네이티브 창의 이동이 기준이다. 늦게 도착한 DOM 배치로 사용자의 드래그를 되돌리지 않는다.
-    if (created && Object.keys(bounds).some(key => bounds[key] !== previous[key])) floating.setBounds(bounds);
-    tab.interactive = interactive === true && tab.human;
-    // 이미 보이는 뷰를 다시 표시하면 macOS가 페이지의 키보드 포커스를 해제한다.
-    if (created) tab.view.setVisible(true);
-    this.layoutFloat(tab); this.rememberFloat(tab);
-    if (!floating.webContents.isLoadingMainFrame() && ownerWindow.isVisible() && !floating.isVisible()) floating.showInactive();
-    this.emit(tab, 'presentation');
-    return this.state(tab);
+  // 띄운 페이지는 같은 창의 다른 게스트(사이드바) 위에 있어야 한다.
+  raiseFloat(tab) {
+    const content = tab.placement?.window.contentView;
+    if (!content || content.children.at(-1) === tab.view) return;
+    // 이미 붙은 뷰를 다시 추가하면 Electron은 순서만 맨 위로 바꾼다.
+    content.addChildView(tab.view);
   }
 
-  rememberFloat(tab) {
-    const placement = tab.placement; if (placement?.mode !== 'float' || placement.window.isDestroyed() || placement.ownerWindow.isDestroyed()) return;
-    const area = placement.ownerWindow.getContentBounds(); const bounds = placement.window.getBounds();
-    tab.floatingOffset = { x: bounds.x - area.x, y: bounds.y - area.y };
-  }
-
-  layoutFloat(tab) {
-    const placement = tab.placement; if (placement?.mode !== 'float' || placement.window.isDestroyed()) return;
-    const { width, height } = placement.window.getContentBounds();
-    const bounds = { x: 0, y: 36, width, height: Math.max(0, height - 48) };
-    const previous = tab.view.getBounds();
-    if (Object.keys(bounds).some(key => bounds[key] !== previous[key])) tab.view.setBounds(bounds);
-    void this.viewport(tab, bounds).catch(() => {});
+  setViewRadius(tab, radius) {
+    if ((tab.viewRadius ?? 0) === radius) return;
+    tab.view.setBorderRadius(radius);
+    tab.viewRadius = radius;
   }
 
   async presentationState(window, { tabId, expectedTargetId }) {
@@ -562,6 +522,7 @@ export class OwnedBrowserHost {
     tab.parkingWindow = null;
     tab.dialogParking = null;
     window.contentView.addChildView(tab.view);
+    for (const other of this.tabs.values()) if (other !== tab && other.placement?.window === window && other.placement.mode === 'float') this.raiseFloat(other);
   }
 
   parkGuest(tab) {
@@ -609,11 +570,8 @@ export class OwnedBrowserHost {
     tab.view.setVisible(false);
     tab.placement = null;
     tab.interactive = false;
+    if (tab.view.webContents && !tab.view.webContents.isDestroyed()) this.setViewRadius(tab, 0);
     this.parkGuest(tab);
-    if (placement?.mode === 'float' && this.floatingWindows.get(tab.targetId) === placement.window) {
-      this.floatingWindows.delete(tab.targetId);
-      if (!placement.window.isDestroyed()) placement.window.destroy();
-    }
     if (!tab.closing && !tab.view.webContents.isDestroyed()) void this.viewport(tab, tab.view.getBounds()).catch(() => {});
   }
 
@@ -739,32 +697,28 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
-  control({ targetId, tabId, human, owner }) {
+  control({ targetId, tabId, human, owner, held }) {
     const tab = this.tab(targetId ?? tabId);
     void this.clearActivity(tab);
     tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1;
     tab.passwordSnapshot = null;
     this.webAuthn?.cancelTab(tab);
     tab.human = human === true || owner === 'human';
-    tab.interactive = tab.human && !!tab.placement;
+    if (typeof held === 'boolean') tab.held = held;
+    // 물리 입력은 조작권과 렌더러의 배치 요청을 함께 따른다. 에이전트 미리보기 중에는 잠긴 채로 둔다.
+    tab.interactive = tab.human && !!tab.placement && (tab.placement.mode === 'popout' || tab.requestedInteractive === true);
     this.emit(tab, 'controller');
     return this.state(tab);
   }
 
   popoutCommand(sender, { command, url, factor } = {}) {
-    const pair = [...this.popouts, ...this.floatingWindows].find(([, window]) => window.webContents === sender && !window.isDestroyed());
+    const pair = [...this.popouts].find(([, window]) => window.webContents === sender && !window.isDestroyed());
     if (!pair) throw new Error('Browser popout sender is not owned');
     const tab = this.tab(pair[0]);
     const ownerWindow = this.getWindowForSession(tab.sessionId);
     if (!ownerWindow) throw new Error('Browser popout owner is unavailable');
-    if (this.floatingWindows.has(tab.targetId) && !tab.interactive) throw new Error('Floating preview is controlled by the agent');
     if (command === 'zoom') return this.zoom(ownerWindow, { tabId: tab.tabId, factor });
-    if (command === 'close') {
-      const floating = this.floatingWindows.has(tab.targetId);
-      const state = this.detach(ownerWindow, { tabId: tab.tabId });
-      if (floating) this.emit(tab, 'browser-float-closed');
-      return state;
-    }
+    if (command === 'close') return this.detach(ownerWindow, { tabId: tab.tabId });
     if (['dock', 'take-control', 'return-agent', 'annotate', 'capture', 'downloads', 'navigate'].includes(command)) {
       if (command === 'dock') this.detach(ownerWindow, { tabId: tab.tabId });
       this.emit(tab, 'presentation-command', { command, ...(command === 'navigate' ? { url } : {}) });
@@ -947,7 +901,7 @@ export class OwnedBrowserHost {
     contents.closeDevTools();
     this.emit(tab, 'debugger-disconnected', { reason, recovery: 'reconnect' });
   }
-  onAutomationDisconnected() { for (const tab of this.tabs.values()) { void this.clearActivity(tab); tab.passwordSnapshot = null; tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1; this.webAuthn?.cancelTab(tab); tab.human = false; tab.interactive = false; this.emit(tab, 'runtime-disconnected'); } }
+  onAutomationDisconnected() { for (const tab of this.tabs.values()) { void this.clearActivity(tab); tab.passwordSnapshot = null; tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1; this.webAuthn?.cancelTab(tab); tab.human = false; tab.held = false; tab.interactive = false; this.emit(tab, 'runtime-disconnected'); } }
 
   async release(owner) {
     if (this.owner !== owner) return false;

@@ -228,9 +228,9 @@ try {
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } })));
     await waitForState(page, 'normal editor with floating browser', () => !document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt') && !document.body.classList.contains('ag-fs-vt'));
     const floatRect = await page.$eval('.ag-browser-floating:not([hidden])', element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
-    const resizePoint = await page.$eval('.ag-browser-floating:not([hidden]) [aria-label="브라우저 크기 조절"]', element => { const rect = element.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
+    const resizePoint = await page.$eval('.ag-browser-floating:not([hidden]) .ag-browser-float-edge[data-edge="se"]', element => { const rect = element.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
     await page.mouse.move(resizePoint.x, resizePoint.y); await page.mouse.down();
-    await page.mouse.move(resizePoint.x + 560 - floatRect.width, resizePoint.y + 430 - floatRect.height, { steps: 6 }); await page.mouse.up();
+    await page.mouse.move(resizePoint.x - 80, resizePoint.y - 40, { steps: 6 }); await page.mouse.up();
     const movePoint = await page.$eval('.ag-browser-floating:not([hidden]) [aria-label="브라우저 이동"]', element => { const rect = element.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
     await page.mouse.move(movePoint.x, movePoint.y); await page.mouse.down();
     await page.mouse.move(movePoint.x + 50 - floatRect.x, movePoint.y + 430 - floatRect.y, { steps: 6 }); await page.mouse.up();

@@ -47,6 +47,20 @@ test('떠 있는 주소창은 같은 탭을 탐색하고 입력 취소와 다른
     });
     const input = '.ag-browser-floating-chrome .ag-browser-address';
     await page.waitForFunction(() => document.querySelector<HTMLInputElement>('.ag-browser-floating-chrome .ag-browser-address')?.value === 'https://example.com/first');
+    // 포커스 없는 주소 칸을 끌면 창이 움직이고, 그대로 누르면 주소를 고르며, 고른 뒤 끌면 글자를 선택한다.
+    const frameAt = () => page.$eval('.ag-browser-floating', node => { const r = node.getBoundingClientRect(); return { left: r.left, top: r.top }; });
+    const field = await page.$eval(input, node => { const r = node.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+    const before = await frameAt();
+    await page.mouse.move(field.x, field.y); await page.mouse.down(); await page.mouse.move(field.x + 40, field.y - 30, { steps: 4 }); await page.mouse.up();
+    await page.waitForFunction(() => !document.querySelector<HTMLElement>('.ag-browser-floating')!.dataset.gesture);
+    const moved = await frameAt();
+    assert.ok(moved.left !== before.left || moved.top !== before.top, 'dragging the unfocused address moves the frame');
+    assert.equal(await page.$eval(input, node => document.activeElement === node), false, 'a drag does not focus the address');
+    const fieldAfter = await page.$eval(input, node => { const r = node.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+    await page.mouse.click(fieldAfter.x, fieldAfter.y);
+    assert.deepEqual(await page.$eval(input, node => ({ focused: document.activeElement === node, selected: (node as HTMLInputElement).selectionEnd! - (node as HTMLInputElement).selectionStart! === (node as HTMLInputElement).value.length })), { focused: true, selected: true }, 'a click focuses and selects the address');
+    await page.mouse.move(fieldAfter.x, fieldAfter.y); await page.mouse.down(); await page.mouse.move(fieldAfter.x - 60, fieldAfter.y, { steps: 4 }); await page.mouse.up();
+    assert.deepEqual(await frameAt(), moved, 'a focused address keeps text selection instead of dragging');
     await page.click(input); await page.$eval(input, node => { (node as HTMLInputElement).value = 'draft search'; });
     await page.evaluate(async () => { const fixture = (window as any).addressTest; fixture.tabs[0].url = 'https://example.com/redirected'; fixture.tabs[0].navigationEpoch++; await fixture.view.controller.refresh(); });
     assert.equal(await page.$eval(input, node => (node as HTMLInputElement).value), 'draft search', 'async navigation does not overwrite an address being edited');
@@ -62,6 +76,7 @@ test('떠 있는 주소창은 같은 탭을 탐색하고 입력 취소와 다른
     assert.equal(state.tabs.length, 2); assert.equal(state.tabs[1].url, 'https://example.org/other');
     assert.ok(state.calls.filter((call: any) => call.action === 'navigate').every((call: any) => call.args.tabId === 'selected'));
     assert.ok(!state.calls.some((call: any) => ['open', 'close'].includes(call.action)));
+    await page.$eval('.ag-browser-floating', node => { (node as HTMLElement).style.width = '640px'; });
     const percentage = '.ag-browser-zoom button:nth-child(2)';
     await page.click('.ag-browser-zoom button:nth-child(3)');
     await page.waitForFunction(() => document.querySelector('.ag-browser-zoom button:nth-child(2)')?.textContent === '110%');

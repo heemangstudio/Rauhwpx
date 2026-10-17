@@ -1849,6 +1849,8 @@ export function createMockBridge(
     setConnection,
     setServices,
     setUpdateAvailable,
+    /** 에이전트가 브라우저 도구를 부른 것처럼 요청한다. 미리보기 탭과 조작권 흐름을 확인할 때 쓴다. */
+    browserAsAgent: previewBrowser.requestAsAgent,
     setScenario: (value: Scenario) => {
       scenario = value;
       interruptNextTurn = true;

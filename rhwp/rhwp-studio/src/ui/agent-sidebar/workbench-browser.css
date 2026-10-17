@@ -70,37 +70,51 @@ html.desktop-mac .ag-browser-popover-header::after { content: ''; width: 22px; f
 .ag-browser-menu { position: absolute; z-index: 10; right: 0; top: calc(100% + 7px); width: 270px; max-width: calc(100vw - 28px); max-height: min(330px, 65vh); overflow: auto; padding: 7px; border: 1px solid var(--browser-border); border-radius: 12px; background: var(--ag-bg, var(--n-surface)); box-shadow: 0 8px 30px var(--ag-shadow-soft); }
 .ag-browser-menu>button { display: flex; width: 100%; justify-content: flex-start; border-color: transparent; padding: 7px 9px; }
 @container (max-width: 500px) { .ag-browser-toolbar { flex-wrap: wrap; justify-content: flex-end; } .ag-browser-navigation { flex: 1 0 100%; margin-right: 0; margin-bottom: 2px; } .ag-browser-status { max-width: 120px; font-size: 9px; } }
-/* 네이티브 페이지 밖에 손잡이와 닫기·크기 조절 영역을 남긴다. */
-.ag-browser-floating { position: fixed; z-index: 1300; box-sizing: border-box; container: browser-float / inline-size; width: min(640px, calc(100vw - 40px)); height: min(480px, calc(100vh - 60px)); left: 24px; top: auto; bottom: 24px; min-width: min(320px, 100vw); min-height: min(280px, 100dvh); padding: 0 0 12px; border: 0; border-radius: 10px; box-shadow: 0 12px 40px var(--ag-shadow-medium), 0 0 0 1px var(--ag-shadow-faint); background: var(--ag-bg, var(--n-surface)); color: var(--ag-text-secondary, var(--n-text-secondary)); overflow: hidden; display: flex; flex-direction: column; }
+/* 앱 창 안에만 머무는 작은 창. 네이티브 페이지는 표면 사각형 위에 그려지므로 머리줄과 4px 테두리, 크기 조절 영역은 그 밖에 둔다. */
+.ag-browser-floating { position: fixed; z-index: 1300; box-sizing: border-box; container: browser-float / inline-size; left: 12px; bottom: 12px; width: 480px; height: 340px; padding: 0 4px 4px; border: 0; border-radius: 12px; box-shadow: 0 10px 32px var(--ag-shadow-medium), 0 0 0 1px var(--ag-shadow-faint); background: var(--ag-bg, var(--n-surface)); color: var(--ag-text-secondary, var(--n-text-secondary)); display: flex; flex-direction: column; contain: layout; transition: box-shadow 180ms ease; }
 .ag-browser-floating[hidden] { display: none; }
 html.document-home-open .ag-browser-floating { visibility: hidden; pointer-events: none; }
-.ag-browser-floating .ag-browser { flex: 1; height: auto; min-height: 0; border-radius: 0 0 4px 4px; }
+.ag-browser-floating .ag-browser { flex: 1; height: auto; min-height: 0; border-radius: 10px; }
 .ag-browser[data-presentation=float]>.ag-browser-surface { min-height: 0; }
 .ag-browser[data-presentation=float]>.ag-browser-tabbar,.ag-browser[data-presentation=float]>.ag-browser-toolbar { display: none; }
-.ag-browser-floating-chrome { display: flex; height: 36px; flex: 0 0 36px; align-items: center; gap: 2px; padding: 0 4px; }
-.ag-browser-floating-chrome button { display: flex; align-items: center; justify-content: center; height: 24px; width: 24px; flex: 0 0 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
+.ag-browser-floating-chrome { display: flex; height: 32px; flex: 0 0 32px; align-items: center; gap: 2px; padding: 0 2px; user-select: none; -webkit-user-select: none; touch-action: none; }
+.ag-browser-floating[data-gesture=move] .ag-browser-floating-chrome { cursor: grabbing; }
+.ag-browser-floating-chrome button { display: flex; align-items: center; justify-content: center; height: 24px; width: 24px; flex: 0 0 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
 .ag-browser-floating-chrome button:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
 .ag-browser-floating-chrome button:active { background: color-mix(in srgb, currentColor 14%, transparent); }
 .ag-browser-floating-chrome .ag-icon { width: 14px; height: 14px; }
-.ag-browser-floating-chrome .ag-browser-move { flex: 0 0 24px; width: 24px; cursor: move; touch-action: none; }
+.ag-browser-floating-chrome .ag-browser-move { flex: 0 0 28px; width: 28px; cursor: grab; }
+.ag-browser-floating[data-gesture=move] .ag-browser-floating-chrome .ag-browser-move { cursor: grabbing; }
 .ag-browser-floating-chrome .ag-browser-navigation { flex: 1; min-width: 0; margin: 0; color: var(--ag-text, var(--n-text)); font: 11px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
-.ag-browser-floating-chrome .ag-browser-address { box-sizing: border-box; height: 26px; margin-left: 3px; border-color: color-mix(in srgb, currentColor 10%, transparent); background: color-mix(in srgb, currentColor 4%, transparent); text-align: center; }
+.ag-browser-floating-chrome .ag-browser-address { box-sizing: border-box; height: 24px; margin-left: 3px; border-color: color-mix(in srgb, currentColor 10%, transparent); border-radius: 6px; background: color-mix(in srgb, currentColor 4%, transparent); text-align: center; user-select: text; -webkit-user-select: text; }
 .ag-browser-floating-chrome .ag-browser-address:focus { text-align: left; outline: 2px solid var(--ag-accent); outline-offset: -1px; }
 .ag-browser-floating-chrome .ag-browser-go { display: none; }
 .ag-browser-floating-chrome .ag-browser-zoom button { width: 18px; flex: 0 0 18px; height: 24px; font-size: 11px; }
 .ag-browser-floating-chrome .ag-browser-zoom button:nth-child(2) { width: 32px; flex-basis: 32px; font-size: 9px; }
+/* 기본 480px 창에서도 주소 칸이 쓸 만한 폭을 갖도록 좁은 창에서는 배율 단추를 숨긴다. */
+@container browser-float (max-width: 559px) { .ag-browser-floating-chrome .ag-browser-zoom { display: none; } }
 @container browser-float (max-width: 400px) {
-  .ag-browser-floating-chrome { flex-wrap: wrap; height: 60px; flex-basis: 60px; }
-  .ag-browser-floating-chrome .ag-browser-navigation { order: -1; flex-basis: 100%; height: 28px; }
+  .ag-browser-floating-chrome { flex-wrap: wrap; align-content: center; row-gap: 2px; height: 58px; flex-basis: 58px; }
+  .ag-browser-floating-chrome .ag-browser-navigation { order: -1; flex-basis: 100%; height: 26px; }
   .ag-browser-floating-chrome .ag-browser-forward { display: none; }
   .ag-browser-floating-chrome .ag-browser-move { margin-right: auto; }
 }
 .ag-browser-floating-chrome .ag-browser-navigation button:disabled { opacity: .35; cursor: default; }
-.ag-browser-move::before { content: ''; width: 27px; height: 3px; border-radius: 3px; background: currentColor; opacity: .35; }
+.ag-browser-move::before { content: ''; width: 16px; height: 3px; border-radius: 3px; background: currentColor; opacity: .35; }
 .ag-browser-floating button:focus-visible { outline: 2px solid var(--ag-accent); outline-offset: -2px; }
-.ag-browser-resize { position: absolute; right: 0; bottom: 0; width: 24px; height: 12px; padding: 0; border: 0; background: transparent; cursor: nwse-resize; touch-action: none; color: inherit; }
-.ag-browser-resize .ag-icon { position: absolute; right: 1px; bottom: 1px; width: 12px; height: 12px; }
-@media (max-width: 639px) { .ag-browser-floating { left: 0 !important; top: 0 !important; width: 100vw !important; height: 100dvh !important; border-radius: 0; } .ag-browser-move { cursor: default; } .ag-browser-resize { display: none; } }
+/* 들어 올린 동안 그림자를 키운다. 위치는 매 프레임 JS가 쓰므로 left/top에는 전환을 두지 않는다. */
+.ag-browser-floating[data-gesture] { box-shadow: 0 22px 56px var(--ag-shadow-medium), 0 6px 18px var(--ag-shadow-soft), 0 0 0 1px var(--ag-shadow-faint); }
+.ag-browser-float-edge { position: absolute; z-index: 2; touch-action: none; }
+.ag-browser-float-edge[data-edge=n],.ag-browser-float-edge[data-edge=s] { left: 4px; right: 4px; height: 8px; cursor: ns-resize; }
+.ag-browser-float-edge[data-edge=e],.ag-browser-float-edge[data-edge=w] { top: 4px; bottom: 4px; width: 8px; cursor: ew-resize; }
+.ag-browser-float-edge[data-edge=n] { top: -4px; } .ag-browser-float-edge[data-edge=s] { bottom: -4px; }
+.ag-browser-float-edge[data-edge=w] { left: -4px; } .ag-browser-float-edge[data-edge=e] { right: -4px; }
+.ag-browser-float-edge[data-edge$=w]:not([data-edge=w]),.ag-browser-float-edge[data-edge$=e]:not([data-edge=e]) { width: 16px; height: 16px; }
+.ag-browser-float-edge[data-edge^=n]:not([data-edge=n]) { top: -12px; } .ag-browser-float-edge[data-edge^=s]:not([data-edge=s]) { bottom: -12px; }
+.ag-browser-float-edge[data-edge$=w]:not([data-edge=w]) { left: -12px; } .ag-browser-float-edge[data-edge$=e]:not([data-edge=e]) { right: -12px; }
+.ag-browser-float-edge[data-edge=nw],.ag-browser-float-edge[data-edge=se] { cursor: nwse-resize; }
+.ag-browser-float-edge[data-edge=ne],.ag-browser-float-edge[data-edge=sw] { cursor: nesw-resize; }
+@media (max-width: 639px) { .ag-browser-floating { left: 0 !important; top: 0 !important; width: 100vw !important; height: 100dvh !important; padding: 0; border-radius: 0; } .ag-browser-floating .ag-browser { border-radius: 0; } .ag-browser-move { cursor: default; } .ag-browser-float-edge { display: none; } }
 
 .ag-browser-trigger { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px; border: 0; background: transparent; color: var(--ag-text-secondary, var(--n-text-secondary)); cursor: pointer; border-radius: 4px; }
 .ag-browser-trigger:hover { background: var(--ag-active); color: var(--ag-text, var(--n-text)); }
@@ -118,19 +132,23 @@ html.document-home-open .ag-browser-floating { visibility: hidden; pointer-event
 
 .ag-browser button[data-password-save=saved] { color: var(--ag-accent); }
 
-/* 네이티브 페이지 밖에 테두리를 두어 조작 중인 미리보기를 구분한다. */
-.ag-browser-floating[data-agent-controlled="true"] { border: 1px solid var(--ag-browser-agent-border); box-shadow: 0 12px 40px var(--ag-shadow-medium); }
-html.document-home-open .ag-browser-floating[data-agent-controlled="true"] { visibility: visible; pointer-events: auto; }
+/* 네이티브 페이지 밖에 테두리를 두어 조작 중인 미리보기를 구분한다. 그림자 고리라 잠금을 풀어도 페이지 영역이 움직이지 않는다. */
+.ag-browser-floating[data-agent-controlled="true"] { box-shadow: 0 0 0 1px var(--ag-browser-agent-border), 0 10px 32px var(--ag-shadow-medium); }
+.ag-browser-floating[data-agent-controlled="true"][data-gesture] { box-shadow: 0 0 0 1px var(--ag-browser-agent-border), 0 22px 56px var(--ag-shadow-medium), 0 6px 18px var(--ag-shadow-soft); }
+html.document-home-open .ag-browser-floating[data-agent-session="true"] { visibility: visible; pointer-events: auto; }
+/* 조작권 단추. 두 문구를 한 칸에 겹쳐 긴 쪽 폭을 쓰므로 바꿔도 머리줄이 움직이지 않는다. */
+.ag-browser-control { display: inline-grid; place-items: center; box-sizing: border-box; border: 1px solid var(--ag-browser-agent-border); border-radius: 6px; background: transparent; color: var(--ag-text, var(--n-text)); font: 500 11px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; white-space: nowrap; cursor: pointer; }
+.ag-browser .ag-browser-control,.ag-browser-floating-chrome .ag-browser-control { display: inline-grid; width: auto; height: 24px; flex: 0 0 auto; padding: 0 8px; border: 1px solid var(--ag-browser-agent-border); font: 500 11px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+.ag-browser .ag-browser-control[hidden],.ag-browser-floating-chrome .ag-browser-control[hidden] { display: none; }
+.ag-browser-control>span { grid-area: 1 / 1; }
+.ag-browser-control[data-held="true"]>[data-control="take"],.ag-browser-control:not([data-held="true"])>[data-control="return"] { visibility: hidden; }
+.ag-browser .ag-browser-control[data-held="true"],.ag-browser-floating-chrome .ag-browser-control[data-held="true"] { border-color: color-mix(in srgb, currentColor 14%, transparent); }
 
 .ag-browser button[data-downloading=true] { color: var(--ag-accent); }
 
-.ag-browser-floating { contain: layout paint; }
-.ag-browser-floating[data-gesture] { box-shadow: 0 4px 12px var(--ag-shadow-soft), 0 0 0 1px var(--ag-shadow-faint); }
 
 .ag-browser-tab-drag { position: fixed; top: 0; left: 0; z-index: 3000; pointer-events: none; max-width: 240px; padding: 9px 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 10px; color: var(--ag-text); background: var(--ag-raised); box-shadow: 0 6px 18px var(--ag-shadow-medium); border: 1px solid var(--ag-browser-drag-border); font: 13px -apple-system, BlinkMacSystemFont, sans-serif; }
 .ag-browser-tab-drag[data-detached=true] { border-color: var(--ag-accent); }
 
-/* 네이티브 자식 창이 실제 미리보기를 그린다. DOM은 위치와 레이아웃만 유지한다. */
-.ag-browser-floating[data-native-floating="true"] { opacity: 0; pointer-events: none; }
 
 .ag-browser[data-presentation="dock"][data-agent-controlled="true"] { box-shadow: inset 0 0 0 1px var(--ag-browser-agent-inset); }

@@ -79,7 +79,7 @@ test('traffic checks retain one owned tab, stop agent retries, and permit explic
   denied = false;
   const taken = await browser.request(human, 'control', { ...identity(), owner: 'human' });
   assert.equal(taken.tab.tabId, opened.tab.tabId);
-  assert.equal(taken.tab.controller.owner, 'agent');
+  assert.deepEqual(taken.tab.controller, { owner: 'human', held: true });
   // Human continuation remains in the same Chromium page and session.
   await pages[0].goto('https://www.google.com/completed');
   assert.equal((await browser.inventory(human)).tabs[0].challenge, null);

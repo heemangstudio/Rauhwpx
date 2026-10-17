@@ -194,7 +194,7 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   assert.ok(observation.snapshot.elements.some((element) => element.value === '한국어 research'));
   await assert.rejects(browser.request(alice, 'type', inputArgs), { code: 'BROWSER_STALE_REFERENCE' });
   const taken = await browser.request(human, 'control', { tabId: a.tabId, owner: 'human' });
-  await browser.request(alice, 'press', { tabId: a.tabId, key: 'Enter', navigationEpoch: taken.tab.navigationEpoch, controllerEpoch: taken.tab.controllerEpoch });
+  await assert.rejects(browser.request(alice, 'press', { tabId: a.tabId, key: 'Enter', navigationEpoch: taken.tab.navigationEpoch, controllerEpoch: taken.tab.controllerEpoch }), { code: 'BROWSER_USER_CONTROL' });
   const stillReadable = await browser.request(alice, 'snapshot', { tabId: a.tabId });
   assert.ok(stillReadable.snapshot.text.includes('Research'));
   const frame = await browser.request(human, 'frame', { tabId: a.tabId });
@@ -252,13 +252,14 @@ test('encrypted profile checkpoint hooks run on shutdown and restore before obse
 });
 
 
-test('human tab closure retains epoch and agent scope checks without requiring page input takeover', async (t) => {
+test('human tab closure skips page takeover, and a human hold rejects agent changes until control returns', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-close-control-'));
   let closedPages = 0;
   const browser = createOwnedBrowserService({ dataDir, runtimeFactory: async () => {
     const context = Object.assign(new EventEmitter(), {
       async storageState() { return { cookies: [], origins: [] }; }, async route() {}, pages: () => [],
-      async newPage() { return Object.assign(new EventEmitter(), { url: () => 'about:blank', isClosed: () => false, async close() { closedPages++; }, async routeWebSocket() {}, frames: () => [] }); },
+      async newPage() { return Object.assign(new EventEmitter(), { url: () => 'about:blank', isClosed: () => false, async close() { closedPages++; }, async routeWebSocket() {}, frames: () => [],
+        locator: () => ({ elementHandles: async () => [], innerText: async () => 'Fake research page' }), evaluate: async () => '' }); },
     });
     return { kind: 'chromium', context, browser: new EventEmitter(), async close() {} };
   } });
@@ -278,10 +279,18 @@ test('human tab closure retains epoch and agent scope checks without requiring p
   assert.equal(closed.completed, true); assert.equal(closedPages, 1); assert.equal((await browser.inventory(human)).tabs.length, 0);
   const humanOwned = await browser.request(human, 'open', {});
   const controlled = await browser.request(human, 'control', { tabId: humanOwned.tab.tabId, owner: 'human' });
-  // 사용자의 입력 이후에도 소유 에이전트가 탭을 조작할 수 있다.
+  // 조작권은 사용자만 옮긴다. 사용자가 쥔 탭에서 에이전트 변경은 기다리지 않고 거절되고 읽기는 이어진다.
   const next = await browser.request(agent, 'open', {});
+  await assert.rejects(browser.request(agent, 'control', { tabId: next.tab.tabId, owner: 'agent' }), { code: 'BROWSER_HUMAN_REQUIRED' });
   const taken = await browser.request(human, 'control', { tabId: next.tab.tabId, owner: 'human' });
-  await browser.request(agent, 'close', identity(taken.tab));
+  assert.deepEqual(taken.tab.controller, { owner: 'human', held: true });
+  await assert.rejects(browser.request(agent, 'close', identity(taken.tab)), { code: 'BROWSER_USER_CONTROL' });
+  await assert.rejects(browser.request(agent, 'navigate', { ...identity(next.tab), url: 'about:blank' }), { code: 'BROWSER_USER_CONTROL' }, 'a stale agent epoch still reports the user hold');
+  assert.equal((await browser.request(agent, 'snapshot', { tabId: next.tab.tabId })).snapshot.text, 'Fake research page');
+  await assert.rejects(browser.request(human, 'control', { tabId: next.tab.tabId, owner: 'nobody' }), { code: 'BROWSER_CONTROL_INVALID' });
+  const returned = await browser.request(human, 'control', { tabId: next.tab.tabId, owner: 'agent' });
+  assert.deepEqual(returned.tab.controller, { owner: 'agent' });
+  await browser.request(agent, 'close', identity(returned.tab));
   await browser.request({ isHuman: true, clientId: 'another-editor' }, 'close', identity(controlled.tab));
   assert.equal(closedPages, 3);
 });

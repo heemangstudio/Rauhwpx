@@ -249,6 +249,8 @@ export function createOwnedBrowserService(options = {}) {
   };
   const assertController = (actor, tab) => {
     if (actor.isHuman && tab.scope !== 'global' && actor.sessionId && tab.sessionId && actor.sessionId !== tab.sessionId) throw error('BROWSER_CONTROL_REQUIRED', 'This browser tab belongs to another editor window.');
+    // 사용자가 직접 조작을 가져간 탭은 돌려받을 때까지 에이전트의 페이지 변경을 기다리게 하지 않고 바로 거절한다.
+    if (!actor.isHuman && tab.controller.held) throw error('BROWSER_USER_CONTROL', 'The user is controlling this tab. Wait for them to return control, or continue without it.');
   };
   const enqueue = (tab, operation) => {
     const result = tab.queue.catch(() => {}).then(operation);
@@ -1151,7 +1153,8 @@ export function createOwnedBrowserService(options = {}) {
       publish(tab); await persist(); return !actor.isHuman && challengeFor(tab) ? challengeResult(action, tab) : { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab) };
     }
     const tab = ownedTab(actor, args.tabId);
-    if (!actor.isHuman) await dismissPendingDialog(tab);
+    // 사용자가 조작 중인 탭의 대화상자는 에이전트 읽기로 닫지 않는다.
+    if (!actor.isHuman && !tab.controller.held) await dismissPendingDialog(tab);
     tab.lastActivityAt = Date.now();
     if (tab.sleeping && !['close', 'reconnect', 'sleep'].includes(action)) await wakeTab(actor, tab);
     if (action === 'sleep') {
@@ -1222,36 +1225,40 @@ export function createOwnedBrowserService(options = {}) {
     }
     if (action === 'control') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the user can transfer browser control.');
+      if (args.owner !== undefined && args.owner !== 'human' && args.owner !== 'agent') throw error('BROWSER_CONTROL_INVALID', 'Choose human or agent control.');
+      assertController(actor, tab);
       epochs(tab, args);
-      tab.controllerEpoch++; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' };
-      if (tab.controller.owner === 'human') markHumanDocument(tab);
+      // 조작권은 사용자만 옮긴다. 가져가면 held로 에이전트의 페이지 변경을 막고, 돌려주면 탭 범위의 기본 소유로 돌아간다.
+      const held = args.owner === undefined ? tab.controller.held === true : args.owner === 'human';
+      tab.controllerEpoch++; tab.controller = held ? { owner: 'human', held: true } : { owner: tab.scope === 'global' ? 'human' : 'agent' };
+      if (held) markHumanDocument(tab);
       credentialBroker?.invalidateTab?.(tab.tabId);
       // Invalidate queued agent input immediately, then drain before confirming the transfer.
       await dismissPendingDialog(tab);
       await tab.queue.catch(() => {}); await releaseInput(tab);
-      if (selectedAdapter()?.control) await selectedAdapter().control({ targetId: tab.nativeTargetId, human: true });
+      if (selectedAdapter()?.control) await selectedAdapter().control({ targetId: tab.nativeTargetId, human: true, held });
       publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo() };
     }
     const mutating = MUTATIONS.has(action);
     // 편집기의 탭 닫기는 페이지 입력 조작권을 넘겨받지 않아도 실행한다.
     const requiresControl = mutating && !(action === 'close' && actor.isHuman);
-    epochs(tab, args, mutating);
     if (requiresControl) assertController(actor, tab);
+    epochs(tab, args, mutating);
     const queuedControlEpoch = tab.controllerEpoch;
     const waitDeadline = action === 'wait' ? Date.now() + bounded(args.timeoutMs, 1, 30_000, 10_000) : undefined;
     let waitTimer;
     const queued = enqueue(tab, async () => {
       clearTimeout(waitTimer);
       if (waitDeadline !== undefined && Date.now() >= waitDeadline) throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out in the tab queue.', true);
-      epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
+      epochs(tab, args, mutating);
       if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Browser cleanup invalidated the pending action.');
       await assertPolicy(actor, action, action === 'close' ? tab.page?.url?.() ?? tab.url : requirePage(tab).url(), tab, args);
       if (!actor.isHuman && challengeFor(tab) && (mutating && action !== 'close' && !(action === 'navigate' && args.url && !googleResearchURL(args.url)))) return challengeResult(action, tab);
       if (action === 'press') assertAgentKey(actor, args.key);
       if (!actor.isHuman && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in.', true);
-      epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
+      epochs(tab, args, mutating);
       if (!actor.isHuman && ['type', 'click', 'press'].includes(action)) {
         const element = args.ref && tab.snapshot?.elements.find(entry => entry.ref === args.ref);
         const handle = args.ref && !tab.snapshot?.native ? requireRef(tab, args) : null;
