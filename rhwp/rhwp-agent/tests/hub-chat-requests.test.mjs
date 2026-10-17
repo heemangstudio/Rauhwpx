@@ -208,19 +208,19 @@ test('deny and grant both resume the agent, deny releases the handed-off tab, an
 
 const SAVED_ACCOUNT_ID = '0b0c3f6e-6f47-4c2a-9c1d-5d2f7a1e9b10';
 
-/** 이 사이트의 저장된 계정 하나(세션만 남은 계정)를 허브 계정 기록에 미리 둔다. */
+/** 이 사이트의 저장된 로그인 하나를 허브 로그인 기록에 미리 둔다(관리형 브라우저의 저장소). */
 async function prepareSavedAccount({ workRoot }) {
   await prepareHandoffTab({ workRoot });
   const browserRoot = path.join(workRoot, 'browser');
   mkdirSync(browserRoot, { recursive: true });
   writeFileSync(path.join(browserRoot, 'browser-accounts.json'), JSON.stringify({
-    schema: 1, sessions: [],
+    schema: 2,
     configuration: { profileId: 'default', downloads: { directory: 'managed', maxFileBytes: 1024 * 1024, autoImport: true }, preview: { mode: 'docked', reducedMotion: false } },
-    accounts: [{ id: SAVED_ACCOUNT_ID, origin: 'https://www.shop.co.kr', origins: ['https://www.shop.co.kr'], label: 'andy@shop.co.kr', stableIdentity: SAVED_ACCOUNT_ID, profileId: 'default', hasPassword: false, sessionStatus: 'session-retained', version: 1, updatedAt: new Date().toISOString() }],
+    accounts: [{ id: SAVED_ACCOUNT_ID, origin: 'https://www.shop.co.kr', origins: ['https://www.shop.co.kr'], label: 'andy@shop.co.kr', stableIdentity: 'andy', profileId: 'default', hasPassword: true, agentBlocked: false, sessionStatus: 'saved', version: 1, updatedAt: new Date().toISOString() }],
   }));
 }
 
-test('a site with a saved account gets the site access card instead of the save form, and its scope decides where the grant lives', { timeout: 60_000 }, async (t) => {
+test('one site card covers the whole site: duplicates share it, approval resumes at once, and its scope decides where the grant lives', { timeout: 60_000 }, async (t) => {
   const hub = await startRequestHub(t, { prepare: prepareSavedAccount });
   const { studio: studioUrl, mcp: mcpUrl } = urls(hub.port, 'request-site', 'site-page');
   const studio = await openClient(studioUrl);
@@ -229,67 +229,116 @@ test('a site with a saved account gets the site access card instead of the save 
   await startChat(studio);
   await userTurn(studio, 'Check my orders on the shop.');
   let mcp = await openClient(mcpUrl);
-  const ask = (origin, extra = {}) => call(mcp, 'browser_request_account', { tabId: 'handoff-tab', origin, label: 'Shop', reason: 'Check the order history.', ...extra });
+  const ask = (origin, extra = {}) => call(mcp, 'browser_request_account', { origin, ...extra });
+  const nextCard = async () => (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
 
-  // 계정이 없는 사이트만 저장 양식을 받는다. 계정이 있으면 같은 등록 도메인의 하위 도메인이라도 사이트 사용 카드가 된다.
-  assert.equal((await ask('https://news.co.kr')).result.kind, 'account', 'co.kr is a public suffix, so the shop account does not match');
-  const saveCard = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
+  // 로그인이 없는 사이트만 저장 양식을 받는다. 로그인이 있으면 같은 등록 도메인의 하위 도메인이라도 사이트 카드가 된다.
+  assert.equal((await ask('https://news.co.kr')).result.kind, 'account', 'co.kr is a public suffix, so the shop login does not match');
+  const saveCard = await nextCard();
   assert.equal(saveCard.kind, 'browser-save-account');
-  const routed = await ask('https://login.shop.co.kr');
+  const routed = await ask('https://login.shop.co.kr', { kind: 'site' });
   assert.equal(routed.result.kind, 'site', JSON.stringify(routed));
-  let card = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
-  assert.equal(card.kind, 'browser-site-access');
-  assert.equal(card.accountId, SAVED_ACCOUNT_ID);
-  assert.equal(card.accountLabel, 'andy@shop.co.kr');
-  assert.deepEqual(card.origins, ['https://shop.co.kr']);
-  assert.equal(card.siteDomain, 'shop.co.kr');
-  assert.deepEqual(card.scopes, ['chat', 'always']);
+  const card = await nextCard();
+  assert.deepEqual([card.kind, card.site, card.origins, card.scopes, card.tabId], ['browser-site-access', 'shop.co.kr', ['https://shop.co.kr'], ['chat', 'always'], null]);
+  assert.deepEqual(card.logins.map((login) => [login.id, login.label, login.agentBlocked]), [[SAVED_ACCOUNT_ID, 'andy@shop.co.kr', false]]);
+  const duplicate = await ask('https://www.shop.co.kr', { kind: 'site' });
+  assert.equal(duplicate.result.requestId, card.requestId, 'a second request for the same site returns the pending card');
   hub.completeTurn();
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
   await closeClient(mcp);
+  assert.equal(studio.frames().filter((frame) => frame.type === 'chat-permission-requested').length, 2, 'the duplicate shows no second card');
 
-  sendFrame(studio, { type: 'chat-permission-response', requestId: saveCard.requestId, responseId: 'deny-save', threadId: THREAD, documentId: DOCUMENT, decision: 'deny' });
-  await studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === saveCard.requestId);
-  // 거절은 아무것도 허용하지 않는다.
-  sendFrame(studio, { type: 'chat-permission-response', requestId: card.requestId, responseId: 'deny-site', threadId: THREAD, documentId: DOCUMENT, decision: 'deny' });
-  assert.equal((await studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === card.requestId)).outcome.status, 'denied');
-  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
-  await hub.waitForPrompt((prompt) => prompt.includes('The user declined access to https://login.shop.co.kr'));
-  assert.ok((await browserRequest(studio, 'sites.approve', { requestId: card.requestId })).error, 'a denied card cannot be approved later');
-  const sitesAfterDeny = (await browserRequest(studio, 'policy.list')).result.sites;
-  assert.equal(sitesAfterDeny.some((site) => site.origin.includes('shop.co.kr')), false);
-  assert.equal((await browserRequest(studio, 'accounts.list')).result.accounts[0].agentReuseApproved, false);
-
-  // 이 채팅 승인: 이 채팅의 에이전트만 계정을 쓸 수 있고 저장되는 정책은 없다.
-  mcp = await openClient(mcpUrl);
-  await ask('https://shop.co.kr');
-  card = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
-  hub.completeTurn();
-  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
-  await closeClient(mcp);
+  // 사이트 승인은 다른 카드(저장 양식)를 기다리지 않고 바로 이어 간다. 남은 카드는 한 줄로 알린다.
   const chatGrant = await browserRequest(studio, 'sites.approve', { requestId: card.requestId, scope: 'chat' });
-  assert.deepEqual(chatGrant.result, { approved: true, scope: 'chat', origins: ['https://shop.co.kr'], domain: 'shop.co.kr', accountId: SAVED_ACCOUNT_ID }, JSON.stringify(chatGrant));
+  assert.deepEqual(chatGrant.result, { approved: true, scope: 'chat', origins: ['https://shop.co.kr'], domain: 'shop.co.kr', site: 'shop.co.kr' }, JSON.stringify(chatGrant));
   assert.equal((await studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === card.requestId)).outcome.status, 'granted');
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
-  await hub.waitForPrompt((prompt) => prompt.includes('The user allowed shop.co.kr and its subdomains for this chat') && prompt.includes(`accountId ${SAVED_ACCOUNT_ID}`) && prompt.includes('browser_fill_account'));
+  const prompt = await hub.waitForPrompt((entry) => entry.includes('The user allowed shop.co.kr and its subdomains for this chat'));
+  assert.match(prompt, new RegExp(`accountId ${SAVED_ACCOUNT_ID}`));
+  assert.match(prompt, /Still waiting on: news\.co\.kr; do not ask for them again\./);
   mcp = await openClient(mcpUrl);
+  assert.deepEqual((await ask('https://checkout.shop.co.kr', { kind: 'site' })).result, { granted: true, site: 'shop.co.kr', origin: 'https://checkout.shop.co.kr' }, 'a site the chat already has needs no card');
   const status = await call(mcp, 'browser_status', {});
-  assert.equal(status.result.accounts.find((account) => account.id === SAVED_ACCOUNT_ID).agentReuseApproved, true, 'this chat sees the account as approved');
-  assert.equal((await browserRequest(studio, 'accounts.list')).result.accounts[0].agentReuseApproved, false, 'the saved approval is unchanged');
-  assert.equal((await browserRequest(studio, 'policy.list')).result.sites.some((site) => site.origin.includes('shop.co.kr')), false);
+  assert.deepEqual(status.result.accounts.map((account) => [account.id, account.site, account.usable]), [[SAVED_ACCOUNT_ID, 'shop.co.kr', true]]);
+  assert.ok(status.result.sites.some((site) => site.site === 'shop.co.kr' && site.chat === true && site.always === false));
+  assert.equal((await browserRequest(studio, 'policy.list')).result.sites.some((site) => site.origin.includes('shop.co.kr')), false, 'a chat grant is not a site entry');
 
-  // 항상 승인: 사이트 정책과 계정 승인이 저장된다.
-  await ask('https://shop.co.kr');
-  card = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
+  // 차단을 푸는 카드는 항상 저장되고, 표시한 차단만 푼다.
+  await browserRequest(studio, 'policy.update', { operation: 'set-site', origin: 'https://shop.co.kr', blockedActions: ['website-change'] });
+  await ask('https://shop.co.kr', { kind: 'site', blocked: ['website-change'] });
+  const blockedCard = await nextCard();
+  assert.deepEqual([blockedCard.blocked, blockedCard.scopes], [['website-change'], ['always']]);
   hub.completeTurn();
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
   await closeClient(mcp);
-  assert.equal((await browserRequest(studio, 'sites.approve', { requestId: card.requestId, scope: 'always' })).result.scope, 'always');
+  assert.equal((await browserRequest(studio, 'sites.approve', { requestId: blockedCard.requestId, scope: 'chat' })).result.scope, 'always');
   const saved = (await browserRequest(studio, 'policy.list')).result.sites.filter((site) => site.origin.includes('shop.co.kr'));
-  assert.deepEqual(saved.map((site) => [site.origin, site.domain]), [['https://shop.co.kr', 'shop.co.kr']]);
-  for (const site of saved) assert.ok(site.allowedActions.includes('website-change'), JSON.stringify(site));
-  assert.equal((await browserRequest(studio, 'accounts.list')).result.accounts[0].agentReuseApproved, true);
-  await hub.waitForPrompt((prompt) => prompt.includes('The user allowed shop.co.kr and its subdomains in every chat'));
+  assert.deepEqual(saved.map((site) => [site.origin, site.blockedActions]), [['https://shop.co.kr', []]]);
+  assert.ok(['website-change', 'account-use'].every((action) => saved[0].allowedActions.includes(action)));
+  await hub.waitForPrompt((entry) => entry.includes('The user allowed shop.co.kr and its subdomains in every chat') && entry.includes('turned website-change back on'));
+  hub.completeTurn();
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+
+  // 거절은 아무것도 허용하지 않는다.
+  sendFrame(studio, { type: 'chat-permission-response', requestId: saveCard.requestId, responseId: 'deny-save', threadId: THREAD, documentId: DOCUMENT, decision: 'deny' });
+  assert.equal((await studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === saveCard.requestId)).outcome.status, 'denied');
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  await hub.waitForPrompt((entry) => entry.includes('The user declined saving a login for news.co.kr'));
+  assert.ok((await browserRequest(studio, 'sites.approve', { requestId: saveCard.requestId })).error, 'a denied card cannot be approved later');
+});
+
+test('a saved secret is used through site access: turning it off asks for the site card, and deletion ends its use', { timeout: 60_000 }, async (t) => {
+  const hub = await startRequestHub(t);
+  const { studio: studioUrl, mcp: mcpUrl } = urls(hub.port, 'request-secret-use', 'secret-use-page');
+  const studio = await openClient(studioUrl);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  await startChat(studio);
+  await userTurn(studio, 'Use my API key.');
+  let mcp = await openClient(mcpUrl);
+  const origin = 'https://api.example.com';
+  await call(mcp, 'request_secret', secretArgs(origin));
+  const saveCard = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
+  // 비밀 값은 일반 브라우저 요청으로는 받지 않는다.
+  const blocked = await browserRequest(studio, 'secrets.approve', { requestId: saveCard.requestId, secret: 'sk-wrong-channel' });
+  assert.equal(blocked.error.code, 'BROWSER_SECURE_CHANNEL_REQUIRED');
+  hub.completeTurn();
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  await closeClient(mcp);
+  sendFrame(studio, { type: 'secret-submit', responseId: 'save', requestId: saveCard.requestId, threadId: THREAD, documentId: DOCUMENT, value: 'sk-use-fixture', scope: 'always' });
+  assert.equal((await studio.next((frame) => frame.type === 'secret-submit-result' && frame.responseId === 'save')).code, 'SECRET_SCOPE_INVALID', 'always needs a vault');
+  sendFrame(studio, { type: 'secret-submit', responseId: 'save-chat', requestId: saveCard.requestId, threadId: THREAD, documentId: DOCUMENT, value: 'sk-use-fixture', scope: 'chat' });
+  const { secret } = await studio.next((frame) => frame.type === 'secret-submit-result' && frame.responseId === 'save-chat');
+  assert.equal(secret.label, 'Example API key');
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  await hub.waitForPrompt((prompt) => prompt.includes(`secretId ${secret.id}`) && prompt.includes('allowed its site for this chat'));
+  mcp = await openClient(mcpUrl);
+  assert.deepEqual((await call(mcp, 'request_secret', { ...secretArgs(origin), secretId: secret.id })).result, { status: 'granted', secretId: secret.id, label: 'Example API key', origins: [origin] }, 'saving it allowed its site for this chat');
+  assert.deepEqual((await call(mcp, 'browser_status', {})).result.secrets.map((entry) => [entry.id, entry.usable]), [[secret.id, true]]);
+  hub.completeTurn();
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  await closeClient(mcp);
+
+  assert.equal((await browserRequest(studio, 'secrets.block', { secretId: secret.id, blocked: true })).result.secret.blocked, true);
+  await userTurn(studio, 'Try the key again.');
+  mcp = await openClient(mcpUrl);
+  const asked = await call(mcp, 'request_secret', { ...secretArgs(origin), secretId: secret.id });
+  assert.equal(asked.result.kind, 'site');
+  const card = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
+  assert.deepEqual([card.kind, card.item, card.scopes, card.secrets.map((entry) => [entry.id, entry.blocked])], ['browser-site-access', { secretId: secret.id }, ['always'], [[secret.id, true]]]);
+  hub.completeTurn();
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  await closeClient(mcp);
+  assert.equal((await browserRequest(studio, 'sites.approve', { requestId: card.requestId })).result.scope, 'always');
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  await hub.waitForPrompt((prompt) => prompt.includes(`Saved secret "Example API key" (secretId ${secret.id})`));
+  assert.equal((await browserRequest(studio, 'secrets.list')).result.secrets[0].blocked, false, 'the card turned the secret back on');
+
+  mcp = await openClient(mcpUrl);
+  assert.equal((await call(mcp, 'request_secret', { ...secretArgs(origin), secretId: secret.id })).result.status, 'granted');
+  await browserRequest(studio, 'secrets.delete', { secretId: secret.id });
+  assert.equal((await call(mcp, 'request_secret', { ...secretArgs(origin), secretId: secret.id })).error.code, 'SECRET_NOT_FOUND');
+  assert.equal(JSON.stringify([studio.frames(), mcp.frames(), hub.prompts()]).includes('sk-use-fixture'), false);
 });
 
 test('requests from one turn resume the agent once, after the last of them is answered', { timeout: 60_000 }, async (t) => {
@@ -342,60 +391,6 @@ test('stopping a turn expires its requests and a later completion cannot resume 
   assert.ok((await browserRequest(studio, 'accounts.complete', { requestId: handoff.requestId })).error);
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(studio.frames().some((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start'), false, 'no stale continuation turn');
-});
-
-test('a saved secret asks again after revoke, approval resumes the agent, and deletion ends its use', { timeout: 60_000 }, async (t) => {
-  const hub = await startRequestHub(t);
-  const { studio: studioUrl, mcp: mcpUrl } = urls(hub.port, 'request-secret-use', 'secret-use-page');
-  const studio = await openClient(studioUrl);
-  t.after(() => closeClient(studio));
-  await studio.next((frame) => frame.type === 'welcome');
-  await startChat(studio);
-  await userTurn(studio, 'Use my API key.');
-  let mcp = await openClient(mcpUrl);
-  const origin = 'https://api.example.com';
-  await call(mcp, 'request_secret', secretArgs(origin));
-  const saveCard = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
-  // 비밀 값은 일반 브라우저 요청으로는 받지 않는다.
-  const blocked = await browserRequest(studio, 'secrets.approve', { requestId: saveCard.requestId, secret: 'sk-wrong-channel' });
-  assert.equal(blocked.error.code, 'BROWSER_SECURE_CHANNEL_REQUIRED');
-  hub.completeTurn();
-  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
-  await closeClient(mcp);
-  sendFrame(studio, { type: 'secret-submit', responseId: 'save', requestId: saveCard.requestId, threadId: THREAD, documentId: DOCUMENT, value: 'sk-use-fixture', scope: 'always' });
-  assert.equal((await studio.next((frame) => frame.type === 'secret-submit-result' && frame.responseId === 'save')).code, 'SECRET_SCOPE_INVALID', 'always needs a vault');
-  sendFrame(studio, { type: 'secret-submit', responseId: 'save-chat', requestId: saveCard.requestId, threadId: THREAD, documentId: DOCUMENT, value: 'sk-use-fixture', scope: 'chat' });
-  const { secret } = await studio.next((frame) => frame.type === 'secret-submit-result' && frame.responseId === 'save-chat');
-  assert.equal(secret.label, 'Example API key');
-  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
-  hub.completeTurn();
-  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
-
-  assert.deepEqual((await browserRequest(studio, 'secrets.list')).result.secrets.map((entry) => [entry.id, entry.scope, entry.approved]), [[secret.id, 'chat', true]]);
-  assert.equal((await browserRequest(studio, 'secrets.revoke', { secretId: secret.id })).result.secret.approved, false);
-  await userTurn(studio, 'Try the key again.');
-  mcp = await openClient(mcpUrl);
-  const unapproved = await call(mcp, 'browser_fill_secret', { tabId: 'handoff-tab', snapshotId: 'none', ref: 'e1', secretId: secret.id, navigationEpoch: 0, controllerEpoch: 0 });
-  assert.equal(unapproved.error.code, 'SECRET_APPROVAL_REQUIRED');
-  assert.equal((await call(mcp, 'request_secret', { ...secretArgs(origin), secretId: secret.id })).result.pending, true);
-  const useCard = (await studio.next((frame) => frame.type === 'chat-permission-requested')).request;
-  assert.equal(useCard.kind, 'secret-use');
-  assert.equal(useCard.secretId, secret.id);
-  assert.deepEqual(useCard.scopes, ['chat'], 'a chat-only secret cannot be approved for every chat');
-  hub.completeTurn();
-  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
-  await closeClient(mcp);
-  const approved = await browserRequest(studio, 'secrets.approve', { requestId: useCard.requestId, secretId: secret.id, scope: 'chat' });
-  assert.equal(approved.result.secret.approved, true);
-  assert.equal((await studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === useCard.requestId)).outcome.status, 'granted');
-  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
-  await hub.waitForPrompt((prompt) => prompt.includes(`approved the secret "Example API key" (secretId ${secret.id})`));
-
-  mcp = await openClient(mcpUrl);
-  assert.deepEqual((await call(mcp, 'request_secret', { ...secretArgs(origin), secretId: secret.id })).result, { status: 'granted', secretId: secret.id, label: 'Example API key', origins: [origin] });
-  await browserRequest(studio, 'secrets.delete', { secretId: secret.id });
-  assert.equal((await call(mcp, 'request_secret', { ...secretArgs(origin), secretId: secret.id })).error.code, 'SECRET_NOT_FOUND');
-  assert.equal(JSON.stringify([studio.frames(), mcp.frames(), hub.prompts()]).includes('sk-use-fixture'), false);
 });
 
 async function needsBrowser(t) {
@@ -487,7 +482,7 @@ test('a secret typed into its card fills a real page and never reaches the agent
 
   mcp = await openClient(mcpUrl);
   const status = await call(mcp, 'browser_status', {});
-  assert.deepEqual(status.result.secrets, [{ id: saved.secret.id, label: 'Dashboard key', kind: 'api-key', origins: [origin], approved: true }]);
+  assert.deepEqual(status.result.secrets, [{ id: saved.secret.id, label: 'Dashboard key', kind: 'api-key', origins: [origin], blocked: false, usable: true }]);
   const tabId = opened.result.tab.tabId;
   const target = async () => {
     const { snapshot } = (await call(mcp, 'browser_snapshot', { tabId })).result;
@@ -501,8 +496,7 @@ test('a secret typed into its card fills a real page and never reaches the agent
   assert.match(after.result.snapshot.outline, /typed:\[masked\]/);
   const capture = await call(mcp, 'browser_capture', { tabId });
   assert.ok(capture.result?.capture?.screenshotError || capture.error, 'a page holding the secret is not captured as an image');
-  // 사용자가 쓰기를 허용한 사이트라야 제출까지 할 수 있다.
-  await browserRequest(studio, 'policy.update', { operation: 'set-site', origin, allowedActions: ['browse', 'read', 'website-change'] });
+  // 비밀을 저장하며 그 사이트를 이 채팅에 허용했으므로 제출도 된다.
   const submitted = await call(mcp, 'browser_fill_secret', { ...await target(), secretId: saved.secret.id, submit: true });
   assert.equal(submitted.ok, true, JSON.stringify(submitted));
   const deadline = Date.now() + 5_000;
