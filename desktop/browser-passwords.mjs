@@ -2,10 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { LocalBrowserPasswordVault, passwordFailure, passwordOrigin } from './browser-local-password-vault.mjs';
 import { ChromePasswordImporter } from './browser-chrome-password-import.mjs';
 import { ChromeCookieImporter } from './browser-chrome-cookie-import.mjs';
+import { sameSite, siteScope } from './browser-site.mjs';
 
 const WORLD = 1007;
 const SENSITIVE = 'input[type="password"],input[type="email"],input[autocomplete="username"],input[name="username"],input[name="email"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
 const SECRET = 'input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
+/** 앱 전체에서 가리는 입력값 수. 넘으면 가장 오래된 값부터 뺀다. */
+const PROTECTED_LIMIT = 256;
 
 // These functions run only in Electron's isolated world. Page scripts never see the ref map.
 // 허브가 Playwright aria 개요와 같은 노드 모양으로 그린다. 조작 가능한 요소와 범위 컨테이너만 ref를 받는다.
@@ -139,16 +142,22 @@ function pageAction(payload) {
   if (payload.action === 'wait') return { completed: payload.state === 'hidden' ? !ready(el) : ready(el) };
   if (payload.action === 'scroll') { window.scrollBy(payload.deltaX, payload.deltaY); return { completed: true }; }
   if (!ready(el)) return { error: 'target' };
+  // 폼은 같은 사이트(등록 도메인)로만 보내야 한다. 등록 도메인이 없는 사이트는 정확한 출처만 된다.
+  // 이름이 action 인 칸이 form.action 을 가릴 수 있어 속성을 직접 읽는다. 제출 단추의 formaction 도 본다.
+  const onSite = (value) => {
+    let url; try { url = new URL(value, document.baseURI); } catch { return false; }
+    const key = new URL(payload.site.key);
+    if (!payload.site.domain) return url.origin === key.origin;
+    return url.protocol === key.protocol && url.port === key.port && (url.hostname === payload.site.domain || url.hostname.endsWith(`.${payload.site.domain}`));
+  };
+  const sendsOffSite = (form) => !!form && [form.getAttribute('action'), ...[...form.elements].filter((item) => ['submit', 'image'].includes(item.type)).map((item) => item.getAttribute('formaction'))].some((value) => value && !onSite(value));
   if (payload.action === 'validate-secret' || payload.action === 'fill-secret') {
     // 사용자가 승인한 비밀은 한 줄 글자 칸이나 textarea 한 곳에만 넣는다.
     const textInput = el instanceof HTMLInputElement && ['text', 'password', 'email', 'tel', 'url'].includes(el.type);
     if (!textInput && !(el instanceof HTMLTextAreaElement)) return { error: 'target' };
     if (el.autocomplete === 'one-time-code') return { error: 'code' };
     if (/^cc-/.test(el.autocomplete)) return { error: 'target' };
-    // 이름이 action 인 칸이 form.action 을 가릴 수 있어 속성을 직접 읽는다. 제출 단추의 formaction 도 본다.
-    const form = el.form;
-    const destinations = form ? [form.getAttribute('action'), ...[...form.elements].filter((item) => ['submit', 'image'].includes(item.type)).map((item) => item.getAttribute('formaction'))] : [];
-    if (destinations.some((value) => value && new URL(value, document.baseURI).origin !== payload.origin)) return { error: 'origin' };
+    if (sendsOffSite(el.form)) return { error: 'origin' };
     if (payload.action === 'validate-secret') return { completed: true };
     const prototype = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
     el.setAttribute('data-rhwp-private-field', 'true');
@@ -164,7 +173,7 @@ function pageAction(payload) {
     if (!ready(password) || !(password instanceof HTMLInputElement) || password.type !== 'password' || username && (!ready(username) || !(username instanceof HTMLInputElement) || !['text', 'email', 'tel'].includes(username.type))) return { error: 'target' };
     const form = password.form;
     if (username && username.form !== form) return { error: 'target' };
-    if (form?.action && new URL(form.action, location.href).origin !== payload.origin) return { error: 'origin' };
+    if (sendsOffSite(form)) return { error: 'origin' };
     if (payload.action === 'validate-fill') return { completed: true };
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     if (username) { username.setAttribute('data-rhwp-private-field', 'true'); setter.call(username, payload.username); }
@@ -233,8 +242,22 @@ export class NativeBrowserPasswords {
     this.importer = importer ?? new ChromePasswordImporter({ vault: this.vault });
     this.cookies = new ChromeCookieImporter({ host, profiles: this.importer });
     this.Menu = Menu;
+    /** 저장된 비밀번호와 사용자 비밀 중 이 앱에서 입력한 값. 모든 탭의 관찰·상태·CDP 메시지에서 가린다. */
+    this.protectedValues = new Set();
+    this.protectedLoad = null;
     host.passwords = this;
   }
+  protect(value) {
+    if (typeof value !== 'string' || !value) return;
+    this.protectedValues.delete(value); this.protectedValues.add(value);
+    while (this.protectedValues.size > PROTECTED_LIMIT) this.protectedValues.delete(this.protectedValues.values().next().value);
+  }
+  /** 다시 시작한 뒤 첫 관찰 전에 최근에 입력한 비밀번호를 다시 가린다. 입력 기록이 없으면 OS 보관함을 열지 않는다. */
+  loadProtectedValues() {
+    this.protectedLoad ??= Promise.resolve().then(() => this.vault.recentPasswords?.() ?? []).then((values) => { for (const value of [...values].reverse()) this.protect(value); }, () => {});
+    return this.protectedLoad;
+  }
+  clearProtectedValues() { this.protectedValues.clear(); this.protectedLoad = null; }
   async run(tab, fn, args = []) {
     try { return await tab.view.webContents.executeJavaScriptInIsolatedWorld(WORLD, [{ code: `(${fn.toString()})(...${JSON.stringify(args)})` }], true); }
     catch { throw passwordFailure('BROWSER_PASSWORD_TARGET_CHANGED', 'The page changed before native browser input completed.'); }
@@ -267,6 +290,7 @@ export class NativeBrowserPasswords {
       member.passwordAllowedOrigins = new Set(member.passwordAllowedOrigins ?? []); member.passwordAllowedOrigins.add(origin);
       member.protectedPasswords = new Set(member.protectedPasswords ?? []); member.protectedPasswords.add(password);
     }
+    this.protect(password);
   }
   tab(params, { human = false } = {}) {
     const tab = this.host.tab(params.targetId ?? params.tabId);
@@ -282,10 +306,11 @@ export class NativeBrowserPasswords {
   }
   async snapshot(params, { viewportOnly = false } = {}) {
     const tab = this.tab(params);
+    await this.loadProtectedValues();
     const epoch = tab.navigationEpoch; const snapshotId = `native-password-${randomUUID()}`;
     const lifetime = { generation: this.host.generation, owner: this.host.owner, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: tab.view.webContents.getZoomFactor(), origin: new URL(tab.view.webContents.getURL()).origin };
     const observed = viewportOnly
-      ? await this.run(tab, captureViewport, [SECRET, Array.isArray(params.protectedValues) ? params.protectedValues.filter((value) => typeof value === 'string' && value).slice(0, 256) : []]).then(({ hasSecret, width, height, deviceScaleFactor, scrollX, scrollY }) => ({ hasSecret, viewport: { width, height, deviceScaleFactor, scrollX, scrollY } }))
+      ? await this.run(tab, captureViewport, [SECRET, [...new Set([...this.protectedValues, ...(Array.isArray(params.protectedValues) ? params.protectedValues.filter((value) => typeof value === 'string' && value).slice(0, 256) : [])])]]).then(({ hasSecret, width, height, deviceScaleFactor, scrollX, scrollY }) => ({ hasSecret, viewport: { width, height, deviceScaleFactor, scrollX, scrollY } }))
       : await this.run(tab, pageSnapshot, [snapshotId, SENSITIVE, 1000, params.text === true]);
     if (lifetime.zoomFactor !== tab.view.webContents.getZoomFactor()) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Page zoom changed during the browser snapshot.');
     if (tab.closing || tab.view.webContents.isDestroyed() || epoch !== tab.navigationEpoch || lifetime.generation !== this.host.generation || lifetime.owner !== this.host.owner || lifetime.targetId !== tab.targetId || lifetime.sessionId !== tab.sessionId || lifetime.chatId !== tab.chatId || lifetime.controlEpoch !== (tab.passwordControlEpoch ?? 0) || lifetime.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'The page changed during the browser snapshot.');
@@ -296,6 +321,7 @@ export class NativeBrowserPasswords {
   async capture(params) {
     const tab = this.tab(params);
     if (!tab.passwordShield) return { available: false };
+    await this.loadProtectedValues();
     const contents = tab.view.webContents;
     // 저장된 비밀번호는 페이지 본문에도 복사될 수 있어 이미지로 내보내지 않는다.
     const assertSafe = () => {
@@ -315,7 +341,7 @@ export class NativeBrowserPasswords {
       // 폼과 하위 프레임은 숨기고 실제 마스킹을 확인한다. 값은 읽거나 전송하지 않는다.
       css = await contents.insertCSS('input,textarea,select,[contenteditable],iframe,frame { visibility: hidden !important; }');
       current();
-      const viewport = await this.run(tab, captureViewport, [SECRET]);
+      const viewport = await this.run(tab, captureViewport, [SECRET, [...this.protectedValues]]);
       if (viewport.hasSecret) throw passwordFailure('BROWSER_PASSWORD_CAPTURE_PROTECTED', '비밀번호가 입력된 페이지는 캡처할 수 없습니다. 다른 탭에서 캡처해 주세요.');
       if (!viewport.masked) throw passwordFailure('BROWSER_CAPTURE_MASK_FAILED', '입력 내용을 안전하게 가릴 수 없어 캡처를 중단했습니다.');
       const image = await Promise.race([
@@ -323,7 +349,7 @@ export class NativeBrowserPasswords {
         new Promise((_, reject) => { timer = setTimeout(() => reject(passwordFailure('BROWSER_CAPTURE_TIMEOUT', '화면 캡처 시간이 초과되었습니다. 다시 시도해 주세요.')), 5000); }),
       ]);
       current();
-      const after = await this.run(tab, captureViewport, [SECRET]);
+      const after = await this.run(tab, captureViewport, [SECRET, [...this.protectedValues]]);
       current();
       if (after.hasSecret) throw passwordFailure('BROWSER_PASSWORD_CAPTURE_PROTECTED', '비밀번호가 입력된 페이지는 캡처할 수 없습니다. 다른 탭에서 캡처해 주세요.');
       if (JSON.stringify(viewport) !== JSON.stringify(after)) throw passwordFailure('BROWSER_STALE_GEOMETRY', '페이지 크기가 변경되었습니다. 현재 화면을 다시 캡처해 주세요.');
@@ -346,18 +372,19 @@ export class NativeBrowserPasswords {
     current();
     return result;
   }
-  /** 허브가 승인을 확인하고 넘긴 사용자 비밀을 한 칸에 넣는다. 값은 응답·로그에 남기지 않는다. */
+  /** 허브가 사이트 사용을 확인하고 넘긴 사용자 비밀을 한 칸에 넣는다. 비밀의 사이트(등록 도메인) 안에서만 넣는다. 값은 응답·로그에 남기지 않는다. */
   async fillSecret(params) {
     const tab = this.tab(params);
     const snapshot = this.assertSnapshot(tab, params);
     const origin = passwordOrigin(tab.view.webContents.getURL());
-    if (!Array.isArray(params.origins) || !params.origins.includes(origin)) throw passwordFailure('BROWSER_SECRET_ORIGIN_MISMATCH', 'This page is outside the websites the user approved for this secret.');
+    if (!Array.isArray(params.origins) || !params.origins.some((entry) => sameSite(entry, origin))) throw passwordFailure('BROWSER_SECRET_ORIGIN_MISMATCH', 'This page is outside the websites saved for this secret.');
     if (typeof params.value !== 'string' || !params.value || Buffer.byteLength(params.value) > 16 * 1024) throw passwordFailure('BROWSER_SECRET_INVALID', 'The secret value is unavailable.');
-    const target = { snapshotId: snapshot.snapshotId, ref: params.ref, origin };
+    const { key, domain } = siteScope(origin);
+    const target = { snapshotId: snapshot.snapshotId, ref: params.ref, origin, site: { key, domain } };
     const checked = await this.run(tab, pageAction, [{ ...target, action: 'validate-secret' }]);
     this.assertSnapshot(tab, params);
     if (checked?.error === 'code') throw passwordFailure('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code'.");
-    if (!checked?.completed) throw passwordFailure(checked?.error === 'origin' ? 'BROWSER_SECRET_FORM_ORIGIN' : 'BROWSER_SECRET_TARGET_INVALID', checked?.error === 'origin' ? 'This form sends its data to another website.' : 'Choose a visible text or password field for this secret.');
+    if (!checked?.completed) throw passwordFailure(checked?.error === 'origin' ? 'BROWSER_SECRET_FORM_ORIGIN' : 'BROWSER_SECRET_TARGET_INVALID', checked?.error === 'origin' ? 'This form sends its data to another site.' : 'Choose a visible text or password field for this secret.');
     // 값이 페이지에 들어가기 전에 원시 읽기를 막는다(비밀번호 입력과 같은 보호).
     const firstProtection = !tab.passwordShield;
     this.protectFamily(tab, origin, params.value);
@@ -372,23 +399,27 @@ export class NativeBrowserPasswords {
     const tab = this.tab(params, { human });
     const snapshot = this.assertSnapshot(tab, params);
     const origin = passwordOrigin(tab.view.webContents.getURL());
-    return this.vault.withCredential(params.accountId, async (credential, lease) => {
+    const { key, domain } = siteScope(origin);
+    const filled = await this.vault.withCredential(params.accountId, async (credential, lease) => {
       this.assertSnapshot(tab, params);
-      if (credential.origin !== origin) throw passwordFailure('BROWSER_PASSWORD_ORIGIN_MISMATCH', 'This saved account belongs to a different website.');
-      const target = { snapshotId: snapshot.snapshotId, ref: params.passwordRef, passwordRef: params.passwordRef, usernameRef: params.usernameRef, origin };
+      // 로그인은 자기 사이트(등록 도메인) 안에서만 넣는다. www 에 저장한 계정도 login.* 에서 쓸 수 있다.
+      if (!sameSite(credential.origin, origin)) throw passwordFailure('BROWSER_PASSWORD_ORIGIN_MISMATCH', 'This saved account belongs to a different website.');
+      const target = { snapshotId: snapshot.snapshotId, ref: params.passwordRef, passwordRef: params.passwordRef, usernameRef: params.usernameRef, origin, site: { key, domain } };
       const checked = await this.run(tab, pageAction, [{ ...target, action: 'validate-fill' }]);
       this.assertSnapshot(tab, params);
       lease.assertCurrent();
-      if (!checked?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
+      if (!checked?.completed) throw passwordFailure(checked?.error === 'origin' ? 'BROWSER_PASSWORD_FORM_ORIGIN' : 'BROWSER_PASSWORD_TARGET_INVALID', checked?.error === 'origin' ? 'This sign-in form sends its data to another site.' : 'Choose a visible password field in a same-site sign-in form.');
       // Stop outstanding raw reads before the first secret enters the guest DOM.
       const firstProtection = !tab.passwordShield;
       this.protectFamily(tab, origin, credential.password);
       if (firstProtection) await this.host.session?.closeAllConnections();
       this.assertSnapshot(tab, params);
       const result = await lease.write(() => this.run(tab, pageAction, [{ ...target, action: 'fill', username: credential.username, password: credential.password }]));
-      if (!result?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
+      if (!result?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-site sign-in form.');
       return { completed: true, accountId: params.accountId };
-    }, { agent: !human, chatApprovedAt: human ? null : params.chatApprovedAt });
+    }, { agent: !human, grant: human ? null : params.grant });
+    await Promise.resolve(this.vault.markFilled?.(params.accountId)).catch(() => {});
+    return filled;
   }
   async action(params) {
     const tab = this.tab(params);
@@ -440,8 +471,10 @@ export class NativeBrowserPasswords {
     }
     return { completed: true };
   }
+  /** tab 이 없으면 모든 탭의 보호 값까지 함께 가린다. */
   redact(tab, value) {
-    const secrets = [...tab?.protectedPasswords ?? []].flatMap((secret) => [secret, encodeURIComponent(secret), new URLSearchParams({ value: secret }).toString().slice(6), Buffer.from(secret).toString('base64')]).filter(Boolean);
+    const tabValues = tab ? [...tab.protectedPasswords ?? []] : [...this.host.tabs?.values() ?? []].flatMap((entry) => [...entry.protectedPasswords ?? []]);
+    const secrets = [...new Set([...this.protectedValues, ...tabValues])].flatMap((secret) => [secret, encodeURIComponent(secret), new URLSearchParams({ value: secret }).toString().slice(6), Buffer.from(secret).toString('base64')]).filter(Boolean);
     const scrub = (input) => {
       if (typeof input === 'string') { for (const secret of secrets) input = input.replaceAll(secret, '[masked]'); return input; }
       if (Array.isArray(input)) return input.map(scrub);
@@ -460,6 +493,12 @@ export class NativeBrowserPasswords {
     let value = { cookies: await this.host.getCookies(), origins: [], originsComplete: false };
     for (const tab of this.host.tabs.values()) value = this.redact(tab, value);
     return value;
+  }
+  /** 사용자가 승인한 저장 카드나 설정이 보낸 로그인을 OS 보관함에 저장한다. 응답에는 비밀번호가 없다. */
+  async save(payload) {
+    try {
+      return await this.vault.importCredential({ origin: payload?.origin, username: payload?.username, password: payload?.password, sourceProfile: 'Hama Browser' });
+    } finally { if (payload) payload.password = ''; }
   }
   async armSave(window, params) {
     const tab = this.host.ownedTab(params.tabId, window);
@@ -517,7 +556,8 @@ export class NativeBrowserPasswords {
     try { origin = passwordOrigin(event.sender.getURL()); } catch { return; }
     const epoch = tab.navigationEpoch;
     const { accounts } = await this.vault.list();
-    const matching = accounts.filter((account) => account.origin === origin);
+    // 같은 사이트의 로그인을 모두 보여 주고, 이 출처에 저장한 것을 먼저 둔다.
+    const matching = accounts.filter((account) => sameSite(account.origin, origin)).sort((left, right) => Number(right.origin === origin) - Number(left.origin === origin));
     if (!matching.length || epoch !== tab.navigationEpoch || !tab.interactive) return;
     const window = this.host.getWindowForSession(tab.sessionId);
     if (!window || window.isDestroyed()) return;
@@ -532,7 +572,8 @@ export function registerBrowserPasswordIpc({ ipcMain, browserHost, passwords = b
   const handlers = {
     profiles: () => passwords.importer.listProfiles(), import: (_window, payload) => passwords.importer.importProfile(payload),
     list: () => passwords.vault.list(), remove: (_window, payload) => passwords.vault.remove(payload?.id),
-    approve: (_window, payload) => passwords.vault.setAgentReuse(payload?.id, payload?.approved),
+    block: (_window, payload) => passwords.vault.setAgentBlocked(payload?.id, payload?.blocked),
+    save: (_window, payload) => passwords.save(payload),
     cookieSites: (_window, payload) => passwords.cookies.listSites(payload), importCookies: (_window, payload) => passwords.cookies.importSites(payload),
     fill: (window, payload) => passwords.humanFill(window, payload),
     armSave: (window, payload) => passwords.armSave(window, payload),

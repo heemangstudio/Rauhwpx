@@ -125,7 +125,7 @@ export class PrivateBrowserCdp {
   }
 
   send(message, client = this.client) {
-    if (this.host.passwords) for (const tab of this.tabs.values()) message = this.host.passwords.redact(tab, message);
+    if (this.host.passwords) message = this.host.passwords.redact(null, message);
     if (client && this.client === client && client.readyState === WebSocket.OPEN) client.send(JSON.stringify(message));
   }
 

@@ -44,7 +44,8 @@ try {
     if (request.method === 'POST') {
       let body = ''; request.on('data', (chunk) => { body += chunk; });
       request.on('end', () => { const form = new URLSearchParams(body); submitted = form.get('identity') === 'fixture-user' && form.get('secret') === secret; response.end(`<title>Signed in</title><h1>Account research fixture</h1><input id="research"><button id="next">Continue research</button><script>window.socket=new WebSocket(location.origin.replace('https:','wss:')+'/channel');socket.onopen=()=>socket.send(${JSON.stringify(secret)});socket.onmessage=()=>{window.socketReady=true;};</script>`); });
-    } else response.end('<title>Sign in fixture</title><form action="/signed-in" method="post"><label>Username <input id="identity" name="identity" autocomplete="username"></label><label>Password <input id="secret" name="secret" type="password" autocomplete="current-password"></label><button id="submit" type="submit">Sign in</button></form>');
+    } else if (request.url === '/echo') response.end(`<title>Echo fixture</title><h1>Profile</h1><p>Saved password: ${secret}</p>`);
+    else response.end('<title>Sign in fixture</title><form action="/signed-in" method="post"><label>Username <input id="identity" name="identity" autocomplete="username"></label><label>Password <input id="secret" name="secret" type="password" autocomplete="current-password"></label><button id="submit" type="submit">Sign in</button></form>');
   });
   server.on('connection', (socket) => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
   webSockets = new WebSocketServer({ server, path: '/channel' });
@@ -67,7 +68,11 @@ try {
   const account = await vault.importCredential({ origin, username: 'fixture-user', password: secret, sourceProfile: 'Synthetic Chrome import' });
   const wire = [];
   const messages = new EventEmitter();
-  const adapter = createIpcNativeBrowserAdapter({ events: messages, send: (message) => { wire.push(JSON.stringify(message)); void host.handleRequest(message, owner).then((response) => { wire.push(JSON.stringify(response)); messages.emit('message', response); }); } });
+  // 허브가 사이트 사용 승인을 확인하고 붙이는 grant 를 대신한다. 사용자가 승인하기 전에는 붙이지 않는다.
+  let siteGrant = null;
+  const withGrant = (message) => message.operation === 'password-fill' && message.params?.mode !== 'secret' && !message.params?.grant && siteGrant ? { ...message, params: { ...message.params, grant: siteGrant } } : message;
+  const adapter = createIpcNativeBrowserAdapter({ events: messages, send: (message) => { wire.push(JSON.stringify(message)); void host.handleRequest(withGrant(message), owner).then((response) => { wire.push(JSON.stringify(response)); messages.emit('message', response); }); } });
+  const hostOperation = async (operation, params) => { const response = await host.handleRequest({ type: 'rhwp-browser-request', id: randomUUID(), operation, params }, owner); if (!response.ok) throw Object.assign(new Error(response.error.message), { code: response.error.code }); return response.value; };
   const originalSend = host.cdp.send.bind(host.cdp);
   host.cdp.send = (message, client) => { wire.push(JSON.stringify(message)); return originalSend(message, client); };
   service = createOwnedBrowserService({ dataDir, policy: { assertAllowed: async () => {} }, nativeAdapter: adapter, workspaceTargets: [origin], autoInstall: false, runtimeFactory: startOwnedBrowserRuntime });
@@ -127,22 +132,36 @@ try {
   assert.ok(code.ref);
   await assert.rejects(service.request(actor, 'type', { ...args, ref: code.ref, text: '123456' }), { code: 'BROWSER_USER_CODE_REQUIRED' });
   assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("otp").value'), '');
-  // 가져온 계정은 사용자가 허용하기 전까지 에이전트가 채울 수 없다.
-  await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref }), { code: 'BROWSER_ACCOUNT_NOT_APPROVED' });
-  await vault.setAgentReuse(account.id, true);
+  // 사이트 사용 승인 전에는 저장된 계정을 채울 수 없다.
+  await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref }), { code: 'BROWSER_PERMISSION_REQUIRED' });
+  siteGrant = { site: origin, scope: 'chat', grantedAt: Date.now() };
+  // 사용자가 이 계정의 에이전트 사용을 끄면 사이트 승인이 있어도 채우지 않는다.
+  assert.equal((await hostOperation('password-block', { accountId: account.id, blocked: true })).agentBlocked, true);
+  await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref }), { code: 'BROWSER_SITE_BLOCKED' });
+  assert.equal((await hostOperation('password-block', { accountId: account.id, blocked: false })).agentBlocked, false);
+  assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("secret").value'), '');
   assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("identity").value'), 'public-identifier');
   await assert.rejects(service.request({ ...actor, threadId: 'chat-two' }, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref }), /belongs|assigned|own|scope/i);
   const other = await vault.importCredential({ origin: 'https://other.invalid', username: 'other', password: 'other-fixture-secret' });
-  await vault.setAgentReuse(other.id, true);
   await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: other.id, passwordRef: password.ref }), /different website/);
   await tab.view.webContents.executeJavaScript(`document.querySelector('form').action='https://other.invalid/'`);
-  await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, passwordRef: password.ref }), /same-origin/);
+  await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, passwordRef: password.ref }), /another site/);
+  // 이름이 action 인 칸으로 form.action 을 가려도 실제 전송 주소를 본다.
+  await tab.view.webContents.executeJavaScript(`document.querySelector('form').setAttribute('action', 'https://other.invalid/'); document.querySelector('form').insertAdjacentHTML('beforeend', '<input type="hidden" name="action" id="shadow-action">')`);
+  await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, passwordRef: password.ref }), /another site/);
+  await tab.view.webContents.executeJavaScript(`document.getElementById('shadow-action').remove()`);
   assert.equal(tab.passwordShield, false);
   await tab.view.webContents.executeJavaScript(`document.querySelector('form').action='/signed-in'`);
   await service.request(actor, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref });
   report.stage = 'filled';
   assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("secret").value'), secret);
   report.nativeFill = true;
+  // 입력한 비밀번호는 관련 없는 새 탭이 보여 줘도 가린다.
+  const echo = await service.request(actor, 'open', { url: `${origin}/echo` });
+  const echoed = await service.request(actor, 'snapshot', { tabId: echo.tab.tabId });
+  assert.match(echoed.snapshot.outline, /Saved password: \[masked\]/);
+  assert.equal(JSON.stringify(echoed).includes(secret), false);
+  report.globalRedaction = true;
   const protectedCapture = await service.request(actor, 'capture', { tabId, mode: 'page' });
   assert.equal(protectedCapture.capture.screenshot, undefined);
   assert.equal(protectedCapture.capture.screenshotError.code, 'BROWSER_PASSWORD_CAPTURE_PROTECTED');
@@ -221,10 +240,12 @@ try {
   // School login forms often omit both autocomplete and name attributes.
   await tab.view.webContents.executeJavaScript(`for (const field of document.querySelectorAll('input')) { field.removeAttribute('autocomplete'); field.removeAttribute('name'); field.value=''; } document.querySelector('#secret').focus()`);
   const inventory = await service.request(actor, 'status', {});
-  // 직접 저장한 로그인도 에이전트 사용은 따로 허용해야 한다.
-  assert.ok(inventory.accounts.some(account => account.id === manual.id && account.agentReuseApproved === false));
-  await vault.setAgentReuse(manual.id, true);
+  assert.ok(inventory.accounts.some(account => account.id === manual.id));
   assert.equal(JSON.stringify(inventory).includes(secret), false);
+  const saved = await hostOperation('password-save', { origin, username: 'card-saved-user', password: `card-${secret}` });
+  assert.equal(saved.agentBlocked, false);
+  assert.equal(JSON.stringify(saved).includes(secret), false);
+  assert.ok((await vault.list()).accounts.some((entry) => entry.id === saved.id));
   const manualObservation = await service.request(actor, 'snapshot', { tabId });
   const [loginId, loginPassword] = manualObservation.snapshot.outline.split('\n').filter((line) => line.includes('- textbox')).map((line) => ({ ref: line.match(/\[ref=([^\]]+)\]/)[1] }));
   assert.ok(loginId && loginPassword);
