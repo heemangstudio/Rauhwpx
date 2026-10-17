@@ -1,0 +1,218 @@
+{
+  "status": "DIAGNOSTIC_ONLY_NOT_BROWSER_ACCEPTANCE",
+  "scope": "Historical v35 offline diagnostic of10 Math p10 equations; v36 acceptance uses fresh captures separately.",
+  "finding": "Glyph-mask replay matches captured browser RGB exactly across all ten actual paint supports. Source outline replay at unchanged geometry matches native threshold ink within one pixel total. Target contour/header bounds agree, identifying raster coverage/phase behavior rather than malformed glyph bounds.",
+  "mask_vs_browser_rgb_differences": 0,
+  "outline_vs_native_ink_differences": 1,
+  "scores": {
+    "browser": {
+      "mismatch_px": 113,
+      "ink": 9638,
+      "pct": 1.1724424154388877,
+      "integer_gate": false
+    },
+    "native": {
+      "mismatch_px": 74,
+      "ink": 10145,
+      "pct": 0.7294233612617053,
+      "integer_gate": true
+    },
+    "diagnostic_outline_replay_prediction": {
+      "mismatch_px": 79,
+      "ink": 10099,
+      "pct": 0.7822556688781067,
+      "integer_gate": true
+    }
+  },
+  "prediction": "diagnostic_outline_replay_prediction is an offline in-memory replacement prediction, not a captured browser result or final gate.",
+  "source_face": {
+    "label": "HYHWPEQ.TTF",
+    "sha256": "a3a3cd992a89ac38e7707b58143ebdb1da9511d3c462f019cda7f92c30467807",
+    "units_per_em": 1024,
+    "glyph_count": 618,
+    "prepared_source_receipt_sha256": "913289515c8680fe94ea8d344ce1b642ac61bc61c4963471d414554b7420e735"
+  },
+  "target_glyphs": [
+    {
+      "codepoint": "0xe034",
+      "gid": 301,
+      "header_bounds": [
+        91,
+        2,
+        429,
+        684
+      ],
+      "actual_outline_bounds": [
+        91,
+        2,
+        429,
+        684
+      ]
+    },
+    {
+      "codepoint": "0xe03c",
+      "gid": 309,
+      "header_bounds": [
+        43,
+        -20,
+        468,
+        684
+      ],
+      "actual_outline_bounds": [
+        43,
+        -20,
+        468,
+        684
+      ]
+    },
+    {
+      "codepoint": "0xe03d",
+      "gid": 310,
+      "header_bounds": [
+        40,
+        -20,
+        471,
+        684
+      ],
+      "actual_outline_bounds": [
+        40,
+        -20,
+        471,
+        684
+      ]
+    }
+  ],
+  "target_draws": [
+    {
+      "mode": "mask",
+      "op_index": 12,
+      "text": "",
+      "codepoints": [
+        57396
+      ],
+      "ids": [
+        301
+      ],
+      "widths": [
+        7.328125
+      ],
+      "x": 16.2,
+      "y": 12.61333302,
+      "size": 14.666666984558105,
+      "scaleX": 1,
+      "skewX": 0,
+      "ctm": [
+        1,
+        0,
+        430.3599853515625,
+        0,
+        1,
+        294.2669982910156,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "mode": "mask",
+      "op_index": 30,
+      "text": "",
+      "codepoints": [
+        57404
+      ],
+      "ids": [
+        309
+      ],
+      "widths": [
+        7.328125
+      ],
+      "x": 9.966667,
+      "y": 12.906666020000001,
+      "size": 14.666666984558105,
+      "scaleX": 1,
+      "skewX": 0,
+      "ctm": [
+        1,
+        0,
+        897.8800048828125,
+        0,
+        1,
+        319.0669860839844,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "mode": "mask",
+      "op_index": 30,
+      "text": "",
+      "codepoints": [
+        57405
+      ],
+      "ids": [
+        310
+      ],
+      "widths": [
+        7.328125
+      ],
+      "x": 9.966667,
+      "y": 31.973333020000002,
+      "size": 14.666666984558105,
+      "scaleX": 1,
+      "skewX": 0,
+      "ctm": [
+        1,
+        0,
+        897.8800048828125,
+        0,
+        1,
+        319.0669860839844,
+        0,
+        0,
+        1
+      ]
+    }
+  ],
+  "provenance": {
+    "full_diagnostic_campaign_label": "probes/math-equation-outline-boundary-v1/findings.json",
+    "full_diagnostic_sha256": "610adf094420a8f09678319fc5c2cb418942f018db6ed58597d53d611328076f",
+    "public_tree_sha256": "817127f032c9b9e885df57442128de2a0e22366b13f473974a992d413ca42d74",
+    "sdk_wasm_sha256": "bd669c88bd033eaf62d673103a42231a737c6d12e4cc99f8548b2784b5772430",
+    "diagnostic_harness_sha256": "0f3d93e9bdade8f6c1bbb4802226ad5c041027a7e8960a7509af303983e71a8e",
+    "diagnostic_comparison_sha256": "13df2fe93b766e9d15f6a9abe67e34a47a527c22475a2d8d1a74ca4fc220e8b4",
+    "derived_source_paths_sha256": "f4e797baf5685d50aea5544c64e882f167fda4ca59c93ae26c55e343b1ae2291",
+    "draw_receipt_sha256": "1233767c18928e5f6cce2d9aa4aee599f6da0fe5f22e1aa58214c69751029060",
+    "native_path_replay": {
+      "repo_path": "rhwp/src/renderer/skia/text_replay.rs",
+      "sha256": "6f8fe97f1191a5c47536397474a4f9b6c14c9b5646249d10b91eb8482b912492"
+    },
+    "canvas_kit_replay": {
+      "repo_path": "rhwp/rhwp-studio/src/view/canvaskit-renderer.ts",
+      "sha256": "7b99ca8f5c6c785a6bb151f9ab37518977fad61bf3f742494416cd947bf91ffa"
+    },
+    "input_pngs": [
+      {
+        "label": "studio/v35-normal/math-exam/ours_010.png",
+        "sha256": "15db63c617a2042104a3082910e320b98b358a1426ac49406fbd79bd0d237650"
+      },
+      {
+        "label": "rounds/v35/math-exam/ours/math-exam_010.png",
+        "sha256": "5b4990a73a7dc50648970490de3e566e2f9d494b93ca512f2b3af6a5e34dd9ef"
+      },
+      {
+        "label": "official/png200/math-exam/official_010.png",
+        "sha256": "d561a5806d1f6375fa609f7285b8a22a6927c5fa84bd218464861b506708e531"
+      },
+      {
+        "label": "probes/math-equation-outline-boundary-v1/mask.png",
+        "sha256": "f36cc1dab1ca652bac0d192fb551afb8d07def49545f369cdc1275e86f11ae53"
+      },
+      {
+        "label": "probes/math-equation-outline-boundary-v1/outline.png",
+        "sha256": "ad63b13bf1f1021221b2d052640e9dbd1ed8f9c60caadba43ea822a33fe98104"
+      }
+    ]
+  },
+  "changes": "External diagnostic artifacts only; no W/source changes, Chrome, builds, reference/capture mutations, fitted offsets or tolerance changes. Source font/path payloads are not bundled."
+}

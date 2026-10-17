@@ -4267,6 +4267,8 @@ fn test_tac_leading_width_block_table_full_line() {
         char_start: 0,
     };
     let composed = ComposedParagraph {
+        projected_tac_line_owners: None,
+        authored_cell_frame: false,
         lines: vec![line],
         para_style_id: 0,
         inline_controls: Vec::new(),
@@ -4364,6 +4366,8 @@ fn test_tac_leading_width_inline_table_partial() {
         char_start: 0,
     };
     let composed = ComposedParagraph {
+        projected_tac_line_owners: None,
+        authored_cell_frame: false,
         lines: vec![line],
         para_style_id: 0,
         inline_controls: Vec::new(),
@@ -5727,6 +5731,8 @@ fn footnote_justifies_wrapped_body_and_keeps_generated_marker_untracked() {
         char_start,
     };
     let composed = ComposedParagraph {
+        projected_tac_line_owners: None,
+        authored_cell_frame: false,
         lines: vec![make_line("\u{0015} alpha beta ", 0), make_line("gamma", 13)],
         para_style_id: 0,
         inline_controls: vec![],

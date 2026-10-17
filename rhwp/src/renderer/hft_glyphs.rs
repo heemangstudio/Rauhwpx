@@ -420,16 +420,16 @@ fn decrypt_hanyang(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// 머리말(0..0x200)과 윤곽선 블록 머리(40바이트)만으로 은행 종류를 판별한다.
-fn classify(head: &[u8], outline: &[u8]) -> Option<(String, BankKind, u16, usize)> {
+fn classify(head: &[u8], outline: &[u8], element: &[u8]) -> Option<(String, BankKind, u16, usize)> {
     if !head.starts_with(MAGIC) || head.len() < 0x200 {
         return None;
     }
     let family = family_name(head)?;
     let units = u16_at(outline, 4)?;
     let subtables = u16_at(outline, 8)?;
-    let first = u16_at(outline, 20)?;
-    let last = u16_at(outline, 22)?;
-    let count = usize::from(u16_at(outline, 24)?);
+    let first = u16_at(element, 6)?;
+    let last = u16_at(element, 8)?;
+    let count = usize::from(u16_at(element, 10)?);
     if !(256..=4096).contains(&units) || count == 0 {
         return None;
     }
@@ -468,7 +468,57 @@ fn bank_layout<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<(Stri
     if flavor != HANYANG_FLAVOR {
         // 기존 평문 은행의 선택을 유지하고 선택된 요소의 flags 를 보존한다.
         let outline = read_at::<40, _>(reader, at)?;
-        let (_, kind, units, count) = classify(&head, &outline)?;
+        let mut element: [u8; 22] = outline[14..36].try_into().ok()?;
+        let mut element_at = at.checked_add(14)?;
+        let mut selected = classify(&head, &outline, &element);
+        if selected.is_none() {
+            // 낱자모 요소가 완성형 음절보다 먼저 오는 평문 서체도 있다.
+            // 이미 인식한 첫 요소의 경로는 유지하고, 나머지는 연결 경계 안에서 찾는다.
+            let record_end = match u32_at(&outline, 0)? {
+                0 => file_end,
+                distance => at.checked_add(distance)?,
+            };
+            if record_end > file_end {
+                return None;
+            }
+            let elements = usize::from(u16_at(&outline, 8)?);
+            element_at = at.checked_add(usize::from(u16_at(&outline, 10)?))?;
+            if element_at < at.checked_add(14)?
+                || elements > record_end.saturating_sub(element_at) / 22
+            {
+                return None;
+            }
+            for index in 0..elements {
+                element = read_at::<22, _>(reader, element_at)?;
+                let distance = u32_at(&element, 0)?;
+                let end = if distance == 0 && index + 1 == elements {
+                    record_end
+                } else {
+                    element_at.checked_add(distance)?
+                };
+                if end < element_at.checked_add(22)? || end > record_end {
+                    return None;
+                }
+                selected = classify(&head, &outline, &element);
+                if let Some((_, kind, _, count)) = selected.as_ref() {
+                    let prefix = if matches!(kind, BankKind::Latin { .. }) {
+                        22
+                    } else {
+                        26
+                    };
+                    if element_at
+                        .checked_add(prefix)?
+                        .checked_add(count.checked_mul(4)?)?
+                        > end
+                    {
+                        return None;
+                    }
+                    break;
+                }
+                element_at = end;
+            }
+        }
+        let (_, kind, units, count) = selected?;
         let jamo = if kind == BankKind::Hangul {
             let distance = u32_at(&outline, 0)?;
             let record_end = if distance == 0 {
@@ -485,10 +535,10 @@ fn bank_layout<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<(Stri
         } else {
             None
         };
-        let table = at.checked_add(if matches!(kind, BankKind::Latin { .. }) {
-            36
+        let table = element_at.checked_add(if matches!(kind, BankKind::Latin { .. }) {
+            22
         } else {
-            40
+            26
         })?;
         if table.checked_add(count.checked_mul(4)?)? > file_end {
             return None;
@@ -498,7 +548,7 @@ fn bank_layout<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<(Stri
             BankLayout {
                 kind,
                 units,
-                flags: u16_at(&outline, 18)?,
+                flags: u16_at(&element, 4)?,
                 variant: latin_variant(&head, kind),
                 table,
                 count,
@@ -959,6 +1009,13 @@ fn insert_latin_advances(advances: Option<(String, LatinAdvances)>) -> bool {
     };
     registry.latin_advances.entry(family).or_insert(advances);
     true
+}
+
+/// 실제 regular 라틴 폭 디렉터리가 등록된 원본 은행인지 판정한다.
+pub(crate) fn has_regular_latin_advances(family: &str) -> bool {
+    REGISTRY
+        .read()
+        .is_ok_and(|registry| registry.latin_advances.contains_key(family.trim()))
 }
 
 /// 원본 HFT 라틴 폭(em). 암호화 윤곽선을 대체 서체로 그릴 때도 원래 전진을 보존한다.
@@ -1789,6 +1846,91 @@ mod tests {
         assert_eq!(ks_index('힝', 0xB0), Some(2349));
         assert_eq!(ks_index('伽', 0xCA), Some(0));
         assert_eq!(ks_index('a', 0xB0), None);
+    }
+
+    #[test]
+    fn plain_hangul_and_jamo_elements_decode_in_either_order() {
+        fn element(count: usize, jamo: bool) -> Vec<u8> {
+            let prefix = if jamo { 4 + count * 2 } else { 4 };
+            let table = 22 + prefix;
+            let glyph = table + count * 4;
+            let mut data = vec![0u8; glyph + 2 + PLAIN_RECTANGLE.len()];
+            let length = data.len() as u32;
+            data[..4].copy_from_slice(&length.to_le_bytes());
+            for (at, value) in [(4, 0x11u16), (6, 0x8000), (8, 0xffff), (10, count as u16)] {
+                data[at..at + 2].copy_from_slice(&value.to_le_bytes());
+            }
+            data[22..26].copy_from_slice(&(prefix as u32).to_le_bytes());
+            if jamo {
+                for slot in (26..table).step_by(2) {
+                    data[slot..slot + 2].copy_from_slice(&johab_jamo('ㄱ').unwrap().to_le_bytes());
+                }
+            }
+            for slot in (table..glyph).step_by(4) {
+                data[slot..slot + 4].copy_from_slice(&((glyph - table) as u32).to_le_bytes());
+            }
+            data[glyph..glyph + 2].copy_from_slice(&(PLAIN_RECTANGLE.len() as u16).to_le_bytes());
+            data[glyph + 2..].copy_from_slice(PLAIN_RECTANGLE);
+            data
+        }
+        for jamo_first in [false, true] {
+            let mut data = vec![0u8; 526];
+            data[..MAGIC.len()].copy_from_slice(MAGIC);
+            data[0x6c..0x76].copy_from_slice(b"Bank Order");
+            data[0x1ae..0x1b2].copy_from_slice(&512u32.to_le_bytes());
+            data[516..518].copy_from_slice(&1000u16.to_le_bytes());
+            data[520..522].copy_from_slice(&2u16.to_le_bytes());
+            data[522..524].copy_from_slice(&14u16.to_le_bytes());
+            for is_jamo in [jamo_first, !jamo_first] {
+                data.extend(element(if is_jamo { 41 } else { 2350 }, is_jamo));
+            }
+            let distance = (data.len() - 512) as u32;
+            data[512..516].copy_from_slice(&distance.to_le_bytes());
+            let expected = decode_outline(PLAIN_RECTANGLE, 1000.0, 0x11).unwrap();
+            let (family, bank) =
+                Bank::parse(Arc::from(data.clone())).expect("both plain element orders");
+            assert_eq!(family, "Bank Order");
+            for ch in ['가', '힝', 'ㄱ', '\u{1100}'] {
+                assert_eq!(bank.commands(ch).unwrap(), expected, "{jamo_first}: {ch}");
+            }
+            let (_, layout) = bank_layout(&mut std::io::Cursor::new(&data)).unwrap();
+            assert_eq!(layout.table, bank.layout.table);
+            if jamo_first {
+                data[526..530].copy_from_slice(&0u32.to_le_bytes());
+                assert!(
+                    Bank::parse(Arc::from(data)).is_none(),
+                    "invalid predecessor boundary"
+                );
+            }
+        }
+    }
+
+    /// 한컴 설치 서체의 낱자모 우선·완성형 우선 은행을 모두 실제 윤곽선으로 읽는다.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn installed_hancom_plain_hangul_banks_decode_both_element_orders() {
+        let dir = std::path::Path::new(
+            "/Applications/Hancom Office HWP.app/Contents/Resources/Hnc/Shared/Fonts",
+        );
+        for (file, family) in [("HCHGTGT.HFT", "#태고딕"), ("TETGTHG.HFT", "신명 태고딕")] {
+            let path = dir.join(file);
+            if !path.is_file() {
+                continue;
+            }
+            let data: Arc<[u8]> = Arc::from(std::fs::read(&path).unwrap());
+            let (recognized, layout) = bank_layout(&mut std::io::Cursor::new(&*data)).expect(file);
+            assert_eq!(recognized, family);
+            assert_eq!(layout.kind, BankKind::Hangul);
+            let (_, bank) = Bank::parse(data).expect(file);
+            for ch in ['단', '답', '형', 'ㄱ', 'ㅏ'] {
+                let commands = bank.commands(ch).unwrap_or_else(|| panic!("{file}: {ch}"));
+                assert!(commands.len() > 5, "{file}: {ch}");
+                assert!(commands.iter().any(|command| matches!(
+                    command,
+                    HftPathCmd::LineTo(..) | HftPathCmd::CubicTo(..)
+                )));
+            }
+        }
     }
 
     #[test]

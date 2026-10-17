@@ -433,6 +433,7 @@ impl SkiaTextReplay<'_> {
         is_para_end: bool,
         is_line_break_end: bool,
         preserve_projection: bool,
+        origin_text: &str,
     ) {
         let canvas = self.canvas;
         let output_options = self.output_options;
@@ -973,6 +974,7 @@ impl SkiaTextReplay<'_> {
                     return;
                 }
 
+                let source_text = origin_text;
                 let expanded;
                 let text = if preserve_projection {
                     text
@@ -989,6 +991,7 @@ impl SkiaTextReplay<'_> {
                 };
                 let char_positions = compute_char_positions(text, style);
                 let clusters = split_into_clusters(text);
+                let nonprinting_spaces = style.nonprinting_control_space_indices(source_text, text);
                 let text_width = *char_positions.last().unwrap_or(&0.0) as f32;
                 let ratio = if style.ratio > 0.0 {
                     style.ratio as f32
@@ -1155,7 +1158,11 @@ impl SkiaTextReplay<'_> {
                         }
                     };
                     for (char_idx, cluster) in &clusters {
-                        if cluster == " " || cluster == "\t" || cluster == "\u{2007}" {
+                        if cluster == " "
+                            || cluster == "\t"
+                            || cluster == "\u{2007}"
+                            || nonprinting_spaces.binary_search(char_idx).is_ok()
+                        {
                             continue;
                         }
                         if cluster.starts_with(|ch: char| {

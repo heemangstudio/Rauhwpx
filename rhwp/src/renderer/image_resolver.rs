@@ -353,10 +353,52 @@ fn grayscale_jpeg_bytes_to_png_bytes_uncached(data: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
 
+    // PNG 재인코딩으로 ICC를 버리기 전에 실제 회색 JPEG의 색 공간을 sRGB로 굽는다.
+    if let Some(table) = grayscale_jpeg_icc_srgb_table(data) {
+        for px in img.pixels_mut() {
+            let rgb = table[usize::from(px.0[0])];
+            px.0 = [rgb[0], rgb[1], rgb[2], px.0[3]];
+        }
+    }
+
     let mut out = Vec::new();
     img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
         .ok()?;
     Some(out)
+}
+
+/// 8비트 Gray ICC는 입력 256개에 대한 점별 변환이다. 전체 그림용 중간 버퍼 없이
+/// 원본 프로필의 TRC/백색점을 적용하고, 잘못되거나 채널이 맞지 않는 프로필은 건너뛴다.
+fn grayscale_jpeg_icc_srgb_table(data: &[u8]) -> Option<[[u8; 3]; 256]> {
+    use image::ImageDecoder;
+    use moxcms::{ColorProfile, DataColorSpace, Layout};
+
+    let mut decoder = image::codecs::jpeg::JpegDecoder::new(Cursor::new(data)).ok()?;
+    if decoder.color_type() != image::ColorType::L8 {
+        return None;
+    }
+    let profile = ColorProfile::new_from_slice(&decoder.icc_profile().ok()??).ok()?;
+    if profile.color_space != DataColorSpace::Gray {
+        return None;
+    }
+    let transform = profile
+        .create_transform_8bit(
+            Layout::Gray,
+            &ColorProfile::new_srgb(),
+            Layout::Rgb,
+            Default::default(),
+        )
+        .ok()?;
+    let input: [u8; 256] = std::array::from_fn(|value| value as u8);
+    let mut output = [0u8; 256 * 3];
+    transform.transform(&input, &mut output).ok()?;
+    Some(std::array::from_fn(|value| {
+        [
+            output[value * 3],
+            output[value * 3 + 1],
+            output[value * 3 + 2],
+        ]
+    }))
 }
 
 /// PCX 바이트를 PNG 바이트로 재인코딩한다. 실패 시 None 반환.
@@ -879,6 +921,86 @@ mod tests {
 
         let png = grayscale_jpeg_bytes_to_png_bytes(&jpeg).expect("gray jpeg should normalize");
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[test]
+    fn grayscale_jpeg_bakes_embedded_gray_icc_before_png_conversion() {
+        use image::{ExtendedColorType, ImageDecoder, ImageEncoder};
+
+        let document = crate::parser::parse_hwp(include_bytes!("../../samples/exam_eng.hwp"))
+            .expect("embedded image fixture");
+        let (jpeg, profile) = document
+            .bin_data_content
+            .iter()
+            .find_map(|content| {
+                let bytes = content.data.load();
+                let mut decoder =
+                    image::codecs::jpeg::JpegDecoder::new(Cursor::new(&bytes)).ok()?;
+                let profile = decoder.icc_profile().ok()??;
+                super::grayscale_jpeg_icc_srgb_table(&bytes)?;
+                Some((bytes, profile))
+            })
+            .expect("fixture has a grayscale JPEG with a valid Gray ICC profile");
+        let raw = image::load_from_memory(&jpeg).unwrap().to_rgba8();
+        let png = grayscale_jpeg_bytes_to_png_bytes(&jpeg).expect("profiled JPEG converts");
+        let normalized = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(raw.dimensions(), normalized.dimensions());
+        let sample = raw
+            .pixels()
+            .position(|pixel| pixel.0 == [179, 179, 179, 255])
+            .unwrap();
+        // 이 그림의 Dot Gain 15% 프로필을 적용한 공식 편집기/LittleCMS 출력.
+        assert_eq!(
+            normalized.pixels().nth(sample).unwrap().0,
+            [201, 201, 201, 255]
+        );
+        assert!(normalized
+            .pixels()
+            .any(|pixel| pixel.0 == [255, 255, 255, 255]));
+        assert!(normalized.pixels().any(|pixel| pixel.0 == [0, 0, 0, 255]));
+        assert_eq!(grayscale_jpeg_bytes_to_png_bytes(&jpeg).unwrap(), png);
+
+        // Gray 프로필이 붙었어도 실제 RGB JPEG의 채널을 Gray로 해석하면 안 된다.
+        let mut rgb_jpeg = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut rgb_jpeg, 100);
+        encoder.set_icc_profile(profile).unwrap();
+        encoder
+            .encode(&[179; 8 * 8 * 3], 8, 8, ExtendedColorType::Rgb8)
+            .unwrap();
+        assert!(super::grayscale_jpeg_icc_srgb_table(&rgb_jpeg).is_none());
+        let png = grayscale_jpeg_bytes_to_png_bytes(&rgb_jpeg).unwrap();
+        assert_eq!(
+            image::load_from_memory(&png)
+                .unwrap()
+                .to_rgb8()
+                .get_pixel(0, 0)
+                .0,
+            [179; 3]
+        );
+    }
+
+    #[test]
+    fn grayscale_jpeg_without_usable_icc_keeps_sample_values() {
+        use image::{ExtendedColorType, ImageEncoder};
+
+        for profile in [Vec::new(), b"invalid ICC profile".to_vec()] {
+            let mut jpeg = Vec::new();
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 100);
+            encoder.set_icc_profile(profile).unwrap();
+            encoder
+                .encode(&[179; 8 * 8], 8, 8, ExtendedColorType::L8)
+                .unwrap();
+            assert!(super::grayscale_jpeg_icc_srgb_table(&jpeg).is_none());
+            let png = grayscale_jpeg_bytes_to_png_bytes(&jpeg).unwrap();
+            assert_eq!(
+                image::load_from_memory(&png)
+                    .unwrap()
+                    .to_rgb8()
+                    .get_pixel(0, 0)
+                    .0,
+                [179; 3]
+            );
+        }
     }
 
     #[test]

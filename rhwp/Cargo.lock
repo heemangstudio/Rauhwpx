@@ -905,6 +905,7 @@ dependencies = [
  "flate2",
  "image",
  "js-sys",
+ "moxcms",
  "pastey",
  "pcx",
  "pdf-writer",

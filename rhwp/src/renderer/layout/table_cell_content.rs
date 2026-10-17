@@ -759,12 +759,7 @@ impl LayoutEngine {
             let composed_paras: Vec<_> = cell
                 .paragraphs
                 .iter()
-                .map(|p| {
-                    crate::renderer::composer::compose_paragraph_with_policy(
-                        p,
-                        styles.font_metrics_policy,
-                    )
-                })
+                .map(|p| crate::renderer::composer::compose_paragraph_with_styles(p, &styles))
                 .collect();
 
             // 텍스트 오버플로우 시 좌우 패딩 축소
@@ -2322,12 +2317,7 @@ mod nested_paper_reference_tests {
         let styles = ResolvedStyleSet::default();
         let composed: Vec<_> = paragraphs
             .iter()
-            .map(|para| {
-                crate::renderer::composer::compose_paragraph_with_policy(
-                    para,
-                    styles.font_metrics_policy,
-                )
-            })
+            .map(|para| crate::renderer::composer::compose_paragraph_with_styles(para, &styles))
             .collect();
         engine.build_render_tree(
             page,
@@ -2515,12 +2505,7 @@ mod nested_paper_reference_tests {
         let styles = ResolvedStyleSet::default();
         let composed: Vec<_> = paragraphs
             .iter()
-            .map(|para| {
-                crate::renderer::composer::compose_paragraph_with_policy(
-                    para,
-                    styles.font_metrics_policy,
-                )
-            })
+            .map(|para| crate::renderer::composer::compose_paragraph_with_styles(para, &styles))
             .collect();
         let bottom = engine.measure_endnote_column_bottom(
             vec![PageItem::Table {
@@ -2703,10 +2688,7 @@ mod nested_paper_reference_tests {
         core.composed = vec![paragraphs
             .iter()
             .map(|para| {
-                crate::renderer::composer::compose_paragraph_with_policy(
-                    para,
-                    core.styles.font_metrics_policy,
-                )
+                crate::renderer::composer::compose_paragraph_with_styles(para, &core.styles)
             })
             .collect()];
         core.para_column_map = vec![vec![0; paragraphs.len()]];

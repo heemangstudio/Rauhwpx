@@ -16,11 +16,13 @@ use crate::model::ColorRef;
 pub const LANG_COUNT: usize = 7;
 
 /// 해소된 글자 스타일 (CharShape + FontFace → 렌더링용)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedCharStyle {
     pub font_metrics_policy: crate::model::provenance::FontMetricsPolicy,
     /// 일반 글리프 해소 전에 보존한 signed HU/KOR byte 제어자 기본 폭 입력.
     pub control_space_base: Option<super::ControlSpaceBase>,
+    /// 명시된 기본 HWP 호환성에서 일반 빈칸의 원본 기본 폭을 사용한다.
+    pub source_standard_space: bool,
     /// 제어자 HU 기본 폭에 적용할 원본 해소 DPI.
     pub control_space_dpi: f64,
     /// MS Word compatibility uses the Latin face's own space advance.
@@ -109,6 +111,7 @@ impl Default for ResolvedCharStyle {
         Self {
             font_metrics_policy: Default::default(),
             control_space_base: None,
+            source_standard_space: false,
             control_space_dpi: super::DEFAULT_DPI,
             latin_font_space: false,
             has_nondefault_glyph_geometry: false,
@@ -423,7 +426,56 @@ pub fn resolve_styles_with_variant(
     dpi: f64,
     is_hwp3_variant: bool,
 ) -> ResolvedStyleSet {
-    let char_styles = resolve_char_styles(doc_info, dpi);
+    resolve_styles_with_context(doc_info, dpi, is_hwp3_variant, false)
+}
+
+/// 원본 구역 문맥이 확인된 HWP5 계열만 비격자 빈칸 자간 경로를 사용한다.
+/// DocInfo 단독 해소는 0% 정책을 유지하여 누락된 구역을 기본값으로 추정하지 않는다.
+pub(crate) fn resolve_document_styles(
+    document: &crate::model::document::Document,
+    dpi: f64,
+) -> ResolvedStyleSet {
+    let profile = document.layout_profile();
+    let known_non_grid = (profile.native_hwp5_layout() || profile.hwp5_origin_hwpx())
+        && !document.sections.is_empty()
+        && document.sections.iter().all(|section| {
+            let plain = |def: &crate::model::document::SectionDef| {
+                def.text_direction == 0
+                    && def.line_grid == 0
+                    && def.char_grid == 0
+                    && def.flags & (1 << 22) == 0
+            };
+            let mut explicit = false;
+            plain(&section.section_def)
+                && section
+                    .paragraphs
+                    .iter()
+                    .flat_map(|para| &para.controls)
+                    .all(|control| {
+                        if let crate::model::control::Control::SectionDef(def) = control {
+                            explicit = true;
+                            plain(def)
+                        } else {
+                            true
+                        }
+                    })
+                && explicit
+        });
+    resolve_styles_with_context(
+        &document.doc_info,
+        dpi,
+        profile.hwp3_layout(),
+        known_non_grid,
+    )
+}
+
+fn resolve_styles_with_context(
+    doc_info: &DocInfo,
+    dpi: f64,
+    is_hwp3_variant: bool,
+    known_non_grid: bool,
+) -> ResolvedStyleSet {
+    let char_styles = resolve_char_styles(doc_info, dpi, known_non_grid);
     let para_styles = resolve_para_styles_with_variant(doc_info, dpi, is_hwp3_variant);
     let border_styles = resolve_border_styles(doc_info);
     let numberings = doc_info.numberings.clone();
@@ -458,12 +510,96 @@ fn page_number_char_shape(doc_info: &DocInfo) -> Option<u32> {
 }
 
 /// CharShape + FontFace → ResolvedCharStyle 목록
-fn resolve_char_styles(doc_info: &DocInfo, dpi: f64) -> Vec<ResolvedCharStyle> {
+fn resolve_char_styles(
+    doc_info: &DocInfo,
+    dpi: f64,
+    known_non_grid: bool,
+) -> Vec<ResolvedCharStyle> {
+    let standard_space = has_explicit_standard_hwp_space_policy(doc_info);
     doc_info
         .char_shapes
         .iter()
-        .map(|cs| resolve_single_char_style(cs, doc_info, dpi))
+        .map(|cs| {
+            let mut style = resolve_single_char_style(cs, doc_info, dpi);
+            style.source_standard_space = standard_space && (cs.spacings[1] == 0 || known_non_grid);
+            style
+        })
         .collect()
+}
+
+/// 234294의 mask1은 기본 HWP 문서 호환성의 U+0020 폭을 사용한다.
+/// 원본 HWP의 30/31 레코드 또는 HWPX의 명시된 빈 호환성 블록만 인정한다.
+/// 메타데이터가 없거나 해석하지 않은 호환성 플래그가 있으면 기존 측정을 유지한다.
+fn has_explicit_standard_hwp_space_policy(info: &DocInfo) -> bool {
+    use quick_xml::events::Event;
+    use quick_xml::Reader;
+
+    if let Some(tail) = &info.hwpx_head_tail {
+        let mut reader = Reader::from_str(tail);
+        let mut compatible = false;
+        let mut seen_compatible = false;
+        let mut seen_layout = false;
+        loop {
+            match reader.read_event() {
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"compatibleDocument" => {
+                    if compatible || seen_compatible {
+                        return false;
+                    }
+                    let mut target = false;
+                    for attr in e.attributes() {
+                        let Ok(attr) = attr else { return false };
+                        if attr.key.as_ref() != b"targetProgram"
+                            || attr.value.as_ref() != b"HWP201X"
+                            || target
+                        {
+                            return false;
+                        }
+                        target = true;
+                    }
+                    if !target {
+                        return false;
+                    }
+                    compatible = true;
+                    seen_compatible = true;
+                }
+                Ok(Event::Start(e) | Event::Empty(e)) if compatible => {
+                    if e.local_name().as_ref() != b"layoutCompatibility"
+                        || seen_layout
+                        || e.attributes().next().is_some()
+                    {
+                        return false;
+                    }
+                    seen_layout = true;
+                }
+                Ok(Event::Empty(e)) if e.local_name().as_ref() == b"compatibleDocument" => {
+                    return false;
+                }
+                Ok(Event::End(e)) if e.local_name().as_ref() == b"compatibleDocument" => {
+                    compatible = false;
+                }
+                Ok(Event::Text(e)) if compatible && e.iter().any(|b| !b.is_ascii_whitespace()) => {
+                    return false;
+                }
+                Ok(Event::CData(_)) if compatible => return false,
+                Ok(Event::Eof) => return seen_compatible && seen_layout && !compatible,
+                Err(_) => return false,
+                _ => {}
+            }
+        }
+    }
+
+    let mut target = info
+        .extra_records
+        .iter()
+        .filter(|record| record.tag_id == crate::parser::tags::HWPTAG_COMPATIBLE_DOCUMENT);
+    let mut layout = info
+        .extra_records
+        .iter()
+        .filter(|record| record.tag_id == crate::parser::tags::HWPTAG_LAYOUT_COMPATIBILITY);
+    matches!(target.next(), Some(record) if record.level == 0 && record.data == [0; 4])
+        && target.next().is_none()
+        && matches!(layout.next(), Some(record) if record.level == 1 && record.data == [0; 20])
+        && layout.next().is_none()
 }
 
 /// 개별 CharShape 해소
@@ -510,6 +646,7 @@ fn resolve_single_char_style(cs: &CharShape, doc_info: &DocInfo, dpi: f64) -> Re
             korean_ratio: cs.ratios[0],
             raw31_eng_tracking_percent: Some(cs.spacings[1]),
         }),
+        source_standard_space: false,
         control_space_dpi: dpi,
         has_nondefault_glyph_geometry: cs.char_offsets.iter().any(|value| *value != 0)
             || cs.relative_sizes.iter().any(|value| *value != 100),
@@ -615,6 +752,9 @@ pub fn detect_lang_category(ch: char) -> usize {
         0x2190..=0x21FF | 0x2200..=0x22FF | 0x2300..=0x23FF |
         0x2500..=0x257F | 0x2580..=0x259F | 0x25A0..=0x25FF |
         0x2600..=0x26FF | 0x2700..=0x27BF |
+        // 원문자 한글도 기호 글꼴 슬롯이다. Mac 한컴은 ㉠/㉡을 HCRBatang
+        // (원본 기호 슬롯 대체 서체)으로 그리며 한글 전각 폭을 쓰지 않는다.
+        0x3260..=0x327F |
         // 원 숫자, 괄호 숫자 등
         0x2460..=0x24FF |
         // ※(U+203B): 한컴(macOS) PDF 실측 — 기호 슬롯 글꼴로 그린다
@@ -1812,6 +1952,44 @@ mod tests {
     }
 
     #[test]
+    fn circled_hangul_selects_symbol_font_without_reclassifying_phonetic_hangul() {
+        let mut styles = ResolvedStyleSet::default();
+        styles.char_styles.push(ResolvedCharStyle {
+            font_family: "korean".into(),
+            font_families: [
+                "korean", "latin", "hanja", "japanese", "other", "symbol", "user",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            ..Default::default()
+        });
+        for ch in ['㉠', '㉭', '㉮', '㉻', '㉼', '㉽', '㉾', '㉿'] {
+            let lang = detect_lang_category(ch);
+            assert_eq!(lang, 5);
+            assert_eq!(
+                crate::renderer::layout::resolved_to_text_style(&styles, 0, lang).font_family,
+                "symbol"
+            );
+        }
+        for ch in ['가', 'ㄱ', 'ᄀ', 'ㆍ'] {
+            let lang = detect_lang_category(ch);
+            assert_eq!(lang, 0);
+            assert_eq!(
+                crate::renderer::layout::resolved_to_text_style(&styles, 0, lang).font_family,
+                "korean"
+            );
+        }
+        for ch in ['\u{3200}', '\u{325F}', '\u{3280}'] {
+            assert_eq!(
+                detect_lang_category(ch),
+                0,
+                "unproved neighboring ranges remain unchanged"
+            );
+        }
+    }
+
+    #[test]
     fn test_detect_lang_category_default() {
         // 공백은 기본값(한국어=0) — 호출부가 앞 글자의 언어를 따르게 한다
         assert_eq!(detect_lang_category(' '), 0);
@@ -1953,5 +2131,102 @@ mod tests {
         assert_eq!(cs.font_family_for_lang(1), "Arial");
         assert_eq!(cs.font_family_for_lang(3), "함초롬돋움"); // 빈 문자열 → 한국어 폴백
         assert_eq!(cs.font_family_for_lang(99), "함초롬돋움"); // 범위 초과 → 한국어 폴백
+    }
+}
+
+#[cfg(test)]
+mod standard_hwp_space_policy_tests {
+    use super::*;
+    use crate::model::document::RawRecord;
+    use crate::parser::tags::{HWPTAG_COMPATIBLE_DOCUMENT, HWPTAG_LAYOUT_COMPATIBILITY};
+
+    fn raw_default() -> DocInfo {
+        DocInfo {
+            raw_stream: Some(vec![1]),
+            extra_records: vec![
+                RawRecord {
+                    tag_id: HWPTAG_COMPATIBLE_DOCUMENT,
+                    level: 0,
+                    data: vec![0; 4],
+                },
+                RawRecord {
+                    tag_id: HWPTAG_LAYOUT_COMPATIBILITY,
+                    level: 1,
+                    data: vec![0; 20],
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn standard_space_requires_complete_explicit_compatibility() {
+        assert!(!has_explicit_standard_hwp_space_policy(&DocInfo::default()));
+        let source = raw_default();
+        assert!(has_explicit_standard_hwp_space_policy(&source));
+        for case in ["target", "layout", "length", "level", "duplicate", "absent"] {
+            let mut info = source.clone();
+            match case {
+                "target" => info.extra_records[0].data[0] = 1,
+                "layout" => info.extra_records[1].data[0] = 0x80,
+                "length" => {
+                    info.extra_records[1].data.pop();
+                }
+                "level" => info.extra_records[1].level = 0,
+                "duplicate" => info.extra_records.push(info.extra_records[1].clone()),
+                "absent" => {
+                    info.extra_records.pop();
+                }
+                _ => unreachable!(),
+            }
+            assert!(!has_explicit_standard_hwp_space_policy(&info), "{case}");
+        }
+        for xml in [
+            r#"<hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility/></hh:compatibleDocument>"#,
+            r#"<hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility></hh:layoutCompatibility></hh:compatibleDocument><hh:docOption/>"#,
+        ] {
+            let mut info = source.clone();
+            info.hwpx_head_tail = Some(xml.into());
+            assert!(has_explicit_standard_hwp_space_policy(&info));
+        }
+        for xml in [
+            "",
+            r#"<hh:compatibleDocument/>"#,
+            r#"<hh:compatibleDocument targetProgram="HWP201X"/>"#,
+            r#"<hh:compatibleDocument targetProgram="MS_WORD"><hh:layoutCompatibility/></hh:compatibleDocument>"#,
+            r#"<hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility><hh:applyFontSpaceLatin/></hh:layoutCompatibility></hh:compatibleDocument>"#,
+            r#"<hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility><hh:unknown/></hh:layoutCompatibility></hh:compatibleDocument>"#,
+            r#"<hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility value="0"/></hh:compatibleDocument>"#,
+            r#"<hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility/>"#,
+        ] {
+            let mut info = source.clone();
+            info.hwpx_head_tail = Some(xml.into());
+            assert!(!has_explicit_standard_hwp_space_policy(&info), "{xml}");
+        }
+    }
+
+    #[test]
+    fn standalone_space_policy_requires_zero_authored_eng_tracking() {
+        let mut info = raw_default();
+        let mut cs = CharShape::default();
+        for percent in [-5, 0, 5] {
+            cs.spacings[1] = percent;
+            info.char_shapes = vec![cs.clone()];
+            let styles = resolve_styles(&info, 96.0);
+            assert_eq!(styles.char_styles[0].source_standard_space, percent == 0);
+            assert_eq!(
+                styles.char_styles[0]
+                    .control_space_base
+                    .unwrap()
+                    .raw31_eng_tracking_percent,
+                Some(percent)
+            );
+        }
+        info.raw_stream = None;
+        cs.spacings[1] = 0;
+        info.char_shapes = vec![cs];
+        assert!(resolve_styles(&info, 96.0).char_styles[0].source_standard_space);
+        info.extra_records[1].data[0] = 0x80;
+        assert!(!resolve_styles(&info, 96.0).char_styles[0].source_standard_space);
     }
 }

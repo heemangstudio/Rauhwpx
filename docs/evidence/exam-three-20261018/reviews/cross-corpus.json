@@ -1,0 +1,8 @@
+{
+  "status": "PASS_NO_MATERIAL_REGRESSION",
+  "scope": "All161 additional native v36 pages exact to independently reviewed v33 via v35.",
+  "source_receipt": {
+    "campaign_artifact_label": "review/cross-v36-reused-independent.json",
+    "sha256": "babc75306f4679a042fc45f378ac8c5b4d0cc4ea5d1911b3511bdb0794176940"
+  }
+}

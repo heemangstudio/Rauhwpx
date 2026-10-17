@@ -1,0 +1,116 @@
+{
+  "status": "PASS_WITH_PREEXISTING_LIMITATION",
+  "target_repo_directory": "docs/evidence/exam-three-20261018",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "7c49e05e4bfc9bb99486d8d421551e2d86196ece315f34bacd5a0e4e78fa79c5",
+      "bytes": 3410
+    },
+    {
+      "path": "diagnostics/math-equation-outline-boundary.json",
+      "sha256": "7cfc2e79944de6591f73dbcebf4f159993434c9119555fbe259c9240e3427c54",
+      "bytes": 5862
+    },
+    {
+      "path": "english-before-after.png",
+      "sha256": "a2def9b08406c700ace6bf8ad6b36f90fbe5f4661339866e3c10e4f0e4c84dd5",
+      "bytes": 363313
+    },
+    {
+      "path": "evidence.json",
+      "sha256": "e47039bc1e8ee3e274c5231d02fba10d3a689ed235959249de0313ed449771be",
+      "bytes": 16332
+    },
+    {
+      "path": "images.json",
+      "sha256": "d4370287da7e4fd98446c51e1ac490568c7c9f029eb51760e1c87d783723ddf8",
+      "bytes": 4653
+    },
+    {
+      "path": "late-english-band-matrix.json",
+      "sha256": "76ec677a16def9323e54aced1fef6da3bcc1f4abab9606afeb145843ee519a66",
+      "bytes": 14303
+    },
+    {
+      "path": "math-before-after.png",
+      "sha256": "da72c29a927e15c494861fb9a92de46330e5dab7a6ecfb73b191a100c8320c9e",
+      "bytes": 270654
+    },
+    {
+      "path": "native-cross-corpus.json",
+      "sha256": "75c405e12ca6a0689a8b2a3408b219362e607ea9248ea6850acaed249e4d7fa3",
+      "bytes": 35789
+    },
+    {
+      "path": "original-band-matrix.json",
+      "sha256": "9b4d4f3bd93826802620e85279b7d354efb4b12c35c56e88c7de6ee47753cd66",
+      "bytes": 64531
+    },
+    {
+      "path": "original-cuts.json",
+      "sha256": "7b878100b20c8eb70a83342d8d1f72c6dae169e1a5249f9e6a7487e19f7b76a5",
+      "bytes": 19698
+    },
+    {
+      "path": "original-page-pins.json",
+      "sha256": "032c19a1833abdf704726d6b57a9df5e032448de27b946699f9012dd5f6d2097",
+      "bytes": 14258
+    },
+    {
+      "path": "reviews/browser-math.json",
+      "sha256": "fd1e5d10f9926af099d254279106946161b1834b1934e49801188de0e1707cf5",
+      "bytes": 1849
+    },
+    {
+      "path": "reviews/browser-science-english.json",
+      "sha256": "a69745355612b068bcc5b3da73ee6b02661bfc4a48aef846763e06e91d0a5c17",
+      "bytes": 426
+    },
+    {
+      "path": "reviews/browser-v37-normal.json",
+      "sha256": "fdafd66a4329844b70d317ecbddb1c4ed2ef9f074d44988d5d41b8cec6da76c3",
+      "bytes": 12881
+    },
+    {
+      "path": "reviews/cross-corpus.json",
+      "sha256": "a8b87fafbfe85d77f62d173bd4909f370874d8aecf2872654be53b288425060e",
+      "bytes": 323
+    },
+    {
+      "path": "reviews/fallback-current.json",
+      "sha256": "a6fa2bee7bf334bd5230a2dcc03e7b274c2e1edd40bc692a033c0e0da66b612d",
+      "bytes": 4961
+    },
+    {
+      "path": "reviews/fallback-v36-history.json",
+      "sha256": "80ad806b0dceb557149288d36988dabfdce3d8efb226530602caf250c2235016",
+      "bytes": 6851
+    },
+    {
+      "path": "reviews/late-font-cohorts.json",
+      "sha256": "4d1724d498224451a1ba03f663b5540ea030f1f01dc1544b9af7a74c58973aa9",
+      "bytes": 12190
+    },
+    {
+      "path": "reviews/late-lifecycle.json",
+      "sha256": "f281ce37717e3da06e0bbc8cc4ccc1f051156b5db3167e742c062585ce00def3",
+      "bytes": 6273
+    },
+    {
+      "path": "reviews/native.json",
+      "sha256": "574b4801161f28b74eb76651e7e8cad1539280921f45eb657370d62064dec313",
+      "bytes": 321
+    },
+    {
+      "path": "reviews/public-edit-undo.json",
+      "sha256": "9ec4ba5cb9460a7f046bf6d9ed80724bfed10e9b4be1ad16e2421c76be380046",
+      "bytes": 776
+    },
+    {
+      "path": "science-before-after.png",
+      "sha256": "1c732acb3ef5500857a3437d1a9261c362f4415dbe8b81b86eb2a77bfd8a1940",
+      "bytes": 177559
+    }
+  ]
+}

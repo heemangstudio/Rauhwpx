@@ -1,7 +1,7 @@
 //! 페이지 분할 표 레이아웃 (layout_partial_table)
 
 use super::super::composer::{
-    compose_paragraph, inline_picture_occupied_width_hu, ComposedParagraph,
+    compose_paragraph_with_styles, inline_picture_occupied_width_hu, ComposedParagraph,
 };
 use super::super::height_measurer::MeasuredTable;
 use super::super::page_layout::LayoutRect;
@@ -215,6 +215,8 @@ mod inline_fallback_alignment_tests {
     fn centered_and_right_inline_picture_share_the_text_line_width() {
         let styles = ResolvedStyleSet::default();
         let composed = ComposedParagraph {
+            projected_tac_line_owners: None,
+            authored_cell_frame: false,
             lines: vec![ComposedLine {
                 runs: vec![ComposedTextRun {
                     text: "AB\u{FFFC}CD".into(),
@@ -529,7 +531,7 @@ impl LayoutEngine {
             let mut composed_paras: Vec<_> = cell
                 .paragraphs
                 .iter()
-                .map(|p| compose_paragraph(p))
+                .map(|p| compose_paragraph_with_styles(p, styles))
                 .collect();
 
             // 텍스트 오버플로우 시 좌우 패딩 축소
@@ -939,6 +941,9 @@ impl LayoutEngine {
                 .zip(cell.paragraphs.iter())
                 .enumerate()
             {
+                let certified_composed =
+                    self.composed_for_authored_cell_frame(table, cell, para, composed, styles);
+                let composed = certified_composed.as_ref().unwrap_or(composed);
                 // 분할 행이면 해당 문단의 줄 범위 적용
                 let (start_line, end_line) = if let Some(ref ranges) = line_ranges {
                     if cp_idx < ranges.len() {

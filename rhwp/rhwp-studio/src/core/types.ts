@@ -1190,6 +1190,8 @@ export interface LayerTextRunOp {
   displayPositions?: number[];
   /** 반각 칸에 전각 glyph 를 그리는 구두점의 `[replay 글자 index, glyph x 오프셋]` (엔진 halt 규칙). */
   glyphOffsets?: Array<[number, number]>;
+  /** Replay scalar indices of authored nonprinting HWP space controls. Positions remain unchanged. */
+  nonprintingSpaces?: number[];
   legacyVisuals?: LayerTextLegacyVisuals;
   controlMarks?: LayerTextControlMark[];
   controlMarksComplete?: boolean;

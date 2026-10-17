@@ -1014,6 +1014,7 @@ impl SkiaLayerRenderer {
                                 run.is_para_end,
                                 run.is_line_break_end,
                                 run.display_text.is_some(),
+                                &run.text,
                             );
                         }
                         PaintOp::GlyphRun { run, .. } => {
@@ -1047,6 +1048,7 @@ impl SkiaLayerRenderer {
                                 false,
                                 false,
                                 false,
+                                &marker.text,
                             );
                         }
                         PaintOp::Line { bbox, line } => {

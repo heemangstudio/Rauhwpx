@@ -1,0 +1,45 @@
+{
+  "status": "PASS",
+  "scope": "All 20 current original fullpage pairs and all 37 nonzero original fixed-band sheets visually inspected; three full-resolution focused zoom pairs also inspected. Original acceptance only; intentional edited/reopened content is outside this original-reference verdict.",
+  "reviewer_relationship": "Math implementation lane; fresh read-only whole-document review. Not independent of implementation authorship. Separate English-lane v35 review is retained, but no v35 image review was reused without current inspection.",
+  "root_focused_cross_check": "Parent separately viewed current p8/p10/p16 official-comparison zooms and reported no additional material defect.",
+  "acceptance": {
+    "pages": 20,
+    "bands": 200,
+    "nonzero_bands": 37,
+    "all_strictly_below_one": true,
+    "worst_pct": 0.7990645098421361,
+    "p10_band2": {
+      "band": 2,
+      "y": [
+        620,
+        930
+      ],
+      "ink": 9945,
+      "mismatch_px": 79,
+      "ours_only_px": 32,
+      "hancom_only_px": 47,
+      "mismatch_pct": 0.7943690296631473,
+      "below_one": true
+    },
+    "material_defects": 0
+  },
+  "low_severity_residuals": [
+    {
+      "page": 8,
+      "kind": "delimiter contour/extent",
+      "material": false,
+      "effect": "Case brace differs in contour/height; two-branch grouping remains readable and complete, with no text flow or absolute-bar placement defect."
+    },
+    {
+      "page": 16,
+      "kind": "delimiter contour/extent",
+      "material": false,
+      "effect": "Large parentheses differ in height/contour; enclosed factors and inequality remain complete and unambiguous."
+    }
+  ],
+  "source_receipt": {
+    "campaign_artifact_label": "review/studio-v36-normal-math-independent/review.json",
+    "sha256": "a8c5e731f34059db9296123bb4fa96b322214872dff7b5243f2cae22b1fe5bab"
+  }
+}

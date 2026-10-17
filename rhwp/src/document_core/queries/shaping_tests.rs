@@ -163,3 +163,138 @@ fn embedded_ligature_advance_controls_line_fitting() {
     );
     assert!(second_word_end["y"].as_f64().unwrap() > first["y"].as_f64().unwrap());
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn embedded_font_space_context_matches_load_refresh_edit_and_reopen() {
+    use crate::model::paragraph::LineSeg;
+    use crate::model::provenance::FontMetricsPolicy;
+    use crate::renderer::layout::{resolved_to_text_style, source_font_space_advance_px};
+
+    const FAMILY: &str = "RHWP Embedded Space Context";
+    // 이 테스트는 외부 설치·runtime 등록을 하지 않는다. BinData만 공급자다.
+    assert!(!crate::renderer::runtime_font_metrics::face_available(
+        FAMILY
+    ));
+    assert!(!crate::renderer::font_paths::custom_font_face_available(
+        FAMILY
+    ));
+    let mut model = document("A 한").document;
+    // 단일 SFNT face는 문서 선언 별칭으로 해소된다(font_glyph.rs).
+    // 다른 테스트가 등록한 실제 fixture family가 임베드 공급자를 가리지 않게 한다.
+    for fonts in &mut model.doc_info.font_faces {
+        for font in fonts {
+            font.name = FAMILY.into();
+        }
+    }
+    model.doc_info.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+    let cs = &mut model.doc_info.char_shapes[0];
+    cs.base_size = 1150;
+    cs.relative_sizes = [100, 106, 100, 100, 100, 100, 100];
+    cs.ratios = [95, 100, 100, 100, 100, 100, 100];
+    cs.spacings = [0; 7];
+    cs.use_font_space = true;
+    cs.bold = false;
+    cs.italic = false;
+    cs.kerning = false;
+    model.sections[0].paragraphs[0].line_segs = vec![LineSeg {
+        text_start: 0,
+        line_height: 1600,
+        text_height: 1150,
+        baseline_distance: 1000,
+        segment_width: 40000,
+        ..Default::default()
+    }];
+    let mut unrelated = model.sections[0].paragraphs[0].clone();
+    unrelated.text = "한".into();
+    unrelated.char_count = 2;
+    unrelated.char_offsets = vec![0];
+    unrelated.line_segs[0].vertical_pos = 1600;
+    model.sections[0].paragraphs.push(unrelated);
+
+    fn check(core: &DocumentCore, font_type: u8, stage: &str) -> (f64, f64) {
+        assert!(!core.collect_resolved_shaping_fonts().is_empty());
+        let space = core.composed[0][0]
+            .lines
+            .iter()
+            .flat_map(|line| &line.runs)
+            .find(|run| run.text.contains(' '))
+            .unwrap();
+        assert_eq!(space.lang_index, 1);
+        let _scope = core.resolved_shaping_font_scope();
+        let style = resolved_to_text_style(&core.styles, 0, space.lang_index);
+        assert_eq!(style.font_family.split(',').next().unwrap().trim(), FAMILY);
+        let width = source_font_space_advance_px(' ', &style).unwrap();
+        assert!((width * 75.0 - 304.0).abs() < 1e-9);
+        let before = cursor(core, 1)["x"].as_f64().unwrap();
+        let after = cursor(core, 2)["x"].as_f64().unwrap();
+        fn painted_space(node: &crate::renderer::render_tree::RenderNode) -> Option<(f64, f64)> {
+            use crate::renderer::render_tree::RenderNodeType;
+            if let RenderNodeType::TextRun(run) = &node.node_type {
+                if run.section_index == Some(0)
+                    && run.para_index == Some(0)
+                    && run.cell_context.is_none()
+                {
+                    if let Some(start) = run.char_start.filter(|&start| start <= 1) {
+                        let offset = 1 - start;
+                        if run.text.chars().nth(offset) == Some(' ') {
+                            let positions = crate::renderer::layout::compute_char_positions(
+                                &run.text, &run.style,
+                            );
+                            return Some((
+                                node.bbox.x + positions[offset],
+                                node.bbox.x + positions[offset + 1],
+                            ));
+                        }
+                    }
+                }
+            }
+            node.children.iter().find_map(painted_space)
+        }
+        let tree = core.build_page_render_tree(0).unwrap();
+        let (paint_before, paint_after) =
+            painted_space(&tree.root).expect("actual space render node");
+        assert!((paint_after - paint_before - width).abs() < 0.01,
+            "font_type={font_type} stage={stage} paint_before={paint_before} paint_after={paint_after} expected={width}");
+        // 공개 커서 JSON은 각 끝점을 소수 한 자리로 직렬화한다(cursor_rect.rs).
+        // 차이의 허용치를 늘리는 대신 실제 paint 끝점에 같은 직렬화를 적용한다.
+        let public_x = |x: f64| format!("{x:.1}").parse::<f64>().unwrap();
+        assert_eq!(
+            before,
+            public_x(paint_before),
+            "font_type={font_type} stage={stage}"
+        );
+        assert_eq!(
+            after,
+            public_x(paint_after),
+            "font_type={font_type} stage={stage}"
+        );
+        (before, after)
+    }
+
+    // HFT로 선언된 materialized SFNT도 paginate 재해소 뒤 다시 분류한다.
+    for font_type in [1, 2] {
+        for fonts in &mut model.doc_info.font_faces {
+            fonts[0].alt_type = font_type;
+        }
+        let bytes = crate::serializer::hwpx::serialize_hwpx(&model).unwrap();
+        let mut loaded =
+            DocumentCore::from_bytes_with_font_metrics(&bytes, FontMetricsPolicy::HcrDeclared)
+                .unwrap();
+        let original = format!("{:?}", loaded.document.sections[0].paragraphs[0]);
+        let initial = check(&loaded, font_type, "load");
+        loaded.refresh_layout_native();
+        assert_eq!(check(&loaded, font_type, "refresh"), initial);
+        loaded.insert_text_native(0, 1, 1, " ").unwrap();
+        assert_eq!(check(&loaded, font_type, "edit"), initial);
+        let saved = loaded.export_hwpx_native().unwrap();
+        assert_eq!(
+            format!("{:?}", loaded.document.sections[0].paragraphs[0]),
+            original
+        );
+        let reopened =
+            DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared)
+                .unwrap();
+        assert_eq!(check(&reopened, font_type, "reopen"), initial);
+    }
+}

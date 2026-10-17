@@ -1,0 +1,29 @@
+{
+  "status": "PASS",
+  "source_receipt": {
+    "campaign_artifact_label": "review/studio-v37-root-ui-edit-undo.json",
+    "sha256": "5a8a6a426378452b736dc6caabcf4d0a79deafc5aac180715e33d6b7a47f9655"
+  },
+  "operation": "Move to final paragraph and paste one space; click actual toolbar Undo afterward.",
+  "observed": "Prepared local fonts remain15,20pages and readiness true through edit and undo.",
+  "before": {
+    "pages": 20,
+    "fonts": 15,
+    "sectionIndex": 1,
+    "paragraphIndex": 94,
+    "beforeLength": 0
+  },
+  "after_public_paste": {
+    "pages": 20,
+    "length": 1,
+    "local_fonts": 15,
+    "runtime_ready": true
+  },
+  "after_toolbar_undo": {
+    "pages": 20,
+    "length": 0,
+    "fonts": 15,
+    "ready": true
+  },
+  "full_ui_image_included": false
+}

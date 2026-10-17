@@ -60,9 +60,8 @@ pub(crate) enum BreakToken {
     /// 문자를 소비하지 않고 지정 폭(HWPUNIT)만큼 가로 공간만 예약한다.
     /// idx는 개체가 삽입된 문자 위치 (개체 바로 다음 문자 인덱스와 동일).
     /// own_line: 한컴이 전용 줄을 부여하는 블록형 개체(표/그림/도형) 여부.
-    /// true 이면 개체 줄에 뒤따르는 토큰이 넘칠 때 토큰 통째를 다음 줄로 본내
-    /// 글자 단위 분할(한 글자 run 조각남)을 피한다. 수식(false)은 텍스트 흐름
-    /// 개처이므로 기존 첫 글자 고정(pin) 동작을 유지한다.
+    /// true 이면 개체 줄에 뒤따르는 토큰이 넘칠 때 토큰 통째를 다음 줄로 보낸다.
+    /// 수식(false)은 텍스트와 같은 줄 안에서도 독립된 토큰 경계를 가진다.
     InlineControl {
         idx: usize,
         width_hwp: i32,
@@ -74,6 +73,8 @@ pub(crate) enum BreakToken {
 /// 줄 채움 결과
 #[derive(Debug)]
 struct LineBreakResult {
+    /// 실제 첫 토큰. 같은 scalar 위치의 제어 슬롯도 서로 다른 줄에 속할 수 있다.
+    start_token_idx: usize,
     start_idx: usize,
     end_idx: usize, // exclusive
     max_font_size: f64,
@@ -665,11 +666,23 @@ fn annotate_trailing_spacing(
     styles: &ResolvedStyleSet,
     auto_spacing: AutoSpacing,
 ) {
-    let trailing_langs = trailing_lang_categories(
+    let mut trailing_langs = trailing_lang_categories(
         text_chars,
         special_space_origins,
         styles.font_metrics_policy,
     );
+    for (lang, selected) in trailing_langs.iter_mut().zip(super::font_space_lang_slots(
+        text_chars
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(scalar, ch)| (ch, char_style_id_at(char_offsets, char_shapes, scalar))),
+        styles,
+    )) {
+        if let Some(selected) = selected {
+            *lang = selected;
+        }
+    }
     for k in 0..tokens.len() {
         let next_text_start = match tokens.get(k + 1) {
             Some(BreakToken::Text { start_idx, .. }) => Some(*start_idx),
@@ -781,6 +794,14 @@ fn tokenize_paragraph_with_controls(
         return Vec::new();
     }
 
+    let font_space_langs = super::font_space_lang_slots(
+        text_chars
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(scalar, ch)| (ch, char_style_id_at(char_offsets, char_shapes, scalar))),
+        styles,
+    );
     let mut tokens = Vec::new();
     let grapheme_ends = grapheme_end_map(text_chars);
     let mut i = 0;
@@ -863,7 +884,9 @@ fn tokenize_paragraph_with_controls(
             let style_id = find_active_char_shape(char_shapes, utf16_pos);
             let selected =
                 occurrence_lang_category(ch, i, special_space_origins, styles.font_metrics_policy);
-            let space_lang = if ch == '\u{2007}' && selected == 5 {
+            let space_lang = if let Some(lang) = font_space_langs[i] {
+                lang
+            } else if ch == '\u{2007}' && selected == 5 {
                 selected
             } else {
                 current_lang
@@ -1404,8 +1427,9 @@ fn condense_fit_can_pull_next_token(
 fn squeeze_lines(tokens: &[BreakToken], text_len: usize) -> Vec<LineBreakResult> {
     let mut lines = Vec::new();
     let mut start_idx = 0;
+    let mut start_token_idx = 0;
     let mut max_font_size = 0.0f64;
-    for token in tokens {
+    for (ti, token) in tokens.iter().enumerate() {
         match token {
             BreakToken::LineBreak {
                 idx,
@@ -1413,12 +1437,14 @@ fn squeeze_lines(tokens: &[BreakToken], text_len: usize) -> Vec<LineBreakResult>
             } => {
                 max_font_size = max_font_size.max(*break_font_size);
                 lines.push(LineBreakResult {
+                    start_token_idx,
                     start_idx,
                     end_idx: *idx + 1,
                     max_font_size,
                     has_line_break: true,
                 });
                 start_idx = *idx + 1;
+                start_token_idx = ti + 1;
                 max_font_size = 0.0;
             }
             BreakToken::Text {
@@ -1438,6 +1464,7 @@ fn squeeze_lines(tokens: &[BreakToken], text_len: usize) -> Vec<LineBreakResult>
         }
     }
     lines.push(LineBreakResult {
+        start_token_idx,
         start_idx,
         end_idx: text_len,
         max_font_size,
@@ -1459,9 +1486,11 @@ fn fill_lines(
     english_break_unit: u8,
     condense_min_space: u8,
     band_plan: Option<&LineBandPlan>,
+    exact_control_cuts: bool,
 ) -> Vec<LineBreakResult> {
     if tokens.is_empty() {
         return vec![LineBreakResult {
+            start_token_idx: 0,
             start_idx: 0,
             end_idx: 0,
             max_font_size: 0.0,
@@ -1479,6 +1508,7 @@ fn fill_lines(
         para_style.filter(|style| !style.tab_stops.is_empty() || style.auto_tab_right);
     let mut results = Vec::new();
     let mut line_start_idx = 0usize;
+    let mut line_start_token_idx = 0usize;
     let mut lw = 0i32; // HWPUNIT 정수 누적
     let mut line_space_savings = 0i32;
     let mut last_content_end = 0usize;
@@ -1595,6 +1625,7 @@ fn fill_lines(
                 // 내리거나 9pt 본문 뒤의 16pt 줄바꿈을 무시하면 뒤 줄이 올라간다.
                 line_max_fs = line_max_fs.max(*break_font_size);
                 results.push(LineBreakResult {
+                    start_token_idx: line_start_token_idx,
                     start_idx: line_start_idx,
                     end_idx: *idx + 1,
                     max_font_size: line_max_fs,
@@ -1602,6 +1633,7 @@ fn fill_lines(
                 });
                 advance_band(&results);
                 line_start_idx = *idx + 1;
+                line_start_token_idx = ti + 1;
                 lw = 0;
                 line_space_savings = 0;
                 line_max_fs = 0.0;
@@ -1649,14 +1681,10 @@ fn fill_lines(
                             &style.tab_stops,
                             tab_w_px,
                             style.auto_tab_right,
-                            current_line_w.get(),
+                            style.margin_left + current_line_w.get(),
                         );
-                        // 명시적 탭은 단 기준, 자동 오른쪽 탭은 본문 여백 기준이다.
-                        let position = if kind == 1 && style.auto_tab_right {
-                            style.margin_left + position
-                        } else {
-                            position
-                        };
+                        // 현재 x와 오른쪽 끝 모두 단 기준 좌표다. 본문 폭만 넘기면
+                        // 왼쪽 여백 안쪽의 마지막 자동 오른쪽 정지를 놓친다.
                         let target =
                             to_hwp(position - origin) - if kind == 1 { following_width } else { 0 };
                         (target.max(width), kind)
@@ -1668,6 +1696,7 @@ fn fill_lines(
                         // 앞 텍스트를 마지막 공백까지 되돌리지 않는다.
                         if target > eff_w(is_first_line) && line_start_idx < *idx {
                             results.push(LineBreakResult {
+                                start_token_idx: line_start_token_idx,
                                 start_idx: line_start_idx,
                                 end_idx: *idx,
                                 max_font_size: line_max_fs,
@@ -1675,6 +1704,7 @@ fn fill_lines(
                             });
                             advance_band(&results);
                             line_start_idx = *idx;
+                            line_start_token_idx = ti;
                             is_first_line = false;
                             lw = next_stop(0, false).0;
                             line_space_savings = 0;
@@ -1705,6 +1735,7 @@ fn fill_lines(
                 if next_tab_hwp > eff_w(is_first_line) && line_start_idx < *idx {
                     if let Some(_) = last_break_token_idx {
                         results.push(LineBreakResult {
+                            start_token_idx: line_start_token_idx,
                             start_idx: line_start_idx,
                             end_idx: last_break_char_idx,
                             max_font_size: fs_at_last_break,
@@ -1712,10 +1743,17 @@ fn fill_lines(
                         });
                         advance_band(&results);
                         line_start_idx = last_break_char_idx;
+                        line_start_token_idx = token_index_after_break(
+                            tokens,
+                            last_break_token_idx.unwrap(),
+                            ti,
+                            line_start_idx,
+                        );
                         lw = lw - width_at_last_break;
                         line_space_savings -= space_savings_at_last_break;
                     } else {
                         results.push(LineBreakResult {
+                            start_token_idx: line_start_token_idx,
                             start_idx: line_start_idx,
                             end_idx: *idx,
                             max_font_size: line_max_fs,
@@ -1723,6 +1761,7 @@ fn fill_lines(
                         });
                         advance_band(&results);
                         line_start_idx = *idx;
+                        line_start_token_idx = ti;
                         lw = 0;
                         line_space_savings = 0;
                         line_max_fs = *max_font_size;
@@ -1762,6 +1801,7 @@ fn fill_lines(
                     && (line_start_idx == 0 || space_content_end > line_start_idx)
                 {
                     results.push(LineBreakResult {
+                        start_token_idx: line_start_token_idx,
                         start_idx: line_start_idx,
                         end_idx: *idx,
                         max_font_size: line_max_fs,
@@ -1769,6 +1809,7 @@ fn fill_lines(
                     });
                     advance_band(&results);
                     line_start_idx = *idx;
+                    line_start_token_idx = ti;
                     lw = 0;
                     line_space_savings = 0;
                     line_max_fs = 0.0;
@@ -1800,22 +1841,29 @@ fn fill_lines(
                 }
                 // 개체가 현재 줄에 들어가지 않으면 개체 앞에서 줄을 나눈다
                 // (줄 시작 개체는 넘치더라도 그대로 배치 — 분할 불가).
-                // 개체 직후는 break point로 등록하지 않는다: 줄 끝 경계와 개체
-                // 위치가 정확히 겹치면 painter/metrics가 개체를 다음 줄로 판정해
-                // (char_pos_in_line 반열림 규칙) anchor 줄이 어긋나기 때문이다.
+                // 개체는 텍스트 위치와 별도로 토큰 경계에서 줄 소유권을 보존한다.
                 if condensed_line_width_hwp(lw + width_hwp, eligible_space_savings)
                     > eff_w(is_first_line)
-                    && *idx > line_start_idx
+                    && if exact_control_cuts {
+                        ti > line_start_token_idx
+                    } else {
+                        *idx > line_start_idx
+                    }
                 {
                     // 개체 바로 앞 글자 뒤가 원래 줄을 나눌 수 있는 자리(닫는 문장부호,
                     // 글자 단위 한글, 한자)이면 개체 앞에서 바로 나눈다. 마지막 공백까지
                     // 되돌리면 "형성한다." 의 마침표처럼 줄 머리 금칙 글자나 어절 조각이
                     // 개체와 함께 다음 줄로 넘어가 앞 줄만 짧게 남는다.
-                    let break_before_object = text_chars.get(*idx - 1).is_some_and(|&c| {
-                        (is_line_start_forbidden(c) && !is_line_end_forbidden(c))
-                            || (is_hangul(c) && korean_break_unit == 1)
-                            || is_cjk_ideograph(c)
-                    });
+                    // 같은 scalar 위치여도 이미 들어간 앞 개체 다음은 정확한 토큰 경계다.
+                    // 이 경계보다 앞 공백으로 되돌리면 들어간 개체까지 다시 옮기게 된다.
+                    let break_before_object = (exact_control_cuts
+                        && matches!(tokens.get(ti - 1),
+                        Some(BreakToken::InlineControl {idx:previous,..}) if previous==idx))
+                        || text_chars.get(idx.saturating_sub(1)).is_some_and(|&c| {
+                            (is_line_start_forbidden(c) && !is_line_end_forbidden(c))
+                                || (is_hangul(c) && korean_break_unit == 1)
+                                || is_cjk_ideograph(c)
+                        });
                     if last_break_token_idx.is_some() && !break_before_object {
                         let mut break_char = last_break_char_idx;
                         let mut next_start = break_char;
@@ -1853,6 +1901,7 @@ fn fill_lines(
                             }
                         }
                         results.push(LineBreakResult {
+                            start_token_idx: line_start_token_idx,
                             start_idx: line_start_idx,
                             end_idx: break_char,
                             max_font_size: fs_at_last_break,
@@ -1860,34 +1909,60 @@ fn fill_lines(
                         });
                         advance_band(&results);
                         line_start_idx = next_start;
-                        lw = recalc_width_hwp(tokens, ti, next_start);
-                        line_space_savings =
-                            recalc_space_savings_hwp(tokens, ti, next_start, condense_min_space);
+                        line_start_token_idx = token_index_after_break(
+                            tokens,
+                            last_break_token_idx.unwrap(),
+                            ti,
+                            next_start,
+                        );
+                        lw = recalc_width_hwp(
+                            tokens,
+                            ti,
+                            next_start,
+                            if exact_control_cuts {
+                                line_start_token_idx
+                            } else {
+                                0
+                            },
+                        );
+                        line_space_savings = recalc_space_savings_hwp(
+                            tokens,
+                            ti,
+                            next_start,
+                            if exact_control_cuts {
+                                line_start_token_idx
+                            } else {
+                                0
+                            },
+                            condense_min_space,
+                        );
                         lw += width_hwp;
                         last_trailing_hwp = 0;
                         line_max_fs = *max_font_size;
                         is_first_line = false;
                         last_break_token_idx = None;
                     } else {
-                        // 같은 위치에 연속으로 배치된 인라인 개체가 현재 줄에 있으면
-                        // 함께 다음 줄로 본낸다 — painter는 줄 끝 경계에 걸린 개체를
-                        // 다음 줄 선두로 판정하므로, 폭 예약 줄과 그리는 줄을 맞춘다.
-                        let mut carry_w = 0i32;
-                        let mut k = ti;
-                        while k > 0 {
-                            match &tokens[k - 1] {
-                                BreakToken::InlineControl {
-                                    idx: prev_idx,
-                                    width_hwp: prev_w,
-                                    ..
-                                } if *prev_idx == *idx => {
-                                    carry_w += prev_w;
-                                    k -= 1;
+                        // 복원된 슬롯은 현재 토큰에서 나눈다. 알 수 없는 슬롯은 기존
+                        // scalar 기반 painter 계약에 맞춰 같은 위치의 앞 개체도 옮긴다.
+                        let mut first_control = ti;
+                        let mut carry_w = 0;
+                        if !exact_control_cuts {
+                            while first_control > 0 {
+                                match &tokens[first_control - 1] {
+                                    BreakToken::InlineControl {
+                                        idx: previous,
+                                        width_hwp,
+                                        ..
+                                    } if previous == idx => {
+                                        carry_w += width_hwp;
+                                        first_control -= 1;
+                                    }
+                                    _ => break,
                                 }
-                                _ => break,
                             }
                         }
                         results.push(LineBreakResult {
+                            start_token_idx: line_start_token_idx,
                             start_idx: line_start_idx,
                             end_idx: *idx,
                             max_font_size: line_max_fs,
@@ -1895,6 +1970,7 @@ fn fill_lines(
                         });
                         advance_band(&results);
                         line_start_idx = *idx;
+                        line_start_token_idx = first_control;
                         lw = *width_hwp + carry_w;
                         line_space_savings = 0;
                         line_max_fs = *max_font_size;
@@ -1904,6 +1980,20 @@ fn fill_lines(
                 } else {
                     lw += width_hwp;
                     last_trailing_hwp = 0;
+                }
+                // 복원된 개체 뒤의 글자가 현재 문단 규칙에서 나눌 수 있으면
+                // 개체가 이미 들어간 이 토큰 경계도 유효하다. 앞 공백으로 되감아
+                // 개체까지 옮기지 않는다. KEEP_WORD/알 수 없는 슬롯은 종전대로다.
+                if exact_control_cuts
+                    && text_chars
+                        .get(*idx)
+                        .is_some_and(|&ch| char_breakable(ch) && !is_line_start_forbidden(ch))
+                {
+                    last_break_token_idx = Some(ti);
+                    last_break_char_idx = *idx;
+                    width_at_last_break = lw;
+                    space_savings_at_last_break = line_space_savings;
+                    fs_at_last_break = line_max_fs;
                 }
             }
             BreakToken::Text {
@@ -2010,10 +2100,16 @@ fn fill_lines(
                 let attached_to_inline = matches!(tokens.get(ti.wrapping_sub(1)),
                     Some(BreakToken::InlineControl { idx, .. }) if idx == start_idx);
                 let has_inline_object = needs_condense_to_fit
-                    && tokens[..ti].iter().any(|token| {
-                        matches!(token, BreakToken::InlineControl { idx, .. }
+                    && tokens[if exact_control_cuts {
+                        line_start_token_idx
+                    } else {
+                        0
+                    }..ti]
+                        .iter()
+                        .any(|token| {
+                            matches!(token, BreakToken::InlineControl { idx, .. }
                         if *idx >= line_start_idx && *idx <= *start_idx)
-                    });
+                        });
                 let condense_pull_allowed = !needs_condense_to_fit
                     || !line_full_before_word(tokens, ti, lw, effective_width);
                 if condensed_candidate > effective_width || !condense_pull_allowed {
@@ -2026,6 +2122,7 @@ fn fill_lines(
                                 eff_w(is_first_line),
                             );
                             results.push(LineBreakResult {
+                                start_token_idx: line_start_token_idx,
                                 start_idx: line_start_idx,
                                 end_idx: carried_space_start.unwrap_or(last_break_char_idx),
                                 max_font_size: fs_at_last_break,
@@ -2043,11 +2140,31 @@ fn fill_lines(
                                 }
                             }
                             line_start_idx = next_start;
-                            lw = recalc_width_hwp(tokens, ti, next_start);
+                            line_start_token_idx = token_index_after_break(
+                                tokens,
+                                last_break_token_idx.unwrap(),
+                                ti,
+                                next_start,
+                            );
+                            lw = recalc_width_hwp(
+                                tokens,
+                                ti,
+                                next_start,
+                                if exact_control_cuts {
+                                    line_start_token_idx
+                                } else {
+                                    0
+                                },
+                            );
                             line_space_savings = recalc_space_savings_hwp(
                                 tokens,
                                 ti,
                                 next_start,
+                                if exact_control_cuts {
+                                    line_start_token_idx
+                                } else {
+                                    0
+                                },
                                 condense_min_space,
                             );
                             let lw_before_token = lw;
@@ -2070,6 +2187,8 @@ fn fill_lines(
                                         *start_idx,
                                         *end_idx,
                                         &mut line_start_idx,
+                                        &mut line_start_token_idx,
+                                        ti,
                                         lw_before_token,
                                         line_max_fs,
                                         eff_w(false),
@@ -2078,6 +2197,7 @@ fn fill_lines(
                                         &cw_hwp,
                                         &cs_hwp,
                                         false,
+                                        exact_control_cuts,
                                         0,
                                     );
                                 for r in results_part {
@@ -2096,19 +2216,29 @@ fn fill_lines(
                     // 토큰이 넘치면 토큰 통째를 다음 줄로 본내고 개체 줄을 빈 텍스트
                     // 줄로 확정한다. char 분할로 첫 글자를 개체 줄에 억지 배치하면
                     // 한 char shape 의 단어가 "e"+"fg" 처럼 한 글자 run 으로 조각나
-                    // paint/run 경계가 깨진다. 수식(own_line=false) 줄은 기존 첫 글자
-                    // 고정(pin) 동작을 유지한다 (painter anchor 모호성 회피).
+                    // paint/run 경계가 깨진다. 수식은 실제 토큰 경계에서 글자를 나눈다.
                     if *start_idx == line_start_idx
-                        && line_hosts_own_line_control(tokens, ti, line_start_idx)
+                        && line_hosts_own_line_control(
+                            tokens,
+                            ti,
+                            line_start_idx,
+                            if exact_control_cuts {
+                                line_start_token_idx
+                            } else {
+                                0
+                            },
+                        )
                     {
                         results.push(LineBreakResult {
+                            start_token_idx: line_start_token_idx,
                             start_idx: line_start_idx,
                             end_idx: *start_idx, // == line_start_idx — 빈 텍스트 줄 (개체 호스트)
                             max_font_size: line_max_fs,
                             has_line_break: false,
                         });
                         advance_band(&results);
-                        // line_start_idx 는 유지 — 토큰이 새 줄 선두가 된다.
+                        // scalar 위치는 같아도 개체 토큰은 앞 줄에서 이미 소비했다.
+                        line_start_token_idx = ti;
                         lw = 0;
                         line_space_savings = 0;
                         line_max_fs = *max_font_size;
@@ -2127,6 +2257,8 @@ fn fill_lines(
                                 *start_idx,
                                 *end_idx,
                                 &mut line_start_idx,
+                                &mut line_start_token_idx,
+                                ti,
                                 lw,
                                 line_max_fs,
                                 eff_w(false),
@@ -2135,6 +2267,7 @@ fn fill_lines(
                                 &cw_hwp,
                                 &cs_hwp,
                                 false,
+                                exact_control_cuts,
                                 0,
                             );
                             for r in results_part {
@@ -2150,14 +2283,10 @@ fn fill_lines(
                     // 토큰에 저장된 개별 글자 폭을 HWPUNIT로 변환
                     let cw_hwp: Vec<i32> = char_widths.iter().map(|w| to_hwp(*w)).collect();
                     let cs_hwp: Vec<i32> = char_spacings.iter().map(|w| to_hwp(*w)).collect();
-                    // 직전 토큰이 이 줄에 배치된 인라인 개체인 경우, 첫 글자에서 자륵면
-                    // 줄 끝이 개체 위치와 정확히 겹쳐 painter가 개체를 다음 줄로
-                    // 판정한다 (anchor 모호성). 첫 글자는 현재 줄에 고정해 피한다.
-                    let pin_first_char = *start_idx > line_start_idx
-                        && matches!(
-                            ti.checked_sub(1).and_then(|p| tokens.get(p)),
-                            Some(BreakToken::InlineControl { idx, .. }) if *idx == *start_idx
-                        );
+                    let pin_first_char = !exact_control_cuts
+                        && *start_idx > line_start_idx
+                        && matches!(ti.checked_sub(1).and_then(|i|tokens.get(i)),
+                            Some(BreakToken::InlineControl {idx,..}) if idx==start_idx);
                     // 강제 분할이 토큰 첫 글자 앞에서 일어나면 줄이 줄 꼬리 금칙 글자(`(` 등)로
                     // 끝난다. 그 글자를 다음 줄로 함께 넘긴다 (aift `(단계−해당차수)` 좁은 셀).
                     let first_fits = cw_hwp
@@ -2176,6 +2305,7 @@ fn fill_lines(
                                 && is_line_end_forbidden(text_chars[*ps])
                             {
                                 results.push(LineBreakResult {
+                                    start_token_idx: line_start_token_idx,
                                     start_idx: line_start_idx,
                                     end_idx: *ps,
                                     max_font_size: line_max_fs,
@@ -2183,6 +2313,7 @@ fn fill_lines(
                                 });
                                 advance_band(&results);
                                 line_start_idx = *ps;
+                                line_start_token_idx = ti - 1;
                                 lw = to_hwp(*pw);
                                 is_first_line = false;
                             }
@@ -2193,6 +2324,8 @@ fn fill_lines(
                         *start_idx,
                         *end_idx,
                         &mut line_start_idx,
+                        &mut line_start_token_idx,
+                        ti,
                         lw,
                         line_max_fs,
                         eff_w(is_first_line),
@@ -2201,6 +2334,7 @@ fn fill_lines(
                         &cw_hwp,
                         &cs_hwp,
                         pin_first_char,
+                        exact_control_cuts,
                         eligible_space_savings,
                     );
                     for r in results_part {
@@ -2236,6 +2370,7 @@ fn fill_lines(
 
     if line_start_idx <= last_end {
         results.push(LineBreakResult {
+            start_token_idx: line_start_token_idx,
             start_idx: line_start_idx,
             end_idx: last_end,
             max_font_size: line_max_fs,
@@ -2245,6 +2380,7 @@ fn fill_lines(
 
     if results.is_empty() {
         results.push(LineBreakResult {
+            start_token_idx: line_start_token_idx,
             start_idx: 0,
             end_idx: text_chars.len(),
             max_font_size: 0.0,
@@ -2301,31 +2437,63 @@ fn spaces_carried_to_next_line(
     run.get(keep.max(2)).map(|(idx, _)| *idx)
 }
 
+/// 되돌린 글자 위치와 실제 break 토큰을 함께 써 이미 소비한 제어 슬롯을 제외한다.
+fn token_index_after_break(
+    tokens: &[BreakToken],
+    break_token: usize,
+    current: usize,
+    next_char: usize,
+) -> usize {
+    let start_of = |token: &BreakToken| match token {
+        BreakToken::Text { start_idx, .. } => *start_idx,
+        BreakToken::Space { idx, .. }
+        | BreakToken::Tab { idx, .. }
+        | BreakToken::LineBreak { idx, .. }
+        | BreakToken::InlineControl { idx, .. } => *idx,
+    };
+    let from = if next_char < start_of(&tokens[break_token]) {
+        // 줄 꼬리에서 남긴 공백 묶음은 그 가시 토큰부터 시작한다.
+        tokens[..=break_token]
+            .iter()
+            .position(|token| {
+                !matches!(token, BreakToken::InlineControl { .. }) && start_of(token) == next_char
+            })
+            .unwrap_or(break_token)
+    } else if matches!(tokens[break_token], BreakToken::InlineControl { .. }) {
+        break_token + 1
+    } else {
+        break_token
+    };
+    (from..=current)
+        .find(|&i| match &tokens[i] {
+            BreakToken::Text { end_idx, .. } => *end_idx > next_char,
+            token => start_of(token) >= next_char,
+        })
+        .unwrap_or(current)
+}
+
 /// 현재 줄에 own_line 인라인 개체(표/그림/도형)가 배치됐는지 판별한다.
-/// 개체 토큰은 문자를 소비하지 않으므로, idx >= line_start 인 개체가
-/// 현재 줄에 놓인 것으로 본다 (개체는 줄 바꿈과 함께 앞으로 이동하므로
-/// 이전 줄에 남은 개체가 현재 line_start 이상의 idx 를 가지는 일은 없다).
+/// 가시 문자 위치가 같아도 앞 줄에서 소비한 개체 토큰은 다시 포함하지 않는다.
 fn line_hosts_own_line_control(
     tokens: &[BreakToken],
     current_token_idx: usize,
-    line_start: usize,
+    line_start_idx: usize,
+    line_start_token_idx: usize,
 ) -> bool {
-    tokens[..current_token_idx].iter().any(|t| {
-        matches!(
-            t,
-            BreakToken::InlineControl {
-                idx,
-                own_line: true,
-                ..
-            } if *idx >= line_start
-        )
-    })
+    tokens[line_start_token_idx..current_token_idx]
+        .iter()
+        .any(|t| matches!(t, BreakToken::InlineControl { idx, own_line: true, .. } if *idx >= line_start_idx))
 }
 
 /// 줄 바꿈 지점 이후 토큰의 누적 폭 재계산 (HWPUNIT)
-fn recalc_width_hwp(tokens: &[BreakToken], current_token_idx: usize, new_line_start: usize) -> i32 {
+fn recalc_width_hwp(
+    tokens: &[BreakToken],
+    current_token_idx: usize,
+    new_line_start: usize,
+    start_token_idx: usize,
+) -> i32 {
     let mut w = 0i32;
-    for t in &tokens[..current_token_idx] {
+    for t in &tokens[start_token_idx..current_token_idx] {
         match t {
             BreakToken::Text {
                 start_idx, width, ..
@@ -2349,11 +2517,12 @@ fn recalc_space_savings_hwp(
     tokens: &[BreakToken],
     current_token_idx: usize,
     new_line_start: usize,
+    start_token_idx: usize,
     condense_min_space: u8,
 ) -> i32 {
     let mut w = 0i32;
     let mut content_end = 0;
-    for t in &tokens[..current_token_idx] {
+    for t in &tokens[start_token_idx..current_token_idx] {
         match t {
             BreakToken::Text { end_idx, .. } => content_end = *end_idx,
             BreakToken::Tab { idx, .. } | BreakToken::InlineControl { idx, .. } => {
@@ -2376,13 +2545,13 @@ fn recalc_space_savings_hwp(
 
 /// 긴 단어 폴백: 글자 단위 분할 (HWPUNIT)
 /// char_widths_hwp: 토큰 내 각 글자의 HWPUNIT 폭 (None이면 휴리스틱)
-/// pin_first_char: true이면 첫 글자는 줄이 넘쳐도 현재 줄에 고정한다
-/// (직전 인라인 개체와의 anchor 모호성 회피 — fill_lines 호출부 주석 참조)
 fn char_level_break_hwp(
     text_chars: &[char],
     token_start: usize,
     token_end: usize,
     line_start_idx: &mut usize,
+    line_start_token_idx: &mut usize,
+    current_token_idx: usize,
     mut lw: i32,
     mut line_max_fs: f64,
     first_line_w: i32,
@@ -2391,6 +2560,7 @@ fn char_level_break_hwp(
     char_widths_hwp: &[i32],   // 토큰 내 글자별 HWPUNIT 폭
     char_spacings_hwp: &[i32], // 글자별 trailing(자간) 폭 — 줄 끝 글자는 맞춤 판정에서 뺀다
     pin_first_char: bool,
+    exact_control_cuts: bool,
     first_line_space_savings: i32, // 첫 줄 공백 압축(condense) 여유 — 어절을 나눌 때도 쓴다
 ) -> (Vec<LineBreakResult>, i32, f64) {
     let mut space_savings = first_line_space_savings;
@@ -2422,18 +2592,21 @@ fn char_level_break_hwp(
             .unwrap_or(0);
 
         if lw + cluster_w - cluster_trailing > current_w + space_savings
-            && ci > *line_start_idx
+            && (ci > *line_start_idx
+                || exact_control_cuts && current_token_idx > *line_start_token_idx)
             && !(pin_first_char && rel_idx == 0)
         {
             // 강제 분할은 줄 머리 금칙을 따지지 않는다 — macOS 한컴은 `1,234|,567` 처럼
             // 쉼표로도 다음 줄을 시작한다 (스윕 I_squeeze 좁은 문단).
             results.push(LineBreakResult {
+                start_token_idx: *line_start_token_idx,
                 start_idx: *line_start_idx,
                 end_idx: ci,
                 max_font_size: line_max_fs,
                 has_line_break: false,
             });
             *line_start_idx = ci;
+            *line_start_token_idx = current_token_idx;
             lw = cluster_w;
             is_first_line = false;
             current_w = normal_w;
@@ -2451,6 +2624,57 @@ fn char_level_break_hwp(
 mod wrap_band_perf_tests {
     use super::*;
     use crate::model::shape::TextFlow;
+
+    #[test]
+    fn incoming_wrap_restores_paragraph_margin_after_exclusion_ends() {
+        use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+        let styles = ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_size: 12.0,
+                ..Default::default()
+            }],
+            para_styles: vec![ResolvedParaStyle {
+                margin_left: 10.0,
+                line_spacing: 100.0,
+                korean_break_unit: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let text = "가나다라마바사아자차카타파하가나다라마바사아자차카타파하";
+        let mut para = Paragraph {
+            text: text.into(),
+            char_offsets: (0..text.chars().count() as u32).collect(),
+            char_shapes: vec![CharShapeRef::default()],
+            ..Default::default()
+        };
+        let incoming = FloatExclusion {
+            rect: LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 30.0,
+                height: 6.0,
+            },
+            geometry: WrapGeometry::Side(TextFlow::BothSides),
+        };
+        assert!(
+            reflow_line_segs_with_exclusions(&mut para, 100.0, &styles, 96.0, &[incoming])
+                .is_empty()
+        );
+        assert!(para.line_segs.len() > 1);
+        assert_eq!(
+            para.line_segs[0].column_start,
+            px_to_hwpunit_round(30.0, 96.0)
+        );
+        assert_eq!(
+            para.line_segs[0].segment_width,
+            px_to_hwpunit_round(80.0, 96.0)
+        );
+        for line in &para.line_segs[1..] {
+            assert_eq!(line.column_start, px_to_hwpunit_round(10.0, 96.0));
+            assert_eq!(line.segment_width, px_to_hwpunit_round(100.0, 96.0));
+        }
+    }
 
     #[test]
     fn wrap_band_overlap_uses_text_height_not_line_spacing() {
@@ -2473,6 +2697,276 @@ mod wrap_band_perf_tests {
         assert_eq!(plan.interval_at(0.0, 16.0), (0.0, 100.0));
         assert_eq!(plan.interval_at(8.0, 16.0), (0.0, 60.0));
         assert_eq!(plan.interval_at(60.0, 16.0), (0.0, 100.0));
+    }
+}
+
+#[cfg(test)]
+mod inline_token_cut_tests {
+    use super::*;
+    use crate::model::control::Equation;
+    use crate::model::shape::CommonObjAttr;
+    use crate::model::table::{Cell, Table};
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    fn text(start: usize, end: usize, width: f64) -> BreakToken {
+        BreakToken::Text {
+            start_idx: start,
+            end_idx: end,
+            width,
+            max_font_size: 12.0,
+            char_widths: vec![width / (end - start) as f64; end - start],
+            trailing_spacing: 0.0,
+            char_spacings: vec![],
+        }
+    }
+    fn object(idx: usize, width: f64, own_line: bool) -> BreakToken {
+        BreakToken::InlineControl {
+            idx,
+            width_hwp: to_hwp(width),
+            max_font_size: 12.0,
+            own_line,
+        }
+    }
+    fn fill(text: &str, tokens: &[BreakToken], width: f64) -> Vec<LineBreakResult> {
+        fill_lines(
+            tokens,
+            &text.chars().collect::<Vec<_>>(),
+            width,
+            0.0,
+            (0.0, 0.0),
+            None,
+            1,
+            0,
+            0,
+            None,
+            true,
+        )
+    }
+
+    #[test]
+    fn inline_cut_identity_survives_particle_and_word_rewind() {
+        // The particle starts at the same scalar index as its preceding equation.
+        let tokens = vec![
+            text(0, 1, 10.0),
+            object(1, 20.0, false),
+            text(1, 2, 30.0),
+            text(2, 3, 5.0),
+        ];
+        let lines = fill("A는B", &tokens, 40.0);
+        assert_eq!(lines.len(), 2);
+        assert_eq!((lines[1].start_idx, lines[1].start_token_idx), (1, 2));
+        assert_eq!(line_index_for_token(&lines, 1), 0);
+        assert_eq!(
+            recalc_width_hwp(&tokens, 3, 1, lines[1].start_token_idx),
+            to_hwp(30.0)
+        );
+
+        // Rewinding a whole word brings its inline prefix along, without an earlier object.
+        let tokens = vec![
+            text(0, 1, 20.0),
+            BreakToken::Space {
+                idx: 1,
+                width: 5.0,
+                base_width: 5.0,
+                max_font_size: 12.0,
+                is_fixed_width: false,
+            },
+            object(2, 10.0, false),
+            text(2, 6, 40.0),
+        ];
+        let lines = fill("A BCDE", &tokens, 50.0);
+        assert_eq!(lines.len(), 2);
+        assert_eq!((lines[1].start_idx, lines[1].start_token_idx), (2, 2));
+        assert_eq!(line_index_for_token(&lines, 2), 1);
+    }
+
+    #[test]
+    fn accepted_control_break_precedes_earlier_space_for_breakable_particle() {
+        // An earlier own-line table does not pull a later accepted equation forward.
+        let tokens = vec![
+            text(0, 1, 5.0),
+            object(1, 10.0, true),
+            text(1, 2, 5.0),
+            BreakToken::Space {
+                idx: 2,
+                width: 5.0,
+                base_width: 5.0,
+                max_font_size: 12.0,
+                is_fixed_width: false,
+            },
+            object(3, 10.0, false),
+            text(3, 4, 10.0),
+            text(4, 5, 10.0),
+        ];
+        let text_chars = "A나 는가".chars().collect::<Vec<_>>();
+        let format = |exact| {
+            fill_lines(
+                &tokens,
+                &text_chars,
+                40.0,
+                0.0,
+                (0.0, 0.0),
+                None,
+                1,
+                0,
+                0,
+                None,
+                exact,
+            )
+        };
+        let lines = format(true);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            (
+                lines[0].end_idx,
+                lines[1].start_idx,
+                lines[1].start_token_idx
+            ),
+            (3, 3, 5)
+        );
+        assert_eq!(line_index_for_token(&lines, 1), 0);
+        assert_eq!(line_index_for_token(&lines, 4), 0);
+        assert_eq!(
+            recalc_width_hwp(&tokens, 6, 3, lines[1].start_token_idx),
+            to_hwp(10.0)
+        );
+        let legacy = format(false);
+        assert_eq!(
+            (
+                legacy[0].end_idx,
+                legacy[1].start_idx,
+                legacy[1].start_token_idx
+            ),
+            (2, 3, 4)
+        );
+        assert_eq!(line_index_for_token(&legacy, 4), 1);
+    }
+
+    #[test]
+    fn consecutive_inline_controls_can_split_at_their_token_boundary() {
+        let tokens = vec![
+            text(0, 1, 10.0),
+            object(1, 20.0, true),
+            object(1, 25.0, false),
+            text(1, 2, 10.0),
+        ];
+        let lines = fill("AB", &tokens, 40.0);
+        assert_eq!(lines.len(), 2);
+        assert_eq!((lines[1].start_idx, lines[1].start_token_idx), (1, 2));
+        assert_eq!(line_index_for_token(&lines, 1), 0);
+        assert_eq!(line_index_for_token(&lines, 2), 1);
+
+        // A prior space must not move the already accepted table along with the equation.
+        let tokens = vec![
+            text(0, 1, 10.0),
+            BreakToken::Space {
+                idx: 1,
+                width: 5.0,
+                base_width: 5.0,
+                max_font_size: 12.0,
+                is_fixed_width: false,
+            },
+            object(2, 20.0, true),
+            object(2, 25.0, false),
+            text(2, 3, 10.0),
+        ];
+        let lines = fill("A B", &tokens, 40.0);
+        assert_eq!(lines.len(), 2);
+        assert_eq!((lines[1].start_idx, lines[1].start_token_idx), (2, 3));
+        assert_eq!(line_index_for_token(&lines, 2), 0);
+        assert_eq!(line_index_for_token(&lines, 3), 1);
+
+        // A long text token may then split repeatedly; the equation remains on its first line.
+        let tokens = vec![text(0, 1, 5.0), object(1, 15.0, false), text(1, 5, 40.0)];
+        let lines = fill("ABCDE", &tokens, 30.0);
+        assert!(lines.len() > 1);
+        assert_eq!(lines[1].start_token_idx, 2);
+        assert_eq!(line_index_for_token(&lines, 1), 0);
+    }
+
+    fn styles() -> ResolvedStyleSet {
+        ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_size: 12.0,
+                font_family: "Arial".into(),
+                ..Default::default()
+            }],
+            para_styles: vec![ResolvedParaStyle {
+                english_break_unit: 2,
+                korean_break_unit: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+    fn equation() -> Control {
+        Control::Equation(Box::new(Equation {
+            common: CommonObjAttr {
+                treat_as_char: true,
+                width: 2250,
+                height: 3000,
+                ..Default::default()
+            },
+            script: "x".into(),
+            font_name: "Missing token-cut test face".into(),
+            font_size: 1000,
+            baseline: 70,
+            ..Default::default()
+        }))
+    }
+    #[test]
+    fn raw_control_cuts_and_metric_owners_share_tokens_with_surrogate_text() {
+        let table = Control::Table(Box::new(Table {
+            common: CommonObjAttr {
+                treat_as_char: true,
+                width: 2250,
+                height: 2000,
+                ..Default::default()
+            },
+            row_count: 1,
+            col_count: 1,
+            cells: vec![Cell {
+                width: 2250,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+        let mut para = Paragraph {
+            text: "A😀B".into(),
+            char_offsets: vec![0, 17, 19],
+            char_count: 21,
+            char_shapes: vec![CharShapeRef::default()],
+            controls: vec![table, equation()],
+            ..Default::default()
+        };
+        let raw_offsets = para.char_offsets.clone();
+        reflow_line_segs(&mut para, 50.0, &styles(), 96.0);
+        assert_eq!(
+            para.line_segs[1].text_start, 9,
+            "cut between the table and equation slots"
+        );
+        assert_eq!(inline_table_host_line_index(&para, 0), Some(0));
+        assert_eq!(inline_table_host_line_index(&para, 1), Some(1));
+        assert_eq!(para.line_segs[0].text_height, 2000);
+        assert_eq!(para.line_segs[1].text_height, 3000);
+        assert_eq!(para.char_offsets, raw_offsets);
+
+        let mut forced = Paragraph {
+            text: "A\n😀B".into(),
+            char_offsets: vec![0, 1, 10, 12],
+            char_count: 14,
+            char_shapes: vec![CharShapeRef::default()],
+            controls: vec![equation()],
+            ..Default::default()
+        };
+        reflow_line_segs(&mut forced, 100.0, &styles(), 96.0);
+        assert_eq!(
+            forced.line_segs[1].text_start, 2,
+            "forced line starts at its inline slot, before the surrogate pair"
+        );
+        assert_eq!(inline_table_host_line_index(&forced, 0), Some(1));
+        assert!(forced.line_segs[0].text_height < 3000);
+        assert_eq!(forced.line_segs[1].text_height, 3000);
     }
 }
 
@@ -2510,11 +3004,14 @@ mod grapheme_reflow_tests {
     fn overwide_grapheme_is_not_split_by_long_token_fallback() {
         let chars: Vec<char> = "e\u{301}x".chars().collect();
         let mut line_start = 0;
+        let mut line_start_token = 0;
         let (lines, remaining_width, _) = char_level_break_hwp(
             &chars,
             0,
             chars.len(),
             &mut line_start,
+            &mut line_start_token,
+            0,
             0,
             12.0,
             1000,
@@ -2523,6 +3020,7 @@ mod grapheme_reflow_tests {
             &[1500, 0, 500],
             &[],
             false,
+            true,
             0,
         );
 
@@ -2819,9 +3317,9 @@ fn apply_char_border_line_metrics(
     }
 }
 
-fn line_index_for_text_position(line_breaks: &[LineBreakResult], position: usize) -> usize {
+fn line_index_for_token(line_breaks: &[LineBreakResult], token: usize) -> usize {
     line_breaks
-        .partition_point(|line| line.start_idx <= position)
+        .partition_point(|line| line.start_token_idx <= token)
         .saturating_sub(1)
         .min(line_breaks.len().saturating_sub(1))
 }
@@ -2889,24 +3387,31 @@ fn control_stream_starts(para: &Paragraph, positions: &[usize]) -> Vec<Option<u3
     anchors
 }
 
-fn inline_control_line_index(
+fn folded_control_line_index(
     control: &Control,
     line_breaks: &[LineBreakResult],
     position: usize,
 ) -> usize {
+    let text_owner = || {
+        line_breaks
+            .partition_point(|line| line.start_idx <= position)
+            .saturating_sub(1)
+            .min(line_breaks.len().saturating_sub(1))
+    };
     if matches!(control, Control::Equation(_)) {
-        line_index_for_text_position(line_breaks, position)
+        text_owner()
     } else {
         line_breaks
             .iter()
             .position(|line| line.start_idx == position && line.end_idx == position)
-            .unwrap_or_else(|| line_index_for_text_position(line_breaks, position))
+            .unwrap_or_else(text_owner)
     }
 }
 
 fn apply_inline_control_metrics_to_text_lines(
     para: &Paragraph,
     line_breaks: &[LineBreakResult],
+    control_tokens: &[Option<usize>],
     line_segs: &mut [LineSeg],
     styles: &ResolvedStyleSet,
     dpi: f64,
@@ -2926,13 +3431,21 @@ fn apply_inline_control_metrics_to_text_lines(
         else {
             continue;
         };
-        let position = positions
+        let line_index = control_tokens
             .get(control_index)
             .copied()
-            .unwrap_or_else(|| para.text.chars().count());
-        // Pictures can occupy a line with no text, immediately before a text
-        // line with the same start index. That first line owns the object slot.
-        let line_index = inline_control_line_index(control, line_breaks, position);
+            .flatten()
+            .map(|token| line_index_for_token(line_breaks, token))
+            .unwrap_or_else(|| {
+                folded_control_line_index(
+                    control,
+                    line_breaks,
+                    positions
+                        .get(control_index)
+                        .copied()
+                        .unwrap_or_else(|| para.text.chars().count()),
+                )
+            });
         if let Some(line_seg) = line_segs.get_mut(line_index) {
             apply_inline_control_line_metrics(line_seg, metrics);
         }
@@ -3943,12 +4456,14 @@ mod inline_equation_metric_tests {
 
         let line_breaks = vec![
             LineBreakResult {
+                start_token_idx: 0,
                 start_idx: 0,
                 end_idx: 5,
                 max_font_size: 10.0,
                 has_line_break: false,
             },
             LineBreakResult {
+                start_token_idx: 1,
                 start_idx: 5,
                 end_idx: 10,
                 max_font_size: 10.0,
@@ -3966,6 +4481,7 @@ mod inline_equation_metric_tests {
         apply_inline_control_metrics_to_text_lines(
             &para,
             &line_breaks,
+            &[Some(1)],
             &mut line_segs,
             &ResolvedStyleSet::default(),
             96.0,
@@ -4581,6 +5097,7 @@ mod inline_control_wrap_tests {
                     0,
                     condense,
                     None,
+                    true,
                 );
                 assert_eq!(
                     lines.len(),
@@ -4617,6 +5134,7 @@ mod inline_control_wrap_tests {
                 0,
                 30,
                 None,
+                true,
             );
             assert_eq!(lines.len(), 2, "leading spaces={count}");
             assert_eq!(lines[1].start_idx, count);
@@ -4678,10 +5196,10 @@ mod inline_control_wrap_tests {
             }
             let expected = if has_content { 180 } else { 0 };
             assert_eq!(
-                recalc_space_savings_hwp(&tokens, tokens.len(), 1, 20),
+                recalc_space_savings_hwp(&tokens, tokens.len(), 1, 0, 20),
                 expected
             );
-            assert_eq!(recalc_space_savings_hwp(&tokens, tokens.len(), 3, 20), 0);
+            assert_eq!(recalc_space_savings_hwp(&tokens, tokens.len(), 3, 0, 20), 0);
         }
     }
 
@@ -4731,6 +5249,7 @@ mod inline_control_wrap_tests {
             0,
             20,
             None,
+            true,
         );
         assert_eq!(lines.len(), 1);
         assert_eq!((lines[0].start_idx, lines[0].end_idx), (0, 3));
@@ -4785,6 +5304,7 @@ mod inline_control_wrap_tests {
             0,
             20,
             None,
+            true,
         );
         assert_eq!(lines.len(), 1);
         assert_eq!((lines[0].start_idx, lines[0].end_idx), (0, 28));
@@ -4837,9 +5357,22 @@ mod inline_control_wrap_tests {
             0,
             10,
             None,
+            true,
         );
         assert_eq!(condensed.len(), 1);
-        let natural = fill_lines(&tokens, &chars, 103.5, 0.0, (0.0, 0.0), None, 0, 0, 0, None);
+        let natural = fill_lines(
+            &tokens,
+            &chars,
+            103.5,
+            0.0,
+            (0.0, 0.0),
+            None,
+            0,
+            0,
+            0,
+            None,
+            true,
+        );
         assert_eq!(natural.len(), 2);
     }
 
@@ -5167,8 +5700,7 @@ mod inline_control_wrap_tests {
     }
 
     /// 단어 중간(straddle)에 삽입된 수식도 토큰을 분할해 폭을 예약한다.
-    /// break point(공백)가 없는 줄에서는 수식 바로 뒤 글자에서 잘리지 않고
-    /// (painter anchor 모호성) 그 다음 글자에서 줄이 나뉜다.
+    /// 수식과 뒤 글자가 같은 scalar 위치여도 복원한 raw 슬롯 뒤에서 나눌 수 있다.
     #[test]
     fn reflow_splits_word_token_at_inline_equation() {
         let styles = styles_16px();
@@ -5187,16 +5719,52 @@ mod inline_control_wrap_tests {
         para.char_count = 19;
 
         // 3000(5글자) + 수식 paint ≈4000 = 7000 ≤ 7500이라 수식은 1번째 줄에 배치.
-        // 뒤 5글자(3000)는 넘치므로 글자 단위 분할 — 단 첫 글자는 수식과 같은 줄에
-        // 고정되어 [0,6),[6,10) 으로 나뉜다 ([0,5),[5,10) 가 아님).
+        // 수식 뒤 첫 글자까지는 넘친다. 수식 raw5..13은 앞 줄에 남기고 글자는 다음 줄이다.
+        let mut unknown_slots = para.clone();
         reflow_line_segs(&mut para, 100.0, &styles, 96.0);
 
         assert_eq!(para.line_segs.len(), 2);
-        // 2번째 줄은 문자 6 (UTF-16 6+8=14)에서 시작
-        assert_eq!(para.line_segs[1].text_start, 14);
-        // 수식 anchor(위치 5)는 1번째 줄 [0,6) 안 → 1번째 줄만 높이 보정
+        assert_eq!(para.line_segs[1].text_start, 13);
+        assert_eq!(inline_table_host_line_index(&para, 0), Some(0));
+        // 실제 제어 슬롯 소유에 따라 첫 줄만 높이 보정
         assert!(para.line_segs[0].line_height >= 5000);
         assert_eq!(para.line_segs[1].line_height, 1200);
+        let mut partial_slots = unknown_slots.clone();
+        partial_slots.controls.push(tac_equation(1000, 1200));
+        // 끝 갭 16은 제어 한 개와 대응하지 않는다. 앞 슬롯만 유효한 경우도
+        // 전체 scalar fallback을 써서 앞 수식 다음 첫 글자를 기존처럼 유지한다.
+        partial_slots.char_count += 16;
+        let positions = partial_slots.control_text_positions();
+        assert_eq!(positions, vec![5, 10]);
+        assert_eq!(
+            control_stream_starts(&partial_slots, &positions),
+            vec![Some(5), None]
+        );
+        let mut all_unknown = partial_slots.clone();
+        all_unknown.control_mask |= 1 << 4;
+        reflow_line_segs(&mut partial_slots, 100.0, &styles, 96.0);
+        reflow_line_segs(&mut all_unknown, 100.0, &styles, 96.0);
+        let geometry = |p: &Paragraph| {
+            p.line_segs
+                .iter()
+                .map(|seg| {
+                    (
+                        seg.text_start,
+                        seg.line_height,
+                        seg.text_height,
+                        seg.baseline_distance,
+                        seg.vertical_pos,
+                        seg.line_spacing,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(geometry(&partial_slots), geometry(&all_unknown));
+        assert_eq!(partial_slots.line_segs[1].text_start, 14);
+        unknown_slots.control_mask |= 1 << 4; // controls 배열에 없는 inline 마커가 있으면 추정하지 않는다.
+        reflow_line_segs(&mut unknown_slots, 100.0, &styles, 96.0);
+        assert_eq!(unknown_slots.line_segs[1].text_start, 14);
+        assert!(unknown_slots.line_segs[0].line_height >= 5000);
     }
 
     /// 한컴: 글자처럼 취급한 표의 줄 높이는 바깥 여백 위/아래를 포함하고, 표가 줄 폭을
@@ -5803,7 +6371,7 @@ fn reflow_line_segs_with_wrap_exclusions(
     let mut control_positions = para.control_text_positions();
     let control_stream_starts = control_stream_starts(para, &control_positions);
     crate::renderer::ruby::project_control_positions(para, &mut control_positions);
-    let mut inline_controls: Vec<(usize, i32, bool)> = para
+    let mut inline_controls: Vec<(usize, i32, bool, usize)> = para
         .controls
         .iter()
         .enumerate()
@@ -5825,10 +6393,10 @@ fn reflow_line_segs_with_wrap_exclusions(
                 .copied()
                 .unwrap_or(text_len)
                 .min(text_len);
-            (pos, width, own_line)
+            (pos, width, own_line, ci)
         })
         .collect();
-    inline_controls.sort_by_key(|&(pos, _, _)| pos);
+    inline_controls.sort_by_key(|&(pos, _, _, _)| pos);
 
     // 토큰화 → 줄 채움 → LineSeg 생성
     let mut tokens = tokenize_paragraph_with_controls(
@@ -5840,8 +6408,33 @@ fn reflow_line_segs_with_wrap_exclusions(
         english_break_unit,
         korean_break_unit,
         auto_spacing,
-        &inline_controls,
+        &inline_controls
+            .iter()
+            .map(|&(p, w, o, _)| (p, w, o))
+            .collect::<Vec<_>>(),
     );
+    let mut control_tokens = vec![None; para.controls.len()];
+    for ((ti, _), (_, _, _, ci)) in tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| matches!(token, BreakToken::InlineControl { .. }))
+        .zip(&inline_controls)
+    {
+        control_tokens[*ci] = control_stream_starts
+            .get(*ci)
+            .copied()
+            .flatten()
+            .map(|_| ti);
+    }
+    // 합성 painter도 같은 원시 슬롯 계약을 쓴다. 일부만 복원되거나 가시
+    // offset이 없으면 문단 전체를 기존 scalar 계약으로 유지한다.
+    let exact_control_cuts = !para.char_offsets.is_empty()
+        && inline_controls
+            .iter()
+            .all(|(_, _, _, ci)| control_tokens[*ci].is_some());
+    if !exact_control_cuts {
+        control_tokens.fill(None);
+    }
     measure_footnote_number_tokens(&mut tokens, para, styles);
     // 1차: 전폭 채움. 어울림 개체가 있으면 여기서 앵커 줄 y 를 추정해 배제
     // 계획을 만들고, 2차 채움과 seg 지오메트리가 같은 계산으로 wrap zone 을 쓴다.
@@ -5876,6 +6469,7 @@ fn reflow_line_segs_with_wrap_exclusions(
             english_break_unit,
             condense_min_space,
             None,
+            exact_control_cuts,
         )
     };
     let margins_px = para_style
@@ -5929,29 +6523,48 @@ fn reflow_line_segs_with_wrap_exclusions(
             english_break_unit,
             condense_min_space,
             Some(plan),
+            exact_control_cuts,
         ),
         _ => line_breaks_full,
     };
     let mut inline_line_starts = vec![None; line_breaks.len()];
-    for (ci, control) in para.controls.iter().enumerate() {
-        let Some(anchor) = control_stream_starts.get(ci).copied().flatten() else {
-            continue;
-        };
-        if matches!(control, Control::Form(_))
-            || ruby_control_metrics(para, ci, styles, dpi)
-                .or_else(|| inline_control_metrics_hwp(control))
-                .is_none()
-        {
-            continue;
+    if exact_control_cuts {
+        for (ci, token) in control_tokens.iter().enumerate() {
+            let Some(token) = *token else {
+                continue;
+            };
+            let Some(anchor) = control_stream_starts.get(ci).copied().flatten() else {
+                continue;
+            };
+            let owner = line_index_for_token(&line_breaks, token);
+            if line_breaks
+                .get(owner)
+                .is_some_and(|line| line.start_token_idx == token)
+            {
+                inline_line_starts[owner] = Some(anchor);
+            }
         }
-        let position = control_positions.get(ci).copied().unwrap_or(text_len);
-        let owner = inline_control_line_index(control, &line_breaks, position);
-        if line_breaks
-            .get(owner)
-            .is_some_and(|line| line.start_idx == position)
-        {
-            let start = &mut inline_line_starts[owner];
-            *start = Some(start.map_or(anchor, |previous: u32| previous.min(anchor)));
+    } else {
+        for (ci, control) in para.controls.iter().enumerate() {
+            let Some(anchor) = control_stream_starts.get(ci).copied().flatten() else {
+                continue;
+            };
+            if matches!(control, Control::Form(_))
+                || ruby_control_metrics(para, ci, styles, dpi)
+                    .or_else(|| inline_control_metrics_hwp(control))
+                    .is_none()
+            {
+                continue;
+            }
+            let position = control_positions.get(ci).copied().unwrap_or(text_len);
+            let owner = folded_control_line_index(control, &line_breaks, position);
+            if line_breaks
+                .get(owner)
+                .is_some_and(|line| line.start_idx == position)
+            {
+                let start = &mut inline_line_starts[owner];
+                *start = Some(start.map_or(anchor, |previous: u32| previous.min(anchor)));
+            }
         }
     }
     let mut new_line_segs: Vec<LineSeg> = Vec::new();
@@ -6016,7 +6629,14 @@ fn reflow_line_segs_with_wrap_exclusions(
 
     // Reserve each object's height on its actual line. Applying the largest
     // picture to the first line creates a blank band above wrapped pictures.
-    apply_inline_control_metrics_to_text_lines(para, &line_breaks, &mut new_line_segs, styles, dpi);
+    apply_inline_control_metrics_to_text_lines(
+        para,
+        &line_breaks,
+        &control_tokens,
+        &mut new_line_segs,
+        styles,
+        dpi,
+    );
 
     // 어울림 배제 계획이 있으면 줄별 wrap zone 을 seg 에 기록한다 — 채움(2차
     // fill_lines)과 동일한 결정적 대역 계산이라 텍스트가 기록 폭을 넘지 않는다.
@@ -6136,11 +6756,9 @@ fn apply_hancom_line_geometry(
             )
         })
         .unwrap_or((0, 0.0, false));
-    // 어울림 계획 문단은 계획의 줄 좌표(문단 여백 기준)를 렌더러가 그대로 재생한다 —
-    // 그 문단의 줄 시작은 건드리지 않는다.
-    let wrap_planned = narrowed.iter().any(|n| *n);
+    // 어울림으로 좁힌 줄만 계획 좌표를 보존하고, 배제가 끝난 줄은 문단 여백을 쓴다.
     for (i, seg) in segs.iter_mut().enumerate() {
-        if !wrap_planned {
+        if !narrowed.get(i).copied().unwrap_or(false) {
             seg.column_start = margin_hu;
         }
         let mut tag = seg.tag & !(LineSeg::TAG_INDENTATION | LineSeg::TAG_PARAGRAPH_HEAD);
@@ -6896,6 +7514,7 @@ mod hancom_break_rule_tests {
                 0,
                 0,
                 None,
+                true,
             );
             assert_eq!(lines.len(), 1);
             assert_eq!(lines[0].end_idx, 1);
@@ -6987,7 +7606,19 @@ mod hancom_break_rule_tests {
         // 10px 글자 세 개는 정확히 2250 HU다. 1 HU라도 부족하면 세 번째 글자를 넘긴다.
         for delta_hwp in -2..=2 {
             let width = f64::from(2250 + delta_hwp) / 75.0;
-            let lines = fill_lines(&toks, &chars, width, 0.0, (0.0, 0.0), None, 1, 0, 0, None);
+            let lines = fill_lines(
+                &toks,
+                &chars,
+                width,
+                0.0,
+                (0.0, 0.0),
+                None,
+                1,
+                0,
+                0,
+                None,
+                true,
+            );
             assert_eq!(lines[0].end_idx, if delta_hwp < 0 { 2 } else { 3 });
         }
     }
@@ -7004,7 +7635,19 @@ mod hancom_break_rule_tests {
             let (chars, toks) = tokens(text, &st, 0, 1);
             let (_, prefix_toks) = tokens(prefix, &st, 0, 1);
             let width = prefix_toks.iter().map(text_width).sum::<f64>() + 0.1;
-            let lines = fill_lines(&toks, &chars, width, 0.0, (0.0, 0.0), None, 1, 0, 0, None);
+            let lines = fill_lines(
+                &toks,
+                &chars,
+                width,
+                0.0,
+                (0.0, 0.0),
+                None,
+                1,
+                0,
+                0,
+                None,
+                true,
+            );
             let first: String = chars[lines[0].start_idx..lines[0].end_idx].iter().collect();
             assert_eq!(first, expected_first, "{text}, width={width}");
         }
@@ -7021,7 +7664,19 @@ mod hancom_break_rule_tests {
                 })
                 .sum::<f64>()
                 + 0.1;
-            let lines = fill_lines(&toks, &chars, width, 0.0, (0.0, 0.0), None, 1, 0, 0, None);
+            let lines = fill_lines(
+                &toks,
+                &chars,
+                width,
+                0.0,
+                (0.0, 0.0),
+                None,
+                1,
+                0,
+                0,
+                None,
+                true,
+            );
             assert_eq!(lines[1].start_idx, 4, "{text}");
         }
     }
@@ -7032,7 +7687,19 @@ mod hancom_break_rule_tests {
         {
             let text = format!("가나 다라{separator}마바");
             let (chars, toks) = tokens(&text, &st, 0, 0);
-            let lines = fill_lines(&toks, &chars, 90.0, 0.0, (0.0, 0.0), None, 0, 0, 0, None);
+            let lines = fill_lines(
+                &toks,
+                &chars,
+                90.0,
+                0.0,
+                (0.0, 0.0),
+                None,
+                0,
+                0,
+                0,
+                None,
+                true,
+            );
             assert_eq!(lines.len(), 2, "{text:?}");
             assert_eq!(lines[1].start_idx, next_start, "{text:?}");
         }
@@ -7050,11 +7717,12 @@ mod hancom_break_rule_tests {
                 0,
                 condense,
                 None,
+                true,
             );
             assert_eq!(lines.len(), 2, "condense={condense}");
             assert_eq!(lines[1].start_idx, 6);
         }
-        assert_eq!(recalc_space_savings_hwp(&toks, toks.len(), 0, 75), 0);
+        assert_eq!(recalc_space_savings_hwp(&toks, toks.len(), 0, 0, 75), 0);
 
         // 넓은 줄의 고정 공백 폭은 줄 나눔 여부나 압축 설정에 좌우되지 않는다.
         let space_widths: Vec<f64> = toks
@@ -7066,7 +7734,19 @@ mod hancom_break_rule_tests {
             .collect();
         assert_eq!(space_widths, [4.0, 4.0]);
         let (chars, toks) = tokens("가나 다라 마바", &st, 0, 0);
-        let lines = fill_lines(&toks, &chars, 102.0, 0.0, (0.0, 0.0), None, 0, 0, 75, None);
+        let lines = fill_lines(
+            &toks,
+            &chars,
+            102.0,
+            0.0,
+            (0.0, 0.0),
+            None,
+            0,
+            0,
+            75,
+            None,
+            true,
+        );
         assert_eq!(lines.len(), 1);
     }
 
@@ -7086,7 +7766,19 @@ mod hancom_break_rule_tests {
         ] {
             let text = format!("가나{spaces}다라");
             let (chars, toks) = tokens(&text, &st, 0, 0);
-            let lines = fill_lines(&toks, &chars, width, 0.0, (0.0, 0.0), None, 0, 0, 0, None);
+            let lines = fill_lines(
+                &toks,
+                &chars,
+                width,
+                0.0,
+                (0.0, 0.0),
+                None,
+                0,
+                0,
+                0,
+                None,
+                true,
+            );
             assert_eq!(
                 lines.iter().map(|line| line.start_idx).collect::<Vec<_>>(),
                 starts,
@@ -7126,11 +7818,11 @@ mod hancom_break_rule_tests {
             st.char_styles[2].letter_spacing = sign * 1.5;
             let toks = tokenize_paragraph(&chars, &offsets, &shapes, &st, 0, 0);
             assert_eq!(
-                recalc_space_savings_hwp(&toks, toks.len(), 0, 20),
+                recalc_space_savings_hwp(&toks, toks.len(), 0, 0, 20),
                 savings.iter().sum::<i32>()
             );
             assert_eq!(
-                recalc_space_savings_hwp(&toks, toks.len(), 2, 20),
+                recalc_space_savings_hwp(&toks, toks.len(), 2, 0, 20),
                 savings[1]
             );
             let natural: i32 = toks
@@ -7154,6 +7846,7 @@ mod hancom_break_rule_tests {
                 0,
                 20,
                 None,
+                true,
             );
             assert_eq!(lines.len(), 1, "tracking sign={sign}");
         }
@@ -7186,7 +7879,7 @@ mod hancom_break_rule_tests {
             for condense in [25, 50, 75] {
                 let saving = interior * i32::from(condense) / 100;
                 assert_eq!(
-                    recalc_space_savings_hwp(&toks, toks.len(), 0, condense),
+                    recalc_space_savings_hwp(&toks, toks.len(), 0, 0, condense),
                     saving
                 );
                 let width = natural - saving * (leading as i32 + 1) + 1;
@@ -7201,6 +7894,7 @@ mod hancom_break_rule_tests {
                     0,
                     condense,
                     None,
+                    true,
                 );
                 assert_eq!(lines.len(), 2, "leading={leading}, condense={condense}");
                 assert_eq!(lines[0].start_idx, 0);
@@ -7243,6 +7937,7 @@ mod hancom_break_rule_tests {
                     0,
                     condense,
                     None,
+                    true,
                 );
                 let first = usize::from(hard_break);
                 assert_eq!(lines.len(), first + 1 + usize::from(blank_line), "{text:?}");
@@ -7453,6 +8148,7 @@ mod hancom_break_rule_tests {
                 0,
                 0,
                 None,
+                true,
             );
             let actual: Vec<String> = lines
                 .iter()
@@ -7487,6 +8183,7 @@ mod hancom_break_rule_tests {
                 0,
                 0,
                 None,
+                true,
             )
         };
         assert_eq!(layout(&ps, width, 0.0).len(), 2);
@@ -7537,10 +8234,71 @@ mod hancom_break_rule_tests {
                 0,
                 0,
                 None,
+                true,
             );
             assert_eq!(lines.len(), 2, "kind={tab_type}: {lines:?}");
             assert_eq!((lines[0].end_idx, lines[1].start_idx), (5, 5));
             assert_eq!(chars[lines[1].start_idx], 'B');
+        }
+    }
+
+    #[test]
+    fn auto_right_tab_uses_absolute_body_edge_with_a_left_margin() {
+        use crate::renderer::TabStop;
+
+        let text: Vec<char> = "A\t\tB".chars().collect();
+        let text_token = |start_idx, width| BreakToken::Text {
+            start_idx,
+            end_idx: start_idx + 1,
+            width,
+            max_font_size: 16.0,
+            char_widths: Vec::new(),
+            trailing_spacing: 0.0,
+            char_spacings: Vec::new(),
+        };
+        for margin in [0.0, 20.0, 40.0] {
+            let body_width = 100.0;
+            let ps = ResolvedParaStyle {
+                margin_left: margin,
+                auto_tab_right: true,
+                tab_stops: vec![TabStop {
+                    position: margin + 20.0,
+                    tab_type: 0,
+                    fill_type: 0,
+                }],
+                ..Default::default()
+            };
+            let tokens = vec![
+                text_token(0, body_width - 10.0),
+                BreakToken::Tab {
+                    idx: 1,
+                    max_font_size: 16.0,
+                },
+                BreakToken::Tab {
+                    idx: 2,
+                    max_font_size: 16.0,
+                },
+                text_token(3, 10.0),
+            ];
+            let lines = fill_lines(
+                &tokens,
+                &text,
+                body_width,
+                0.0,
+                (0.0, 0.0),
+                Some(&ps),
+                1,
+                0,
+                0,
+                None,
+                true,
+            );
+            assert_eq!(lines.len(), 2, "margin={margin}: {lines:?}");
+            assert_eq!(
+                (lines[0].end_idx, lines[1].start_idx),
+                (2, 2),
+                "the first tab stays at the prior body's right edge"
+            );
         }
     }
 
@@ -7608,6 +8366,7 @@ mod hancom_break_rule_tests {
                         0,
                         0,
                         None,
+                        true,
                     );
                     assert_eq!(lines.len(), 2, "{spacing}/{mixed}/{two_stops}: {lines:?}");
                     assert_eq!(lines[0].end_idx, text.find('\n').unwrap() + 1);
@@ -7626,7 +8385,19 @@ mod hancom_break_rule_tests {
         let text = "aa bbbbbbbbbbbbbbbb";
         for (ebu, splits) in [(0u8, false), (2u8, true)] {
             let (chars, toks) = tokens(text, &st, ebu, 1);
-            let lines = fill_lines(&toks, &chars, 80.0, 0.0, (0.0, 0.0), None, 1, ebu, 0, None);
+            let lines = fill_lines(
+                &toks,
+                &chars,
+                80.0,
+                0.0,
+                (0.0, 0.0),
+                None,
+                1,
+                ebu,
+                0,
+                None,
+                true,
+            );
             assert_eq!(lines[0].end_idx > 3, splits, "ebu={ebu}: {lines:?}");
         }
     }
@@ -7647,6 +8418,7 @@ mod hancom_break_rule_tests {
             0,
             0,
             None,
+            true,
         );
         // `,` 는 줄 머리에 올 수 없다 — `라,` 가 함께 다음 줄로 간다.
         assert_eq!((lines[0].end_idx, lines[1].start_idx), (3, 3), "{lines:?}");
@@ -7671,6 +8443,7 @@ mod hancom_break_rule_tests {
                     0,
                     0,
                     None,
+                    true,
                 );
                 assert_eq!(
                     (lines[0].end_idx, lines[1].start_idx),
@@ -7700,6 +8473,7 @@ mod hancom_break_rule_tests {
                     0,
                     0,
                     None,
+                    true,
                 );
                 assert_eq!(
                     (lines[0].end_idx, lines[1].start_idx),
@@ -7734,6 +8508,7 @@ mod hancom_break_rule_tests {
             0,
             0,
             None,
+            true,
         );
         assert_eq!(lines[0].end_idx, 4, "{lines:?}");
     }
@@ -7763,6 +8538,7 @@ mod hancom_break_rule_tests {
             0,
             0,
             None,
+            true,
         );
         assert_eq!(lines[0].end_idx, 43, "{lines:?}");
     }
@@ -8087,6 +8863,7 @@ mod mac_flow_rule_tests {
             0,
             0,
             None,
+            true,
         );
         assert_eq!(lines[0].end_idx, 2, "{lines:?}");
     }
@@ -8115,6 +8892,7 @@ mod mac_flow_rule_tests {
             0,
             0,
             None,
+            true,
         );
         let headed = fill_lines(
             &toks,
@@ -8127,6 +8905,7 @@ mod mac_flow_rule_tests {
             0,
             0,
             None,
+            true,
         );
         assert_eq!(plain[0].end_idx, 5);
         assert_eq!(headed[0].end_idx, 4);

@@ -1,0 +1,477 @@
+{
+  "status": "PASS_CURRENT_V37_VERIFIED_COHORTS",
+  "science": {
+    "original_pages": 4,
+    "original_bands": 40,
+    "pixel_exact_to_normal": true,
+    "page_hashes": [
+      {
+        "page": 1,
+        "normal_and_late_png_sha256": "90c0bdbf6cbd4f6f1f574aa9c89d0b7673cd04bfa69bd3f1913f4154f2e7a59f"
+      },
+      {
+        "page": 2,
+        "normal_and_late_png_sha256": "81766f7874ea75d276d5b4f0b05bcfae1c0f9ddebfcc67b39583b71a8c3d9576"
+      },
+      {
+        "page": 3,
+        "normal_and_late_png_sha256": "673bb0f534df2648ca9e4c5d4f93ac66404728b32c428649e01c3e689e7d9606"
+      },
+      {
+        "page": 4,
+        "normal_and_late_png_sha256": "c2b8d2330b89c3e71dcb175df7edb1f2162c679129c43da9eb7b39831322f072"
+      }
+    ],
+    "capture_receipt": {
+      "campaign_artifact_label": "studio/v36-late/exam-science/capture-result.json",
+      "sha256": "e4d872a26d601fc9b3149217a70276362597a30d53705ddb849399380ed7c73b"
+    }
+  },
+  "english": {
+    "pixel_identity_status": "FAILED_P1_P4_P6",
+    "strict_identity_script": "FAILED; preserved as a failed check, not relabelled PASS",
+    "failure_log": {
+      "campaign_artifact_label": "logs/studio-late-v36.log",
+      "sha256": "062a87936989a308efb39a0f9f101f554c70c4e0ae1f92f8f24b973cad3ad6b0"
+    },
+    "acceptance_basis": "Unchanged <1% original fixed-band scorer plus production same-document font-refresh/runtime/cohort contract. Pixel identity across distinct physical-style cohorts is not asserted.",
+    "normal_cohort": "Imported Times New Roman regular only; actual system B/I/BI absent.",
+    "late_cohort": "Initial automatic OS font loading includes physical Times New Roman Bold/Italic/Bold Italic; same document instance/generation/digest persists through production font-files-imported refresh.",
+    "physical_added_faces": [
+      {
+        "family": "Times New Roman",
+        "style": "Bold",
+        "provider": "desktop",
+        "source_font_label": "Times New Roman Bold.ttf",
+        "sha256": "50f5b1f27b7d34621090e437e8b1dd4510a22d2823fc876b3286bed327b64bbb"
+      },
+      {
+        "family": "Times New Roman",
+        "style": "Italic",
+        "provider": "desktop",
+        "source_font_label": "Times New Roman Italic.ttf",
+        "sha256": "7bb99c3a67697fbce15ab66d806d9a2151432ce1dab2eaba4156e1251da486c0"
+      },
+      {
+        "family": "Times New Roman",
+        "style": "Bold Italic",
+        "provider": "desktop",
+        "source_font_label": "Times New Roman Bold Italic.ttf",
+        "sha256": "906157e8294fdf168d83002eaabde01c2d30fc3f44977be89e33fa22f262002a"
+      }
+    ],
+    "changed_original_pages": [
+      {
+        "page": 1,
+        "changed_rgb_pixels": 3118,
+        "changed_bbox": [
+          1581,
+          1805,
+          1801,
+          1832
+        ],
+        "line_count_before_after": [
+          123,
+          123
+        ],
+        "width_run_differences": [
+          {
+            "index": 60,
+            "para": 0,
+            "cell": {
+              "pp": 52,
+              "path": [
+                [
+                  0,
+                  1,
+                  0
+                ]
+              ]
+            },
+            "differences": {
+              "runs": [
+                [
+                  [
+                    761.7,
+                    99.9,
+                    0,
+                    15
+                  ]
+                ],
+                [
+                  [
+                    758.5,
+                    106.2,
+                    0,
+                    15
+                  ]
+                ]
+              ],
+              "tx0": [
+                761.7,
+                758.5
+              ],
+              "tx1": [
+                861.6,
+                864.7
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "page": 4,
+        "changed_rgb_pixels": 18356,
+        "changed_bbox": [
+          1261,
+          765,
+          1572,
+          2430
+        ],
+        "line_count_before_after": [
+          100,
+          100
+        ],
+        "width_run_differences": [
+          {
+            "index": 48,
+            "para": 2,
+            "cell": {
+              "pp": 181,
+              "path": [
+                [
+                  1,
+                  0,
+                  2
+                ]
+              ]
+            },
+            "differences": {
+              "runs": [
+                [
+                  [
+                    608.4,
+                    90.1,
+                    0,
+                    13
+                  ]
+                ],
+                [
+                  [
+                    608.4,
+                    94.5,
+                    0,
+                    13
+                  ]
+                ]
+              ],
+              "tx1": [
+                698.5,
+                702.9
+              ]
+            }
+          },
+          {
+            "index": 52,
+            "para": 6,
+            "cell": {
+              "pp": 181,
+              "path": [
+                [
+                  1,
+                  0,
+                  6
+                ]
+              ]
+            },
+            "differences": {
+              "runs": [
+                [
+                  [
+                    608.4,
+                    66,
+                    0,
+                    9
+                  ]
+                ],
+                [
+                  [
+                    608.4,
+                    72.1,
+                    0,
+                    9
+                  ]
+                ]
+              ],
+              "tx1": [
+                674.4,
+                680.5
+              ]
+            }
+          },
+          {
+            "index": 56,
+            "para": 9,
+            "cell": {
+              "pp": 181,
+              "path": [
+                [
+                  1,
+                  0,
+                  9
+                ]
+              ]
+            },
+            "differences": {
+              "runs": [
+                [
+                  [
+                    608.4,
+                    134.2,
+                    0,
+                    20
+                  ]
+                ],
+                [
+                  [
+                    608.4,
+                    146.2,
+                    0,
+                    20
+                  ]
+                ]
+              ],
+              "tx1": [
+                742.6,
+                754.6
+              ]
+            }
+          },
+          {
+            "index": 81,
+            "para": 2,
+            "cell": {
+              "pp": 189,
+              "path": [
+                [
+                  0,
+                  0,
+                  2
+                ]
+              ]
+            },
+            "differences": {
+              "runs": [
+                [
+                  [
+                    605.4,
+                    98.3,
+                    0,
+                    12
+                  ]
+                ],
+                [
+                  [
+                    605.4,
+                    105.2,
+                    0,
+                    12
+                  ]
+                ]
+              ],
+              "tx1": [
+                703.8,
+                710.6
+              ]
+            }
+          },
+          {
+            "index": 84,
+            "para": 5,
+            "cell": {
+              "pp": 189,
+              "path": [
+                [
+                  0,
+                  0,
+                  5
+                ]
+              ]
+            },
+            "differences": {
+              "runs": [
+                [
+                  [
+                    605.4,
+                    110,
+                    0,
+                    18
+                  ]
+                ],
+                [
+                  [
+                    605.4,
+                    113.4,
+                    0,
+                    18
+                  ]
+                ]
+              ],
+              "tx1": [
+                715.4,
+                718.9
+              ]
+            }
+          },
+          {
+            "index": 87,
+            "para": 8,
+            "cell": {
+              "pp": 189,
+              "path": [
+                [
+                  0,
+                  0,
+                  8
+                ]
+              ]
+            },
+            "differences": {
+              "runs": [
+                [
+                  [
+                    605.4,
+                    91.5,
+                    0,
+                    14
+                  ]
+                ],
+                [
+                  [
+                    605.4,
+                    101.9,
+                    0,
+                    14
+                  ]
+                ]
+              ],
+              "tx1": [
+                696.9,
+                707.3
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "page": 6,
+        "changed_rgb_pixels": 5933,
+        "changed_bbox": [
+          276,
+          548,
+          1006,
+          1059
+        ],
+        "line_count_before_after": [
+          167,
+          167
+        ],
+        "width_run_differences": [
+          {
+            "index": 6,
+            "para": 228,
+            "cell": null,
+            "differences": {
+              "runs": [
+                [
+                  [
+                    132.2,
+                    96.4,
+                    127,
+                    142
+                  ],
+                  [
+                    228.7,
+                    54.6,
+                    142,
+                    149
+                  ],
+                  [
+                    283.3,
+                    264.1,
+                    149,
+                    189
+                  ]
+                ],
+                [
+                  [
+                    132.2,
+                    96.7,
+                    127,
+                    142
+                  ],
+                  [
+                    229,
+                    53.8,
+                    142,
+                    149
+                  ],
+                  [
+                    282.8,
+                    264.7,
+                    149,
+                    189
+                  ]
+                ]
+              ],
+              "tx1": [
+                547.4,
+                547.5
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "changed_width_runs": 8,
+    "line_contract": "Line counts, retained line boxes and Y positions unchanged; eight run widths/origins change with actual style faces.",
+    "original_bands": 80,
+    "original_status": "PASS",
+    "reopened_bands": 80,
+    "reopened_status": "PASS_PER_RETAINED_RECEIPT",
+    "worst_pct": 0.5568566224303929,
+    "quantified_receipt": {
+      "campaign_artifact_label": "review/studio-v36-late-english-first-divergence/quantified.json",
+      "sha256": "5369444e48d5110fd2689f3be6e196f19c2903ced97205c04d5a1f72f9a44da7"
+    },
+    "capture_receipt": {
+      "campaign_artifact_label": "studio/v36-late/exam-english/capture-result.json",
+      "sha256": "97d8bb5a07ba8003b325ac8fb3db9c41e0bf4118f20b82e5458429507483516c"
+    },
+    "band_matrix": "late-english-band-matrix.json"
+  },
+  "math_late": {
+    "status": "PASS",
+    "pages": 20,
+    "original_bands": 200,
+    "originals_pixel_exact_to_normal": true,
+    "capture_receipt": {
+      "campaign_artifact_label": "studio/v36-late-math/math-exam/capture-result.json",
+      "sha256": "182a6cbff455256b989b5fa6488e4cbcefde76985509fde8e634bb5fd1394d2c"
+    }
+  },
+  "bounded_fallback": "PASS_WITH_PREEXISTING_LIMITATION",
+  "wasm_sha256": "6255361c0445bba031707ce2fcda4a7ca5148c520288a6044be3bf52e56dce5a",
+  "final_lifecycle_summary": {
+    "path": "reviews/late-lifecycle.json",
+    "sha256": "f281ce37717e3da06e0bbc8cc4ccc1f051156b5db3167e742c062585ce00def3"
+  },
+  "current_lifecycle_verification": {
+    "campaign_artifact_label": "review/studio-v37-late-lifecycle/verification.json",
+    "sha256": "7295fca9777dd88b6a2f6f7b044a5b9ad142df4845222b5936c06a9890fd8a36"
+  },
+  "current_fixed_band_report": {
+    "campaign_artifact_label": "studio/v37-late/fixed-band-report.json",
+    "sha256": "5a8f1b69bd08cdd070c8c546bf912a1ba242db21dbecf814145ba445dc2e4907"
+  }
+}

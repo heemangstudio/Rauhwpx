@@ -1,0 +1,359 @@
+{
+  "status": "PASS",
+  "versions": "Browser v37 TypeScript renderer; unchanged native/Rust/WASM v36.",
+  "scope": "All32 original PNGs byte-exact to visually accepted v36 originals. Reuse the v36 Science/English and Math visual receipts only on this exact proof. All320 original fixed bands freshly scored with unchanged scorer.",
+  "source_verification": {
+    "campaign_artifact_label": "review/studio-v37-normal-lifecycle/verification.json",
+    "sha256": "be952999ffcf10a28dc7dd08966d058276c549552bcbfe32559b3f53ba82298b"
+  },
+  "fixed_band_report": {
+    "campaign_artifact_label": "studio/v37-normal/fixed-band-report.json",
+    "sha256": "f2474523c038b744241b838db66907d2da4fd47825457ec0eb46f2c06249e43e"
+  },
+  "captures": 96,
+  "original_hash_proof": [
+    {
+      "document": "exam-science",
+      "page": 1,
+      "v36_v37_original_png_sha256": "90c0bdbf6cbd4f6f1f574aa9c89d0b7673cd04bfa69bd3f1913f4154f2e7a59f",
+      "official_png_sha256": "cb3be261a8b42ed847d466e583bd7fcff3bde1cb9246e0676bafbf3e03020568"
+    },
+    {
+      "document": "exam-science",
+      "page": 2,
+      "v36_v37_original_png_sha256": "81766f7874ea75d276d5b4f0b05bcfae1c0f9ddebfcc67b39583b71a8c3d9576",
+      "official_png_sha256": "d53d7e23aad60d57064af940b9c2154b5e581439422735744220d3b76b08773c"
+    },
+    {
+      "document": "exam-science",
+      "page": 3,
+      "v36_v37_original_png_sha256": "673bb0f534df2648ca9e4c5d4f93ac66404728b32c428649e01c3e689e7d9606",
+      "official_png_sha256": "08f51d91d77fcb059d0b8c6ee366abe5fb29a1a6695a0b1fc173100758ae5918"
+    },
+    {
+      "document": "exam-science",
+      "page": 4,
+      "v36_v37_original_png_sha256": "c2b8d2330b89c3e71dcb175df7edb1f2162c679129c43da9eb7b39831322f072",
+      "official_png_sha256": "fce5d102224b4f7f7c3e91355e166abf6f123ba5df4f31ca6a9465786dbe2f34"
+    },
+    {
+      "document": "exam-english",
+      "page": 1,
+      "v36_v37_original_png_sha256": "b273443837522a5d61a4411e3ff47247f749c2172af0afa54f4e9931d682d740",
+      "official_png_sha256": "23dc08e21f7e22d49f529cd1e6be6d29e6c1934d05994b60647c15723152fe86"
+    },
+    {
+      "document": "exam-english",
+      "page": 2,
+      "v36_v37_original_png_sha256": "aadbb35a227e8f963d483f38b0f66c78a91be867b03e46ca85664e3a95d87fd4",
+      "official_png_sha256": "8c826238b248c3410147c7ab7cbd4ac252f69e137475e27ddb2605516ce6d0a8"
+    },
+    {
+      "document": "exam-english",
+      "page": 3,
+      "v36_v37_original_png_sha256": "0c458230a16c8638e73d2bad928afb5aebac116f22655b3de472fed92e372c99",
+      "official_png_sha256": "5d3648caeb09d3cdaddeae91be29139f20127e35f67e02a4ed681cee6eceb150"
+    },
+    {
+      "document": "exam-english",
+      "page": 4,
+      "v36_v37_original_png_sha256": "55348cde36d66ca871161bf493eaecbd1d8c5d37175c289caba840b925e19d2c",
+      "official_png_sha256": "5a45c1df2a857f211f2e311d203b8c6e7d0e5e06d6f118f6e0d088e6989221be"
+    },
+    {
+      "document": "exam-english",
+      "page": 5,
+      "v36_v37_original_png_sha256": "d85657f38143f537243f953800e539b99d998c90594e663f19e656784c7a7542",
+      "official_png_sha256": "25f8d9234f4328b70a218934eba6b9e13f1cac78209e5010bad78b7c8d54ff0d"
+    },
+    {
+      "document": "exam-english",
+      "page": 6,
+      "v36_v37_original_png_sha256": "aa5dbc84e2783ca8ebaee866e89be867ac9e1e3afa562ebacc6182dd3735c7c8",
+      "official_png_sha256": "65b5c9e2fa8bfb5ebee716203661172c1dc8329b5da9120237d04ba92b2f23c8"
+    },
+    {
+      "document": "exam-english",
+      "page": 7,
+      "v36_v37_original_png_sha256": "5296f84a650ab023465d7b31b9982d16c6352655e7bb08d4df6959c68749c06b",
+      "official_png_sha256": "2cdfe15f7b39fcebd6a93244f2cc8ea1030c5191066ade751fe72032cbfc7f06"
+    },
+    {
+      "document": "exam-english",
+      "page": 8,
+      "v36_v37_original_png_sha256": "c968c7e7b2a01ab7ad295b9daa5420b688f6bee5381071a5eaaa86dd9bf42f9f",
+      "official_png_sha256": "43c3b2de767571a6b9498e9435564134d97ea4613fe877ff316576b77a614734"
+    },
+    {
+      "document": "math-exam",
+      "page": 1,
+      "v36_v37_original_png_sha256": "952c8ff1719130024333eb675dbbce635be0bf5041dd20dc9728609e4fadb087",
+      "official_png_sha256": "7154913c0b1b016b189c22d7b7afeb2b809e36196268749b7fce4bea99d34f7e"
+    },
+    {
+      "document": "math-exam",
+      "page": 2,
+      "v36_v37_original_png_sha256": "19ba19a166d1611d1bdb334a573afddd04e8212155e95c753a632150aeada427",
+      "official_png_sha256": "244aae66bfed04517acb2f8a4b7ce131f7ce406cf96085611aed098c052aee36"
+    },
+    {
+      "document": "math-exam",
+      "page": 3,
+      "v36_v37_original_png_sha256": "2aa02cee22a0ec8178c80a89f441f8fbeedd736071cfb2dc68c705928e2b22cb",
+      "official_png_sha256": "18f8c3b60b8a417093c25bd5bb6c70dcfcb42a65a644eb411072389328798b1e"
+    },
+    {
+      "document": "math-exam",
+      "page": 4,
+      "v36_v37_original_png_sha256": "29f65d3a43627cd7bfbafb9df8f1819aac16b982b6c50aad14cd4d16b80fdb95",
+      "official_png_sha256": "1c6237be1afe530c72c8cd1d2bd41066515d1c77b377819a39201e29ec1ca8de"
+    },
+    {
+      "document": "math-exam",
+      "page": 5,
+      "v36_v37_original_png_sha256": "582986118f012f6eb6f3295587ea3fc6b58ffa90fa1d22481f36880c796067f6",
+      "official_png_sha256": "7df2c510e6fddc059aaff9eaf734bdb5fc273cbfcfdd44409519dec22e7de83b"
+    },
+    {
+      "document": "math-exam",
+      "page": 6,
+      "v36_v37_original_png_sha256": "ef5ff07ed5dd0b67910ef159ff4471ea92bae227227db84785a98b4cc816ba34",
+      "official_png_sha256": "be34c74f9f3c348d283723d1310bee961c4e580cfd09c8fb7cd4a10bab9b41fa"
+    },
+    {
+      "document": "math-exam",
+      "page": 7,
+      "v36_v37_original_png_sha256": "f254ba065a2f1e99cbd5587c8f0bf59a50d5503e04fc778866e2b1184ad314b4",
+      "official_png_sha256": "905a3fb9c85b345f62f877f9e9cb2d658c2426f8bd6df0a9fb90e353fc3741bc"
+    },
+    {
+      "document": "math-exam",
+      "page": 8,
+      "v36_v37_original_png_sha256": "8f3cd5e6971aa1c64918ae8cb8c502b3e6a9f63a0d9ec86a3f2baded420dbadc",
+      "official_png_sha256": "1078eb1c9458d2307cbb45caabc4a9419439739f8c62c179a003bb6c5a839809"
+    },
+    {
+      "document": "math-exam",
+      "page": 9,
+      "v36_v37_original_png_sha256": "2cfeb1bc22860efe2b5210331c9ac2d37b53303eafa41b6ad1ccdad31c8b721a",
+      "official_png_sha256": "bfd125a849eb7cda10e15e66eb43b4d2332f12f66f0c2ade9eae54f47e4d5497"
+    },
+    {
+      "document": "math-exam",
+      "page": 10,
+      "v36_v37_original_png_sha256": "c6870dbf190ddc2cac3c7589dca28cbf1014bf8b63b88126abeb5d8707eedd99",
+      "official_png_sha256": "d561a5806d1f6375fa609f7285b8a22a6927c5fa84bd218464861b506708e531"
+    },
+    {
+      "document": "math-exam",
+      "page": 11,
+      "v36_v37_original_png_sha256": "b4e195ef72b11fc8e7f1de757701db22fe6757f176eb3804d72d68b256e1c6f7",
+      "official_png_sha256": "1133cf693b2496bfabb8794dce6c64c3a0be14b4a208898bc563b9af247f78b4"
+    },
+    {
+      "document": "math-exam",
+      "page": 12,
+      "v36_v37_original_png_sha256": "4fffc5f0f21ee4cacc98ab8469a8572d93d9d85b0be57dc817da2dca65e7fe8e",
+      "official_png_sha256": "a666acc6447ab38180c8b933eab90b96cf0b0c813af6b94ea60c52be644bcde6"
+    },
+    {
+      "document": "math-exam",
+      "page": 13,
+      "v36_v37_original_png_sha256": "67f68a9dae7107191980f219694d95c25cac581406030c05023ca9578f7d0ee6",
+      "official_png_sha256": "f46e0bfc03428805e97e3645c3e6451cfd510345085360fa872191db5614b0f6"
+    },
+    {
+      "document": "math-exam",
+      "page": 14,
+      "v36_v37_original_png_sha256": "48036748100396b21e4cdaf128c22fa7597db3d5886812cde0a88ed5ae125d60",
+      "official_png_sha256": "100e412ba7b463ffd1407c562d05bd2f978afd9d659565b67d710facfc5b9bf0"
+    },
+    {
+      "document": "math-exam",
+      "page": 15,
+      "v36_v37_original_png_sha256": "42f4bce448ae6bd74298e57b83b9547a0873aaa343de22bca1494d37c04c7597",
+      "official_png_sha256": "cda008bf7080c060840bc91954f52943818a38613207fb5cca50e607d8c5ab56"
+    },
+    {
+      "document": "math-exam",
+      "page": 16,
+      "v36_v37_original_png_sha256": "a6b56155b6df8337b77578d7e198b5519c8645bf031a52b51d684784c7f90b8b",
+      "official_png_sha256": "fc1d2ae0cc27f82b4b3a3f9b295ffb44a0de51947fb49534bf32bac335844736"
+    },
+    {
+      "document": "math-exam",
+      "page": 17,
+      "v36_v37_original_png_sha256": "770b627ea29892df7a542097a7f54c38ca8fd7b3b3e9c43742eb0993fba7b1f1",
+      "official_png_sha256": "311f270173f12fcaa2e5aa24549e4c89a04e493f8243ebccf09de72c4bd17913"
+    },
+    {
+      "document": "math-exam",
+      "page": 18,
+      "v36_v37_original_png_sha256": "d9b3c156d6cd91165eb94bf2c98c3df345b888ba6563b8a859277d0902cce4fa",
+      "official_png_sha256": "9be30448224363bc6533fdaab69399274aa5d3b8d7c9f6bdc7d992cc08578d1e"
+    },
+    {
+      "document": "math-exam",
+      "page": 19,
+      "v36_v37_original_png_sha256": "53850c8c3dd4a4e866121a16376f399745283088ee5e8e1b5b5d9509d9f1e9ff",
+      "official_png_sha256": "185fae5ac1053aaf6f9164e8d2736daea3f7ec8f2292124817474ff27c75b3d8"
+    },
+    {
+      "document": "math-exam",
+      "page": 20,
+      "v36_v37_original_png_sha256": "2768210353275d17d975061e2996546caa9da2840af1f6f5e5169203a09d5d4d",
+      "official_png_sha256": "7414706e93ce81986a0acb5b3e04635002495b29ee2316f978c552262a49fb2f"
+    }
+  ],
+  "documents": [
+    {
+      "document": "exam-science",
+      "capture_receipt": {
+        "campaign_artifact_label": "studio/v37-normal/exam-science/capture-result.json",
+        "sha256": "a16f36c9f68eb1d0f10784acd5014a0d2e5af7be932b4a6629ee2ebc14a321a0"
+      },
+      "page_counts": {
+        "original": 4,
+        "edited": 4,
+        "reopened": 4
+      },
+      "phase_font_counts": {
+        "original": [
+          22
+        ],
+        "edited": [
+          22
+        ],
+        "reopened": [
+          22
+        ]
+      },
+      "font_retention_passed": true,
+      "pending_typefaces_all_zero": true,
+      "runtime_ready": true,
+      "page_errors": [],
+      "edited_reopened_pixel_exact_pages": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "edited_reopened_differences": []
+    },
+    {
+      "document": "exam-english",
+      "capture_receipt": {
+        "campaign_artifact_label": "studio/v37-normal/exam-english/capture-result.json",
+        "sha256": "e35bd85ec1f70e9e38c20fc1d289809c66c5df05ae30c01264dbb11ac53f45db"
+      },
+      "page_counts": {
+        "original": 8,
+        "edited": 8,
+        "reopened": 8
+      },
+      "phase_font_counts": {
+        "original": [
+          12
+        ],
+        "edited": [
+          12
+        ],
+        "reopened": [
+          12
+        ]
+      },
+      "font_retention_passed": true,
+      "pending_typefaces_all_zero": true,
+      "runtime_ready": true,
+      "page_errors": [],
+      "edited_reopened_pixel_exact_pages": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "edited_reopened_differences": []
+    },
+    {
+      "document": "math-exam",
+      "capture_receipt": {
+        "campaign_artifact_label": "studio/v37-normal/math-exam/capture-result.json",
+        "sha256": "e8d6a5ad1c8de68e22346a33ae9d455664720bcc451a513366fb2c024af7de45"
+      },
+      "page_counts": {
+        "original": 20,
+        "edited": 20,
+        "reopened": 20
+      },
+      "phase_font_counts": {
+        "original": [
+          15
+        ],
+        "edited": [
+          15
+        ],
+        "reopened": [
+          15
+        ]
+      },
+      "font_retention_passed": true,
+      "pending_typefaces_all_zero": true,
+      "runtime_ready": true,
+      "page_errors": [],
+      "edited_reopened_pixel_exact_pages": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        13,
+        14,
+        15,
+        17,
+        18,
+        19,
+        20
+      ],
+      "edited_reopened_differences": [
+        {
+          "page": 12,
+          "pixelExact": false,
+          "changedPixels": 8620,
+          "changedBBox": [
+            1175,
+            2738,
+            1953,
+            2768
+          ]
+        },
+        {
+          "page": 16,
+          "pixelExact": false,
+          "changedPixels": 8479,
+          "changedBBox": [
+            1175,
+            2738,
+            1933,
+            2768
+          ]
+        }
+      ]
+    }
+  ],
+  "edited_reopened_scope": "30/32 edited→reopened pages pixel and line-layout exact. Mathp12/p16 differ in one footer-line advance each, present before TSfix; current original/reopened wholepage PNGs and line dumps equal v36. No new font loss. Intentional edits are not scored against unchanged official content.",
+  "preexisting_math_footer_proof": {
+    "campaign_artifact_label": "review/studio-v37-normal-lifecycle/preexisting-math-footer.json",
+    "sha256": "c564a03d16860f73e2948d1cd8064d23769c00775a64789bd96536fad22f97b9"
+  },
+  "wasm_sha256": "6255361c0445bba031707ce2fcda4a7ca5148c520288a6044be3bf52e56dce5a"
+}

@@ -1,0 +1,383 @@
+{
+  "schema_version": 1,
+  "status": "PASS_WITH_PREEXISTING_LIMITATION",
+  "base_commit": "a5f028726c267700983665e7e910f6d18ebb2a7b",
+  "campaign": "Three original HWP exams against preserved official Hancom PDFs. Native and browser results are separate; edited-source outputs use separate lifecycle checks.",
+  "native": {
+    "status": "PASS",
+    "documents": 3,
+    "pages": 32,
+    "original_fixed_bands": 320,
+    "baseline_binary_sha256": "f82116b8b2e8c1af1d5f16117021bcea0284b05f56ed272f79d5bd52c58e73cd",
+    "v36_binary_sha256": "75e47a7a9302504b2a9444e358a9d4ea7699a22242b0a0ab8bcbba0a893efbeb",
+    "baseline_summary": {
+      "campaign_artifact_label": "rounds/baseline/summary.json",
+      "sha256": "5e7a888f8240712b837249ba7031f8731812d59eaf188af9d06b61c89289426a"
+    },
+    "v36_summary": {
+      "campaign_artifact_label": "rounds/v36/summary.json",
+      "sha256": "247e46673cf9a0547e7c42cb12017e1b0dcfbe61f2a81cf27f73183fba4c9bab"
+    },
+    "visual_reuse": {
+      "campaign_artifact_label": "review/native-v36-visual-reuse.json",
+      "sha256": "9f631f8e764346e7fc68a7fc12e36a788605fc6ca0816b90ccf04d9bb56c2110"
+    }
+  },
+  "browser": {
+    "mode": "CanvasKit software / print / 200dpi / before-open physical-font import",
+    "wasm_sha256": "6255361c0445bba031707ce2fcda4a7ca5148c520288a6044be3bf52e56dce5a",
+    "original_numeric_status": "PASS_ALL32_PAGES_ALL320_BANDS",
+    "normal_science_english_visual_status": "PASS_EXACT_V36_VISUAL_REUSE",
+    "late_font_import_status": "PASS_CURRENT_V37_SCOPED_COHORTS_ALL320",
+    "fallback_font_status": "PASS_WITH_PREEXISTING_LIMITATION",
+    "normal_runtime": "All96 original/edit/reopen capture pages ready/error-free; prepared fonts22/12/15 retained through every phase.30/32 edited→reopened exact; two preexisting Math footer advances scoped separately.",
+    "fixed_band_report": {
+      "campaign_artifact_label": "studio/v37-normal/fixed-band-report.json",
+      "sha256": "f2474523c038b744241b838db66907d2da4fd47825457ec0eb46f2c06249e43e"
+    },
+    "runtime_gates": {
+      "path": "reviews/browser-v37-normal.json",
+      "sha256": "fdafd66a4329844b70d317ecbddb1c4ed2ef9f074d44988d5d41b8cec6da76c3"
+    },
+    "late_font_import_detail": {
+      "original_pages": 32,
+      "original_bands": 320,
+      "all_bands_below_one": true,
+      "pixel_exact_to_normal_originals": 29,
+      "byte_exact_to_prior_late_originals": 32,
+      "english_different_cohort_pages": [
+        1,
+        4,
+        6
+      ],
+      "strict_cross_cohort_identity_script_history": "FAILED_RETAINED_AND_EXPLAINED",
+      "lifecycle_summary": "reviews/late-lifecycle.json",
+      "current_verification": {
+        "campaign_artifact_label": "review/studio-v37-late-lifecycle/verification.json",
+        "sha256": "7295fca9777dd88b6a2f6f7b044a5b9ad142df4845222b5936c06a9890fd8a36"
+      }
+    },
+    "normal_math_visual_status": "PASS_EXACT_V36_VISUAL_REUSE_AUTHORSHIP_DISCLOSED",
+    "normal_capture_version": "v37",
+    "fallback_receipt": {
+      "path": "reviews/fallback-current.json",
+      "sha256": "a6fa2bee7bf334bd5230a2dcc03e7b274c2e1edd40bc692a033c0e0da66b612d"
+    },
+    "late_current_typescript_verification": "PASS"
+  },
+  "scoring": {
+    "dpi": 200,
+    "ink_threshold": 200,
+    "tolerance_px": 4,
+    "gate": "100*mismatch_px < union_ink; zero-ink bands pass per unchanged scorer. Unrounded acceptance.",
+    "fixed_original_cuts_unchanged": true,
+    "scorer": {
+      "campaign_artifact_label": "score.py",
+      "sha256": "25dfc94a98e387f339b6f4058dfec77c7ef652203a96ece5b7ece2e2561575d5"
+    },
+    "parity_helper_sha256": "d6d7afc44f8d4ec471e30294f5c6aac2af0d33501f5cc63fbdc9374eb63a2a43",
+    "historical_comparison_sha256": "d93e870adbeb237d43fd0882532550ee120eefe4556f8ea5e804b4b46d05e25e",
+    "canonical_original_cuts_sha256": "3160318dd5bd6ffa777d340b73ca2e7cf060e529c33329f29039f9c6a7df8404",
+    "original_cuts_file": "original-cuts.json",
+    "matrix_file": "original-band-matrix.json",
+    "page_hashes_file": "original-page-pins.json"
+  },
+  "documents": [
+    {
+      "document": "exam-science",
+      "source_label": "docs/exam-science.hwp",
+      "source_sha256": "22d29786a80d68a9b2ad9294c2dab4915e0eced941e790e37390b14312b8b6a8",
+      "official_label": "official/exam-science.pdf",
+      "official_sha256": "465b0d1a04a1dc343573e3e0d87db52a4f4e5a90481384f8d6f5eb07ec6350c8",
+      "official_export": "Exact frozen source opened in Hancom Office HWP 12.30.0 build 6446; PDF exported without edits; preserved reference.",
+      "pages": 4,
+      "bands": 40,
+      "native_baseline_worst_pct": 100.0,
+      "native_baseline_failing_bands": 30,
+      "native_v36_worst_pct": 0.7490568775391758,
+      "native_v36_status": "PASS",
+      "baseline_report": {
+        "campaign_artifact_label": "rounds/baseline/exam-science/report.json",
+        "sha256": "5ba4c806fc6bf3a1a2bb0a27c411d79fb1b10c31fe92f0ac2e0e195828219725"
+      },
+      "native_report": {
+        "campaign_artifact_label": "rounds/v36/exam-science/report.json",
+        "sha256": "90573315f0ccaafeba59e4cecf899df087ea7d67adc629c8d11977f47fb1cdf8"
+      },
+      "browser_receipt": {
+        "campaign_artifact_label": "studio/v37-normal/exam-science/capture-result.json",
+        "sha256": "a16f36c9f68eb1d0f10784acd5014a0d2e5af7be932b4a6629ee2ebc14a321a0"
+      },
+      "browser_normal_v37_worst_pct": 0.7499409852735559,
+      "browser_normal_v37_status": "PASS",
+      "browser_late_v37_worst_pct": 0.7499409852735559,
+      "browser_late_v37_status": "PASS",
+      "browser_late_receipt": {
+        "campaign_artifact_label": "studio/v37-late/exam-science/capture-result.json",
+        "sha256": "f5757207f54960b8e46a570fda1a7aa2bae7ba8e584523a8f41bff3734e098ba"
+      }
+    },
+    {
+      "document": "exam-english",
+      "source_label": "docs/exam-english.hwp",
+      "source_sha256": "7a5755a2f773fce4d295cbfeb1c5d722edb02c7f920bb067fa56940e8cd6a05b",
+      "official_label": "official/exam-english.pdf",
+      "official_sha256": "1aa4a2eb1ae29c290934e9818d7cfecf91731bdd3889a8ebc642a586f285e629",
+      "official_export": "Exact frozen source opened in Hancom Office HWP 12.30.0 build 6446; PDF exported without edits; preserved reference.",
+      "pages": 8,
+      "bands": 80,
+      "native_baseline_worst_pct": 45.4484189244685,
+      "native_baseline_failing_bands": 29,
+      "native_v36_worst_pct": 0.4943609022556391,
+      "native_v36_status": "PASS",
+      "baseline_report": {
+        "campaign_artifact_label": "rounds/baseline/exam-english/report.json",
+        "sha256": "414bf3e500743777a49d91c2179a9be805199801beaa438ac428905b98e546c3"
+      },
+      "native_report": {
+        "campaign_artifact_label": "rounds/v36/exam-english/report.json",
+        "sha256": "aa9f5fded3e488f02b0f88df0eee1d1ea4185a33737c5743f7a926ed6c37ebcd"
+      },
+      "browser_receipt": {
+        "campaign_artifact_label": "studio/v37-normal/exam-english/capture-result.json",
+        "sha256": "e35bd85ec1f70e9e38c20fc1d289809c66c5df05ae30c01264dbb11ac53f45db"
+      },
+      "browser_normal_v37_worst_pct": 0.49511575003345376,
+      "browser_normal_v37_status": "PASS",
+      "browser_late_v37_worst_pct": 0.5568566224303929,
+      "browser_late_v37_status": "PASS",
+      "browser_late_receipt": {
+        "campaign_artifact_label": "studio/v37-late/exam-english/capture-result.json",
+        "sha256": "824463e83236d998d67bd6345ff8d5fddae0e4c302eb169a7a78f4b472ebe6d9"
+      }
+    },
+    {
+      "document": "math-exam",
+      "source_label": "docs/math-exam.hwp",
+      "source_sha256": "e40e3d675373c8efb3a844fc71f209600d3b0db987a04b3808b8e74a6b1671fe",
+      "official_label": "official/math-exam.pdf",
+      "official_sha256": "c0fe812cf46671be5c1c1354e280deb05a08bfc195e4643ba9fe4787ce934106",
+      "official_export": "Exact frozen source opened in Hancom Office HWP 12.30.0 build 6446; PDF exported without edits; preserved reference.",
+      "pages": 20,
+      "bands": 200,
+      "native_baseline_worst_pct": 40.01381327699683,
+      "native_baseline_failing_bands": 51,
+      "native_v36_worst_pct": 0.7990645098421361,
+      "native_v36_status": "PASS",
+      "baseline_report": {
+        "campaign_artifact_label": "rounds/baseline/math-exam/report.json",
+        "sha256": "38149bf4003b9b2429527aa579701868810b010ecc10265aa551aa6fb8cc768c"
+      },
+      "native_report": {
+        "campaign_artifact_label": "rounds/v36/math-exam/report.json",
+        "sha256": "983a19ce3aac70da3611284c2ee523389d3fb68353669169d226fd2d93d4dfe2"
+      },
+      "browser_receipt": {
+        "campaign_artifact_label": "studio/v37-normal/math-exam/capture-result.json",
+        "sha256": "e8d6a5ad1c8de68e22346a33ae9d455664720bcc451a513366fb2c024af7de45"
+      },
+      "browser_normal_v37_worst_pct": 0.7990645098421361,
+      "browser_normal_v37_status": "PASS",
+      "browser_late_v37_worst_pct": 0.7990645098421361,
+      "browser_late_v37_status": "PASS",
+      "browser_late_receipt": {
+        "campaign_artifact_label": "studio/v37-late/math-exam/capture-result.json",
+        "sha256": "ca2e38e03a99dd22591df8599b0b27a719d14d76f479badd0e9d58909aae337c"
+      }
+    }
+  ],
+  "font_conditions": {
+    "native_font_metrics": "mac",
+    "explicit_native_font_paths": 188,
+    "native_font_command": {
+      "campaign_artifact_label": "rounds/v36/exam-science/command.json",
+      "sha256": "bde4b4394960d0d5f3c4726c76b26e2bf7dc20d8dd82f2f4f2a85cd89df31756"
+    },
+    "browser_font_manifest": {
+      "campaign_artifact_label": "candidates/studio-capture-v4/studio-fonts.json",
+      "sha256": "20ba9c34bbf4740e3308081991053d135736bac08309b28021768459d1210110"
+    },
+    "condition": "Captured physical Hancom/declared source fonts and registered metrics. Arbitrary replacement/missing-font parity is not established; no font binaries included.",
+    "capture_script": {
+      "campaign_artifact_label": "candidates/studio-capture-v4/capture-studio.mjs",
+      "sha256": "59d9123b625b3369f5cc05c29da85c7f55f65a9617d3feac334005bc939c7ff7"
+    }
+  },
+  "checks": [
+    {
+      "check": "native-full",
+      "exit": 0,
+      "counts": {
+        "library_pass": 4220,
+        "additional_pass": 7,
+        "integration_pass": 1693,
+        "integration_ignored": 1,
+        "doc_pass": 4,
+        "doc_ignored": 2
+      },
+      "receipt": {
+        "campaign_artifact_label": "logs/native-full-v36.json",
+        "sha256": "c9b16920e1e63f0c2614838a4d8a2bffe885b22f279e9ae18be44f094369a3bc"
+      },
+      "log": {
+        "campaign_artifact_label": "logs/native-full-v36.log",
+        "sha256": "0377a3bcaa62453a7026c78d30ddae4925710d7f549f5d8303b982a27966b452"
+      }
+    },
+    {
+      "check": "wasm-build",
+      "exit": 0,
+      "counts": {},
+      "receipt": {
+        "campaign_artifact_label": "logs/wasm-v36.json",
+        "sha256": "2b33e4302d0d09f502ff2270bf217da7925947d8a870b83388bc9ed4150fba18"
+      },
+      "log": {
+        "campaign_artifact_label": "logs/wasm-v36.log",
+        "sha256": "269a8bf36152015b2257db067426bb236de0cb351ad1a6a72136f67208d346d7"
+      }
+    },
+    {
+      "check": "studio-full",
+      "exit": 0,
+      "counts": {
+        "pass": 2703,
+        "fail": 0,
+        "existing_todo": 2
+      },
+      "receipt": {
+        "campaign_artifact_label": "logs/studio-unit-v37.json",
+        "sha256": "dad22ba3dd8986eb1d26b3582df65d677a3f6cbaee443f6c896977d8955303c1"
+      },
+      "log": {
+        "campaign_artifact_label": "logs/studio-unit-v37.log",
+        "sha256": "4fdbd65838e8cf623d1e8cb14f37ca75e9039fa7af72edbe5a3b95a237a66c6e"
+      }
+    },
+    {
+      "check": "fresh-wasm-typecheck",
+      "exit": 0,
+      "counts": {},
+      "receipt": {
+        "campaign_artifact_label": "logs/typecheck-v37.json",
+        "sha256": "b091754601dc0a63dc745505832f2b15dfaa066595ba7d20509f5c907d62397f"
+      },
+      "log": {
+        "campaign_artifact_label": "logs/typecheck-v37.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "check": "mutation-font-red-control",
+      "exit": 1,
+      "counts": {
+        "expected_old_code_failure": true,
+        "failed": 2
+      },
+      "receipt": {
+        "campaign_artifact_label": "logs/mutation-fonts-red-v37.json",
+        "sha256": "54d35e6ace5f076f7dd0f966ff01b85032781e4b32d08644f60a664a719406e7"
+      },
+      "log": {
+        "campaign_artifact_label": "logs/mutation-fonts-red-v37.log",
+        "sha256": "dc661a800af94c706336dd5f67ea885cc482ea6863e0d51d8ef8b643742e6fc9"
+      }
+    },
+    {
+      "check": "mutation-font-focused-green",
+      "exit": 0,
+      "counts": {
+        "pass": 19
+      },
+      "receipt": {
+        "campaign_artifact_label": "logs/mutation-fonts-green-v37.json",
+        "sha256": "be08767da3f572e5349fe6a1ed24bd6038c115c97ead16871144e50caba0fa2b"
+      },
+      "log": {
+        "campaign_artifact_label": "logs/mutation-fonts-green-v37.log",
+        "sha256": "f2fb1aca36a919f42b69ee77ab402a23abd7a7cc769b7762c6dd567a50d2192e"
+      }
+    }
+  ],
+  "native_cross_corpus": "native-cross-corpus.json",
+  "review_summaries": [
+    {
+      "path": "reviews/native.json",
+      "sha256": "574b4801161f28b74eb76651e7e8cad1539280921f45eb657370d62064dec313"
+    },
+    {
+      "path": "reviews/cross-corpus.json",
+      "sha256": "a8b87fafbfe85d77f62d173bd4909f370874d8aecf2872654be53b288425060e"
+    },
+    {
+      "path": "reviews/browser-science-english.json",
+      "sha256": "a69745355612b068bcc5b3da73ee6b02661bfc4a48aef846763e06e91d0a5c17"
+    },
+    {
+      "path": "reviews/browser-math.json",
+      "sha256": "fd1e5d10f9926af099d254279106946161b1834b1934e49801188de0e1707cf5"
+    },
+    {
+      "path": "reviews/late-font-cohorts.json",
+      "sha256": "4d1724d498224451a1ba03f663b5540ea030f1f01dc1544b9af7a74c58973aa9"
+    },
+    {
+      "path": "reviews/late-lifecycle.json",
+      "sha256": "f281ce37717e3da06e0bbc8cc4ccc1f051156b5db3167e742c062585ce00def3"
+    },
+    {
+      "path": "reviews/browser-v37-normal.json",
+      "sha256": "fdafd66a4329844b70d317ecbddb1c4ed2ef9f074d44988d5d41b8cec6da76c3"
+    },
+    {
+      "path": "reviews/public-edit-undo.json",
+      "sha256": "9ec4ba5cb9460a7f046bf6d9ed80724bfed10e9b4be1ad16e2421c76be380046"
+    },
+    {
+      "path": "reviews/fallback-v36-history.json",
+      "sha256": "80ad806b0dceb557149288d36988dabfdce3d8efb226530602caf250c2235016"
+    },
+    {
+      "path": "reviews/fallback-current.json",
+      "sha256": "a6fa2bee7bf334bd5230a2dcc03e7b274c2e1edd40bc692a033c0e0da66b612d"
+    }
+  ],
+  "artifact_reference_policy": "campaign_artifact_label identifies retained external evidence by label/hash; it is not a bundled file path.",
+  "images_manifest": "images.json",
+  "diagnostics": [
+    {
+      "path": "diagnostics/math-equation-outline-boundary.json",
+      "sha256": "7cfc2e79944de6591f73dbcebf4f159993434c9119555fbe259c9240e3427c54",
+      "status": "HISTORICAL_DIAGNOSTIC_ONLY"
+    }
+  ],
+  "versions": {
+    "native_cli": "v36",
+    "browser_typescript": "v37",
+    "wasm": "unchanged v36",
+    "late_font_receipts": "v37 current TypeScript and unchanged v36 WASM"
+  },
+  "typescript_fix_source_pins": [
+    {
+      "repo_path": "rhwp/rhwp-studio/src/view/canvaskit-renderer.ts",
+      "sha256": "06a8245d8d1aa5eabdc6c2a4970f0fb5f0debb70430cf6d32bcce27aa00afc51"
+    },
+    {
+      "repo_path": "rhwp/rhwp-studio/src/view/renderer-session.ts",
+      "sha256": "ea8be0d6feb74f8f297ac6eee61fb105870a26bd698b9de50a1d1206937cf5c9"
+    }
+  ],
+  "known_limitations": [
+    "Mathp12#45 andp16#27 notice-line advances differ between edited and reopened; preexisting, full content/frames retained; edited/reopen pixel/layout exact30/32, not32/32.",
+    "Physical source-font/registered metric scope; no fontless or <1% fallback parity claim.",
+    "Fine typography, delimiter contours and Englishp7 arrow stroke residuals remain below original-band threshold."
+  ],
+  "remote_ci_status": "NOT_PART_OF_THIS_LOCAL_EVIDENCE_PACKET",
+  "late_band_matrix": "original-band-matrix.json",
+  "acceptance": {
+    "original_parity_native_normal_late": "PASS_ALL32_PAGES_ALL320_BANDS_EACH",
+    "font_retention_normal_late_fallback": "PASS",
+    "fallback_smoke": "PASS_WITH_PREEXISTING_LIMITATION",
+    "limitation": "Two pre-existing Math footer advance differences;30/32 edited/reopen exact, not32/32."
+  }
+}

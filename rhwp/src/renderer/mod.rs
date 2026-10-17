@@ -43,6 +43,7 @@ pub mod render_tree;
 pub(crate) mod ruby;
 pub(crate) mod runtime_font_metrics;
 pub mod scheduler;
+pub(crate) mod sfnt_glyphs;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
 pub mod skia;
 pub(crate) mod static_svg;
@@ -180,6 +181,17 @@ impl ControlSpaceBase {
         let divided = effective_height / divisor;
         Some(mul_div_percent(divided, self.korean_ratio).wrapping_shl(2))
     }
+
+    /// 일반 U+0020의 비격자 전진: intrinsic 뒤 signed ENG 자간을 DWORD 단위로 더한다.
+    /// 32C228..268, 32C558, 32C744: trunc(B/4) → signed MulDiv → low32 LSL2.
+    pub(crate) fn ordinary_space_advance_hu(self, percent: i8) -> Option<i32> {
+        let base = self.width_hu(crate::model::paragraph::SpecialSpaceOriginKind::NbSpace)?;
+        let product = i64::from(base / 4) * i64::from(percent);
+        let magnitude = (product.abs() + 50) / 100;
+        let rounded = if product < 0 { -magnitude } else { magnitude };
+        let delta = i32::try_from(rounded).unwrap_or(-1).wrapping_shl(2);
+        Some(base.wrapping_add(delta))
+    }
 }
 
 /// Foundation MulDiv의 signed DWORD 입력, ties-away 반올림 및 overflow sentinel.
@@ -228,6 +240,20 @@ pub(crate) fn localize_special_space_origins(
         .collect()
 }
 
+/// useFontSpace의 원본 영문 슬롯. 글자 run의 언어·face와 분리해 빈칸만 측정한다.
+#[derive(Debug, Clone)]
+pub struct SourceFontSpace {
+    /// 원본 run 배율. 해소 뒤 크기·장평을 바꾼 fit/ruby는 기존 측정으로 돌린다.
+    pub own_run_font_size: f64,
+    pub own_run_ratio: f64,
+    pub family: String,
+    pub substitute: String,
+    pub hft_family: String,
+    pub font_size: f64,
+    pub ratio: f64,
+    pub letter_spacing: f64,
+}
+
 /// 텍스트 렌더링 스타일
 #[derive(Debug, Clone, Serialize)]
 pub struct TextStyle {
@@ -236,6 +262,12 @@ pub struct TextStyle {
     /// 원본 signed HU/KOR byte 기본 폭. full advance와 혼동하지 않는다.
     #[serde(skip)]
     pub control_space_base: Option<ControlSpaceBase>,
+    /// 명시된 기본 HWP 호환성의 mask1 빈칸 정책. 원본 없는 스타일은 false이다.
+    #[serde(skip)]
+    pub source_standard_space: bool,
+    /// 명시된 글자모양 useFontSpace의 LATIN 공급자·크기·장평. 페인트 투영에는 내보내지 않는다.
+    #[serde(skip)]
+    pub source_font_space: Option<SourceFontSpace>,
     /// 같은 언어 슬롯의 원본 signed 글자 위치 입력. 렌더 축은 기존 helper가 유지한다.
     #[serde(skip)]
     pub native_char_position: Option<NativeCharPosition>,
@@ -356,6 +388,9 @@ impl TextStyle {
     /// 글리프/줄 끝의 비자간 참조 폭: intrinsic 값과 원점은 유지한다.
     pub(crate) fn zero_tracking(&mut self) {
         self.letter_spacing = 0.0;
+        if let Some(space) = self.source_font_space.as_mut() {
+            space.letter_spacing = 0.0;
+        }
         if let Some(base) = self.control_space_base.as_mut() {
             if base.raw31_eng_tracking_percent.is_some() {
                 base.raw31_eng_tracking_percent = Some(0);
@@ -368,6 +403,9 @@ impl TextStyle {
         if self.letter_spacing < 0.0 {
             self.letter_spacing = 0.0;
         }
+        if let Some(space) = self.source_font_space.as_mut() {
+            space.letter_spacing = space.letter_spacing.max(0.0);
+        }
         if let Some(base) = self.control_space_base.as_mut() {
             base.raw31_eng_tracking_percent = base
                 .raw31_eng_tracking_percent
@@ -376,7 +414,7 @@ impl TextStyle {
     }
 
     /// 일반 빈칸의 비격자 자간은 ENG 슬롯이다. 글꼴/크기/장평은 기존 run을 쓴다.
-    /// 32d59c 캐시 metric → 32d6ac classifier(32,1) → 32d744 signed Q+1e.
+    /// 32C228 캐시 metric → 32C234 classifier(32,1) → 32C244 signed Q+1E.
     pub(crate) fn ordinary_space_tracking_percent(&self, ch: char) -> Option<i8> {
         if ch != ' '
             || self.font_metrics_policy != crate::model::provenance::FontMetricsPolicy::HcrDeclared
@@ -469,6 +507,8 @@ impl Default for TextStyle {
         Self {
             font_metrics_policy: Default::default(),
             control_space_base: None,
+            source_standard_space: false,
+            source_font_space: None,
             native_char_position: None,
             control_space_dpi: DEFAULT_DPI,
             special_space_origins: Vec::new(),
@@ -533,6 +573,57 @@ impl TextStyle {
     pub(crate) fn slice_origins(&self, start: usize, end: usize) -> Self {
         self.clone()
             .with_origin_range(&self.special_space_origins, start, end)
+    }
+
+    /// 원본 공백 제어자는 폭만 차지한다. 같은 Unicode의 일반 글자는 제외한다.
+    pub(crate) fn is_nonprinting_control_space(&self, scalar: usize, ch: char) -> bool {
+        use crate::model::paragraph::SpecialSpaceOriginKind;
+        self.special_space_origins
+            .binary_search_by_key(&scalar, |origin| origin.char_idx)
+            .ok()
+            .is_some_and(|index| {
+                matches!(
+                    (self.special_space_origins[index].origin, ch),
+                    (SpecialSpaceOriginKind::NbSpace, '\u{00a0}')
+                        | (SpecialSpaceOriginKind::FwSpace, '\u{2007}')
+                )
+            })
+    }
+
+    /// PUA 확장·placeholder 제거는 특수 공백의 순서와 종류를 보존한다.
+    /// 측정 문자열은 바꾸지 않고 그리기 문자열의 제어자 위치만 옮긴다.
+    pub(crate) fn nonprinting_control_space_indices(
+        &self,
+        source: &str,
+        projected: &str,
+    ) -> Vec<usize> {
+        if self.special_space_origins.is_empty() {
+            return Vec::new();
+        }
+        let source: Vec<_> = source
+            .chars()
+            .enumerate()
+            .filter(|(_, ch)| matches!(*ch, '\u{00a0}' | '\u{2007}'))
+            .map(|(i, ch)| (ch, self.is_nonprinting_control_space(i, ch)))
+            .collect();
+        if !source.iter().any(|(_, blank)| *blank) {
+            return Vec::new();
+        }
+        let projected: Vec<_> = projected
+            .chars()
+            .enumerate()
+            .filter(|(_, ch)| matches!(*ch, '\u{00a0}' | '\u{2007}'))
+            .collect();
+        if source.len() != projected.len()
+            || source.iter().zip(&projected).any(|((a, _), (_, b))| a != b)
+        {
+            return Vec::new();
+        }
+        source
+            .iter()
+            .zip(projected)
+            .filter_map(|((_, blank), (i, _))| blank.then_some(i))
+            .collect()
     }
 
     /// 발생 원점과 normalized scalar가 모두 맞는 native 기본 폭만 제공한다.
@@ -2699,6 +2790,51 @@ fn format_hanja_number(n: u16) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn raw_control_spaces_are_nonprinting_through_text_projection() {
+        use super::TextStyle;
+        use crate::model::paragraph::{SpecialSpaceOrigin, SpecialSpaceOriginKind::*};
+        let style = TextStyle {
+            special_space_origins: vec![
+                SpecialSpaceOrigin {
+                    char_idx: 2,
+                    origin: NbSpace,
+                },
+                SpecialSpaceOrigin {
+                    char_idx: 3,
+                    origin: Literal,
+                },
+                SpecialSpaceOrigin {
+                    char_idx: 4,
+                    origin: FwSpace,
+                },
+            ],
+            ..Default::default()
+        };
+        let source = "😀\u{FFFC}\u{00a0}\u{00a0}\u{2007}";
+        assert_eq!(
+            style.nonprinting_control_space_indices(source, source),
+            vec![2, 4]
+        );
+        assert_eq!(
+            style.nonprinting_control_space_indices(source, "😀XX\u{00a0}\u{00a0}\u{2007}"),
+            vec![3, 5]
+        );
+        assert!(!style.is_nonprinting_control_space(3, '\u{00a0}'));
+        assert!(!style.is_nonprinting_control_space(2, 'A'));
+        assert!(!style.is_nonprinting_control_space(1, '\u{00a0}'));
+        assert!(style
+            .nonprinting_control_space_indices(source, "😀\u{00a0}")
+            .is_empty());
+        assert!(style
+            .nonprinting_control_space_indices(source, "😀\u{2007}\u{00a0}\u{00a0}")
+            .is_empty());
+        assert!(TextStyle::default()
+            .nonprinting_control_space_indices("\u{00a0}", "\u{00a0}")
+            .is_empty());
+        assert_eq!(source, "😀\u{FFFC}\u{00a0}\u{00a0}\u{2007}");
+    }
+
     #[test]
     fn native_char_position_descriptor_signed_edges() {
         use super::NativeCharPosition;

@@ -450,6 +450,9 @@ fn parse_grid(e: &quick_xml::events::BytesStart, sec_def: &mut SectionDef) {
         match attr.key.as_ref() {
             b"lineGrid" => sec_def.line_grid = parse_i32(&attr) as i16,
             b"charGrid" => sec_def.char_grid = parse_i32(&attr) as i16,
+            b"wonggojiFormat" => {
+                sec_def.flags = (sec_def.flags & !(1 << 22)) | (u32::from(parse_bool(&attr)) << 22);
+            }
             _ => {}
         }
     }
@@ -7655,6 +7658,24 @@ mod tests {
 
         assert_eq!(section.section_def.line_grid, 1200);
         assert_eq!(section.section_def.char_grid, 900);
+        assert_eq!(section.section_def.flags & (1 << 22), 0);
+        for value in ["1", "true"] {
+            let changed = xml.replace(
+                "wonggojiFormat=\"0\"",
+                &format!("wonggojiFormat=\"{value}\""),
+            );
+            let section = parse_hwpx_section(&changed).unwrap();
+            assert_ne!(section.section_def.flags & (1 << 22), 0);
+        }
+        for changed in [
+            xml.replace("wonggojiFormat=\"0\"", "wonggojiFormat=\"false\""),
+            xml.replace(" wonggojiFormat=\"0\"", ""),
+        ] {
+            assert_eq!(
+                parse_hwpx_section(&changed).unwrap().section_def.flags & (1 << 22),
+                0
+            );
+        }
     }
 
     #[test]
