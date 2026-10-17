@@ -61,6 +61,11 @@ export function siteScope(value) {
   return { ...scope };
 }
 
+/** 로그인 표시의 키. 쿠키처럼 포트를 가리지 않는 https://등록도메인 이고, 등록 도메인이 없으면 null 이다. */
+export function signedInKey(value) {
+  try { const scope = siteScope(value); return scope.domain ? `https://${scope.domain}` : null; } catch { return null; }
+}
+
 /** 사람이 읽는 사이트 이름 — 등록 도메인, 없으면 호스트(포트 포함). */
 export function siteName(value) {
   const scope = siteScope(value);
@@ -344,7 +349,7 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
     const grant = chatGrant(actor?.threadId, scope.key, action) ?? userEntry(origin, action) ?? researchDefault(origin, action);
     if (grant) return { ...base, allowed: true, source: grant.source, grantEpoch: grant.epoch };
     if (action === 'website-change' || action === 'account-use') return { ...base, allowed: false, code: 'BROWSER_PERMISSION_REQUIRED', reason: action, item };
-    if ((action === 'browse' || action === 'read') && !shared && isSignedInSync(profileId, scope.key)) {
+    if ((action === 'browse' || action === 'read') && !shared && scope.domain && isSignedInSync(profileId, `https://${scope.domain}`)) {
       return { ...base, allowed: false, code: 'BROWSER_PERMISSION_REQUIRED', reason: 'signed-in' };
     }
     return { ...base, allowed: true, source: 'public' };
@@ -386,7 +391,7 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
     else {
       for (const site of state.sites) if (site.source !== 'research-default') add(site.origin);
       for (const grant of state.chatGrants) if (!actor?.threadId || grant.threadId === actor.threadId) add(grant.key);
-      for (const marker of state.signedIn) if (!profileId || marker.profileId === profileId) add(marker.key);
+      for (const marker of state.signedIn) if ((!profileId || marker.profileId === profileId) && cookieSites.get(marker.profileId)?.has(marker.key) !== false) add(marker.key);
     }
     return [...keys.values()].map((scope) => {
       const entries = state.sites.filter((entry) => entry.source !== 'research-default' && (entry.origin === scope.key || siteScope(entry.origin).key === scope.key));
@@ -397,7 +402,7 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
         always: SITE_ACCESS_ACTIONS.every((action) => keyEntry?.allowedActions.includes(action)),
         allowedActions: [...(keyEntry?.allowedActions ?? [])],
         chat: !!actor?.threadId && state.chatGrants.some((grant) => grant.threadId === actor.threadId && grant.key === scope.key),
-        signedIn: profileId ? isSignedInSync(profileId, scope.key) : state.signedIn.some((marker) => marker.key === scope.key),
+        signedIn: !!scope.domain && (profileId ? isSignedInSync(profileId, `https://${scope.domain}`) : state.signedIn.some((marker) => marker.key === `https://${scope.domain}`)),
         blocked,
       };
     });
@@ -506,10 +511,7 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
   }
 
   function markerKey({ origin, domain }) {
-    try {
-      const scope = siteScope(origin ?? `https://${String(domain ?? '').replace(/^\./, '')}`);
-      return scope.domain ? scope.key : null;
-    } catch { return null; }
+    return signedInKey(origin ?? `https://${String(domain ?? '').replace(/^\./, '')}`);
   }
   /** 로그인 표시는 프로필마다 4096 개까지. 넘치면 쿠키가 없는 표시부터, 그다음 오래된 표시부터 버린다. */
   function capMarkers(next, profileId) {
@@ -520,15 +522,21 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
     const drop = new Set(order.slice(0, mine.length - signedInLimit));
     next.signedIn = next.signedIn.filter((marker) => !drop.has(marker));
   }
-  /** 사용자가 이 사이트에 신원이 있다는 증거를 남긴다(HTTPS 등록 도메인만). 실패해도 던지지 않는다. */
-  async function markSignedIn({ profileId = 'default', origin, domain, source } = {}) {
-    const key = markerKey({ origin, domain });
-    if (!key || !SIGNED_IN_SOURCES.has(source)) return false;
+  /** 사용자가 이 사이트에 신원이 있다는 증거를 남긴다(HTTPS 등록 도메인만). domains 로 여러 개를 한 번에 쓴다. 실패해도 던지지 않는다. */
+  async function markSignedIn({ profileId = 'default', origin, domain, domains, source } = {}) {
+    if (!SIGNED_IN_SOURCES.has(source)) return false;
+    const keys = [...new Set((domains ?? [origin === undefined ? domain : undefined]).map((value) => markerKey(origin !== undefined && !domains ? { origin } : { domain: value })).filter(Boolean))];
+    if (!keys.length) return false;
     try {
       await mutate((next) => {
-        const previous = next.signedIn.find((marker) => marker.profileId === profileId && marker.key === key);
-        if (previous) { previous.at = now(); if (previous.source === source) return SKIP; previous.source = source; return; }
-        next.signedIn.push({ profileId, key, source, at: now() });
+        let changedAny = false;
+        for (const key of keys) {
+          const previous = next.signedIn.find((marker) => marker.profileId === profileId && marker.key === key);
+          if (previous) { previous.at = now(); if (previous.source !== source) { previous.source = source; changedAny = true; } continue; }
+          next.signedIn.push({ profileId, key, source, at: now() });
+          changedAny = true;
+        }
+        if (!changedAny) return SKIP;
         capMarkers(next, profileId);
       });
       return true;

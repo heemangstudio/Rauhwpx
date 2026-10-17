@@ -10,8 +10,12 @@ import { createBrowserCredentialBroker } from '../browser-credentials.mjs';
 
 const origin = 'https://site.example';
 const actor = { isHuman: true, clientId: 'editor', sessionId: 'editor', threadId: 'research', agentId: 'owner' };
-const account = { id: 'approved-site', profileId: 'default', origins: [origin], agentReuseApproved: true, sessionStatus: 'saved' };
+const account = { id: 'approved-site', profileId: 'default', origin, origins: [origin], agentBlocked: false, sessionStatus: 'saved' };
 const cookie = (name, domain, value) => ({ name, domain, value, path: '/', expires: -1, httpOnly: true, secure: true, sameSite: 'Lax' });
+async function savedLogin(broker) {
+  const request = await broker.requestAccount({ actor, origin, label: 'Fixture website' });
+  return (await broker.saveLogin({ actor, requestId: request.requestId, account: { origin, label: 'Fixture website' }, username: 'fixture-user', password: 'fixture-password' })).account;
+}
 
 async function harness(t, { failSignIn = false, protectedAutofill = false } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-native-passkey-handoff-'));
@@ -73,7 +77,6 @@ async function harness(t, { failSignIn = false, protectedAutofill = false } = {}
     },
     credentialBroker: {
       async listAccounts() { return { accounts: [account] }; }, setSessionClearer(clearer) { clearSession = clearer; },
-      async registerSessionOrigins() {}, async assertBrowserAccess() {},
       async saveCheckpoint({ profileId, state }) { checkpoints.set(profileId, structuredClone(state)); },
       async restoreCheckpoint({ profileId }) { return checkpoints.get(profileId) ?? null; },
       async deleteCheckpoint({ profileId }) { checkpoints.delete(profileId); },
@@ -109,31 +112,17 @@ test('Mac passkey confirmation returns approved website authentication to the re
   assert.ok(retained.controllerEpoch > before.controllerEpoch);
 });
 
-test('native session counterpart preserves the original login account and shares revocation and signout cleanup', async (t) => {
+test('a full-browser sign-in carried to the native profile keeps one login and signs out of both profiles', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-native-session-account-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const policy = createBrowserPolicy({ dataDir });
   const broker = createBrowserCredentialBroker({ dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 1) });
   await broker.ready();
-  const requested = await broker.requestAccount({ actor, origin, origins: [origin], label: 'Fixture website' });
-  const { account: original } = await broker.approveAccount({ actor, requestId: requested.requestId, approval: { approved: true, requestId: requested.requestId, use: true } });
+  const original = await savedLogin(broker);
   const result = await broker.confirmAccountSession({ actor, accountId: original.id, additionalProfileId: 'native' });
-  assert.equal(result.account.id, original.id);
-  assert.equal(result.account.profileId, 'default');
-  assert.equal(result.additionalAccount.profileId, 'native');
-  assert.equal(result.additionalAccount.sourceAccountId, original.id);
-  assert.equal(result.additionalAccount.hasPassword, false);
-  const second = await broker.confirmAccountSession({ actor, accountId: original.id, additionalProfileId: 'native' });
-  assert.equal(second.additionalAccount.id, result.additionalAccount.id);
-  assert.equal((await broker.listAccounts()).accounts.length, 2);
-  const agent = { threadId: 'other-chat', agentId: 'other-owner' };
-  await broker.assertBrowserAccess({ actor: agent, url: origin, tab: { profileId: 'native' } });
-  const state = { cookies: [cookie('siteSession', 'site.example', 'approved')], origins: [] };
-  await broker.saveCheckpoint({ profileId: 'native', state });
-  assert.ok(await broker.restoreCheckpoint({ profileId: 'native' }));
-  await broker.revokeAccount({ actor, accountId: original.id });
-  await assert.rejects(broker.assertBrowserAccess({ actor: agent, url: origin, tab: { profileId: 'native' } }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
-  assert.equal(await broker.restoreCheckpoint({ profileId: 'native' }), null);
+  assert.deepEqual([result.account.id, result.account.profileId, result.account.sessionProfiles], [original.id, 'default', ['default', 'native']]);
+  await broker.confirmAccountSession({ actor, accountId: original.id, additionalProfileId: 'native' });
+  assert.equal((await broker.listAccounts()).accounts.length, 1, 'no linked account copy');
   const cleared = [];
   broker.setSessionClearer(async ({ profileId, origins }) => { cleared.push(profileId); return { clearedOrigins: origins }; });
   await broker.signOut({ actor, accountId: original.id });
@@ -173,7 +162,7 @@ test('passkey return after protected native autofill preserves unrelated origin 
 });
 
 
-test('native signout after protected autofill clears only the linked approved website', async (t) => {
+test('native signout after protected autofill clears only that website', async (t) => {
   const f = await harness(t, { protectedAutofill: true });
   await f.nativeAdapter.passwordFill();
   await f.browser.request(actor, 'sign-in', { accountId: account.id, url: `${origin}/login`, authenticationMethod: 'mac-passkey' });
@@ -185,15 +174,14 @@ test('native signout after protected autofill clears only the linked approved we
 });
 
 
-test('protected native partial checkpoints preserve encrypted origin storage through broker restart and honor explicit clearing', async (t) => {
+test('protected native partial checkpoints keep encrypted origin storage through restart, a turned-off login and explicit clearing', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-partial-native-checkpoint-'));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const policy = createBrowserPolicy({ dataDir });
   const options = { dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 7) };
   const broker = createBrowserCredentialBroker(options);
   await broker.ready();
-  const requested = await broker.requestAccount({ actor, origin, origins: [origin], label: 'Fixture checkpoint website' });
-  const { account: original } = await broker.approveAccount({ actor, requestId: requested.requestId, approval: { approved: true, requestId: requested.requestId, use: true } });
+  const original = await savedLogin(broker);
   await broker.confirmAccountSession({ actor, accountId: original.id, additionalProfileId: 'native' });
   const savedOrigins = [{ origin, localStorage: [{ name: 'approved-token', value: 'encrypted-token' }], indexedDB: [{ name: 'approved-cache', version: 1, stores: [] }] }];
   await broker.saveCheckpoint({ profileId: 'native', state: { cookies: [cookie('session', 'site.example', 'before')], origins: savedOrigins } });
@@ -205,12 +193,10 @@ test('protected native partial checkpoints preserve encrypted origin storage thr
   assert.equal(restored.cookies[0].value, 'after');
   assert.equal('originsComplete' in restored, false);
   await assert.rejects(restarted.saveCheckpoint({ profileId: 'default', state: { cookies: [], origins: [], originsComplete: false } }), { code: 'BROWSER_AUTH_CHECKPOINT_INVALID' });
+  await restarted.setLoginBlocked({ actor, accountId: original.id, blocked: true });
+  assert.deepEqual((await restarted.restoreCheckpoint({ profileId: 'native' })).origins, savedOrigins, 'turning a login off keeps the session');
   await restarted.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: [] } });
   assert.deepEqual((await restarted.restoreCheckpoint({ profileId: 'native' })).origins, []);
-  await restarted.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: savedOrigins } });
-  await restarted.revokeAccount({ actor, accountId: original.id });
-  await restarted.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: [], originsComplete: false } });
-  assert.equal(await restarted.restoreCheckpoint({ profileId: 'native' }), null);
 });
 
 async function seededNativeCheckpoint(t) {
@@ -219,28 +205,12 @@ async function seededNativeCheckpoint(t) {
   const policy = createBrowserPolicy({ dataDir });
   const broker = createBrowserCredentialBroker({ dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 6) });
   await broker.ready();
-  const requested = await broker.requestAccount({ actor, origin, origins: [origin], label: 'Checkpoint cleanup fixture' });
-  const { account } = await broker.approveAccount({ actor, requestId: requested.requestId, approval: { approved: true, requestId: requested.requestId, use: true } });
+  const account = await savedLogin(broker);
   await broker.confirmAccountSession({ actor, accountId: account.id, additionalProfileId: 'native' });
   await broker.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: [{ origin, localStorage: [{ name: 'old-authentication', value: 'must-not-return' }] }] } });
   broker.setSessionClearer(async ({ origins }) => ({ clearedOrigins: origins }));
   return { broker, policy, account };
 }
-
-test('partial native checkpoint saves cannot retain authentication across account cleanup', async (t) => {
-  for (const action of ['signOut', 'revokeAccount', 'forgetAccount']) await t.test(action, async (t) => {
-    const { broker, policy, account } = await seededNativeCheckpoint(t);
-    const list = policy.list;
-    let reads = 0; let armed = true;
-    policy.list = async () => {
-      // First read validates the old encrypted archive; the second is the final save proof.
-      if (armed && ++reads === 2) { armed = false; await broker[action]({ actor, accountId: account.id }); }
-      return list();
-    };
-    await assert.rejects(broker.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: [], originsComplete: false } }), { code: 'BROWSER_AUTH_CHECKPOINT_INVALIDATED' });
-    assert.equal(await broker.restoreCheckpoint({ profileId: 'native' }), null);
-  });
-});
 
 test('pending native session cleanup blocks both checkpoint saves and archive restoration before account versions change', async (t) => {
   const { broker, account } = await seededNativeCheckpoint(t);
