@@ -392,37 +392,39 @@
   outline-offset: var(--ag-focus-offset);
 }
 
-/* 정착한 카드 — 한 줄 */
+/* 정착한 카드 — 한 줄짜리 단색 알약. 높이가 고정이라 상태가 바뀌어도 흐름이 움직이지 않는다. */
 .ag-request-card[data-settled='true'] {
   flex-direction: row;
   align-items: center;
   gap: 8px;
-  max-width: 100%;
+  box-sizing: border-box;
   width: auto;
+  max-width: 100%;
+  flex: 0 0 32px;
+  height: 32px;
   align-self: flex-start;
-  padding: 7px 12px 7px 10px;
-  border-radius: var(--ag-r-card);
+  padding: 0 14px 0 8px;
+  border-radius: var(--ag-r-pill);
   box-shadow: none;
+  font-size: var(--ag-fs-meta);
+  line-height: 1;
 }
 
 .ag-request-done-label {
   min-width: 0;
   overflow: hidden;
-  font-size: var(--ag-fs-meta);
+  color: var(--ag-text);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .ag-request-done-status {
   flex: 0 0 auto;
-  color: var(--ag-text-secondary);
-  font-size: var(--ag-fs-mono);
+  color: var(--ag-text-tertiary);
+  white-space: nowrap;
 }
 
-.ag-request-card[data-status='granted'] .ag-request-done-status { color: var(--ag-ok); }
-.ag-request-card[data-status='granted'] .ag-request-mark { color: var(--ag-ok); }
-.ag-request-card[data-status='denied'] .ag-request-mark,
-.ag-request-card[data-status='expired'] .ag-request-mark { color: var(--ag-text-tertiary); }
+.ag-request-card[data-settled='true'] .ag-request-mark { color: var(--ag-text-tertiary); }
 
 @media (prefers-reduced-motion: reduce) {
   .ag-request-pulse,
