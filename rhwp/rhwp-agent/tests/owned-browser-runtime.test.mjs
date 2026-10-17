@@ -505,3 +505,56 @@ test('idle desktop native browser is ready without installing or starting manage
   assert.equal(status.readiness.state, 'ready');
   assert.equal(status.readiness.retryAction, undefined);
 });
+
+test('account approval settles owner changes and survives agent cookie rotation until the owner changes it again', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-account-approval-'));
+  const policy = createBrowserPolicy({ dataDir });
+  const broker = createBrowserCredentialBroker({ dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 7) });
+  const agent = { threadId: 'chat', agentId: 'researcher', sessionId: 'window' };
+  const owner = { ...agent, isHuman: true, clientId: 'editor' };
+  const origin = 'https://login.example.test';
+  const requested = await broker.requestAccount({ actor: owner, origin, profileId: 'native' });
+  const { account } = await broker.submit({ actor: owner, requestId: requested.requestId,
+    approval: { approved: true, requestId: requested.requestId, save: true, use: true },
+    username: 'fixture-user', password: 'fixture-password' });
+  const storage = { cookies: [], origins: [] };
+  let url = 'about:blank';
+  const page = Object.assign(new EventEmitter(), { url: () => url, isClosed: () => false,
+    frames: () => [{ url: () => url }, { url: () => 'https://www.example.test' }], async routeWebSocket() {}, async close() {}, async goto(next) { url = next; } });
+  const context = Object.assign(new EventEmitter(), { async storageState() { return structuredClone(storage); },
+    async route() {}, pages: () => url === 'about:blank' ? [] : [page], async newPage() { return page; },
+    async newCDPSession() { return { async send() { return { targetInfo: { targetId: 'native-fixture' } }; }, async detach() {} }; } });
+  const browser = createOwnedBrowserService({ dataDir, policy, credentialBroker: broker,
+    nativeAdapter: { async bind() {}, async control() {} }, lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+    runtimeFactory: async () => ({ kind: 'native', context, browser: new EventEmitter(), async close() {} }) });
+  t.after(async () => { await browser.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const opened = await browser.request(agent, 'open', { url: origin });
+  const rotate = value => { storage.cookies = [{ name: 'session', domain: '.example.test', path: '/', value, secure: true, httpOnly: true }]; };
+  const approve = args => browser.approveAccount(args);
+  const approved = () => broker.listAccounts().then(({ accounts }) => accounts.find(entry => entry.id === account.id).agentReuseApproved);
+
+  await browser.request(owner, 'control', { tabId: opened.tab.tabId, owner: 'human' });
+  rotate('owner-login');
+  await approve({ actor: owner, accountId: account.id });
+  await browser.request(owner, 'control', { tabId: opened.tab.tabId, owner: 'agent' });
+  await browser.inventory(agent);
+  assert.equal(await approved(), true, 'approval includes owner cookies that had not been observed yet');
+  rotate('agent-refresh');
+  await browser.inventory(agent);
+  assert.equal(await approved(), true, 'agent/background cookie refresh does not revoke the approved identity');
+  await assert.rejects(broker.assertBrowserAccess({ actor: agent, url: 'https://www.example.test', tab: { profileId: 'native' } }),
+    { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' }, 'acknowledging a shared cookie never grants a sibling origin');
+
+  await browser.request(owner, 'control', { tabId: opened.tab.tabId, owner: 'human' });
+  rotate('different-owner-login');
+  await browser.inventory(agent);
+  assert.equal(await approved(), false, 'owner changes are fenced even while the owner still holds the tab');
+  await browser.request(owner, 'control', { tabId: opened.tab.tabId, owner: 'agent' });
+  await browser.inventory(agent);
+  assert.equal(await approved(), false, 'a later owner session change still needs approval');
+  await assert.rejects(broker.assertBrowserAccess({ actor: agent, url: origin, tab: { profileId: 'native' } }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  await approve({ actor: owner, accountId: account.id });
+  rotate('next-agent-refresh');
+  await browser.inventory(agent);
+  assert.equal(await approved(), true, 'reapproval does not leave an old owner marker armed');
+});

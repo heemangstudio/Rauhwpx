@@ -802,7 +802,7 @@ async function handleBrowserRequest(record, sock, msg) {
           assertBrowserAccountScope(pending, actor);
           approval = Object.freeze({ approved: true, requestId: args.requestId, use: true });
         }
-        result = await credentialBroker.approveAccount({ profileId: ownedBrowser.profileId(), ...args, actor, approval });
+        result = await ownedBrowser.approveAccount({ profileId: ownedBrowser.profileId(), ...args, actor, approval });
         if (args.requestId) settleBrowserAccountRequest(args.requestId);
         break;
       }
@@ -831,7 +831,7 @@ async function handleBrowserAccountSubmit(record, sock, msg) {
     if (msg.consent?.save !== true || typeof msg.consent?.use !== 'boolean') {
       throw workflowError('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'Choose whether to save and reuse this account');
     }
-    const result = await credentialBroker.submit({
+    const result = await ownedBrowser.submitAccount({
       actor, requestId: accountRequestId, account: msg.account,
       username: msg.username, password: msg.password, remember: msg.remember === true,
       approval: Object.freeze({ approved: true, requestId: accountRequestId, save: true, use: msg.consent.use }),

@@ -262,7 +262,7 @@ try {
   await assert.rejects(host.cdp.command({ method: 'Page.reload', sessionId: protectedReloadSession, params: { scriptToEvaluateOnLoad: 'document.querySelector("input").value' } }), /protect this page/);
   report.protectedReload = true;
   // The secure account form stores this account in the owner vault, never the Chrome-import vault.
-  const ownerActor = { ...actor, isHuman: true };
+  const ownerActor = { ...actor, isHuman: true, clientId: 'fixture-owner' };
   const registration = await credentialBroker.requestAccount({ actor: ownerActor, origin, origins: [origin], profileId: 'default', label: 'Owner-vault fixture' });
   const { account: brokerAccount } = await credentialBroker.submit({ actor: ownerActor, requestId: registration.requestId,
     approval: { approved: true, requestId: registration.requestId, save: true, use: true },
@@ -271,9 +271,28 @@ try {
   await credentialBroker.registerSessionOrigins({ profileId: 'native', origins: [origin], source: 'human' });
   await assert.rejects(credentialBroker.assertBrowserAccess({ actor, url: origin, tab: { profileId: 'native' } }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
   const nativeApproval = await credentialBroker.requestAccount({ actor, accountId: brokerAccount.id, profileId: 'native' });
-  const migrated = await credentialBroker.approveAccount({ actor: ownerActor, requestId: nativeApproval.requestId,
+  await service.request(ownerActor, 'control', { tabId, owner: 'human' });
+  await tab.view.webContents.executeJavaScript("document.cookie='approvalFixture=owner-login; path=/; Secure'; localStorage.setItem('approvalFixture','owner-login')");
+  const migrated = await service.approveAccount({ actor: ownerActor, requestId: nativeApproval.requestId,
     approval: { approved: true, requestId: nativeApproval.requestId, use: true } });
   assert.equal(migrated.account.id, brokerAccount.id);
+  await service.request(ownerActor, 'control', { tabId, owner: 'agent' });
+  await tab.view.webContents.executeJavaScript("document.cookie='approvalFixture=site-refresh; path=/; Secure'; localStorage.setItem('approvalFixture','site-refresh')");
+  await service.inventory(actor);
+  assert.equal((await credentialBroker.listAccounts()).accounts.find(account => account.id === brokerAccount.id).agentReuseApproved, true,
+    'the approved native account survives normal cookie and localStorage refresh');
+  await service.request(ownerActor, 'control', { tabId, owner: 'human' });
+  await tab.view.webContents.executeJavaScript("document.cookie='approvalFixture=owner-update; path=/; Secure'");
+  const update = await credentialBroker.requestAccount({ actor: ownerActor, accountId: brokerAccount.id, profileId: 'native', intent: 'save' });
+  const updated = await service.submitAccount({ actor: ownerActor, requestId: update.requestId,
+    username: 'owner-vault-user', password: secret, approval: { approved: true, requestId: update.requestId, save: true, use: true } });
+  assert.equal(updated.account.id, brokerAccount.id);
+  await service.request(ownerActor, 'control', { tabId, owner: 'agent' });
+  await tab.view.webContents.executeJavaScript("document.cookie='approvalFixture=after-save; path=/; Secure'");
+  await service.inventory(actor);
+  assert.equal((await credentialBroker.listAccounts()).accounts.find(account => account.id === brokerAccount.id).agentReuseApproved, true,
+    'saving an account with reuse consent also settles the current session');
+  report.brokerApprovalSurvivesSessionRefresh = true;
   assert.equal(migrated.account.profileId, 'native');
   assert.equal(migrated.account.sessionApprovalRequired, false);
 

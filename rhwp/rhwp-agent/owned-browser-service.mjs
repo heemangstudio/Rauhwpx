@@ -311,7 +311,7 @@ export function createOwnedBrowserService(options = {}) {
     const approved = sessionFingerprint({ cookies: [...cookieBaseline.values()], origins: [] });
     for (const domain of touchedDomains) { const key = `domain:${domain}`; if (approved.has(key)) sessionBaseline.set(key, approved.get(key)); else sessionBaseline.delete(key); }
   });
-  const observeHumanSessions = () => serializeSession(async () => {
+  const observeHumanSessionsNow = async () => {
     if (!runtime || state !== 'ready' || !credentialBroker?.registerSessionOrigins) return;
     for (const page of runtime.context.pages()) if (!pageTabs.has(page) && /^https?:/.test(page.url())) markHumanOrigin(new URL(page.url()).origin);
     const storage = await browserStorageState();
@@ -322,12 +322,37 @@ export function createOwnedBrowserService(options = {}) {
       if (key.startsWith('domain:')) {
         const domain = key.slice(7);
         if ([...humanOrigins].some((origin) => { const host = new URL(origin).hostname; return host === domain || host.endsWith(`.${domain}`) || domain.endsWith(`.${host}`); })) domains.push(domain);
-      } else { const origin = key.slice(7); if (humanOrigins.has(origin)) origins.push(origin); }
+      } else { const origin = key.slice(7); if (humanOrigins.has(origin) || unconfirmedHumanOrigins.has(origin)) origins.push(origin); }
     }
     if (domains.length || origins.length) await credentialBroker.registerSessionOrigins({ profileId: profileId(), origins, domains, source: 'human' });
     sessionBaseline = current;
     cookieBaseline = new Map(storage.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
-  });
+  };
+  const observeHumanSessions = () => serializeSession(observeHumanSessionsNow);
+  const acknowledgeAccountOrigins = (account) => {
+    if (!account.agentReuseApproved || account.profileId !== profileId()) return;
+    // Consent acknowledges shared cookie state, while access remains limited to the exact approved origins.
+    const cookieKeys = [...sessionBaseline.keys()].filter(key => key.startsWith('domain:') && account.origins.some(origin => matchesOrigin(key, origin)));
+    for (const origin of humanOrigins) {
+      if (account.origins.includes(origin) || cookieKeys.some(key => matchesOrigin(key, origin))) humanOrigins.delete(origin);
+    }
+    for (const origin of account.origins) unconfirmedHumanOrigins.delete(origin);
+  };
+  const withAccountApproval = (actor, operation) => {
+    validateActor(actor);
+    if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the owner can approve website accounts.');
+    return serializeSession(async () => {
+      // Acknowledge the current browser state before granting reuse, including changes not yet polled.
+      await observeHumanSessionsNow();
+      const epoch = humanSessionEpoch;
+      const result = await operation();
+      if (result.account?.agentReuseApproved && result.account.profileId === profileId() && epoch === humanSessionEpoch) {
+        acknowledgeAccountOrigins(result.account);
+        await persist();
+      }
+      return result;
+    });
+  };
 
   const onDownload = async (tab, download) => {
     const actor = Object.freeze(tab.activeActor ?? (tab.controller.owner === 'human' ? { ...actorForTab(tab), isHuman: true, clientId: tab.controller.clientId } : actorForTab(tab)));
@@ -475,6 +500,7 @@ export function createOwnedBrowserService(options = {}) {
         }
         sessionBaseline = initialFingerprint;
         cookieBaseline = new Map(initialStorage.cookies.map((cookie) => [cookieIdentity(cookie), cookie]));
+        for (const account of (await credentialBroker?.listAccounts?.())?.accounts ?? []) acknowledgeAccountOrigins(account);
         handoffProfile = false;
         await runtime.context.route('**/*', async (route) => {
           const request = route.request();
@@ -1108,6 +1134,7 @@ export function createOwnedBrowserService(options = {}) {
         const key = `origin:${origin}`;
         if (confirmed.has(key)) sessionBaseline.set(key, confirmed.get(key)); else sessionBaseline.delete(key);
       }
+      acknowledgeAccountOrigins(account);
       await persist();
       await saveCheckpoint();
       if (handoffPreviousMode === 'native') await returnFromSignIn(account, confirmedStorage);
@@ -1242,6 +1269,12 @@ export function createOwnedBrowserService(options = {}) {
       epochs(tab, args);
       // 조작권은 사용자만 옮긴다. 가져가면 held로 에이전트의 페이지 변경을 막고, 돌려주면 탭 범위의 기본 소유로 돌아간다.
       const held = args.owner === undefined ? tab.controller.held === true : args.owner === 'human';
+      if (!held && tab.controller.owner === 'human') {
+        markHumanDocument(tab); await observeHumanSessions();
+        // Returning an unchanged, already-approved session must not arm another approval reset.
+        for (const account of (await credentialBroker?.listAccounts?.())?.accounts ?? []) acknowledgeAccountOrigins(account);
+        await persist();
+      }
       tab.controllerEpoch++; tab.controller = held ? { owner: 'human', held: true } : { owner: tab.scope === 'global' ? 'human' : 'agent' };
       if (held) markHumanDocument(tab);
       credentialBroker?.invalidateTab?.(tab.tabId);
@@ -1331,6 +1364,8 @@ export function createOwnedBrowserService(options = {}) {
   const request = performRequest;
   return {
     request, inventory, sweepSleepingTabs, profileId,
+    approveAccount: (args) => withAccountApproval(args.actor, () => credentialBroker.approveAccount(args)),
+    submitAccount: (args) => withAccountApproval(args.actor, () => credentialBroker.submit(args)),
     configureSleep({ idleMinutes = 15 } = {}) {
       if (!Number.isInteger(idleMinutes) || idleMinutes < 0 || idleMinutes > 1440) throw error('BROWSER_CONFIGURATION_INVALID', 'Choose an idle timeout between 0 and 1440 minutes.');
       idleSleepMs = idleMinutes * 60_000;
