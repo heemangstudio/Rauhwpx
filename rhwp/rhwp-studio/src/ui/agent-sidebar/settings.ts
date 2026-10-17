@@ -631,9 +631,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   // 2단계 — OpenRouter 키
   const piKeyStep = el('div', 'ag-pi-step');
   const piKeyNote = el('p', 'ag-settings-note', 'OpenRouter 로그인 또는 API 키');
-  const piOauth = el('button', 'ag-settings-primary ag-agent-auth-choice');
+  const piOauth = el('button', 'ag-settings-btn ag-pi-oauth', '브라우저로 로그인');
   piOauth.type = 'button';
-  piOauth.append(el('strong', '', '브라우저로 로그인'), el('span', '', 'OpenRouter OAuth'));
   const piAuthDivider = el('div', 'ag-agent-auth-divider', '또는 API 키');
   const piKeyInput = createTextField('OpenRouter 키', {
     type: 'password',

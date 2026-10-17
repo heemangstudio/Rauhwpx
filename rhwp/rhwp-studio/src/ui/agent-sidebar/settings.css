@@ -1144,6 +1144,10 @@
   display: none;
 }
 
+.ag-pi-oauth {
+  align-self: flex-start;
+}
+
 .ag-pi-key-guide {
   align-self: center;
   margin-left: auto;
