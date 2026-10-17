@@ -148,6 +148,19 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'dock', 'ending the agent turn keeps the page docked');
 
     await page.evaluate(() => {
+      // 긴 대기만 가상 시계로 돌려 실제 프레임과 네이티브 투영 검사는 그대로 실행한다.
+      const timers = new Map<number, { at: number; run: () => void }>();
+      let now = 0; let nextId = -1;
+      const schedule = window.setTimeout.bind(window); const cancel = window.clearTimeout.bind(window);
+      window.setTimeout = ((handler: TimerHandler, delay = 0, ...args: any[]) => {
+        if (delay < 60_000 || typeof handler !== 'function') return schedule(handler, delay, ...args);
+        const id = nextId--; timers.set(id, { at: now + delay, run: () => handler(...args) }); return id;
+      }) as typeof window.setTimeout;
+      window.clearTimeout = (id?: number) => { if (id !== undefined && timers.delete(id)) return; cancel(id); };
+      (window as any).projectionTest.advanceTime = (ms: number) => {
+        now += ms;
+        for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.run(); }
+      };
       const view = (window as any).projectionTest.view;
       view.setVisible(false);
       view.previewAgent({ ...view.controller.tab(), controller: { owner: 'agent' } });
@@ -164,9 +177,37 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     await page.evaluate(() => (window as any).projectionTest.view.controller.refresh());
     assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'idle browser state preserves the agent preview');
     await page.evaluate(() => (window as any).projectionTest.view.endAgentPreview());
-    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true, 'turn end collapses immediately');
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'turn end keeps the browser visible');
+    assert.equal(await page.$eval('.ag-browser-surface', node => (node as HTMLElement).inert), false, 'turn end immediately unlocks the lingering browser');
+    assert.equal(await page.$eval('.ag-browser-floating', node => getComputedStyle(node).visibility), 'visible', 'the lingering browser stays visible on Home');
+    await attached('same-tab');
+    await page.evaluate(() => (window as any).projectionTest.advanceTime(119_999));
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'browser stays visible for two minutes');
+    await page.evaluate(() => { const h = (window as any).projectionTest; h.view.previewAgent(h.view.controller.tab()); h.view.endAgentPreview(); h.advanceTime(1); });
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'new agent use resets the idle deadline');
+    await page.evaluate(() => (window as any).projectionTest.advanceTime(119_999));
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true, 'two idle minutes collapse the preview');
     await attached(null);
     assert.equal(await page.evaluate(() => (window as any).projectionTest.view.controller.tab().tabId), 'same-tab', 'collapse preserves the browser tab');
+    await page.evaluate(() => document.documentElement.classList.remove('document-home-open'));
+
+    await page.evaluate(() => { const h = (window as any).projectionTest; h.view.previewAgent(h.view.controller.tab()); h.view.endAgentPreview(); });
+    await page.click('.ag-browser-floating-close');
+    await attached(null);
+    await page.evaluate(() => { const h = (window as any).projectionTest; h.view.float(); h.advanceTime(120_000); });
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'manual reopen cancels the old idle close');
+    await page.click('.ag-browser-floating-close');
+    await attached(null);
+
+    await page.evaluate(() => { const h = (window as any).projectionTest; h.view.previewAgent(h.view.controller.tab()); h.view.endAgentPreview(); });
+    await page.click('.ag-browser-floating .ag-browser-control');
+    await page.waitForFunction(() => (window as any).projectionTest.view.controller.tab().controller.held === true);
+    await page.evaluate(() => (window as any).projectionTest.advanceTime(120_000));
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'taking control during the idle grace period cancels automatic hiding');
+    await page.click('.ag-browser-floating .ag-browser-control');
+    await page.waitForFunction(() => (window as any).projectionTest.view.controller.tab().controller.held !== true);
+    await page.click('.ag-browser-floating-close');
+    await attached(null);
 
     // 직접 조작은 같은 게스트를 떼지 않고 입력만 풀며, 거절되면 미리보기 잠금으로 돌아가고, 턴이 끝나도 쓰던 창을 접지 않는다.
     const lastAttach = () => page.evaluate(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'attach').at(-1));
