@@ -513,9 +513,11 @@ const UNEDITED_DOCUMENT_RELOAD_KEY = 'rhwp-unedited-document-reload-v1';
 function checkpointUneditedDocument(): void {
   try {
     const storage = sessionStorageOrNull();
+    // 시작 복구가 끝나기 전에 다시 새로고침해도 아직 읽는 체크포인트를 지우지 않는다.
+    if (!engineTrap() && (documentIoCount > 0 || !wasm.hasLoadedDocument())) return;
     storage?.removeItem(UNEDITED_DOCUMENT_RELOAD_KEY);
-    if (engineTrap() || documentIoCount > 0 || !attachedSession.documentId || attachedSession.worktree
-      || !wasm.hasLoadedDocument() || !wasm.isNewDocument || wasm.currentFileHandle
+    if (engineTrap() || !attachedSession.documentId || attachedSession.worktree
+      || !wasm.isNewDocument || wasm.currentFileHandle
       || documentState.isDirty()) return;
     storage?.setItem(UNEDITED_DOCUMENT_RELOAD_KEY, JSON.stringify({
       documentId: attachedSession.documentId,
@@ -527,10 +529,9 @@ function checkpointUneditedDocument(): void {
 }
 
 async function reopenUneditedDocumentAfterReload(): Promise<boolean> {
+  const storage = sessionStorageOrNull();
   try {
-    const storage = sessionStorageOrNull();
     const saved = storage?.getItem(UNEDITED_DOCUMENT_RELOAD_KEY);
-    storage?.removeItem(UNEDITED_DOCUMENT_RELOAD_KEY);
     const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
     if (!saved || navigation?.type !== 'reload' || shouldSkipInitialAutosaveRecovery()) return false;
     const checkpoint = JSON.parse(saved);
@@ -540,6 +541,8 @@ async function reopenUneditedDocumentAfterReload(): Promise<boolean> {
   } catch (error) {
     console.warn('[recovery] 새 문서 새로고침 복구 실패:', error);
     return false;
+  } finally {
+    try { storage?.removeItem(UNEDITED_DOCUMENT_RELOAD_KEY); } catch { /* 저장소 접근 불가 */ }
   }
 }
 
