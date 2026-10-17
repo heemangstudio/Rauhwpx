@@ -300,7 +300,6 @@ test('expands catalog roots with home, Windows variables and wildcard folders', 
   for (const name of ['Font7', 'Font8', 'Other']) await mkdir(path.join(dir, 'assets', `com_apple_MobileAsset_${name}`), { recursive: true });
   await writeFile(path.join(dir, 'assets', 'com_apple_MobileAsset_FontFile'), '');
   const catalog = [
-    { os: 'darwin', kind: 'system', label: 'assets', glob: `${dir}/assets/com_apple_MobileAsset_Font*` },
     { os: 'darwin', kind: 'user', label: 'home', path: '~/Library/Fonts' },
     { os: 'darwin', kind: 'app', label: 'cache', path: '~/cache', sniff: true, maxDepth: 2 },
     { os: 'darwin', kind: 'hancom', label: 'Hancom', path: '/opt/hnc' },
@@ -309,9 +308,17 @@ test('expands catalog roots with home, Windows variables and wildcard folders', 
     { os: 'linux', kind: 'app', label: 'LibreOffice', path: '/usr/lib/libreoffice/share/fonts' },
   ];
   const mac = await expandFontRootCatalog({ platform: 'darwin', home: '/Users/rau', catalog });
-  assert.deepEqual(mac.roots, [
+  // 와일드카드는 실제 폴더를 읽으므로 이 테스트를 돌리는 플랫폼의 경로 규칙으로 확인한다.
+  const hostOs = process.platform === 'win32' || process.platform === 'darwin' ? process.platform : 'linux';
+  const host = await expandFontRootCatalog({
+    platform: process.platform,
+    catalog: [{ os: hostOs, kind: 'system', label: 'assets', glob: path.join(dir, 'assets', 'com_apple_MobileAsset_Font*') }],
+  });
+  assert.deepEqual(host.roots, [
     { path: path.join(dir, 'assets', 'com_apple_MobileAsset_Font7'), kind: 'system', label: 'assets' },
     { path: path.join(dir, 'assets', 'com_apple_MobileAsset_Font8'), kind: 'system', label: 'assets' },
+  ]);
+  assert.deepEqual(mac.roots, [
     { path: '/Users/rau/Library/Fonts', kind: 'user', label: 'home' },
     { path: '/Users/rau/cache', kind: 'app', label: 'cache', sniff: true, maxDepth: 2 },
   ]);

@@ -32,7 +32,7 @@ struct Context {
 fn loaded(text: &str, width: i32, ctx: Context) -> (DocumentCore, Vec<(f64, f64, TextRunNode)>) {
     rhwp::wasm_api::clear_runtime_font_metrics();
     let registered: serde_json::Value = serde_json::from_str(
-        &rhwp::wasm_api::register_runtime_font_metrics(FONT, "[\"Noto Sans KR\"]", false, false),
+        &rhwp::wasm_api::register_runtime_font_metrics(FONT, "[\"Noto Sans KR\"]", false, false, None),
     )
     .unwrap();
     assert_eq!(registered["registered"], true);
